@@ -14,8 +14,12 @@
     "lint": "eslint --cache .",
     "lint:fix": "eslint --cache --fix .",
     "format": "prettier --write .",
+    "test:desktop": "pnpm --filter desktop test",
+    "test:server": "pnpm --filter agent-server test",
+    "test:packages": "pnpm --filter @repo/shared test && pnpm --filter @repo/protocol test",
+    "test": "pnpm test:packages && pnpm test:server && pnpm test:desktop",
     "typecheck:desktop": "pnpm --filter desktop typecheck",
-    "typecheck:server": "pnpm --filter agent-server tsc --noEmit",
+    "typecheck:server": "pnpm --filter agent-server exec tsc --noEmit",
     "typecheck:packages": "pnpm --filter @repo/shared exec tsc --noEmit && pnpm --filter @repo/config exec tsc --noEmit && pnpm --filter @repo/protocol exec tsc --noEmit",
     "typecheck": "pnpm typecheck:packages && pnpm typecheck:server && pnpm typecheck:desktop",
     "prepare": "husky"
@@ -32,6 +36,12 @@
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "3.0.0",
