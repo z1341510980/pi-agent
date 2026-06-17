@@ -2,6 +2,7 @@ import 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type { PiAgUiAgent } from '../core/agent/pi-agui-agent.js'
 import type { PiSessionStore } from '../core/agent/session-store.js'
+import type { ConfirmationManager } from '../core/tool/confirmation-manager.js'
 
 // Pi SDK 类型通过 any 声明，避免编译时依赖具体 SDK 类型
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -23,6 +24,7 @@ declare module 'fastify' {
     sessionManager: PiSessionManager
     getApiKey: (provider: string) => Promise<string | undefined>
     eventBus: EventBus
+    confirmationManager: ConfirmationManager
     piAgUiAgent: PiAgUiAgent
     piSessionStore: PiSessionStore
   }

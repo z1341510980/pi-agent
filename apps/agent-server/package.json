@@ -27,6 +27,7 @@
     "@earendil-works/pi-coding-agent": "^0.79.4",
     "@fastify/cors": "^11.2.0",
     "@fastify/rate-limit": "^11.0.0",
+    "@fastify/websocket": "^11.2.0",
     "@repo/config": "workspace:*",
     "@repo/protocol": "workspace:*",
     "@repo/shared": "workspace:*",

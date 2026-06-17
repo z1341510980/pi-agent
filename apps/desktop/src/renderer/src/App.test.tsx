@@ -1,4 +1,3 @@
-import '@testing-library/jest-dom/vitest'
 import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,10 +40,10 @@ describe('App shell', () => {
 
     render(<App />)
 
-    expect(screen.getByRole('main', { name: 'PI Agent 工作台' })).toBeInTheDocument()
-    expect(screen.getByRole('navigation', { name: '会话' })).toBeInTheDocument()
-    expect(screen.getByRole('complementary', { name: '上下文' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '配置 Provider' })).toBeInTheDocument()
-    expect(screen.queryByText('CopilotKit Runtime')).not.toBeInTheDocument()
+    expect(screen.getByRole('main', { name: 'PI Agent 工作台' })).toBeTruthy()
+    expect(screen.getByRole('navigation', { name: '会话' })).toBeTruthy()
+    expect(screen.getByRole('complementary', { name: '上下文' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '配置 Provider' })).toBeTruthy()
+    expect(screen.queryByText('CopilotKit Runtime')).toBeNull()
   })
 })
