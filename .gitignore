@@ -1,0 +1,48 @@
+# 依赖目录
+node_modules/
+
+# 构建产物
+dist/
+out/
+*.tsbuildinfo
+
+# 环境变量（敏感信息）
+.env
+.env.*
+!.env.example
+
+# IDE / 编辑器
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# 日志文件
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.eslintcache
+
+# Electron / electron-builder
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.snap
+
+# 临时文件
+*.tmp
+*.bak
+
+# Pi SDK 本地数据目录（会话、凭证、模型配置）
+.pi-data/
+.pi/

@@ -48,13 +48,25 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   // 3. Gate 集成：获取被禁止的工具列表
   const gateDeniedTools = deps.gate.getDeniedTools()
 
-  // 4. 创建 Agent Session
+  // 4. 解析默认模型（优先 DeepSeek，回退到第一个可用模型）
+  const allModels = deps.modelRegistry.getAll()
+  const defaultModel =
+    allModels.find((m) => m.provider === 'deepseek' && m.id === 'deepseek-chat') ??
+    allModels.find((m) => m.provider === 'deepseek') ??
+    allModels[0]
+
+  if (!defaultModel) {
+    throw new Error('没有可用的模型，请检查 Provider 配置')
+  }
+
+  // 5. 创建 Agent Session
   const { session } = await createAgentSession({
     authStorage: deps.authStorage,
     modelRegistry: deps.modelRegistry,
     sessionManager: deps.sessionManager,
     resourceLoader,
     cwd: deps.config.cwd,
+    model: defaultModel,
     ...(gateDeniedTools.length > 0 ? { excludeTools: gateDeniedTools } : {}),
   })
 

@@ -17,6 +17,10 @@ import { createModuleLogger } from '../lib/logger.js'
  * - ${dataDir}/agent/auth.json     凭证存储
  * - ${dataDir}/agent/models.json   模型注册表
  * - ${dataDir}/agent/sessions/     会话持久化
+ *
+ * Provider 配置：
+ * - DeepSeek：OpenAI 兼容 API，通过 PI_API_KEY_DEEPSEEK 或 PI_API_KEY 注入
+ * - 其他 Provider：通过 PI_API_KEY_{PROVIDER} 或 PI_API_KEY 注入
  */
 export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'pi-sdk')
@@ -48,6 +52,52 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   // SessionManager.create 会创建 sessionDir 并初始化新会话文件
   const sessionManager = SessionManager.create(cwd, sessionDir)
   app.decorate('sessionManager', sessionManager)
+
+  // 注册 DeepSeek Provider（OpenAI 兼容 API）
+  // 通过环境变量 PI_API_KEY_DEEPSEEK 或 PI_API_KEY 注入 API Key
+  const deepseekApiKey =
+    process.env.PI_API_KEY_DEEPSEEK ?? process.env.PI_API_KEY
+  if (deepseekApiKey) {
+    modelRegistry.registerProvider('deepseek', {
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: deepseekApiKey,
+      api: 'openai-completions',
+      authHeader: true,
+      models: [
+        {
+          id: 'deepseek-chat',
+          name: 'DeepSeek V3 Chat',
+          reasoning: false,
+          input: ['text'],
+          cost: { input: 0.27, output: 1.1, cacheRead: 0.07, cacheWrite: 0.27 },
+          contextWindow: 65536,
+          maxTokens: 8192,
+          compat: {
+            supportsDeveloperRole: false,
+            maxTokensField: 'max_tokens',
+          },
+        },
+        {
+          id: 'deepseek-reasoner',
+          name: 'DeepSeek R1 Reasoner',
+          reasoning: true,
+          input: ['text'],
+          cost: { input: 0.55, output: 2.19, cacheRead: 0.14, cacheWrite: 0.55 },
+          contextWindow: 65536,
+          maxTokens: 8192,
+          compat: {
+            supportsDeveloperRole: false,
+            maxTokensField: 'max_tokens',
+            thinkingFormat: 'deepseek',
+          },
+        },
+      ],
+    })
+    log.info('DeepSeek Provider 已注册（deepseek-chat, deepseek-reasoner）')
+  } else {
+    log.warn('PI_API_KEY_DEEPSEEK/PI_API_KEY 未设置，DeepSeek Provider 未注册')
+  }
 
   // getApiKey 回调：从环境变量解析 API Key
   // 优先级：PI_API_KEY_${PROVIDER} > PI_API_KEY
