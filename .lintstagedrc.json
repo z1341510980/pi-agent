@@ -1,0 +1,11 @@
+{
+  "*.ts": ["eslint --cache --fix", "prettier --write"],
+  "*.tsx": ["eslint --cache --fix", "prettier --write"],
+  "*.mts": ["eslint --cache --fix", "prettier --write"],
+  "*.js": ["eslint --cache --fix", "prettier --write"],
+  "*.mjs": ["eslint --cache --fix", "prettier --write"],
+  "*.json": ["prettier --write"],
+  "*.yaml": ["prettier --write"],
+  "*.yml": ["prettier --write"],
+  "*.md": ["prettier --write"]
+}

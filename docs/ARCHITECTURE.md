@@ -3867,6 +3867,296 @@ token 预算超限时自动截断。
 
 ---
 
+## 30. 前端实施计划（F0-F9）
+
+> **背景**：前端完整规格见 [`docs/FRONTEND_DEVELOPMENT.md`](./FRONTEND_DEVELOPMENT.md)（14 章节，约 2000 行）。
+> 本章节将其整合进主架构文档，定义与后端阶段的并行推进策略与启动时机。
+> 配套可视化文档：
+> - [`docs/pi_agent_前端信息架构总览.html`](./pi_agent_前端信息架构总览.html)
+> - [`docs/主对话工作台界面线框.html`](./主对话工作台界面线框.html)
+> - [`docs/消息类型与状态卡片规范.html`](./消息类型与状态卡片规范.html)
+> - [`docs/实时交互时序流程.html`](./实时交互时序流程.html)
+> - [`docs/Provider_管理设置页面.html`](./Provider_管理设置页面.html)
+
+### 30.1 前端技术栈定型
+
+| 层 | 技术 | 选型理由 |
+|----|------|----------|
+| 框架 | React 19 + TypeScript 5.9（strict） | 已有，并发特性支持流式渲染 |
+| 构建 | electron-vite + Vite 7 | 已有，HMR + ESM |
+| 样式 | Tailwind CSS v4（CSS 变量驱动主题） | utility-first，与 shadcn/ui 同源 |
+| 组件库 | shadcn/ui + Radix UI | 可定制、a11y 内置、无运行时 license 风险 |
+| 图标 | Lucide React | tree-shakeable，与 shadcn/ui 默认搭配 |
+| 客户端状态 | Zustand 5 | §12 指定，轻量、无 Provider |
+| 服务端状态 | TanStack Query 5 | 已有，SSE/WS 数据缓存与同步 |
+| 动画 | Framer Motion 11 | 声明式动画，layout 动画 |
+| Markdown | react-markdown + remark-gfm + rehype-highlight | Agent 输出渲染 |
+| 代码高亮 | Shiki | VS Code 级别，与后端同源 |
+| 表单 | react-hook-form + zod | 与后端 Zod schema 复用 |
+| 图表 | Recharts 2 | 用量面板折线/饼/柱状图 |
+| 虚拟列表 | @tanstack/react-virtual 3 | 会话列表/消息流长列表 |
+| 快捷键 | react-hotkeys-hook | 全局快捷键 |
+| 拖拽 | @dnd-kit/core | 会话排序、面板拖拽 |
+
+> **CopilotKit 决策**：v1.0 移除 CopilotKit，自建完整对话 UI。原因：CopilotKit Sidebar 无法满足工具卡/思考块/确认卡等复杂需求，自研 UI 更好对接 AG-UI 协议细粒度事件，减少依赖体积。
+
+### 30.2 信息架构与后端能力映射
+
+| 前端模块 | 后端能力（ARCHITECTURE 章节） | 通信方式 | 启动依赖 |
+|----------|------------------------------|----------|----------|
+| 消息流 | §3.5 Agent Loop / §3.8 端到端数据流 | SSE (AG-UI) | P4 完成 ✅ |
+| 工具确认 | §11.3 确认机制 / §22.7 Gate | WebSocket | P5 + P10 |
+| 中途引导 (steer) | §22.11 Mid-turn Steer | SSE (POST) / WebSocket | P4 完成 ✅ |
+| 会话管理 | §3.5 / §20 SessionFileRegistry | HTTP REST | P6 |
+| Compaction 状态 | §13 Session Compaction | WebSocket | P7 |
+| 记忆状态 | §6 记忆系统 / §22.9 Memory Reflection | WebSocket | P8 |
+| Provider/模型配置 | §8 三层配置 / §21 ProviderRegistry | Electron IPC → Main | P4 完成 ✅ |
+| API Key | §16 CredentialStore (safeStorage) | Electron IPC → Main | P4 完成 ✅ |
+| 用量 | §14 Usage Ledger | HTTP REST + WebSocket | P9 |
+| 权限模式 | §11 / §22.7 Gate | HTTP REST | P5 |
+| 出站代理 | §24.5 OutboundProxy | Electron IPC → Main | 任意时机 |
+| 自动更新 | §18 auto-updater | Electron IPC | 任意时机 |
+| Cron | §24.8 CronScheduler | HTTP REST | v1.2 |
+| DevLog | §23.2 DevLog | WebSocket | P10 |
+| 通知 | §7.5 EventBus → WebSocket | WebSocket | P10 |
+
+### 30.3 前端阶段与后端阶段并行策略
+
+```
+后端时间轴 ─────────────────────────────────────────────────────▶
+  P0-P4 ✅    P5    P6    P7    P8    P9    P10    RC
+   │           │     │     │     │     │     │      │
+前端时间轴 ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶
+              F0    F1    F2    F3    F4    F5    F6  F7  F8  F9
+              脚手架 对话  工具卡 会话  压缩  记忆  用量 推送 设置 打磨
+```
+
+**关键并行节点：**
+- **F0 脚手架** 可立即启动（不依赖后端，仅搭 UI 骨架）
+- **F1 对话可用** 依赖 P4（已完成 ✅），可立即启动
+- **F2 工具卡** 依赖 P5（工具系统），需先完成 P5
+- **F3 会话持久化** 依赖 P6（Session 持久化）
+- **F4 压缩状态** 依赖 P7（Compaction）
+- **F5 记忆面板** 依赖 P8（Memory 系统）
+- **F6 用量面板** 依赖 P9（Usage Ledger）
+- **F7 实时推送** 依赖 P10（WebSocket）
+- **F8 设置中心** 部分依赖 P4（已完成 ✅），可与 F1-F7 并行
+- **F9 打磨** 依赖 F0-F8 基本完成
+
+### 30.4 立即可启动的前端工作
+
+**当前后端状态**：P0-P4 完成，DeepSeek 真实 LLM 对话已验证通过。
+
+**可立即启动的前端阶段：**
+
+| 阶段 | 内容 | 依赖 | 预估工期 |
+|------|------|------|----------|
+| **F0 脚手架** | Tailwind + shadcn/ui 接入、三栏布局、主题系统、路由骨架、移除 CopilotSidebar | 无 | 1 周 |
+| **F1 对话最小可用** | SSE 流式对话、消息流、输入区、会话列表、中断、三态 | P4 ✅ | 1.5 周 |
+| **F8 设置中心（部分）** | Provider 管理、API Key 配置、通用设置 | P4 ✅ | 1 周（部分） |
+
+**建议启动顺序：**
+1. **立即启动 F0**（脚手架） — 不阻塞任何后端工作
+2. **F0 完成后启动 F1**（对话可用） — 后端 P4 已就绪，可端到端验证
+3. **F1 进行中并行启动 F8 部分**（Provider 设置） — 让用户能配置 API Key
+4. **等待 P5 完成后启动 F2**（工具卡）
+
+### 30.5 F0-F9 详细任务清单
+
+#### F0 脚手架（1 周）
+
+| 任务 | 验收标准 |
+|------|----------|
+| 接入 Tailwind v4 + shadcn/ui CLI | `pnpm dlx shadcn@latest init` 可用 |
+| 安装 Lucide / Framer Motion / Zustand | 依赖就位 |
+| 自定义标题栏组件 | 可拖拽，最小/最大/关闭可用 |
+| 三栏布局骨架 | 左/中/右栏可折叠 |
+| 主题系统（Light/Dark/System） | 切换生效并持久化 |
+| 路由骨架（react-router） | `/` 与 `/settings` 可切 |
+| 移除 CopilotSidebar，自建空壳 | 编译通过 |
+| 全局状态栏 | 显示占位状态 |
+
+#### F1 对话最小可用（1.5 周）
+
+| 任务 | 验收标准 |
+|------|----------|
+| `useStreamingRun` hook | SSE 流接入，AG-UI 事件接收 |
+| `MessageStream` 组件 | 流式文本逐字显示 |
+| `MessageBubble` 用户/助手气泡 | Markdown 渲染 |
+| `InputArea` 组件 | 多行输入，Enter 发送 |
+| `SessionList` 组件 | 列表显示，新建会话 |
+| `sessionStore` | 当前会话/消息状态 |
+| 流式占位（打字指示） | 思考中有反馈 |
+| 中断按钮 | 可中断运行 |
+| 会话标题自动生成 | 首轮后显示标题 |
+| 三态（loading/error/empty） | 全覆盖 |
+
+#### F2 工具卡 + 确认（1 周，依赖 P5）
+
+| 任务 | 验收标准 |
+|------|----------|
+| `ToolCallCard` 通用组件 | 状态机：pending→running→success/error |
+| 工具类型差异化（read/bash/edit/grep/web_search） | 各类型专属展示 |
+| `ConfirmationCard` 确认卡 | 嵌入消息流 |
+| 顶部确认通知条 | 不阻塞 |
+| WebSocket 客户端 | 接收 confirmation_request |
+| 权限模式切换器 | Auto/Plan/Read-only 切换生效 |
+| 危险操作红色强调 | 视觉区分 |
+
+#### F3 会话持久化（1 周，依赖 P6）
+
+| 任务 | 验收标准 |
+|------|----------|
+| 会话恢复（重开应用） | 历史会话可见 |
+| 会话搜索 | 实时过滤 |
+| 会话重命名/删除/导出 | 右键菜单 |
+| 会话分支（Pi SDK 树结构） | 分支切换 |
+| 会话列表虚拟化 | 1000+ 会话流畅 |
+| 草稿持久化 | 切换不丢失输入 |
+
+#### F4 压缩状态（0.5 周，依赖 P7）
+
+| 任务 | 验收标准 |
+|------|----------|
+| 压缩横幅 | compaction 事件触发 |
+| 上下文面板（右栏） | token 用量、阈值、缓存诊断 |
+| 手动压缩按钮 | 确认弹窗 + 执行 |
+| 压缩完成通知 | WebSocket 推送 |
+
+#### F5 记忆面板（1 周，依赖 P8）
+
+| 任务 | 验收标准 |
+|------|----------|
+| 记忆编译状态页 | 流水线步骤状态 |
+| 事实库浏览 | 搜索/标签筛选 |
+| 立即编译按钮 | 触发并反馈 |
+| 记忆标签页（右栏） | 置顶记忆概览 |
+| 反思验证入口 | shadow/write 模式 |
+
+#### F6 用量面板（1 周，依赖 P9）
+
+| 任务 | 验收标准 |
+|------|----------|
+| 用量概览卡片 | 总 token/成本/调用/缓存 |
+| 成本趋势折线图 | Recharts |
+| Agent 归因饼图 | Recharts |
+| 模型明细柱状图 | Recharts |
+| 明细列表分页 | 服务端分页 |
+| 本轮用量提示 | 输入区下方 |
+| 状态栏用量 | 实时更新 |
+| 用量预警通知 | 阈值可配 |
+
+#### F7 实时推送（0.5 周，依赖 P10）
+
+| 任务 | 验收标准 |
+|------|----------|
+| WebSocket 重连 | 指数退避 |
+| 通知中心 | 右上角下拉 |
+| DevLog 面板 | 底部抽屉 |
+| 通知分类与已读 | 按类型筛选 |
+| 实时用量更新 | WS 推送刷新 |
+
+#### F8 设置中心（1.5 周，部分可并行）
+
+| 任务 | 验收标准 |
+|------|----------|
+| 设置布局（左导航+右内容） | 导航切换 |
+| Provider 管理完整流程 | 增删改查 + API Key 测试 |
+| 模型管理 | 自定义模型增删 |
+| Agent 管理 | 编辑/人格模板编辑器 |
+| 权限与安全 | 模式切换 + 目录白名单 |
+| 通用设置 | 语言/主题/代理/数据目录 |
+| 出站代理配置 | 系统代理/手动/测试 |
+| 关于页 | 版本 + 检查更新 |
+| 表单校验 | react-hook-form + zod |
+
+#### F9 打磨（1 周）
+
+| 任务 | 验收标准 |
+|------|----------|
+| 命令面板（Cmd+K） | 全局搜索命令 |
+| 全套快捷键 | 见前端文档 §11.3 |
+| 动画打磨 | 60fps，自然过渡 |
+| a11y 审计 | 键盘全可达，对比度达标 |
+| 性能优化 | 虚拟化、防抖、memo |
+| 系统托盘 | 最小化、快速操作 |
+| 自动更新 UI | 发现/下载/安装 |
+| 错误边界 | 优雅降级 |
+| 空状态设计 | 每个空状态有引导 |
+
+### 30.6 前端里程碑
+
+| 里程碑 | 前端阶段 | 后端依赖 | 能力 |
+|--------|----------|----------|------|
+| **M1 对话可用** | F0 + F1 | P4 ✅ | 能和 Agent 流式对话 |
+| **M2 工具+持久化** | F2 + F3 | P5 + P6 | 工具卡、确认、会话恢复 |
+| **M3 上下文+记忆** | F4 + F5 | P7 + P8 | 压缩感知、记忆管理 |
+| **M4 用量+实时** | F6 + F7 | P9 + P10 | 成本可视、实时推送 |
+| **M5 完整体验** | F8 + F9 | 全部 | 设置完整、交互打磨 |
+
+### 30.7 性能基线（v1.0 验收）
+
+| 指标 | 目标 |
+|------|------|
+| 首屏渲染 | < 500ms |
+| 会话切换 | < 100ms（数据就绪后） |
+| 流式首 token 显示 | < 200ms（收到事件后） |
+| 长会话滚动 | 60fps（1000+ 消息） |
+| 设置页打开 | < 300ms |
+| 内存占用 | < 300MB（10 个会话） |
+
+### 30.8 前端目录结构规范
+
+```
+apps/desktop/src/renderer/src/
+├── components/
+│   ├── ui/                    # shadcn/ui 基础组件（generated，约 20 个）
+│   ├── chat/                  # 对话专用（11 个）
+│   │   ├── chat-workspace.tsx
+│   │   ├── session-list.tsx
+│   │   ├── message-stream.tsx
+│   │   ├── message-bubble.tsx
+│   │   ├── thinking-block.tsx
+│   │   ├── tool-call-card.tsx
+│   │   ├── confirmation-card.tsx
+│   │   ├── input-area.tsx
+│   │   └── steer-indicator.tsx
+│   ├── settings/              # 设置专用（10 个）
+│   ├── overlays/              # 浮层（4 个）
+│   └── shared/                # 通用业务组件（6 个）
+├── hooks/                     # 自定义 hooks（6 个）
+├── stores/                    # Zustand stores（4 个）
+├── lib/                       # 工具函数（6 个）
+├── routes/                    # 路由（2 个）
+└── types/                     # 前端专用类型
+```
+
+预估组件总数：**约 70 个文件**。
+
+### 30.9 前后端契约对齐
+
+前端所有 API 调用与 WS 事件的类型，必须从 `@repo/protocol` 导入，确保前后端类型一致：
+
+```typescript
+import type {
+  AguiAnyEvent,
+  RunAgentInput,
+  WsServerEvent,
+  WsClientEvent,
+} from '@repo/protocol'
+```
+
+**当前 `@repo/protocol` 已提供：**
+- AG-UI 事件类型重导出（`events.ts`）
+- 12 个 Zod schema（`schemas.ts`）：runAgentInput、threadMessage、forkThread、navigateThread、compactThread、toolsActive、reload、modelSelection、thinkingSettings、booleanToggle、queueMode、sessionName
+
+**前端需补充的类型（F0 阶段）：**
+- `WsServerEvent` / `WsClientEvent`（WebSocket 事件类型，待 P10 定义）
+- `SessionSummary` / `Message` / `StreamingMessage`（前端状态类型）
+- `ProviderConfig` / `AgentConfig` / `UsageRecord`（设置与用量类型）
+
+---
+
 ## 附录 A：设计模式索引
 
 | 模式 | 应用位置 | 说明 |

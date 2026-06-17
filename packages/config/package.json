@@ -1,0 +1,27 @@
+{
+  "name": "@repo/config",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "exports": {
+    "./browser": "./src/browser/index.ts",
+    "./node": "./src/node/index.ts",
+    "./shared": "./src/shared/index.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.5"
+  }
+}

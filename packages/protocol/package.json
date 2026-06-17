@@ -1,0 +1,22 @@
+{
+  "name": "@repo/protocol",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./events": "./src/events.ts",
+    "./schemas": "./src/schemas.ts"
+  },
+  "dependencies": {
+    "@ag-ui/core": "^0.0.56",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  }
+}
