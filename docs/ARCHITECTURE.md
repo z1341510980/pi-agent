@@ -3664,7 +3664,7 @@ token 预算超限时自动截断。
 - P1 配置 + 容器
 - P2 迁移 + Provider
 - P3 Agent 类 + Prompt（含 Token 预算）
-- P4 LLM 接入（自建 Agent Loop + 工具并行化）
+- P4 LLM 接入（Pi SDK Agent Loop + AG-UI 适配 + hook 定制）
 - P5 工具系统（Gate 权限控制）
 - P6 Session 管理（JSONL append-only）
 - P7 Session Compaction（异步后台压缩）

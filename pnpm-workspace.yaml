@@ -1,12 +1,12 @@
 packages:
   - "apps/*"
   - "packages/*"
-overrides:
-  "@copilotkit/runtime>zod": "3.25.76"
 allowBuilds:
-  '@google/genai': set this to true or false
-  '@scarf/scarf': set this to true or false
+  '@google/genai': true
+  '@scarf/scarf': true
   electron: true
   electron-winstaller: true
   esbuild: true
-  protobufjs: set this to true or false
+  protobufjs: true
+overrides:
+  "@copilotkit/runtime>zod": "3.25.76"
