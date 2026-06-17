@@ -57,10 +57,12 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   // 通过环境变量 PI_API_KEY_DEEPSEEK 或 PI_API_KEY 注入 API Key
   const deepseekApiKey =
     process.env.PI_API_KEY_DEEPSEEK ?? process.env.PI_API_KEY
+  const deepseekBaseUrl =
+    process.env.PI_DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
   if (deepseekApiKey) {
     modelRegistry.registerProvider('deepseek', {
       name: 'DeepSeek',
-      baseUrl: 'https://api.deepseek.com/v1',
+      baseUrl: deepseekBaseUrl,
       apiKey: deepseekApiKey,
       api: 'openai-completions',
       authHeader: true,
