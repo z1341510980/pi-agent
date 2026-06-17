@@ -1,6 +1,5 @@
 import {
   EventType,
-  type RunAgentInput,
   type RunFinishedEvent,
   type RunStartedEvent,
   type RunErrorEvent,
@@ -13,6 +12,18 @@ import type { PiSessionStore } from './session-store.js'
 import { StreamEmitter, emitSingleAssistantMessage } from './stream-emitter.js'
 import { ReasoningPipeline } from './reasoning-pipeline.js'
 
+/** streamRun 输入（宽松类型，兼容 @repo/protocol schema 输出） */
+export interface StreamRunInput {
+  threadId: string
+  runId: string
+  messages: Array<{
+    id: string
+    role: string
+    content: string | unknown
+    toolCallId?: string
+  }>
+}
+
 export interface StreamRunOptions {
   signal?: AbortSignal
 }
@@ -21,8 +32,6 @@ export interface StreamRunOptions {
  * PiAgUiAgent：AG-UI 适配层核心类
  */
 export class PiAgUiAgent {
-  private readonly threadStateByThread = new Map<string, unknown>()
-
   readonly agentId: string
 
   constructor(
@@ -33,7 +42,7 @@ export class PiAgUiAgent {
   }
 
   async streamRun(
-    input: RunAgentInput,
+    input: StreamRunInput,
     emit: AgUiEventSink,
     runOptions: StreamRunOptions = {},
   ): Promise<void> {

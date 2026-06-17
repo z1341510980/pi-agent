@@ -13,6 +13,7 @@ import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
 import { createPiSession } from './core/agent/pi-session.js'
+import { CredentialBridge } from './core/config/credential-bridge.js'
 
 export async function createApp() {
   const app = Fastify({
@@ -30,9 +31,10 @@ export async function createApp() {
   await app.register(eventBusPlugin)
   await app.register(piSdkPlugin)
 
-  // 创建 SessionStore 和 PiAgUiAgent
-  const sessionStore = new PiSessionStore()
+  // 创建 CredentialBridge、Gate、SessionStore
+  const credentialBridge = new CredentialBridge()
   const gate = new Gate()
+  const sessionStore = new PiSessionStore()
 
   // 注入 Session 工厂
   sessionStore.setSessionFactory(async () => {
@@ -40,7 +42,7 @@ export async function createApp() {
       authStorage: app.authStorage,
       modelRegistry: app.modelRegistry,
       sessionManager: app.sessionManager,
-      getApiKey: app.getApiKey,
+      credentialBridge,
       gate,
       eventBus: app.eventBus,
       config: {

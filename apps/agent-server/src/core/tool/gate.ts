@@ -37,4 +37,9 @@ export class Gate {
 
     return { allowed: true }
   }
+
+  /** 获取被禁止的工具列表（用于 Pi SDK excludeTools 参数） */
+  getDeniedTools(): string[] {
+    return Array.from(this.deniedTools)
+  }
 }

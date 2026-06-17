@@ -1,5 +1,4 @@
 import type { FastifyPluginAsync } from 'fastify'
-import type { RunAgentInput } from '@ag-ui/core'
 import { setupSse, sendSseEvent, sendSseComment, closeSse } from '../lib/sse.js'
 import { validateBody } from '../lib/validate.js'
 import {
@@ -12,6 +11,7 @@ import {
   reloadInputSchema,
 } from '@repo/protocol/schemas'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import type { StreamRunInput } from '../core/agent/pi-agui-agent.js'
 
 export const aguiRoute: FastifyPluginAsync = async (app) => {
   function getAgent() {
@@ -92,7 +92,11 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
     try {
       const agent = getAgent()
       await agent.streamRun(
-        input as unknown as RunAgentInput,
+        {
+          threadId: input.threadId,
+          runId: input.runId,
+          messages: (input.messages ?? []) as StreamRunInput['messages'],
+        },
         (event) => sendSseEvent(reply, event),
         { signal: abortController.signal },
       )

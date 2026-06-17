@@ -42,6 +42,15 @@ export const errorHandlerPlugin: FastifyPluginAsync = fp(async (app) => {
       );
     }
 
+    // Fastify 内置错误（如 JSON 解析失败 FST_ERR_CTP_INVALID_JSON_BODY）
+    // 使用错误自带的状态码，避免 400 被误转为 500
+    if (fastifyError.statusCode && fastifyError.statusCode >= 400 && fastifyError.statusCode < 500) {
+      request.log.warn({ traceId, statusCode: fastifyError.statusCode, error });
+      return reply.status(fastifyError.statusCode).send(
+        failure(ErrorCode.VALIDATION_ERROR, "请求格式错误", traceId),
+      );
+    }
+
     // 未知错误：脱敏后返回 500
     request.log.error({ traceId, error });
     return reply.status(500).send(
