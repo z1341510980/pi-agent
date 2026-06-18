@@ -8,12 +8,16 @@ import { requestContextPlugin } from './plugins/request-context.plugin.js'
 import { eventBusPlugin } from './plugins/event-bus.plugin.js'
 import { websocketSupportPlugin } from './plugins/websocket.plugin.js'
 import { piSdkPlugin } from './plugins/pi-sdk.plugin.js'
+import { usageLedgerPlugin } from './plugins/usage-ledger.plugin.js'
+import { memoryStorePlugin } from './plugins/memory-store.plugin.js'
 import { healthRoute } from './routes/health.route.js'
 import { aguiRoute } from './routes/agui.route.js'
 import { copilotkitRoute } from './routes/copilotkit.route.js'
 import { confirmationRoute } from './routes/confirmation.route.js'
 import { websocketRoute } from './routes/websocket.route.js'
 import { gateRoute } from './routes/gate.route.js'
+import { memoryRoute } from './routes/memory.route.js'
+import { usageRoute } from './routes/usage.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
@@ -37,6 +41,8 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // 业务插件
   await app.register(websocketSupportPlugin)
   await app.register(piSdkPlugin)
+  await app.register(usageLedgerPlugin)
+  await app.register(memoryStorePlugin)
 
   // 创建 CredentialBridge、Gate、SessionStore
   const cwd = process.env.PI_CWD ?? process.cwd()
@@ -83,6 +89,8 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(confirmationRoute)
   await app.register(websocketRoute)
   await app.register(gateRoute)
+  await app.register(memoryRoute)
+  await app.register(usageRoute)
   await app.register(aguiRoute)
   await app.register(copilotkitRoute)
 

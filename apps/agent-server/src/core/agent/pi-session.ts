@@ -11,6 +11,8 @@ import { createBeforeToolCall } from '../tool/confirmation-tools.js'
 import { StormBreaker } from '../tool/storm-breaker.js'
 import { truncateOutput, shouldTruncate } from '../tool/output-truncator.js'
 import { InstructionLoader } from './instruction-loader.js'
+import { FactStore } from '../memory/fact-store.js'
+import { MemoryTicker } from '../memory/memory-ticker.js'
 
 export interface PiSessionDeps {
   threadId: string
@@ -140,7 +142,11 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     return wasTruncated ? { content: truncatedContent } : undefined
   }
 
-  // 8. EventBus 集成：监听 session 事件，转发工具执行开始事件 + Storm Breaker 检测
+  // 8. Memory 集成：FactStore + MemoryTicker
+  const factStore = new FactStore(deps.config.dataDir)
+  const memoryTicker = new MemoryTicker()
+
+  // 9. EventBus 集成：监听 session 事件，转发工具执行开始事件 + Storm Breaker 检测 + Memory Ticker
   const stormBreaker = new StormBreaker()
   session.subscribe((event) => {
     if (event.type === 'tool_execution_start') {
@@ -161,6 +167,35 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           toolName,
           toolCallId,
           stats: stormBreaker.getStats(deps.threadId),
+        })
+      }
+    }
+
+    // LLM 响应完成事件：发射 llm:call_complete 供 UsageLedger 记录
+    if (event.type === 'message_end') {
+      const msg = (event as unknown as { message?: Record<string, unknown> }).message
+      if (msg && msg.role === 'assistant') {
+        const usage = msg.usage as Record<string, unknown> | undefined
+        deps.eventBus.emit('llm:call_complete', {
+          sessionId: session.sessionId,
+          threadId: deps.threadId,
+          model: msg.model as string,
+          provider: msg.provider as string,
+          inputTokens: (usage?.input as number) ?? 0,
+          outputTokens: (usage?.output as number) ?? 0,
+          cacheReadTokens: (usage?.cacheRead as number) ?? undefined,
+          cacheWriteTokens: (usage?.cacheWrite as number) ?? undefined,
+          durationMs: 0, // Pi SDK 不提供单次调用耗时
+          agentId: 'default',
+        })
+      }
+    }
+
+    // 对话轮次结束事件：记录 MemoryTicker
+    if (event.type === 'turn_end') {
+      if (memoryTicker.recordTurn()) {
+        deps.eventBus.emit('memory:compile:requested', {
+          threadId: deps.threadId,
         })
       }
     }
