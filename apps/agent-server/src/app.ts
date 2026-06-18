@@ -12,6 +12,7 @@ import { aguiRoute } from './routes/agui.route.js'
 import { copilotkitRoute } from './routes/copilotkit.route.js'
 import { confirmationRoute } from './routes/confirmation.route.js'
 import { websocketRoute } from './routes/websocket.route.js'
+import { gateRoute } from './routes/gate.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
@@ -19,7 +20,7 @@ import { ConfirmationManager } from './core/tool/confirmation-manager.js'
 import { createPiSession } from './core/agent/pi-session.js'
 import { CredentialBridge } from './core/config/credential-bridge.js'
 
-export async function createApp() {
+export async function createApp(): Promise<Fastify.FastifyInstance> {
   const app = Fastify({
     logger: true,
   })
@@ -37,23 +38,31 @@ export async function createApp() {
   await app.register(piSdkPlugin)
 
   // 创建 CredentialBridge、Gate、SessionStore
+  const cwd = process.env.PI_CWD ?? process.cwd()
+  const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
   const credentialBridge = new CredentialBridge()
-  const gate = new Gate()
+  const gate = new Gate({
+    mode: 'auto',
+    workspace: cwd,
+    agentDir: dataDir,
+  })
   const confirmationManager = new ConfirmationManager(app.eventBus)
   const sessionStore = new PiSessionStore()
 
   // 注入 Session 工厂
-  sessionStore.setSessionFactory(async () => {
+  sessionStore.setSessionFactory(async (threadId) => {
     return createPiSession({
+      threadId,
       authStorage: app.authStorage,
       modelRegistry: app.modelRegistry,
       sessionManager: app.sessionManager,
       credentialBridge,
       gate,
+      confirmationManager,
       eventBus: app.eventBus,
       config: {
-        cwd: process.env.PI_CWD ?? process.cwd(),
-        dataDir: process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`,
+        cwd,
+        dataDir,
       },
     })
   })
@@ -64,12 +73,14 @@ export async function createApp() {
   app.decorate('confirmationManager', confirmationManager)
   app.decorate('piAgUiAgent', piAgUiAgent)
   app.decorate('piSessionStore', sessionStore)
+  app.decorate('gate', gate)
   app.addHook('onClose', () => confirmationManager.dispose())
 
   // 路由
   await app.register(healthRoute)
   await app.register(confirmationRoute)
   await app.register(websocketRoute)
+  await app.register(gateRoute)
   await app.register(aguiRoute)
   await app.register(copilotkitRoute)
 

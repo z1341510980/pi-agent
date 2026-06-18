@@ -1,5 +1,6 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PiAgentSession = any
+type PiSessionFactory = (threadId: string) => Promise<PiAgentSession>
 
 export interface PiThreadSession {
   threadId: string
@@ -20,9 +21,9 @@ export interface PiSessionStoreStats {
  */
 export class PiSessionStore {
   private readonly sessions = new Map<string, PiThreadSession>()
-  private sessionFactory?: () => Promise<PiAgentSession>
+  private sessionFactory?: PiSessionFactory
 
-  setSessionFactory(factory: () => Promise<PiAgentSession>): void {
+  setSessionFactory(factory: PiSessionFactory): void {
     this.sessionFactory = factory
   }
 
@@ -37,7 +38,7 @@ export class PiSessionStore {
       throw new Error('SessionFactory 未设置，请先调用 setSessionFactory')
     }
 
-    const session = await this.sessionFactory()
+    const session = await this.sessionFactory(threadId)
     const threadSession: PiThreadSession = {
       threadId,
       session,

@@ -3,14 +3,19 @@ import type { AuthStorage, ModelRegistry, SessionManager, AgentSession } from '@
 import type { Gate } from '../tool/gate.js'
 import type { EventBus } from '@repo/shared/events'
 import type { CredentialBridge } from '../config/credential-bridge.js'
+import type { ConfirmationManager } from '../tool/confirmation-manager.js'
+import { EvidenceLedger, summarizeArgs, summarizeResult } from '../tool/evidence-ledger.js'
+import { createBeforeToolCall } from '../tool/confirmation-tools.js'
 import { InstructionLoader } from './instruction-loader.js'
 
 export interface PiSessionDeps {
+  threadId: string
   authStorage: AuthStorage
   modelRegistry: ModelRegistry
   sessionManager: SessionManager
   credentialBridge: CredentialBridge
   gate: Gate
+  confirmationManager: ConfirmationManager
   eventBus: EventBus
   config: {
     cwd: string
@@ -70,15 +75,47 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     ...(gateDeniedTools.length > 0 ? { excludeTools: gateDeniedTools } : {}),
   })
 
-  // 5. EventBus 集成：监听 session 事件，转发工具执行事件
+  // 6. 注入 beforeToolCall 钩子：Gate 权限检查 + 用户确认
+  // 使用 Pi SDK 原生钩子，统一拦截所有工具调用（内置 + 扩展 + customTools）
+  session.agent.beforeToolCall = createBeforeToolCall({
+    threadId: deps.threadId,
+    gate: deps.gate,
+    confirmationManager: deps.confirmationManager,
+  })
+
+  // 7. 注入 afterToolCall 钩子：Evidence Ledger 记录 + EventBus 事件转发
+  const evidenceLedger = new EvidenceLedger({
+    threadId: deps.threadId,
+    dataDir: deps.config.dataDir,
+  })
+
+  session.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+    // Evidence Ledger：记录工具调用证据
+    evidenceLedger.record({
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      argsSummary: summarizeArgs(
+        (args && typeof args === 'object' && !Array.isArray(args))
+          ? args as Record<string, unknown>
+          : {},
+      ),
+      resultSummary: summarizeResult(result),
+      isError,
+    })
+
+    // EventBus：转发工具执行结束事件
+    deps.eventBus.emit('tool:execution:end', {
+      toolName: toolCall.name,
+      toolCallId: toolCall.id,
+    })
+
+    return undefined
+  }
+
+  // 8. EventBus 集成：监听 session 事件，转发工具执行开始事件
   session.subscribe((event) => {
     if (event.type === 'tool_execution_start') {
       deps.eventBus.emit('tool:execution:start', {
-        toolName: (event as { toolName?: string }).toolName,
-        toolCallId: (event as { toolCallId?: string }).toolCallId,
-      })
-    } else if (event.type === 'tool_execution_end') {
-      deps.eventBus.emit('tool:execution:end', {
         toolName: (event as { toolName?: string }).toolName,
         toolCallId: (event as { toolCallId?: string }).toolCallId,
       })

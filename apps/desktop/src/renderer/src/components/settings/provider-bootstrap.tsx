@@ -1,5 +1,15 @@
 import type { FormEvent, ReactElement } from 'react'
 import { useEffect, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 export type ProviderSettings = {
   provider: string
@@ -40,50 +50,55 @@ export function ProviderBootstrap(): ReactElement {
   }
 
   return (
-    <form className="provider-form" onSubmit={saveSettings}>
+    <form className="grid gap-4 min-h-0 overflow-auto p-4 align-content-start" onSubmit={saveSettings}>
       <div>
-        <p className="panel-label">Provider bootstrap</p>
-        <h2>模型连接</h2>
+        <p className="text-subtle text-xs font-[760] m-0">Provider bootstrap</p>
+        <h2 className="text-[22px] font-[780] leading-tight mt-0.5">模型连接</h2>
       </div>
 
-      <label>
-        <span>Provider</span>
-        <select
+      <div className="grid gap-1.5">
+        <Label htmlFor="provider">Provider</Label>
+        <Select
           value={settings.provider}
-          onChange={(event) => updateSettings('provider', event.target.value)}
+          onValueChange={(value) => updateSettings('provider', value)}
         >
-          <option value="deepseek">DeepSeek</option>
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
-          <option value="gemini">Gemini</option>
-          <option value="custom">自定义</option>
-        </select>
-      </label>
+          <SelectTrigger id="provider">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="deepseek">DeepSeek</SelectItem>
+            <SelectItem value="openai">OpenAI</SelectItem>
+            <SelectItem value="anthropic">Anthropic</SelectItem>
+            <SelectItem value="gemini">Gemini</SelectItem>
+            <SelectItem value="custom">自定义</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
-      <label>
-        <span>模型</span>
-        <input
+      <div className="grid gap-1.5">
+        <Label htmlFor="model">模型</Label>
+        <Input
+          id="model"
           value={settings.model}
           onChange={(event) => updateSettings('model', event.target.value)}
           placeholder="deepseek-chat"
         />
-      </label>
+      </div>
 
-      <label>
-        <span>API Key</span>
-        <input
+      <div className="grid gap-1.5">
+        <Label htmlFor="apiKey">API Key</Label>
+        <Input
+          id="apiKey"
+          type="password"
           value={settings.apiKey}
           onChange={(event) => updateSettings('apiKey', event.target.value)}
           placeholder="sk-..."
-          type="password"
         />
-      </label>
+      </div>
 
-      <button className="primary-button" type="submit">
-        保存本机设置
-      </button>
+      <Button type="submit">保存本机设置</Button>
 
-      <p className="provider-note" role="status">
+      <p className="text-muted text-xs leading-relaxed m-0" role="status">
         {saveState === 'saved'
           ? 'Provider 设置已保存到本机。'
           : '后续会接入 Electron safeStorage 和后端连通性验证。'}
