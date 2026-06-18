@@ -186,6 +186,27 @@ describe('App shell', () => {
     })) as HTMLTextAreaElement
     expect(restoredDraft.value).toBe('未发送草稿')
   })
+
+  it('TC-06: triggers manual context compaction for the active session', async () => {
+    const fetchMock = createFetchMock()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { default: App } = await import('./App')
+    render(<App />)
+
+    const compactButton = await screen.findByRole('button', { name: '手动压缩上下文' })
+    fireEvent.click(compactButton)
+
+    await screen.findByText('上下文压缩完成。')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:3900/ag-ui/agent/default/compact',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ threadId: 'desktop-main' })
+      })
+    )
+  })
 })
 
 type SseEvent = Record<string, unknown>
@@ -220,6 +241,23 @@ function createFetchMock(runEvents: SseEvent[] = [], options: FetchMockOptions =
       return {
         ok: true,
         body: createSseStream(runEvents, options.holdOpen)
+      } as Response
+    }
+
+    if (url.endsWith('/ag-ui/agent/default/compact')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: {
+            status: 'compacted',
+            threadId: 'desktop-main',
+            result: {}
+          },
+          meta: {
+            traceId: 'test-trace'
+          }
+        })
       } as Response
     }
 

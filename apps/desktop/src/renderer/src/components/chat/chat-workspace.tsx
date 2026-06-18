@@ -5,7 +5,7 @@ import type { BrowserConfig } from '@repo/config/shared'
 import type { BaseEvent } from '@repo/protocol/events'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { getApi } from '../../api'
+import { getApi, postApi } from '../../api'
 import { ProviderBootstrap, type ProviderSettings } from '../settings/provider-bootstrap'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useToolExecutions } from '@/hooks/use-tool-executions'
@@ -34,6 +34,18 @@ type SessionSummary = {
   time: string
 }
 
+type CompactStatus =
+  | { state: 'idle' }
+  | { state: 'running' }
+  | { state: 'success'; message: string }
+  | { state: 'error'; message: string }
+
+type CompactThreadResponse = {
+  status: string
+  threadId: string
+  result: unknown
+}
+
 const defaultSessions: SessionSummary[] = [
   {
     id: 'desktop-main',
@@ -60,6 +72,7 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
     loadSessionMessages()
   )
   const [drafts, setDrafts] = useState<Record<string, string>>(() => loadDrafts())
+  const [compactStatus, setCompactStatus] = useState<CompactStatus>({ state: 'idle' })
 
   const messageState = sessionMessages[activeThreadId] ?? createEmptyMessageState()
 
@@ -143,6 +156,19 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
   const handleAbort = useCallback(() => {
     abort()
   }, [abort])
+
+  const handleCompact = useCallback(async () => {
+    setCompactStatus({ state: 'running' })
+    try {
+      await postApi<CompactThreadResponse>('/ag-ui/agent/default/compact', {
+        threadId: activeThreadId
+      })
+      setCompactStatus({ state: 'success', message: '上下文压缩完成。' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '上下文压缩失败。'
+      setCompactStatus({ state: 'error', message })
+    }
+  }, [activeThreadId])
 
   const handleRetry = useCallback(() => {
     const lastUserMsg = [...messageState.messages].reverse().find((m) => m.role === 'user')
@@ -419,6 +445,32 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
                 <PermissionModeSwitch />
               </div>
               <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-subtle text-xs font-[760] m-0">上下文压缩</p>
+                    <p className="text-muted text-xs leading-relaxed m-0">
+                      {getCompactStatusText(compactStatus)}
+                    </p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleCompact()}
+                    disabled={!isOnline || compactStatus.state === 'running'}
+                  >
+                    {compactStatus.state === 'running' ? '压缩中' : '手动压缩上下文'}
+                  </Button>
+                </div>
+                {compactStatus.state === 'success' || compactStatus.state === 'error' ? (
+                  <p
+                    className={`text-xs leading-relaxed m-0 ${compactStatus.state === 'success' ? 'text-success' : 'text-danger'}`}
+                    role="status"
+                  >
+                    {compactStatus.message}
+                  </p>
+                ) : null}
+              </div>
+              <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
                 <div className="flex items-center justify-between">
                   <p className="text-subtle text-xs font-[760] m-0">工具调用</p>
                   {executions.length > 0 && (
@@ -472,6 +524,19 @@ function loadProviderSummary(): string {
     return `${settings.provider} · ${settings.model}`
   } catch {
     return '未配置 Provider'
+  }
+}
+
+function getCompactStatusText(status: CompactStatus): string {
+  switch (status.state) {
+    case 'running':
+      return '正在调用 Pi SDK compact，完成前请避免重复触发。'
+    case 'success':
+      return '最近一次压缩已完成。'
+    case 'error':
+      return '最近一次压缩失败，请检查 Agent Server。'
+    case 'idle':
+      return '长对话时可手动触发 Pi SDK 会话压缩。'
   }
 }
 

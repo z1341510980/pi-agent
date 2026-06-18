@@ -432,6 +432,19 @@ describe('S4 Session navigation 契约', () => {
     expect(result).toEqual({ selectedId: 'entry-1' })
     expect(threadSession.lastAccessedAt).toBeGreaterThanOrEqual(before)
   })
+
+  it('TC-32: compact 通过 PiAgUiAgent 封装并更新访问时间', async () => {
+    const { session } = createMockSession()
+    const { store, agent } = createAgentWithMockSession(session)
+    const threadSession = await store.getOrCreate('thread-1')
+    const before = threadSession.lastAccessedAt
+
+    const result = await agent.compactThread('thread-1', '保留关键决策')
+
+    expect(session.compact).toHaveBeenCalledWith('保留关键决策')
+    expect(result).toEqual({})
+    expect(threadSession.lastAccessedAt).toBeGreaterThanOrEqual(before)
+  })
 })
 
 describe('S3-1 并发契约', () => {
