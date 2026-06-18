@@ -29,6 +29,12 @@ describe('App shell', () => {
     vi.stubGlobal('crypto', {
       randomUUID: vi.fn(() => `test-uuid-${++uuidCounter}`)
     })
+    // Radix Select 在 jsdom 中需要 pointer capture polyfill
+    window.HTMLElement.prototype.hasPointerCapture = vi.fn(() => false)
+    window.HTMLElement.prototype.setPointerCapture = vi.fn()
+    window.HTMLElement.prototype.releasePointerCapture = vi.fn()
+    // Radix Select 需要 scrollIntoView
+    window.HTMLElement.prototype.scrollIntoView = vi.fn()
   })
 
   it('renders the pi-agent workspace instead of the CopilotKit sidebar shell', async () => {
@@ -207,6 +213,103 @@ describe('App shell', () => {
       })
     )
   })
+
+  it('TC-07: opens the settings page from the title bar gear button', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+
+    const { default: App } = await import('./App')
+    render(<App />)
+
+    // 等待聊天工作台渲染
+    await screen.findByRole('main', { name: 'PI Agent 工作台' })
+
+    // 点击设置按钮
+    const settingsButton = screen.getByRole('button', { name: '打开设置' })
+    fireEvent.click(settingsButton)
+
+    // 设置页面应显示
+    expect(screen.getByRole('heading', { name: '设置' })).toBeTruthy()
+    expect(screen.getByLabelText('设置中心')).toBeTruthy()
+    // 聊天工作台应被隐藏
+    expect(screen.queryByRole('main', { name: 'PI Agent 工作台' })).toBeNull()
+  })
+
+  it('TC-08: closes the settings page and returns to chat', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+
+    const { default: App } = await import('./App')
+    render(<App />)
+
+    // 打开设置
+    await screen.findByRole('main', { name: 'PI Agent 工作台' })
+    fireEvent.click(screen.getByRole('button', { name: '打开设置' }))
+    expect(screen.getByLabelText('设置中心')).toBeTruthy()
+
+    // 点击关闭按钮
+    fireEvent.click(screen.getByRole('button', { name: '关闭设置' }))
+
+    // 应返回聊天页面
+    expect(await screen.findByRole('main', { name: 'PI Agent 工作台' })).toBeTruthy()
+    expect(screen.queryByLabelText('设置中心')).toBeNull()
+  })
+
+  it('TC-09: renders the provider list from the models endpoint', async () => {
+    vi.stubGlobal('fetch', createFetchMock([], {
+      models: [
+        { provider: 'openai', id: 'gpt-4.1-mini' },
+        { provider: 'openai', id: 'gpt-4.1' },
+        { provider: 'anthropic', id: 'claude-3-5-sonnet' }
+      ]
+    }))
+
+    const { default: App } = await import('./App')
+    render(<App />)
+
+    // 打开设置
+    await screen.findByRole('main', { name: 'PI Agent 工作台' })
+    fireEvent.click(screen.getByRole('button', { name: '打开设置' }))
+
+    // 等待 Provider 列表渲染
+    expect(await screen.findByText('openai')).toBeTruthy()
+    expect(await screen.findByText('anthropic')).toBeTruthy()
+    // openai 有 2 个模型
+    expect(await screen.findByText('2 模型')).toBeTruthy()
+  })
+
+  it('TC-10: toggles theme between light and dark', async () => {
+    // 预设 localStorage 为 light，验证 data-theme 同步
+    window.localStorage.setItem('pi-agent.theme', 'light')
+
+    vi.stubGlobal('fetch', createFetchMock())
+
+    const { default: App } = await import('./App')
+    render(<App />)
+
+    // 打开设置
+    await screen.findByRole('main', { name: 'PI Agent 工作台' })
+    fireEvent.click(screen.getByRole('button', { name: '打开设置' }))
+
+    // 切换到通用设置
+    fireEvent.click(screen.getByRole('button', { name: '通用设置' }))
+
+    // 等待通用设置渲染（通过"数据目录"标签）
+    await screen.findByText('数据目录（PI_DATA_DIR）')
+
+    // data-theme 应为 light（从 localStorage 恢复）
+    await waitFor(() => {
+      expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    })
+
+    // 验证主题选项存在
+    const themeTrigger = screen.getByRole('combobox', { name: '主题' })
+    expect(themeTrigger).toBeTruthy()
+
+    // 验证语言选项存在
+    expect(screen.getByRole('combobox', { name: '语言' })).toBeTruthy()
+
+    // 验证数据目录和工作目录显示
+    expect(screen.getByText('工作目录（PI_CWD）')).toBeTruthy()
+  })
 })
 
 type SseEvent = Record<string, unknown>
@@ -214,6 +317,7 @@ type SseEvent = Record<string, unknown>
 interface FetchMockOptions {
   holdOpen?: boolean
   onRunSignal?: (signal: AbortSignal) => void
+  models?: Array<{ provider: string; id: string }>
 }
 
 function createFetchMock(runEvents: SseEvent[] = [], options: FetchMockOptions = {}) {
@@ -253,6 +357,42 @@ function createFetchMock(runEvents: SseEvent[] = [], options: FetchMockOptions =
             status: 'compacted',
             threadId: 'desktop-main',
             result: {}
+          },
+          meta: {
+            traceId: 'test-trace'
+          }
+        })
+      } as Response
+    }
+
+    // Provider 列表：GET /ag-ui/agent/default/models?threadId=main
+    if (url.includes('/ag-ui/agent/default/models')) {
+      const models = options.models ?? []
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: {
+            threadId: 'main',
+            models
+          },
+          meta: {
+            traceId: 'test-trace'
+          }
+        })
+      } as Response
+    }
+
+    // 测试连接：GET /ag-ui/info
+    if (url.endsWith('/ag-ui/info')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: {
+            protocol: 'ag-ui',
+            version: '0.0.42',
+            agents: [{ id: 'default', name: 'Pi AG-UI Agent' }]
           },
           meta: {
             traceId: 'test-trace'

@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { SettingsIcon } from 'lucide-react'
 import type { BrowserConfig } from '@repo/config/shared'
 import type { BaseEvent } from '@repo/protocol/events'
 import { Button } from '@/components/ui/button'
@@ -25,6 +26,7 @@ type HealthData = {
 type ChatWorkspaceProps = {
   appName: string
   config: BrowserConfig
+  onOpenSettings?: () => void
 }
 
 type SessionSummary = {
@@ -61,7 +63,7 @@ const defaultSessions: SessionSummary[] = [
   }
 ]
 
-export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactElement {
+export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspaceProps): ReactElement {
   const [rightPanel, setRightPanel] = useState<'context' | 'provider'>('context')
   const [sessions, setSessions] = useState<SessionSummary[]>(() => loadSessions())
   const [activeThreadId, setActiveThreadId] = useState<string>(() =>
@@ -243,6 +245,17 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
           <span>{appName}</span>
         </div>
         <div className="flex h-full [webkit-app-region:no-drag]">
+          {onOpenSettings && (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="打开设置"
+              onClick={onOpenSettings}
+              className="h-full w-11 rounded-none border-0 border-l border-titlebar-border"
+            >
+              <SettingsIcon className="size-4" />
+            </Button>
+          )}
           <button
             type="button"
             aria-label="最小化"

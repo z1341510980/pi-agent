@@ -8,6 +8,8 @@ import type { CredentialBridge } from '../config/credential-bridge.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
 import { EvidenceLedger, summarizeArgs, summarizeResult } from '../tool/evidence-ledger.js'
 import { createBeforeToolCall } from '../tool/confirmation-tools.js'
+import { StormBreaker } from '../tool/storm-breaker.js'
+import { truncateOutput, shouldTruncate } from '../tool/output-truncator.js'
 import { InstructionLoader } from './instruction-loader.js'
 
 export interface PiSessionDeps {
@@ -116,16 +118,51 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
       toolCallId: toolCall.id,
     })
 
-    return undefined
+    // OutputTruncator：截断超长工具输出（32KB head+tail）
+    // 在 afterToolCall 中修改 content，SDK 会将修改后的结果发送给 LLM
+    let wasTruncated = false
+    const truncatedContent = result.content.map((item) => {
+      if (item.type === 'text' && shouldTruncate(item.text)) {
+        wasTruncated = true
+        const originalBytes = Buffer.byteLength(item.text, 'utf8')
+        const truncatedText = truncateOutput(item.text)
+        deps.eventBus.emit('tool:output:truncated', {
+          threadId: deps.threadId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          originalBytes,
+        })
+        return { ...item, text: truncatedText }
+      }
+      return item
+    })
+
+    return wasTruncated ? { content: truncatedContent } : undefined
   }
 
-  // 8. EventBus 集成：监听 session 事件，转发工具执行开始事件
+  // 8. EventBus 集成：监听 session 事件，转发工具执行开始事件 + Storm Breaker 检测
+  const stormBreaker = new StormBreaker()
   session.subscribe((event) => {
     if (event.type === 'tool_execution_start') {
+      const toolName = (event as { toolName?: string }).toolName ?? 'unknown'
+      const toolCallId = (event as { toolCallId?: string }).toolCallId
+      const rawArgs = (event as { args?: unknown }).args
+
       deps.eventBus.emit('tool:execution:start', {
-        toolName: (event as { toolName?: string }).toolName,
-        toolCallId: (event as { toolCallId?: string }).toolCallId,
+        toolName,
+        toolCallId,
       })
+
+      // Storm Breaker：检测工具调用死循环
+      const argsRecord = toRecord(rawArgs)
+      if (stormBreaker.recordAndCheck(toolName, argsRecord)) {
+        deps.eventBus.emit('tool:storm:detected', {
+          threadId: deps.threadId,
+          toolName,
+          toolCallId,
+          stats: stormBreaker.getStats(deps.threadId),
+        })
+      }
     }
   })
 
@@ -145,4 +182,12 @@ function buildSystemPrompt(deps: PiSessionDeps): string {
   }
 
   return parts.join('\n')
+}
+
+/** 将未知值转换为 Record，非对象或数组返回空对象 */
+function toRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return {}
 }

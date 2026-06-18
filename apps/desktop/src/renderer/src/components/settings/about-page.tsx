@@ -1,0 +1,114 @@
+import type { ReactElement } from 'react'
+import { useState } from 'react'
+import { ExternalLinkIcon, RefreshCwIcon, CheckCircleIcon } from 'lucide-react'
+import { browserConfig } from '@repo/config/browser'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+
+type UpdateState = 'idle' | 'checking' | 'no-update'
+
+const techStack = [
+  { label: '前端框架', value: 'React 19 + TypeScript' },
+  { label: 'UI 组件', value: 'shadcn/ui + Tailwind v4' },
+  { label: '桌面框架', value: 'Electron 39' },
+  { label: '状态管理', value: 'TanStack Query + useState' },
+  { label: '构建工具', value: 'Vite + electron-vite' },
+  { label: '后端', value: 'Fastify + Pi SDK' }
+]
+
+export function AboutPage(): ReactElement {
+  const [updateState, setUpdateState] = useState<UpdateState>('idle')
+
+  function handleCheckUpdate(): void {
+    setUpdateState('checking')
+    // 占位：模拟检查更新
+    window.setTimeout(() => {
+      setUpdateState('no-update')
+    }, 800)
+  }
+
+  return (
+    <section className="p-6 grid gap-5" aria-label="关于">
+      <div>
+        <p className="text-subtle text-xs font-[760] m-0">About</p>
+        <h2 className="text-[22px] font-[780] leading-tight mt-0.5">关于</h2>
+      </div>
+
+      {/* ── 应用信息 ── */}
+      <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center gap-4">
+        <div className="size-12 rounded-xl bg-accent text-[#15120a] flex items-center justify-center text-2xl font-extrabold shrink-0">
+          π
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-base font-[780]">{browserConfig.appName}</span>
+            <Badge variant="secondary">v1.0.0</Badge>
+          </div>
+          <p className="text-xs text-muted m-0 mt-0.5">
+            基于 Pi SDK 的 AG-UI 桌面 Agent 助手
+          </p>
+        </div>
+      </div>
+
+      {/* ── 技术栈 ── */}
+      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2.5">
+        <p className="text-subtle text-xs font-[760] m-0">技术栈</p>
+        <dl className="grid gap-1.5 m-0">
+          {techStack.map((item) => (
+            <div key={item.label} className="flex items-center justify-between gap-3 text-sm">
+              <dt className="text-muted">{item.label}</dt>
+              <dd className="font-mono text-xs text-text m-0">{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+
+      {/* ── GitHub 链接 ── */}
+      <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-[760] m-0">源代码</p>
+          <p className="text-xs text-muted m-0 mt-0.5">在 GitHub 上查看项目源码</p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          asChild
+        >
+          <a
+            href="https://github.com/pi-agent/pi-agent"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub 仓库（占位链接）"
+          >
+            <ExternalLinkIcon className="size-3.5" />
+            GitHub
+          </a>
+        </Button>
+      </div>
+
+      {/* ── 检查更新 ── */}
+      <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-[760] m-0">检查更新</p>
+          {updateState === 'no-update' ? (
+            <p className="text-xs text-success flex items-center gap-1.5 m-0 mt-0.5">
+              <CheckCircleIcon className="size-3.5" />
+              暂无更新
+            </p>
+          ) : (
+            <p className="text-xs text-muted m-0 mt-0.5">检查是否有新版本可用</p>
+          )}
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleCheckUpdate}
+          disabled={updateState === 'checking'}
+        >
+          <RefreshCwIcon className={`size-3.5 ${updateState === 'checking' ? 'animate-spin' : ''}`} />
+          {updateState === 'checking' ? '检查中...' : '检查更新'}
+        </Button>
+      </div>
+    </section>
+  )
+}
