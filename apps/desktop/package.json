@@ -26,6 +26,7 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@repo/config": "workspace:*",
+    "@repo/protocol": "workspace:*",
     "@repo/shared": "workspace:*",
     "@tanstack/react-query": "^5.101.0",
     "class-variance-authority": "^0.7.1",
@@ -35,6 +36,8 @@
     "radix-ui": "^1.6.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

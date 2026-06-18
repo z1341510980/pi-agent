@@ -1,16 +1,21 @@
 import type { ReactElement } from 'react'
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { BrowserConfig } from '@repo/config/shared'
+import type { BaseEvent } from '@repo/protocol/events'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getApi } from '../../api'
 import { ProviderBootstrap, type ProviderSettings } from '../settings/provider-bootstrap'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useToolExecutions } from '@/hooks/use-tool-executions'
+import { useStreamingRun } from '@/hooks/use-streaming-run'
 import { ConfirmationDialog } from './confirmation-dialog'
 import { PermissionModeSwitch } from './permission-mode-switch'
 import { ToolCardList } from './tool-card'
+import { MessageStream, applyEvent, type MessageStreamState } from './message-stream'
+import { InputArea } from './input-area'
+import { createUserMessage, type ChatMessage } from './types'
 
 type HealthData = {
   service: string
@@ -40,6 +45,11 @@ const defaultSessions = [
 export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactElement {
   const [rightPanel, setRightPanel] = useState<'context' | 'provider'>('context')
   const [activeThreadId] = useState<string>('desktop-main')
+  const [messageState, setMessageState] = useState<MessageStreamState>({
+    messages: [],
+    activeRunId: null,
+    streamError: null,
+  })
 
   const healthQuery = useQuery({
     queryKey: ['agent-server-health'],
@@ -53,6 +63,53 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
     threadId: activeThreadId,
     onMessage: onToolMessage,
   })
+
+  // AG-UI 事件 → 消息流状态
+  const handleAguiEvent = useCallback((event: BaseEvent) => {
+    setMessageState((prev) => applyEvent(prev, event))
+  }, [])
+
+  const { run, abort, isRunning, error: runError } = useStreamingRun({
+    threadId: activeThreadId,
+    onEvent: handleAguiEvent,
+  })
+
+  const handleSend = useCallback((text: string) => {
+    const userMsg = createUserMessage(text)
+    // 先添加用户消息到列表
+    setMessageState((prev) => ({
+      ...prev,
+      messages: [...prev.messages, userMsg],
+    }))
+    // 发起 run（只发送用户消息）
+    void run([userMsg])
+  }, [run])
+
+  const handleAbort = useCallback(() => {
+    abort()
+  }, [abort])
+
+  const handleRetry = useCallback(() => {
+    // 清除错误，找到最后一条用户消息重发
+    setMessageState((prev) => {
+      const lastUserMsg = [...prev.messages].reverse().find((m) => m.role === 'user')
+      if (lastUserMsg) {
+        void run([lastUserMsg as ChatMessage])
+      }
+      return {
+        ...prev,
+        streamError: null,
+        // 移除最后一条错误的助手消息
+        messages: prev.messages.filter(
+          (m) => !(m.role === 'assistant' && m.status === 'error'),
+        ),
+      }
+    })
+  }, [run])
+
+  const handleDismissError = useCallback(() => {
+    setMessageState((prev) => ({ ...prev, streamError: null }))
+  }, [])
 
   const health = healthQuery.data
   const isOnline = health?.status === 'online'
@@ -71,6 +128,9 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
     : wsStatus === 'connecting'
       ? 'ws: 连接中'
       : 'ws: 已断开'
+
+  // 合并流式错误和 run 错误
+  const displayError = messageState.streamError ?? (runError ? runError.message : null)
 
   return (
     <div className="grid grid-rows-[var(--titlebar-height)_minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
@@ -163,32 +223,26 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
               <span className="text-xs font-mono">{wsStatusText}</span>
             </div>
             <div className="flex items-center gap-2 min-w-0">
-              <span className="shrink-0 size-[9px] rounded-full bg-accent shadow-[0_0_0_4px_rgba(242,193,78,0.16)]" />
+              <span className={`shrink-0 size-[9px] rounded-full ${isRunning ? 'bg-accent shadow-[0_0_0_4px_rgba(242,193,78,0.16)]' : 'bg-muted'}`} />
               <span className="text-xs">AG-UI</span>
               <strong className="text-xs font-bold font-mono break-anywhere">{config.aguiBaseUrl}</strong>
             </div>
           </section>
 
-          <section className="min-h-0 overflow-auto px-5 py-6" aria-label="消息流">
-            <article className="flex items-start gap-3 max-w-[720px]">
-              <div className="inline-flex items-center justify-center size-7 rounded-[7px] bg-avatar-bg text-avatar-text text-xs font-extrabold shrink-0">pi</div>
-              <div className="bg-surface-1 border border-border rounded-lg px-3.5 py-[13px]">
-                <p className="text-subtle text-xs font-[760] m-0">pi · 准备就绪</p>
-                <p className="mt-0">
-                  工作台骨架已接入。下一步会把输入区和 SSE 流式消息接到 AG-UI
-                  端点，替换临时占位消息。
-                </p>
-              </div>
-            </article>
-          </section>
+          <MessageStream
+            messages={messageState.messages}
+            isStreaming={isRunning}
+            streamError={displayError}
+            onRetry={handleRetry}
+            onDismissError={handleDismissError}
+          />
 
-          <form className="grid gap-2.5 border-t border-border px-5 py-3.5" aria-label="发送消息">
-            <textarea placeholder="询问 PI Agent..." rows={3} className="bg-input-bg border border-border rounded-lg text-text min-w-0 min-h-[76px] max-h-40 py-3 px-3 resize-y outline-none focus:border-primary focus:ring-[3px] focus:ring-primary/20" />
-            <div className="flex items-center justify-between">
-              <span className="text-muted text-xs leading-snug">Auto · {providerSummary}</span>
-              <Button variant="secondary" size="sm" disabled>发送</Button>
-            </div>
-          </form>
+          <InputArea
+            onSend={handleSend}
+            onAbort={handleAbort}
+            isRunning={isRunning}
+            disabled={!isOnline}
+          />
         </main>
 
         {/* ── Context panel ── */}
@@ -223,7 +277,7 @@ export function ChatWorkspace({ appName, config }: ChatWorkspaceProps): ReactEle
                 <ToolCardList executions={executions} emptyHint="暂无工具调用，发送消息后这里会显示工具执行状态" />
               </div>
               <div className="bg-surface-2 border border-border rounded-lg grid gap-1 p-3">
-                <p className="text-subtle text-xs font-[760] m-0">下一里程碑</p>
+                <p className="text-subtle text-xs font-[760] m-0">当前里程碑</p>
                 <strong className="font-[760] leading-tight">F1 SSE 流式对话</strong>
               </div>
             </section>
