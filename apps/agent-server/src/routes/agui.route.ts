@@ -89,6 +89,15 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
     request.raw.on('aborted', closeHandler)
     reply.raw.on('close', closeHandler)
 
+    // SSE 心跳：每 15s 发送注释，防止中间代理超时断开
+    const keepalive = setInterval(() => {
+      try {
+        sendSseComment(reply, 'keepalive')
+      } catch {
+        // reply 已关闭，忽略
+      }
+    }, 15000)
+
     try {
       const agent = getAgent()
       await agent.streamRun(
@@ -101,11 +110,14 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
         { signal: abortController.signal },
       )
     } catch (error) {
+      // streamRun 内部已处理所有错误并发射终止事件，此处仅作兜底
+      // 仅当未被 abort 且未发射过终止事件时才补发 RUN_ERROR
       if (!abortController.signal.aborted) {
         const message = error instanceof Error ? error.message : 'AG-UI 运行失败'
         sendSseEvent(reply, { type: 'RUN_ERROR', message })
       }
     } finally {
+      clearInterval(keepalive)
       request.raw.off('aborted', closeHandler)
       reply.raw.off('close', closeHandler)
       closeSse(reply)
@@ -121,8 +133,8 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
     const input = validateBody(threadMessageInputSchema, request, reply)
     if (!input) return reply
 
-    await getAgent().steerThread(input.threadId, input.text)
-    return { status: 'accepted', threadId: input.threadId }
+    const result = await getAgent().steerThread(input.threadId, input.text)
+    return result
   })
 
   // 后续消息
@@ -132,8 +144,8 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
     const input = validateBody(threadMessageInputSchema, request, reply)
     if (!input) return reply
 
-    await getAgent().followUpThread(input.threadId, input.text)
-    return { status: 'accepted', threadId: input.threadId }
+    const result = await getAgent().followUpThread(input.threadId, input.text)
+    return result
   })
 
   // 分叉

@@ -8,9 +8,10 @@ import {
 } from '@ag-ui/core'
 import { randomUUID } from 'node:crypto'
 import type { AgUiEventSink } from '@repo/protocol/events'
-import type { PiSessionStore } from './session-store.js'
+import type { PiSessionStore, PiThreadSession } from './session-store.js'
 import { StreamEmitter, emitSingleAssistantMessage } from './stream-emitter.js'
 import { ReasoningPipeline } from './reasoning-pipeline.js'
+import { AppError, ErrorCode } from '@repo/shared/errors'
 
 /** streamRun 输入（宽松类型，兼容 @repo/protocol schema 输出） */
 export interface StreamRunInput {
@@ -28,8 +29,19 @@ export interface StreamRunOptions {
   signal?: AbortSignal
 }
 
+/** steer/follow-up 结果 */
+export interface SteerResult {
+  status: 'accepted' | 'no_active_run'
+  threadId: string
+}
+
 /**
  * PiAgUiAgent：AG-UI 适配层核心类
+ *
+ * 关键不变量：
+ * 1. 一次 streamRun 恰好发射一个终止事件（RUN_FINISHED 或 RUN_ERROR），之后不再发射任何事件
+ * 2. abort 视为正常终止，发射 RUN_FINISHED（reason: 'aborted'），不发射 RUN_ERROR
+ * 3. 同一 threadId 同时只允许一个活跃 run，并发 run 返回 409
  */
 export class PiAgUiAgent {
   readonly agentId: string
@@ -48,6 +60,14 @@ export class PiAgUiAgent {
   ): Promise<void> {
     const threadId = input.threadId
     const runId = input.runId
+
+    // 终止事件守卫：确保只发射一次
+    let terminated = false
+    const emitTermination = (event: RunFinishedEvent | RunErrorEvent) => {
+      if (terminated) return
+      terminated = true
+      emit(event)
+    }
 
     emit({
       type: EventType.RUN_STARTED,
@@ -74,8 +94,22 @@ export class PiAgUiAgent {
       }
     }
 
+    // 同线程 run 互斥：尝试占用 activeRunId
+    const acquired = this.sessionStore.tryAcquireRun(threadId, runId)
+    if (!acquired) {
+      emitTermination({
+        type: EventType.RUN_ERROR,
+        message: `线程 ${threadId} 已有活跃 run，请等待完成或中断后再试`,
+      } as RunErrorEvent)
+      return
+    }
+
+    let threadSession: PiThreadSession | null = null
+    let unsubscribe: (() => void) | null = null
+    let abortHandler: (() => void) | null = null
+
     try {
-      const threadSession = await this.sessionStore.getOrCreate(threadId)
+      threadSession = await this.sessionStore.getOrCreate(threadId)
 
       const assistantResponseMessageId = randomUUID()
       const reasoningPipeline = new ReasoningPipeline(emit, assistantResponseMessageId)
@@ -85,69 +119,107 @@ export class PiAgUiAgent {
         reasoningPipeline,
       )
 
-      const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+      unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
         streamEmitter.handleSessionEvent(event)
       })
 
-      const abortHandler = () => {
-        void threadSession.session.abort()
+      abortHandler = () => {
+        void threadSession!.session.abort()
       }
       runOptions.signal?.addEventListener('abort', abortHandler, { once: true })
 
-      try {
-        const lastUserMessage = [...input.messages]
-          .reverse()
-          .find((m) => m.role === 'user')
-        const userText = typeof lastUserMessage?.content === 'string'
-          ? lastUserMessage.content
-          : ''
+      const lastUserMessage = [...input.messages]
+        .reverse()
+        .find((m) => m.role === 'user')
+      const userText = typeof lastUserMessage?.content === 'string'
+        ? lastUserMessage.content
+        : ''
 
-        if (!userText) {
-          emitSingleAssistantMessage(emit, '我需要一条用户消息才能继续。')
-          emit({
-            type: EventType.RUN_FINISHED,
-            threadId,
-            runId,
-          } as RunFinishedEvent)
-          return
-        }
-
-        await threadSession.session.prompt(userText)
-
-        streamEmitter.finishTextMessage()
-
-        const completeText = streamEmitter.getCompleteAssistantText()
-        emit({
+      if (!userText) {
+        emitSingleAssistantMessage(emit, '我需要一条用户消息才能继续。')
+        emitTermination({
           type: EventType.RUN_FINISHED,
           threadId,
           runId,
-          ...(completeText ? { result: completeText } : {}),
         } as RunFinishedEvent)
-      } finally {
-        unsubscribe()
-        runOptions.signal?.removeEventListener('abort', abortHandler)
-        threadSession.lastRunId = runId
-        threadSession.lastAccessedAt = Date.now()
+        return
       }
+
+      await threadSession.session.prompt(userText)
+
+      // 正常完成：先关闭文本消息，再发射 RUN_FINISHED
+      streamEmitter.finishTextMessage()
+
+      const completeText = streamEmitter.getCompleteAssistantText()
+      emitTermination({
+        type: EventType.RUN_FINISHED,
+        threadId,
+        runId,
+        ...(completeText ? { result: completeText } : {}),
+      } as RunFinishedEvent)
     } catch (error) {
+      // abort 视为正常终止，发射 RUN_FINISHED 而非 RUN_ERROR
+      if (runOptions.signal?.aborted) {
+        emitTermination({
+          type: EventType.RUN_FINISHED,
+          threadId,
+          runId,
+          reason: 'aborted',
+        } as RunFinishedEvent)
+        return
+      }
+
       const message = error instanceof Error ? error.message : '未知 AG-UI 运行错误'
-      emit({
+      emitTermination({
         type: EventType.RUN_ERROR,
         message,
       } as RunErrorEvent)
+    } finally {
+      // 清理资源顺序：移除 abort 监听 → 取消订阅 → 清理 pendingToolCalls → 释放 run 占用
+      if (abortHandler && runOptions.signal) {
+        runOptions.signal.removeEventListener('abort', abortHandler)
+      }
+      if (unsubscribe) {
+        unsubscribe()
+      }
+      if (threadSession) {
+        threadSession.pendingToolCalls.clear()
+        threadSession.lastRunId = runId
+        threadSession.lastAccessedAt = Date.now()
+      }
+      this.sessionStore.releaseRun(threadId, runId)
     }
   }
 
-  async steerThread(threadId: string, text: string): Promise<void> {
+  async steerThread(threadId: string, text: string): Promise<SteerResult> {
     const threadSession = await this.sessionStore.getOrCreate(threadId)
-    await threadSession.session.steer(text)
-    threadSession.lastAccessedAt = Date.now()
+
+    // 无活跃 run 时，steer 无意义，返回状态标识
+    if (!this.sessionStore.hasActiveRun(threadId)) {
+      return { status: 'no_active_run', threadId }
+    }
+
+    try {
+      await threadSession.session.steer(text)
+      threadSession.lastAccessedAt = Date.now()
+      return { status: 'accepted', threadId }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'steer 失败'
+      throw new AppError(ErrorCode.INTERNAL_SERVER_ERROR, `Steer 失败: ${message}`, 500)
+    }
   }
 
-  async followUpThread(threadId: string, text: string): Promise<void> {
+  async followUpThread(threadId: string, text: string): Promise<SteerResult> {
     const threadSession = await this.sessionStore.getOrCreate(threadId)
-    await threadSession.session.followUp(text)
-    threadSession.lastAccessedAt = Date.now()
+
+    try {
+      await threadSession.session.followUp(text)
+      threadSession.lastAccessedAt = Date.now()
+      return { status: 'accepted', threadId }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'follow-up 失败'
+      throw new AppError(ErrorCode.INTERNAL_SERVER_ERROR, `Follow-up 失败: ${message}`, 500)
+    }
   }
 
   async forkThread(threadId: string, entryId: string): Promise<{ selectedText: string; cancelled: boolean }> {
