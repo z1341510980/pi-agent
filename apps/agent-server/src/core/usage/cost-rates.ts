@@ -53,7 +53,7 @@ export const COST_RATES: Record<string, ModelCostRate> = {
   },
 }
 
-/** 计算单次调用成本（USD） */
+/** 计算单次调用成本（USD），四舍五入到微美分精度 */
 export function calculateCost(params: {
   model: string
   inputTokens: number
@@ -62,7 +62,10 @@ export function calculateCost(params: {
   cacheWriteTokens?: number
 }): number {
   const rate = COST_RATES[params.model]
-  if (!rate) return 0
+  if (!rate) {
+    console.warn(`[calculateCost] 未知模型 "${params.model}"，成本将被记录为 0，请更新价格表`)
+    return 0
+  }
 
   const inputCost = (params.inputTokens / 1_000_000) * rate.inputPer1M
   const outputCost = (params.outputTokens / 1_000_000) * rate.outputPer1M
@@ -73,5 +76,6 @@ export function calculateCost(params: {
     ? (params.cacheWriteTokens / 1_000_000) * rate.cacheWritePer1M
     : 0
 
-  return inputCost + outputCost + cacheReadCost + cacheWriteCost
+  // 四舍五入到 8 位小数（微美分精度），避免浮点漂移
+  return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 1e8) / 1e8
 }

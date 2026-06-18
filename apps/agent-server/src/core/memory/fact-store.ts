@@ -70,18 +70,40 @@ export class FactStore {
         const content = readFileSync(this.filePath, 'utf-8')
         const data = JSON.parse(content) as Fact[]
         for (const f of data) {
-          this.facts.set(f.id, f)
+          if (f && typeof f.id === 'string') {
+            this.facts.set(f.id, f)
+          }
         }
-      } catch {
-        // 文件损坏时忽略，从空状态开始
+      } catch (err) {
+        console.error(`[FactStore] 加载 ${this.filePath} 失败，历史数据可能丢失:`, err)
       }
     }
   }
 
-  /** 持久化到文件 */
+  /** 持久化到文件（静默失败，保留 dirty 标记以便重试） */
+  private dirty = false
+
   private persist(): void {
-    const data = Array.from(this.facts.values())
-    atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
+    try {
+      const data = Array.from(this.facts.values())
+      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
+      this.dirty = false
+    } catch (err) {
+      console.error(`[FactStore] persist 失败，数据仅存在于内存中:`, err)
+      // 保留 dirty 标记，下次操作时重试
+    }
+  }
+
+  /** 持久化到文件（失败时抛出异常，用于 close 场景） */
+  private persistOrThrow(): void {
+    try {
+      const data = Array.from(this.facts.values())
+      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
+      this.dirty = false
+    } catch (err) {
+      console.error(`[FactStore] close 时 persist 失败，数据可能丢失:`, err)
+      throw err
+    }
   }
 
   /** 更新 LRU 缓存：将事实移到末尾 */
@@ -128,11 +150,12 @@ export class FactStore {
       createdAt: now,
       updatedAt: now,
       accessCount: 0,
-      lastAccessedAt: 0,
+      lastAccessedAt: now,
     }
     this.facts.set(id, full)
     this.touchLru(full)
     this.evictIfNeeded()
+    this.dirty = true
     this.persist()
     return id
   }
@@ -187,6 +210,7 @@ export class FactStore {
     if (updates.confidence !== undefined) fact.confidence = updates.confidence
     fact.updatedAt = Date.now()
     this.touchLru(fact)
+    this.dirty = true
     this.persist()
   }
 
@@ -195,6 +219,7 @@ export class FactStore {
     this.ensureLoaded()
     this.facts.delete(id)
     this.lruCache.delete(id)
+    this.dirty = true
     this.persist()
   }
 
@@ -212,8 +237,10 @@ export class FactStore {
     return { facts, total }
   }
 
-  /** 关闭存储 */
+  /** 关闭存储，持久化脏数据。持久化失败时抛出异常让调用方感知 */
   async close(): Promise<void> {
-    this.persist()
+    if (this.dirty) {
+      this.persistOrThrow()
+    }
   }
 }

@@ -31,15 +31,21 @@ export class EventBus {
     this.on(event, wrapper)
   }
 
-  /** 发布事件，处理器异常不影响其他处理器 */
+  /** 发布事件，处理器异常不影响其他处理器（含 async handler 保护） */
   emit<T = unknown>(event: string, data: T): void {
     const set = this.handlers.get(event)
     if (!set) return
     for (const handler of set) {
       try {
-        handler(data)
+        const result = handler(data) as unknown
+        // 处理 async handler 返回的 Promise，防止 unhandled rejection
+        if (result && typeof result === 'object' && 'then' in result && typeof (result as Promise<unknown>).catch === 'function') {
+          ;(result as Promise<unknown>).catch(() => {
+            // 异常隔离：async handler 的 rejection 不中断其他处理器
+          })
+        }
       } catch {
-        // 异常隔离：不中断其他处理器
+        // 异常隔离：同步 handler 的异常不中断其他处理器
       }
     }
   }

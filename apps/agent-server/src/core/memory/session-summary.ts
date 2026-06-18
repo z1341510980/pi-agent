@@ -39,24 +39,46 @@ export class SessionSummaryStore {
         const content = readFileSync(this.filePath, 'utf-8')
         const data = JSON.parse(content) as SessionSummary[]
         for (const s of data) {
-          this.summaries.set(s.sessionId, s)
+          if (s && typeof s.sessionId === 'string') {
+            this.summaries.set(s.sessionId, s)
+          }
         }
-      } catch {
-        // 文件损坏时忽略，从空状态开始
+      } catch (err) {
+        console.error(`[SessionSummaryStore] 加载 ${this.filePath} 失败，历史数据可能丢失:`, err)
       }
     }
   }
 
-  /** 持久化到文件 */
+  /** 持久化到文件（静默失败，保留 dirty 标记以便重试） */
+  private dirty = false
+
   private persist(): void {
-    const data = Array.from(this.summaries.values())
-    atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
+    try {
+      const data = Array.from(this.summaries.values())
+      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
+      this.dirty = false
+    } catch (err) {
+      console.error(`[SessionSummaryStore] persist 失败，数据仅存在于内存中:`, err)
+    }
+  }
+
+  /** 持久化到文件（失败时抛出异常，用于 close 场景） */
+  private persistOrThrow(): void {
+    try {
+      const data = Array.from(this.summaries.values())
+      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
+      this.dirty = false
+    } catch (err) {
+      console.error(`[SessionSummaryStore] close 时 persist 失败，数据可能丢失:`, err)
+      throw err
+    }
   }
 
   /** 保存会话摘要 */
   async saveSummary(summary: SessionSummary): Promise<void> {
     this.ensureLoaded()
     this.summaries.set(summary.sessionId, summary)
+    this.dirty = true
     this.persist()
   }
 
@@ -76,6 +98,14 @@ export class SessionSummaryStore {
   async deleteSummary(sessionId: string): Promise<void> {
     this.ensureLoaded()
     this.summaries.delete(sessionId)
+    this.dirty = true
     this.persist()
+  }
+
+  /** 关闭存储，持久化脏数据。持久化失败时抛出异常让调用方感知 */
+  async close(): Promise<void> {
+    if (this.dirty) {
+      this.persistOrThrow()
+    }
   }
 }

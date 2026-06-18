@@ -1,7 +1,8 @@
-import { useState, useRef, useCallback, type KeyboardEvent } from 'react'
+import { useState, useRef, useCallback, type KeyboardEvent, type ReactElement } from 'react'
 import { Send, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import type { UsageSummary } from '@/components/usage/usage-overview'
 
 export interface InputAreaProps {
   /** 发送消息（非运行状态） */
@@ -18,6 +19,8 @@ export interface InputAreaProps {
   value?: string
   /** 输入变化 */
   onChange?: (text: string) => void
+  /** 本轮会话用量（可选） */
+  sessionUsage?: UsageSummary
 }
 
 /**
@@ -36,8 +39,9 @@ export function InputArea({
   disabled = false,
   placeholder = '询问 PI Agent...',
   value,
-  onChange
-}: InputAreaProps) {
+  onChange,
+  sessionUsage
+}: InputAreaProps): ReactElement {
   const [internalText, setInternalText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const text = value ?? internalText
@@ -88,53 +92,75 @@ export function InputArea({
   const canSend = text.trim().length > 0 && !disabled
 
   return (
-    <form
-      className="grid gap-2.5 border-t border-border px-5 py-3.5"
-      aria-label="发送消息"
-      onSubmit={(e) => {
-        e.preventDefault()
-        handleSend()
-      }}
-    >
-      <textarea
-        ref={textareaRef}
-        value={text}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        rows={3}
-        disabled={disabled}
-        className={cn(
-          'w-full resize-none rounded-lg border border-input bg-background px-3 py-2.5 text-sm',
-          'placeholder:text-muted-foreground',
-          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-          'disabled:cursor-not-allowed disabled:opacity-50'
-        )}
-        aria-label="消息输入"
-        onChange={(e) => {
-          updateText(e.target.value)
-          handleInput()
+    <>
+      <form
+        className="grid gap-2.5 border-t border-border px-5 py-3.5"
+        aria-label="发送消息"
+        onSubmit={(e) => {
+          e.preventDefault()
+          handleSend()
         }}
-      />
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
-        {isRunning ? (
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            onClick={onAbort}
-            className="gap-1.5"
-          >
-            <Square className="h-3.5 w-3.5" />
-            中断
-          </Button>
-        ) : (
-          <Button type="submit" size="sm" disabled={!canSend} className="gap-1.5">
-            <Send className="h-3.5 w-3.5" />
-            发送
-          </Button>
-        )}
-      </div>
-    </form>
+      >
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          rows={3}
+          disabled={disabled}
+          className={cn(
+            'w-full resize-none rounded-lg border border-input bg-background px-3 py-2.5 text-sm',
+            'placeholder:text-muted-foreground',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            'disabled:cursor-not-allowed disabled:opacity-50'
+          )}
+          aria-label="消息输入"
+          onChange={(e) => {
+            updateText(e.target.value)
+            handleInput()
+          }}
+        />
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
+          {isRunning ? (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={onAbort}
+              className="gap-1.5"
+            >
+              <Square className="h-3.5 w-3.5" />
+              中断
+            </Button>
+          ) : (
+            <Button type="submit" size="sm" disabled={!canSend} className="gap-1.5">
+              <Send className="h-3.5 w-3.5" />
+              发送
+            </Button>
+          )}
+        </div>
+      </form>
+
+      {/* 本轮用量提示 */}
+      {sessionUsage && sessionUsage.totalCalls > 0 && (
+        <div className="flex items-center gap-2 px-5 pb-1.5 text-[10px] text-muted-foreground">
+          <span>本轮: {sessionUsage.totalCalls} 次调用</span>
+          <span>·</span>
+          <span className="font-mono text-accent">${sessionUsage.totalCostUsd.toFixed(4)}</span>
+          <span>·</span>
+          <span>
+            {formatTokens(sessionUsage.totalInputTokens)} in /{' '}
+            {formatTokens(sessionUsage.totalOutputTokens)} out
+          </span>
+        </div>
+      )}
+    </>
   )
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return n.toString()
 }

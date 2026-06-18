@@ -51,6 +51,9 @@ export interface UsageSummary {
   byAgent: Record<string, { calls: number; costUsd: number }>
 }
 
+/** 四舍五入到 8 位小数（微美分精度），避免浮点漂移 */
+const roundUsd = (n: number) => Math.round(n * 1e8) / 1e8
+
 export class UsageLedger {
   private readonly filePath: string
   private records: UsageRecord[] = []
@@ -61,8 +64,8 @@ export class UsageLedger {
     this.load()
   }
 
-  /** 记录一次 LLM 调用 */
-  async record(record: Omit<UsageRecord, 'id' | 'timestamp'>): Promise<string> {
+  /** 记录一次 LLM 调用（costUsd 由内部自动计算，调用方无需传入） */
+  record(record: Omit<UsageRecord, 'id' | 'timestamp' | 'costUsd'>): string {
     const costUsd = calculateCost({
       model: record.model,
       inputTokens: record.inputTokens,
@@ -86,7 +89,7 @@ export class UsageLedger {
   }
 
   /** 查询用量（支持时间范围、模型、Agent 过滤） */
-  async query(options?: {
+  query(options?: {
     from?: number
     to?: number
     model?: string
@@ -94,7 +97,7 @@ export class UsageLedger {
     sessionId?: string
     limit?: number
     offset?: number
-  }): Promise<{ records: UsageRecord[]; total: number }> {
+  }): { records: UsageRecord[]; total: number } {
     let filtered = this.records
 
     if (options?.from) {
@@ -122,11 +125,11 @@ export class UsageLedger {
   }
 
   /** 获取汇总统计 */
-  async getSummary(options?: {
+  getSummary(options?: {
     from?: number
     to?: number
     agentId?: string
-  }): Promise<UsageSummary> {
+  }): UsageSummary {
     let filtered = this.records
 
     if (options?.from) {
@@ -143,13 +146,13 @@ export class UsageLedger {
   }
 
   /** 获取当前会话用量 */
-  async getSessionUsage(sessionId: string): Promise<UsageSummary> {
+  getSessionUsage(sessionId: string): UsageSummary {
     const filtered = this.records.filter((r) => r.sessionId === sessionId)
     return this.computeSummary(filtered)
   }
 
   /** 清理过期记录（保留最近 N 天） */
-  async prune(keepDays = 90): Promise<number> {
+  prune(keepDays = 90): number {
     const cutoff = Date.now() - keepDays * 24 * 60 * 60 * 1000
     const before = this.records.length
     this.records = this.records.filter((r) => r.timestamp >= cutoff)
@@ -161,10 +164,10 @@ export class UsageLedger {
     return removed
   }
 
-  /** 关闭存储 */
-  async close(): Promise<void> {
+  /** 关闭存储，持久化脏数据。持久化失败时抛出异常让调用方感知 */
+  close(): void {
     if (this.dirty) {
-      this.persist()
+      this.persistOrThrow()
     }
   }
 
@@ -177,19 +180,41 @@ export class UsageLedger {
     try {
       const content = readFileSync(this.filePath, 'utf8')
       const data = JSON.parse(content)
-      this.records = Array.isArray(data) ? data : []
-    } catch {
+      if (!Array.isArray(data)) {
+        this.records = []
+        return
+      }
+      // 校验记录结构，剔除无效条目
+      this.records = data.filter((r: unknown, i: number) => {
+        if (r && typeof r === 'object' && typeof (r as Record<string, unknown>).model === 'string' && typeof (r as Record<string, unknown>).costUsd === 'number') return true
+        console.warn(`[UsageLedger] 跳过无效记录 #${i}:`, r)
+        return false
+      }) as UsageRecord[]
+    } catch (err) {
+      console.error(`[UsageLedger] 加载 ${this.filePath} 失败，历史数据可能丢失:`, err)
       this.records = []
     }
   }
 
-  /** 持久化到文件 */
+  /** 持久化到文件（静默失败，保留 dirty 标记以便重试） */
   private persist(): void {
     try {
       atomicWriteSync(this.filePath, JSON.stringify(this.records, null, 2))
       this.dirty = false
-    } catch {
-      // 持久化失败不影响内存操作，下次 record 时重试
+    } catch (err) {
+      console.error(`[UsageLedger] persist 失败，数据仅存在于内存中:`, err)
+      // 保留 dirty 标记，下次 record 时重试
+    }
+  }
+
+  /** 持久化到文件（失败时抛出异常，用于 close 场景） */
+  private persistOrThrow(): void {
+    try {
+      atomicWriteSync(this.filePath, JSON.stringify(this.records, null, 2))
+      this.dirty = false
+    } catch (err) {
+      console.error(`[UsageLedger] close 时 persist 失败，数据可能丢失:`, err)
+      throw err
     }
   }
 
@@ -230,10 +255,14 @@ export class UsageLedger {
       totalOutputTokens,
       totalCacheReadTokens,
       totalCacheWriteTokens,
-      totalCostUsd,
+      totalCostUsd: roundUsd(totalCostUsd),
       totalCalls: records.length,
-      byModel,
-      byAgent,
+      byModel: Object.fromEntries(
+        Object.entries(byModel).map(([k, v]) => [k, { ...v, costUsd: roundUsd(v.costUsd) }]),
+      ),
+      byAgent: Object.fromEntries(
+        Object.entries(byAgent).map(([k, v]) => [k, { ...v, costUsd: roundUsd(v.costUsd) }]),
+      ),
     }
   }
 }

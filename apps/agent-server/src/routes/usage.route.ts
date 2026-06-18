@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify'
+import { AppError, ErrorCode } from '@repo/shared/errors'
 import { success } from '../lib/api-response.js'
 
 /**
@@ -12,14 +13,33 @@ export const usageRoute: FastifyPluginAsync = async (app) => {
   app.get('/api/usage', async (request) => {
     const query = request.query as Record<string, string | undefined>
 
-    const result = await app.usageLedger.query({
-      from: query.from ? Number(query.from) : undefined,
-      to: query.to ? Number(query.to) : undefined,
+    const from = query.from ? Number(query.from) : undefined
+    const to = query.to ? Number(query.to) : undefined
+    const limit = query.limit ? Number(query.limit) : undefined
+    const offset = query.offset ? Number(query.offset) : undefined
+
+    // 参数验证
+    if (from !== undefined && (!Number.isFinite(from) || from < 0)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'from 必须为非负数字', 400)
+    }
+    if (to !== undefined && (!Number.isFinite(to) || to < 0)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'to 必须为非负数字', 400)
+    }
+    if (limit !== undefined && (!Number.isFinite(limit) || limit < 1 || limit > 1000)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'limit 必须为 1-1000 之间的数字', 400)
+    }
+    if (offset !== undefined && (!Number.isFinite(offset) || offset < 0)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'offset 必须为非负数字', 400)
+    }
+
+    const result = app.usageLedger.query({
+      from,
+      to,
       model: query.model,
       agentId: query.agentId,
       sessionId: query.sessionId,
-      limit: query.limit ? Number(query.limit) : undefined,
-      offset: query.offset ? Number(query.offset) : undefined,
+      limit,
+      offset,
     })
 
     return success(result, request.traceId)
@@ -29,9 +49,19 @@ export const usageRoute: FastifyPluginAsync = async (app) => {
   app.get('/api/usage/summary', async (request) => {
     const query = request.query as Record<string, string | undefined>
 
-    const summary = await app.usageLedger.getSummary({
-      from: query.from ? Number(query.from) : undefined,
-      to: query.to ? Number(query.to) : undefined,
+    const from = query.from ? Number(query.from) : undefined
+    const to = query.to ? Number(query.to) : undefined
+
+    if (from !== undefined && (!Number.isFinite(from) || from < 0)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'from 必须为非负数字', 400)
+    }
+    if (to !== undefined && (!Number.isFinite(to) || to < 0)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'to 必须为非负数字', 400)
+    }
+
+    const summary = app.usageLedger.getSummary({
+      from,
+      to,
       agentId: query.agentId,
     })
 
@@ -42,7 +72,11 @@ export const usageRoute: FastifyPluginAsync = async (app) => {
   app.get('/api/usage/session/:sessionId', async (request) => {
     const { sessionId } = request.params as { sessionId: string }
 
-    const summary = await app.usageLedger.getSessionUsage(sessionId)
+    if (!sessionId || sessionId.trim().length === 0) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'sessionId 不能为空', 400)
+    }
+
+    const summary = app.usageLedger.getSessionUsage(sessionId)
 
     return success(summary, request.traceId)
   })

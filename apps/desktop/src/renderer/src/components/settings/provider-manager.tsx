@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { getApi } from '../../api'
+import { getAgui } from '../../api'
 
 // ── 类型定义 ──
 
@@ -86,7 +86,7 @@ export function ProviderManager(): ReactElement {
       setLoading(true)
       setLoadError(null)
       try {
-        const data = await getApi<ModelsResponse>(
+        const data = await getAgui<ModelsResponse>(
           '/ag-ui/agent/default/models?threadId=main'
         )
         if (cancelled) return
@@ -285,7 +285,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
   async function handleTestConnection(): Promise<void> {
     setTestState({ state: 'testing' })
     try {
-      const info = await getApi<AguiInfoResponse>('/ag-ui/info')
+      const info = await getAgui<AguiInfoResponse>('/ag-ui/info')
       setTestState({
         state: 'success',
         message: `连通性验证通过，协议 ${info.protocol} v${info.version}`

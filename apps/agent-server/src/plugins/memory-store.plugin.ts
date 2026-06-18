@@ -19,5 +19,6 @@ export const memoryStorePlugin: FastifyPluginAsync = fp(async (app) => {
 
   app.addHook('onClose', async () => {
     await factStore.close()
+    await summaryStore.close()
   })
 })

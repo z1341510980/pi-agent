@@ -6,7 +6,7 @@ import type { BrowserConfig } from '@repo/config/shared'
 import type { BaseEvent } from '@repo/protocol/events'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { getApi, postApi } from '../../api'
+import { getApi, postAgui } from '../../api'
 import { ProviderBootstrap, type ProviderSettings } from '../settings/provider-bootstrap'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useToolExecutions } from '@/hooks/use-tool-executions'
@@ -16,7 +16,12 @@ import { PermissionModeSwitch } from './permission-mode-switch'
 import { ToolCardList } from './tool-card'
 import { MessageStream, applyEvent, type MessageStreamState } from './message-stream'
 import { InputArea } from './input-area'
+import { SessionList, type SessionSummary } from './session-list'
+import { MemoryPanel } from './memory-panel'
+import { UsagePanel } from './usage-panel'
+import { FactList } from '../memory/fact-list'
 import { createUserMessage, type ChatMessage } from './types'
+import type { UsageSummary } from '@/components/usage/usage-overview'
 
 type HealthData = {
   service: string
@@ -27,13 +32,6 @@ type ChatWorkspaceProps = {
   appName: string
   config: BrowserConfig
   onOpenSettings?: () => void
-}
-
-type SessionSummary = {
-  id: string
-  title: string
-  preview: string
-  time: string
 }
 
 type CompactStatus =
@@ -48,28 +46,37 @@ type CompactThreadResponse = {
   result: unknown
 }
 
+const now = Date.now()
+
 const defaultSessions: SessionSummary[] = [
   {
     id: 'desktop-main',
     title: '新会话',
     preview: '准备连接 Pi Agent',
-    time: '现在'
+    createdAt: now,
+    updatedAt: now
   },
   {
     id: 'sdk-integration',
     title: 'SDK 集成验证',
     preview: 'P0-P4 基线已就绪',
-    time: '今天'
+    createdAt: now - 86_400_000,
+    updatedAt: now - 86_400_000
   }
 ]
 
-export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspaceProps): ReactElement {
-  const [rightPanel, setRightPanel] = useState<'context' | 'provider'>('context')
+export function ChatWorkspace({
+  appName,
+  config,
+  onOpenSettings
+}: ChatWorkspaceProps): ReactElement {
+  const [rightPanel, setRightPanel] = useState<
+    'context' | 'memory' | 'facts' | 'usage' | 'provider'
+  >('context')
   const [sessions, setSessions] = useState<SessionSummary[]>(() => loadSessions())
   const [activeThreadId, setActiveThreadId] = useState<string>(() =>
     loadCurrentSessionId(loadSessions())
   )
-  const [sessionSearch, setSessionSearch] = useState('')
   const [sessionMessages, setSessionMessages] = useState<Record<string, MessageStreamState>>(() =>
     loadSessionMessages()
   )
@@ -82,6 +89,20 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
     queryKey: ['agent-server-health'],
     queryFn: () => getApi<HealthData>('/api/health'),
     refetchInterval: 10_000
+  })
+
+  // 用量汇总（状态栏 + 用量面板共用）
+  const usageSummaryQuery = useQuery({
+    queryKey: ['usage-summary'],
+    queryFn: () => getApi<UsageSummary>('/api/usage/summary'),
+    refetchInterval: 30_000
+  })
+
+  // 本轮（当前会话）用量
+  const sessionUsageQuery = useQuery({
+    queryKey: ['usage-session', activeThreadId],
+    queryFn: () => getApi<UsageSummary>(`/api/usage/session/${activeThreadId}`),
+    refetchInterval: 15_000
   })
 
   const { executions, onMessage: onToolMessage, clear: clearExecutions } = useToolExecutions()
@@ -162,7 +183,7 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
   const handleCompact = useCallback(async () => {
     setCompactStatus({ state: 'running' })
     try {
-      await postApi<CompactThreadResponse>('/ag-ui/agent/default/compact', {
+      await postAgui<CompactThreadResponse>('/ag-ui/agent/default/compact', {
         threadId: activeThreadId
       })
       setCompactStatus({ state: 'success', message: '上下文压缩完成。' })
@@ -193,24 +214,49 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
 
   const handleNewSession = useCallback(() => {
     const id = crypto.randomUUID()
+    const ts = Date.now()
     const session: SessionSummary = {
       id,
       title: '新会话',
       preview: '准备开始对话',
-      time: '现在'
+      createdAt: ts,
+      updatedAt: ts
     }
     setSessions((prev) => [session, ...prev])
     setSessionMessages((prev) => ({ ...prev, [id]: createEmptyMessageState() }))
     setActiveThreadId(id)
   }, [])
 
-  const filteredSessions = useMemo(() => {
-    const query = sessionSearch.trim().toLowerCase()
-    if (!query) return sessions
-    return sessions.filter((session) =>
-      `${session.title} ${session.preview}`.toLowerCase().includes(query)
+  const handleRenameSession = useCallback((id: string, newTitle: string) => {
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, title: newTitle, updatedAt: Date.now() } : s))
     )
-  }, [sessionSearch, sessions])
+  }, [])
+
+  const handleDeleteSession = useCallback(
+    (id: string) => {
+      setSessions((prev) => {
+        const remaining = prev.filter((s) => s.id !== id)
+        // 如果删除的是当前会话，切换到第一个
+        if (id === activeThreadId && remaining.length > 0) {
+          setActiveThreadId(remaining[0].id)
+        }
+        return remaining
+      })
+      // 清理该会话的消息和草稿
+      setSessionMessages((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      setDrafts((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+    },
+    [activeThreadId]
+  )
 
   const health = healthQuery.data
   const isOnline = health?.status === 'online'
@@ -283,67 +329,14 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
       {/* ── Workspace grid ── */}
       <div className="grid grid-cols-[var(--sidebar-width)_minmax(480px,1fr)_var(--context-width)] min-h-0">
         {/* ── Sidebar ── */}
-        <nav
-          className="bg-surface-1 border-r border-border flex flex-col gap-3.5 min-w-0 overflow-hidden p-3.5"
-          aria-label="会话"
-        >
-          <div className="flex items-center justify-between">
-            <button
-              className="inline-flex flex-1 items-center gap-2.5 min-h-[42px] min-w-0 px-2 py-1.5 rounded-lg bg-surface-2 border border-border text-text text-left"
-              type="button"
-              aria-label="切换 Agent"
-            >
-              <span className="inline-flex items-center justify-center size-7 rounded-[7px] bg-avatar-bg text-avatar-text text-xs font-extrabold shrink-0">
-                pi
-              </span>
-              <span>
-                <strong className="block font-[760] leading-tight">pi</strong>
-                <small className="text-muted text-xs leading-snug">代码助手</small>
-              </span>
-            </button>
-            <Button
-              size="icon"
-              className="shrink-0 text-xl font-bold"
-              aria-label="新建会话"
-              onClick={handleNewSession}
-            >
-              +
-            </Button>
-          </div>
-
-          <label className="grid gap-1.5">
-            <span className="text-muted text-xs font-bold">搜索会话</span>
-            <input
-              type="search"
-              placeholder="搜索会话..."
-              value={sessionSearch}
-              onChange={(e) => setSessionSearch(e.target.value)}
-              className="bg-input-bg border border-border rounded-lg text-text min-w-0 min-h-[38px] px-2.5 outline-none focus:border-primary focus:ring-[3px] focus:ring-primary/20"
-            />
-          </label>
-
-          <div className="grid gap-2 min-h-0 overflow-auto" aria-label="今天">
-            <p className="text-subtle text-xs font-[760] m-0">今天</p>
-            {filteredSessions.map((session) => (
-              <button
-                className={`bg-transparent border rounded-lg text-text grid gap-1 min-h-[58px] p-2 text-left hover:bg-surface-2 hover:border-border focus-visible:bg-surface-2 focus-visible:border-border ${
-                  session.id === activeThreadId
-                    ? 'border-border bg-surface-2'
-                    : 'border-transparent'
-                }`}
-                key={session.id}
-                type="button"
-                onClick={() => setActiveThreadId(session.id)}
-              >
-                <span>
-                  <strong className="block font-[760] leading-tight">{session.title}</strong>
-                  <small className="text-muted text-xs leading-snug">{session.preview}</small>
-                </span>
-                <time className="text-subtle text-[11px]">{session.time}</time>
-              </button>
-            ))}
-          </div>
-        </nav>
+        <SessionList
+          sessions={sessions}
+          activeSessionId={activeThreadId}
+          onSelectSession={setActiveThreadId}
+          onNewSession={handleNewSession}
+          onRenameSession={handleRenameSession}
+          onDeleteSession={handleDeleteSession}
+        />
 
         {/* ── Chat main ── */}
         <main
@@ -418,6 +411,7 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
                 [activeThreadId]: text
               }))
             }
+            sessionUsage={sessionUsageQuery.data}
           />
         </main>
 
@@ -428,18 +422,38 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
         >
           <Tabs
             value={rightPanel}
-            onValueChange={(v) => setRightPanel(v as 'context' | 'provider')}
+            onValueChange={(v) =>
+              setRightPanel(v as 'context' | 'memory' | 'facts' | 'usage' | 'provider')
+            }
           >
-            <TabsList className="w-full grid grid-cols-2 rounded-none border-b border-border bg-transparent h-11 p-0">
+            <TabsList className="w-full grid grid-cols-5 rounded-none border-b border-border bg-transparent h-11 p-0">
               <TabsTrigger
                 value="context"
-                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none"
+                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
               >
                 上下文
               </TabsTrigger>
               <TabsTrigger
+                value="memory"
+                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
+              >
+                记忆
+              </TabsTrigger>
+              <TabsTrigger
+                value="facts"
+                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
+              >
+                事实库
+              </TabsTrigger>
+              <TabsTrigger
+                value="usage"
+                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
+              >
+                用量
+              </TabsTrigger>
+              <TabsTrigger
                 value="provider"
-                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none"
+                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
               >
                 Provider
               </TabsTrigger>
@@ -448,6 +462,12 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
 
           {rightPanel === 'provider' ? (
             <ProviderBootstrap />
+          ) : rightPanel === 'memory' ? (
+            <MemoryPanel isOnline={isOnline} />
+          ) : rightPanel === 'facts' ? (
+            <FactList />
+          ) : rightPanel === 'usage' ? (
+            <UsagePanel isOnline={isOnline} />
           ) : (
             <section className="grid gap-3.5 min-h-0 overflow-auto p-4 align-content-start">
               <div className="bg-surface-2 border border-border rounded-lg grid gap-1 p-3">
@@ -499,7 +519,7 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
               </div>
               <div className="bg-surface-2 border border-border rounded-lg grid gap-1 p-3">
                 <p className="text-subtle text-xs font-[760] m-0">当前里程碑</p>
-                <strong className="font-[760] leading-tight">F1 SSE 流式对话</strong>
+                <strong className="font-[760] leading-tight">F6 用量面板</strong>
               </div>
             </section>
           )}
@@ -516,6 +536,17 @@ export function ChatWorkspace({ appName, config, onOpenSettings }: ChatWorkspace
         <PermissionModeSwitch compact />
         <span className="text-muted text-xs whitespace-nowrap">·</span>
         <span className="text-muted text-xs whitespace-nowrap">{wsStatusText}</span>
+        <span className="text-muted text-xs whitespace-nowrap">·</span>
+        {usageSummaryQuery.data && (
+          <>
+            <span className="text-accent text-xs whitespace-nowrap font-mono">
+              ${usageSummaryQuery.data.totalCostUsd.toFixed(4)}
+            </span>
+            <span className="text-muted text-xs whitespace-nowrap">
+              / {usageSummaryQuery.data.totalCalls} 次
+            </span>
+          </>
+        )}
         <span className="text-muted text-xs whitespace-nowrap">·</span>
         <span className="text-muted text-xs whitespace-nowrap">{providerSummary}</span>
       </footer>
@@ -564,7 +595,12 @@ function createEmptyMessageState(): MessageStreamState {
 function loadSessions(): SessionSummary[] {
   const stored = loadJson<SessionSummary[]>('pi-agent.sessions')
   if (!stored || stored.length === 0) return defaultSessions
-  return stored
+  // 兼容旧数据：为缺少时间戳的会话补充默认值
+  return stored.map((s) => ({
+    ...s,
+    createdAt: s.createdAt ?? Date.now(),
+    updatedAt: s.updatedAt ?? Date.now()
+  }))
 }
 
 function loadCurrentSessionId(sessions: SessionSummary[]): string {
@@ -591,6 +627,7 @@ function upsertSessionAfterSend(
   const title = text.length > 24 ? `${text.slice(0, 24)}...` : text
   const preview = text.length > 42 ? `${text.slice(0, 42)}...` : text
   const existing = sessions.find((session) => session.id === sessionId)
+  const nowTs = Date.now()
 
   if (!existing) {
     return [
@@ -598,7 +635,8 @@ function upsertSessionAfterSend(
         id: sessionId,
         title,
         preview,
-        time: '现在'
+        createdAt: nowTs,
+        updatedAt: nowTs
       },
       ...sessions
     ]
@@ -610,7 +648,7 @@ function upsertSessionAfterSend(
           ...session,
           title: session.title === '新会话' ? title : session.title,
           preview,
-          time: '现在'
+          updatedAt: nowTs
         }
       : session
   )
