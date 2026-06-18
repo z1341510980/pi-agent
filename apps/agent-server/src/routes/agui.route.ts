@@ -8,7 +8,7 @@ import {
   navigateThreadInputSchema,
   compactThreadInputSchema,
   toolsActiveInputSchema,
-  reloadInputSchema,
+  reloadInputSchema
 } from '@repo/protocol/schemas'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { StreamRunInput } from '../core/agent/pi-agui-agent.js'
@@ -24,7 +24,7 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
       throw new AppError(
         ErrorCode.NOT_FOUND,
         `未知的 Agent '${agentId}'，期望 '${agent.agentId}'`,
-        404,
+        404
       )
     }
   }
@@ -49,8 +49,8 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
           id: agent.agentId,
           name: 'Pi AG-UI Agent',
           description: '基于 Pi SDK 的 AG-UI 协议端点',
-          runEndpoint: `/ag-ui/agent/${agent.agentId}/run`,
-        },
+          runEndpoint: `/ag-ui/agent/${agent.agentId}/run`
+        }
       ],
       endpoints: {
         info: '/ag-ui/info',
@@ -64,9 +64,9 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
         models: `/ag-ui/agent/${agent.agentId}/models`,
         tools: `/ag-ui/agent/${agent.agentId}/tools`,
         activeTools: `/ag-ui/agent/${agent.agentId}/tools/active`,
-        compact: `/ag-ui/agent/${agent.agentId}/compact`,
+        compact: `/ag-ui/agent/${agent.agentId}/compact`
       },
-      sessions: stats,
+      sessions: stats
     }
   })
 
@@ -104,10 +104,10 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
         {
           threadId: input.threadId,
           runId: input.runId,
-          messages: (input.messages ?? []) as StreamRunInput['messages'],
+          messages: (input.messages ?? []) as StreamRunInput['messages']
         },
         (event) => sendSseEvent(reply, event),
-        { signal: abortController.signal },
+        { signal: abortController.signal }
       )
     } catch (error) {
       // streamRun 内部已处理所有错误并发射终止事件，此处仅作兜底
@@ -166,10 +166,9 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
     const input = validateBody(navigateThreadInputSchema, request, reply)
     if (!input) return reply
 
-    const threadSession = await app.piSessionStore.getOrCreate(input.threadId)
-    const navResult = await threadSession.session.navigateTree(input.targetId, {
-      summarize: input.summarize ?? true,
-      ...(input.customInstructions ? { customInstructions: input.customInstructions } : {}),
+    const navResult = await getAgent().navigateThread(input.threadId, input.targetId, {
+      summarize: input.summarize,
+      customInstructions: input.customInstructions
     })
     return { status: 'navigated', ...navResult }
   })

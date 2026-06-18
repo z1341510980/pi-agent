@@ -14,6 +14,10 @@ export interface InputAreaProps {
   disabled?: boolean
   /** 占位符 */
   placeholder?: string
+  /** 受控输入值 */
+  value?: string
+  /** 输入变化 */
+  onChange?: (text: string) => void
 }
 
 /**
@@ -31,20 +35,33 @@ export function InputArea({
   isRunning,
   disabled = false,
   placeholder = '询问 PI Agent...',
+  value,
+  onChange
 }: InputAreaProps) {
-  const [text, setText] = useState('')
+  const [internalText, setInternalText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const text = value ?? internalText
+
+  const updateText = useCallback(
+    (nextText: string) => {
+      if (value === undefined) {
+        setInternalText(nextText)
+      }
+      onChange?.(nextText)
+    },
+    [onChange, value]
+  )
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim()
     if (!trimmed || isRunning || disabled) return
     onSend(trimmed)
-    setText('')
+    updateText('')
     // 重置 textarea 高度
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, isRunning, disabled, onSend])
+  }, [text, isRunning, disabled, onSend, updateText])
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -57,7 +74,7 @@ export function InputArea({
         }
       }
     },
-    [isRunning, onAbort, handleSend],
+    [isRunning, onAbort, handleSend]
   )
 
   // 自适应高度
@@ -82,10 +99,6 @@ export function InputArea({
       <textarea
         ref={textareaRef}
         value={text}
-        onChange={(e) => {
-          setText(e.target.value)
-          handleInput()
-        }}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         rows={3}
@@ -94,14 +107,16 @@ export function InputArea({
           'w-full resize-none rounded-lg border border-input bg-background px-3 py-2.5 text-sm',
           'placeholder:text-muted-foreground',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-          'disabled:cursor-not-allowed disabled:opacity-50',
+          'disabled:cursor-not-allowed disabled:opacity-50'
         )}
         aria-label="消息输入"
+        onChange={(e) => {
+          updateText(e.target.value)
+          handleInput()
+        }}
       />
       <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">
-          Enter 发送 · Shift+Enter 换行
-        </span>
+        <span className="text-xs text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
         {isRunning ? (
           <Button
             type="button"
@@ -114,12 +129,7 @@ export function InputArea({
             中断
           </Button>
         ) : (
-          <Button
-            type="submit"
-            size="sm"
-            disabled={!canSend}
-            className="gap-1.5"
-          >
+          <Button type="submit" size="sm" disabled={!canSend} className="gap-1.5">
             <Send className="h-3.5 w-3.5" />
             发送
           </Button>

@@ -4,7 +4,7 @@ import {
   type RunStartedEvent,
   type RunErrorEvent,
   type MessagesSnapshotEvent,
-  type ToolCallResultEvent,
+  type ToolCallResultEvent
 } from '@ag-ui/core'
 import { randomUUID } from 'node:crypto'
 import type { AgUiEventSink } from '@repo/protocol/events'
@@ -48,7 +48,7 @@ export class PiAgUiAgent {
 
   constructor(
     private readonly sessionStore: PiSessionStore,
-    agentId = 'default',
+    agentId = 'default'
   ) {
     this.agentId = agentId
   }
@@ -56,7 +56,7 @@ export class PiAgUiAgent {
   async streamRun(
     input: StreamRunInput,
     emit: AgUiEventSink,
-    runOptions: StreamRunOptions = {},
+    runOptions: StreamRunOptions = {}
   ): Promise<void> {
     const threadId = input.threadId
     const runId = input.runId
@@ -72,12 +72,12 @@ export class PiAgUiAgent {
     emit({
       type: EventType.RUN_STARTED,
       threadId,
-      runId,
+      runId
     } as RunStartedEvent)
 
     emit({
       type: EventType.MESSAGES_SNAPSHOT,
-      messages: input.messages,
+      messages: input.messages
     } as MessagesSnapshotEvent)
 
     const lastMessage = input.messages[input.messages.length - 1]
@@ -88,8 +88,11 @@ export class PiAgUiAgent {
           type: EventType.TOOL_CALL_RESULT,
           messageId: lastMessage.id,
           toolCallId,
-          content: typeof lastMessage.content === 'string' ? lastMessage.content : JSON.stringify(lastMessage.content),
-          role: 'tool',
+          content:
+            typeof lastMessage.content === 'string'
+              ? lastMessage.content
+              : JSON.stringify(lastMessage.content),
+          role: 'tool'
         } as ToolCallResultEvent)
       }
     }
@@ -99,7 +102,7 @@ export class PiAgUiAgent {
     if (!acquired) {
       emitTermination({
         type: EventType.RUN_ERROR,
-        message: `线程 ${threadId} 已有活跃 run，请等待完成或中断后再试`,
+        message: `线程 ${threadId} 已有活跃 run，请等待完成或中断后再试`
       } as RunErrorEvent)
       return
     }
@@ -113,11 +116,7 @@ export class PiAgUiAgent {
 
       const assistantResponseMessageId = randomUUID()
       const reasoningPipeline = new ReasoningPipeline(emit, assistantResponseMessageId)
-      const streamEmitter = new StreamEmitter(
-        emit,
-        assistantResponseMessageId,
-        reasoningPipeline,
-      )
+      const streamEmitter = new StreamEmitter(emit, assistantResponseMessageId, reasoningPipeline)
 
       unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
         streamEmitter.handleSessionEvent(event)
@@ -128,19 +127,15 @@ export class PiAgUiAgent {
       }
       runOptions.signal?.addEventListener('abort', abortHandler, { once: true })
 
-      const lastUserMessage = [...input.messages]
-        .reverse()
-        .find((m) => m.role === 'user')
-      const userText = typeof lastUserMessage?.content === 'string'
-        ? lastUserMessage.content
-        : ''
+      const lastUserMessage = [...input.messages].reverse().find((m) => m.role === 'user')
+      const userText = typeof lastUserMessage?.content === 'string' ? lastUserMessage.content : ''
 
       if (!userText) {
         emitSingleAssistantMessage(emit, '我需要一条用户消息才能继续。')
         emitTermination({
           type: EventType.RUN_FINISHED,
           threadId,
-          runId,
+          runId
         } as RunFinishedEvent)
         return
       }
@@ -155,7 +150,7 @@ export class PiAgUiAgent {
         type: EventType.RUN_FINISHED,
         threadId,
         runId,
-        ...(completeText ? { result: completeText } : {}),
+        ...(completeText ? { result: completeText } : {})
       } as RunFinishedEvent)
     } catch (error) {
       // abort 视为正常终止，发射 RUN_FINISHED 而非 RUN_ERROR
@@ -164,7 +159,7 @@ export class PiAgUiAgent {
           type: EventType.RUN_FINISHED,
           threadId,
           runId,
-          reason: 'aborted',
+          reason: 'aborted'
         } as RunFinishedEvent)
         return
       }
@@ -172,7 +167,7 @@ export class PiAgUiAgent {
       const message = error instanceof Error ? error.message : '未知 AG-UI 运行错误'
       emitTermination({
         type: EventType.RUN_ERROR,
-        message,
+        message
       } as RunErrorEvent)
     } finally {
       // 清理资源顺序：移除 abort 监听 → 取消订阅 → 清理 pendingToolCalls → 释放 run 占用
@@ -222,12 +217,29 @@ export class PiAgUiAgent {
     }
   }
 
-  async forkThread(threadId: string, entryId: string): Promise<{ selectedText: string; cancelled: boolean }> {
+  async forkThread(
+    threadId: string,
+    entryId: string
+  ): Promise<{ selectedText: string; cancelled: boolean }> {
     const threadSession = await this.sessionStore.getOrCreate(threadId)
     const result = await threadSession.session.fork(entryId)
     threadSession.pendingToolCalls.clear()
     threadSession.lastAccessedAt = Date.now()
     return result
+  }
+
+  async navigateThread(
+    threadId: string,
+    targetId: string,
+    options: { summarize?: boolean; customInstructions?: string } = {}
+  ): Promise<Record<string, unknown>> {
+    const threadSession = await this.sessionStore.getOrCreate(threadId)
+    const result = await threadSession.session.navigateTree(targetId, {
+      summarize: options.summarize ?? true,
+      ...(options.customInstructions ? { customInstructions: options.customInstructions } : {})
+    })
+    threadSession.lastAccessedAt = Date.now()
+    return isRecord(result) ? result : { result }
   }
 
   async compactThread(threadId: string, customInstructions?: string): Promise<unknown> {
@@ -273,4 +285,8 @@ export class PiAgUiAgent {
     await threadSession.session.reload()
     threadSession.lastAccessedAt = Date.now()
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

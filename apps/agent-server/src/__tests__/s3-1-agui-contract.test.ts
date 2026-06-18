@@ -10,12 +10,14 @@ import { PiSessionStore } from '../core/agent/session-store.js'
  */
 
 /** 创建 mock PiSession，可控制 prompt 行为 */
-function createMockSession(options: {
-  promptImpl?: (text: string) => Promise<void>
-  steerImpl?: (text: string) => Promise<void>
-  followUpImpl?: (text: string) => Promise<void>
-  events?: Array<Record<string, unknown>>
-} = {}) {
+function createMockSession(
+  options: {
+    promptImpl?: (text: string) => Promise<void>
+    steerImpl?: (text: string) => Promise<void>
+    followUpImpl?: (text: string) => Promise<void>
+    events?: Array<Record<string, unknown>>
+  } = {}
+) {
   const subscribers: Array<(event: Record<string, unknown>) => void> = []
   const session: any = {
     subscribe: vi.fn((cb: (event: Record<string, unknown>) => void) => {
@@ -30,12 +32,13 @@ function createMockSession(options: {
     followUp: vi.fn(options.followUpImpl ?? (async () => {})),
     abort: vi.fn(),
     fork: vi.fn(async () => ({ selectedText: '', cancelled: false })),
+    navigateTree: vi.fn(async () => ({ selectedId: 'entry-1' })),
     compact: vi.fn(async () => ({})),
     reload: vi.fn(async () => {}),
     getAllTools: () => [],
     getActiveToolNames: () => [],
     sessionManager: { getTree: () => [] },
-    modelRegistry: { getAvailable: () => [] },
+    modelRegistry: { getAvailable: () => [] }
   }
 
   // 触发订阅事件的方法
@@ -57,21 +60,15 @@ function createInput(overrides: Partial<StreamRunInput> = {}): StreamRunInput {
   return {
     threadId: 'thread-1',
     runId: 'run-1',
-    messages: [
-      { id: 'msg-1', role: 'user', content: '你好' },
-    ],
-    ...overrides,
+    messages: [{ id: 'msg-1', role: 'user', content: '你好' }],
+    ...overrides
   }
 }
 
 /** 收集所有发射的事件 */
 function collectEvents(agent: PiAgUiAgent, input: StreamRunInput, signal?: AbortSignal) {
   const events: BaseEvent[] = []
-  const promise = agent.streamRun(
-    input,
-    (e) => events.push(e),
-    signal ? { signal } : {},
-  )
+  const promise = agent.streamRun(input, (e) => events.push(e), signal ? { signal } : {})
   return { events, promise }
 }
 
@@ -114,7 +111,7 @@ describe('S3-1 AG-UI 事件顺序契约', () => {
     const { session: errSession } = createMockSession({
       promptImpl: async () => {
         throw new Error('boom')
-      },
+      }
     })
     const { agent: errAgent } = createAgentWithMockSession(errSession)
     const { events: errEvents, promise: errPromise } = collectEvents(errAgent, createInput())
@@ -141,16 +138,13 @@ describe('S3-1 AG-UI 事件顺序契约', () => {
     const { agent } = createAgentWithMockSession(session)
 
     const events: BaseEvent[] = []
-    const promise = agent.streamRun(
-      createInput(),
-      (e) => events.push(e),
-    )
+    const promise = agent.streamRun(createInput(), (e) => events.push(e))
 
     // 在 prompt 执行期间触发 text_delta 事件
     session.prompt.mockImplementation(async () => {
       emit({
         type: 'message_update',
-        assistantMessageEvent: { type: 'text_delta', delta: 'hello' },
+        assistantMessageEvent: { type: 'text_delta', delta: 'hello' }
       })
     })
 
@@ -170,11 +164,11 @@ describe('S3-1 AG-UI 事件顺序契约', () => {
     session.prompt.mockImplementation(async () => {
       emit({
         type: 'message_update',
-        assistantMessageEvent: { type: 'text_delta', delta: 'hello' },
+        assistantMessageEvent: { type: 'text_delta', delta: 'hello' }
       })
       emit({
         type: 'message_update',
-        assistantMessageEvent: { type: 'text_delta', delta: ' world' },
+        assistantMessageEvent: { type: 'text_delta', delta: ' world' }
       })
     })
 
@@ -197,7 +191,7 @@ describe('S3-1 AG-UI 事件顺序契约', () => {
     session.prompt.mockImplementation(async () => {
       emit({
         type: 'message_update',
-        assistantMessageEvent: { type: 'text_delta', delta: 'hi' },
+        assistantMessageEvent: { type: 'text_delta', delta: 'hi' }
       })
     })
 
@@ -236,8 +230,8 @@ describe('S3-1 AG-UI 事件顺序契约', () => {
     const input = createInput({
       messages: [
         { id: 'msg-1', role: 'user', content: 'list files' },
-        { id: 'msg-2', role: 'tool', content: 'file1.txt', toolCallId: 'tc-1' },
-      ],
+        { id: 'msg-2', role: 'tool', content: 'file1.txt', toolCallId: 'tc-1' }
+      ]
     })
 
     const { events, promise } = collectEvents(agent, input)
@@ -260,19 +254,21 @@ describe('S3-1 abort 契约', () => {
     session.prompt.mockImplementation(
       () =>
         new Promise<void>((_, reject) => {
-          controller.signal.addEventListener('abort', () => {
-            const err = new Error('Aborted')
-            err.name = 'AbortError'
-            reject(err)
-          }, { once: true })
-        }),
+          controller.signal.addEventListener(
+            'abort',
+            () => {
+              const err = new Error('Aborted')
+              err.name = 'AbortError'
+              reject(err)
+            },
+            { once: true }
+          )
+        })
     )
 
-    const promise = agent.streamRun(
-      createInput(),
-      (e) => events.push(e),
-      { signal: controller.signal },
-    )
+    const promise = agent.streamRun(createInput(), (e) => events.push(e), {
+      signal: controller.signal
+    })
 
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled())
     controller.abort()
@@ -296,19 +292,21 @@ describe('S3-1 abort 契约', () => {
     session.prompt.mockImplementation(
       () =>
         new Promise<void>((_, reject) => {
-          controller.signal.addEventListener('abort', () => {
-            const err = new Error('Aborted')
-            err.name = 'AbortError'
-            reject(err)
-          }, { once: true })
-        }),
+          controller.signal.addEventListener(
+            'abort',
+            () => {
+              const err = new Error('Aborted')
+              err.name = 'AbortError'
+              reject(err)
+            },
+            { once: true }
+          )
+        })
     )
 
-    const promise = agent.streamRun(
-      createInput(),
-      (e) => events.push(e),
-      { signal: controller.signal },
-    )
+    const promise = agent.streamRun(createInput(), (e) => events.push(e), {
+      signal: controller.signal
+    })
 
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled())
     controller.abort()
@@ -329,30 +327,29 @@ describe('S3-1 abort 契约', () => {
     session.prompt.mockImplementationOnce(
       () =>
         new Promise<void>((_, reject) => {
-          controller1.signal.addEventListener('abort', () => {
-            const err = new Error('Aborted')
-            err.name = 'AbortError'
-            reject(err)
-          }, { once: true })
-        }),
+          controller1.signal.addEventListener(
+            'abort',
+            () => {
+              const err = new Error('Aborted')
+              err.name = 'AbortError'
+              reject(err)
+            },
+            { once: true }
+          )
+        })
     )
 
     const events1: BaseEvent[] = []
-    const promise1 = agent.streamRun(
-      createInput({ runId: 'run-1' }),
-      (e) => events1.push(e),
-      { signal: controller1.signal },
-    )
+    const promise1 = agent.streamRun(createInput({ runId: 'run-1' }), (e) => events1.push(e), {
+      signal: controller1.signal
+    })
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled())
     controller1.abort()
     await promise1
 
     // 第二次 run：正常完成
     const events2: BaseEvent[] = []
-    const promise2 = agent.streamRun(
-      createInput({ runId: 'run-2' }),
-      (e) => events2.push(e),
-    )
+    const promise2 = agent.streamRun(createInput({ runId: 'run-2' }), (e) => events2.push(e))
     await promise2
 
     const last = events2[events2.length - 1]
@@ -386,7 +383,7 @@ describe('S3-1 steer/follow-up 契约', () => {
     const { session } = createMockSession({
       steerImpl: async () => {
         throw new Error('steer 内部错误')
-      },
+      }
     })
     const { store, agent } = createAgentWithMockSession(session)
     store.tryAcquireRun('thread-1', 'run-1')
@@ -408,11 +405,32 @@ describe('S3-1 steer/follow-up 契约', () => {
     const { session } = createMockSession({
       followUpImpl: async () => {
         throw new Error('follow-up 内部错误')
-      },
+      }
     })
     const { agent } = createAgentWithMockSession(session)
 
     await expect(agent.followUpThread('thread-1', 'text')).rejects.toThrow()
+  })
+})
+
+describe('S4 Session navigation 契约', () => {
+  it('TC-31: navigate 通过 PiAgUiAgent 封装并更新访问时间', async () => {
+    const { session } = createMockSession()
+    const { store, agent } = createAgentWithMockSession(session)
+    const threadSession = await store.getOrCreate('thread-1')
+    const before = threadSession.lastAccessedAt
+
+    const result = await agent.navigateThread('thread-1', 'entry-1', {
+      summarize: false,
+      customInstructions: '保留测试上下文'
+    })
+
+    expect(session.navigateTree).toHaveBeenCalledWith('entry-1', {
+      summarize: false,
+      customInstructions: '保留测试上下文'
+    })
+    expect(result).toEqual({ selectedId: 'entry-1' })
+    expect(threadSession.lastAccessedAt).toBeGreaterThanOrEqual(before)
   })
 })
 
@@ -431,7 +449,7 @@ describe('S3-1 并发契约', () => {
     const [s1, s2, s3] = await Promise.all([
       store.getOrCreate('thread-1'),
       store.getOrCreate('thread-1'),
-      store.getOrCreate('thread-1'),
+      store.getOrCreate('thread-1')
     ])
 
     expect(createCount).toBe(1)
@@ -448,25 +466,19 @@ describe('S3-1 并发契约', () => {
       () =>
         new Promise<void>((resolve) => {
           resolvePrompt = resolve
-        }),
+        })
     )
 
     // 第一个 run 启动但不完成
     const events1: BaseEvent[] = []
-    const promise1 = agent.streamRun(
-      createInput({ runId: 'run-1' }),
-      (e) => events1.push(e),
-    )
+    const promise1 = agent.streamRun(createInput({ runId: 'run-1' }), (e) => events1.push(e))
 
     // 等待第一个 run 占用 activeRunId（prompt 被调用表示已占用）
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled())
 
     // 第二个 run 应被拒绝
     const events2: BaseEvent[] = []
-    const promise2 = agent.streamRun(
-      createInput({ runId: 'run-2' }),
-      (e) => events2.push(e),
-    )
+    const promise2 = agent.streamRun(createInput({ runId: 'run-2' }), (e) => events2.push(e))
     await promise2
 
     const last2 = events2[events2.length - 1] as any
@@ -489,14 +501,10 @@ describe('S3-1 并发契约', () => {
     const events2: BaseEvent[] = []
 
     const [r1, r2] = await Promise.all([
-      agent.streamRun(
-        createInput({ threadId: 'thread-1', runId: 'run-1' }),
-        (e) => events1.push(e),
+      agent.streamRun(createInput({ threadId: 'thread-1', runId: 'run-1' }), (e) =>
+        events1.push(e)
       ),
-      agent.streamRun(
-        createInput({ threadId: 'thread-2', runId: 'run-2' }),
-        (e) => events2.push(e),
-      ),
+      agent.streamRun(createInput({ threadId: 'thread-2', runId: 'run-2' }), (e) => events2.push(e))
     ])
 
     expect(events1[events1.length - 1].type).toBe(EventType.RUN_FINISHED)
@@ -509,7 +517,7 @@ describe('S3-1 错误处理契约', () => {
     const { session } = createMockSession({
       promptImpl: async () => {
         throw new Error('LLM 服务不可用')
-      },
+      }
     })
     const { agent } = createAgentWithMockSession(session)
 
@@ -526,10 +534,7 @@ describe('S3-1 错误处理契约', () => {
     const { session } = createMockSession()
     const { agent } = createAgentWithMockSession(session)
 
-    const { events, promise } = collectEvents(
-      agent,
-      createInput({ messages: [] }),
-    )
+    const { events, promise } = collectEvents(agent, createInput({ messages: [] }))
     await promise
 
     const last = events[events.length - 1]
