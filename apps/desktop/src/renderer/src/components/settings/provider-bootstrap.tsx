@@ -20,8 +20,8 @@ export type ProviderSettings = {
 const storageKey = 'pi-agent.provider'
 
 const defaultSettings: ProviderSettings = {
-  provider: 'deepseek',
-  model: 'deepseek-chat',
+  provider: 'openai',
+  model: 'gpt-4.1-mini',
   apiKey: ''
 }
 
@@ -66,10 +66,10 @@ export function ProviderBootstrap(): ReactElement {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="deepseek">DeepSeek</SelectItem>
             <SelectItem value="openai">OpenAI</SelectItem>
             <SelectItem value="anthropic">Anthropic</SelectItem>
             <SelectItem value="gemini">Gemini</SelectItem>
+            <SelectItem value="deepseek">DeepSeek</SelectItem>
             <SelectItem value="custom">自定义</SelectItem>
           </SelectContent>
         </Select>
@@ -81,7 +81,7 @@ export function ProviderBootstrap(): ReactElement {
           id="model"
           value={settings.model}
           onChange={(event) => updateSettings('model', event.target.value)}
-          placeholder="deepseek-chat"
+          placeholder="gpt-4.1-mini"
         />
       </div>
 

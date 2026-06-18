@@ -2,6 +2,7 @@ import fp from 'fastify-plugin'
 import type { FastifyPluginAsync } from 'fastify'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { nodeConfig } from '@repo/config/node'
 import { AuthStorage, ModelRegistry, SessionManager } from '@earendil-works/pi-coding-agent'
 import { createModuleLogger } from '../lib/logger.js'
 
@@ -19,8 +20,8 @@ import { createModuleLogger } from '../lib/logger.js'
  * - ${dataDir}/agent/sessions/     会话持久化
  *
  * Provider 配置：
- * - DeepSeek：OpenAI 兼容 API，通过 PI_API_KEY_DEEPSEEK 或 PI_API_KEY 注入
- * - 其他 Provider：通过 PI_API_KEY_{PROVIDER} 或 PI_API_KEY 注入
+ * - DeepSeek：OpenAI 兼容 API，仅在明确配置 DeepSeek 时注册
+ * - 其他 Provider：通过 Pi SDK 内置模型注册表和凭证解析处理
  */
 export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'pi-sdk')
@@ -54,9 +55,11 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   app.decorate('sessionManager', sessionManager)
 
   // 注册 DeepSeek Provider（OpenAI 兼容 API）
-  // 通过环境变量 PI_API_KEY_DEEPSEEK 或 PI_API_KEY 注入 API Key
+  // 仅通过 PI_API_KEY_DEEPSEEK，或显式 LLM_PROVIDER=deepseek + LLM_API_KEY 注册
+  const configuredDeepSeekApiKey =
+    nodeConfig.llm.provider === 'deepseek' ? nodeConfig.llm.apiKey : undefined
   const deepseekApiKey =
-    process.env.PI_API_KEY_DEEPSEEK ?? process.env.PI_API_KEY
+    process.env.PI_API_KEY_DEEPSEEK ?? configuredDeepSeekApiKey
   const deepseekBaseUrl =
     process.env.PI_DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
   if (deepseekApiKey) {
@@ -98,16 +101,19 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
     })
     log.info('DeepSeek Provider 已注册（deepseek-chat, deepseek-reasoner）')
   } else {
-    log.warn('PI_API_KEY_DEEPSEEK/PI_API_KEY 未设置，DeepSeek Provider 未注册')
+    log.warn('DeepSeek 未显式配置，DeepSeek Provider 未注册')
   }
 
   // getApiKey 回调：从环境变量解析 API Key
-  // 优先级：PI_API_KEY_${PROVIDER} > PI_API_KEY
+  // 优先级：PI_API_KEY_${PROVIDER} > 当前 LLM_API_KEY > PI_API_KEY
   // 后续 P1 阶段会替换为 CredentialBridge（从 Electron safeStorage 获取）
   const getApiKey = async (provider: string): Promise<string | undefined> => {
     const envKey = `PI_API_KEY_${provider.toUpperCase().replace(/-/g, '_')}`
     const apiKey = process.env[envKey]
     if (apiKey) return apiKey
+    if (provider === nodeConfig.llm.provider && nodeConfig.llm.apiKey) {
+      return nodeConfig.llm.apiKey
+    }
     return process.env.PI_API_KEY
   }
   app.decorate('getApiKey', getApiKey)

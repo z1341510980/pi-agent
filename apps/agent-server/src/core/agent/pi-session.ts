@@ -1,7 +1,9 @@
 import { createAgentSession, DefaultResourceLoader } from '@earendil-works/pi-coding-agent'
 import type { AuthStorage, ModelRegistry, SessionManager, AgentSession } from '@earendil-works/pi-coding-agent'
+import type { NodeConfig } from '@repo/config/shared'
 import type { Gate } from '../tool/gate.js'
 import type { EventBus } from '@repo/shared/events'
+import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { CredentialBridge } from '../config/credential-bridge.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
 import { EvidenceLedger, summarizeArgs, summarizeResult } from '../tool/evidence-ledger.js'
@@ -20,6 +22,7 @@ export interface PiSessionDeps {
   config: {
     cwd: string
     dataDir: string
+    llm: NodeConfig['llm']
   }
 }
 
@@ -39,6 +42,9 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     const envKey = `PI_API_KEY_${provider.toUpperCase().replace(/-/g, '_')}`
     const providerKey = process.env[envKey]
     if (providerKey) return providerKey
+    if (provider === deps.config.llm.provider && deps.config.llm.apiKey) {
+      return deps.config.llm.apiKey
+    }
     return process.env.PI_API_KEY
   })
 
@@ -53,15 +59,16 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   // 3. Gate 集成：获取被禁止的工具列表
   const gateDeniedTools = deps.gate.getDeniedTools()
 
-  // 4. 解析默认模型（优先 DeepSeek，回退到第一个可用模型）
-  const allModels = deps.modelRegistry.getAll()
-  const defaultModel =
-    allModels.find((m) => m.provider === 'deepseek' && m.id === 'deepseek-chat') ??
-    allModels.find((m) => m.provider === 'deepseek') ??
-    allModels[0]
+  // 4. 解析默认模型：严格遵守项目配置，避免历史临时 Provider 泄漏为默认值
+  const defaultModel = deps.modelRegistry.find(deps.config.llm.provider, deps.config.llm.model)
 
   if (!defaultModel) {
-    throw new Error('没有可用的模型，请检查 Provider 配置')
+    throw new AppError(
+      ErrorCode.CONFIG_ERROR,
+      `模型配置不可用：${deps.config.llm.provider}/${deps.config.llm.model}`,
+      500,
+      'Configured LLM model was not found in the Pi SDK model registry',
+    )
   }
 
   // 5. 创建 Agent Session

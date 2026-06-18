@@ -1,4 +1,5 @@
 import Fastify from 'fastify'
+import { nodeConfig } from '@repo/config/node'
 import { corsPlugin } from './plugins/cors.plugin.js'
 import { authPlugin } from './plugins/auth.plugin.js'
 import { rateLimitPlugin } from './plugins/rate-limit.plugin.js'
@@ -63,6 +64,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       config: {
         cwd,
         dataDir,
+        llm: nodeConfig.llm,
       },
     })
   })
