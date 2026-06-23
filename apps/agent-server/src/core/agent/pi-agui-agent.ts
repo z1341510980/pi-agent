@@ -379,6 +379,8 @@ export class PiAgUiAgent {
       provider: string
       id: string
       name?: string
+      contextWindow?: number
+      maxTokens?: number
     }>
     return allModels.filter((m) => configuredProviderIds.has(m.provider))
   }

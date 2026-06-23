@@ -9,6 +9,8 @@ export interface UsageSummary {
   totalCacheWriteTokens: number
   totalCostUsd: number
   totalCalls: number
+  /** 最近一次 LLM 调用的输入 token 数（代表当前上下文窗口实际占用） */
+  lastInputTokens: number
   byModel: Record<
     string,
     { calls: number; costUsd: number; inputTokens: number; outputTokens: number }

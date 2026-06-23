@@ -124,4 +124,11 @@ export const memoryRoute: FastifyPluginAsync = async (app) => {
     const summaries = await summaryStore.listSummaries()
     return success(summaries, request.traceId)
   })
+
+  // GET /api/memory/summaries/:sessionId — 获取指定会话的摘要
+  app.get('/api/memory/summaries/:sessionId', async (request) => {
+    const { sessionId } = request.params as { sessionId: string }
+    const summary = await summaryStore.getSummary(sessionId)
+    return success(summary, request.traceId)
+  })
 }

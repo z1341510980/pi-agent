@@ -13,6 +13,8 @@ export interface ModelOption {
   provider: string
   id: string
   name?: string
+  contextWindow?: number
+  maxTokens?: number
 }
 
 export interface ModelSelectorProps {

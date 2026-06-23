@@ -47,6 +47,8 @@ export interface UsageSummary {
   totalCacheWriteTokens: number
   totalCostUsd: number
   totalCalls: number
+  /** 最近一次 LLM 调用的输入 token 数（代表当前上下文窗口实际占用） */
+  lastInputTokens: number
   byModel: Record<string, { calls: number; costUsd: number; inputTokens: number; outputTokens: number }>
   byAgent: Record<string, { calls: number; costUsd: number }>
 }
@@ -551,6 +553,8 @@ export class UsageLedger {
     let totalCacheReadTokens = 0
     let totalCacheWriteTokens = 0
     let totalCostUsd = 0
+    let lastInputTokens = 0
+    let lastTimestamp = 0
 
     for (const r of records) {
       totalInputTokens += r.inputTokens
@@ -558,6 +562,12 @@ export class UsageLedger {
       totalCacheReadTokens += r.cacheReadTokens ?? 0
       totalCacheWriteTokens += r.cacheWriteTokens ?? 0
       totalCostUsd += r.costUsd
+
+      // 跟踪最近一次调用的 inputTokens（代表当前上下文窗口占用）
+      if (r.timestamp >= lastTimestamp) {
+        lastTimestamp = r.timestamp
+        lastInputTokens = r.inputTokens
+      }
 
       if (!byModel[r.model]) {
         byModel[r.model] = { calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 }
@@ -581,6 +591,7 @@ export class UsageLedger {
       totalCacheWriteTokens,
       totalCostUsd: roundUsd(totalCostUsd),
       totalCalls: records.length,
+      lastInputTokens,
       byModel: Object.fromEntries(
         Object.entries(byModel).map(([k, v]) => [k, { ...v, costUsd: roundUsd(v.costUsd) }]),
       ),

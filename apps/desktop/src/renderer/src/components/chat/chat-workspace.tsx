@@ -21,7 +21,7 @@ import { NotificationCenter } from '../overlays/notification-center'
 import { DevLogPanel } from '../overlays/devlog-panel'
 import { CommandPalette, createDefaultCommands } from '../overlays/command-palette'
 import { CompactionBanner, type CompactionEvent } from './compaction-banner'
-import { ContextPanel } from './context-panel'
+import { ContextPanel, type AssociatedFile, type MemorySummaryData, type ActivityEntry } from './context-panel'
 import { UsagePanel } from './usage-panel'
 import {
   Dialog,
@@ -135,6 +135,20 @@ export function ChatWorkspace({
     refetchInterval: 15_000,
   })
 
+  // 当前工作区信息
+  const workspaceQuery = useQuery({
+    queryKey: ['workspace'],
+    queryFn: () => getApi<{ path: string; name: string; gitBranch?: string; gitDirty?: boolean }>('/api/workspace'),
+    refetchInterval: 30_000,
+  })
+
+  // 当前会话的记忆摘要
+  const memorySummaryQuery = useQuery({
+    queryKey: ['memory-summary', activeThreadId],
+    queryFn: () => getApi<MemorySummaryData | null>(`/api/memory/summaries/${activeThreadId}`),
+    refetchInterval: 30_000,
+  })
+
   // 已注册模型列表（供模型选择器使用）
   const modelsQuery = useQuery({
     queryKey: ['agui-models'],
@@ -191,6 +205,48 @@ export function ChatWorkspace({
     model: selectedModel ?? undefined,
     agentId: activeAgentId,
   })
+
+  // ── 从选中模型动态获取 contextWindow ──
+  const currentContextWindow = useMemo(() => {
+    if (!selectedModel) return 32768
+    const model = modelsQuery.data?.find(
+      (m) => m.provider === selectedModel.provider && m.id === selectedModel.modelId,
+    )
+    return model?.contextWindow ?? 32768
+  }, [selectedModel, modelsQuery.data])
+
+  // ── 从消息流中提取关联文件（工具调用涉及的文件路径） ──
+  const associatedFiles = useMemo<AssociatedFile[]>(() => {
+    const PATH_KEYS = ['path', 'filePath', 'file_path', 'filename', 'file']
+    const files: AssociatedFile[] = []
+    for (const msg of messageState.messages) {
+      if (!msg.toolCalls) continue
+      for (const tc of msg.toolCalls) {
+        if (!tc.args || typeof tc.args !== 'object') continue
+        const args = tc.args as Record<string, unknown>
+        for (const key of PATH_KEYS) {
+          const val = args[key]
+          if (typeof val === 'string' && val.length > 0) {
+            files.push({
+              path: val,
+              toolName: tc.toolName,
+              timestamp: tc.startedAt ?? msg.createdAt ?? Date.now(),
+            })
+            break
+          }
+        }
+      }
+    }
+    return files
+  }, [messageState.messages])
+
+  // ── 将 DevLog 转换为活动日志条目 ──
+  const activities = useMemo<ActivityEntry[]>(() => {
+    return devLogs.map((log) => ({
+      label: log.message,
+      timestamp: log.timestamp,
+    }))
+  }, [devLogs])
 
   const handleSend = useCallback(
     (text: string, attachments?: FileAttachment[]) => {
@@ -491,8 +547,8 @@ export function ChatWorkspace({
           >
             <ContextPanel
               stats={{
-                tokensUsed: (sessionUsageQuery.data?.totalInputTokens ?? 0) + (sessionUsageQuery.data?.totalOutputTokens ?? 0),
-                contextWindow: 32768,
+                tokensUsed: sessionUsageQuery.data?.lastInputTokens ?? 0,
+                contextWindow: currentContextWindow,
                 messageCount: messageState.messages.length,
                 toolCallCount: executions.length,
                 compactionCount,
@@ -503,6 +559,10 @@ export function ChatWorkspace({
               onCompact={() => void handleCompact()}
               onOpenSettings={onOpenSettings}
               onViewDetails={() => setUsageDetailOpen(true)}
+              workspacePath={workspaceQuery.data?.path}
+              associatedFiles={associatedFiles}
+              memorySummary={memorySummaryQuery.data ?? null}
+              activities={activities}
             />
           </aside>
         )}
