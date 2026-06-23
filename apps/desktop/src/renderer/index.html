@@ -3,11 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <title>Electron</title>
-    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:3900 http://localhost:3900 ws://127.0.0.1:3900 ws://localhost:3900"
-    />
+    <!-- CSP 由 Electron 主进程动态注入（支持随机端口） -->
   </head>
 
   <body>

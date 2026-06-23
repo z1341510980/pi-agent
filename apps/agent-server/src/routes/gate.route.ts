@@ -4,7 +4,7 @@ import { success } from '../lib/api-response.js'
 import { validateBody } from '../lib/validate.js'
 
 const gateModeSchema = z.object({
-  mode: z.enum(['auto', 'plan', 'readonly']),
+  mode: z.enum(['auto', 'plan', 'readonly', 'full']),
 })
 
 export const gateRoute: FastifyPluginAsync = async (app) => {

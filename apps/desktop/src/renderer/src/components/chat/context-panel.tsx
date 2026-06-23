@@ -136,7 +136,7 @@ export function ContextPanel({
       {/* ── 会话用量统计 ── */}
       <div className="bg-card-bg rounded-md p-2.5 grid gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium text-text">当前上下文占用</span>
+          <span className="text-[11px] font-medium text-text">会话用量</span>
           {onViewDetails && (
             <span
               role="button"
@@ -150,7 +150,7 @@ export function ContextPanel({
           )}
         </div>
         <div className="grid gap-1.5">
-          <ProgressBar label="上下文窗口" current={stats.tokensUsed} max={stats.contextWindow} percentage={tokenPct} variant="primary" />
+          <ProgressBar label="输入 Tokens" current={stats.tokensUsed} max={stats.contextWindow} percentage={tokenPct} variant="primary" />
           <ProgressBar label="生成次数" current={generationCount} max={generationLimit} percentage={generationPct} variant="accent" />
         </div>
         <div className="flex items-center gap-2 text-[10px] text-subtle">
@@ -216,17 +216,17 @@ export function ContextPanel({
       </div>
 
       {/* ── 活动日志 ── */}
-      <div className="bg-card-bg rounded-md p-2.5 grid gap-1.5">
+      <div className="bg-card-bg rounded-md p-2.5 grid gap-1.5 min-w-0">
         <div className="flex items-center gap-1.5">
           <ActivityIcon className="size-3 text-subtle" />
           <span className="text-[11px] font-medium text-text">活动日志</span>
         </div>
         {recentActivities.length > 0 ? (
-          <ul className="grid gap-0.5">
+          <ul className="grid gap-0.5 min-w-0">
             {recentActivities.map((activity, index) => (
-              <li key={index} className="flex items-center justify-between gap-2 text-[10px] text-subtle">
-                <span className="truncate">{activity.label}</span>
-                <span className="shrink-0">{activity.meta ?? formatRelativeTime(activity.timestamp)}</span>
+              <li key={index} className="flex items-center justify-between gap-2 text-[10px] text-subtle min-w-0">
+                <span className="truncate min-w-0">{activity.label}</span>
+                <span className="shrink-0 text-[9px]">{activity.meta ?? formatRelativeTime(activity.timestamp)}</span>
               </li>
             ))}
           </ul>

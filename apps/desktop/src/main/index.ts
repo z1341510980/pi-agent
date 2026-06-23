@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, session } from 'electron'
 import { join, basename } from 'path'
 import { readFile } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -92,8 +92,8 @@ ipcMain.handle('file:read', async (_event, filePath: string) => {
 function createWindow(): void {
   // Create the browser window.
   const win = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1440,
+    height: 900,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -101,6 +101,25 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
     }
+  })
+
+  // 动态注入 CSP：使用嵌入式服务器的实际端口
+  const port = serverPort ?? 3900
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    `connect-src 'self' http://127.0.0.1:${port} http://localhost:${port} ws://127.0.0.1:${port} ws://localhost:${port}`,
+  ].join('; ')
+
+  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp],
+      },
+    })
   })
 
   win.on('ready-to-show', () => {

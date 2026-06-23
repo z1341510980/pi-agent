@@ -61,13 +61,14 @@ type CompactThreadResponse = {
 }
 
 /** 权限模式循环顺序 */
-const PERMISSION_MODE_ORDER: PermissionMode[] = ['auto', 'plan', 'readonly']
+const PERMISSION_MODE_ORDER: PermissionMode[] = ['auto', 'plan', 'readonly', 'full']
 
 /** 权限模式展示文案 */
 const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   auto: '自动',
   plan: '计划',
   readonly: '只读',
+  full: '完全控制',
 }
 
 export function ChatWorkspace({
@@ -176,7 +177,7 @@ export function ChatWorkspace({
   } = useRealtimeEvents()
 
   const {
-    pendingConfirmation,
+    pendingConfirmations,
     respondConfirmation,
   } = useWebSocket({
     threadId: activeThreadId,
@@ -256,7 +257,20 @@ export function ChatWorkspace({
         messages: [...prev.messages, userMsg],
       }))
       setSessions(upsertSessionAfterSend(sessions, activeThreadId, text))
-      void run([userMsg])
+
+      // 将附件内容注入到消息 content 中（AG-UI 协议只传 content 字符串）
+      const enrichedMsg = { ...userMsg }
+      if (attachments && attachments.length > 0) {
+        const attachmentParts = attachments
+          .filter((a) => a.content && a.encoding === 'utf-8')
+          .map((a) => `\n--- 附件: ${a.name} ---\n${a.content}`)
+          .join('\n')
+        if (attachmentParts) {
+          enrichedMsg.content = `${text}\n${attachmentParts}`
+        }
+      }
+
+      void run([enrichedMsg])
     },
     [activeThreadId, run, updateSessionMessages, sessions, setSessions],
   )
@@ -547,7 +561,7 @@ export function ChatWorkspace({
           >
             <ContextPanel
               stats={{
-                tokensUsed: sessionUsageQuery.data?.lastInputTokens ?? 0,
+                tokensUsed: sessionUsageQuery.data?.totalInputTokens ?? 0,
                 contextWindow: currentContextWindow,
                 messageCount: messageState.messages.length,
                 toolCallCount: executions.length,
@@ -615,16 +629,18 @@ export function ChatWorkspace({
 
       {/* ── 用量明细弹窗 ── */}
       <Dialog open={usageDetailOpen} onOpenChange={setUsageDetailOpen}>
-        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-auto">
-          <DialogHeader>
+        <DialogContent className="sm:max-w-lg flex flex-col max-h-[80vh]">
+          <DialogHeader className="shrink-0">
             <DialogTitle>用量明细</DialogTitle>
           </DialogHeader>
-          <UsagePanel isOnline={isOnline} />
+          <div className="flex-1 overflow-y-auto min-h-0">
+            <UsagePanel isOnline={isOnline} />
+          </div>
         </DialogContent>
       </Dialog>
 
       {/* ── 确认对话框（由 WebSocket 事件驱动） ── */}
-      <ConfirmationDialog request={pendingConfirmation} onRespond={respondConfirmation} />
+      <ConfirmationDialog requests={pendingConfirmations} onRespond={respondConfirmation} />
     </div>
   )
 }

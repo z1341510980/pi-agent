@@ -77,8 +77,7 @@ export function applyEvent(
       }))
     }
 
-    case EventType.THINKING_TEXT_MESSAGE_CONTENT:
-    case EventType.REASONING_MESSAGE_CONTENT: {
+    case EventType.THINKING_TEXT_MESSAGE_CONTENT: {
       const delta = (e.delta as string) ?? ''
       if (!delta) return state
       return updateActiveAssistant(state, (msg) => ({
@@ -88,6 +87,11 @@ export function applyEvent(
           isStreaming: true,
         },
       }))
+    }
+
+    case EventType.REASONING_MESSAGE_CONTENT: {
+      // 与 THINKING_TEXT_MESSAGE_CONTENT 内容相同，跳过避免重复
+      return state
     }
 
     case EventType.THINKING_END:

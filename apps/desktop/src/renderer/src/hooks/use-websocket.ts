@@ -90,8 +90,8 @@ export interface UseWebSocketReturn {
   /** 发送消息 */
   send: (msg: unknown) => void
   /** 当前待处理的确认请求 */
-  pendingConfirmation: ConfirmationRequestPayload | null
-  /** 回复确认请求 */
+  pendingConfirmations: ConfirmationRequestPayload[]
+  /** 响应确认请求（批准/拒绝） */
   respondConfirmation: (id: string, approved: boolean) => void
 }
 
@@ -115,7 +115,7 @@ const RECONNECT_MAX_DELAY = 30000 // 30s 上限
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
   const { threadId, onMessage, onNotification, onDevLog, onUsageUpdate } = options
   const [status, setStatus] = useState<UseWebSocketReturn['status']>('connecting')
-  const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequestPayload | null>(null)
+  const [pendingConfirmations, setPendingConfirmations] = useState<ConfirmationRequestPayload[]>([])
   const wsRef = useRef<WebSocket | null>(null)
   const onMessageRef = useRef(onMessage)
   const onNotificationRef = useRef(onNotification)
@@ -139,7 +139,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
   const respondConfirmation = useCallback((id: string, approved: boolean) => {
     send({ type: 'confirmation_response', payload: { id, approved } })
-    setPendingConfirmation(null)
+    setPendingConfirmations((prev) => prev.filter((r) => r.id !== id))
   }, [send])
 
   useEffect(() => {
@@ -184,7 +184,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           // 分发到具体回调
           switch (msg.type) {
             case 'confirmation_request':
-              setPendingConfirmation(msg.payload)
+              setPendingConfirmations((prev) => [...prev, msg.payload])
               break
             case 'notification':
               onNotificationRef.current?.(msg.payload)
@@ -253,7 +253,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   return {
     status,
     send,
-    pendingConfirmation,
+    pendingConfirmations,
     respondConfirmation,
   }
 }

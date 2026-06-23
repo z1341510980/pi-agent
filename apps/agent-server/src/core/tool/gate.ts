@@ -1,7 +1,7 @@
 import { resolve, isAbsolute, sep } from 'node:path'
 import { realpathSync } from 'node:fs'
 
-export type PermissionMode = 'auto' | 'plan' | 'readonly'
+export type PermissionMode = 'auto' | 'plan' | 'readonly' | 'full'
 
 export type ToolRiskLevel = 'safe' | 'moderate' | 'dangerous'
 
@@ -136,10 +136,15 @@ export class Gate {
       }
     }
 
-    // 3. 路径白名单检查（文件工具）
+    // 3. 路径白名单检查（文件工具，所有模式都生效）
     const pathCheck = this.checkPath(toolName, args)
     if (pathCheck && !pathCheck.allowed) {
       return pathCheck
+    }
+
+    // 3.5 full 模式：跳过所有确认，直接允许（路径白名单已在上方检查）
+    if (this.mode === 'full') {
+      return { allowed: true }
     }
 
     // 4. 显式确认列表

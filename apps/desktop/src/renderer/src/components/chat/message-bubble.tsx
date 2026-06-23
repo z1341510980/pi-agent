@@ -94,8 +94,21 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
             {/* 文本内容 */}
             {displayContent ? (
-              <div className="text-sm text-text-secondary leading-[1.6] min-w-0 break-words">
-                <div className="prose prose-sm max-w-none prose-p:my-1.5 prose-headings:my-2 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-pre:my-2 prose-code:before:content-none prose-code:after:content-none prose-pre:overflow-x-auto prose-pre:max-w-full">
+              <div className="text-sm text-text-secondary leading-relaxed min-w-0 break-words">
+                <div className="prose prose-sm max-w-none
+                  prose-p:my-2 prose-p:leading-relaxed
+                  prose-headings:my-3 prose-headings:leading-tight
+                  prose-h1:text-base prose-h2:text-sm prose-h3:text-sm
+                  prose-ul:my-2 prose-ol:my-2
+                  prose-li:my-0.5
+                  prose-pre:my-3 prose-pre:rounded-md prose-pre:bg-muted/60 prose-pre:border prose-pre:border-border prose-pre:overflow-x-auto prose-pre:max-w-full
+                  prose-code:before:content-none prose-code:after:content-none prose-code:text-primary prose-code:bg-muted/60 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em]
+                  prose-blockquote:my-2 prose-blockquote:border-l-primary prose-blockquote:text-muted-foreground
+                  prose-hr:my-3 prose-hr:border-border
+                  prose-a:text-primary prose-a:no-underline hover:prose-a:underline
+                  prose-strong:text-text prose-em:text-text-secondary
+                  prose-table:text-xs
+                ">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
                 </div>
               </div>

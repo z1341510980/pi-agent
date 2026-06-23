@@ -255,6 +255,14 @@ function buildSystemPrompt(deps: PiSessionDeps): string {
 
   parts.push('你是 Pi Agent，一个智能编程助手。')
 
+  // 注入运行环境信息，避免 LLM 在 Windows 上生成 bash 不兼容的 PowerShell 命令
+  const platform = process.platform
+  const isWindows = platform === 'win32'
+  const shellInfo = isWindows
+    ? '当前运行在 Windows 系统上。bash 工具使用 Git Bash（/usr/bin/bash），请使用 Unix/bash 语法（如 ls、cat、grep），不要使用 PowerShell 语法（如 Get-ChildItem、Select-Object、Get-Content）。如需 Windows 特定操作，使用 cmd 语法（如 dir、type）。'
+    : `当前运行在 ${platform === 'darwin' ? 'macOS' : 'Linux'} 系统上，bash 工具使用标准 Unix shell。`
+  parts.push(`\n## 运行环境\n${shellInfo}`)
+
   const loader = new InstructionLoader(deps.config.cwd)
   const instructions = loader.loadInstructions()
   if (instructions) {

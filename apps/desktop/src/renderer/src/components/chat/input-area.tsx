@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { type ModelOption, ModelSelector } from './model-selector'
 import { FileAttachmentList, type FileAttachment } from './file-attachment'
+import { PermissionModeSwitch } from './permission-mode-switch'
 
 export interface InputAreaProps {
   /** 发送消息（非运行状态） */
@@ -334,8 +335,9 @@ export function InputArea({
             Enter 发送 · Shift+Enter 换行
           </span>
 
-          {/* 右侧：模型选择 + 发送/中断 */}
+          {/* 右侧：权限 + 模型选择 + 发送/中断 */}
           <div className="flex items-center gap-2">
+            <PermissionModeSwitch compact />
             {models.length > 0 && onModelChange && (
               <ModelSelector
                 models={models}

@@ -120,7 +120,7 @@ const modelSchema = z.object({
 })
 
 const providerFormSchema = z.object({
-  id: providerIdSchema,
+  id: z.string().optional(), // 添加时自动从名称生成
   name: providerNameSchema,
   api: z.string().min(1, 'API 类型不能为空'),
   baseUrl: apiBaseUrlSchema,
@@ -273,9 +273,14 @@ export function ProviderManager(): ReactElement {
   }
 
   async function handleSave(entry: ProviderEntry): Promise<void> {
-    const id = entry.id || entry.name.toLowerCase().trim()
+    // ID 优先使用已有值，否则从名称自动生成（小写+连字符）
+    const id = entry.id || entry.name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
     if (!id) {
-      throw new Error('Provider ID 不能为空')
+      throw new Error('请填写 Provider 名称')
     }
     if (entry.models.length === 0) {
       throw new Error('请至少添加一个模型')
@@ -604,7 +609,13 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
         <DialogHeader>
           <DialogTitle>{formId ? '编辑 Provider' : '添加 Provider'}</DialogTitle>
         </DialogHeader>
-        <form className="grid gap-3.5" onSubmit={handleSubmit(onSubmit)}>
+        <form className="grid gap-3.5" onSubmit={handleSubmit(onSubmit, (validationErrors) => {
+          // 校验失败时显示第一个错误
+          const firstError = Object.values(validationErrors).find((e) => e?.message)
+          if (firstError?.message) {
+            setSaveError(firstError.message)
+          }
+        })}>
           <div className="grid gap-1.5">
             <Label htmlFor="provider-preset">Provider 预设</Label>
             <Select value={presetKey} onValueChange={applyPreset}>
@@ -713,7 +724,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
 
           <div className="grid gap-1.5">
             <div className="flex items-center justify-between">
-              <Label htmlFor="provider-models">模型列表</Label>
+              <Label>模型列表</Label>
               <Button
                 type="button"
                 variant="outline"
@@ -727,10 +738,22 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
             </div>
             {models.length > 0 ? (
               <div className="flex flex-wrap gap-1.5 rounded-md border border-input bg-transparent p-3 min-h-[80px]">
-                {models.map((m) => (
-                  <Badge key={m.id} variant="secondary" className="font-mono text-xs">
+                {models.map((m, idx) => (
+                  <Badge key={m.id} variant="secondary" className="font-mono text-xs gap-1 pr-1">
                     {m.id}
-                    <span className="text-muted-foreground ml-1">{m.name !== m.id ? m.name : ''}</span>
+                    {m.name !== m.id && <span className="text-muted-foreground">{m.name}</span>}
+                    <button
+                      type="button"
+                      className="ml-0.5 hover:text-danger transition-colors"
+                      aria-label={`移除 ${m.id}`}
+                      onClick={() => {
+                        const updated = [...models]
+                        updated.splice(idx, 1)
+                        setValue('models', updated, { shouldValidate: true })
+                      }}
+                    >
+                      <XCircleIcon className="size-3" />
+                    </button>
                   </Badge>
                 ))}
               </div>
@@ -741,19 +764,6 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
                 </span>
               </div>
             )}
-            <Controller
-              control={control}
-              name="models"
-              render={({ field }) => (
-                <textarea
-                  id="provider-models"
-                  className="flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono resize-y"
-                  value={serializeModels(field.value ?? [])}
-                  onChange={(e) => field.onChange(parseModels(e.target.value, providerPresets[presetKey]?.models))}
-                  placeholder={'可手动编辑，格式：model_id | model_name，每行一个'}
-                />
-              )}
-            />
             <FieldErrorMessage error={errors.models} />
           </div>
 
