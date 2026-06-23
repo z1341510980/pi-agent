@@ -1,11 +1,12 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { ExternalLinkIcon, RefreshCwIcon, CheckCircleIcon } from 'lucide-react'
+import { ExternalLinkIcon, RefreshCwIcon, CheckCircleIcon, AlertCircleIcon } from 'lucide-react'
 import { browserConfig } from '@repo/config/browser'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { UpdateDialog, useUpdateStatus } from '@/components/overlays/update-dialog'
 
-type UpdateState = 'idle' | 'checking' | 'no-update'
+type UpdateState = 'idle' | 'checking' | 'no-update' | 'has-update' | 'error'
 
 const techStack = [
   { label: '前端框架', value: 'React 19 + TypeScript' },
@@ -18,13 +19,26 @@ const techStack = [
 
 export function AboutPage(): ReactElement {
   const [updateState, setUpdateState] = useState<UpdateState>('idle')
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const { status, check, download, install } = useUpdateStatus()
 
-  function handleCheckUpdate(): void {
+  async function handleCheckUpdate(): Promise<void> {
     setUpdateState('checking')
-    // 占位：模拟检查更新
-    window.setTimeout(() => {
-      setUpdateState('no-update')
-    }, 800)
+    try {
+      // check() 返回最新状态，避免依赖异步 setState
+      const result = await check()
+      if (result.state === 'available' || result.state === 'downloaded') {
+        setUpdateState('has-update')
+        setDialogOpen(true)
+      } else if (result.state === 'error') {
+        setUpdateState('error')
+      } else {
+        setUpdateState('no-update')
+      }
+    } catch (err) {
+      setUpdateState('error')
+      console.error('[about-page] 检查更新失败:', err)
+    }
   }
 
   return (
@@ -36,7 +50,7 @@ export function AboutPage(): ReactElement {
 
       {/* ── 应用信息 ── */}
       <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center gap-4">
-        <div className="size-12 rounded-xl bg-accent text-[#15120a] flex items-center justify-center text-2xl font-extrabold shrink-0">
+        <div className="size-12 rounded-xl bg-accent text-accent-foreground flex items-center justify-center text-2xl font-extrabold shrink-0">
           π
         </div>
         <div className="flex-1 min-w-0">
@@ -44,7 +58,7 @@ export function AboutPage(): ReactElement {
             <span className="text-base font-[780]">{browserConfig.appName}</span>
             <Badge variant="secondary">v1.0.0</Badge>
           </div>
-          <p className="text-xs text-muted m-0 mt-0.5">
+          <p className="text-xs text-muted-foreground m-0 mt-0.5">
             基于 Pi SDK 的 AG-UI 桌面 Agent 助手
           </p>
         </div>
@@ -56,7 +70,7 @@ export function AboutPage(): ReactElement {
         <dl className="grid gap-1.5 m-0">
           {techStack.map((item) => (
             <div key={item.label} className="flex items-center justify-between gap-3 text-sm">
-              <dt className="text-muted">{item.label}</dt>
+              <dt className="text-muted-foreground">{item.label}</dt>
               <dd className="font-mono text-xs text-text m-0">{item.value}</dd>
             </div>
           ))}
@@ -67,7 +81,7 @@ export function AboutPage(): ReactElement {
       <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-[760] m-0">源代码</p>
-          <p className="text-xs text-muted m-0 mt-0.5">在 GitHub 上查看项目源码</p>
+          <p className="text-xs text-muted-foreground m-0 mt-0.5">在 GitHub 上查看项目源码</p>
         </div>
         <Button
           variant="outline"
@@ -90,25 +104,47 @@ export function AboutPage(): ReactElement {
       <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-[760] m-0">检查更新</p>
-          {updateState === 'no-update' ? (
+          {updateState === 'no-update' && (
             <p className="text-xs text-success flex items-center gap-1.5 m-0 mt-0.5">
               <CheckCircleIcon className="size-3.5" />
               暂无更新
             </p>
-          ) : (
-            <p className="text-xs text-muted m-0 mt-0.5">检查是否有新版本可用</p>
+          )}
+          {updateState === 'error' && (
+            <p className="text-xs text-danger flex items-center gap-1.5 m-0 mt-0.5">
+              <AlertCircleIcon className="size-3.5" />
+              检查更新失败
+            </p>
+          )}
+          {updateState === 'has-update' && (
+            <p className="text-xs text-accent flex items-center gap-1.5 m-0 mt-0.5">
+              <AlertCircleIcon className="size-3.5" />
+              发现新版本
+            </p>
+          )}
+          {(updateState === 'idle' || updateState === 'checking') && (
+            <p className="text-xs text-muted-foreground m-0 mt-0.5">检查是否有新版本可用</p>
           )}
         </div>
         <Button
           variant="secondary"
           size="sm"
-          onClick={handleCheckUpdate}
+          onClick={() => void handleCheckUpdate()}
           disabled={updateState === 'checking'}
         >
           <RefreshCwIcon className={`size-3.5 ${updateState === 'checking' ? 'animate-spin' : ''}`} />
           {updateState === 'checking' ? '检查中...' : '检查更新'}
         </Button>
       </div>
+
+      {/* ── 更新对话框 ── */}
+      <UpdateDialog
+        status={status}
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onDownload={() => void download()}
+        onInstall={() => void install()}
+      />
     </section>
   )
 }

@@ -1,20 +1,32 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bot, User } from 'lucide-react'
 import type { ChatMessage } from './types'
 import { ThinkingBlock } from './thinking-block'
 import { ToolCallCard } from './tool-call-card'
+import { FileAttachmentList } from './file-attachment'
 import { cn } from '@/lib/utils'
 
 export interface MessageBubbleProps {
   message: ChatMessage
 }
 
+/** 格式化时间戳为 HH:mm */
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** 用户头像显示文本：当前未接入用户资料，默认显示 MJ */
+function getUserInitials(): string {
+  return 'MJ'
+}
+
 /**
- * MessageBubble：单条消息气泡
+ * MessageBubble：单条消息气泡（Craft 风格）
  *
- * 用户消息右对齐，助手消息左对齐
- * 助手消息包含：思考块 + Markdown 内容 + 工具调用卡片
+ * - 助手消息左对齐：紫色头像 "C" + 名字 "Craft" + 浅灰/白色气泡
+ * - 用户消息右对齐：深色头像 "MJ" + 紫色气泡
+ * - 保留思考块、工具调用卡片、Markdown 渲染与文件附件
  */
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
@@ -23,77 +35,81 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const displayContent = message.streamingBuffer ?? message.content
 
   return (
-    <article
-      className={cn(
-        'flex items-start gap-3',
-        isUser ? 'flex-row-reverse' : 'flex-row',
-      )}
-    >
-      {/* 头像 */}
-      <div
-        className={cn(
-          'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
-          isUser
-            ? 'bg-primary text-primary-foreground'
-            : 'bg-muted text-muted-foreground',
-        )}
-      >
-        {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-      </div>
-
-      {/* 消息内容 */}
-      <div
-        className={cn(
-          'min-w-0 flex-1 space-y-2',
-          isUser ? 'items-end text-right' : 'items-start',
-        )}
-      >
-        {/* 思考块 */}
-        {!isUser && message.thinking && message.thinking.content && (
-          <ThinkingBlock
-            content={message.thinking.content}
-            isStreaming={message.thinking.isStreaming}
-          />
-        )}
-
-        {/* 工具调用卡片 */}
-        {!isUser && message.toolCalls.length > 0 && (
-          <div className="space-y-2">
-            {message.toolCalls.map((tc) => (
-              <ToolCallCard key={tc.toolCallId} toolCall={tc} />
-            ))}
-          </div>
-        )}
-
-        {/* 文本内容 */}
-        {displayContent ? (
+    <article className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
+      {isUser ? (
+        /* 用户消息：气泡 + 右侧头像 */
+        <div className="relative max-w-[70%] pr-9">
           <div
-            className={cn(
-              'inline-block rounded-lg px-4 py-2.5 text-sm',
-              isUser
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted text-foreground',
-            )}
+            className="flex size-7 items-center justify-center rounded-full bg-user-avatar-bg text-user-avatar-text text-[10px] font-semibold absolute top-0 right-0"
+            aria-label="用户头像"
           >
-            {isUser ? (
+            {getUserInitials()}
+          </div>
+
+          {/* 文件附件 */}
+          {message.attachments && message.attachments.length > 0 && (
+            <FileAttachmentList attachments={message.attachments} />
+          )}
+
+          {/* 文本气泡 */}
+          {displayContent ? (
+            <div className="rounded-[12px] bg-primary px-4 py-3.5 text-primary-foreground text-sm leading-relaxed break-words">
               <p className="whitespace-pre-wrap">{displayContent}</p>
-            ) : (
-              <div className="prose prose-sm dark:prose-invert max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {displayContent}
-                </ReactMarkdown>
+              {message.createdAt && (
+                <div className="mt-1.5 text-xs text-primary-foreground/80">
+                  {formatTimestamp(message.createdAt)}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        /* 助手消息：左侧头像 + Craft 名字 + 正文 */
+        <div className="flex items-start gap-3 max-w-[80%] min-w-0">
+          <div
+            className="flex size-6 items-center justify-center rounded-full bg-avatar-bg text-avatar-text text-[10px] font-semibold shrink-0"
+            aria-label="助手头像"
+          >
+            C
+          </div>
+          <div className="flex flex-col gap-2 min-w-0">
+            <span className="text-sm font-medium text-text">Craft</span>
+
+            {/* 思考块 */}
+            {message.thinking && message.thinking.content && (
+              <ThinkingBlock
+                content={message.thinking.content}
+                isStreaming={message.thinking.isStreaming}
+              />
+            )}
+
+            {/* 工具调用卡片 */}
+            {message.toolCalls.length > 0 && (
+              <div className="w-full min-w-0 space-y-1.5">
+                {message.toolCalls.map((tc) => (
+                  <ToolCallCard key={tc.toolCallId} toolCall={tc} />
+                ))}
+              </div>
+            )}
+
+            {/* 文本内容 */}
+            {displayContent ? (
+              <div className="text-sm text-text-secondary leading-[1.6] min-w-0 break-words">
+                <div className="prose prose-sm max-w-none prose-p:my-1.5 prose-headings:my-2 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-pre:my-2 prose-code:before:content-none prose-code:after:content-none prose-pre:overflow-x-auto prose-pre:max-w-full">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
+                </div>
+              </div>
+            ) : null}
+
+            {/* 错误标记 */}
+            {message.status === 'error' && message.error && (
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
+                {message.error}
               </div>
             )}
           </div>
-        ) : null}
-
-        {/* 错误标记 */}
-        {!isUser && message.status === 'error' && message.error && (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
-            {message.error}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </article>
   )
 }

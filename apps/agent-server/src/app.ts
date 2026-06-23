@@ -1,5 +1,4 @@
 import Fastify from 'fastify'
-import { nodeConfig } from '@repo/config/node'
 import { corsPlugin } from './plugins/cors.plugin.js'
 import { authPlugin } from './plugins/auth.plugin.js'
 import { rateLimitPlugin } from './plugins/rate-limit.plugin.js'
@@ -10,6 +9,9 @@ import { websocketSupportPlugin } from './plugins/websocket.plugin.js'
 import { piSdkPlugin } from './plugins/pi-sdk.plugin.js'
 import { usageLedgerPlugin } from './plugins/usage-ledger.plugin.js'
 import { memoryStorePlugin } from './plugins/memory-store.plugin.js'
+import { subagentPlugin } from './plugins/subagent-plugin.js'
+import { pluginLoaderPlugin } from './plugins/plugin-loader.plugin.js'
+import { cronPlugin } from './plugins/cron-plugin.js'
 import { healthRoute } from './routes/health.route.js'
 import { aguiRoute } from './routes/agui.route.js'
 import { copilotkitRoute } from './routes/copilotkit.route.js'
@@ -18,6 +20,14 @@ import { websocketRoute } from './routes/websocket.route.js'
 import { gateRoute } from './routes/gate.route.js'
 import { memoryRoute } from './routes/memory.route.js'
 import { usageRoute } from './routes/usage.route.js'
+import { providerRoute } from './routes/provider.route.js'
+import { sessionRoute } from './routes/session.route.js'
+import { settingsRoute } from './routes/settings.route.js'
+import { agentsRoute } from './routes/agents.route.js'
+import { pluginsRoute } from './routes/plugins.route.js'
+import { i18nRoute } from './routes/i18n.route.js'
+import { cronRoute } from './routes/cron.route.js'
+import { workspaceRoute } from './routes/workspace.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
@@ -64,25 +74,39 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       modelRegistry: app.modelRegistry,
       sessionManager: app.sessionManager,
       credentialBridge,
+      providerConfigStore: app.providerConfigStore,
       gate,
       confirmationManager,
       eventBus: app.eventBus,
+      getApiKey: app.getApiKey,
+      factStore: app.factStore,
       config: {
         cwd,
         dataDir,
-        llm: nodeConfig.llm,
       },
     })
   })
 
-  const piAgUiAgent = new PiAgUiAgent(sessionStore)
+  const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.eventBus)
 
   // 挂载到 Fastify 实例
   app.decorate('confirmationManager', confirmationManager)
   app.decorate('piAgUiAgent', piAgUiAgent)
   app.decorate('piSessionStore', sessionStore)
   app.decorate('gate', gate)
-  app.addHook('onClose', () => confirmationManager.dispose())
+  app.addHook('onClose', () => {
+    confirmationManager.dispose()
+    sessionStore.dispose()
+  })
+
+  // Subagent 协作插件（依赖 piSessionStore、eventBus、modelRegistry）
+  await app.register(subagentPlugin)
+
+  // 插件加载器（依赖 eventBus；扫描并加载所有插件，注册插件路由）
+  await app.register(pluginLoaderPlugin)
+
+  // Cron 调度器插件（依赖 eventBus）
+  await app.register(cronPlugin)
 
   // 路由
   await app.register(healthRoute)
@@ -91,8 +115,16 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(gateRoute)
   await app.register(memoryRoute)
   await app.register(usageRoute)
+  await app.register(providerRoute)
+  await app.register(sessionRoute)
+  await app.register(settingsRoute)
+  await app.register(agentsRoute)
+  await app.register(pluginsRoute)
   await app.register(aguiRoute)
   await app.register(copilotkitRoute)
+  await app.register(i18nRoute)
+  await app.register(cronRoute)
+  await app.register(workspaceRoute)
 
   return app
 }

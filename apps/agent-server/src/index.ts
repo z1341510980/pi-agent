@@ -23,6 +23,11 @@ try {
   app.log.info(`  Health:           http://${host}:${port}/api/health`)
   app.log.info(`  CopilotKit (弃用): http://${host}:${port}/copilotkit/*`)
 
+  // 全局兜底：防止未捕获的异常导致进程崩溃
+  process.on('uncaughtException', (err) => {
+    app.log.error({ err }, '未捕获的异常')
+  })
+
   // 优雅关闭
   const shutdown = async (signal: string) => {
     app.log.info(`收到 ${signal}，正在关闭...`)

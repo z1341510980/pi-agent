@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 import { getApi, putApi } from '../../api'
 
 /** 权限模式（与后端 Gate 保持一致） */
@@ -15,6 +16,8 @@ interface GateData {
 interface PermissionModeSwitchProps {
   /** 紧凑模式（用于状态栏） */
   compact?: boolean
+  /** 自定义 badge 样式类名（紧凑模式下生效） */
+  badgeClassName?: string
 }
 
 const MODE_META: Record<PermissionMode, { label: string; hint: string; badge?: 'default' | 'secondary' | 'destructive' }> = {
@@ -37,7 +40,7 @@ const MODE_META: Record<PermissionMode, { label: string; hint: string; badge?: '
 
 const MODE_ORDER: PermissionMode[] = ['auto', 'plan', 'readonly']
 
-export function PermissionModeSwitch({ compact = false }: PermissionModeSwitchProps): ReactElement {
+export function PermissionModeSwitch({ compact = false, badgeClassName }: PermissionModeSwitchProps): ReactElement {
   const queryClient = useQueryClient()
   const [optimisticMode, setOptimisticMode] = useState<PermissionMode | null>(null)
 
@@ -81,13 +84,12 @@ export function PermissionModeSwitch({ compact = false }: PermissionModeSwitchPr
         type="button"
         onClick={cycleMode}
         disabled={updateMutation.isPending || gateQuery.isLoading}
-        className="inline-flex items-center gap-1.5 bg-transparent border-0 text-muted text-xs cursor-pointer hover:text-text disabled:opacity-50 disabled:cursor-not-allowed"
+        className="inline-flex items-center gap-1.5 bg-transparent border-0 text-muted-foreground text-xs cursor-pointer hover:text-text disabled:opacity-50 disabled:cursor-not-allowed"
         title={meta.hint}
       >
-        <span>权限:</span>
         {meta.badge && (
-          <Badge variant={meta.badge} className="h-4 px-1.5 text-[10px]">
-            {meta.label}
+          <Badge variant={meta.badge} className={cn('h-4 px-1.5 text-[10px]', badgeClassName)}>
+            {currentMode === 'auto' ? 'Auto 模式' : meta.label}
           </Badge>
         )}
       </button>
@@ -120,7 +122,7 @@ export function PermissionModeSwitch({ compact = false }: PermissionModeSwitchPr
           )
         })}
       </div>
-      <p className="text-muted text-xs leading-snug m-0">{meta.hint}</p>
+      <p className="text-muted-foreground text-xs leading-snug m-0">{meta.hint}</p>
     </div>
   )
 }

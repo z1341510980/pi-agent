@@ -32,7 +32,7 @@ export const usageLedgerPlugin: FastifyPluginAsync = fp(async (app) => {
   // 监听 LLM 调用完成事件（保存引用以便清理）
   const onLlmCallComplete = (event: LlmCallCompleteEvent) => {
     try {
-      ledger.record({
+      const cost = ledger.record({
         sessionId: event.sessionId,
         threadId: event.threadId,
         model: event.model,
@@ -43,6 +43,11 @@ export const usageLedgerPlugin: FastifyPluginAsync = fp(async (app) => {
         cacheWriteTokens: event.cacheWriteTokens,
         durationMs: event.durationMs,
         agentId: event.agentId ?? 'default',
+      })
+      // 发射带 cost 的实时用量事件，供 websocket 推送
+      app.eventBus.emit('usage:recorded', {
+        ...event,
+        cost,
       })
     } catch (err) {
       log.error({ err }, '记录 LLM 用量失败')

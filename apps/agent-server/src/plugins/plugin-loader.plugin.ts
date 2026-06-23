@@ -1,0 +1,119 @@
+/**
+ * 插件加载器 Fastify 插件
+ *
+ * 职责：
+ * 1. 在 Fastify 启动时初始化 PluginManager
+ * 2. 扫描并加载所有插件
+ * 3. 将插件注册的路由集成到 Fastify
+ * 4. 通过 fastify.pluginManager 暴露 PluginManager 实例
+ * 5. 在 Fastify 关闭时调用 PluginManager.stop()
+ *
+ * 环境变量：
+ * - PI_PLUGINS_DIR：本地插件目录（绝对路径），未设置则不扫描
+ * - PI_PLUGINS_ENABLE_NPM：是否启用 npm 插件扫描（'true' / '1' 启用）
+ * - PI_PLUGINS_ENABLE_EXAMPLES：是否启用内置示例插件（'true' / '1' 启用，默认启用）
+ */
+
+import fp from 'fastify-plugin'
+import type { FastifyPluginAsync } from 'fastify'
+import { join } from 'node:path'
+import { createModuleLogger } from '../lib/logger.js'
+import { PluginManager } from '../core/plugin/plugin-manager.js'
+import { createHelloPlugin } from './examples/hello-plugin/index.js'
+
+export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
+  const log = createModuleLogger(app.log, 'plugin-loader')
+
+  // 解析配置
+  const localPluginsDir = process.env.PI_PLUGINS_DIR
+  const enableNpmPlugins =
+    process.env.PI_PLUGINS_ENABLE_NPM === 'true' || process.env.PI_PLUGINS_ENABLE_NPM === '1'
+  const enableExamples =
+    process.env.PI_PLUGINS_ENABLE_EXAMPLES !== 'false' &&
+    process.env.PI_PLUGINS_ENABLE_EXAMPLES !== '0'
+
+  // 准备内置插件列表
+  const builtinPlugins = enableExamples ? [{ plugin: createHelloPlugin() }] : []
+
+  log.info(
+    {
+      localPluginsDir: localPluginsDir ?? '(未配置)',
+      enableNpmPlugins,
+      enableExamples,
+      builtinCount: builtinPlugins.length,
+    },
+    '初始化插件系统',
+  )
+
+  // 创建 PluginManager
+  const manager = new PluginManager(log, app.eventBus, {
+    localPluginsDir,
+    enableNpmPlugins,
+    builtinPlugins,
+  })
+
+  // 初始化（扫描并加载插件）
+  await manager.init()
+
+  // 启动所有插件（调用 setup）
+  await manager.start()
+
+  // 将插件注册的路由集成到 Fastify
+  // 路由路径格式：/api/plugins/:pluginName + route.path
+  const routes = manager.getAllRoutes()
+  for (const { pluginName, route } of routes) {
+    const fullPath = `/api/plugins/${pluginName}${route.path}`
+    try {
+      // 根据方法调用对应的 Fastify 注册函数
+      const opts = { handler: route.handler }
+      switch (route.method) {
+        case 'GET':
+          app.get(fullPath, opts)
+          break
+        case 'POST':
+          app.post(fullPath, opts)
+          break
+        case 'PUT':
+          app.put(fullPath, opts)
+          break
+        case 'DELETE':
+          app.delete(fullPath, opts)
+          break
+        case 'PATCH':
+          app.patch(fullPath, opts)
+          break
+        default:
+          log.warn({ method: route.method, path: fullPath }, '不支持的路由方法，跳过')
+          continue
+      }
+      log.info({ method: route.method, path: fullPath }, '已注册插件路由')
+    } catch (err) {
+      log.error({ method: route.method, path: fullPath, err }, '注册插件路由失败')
+    }
+  }
+
+  // 暴露 PluginManager 到 Fastify 实例
+  app.decorate('pluginManager', manager)
+
+  // Fastify 关闭时停止所有插件
+  app.addHook('onClose', async () => {
+    log.info('正在停止插件系统')
+    await manager.stop()
+    log.info('插件系统已停止')
+  })
+
+  log.info(
+    {
+      totalPlugins: manager.list().length,
+      enabledPlugins: manager.list().filter((p) => p.status === 'enabled').length,
+      totalTools: manager.getAllTools().length,
+      totalRoutes: routes.length,
+    },
+    '插件系统初始化完成',
+  )
+})
+
+/** 工具函数：拼接插件数据目录路径（供插件使用） */
+export function getPluginDataDir(dataDir: string, pluginName: string): string {
+  return join(dataDir, 'plugins', pluginName)
+}

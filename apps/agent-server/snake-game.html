@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🐍 贪吃蛇</title>
+  <style>
+    /* ===== 全局重置 & 字体 ===== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #1a1a2e;
+      font-family: 'Segoe UI', 'PingFang SC', Roboto, system-ui, sans-serif;
+    }
+
+    /* ===== 游戏容器 ===== */
+    .game-wrapper {
+      background: linear-gradient(145deg, #16213e, #0f3460);
+      padding: 30px 40px 40px;
+      border-radius: 24px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+
+    /* ===== 顶部信息栏 ===== */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      color: #e0e0e0;
+    }
+    .title {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      background: linear-gradient(90deg, #53f0b2, #2dd4bf);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .score-board {
+      display: flex;
+      gap: 24px;
+      font-size: 16px;
+    }
+    .score-board span {
+      background: rgba(255,255,255,0.08);
+      padding: 4px 16px;
+      border-radius: 30px;
+      font-weight: 600;
+    }
+    .score-board .score-value { color: #53f0b2; }
+    .score-board .best-value  { color: #fbbf24; }
+
+    /* ===== 画布容器 ===== */
+    .canvas-container {
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
+    }
+    canvas {
+      display: block;
+      width: 480px;
+      height: 480px;
+      background: #0d1b2a;
+      image-rendering: pixelated;
+    }
+
+    /* ===== 覆盖层（开始 / 结束 / 暂停） ===== */
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      color: #fff;
+      transition: opacity 0.25s;
+      z-index: 10;
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; }
+
+    .overlay .emoji-icon { font-size: 56px; margin-bottom: 8px; }
+    .overlay h2 { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+    .overlay p  { font-size: 15px; color: #94a3b8; margin-bottom: 18px; }
+    .overlay .final-score { font-size: 18px; color: #53f0b2; margin-bottom: 4px; }
+
+    .btn {
+      padding: 10px 32px;
+      border: none;
+      border-radius: 40px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #2dd4bf, #0ea5e9);
+      color: #fff;
+      box-shadow: 0 4px 16px rgba(45, 212, 191, 0.35);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px) scale(1.03);
+      box-shadow: 0 6px 24px rgba(45, 212, 191, 0.5);
+    }
+    .btn-primary:active { transform: scale(0.96); }
+
+    /* ===== 底部控制提示 ===== */
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 14px;
+      color: #64748b;
+      font-size: 13px;
+    }
+    .footer kbd {
+      display: inline-block;
+      background: rgba(255,255,255,0.08);
+      padding: 1px 10px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 12px;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    /* ===== 移动端触控按钮 ===== */
+    .touch-controls {
+      display: none;
+      margin-top: 16px;
+      justify-content: center;
+    }
+    .touch-grid {
+      display: grid;
+      grid-template-columns: 64px 64px 64px;
+      grid-template-rows: 64px 64px;
+      gap: 6px;
+    }
+    .touch-grid button {
+      border: none;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.08);
+      color: #e0e0e0;
+      font-size: 26px;
+      cursor: pointer;
+      transition: background 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    .touch-grid button:active { background: rgba(255,255,255,0.18); }
+    .touch-grid .up    { grid-column: 2; }
+    .touch-grid .left  { grid-column: 1; grid-row: 2; }
+    .touch-grid .down  { grid-column: 2; grid-row: 2; }
+    .touch-grid .right { grid-column: 3; grid-row: 2; }
+
+    @media (max-width: 560px) {
+      .game-wrapper { padding: 16px; }
+      canvas { width: 100% !important; height: auto !important; aspect-ratio: 1/1; }
+      .touch-controls { display: flex; }
+      .header { flex-wrap: wrap; gap: 8px; }
+      .title { font-size: 18px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="game-wrapper">
+  <!-- 顶部 -->
+  <div class="header">
+    <div class="title">🐍 贪吃蛇</div>
+    <div class="score-board">
+      <span>得分 <span class="score-value" id="scoreDisplay">0</span></span>
+      <span>最高 <span class="best-value" id="bestDisplay">0</span></span>
+    </div>
+  </div>
+
+  <!-- 画布 -->
+  <div class="canvas-container">
+    <canvas id="gameCanvas" width="480" height="480"></canvas>
+
+    <!-- 开始覆盖层 -->
+    <div class="overlay" id="startOverlay">
+      <div class="emoji-icon">🐍</div>
+      <h2>贪吃蛇</h2>
+      <p>用方向键控制蛇移动，吃掉食物得分</p>
+      <button class="btn btn-primary" id="startBtn">开始游戏</button>
+    </div>
+
+    <!-- 结束覆盖层 -->
+    <div class="overlay hidden" id="gameOverOverlay">
+      <div class="emoji-icon">💀</div>
+      <h2>游戏结束</h2>
+      <div class="final-score" id="finalScore">得分：0</div>
+      <p id="finalBest">🏆 新纪录！</p>
+      <button class="btn btn-primary" id="restartBtn">再来一局</button>
+    </div>
+  </div>
+
+  <!-- 底部 -->
+  <div class="footer">
+    <span><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 或 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span>
+    <span><kbd>Space</kbd> 暂停</span>
+  </div>
+
+  <!-- 触控按钮 -->
+  <div class="touch-controls">
+    <div class="touch-grid">
+      <button class="up"    data-dir="up">⬆</button>
+      <button class="left"  data-dir="left">⬅</button>
+      <button class="down"  data-dir="down">⬇</button>
+      <button class="right" data-dir="right">➡</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    'use strict';
+
+    // ============================================================
+    //  常量
+    // ============================================================
+    const CANVAS_SIZE  = 480;
+    const GRID_SIZE    = 20;       // 20×20 网格
+    const CELL_SIZE    = CANVAS_SIZE / GRID_SIZE;  // 24px
+    const TICK_MS      = 150;      // 毫秒/帧
+
+    const DIR = {
+      UP:    { x:  0, y: -1 },
+      DOWN:  { x:  0, y:  1 },
+      LEFT:  { x: -1, y:  0 },
+      RIGHT: { x:  1, y:  0 },
+    };
+    const OPPOSITE = {
+      up:    'down',
+      down:  'up',
+      left:  'right',
+      right: 'left',
+    };
+
+    // ============================================================
+    //  DOM 引用
+    // ============================================================
+    const canvas       = document.getElementById('gameCanvas');
+    const ctx          = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const bestDisplay  = document.getElementById('bestDisplay');
+    const finalScore   = document.getElementById('finalScore');
+    const finalBestMsg = document.getElementById('finalBest');
+
+    const startOverlay   = document.getElementById('startOverlay');
+    const gameOverOverlay = document.getElementById('gameOverOverlay');
+    const startBtn       = document.getElementById('startBtn');
+    const restartBtn     = document.getElementById('restartBtn');
+
+    // ============================================================
+    //  状态
+    // ============================================================
+    let snake     = [];          // [{x,y}, …]  蛇身（头在第一个）
+    let food      = null;       // {x,y}
+    let direction = DIR.RIGHT;  // 当前移动方向向量
+    let nextDirection = null;   // 缓冲方向
+    let score     = 0;
+    let bestScore = 0;
+    let running   = false;      // 游戏是否进行中
+    let gameOver  = false;
+    let paused    = false;
+    let timerId   = null;
+
+    // 从 localStorage 读取最高分
+    try {
+      const saved = localStorage.getItem('snake_best');
+      if (saved) bestScore = parseInt(saved, 10) || 0;
+    } catch (_) { /* 无存储权限时不处理 */ }
+    bestDisplay.textContent = bestScore;
+
+    // ============================================================
+    //  核心逻辑
+    // ============================================================
+
+    /** 生成不与蛇身重叠的食物 */
+    function spawnFood() {
+      const occupied = new Set(snake.map(c => `${c.x},${c.y}`));
+      const free = [];
+      for (let x = 0; x < GRID_SIZE; x++) {
+        for (let y = 0; y < GRID_SIZE; y++) {
+          if (!occupied.has(`${x},${y}`)) free.push({ x, y });
+        }
+      }
+      if (free.length === 0) return null; // 全满 -> 胜利
+      return free[Math.floor(Math.random() * free.length)];
+    }
+
+    /** 重置游戏状态（不自动开始） */
+    function resetGame() {
+      // 蛇初始居中，长度 3
+      const mid = Math.floor(GRID_SIZE / 2);
+      snake = [
+        { x: mid,     y: mid },
+        { x: mid - 1, y: mid },
+        { x: mid - 2, y: mid },
+      ];
+      direction = DIR.RIGHT;
+      nextDirection = null;
+      score = 0;
+      gameOver = false;
+      paused = false;
+      food = spawnFood();
+      updateScoreUI();
+    }
+
+    /** 移动一步（返回是否存活） */
+    function step() {
+      if (paused || gameOver) return false;
+
+      // 采纳缓冲方向
+      if (nextDirection) {
+        direction = nextDirection;
+        nextDirection = null;
+      }
+
+      const head = snake[0];
+      const newHead = {
+        x: head.x + direction.x,
+        y: head.y + direction.y,
+      };
+
+      // ---- 穿墙 ----
+      if (newHead.x < 0) newHead.x = GRID_SIZE - 1;
+      else if (newHead.x >= GRID_SIZE) newHead.x = 0;
+      if (newHead.y < 0) newHead.y = GRID_SIZE - 1;
+      else if (newHead.y >= GRID_SIZE) newHead.y = 0;
+
+      // ---- 撞自身（注意：尾部会在吃不到食物时移除，所以先检查） ----
+      const willEat = food && newHead.x === food.x && newHead.y === food.y;
+      // 检查撞身：如果会吃到食物，尾部不移除，所以不能撞到尾部（最后一段）
+      // 否则尾部会移除，允许撞到尾部。
+      const bodyToCheck = willEat ? snake : snake.slice(0, -1);
+      for (const seg of bodyToCheck) {
+        if (seg.x === newHead.x && seg.y === newHead.y) {
+          return false; // 撞到
+        }
+      }
+
+      // ---- 移动蛇 ----
+      snake.unshift(newHead);
+
+      if (willEat) {
+        // 吃到了 → 不删尾部
+        score++;
+        updateScoreUI();
+        food = spawnFood();
+        if (!food) {
+          // 胜利！网格填满
+          gameOver = true;
+          showGameOver(true);
+          return false;
+        }
+      } else {
+        snake.pop();
+      }
+
+      return true;
+    }
+
+    // ============================================================
+    //  渲染
+    // ============================================================
+
+    function draw() {
+      ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+      // ---- 网格线（淡） ----
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= GRID_SIZE; i++) {
+        const p = i * CELL_SIZE;
+        ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, CANVAS_SIZE); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(CANVAS_SIZE, p); ctx.stroke();
+      }
+
+      // ---- 食物 ----
+      if (food) {
+        const fx = food.x * CELL_SIZE;
+        const fy = food.y * CELL_SIZE;
+        const pad = 2;
+        // 发光
+        ctx.shadowColor = '#53f0b2';
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = '#53f0b2';
+        ctx.beginPath();
+        ctx.arc(fx + CELL_SIZE/2, fy + CELL_SIZE/2, CELL_SIZE/2 - pad, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        // 高光
+        ctx.fillStyle = '#86f7d0';
+        ctx.beginPath();
+        ctx.arc(fx + CELL_SIZE/2 - 3, fy + CELL_SIZE/2 - 3, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ---- 蛇身 ----
+      snake.forEach((seg, i) => {
+        const sx = seg.x * CELL_SIZE;
+        const sy = seg.y * CELL_SIZE;
+        const r = i === 0 ? 5 : 4; // 头部稍微圆一点
+        const pad = i === 0 ? 1 : 2;
+
+        // 从绿到蓝渐变
+        const t = i / snake.length;
+        const rVal = Math.round(15 + t * 10);
+        const gVal = Math.round(200 - t * 60);
+        const bVal = Math.round(130 + t * 80);
+        ctx.fillStyle = `rgb(${rVal},${gVal},${bVal})`;
+        ctx.shadowColor = i === 0 ? 'rgba(83,240,178,0.35)' : 'transparent';
+        ctx.shadowBlur = i === 0 ? 10 : 0;
+
+        roundRect(ctx, sx + pad, sy + pad, CELL_SIZE - pad*2, CELL_SIZE - pad*2, r);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // 眼睛（头部）
+        if (i === 0) {
+          ctx.fillStyle = '#fff';
+          const eyeSize = 3.5;
+          let ex1, ey1, ex2, ey2;
+          if (direction === DIR.RIGHT) {
+            ex1 = sx + 16; ey1 = sy + 5;  ex2 = sx + 16; ey2 = sy + 14;
+          } else if (direction === DIR.LEFT) {
+            ex1 = sx + 5;  ey1 = sy + 5;  ex2 = sx + 5;  ey2 = sy + 14;
+          } else if (direction === DIR.UP) {
+            ex1 = sx + 5;  ey1 = sy + 5;  ex2 = sx + 14; ey2 = sy + 5;
+          } else {
+            ex1 = sx + 5;  ey1 = sy + 16; ex2 = sx + 14; ey2 = sy + 16;
+          }
+          ctx.beginPath(); ctx.arc(ex1, ey1, eyeSize, 0, Math.PI*2); ctx.fill();
+          ctx.beginPath(); ctx.arc(ex2, ey2, eyeSize, 0, Math.PI*2); ctx.fill();
+          // 瞳孔
+          ctx.fillStyle = '#111';
+          ctx.beginPath(); ctx.arc(ex1, ey1, 1.5, 0, Math.PI*2); ctx.fill();
+          ctx.beginPath(); ctx.arc(ex2, ey2, 1.5, 0, Math.PI*2); ctx.fill();
+        }
+      });
+    }
+
+    /** 圆角矩形辅助 */
+    function roundRect(c, x, y, w, h, r) {
+      r = Math.min(r, w/2, h/2);
+      c.beginPath();
+      c.moveTo(x + r, y);
+      c.lineTo(x + w - r, y);
+      c.quadraticCurveTo(x + w, y, x + w, y + r);
+      c.lineTo(x + w, y + h - r);
+      c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      c.lineTo(x + r, y + h);
+      c.quadraticCurveTo(x, y + h, x, y + h - r);
+      c.lineTo(x, y + r);
+      c.quadraticCurveTo(x, y, x + r, y);
+      c.closePath();
+    }
+
+    // ============================================================
+    //  UI 更新
+    // ============================================================
+
+    function updateScoreUI() {
+      scoreDisplay.textContent = score;
+      if (score > bestScore) {
+        bestScore = score;
+        bestDisplay.textContent = bestScore;
+        try { localStorage.setItem('snake_best', String(bestScore)); } catch (_) {}
+      }
+    }
+
+    function showGameOver(isWin) {
+      gameOver = true;
+      running = false;
+      if (timerId) { clearInterval(timerId); timerId = null; }
+      const emoji = isWin ? '🏆' : '💀';
+      const title = isWin ? '你赢了！' : '游戏结束';
+      document.querySelector('#gameOverOverlay .emoji-icon').textContent = emoji;
+      document.querySelector('#gameOverOverlay h2').textContent = title;
+      finalScore.textContent = `得分：${score}`;
+      const isNewRecord = score >= bestScore && score > 0;
+      finalBestMsg.textContent = isNewRecord ? '🏆 新纪录！' : `最高记录：${bestScore}`;
+      gameOverOverlay.classList.remove('hidden');
+    }
+
+    function hideAllOverlays() {
+      startOverlay.classList.add('hidden');
+      gameOverOverlay.classList.add('hidden');
+    }
+
+    // ============================================================
+    //  游戏循环
+    // ============================================================
+
+    function gameLoop() {
+      if (gameOver) return;
+      const alive = step();
+      draw();
+      if (!alive && !gameOver) {
+        showGameOver(false);
+      }
+    }
+
+    function startLoop() {
+      if (timerId) clearInterval(timerId);
+      timerId = setInterval(gameLoop, TICK_MS);
+    }
+
+    // ============================================================
+    //  开始 / 重新开始
+    // ============================================================
+
+    function startGame() {
+      resetGame();
+      hideAllOverlays();
+      running = true;
+      gameOver = false;
+      draw();
+      startLoop();
+    }
+
+    // ============================================================
+    //  键盘控制
+    // ============================================================
+
+    function handleKey(e) {
+      const key = e.key;
+      // 防止页面滚动
+      if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(key)) {
+        e.preventDefault();
+      }
+
+      // 空格 → 暂停切换
+      if (key === ' ') {
+        if (!running || gameOver) return;
+        paused = !paused;
+        return;
+      }
+
+      // 方向映射
+      let map = null;
+      if (key === 'ArrowUp'    || key === 'w' || key === 'W') map = 'up';
+      else if (key === 'ArrowDown'  || key === 's' || key === 'S') map = 'down';
+      else if (key === 'ArrowLeft'  || key === 'a' || key === 'A') map = 'left';
+      else if (key === 'ArrowRight' || key === 'd' || key === 'D') map = 'right';
+      else return;
+
+      if (!running || gameOver || paused) return;
+
+      // 不允许原地掉头
+      const newDir = DIR[map.toUpperCase()];
+      if (newDir.x + direction.x === 0 && newDir.y + direction.y === 0) return;
+      nextDirection = newDir;
+    }
+
+    // ============================================================
+    //  触控
+    // ============================================================
+
+    document.querySelectorAll('.touch-grid button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const dir = btn.dataset.dir;
+        if (!running || gameOver || paused) return;
+        const newDir = DIR[dir.toUpperCase()];
+        if (newDir.x + direction.x === 0 && newDir.y + direction.y === 0) return;
+        nextDirection = newDir;
+      });
+    });
+
+    // 触摸滑动支持
+    let touchStartX = 0, touchStartY = 0;
+    canvas.addEventListener('touchstart', (e) => {
+      const t = e.changedTouches[0];
+      touchStartX = t.clientX;
+      touchStartY = t.clientY;
+    }, { passive: true });
+    canvas.addEventListener('touchend', (e) => {
+      if (!running || gameOver || paused) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - touchStartX;
+      const dy = t.clientY - touchStartY;
+      const absDx = Math.abs(dx), absDy = Math.abs(dy);
+      if (Math.max(absDx, absDy) < 15) return; // 太短忽略
+      let map;
+      if (absDx > absDy) {
+        map = dx > 0 ? 'right' : 'left';
+      } else {
+        map = dy > 0 ? 'down' : 'up';
+      }
+      const newDir = DIR[map.toUpperCase()];
+      if (newDir.x + direction.x === 0 && newDir.y + direction.y === 0) return;
+      nextDirection = newDir;
+    }, { passive: true });
+
+    // ============================================================
+    //  事件绑定
+    // ============================================================
+
+    document.addEventListener('keydown', handleKey);
+
+    startBtn.addEventListener('click', startGame);
+    restartBtn.addEventListener('click', startGame);
+
+    // 失焦时自动暂停（可选）
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && running && !gameOver) paused = true;
+    });
+
+    // ============================================================
+    //  初始画面
+    // ============================================================
+
+    resetGame();
+    draw();
+
+  })();
+</script>
+</body>
+</html>

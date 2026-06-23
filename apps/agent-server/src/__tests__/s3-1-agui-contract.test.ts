@@ -52,7 +52,7 @@ function createMockSession(
 function createAgentWithMockSession(mockSessionReturn: any) {
   const store = new PiSessionStore()
   store.setSessionFactory(async () => mockSessionReturn)
-  const agent = new PiAgUiAgent(store)
+  const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, { list: () => [] } as any)
   return { store, agent }
 }
 
@@ -508,7 +508,7 @@ describe('S3-1 并发契约', () => {
     const { session } = createMockSession()
     const store = new PiSessionStore()
     store.setSessionFactory(async (threadId) => ({ ...session, threadId }))
-    const agent = new PiAgUiAgent(store)
+    const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, { list: () => [] } as any)
 
     const events1: BaseEvent[] = []
     const events2: BaseEvent[] = []

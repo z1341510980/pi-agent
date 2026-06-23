@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
+import { motion } from 'framer-motion'
 import {
   Dialog,
   DialogContent,
@@ -89,66 +90,73 @@ export function ConfirmationDialog({ request, onRespond }: ConfirmationDialogPro
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent showCloseButton={false} className="sm:max-w-md">
-        <DialogHeader>
-          <div className="flex items-center gap-2">
-            <DialogTitle>工具执行确认</DialogTitle>
-            <Badge variant={risk.variant}>{risk.label}</Badge>
-          </div>
-          <DialogDescription>
-            Agent 请求执行一个需要确认的工具。请审查后选择批准或拒绝。
-          </DialogDescription>
-        </DialogHeader>
-
-        {request && (
-          <div className="grid gap-3">
-            <div className="grid gap-1">
-              <span className="text-subtle text-xs font-[760]">工具</span>
-              <code className="bg-surface-2 border border-border rounded-md px-2 py-1 text-sm font-mono break-anywhere">
-                {toolName}
-              </code>
+        {/* 从顶部滑入动画（250ms） */}
+        <motion.div
+          initial={{ y: -20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+        >
+          <DialogHeader>
+            <div className="flex items-center gap-2">
+              <DialogTitle>工具执行确认</DialogTitle>
+              <Badge variant={risk.variant}>{risk.label}</Badge>
             </div>
+            <DialogDescription>
+              Agent 请求执行一个需要确认的工具。请审查后选择批准或拒绝。
+            </DialogDescription>
+          </DialogHeader>
 
-            <div className="grid gap-1">
-              <span className="text-subtle text-xs font-[760]">原因</span>
-              <p className="text-sm m-0">{request.reason}</p>
-            </div>
-
-            {argsText && (
+          {request && (
+            <div className="grid gap-3">
               <div className="grid gap-1">
-                <span className="text-subtle text-xs font-[760]">参数</span>
-                <pre className="bg-surface-2 border border-border rounded-md px-2 py-1.5 text-xs font-mono whitespace-pre-wrap break-anywhere max-h-40 overflow-auto m-0">
-                  {argsText}
-                </pre>
+                <span className="text-subtle text-xs font-[760]">工具</span>
+                <code className="bg-surface-2 border border-border rounded-md px-2 py-1 text-sm font-mono break-anywhere">
+                  {toolName}
+                </code>
               </div>
-            )}
 
-            {risk.variant === 'destructive' && (
-              <Alert variant="destructive">
-                <AlertTitle>危险操作</AlertTitle>
-                <AlertDescription>
-                  该工具可能执行不可逆的副作用（如运行 shell 命令、删除文件、产生 API 费用）。请仔细核对参数后再批准。
-                </AlertDescription>
-              </Alert>
-            )}
-          </div>
-        )}
+              <div className="grid gap-1">
+                <span className="text-subtle text-xs font-[760]">原因</span>
+                <p className="text-sm m-0">{request.reason}</p>
+              </div>
 
-        <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => handleRespond(false)}
-            disabled={responding}
-          >
-            拒绝
-          </Button>
-          <Button
-            variant={risk.variant === 'destructive' ? 'destructive' : 'default'}
-            onClick={() => handleRespond(true)}
-            disabled={responding}
-          >
-            {responding ? '处理中…' : '批准执行'}
-          </Button>
-        </DialogFooter>
+              {argsText && (
+                <div className="grid gap-1">
+                  <span className="text-subtle text-xs font-[760]">参数</span>
+                  <pre className="bg-surface-2 border border-border rounded-md px-2 py-1.5 text-xs font-mono whitespace-pre-wrap break-anywhere max-h-40 overflow-auto m-0">
+                    {argsText}
+                  </pre>
+                </div>
+              )}
+
+              {risk.variant === 'destructive' && (
+                <Alert variant="destructive">
+                  <AlertTitle>危险操作</AlertTitle>
+                  <AlertDescription>
+                    该工具可能执行不可逆的副作用（如运行 shell 命令、删除文件、产生 API 费用）。请仔细核对参数后再批准。
+                  </AlertDescription>
+                </Alert>
+              )}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => handleRespond(false)}
+              disabled={responding}
+            >
+              拒绝
+            </Button>
+            <Button
+              variant={risk.variant === 'destructive' ? 'destructive' : 'default'}
+              onClick={() => handleRespond(true)}
+              disabled={responding}
+            >
+              {responding ? '处理中…' : '批准执行'}
+            </Button>
+          </DialogFooter>
+        </motion.div>
       </DialogContent>
     </Dialog>
   )

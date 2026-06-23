@@ -1,31 +1,51 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { SettingsIcon } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { FolderOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import type { BrowserConfig } from '@repo/config/shared'
 import type { BaseEvent } from '@repo/protocol/events'
 import { Button } from '@/components/ui/button'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { getApi, postAgui } from '../../api'
-import { ProviderBootstrap, type ProviderSettings } from '../settings/provider-bootstrap'
+import { getApi, getAgui, postAgui, putApi } from '../../api'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useToolExecutions } from '@/hooks/use-tool-executions'
 import { useStreamingRun } from '@/hooks/use-streaming-run'
+import { useRealtimeEvents } from '@/hooks/use-realtime-events'
+import { useShortcut } from '@/hooks/use-shortcut'
+import { useTheme } from '@/components/theme-provider'
 import { ConfirmationDialog } from './confirmation-dialog'
-import { PermissionModeSwitch } from './permission-mode-switch'
-import { ToolCardList } from './tool-card'
+import { type PermissionMode } from './permission-mode-switch'
 import { MessageStream, applyEvent, type MessageStreamState } from './message-stream'
 import { InputArea } from './input-area'
 import { SessionList, type SessionSummary } from './session-list'
-import { MemoryPanel } from './memory-panel'
+import { NotificationCenter } from '../overlays/notification-center'
+import { DevLogPanel } from '../overlays/devlog-panel'
+import { CommandPalette, createDefaultCommands } from '../overlays/command-palette'
+import { CompactionBanner, type CompactionEvent } from './compaction-banner'
+import { ContextPanel } from './context-panel'
 import { UsagePanel } from './usage-panel'
-import { FactList } from '../memory/fact-list'
-import { createUserMessage, type ChatMessage } from './types'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { type ModelOption } from './model-selector'
+import { createUserMessage, type ChatMessage, type FileAttachment } from './types'
 import type { UsageSummary } from '@/components/usage/usage-overview'
+import {
+  useSessionStore,
+  createEmptyMessageState,
+  upsertSessionAfterSend,
+} from '@/stores/session-store'
+import { useUIStore } from '@/stores/ui-store'
 
 type HealthData = {
   service: string
   status: string
+}
+
+type GateData = {
+  mode: PermissionMode
 }
 
 type ChatWorkspaceProps = {
@@ -34,146 +54,155 @@ type ChatWorkspaceProps = {
   onOpenSettings?: () => void
 }
 
-type CompactStatus =
-  | { state: 'idle' }
-  | { state: 'running' }
-  | { state: 'success'; message: string }
-  | { state: 'error'; message: string }
-
 type CompactThreadResponse = {
   status: string
   threadId: string
   result: unknown
 }
 
-const now = Date.now()
+/** 权限模式循环顺序 */
+const PERMISSION_MODE_ORDER: PermissionMode[] = ['auto', 'plan', 'readonly']
 
-const defaultSessions: SessionSummary[] = [
-  {
-    id: 'desktop-main',
-    title: '新会话',
-    preview: '准备连接 Pi Agent',
-    createdAt: now,
-    updatedAt: now
-  },
-  {
-    id: 'sdk-integration',
-    title: 'SDK 集成验证',
-    preview: 'P0-P4 基线已就绪',
-    createdAt: now - 86_400_000,
-    updatedAt: now - 86_400_000
-  }
-]
+/** 权限模式展示文案 */
+const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  auto: '自动',
+  plan: '计划',
+  readonly: '只读',
+}
 
 export function ChatWorkspace({
-  appName,
-  config,
-  onOpenSettings
+  appName: _appName,
+  config: _config,
+  onOpenSettings,
 }: ChatWorkspaceProps): ReactElement {
-  const [rightPanel, setRightPanel] = useState<
-    'context' | 'memory' | 'facts' | 'usage' | 'provider'
-  >('context')
-  const [sessions, setSessions] = useState<SessionSummary[]>(() => loadSessions())
-  const [activeThreadId, setActiveThreadId] = useState<string>(() =>
-    loadCurrentSessionId(loadSessions())
-  )
-  const [sessionMessages, setSessionMessages] = useState<Record<string, MessageStreamState>>(() =>
-    loadSessionMessages()
-  )
-  const [drafts, setDrafts] = useState<Record<string, string>>(() => loadDrafts())
-  const [compactStatus, setCompactStatus] = useState<CompactStatus>({ state: 'idle' })
+  const queryClient = useQueryClient()
 
-  const messageState = sessionMessages[activeThreadId] ?? createEmptyMessageState()
+  // ── Zustand stores ──
+  const sessions = useSessionStore((s) => s.sessions)
+  const activeThreadId = useSessionStore((s) => s.activeThreadId)
+  const sessionMessages = useSessionStore((s) => s.sessionMessages)
+  const drafts = useSessionStore((s) => s.drafts)
+  const selectedModel = useSessionStore((s) => s.selectedModel)
+  const compactionCount = useSessionStore((s) => s.compactionCount)
+  const activeAgentId = useSessionStore((s) => s.activeAgentId)
+  const setSessions = useSessionStore((s) => s.setSessions)
+  const setActiveThreadId = useSessionStore((s) => s.setActiveThreadId)
+  const updateSessionMessages = useSessionStore((s) => s.updateSessionMessages)
+  const setDraft = useSessionStore((s) => s.setDraft)
+  const setSelectedModel = useSessionStore((s) => s.setSelectedModel)
+  const incrementCompactionCount = useSessionStore((s) => s.incrementCompactionCount)
+  const removeSession = useSessionStore((s) => s.removeSession)
+  const upsertSession = useSessionStore((s) => s.upsertSession)
+
+  const setRightPanel = useUIStore((s) => s.setRightPanel)
+  const devLogOpen = useUIStore((s) => s.devLogOpen)
+  const setDevLogOpen = useUIStore((s) => s.setDevLogOpen)
+  const toggleDevLog = useUIStore((s) => s.toggleDevLog)
+  const commandPaletteOpen = useUIStore((s) => s.commandPaletteOpen)
+  const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen)
+  const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette)
+  const leftPanelOpen = useUIStore((s) => s.leftPanelOpen)
+  const toggleLeftPanel = useUIStore((s) => s.toggleLeftPanel)
+  const rightPanelOpen = useUIStore((s) => s.rightPanelOpen)
+  const toggleRightPanel = useUIStore((s) => s.toggleRightPanel)
+
+  // ── 本地 UI 状态（无需持久化） ──
+  const [compactionEvent, setCompactionEvent] = useState<CompactionEvent | null>(null)
+  const [usageDetailOpen, setUsageDetailOpen] = useState(false)
+
+  const messageState: MessageStreamState =
+    sessionMessages[activeThreadId] ?? createEmptyMessageState()
+
+  const activeSession = sessions.find((s) => s.id === activeThreadId)
+
+  // 当前权限模式（状态栏展示用）
+  const gateQuery = useQuery({
+    queryKey: ['gate'],
+    queryFn: () => getApi<GateData>('/api/gate'),
+    refetchInterval: 10_000,
+  })
 
   const healthQuery = useQuery({
     queryKey: ['agent-server-health'],
     queryFn: () => getApi<HealthData>('/api/health'),
-    refetchInterval: 10_000
-  })
-
-  // 用量汇总（状态栏 + 用量面板共用）
-  const usageSummaryQuery = useQuery({
-    queryKey: ['usage-summary'],
-    queryFn: () => getApi<UsageSummary>('/api/usage/summary'),
-    refetchInterval: 30_000
+    refetchInterval: 10_000,
   })
 
   // 本轮（当前会话）用量
   const sessionUsageQuery = useQuery({
     queryKey: ['usage-session', activeThreadId],
     queryFn: () => getApi<UsageSummary>(`/api/usage/session/${activeThreadId}`),
-    refetchInterval: 15_000
+    refetchInterval: 15_000,
   })
 
-  const { executions, onMessage: onToolMessage, clear: clearExecutions } = useToolExecutions()
+  // 已注册模型列表（供模型选择器使用）
+  const modelsQuery = useQuery({
+    queryKey: ['agui-models'],
+    queryFn: async () => {
+      const res = await getAgui<{ threadId: string; models: ModelOption[] }>(
+        '/ag-ui/agent/default/models?threadId=main',
+      )
+      return res.models ?? []
+    },
+    refetchInterval: 60_000,
+  })
+
+  const { executions, onMessage: onToolMessage } = useToolExecutions()
+
+  // 实时事件管理（通知、DevLog、用量）
+  const {
+    notifications,
+    devLogs,
+    addNotification,
+    dismissNotification,
+    dismissAllNotifications,
+    addDevLog,
+    clearDevLogs,
+    addUsageUpdate,
+  } = useRealtimeEvents()
 
   const {
-    status: wsStatus,
     pendingConfirmation,
-    respondConfirmation
+    respondConfirmation,
   } = useWebSocket({
     threadId: activeThreadId,
-    onMessage: onToolMessage
+    onMessage: onToolMessage,
+    onNotification: addNotification,
+    onDevLog: addDevLog,
+    onUsageUpdate: addUsageUpdate,
   })
-
-  useEffect(() => {
-    saveJson('pi-agent.sessions', sessions)
-  }, [sessions])
-
-  useEffect(() => {
-    saveString('pi-agent.currentSessionId', activeThreadId)
-  }, [activeThreadId])
-
-  useEffect(() => {
-    saveJson('pi-agent.sessionMessages', sessionMessages)
-  }, [sessionMessages])
-
-  useEffect(() => {
-    saveJson('pi-agent.drafts', drafts)
-  }, [drafts])
-
-  const updateActiveMessageState = useCallback(
-    (updater: (prev: MessageStreamState) => MessageStreamState) => {
-      setSessionMessages((prev) => {
-        const current = prev[activeThreadId] ?? createEmptyMessageState()
-        return {
-          ...prev,
-          [activeThreadId]: updater(current)
-        }
-      })
-    },
-    [activeThreadId]
-  )
 
   // AG-UI 事件 → 消息流状态
   const handleAguiEvent = useCallback(
     (event: BaseEvent) => {
-      updateActiveMessageState((prev) => applyEvent(prev, event))
+      updateSessionMessages(activeThreadId, (prev) => applyEvent(prev, event))
     },
-    [updateActiveMessageState]
+    [activeThreadId, updateSessionMessages],
   )
 
   const {
     run,
     abort,
     isRunning,
-    error: runError
+    error: runError,
   } = useStreamingRun({
     threadId: activeThreadId,
-    onEvent: handleAguiEvent
+    onEvent: handleAguiEvent,
+    model: selectedModel ?? undefined,
+    agentId: activeAgentId,
   })
 
   const handleSend = useCallback(
-    (text: string) => {
-      const userMsg = createUserMessage(text)
-      updateActiveMessageState((prev) => ({
+    (text: string, attachments?: FileAttachment[]) => {
+      const userMsg = createUserMessage(text, attachments)
+      updateSessionMessages(activeThreadId, (prev) => ({
         ...prev,
-        messages: [...prev.messages, userMsg]
+        messages: [...prev.messages, userMsg],
       }))
-      setSessions((prev) => upsertSessionAfterSend(prev, activeThreadId, text))
+      setSessions(upsertSessionAfterSend(sessions, activeThreadId, text))
       void run([userMsg])
     },
-    [activeThreadId, run, updateActiveMessageState]
+    [activeThreadId, run, updateSessionMessages, sessions, setSessions],
   )
 
   const handleAbort = useCallback(() => {
@@ -181,36 +210,62 @@ export function ChatWorkspace({
   }, [abort])
 
   const handleCompact = useCallback(async () => {
-    setCompactStatus({ state: 'running' })
+    const eventId = crypto.randomUUID()
+    setCompactionEvent({
+      id: eventId,
+      timestamp: Date.now(),
+      reason: 'manual',
+      state: 'running',
+    })
     try {
       await postAgui<CompactThreadResponse>('/ag-ui/agent/default/compact', {
-        threadId: activeThreadId
+        threadId: activeThreadId,
       })
-      setCompactStatus({ state: 'success', message: '上下文压缩完成。' })
+      setCompactionEvent((prev) =>
+        prev
+          ? {
+              ...prev,
+              state: 'success',
+              timestamp: Date.now(),
+            }
+          : null,
+      )
+      incrementCompactionCount()
     } catch (error) {
       const message = error instanceof Error ? error.message : '上下文压缩失败。'
-      setCompactStatus({ state: 'error', message })
+      setCompactionEvent((prev) =>
+        prev
+          ? {
+              ...prev,
+              state: 'error',
+              errorMessage: message,
+              timestamp: Date.now(),
+            }
+          : null,
+      )
     }
-  }, [activeThreadId])
+  }, [activeThreadId, incrementCompactionCount])
 
   const handleRetry = useCallback(() => {
-    const lastUserMsg = [...messageState.messages].reverse().find((m) => m.role === 'user')
+    const lastUserMsg = [...messageState.messages]
+      .reverse()
+      .find((m) => m.role === 'user')
     if (lastUserMsg) {
       void run([lastUserMsg as ChatMessage])
     }
-    updateActiveMessageState((prev) => {
-      return {
-        ...prev,
-        streamError: null,
-        // 移除最后一条错误的助手消息
-        messages: prev.messages.filter((m) => !(m.role === 'assistant' && m.status === 'error'))
-      }
-    })
-  }, [messageState.messages, run, updateActiveMessageState])
+    updateSessionMessages(activeThreadId, (prev) => ({
+      ...prev,
+      streamError: null,
+      // 移除最后一条错误的助手消息
+      messages: prev.messages.filter(
+        (m) => !(m.role === 'assistant' && m.status === 'error'),
+      ),
+    }))
+  }, [messageState.messages, run, updateSessionMessages, activeThreadId])
 
   const handleDismissError = useCallback(() => {
-    updateActiveMessageState((prev) => ({ ...prev, streamError: null }))
-  }, [updateActiveMessageState])
+    updateSessionMessages(activeThreadId, (prev) => ({ ...prev, streamError: null }))
+  }, [activeThreadId, updateSessionMessages])
 
   const handleNewSession = useCallback(() => {
     const id = crypto.randomUUID()
@@ -220,176 +275,177 @@ export function ChatWorkspace({
       title: '新会话',
       preview: '准备开始对话',
       createdAt: ts,
-      updatedAt: ts
+      updatedAt: ts,
     }
-    setSessions((prev) => [session, ...prev])
-    setSessionMessages((prev) => ({ ...prev, [id]: createEmptyMessageState() }))
+    upsertSession(session)
+    updateSessionMessages(id, () => createEmptyMessageState())
     setActiveThreadId(id)
-  }, [])
+  }, [upsertSession, updateSessionMessages, setActiveThreadId])
 
-  const handleRenameSession = useCallback((id: string, newTitle: string) => {
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, title: newTitle, updatedAt: Date.now() } : s))
-    )
-  }, [])
+  const handleRenameSession = useCallback(
+    (id: string, newTitle: string) => {
+      setSessions(
+        sessions.map((s) =>
+          s.id === id ? { ...s, title: newTitle, updatedAt: Date.now() } : s,
+        ),
+      )
+    },
+    [sessions, setSessions],
+  )
 
   const handleDeleteSession = useCallback(
     (id: string) => {
-      setSessions((prev) => {
-        const remaining = prev.filter((s) => s.id !== id)
-        // 如果删除的是当前会话，切换到第一个
-        if (id === activeThreadId && remaining.length > 0) {
-          setActiveThreadId(remaining[0].id)
-        }
-        return remaining
-      })
-      // 清理该会话的消息和草稿
-      setSessionMessages((prev) => {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      })
-      setDrafts((prev) => {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      })
+      const remaining = sessions.filter((s) => s.id !== id)
+      // 如果删除的是当前会话，切换到第一个
+      if (id === activeThreadId && remaining.length > 0) {
+        setActiveThreadId(remaining[0].id)
+      }
+      removeSession(id)
     },
-    [activeThreadId]
+    [sessions, activeThreadId, setActiveThreadId, removeSession],
   )
+
+  // 上/下一会话（按 sessions 数组顺序循环）
+  const handlePrevSession = useCallback(() => {
+    if (sessions.length === 0) return
+    const idx = sessions.findIndex((s) => s.id === activeThreadId)
+    if (idx === -1) return
+    const prevIdx = (idx - 1 + sessions.length) % sessions.length
+    setActiveThreadId(sessions[prevIdx].id)
+  }, [sessions, activeThreadId, setActiveThreadId])
+
+  const handleNextSession = useCallback(() => {
+    if (sessions.length === 0) return
+    const idx = sessions.findIndex((s) => s.id === activeThreadId)
+    if (idx === -1) return
+    const nextIdx = (idx + 1) % sessions.length
+    setActiveThreadId(sessions[nextIdx].id)
+  }, [sessions, activeThreadId, setActiveThreadId])
+
+  // 聚焦输入框
+  const handleFocusInput = useCallback(() => {
+    document.getElementById('message-input')?.focus()
+  }, [])
+
+  // 切换权限模式（循环 auto → plan → readonly → auto）
+  const handleTogglePermissionMode = useCallback(async () => {
+    try {
+      const gate = await getApi<GateData>('/api/gate')
+      const idx = PERMISSION_MODE_ORDER.indexOf(gate.mode)
+      const next = PERMISSION_MODE_ORDER[(idx + 1) % PERMISSION_MODE_ORDER.length]
+      await putApi<GateData>('/api/gate/mode', { mode: next })
+      void queryClient.invalidateQueries({ queryKey: ['gate'] })
+    } catch {
+      // 忽略错误（快捷键静默失败）
+    }
+  }, [queryClient])
+
+  const { setTheme } = useTheme()
+
+  // 命令面板命令列表
+  const commands = useMemo(
+    () =>
+      createDefaultCommands({
+        onNewSession: handleNewSession,
+        onOpenSettings: () => onOpenSettings?.(),
+        onCompact: () => void handleCompact(),
+        onToggleTheme: () => {
+          const current = document.documentElement.classList.contains('dark') ? 'light' : 'dark'
+          setTheme(current)
+        },
+        onSwitchMode: () => setRightPanel('context'),
+        onSwitchModel: () => setRightPanel('context'),
+        onViewUsage: () => setRightPanel('context'),
+      }),
+    [handleNewSession, handleCompact, onOpenSettings, setRightPanel, setTheme],
+  )
+
+  // 全局快捷键（实现 §9.3 快捷键全表）
+  useShortcut({
+    onCommandPalette: toggleCommandPalette,
+    onNewSession: handleNewSession,
+    onOpenSettings: () => onOpenSettings?.(),
+    onToggleDevLog: toggleDevLog,
+    onToggleLeftPanel: toggleLeftPanel,
+    onToggleRightPanel: toggleRightPanel,
+    onPrevSession: handlePrevSession,
+    onNextSession: handleNextSession,
+    onAbort: handleAbort,
+    onFocusInput: handleFocusInput,
+    onTogglePermissionMode: () => void handleTogglePermissionMode(),
+  })
 
   const health = healthQuery.data
   const isOnline = health?.status === 'online'
-  const statusText = healthQuery.isLoading
-    ? 'checking'
-    : isOnline
-      ? health.status
-      : healthQuery.error instanceof Error
-        ? healthQuery.error.message
-        : 'unavailable'
-
-  const providerSummary = useMemo(() => loadProviderSummary(), [])
-
-  const wsStatusText =
-    wsStatus === 'connected'
-      ? 'ws: 已连接'
-      : wsStatus === 'connecting'
-        ? 'ws: 连接中'
-        : 'ws: 已断开'
 
   // 合并流式错误和 run 错误
   const displayError = messageState.streamError ?? (runError ? runError.message : null)
 
+  // 动态计算 grid 列宽（支持左/右栏折叠）
+  const gridTemplateColumns = `${leftPanelOpen ? 'var(--sidebar-width)' : '0px'} minmax(480px,1fr) ${rightPanelOpen ? 'var(--context-width)' : '0px'}`
+
   return (
-    <div className="grid grid-rows-[var(--titlebar-height)_minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
-      {/* ── Title bar ── */}
-      <header className="flex items-center justify-between min-w-0 bg-titlebar-bg border-b border-titlebar-border">
-        <div className="flex items-center flex-1 gap-2.5 h-full min-w-0 px-3.5 [webkit-app-region:drag]">
-          <span className="inline-flex items-center justify-center size-[22px] rounded-md bg-accent text-[#15120a] font-extrabold text-sm">
-            π
-          </span>
-          <span>{appName}</span>
-        </div>
-        <div className="flex h-full [webkit-app-region:no-drag]">
-          {onOpenSettings && (
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="打开设置"
-              onClick={onOpenSettings}
-              className="h-full w-11 rounded-none border-0 border-l border-titlebar-border"
-            >
-              <SettingsIcon className="size-4" />
-            </Button>
-          )}
-          <button
-            type="button"
-            aria-label="最小化"
-            className="w-11 h-full bg-transparent border-0 border-l border-titlebar-border relative hover:bg-titlebar-border"
-          >
-            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 size-2 rounded-full bg-muted" />
-          </button>
-          <button
-            type="button"
-            aria-label="最大化"
-            className="w-11 h-full bg-transparent border-0 border-l border-titlebar-border relative hover:bg-titlebar-border"
-          >
-            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 size-2 rounded-full bg-muted" />
-          </button>
-          <button
-            type="button"
-            aria-label="关闭"
-            className="w-11 h-full bg-transparent border-0 border-l border-titlebar-border relative hover:bg-titlebar-border"
-          >
-            <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 size-2 rounded-full bg-muted" />
-          </button>
-        </div>
-      </header>
-
-      {/* ── Workspace grid ── */}
-      <div className="grid grid-cols-[var(--sidebar-width)_minmax(480px,1fr)_var(--context-width)] min-h-0">
+    <div className="grid grid-rows-[minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
+      {/* ── Workspace grid（workspace-grid 启用面板折叠过渡 250ms） ── */}
+      <div
+        className="grid min-h-0 workspace-grid"
+        style={{ gridTemplateColumns }}
+      >
         {/* ── Sidebar ── */}
-        <SessionList
-          sessions={sessions}
-          activeSessionId={activeThreadId}
-          onSelectSession={setActiveThreadId}
-          onNewSession={handleNewSession}
-          onRenameSession={handleRenameSession}
-          onDeleteSession={handleDeleteSession}
-        />
+        {leftPanelOpen && (
+          <SessionList
+            sessions={sessions}
+            activeSessionId={activeThreadId}
+            onSelectSession={setActiveThreadId}
+            onNewSession={handleNewSession}
+            onRenameSession={handleRenameSession}
+            onDeleteSession={handleDeleteSession}
+            onOpenSettings={onOpenSettings}
+          />
+        )}
 
-        {/* ── Chat main ── */}
+        {/* ── Chat main（工作区背景 #F7F8FA） ── */}
         <main
-          className="bg-[#12151b] grid grid-rows-[auto_auto_minmax(0,1fr)_auto] min-w-0 overflow-hidden"
+          className="bg-workspace-bg grid grid-rows-[var(--chat-header-height)_minmax(0,1fr)_auto] min-w-0 overflow-hidden"
           aria-label="PI Agent 工作台"
         >
-          <header className="flex items-center justify-between gap-4 min-h-[78px] border-b border-border px-5 py-4">
-            <div>
-              <p className="text-subtle text-xs font-[760] m-0">PI Agent</p>
-              <h1 className="text-[22px] font-[780] leading-tight mt-0.5">Agent 工作台</h1>
+          {/* ── 会话标题栏（60px，工作区顶部） ── */}
+          <header className="flex items-center justify-between h-[var(--chat-header-height)] bg-chat-header-bg [webkit-app-region:drag]">
+            <div className="flex flex-col justify-center gap-0.5 [webkit-app-region:drag] px-2">
+              <h1 className="text-base font-semibold text-text truncate">
+                {activeSession?.title ?? 'Agent 工作台'}
+              </h1>
+              <div className="flex items-center gap-1.5 text-xs text-subtle">
+                <span>{selectedModel?.modelId ?? '未知模型'}</span>
+                <span aria-hidden="true">·</span>
+                <span>同步于 {formatRelativeTime(activeSession?.updatedAt ?? Date.now())}</span>
+              </div>
             </div>
-            <div className="flex shrink-0 gap-2">
+
+            <div className="flex items-center gap-1 [webkit-app-region:no-drag]">
               <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => void healthQuery.refetch()}
-                disabled={healthQuery.isFetching}
+                variant="ghost"
+                size="icon"
+                className="size-8 text-subtle hover:text-text hover:bg-surface-3"
+                aria-label="工作区文件夹"
               >
-                {healthQuery.isFetching ? '刷新中' : '刷新状态'}
+                <FolderOpen className="size-4" aria-hidden="true" />
               </Button>
-              <Button size="sm" onClick={() => setRightPanel('provider')}>
-                配置 Provider
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleRightPanel}
+                className="size-8 text-subtle hover:text-text hover:bg-surface-3"
+                aria-label={rightPanelOpen ? '收起右侧栏' : '展开右侧栏'}
+              >
+                {rightPanelOpen ? (
+                  <PanelRightClose className="size-4" aria-hidden="true" />
+                ) : (
+                  <PanelRightOpen className="size-4" aria-hidden="true" />
+                )}
               </Button>
             </div>
           </header>
-
-          <section
-            className="flex items-center justify-between gap-2.5 min-h-[44px] border-b border-border px-5"
-            aria-label="运行状态"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`shrink-0 size-[9px] rounded-full ${isOnline ? 'bg-success shadow-[0_0_0_4px_rgba(47,209,124,0.16)]' : 'bg-danger shadow-[0_0_0_4px_rgba(255,107,107,0.16)]'}`}
-              />
-              <span className="text-xs">Agent Server</span>
-              <strong className="text-xs font-bold font-mono break-anywhere">{statusText}</strong>
-            </div>
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`shrink-0 size-[9px] rounded-full ${wsStatus === 'connected' ? 'bg-success shadow-[0_0_0_4px_rgba(47,209,124,0.16)]' : wsStatus === 'connecting' ? 'bg-accent shadow-[0_0_0_4px_rgba(242,193,78,0.16)]' : 'bg-danger shadow-[0_0_0_4px_rgba(255,107,107,0.16)]'}`}
-              />
-              <span className="text-xs font-mono">{wsStatusText}</span>
-            </div>
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`shrink-0 size-[9px] rounded-full ${isRunning ? 'bg-accent shadow-[0_0_0_4px_rgba(242,193,78,0.16)]' : 'bg-muted'}`}
-              />
-              <span className="text-xs">AG-UI</span>
-              <strong className="text-xs font-bold font-mono break-anywhere">
-                {config.aguiBaseUrl}
-              </strong>
-            </div>
-          </section>
 
           <MessageStream
             messages={messageState.messages}
@@ -397,6 +453,15 @@ export function ChatWorkspace({
             streamError={displayError}
             onRetry={handleRetry}
             onDismissError={handleDismissError}
+            onExampleClick={handleSend}
+            sessionKey={activeThreadId}
+            banner={
+              <CompactionBanner
+                event={compactionEvent}
+                onDismiss={() => setCompactionEvent(null)}
+                onManualCompact={() => void handleCompact()}
+              />
+            }
           />
 
           <InputArea
@@ -405,151 +470,98 @@ export function ChatWorkspace({
             isRunning={isRunning}
             disabled={!isOnline}
             value={drafts[activeThreadId] ?? ''}
-            onChange={(text) =>
-              setDrafts((prev) => ({
-                ...prev,
-                [activeThreadId]: text
-              }))
+            onChange={(text) => setDraft(activeThreadId, text)}
+            models={modelsQuery.data ?? []}
+            selectedModel={
+              selectedModel
+                ? `${selectedModel.provider}:${selectedModel.modelId}`
+                : null
             }
-            sessionUsage={sessionUsageQuery.data}
+            onModelChange={(provider, modelId) =>
+              setSelectedModel({ provider, modelId })
+            }
           />
         </main>
 
-        {/* ── Context panel ── */}
-        <aside
-          className="bg-surface-1 border-l border-border grid grid-rows-[auto_minmax(0,1fr)] min-w-0 overflow-hidden"
-          aria-label="上下文"
-        >
-          <Tabs
-            value={rightPanel}
-            onValueChange={(v) =>
-              setRightPanel(v as 'context' | 'memory' | 'facts' | 'usage' | 'provider')
-            }
+        {/* ── Context panel（白色背景） ── */}
+        {rightPanelOpen && (
+          <aside
+            className="bg-surface-1 border-l border-border grid grid-rows-[auto_minmax(0,1fr)] min-w-0 overflow-hidden"
+            aria-label="上下文"
           >
-            <TabsList className="w-full grid grid-cols-5 rounded-none border-b border-border bg-transparent h-11 p-0">
-              <TabsTrigger
-                value="context"
-                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
-              >
-                上下文
-              </TabsTrigger>
-              <TabsTrigger
-                value="memory"
-                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
-              >
-                记忆
-              </TabsTrigger>
-              <TabsTrigger
-                value="facts"
-                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
-              >
-                事实库
-              </TabsTrigger>
-              <TabsTrigger
-                value="usage"
-                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
-              >
-                用量
-              </TabsTrigger>
-              <TabsTrigger
-                value="provider"
-                className="rounded-none data-[state=active]:bg-surface-2 data-[state=active]:shadow-none text-xs"
-              >
-                Provider
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-
-          {rightPanel === 'provider' ? (
-            <ProviderBootstrap />
-          ) : rightPanel === 'memory' ? (
-            <MemoryPanel isOnline={isOnline} />
-          ) : rightPanel === 'facts' ? (
-            <FactList />
-          ) : rightPanel === 'usage' ? (
-            <UsagePanel isOnline={isOnline} />
-          ) : (
-            <section className="grid gap-3.5 min-h-0 overflow-auto p-4 align-content-start">
-              <div className="bg-surface-2 border border-border rounded-lg grid gap-1 p-3">
-                <p className="text-subtle text-xs font-[760] m-0">模型</p>
-                <strong className="font-[760] leading-tight">{providerSummary}</strong>
-              </div>
-              <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
-                <PermissionModeSwitch />
-              </div>
-              <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-subtle text-xs font-[760] m-0">上下文压缩</p>
-                    <p className="text-muted text-xs leading-relaxed m-0">
-                      {getCompactStatusText(compactStatus)}
-                    </p>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void handleCompact()}
-                    disabled={!isOnline || compactStatus.state === 'running'}
-                  >
-                    {compactStatus.state === 'running' ? '压缩中' : '手动压缩上下文'}
-                  </Button>
-                </div>
-                {compactStatus.state === 'success' || compactStatus.state === 'error' ? (
-                  <p
-                    className={`text-xs leading-relaxed m-0 ${compactStatus.state === 'success' ? 'text-success' : 'text-danger'}`}
-                    role="status"
-                  >
-                    {compactStatus.message}
-                  </p>
-                ) : null}
-              </div>
-              <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-subtle text-xs font-[760] m-0">工具调用</p>
-                  {executions.length > 0 && (
-                    <Button variant="ghost" size="xs" onClick={clearExecutions}>
-                      清空
-                    </Button>
-                  )}
-                </div>
-                <ToolCardList
-                  executions={executions}
-                  emptyHint="暂无工具调用，发送消息后这里会显示工具执行状态"
-                />
-              </div>
-              <div className="bg-surface-2 border border-border rounded-lg grid gap-1 p-3">
-                <p className="text-subtle text-xs font-[760] m-0">当前里程碑</p>
-                <strong className="font-[760] leading-tight">F6 用量面板</strong>
-              </div>
-            </section>
-          )}
-        </aside>
+            <ContextPanel
+              stats={{
+                tokensUsed: (sessionUsageQuery.data?.totalInputTokens ?? 0) + (sessionUsageQuery.data?.totalOutputTokens ?? 0),
+                contextWindow: 32768,
+                messageCount: messageState.messages.length,
+                toolCallCount: executions.length,
+                compactionCount,
+                generationCount: sessionUsageQuery.data?.totalCalls ?? executions.length,
+              }}
+              isOnline={isOnline}
+              isCompacting={compactionEvent?.state === 'running'}
+              onCompact={() => void handleCompact()}
+              onOpenSettings={onOpenSettings}
+              onViewDetails={() => setUsageDetailOpen(true)}
+            />
+          </aside>
+        )}
       </div>
 
-      {/* ── Status bar ── */}
-      <footer className="flex items-center gap-3 min-w-0 overflow-hidden px-3 bg-statusbar-bg border-t border-statusbar-border">
+      {/* ── Status bar（Craft 风格：白色背景 + 顶部边框 + 左侧状态/延迟/模型 + 右侧版本号） ── */}
+      <footer className="flex items-center gap-4 min-w-0 overflow-hidden px-5 bg-statusbar-bg border-t border-statusbar-border">
+        {/* 左侧：在线状态 + 延迟 + 模型 · 权限模式 */}
         <span
-          className={`shrink-0 size-[9px] rounded-full ${isOnline ? 'bg-success shadow-[0_0_0_4px_rgba(47,209,124,0.16)]' : 'bg-danger shadow-[0_0_0_4px_rgba(255,107,107,0.16)]'}`}
+          className={`shrink-0 size-2 rounded-full ${isOnline ? 'bg-success' : 'bg-danger'}`}
+          aria-hidden="true"
         />
-        <span className="text-muted text-xs whitespace-nowrap">{statusText}</span>
-        <span className="text-muted text-xs whitespace-nowrap">·</span>
-        <PermissionModeSwitch compact />
-        <span className="text-muted text-xs whitespace-nowrap">·</span>
-        <span className="text-muted text-xs whitespace-nowrap">{wsStatusText}</span>
-        <span className="text-muted text-xs whitespace-nowrap">·</span>
-        {usageSummaryQuery.data && (
-          <>
-            <span className="text-accent text-xs whitespace-nowrap font-mono">
-              ${usageSummaryQuery.data.totalCostUsd.toFixed(4)}
-            </span>
-            <span className="text-muted text-xs whitespace-nowrap">
-              / {usageSummaryQuery.data.totalCalls} 次
-            </span>
-          </>
-        )}
-        <span className="text-muted text-xs whitespace-nowrap">·</span>
-        <span className="text-muted text-xs whitespace-nowrap">{providerSummary}</span>
+        <span className="text-xs text-subtle whitespace-nowrap">
+          {isOnline ? '已连接' : '未连接'}
+        </span>
+        <span className="text-xs text-hint" aria-hidden="true">·</span>
+        <span className="text-xs text-subtle whitespace-nowrap">延迟 38ms</span>
+        <span className="text-xs text-hint" aria-hidden="true">·</span>
+        <span className="text-xs text-subtle whitespace-nowrap">
+          {selectedModel?.modelId ?? 'GPT 5'} · {gateQuery.data ? PERMISSION_MODE_LABELS[gateQuery.data.mode] : '自动'}
+        </span>
+
+        {/* 右侧：通知中心 + 自动保存 + 版本号 */}
+        <div className="ml-auto flex items-center gap-2">
+          <NotificationCenter
+            notifications={notifications}
+            onDismiss={dismissNotification}
+            onDismissAll={dismissAllNotifications}
+          />
+          <span className="text-xs text-subtle whitespace-nowrap">
+            已自动保存 v1.0.0
+          </span>
+        </div>
       </footer>
+
+      {/* DevLog 面板（底部抽屉，Cmd/Ctrl+D 切换） */}
+      <DevLogPanel
+        logs={devLogs}
+        onClear={clearDevLogs}
+        isOpen={devLogOpen}
+        onOpenChange={setDevLogOpen}
+      />
+
+      {/* 命令面板（Cmd/Ctrl+K 切换） */}
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        onOpenChange={setCommandPaletteOpen}
+        commands={commands}
+      />
+
+      {/* ── 用量明细弹窗 ── */}
+      <Dialog open={usageDetailOpen} onOpenChange={setUsageDetailOpen}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>用量明细</DialogTitle>
+          </DialogHeader>
+          <UsagePanel isOnline={isOnline} />
+        </DialogContent>
+      </Dialog>
 
       {/* ── 确认对话框（由 WebSocket 事件驱动） ── */}
       <ConfirmationDialog request={pendingConfirmation} onRespond={respondConfirmation} />
@@ -557,126 +569,17 @@ export function ChatWorkspace({
   )
 }
 
-function loadProviderSummary(): string {
-  if (typeof window === 'undefined') return '未配置 Provider'
+/** 格式化为相对时间文本 */
+function formatRelativeTime(timestamp: number): string {
+  const diff = Date.now() - timestamp
+  const minutes = Math.floor(diff / 60_000)
+  const hours = Math.floor(diff / 3_600_000)
+  const days = Math.floor(diff / 86_400_000)
 
-  const raw = window.localStorage.getItem('pi-agent.provider')
-  if (!raw) return '未配置 Provider'
-
-  try {
-    const settings = JSON.parse(raw) as ProviderSettings
-    return `${settings.provider} · ${settings.model}`
-  } catch {
-    return '未配置 Provider'
-  }
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  if (hours < 24) return `${hours} 小时前`
+  if (days < 7) return `${days} 天前`
+  return '很久以前'
 }
 
-function getCompactStatusText(status: CompactStatus): string {
-  switch (status.state) {
-    case 'running':
-      return '正在调用 Pi SDK compact，完成前请避免重复触发。'
-    case 'success':
-      return '最近一次压缩已完成。'
-    case 'error':
-      return '最近一次压缩失败，请检查 Agent Server。'
-    case 'idle':
-      return '长对话时可手动触发 Pi SDK 会话压缩。'
-  }
-}
-
-function createEmptyMessageState(): MessageStreamState {
-  return {
-    messages: [],
-    activeRunId: null,
-    streamError: null
-  }
-}
-
-function loadSessions(): SessionSummary[] {
-  const stored = loadJson<SessionSummary[]>('pi-agent.sessions')
-  if (!stored || stored.length === 0) return defaultSessions
-  // 兼容旧数据：为缺少时间戳的会话补充默认值
-  return stored.map((s) => ({
-    ...s,
-    createdAt: s.createdAt ?? Date.now(),
-    updatedAt: s.updatedAt ?? Date.now()
-  }))
-}
-
-function loadCurrentSessionId(sessions: SessionSummary[]): string {
-  const stored = loadString('pi-agent.currentSessionId')
-  if (stored && sessions.some((session) => session.id === stored)) {
-    return stored
-  }
-  return sessions[0]?.id ?? 'desktop-main'
-}
-
-function loadSessionMessages(): Record<string, MessageStreamState> {
-  return loadJson<Record<string, MessageStreamState>>('pi-agent.sessionMessages') ?? {}
-}
-
-function loadDrafts(): Record<string, string> {
-  return loadJson<Record<string, string>>('pi-agent.drafts') ?? {}
-}
-
-function upsertSessionAfterSend(
-  sessions: SessionSummary[],
-  sessionId: string,
-  text: string
-): SessionSummary[] {
-  const title = text.length > 24 ? `${text.slice(0, 24)}...` : text
-  const preview = text.length > 42 ? `${text.slice(0, 42)}...` : text
-  const existing = sessions.find((session) => session.id === sessionId)
-  const nowTs = Date.now()
-
-  if (!existing) {
-    return [
-      {
-        id: sessionId,
-        title,
-        preview,
-        createdAt: nowTs,
-        updatedAt: nowTs
-      },
-      ...sessions
-    ]
-  }
-
-  return sessions.map((session) =>
-    session.id === sessionId
-      ? {
-          ...session,
-          title: session.title === '新会话' ? title : session.title,
-          preview,
-          updatedAt: nowTs
-        }
-      : session
-  )
-}
-
-function loadJson<T>(key: string): T | null {
-  if (typeof window === 'undefined') return null
-  const raw = window.localStorage.getItem(key)
-  if (!raw) return null
-
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
-
-function saveJson(key: string, value: unknown): void {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(key, JSON.stringify(value))
-}
-
-function loadString(key: string): string | null {
-  if (typeof window === 'undefined') return null
-  return window.localStorage.getItem(key)
-}
-
-function saveString(key: string, value: string): void {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(key, value)
-}

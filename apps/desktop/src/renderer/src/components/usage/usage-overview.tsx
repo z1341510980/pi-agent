@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { ArrowDownToLine, ArrowUpFromLine, DollarSign, Hash, Database } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, DollarSign, Hash, Database, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export interface UsageSummary {
@@ -16,9 +16,27 @@ export interface UsageSummary {
   byAgent: Record<string, { calls: number; costUsd: number }>
 }
 
+/** 预算与当月用量信息（由 /api/usage/budget 返回） */
+export interface UsageBudgetInfo {
+  /** 月度预算（USD），0 表示未设置 */
+  monthlyBudgetUsd: number
+  /** 告警阈值（百分比 0-100） */
+  alertThreshold: number
+  /** 当月已用成本（USD） */
+  costUsd: number
+  /** 预算使用百分比（0-100+） */
+  percentage: number
+  /** 是否已超出预算 */
+  exceeded: boolean
+  /** 是否达到告警阈值 */
+  warning: boolean
+}
+
 export interface UsageOverviewProps {
   summary: UsageSummary | undefined
   isLoading: boolean
+  /** 预算信息（可选，传入后显示预算告警卡片） */
+  budget?: UsageBudgetInfo
 }
 
 function formatTokens(n: number): string {
@@ -51,12 +69,12 @@ function StatCard({ icon, label, value, sublabel, accent }: StatCardProps): Reac
       <strong className={cn('font-[780] leading-tight text-lg', accent && 'text-accent')}>
         {value}
       </strong>
-      {sublabel && <p className="text-muted text-[10px] m-0">{sublabel}</p>}
+      {sublabel && <p className="text-muted-foreground text-[10px] m-0">{sublabel}</p>}
     </div>
   )
 }
 
-export function UsageOverview({ summary, isLoading }: UsageOverviewProps): ReactElement {
+export function UsageOverview({ summary, isLoading, budget }: UsageOverviewProps): ReactElement {
   const totalTokens = (summary?.totalInputTokens ?? 0) + (summary?.totalOutputTokens ?? 0)
   const cacheTotal = (summary?.totalCacheReadTokens ?? 0) + (summary?.totalCacheWriteTokens ?? 0)
   const cacheHitRate =
@@ -77,35 +95,65 @@ export function UsageOverview({ summary, isLoading }: UsageOverviewProps): React
     )
   }
 
+  // 预算告警卡片（仅在设置了预算时显示）
+  const showBudget = budget && budget.monthlyBudgetUsd > 0
+  const budgetWarning = budget?.warning ?? false
+  const budgetExceeded = budget?.exceeded ?? false
+
   return (
-    <div className="grid grid-cols-2 gap-2.5">
-      <StatCard
-        icon={<ArrowUpFromLine className="size-3.5" />}
-        label="输入 Token"
-        value={formatTokens(summary?.totalInputTokens ?? 0)}
-      />
-      <StatCard
-        icon={<ArrowDownToLine className="size-3.5" />}
-        label="输出 Token"
-        value={formatTokens(summary?.totalOutputTokens ?? 0)}
-      />
-      <StatCard
-        icon={<DollarSign className="size-3.5" />}
-        label="总成本"
-        value={formatCost(summary?.totalCostUsd ?? 0)}
-        accent
-      />
-      <StatCard
-        icon={<Hash className="size-3.5" />}
-        label="调用次数"
-        value={formatTokens(summary?.totalCalls ?? 0)}
-      />
-      <StatCard
-        icon={<Database className="size-3.5" />}
-        label="缓存命中率"
-        value={`${cacheHitRate.toFixed(1)}%`}
-        sublabel={`读 ${formatTokens(summary?.totalCacheReadTokens ?? 0)} / 写 ${formatTokens(summary?.totalCacheWriteTokens ?? 0)}`}
-      />
+    <div className="grid gap-2.5">
+      {showBudget && (budgetWarning || budgetExceeded) && (
+        <div
+          role="alert"
+          className={cn(
+            'border rounded-lg p-2.5 flex items-start gap-2 text-xs',
+            budgetExceeded
+              ? 'border-danger/40 bg-danger/10 text-danger'
+              : 'border-warning/40 bg-warning/10 text-warning'
+          )}
+        >
+          <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
+          <div className="grid gap-0.5">
+            <p className="font-[760] m-0">
+              {budgetExceeded ? '预算已超出' : '预算告警'}
+            </p>
+            <p className="m-0 text-[11px]">
+              当月已用 {formatCost(budget!.costUsd)} / 预算 {formatCost(budget!.monthlyBudgetUsd)}
+              （{budget!.percentage.toFixed(1)}%）
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2.5">
+        <StatCard
+          icon={<ArrowUpFromLine className="size-3.5" />}
+          label="输入 Token"
+          value={formatTokens(summary?.totalInputTokens ?? 0)}
+        />
+        <StatCard
+          icon={<ArrowDownToLine className="size-3.5" />}
+          label="输出 Token"
+          value={formatTokens(summary?.totalOutputTokens ?? 0)}
+        />
+        <StatCard
+          icon={<DollarSign className="size-3.5" />}
+          label="总成本"
+          value={formatCost(summary?.totalCostUsd ?? 0)}
+          accent
+        />
+        <StatCard
+          icon={<Hash className="size-3.5" />}
+          label="调用次数"
+          value={formatTokens(summary?.totalCalls ?? 0)}
+        />
+        <StatCard
+          icon={<Database className="size-3.5" />}
+          label="缓存命中率"
+          value={`${cacheHitRate.toFixed(1)}%`}
+          sublabel={`读 ${formatTokens(summary?.totalCacheReadTokens ?? 0)} / 写 ${formatTokens(summary?.totalCacheWriteTokens ?? 0)}`}
+        />
+      </div>
     </div>
   )
 }

@@ -1,17 +1,17 @@
 import { createAgentSession, DefaultResourceLoader } from '@earendil-works/pi-coding-agent'
 import type { AuthStorage, ModelRegistry, SessionManager, AgentSession } from '@earendil-works/pi-coding-agent'
-import type { NodeConfig } from '@repo/config/shared'
 import type { Gate } from '../tool/gate.js'
 import type { EventBus } from '@repo/shared/events'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { CredentialBridge } from '../config/credential-bridge.js'
+import type { ProviderConfigStore } from '../config/provider-config-store.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
 import { EvidenceLedger, summarizeArgs, summarizeResult } from '../tool/evidence-ledger.js'
 import { createBeforeToolCall } from '../tool/confirmation-tools.js'
 import { StormBreaker } from '../tool/storm-breaker.js'
 import { truncateOutput, shouldTruncate } from '../tool/output-truncator.js'
 import { InstructionLoader } from './instruction-loader.js'
-import { FactStore } from '../memory/fact-store.js'
+import type { FactStore } from '../memory/fact-store.js'
 import { MemoryTicker } from '../memory/memory-ticker.js'
 
 export interface PiSessionDeps {
@@ -20,13 +20,17 @@ export interface PiSessionDeps {
   modelRegistry: ModelRegistry
   sessionManager: SessionManager
   credentialBridge: CredentialBridge
+  providerConfigStore: ProviderConfigStore
   gate: Gate
   confirmationManager: ConfirmationManager
   eventBus: EventBus
+  /** 获取 Provider 的 API Key（用于检查 Provider 是否可用） */
+  getApiKey: (provider: string) => Promise<string | undefined>
+  /** 共享的 FactStore 单例（由 memoryStorePlugin 提供） */
+  factStore?: FactStore
   config: {
     cwd: string
     dataDir: string
-    llm: NodeConfig['llm']
   }
 }
 
@@ -38,18 +42,10 @@ export interface PiSessionDeps {
  * EventBus 集成：通过 session.subscribe 监听工具执行事件
  */
 export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession> {
-  // 1. 注入 API Key 桥接：CredentialBridge → AuthStorage fallback resolver
+  // 1. 注入 API Key 桥接：ProviderConfigStore → AuthStorage fallback resolver
+  //    LLM 配置完全由前端用户配置，不读取任何环境变量
   deps.authStorage.setFallbackResolver((provider: string) => {
-    // 同步获取（setFallbackResolver 要求同步返回）
-    // CredentialBridge.getApiKey 是异步的，但 fallback resolver 是同步的
-    // 因此这里直接从环境变量读取（CredentialBridge 的环境变量逻辑）
-    const envKey = `PI_API_KEY_${provider.toUpperCase().replace(/-/g, '_')}`
-    const providerKey = process.env[envKey]
-    if (providerKey) return providerKey
-    if (provider === deps.config.llm.provider && deps.config.llm.apiKey) {
-      return deps.config.llm.apiKey
-    }
-    return process.env.PI_API_KEY
+    return deps.providerConfigStore.getApiKey(provider)
   })
 
   // 2. 资源加载器
@@ -63,15 +59,28 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   // 3. Gate 集成：获取被禁止的工具列表
   const gateDeniedTools = deps.gate.getDeniedTools()
 
-  // 4. 解析默认模型：严格遵守项目配置，避免历史临时 Provider 泄漏为默认值
-  const defaultModel = deps.modelRegistry.find(deps.config.llm.provider, deps.config.llm.model)
+  // 4. 解析默认模型：完全从 ProviderConfigStore（前端用户配置）获取
+  //    不再从环境变量读取 LLM_PROVIDER/LLM_MODEL
+  let defaultModel = undefined
+  const providers = deps.providerConfigStore.list()
+  for (const provider of providers) {
+    const firstModel = provider.models[0]
+    if (firstModel) {
+      const candidateModel = deps.modelRegistry.find(provider.id, firstModel.id)
+      const candidateApiKey = await deps.getApiKey(provider.id)
+      if (candidateModel && candidateApiKey) {
+        defaultModel = candidateModel
+        break
+      }
+    }
+  }
 
   if (!defaultModel) {
     throw new AppError(
       ErrorCode.CONFIG_ERROR,
-      `模型配置不可用：${deps.config.llm.provider}/${deps.config.llm.model}`,
+      '未找到已配置的 Provider。请在设置中配置 Provider（含 API Key 和模型）后再开始对话。',
       500,
-      'Configured LLM model was not found in the Pi SDK model registry',
+      'No provider is configured. Please configure a provider in Settings before starting a conversation.',
     )
   }
 
@@ -119,6 +128,11 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
       toolName: toolCall.name,
       toolCallId: toolCall.id,
     })
+    deps.eventBus.emit('devlog:entry', {
+      level: 'debug',
+      message: `工具调用结束: ${toolCall.name}`,
+      source: 'agent',
+    })
 
     // OutputTruncator：截断超长工具输出（32KB head+tail）
     // 在 afterToolCall 中修改 content，SDK 会将修改后的结果发送给 LLM
@@ -134,6 +148,13 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           toolName: toolCall.name,
           originalBytes,
         })
+        deps.eventBus.emit('notification:push', {
+          level: 'warning',
+          title: '工具输出已截断',
+          message: `${toolCall.name} 输出从 ${originalBytes} 字节截断`,
+          category: 'tool',
+          threadId: deps.threadId,
+        })
         return { ...item, text: truncatedText }
       }
       return item
@@ -142,8 +163,8 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     return wasTruncated ? { content: truncatedContent } : undefined
   }
 
-  // 8. Memory 集成：FactStore + MemoryTicker
-  const factStore = new FactStore(deps.config.dataDir)
+  // 8. Memory 集成：使用共享的 FactStore 单例（如果提供）+ MemoryTicker
+  const factStore = deps.factStore ?? null
   const memoryTicker = new MemoryTicker()
 
   // 9. EventBus 集成：监听 session 事件，转发工具执行开始事件 + Storm Breaker 检测 + Memory Ticker
@@ -158,6 +179,11 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
         toolName,
         toolCallId,
       })
+      deps.eventBus.emit('devlog:entry', {
+        level: 'debug',
+        message: `工具调用开始: ${toolName}`,
+        source: 'agent',
+      })
 
       // Storm Breaker：检测工具调用死循环
       const argsRecord = toRecord(rawArgs)
@@ -167,6 +193,13 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           toolName,
           toolCallId,
           stats: stormBreaker.getStats(deps.threadId),
+        })
+        deps.eventBus.emit('notification:push', {
+          level: 'error',
+          title: '检测到工具调用死循环',
+          message: `${toolName} 已被 Storm Breaker 中止`,
+          category: 'tool',
+          threadId: deps.threadId,
         })
       }
     }
@@ -188,6 +221,11 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           durationMs: 0, // Pi SDK 不提供单次调用耗时
           agentId: 'default',
         })
+        deps.eventBus.emit('devlog:entry', {
+          level: 'debug',
+          message: `LLM 调用完成: ${msg.provider as string}/${msg.model as string}`,
+          source: 'llm',
+        })
       }
     }
 
@@ -196,7 +234,15 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
       if (memoryTicker.recordTurn()) {
         deps.eventBus.emit('memory:compile:requested', {
           threadId: deps.threadId,
+          phase: 'turn_threshold',
         })
+        deps.eventBus.emit('devlog:entry', {
+          level: 'info',
+          message: `记忆编译已触发（阶段：turn_threshold）`,
+          source: 'memory',
+        })
+        // 标记已编译，重置计数器
+        memoryTicker.markCompiled()
       }
     }
   })

@@ -15,6 +15,10 @@ export interface RunAgentOptions {
   onError?: (error: Error) => void
   /** 流结束回调（无论成功/失败/中断都会调用） */
   onDone?: () => void
+  /** 指定本次 run 使用的模型（provider + modelId），未传则由后端使用默认模型 */
+  model?: { provider: string; modelId: string }
+  /** 目标 Agent ID，默认 'default' */
+  agentId?: string
 }
 
 /**
@@ -24,9 +28,9 @@ export interface RunAgentOptions {
  * 后端会发射 AG-UI 事件（RUN_STARTED → TEXT_MESSAGE_* → ... → RUN_FINISHED/RUN_ERROR）
  */
 export async function runAgent(options: RunAgentOptions): Promise<void> {
-  const { threadId, messages, signal, onEvent, onError, onDone } = options
+  const { threadId, messages, signal, onEvent, onError, onDone, model } = options
   const runId = options.runId ?? crypto.randomUUID()
-  const agentId = 'default'
+  const agentId = options.agentId ?? 'default'
 
   try {
     const response = await fetch(
@@ -44,6 +48,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
             role: m.role,
             content: m.content,
           })),
+          model,
         }),
         signal,
       },
@@ -66,7 +71,9 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     if (error instanceof DOMException && error.name === 'AbortError') {
       return
     }
-    onError?.(error instanceof Error ? error : new Error(String(error)))
+    // 网络错误（ECONNRESET、连接中断等）→ 通知上层
+    const err = error instanceof Error ? error : new Error(String(error))
+    onError?.(err)
   } finally {
     onDone?.()
   }

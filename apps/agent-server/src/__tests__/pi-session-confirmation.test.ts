@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthStorage, ModelRegistry, SessionManager } from '@earendil-works/pi-coding-agent'
-import type { NodeConfig } from '@repo/config/shared'
 import { EventBus } from '@repo/shared/events'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { ConfirmationManager } from '../core/tool/confirmation-manager.js'
 import { Gate } from '../core/tool/gate.js'
 import type { CredentialBridge } from '../core/config/credential-bridge.js'
+import type { ProviderConfigStore } from '../core/config/provider-config-store.js'
 import type { PiSessionDeps } from '../core/agent/pi-session.js'
 
 interface ModelStub {
@@ -99,7 +99,6 @@ describe('createPiSession beforeToolCall integration', () => {
 
 function createDeps(
   models: ModelStub[],
-  llm: NodeConfig['llm'] = { provider: 'openai', model: 'gpt-4.1-mini' },
 ): PiSessionDeps {
   return {
     threadId: 'thread-1',
@@ -114,13 +113,17 @@ function createDeps(
     } as unknown as ModelRegistry,
     sessionManager: {} as unknown as SessionManager,
     credentialBridge: {} as CredentialBridge,
+    providerConfigStore: {
+      getApiKey: (provider: string) => provider === 'openai' ? 'test-key' : undefined,
+      list: () => [{ id: 'openai', models: [{ id: 'gpt-4.1-mini' }] }],
+    } as unknown as ProviderConfigStore,
+    getApiKey: async (provider: string) => provider === 'openai' ? 'test-key' : undefined,
     gate: new Gate({ confirmationTools: ['bash'] }),
     confirmationManager: new ConfirmationManager(new EventBus()),
     eventBus: new EventBus(),
     config: {
       cwd: process.cwd(),
       dataDir: process.cwd(),
-      llm,
     },
   }
 }

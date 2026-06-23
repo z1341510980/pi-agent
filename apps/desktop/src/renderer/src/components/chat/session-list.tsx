@@ -1,7 +1,12 @@
 import type { ReactElement } from 'react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { DropdownMenu } from 'radix-ui'
-import { Pencil, Trash2, Search } from 'lucide-react'
+import {
+  Pencil,
+  Trash2,
+  SettingsIcon
+} from 'lucide-react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -10,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
-  DialogDescription,
+  DialogDescription
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
@@ -30,52 +35,53 @@ export interface SessionListProps {
   onNewSession: () => void
   onRenameSession: (id: string, newTitle: string) => void
   onDeleteSession: (id: string) => void
-}
-
-/** 将时间戳格式化为相对时间文本 */
-function formatRelativeTime(timestamp: number): string {
-  const now = Date.now()
-  const diff = now - timestamp
-  const minutes = Math.floor(diff / 60_000)
-  const hours = Math.floor(diff / 3_600_000)
-  const days = Math.floor(diff / 86_400_000)
-
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes} 分钟前`
-  if (hours < 24) return `${hours} 小时前`
-  if (days < 7) return `${days} 天前`
-
-  const date = new Date(timestamp)
-  return `${date.getMonth() + 1}/${date.getDate()}`
+  onOpenSettings?: () => void
 }
 
 /** 按更新时间分组会话 */
-function groupSessions(sessions: SessionSummary[]): { label: string; sessions: SessionSummary[] }[] {
+function groupSessions(
+  sessions: SessionSummary[]
+): { label: string; sessions: SessionSummary[] }[] {
   const now = Date.now()
-  const todayStart = new Date().setHours(0, 0, 0, 0)
-  const yesterdayStart = todayStart - 86_400_000
   const weekStart = now - 7 * 86_400_000
 
   const groups: { label: string; sessions: SessionSummary[] }[] = [
-    { label: '今天', sessions: [] },
-    { label: '昨天', sessions: [] },
-    { label: '最近 7 天', sessions: [] },
-    { label: '更早', sessions: [] },
+    { label: '最近对话', sessions: [] },
+    { label: '更早', sessions: [] }
   ]
 
   for (const session of sessions) {
-    if (session.updatedAt >= todayStart) {
+    if (session.updatedAt >= weekStart) {
       groups[0].sessions.push(session)
-    } else if (session.updatedAt >= yesterdayStart) {
-      groups[1].sessions.push(session)
-    } else if (session.updatedAt >= weekStart) {
-      groups[2].sessions.push(session)
     } else {
-      groups[3].sessions.push(session)
+      groups[1].sessions.push(session)
     }
   }
 
   return groups.filter((g) => g.sessions.length > 0)
+}
+
+// ── 虚拟化列表项类型 ──
+
+type VirtualItem = { type: 'header'; label: string } | { type: 'session'; session: SessionSummary }
+
+// 会话项固定高度（px）
+const SESSION_ITEM_HEIGHT = 36
+// 分组标题高度（px）
+const HEADER_HEIGHT = 28
+
+/** 将分组会话展平为虚拟化列表项数组 */
+function flattenGroupedSessions(
+  groups: { label: string; sessions: SessionSummary[] }[]
+): VirtualItem[] {
+  const items: VirtualItem[] = []
+  for (const group of groups) {
+    items.push({ type: 'header', label: group.label })
+    for (const session of group.sessions) {
+      items.push({ type: 'session', session })
+    }
+  }
+  return items
 }
 
 export function SessionList({
@@ -85,22 +91,31 @@ export function SessionList({
   onNewSession,
   onRenameSession,
   onDeleteSession,
+  onOpenSettings
 }: SessionListProps): ReactElement {
-  const [search, setSearch] = useState('')
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  const filteredSessions = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
-    if (!query) return sorted
-    return sorted.filter(
-      (s) => `${s.title} ${s.preview}`.toLowerCase().includes(query)
-    )
-  }, [search, sessions])
+  const scrollRef = useRef<HTMLDivElement>(null)
 
-  const grouped = useMemo(() => groupSessions(filteredSessions), [filteredSessions])
+  const sortedSessions = useMemo(
+    () => [...sessions].sort((a, b) => b.updatedAt - a.updatedAt),
+    [sessions]
+  )
+
+  const grouped = useMemo(() => groupSessions(sortedSessions), [sortedSessions])
+
+  // 展平为虚拟化列表
+  const virtualItems = useMemo(() => flattenGroupedSessions(grouped), [grouped])
+
+  const virtualizer = useVirtualizer({
+    count: virtualItems.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) =>
+      virtualItems[index].type === 'header' ? HEADER_HEIGHT : SESSION_ITEM_HEIGHT,
+    overscan: 8
+  })
 
   const handleContextMenuRename = useCallback((session: SessionSummary) => {
     setRenamingId(session.id)
@@ -124,66 +139,96 @@ export function SessionList({
 
   return (
     <nav
-      className="bg-surface-1 border-r border-border flex flex-col gap-3.5 min-w-0 overflow-hidden p-3.5"
+      className="bg-surface-1 border-r border-border flex flex-col min-w-0 overflow-hidden px-4 py-5"
       aria-label="会话"
     >
-      {/* Agent 切换 + 新建会话 */}
-      <div className="flex items-center justify-between">
-        <button
-          className="inline-flex flex-1 items-center gap-2.5 min-h-[42px] min-w-0 px-2 py-1.5 rounded-lg bg-surface-2 border border-border text-text text-left"
-          type="button"
-          aria-label="切换 Agent"
-        >
-          <span className="inline-flex items-center justify-center size-7 rounded-[7px] bg-avatar-bg text-avatar-text text-xs font-extrabold shrink-0">
-            pi
-          </span>
-          <span>
-            <strong className="block font-[760] leading-tight">pi</strong>
-            <small className="text-muted text-xs leading-snug">代码助手</small>
-          </span>
-        </button>
-        <Button
-          size="icon"
-          className="shrink-0 text-xl font-bold"
-          aria-label="新建会话"
-          onClick={onNewSession}
-        >
-          +
-        </Button>
-      </div>
-
-      {/* 搜索框 */}
-      <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
-        <Input
-          type="search"
-          placeholder="搜索会话..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-8 min-h-[38px] bg-input-bg border-border text-text placeholder:text-muted-foreground"
-        />
-      </div>
+      {/* 新建会话按钮 */}
+      <Button
+        className="w-full justify-center rounded-md h-9 text-sm font-medium bg-primary hover:bg-primary/95 text-primary-foreground shadow-sm"
+        onClick={onNewSession}
+        aria-label="新建会话"
+      >
+        开启新对话
+      </Button>
 
       {/* 会话列表 */}
-      <div className="flex-1 min-h-0 overflow-auto">
-        {grouped.map((group) => (
-          <div key={group.label} className="grid gap-2 mb-3">
-            <p className="text-subtle text-xs font-[760] m-0">{group.label}</p>
-            {group.sessions.map((session) => (
-              <SessionItem
-                key={session.id}
-                session={session}
-                isActive={session.id === activeSessionId}
-                onSelect={() => onSelectSession(session.id)}
-                onRename={() => handleContextMenuRename(session)}
-                onDelete={() => setDeletingId(session.id)}
-              />
-            ))}
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto mt-3">
+        {virtualItems.length === 0 ? null : virtualizer.getVirtualItems().length === 0 ? (
+          // 降级渲染（jsdom 或容器高度为 0 时）
+          grouped.map((group) => (
+            <div key={group.label} className="grid gap-0.5 mb-3">
+              <p className="text-xs font-medium text-subtle m-0 px-2.5 mb-1">
+                {group.label}
+              </p>
+              {group.sessions.map((session) => (
+                <SessionItem
+                  key={session.id}
+                  session={session}
+                  isActive={session.id === activeSessionId}
+                  onSelect={() => onSelectSession(session.id)}
+                  onRename={() => handleContextMenuRename(session)}
+                  onDelete={() => setDeletingId(session.id)}
+                />
+              ))}
+            </div>
+          ))
+        ) : (
+          <div
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative'
+            }}
+          >
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const item = virtualItems[virtualRow.index]
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`
+                  }}
+                >
+                  {item.type === 'header' ? (
+                    <p
+                      className="text-xs font-medium text-subtle m-0 px-2.5"
+                      style={{ height: HEADER_HEIGHT, lineHeight: `${HEADER_HEIGHT}px` }}
+                    >
+                      {item.label}
+                    </p>
+                  ) : (
+                    <SessionItem
+                      session={item.session}
+                      isActive={item.session.id === activeSessionId}
+                      onSelect={() => onSelectSession(item.session.id)}
+                      onRename={() => handleContextMenuRename(item.session)}
+                      onDelete={() => setDeletingId(item.session.id)}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </div>
-        ))}
-        {filteredSessions.length === 0 && search && (
-          <p className="text-muted text-xs text-center py-4">没有找到匹配的会话</p>
         )}
+      </div>
+
+      {/* 底部设置按钮 */}
+      <div className="mt-auto pt-3">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="flex items-center gap-2.5 w-full h-9 rounded-md px-2.5 text-sm text-text-secondary hover:bg-surface-3 cursor-pointer transition-colors"
+          aria-label="打开设置"
+        >
+          <SettingsIcon className="size-4 text-subtle shrink-0" />
+          <span>设置</span>
+        </button>
       </div>
 
       {/* 重命名对话框 */}
@@ -254,13 +299,13 @@ export function SessionList({
   )
 }
 
-/** 单个会话项（含右键菜单） */
+/** 单个会话项（单击切换，hover 显示操作按钮） */
 function SessionItem({
   session,
   isActive,
   onSelect,
   onRename,
-  onDelete,
+  onDelete
 }: {
   session: SessionSummary
   isActive: boolean
@@ -270,28 +315,51 @@ function SessionItem({
 }): ReactElement {
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button
+      <div
+        className={cn(
+          'group relative flex items-center gap-2.5 h-9 rounded-md px-2.5 text-left transition-colors cursor-pointer',
+          isActive
+            ? 'bg-[#EEF0FF] dark:bg-purple-950/20'
+            : 'hover:bg-surface-3 dark:hover:bg-surface-2'
+        )}
+        onClick={onSelect}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onSelect()
+          }
+        }}
+      >
+        {/* 左侧指示器：统一圆点，选中为紫色，未选中为灰色 */}
+        <span
           className={cn(
-            'bg-transparent border rounded-lg text-text grid gap-1 min-h-[58px] p-2 text-left hover:bg-surface-2 hover:border-border focus-visible:bg-surface-2 focus-visible:border-border',
-            isActive ? 'border-border bg-surface-2' : 'border-transparent'
+            'size-1.5 shrink-0 rounded-full',
+            isActive ? 'bg-primary' : 'bg-hint'
           )}
-          type="button"
-          onClick={onSelect}
-        >
-          <span>
-            <strong className="block font-[760] leading-tight truncate">
-              {session.title}
-            </strong>
-            <small className="text-muted text-xs leading-snug truncate block">
-              {session.preview}
-            </small>
+          aria-hidden="true"
+        />
+
+        {/* 标题 */}
+        <div className="flex-1 min-w-0 flex flex-col justify-center">
+          <span className={cn('block text-sm truncate', isActive ? 'font-medium text-text' : 'text-text-secondary')}>
+            {session.title}
           </span>
-          <time className="text-subtle text-[11px]">
-            {formatRelativeTime(session.updatedAt)}
-          </time>
-        </button>
-      </DropdownMenu.Trigger>
+        </div>
+
+        {/* hover 时显示的操作按钮 */}
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            className="size-5 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-surface-2 transition-opacity text-subtle"
+            aria-label="会话操作"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="text-xs leading-none">...</span>
+          </button>
+        </DropdownMenu.Trigger>
+      </div>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           className="z-50 min-w-36 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 animate-in fade-in-0 zoom-in-95"

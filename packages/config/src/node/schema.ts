@@ -16,10 +16,4 @@ export const nodeEnvSchema = z.object({
   AGENT_MAX_TOOL_CALLS: z.coerce.number().int().positive().default(20),
 
   AGENT_MAX_CONTEXT_TOKENS: z.coerce.number().int().positive().default(120000),
-
-  LLM_PROVIDER: z.string().default("openai"),
-
-  LLM_MODEL: z.string().default("gpt-4.1-mini"),
-
-  LLM_API_KEY: z.string().optional(),
 });

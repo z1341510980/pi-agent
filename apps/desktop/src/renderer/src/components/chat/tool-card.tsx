@@ -70,7 +70,7 @@ export function ToolCard({ execution }: ToolCardProps): ReactElement {
       </header>
 
       {execution.reason && execution.state === 'pending' && (
-        <p className="text-muted text-xs leading-snug m-0">{execution.reason}</p>
+        <p className="text-muted-foreground text-xs leading-snug m-0">{execution.reason}</p>
       )}
 
       <footer className="flex items-center gap-3 text-subtle text-[11px] font-mono">

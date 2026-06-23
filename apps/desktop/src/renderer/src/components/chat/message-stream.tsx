@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { EventType, type BaseEvent } from '@repo/protocol/events'
 import type { ChatMessage, ToolCallInfo } from './types'
 import { createAssistantMessage } from './types'
@@ -276,6 +278,12 @@ export interface MessageStreamProps {
   onRetry?: () => void
   /** 清空错误 */
   onDismissError?: () => void
+  /** 顶部横幅（如压缩横幅） */
+  banner?: ReactNode
+  /** 点击示例问题回调（空状态时） */
+  onExampleClick?: (text: string) => void
+  /** 会话标识（用于会话切换时触发淡入动画） */
+  sessionKey?: string
 }
 
 /**
@@ -283,6 +291,7 @@ export interface MessageStreamProps {
  *
  * 渲染消息列表 + 流式指示器 + 错误卡片 + 空状态
  * 自动滚动到底部（流式时跟随，手动滚动后停止跟随）
+ * 会话切换时使用 AnimatePresence mode="wait" 淡入（200ms）
  */
 export function MessageStream({
   messages,
@@ -290,6 +299,9 @@ export function MessageStream({
   streamError,
   onRetry,
   onDismissError,
+  banner,
+  onExampleClick,
+  sessionKey,
 }: MessageStreamProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -308,7 +320,7 @@ export function MessageStream({
     const el = scrollRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-  }, [messages, isStreaming, autoScroll])
+  }, [messages, isStreaming, autoScroll, banner])
 
   const isEmpty = messages.length === 0 && !isStreaming && !streamError
 
@@ -316,28 +328,38 @@ export function MessageStream({
     <section
       ref={scrollRef}
       onScroll={handleScroll}
-      className="min-h-0 flex-1 overflow-auto px-5 py-6"
+      className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-4"
       aria-label="消息流"
     >
-      <div className="mx-auto max-w-[720px] space-y-4">
-        {isEmpty ? (
-          <EmptyState />
+      <div className="space-y-5 min-w-0">
+        {banner}
+        {isEmpty && !banner ? (
+          <EmptyState onExampleClick={onExampleClick} />
         ) : (
-          <>
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
-            ))}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={sessionKey ?? 'default'}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+              className="space-y-5"
+            >
+              {messages.map((msg) => (
+                <MessageBubble key={msg.id} message={msg} />
+              ))}
 
-            {isStreaming && <StreamingIndicator />}
+              {isStreaming && <StreamingIndicator />}
 
-            {streamError && (
-              <ErrorCard
-                message={streamError}
-                onRetry={onRetry}
-                onDismiss={onDismissError}
-              />
-            )}
-          </>
+              {streamError && (
+                <ErrorCard
+                  message={streamError}
+                  onRetry={onRetry}
+                  onDismiss={onDismissError}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
         )}
       </div>
     </section>

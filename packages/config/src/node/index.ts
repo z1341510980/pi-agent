@@ -19,10 +19,4 @@ export const nodeConfig: NodeConfig = {
     maxToolCalls: parsed.AGENT_MAX_TOOL_CALLS,
     maxContextTokens: parsed.AGENT_MAX_CONTEXT_TOKENS,
   },
-
-  llm: {
-    provider: parsed.LLM_PROVIDER,
-    model: parsed.LLM_MODEL,
-    apiKey: parsed.LLM_API_KEY,
-  },
 };

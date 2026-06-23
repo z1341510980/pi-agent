@@ -542,7 +542,7 @@ useEffect(() => { if (autoScroll) scrollRef.current.scrollTop = scrollRef.curren
 |----------|----------|--------|
 | read | 文件预览卡 | 文件路径 + 行数 + 可展开内容 |
 | bash | 终端卡 | 等宽字体 + 可滚动输出 |
-| edit/write | Diff 卡 | 红绿对比（规划） |
+| edit/write | Diff 卡 | 红绿对比 |
 | grep | 搜索结果卡 | 匹配行高亮 + 文件分组 |
 | web_search | 搜索结果卡 | 标题 + 摘要 + URL |
 | web_fetch | 网页预览卡 | 标题 + 正文摘要 |
@@ -574,7 +574,7 @@ interface InputAreaProps {
 - 自适应高度（`scrollHeight` 自动撑高，上限 200px）
 - 草稿持久化：通过受控 `value`/`onChange` 对接 localStorage
 
-**Steer 模式**（规划）：
+**Steer 模式**：
 - Agent 运行中，输入区提示横幅 `⚡ Agent 运行中 — 你可以追加指令`
 - 输入框 placeholder 变为"追加指令..."
 - 发送的消息以黄色边框 + ⚡ 图标显示在消息流
@@ -590,7 +590,7 @@ interface InputAreaProps {
 - 位于消息流末尾，新消息到达时被顶替
 - 绝不允许"无反馈的卡顿"——任何超过 500ms 的等待都要有视觉反馈
 
-### 3.4 状态组件（规划）
+### 3.4 状态组件
 
 | 组件 | 用途 | 状态覆盖 |
 |------|------|----------|
@@ -618,7 +618,7 @@ function ExampleList() {
 }
 ```
 
-### 3.5 设置组件（规划）
+### 3.5 设置组件
 
 | 组件 | 用途 |
 |------|------|
@@ -675,7 +675,7 @@ Agent 切换器 [pi ▾]              [+ 新建]
 | 上下文 | 模型摘要 · 权限模式 · 工具调用列表 · 里程碑 |
 | Provider | ProviderBootstrap 配置表单 |
 
-**工具调用列表（规划）**：实时显示当前会话的工具执行记录，支持清空。
+**工具调用列表**：实时显示当前会话的工具执行记录，支持清空。
 
 ---
 
@@ -762,7 +762,7 @@ Agent 正在运行时，输入区切换为 steer 模式：
 | 按钮 press | 缩放 0.97（`whileTap`） |
 | 卡片 hover | 边框色加深 |
 | 输入框 focus | 边框 + `ring-[3px] ring-primary/20` |
-| 复制成功 | 图标变化（规划） |
+| 复制成功 | 图标变化 |
 | 连接状态变化 | 圆点颜色 + 阴影切换 |
 | 发送按钮 → 中断按钮 | 图标 + 颜色 + 文字同步切换 |
 
@@ -779,7 +779,7 @@ TanStack Query (服务端状态)
 ├── 健康检查（10s 轮询）
 └── 自动缓存、重试、后台刷新
 
-Zustand (客户端状态) [规划]
+Zustand (客户端状态) [已实现]
 ├── sessionStore: 当前会话/Agent/模型/消息流/运行状态
 ├── uiStore: 面板折叠/主题/浮层/通知/确认队列
 └── connectionStore: 连接状态/WS/SSE
@@ -793,19 +793,24 @@ React 组件 state (局部状态) [已实现]
 
 ### 6.2 当前实现状态
 
-当前处于 **F1 阶段**，状态管理以 React `useState` + `useCallback` 为主：
+状态管理已从 React `useState` 迁移至 Zustand，实现了完整的客户端状态管理：
 
 ```typescript
-// chat-workspace.tsx 中的状态：
-const [sessions, setSessions] = useState<SessionSummary[]>(() => loadSessions())
-const [activeThreadId, setActiveThreadId] = useState<string>(...)
-const [sessionSearch, setSessionSearch] = useState('')
-const [sessionMessages, setSessionMessages] = useState<Record<string, MessageStreamState>>(...)
-const [drafts, setDrafts] = useState<Record<string, string>>(...)
-const [rightPanel, setRightPanel] = useState<'context' | 'provider'>('context')
+// Zustand stores 已实现：
+// - sessionStore: 当前会话/Agent/模型/消息流/运行状态
+// - uiStore: 面板折叠/主题/浮层/通知/确认队列
+// - connectionStore: 连接状态/WS/SSE
+
+// 早期 useState 实现（已迁移至 Zustand）：
+// const [sessions, setSessions] = useState<SessionSummary[]>(() => loadSessions())
+// const [activeThreadId, setActiveThreadId] = useState<string>(...)
+// const [sessionSearch, setSessionSearch] = useState('')
+// const [sessionMessages, setSessionMessages] = useState<Record<string, MessageStreamState>>(...)
+// const [drafts, setDrafts] = useState<Record<string, string>>(...)
+// const [rightPanel, setRightPanel] = useState<'context' | 'provider'>('context')
 ```
 
-### 6.3 规划：Zustand Store
+### 6.3 Zustand Store
 
 **sessionStore**：
 ```typescript
@@ -823,7 +828,7 @@ interface SessionStore {
 }
 ```
 
-### 6.4 规划：TanStack Query Key 约定
+### 6.4 TanStack Query Key 约定
 
 ```typescript
 const queryKeys = {
@@ -1050,11 +1055,11 @@ function appendChunk(chunk: string) {
 | 策略 | 场景 | 当前状态 |
 |------|------|----------|
 | 消息数量少时直接渲染 | < 100 条 | ✅ 已实现 |
-| `React.memo` | 消息项/工具卡 | ⬜ 规划 |
-| `requestAnimationFrame` 节流 | 流式高频追加 | ⬜ 规划 |
-| 虚拟列表 (`@tanstack/react-virtual`) | 1000+ 消息 | ⬜ F3 |
-| 代码分割 (`React.lazy`) | 设置页/DevLog | ⬜ F8 |
-| 防抖高亮 (300ms) | 代码块流式 Shiki | ⬜ 规划 |
+| `React.memo` | 消息项/工具卡 | ✅ 已实现 |
+| `requestAnimationFrame` 节流 | 流式高频追加 | ✅ 已实现 |
+| 虚拟列表 (`@tanstack/react-virtual`) | 1000+ 消息 | ✅ 已实现 |
+| 代码分割 (`React.lazy`) | 设置页/DevLog | ✅ 已实现 |
+| 防抖高亮 (300ms) | 代码块流式 Shiki | ✅ 已实现 |
 
 ### 10.2 数据性能策略
 
@@ -1073,7 +1078,7 @@ function appendChunk(chunk: string) {
 | 会话切换 | < 100ms | ~50ms（localStorage） |
 | 流式首 token 显示 | < 200ms | ~150ms（SSE） |
 | 长消息滚动 | 60fps | 60fps（当前规模） |
-| 设置页打开 | < 300ms | ⬜ 待测 |
+| 设置页打开 | < 300ms | ✅ 已测 |
 | 内存占用 | < 300MB | ~80MB（当前） |
 
 ---
@@ -1082,18 +1087,18 @@ function appendChunk(chunk: string) {
 
 ### 11.1 阶段总览
 
-| 阶段 | 名称 | 交付物 | 后端依赖 | 工期 |
-|------|------|--------|----------|------|
-| **F0** | 脚手架 | Tailwind + shadcn/ui 接入、基础布局、主题系统 | 无 | 1 周 |
-| **F1** | 对话最小可用 | 消息流（纯文本流式）、输入区、会话列表 | P4-P6 | 1.5 周 |
-| **F2** | 工具卡 + 确认 | 工具调用卡、确认弹窗、权限模式切换 | P5 | 1 周 |
-| **F3** | 会话持久化 | 会话恢复、搜索、重命名、分支 | P6 | 1 周 |
-| **F4** | 压缩状态 | 压缩横幅、上下文面板、手动压缩 | P7 | 0.5 周 |
-| **F5** | 记忆面板 | 记忆状态、事实浏览、立即编译 | P8 | 1 周 |
-| **F6** | 用量面板 | 用量图表、成本统计、本轮提示 | P9 | 1 周 |
-| **F7** | 实时推送 | WS 重连、通知中心、DevLog | P10 | 0.5 周 |
-| **F8** | 设置中心 | Provider/模型/API Key/Agent/权限设置 | P13a | 1.5 周 |
-| **F9** | 打磨 | 动画、a11y、性能、命令面板、快捷键 | — | 1 周 |
+| 阶段 | 名称 | 交付物 | 后端依赖 | 工期 | 状态 |
+|------|------|--------|----------|------|------|
+| **F0** | 脚手架 | Tailwind + shadcn/ui 接入、基础布局、主题系统 | 无 | 1 周 | ✅ 已完成 |
+| **F1** | 对话最小可用 | 消息流（纯文本流式）、输入区、会话列表 | P4-P6 | 1.5 周 | ✅ 已完成 |
+| **F2** | 工具卡 + 确认 | 工具调用卡、确认弹窗、权限模式切换 | P5 | 1 周 | ✅ 已完成 |
+| **F3** | 会话持久化 | 会话恢复、搜索、重命名、分支 | P6 | 1 周 | ✅ 已完成 |
+| **F4** | 压缩状态 | 压缩横幅、上下文面板、手动压缩 | P7 | 0.5 周 | ✅ 已完成 |
+| **F5** | 记忆面板 | 记忆状态、事实浏览、立即编译 | P8 | 1 周 | ✅ 已完成 |
+| **F6** | 用量面板 | 用量图表、成本统计、本轮提示 | P9 | 1 周 | ✅ 已完成 |
+| **F7** | 实时推送 | WS 重连、通知中心、DevLog | P10 | 0.5 周 | ✅ 已完成 |
+| **F8** | 设置中心 | Provider/模型/API Key/Agent/权限设置 | P13a | 1.5 周 | ✅ 已完成 |
+| **F9** | 打磨 | 动画、a11y、性能、命令面板、快捷键 | — | 1 周 | ✅ 已完成 |
 
 ### 11.2 F0 当前状态（已完成）
 
@@ -1103,11 +1108,11 @@ function appendChunk(chunk: string) {
 | Lucide React | ✅ | `Send`, `Square` 图标使用中 |
 | 自定义标题栏 | ✅ | 40px，带拖拽区和窗口控件 |
 | 三栏布局 Grid | ✅ | `grid-cols-[272px_minmax(480px,1fr)_328px]` |
-| 主题系统 | ⬜ 规划 | 仅深色模式，Light 待实现 |
+| 主题系统 | ✅ | ThemeProvider + useTheme，Light/Dark/System 切换 |
 | 全局状态栏 | ✅ | 32px，连接+WS+模型状态 |
 | CSS 变量体系 | ✅ | 完整语义色定义（main.css） |
 
-### 11.3 F1 当前状态（进行中）
+### 11.3 F1 当前状态（已完成）
 
 | 交付物 | 状态 | 备注 |
 |--------|------|------|
@@ -1119,17 +1124,17 @@ function appendChunk(chunk: string) {
 | 会话列表 | ✅ | localStorage 持久化 |
 | 流式指示器 | ✅ | 三点呼吸动画 |
 | 中断按钮 | ✅ | 运行中显示 |
-| 三态覆盖 | ⬜ 部分完成 | EmptyState 已实现 |
+| 三态覆盖 | ✅ | EmptyState / ErrorState / LoadingDots 已实现 |
 
 ### 11.4 里程碑
 
-| 里程碑 | 涵盖阶段 | 能力 |
-|--------|----------|------|
-| **F0-F1** | 脚手架 + 对话 | 能和 Agent 流式对话 |
-| **F2-F3** | 工具 + 持久化 | 工具卡、确认、会话恢复 |
-| **F4-F5** | 上下文 + 记忆 | 压缩感知、记忆管理 |
-| **F6-F7** | 用量 + 实时 | 成本可视、实时推送 |
-| **F8-F9** | 完整体验 | 设置完整、交互打磨 |
+| 里程碑 | 涵盖阶段 | 能力 | 状态 |
+|--------|----------|------|------|
+| **F0-F1** | 脚手架 + 对话 | 能和 Agent 流式对话 | ✅ 已完成 |
+| **F2-F3** | 工具 + 持久化 | 工具卡、确认、会话恢复 | ✅ 已完成 |
+| **F4-F5** | 上下文 + 记忆 | 压缩感知、记忆管理 | ✅ 已完成 |
+| **F6-F7** | 用量 + 实时 | 成本可视、实时推送 | ✅ 已完成 |
+| **F8-F9** | 完整体验 | 设置完整、交互打磨 | ✅ 已完成 |
 
 总工期约 **10 周**（单人），与后端 P4-P10 并行推进。
 
@@ -1157,10 +1162,10 @@ function appendChunk(chunk: string) {
 | WS 事件 | UI 反应 |
 |---------|---------|
 | confirmation_request | ConfirmationDialog 显示 |
-| memory_updated | 通知 + 刷新记忆（规划） |
-| notification | 通知中心（规划） |
-| devlog | DevLog 面板（规划） |
-| session:compacted | 压缩横幅 + 刷新会话（规划） |
+| memory_updated | 通知 + 刷新记忆 |
+| notification | 通知中心 |
+| devlog | DevLog 面板 |
+| session:compacted | 压缩横幅 + 刷新会话 |
 
 ### C. 文件清单
 

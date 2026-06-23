@@ -18,6 +18,10 @@ export interface UseStreamingRunOptions {
   onFinished?: (runId: string, result?: string) => void
   /** run 出错（RUN_ERROR 或网络错误） */
   onError?: (error: Error) => void
+  /** 指定本次 run 使用的模型（provider + modelId），未传则由后端使用默认模型 */
+  model?: { provider: string; modelId: string }
+  /** 目标 Agent ID，默认 'default' */
+  agentId?: string
 }
 
 export interface UseStreamingRunReturn {
@@ -53,7 +57,7 @@ export interface UseStreamingRunReturn {
 export function useStreamingRun(
   options: UseStreamingRunOptions,
 ): UseStreamingRunReturn {
-  const { threadId, onEvent, onFinished, onError } = options
+  const { threadId, onEvent, onFinished, onError, model, agentId } = options
 
   const [status, setStatus] = useState<StreamingRunStatus>('idle')
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
@@ -88,6 +92,8 @@ export function useStreamingRun(
         runId,
         messages,
         signal: controller.signal,
+        model,
+        agentId,
         onEvent: (event) => {
           // 根据 AG-UI 事件类型更新状态
           if (event.type === EventType.RUN_FINISHED) {
@@ -118,10 +124,10 @@ export function useStreamingRun(
         },
       })
 
-      // 清理资源
+      // 清理资源（无论成功/失败/中断都必须清理，否则后续 run 会被拒绝）
       abortControllerRef.current = null
     },
-    [threadId],
+    [threadId, model, agentId],
   )
 
   const abort = useCallback(() => {

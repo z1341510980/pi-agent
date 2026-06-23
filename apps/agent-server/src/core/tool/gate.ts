@@ -69,7 +69,7 @@ export class Gate {
   private mode: PermissionMode
   private readonly deniedTools: Set<string>
   private readonly confirmationTools: Set<string>
-  private readonly workspace?: string
+  private workspace?: string
   private readonly agentDir?: string
   private readonly externalReadPaths: string[]
   private readonly customCheck?: GateOptions['customCheck']
@@ -92,6 +92,16 @@ export class Gate {
   /** 运行时切换权限模式 */
   setMode(mode: PermissionMode): void {
     this.mode = mode
+  }
+
+  /** 获取当前工作区路径 */
+  getWorkspace(): string | undefined {
+    return this.workspace
+  }
+
+  /** 运行时切换工作区路径 */
+  setWorkspace(workspace: string): void {
+    this.workspace = workspace
   }
 
   /** 获取工具风险等级 */

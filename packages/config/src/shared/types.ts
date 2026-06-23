@@ -21,10 +21,4 @@ export type NodeConfig = {
     maxToolCalls: number;
     maxContextTokens: number;
   };
-
-  llm: {
-    provider: string;
-    model: string;
-    apiKey?: string;
-  };
 };

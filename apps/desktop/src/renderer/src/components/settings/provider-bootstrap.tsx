@@ -1,5 +1,6 @@
 import type { FormEvent, ReactElement } from 'react'
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -10,6 +11,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { postApi } from '../../api'
+import { providerPresets, presetOptions } from './provider-manager'
 
 export type ProviderSettings = {
   provider: string
@@ -25,9 +28,13 @@ const defaultSettings: ProviderSettings = {
   apiKey: ''
 }
 
+type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+
 export function ProviderBootstrap(): ReactElement {
+  const queryClient = useQueryClient()
   const [settings, setSettings] = useState<ProviderSettings>(() => loadProviderSettings())
-  const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle')
+  const [saveState, setSaveState] = useState<SaveState>('idle')
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     if (saveState !== 'saved') return
@@ -43,10 +50,46 @@ export function ProviderBootstrap(): ReactElement {
     }))
   }
 
-  function saveSettings(event: FormEvent<HTMLFormElement>): void {
+  async function saveSettings(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
-    window.localStorage.setItem(storageKey, JSON.stringify(settings))
-    setSaveState('saved')
+    setSaveState('saving')
+    setSaveError(null)
+    try {
+      const preset = providerPresets[settings.provider]
+      if (!preset) {
+        throw new Error(`不支持的 Provider "${settings.provider}"，请在 Provider 管理中配置`)
+      }
+
+      // 构建 models：使用 preset 的模型，如果用户输入的 model 不在 preset 中，添加它
+      const models = [...preset.models]
+      if (settings.model && !models.some((m) => m.id === settings.model)) {
+        models.push({ id: settings.model, name: settings.model })
+      }
+      if (models.length === 0) {
+        throw new Error('请填写模型名称')
+      }
+
+      const label = presetOptions.find((o) => o.value === settings.provider)?.label ?? settings.provider
+
+      await postApi('/api/providers', {
+        id: settings.provider,
+        name: label,
+        baseUrl: preset.baseUrl,
+        apiKey: settings.apiKey,
+        api: preset.api,
+        authHeader: true,
+        models,
+      })
+
+      // Provider 变更后，使模型列表缓存失效，让对话界面的模型选择器重新获取
+      void queryClient.invalidateQueries({ queryKey: ['agui-models'] })
+
+      window.localStorage.setItem(storageKey, JSON.stringify(settings))
+      setSaveState('saved')
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : '保存失败')
+      setSaveState('error')
+    }
   }
 
   return (
@@ -96,12 +139,16 @@ export function ProviderBootstrap(): ReactElement {
         />
       </div>
 
-      <Button type="submit">保存本机设置</Button>
+      <Button type="submit" disabled={saveState === 'saving'}>
+        {saveState === 'saving' ? '保存中...' : '保存并注册到后端'}
+      </Button>
 
-      <p className="text-muted text-xs leading-relaxed m-0" role="status">
+      <p className="text-muted-foreground text-xs leading-relaxed m-0" role="status">
         {saveState === 'saved'
-          ? 'Provider 设置已保存到本机。'
-          : '后续会接入 Electron safeStorage 和后端连通性验证。'}
+          ? 'Provider 已注册到后端，可立即使用。'
+          : saveState === 'error'
+            ? (saveError ?? '保存失败')
+            : '保存时会将 Provider 注册到后端 ModelRegistry。'}
       </p>
     </form>
   )

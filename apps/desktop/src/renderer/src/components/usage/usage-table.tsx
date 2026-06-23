@@ -10,6 +10,8 @@ export interface UsageRecord {
   agentId: string
   sessionId: string
   model: string
+  /** Provider 名（部分历史记录可能缺失） */
+  provider?: string
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
@@ -72,7 +74,7 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
     <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
       <div className="flex items-center justify-between">
         <p className="text-subtle text-xs font-[760] m-0">调用明细</p>
-        <span className="text-muted text-[10px]">
+        <span className="text-muted-foreground text-[10px]">
           {total > 0 ? `${offset + 1}-${Math.min(offset + limit, total)} / ${total}` : '0 条'}
         </span>
       </div>
@@ -97,12 +99,13 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
 
       {items.length > 0 && (
         <>
-          {/* 表头 */}
-          <div className="grid grid-cols-[1fr_60px_60px_60px_50px] gap-1 text-[10px] text-muted-foreground font-[760] px-1">
+          {/* 表头（含 Provider 列） */}
+          <div className="grid grid-cols-[1fr_60px_60px_60px_50px_50px] gap-1 text-[10px] text-muted-foreground font-[760] px-1">
             <span>模型</span>
             <span className="text-right">输入</span>
             <span className="text-right">输出</span>
             <span className="text-right">成本</span>
+            <span>Provider</span>
             <span className="text-right">时间</span>
           </div>
           {/* 行 */}
@@ -110,7 +113,7 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
             {items.map((item) => (
               <div
                 key={item.id}
-                className="grid grid-cols-[1fr_60px_60px_60px_50px] gap-1 text-[11px] px-1 py-1 rounded hover:bg-surface-1/50"
+                className="grid grid-cols-[1fr_60px_60px_60px_50px_50px] gap-1 text-[11px] px-1 py-1 rounded hover:bg-surface-1/50"
               >
                 <span className="truncate" title={item.model}>
                   {item.model.length > 16 ? `${item.model.slice(0, 14)}…` : item.model}
@@ -122,6 +125,12 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
                   {formatTokens(item.outputTokens)}
                 </span>
                 <span className="text-right font-mono">{formatCost(item.costUsd)}</span>
+                <span
+                  className="truncate text-muted-foreground"
+                  title={item.provider ?? ''}
+                >
+                  {item.provider ? (item.provider.length > 8 ? `${item.provider.slice(0, 6)}…` : item.provider) : '—'}
+                </span>
                 <span className="text-right text-muted-foreground">
                   {formatTime(item.createdAt)}
                 </span>
@@ -131,7 +140,7 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
 
           {/* 分页 */}
           <div className="flex items-center justify-between pt-1">
-            <span className="text-muted text-[10px]">
+            <span className="text-muted-foreground text-[10px]">
               第 {currentPage} / {totalPages} 页
             </span>
             <div className="flex gap-1">

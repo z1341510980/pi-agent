@@ -17,7 +17,21 @@ export interface PiSessionStoreStats {
   threadCount: number
   pendingToolCalls: number
   activeRuns: number
+  evictedCount: number
 }
+
+export interface PiSessionStoreOptions {
+  /** 最大缓存会话数，超过后按 LRU 淘汰（默认 50） */
+  maxSessions?: number
+  /** 空闲会话超时毫秒数，超过后可被淘汰（默认 30 分钟） */
+  idleTimeoutMs?: number
+  /** 淘汰检查间隔毫秒数（默认 5 分钟） */
+  sweepIntervalMs?: number
+}
+
+const DEFAULT_MAX_SESSIONS = 50
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000
+const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000
 
 /**
  * PiSessionStore：活跃会话管理
@@ -25,12 +39,25 @@ export interface PiSessionStoreStats {
  * 关键不变量：
  * 1. getOrCreate 对同一 threadId 并发调用只创建一个 session（通过 pendingPromises Map）
  * 2. tryAcquireRun/releaseRun 提供同线程 run 互斥
+ * 3. LRU 淘汰不会清除活跃 run 的会话
  */
 export class PiSessionStore {
   private readonly sessions = new Map<string, PiThreadSession>()
   /** 进行中的 session 创建 Promise，防止并发重复创建 */
   private readonly pendingPromises = new Map<string, Promise<PiThreadSession>>()
   private sessionFactory?: PiSessionFactory
+  private readonly maxSessions: number
+  private readonly idleTimeoutMs: number
+  private readonly sweepIntervalMs: number
+  private sweepTimer: ReturnType<typeof setInterval> | null = null
+  private evictedCount = 0
+
+  constructor(options: PiSessionStoreOptions = {}) {
+    this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS
+    this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+    this.sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS
+    this.startSweepTimer()
+  }
 
   setSessionFactory(factory: PiSessionFactory): void {
     this.sessionFactory = factory
@@ -168,6 +195,7 @@ export class PiSessionStore {
       threadCount: this.sessions.size,
       pendingToolCalls,
       activeRuns,
+      evictedCount: this.evictedCount,
     }
   }
 
@@ -186,5 +214,78 @@ export class PiSessionStore {
       return call
     }
     return undefined
+  }
+
+  /**
+   * 清除所有缓存的 Session（不影响持久化的会话历史）。
+   * Provider 配置更新后调用，使下次请求创建新的 Session（使用新配置）。
+   * 正在执行的 run 不会被强制中断，但下次 getOrCreate 会重建 Session。
+   */
+  clear(): void {
+    this.sessions.clear()
+    this.pendingPromises.clear()
+  }
+
+  /** 停止 sweep 定时器（用于优雅关闭） */
+  dispose(): void {
+    this.stopSweepTimer()
+    this.clear()
+  }
+
+  /** 手动触发一次淘汰扫描，返回被淘汰的会话数 */
+  sweepIdle(): number {
+    const now = Date.now()
+    let evicted = 0
+    for (const [threadId, session] of this.sessions) {
+      if (session.activeRunId) continue
+      if (session.pendingToolCalls.size > 0) continue
+      if (now - session.lastAccessedAt > this.idleTimeoutMs) {
+        this.sessions.delete(threadId)
+        evicted++
+      }
+    }
+    this.evictedCount += evicted
+    return evicted
+  }
+
+  /** LRU 淘汰：当缓存超过 maxSessions 时淘汰最久未访问的会话 */
+  private evictLRU(): void {
+    while (this.sessions.size > this.maxSessions) {
+      let oldestId: string | null = null
+      let oldestTime = Infinity
+      for (const [threadId, session] of this.sessions) {
+        if (session.activeRunId) continue
+        if (session.pendingToolCalls.size > 0) continue
+        if (session.lastAccessedAt < oldestTime) {
+          oldestTime = session.lastAccessedAt
+          oldestId = threadId
+        }
+      }
+      if (oldestId === null) break
+      this.sessions.delete(oldestId)
+      this.evictedCount++
+    }
+  }
+
+  private startSweepTimer(): void {
+    if (this.sweepTimer) return
+    this.sweepTimer = setInterval(() => {
+      try {
+        this.sweepIdle()
+        this.evictLRU()
+      } catch {
+        // 定时器异常不影响主流程
+      }
+    }, this.sweepIntervalMs)
+    if (this.sweepTimer.unref) {
+      this.sweepTimer.unref()
+    }
+  }
+
+  private stopSweepTimer(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer)
+      this.sweepTimer = null
+    }
   }
 }

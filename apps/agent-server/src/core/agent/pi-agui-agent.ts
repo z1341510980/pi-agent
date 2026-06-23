@@ -8,7 +8,9 @@ import {
 } from '@ag-ui/core'
 import { randomUUID } from 'node:crypto'
 import type { AgUiEventSink } from '@repo/protocol/events'
+import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore, PiThreadSession } from './session-store.js'
+import type { ProviderConfigStore } from '../config/provider-config-store.js'
 import { StreamEmitter, emitSingleAssistantMessage } from './stream-emitter.js'
 import { ReasoningPipeline } from './reasoning-pipeline.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
@@ -23,6 +25,11 @@ export interface StreamRunInput {
     content: string | unknown
     toolCallId?: string
   }>
+  /** 模型选择：允许前端指定 provider + modelId */
+  model?: {
+    provider: string
+    modelId: string
+  }
 }
 
 export interface StreamRunOptions {
@@ -48,6 +55,10 @@ export class PiAgUiAgent {
 
   constructor(
     private readonly sessionStore: PiSessionStore,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    private readonly modelRegistry: any,
+    private readonly providerConfigStore: ProviderConfigStore,
+    private readonly eventBus?: EventBus,
     agentId = 'default'
   ) {
     this.agentId = agentId
@@ -68,6 +79,12 @@ export class PiAgUiAgent {
       terminated = true
       emit(event)
     }
+
+    this.eventBus?.emit('devlog:entry', {
+      level: 'debug',
+      message: `Run 开始: threadId=${threadId}, runId=${runId}`,
+      source: 'agent',
+    })
 
     emit({
       type: EventType.RUN_STARTED,
@@ -100,6 +117,11 @@ export class PiAgUiAgent {
     // 同线程 run 互斥：尝试占用 activeRunId
     const acquired = this.sessionStore.tryAcquireRun(threadId, runId)
     if (!acquired) {
+      this.eventBus?.emit('devlog:entry', {
+        level: 'warn',
+        message: `Run 被拒绝（线程 ${threadId} 已有活跃 run）`,
+        source: 'agent',
+      })
       emitTermination({
         type: EventType.RUN_ERROR,
         message: `线程 ${threadId} 已有活跃 run，请等待完成或中断后再试`
@@ -113,6 +135,20 @@ export class PiAgUiAgent {
 
     try {
       threadSession = await this.sessionStore.getOrCreate(threadId)
+
+      // 模型切换：如果前端传了 model，切换到指定模型
+      if (input.model) {
+        const targetModel = this.modelRegistry.find(input.model.provider, input.model.modelId)
+        if (targetModel) {
+          await threadSession.session.setModel(targetModel)
+        } else {
+          emitTermination({
+            type: EventType.RUN_ERROR,
+            message: `模型不可用：${input.model.provider}/${input.model.modelId}`
+          } as RunErrorEvent)
+          return
+        }
+      }
 
       const assistantResponseMessageId = randomUUID()
       const reasoningPipeline = new ReasoningPipeline(emit, assistantResponseMessageId)
@@ -146,6 +182,11 @@ export class PiAgUiAgent {
       streamEmitter.finishTextMessage()
 
       const completeText = streamEmitter.getCompleteAssistantText()
+      this.eventBus?.emit('devlog:entry', {
+        level: 'info',
+        message: `Run 完成: threadId=${threadId}, runId=${runId}`,
+        source: 'agent',
+      })
       emitTermination({
         type: EventType.RUN_FINISHED,
         threadId,
@@ -155,6 +196,11 @@ export class PiAgUiAgent {
     } catch (error) {
       // abort 视为正常终止，发射 RUN_FINISHED 而非 RUN_ERROR
       if (runOptions.signal?.aborted) {
+        this.eventBus?.emit('devlog:entry', {
+          level: 'info',
+          message: `Run 已中断: threadId=${threadId}, runId=${runId}`,
+          source: 'agent',
+        })
         emitTermination({
           type: EventType.RUN_FINISHED,
           threadId,
@@ -165,6 +211,18 @@ export class PiAgUiAgent {
       }
 
       const message = error instanceof Error ? error.message : '未知 AG-UI 运行错误'
+      this.eventBus?.emit('devlog:entry', {
+        level: 'error',
+        message: `Run 错误: threadId=${threadId}, runId=${runId}, error=${message}`,
+        source: 'agent',
+      })
+      this.eventBus?.emit('notification:push', {
+        level: 'error',
+        title: 'Agent 运行错误',
+        message,
+        category: 'agent',
+        threadId,
+      })
       emitTermination({
         type: EventType.RUN_ERROR,
         message
@@ -244,9 +302,61 @@ export class PiAgUiAgent {
 
   async compactThread(threadId: string, customInstructions?: string): Promise<unknown> {
     const threadSession = await this.sessionStore.getOrCreate(threadId)
-    const result = await threadSession.session.compact(customInstructions)
-    threadSession.lastAccessedAt = Date.now()
-    return result
+    const startedAt = Date.now()
+    this.eventBus?.emit('compaction:started', {
+      threadId,
+      reason: 'manual',
+      startedAt,
+    })
+    this.eventBus?.emit('devlog:entry', {
+      level: 'debug',
+      message: `压缩开始: threadId=${threadId}`,
+      source: 'compaction',
+    })
+    try {
+      const result = await threadSession.session.compact(customInstructions)
+      threadSession.lastAccessedAt = Date.now()
+      const durationMs = Date.now() - startedAt
+      this.eventBus?.emit('compaction:completed', {
+        threadId,
+        reason: 'manual',
+        durationMs,
+        result,
+      })
+      this.eventBus?.emit('devlog:entry', {
+        level: 'info',
+        message: `压缩完成: threadId=${threadId}, 耗时 ${durationMs}ms`,
+        source: 'compaction',
+      })
+      this.eventBus?.emit('notification:push', {
+        level: 'success',
+        title: '上下文压缩完成',
+        message: `耗时 ${durationMs}ms`,
+        category: 'compaction',
+        threadId,
+      })
+      return result
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      this.eventBus?.emit('compaction:failed', {
+        threadId,
+        reason: 'manual',
+        error: errorMsg,
+      })
+      this.eventBus?.emit('devlog:entry', {
+        level: 'error',
+        message: `压缩失败: threadId=${threadId}, error=${errorMsg}`,
+        source: 'compaction',
+      })
+      this.eventBus?.emit('notification:push', {
+        level: 'error',
+        title: '上下文压缩失败',
+        message: errorMsg,
+        category: 'compaction',
+        threadId,
+      })
+      throw err
+    }
   }
 
   async getThreadTree(threadId: string): Promise<unknown[]> {
@@ -257,10 +367,20 @@ export class PiAgUiAgent {
   }
 
   async getThreadModels(threadId: string): Promise<unknown[]> {
-    const threadSession = await this.sessionStore.getOrCreate(threadId)
-    const models = threadSession.session.modelRegistry.getAvailable()
-    threadSession.lastAccessedAt = Date.now()
-    return models
+    // 只返回已配置 Provider 的模型（从 ProviderConfigStore 获取已注册的 Provider ID 列表）
+    // 避免返回所有内置模型（如 openai、anthropic 等），那些需要用户配置 API Key 才可用
+    void threadId // 保留参数以维持 API 兼容性
+    const configuredProviders = this.providerConfigStore.list()
+    if (configuredProviders.length === 0) {
+      return []
+    }
+    const configuredProviderIds = new Set(configuredProviders.map((p) => p.id))
+    const allModels = this.modelRegistry.getAll() as Array<{
+      provider: string
+      id: string
+      name?: string
+    }>
+    return allModels.filter((m) => configuredProviderIds.has(m.provider))
   }
 
   async getThreadTools(threadId: string): Promise<{ tools: unknown[]; activeToolNames: string[] }> {

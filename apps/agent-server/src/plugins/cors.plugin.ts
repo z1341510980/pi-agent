@@ -24,6 +24,7 @@ export const corsPlugin: FastifyPluginAsync = fp(async (app) => {
       }
       callback(new Error("CORS 不允许的来源"), false);
     },
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     credentials: true,
   });
 });

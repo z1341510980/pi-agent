@@ -10,6 +10,11 @@ export const runAgentInputSchema = z.object({
   state: z.record(z.string(), z.unknown()).optional(),
   forwardedProps: z.record(z.string(), z.unknown()).optional(),
   parentRunId: z.string().optional(),
+  // 模型选择：允许前端指定 provider + modelId，未传则使用默认配置
+  model: z.object({
+    provider: z.string().min(1),
+    modelId: z.string().min(1),
+  }).optional(),
 })
 
 /** 线程消息输入（steer / follow-up 共用） */

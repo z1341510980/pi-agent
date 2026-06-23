@@ -376,4 +376,146 @@ describe('UsageLedger', () => {
 
     ledger.close()
   })
+
+  it('getDaily 默认返回最近 7 天（含空日填充）', () => {
+    const ledger = new UsageLedger(tempDir)
+
+    ledger.record({
+      sessionId: 's1',
+      threadId: 't1',
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      inputTokens: 1000,
+      outputTokens: 500,
+      durationMs: 1000,
+      agentId: 'default',
+    })
+
+    const daily = ledger.getDaily()
+    expect(daily).toHaveLength(7)
+    // 最后一天是今天，应有数据
+    const today = daily[6]
+    expect(today.calls).toBe(1)
+    expect(today.inputTokens).toBe(1000)
+    expect(today.outputTokens).toBe(500)
+    expect(today.costUsd).toBeGreaterThan(0)
+    // 前面的天应为空
+    expect(daily[0].calls).toBe(0)
+    expect(daily[0].costUsd).toBe(0)
+    // 日期格式应为 YYYY-MM-DD
+    expect(today.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    // 日期应升序排列
+    for (let i = 1; i < daily.length; i++) {
+      expect(daily[i].date > daily[i - 1].date).toBe(true)
+    }
+
+    ledger.close()
+  })
+
+  it('getDaily 支持自定义 days 参数', () => {
+    const ledger = new UsageLedger(tempDir)
+
+    ledger.record({
+      sessionId: 's1',
+      threadId: 't1',
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      inputTokens: 100,
+      outputTokens: 50,
+      durationMs: 100,
+      agentId: 'default',
+    })
+
+    const daily = ledger.getDaily({ days: 3 })
+    expect(daily).toHaveLength(3)
+
+    ledger.close()
+  })
+
+  it('getDaily 支持按日聚合多条记录', () => {
+    const ledger = new UsageLedger(tempDir)
+
+    // 同一天写入 3 条记录
+    for (let i = 0; i < 3; i++) {
+      ledger.record({
+        sessionId: `s${i}`,
+        threadId: 't1',
+        model: 'deepseek-chat',
+        provider: 'deepseek',
+        inputTokens: 100,
+        outputTokens: 50,
+        durationMs: 100,
+        agentId: 'default',
+      })
+    }
+
+    const daily = ledger.getDaily({ days: 1 })
+    expect(daily).toHaveLength(1)
+    expect(daily[0].calls).toBe(3)
+    expect(daily[0].inputTokens).toBe(300)
+    expect(daily[0].outputTokens).toBe(150)
+
+    ledger.close()
+  })
+
+  it('getDaily 支持 agentId 过滤', () => {
+    const ledger = new UsageLedger(tempDir)
+
+    ledger.record({
+      sessionId: 's1',
+      threadId: 't1',
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      inputTokens: 100,
+      outputTokens: 50,
+      durationMs: 100,
+      agentId: 'agent-a',
+    })
+    ledger.record({
+      sessionId: 's2',
+      threadId: 't1',
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      inputTokens: 200,
+      outputTokens: 100,
+      durationMs: 200,
+      agentId: 'agent-b',
+    })
+
+    const daily = ledger.getDaily({ days: 1, agentId: 'agent-a' })
+    expect(daily).toHaveLength(1)
+    expect(daily[0].calls).toBe(1)
+    expect(daily[0].inputTokens).toBe(100)
+
+    ledger.close()
+  })
+
+  it('getDaily days 参数被限制在 1-90 范围内', () => {
+    const ledger = new UsageLedger(tempDir)
+
+    // days = 0 应被限制为 1
+    const daily0 = ledger.getDaily({ days: 0 })
+    expect(daily0).toHaveLength(1)
+
+    // days = 200 应被限制为 90
+    const daily200 = ledger.getDaily({ days: 200 })
+    expect(daily200).toHaveLength(90)
+
+    ledger.close()
+  })
+
+  it('getDaily 空数据返回全零的日期范围', () => {
+    const ledger = new UsageLedger(tempDir)
+
+    const daily = ledger.getDaily({ days: 5 })
+    expect(daily).toHaveLength(5)
+    for (const d of daily) {
+      expect(d.calls).toBe(0)
+      expect(d.costUsd).toBe(0)
+      expect(d.inputTokens).toBe(0)
+      expect(d.outputTokens).toBe(0)
+    }
+
+    ledger.close()
+  })
 })

@@ -2,9 +2,11 @@ import fp from 'fastify-plugin'
 import type { FastifyPluginAsync } from 'fastify'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { nodeConfig } from '@repo/config/node'
 import { AuthStorage, ModelRegistry, SessionManager } from '@earendil-works/pi-coding-agent'
 import { createModuleLogger } from '../lib/logger.js'
+import { ProviderConfigStore } from '../core/config/provider-config-store.js'
+import { ProxyConfigStore } from '../core/config/proxy-config-store.js'
+import { ProxyManager } from '../core/config/proxy-manager.js'
 
 /**
  * Pi SDK 核心对象注册插件
@@ -18,10 +20,17 @@ import { createModuleLogger } from '../lib/logger.js'
  * - ${dataDir}/agent/auth.json     凭证存储
  * - ${dataDir}/agent/models.json   模型注册表
  * - ${dataDir}/agent/sessions/     会话持久化
+ * - ${dataDir}/agent/providers.json Provider 配置
+ * - ${dataDir}/agent/proxy.json    代理配置
  *
  * Provider 配置：
- * - DeepSeek：OpenAI 兼容 API，仅在明确配置 DeepSeek 时注册
- * - 其他 Provider：通过 Pi SDK 内置模型注册表和凭证解析处理
+ * - 所有 LLM Provider 配置由前端用户在设置页面配置
+ * - 通过 POST /api/providers 注册到 ProviderConfigStore 和 ModelRegistry
+ * - 不从环境变量读取 LLM_PROVIDER/LLM_MODEL/LLM_API_KEY
+ *
+ * 代理配置：
+ * - 由前端用户在设置页面配置
+ * - 通过 PUT /api/settings/proxy 注册到 ProxyConfigStore 并应用到全局 HTTP 客户端
  */
 export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'pi-sdk')
@@ -54,69 +63,80 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   const sessionManager = SessionManager.create(cwd, sessionDir)
   app.decorate('sessionManager', sessionManager)
 
-  // 注册 DeepSeek Provider（OpenAI 兼容 API）
-  // 仅通过 PI_API_KEY_DEEPSEEK，或显式 LLM_PROVIDER=deepseek + LLM_API_KEY 注册
-  const configuredDeepSeekApiKey =
-    nodeConfig.llm.provider === 'deepseek' ? nodeConfig.llm.apiKey : undefined
-  const deepseekApiKey =
-    process.env.PI_API_KEY_DEEPSEEK ?? configuredDeepSeekApiKey
-  const deepseekBaseUrl =
-    process.env.PI_DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
-  if (deepseekApiKey) {
-    modelRegistry.registerProvider('deepseek', {
-      name: 'DeepSeek',
-      baseUrl: deepseekBaseUrl,
-      apiKey: deepseekApiKey,
-      api: 'openai-completions',
-      authHeader: true,
-      models: [
-        {
-          id: 'deepseek-chat',
-          name: 'DeepSeek V3 Chat',
-          reasoning: false,
-          input: ['text'],
-          cost: { input: 0.27, output: 1.1, cacheRead: 0.07, cacheWrite: 0.27 },
-          contextWindow: 65536,
-          maxTokens: 8192,
-          compat: {
-            supportsDeveloperRole: false,
-            maxTokensField: 'max_tokens',
-          },
-        },
-        {
-          id: 'deepseek-reasoner',
-          name: 'DeepSeek R1 Reasoner',
-          reasoning: true,
-          input: ['text'],
-          cost: { input: 0.55, output: 2.19, cacheRead: 0.14, cacheWrite: 0.55 },
-          contextWindow: 65536,
-          maxTokens: 8192,
-          compat: {
-            supportsDeveloperRole: false,
-            maxTokensField: 'max_tokens',
-            thinkingFormat: 'deepseek',
-          },
-        },
-      ],
-    })
-    log.info('DeepSeek Provider 已注册（deepseek-chat, deepseek-reasoner）')
-  } else {
-    log.warn('DeepSeek 未显式配置，DeepSeek Provider 未注册')
+  // ProviderConfigStore：前端动态注册的 Provider 配置
+  // 所有 LLM 配置由前端用户在设置页面配置，不读取环境变量
+  // 持久化到 ${agentDir}/providers.json，进程重启后自动恢复
+  const providersPath = join(agentDir, 'providers.json')
+  const providerConfigStore = new ProviderConfigStore(providersPath)
+  app.decorate('providerConfigStore', providerConfigStore)
+
+  // ProxyConfigStore：出站代理配置
+  // 持久化到 ${agentDir}/proxy.json，进程重启后自动恢复
+  const proxyPath = join(agentDir, 'proxy.json')
+  const proxyConfigStore = new ProxyConfigStore(proxyPath)
+  app.decorate('proxyConfigStore', proxyConfigStore)
+
+  // ProxyManager：代理管理器，应用到全局 HTTP 客户端（undici）
+  const proxyManager = new ProxyManager()
+  app.decorate('proxyManager', proxyManager)
+
+  // 启动时从持久化存储恢复 Provider 配置到 ModelRegistry 和 AuthStorage
+  // 这样进程重启后无需用户重新配置 Provider
+  const restoredProviders = providerConfigStore.list()
+  if (restoredProviders.length > 0) {
+    for (const config of restoredProviders) {
+      // 注册到 ModelRegistry
+      modelRegistry.registerProvider(config.id, {
+        name: config.name,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        api: config.api,
+        authHeader: config.authHeader ?? true,
+        models: config.models.map((m) => {
+          const cost = m.cost ?? { input: 0, output: 0 }
+          return {
+            id: m.id,
+            name: m.name,
+            reasoning: m.reasoning ?? false,
+            input: ['text'] as const,
+            cost: {
+              input: cost.input ?? 0,
+              output: cost.output ?? 0,
+              cacheRead: cost.cacheRead ?? 0,
+              cacheWrite: cost.cacheWrite ?? 0,
+            },
+            contextWindow: m.contextWindow ?? 32768,
+            maxTokens: m.maxTokens ?? 8192,
+          }
+        }),
+      })
+      // 注入 API Key 到 AuthStorage
+      authStorage.setRuntimeApiKey(config.id, config.apiKey)
+    }
+    log.info(`已从 providers.json 恢复 ${restoredProviders.length} 个 Provider 配置`)
   }
 
-  // getApiKey 回调：从环境变量解析 API Key
-  // 优先级：PI_API_KEY_${PROVIDER} > 当前 LLM_API_KEY > PI_API_KEY
-  // 后续 P1 阶段会替换为 CredentialBridge（从 Electron safeStorage 获取）
+  // 启动时恢复代理配置并应用到全局 HTTP 客户端
+  const restoredProxy = proxyConfigStore.get()
+  const proxyResult = proxyManager.apply(restoredProxy)
+  if (proxyResult.applied) {
+    log.info(
+      { mode: restoredProxy.mode, effectiveProxyUrl: proxyResult.effectiveProxyUrl },
+      '代理配置已从 proxy.json 恢复并应用'
+    )
+  } else {
+    log.warn(
+      { mode: restoredProxy.mode, error: proxyResult.error },
+      '代理配置恢复失败'
+    )
+  }
+
+  // getApiKey 回调：仅从 ProviderConfigStore 读取 API Key
+  // 不再从环境变量读取，LLM 配置完全由前端用户配置
   const getApiKey = async (provider: string): Promise<string | undefined> => {
-    const envKey = `PI_API_KEY_${provider.toUpperCase().replace(/-/g, '_')}`
-    const apiKey = process.env[envKey]
-    if (apiKey) return apiKey
-    if (provider === nodeConfig.llm.provider && nodeConfig.llm.apiKey) {
-      return nodeConfig.llm.apiKey
-    }
-    return process.env.PI_API_KEY
+    return providerConfigStore.getApiKey(provider)
   }
   app.decorate('getApiKey', getApiKey)
 
-  log.info('Pi SDK 核心对象注册完成')
+  log.info('Pi SDK 核心对象注册完成（LLM 配置由前端用户配置，不读取环境变量）')
 })
