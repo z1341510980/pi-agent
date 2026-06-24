@@ -1,18 +1,16 @@
 /**
  * FactStore：结构化记忆存储
  *
- * 使用 JSON 文件存储事实，内存中维护 LRU 缓存。
- * 文件路径：${dataDir}/agent/facts.json
+ * 使用 SQLite 存储事实（facts 表），内存中维护 LRU 缓存。
+ * 写操作同步落库以保证一致性，读操作走内存 Map 缓存。
  *
  * 搜索能力：
  * - 标签交集匹配
  * - 文本关键词匹配（大小写不敏感）
  */
 
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { atomicWriteSync } from '@repo/shared/utils'
+import type Database from 'better-sqlite3'
 
 export interface Fact {
   /** UUID */
@@ -47,62 +45,109 @@ const DEFAULT_CONFIG: FactStoreConfig = {
   lruSize: 100,
 }
 
+/** facts 表行结构 */
+interface FactRow {
+  id: string
+  content: string
+  tags: string
+  source: string | null
+  confidence: number
+  created_at: number
+  updated_at: number
+  access_count: number
+  last_accessed_at: number
+}
+
 export class FactStore {
-  private readonly filePath: string
   private readonly config: FactStoreConfig
   /** 所有事实的存储 */
   private facts: Map<string, Fact> = new Map()
   /** LRU 缓存：最近访问的事实，键为 ID，值为事实 */
   private lruCache: Map<string, Fact> = new Map()
-  private loaded = false
 
-  constructor(dataDir: string, config?: Partial<FactStoreConfig>) {
+  /** 预编译 SQL，提升反复执行性能 */
+  private readonly stmtUpsert: Database.Statement
+  private readonly stmtDelete: Database.Statement
+  private readonly stmtGetAll: Database.Statement
+
+  constructor(db: Database.Database, config?: Partial<FactStoreConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config }
-    this.filePath = join(dataDir, 'agent', 'facts.json')
-  }
+    // 预编译语句
+    this.stmtUpsert = db.prepare(`
+      INSERT INTO facts (id, content, tags, source, confidence, created_at, updated_at, access_count, last_accessed_at)
+      VALUES (@id, @content, @tags, @source, @confidence, @created_at, @updated_at, @access_count, @last_accessed_at)
+      ON CONFLICT(id) DO UPDATE SET
+        content         = excluded.content,
+        tags            = excluded.tags,
+        source          = excluded.source,
+        confidence      = excluded.confidence,
+        created_at      = excluded.created_at,
+        updated_at      = excluded.updated_at,
+        access_count    = excluded.access_count,
+        last_accessed_at = excluded.last_accessed_at
+    `)
+    this.stmtDelete = db.prepare('DELETE FROM facts WHERE id = ?')
+    this.stmtGetAll = db.prepare('SELECT * FROM facts')
 
-  /** 延迟加载：首次访问时从文件读取 */
-  private ensureLoaded(): void {
-    if (this.loaded) return
-    this.loaded = true
-    if (existsSync(this.filePath)) {
-      try {
-        const content = readFileSync(this.filePath, 'utf-8')
-        const data = JSON.parse(content) as Fact[]
-        for (const f of data) {
-          if (f && typeof f.id === 'string') {
-            this.facts.set(f.id, f)
-          }
-        }
-      } catch (err) {
-        console.error(`[FactStore] 加载 ${this.filePath} 失败，历史数据可能丢失:`, err)
+    // 启动时把所有事实加载到内存 Map 作为读缓存
+    try {
+      const rows = this.stmtGetAll.all() as FactRow[]
+      for (const row of rows) {
+        const fact = this.rowToFact(row)
+        this.facts.set(fact.id, fact)
       }
+    } catch (err) {
+      console.error('[FactStore] 从 SQLite 加载失败，历史数据可能丢失:', err)
     }
   }
 
-  /** 持久化到文件（静默失败，保留 dirty 标记以便重试） */
-  private dirty = false
-
-  private persist(): void {
+  /** 将数据库行转换为 Fact */
+  private rowToFact(row: FactRow): Fact {
+    let tags: string[] = []
     try {
-      const data = Array.from(this.facts.values())
-      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
-      this.dirty = false
-    } catch (err) {
-      console.error(`[FactStore] persist 失败，数据仅存在于内存中:`, err)
-      // 保留 dirty 标记，下次操作时重试
+      const parsed = JSON.parse(row.tags)
+      if (Array.isArray(parsed)) tags = parsed
+    } catch {
+      // tags 字段损坏时回退为空数组
+    }
+    return {
+      id: row.id,
+      content: row.content,
+      tags,
+      source: row.source ?? '',
+      confidence: row.confidence,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      accessCount: row.access_count,
+      lastAccessedAt: row.last_accessed_at,
     }
   }
 
-  /** 持久化到文件（失败时抛出异常，用于 close 场景） */
-  private persistOrThrow(): void {
+  /** 持久化单条事实到 SQLite（UPSERT，静默失败） */
+  private persist(fact: Fact): void {
     try {
-      const data = Array.from(this.facts.values())
-      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
-      this.dirty = false
+      this.stmtUpsert.run({
+        id: fact.id,
+        content: fact.content,
+        tags: JSON.stringify(fact.tags),
+        source: fact.source,
+        confidence: fact.confidence,
+        created_at: fact.createdAt,
+        updated_at: fact.updatedAt,
+        access_count: fact.accessCount,
+        last_accessed_at: fact.lastAccessedAt,
+      })
     } catch (err) {
-      console.error(`[FactStore] close 时 persist 失败，数据可能丢失:`, err)
-      throw err
+      console.error('[FactStore] persist 失败，数据仅存在于内存中:', err)
+    }
+  }
+
+  /** 从 SQLite 删除单条事实（静默失败） */
+  private deleteFromDb(id: string): void {
+    try {
+      this.stmtDelete.run(id)
+    } catch (err) {
+      console.error('[FactStore] deleteFromDb 失败:', err)
     }
   }
 
@@ -135,13 +180,13 @@ export class FactStore {
       if (oldestId) {
         this.facts.delete(oldestId)
         this.lruCache.delete(oldestId)
+        this.deleteFromDb(oldestId)
       }
     }
   }
 
   /** 添加事实，返回 ID */
   async addFact(fact: Omit<Fact, 'id' | 'createdAt' | 'updatedAt' | 'accessCount' | 'lastAccessedAt'>): Promise<string> {
-    this.ensureLoaded()
     const now = Date.now()
     const id = randomUUID()
     const full: Fact = {
@@ -155,14 +200,12 @@ export class FactStore {
     this.facts.set(id, full)
     this.touchLru(full)
     this.evictIfNeeded()
-    this.dirty = true
-    this.persist()
+    this.persist(full)
     return id
   }
 
   /** 获取事实 */
   async getFact(id: string): Promise<Fact | null> {
-    this.ensureLoaded()
     const fact = this.facts.get(id)
     if (!fact) return null
     // 更新访问计数和时间
@@ -174,7 +217,6 @@ export class FactStore {
 
   /** 按标签搜索（交集匹配） */
   async searchByTags(tags: string[]): Promise<Fact[]> {
-    this.ensureLoaded()
     if (tags.length === 0) return Array.from(this.facts.values())
     const results: Fact[] = []
     for (const fact of this.facts.values()) {
@@ -187,7 +229,6 @@ export class FactStore {
 
   /** 全文搜索（简单关键词匹配，大小写不敏感） */
   async searchByText(query: string): Promise<Fact[]> {
-    this.ensureLoaded()
     const keywords = query.toLowerCase().split(/\s+/).filter((k) => k.length > 0)
     if (keywords.length === 0) return Array.from(this.facts.values())
     const results: Fact[] = []
@@ -202,7 +243,6 @@ export class FactStore {
 
   /** 更新事实 */
   async updateFact(id: string, updates: Partial<Pick<Fact, 'content' | 'tags' | 'confidence'>>): Promise<void> {
-    this.ensureLoaded()
     const fact = this.facts.get(id)
     if (!fact) return
     if (updates.content !== undefined) fact.content = updates.content
@@ -210,22 +250,18 @@ export class FactStore {
     if (updates.confidence !== undefined) fact.confidence = updates.confidence
     fact.updatedAt = Date.now()
     this.touchLru(fact)
-    this.dirty = true
-    this.persist()
+    this.persist(fact)
   }
 
   /** 删除事实 */
   async deleteFact(id: string): Promise<void> {
-    this.ensureLoaded()
     this.facts.delete(id)
     this.lruCache.delete(id)
-    this.dirty = true
-    this.persist()
+    this.deleteFromDb(id)
   }
 
   /** 获取所有事实（分页） */
   async listFacts(options?: { limit?: number; offset?: number; tag?: string }): Promise<{ facts: Fact[]; total: number }> {
-    this.ensureLoaded()
     let filtered = Array.from(this.facts.values())
     if (options?.tag) {
       filtered = filtered.filter((f) => f.tags.includes(options.tag!))
@@ -237,10 +273,8 @@ export class FactStore {
     return { facts, total }
   }
 
-  /** 关闭存储，持久化脏数据。持久化失败时抛出异常让调用方感知 */
+  /** 关闭存储。写操作已即时落库，无需额外持久化 */
   async close(): Promise<void> {
-    if (this.dirty) {
-      this.persistOrThrow()
-    }
+    // 数据已在每次写操作时同步写入 SQLite，此处无需额外处理
   }
 }

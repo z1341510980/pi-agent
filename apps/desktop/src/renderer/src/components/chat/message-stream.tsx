@@ -8,6 +8,7 @@ import { MessageBubble } from './message-bubble'
 import { StreamingIndicator } from './streaming-indicator'
 import { ErrorCard } from './error-card'
 import { EmptyState } from './empty-state'
+import type { FilePreviewState } from '@/stores/ui-store'
 
 /**
  * 消息流状态：管理 ChatMessage 列表 + 当前流式 runId
@@ -288,6 +289,8 @@ export interface MessageStreamProps {
   onExampleClick?: (text: string) => void
   /** 会话标识（用于会话切换时触发淡入动画） */
   sessionKey?: string
+  /** 附件预览回调 */
+  onFilePreview?: (file: FilePreviewState) => void
 }
 
 /**
@@ -306,6 +309,7 @@ export function MessageStream({
   banner,
   onExampleClick,
   sessionKey,
+  onFilePreview,
 }: MessageStreamProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -350,7 +354,7 @@ export function MessageStream({
               className="space-y-5"
             >
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} />
+                <MessageBubble key={msg.id} message={msg} onFilePreview={onFilePreview} />
               ))}
 
               {isStreaming && <StreamingIndicator />}

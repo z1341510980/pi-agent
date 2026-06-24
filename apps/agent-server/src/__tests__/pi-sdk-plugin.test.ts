@@ -2,6 +2,7 @@ import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest'
 import Fastify from 'fastify'
 import { piSdkPlugin } from '../plugins/pi-sdk.plugin.js'
 import { eventBusPlugin } from '../plugins/event-bus.plugin.js'
+import { databasePlugin } from '../plugins/database.plugin.js'
 
 const originalPiApiKey = process.env.PI_API_KEY
 const originalDeepSeekApiKey = process.env.PI_API_KEY_DEEPSEEK
@@ -12,6 +13,7 @@ describe('Pi SDK 插件', () => {
   beforeAll(async () => {
     app = Fastify()
     await app.register(eventBusPlugin)
+    await app.register(databasePlugin)
     await app.register(piSdkPlugin)
     await app.ready()
   })
@@ -51,6 +53,7 @@ describe('Pi SDK 插件', () => {
 
     const genericKeyApp = Fastify()
     await genericKeyApp.register(eventBusPlugin)
+    await genericKeyApp.register(databasePlugin)
     await genericKeyApp.register(piSdkPlugin)
     await genericKeyApp.ready()
 

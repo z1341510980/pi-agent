@@ -26,8 +26,7 @@ export interface LlmCallCompleteEvent {
  */
 export const usageLedgerPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'usage-ledger')
-  const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
-  const ledger = new UsageLedger(dataDir)
+  const ledger = new UsageLedger(app.db)
 
   // 监听 LLM 调用完成事件（保存引用以便清理）
   const onLlmCallComplete = (event: LlmCallCompleteEvent) => {

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthStorage, ModelRegistry, SessionManager } from '@earendil-works/pi-coding-agent'
+import Database from 'better-sqlite3'
 import { EventBus } from '@repo/shared/events'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import { runMigrations } from '../core/db/migrations.js'
 import { ConfirmationManager } from '../core/tool/confirmation-manager.js'
 import { Gate } from '../core/tool/gate.js'
 import type { CredentialBridge } from '../core/config/credential-bridge.js'
@@ -100,6 +102,8 @@ describe('createPiSession beforeToolCall integration', () => {
 function createDeps(
   models: ModelStub[],
 ): PiSessionDeps {
+  const db = new Database(':memory:')
+  runMigrations(db)
   return {
     threadId: 'thread-1',
     authStorage: {
@@ -121,6 +125,7 @@ function createDeps(
     gate: new Gate({ confirmationTools: ['bash'] }),
     confirmationManager: new ConfirmationManager(new EventBus()),
     eventBus: new EventBus(),
+    db,
     config: {
       cwd: process.cwd(),
       dataDir: process.cwd(),

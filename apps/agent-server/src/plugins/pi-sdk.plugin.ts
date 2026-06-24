@@ -20,17 +20,18 @@ import { ProxyManager } from '../core/config/proxy-manager.js'
  * - ${dataDir}/agent/auth.json     凭证存储
  * - ${dataDir}/agent/models.json   模型注册表
  * - ${dataDir}/agent/sessions/     会话持久化
- * - ${dataDir}/agent/providers.json Provider 配置
- * - ${dataDir}/agent/proxy.json    代理配置
+ * - ${dataDir}/pi-agent.db         SQLite 数据库（providers、proxy_config 等表）
  *
  * Provider 配置：
  * - 所有 LLM Provider 配置由前端用户在设置页面配置
  * - 通过 POST /api/providers 注册到 ProviderConfigStore 和 ModelRegistry
  * - 不从环境变量读取 LLM_PROVIDER/LLM_MODEL/LLM_API_KEY
+ * - 持久化到 SQLite providers 表（由 database.plugin 初始化的 app.db）
  *
  * 代理配置：
  * - 由前端用户在设置页面配置
  * - 通过 PUT /api/settings/proxy 注册到 ProxyConfigStore 并应用到全局 HTTP 客户端
+ * - 持久化到 SQLite proxy_config 表（单行 id=1）
  */
 export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'pi-sdk')
@@ -65,15 +66,13 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
 
   // ProviderConfigStore：前端动态注册的 Provider 配置
   // 所有 LLM 配置由前端用户在设置页面配置，不读取环境变量
-  // 持久化到 ${agentDir}/providers.json，进程重启后自动恢复
-  const providersPath = join(agentDir, 'providers.json')
-  const providerConfigStore = new ProviderConfigStore(providersPath)
+  // 持久化到 SQLite providers 表（app.db），进程重启后自动恢复
+  const providerConfigStore = new ProviderConfigStore(app.db)
   app.decorate('providerConfigStore', providerConfigStore)
 
   // ProxyConfigStore：出站代理配置
-  // 持久化到 ${agentDir}/proxy.json，进程重启后自动恢复
-  const proxyPath = join(agentDir, 'proxy.json')
-  const proxyConfigStore = new ProxyConfigStore(proxyPath)
+  // 持久化到 SQLite proxy_config 表（app.db，单行 id=1），进程重启后自动恢复
+  const proxyConfigStore = new ProxyConfigStore(app.db)
   app.decorate('proxyConfigStore', proxyConfigStore)
 
   // ProxyManager：代理管理器，应用到全局 HTTP 客户端（undici）
@@ -113,7 +112,7 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
       // 注入 API Key 到 AuthStorage
       authStorage.setRuntimeApiKey(config.id, config.apiKey)
     }
-    log.info(`已从 providers.json 恢复 ${restoredProviders.length} 个 Provider 配置`)
+    log.info(`已从 SQLite 恢复 ${restoredProviders.length} 个 Provider 配置`)
   }
 
   // 启动时恢复代理配置并应用到全局 HTTP 客户端
@@ -122,7 +121,7 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   if (proxyResult.applied) {
     log.info(
       { mode: restoredProxy.mode, effectiveProxyUrl: proxyResult.effectiveProxyUrl },
-      '代理配置已从 proxy.json 恢复并应用'
+      '代理配置已从 SQLite 恢复并应用'
     )
   } else {
     log.warn(

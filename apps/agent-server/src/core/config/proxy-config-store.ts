@@ -1,14 +1,13 @@
 /**
  * ProxyConfigStore：出站代理配置存储
  *
- * 持久化到 JSON 文件，进程重启后自动恢复。
+ * 持久化到 SQLite（proxy_config 表，单行 id=1），进程重启后自动恢复。
  * 与前端 settings/general-settings.tsx 的 ProxyConfig 类型对齐。
  *
- * 持久化路径：${dataDir}/agent/proxy.json
+ * 内存中保存配置作为读缓存，写操作同步落库。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import type Database from 'better-sqlite3'
 
 export type ProxyMode = 'none' | 'system' | 'manual'
 
@@ -47,57 +46,60 @@ export function normalizeProxyConfig(data: unknown): ProxyConfig {
   }
 }
 
+/** proxy_config 表行结构 */
+interface ProxyRow {
+  id: number
+  mode: string
+  host: string
+  port: string
+  username: string
+  password: string
+}
+
 export class ProxyConfigStore {
   private config: ProxyConfig = { ...defaultProxyConfig }
-  private readonly filePath: string
-  private writeTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly stmtSelect: Database.Statement
+  private readonly stmtUpsert: Database.Statement
 
-  constructor(filePath?: string) {
-    this.filePath = filePath ?? ''
-    if (this.filePath) {
-      this.loadFromDisk()
-    }
-  }
+  constructor(db: Database.Database) {
+    // 预编译 SQL
+    this.stmtSelect = db.prepare('SELECT * FROM proxy_config WHERE id = 1')
+    this.stmtUpsert = db.prepare(`
+      INSERT INTO proxy_config (id, mode, host, port, username, password)
+      VALUES (1, @mode, @host, @port, @username, @password)
+      ON CONFLICT(id) DO UPDATE SET
+        mode     = excluded.mode,
+        host     = excluded.host,
+        port     = excluded.port,
+        username = excluded.username,
+        password = excluded.password
+    `)
 
-  /** 从磁盘加载配置 */
-  private loadFromDisk(): void {
-    if (!this.filePath || !existsSync(this.filePath)) return
-    try {
-      const raw = readFileSync(this.filePath, 'utf-8')
-      const data = JSON.parse(raw)
-      this.config = normalizeProxyConfig(data)
-    } catch {
-      // 文件损坏或不存在，忽略错误，使用默认配置
-    }
-  }
-
-  /** 延迟写入磁盘（防抖，避免频繁写入） */
-  private schedulePersist(): void {
-    if (!this.filePath) return
-    if (this.writeTimer) clearTimeout(this.writeTimer)
-    this.writeTimer = setTimeout(() => {
-      this.persistNow()
-    }, 100)
-  }
-
-  /** 立即写入磁盘 */
-  persistNow(): void {
-    if (!this.filePath) return
-    try {
-      const dir = dirname(this.filePath)
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true })
-      }
-      writeFileSync(this.filePath, JSON.stringify(this.config, null, 2), 'utf-8')
-    } catch {
-      // 写入失败不影响内存中的配置
+    // 启动时从 SQLite 加载配置到内存
+    const row = this.stmtSelect.get() as ProxyRow | undefined
+    if (row) {
+      this.config = normalizeProxyConfig({
+        mode: row.mode,
+        host: row.host,
+        port: row.port,
+        username: row.username,
+        password: row.password,
+      })
     }
   }
 
   /** 设置代理配置 */
   set(config: ProxyConfig): void {
+    // 先更新内存
     this.config = { ...config }
-    this.schedulePersist()
+    // 同步写入 SQLite（UPSERT）
+    this.stmtUpsert.run({
+      mode: config.mode,
+      host: config.host,
+      port: config.port,
+      username: config.username,
+      password: config.password,
+    })
   }
 
   /** 获取代理配置 */

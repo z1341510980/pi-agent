@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react'
+import { useState, type ReactElement, type MouseEvent } from 'react'
 import { FileText, Image, X, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { FileAttachment } from './types'
@@ -26,7 +26,7 @@ function inferMimeType(name: string): string {
     bmp: 'image/bmp',
     ico: 'image/x-icon',
   }
-  return map[ext] ?? ''
+  return map[ext] ?? 'application/octet-stream'
 }
 
 /** 判断是否为图片类型 */
@@ -54,6 +54,8 @@ export interface FileAttachmentCardProps {
   removable?: boolean
   /** 删除回调 */
   onRemove?: (id: string) => void
+  /** 预览回调（点击展开/箭头时触发） */
+  onPreview?: (attachment: FileAttachment) => void
 }
 
 /**
@@ -67,17 +69,48 @@ export function FileAttachmentCard({
   attachment,
   removable = false,
   onRemove,
+  onPreview,
 }: FileAttachmentCardProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
   const isImage = isImageType(attachment)
   const isCode = isCodeFile(attachment.name)
 
+  const handleCardClick = () => {
+    if (onPreview) {
+      onPreview(attachment)
+    }
+  }
+
+  const handleToggleExpand = (e: MouseEvent) => {
+    e.stopPropagation()
+    if (onPreview) {
+      onPreview(attachment)
+    } else {
+      setExpanded(!expanded)
+    }
+  }
+
+  const handleRemoveClick = (e: MouseEvent) => {
+    e.stopPropagation()
+    onRemove?.(attachment.id)
+  }
+
   return (
     <div
       className={cn(
         'group relative rounded-lg border border-border bg-surface-1 overflow-hidden',
-        'transition-colors hover:border-border/80',
+        'transition-colors',
+        onPreview ? 'cursor-pointer hover:border-primary/50 hover:bg-surface-2/50' : 'hover:border-border/80',
       )}
+      onClick={onPreview ? handleCardClick : undefined}
+      role={onPreview ? 'button' : undefined}
+      tabIndex={onPreview ? 0 : undefined}
+      onKeyDown={onPreview ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          handleCardClick()
+        }
+      } : undefined}
     >
       {/* 顶部信息栏 */}
       <div className="flex items-center gap-2 px-3 py-2">
@@ -95,11 +128,11 @@ export function FileAttachmentCard({
         </div>
 
         {/* 展开/收起（代码文件且有内容时） */}
-        {isCode && attachment.content && attachment.encoding === 'utf-8' && (
+        {(isCode && attachment.content && attachment.encoding === 'utf-8') && (
           <button
             type="button"
             className="shrink-0 p-0.5 rounded hover:bg-surface-2 transition-colors"
-            onClick={() => setExpanded(!expanded)}
+            onClick={handleToggleExpand}
             aria-label={expanded ? '收起' : '展开'}
           >
             {expanded ? (
@@ -115,7 +148,7 @@ export function FileAttachmentCard({
           <button
             type="button"
             className="shrink-0 p-0.5 rounded hover:bg-destructive/10 transition-colors"
-            onClick={() => onRemove(attachment.id)}
+            onClick={handleRemoveClick}
             aria-label="移除附件"
           >
             <X className="size-3.5 text-muted-foreground hover:text-destructive" />
@@ -135,7 +168,7 @@ export function FileAttachmentCard({
       )}
 
       {/* 代码预览 */}
-      {expanded && isCode && attachment.content && attachment.encoding === 'utf-8' && (
+      {expanded && !onPreview && isCode && attachment.content && attachment.encoding === 'utf-8' && (
         <div className="border-t border-border">
           <pre className="px-3 py-2 text-[11px] font-mono overflow-x-auto max-h-48 text-muted-foreground bg-surface-2/50">
             <code>{attachment.content.slice(0, 2000)}{attachment.content.length > 2000 ? '\n... (已截断)' : ''}</code>
@@ -152,6 +185,8 @@ export interface FileAttachmentListProps {
   removable?: boolean
   /** 删除回调 */
   onRemove?: (id: string) => void
+  /** 预览回调 */
+  onPreview?: (attachment: FileAttachment) => void
 }
 
 /**
@@ -161,6 +196,7 @@ export function FileAttachmentList({
   attachments,
   removable = false,
   onRemove,
+  onPreview,
 }: FileAttachmentListProps): ReactElement {
   if (attachments.length === 0) return <></>
 
@@ -172,6 +208,7 @@ export function FileAttachmentList({
             attachment={att}
             removable={removable}
             onRemove={onRemove}
+            onPreview={onPreview}
           />
         </div>
       ))}

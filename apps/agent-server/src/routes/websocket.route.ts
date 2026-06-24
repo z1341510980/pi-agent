@@ -19,6 +19,7 @@ export type ServerMessage =
   | { type: 'usage_update'; payload: UsageUpdatePayload }
   | { type: 'compaction'; payload: CompactionPayload }
   | { type: 'agent_status'; payload: AgentStatusPayload }
+  | { type: 'context_update'; payload: ContextUpdatePayload }
 
 /** 通知事件载荷 */
 export interface NotificationPayload {
@@ -69,6 +70,24 @@ export interface AgentStatusPayload {
   threadId?: string
   status: 'idle' | 'running' | 'thinking' | 'tool_calling' | 'error'
   message?: string
+  timestamp: number
+}
+
+/** 上下文占用更新事件载荷 */
+export interface ContextUpdatePayload {
+  threadId?: string
+  /** 当前上下文窗口实际占用的 token 数（来自 LLM 返回的 usage.totalTokens） */
+  tokensUsed: number
+  /** 本次调用输入 tokens */
+  inputTokens: number
+  /** 本次调用输出 tokens */
+  outputTokens: number
+  /** 当前使用的模型 */
+  model: string
+  /** 当前使用的 provider */
+  provider: string
+  /** 模型的上下文窗口大小（来自 modelRegistry） */
+  contextWindow: number
   timestamp: number
 }
 
@@ -257,6 +276,23 @@ export const websocketRoute: FastifyPluginAsync = async (app) => {
     app.eventBus.on('compaction:completed', sendCompactionCompleted)
     app.eventBus.on('compaction:failed', sendCompactionFailed)
 
+    // ── 推送：上下文占用更新（context:update）──
+    const sendContextUpdate = (payload: { threadId?: string; tokensUsed: number; inputTokens: number; outputTokens: number; model: string; provider: string; contextWindow: number }): void => {
+      if (threadId && payload.threadId && payload.threadId !== threadId) return
+      const contextPayload: ContextUpdatePayload = {
+        threadId: payload.threadId,
+        tokensUsed: payload.tokensUsed,
+        inputTokens: payload.inputTokens,
+        outputTokens: payload.outputTokens,
+        model: payload.model,
+        provider: payload.provider,
+        contextWindow: payload.contextWindow,
+        timestamp: Date.now(),
+      }
+      send(socket, { type: 'context_update', payload: contextPayload })
+    }
+    app.eventBus.on('context:update', sendContextUpdate)
+
     // ── 接收：客户端消息 ──
     socket.on('message', (raw: Buffer) => {
       let msg: ClientMessage
@@ -279,7 +315,7 @@ export const websocketRoute: FastifyPluginAsync = async (app) => {
     })
 
     // ── 错误处理：防止 ECONNRESET 等网络错误导致进程崩溃 ──
-    socket.on('error', (err) => {
+    socket.on('error', (err: Error) => {
       app.log.warn({ err, threadId }, 'WebSocket 连接错误')
     })
 
@@ -297,6 +333,8 @@ export const websocketRoute: FastifyPluginAsync = async (app) => {
       app.eventBus.off('compaction:started', sendCompactionStarted)
       app.eventBus.off('compaction:completed', sendCompactionCompleted)
       app.eventBus.off('compaction:failed', sendCompactionFailed)
+      // 上下文占用更新
+      app.eventBus.off('context:update', sendContextUpdate)
       // DevLog 事件
       app.eventBus.off('devlog:entry', sendDevLog)
       app.eventBus.off('log:info', onLogInfo)

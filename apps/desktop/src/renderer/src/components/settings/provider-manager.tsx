@@ -737,14 +737,61 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
               </Button>
             </div>
             {models.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 rounded-md border border-input bg-transparent p-3 min-h-[80px]">
+              <div className="grid gap-1.5 rounded-md border border-input bg-transparent p-3">
                 {models.map((m, idx) => (
-                  <Badge key={m.id} variant="secondary" className="font-mono text-xs gap-1 pr-1">
-                    {m.id}
-                    {m.name !== m.id && <span className="text-muted-foreground">{m.name}</span>}
+                  <div key={m.id} className="flex items-start gap-2 bg-surface-3 rounded-md px-2.5 py-2">
+                    <div className="flex-1 min-w-0 grid gap-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-mono font-[760] truncate">{m.id}</span>
+                        {m.name !== m.id && (
+                          <span className="text-xs text-muted-foreground truncate">{m.name}</span>
+                        )}
+                        {m.reasoning && (
+                          <Badge variant="outline" className="shrink-0 text-[9px] px-1 py-0">推理</Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="grid gap-0.5">
+                          <label className="text-[9px] text-muted-foreground">上下文窗口</label>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="128000"
+                            value={m.contextWindow ?? ''}
+                            onChange={(e) => {
+                              const updated = [...models]
+                              updated[idx] = {
+                                ...updated[idx],
+                                contextWindow: e.target.value ? Number(e.target.value) : undefined,
+                              }
+                              setValue('models', updated, { shouldValidate: true })
+                            }}
+                            className="w-24 bg-surface-2 border border-border rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
+                          />
+                        </div>
+                        <div className="grid gap-0.5">
+                          <label className="text-[9px] text-muted-foreground">最大输出</label>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="8192"
+                            value={m.maxTokens ?? ''}
+                            onChange={(e) => {
+                              const updated = [...models]
+                              updated[idx] = {
+                                ...updated[idx],
+                                maxTokens: e.target.value ? Number(e.target.value) : undefined,
+                              }
+                              setValue('models', updated, { shouldValidate: true })
+                            }}
+                            className="w-20 bg-surface-2 border border-border rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
+                          />
+                        </div>
+                      </div>
+                    </div>
                     <button
                       type="button"
-                      className="ml-0.5 hover:text-danger transition-colors"
+                      className="mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground hover:text-danger transition-colors"
                       aria-label={`移除 ${m.id}`}
                       onClick={() => {
                         const updated = [...models]
@@ -752,9 +799,9 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
                         setValue('models', updated, { shouldValidate: true })
                       }}
                     >
-                      <XCircleIcon className="size-3" />
+                      <XCircleIcon className="size-3.5" />
                     </button>
-                  </Badge>
+                  </div>
                 ))}
               </div>
             ) : (

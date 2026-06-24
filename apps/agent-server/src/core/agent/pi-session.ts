@@ -1,5 +1,7 @@
 import { createAgentSession, DefaultResourceLoader } from '@earendil-works/pi-coding-agent'
-import type { AuthStorage, ModelRegistry, SessionManager, AgentSession } from '@earendil-works/pi-coding-agent'
+import type { AuthStorage, ModelRegistry, SessionManager, AgentSession, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import type Database from 'better-sqlite3'
 import type { Gate } from '../tool/gate.js'
 import type { EventBus } from '@repo/shared/events'
 import { AppError, ErrorCode } from '@repo/shared/errors'
@@ -13,6 +15,27 @@ import { truncateOutput, shouldTruncate } from '../tool/output-truncator.js'
 import { InstructionLoader } from './instruction-loader.js'
 import type { FactStore } from '../memory/fact-store.js'
 import { MemoryTicker } from '../memory/memory-ticker.js'
+import type { AgentManager, AgentConfig } from './subagent-tool.js'
+import { createSubagentTool, createSubagentReplyTool, createSubagentCloseTool } from './subagent-tool.js'
+import type { TeamManager } from './team-manager.js'
+import { createTeamExecuteTool } from './team-tool.js'
+
+/**
+ * AsyncLocalStorage：传递 subagent 的 AgentConfig 到 session factory
+ *
+ * dispatchFn 在调用 piSessionStore.getOrCreate 时设置此上下文，
+ * createPiSession 中的 buildSystemPrompt 读取此上下文，将 identity/personality/systemPrompt
+ * 注入到 subagent session 的系统提示词中。
+ */
+const agentConfigStorage = new AsyncLocalStorage<AgentConfig>()
+
+/**
+ * 在指定 AgentConfig 上下文中执行函数。
+ * 用于 subagent dispatchFn，使 createPiSession 能读取到 Agent 的身份/人格模板。
+ */
+export function withAgentConfig<T>(config: AgentConfig, fn: () => Promise<T>): Promise<T> {
+  return agentConfigStorage.run(config, fn)
+}
 
 export interface PiSessionDeps {
   threadId: string
@@ -28,6 +51,12 @@ export interface PiSessionDeps {
   getApiKey: (provider: string) => Promise<string | undefined>
   /** 共享的 FactStore 单例（由 memoryStorePlugin 提供） */
   factStore?: FactStore
+  /** 共享的 SQLite 数据库连接（由 databasePlugin 提供） */
+  db: Database.Database
+  /** Subagent 管理器（由 subagentPlugin 提供，用于注入 customTools） */
+  subagentManager?: AgentManager
+  /** Team 管理器（由 teamPlugin 提供，用于注入 team_execute 工具） */
+  teamManager?: TeamManager
   config: {
     cwd: string
     dataDir: string
@@ -84,7 +113,20 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     )
   }
 
-  // 5. 创建 Agent Session
+  // 5. 构建 customTools：subagent 系列工具 + team_execute 工具
+  const customTools: ToolDefinition[] = []
+  if (deps.subagentManager) {
+    customTools.push(
+      createSubagentTool(deps.subagentManager),
+      createSubagentReplyTool(deps.subagentManager),
+      createSubagentCloseTool(deps.subagentManager),
+    )
+  }
+  if (deps.teamManager) {
+    customTools.push(createTeamExecuteTool(deps.teamManager))
+  }
+
+  // 6. 创建 Agent Session
   const { session } = await createAgentSession({
     authStorage: deps.authStorage,
     modelRegistry: deps.modelRegistry,
@@ -92,10 +134,11 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     resourceLoader,
     cwd: deps.config.cwd,
     model: defaultModel,
+    ...(customTools.length > 0 ? { customTools } : {}),
     ...(gateDeniedTools.length > 0 ? { excludeTools: gateDeniedTools } : {}),
   })
 
-  // 6. 注入 beforeToolCall 钩子：Gate 权限检查 + 用户确认
+  // 7. 注入 beforeToolCall 钩子：Gate 权限检查 + 用户确认
   // 使用 Pi SDK 原生钩子，统一拦截所有工具调用（内置 + 扩展 + customTools）
   session.agent.beforeToolCall = createBeforeToolCall({
     threadId: deps.threadId,
@@ -103,10 +146,10 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     confirmationManager: deps.confirmationManager,
   })
 
-  // 7. 注入 afterToolCall 钩子：Evidence Ledger 记录 + EventBus 事件转发
+  // 8. 注入 afterToolCall 钩子：Evidence Ledger 记录 + EventBus 事件转发
   const evidenceLedger = new EvidenceLedger({
     threadId: deps.threadId,
-    dataDir: deps.config.dataDir,
+    db: deps.db,
   })
 
   session.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
@@ -163,11 +206,11 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     return wasTruncated ? { content: truncatedContent } : undefined
   }
 
-  // 8. Memory 集成：使用共享的 FactStore 单例（如果提供）+ MemoryTicker
+  // 9. Memory 集成：使用共享的 FactStore 单例（如果提供）+ MemoryTicker
   const factStore = deps.factStore ?? null
   const memoryTicker = new MemoryTicker()
 
-  // 9. EventBus 集成：监听 session 事件，转发工具执行开始事件 + Storm Breaker 检测 + Memory Ticker
+  // 10. EventBus 集成：监听 session 事件，转发工具执行开始事件 + Storm Breaker 检测 + Memory Ticker
   const stormBreaker = new StormBreaker()
   session.subscribe((event) => {
     if (event.type === 'tool_execution_start') {
@@ -209,21 +252,41 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
       const msg = (event as unknown as { message?: Record<string, unknown> }).message
       if (msg && msg.role === 'assistant') {
         const usage = msg.usage as Record<string, unknown> | undefined
+        const inputTokens = (usage?.input as number) ?? 0
+        const outputTokens = (usage?.output as number) ?? 0
+        const totalTokens = (usage?.totalTokens as number) ?? 0
+
         deps.eventBus.emit('llm:call_complete', {
           sessionId: session.sessionId,
           threadId: deps.threadId,
           model: msg.model as string,
           provider: msg.provider as string,
-          inputTokens: (usage?.input as number) ?? 0,
-          outputTokens: (usage?.output as number) ?? 0,
+          inputTokens,
+          outputTokens,
           cacheReadTokens: (usage?.cacheRead as number) ?? undefined,
           cacheWriteTokens: (usage?.cacheWrite as number) ?? undefined,
           durationMs: 0, // Pi SDK 不提供单次调用耗时
           agentId: 'default',
         })
+
+        // 推送上下文占用更新：totalTokens 是当前上下文窗口的实际 token 占用
+        // 同时从 modelRegistry 获取当前模型的 contextWindow
+        const modelInfo = deps.modelRegistry.find(msg.provider as string, msg.model as string)
+        const contextWindow = modelInfo?.contextWindow ?? 0
+
+        deps.eventBus.emit('context:update', {
+          threadId: deps.threadId,
+          tokensUsed: totalTokens,
+          inputTokens,
+          outputTokens,
+          model: msg.model as string,
+          provider: msg.provider as string,
+          contextWindow,
+        })
+
         deps.eventBus.emit('devlog:entry', {
           level: 'debug',
-          message: `LLM 调用完成: ${msg.provider as string}/${msg.model as string}`,
+          message: `LLM 调用完成: ${msg.provider as string}/${msg.model as string} (上下文 ${totalTokens} tokens)`,
           source: 'llm',
         })
       }
@@ -268,6 +331,23 @@ function buildSystemPrompt(deps: PiSessionDeps): string {
   if (instructions) {
     parts.push('\n## 项目指令\n')
     parts.push(instructions)
+  }
+
+  // 注入 subagent 的身份/人格模板（如果当前在 subagent 上下文中）
+  const agentConfig = agentConfigStorage.getStore()
+  if (agentConfig) {
+    if (agentConfig.systemPrompt) {
+      parts.push(`\n## Agent 自定义指令\n${agentConfig.systemPrompt}`)
+    }
+    if (agentConfig.identity) {
+      parts.push(`\n## 身份\n${agentConfig.identity}`)
+    }
+    if (agentConfig.personality) {
+      parts.push(`\n## 人格\n${agentConfig.personality}`)
+    }
+    if (agentConfig.name) {
+      parts.push(`\n## 当前角色\n你当前作为 "${agentConfig.name}" 运行。${agentConfig.description ? `职责：${agentConfig.description}` : ''}`)
+    }
   }
 
   return parts.join('\n')

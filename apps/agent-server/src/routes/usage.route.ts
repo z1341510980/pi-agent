@@ -185,4 +185,17 @@ export const usageRoute: FastifyPluginAsync = async (app) => {
 
     return success(summary, request.traceId)
   })
+
+  // 获取线程用量（前端用 threadId 查询，而非 sessionId）
+  app.get('/api/usage/thread/:threadId', async (request) => {
+    const { threadId } = request.params as { threadId: string }
+
+    if (!threadId || threadId.trim().length === 0) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'threadId 不能为空', 400)
+    }
+
+    const summary = app.usageLedger.getThreadUsage(threadId)
+
+    return success(summary, request.traceId)
+  })
 }

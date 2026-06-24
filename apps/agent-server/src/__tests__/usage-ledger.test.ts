@@ -1,22 +1,28 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import Database from 'better-sqlite3'
+import { runMigrations } from '../core/db/migrations.js'
 import { UsageLedger } from '../core/usage/usage-ledger.js'
 
 let tempDir: string
+let db: Database.Database
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'pi-usage-test-'))
+  db = new Database(':memory:')
+  runMigrations(db)
 })
 
 afterEach(() => {
+  db.close()
   rmSync(tempDir, { recursive: true, force: true })
 })
 
 describe('UsageLedger', () => {
   it('record 记录一次 LLM 调用并返回 ID', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
     const id = ledger.record({
       sessionId: 'session-1',
       threadId: 'thread-1',
@@ -33,7 +39,7 @@ describe('UsageLedger', () => {
   })
 
   it('record 自动计算 costUsd', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
     ledger.record({
       sessionId: 'session-1',
       threadId: 'thread-1',
@@ -52,7 +58,7 @@ describe('UsageLedger', () => {
   })
 
   it('query 支持时间范围过滤', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
     const now = Date.now()
 
     ledger.record({
@@ -77,7 +83,7 @@ describe('UsageLedger', () => {
   })
 
   it('query 支持模型过滤', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -108,7 +114,7 @@ describe('UsageLedger', () => {
   })
 
   it('query 支持 agentId 过滤', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -138,7 +144,7 @@ describe('UsageLedger', () => {
   })
 
   it('query 支持 sessionId 过滤', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -168,7 +174,7 @@ describe('UsageLedger', () => {
   })
 
   it('query 支持分页', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     for (let i = 0; i < 5; i++) {
       ledger.record({
@@ -194,7 +200,7 @@ describe('UsageLedger', () => {
   })
 
   it('getSummary 返回汇总统计', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -237,7 +243,7 @@ describe('UsageLedger', () => {
   })
 
   it('getSessionUsage 返回指定会话的汇总', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -267,8 +273,8 @@ describe('UsageLedger', () => {
     ledger.close()
   })
 
-  it('prune 清理过期记录', () => {
-    const ledger = new UsageLedger(tempDir)
+  it('prune 清理过期记录', async () => {
+    const ledger = new UsageLedger(db)
 
     // 记录一条
     ledger.record({
@@ -282,6 +288,13 @@ describe('UsageLedger', () => {
       agentId: 'default',
     })
 
+    // 等待确保 prune(0) 的 cutoff 严格大于记录的 timestamp
+    // Windows 上 setTimeout 精度低，需循环等待 Date.now() 真正前进
+    const recordTime = Date.now()
+    while (Date.now() === recordTime) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+
     // 保留 0 天 = 清理所有记录
     const removed = ledger.prune(0)
     expect(removed).toBe(1)
@@ -293,7 +306,7 @@ describe('UsageLedger', () => {
   })
 
   it('prune 保留最近 N 天的记录', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -316,9 +329,12 @@ describe('UsageLedger', () => {
     ledger.close()
   })
 
-  it('持久化到 JSON 文件', () => {
-    const ledger = new UsageLedger(tempDir)
+  it('持久化到 SQLite 数据库', () => {
+    const dbPath = join(tempDir, 'test.db')
+    const fileDb = new Database(dbPath)
+    runMigrations(fileDb)
 
+    const ledger = new UsageLedger(fileDb)
     ledger.record({
       sessionId: 's1',
       threadId: 't1',
@@ -331,21 +347,30 @@ describe('UsageLedger', () => {
     })
 
     ledger.close()
+    fileDb.close()
 
-    // 验证文件已写入
-    const filePath = join(tempDir, 'agent', 'usage.json')
-    expect(existsSync(filePath)).toBe(true)
+    // 重新打开数据库，验证记录已持久化
+    const reopenDb = new Database(dbPath)
+    const row = reopenDb.prepare('SELECT COUNT(*) as count FROM usage_records').get() as { count: number }
+    expect(row.count).toBe(1)
 
-    const content = readFileSync(filePath, 'utf8')
-    const data = JSON.parse(content)
-    expect(data).toHaveLength(1)
-    expect(data[0].model).toBe('deepseek-chat')
-    expect(data[0].sessionId).toBe('s1')
+    const record = reopenDb.prepare('SELECT * FROM usage_records WHERE session_id = ?').get('s1') as {
+      model: string
+      session_id: string
+    }
+    expect(record.model).toBe('deepseek-chat')
+    expect(record.session_id).toBe('s1')
+
+    reopenDb.close()
   })
 
-  it('从文件加载已有记录', () => {
+  it('从数据库加载已有记录', () => {
+    const dbPath = join(tempDir, 'test.db')
+    const fileDb = new Database(dbPath)
+    runMigrations(fileDb)
+
     // 先写入一条记录
-    const ledger1 = new UsageLedger(tempDir)
+    const ledger1 = new UsageLedger(fileDb)
     ledger1.record({
       sessionId: 's1',
       threadId: 't1',
@@ -357,17 +382,20 @@ describe('UsageLedger', () => {
       agentId: 'default',
     })
     ledger1.close()
+    fileDb.close()
 
-    // 重新创建 ledger，应能加载已有记录
-    const ledger2 = new UsageLedger(tempDir)
+    // 重新打开数据库，创建新的 ledger，应能加载已有记录
+    const reopenDb = new Database(dbPath)
+    const ledger2 = new UsageLedger(reopenDb)
     const { total } = ledger2.query({})
     expect(total).toBe(1)
 
     ledger2.close()
+    reopenDb.close()
   })
 
-  it('空数据目录初始化正常', () => {
-    const ledger = new UsageLedger(tempDir)
+  it('空数据库初始化正常', () => {
+    const ledger = new UsageLedger(db)
     const { total } = ledger.query({})
     expect(total).toBe(0)
 
@@ -378,7 +406,7 @@ describe('UsageLedger', () => {
   })
 
   it('getDaily 默认返回最近 7 天（含空日填充）', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -413,7 +441,7 @@ describe('UsageLedger', () => {
   })
 
   it('getDaily 支持自定义 days 参数', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -433,7 +461,7 @@ describe('UsageLedger', () => {
   })
 
   it('getDaily 支持按日聚合多条记录', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     // 同一天写入 3 条记录
     for (let i = 0; i < 3; i++) {
@@ -459,7 +487,7 @@ describe('UsageLedger', () => {
   })
 
   it('getDaily 支持 agentId 过滤', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     ledger.record({
       sessionId: 's1',
@@ -491,7 +519,7 @@ describe('UsageLedger', () => {
   })
 
   it('getDaily days 参数被限制在 1-90 范围内', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     // days = 0 应被限制为 1
     const daily0 = ledger.getDaily({ days: 0 })
@@ -505,7 +533,7 @@ describe('UsageLedger', () => {
   })
 
   it('getDaily 空数据返回全零的日期范围', () => {
-    const ledger = new UsageLedger(tempDir)
+    const ledger = new UsageLedger(db)
 
     const daily = ledger.getDaily({ days: 5 })
     expect(daily).toHaveLength(5)

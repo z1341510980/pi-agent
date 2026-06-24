@@ -163,7 +163,7 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
               'inline-flex items-center gap-1 rounded-md px-1.5 py-1',
               'bg-transparent border border-border cursor-pointer',
               'hover:bg-surface-3 disabled:opacity-50 disabled:cursor-not-allowed',
-              'text-xs transition-colors',
+              'transition-colors text-[12px]!',
               className,
             )}
           >

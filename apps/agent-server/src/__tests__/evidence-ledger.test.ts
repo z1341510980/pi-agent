@@ -1,22 +1,22 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import Database from 'better-sqlite3'
+import { runMigrations } from '../core/db/migrations.js'
 import { EvidenceLedger, summarizeArgs, summarizeResult } from '../core/tool/evidence-ledger.js'
 
-let tempDir: string
+let db: Database.Database
 
 beforeEach(() => {
-  tempDir = mkdtempSync(join(tmpdir(), 'pi-evidence-test-'))
+  db = new Database(':memory:')
+  runMigrations(db)
 })
 
 afterEach(() => {
-  rmSync(tempDir, { recursive: true, force: true })
+  db.close()
 })
 
 describe('EvidenceLedger', () => {
-  it('record 追加 JSONL 记录到文件', () => {
-    const ledger = new EvidenceLedger({ threadId: 'thread-1', dataDir: tempDir })
+  it('record 插入记录到 SQLite', () => {
+    const ledger = new EvidenceLedger({ threadId: 'thread-1', db })
     const entry = ledger.record({
       toolCallId: 'call-1',
       toolName: 'bash',
@@ -29,19 +29,17 @@ describe('EvidenceLedger', () => {
     expect(entry.threadId).toBe('thread-1')
     expect(entry.timestamp).toBeTruthy()
 
-    const logFile = join(tempDir, 'agent', 'evidence', 'thread-1.jsonl')
-    expect(existsSync(logFile)).toBe(true)
-
-    const content = readFileSync(logFile, 'utf8')
-    const lines = content.trim().split('\n')
-    expect(lines).toHaveLength(1)
-    const parsed = JSON.parse(lines[0])
-    expect(parsed.toolName).toBe('bash')
-    expect(parsed.toolCallId).toBe('call-1')
+    // 验证数据库中已写入
+    const row = db.prepare('SELECT * FROM evidence WHERE thread_id = ?').get('thread-1') as {
+      tool_name: string
+      tool_call_id: string
+    }
+    expect(row.tool_name).toBe('bash')
+    expect(row.tool_call_id).toBe('call-1')
   })
 
-  it('多次 record 追加多行', () => {
-    const ledger = new EvidenceLedger({ threadId: 'thread-1', dataDir: tempDir })
+  it('多次 record 追加多条', () => {
+    const ledger = new EvidenceLedger({ threadId: 'thread-1', db })
 
     ledger.record({
       toolCallId: 'call-1',
@@ -64,14 +62,14 @@ describe('EvidenceLedger', () => {
     expect(all[1].toolCallId).toBe('call-2')
   })
 
-  it('readAll 空文件返回空数组', () => {
-    const ledger = new EvidenceLedger({ threadId: 'empty-thread', dataDir: tempDir })
+  it('readAll 空线程返回空数组', () => {
+    const ledger = new EvidenceLedger({ threadId: 'empty-thread', db })
     expect(ledger.readAll()).toEqual([])
   })
 
-  it('不同 threadId 写入不同文件', () => {
-    const ledger1 = new EvidenceLedger({ threadId: 'thread-1', dataDir: tempDir })
-    const ledger2 = new EvidenceLedger({ threadId: 'thread-2', dataDir: tempDir })
+  it('不同 threadId 隔离读取', () => {
+    const ledger1 = new EvidenceLedger({ threadId: 'thread-1', db })
+    const ledger2 = new EvidenceLedger({ threadId: 'thread-2', db })
 
     ledger1.record({
       toolCallId: 'call-1',
@@ -92,6 +90,21 @@ describe('EvidenceLedger', () => {
     expect(ledger2.readAll()).toHaveLength(1)
     expect(ledger1.readAll()[0].toolCallId).toBe('call-1')
     expect(ledger2.readAll()[0].toolCallId).toBe('call-2')
+  })
+
+  it('isError 正确存储为整数并还原为布尔', () => {
+    const ledger = new EvidenceLedger({ threadId: 'thread-1', db })
+
+    ledger.record({
+      toolCallId: 'call-1',
+      toolName: 'bash',
+      argsSummary: '{}',
+      resultSummary: 'error output',
+      isError: true,
+    })
+
+    const all = ledger.readAll()
+    expect(all[0].isError).toBe(true)
   })
 })
 

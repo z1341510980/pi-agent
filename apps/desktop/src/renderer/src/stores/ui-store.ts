@@ -2,7 +2,17 @@ import { create } from 'zustand'
 
 // ── 类型定义 ──
 
-export type RightPanelType = 'context' | 'files' | 'memory'
+export type RightPanelType = 'context' | 'files' | 'memory' | 'preview'
+
+export interface FilePreviewState {
+  name: string
+  content?: string
+  encoding?: string
+  mimeType?: string
+  thumbnail?: string
+  size: number
+  type: 'image' | 'file'
+}
 
 interface UIState {
   // ── 面板状态 ──
@@ -13,6 +23,8 @@ interface UIState {
   leftPanelOpen: boolean
   /** 右栏（上下文/记忆/用量）是否展开 */
   rightPanelOpen: boolean
+  /** 文件预览状态 */
+  filePreview: FilePreviewState | null
 
   // ── Actions ──
   setRightPanel: (panel: RightPanelType) => void
@@ -24,6 +36,8 @@ interface UIState {
   toggleLeftPanel: () => void
   setRightPanelOpen: (open: boolean) => void
   toggleRightPanel: () => void
+  openFilePreview: (file: FilePreviewState) => void
+  closeFilePreview: () => void
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -32,6 +46,7 @@ export const useUIStore = create<UIState>()((set) => ({
   commandPaletteOpen: false,
   leftPanelOpen: true,
   rightPanelOpen: true,
+  filePreview: null,
 
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setDevLogOpen: (open) => set({ devLogOpen: open }),
@@ -43,4 +58,6 @@ export const useUIStore = create<UIState>()((set) => ({
   toggleLeftPanel: () => set((state) => ({ leftPanelOpen: !state.leftPanelOpen })),
   setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
   toggleRightPanel: () => set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
+  openFilePreview: (file) => set({ filePreview: file, rightPanel: 'preview', rightPanelOpen: true }),
+  closeFilePreview: () => set({ filePreview: null, rightPanel: 'context' }),
 }))

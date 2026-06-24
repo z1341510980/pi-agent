@@ -1,13 +1,15 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { ChatMessage } from './types'
+import type { ChatMessage, FileAttachment } from './types'
 import { ThinkingBlock } from './thinking-block'
 import { ToolCallCard } from './tool-call-card'
 import { FileAttachmentList } from './file-attachment'
 import { cn } from '@/lib/utils'
+import type { FilePreviewState } from '@/stores/ui-store'
 
 export interface MessageBubbleProps {
   message: ChatMessage
+  onFilePreview?: (file: FilePreviewState) => void
 }
 
 /** 格式化时间戳为 HH:mm */
@@ -28,7 +30,7 @@ function getUserInitials(): string {
  * - 用户消息右对齐：深色头像 "MJ" + 紫色气泡
  * - 保留思考块、工具调用卡片、Markdown 渲染与文件附件
  */
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, onFilePreview }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   // 显示内容：流式时用 streamingBuffer，完成时用 content
@@ -48,7 +50,20 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
           {/* 文件附件 */}
           {message.attachments && message.attachments.length > 0 && (
-            <FileAttachmentList attachments={message.attachments} />
+            <div className="mb-2">
+              <FileAttachmentList
+                attachments={message.attachments}
+                onPreview={onFilePreview ? (att: FileAttachment) => onFilePreview({
+                  name: att.name,
+                  content: att.content,
+                  encoding: att.encoding,
+                  mimeType: att.mimeType,
+                  thumbnail: att.thumbnail,
+                  size: att.size,
+                  type: att.type,
+                }) : undefined}
+              />
+            </div>
           )}
 
           {/* 文本气泡 */}

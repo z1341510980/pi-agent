@@ -10,6 +10,8 @@ import { piSdkPlugin } from './plugins/pi-sdk.plugin.js'
 import { usageLedgerPlugin } from './plugins/usage-ledger.plugin.js'
 import { memoryStorePlugin } from './plugins/memory-store.plugin.js'
 import { subagentPlugin } from './plugins/subagent-plugin.js'
+import { teamPlugin } from './plugins/team-plugin.js'
+import { databasePlugin } from './plugins/database.plugin.js'
 import { pluginLoaderPlugin } from './plugins/plugin-loader.plugin.js'
 import { cronPlugin } from './plugins/cron-plugin.js'
 import { healthRoute } from './routes/health.route.js'
@@ -24,10 +26,12 @@ import { providerRoute } from './routes/provider.route.js'
 import { sessionRoute } from './routes/session.route.js'
 import { settingsRoute } from './routes/settings.route.js'
 import { agentsRoute } from './routes/agents.route.js'
+import { teamsRoute } from './routes/teams.route.js'
 import { pluginsRoute } from './routes/plugins.route.js'
 import { i18nRoute } from './routes/i18n.route.js'
 import { cronRoute } from './routes/cron.route.js'
 import { workspaceRoute } from './routes/workspace.route.js'
+import { skillsRoute } from './routes/skills.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
@@ -48,9 +52,18 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(errorHandlerPlugin)
   await app.register(eventBusPlugin)
 
-  // 业务插件
+  // 业务插件（databasePlugin 必须最先注册，其他插件依赖 app.db）
+  await app.register(databasePlugin)
   await app.register(websocketSupportPlugin)
   await app.register(piSdkPlugin)
+
+  // Subagent 协作插件（在 session factory 之前注册，使 app.subagentManager 可用于 customTools 注入）
+  // dispatchFn 闭包在运行时访问 app.piSessionStore / app.modelRegistry，初始化时不需要
+  await app.register(subagentPlugin)
+
+  // Team 协作插件（依赖 app.subagentManager 和 app.db，在 session factory 之前注册）
+  await app.register(teamPlugin)
+
   await app.register(usageLedgerPlugin)
   await app.register(memoryStorePlugin)
 
@@ -66,7 +79,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   const confirmationManager = new ConfirmationManager(app.eventBus)
   const sessionStore = new PiSessionStore()
 
-  // 注入 Session 工厂
+  // 注入 Session 工厂（注入 subagentManager 用于 customTools）
   sessionStore.setSessionFactory(async (threadId) => {
     return createPiSession({
       threadId,
@@ -80,6 +93,9 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       eventBus: app.eventBus,
       getApiKey: app.getApiKey,
       factStore: app.factStore,
+      subagentManager: app.subagentManager,
+      teamManager: app.teamManager,
+      db: app.db,
       config: {
         cwd,
         dataDir,
@@ -99,9 +115,6 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
     sessionStore.dispose()
   })
 
-  // Subagent 协作插件（依赖 piSessionStore、eventBus、modelRegistry）
-  await app.register(subagentPlugin)
-
   // 插件加载器（依赖 eventBus；扫描并加载所有插件，注册插件路由）
   await app.register(pluginLoaderPlugin)
 
@@ -119,12 +132,14 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(sessionRoute)
   await app.register(settingsRoute)
   await app.register(agentsRoute)
+  await app.register(teamsRoute)
   await app.register(pluginsRoute)
   await app.register(aguiRoute)
   await app.register(copilotkitRoute)
   await app.register(i18nRoute)
   await app.register(cronRoute)
   await app.register(workspaceRoute)
+  await app.register(skillsRoute)
 
   return app
 }

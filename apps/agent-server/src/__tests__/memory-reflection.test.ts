@@ -1,23 +1,23 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { mkdtempSync, rmSync } from 'node:fs'
+import Database from 'better-sqlite3'
 import { FactStore } from '../core/memory/fact-store.js'
 import { MemoryReflector } from '../core/memory/memory-reflection.js'
 import type { CandidateFact } from '../core/memory/memory-reflection.js'
+import { runMigrations } from '../core/db/migrations.js'
 
-let tempDir: string
+let db: Database.Database
 let factStore: FactStore
 let reflector: MemoryReflector
 
 beforeEach(() => {
-  tempDir = mkdtempSync(join(tmpdir(), 'pi-reflection-test-'))
-  factStore = new FactStore(tempDir)
+  db = new Database(':memory:')
+  runMigrations(db)
+  factStore = new FactStore(db)
   reflector = new MemoryReflector(factStore)
 })
 
 afterEach(() => {
-  rmSync(tempDir, { recursive: true, force: true })
+  db.close()
 })
 
 describe('MemoryReflector — shadow 模式', () => {

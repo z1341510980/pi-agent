@@ -6,15 +6,13 @@
  * - 任务调度（每分钟检查到期任务）
  * - 任务执行（通过 EventBus 发射 cron:tick 事件）
  * - 错误处理和超时控制
- * - 持久化到 {dataDir}/cron-jobs.json
+ * - 持久化到 SQLite（cron_jobs 表）
  *
  * 支持：添加/删除/更新/启用/禁用/列出任务、手动触发任务
  */
 
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
-import { existsSync, readFileSync } from 'node:fs'
-import { atomicWriteSync } from '@repo/shared/utils'
+import type Database from 'better-sqlite3'
 import type { EventBus } from '@repo/shared/events'
 
 /** Cron 任务定义 */
@@ -183,19 +181,111 @@ export function isValidCronExpression(expr: string): boolean {
 /** 默认超时 5 分钟 */
 const DEFAULT_TIMEOUT_MS = 300_000
 
+/** cron_jobs 表的行结构 */
+interface CronJobRow {
+  id: string
+  name: string
+  agent_id: string
+  schedule: string
+  prompt: string
+  enabled: number
+  last_run_at: number | null
+  next_run_at: number | null
+  run_count: number
+  created_at: number
+  updated_at: number
+  last_result: string | null
+  timeout_ms: number
+  last_error: string | null
+}
+
+/** 将 ISO 字符串转为 unix 秒（null 安全） */
+function isoToUnix(iso: string | null): number | null {
+  if (!iso) return null
+  return Math.floor(new Date(iso).getTime() / 1000)
+}
+
+/** 将 unix 秒转为 ISO 字符串（null 安全） */
+function unixToIso(unix: number | null): string | null {
+  if (unix == null) return null
+  return new Date(unix * 1000).toISOString()
+}
+
+/** 将数据库行转换为 CronJob 对象 */
+function rowToJob(row: CronJobRow): CronJob {
+  return {
+    id: row.id,
+    name: row.name,
+    agentId: row.agent_id,
+    schedule: row.schedule,
+    prompt: row.prompt,
+    enabled: row.enabled === 1,
+    lastRunAt: unixToIso(row.last_run_at),
+    lastResult: (row.last_result as CronJob['lastResult']) ?? null,
+    timeoutMs: row.timeout_ms,
+    createdAt: unixToIso(row.created_at) ?? new Date().toISOString(),
+    lastError: row.last_error ?? null,
+  }
+}
+
+/** 将 CronJob 对象转换为数据库插入/更新参数 */
+function jobToInsertParams(job: CronJob) {
+  return {
+    id: job.id,
+    name: job.name,
+    agent_id: job.agentId,
+    schedule: job.schedule,
+    prompt: job.prompt,
+    enabled: job.enabled ? 1 : 0,
+    last_run_at: isoToUnix(job.lastRunAt),
+    last_result: job.lastResult,
+    timeout_ms: job.timeoutMs,
+    last_error: job.lastError ?? null,
+    created_at: isoToUnix(job.createdAt),
+  }
+}
+
 /**
  * Cron 定时任务调度器
  */
 export class CronScheduler {
-  private readonly filePath: string
+  private readonly db: Database.Database
   private jobs: CronJob[] = []
   private timer: NodeJS.Timeout | null = null
-  private dirty = false
   private readonly eventBus: EventBus | null
 
-  constructor(dataDir: string, eventBus?: EventBus) {
-    this.filePath = join(dataDir, 'cron-jobs.json')
+  // 预编译语句
+  private readonly stmtInsert: Database.Statement
+  private readonly stmtUpdate: Database.Statement
+  private readonly stmtUpdateEnabled: Database.Statement
+  private readonly stmtUpdateStatus: Database.Statement
+  private readonly stmtDelete: Database.Statement
+  private readonly stmtSelectAll: Database.Statement
+
+  constructor(db: Database.Database, eventBus?: EventBus) {
+    this.db = db
     this.eventBus = eventBus ?? null
+
+    // 预编译所有 SQL 语句
+    this.stmtInsert = db.prepare(
+      `INSERT INTO cron_jobs (id, name, agent_id, schedule, prompt, enabled, last_run_at, last_result, timeout_ms, last_error, created_at)
+       VALUES (@id, @name, @agent_id, @schedule, @prompt, @enabled, @last_run_at, @last_result, @timeout_ms, @last_error, @created_at)`,
+    )
+    this.stmtUpdate = db.prepare(
+      `UPDATE cron_jobs
+       SET name = @name, agent_id = @agent_id, schedule = @schedule, prompt = @prompt, enabled = @enabled, timeout_ms = @timeout_ms, updated_at = unixepoch()
+       WHERE id = @id`,
+    )
+    this.stmtUpdateEnabled = db.prepare(
+      `UPDATE cron_jobs SET enabled = @enabled, updated_at = unixepoch() WHERE id = @id`,
+    )
+    this.stmtUpdateStatus = db.prepare(
+      `UPDATE cron_jobs SET last_run_at = @last_run_at, last_result = @last_result, last_error = @last_error, updated_at = unixepoch() WHERE id = @id`,
+    )
+    this.stmtDelete = db.prepare(`DELETE FROM cron_jobs WHERE id = @id`)
+    this.stmtSelectAll = db.prepare(`SELECT * FROM cron_jobs`)
+
+    // 从 SQLite 加载所有任务到内存
     this.load()
   }
 
@@ -258,8 +348,8 @@ export class CronScheduler {
     }
 
     this.jobs.push(job)
-    this.dirty = true
-    this.persist()
+    // 写入 SQLite
+    this.stmtInsert.run(jobToInsertParams(job))
     return { ...job }
   }
 
@@ -283,8 +373,16 @@ export class CronScheduler {
     if (input.enabled !== undefined) job.enabled = input.enabled
     if (input.timeoutMs !== undefined) job.timeoutMs = input.timeoutMs
 
-    this.dirty = true
-    this.persist()
+    // 写入 SQLite
+    this.stmtUpdate.run({
+      id: job.id,
+      name: job.name,
+      agent_id: job.agentId,
+      schedule: job.schedule,
+      prompt: job.prompt,
+      enabled: job.enabled ? 1 : 0,
+      timeout_ms: job.timeoutMs,
+    })
     return { ...job }
   }
 
@@ -296,8 +394,8 @@ export class CronScheduler {
     this.jobs = this.jobs.filter((j) => j.id !== id)
     const removed = this.jobs.length < before
     if (removed) {
-      this.dirty = true
-      this.persist()
+      // 从 SQLite 删除（stmtDelete 使用命名参数 @id，需传对象）
+      this.stmtDelete.run({ id })
     }
     return removed
   }
@@ -322,8 +420,8 @@ export class CronScheduler {
       throw new Error(`任务不存在: ${id}`)
     }
     job.enabled = enabled
-    this.dirty = true
-    this.persist()
+    // 写入 SQLite
+    this.stmtUpdateEnabled.run({ id: job.id, enabled: enabled ? 1 : 0 })
     return { ...job }
   }
 
@@ -408,60 +506,34 @@ export class CronScheduler {
       this.jobs[jobIndex].lastRunAt = now
       this.jobs[jobIndex].lastResult = success ? 'success' : 'error'
       this.jobs[jobIndex].lastError = success ? null : errorMessage
-      this.dirty = true
-      this.persist()
+      // 写入 SQLite
+      this.stmtUpdateStatus.run({
+        id: job.id,
+        last_run_at: isoToUnix(now),
+        last_result: this.jobs[jobIndex].lastResult,
+        last_error: this.jobs[jobIndex].lastError ?? null,
+      })
     }
 
     return { success, error: errorMessage ?? undefined }
   }
 
   /**
-   * 关闭调度器，持久化脏数据
+   * 关闭调度器
+   * 所有变更已实时写入 SQLite，无需额外持久化
    */
   close(): void {
     this.stop()
-    if (this.dirty) {
-      this.persistOrThrow()
-    }
   }
 
-  /** 从文件加载任务 */
+  /** 从 SQLite 加载所有任务到内存 */
   private load(): void {
-    if (!existsSync(this.filePath)) {
-      this.jobs = []
-      return
-    }
     try {
-      const content = readFileSync(this.filePath, 'utf8')
-      const data = JSON.parse(content)
-      if (!Array.isArray(data)) {
-        this.jobs = []
-        return
-      }
-      // 校验记录结构
-      this.jobs = data.filter((j: unknown) => {
-        if (j && typeof j === 'object' && typeof (j as CronJob).id === 'string' && typeof (j as CronJob).schedule === 'string') return true
-        return false
-      }) as CronJob[]
+      const rows = this.stmtSelectAll.all() as CronJobRow[]
+      this.jobs = rows.map(rowToJob)
     } catch (err) {
-      console.error(`[CronScheduler] 加载 ${this.filePath} 失败:`, err)
+      console.error('[CronScheduler] 从 SQLite 加载任务失败:', err)
       this.jobs = []
     }
-  }
-
-  /** 持久化到文件（静默失败） */
-  private persist(): void {
-    try {
-      atomicWriteSync(this.filePath, JSON.stringify(this.jobs, null, 2))
-      this.dirty = false
-    } catch (err) {
-      console.error(`[CronScheduler] persist 失败:`, err)
-    }
-  }
-
-  /** 持久化到文件（失败时抛出异常） */
-  private persistOrThrow(): void {
-    atomicWriteSync(this.filePath, JSON.stringify(this.jobs, null, 2))
-    this.dirty = false
   }
 }

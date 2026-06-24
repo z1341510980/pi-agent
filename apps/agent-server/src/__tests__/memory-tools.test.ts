@@ -1,17 +1,17 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { mkdtempSync, rmSync } from 'node:fs'
+import Database from 'better-sqlite3'
 import { executeMemorySearch } from '../core/memory/memory-tools.js'
 import { FactStore } from '../core/memory/fact-store.js'
 import type { MemorySearchInput } from '../core/memory/memory-tools.js'
+import { runMigrations } from '../core/db/migrations.js'
 
-let tempDir: string
+let db: Database.Database
 let factStore: FactStore
 
 beforeEach(async () => {
-  tempDir = mkdtempSync(join(tmpdir(), 'pi-memtools-test-'))
-  factStore = new FactStore(tempDir)
+  db = new Database(':memory:')
+  runMigrations(db)
+  factStore = new FactStore(db)
 
   // 预置测试数据
   await factStore.addFact({
@@ -35,7 +35,7 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
-  rmSync(tempDir, { recursive: true, force: true })
+  db.close()
 })
 
 describe('executeMemorySearch', () => {

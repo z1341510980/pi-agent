@@ -1,7 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import Database from 'better-sqlite3'
+import { runMigrations } from '../core/db/migrations.js'
 import { ProxyConfigStore, normalizeProxyConfig, defaultProxyConfig } from '../core/config/proxy-config-store.js'
 
 describe('normalizeProxyConfig', () => {
@@ -53,30 +52,27 @@ describe('normalizeProxyConfig', () => {
 })
 
 describe('ProxyConfigStore', () => {
-  const tempDir = join(tmpdir(), `pi-agent-proxy-test-${Date.now()}`)
-  const filePath = join(tempDir, 'proxy.json')
+  let db: Database.Database
 
   beforeEach(() => {
-    if (existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true, force: true })
-    }
-    mkdirSync(tempDir, { recursive: true })
+    // 使用内存数据库，每个测试独立隔离
+    db = new Database(':memory:')
+    runMigrations(db)
   })
 
   afterEach(() => {
-    if (existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true, force: true })
-    }
+    db.close()
   })
 
-  it('无文件时返回默认配置', () => {
-    const store = new ProxyConfigStore(filePath)
+  it('空数据库时返回默认配置', () => {
+    // migrations 已插入 id=1 的默认行（mode='system'）
+    const store = new ProxyConfigStore(db)
     const config = store.get()
     expect(config).toEqual(defaultProxyConfig)
   })
 
   it('set + get 往返一致', () => {
-    const store = new ProxyConfigStore(filePath)
+    const store = new ProxyConfigStore(db)
     const custom = {
       mode: 'manual' as const,
       host: '127.0.0.1',
@@ -89,7 +85,7 @@ describe('ProxyConfigStore', () => {
   })
 
   it('get 返回副本（修改不影响内部状态）', () => {
-    const store = new ProxyConfigStore(filePath)
+    const store = new ProxyConfigStore(db)
     store.set({
       mode: 'manual',
       host: '127.0.0.1',
@@ -102,8 +98,8 @@ describe('ProxyConfigStore', () => {
     expect(store.get().host).toBe('127.0.0.1')
   })
 
-  it('persistNow 写入磁盘', () => {
-    const store = new ProxyConfigStore(filePath)
+  it('set 同步写入 SQLite', () => {
+    const store = new ProxyConfigStore(db)
     store.set({
       mode: 'manual',
       host: '10.0.0.1',
@@ -111,43 +107,63 @@ describe('ProxyConfigStore', () => {
       username: 'admin',
       password: 'secret',
     })
-    store.persistNow()
-    expect(existsSync(filePath)).toBe(true)
+    // 直接查询数据库验证已落库
+    const row = db.prepare('SELECT * FROM proxy_config WHERE id = 1').get() as {
+      mode: string
+      host: string
+      port: string
+      username: string
+      password: string
+    }
+    expect(row.mode).toBe('manual')
+    expect(row.host).toBe('10.0.0.1')
+    expect(row.port).toBe('8080')
+    expect(row.username).toBe('admin')
+    expect(row.password).toBe('secret')
   })
 
-  it('从磁盘加载已持久化的配置', () => {
-    // 先写入一个配置文件
+  it('新实例从 SQLite 加载已持久化的配置', () => {
+    // 先用第一个 store 写入配置
+    const store1 = new ProxyConfigStore(db)
     const data = {
-      mode: 'manual',
+      mode: 'manual' as const,
       host: '192.168.1.1',
       port: '3128',
       username: 'proxyuser',
       password: 'proxypass',
     }
-    writeFileSync(filePath, JSON.stringify(data), 'utf-8')
+    store1.set(data)
 
-    // 创建新的 store 实例，应从磁盘加载
-    const store = new ProxyConfigStore(filePath)
-    expect(store.get()).toEqual(data)
+    // 用同一个 db 创建新的 store 实例，应从 SQLite 加载
+    const store2 = new ProxyConfigStore(db)
+    expect(store2.get()).toEqual(data)
   })
 
-  it('磁盘文件损坏时回退到默认配置', () => {
-    writeFileSync(filePath, 'invalid json {{{', 'utf-8')
-    const store = new ProxyConfigStore(filePath)
-    expect(store.get()).toEqual(defaultProxyConfig)
-  })
-
-  it('无 filePath 时不持久化（内存模式）', () => {
-    const store = new ProxyConfigStore()
+  it('set 覆盖已有行（UPSERT）', () => {
+    const store = new ProxyConfigStore(db)
+    store.set({
+      mode: 'manual',
+      host: '1.1.1.1',
+      port: '1111',
+      username: 'u1',
+      password: 'p1',
+    })
     store.set({
       mode: 'none',
-      host: '',
-      port: '',
-      username: '',
-      password: '',
+      host: '2.2.2.2',
+      port: '2222',
+      username: 'u2',
+      password: 'p2',
     })
-    // 不应抛出异常
-    store.persistNow()
-    expect(store.get().mode).toBe('none')
+    expect(store.get()).toEqual({
+      mode: 'none',
+      host: '2.2.2.2',
+      port: '2222',
+      username: 'u2',
+      password: 'p2',
+    })
+    // 确认数据库只有一行
+    const count = (db.prepare('SELECT COUNT(*) as c FROM proxy_config').get() as { c: number }).c
+    expect(count).toBe(1)
   })
 })

@@ -13,6 +13,7 @@ export type ServerMessage =
   | { type: 'usage_update'; payload: UsageUpdatePayload }
   | { type: 'compaction'; payload: CompactionPayload }
   | { type: 'agent_status'; payload: AgentStatusPayload }
+  | { type: 'context_update'; payload: ContextUpdatePayload }
 
 export interface ConfirmationRequestPayload {
   id: string
@@ -73,6 +74,24 @@ export interface AgentStatusPayload {
   timestamp: number
 }
 
+/** 上下文占用更新事件载荷 */
+export interface ContextUpdatePayload {
+  threadId?: string
+  /** 当前上下文窗口实际占用的 token 数 */
+  tokensUsed: number
+  /** 本次调用输入 tokens */
+  inputTokens: number
+  /** 本次调用输出 tokens */
+  outputTokens: number
+  /** 当前使用的模型 */
+  model: string
+  /** 当前使用的 provider */
+  provider: string
+  /** 模型的上下文窗口大小（来自 modelRegistry） */
+  contextWindow: number
+  timestamp: number
+}
+
 export interface UseWebSocketOptions {
   threadId?: string
   onMessage?: (msg: ServerMessage) => void
@@ -82,6 +101,8 @@ export interface UseWebSocketOptions {
   onDevLog?: (log: DevLogPayload) => void
   /** 用量更新回调 */
   onUsageUpdate?: (usage: UsageUpdatePayload) => void
+  /** 上下文占用更新回调 */
+  onContextUpdate?: (context: ContextUpdatePayload) => void
 }
 
 export interface UseWebSocketReturn {
@@ -113,7 +134,7 @@ const RECONNECT_MAX_DELAY = 30000 // 30s 上限
  * - notification/devlog/usage_update 事件分发
  */
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
-  const { threadId, onMessage, onNotification, onDevLog, onUsageUpdate } = options
+  const { threadId, onMessage, onNotification, onDevLog, onUsageUpdate, onContextUpdate } = options
   const [status, setStatus] = useState<UseWebSocketReturn['status']>('connecting')
   const [pendingConfirmations, setPendingConfirmations] = useState<ConfirmationRequestPayload[]>([])
   const wsRef = useRef<WebSocket | null>(null)
@@ -121,6 +142,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   const onNotificationRef = useRef(onNotification)
   const onDevLogRef = useRef(onDevLog)
   const onUsageUpdateRef = useRef(onUsageUpdate)
+  const onContextUpdateRef = useRef(onContextUpdate)
   const reconnectAttemptsRef = useRef(0)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -129,6 +151,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   onNotificationRef.current = onNotification
   onDevLogRef.current = onDevLog
   onUsageUpdateRef.current = onUsageUpdate
+  onContextUpdateRef.current = onContextUpdate
 
   const send = useCallback((msg: unknown) => {
     const ws = wsRef.current
@@ -194,6 +217,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
               break
             case 'usage_update':
               onUsageUpdateRef.current?.(msg.payload)
+              break
+            case 'context_update':
+              onContextUpdateRef.current?.(msg.payload)
               break
           }
           onMessageRef.current?.(msg)

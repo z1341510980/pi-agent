@@ -7,10 +7,9 @@
  * - 恢复（重新打开会话时能找到文件）
  *
  * 存储布局：
- * - {dataDir}/session-files/{hash}/   — managed_cache 文件，按内容 hash 组织
- * - {dataDir}/session-files/.refcount.json — 全局引用计数，用于去重清理
- * - {dataDir}/session-files/.file-index.json — 全局文件 ID 索引，用于 getFileById
- * - {sessionPath}/.files.json         — 会话文件索引 sidecar
+ * - {dataDir}/session-files/{hash}/   — managed_cache 文件内容，按内容 hash 组织（文件系统）
+ * - session_files 表                  — 文件元数据/索引（SQLite）
+ * - file_refcount 表                  — 全局引用计数，用于去重清理（SQLite）
  *
  * storageKind 说明：
  * - managed_cache：由 Agent 管理的缓存文件，会话结束时可清理
@@ -21,7 +20,7 @@
 import { existsSync, readFileSync, mkdirSync, copyFileSync, statSync, rmSync, readdirSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { atomicWriteSync } from '@repo/shared/utils'
+import type Database from 'better-sqlite3'
 
 /** 会话文件记录 */
 export interface SessionFileRecord {
@@ -45,22 +44,81 @@ export interface SessionFileRecord {
   contentHash?: string
 }
 
-/** 引用计数表：hash → 引用数 */
-type RefcountMap = Record<string, number>
-/** 全局文件 ID 索引：fileId → SessionFileRecord */
-type FileIndexMap = Record<string, SessionFileRecord>
+/** session_files 表的行结构 */
+interface SessionFileRow {
+  file_id: string
+  file_path: string
+  session_path: string
+  label: string
+  origin: string
+  storage_kind: string
+  content_hash: string | null
+  size_bytes: number | null
+  created_at: string
+}
+
+/** 将数据库行转换为 SessionFileRecord 对象 */
+function rowToRecord(row: SessionFileRow): SessionFileRecord {
+  return {
+    fileId: row.file_id,
+    filePath: row.file_path,
+    sessionPath: row.session_path,
+    label: row.label,
+    origin: row.origin,
+    storageKind: row.storage_kind,
+    createdAt: row.created_at,
+    ...(row.size_bytes != null ? { sizeBytes: row.size_bytes } : {}),
+    ...(row.content_hash != null ? { contentHash: row.content_hash } : {}),
+  }
+}
 
 export class SessionFileRegistry {
-  private readonly dataDir: string
+  private readonly db: Database.Database
   private readonly managedCacheDir: string
-  private readonly refcountFile: string
-  private readonly fileIndexFile: string
 
-  constructor(dataDir: string) {
-    this.dataDir = dataDir
+  // 预编译语句 — session_files 表
+  private readonly stmtInsertFile: Database.Statement
+  private readonly stmtSelectBySession: Database.Statement
+  private readonly stmtSelectByFileId: Database.Statement
+  private readonly stmtDeleteBySession: Database.Statement
+
+  // 预编译语句 — file_refcount 表
+  private readonly stmtUpsertRefcount: Database.Statement
+  private readonly stmtDecrementRefcount: Database.Statement
+  private readonly stmtDeleteRefcount: Database.Statement
+
+  constructor(db: Database.Database, dataDir: string) {
+    this.db = db
     this.managedCacheDir = join(dataDir, 'session-files')
-    this.refcountFile = join(this.managedCacheDir, '.refcount.json')
-    this.fileIndexFile = join(this.managedCacheDir, '.file-index.json')
+
+    // 预编译 session_files 表的语句
+    this.stmtInsertFile = db.prepare(
+      `INSERT INTO session_files (file_id, file_path, session_path, label, origin, storage_kind, content_hash, size_bytes, created_at)
+       VALUES (@file_id, @file_path, @session_path, @label, @origin, @storage_kind, @content_hash, @size_bytes, @created_at)`,
+    )
+    this.stmtSelectBySession = db.prepare(
+      `SELECT * FROM session_files WHERE session_path = ?`,
+    )
+    this.stmtSelectByFileId = db.prepare(
+      `SELECT * FROM session_files WHERE file_id = ?`,
+    )
+    this.stmtDeleteBySession = db.prepare(
+      `DELETE FROM session_files WHERE session_path = ?`,
+    )
+
+    // 预编译 file_refcount 表的语句
+    // UPSERT：存在则递增，不存在则插入 1
+    this.stmtUpsertRefcount = db.prepare(
+      `INSERT INTO file_refcount (content_hash, refcount) VALUES (?, 1)
+       ON CONFLICT(content_hash) DO UPDATE SET refcount = refcount + 1`,
+    )
+    // 递减并返回新值（RETURNING 需要 SQLite 3.35+）
+    this.stmtDecrementRefcount = db.prepare(
+      `UPDATE file_refcount SET refcount = MAX(0, refcount - 1) WHERE content_hash = ? RETURNING refcount`,
+    )
+    this.stmtDeleteRefcount = db.prepare(
+      `DELETE FROM file_refcount WHERE content_hash = ?`,
+    )
   }
 
   /**
@@ -108,33 +166,43 @@ export class SessionFileRegistry {
       this.incrementRefcount(contentHash)
     }
 
+    const sizeBytes = this.getFileSize(filePath)
+
     const full: SessionFileRecord = {
       ...record,
       fileId,
       createdAt,
       filePath,
       ...(contentHash !== undefined ? { contentHash } : {}),
-      ...(this.getFileSize(filePath) !== undefined ? { sizeBytes: this.getFileSize(filePath) } : {}),
+      ...(sizeBytes !== undefined ? { sizeBytes } : {}),
     }
 
-    // 写入会话 sidecar
-    this.appendToSessionIndex(record.sessionPath, full)
-
-    // 写入全局文件 ID 索引
-    this.addToGlobalIndex(full)
+    // 写入 SQLite（会话索引和全局文件 ID 索引统一由 session_files 表承载）
+    this.stmtInsertFile.run({
+      file_id: full.fileId,
+      file_path: full.filePath,
+      session_path: full.sessionPath,
+      label: full.label,
+      origin: full.origin,
+      storage_kind: full.storageKind,
+      content_hash: full.contentHash ?? null,
+      size_bytes: full.sizeBytes ?? null,
+      created_at: full.createdAt,
+    })
 
     return full
   }
 
   /** 获取会话的所有文件记录 */
   getFilesForSession(sessionPath: string): SessionFileRecord[] {
-    return this.loadSessionIndex(sessionPath)
+    const rows = this.stmtSelectBySession.all(sessionPath) as SessionFileRow[]
+    return rows.map(rowToRecord)
   }
 
   /** 按 ID 获取文件记录（通过全局索引查找） */
   getFileById(fileId: string): SessionFileRecord | null {
-    const index = this.loadGlobalIndex()
-    return index[fileId] ?? null
+    const row = this.stmtSelectByFileId.get(fileId) as SessionFileRow | undefined
+    return row ? rowToRecord(row) : null
   }
 
   /**
@@ -142,14 +210,13 @@ export class SessionFileRegistry {
    *
    * - 对每个 managed_cache 文件：减少引用计数，计数归零时删除物理文件
    * - external / install_source 文件不清理
-   * - 删除会话的 .files.json sidecar
-   * - 从全局索引中移除该会话的所有记录
+   * - 从 SQLite 中删除该会话的所有记录
    *
    * @param sessionPath 会话目录路径
    * @returns 清理的文件数量
    */
   cleanupSession(sessionPath: string): number {
-    const records = this.loadSessionIndex(sessionPath)
+    const records = this.getFilesForSession(sessionPath)
     let cleaned = 0
 
     for (const record of records) {
@@ -168,47 +235,13 @@ export class SessionFileRegistry {
       cleaned++
     }
 
-    // 从全局索引中移除该会话的所有记录
-    this.removeFromGlobalBySession(sessionPath)
-
-    // 删除会话 sidecar
-    const sidecar = this.getSidecarPath(sessionPath)
-    if (existsSync(sidecar)) {
-      rmSync(sidecar, { force: true })
-    }
+    // 从 SQLite 中删除该会话的所有记录
+    this.stmtDeleteBySession.run(sessionPath)
 
     return cleaned
   }
 
   // ===== 内部方法 =====
-
-  /** 获取会话 sidecar 文件路径 */
-  private getSidecarPath(sessionPath: string): string {
-    return join(sessionPath, '.files.json')
-  }
-
-  /** 加载会话的文件索引 */
-  private loadSessionIndex(sessionPath: string): SessionFileRecord[] {
-    const sidecar = this.getSidecarPath(sessionPath)
-    if (!existsSync(sidecar)) return []
-    try {
-      const content = readFileSync(sidecar, 'utf-8')
-      const data = JSON.parse(content) as SessionFileRecord[]
-      return Array.isArray(data) ? data : []
-    } catch (err) {
-      console.error(`[SessionFileRegistry] 加载 sidecar ${sidecar} 失败:`, err)
-      return []
-    }
-  }
-
-  /** 追加文件记录到会话 sidecar */
-  private appendToSessionIndex(sessionPath: string, record: SessionFileRecord): void {
-    const records = this.loadSessionIndex(sessionPath)
-    records.push(record)
-    const sidecar = this.getSidecarPath(sessionPath)
-    mkdirSync(sessionPath, { recursive: true })
-    atomicWriteSync(sidecar, JSON.stringify(records, null, 2))
-  }
 
   /** 计算文件内容的 SHA-256 hash */
   private hashFile(filePath: string): string {
@@ -245,87 +278,19 @@ export class SessionFileRegistry {
     return null
   }
 
-  /** 加载全局引用计数表 */
-  private loadRefcount(): RefcountMap {
-    if (!existsSync(this.refcountFile)) return {}
-    try {
-      const content = readFileSync(this.refcountFile, 'utf-8')
-      const data = JSON.parse(content) as RefcountMap
-      return data && typeof data === 'object' ? data : {}
-    } catch {
-      return {}
-    }
-  }
-
-  /** 保存全局引用计数表 */
-  private saveRefcount(map: RefcountMap): void {
-    mkdirSync(this.managedCacheDir, { recursive: true })
-    atomicWriteSync(this.refcountFile, JSON.stringify(map, null, 2))
-  }
-
   /** 增加引用计数 */
   private incrementRefcount(hash: string): void {
-    const map = this.loadRefcount()
-    map[hash] = (map[hash] ?? 0) + 1
-    this.saveRefcount(map)
+    this.stmtUpsertRefcount.run(hash)
   }
 
   /** 减少引用计数，返回剩余引用数 */
   private decrementRefcount(hash: string): number {
-    const map = this.loadRefcount()
-    const current = map[hash] ?? 0
-    const next = Math.max(0, current - 1)
-    if (next > 0) {
-      map[hash] = next
-      this.saveRefcount(map)
-    }
-    return next
+    const result = this.stmtDecrementRefcount.get(hash) as { refcount: number } | undefined
+    return result?.refcount ?? 0
   }
 
   /** 从引用计数表中移除某 hash */
   private removeRefcount(hash: string): void {
-    const map = this.loadRefcount()
-    delete map[hash]
-    this.saveRefcount(map)
-  }
-
-  /** 加载全局文件 ID 索引 */
-  private loadGlobalIndex(): FileIndexMap {
-    if (!existsSync(this.fileIndexFile)) return {}
-    try {
-      const content = readFileSync(this.fileIndexFile, 'utf-8')
-      const data = JSON.parse(content) as FileIndexMap
-      return data && typeof data === 'object' ? data : {}
-    } catch {
-      return {}
-    }
-  }
-
-  /** 保存全局文件 ID 索引 */
-  private saveGlobalIndex(map: FileIndexMap): void {
-    mkdirSync(this.managedCacheDir, { recursive: true })
-    atomicWriteSync(this.fileIndexFile, JSON.stringify(map, null, 2))
-  }
-
-  /** 添加记录到全局索引 */
-  private addToGlobalIndex(record: SessionFileRecord): void {
-    const map = this.loadGlobalIndex()
-    map[record.fileId] = record
-    this.saveGlobalIndex(map)
-  }
-
-  /** 从全局索引中移除指定会话的所有记录 */
-  private removeFromGlobalBySession(sessionPath: string): void {
-    const map = this.loadGlobalIndex()
-    let changed = false
-    for (const fileId of Object.keys(map)) {
-      if (map[fileId].sessionPath === sessionPath) {
-        delete map[fileId]
-        changed = true
-      }
-    }
-    if (changed) {
-      this.saveGlobalIndex(map)
-    }
+    this.stmtDeleteRefcount.run(hash)
   }
 }

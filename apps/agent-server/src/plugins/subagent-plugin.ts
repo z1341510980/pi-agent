@@ -5,6 +5,7 @@
  * - AgentChannel：Agent 间频道/DM 通信
  * - ConcurrencyLimiter：并发限流（通过 AgentManager 持有）
  * - AgentManager：Agent 注册与 subagent 派遣
+ * - SqliteAgentStore：Agent 配置持久化到 SQLite
  *
  * 通过 fastify.subagentManager 暴露给路由和其他插件使用。
  *
@@ -14,6 +15,8 @@
 import fp from 'fastify-plugin'
 import { AgentChannel } from '../core/agent/agent-channel.js'
 import { AgentManager, type AgentConfig } from '../core/agent/subagent-tool.js'
+import { SqliteAgentStore } from '../core/agent/agent-persistence.js'
+import { withAgentConfig } from '../core/agent/pi-session.js'
 import { DEFAULT_LIMITS, type ConcurrencyLimits } from '../core/agent/concurrency-limiter.js'
 
 export interface SubagentPluginOptions {
@@ -29,73 +32,110 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
   // 1. 创建 AgentChannel（集成 EventBus）
   const channel = new AgentChannel(app.eventBus)
 
-  // 2. 创建 AgentManager（持有 ConcurrencyLimiter）
+  // 2. 创建 SQLite 持久化存储
+  const store = new SqliteAgentStore(app.db)
+
+  // 3. 创建 AgentManager（持有 ConcurrencyLimiter + 持久化存储）
   const limits: ConcurrencyLimits = { ...DEFAULT_LIMITS, ...options.limits }
   const manager = new AgentManager({
     limits,
     channel,
+    store,
   })
 
-  // 3. 注册默认 Agent
-  const defaultAgent: AgentConfig = {
-    id: 'default',
-    name: 'Pi Agent',
-    description: '默认主 Agent',
-  }
-  manager.registerAgent(defaultAgent)
+  // 4. 从数据库加载已持久化的 Agent
+  manager.loadPersistedAgents()
 
-  // 4. 注册用户提供的 Agent
+  // 5. 注册默认 Agent（如果不存在）
+  if (!manager.getAgent('default')) {
+    const defaultAgent: AgentConfig = {
+      id: 'default',
+      name: 'Pi Agent',
+      description: '默认主 Agent',
+    }
+    manager.registerAgent(defaultAgent)
+  }
+
+  // 6. 注册用户提供的 Agent
   if (options.agents) {
     for (const agent of options.agents) {
       manager.registerAgent(agent)
     }
   }
 
-  // 5. 注入派遣函数：使用 PiSessionStore 创建隔离 Session 执行子任务
+  // 7. 注入派遣函数：使用 PiSessionStore 创建隔离 Session 执行子任务
   manager.setDispatchFn(async (agentId, task, dispatchOptions) => {
-    // 为 subagent 创建独立的 threadId
-    const subagentThreadId = `subagent-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const threadSession = await app.piSessionStore.getOrCreate(subagentThreadId)
-
-    // 如果目标 Agent 配置了模型，切换模型
     const agentConfig = manager.getAgent(agentId)
-    if (agentConfig?.model) {
-      const targetModel = app.modelRegistry.find(agentConfig.model.provider, agentConfig.model.modelId)
-      if (targetModel) {
-        await threadSession.session.setModel(targetModel)
-      }
+    if (!agentConfig) {
+      throw new Error(`Agent 不存在: ${agentId}`)
     }
 
-    // 执行任务（通过 session.prompt）
-    // dispatchOptions.signal 用于超时/取消控制
-    if (dispatchOptions.signal?.aborted) {
-      throw new Error('子任务在执行前已被取消')
-    }
+    // 在 AgentConfig 上下文中创建 session，使 buildSystemPrompt 能注入身份/人格模板
+    return withAgentConfig(agentConfig, async () => {
+      // 为 subagent 创建独立的 threadId
+      const subagentThreadId = `subagent-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const threadSession = await app.piSessionStore.getOrCreate(subagentThreadId)
 
-    // 监听取消信号
-    const abortPromise = new Promise<never>((_, reject) => {
-      if (dispatchOptions.signal) {
-        dispatchOptions.signal.addEventListener('abort', () => {
-          reject(new Error('子任务已被取消'))
-        }, { once: true })
+      // 如果目标 Agent 配置了模型，切换模型
+      if (agentConfig.model) {
+        const targetModel = app.modelRegistry.find(agentConfig.model.provider, agentConfig.model.modelId)
+        if (targetModel) {
+          await threadSession.session.setModel(targetModel)
+        }
       }
+
+      // 检查取消信号
+      if (dispatchOptions.signal?.aborted) {
+        throw new Error('子任务在执行前已被取消')
+      }
+
+      // 监听取消信号
+      const abortPromise = new Promise<never>((_, reject) => {
+        if (dispatchOptions.signal) {
+          dispatchOptions.signal.addEventListener('abort', () => {
+            reject(new Error('子任务已被取消'))
+          }, { once: true })
+        }
+      })
+
+      // 监听 subagent session 事件，转发为 onProgress
+      if (dispatchOptions.onProgress) {
+        threadSession.session.subscribe((event: any) => {
+          if (event.type === 'tool_execution_start') {
+            const toolName = event.toolName ?? 'unknown'
+            dispatchOptions.onProgress!({
+              text: `子 Agent 调用工具: ${toolName}`,
+              phase: 'tool_call',
+            })
+          }
+          if (event.type === 'message_update') {
+            dispatchOptions.onProgress!({
+              text: '子 Agent 思考中...',
+              phase: 'thinking',
+            })
+          }
+        })
+      }
+
+      const promptPromise = threadSession.session.prompt(task)
+      const rawResult = await Promise.race([promptPromise, abortPromise])
+
+      // 解析执行结果文本
+      let result: string
+      if (typeof rawResult === 'string') {
+        result = rawResult
+      } else if (rawResult && typeof rawResult === 'object' && 'content' in rawResult) {
+        const content = (rawResult as { content: unknown }).content
+        result = typeof content === 'string' ? content : JSON.stringify(content)
+      } else {
+        result = String(rawResult ?? '')
+      }
+
+      return { result, threadId: subagentThreadId }
     })
-
-    const promptPromise = threadSession.session.prompt(task)
-    const result = await Promise.race([promptPromise, abortPromise])
-
-    // 返回执行结果文本
-    if (typeof result === 'string') {
-      return result
-    }
-    if (result && typeof result === 'object' && 'content' in result) {
-      const content = (result as { content: unknown }).content
-      return typeof content === 'string' ? content : JSON.stringify(content)
-    }
-    return String(result ?? '')
   })
 
-  // 6. 挂载到 Fastify 实例
+  // 8. 挂载到 Fastify 实例
   app.decorate('subagentManager', manager)
 
   app.log.info(

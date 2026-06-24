@@ -1,19 +1,17 @@
 /**
  * 嵌入式 Agent Server
  *
- * 通过 child_process.fork() 在子进程中启动 agent-server，
+ * 通过 spawn() 使用系统 Node.js 在子进程中启动 agent-server，
+ * 避免继承 Electron 的 Node.js 运行时导致原生模块 ABI 不兼容。
  * 后端崩溃不会影响 Electron 主进程，且可自动重启。
  */
 
-import { fork, type ChildProcess } from 'child_process'
+import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
 import { app } from 'electron'
 
 /** agent-server 子进程 */
 let serverProcess: ChildProcess | null = null
-
-/** 服务端口（子进程启动后通过 IPC 通知） */
-// let resolvedPort: number | null = null
 
 /** 端口解析 Promise 的 resolve 函数 */
 let portResolve: ((port: number) => void) | null = null
@@ -21,8 +19,8 @@ let portResolve: ((port: number) => void) | null = null
 /**
  * 启动嵌入式后端服务，返回实际监听端口。
  *
- * 使用 fork() 启动 agent-server 子进程：
- * - 开发模式：直接用 tsx 运行源码
+ * 使用 spawn() + 系统 Node.js 启动 agent-server 子进程：
+ * - 开发模式：用 tsx 运行源码
  * - 生产模式：运行编译后的 JS
  */
 export async function startEmbeddedServer(): Promise<number> {
@@ -33,23 +31,26 @@ export async function startEmbeddedServer(): Promise<number> {
   const isDev = !app.isPackaged
 
   if (isDev) {
-    // 开发模式：用 tsx 运行 TypeScript 源码
+    // 开发模式：用系统 Node.js + tsx 运行 TypeScript 源码
     const serverSrc = join(__dirname, '../../../agent-server/src/index.ts')
-    serverProcess = fork(serverSrc, [], {
-      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    const serverDir = join(__dirname, '../../../agent-server')
+    serverProcess = spawn('node', ['--import', 'tsx', serverSrc], {
+      cwd: serverDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
         PI_HOST: '127.0.0.1',
         PI_PORT: '0',
         PI_CWD: process.env.PI_CWD ?? process.cwd(),
       },
-      execArgv: ['--import', 'tsx'],
     })
   } else {
-    // 生产模式：运行编译后的 JS
+    // 生产模式：用系统 Node.js 运行编译后的 JS
     const serverDist = join(__dirname, '../../../agent-server/dist/index.js')
-    serverProcess = fork(serverDist, [], {
-      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    const serverDir = join(__dirname, '../../../agent-server')
+    serverProcess = spawn('node', [serverDist], {
+      cwd: serverDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
         PI_HOST: '127.0.0.1',

@@ -161,6 +161,11 @@ export class ConcurrencyLimiter {
     return this.queue.length
   }
 
+  /** 剩余可用并发槽位数 */
+  getAvailableSlots(): number {
+    return Math.max(0, this.limits.maxConcurrent - this.activeCount)
+  }
+
   /** 重置计数器（用于新一轮主任务开始时） */
   reset(): void {
     this.activeCount = 0

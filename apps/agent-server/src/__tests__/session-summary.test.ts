@@ -1,23 +1,29 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import Database from 'better-sqlite3'
 import { SessionSummaryStore } from '../core/memory/session-summary.js'
 import type { SessionSummary } from '../core/memory/session-summary.js'
+import { runMigrations } from '../core/db/migrations.js'
 
 let tempDir: string
+let db: Database.Database
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'pi-summary-test-'))
+  db = new Database(join(tempDir, 'test.db'))
+  runMigrations(db)
 })
 
 afterEach(() => {
+  db.close()
   rmSync(tempDir, { recursive: true, force: true })
 })
 
 describe('SessionSummaryStore', () => {
-  it('saveSummary 保存摘要到文件', async () => {
-    const store = new SessionSummaryStore(tempDir)
+  it('saveSummary 保存摘要到 SQLite', async () => {
+    const store = new SessionSummaryStore(db)
     const summary: SessionSummary = {
       sessionId: 'session-1',
       summary: '用户讨论了项目架构',
@@ -28,12 +34,15 @@ describe('SessionSummaryStore', () => {
     }
     await store.saveSummary(summary)
 
-    const file = join(tempDir, 'agent', 'summaries.json')
-    expect(existsSync(file)).toBe(true)
+    // 直接查询 SQLite 验证数据已落库
+    const row = db.prepare('SELECT summary FROM session_summaries WHERE session_id = ?').get('session-1') as
+      { summary: string } | undefined
+    expect(row).toBeTruthy()
+    expect(row!.summary).toBe('用户讨论了项目架构')
   })
 
   it('getSummary 返回已保存的摘要', async () => {
-    const store = new SessionSummaryStore(tempDir)
+    const store = new SessionSummaryStore(db)
     const summary: SessionSummary = {
       sessionId: 'session-1',
       summary: '用户讨论了项目架构',
@@ -52,13 +61,13 @@ describe('SessionSummaryStore', () => {
   })
 
   it('getSummary 不存在时返回 null', async () => {
-    const store = new SessionSummaryStore(tempDir)
+    const store = new SessionSummaryStore(db)
     const result = await store.getSummary('nonexistent')
     expect(result).toBeNull()
   })
 
   it('listSummaries 返回所有摘要', async () => {
-    const store = new SessionSummaryStore(tempDir)
+    const store = new SessionSummaryStore(db)
     await store.saveSummary({
       sessionId: 's1',
       summary: '摘要1',
@@ -82,7 +91,7 @@ describe('SessionSummaryStore', () => {
   })
 
   it('deleteSummary 删除摘要', async () => {
-    const store = new SessionSummaryStore(tempDir)
+    const store = new SessionSummaryStore(db)
     await store.saveSummary({
       sessionId: 's1',
       summary: '摘要1',
@@ -98,12 +107,12 @@ describe('SessionSummaryStore', () => {
   })
 
   it('deleteSummary 不存在时不报错', async () => {
-    const store = new SessionSummaryStore(tempDir)
+    const store = new SessionSummaryStore(db)
     await expect(store.deleteSummary('nonexistent')).resolves.toBeUndefined()
   })
 
   it('saveSummary 覆盖更新已有摘要', async () => {
-    const store = new SessionSummaryStore(tempDir)
+    const store = new SessionSummaryStore(db)
     await store.saveSummary({
       sessionId: 's1',
       summary: '旧摘要',
@@ -127,7 +136,7 @@ describe('SessionSummaryStore', () => {
   })
 
   it('持久化：重新加载后数据仍在', async () => {
-    const store1 = new SessionSummaryStore(tempDir)
+    const store1 = new SessionSummaryStore(db)
     await store1.saveSummary({
       sessionId: 's1',
       summary: '持久化测试',
@@ -137,9 +146,12 @@ describe('SessionSummaryStore', () => {
       updatedAt: 1000,
     })
 
-    // 新实例读取同一目录
-    const store2 = new SessionSummaryStore(tempDir)
+    // 新实例读取同一数据库
+    const db2 = new Database(join(tempDir, 'test.db'))
+    runMigrations(db2) // 幂等
+    const store2 = new SessionSummaryStore(db2)
     const result = await store2.getSummary('s1')
     expect(result!.summary).toBe('持久化测试')
+    db2.close()
   })
 })

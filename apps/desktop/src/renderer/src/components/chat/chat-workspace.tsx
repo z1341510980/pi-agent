@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FolderOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import type { BrowserConfig } from '@repo/config/shared'
@@ -17,10 +17,13 @@ import { type PermissionMode } from './permission-mode-switch'
 import { MessageStream, applyEvent, type MessageStreamState } from './message-stream'
 import { InputArea } from './input-area'
 import { SessionList, type SessionSummary } from './session-list'
+import { WorkspaceIndicator } from './workspace-indicator'
+import { FilePreviewPanel } from './file-preview-panel'
 import { NotificationCenter } from '../overlays/notification-center'
 import { DevLogPanel } from '../overlays/devlog-panel'
 import { CommandPalette, createDefaultCommands } from '../overlays/command-palette'
 import { CompactionBanner, type CompactionEvent } from './compaction-banner'
+import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { ContextPanel, type AssociatedFile, type MemorySummaryData, type ActivityEntry } from './context-panel'
 import { UsagePanel } from './usage-panel'
 import {
@@ -31,7 +34,6 @@ import {
 } from '@/components/ui/dialog'
 import { type ModelOption } from './model-selector'
 import { createUserMessage, type ChatMessage, type FileAttachment } from './types'
-import type { UsageSummary } from '@/components/usage/usage-overview'
 import {
   useSessionStore,
   createEmptyMessageState,
@@ -106,10 +108,15 @@ export function ChatWorkspace({
   const toggleLeftPanel = useUIStore((s) => s.toggleLeftPanel)
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen)
   const toggleRightPanel = useUIStore((s) => s.toggleRightPanel)
+  const filePreview = useUIStore((s) => s.filePreview)
+  const openFilePreview = useUIStore((s) => s.openFilePreview)
+  const closeFilePreview = useUIStore((s) => s.closeFilePreview)
 
   // ── 本地 UI 状态（无需持久化） ──
   const [compactionEvent, setCompactionEvent] = useState<CompactionEvent | null>(null)
   const [usageDetailOpen, setUsageDetailOpen] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(260)
+  const [rightPanelWidth, setRightPanelWidth] = useState(320)
 
   const messageState: MessageStreamState =
     sessionMessages[activeThreadId] ?? createEmptyMessageState()
@@ -127,13 +134,6 @@ export function ChatWorkspace({
     queryKey: ['agent-server-health'],
     queryFn: () => getApi<HealthData>('/api/health'),
     refetchInterval: 10_000,
-  })
-
-  // 本轮（当前会话）用量
-  const sessionUsageQuery = useQuery({
-    queryKey: ['usage-session', activeThreadId],
-    queryFn: () => getApi<UsageSummary>(`/api/usage/session/${activeThreadId}`),
-    refetchInterval: 15_000,
   })
 
   // 当前工作区信息
@@ -164,7 +164,7 @@ export function ChatWorkspace({
 
   const { executions, onMessage: onToolMessage } = useToolExecutions()
 
-  // 实时事件管理（通知、DevLog、用量）
+  // 实时事件管理（通知、DevLog、用量、上下文）
   const {
     notifications,
     devLogs,
@@ -174,7 +174,15 @@ export function ChatWorkspace({
     addDevLog,
     clearDevLogs,
     addUsageUpdate,
+    contextState,
+    addContextUpdate,
+    resetContextState,
   } = useRealtimeEvents()
+
+  // 切换线程时重置上下文状态
+  useEffect(() => {
+    resetContextState()
+  }, [activeThreadId, resetContextState])
 
   const {
     pendingConfirmations,
@@ -185,6 +193,7 @@ export function ChatWorkspace({
     onNotification: addNotification,
     onDevLog: addDevLog,
     onUsageUpdate: addUsageUpdate,
+    onContextUpdate: addContextUpdate,
   })
 
   // AG-UI 事件 → 消息流状态
@@ -207,14 +216,16 @@ export function ChatWorkspace({
     agentId: activeAgentId,
   })
 
-  // ── 从选中模型动态获取 contextWindow ──
+  // ── 从上下文状态获取 contextWindow（由 context:update 实时事件推送，来自 modelRegistry）──
+  // 当 contextState.contextWindow > 0 时使用实时值，否则回退到模型列表查询
   const currentContextWindow = useMemo(() => {
+    if (contextState.contextWindow > 0) return contextState.contextWindow
     if (!selectedModel) return 32768
     const model = modelsQuery.data?.find(
       (m) => m.provider === selectedModel.provider && m.id === selectedModel.modelId,
     )
     return model?.contextWindow ?? 32768
-  }, [selectedModel, modelsQuery.data])
+  }, [contextState.contextWindow, selectedModel, modelsQuery.data])
 
   // ── 从消息流中提取关联文件（工具调用涉及的文件路径） ──
   const associatedFiles = useMemo<AssociatedFile[]>(() => {
@@ -451,32 +462,41 @@ export function ChatWorkspace({
   // 合并流式错误和 run 错误
   const displayError = messageState.streamError ?? (runError ? runError.message : null)
 
-  // 动态计算 grid 列宽（支持左/右栏折叠）
-  const gridTemplateColumns = `${leftPanelOpen ? 'var(--sidebar-width)' : '0px'} minmax(480px,1fr) ${rightPanelOpen ? 'var(--context-width)' : '0px'}`
-
   return (
     <div className="grid grid-rows-[minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
       {/* ── Workspace grid（workspace-grid 启用面板折叠过渡 250ms） ── */}
       <div
-        className="grid min-h-0 workspace-grid"
-        style={{ gridTemplateColumns }}
+        className="flex min-h-0 workspace-grid"
       >
         {/* ── Sidebar ── */}
         {leftPanelOpen && (
-          <SessionList
-            sessions={sessions}
-            activeSessionId={activeThreadId}
-            onSelectSession={setActiveThreadId}
-            onNewSession={handleNewSession}
-            onRenameSession={handleRenameSession}
-            onDeleteSession={handleDeleteSession}
-            onOpenSettings={onOpenSettings}
-          />
+          <>
+            <div style={{ width: sidebarWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
+              <SessionList
+                sessions={sessions}
+                activeSessionId={activeThreadId}
+                onSelectSession={setActiveThreadId}
+                onNewSession={handleNewSession}
+                onRenameSession={handleRenameSession}
+                onDeleteSession={handleDeleteSession}
+                onOpenSettings={onOpenSettings}
+              />
+            </div>
+            <ResizableSplitter
+              direction="horizontal"
+              size={sidebarWidth}
+              minSize={180}
+              maxSize={400}
+              onSizeChange={setSidebarWidth}
+              side="left"
+            />
+          </>
         )}
 
         {/* ── Chat main（工作区背景 #F7F8FA） ── */}
         <main
-          className="bg-workspace-bg grid grid-rows-[var(--chat-header-height)_minmax(0,1fr)_auto] min-w-0 overflow-hidden"
+          className="bg-workspace-bg grid min-w-0 overflow-hidden"
+          style={{ gridTemplateRows: `var(--chat-header-height) minmax(0,1fr) auto${messageState.messages.length === 0 ? ' auto' : ''}` }}
           aria-label="PI Agent 工作台"
         >
           {/* ── 会话标题栏（60px，工作区顶部） ── */}
@@ -525,6 +545,7 @@ export function ChatWorkspace({
             onDismissError={handleDismissError}
             onExampleClick={handleSend}
             sessionKey={activeThreadId}
+            onFilePreview={openFilePreview}
             banner={
               <CompactionBanner
                 event={compactionEvent}
@@ -550,35 +571,64 @@ export function ChatWorkspace({
             onModelChange={(provider, modelId) =>
               setSelectedModel({ provider, modelId })
             }
+            sessions={sessions}
+            activeSessionId={activeThreadId}
+            onFilePreview={openFilePreview}
           />
+
+          {/* 工作区选择（仅空态显示） */}
+          {messageState.messages.length === 0 && (
+            <div className="px-6 pb-2">
+              <WorkspaceIndicator />
+            </div>
+          )}
         </main>
 
-        {/* ── Context panel（白色背景） ── */}
+        {/* ── 右侧栏 Splitter + Context panel ── */}
         {rightPanelOpen && (
-          <aside
-            className="bg-surface-1 border-l border-border grid grid-rows-[auto_minmax(0,1fr)] min-w-0 overflow-hidden"
-            aria-label="上下文"
-          >
-            <ContextPanel
-              stats={{
-                tokensUsed: sessionUsageQuery.data?.totalInputTokens ?? 0,
-                contextWindow: currentContextWindow,
-                messageCount: messageState.messages.length,
-                toolCallCount: executions.length,
-                compactionCount,
-                generationCount: sessionUsageQuery.data?.totalCalls ?? executions.length,
-              }}
-              isOnline={isOnline}
-              isCompacting={compactionEvent?.state === 'running'}
-              onCompact={() => void handleCompact()}
-              onOpenSettings={onOpenSettings}
-              onViewDetails={() => setUsageDetailOpen(true)}
-              workspacePath={workspaceQuery.data?.path}
-              associatedFiles={associatedFiles}
-              memorySummary={memorySummaryQuery.data ?? null}
-              activities={activities}
+          <>
+            <ResizableSplitter
+              direction="horizontal"
+              size={rightPanelWidth}
+              minSize={240}
+              maxSize={600}
+              onSizeChange={setRightPanelWidth}
+              side="right"
             />
-          </aside>
+            <aside
+              style={{ width: rightPanelWidth }}
+              className="bg-surface-1 border-l border-border shrink-0 overflow-hidden flex flex-col"
+              aria-label={filePreview ? '文件预览' : '上下文'}
+            >
+              {filePreview ? (
+                <FilePreviewPanel file={filePreview} onClose={closeFilePreview} />
+              ) : (
+                <ContextPanel
+                  stats={{
+                    tokensUsed: contextState.tokensUsed,
+                    contextWindow: currentContextWindow,
+                    messageCount: messageState.messages.length,
+                    toolCallCount: executions.length,
+                    compactionCount,
+                    generationCount: contextState.callCount || executions.length,
+                    totalInputTokens: contextState.totalInputTokens,
+                    totalOutputTokens: contextState.totalOutputTokens,
+                    model: contextState.model,
+                    provider: contextState.provider,
+                  }}
+                  isOnline={isOnline}
+                  isCompacting={compactionEvent?.state === 'running'}
+                  onCompact={() => void handleCompact()}
+                  onOpenSettings={onOpenSettings}
+                  onViewDetails={() => setUsageDetailOpen(true)}
+                  workspacePath={workspaceQuery.data?.path}
+                  associatedFiles={associatedFiles}
+                  memorySummary={memorySummaryQuery.data ?? null}
+                  activities={activities}
+                />
+              )}
+            </aside>
+          </>
         )}
       </div>
 

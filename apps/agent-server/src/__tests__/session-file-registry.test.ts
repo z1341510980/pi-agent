@@ -2,11 +2,14 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import Database from 'better-sqlite3'
 import { SessionFileRegistry } from '../core/session/session-file-registry.js'
+import { runMigrations } from '../core/db/migrations.js'
 
 let tempDir: string
 let dataDir: string
 let sessionDir: string
+let db: Database.Database
 let registry: SessionFileRegistry
 
 beforeEach(() => {
@@ -14,10 +17,13 @@ beforeEach(() => {
   dataDir = join(tempDir, 'data')
   sessionDir = join(tempDir, 'sessions', 'session-1')
   mkdirSync(sessionDir, { recursive: true })
-  registry = new SessionFileRegistry(dataDir)
+  db = new Database(join(tempDir, 'test.db'))
+  runMigrations(db)
+  registry = new SessionFileRegistry(db, dataDir)
 })
 
 afterEach(() => {
+  db.close()
   rmSync(tempDir, { recursive: true, force: true })
 })
 
@@ -159,7 +165,7 @@ describe('SessionFileRegistry — getFilesForSession', () => {
     expect(files).toEqual([])
   })
 
-  it('sidecar 文件持久化到会话目录', () => {
+  it('文件记录持久化到 SQLite session_files 表', () => {
     const source = createSourceFile('file1.txt', 'Content A')
     registry.registerFile({
       filePath: source,
@@ -169,11 +175,10 @@ describe('SessionFileRegistry — getFilesForSession', () => {
       storageKind: 'managed_cache',
     })
 
-    const sidecar = join(sessionDir, '.files.json')
-    expect(existsSync(sidecar)).toBe(true)
-    const content = JSON.parse(readFileSync(sidecar, 'utf-8'))
-    expect(content).toHaveLength(1)
-    expect(content[0].label).toBe('file1.txt')
+    // 直接查询 SQLite session_files 表验证持久化
+    const rows = db.prepare('SELECT * FROM session_files WHERE session_path = ?').all(sessionDir) as any[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].label).toBe('file1.txt')
   })
 })
 
@@ -323,15 +328,17 @@ describe('SessionFileRegistry — 持久化', () => {
       storageKind: 'managed_cache',
     })
 
-    // 新实例读取同一 dataDir
-    const newRegistry = new SessionFileRegistry(dataDir)
+    // 新实例读取同一数据库文件
+    const newDb = new Database(join(tempDir, 'test.db'))
+    const newRegistry = new SessionFileRegistry(newDb, dataDir)
     const files = newRegistry.getFilesForSession(sessionDir)
     expect(files).toHaveLength(1)
     expect(files[0].fileId).toBe(record.fileId)
     expect(files[0].label).toBe('artifact.txt')
+    newDb.close()
   })
 
-  it('引用计数持久化到 .refcount.json', () => {
+  it('引用计数持久化到 SQLite file_refcount 表', () => {
     const source = createSourceFile('artifact.txt', 'Content')
     registry.registerFile({
       filePath: source,
@@ -341,11 +348,9 @@ describe('SessionFileRegistry — 持久化', () => {
       storageKind: 'managed_cache',
     })
 
-    const refcountFile = join(dataDir, 'session-files', '.refcount.json')
-    expect(existsSync(refcountFile)).toBe(true)
-    const refcount = JSON.parse(readFileSync(refcountFile, 'utf-8'))
-    const hashes = Object.keys(refcount)
-    expect(hashes).toHaveLength(1)
-    expect(refcount[hashes[0]]).toBe(1)
+    // 直接查询 SQLite file_refcount 表验证持久化
+    const rows = db.prepare('SELECT * FROM file_refcount').all() as any[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].refcount).toBe(1)
   })
 })

@@ -28,7 +28,6 @@ import {
 interface AgentConfig {
   systemPrompt: string
   temperature: number
-  maxTokens: number
 }
 
 /** 自定义人格模板 */
@@ -59,7 +58,6 @@ const dispatchHistoryKey = 'pi-agent.dispatch-history'
 const defaultConfig: AgentConfig = {
   systemPrompt: '',
   temperature: 0.7,
-  maxTokens: 8192,
 }
 
 // 内置预设模板（不可编辑/删除）
@@ -131,8 +129,7 @@ export function AgentPage(): ReactElement {
 
   const dirty =
     config.systemPrompt !== savedConfig.systemPrompt ||
-    config.temperature !== savedConfig.temperature ||
-    config.maxTokens !== savedConfig.maxTokens
+    config.temperature !== savedConfig.temperature
 
   useEffect(() => {
     if (!saveMsg) return
@@ -545,27 +542,9 @@ export function AgentPage(): ReactElement {
           </div>
         </div>
 
-        <div className="grid gap-2">
-          <div className="flex items-center justify-between gap-2">
-            <Label htmlFor="max-tokens" className="text-xs">Max Tokens</Label>
-            <span className="text-xs font-mono text-muted-foreground">{config.maxTokens}</span>
-          </div>
-          <input
-            id="max-tokens"
-            type="range"
-            min="1024"
-            max="32768"
-            step="1024"
-            value={config.maxTokens}
-            onChange={(e) => setConfig((prev) => ({ ...prev, maxTokens: Number(e.target.value) }))}
-            className="w-full accent-accent"
-          />
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>1024</span>
-            <span>8192</span>
-            <span>32768</span>
-          </div>
-        </div>
+        <p className="text-xs text-muted-foreground m-0">
+          Max Tokens 由模型配置决定，可在「模型管理」或「Provider 管理」中设置
+        </p>
       </div>
 
       {/* ── 操作按钮 ── */}
@@ -902,7 +881,6 @@ function loadConfig(): AgentConfig {
     return {
       systemPrompt: typeof data.systemPrompt === 'string' ? data.systemPrompt : defaultConfig.systemPrompt,
       temperature: typeof data.temperature === 'number' ? data.temperature : defaultConfig.temperature,
-      maxTokens: typeof data.maxTokens === 'number' ? data.maxTokens : defaultConfig.maxTokens,
     }
   } catch {
     return defaultConfig

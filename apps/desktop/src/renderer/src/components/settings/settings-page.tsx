@@ -50,11 +50,6 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
       {/* ── 顶部标题栏 ── */}
       <header className="flex items-center justify-between min-w-0 bg-titlebar-bg border-b border-titlebar-border">
         <div className="flex items-center gap-3 h-full min-w-0 px-4 [webkit-app-region:drag]">
-          <div className="flex items-center gap-2 [webkit-app-region:no-drag]">
-            <span className="size-3 rounded-full bg-[#ff5f57]" aria-hidden="true" />
-            <span className="size-3 rounded-full bg-[#ffbd2e]" aria-hidden="true" />
-            <span className="size-3 rounded-full bg-[#28c840]" aria-hidden="true" />
-          </div>
           <SettingsIcon className="size-4 text-muted-foreground" />
           <h1 className="text-sm font-semibold text-text">设置</h1>
         </div>

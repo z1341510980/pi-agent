@@ -1,16 +1,16 @@
 /**
  * ProviderConfigStore：前端动态注册的 Provider 配置存储
  *
- * 持久化到 JSON 文件，进程重启后自动恢复。
+ * 持久化到 SQLite（providers 表），进程重启后自动恢复。
  * 与 ModelRegistry 互补：
  * - ModelRegistry：Pi SDK 内置模型 + models.json 自定义模型
  * - 本存储：前端用户在设置页面配置的 Provider（含 API Key）
  *
- * 持久化路径：${dataDir}/agent/providers.json
+ * 内存 Map 作为读缓存，写操作同步落库以保证一致性。
+ * models 字段在 SQLite 中以 JSON 字符串存储；auth_header 以 0/1 存储。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import type Database from 'better-sqlite3'
 
 export interface ProviderModelConfig {
   id: string
@@ -31,64 +31,82 @@ export interface ProviderConfig {
   models: ProviderModelConfig[]
 }
 
+/** providers 表行结构 */
+interface ProviderRow {
+  id: string
+  name: string
+  base_url: string
+  api_key: string
+  api: string
+  auth_header: number
+  models: string
+  updated_at: number
+}
+
 export class ProviderConfigStore {
   private readonly providers = new Map<string, ProviderConfig>()
-  private readonly filePath: string
-  private writeTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly stmtSelectAll: Database.Statement
+  private readonly stmtUpsert: Database.Statement
+  private readonly stmtDelete: Database.Statement
 
-  constructor(filePath?: string) {
-    this.filePath = filePath ?? ''
-    if (this.filePath) {
-      this.loadFromDisk()
+  constructor(db: Database.Database) {
+    // 预编译 SQL，提升反复执行性能
+    this.stmtSelectAll = db.prepare('SELECT * FROM providers')
+    this.stmtUpsert = db.prepare(`
+      INSERT INTO providers (id, name, base_url, api_key, api, auth_header, models, updated_at)
+      VALUES (@id, @name, @base_url, @api_key, @api, @auth_header, @models, unixepoch())
+      ON CONFLICT(id) DO UPDATE SET
+        name        = excluded.name,
+        base_url    = excluded.base_url,
+        api_key     = excluded.api_key,
+        api         = excluded.api,
+        auth_header = excluded.auth_header,
+        models      = excluded.models,
+        updated_at  = unixepoch()
+    `)
+    this.stmtDelete = db.prepare('DELETE FROM providers WHERE id = ?')
+
+    // 启动时把所有 providers 加载到内存 Map 作为读缓存
+    const rows = this.stmtSelectAll.all() as ProviderRow[]
+    for (const row of rows) {
+      this.providers.set(row.id, this.rowToConfig(row))
     }
   }
 
-  /** 从磁盘加载配置 */
-  private loadFromDisk(): void {
-    if (!this.filePath || !existsSync(this.filePath)) return
+  /** 将数据库行转换为 ProviderConfig */
+  private rowToConfig(row: ProviderRow): ProviderConfig {
+    let models: ProviderModelConfig[] = []
     try {
-      const raw = readFileSync(this.filePath, 'utf-8')
-      const data = JSON.parse(raw) as ProviderConfig[]
-      if (Array.isArray(data)) {
-        for (const config of data) {
-          if (config && typeof config.id === 'string') {
-            this.providers.set(config.id, config)
-          }
-        }
-      }
+      const parsed = JSON.parse(row.models)
+      if (Array.isArray(parsed)) models = parsed
     } catch {
-      // 文件损坏或不存在，忽略错误，使用空存储
+      // models 字段损坏时回退为空数组
     }
-  }
-
-  /** 延迟写入磁盘（防抖，避免频繁写入） */
-  private schedulePersist(): void {
-    if (!this.filePath) return
-    if (this.writeTimer) clearTimeout(this.writeTimer)
-    this.writeTimer = setTimeout(() => {
-      this.persistNow()
-    }, 100)
-  }
-
-  /** 立即写入磁盘 */
-  persistNow(): void {
-    if (!this.filePath) return
-    try {
-      const dir = dirname(this.filePath)
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true })
-      }
-      const data = Array.from(this.providers.values())
-      writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8')
-    } catch {
-      // 写入失败不影响内存中的配置
+    return {
+      id: row.id,
+      name: row.name,
+      baseUrl: row.base_url,
+      apiKey: row.api_key,
+      api: row.api,
+      authHeader: row.auth_header === 1,
+      models,
     }
   }
 
   /** 注册或更新 Provider 配置 */
   upsert(config: ProviderConfig): void {
+    // 先更新内存 Map
     this.providers.set(config.id, config)
-    this.schedulePersist()
+    // 同步写入 SQLite（UPSERT）
+    this.stmtUpsert.run({
+      id: config.id,
+      name: config.name,
+      base_url: config.baseUrl,
+      api_key: config.apiKey,
+      api: config.api,
+      auth_header: config.authHeader === false ? 0 : 1,
+      models: JSON.stringify(config.models ?? []),
+    })
   }
 
   /** 获取 Provider 配置 */
@@ -105,7 +123,7 @@ export class ProviderConfigStore {
   delete(id: string): boolean {
     const result = this.providers.delete(id)
     if (result) {
-      this.schedulePersist()
+      this.stmtDelete.run(id)
     }
     return result
   }

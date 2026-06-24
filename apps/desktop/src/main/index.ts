@@ -1,11 +1,11 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, session } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join, basename } from 'path'
 import { readFile } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { createTray, attachMinimizeToTray, destroyTray } from './tray'
 import { setupAutoUpdater, destroyAutoUpdater } from './auto-updater'
-import { startEmbeddedServer, stopEmbeddedServer } from './server'
+// import { startEmbeddedServer, stopEmbeddedServer } from './server'
 
 /** 当前工作目录 */
 let currentCwd = process.env.PI_CWD ?? process.cwd()
@@ -105,12 +105,14 @@ function createWindow(): void {
 
   // 动态注入 CSP：使用嵌入式服务器的实际端口
   const port = serverPort ?? 3900
+  const isDev = !app.isPackaged
   const csp = [
     "default-src 'self'",
-    "script-src 'self'",
+    // 开发模式允许 Vite HMR 和 @vitejs/plugin-react 的内联脚本
+    isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173" : "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
-    `connect-src 'self' http://127.0.0.1:${port} http://localhost:${port} ws://127.0.0.1:${port} ws://localhost:${port}`,
+    `connect-src 'self' http://127.0.0.1:${port} http://localhost:${port} ws://127.0.0.1:${port} ws://localhost:${port}${isDev ? ' http://localhost:5173 ws://localhost:5173' : ''}`,
   ].join('; ')
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
@@ -159,13 +161,13 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // 启动嵌入式后端服务
-  try {
-    serverPort = await startEmbeddedServer()
-    console.log(`嵌入式 Agent Server 运行于 http://127.0.0.1:${serverPort}`)
-  } catch (err) {
-    console.error('嵌入式 Agent Server 启动失败:', err)
-  }
+  // 启动嵌入式后端服务（已禁用，手动启动 agent-server）
+  // try {
+  //   serverPort = await startEmbeddedServer()
+  //   console.log(`嵌入式 Agent Server 运行于 http://127.0.0.1:${serverPort}`)
+  // } catch (err) {
+  //   console.error('嵌入式 Agent Server 启动失败:', err)
+  // }
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
@@ -201,7 +203,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  stopEmbeddedServer()
+  // stopEmbeddedServer()
   destroyTray()
   destroyAutoUpdater()
 })

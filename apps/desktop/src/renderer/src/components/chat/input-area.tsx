@@ -5,6 +5,10 @@ import { cn } from '@/lib/utils'
 import { type ModelOption, ModelSelector } from './model-selector'
 import { FileAttachmentList, type FileAttachment } from './file-attachment'
 import { PermissionModeSwitch } from './permission-mode-switch'
+import { SlashCommandPanel } from './slash-command-panel'
+import { MentionPanel } from './mention-panel'
+import type { SessionSummary } from './session-list'
+import type { FilePreviewState } from '@/stores/ui-store'
 
 export interface InputAreaProps {
   /** 发送消息（非运行状态） */
@@ -27,6 +31,12 @@ export interface InputAreaProps {
   selectedModel?: string | null
   /** 模型变化回调 */
   onModelChange?: (provider: string, modelId: string) => void
+  /** 可引用的会话列表（@ 功能） */
+  sessions?: SessionSummary[]
+  /** 当前活跃会话 ID */
+  activeSessionId?: string
+  /** 附件预览回调 */
+  onFilePreview?: (file: FilePreviewState) => void
 }
 
 /** 根据文件名推断 MIME 类型 */
@@ -67,16 +77,21 @@ export function InputArea({
   onAbort,
   isRunning,
   disabled = false,
-  placeholder = '输入消息...',
+  placeholder = '今天帮你做些什么？@ 引用对话文件，/ 调用技能与指令',
   value,
   onChange,
   models = [],
   selectedModel = null,
   onModelChange,
+  sessions = [],
+  activeSessionId = '',
+  onFilePreview,
 }: InputAreaProps): ReactElement {
   const [internalText, setInternalText] = useState('')
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
+  const [slashPanelOpen, setSlashPanelOpen] = useState(false)
+  const [mentionPanelOpen, setMentionPanelOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const text = value ?? internalText
 
@@ -235,6 +250,14 @@ export function InputArea({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // 斜杠面板或 @ 面板打开时，拦截导航键，让面板处理
+      if (slashPanelOpen || mentionPanelOpen) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Escape') {
+          e.preventDefault()
+          return
+        }
+      }
+
       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault()
         if (isRunning) {
@@ -244,7 +267,7 @@ export function InputArea({
         }
       }
     },
-    [isRunning, onAbort, handleSend]
+    [isRunning, onAbort, handleSend, slashPanelOpen, mentionPanelOpen]
   )
 
   // 自适应高度
@@ -271,11 +294,22 @@ export function InputArea({
     >
       {/* 附件预览 */}
       {attachments.length > 0 && (
-        <FileAttachmentList
-          attachments={attachments}
-          removable
-          onRemove={handleRemoveAttachment}
-        />
+        <div className="mb-2">
+          <FileAttachmentList
+            attachments={attachments}
+            removable
+            onRemove={handleRemoveAttachment}
+            onPreview={onFilePreview ? (att) => onFilePreview({
+              name: att.name,
+              content: att.content,
+              encoding: att.encoding,
+              mimeType: att.mimeType,
+              thumbnail: att.thumbnail,
+              size: att.size,
+              type: att.type,
+            }) : undefined}
+          />
+        </div>
       )}
 
       {/* 输入卡片：白色圆角大输入框，聚焦态 2px 紫色边框 */}
@@ -286,6 +320,66 @@ export function InputArea({
           isDragOver && 'border-primary/50',
         )}
       >
+        {/* 斜杠指令面板 */}
+        {slashPanelOpen && (
+          <SlashCommandPanel
+            query={(() => {
+              const slashIdx = text.lastIndexOf('/')
+              if (slashIdx === -1) return ''
+              const after = text.slice(slashIdx + 1)
+              const spaceIdx = after.search(/[\s\n]/)
+              return spaceIdx === -1 ? after : after.slice(0, spaceIdx)
+            })()}
+            onSelect={(insertText) => {
+              // 将 /搜索词 替换为实际插入文本
+              const slashIdx = text.lastIndexOf('/')
+              if (slashIdx === -1) {
+                updateText(insertText)
+              } else {
+                const before = text.slice(0, slashIdx)
+                const afterSlash = text.slice(slashIdx + 1)
+                const spaceIdx = afterSlash.search(/[\s\n]/)
+                const after = spaceIdx === -1 ? '' : afterSlash.slice(spaceIdx)
+                updateText(`${before}${insertText}${after}`)
+              }
+              setSlashPanelOpen(false)
+              textareaRef.current?.focus()
+            }}
+            onClose={() => {
+              setSlashPanelOpen(false)
+            }}
+          />
+        )}
+
+        {/* @ 会话引用面板 */}
+        {mentionPanelOpen && (
+          <MentionPanel
+            query={(() => {
+              const atIdx = text.lastIndexOf('@')
+              if (atIdx === -1) return ''
+              const after = text.slice(atIdx + 1)
+              const spaceIdx = after.search(/[\s\n]/)
+              return spaceIdx === -1 ? after : after.slice(0, spaceIdx)
+            })()}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelect={(session) => {
+              // 将 @搜索词 替换为 @[会话标题]
+              const atIdx = text.lastIndexOf('@')
+              if (atIdx === -1) return
+              const before = text.slice(0, atIdx)
+              const afterAt = text.slice(atIdx + 1)
+              const spaceIdx = afterAt.search(/[\s\n]/)
+              const after = spaceIdx === -1 ? '' : afterAt.slice(spaceIdx)
+              updateText(`${before}@[${session.title}] ${after}`)
+              setMentionPanelOpen(false)
+              textareaRef.current?.focus()
+            }}
+            onClose={() => {
+              setMentionPanelOpen(false)
+            }}
+          />
+        )}
         <textarea
           ref={textareaRef}
           id="message-input"
@@ -303,8 +397,55 @@ export function InputArea({
           )}
           aria-label="消息输入"
           onChange={(e) => {
-            updateText(e.target.value)
+            const newValue = e.target.value
+            updateText(newValue)
             handleInput()
+
+            const lastChar = newValue[newValue.length - 1]
+
+            // 检测 / 唤起指令面板（仅在行首或空白后输入 /）
+            if (lastChar === '/') {
+              const beforeSlash = newValue.slice(0, -1)
+              if (beforeSlash.trim() === '' || beforeSlash.endsWith(' ') || beforeSlash.endsWith('\n')) {
+                setSlashPanelOpen(true)
+                setMentionPanelOpen(false)
+              }
+            }
+            // 检测 @ 唤起会话引用面板（输入 @ 即可，但不在邮箱等场景）
+            if (lastChar === '@') {
+              const beforeAt = newValue.slice(0, -1)
+              if (!beforeAt.endsWith('.') && !beforeAt.match(/[a-zA-Z]$/)) {
+                setMentionPanelOpen(true)
+                setSlashPanelOpen(false)
+              }
+            }
+
+            // 斜杠面板状态更新
+            if (slashPanelOpen) {
+              const slashIdx = newValue.lastIndexOf('/')
+              if (slashIdx === -1) {
+                setSlashPanelOpen(false)
+              } else {
+                // 斜杠后如果输入了空格，认为命令完成，关闭面板
+                const afterSlash = newValue.slice(slashIdx + 1)
+                if (afterSlash.includes(' ') || afterSlash.includes('\n')) {
+                  setSlashPanelOpen(false)
+                }
+              }
+            }
+            // @ 面板状态更新
+            if (mentionPanelOpen) {
+              const atIdx = newValue.lastIndexOf('@')
+              if (atIdx === -1) {
+                setMentionPanelOpen(false)
+              } else {
+                // @ 后如果输入了空格，认为引用完成，关闭面板
+                const afterAt = newValue.slice(atIdx + 1)
+                if (afterAt.includes(' ') || afterAt.includes('\n')) {
+                  setMentionPanelOpen(false)
+                }
+              }
+            }
           }}
         />
 

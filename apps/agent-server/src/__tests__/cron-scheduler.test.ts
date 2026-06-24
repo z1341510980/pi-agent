@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import Database from 'better-sqlite3'
 import { EventBus } from '@repo/shared/events'
 import {
   CronScheduler,
@@ -10,14 +11,19 @@ import {
   isValidCronExpression,
 } from '../core/cron/cron-scheduler.js'
 import type { CronTickEvent } from '../core/cron/cron-scheduler.js'
+import { runMigrations } from '../core/db/migrations.js'
 
 let tempDir: string
+let db: Database.Database
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'pi-cron-test-'))
+  db = new Database(join(tempDir, 'test.db'))
+  runMigrations(db)
 })
 
 afterEach(() => {
+  db.close()
   rmSync(tempDir, { recursive: true, force: true })
 })
 
@@ -169,7 +175,7 @@ describe('isDue', () => {
 
 describe('CronScheduler', () => {
   it('addJob 添加任务并返回完整对象', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const job = scheduler.addJob({
       name: '每日报告',
       schedule: '0 8 * * *',
@@ -189,7 +195,7 @@ describe('CronScheduler', () => {
   })
 
   it('addJob 无效 cron 表达式抛出错误', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     expect(() =>
       scheduler.addJob({
         name: '无效任务',
@@ -201,7 +207,7 @@ describe('CronScheduler', () => {
   })
 
   it('addJob 自定义参数', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const job = scheduler.addJob({
       name: '自定义任务',
       agentId: 'agent-1',
@@ -218,7 +224,7 @@ describe('CronScheduler', () => {
   })
 
   it('listJobs 返回所有任务的副本', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     scheduler.addJob({ name: '任务1', schedule: '0 8 * * *', prompt: 'p1' })
     scheduler.addJob({ name: '任务2', schedule: '0 9 * * *', prompt: 'p2' })
 
@@ -231,7 +237,7 @@ describe('CronScheduler', () => {
   })
 
   it('getJob 返回指定任务的副本', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const added = scheduler.addJob({ name: '任务1', schedule: '0 8 * * *', prompt: 'p1' })
 
     const job = scheduler.getJob(added.id)
@@ -245,7 +251,7 @@ describe('CronScheduler', () => {
   })
 
   it('updateJob 更新任务字段', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const added = scheduler.addJob({ name: '原名称', schedule: '0 8 * * *', prompt: 'p1' })
 
     const updated = scheduler.updateJob(added.id, {
@@ -261,7 +267,7 @@ describe('CronScheduler', () => {
   })
 
   it('updateJob 无效 cron 表达式抛出错误', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const added = scheduler.addJob({ name: '任务', schedule: '0 8 * * *', prompt: 'p1' })
 
     expect(() =>
@@ -271,13 +277,13 @@ describe('CronScheduler', () => {
   })
 
   it('updateJob 不存在的任务抛出错误', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     expect(() => scheduler.updateJob('non-existent', { name: 'x' })).toThrow(/任务不存在/)
     scheduler.close()
   })
 
   it('removeJob 删除任务', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const added = scheduler.addJob({ name: '任务', schedule: '0 8 * * *', prompt: 'p1' })
 
     expect(scheduler.removeJob(added.id)).toBe(true)
@@ -288,7 +294,7 @@ describe('CronScheduler', () => {
   })
 
   it('enableJob / disableJob 切换任务状态', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const added = scheduler.addJob({
       name: '任务',
       schedule: '0 8 * * *',
@@ -310,7 +316,7 @@ describe('CronScheduler', () => {
     const receivedEvents: CronTickEvent[] = []
     eventBus.on<CronTickEvent>('cron:tick', (e) => receivedEvents.push(e))
 
-    const scheduler = new CronScheduler(tempDir, eventBus)
+    const scheduler = new CronScheduler(db, eventBus)
     const added = scheduler.addJob({
       name: '手动任务',
       agentId: 'agent-1',
@@ -340,7 +346,7 @@ describe('CronScheduler', () => {
   })
 
   it('runJob 不存在的任务抛出错误', async () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     await expect(scheduler.runJob('non-existent')).rejects.toThrow(/任务不存在/)
     scheduler.close()
   })
@@ -350,7 +356,7 @@ describe('CronScheduler', () => {
     const receivedEvents: CronTickEvent[] = []
     eventBus.on<CronTickEvent>('cron:tick', (e) => receivedEvents.push(e))
 
-    const scheduler = new CronScheduler(tempDir, eventBus)
+    const scheduler = new CronScheduler(db, eventBus)
     const added = scheduler.addJob({
       name: '禁用任务',
       schedule: '0 8 * * *',
@@ -365,28 +371,26 @@ describe('CronScheduler', () => {
     scheduler.close()
   })
 
-  it('持久化到 JSON 文件', () => {
-    const scheduler = new CronScheduler(tempDir)
+  it('持久化到 SQLite 数据库', () => {
+    const scheduler = new CronScheduler(db)
     scheduler.addJob({ name: '任务1', schedule: '0 8 * * *', prompt: 'p1' })
     scheduler.close()
 
-    const filePath = join(tempDir, 'cron-jobs.json')
-    expect(existsSync(filePath)).toBe(true)
-
-    const content = readFileSync(filePath, 'utf8')
-    const data = JSON.parse(content)
-    expect(data).toHaveLength(1)
-    expect(data[0].name).toBe('任务1')
+    // 直接查询 SQLite 验证持久化
+    const row = db.prepare('SELECT * FROM cron_jobs WHERE name = ?').get('任务1') as any
+    expect(row).toBeTruthy()
+    expect(row.name).toBe('任务1')
+    expect(row.schedule).toBe('0 8 * * *')
   })
 
   it('从文件加载已有任务', () => {
     // 先写入一条任务
-    const scheduler1 = new CronScheduler(tempDir)
+    const scheduler1 = new CronScheduler(db)
     const added = scheduler1.addJob({ name: '持久化任务', schedule: '0 8 * * *', prompt: 'p1' })
     scheduler1.close()
 
     // 重新创建 scheduler，应能加载已有任务
-    const scheduler2 = new CronScheduler(tempDir)
+    const scheduler2 = new CronScheduler(db)
     const jobs = scheduler2.listJobs()
     expect(jobs).toHaveLength(1)
     expect(jobs[0].id).toBe(added.id)
@@ -395,13 +399,13 @@ describe('CronScheduler', () => {
   })
 
   it('空数据目录初始化正常', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     expect(scheduler.listJobs()).toHaveLength(0)
     scheduler.close()
   })
 
   it('start/stop 不重复启动定时器', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     // start 后再 start 不应抛错
     scheduler.start()
     scheduler.start()
@@ -412,7 +416,7 @@ describe('CronScheduler', () => {
   })
 
   it('close 后停止定时器', () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     scheduler.start()
     scheduler.close()
     // close 后再调用其他方法不应崩溃
@@ -422,7 +426,7 @@ describe('CronScheduler', () => {
   it('checkJobs 跳过无效 cron 表达式的任务', async () => {
     // 直接写入一个无效表达式的任务到文件
     const eventBus = new EventBus()
-    const scheduler = new CronScheduler(tempDir, eventBus)
+    const scheduler = new CronScheduler(db, eventBus)
     const added = scheduler.addJob({
       name: '有效任务',
       schedule: '* * * * *',
@@ -437,7 +441,7 @@ describe('CronScheduler', () => {
   })
 
   it('EventBus 可选（不传入也能工作）', async () => {
-    const scheduler = new CronScheduler(tempDir)
+    const scheduler = new CronScheduler(db)
     const added = scheduler.addJob({
       name: '无事件总线',
       schedule: '0 8 * * *',
@@ -450,14 +454,9 @@ describe('CronScheduler', () => {
     scheduler.close()
   })
 
-  it('加载无效 JSON 文件时回退到空数组', () => {
-    // 写入一个无效的 JSON 文件
-    const filePath = join(tempDir, 'cron-jobs.json')
-    const { writeFileSync } = require('node:fs')
-    writeFileSync(filePath, 'invalid json content')
-
-    // 创建 scheduler 不应抛错
-    const scheduler = new CronScheduler(tempDir)
+  it('空数据库初始化正常', () => {
+    // 全新数据库，无任何任务
+    const scheduler = new CronScheduler(db)
     expect(scheduler.listJobs()).toHaveLength(0)
     scheduler.close()
   })

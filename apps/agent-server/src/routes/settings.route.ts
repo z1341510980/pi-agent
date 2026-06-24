@@ -56,9 +56,8 @@ export const settingsRoute: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // 持久化
+    // 持久化（set 内部同步写入 SQLite）
     store.set(config)
-    store.persistNow()
 
     // 应用到全局 HTTP 客户端
     const result = manager.apply(config)

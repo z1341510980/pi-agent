@@ -1,12 +1,11 @@
-import { appendFileSync, mkdirSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
+import type Database from 'better-sqlite3'
 
 /**
  * Evidence Ledger：工具调用证据记录
  *
- * 参考 ARCHITECTURE.md §22.8。S2 阶段实现最小记录：
- * - 每次工具调用后追加一条 JSONL 记录到 ${dataDir}/agent/evidence/${threadId}.jsonl
+ * 参考 ARCHITECTURE.md §22.8。使用 SQLite 持久化（evidence 表）：
+ * - 每次工具调用后插入一条记录
  * - 记录工具名、参数摘要、结果摘要、是否出错、时间戳
  * - 完整的 Final Readiness Check 验证留到后续阶段
  */
@@ -32,20 +31,38 @@ export interface EvidenceEntry {
 
 export interface EvidenceRecordOptions {
   threadId: string
-  dataDir: string
+  db: Database.Database
+}
+
+/** evidence 表行结构 */
+interface EvidenceRow {
+  id: string
+  thread_id: string
+  tool_call_id: string
+  tool_name: string
+  args_summary: string | null
+  result_summary: string | null
+  is_error: number
+  timestamp: string
 }
 
 export class EvidenceLedger {
   private readonly threadId: string
-  private readonly logFile: string
+  private readonly db: Database.Database
+  // 预编译 SQL
+  private readonly stmtInsert: Database.Statement
+  private readonly stmtSelectByThread: Database.Statement
 
   constructor(options: EvidenceRecordOptions) {
     this.threadId = options.threadId
-    const dir = join(options.dataDir, 'agent', 'evidence')
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
-    this.logFile = join(dir, `${this.threadId}.jsonl`)
+    this.db = options.db
+
+    // 预编译 SQL，提升反复执行性能
+    this.stmtInsert = this.db.prepare(`
+      INSERT INTO evidence (id, thread_id, tool_call_id, tool_name, args_summary, result_summary, is_error, timestamp)
+      VALUES (@id, @thread_id, @tool_call_id, @tool_name, @args_summary, @result_summary, @is_error, @timestamp)
+    `)
+    this.stmtSelectByThread = this.db.prepare('SELECT * FROM evidence WHERE thread_id = ? ORDER BY timestamp ASC')
   }
 
   /**
@@ -60,19 +77,39 @@ export class EvidenceLedger {
       timestamp: new Date().toISOString(),
     }
 
-    appendFileSync(this.logFile, JSON.stringify(full) + '\n', 'utf8')
+    // 写入 SQLite
+    this.stmtInsert.run({
+      id: full.id,
+      thread_id: full.threadId,
+      tool_call_id: full.toolCallId,
+      tool_name: full.toolName,
+      args_summary: full.argsSummary,
+      result_summary: full.resultSummary,
+      is_error: full.isError ? 1 : 0,
+      timestamp: full.timestamp,
+    })
+
     return full
   }
 
   /** 读取当前线程的所有证据记录 */
   readAll(): EvidenceEntry[] {
-    if (!existsSync(this.logFile)) return []
-    const { readFileSync } = require('node:fs')
-    const content = readFileSync(this.logFile, 'utf8') as string
-    return content
-      .split('\n')
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as EvidenceEntry)
+    const rows = this.stmtSelectByThread.all(this.threadId) as EvidenceRow[]
+    return rows.map((row) => this.rowToEntry(row))
+  }
+
+  /** 将数据库行转换为 EvidenceEntry */
+  private rowToEntry(row: EvidenceRow): EvidenceEntry {
+    return {
+      id: row.id,
+      threadId: row.thread_id,
+      toolCallId: row.tool_call_id,
+      toolName: row.tool_name,
+      argsSummary: row.args_summary ?? '',
+      resultSummary: row.result_summary ?? '',
+      isError: row.is_error === 1,
+      timestamp: row.timestamp,
+    }
   }
 
   private hash(...parts: unknown[]): string {

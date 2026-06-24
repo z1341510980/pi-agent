@@ -1,13 +1,12 @@
 /**
  * SessionSummaryStore：会话摘要存储
  *
- * 使用 JSON 文件存储会话摘要，支持 CRUD 操作。
- * 文件路径：${dataDir}/agent/summaries.json
+ * 使用 SQLite 存储会话摘要（session_summaries 表），支持 CRUD 操作。
+ * 写操作同步落库以保证一致性，读操作走内存 Map 缓存。
+ * key_decisions 和 topics 字段在 SQLite 中以 JSON 字符串存储。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { atomicWriteSync } from '@repo/shared/utils'
+import type Database from 'better-sqlite3'
 
 export interface SessionSummary {
   sessionId: string
@@ -21,91 +20,121 @@ export interface SessionSummary {
   updatedAt: number
 }
 
+/** session_summaries 表行结构 */
+interface SessionSummaryRow {
+  session_id: string
+  summary: string
+  key_decisions: string
+  topics: string
+  created_at: number
+  updated_at: number
+}
+
 export class SessionSummaryStore {
-  private readonly filePath: string
   private summaries: Map<string, SessionSummary> = new Map()
-  private loaded = false
 
-  constructor(dataDir: string) {
-    this.filePath = join(dataDir, 'agent', 'summaries.json')
-  }
+  /** 预编译 SQL，提升反复执行性能 */
+  private readonly stmtUpsert: Database.Statement
+  private readonly stmtDelete: Database.Statement
+  private readonly stmtGetAll: Database.Statement
 
-  /** 延迟加载：首次访问时从文件读取 */
-  private ensureLoaded(): void {
-    if (this.loaded) return
-    this.loaded = true
-    if (existsSync(this.filePath)) {
-      try {
-        const content = readFileSync(this.filePath, 'utf-8')
-        const data = JSON.parse(content) as SessionSummary[]
-        for (const s of data) {
-          if (s && typeof s.sessionId === 'string') {
-            this.summaries.set(s.sessionId, s)
-          }
-        }
-      } catch (err) {
-        console.error(`[SessionSummaryStore] 加载 ${this.filePath} 失败，历史数据可能丢失:`, err)
+  constructor(db: Database.Database) {
+    // 预编译语句
+    this.stmtUpsert = db.prepare(`
+      INSERT INTO session_summaries (session_id, summary, key_decisions, topics, created_at, updated_at)
+      VALUES (@session_id, @summary, @key_decisions, @topics, @created_at, @updated_at)
+      ON CONFLICT(session_id) DO UPDATE SET
+        summary      = excluded.summary,
+        key_decisions = excluded.key_decisions,
+        topics       = excluded.topics,
+        created_at   = excluded.created_at,
+        updated_at   = excluded.updated_at
+    `)
+    this.stmtDelete = db.prepare('DELETE FROM session_summaries WHERE session_id = ?')
+    this.stmtGetAll = db.prepare('SELECT * FROM session_summaries')
+
+    // 启动时把所有摘要加载到内存 Map 作为读缓存
+    try {
+      const rows = this.stmtGetAll.all() as SessionSummaryRow[]
+      for (const row of rows) {
+        const summary = this.rowToSummary(row)
+        this.summaries.set(summary.sessionId, summary)
       }
+    } catch (err) {
+      console.error('[SessionSummaryStore] 从 SQLite 加载失败，历史数据可能丢失:', err)
     }
   }
 
-  /** 持久化到文件（静默失败，保留 dirty 标记以便重试） */
-  private dirty = false
-
-  private persist(): void {
+  /** 将数据库行转换为 SessionSummary */
+  private rowToSummary(row: SessionSummaryRow): SessionSummary {
+    let keyDecisions: string[] = []
+    let topics: string[] = []
     try {
-      const data = Array.from(this.summaries.values())
-      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
-      this.dirty = false
-    } catch (err) {
-      console.error(`[SessionSummaryStore] persist 失败，数据仅存在于内存中:`, err)
+      const parsed = JSON.parse(row.key_decisions)
+      if (Array.isArray(parsed)) keyDecisions = parsed
+    } catch {
+      // key_decisions 字段损坏时回退为空数组
+    }
+    try {
+      const parsed = JSON.parse(row.topics)
+      if (Array.isArray(parsed)) topics = parsed
+    } catch {
+      // topics 字段损坏时回退为空数组
+    }
+    return {
+      sessionId: row.session_id,
+      summary: row.summary,
+      keyDecisions,
+      topics,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     }
   }
 
-  /** 持久化到文件（失败时抛出异常，用于 close 场景） */
-  private persistOrThrow(): void {
+  /** 持久化单条摘要到 SQLite（UPSERT，静默失败） */
+  private persist(summary: SessionSummary): void {
     try {
-      const data = Array.from(this.summaries.values())
-      atomicWriteSync(this.filePath, JSON.stringify(data, null, 2))
-      this.dirty = false
+      this.stmtUpsert.run({
+        session_id: summary.sessionId,
+        summary: summary.summary,
+        key_decisions: JSON.stringify(summary.keyDecisions),
+        topics: JSON.stringify(summary.topics),
+        created_at: summary.createdAt,
+        updated_at: summary.updatedAt,
+      })
     } catch (err) {
-      console.error(`[SessionSummaryStore] close 时 persist 失败，数据可能丢失:`, err)
-      throw err
+      console.error('[SessionSummaryStore] persist 失败，数据仅存在于内存中:', err)
     }
   }
 
   /** 保存会话摘要 */
   async saveSummary(summary: SessionSummary): Promise<void> {
-    this.ensureLoaded()
     this.summaries.set(summary.sessionId, summary)
-    this.dirty = true
-    this.persist()
+    this.persist(summary)
   }
 
   /** 获取会话摘要 */
   async getSummary(sessionId: string): Promise<SessionSummary | null> {
-    this.ensureLoaded()
     return this.summaries.get(sessionId) ?? null
   }
 
   /** 列出所有摘要 */
   async listSummaries(): Promise<SessionSummary[]> {
-    this.ensureLoaded()
     return Array.from(this.summaries.values())
   }
 
   /** 删除摘要 */
   async deleteSummary(sessionId: string): Promise<void> {
-    this.ensureLoaded()
     this.summaries.delete(sessionId)
-    this.dirty = true
-    this.persist()
+    try {
+      this.stmtDelete.run(sessionId)
+    } catch (err) {
+      console.error('[SessionSummaryStore] deleteSummary 失败:', err)
+    }
   }
 
-  /** 关闭存储，持久化脏数据。持久化失败时抛出异常让调用方感知 */
+  /** 关闭存储。写操作已即时落库，无需额外持久化 */
   async close(): Promise<void> {
-    if (this.dirty) {
-      this.persistOrThrow()
-    }
+    // 数据已在每次写操作时同步写入 SQLite，此处无需额外处理
   }
 }

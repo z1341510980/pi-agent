@@ -10,9 +10,8 @@ import { SessionSummaryStore } from '../core/memory/session-summary.js'
  * - onClose 时持久化
  */
 export const memoryStorePlugin: FastifyPluginAsync = fp(async (app) => {
-  const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
-  const factStore = new FactStore(dataDir)
-  const summaryStore = new SessionSummaryStore(dataDir)
+  const factStore = new FactStore(app.db)
+  const summaryStore = new SessionSummaryStore(app.db)
 
   app.decorate('factStore', factStore)
   app.decorate('summaryStore', summaryStore)

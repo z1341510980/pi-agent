@@ -1,23 +1,28 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import Database from 'better-sqlite3'
 import { FactStore } from '../core/memory/fact-store.js'
-import type { Fact } from '../core/memory/fact-store.js'
+import { runMigrations } from '../core/db/migrations.js'
 
 let tempDir: string
+let db: Database.Database
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'pi-fact-test-'))
+  db = new Database(join(tempDir, 'test.db'))
+  runMigrations(db)
 })
 
 afterEach(() => {
+  db.close()
   rmSync(tempDir, { recursive: true, force: true })
 })
 
 describe('FactStore CRUD', () => {
   it('addFact 添加事实并返回 ID', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     const id = await store.addFact({
       content: '用户偏好暗色主题',
       tags: ['preference'],
@@ -36,13 +41,13 @@ describe('FactStore CRUD', () => {
   })
 
   it('getFact 不存在时返回 null', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     const result = await store.getFact('nonexistent')
     expect(result).toBeNull()
   })
 
   it('updateFact 更新事实内容', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     const id = await store.addFact({
       content: '旧内容',
       tags: ['test'],
@@ -59,12 +64,12 @@ describe('FactStore CRUD', () => {
   })
 
   it('updateFact 不存在的 ID 不报错', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     await expect(store.updateFact('nonexistent', { content: 'x' })).resolves.toBeUndefined()
   })
 
   it('deleteFact 删除事实', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     const id = await store.addFact({
       content: '待删除',
       tags: [],
@@ -78,14 +83,14 @@ describe('FactStore CRUD', () => {
   })
 
   it('deleteFact 不存在的 ID 不报错', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     await expect(store.deleteFact('nonexistent')).resolves.toBeUndefined()
   })
 })
 
 describe('FactStore 标签搜索', () => {
   it('searchByTags 返回包含所有指定标签的事实', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     await store.addFact({
       content: '事实1',
       tags: ['preference', 'ui'],
@@ -110,7 +115,7 @@ describe('FactStore 标签搜索', () => {
   })
 
   it('searchByTags 多标签交集匹配', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     await store.addFact({
       content: '事实1',
       tags: ['preference', 'ui'],
@@ -130,7 +135,7 @@ describe('FactStore 标签搜索', () => {
   })
 
   it('searchByTags 无匹配返回空数组', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     const results = await store.searchByTags(['nonexistent'])
     expect(results).toEqual([])
   })
@@ -138,7 +143,7 @@ describe('FactStore 标签搜索', () => {
 
 describe('FactStore 文本搜索', () => {
   it('searchByText 关键词匹配（大小写不敏感）', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     await store.addFact({
       content: '用户偏好 Dark Theme',
       tags: [],
@@ -158,7 +163,7 @@ describe('FactStore 文本搜索', () => {
   })
 
   it('searchByText 多关键词匹配（任一匹配）', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     await store.addFact({
       content: '使用 React 框架',
       tags: [],
@@ -177,7 +182,7 @@ describe('FactStore 文本搜索', () => {
   })
 
   it('searchByText 无匹配返回空数组', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     const results = await store.searchByText('nonexistent')
     expect(results).toEqual([])
   })
@@ -185,7 +190,7 @@ describe('FactStore 文本搜索', () => {
 
 describe('FactStore 分页', () => {
   it('listFacts 默认返回所有事实', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     for (let i = 0; i < 5; i++) {
       await store.addFact({
         content: `事实${i}`,
@@ -201,7 +206,7 @@ describe('FactStore 分页', () => {
   })
 
   it('listFacts 支持分页', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     for (let i = 0; i < 10; i++) {
       await store.addFact({
         content: `事实${i}`,
@@ -217,7 +222,7 @@ describe('FactStore 分页', () => {
   })
 
   it('listFacts 按标签过滤', async () => {
-    const store = new FactStore(tempDir)
+    const store = new FactStore(db)
     await store.addFact({
       content: '偏好1',
       tags: ['preference'],
@@ -240,7 +245,7 @@ describe('FactStore 分页', () => {
 
 describe('FactStore LRU 缓存', () => {
   it('getFact 更新访问计数和时间', async () => {
-    const store = new FactStore(tempDir, { lruSize: 100 })
+    const store = new FactStore(db, { lruSize: 100 })
     const id = await store.addFact({
       content: '测试',
       tags: [],
@@ -258,13 +263,13 @@ describe('FactStore LRU 缓存', () => {
   })
 
   it('LRU 缓存淘汰旧条目', async () => {
-    const store = new FactStore(tempDir, { lruSize: 2 })
+    const store = new FactStore(db, { lruSize: 2 })
     const id1 = await store.addFact({ content: '事实1', tags: [], source: 's1:0', confidence: 0.5 })
     const id2 = await store.addFact({ content: '事实2', tags: [], source: 's1:1', confidence: 0.5 })
     const id3 = await store.addFact({ content: '事实3', tags: [], source: 's1:2', confidence: 0.5 })
 
     // 缓存大小为 2，添加 3 个事实后，id1 应被淘汰出缓存
-    // 但仍然可以从文件加载
+    // 但仍然可以从 SQLite 加载
     const fact1 = await store.getFact(id1)
     expect(fact1).not.toBeNull()
     expect(fact1!.content).toBe('事实1')
@@ -272,8 +277,8 @@ describe('FactStore LRU 缓存', () => {
 })
 
 describe('FactStore 持久化', () => {
-  it('写操作后数据持久化到文件', async () => {
-    const store = new FactStore(tempDir)
+  it('写操作后数据持久化到 SQLite', async () => {
+    const store = new FactStore(db)
     await store.addFact({
       content: '持久化测试',
       tags: ['test'],
@@ -281,16 +286,16 @@ describe('FactStore 持久化', () => {
       confidence: 0.9,
     })
 
-    const file = join(tempDir, 'agent', 'facts.json')
-    expect(existsSync(file)).toBe(true)
-    const content = readFileSync(file, 'utf-8')
-    const data = JSON.parse(content)
-    expect(data).toHaveLength(1)
-    expect(data[0].content).toBe('持久化测试')
+    // 直接查询 SQLite 验证数据已落库
+    const row = db.prepare('SELECT content, tags FROM facts WHERE content = ?').get('持久化测试') as
+      { content: string; tags: string } | undefined
+    expect(row).toBeTruthy()
+    expect(row!.content).toBe('持久化测试')
+    expect(JSON.parse(row!.tags)).toEqual(['test'])
   })
 
   it('重新加载后数据仍在', async () => {
-    const store1 = new FactStore(tempDir)
+    const store1 = new FactStore(db)
     const id = await store1.addFact({
       content: '持久化测试',
       tags: ['test'],
@@ -298,17 +303,20 @@ describe('FactStore 持久化', () => {
       confidence: 0.9,
     })
 
-    // 新实例读取同一目录
-    const store2 = new FactStore(tempDir)
+    // 新实例读取同一数据库
+    const db2 = new Database(join(tempDir, 'test.db'))
+    runMigrations(db2) // 幂等
+    const store2 = new FactStore(db2)
     const fact = await store2.getFact(id)
     expect(fact).not.toBeNull()
     expect(fact!.content).toBe('持久化测试')
+    db2.close()
   })
 })
 
 describe('FactStore maxFacts 限制', () => {
   it('超过 maxFacts 时淘汰最久未访问的事实', async () => {
-    const store = new FactStore(tempDir, { maxFacts: 2 })
+    const store = new FactStore(db, { maxFacts: 2 })
     const id1 = await store.addFact({ content: '事实1', tags: [], source: 's1:0', confidence: 0.5 })
     const id2 = await store.addFact({ content: '事实2', tags: [], source: 's1:1', confidence: 0.5 })
 

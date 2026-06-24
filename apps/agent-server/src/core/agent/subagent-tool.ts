@@ -3,18 +3,20 @@
  *
  * 参考 ARCHITECTURE.md §9.2-9.3，实现：
  * - AgentConfig：Agent 配置定义
- * - AgentManager：管理 Agent 注册、subagent 派遣
- * - SubagentTool：subagent 工具定义与执行
+ * - AgentManager：管理 Agent 注册、subagent 派遣、持久化
+ * - subagent / subagent_reply / subagent_close 工具（defineTool + TypeBox 格式）
  *
  * subagent 工具通过 ConcurrencyLimiter 控制并发，
  * 通过 AsyncLocalStorage 跟踪嵌套深度，防止无限递归。
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { z } from 'zod'
+import { Type, type Static } from 'typebox'
+import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { ConcurrencyLimiter, type ConcurrencyLimits, type ReleaseFunction } from './concurrency-limiter.js'
 import { AgentChannel } from './agent-channel.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import type { AgentPersistenceStore } from './agent-persistence.js'
 
 /** Agent 配置 */
 export interface AgentConfig {
@@ -33,6 +35,10 @@ export interface AgentConfig {
   systemPrompt?: string
   /** 可用工具列表（不指定则使用全部） */
   tools?: string[]
+  /** 身份模板（identity.md 内容） */
+  identity?: string
+  /** 人格模板（personality.md 内容） */
+  personality?: string
 }
 
 /** subagent 执行结果 */
@@ -51,44 +57,55 @@ export interface SubagentResult {
   durationMs: number
   /** 嵌套深度 */
   depth: number
+  /** 子 Agent 的 threadId（供 subagent_reply 续接使用） */
+  threadId?: string
+}
+
+/** 流式进度回调 */
+export interface SubagentProgress {
+  /** 进度文本 */
+  text: string
+  /** 阶段 */
+  phase: 'thinking' | 'tool_call' | 'output'
 }
 
 /** subagent 派遣函数：由外部注入实际执行逻辑 */
 export type DispatchFn = (
   agentId: string,
   task: string,
-  options: { signal?: AbortSignal; depth: number },
-) => Promise<string>
+  options: {
+    signal?: AbortSignal
+    depth: number
+    /** 流式进度回调（可选） */
+    onProgress?: (progress: SubagentProgress) => void
+  },
+) => Promise<{ result: string; threadId: string }>
 
-/** subagent 工具参数 schema */
-export const subagentToolSchema = z.object({
-  agentId: z.string().describe('目标 Agent ID'),
-  task: z.string().min(1).describe('任务描述'),
-  timeout: z.number().min(1000).max(600000).default(60000).describe('超时毫秒数（默认 60s）'),
+// ─── TypeBox Schema 定义 ───
+
+/** subagent 工具参数 */
+const SubagentToolParams = Type.Object({
+  agentId: Type.String({ description: '目标 Agent ID' }),
+  task: Type.String({ minLength: 1, description: '任务描述' }),
+  timeout: Type.Number({
+    minimum: 1000,
+    maximum: 600000,
+    default: 60000,
+    description: '超时毫秒数（默认 60s）',
+  }),
 })
 
-export type SubagentToolInput = z.infer<typeof subagentToolSchema>
+/** subagent_reply 工具参数 */
+const SubagentReplyParams = Type.Object({
+  threadId: Type.String({ description: '子 Agent 的 threadId（从 subagent 调用结果中获取）' }),
+  task: Type.String({ minLength: 1, description: '后续任务描述' }),
+  timeout: Type.Number({ minimum: 1000, maximum: 600000, default: 60000 }),
+})
 
-/** subagent 工具定义（JSON Schema 格式，兼容 Pi SDK customTools） */
-export const subagentToolDefinition = {
-  name: 'subagent',
-  description:
-    '派遣子任务给指定 Agent 执行。当需要其他 Agent 的专长时调用此工具。' +
-    '注意：嵌套深度和并发数受限流器控制，超限时会抛错。',
-  parameters: {
-    type: 'object' as const,
-    properties: {
-      agentId: { type: 'string', description: '目标 Agent ID' },
-      task: { type: 'string', description: '任务描述' },
-      timeout: {
-        type: 'number',
-        description: '超时毫秒数（默认 60000，即 60s）',
-        default: 60000,
-      },
-    },
-    required: ['agentId', 'task'],
-  },
-}
+/** subagent_close 工具参数 */
+const SubagentCloseParams = Type.Object({
+  threadId: Type.String({ description: '要关闭的子 Agent threadId' }),
+})
 
 /** AsyncLocalStorage 用于跟踪当前 subagent 嵌套深度 */
 const depthStorage = new AsyncLocalStorage<number>()
@@ -100,19 +117,29 @@ const depthStorage = new AsyncLocalStorage<number>()
  * 1. 每个 Agent ID 唯一，重复注册会覆盖
  * 2. dispatchToAgent 通过 ConcurrencyLimiter 控制并发与深度
  * 3. 嵌套深度通过 AsyncLocalStorage 自动传递
+ * 4. Agent 配置持久化到 SQLite（如果 store 提供）
  */
 export class AgentManager {
   private readonly agents = new Map<string, AgentConfig>()
   private readonly limiter: ConcurrencyLimiter
   private readonly channel: AgentChannel
+  private readonly store?: AgentPersistenceStore
   private dispatchFn?: DispatchFn
+  /** 活跃的子 Agent session 注册表 */
+  private readonly activeSubagentSessions = new Map<string, {
+    threadId: string
+    agentId: string
+    createdAt: number
+  }>()
 
   constructor(options: {
     limits?: ConcurrencyLimits
     channel: AgentChannel
+    store?: AgentPersistenceStore
   }) {
     this.limiter = new ConcurrencyLimiter(options.limits)
     this.channel = options.channel
+    this.store = options.store
   }
 
   /** 设置派遣函数（由插件注入实际执行逻辑） */
@@ -120,7 +147,7 @@ export class AgentManager {
     this.dispatchFn = fn
   }
 
-  /** 注册 Agent */
+  /** 注册 Agent（仅内存） */
   registerAgent(config: AgentConfig): void {
     this.agents.set(config.id, config)
   }
@@ -150,46 +177,67 @@ export class AgentManager {
     return this.channel
   }
 
+  /** 从持久化存储加载所有 Agent */
+  loadPersistedAgents(): void {
+    if (!this.store) return
+    const agents = this.store.loadAll()
+    for (const agent of agents) {
+      this.agents.set(agent.id, agent)
+    }
+  }
+
+  /** 创建 Agent（注册 + 持久化） */
+  async createAgent(config: AgentConfig): Promise<AgentConfig> {
+    this.agents.set(config.id, config)
+    this.store?.save(config)
+    return config
+  }
+
+  /** 更新 Agent 配置 */
+  async updateAgent(id: string, patch: Partial<AgentConfig>): Promise<AgentConfig> {
+    const existing = this.agents.get(id)
+    if (!existing) {
+      throw new AppError(ErrorCode.NOT_FOUND, `Agent 不存在: ${id}`, 404)
+    }
+    const updated = { ...existing, ...patch, id }
+    this.agents.set(id, updated)
+    this.store?.save(updated)
+    return updated
+  }
+
+  /** 删除 Agent（注销 + 从持久化存储删除） */
+  async deleteAgent(id: string): Promise<void> {
+    this.agents.delete(id)
+    this.store?.delete(id)
+  }
+
   /**
    * 派遣子任务给指定 Agent
-   *
-   * @param agentId 目标 Agent ID
-   * @param task 任务描述
-   * @param options 超时等选项
-   * @returns 子 Agent 执行结果
    */
   async dispatchToAgent(
     agentId: string,
     task: string,
-    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+    options: {
+      timeoutMs?: number
+      signal?: AbortSignal
+      onProgress?: (progress: SubagentProgress) => void
+    } = {},
   ): Promise<SubagentResult> {
-    // 检查目标 Agent 是否存在
     const agent = this.agents.get(agentId)
     if (!agent) {
-      throw new AppError(
-        ErrorCode.NOT_FOUND,
-        `Agent 不存在: ${agentId}`,
-        404,
-      )
+      throw new AppError(ErrorCode.NOT_FOUND, `Agent 不存在: ${agentId}`, 404)
     }
 
-    // 检查派遣函数是否已注入
     if (!this.dispatchFn) {
-      throw new AppError(
-        ErrorCode.CONFIG_ERROR,
-        '派遣函数未设置，请先调用 setDispatchFn',
-        500,
-      )
+      throw new AppError(ErrorCode.CONFIG_ERROR, '派遣函数未设置，请先调用 setDispatchFn', 500)
     }
 
-    // 获取当前嵌套深度（主 Agent 调用时为 0）
     const currentDepth = depthStorage.getStore() ?? 0
     const childDepth = currentDepth + 1
 
     const startedAt = Date.now()
     const timeoutMs = options.timeoutMs ?? 60000
 
-    // 获取并发槽位（带超时等待）
     let release: ReleaseFunction
     try {
       release = await this.limiter.acquire(childDepth, {
@@ -207,13 +255,9 @@ export class AgentManager {
       }
     }
 
-    // 创建超时 AbortController
     const abortController = new AbortController()
-    const timeoutTimer = setTimeout(() => {
-      abortController.abort()
-    }, timeoutMs)
+    const timeoutTimer = setTimeout(() => abortController.abort(), timeoutMs)
 
-    // 如果外部传入了 signal，联动取消
     if (options.signal) {
       if (options.signal.aborted) {
         abortController.abort()
@@ -223,13 +267,20 @@ export class AgentManager {
     }
 
     try {
-      // 在新的 AsyncLocalStorage 上下文中执行，传递子深度
-      const result = await depthStorage.run(childDepth, () =>
+      const { result, threadId } = await depthStorage.run(childDepth, () =>
         this.dispatchFn!(agentId, task, {
           signal: abortController.signal,
           depth: childDepth,
+          onProgress: options.onProgress,
         }),
       )
+
+      // 记录活跃 session
+      this.activeSubagentSessions.set(threadId, {
+        threadId,
+        agentId,
+        createdAt: Date.now(),
+      })
 
       return {
         agentId,
@@ -238,6 +289,7 @@ export class AgentManager {
         success: true,
         durationMs: Date.now() - startedAt,
         depth: childDepth,
+        threadId,
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
@@ -257,33 +309,201 @@ export class AgentManager {
   }
 
   /**
-   * 执行 subagent 工具
-   * 供 Pi SDK customTools 调用
+   * 续接已有子 Agent session
    */
-  async executeSubagentTool(input: SubagentToolInput): Promise<SubagentResult> {
-    return this.dispatchToAgent(input.agentId, input.task, {
-      timeoutMs: input.timeout,
-    })
+  async replyToAgent(
+    threadId: string,
+    task: string,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<SubagentResult> {
+    const sessionInfo = this.activeSubagentSessions.get(threadId)
+    if (!sessionInfo) {
+      return {
+        agentId: 'unknown',
+        task,
+        result: '',
+        success: false,
+        error: `子 Agent 会话不存在或已关闭: ${threadId}`,
+        durationMs: 0,
+        depth: 0,
+      }
+    }
+
+    if (!this.dispatchFn) {
+      throw new AppError(ErrorCode.CONFIG_ERROR, '派遣函数未设置', 500)
+    }
+
+    const currentDepth = depthStorage.getStore() ?? 0
+    const childDepth = currentDepth + 1
+    const startedAt = Date.now()
+    const timeoutMs = options.timeoutMs ?? 60000
+
+    let release: ReleaseFunction
+    try {
+      release = await this.limiter.acquire(childDepth, {
+        timeoutMs: timeoutMs > 5000 ? 5000 : timeoutMs,
+      })
+    } catch (error) {
+      return {
+        agentId: sessionInfo.agentId,
+        task,
+        result: '',
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - startedAt,
+        depth: childDepth,
+      }
+    }
+
+    const abortController = new AbortController()
+    const timeoutTimer = setTimeout(() => abortController.abort(), timeoutMs)
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        abortController.abort()
+      } else {
+        options.signal.addEventListener('abort', () => abortController.abort(), { once: true })
+      }
+    }
+
+    try {
+      const { result } = await depthStorage.run(childDepth, () =>
+        this.dispatchFn!(sessionInfo.agentId, task, {
+          signal: abortController.signal,
+          depth: childDepth,
+        }),
+      )
+
+      return {
+        agentId: sessionInfo.agentId,
+        task,
+        result,
+        success: true,
+        durationMs: Date.now() - startedAt,
+        depth: childDepth,
+        threadId,
+      }
+    } catch (error) {
+      return {
+        agentId: sessionInfo.agentId,
+        task,
+        result: '',
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - startedAt,
+        depth: childDepth,
+      }
+    } finally {
+      clearTimeout(timeoutTimer)
+      release()
+    }
   }
 
-  /** 重置限流器（新一轮主任务开始时调用） */
+  /**
+   * 关闭子 Agent session，释放资源
+   */
+  async closeAgentSession(threadId: string): Promise<void> {
+    this.activeSubagentSessions.delete(threadId)
+  }
+
+  /** 获取 Agent 的活跃 subagent sessions */
+  getActiveSessions(agentId?: string): Array<{ threadId: string; agentId: string; createdAt: number }> {
+    const all = Array.from(this.activeSubagentSessions.values())
+    return agentId ? all.filter((s) => s.agentId === agentId) : all
+  }
+
+  /** 重置限流器 */
   resetLimiter(): void {
     this.limiter.reset()
   }
 }
 
-/**
- * 创建 subagent 工具的执行函数
- *
- * 返回一个可直接用于 Pi SDK customTools 的 execute 函数。
- * 调用时自动从 AgentManager 获取限流器和派遣逻辑。
- */
-export function createSubagentToolExecutor(manager: AgentManager) {
-  return async (args: SubagentToolInput): Promise<string> => {
-    const result = await manager.executeSubagentTool(args)
-    if (!result.success) {
-      return `子 Agent 执行失败: ${result.error ?? '未知错误'}`
-    }
-    return result.result
-  }
+// ─── defineTool 工具定义 ───
+
+/** 创建 subagent 工具（Pi SDK ToolDefinition 格式） */
+export function createSubagentTool(manager: AgentManager): ToolDefinition<typeof SubagentToolParams> {
+  return defineTool({
+    name: 'subagent',
+    label: '子代理',
+    description:
+      '派遣子任务给指定 Agent 执行。当需要其他 Agent 的专长时调用此工具。' +
+      '注意：嵌套深度和并发数受限流器控制，超限时会抛错。',
+    promptSnippet: '派遣子任务给指定 Agent 执行',
+    parameters: SubagentToolParams,
+    async execute(toolCallId, params, signal, onUpdate): Promise<AgentToolResult<undefined>> {
+      // 通知前端：子 Agent 开始执行
+      onUpdate?.({
+        content: [{ type: 'text', text: `正在派遣任务给 ${params.agentId}...` }],
+        details: undefined,
+      })
+
+      const result = await manager.dispatchToAgent(params.agentId, params.task, {
+        timeoutMs: params.timeout,
+        signal,
+        onProgress: (progress) => {
+          onUpdate?.({
+            content: [{ type: 'text', text: progress.text }],
+            details: undefined,
+          })
+        },
+      })
+
+      if (!result.success) {
+        return {
+          content: [{ type: 'text', text: `子 Agent 执行失败: ${result.error ?? '未知错误'}` }],
+          details: undefined,
+        }
+      }
+      // 在结果中附带 threadId，供 subagent_reply 使用
+      return {
+        content: [{ type: 'text', text: `${result.result}\n\n[threadId: ${result.threadId}]` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 创建 subagent_reply 工具 */
+export function createSubagentReplyTool(manager: AgentManager): ToolDefinition<typeof SubagentReplyParams> {
+  return defineTool({
+    name: 'subagent_reply',
+    label: '子代理续接',
+    description: '向已存在的子 Agent 会话发送后续消息，用于多轮交互。',
+    promptSnippet: '续接已有子 Agent 会话',
+    parameters: SubagentReplyParams,
+    async execute(toolCallId, params, signal): Promise<AgentToolResult<undefined>> {
+      const result = await manager.replyToAgent(params.threadId, params.task, {
+        timeoutMs: params.timeout,
+        signal,
+      })
+      if (!result.success) {
+        return {
+          content: [{ type: 'text', text: `续接失败: ${result.error}` }],
+          details: undefined,
+        }
+      }
+      return {
+        content: [{ type: 'text', text: result.result }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 创建 subagent_close 工具 */
+export function createSubagentCloseTool(manager: AgentManager): ToolDefinition<typeof SubagentCloseParams> {
+  return defineTool({
+    name: 'subagent_close',
+    label: '子代理关闭',
+    description: '关闭子 Agent 会话，释放资源。',
+    promptSnippet: '关闭子 Agent 会话',
+    parameters: SubagentCloseParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      await manager.closeAgentSession(params.threadId)
+      return {
+        content: [{ type: 'text', text: `子 Agent 会话 ${params.threadId} 已关闭` }],
+        details: undefined,
+      }
+    },
+  })
 }

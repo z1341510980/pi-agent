@@ -2,13 +2,11 @@
  * UsageLedger：用量账本
  *
  * 记录每次 LLM 调用的 token 用量和成本，支持查询、汇总和过期清理。
- * 使用 JSON 文件存储（${dataDir}/agent/usage.json），atomicWriteSync 持久化。
+ * 使用 SQLite 持久化（usage_records / usage_budget 表），内存数组作为聚合计算缓存。
  */
 
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
-import { existsSync, readFileSync } from 'node:fs'
-import { atomicWriteSync } from '@repo/shared/utils'
+import type Database from 'better-sqlite3'
 import { calculateCost } from './cost-rates.js'
 
 export interface UsageRecord {
@@ -91,19 +89,69 @@ function formatDateKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** usage_records 表行结构 */
+interface UsageRow {
+  id: string
+  timestamp: number
+  session_id: string
+  thread_id: string
+  model: string
+  provider: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number | null
+  cache_write_tokens: number | null
+  cost_usd: number
+  duration_ms: number
+  agent_id: string
+}
+
+/** usage_budget 表行结构 */
+interface BudgetRow {
+  monthly_budget_usd: number
+  alert_threshold: number
+}
+
 export class UsageLedger {
-  private readonly filePath: string
-  private readonly budgetFilePath: string
+  private readonly db: Database.Database
   private records: UsageRecord[] = []
   private budget: UsageBudget = { ...DEFAULT_BUDGET }
-  private dirty = false
-  private budgetDirty = false
 
-  constructor(dataDir: string) {
-    this.filePath = join(dataDir, 'agent', 'usage.json')
-    this.budgetFilePath = join(dataDir, 'agent', 'usage-budget.json')
-    this.load()
-    this.loadBudget()
+  // 预编译 SQL
+  private readonly stmtInsert: Database.Statement
+  private readonly stmtDeleteOld: Database.Statement
+  private readonly stmtSelectBudget: Database.Statement
+  private readonly stmtUpsertBudget: Database.Statement
+
+  constructor(db: Database.Database) {
+    this.db = db
+
+    // 预编译 SQL，提升反复执行性能
+    this.stmtInsert = db.prepare(`
+      INSERT INTO usage_records (
+        id, timestamp, session_id, thread_id, model, provider,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        cost_usd, duration_ms, agent_id
+      ) VALUES (
+        @id, @timestamp, @session_id, @thread_id, @model, @provider,
+        @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
+        @cost_usd, @duration_ms, @agent_id
+      )
+    `)
+    this.stmtDeleteOld = db.prepare('DELETE FROM usage_records WHERE timestamp < ?')
+    this.stmtSelectBudget = db.prepare('SELECT monthly_budget_usd, alert_threshold FROM usage_budget WHERE id = 1')
+    this.stmtUpsertBudget = db.prepare(`
+      INSERT INTO usage_budget (id, monthly_budget_usd, alert_threshold)
+      VALUES (1, @monthly_budget_usd, @alert_threshold)
+      ON CONFLICT(id) DO UPDATE SET
+        monthly_budget_usd = excluded.monthly_budget_usd,
+        alert_threshold = excluded.alert_threshold
+    `)
+
+    // 加载所有记录到内存（用于聚合计算）
+    this.records = this.loadAllRecords()
+    // 加载预算
+    this.budget = this.loadBudget()
   }
 
   /** 记录一次 LLM 调用（costUsd 由内部自动计算，调用方无需传入） */
@@ -117,16 +165,34 @@ export class UsageLedger {
     })
 
     const id = randomUUID()
+    const timestamp = Date.now()
     const full: UsageRecord = {
       ...record,
       id,
-      timestamp: Date.now(),
+      timestamp,
       costUsd,
     }
 
+    // 写入 SQLite
+    this.stmtInsert.run({
+      id,
+      timestamp,
+      session_id: record.sessionId,
+      thread_id: record.threadId,
+      model: record.model,
+      provider: record.provider,
+      input_tokens: record.inputTokens,
+      output_tokens: record.outputTokens,
+      cache_read_tokens: record.cacheReadTokens ?? null,
+      cache_write_tokens: record.cacheWriteTokens ?? null,
+      cost_usd: costUsd,
+      duration_ms: record.durationMs,
+      agent_id: record.agentId,
+    })
+
+    // 同步到内存数组
     this.records.push(full)
-    this.dirty = true
-    this.persist()
+
     return { id, costUsd }
   }
 
@@ -141,31 +207,48 @@ export class UsageLedger {
     limit?: number
     offset?: number
   }): { records: UsageRecord[]; total: number } {
-    let filtered = this.records
+    // 动态构建 WHERE 子句
+    const conditions: string[] = []
+    const params: Record<string, unknown> = {}
 
     if (options?.from) {
-      filtered = filtered.filter((r) => r.timestamp >= options.from!)
+      conditions.push('timestamp >= @from')
+      params.from = options.from
     }
     if (options?.to) {
-      filtered = filtered.filter((r) => r.timestamp <= options.to!)
+      conditions.push('timestamp <= @to')
+      params.to = options.to
     }
     if (options?.model) {
-      filtered = filtered.filter((r) => r.model === options.model)
+      conditions.push('model = @model')
+      params.model = options.model
     }
     if (options?.provider) {
-      filtered = filtered.filter((r) => r.provider === options.provider)
+      conditions.push('provider = @provider')
+      params.provider = options.provider
     }
     if (options?.agentId) {
-      filtered = filtered.filter((r) => r.agentId === options.agentId)
+      conditions.push('agent_id = @agentId')
+      params.agentId = options.agentId
     }
     if (options?.sessionId) {
-      filtered = filtered.filter((r) => r.sessionId === options.sessionId)
+      conditions.push('session_id = @sessionId')
+      params.sessionId = options.sessionId
     }
 
-    const total = filtered.length
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
     const offset = options?.offset ?? 0
     const limit = options?.limit ?? 100
-    const records = filtered.slice(offset, offset + limit)
+
+    // 先查总数
+    const countRow = this.db.prepare(`SELECT COUNT(*) as total FROM usage_records ${whereClause}`).get(params) as { total: number }
+    const total = countRow.total
+
+    // 再查分页数据
+    const rows = this.db.prepare(
+      `SELECT * FROM usage_records ${whereClause} ORDER BY timestamp ASC LIMIT @limit OFFSET @offset`,
+    ).all({ ...params, limit, offset }) as UsageRow[]
+    const records = rows.map((row) => this.rowToRecord(row))
 
     return { records, total }
   }
@@ -191,9 +274,15 @@ export class UsageLedger {
     return this.computeSummary(filtered)
   }
 
-  /** 获取当前会话用量 */
+  /** 获取当前会话用量（按 sessionId） */
   getSessionUsage(sessionId: string): UsageSummary {
     const filtered = this.records.filter((r) => r.sessionId === sessionId)
+    return this.computeSummary(filtered)
+  }
+
+  /** 获取线程用量（按 threadId） */
+  getThreadUsage(threadId: string): UsageSummary {
+    const filtered = this.records.filter((r) => r.threadId === threadId)
     return this.computeSummary(filtered)
   }
 
@@ -416,8 +505,11 @@ export class UsageLedger {
     if (budget.alertThreshold !== undefined) {
       this.budget.alertThreshold = Math.min(100, Math.max(0, budget.alertThreshold))
     }
-    this.budgetDirty = true
-    this.persistBudget()
+    // 写入 SQLite
+    this.stmtUpsertBudget.run({
+      monthly_budget_usd: this.budget.monthlyBudgetUsd,
+      alert_threshold: this.budget.alertThreshold,
+    })
     return { ...this.budget }
   }
 
@@ -442,106 +534,54 @@ export class UsageLedger {
   /** 清理过期记录（保留最近 N 天） */
   prune(keepDays = 90): number {
     const cutoff = Date.now() - keepDays * 24 * 60 * 60 * 1000
-    const before = this.records.length
+    // 从 SQLite 删除
+    const result = this.stmtDeleteOld.run(cutoff)
+    const removed = result.changes
+    // 同步内存数组
     this.records = this.records.filter((r) => r.timestamp >= cutoff)
-    const removed = before - this.records.length
-    if (removed > 0) {
-      this.dirty = true
-      this.persist()
-    }
     return removed
   }
 
-  /** 关闭存储，持久化脏数据。持久化失败时抛出异常让调用方感知 */
+  /** 关闭存储（SQLite 自动持久化，无需操作） */
   close(): void {
-    if (this.dirty) {
-      this.persistOrThrow()
+    // SQLite 自动持久化，无需手动 flush
+  }
+
+  /** 从 SQLite 加载所有记录到内存 */
+  private loadAllRecords(): UsageRecord[] {
+    const rows = this.db.prepare('SELECT * FROM usage_records ORDER BY timestamp ASC').all() as UsageRow[]
+    return rows.map((row) => this.rowToRecord(row))
+  }
+
+  /** 从 SQLite 加载预算设置 */
+  private loadBudget(): UsageBudget {
+    const row = this.stmtSelectBudget.get() as BudgetRow | undefined
+    if (!row) {
+      return { ...DEFAULT_BUDGET }
     }
-    if (this.budgetDirty) {
-      this.persistBudgetOrThrow()
+    return {
+      monthlyBudgetUsd: row.monthly_budget_usd,
+      alertThreshold: row.alert_threshold,
     }
   }
 
-  /** 从文件加载记录 */
-  private load(): void {
-    if (!existsSync(this.filePath)) {
-      this.records = []
-      return
+  /** 将数据库行转换为 UsageRecord */
+  private rowToRecord(row: UsageRow): UsageRecord {
+    return {
+      id: row.id,
+      timestamp: row.timestamp,
+      sessionId: row.session_id,
+      threadId: row.thread_id,
+      model: row.model,
+      provider: row.provider,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      cacheReadTokens: row.cache_read_tokens ?? undefined,
+      cacheWriteTokens: row.cache_write_tokens ?? undefined,
+      costUsd: row.cost_usd,
+      durationMs: row.duration_ms,
+      agentId: row.agent_id,
     }
-    try {
-      const content = readFileSync(this.filePath, 'utf8')
-      const data = JSON.parse(content)
-      if (!Array.isArray(data)) {
-        this.records = []
-        return
-      }
-      // 校验记录结构，剔除无效条目
-      this.records = data.filter((r: unknown, i: number) => {
-        if (r && typeof r === 'object' && typeof (r as Record<string, unknown>).model === 'string' && typeof (r as Record<string, unknown>).costUsd === 'number') return true
-        console.warn(`[UsageLedger] 跳过无效记录 #${i}:`, r)
-        return false
-      }) as UsageRecord[]
-    } catch (err) {
-      console.error(`[UsageLedger] 加载 ${this.filePath} 失败，历史数据可能丢失:`, err)
-      this.records = []
-    }
-  }
-
-  /** 加载预算设置 */
-  private loadBudget(): void {
-    if (!existsSync(this.budgetFilePath)) {
-      this.budget = { ...DEFAULT_BUDGET }
-      return
-    }
-    try {
-      const content = readFileSync(this.budgetFilePath, 'utf8')
-      const data = JSON.parse(content) as Partial<UsageBudget>
-      this.budget = {
-        monthlyBudgetUsd: typeof data.monthlyBudgetUsd === 'number' ? data.monthlyBudgetUsd : DEFAULT_BUDGET.monthlyBudgetUsd,
-        alertThreshold: typeof data.alertThreshold === 'number' ? data.alertThreshold : DEFAULT_BUDGET.alertThreshold,
-      }
-    } catch (err) {
-      console.error(`[UsageLedger] 加载预算文件 ${this.budgetFilePath} 失败:`, err)
-      this.budget = { ...DEFAULT_BUDGET }
-    }
-  }
-
-  /** 持久化到文件（静默失败，保留 dirty 标记以便重试） */
-  private persist(): void {
-    try {
-      atomicWriteSync(this.filePath, JSON.stringify(this.records, null, 2))
-      this.dirty = false
-    } catch (err) {
-      console.error(`[UsageLedger] persist 失败，数据仅存在于内存中:`, err)
-      // 保留 dirty 标记，下次 record 时重试
-    }
-  }
-
-  /** 持久化到文件（失败时抛出异常，用于 close 场景） */
-  private persistOrThrow(): void {
-    try {
-      atomicWriteSync(this.filePath, JSON.stringify(this.records, null, 2))
-      this.dirty = false
-    } catch (err) {
-      console.error(`[UsageLedger] close 时 persist 失败，数据可能丢失:`, err)
-      throw err
-    }
-  }
-
-  /** 持久化预算设置（静默失败） */
-  private persistBudget(): void {
-    try {
-      atomicWriteSync(this.budgetFilePath, JSON.stringify(this.budget, null, 2))
-      this.budgetDirty = false
-    } catch (err) {
-      console.error(`[UsageLedger] persist 预算失败:`, err)
-    }
-  }
-
-  /** 持久化预算设置（失败时抛出异常） */
-  private persistBudgetOrThrow(): void {
-    atomicWriteSync(this.budgetFilePath, JSON.stringify(this.budget, null, 2))
-    this.budgetDirty = false
   }
 
   /** 计算汇总统计 */
