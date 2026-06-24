@@ -282,7 +282,7 @@ export function InputArea({
 
   return (
     <form
-      className="px-6 pb-4 pt-2 transition-colors"
+      className="px-2 pb-2 pt-2 transition-colors"
       aria-label="发送消息"
       onSubmit={(e) => {
         e.preventDefault()

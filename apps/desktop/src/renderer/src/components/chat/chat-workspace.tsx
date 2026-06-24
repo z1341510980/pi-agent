@@ -495,7 +495,7 @@ export function ChatWorkspace({
 
         {/* ── Chat main（工作区背景 #F7F8FA） ── */}
         <main
-          className="bg-workspace-bg grid min-w-0 overflow-hidden"
+          className="bg-workspace-bg grid min-w-0 flex-1 overflow-hidden"
           style={{ gridTemplateRows: `var(--chat-header-height) minmax(0,1fr) auto${messageState.messages.length === 0 ? ' auto' : ''}` }}
           aria-label="PI Agent 工作台"
         >

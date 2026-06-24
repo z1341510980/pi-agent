@@ -39,8 +39,13 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "@google/genai",
+      "@scarf/scarf",
+      "better-sqlite3",
       "electron",
-      "esbuild"
+      "electron-winstaller",
+      "esbuild",
+      "protobufjs"
     ]
   },
   "devDependencies": {

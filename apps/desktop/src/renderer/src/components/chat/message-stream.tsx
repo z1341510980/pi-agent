@@ -336,12 +336,12 @@ export function MessageStream({
     <section
       ref={scrollRef}
       onScroll={handleScroll}
-      className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-4"
+      className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 py-4 flex flex-col"
       aria-label="消息流"
     >
-      <div className="space-y-5 min-w-0">
+      <div className={`space-y-5 min-w-0 ${isEmpty ? 'flex-1 flex flex-col justify-center' : ''}`}>
         {banner}
-        {isEmpty && !banner ? (
+        {isEmpty ? (
           <EmptyState onExampleClick={onExampleClick} />
         ) : (
           <AnimatePresence mode="wait">
