@@ -14,6 +14,7 @@ import { teamPlugin } from './plugins/team-plugin.js'
 import { databasePlugin } from './plugins/database.plugin.js'
 import { pluginLoaderPlugin } from './plugins/plugin-loader.plugin.js'
 import { cronPlugin } from './plugins/cron-plugin.js'
+import { novelPlugin } from './plugins/novel.plugin.js'
 import { healthRoute } from './routes/health.route.js'
 import { aguiRoute } from './routes/agui.route.js'
 import { copilotkitRoute } from './routes/copilotkit.route.js'
@@ -32,6 +33,7 @@ import { i18nRoute } from './routes/i18n.route.js'
 import { cronRoute } from './routes/cron.route.js'
 import { workspaceRoute } from './routes/workspace.route.js'
 import { skillsRoute } from './routes/skills.route.js'
+import { novelRoute } from './routes/novel.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
@@ -67,6 +69,9 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(usageLedgerPlugin)
   await app.register(memoryStorePlugin)
 
+  // 小说创作系统插件（依赖 app.db）
+  await app.register(novelPlugin)
+
   // 创建 CredentialBridge、Gate、SessionStore
   const cwd = process.env.PI_CWD ?? process.cwd()
   const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
@@ -95,6 +100,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       factStore: app.factStore,
       subagentManager: app.subagentManager,
       teamManager: app.teamManager,
+      novelTools: app.novelSessionFactory.getNovelTools(),
       db: app.db,
       config: {
         cwd,
@@ -140,6 +146,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(cronRoute)
   await app.register(workspaceRoute)
   await app.register(skillsRoute)
+  await app.register(novelRoute)
 
   return app
 }
