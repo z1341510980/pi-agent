@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
 import {
   ReactFlow,
   Background,
@@ -50,6 +50,39 @@ const nodeTypes: NodeTypes = {
   foreshadow: ForeshadowNode,
   group: GroupNode,
 }
+
+// ── MiniMap 性能优化 ──
+// 说明：@xyflow/react v12 的 <MiniMap> 不再接受 onlyRenderVisibleElements 属性
+// （该属性在 v11 中曾存在，v12 将其合并到 <ReactFlow> 顶层，控制 NodeRenderer /
+//  EdgeRenderer 的视口裁剪）。因此这里采用两种互补优化：
+//   1. 在 <ReactFlow> 上启用 onlyRenderVisibleElements（节点/边虚拟化）
+//   2. 将 <MiniMap> 包装为 memo 组件，仅在节点数 > COMPACT_THRESHOLD 时挂载
+//      小项目下 MiniMap 价值有限，省去 SVG 全量渲染开销；大项目时才出现
+//      导航缩略图。nodeColor 提到模块作用域以稳定 props 引用，避免不必要重渲染。
+
+function miniMapNodeColor(n: Node): string {
+  const type = n.type
+  if (type === 'project') return '#8b5cf6'
+  if (type === 'character') return '#3b82f6'
+  if (type === 'chapter') return '#10b981'
+  if (type === 'conflict') return '#f43f5e'
+  if (type === 'foreshadow') return '#f59e0b'
+  if (type === 'group') return '#6366f1'
+  return '#6b7280'
+}
+
+const MemoizedMiniMap = memo(function MemoizedMiniMap({ visible }: { visible: boolean }) {
+  if (!visible) return null
+  return (
+    <MiniMap
+      pannable
+      zoomable
+      className="!bg-card !border !border-border"
+      maskColor="rgba(0,0,0,0.05)"
+      nodeColor={miniMapNodeColor}
+    />
+  )
+})
 
 // ── 布局常量 ──
 
@@ -730,25 +763,11 @@ export function NovelCanvas({
         maxZoom={2}
         defaultEdgeOptions={{ animated: false }}
         proOptions={{ hideAttribution: true }}
+        onlyRenderVisibleElements
         className="novel-canvas"
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} className="!text-muted-foreground/40" />
-        <MiniMap
-          pannable
-          zoomable
-          className="!bg-card !border !border-border"
-          maskColor="rgba(0,0,0,0.05)"
-          nodeColor={(n) => {
-            const type = n.type
-            if (type === 'project') return '#8b5cf6'
-            if (type === 'character') return '#3b82f6'
-            if (type === 'chapter') return '#10b981'
-            if (type === 'conflict') return '#f43f5e'
-            if (type === 'foreshadow') return '#f59e0b'
-            if (type === 'group') return '#6366f1'
-            return '#6b7280'
-          }}
-        />
+        <MemoizedMiniMap visible={nodeCount > COMPACT_THRESHOLD} />
         <Controls className="!bg-card !border !border-border !shadow-md" showInteractive={false} />
       </ReactFlow>
 
