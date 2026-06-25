@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { Lightbulb } from 'lucide-react'
 import type { NovelForeshadow, ForeshadowStatus } from '@/api/novel-client'
@@ -17,7 +17,7 @@ const STATUS_STYLES: Record<ForeshadowStatus, { label: string; className: string
   abandoned: { label: '已废弃', className: 'bg-rose-500/10 text-rose-600 dark:text-rose-300' },
 }
 
-export function ForeshadowNode({ data, selected }: NodeProps<ForeshadowNodeType>): ReactElement {
+function ForeshadowNodeImpl({ data, selected }: NodeProps<ForeshadowNodeType>): ReactElement {
   const { entity } = data
   const status = STATUS_STYLES[entity.status] ?? STATUS_STYLES.planned
   return (
@@ -55,3 +55,5 @@ export function ForeshadowNode({ data, selected }: NodeProps<ForeshadowNodeType>
     </div>
   )
 }
+
+export const ForeshadowNode = memo(ForeshadowNodeImpl)

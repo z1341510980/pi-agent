@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { FileText } from 'lucide-react'
 import type { NovelChapter, ChapterStatus } from '@/api/novel-client'
@@ -15,7 +15,7 @@ const STATUS_STYLES: Record<ChapterStatus, { label: string; className: string; d
   rejected: { label: '已驳回', className: 'bg-rose-500/10 text-rose-600 dark:text-rose-300', dot: 'bg-rose-500' },
 }
 
-export function ChapterNode({ data, selected }: NodeProps<ChapterNodeType>): ReactElement {
+function ChapterNodeImpl({ data, selected }: NodeProps<ChapterNodeType>): ReactElement {
   const { entity } = data
   const status = STATUS_STYLES[entity.status] ?? STATUS_STYLES.planned
   return (
@@ -52,3 +52,5 @@ export function ChapterNode({ data, selected }: NodeProps<ChapterNodeType>): Rea
     </div>
   )
 }
+
+export const ChapterNode = memo(ChapterNodeImpl)

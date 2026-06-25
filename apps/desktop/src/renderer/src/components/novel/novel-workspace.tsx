@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
-import { ArrowLeft, Download } from 'lucide-react'
+import { ArrowLeft, Download, Sparkles, Database } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog'
 import { useNovelStore } from '@/stores/novel-store'
 import {
   listCharacters,
@@ -16,11 +23,16 @@ import {
   listStyleGuides,
   listConstraints,
   listInfoLayers,
+  createChapter,
+  completeChapter,
 } from '@/api/novel-client'
+import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
 import { NovelSidebar } from './novel-sidebar'
 import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
+import { ChapterLiveView } from './chapter-live-view'
+import { CacheMonitorPanel } from './cache-monitor-panel'
 
 export interface NovelWorkspaceProps {
   onClose: () => void
@@ -41,11 +53,21 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const styleGuides = useNovelStore((s) => s.styleGuides)
   const constraints = useNovelStore((s) => s.constraints)
   const infoLayers = useNovelStore((s) => s.infoLayers)
+  const upsertChapter = useNovelStore((s) => s.upsertChapter)
+
+  const queryClient = useQueryClient()
+
+  // 创作流程
+  const creationFlow = useNovelCreationFlow()
+  const [liveViewOpen, setLiveViewOpen] = useState(false)
+  const [creationChapterNumber, setCreationChapterNumber] = useState<number | undefined>(undefined)
 
   const [layoutMode, setLayoutMode] = useState<'auto' | 'free'>('auto')
   const [relayoutSignal, setRelayoutSignal] = useState(0)
   const [sidebarWidth, setSidebarWidth] = useState(240)
   const [detailWidth, setDetailWidth] = useState(320)
+  const [nodeCount, setNodeCount] = useState(0)
+  const [cachePanelOpen, setCachePanelOpen] = useState(false)
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
 
@@ -137,6 +159,55 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     URL.revokeObjectURL(url)
   }, [currentProject, characters, chapters, conflicts, foreshadows, relationships, clues, worldRules, styleGuides, constraints, infoLayers])
 
+  // ── 创作流程 ──
+
+  const handleStartCreation = useCallback(async () => {
+    if (!currentProjectId || creationFlow.isRunning) return
+    const nextNumber = chapters.length > 0
+      ? Math.max(...chapters.map((c) => c.chapterNumber)) + 1
+      : 1
+    try {
+      const chapter = await createChapter(currentProjectId, {
+        chapterNumber: nextNumber,
+        narrativeTask: {
+          description: '推进主线剧情',
+          type: 'advance_mainline',
+          priority: 'medium',
+        },
+      })
+      upsertChapter(chapter)
+      setCreationChapterNumber(nextNumber)
+      setLiveViewOpen(true)
+      await creationFlow.startCreation(currentProjectId, nextNumber)
+    } catch {
+      // 静默失败
+    }
+  }, [currentProjectId, chapters, creationFlow, upsertChapter])
+
+  const handleSaveChapter = useCallback(async (content: string) => {
+    if (!currentProjectId || creationChapterNumber == null) return
+    const targetChapter = chapters.find((c) => c.chapterNumber === creationChapterNumber)
+    if (!targetChapter) return
+    try {
+      const updated = await completeChapter(targetChapter.id, { content })
+      upsertChapter(updated)
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      setLiveViewOpen(false)
+    } catch {
+      // 静默失败
+    }
+  }, [currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient])
+
+  const handleDiscardCreation = useCallback(() => {
+    creationFlow.cancel()
+    setLiveViewOpen(false)
+  }, [creationFlow])
+
+  const handleCloseLiveView = useCallback(() => {
+    if (creationFlow.isRunning) return
+    setLiveViewOpen(false)
+  }, [creationFlow])
+
   return (
     <ReactFlowProvider>
       <div className="flex h-screen flex-col bg-app-bg text-text overflow-hidden">
@@ -154,8 +225,32 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 · {currentProject.genre}
               </span>
             )}
+            {nodeCount > 0 && (
+              <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5">
+                {nodeCount} 节点
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="default"
+              onClick={handleStartCreation}
+              disabled={!currentProject || creationFlow.isRunning}
+              title="启动多 Agent 创作流程"
+            >
+              <Sparkles className="size-3.5" />
+              <span className="hidden sm:inline">开始创作</span>
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => setCachePanelOpen(true)}
+              disabled={!currentProject}
+              title="缓存诊断"
+            >
+              <Database className="size-3.5" />
+            </Button>
             <Button
               size="sm"
               variant="ghost"
@@ -195,7 +290,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           {/* 画布 */}
           <main className="flex-1 min-w-0 h-full overflow-hidden">
             {currentProject ? (
-              <NovelCanvas layoutMode={layoutMode} relayoutSignal={relayoutSignal} />
+              <NovelCanvas
+                layoutMode={layoutMode}
+                relayoutSignal={relayoutSignal}
+                creationPhase={creationFlow.phase}
+                creationRunning={creationFlow.isRunning}
+                creationChapterNumber={creationChapterNumber}
+                creationError={creationFlow.error}
+                onCancelCreation={handleDiscardCreation}
+                onNodeCountChange={setNodeCount}
+              />
             ) : (
               <div className="flex h-full items-center justify-center text-muted-foreground">
                 <div className="text-center">
@@ -218,6 +322,40 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             <NovelDetailPanel />
           </aside>
         </div>
+
+        {/* 章节实时预览弹窗 */}
+        <ChapterLiveView
+          open={liveViewOpen}
+          phase={creationFlow.phase}
+          isRunning={creationFlow.isRunning}
+          chapterContent={creationFlow.chapterContent}
+          chapterNumber={creationChapterNumber}
+          currentCheckpoint={creationFlow.currentCheckpoint}
+          result={creationFlow.result}
+          error={creationFlow.error}
+          onSubmitCheckpoint={creationFlow.submitCheckpoint}
+          onSave={handleSaveChapter}
+          onDiscard={handleDiscardCreation}
+          onClose={handleCloseLiveView}
+        />
+
+        {/* 缓存诊断弹窗 */}
+        <Dialog open={cachePanelOpen} onOpenChange={setCachePanelOpen}>
+          <DialogContent className="sm:max-w-md max-h-[80vh] p-0 gap-0">
+            <DialogHeader className="px-4 py-3 border-b border-border">
+              <DialogTitle className="flex items-center gap-2 text-sm">
+                <Database className="size-4 text-primary" />
+                缓存诊断
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                提示词缓存命中率监控
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[60vh] overflow-y-auto">
+              <CacheMonitorPanel chapterNumber={creationChapterNumber} />
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </ReactFlowProvider>
   )

@@ -23,7 +23,7 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 
 /** 创建小说系统 REST API 路由 */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
-  const { store, promptManager, engine } = services
+  const { store, promptManager, promptBuilder, engine } = services
   const routes: RouteDefinition[] = []
 
   // ═══════════════════════════════════════════════════════════════
@@ -542,6 +542,72 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/info-layers',
     handler: async (request: any) => {
       return success(store.listInformationLayers(request.params.projectId), request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 缓存诊断
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/cache-diagnostics',
+    handler: async (request: any) => {
+      const projectId = request.params.projectId
+      const chapterNumber = request.query?.chapterNumber != null
+        ? parseInt(request.query.chapterNumber, 10)
+        : undefined
+
+      // 系统提示词哈希（STATIC 层）- 跨章节缓存命中指标
+      const agentTypes = ['director', 'writer', 'reviewer', 'reviser', 'memory']
+      const systemPromptHashes: Record<string, string> = {}
+      for (const agentType of agentTypes) {
+        try {
+          systemPromptHashes[agentType] = promptBuilder.getSystemPromptHash(projectId, agentType)
+        } catch {
+          systemPromptHashes[agentType] = 'error'
+        }
+      }
+
+      // 章节上下文哈希（SEMI 层）- 单章内缓存命中指标
+      let chapterContextHash: string | undefined
+      if (chapterNumber != null && !Number.isNaN(chapterNumber)) {
+        try {
+          // 使用默认叙事任务与约束计算哈希（诊断用途）
+          chapterContextHash = promptBuilder.getChapterContextHash(
+            projectId,
+            chapterNumber,
+            {
+              description: '诊断请求',
+              type: 'advance_mainline',
+              targetEntity: null,
+              priority: 'medium',
+            },
+            {
+              facts: store.listConstraints(projectId).filter((c: any) => c.type === 'fact'),
+              cognitive: store.listConstraints(projectId).filter((c: any) => c.type === 'cognitive'),
+              stage: store.listConstraints(projectId).filter((c: any) => c.type === 'stage'),
+              narrativeDebts: store.listForeshadowing(projectId),
+              characterArcs: store.listCharacters(projectId).map((c: any) => ({
+                character: c,
+                allowedNextStage: null,
+              })),
+            },
+          )
+        } catch {
+          chapterContextHash = 'error'
+        }
+      }
+
+      return success(
+        {
+          systemPromptHashes,
+          chapterContextHash,
+          agentTypes,
+          timestamp: Date.now(),
+        },
+        request.traceId,
+      )
     },
   })
 

@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { Swords } from 'lucide-react'
 import type { NovelConflict, ConflictType, ConflictStage } from '@/api/novel-client'
@@ -29,7 +29,7 @@ const STAGE_LABELS: Record<ConflictStage, string> = {
   transformed: '转化',
 }
 
-export function ConflictNode({ data, selected }: NodeProps<ConflictNodeType>): ReactElement {
+function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): ReactElement {
   const { entity } = data
   const intensityPct = Math.min(100, (entity.intensity / 10) * 100)
   const intensityColor =
@@ -74,3 +74,5 @@ export function ConflictNode({ data, selected }: NodeProps<ConflictNodeType>): R
     </div>
   )
 }
+
+export const ConflictNode = memo(ConflictNodeImpl)

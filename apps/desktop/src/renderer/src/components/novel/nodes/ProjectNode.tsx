@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { BookOpen } from 'lucide-react'
 import type { NovelProject } from '@/api/novel-client'
@@ -21,7 +21,7 @@ const STATUS_LABELS: Record<string, string> = {
   completed: '已完成',
 }
 
-export function ProjectNode({ data, selected }: NodeProps<ProjectNodeType>): ReactElement {
+function ProjectNodeImpl({ data, selected }: NodeProps<ProjectNodeType>): ReactElement {
   const { entity } = data
   const progress = entity.targetWords > 0
     ? Math.min(100, Math.round((entity.currentChapter / Math.max(1, entity.targetWords / 3000)) * 100))
@@ -77,3 +77,5 @@ export function ProjectNode({ data, selected }: NodeProps<ProjectNodeType>): Rea
     </div>
   )
 }
+
+export const ProjectNode = memo(ProjectNodeImpl)

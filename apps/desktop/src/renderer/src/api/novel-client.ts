@@ -443,3 +443,20 @@ export function submitCheckpointDecision(
 ): Promise<{ ok: boolean }> {
   return postApi<{ ok: boolean }>(`${BASE}/projects/${projectId}/checkpoint/${type}/decision`, { decision })
 }
+
+// ── 缓存诊断 ──
+
+export interface CacheDiagnostics {
+  systemPromptHashes: Record<string, string>
+  chapterContextHash?: string
+  agentTypes: string[]
+  timestamp: number
+}
+
+export function getCacheDiagnostics(
+  projectId: string,
+  chapterNumber?: number,
+): Promise<CacheDiagnostics> {
+  const query = chapterNumber != null ? `?chapterNumber=${chapterNumber}` : ''
+  return getApi<CacheDiagnostics>(`${BASE}/projects/${projectId}/cache-diagnostics${query}`)
+}

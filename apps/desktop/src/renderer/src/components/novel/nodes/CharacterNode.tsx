@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { User } from 'lucide-react'
 import type { NovelCharacter } from '@/api/novel-client'
@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 export type CharacterNodeData = { entity: NovelCharacter }
 export type CharacterNodeType = Node<CharacterNodeData, 'character'>
 
-export function CharacterNode({ data, selected }: NodeProps<CharacterNodeType>): ReactElement {
+function CharacterNodeImpl({ data, selected }: NodeProps<CharacterNodeType>): ReactElement {
   const { entity } = data
   return (
     <div
@@ -48,3 +48,5 @@ export function CharacterNode({ data, selected }: NodeProps<CharacterNodeType>):
     </div>
   )
 }
+
+export const CharacterNode = memo(CharacterNodeImpl)
