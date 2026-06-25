@@ -23,6 +23,15 @@ function createSilentLogger() {
   return logger
 }
 
+/** 创建一个最小化的 mock db（测试插件不使用迁移功能，无需真实数据库） */
+function createMockDb() {
+  return {
+    prepare: () => ({ get: () => undefined, all: () => [], run: () => undefined }),
+    exec: () => undefined,
+    transaction: (fn: () => unknown) => fn,
+  } as unknown as import('better-sqlite3').Database
+}
+
 /** 创建一个测试插件 */
 function createTestPlugin(options: {
   name: string
@@ -55,13 +64,13 @@ describe('PluginManager', () => {
 
   beforeEach(() => {
     eventBus = new EventBus()
-    manager = new PluginManager(createSilentLogger(), eventBus, {})
+    manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {})
   })
 
   describe('init / start / stop', () => {
     it('init 加载内置插件但不启动', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -76,7 +85,7 @@ describe('PluginManager', () => {
     it('start 启用所有已加载插件', async () => {
       const setupFn = vi.fn()
       const plugin = createTestPlugin({ name: 'test-1', setupFn })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -91,7 +100,7 @@ describe('PluginManager', () => {
     it('stop 停止所有已启用插件', async () => {
       const teardownFn = vi.fn()
       const plugin = createTestPlugin({ name: 'test-1', teardownFn })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -106,7 +115,7 @@ describe('PluginManager', () => {
 
     it('重复 init 会被忽略', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -120,7 +129,7 @@ describe('PluginManager', () => {
   describe('错误隔离', () => {
     it('单个插件 setup 失败不影响其他插件', async () => {
       const okSetup = vi.fn()
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [
           { plugin: createTestPlugin({ name: 'ok-plugin', setupFn: okSetup }) },
           { plugin: createTestPlugin({ name: 'bad-plugin', shouldFail: true }) },
@@ -149,7 +158,7 @@ describe('PluginManager', () => {
           throw new Error('teardown 失败')
         },
       })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -165,7 +174,7 @@ describe('PluginManager', () => {
   describe('enable / disable', () => {
     it('enable 启用指定插件', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -177,7 +186,7 @@ describe('PluginManager', () => {
 
     it('disable 禁用指定插件', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -198,7 +207,7 @@ describe('PluginManager', () => {
 
     it('已启用的插件再次 enable 不报错', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -239,7 +248,7 @@ describe('PluginManager', () => {
         },
       }
 
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -279,7 +288,7 @@ describe('PluginManager', () => {
         },
       }
 
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -322,7 +331,7 @@ describe('PluginManager', () => {
         },
       }
 
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -343,7 +352,7 @@ describe('PluginManager', () => {
 
   describe('list / get', () => {
     it('list 返回所有插件的摘要信息', async () => {
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [
           { plugin: createTestPlugin({ name: 'a', version: '1.0.0' }) },
           { plugin: createTestPlugin({ name: 'b', version: '2.0.0' }) },
@@ -361,7 +370,7 @@ describe('PluginManager', () => {
 
     it('get 返回插件详情', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin }],
       })
 
@@ -387,7 +396,7 @@ describe('PluginManager', () => {
     })
 
     it('hello 插件注册工具、路由、面板、事件监听', async () => {
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin: createHelloPlugin() }],
       })
 
@@ -403,7 +412,7 @@ describe('PluginManager', () => {
     })
 
     it('hello.greet 工具执行正确', async () => {
-      manager = new PluginManager(createSilentLogger(), eventBus, {
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [{ plugin: createHelloPlugin() }],
       })
 
