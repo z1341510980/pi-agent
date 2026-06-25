@@ -1,10 +1,10 @@
 import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { Lightbulb } from 'lucide-react'
+import { Lightbulb, X } from 'lucide-react'
 import type { NovelForeshadow, ForeshadowStatus } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 
-export type ForeshadowNodeData = { entity: NovelForeshadow }
+export type ForeshadowNodeData = { entity: NovelForeshadow; onDelete?: () => void }
 export type ForeshadowNodeType = Node<ForeshadowNodeData, 'foreshadow'>
 
 const STATUS_STYLES: Record<ForeshadowStatus, { label: string; className: string }> = {
@@ -18,17 +18,32 @@ const STATUS_STYLES: Record<ForeshadowStatus, { label: string; className: string
 }
 
 function ForeshadowNodeImpl({ data, selected }: NodeProps<ForeshadowNodeType>): ReactElement {
-  const { entity } = data
+  const { entity, onDelete } = data
   const status = STATUS_STYLES[entity.status] ?? STATUS_STYLES.planned
   return (
     <div
       className={cn(
-        'w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
         'border-amber-500/40 dark:border-amber-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
     >
       <Handle type="target" position={Position.Top} className="!bg-amber-500" />
+      <Handle type="target" position={Position.Left} className="!bg-amber-500" />
+      <Handle type="source" position={Position.Right} className="!bg-amber-500" />
+
+      {/* 删除按钮（hover 显示） */}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          title="删除节点"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-amber-500/10 rounded-t-lg">
         <Lightbulb className="size-3.5 text-amber-500 dark:text-amber-400 shrink-0" />
         <span className="text-xs font-medium text-amber-600 dark:text-amber-300">伏笔</span>

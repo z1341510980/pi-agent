@@ -1,23 +1,38 @@
 import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { User } from 'lucide-react'
+import { User, X } from 'lucide-react'
 import type { NovelCharacter } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 
-export type CharacterNodeData = { entity: NovelCharacter }
+export type CharacterNodeData = { entity: NovelCharacter; onDelete?: () => void }
 export type CharacterNodeType = Node<CharacterNodeData, 'character'>
 
 function CharacterNodeImpl({ data, selected }: NodeProps<CharacterNodeType>): ReactElement {
-  const { entity } = data
+  const { entity, onDelete } = data
   return (
     <div
       className={cn(
-        'w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
         'border-blue-500/40 dark:border-blue-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
     >
       <Handle type="target" position={Position.Top} className="!bg-blue-500" />
+      <Handle type="target" position={Position.Left} className="!bg-blue-500" />
+      <Handle type="source" position={Position.Right} className="!bg-blue-500" />
+
+      {/* 删除按钮（hover 显示） */}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          title="删除节点"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-blue-500/10 rounded-t-lg">
         <User className="size-3.5 text-blue-500 dark:text-blue-400 shrink-0" />
         <span className="text-xs font-medium text-blue-600 dark:text-blue-300">角色</span>

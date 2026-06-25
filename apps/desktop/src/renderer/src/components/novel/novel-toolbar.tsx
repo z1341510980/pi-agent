@@ -5,13 +5,12 @@ import {
   FilePlus,
   Swords,
   Lightbulb,
-  LayoutGrid,
-  Move,
+  Maximize,
   ZoomIn,
   ZoomOut,
-  Maximize,
   Download,
   Upload,
+  Trash2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -21,11 +20,17 @@ import {
   createChapter,
   createConflict,
   createForeshadow,
+  deleteProject,
+  deleteCharacter,
+  deleteChapter,
+  deleteConflict,
+  deleteForeshadow,
+  deleteNodePosition,
+  type NovelNodeTypeName,
 } from '@/api/novel-client'
 
 export interface NovelToolbarProps {
-  layoutMode: 'auto' | 'free'
-  onLayoutModeChange: (mode: 'auto' | 'free') => void
+  /** 触发重新布局 */
   onRelayout: () => void
   /** 导出当前画布数据为 JSON */
   onExport?: () => void
@@ -49,8 +54,6 @@ function AddButton({ icon: Icon, label, onClick, disabled }: AddButtonProps): Re
 }
 
 export function NovelToolbar({
-  layoutMode,
-  onLayoutModeChange,
   onRelayout,
   onExport,
   onImport,
@@ -61,10 +64,20 @@ export function NovelToolbar({
   const upsertConflict = useNovelStore((s) => s.upsertConflict)
   const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
   const chapters = useNovelStore((s) => s.chapters)
+  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
+  const selectedNodeType = useNovelStore((s) => s.selectedNodeType)
+  const clearSelection = useNovelStore((s) => s.clearSelection)
+  const removeProject = useNovelStore((s) => s.removeProject)
+  const removeCharacter = useNovelStore((s) => s.removeCharacter)
+  const removeChapter = useNovelStore((s) => s.removeChapter)
+  const removeConflict = useNovelStore((s) => s.removeConflict)
+  const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
+  const removeNodePosition = useNovelStore((s) => s.removeNodePosition)
 
   const { zoomIn, zoomOut, fitView } = useReactFlow()
 
   const noProject = !currentProjectId
+  const hasSelection = !!selectedNodeId && !!selectedNodeType
 
   const handleAddCharacter = useCallback(async () => {
     if (!currentProjectId) return
@@ -127,6 +140,50 @@ export function NovelToolbar({
     }
   }, [currentProjectId, upsertForeshadow])
 
+  // ── 删除当前选中节点 ──
+  const handleDeleteSelected = useCallback(async () => {
+    if (!currentProjectId || !selectedNodeId || !selectedNodeType) return
+    // group 节点不对应持久化实体
+    if (selectedNodeType === 'group') return
+    if (!window.confirm('确认删除此节点？相关数据将被永久移除。')) return
+    try {
+      switch (selectedNodeType) {
+        case 'project':
+          await deleteProject(selectedNodeId)
+          removeProject(selectedNodeId)
+          break
+        case 'character':
+          await deleteCharacter(selectedNodeId)
+          removeCharacter(selectedNodeId)
+          break
+        case 'chapter':
+          await deleteChapter(selectedNodeId)
+          removeChapter(selectedNodeId)
+          break
+        case 'conflict':
+          await deleteConflict(selectedNodeId)
+          removeConflict(selectedNodeId)
+          break
+        case 'foreshadow':
+          await deleteForeshadow(selectedNodeId)
+          removeForeshadow(selectedNodeId)
+          break
+        default:
+          return
+      }
+      // 删除节点位置（best-effort）
+      try {
+        await deleteNodePosition(currentProjectId, selectedNodeType as NovelNodeTypeName, selectedNodeId)
+      } catch {
+        // 位置删除失败不阻塞主流程
+      }
+      removeNodePosition(selectedNodeType as NovelNodeTypeName, selectedNodeId)
+      clearSelection()
+    } catch {
+      // 静默失败
+    }
+  }, [currentProjectId, selectedNodeId, selectedNodeType, removeProject, removeCharacter, removeChapter, removeConflict, removeForeshadow, removeNodePosition, clearSelection])
+
   return (
     <div className="flex items-center gap-1 px-3 h-11 border-b border-border bg-surface-1 shrink-0">
       {/* 添加实体 */}
@@ -139,25 +196,18 @@ export function NovelToolbar({
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
-      {/* 布局模式 */}
+      {/* 删除选中节点 + 重新排列 */}
       <div className="flex items-center gap-0.5">
         <Button
           size="sm"
-          variant={layoutMode === 'auto' ? 'secondary' : 'ghost'}
-          onClick={() => onLayoutModeChange('auto')}
-          title="自动布局"
+          variant="ghost"
+          onClick={handleDeleteSelected}
+          disabled={!hasSelection}
+          title="删除选中节点"
+          className={cn(!hasSelection && 'opacity-50')}
         >
-          <LayoutGrid className="size-3.5" />
-          <span className="hidden sm:inline">自动</span>
-        </Button>
-        <Button
-          size="sm"
-          variant={layoutMode === 'free' ? 'secondary' : 'ghost'}
-          onClick={() => onLayoutModeChange('free')}
-          title="自由拖拽"
-        >
-          <Move className="size-3.5" />
-          <span className="hidden sm:inline">自由</span>
+          <Trash2 className="size-3.5" />
+          <span className="hidden sm:inline">删除</span>
         </Button>
         <Button
           size="icon-sm"

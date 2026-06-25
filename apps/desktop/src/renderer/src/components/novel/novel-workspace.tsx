@@ -62,7 +62,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [liveViewOpen, setLiveViewOpen] = useState(false)
   const [creationChapterNumber, setCreationChapterNumber] = useState<number | undefined>(undefined)
 
-  const [layoutMode, setLayoutMode] = useState<'auto' | 'free'>('auto')
   const [relayoutSignal, setRelayoutSignal] = useState(0)
   const [sidebarWidth, setSidebarWidth] = useState(240)
   const [detailWidth, setDetailWidth] = useState(320)
@@ -266,8 +265,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
         {/* 工具栏 */}
         <NovelToolbar
-          layoutMode={layoutMode}
-          onLayoutModeChange={setLayoutMode}
           onRelayout={handleRelayout}
           onExport={handleExport}
         />
@@ -291,7 +288,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           <main className="flex-1 min-w-0 h-full overflow-hidden">
             {currentProject ? (
               <NovelCanvas
-                layoutMode={layoutMode}
                 relayoutSignal={relayoutSignal}
                 creationPhase={creationFlow.phase}
                 creationRunning={creationFlow.isRunning}

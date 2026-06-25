@@ -1,10 +1,10 @@
 import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { Swords } from 'lucide-react'
+import { Swords, X } from 'lucide-react'
 import type { NovelConflict, ConflictType, ConflictStage } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 
-export type ConflictNodeData = { entity: NovelConflict }
+export type ConflictNodeData = { entity: NovelConflict; onDelete?: () => void }
 export type ConflictNodeType = Node<ConflictNodeData, 'conflict'>
 
 const TYPE_LABELS: Record<ConflictType, string> = {
@@ -30,7 +30,7 @@ const STAGE_LABELS: Record<ConflictStage, string> = {
 }
 
 function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): ReactElement {
-  const { entity } = data
+  const { entity, onDelete } = data
   const intensityPct = Math.min(100, (entity.intensity / 10) * 100)
   const intensityColor =
     entity.intensity >= 8 ? 'bg-rose-500'
@@ -40,12 +40,27 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
   return (
     <div
       className={cn(
-        'w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
         'border-rose-500/40 dark:border-rose-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
     >
       <Handle type="target" position={Position.Top} className="!bg-rose-500" />
+      <Handle type="target" position={Position.Left} className="!bg-rose-500" />
+      <Handle type="source" position={Position.Right} className="!bg-rose-500" />
+
+      {/* 删除按钮（hover 显示） */}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          title="删除节点"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-rose-500/10 rounded-t-lg">
         <Swords className="size-3.5 text-rose-500 dark:text-rose-400 shrink-0" />
         <span className="text-xs font-medium text-rose-600 dark:text-rose-300">冲突</span>

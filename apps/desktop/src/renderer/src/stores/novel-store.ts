@@ -25,6 +25,7 @@ export type NovelNodeType =
   | 'chapter'
   | 'conflict'
   | 'foreshadow'
+  | 'group'
 
 // ── Store 状态 ──
 

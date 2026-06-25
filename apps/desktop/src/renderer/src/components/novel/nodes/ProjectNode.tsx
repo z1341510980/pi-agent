@@ -1,10 +1,10 @@
 import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { BookOpen } from 'lucide-react'
+import { BookOpen, X } from 'lucide-react'
 import type { NovelProject } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 
-export type ProjectNodeData = { entity: NovelProject }
+export type ProjectNodeData = { entity: NovelProject; onDelete?: () => void }
 export type ProjectNodeType = Node<ProjectNodeData, 'project'>
 
 const STAGE_LABELS: Record<string, string> = {
@@ -22,7 +22,7 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 function ProjectNodeImpl({ data, selected }: NodeProps<ProjectNodeType>): ReactElement {
-  const { entity } = data
+  const { entity, onDelete } = data
   const progress = entity.targetWords > 0
     ? Math.min(100, Math.round((entity.currentChapter / Math.max(1, entity.targetWords / 3000)) * 100))
     : 0
@@ -30,12 +30,27 @@ function ProjectNodeImpl({ data, selected }: NodeProps<ProjectNodeType>): ReactE
   return (
     <div
       className={cn(
-        'w-[220px] rounded-lg border bg-card text-card-foreground shadow-md transition-all',
+        'group relative w-[220px] rounded-lg border bg-card text-card-foreground shadow-md transition-all',
         'border-violet-500/40 dark:border-violet-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
     >
       <Handle type="target" position={Position.Top} className="!bg-violet-500" />
+      <Handle type="target" position={Position.Left} className="!bg-violet-500" />
+      <Handle type="source" position={Position.Right} className="!bg-violet-500" />
+
+      {/* 删除按钮（hover 显示） */}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          title="删除节点"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2 bg-violet-500/10 rounded-t-lg">
         <BookOpen className="size-4 text-violet-500 dark:text-violet-400 shrink-0" />
         <span className="text-xs font-medium text-violet-600 dark:text-violet-300">项目</span>
