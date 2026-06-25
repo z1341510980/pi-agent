@@ -95,7 +95,9 @@ export function createNovelPlugin(): Plugin {
           context.logger.debug({ teamId: NOVEL_TEAM_ID }, 'Novel Team 已存在，跳过创建')
         } else {
           try {
-            await teamManager.createTeam({
+            // 使用 registerTeam（仅内存注册）而非 createTeam（持久化）
+            // 因为 AgentManager.registerAgent 只注册到内存，createTeam 持久化时外键约束会失败
+            teamManager.registerTeam({
               id: NOVEL_TEAM_ID,
               name: '小说创作团队',
               description: '小说多 Agent 创作团队：导演→作家→审稿→修订→记忆',
