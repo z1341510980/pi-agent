@@ -44,6 +44,7 @@ export function createNovelPlugin(): Plugin {
       context.registerService('novelPromptBuilder', services.promptBuilder)
       context.registerService('novelSessionFactory', services.sessionFactory)
       context.registerService('novelEngine', services.engine)
+      context.registerService('novelOrchestrator', services.orchestrator)
 
       // 4. 注册 Pi Session 工具（注入到 customTools）
       // 注：services.tools 为 pi-coding-agent 的 ToolDefinition（含 TSchema 泛型），

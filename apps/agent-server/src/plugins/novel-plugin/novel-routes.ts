@@ -585,5 +585,69 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  // ═══════════════════════════════════════════════════════════════
+  // 多 Agent 创作流程（SSE + 检查点）
+  // ═══════════════════════════════════════════════════════════════
+
+  // 创作流程启动端点（SSE）
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/create-flow',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params
+      const orchestrator = services.orchestrator
+
+      // 设置 SSE
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      try {
+        const result = await orchestrator.createChapterWithFlow(
+          projectId,
+          parseInt(chapterNumber, 10),
+          {
+            onCheckpoint: async (checkpoint) => {
+              reply.raw.write(`data: ${JSON.stringify({ type: 'checkpoint', data: checkpoint })}\n\n`)
+              return new Promise((resolve) => {
+                orchestrator.once(`checkpoint:${checkpoint.type}`, (decision: string) => {
+                  resolve(decision as any)
+                })
+              })
+            },
+            onProgress: (event) => {
+              reply.raw.write(`data: ${JSON.stringify({ type: 'progress', data: event })}\n\n`)
+            },
+          },
+        )
+        reply.raw.write(`data: ${JSON.stringify({ type: 'result', data: result })}\n\n`)
+      } catch (err) {
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: String(err) })}\n\n`)
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.end()
+      }
+    },
+  })
+
+  // 检查点决策端点
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/checkpoint/:type/decision',
+    handler: async (request: any, reply: any) => {
+      const { projectId, type } = request.params
+      const { decision } = request.body
+      services.orchestrator.emit(`checkpoint:${type}`, decision)
+      return { ok: true, data: { accepted: true } }
+    },
+  })
+
   return routes
 }

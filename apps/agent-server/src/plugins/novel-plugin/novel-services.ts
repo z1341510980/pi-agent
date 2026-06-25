@@ -7,6 +7,7 @@
  * - NovelPromptBuilder：缓存优化的提示词构建器
  * - NovelSessionFactory：Session 工厂（集成 Pi SDK）
  * - NovelEngine：核心引擎（流程编排）
+ * - NovelOrchestrator：多 Agent 编排引擎（Director → Writer → Reviewer → Reviser → Memory）
  * - tools：Pi Session 自定义工具集
  *
  * 依赖关系（与原 novel.plugin.ts 保持一致）：
@@ -15,6 +16,7 @@
  * - NovelPromptBuilder 依赖 PromptManager + NovelStore
  * - NovelSessionFactory 依赖 NovelStore + PromptManager
  * - NovelEngine 依赖 NovelStore + NovelSessionFactory
+ * - NovelOrchestrator 依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine
  * - createNovelTools 依赖 NovelStore
  */
 
@@ -25,6 +27,7 @@ import { NovelPromptBuilder } from '../../core/novel/prompt-builder.js'
 import { NovelSessionFactory } from '../../core/novel/novel-session.js'
 import { NovelEngine } from '../../core/novel/novel-engine.js'
 import { createNovelTools } from '../../core/novel/novel-tools.js'
+import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 
 export interface NovelServices {
@@ -33,6 +36,7 @@ export interface NovelServices {
   promptBuilder: NovelPromptBuilder
   sessionFactory: NovelSessionFactory
   engine: NovelEngine
+  orchestrator: NovelOrchestrator
   tools: ToolDefinition[]
 }
 
@@ -53,8 +57,11 @@ export function createNovelServices(db: Database.Database, cwd: string): NovelSe
   // 5. 创建 NovelEngine（依赖 NovelStore + NovelSessionFactory）
   const engine = new NovelEngine(store, sessionFactory)
 
-  // 6. 创建 Pi Session 工具集（依赖 NovelStore）
+  // 6. 创建 NovelOrchestrator（依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine）
+  const orchestrator = new NovelOrchestrator(store, sessionFactory, promptBuilder, engine)
+
+  // 7. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, promptManager, promptBuilder, sessionFactory, engine, tools }
+  return { store, promptManager, promptBuilder, sessionFactory, engine, orchestrator, tools }
 }
