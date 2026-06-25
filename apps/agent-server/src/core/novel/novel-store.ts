@@ -337,6 +337,12 @@ export class NovelStore implements NovelPromptStores {
     return updated
   }
 
+  /** 更新章节内容（仅 content 和 wordCount） */
+  updateChapterContent(id: string, content: string, wordCount: number): NovelChapter | null {
+    this.db.prepare('UPDATE novel_chapters SET content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?').run(content, wordCount, id)
+    return this.getChapterById(id) ?? null
+  }
+
   listChapters(projectId: string): NovelChapter[] {
     return (this.stmtListChapters.all(projectId) as ChapterRow[]).map((r) => this.rowToChapter(r))
   }
@@ -384,6 +390,11 @@ export class NovelStore implements NovelPromptStores {
     return updated
   }
 
+  deleteCharacter(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_characters WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 伏笔 CRUD
   // ═══════════════════════════════════════════════════════════════
@@ -424,6 +435,11 @@ export class NovelStore implements NovelPromptStores {
     return updated
   }
 
+  deleteForeshadow(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_foreshadowing WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 冲突 CRUD
   // ═══════════════════════════════════════════════════════════════
@@ -455,6 +471,11 @@ export class NovelStore implements NovelPromptStores {
       stage: updated.stage, participants: updated.participants, updated_at: updated.updatedAt,
     })
     return updated
+  }
+
+  deleteConflict(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_conflicts WHERE id = ?').run(id)
+    return result.changes > 0
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -494,6 +515,11 @@ export class NovelStore implements NovelPromptStores {
     return updated
   }
 
+  deleteClue(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_clues WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 关系 CRUD
   // ═══════════════════════════════════════════════════════════════
@@ -529,6 +555,11 @@ export class NovelStore implements NovelPromptStores {
     return updated
   }
 
+  deleteRelationship(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_relationships WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 世界规则 CRUD
   // ═══════════════════════════════════════════════════════════════
@@ -546,6 +577,30 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
+  updateWorldRule(id: string, updates: Partial<Omit<NovelWorldRule, 'id' | 'projectId' | 'createdAt'>>): NovelWorldRule | null {
+    const fields: string[] = []
+    const values: unknown[] = []
+    for (const [key, value] of Object.entries(updates)) {
+      const dbKey = this.camelToSnake(key)
+      fields.push(`${dbKey} = ?`)
+      values.push(value)
+    }
+    if (fields.length === 0) {
+      const row = this.db.prepare('SELECT * FROM novel_world_rules WHERE id = ?').get(id) as WorldRuleRow | undefined
+      return row ? this.rowToWorldRule(row) : null
+    }
+    fields.push('updated_at = unixepoch()')
+    values.push(id)
+    this.db.prepare(`UPDATE novel_world_rules SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+    const row = this.db.prepare('SELECT * FROM novel_world_rules WHERE id = ?').get(id) as WorldRuleRow | undefined
+    return row ? this.rowToWorldRule(row) : null
+  }
+
+  deleteWorldRule(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_world_rules WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 风格指南 CRUD
   // ═══════════════════════════════════════════════════════════════
@@ -561,6 +616,30 @@ export class NovelStore implements NovelPromptStores {
       example: full.example, created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
+  }
+
+  updateStyleGuide(id: string, updates: Partial<Omit<NovelStyleGuide, 'id' | 'projectId' | 'createdAt'>>): NovelStyleGuide | null {
+    const fields: string[] = []
+    const values: unknown[] = []
+    for (const [key, value] of Object.entries(updates)) {
+      const dbKey = this.camelToSnake(key)
+      fields.push(`${dbKey} = ?`)
+      values.push(value)
+    }
+    if (fields.length === 0) {
+      const row = this.db.prepare('SELECT * FROM novel_style_guides WHERE id = ?').get(id) as StyleGuideRow | undefined
+      return row ? this.rowToStyleGuide(row) : null
+    }
+    fields.push('updated_at = unixepoch()')
+    values.push(id)
+    this.db.prepare(`UPDATE novel_style_guides SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+    const row = this.db.prepare('SELECT * FROM novel_style_guides WHERE id = ?').get(id) as StyleGuideRow | undefined
+    return row ? this.rowToStyleGuide(row) : null
+  }
+
+  deleteStyleGuide(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_style_guides WHERE id = ?').run(id)
+    return result.changes > 0
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -581,6 +660,30 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
+  updateConstraint(id: string, updates: Partial<Omit<NovelConstraint, 'id' | 'projectId' | 'createdAt'>>): NovelConstraint | null {
+    const fields: string[] = []
+    const values: unknown[] = []
+    for (const [key, value] of Object.entries(updates)) {
+      const dbKey = this.camelToSnake(key)
+      fields.push(`${dbKey} = ?`)
+      values.push(value)
+    }
+    if (fields.length === 0) {
+      const row = this.db.prepare('SELECT * FROM novel_constraints WHERE id = ?').get(id) as ConstraintRow | undefined
+      return row ? this.rowToConstraint(row) : null
+    }
+    fields.push('updated_at = unixepoch()')
+    values.push(id)
+    this.db.prepare(`UPDATE novel_constraints SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+    const row = this.db.prepare('SELECT * FROM novel_constraints WHERE id = ?').get(id) as ConstraintRow | undefined
+    return row ? this.rowToConstraint(row) : null
+  }
+
+  deleteConstraint(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_constraints WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 信息差 CRUD
   // ═══════════════════════════════════════════════════════════════
@@ -599,6 +702,30 @@ export class NovelStore implements NovelPromptStores {
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
+  }
+
+  updateInfoLayer(id: string, updates: Partial<Omit<NovelInformationLayer, 'id' | 'projectId' | 'createdAt'>>): NovelInformationLayer | null {
+    const fields: string[] = []
+    const values: unknown[] = []
+    for (const [key, value] of Object.entries(updates)) {
+      const dbKey = this.camelToSnake(key)
+      fields.push(`${dbKey} = ?`)
+      values.push(value)
+    }
+    if (fields.length === 0) {
+      const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
+      return row ? this.rowToInfoLayer(row) : null
+    }
+    fields.push('updated_at = unixepoch()')
+    values.push(id)
+    this.db.prepare(`UPDATE novel_information_layers SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+    const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
+    return row ? this.rowToInfoLayer(row) : null
+  }
+
+  deleteInfoLayer(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_information_layers WHERE id = ?').run(id)
+    return result.changes > 0
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -771,5 +898,9 @@ export class NovelStore implements NovelPromptStores {
       issues: row.issues, suggestions: row.suggestions, reviewedBy: row.reviewed_by,
       createdAt: row.created_at,
     }
+  }
+
+  private camelToSnake(str: string): string {
+    return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)
   }
 }
