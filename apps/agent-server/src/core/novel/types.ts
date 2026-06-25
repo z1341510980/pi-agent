@@ -240,6 +240,39 @@ export interface NovelChapterReview {
   createdAt: number
 }
 
+// ── 角色状态变更历史 ──
+
+export type CharacterHistoryField =
+  | 'currentState' | 'currentGoal' | 'currentPressure' | 'secret' | 'arcStage'
+
+export interface NovelCharacterHistory {
+  id: string
+  projectId: string
+  characterId: string
+  chapterId: string | null
+  chapterNumber: number | null
+  fieldName: CharacterHistoryField
+  oldValue: string | null
+  newValue: string | null
+  reason: string | null
+  createdAt: number
+}
+
+// ── 节点位置（前端画布节点坐标持久化）──
+
+export type NovelNodeType =
+  | 'project' | 'character' | 'chapter' | 'conflict' | 'foreshadow' | 'group'
+
+export interface NovelNodePosition {
+  id: string
+  projectId: string
+  nodeType: NovelNodeType
+  entityId: string
+  posX: number
+  posY: number
+  updatedAt: number
+}
+
 // ── 提示词模板 ──
 
 export interface NovelPromptTemplate {

@@ -28,6 +28,7 @@ import { NovelSessionFactory } from '../../core/novel/novel-session.js'
 import { NovelEngine } from '../../core/novel/novel-engine.js'
 import { createNovelTools } from '../../core/novel/novel-tools.js'
 import { NovelOrchestrator } from './core/novel-orchestrator.js'
+import { NovelCharacterGenerator } from './core/novel-character-generator.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 
 export interface NovelServices {
@@ -37,6 +38,7 @@ export interface NovelServices {
   sessionFactory: NovelSessionFactory
   engine: NovelEngine
   orchestrator: NovelOrchestrator
+  characterGenerator: NovelCharacterGenerator
   tools: ToolDefinition[]
 }
 
@@ -60,8 +62,11 @@ export function createNovelServices(db: Database.Database, cwd: string): NovelSe
   // 6. 创建 NovelOrchestrator（依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine）
   const orchestrator = new NovelOrchestrator(store, sessionFactory, promptBuilder, engine)
 
-  // 7. 创建 Pi Session 工具集（依赖 NovelStore）
+  // 7. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager）
+  const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager)
+
+  // 8. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, promptManager, promptBuilder, sessionFactory, engine, orchestrator, tools }
+  return { store, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, tools }
 }

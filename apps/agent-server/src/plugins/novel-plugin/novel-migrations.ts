@@ -272,4 +272,37 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_novel_prompt_templates_name ON novel_prompt_templates(name);
     CREATE INDEX IF NOT EXISTS idx_novel_prompt_templates_project ON novel_prompt_templates(project_id);`,
   },
+  {
+    // 节点位置表（前端画布节点坐标持久化）
+    id: '027_create_novel_node_positions',
+    sql: `CREATE TABLE IF NOT EXISTS novel_node_positions (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL,
+      node_type   TEXT NOT NULL,
+      entity_id   TEXT NOT NULL,
+      pos_x       REAL NOT NULL,
+      pos_y       REAL NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      UNIQUE(project_id, node_type, entity_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_node_positions_project ON novel_node_positions(project_id);`,
+  },
+  {
+    // 角色状态变更历史表
+    id: '028_create_novel_character_history',
+    sql: `CREATE TABLE IF NOT EXISTS novel_character_history (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      character_id    TEXT NOT NULL,
+      chapter_id      TEXT,
+      chapter_number  INTEGER,
+      field_name      TEXT NOT NULL,
+      old_value       TEXT,
+      new_value       TEXT,
+      reason          TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_char_history_character ON novel_character_history(character_id);
+    CREATE INDEX IF NOT EXISTS idx_char_history_project ON novel_character_history(project_id);`,
+  },
 ]

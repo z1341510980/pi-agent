@@ -13,6 +13,7 @@
  */
 
 import type Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import type { NovelPromptStores } from './prompt-builder.js'
 import type {
   NovelProject,
@@ -28,6 +29,9 @@ import type {
   NovelStyleGuide,
   NovelAuthorIntent,
   NovelChapterReview,
+  NovelCharacterHistory,
+  NovelNodePosition,
+  NovelNodeType,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
@@ -120,6 +124,18 @@ interface ChapterReviewRow {
   reviewed_by: string | null; created_at: number
 }
 
+interface NodePositionRow {
+  id: string; project_id: string; node_type: string; entity_id: string
+  pos_x: number; pos_y: number; updated_at: number
+}
+
+interface CharacterHistoryRow {
+  id: string; project_id: string; character_id: string
+  chapter_id: string | null; chapter_number: number | null
+  field_name: string; old_value: string | null; new_value: string | null
+  reason: string | null; created_at: number
+}
+
 // ── 工具函数 ──
 
 function parseJSON<T>(s: string, fallback: T): T {
@@ -147,6 +163,11 @@ export class NovelStore implements NovelPromptStores {
   private readonly stmtListConstraints: Database.Statement
   private readonly stmtListInfoLayers: Database.Statement
   private readonly stmtListRecentChapters: Database.Statement
+  private readonly stmtListNodePositions: Database.Statement
+  private readonly stmtUpsertNodePosition: Database.Statement
+  private readonly stmtDeleteNodePosition: Database.Statement
+  private readonly stmtListCharacterHistoryByProject: Database.Statement
+  private readonly stmtListCharacterHistoryByCharacter: Database.Statement
 
   constructor(private db: Database.Database) {
     this.stmtGetProject = db.prepare('SELECT * FROM novel_projects WHERE id = ?')
@@ -162,6 +183,19 @@ export class NovelStore implements NovelPromptStores {
     this.stmtListConstraints = db.prepare('SELECT * FROM novel_constraints WHERE project_id = ? AND is_active = 1 ORDER BY created_at ASC')
     this.stmtListInfoLayers = db.prepare('SELECT * FROM novel_information_layers WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListRecentChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND status = ? ORDER BY chapter_number DESC LIMIT ?')
+    this.stmtListNodePositions = db.prepare('SELECT * FROM novel_node_positions WHERE project_id = ? ORDER BY updated_at ASC')
+    this.stmtUpsertNodePosition = db.prepare(`
+      INSERT INTO novel_node_positions (id, project_id, node_type, entity_id, pos_x, pos_y, updated_at)
+      VALUES (@id, @project_id, @node_type, @entity_id, @pos_x, @pos_y, @updated_at)
+      ON CONFLICT(project_id, node_type, entity_id) DO UPDATE SET
+        id = @id,
+        pos_x = @pos_x,
+        pos_y = @pos_y,
+        updated_at = @updated_at
+    `)
+    this.stmtDeleteNodePosition = db.prepare('DELETE FROM novel_node_positions WHERE project_id = ? AND node_type = ? AND entity_id = ?')
+    this.stmtListCharacterHistoryByProject = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? ORDER BY created_at DESC')
+    this.stmtListCharacterHistoryByCharacter = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? AND character_id = ? ORDER BY created_at DESC')
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -345,6 +379,11 @@ export class NovelStore implements NovelPromptStores {
 
   listChapters(projectId: string): NovelChapter[] {
     return (this.stmtListChapters.all(projectId) as ChapterRow[]).map((r) => this.rowToChapter(r))
+  }
+
+  deleteChapter(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_chapters WHERE id = ?').run(id)
+    return result.changes > 0
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -782,6 +821,66 @@ export class NovelStore implements NovelPromptStores {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // 节点位置 CRUD（前端画布节点坐标持久化）
+  // ═══════════════════════════════════════════════════════════════
+
+  listNodePositions(projectId: string): NovelNodePosition[] {
+    return (this.stmtListNodePositions.all(projectId) as NodePositionRow[]).map((r) => this.rowToNodePosition(r))
+  }
+
+  upsertNodePosition(
+    projectId: string,
+    nodeType: NovelNodeType,
+    entityId: string,
+    posX: number,
+    posY: number,
+  ): NovelNodePosition {
+    const id = `${nodeType}:${entityId}`
+    const updatedAt = now()
+    this.stmtUpsertNodePosition.run({
+      id, project_id: projectId, node_type: nodeType, entity_id: entityId,
+      pos_x: posX, pos_y: posY, updated_at: updatedAt,
+    })
+    return { id, projectId, nodeType, entityId, posX, posY, updatedAt }
+  }
+
+  deleteNodePosition(projectId: string, nodeType: NovelNodeType, entityId: string): boolean {
+    const result = this.stmtDeleteNodePosition.run(projectId, nodeType, entityId)
+    return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 角色状态变更历史 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  createCharacterHistory(
+    entry: Omit<NovelCharacterHistory, 'id' | 'createdAt'>,
+  ): NovelCharacterHistory {
+    const id = randomUUID()
+    const ts = now()
+    const full: NovelCharacterHistory = { ...entry, id, createdAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_character_history (id, project_id, character_id, chapter_id, chapter_number,
+      field_name, old_value, new_value, reason, created_at)
+      VALUES (@id, @project_id, @character_id, @chapter_id, @chapter_number,
+      @field_name, @old_value, @new_value, @reason, @created_at)
+    `).run({
+      id, project_id: full.projectId, character_id: full.characterId,
+      chapter_id: full.chapterId, chapter_number: full.chapterNumber,
+      field_name: full.fieldName, old_value: full.oldValue,
+      new_value: full.newValue, reason: full.reason, created_at: full.createdAt,
+    })
+    return full
+  }
+
+  listCharacterHistory(projectId: string, characterId?: string): NovelCharacterHistory[] {
+    const rows = characterId
+      ? this.stmtListCharacterHistoryByCharacter.all(projectId, characterId) as CharacterHistoryRow[]
+      : this.stmtListCharacterHistoryByProject.all(projectId) as CharacterHistoryRow[]
+    return rows.map((r) => this.rowToCharacterHistory(r))
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // 行 → 对象 转换方法
   // ═══════════════════════════════════════════════════════════════
 
@@ -897,6 +996,25 @@ export class NovelStore implements NovelPromptStores {
       overallScore: row.overall_score, verdict: row.verdict as NovelChapterReview['verdict'],
       issues: row.issues, suggestions: row.suggestions, reviewedBy: row.reviewed_by,
       createdAt: row.created_at,
+    }
+  }
+
+  private rowToNodePosition(row: NodePositionRow): NovelNodePosition {
+    return {
+      id: row.id, projectId: row.project_id,
+      nodeType: row.node_type as NovelNodePosition['nodeType'],
+      entityId: row.entity_id, posX: row.pos_x, posY: row.pos_y,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  private rowToCharacterHistory(row: CharacterHistoryRow): NovelCharacterHistory {
+    return {
+      id: row.id, projectId: row.project_id, characterId: row.character_id,
+      chapterId: row.chapter_id, chapterNumber: row.chapter_number,
+      fieldName: row.field_name as NovelCharacterHistory['fieldName'],
+      oldValue: row.old_value, newValue: row.new_value,
+      reason: row.reason, createdAt: row.created_at,
     }
   }
 

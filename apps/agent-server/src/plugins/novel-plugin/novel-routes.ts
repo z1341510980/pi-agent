@@ -105,6 +105,110 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 通用实体删除路由（章节/角色/伏笔/冲突/线索/关系/世界规则/风格指南/约束/信息差）
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'DELETE',
+    path: '/chapters/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteChapter(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/characters/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteCharacter(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/foreshadowing/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteForeshadow(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `伏笔不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/conflicts/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteConflict(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `冲突不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/clues/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteClue(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `线索不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/relationships/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteRelationship(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `关系不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/world-rules/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteWorldRule(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `世界规则不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/style-guides/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteStyleGuide(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `风格指南不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/constraints/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteConstraint(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `创作约束不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/info-layers/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteInfoLayer(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `信息差不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 章节管理
   // ═══════════════════════════════════════════════════════════════
 
@@ -250,6 +354,77 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const updated = store.updateCharacter(request.params.id, input)
       if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
+    },
+  })
+
+  // ── AI 角色生成 ──
+
+  const aiGenerateCharacterSchema = z.object({
+    coreStyle: z.string().min(1).max(500),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/characters/ai-generate',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(aiGenerateCharacterSchema, request, reply)
+      if (!input) return reply
+
+      const generated = await services.characterGenerator.generate(
+        request.params.projectId,
+        input.coreStyle,
+      )
+
+      const character = store.createCharacter({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        arcHistory: '[]',
+        ...generated,
+      })
+      return success(character, request.traceId)
+    },
+  })
+
+  // ── 角色状态变更历史 ──
+
+  const createCharacterHistorySchema = z.object({
+    fieldName: z.enum(['currentState', 'currentGoal', 'currentPressure', 'secret', 'arcStage']),
+    oldValue: z.string().nullable().default(null),
+    newValue: z.string().nullable().default(null),
+    reason: z.string().nullable().default(null),
+    chapterNumber: z.number().int().nullable().optional(),
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/characters/:characterId/history',
+    handler: async (request: any) => {
+      const history = store.listCharacterHistory(
+        request.params.projectId,
+        request.params.characterId,
+      )
+      return success(history, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/characters/:characterId/history',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createCharacterHistorySchema, request, reply)
+      if (!input) return reply
+
+      const entry = store.createCharacterHistory({
+        projectId: request.params.projectId,
+        characterId: request.params.characterId,
+        chapterId: null,
+        chapterNumber: input.chapterNumber ?? null,
+        fieldName: input.fieldName,
+        oldValue: input.oldValue,
+        newValue: input.newValue,
+        reason: input.reason,
+      })
+      return success(entry, request.traceId)
     },
   })
 
@@ -542,6 +717,70 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/info-layers',
     handler: async (request: any) => {
       return success(store.listInformationLayers(request.params.projectId), request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 节点位置（前端画布节点坐标持久化）
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/node-positions',
+    handler: async (request: any) => {
+      return success(store.listNodePositions(request.params.projectId), request.traceId)
+    },
+  })
+
+  const upsertNodePositionsSchema = z.object({
+    positions: z.array(z.object({
+      nodeType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group']),
+      entityId: z.string().min(1),
+      posX: z.number(),
+      posY: z.number(),
+    })).min(1),
+  })
+
+  routes.push({
+    method: 'PUT',
+    path: '/projects/:projectId/node-positions',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(upsertNodePositionsSchema, request, reply)
+      if (!input) return reply
+
+      const upserted = input.positions.map((p) =>
+        store.upsertNodePosition(
+          request.params.projectId,
+          p.nodeType,
+          p.entityId,
+          p.posX,
+          p.posY,
+        ),
+      )
+      return success({ upserted: upserted.length, positions: upserted }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/:projectId/node-positions/:nodeType/:entityId',
+    handler: async (request: any) => {
+      const deleted = store.deleteNodePosition(
+        request.params.projectId,
+        request.params.nodeType,
+        request.params.entityId,
+      )
+      if (!deleted) {
+        throw new AppError(
+          ErrorCode.NOT_FOUND,
+          `节点位置不存在: ${request.params.nodeType}:${request.params.entityId}`,
+          404,
+        )
+      }
+      return success(
+        { projectId: request.params.projectId, nodeType: request.params.nodeType, entityId: request.params.entityId, deleted: true },
+        request.traceId,
+      )
     },
   })
 
