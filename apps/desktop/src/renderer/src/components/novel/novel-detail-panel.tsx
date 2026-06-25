@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
-import { Save, X, Info } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Save, X, Info, History, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,17 +12,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
 import {
   updateProject,
   updateCharacter,
   updateChapter,
+  listCharacterHistory,
+  createCharacterHistory,
   type NovelProject,
   type NovelCharacter,
   type NovelChapter,
   type NovelConflict,
   type NovelForeshadow,
+  type NovelCharacterHistory,
+  type CharacterHistoryField,
   type StoryStage,
   type ChapterStatus,
   type ConflictType,
@@ -111,6 +124,42 @@ const FORESHADOW_STATUS_OPTIONS: { value: ForeshadowStatus; label: string }[] = 
   { value: 'recovered', label: '已回收' },
   { value: 'abandoned', label: '已废弃' },
 ]
+
+// 动态状态字段（用于变更历史记录）
+const DYNAMIC_FIELDS: CharacterHistoryField[] = [
+  'currentState',
+  'currentGoal',
+  'currentPressure',
+  'secret',
+  'arcStage',
+]
+
+const HISTORY_FIELD_LABELS: Record<CharacterHistoryField, string> = {
+  currentState: '当前状态',
+  currentGoal: '当前目标',
+  currentPressure: '当前压力',
+  secret: '秘密',
+  arcStage: '弧光阶段',
+}
+
+// 简单的相对时间格式化
+function relativeTime(timestamp: number): string {
+  const now = Date.now()
+  const diff = now - timestamp
+  if (diff < 0) return '刚刚'
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60) return '刚刚'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min} 分钟前`
+  const hour = Math.floor(min / 60)
+  if (hour < 24) return `${hour} 小时前`
+  const day = Math.floor(hour / 24)
+  if (day < 30) return `${day} 天前`
+  const month = Math.floor(day / 30)
+  if (month < 12) return `${month} 个月前`
+  const year = Math.floor(month / 12)
+  return `${year} 年前`
+}
 
 // ── 主组件 ──
 
@@ -370,27 +419,302 @@ function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
       <FieldRow label="外貌">
         <TextArea value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
       </FieldRow>
-      <FieldRow label="当前状态">
-        <TextInput value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="当前目标">
-        <TextInput value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="当前压力">
-        <TextInput value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="秘密">
-        <TextArea value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="弧光阶段">
-        <TextInput value={form.arcStage} onChange={(e) => setForm((f) => ({ ...f, arcStage: e.target.value }))} />
-      </FieldRow>
+
+      {/* 动态状态字段分组（带变更历史提示） */}
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 space-y-2">
+        <p className="text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1">
+          <Info className="size-3" />
+          修改动态状态会记录到变更历史
+        </p>
+        <FieldRow label="当前状态">
+          <TextInput value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="当前目标">
+          <TextInput value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="当前压力">
+          <TextInput value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="秘密">
+          <TextArea value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="弧光阶段">
+          <TextInput value={form.arcStage} onChange={(e) => setForm((f) => ({ ...f, arcStage: e.target.value }))} />
+        </FieldRow>
+      </div>
+
       <FieldRow label="说话风格">
         <TextInput value={form.speechStyle} onChange={(e) => setForm((f) => ({ ...f, speechStyle: e.target.value }))} />
       </FieldRow>
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+
+      {/* 状态变更历史时间线 */}
+      <CharacterHistorySection characterId={entity.id} />
     </div>
+  )
+}
+
+// ── 角色状态变更历史 ──
+
+function CharacterHistorySection({ characterId }: { characterId: string }): ReactElement {
+  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const addCharacterHistory = useNovelStore((s) => s.addCharacterHistory)
+  const queryClient = useQueryClient()
+  const [manualOpen, setManualOpen] = useState(false)
+
+  const queryKey = useMemo(
+    () => ['novel-character-history', currentProjectId, characterId] as const,
+    [currentProjectId, characterId],
+  )
+
+  const { data, isLoading, error } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!currentProjectId) return []
+      return listCharacterHistory(currentProjectId, characterId)
+    },
+    enabled: !!currentProjectId,
+  })
+
+  const history = data ?? []
+
+  const handleManualCreated = useCallback(
+    (entry: NovelCharacterHistory) => {
+      addCharacterHistory(entry)
+      void queryClient.invalidateQueries({ queryKey })
+    },
+    [addCharacterHistory, queryClient, queryKey],
+  )
+
+  return (
+    <div className="pt-3 mt-3 border-t border-border">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5">
+          <History className="size-3.5 text-muted-foreground" />
+          <span className="text-xs font-medium text-text">状态变更历史</span>
+          <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+            {history.length}
+          </Badge>
+        </div>
+        <Button size="xs" variant="ghost" onClick={() => setManualOpen(true)}>
+          <Plus className="size-3" />
+          手动记录变更
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <p className="text-[11px] text-muted-foreground px-1 py-2">加载中...</p>
+      ) : error ? (
+        <p className="text-[11px] text-destructive px-1 py-2">
+          {error instanceof Error ? error.message : '加载历史失败'}
+        </p>
+      ) : history.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground px-1 py-2">暂无变更记录</p>
+      ) : (
+        <CharacterHistoryTimeline history={history} />
+      )}
+
+      <ManualHistoryDialog
+        open={manualOpen}
+        onOpenChange={setManualOpen}
+        characterId={characterId}
+        onCreated={handleManualCreated}
+      />
+    </div>
+  )
+}
+
+function CharacterHistoryTimeline({
+  history,
+}: {
+  history: NovelCharacterHistory[]
+}): ReactElement {
+  // 按时间倒序
+  const sorted = useMemo(
+    () => [...history].sort((a, b) => b.createdAt - a.createdAt),
+    [history],
+  )
+  return (
+    <ol className="relative space-y-2.5 pl-3">
+      {/* 时间线竖线 */}
+      <span
+        className="absolute left-[3px] top-1 bottom-1 w-px bg-border"
+        aria-hidden="true"
+      />
+      {sorted.map((entry) => {
+        const fieldLabel = HISTORY_FIELD_LABELS[entry.fieldName] ?? entry.fieldName
+        const chapterLabel =
+          entry.chapterNumber != null
+            ? `第 ${entry.chapterNumber} 章`
+            : '手动'
+        return (
+          <li key={entry.id} className="relative">
+            {/* 节点圆点 */}
+            <span
+              className="absolute -left-3 top-1 size-1.5 rounded-full bg-primary ring-2 ring-background"
+              aria-hidden="true"
+            />
+            <div className="rounded-md bg-muted/40 px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-text">
+                  {chapterLabel} · {fieldLabel}
+                </span>
+                <span className="text-[10px] text-muted-foreground">
+                  {relativeTime(entry.createdAt)}
+                </span>
+              </div>
+              <div className="mt-1 space-y-0.5 text-[10px]">
+                {entry.oldValue != null && (
+                  <div className="text-muted-foreground">
+                    旧值: <span className="text-text">{entry.oldValue || '（空）'}</span>
+                  </div>
+                )}
+                {entry.newValue != null && (
+                  <div className="text-muted-foreground">
+                    新值: <span className="text-text">{entry.newValue || '（空）'}</span>
+                  </div>
+                )}
+                {entry.reason && (
+                  <div className="text-muted-foreground">
+                    原因: <span className="text-text">{entry.reason}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+// ── 手动记录变更对话框 ──
+
+interface ManualHistoryDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  characterId: string
+  onCreated: (entry: NovelCharacterHistory) => void
+}
+
+function ManualHistoryDialog({
+  open,
+  onOpenChange,
+  characterId,
+  onCreated,
+}: ManualHistoryDialogProps): ReactElement {
+  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const [fieldName, setFieldName] = useState<CharacterHistoryField>('currentState')
+  const [oldValue, setOldValue] = useState('')
+  const [newValue, setNewValue] = useState('')
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // 关闭时重置表单
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (!next) {
+        setFieldName('currentState')
+        setOldValue('')
+        setNewValue('')
+        setReason('')
+        setError(null)
+      }
+      onOpenChange(next)
+    },
+    [onOpenChange],
+  )
+
+  const handleSave = useCallback(async () => {
+    if (!currentProjectId) {
+      setError('未选择项目')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      const entry = await createCharacterHistory(currentProjectId, characterId, {
+        fieldName,
+        oldValue: oldValue || null,
+        newValue: newValue || null,
+        reason: reason || null,
+      })
+      onCreated(entry)
+      handleOpenChange(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [currentProjectId, characterId, fieldName, oldValue, newValue, reason, onCreated, handleOpenChange])
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>手动记录变更</DialogTitle>
+          <DialogDescription>记录角色动态状态的一次变更</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">字段</Label>
+            <Select
+              value={fieldName}
+              onValueChange={(v) => setFieldName(v as CharacterHistoryField)}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {DYNAMIC_FIELDS.map((f) => (
+                  <SelectItem key={f} value={f}>
+                    {HISTORY_FIELD_LABELS[f]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="hist-old" className="text-xs text-muted-foreground">旧值</Label>
+            <Input
+              id="hist-old"
+              value={oldValue}
+              onChange={(e) => setOldValue(e.target.value)}
+              placeholder="原值（可留空）"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="hist-new" className="text-xs text-muted-foreground">新值</Label>
+            <Input
+              id="hist-new"
+              value={newValue}
+              onChange={(e) => setNewValue(e.target.value)}
+              placeholder="变更后的值"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="hist-reason" className="text-xs text-muted-foreground">原因</Label>
+            <Input
+              id="hist-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="变更原因（可选）"
+            />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={saving}>
+            取消
+          </Button>
+          <Button onClick={handleSave} disabled={saving || !currentProjectId}>
+            {saving ? '保存中...' : '保存记录'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
