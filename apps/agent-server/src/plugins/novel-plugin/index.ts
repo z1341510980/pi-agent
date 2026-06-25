@@ -9,21 +9,16 @@
  * 2. 初始化服务（NovelStore / PromptManager / NovelPromptBuilder / NovelSessionFactory / NovelEngine / tools）
  * 3. 装饰 Fastify 实例（供其他插件和路由使用）
  * 4. 注册 Pi Session 工具（注入到 customTools）
- * 5. 注册提示词模板目录（默认文件目录）
- * 6. 注册 REST API 路由（自动加 /api/plugins/novel 前缀）
- * 7. 注册前端面板（NovelCanvas）
+ * 5. 注册 REST API 路由（自动加 /api/plugins/novel 前缀）
+ * 6. 注册前端面板（NovelCanvas）
  *
  * 必须在 databasePlugin 和 pluginLoaderPlugin 之后加载（依赖 app.db）。
  */
 
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { Plugin, PluginContext } from '../../core/plugin/plugin-types.js'
 import { novelMigrations } from './novel-migrations.js'
 import { createNovelServices } from './novel-services.js'
 import { createNovelRoutes } from './novel-routes.js'
-
-const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 export function createNovelPlugin(): Plugin {
   return {
@@ -56,16 +51,13 @@ export function createNovelPlugin(): Plugin {
       // 运行时由 pi-session.ts 的 customTools 统一消费，结构兼容。
       context.registerSessionTools(services.tools as unknown as Parameters<typeof context.registerSessionTools>[0])
 
-      // 5. 注册提示词模板目录（默认文件目录，三级覆盖中的最底层）
-      context.registerPromptTemplates(join(__dirname, 'prompts'))
-
-      // 6. 注册 REST API 路由（路径自动加 /api/plugins/novel 前缀）
+      // 5. 注册 REST API 路由（路径自动加 /api/plugins/novel 前缀）
       const routes = createNovelRoutes(services)
       for (const route of routes) {
         context.registerRoute(route)
       }
 
-      // 7. 注册前端面板
+      // 6. 注册前端面板
       context.registerPanel({
         id: 'novel-canvas',
         title: '小说工作台',
