@@ -16,11 +16,53 @@ export interface NovelProject {
   currentChapter: number
   currentStage: StoryStage
   status: 'active' | 'paused' | 'completed'
+  /** 节奏模型 ID（缺省时使用 RhythmController.DEFAULT_MODEL） */
+  rhythmModelId?: string
   createdAt: number
   updatedAt: number
 }
 
 export type StoryStage = 'setup' | 'rising' | 'climax' | 'falling' | 'resolution'
+
+// ── 章节节奏 ──
+
+/** 章节节奏类型 */
+export type ChapterRhythm =
+  | 'setup'      // 铺垫：介绍背景、人物、设定
+  | 'rising'     // 上升：推进冲突，加剧紧张
+  | 'climax'     // 高潮：冲突爆发，转折点
+  | 'falling'    // 下降：高潮后回落，处理后果
+  | 'resolution' // 收束：解决线索，回到平衡
+  | 'twist'      // 转折：意料之外的走向
+  | 'breather'   // 舒缓：紧张之间的缓冲
+
+/** 节奏模型：定义故事弧的理想节奏序列 */
+export interface RhythmModel {
+  id: string
+  name: string
+  description: string
+  /** 理想节奏序列（循环执行，如果章节数超过序列长度） */
+  sequence: ChapterRhythm[]
+}
+
+/** 节奏建议 */
+export interface RhythmSuggestion {
+  /** 建议的节奏 */
+  rhythm: ChapterRhythm
+  /** 在弧中的位置（0-1） */
+  arcPosition: number
+  /** 建议原因 */
+  reason: string
+  /** 节奏描述（供 LLM 参考） */
+  description: string
+}
+
+/** 节奏历史记录 */
+export interface RhythmHistoryEntry {
+  chapterNumber: number
+  rhythm: ChapterRhythm
+  effectiveness: 'low' | 'medium' | 'high'  // 节奏效果评估
+}
 
 // ── 章节 ──
 
@@ -35,6 +77,8 @@ export interface NovelChapter {
   status: ChapterStatus
   narrativeTask: string
   acceptanceResult: string | null // JSON
+  /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
+  rhythm?: ChapterRhythm
   createdAt: number
   updatedAt: number
 }

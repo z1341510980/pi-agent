@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto'
 import { success } from '../../lib/api-response.js'
 import { validateBody } from '../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import { RhythmController } from './core/rhythm-controller.js'
 
 /** 创建小说系统 REST API 路由 */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
@@ -298,6 +299,58 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     handler: async (request: any) => {
       const chapter = await engine.publishChapter(request.params.id)
       return success(chapter, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 节奏控制
+  // ═══════════════════════════════════════════════════════════════
+
+  // 列出所有可用节奏模型
+  routes.push({
+    method: 'GET',
+    path: '/rhythm-models',
+    handler: async (request: any) => {
+      return success(RhythmController.MODELS, request.traceId)
+    },
+  })
+
+  // 获取下一章节奏建议（query: ?chapterNumber=N）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/rhythm-suggestion',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const { chapterNumber } = request.query as { chapterNumber?: string }
+
+      const project = store.getProject(projectId)
+      if (!project) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+
+      const chapterNum = chapterNumber != null ? parseInt(chapterNumber, 10) : (project.currentChapter + 1)
+      if (Number.isNaN(chapterNum) || chapterNum < 1) {
+        throw new AppError(ErrorCode.BAD_REQUEST, `无效的 chapterNumber: ${chapterNumber}`, 400)
+      }
+
+      const controller = new RhythmController()
+      const model = RhythmController.MODELS.find(m => m.id === project.rhythmModelId) ?? RhythmController.DEFAULT_MODEL
+
+      // 从历史章节构建节奏历史
+      const chapters = store.listChapters(projectId)
+      const history = chapters
+        .filter(c => c.rhythm)
+        .map(c => ({
+          chapterNumber: c.chapterNumber,
+          rhythm: c.rhythm!,
+          effectiveness: 'medium' as const,
+        }))
+
+      const suggestion = controller.suggestRhythm(
+        chapterNum,
+        project.currentStage,
+        history,
+        model,
+      )
+      return success(suggestion, request.traceId)
     },
   })
 

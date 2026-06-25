@@ -42,6 +42,7 @@ import type { NovelPromptBuilder } from '../../../core/novel/prompt-builder.js'
 import type { NovelEngine } from '../../../core/novel/novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent } from './novel-agents.js'
+import { RhythmController } from './rhythm-controller.js'
 
 export interface CreationOptions {
   onCheckpoint: (checkpoint: CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
@@ -74,10 +75,30 @@ export class NovelOrchestrator extends EventEmitter {
     options: CreationOptions,
   ): Promise<CreationResult> {
     try {
+      // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）
+      const rhythmController = new RhythmController()
+      const project = this.store.getProject(projectId)
+      const chapters = this.store.listChapters(projectId)
+      const rhythmHistory = chapters
+        .filter(c => c.rhythm)
+        .map(c => ({
+          chapterNumber: c.chapterNumber,
+          rhythm: c.rhythm!,
+          effectiveness: 'medium' as const,
+        }))
+      const rhythmModel = RhythmController.MODELS.find(m => m.id === project?.rhythmModelId) ?? RhythmController.DEFAULT_MODEL
+      const rhythmSuggestion = rhythmController.suggestRhythm(
+        chapterNumber,
+        project?.currentStage ?? 'setup',
+        rhythmHistory,
+        rhythmModel,
+      )
+
       // Phase 1: Director
       this.emitProgress(options, 'directing', { message: '导演 Agent 正在分析故事状态...' })
       const directorResult = await this.runAgent('director', projectId, {
         task: `请分析当前故事状态，为第 ${chapterNumber} 章规划叙事任务。`,
+        rhythmSuggestion,
       })
 
       // 检查点 1
