@@ -113,6 +113,8 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // PluginManager 在 pluginLoaderPlugin 中创建（line 73），早于 SessionStore（line 85），
   // 因此通过 setter 延迟注入。createSession 在请求期调用，此时必然已注入。
   app.pluginManager?.setSessionStore(sessionStore)
+  // 注入 ModelRegistry（供 createSession 的 modelId 切换）
+  app.pluginManager?.setModelRegistry(app.modelRegistry)
 
   const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.eventBus)
 

@@ -26,6 +26,8 @@ import {
   updateProject,
   updateCharacter,
   updateChapter,
+  updateConflict,
+  updateForeshadow,
   listCharacterHistory,
   createCharacterHistory,
   type NovelProject,
@@ -231,10 +233,10 @@ export function NovelDetailPanel(): ReactElement {
           <ChapterForm key={entity.id} entity={entity as NovelChapter} />
         )}
         {selectedNodeType === 'conflict' && (
-          <ConflictView entity={entity as NovelConflict} />
+          <ConflictForm key={entity.id} entity={entity as NovelConflict} />
         )}
         {selectedNodeType === 'foreshadow' && (
-          <ForeshadowView entity={entity as NovelForeshadow} />
+          <ForeshadowForm key={entity.id} entity={entity as NovelForeshadow} />
         )}
       </div>
     </div>
@@ -789,11 +791,19 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
   )
 }
 
-// ── 冲突只读视图 ──
+// ── 冲突编辑表单 ──
 
-function ConflictView({ entity }: { entity: NovelConflict }): ReactElement {
-  const typeLabel = CONFLICT_TYPE_OPTIONS.find((o) => o.value === entity.type)?.label ?? entity.type
-  const stageLabel = CONFLICT_STAGE_OPTIONS.find((o) => o.value === entity.stage)?.label ?? entity.stage
+function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
+  const upsertConflict = useNovelStore((s) => s.upsertConflict)
+  const [form, setForm] = useState({
+    description: entity.description,
+    type: entity.type,
+    intensity: String(entity.intensity),
+    stage: entity.stage,
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
   let participants: string[] = []
   try {
     const p = JSON.parse(entity.participants)
@@ -802,26 +812,76 @@ function ConflictView({ entity }: { entity: NovelConflict }): ReactElement {
     // ignore
   }
 
+  const dirty =
+    form.description !== entity.description ||
+    form.type !== entity.type ||
+    form.stage !== entity.stage ||
+    Number(form.intensity) !== entity.intensity
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await updateConflict(entity.id, {
+        description: form.description,
+        type: form.type,
+        intensity: Number(form.intensity) || 0,
+        stage: form.stage,
+      })
+      upsertConflict(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertConflict])
+
   return (
     <div className="space-y-3">
-      <div className="rounded-lg bg-rose-500/5 border border-rose-500/20 p-2.5">
-        <p className="text-sm text-text">{entity.description}</p>
-      </div>
+      <FieldRow label="描述">
+        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
       <FieldRow label="类型">
-        <Badge variant="secondary">{typeLabel}</Badge>
+        <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as ConflictType }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONFLICT_TYPE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </FieldRow>
       <FieldRow label="阶段">
-        <Badge variant="secondary">{stageLabel}</Badge>
+        <Select value={form.stage} onValueChange={(v) => setForm((f) => ({ ...f, stage: v as ConflictStage }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONFLICT_STAGE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </FieldRow>
       <FieldRow label="强度">
         <div className="flex items-center gap-2">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
             <div
               className="h-full bg-rose-500"
-              style={{ width: `${(entity.intensity / 10) * 100}%` }}
+              style={{ width: `${(Number(form.intensity) / 10) * 100}%` }}
             />
           </div>
-          <span className="text-xs text-muted-foreground">{entity.intensity}/10</span>
+          <TextInput
+            type="number"
+            min={0}
+            max={10}
+            value={form.intensity}
+            onChange={(e) => setForm((f) => ({ ...f, intensity: e.target.value }))}
+            className="w-16"
+          />
+          <span className="text-xs text-muted-foreground">/10</span>
         </div>
       </FieldRow>
       {participants.length > 0 && (
@@ -833,17 +893,27 @@ function ConflictView({ entity }: { entity: NovelConflict }): ReactElement {
           </div>
         </FieldRow>
       )}
-      <p className="text-[10px] text-muted-foreground flex items-center gap-1 pt-2">
-        <Info className="size-3" /> 冲突暂不支持编辑，可通过创建流程更新
-      </p>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
   )
 }
 
-// ── 伏笔只读视图 ──
+// ── 伏笔编辑表单 ──
 
-function ForeshadowView({ entity }: { entity: NovelForeshadow }): ReactElement {
-  const statusLabel = FORESHADOW_STATUS_OPTIONS.find((o) => o.value === entity.status)?.label ?? entity.status
+function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
+  const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
+  const [form, setForm] = useState({
+    description: entity.description,
+    category: entity.category,
+    status: entity.status,
+    firstChapter: entity.firstChapter != null ? String(entity.firstChapter) : '',
+    lastChapter: entity.lastChapter != null ? String(entity.lastChapter) : '',
+    recoverByChapter: entity.recoverByChapter != null ? String(entity.recoverByChapter) : '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
   let linkedCharacters: string[] = []
   try {
     const p = JSON.parse(entity.linkedCharacters)
@@ -852,30 +922,78 @@ function ForeshadowView({ entity }: { entity: NovelForeshadow }): ReactElement {
     // ignore
   }
 
+  const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
+
+  const dirty =
+    form.description !== entity.description ||
+    form.category !== entity.category ||
+    form.status !== entity.status ||
+    toNumOrNull(form.firstChapter) !== entity.firstChapter ||
+    toNumOrNull(form.lastChapter) !== entity.lastChapter ||
+    toNumOrNull(form.recoverByChapter) !== entity.recoverByChapter
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await updateForeshadow(entity.id, {
+        description: form.description,
+        category: form.category,
+        status: form.status,
+        firstChapter: toNumOrNull(form.firstChapter),
+        lastChapter: toNumOrNull(form.lastChapter),
+        recoverByChapter: toNumOrNull(form.recoverByChapter),
+      })
+      upsertForeshadow(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertForeshadow])
+
   return (
     <div className="space-y-3">
-      <div className="rounded-lg bg-amber-500/5 border border-amber-500/20 p-2.5">
-        <p className="text-sm text-text">{entity.description}</p>
-      </div>
+      <FieldRow label="描述">
+        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
       <FieldRow label="分类">
-        <Badge variant="secondary">{entity.category || '未分类'}</Badge>
+        <TextInput value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
       </FieldRow>
       <FieldRow label="状态">
-        <Badge variant="secondary">{statusLabel}</Badge>
+        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ForeshadowStatus }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FORESHADOW_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </FieldRow>
-      <div className="grid grid-cols-3 gap-2 text-xs">
-        <div className="rounded bg-muted/50 p-2">
-          <div className="text-muted-foreground text-[10px]">首次出现</div>
-          <div className="text-text">{entity.firstChapter ?? '—'}</div>
-        </div>
-        <div className="rounded bg-muted/50 p-2">
-          <div className="text-muted-foreground text-[10px]">最后强化</div>
-          <div className="text-text">{entity.lastChapter ?? '—'}</div>
-        </div>
-        <div className="rounded bg-muted/50 p-2">
-          <div className="text-muted-foreground text-[10px]">回收期限</div>
-          <div className="text-text">{entity.recoverByChapter ?? '—'}</div>
-        </div>
+      <div className="grid grid-cols-3 gap-2">
+        <FieldRow label="首次出现">
+          <TextInput
+            type="number"
+            value={form.firstChapter}
+            onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
+          />
+        </FieldRow>
+        <FieldRow label="最后强化">
+          <TextInput
+            type="number"
+            value={form.lastChapter}
+            onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
+          />
+        </FieldRow>
+        <FieldRow label="回收期限">
+          <TextInput
+            type="number"
+            value={form.recoverByChapter}
+            onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
+          />
+        </FieldRow>
       </div>
       {linkedCharacters.length > 0 && (
         <FieldRow label="关联角色">
@@ -886,9 +1004,8 @@ function ForeshadowView({ entity }: { entity: NovelForeshadow }): ReactElement {
           </div>
         </FieldRow>
       )}
-      <p className="text-[10px] text-muted-foreground flex items-center gap-1 pt-2">
-        <Info className="size-3" /> 伏笔暂不支持编辑，可通过创建流程更新
-      </p>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
   )
 }

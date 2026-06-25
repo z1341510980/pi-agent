@@ -215,8 +215,7 @@ export class TeamManager {
           memberResults = await this.executePipeline(team, plan, teamChannel, options)
           break
         case 'coordinated':
-          // coordinated 策略当前未实现，fallback 到 parallel
-          memberResults = await this.executeParallel(team, plan, teamChannel, options)
+          memberResults = await this.executeCoordinated(team, plan, teamChannel, options)
           break
         default:
           memberResults = await this.executeParallel(team, plan, teamChannel, options)
@@ -491,6 +490,97 @@ export class TeamManager {
       pipelineInput = result.result.length > MAX_PIPELINE_INPUT
         ? result.result.slice(0, MAX_PIPELINE_INPUT) + '\n...[输出已截断]'
         : result.result
+    }
+
+    return results
+  }
+
+  /**
+   * 协调执行：串行执行，每个成员接收原始任务 + 前序成员的结果摘要
+   *
+   * 与 pipeline 的区别：pipeline 只传上一个阶段的输出，
+   * coordinated 传入所有前序成员的结果（附带上下文），让成员能感知全局进展。
+   */
+  private async executeCoordinated(
+    team: TeamConfig,
+    plan: ExecutionPlan,
+    teamChannel: string,
+    options: TeamExecuteOptions,
+  ): Promise<Record<string, TeamMemberResult>> {
+    const results: Record<string, TeamMemberResult> = {}
+    /** 前序成员结果摘要（限制数量避免上下文膨胀） */
+    const priorContext: string[] = []
+
+    options.onProgress?.({
+      text: `协调执行：${plan.assignments.length} 个成员`,
+      phase: 'output',
+    })
+
+    for (let i = 0; i < plan.assignments.length; i++) {
+      const assignment = plan.assignments[i]
+
+      if (options.signal?.aborted) {
+        throw new Error('团队任务已被取消')
+      }
+
+      // 构建包含前序上下文的任务描述
+      let coordinatedTask = assignment.subtask
+      if (priorContext.length > 0) {
+        const contextBlock = priorContext.join('\n\n')
+        coordinatedTask = `${assignment.subtask}\n\n## 前序成员工作结果\n以下是你之前的团队成员已完成的工作，请参考并协调你的工作：\n\n${contextBlock}`
+      }
+
+      options.onProgress?.({
+        text: `协调阶段 ${i + 1}/${plan.assignments.length}：${assignment.agentId}`,
+        phase: 'output',
+      })
+
+      const startedAt = Date.now()
+      const result = await this.agentManager.dispatchToAgent(
+        assignment.agentId,
+        coordinatedTask,
+        {
+          timeoutMs: plan.timeoutPerMember,
+          signal: options.signal,
+          onProgress: options.onProgress,
+        },
+      )
+
+      results[assignment.agentId] = {
+        agentId: assignment.agentId,
+        result: result.result,
+        success: result.success,
+        error: result.error,
+        durationMs: result.durationMs,
+      }
+
+      // 通过 Team 频道广播进展
+      this.channel.broadcast(teamChannel, assignment.agentId, {
+        type: 'member_result',
+        agentId: assignment.agentId,
+        success: result.success,
+        coordinatedStage: i,
+      })
+
+      if (!result.success) {
+        options.onProgress?.({
+          text: `成员 ${assignment.agentId} 执行失败: ${result.error ?? '未知错误'}，继续执行下一个`,
+          phase: 'output',
+        })
+      }
+
+      // 将结果摘要加入前序上下文（限制大小和数量）
+      if (result.success && result.result) {
+        const MAX_CONTEXT_ENTRY = 5_000
+        const summary = result.result.length > MAX_CONTEXT_ENTRY
+          ? result.result.slice(0, MAX_CONTEXT_ENTRY) + '\n...[结果已截断]'
+          : result.result
+        priorContext.push(`### ${assignment.agentId} 的结果\n${summary}`)
+        // 最多保留最近5条上下文，避免上下文膨胀
+        if (priorContext.length > 5) {
+          priorContext.shift()
+        }
+      }
     }
 
     return results

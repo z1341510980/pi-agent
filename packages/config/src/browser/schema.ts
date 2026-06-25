@@ -8,4 +8,6 @@ export const browserEnvSchema = z.object({
   VITE_API_BASE_URL: z.string().url().default("http://127.0.0.1:3900"),
 
   VITE_AGUI_BASE_URL: z.string().url().default("http://127.0.0.1:3900"),
+
+  VITE_REPOSITORY_URL: z.string().default(""),
 });

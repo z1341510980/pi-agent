@@ -446,6 +446,10 @@ export function deleteForeshadow(id: string): Promise<{ id: string; deleted: boo
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/foreshadowing/${id}`)
 }
 
+export function updateForeshadow(id: string, input: Partial<CreateForeshadowInput>): Promise<NovelForeshadow> {
+  return patchApi<NovelForeshadow>(`${BASE}/foreshadowing/${id}`, input)
+}
+
 // ── Conflicts ──
 
 export function listConflicts(projectId: string): Promise<NovelConflict[]> {
@@ -458,6 +462,10 @@ export function createConflict(projectId: string, input: CreateConflictInput): P
 
 export function deleteConflict(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/conflicts/${id}`)
+}
+
+export function updateConflict(id: string, input: Partial<CreateConflictInput>): Promise<NovelConflict> {
+  return patchApi<NovelConflict>(`${BASE}/conflicts/${id}`, input)
 }
 
 // ── Clues ──

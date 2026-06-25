@@ -24,7 +24,6 @@ const AGENT_LABELS: Record<string, string> = {
   director: '导演',
   writer: '写作',
   reviewer: '审稿',
-  reviser: '修订',
   memory: '记忆',
 }
 

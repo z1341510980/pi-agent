@@ -75,6 +75,14 @@ export class PluginManager {
    * 注入后插件 setup 可通过 context.teamManager 注册 Team。
    */
   private teamManager?: TeamManager
+  /**
+   * ModelRegistry（用于 createSession 的 modelId 切换）
+   *
+   * 通过 setModelRegistry() 在 app.ts 启动后期注入，
+   * 与 SessionStore 同时期注入。
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private modelRegistry?: any
 
   constructor(
     logger: FastifyBaseLogger,
@@ -102,6 +110,18 @@ export class PluginManager {
   setSessionStore(store: PiSessionStore): void {
     this.sessionStore = store
     this.logger.info('已注入 PiSessionStore，插件可使用 createSession API')
+  }
+
+  /**
+   * 注入 ModelRegistry（在 SessionStore 创建后调用）
+   *
+   * 用于 createSession 的 modelId 切换：
+   * 通过 modelRegistry.find() 查找模型后调用 session.setModel()。
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setModelRegistry(registry: any): void {
+    this.modelRegistry = registry
+    this.logger.info('已注入 ModelRegistry，插件 createSession 支持 modelId 切换')
   }
 
   /**
@@ -725,13 +745,24 @@ export class PluginManager {
 
         // 模型切换（如指定）
         if (options.modelId) {
-          // Note: 模型切换通过 session.setModel，但需要 modelRegistry 访问。
-          // 当前 createSession 不持有 modelRegistry，因此模型切换暂不支持。
-          // TODO: 注入 modelRegistry 以支持 options.modelId
-          logger.warn(
-            { provider: options.modelId.provider, modelId: options.modelId.modelId },
-            'createSession 暂不支持 modelId 切换，使用默认模型',
-          )
+          if (this.modelRegistry) {
+            const targetModel = this.modelRegistry.find(
+              options.modelId.provider,
+              options.modelId.modelId,
+            )
+            if (targetModel) {
+              await threadSession.session.setModel(targetModel)
+            } else {
+              logger.warn(
+                { provider: options.modelId.provider, modelId: options.modelId.modelId },
+                'modelRegistry 未找到指定模型，使用默认模型',
+              )
+            }
+          } else {
+            logger.warn(
+              'ModelRegistry 未注入，无法切换模型，使用默认模型',
+            )
+          }
         }
 
         // 中止信号转发

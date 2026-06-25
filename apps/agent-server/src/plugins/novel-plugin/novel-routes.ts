@@ -520,6 +520,19 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  routes.push({
+    method: 'PATCH',
+    path: '/foreshadowing/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createForeshadowSchema.partial(), request, reply)
+      if (!input) return reply
+
+      const updated = store.updateForeshadow(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `伏笔不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
   // ═══════════════════════════════════════════════════════════════
   // 冲突
   // ═══════════════════════════════════════════════════════════════
@@ -553,6 +566,19 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/conflicts',
     handler: async (request: any) => {
       return success(store.listConflicts(request.params.projectId), request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/conflicts/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createConflictSchema.partial(), request, reply)
+      if (!input) return reply
+
+      const updated = store.updateConflict(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `冲突不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
     },
   })
 
@@ -942,7 +968,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         : undefined
 
       // 系统提示词哈希（STATIC 层）- 跨章节缓存命中指标
-      const agentTypes = ['director', 'writer', 'reviewer', 'reviser', 'memory']
+      const agentTypes = ['director', 'writer', 'reviewer', 'memory']
       const systemPromptHashes: Record<string, string> = {}
       for (const agentType of agentTypes) {
         try {

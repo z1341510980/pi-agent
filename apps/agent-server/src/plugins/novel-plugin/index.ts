@@ -86,7 +86,7 @@ export function createNovelPlugin(): Plugin {
       }
 
       // 4. 注册 Novel Team 到 TeamManager
-      //    管道式执行：Director → Writer → Reviewer → Reviser → Memory
+      //    管道式执行：Director → Writer → Reviewer → (Writer 修订) → Memory
       //    与 NovelOrchestrator 的 SSE 流程并存，提供统一的 team_execute 触发方式。
       const teamManager = context.teamManager
       if (teamManager) {
@@ -100,13 +100,12 @@ export function createNovelPlugin(): Plugin {
             teamManager.registerTeam({
               id: NOVEL_TEAM_ID,
               name: '小说创作团队',
-              description: '小说多 Agent 创作团队：导演→作家→审稿→修订→记忆',
+              description: '小说多 Agent 创作团队：导演→作家→审稿→(作家修订)→记忆',
               leadAgentId: 'novel-director',
               members: [
                 { agentId: 'novel-director', role: 'analyst', roleDescription: '分析故事状态，生成叙事任务' },
                 { agentId: 'novel-writer', role: 'writer', roleDescription: '根据叙事任务创作章节正文' },
                 { agentId: 'novel-reviewer', role: 'reviewer', roleDescription: '检查章节质量，生成验收报告' },
-                { agentId: 'novel-reviser', role: 'writer', roleDescription: '根据审稿意见修订章节' },
                 { agentId: 'novel-memory', role: 'analyst', roleDescription: '提取状态变更，更新故事记忆' },
               ],
               defaultStrategy: 'pipeline',

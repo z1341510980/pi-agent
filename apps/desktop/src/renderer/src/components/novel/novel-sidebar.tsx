@@ -39,6 +39,7 @@ import {
   type NovelChapter,
   type NovelConflict,
   type NovelForeshadow,
+  type NovelCharacterHistory,
 } from '@/api/novel-client'
 import { CharacterCreateDialog } from './character-create-dialog'
 
@@ -313,6 +314,7 @@ function ProjectTree({
   const removeChapter = useNovelStore((s) => s.removeChapter)
   const removeConflict = useNovelStore((s) => s.removeConflict)
   const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
+  const characterHistory = useNovelStore((s) => s.characterHistory)
 
   const sortedChapters = useMemo(
     () => [...chapters].sort((a, b) => a.chapterNumber - b.chapterNumber),
@@ -444,6 +446,7 @@ function ProjectTree({
               characters={characters}
               conflicts={conflicts}
               foreshadows={foreshadows}
+              characterHistory={characterHistory}
               onSelectEntity={onSelectEntity}
               onDelete={() => handleDelete('chapter', chapter.id, `第 ${chapter.chapterNumber} 章`)}
             />
@@ -613,6 +616,7 @@ interface ChapterItemProps {
   characters: NovelCharacter[]
   conflicts: NovelConflict[]
   foreshadows: NovelForeshadow[]
+  characterHistory: NovelCharacterHistory[]
   onSelectEntity: (id: string, type: NovelNodeType) => void
   onDelete: () => void
 }
@@ -622,6 +626,7 @@ function ChapterItem({
   characters,
   conflicts,
   foreshadows,
+  characterHistory,
   onSelectEntity,
   onDelete,
 }: ChapterItemProps): ReactElement {
@@ -639,6 +644,35 @@ function ChapterItem({
       ),
     [foreshadows, chapter.chapterNumber],
   )
+
+  // 该章出场角色：基于角色变更历史（chapterNumber 匹配）筛选；
+  // 若无历史记录则回退展示全部角色。
+  const hasHistory = characterHistory.length > 0
+  const chapterCharacters = useMemo(() => {
+    if (!hasHistory) return characters
+    const charIds = new Set(
+      characterHistory
+        .filter((h) => h.chapterNumber === chapter.chapterNumber)
+        .map((h) => h.characterId),
+    )
+    return characters.filter((c) => charIds.has(c.id))
+  }, [characters, characterHistory, chapter.chapterNumber, hasHistory])
+
+  // 该章关联冲突：按参与者与本章出场角色交集筛选；
+  // 若无历史记录则回退展示全部冲突。
+  const chapterConflicts = useMemo(() => {
+    if (!hasHistory) return conflicts
+    const charIds = new Set(chapterCharacters.map((c) => c.id))
+    return conflicts.filter((c) => {
+      try {
+        const p = JSON.parse(c.participants)
+        if (!Array.isArray(p)) return false
+        return p.some((id: unknown) => typeof id === 'string' && charIds.has(id))
+      } catch {
+        return false
+      }
+    })
+  }, [conflicts, chapterCharacters, hasHistory])
 
   return (
     <div>
@@ -682,18 +716,18 @@ function ChapterItem({
 
       {expanded && (
         <div className="ml-3 pl-2 border-l border-border/60 mt-0.5 space-y-1">
-          {/* 出场角色（暂以全部项目角色近似展示） */}
+          {/* 出场角色 */}
           <div>
             <div className="text-[10px] text-muted-foreground px-1.5 py-0.5">
-              出场角色（{characters.length}）
+              出场角色（{chapterCharacters.length}）
             </div>
-            {characters.length === 0 ? (
+            {chapterCharacters.length === 0 ? (
               <div className="text-[10px] text-muted-foreground/70 px-1.5 py-0.5">
-                暂无角色（章节→角色映射未实现，默认显示全部）
+                本章无出场角色
               </div>
             ) : (
               <div className="space-y-0.5">
-                {characters.map((c) => (
+                {chapterCharacters.map((c) => (
                   <div
                     key={c.id}
                     onClick={() => onSelectEntity(c.id, 'character')}
@@ -734,18 +768,18 @@ function ChapterItem({
             )}
           </div>
 
-          {/* 章节冲突（暂以全部项目冲突近似展示） */}
+          {/* 章节关联冲突 */}
           <div>
             <div className="text-[10px] text-muted-foreground px-1.5 py-0.5">
-              冲突（{conflicts.length}）
+              冲突（{chapterConflicts.length}）
             </div>
-            {conflicts.length === 0 ? (
+            {chapterConflicts.length === 0 ? (
               <div className="text-[10px] text-muted-foreground/70 px-1.5 py-0.5">
-                暂无冲突（章节→冲突映射未实现，默认显示全部）
+                本章无关联冲突
               </div>
             ) : (
               <div className="space-y-0.5">
-                {conflicts.map((c) => (
+                {chapterConflicts.map((c) => (
                   <div
                     key={c.id}
                     onClick={() => onSelectEntity(c.id, 'conflict')}
