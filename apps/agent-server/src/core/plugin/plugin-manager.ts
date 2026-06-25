@@ -21,6 +21,8 @@ import type Database from 'better-sqlite3'
 import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore } from '../agent/session-store.js'
+import { withAgentConfig } from '../agent/pi-session.js'
+import type { AgentConfig } from '../agent/subagent-tool.js'
 import type {
   Plugin,
   PluginContext,
@@ -646,7 +648,25 @@ export class PluginManager {
         }
 
         const threadId = `plugin:${pluginName}:${randomUUID()}`
-        const threadSession = await this.sessionStore.getOrCreate(threadId)
+
+        // 构建 AgentConfig，通过 withAgentConfig 注入 systemPrompt 到 system role。
+        // createPiSession 内的 buildSystemPrompt 会从 agentConfigStorage 读取
+        // systemPrompt 并拼入系统提示词的 `## Agent 自定义指令` 部分
+        // （参考 core/agent/pi-session.ts），不再拼接到 userMessage 头部，
+        // 从而保持 userMessage 纯净，不破坏 prompt cache 前缀匹配。
+        const agentConfig: AgentConfig = {
+          id: `plugin-session-${randomUUID()}`,
+          name: `${pluginName} session`,
+          systemPrompt: options.systemPrompt,
+          ...(options.modelId ? { model: options.modelId } : {}),
+        }
+
+        // 在 withAgentConfig 上下文中创建 session：
+        // buildSystemPrompt 在 resourceLoader.reload() 时被调用，因此
+        // 必须在 session 创建期间持有 agentConfigStorage 上下文。
+        const threadSession = await withAgentConfig(agentConfig, async () => {
+          return await this.sessionStore!.getOrCreate(threadId)
+        })
 
         // 收集 assistant 文本（事件格式参考 core/agent/stream-emitter.ts）
         let completeText = ''
@@ -687,15 +707,13 @@ export class PluginManager {
           )
         }
 
-        // TODO: systemPrompt 应通过 systemPromptOverride 注入到 createPiSession，
-        // 当前实现将其拼接到 userMessage 头部（不理想，影响 prompt cache 命中率）。
-        // 待 createPiSession 暴露 systemPromptOverride 注入点后改为正式 system role。
-        const fullMessage = `${options.systemPrompt}\n\n---\n\n${options.userMessage}`
-
         return {
           prompt: async (): Promise<string> => {
             completeText = '' // 重置
-            await threadSession.session.prompt(fullMessage)
+            // 在 withAgentConfig 上下文中调用 prompt（session 已创建，但保险起见）
+            await withAgentConfig(agentConfig, async () => {
+              await threadSession.session.prompt(options.userMessage)
+            })
             return completeText
           },
           abort: () => {

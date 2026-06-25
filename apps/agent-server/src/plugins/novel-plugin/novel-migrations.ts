@@ -305,4 +305,40 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_char_history_character ON novel_character_history(character_id);
     CREATE INDEX IF NOT EXISTS idx_char_history_project ON novel_character_history(project_id);`,
   },
+  {
+    // 长期记忆事件表（情景记忆：跨章节的事件/状态变更时间线 + 因果链）
+    id: '029_create_novel_memory',
+    sql: `CREATE TABLE IF NOT EXISTS novel_memory_events (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_id      TEXT,
+      chapter_number  INTEGER NOT NULL,
+      event_type      TEXT NOT NULL,
+      entity_id       TEXT NOT NULL,
+      entity_type     TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      old_value       TEXT,
+      new_value       TEXT,
+      cause           TEXT,
+      effect_ids      TEXT,
+      significance    INTEGER DEFAULT 5,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_events_project ON novel_memory_events(project_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_events_chapter ON novel_memory_events(chapter_number);
+    CREATE INDEX IF NOT EXISTS idx_memory_events_entity ON novel_memory_events(entity_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_events_type ON novel_memory_events(event_type);
+
+    CREATE TABLE IF NOT EXISTS novel_memory_snapshots (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      snapshot_type   TEXT NOT NULL,
+      entity_id       TEXT,
+      snapshot_data   TEXT NOT NULL,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_snapshots_project ON novel_memory_snapshots(project_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_snapshots_chapter ON novel_memory_snapshots(chapter_number);`,
+  },
 ]

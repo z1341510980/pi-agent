@@ -24,7 +24,7 @@ import { RhythmController } from './core/rhythm-controller.js'
 
 /** 创建小说系统 REST API 路由 */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
-  const { store, promptManager, promptBuilder, engine } = services
+  const { store, memoryStore, promptManager, promptBuilder, engine } = services
   const routes: RouteDefinition[] = []
 
   // ═══════════════════════════════════════════════════════════════
@@ -834,6 +834,97 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         { projectId: request.params.projectId, nodeType: request.params.nodeType, entityId: request.params.entityId, deleted: true },
         request.traceId,
       )
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 长期记忆（记忆事件 + 章节快照 + 因果链）
+  // ═══════════════════════════════════════════════════════════════
+
+  // 查询记忆事件（支持 query: chapterNumber, entityType, entityId, eventType, minSignificance, limit）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/memory-events',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const query = (request.query ?? {}) as Record<string, string | undefined>
+
+      const chapterNumber = query.chapterNumber != null ? parseInt(query.chapterNumber, 10) : undefined
+      const minSignificance = query.minSignificance != null ? parseInt(query.minSignificance, 10) : undefined
+      const limit = query.limit != null ? parseInt(query.limit, 10) : undefined
+
+      const events = memoryStore.listEvents(projectId, {
+        chapterNumber: chapterNumber != null && !Number.isNaN(chapterNumber) ? chapterNumber : undefined,
+        entityType: query.entityType as any,
+        entityId: query.entityId,
+        eventType: query.eventType as any,
+        minSignificance: minSignificance != null && !Number.isNaN(minSignificance) ? minSignificance : undefined,
+        limit: limit != null && !Number.isNaN(limit) ? limit : undefined,
+      })
+      return success(events, request.traceId)
+    },
+  })
+
+  // 获取实体事件时间线
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/memory-events/timeline/:entityId',
+    handler: async (request: any) => {
+      const { projectId, entityId } = request.params as { projectId: string; entityId: string }
+      const timeline = memoryStore.getEntityTimeline(projectId, entityId)
+      return success(timeline, request.traceId)
+    },
+  })
+
+  // 获取因果关系链（向上追溯原因 + 向下追溯影响）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/memory-events/causal/:eventId',
+    handler: async (request: any) => {
+      const { eventId } = request.params as { eventId: string }
+      const chain = memoryStore.getCausalChain(eventId)
+      return success(chain, request.traceId)
+    },
+  })
+
+  // 查询记忆快照（支持 query: chapterNumber, snapshotType）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/memory-snapshots',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const query = (request.query ?? {}) as Record<string, string | undefined>
+
+      const chapterNumber = query.chapterNumber != null ? parseInt(query.chapterNumber, 10) : undefined
+      const snapshots = memoryStore.listSnapshots(projectId, {
+        chapterNumber: chapterNumber != null && !Number.isNaN(chapterNumber) ? chapterNumber : undefined,
+        snapshotType: query.snapshotType as any,
+      })
+      return success(snapshots, request.traceId)
+    },
+  })
+
+  // 获取某章的状态快照（支持 query: snapshotType, entityId）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/memory-snapshots/:chapterNumber',
+    handler: async (request: any) => {
+      const { projectId, chapterNumber } = request.params as { projectId: string; chapterNumber: string }
+      const query = (request.query ?? {}) as Record<string, string | undefined>
+
+      const chapterNum = parseInt(chapterNumber, 10)
+      if (Number.isNaN(chapterNum) || chapterNum < 0) {
+        throw new AppError(ErrorCode.BAD_REQUEST, `无效的 chapterNumber: ${chapterNumber}`, 400)
+      }
+
+      const snapshot = memoryStore.getSnapshot(projectId, chapterNum, {
+        snapshotType: query.snapshotType as any,
+        entityId: query.entityId,
+      })
+      if (!snapshot) {
+        throw new AppError(ErrorCode.NOT_FOUND, `章节 ${chapterNum} 的快照不存在`, 404)
+      }
+      return success(snapshot, request.traceId)
     },
   })
 
