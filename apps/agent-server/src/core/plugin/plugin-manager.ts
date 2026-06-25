@@ -16,6 +16,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import type Database from 'better-sqlite3'
 import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type {
@@ -29,6 +30,7 @@ import type {
   ToolDefinition,
   PanelDefinition,
   EventHandler,
+  MigrationDefinition,
 } from './plugin-types.js'
 
 /** npm 插件包名前缀 */
@@ -39,11 +41,24 @@ export class PluginManager {
   private readonly logger: FastifyBaseLogger
   private readonly eventBus: EventBus
   private readonly options: PluginManagerOptions
+  private readonly db: Database.Database
+  private readonly cwd: string
+  private readonly dataDir: string
   private initialized = false
 
-  constructor(logger: FastifyBaseLogger, eventBus: EventBus, options: PluginManagerOptions = {}) {
+  constructor(
+    logger: FastifyBaseLogger,
+    eventBus: EventBus,
+    db: Database.Database,
+    cwd: string,
+    dataDir: string,
+    options: PluginManagerOptions = {},
+  ) {
     this.logger = logger
     this.eventBus = eventBus
+    this.db = db
+    this.cwd = cwd
+    this.dataDir = dataDir
     this.options = options
   }
 
@@ -186,6 +201,9 @@ export class PluginManager {
       routeCount: entry.routes.length,
       panelCount: entry.panels.length,
       eventHandlerCount: entry.eventHandlers.length,
+      migrationCount: entry.migrations.length,
+      sessionToolCount: entry.sessionTools.length,
+      serviceCount: entry.services.length,
     }))
   }
 
@@ -227,6 +245,52 @@ export class PluginManager {
       }
     }
     return panels
+  }
+
+  /** 获取所有已启用插件的数据库迁移（按 id 排序） */
+  getAllMigrations(): MigrationDefinition[] {
+    const all: MigrationDefinition[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        all.push(...entry.migrations)
+      }
+    }
+    return all.sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  /** 获取所有已启用插件注入的 Pi Session 工具 */
+  getAllSessionTools(): ToolDefinition[] {
+    const all: ToolDefinition[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        all.push(...entry.sessionTools)
+      }
+    }
+    return all
+  }
+
+  /** 获取所有已启用插件注册的 Fastify 服务 */
+  getAllServices(): Array<{ pluginName: string; name: string; service: unknown }> {
+    const all: Array<{ pluginName: string; name: string; service: unknown }> = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        for (const { name, service } of entry.services) {
+          all.push({ pluginName: entry.manifest.name, name, service })
+        }
+      }
+    }
+    return all
+  }
+
+  /** 获取所有已启用插件注册的提示词模板目录 */
+  getAllPromptTemplateDirs(): string[] {
+    const all: string[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        all.push(...entry.promptTemplateDirs)
+      }
+    }
+    return all
   }
 
   // ============ 内部实现 ============
@@ -402,6 +466,10 @@ export class PluginManager {
         routes: [],
         panels: [],
         eventHandlers: [],
+        migrations: [],
+        sessionTools: [],
+        services: [],
+        promptTemplateDirs: [],
       }
       this.entries.set(manifest.name, entry)
       this.logger.info(
@@ -473,6 +541,10 @@ export class PluginManager {
     entry.routes = []
     entry.panels = []
     entry.eventHandlers = []
+    entry.migrations = []
+    entry.sessionTools = []
+    entry.services = []
+    entry.promptTemplateDirs = []
     entry.status = 'disabled'
 
     this.logger.info({ plugin: name }, '插件已禁用')
@@ -486,6 +558,9 @@ export class PluginManager {
     return {
       pluginName,
       logger,
+      db: this.db,
+      cwd: this.cwd,
+      dataDir: this.dataDir,
       registerTool: (tool: ToolDefinition) => {
         entry.tools.push(tool)
         logger.debug({ tool: tool.name }, '工具已注册')
@@ -502,6 +577,22 @@ export class PluginManager {
       registerPanel: (panel: PanelDefinition) => {
         entry.panels.push(panel)
         logger.debug({ panel: panel.id }, 'UI 面板已注册')
+      },
+      registerMigration: (migration: MigrationDefinition) => {
+        entry.migrations.push(migration)
+        logger.debug({ migrationId: migration.id }, '已注册数据库迁移')
+      },
+      registerSessionTools: (tools: ToolDefinition[]) => {
+        entry.sessionTools.push(...tools)
+        logger.debug({ count: tools.length }, '已注册 Session 工具')
+      },
+      registerService: (name: string, service: unknown) => {
+        entry.services.push({ name, service })
+        logger.debug({ serviceName: name }, '已注册 Fastify 服务')
+      },
+      registerPromptTemplates: (dir: string) => {
+        entry.promptTemplateDirs.push(dir)
+        logger.debug({ dir }, '已注册提示词模板目录')
       },
     }
   }
