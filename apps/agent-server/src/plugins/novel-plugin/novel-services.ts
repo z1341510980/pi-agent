@@ -8,6 +8,7 @@
  * - NovelSessionFactory：Session 工厂（集成 Pi SDK）
  * - NovelEngine：核心引擎（流程编排）
  * - NovelOrchestrator：多 Agent 编排引擎（Director → Writer → Reviewer → Reviser → Memory）
+ * - NovelCharacterGenerator：AI 角色生成器
  * - tools：Pi Session 自定义工具集
  *
  * 依赖关系（与原 novel.plugin.ts 保持一致）：
@@ -16,11 +17,11 @@
  * - NovelPromptBuilder 依赖 PromptManager + NovelStore
  * - NovelSessionFactory 依赖 NovelStore + PromptManager
  * - NovelEngine 依赖 NovelStore + NovelSessionFactory
- * - NovelOrchestrator 依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine
+ * - NovelOrchestrator 依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext
+ * - NovelCharacterGenerator 依赖 NovelPromptBuilder + PromptManager + PluginContext
  * - createNovelTools 依赖 NovelStore
  */
 
-import type Database from 'better-sqlite3'
 import { NovelStore } from '../../core/novel/novel-store.js'
 import { PromptManager } from '../../core/novel/prompt-manager.js'
 import { NovelPromptBuilder } from '../../core/novel/prompt-builder.js'
@@ -29,6 +30,7 @@ import { NovelEngine } from '../../core/novel/novel-engine.js'
 import { createNovelTools } from '../../core/novel/novel-tools.js'
 import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import { NovelCharacterGenerator } from './core/novel-character-generator.js'
+import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 
 export interface NovelServices {
@@ -42,8 +44,14 @@ export interface NovelServices {
   tools: ToolDefinition[]
 }
 
-/** 初始化小说系统所有服务 */
-export function createNovelServices(db: Database.Database, cwd: string): NovelServices {
+/**
+ * 初始化小说系统所有服务
+ *
+ * @param context PluginContext（提供 db / cwd / logger / createSession 等）
+ */
+export function createNovelServices(context: PluginContext): NovelServices {
+  const { db, cwd } = context
+
   // 1. 创建 NovelStore（依赖 db）
   const store = new NovelStore(db)
 
@@ -59,11 +67,13 @@ export function createNovelServices(db: Database.Database, cwd: string): NovelSe
   // 5. 创建 NovelEngine（依赖 NovelStore + NovelSessionFactory）
   const engine = new NovelEngine(store, sessionFactory)
 
-  // 6. 创建 NovelOrchestrator（依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine）
-  const orchestrator = new NovelOrchestrator(store, sessionFactory, promptBuilder, engine)
+  // 6. 创建 NovelOrchestrator（依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext）
+  //    PluginContext.createSession 用于 runAgent 调用 LLM
+  const orchestrator = new NovelOrchestrator(store, sessionFactory, promptBuilder, engine, context)
 
-  // 7. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager）
-  const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager)
+  // 7. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
+  //    PluginContext.createSession 用于 generate 调用 LLM
+  const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, context)
 
   // 8. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)

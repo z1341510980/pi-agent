@@ -4,8 +4,8 @@
  * 基于用户输入的核心风格描述 + 项目上下文（类型、世界规则、风格指南），
  * 调用 LLM 生成完整的角色设定（身份/性格/外貌/动态状态/秘密/角色弧光/说话风格）。
  *
- * 当前实现为占位：返回基于 coreStyle 的模板角色。
- * Pi SDK 集成后通过 Session 调用 LLM 完成实际生成（参考 NovelOrchestrator.runAgent）。
+ * 通过 PluginContext.createSession 创建独立 Pi Session 调用 LLM（参考 NovelOrchestrator.runAgent）。
+ * 与主聊天 Session 隔离：使用独立的 threadId，不污染用户对话历史。
  *
  * 与 NovelOrchestrator 同目录，作为插件级服务由 NovelServices 注入。
  */
@@ -13,6 +13,7 @@
 import type { NovelPromptBuilder } from '../../../core/novel/prompt-builder.js'
 import type { PromptManager } from '../../../core/novel/prompt-manager.js'
 import type { NovelCharacter } from '../../../core/novel/types.js'
+import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 
 export type GeneratedCharacter = Pick<
   NovelCharacter,
@@ -25,6 +26,7 @@ export class NovelCharacterGenerator {
   constructor(
     private promptBuilder: NovelPromptBuilder,
     private promptManager: PromptManager,
+    private context: PluginContext,
   ) {}
 
   /**
@@ -42,19 +44,33 @@ export class NovelCharacterGenerator {
     // ── 2. 构建用户消息（核心风格描述 + 生成指令）──
     const userPrompt = this.buildUserPrompt(coreStyle)
 
-    // TODO: 集成 Pi SDK Session 调用 LLM
-    // 实际实现需要：
-    //   1. 通过 createPiSession 创建 Session（注入 systemPrompt 作为 system prompt）
-    //   2. 发送 userPrompt 作为首条用户消息
-    //   3. 解析 LLM 返回的 JSON/结构化文本为 GeneratedCharacter
-    // 当前返回基于 coreStyle 的模板角色，实际 LLM 调用在 Pi SDK 集成后完成
-    console.log(
-      `[Novel] Generating character for project ${projectId}, ` +
-      `coreStyle: ${coreStyle.slice(0, 80)}${coreStyle.length > 80 ? '...' : ''}`,
-    )
-    console.log(`[Novel] System prompt length: ${systemPrompt.length}, user prompt length: ${userPrompt.length}`)
+    // ── 3. 创建独立 Session 调用 LLM ──
+    const session = await this.context.createSession({
+      systemPrompt,
+      userMessage: userPrompt,
+    })
 
-    return this.buildTemplateCharacter(coreStyle)
+    try {
+      const result = await session.prompt()
+      this.context.logger.info(
+        {
+          projectId,
+          coreStylePreview: coreStyle.slice(0, 80),
+          resultLength: result.length,
+        },
+        '角色生成 LLM 调用完成',
+      )
+      // ── 4. 解析 LLM 返回的 JSON ──
+      return this.parseCharacterJson(result, coreStyle)
+    } catch (err) {
+      this.context.logger.error(
+        { projectId, coreStylePreview: coreStyle.slice(0, 80), err },
+        '角色生成 LLM 调用失败，回退到模板角色',
+      )
+      return this.buildTemplateCharacter(coreStyle)
+    } finally {
+      session.dispose()
+    }
   }
 
   /**
@@ -84,11 +100,46 @@ export class NovelCharacterGenerator {
   }
 
   /**
-   * 基于核心风格描述生成模板角色（占位实现）
+   * 解析 LLM 返回的文本为 GeneratedCharacter
    *
-   * 实际实现应通过 Pi SDK 调用 LLM，根据 coreStyle + 项目上下文
-   * 生成符合类型惯例与世界观的角色设定。
-   * 当前实现基于 coreStyle 关键词推断角色特征，仅用于开发期占位。
+   * LLM 可能返回纯 JSON，也可能用 ```json ... ``` 代码块包裹。
+   * 解析失败时回退到模板角色（buildTemplateCharacter）。
+   */
+  private parseCharacterJson(text: string, coreStyle: string): GeneratedCharacter {
+    // 提取 ```json ... ``` 代码块（如有）
+    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+    const jsonStr = jsonMatch ? jsonMatch[1] : text
+
+    try {
+      const parsed = JSON.parse(jsonStr.trim()) as Record<string, unknown>
+      return {
+        name: (parsed.name as string) ?? '未命名角色',
+        description: (parsed.description as string) ?? '',
+        identity: (parsed.identity as string) ?? '',
+        personality: (parsed.personality as string) ?? '',
+        appearance: (parsed.appearance as string) ?? '',
+        currentState: (parsed.currentState as string) ?? '',
+        currentGoal: (parsed.currentGoal as string) ?? '',
+        currentPressure: (parsed.currentPressure as string) ?? '',
+        secret: (parsed.secret as string) ?? '',
+        arcStage: (parsed.arcStage as string) ?? 'setup',
+        speechStyle: (parsed.speechStyle as string) ?? '',
+      }
+    } catch (err) {
+      this.context.logger.warn(
+        { err, textPreview: text.slice(0, 200) },
+        '解析 LLM 返回的角色 JSON 失败，回退到模板角色',
+      )
+      return this.buildTemplateCharacter(coreStyle)
+    }
+  }
+
+  /**
+   * 基于核心风格描述生成模板角色（占位实现 / 兜底回退）
+   *
+   * 用途：
+   * 1. LLM 调用失败时的兜底回退（保证调用方拿到结构化结果）
+   * 2. parseCharacterJson 解析失败时的回退
    */
   private buildTemplateCharacter(coreStyle: string): GeneratedCharacter {
     // 从 coreStyle 推断姓名（取前 2-4 个字符 + "角色"后缀作为占位名）

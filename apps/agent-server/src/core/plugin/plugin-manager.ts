@@ -14,11 +14,13 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type Database from 'better-sqlite3'
 import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
+import type { PiSessionStore } from '../agent/session-store.js'
 import type {
   Plugin,
   PluginContext,
@@ -26,6 +28,8 @@ import type {
   PluginFactory,
   PluginListItem,
   PluginManagerOptions,
+  PluginSessionHandle,
+  PluginSessionOptions,
   RouteDefinition,
   ToolDefinition,
   PanelDefinition,
@@ -45,6 +49,14 @@ export class PluginManager {
   private readonly cwd: string
   private readonly dataDir: string
   private initialized = false
+  /**
+   * Pi SessionStore（用于 createSession API）
+   *
+   * 通过 setSessionStore() 在 app.ts 启动后期注入，
+   * 因为 PluginManager 在 pluginLoaderPlugin 中创建（app.ts:73），
+   * 而 SessionStore 在其后创建（app.ts:85）。
+   */
+  private sessionStore?: PiSessionStore
 
   constructor(
     logger: FastifyBaseLogger,
@@ -60,6 +72,18 @@ export class PluginManager {
     this.cwd = cwd
     this.dataDir = dataDir
     this.options = options
+  }
+
+  /**
+   * 注入 PiSessionStore（在 SessionStore 创建后调用）
+   *
+   * PluginManager 在 pluginLoaderPlugin 注册时创建，但 SessionStore
+   * 在其后才创建。因此通过 setter 延迟注入。
+   * createSession 调用时（请求期）SessionStore 必然已注入。
+   */
+  setSessionStore(store: PiSessionStore): void {
+    this.sessionStore = store
+    this.logger.info('已注入 PiSessionStore，插件可使用 createSession API')
   }
 
   /**
@@ -252,6 +276,22 @@ export class PluginManager {
     const all: MigrationDefinition[] = []
     for (const entry of this.entries.values()) {
       if (entry.status === 'enabled') {
+        all.push(...entry.migrations)
+      }
+    }
+    return all.sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  /**
+   * 获取所有已加载插件的数据库迁移（按 id 排序）
+   *
+   * 与 getAllMigrations 的区别：不要求插件为 enabled 状态。
+   * 用于在 start() 之前执行静态迁移，确保 setup 时表已存在。
+   */
+  getLoadedMigrations(): MigrationDefinition[] {
+    const all: MigrationDefinition[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'loaded' || entry.status === 'enabled') {
         all.push(...entry.migrations)
       }
     }
@@ -466,7 +506,8 @@ export class PluginManager {
         routes: [],
         panels: [],
         eventHandlers: [],
-        migrations: [],
+        // 收集插件静态声明的迁移（在 setup 之前执行，确保 setup 时表已存在）
+        migrations: [...(plugin.migrations ?? [])],
         sessionTools: [],
         services: [],
         promptTemplateDirs: [],
@@ -489,11 +530,12 @@ export class PluginManager {
 
     try {
       // 清空之前的注册项（防止重复启动累积）
+      // 注意：migrations 保留静态声明的部分，setup 中通过 registerMigration 注册的会在 setup 时追加
       entry.tools = []
       entry.routes = []
       entry.panels = []
       entry.eventHandlers = []
-      entry.migrations = []
+      entry.migrations = [...(entry.plugin.migrations ?? [])]
       entry.sessionTools = []
       entry.services = []
       entry.promptTemplateDirs = []
@@ -598,6 +640,81 @@ export class PluginManager {
         entry.promptTemplateDirs.push(dir)
         logger.debug({ dir }, '已注册提示词模板目录')
       },
+      createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
+        if (!this.sessionStore) {
+          throw new Error('SessionStore 未注入，无法创建 Pi Session')
+        }
+
+        const threadId = `plugin:${pluginName}:${randomUUID()}`
+        const threadSession = await this.sessionStore.getOrCreate(threadId)
+
+        // 收集 assistant 文本（事件格式参考 core/agent/stream-emitter.ts）
+        let completeText = ''
+        const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+          if (event.type !== 'message_update') return
+          const assistantMessageEvent = event.assistantMessageEvent as
+            | Record<string, unknown>
+            | undefined
+          if (!assistantMessageEvent) return
+          if (assistantMessageEvent.type !== 'text_delta') return
+          const delta = (assistantMessageEvent.delta as string) ?? ''
+          completeText += delta
+        })
+
+        // 模型切换（如指定）
+        if (options.modelId) {
+          // Note: 模型切换通过 session.setModel，但需要 modelRegistry 访问。
+          // 当前 createSession 不持有 modelRegistry，因此模型切换暂不支持。
+          // TODO: 注入 modelRegistry 以支持 options.modelId
+          logger.warn(
+            { provider: options.modelId.provider, modelId: options.modelId.modelId },
+            'createSession 暂不支持 modelId 切换，使用默认模型',
+          )
+        }
+
+        // 中止信号转发
+        if (options.signal) {
+          options.signal.addEventListener(
+            'abort',
+            () => {
+              try {
+                threadSession.session.abort()
+              } catch (err) {
+                logger.warn({ err }, '中止 Pi Session 失败')
+              }
+            },
+            { once: true },
+          )
+        }
+
+        // TODO: systemPrompt 应通过 systemPromptOverride 注入到 createPiSession，
+        // 当前实现将其拼接到 userMessage 头部（不理想，影响 prompt cache 命中率）。
+        // 待 createPiSession 暴露 systemPromptOverride 注入点后改为正式 system role。
+        const fullMessage = `${options.systemPrompt}\n\n---\n\n${options.userMessage}`
+
+        return {
+          prompt: async (): Promise<string> => {
+            completeText = '' // 重置
+            await threadSession.session.prompt(fullMessage)
+            return completeText
+          },
+          abort: () => {
+            try {
+              threadSession.session.abort()
+            } catch (err) {
+              logger.warn({ err }, '中止 Pi Session 失败')
+            }
+          },
+          dispose: () => {
+            // 取消订阅；PiSessionStore 自带 LRU 淘汰，无需显式 delete
+            try {
+              unsubscribe()
+            } catch (err) {
+              logger.warn({ err }, '取消订阅 Pi Session 事件失败')
+            }
+          },
+        }
+      },
     }
   }
 }
@@ -609,6 +726,8 @@ export type {
   PluginEntry,
   PluginListItem,
   PluginManagerOptions,
+  PluginSessionHandle,
+  PluginSessionOptions,
   ToolDefinition,
   RouteDefinition,
   PanelDefinition,

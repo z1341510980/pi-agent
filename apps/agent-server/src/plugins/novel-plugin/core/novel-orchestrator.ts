@@ -40,6 +40,7 @@ import type { NovelStore } from '../../../core/novel/novel-store.js'
 import type { NovelSessionFactory } from '../../../core/novel/novel-session.js'
 import type { NovelPromptBuilder } from '../../../core/novel/prompt-builder.js'
 import type { NovelEngine } from '../../../core/novel/novel-engine.js'
+import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent } from './novel-agents.js'
 
 export interface CreationOptions {
@@ -62,6 +63,7 @@ export class NovelOrchestrator extends EventEmitter {
     private sessionFactory: NovelSessionFactory,
     private promptBuilder: NovelPromptBuilder,
     private engine: NovelEngine,
+    private context: PluginContext,
   ) {
     super()
   }
@@ -151,15 +153,44 @@ export class NovelOrchestrator extends EventEmitter {
 
   /** 运行单个 Agent（通过 Pi SDK Session） */
   private async runAgent(agentType: NovelAgentType, projectId: string, input: unknown): Promise<string> {
-    // TODO: 集成 Pi SDK Session
-    // 当前返回占位文本，实际 LLM 调用在集成 Pi SDK 后完成
     const config = NOVEL_AGENT_CONFIGS[agentType]
     const inputText = typeof input === 'string' ? input : JSON.stringify(input)
 
-    // 临时实现：返回占位文本
-    // 实际实现需要通过 createPiSession 创建 Session 并运行
-    console.log(`[Novel] Running agent: ${config.name}, input: ${inputText.slice(0, 100)}...`)
-    return `[${config.name}] 已处理请求。这是占位响应，实际 LLM 集成在后续实现。`
+    // 构建系统提示词（STATIC 层 - Agent 身份 + 世界规则 + 风格 + 角色定义）
+    const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, agentType)
+
+    // 构建用户消息（Agent 任务指令 + 输入数据）
+    const userMessage = inputText
+
+    // 创建独立 Session 并调用 LLM
+    // TODO: 从 CreationOptions 传入 signal（需要扩展 runAgent 签名）
+    const session = await this.context.createSession({
+      systemPrompt,
+      userMessage,
+    })
+
+    try {
+      const result = await session.prompt()
+      this.context.logger.info(
+        {
+          agentType,
+          agentName: config.name,
+          projectId,
+          resultLength: result.length,
+          resultPreview: result.slice(0, 200),
+        },
+        'Agent 推理完成',
+      )
+      return result
+    } catch (err) {
+      this.context.logger.error(
+        { agentType, agentName: config.name, projectId, err },
+        'Agent 推理失败',
+      )
+      throw err
+    } finally {
+      session.dispose()
+    }
   }
 
   private emitProgress(options: CreationOptions, phase: CreationPhase, data: unknown): void {

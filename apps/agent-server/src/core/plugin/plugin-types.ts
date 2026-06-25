@@ -152,6 +152,43 @@ export interface PluginContext {
   registerService(name: string, service: unknown): void
   /** 注册提示词模板目录（三级覆盖中的默认文件目录） */
   registerPromptTemplates(dir: string): void
+  /**
+   * 创建独立的 Pi SDK Session（用于插件内部 LLM 调用，如多 Agent 编排）
+   *
+   * 与主聊天 Session 隔离：使用独立的 threadId，不污染用户对话历史。
+   * 系统提示词、工具、模型均可自定义。
+   *
+   * @returns Session 句柄，可调用 prompt() 触发 LLM 推理并获取结果
+   */
+  createSession(options: PluginSessionOptions): Promise<PluginSessionHandle>
+}
+
+/**
+ * 插件创建 Pi Session 的选项
+ */
+export interface PluginSessionOptions {
+  /** 系统提示词（覆盖默认的 Pi Agent 提示词） */
+  systemPrompt: string
+  /** 首条用户消息（章节上下文/生成指令） */
+  userMessage: string
+  /** 自定义工具（可选，默认注入插件工具） */
+  tools?: ToolDefinition[]
+  /** 模型 ID（可选，默认使用已配置的第一个 Provider 的第一个模型） */
+  modelId?: { provider: string; modelId: string }
+  /** 中止信号 */
+  signal?: AbortSignal
+}
+
+/**
+ * 插件创建的 Pi Session 句柄
+ */
+export interface PluginSessionHandle {
+  /** 触发 LLM 推理，返回完整 assistant 文本 */
+  prompt(): Promise<string>
+  /** 中止当前推理 */
+  abort(): void
+  /** 释放 Session（从 SessionStore 淘汰） */
+  dispose(): void
 }
 
 /**
@@ -161,6 +198,14 @@ export interface PluginContext {
 export interface Plugin {
   /** 插件清单 */
   readonly manifest: PluginManifest
+  /**
+   * 静态数据库迁移（可选）
+   *
+   * 在 setup() 之前执行，确保插件 setup 时表已存在。
+   * 适用于 setup 中初始化依赖数据库表的服务的插件。
+   * setup 中也可通过 context.registerMigration() 注册动态迁移（在 start() 后执行）。
+   */
+  readonly migrations?: MigrationDefinition[]
   /** 插件初始化（注册工具、路由、事件监听、面板） */
   setup(context: PluginContext): void | Promise<void>
   /** 可选：插件销毁时清理资源 */
