@@ -93,6 +93,14 @@ export interface PanelDefinition {
 /** 事件处理器 */
 export type EventHandler = (data: unknown) => void | Promise<void>
 
+/** 数据库迁移定义：插件可注册的数据库表创建/变更 */
+export interface MigrationDefinition {
+  /** 迁移 ID（全局唯一，建议用数字前缀，如 '013_create_novel_projects'） */
+  id: string
+  /** SQL 语句（必须幂等，使用 IF NOT EXISTS） */
+  sql: string
+}
+
 /** 插件清单：插件元数据 */
 export interface PluginManifest {
   /** 插件名（唯一标识，建议使用 kebab-case） */
@@ -122,6 +130,12 @@ export interface PluginContext {
   readonly pluginName: string
   /** 模块级日志器（已绑定 pluginName） */
   readonly logger: FastifyBaseLogger
+  /** SQLite 数据库连接（由 databasePlugin 提供） */
+  readonly db: import('better-sqlite3').Database
+  /** 当前工作目录 */
+  readonly cwd: string
+  /** 数据目录 */
+  readonly dataDir: string
   /** 注册工具 */
   registerTool(tool: ToolDefinition): void
   /** 注册 HTTP 路由（路径自动加 /api/plugins/:pluginName 前缀） */
@@ -130,6 +144,14 @@ export interface PluginContext {
   onEvent(type: string, handler: EventHandler): void
   /** 注册 UI 面板 */
   registerPanel(panel: PanelDefinition): void
+  /** 注册数据库迁移（在 database 插件之后、session factory 之前执行） */
+  registerMigration(migration: MigrationDefinition): void
+  /** 注入 Pi Session customTools（每次创建 session 时注入） */
+  registerSessionTools(tools: ToolDefinition[]): void
+  /** 装饰 Fastify 实例（挂载服务供路由和其他插件使用） */
+  registerService(name: string, service: unknown): void
+  /** 注册提示词模板目录（三级覆盖中的默认文件目录） */
+  registerPromptTemplates(dir: string): void
 }
 
 /**
@@ -170,6 +192,14 @@ export interface PluginEntry {
   panels: PanelDefinition[]
   /** 已注册的事件监听器（用于卸载时取消订阅） */
   eventHandlers: Array<{ type: string; handler: EventHandler }>
+  /** 已注册的数据库迁移 */
+  migrations: MigrationDefinition[]
+  /** 已注册的 Session 工具（注入到 Pi Session customTools） */
+  sessionTools: ToolDefinition[]
+  /** 已注册的 Fastify 服务 */
+  services: Array<{ name: string; service: unknown }>
+  /** 已注册的提示词模板目录 */
+  promptTemplateDirs: string[]
 }
 
 /** 插件列表项（API 返回的简化形式） */
@@ -185,6 +215,9 @@ export interface PluginListItem {
   routeCount: number
   panelCount: number
   eventHandlerCount: number
+  migrationCount: number
+  sessionToolCount: number
+  serviceCount: number
 }
 
 /** 插件加载选项 */
