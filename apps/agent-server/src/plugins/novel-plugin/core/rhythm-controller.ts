@@ -1,4 +1,4 @@
-import type { ChapterRhythm, RhythmModel, RhythmSuggestion, RhythmHistoryEntry, StoryStage } from '../../../core/novel/types.js'
+import type { ChapterRhythm, RhythmModel, RhythmSuggestion, RhythmHistoryEntry, StoryStage } from './types.js'
 
 /**
  * RhythmController：章节节奏控制

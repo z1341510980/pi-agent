@@ -10,9 +10,9 @@
  * 与 NovelOrchestrator 同目录，作为插件级服务由 NovelServices 注入。
  */
 
-import type { NovelPromptBuilder } from '../../../core/novel/prompt-builder.js'
-import type { PromptManager } from '../../../core/novel/prompt-manager.js'
-import type { NovelCharacter } from '../../../core/novel/types.js'
+import type { NovelPromptBuilder } from './prompt-builder.js'
+import type { PromptManager } from './prompt-manager.js'
+import type { NovelCharacter } from './types.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 
 export type GeneratedCharacter = Pick<

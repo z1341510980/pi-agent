@@ -3,6 +3,7 @@
  *
  * 集中创建小说系统的所有核心组件，供 novel-plugin 的 setup 调用：
  * - NovelStore：统一存储（SQLite CRUD）
+ * - NovelMemoryStore：长期记忆分层存储（事件 + 快照 + 因果链）
  * - PromptManager：提示词模板管理器（三级覆盖）
  * - NovelPromptBuilder：缓存优化的提示词构建器
  * - NovelSessionFactory：Session 工厂（集成 Pi SDK）
@@ -13,28 +14,31 @@
  *
  * 依赖关系（与原 novel.plugin.ts 保持一致）：
  * - NovelStore 依赖 db
+ * - NovelMemoryStore 依赖 db
  * - PromptManager 依赖 db + cwd
  * - NovelPromptBuilder 依赖 PromptManager + NovelStore
  * - NovelSessionFactory 依赖 NovelStore + PromptManager
  * - NovelEngine 依赖 NovelStore + NovelSessionFactory
- * - NovelOrchestrator 依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext
+ * - NovelOrchestrator 依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext
  * - NovelCharacterGenerator 依赖 NovelPromptBuilder + PromptManager + PluginContext
  * - createNovelTools 依赖 NovelStore
  */
 
-import { NovelStore } from '../../core/novel/novel-store.js'
-import { PromptManager } from '../../core/novel/prompt-manager.js'
-import { NovelPromptBuilder } from '../../core/novel/prompt-builder.js'
-import { NovelSessionFactory } from '../../core/novel/novel-session.js'
-import { NovelEngine } from '../../core/novel/novel-engine.js'
-import { createNovelTools } from '../../core/novel/novel-tools.js'
+import { NovelStore } from './core/novel-store.js'
+import { PromptManager } from './core/prompt-manager.js'
+import { NovelPromptBuilder } from './core/prompt-builder.js'
+import { NovelSessionFactory } from './core/novel-session.js'
+import { NovelEngine } from './core/novel-engine.js'
+import { createNovelTools } from './core/novel-tools.js'
 import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import { NovelCharacterGenerator } from './core/novel-character-generator.js'
+import { NovelMemoryStore } from './core/novel-memory-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 
 export interface NovelServices {
   store: NovelStore
+  memoryStore: NovelMemoryStore
   promptManager: PromptManager
   promptBuilder: NovelPromptBuilder
   sessionFactory: NovelSessionFactory
@@ -55,28 +59,31 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 1. 创建 NovelStore（依赖 db）
   const store = new NovelStore(db)
 
-  // 2. 创建 PromptManager（依赖 db + cwd）
+  // 2. 创建 NovelMemoryStore（依赖 db，长期记忆分层存储）
+  const memoryStore = new NovelMemoryStore(db)
+
+  // 3. 创建 PromptManager（依赖 db + cwd）
   const promptManager = new PromptManager(db, cwd)
 
-  // 3. 创建 NovelPromptBuilder（依赖 PromptManager + NovelStore）
+  // 4. 创建 NovelPromptBuilder（依赖 PromptManager + NovelStore）
   const promptBuilder = new NovelPromptBuilder(promptManager, store)
 
-  // 4. 创建 NovelSessionFactory（复用共享的 store 和 promptManager）
+  // 5. 创建 NovelSessionFactory（复用共享的 store 和 promptManager）
   const sessionFactory = new NovelSessionFactory(store, promptManager)
 
-  // 5. 创建 NovelEngine（依赖 NovelStore + NovelSessionFactory）
+  // 6. 创建 NovelEngine（依赖 NovelStore + NovelSessionFactory）
   const engine = new NovelEngine(store, sessionFactory)
 
-  // 6. 创建 NovelOrchestrator（依赖 NovelStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext）
+  // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext）
   //    PluginContext.createSession 用于 runAgent 调用 LLM
-  const orchestrator = new NovelOrchestrator(store, sessionFactory, promptBuilder, engine, context)
+  const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context)
 
-  // 7. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
+  // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
   //    PluginContext.createSession 用于 generate 调用 LLM
   const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, context)
 
-  // 8. 创建 Pi Session 工具集（依赖 NovelStore）
+  // 9. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, tools }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, tools }
 }

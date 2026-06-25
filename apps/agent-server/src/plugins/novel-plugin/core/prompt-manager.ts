@@ -8,7 +8,7 @@
  * 4. 内存缓存，避免重复 IO
  *
  * 模板文件位置：
- * - 默认模板：apps/agent-server/src/core/novel/prompts/*.md
+ * - 默认模板：apps/agent-server/src/plugins/novel-plugin/core/prompts/*.md
  * - 项目覆盖：${cwd}/.pi/novel/prompts/*.md
  * - 运行时覆盖：SQLite novel_prompt_templates 表
  *

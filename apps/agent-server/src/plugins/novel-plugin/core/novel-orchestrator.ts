@@ -36,13 +36,14 @@
  */
 
 import { EventEmitter } from 'node:events'
-import type { NovelStore } from '../../../core/novel/novel-store.js'
-import type { NovelSessionFactory } from '../../../core/novel/novel-session.js'
-import type { NovelPromptBuilder } from '../../../core/novel/prompt-builder.js'
-import type { NovelEngine } from '../../../core/novel/novel-engine.js'
+import type { NovelStore } from './novel-store.js'
+import type { NovelSessionFactory } from './novel-session.js'
+import type { NovelPromptBuilder } from './prompt-builder.js'
+import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent } from './novel-agents.js'
 import { RhythmController } from './rhythm-controller.js'
+import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'
 
 export interface CreationOptions {
   onCheckpoint: (checkpoint: CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
@@ -61,6 +62,7 @@ export interface CreationResult {
 export class NovelOrchestrator extends EventEmitter {
   constructor(
     private store: NovelStore,
+    private memoryStore: NovelMemoryStore,
     private sessionFactory: NovelSessionFactory,
     private promptBuilder: NovelPromptBuilder,
     private engine: NovelEngine,
@@ -152,18 +154,36 @@ export class NovelOrchestrator extends EventEmitter {
       }
 
       // Phase 5: Memory
+      // 在 Memory Agent 执行前捕获实体状态快照，执行后比较差异并记录记忆事件
       this.emitProgress(options, 'memory', { message: '记忆 Agent 正在提取状态变更...' })
+      const beforeState = this.captureEntityState(projectId)
       const memoryResult = await this.runAgent('memory', projectId, {
         task: `请从第 ${chapterNumber} 章中提取状态变更。`,
         content: finalContent,
       })
+      const chapter = this.store.getChapter(projectId, chapterNumber)
+      const memoryEvents = this.recordMemoryEvents(
+        projectId,
+        chapterNumber,
+        chapter?.id ?? null,
+        beforeState,
+      )
+
+      // 章节完成时保存全量状态快照（情景记忆）
+      this.saveChapterSnapshot(projectId, chapterNumber)
 
       this.emitProgress(options, 'completed', { message: '章节创作完成' })
 
       return {
         status: 'completed',
         content: finalContent,
-        stateChanges: [{ type: 'memory', description: memoryResult.slice(0, 200) }],
+        stateChanges: [
+          { type: 'memory', description: memoryResult.slice(0, 200) },
+          ...memoryEvents.map((e) => ({
+            type: e.eventType,
+            description: e.description,
+          })),
+        ],
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -212,6 +232,198 @@ export class NovelOrchestrator extends EventEmitter {
     } finally {
       session.dispose()
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 长期记忆：实体状态捕获 + 记忆事件记录
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 捕获项目当前实体状态（角色 / 冲突 / 伏笔）
+   * 返回按实体 ID 索引的 Map，用于 Memory Agent 执行前后差异比较
+   */
+  private captureEntityState(projectId: string): {
+    characters: Map<string, { name: string; currentState: string; currentGoal: string; currentPressure: string; secret: string; arcStage: string }>
+    conflicts: Map<string, { description: string; stage: string; intensity: number }>
+    foreshadowing: Map<string, { description: string; status: string; firstChapter: number | null; lastChapter: number | null }>
+  } {
+    const characters = new Map(
+      this.store.listCharacters(projectId).map((c) => [
+        c.id,
+        {
+          name: c.name,
+          currentState: c.currentState,
+          currentGoal: c.currentGoal,
+          currentPressure: c.currentPressure,
+          secret: c.secret,
+          arcStage: c.arcStage,
+        },
+      ]),
+    )
+    const conflicts = new Map(
+      this.store.listConflicts(projectId).map((c) => [
+        c.id,
+        { description: c.description, stage: c.stage, intensity: c.intensity },
+      ]),
+    )
+    const foreshadowing = new Map(
+      this.store.listForeshadowing(projectId).map((f) => [
+        f.id,
+        {
+          description: f.description,
+          status: f.status,
+          firstChapter: f.firstChapter,
+          lastChapter: f.lastChapter,
+        },
+      ]),
+    )
+    return { characters, conflicts, foreshadowing }
+  }
+
+  /**
+   * 比较 Memory Agent 执行前后的实体状态，记录记忆事件
+   * - 角色状态变更 → character_change 事件
+   * - 冲突阶段变更 → conflict_change 事件
+   * - 伏笔状态变更 → foreshadow_change 事件
+   */
+  private recordMemoryEvents(
+    projectId: string,
+    chapterNumber: number,
+    chapterId: string | null,
+    before: ReturnType<NovelOrchestrator['captureEntityState']>,
+  ): MemoryEvent[] {
+    const events: MemoryEvent[] = []
+    const after = this.captureEntityState(projectId)
+
+    // ── 角色变更 ──
+    const characterFields = ['currentState', 'currentGoal', 'currentPressure', 'secret', 'arcStage'] as const
+    for (const [id, afterChar] of after.characters) {
+      const beforeChar = before.characters.get(id)
+      if (!beforeChar) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'character_change',
+          entityId: id, entityType: 'character',
+          description: `角色创建: ${afterChar.name}`,
+          oldValue: null,
+          newValue: JSON.stringify({ name: afterChar.name, arcStage: afterChar.arcStage }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+        continue
+      }
+      for (const field of characterFields) {
+        if (beforeChar[field] !== afterChar[field]) {
+          events.push(this.memoryStore.recordEvent({
+            projectId, chapterId, chapterNumber,
+            eventType: 'character_change',
+            entityId: id, entityType: 'character',
+            description: `角色 ${afterChar.name} 的 ${field} 变更`,
+            oldValue: JSON.stringify({ [field]: beforeChar[field] }),
+            newValue: JSON.stringify({ [field]: afterChar[field] }),
+            cause: null, effectIds: [], significance: 6,
+          }))
+        }
+      }
+    }
+
+    // ── 冲突变更 ──
+    for (const [id, afterConflict] of after.conflicts) {
+      const beforeConflict = before.conflicts.get(id)
+      if (!beforeConflict) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'conflict_change',
+          entityId: id, entityType: 'conflict',
+          description: `冲突创建: ${afterConflict.description}`,
+          oldValue: null,
+          newValue: JSON.stringify({ stage: afterConflict.stage, intensity: afterConflict.intensity }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+        continue
+      }
+      if (beforeConflict.stage !== afterConflict.stage) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'conflict_change',
+          entityId: id, entityType: 'conflict',
+          description: `冲突阶段变更: ${afterConflict.description}（${beforeConflict.stage} → ${afterConflict.stage}）`,
+          oldValue: JSON.stringify({ stage: beforeConflict.stage, intensity: beforeConflict.intensity }),
+          newValue: JSON.stringify({ stage: afterConflict.stage, intensity: afterConflict.intensity }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+      } else if (beforeConflict.intensity !== afterConflict.intensity) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'conflict_change',
+          entityId: id, entityType: 'conflict',
+          description: `冲突强度变更: ${afterConflict.description}（${beforeConflict.intensity} → ${afterConflict.intensity}）`,
+          oldValue: JSON.stringify({ intensity: beforeConflict.intensity }),
+          newValue: JSON.stringify({ intensity: afterConflict.intensity }),
+          cause: null, effectIds: [], significance: 5,
+        }))
+      }
+    }
+
+    // ── 伏笔变更 ──
+    for (const [id, afterF] of after.foreshadowing) {
+      const beforeF = before.foreshadowing.get(id)
+      if (!beforeF) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'foreshadow_change',
+          entityId: id, entityType: 'foreshadow',
+          description: `伏笔创建: ${afterF.description}`,
+          oldValue: null,
+          newValue: JSON.stringify({ status: afterF.status }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+        continue
+      }
+      if (beforeF.status !== afterF.status) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'foreshadow_change',
+          entityId: id, entityType: 'foreshadow',
+          description: `伏笔状态变更: ${afterF.description}（${beforeF.status} → ${afterF.status}）`,
+          oldValue: JSON.stringify({ status: beforeF.status }),
+          newValue: JSON.stringify({ status: afterF.status }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
+      if (beforeF.lastChapter !== afterF.lastChapter) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'foreshadow_change',
+          entityId: id, entityType: 'foreshadow',
+          description: `伏笔回收章节更新: ${afterF.description}`,
+          oldValue: JSON.stringify({ lastChapter: beforeF.lastChapter }),
+          newValue: JSON.stringify({ lastChapter: afterF.lastChapter }),
+          cause: null, effectIds: [], significance: 8,
+        }))
+      }
+    }
+
+    return events
+  }
+
+  /**
+   * 保存章节完成时的全量状态快照（情景记忆）
+   * 包含角色 / 冲突 / 伏笔 / 关系的当前状态，供时间线查询
+   */
+  private saveChapterSnapshot(projectId: string, chapterNumber: number): void {
+    const data = {
+      characters: this.store.listCharacters(projectId),
+      conflicts: this.store.listConflicts(projectId),
+      foreshadowing: this.store.listForeshadowing(projectId),
+      relationships: this.store.listRelationships(projectId),
+    }
+    this.memoryStore.saveSnapshot({
+      projectId,
+      chapterNumber,
+      snapshotType: 'full',
+      entityId: null,
+      snapshotData: JSON.stringify(data),
+    })
   }
 
   private emitProgress(options: CreationOptions, phase: CreationPhase, data: unknown): void {
