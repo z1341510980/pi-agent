@@ -1098,5 +1098,65 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  // ═══════════════════════════════════════════════════════════════
+  // TeamManager 统一触发（pipeline 策略：Director → Writer → Reviewer → Reviser → Memory）
+  // ═══════════════════════════════════════════════════════════════
+
+  const createTeamSchema = z.object({
+    narrativeTask: z.string().min(1).describe('本章叙事任务描述'),
+    rhythm: z.string().optional().describe('节奏建议（可选）'),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/create-team',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params as { projectId: string; chapterNumber: string }
+      const input = validateBody(createTeamSchema, request, reply)
+      if (!input) return reply
+
+      const teamManager = services.teamManager
+      if (!teamManager) {
+        throw new AppError(
+          ErrorCode.CONFIG_ERROR,
+          'TeamManager 不可用（teamPlugin 未注册或 plugin-loader 未注入），无法触发团队创作',
+          503,
+        )
+      }
+
+      const team = teamManager.getTeam('novel-team')
+      if (!team) {
+        throw new AppError(
+          ErrorCode.CONFIG_ERROR,
+          'Novel Team 未注册，请检查 novel-plugin 初始化日志',
+          503,
+        )
+      }
+
+      const project = store.getProject(projectId)
+      if (!project) {
+        throw new AppError(ErrorCode.NOT_FOUND, `项目不存在: ${projectId}`, 404)
+      }
+
+      const chapterNum = parseInt(chapterNumber, 10)
+      if (Number.isNaN(chapterNum) || chapterNum < 1) {
+        throw new AppError(ErrorCode.BAD_REQUEST, `无效的 chapterNumber: ${chapterNumber}`, 400)
+      }
+
+      // 构建团队任务描述（pipeline 下作为首个 Agent 的输入，后续 Agent 接收前一阶段输出）
+      const task = [
+        `为项目《${project.title}》创作第 ${chapterNum} 章。`,
+        `叙事任务：${input.narrativeTask}`,
+        input.rhythm ? `节奏建议：${input.rhythm}` : '',
+      ].filter(Boolean).join('\n')
+
+      const result = await teamManager.execute('novel-team', task, {
+        strategy: 'pipeline',
+      })
+
+      return success(result, request.traceId)
+    },
+  })
+
   return routes
 }

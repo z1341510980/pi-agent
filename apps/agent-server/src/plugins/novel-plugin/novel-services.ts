@@ -34,6 +34,7 @@ import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import { NovelCharacterGenerator } from './core/novel-character-generator.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
+import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 
 export interface NovelServices {
@@ -46,6 +47,12 @@ export interface NovelServices {
   orchestrator: NovelOrchestrator
   characterGenerator: NovelCharacterGenerator
   tools: ToolDefinition[]
+  /**
+   * TeamManager（可选，由 teamPlugin 提供）
+   * 当 teamPlugin 已注册且 plugin-loader 完成注入时可用，
+   * 供 novel-routes 的 create-team 路由触发统一团队执行。
+   */
+  teamManager?: TeamManager
 }
 
 /**
@@ -54,7 +61,7 @@ export interface NovelServices {
  * @param context PluginContext（提供 db / cwd / logger / createSession 等）
  */
 export function createNovelServices(context: PluginContext): NovelServices {
-  const { db, cwd } = context
+  const { db, cwd, teamManager } = context
 
   // 1. 创建 NovelStore（依赖 db）
   const store = new NovelStore(db)
@@ -85,5 +92,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 9. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, tools }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, tools, teamManager }
 }

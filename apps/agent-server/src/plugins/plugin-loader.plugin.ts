@@ -62,18 +62,58 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
     builtinPlugins,
   })
 
+  // 注入 subagentPlugin / teamPlugin 已装饰的 Manager
+  // subagentPlugin 与 teamPlugin 在 pluginLoaderPlugin 之前注册，
+  // 因此 app.subagentManager / app.teamManager 此时已可用。
+  // 在 manager.start()（调用插件 setup）之前注入，
+  // 使插件 setup 可通过 context.subagentManager / context.teamManager 访问。
+  if (app.subagentManager) {
+    manager.setAgentManager(app.subagentManager)
+  } else {
+    log.warn('subagentPlugin 未注册，插件 context.subagentManager 将不可用')
+  }
+  if (app.teamManager) {
+    manager.setTeamManager(app.teamManager)
+  } else {
+    log.warn('teamPlugin 未注册，插件 context.teamManager 将不可用')
+  }
+
   // 初始化（扫描并加载插件）
   await manager.init()
+
+  // 执行插件静态声明的数据库迁移（在 start/setup 之前）
+  // 这确保依赖数据库表的插件 setup 能成功执行
+  const staticMigrations = manager.getLoadedMigrations()
+  if (staticMigrations.length > 0) {
+    log.info({ count: staticMigrations.length }, '开始执行插件静态数据库迁移')
+    for (const migration of staticMigrations) {
+      // 检查是否已执行
+      const applied = app.db
+        .prepare('SELECT id FROM schema_migrations WHERE id = ?')
+        .get(migration.id) as { id: string } | undefined
+      if (applied) {
+        log.debug({ id: migration.id }, '迁移已应用，跳过')
+        continue
+      }
+      try {
+        app.db.exec(migration.sql)
+        app.db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
+        log.info({ id: migration.id }, '迁移已执行')
+      } catch (err) {
+        log.error({ id: migration.id, err }, '迁移执行失败')
+      }
+    }
+  }
 
   // 启动所有插件（调用 setup）
   await manager.start()
 
-  // 执行插件注册的数据库迁移
-  // schema_migrations 表由 database.plugin 在启动时创建，此处可直接使用
-  const migrations = manager.getAllMigrations()
-  if (migrations.length > 0) {
-    log.info({ count: migrations.length }, '开始执行插件数据库迁移')
-    for (const migration of migrations) {
+  // 执行 setup 中动态注册的数据库迁移（通过 context.registerMigration 注册）
+  // 静态迁移已在上一步执行，此处只会执行 setup 中新增的迁移
+  const dynamicMigrations = manager.getAllMigrations()
+  if (dynamicMigrations.length > 0) {
+    log.info({ count: dynamicMigrations.length }, '开始执行插件动态数据库迁移')
+    for (const migration of dynamicMigrations) {
       // 检查是否已执行
       const applied = app.db
         .prepare('SELECT id FROM schema_migrations WHERE id = ?')
@@ -153,7 +193,7 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       enabledPlugins: manager.list().filter((p) => p.status === 'enabled').length,
       totalTools: manager.getAllTools().length,
       totalRoutes: routes.length,
-      totalMigrations: migrations.length,
+      totalMigrations: staticMigrations.length + dynamicMigrations.length,
       totalServices: services.length,
     },
     '插件系统初始化完成',

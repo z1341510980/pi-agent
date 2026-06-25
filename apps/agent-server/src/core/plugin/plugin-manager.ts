@@ -22,7 +22,8 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore } from '../agent/session-store.js'
 import { withAgentConfig } from '../agent/pi-session.js'
-import type { AgentConfig } from '../agent/subagent-tool.js'
+import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
+import type { TeamManager } from '../agent/team-manager.js'
 import type {
   Plugin,
   PluginContext,
@@ -59,6 +60,21 @@ export class PluginManager {
    * 而 SessionStore 在其后创建（app.ts:85）。
    */
   private sessionStore?: PiSessionStore
+  /**
+   * AgentManager（由 subagentPlugin 提供）
+   *
+   * 在 pluginLoaderPlugin 中创建 PluginManager 之前 subagentPlugin 已注册，
+   * 因此可在 manager.start() 之前通过 setAgentManager 注入。
+   * 注入后插件 setup 可通过 context.subagentManager 注册 Agent。
+   */
+  private agentManager?: AgentManager
+  /**
+   * TeamManager（由 teamPlugin 提供）
+   *
+   * 同 AgentManager，teamPlugin 在 pluginLoaderPlugin 之前注册。
+   * 注入后插件 setup 可通过 context.teamManager 注册 Team。
+   */
+  private teamManager?: TeamManager
 
   constructor(
     logger: FastifyBaseLogger,
@@ -86,6 +102,30 @@ export class PluginManager {
   setSessionStore(store: PiSessionStore): void {
     this.sessionStore = store
     this.logger.info('已注入 PiSessionStore，插件可使用 createSession API')
+  }
+
+  /**
+   * 注入 AgentManager（在 manager.start() 之前调用）
+   *
+   * subagentPlugin 在 pluginLoaderPlugin 之前注册，app.subagentManager
+   * 在 pluginLoaderPlugin 执行时已可用。注入后插件 setup 可通过
+   * context.subagentManager 访问。
+   */
+  setAgentManager(manager: AgentManager): void {
+    this.agentManager = manager
+    this.logger.debug('已注入 AgentManager，插件可通过 context.subagentManager 访问')
+  }
+
+  /**
+   * 注入 TeamManager（在 manager.start() 之前调用）
+   *
+   * teamPlugin 在 pluginLoaderPlugin 之前注册，app.teamManager
+   * 在 pluginLoaderPlugin 执行时已可用。注入后插件 setup 可通过
+   * context.teamManager 访问。
+   */
+  setTeamManager(manager: TeamManager): void {
+    this.teamManager = manager
+    this.logger.debug('已注入 TeamManager，插件可通过 context.teamManager 访问')
   }
 
   /**
@@ -609,6 +649,8 @@ export class PluginManager {
       db: this.db,
       cwd: this.cwd,
       dataDir: this.dataDir,
+      subagentManager: this.agentManager,
+      teamManager: this.teamManager,
       registerTool: (tool: ToolDefinition) => {
         entry.tools.push(tool)
         logger.debug({ tool: tool.name }, '工具已注册')

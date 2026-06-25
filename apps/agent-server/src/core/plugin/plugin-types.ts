@@ -14,6 +14,8 @@
  */
 
 import type { FastifyBaseLogger } from 'fastify'
+import type { AgentManager } from '../agent/subagent-tool.js'
+import type { TeamManager } from '../agent/team-manager.js'
 
 /** 插件状态 */
 export type PluginStatus = 'loaded' | 'enabled' | 'disabled' | 'error'
@@ -136,6 +138,18 @@ export interface PluginContext {
   readonly cwd: string
   /** 数据目录 */
   readonly dataDir: string
+  /**
+   * AgentManager（由 subagentPlugin 提供）
+   * 在 subagentPlugin 之后加载的插件可通过此引用注册 Agent。
+   * 若 subagentPlugin 未注册则为 undefined。
+   */
+  readonly subagentManager?: AgentManager
+  /**
+   * TeamManager（由 teamPlugin 提供）
+   * 在 teamPlugin 之后加载的插件可通过此引用注册 Team。
+   * 若 teamPlugin 未注册则为 undefined。
+   */
+  readonly teamManager?: TeamManager
   /** 注册工具 */
   registerTool(tool: ToolDefinition): void
   /** 注册 HTTP 路由（路径自动加 /api/plugins/:pluginName 前缀） */
