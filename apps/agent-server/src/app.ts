@@ -14,7 +14,6 @@ import { teamPlugin } from './plugins/team-plugin.js'
 import { databasePlugin } from './plugins/database.plugin.js'
 import { pluginLoaderPlugin } from './plugins/plugin-loader.plugin.js'
 import { cronPlugin } from './plugins/cron-plugin.js'
-import { novelPlugin } from './plugins/novel.plugin.js'
 import { healthRoute } from './routes/health.route.js'
 import { aguiRoute } from './routes/agui.route.js'
 import { copilotkitRoute } from './routes/copilotkit.route.js'
@@ -33,13 +32,13 @@ import { i18nRoute } from './routes/i18n.route.js'
 import { cronRoute } from './routes/cron.route.js'
 import { workspaceRoute } from './routes/workspace.route.js'
 import { skillsRoute } from './routes/skills.route.js'
-import { novelRoute } from './routes/novel.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
 import { ConfirmationManager } from './core/tool/confirmation-manager.js'
 import { createPiSession } from './core/agent/pi-session.js'
 import { CredentialBridge } from './core/config/credential-bridge.js'
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 
 export async function createApp(): Promise<Fastify.FastifyInstance> {
   const app = Fastify({
@@ -69,8 +68,9 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(usageLedgerPlugin)
   await app.register(memoryStorePlugin)
 
-  // 小说创作系统插件（依赖 app.db）
-  await app.register(novelPlugin)
+  // 插件加载器（依赖 eventBus 和 app.db；扫描并加载所有插件，注册插件路由）
+  // 必须在 sessionStore.setSessionFactory 之前注册，因为 setSessionFactory 的闭包在运行时访问 app.pluginManager
+  await app.register(pluginLoaderPlugin)
 
   // 创建 CredentialBridge、Gate、SessionStore
   const cwd = process.env.PI_CWD ?? process.cwd()
@@ -100,7 +100,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       factStore: app.factStore,
       subagentManager: app.subagentManager,
       teamManager: app.teamManager,
-      novelTools: app.novelSessionFactory.getNovelTools(),
+      pluginSessionTools: (app.pluginManager?.getAllSessionTools() ?? []) as unknown as ToolDefinition[],
       db: app.db,
       config: {
         cwd,
@@ -120,9 +120,6 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
     confirmationManager.dispose()
     sessionStore.dispose()
   })
-
-  // 插件加载器（依赖 eventBus；扫描并加载所有插件，注册插件路由）
-  await app.register(pluginLoaderPlugin)
 
   // Cron 调度器插件（依赖 eventBus）
   await app.register(cronPlugin)
@@ -146,7 +143,6 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(cronRoute)
   await app.register(workspaceRoute)
   await app.register(skillsRoute)
-  await app.register(novelRoute)
 
   return app
 }

@@ -57,8 +57,8 @@ export interface PiSessionDeps {
   subagentManager?: AgentManager
   /** Team 管理器（由 teamPlugin 提供，用于注入 team_execute 工具） */
   teamManager?: TeamManager
-  /** 小说创作系统工具（由 novelPlugin 提供，用于注入 novel_* 工具） */
-  novelTools?: ToolDefinition[]
+  /** 插件注入的 Pi Session 工具（由 PluginManager 提供，用于注入 novel_* 等插件工具） */
+  pluginSessionTools?: ToolDefinition[]
   config: {
     cwd: string
     dataDir: string
@@ -127,8 +127,8 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   if (deps.teamManager) {
     customTools.push(createTeamExecuteTool(deps.teamManager))
   }
-  if (deps.novelTools && deps.novelTools.length > 0) {
-    customTools.push(...deps.novelTools)
+  if (deps.pluginSessionTools && deps.pluginSessionTools.length > 0) {
+    customTools.push(...deps.pluginSessionTools)
   }
 
   // 6. 创建 Agent Session

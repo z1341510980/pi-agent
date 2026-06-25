@@ -14,11 +14,6 @@ import type { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import type { ProxyManager } from '../core/config/proxy-manager.js'
 import type { PluginManager } from '../core/plugin/plugin-manager.js'
 import type { CronScheduler } from '../core/cron/cron-scheduler.js'
-import type { NovelStore } from '../core/novel/novel-store.js'
-import type { PromptManager } from '../core/novel/prompt-manager.js'
-import type { NovelPromptBuilder } from '../core/novel/prompt-builder.js'
-import type { NovelSessionFactory } from '../core/novel/novel-session.js'
-import type { NovelEngine } from '../core/novel/novel-engine.js'
 import type Database from 'better-sqlite3'
 
 // Pi SDK 类型通过 any 声明，避免编译时依赖具体 SDK 类型
@@ -55,11 +50,6 @@ declare module 'fastify' {
     teamManager: TeamManager
     pluginManager: PluginManager
     cronScheduler: CronScheduler
-    novelStore: NovelStore
-    promptManager: PromptManager
-    novelPromptBuilder: NovelPromptBuilder
-    novelSessionFactory: NovelSessionFactory
-    novelEngine: NovelEngine
     db: Database.Database
   }
 }

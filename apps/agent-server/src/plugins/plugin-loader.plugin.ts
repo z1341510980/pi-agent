@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { createModuleLogger } from '../lib/logger.js'
 import { PluginManager } from '../core/plugin/plugin-manager.js'
 import { createHelloPlugin } from './examples/hello-plugin/index.js'
+import { createNovelPlugin } from './novel-plugin/index.js'
 
 export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'plugin-loader')
@@ -37,7 +38,10 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
 
   // 准备内置插件列表
-  const builtinPlugins = enableExamples ? [{ plugin: createHelloPlugin() }] : []
+  const builtinPlugins = [
+    ...(enableExamples ? [{ plugin: createHelloPlugin() }] : []),
+    { plugin: createNovelPlugin() },
+  ]
 
   log.info(
     {
