@@ -142,6 +142,35 @@ export async function putApi<T>(path: string, payload: unknown): Promise<T> {
   return body.data
 }
 
+export async function patchApi<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`${browserConfig.apiBaseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const body = (await safeParseJson(response)) as ApiResponse<T> | null
+
+  if (!body) {
+    throw new ApiClientError(
+      `API 请求失败: HTTP ${response.status} ${response.statusText}`,
+      'API_ERROR'
+    )
+  }
+
+  if (!body.ok) {
+    const errorMsg = body.error?.message ?? `API 请求失败: HTTP ${response.status}`
+    throw new ApiClientError(
+      errorMsg,
+      body.error?.code ?? 'API_ERROR',
+      body.meta?.traceId,
+      body.error?.details
+    )
+  }
+
+  return body.data
+}
+
 export async function deleteApi<T>(path: string): Promise<T> {
   const response = await fetch(`${browserConfig.apiBaseUrl}${path}`, {
     method: 'DELETE'

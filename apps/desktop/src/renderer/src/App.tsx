@@ -7,6 +7,7 @@ import { I18nProvider } from './i18n'
 import { ThemeProvider } from './components/theme-provider'
 import { ChatWorkspace } from './components/chat/chat-workspace'
 import { SettingsPage } from './components/settings/settings-page'
+import { NovelWorkspace } from './components/novel/novel-workspace'
 import { ErrorBoundary } from './components/overlays/error-boundary'
 import { UpdateDialog, useUpdateStatus } from './components/overlays/update-dialog'
 
@@ -20,7 +21,7 @@ const queryClient = new QueryClient({
   }
 })
 
-type AppView = 'chat' | 'settings'
+type AppView = 'chat' | 'settings' | 'novel'
 
 export default function App(): ReactElement {
   const [view, setView] = useState<AppView>('chat')
@@ -52,11 +53,14 @@ export default function App(): ReactElement {
             <ThemeProvider>
             {view === 'settings' ? (
               <SettingsPage onClose={() => setView('chat')} />
+            ) : view === 'novel' ? (
+              <NovelWorkspace onClose={() => setView('chat')} />
             ) : (
               <ChatWorkspace
                 appName={browserConfig.appName}
                 config={browserConfig}
                 onOpenSettings={() => setView('settings')}
+                onOpenNovel={() => setView('novel')}
               />
             )}
             {/* 自动更新对话框：发现新版本时自动展示 */}

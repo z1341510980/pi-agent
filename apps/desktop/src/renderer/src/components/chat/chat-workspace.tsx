@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { FolderOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { FolderOpen, PanelRightClose, PanelRightOpen, BookOpen } from 'lucide-react'
 import type { BrowserConfig } from '@repo/config/shared'
 import type { BaseEvent } from '@repo/protocol/events'
 import { Button } from '@/components/ui/button'
@@ -54,6 +54,7 @@ type ChatWorkspaceProps = {
   appName: string
   config: BrowserConfig
   onOpenSettings?: () => void
+  onOpenNovel?: () => void
 }
 
 type CompactThreadResponse = {
@@ -77,6 +78,7 @@ export function ChatWorkspace({
   appName: _appName,
   config: _config,
   onOpenSettings,
+  onOpenNovel,
 }: ChatWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
@@ -513,6 +515,16 @@ export function ChatWorkspace({
             </div>
 
             <div className="flex items-center gap-1 [webkit-app-region:no-drag]">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onOpenNovel}
+                className="size-8 text-subtle hover:text-text hover:bg-surface-3"
+                aria-label="小说创作工作台"
+                title="小说创作工作台"
+              >
+                <BookOpen className="size-4" aria-hidden="true" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"

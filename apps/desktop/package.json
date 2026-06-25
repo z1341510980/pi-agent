@@ -31,6 +31,7 @@
     "@repo/shared": "workspace:*",
     "@tanstack/react-query": "^5.101.0",
     "@tanstack/react-virtual": "^3.14.3",
+    "@xyflow/react": "^12.11.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "electron-updater": "^6.3.9",
