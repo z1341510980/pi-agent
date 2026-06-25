@@ -493,6 +493,10 @@ export class PluginManager {
       entry.routes = []
       entry.panels = []
       entry.eventHandlers = []
+      entry.migrations = []
+      entry.sessionTools = []
+      entry.services = []
+      entry.promptTemplateDirs = []
 
       const context = this.createPluginContext(entry)
       await entry.plugin.setup(context)
