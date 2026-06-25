@@ -7,7 +7,7 @@
  * 类型镜像后端 apps/agent-server/src/core/novel/types.ts
  */
 
-import { getApi, postApi, patchApi, deleteApi } from './http-client'
+import { getApi, postApi, putApi, patchApi, deleteApi } from './http-client'
 
 // ── 基础路径 ──
 
@@ -292,6 +292,62 @@ export interface CreateInfoLayerInput {
   revealChapter?: number | null
 }
 
+// ── 节点位置 ──
+
+export type NovelNodeTypeName =
+  | 'project' | 'character' | 'chapter'
+  | 'conflict' | 'foreshadow' | 'group'
+
+export interface NovelNodePosition {
+  id: string
+  projectId: string
+  nodeType: NovelNodeTypeName
+  entityId: string
+  posX: number
+  posY: number
+  updatedAt: number
+}
+
+export interface NodePositionInput {
+  nodeType: NovelNodeTypeName
+  entityId: string
+  posX: number
+  posY: number
+}
+
+// ── 角色历史 ──
+
+export type CharacterHistoryField =
+  | 'currentState' | 'currentGoal' | 'currentPressure'
+  | 'secret' | 'arcStage'
+
+export interface NovelCharacterHistory {
+  id: string
+  projectId: string
+  characterId: string
+  chapterId: string | null
+  chapterNumber: number | null
+  fieldName: CharacterHistoryField
+  oldValue: string | null
+  newValue: string | null
+  reason: string | null
+  createdAt: number
+}
+
+export interface CreateCharacterHistoryInput {
+  fieldName: CharacterHistoryField
+  oldValue: string | null
+  newValue: string | null
+  reason: string | null
+  chapterNumber?: number | null
+}
+
+// ── AI 角色生成 ──
+
+export interface AiGenerateCharacterInput {
+  coreStyle: string
+}
+
 // ── Projects ──
 
 export function listProjects(): Promise<NovelProject[]> {
@@ -340,6 +396,10 @@ export function publishChapter(id: string): Promise<NovelChapter> {
   return postApi<NovelChapter>(`${BASE}/chapters/${id}/publish`, {})
 }
 
+export function deleteChapter(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/chapters/${id}`)
+}
+
 // ── Characters ──
 
 export function listCharacters(projectId: string): Promise<NovelCharacter[]> {
@@ -354,6 +414,10 @@ export function updateCharacter(id: string, input: UpdateCharacterInput): Promis
   return patchApi<NovelCharacter>(`${BASE}/characters/${id}`, input)
 }
 
+export function deleteCharacter(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/characters/${id}`)
+}
+
 // ── Relationships ──
 
 export function listRelationships(projectId: string): Promise<NovelRelationship[]> {
@@ -362,6 +426,10 @@ export function listRelationships(projectId: string): Promise<NovelRelationship[
 
 export function createRelationship(projectId: string, input: CreateRelationshipInput): Promise<NovelRelationship> {
   return postApi<NovelRelationship>(`${BASE}/projects/${projectId}/relationships`, input)
+}
+
+export function deleteRelationship(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/relationships/${id}`)
 }
 
 // ── Foreshadowing ──
@@ -374,6 +442,10 @@ export function createForeshadow(projectId: string, input: CreateForeshadowInput
   return postApi<NovelForeshadow>(`${BASE}/projects/${projectId}/foreshadowing`, input)
 }
 
+export function deleteForeshadow(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/foreshadowing/${id}`)
+}
+
 // ── Conflicts ──
 
 export function listConflicts(projectId: string): Promise<NovelConflict[]> {
@@ -382,6 +454,10 @@ export function listConflicts(projectId: string): Promise<NovelConflict[]> {
 
 export function createConflict(projectId: string, input: CreateConflictInput): Promise<NovelConflict> {
   return postApi<NovelConflict>(`${BASE}/projects/${projectId}/conflicts`, input)
+}
+
+export function deleteConflict(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/conflicts/${id}`)
 }
 
 // ── Clues ──
@@ -394,6 +470,10 @@ export function createClue(projectId: string, input: CreateClueInput): Promise<N
   return postApi<NovelClue>(`${BASE}/projects/${projectId}/clues`, input)
 }
 
+export function deleteClue(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/clues/${id}`)
+}
+
 // ── World Rules ──
 
 export function listWorldRules(projectId: string): Promise<NovelWorldRule[]> {
@@ -402,6 +482,10 @@ export function listWorldRules(projectId: string): Promise<NovelWorldRule[]> {
 
 export function createWorldRule(projectId: string, input: CreateWorldRuleInput): Promise<NovelWorldRule> {
   return postApi<NovelWorldRule>(`${BASE}/projects/${projectId}/world-rules`, input)
+}
+
+export function deleteWorldRule(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/world-rules/${id}`)
 }
 
 // ── Style Guides ──
@@ -414,6 +498,10 @@ export function createStyleGuide(projectId: string, input: CreateStyleGuideInput
   return postApi<NovelStyleGuide>(`${BASE}/projects/${projectId}/style-guides`, input)
 }
 
+export function deleteStyleGuide(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/style-guides/${id}`)
+}
+
 // ── Constraints ──
 
 export function listConstraints(projectId: string): Promise<NovelConstraint[]> {
@@ -424,6 +512,10 @@ export function createConstraint(projectId: string, input: CreateConstraintInput
   return postApi<NovelConstraint>(`${BASE}/projects/${projectId}/constraints`, input)
 }
 
+export function deleteConstraint(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/constraints/${id}`)
+}
+
 // ── Info Layers ──
 
 export function listInfoLayers(projectId: string): Promise<NovelInformationLayer[]> {
@@ -432,6 +524,57 @@ export function listInfoLayers(projectId: string): Promise<NovelInformationLayer
 
 export function createInfoLayer(projectId: string, input: CreateInfoLayerInput): Promise<NovelInformationLayer> {
   return postApi<NovelInformationLayer>(`${BASE}/projects/${projectId}/info-layers`, input)
+}
+
+export function deleteInfoLayer(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/info-layers/${id}`)
+}
+
+// ── Node Positions ──
+
+export function listNodePositions(projectId: string): Promise<NovelNodePosition[]> {
+  return getApi<NovelNodePosition[]>(`${BASE}/projects/${projectId}/node-positions`)
+}
+
+export function upsertNodePositions(
+  projectId: string,
+  positions: NodePositionInput[],
+): Promise<{ updated: number }> {
+  return putApi<{ updated: number }>(`${BASE}/projects/${projectId}/node-positions`, { positions })
+}
+
+export function deleteNodePosition(
+  projectId: string,
+  nodeType: NovelNodeTypeName,
+  entityId: string,
+): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/projects/${projectId}/node-positions/${nodeType}/${entityId}`)
+}
+
+// ── AI Character Generation ──
+
+export function aiGenerateCharacter(
+  projectId: string,
+  input: AiGenerateCharacterInput,
+): Promise<NovelCharacter> {
+  return postApi<NovelCharacter>(`${BASE}/projects/${projectId}/characters/ai-generate`, input)
+}
+
+// ── Character History ──
+
+export function listCharacterHistory(
+  projectId: string,
+  characterId: string,
+): Promise<NovelCharacterHistory[]> {
+  return getApi<NovelCharacterHistory[]>(`${BASE}/projects/${projectId}/characters/${characterId}/history`)
+}
+
+export function createCharacterHistory(
+  projectId: string,
+  characterId: string,
+  input: CreateCharacterHistoryInput,
+): Promise<NovelCharacterHistory> {
+  return postApi<NovelCharacterHistory>(`${BASE}/projects/${projectId}/characters/${characterId}/history`, input)
 }
 
 // ── Checkpoint Decision（多 Agent 创作流程检查点） ──

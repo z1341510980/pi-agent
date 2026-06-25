@@ -12,6 +12,9 @@ import type {
   NovelStyleGuide,
   NovelConstraint,
   NovelInformationLayer,
+  NovelNodePosition,
+  NovelNodeTypeName,
+  NovelCharacterHistory,
 } from '@/api/novel-client'
 
 // ── 节点类型 ──
@@ -39,6 +42,8 @@ export interface NovelState {
   styleGuides: NovelStyleGuide[]
   constraints: NovelConstraint[]
   infoLayers: NovelInformationLayer[]
+  nodePositions: NovelNodePosition[]
+  characterHistory: NovelCharacterHistory[]
 
   // ── 选中节点 ──
   selectedNodeId: string | null
@@ -88,6 +93,16 @@ export interface NovelState {
   removeChapter: (id: string) => void
   removeConflict: (id: string) => void
   removeForeshadow: (id: string) => void
+
+  // ── 节点位置 ──
+  setNodePositions: (positions: NovelNodePosition[]) => void
+  upsertNodePosition: (pos: NovelNodePosition) => void
+  removeNodePosition: (nodeType: NovelNodeTypeName, entityId: string) => void
+  clearNodePositions: () => void
+
+  // ── 角色历史 ──
+  setCharacterHistory: (history: NovelCharacterHistory[]) => void
+  addCharacterHistory: (entry: NovelCharacterHistory) => void
 }
 
 // ── 通用 upsert 工具 ──
@@ -124,6 +139,8 @@ export const useNovelStore = create<NovelState>()(
       styleGuides: [],
       constraints: [],
       infoLayers: [],
+      nodePositions: [],
+      characterHistory: [],
 
       selectedNodeId: null,
       selectedNodeType: null,
@@ -168,6 +185,8 @@ export const useNovelStore = create<NovelState>()(
           styleGuides: [],
           constraints: [],
           infoLayers: [],
+          nodePositions: [],
+          characterHistory: [],
           selectedNodeId: null,
           selectedNodeType: null,
         }),
@@ -190,13 +209,46 @@ export const useNovelStore = create<NovelState>()(
         set((state) => ({
           projects: removeFromList(state.projects, id),
           ...(state.currentProjectId === id
-            ? { currentProjectId: null, characters: [], chapters: [], conflicts: [], foreshadows: [], relationships: [], clues: [], worldRules: [], styleGuides: [], constraints: [], infoLayers: [], selectedNodeId: null, selectedNodeType: null }
+            ? {
+                currentProjectId: null,
+                characters: [],
+                chapters: [],
+                conflicts: [],
+                foreshadows: [],
+                relationships: [],
+                clues: [],
+                worldRules: [],
+                styleGuides: [],
+                constraints: [],
+                infoLayers: [],
+                nodePositions: [],
+                characterHistory: [],
+                selectedNodeId: null,
+                selectedNodeType: null,
+              }
             : {}),
         })),
       removeCharacter: (id) => set((state) => ({ characters: removeFromList(state.characters, id) })),
       removeChapter: (id) => set((state) => ({ chapters: removeFromList(state.chapters, id) })),
       removeConflict: (id) => set((state) => ({ conflicts: removeFromList(state.conflicts, id) })),
       removeForeshadow: (id) => set((state) => ({ foreshadows: removeFromList(state.foreshadows, id) })),
+
+      // ── 节点位置 ──
+      setNodePositions: (positions) => set({ nodePositions: positions }),
+      upsertNodePosition: (pos) =>
+        set((state) => ({ nodePositions: upsertInList(state.nodePositions, pos) })),
+      removeNodePosition: (nodeType, entityId) =>
+        set((state) => ({
+          nodePositions: state.nodePositions.filter(
+            (p) => !(p.nodeType === nodeType && p.entityId === entityId),
+          ),
+        })),
+      clearNodePositions: () => set({ nodePositions: [] }),
+
+      // ── 角色历史 ──
+      setCharacterHistory: (history) => set({ characterHistory: history }),
+      addCharacterHistory: (entry) =>
+        set((state) => ({ characterHistory: [...state.characterHistory, entry] })),
     }),
     {
       name: 'pi-agent-novel',
@@ -215,6 +267,8 @@ export const useNovelStore = create<NovelState>()(
         styleGuides: state.styleGuides,
         constraints: state.constraints,
         infoLayers: state.infoLayers,
+        nodePositions: state.nodePositions,
+        characterHistory: state.characterHistory,
         selectedNodeId: state.selectedNodeId,
         selectedNodeType: state.selectedNodeType,
       }),
