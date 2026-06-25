@@ -53,6 +53,7 @@
  * 4. systemPromptOverride 函数只读取静态数据 → 每次调用返回相同结果
  */
 
+import { createHash } from 'node:crypto'
 import type { PromptManager } from './prompt-manager.js'
 import type {
   NovelProject,
@@ -124,9 +125,11 @@ export class NovelPromptBuilder {
     parts.push(identityPrompt)
 
     // ── Layer 1: 世界规则（项目级，极少变）──
+    // 按 category 排序，确保顺序稳定，最大化 prompt cache 命中率
     const worldRules = this.stores.listWorldRules(projectId)
     if (worldRules.length > 0) {
-      parts.push(this.formatWorldRules(worldRules))
+      const sorted = [...worldRules].sort((a, b) => a.category.localeCompare(b.category))
+      parts.push(this.formatWorldRules(sorted))
     }
 
     // ── Layer 2: 风格指南（项目级，极少变）──
@@ -138,9 +141,11 @@ export class NovelPromptBuilder {
     // ── Layer 3: 角色定义（仅静态部分）──
     // ⚠️ 只包含角色的静态设定（身份/性格/外貌/说话风格）
     // 不包含动态状态（当前情绪/目标/压力）—— 那些放在章节上下文中
+    // 按 name 排序，确保顺序稳定，最大化 prompt cache 命中率
     const characters = this.stores.listCharacters(projectId)
     if (characters.length > 0) {
-      parts.push(this.formatCharacterDefinitions(characters))
+      const sorted = [...characters].sort((a, b) => a.name.localeCompare(b.name))
+      parts.push(this.formatCharacterDefinitions(sorted))
     }
 
     return parts.join('\n\n---\n\n')
@@ -373,7 +378,10 @@ export class NovelPromptBuilder {
   private formatRecentSummaries(chapters: NovelChapter[]): string {
     const parts: string[] = ['## 最近章节摘要']
     for (const ch of chapters) {
-      const summary = ch.content.slice(0, 200) + (ch.content.length > 200 ? '...' : '')
+      // 优先使用 narrative_task 作为摘要（比 content 截取更有语义）
+      const summary = ch.narrativeTask
+        ? ch.narrativeTask
+        : ch.content.slice(0, 200) + (ch.content.length > 200 ? '...' : '')
       parts.push(`- 第${ch.chapterNumber}章《${ch.title}》：${summary}`)
     }
     return parts.join('\n')
@@ -413,5 +421,31 @@ export class NovelPromptBuilder {
       // 模板不存在时回退到通用描述
       return '小说创作助手'
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 缓存诊断方法
+  // ═══════════════════════════════════════════════════════════════
+
+  /** 计算字符串的 SHA-256 哈希（前 16 位，用于诊断） */
+  private hashContent(content: string): string {
+    return createHash('sha256').update(content).digest('hex').slice(0, 16)
+  }
+
+  /** 计算系统提示词哈希（用于跨章诊断缓存命中） */
+  getSystemPromptHash(projectId: string, agentType: string): string {
+    const prompt = this.buildSystemPrompt(projectId, agentType)
+    return this.hashContent(prompt)
+  }
+
+  /** 计算章节上下文哈希（用于单章内诊断缓存命中） */
+  getChapterContextHash(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+  ): string {
+    const context = this.buildChapterContext(projectId, chapterNumber, narrativeTask, constraints)
+    return this.hashContent(context)
   }
 }

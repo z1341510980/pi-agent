@@ -589,7 +589,7 @@ export function createNovelCreateClueTool(store: NovelStore): ToolDefinition<typ
  * 用于注入到 Pi SDK session 的 customTools 参数。
  */
 export function createNovelTools(store: NovelStore): ToolDefinition[] {
-  return [
+  const tools: ToolDefinition[] = [
     createNovelQueryStateTool(store),
     createNovelUpdateCharacterTool(store),
     createNovelUpdateForeshadowTool(store),
@@ -602,4 +602,6 @@ export function createNovelTools(store: NovelStore): ToolDefinition[] {
     createNovelCreateConflictTool(store),
     createNovelCreateClueTool(store),
   ]
+  // 按工具名排序，确保 tools schema 顺序稳定，最大化 prompt cache 命中率
+  return tools.sort((a, b) => a.name.localeCompare(b.name))
 }

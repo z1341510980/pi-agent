@@ -103,4 +103,38 @@ export class NovelSessionFactory {
   getNovelTools(): ToolDefinition[] {
     return this.novelTools
   }
+
+  /**
+   * 计算并记录系统提示词哈希（用于诊断缓存命中）
+   *
+   * 在 Session 创建时调用，对比跨章节的哈希值可判断系统提示词是否稳定
+   * （稳定 → LLM 提供商的 prompt cache 能跨章节命中）。
+   */
+  logSystemPromptHash(projectId: string, agentType: string): string {
+    const hash = this.promptBuilder.getSystemPromptHash(projectId, agentType)
+    console.log(`[Novel] SystemPrompt hash for ${agentType}: ${hash} (projectId=${projectId})`)
+    return hash
+  }
+
+  /**
+   * 计算并记录章节上下文哈希（用于诊断缓存命中）
+   *
+   * 在章节生成开始时调用，对比单章内多次 LLM 调用的哈希值可判断章节上下文是否稳定
+   * （稳定 → 单章内 prompt cache 命中）。
+   */
+  logChapterContextHash(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+  ): string {
+    const hash = this.promptBuilder.getChapterContextHash(
+      projectId,
+      chapterNumber,
+      narrativeTask,
+      constraints,
+    )
+    console.log(`[Novel] ChapterContext hash: ${hash} (chapter=${chapterNumber})`)
+    return hash
+  }
 }
