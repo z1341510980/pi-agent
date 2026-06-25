@@ -338,9 +338,9 @@ export class NovelStore implements NovelPromptStores {
   }
 
   /** 更新章节内容（仅 content 和 wordCount） */
-  updateChapterContent(id: string, content: string, wordCount: number): NovelChapter | null {
+  updateChapterContent(id: string, content: string, wordCount: number): NovelChapter | undefined {
     this.db.prepare('UPDATE novel_chapters SET content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?').run(content, wordCount, id)
-    return this.getChapterById(id) ?? null
+    return this.getChapterById(id) ?? undefined
   }
 
   listChapters(projectId: string): NovelChapter[] {
@@ -577,23 +577,23 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
-  updateWorldRule(id: string, updates: Partial<Omit<NovelWorldRule, 'id' | 'projectId' | 'createdAt'>>): NovelWorldRule | null {
+  updateWorldRule(id: string, updates: Partial<Omit<NovelWorldRule, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelWorldRule | undefined {
     const fields: string[] = []
     const values: unknown[] = []
     for (const [key, value] of Object.entries(updates)) {
       const dbKey = this.camelToSnake(key)
       fields.push(`${dbKey} = ?`)
-      values.push(value)
+      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
     }
     if (fields.length === 0) {
       const row = this.db.prepare('SELECT * FROM novel_world_rules WHERE id = ?').get(id) as WorldRuleRow | undefined
-      return row ? this.rowToWorldRule(row) : null
+      return row ? this.rowToWorldRule(row) : undefined
     }
     fields.push('updated_at = unixepoch()')
     values.push(id)
     this.db.prepare(`UPDATE novel_world_rules SET ${fields.join(', ')} WHERE id = ?`).run(...values)
     const row = this.db.prepare('SELECT * FROM novel_world_rules WHERE id = ?').get(id) as WorldRuleRow | undefined
-    return row ? this.rowToWorldRule(row) : null
+    return row ? this.rowToWorldRule(row) : undefined
   }
 
   deleteWorldRule(id: string): boolean {
@@ -618,23 +618,23 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
-  updateStyleGuide(id: string, updates: Partial<Omit<NovelStyleGuide, 'id' | 'projectId' | 'createdAt'>>): NovelStyleGuide | null {
+  updateStyleGuide(id: string, updates: Partial<Omit<NovelStyleGuide, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelStyleGuide | undefined {
     const fields: string[] = []
     const values: unknown[] = []
     for (const [key, value] of Object.entries(updates)) {
       const dbKey = this.camelToSnake(key)
       fields.push(`${dbKey} = ?`)
-      values.push(value)
+      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
     }
     if (fields.length === 0) {
       const row = this.db.prepare('SELECT * FROM novel_style_guides WHERE id = ?').get(id) as StyleGuideRow | undefined
-      return row ? this.rowToStyleGuide(row) : null
+      return row ? this.rowToStyleGuide(row) : undefined
     }
     fields.push('updated_at = unixepoch()')
     values.push(id)
     this.db.prepare(`UPDATE novel_style_guides SET ${fields.join(', ')} WHERE id = ?`).run(...values)
     const row = this.db.prepare('SELECT * FROM novel_style_guides WHERE id = ?').get(id) as StyleGuideRow | undefined
-    return row ? this.rowToStyleGuide(row) : null
+    return row ? this.rowToStyleGuide(row) : undefined
   }
 
   deleteStyleGuide(id: string): boolean {
@@ -660,23 +660,23 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
-  updateConstraint(id: string, updates: Partial<Omit<NovelConstraint, 'id' | 'projectId' | 'createdAt'>>): NovelConstraint | null {
+  updateConstraint(id: string, updates: Partial<Omit<NovelConstraint, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelConstraint | undefined {
     const fields: string[] = []
     const values: unknown[] = []
     for (const [key, value] of Object.entries(updates)) {
       const dbKey = this.camelToSnake(key)
       fields.push(`${dbKey} = ?`)
-      values.push(value)
+      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
     }
     if (fields.length === 0) {
       const row = this.db.prepare('SELECT * FROM novel_constraints WHERE id = ?').get(id) as ConstraintRow | undefined
-      return row ? this.rowToConstraint(row) : null
+      return row ? this.rowToConstraint(row) : undefined
     }
     fields.push('updated_at = unixepoch()')
     values.push(id)
     this.db.prepare(`UPDATE novel_constraints SET ${fields.join(', ')} WHERE id = ?`).run(...values)
     const row = this.db.prepare('SELECT * FROM novel_constraints WHERE id = ?').get(id) as ConstraintRow | undefined
-    return row ? this.rowToConstraint(row) : null
+    return row ? this.rowToConstraint(row) : undefined
   }
 
   deleteConstraint(id: string): boolean {
@@ -704,23 +704,23 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
-  updateInfoLayer(id: string, updates: Partial<Omit<NovelInformationLayer, 'id' | 'projectId' | 'createdAt'>>): NovelInformationLayer | null {
+  updateInfoLayer(id: string, updates: Partial<Omit<NovelInformationLayer, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelInformationLayer | undefined {
     const fields: string[] = []
     const values: unknown[] = []
     for (const [key, value] of Object.entries(updates)) {
       const dbKey = this.camelToSnake(key)
       fields.push(`${dbKey} = ?`)
-      values.push(value)
+      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
     }
     if (fields.length === 0) {
       const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
-      return row ? this.rowToInfoLayer(row) : null
+      return row ? this.rowToInfoLayer(row) : undefined
     }
     fields.push('updated_at = unixepoch()')
     values.push(id)
     this.db.prepare(`UPDATE novel_information_layers SET ${fields.join(', ')} WHERE id = ?`).run(...values)
     const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
-    return row ? this.rowToInfoLayer(row) : null
+    return row ? this.rowToInfoLayer(row) : undefined
   }
 
   deleteInfoLayer(id: string): boolean {
