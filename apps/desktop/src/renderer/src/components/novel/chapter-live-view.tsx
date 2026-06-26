@@ -311,9 +311,10 @@ export function ChapterLivePanel({
   const checkpointContent = currentCheckpoint ? renderCheckpointData(currentCheckpoint) : null
 
   // 合并 Agent 输出与用户消息，按时间戳排序
+  // 过滤掉 dataChanged 通知项（仅用于触发画布刷新，不展示在时间线）
   const timeline = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = [
-      ...agentOutputs.map((output) => ({ kind: 'agent' as const, output })),
+      ...agentOutputs.filter((o) => !o.dataChanged).map((output) => ({ kind: 'agent' as const, output })),
       ...(userMessages ?? []).map((message) => ({ kind: 'user' as const, message })),
     ]
     return items.sort((a, b) => {
@@ -463,9 +464,9 @@ export function ChapterLivePanel({
         </div>
       </div>
 
-      {/* 底部固定交互区：检查点决策 / 用户输入 / 完成操作三态互斥 */}
+      {/* 底部固定交互区：检查点决策（上方提示条） + 用户输入（运行期间始终显示） + 完成操作（叠加模式） */}
       <div className="shrink-0 border-t border-border">
-        {/* 检查点决策（出现时替代输入框） */}
+        {/* 检查点决策（出现时在输入框上方显示，不替代输入框） */}
         <AnimatePresence>
           {isCheckpoint && currentCheckpoint && (
             <motion.div
@@ -501,13 +502,13 @@ export function ChapterLivePanel({
           )}
         </AnimatePresence>
 
-        {/* 用户输入框（运行中且无检查点时显示） */}
-        {isRunning && !isCheckpoint && (
+        {/* 用户输入框（运行期间始终显示，包括检查点期间） */}
+        {isRunning && (
           <div className="p-3">
             <div className="flex items-end gap-2">
               <textarea
                 className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm min-h-[40px] max-h-[120px] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                placeholder="输入指令参与创作（如：加一段环境描写）..."
+                placeholder={isCheckpoint ? '补充指令（可选，随决策一起发送）...' : '输入指令参与创作（如：加一段环境描写）...'}
                 value={userInput}
                 onChange={(e) => setUserInput(e.target.value)}
                 onKeyDown={(e) => {

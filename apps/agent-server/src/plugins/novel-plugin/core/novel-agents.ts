@@ -91,4 +91,6 @@ export interface AgentOutputData {
   content: string
   /** 输出预览（前 500 字符，供 UI 折叠展示） */
   preview: string
+  /** 标记为数据变更通知（Memory Agent 写入完成后推送，前端据此刷新画布，不展示在时间线） */
+  dataChanged?: boolean
 }

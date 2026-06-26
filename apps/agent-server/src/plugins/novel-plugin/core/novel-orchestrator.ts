@@ -223,6 +223,16 @@ export class NovelOrchestrator extends EventEmitter {
       // 章节完成时保存全量状态快照（情景记忆）
       this.saveChapterSnapshot(projectId, chapterNumber)
 
+      // 推送数据变更通知：Memory Agent 已写入实体状态、快照已保存，
+      // 前端收到后刷新画布（替代轮询）。此事件不展示在时间线（dataChanged: true）。
+      this.emitProgress(options, 'memory', {
+        agentType: 'memory',
+        agentName: '记忆',
+        content: '数据已更新',
+        preview: '数据已更新',
+        dataChanged: true,
+      } as AgentOutputData)
+
       // 自动保存章节内容到数据库（创作完成后立即持久化，无需用户手动点击"保存到章节"）
       if (chapter) {
         this.store.updateChapter(chapter.id, {

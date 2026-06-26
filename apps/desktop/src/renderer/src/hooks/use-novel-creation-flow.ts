@@ -46,6 +46,8 @@ export interface AgentOutput {
   content: string
   preview: string
   timestamp: number
+  /** 数据变更通知（Memory Agent 写入完成，前端据此刷新画布；不展示在时间线） */
+  dataChanged?: boolean
 }
 
 /** 用户在创作过程中发送的消息（参与创作的指令） */
@@ -174,6 +176,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               content: data.content,
               preview: data.preview,
               timestamp: evt.timestamp,
+              dataChanged: data.dataChanged,
             },
           ])
           // 如果是 writer 或 reviser 的输出，同时更新 chapterContent

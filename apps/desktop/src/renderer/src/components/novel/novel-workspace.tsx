@@ -111,7 +111,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       }
     },
     enabled: !!currentProjectId,
-    refetchInterval: 30_000,
+    refetchInterval: 300_000,
   })
 
   // 同步到 store
@@ -183,14 +183,15 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
   }, [currentProjectId, chapters, creationFlow, upsertChapter, queryClient])
 
-  // 创作运行中定期刷新：Memory Agent 可能在创作过程中修改角色/伏笔/冲突等
+  // 收到 data_changed 事件时刷新画布（替代轮询）
+  // Memory Agent 写入实体状态后会推送带 dataChanged 标记的 agent_output，
+  // 监听 agentOutputs 末尾的 dataChanged 标记，触发 React Query 失效刷新。
   useEffect(() => {
-    if (!creationFlow.isRunning || !currentProjectId) return
-    const interval = setInterval(() => {
+    const lastOutput = creationFlow.agentOutputs[creationFlow.agentOutputs.length - 1]
+    if (lastOutput?.dataChanged && currentProjectId) {
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [creationFlow.isRunning, currentProjectId, queryClient])
+    }
+  }, [creationFlow.agentOutputs, currentProjectId, queryClient])
 
   // 创作完成后自动保存章节内容（收到 result 事件即持久化，无需用户手动点击"保存到章节"）
   useEffect(() => {
