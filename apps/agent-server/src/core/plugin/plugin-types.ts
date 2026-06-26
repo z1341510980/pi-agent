@@ -199,6 +199,17 @@ export interface PluginSessionOptions {
 export interface PluginSessionHandle {
   /** 触发 LLM 推理，返回完整 assistant 文本 */
   prompt(): Promise<string>
+  /**
+   * 触发 LLM 推理，流式推送 delta 文本。
+   *
+   * 与 prompt() 的区别：在 LLM 推理期间，每收到一段 text_delta
+   * 就调用 onDelta(delta) 推送给调用方，实现真正的流式体验。
+   * 最终仍返回完整 assistant 文本。
+   *
+   * @param onDelta delta 文本回调（每次 LLM 输出一段文本时触发）
+   * @returns 完整 assistant 文本（与 prompt() 返回值一致）
+   */
+  promptStream(onDelta: (delta: string) => void): Promise<string>
   /** 中止当前推理 */
   abort(): void
   /** 释放 Session（从 SessionStore 淘汰） */

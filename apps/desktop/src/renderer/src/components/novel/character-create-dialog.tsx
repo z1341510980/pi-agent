@@ -106,7 +106,8 @@ export function CharacterCreateDialog({
   const [generating, setGenerating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [progress, setProgress] = useState<{ phase: string; message: string } | null>(null)
+  // 进度状态：保留 data 字段以承载流式文本预览（data.partial）
+  const [progress, setProgress] = useState<{ phase: string; message: string; data?: { partial?: string } } | null>(null)
 
   // 打开/关闭时重置状态
   useEffect(() => {
@@ -140,7 +141,12 @@ export function CharacterCreateDialog({
         projectId,
         { coreStyle: trimmed },
         (event) => {
-          setProgress({ phase: event.phase, message: event.message })
+          // 保留 data 字段以承载流式文本预览（data.partial）
+          setProgress({
+            phase: event.phase,
+            message: event.message,
+            data: (event.data as { partial?: string } | undefined) ?? undefined,
+          })
         },
       )
       setGenerated(character)
@@ -265,6 +271,12 @@ export function CharacterCreateDialog({
                 <p className="text-sm text-muted-foreground">
                   {progress?.message ?? '正在生成...'}
                 </p>
+                {/* 流式文本预览：展示 LLM 实时输出的最后一段文本 */}
+                {progress?.data?.partial && (
+                  <div className="max-h-32 w-full overflow-y-auto rounded-md bg-muted/50 p-2 font-mono text-xs text-muted-foreground">
+                    {progress.data.partial}
+                  </div>
+                )}
                 {progress && (
                   <div className="flex items-center gap-1.5">
                     {PHASE_ORDER.map((phase, i) => (

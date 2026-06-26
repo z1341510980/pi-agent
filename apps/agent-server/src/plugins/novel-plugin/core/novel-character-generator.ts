@@ -65,7 +65,20 @@ export class NovelCharacterGenerator {
     })
 
     try {
-      const result = await session.prompt()
+      // 使用 promptStream 实现真正的流式推送：
+      // 每收到一段 text_delta 就通过 onProgress 推送给前端，
+      // 前端可在 SSE 通道上实时显示生成中的文本预览。
+      let streamedText = ''
+      const result = await session.promptStream((delta) => {
+        streamedText += delta
+        // 取最后 200 字符作为预览，避免 SSE 事件过大
+        const partial = streamedText.slice(-200)
+        onProgress?.({
+          phase: 'generating',
+          message: 'AI 正在生成角色设定...',
+          data: { partial },
+        })
+      })
       this.context.logger.info(
         {
           projectId,

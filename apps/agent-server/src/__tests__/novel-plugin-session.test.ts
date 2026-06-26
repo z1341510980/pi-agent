@@ -22,6 +22,7 @@ let characterGenerator: NovelCharacterGenerator
 /** 捕获 createSession 调用与 handle 状态 */
 interface MockHandle extends PluginSessionHandle {
   promptCalls: number
+  promptStreamCalls: number
   disposeCalls: number
   abortCalls: number
   promptReturn: string
@@ -87,11 +88,18 @@ function createMockContext(): PluginContext {
 
       const handle: MockHandle = {
         promptCalls: 0,
+        promptStreamCalls: 0,
         disposeCalls: 0,
         abortCalls: 0,
         promptReturn: 'LLM-mock-result',
         async prompt() {
           this.promptCalls++
+          return this.promptReturn
+        },
+        async promptStream(onDelta: (delta: string) => void) {
+          this.promptStreamCalls++
+          // 模拟流式推送：将完整结果作为单个 delta 推送一次
+          if (onDelta) onDelta(this.promptReturn)
           return this.promptReturn
         },
         abort() {
@@ -117,13 +125,14 @@ describe('Plugin createSession 集成 - 句柄结构', () => {
     })
   })
 
-  it('createSession 返回包含 prompt/abort/dispose 的 handle', async () => {
+  it('createSession 返回包含 prompt/promptStream/abort/dispose 的 handle', async () => {
     const ctx = createMockContext()
     const handle = await ctx.createSession({
       systemPrompt: 'test-system',
       userMessage: 'test-user',
     })
     expect(typeof handle.prompt).toBe('function')
+    expect(typeof handle.promptStream).toBe('function')
     expect(typeof handle.abort).toBe('function')
     expect(typeof handle.dispose).toBe('function')
   })
@@ -184,11 +193,13 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
     expect(mockState.createSessionCalls).toBe(1)
   })
 
-  it('characterGenerator.generate 调用 handle.prompt() 并获取结果', async () => {
+  it('characterGenerator.generate 调用 handle.promptStream() 并获取结果', async () => {
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
     await characterGenerator.generate('p-1', '勇敢的少年')
     expect(mockState.handles).toHaveLength(1)
-    expect(mockState.handles[0].promptCalls).toBe(1)
+    // generate 现在使用 promptStream 而非 prompt
+    expect(mockState.handles[0].promptStreamCalls).toBe(1)
+    expect(mockState.handles[0].promptCalls).toBe(0)
   })
 
   it('characterGenerator.generate 在结束时调用 dispose()', async () => {
@@ -201,20 +212,25 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
   it('characterGenerator.generate LLM 返回有效 JSON 时被正确解析', async () => {
     const ctx = createMockContext()
     // 覆盖 createSession 返回特定 JSON
+    const mockResult = JSON.stringify({
+      name: '李寒山',
+      description: '沉默寡言的剑客',
+      identity: '出身寒门',
+      personality: '冷静内敛',
+      appearance: '黑衣长剑',
+      currentState: '复仇途中',
+      currentGoal: '寻找仇人',
+      currentPressure: '身份暴露',
+      secret: '前朝遗孤',
+      arcStage: 'rising',
+      speechStyle: '惜字如金',
+    })
     ctx.createSession = async () => ({
-      prompt: async () => JSON.stringify({
-        name: '李寒山',
-        description: '沉默寡言的剑客',
-        identity: '出身寒门',
-        personality: '冷静内敛',
-        appearance: '黑衣长剑',
-        currentState: '复仇途中',
-        currentGoal: '寻找仇人',
-        currentPressure: '身份暴露',
-        secret: '前朝遗孤',
-        arcStage: 'rising',
-        speechStyle: '惜字如金',
-      }),
+      prompt: async () => mockResult,
+      promptStream: async (onDelta: (delta: string) => void) => {
+        if (onDelta) onDelta(mockResult)
+        return mockResult
+      },
       abort: () => {},
       dispose: () => {},
     })
@@ -228,8 +244,13 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
 
   it('characterGenerator.generate LLM 返回 ```json 代码块也能被解析', async () => {
     const ctx = createMockContext()
+    const mockResult = '```json\n{"name":"代码块角色","description":"x","identity":"","personality":"","appearance":"","currentState":"","currentGoal":"","currentPressure":"","secret":"","arcStage":"setup","speechStyle":""}\n```'
     ctx.createSession = async () => ({
-      prompt: async () => '```json\n{"name":"代码块角色","description":"x","identity":"","personality":"","appearance":"","currentState":"","currentGoal":"","currentPressure":"","secret":"","arcStage":"setup","speechStyle":""}\n```',
+      prompt: async () => mockResult,
+      promptStream: async (onDelta: (delta: string) => void) => {
+        if (onDelta) onDelta(mockResult)
+        return mockResult
+      },
       abort: () => {},
       dispose: () => {},
     })
@@ -240,8 +261,13 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
 
   it('characterGenerator.generate LLM 返回非 JSON 时回退到模板角色', async () => {
     const ctx = createMockContext()
+    const mockResult = '这不是 JSON 格式的回复'
     ctx.createSession = async () => ({
-      prompt: async () => '这不是 JSON 格式的回复',
+      prompt: async () => mockResult,
+      promptStream: async (onDelta: (delta: string) => void) => {
+        if (onDelta) onDelta(mockResult)
+        return mockResult
+      },
       abort: () => {},
       dispose: () => {},
     })
@@ -257,6 +283,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
     const ctx = createMockContext()
     ctx.createSession = async () => ({
       prompt: async () => { throw new Error('LLM 调用失败') },
+      promptStream: async () => { throw new Error('LLM 调用失败') },
       abort: () => {},
       dispose: () => {},
     })
@@ -271,6 +298,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
     const ctx = createMockContext()
     ctx.createSession = async () => ({
       prompt: async () => { throw new Error('LLM 调用失败') },
+      promptStream: async () => { throw new Error('LLM 调用失败') },
       abort: () => {},
       dispose: disposeFn,
     })

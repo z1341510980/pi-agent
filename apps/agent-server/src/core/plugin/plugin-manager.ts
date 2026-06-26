@@ -789,6 +789,30 @@ export class PluginManager {
             })
             return completeText
           },
+          promptStream: async (onDelta: (delta: string) => void): Promise<string> => {
+            completeText = '' // 重置
+            // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。
+            // 注意：外层 unsubscribe（上方）已在累积 completeText，
+            // 此处订阅只负责推送 delta，不重复累积，两个订阅并存互不干扰。
+            const streamUnsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+              if (event.type !== 'message_update') return
+              const assistantMessageEvent = event.assistantMessageEvent as
+                | Record<string, unknown>
+                | undefined
+              if (!assistantMessageEvent) return
+              if (assistantMessageEvent.type !== 'text_delta') return
+              const delta = (assistantMessageEvent.delta as string) ?? ''
+              if (delta) onDelta(delta)
+            })
+            try {
+              await withAgentConfig(agentConfig, async () => {
+                await threadSession.session.prompt(options.userMessage)
+              })
+              return completeText
+            } finally {
+              streamUnsubscribe()
+            }
+          },
           abort: () => {
             try {
               threadSession.session.abort()

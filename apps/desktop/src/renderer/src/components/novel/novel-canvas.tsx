@@ -514,7 +514,8 @@ function buildLayout(params: {
       target: `${e.targetType}:${e.targetId}`,
       type: 'smoothstep',
       animated: false,
-      style: { stroke: 'var(--color-primary)', strokeWidth: 1.5 },
+      // cursor:pointer + 略粗线宽提示可交互（hover/选中样式由全局 CSS 控制）
+      style: { stroke: 'var(--color-primary)', strokeWidth: 1.5, cursor: 'pointer' },
       data: { auto: false, edgeId: e.id },
     }))
 
@@ -868,7 +869,7 @@ export function NovelCanvas({
         ...params,
         id: `edge-${edge.id}`,
         animated: false,
-        style: { stroke: 'var(--color-primary)', strokeWidth: 1.5 },
+        style: { stroke: 'var(--color-primary)', strokeWidth: 1.5, cursor: 'pointer' },
         data: { auto: false, edgeId: edge.id },
       },
       eds,
@@ -1042,16 +1043,26 @@ export function NovelCanvas({
     setSelectedEdgeId(edge.id)
   }, [])
 
-  // 双击边：仅手动边可删除（自动边无 edgeId）
+  // 双击边：直接删除（仅手动边可删除，自动边无 edgeId）
+  // 改为无 confirm 直删：双击是明确的删除意图，confirm 在 Electron 下体验不佳
   const handleEdgeDoubleClick = useCallback((_evt: ReactMouseEvent, edge: Edge) => {
     if (typeof edge.data?.edgeId !== 'string') return
-    if (!window.confirm('确认删除此连线？')) return
     void handleDeleteEdge(edge)
   }, [handleDeleteEdge])
 
+  // ── 边选中视觉反馈 ──
+  // ReactFlow 原生支持 edge.selected（默认选中样式：粗线 + 高亮色），
+  // 但默认样式较弱且不易察觉。这里在传入前显式标记 selected，
+  // 配合下方 .novel-edge-selected CSS 提供更明显的视觉反馈，
+  // 让用户知道"边已被选中，可按 Delete 删除"。
+  const edgesWithSelection = useMemo(
+    () => edges.map((e) => (e.id === selectedEdgeId ? { ...e, selected: true } : { ...e, selected: false })),
+    [edges, selectedEdgeId],
+  )
+
   return (
     <div className="relative h-full w-full bg-workspace-bg">
-      {/* 节点脉冲动画样式 + 紧凑模式样式 */}
+      {/* 节点脉冲动画样式 + 紧凑模式样式 + 边选中/hover 样式 */}
       <style>{`
         @keyframes novel-node-pulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
@@ -1065,11 +1076,23 @@ export function NovelCanvas({
           transform: scale(0.85);
           transform-origin: center top;
         }
+        /* 手动边 hover：略粗 + 主色加亮，提示可交互 */
+        .novel-canvas .react-flow__edge:hover .react-flow__edge-path {
+          stroke-width: 2.5;
+          cursor: pointer;
+        }
+        /* 选中边：粗线 + 醒目强调色 + 轻微动画 */
+        .novel-canvas .react-flow__edge.novel-edge-selected .react-flow__edge-path,
+        .novel-canvas .react-flow__edge.selected .react-flow__edge-path {
+          stroke: #6366f1;
+          stroke-width: 3;
+          filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.5));
+        }
       `}</style>
 
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={edgesWithSelection}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
@@ -1091,6 +1114,13 @@ export function NovelCanvas({
         <MemoizedMiniMap visible={nodeCount > COMPACT_THRESHOLD} />
         <Controls className="!bg-card !border !border-border !shadow-md" showInteractive={false} />
       </ReactFlow>
+
+      {/* 边删除提示：选中边时显示，引导用户按 Delete 删除或双击直删 */}
+      {selectedEdgeId && (
+        <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-md border border-border bg-surface-1 px-3 py-1.5 text-xs text-muted-foreground shadow-md backdrop-blur-sm">
+          按 <kbd className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground">Delete</kbd> 删除连线，或双击连线直接删除
+        </div>
+      )}
 
       {/* 节点计数 + 性能警告 */}
       <div className="absolute bottom-3 left-3 z-10 flex items-center gap-2">
