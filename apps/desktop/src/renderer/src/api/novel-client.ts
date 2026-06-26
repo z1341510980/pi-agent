@@ -8,6 +8,7 @@
  */
 
 import { getApi, postApi, putApi, patchApi, deleteApi } from './http-client'
+import { browserConfig } from '@repo/config/browser'
 
 // ── 基础路径 ──
 
@@ -479,6 +480,13 @@ export interface AiGenerateCharacterInput {
   coreStyle: string
 }
 
+/** 角色生成进度事件（镜像后端 CharacterGenerationProgressEvent） */
+export interface CharacterGenerationProgressEvent {
+  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
+  message: string
+  data?: unknown
+}
+
 // ── Projects ──
 
 export function listProjects(): Promise<NovelProject[]> {
@@ -760,11 +768,86 @@ export function deleteEdge(id: string): Promise<{ id: string; deleted: boolean }
 
 // ── AI Character Generation ──
 
-export function aiGenerateCharacter(
+/**
+ * AI 角色生成（SSE 流式）
+ *
+ * 后端端点 POST /api/plugins/novel/projects/:projectId/characters/ai-generate
+ * 返回 text/event-stream，事件格式：
+ *   - { type: 'progress', data: CharacterGenerationProgressEvent }  阶段进度
+ *   - { type: 'result',   data: NovelCharacter }                   生成完成
+ *   - { type: 'error',    error: string }                          错误
+ *
+ * SSE 消费参考 use-novel-creation-flow.ts 中的 consumeStream 实现。
+ */
+export async function aiGenerateCharacter(
   projectId: string,
   input: AiGenerateCharacterInput,
+  onProgress?: (event: CharacterGenerationProgressEvent) => void,
 ): Promise<NovelCharacter> {
-  return postApi<NovelCharacter>(`${BASE}/projects/${projectId}/characters/ai-generate`, input)
+  const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/characters/ai-generate`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(input),
+  })
+
+  if (!response.ok) {
+    throw new Error(`AI 生成失败: HTTP ${response.status} ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('响应体为空，无法读取 SSE 流')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: NovelCharacter | null = null
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE 以双换行分隔事件块
+    let newlineIdx: number
+    while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
+      const rawEvent = buffer.slice(0, newlineIdx)
+      buffer = buffer.slice(newlineIdx + 2)
+
+      // 解析事件块中的 data: 行（忽略注释行 ": keepalive"）
+      const dataLines = rawEvent
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+
+      if (dataLines.length === 0) continue
+
+      let payload: { type: string; data?: unknown; error?: string } | null = null
+      try {
+        payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
+      } catch {
+        continue
+      }
+      if (!payload) continue
+
+      if (payload.type === 'progress') {
+        onProgress?.(payload.data as CharacterGenerationProgressEvent)
+      } else if (payload.type === 'result') {
+        result = payload.data as NovelCharacter
+      } else if (payload.type === 'error') {
+        throw new Error(payload.error ?? 'AI 生成失败')
+      }
+    }
+  }
+
+  if (!result) {
+    throw new Error('AI 生成未返回结果')
+  }
+  return result
 }
 
 // ── Character History ──

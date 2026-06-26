@@ -453,18 +453,45 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(aiGenerateCharacterSchema, request, reply)
       if (!input) return reply
 
-      const generated = await services.characterGenerator.generate(
-        request.params.projectId,
-        input.coreStyle,
-      )
-
-      const character = store.createCharacter({
-        id: randomUUID(),
-        projectId: request.params.projectId,
-        arcHistory: '[]',
-        ...generated,
+      // SSE 设置
+      // 注意：reply.raw.writeHead 绕过 Fastify 的 CORS 中间件，需手动附加 CORS 头，
+      // 否则浏览器会以 CORS 策略拦截跨域 SSE 请求（参考 create-flow 实现）。
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
       })
-      return success(character, request.traceId)
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      try {
+        const generated = await services.characterGenerator.generate(
+          request.params.projectId,
+          input.coreStyle,
+          (event) => {
+            reply.raw.write(`data: ${JSON.stringify({ type: 'progress', data: event })}\n\n`)
+          },
+        )
+
+        const character = store.createCharacter({
+          id: randomUUID(),
+          projectId: request.params.projectId,
+          arcHistory: '[]',
+          ...generated,
+        })
+
+        reply.raw.write(`data: ${JSON.stringify({ type: 'result', data: character })}\n\n`)
+      } catch (err) {
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: String(err) })}\n\n`)
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.end()
+      }
     },
   })
 

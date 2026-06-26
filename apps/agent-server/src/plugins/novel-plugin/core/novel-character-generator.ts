@@ -22,6 +22,13 @@ export type GeneratedCharacter = Pick<
   | 'arcStage' | 'speechStyle'
 >
 
+/** 角色生成进度事件（由 SSE 推送给前端） */
+export interface CharacterGenerationProgressEvent {
+  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
+  message: string
+  data?: unknown
+}
+
 export class NovelCharacterGenerator {
   constructor(
     private promptBuilder: NovelPromptBuilder,
@@ -34,17 +41,24 @@ export class NovelCharacterGenerator {
    *
    * @param projectId 项目 ID（用于读取项目上下文：类型、世界规则、风格指南）
    * @param coreStyle 用户输入的核心风格描述（如"沉默寡言的剑客，背负血海深仇"）
+   * @param onProgress 进度回调（用于 SSE 流式推送生成阶段到前端）
    * @returns 角色设定（不含 id / projectId / arcHistory / 时间戳，由调用方补全）
    */
-  async generate(projectId: string, coreStyle: string): Promise<GeneratedCharacter> {
+  async generate(
+    projectId: string,
+    coreStyle: string,
+    onProgress?: (event: CharacterGenerationProgressEvent) => void,
+  ): Promise<GeneratedCharacter> {
     // ── 1. 构建系统提示词（包含项目级世界规则、风格指南、角色定义等上下文）──
     // agentType 使用 'character-generator'，promptBuilder 会回退到通用角色描述
+    onProgress?.({ phase: 'preparing', message: '正在构建角色生成提示词...' })
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
 
     // ── 2. 构建用户消息（核心风格描述 + 生成指令）──
     const userPrompt = this.buildUserPrompt(coreStyle)
 
     // ── 3. 创建独立 Session 调用 LLM ──
+    onProgress?.({ phase: 'generating', message: 'AI 正在生成角色设定...' })
     const session = await this.context.createSession({
       systemPrompt,
       userMessage: userPrompt,
@@ -60,13 +74,25 @@ export class NovelCharacterGenerator {
         },
         '角色生成 LLM 调用完成',
       )
+      onProgress?.({
+        phase: 'parsing',
+        message: '正在解析生成结果...',
+        data: { resultLength: result.length },
+      })
       // ── 4. 解析 LLM 返回的 JSON ──
-      return this.parseCharacterJson(result, coreStyle)
+      const character = this.parseCharacterJson(result, coreStyle)
+      onProgress?.({
+        phase: 'completed',
+        message: '角色生成完成',
+        data: { name: character.name },
+      })
+      return character
     } catch (err) {
       this.context.logger.error(
         { projectId, coreStylePreview: coreStyle.slice(0, 80), err },
         '角色生成 LLM 调用失败，回退到模板角色',
       )
+      onProgress?.({ phase: 'fallback', message: 'AI 生成失败，使用模板兜底...' })
       return this.buildTemplateCharacter(coreStyle)
     } finally {
       session.dispose()

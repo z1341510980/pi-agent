@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
-import { Sparkles, RotateCcw, Save, X, AlertCircle } from 'lucide-react'
+import { Sparkles, RotateCcw, Save, X, AlertCircle, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -35,6 +35,9 @@ export interface CharacterCreateDialogProps {
 }
 
 const MAX_CORE_STYLE = 500
+
+/** 角色生成阶段顺序（用于进度指示器） */
+const PHASE_ORDER = ['preparing', 'generating', 'parsing', 'completed']
 
 const ARC_STAGE_OPTIONS = [
   { value: 'introduction', label: '出场' },
@@ -103,6 +106,7 @@ export function CharacterCreateDialog({
   const [generating, setGenerating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [progress, setProgress] = useState<{ phase: string; message: string } | null>(null)
 
   // 打开/关闭时重置状态
   useEffect(() => {
@@ -114,6 +118,7 @@ export function CharacterCreateDialog({
       setError(null)
       setGenerating(false)
       setSaving(false)
+      setProgress(null)
     }
   }, [open])
 
@@ -129,8 +134,15 @@ export function CharacterCreateDialog({
     }
     setGenerating(true)
     setError(null)
+    setProgress(null)
     try {
-      const character = await aiGenerateCharacter(projectId, { coreStyle: trimmed })
+      const character = await aiGenerateCharacter(
+        projectId,
+        { coreStyle: trimmed },
+        (event) => {
+          setProgress({ phase: event.phase, message: event.message })
+        },
+      )
       setGenerated(character)
       setForm(toForm(character))
       upsertCharacter(character)
@@ -139,6 +151,7 @@ export function CharacterCreateDialog({
       setError(err instanceof Error ? err.message : 'AI 生成失败')
     } finally {
       setGenerating(false)
+      setProgress(null)
     }
   }, [projectId, coreStyle, upsertCharacter])
 
@@ -246,6 +259,29 @@ export function CharacterCreateDialog({
                 {coreStyle.length}/{MAX_CORE_STYLE}
               </div>
             </div>
+            {generating && (
+              <div className="flex flex-col items-center gap-3 py-6">
+                <Loader2 className="size-6 animate-spin text-primary" />
+                <p className="text-sm text-muted-foreground">
+                  {progress?.message ?? '正在生成...'}
+                </p>
+                {progress && (
+                  <div className="flex items-center gap-1.5">
+                    {PHASE_ORDER.map((phase, i) => (
+                      <div
+                        key={phase}
+                        className={cn(
+                          'h-1.5 w-8 rounded-full transition-colors',
+                          PHASE_ORDER.indexOf(progress.phase) >= i
+                            ? 'bg-primary'
+                            : 'bg-muted',
+                        )}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {error && (
               <p className="flex items-center gap-1 text-xs text-destructive">
                 <AlertCircle className="size-3" />
