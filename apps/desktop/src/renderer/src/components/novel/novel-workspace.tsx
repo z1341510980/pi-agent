@@ -325,6 +325,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           phase={creationFlow.phase}
           isRunning={creationFlow.isRunning}
           chapterContent={creationFlow.chapterContent}
+          agentOutputs={creationFlow.agentOutputs}
           chapterNumber={creationChapterNumber}
           currentCheckpoint={creationFlow.currentCheckpoint}
           result={creationFlow.result}

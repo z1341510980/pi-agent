@@ -9,7 +9,7 @@
  * - 保存到章节 / 丢弃按钮
  */
 
-import { useMemo, type ReactElement } from 'react'
+import { useMemo, useState, type ReactElement } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -24,6 +24,8 @@ import {
   FileText,
   Clock,
   Loader2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
 import {
   Dialog,
@@ -34,11 +36,13 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 import type {
   CreationPhase,
   CreationResult,
   CheckpointData,
   CheckpointDecision,
+  AgentOutput,
 } from '@/hooks/use-novel-creation-flow'
 
 // ── 阶段标签 ──
@@ -94,6 +98,137 @@ const REVIEW_DECISIONS: DecisionButton[] = [
   { decision: 'rewrite', label: '重写', icon: RotateCcw, variant: 'ghost' },
 ]
 
+// ── Agent 颜色映射 ──
+
+const AGENT_COLOR_CLASSES: Record<AgentOutput['agentType'], string> = {
+  director: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/40',
+  writer: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40',
+  reviewer: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/40',
+  reviser: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/40',
+  memory: 'bg-gray-500/15 text-gray-700 dark:text-gray-300 border-gray-500/40',
+}
+
+/** 格式化时间戳为 HH:mm:ss */
+function formatTime(ts: number): string {
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// ── Agent 输出卡片（参考主聊天 MessageBubble 左对齐样式） ──
+
+interface AgentOutputCardProps {
+  output: AgentOutput
+}
+
+function AgentOutputCard({ output }: AgentOutputCardProps): ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const showToggle = output.content.length > output.preview.length
+
+  return (
+    <div className="rounded-lg border border-border bg-surface-1 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Badge
+          variant="outline"
+          className={cn('text-[10px] font-medium', AGENT_COLOR_CLASSES[output.agentType])}
+        >
+          {output.agentName}
+        </Badge>
+        <span className="text-[10px] text-muted-foreground">
+          {formatTime(output.timestamp)}
+        </span>
+        {showToggle && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-5 px-1.5 text-[10px]"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? (
+              <>
+                <ChevronUp className="size-3" />
+                收起
+              </>
+            ) : (
+              <>
+                <ChevronDown className="size-3" />
+                展开
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+      <div className={cn('overflow-hidden', !expanded && 'max-h-32')}>
+        <div className="prose prose-sm dark:prose-invert max-w-none text-xs leading-relaxed text-text-secondary
+          prose-p:my-1.5 prose-p:leading-relaxed
+          prose-headings:my-2 prose-headings:leading-tight
+          prose-h1:text-sm prose-h2:text-xs prose-h3:text-xs
+          prose-ul:my-1.5 prose-ol:my-1.5
+          prose-li:my-0.5
+          prose-pre:my-2 prose-pre:rounded-md prose-pre:bg-muted/60 prose-pre:border prose-pre:border-border prose-pre:overflow-x-auto
+          prose-code:before:content-none prose-code:after:content-none prose-code:text-primary prose-code:bg-muted/60 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
+          prose-blockquote:my-1.5 prose-blockquote:border-l-primary
+          prose-a:text-primary
+        ">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {expanded ? output.content : output.preview}
+          </ReactMarkdown>
+        </div>
+      </div>
+      {!expanded && showToggle && (
+        <Button
+          size="sm"
+          variant="link"
+          className="h-5 px-0 text-[10px]"
+          onClick={() => setExpanded(true)}
+        >
+          查看全部 {output.content.length} 字
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// ── 检查点内容渲染 ──
+
+/** 渲染 checkpoint.data.data 的实际内容（叙事任务/验收报告） */
+function renderCheckpointData(checkpoint: CheckpointData): ReactElement | null {
+  const outer = checkpoint.data as { message?: string; data?: unknown } | undefined
+  if (!outer) return null
+
+  const inner = outer.data
+
+  if (typeof inner === 'string' && inner.trim()) {
+    return (
+      <div className="prose prose-sm dark:prose-invert max-w-none text-xs leading-relaxed text-text
+        prose-p:my-1.5 prose-headings:my-2
+        prose-h1:text-sm prose-h2:text-xs prose-h3:text-xs
+        prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5
+        prose-pre:my-2 prose-pre:rounded-md prose-pre:bg-muted/60 prose-pre:border prose-pre:border-border prose-pre:overflow-x-auto
+        prose-code:before:content-none prose-code:after:content-none prose-code:text-primary prose-code:bg-muted/60
+        prose-blockquote:my-1.5 prose-blockquote:border-l-primary
+        prose-a:text-primary
+      ">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{inner}</ReactMarkdown>
+      </div>
+    )
+  }
+
+  if (inner && typeof inner === 'object') {
+    return (
+      <pre className="text-[11px] leading-relaxed bg-muted/40 border border-border rounded-md p-2 overflow-x-auto max-h-48">
+        {JSON.stringify(inner, null, 2)}
+      </pre>
+    )
+  }
+
+  if (outer.message) {
+    return <p className="text-xs text-text-secondary">{outer.message}</p>
+  }
+
+  return null
+}
+
 // ── 主组件 ──
 
 export interface ChapterLiveViewProps {
@@ -101,6 +236,8 @@ export interface ChapterLiveViewProps {
   phase: CreationPhase
   isRunning: boolean
   chapterContent: string
+  /** 各 Agent 的输出时间线 */
+  agentOutputs: AgentOutput[]
   chapterNumber?: number
   currentCheckpoint: CheckpointData | null
   result: CreationResult | null
@@ -116,6 +253,7 @@ export function ChapterLiveView({
   phase,
   isRunning,
   chapterContent,
+  agentOutputs,
   chapterNumber,
   currentCheckpoint,
   result,
@@ -138,6 +276,9 @@ export function ChapterLiveView({
     : currentCheckpoint?.type === 'review'
       ? REVIEW_DECISIONS
       : []
+
+  // 检查点的实际内容（叙事任务/验收报告）
+  const checkpointContent = currentCheckpoint ? renderCheckpointData(currentCheckpoint) : null
 
   const handleSave = async (): Promise<void> => {
     if (!chapterContent) return
@@ -175,8 +316,26 @@ export function ChapterLiveView({
           </DialogDescription>
         </DialogHeader>
 
+        {/* Agent 输出时间线（参考主聊天消息流，左对齐卡片） */}
+        {agentOutputs.length > 0 && (
+          <div className="shrink-0 rounded-lg border border-border bg-background/50 p-2">
+            <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium text-muted-foreground">
+              <PenLine className="size-3" />
+              <span>Agent 输出时间线</span>
+              <Badge variant="secondary" className="text-[10px] h-4 px-1">
+                {agentOutputs.length}
+              </Badge>
+            </div>
+            <div className="space-y-2 max-h-[200px] overflow-y-auto pr-0.5">
+              {agentOutputs.map((out, idx) => (
+                <AgentOutputCard key={`${out.timestamp}-${idx}`} output={out} />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 内容区 */}
-        <div className="flex-1 overflow-y-auto min-h-[200px] max-h-[55vh] rounded-lg border border-border bg-background p-4">
+        <div className="flex-1 overflow-y-auto min-h-[160px] max-h-[40vh] rounded-lg border border-border bg-background p-4">
           {/* 写作中：流式指示器 */}
           {isWriting && !chapterContent && (
             <div className="flex h-full items-center justify-center">
@@ -243,7 +402,7 @@ export function ChapterLiveView({
           )}
         </div>
 
-        {/* 检查点决策按钮 */}
+        {/* 检查点决策区：渲染实际叙事任务/验收报告内容 */}
         <AnimatePresence>
           {isCheckpoint && currentCheckpoint && (
             <motion.div
@@ -257,6 +416,11 @@ export function ChapterLiveView({
                   ? '请确认导演 Agent 规划的叙事任务：'
                   : '请确认审稿 Agent 的验收报告：'}
               </p>
+              {checkpointContent && (
+                <div className="mb-3 max-h-[180px] overflow-y-auto rounded-md bg-background/60 p-2">
+                  {checkpointContent}
+                </div>
+              )}
               <div className="flex items-center gap-2">
                 {decisions.map((d) => (
                   <Button

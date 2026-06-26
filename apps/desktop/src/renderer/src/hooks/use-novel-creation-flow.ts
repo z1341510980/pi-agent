@@ -33,9 +33,18 @@ export type CheckpointType = 'narrative_task' | 'review'
 export type CheckpointDecision = 'approve' | 'reject' | 'revise' | 'rewrite'
 
 export interface CreationFlowEvent {
-  type: 'phase_change' | 'agent_event' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
+  type: 'phase_change' | 'agent_event' | 'agent_output' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
   phase: CreationPhase
   data?: unknown
+  timestamp: number
+}
+
+/** 单个 Agent 的输出内容（用于时间线展示） */
+export interface AgentOutput {
+  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+  agentName: string
+  content: string
+  preview: string
   timestamp: number
 }
 
@@ -95,6 +104,8 @@ export interface UseNovelCreationFlowReturn {
   error: string | null
   /** 累积的章节内容 */
   chapterContent: string
+  /** 各 Agent 的输出时间线（按到达顺序） */
+  agentOutputs: AgentOutput[]
   /** 启动创作流程 */
   startCreation: (projectId: string, chapterNumber: number) => Promise<void>
   /** 提交检查点决策 */
@@ -119,6 +130,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const [result, setResult] = useState<CreationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [chapterContent, setChapterContent] = useState('')
+  const [agentOutputs, setAgentOutputs] = useState<AgentOutput[]>([])
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const projectIdRef = useRef<string | null>(null)
@@ -139,6 +151,25 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         const evt = msg.data
         setEvents((prev) => [...prev, evt])
         setPhase(evt.phase)
+        // 处理 agent_output 事件：保存到 agentOutputs 时间线
+        if (evt.type === 'agent_output') {
+          const data = evt.data as AgentOutput
+          setAgentOutputs((prev) => [
+            ...prev,
+            {
+              agentType: data.agentType,
+              agentName: data.agentName,
+              content: data.content,
+              preview: data.preview,
+              timestamp: evt.timestamp,
+            },
+          ])
+          // 如果是 writer 或 reviser 的输出，同时更新 chapterContent
+          if (data.agentType === 'writer' || data.agentType === 'reviser') {
+            setChapterContent(data.content)
+          }
+          break
+        }
         // 写作阶段开始累积内容占位（实际内容由 result 提供）
         if (evt.phase === 'writing' && evt.data && typeof evt.data === 'object') {
           const data = evt.data as { message?: string }
@@ -220,6 +251,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setResult(null)
       setError(null)
       setChapterContent('')
+      setAgentOutputs([])
       setIsRunning(true)
       projectIdRef.current = projectId
 
@@ -298,6 +330,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     result,
     error,
     chapterContent,
+    agentOutputs,
     startCreation,
     submitCheckpoint,
     cancel,
