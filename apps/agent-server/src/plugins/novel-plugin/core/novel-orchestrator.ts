@@ -116,14 +116,6 @@ export class NovelOrchestrator extends EventEmitter {
         rhythmSuggestion,
       }, options)
 
-      // 推送导演 Agent 的输出
-      this.emitProgress(options, 'directing', {
-        agentType: 'director',
-        agentName: '导演',
-        content: directorResult,
-        preview: directorResult.slice(0, 500),
-      } as AgentOutputData)
-
       // 检查点 1
       this.emitProgress(options, 'checkpoint_narrative', { message: '等待用户确认叙事任务...' })
       const narrativeDecision = await options.onCheckpoint({
@@ -144,28 +136,12 @@ export class NovelOrchestrator extends EventEmitter {
         narrativeTask: directorResult,
       }, options)
 
-      // 推送写作 Agent 的输出
-      this.emitProgress(options, 'writing', {
-        agentType: 'writer',
-        agentName: '写作',
-        content: writerResult,
-        preview: writerResult.slice(0, 500),
-      } as AgentOutputData)
-
       // Phase 3: Reviewer
       this.emitProgress(options, 'reviewing', { message: '审稿 Agent 正在检查章节...' })
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber, {
         task: `请验收第 ${chapterNumber} 章的内容。`,
         content: writerResult,
       }, options)
-
-      // 推送审稿 Agent 的输出
-      this.emitProgress(options, 'reviewing', {
-        agentType: 'reviewer',
-        agentName: '审稿',
-        content: reviewResult,
-        preview: reviewResult.slice(0, 500),
-      } as AgentOutputData)
 
       // 检查点 2
       this.emitProgress(options, 'checkpoint_review', { message: '等待用户确认验收报告...' })
@@ -183,14 +159,11 @@ export class NovelOrchestrator extends EventEmitter {
           task: `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。`,
           content: writerResult,
           issues: reviewResult,
-        }, options)
-        // 推送修订 Agent 的输出
-        this.emitProgress(options, 'revising', {
-          agentType: 'reviser',
-          agentName: '修订',
-          content: reviseResult,
-          preview: reviseResult.slice(0, 500),
-        } as AgentOutputData)
+        }, options, {
+          phase: 'revising',
+          displayAgentType: 'reviser',
+          displayAgentName: '修订',
+        })
         finalContent = reviseResult
       } else if (reviewDecision === 'rewrite') {
         this.emitProgress(options, 'rewriting', { message: '重新创作章节...' })
@@ -205,13 +178,6 @@ export class NovelOrchestrator extends EventEmitter {
         task: `请从第 ${chapterNumber} 章中提取状态变更。`,
         content: finalContent,
       }, options)
-      // 推送记忆 Agent 的输出
-      this.emitProgress(options, 'memory', {
-        agentType: 'memory',
-        agentName: '记忆',
-        content: memoryResult,
-        preview: memoryResult.slice(0, 500),
-      } as AgentOutputData)
       const chapter = this.store.getChapter(projectId, chapterNumber)
       const memoryEvents = this.recordMemoryEvents(
         projectId,
@@ -262,15 +228,34 @@ export class NovelOrchestrator extends EventEmitter {
     }
   }
 
-  /** 运行单个 Agent（通过 Pi SDK Session） */
+  /** 运行单个 Agent（通过 Pi SDK Session，流式推送 delta） */
   private async runAgent(
     agentType: NovelAgentType,
     projectId: string,
     chapterNumber: number,
     input: unknown,
     options?: CreationOptions,
+    overrides?: {
+      /** 展示用的 agentType（如 writer 用于修订时展示为 reviser） */
+      displayAgentType?: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+      /** 展示用的 agentName */
+      displayAgentName?: string
+      /** 当前阶段（默认按 agentType 推断） */
+      phase?: CreationPhase
+    },
   ): Promise<string> {
     const config = NOVEL_AGENT_CONFIGS[agentType]
+    // agentType → 阶段映射（config 无 phase 字段，这里显式维护）
+    const phaseMap: Record<NovelAgentType, CreationPhase> = {
+      director: 'directing',
+      writer: 'writing',
+      reviewer: 'reviewing',
+      memory: 'memory',
+    }
+    const phase = overrides?.phase ?? phaseMap[agentType]
+    const displayAgentType = overrides?.displayAgentType ?? agentType
+    const displayAgentName = overrides?.displayAgentName ?? config.name
+
     let inputText = typeof input === 'string' ? input : JSON.stringify(input)
 
     // 附加用户在检查点期间发送的创作指令（消费后清空）
@@ -316,7 +301,31 @@ export class NovelOrchestrator extends EventEmitter {
     })
 
     try {
-      const result = await session.prompt()
+      // 流式推送：每收到一段 delta 就通过 emitProgress 推送给前端，
+      // 前端据此实时更新最后一条同类型 Agent 输出（streaming: true）。
+      let streamedText = ''
+      const result = await session.promptStream((delta: string) => {
+        streamedText += delta
+        this.emitProgress(options, phase, {
+          agentType: displayAgentType,
+          agentName: displayAgentName,
+          content: streamedText,
+          // 取最后 200 字符作为预览，避免 SSE 事件过大
+          preview: streamedText.slice(-200),
+          streaming: true,
+        } as AgentOutputData)
+      })
+
+      // 推送最终完整输出（streaming: false 标记生成结束，
+      // 前端会更新最后一条同类型输出并移除"正在生成"状态）
+      this.emitProgress(options, phase, {
+        agentType: displayAgentType,
+        agentName: displayAgentName,
+        content: result,
+        preview: result.slice(0, 500),
+        streaming: false,
+      } as AgentOutputData)
+
       this.context.logger.info(
         {
           agentType,
@@ -531,7 +540,7 @@ export class NovelOrchestrator extends EventEmitter {
     })
   }
 
-  private emitProgress(options: CreationOptions, phase: CreationPhase, data: unknown): void {
+  private emitProgress(options: CreationOptions | undefined, phase: CreationPhase, data: unknown): void {
     const event: CreationFlowEvent = {
       type: phase === 'completed' || phase === 'error' || phase === 'cancelled'
         ? phase
@@ -540,7 +549,7 @@ export class NovelOrchestrator extends EventEmitter {
       data,
       timestamp: Date.now(),
     }
-    options.onProgress(event)
+    options?.onProgress(event)
     this.emit('event', event)
   }
 }

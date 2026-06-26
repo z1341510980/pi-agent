@@ -611,6 +611,8 @@ export interface NovelCanvasProps {
   onNodeCountChange?: (count: number) => void
   /** 节点删除完成后的回调（删除逻辑在画布内处理：调用 store + API） */
   onDeleteNode?: () => void
+  /** 右键章节节点时触发重新创作（传入章节编号） */
+  onRegenerateChapter?: (chapterNumber: number) => void
 }
 
 export function NovelCanvas({
@@ -622,6 +624,7 @@ export function NovelCanvas({
   onCancelCreation,
   onNodeCountChange,
   onDeleteNode,
+  onRegenerateChapter,
 }: NovelCanvasProps): ReactElement {
   const currentProjectId = useNovelStore((s) => s.currentProjectId)
   const projects = useNovelStore((s) => s.projects)
@@ -975,19 +978,23 @@ export function NovelCanvas({
   }, [selectedNodeId, selectedNodeType, setNodes, pulsingIds, isCompact])
 
   // ── 边删除：调用 API + 更新 store + 移除 xyflow 边 ──
-  // 仅手动边（data.edgeId 存在）可删除；自动边由布局重算生成，不持久化
+  // 手动边（data.edgeId 存在）调 API + 更新 store；自动边仅从 xyflow state 移除
+  // （自动边由布局重算生成，下次 layout 会重建，但即时移除给用户明确反馈）
   const handleDeleteEdge = useCallback(async (edge: Edge) => {
     const edgeId = edge.data?.edgeId
-    if (typeof edgeId !== 'string') return
-    try {
-      await deleteEdge(edgeId)
-    } catch {
-      return
+    // 有 edgeId 的手动边：调 API 持久化删除 + 更新 store
+    if (typeof edgeId === 'string') {
+      try {
+        await deleteEdge(edgeId)
+      } catch {
+        return
+      }
+      removeEdgeFromStore(edgeId)
     }
-    removeEdgeFromStore(edgeId)
+    // 无论手动边还是自动边，都从 React Flow state 中移除
     setEdges((eds) => eds.filter((e) => e.id !== edge.id))
     setSelectedEdgeId(null)
-  }, [removeEdgeFromStore, setEdges])
+  }, [deleteEdge, removeEdgeFromStore, setEdges])
 
   // ── 键盘删除：Delete / Backspace ──
   // 优先删除选中的节点；若未选中节点但选中了边，则删除边
@@ -1043,12 +1050,29 @@ export function NovelCanvas({
     setSelectedEdgeId(edge.id)
   }, [])
 
-  // 双击边：直接删除（仅手动边可删除，自动边无 edgeId）
+  // 双击边：直接删除（手动边 + 自动边均可）
   // 改为无 confirm 直删：双击是明确的删除意图，confirm 在 Electron 下体验不佳
   const handleEdgeDoubleClick = useCallback((_evt: ReactMouseEvent, edge: Edge) => {
-    if (typeof edge.data?.edgeId !== 'string') return
     void handleDeleteEdge(edge)
   }, [handleDeleteEdge])
+
+  // 右键边：直接删除（补充双击与键盘 Delete 之外的交互方式）
+  // preventDefault 阻止浏览器默认右键菜单
+  const handleEdgeContextMenu = useCallback((evt: ReactMouseEvent, edge: Edge) => {
+    evt.preventDefault()
+    void handleDeleteEdge(edge)
+  }, [handleDeleteEdge])
+
+  // 右键章节节点：触发重新创作此章（无需先选中，直接回调章节编号）
+  // preventDefault 阻止浏览器默认右键菜单
+  const handleNodeContextMenu = useCallback((evt: ReactMouseEvent, node: Node) => {
+    evt.preventDefault()
+    const [type, id] = parseNodeId(node.id)
+    if (type !== 'chapter') return
+    const chapter = chapters.find((c) => c.id === id)
+    if (!chapter) return
+    onRegenerateChapter?.(chapter.chapterNumber)
+  }, [chapters, onRegenerateChapter])
 
   // ── 边选中视觉反馈 ──
   // ReactFlow 原生支持 edge.selected（默认选中样式：粗线 + 高亮色），
@@ -1097,15 +1121,17 @@ export function NovelCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
+        onNodeContextMenu={handleNodeContextMenu}
         onEdgeClick={handleEdgeClick}
         onEdgeDoubleClick={handleEdgeDoubleClick}
+        onEdgeContextMenu={handleEdgeContextMenu}
         onPaneClick={handlePaneClick}
         onNodeDragStop={handleNodeDragStop}
         onConnect={handleConnect}
         fitView
         minZoom={0.2}
         maxZoom={2}
-        defaultEdgeOptions={{ animated: false }}
+        defaultEdgeOptions={{ animated: false, interactionWidth: 20 }}
         proOptions={{ hideAttribution: true }}
         onlyRenderVisibleElements
         className="novel-canvas"
@@ -1115,10 +1141,10 @@ export function NovelCanvas({
         <Controls className="!bg-card !border !border-border !shadow-md" showInteractive={false} />
       </ReactFlow>
 
-      {/* 边删除提示：选中边时显示，引导用户按 Delete 删除或双击直删 */}
+      {/* 边删除提示：选中边时显示，引导用户按 Delete 删除或双击/右键直删 */}
       {selectedEdgeId && (
         <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-md border border-border bg-surface-1 px-3 py-1.5 text-xs text-muted-foreground shadow-md backdrop-blur-sm">
-          按 <kbd className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground">Delete</kbd> 删除连线，或双击连线直接删除
+          按 <kbd className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground">Delete</kbd> 删除连线，或双击 / 右键连线直接删除
         </div>
       )}
 

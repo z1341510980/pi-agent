@@ -97,4 +97,6 @@ export interface AgentOutputData {
   preview: string
   /** 标记为数据变更通知（Memory Agent 写入完成后推送，前端据此刷新画布，不展示在时间线） */
   dataChanged?: boolean
+  /** 是否为流式增量推送（true 表示 Agent 仍在生成中，前端应更新最后一条同类型输出而非新增） */
+  streaming?: boolean
 }

@@ -126,9 +126,13 @@ interface AgentOutputCardProps {
 function AgentOutputCard({ output }: AgentOutputCardProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
   const showToggle = output.content.length > output.preview.length
+  const isStreaming = output.streaming === true
 
   return (
-    <div className="rounded-lg border border-border bg-surface-1 p-3">
+    <div className={cn(
+      'rounded-lg border bg-surface-1 p-3 transition-colors',
+      isStreaming ? 'border-primary/50 shadow-sm' : 'border-border',
+    )}>
       <div className="flex items-center gap-2 mb-2">
         <Badge
           variant="outline"
@@ -139,7 +143,17 @@ function AgentOutputCard({ output }: AgentOutputCardProps): ReactElement {
         <span className="text-[10px] text-muted-foreground">
           {formatTime(output.timestamp)}
         </span>
-        {showToggle && (
+        {isStreaming && (
+          <motion.span
+            animate={{ opacity: [0.4, 1, 0.4] }}
+            transition={{ duration: 1.2, repeat: Infinity }}
+            className="flex items-center gap-1 text-[10px] text-primary"
+          >
+            <Loader2 className="size-2.5 animate-spin" />
+            正在生成...
+          </motion.span>
+        )}
+        {!isStreaming && showToggle && (
           <Button
             size="sm"
             variant="ghost"
@@ -177,7 +191,7 @@ function AgentOutputCard({ output }: AgentOutputCardProps): ReactElement {
           </ReactMarkdown>
         </div>
       </div>
-      {!expanded && showToggle && (
+      {!expanded && showToggle && !isStreaming && (
         <Button
           size="sm"
           variant="link"

@@ -48,6 +48,8 @@ export interface AgentOutput {
   timestamp: number
   /** 数据变更通知（Memory Agent 写入完成，前端据此刷新画布；不展示在时间线） */
   dataChanged?: boolean
+  /** 是否仍在流式生成中（true 时 UI 显示"正在生成"动画） */
+  streaming?: boolean
 }
 
 /** 用户在创作过程中发送的消息（参与创作的指令） */
@@ -168,17 +170,30 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         // 处理 agent_output 事件：保存到 agentOutputs 时间线
         if (evt.type === 'agent_output') {
           const data = evt.data as AgentOutput
-          setAgentOutputs((prev) => [
-            ...prev,
-            {
-              agentType: data.agentType,
-              agentName: data.agentName,
-              content: data.content,
-              preview: data.preview,
-              timestamp: evt.timestamp,
-              dataChanged: data.dataChanged,
-            },
-          ])
+          const newOutput: AgentOutput = {
+            agentType: data.agentType,
+            agentName: data.agentName,
+            content: data.content,
+            preview: data.preview,
+            timestamp: evt.timestamp,
+            dataChanged: data.dataChanged,
+            streaming: data.streaming,
+          }
+          // 流式更新（streaming: true）与完成通知（streaming: false）都更新最后一条
+          // 同类型 Agent 输出，避免重复条目；仅在不存在同类型输出时新增。
+          // dataChanged 通知总是新增（它是独立的数据刷新信号，不参与流式替换）。
+          if (data.dataChanged) {
+            setAgentOutputs((prev) => [...prev, newOutput])
+          } else {
+            setAgentOutputs((prev) => {
+              const idx = [...prev].reverse().findIndex((o) => o.agentType === data.agentType)
+              if (idx === -1) return [...prev, newOutput]
+              const realIdx = prev.length - 1 - idx
+              const updated = [...prev]
+              updated[realIdx] = newOutput
+              return updated
+            })
+          }
           // 如果是 writer 或 reviser 的输出，同时更新 chapterContent
           if (data.agentType === 'writer' || data.agentType === 'reviser') {
             setChapterContent(data.content)

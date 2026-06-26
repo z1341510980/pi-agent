@@ -205,6 +205,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
   }, [currentProjectId, chapters, creationFlow, upsertChapter, queryClient])
 
+  // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
+  // 直接以原章节号启动创作流程（覆盖旧内容）
+  const handleRegenerateChapter = useCallback(async (chapterNumber: number) => {
+    if (!currentProjectId || creationFlow.isRunning) return
+    const chapter = chapters.find((c) => c.chapterNumber === chapterNumber)
+    if (!chapter) return
+    setCreationChapterNumber(chapterNumber)
+    await creationFlow.startCreation(currentProjectId, chapterNumber)
+  }, [currentProjectId, chapters, creationFlow])
+
   // 收到 data_changed 事件时刷新画布（替代轮询）
   // Memory Agent 写入实体状态后会推送带 dataChanged 标记的 agent_output，
   // 监听 agentOutputs 末尾的 dataChanged 标记，触发 React Query 失效刷新。
@@ -350,6 +360,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 creationError={creationFlow.error}
                 onCancelCreation={handleDiscardCreation}
                 onNodeCountChange={setNodeCount}
+                onRegenerateChapter={handleRegenerateChapter}
               />
             ) : (
               <div className="flex h-full items-center justify-center text-muted-foreground">
