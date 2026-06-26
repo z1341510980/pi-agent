@@ -591,8 +591,12 @@ export function submitCheckpointDecision(
   projectId: string,
   type: string,
   decision: string,
+  userMessages?: string[],
 ): Promise<{ ok: boolean }> {
-  return postApi<{ ok: boolean }>(`${BASE}/projects/${projectId}/checkpoint/${type}/decision`, { decision })
+  return postApi<{ ok: boolean }>(`${BASE}/projects/${projectId}/checkpoint/${type}/decision`, {
+    decision,
+    userMessages,
+  })
 }
 
 // ── 缓存诊断 ──

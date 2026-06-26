@@ -48,6 +48,13 @@ export interface AgentOutput {
   timestamp: number
 }
 
+/** 用户在创作过程中发送的消息（参与创作的指令） */
+export interface UserMessage {
+  id: string
+  content: string
+  timestamp: number
+}
+
 export interface CheckpointData {
   type: CheckpointType
   phase: CreationPhase
@@ -106,10 +113,14 @@ export interface UseNovelCreationFlowReturn {
   chapterContent: string
   /** 各 Agent 的输出时间线（按到达顺序） */
   agentOutputs: AgentOutput[]
+  /** 用户在创作过程中发送的消息（随检查点决策一并发送到后端） */
+  userMessages: UserMessage[]
   /** 启动创作流程 */
   startCreation: (projectId: string, chapterNumber: number) => Promise<void>
   /** 提交检查点决策 */
   submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
+  /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
+  sendMessage: (content: string) => void
   /** 取消流程 */
   cancel: () => void
 }
@@ -131,6 +142,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const [error, setError] = useState<string | null>(null)
   const [chapterContent, setChapterContent] = useState('')
   const [agentOutputs, setAgentOutputs] = useState<AgentOutput[]>([])
+  const [userMessages, setUserMessages] = useState<UserMessage[]>([])
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const projectIdRef = useRef<string | null>(null)
@@ -252,6 +264,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setError(null)
       setChapterContent('')
       setAgentOutputs([])
+      setUserMessages([])
       setIsRunning(true)
       projectIdRef.current = projectId
 
@@ -306,15 +319,31 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       if (!projectId || !currentCheckpoint) return
 
       try {
-        await submitCheckpointDecision(projectId, currentCheckpoint.type, decision)
-        // 决策已提交，清空检查点，等待后续 SSE 事件推进流程
+        // 将检查点期间用户发送的消息一并提交给后端，供下一个 Agent 使用
+        const messagesToSend = userMessages.map((m) => m.content)
+        await submitCheckpointDecision(projectId, currentCheckpoint.type, decision, messagesToSend)
+        // 决策已提交，清空检查点与用户消息，等待后续 SSE 事件推进流程
         setCurrentCheckpoint(null)
+        setUserMessages([])
       } catch (err) {
         setError(err instanceof Error ? err.message : '提交决策失败')
       }
     },
-    [currentCheckpoint],
+    [currentCheckpoint, userMessages],
   )
+
+  const sendMessage = useCallback((content: string): void => {
+    const trimmed = content.trim()
+    if (!trimmed) return
+    setUserMessages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        content: trimmed,
+        timestamp: Date.now(),
+      },
+    ])
+  }, [])
 
   const cancel = useCallback((): void => {
     if (!abortControllerRef.current) return
@@ -331,8 +360,10 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     error,
     chapterContent,
     agentOutputs,
+    userMessages,
     startCreation,
     submitCheckpoint,
+    sendMessage,
     cancel,
   }
 }

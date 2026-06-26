@@ -62,6 +62,9 @@ export interface CreationResult {
 }
 
 export class NovelOrchestrator extends EventEmitter {
+  /** 用户在检查点期间发送的创作指令（供下一个 Agent 使用后清空） */
+  private userMessages: string[] = []
+
   constructor(
     private store: NovelStore,
     private memoryStore: NovelMemoryStore,
@@ -71,6 +74,14 @@ export class NovelOrchestrator extends EventEmitter {
     private context: PluginContext,
   ) {
     super()
+  }
+
+  /**
+   * 设置用户在检查点期间发送的创作指令
+   * 这些指令会在下一个 Agent 执行时附加到其输入中，随后清空
+   */
+  setUserMessages(messages: string[]): void {
+    this.userMessages = messages.slice()
   }
 
   async createChapterWithFlow(
@@ -241,7 +252,14 @@ export class NovelOrchestrator extends EventEmitter {
     options?: CreationOptions,
   ): Promise<string> {
     const config = NOVEL_AGENT_CONFIGS[agentType]
-    const inputText = typeof input === 'string' ? input : JSON.stringify(input)
+    let inputText = typeof input === 'string' ? input : JSON.stringify(input)
+
+    // 附加用户在检查点期间发送的创作指令（消费后清空）
+    if (this.userMessages.length > 0) {
+      const userInstructions = this.userMessages.map((m, i) => `${i + 1}. ${m}`).join('\n')
+      inputText += `\n\n## 用户创作指令\n用户在创作过程中提出以下指令，请在创作中予以考虑：\n${userInstructions}`
+      this.userMessages = []
+    }
 
     // STATIC 层：系统提示词（Agent 身份 + 世界规则 + 风格 + 角色定义）
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, agentType)

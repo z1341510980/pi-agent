@@ -1,12 +1,13 @@
 /**
- * 章节实时预览面板
+ * 章节实时预览面板（内嵌于右侧栏）
  *
- * 在创作流程运行时以模态弹窗形式展示：
+ * 在创作流程运行时以右侧栏内嵌面板形式展示：
  * - writing 阶段：流式/打字指示器
  * - result 到达后：Markdown 渲染最终内容
  * - checkpoint 阶段：检查点决策按钮（approve/reject/revise/rewrite）
  * - 字数统计、预计阅读时间
  * - 保存到章节 / 丢弃按钮
+ * - 底部用户输入框：用户可发消息参与创作
  */
 
 import { useMemo, useState, type ReactElement } from 'react'
@@ -26,14 +27,8 @@ import {
   Loader2,
   ChevronDown,
   ChevronUp,
+  Send,
 } from 'lucide-react'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -43,6 +38,7 @@ import type {
   CheckpointData,
   CheckpointDecision,
   AgentOutput,
+  UserMessage,
 } from '@/hooks/use-novel-creation-flow'
 
 // ── 阶段标签 ──
@@ -114,6 +110,12 @@ function formatTime(ts: number): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
+
+// ── 时间线联合类型（Agent 输出 + 用户消息按时间排序） ──
+
+type TimelineItem =
+  | { kind: 'agent'; output: AgentOutput }
+  | { kind: 'user'; message: UserMessage }
 
 // ── Agent 输出卡片（参考主聊天 MessageBubble 左对齐样式） ──
 
@@ -189,6 +191,30 @@ function AgentOutputCard({ output }: AgentOutputCardProps): ReactElement {
   )
 }
 
+// ── 用户消息气泡（参考主聊天用户消息，右对齐 + 主色背景） ──
+
+interface UserMessageBubbleProps {
+  message: UserMessage
+}
+
+function UserMessageBubble({ message }: UserMessageBubbleProps): ReactElement {
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] text-muted-foreground">
+          {formatTime(message.timestamp)}
+        </span>
+        <Badge variant="outline" className="text-[10px] font-medium bg-primary/15 text-primary border-primary/40">
+          你
+        </Badge>
+      </div>
+      <div className="rounded-lg rounded-tr-sm bg-primary text-primary-foreground px-3 py-2 max-w-[85%]">
+        <p className="text-xs leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+      </div>
+    </div>
+  )
+}
+
 // ── 检查点内容渲染 ──
 
 /** 渲染 checkpoint.data.data 的实际内容（叙事任务/验收报告） */
@@ -231,8 +257,7 @@ function renderCheckpointData(checkpoint: CheckpointData): ReactElement | null {
 
 // ── 主组件 ──
 
-export interface ChapterLiveViewProps {
-  open: boolean
+export interface ChapterLivePanelProps {
   phase: CreationPhase
   isRunning: boolean
   chapterContent: string
@@ -245,11 +270,13 @@ export interface ChapterLiveViewProps {
   onSubmitCheckpoint: (decision: CheckpointDecision) => void
   onSave: (content: string) => Promise<void>
   onDiscard: () => void
-  onClose: () => void
+  /** 用户发送消息参与创作 */
+  onSendMessage?: (message: string) => void
+  /** 用户消息历史 */
+  userMessages?: UserMessage[]
 }
 
-export function ChapterLiveView({
-  open,
+export function ChapterLivePanel({
   phase,
   isRunning,
   chapterContent,
@@ -261,8 +288,11 @@ export function ChapterLiveView({
   onSubmitCheckpoint,
   onSave,
   onDiscard,
-  onClose,
-}: ChapterLiveViewProps): ReactElement {
+  onSendMessage,
+  userMessages,
+}: ChapterLivePanelProps): ReactElement {
+  const [userInput, setUserInput] = useState('')
+
   const wordCount = useMemo(() => countWords(chapterContent), [chapterContent])
   const readTime = useMemo(() => estimateReadTime(wordCount), [wordCount])
 
@@ -280,65 +310,95 @@ export function ChapterLiveView({
   // 检查点的实际内容（叙事任务/验收报告）
   const checkpointContent = currentCheckpoint ? renderCheckpointData(currentCheckpoint) : null
 
+  // 合并 Agent 输出与用户消息，按时间戳排序
+  const timeline = useMemo<TimelineItem[]>(() => {
+    const items: TimelineItem[] = [
+      ...agentOutputs.map((output) => ({ kind: 'agent' as const, output })),
+      ...(userMessages ?? []).map((message) => ({ kind: 'user' as const, message })),
+    ]
+    return items.sort((a, b) => {
+      const aTime = a.kind === 'agent' ? a.output.timestamp : a.message.timestamp
+      const bTime = b.kind === 'agent' ? b.output.timestamp : b.message.timestamp
+      return aTime - bTime
+    })
+  }, [agentOutputs, userMessages])
+
   const handleSave = async (): Promise<void> => {
     if (!chapterContent) return
     await onSave(chapterContent)
   }
 
-  return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <FileText className="size-4 text-emerald-500" />
-            <span>章节实时预览</span>
-            {chapterNumber != null && (
-              <Badge variant="secondary" className="text-[10px]">第 {chapterNumber} 章</Badge>
-            )}
-          </DialogTitle>
-          <DialogDescription className="flex items-center gap-2">
-            {isRunning && (
-              <motion.span
-                animate={{ opacity: [0.5, 1, 0.5] }}
-                transition={{ duration: 1.5, repeat: Infinity }}
-                className="flex items-center gap-1 text-xs"
-              >
-                <Loader2 className="size-3 animate-spin" />
-                {PHASE_LABELS[phase] ?? phase}
-              </motion.span>
-            )}
-            {!isRunning && phase === 'completed' && (
-              <span className="text-xs text-success">创作完成</span>
-            )}
-            {!isRunning && phase === 'error' && (
-              <span className="text-xs text-destructive">创作出错</span>
-            )}
-          </DialogDescription>
-        </DialogHeader>
+  const handleSendMessage = (): void => {
+    const trimmed = userInput.trim()
+    if (!trimmed || !isRunning || !onSendMessage) return
+    onSendMessage(trimmed)
+    setUserInput('')
+  }
 
-        {/* Agent 输出时间线（参考主聊天消息流，左对齐卡片） */}
-        {agentOutputs.length > 0 && (
-          <div className="shrink-0 rounded-lg border border-border bg-background/50 p-2">
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      {/* 紧凑标题栏 */}
+      <header className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-1">
+        <FileText className="size-4 text-emerald-500 shrink-0" />
+        <span className="text-sm font-semibold truncate">章节实时预览</span>
+        {chapterNumber != null && (
+          <Badge variant="secondary" className="text-[10px] shrink-0">第 {chapterNumber} 章</Badge>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          {isRunning && (
+            <motion.span
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground"
+            >
+              <Loader2 className="size-3 animate-spin" />
+              {PHASE_LABELS[phase] ?? phase}
+            </motion.span>
+          )}
+          {!isRunning && phase === 'completed' && (
+            <span className="text-[11px] text-success">创作完成</span>
+          )}
+          {!isRunning && phase === 'error' && (
+            <span className="text-[11px] text-destructive">创作出错</span>
+          )}
+        </div>
+      </header>
+
+      {/* 可滚动内容区 */}
+      <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-3">
+        {/* Agent 输出 + 用户消息时间线（参考主聊天消息流） */}
+        {timeline.length > 0 && (
+          <div className="rounded-lg border border-border bg-background/50 p-2">
             <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium text-muted-foreground">
               <PenLine className="size-3" />
-              <span>Agent 输出时间线</span>
+              <span>创作时间线</span>
               <Badge variant="secondary" className="text-[10px] h-4 px-1">
-                {agentOutputs.length}
+                {timeline.length}
               </Badge>
             </div>
-            <div className="space-y-2 max-h-[200px] overflow-y-auto pr-0.5">
-              {agentOutputs.map((out, idx) => (
-                <AgentOutputCard key={`${out.timestamp}-${idx}`} output={out} />
-              ))}
+            <div className="space-y-2 max-h-[240px] overflow-y-auto pr-0.5">
+              {timeline.map((item, idx) =>
+                item.kind === 'agent' ? (
+                  <AgentOutputCard
+                    key={`agent-${item.output.timestamp}-${idx}`}
+                    output={item.output}
+                  />
+                ) : (
+                  <UserMessageBubble
+                    key={`user-${item.message.id}-${idx}`}
+                    message={item.message}
+                  />
+                ),
+              )}
             </div>
           </div>
         )}
 
-        {/* 内容区 */}
-        <div className="flex-1 overflow-y-auto min-h-[160px] max-h-[40vh] rounded-lg border border-border bg-background p-4">
+        {/* 章节内容区 */}
+        <div className="rounded-lg border border-border bg-background p-4 min-h-[120px]">
           {/* 写作中：流式指示器 */}
           {isWriting && !chapterContent && (
-            <div className="flex h-full items-center justify-center">
+            <div className="flex h-full min-h-[80px] items-center justify-center">
               <motion.div
                 animate={{ opacity: [0.3, 1, 0.3] }}
                 transition={{ duration: 1.2, repeat: Infinity }}
@@ -372,7 +432,7 @@ export function ChapterLiveView({
 
           {/* 空状态 */}
           {!isWriting && !chapterContent && !error && (
-            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+            <div className="flex h-full min-h-[80px] items-center justify-center text-xs text-muted-foreground">
               等待创作流程启动...
             </div>
           )}
@@ -385,8 +445,8 @@ export function ChapterLiveView({
           )}
         </div>
 
-        {/* 底部统计 */}
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+        {/* 字数统计 */}
+        <div className="flex items-center gap-3 text-[10px] text-muted-foreground px-1">
           <span className="flex items-center gap-1">
             <FileText className="size-2.5" />
             {wordCount} 字
@@ -421,7 +481,7 @@ export function ChapterLiveView({
                   {checkpointContent}
                 </div>
               )}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 {decisions.map((d) => (
                   <Button
                     key={d.decision}
@@ -437,28 +497,51 @@ export function ChapterLiveView({
             </motion.div>
           )}
         </AnimatePresence>
+      </div>
 
-        {/* 操作按钮 */}
-        <div className="flex items-center justify-end gap-2 pt-1">
-          {isRunning && (
-            <Button size="sm" variant="ghost" onClick={onDiscard}>
-              <Trash2 className="size-3" />
-              丢弃
-            </Button>
-          )}
-          {canSave && (
-            <Button size="sm" onClick={handleSave} disabled={!chapterContent}>
-              <Save className="size-3" />
-              保存到章节
-            </Button>
-          )}
-          {!isRunning && (
-            <Button size="sm" variant="outline" onClick={onClose}>
-              关闭
-            </Button>
-          )}
+      {/* 用户消息输入区 */}
+      <div className="shrink-0 border-t border-border p-3">
+        <div className="flex items-end gap-2">
+          <textarea
+            className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm min-h-[40px] max-h-[120px] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
+            placeholder={isRunning ? '输入指令参与创作（如：加一段环境描写）...' : '创作已结束'}
+            value={userInput}
+            onChange={(e) => setUserInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                handleSendMessage()
+              }
+            }}
+            disabled={!isRunning}
+            rows={1}
+          />
+          <Button
+            size="sm"
+            onClick={handleSendMessage}
+            disabled={!isRunning || !userInput.trim()}
+          >
+            <Send className="size-3" />
+            发送
+          </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+
+      {/* 操作按钮 */}
+      <div className="shrink-0 flex items-center justify-end gap-2 px-3 pb-3">
+        {isRunning && (
+          <Button size="sm" variant="ghost" onClick={onDiscard}>
+            <Trash2 className="size-3" />
+            丢弃
+          </Button>
+        )}
+        {canSave && (
+          <Button size="sm" onClick={handleSave} disabled={!chapterContent}>
+            <Save className="size-3" />
+            保存到章节
+          </Button>
+        )}
+      </div>
+    </div>
   )
 }

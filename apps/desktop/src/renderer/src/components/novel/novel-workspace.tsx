@@ -31,7 +31,7 @@ import { NovelSidebar } from './novel-sidebar'
 import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
-import { ChapterLiveView } from './chapter-live-view'
+import { ChapterLivePanel } from './chapter-live-view'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 
 export interface NovelWorkspaceProps {
@@ -59,12 +59,11 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   // 创作流程
   const creationFlow = useNovelCreationFlow()
-  const [liveViewOpen, setLiveViewOpen] = useState(false)
   const [creationChapterNumber, setCreationChapterNumber] = useState<number | undefined>(undefined)
 
   const [relayoutSignal, setRelayoutSignal] = useState(0)
   const [sidebarWidth, setSidebarWidth] = useState(240)
-  const [detailWidth, setDetailWidth] = useState(320)
+  const [detailWidth, setDetailWidth] = useState(420)
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
 
@@ -176,7 +175,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       })
       upsertChapter(chapter)
       setCreationChapterNumber(nextNumber)
-      setLiveViewOpen(true)
       await creationFlow.startCreation(currentProjectId, nextNumber)
     } catch {
       // 静默失败
@@ -191,7 +189,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       const updated = await completeChapter(targetChapter.id, { content })
       upsertChapter(updated)
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-      setLiveViewOpen(false)
     } catch {
       // 静默失败
     }
@@ -199,13 +196,14 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   const handleDiscardCreation = useCallback(() => {
     creationFlow.cancel()
-    setLiveViewOpen(false)
   }, [creationFlow])
 
-  const handleCloseLiveView = useCallback(() => {
-    if (creationFlow.isRunning) return
-    setLiveViewOpen(false)
+  const handleSendMessage = useCallback((message: string) => {
+    creationFlow.sendMessage(message)
   }, [creationFlow])
+
+  // 创作激活状态：运行中或处于非 idle 阶段时，右侧栏切换为创作预览面板
+  const isCreationActive = creationFlow.isRunning || creationFlow.phase !== 'idle'
 
   return (
     <ReactFlowProvider>
@@ -305,36 +303,37 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             )}
           </main>
 
-          {/* 右侧详情栏 */}
+          {/* 右侧详情栏：创作中显示实时预览面板，否则显示详情面板 */}
           <ResizableSplitter
             direction="horizontal"
             size={detailWidth}
-            minSize={240}
-            maxSize={520}
+            minSize={280}
+            maxSize={600}
             onSizeChange={setDetailWidth}
             side="right"
           />
           <aside style={{ width: detailWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
-            <NovelDetailPanel />
+            {isCreationActive ? (
+              <ChapterLivePanel
+                phase={creationFlow.phase}
+                isRunning={creationFlow.isRunning}
+                chapterContent={creationFlow.chapterContent}
+                agentOutputs={creationFlow.agentOutputs}
+                chapterNumber={creationChapterNumber}
+                currentCheckpoint={creationFlow.currentCheckpoint}
+                result={creationFlow.result}
+                error={creationFlow.error}
+                onSubmitCheckpoint={creationFlow.submitCheckpoint}
+                onSave={handleSaveChapter}
+                onDiscard={handleDiscardCreation}
+                onSendMessage={handleSendMessage}
+                userMessages={creationFlow.userMessages}
+              />
+            ) : (
+              <NovelDetailPanel />
+            )}
           </aside>
         </div>
-
-        {/* 章节实时预览弹窗 */}
-        <ChapterLiveView
-          open={liveViewOpen}
-          phase={creationFlow.phase}
-          isRunning={creationFlow.isRunning}
-          chapterContent={creationFlow.chapterContent}
-          agentOutputs={creationFlow.agentOutputs}
-          chapterNumber={creationChapterNumber}
-          currentCheckpoint={creationFlow.currentCheckpoint}
-          result={creationFlow.result}
-          error={creationFlow.error}
-          onSubmitCheckpoint={creationFlow.submitCheckpoint}
-          onSave={handleSaveChapter}
-          onDiscard={handleDiscardCreation}
-          onClose={handleCloseLiveView}
-        />
 
         {/* 缓存诊断弹窗 */}
         <Dialog open={cachePanelOpen} onOpenChange={setCachePanelOpen}>

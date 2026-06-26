@@ -1122,7 +1122,11 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/checkpoint/:type/decision',
     handler: async (request: any, reply: any) => {
       const { projectId, type } = request.params
-      const { decision } = request.body
+      const { decision, userMessages } = request.body as { decision: string; userMessages?: string[] }
+      // 如果有用户消息，存到 orchestrator 供下一个 Agent 使用
+      if (userMessages && userMessages.length > 0) {
+        services.orchestrator.setUserMessages(userMessages)
+      }
       services.orchestrator.emit(`checkpoint:${type}`, decision)
       return { ok: true, data: { accepted: true } }
     },
