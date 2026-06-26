@@ -41,7 +41,7 @@ import type { NovelSessionFactory } from './novel-session.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
-import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent } from './novel-agents.js'
+import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent, type AgentOutputData } from './novel-agents.js'
 import type { NarrativeTask, ChapterConstraints } from './types.js'
 import type { ToolDefinition as PluginToolDefinition } from '../../../core/plugin/plugin-types.js'
 import { RhythmController } from './rhythm-controller.js'
@@ -105,6 +105,14 @@ export class NovelOrchestrator extends EventEmitter {
         rhythmSuggestion,
       }, options)
 
+      // 推送导演 Agent 的输出
+      this.emitProgress(options, 'directing', {
+        agentType: 'director',
+        agentName: '导演',
+        content: directorResult,
+        preview: directorResult.slice(0, 500),
+      } as AgentOutputData)
+
       // 检查点 1
       this.emitProgress(options, 'checkpoint_narrative', { message: '等待用户确认叙事任务...' })
       const narrativeDecision = await options.onCheckpoint({
@@ -125,12 +133,28 @@ export class NovelOrchestrator extends EventEmitter {
         narrativeTask: directorResult,
       }, options)
 
+      // 推送写作 Agent 的输出
+      this.emitProgress(options, 'writing', {
+        agentType: 'writer',
+        agentName: '写作',
+        content: writerResult,
+        preview: writerResult.slice(0, 500),
+      } as AgentOutputData)
+
       // Phase 3: Reviewer
       this.emitProgress(options, 'reviewing', { message: '审稿 Agent 正在检查章节...' })
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber, {
         task: `请验收第 ${chapterNumber} 章的内容。`,
         content: writerResult,
       }, options)
+
+      // 推送审稿 Agent 的输出
+      this.emitProgress(options, 'reviewing', {
+        agentType: 'reviewer',
+        agentName: '审稿',
+        content: reviewResult,
+        preview: reviewResult.slice(0, 500),
+      } as AgentOutputData)
 
       // 检查点 2
       this.emitProgress(options, 'checkpoint_review', { message: '等待用户确认验收报告...' })
@@ -149,6 +173,13 @@ export class NovelOrchestrator extends EventEmitter {
           content: writerResult,
           issues: reviewResult,
         }, options)
+        // 推送修订 Agent 的输出
+        this.emitProgress(options, 'revising', {
+          agentType: 'reviser',
+          agentName: '修订',
+          content: reviseResult,
+          preview: reviseResult.slice(0, 500),
+        } as AgentOutputData)
         finalContent = reviseResult
       } else if (reviewDecision === 'rewrite') {
         this.emitProgress(options, 'rewriting', { message: '重新创作章节...' })
@@ -163,6 +194,13 @@ export class NovelOrchestrator extends EventEmitter {
         task: `请从第 ${chapterNumber} 章中提取状态变更。`,
         content: finalContent,
       }, options)
+      // 推送记忆 Agent 的输出
+      this.emitProgress(options, 'memory', {
+        agentType: 'memory',
+        agentName: '记忆',
+        content: memoryResult,
+        preview: memoryResult.slice(0, 500),
+      } as AgentOutputData)
       const chapter = this.store.getChapter(projectId, chapterNumber)
       const memoryEvents = this.recordMemoryEvents(
         projectId,
@@ -458,7 +496,9 @@ export class NovelOrchestrator extends EventEmitter {
 
   private emitProgress(options: CreationOptions, phase: CreationPhase, data: unknown): void {
     const event: CreationFlowEvent = {
-      type: phase === 'completed' || phase === 'error' || phase === 'cancelled' ? phase : 'phase_change',
+      type: phase === 'completed' || phase === 'error' || phase === 'cancelled'
+        ? phase
+        : (data && typeof data === 'object' && 'agentType' in data ? 'agent_output' : 'phase_change'),
       phase,
       data,
       timestamp: Date.now(),

@@ -75,8 +75,20 @@ export interface CheckpointData {
 }
 
 export interface CreationFlowEvent {
-  type: 'phase_change' | 'agent_event' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
+  type: 'phase_change' | 'agent_output' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
   phase: CreationPhase
   data?: unknown
   timestamp: number
+}
+
+/** Agent 输出事件数据 */
+export interface AgentOutputData {
+  /** Agent 类型 */
+  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+  /** Agent 名称（中文） */
+  agentName: string
+  /** Agent 的完整输出文本 */
+  content: string
+  /** 输出预览（前 500 字符，供 UI 折叠展示） */
+  preview: string
 }
