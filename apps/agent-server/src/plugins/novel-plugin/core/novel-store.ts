@@ -178,6 +178,15 @@ function now(): number {
   return Math.floor(Date.now() / 1000)
 }
 
+/** 防御性：将任意值安全转为 SQLite 可绑定的 string */
+function bindString(v: unknown, fallback = ''): string {
+  if (typeof v === 'string') return v
+  if (v == null) return fallback
+  if (Array.isArray(v)) return JSON.stringify(v)
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
 // ── NovelStore ──
 
 export class NovelStore implements NovelPromptStores {
@@ -446,11 +455,12 @@ export class NovelStore implements NovelPromptStores {
       VALUES (@id, @project_id, @name, @description, @identity, @personality, @appearance,
       @current_state, @current_goal, @current_pressure, @secret, @arc_stage, @arc_history, @speech_style, @created_at, @updated_at)
     `).run({
-      id: full.id, project_id: full.projectId, name: full.name, description: full.description,
-      identity: full.identity, personality: full.personality, appearance: full.appearance,
-      current_state: full.currentState, current_goal: full.currentGoal, current_pressure: full.currentPressure,
-      secret: full.secret, arc_stage: full.arcStage, arc_history: full.arcHistory,
-      speech_style: full.speechStyle, created_at: full.createdAt, updated_at: full.updatedAt,
+      id: full.id, project_id: full.projectId,
+      name: bindString(full.name, '未命名'), description: bindString(full.description),
+      identity: bindString(full.identity), personality: bindString(full.personality), appearance: bindString(full.appearance),
+      current_state: bindString(full.currentState), current_goal: bindString(full.currentGoal), current_pressure: bindString(full.currentPressure),
+      secret: bindString(full.secret), arc_stage: bindString(full.arcStage, 'introduction'), arc_history: bindString(full.arcHistory, '[]'),
+      speech_style: bindString(full.speechStyle), created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
   }
@@ -466,12 +476,12 @@ export class NovelStore implements NovelPromptStores {
       secret=@secret, arc_stage=@arc_stage, arc_history=@arc_history, speech_style=@speech_style, updated_at=@updated_at
       WHERE id=@id
     `).run({
-      id, name: updated.name, description: updated.description, identity: updated.identity,
-      personality: updated.personality, appearance: updated.appearance,
-      current_state: updated.currentState, current_goal: updated.currentGoal,
-      current_pressure: updated.currentPressure, secret: updated.secret,
-      arc_stage: updated.arcStage, arc_history: updated.arcHistory,
-      speech_style: updated.speechStyle, updated_at: updated.updatedAt,
+      id, name: bindString(updated.name, '未命名'), description: bindString(updated.description),
+      identity: bindString(updated.identity), personality: bindString(updated.personality), appearance: bindString(updated.appearance),
+      current_state: bindString(updated.currentState), current_goal: bindString(updated.currentGoal),
+      current_pressure: bindString(updated.currentPressure), secret: bindString(updated.secret),
+      arc_stage: bindString(updated.arcStage, 'introduction'), arc_history: bindString(updated.arcHistory, '[]'),
+      speech_style: bindString(updated.speechStyle), updated_at: updated.updatedAt,
     })
     return updated
   }

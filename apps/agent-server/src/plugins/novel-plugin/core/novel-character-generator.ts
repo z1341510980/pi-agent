@@ -10,10 +10,19 @@
  * 与 NovelOrchestrator 同目录，作为插件级服务由 NovelServices 注入。
  */
 
+import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacter } from './types.js'
-import type { PluginContext } from '../../../core/plugin/plugin-types.js'
+
+/** 将任意 LLM 输出值安全转为 string，防止数组/对象传到 SQLite */
+function ensureString(value: unknown, defaultValue: string): string {
+  if (typeof value === 'string') return value
+  if (value == null) return defaultValue
+  if (Array.isArray(value)) return value.join(', ')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
 
 export type GeneratedCharacter = Pick<
   NovelCharacter,
@@ -152,17 +161,17 @@ export class NovelCharacterGenerator {
     try {
       const parsed = JSON.parse(jsonStr.trim()) as Record<string, unknown>
       return {
-        name: (parsed.name as string) ?? '未命名角色',
-        description: (parsed.description as string) ?? '',
-        identity: (parsed.identity as string) ?? '',
-        personality: (parsed.personality as string) ?? '',
-        appearance: (parsed.appearance as string) ?? '',
-        currentState: (parsed.currentState as string) ?? '',
-        currentGoal: (parsed.currentGoal as string) ?? '',
-        currentPressure: (parsed.currentPressure as string) ?? '',
-        secret: (parsed.secret as string) ?? '',
-        arcStage: (parsed.arcStage as string) ?? 'setup',
-        speechStyle: (parsed.speechStyle as string) ?? '',
+        name: ensureString(parsed.name, '未命名角色'),
+        description: ensureString(parsed.description, ''),
+        identity: ensureString(parsed.identity, ''),
+        personality: ensureString(parsed.personality, ''),
+        appearance: ensureString(parsed.appearance, ''),
+        currentState: ensureString(parsed.currentState, ''),
+        currentGoal: ensureString(parsed.currentGoal, ''),
+        currentPressure: ensureString(parsed.currentPressure, ''),
+        secret: ensureString(parsed.secret, ''),
+        arcStage: ensureString(parsed.arcStage, 'setup'),
+        speechStyle: ensureString(parsed.speechStyle, ''),
       }
     } catch (err) {
       this.context.logger.warn(
