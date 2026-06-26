@@ -15,6 +15,9 @@ import type {
   NovelNodePosition,
   NovelNodeTypeName,
   NovelCharacterHistory,
+  NovelFaction,
+  NovelLocation,
+  NovelWorldElement,
 } from '@/api/novel-client'
 
 // ── 节点类型 ──
@@ -26,6 +29,9 @@ export type NovelNodeType =
   | 'conflict'
   | 'foreshadow'
   | 'group'
+  | 'faction'
+  | 'location'
+  | 'world_element'
 
 // ── Store 状态 ──
 
@@ -43,6 +49,9 @@ export interface NovelState {
   styleGuides: NovelStyleGuide[]
   constraints: NovelConstraint[]
   infoLayers: NovelInformationLayer[]
+  factions: NovelFaction[]
+  locations: NovelLocation[]
+  worldElements: NovelWorldElement[]
   nodePositions: NovelNodePosition[]
   characterHistory: NovelCharacterHistory[]
 
@@ -68,6 +77,9 @@ export interface NovelState {
     styleGuides?: NovelStyleGuide[]
     constraints?: NovelConstraint[]
     infoLayers?: NovelInformationLayer[]
+    factions?: NovelFaction[]
+    locations?: NovelLocation[]
+    worldElements?: NovelWorldElement[]
   }) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -87,6 +99,9 @@ export interface NovelState {
   upsertStyleGuide: (guide: NovelStyleGuide) => void
   upsertConstraint: (constraint: NovelConstraint) => void
   upsertInfoLayer: (layer: NovelInformationLayer) => void
+  upsertFaction: (faction: NovelFaction) => void
+  upsertLocation: (location: NovelLocation) => void
+  upsertWorldElement: (element: NovelWorldElement) => void
 
   // ── 实体删除 ──
   removeProject: (id: string) => void
@@ -94,6 +109,9 @@ export interface NovelState {
   removeChapter: (id: string) => void
   removeConflict: (id: string) => void
   removeForeshadow: (id: string) => void
+  removeFaction: (id: string) => void
+  removeLocation: (id: string) => void
+  removeWorldElement: (id: string) => void
 
   // ── 节点位置 ──
   setNodePositions: (positions: NovelNodePosition[]) => void
@@ -140,6 +158,9 @@ export const useNovelStore = create<NovelState>()(
       styleGuides: [],
       constraints: [],
       infoLayers: [],
+      factions: [],
+      locations: [],
+      worldElements: [],
       nodePositions: [],
       characterHistory: [],
 
@@ -167,6 +188,9 @@ export const useNovelStore = create<NovelState>()(
           styleGuides: data.styleGuides ?? state.styleGuides,
           constraints: data.constraints ?? state.constraints,
           infoLayers: data.infoLayers ?? state.infoLayers,
+          factions: data.factions ?? state.factions,
+          locations: data.locations ?? state.locations,
+          worldElements: data.worldElements ?? state.worldElements,
         })),
 
       setLoading: (loading) => set({ loading }),
@@ -186,6 +210,9 @@ export const useNovelStore = create<NovelState>()(
           styleGuides: [],
           constraints: [],
           infoLayers: [],
+          factions: [],
+          locations: [],
+          worldElements: [],
           nodePositions: [],
           characterHistory: [],
           selectedNodeId: null,
@@ -204,6 +231,9 @@ export const useNovelStore = create<NovelState>()(
       upsertStyleGuide: (guide) => set((state) => ({ styleGuides: upsertInList(state.styleGuides, guide) })),
       upsertConstraint: (constraint) => set((state) => ({ constraints: upsertInList(state.constraints, constraint) })),
       upsertInfoLayer: (layer) => set((state) => ({ infoLayers: upsertInList(state.infoLayers, layer) })),
+      upsertFaction: (faction) => set((state) => ({ factions: upsertInList(state.factions, faction) })),
+      upsertLocation: (location) => set((state) => ({ locations: upsertInList(state.locations, location) })),
+      upsertWorldElement: (element) => set((state) => ({ worldElements: upsertInList(state.worldElements, element) })),
 
       // ── remove ──
       removeProject: (id) =>
@@ -222,6 +252,9 @@ export const useNovelStore = create<NovelState>()(
                 styleGuides: [],
                 constraints: [],
                 infoLayers: [],
+                factions: [],
+                locations: [],
+                worldElements: [],
                 nodePositions: [],
                 characterHistory: [],
                 selectedNodeId: null,
@@ -233,6 +266,9 @@ export const useNovelStore = create<NovelState>()(
       removeChapter: (id) => set((state) => ({ chapters: removeFromList(state.chapters, id) })),
       removeConflict: (id) => set((state) => ({ conflicts: removeFromList(state.conflicts, id) })),
       removeForeshadow: (id) => set((state) => ({ foreshadows: removeFromList(state.foreshadows, id) })),
+      removeFaction: (id) => set((state) => ({ factions: removeFromList(state.factions, id) })),
+      removeLocation: (id) => set((state) => ({ locations: removeFromList(state.locations, id) })),
+      removeWorldElement: (id) => set((state) => ({ worldElements: removeFromList(state.worldElements, id) })),
 
       // ── 节点位置 ──
       setNodePositions: (positions) => set({ nodePositions: positions }),
@@ -268,6 +304,9 @@ export const useNovelStore = create<NovelState>()(
         styleGuides: state.styleGuides,
         constraints: state.constraints,
         infoLayers: state.infoLayers,
+        factions: state.factions,
+        locations: state.locations,
+        worldElements: state.worldElements,
         nodePositions: state.nodePositions,
         characterHistory: state.characterHistory,
         selectedNodeId: state.selectedNodeId,

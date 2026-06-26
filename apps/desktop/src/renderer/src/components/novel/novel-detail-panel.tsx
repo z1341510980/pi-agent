@@ -28,6 +28,9 @@ import {
   updateChapter,
   updateConflict,
   updateForeshadow,
+  updateFaction,
+  updateLocation,
+  updateWorldElement,
   listCharacterHistory,
   createCharacterHistory,
   type NovelProject,
@@ -42,6 +45,16 @@ import {
   type ConflictType,
   type ConflictStage,
   type ForeshadowStatus,
+  type NovelFaction,
+  type NovelLocation,
+  type NovelWorldElement,
+  type NovelFactionType,
+  type NovelFactionStrength,
+  type NovelFactionStatus,
+  type NovelLocationType,
+  type NovelLocationSignificance,
+  type NovelLocationStatus,
+  type NovelWorldElementCategory,
 } from '@/api/novel-client'
 
 // ── 字段组件 ──
@@ -127,6 +140,63 @@ const FORESHADOW_STATUS_OPTIONS: { value: ForeshadowStatus; label: string }[] = 
   { value: 'abandoned', label: '已废弃' },
 ]
 
+const FACTION_TYPE_OPTIONS: { value: NovelFactionType; label: string }[] = [
+  { value: 'organization', label: '组织' },
+  { value: 'sect', label: '门派' },
+  { value: 'kingdom', label: '王国' },
+  { value: 'family', label: '家族' },
+  { value: 'guild', label: '公会' },
+  { value: 'cult', label: '邪教' },
+]
+
+const FACTION_STRENGTH_OPTIONS: { value: NovelFactionStrength; label: string }[] = [
+  { value: 'weak', label: '弱小' },
+  { value: 'medium', label: '中等' },
+  { value: 'strong', label: '强盛' },
+  { value: 'overwhelming', label: '压倒性' },
+]
+
+const FACTION_STATUS_OPTIONS: { value: NovelFactionStatus; label: string }[] = [
+  { value: 'active', label: '活跃' },
+  { value: 'declined', label: '衰落' },
+  { value: 'destroyed', label: '覆灭' },
+  { value: 'hidden', label: '隐秘' },
+]
+
+const LOCATION_TYPE_OPTIONS: { value: NovelLocationType; label: string }[] = [
+  { value: 'continent', label: '大陆' },
+  { value: 'country', label: '国家' },
+  { value: 'city', label: '城市' },
+  { value: 'building', label: '建筑' },
+  { value: 'dungeon', label: '地下城' },
+  { value: 'region', label: '区域' },
+  { value: 'wilderness', label: '荒野' },
+]
+
+const LOCATION_SIGNIFICANCE_OPTIONS: { value: NovelLocationSignificance; label: string }[] = [
+  { value: 'minor', label: '次要' },
+  { value: 'moderate', label: '中等' },
+  { value: 'major', label: '重要' },
+  { value: 'critical', label: '关键' },
+]
+
+const LOCATION_STATUS_OPTIONS: { value: NovelLocationStatus; label: string }[] = [
+  { value: 'normal', label: '正常' },
+  { value: 'destroyed', label: '毁灭' },
+  { value: 'changed', label: '变迁' },
+  { value: 'hidden', label: '隐秘' },
+]
+
+const WORLD_ELEMENT_CATEGORY_OPTIONS: { value: NovelWorldElementCategory; label: string }[] = [
+  { value: 'power_system', label: '力量体系' },
+  { value: 'history', label: '历史' },
+  { value: 'culture', label: '文化' },
+  { value: 'religion', label: '宗教' },
+  { value: 'technology', label: '科技' },
+  { value: 'economy', label: '经济' },
+  { value: 'geography', label: '地理' },
+]
+
 // 动态状态字段（用于变更历史记录）
 const DYNAMIC_FIELDS: CharacterHistoryField[] = [
   'currentState',
@@ -174,6 +244,9 @@ export function NovelDetailPanel(): ReactElement {
   const chapters = useNovelStore((s) => s.chapters)
   const conflicts = useNovelStore((s) => s.conflicts)
   const foreshadows = useNovelStore((s) => s.foreshadows)
+  const factions = useNovelStore((s) => s.factions)
+  const locations = useNovelStore((s) => s.locations)
+  const worldElements = useNovelStore((s) => s.worldElements)
 
   const entity = useMemo(() => {
     if (!selectedNodeId || !selectedNodeType) return null
@@ -188,10 +261,16 @@ export function NovelDetailPanel(): ReactElement {
         return conflicts.find((c) => c.id === selectedNodeId) ?? null
       case 'foreshadow':
         return foreshadows.find((f) => f.id === selectedNodeId) ?? null
+      case 'faction':
+        return factions.find((f) => f.id === selectedNodeId) ?? null
+      case 'location':
+        return locations.find((l) => l.id === selectedNodeId) ?? null
+      case 'world_element':
+        return worldElements.find((w) => w.id === selectedNodeId) ?? null
       default:
         return null
     }
-  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, conflicts, foreshadows])
+  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, conflicts, foreshadows, factions, locations, worldElements])
 
   if (!entity || !selectedNodeType) {
     return (
@@ -238,6 +317,15 @@ export function NovelDetailPanel(): ReactElement {
         {selectedNodeType === 'foreshadow' && (
           <ForeshadowForm key={entity.id} entity={entity as NovelForeshadow} />
         )}
+        {selectedNodeType === 'faction' && (
+          <FactionForm key={entity.id} entity={entity as NovelFaction} />
+        )}
+        {selectedNodeType === 'location' && (
+          <LocationForm key={entity.id} entity={entity as NovelLocation} />
+        )}
+        {selectedNodeType === 'world_element' && (
+          <WorldElementForm key={entity.id} entity={entity as NovelWorldElement} />
+        )}
       </div>
     </div>
   )
@@ -248,6 +336,9 @@ function entityTitle(entity: unknown, type: string): string {
   if (type === 'project') return String(e.title ?? '')
   if (type === 'chapter') return String(e.title ?? `第 ${e.chapterNumber} 章`)
   if (type === 'character') return String(e.name ?? '')
+  if (type === 'faction' || type === 'location' || type === 'world_element') {
+    return String(e.name ?? '')
+  }
   if (type === 'conflict' || type === 'foreshadow') {
     const d = String(e.description ?? '')
     return d.length > 20 ? `${d.slice(0, 20)}...` : d
@@ -1004,6 +1095,375 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
           </div>
         </FieldRow>
       )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+    </div>
+  )
+}
+
+// ── 势力编辑表单 ──
+
+function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
+  const upsertFaction = useNovelStore((s) => s.upsertFaction)
+  const [form, setForm] = useState({
+    name: entity.name,
+    description: entity.description,
+    type: entity.type,
+    leaderId: entity.leaderId ?? '',
+    ideology: entity.ideology,
+    strength: entity.strength,
+    status: entity.status,
+    resources: entity.resources.join(', '),
+    allies: entity.allies.join(', '),
+    enemies: entity.enemies.join(', '),
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const dirty =
+    form.name !== entity.name ||
+    form.description !== entity.description ||
+    form.type !== entity.type ||
+    (entity.leaderId ?? '') !== form.leaderId ||
+    form.ideology !== entity.ideology ||
+    form.strength !== entity.strength ||
+    form.status !== entity.status ||
+    form.resources !== entity.resources.join(', ') ||
+    form.allies !== entity.allies.join(', ') ||
+    form.enemies !== entity.enemies.join(', ')
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const splitList = (s: string) =>
+        s.split(',').map((x) => x.trim()).filter(Boolean)
+      const updated = await updateFaction(entity.id, {
+        name: form.name,
+        description: form.description,
+        type: form.type,
+        leaderId: form.leaderId || null,
+        ideology: form.ideology,
+        strength: form.strength,
+        status: form.status,
+        resources: splitList(form.resources),
+        allies: splitList(form.allies),
+        enemies: splitList(form.enemies),
+      })
+      upsertFaction(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertFaction])
+
+  return (
+    <div className="space-y-3">
+      <FieldRow label="名称">
+        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="简述">
+        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
+      <div className="grid grid-cols-2 gap-2">
+        <FieldRow label="类型">
+          <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelFactionType }))}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {FACTION_TYPE_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FieldRow>
+        <FieldRow label="实力">
+          <Select value={form.strength} onValueChange={(v) => setForm((f) => ({ ...f, strength: v as NovelFactionStrength }))}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {FACTION_STRENGTH_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FieldRow>
+      </div>
+      <FieldRow label="状态">
+        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelFactionStatus }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FACTION_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="首领角色 ID">
+        <TextInput
+          value={form.leaderId}
+          onChange={(e) => setForm((f) => ({ ...f, leaderId: e.target.value }))}
+          placeholder="角色 ID（可留空）"
+        />
+      </FieldRow>
+      <FieldRow label="理念 / 信仰">
+        <TextArea value={form.ideology} onChange={(e) => setForm((f) => ({ ...f, ideology: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="资源（逗号分隔）">
+        <TextArea
+          value={form.resources}
+          onChange={(e) => setForm((f) => ({ ...f, resources: e.target.value }))}
+          placeholder="金钱, 矿石, 法术卷轴"
+        />
+      </FieldRow>
+      <div className="grid grid-cols-2 gap-2">
+        <FieldRow label="盟友势力 ID（逗号分隔）">
+          <TextArea
+            value={form.allies}
+            onChange={(e) => setForm((f) => ({ ...f, allies: e.target.value }))}
+            placeholder="faction-id-1, faction-id-2"
+          />
+        </FieldRow>
+        <FieldRow label="敌对势力 ID（逗号分隔）">
+          <TextArea
+            value={form.enemies}
+            onChange={(e) => setForm((f) => ({ ...f, enemies: e.target.value }))}
+            placeholder="faction-id-3, faction-id-4"
+          />
+        </FieldRow>
+      </div>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+    </div>
+  )
+}
+
+// ── 地点编辑表单 ──
+
+function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
+  const upsertLocation = useNovelStore((s) => s.upsertLocation)
+  const [form, setForm] = useState({
+    name: entity.name,
+    description: entity.description,
+    type: entity.type,
+    parentId: entity.parentId ?? '',
+    factionId: entity.factionId ?? '',
+    significance: entity.significance,
+    firstChapter: entity.firstChapter != null ? String(entity.firstChapter) : '',
+    status: entity.status,
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
+
+  const dirty =
+    form.name !== entity.name ||
+    form.description !== entity.description ||
+    form.type !== entity.type ||
+    (entity.parentId ?? '') !== form.parentId ||
+    (entity.factionId ?? '') !== form.factionId ||
+    form.significance !== entity.significance ||
+    toNumOrNull(form.firstChapter) !== entity.firstChapter ||
+    form.status !== entity.status
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await updateLocation(entity.id, {
+        name: form.name,
+        description: form.description,
+        type: form.type,
+        parentId: form.parentId || null,
+        factionId: form.factionId || null,
+        significance: form.significance,
+        firstChapter: toNumOrNull(form.firstChapter),
+        status: form.status,
+      })
+      upsertLocation(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertLocation])
+
+  return (
+    <div className="space-y-3">
+      <FieldRow label="名称">
+        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="简述">
+        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
+      <div className="grid grid-cols-2 gap-2">
+        <FieldRow label="类型">
+          <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelLocationType }))}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LOCATION_TYPE_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FieldRow>
+        <FieldRow label="重要程度">
+          <Select value={form.significance} onValueChange={(v) => setForm((f) => ({ ...f, significance: v as NovelLocationSignificance }))}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LOCATION_SIGNIFICANCE_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FieldRow>
+      </div>
+      <FieldRow label="状态">
+        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelLocationStatus }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {LOCATION_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <div className="grid grid-cols-2 gap-2">
+        <FieldRow label="父级地点 ID">
+          <TextInput
+            value={form.parentId}
+            onChange={(e) => setForm((f) => ({ ...f, parentId: e.target.value }))}
+            placeholder="父地点 ID（可留空）"
+          />
+        </FieldRow>
+        <FieldRow label="归属势力 ID">
+          <TextInput
+            value={form.factionId}
+            onChange={(e) => setForm((f) => ({ ...f, factionId: e.target.value }))}
+            placeholder="势力 ID（可留空）"
+          />
+        </FieldRow>
+      </div>
+      <FieldRow label="首次出现章节">
+        <TextInput
+          type="number"
+          value={form.firstChapter}
+          onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
+          placeholder="章节号（可留空）"
+        />
+      </FieldRow>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+    </div>
+  )
+}
+
+// ── 世界观要素编辑表单 ──
+
+function WorldElementForm({ entity }: { entity: NovelWorldElement }): ReactElement {
+  const upsertWorldElement = useNovelStore((s) => s.upsertWorldElement)
+  const [form, setForm] = useState({
+    category: entity.category,
+    name: entity.name,
+    description: entity.description,
+    parentId: entity.parentId ?? '',
+    attributesText: (() => {
+      try {
+        return JSON.stringify(entity.attributes ?? {}, null, 2)
+      } catch {
+        return '{}'
+      }
+    })(),
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [attributesError, setAttributesError] = useState<string | null>(null)
+
+  const dirty =
+    form.category !== entity.category ||
+    form.name !== entity.name ||
+    form.description !== entity.description ||
+    (entity.parentId ?? '') !== form.parentId ||
+    form.attributesText !== JSON.stringify(entity.attributes ?? {}, null, 2)
+
+  const handleSave = useCallback(async () => {
+    setAttributesError(null)
+    let parsedAttributes: Record<string, unknown> = {}
+    try {
+      parsedAttributes = form.attributesText.trim() ? JSON.parse(form.attributesText) : {}
+      if (typeof parsedAttributes !== 'object' || parsedAttributes === null || Array.isArray(parsedAttributes)) {
+        throw new Error('附加属性必须是 JSON 对象')
+      }
+    } catch (err) {
+      setAttributesError(err instanceof Error ? err.message : '附加属性 JSON 解析失败')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await updateWorldElement(entity.id, {
+        category: form.category,
+        name: form.name,
+        description: form.description,
+        parentId: form.parentId || null,
+        attributes: parsedAttributes,
+      })
+      upsertWorldElement(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertWorldElement])
+
+  return (
+    <div className="space-y-3">
+      <FieldRow label="分类">
+        <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelWorldElementCategory }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {WORLD_ELEMENT_CATEGORY_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="名称">
+        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="描述">
+        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="父级要素 ID">
+        <TextInput
+          value={form.parentId}
+          onChange={(e) => setForm((f) => ({ ...f, parentId: e.target.value }))}
+          placeholder="父要素 ID（可留空）"
+        />
+      </FieldRow>
+      <FieldRow label="附加属性（JSON 对象）">
+        <TextArea
+          value={form.attributesText}
+          onChange={(e) => setForm((f) => ({ ...f, attributesText: e.target.value }))}
+          className="min-h-[120px] font-mono text-xs"
+          placeholder='{"key": "value"}'
+        />
+      </FieldRow>
+      {attributesError && <p className="text-xs text-destructive">{attributesError}</p>}
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>

@@ -24,6 +24,9 @@ import {
   deleteChapter,
   deleteConflict,
   deleteForeshadow,
+  deleteFaction,
+  deleteLocation,
+  deleteWorldElement,
   deleteNodePosition,
   upsertNodePositions,
   type NovelNodePosition,
@@ -36,6 +39,9 @@ import { ChapterNode } from './nodes/ChapterNode'
 import { ConflictNode } from './nodes/ConflictNode'
 import { ForeshadowNode } from './nodes/ForeshadowNode'
 import { GroupNode } from './nodes/GroupNode'
+import { FactionNode } from './nodes/FactionNode'
+import { LocationNode } from './nodes/LocationNode'
+import { WorldElementNode } from './nodes/WorldElementNode'
 import { CreationProgressOverlay } from './creation-progress-overlay'
 import type { CreationPhase } from '@/hooks/use-novel-creation-flow'
 import { cn } from '@/lib/utils'
@@ -49,6 +55,9 @@ const nodeTypes: NodeTypes = {
   conflict: ConflictNode,
   foreshadow: ForeshadowNode,
   group: GroupNode,
+  faction: FactionNode,
+  location: LocationNode,
+  world_element: WorldElementNode,
 }
 
 // ── MiniMap 性能优化 ──
@@ -68,6 +77,9 @@ function miniMapNodeColor(n: Node): string {
   if (type === 'conflict') return '#f43f5e'
   if (type === 'foreshadow') return '#f59e0b'
   if (type === 'group') return '#6366f1'
+  if (type === 'faction') return '#a855f7'
+  if (type === 'location') return '#06b6d4'
+  if (type === 'world_element') return '#4f46e5'
   return '#6b7280'
 }
 
@@ -91,6 +103,12 @@ const CHAR_X = -380
 const CHAPTER_Y = 280
 const CONFLICT_X_OFFSET = 200
 const FORESHADOW_Y = 560
+const FACTION_X = 380
+const FACTION_Y_START = -280
+const LOCATION_Y = 560
+const LOCATION_X_START = -380
+const WORLD_ELEMENT_Y = 820
+const WORLD_ELEMENT_X_START = -380
 const NODE_SPACING_Y = 110
 const CHAPTER_SPACING_X = 240
 
@@ -151,6 +169,11 @@ function computeTargetBundleCount(edges: Edge[]): Map<string, number> {
  *   - conflict  → character   （冲突涉及角色，方向性）
  *   - foreshadow → chapter    （伏笔埋设/回收于章节）
  *   - group     → chapter     （集合节点关联到章节）
+ *   - faction   ↔ character   （势力与角色：首领/成员）
+ *   - location  ↔ chapter     （地点出现于章节）
+ *   - location  ↔ location    （地点层级：父/子）
+ *   - faction   ↔ location    （势力归属地点）
+ *   - world_element → any / any → world_element （世界观要素可关联任意实体）
  *   - project   → any / any → project （通常自动生成）
  * 禁止：
  *   - character → conflict    （应使用 conflict → character）
@@ -161,6 +184,9 @@ function isValidConnection(sourceType: string, targetType: string): boolean {
 
   // project 与任意实体可互连（通常自动生成）
   if (sourceType === 'project' || targetType === 'project') return true
+
+  // world_element 与任意实体可互连（世界观要素是元数据层）
+  if (sourceType === 'world_element' || targetType === 'world_element') return true
 
   // character ↔ chapter
   if (
@@ -186,6 +212,30 @@ function isValidConnection(sourceType: string, targetType: string): boolean {
     (sourceType === 'chapter' && targetType === 'group')
   ) return true
 
+  // faction ↔ character（势力首领/成员）
+  if (
+    (sourceType === 'faction' && targetType === 'character') ||
+    (sourceType === 'character' && targetType === 'faction')
+  ) return true
+
+  // location ↔ chapter（地点出现于章节）
+  if (
+    (sourceType === 'location' && targetType === 'chapter') ||
+    (sourceType === 'chapter' && targetType === 'location')
+  ) return true
+
+  // location ↔ location（地点层级：父/子）
+  if (sourceType === 'location' && targetType === 'location') return true
+
+  // faction ↔ location（势力归属地点）
+  if (
+    (sourceType === 'faction' && targetType === 'location') ||
+    (sourceType === 'location' && targetType === 'faction')
+  ) return true
+
+  // faction ↔ faction（势力间盟友/敌对关系）
+  if (sourceType === 'faction' && targetType === 'faction') return true
+
   return false
 }
 
@@ -202,9 +252,12 @@ function buildLayout(params: {
   chapters: Array<{ id: string; chapterNumber: number; title: string; status: string; wordCount: number; volume: number }>
   conflicts: Array<{ id: string; description: string; type: string; intensity: number; stage: string; participants: string }>
   foreshadows: Array<{ id: string; description: string; category: string; status: string; firstChapter: number | null; lastChapter: number | null; recoverByChapter: number | null }>
+  factions: Array<{ id: string; name: string; description: string; type: string; strength: string; status: string; leaderId: string | null; allies: string[]; enemies: string[] }>
+  locations: Array<{ id: string; name: string; description: string; type: string; parentId: string | null; factionId: string | null; significance: string; firstChapter: number | null; status: string }>
+  worldElements: Array<{ id: string; name: string; description: string; category: string; parentId: string | null; attributes: Record<string, unknown> }>
   savedPositions: Map<string, { x: number; y: number }>
 }): LayoutResult {
-  const { project, characters, chapters, conflicts, foreshadows, savedPositions } = params
+  const { project, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, savedPositions } = params
   const nodes: Node[] = []
   const edges: Edge[] = []
 
@@ -313,6 +366,100 @@ function buildLayout(params: {
     }
   })
 
+  // 势力节点（右侧竖向排列，连接首领角色与盟友/敌对势力）
+  factions.forEach((f, i) => {
+    nodes.push({
+      id: nodeId('faction', f.id),
+      type: 'faction',
+      position: resolvePos('faction', f.id, { x: FACTION_X, y: FACTION_Y_START + i * NODE_SPACING_Y }),
+      data: { entity: f },
+    })
+    // 势力 → 首领角色
+    if (f.leaderId && characters.some((c) => c.id === f.leaderId)) {
+      edges.push({
+        id: `e-fac-${f.id}-leader-${f.leaderId}`,
+        source: nodeId('faction', f.id),
+        target: nodeId('character', f.leaderId),
+        style: { stroke: '#a855f7', strokeWidth: 1.5 },
+        data: { auto: true },
+      })
+    }
+    // 势力 → 盟友势力
+    f.allies.forEach((aid) => {
+      if (factions.some((x) => x.id === aid)) {
+        edges.push({
+          id: `e-fac-${f.id}-ally-${aid}`,
+          source: nodeId('faction', f.id),
+          target: nodeId('faction', aid),
+          style: { stroke: '#10b981', strokeWidth: 1, strokeDasharray: '2 3' },
+          data: { auto: true },
+        })
+      }
+    })
+    // 势力 → 敌对势力
+    f.enemies.forEach((eid) => {
+      if (factions.some((x) => x.id === eid)) {
+        edges.push({
+          id: `e-fac-${f.id}-enemy-${eid}`,
+          source: nodeId('faction', f.id),
+          target: nodeId('faction', eid),
+          style: { stroke: '#f43f5e', strokeWidth: 1, strokeDasharray: '4 2' },
+          data: { auto: true },
+        })
+      }
+    })
+  })
+
+  // 地点节点（左下方横向排列，构建父子层级与势力归属）
+  locations.forEach((l, i) => {
+    nodes.push({
+      id: nodeId('location', l.id),
+      type: 'location',
+      position: resolvePos('location', l.id, { x: LOCATION_X_START + i * CHAPTER_SPACING_X, y: LOCATION_Y }),
+      data: { entity: l },
+    })
+    // 地点 → 父级地点
+    if (l.parentId && locations.some((x) => x.id === l.parentId)) {
+      edges.push({
+        id: `e-loc-${l.id}-parent-${l.parentId}`,
+        source: nodeId('location', l.id),
+        target: nodeId('location', l.parentId),
+        style: { stroke: '#06b6d4', strokeWidth: 1, strokeDasharray: '2 3' },
+        data: { auto: true },
+      })
+    }
+    // 地点 → 归属势力
+    if (l.factionId && factions.some((x) => x.id === l.factionId)) {
+      edges.push({
+        id: `e-loc-${l.id}-fac-${l.factionId}`,
+        source: nodeId('location', l.id),
+        target: nodeId('faction', l.factionId),
+        style: { stroke: '#0891b2', strokeWidth: 1, strokeDasharray: '3 2' },
+        data: { auto: true },
+      })
+    }
+  })
+
+  // 世界观要素节点（最下方横向排列，构建父子层级）
+  worldElements.forEach((we, i) => {
+    nodes.push({
+      id: nodeId('world_element', we.id),
+      type: 'world_element',
+      position: resolvePos('world_element', we.id, { x: WORLD_ELEMENT_X_START + i * CHAPTER_SPACING_X, y: WORLD_ELEMENT_Y }),
+      data: { entity: we },
+    })
+    // 世界观要素 → 父级要素
+    if (we.parentId && worldElements.some((x) => x.id === we.parentId)) {
+      edges.push({
+        id: `e-we-${we.id}-parent-${we.parentId}`,
+        source: nodeId('world_element', we.id),
+        target: nodeId('world_element', we.parentId),
+        style: { stroke: '#4f46e5', strokeWidth: 1, strokeDasharray: '2 3' },
+        data: { auto: true },
+      })
+    }
+  })
+
   // ── 边打包：同一 target 有多条边时降低透明度与线宽 ──
   const bundleCounts = computeTargetBundleCount(edges)
   for (const e of edges) {
@@ -409,6 +556,9 @@ export function NovelCanvas({
   const chapters = useNovelStore((s) => s.chapters)
   const conflicts = useNovelStore((s) => s.conflicts)
   const foreshadows = useNovelStore((s) => s.foreshadows)
+  const factions = useNovelStore((s) => s.factions)
+  const locations = useNovelStore((s) => s.locations)
+  const worldElements = useNovelStore((s) => s.worldElements)
   const nodePositions = useNovelStore((s) => s.nodePositions)
   const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
   const selectedNodeType = useNovelStore((s) => s.selectedNodeType)
@@ -422,6 +572,9 @@ export function NovelCanvas({
   const removeChapter = useNovelStore((s) => s.removeChapter)
   const removeConflict = useNovelStore((s) => s.removeConflict)
   const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
+  const removeFaction = useNovelStore((s) => s.removeFaction)
+  const removeLocation = useNovelStore((s) => s.removeLocation)
+  const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
 
   const { fitView } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
@@ -464,9 +617,12 @@ export function NovelCanvas({
       chapters,
       conflicts,
       foreshadows,
+      factions,
+      locations,
+      worldElements,
       savedPositions: savedPositionsMap,
     }),
-    [project, characters, chapters, conflicts, foreshadows, savedPositionsMap],
+    [project, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, savedPositionsMap],
   )
 
   // 节点总数
@@ -522,6 +678,18 @@ export function NovelCanvas({
           await deleteForeshadow(targetId)
           removeForeshadow(targetId)
           break
+        case 'faction':
+          await deleteFaction(targetId)
+          removeFaction(targetId)
+          break
+        case 'location':
+          await deleteLocation(targetId)
+          removeLocation(targetId)
+          break
+        case 'world_element':
+          await deleteWorldElement(targetId)
+          removeWorldElement(targetId)
+          break
         default:
           return
       }
@@ -537,7 +705,7 @@ export function NovelCanvas({
     } catch {
       // 静默失败（可在通知中心提示）
     }
-  }, [removeProject, removeCharacter, removeChapter, removeConflict, removeForeshadow, removeNodePosition, clearSelection, onDeleteNode])
+  }, [removeProject, removeCharacter, removeChapter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeNodePosition, clearSelection, onDeleteNode])
 
   // ── 位置批量同步：将待同步队列一次性 PUT 到 API ──
   const flushPositions = useCallback(() => {

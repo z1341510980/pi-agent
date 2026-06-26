@@ -209,6 +209,36 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  routes.push({
+    method: 'DELETE',
+    path: '/factions/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteFaction(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `势力不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/locations/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteLocation(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `地点不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/world-elements/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteWorldElement(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `世界观要素不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
   // ═══════════════════════════════════════════════════════════════
   // 章节管理
   // ═══════════════════════════════════════════════════════════════
@@ -800,6 +830,161 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 势力
+  // ═══════════════════════════════════════════════════════════════
+
+  const createFactionSchema = z.object({
+    name: z.string().min(1),
+    description: z.string().default(''),
+    type: z.enum(['organization', 'sect', 'kingdom', 'family', 'guild', 'cult']).default('organization'),
+    leaderId: z.string().nullable().default(null),
+    ideology: z.string().default(''),
+    strength: z.enum(['weak', 'medium', 'strong', 'overwhelming']).default('medium'),
+    resources: z.array(z.string()).default([]),
+    allies: z.array(z.string()).default([]),
+    enemies: z.array(z.string()).default([]),
+    status: z.enum(['active', 'declined', 'destroyed', 'hidden']).default('active'),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/factions',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createFactionSchema, request, reply)
+      if (!input) return reply
+
+      const faction = store.createFaction({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        ...input,
+      })
+      return success(faction, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/factions',
+    handler: async (request: any) => {
+      return success(store.listFactions(request.params.projectId), request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/factions/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createFactionSchema.partial(), request, reply)
+      if (!input) return reply
+
+      const updated = store.updateFaction(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `势力不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 地点
+  // ═══════════════════════════════════════════════════════════════
+
+  const createLocationSchema = z.object({
+    name: z.string().min(1),
+    description: z.string().default(''),
+    type: z.enum(['continent', 'country', 'city', 'building', 'dungeon', 'region', 'wilderness']).default('city'),
+    parentId: z.string().nullable().default(null),
+    factionId: z.string().nullable().default(null),
+    significance: z.enum(['minor', 'moderate', 'major', 'critical']).default('minor'),
+    firstChapter: z.number().int().nullable().default(null),
+    status: z.enum(['normal', 'destroyed', 'changed', 'hidden']).default('normal'),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/locations',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createLocationSchema, request, reply)
+      if (!input) return reply
+
+      const location = store.createLocation({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        ...input,
+      })
+      return success(location, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/locations',
+    handler: async (request: any) => {
+      return success(store.listLocations(request.params.projectId), request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/locations/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createLocationSchema.partial(), request, reply)
+      if (!input) return reply
+
+      const updated = store.updateLocation(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `地点不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 世界观要素
+  // ═══════════════════════════════════════════════════════════════
+
+  const createWorldElementSchema = z.object({
+    category: z.enum(['power_system', 'history', 'culture', 'religion', 'technology', 'economy', 'geography']),
+    name: z.string().min(1),
+    description: z.string().default(''),
+    parentId: z.string().nullable().default(null),
+    attributes: z.record(z.string(), z.unknown()).default({}),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/world-elements',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createWorldElementSchema, request, reply)
+      if (!input) return reply
+
+      const element = store.createWorldElement({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        ...input,
+      })
+      return success(element, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/world-elements',
+    handler: async (request: any) => {
+      return success(store.listWorldElements(request.params.projectId), request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/world-elements/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createWorldElementSchema.partial(), request, reply)
+      if (!input) return reply
+
+      const updated = store.updateWorldElement(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `世界观要素不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 节点位置（前端画布节点坐标持久化）
   // ═══════════════════════════════════════════════════════════════
 
@@ -813,7 +998,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
 
   const upsertNodePositionsSchema = z.object({
     positions: z.array(z.object({
-      nodeType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group']),
+      nodeType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group', 'faction', 'location', 'world_element']),
       entityId: z.string().min(1),
       posX: z.number(),
       posY: z.number(),

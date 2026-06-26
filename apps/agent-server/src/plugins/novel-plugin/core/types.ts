@@ -204,6 +204,70 @@ export interface NovelWorldRule {
   updatedAt: number
 }
 
+// ── 势力 ──
+
+export type NovelFactionType =
+  | 'organization' | 'sect' | 'kingdom' | 'family' | 'guild' | 'cult'
+export type NovelFactionStrength = 'weak' | 'medium' | 'strong' | 'overwhelming'
+export type NovelFactionStatus = 'active' | 'declined' | 'destroyed' | 'hidden'
+
+export interface NovelFaction {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  type: NovelFactionType
+  leaderId: string | null
+  ideology: string
+  strength: NovelFactionStrength
+  resources: string[]
+  allies: string[] // factionId[]
+  enemies: string[] // factionId[]
+  status: NovelFactionStatus
+  createdAt: number
+  updatedAt: number
+}
+
+// ── 地点 ──
+
+export type NovelLocationType =
+  | 'continent' | 'country' | 'city' | 'building' | 'dungeon' | 'region' | 'wilderness'
+export type NovelLocationSignificance = 'minor' | 'moderate' | 'major' | 'critical'
+export type NovelLocationStatus = 'normal' | 'destroyed' | 'changed' | 'hidden'
+
+export interface NovelLocation {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  type: NovelLocationType
+  parentId: string | null
+  factionId: string | null
+  significance: NovelLocationSignificance
+  firstChapter: number | null
+  status: NovelLocationStatus
+  createdAt: number
+  updatedAt: number
+}
+
+// ── 世界观要素 ──
+
+export type NovelWorldElementCategory =
+  | 'power_system' | 'history' | 'culture' | 'religion'
+  | 'technology' | 'economy' | 'geography'
+
+export interface NovelWorldElement {
+  id: string
+  projectId: string
+  category: NovelWorldElementCategory
+  name: string
+  description: string
+  parentId: string | null
+  attributes: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+}
+
 // ── 创作约束 ──
 
 export interface NovelConstraint {
@@ -306,6 +370,7 @@ export interface NovelCharacterHistory {
 
 export type NovelNodeType =
   | 'project' | 'character' | 'chapter' | 'conflict' | 'foreshadow' | 'group'
+  | 'faction' | 'location' | 'world_element'
 
 export interface NovelNodePosition {
   id: string

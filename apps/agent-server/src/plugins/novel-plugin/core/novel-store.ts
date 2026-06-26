@@ -32,6 +32,9 @@ import type {
   NovelCharacterHistory,
   NovelNodePosition,
   NovelNodeType,
+  NovelFaction,
+  NovelLocation,
+  NovelWorldElement,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
@@ -136,6 +139,26 @@ interface CharacterHistoryRow {
   reason: string | null; created_at: number
 }
 
+interface FactionRow {
+  id: string; project_id: string; name: string; description: string
+  type: string; leader_id: string | null; ideology: string; strength: string
+  resources: string; allies: string; enemies: string; status: string
+  created_at: number; updated_at: number
+}
+
+interface LocationRow {
+  id: string; project_id: string; name: string; description: string
+  type: string; parent_id: string | null; faction_id: string | null
+  significance: string; first_chapter: number | null; status: string
+  created_at: number; updated_at: number
+}
+
+interface WorldElementRow {
+  id: string; project_id: string; category: string; name: string
+  description: string; parent_id: string | null; attributes: string
+  created_at: number; updated_at: number
+}
+
 // ── 工具函数 ──
 
 function parseJSON<T>(s: string, fallback: T): T {
@@ -168,6 +191,9 @@ export class NovelStore implements NovelPromptStores {
   private readonly stmtDeleteNodePosition: Database.Statement
   private readonly stmtListCharacterHistoryByProject: Database.Statement
   private readonly stmtListCharacterHistoryByCharacter: Database.Statement
+  private readonly stmtListFactions: Database.Statement
+  private readonly stmtListLocations: Database.Statement
+  private readonly stmtListWorldElements: Database.Statement
 
   constructor(private db: Database.Database) {
     this.stmtGetProject = db.prepare('SELECT * FROM novel_projects WHERE id = ?')
@@ -196,6 +222,9 @@ export class NovelStore implements NovelPromptStores {
     this.stmtDeleteNodePosition = db.prepare('DELETE FROM novel_node_positions WHERE project_id = ? AND node_type = ? AND entity_id = ?')
     this.stmtListCharacterHistoryByProject = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? ORDER BY created_at DESC')
     this.stmtListCharacterHistoryByCharacter = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? AND character_id = ? ORDER BY created_at DESC')
+    this.stmtListFactions = db.prepare('SELECT * FROM novel_factions WHERE project_id = ? ORDER BY created_at ASC')
+    this.stmtListLocations = db.prepare('SELECT * FROM novel_locations WHERE project_id = ? ORDER BY created_at ASC')
+    this.stmtListWorldElements = db.prepare('SELECT * FROM novel_world_elements WHERE project_id = ? ORDER BY created_at ASC')
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -881,6 +910,160 @@ export class NovelStore implements NovelPromptStores {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // 势力 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  listFactions(projectId: string): NovelFaction[] {
+    return (this.stmtListFactions.all(projectId) as FactionRow[]).map((r) => this.rowToFaction(r))
+  }
+
+  getFaction(factionId: string): NovelFaction | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_factions WHERE id = ?').get(factionId) as FactionRow | undefined
+    return row ? this.rowToFaction(row) : undefined
+  }
+
+  createFaction(faction: Omit<NovelFaction, 'createdAt' | 'updatedAt'>): NovelFaction {
+    const ts = now()
+    const full: NovelFaction = { ...faction, createdAt: ts, updatedAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_factions (id, project_id, name, description, type, leader_id, ideology,
+      strength, resources, allies, enemies, status, created_at, updated_at)
+      VALUES (@id, @project_id, @name, @description, @type, @leader_id, @ideology,
+      @strength, @resources, @allies, @enemies, @status, @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId, name: full.name, description: full.description,
+      type: full.type, leader_id: full.leaderId, ideology: full.ideology,
+      strength: full.strength, resources: JSON.stringify(full.resources),
+      allies: JSON.stringify(full.allies), enemies: JSON.stringify(full.enemies),
+      status: full.status, created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  updateFaction(id: string, patch: Partial<NovelFaction>): NovelFaction | undefined {
+    const existing = this.db.prepare('SELECT * FROM novel_factions WHERE id = ?').get(id) as FactionRow | undefined
+    if (!existing) return undefined
+    const current = this.rowToFaction(existing)
+    const updated = { ...current, ...patch, id, updatedAt: now() }
+    this.db.prepare(`
+      UPDATE novel_factions SET name=@name, description=@description, type=@type, leader_id=@leader_id,
+      ideology=@ideology, strength=@strength, resources=@resources, allies=@allies, enemies=@enemies,
+      status=@status, updated_at=@updated_at WHERE id=@id
+    `).run({
+      id, name: updated.name, description: updated.description, type: updated.type,
+      leader_id: updated.leaderId, ideology: updated.ideology, strength: updated.strength,
+      resources: JSON.stringify(updated.resources), allies: JSON.stringify(updated.allies),
+      enemies: JSON.stringify(updated.enemies), status: updated.status, updated_at: updated.updatedAt,
+    })
+    return updated
+  }
+
+  deleteFaction(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_factions WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 地点 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  listLocations(projectId: string): NovelLocation[] {
+    return (this.stmtListLocations.all(projectId) as LocationRow[]).map((r) => this.rowToLocation(r))
+  }
+
+  getLocation(locationId: string): NovelLocation | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_locations WHERE id = ?').get(locationId) as LocationRow | undefined
+    return row ? this.rowToLocation(row) : undefined
+  }
+
+  createLocation(location: Omit<NovelLocation, 'createdAt' | 'updatedAt'>): NovelLocation {
+    const ts = now()
+    const full: NovelLocation = { ...location, createdAt: ts, updatedAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_locations (id, project_id, name, description, type, parent_id, faction_id,
+      significance, first_chapter, status, created_at, updated_at)
+      VALUES (@id, @project_id, @name, @description, @type, @parent_id, @faction_id,
+      @significance, @first_chapter, @status, @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId, name: full.name, description: full.description,
+      type: full.type, parent_id: full.parentId, faction_id: full.factionId,
+      significance: full.significance, first_chapter: full.firstChapter, status: full.status,
+      created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  updateLocation(id: string, patch: Partial<NovelLocation>): NovelLocation | undefined {
+    const existing = this.db.prepare('SELECT * FROM novel_locations WHERE id = ?').get(id) as LocationRow | undefined
+    if (!existing) return undefined
+    const current = this.rowToLocation(existing)
+    const updated = { ...current, ...patch, id, updatedAt: now() }
+    this.db.prepare(`
+      UPDATE novel_locations SET name=@name, description=@description, type=@type, parent_id=@parent_id,
+      faction_id=@faction_id, significance=@significance, first_chapter=@first_chapter, status=@status,
+      updated_at=@updated_at WHERE id=@id
+    `).run({
+      id, name: updated.name, description: updated.description, type: updated.type,
+      parent_id: updated.parentId, faction_id: updated.factionId, significance: updated.significance,
+      first_chapter: updated.firstChapter, status: updated.status, updated_at: updated.updatedAt,
+    })
+    return updated
+  }
+
+  deleteLocation(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_locations WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 世界观要素 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  listWorldElements(projectId: string): NovelWorldElement[] {
+    return (this.stmtListWorldElements.all(projectId) as WorldElementRow[]).map((r) => this.rowToWorldElement(r))
+  }
+
+  getWorldElement(worldElementId: string): NovelWorldElement | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_world_elements WHERE id = ?').get(worldElementId) as WorldElementRow | undefined
+    return row ? this.rowToWorldElement(row) : undefined
+  }
+
+  createWorldElement(element: Omit<NovelWorldElement, 'createdAt' | 'updatedAt'>): NovelWorldElement {
+    const ts = now()
+    const full: NovelWorldElement = { ...element, createdAt: ts, updatedAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_world_elements (id, project_id, category, name, description, parent_id, attributes, created_at, updated_at)
+      VALUES (@id, @project_id, @category, @name, @description, @parent_id, @attributes, @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId, category: full.category, name: full.name,
+      description: full.description, parent_id: full.parentId,
+      attributes: JSON.stringify(full.attributes), created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  updateWorldElement(id: string, patch: Partial<NovelWorldElement>): NovelWorldElement | undefined {
+    const existing = this.db.prepare('SELECT * FROM novel_world_elements WHERE id = ?').get(id) as WorldElementRow | undefined
+    if (!existing) return undefined
+    const current = this.rowToWorldElement(existing)
+    const updated = { ...current, ...patch, id, updatedAt: now() }
+    this.db.prepare(`
+      UPDATE novel_world_elements SET category=@category, name=@name, description=@description,
+      parent_id=@parent_id, attributes=@attributes, updated_at=@updated_at WHERE id=@id
+    `).run({
+      id, category: updated.category, name: updated.name, description: updated.description,
+      parent_id: updated.parentId, attributes: JSON.stringify(updated.attributes),
+      updated_at: updated.updatedAt,
+    })
+    return updated
+  }
+
+  deleteWorldElement(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_world_elements WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // 行 → 对象 转换方法
   // ═══════════════════════════════════════════════════════════════
 
@@ -1015,6 +1198,38 @@ export class NovelStore implements NovelPromptStores {
       fieldName: row.field_name as NovelCharacterHistory['fieldName'],
       oldValue: row.old_value, newValue: row.new_value,
       reason: row.reason, createdAt: row.created_at,
+    }
+  }
+
+  private rowToFaction(row: FactionRow): NovelFaction {
+    return {
+      id: row.id, projectId: row.project_id, name: row.name, description: row.description,
+      type: row.type as NovelFaction['type'], leaderId: row.leader_id, ideology: row.ideology,
+      strength: row.strength as NovelFaction['strength'],
+      resources: parseJSON<string[]>(row.resources, []),
+      allies: parseJSON<string[]>(row.allies, []),
+      enemies: parseJSON<string[]>(row.enemies, []),
+      status: row.status as NovelFaction['status'],
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }
+  }
+
+  private rowToLocation(row: LocationRow): NovelLocation {
+    return {
+      id: row.id, projectId: row.project_id, name: row.name, description: row.description,
+      type: row.type as NovelLocation['type'], parentId: row.parent_id, factionId: row.faction_id,
+      significance: row.significance as NovelLocation['significance'],
+      firstChapter: row.first_chapter, status: row.status as NovelLocation['status'],
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }
+  }
+
+  private rowToWorldElement(row: WorldElementRow): NovelWorldElement {
+    return {
+      id: row.id, projectId: row.project_id, category: row.category as NovelWorldElement['category'],
+      name: row.name, description: row.description, parentId: row.parent_id,
+      attributes: parseJSON<Record<string, unknown>>(row.attributes, {}),
+      createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
 

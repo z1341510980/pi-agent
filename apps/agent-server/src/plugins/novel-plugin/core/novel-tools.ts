@@ -176,6 +176,172 @@ const CreateClueParams = Type.Object({
   linkedForeshadow: Type.Optional(Type.String({ description: '关联伏笔 ID' })),
 })
 
+// ── 势力 / 地点 / 世界观要素 工具参数 ──
+
+const QueryFactionsParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+})
+
+const CreateFactionParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+  name: Type.String({ description: '势力名称' }),
+  description: Type.Optional(Type.String({ description: '势力简述' })),
+  type: Type.Optional(Type.Union([
+    Type.Literal('organization'),
+    Type.Literal('sect'),
+    Type.Literal('kingdom'),
+    Type.Literal('family'),
+    Type.Literal('guild'),
+    Type.Literal('cult'),
+  ], { description: '势力类型' })),
+  leaderId: Type.Optional(Type.String({ description: '首领角色 ID' })),
+  ideology: Type.Optional(Type.String({ description: '理念/信仰' })),
+  strength: Type.Optional(Type.Union([
+    Type.Literal('weak'),
+    Type.Literal('medium'),
+    Type.Literal('strong'),
+    Type.Literal('overwhelming'),
+  ], { description: '实力等级' })),
+  resources: Type.Optional(Type.Array(Type.String(), { description: '资源列表' })),
+  allies: Type.Optional(Type.Array(Type.String(), { description: '盟友势力 ID 列表' })),
+  enemies: Type.Optional(Type.Array(Type.String(), { description: '敌对势力 ID 列表' })),
+  status: Type.Optional(Type.Union([
+    Type.Literal('active'),
+    Type.Literal('declined'),
+    Type.Literal('destroyed'),
+    Type.Literal('hidden'),
+  ], { description: '势力状态' })),
+})
+
+const UpdateFactionParams = Type.Object({
+  factionId: Type.String({ description: '势力 ID' }),
+  name: Type.Optional(Type.String({ description: '势力名称' })),
+  description: Type.Optional(Type.String({ description: '势力简述' })),
+  type: Type.Optional(Type.Union([
+    Type.Literal('organization'),
+    Type.Literal('sect'),
+    Type.Literal('kingdom'),
+    Type.Literal('family'),
+    Type.Literal('guild'),
+    Type.Literal('cult'),
+  ], { description: '势力类型' })),
+  leaderId: Type.Optional(Type.String({ description: '首领角色 ID' })),
+  ideology: Type.Optional(Type.String({ description: '理念/信仰' })),
+  strength: Type.Optional(Type.Union([
+    Type.Literal('weak'),
+    Type.Literal('medium'),
+    Type.Literal('strong'),
+    Type.Literal('overwhelming'),
+  ], { description: '实力等级' })),
+  resources: Type.Optional(Type.Array(Type.String(), { description: '资源列表' })),
+  allies: Type.Optional(Type.Array(Type.String(), { description: '盟友势力 ID 列表' })),
+  enemies: Type.Optional(Type.Array(Type.String(), { description: '敌对势力 ID 列表' })),
+  status: Type.Optional(Type.Union([
+    Type.Literal('active'),
+    Type.Literal('declined'),
+    Type.Literal('destroyed'),
+    Type.Literal('hidden'),
+  ], { description: '势力状态' })),
+})
+
+const QueryLocationsParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+})
+
+const CreateLocationParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+  name: Type.String({ description: '地点名称' }),
+  description: Type.Optional(Type.String({ description: '地点简述' })),
+  type: Type.Optional(Type.Union([
+    Type.Literal('continent'),
+    Type.Literal('country'),
+    Type.Literal('city'),
+    Type.Literal('building'),
+    Type.Literal('dungeon'),
+    Type.Literal('region'),
+    Type.Literal('wilderness'),
+  ], { description: '地点类型' })),
+  parentId: Type.Optional(Type.String({ description: '父级地点 ID（构建层级树）' })),
+  factionId: Type.Optional(Type.String({ description: '归属势力 ID' })),
+  significance: Type.Optional(Type.Union([
+    Type.Literal('minor'),
+    Type.Literal('moderate'),
+    Type.Literal('major'),
+    Type.Literal('critical'),
+  ], { description: '重要程度' })),
+  firstChapter: Type.Optional(Type.Number({ description: '首次出现章节' })),
+  status: Type.Optional(Type.Union([
+    Type.Literal('normal'),
+    Type.Literal('destroyed'),
+    Type.Literal('changed'),
+    Type.Literal('hidden'),
+  ], { description: '地点状态' })),
+})
+
+const UpdateLocationParams = Type.Object({
+  locationId: Type.String({ description: '地点 ID' }),
+  name: Type.Optional(Type.String({ description: '地点名称' })),
+  description: Type.Optional(Type.String({ description: '地点简述' })),
+  type: Type.Optional(Type.Union([
+    Type.Literal('continent'),
+    Type.Literal('country'),
+    Type.Literal('city'),
+    Type.Literal('building'),
+    Type.Literal('dungeon'),
+    Type.Literal('region'),
+    Type.Literal('wilderness'),
+  ], { description: '地点类型' })),
+  parentId: Type.Optional(Type.String({ description: '父级地点 ID' })),
+  factionId: Type.Optional(Type.String({ description: '归属势力 ID' })),
+  significance: Type.Optional(Type.Union([
+    Type.Literal('minor'),
+    Type.Literal('moderate'),
+    Type.Literal('major'),
+    Type.Literal('critical'),
+  ], { description: '重要程度' })),
+  firstChapter: Type.Optional(Type.Number({ description: '首次出现章节' })),
+  status: Type.Optional(Type.Union([
+    Type.Literal('normal'),
+    Type.Literal('destroyed'),
+    Type.Literal('changed'),
+    Type.Literal('hidden'),
+  ], { description: '地点状态' })),
+})
+
+const CreateWorldElementParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+  category: Type.Union([
+    Type.Literal('power_system'),
+    Type.Literal('history'),
+    Type.Literal('culture'),
+    Type.Literal('religion'),
+    Type.Literal('technology'),
+    Type.Literal('economy'),
+    Type.Literal('geography'),
+  ], { description: '世界观要素分类' }),
+  name: Type.String({ description: '要素名称' }),
+  description: Type.Optional(Type.String({ description: '要素描述' })),
+  parentId: Type.Optional(Type.String({ description: '父级要素 ID（支持层级）' })),
+  attributes: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: '附加属性（键值对）' })),
+})
+
+const UpdateWorldElementParams = Type.Object({
+  worldElementId: Type.String({ description: '世界观要素 ID' }),
+  category: Type.Optional(Type.Union([
+    Type.Literal('power_system'),
+    Type.Literal('history'),
+    Type.Literal('culture'),
+    Type.Literal('religion'),
+    Type.Literal('technology'),
+    Type.Literal('economy'),
+    Type.Literal('geography'),
+  ], { description: '世界观要素分类' })),
+  name: Type.Optional(Type.String({ description: '要素名称' })),
+  description: Type.Optional(Type.String({ description: '要素描述' })),
+  parentId: Type.Optional(Type.String({ description: '父级要素 ID' })),
+  attributes: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: '附加属性（键值对）' })),
+})
+
 // ── 工具创建函数 ──
 
 /**
@@ -583,6 +749,237 @@ export function createNovelCreateClueTool(store: NovelStore): ToolDefinition<typ
   })
 }
 
+// ── 势力工具 ──
+
+/** 查询项目下所有势力 */
+export function createNovelQueryFactionsTool(store: NovelStore): ToolDefinition<typeof QueryFactionsParams> {
+  return defineTool({
+    name: 'novel_query_factions',
+    label: '查询势力',
+    description:
+      '查询小说项目下的所有势力（组织/门派/王国/家族/公会/邪教）。' +
+      '包含势力的类型、首领、理念、实力、盟友/敌人列表和当前状态。此工具只读不写。',
+    promptSnippet: '查询势力列表',
+    parameters: QueryFactionsParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const factions = store.listFactions(params.projectId)
+      return {
+        content: [{ type: 'text', text: JSON.stringify(factions, null, 2) }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 创建势力 */
+export function createNovelCreateFactionTool(store: NovelStore): ToolDefinition<typeof CreateFactionParams> {
+  return defineTool({
+    name: 'novel_create_faction',
+    label: '创建势力',
+    description:
+      '在小说项目中创建一个新势力，包含类型、首领、理念、实力、资源、盟友/敌人列表。' +
+      '用于建立故事中的阵营结构，后续可通过 novel_update_faction 推进演变。',
+    promptSnippet: '创建新势力',
+    parameters: CreateFactionParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const faction = store.createFaction({
+        id: randomUUID(),
+        projectId: params.projectId,
+        name: params.name,
+        description: params.description ?? '',
+        type: params.type ?? 'organization',
+        leaderId: params.leaderId ?? null,
+        ideology: params.ideology ?? '',
+        strength: params.strength ?? 'medium',
+        resources: params.resources ?? [],
+        allies: params.allies ?? [],
+        enemies: params.enemies ?? [],
+        status: params.status ?? 'active',
+      })
+      return {
+        content: [{ type: 'text', text: `已创建势力「${params.name}」，ID: ${faction.id}` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 更新势力 */
+export function createNovelUpdateFactionTool(store: NovelStore): ToolDefinition<typeof UpdateFactionParams> {
+  return defineTool({
+    name: 'novel_update_faction',
+    label: '更新势力',
+    description:
+      '更新势力的属性，包括类型、首领、理念、实力、资源、盟友/敌人列表和状态。' +
+      '用于推进势力的演变（如实力变化、盟友反目、势力覆灭）。',
+    promptSnippet: '更新势力属性',
+    parameters: UpdateFactionParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const { factionId, ...updates } = params
+      const patch: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) patch[key] = value
+      }
+      const updated = store.updateFaction(factionId, patch as any)
+      if (!updated) {
+        return {
+          content: [{ type: 'text', text: `势力不存在: ${factionId}` }],
+          details: undefined,
+        }
+      }
+      return {
+        content: [{ type: 'text', text: `势力「${updated.name}」已更新` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+// ── 地点工具 ──
+
+/** 查询项目下所有地点 */
+export function createNovelQueryLocationsTool(store: NovelStore): ToolDefinition<typeof QueryLocationsParams> {
+  return defineTool({
+    name: 'novel_query_locations',
+    label: '查询地点',
+    description:
+      '查询小说项目下的所有地点（大陆/国家/城市/建筑/地下城/区域/荒野）。' +
+      '包含地点的类型、父级地点、归属势力、重要程度和状态。此工具只读不写。',
+    promptSnippet: '查询地点列表',
+    parameters: QueryLocationsParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const locations = store.listLocations(params.projectId)
+      return {
+        content: [{ type: 'text', text: JSON.stringify(locations, null, 2) }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 创建地点 */
+export function createNovelCreateLocationTool(store: NovelStore): ToolDefinition<typeof CreateLocationParams> {
+  return defineTool({
+    name: 'novel_create_location',
+    label: '创建地点',
+    description:
+      '在小说项目中创建一个新地点，包含类型、父级地点、归属势力、重要程度。' +
+      '用于构建故事地图的层级结构，后续可通过 novel_update_location 更新。',
+    promptSnippet: '创建新地点',
+    parameters: CreateLocationParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const location = store.createLocation({
+        id: randomUUID(),
+        projectId: params.projectId,
+        name: params.name,
+        description: params.description ?? '',
+        type: params.type ?? 'city',
+        parentId: params.parentId ?? null,
+        factionId: params.factionId ?? null,
+        significance: params.significance ?? 'minor',
+        firstChapter: params.firstChapter ?? null,
+        status: params.status ?? 'normal',
+      })
+      return {
+        content: [{ type: 'text', text: `已创建地点「${params.name}」，ID: ${location.id}` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 更新地点 */
+export function createNovelUpdateLocationTool(store: NovelStore): ToolDefinition<typeof UpdateLocationParams> {
+  return defineTool({
+    name: 'novel_update_location',
+    label: '更新地点',
+    description:
+      '更新地点的属性，包括类型、父级地点、归属势力、重要程度和状态。' +
+      '用于推进地点的演变（如归属势力易主、地点被毁、重要程度提升）。',
+    promptSnippet: '更新地点属性',
+    parameters: UpdateLocationParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const { locationId, ...updates } = params
+      const patch: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) patch[key] = value
+      }
+      const updated = store.updateLocation(locationId, patch as any)
+      if (!updated) {
+        return {
+          content: [{ type: 'text', text: `地点不存在: ${locationId}` }],
+          details: undefined,
+        }
+      }
+      return {
+        content: [{ type: 'text', text: `地点「${updated.name}」已更新` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+// ── 世界观要素工具 ──
+
+/** 创建世界观要素 */
+export function createNovelCreateWorldElementTool(store: NovelStore): ToolDefinition<typeof CreateWorldElementParams> {
+  return defineTool({
+    name: 'novel_create_world_element',
+    label: '创建世界观要素',
+    description:
+      '在小说项目中创建一个结构化的世界观要素，分类包括力量体系/历史/文化/宗教/科技/经济/地理。' +
+      '支持层级结构（parentId）和自由属性（attributes）。',
+    promptSnippet: '创建世界观要素',
+    parameters: CreateWorldElementParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const element = store.createWorldElement({
+        id: randomUUID(),
+        projectId: params.projectId,
+        category: params.category,
+        name: params.name,
+        description: params.description ?? '',
+        parentId: params.parentId ?? null,
+        attributes: params.attributes ?? {},
+      })
+      return {
+        content: [{ type: 'text', text: `已创建世界观要素「${params.name}」，ID: ${element.id}` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 更新世界观要素 */
+export function createNovelUpdateWorldElementTool(store: NovelStore): ToolDefinition<typeof UpdateWorldElementParams> {
+  return defineTool({
+    name: 'novel_update_world_element',
+    label: '更新世界观要素',
+    description:
+      '更新世界观要素的属性，包括分类、名称、描述、父级要素和附加属性。' +
+      '用于推进世界观设定的演化。',
+    promptSnippet: '更新世界观要素',
+    parameters: UpdateWorldElementParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const { worldElementId, ...updates } = params
+      const patch: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) patch[key] = value
+      }
+      const updated = store.updateWorldElement(worldElementId, patch as any)
+      if (!updated) {
+        return {
+          content: [{ type: 'text', text: `世界观要素不存在: ${worldElementId}` }],
+          details: undefined,
+        }
+      }
+      return {
+        content: [{ type: 'text', text: `世界观要素「${updated.name}」已更新` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
 /**
  * 获取所有小说工具
  *
@@ -601,6 +998,15 @@ export function createNovelTools(store: NovelStore): ToolDefinition[] {
     createNovelCreateForeshadowTool(store),
     createNovelCreateConflictTool(store),
     createNovelCreateClueTool(store),
+    // 势力/地点/世界观要素工具
+    createNovelQueryFactionsTool(store),
+    createNovelCreateFactionTool(store),
+    createNovelUpdateFactionTool(store),
+    createNovelQueryLocationsTool(store),
+    createNovelCreateLocationTool(store),
+    createNovelUpdateLocationTool(store),
+    createNovelCreateWorldElementTool(store),
+    createNovelUpdateWorldElementTool(store),
   ]
   // 按工具名排序，确保 tools schema 顺序稳定，最大化 prompt cache 命中率
   return tools.sort((a, b) => a.name.localeCompare(b.name))

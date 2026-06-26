@@ -341,4 +341,65 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_memory_snapshots_project ON novel_memory_snapshots(project_id);
     CREATE INDEX IF NOT EXISTS idx_memory_snapshots_chapter ON novel_memory_snapshots(chapter_number);`,
   },
+  {
+    // 势力表（组织/门派/王国/家族/公会/邪教）
+    id: '030_create_novel_factions',
+    sql: `CREATE TABLE IF NOT EXISTS novel_factions (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      type            TEXT NOT NULL DEFAULT 'organization',
+      leader_id       TEXT,
+      ideology        TEXT NOT NULL DEFAULT '',
+      strength        TEXT NOT NULL DEFAULT 'medium',
+      resources       TEXT NOT NULL DEFAULT '[]',
+      allies          TEXT NOT NULL DEFAULT '[]',
+      enemies         TEXT NOT NULL DEFAULT '[]',
+      status          TEXT NOT NULL DEFAULT 'active',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_factions_project ON novel_factions(project_id);`,
+  },
+  {
+    // 地点表（大陆/国家/城市/建筑/地下城/区域/荒野），自引用构建层级树
+    id: '031_create_novel_locations',
+    sql: `CREATE TABLE IF NOT EXISTS novel_locations (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      type            TEXT NOT NULL DEFAULT 'city',
+      parent_id       TEXT,
+      faction_id      TEXT,
+      significance    TEXT NOT NULL DEFAULT 'minor',
+      first_chapter   INTEGER,
+      status          TEXT NOT NULL DEFAULT 'normal',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_locations_project ON novel_locations(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_locations_parent ON novel_locations(parent_id);`,
+  },
+  {
+    // 世界观结构化要素表（力量体系/历史/文化/宗教/科技/经济/地理）
+    id: '032_create_novel_world_elements',
+    sql: `CREATE TABLE IF NOT EXISTS novel_world_elements (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      category        TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      parent_id       TEXT,
+      attributes      TEXT NOT NULL DEFAULT '{}',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_world_elements_project ON novel_world_elements(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_world_elements_category ON novel_world_elements(category);`,
+  },
 ]

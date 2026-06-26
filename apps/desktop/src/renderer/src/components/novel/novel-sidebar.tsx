@@ -10,6 +10,8 @@ import {
   ChevronRight,
   ChevronDown,
   Trash2,
+  MapPin,
+  Globe,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,21 +33,30 @@ import {
   createChapter,
   createConflict,
   createForeshadow,
+  createFaction,
+  createLocation,
+  createWorldElement,
   deleteCharacter,
   deleteChapter,
   deleteConflict,
   deleteForeshadow,
+  deleteFaction,
+  deleteLocation,
+  deleteWorldElement,
   type NovelCharacter,
   type NovelChapter,
   type NovelConflict,
   type NovelForeshadow,
   type NovelCharacterHistory,
+  type NovelFaction,
+  type NovelLocation,
+  type NovelWorldElement,
 } from '@/api/novel-client'
 import { CharacterCreateDialog } from './character-create-dialog'
 
 // ── 通用节点类型（用于拖拽） ──
 
-type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict'
+type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'faction' | 'location' | 'world_element'
 
 function setDragData(
   e: React.DragEvent<HTMLDivElement>,
@@ -69,6 +80,9 @@ export function NovelSidebar(): ReactElement {
   const chapters = useNovelStore((s) => s.chapters)
   const conflicts = useNovelStore((s) => s.conflicts)
   const foreshadows = useNovelStore((s) => s.foreshadows)
+  const factions = useNovelStore((s) => s.factions)
+  const locations = useNovelStore((s) => s.locations)
+  const worldElements = useNovelStore((s) => s.worldElements)
   const selectNode = useNovelStore((s) => s.selectNode)
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
@@ -209,6 +223,9 @@ export function NovelSidebar(): ReactElement {
                   chapters={chapters}
                   conflicts={conflicts}
                   foreshadows={foreshadows}
+                  factions={factions}
+                  locations={locations}
+                  worldElements={worldElements}
                   onSelectEntity={handleSelectEntity}
                   onOpenCharacterDialog={() => setCharacterDialogOpen(true)}
                 />
@@ -294,6 +311,9 @@ interface ProjectTreeProps {
   chapters: NovelChapter[]
   conflicts: NovelConflict[]
   foreshadows: NovelForeshadow[]
+  factions: NovelFaction[]
+  locations: NovelLocation[]
+  worldElements: NovelWorldElement[]
   onSelectEntity: (id: string, type: NovelNodeType) => void
   onOpenCharacterDialog: () => void
 }
@@ -304,16 +324,25 @@ function ProjectTree({
   chapters,
   conflicts,
   foreshadows,
+  factions,
+  locations,
+  worldElements,
   onSelectEntity,
   onOpenCharacterDialog,
 }: ProjectTreeProps): ReactElement {
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
   const upsertConflict = useNovelStore((s) => s.upsertConflict)
   const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
+  const upsertFaction = useNovelStore((s) => s.upsertFaction)
+  const upsertLocation = useNovelStore((s) => s.upsertLocation)
+  const upsertWorldElement = useNovelStore((s) => s.upsertWorldElement)
   const removeCharacter = useNovelStore((s) => s.removeCharacter)
   const removeChapter = useNovelStore((s) => s.removeChapter)
   const removeConflict = useNovelStore((s) => s.removeConflict)
   const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
+  const removeFaction = useNovelStore((s) => s.removeFaction)
+  const removeLocation = useNovelStore((s) => s.removeLocation)
+  const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
   const characterHistory = useNovelStore((s) => s.characterHistory)
 
   const sortedChapters = useMemo(
@@ -367,6 +396,49 @@ function ProjectTree({
     }
   }, [projectId, upsertForeshadow])
 
+  const handleAddFaction = useCallback(async () => {
+    try {
+      const faction = await createFaction(projectId, {
+        name: '新势力',
+        description: '',
+        type: 'organization',
+        strength: 'medium',
+        status: 'active',
+      })
+      upsertFaction(faction)
+    } catch {
+      // 静默失败
+    }
+  }, [projectId, upsertFaction])
+
+  const handleAddLocation = useCallback(async () => {
+    try {
+      const location = await createLocation(projectId, {
+        name: '新地点',
+        description: '',
+        type: 'city',
+        significance: 'minor',
+        status: 'normal',
+      })
+      upsertLocation(location)
+    } catch {
+      // 静默失败
+    }
+  }, [projectId, upsertLocation])
+
+  const handleAddWorldElement = useCallback(async () => {
+    try {
+      const element = await createWorldElement(projectId, {
+        category: 'history',
+        name: '新世界观要素',
+        description: '',
+      })
+      upsertWorldElement(element)
+    } catch {
+      // 静默失败
+    }
+  }, [projectId, upsertWorldElement])
+
   const handleDelete = useCallback(
     async (
       type: DraggableEntityType,
@@ -392,12 +464,24 @@ function ProjectTree({
             await deleteForeshadow(id)
             removeForeshadow(id)
             break
+          case 'faction':
+            await deleteFaction(id)
+            removeFaction(id)
+            break
+          case 'location':
+            await deleteLocation(id)
+            removeLocation(id)
+            break
+          case 'world_element':
+            await deleteWorldElement(id)
+            removeWorldElement(id)
+            break
         }
       } catch {
         // 静默失败
       }
     },
-    [removeCharacter, removeChapter, removeConflict, removeForeshadow],
+    [removeCharacter, removeChapter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement],
   )
 
   return (
@@ -499,6 +583,81 @@ function ProjectTree({
               onClick={() => onSelectEntity(c.id, 'conflict')}
               onDragStart={(e) => setDragData(e, 'conflict', c.id)}
               onDelete={() => handleDelete('conflict', c.id, '冲突')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
+
+      {/* 势力集合 */}
+      <CollapsibleGroup
+        icon={Users}
+        label="势力集合"
+        count={factions.length}
+        accent="text-violet-500"
+        onAdd={handleAddFaction}
+        addLabel="新建势力"
+      >
+        {factions.length === 0 ? (
+          <EmptyHint text="暂无势力" />
+        ) : (
+          factions.map((f) => (
+            <EntityItem
+              key={f.id}
+              label={f.name || '未命名'}
+              sublabel={f.type}
+              onClick={() => onSelectEntity(f.id, 'faction')}
+              onDragStart={(e) => setDragData(e, 'faction', f.id)}
+              onDelete={() => handleDelete('faction', f.id, f.name || '势力')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
+
+      {/* 地点集合 */}
+      <CollapsibleGroup
+        icon={MapPin}
+        label="地点集合"
+        count={locations.length}
+        accent="text-cyan-500"
+        onAdd={handleAddLocation}
+        addLabel="新建地点"
+      >
+        {locations.length === 0 ? (
+          <EmptyHint text="暂无地点" />
+        ) : (
+          locations.map((l) => (
+            <EntityItem
+              key={l.id}
+              label={l.name || '未命名'}
+              sublabel={l.type}
+              onClick={() => onSelectEntity(l.id, 'location')}
+              onDragStart={(e) => setDragData(e, 'location', l.id)}
+              onDelete={() => handleDelete('location', l.id, l.name || '地点')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
+
+      {/* 世界观要素集合 */}
+      <CollapsibleGroup
+        icon={Globe}
+        label="世界观要素"
+        count={worldElements.length}
+        accent="text-indigo-500"
+        onAdd={handleAddWorldElement}
+        addLabel="新建世界观要素"
+      >
+        {worldElements.length === 0 ? (
+          <EmptyHint text="暂无世界观要素" />
+        ) : (
+          worldElements.map((w) => (
+            <EntityItem
+              key={w.id}
+              label={w.name || '未命名'}
+              sublabel={w.category}
+              onClick={() => onSelectEntity(w.id, 'world_element')}
+              onDragStart={(e) => setDragData(e, 'world_element', w.id)}
+              onDelete={() => handleDelete('world_element', w.id, w.name || '世界观要素')}
             />
           ))
         )}

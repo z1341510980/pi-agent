@@ -23,6 +23,9 @@ import {
   listStyleGuides,
   listConstraints,
   listInfoLayers,
+  listFactions,
+  listLocations,
+  listWorldElements,
   createChapter,
   completeChapter,
 } from '@/api/novel-client'
@@ -53,6 +56,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const styleGuides = useNovelStore((s) => s.styleGuides)
   const constraints = useNovelStore((s) => s.constraints)
   const infoLayers = useNovelStore((s) => s.infoLayers)
+  const factions = useNovelStore((s) => s.factions)
+  const locations = useNovelStore((s) => s.locations)
+  const worldElements = useNovelStore((s) => s.worldElements)
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
 
   const queryClient = useQueryClient()
@@ -85,6 +91,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         sguides,
         constr,
         infos,
+        facs,
+        locs,
+        wel,
       ] = await Promise.all([
         listCharacters(currentProjectId),
         listChapters(currentProjectId),
@@ -96,6 +105,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         listStyleGuides(currentProjectId),
         listConstraints(currentProjectId),
         listInfoLayers(currentProjectId),
+        listFactions(currentProjectId),
+        listLocations(currentProjectId),
+        listWorldElements(currentProjectId),
       ])
       return {
         characters: chars,
@@ -108,6 +120,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         styleGuides: sguides,
         constraints: constr,
         infoLayers: infos,
+        factions: facs,
+        locations: locs,
+        worldElements: wel,
       }
     },
     enabled: !!currentProjectId,
@@ -146,6 +161,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       styleGuides,
       constraints,
       infoLayers,
+      factions,
+      locations,
+      worldElements,
       exportedAt: new Date().toISOString(),
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
@@ -155,7 +173,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     a.download = `${currentProject.title || 'novel'}-export.json`
     a.click()
     URL.revokeObjectURL(url)
-  }, [currentProject, characters, chapters, conflicts, foreshadows, relationships, clues, worldRules, styleGuides, constraints, infoLayers])
+  }, [currentProject, characters, chapters, conflicts, foreshadows, relationships, clues, worldRules, styleGuides, constraints, infoLayers, factions, locations, worldElements])
 
   // ── 创作流程 ──
 

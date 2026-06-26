@@ -178,6 +178,67 @@ export interface NovelInformationLayer {
   updatedAt: number
 }
 
+// ── 势力 / 地点 / 世界观要素 ──
+
+export type NovelFactionType =
+  | 'organization' | 'sect' | 'kingdom' | 'family' | 'guild' | 'cult'
+export type NovelFactionStrength = 'weak' | 'medium' | 'strong' | 'overwhelming'
+export type NovelFactionStatus = 'active' | 'declined' | 'destroyed' | 'hidden'
+
+export interface NovelFaction {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  type: NovelFactionType
+  leaderId: string | null
+  ideology: string
+  strength: NovelFactionStrength
+  resources: string[]
+  allies: string[]
+  enemies: string[]
+  status: NovelFactionStatus
+  createdAt: number
+  updatedAt: number
+}
+
+export type NovelLocationType =
+  | 'continent' | 'country' | 'city' | 'building'
+  | 'dungeon' | 'region' | 'wilderness'
+export type NovelLocationSignificance = 'minor' | 'moderate' | 'major' | 'critical'
+export type NovelLocationStatus = 'normal' | 'destroyed' | 'changed' | 'hidden'
+
+export interface NovelLocation {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  type: NovelLocationType
+  parentId: string | null
+  factionId: string | null
+  significance: NovelLocationSignificance
+  firstChapter: number | null
+  status: NovelLocationStatus
+  createdAt: number
+  updatedAt: number
+}
+
+export type NovelWorldElementCategory =
+  | 'power_system' | 'history' | 'culture' | 'religion'
+  | 'technology' | 'economy' | 'geography'
+
+export interface NovelWorldElement {
+  id: string
+  projectId: string
+  category: NovelWorldElementCategory
+  name: string
+  description: string
+  parentId: string | null
+  attributes: Record<string, unknown>
+  createdAt: number
+  updatedAt: number
+}
+
 // ── 创建/更新载荷类型 ──
 
 export interface CreateProjectInput {
@@ -292,11 +353,50 @@ export interface CreateInfoLayerInput {
   revealChapter?: number | null
 }
 
+export interface CreateFactionInput {
+  name: string
+  description?: string
+  type?: NovelFactionType
+  leaderId?: string | null
+  ideology?: string
+  strength?: NovelFactionStrength
+  resources?: string[]
+  allies?: string[]
+  enemies?: string[]
+  status?: NovelFactionStatus
+}
+
+export type UpdateFactionInput = Partial<CreateFactionInput>
+
+export interface CreateLocationInput {
+  name: string
+  description?: string
+  type?: NovelLocationType
+  parentId?: string | null
+  factionId?: string | null
+  significance?: NovelLocationSignificance
+  firstChapter?: number | null
+  status?: NovelLocationStatus
+}
+
+export type UpdateLocationInput = Partial<CreateLocationInput>
+
+export interface CreateWorldElementInput {
+  category: NovelWorldElementCategory
+  name: string
+  description?: string
+  parentId?: string | null
+  attributes?: Record<string, unknown>
+}
+
+export type UpdateWorldElementInput = Partial<CreateWorldElementInput>
+
 // ── 节点位置 ──
 
 export type NovelNodeTypeName =
   | 'project' | 'character' | 'chapter'
   | 'conflict' | 'foreshadow' | 'group'
+  | 'faction' | 'location' | 'world_element'
 
 export interface NovelNodePosition {
   id: string
@@ -536,6 +636,60 @@ export function createInfoLayer(projectId: string, input: CreateInfoLayerInput):
 
 export function deleteInfoLayer(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/info-layers/${id}`)
+}
+
+// ── Factions ──
+
+export function listFactions(projectId: string): Promise<NovelFaction[]> {
+  return getApi<NovelFaction[]>(`${BASE}/projects/${projectId}/factions`)
+}
+
+export function createFaction(projectId: string, input: CreateFactionInput): Promise<NovelFaction> {
+  return postApi<NovelFaction>(`${BASE}/projects/${projectId}/factions`, input)
+}
+
+export function updateFaction(id: string, input: UpdateFactionInput): Promise<NovelFaction> {
+  return patchApi<NovelFaction>(`${BASE}/factions/${id}`, input)
+}
+
+export function deleteFaction(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/factions/${id}`)
+}
+
+// ── Locations ──
+
+export function listLocations(projectId: string): Promise<NovelLocation[]> {
+  return getApi<NovelLocation[]>(`${BASE}/projects/${projectId}/locations`)
+}
+
+export function createLocation(projectId: string, input: CreateLocationInput): Promise<NovelLocation> {
+  return postApi<NovelLocation>(`${BASE}/projects/${projectId}/locations`, input)
+}
+
+export function updateLocation(id: string, input: UpdateLocationInput): Promise<NovelLocation> {
+  return patchApi<NovelLocation>(`${BASE}/locations/${id}`, input)
+}
+
+export function deleteLocation(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/locations/${id}`)
+}
+
+// ── World Elements ──
+
+export function listWorldElements(projectId: string): Promise<NovelWorldElement[]> {
+  return getApi<NovelWorldElement[]>(`${BASE}/projects/${projectId}/world-elements`)
+}
+
+export function createWorldElement(projectId: string, input: CreateWorldElementInput): Promise<NovelWorldElement> {
+  return postApi<NovelWorldElement>(`${BASE}/projects/${projectId}/world-elements`, input)
+}
+
+export function updateWorldElement(id: string, input: UpdateWorldElementInput): Promise<NovelWorldElement> {
+  return patchApi<NovelWorldElement>(`${BASE}/world-elements/${id}`, input)
+}
+
+export function deleteWorldElement(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/world-elements/${id}`)
 }
 
 // ── Node Positions ──

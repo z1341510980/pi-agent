@@ -30,7 +30,7 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     id: 'novel-director',
     name: '导演 Agent',
     identity: '你是一个专业的小说导演，负责分析故事状态并规划章节叙事任务。',
-    tools: ['novel_query_state'],
+    tools: ['novel_query_state', 'novel_query_factions', 'novel_query_locations'],
     roleTemplate: 'role-director',
   },
   writer: {
@@ -58,6 +58,10 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
       'novel_query_state',
       'novel_update_character', 'novel_update_foreshadow', 'novel_update_conflict', 'novel_update_clue', 'novel_update_relationship',
       'novel_create_character', 'novel_create_foreshadow', 'novel_create_conflict', 'novel_create_clue',
+      // 势力/地点/世界观要素工具
+      'novel_query_factions', 'novel_create_faction', 'novel_update_faction',
+      'novel_query_locations', 'novel_create_location', 'novel_update_location',
+      'novel_create_world_element', 'novel_update_world_element',
     ],
     roleTemplate: 'role-memory',
   },
