@@ -1073,11 +1073,15 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const orchestrator = services.orchestrator
 
       // 设置 SSE
+      // 注意：reply.raw.writeHead 绕过 Fastify 的 CORS 中间件，需手动附加 CORS 头，
+      // 否则浏览器会以 CORS 策略拦截跨域 SSE 请求（如 localhost:5173 → 127.0.0.1:3900）。
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
       })
 
       const heartbeat = setInterval(() => {

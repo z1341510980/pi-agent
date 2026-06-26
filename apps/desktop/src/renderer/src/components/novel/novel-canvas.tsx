@@ -108,6 +108,18 @@ function nodeId(type: NovelNodeType, id: string): string {
   return `${type}:${id}`
 }
 
+/**
+ * 解析节点 ID：仅在第一个冒号处拆分。
+ *
+ * 必须使用 indexOf 而非 split(':')，否则当 id 本身含冒号时
+ * （例如 "chapter:uuid:1" 这种复合 ID），split 会把 id 截断，
+ * 导致后续按 entityId 发起的 DELETE / GET 请求拿到不完整的 id 而 404。
+ */
+function parseNodeId(nodeId: string): [string, string] {
+  const idx = nodeId.indexOf(':')
+  return idx >= 0 ? [nodeId.slice(0, idx), nodeId.slice(idx + 1)] : [nodeId, '']
+}
+
 function parseParticipants(raw: string): string[] {
   try {
     const parsed = JSON.parse(raw)
@@ -543,7 +555,7 @@ export function NovelCanvas({
   const handleNodeDragStop = useCallback((_evt: MouseEvent | TouchEvent, node: Node) => {
     const pid = currentProjectIdRef.current
     if (!pid) return
-    const [nodeType, entityId] = node.id.split(':') as [NovelNodeTypeName, string]
+    const [nodeType, entityId] = parseNodeId(node.id) as [NovelNodeTypeName, string]
     // group 节点不持久化位置
     if (nodeType === 'group') return
     // 查找现有位置记录以保留 id（避免在 upsertInList 中产生重复）
@@ -602,7 +614,7 @@ export function NovelCanvas({
         // relayout 模式：忽略 prev 位置，使用 layout（computed）
         skipPrevPositionsRef.current = false
         return layout.nodes.map((n) => {
-          const [type, id] = n.id.split(':')
+          const [type, id] = parseNodeId(n.id)
           return {
             ...n,
             data: {
@@ -614,7 +626,7 @@ export function NovelCanvas({
       }
       const prevPosMap = new Map(prev.map((n) => [n.id, n.position]))
       return layout.nodes.map((n) => {
-        const [type, id] = n.id.split(':')
+        const [type, id] = parseNodeId(n.id)
         const prevPos = prevPosMap.get(n.id)
         return {
           ...n,
@@ -676,7 +688,7 @@ export function NovelCanvas({
   useEffect(() => {
     setNodes((prev) =>
       prev.map((n) => {
-        const [type, id] = n.id.split(':') as [NovelNodeType, string]
+        const [type, id] = parseNodeId(n.id) as [NovelNodeType, string]
         const isSelected = id === selectedNodeId && type === selectedNodeType
         const isPulsing = pulsingIds.has(n.id)
         const nextSelected = n.selected === isSelected ? n.selected : isSelected
@@ -718,7 +730,7 @@ export function NovelCanvas({
 
   const handleNodeClick = useCallback(
     (_evt: ReactMouseEvent, node: Node) => {
-      const [type, id] = node.id.split(':')
+      const [type, id] = parseNodeId(node.id)
       // group 节点内部处理点击（展开/折叠），不参与选中
       if (type === 'group') return
       selectNode(id, type as NovelNodeType)
