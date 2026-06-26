@@ -29,9 +29,13 @@ import {
   deleteWorldElement,
   deleteNodePosition,
   upsertNodePositions,
+  createEdge,
+  deleteEdge,
   type NovelNodePosition,
   type NovelNodeTypeName,
   type NodePositionInput,
+  type NovelEdge,
+  type NovelEdgeType,
 } from '@/api/novel-client'
 import { ProjectNode } from './nodes/ProjectNode'
 import { CharacterNode } from './nodes/CharacterNode'
@@ -239,6 +243,44 @@ function isValidConnection(sourceType: string, targetType: string): boolean {
   return false
 }
 
+// ── 边类型推断：根据 source/target 节点类型确定语义化 edgeType ──
+
+/**
+ * 根据连接两端的节点类型推断边类型。
+ * 规则与画布布局的自动边语义保持一致，未匹配时回退为 association。
+ */
+function getEdgeType(sourceType: string, targetType: string): NovelEdgeType {
+  // 角色 ↔ 章节：出场
+  if (
+    (sourceType === 'character' && targetType === 'chapter') ||
+    (sourceType === 'chapter' && targetType === 'character')
+  ) return 'appearance'
+  // 角色 ↔ 角色：关系
+  if (sourceType === 'character' && targetType === 'character') return 'relationship'
+  // 冲突 → 角色：参与
+  if (sourceType === 'conflict' && targetType === 'character') return 'involvement'
+  // 伏笔 ↔ 章节：埋设/回收
+  if (
+    (sourceType === 'foreshadow' && targetType === 'chapter') ||
+    (sourceType === 'chapter' && targetType === 'foreshadow')
+  ) return 'foreshadow'
+  // 势力 ↔ 角色：成员/首领
+  if (
+    (sourceType === 'faction' && targetType === 'character') ||
+    (sourceType === 'character' && targetType === 'faction')
+  ) return 'member'
+  // 地点 ↔ 章节：场景
+  if (
+    (sourceType === 'location' && targetType === 'chapter') ||
+    (sourceType === 'chapter' && targetType === 'location')
+  ) return 'base'
+  // 地点 ↔ 地点：层级
+  if (sourceType === 'location' && targetType === 'location') return 'hierarchy'
+  // 世界观要素 ↔ 世界观要素：层级
+  if (sourceType === 'world_element' && targetType === 'world_element') return 'hierarchy'
+  return 'association'
+}
+
 // ── 布局函数：根据 store 数据生成节点与边 ──
 
 interface LayoutResult {
@@ -256,8 +298,10 @@ function buildLayout(params: {
   locations: Array<{ id: string; name: string; description: string; type: string; parentId: string | null; factionId: string | null; significance: string; firstChapter: number | null; status: string }>
   worldElements: Array<{ id: string; name: string; description: string; category: string; parentId: string | null; attributes: Record<string, unknown> }>
   savedPositions: Map<string, { x: number; y: number }>
+  /** 已持久化的手动边（auto=false），与自动边合并并按 source-target 去重 */
+  manualEdges: NovelEdge[]
 }): LayoutResult {
-  const { project, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, savedPositions } = params
+  const { project, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, savedPositions, manualEdges } = params
   const nodes: Node[] = []
   const edges: Edge[] = []
 
@@ -460,6 +504,34 @@ function buildLayout(params: {
     }
   })
 
+  // ── 合并手动边（从 store 读取的已持久化边，auto=false）──
+  // 与自动边按 source-target 去重，手动边优先保留（用户意图优先于算法推断）
+  const manualFlowEdges: Edge[] = manualEdges
+    .filter((e) => !e.auto)
+    .map((e) => ({
+      id: `edge-${e.id}`,
+      source: `${e.sourceType}:${e.sourceId}`,
+      target: `${e.targetType}:${e.targetId}`,
+      type: 'smoothstep',
+      animated: false,
+      style: { stroke: 'var(--color-primary)', strokeWidth: 1.5 },
+      data: { auto: false, edgeId: e.id },
+    }))
+
+  if (manualFlowEdges.length > 0) {
+    const seen = new Set<string>()
+    for (const e of edges) {
+      const key = `${e.source}-${e.target}`
+      seen.add(key)
+    }
+    for (const me of manualFlowEdges) {
+      const key = `${me.source}-${me.target}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      edges.push(me)
+    }
+  }
+
   // ── 边打包：同一 target 有多条边时降低透明度与线宽 ──
   const bundleCounts = computeTargetBundleCount(edges)
   for (const e of edges) {
@@ -575,10 +647,16 @@ export function NovelCanvas({
   const removeFaction = useNovelStore((s) => s.removeFaction)
   const removeLocation = useNovelStore((s) => s.removeLocation)
   const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
+  // 边数据：手动边来自 store（已持久化），与 buildLayout 自动边合并后渲染
+  // 注意：store 的 addEdge/removeEdge 与 xyflow 的 addEdge 同名，这里别名以避免冲突
+  const manualEdges = useNovelStore((s) => s.edges)
+  const addEdgeToStore = useNovelStore((s) => s.addEdge)
+  const removeEdgeFromStore = useNovelStore((s) => s.removeEdge)
 
   const { fitView } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const isFirstLayout = useRef(true)
   /** 位置批量同步 API 的防抖定时器 */
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -621,8 +699,9 @@ export function NovelCanvas({
       locations,
       worldElements,
       savedPositions: savedPositionsMap,
+      manualEdges,
     }),
-    [project, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, savedPositionsMap],
+    [project, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, savedPositionsMap, manualEdges],
   )
 
   // 节点总数
@@ -756,21 +835,45 @@ export function NovelCanvas({
   }, [upsertNodePosition, flushPositions])
 
   // ── 手动连接：onConnect ──
-  const handleConnect = useCallback((params: Connection) => {
+  // 持久化到后端 → 更新 store → 更新 xyflow edges
+  // 失败时静默返回，不污染画布（store 未变，layout 不会重算）
+  const handleConnect = useCallback(async (params: Connection) => {
     if (!params.source || !params.target) return
-    const [sourceType] = params.source.split(':')
-    const [targetType] = params.target.split(':')
+    const pid = currentProjectIdRef.current
+    if (!pid) return
+    const [sourceType, sourceId] = parseNodeId(params.source)
+    const [targetType, targetId] = parseNodeId(params.target)
+    if (!sourceId || !targetId) return
     if (!isValidConnection(sourceType, targetType)) return
+    const edgeType = getEdgeType(sourceType, targetType)
+    let edge: NovelEdge
+    try {
+      edge = await createEdge(pid, {
+        sourceId,
+        sourceType: sourceType as NovelNodeTypeName,
+        targetId,
+        targetType: targetType as NovelNodeTypeName,
+        edgeType,
+        label: '',
+        auto: false,
+      })
+    } catch {
+      return
+    }
+    addEdgeToStore(edge)
+    // id 与 buildLayout 中手动边的 id 格式一致（`edge-${edge.id}`），
+    // 避免 store 更新触发布局重算与此处 addEdge 同时执行时产生重复边
     setEdges((eds) => addEdge(
       {
         ...params,
+        id: `edge-${edge.id}`,
         animated: false,
         style: { stroke: 'var(--color-primary)', strokeWidth: 1.5 },
-        data: { auto: false },
+        data: { auto: false, edgeId: edge.id },
       },
       eds,
     ))
-  }, [setEdges])
+  }, [setEdges, addEdgeToStore])
 
   // ── 同步布局到 nodes/edges ──
   // - 保留已存在节点的拖拽位置（prev）
@@ -870,20 +973,43 @@ export function NovelCanvas({
     )
   }, [selectedNodeId, selectedNodeType, setNodes, pulsingIds, isCompact])
 
+  // ── 边删除：调用 API + 更新 store + 移除 xyflow 边 ──
+  // 仅手动边（data.edgeId 存在）可删除；自动边由布局重算生成，不持久化
+  const handleDeleteEdge = useCallback(async (edge: Edge) => {
+    const edgeId = edge.data?.edgeId
+    if (typeof edgeId !== 'string') return
+    try {
+      await deleteEdge(edgeId)
+    } catch {
+      return
+    }
+    removeEdgeFromStore(edgeId)
+    setEdges((eds) => eds.filter((e) => e.id !== edge.id))
+    setSelectedEdgeId(null)
+  }, [removeEdgeFromStore, setEdges])
+
   // ── 键盘删除：Delete / Backspace ──
+  // 优先删除选中的节点；若未选中节点但选中了边，则删除边
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
       // 输入框中不触发删除
-      const target = e.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
-      if (!selectedNodeId || !selectedNodeType) return
-      e.preventDefault()
-      void handleDeleteNode(selectedNodeId, selectedNodeType)
+      const evtTarget = e.target as HTMLElement | null
+      if (evtTarget && (evtTarget.tagName === 'INPUT' || evtTarget.tagName === 'TEXTAREA' || evtTarget.isContentEditable)) return
+      if (selectedNodeId && selectedNodeType) {
+        e.preventDefault()
+        void handleDeleteNode(selectedNodeId, selectedNodeType)
+        return
+      }
+      if (selectedEdgeId) {
+        e.preventDefault()
+        const edgeToDelete = edges.find((ed) => ed.id === selectedEdgeId)
+        if (edgeToDelete) void handleDeleteEdge(edgeToDelete)
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedNodeId, selectedNodeType, handleDeleteNode])
+  }, [selectedNodeId, selectedNodeType, selectedEdgeId, edges, handleDeleteNode, handleDeleteEdge])
 
   // ── 卸载 / 项目切换前刷新待同步位置 ──
   useEffect(() => {
@@ -908,7 +1034,20 @@ export function NovelCanvas({
 
   const handlePaneClick = useCallback(() => {
     clearSelection()
+    setSelectedEdgeId(null)
   }, [clearSelection])
+
+  // 点击边：选中（用于键盘删除）；仅在画布内追踪，不污染 store 选中状态
+  const handleEdgeClick = useCallback((_evt: ReactMouseEvent, edge: Edge) => {
+    setSelectedEdgeId(edge.id)
+  }, [])
+
+  // 双击边：仅手动边可删除（自动边无 edgeId）
+  const handleEdgeDoubleClick = useCallback((_evt: ReactMouseEvent, edge: Edge) => {
+    if (typeof edge.data?.edgeId !== 'string') return
+    if (!window.confirm('确认删除此连线？')) return
+    void handleDeleteEdge(edge)
+  }, [handleDeleteEdge])
 
   return (
     <div className="relative h-full w-full bg-workspace-bg">
@@ -935,6 +1074,8 @@ export function NovelCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
+        onEdgeClick={handleEdgeClick}
+        onEdgeDoubleClick={handleEdgeDoubleClick}
         onPaneClick={handlePaneClick}
         onNodeDragStop={handleNodeDragStop}
         onConnect={handleConnect}

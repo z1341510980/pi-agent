@@ -26,6 +26,7 @@ import {
   listFactions,
   listLocations,
   listWorldElements,
+  listEdges,
   createChapter,
   completeChapter,
 } from '@/api/novel-client'
@@ -94,6 +95,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         facs,
         locs,
         wel,
+        eds,
       ] = await Promise.all([
         listCharacters(currentProjectId),
         listChapters(currentProjectId),
@@ -108,6 +110,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         listFactions(currentProjectId),
         listLocations(currentProjectId),
         listWorldElements(currentProjectId),
+        listEdges(currentProjectId),
       ])
       return {
         characters: chars,
@@ -123,6 +126,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         factions: facs,
         locations: locs,
         worldElements: wel,
+        edges: eds,
       }
     },
     enabled: !!currentProjectId,

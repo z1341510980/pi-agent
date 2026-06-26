@@ -402,4 +402,28 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_novel_world_elements_project ON novel_world_elements(project_id);
     CREATE INDEX IF NOT EXISTS idx_novel_world_elements_category ON novel_world_elements(category);`,
   },
+  {
+    // 画布连线表（手动连线的持久化 + 自动边存储）
+    // source_type/target_type: character/chapter/conflict/foreshadow/faction/location/world_element/group
+    // edge_type: appearance/relationship/involvement/foreshadow/base/member/hierarchy/association
+    // auto: 0=手动创建, 1=自动生成
+    id: '033_create_novel_edges',
+    sql: `CREATE TABLE IF NOT EXISTS novel_edges (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      source_id       TEXT NOT NULL,
+      source_type     TEXT NOT NULL,
+      target_id       TEXT NOT NULL,
+      target_type     TEXT NOT NULL,
+      edge_type       TEXT NOT NULL,
+      label           TEXT NOT NULL DEFAULT '',
+      auto            INTEGER NOT NULL DEFAULT 0,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_edges_project ON novel_edges(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_edges_source ON novel_edges(source_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_edges_target ON novel_edges(target_id);`,
+  },
 ]

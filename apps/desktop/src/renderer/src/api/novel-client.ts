@@ -415,6 +415,37 @@ export interface NodePositionInput {
   posY: number
 }
 
+// ── 画布连线 ──
+
+export type NovelEdgeType =
+  | 'appearance' | 'relationship' | 'involvement' | 'foreshadow'
+  | 'base' | 'member' | 'hierarchy' | 'association'
+
+export interface NovelEdge {
+  id: string
+  projectId: string
+  sourceId: string
+  sourceType: NovelNodeTypeName
+  targetId: string
+  targetType: NovelNodeTypeName
+  edgeType: NovelEdgeType
+  label: string
+  /** true=自动生成, false=手动创建 */
+  auto: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreateEdgeInput {
+  sourceId: string
+  sourceType: NovelNodeTypeName
+  targetId: string
+  targetType: NovelNodeTypeName
+  edgeType: NovelEdgeType
+  label?: string
+  auto?: boolean
+}
+
 // ── 角色历史 ──
 
 export type CharacterHistoryField =
@@ -711,6 +742,20 @@ export function deleteNodePosition(
   entityId: string,
 ): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/projects/${projectId}/node-positions/${nodeType}/${entityId}`)
+}
+
+// ── Edges（画布连线持久化）──
+
+export function listEdges(projectId: string): Promise<NovelEdge[]> {
+  return getApi<NovelEdge[]>(`${BASE}/projects/${projectId}/edges`)
+}
+
+export function createEdge(projectId: string, input: CreateEdgeInput): Promise<NovelEdge> {
+  return postApi<NovelEdge>(`${BASE}/projects/${projectId}/edges`, input)
+}
+
+export function deleteEdge(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/edges/${id}`)
 }
 
 // ── AI Character Generation ──

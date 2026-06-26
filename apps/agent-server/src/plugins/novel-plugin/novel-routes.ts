@@ -1049,6 +1049,50 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 画布连线（手动连线持久化 + 自动边存储）
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/edges',
+    handler: async (request: any) => {
+      return success(store.listEdges(request.params.projectId), request.traceId)
+    },
+  })
+
+  const createEdgeSchema = z.object({
+    sourceId: z.string().min(1),
+    sourceType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group', 'faction', 'location', 'world_element']),
+    targetId: z.string().min(1),
+    targetType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group', 'faction', 'location', 'world_element']),
+    edgeType: z.enum(['appearance', 'relationship', 'involvement', 'foreshadow', 'base', 'member', 'hierarchy', 'association']),
+    label: z.string().default(''),
+    auto: z.boolean().default(false),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/edges',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createEdgeSchema, request, reply)
+      if (!input) return reply
+
+      const edge = store.createEdge(request.params.projectId, input)
+      return success(edge, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/edges/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteEdge(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `连线不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 长期记忆（记忆事件 + 章节快照 + 因果链）
   // ═══════════════════════════════════════════════════════════════
 

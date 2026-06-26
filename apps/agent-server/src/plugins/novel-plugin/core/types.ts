@@ -382,6 +382,38 @@ export interface NovelNodePosition {
   updatedAt: number
 }
 
+// ── 画布连线（手动连线持久化 + 自动边存储）──
+
+/**
+ * 边类型语义：
+ * - appearance    角色 ↔ 章节（出场）
+ * - relationship  角色 ↔ 角色（关系）
+ * - involvement   冲突 → 角色（参与）
+ * - foreshadow    伏笔 → 章节（埋设/回收）
+ * - base          地点 ↔ 章节（场景）
+ * - member        势力 ↔ 角色（成员/首领）
+ * - hierarchy     地点 ↔ 地点 / 世界观要素 ↔ 世界观要素（层级）
+ * - association   其他关联（兜底）
+ */
+export type NovelEdgeType =
+  | 'appearance' | 'relationship' | 'involvement' | 'foreshadow'
+  | 'base' | 'member' | 'hierarchy' | 'association'
+
+export interface NovelEdge {
+  id: string
+  projectId: string
+  sourceId: string
+  sourceType: NovelNodeType
+  targetId: string
+  targetType: NovelNodeType
+  edgeType: NovelEdgeType
+  label: string
+  /** true=自动生成, false=手动创建 */
+  auto: boolean
+  createdAt: number
+  updatedAt: number
+}
+
 // ── 提示词模板 ──
 
 export interface NovelPromptTemplate {

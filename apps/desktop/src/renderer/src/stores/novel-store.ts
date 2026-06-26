@@ -18,6 +18,7 @@ import type {
   NovelFaction,
   NovelLocation,
   NovelWorldElement,
+  NovelEdge,
 } from '@/api/novel-client'
 
 // ── 节点类型 ──
@@ -54,6 +55,7 @@ export interface NovelState {
   worldElements: NovelWorldElement[]
   nodePositions: NovelNodePosition[]
   characterHistory: NovelCharacterHistory[]
+  edges: NovelEdge[]
 
   // ── 选中节点 ──
   selectedNodeId: string | null
@@ -80,6 +82,7 @@ export interface NovelState {
     factions?: NovelFaction[]
     locations?: NovelLocation[]
     worldElements?: NovelWorldElement[]
+    edges?: NovelEdge[]
   }) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -122,6 +125,11 @@ export interface NovelState {
   // ── 角色历史 ──
   setCharacterHistory: (history: NovelCharacterHistory[]) => void
   addCharacterHistory: (entry: NovelCharacterHistory) => void
+
+  // ── 画布连线 ──
+  setEdges: (edges: NovelEdge[]) => void
+  addEdge: (edge: NovelEdge) => void
+  removeEdge: (id: string) => void
 }
 
 // ── 通用 upsert 工具 ──
@@ -163,6 +171,7 @@ export const useNovelStore = create<NovelState>()(
       worldElements: [],
       nodePositions: [],
       characterHistory: [],
+      edges: [],
 
       selectedNodeId: null,
       selectedNodeType: null,
@@ -191,6 +200,7 @@ export const useNovelStore = create<NovelState>()(
           factions: data.factions ?? state.factions,
           locations: data.locations ?? state.locations,
           worldElements: data.worldElements ?? state.worldElements,
+          edges: data.edges ?? state.edges,
         })),
 
       setLoading: (loading) => set({ loading }),
@@ -215,6 +225,7 @@ export const useNovelStore = create<NovelState>()(
           worldElements: [],
           nodePositions: [],
           characterHistory: [],
+          edges: [],
           selectedNodeId: null,
           selectedNodeType: null,
         }),
@@ -257,6 +268,7 @@ export const useNovelStore = create<NovelState>()(
                 worldElements: [],
                 nodePositions: [],
                 characterHistory: [],
+                edges: [],
                 selectedNodeId: null,
                 selectedNodeType: null,
               }
@@ -286,6 +298,11 @@ export const useNovelStore = create<NovelState>()(
       setCharacterHistory: (history) => set({ characterHistory: history }),
       addCharacterHistory: (entry) =>
         set((state) => ({ characterHistory: [...state.characterHistory, entry] })),
+
+      // ── 画布连线 ──
+      setEdges: (edges) => set({ edges }),
+      addEdge: (edge) => set((state) => ({ edges: upsertInList(state.edges, edge) })),
+      removeEdge: (id) => set((state) => ({ edges: removeFromList(state.edges, id) })),
     }),
     {
       name: 'pi-agent-novel',
@@ -309,6 +326,7 @@ export const useNovelStore = create<NovelState>()(
         worldElements: state.worldElements,
         nodePositions: state.nodePositions,
         characterHistory: state.characterHistory,
+        edges: state.edges,
         selectedNodeId: state.selectedNodeId,
         selectedNodeType: state.selectedNodeType,
       }),

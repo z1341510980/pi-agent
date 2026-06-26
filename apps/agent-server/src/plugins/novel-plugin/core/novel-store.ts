@@ -35,6 +35,7 @@ import type {
   NovelFaction,
   NovelLocation,
   NovelWorldElement,
+  NovelEdge,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
@@ -159,6 +160,14 @@ interface WorldElementRow {
   created_at: number; updated_at: number
 }
 
+interface EdgeRow {
+  id: string; project_id: string
+  source_id: string; source_type: string
+  target_id: string; target_type: string
+  edge_type: string; label: string; auto: number
+  created_at: number; updated_at: number
+}
+
 // ── 工具函数 ──
 
 function parseJSON<T>(s: string, fallback: T): T {
@@ -194,6 +203,9 @@ export class NovelStore implements NovelPromptStores {
   private readonly stmtListFactions: Database.Statement
   private readonly stmtListLocations: Database.Statement
   private readonly stmtListWorldElements: Database.Statement
+  private readonly stmtListEdges: Database.Statement
+  private readonly stmtDeleteEdge: Database.Statement
+  private readonly stmtDeleteEdgesByEntity: Database.Statement
 
   constructor(private db: Database.Database) {
     this.stmtGetProject = db.prepare('SELECT * FROM novel_projects WHERE id = ?')
@@ -225,6 +237,11 @@ export class NovelStore implements NovelPromptStores {
     this.stmtListFactions = db.prepare('SELECT * FROM novel_factions WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListLocations = db.prepare('SELECT * FROM novel_locations WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListWorldElements = db.prepare('SELECT * FROM novel_world_elements WHERE project_id = ? ORDER BY created_at ASC')
+    this.stmtListEdges = db.prepare('SELECT * FROM novel_edges WHERE project_id = ? ORDER BY created_at ASC')
+    this.stmtDeleteEdge = db.prepare('DELETE FROM novel_edges WHERE id = ?')
+    this.stmtDeleteEdgesByEntity = db.prepare(
+      'DELETE FROM novel_edges WHERE source_id = ? OR target_id = ?',
+    )
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -411,6 +428,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteChapter(id: string): boolean {
+    this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_chapters WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -459,6 +477,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteCharacter(id: string): boolean {
+    this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_characters WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -504,6 +523,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteForeshadow(id: string): boolean {
+    this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_foreshadowing WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -542,6 +562,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteConflict(id: string): boolean {
+    this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_conflicts WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -959,6 +980,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteFaction(id: string): boolean {
+    this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_factions WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -1011,6 +1033,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteLocation(id: string): boolean {
+    this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_locations WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -1059,8 +1082,63 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteWorldElement(id: string): boolean {
+    this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_world_elements WHERE id = ?').run(id)
     return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 画布连线 CRUD（手动连线持久化 + 自动边存储）
+  // ═══════════════════════════════════════════════════════════════
+
+  listEdges(projectId: string): NovelEdge[] {
+    return (this.stmtListEdges.all(projectId) as EdgeRow[]).map((r) => this.rowToEdge(r))
+  }
+
+  createEdge(
+    projectId: string,
+    data: Omit<NovelEdge, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'auto'> & { auto?: boolean },
+  ): NovelEdge {
+    const id = randomUUID()
+    const ts = now()
+    const auto = data.auto ? 1 : 0
+    const full: NovelEdge = {
+      id,
+      projectId,
+      sourceId: data.sourceId,
+      sourceType: data.sourceType,
+      targetId: data.targetId,
+      targetType: data.targetType,
+      edgeType: data.edgeType,
+      label: data.label ?? '',
+      auto: auto === 1,
+      createdAt: ts,
+      updatedAt: ts,
+    }
+    this.db.prepare(`
+      INSERT INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type,
+      edge_type, label, auto, created_at, updated_at)
+      VALUES (@id, @project_id, @source_id, @source_type, @target_id, @target_type,
+      @edge_type, @label, @auto, @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId,
+      source_id: full.sourceId, source_type: full.sourceType,
+      target_id: full.targetId, target_type: full.targetType,
+      edge_type: full.edgeType, label: full.label, auto,
+      created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  deleteEdge(id: string): boolean {
+    const result = this.stmtDeleteEdge.run(id)
+    return result.changes > 0
+  }
+
+  /** 删除与某实体相关的所有边（实体被删除时调用） */
+  deleteEdgesByEntity(entityId: string): number {
+    const result = this.stmtDeleteEdgesByEntity.run(entityId, entityId)
+    return result.changes
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1229,6 +1307,17 @@ export class NovelStore implements NovelPromptStores {
       id: row.id, projectId: row.project_id, category: row.category as NovelWorldElement['category'],
       name: row.name, description: row.description, parentId: row.parent_id,
       attributes: parseJSON<Record<string, unknown>>(row.attributes, {}),
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }
+  }
+
+  private rowToEdge(row: EdgeRow): NovelEdge {
+    return {
+      id: row.id, projectId: row.project_id,
+      sourceId: row.source_id, sourceType: row.source_type as NovelEdge['sourceType'],
+      targetId: row.target_id, targetType: row.target_type as NovelEdge['targetType'],
+      edgeType: row.edge_type as NovelEdge['edgeType'],
+      label: row.label, auto: row.auto === 1,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

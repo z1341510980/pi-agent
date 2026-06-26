@@ -67,6 +67,10 @@ import type {
   NovelInformationLayer,
   NovelConstraint,
   NovelRelationship,
+  NovelFaction,
+  NovelLocation,
+  NovelWorldElement,
+  NovelEdge,
   StoryState,
   NarrativeTask,
   ChapterConstraints,
@@ -88,6 +92,10 @@ export interface NovelPromptStores {
   listConstraints(projectId: string): NovelConstraint[]
   listRecentChapters(projectId: string, limit: number): NovelChapter[]
   getChapter(projectId: string, chapterNumber: number): NovelChapter | undefined
+  listEdges(projectId: string): NovelEdge[]
+  listFactions(projectId: string): NovelFaction[]
+  listLocations(projectId: string): NovelLocation[]
+  listWorldElements(projectId: string): NovelWorldElement[]
 }
 
 export class NovelPromptBuilder {
@@ -190,6 +198,13 @@ export class NovelPromptBuilder {
     const infoLayers = this.stores.listInformationLayers(projectId)
     if (infoLayers.length > 0) {
       parts.push(this.formatInfoLayers(infoLayers))
+    }
+
+    // ── 实体关联（画布手动 + 自动连线）──
+    const edges = this.stores.listEdges(projectId)
+    if (edges.length > 0) {
+      const edgeSection = this.formatEdges(projectId, edges)
+      if (edgeSection) parts.push(edgeSection)
     }
 
     // ── 最近章节摘要 ──
@@ -374,6 +389,24 @@ export class NovelPromptBuilder {
     return parts.join('\n')
   }
 
+  /**
+   * 格式化实体关联（画布连线）
+   *
+   * 将画布上的手动 + 自动边格式化为可读文本，让 Agent 能感知
+   * 用户在画布上建立的角色出场、势力归属、地点场景等关联关系。
+   */
+  private formatEdges(projectId: string, edges: NovelEdge[]): string {
+    const nameMap = this.buildEntityNameMap(projectId)
+    const lines = edges.map((e) => {
+      const sourceName = nameMap.get(e.sourceId) ?? e.sourceId
+      const targetName = nameMap.get(e.targetId) ?? e.targetId
+      const label = e.label ? `：${e.label}` : ''
+      const origin = e.auto ? '（自动）' : '（手动）'
+      return `- ${sourceName}(${e.sourceType}) --[${e.edgeType}]--> ${targetName}(${e.targetType})${label}${origin}`
+    })
+    return `## 实体关联\n\n${lines.join('\n')}`
+  }
+
   /** 格式化最近章节摘要 */
   private formatRecentSummaries(chapters: NovelChapter[]): string {
     const parts: string[] = ['## 最近章节摘要']
@@ -410,6 +443,35 @@ export class NovelPromptBuilder {
       currentStage: project.currentStage,
       currentChapter: project.currentChapter,
     }
+  }
+
+  /**
+   * 构建实体 ID → 可读名称的映射表（供格式化边数据时查询实体名称）
+   * 覆盖画布上所有节点类型：project/character/chapter/conflict/foreshadow/faction/location/world_element
+   */
+  private buildEntityNameMap(projectId: string): Map<string, string> {
+    const map = new Map<string, string>()
+    const project = this.stores.getProject(projectId)
+    if (project) map.set(project.id, project.title)
+    for (const c of this.stores.listCharacters(projectId)) map.set(c.id, c.name)
+    for (const ch of this.stores.listRecentChapters(projectId, 9999)) {
+      map.set(ch.id, `第${ch.chapterNumber}章《${ch.title}》`)
+    }
+    for (const c of this.stores.listConflicts(projectId)) map.set(c.id, c.description)
+    for (const f of this.stores.listForeshadowing(projectId)) map.set(f.id, f.description)
+    for (const f of this.stores.listFactions(projectId)) map.set(f.id, f.name)
+    for (const l of this.stores.listLocations(projectId)) map.set(l.id, l.name)
+    for (const w of this.stores.listWorldElements(projectId)) map.set(w.id, w.name)
+    return map
+  }
+
+  /** 根据实体类型和 ID 查询实体名称（找不到时返回 null） */
+  private getEntityName(entityType: string, entityId: string, projectId: string): string | null {
+    const map = this.buildEntityNameMap(projectId)
+    if (map.has(entityId)) return map.get(entityId)!
+    // group 节点无持久化实体
+    if (entityType === 'group') return null
+    return null
   }
 
   /** 获取 Agent 角色描述（从模板读取，可配置） */
