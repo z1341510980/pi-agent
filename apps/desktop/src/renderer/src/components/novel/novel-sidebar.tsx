@@ -550,6 +550,7 @@ function CollapsibleGroup({
         <div className="ml-3 pl-2 border-l border-border/60 mt-0.5 space-y-0.5">
           {children}
           <button
+            key="add-button"
             type="button"
             onClick={onAdd}
             className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"

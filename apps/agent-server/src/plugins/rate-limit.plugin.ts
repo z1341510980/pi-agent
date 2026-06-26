@@ -15,7 +15,8 @@ export const rateLimitPlugin: FastifyPluginAsync = fp(async (app) => {
       return request.ip ?? "unknown";
     },
     allowList: (request: FastifyRequest) => {
-      return request.url.startsWith("/api/health");
+      // health 端点和插件路由（小说创作等高频场景）跳过限制
+      return request.url.startsWith("/api/health") || request.url.startsWith("/api/plugins/");
     },
   });
 });
