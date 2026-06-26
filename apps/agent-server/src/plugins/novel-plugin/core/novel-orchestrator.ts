@@ -223,6 +223,15 @@ export class NovelOrchestrator extends EventEmitter {
       // 章节完成时保存全量状态快照（情景记忆）
       this.saveChapterSnapshot(projectId, chapterNumber)
 
+      // 自动保存章节内容到数据库（创作完成后立即持久化，无需用户手动点击"保存到章节"）
+      if (chapter) {
+        this.store.updateChapter(chapter.id, {
+          content: finalContent,
+          status: 'review',
+          wordCount: finalContent.length,
+        })
+      }
+
       this.emitProgress(options, 'completed', { message: '章节创作完成' })
 
       return {

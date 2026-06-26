@@ -192,6 +192,26 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     return () => clearInterval(interval)
   }, [creationFlow.isRunning, currentProjectId, queryClient])
 
+  // 创作完成后自动保存章节内容（收到 result 事件即持久化，无需用户手动点击"保存到章节"）
+  useEffect(() => {
+    if (
+      creationFlow.result?.status === 'completed' &&
+      creationFlow.result.content &&
+      currentProjectId &&
+      creationChapterNumber != null
+    ) {
+      const targetChapter = chapters.find((c) => c.chapterNumber === creationChapterNumber)
+      if (targetChapter) {
+        void completeChapter(targetChapter.id, { content: creationFlow.result.content })
+          .then((updated) => {
+            upsertChapter(updated)
+            void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          })
+          .catch(() => {})
+      }
+    }
+  }, [creationFlow.result, currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient])
+
   const handleSaveChapter = useCallback(async (content: string) => {
     if (!currentProjectId || creationChapterNumber == null) return
     const targetChapter = chapters.find((c) => c.chapterNumber === creationChapterNumber)
