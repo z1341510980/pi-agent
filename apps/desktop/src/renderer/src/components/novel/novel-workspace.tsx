@@ -175,11 +175,22 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       })
       upsertChapter(chapter)
       setCreationChapterNumber(nextNumber)
+      // 刷新数据，确保新章节出现在画布上
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
       await creationFlow.startCreation(currentProjectId, nextNumber)
     } catch {
       // 静默失败
     }
-  }, [currentProjectId, chapters, creationFlow, upsertChapter])
+  }, [currentProjectId, chapters, creationFlow, upsertChapter, queryClient])
+
+  // 创作运行中定期刷新：Memory Agent 可能在创作过程中修改角色/伏笔/冲突等
+  useEffect(() => {
+    if (!creationFlow.isRunning || !currentProjectId) return
+    const interval = setInterval(() => {
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [creationFlow.isRunning, currentProjectId, queryClient])
 
   const handleSaveChapter = useCallback(async (content: string) => {
     if (!currentProjectId || creationChapterNumber == null) return
@@ -196,7 +207,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   const handleDiscardCreation = useCallback(() => {
     creationFlow.cancel()
-  }, [creationFlow])
+    if (currentProjectId) {
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    }
+  }, [creationFlow, currentProjectId, queryClient])
 
   const handleSendMessage = useCallback((message: string) => {
     creationFlow.sendMessage(message)

@@ -461,15 +461,18 @@ export function ChapterLivePanel({
             </Badge>
           )}
         </div>
+      </div>
 
-        {/* 检查点决策区：渲染实际叙事任务/验收报告内容 */}
+      {/* 底部固定交互区：检查点决策 / 用户输入 / 完成操作三态互斥 */}
+      <div className="shrink-0 border-t border-border">
+        {/* 检查点决策（出现时替代输入框） */}
         <AnimatePresence>
           {isCheckpoint && currentCheckpoint && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8 }}
-              className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3"
+              className="p-3 border-b border-border bg-amber-500/5"
             >
               <p className="text-xs text-amber-700 dark:text-amber-300 mb-2">
                 {currentCheckpoint.type === 'narrative_task'
@@ -497,49 +500,50 @@ export function ChapterLivePanel({
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
 
-      {/* 用户消息输入区 */}
-      <div className="shrink-0 border-t border-border p-3">
-        <div className="flex items-end gap-2">
-          <textarea
-            className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm min-h-[40px] max-h-[120px] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
-            placeholder={isRunning ? '输入指令参与创作（如：加一段环境描写）...' : '创作已结束'}
-            value={userInput}
-            onChange={(e) => setUserInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                handleSendMessage()
-              }
-            }}
-            disabled={!isRunning}
-            rows={1}
-          />
-          <Button
-            size="sm"
-            onClick={handleSendMessage}
-            disabled={!isRunning || !userInput.trim()}
-          >
-            <Send className="size-3" />
-            发送
-          </Button>
-        </div>
-      </div>
-
-      {/* 操作按钮 */}
-      <div className="shrink-0 flex items-center justify-end gap-2 px-3 pb-3">
-        {isRunning && (
-          <Button size="sm" variant="ghost" onClick={onDiscard}>
-            <Trash2 className="size-3" />
-            丢弃
-          </Button>
+        {/* 用户输入框（运行中且无检查点时显示） */}
+        {isRunning && !isCheckpoint && (
+          <div className="p-3">
+            <div className="flex items-end gap-2">
+              <textarea
+                className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm min-h-[40px] max-h-[120px] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                placeholder="输入指令参与创作（如：加一段环境描写）..."
+                value={userInput}
+                onChange={(e) => setUserInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    handleSendMessage()
+                  }
+                }}
+                rows={1}
+              />
+              <Button
+                size="sm"
+                onClick={handleSendMessage}
+                disabled={!userInput.trim()}
+              >
+                <Send className="size-3" />
+                发送
+              </Button>
+            </div>
+          </div>
         )}
-        {canSave && (
-          <Button size="sm" onClick={handleSave} disabled={!chapterContent}>
-            <Save className="size-3" />
-            保存到章节
-          </Button>
+
+        {/* 操作按钮（完成或出错时显示） */}
+        {!isRunning && (isCompleted || phase === 'error') && (
+          <div className="flex items-center justify-end gap-2 p-3">
+            <Button size="sm" variant="ghost" onClick={onDiscard}>
+              <Trash2 className="size-3" />
+              丢弃
+            </Button>
+            {canSave && (
+              <Button size="sm" onClick={handleSave} disabled={!chapterContent}>
+                <Save className="size-3" />
+                保存到章节
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </div>
