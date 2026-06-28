@@ -46,6 +46,7 @@ import type { NarrativeTask, ChapterConstraints } from './types.js'
 import type { ToolDefinition as PluginToolDefinition } from '../../../core/plugin/plugin-types.js'
 import { RhythmController } from './rhythm-controller.js'
 import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'
+import type { NovelAgentLogStatus } from './types.js'
 
 export interface CreationOptions {
   onCheckpoint: (checkpoint: CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
@@ -257,8 +258,12 @@ export class NovelOrchestrator extends EventEmitter {
     const displayAgentName = overrides?.displayAgentName ?? config.name
 
     let inputText = typeof input === 'string' ? input : JSON.stringify(input)
+    // 保存原始任务输入（用于日志记录），再附加用户指令
+    const taskInputForLog = inputText
 
     // 附加用户在检查点期间发送的创作指令（消费后清空）
+    // 保留副本用于日志记录
+    const userInstructionsForLog = this.userMessages.slice()
     if (this.userMessages.length > 0) {
       const userInstructions = this.userMessages.map((m, i) => `${i + 1}. ${m}`).join('\n')
       inputText += `\n\n## 用户创作指令\n用户在创作过程中提出以下指令，请在创作中予以考虑：\n${userInstructions}`
@@ -285,26 +290,60 @@ export class NovelOrchestrator extends EventEmitter {
     )
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）
-    const userMessage = `${chapterContext}\n\n## 本次任务\n${inputText}`
+    // 章节上下文（SEMI 层）通过 prefixUserMessage 独立注入，不与任务拼接，
+    // 确保 SEMI 层前缀跨 Agent 稳定，可被 prompt cache 命中。
+    const userMessage = inputText
 
     // 按 Agent 类型过滤工具权限
     const allNovelTools = this.sessionFactory.getNovelTools()
     const allowedToolNames = config.tools
     const filteredTools = allNovelTools.filter(t => allowedToolNames.includes(t.name))
+    const toolNamesForLog = filteredTools.map(t => t.name)
+
+    // 记录提示词日志（STATIC + SEMI + DYNAMIC 三层）
+    this.context.logger.debug(
+      {
+        agentType,
+        agentName: config.name,
+        projectId,
+        chapterNumber,
+        systemPromptLength: systemPrompt.length,
+        systemPromptPreview: systemPrompt.slice(0, 500),
+        prefixUserMessageLength: chapterContext.length,
+        prefixUserMessagePreview: chapterContext.slice(0, 500),
+        userMessageLength: userMessage.length,
+        userMessagePreview: userMessage.slice(0, 500),
+        toolsCount: filteredTools.length,
+        toolNames: toolNamesForLog,
+      },
+      'Agent 提示词构建完成',
+    )
 
     // 创建独立 Session 并调用 LLM
+    const startTime = Date.now()
     const session = await this.context.createSession({
       systemPrompt,
+      prefixUserMessage: chapterContext,
       userMessage,
       tools: filteredTools as unknown as PluginToolDefinition[],
       signal: options?.signal,
     })
 
+    // 在 try/catch/finally 中捕获结果与错误，finally 持久化到日志表
+    let logStatus: NovelAgentLogStatus = 'success'
+    let logError = ''
+    let logResult = ''
     try {
       // 流式推送：每收到一段 delta 就通过 emitProgress 推送给前端，
       // 前端据此实时更新最后一条同类型 Agent 输出（streaming: true）。
       let streamedText = ''
+      let deltaCount = 0
+      this.context.logger.info(
+        { agentType, agentName: config.name, projectId, chapterNumber, userMessageLength: userMessage.length },
+        'Agent promptStream 开始调用 LLM',
+      )
       const result = await session.promptStream((delta: string) => {
+        deltaCount++
         streamedText += delta
         this.emitProgress(options, phase, {
           agentType: displayAgentType,
@@ -316,6 +355,19 @@ export class NovelOrchestrator extends EventEmitter {
         } as AgentOutputData)
       })
 
+      this.context.logger.info(
+        {
+          agentType,
+          agentName: config.name,
+          projectId,
+          deltaCount,
+          streamedLength: streamedText.length,
+          resultLength: result.length,
+          resultPreview: result.slice(0, 200),
+        },
+        'Agent promptStream 返回',
+      )
+
       // 推送最终完整输出（streaming: false 标记生成结束，
       // 前端会更新最后一条同类型输出并移除"正在生成"状态）
       this.emitProgress(options, phase, {
@@ -326,18 +378,11 @@ export class NovelOrchestrator extends EventEmitter {
         streaming: false,
       } as AgentOutputData)
 
-      this.context.logger.info(
-        {
-          agentType,
-          agentName: config.name,
-          projectId,
-          resultLength: result.length,
-          resultPreview: result.slice(0, 200),
-        },
-        'Agent 推理完成',
-      )
+      logResult = result
       return result
     } catch (err) {
+      logStatus = 'error'
+      logError = err instanceof Error ? err.message : String(err)
       this.context.logger.error(
         { agentType, agentName: config.name, projectId, err },
         'Agent 推理失败',
@@ -345,6 +390,38 @@ export class NovelOrchestrator extends EventEmitter {
       throw err
     } finally {
       session.dispose()
+
+      // 持久化 Agent 调用日志（fire-and-forget，失败不影响主流程）
+      try {
+        this.store.insertAgentLog({
+          projectId,
+          chapterNumber,
+          agentType,
+          agentName: config.name,
+          displayAgentType,
+          displayAgentName,
+          phase,
+          systemPrompt,
+          chapterContext,
+          userMessage,
+          taskInput: taskInputForLog,
+          userInstructions: userInstructionsForLog,
+          tools: filteredTools.map(t => ({ name: t.name, description: t.description })),
+          toolNames: toolNamesForLog,
+          result: logResult,
+          resultLength: logResult.length,
+          durationMs: Date.now() - startTime,
+          status: logStatus,
+          error: logError,
+          sessionId: '',
+        })
+      } catch (logErr) {
+        // 日志写入失败不影响主流程
+        this.context.logger.warn(
+          { agentType, projectId, err: logErr },
+          'Agent 调用日志写入失败',
+        )
+      }
     }
   }
 

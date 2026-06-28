@@ -23,6 +23,7 @@ import type {
   NovelForeshadow,
   NovelClue,
   NovelConflict,
+  ConflictTier,
   NovelWorldRule,
   NovelConstraint,
   NovelInformationLayer,
@@ -36,6 +37,10 @@ import type {
   NovelLocation,
   NovelWorldElement,
   NovelEdge,
+  NovelAgentLog,
+  NovelAgentLogSummary,
+  NovelAgentLogStatus,
+  NovelMarker,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
@@ -58,6 +63,7 @@ interface CharacterRow {
   identity: string; personality: string; appearance: string
   current_state: string; current_goal: string; current_pressure: string
   secret: string; arc_stage: string; arc_history: string; speech_style: string
+  is_protagonist: number
   created_at: number; updated_at: number
 }
 
@@ -84,6 +90,7 @@ interface ClueRow {
 interface ConflictRow {
   id: string; project_id: string; description: string; type: string
   intensity: number; stage: string; participants: string
+  first_chapter: number | null; last_chapter: number | null; tier: string
   created_at: number; updated_at: number
 }
 
@@ -144,6 +151,7 @@ interface FactionRow {
   id: string; project_id: string; name: string; description: string
   type: string; leader_id: string | null; ideology: string; strength: string
   resources: string; allies: string; enemies: string; status: string
+  first_chapter: number | null; last_chapter: number | null
   created_at: number; updated_at: number
 }
 
@@ -151,6 +159,7 @@ interface LocationRow {
   id: string; project_id: string; name: string; description: string
   type: string; parent_id: string | null; faction_id: string | null
   significance: string; first_chapter: number | null; status: string
+  appear_chapters: string
   created_at: number; updated_at: number
 }
 
@@ -160,12 +169,30 @@ interface WorldElementRow {
   created_at: number; updated_at: number
 }
 
+interface MarkerRow {
+  id: string; project_id: string; chapter: number; title: string; note: string
+  type: string; color: string; created_at: number; updated_at: number
+}
+
 interface EdgeRow {
   id: string; project_id: string
   source_id: string; source_type: string
   target_id: string; target_type: string
   edge_type: string; label: string; auto: number
   created_at: number; updated_at: number
+}
+
+interface AgentLogRow {
+  id: string; project_id: string; chapter_number: number
+  agent_type: string; agent_name: string
+  display_agent_type: string; display_agent_name: string
+  phase: string
+  system_prompt: string; chapter_context: string; user_message: string
+  task_input: string; user_instructions: string
+  tools: string; tool_names: string
+  result: string; result_length: number
+  duration_ms: number; status: string; error: string
+  session_id: string; created_at: number
 }
 
 // ── 工具函数 ──
@@ -212,9 +239,16 @@ export class NovelStore implements NovelPromptStores {
   private readonly stmtListFactions: Database.Statement
   private readonly stmtListLocations: Database.Statement
   private readonly stmtListWorldElements: Database.Statement
+  private readonly stmtListMarkers: Database.Statement
   private readonly stmtListEdges: Database.Statement
   private readonly stmtDeleteEdge: Database.Statement
   private readonly stmtDeleteEdgesByEntity: Database.Statement
+  private readonly stmtInsertAgentLog: Database.Statement
+  private readonly stmtGetAgentLog: Database.Statement
+  private readonly stmtListAgentLogsByProject: Database.Statement
+  private readonly stmtListAgentLogsByChapter: Database.Statement
+  private readonly stmtListAgentLogsByAgent: Database.Statement
+  private readonly stmtDeleteAgentLogsByProject: Database.Statement
 
   constructor(private db: Database.Database) {
     this.stmtGetProject = db.prepare('SELECT * FROM novel_projects WHERE id = ?')
@@ -246,10 +280,43 @@ export class NovelStore implements NovelPromptStores {
     this.stmtListFactions = db.prepare('SELECT * FROM novel_factions WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListLocations = db.prepare('SELECT * FROM novel_locations WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListWorldElements = db.prepare('SELECT * FROM novel_world_elements WHERE project_id = ? ORDER BY created_at ASC')
+    this.stmtListMarkers = db.prepare('SELECT * FROM novel_markers WHERE project_id = ? ORDER BY chapter ASC, created_at ASC')
     this.stmtListEdges = db.prepare('SELECT * FROM novel_edges WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtDeleteEdge = db.prepare('DELETE FROM novel_edges WHERE id = ?')
     this.stmtDeleteEdgesByEntity = db.prepare(
       'DELETE FROM novel_edges WHERE source_id = ? OR target_id = ?',
+    )
+
+    // Agent 调用日志
+    this.stmtInsertAgentLog = db.prepare(`
+      INSERT INTO novel_agent_logs (
+        id, project_id, chapter_number, agent_type, agent_name,
+        display_agent_type, display_agent_name, phase,
+        system_prompt, chapter_context, user_message,
+        task_input, user_instructions, tools, tool_names,
+        result, result_length, duration_ms, status, error,
+        session_id, created_at
+      ) VALUES (
+        @id, @project_id, @chapter_number, @agent_type, @agent_name,
+        @display_agent_type, @display_agent_name, @phase,
+        @system_prompt, @chapter_context, @user_message,
+        @task_input, @user_instructions, @tools, @tool_names,
+        @result, @result_length, @duration_ms, @status, @error,
+        @session_id, @created_at
+      )
+    `)
+    this.stmtGetAgentLog = db.prepare('SELECT * FROM novel_agent_logs WHERE id = ?')
+    this.stmtListAgentLogsByProject = db.prepare(
+      'SELECT * FROM novel_agent_logs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?',
+    )
+    this.stmtListAgentLogsByChapter = db.prepare(
+      'SELECT * FROM novel_agent_logs WHERE project_id = ? AND chapter_number = ? ORDER BY created_at DESC LIMIT ?',
+    )
+    this.stmtListAgentLogsByAgent = db.prepare(
+      'SELECT * FROM novel_agent_logs WHERE project_id = ? AND agent_type = ? ORDER BY created_at DESC LIMIT ?',
+    )
+    this.stmtDeleteAgentLogsByProject = db.prepare(
+      'DELETE FROM novel_agent_logs WHERE project_id = ?',
     )
   }
 
@@ -451,16 +518,17 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelCharacter = { ...character, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_characters (id, project_id, name, description, identity, personality, appearance,
-      current_state, current_goal, current_pressure, secret, arc_stage, arc_history, speech_style, created_at, updated_at)
+      current_state, current_goal, current_pressure, secret, arc_stage, arc_history, speech_style, is_protagonist, created_at, updated_at)
       VALUES (@id, @project_id, @name, @description, @identity, @personality, @appearance,
-      @current_state, @current_goal, @current_pressure, @secret, @arc_stage, @arc_history, @speech_style, @created_at, @updated_at)
+      @current_state, @current_goal, @current_pressure, @secret, @arc_stage, @arc_history, @speech_style, @is_protagonist, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId,
       name: bindString(full.name, '未命名'), description: bindString(full.description),
       identity: bindString(full.identity), personality: bindString(full.personality), appearance: bindString(full.appearance),
       current_state: bindString(full.currentState), current_goal: bindString(full.currentGoal), current_pressure: bindString(full.currentPressure),
       secret: bindString(full.secret), arc_stage: bindString(full.arcStage, 'introduction'), arc_history: bindString(full.arcHistory, '[]'),
-      speech_style: bindString(full.speechStyle), created_at: full.createdAt, updated_at: full.updatedAt,
+      speech_style: bindString(full.speechStyle), is_protagonist: full.isProtagonist ? 1 : 0,
+      created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
   }
@@ -473,7 +541,8 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_characters SET name=@name, description=@description, identity=@identity, personality=@personality,
       appearance=@appearance, current_state=@current_state, current_goal=@current_goal, current_pressure=@current_pressure,
-      secret=@secret, arc_stage=@arc_stage, arc_history=@arc_history, speech_style=@speech_style, updated_at=@updated_at
+      secret=@secret, arc_stage=@arc_stage, arc_history=@arc_history, speech_style=@speech_style, is_protagonist=@is_protagonist,
+      updated_at=@updated_at
       WHERE id=@id
     `).run({
       id, name: bindString(updated.name, '未命名'), description: bindString(updated.description),
@@ -481,7 +550,8 @@ export class NovelStore implements NovelPromptStores {
       current_state: bindString(updated.currentState), current_goal: bindString(updated.currentGoal),
       current_pressure: bindString(updated.currentPressure), secret: bindString(updated.secret),
       arc_stage: bindString(updated.arcStage, 'introduction'), arc_history: bindString(updated.arcHistory, '[]'),
-      speech_style: bindString(updated.speechStyle), updated_at: updated.updatedAt,
+      speech_style: bindString(updated.speechStyle), is_protagonist: updated.isProtagonist ? 1 : 0,
+      updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -546,12 +616,16 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelConflict = { ...conflict, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_conflicts (id, project_id, description, type, intensity, stage, participants, created_at, updated_at)
-      VALUES (@id, @project_id, @description, @type, @intensity, @stage, @participants, @created_at, @updated_at)
+      INSERT INTO novel_conflicts (id, project_id, description, type, intensity, stage, participants,
+      first_chapter, last_chapter, tier, created_at, updated_at)
+      VALUES (@id, @project_id, @description, @type, @intensity, @stage, @participants,
+      @first_chapter, @last_chapter, @tier, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       type: full.type, intensity: full.intensity, stage: full.stage,
-      participants: full.participants, created_at: full.createdAt, updated_at: full.updatedAt,
+      participants: full.participants, first_chapter: full.firstChapter,
+      last_chapter: full.lastChapter, tier: full.tier,
+      created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
   }
@@ -563,10 +637,13 @@ export class NovelStore implements NovelPromptStores {
     const updated = { ...current, ...patch, id, updatedAt: now() }
     this.db.prepare(`
       UPDATE novel_conflicts SET description=@description, type=@type, intensity=@intensity,
-      stage=@stage, participants=@participants, updated_at=@updated_at WHERE id=@id
+      stage=@stage, participants=@participants, first_chapter=@first_chapter, last_chapter=@last_chapter,
+      tier=@tier, updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, type: updated.type, intensity: updated.intensity,
-      stage: updated.stage, participants: updated.participants, updated_at: updated.updatedAt,
+      stage: updated.stage, participants: updated.participants,
+      first_chapter: updated.firstChapter, last_chapter: updated.lastChapter, tier: updated.tier,
+      updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -933,6 +1010,34 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
+  batchCreateCharacterHistory(
+    entries: Array<Omit<NovelCharacterHistory, 'id' | 'createdAt'>>,
+  ): NovelCharacterHistory[] {
+    const ts = now()
+    const stmt = this.db.prepare(`
+      INSERT INTO novel_character_history (id, project_id, character_id, chapter_id, chapter_number,
+      field_name, old_value, new_value, reason, created_at)
+      VALUES (@id, @project_id, @character_id, @chapter_id, @chapter_number,
+      @field_name, @old_value, @new_value, @reason, @created_at)
+    `)
+    const results: NovelCharacterHistory[] = []
+    const tx = this.db.transaction((items: typeof entries) => {
+      for (const entry of items) {
+        const id = randomUUID()
+        const full: NovelCharacterHistory = { ...entry, id, createdAt: ts }
+        stmt.run({
+          id, project_id: full.projectId, character_id: full.characterId,
+          chapter_id: full.chapterId, chapter_number: full.chapterNumber,
+          field_name: full.fieldName, old_value: full.oldValue,
+          new_value: full.newValue, reason: full.reason, created_at: full.createdAt,
+        })
+        results.push(full)
+      }
+    })
+    tx(entries)
+    return results
+  }
+
   listCharacterHistory(projectId: string, characterId?: string): NovelCharacterHistory[] {
     const rows = characterId
       ? this.stmtListCharacterHistoryByCharacter.all(projectId, characterId) as CharacterHistoryRow[]
@@ -958,15 +1063,16 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelFaction = { ...faction, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_factions (id, project_id, name, description, type, leader_id, ideology,
-      strength, resources, allies, enemies, status, created_at, updated_at)
+      strength, resources, allies, enemies, status, first_chapter, last_chapter, created_at, updated_at)
       VALUES (@id, @project_id, @name, @description, @type, @leader_id, @ideology,
-      @strength, @resources, @allies, @enemies, @status, @created_at, @updated_at)
+      @strength, @resources, @allies, @enemies, @status, @first_chapter, @last_chapter, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, name: full.name, description: full.description,
       type: full.type, leader_id: full.leaderId, ideology: full.ideology,
       strength: full.strength, resources: JSON.stringify(full.resources),
       allies: JSON.stringify(full.allies), enemies: JSON.stringify(full.enemies),
-      status: full.status, created_at: full.createdAt, updated_at: full.updatedAt,
+      status: full.status, first_chapter: full.firstChapter, last_chapter: full.lastChapter,
+      created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
   }
@@ -979,12 +1085,13 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_factions SET name=@name, description=@description, type=@type, leader_id=@leader_id,
       ideology=@ideology, strength=@strength, resources=@resources, allies=@allies, enemies=@enemies,
-      status=@status, updated_at=@updated_at WHERE id=@id
+      status=@status, first_chapter=@first_chapter, last_chapter=@last_chapter, updated_at=@updated_at WHERE id=@id
     `).run({
       id, name: updated.name, description: updated.description, type: updated.type,
       leader_id: updated.leaderId, ideology: updated.ideology, strength: updated.strength,
       resources: JSON.stringify(updated.resources), allies: JSON.stringify(updated.allies),
-      enemies: JSON.stringify(updated.enemies), status: updated.status, updated_at: updated.updatedAt,
+      enemies: JSON.stringify(updated.enemies), status: updated.status,
+      first_chapter: updated.firstChapter, last_chapter: updated.lastChapter, updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -992,6 +1099,54 @@ export class NovelStore implements NovelPromptStores {
   deleteFaction(id: string): boolean {
     this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_factions WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 时间轴标记 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  listMarkers(projectId: string): NovelMarker[] {
+    return (this.stmtListMarkers.all(projectId) as MarkerRow[]).map((r) => this.rowToMarker(r))
+  }
+
+  getMarker(markerId: string): NovelMarker | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_markers WHERE id = ?').get(markerId) as MarkerRow | undefined
+    return row ? this.rowToMarker(row) : undefined
+  }
+
+  createMarker(marker: Omit<NovelMarker, 'createdAt' | 'updatedAt'>): NovelMarker {
+    const ts = now()
+    const full: NovelMarker = { ...marker, createdAt: ts, updatedAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_markers (id, project_id, chapter, title, note, type, color, created_at, updated_at)
+      VALUES (@id, @project_id, @chapter, @title, @note, @type, @color, @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId, chapter: full.chapter,
+      title: bindString(full.title), note: bindString(full.note),
+      type: full.type, color: full.color,
+      created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  updateMarker(id: string, patch: Partial<NovelMarker>): NovelMarker | undefined {
+    const existing = this.db.prepare('SELECT * FROM novel_markers WHERE id = ?').get(id) as MarkerRow | undefined
+    if (!existing) return undefined
+    const current = this.rowToMarker(existing)
+    const updated = { ...current, ...patch, id, updatedAt: now() }
+    this.db.prepare(`
+      UPDATE novel_markers SET chapter=@chapter, title=@title, note=@note,
+      type=@type, color=@color, updated_at=@updated_at WHERE id=@id
+    `).run({
+      id, chapter: updated.chapter, title: bindString(updated.title), note: bindString(updated.note),
+      type: updated.type, color: updated.color, updated_at: updated.updatedAt,
+    })
+    return updated
+  }
+
+  deleteMarker(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_markers WHERE id = ?').run(id)
     return result.changes > 0
   }
 
@@ -1013,13 +1168,14 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelLocation = { ...location, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_locations (id, project_id, name, description, type, parent_id, faction_id,
-      significance, first_chapter, status, created_at, updated_at)
+      significance, first_chapter, status, appear_chapters, created_at, updated_at)
       VALUES (@id, @project_id, @name, @description, @type, @parent_id, @faction_id,
-      @significance, @first_chapter, @status, @created_at, @updated_at)
+      @significance, @first_chapter, @status, @appear_chapters, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, name: full.name, description: full.description,
       type: full.type, parent_id: full.parentId, faction_id: full.factionId,
       significance: full.significance, first_chapter: full.firstChapter, status: full.status,
+      appear_chapters: JSON.stringify(full.appearChapters),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -1033,11 +1189,12 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_locations SET name=@name, description=@description, type=@type, parent_id=@parent_id,
       faction_id=@faction_id, significance=@significance, first_chapter=@first_chapter, status=@status,
-      updated_at=@updated_at WHERE id=@id
+      appear_chapters=@appear_chapters, updated_at=@updated_at WHERE id=@id
     `).run({
       id, name: updated.name, description: updated.description, type: updated.type,
       parent_id: updated.parentId, faction_id: updated.factionId, significance: updated.significance,
-      first_chapter: updated.firstChapter, status: updated.status, updated_at: updated.updatedAt,
+      first_chapter: updated.firstChapter, status: updated.status,
+      appear_chapters: JSON.stringify(updated.appearChapters), updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -1152,6 +1309,83 @@ export class NovelStore implements NovelPromptStores {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // Agent 调用日志 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 写入一条 Agent 调用日志
+   *
+   * 在 orchestrator.runAgent 调用 LLM 前后采集完整上下文（STATIC/SEMI/DYNAMIC 三层 + 结果），
+   * 持久化到数据库供事后排查与审计。写入采用 fire-and-forget 模式不影响主流程。
+   */
+  insertAgentLog(input: Omit<NovelAgentLog, 'id' | 'createdAt'>): NovelAgentLog {
+    const id = randomUUID()
+    const createdAt = now()
+    const full: NovelAgentLog = { ...input, id, createdAt }
+    this.stmtInsertAgentLog.run({
+      id: full.id,
+      project_id: full.projectId,
+      chapter_number: full.chapterNumber,
+      agent_type: full.agentType,
+      agent_name: full.agentName,
+      display_agent_type: full.displayAgentType,
+      display_agent_name: full.displayAgentName,
+      phase: full.phase,
+      system_prompt: full.systemPrompt,
+      chapter_context: full.chapterContext,
+      user_message: full.userMessage,
+      task_input: full.taskInput,
+      user_instructions: JSON.stringify(full.userInstructions ?? []),
+      tools: JSON.stringify(full.tools ?? []),
+      tool_names: JSON.stringify(full.toolNames ?? []),
+      result: full.result,
+      result_length: full.resultLength,
+      duration_ms: full.durationMs,
+      status: full.status,
+      error: full.error,
+      session_id: full.sessionId,
+      created_at: full.createdAt,
+    })
+    return full
+  }
+
+  /** 按 ID 获取完整日志（含 prompt 全文） */
+  getAgentLog(id: string): NovelAgentLog | undefined {
+    const row = this.stmtGetAgentLog.get(id) as AgentLogRow | undefined
+    return row ? this.rowToAgentLog(row) : undefined
+  }
+
+  /**
+   * 列出日志（精简字段，不含 prompt 全文，避免传输过大）
+   *
+   * @param projectId  项目 ID
+   * @param filter     可选过滤：按章节号 / Agent 类型
+   * @param limit      最大返回数量，默认 100
+   */
+  listAgentLogs(
+    projectId: string,
+    filter?: { chapterNumber?: number; agentType?: string },
+    limit = 100,
+  ): NovelAgentLogSummary[] {
+    const effectiveLimit = Math.min(Math.max(limit, 1), 500)
+    let rows: AgentLogRow[]
+    if (filter?.chapterNumber != null) {
+      rows = this.stmtListAgentLogsByChapter.all(projectId, filter.chapterNumber, effectiveLimit) as AgentLogRow[]
+    } else if (filter?.agentType) {
+      rows = this.stmtListAgentLogsByAgent.all(projectId, filter.agentType, effectiveLimit) as AgentLogRow[]
+    } else {
+      rows = this.stmtListAgentLogsByProject.all(projectId, effectiveLimit) as AgentLogRow[]
+    }
+    return rows.map((r) => this.rowToAgentLogSummary(r))
+  }
+
+  /** 删除项目下所有日志（项目删除时级联调用） */
+  deleteAgentLogsByProject(projectId: string): number {
+    const result = this.stmtDeleteAgentLogsByProject.run(projectId)
+    return result.changes
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // 行 → 对象 转换方法
   // ═══════════════════════════════════════════════════════════════
 
@@ -1182,6 +1416,7 @@ export class NovelStore implements NovelPromptStores {
       currentState: row.current_state, currentGoal: row.current_goal,
       currentPressure: row.current_pressure, secret: row.secret,
       arcStage: row.arc_stage, arcHistory: row.arc_history, speechStyle: row.speech_style,
+      isProtagonist: row.is_protagonist === 1,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -1219,6 +1454,8 @@ export class NovelStore implements NovelPromptStores {
       id: row.id, projectId: row.project_id, description: row.description,
       type: row.type as NovelConflict['type'], intensity: row.intensity,
       stage: row.stage as NovelConflict['stage'], participants: row.participants,
+      firstChapter: row.first_chapter, lastChapter: row.last_chapter,
+      tier: (row.tier as ConflictTier) ?? 'secondary',
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -1298,6 +1535,17 @@ export class NovelStore implements NovelPromptStores {
       allies: parseJSON<string[]>(row.allies, []),
       enemies: parseJSON<string[]>(row.enemies, []),
       status: row.status as NovelFaction['status'],
+      firstChapter: row.first_chapter, lastChapter: row.last_chapter,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }
+  }
+
+  private rowToMarker(row: MarkerRow): NovelMarker {
+    return {
+      id: row.id, projectId: row.project_id, chapter: row.chapter,
+      title: row.title, note: row.note,
+      type: row.type as NovelMarker['type'],
+      color: row.color as NovelMarker['color'],
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -1308,6 +1556,7 @@ export class NovelStore implements NovelPromptStores {
       type: row.type as NovelLocation['type'], parentId: row.parent_id, factionId: row.faction_id,
       significance: row.significance as NovelLocation['significance'],
       firstChapter: row.first_chapter, status: row.status as NovelLocation['status'],
+      appearChapters: parseJSON<number[]>(row.appear_chapters, []),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -1334,5 +1583,53 @@ export class NovelStore implements NovelPromptStores {
 
   private camelToSnake(str: string): string {
     return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)
+  }
+
+  private rowToAgentLog(row: AgentLogRow): NovelAgentLog {
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      chapterNumber: row.chapter_number,
+      agentType: row.agent_type,
+      agentName: row.agent_name,
+      displayAgentType: row.display_agent_type,
+      displayAgentName: row.display_agent_name,
+      phase: row.phase,
+      systemPrompt: row.system_prompt,
+      chapterContext: row.chapter_context,
+      userMessage: row.user_message,
+      taskInput: row.task_input,
+      userInstructions: parseJSON<string[]>(row.user_instructions, []),
+      tools: parseJSON<unknown[]>(row.tools, []),
+      toolNames: parseJSON<string[]>(row.tool_names, []),
+      result: row.result,
+      resultLength: row.result_length,
+      durationMs: row.duration_ms,
+      status: row.status as NovelAgentLogStatus,
+      error: row.error,
+      sessionId: row.session_id,
+      createdAt: row.created_at,
+    }
+  }
+
+  private rowToAgentLogSummary(row: AgentLogRow): NovelAgentLogSummary {
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      chapterNumber: row.chapter_number,
+      agentType: row.agent_type,
+      agentName: row.agent_name,
+      displayAgentType: row.display_agent_type,
+      displayAgentName: row.display_agent_name,
+      phase: row.phase,
+      systemPromptLength: row.system_prompt.length,
+      userMessageLength: row.user_message.length,
+      toolNames: parseJSON<string[]>(row.tool_names, []),
+      resultLength: row.result_length,
+      durationMs: row.duration_ms,
+      status: row.status as NovelAgentLogStatus,
+      error: row.error,
+      createdAt: row.created_at,
+    }
   }
 }

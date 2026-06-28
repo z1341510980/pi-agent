@@ -27,6 +27,7 @@ export type ConflictType =
 export type ConflictStage =
   | 'latent' | 'emerging' | 'escalating' | 'erupting'
   | 'reversing' | 'resolved' | 'transformed'
+export type ConflictTier = 'main' | 'secondary' | 'goal'
 export type ConstraintType = 'fact' | 'cognitive' | 'stage' | 'debt' | 'arc'
 
 // ── 实体类型 ──
@@ -75,6 +76,7 @@ export interface NovelCharacter {
   arcStage: string
   arcHistory: string
   speechStyle: string
+  isProtagonist: boolean
   createdAt: number
   updatedAt: number
 }
@@ -128,6 +130,9 @@ export interface NovelConflict {
   intensity: number
   stage: ConflictStage
   participants: string
+  firstChapter: number | null
+  lastChapter: number | null
+  tier: ConflictTier
   createdAt: number
   updatedAt: number
 }
@@ -199,6 +204,8 @@ export interface NovelFaction {
   allies: string[]
   enemies: string[]
   status: NovelFactionStatus
+  firstChapter: number | null
+  lastChapter: number | null
   createdAt: number
   updatedAt: number
 }
@@ -219,6 +226,7 @@ export interface NovelLocation {
   factionId: string | null
   significance: NovelLocationSignificance
   firstChapter: number | null
+  appearChapters: number[]
   status: NovelLocationStatus
   createdAt: number
   updatedAt: number
@@ -289,6 +297,7 @@ export interface CreateCharacterInput {
   secret?: string
   arcStage?: string
   speechStyle?: string
+  isProtagonist?: boolean
 }
 
 export type UpdateCharacterInput = Partial<CreateCharacterInput>
@@ -307,6 +316,9 @@ export interface CreateConflictInput {
   type: ConflictType
   intensity?: number
   stage?: ConflictStage
+  firstChapter?: number | null
+  lastChapter?: number | null
+  tier?: ConflictTier
 }
 
 export interface CreateClueInput {
@@ -365,6 +377,8 @@ export interface CreateFactionInput {
   allies?: string[]
   enemies?: string[]
   status?: NovelFactionStatus
+  firstChapter?: number | null
+  lastChapter?: number | null
 }
 
 export type UpdateFactionInput = Partial<CreateFactionInput>
@@ -377,6 +391,7 @@ export interface CreateLocationInput {
   factionId?: string | null
   significance?: NovelLocationSignificance
   firstChapter?: number | null
+  appearChapters?: number[]
   status?: NovelLocationStatus
 }
 
@@ -473,6 +488,35 @@ export interface CreateCharacterHistoryInput {
   reason: string | null
   chapterNumber?: number | null
 }
+
+// ── 时间轴标记 ──
+
+export type NovelMarkerType =
+  | 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note'
+
+export type NovelMarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
+
+export interface NovelMarker {
+  id: string
+  projectId: string
+  chapter: number
+  title: string
+  note: string
+  type: NovelMarkerType
+  color: NovelMarkerColor
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreateMarkerInput {
+  chapter: number
+  title?: string
+  note?: string
+  type?: NovelMarkerType
+  color?: NovelMarkerColor
+}
+
+export type UpdateMarkerInput = Partial<CreateMarkerInput>
 
 // ── AI 角色生成 ──
 
@@ -867,6 +911,22 @@ export function createCharacterHistory(
   return postApi<NovelCharacterHistory>(`${BASE}/projects/${projectId}/characters/${characterId}/history`, input)
 }
 
+/** 删除单条角色历史记录 */
+export function deleteCharacterHistory(
+  projectId: string,
+  historyId: string,
+): Promise<void> {
+  return deleteApi(`${BASE}/projects/${projectId}/character-history/${historyId}`)
+}
+
+/** 批量创建角色历史（用于时间轴补全功能） */
+export function batchCreateCharacterHistory(
+  projectId: string,
+  records: Array<{ characterId: string; chapterNumber: number }>,
+): Promise<NovelCharacterHistory[]> {
+  return postApi<NovelCharacterHistory[]>(`${BASE}/projects/${projectId}/character-history/batch`, { records })
+}
+
 // ── Checkpoint Decision（多 Agent 创作流程检查点） ──
 
 export function submitCheckpointDecision(
@@ -896,4 +956,96 @@ export function getCacheDiagnostics(
 ): Promise<CacheDiagnostics> {
   const query = chapterNumber != null ? `?chapterNumber=${chapterNumber}` : ''
   return getApi<CacheDiagnostics>(`${BASE}/projects/${projectId}/cache-diagnostics${query}`)
+}
+
+// ── Agent 调用日志 ──
+
+export type NovelAgentLogStatus = 'success' | 'error' | 'cancelled'
+
+export interface NovelAgentLogSummary {
+  id: string
+  projectId: string
+  chapterNumber: number
+  agentType: string
+  agentName: string
+  displayAgentType: string
+  displayAgentName: string
+  phase: string
+  systemPromptLength: number
+  userMessageLength: number
+  toolNames: string[]
+  resultLength: number
+  durationMs: number
+  status: NovelAgentLogStatus
+  error: string
+  createdAt: number
+}
+
+export interface NovelAgentLog {
+  id: string
+  projectId: string
+  chapterNumber: number
+  agentType: string
+  agentName: string
+  displayAgentType: string
+  displayAgentName: string
+  phase: string
+  systemPrompt: string
+  chapterContext: string
+  userMessage: string
+  taskInput: string
+  userInstructions: string[]
+  tools: unknown[]
+  toolNames: string[]
+  result: string
+  resultLength: number
+  durationMs: number
+  status: NovelAgentLogStatus
+  error: string
+  sessionId: string
+  createdAt: number
+}
+
+export interface ListAgentLogsParams {
+  chapterNumber?: number
+  agentType?: string
+  limit?: number
+}
+
+export function listAgentLogs(
+  projectId: string,
+  params?: ListAgentLogsParams,
+): Promise<NovelAgentLogSummary[]> {
+  const qs: string[] = []
+  if (params?.chapterNumber != null) qs.push(`chapterNumber=${params.chapterNumber}`)
+  if (params?.agentType) qs.push(`agentType=${encodeURIComponent(params.agentType)}`)
+  if (params?.limit != null) qs.push(`limit=${params.limit}`)
+  const query = qs.length > 0 ? `?${qs.join('&')}` : ''
+  return getApi<NovelAgentLogSummary[]>(`${BASE}/projects/${projectId}/agent-logs${query}`)
+}
+
+export function getAgentLog(id: string): Promise<NovelAgentLog> {
+  return getApi<NovelAgentLog>(`${BASE}/agent-logs/${id}`)
+}
+
+export function deleteAgentLogs(projectId: string): Promise<{ projectId: string; deleted: number }> {
+  return deleteApi<{ projectId: string; deleted: number }>(`${BASE}/projects/${projectId}/agent-logs`)
+}
+
+// ── Markers ──
+
+export function listMarkers(projectId: string): Promise<NovelMarker[]> {
+  return getApi<NovelMarker[]>(`${BASE}/projects/${projectId}/markers`)
+}
+
+export function createMarker(projectId: string, input: CreateMarkerInput): Promise<NovelMarker> {
+  return postApi<NovelMarker>(`${BASE}/projects/${projectId}/markers`, input)
+}
+
+export function updateMarker(id: string, input: UpdateMarkerInput): Promise<NovelMarker> {
+  return patchApi<NovelMarker>(`${BASE}/markers/${id}`, input)
+}
+
+export function deleteMarker(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/markers/${id}`)
 }

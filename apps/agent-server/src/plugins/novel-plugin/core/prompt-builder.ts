@@ -104,6 +104,23 @@ export class NovelPromptBuilder {
     private stores: NovelPromptStores,
   ) {}
 
+  /**
+   * 计算单章目标字数
+   *
+   * 估算逻辑：项目总字数 / 1000（估计章节数），限制在 [2000, 5000] 区间。
+   * 不再用 / 30（假设全书 30 章）——300 万字小说实际有 1000+ 章，
+   * / 30 会导致单章要求 10 万字，远超 LLM 单次输出能力和合理章节长度。
+   *
+   * - 300 万字 → 3000 字/章（典型网文）
+   * - 100 万字 → 2000 字/章（保底）
+   * - 500 万字 → 5000 字/章（上限）
+   * - 未设置   → 3000 字/章（默认）
+   */
+  private computeChapterTargetWords(project: NovelProject | undefined): number {
+    if (!project || project.targetWords <= 0) return 3000
+    return Math.min(5000, Math.max(2000, Math.round(project.targetWords / 1000)))
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 系统提示词（STATIC 层 - 跨章节缓存命中）
   // ═══════════════════════════════════════════════════════════════
@@ -141,9 +158,11 @@ export class NovelPromptBuilder {
     }
 
     // ── Layer 2: 风格指南（项目级，极少变）──
+    // 按 category 排序，确保顺序稳定，最大化 prompt cache 命中率
     const styleGuide = this.stores.listStyleGuide(projectId)
     if (styleGuide.length > 0) {
-      parts.push(this.formatStyleGuide(styleGuide))
+      const sorted = [...styleGuide].sort((a, b) => a.category.localeCompare(b.category))
+      parts.push(this.formatStyleGuide(sorted))
     }
 
     // ── Layer 3: 角色定义（仅静态部分）──
@@ -172,9 +191,10 @@ export class NovelPromptBuilder {
    * 包含：
    * 1. 章节信息（卷/章号/叙事任务/约束）
    * 2. 当前故事状态（角色动态状态/冲突/伏笔/线索）
-   * 3. 信息差（谁知道什么）
-   * 4. 最近章节摘要
-   * 5. 创作指令
+   * 3. 实体关联（画布连线，作为故事状态补充）
+   * 4. 信息差（谁知道什么）
+   * 5. 最近章节摘要
+   * 6. 创作指令
    */
   buildChapterContext(
     projectId: string,
@@ -194,17 +214,17 @@ export class NovelPromptBuilder {
     const state = this.getStoryState(projectId)
     parts.push(this.formatStoryState(state))
 
-    // ── 信息差 ──
-    const infoLayers = this.stores.listInformationLayers(projectId)
-    if (infoLayers.length > 0) {
-      parts.push(this.formatInfoLayers(infoLayers))
-    }
-
-    // ── 实体关联（画布手动 + 自动连线）──
+    // ── 实体关联（画布手动 + 自动连线，作为故事状态的补充）──
     const edges = this.stores.listEdges(projectId)
     if (edges.length > 0) {
       const edgeSection = this.formatEdges(projectId, edges)
       if (edgeSection) parts.push(edgeSection)
+    }
+
+    // ── 信息差 ──
+    const infoLayers = this.stores.listInformationLayers(projectId)
+    if (infoLayers.length > 0) {
+      parts.push(this.formatInfoLayers(infoLayers))
     }
 
     // ── 最近章节摘要 ──
@@ -214,10 +234,13 @@ export class NovelPromptBuilder {
     }
 
     // ── 创作指令 ──
+    const project = this.stores.getProject(projectId)
+    const targetWords = this.computeChapterTargetWords(project)
     const instruction = this.promptManager.render('chapter-instruction', {
       chapter_number: String(chapterNumber),
       narrative_task: narrativeTask.description,
       task_type: narrativeTask.type,
+      target_words: String(targetWords),
     }, projectId)
     parts.push(instruction)
 
@@ -273,6 +296,7 @@ export class NovelPromptBuilder {
   private formatChapterInfo(projectId: string, chapterNumber: number, task: NarrativeTask): string {
     const project = this.stores.getProject(projectId)
     const volume = project?.currentVolume ?? 1
+    const targetWords = this.computeChapterTargetWords(project)
     return [
       `## 当前章节`,
       ``,
@@ -280,6 +304,7 @@ export class NovelPromptBuilder {
       `- 章：第${chapterNumber}章`,
       `- 叙事任务：${task.description}（类型：${task.type}）`,
       `- 优先级：${task.priority}`,
+      `- 目标字数：${targetWords} 字`,
     ].join('\n')
   }
 

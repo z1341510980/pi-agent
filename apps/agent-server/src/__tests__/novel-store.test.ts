@@ -111,6 +111,7 @@ describe('NovelStore - 角色 CRUD', () => {
       identity: '身份', personality: '性格', appearance: '外貌',
       currentState: '初始', currentGoal: '目标', currentPressure: '压力',
       secret: '秘密', arcStage: 'setup', arcHistory: '[]', speechStyle: '口语',
+      isProtagonist: false,
     })
     expect(c.id).toBe('c-1')
     expect(c.name).toBe('主角')
@@ -123,6 +124,7 @@ describe('NovelStore - 角色 CRUD', () => {
       identity: '', personality: '', appearance: '',
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
     })
     const c = store.getCharacter('c-1')
     expect(c).toBeDefined()
@@ -139,6 +141,7 @@ describe('NovelStore - 角色 CRUD', () => {
       identity: '', personality: '', appearance: '',
       currentState: '旧状态', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
     })
     const updated = store.updateCharacter('c-1', { name: '新名', currentState: '新状态' })
     expect(updated).toBeDefined()
@@ -156,6 +159,7 @@ describe('NovelStore - 角色 CRUD', () => {
       identity: '', personality: '', appearance: '',
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
     })
     expect(store.deleteCharacter('c-1')).toBe(true)
     expect(store.getCharacter('c-1')).toBeUndefined()
@@ -171,12 +175,14 @@ describe('NovelStore - 角色 CRUD', () => {
       identity: '', personality: '', appearance: '',
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
     })
     store.createCharacter({
       id: 'c-2', projectId: 'p-1', name: 'B', description: '',
       identity: '', personality: '', appearance: '',
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
     })
     expect(store.listCharacters('p-1')).toHaveLength(2)
   })
@@ -291,6 +297,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     const c = store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: '主要冲突',
       type: 'inner', intensity: 7, stage: 'latent', participants: '[]',
+      firstChapter: null, lastChapter: null, tier: 'secondary',
     })
     expect(c.id).toBe('cf-1')
     expect(c.intensity).toBe(7)
@@ -300,6 +307,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'x',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
+      firstChapter: null, lastChapter: null, tier: 'secondary',
     })
     expect(store.getConflict('cf-1')?.description).toBe('x')
   })
@@ -308,6 +316,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'x',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
+      firstChapter: null, lastChapter: null, tier: 'secondary',
     })
     const updated = store.updateConflict('cf-1', { intensity: 9, stage: 'erupting' })
     expect(updated).toBeDefined()
@@ -319,6 +328,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'x',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
+      firstChapter: null, lastChapter: null, tier: 'secondary',
     })
     expect(store.deleteConflict('cf-1')).toBe(true)
     expect(store.getConflict('cf-1')).toBeUndefined()
@@ -328,10 +338,12 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'A',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
+      firstChapter: null, lastChapter: null, tier: 'secondary',
     })
     store.createConflict({
       id: 'cf-2', projectId: 'p-1', description: 'B',
       type: 'faction', intensity: 6, stage: 'emerging', participants: '[]',
+      firstChapter: null, lastChapter: null, tier: 'secondary',
     })
     expect(store.listConflicts('p-1')).toHaveLength(2)
   })
@@ -455,6 +467,7 @@ describe('NovelStore - 角色历史 CRUD', () => {
       identity: '', personality: '', appearance: '',
       currentState: '初始', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
     })
   })
 

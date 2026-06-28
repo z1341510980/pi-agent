@@ -400,6 +400,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     secret: z.string().default(''),
     arcStage: z.string().default(''),
     speechStyle: z.string().default(''),
+    isProtagonist: z.boolean().default(false),
   })
 
   routes.push({
@@ -482,6 +483,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           id: randomUUID(),
           projectId: request.params.projectId,
           arcHistory: '[]',
+          isProtagonist: false,
           ...generated,
         })
 
@@ -535,6 +537,36 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reason: input.reason,
       })
       return success(entry, request.traceId)
+    },
+  })
+
+  // 批量创建角色历史（用于时间轴补全功能）
+  const batchCharacterHistorySchema = z.object({
+    records: z.array(z.object({
+      characterId: z.string(),
+      chapterNumber: z.number().int(),
+    })),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/character-history/batch',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(batchCharacterHistorySchema, request, reply)
+      if (!input) return reply
+
+      const entries = input.records.map((r: { characterId: string; chapterNumber: number }) => ({
+        projectId: request.params.projectId,
+        characterId: r.characterId,
+        chapterId: null,
+        chapterNumber: r.chapterNumber,
+        fieldName: 'currentState' as const,
+        oldValue: null,
+        newValue: null,
+        reason: '批量补全角色出场章节',
+      }))
+      const results = store.batchCreateCharacterHistory(entries)
+      return success(results, request.traceId)
     },
   })
 
@@ -599,6 +631,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     type: z.enum(['inner', 'relationship', 'faction', 'interest', 'moral', 'identity', 'emotional', 'world_rule', 'survival']),
     intensity: z.number().int().min(1).max(10).default(5),
     stage: z.enum(['latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved', 'transformed']).default('latent'),
+    firstChapter: z.number().int().nullable().default(null),
+    lastChapter: z.number().int().nullable().default(null),
+    tier: z.enum(['main', 'secondary', 'goal']).default('secondary'),
   })
 
   routes.push({
@@ -871,6 +906,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     allies: z.array(z.string()).default([]),
     enemies: z.array(z.string()).default([]),
     status: z.enum(['active', 'declined', 'destroyed', 'hidden']).default('active'),
+    firstChapter: z.number().int().nullable().default(null),
+    lastChapter: z.number().int().nullable().default(null),
   })
 
   routes.push({
@@ -923,6 +960,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     significance: z.enum(['minor', 'moderate', 'major', 'critical']).default('minor'),
     firstChapter: z.number().int().nullable().default(null),
     status: z.enum(['normal', 'destroyed', 'changed', 'hidden']).default('normal'),
+    appearChapters: z.array(z.number().int()).default([]),
   })
 
   routes.push({
@@ -1445,6 +1483,114 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       })
 
       return success(result, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // Agent 调用日志（记录每次 Agent 调用的完整上下文：系统提示词/章节上下文/任务指令/工具/结果）
+  // ═══════════════════════════════════════════════════════════════
+
+  // 列出日志（精简字段，支持按章节/Agent 类型过滤）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/agent-logs',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const query = request.query as {
+        chapterNumber?: string
+        agentType?: string
+        limit?: string
+      }
+      const limit = query.limit ? parseInt(query.limit, 10) : 100
+      const filter: { chapterNumber?: number; agentType?: string } = {}
+      if (query.chapterNumber != null) {
+        const n = parseInt(query.chapterNumber, 10)
+        if (!Number.isNaN(n)) filter.chapterNumber = n
+      }
+      if (query.agentType) filter.agentType = query.agentType
+
+      const logs = store.listAgentLogs(projectId, Object.keys(filter).length > 0 ? filter : undefined, limit)
+      return success(logs, request.traceId)
+    },
+  })
+
+  // 获取单条日志详情（含完整 systemPrompt / userMessage / result 全文）
+  routes.push({
+    method: 'GET',
+    path: '/agent-logs/:id',
+    handler: async (request: any) => {
+      const log = store.getAgentLog(request.params.id)
+      if (!log) throw new AppError(ErrorCode.NOT_FOUND, `日志不存在: ${request.params.id}`, 404)
+      return success(log, request.traceId)
+    },
+  })
+
+  // 删除项目下所有日志
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/:projectId/agent-logs',
+    handler: async (request: any) => {
+      const deleted = store.deleteAgentLogsByProject(request.params.projectId)
+      return success({ projectId: request.params.projectId, deleted }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 时间轴标记
+  // ═══════════════════════════════════════════════════════════════
+
+  const createMarkerSchema = z.object({
+    chapter: z.number().int().min(1),
+    title: z.string().default(''),
+    note: z.string().default(''),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note']).default('bookmark'),
+    color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).default('blue'),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/markers',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createMarkerSchema, request, reply)
+      if (!input) return reply
+
+      const marker = store.createMarker({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        ...input,
+      })
+      return success(marker, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/markers',
+    handler: async (request: any) => {
+      return success(store.listMarkers(request.params.projectId), request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/markers/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createMarkerSchema.partial(), request, reply)
+      if (!input) return reply
+
+      const updated = store.updateMarker(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `标记不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/markers/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteMarker(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `标记不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
     },
   })
 

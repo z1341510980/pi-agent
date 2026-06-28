@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactElement } from 'react'
+import { Children, useCallback, useMemo, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen,
@@ -364,8 +364,8 @@ function ProjectTree({
         },
       })
       upsertChapter(chapter)
-    } catch {
-      // 静默失败
+    } catch (err) {
+      console.error('[NovelSidebar] 创建章节失败:', err)
     }
   }, [projectId, chapters, upsertChapter])
 
@@ -378,8 +378,8 @@ function ProjectTree({
         stage: 'latent',
       })
       upsertConflict(conflict)
-    } catch {
-      // 静默失败
+    } catch (err) {
+      console.error('[NovelSidebar] 创建冲突失败:', err)
     }
   }, [projectId, upsertConflict])
 
@@ -391,8 +391,8 @@ function ProjectTree({
         status: 'planned',
       })
       upsertForeshadow(foreshadow)
-    } catch {
-      // 静默失败
+    } catch (err) {
+      console.error('[NovelSidebar] 创建伏笔失败:', err)
     }
   }, [projectId, upsertForeshadow])
 
@@ -406,8 +406,8 @@ function ProjectTree({
         status: 'active',
       })
       upsertFaction(faction)
-    } catch {
-      // 静默失败
+    } catch (err) {
+      console.error('[NovelSidebar] 创建势力失败:', err)
     }
   }, [projectId, upsertFaction])
 
@@ -421,8 +421,8 @@ function ProjectTree({
         status: 'normal',
       })
       upsertLocation(location)
-    } catch {
-      // 静默失败
+    } catch (err) {
+      console.error('[NovelSidebar] 创建地点失败:', err)
     }
   }, [projectId, upsertLocation])
 
@@ -434,8 +434,8 @@ function ProjectTree({
         description: '',
       })
       upsertWorldElement(element)
-    } catch {
-      // 静默失败
+    } catch (err) {
+      console.error('[NovelSidebar] 创建世界观要素失败:', err)
     }
   }, [projectId, upsertWorldElement])
 
@@ -477,8 +477,8 @@ function ProjectTree({
             removeWorldElement(id)
             break
         }
-      } catch {
-        // 静默失败
+      } catch (err) {
+        console.error('[NovelSidebar] 删除实体失败:', err)
       }
     },
     [removeCharacter, removeChapter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement],
@@ -707,7 +707,7 @@ function CollapsibleGroup({
       </div>
       {expanded && (
         <div className="ml-3 pl-2 border-l border-border/60 mt-0.5 space-y-0.5">
-          {children}
+          {Children.toArray(children)}
           <button
             key="add-button"
             type="button"

@@ -11,6 +11,15 @@ export function validateBody<T>(
   const result = schema.safeParse(request.body);
 
   if (!result.success) {
+    request.log.warn(
+      {
+        url: request.url,
+        method: request.method,
+        body: request.body,
+        errors: result.error.flatten(),
+      },
+      "请求参数校验失败",
+    );
     reply
       .status(400)
       .send(

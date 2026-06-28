@@ -730,9 +730,50 @@ export class PluginManager {
           return await this.sessionStore!.getOrCreate(threadId)
         })
 
+        // 注入 SEMI 层前缀消息（章节上下文）：作为独立首条 user 消息加入对话历史，
+        // 不触发 LLM 调用。这样 LLM 收到的对话为 system → prefixUserMessage → userMessage，
+        // prefixUserMessage 跨 Agent 稳定，可被 prompt cache 命中。
+        if (options.prefixUserMessage) {
+          const piSession = threadSession.session as {
+            agent?: { state?: { messages?: unknown[] } }
+          }
+          if (piSession.agent?.state) {
+            const prefixMessage = {
+              role: 'user',
+              content: options.prefixUserMessage,
+              timestamp: Date.now(),
+            }
+            const existing = piSession.agent.state.messages ?? []
+            piSession.agent.state.messages = [...existing, prefixMessage]
+            logger.debug(
+              { threadId, prefixLength: options.prefixUserMessage.length },
+              '已注入 SEMI 层前缀消息（章节上下文）',
+            )
+          } else {
+            logger.warn(
+              { threadId },
+              '无法注入前缀消息：session.agent.state 不可用，将回退到拼接模式',
+            )
+          }
+        }
+
         // 收集 assistant 文本（事件格式参考 core/agent/stream-emitter.ts）
         let completeText = ''
+        // Pi SDK 在 LLM 调用失败时不抛异常，而是产生 stopReason="error" 的 message_end 事件。
+        // 这里捕获错误信息，供 prompt/promptStream 在调用后检查并抛出，避免"空响应+success"的假象。
+        let lastErrorMessage = ''
         const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+          if (event.type === 'message_end') {
+            const message = event.message as Record<string, unknown> | undefined
+            if (message && message.role === 'assistant' && message.stopReason === 'error') {
+              lastErrorMessage = (message.errorMessage as string) ?? 'Unknown LLM error'
+              logger.error(
+                { threadId, errorMessage: lastErrorMessage, provider: message.provider, model: message.model },
+                'Pi Session LLM 调用失败（message_end stopReason=error）',
+              )
+            }
+            return
+          }
           if (event.type !== 'message_update') return
           const assistantMessageEvent = event.assistantMessageEvent as
             | Record<string, unknown>
@@ -783,18 +824,32 @@ export class PluginManager {
         return {
           prompt: async (): Promise<string> => {
             completeText = '' // 重置
+            lastErrorMessage = '' // 重置
             // 在 withAgentConfig 上下文中调用 prompt（session 已创建，但保险起见）
             await withAgentConfig(agentConfig, async () => {
               await threadSession.session.prompt(options.userMessage)
             })
+            // Pi SDK 在 LLM 调用失败时不抛异常，而是产生 stopReason="error" 的 message_end 事件。
+            // 这里检查是否有错误，若有则抛出，避免上层收到"空响应+success"的假象。
+            if (!completeText && lastErrorMessage) {
+              throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+            }
             return completeText
           },
           promptStream: async (onDelta: (delta: string) => void): Promise<string> => {
             completeText = '' // 重置
+            lastErrorMessage = '' // 重置
             // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。
             // 注意：外层 unsubscribe（上方）已在累积 completeText，
             // 此处订阅只负责推送 delta，不重复累积，两个订阅并存互不干扰。
             const streamUnsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+              if (event.type === 'message_end') {
+                const message = event.message as Record<string, unknown> | undefined
+                if (message && message.role === 'assistant' && message.stopReason === 'error') {
+                  lastErrorMessage = (message.errorMessage as string) ?? 'Unknown LLM error'
+                }
+                return
+              }
               if (event.type !== 'message_update') return
               const assistantMessageEvent = event.assistantMessageEvent as
                 | Record<string, unknown>
@@ -808,6 +863,9 @@ export class PluginManager {
               await withAgentConfig(agentConfig, async () => {
                 await threadSession.session.prompt(options.userMessage)
               })
+              if (!completeText && lastErrorMessage) {
+                throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+              }
               return completeText
             } finally {
               streamUnsubscribe()

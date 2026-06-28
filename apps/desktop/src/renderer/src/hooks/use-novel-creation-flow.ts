@@ -127,6 +127,8 @@ export interface UseNovelCreationFlowReturn {
   sendMessage: (content: string) => void
   /** 取消流程 */
   cancel: () => void
+  /** 重置到 idle 状态（用于创作完成后切回节点详情面板） */
+  reset: () => void
 }
 
 /**
@@ -369,6 +371,28 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     // 状态在 startCreation 的 catch / finally 中清理
   }, [])
 
+  /**
+   * 重置创作流程状态到 idle。
+   *
+   * 用于创作完成（completed/error/cancelled）后，由上层在"保存到章节"或"丢弃"成功后调用，
+   * 使右侧栏从 ChapterLivePanel 切回 NovelDetailPanel。
+   *
+   * 注意：cancel() 只在中途取消（abortControllerRef 仍存在）时生效，
+   * 创作已结束时 abortControllerRef 已被清空，cancel() 直接 return，
+   * 因此需要 reset() 显式清理 phase 等状态。
+   */
+  const reset = useCallback((): void => {
+    setPhase('idle')
+    setIsRunning(false)
+    setEvents([])
+    setCurrentCheckpoint(null)
+    setResult(null)
+    setError(null)
+    setChapterContent('')
+    setAgentOutputs([])
+    setUserMessages([])
+  }, [])
+
   return {
     phase,
     isRunning,
@@ -383,5 +407,6 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     submitCheckpoint,
     sendMessage,
     cancel,
+    reset,
   }
 }

@@ -1,0 +1,1860 @@
+/**
+ * 自研剪辑编辑器时间轴样式
+ *
+ * 主题：light-first，引用应用语义令牌（--color-*），
+ * 自动跟随 .dark class 切换深色，与整体 Craft 风格一致。
+ *
+ * 视觉特征：
+ * - 独立时间标尺（顶部）
+ * - 轨道头部控件（左侧固定列）
+ * - 专业片段块（圆角 + 阴影 + 端点拖拽手柄）
+ * - 可拖动播放头（红色竖线 + 三角形手柄）
+ */
+
+/* ────────────────────────────────────────────────────────────
+   主题变量（引用应用语义令牌，自动 light/dark 自适应）
+   ──────────────────────────────────────────────────────────── */
+
+.novel-timeline-root,
+.tl-editor-root {
+  /* 背景色阶（使用应用 surface 体系） */
+  --tl-bg-base: var(--color-surface-1);          /* 主背景：白/深灰 */
+  --tl-bg-surface: var(--color-surface-2);       /* 轨道区背景 */
+  --tl-bg-surface-2: var(--color-surface-1);     /* 标题栏/刻度栏/头部 */
+  --tl-bg-surface-3: var(--color-surface-3);     /* hover 高亮 */
+  --tl-bg-clip: var(--color-surface-3);          /* 片段默认背景 */
+
+  /* 边框（使用应用 border 体系） */
+  --tl-border: var(--color-border);
+  --tl-border-light: var(--color-border-strong);
+  --tl-border-grid: var(--color-border);         /* 网格线 */
+
+  /* 文字（使用应用 text 体系） */
+  --tl-text-primary: var(--color-text);
+  --tl-text-secondary: var(--color-text-secondary);
+  --tl-text-muted: var(--color-subtle);
+
+  /* 强调色（使用应用 primary） */
+  --tl-accent: var(--color-primary);
+  --tl-accent-glow: color-mix(in oklch, var(--color-primary) 40%, transparent);
+
+  /* 播放头（使用应用 danger） */
+  --tl-playhead: var(--color-danger);
+  --tl-playhead-glow: color-mix(in oklch, var(--color-danger) 40%, transparent);
+
+  /* 轨道色系（保持品牌色，亮暗模式通用） */
+  --tl-color-character: #3b82f6;
+  --tl-color-conflict-main: #ef4444;
+  --tl-color-conflict-sec: #f97316;
+  --tl-color-conflict-goal: #a855f7;
+  --tl-color-foreshadow: #f59e0b;
+  --tl-color-foreshadow-done: #10b981;
+  --tl-color-faction: #a855f7;
+  --tl-color-location: #06b6d4;
+  --tl-color-world: #6366f1;
+}
+
+/* ────────────────────────────────────────────────────────────
+   编辑器根容器
+   ──────────────────────────────────────────────────────────── */
+
+.tl-editor-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--tl-bg-base);
+  color: var(--tl-text-primary);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  overflow: hidden;
+}
+
+/* ────────────────────────────────────────────────────────────
+   顶部标尺行（标尺 + 左侧占位）
+   ──────────────────────────────────────────────────────────── */
+
+.tl-header-row {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+}
+
+.tl-header-corner {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-right: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+  flex-shrink: 0;
+}
+
+.tl-header-corner-text {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--tl-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tl-ruler-viewport {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  position: relative;
+}
+
+.tl-ruler-viewport::-webkit-scrollbar {
+  height: 0;  /* 标尺隐藏横向滚动条，由轨道区域控制滚动 */
+}
+
+.tl-ruler-content {
+  position: relative;
+  height: 100%;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 章节刻度 */
+.tl-ruler-tick {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border-right: 1px solid var(--tl-border-grid);
+  vertical-align: top;
+  transition: background 0.1s ease;
+}
+
+.tl-ruler-tick:hover {
+  background: var(--tl-bg-surface-3);
+}
+
+.tl-ruler-tick.is-creating {
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.tl-ruler-tick.is-creating .tl-ruler-tick-num {
+  color: var(--tl-accent);
+}
+
+.tl-ruler-tick.is-current {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.tl-ruler-tick.is-current .tl-ruler-tick-num {
+  color: var(--tl-playhead);
+}
+
+.tl-ruler-tick-num {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tl-text-secondary);
+  line-height: 1.2;
+}
+
+.tl-ruler-tick-title {
+  font-size: 9px;
+  color: var(--tl-text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 2px;
+  margin-top: 1px;
+}
+
+/* ────────────────────────────────────────────────────────────
+   主体布局
+   ──────────────────────────────────────────────────────────── */
+
+.tl-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ────────────────────────────────────────────────────────────
+   左侧轨道头部列
+   ──────────────────────────────────────────────────────────── */
+
+.tl-header-column {
+  display: flex;
+  flex-direction: column;
+  background: var(--tl-bg-surface-2);
+  border-right: 1px solid var(--tl-border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex-shrink: 0;
+}
+
+/* 隐藏头部列的滚动条（通过 tracks-viewport 同步滚动） */
+.tl-header-column::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.tl-header-column {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE10+ */
+}
+
+.tl-track-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--tl-border);
+  flex-shrink: 0;
+  transition: background 0.1s ease;
+}
+
+.tl-track-header:hover {
+  background: var(--tl-bg-surface-3);
+}
+
+.tl-track-header.is-hidden {
+  opacity: 0.35;
+}
+
+/* 重叠片段数 badge */
+.tl-track-header-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tl-text-muted);
+  flex-shrink: 0;
+}
+
+/* 头部列空状态 */
+.tl-header-empty {
+  padding: 16px 12px;
+  font-size: 11px;
+  color: var(--tl-text-muted);
+  text-align: center;
+}
+
+.tl-track-header-icon {
+  flex-shrink: 0;
+}
+
+.tl-track-header-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.tl-track-header-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tl-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-track-header-sub {
+  font-size: 9px;
+  color: var(--tl-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tl-track-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.tl-track-header-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--tl-text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.tl-track-header-btn:hover {
+  background: var(--tl-bg-surface-3);
+  color: var(--tl-text-secondary);
+}
+
+/* ────────────────────────────────────────────────────────────
+   右侧轨道区域
+   ──────────────────────────────────────────────────────────── */
+
+.tl-tracks-viewport {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: auto;
+  position: relative;
+  background: var(--tl-bg-surface);
+}
+
+.tl-tracks-viewport::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.tl-tracks-viewport::-webkit-scrollbar-track {
+  background: var(--tl-bg-base);
+}
+
+.tl-tracks-viewport::-webkit-scrollbar-thumb {
+  background: var(--tl-border-light);
+  border-radius: 4px;
+}
+
+.tl-tracks-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--color-subtle);
+}
+
+.tl-tracks-content {
+  position: relative;
+  min-height: 100%;
+}
+
+/* 轨道行 */
+.tl-track-row {
+  position: relative;
+  box-sizing: border-box;
+}
+
+/* 隐藏的轨道行（保持高度，降低透明度） */
+.tl-track-row.is-hidden {
+  opacity: 0.25;
+}
+
+/* 章节网格竖线 */
+.tl-grid-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--tl-border-grid);
+  pointer-events: none;
+}
+
+/* 当前章节网格线高亮 */
+.tl-grid-line.is-current {
+  background: rgba(239, 68, 68, 0.25);
+  width: 1px;
+}
+
+/* ────────────────────────────────────────────────────────────
+   片段块（clip）
+   ──────────────────────────────────────────────────────────── */
+
+.tl-clip {
+  position: absolute;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  display: flex;
+  align-items: stretch;
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--color-text) 8%, transparent);
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+  background: var(--tl-bg-clip);
+}
+
+.tl-clip:hover {
+  border-color: color-mix(in oklch, var(--color-text) 20%, transparent);
+  box-shadow: 0 2px 6px color-mix(in oklch, var(--color-text) 12%, transparent);
+  z-index: 5;
+}
+
+.tl-clip:active {
+  cursor: grabbing;
+}
+
+.tl-clip.is-selected {
+  border-color: var(--color-text);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-primary) 30%, transparent),
+              0 2px 8px color-mix(in oklch, var(--color-text) 15%, transparent);
+  z-index: 6;
+}
+
+.tl-clip.is-compact .tl-clip-label {
+  display: none;
+}
+
+/* 片段内容区 */
+.tl-clip-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tl-clip-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+}
+
+.tl-clip-tag {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: color-mix(in oklch, currentColor 15%, transparent);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* 端点拖拽手柄 */
+.tl-clip-handle {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: ew-resize;
+  background: color-mix(in oklch, currentColor 10%, transparent);
+  transition: background 0.1s ease;
+  position: relative;
+  z-index: 2;
+}
+
+.tl-clip-handle:hover {
+  background: color-mix(in oklch, currentColor 25%, transparent);
+}
+
+/* ── 按类型着色（亮色主题：实色填充 + 深色文字保证可读性） ── */
+
+/* 主角：实色蓝 + 白字 */
+.tl-clip-character-protagonist {
+  background: var(--tl-color-character);
+  border-color: color-mix(in oklch, var(--tl-color-character) 70%, black);
+  color: #ffffff;
+}
+.tl-clip-character-protagonist .tl-clip-label {
+  color: #ffffff;
+}
+
+/* 配角：浅蓝填充 + 深蓝文字 */
+.tl-clip-character-secondary {
+  background: color-mix(in oklch, var(--tl-color-character) 15%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-character) 50%, transparent);
+  color: var(--tl-color-character);
+}
+.tl-clip-character-secondary .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-character) 70%, var(--color-text));
+}
+
+/* 主要冲突：实色红 + 白字 */
+.tl-clip-conflict-main {
+  background: var(--tl-color-conflict-main);
+  border-color: color-mix(in oklch, var(--tl-color-conflict-main) 70%, black);
+  color: #ffffff;
+}
+.tl-clip-conflict-main .tl-clip-label {
+  color: #ffffff;
+}
+
+/* 次要冲突：浅橙填充 + 深橙文字 */
+.tl-clip-conflict-secondary {
+  background: color-mix(in oklch, var(--tl-color-conflict-sec) 18%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-conflict-sec) 50%, transparent);
+  color: var(--tl-color-conflict-sec);
+}
+.tl-clip-conflict-secondary .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-conflict-sec) 75%, var(--color-text));
+}
+
+/* 主角目的：浅紫填充 + 虚线边框 + 深紫文字 */
+.tl-clip-conflict-goal {
+  background: color-mix(in oklch, var(--tl-color-conflict-goal) 15%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-conflict-goal) 55%, transparent);
+  border-style: dashed;
+  color: var(--tl-color-conflict-goal);
+}
+.tl-clip-conflict-goal .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-conflict-goal) 75%, var(--color-text));
+}
+
+/* 已回收伏笔：浅绿填充 + 深绿文字 */
+.tl-clip-foreshadow-resolved {
+  background: color-mix(in oklch, var(--tl-color-foreshadow-done) 18%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-foreshadow-done) 50%, transparent);
+  color: var(--tl-color-foreshadow-done);
+}
+.tl-clip-foreshadow-resolved .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-foreshadow-done) 75%, var(--color-text));
+}
+
+/* 待回收伏笔：浅黄填充 + 深黄文字 */
+.tl-clip-foreshadow-pending {
+  background: color-mix(in oklch, var(--tl-color-foreshadow) 20%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-foreshadow) 50%, transparent);
+  color: color-mix(in oklch, var(--tl-color-foreshadow) 80%, var(--color-text));
+}
+.tl-clip-foreshadow-pending .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-foreshadow) 80%, var(--color-text));
+}
+
+/* 势力：浅紫填充 + 深紫文字 */
+.tl-clip-faction {
+  background: color-mix(in oklch, var(--tl-color-faction) 15%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-faction) 50%, transparent);
+  color: var(--tl-color-faction);
+}
+.tl-clip-faction .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-faction) 75%, var(--color-text));
+}
+
+/* 地点：浅青填充 + 深青文字 */
+.tl-clip-location {
+  background: color-mix(in oklch, var(--tl-color-location) 18%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-location) 50%, transparent);
+  color: var(--tl-color-location);
+}
+.tl-clip-location .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-location) 75%, var(--color-text));
+}
+
+/* 世界要素：浅靛填充 + 虚线边框 + 深靛文字 */
+.tl-clip-world-element {
+  background: color-mix(in oklch, var(--tl-color-world) 12%, var(--color-surface-1));
+  border-color: color-mix(in oklch, var(--tl-color-world) 50%, transparent);
+  border-style: dashed;
+  color: var(--tl-color-world);
+}
+.tl-clip-world-element .tl-clip-label {
+  color: color-mix(in oklch, var(--tl-color-world) 75%, var(--color-text));
+}
+
+/* ────────────────────────────────────────────────────────────
+   播放头
+   ──────────────────────────────────────────────────────────── */
+
+/* 顶部手柄（三角形） */
+.tl-playhead-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.tl-playhead-triangle {
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 8px solid var(--tl-playhead);
+  margin-top: 4px;
+  filter: drop-shadow(0 0 4px var(--tl-playhead-glow));
+}
+
+.tl-playhead-handle:hover .tl-playhead-triangle {
+  border-top-color: color-mix(in oklch, var(--tl-playhead) 85%, white);
+}
+
+.tl-playhead-handle.is-dragging .tl-playhead-triangle {
+  border-top-color: color-mix(in oklch, var(--tl-playhead) 75%, white);
+  filter: drop-shadow(0 0 8px var(--tl-playhead-glow));
+}
+
+/* 竖线（贯穿轨道区域） */
+.tl-playhead-line {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: var(--tl-playhead);
+  pointer-events: none;
+  z-index: 15;
+  box-shadow: 0 0 4px var(--tl-playhead-glow);
+}
+
+.tl-playhead-line.is-dragging {
+  width: 2px;
+  background: color-mix(in oklch, var(--tl-playhead) 85%, white);
+  box-shadow: 0 0 8px var(--tl-playhead-glow);
+}
+
+.tl-playhead-line.is-creating {
+  animation: tl-playhead-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tl-playhead-pulse {
+  0%, 100% {
+    opacity: 0.6;
+    box-shadow: 0 0 4px rgba(239, 68, 68, 0.3);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.8);
+  }
+}
+
+/* 播放头拖动 tooltip */
+.tl-playhead-tooltip {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--tl-playhead);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 25;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* ────────────────────────────────────────────────────────────
+   拖入指示线
+   ──────────────────────────────────────────────────────────── */
+
+.tl-drop-indicator {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  background: var(--tl-accent);
+  pointer-events: none;
+  z-index: 18;
+  box-shadow: 0 0 8px var(--tl-accent-glow);
+}
+
+.tl-drop-indicator-label {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--tl-accent);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* ────────────────────────────────────────────────────────────
+   空状态
+   ──────────────────────────────────────────────────────────── */
+
+.tl-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 200px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--tl-text-muted);
+}
+
+.tl-empty-icon {
+  color: var(--tl-text-muted);
+  opacity: 0.4;
+  margin-bottom: 12px;
+}
+
+.tl-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tl-text-secondary);
+  margin-bottom: 6px;
+}
+
+.tl-empty-desc {
+  font-size: 11px;
+  color: var(--tl-text-muted);
+  line-height: 1.6;
+  max-width: 320px;
+}
+
+/* ────────────────────────────────────────────────────────────
+   容器布局（沿用，供 NovelTimelineWorkspace 使用）
+   ──────────────────────────────────────────────────────────── */
+
+.novel-timeline-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--tl-bg-base);
+  color: var(--tl-text-primary);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+}
+
+.novel-timeline-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.novel-timeline-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--tl-bg-surface);
+}
+
+.novel-timeline-canvas.is-drag-over::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(99, 102, 241, 0.06);
+  pointer-events: none;
+  z-index: 20;
+  border: 2px dashed var(--tl-accent);
+}
+
+/* ────────────────────────────────────────────────────────────
+   元素池
+   ──────────────────────────────────────────────────────────── */
+
+.novel-element-pool {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.novel-element-pool-header {
+  padding: 10px 12px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--tl-text-muted);
+  border-bottom: 1px solid var(--tl-border);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.novel-element-pool-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.novel-element-pool-body::-webkit-scrollbar {
+  width: 6px;
+}
+.novel-element-pool-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.novel-element-pool-body::-webkit-scrollbar-thumb {
+  background: var(--tl-border-light);
+  border-radius: 3px;
+}
+
+.novel-element-pool-empty {
+  padding: 16px 8px;
+  font-size: 11px;
+  color: var(--tl-text-muted);
+  text-align: center;
+}
+
+.novel-element-pool-group-title {
+  padding: 8px 6px 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--tl-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.novel-element-pool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  color: var(--tl-text-secondary);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: grab;
+  user-select: none;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.novel-element-pool-item:hover {
+  background: var(--tl-bg-surface-3);
+  border-color: var(--tl-border-light);
+  color: var(--tl-text-primary);
+}
+
+.novel-element-pool-item:active {
+  cursor: grabbing;
+  background: var(--tl-bg-clip);
+}
+
+.novel-element-pool-item .pool-item-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.novel-element-pool-item .pool-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.novel-element-pool-item .pool-item-kind {
+  font-size: 9px;
+  color: var(--tl-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ────────────────────────────────────────────────────────────
+   章节右键菜单
+   ──────────────────────────────────────────────────────────── */
+
+.novel-chapter-context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px color-mix(in oklch, var(--color-text) 18%, transparent);
+  font-size: 12px;
+}
+
+.novel-chapter-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.novel-chapter-context-menu-item:hover {
+  background: var(--color-muted);
+  color: var(--color-text);
+}
+
+.novel-chapter-context-menu-item.is-danger {
+  color: var(--color-destructive);
+}
+
+.novel-chapter-context-menu-item.is-danger:hover {
+  background: color-mix(in oklch, var(--color-destructive) 12%, transparent);
+  color: var(--color-destructive);
+}
+
+.novel-chapter-context-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--tl-border);
+}
+
+/* ────────────────────────────────────────────────────────────
+   工具栏
+   ──────────────────────────────────────────────────────────── */
+
+.novel-timeline-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 40px;
+  border-bottom: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.novel-timeline-toolbar-segment {
+  display: inline-flex;
+  align-items: center;
+  background: var(--tl-bg-base);
+  border-radius: 5px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.novel-timeline-toolbar-segment-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--tl-text-muted);
+  border: none;
+  background: transparent;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.novel-timeline-toolbar-segment-btn:hover {
+  color: var(--tl-text-secondary);
+}
+
+.novel-timeline-toolbar-segment-btn.is-active {
+  background: var(--color-surface-1);
+  color: var(--color-text);
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--color-text) 10%, transparent);
+}
+
+.novel-timeline-filter-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid var(--tl-border-light);
+  background: transparent;
+  color: var(--tl-text-muted);
+  transition: all 0.12s ease;
+}
+
+.novel-timeline-filter-btn:hover {
+  border-color: var(--tl-border-light);
+  color: var(--tl-text-secondary);
+}
+
+.novel-timeline-filter-btn.is-active {
+  border-color: transparent;
+  color: #ffffff;
+}
+
+/* ────────────────────────────────────────────────────────────
+   视图切换
+   ──────────────────────────────────────────────────────────── */
+
+.novel-view-switcher {
+  display: inline-flex;
+  align-items: center;
+  background: var(--color-surface-3);
+  border-radius: 5px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.novel-view-switcher-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--color-subtle);
+  border: none;
+  background: transparent;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.novel-view-switcher-btn:hover {
+  color: var(--color-text-secondary);
+}
+
+.novel-view-switcher-btn.is-active {
+  background: var(--color-surface-1);
+  color: var(--color-primary);
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--color-text) 10%, transparent);
+}
+
+/* ────────────────────────────────────────────────────────────
+   导航按钮 + 编辑按钮
+   ──────────────────────────────────────────────────────────── */
+
+.novel-timeline-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--tl-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.novel-timeline-nav-btn:hover:not(:disabled) {
+  background: var(--tl-bg-surface-3);
+  color: var(--tl-text-secondary);
+}
+
+.novel-timeline-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.novel-timeline-nav-btn.is-active {
+  background: color-mix(in oklch, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+}
+
+.novel-timeline-play-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+}
+
+.novel-timeline-play-btn.is-playing {
+  background: var(--color-primary);
+  color: white;
+}
+
+.novel-timeline-play-btn.is-playing:hover {
+  background: color-mix(in oklch, var(--color-primary) 85%, black);
+}
+
+.novel-timeline-delete-btn:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}
+
+/* ────────────────────────────────────────────────────────────
+   工具光标
+   ──────────────────────────────────────────────────────────── */
+
+.tl-cursor-razor .tl-tracks-viewport,
+.tl-cursor-razor .tl-tracks-content {
+  cursor: crosshair;
+}
+
+.tl-cursor-hand .tl-tracks-viewport,
+.tl-cursor-hand .tl-tracks-content {
+  cursor: grab;
+}
+
+.tl-cursor-hand .tl-tracks-viewport:active {
+  cursor: grabbing;
+}
+
+.tl-cursor-zoom .tl-tracks-viewport,
+.tl-cursor-zoom .tl-tracks-content {
+  cursor: zoom-in;
+}
+
+/* ────────────────────────────────────────────────────────────
+   吸附辅助线
+   ──────────────────────────────────────────────────────────── */
+
+.tl-snap-line {
+  position: absolute;
+  top: 0;
+  width: 0;
+  border-left: 2px solid;
+  pointer-events: none;
+  z-index: 15;
+  opacity: 0.8;
+}
+
+.tl-snap-playhead {
+  border-color: var(--color-danger);
+}
+
+.tl-snap-clip-end {
+  border-color: var(--color-primary);
+}
+
+.tl-snap-chapter {
+  border-color: var(--tl-text-muted);
+  opacity: 0.4;
+}
+
+/* ────────────────────────────────────────────────────────────
+   剃刀虚线
+   ──────────────────────────────────────────────────────────── */
+
+.tl-razor-line {
+  position: absolute;
+  top: 0;
+  width: 0;
+  border-left: 1px dashed var(--color-danger);
+  pointer-events: none;
+  z-index: 14;
+  opacity: 0.6;
+}
+
+/* ────────────────────────────────────────────────────────────
+   框选矩形
+   ──────────────────────────────────────────────────────────── */
+
+.tl-marquee {
+  position: absolute;
+  border: 1px dashed var(--color-primary);
+  background: color-mix(in oklch, var(--color-primary) 12%, transparent);
+  pointer-events: none;
+  z-index: 13;
+  border-radius: 2px;
+}
+
+/* ────────────────────────────────────────────────────────────
+   片段状态增强
+   ──────────────────────────────────────────────────────────── */
+
+.tl-clip.is-hovered {
+  filter: brightness(1.08);
+  z-index: 5;
+}
+
+.tl-clip.is-dragging {
+  opacity: 0.5;
+  z-index: 6;
+}
+
+.tl-clip.is-selected {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -1px;
+  z-index: 7;
+  box-shadow: 0 2px 8px color-mix(in oklch, var(--color-primary) 30%, transparent);
+}
+
+/* ────────────────────────────────────────────────────────────
+   播放头播放状态
+   ──────────────────────────────────────────────────────────── */
+
+.tl-playhead-handle.is-playing .tl-playhead-triangle {
+  animation: tl-playhead-pulse 2s ease-in-out infinite;
+}
+
+@keyframes tl-playhead-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.1); }
+}
+
+.tl-playhead-line.is-playing {
+  opacity: 0.8;
+}
+
+/* ────────────────────────────────────────────────────────────
+   空轨道头部
+   ──────────────────────────────────────────────────────────── */
+
+.tl-track-header.is-empty-track {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.tl-track-header.is-empty-track .tl-track-header-name {
+  font-style: italic;
+}
+
+/* ────────────────────────────────────────────────────────────
+   Solo / Mute / Dimmed 状态
+   ──────────────────────────────────────────────────────────── */
+
+/* 静音轨道：透明度降低 + 斜纹遮罩 */
+.tl-track-row.is-muted .tl-clip {
+  opacity: 0.35;
+  filter: saturate(0.4);
+}
+
+.tl-track-row.is-muted::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 6px,
+    color-mix(in oklch, var(--color-text) 4%, transparent) 6px,
+    color-mix(in oklch, var(--color-text) 4%, transparent) 12px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 被其他轨道 solo 压制的轨道：变暗 */
+.tl-track-row.is-dimmed {
+  opacity: 0.32;
+}
+
+.tl-track-header.is-dimmed {
+  opacity: 0.4;
+}
+
+/* 独显轨道：高亮边框 */
+.tl-track-header.is-soloed {
+  background: color-mix(in oklch, var(--color-primary) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-primary);
+}
+
+.tl-track-header.is-soloed .tl-track-header-name {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* Solo/Mute 按钮激活态 */
+.tl-track-header-btn.is-active {
+  background: color-mix(in oklch, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+}
+
+.tl-track-header-btn.is-active:hover {
+  background: color-mix(in oklch, var(--color-primary) 25%, transparent);
+}
+
+/* ────────────────────────────────────────────────────────────
+   标记层（Markers）
+   ──────────────────────────────────────────────────────────── */
+
+.tl-markers-row {
+  display: flex;
+  flex-shrink: 0;
+  height: 24px;
+  border-bottom: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+  position: relative;
+}
+
+.tl-markers-viewport {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  position: relative;
+}
+
+.tl-markers-viewport::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+.tl-markers-layer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.tl-markers-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--tl-text-muted);
+  font-style: italic;
+  opacity: 0.6;
+  pointer-events: none;
+  text-align: center;
+  padding: 0 8px;
+}
+
+.tl-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  user-select: none;
+  z-index: 5;
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+
+.tl-marker:hover {
+  transform: translate(-50%, -50%) scale(1.25);
+  filter: drop-shadow(0 0 4px currentColor);
+  z-index: 6;
+}
+
+.tl-marker.is-dragging {
+  cursor: grabbing;
+  opacity: 0.7;
+  z-index: 7;
+}
+
+.tl-marker.is-hovered {
+  z-index: 6;
+}
+
+.tl-marker-icon {
+  display: block;
+  filter: drop-shadow(0 1px 1px color-mix(in oklch, var(--color-text) 20%, transparent));
+}
+
+/* 悬停 tooltip */
+.tl-marker-tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px color-mix(in oklch, var(--color-text) 18%, transparent);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 100px;
+}
+
+.tl-marker-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--color-border);
+}
+
+.tl-marker-tooltip-type {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--tl-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tl-marker-tooltip-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tl-text-primary);
+}
+
+.tl-marker-tooltip-chapter {
+  font-size: 10px;
+  color: var(--tl-text-secondary);
+}
+
+/* ────────────────────────────────────────────────────────────
+   字数条形图（Word Count Bar）
+   ──────────────────────────────────────────────────────────── */
+
+.tl-word-count-row {
+  display: flex;
+  flex-shrink: 0;
+  height: 32px;
+  border-top: 1px solid var(--tl-border);
+  border-bottom: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+  overflow: hidden;
+}
+
+.tl-word-count-viewport {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  position: relative;
+}
+
+.tl-word-count-viewport::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+.tl-word-count-bar {
+  display: flex;
+  height: 100%;
+  align-items: flex-end;
+  padding: 2px 0;
+}
+
+.tl-word-count-bar::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+.tl-word-count-bar-item {
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  border-right: 1px solid var(--tl-border-grid);
+  transition: background 0.1s ease;
+}
+
+.tl-word-count-bar-item:hover {
+  background: var(--tl-bg-surface-3);
+}
+
+.tl-word-count-bar-item.is-current {
+  background: color-mix(in oklch, var(--color-primary) 8%, transparent);
+}
+
+.tl-word-count-bar-item.is-current::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--color-primary);
+}
+
+.tl-word-count-bar-fill {
+  width: 60%;
+  min-width: 4px;
+  border-radius: 2px 2px 0 0;
+  transition: height 0.2s ease, opacity 0.2s ease;
+}
+
+.tl-word-count-bar-item.is-empty .tl-word-count-bar-fill {
+  background: var(--tl-text-muted);
+}
+
+/* ────────────────────────────────────────────────────────────
+   小地图（Minimap）
+   ──────────────────────────────────────────────────────────── */
+
+.tl-minimap-row {
+  display: flex;
+  flex-shrink: 0;
+  height: 32px;
+  border-top: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+  overflow: hidden;
+}
+
+.tl-minimap {
+  flex: 1;
+  height: 100%;
+  position: relative;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.tl-minimap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.tl-minimap canvas:active {
+  cursor: grabbing;
+}
+
+/* ────────────────────────────────────────────────────────────
+   关系连线层（Relation Layer）
+   ──────────────────────────────────────────────────────────── */
+
+.tl-relation-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 8;
+  overflow: visible;
+}
+
+.tl-relation-layer-empty {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--tl-text-muted);
+  font-style: italic;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.tl-relation-layer text {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--color-surface-1);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+/* ────────────────────────────────────────────────────────────
+   悬停预览气泡（Hover Bubble）
+   ──────────────────────────────────────────────────────────── */
+
+.tl-hover-bubble {
+  position: fixed;
+  z-index: 100;
+  min-width: 160px;
+  max-width: 240px;
+  padding: 8px 10px;
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px color-mix(in oklch, var(--color-text) 22%, transparent);
+  pointer-events: none;
+  animation: tl-hover-bubble-in 0.12s ease-out;
+}
+
+@keyframes tl-hover-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tl-hover-bubble-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tl-text-primary);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-hover-bubble-range {
+  font-size: 10px;
+  color: var(--tl-text-secondary);
+  margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-hover-bubble-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  border-radius: 3px;
+  background: color-mix(in oklch, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ────────────────────────────────────────────────────────────
+   片段锚点 / 强度指示
+   ──────────────────────────────────────────────────────────── */
+
+/* 伏笔回收链锚点 */
+.tl-clip-anchor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.tl-clip-anchor-left {
+  left: 0;
+  background: var(--tl-color-foreshadow);
+  box-shadow: 0 0 4px var(--tl-color-foreshadow);
+}
+
+.tl-clip-anchor-right {
+  right: 0;
+  background: var(--tl-color-foreshadow-done);
+  box-shadow: 0 0 4px var(--tl-color-foreshadow-done);
+}
+
+/* 冲突强度数字 */
+.tl-clip-intensity {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 4px;
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  border-radius: 2px;
+  background: color-mix(in oklch, currentColor 18%, transparent);
+  color: inherit;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+/* ────────────────────────────────────────────────────────────
+   通用右键菜单（片段 / 轨道 / 标记 共用）
+   ──────────────────────────────────────────────────────────── */
+
+.novel-timeline-context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px color-mix(in oklch, var(--color-text) 18%, transparent);
+  font-size: 12px;
+  animation: tl-context-in 0.1s ease-out;
+}
+
+@keyframes tl-context-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.novel-timeline-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  text-align: left;
+  transition: background 0.1s ease, color 0.1s ease;
+  font-size: 12px;
+}
+
+.novel-timeline-context-item:hover:not(:disabled) {
+  background: var(--color-muted);
+  color: var(--color-text);
+}
+
+.novel-timeline-context-item:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.novel-timeline-context-item.is-active {
+  color: var(--color-primary);
+  background: color-mix(in oklch, var(--color-primary) 8%, transparent);
+}
+
+.novel-timeline-context-item.is-danger {
+  color: var(--color-danger);
+}
+
+.novel-timeline-context-item.is-danger:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}
+
+.novel-timeline-context-item kbd {
+  margin-left: auto;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-family: ui-monospace, monospace;
+  color: var(--tl-text-muted);
+  background: var(--color-surface-3);
+  border-radius: 3px;
+  border: 1px solid var(--color-border);
+}
+
+.novel-timeline-context-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--tl-border);
+}
+
+.novel-timeline-context-label {
+  padding: 4px 10px 2px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--tl-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.novel-timeline-context-hint {
+  padding: 4px 10px;
+  font-size: 10px;
+  color: var(--tl-text-muted);
+  font-style: italic;
+}
+
+/* ────────────────────────────────────────────────────────────
+   标记编辑对话框
+   ──────────────────────────────────────────────────────────── */
+
+.novel-timeline-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: color-mix(in oklch, var(--color-text) 40%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: tl-dialog-overlay-in 0.15s ease-out;
+}
+
+@keyframes tl-dialog-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.novel-timeline-dialog {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 16px 40px color-mix(in oklch, var(--color-text) 28%, transparent);
+  overflow: hidden;
+  animation: tl-dialog-in 0.15s ease-out;
+}
+
+@keyframes tl-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.novel-timeline-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--tl-border);
+}
+
+.novel-timeline-dialog-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tl-text-primary);
+}
+
+.novel-timeline-dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--tl-text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.novel-timeline-dialog-close:hover {
+  background: var(--tl-bg-surface-3);
+  color: var(--tl-text-secondary);
+}
+
+.novel-timeline-dialog-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.novel-timeline-dialog-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tl-text-secondary);
+}
+
+.novel-timeline-dialog-input,
+.novel-timeline-dialog-textarea {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--tl-text-primary);
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+  resize: vertical;
+}
+
+.novel-timeline-dialog-input:focus,
+.novel-timeline-dialog-textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-primary) 20%, transparent);
+}
+
+.novel-timeline-dialog-textarea {
+  min-height: 60px;
+  font-family: inherit;
+}
+
+.novel-timeline-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--tl-border);
+  background: var(--tl-bg-surface-2);
+}
+
+.novel-timeline-dialog-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+  color: var(--tl-text-secondary);
+  transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+}
+
+.novel-timeline-dialog-btn:hover {
+  background: var(--tl-bg-surface-3);
+  color: var(--tl-text-primary);
+}
+
+.novel-timeline-dialog-btn.is-primary {
+  background: var(--color-primary);
+  color: #ffffff;
+  border-color: var(--color-primary);
+}
+
+.novel-timeline-dialog-btn.is-primary:hover {
+  background: color-mix(in oklch, var(--color-primary) 88%, black);
+  color: #ffffff;
+}

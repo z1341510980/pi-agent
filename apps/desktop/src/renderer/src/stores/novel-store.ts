@@ -19,6 +19,7 @@ import type {
   NovelLocation,
   NovelWorldElement,
   NovelEdge,
+  NovelMarker,
 } from '@/api/novel-client'
 
 // ── 节点类型 ──
@@ -56,16 +57,21 @@ export interface NovelState {
   nodePositions: NovelNodePosition[]
   characterHistory: NovelCharacterHistory[]
   edges: NovelEdge[]
+  markers: NovelMarker[]
 
   // ── 选中节点 ──
   selectedNodeId: string | null
   selectedNodeType: NovelNodeType | null
+
+  // ── 视图模式（时间轴/画布）──
+  viewMode: 'timeline' | 'canvas'
 
   // ── 加载状态 ──
   loading: boolean
   error: string | null
 
   // ── Actions ──
+  setViewMode: (mode: 'timeline' | 'canvas') => void
   setCurrentProject: (projectId: string | null) => void
   setProjects: (projects: NovelProject[]) => void
   loadProjectData: (data: {
@@ -83,6 +89,7 @@ export interface NovelState {
     locations?: NovelLocation[]
     worldElements?: NovelWorldElement[]
     edges?: NovelEdge[]
+    markers?: NovelMarker[]
   }) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -125,11 +132,17 @@ export interface NovelState {
   // ── 角色历史 ──
   setCharacterHistory: (history: NovelCharacterHistory[]) => void
   addCharacterHistory: (entry: NovelCharacterHistory) => void
+  removeCharacterHistory: (id: string) => void
 
   // ── 画布连线 ──
   setEdges: (edges: NovelEdge[]) => void
   addEdge: (edge: NovelEdge) => void
   removeEdge: (id: string) => void
+
+  // ── 时间轴标记 ──
+  setMarkers: (markers: NovelMarker[]) => void
+  upsertMarker: (marker: NovelMarker) => void
+  removeMarker: (id: string) => void
 }
 
 // ── 通用 upsert 工具 ──
@@ -172,14 +185,18 @@ export const useNovelStore = create<NovelState>()(
       nodePositions: [],
       characterHistory: [],
       edges: [],
+      markers: [],
 
       selectedNodeId: null,
       selectedNodeType: null,
+
+      viewMode: 'timeline',
 
       loading: false,
       error: null,
 
       // ── Actions ──
+      setViewMode: (mode) => set({ viewMode: mode }),
       setCurrentProject: (projectId) =>
         set({ currentProjectId: projectId, selectedNodeId: null, selectedNodeType: null }),
 
@@ -201,6 +218,7 @@ export const useNovelStore = create<NovelState>()(
           locations: data.locations ?? state.locations,
           worldElements: data.worldElements ?? state.worldElements,
           edges: data.edges ?? state.edges,
+          markers: data.markers ?? state.markers,
         })),
 
       setLoading: (loading) => set({ loading }),
@@ -226,6 +244,7 @@ export const useNovelStore = create<NovelState>()(
           nodePositions: [],
           characterHistory: [],
           edges: [],
+          markers: [],
           selectedNodeId: null,
           selectedNodeType: null,
         }),
@@ -269,6 +288,7 @@ export const useNovelStore = create<NovelState>()(
                 nodePositions: [],
                 characterHistory: [],
                 edges: [],
+                markers: [],
                 selectedNodeId: null,
                 selectedNodeType: null,
               }
@@ -298,11 +318,18 @@ export const useNovelStore = create<NovelState>()(
       setCharacterHistory: (history) => set({ characterHistory: history }),
       addCharacterHistory: (entry) =>
         set((state) => ({ characterHistory: [...state.characterHistory, entry] })),
+      removeCharacterHistory: (id) =>
+        set((state) => ({ characterHistory: state.characterHistory.filter((h) => h.id !== id) })),
 
       // ── 画布连线 ──
       setEdges: (edges) => set({ edges }),
       addEdge: (edge) => set((state) => ({ edges: upsertInList(state.edges, edge) })),
       removeEdge: (id) => set((state) => ({ edges: removeFromList(state.edges, id) })),
+
+      // ── 时间轴标记 ──
+      setMarkers: (markers) => set({ markers }),
+      upsertMarker: (marker) => set((state) => ({ markers: upsertInList(state.markers, marker) })),
+      removeMarker: (id) => set((state) => ({ markers: removeFromList(state.markers, id) })),
     }),
     {
       name: 'pi-agent-novel',
@@ -327,8 +354,10 @@ export const useNovelStore = create<NovelState>()(
         nodePositions: state.nodePositions,
         characterHistory: state.characterHistory,
         edges: state.edges,
+        markers: state.markers,
         selectedNodeId: state.selectedNodeId,
         selectedNodeType: state.selectedNodeType,
+        viewMode: state.viewMode,
       }),
     },
   ),

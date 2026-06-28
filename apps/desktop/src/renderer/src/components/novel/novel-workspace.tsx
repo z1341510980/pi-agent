@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
-import { ArrowLeft, Download, Sparkles, Database } from 'lucide-react'
+import { ArrowLeft, Download, Sparkles, Database, ScrollText, Clock, LayoutGrid } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import {
@@ -37,6 +37,40 @@ import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
 import { ChapterLivePanel } from './chapter-live-view'
 import { CacheMonitorPanel } from './cache-monitor-panel'
+import { AgentLogPanel } from './agent-log-panel'
+import { NovelTimelineWorkspace } from './timeline/novel-timeline-workspace'
+
+// ── 视图切换组件（时间轴 / 画布）──
+
+interface ViewSwitcherProps {
+  value: 'timeline' | 'canvas'
+  onChange: (mode: 'timeline' | 'canvas') => void
+}
+
+function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
+  return (
+    <div className="novel-view-switcher">
+      <button
+        type="button"
+        className={`novel-view-switcher-btn ${value === 'timeline' ? 'is-active' : ''}`}
+        onClick={() => onChange('timeline')}
+        title="时间轴视图"
+      >
+        <Clock className="size-3.5" />
+        <span>时间轴</span>
+      </button>
+      <button
+        type="button"
+        className={`novel-view-switcher-btn ${value === 'canvas' ? 'is-active' : ''}`}
+        onClick={() => onChange('canvas')}
+        title="画布视图"
+      >
+        <LayoutGrid className="size-3.5" />
+        <span>画布</span>
+      </button>
+    </div>
+  )
+}
 
 export interface NovelWorkspaceProps {
   onClose: () => void
@@ -61,6 +95,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const locations = useNovelStore((s) => s.locations)
   const worldElements = useNovelStore((s) => s.worldElements)
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
+  const viewMode = useNovelStore((s) => s.viewMode)
+  const setViewMode = useNovelStore((s) => s.setViewMode)
 
   const queryClient = useQueryClient()
 
@@ -73,6 +109,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [detailWidth, setDetailWidth] = useState(420)
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
+  const [logPanelOpen, setLogPanelOpen] = useState(false)
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
 
@@ -215,6 +252,31 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     await creationFlow.startCreation(currentProjectId, chapterNumber)
   }, [currentProjectId, chapters, creationFlow])
 
+  // 从指定章节开始新创作流程（用于时间轴右键菜单"从此章开始创作"）
+  // 若该章节号不存在，先创建空章节再启动流程
+  const handleStartCreationAt = useCallback(async (chapterNumber: number) => {
+    if (!currentProjectId || creationFlow.isRunning) return
+    const existing = chapters.find((c) => c.chapterNumber === chapterNumber)
+    if (!existing) {
+      try {
+        const chapter = await createChapter(currentProjectId, {
+          chapterNumber,
+          narrativeTask: {
+            description: '推进主线剧情',
+            type: 'advance_mainline',
+            priority: 'medium',
+          },
+        })
+        upsertChapter(chapter)
+        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      } catch {
+        return
+      }
+    }
+    setCreationChapterNumber(chapterNumber)
+    await creationFlow.startCreation(currentProjectId, chapterNumber)
+  }, [currentProjectId, chapters, creationFlow, upsertChapter, queryClient])
+
   // 收到 data_changed 事件时刷新画布（替代轮询）
   // Memory Agent 写入实体状态后会推送带 dataChanged 标记的 agent_output，
   // 监听 agentOutputs 末尾的 dataChanged 标记，触发 React Query 失效刷新。
@@ -225,26 +287,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
   }, [creationFlow.agentOutputs, currentProjectId, queryClient])
 
-  // 创作完成后自动保存章节内容（收到 result 事件即持久化，无需用户手动点击"保存到章节"）
-  useEffect(() => {
-    if (
-      creationFlow.result?.status === 'completed' &&
-      creationFlow.result.content &&
-      currentProjectId &&
-      creationChapterNumber != null
-    ) {
-      const targetChapter = chapters.find((c) => c.chapterNumber === creationChapterNumber)
-      if (targetChapter) {
-        void completeChapter(targetChapter.id, { content: creationFlow.result.content })
-          .then((updated) => {
-            upsertChapter(updated)
-            void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-          })
-          .catch(() => {})
-      }
-    }
-  }, [creationFlow.result, currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient])
-
+  // 创作完成后不自动保存——由用户通过"保存到章节"按钮手动触发，
+  // 避免 useEffect 依赖 chapters 导致 completeChapter → upsertChapter → chapters 变化 → 无限循环
   const handleSaveChapter = useCallback(async (content: string) => {
     if (!currentProjectId || creationChapterNumber == null) return
     const targetChapter = chapters.find((c) => c.chapterNumber === creationChapterNumber)
@@ -253,13 +297,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       const updated = await completeChapter(targetChapter.id, { content })
       upsertChapter(updated)
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-    } catch {
-      // 静默失败
+      // 保存成功后重置创作流程状态，切回节点详情面板
+      creationFlow.reset()
+    } catch (err) {
+      console.error('[NovelWorkspace] 保存章节失败:', err)
     }
-  }, [currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient])
+  }, [currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient, creationFlow])
 
   const handleDiscardCreation = useCallback(() => {
     creationFlow.cancel()
+    creationFlow.reset()
     if (currentProjectId) {
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
     }
@@ -316,6 +363,15 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               <Database className="size-3.5" />
             </Button>
             <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => setLogPanelOpen(true)}
+              disabled={!currentProject}
+              title="Agent 调用日志"
+            >
+              <ScrollText className="size-3.5" />
+            </Button>
+            <Button
               size="sm"
               variant="ghost"
               onClick={handleExport}
@@ -328,11 +384,13 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           </div>
         </header>
 
-        {/* 工具栏 */}
-        <NovelToolbar
-          onRelayout={handleRelayout}
-          onExport={handleExport}
-        />
+        {/* 工具栏（仅画布视图显示；时间轴视图自带工具栏） */}
+        {currentProject && viewMode === 'canvas' && (
+          <NovelToolbar
+            onRelayout={handleRelayout}
+            onExport={handleExport}
+          />
+        )}
 
         {/* 主体三栏布局 */}
         <div className="flex min-h-0 flex-1">
@@ -349,19 +407,50 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             side="left"
           />
 
-          {/* 画布 */}
-          <main className="flex-1 min-w-0 h-full overflow-hidden">
+          {/* 主内容区：时间轴 / 画布可切换 */}
+          <main className="flex-1 min-w-0 h-full overflow-hidden flex flex-col">
             {currentProject ? (
-              <NovelCanvas
-                relayoutSignal={relayoutSignal}
-                creationPhase={creationFlow.phase}
-                creationRunning={creationFlow.isRunning}
-                creationChapterNumber={creationChapterNumber}
-                creationError={creationFlow.error}
-                onCancelCreation={handleDiscardCreation}
-                onNodeCountChange={setNodeCount}
-                onRegenerateChapter={handleRegenerateChapter}
-              />
+              <>
+                {/* 视图切换条 */}
+                <div
+                  className="flex items-center justify-between px-3 h-9 border-b shrink-0"
+                  style={{
+                    background: 'var(--color-surface-1)',
+                    borderColor: 'var(--color-border)',
+                  }}
+                >
+                  <ViewSwitcher value={viewMode} onChange={setViewMode} />
+                  <span
+                    className="text-[10px]"
+                    style={{ color: 'var(--color-subtle)' }}
+                  >
+                    {viewMode === 'timeline' ? '时间轴视图' : '画布视图'}
+                  </span>
+                </div>
+
+                <div className="flex-1 min-h-0">
+                  {viewMode === 'timeline' ? (
+                    <NovelTimelineWorkspace
+                      creationRunning={creationFlow.isRunning}
+                      creationChapterNumber={creationChapterNumber}
+                      onCancelCreation={handleDiscardCreation}
+                      onRegenerateChapter={handleRegenerateChapter}
+                      onStartCreationAt={handleStartCreationAt}
+                    />
+                  ) : (
+                    <NovelCanvas
+                      relayoutSignal={relayoutSignal}
+                      creationPhase={creationFlow.phase}
+                      creationRunning={creationFlow.isRunning}
+                      creationChapterNumber={creationChapterNumber}
+                      creationError={creationFlow.error}
+                      onCancelCreation={handleDiscardCreation}
+                      onNodeCountChange={setNodeCount}
+                      onRegenerateChapter={handleRegenerateChapter}
+                    />
+                  )}
+                </div>
+              </>
             ) : (
               <div className="flex h-full items-center justify-center text-muted-foreground">
                 <div className="text-center">
@@ -417,6 +506,24 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </DialogHeader>
             <div className="max-h-[60vh] overflow-y-auto">
               <CacheMonitorPanel chapterNumber={creationChapterNumber} />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Agent 调用日志弹窗 */}
+        <Dialog open={logPanelOpen} onOpenChange={setLogPanelOpen}>
+          <DialogContent className="sm:max-w-2xl max-h-[85vh] p-0 gap-0">
+            <DialogHeader className="px-4 py-3 border-b border-border">
+              <DialogTitle className="flex items-center gap-2 text-sm">
+                <ScrollText className="size-4 text-primary" />
+                Agent 调用日志
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                记录每次 Agent 调用的完整上下文（系统提示词 / 章节上下文 / 任务指令 / 工具 / 结果）
+              </DialogDescription>
+            </DialogHeader>
+            <div className="h-[70vh]">
+              <AgentLogPanel chapterNumber={creationChapterNumber} />
             </div>
           </DialogContent>
         </Dialog>

@@ -426,4 +426,77 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_novel_edges_source ON novel_edges(source_id);
     CREATE INDEX IF NOT EXISTS idx_novel_edges_target ON novel_edges(target_id);`,
   },
+  {
+    // Agent 调用日志表（记录每次 Agent 调用的完整上下文：系统提示词/章节上下文/任务指令/工具/结果）
+    // 用于调试提示词构建、排查 Agent 行为、审计创作流程
+    id: '034_create_novel_agent_logs',
+    sql: `CREATE TABLE IF NOT EXISTS novel_agent_logs (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      agent_type      TEXT NOT NULL,
+      agent_name      TEXT NOT NULL DEFAULT '',
+      display_agent_type TEXT NOT NULL DEFAULT '',
+      display_agent_name TEXT NOT NULL DEFAULT '',
+      phase           TEXT NOT NULL DEFAULT '',
+      system_prompt   TEXT NOT NULL DEFAULT '',
+      chapter_context TEXT NOT NULL DEFAULT '',
+      user_message    TEXT NOT NULL DEFAULT '',
+      task_input      TEXT NOT NULL DEFAULT '',
+      user_instructions TEXT NOT NULL DEFAULT '[]',
+      tools           TEXT NOT NULL DEFAULT '[]',
+      tool_names      TEXT NOT NULL DEFAULT '[]',
+      result          TEXT NOT NULL DEFAULT '',
+      result_length   INTEGER NOT NULL DEFAULT 0,
+      duration_ms     INTEGER NOT NULL DEFAULT 0,
+      status          TEXT NOT NULL DEFAULT 'success',
+      error           TEXT NOT NULL DEFAULT '',
+      session_id      TEXT NOT NULL DEFAULT '',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_project ON novel_agent_logs(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_chapter ON novel_agent_logs(project_id, chapter_number);
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_agent ON novel_agent_logs(project_id, agent_type);
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_created ON novel_agent_logs(created_at DESC);`,
+  },
+  {
+    // 035: 扩展冲突表，支持章节区间 + 层级分类
+    id: '035_extend_novel_conflicts',
+    sql: `ALTER TABLE novel_conflicts ADD COLUMN first_chapter INTEGER;
+          ALTER TABLE novel_conflicts ADD COLUMN last_chapter INTEGER;
+          ALTER TABLE novel_conflicts ADD COLUMN tier TEXT NOT NULL DEFAULT 'secondary';`,
+  },
+  {
+    // 036: 扩展势力表，支持章节区间
+    id: '036_extend_novel_factions',
+    sql: `ALTER TABLE novel_factions ADD COLUMN first_chapter INTEGER;
+          ALTER TABLE novel_factions ADD COLUMN last_chapter INTEGER;`,
+  },
+  {
+    // 037: 扩展地点表，支持多次出现
+    id: '037_extend_novel_locations',
+    sql: `ALTER TABLE novel_locations ADD COLUMN appear_chapters TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    // 038: 扩展角色表，标记主角
+    id: '038_extend_novel_characters',
+    sql: `ALTER TABLE novel_characters ADD COLUMN is_protagonist INTEGER NOT NULL DEFAULT 0;`,
+  },
+  {
+    // 时间轴标记表
+    id: '039_create_novel_markers',
+    sql: `CREATE TABLE IF NOT EXISTS novel_markers (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter         INTEGER NOT NULL,
+      title           TEXT NOT NULL DEFAULT '',
+      note            TEXT NOT NULL DEFAULT '',
+      type            TEXT NOT NULL DEFAULT 'bookmark',
+      color           TEXT NOT NULL DEFAULT 'blue',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_markers_project ON novel_markers(project_id);`,
+  },
 ]

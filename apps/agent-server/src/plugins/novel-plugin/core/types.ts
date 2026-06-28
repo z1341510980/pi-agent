@@ -106,6 +106,7 @@ export interface NovelCharacter {
   arcHistory: string // JSON: ArcChange[]
   // 说话风格
   speechStyle: string
+  isProtagonist: boolean // 是否主角
   createdAt: number
   updatedAt: number
 }
@@ -179,6 +180,9 @@ export interface NovelConflict {
   intensity: number // 1-10
   stage: ConflictStage
   participants: string // JSON: string[]
+  firstChapter: number | null // 冲突开始的章节
+  lastChapter: number | null // 冲突结束的章节
+  tier: ConflictTier // 冲突层级
   createdAt: number
   updatedAt: number
 }
@@ -190,6 +194,8 @@ export type ConflictType =
 export type ConflictStage =
   | 'latent' | 'emerging' | 'escalating' | 'erupting'
   | 'reversing' | 'resolved' | 'transformed'
+
+export type ConflictTier = 'main' | 'secondary' | 'goal'
 
 // ── 世界规则 ──
 
@@ -224,6 +230,8 @@ export interface NovelFaction {
   allies: string[] // factionId[]
   enemies: string[] // factionId[]
   status: NovelFactionStatus
+  firstChapter: number | null // 势力登场的章节
+  lastChapter: number | null // 势力退场的章节
   createdAt: number
   updatedAt: number
 }
@@ -246,6 +254,7 @@ export interface NovelLocation {
   significance: NovelLocationSignificance
   firstChapter: number | null
   status: NovelLocationStatus
+  appearChapters: number[] // 地点出现的章节列表
   createdAt: number
   updatedAt: number
 }
@@ -483,3 +492,76 @@ export interface ChapterConstraints {
  *             每次调用都变，不缓存
  */
 export type CacheLayer = 'static' | 'semi' | 'dynamic'
+
+// ── Agent 调用日志 ──
+
+export type NovelAgentLogStatus = 'success' | 'error' | 'cancelled'
+
+export interface NovelAgentLog {
+  id: string
+  projectId: string
+  chapterNumber: number
+  agentType: string
+  agentName: string
+  displayAgentType: string
+  displayAgentName: string
+  phase: string
+  systemPrompt: string
+  chapterContext: string
+  userMessage: string
+  taskInput: string
+  userInstructions: string[]
+  tools: unknown[]
+  toolNames: string[]
+  result: string
+  resultLength: number
+  durationMs: number
+  status: NovelAgentLogStatus
+  error: string
+  sessionId: string
+  createdAt: number
+}
+
+/** 列表查询时返回的精简记录（不含完整 prompt 内容，避免传输过大） */
+export interface NovelAgentLogSummary {
+  id: string
+  projectId: string
+  chapterNumber: number
+  agentType: string
+  agentName: string
+  displayAgentType: string
+  displayAgentName: string
+  phase: string
+  systemPromptLength: number
+  userMessageLength: number
+  toolNames: string[]
+  resultLength: number
+  durationMs: number
+  status: NovelAgentLogStatus
+  error: string
+  createdAt: number
+}
+
+// ── 时间轴标记 ──
+
+export type NovelMarkerType =
+  | 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note'
+
+export type NovelMarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
+
+/** 时间轴标记：用户在时间轴上手动创建的章节标记 */
+export interface NovelMarker {
+  id: string
+  projectId: string
+  /** 标记所在章节号 */
+  chapter: number
+  title: string
+  /** 可选备注 */
+  note: string
+  /** 标记类型：书签/转折/伏笔/高潮/备注 */
+  type: NovelMarkerType
+  /** 标记颜色 */
+  color: NovelMarkerColor
+  createdAt: number
+  updatedAt: number
+}

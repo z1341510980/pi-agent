@@ -183,6 +183,16 @@ export interface PluginContext {
 export interface PluginSessionOptions {
   /** 系统提示词（覆盖默认的 Pi Agent 提示词） */
   systemPrompt: string
+  /**
+   * 前缀用户消息（SEMI 层，跨 Agent 稳定的章节上下文）。
+   *
+   * 若提供，会在 session 创建后、prompt() 调用前，作为一条独立 user 消息
+   * 注入到对话历史首部。这样 LLM 收到的对话为：
+   *   system → prefixUserMessage → userMessage
+   * prefixUserMessage 前缀稳定，可被 prompt cache 命中；
+   * userMessage 为 DYNAMIC 层（每次任务不同）。
+   */
+  prefixUserMessage?: string
   /** 首条用户消息（章节上下文/生成指令） */
   userMessage: string
   /** 自定义工具（可选，默认注入插件工具） */

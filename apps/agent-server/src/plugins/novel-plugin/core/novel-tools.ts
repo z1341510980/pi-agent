@@ -639,6 +639,7 @@ export function createNovelCreateCharacterTool(store: NovelStore): ToolDefinitio
         arcStage: params.arcStage ?? 'introduction',
         arcHistory: '[]',
         speechStyle: params.speechStyle ?? '',
+        isProtagonist: false,
       })
       return {
         content: [{ type: 'text', text: `已创建角色「${params.name}」，ID: ${character.id}` }],
@@ -706,6 +707,9 @@ export function createNovelCreateConflictTool(store: NovelStore): ToolDefinition
         intensity: params.intensity ?? 5,
         stage: params.stage ?? 'latent',
         participants: JSON.stringify(params.participants ?? []),
+        firstChapter: null,
+        lastChapter: null,
+        tier: 'secondary',
       })
       return {
         content: [{ type: 'text', text: `已创建冲突「${params.description}」，ID: ${conflict.id}` }],
@@ -795,6 +799,8 @@ export function createNovelCreateFactionTool(store: NovelStore): ToolDefinition<
         allies: params.allies ?? [],
         enemies: params.enemies ?? [],
         status: params.status ?? 'active',
+        firstChapter: null,
+        lastChapter: null,
       })
       return {
         content: [{ type: 'text', text: `已创建势力「${params.name}」，ID: ${faction.id}` }],
@@ -879,6 +885,7 @@ export function createNovelCreateLocationTool(store: NovelStore): ToolDefinition
         significance: params.significance ?? 'minor',
         firstChapter: params.firstChapter ?? null,
         status: params.status ?? 'normal',
+        appearChapters: [],
       })
       return {
         content: [{ type: 'text', text: `已创建地点「${params.name}」，ID: ${location.id}` }],
