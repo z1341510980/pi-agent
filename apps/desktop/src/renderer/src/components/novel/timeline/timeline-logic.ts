@@ -307,3 +307,13 @@ export function planClipSplit(
     second: { start: atChapter, end: origEnd },
   }
 }
+
+/** Solo/Mute 互斥：solo 激活时仅 solo 轨道可闻；否则按 mute 判定 */
+export function isTrackAudible(
+  trackId: string,
+  soloedTrack: string | null,
+  mutedTracks: Set<string>,
+): boolean {
+  if (soloedTrack) return trackId === soloedTrack
+  return !mutedTracks.has(trackId)
+}

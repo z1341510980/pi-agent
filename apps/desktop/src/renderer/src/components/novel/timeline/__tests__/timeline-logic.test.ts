@@ -9,6 +9,7 @@ import {
   rangeToRestore,
   groupContiguousSpans,
   planClipSplit,
+  isTrackAudible,
   type EditAction,
 } from '../timeline-logic'
 
@@ -215,5 +216,20 @@ describe('planClipSplit', () => {
   })
   it('returns null second when atChapter > end', () => {
     expect(planClipSplit(5, 10, 11)).toEqual({ first: { start: 5, end: 10 }, second: null })
+  })
+})
+
+describe('isTrackAudible (Solo/Mute mutex, B7)', () => {
+  it('returns true when no solo and track not muted', () => {
+    expect(isTrackAudible('t1', null, new Set())).toBe(true)
+  })
+  it('returns false when track is muted (no solo)', () => {
+    expect(isTrackAudible('t1', null, new Set(['t1']))).toBe(false)
+  })
+  it('when solo active, only soloed track is audible (mute ignored for soloed)', () => {
+    expect(isTrackAudible('t1', 't1', new Set(['t1']))).toBe(true)
+  })
+  it('when solo active, other tracks are inaudible even if not muted', () => {
+    expect(isTrackAudible('t2', 't1', new Set())).toBe(false)
   })
 })

@@ -43,7 +43,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
-import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, type SnapResult } from './timeline-logic'
+import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, isTrackAudible, type SnapResult } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -764,9 +764,8 @@ export function TimelineEditor({
 
   // 判断轨道是否因 solo 而淡化
   const isTrackDimmed = useCallback((trackId: string): boolean => {
-    if (!soloedTrack) return false
-    return soloedTrack !== trackId
-  }, [soloedTrack])
+    return !isTrackAudible(trackId, soloedTrack, mutedTracks)
+  }, [soloedTrack, mutedTracks])
 
   // 获取冲突强度（从 conflicts 数据中查找）
   const getConflictIntensity = useCallback((clip: TimelineClip): number => {
