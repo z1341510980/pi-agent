@@ -177,3 +177,44 @@
   background: transparent;
   padding: 0;
 }
+
+.cce-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 16px;
+}
+
+.cce-toolbar button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  min-width: 26px;
+  color: var(--color-text, #111);
+}
+
+.cce-toolbar button:hover:not(:disabled) {
+  background: var(--color-muted, rgba(0, 0, 0, 0.05));
+}
+
+.cce-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cce-toolbar button.is-active {
+  background: var(--color-primary-soft, rgba(59, 130, 246, 0.15));
+  color: var(--color-primary, #3b82f6);
+}
+
+.cce-toolbar select {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+  background: var(--color-surface-1, #fff);
+  color: var(--color-text, #111);
+}

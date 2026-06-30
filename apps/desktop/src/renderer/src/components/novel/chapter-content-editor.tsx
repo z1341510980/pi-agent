@@ -177,6 +177,36 @@ export function ChapterContentEditor({
             </span>
           )}
         </div>
+        <div className="cce-toolbar">
+          <select
+            onChange={(e) => {
+              const v = e.target.value
+              if (v === 'p') editor?.chain().focus().setParagraph().run()
+              else if (v === 'h1') editor?.chain().focus().setHeading({ level: 1 }).run()
+              else if (v === 'h2') editor?.chain().focus().setHeading({ level: 2 }).run()
+              else if (v === 'h3') editor?.chain().focus().setHeading({ level: 3 }).run()
+            }}
+            disabled={isCreationActive}
+            title="标题级别"
+            value={editor?.isActive('heading', { level: 1 }) ? 'h1'
+              : editor?.isActive('heading', { level: 2 }) ? 'h2'
+              : editor?.isActive('heading', { level: 3 }) ? 'h3'
+              : 'p'}
+          >
+            <option value="p">正文</option>
+            <option value="h1">标题 1</option>
+            <option value="h2">标题 2</option>
+            <option value="h3">标题 3</option>
+          </select>
+          <button type="button" onClick={() => editor?.chain().focus().toggleBold().run()} disabled={isCreationActive || !editor?.can().toggleBold()} className={editor?.isActive('bold') ? 'is-active' : ''} title="粗体">B</button>
+          <button type="button" onClick={() => editor?.chain().focus().toggleItalic().run()} disabled={isCreationActive || !editor?.can().toggleItalic()} className={editor?.isActive('italic') ? 'is-active' : ''} title="斜体">I</button>
+          <button type="button" onClick={() => editor?.chain().focus().toggleBlockquote().run()} disabled={isCreationActive} className={editor?.isActive('blockquote') ? 'is-active' : ''} title="引用">"</button>
+          <button type="button" onClick={() => editor?.chain().focus().toggleOrderedList().run()} disabled={isCreationActive} className={editor?.isActive('orderedList') ? 'is-active' : ''} title="有序列表">1.</button>
+          <button type="button" onClick={() => editor?.chain().focus().toggleBulletList().run()} disabled={isCreationActive} className={editor?.isActive('bulletList') ? 'is-active' : ''} title="无序列表">•</button>
+          <button type="button" onClick={() => editor?.chain().focus().setHorizontalRule().run()} disabled={isCreationActive} title="分割线">—</button>
+          <button type="button" onClick={() => editor?.chain().focus().undo().run()} disabled={isCreationActive || !editor?.can().undo()} title="撤销">↶</button>
+          <button type="button" onClick={() => editor?.chain().focus().redo().run()} disabled={isCreationActive || !editor?.can().redo()} title="重做">↷</button>
+        </div>
         <div className="cce-word-count">{wordCount} 字</div>
       </header>
       <div className="cce-body">
