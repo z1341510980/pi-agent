@@ -132,6 +132,12 @@ export function NovelTimelineWorkspace({
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenuPosition | null>(null)
   const [trackContextMenu, setTrackContextMenu] = useState<TrackContextMenuPosition | null>(null)
   const [trackHeightLevel, setTrackHeightLevel] = useState<TrackHeightLevel>('standard')
+  // A7：轨道 lock/hide/solo/mute 状态提升到 workspace，与 trackHeightLevel 一致，
+  // 由 TrackContextMenu 与 TimelineEditor 共享（受控）。
+  const [hiddenTracks, setHiddenTracks] = useState<Set<string>>(new Set())
+  const [lockedTracks, setLockedTracks] = useState<Set<string>>(new Set())
+  const [soloedTrack, setSoloedTrack] = useState<string | null>(null)
+  const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set())
   const [clipboard, setClipboard] = useState<TimelineClip[] | null>(null)
   const [showRelations, setShowRelations] = useState(false)
   const [markerContextMenu, setMarkerContextMenu] = useState<{ marker: TimelineMarker; x: number; y: number } | null>(null)
@@ -620,6 +626,35 @@ export function NovelTimelineWorkspace({
     setTrackContextMenu({ x, y, track })
   }, [])
 
+  // ── 轨道状态 toggle（A7：受控状态，由 workspace 维护并下发给 TimelineEditor）──
+  const toggleTrackVisible = useCallback((trackId: string) => {
+    setHiddenTracks((prev) => {
+      const next = new Set(prev)
+      if (next.has(trackId)) next.delete(trackId)
+      else next.add(trackId)
+      return next
+    })
+  }, [])
+  const toggleTrackLock = useCallback((trackId: string) => {
+    setLockedTracks((prev) => {
+      const next = new Set(prev)
+      if (next.has(trackId)) next.delete(trackId)
+      else next.add(trackId)
+      return next
+    })
+  }, [])
+  const toggleTrackMute = useCallback((trackId: string) => {
+    setMutedTracks((prev) => {
+      const next = new Set(prev)
+      if (next.has(trackId)) next.delete(trackId)
+      else next.add(trackId)
+      return next
+    })
+  }, [])
+  const toggleTrackSolo = useCallback((trackId: string) => {
+    setSoloedTrack((prev) => (prev === trackId ? null : trackId))
+  }, [])
+
   // ── 空白右键（暂用章节菜单）──
   const handleContextMenuEmpty = useCallback((x: number, y: number) => {
     // 计算右键位置的章节号
@@ -925,6 +960,14 @@ export function NovelTimelineWorkspace({
             onClipDoubleClick={handleClipDoubleClick}
             onSelectClipsChange={handleSelectClipsChange}
             onChapterWidthChange={handleChapterWidthChange}
+            hiddenTracks={hiddenTracks}
+            lockedTracks={lockedTracks}
+            soloedTrack={soloedTrack}
+            mutedTracks={mutedTracks}
+            onToggleTrackVisible={toggleTrackVisible}
+            onToggleTrackLock={toggleTrackLock}
+            onToggleTrackMute={toggleTrackMute}
+            onToggleTrackSolo={toggleTrackSolo}
           />
         </div>
       </div>
@@ -953,8 +996,8 @@ export function NovelTimelineWorkspace({
 
       <TrackContextMenu
         position={trackContextMenu}
-        isLocked={false}
-        isHidden={false}
+        isLocked={trackContextMenu ? lockedTracks.has(trackContextMenu.track.id) : false}
+        isHidden={trackContextMenu ? hiddenTracks.has(trackContextMenu.track.id) : false}
         heightLevel={trackHeightLevel}
         canMoveUp={currentTrackIndex > 0}
         canMoveDown={currentTrackIndex >= 0 && currentTrackIndex < tracks.length - 1}
@@ -962,8 +1005,8 @@ export function NovelTimelineWorkspace({
         onMoveUp={handleTrackMoveUp}
         onMoveDown={handleTrackMoveDown}
         onSetHeight={setTrackHeightLevel}
-        onToggleLock={() => {/* 由 TimelineEditor 内部管理 */}}
-        onToggleVisible={() => {/* 由 TimelineEditor 内部管理 */}}
+        onToggleLock={() => trackContextMenu && toggleTrackLock(trackContextMenu.track.id)}
+        onToggleVisible={() => trackContextMenu && toggleTrackVisible(trackContextMenu.track.id)}
       />
 
       <MarkerContextMenu

@@ -185,6 +185,18 @@ export interface TimelineEditorProps {
   onClipDoubleClick?: (clip: TimelineClip, x: number, y: number) => void
   onSelectClipsChange?: (clipIds: Set<string>) => void
   onChapterWidthChange?: (width: number) => void
+  /** 轨道可见性集合（受控；不传则使用组件内部 state） */
+  hiddenTracks?: Set<string>
+  /** 轨道锁定集合（受控；不传则使用组件内部 state） */
+  lockedTracks?: Set<string>
+  /** 独显轨道 ID（受控；不传则使用组件内部 state） */
+  soloedTrack?: string | null
+  /** 静音轨道集合（受控；不传则使用组件内部 state） */
+  mutedTracks?: Set<string>
+  onToggleTrackVisible?: (trackId: string) => void
+  onToggleTrackLock?: (trackId: string) => void
+  onToggleTrackMute?: (trackId: string) => void
+  onToggleTrackSolo?: (trackId: string) => void
 }
 
 // ── 主组件 ──
@@ -227,6 +239,14 @@ export function TimelineEditor({
   onClipDoubleClick,
   onSelectClipsChange,
   onChapterWidthChange,
+  hiddenTracks: propHiddenTracks,
+  lockedTracks: propLockedTracks,
+  soloedTrack: propSoloedTrack,
+  mutedTracks: propMutedTracks,
+  onToggleTrackVisible,
+  onToggleTrackLock,
+  onToggleTrackMute,
+  onToggleTrackSolo,
 }: TimelineEditorProps): ReactElement {
   const rulerViewportRef = useRef<HTMLDivElement | null>(null)
   const markersViewportRef = useRef<HTMLDivElement | null>(null)
@@ -237,10 +257,15 @@ export function TimelineEditor({
   const [playheadDrag, setPlayheadDrag] = useState<PlayheadDragState | null>(null)
   const [marquee, setMarquee] = useState<MarqueeState | null>(null)
   const [panState, setPanState] = useState<PanState | null>(null)
-  const [hiddenTracks, setHiddenTracks] = useState<Set<string>>(new Set())
-  const [lockedTracks, setLockedTracks] = useState<Set<string>>(new Set())
-  const [soloedTrack, setSoloedTrack] = useState<string | null>(null)
-  const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set())
+  // 轨道状态：受控/非受控兼容。父组件传 prop 时优先使用 prop；否则回退到内部 state。
+  const [internalHidden, setInternalHidden] = useState<Set<string>>(new Set())
+  const [internalLocked, setInternalLocked] = useState<Set<string>>(new Set())
+  const [internalSoloed, setInternalSoloed] = useState<string | null>(null)
+  const [internalMuted, setInternalMuted] = useState<Set<string>>(new Set())
+  const hiddenTracks = propHiddenTracks ?? internalHidden
+  const lockedTracks = propLockedTracks ?? internalLocked
+  const soloedTrack = propSoloedTrack ?? internalSoloed
+  const mutedTracks = propMutedTracks ?? internalMuted
   const [snapLine, setSnapLine] = useState<{ x: number; type: SnapResult['type'] } | null>(null)
   const [razorLine, setRazorLine] = useState<number | null>(null)
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null)
@@ -594,36 +619,41 @@ export function TimelineEditor({
   }, [pendingClipUpdate])
 
   // ── 轨道头部控件 ──
+  // 受控/非受控兼容：父组件传入回调时优先调用，由父组件维护状态；否则回退到内部 state。
   const toggleTrackVisible = useCallback((trackId: string) => {
-    setHiddenTracks((prev) => {
+    if (onToggleTrackVisible) { onToggleTrackVisible(trackId); return }
+    setInternalHidden((prev) => {
       const next = new Set(prev)
       if (next.has(trackId)) next.delete(trackId)
       else next.add(trackId)
       return next
     })
-  }, [])
+  }, [onToggleTrackVisible])
 
   const toggleTrackLock = useCallback((trackId: string) => {
-    setLockedTracks((prev) => {
+    if (onToggleTrackLock) { onToggleTrackLock(trackId); return }
+    setInternalLocked((prev) => {
       const next = new Set(prev)
       if (next.has(trackId)) next.delete(trackId)
       else next.add(trackId)
       return next
     })
-  }, [])
+  }, [onToggleTrackLock])
 
   const toggleTrackMute = useCallback((trackId: string) => {
-    setMutedTracks((prev) => {
+    if (onToggleTrackMute) { onToggleTrackMute(trackId); return }
+    setInternalMuted((prev) => {
       const next = new Set(prev)
       if (next.has(trackId)) next.delete(trackId)
       else next.add(trackId)
       return next
     })
-  }, [])
+  }, [onToggleTrackMute])
 
   const toggleTrackSolo = useCallback((trackId: string) => {
-    setSoloedTrack((prev) => (prev === trackId ? null : trackId))
-  }, [])
+    if (onToggleTrackSolo) { onToggleTrackSolo(trackId); return }
+    setInternalSoloed((prev) => (prev === trackId ? null : trackId))
+  }, [onToggleTrackSolo])
 
   // ── 滚动同步 ──
   const handleTrackScroll = useCallback((e: React.UIEvent<HTMLDivElement>): void => {
