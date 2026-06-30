@@ -43,7 +43,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
-import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, isTrackAudible, type SnapResult } from './timeline-logic'
+import { applyGroupMove, clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, isTrackAudible, type SnapResult } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -593,8 +593,21 @@ export function TimelineEditor({
         const clip = allClips.find((c) => c.id === dragState.clipId)
         const pending = pendingClipUpdateRef.current
         if (clip && pending && dragState.started) {
-          if (dragState.type === 'move') onClipMove?.(clip, pending.start, pending.end)
-          else onClipResize?.(clip, pending.start, pending.end)
+          if (dragState.type === 'move') {
+            // 多片段成组移动（B3）：松开时对组内其他 clip 一次性应用 delta，避免拖动中频繁写库
+            if (selectedSet.size > 1 && selectedSet.has(clip.id)) {
+              const delta = pending.start - dragState.origStart
+              const group = applyGroupMove(allClips, selectedSet, delta, maxChapter)
+              group.forEach((range, id) => {
+                const c = allClips.find((x) => x.id === id)
+                if (c) onClipMove?.(c, range.start, range.end)
+              })
+            } else {
+              onClipMove?.(clip, pending.start, pending.end)
+            }
+          } else {
+            onClipResize?.(clip, pending.start, pending.end)
+          }
         }
         pendingClipUpdateRef.current = null
         setDragState(null)

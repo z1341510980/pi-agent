@@ -317,3 +317,18 @@ export function isTrackAudible(
   if (soloedTrack) return trackId === soloedTrack
   return !mutedTracks.has(trackId)
 }
+
+/** 多片段成组移动：对每个选中 clip 应用相同 delta，各自独立 clamp */
+export function applyGroupMove(
+  clips: Array<{ id: string; startChapter: number; endChapter: number }>,
+  selectedIds: Set<string>,
+  deltaChapters: number,
+  maxChapter: number,
+): Map<string, { start: number; end: number }> {
+  const result = new Map<string, { start: number; end: number }>()
+  for (const clip of clips) {
+    if (!selectedIds.has(clip.id)) continue
+    result.set(clip.id, clampMoveRange(clip.startChapter, clip.endChapter, deltaChapters, maxChapter))
+  }
+  return result
+}

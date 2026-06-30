@@ -10,6 +10,7 @@ import {
   groupContiguousSpans,
   planClipSplit,
   isTrackAudible,
+  applyGroupMove,
   type EditAction,
 } from '../timeline-logic'
 
@@ -231,5 +232,28 @@ describe('isTrackAudible (Solo/Mute mutex, B7)', () => {
   })
   it('when solo active, other tracks are inaudible even if not muted', () => {
     expect(isTrackAudible('t2', 't1', new Set())).toBe(false)
+  })
+})
+
+describe('applyGroupMove (B3)', () => {
+  const clips = [
+    { id: 'a', startChapter: 2, endChapter: 4 },
+    { id: 'b', startChapter: 6, endChapter: 8 },
+    { id: 'c', startChapter: 10, endChapter: 12 },
+  ]
+  it('applies same delta to all selected clips within [1, maxChapter]', () => {
+    const r = applyGroupMove(clips, new Set(['a', 'b']), 3, 20)
+    expect(r.get('a')).toEqual({ start: 5, end: 7 })
+    expect(r.get('b')).toEqual({ start: 9, end: 11 })
+    expect(r.has('c')).toBe(false)
+  })
+  it('clamps each clip so end <= maxChapter', () => {
+    const r = applyGroupMove(clips, new Set(['c']), 15, 20)
+    // c: 10+15=25 → clamp start to 20-2=18, end=20
+    expect(r.get('c')).toEqual({ start: 18, end: 20 })
+  })
+  it('clamps each clip so start >= 1', () => {
+    const r = applyGroupMove(clips, new Set(['a']), -10, 20)
+    expect(r.get('a')).toEqual({ start: 1, end: 3 })
   })
 })
