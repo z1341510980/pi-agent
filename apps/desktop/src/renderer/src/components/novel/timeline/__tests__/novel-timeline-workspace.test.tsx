@@ -37,6 +37,8 @@ const storeState: Record<string, unknown> = {
   upsertConflict: vi.fn(), upsertForeshadow: vi.fn(), upsertFaction: vi.fn(), upsertLocation: vi.fn(),
   removeChapter: vi.fn(), setCharacterHistory: vi.fn(), addCharacterHistory: vi.fn(), removeCharacterHistory: vi.fn(),
   setMarkers: vi.fn(), upsertMarker: vi.fn(), removeMarker: vi.fn(),
+  playheadChapter: 1,
+  setPlayheadChapter: vi.fn(),
 }
 
 vi.mock('@/stores/novel-store', () => ({
@@ -59,9 +61,13 @@ describe('NovelTimelineWorkspace track state lifting (A7)', () => {
     // 菜单弹出后点击"隐藏轨道"
     const hideBtn = await screen.findByText('隐藏轨道')
     fireEvent.click(hideBtn)
+    // 状态翻转后，轨道头应获得"已隐藏"视觉状态（is-hidden 类）
+    await waitFor(() => {
+      expect(document.querySelector('.tl-track-header.is-hidden')).not.toBeNull()
+    })
     // 再次右键应显示"显示轨道"（状态翻转）
     fireEvent.contextMenu(await screen.findByText('角色', { selector: '.tl-track-header-name' }))
-    await screen.findByText('显示轨道')
-    expect(true).toBe(true)
+    const showBtn = await screen.findByText('显示轨道')
+    expect(showBtn).toBeTruthy()
   })
 })
