@@ -22,6 +22,8 @@ import {
   type ReactElement,
 } from 'react'
 import {
+  ChevronDown,
+  ChevronUp,
   Eye,
   EyeOff,
   Lock,
@@ -43,7 +45,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
-import { applyGroupMove, clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, isTrackAudible, type SnapResult } from './timeline-logic'
+import { applyGroupMove, clampMoveRange, clampResizeRightRange, computeTrackHeight, findSnapPoint, finalClampAfterSnap, isTrackAudible, type SnapResult, type TrackHeightLevel } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -162,7 +164,7 @@ export interface TimelineEditorProps {
   activeTool?: Tool
   snapEnabled?: boolean
   isPlaying?: boolean
-  trackHeightLevel?: 'compact' | 'standard' | 'spacious'
+  trackHeightLevel?: TrackHeightLevel
   /** 显示小说特化可视化 */
   showWordCount?: boolean
   showMinimap?: boolean
@@ -193,10 +195,13 @@ export interface TimelineEditorProps {
   soloedTrack?: string | null
   /** 静音轨道集合（受控；不传则使用组件内部 state） */
   mutedTracks?: Set<string>
+  /** 折叠轨道集合（受控；不传则使用组件内部 state）。折叠态高度=8px，仅显示色条占位 */
+  collapsedTracks?: Set<string>
   onToggleTrackVisible?: (trackId: string) => void
   onToggleTrackLock?: (trackId: string) => void
   onToggleTrackMute?: (trackId: string) => void
   onToggleTrackSolo?: (trackId: string) => void
+  onToggleTrackCollapse?: (trackId: string) => void
 }
 
 // ── 主组件 ──
@@ -243,10 +248,12 @@ export function TimelineEditor({
   lockedTracks: propLockedTracks,
   soloedTrack: propSoloedTrack,
   mutedTracks: propMutedTracks,
+  collapsedTracks: propCollapsedTracks,
   onToggleTrackVisible,
   onToggleTrackLock,
   onToggleTrackMute,
   onToggleTrackSolo,
+  onToggleTrackCollapse,
 }: TimelineEditorProps): ReactElement {
   const rulerViewportRef = useRef<HTMLDivElement | null>(null)
   const markersViewportRef = useRef<HTMLDivElement | null>(null)
@@ -262,10 +269,12 @@ export function TimelineEditor({
   const [internalLocked, setInternalLocked] = useState<Set<string>>(new Set())
   const [internalSoloed, setInternalSoloed] = useState<string | null>(null)
   const [internalMuted, setInternalMuted] = useState<Set<string>>(new Set())
+  const [internalCollapsed, setInternalCollapsed] = useState<Set<string>>(new Set())
   const hiddenTracks = propHiddenTracks ?? internalHidden
   const lockedTracks = propLockedTracks ?? internalLocked
   const soloedTrack = propSoloedTrack ?? internalSoloed
   const mutedTracks = propMutedTracks ?? internalMuted
+  const collapsedTracks = propCollapsedTracks ?? internalCollapsed
   const [snapLine, setSnapLine] = useState<{ x: number; type: SnapResult['type'] } | null>(null)
   const [razorLine, setRazorLine] = useState<number | null>(null)
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null)
@@ -279,7 +288,11 @@ export function TimelineEditor({
   const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set())
   const selectedSet = selectedClipIds ?? internalSelected
 
-  const trackHeight = trackHeightLevel === 'compact' ? 28 : trackHeightLevel === 'spacious' ? 56 : 36
+  // 轨道高度：折叠态 8px，否则按 level。baseTrackHeight 用于与单轨道无关的全局度量（如关系层定位）。
+  const baseTrackHeight = computeTrackHeight(trackHeightLevel, false)
+  const getTrackHeight = useCallback((trackId: string): number => {
+    return collapsedTracks.has(trackId) ? 8 : baseTrackHeight
+  }, [collapsedTracks, baseTrackHeight])
 
   const updateSelection = useCallback((ids: Set<string>) => {
     if (onSelectClipsChange) onSelectClipsChange(ids)
@@ -310,7 +323,7 @@ export function TimelineEditor({
   }, [tracks, subRowMaps])
 
   const totalWidth = Math.max(maxChapter * chapterWidth, 200)
-  const totalContentHeight = tracks.length * trackHeight
+  const totalContentHeight = tracks.reduce((sum, t) => sum + getTrackHeight(t.id), 0)
 
   const allClips = useMemo(() => tracks.flatMap((t) => t.clips), [tracks])
 
@@ -370,16 +383,28 @@ export function TimelineEditor({
     const rect = el.getBoundingClientRect()
     const relX = clientX - rect.left + el.scrollLeft
     const relY = clientY - rect.top + el.scrollTop
-    const trackIdx = Math.floor(relY / trackHeight)
-    if (trackIdx < 0 || trackIdx >= tracks.length) return null
-    const track = tracks[trackIdx]
+    // 轨道高度可变（折叠态 8px），需累计高度定位轨道
+    let trackTop = 0
+    let track: TimelineTrack | null = null
+    for (const t of tracks) {
+      const h = getTrackHeight(t.id)
+      if (relY >= trackTop && relY < trackTop + h) {
+        track = t
+        break
+      }
+      trackTop += h
+    }
+    if (!track) return null
+    // 折叠轨道无 clip 渲染，命中返回 null
+    if (collapsedTracks.has(track.id)) return null
+    const trackHeightForTrack = getTrackHeight(track.id)
     const subRowMap = subRowMaps.get(track.id)
     const subRows = subRowCounts.get(track.id) ?? 1
-    const availableHeight = trackHeight - CLIP_PADDING_Y * 2
+    const availableHeight = trackHeightForTrack - CLIP_PADDING_Y * 2
     const clipHeight = subRows > 1
       ? Math.floor((availableHeight - (subRows - 1) * CLIP_GAP) / subRows)
       : availableHeight
-    const yInTrack = relY - trackIdx * trackHeight
+    const yInTrack = relY - trackTop
     for (const clip of track.clips) {
       const subRow = subRowMap?.get(clip.id) ?? 0
       const clipTop = CLIP_PADDING_Y + subRow * (clipHeight + CLIP_GAP)
@@ -391,7 +416,7 @@ export function TimelineEditor({
       }
     }
     return null
-  }, [tracks, subRowMaps, subRowCounts, chapterWidth, trackHeight])
+  }, [tracks, subRowMaps, subRowCounts, chapterWidth, getTrackHeight, collapsedTracks])
 
   // ── 剃刀点击 ──
   const handleRazorClick = useCallback((e: React.MouseEvent) => {
@@ -491,10 +516,15 @@ export function TimelineEditor({
         const minY = Math.min(marquee.startY, relY)
         const maxY = Math.max(marquee.startY, relY)
         const hitIds = new Set<string>(marquee.additive ? selectedSet : [])
-        tracks.forEach((track, trackIdx) => {
-          const trackTop = trackIdx * trackHeight
-          const trackBottom = trackTop + trackHeight
+        let trackTopAcc = 0
+        tracks.forEach((track) => {
+          const h = getTrackHeight(track.id)
+          const trackTop = trackTopAcc
+          const trackBottom = trackTop + h
+          trackTopAcc = trackBottom
           if (trackBottom < minY || trackTop > maxY) return
+          // 折叠轨道无 clip 渲染，跳过
+          if (collapsedTracks.has(track.id)) return
           for (const clip of track.clips) {
             const clipLeft = chapterToX(clip.startChapter, chapterWidth)
             const clipRight = chapterToX(clip.endChapter, chapterWidth) + chapterWidth
@@ -622,7 +652,7 @@ export function TimelineEditor({
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [dragState, playheadDrag, marquee, panState, tracks, allClips, chapterWidth, trackHeight, snapEnabled, playheadChapter, maxChapter, onPlayheadChange, onClipMove, onClipResize, updateSelection, selectedSet])
+  }, [dragState, playheadDrag, marquee, panState, tracks, allClips, chapterWidth, getTrackHeight, collapsedTracks, snapEnabled, playheadChapter, maxChapter, onPlayheadChange, onClipMove, onClipResize, updateSelection, selectedSet])
 
   const getClipDisplayRange = useCallback((clip: TimelineClip): { start: number; end: number } => {
     if (pendingClipUpdate && pendingClipUpdate.clipId === clip.id) {
@@ -667,6 +697,16 @@ export function TimelineEditor({
     if (onToggleTrackSolo) { onToggleTrackSolo(trackId); return }
     setInternalSoloed((prev) => (prev === trackId ? null : trackId))
   }, [onToggleTrackSolo])
+
+  const toggleTrackCollapse = useCallback((trackId: string) => {
+    if (onToggleTrackCollapse) { onToggleTrackCollapse(trackId); return }
+    setInternalCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(trackId)) next.delete(trackId)
+      else next.add(trackId)
+      return next
+    })
+  }, [onToggleTrackCollapse])
 
   // ── 滚动同步 ──
   const handleTrackScroll = useCallback((e: React.UIEvent<HTMLDivElement>): void => {
@@ -881,14 +921,15 @@ export function TimelineEditor({
             const isLocked = lockedTracks.has(track.id)
             const isMuted = mutedTracks.has(track.id)
             const isSoloed = soloedTrack === track.id
+            const isCollapsed = collapsedTracks.has(track.id)
             const subRows = subRowCounts.get(track.id) ?? 1
             const isEmptyTrack = track.clips.length === 0
             const isDimmed = isTrackDimmed(track.id)
             return (
               <div
                 key={track.id}
-                className={`tl-track-header ${isHidden ? 'is-hidden' : ''} ${isEmptyTrack ? 'is-empty-track' : ''} ${isDimmed ? 'is-dimmed' : ''} ${isSoloed ? 'is-soloed' : ''}`}
-                style={{ height: trackHeight }}
+                className={`tl-track-header ${isHidden ? 'is-hidden' : ''} ${isEmptyTrack ? 'is-empty-track' : ''} ${isDimmed ? 'is-dimmed' : ''} ${isSoloed ? 'is-soloed' : ''} ${isCollapsed ? 'is-collapsed' : ''}`}
+                style={{ height: getTrackHeight(track.id) }}
                 onContextMenu={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
@@ -940,6 +981,14 @@ export function TimelineEditor({
                   >
                     {isLocked ? <Lock size={12} /> : <Unlock size={12} />}
                   </button>
+                  <button
+                    type="button"
+                    className="tl-track-header-btn"
+                    onClick={() => toggleTrackCollapse(track.id)}
+                    title={isCollapsed ? '展开轨道' : '折叠轨道'}
+                  >
+                    {isCollapsed ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+                  </button>
                 </div>
               </div>
             )
@@ -982,18 +1031,20 @@ export function TimelineEditor({
                   const isHidden = hiddenTracks.has(track.id)
                   const isMuted = mutedTracks.has(track.id)
                   const isDimmed = isTrackDimmed(track.id)
+                  const isCollapsed = collapsedTracks.has(track.id)
+                  const trackHeightForTrack = getTrackHeight(track.id)
                   const subRows = subRowCounts.get(track.id) ?? 1
                   const subRowMap = subRowMaps.get(track.id)
-                  const availableHeight = trackHeight - CLIP_PADDING_Y * 2
+                  const availableHeight = trackHeightForTrack - CLIP_PADDING_Y * 2
                   const clipHeight = subRows > 1
                     ? Math.floor((availableHeight - (subRows - 1) * CLIP_GAP) / subRows)
                     : availableHeight
                   return (
                     <div
                       key={track.id}
-                      className={`tl-track-row ${isHidden ? 'is-hidden' : ''} ${isMuted ? 'is-muted' : ''} ${isDimmed ? 'is-dimmed' : ''}`}
+                      className={`tl-track-row ${isHidden ? 'is-hidden' : ''} ${isMuted ? 'is-muted' : ''} ${isDimmed ? 'is-dimmed' : ''} ${isCollapsed ? 'is-collapsed' : ''}`}
                       style={{
-                        height: trackHeight,
+                        height: trackHeightForTrack,
                         borderBottom: idx < tracks.length - 1 ? '1px solid var(--tl-border)' : 'none',
                       }}
                     >
@@ -1007,7 +1058,7 @@ export function TimelineEditor({
                             style={{ left: ch * chapterWidth }}
                           />
                         ))}
-                      {!isHidden && track.clips
+                      {!isHidden && !isCollapsed && track.clips
                         .filter((clip) => {
                           // 虚拟化：仅渲染视口内 clip
                           const range = getClipDisplayRange(clip)
@@ -1093,6 +1144,13 @@ export function TimelineEditor({
                           </div>
                         )
                       })}
+                      {/* 折叠态：仅显示头部色条占位，不渲染 clip */}
+                      {isCollapsed && (
+                        <div
+                          className="tl-track-collapse-bar"
+                          style={{ background: TRACK_COLOR[track.kind], height: 2, position: 'absolute', left: 0, right: 0, top: 3 }}
+                        />
+                      )}
                     </div>
                   )
                 })}
@@ -1112,7 +1170,7 @@ export function TimelineEditor({
                     relationships={relationships}
                     factions={factions}
                     chapterWidth={chapterWidth}
-                    trackHeight={trackHeight}
+                    trackHeight={baseTrackHeight}
                     maxChapter={maxChapter}
                   />
                 )}

@@ -136,6 +136,7 @@ export function NovelTimelineWorkspace({
   const [lockedTracks, setLockedTracks] = useState<Set<string>>(new Set())
   const [soloedTrack, setSoloedTrack] = useState<string | null>(null)
   const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set())
+  const [collapsedTracks, setCollapsedTracks] = useState<Set<string>>(new Set())
   const [clipboard, setClipboard] = useState<TimelineClip[] | null>(null)
   const [showRelations, setShowRelations] = useState(false)
   const [markerContextMenu, setMarkerContextMenu] = useState<{ marker: TimelineMarker; x: number; y: number } | null>(null)
@@ -787,6 +788,14 @@ export function NovelTimelineWorkspace({
   const toggleTrackSolo = useCallback((trackId: string) => {
     setSoloedTrack((prev) => (prev === trackId ? null : trackId))
   }, [])
+  const toggleTrackCollapse = useCallback((trackId: string) => {
+    setCollapsedTracks((prev) => {
+      const next = new Set(prev)
+      if (next.has(trackId)) next.delete(trackId)
+      else next.add(trackId)
+      return next
+    })
+  }, [])
 
   // ── 空白右键（暂用章节菜单）──
   const handleContextMenuEmpty = useCallback((x: number, y: number) => {
@@ -1168,10 +1177,12 @@ export function NovelTimelineWorkspace({
             lockedTracks={lockedTracks}
             soloedTrack={soloedTrack}
             mutedTracks={mutedTracks}
+            collapsedTracks={collapsedTracks}
             onToggleTrackVisible={toggleTrackVisible}
             onToggleTrackLock={toggleTrackLock}
             onToggleTrackMute={toggleTrackMute}
             onToggleTrackSolo={toggleTrackSolo}
+            onToggleTrackCollapse={toggleTrackCollapse}
           />
         </div>
       </div>
@@ -1202,6 +1213,7 @@ export function NovelTimelineWorkspace({
         position={trackContextMenu}
         isLocked={trackContextMenu ? lockedTracks.has(trackContextMenu.track.id) : false}
         isHidden={trackContextMenu ? hiddenTracks.has(trackContextMenu.track.id) : false}
+        isCollapsed={trackContextMenu ? collapsedTracks.has(trackContextMenu.track.id) : false}
         heightLevel={trackHeightLevel}
         canMoveUp={currentTrackIndex > 0}
         canMoveDown={currentTrackIndex >= 0 && currentTrackIndex < tracks.length - 1}
@@ -1211,6 +1223,7 @@ export function NovelTimelineWorkspace({
         onSetHeight={setTrackHeightLevel}
         onToggleLock={() => trackContextMenu && toggleTrackLock(trackContextMenu.track.id)}
         onToggleVisible={() => trackContextMenu && toggleTrackVisible(trackContextMenu.track.id)}
+        onToggleCollapse={() => trackContextMenu && toggleTrackCollapse(trackContextMenu.track.id)}
       />
 
       <MarkerContextMenu

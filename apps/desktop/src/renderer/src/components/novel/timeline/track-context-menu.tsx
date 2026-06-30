@@ -25,6 +25,7 @@ export interface TrackContextMenuProps {
   position: TrackContextMenuPosition | null
   isLocked: boolean
   isHidden: boolean
+  isCollapsed: boolean
   heightLevel: TrackHeightLevel
   canMoveUp: boolean
   canMoveDown: boolean
@@ -34,12 +35,14 @@ export interface TrackContextMenuProps {
   onSetHeight: (level: TrackHeightLevel) => void
   onToggleLock: () => void
   onToggleVisible: () => void
+  onToggleCollapse: () => void
 }
 
 export function TrackContextMenu({
   position,
   isLocked,
   isHidden,
+  isCollapsed,
   heightLevel,
   canMoveUp,
   canMoveDown,
@@ -49,6 +52,7 @@ export function TrackContextMenu({
   onSetHeight,
   onToggleLock,
   onToggleVisible,
+  onToggleCollapse,
 }: TrackContextMenuProps): ReactElement | null {
   if (!position) return null
 
@@ -121,6 +125,14 @@ export function TrackContextMenu({
       >
         {isHidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
         <span>{isHidden ? '显示轨道' : '隐藏轨道'}</span>
+      </button>
+      <button
+        type="button"
+        className="novel-timeline-context-item"
+        onClick={() => handle(onToggleCollapse)}
+      >
+        {isCollapsed ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
+        <span>{isCollapsed ? '展开轨道' : '折叠轨道'}</span>
       </button>
     </div>
   )

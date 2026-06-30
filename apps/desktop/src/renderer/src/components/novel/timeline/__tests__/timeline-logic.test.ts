@@ -11,6 +11,7 @@ import {
   planClipSplit,
   isTrackAudible,
   applyGroupMove,
+  computeTrackHeight,
   type EditAction,
 } from '../timeline-logic'
 
@@ -255,5 +256,17 @@ describe('applyGroupMove (B3)', () => {
   it('clamps each clip so start >= 1', () => {
     const r = applyGroupMove(clips, new Set(['a']), -10, 20)
     expect(r.get('a')).toEqual({ start: 1, end: 3 })
+  })
+})
+
+describe('computeTrackHeight (B4)', () => {
+  it('returns level height when not collapsed', () => {
+    expect(computeTrackHeight('compact', false)).toBe(28)
+    expect(computeTrackHeight('standard', false)).toBe(36)
+    expect(computeTrackHeight('spacious', false)).toBe(56)
+  })
+  it('returns 8 when collapsed regardless of level', () => {
+    expect(computeTrackHeight('compact', true)).toBe(8)
+    expect(computeTrackHeight('spacious', true)).toBe(8)
   })
 })

@@ -332,3 +332,13 @@ export function applyGroupMove(
   }
   return result
 }
+
+// ── 轨道高度（B4 折叠）──
+
+export type TrackHeightLevel = 'compact' | 'standard' | 'spacious'
+
+/** 计算轨道高度：折叠态固定 8px，否则按 level */
+export function computeTrackHeight(level: TrackHeightLevel, collapsed: boolean): number {
+  if (collapsed) return 8
+  return level === 'compact' ? 28 : level === 'spacious' ? 56 : 36
+}
