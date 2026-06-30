@@ -255,3 +255,25 @@ export function computeMinimapViewportFrame(
   const width = Math.max(8, viewportVisibleChapters * chapterW)
   return { left, width }
 }
+
+// ── 撤销/重做编辑动作 ──
+
+export type EditActionType = 'move' | 'resize' | 'delete' | 'paste' | 'cut'
+
+export interface EditAction {
+  type: EditActionType
+  clip: {
+    id: string
+    startChapter: number
+    endChapter: number
+    entityType: 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
+    entityId: string
+  }
+  before: { start: number; end: number }
+  after: { start: number; end: number }
+}
+
+/** 撤销时根据 action.before 还是 after 恢复区间：撤销应用 before，重做应用 after */
+export function rangeToRestore(action: EditAction, direction: 'undo' | 'redo'): { start: number; end: number } {
+  return direction === 'undo' ? action.before : action.after
+}

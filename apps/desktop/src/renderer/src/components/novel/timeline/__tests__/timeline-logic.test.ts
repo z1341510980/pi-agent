@@ -6,6 +6,8 @@ import {
   finalClampAfterSnap,
   buildRelationLines,
   computeMinimapViewportFrame,
+  rangeToRestore,
+  type EditAction,
 } from '../timeline-logic'
 
 describe('clampMoveRange', () => {
@@ -162,5 +164,20 @@ describe('computeMinimapViewportFrame', () => {
   it('enforces minimum width of 8px', () => {
     const f = computeMinimapViewportFrame(1, 1, 1000, 100)
     expect(f.width).toBeGreaterThanOrEqual(8)
+  })
+})
+
+describe('rangeToRestore', () => {
+  const action: EditAction = {
+    type: 'delete',
+    clip: { id: 'c1', startChapter: 3, endChapter: 8, entityType: 'conflict', entityId: 'e1' },
+    before: { start: 3, end: 8 },
+    after: { start: 0, end: -1 },
+  }
+  it('undo returns action.before', () => {
+    expect(rangeToRestore(action, 'undo')).toEqual({ start: 3, end: 8 })
+  })
+  it('redo returns action.after', () => {
+    expect(rangeToRestore(action, 'redo')).toEqual({ start: 0, end: -1 })
   })
 })

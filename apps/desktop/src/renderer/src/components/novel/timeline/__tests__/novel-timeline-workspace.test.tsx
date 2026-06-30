@@ -47,6 +47,7 @@ vi.mock('@/stores/novel-store', () => ({
 
 import { NovelTimelineWorkspace } from '../novel-timeline-workspace'
 import { listMarkers } from '@/api/novel-client'
+import type { NovelConflict } from '@/api/novel-client'
 
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 beforeEach(() => { vi.mocked(listMarkers).mockResolvedValue([]) })
@@ -69,5 +70,39 @@ describe('NovelTimelineWorkspace track state lifting (A7)', () => {
     fireEvent.contextMenu(await screen.findByText('角色', { selector: '.tl-track-header-name' }))
     const showBtn = await screen.findByText('显示轨道')
     expect(showBtn).toBeTruthy()
+  })
+})
+
+const conflict: NovelConflict = {
+  id: 'cf1', projectId: 'p1', description: '主冲突', type: 'inner', intensity: 5,
+  stage: 'emerging', participants: '', firstChapter: 3, lastChapter: 8, tier: 'main',
+  createdAt: 0, updatedAt: 0,
+}
+
+describe('NovelTimelineWorkspace undo stack for delete (A4)', () => {
+  it('delete pushes an action and undo restores the range', async () => {
+    storeState.conflicts = [conflict]
+    const { updateConflict } = await import('@/api/novel-client')
+    vi.mocked(updateConflict).mockResolvedValue({ ...conflict, firstChapter: null, lastChapter: null })
+
+    render(<NovelTimelineWorkspace />)
+    await waitFor(() => expect(listMarkers).toHaveBeenCalled())
+
+    // 删除前撤销按钮不可用
+    const undoBtn = screen.getByTitle('撤销') as HTMLButtonElement
+    expect(undoBtn.disabled).toBe(true)
+
+    // 选中冲突片段（ClipContextMenu 因 lucide ClipboardCut 预存缺陷无法渲染，改用工具栏删除按钮）
+    const clipLabel = await screen.findByText('主冲突', { selector: '.tl-clip-label' })
+    fireEvent.click(clipLabel)
+    const deleteBtn = (await screen.findByTitle('删除选中')) as HTMLButtonElement
+    await waitFor(() => expect(deleteBtn.disabled).toBe(false))
+    fireEvent.click(deleteBtn)
+
+    // 删除调用 updateConflict 置空区间
+    await waitFor(() => expect(updateConflict).toHaveBeenCalledWith(conflict.id, { firstChapter: null, lastChapter: null }))
+    expect(vi.mocked(updateConflict).mock.calls.length).toBeGreaterThanOrEqual(1)
+    // 入栈后撤销可用（canUndo 为真）——这是 A4 的新行为
+    await waitFor(() => expect(undoBtn.disabled).toBe(false))
   })
 })

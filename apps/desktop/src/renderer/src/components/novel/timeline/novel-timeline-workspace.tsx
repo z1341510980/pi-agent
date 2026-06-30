@@ -29,6 +29,7 @@ import {
   deleteMarker,
 } from '@/api/novel-client'
 import { useTimelineData, type TimelineClip, type TimelineTrack } from './use-timeline-data'
+import { rangeToRestore, type EditAction } from './timeline-logic'
 import { ElementPool, POOL_DRAG_MIME, type PoolDragPayload } from './element-pool'
 import {
   TimelineToolbar,
@@ -58,13 +59,7 @@ export interface NovelTimelineWorkspaceProps {
 }
 
 // ── 撤销/重做类型 ──
-
-interface EditAction {
-  type: 'move' | 'resize'
-  clip: TimelineClip
-  before: { start: number; end: number }
-  after: { start: number; end: number }
-}
+// EditAction 类型从 ./timeline-logic 导入（支持 move/resize/delete/paste/cut）
 
 interface HistoryState {
   past: EditAction[]
@@ -297,7 +292,7 @@ export function NovelTimelineWorkspace({
 
   // ── 更新实体范围 ──
   const updateEntityRange = useCallback(
-    async (clip: TimelineClip, start: number, end: number): Promise<void> => {
+    async (clip: EditAction['clip'], start: number, end: number): Promise<void> => {
       if (!currentProjectId) return
       const firstChapter = Math.max(1, Math.round(start))
       const lastChapter = Math.max(firstChapter, Math.round(end))
@@ -423,9 +418,10 @@ export function NovelTimelineWorkspace({
 
   // ── 片段删除 ──
   const handleClipDelete = useCallback(
-    async (clipId: string): Promise<void> => {
+    async (clipId: string, opts?: { ripple?: boolean }): Promise<void> => {
       const clip = tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
       if (!clip || !currentProjectId) return
+      const before = { start: clip.startChapter, end: clip.endChapter }
       try {
         switch (clip.entityType) {
           case 'character': {
@@ -434,7 +430,7 @@ export function NovelTimelineWorkspace({
               (h) => h.characterId === clip.entityId,
             )
             for (const rec of records) {
-              if (rec.chapterNumber >= clip.startChapter && rec.chapterNumber <= clip.endChapter) {
+              if (rec.chapterNumber != null && rec.chapterNumber >= clip.startChapter && rec.chapterNumber <= clip.endChapter) {
                 await deleteCharacterHistory(currentProjectId, rec.id)
                 removeCharacterHistory(rec.id)
               }
@@ -484,6 +480,17 @@ export function NovelTimelineWorkspace({
             break
         }
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        // 入栈：删除后区间为空（start>end），撤销时恢复 before
+        pushHistory({
+          type: 'delete',
+          clip: { ...clip },
+          before,
+          after: { start: 0, end: -1 },
+        })
+        // 涟漪删除（B1 在任务 11 接入，此处预留 opts 入参）
+        if (opts?.ripple) {
+          // 实现见任务 11
+        }
         // 从选择集中移除
         setSelectedClipIds((prev) => {
           const next = new Set(prev)
@@ -495,14 +502,15 @@ export function NovelTimelineWorkspace({
       }
     },
     [tracks, currentProjectId, characterHistory, conflicts, foreshadows, factions, locations,
-      removeCharacterHistory, upsertConflict, upsertForeshadow, upsertFaction, upsertLocation, queryClient],
+      removeCharacterHistory, upsertConflict, upsertForeshadow, upsertFaction, upsertLocation, queryClient, pushHistory],
   )
 
   // ── 批量删除选中 ──
-  const handleDeleteSelected = useCallback(() => {
-    for (const clipId of selectedClipIds) {
-      void handleClipDelete(clipId)
-    }
+  const handleDeleteSelected = useCallback(async () => {
+    const ids = Array.from(selectedClipIds)
+    await Promise.all(ids.map((id) => handleClipDelete(id).catch((err) => {
+      console.error('[NovelTimelineWorkspace] 批量删除单项失败:', err)
+    })))
   }, [selectedClipIds, handleClipDelete])
 
   // ── 复制/剪切/粘贴 ──
@@ -512,19 +520,33 @@ export function NovelTimelineWorkspace({
 
   const handleCutClip = useCallback((clip: TimelineClip) => {
     setClipboard([clip])
+    pushHistory({
+      type: 'cut',
+      clip: { ...clip },
+      before: { start: clip.startChapter, end: clip.endChapter },
+      after: { start: 0, end: -1 },
+    })
     void handleClipDelete(clip.id)
-  }, [handleClipDelete])
+  }, [handleClipDelete, pushHistory])
 
   const handlePasteClips = useCallback(() => {
     if (!clipboard || clipboard.length === 0) return
     // 在播放头位置粘贴，保持相对偏移
+    const actions: EditAction[] = []
     for (const clip of clipboard) {
       const origDuration = clip.endChapter - clip.startChapter
       const newStart = playheadChapter
       const newEnd = newStart + origDuration
+      actions.push({
+        type: 'paste',
+        clip: { ...clip },
+        before: { start: 0, end: -1 },
+        after: { start: newStart, end: newEnd },
+      })
       void updateEntityRange(clip, newStart, newEnd)
     }
-  }, [clipboard, playheadChapter, updateEntityRange])
+    for (const a of actions) pushHistory(a)
+  }, [clipboard, playheadChapter, updateEntityRange, pushHistory])
 
   // ── 对齐到播放头 ──
   const handleAlignToPlayhead = useCallback((clip: TimelineClip) => {
@@ -688,8 +710,14 @@ export function NovelTimelineWorkspace({
     const cur = historyRef.current
     if (cur.past.length === 0) return
     const action = cur.past[cur.past.length - 1]
-    // 恢复 before
-    void updateEntityRange(action.clip, action.before.start, action.before.end)
+    // move/resize/delete/cut 恢复 before；paste 撤销应删除（区间置空）→ before(0,-1) 表示无
+    const restore = rangeToRestore(action, 'undo')
+    if (restore.end >= restore.start) {
+      void updateEntityRange(action.clip, restore.start, restore.end)
+    } else {
+      // 区间无效表示撤销应"删除"该片段：按 entityType 置空
+      void updateEntityRange(action.clip, 0, -1)
+    }
     setHistory({
       past: cur.past.slice(0, -1),
       future: [...cur.future, action],
@@ -700,8 +728,10 @@ export function NovelTimelineWorkspace({
     const cur = historyRef.current
     if (cur.future.length === 0) return
     const action = cur.future[cur.future.length - 1]
-    // 应用 after
-    void updateEntityRange(action.clip, action.after.start, action.after.end)
+    const restore = rangeToRestore(action, 'redo')
+    if (restore.end >= restore.start) {
+      void updateEntityRange(action.clip, restore.start, restore.end)
+    }
     setHistory({
       past: [...cur.past, action],
       future: cur.future.slice(0, -1),
