@@ -1,6 +1,14 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { cleanup, render } from '@testing-library/react'
 import { TimelineMinimap } from '../timeline-minimap'
+
+// jsdom 不支持 ResizeObserver，需 mock
+class MockResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+vi.stubGlobal('ResizeObserver', MockResizeObserver)
 
 afterEach(() => cleanup())
 

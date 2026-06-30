@@ -20,7 +20,7 @@ export interface TimelineMinimapProps {
   onChapterWidthChange?: (width: number) => void
 }
 
-type DragMode = 'pan' | 'resize-left' | 'resize-right' | null
+type DragMode = 'pan' | null
 
 export function TimelineMinimap({
   tracks,
@@ -33,6 +33,8 @@ export function TimelineMinimap({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const dragModeRef = useRef<DragMode>(null)
   const dragStartRef = useRef<{ x: number; startChapter: number; visibleChapters: number } | null>(null)
+  const moveHandlerRef = useRef<((e: MouseEvent) => void) | null>(null)
+  const upHandlerRef = useRef<((e: MouseEvent) => void) | null>(null)
   const rafRef = useRef<ReturnType<typeof requestAnimationFrame> | null>(null)
   const [containerWidth, setContainerWidth] = useState(0)
 
@@ -86,12 +88,27 @@ export function TimelineMinimap({
     }
   }, [drawClips])
 
-  // 监听容器宽度变化（ResizeObserver 简化版：滚动/挂载时同步）
+  // 监听容器宽度变化（ResizeObserver + 挂载时同步）
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    setContainerWidth(container.clientWidth)
-  }, [tracks, maxChapter])
+    setContainerWidth(container.clientWidth) // 保留挂载时同步
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width)
+      }
+    })
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [])
+
+  // 卸载时清理可能残留的 window 监听器（拖拽过程中卸载组件）
+  useEffect(() => {
+    return () => {
+      if (moveHandlerRef.current) window.removeEventListener('mousemove', moveHandlerRef.current)
+      if (upHandlerRef.current) window.removeEventListener('mouseup', upHandlerRef.current)
+    }
+  }, [])
 
   const frame = computeMinimapViewportFrame(viewportStartChapter, viewportVisibleChapters, maxChapter, containerWidth || 1)
 
@@ -103,20 +120,14 @@ export function TimelineMinimap({
     const chapterW = rect.width / maxChapter
     const vpX = (viewportStartChapter - 1) * chapterW
     const vpW = Math.max(8, viewportVisibleChapters * chapterW)
-    const edgeThreshold = 6
 
-    let mode: DragMode = 'pan'
-    if (Math.abs(x - vpX) < edgeThreshold) mode = 'resize-left'
-    else if (Math.abs(x - (vpX + vpW)) < edgeThreshold) mode = 'resize-right'
-    else if (x < vpX || x > vpX + vpW) {
+    // 点击视口框外：跳转中心到点击位置
+    if (x < vpX || x > vpX + vpW) {
       const centerChapter = Math.max(1, Math.min(maxChapter, Math.floor(x / chapterW) + 1))
       const newStart = Math.max(1, Math.min(maxChapter - viewportVisibleChapters + 1, centerChapter - Math.floor(viewportVisibleChapters / 2)))
       onViewportChange?.(newStart)
-      dragModeRef.current = 'pan'
-    } else {
-      mode = 'pan'
     }
-    dragModeRef.current = mode
+    dragModeRef.current = 'pan'
     dragStartRef.current = { x: e.clientX, startChapter: viewportStartChapter, visibleChapters: viewportVisibleChapters }
 
     const handleMove = (ev: MouseEvent): void => {
@@ -133,9 +144,13 @@ export function TimelineMinimap({
     const handleUp = (): void => {
       dragModeRef.current = null
       dragStartRef.current = null
+      moveHandlerRef.current = null
+      upHandlerRef.current = null
       window.removeEventListener('mousemove', handleMove)
       window.removeEventListener('mouseup', handleUp)
     }
+    moveHandlerRef.current = handleMove
+    upHandlerRef.current = handleUp
     window.addEventListener('mousemove', handleMove)
     window.addEventListener('mouseup', handleUp)
   }, [maxChapter, viewportStartChapter, viewportVisibleChapters, onViewportChange])
