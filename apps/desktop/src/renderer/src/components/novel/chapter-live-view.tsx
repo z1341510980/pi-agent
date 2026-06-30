@@ -32,6 +32,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { countWords } from '@/lib/novel-utils'
 import type {
   CreationPhase,
   CreationResult,
@@ -58,14 +59,6 @@ const PHASE_LABELS: Partial<Record<CreationPhase, string>> = {
 }
 
 // ── 工具函数 ──
-
-/** 计算中文字数（按字符计） */
-function countWords(text: string): number {
-  if (!text) return 0
-  // 去除空白与 Markdown 标记后按字符计数
-  const cleaned = text.replace(/[#*`>\-\[\]()!]/g, '').replace(/\s+/g, '')
-  return cleaned.length
-}
 
 /** 预计阅读时间（中文约 400 字/分钟） */
 function estimateReadTime(words: number): string {
