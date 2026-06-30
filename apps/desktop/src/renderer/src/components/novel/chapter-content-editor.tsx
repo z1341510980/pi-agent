@@ -32,6 +32,8 @@ type MarkdownStorage = { getMarkdown(): string }
 
 export function ChapterContentEditor({
   isCreationActive,
+  creationChapterNumber,
+  creationChapterContent,
 }: ChapterContentEditorProps): ReactElement {
   const playheadChapter = useNovelStore((s) => s.playheadChapter)
   const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
@@ -131,6 +133,21 @@ export function ChapterContentEditor({
     if (!editor) return
     editor.setEditable(!isCreationActive)
   }, [isCreationActive, editor])
+
+  // ── 创作流程实时内容显示 ──
+  // 创作流程激活且创作章节 == 当前播放头章节时，显示流式内容；
+  // 与章节切换 effect 互斥（章节切换 effect 首行 `if (isCreationActive) return` 拦截）。
+  // 创作完成（isCreationActive true→false）时，本 effect 重跑但条件不满足不执行；
+  // 章节切换 effect 随之重跑，因 loadedChapterIdRef 在创作期间被置 null，会重新加载 playheadChapter 最新 content。
+  useEffect(() => {
+    if (!editor) return
+    if (isCreationActive && creationChapterNumber === playheadChapter) {
+      const content = creationChapterContent ?? ''
+      // v3 API：setContent(content, { emitUpdate: false }) 不触发 onUpdate
+      editor.commands.setContent(content, { emitUpdate: false })
+      loadedChapterIdRef.current = null // 标记为"创作中"，章节切换 effect 不应覆盖
+    }
+  }, [isCreationActive, creationChapterNumber, playheadChapter, creationChapterContent, editor])
 
   // ── 章节导航（通过 setPlayheadChapter 间接驱动，符合"播放头驱动"语义）──
   const maxChapter = chapters.length > 0 ? Math.max(...chapters.map((c) => c.chapterNumber)) : 1
