@@ -144,12 +144,11 @@ describe('NovelTimelineWorkspace redo for delete (A4)', () => {
       expect(vi.mocked(updateConflict).mock.calls.length).toBeGreaterThan(callsAfterUndo)
     })
 
-    // redo 走 updateEntityRange(clip, 0, -1) 分支：
-    // firstChapter = max(1, round(0)) = 1；lastChapter = max(1, round(-1)) = 1；
-    // 因 lastChapter === firstChapter，最终 lastChapter 传 null
+    // redo 走 clearEntityRange 分支：直接置空 firstChapter/lastChapter
+    // （不再走 updateEntityRange(0,-1) 的 Math.max 钳制路径，避免 lastChapter 被钳为 1）
     const lastCall = vi.mocked(updateConflict).mock.calls[vi.mocked(updateConflict).mock.calls.length - 1]
     expect(lastCall[0]).toBe(conflict.id)
-    expect(lastCall[1]).toEqual({ firstChapter: 1, lastChapter: null })
+    expect(lastCall[1]).toEqual({ firstChapter: null, lastChapter: null })
 
     // redo 后 undo 按钮再次可用（past 栈非空），redo 按钮禁用（future 栈空）
     await waitFor(() => expect(undoBtn.disabled).toBe(false))

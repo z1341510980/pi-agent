@@ -418,7 +418,7 @@ export function NovelTimelineWorkspace({
 
   // ── 片段删除 ──
   const handleClipDelete = useCallback(
-    async (clipId: string, opts?: { ripple?: boolean }): Promise<void> => {
+    async (clipId: string, opts?: { ripple?: boolean; skipHistory?: boolean }): Promise<void> => {
       const clip = tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
       if (!clip || !currentProjectId) return
       const before = { start: clip.startChapter, end: clip.endChapter }
@@ -481,12 +481,15 @@ export function NovelTimelineWorkspace({
         }
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         // 入栈：删除后区间为空（start>end），撤销时恢复 before
-        pushHistory({
-          type: 'delete',
-          clip: { ...clip },
-          before,
-          after: { start: 0, end: -1 },
-        })
+        // skipHistory 时跳过入栈（如 cut 已由 cut 类型独占入栈，避免重复）
+        if (!opts?.skipHistory) {
+          pushHistory({
+            type: 'delete',
+            clip: { ...clip },
+            before,
+            after: { start: 0, end: -1 },
+          })
+        }
         // 涟漪删除（B1 在任务 11 接入，此处预留 opts 入参）
         if (opts?.ripple) {
           // 实现见任务 11
@@ -526,7 +529,8 @@ export function NovelTimelineWorkspace({
       before: { start: clip.startChapter, end: clip.endChapter },
       after: { start: 0, end: -1 },
     })
-    void handleClipDelete(clip.id)
+    // cut 已独占入栈，删除步骤跳过入栈避免重复
+    void handleClipDelete(clip.id, { skipHistory: true })
   }, [handleClipDelete, pushHistory])
 
   const handlePasteClips = useCallback(() => {
@@ -540,7 +544,7 @@ export function NovelTimelineWorkspace({
       actions.push({
         type: 'paste',
         clip: { ...clip },
-        before: { start: 0, end: -1 },
+        before: { start: clip.startChapter, end: clip.endChapter },
         after: { start: newStart, end: newEnd },
       })
       void updateEntityRange(clip, newStart, newEnd)
@@ -705,6 +709,66 @@ export function NovelTimelineWorkspace({
     // 同上
   }, [])
 
+  // ── 清空实体区间（undo/redo else 分支使用，避免 updateEntityRange(0,-1) 的 Math.max 钳制）──
+  // 与 handleClipDelete 的 switch 分支语义一致：直接置空区间而非走钳制路径。
+  const clearEntityRange = useCallback(
+    async (clip: EditAction['clip']): Promise<void> => {
+      if (!currentProjectId) return
+      try {
+        switch (clip.entityType) {
+          case 'character': {
+            const records = characterHistory.filter((h) => h.characterId === clip.entityId)
+            for (const rec of records) {
+              if (rec.chapterNumber != null) {
+                await deleteCharacterHistory(currentProjectId, rec.id)
+                removeCharacterHistory(rec.id)
+              }
+            }
+            break
+          }
+          case 'conflict': {
+            const conflict = conflicts.find((c) => c.id === clip.entityId)
+            if (!conflict) break
+            const updated = await updateConflict(conflict.id, { firstChapter: null, lastChapter: null })
+            upsertConflict(updated)
+            break
+          }
+          case 'foreshadow': {
+            const foreshadow = foreshadows.find((f) => f.id === clip.entityId)
+            if (!foreshadow) break
+            const updated = await updateForeshadow(foreshadow.id, { firstChapter: null, recoverByChapter: null })
+            upsertForeshadow(updated)
+            break
+          }
+          case 'faction': {
+            const faction = factions.find((f) => f.id === clip.entityId)
+            if (!faction) break
+            const updated = await updateFaction(faction.id, { firstChapter: null, lastChapter: null })
+            upsertFaction(updated)
+            break
+          }
+          case 'location': {
+            // location 的置空逻辑较复杂（appearChapters 数组），简化处理：清空 appearChapters
+            const location = locations.find((l) => l.id === clip.entityId)
+            if (!location) break
+            const updated = await updateLocation(location.id, { appearChapters: [] })
+            upsertLocation(updated)
+            break
+          }
+          case 'world_element':
+            break
+        }
+        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      } catch (err) {
+        console.error('[NovelTimelineWorkspace] 清空实体区间失败:', err)
+      }
+    },
+    [
+      currentProjectId, characterHistory, conflicts, foreshadows, factions, locations,
+      removeCharacterHistory, upsertConflict, upsertForeshadow, upsertFaction, upsertLocation, queryClient,
+    ],
+  )
+
   // ── 撤销/重做 ──
   const handleUndo = useCallback(() => {
     const cur = historyRef.current
@@ -716,13 +780,13 @@ export function NovelTimelineWorkspace({
       void updateEntityRange(action.clip, restore.start, restore.end)
     } else {
       // 区间无效表示撤销应"删除"该片段：按 entityType 置空
-      void updateEntityRange(action.clip, 0, -1)
+      void clearEntityRange(action.clip)
     }
     setHistory({
       past: cur.past.slice(0, -1),
       future: [...cur.future, action],
     })
-  }, [updateEntityRange])
+  }, [updateEntityRange, clearEntityRange])
 
   const handleRedo = useCallback(() => {
     const cur = historyRef.current
@@ -733,13 +797,13 @@ export function NovelTimelineWorkspace({
       void updateEntityRange(action.clip, restore.start, restore.end)
     } else {
       // 区间无效表示 redo 应"删除"该片段（delete/cut 的 after={0,-1}）：按 entityType 置空
-      void updateEntityRange(action.clip, 0, -1)
+      void clearEntityRange(action.clip)
     }
     setHistory({
       past: [...cur.past, action],
       future: cur.future.slice(0, -1),
     })
-  }, [updateEntityRange])
+  }, [updateEntityRange, clearEntityRange])
 
   // ── 元素池拖入 ──
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>): void => {
