@@ -181,3 +181,39 @@ describe('rangeToRestore', () => {
     expect(rangeToRestore(action, 'redo')).toEqual({ start: 0, end: -1 })
   })
 })
+
+import { groupContiguousSpans, planClipSplit } from '../timeline-logic'
+
+describe('groupContiguousSpans', () => {
+  it('groups adjacent chapter numbers into spans', () => {
+    expect(groupContiguousSpans([1, 2, 3, 7, 8, 10])).toEqual([
+      { start: 1, end: 3 },
+      { start: 7, end: 8 },
+      { start: 10, end: 10 },
+    ])
+  })
+  it('handles empty input', () => {
+    expect(groupContiguousSpans([])).toEqual([])
+  })
+  it('sorts unsorted input', () => {
+    expect(groupContiguousSpans([5, 1, 2, 6])).toEqual([
+      { start: 1, end: 2 },
+      { start: 5, end: 6 },
+    ])
+  })
+})
+
+describe('planClipSplit', () => {
+  it('produces first and second ranges for a split', () => {
+    expect(planClipSplit(3, 10, 7)).toEqual({
+      first: { start: 3, end: 6 },
+      second: { start: 7, end: 10 },
+    })
+  })
+  it('returns null first when atChapter <= start', () => {
+    expect(planClipSplit(5, 10, 5)).toBeNull()
+  })
+  it('returns null second when atChapter > end', () => {
+    expect(planClipSplit(5, 10, 11)).toEqual({ first: { start: 5, end: 10 }, second: null })
+  })
+})

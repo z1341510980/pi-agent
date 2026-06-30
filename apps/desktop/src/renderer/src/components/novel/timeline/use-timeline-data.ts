@@ -24,6 +24,7 @@ import type {
   NovelCharacterHistory,
   ConflictTier,
 } from '@/api/novel-client'
+import { groupContiguousSpans } from './timeline-logic'
 
 // ── 自研数据类型 ──
 
@@ -92,7 +93,7 @@ export function useTimelineData(params: {
     const poolLocations: NovelLocation[] = []
     const chapterCount = Math.max(chapters.length, 1)
 
-    // ── 角色轨道（每个有历史的角色一条 track；末尾始终追加一条空占位供继续拖入）──
+    // ── 角色轨道（每个有历史的角色一条 track；按连续跨度分组生成 N 个 clip；末尾始终追加一条空占位供继续拖入）──
     for (const character of characters) {
       const history = characterHistory.filter((h) => h.characterId === character.id)
       if (history.length === 0) {
@@ -106,24 +107,27 @@ export function useTimelineData(params: {
         poolCharacters.push(character)
         continue
       }
-      const firstChapter = Math.min(...chapterNumbers)
-      const lastChapter = Math.max(...chapterNumbers)
       const isProtagonist = character.isProtagonist
+      const effectId = isProtagonist ? 'character-protagonist' : 'character-secondary'
+      const tag = isProtagonist ? '主角' : undefined
+      // A1：按连续跨度分组——相邻章节归为同一段，断开处分新段，使剃刀切分后能渲染多个 clip
+      const spans = groupContiguousSpans(chapterNumbers)
+      const clips = spans.map((span, i) => ({
+        id: `character-clip:${character.id}:${i}`,
+        startChapter: span.start,
+        endChapter: span.end,
+        effectId,
+        entityType: 'character' as const,
+        entityId: character.id,
+        label: character.name,
+        tag,
+      }))
       tracks.push({
         id: `character:${character.id}`,
         kind: 'character',
         label: character.name,
         subLabel: isProtagonist ? '主角' : '配角',
-        clips: [{
-          id: `character-clip:${character.id}`,
-          startChapter: firstChapter,
-          endChapter: lastChapter,
-          effectId: isProtagonist ? 'character-protagonist' : 'character-secondary',
-          entityType: 'character',
-          entityId: character.id,
-          label: character.name,
-          tag: isProtagonist ? '主角' : undefined,
-        }],
+        clips,
       })
     }
     // 始终追加一条空占位轨道，供用户继续拖入新角色

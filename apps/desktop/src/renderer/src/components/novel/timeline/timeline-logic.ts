@@ -277,3 +277,33 @@ export interface EditAction {
 export function rangeToRestore(action: EditAction, direction: 'undo' | 'redo'): { start: number; end: number } {
   return direction === 'undo' ? action.before : action.after
 }
+
+// ── 剃刀切分（A1）──
+
+/** 将章节号数组按连续相邻分组为 [start,end] 跨度 */
+export function groupContiguousSpans(chapters: number[]): Array<{ start: number; end: number }> {
+  if (chapters.length === 0) return []
+  const sorted = [...chapters].sort((a, b) => a - b)
+  const spans: Array<{ start: number; end: number }> = []
+  let cur = { start: sorted[0], end: sorted[0] }
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === cur.end + 1) cur.end = sorted[i]
+    else { spans.push(cur); cur = { start: sorted[i], end: sorted[i] } }
+  }
+  spans.push(cur)
+  return spans
+}
+
+/** 规划切分：返回原 clip 的前半段 [start, atChapter-1] 与后半段 [atChapter, end] */
+export function planClipSplit(
+  origStart: number,
+  origEnd: number,
+  atChapter: number,
+): { first: { start: number; end: number }; second: { start: number; end: number } | null } | null {
+  if (atChapter <= origStart) return null
+  if (atChapter > origEnd) return { first: { start: origStart, end: origEnd }, second: null }
+  return {
+    first: { start: origStart, end: atChapter - 1 },
+    second: { start: atChapter, end: origEnd },
+  }
+}

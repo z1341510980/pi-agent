@@ -17,6 +17,9 @@ import { useNovelStore } from '@/stores/novel-store'
 import {
   batchCreateCharacterHistory,
   createCharacterHistory,
+  createConflict,
+  createForeshadow,
+  createFaction,
   deleteChapter,
   deleteCharacterHistory,
   updateConflict,
@@ -29,7 +32,7 @@ import {
   deleteMarker,
 } from '@/api/novel-client'
 import { useTimelineData, type TimelineClip, type TimelineTrack } from './use-timeline-data'
-import { rangeToRestore, type EditAction } from './timeline-logic'
+import { rangeToRestore, planClipSplit, type EditAction } from './timeline-logic'
 import { ElementPool, POOL_DRAG_MIME, type PoolDragPayload } from './element-pool'
 import {
   TimelineToolbar,
@@ -400,20 +403,107 @@ export function NovelTimelineWorkspace({
     [pushHistory, updateEntityRange],
   )
 
-  // ── 片段切分 ──
+  // ── 片段切分：原片段缩为前半段，并按 entityType 新建后半段实体/记录（A1）──
+  const createSecondHalfForSplit = useCallback(
+    async (clip: TimelineClip, start: number, end: number): Promise<void> => {
+      if (!currentProjectId) return
+      try {
+        switch (clip.entityType) {
+          case 'character': {
+            // 删除 [atChapter, end] 在原角色上的历史（updateEntityRange 已缩为前半段，但历史记录可能仍残留）
+            const recs = characterHistory.filter(
+              (h) => h.characterId === clip.entityId && h.chapterNumber != null && h.chapterNumber >= start && h.chapterNumber <= end,
+            )
+            for (const r of recs) {
+              await deleteCharacterHistory(currentProjectId, r.id)
+              removeCharacterHistory(r.id)
+            }
+            // 为同一角色补建起止边界历史记录，使连续跨度分组渲染出第二个 clip
+            const h1 = await createCharacterHistory(currentProjectId, clip.entityId, {
+              fieldName: 'currentState', oldValue: null, newValue: '【切分后半段】', reason: `切分：第 ${start} 章`, chapterNumber: start,
+            })
+            addCharacterHistory(h1)
+            if (end !== start) {
+              const h2 = await createCharacterHistory(currentProjectId, clip.entityId, {
+                fieldName: 'currentState', oldValue: null, newValue: '【切分后半段】', reason: `切分：第 ${end} 章`, chapterNumber: end,
+              })
+              addCharacterHistory(h2)
+            }
+            break
+          }
+          case 'conflict': {
+            const orig = conflicts.find((c) => c.id === clip.entityId)
+            if (!orig) break
+            // CreateConflictInput 不含 participants 字段（仅 NovelConflict 有），故不复制
+            const created = await createConflict(currentProjectId, {
+              description: `${orig.description}（后半段）`,
+              type: orig.type, intensity: orig.intensity, stage: orig.stage, tier: orig.tier,
+              firstChapter: start, lastChapter: end,
+            })
+            upsertConflict(created)
+            break
+          }
+          case 'foreshadow': {
+            const orig = foreshadows.find((f) => f.id === clip.entityId)
+            if (!orig) break
+            // CreateForeshadowInput 不含 linkedCharacters/linkedClues 字段，故不复制
+            const created = await createForeshadow(currentProjectId, {
+              description: `${orig.description}（后半段）`,
+              category: orig.category, status: orig.status,
+              firstChapter: start, recoverByChapter: end,
+            })
+            upsertForeshadow(created)
+            break
+          }
+          case 'faction': {
+            const orig = factions.find((f) => f.id === clip.entityId)
+            if (!orig) break
+            const created = await createFaction(currentProjectId, {
+              name: `${orig.name}（后半段）`, description: orig.description,
+              type: orig.type, leaderId: orig.leaderId, strength: orig.strength,
+              firstChapter: start, lastChapter: end,
+            })
+            upsertFaction(created)
+            break
+          }
+          case 'location': {
+            // location clip 为单章，理论上不触发切分；防御性：在新章节追加出现
+            const orig = locations.find((l) => l.id === clip.entityId)
+            if (!orig) break
+            const next = Array.from(new Set([...(orig.appearChapters ?? []), start, end])).sort((a, b) => a - b)
+            const updated = await updateLocation(orig.id, { appearChapters: next })
+            upsertLocation(updated)
+            break
+          }
+          case 'world_element':
+            break
+        }
+        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      } catch (err) {
+        console.error('[NovelTimelineWorkspace] 切分后半段创建失败:', err)
+      }
+    },
+    [currentProjectId, characterHistory, conflicts, foreshadows, factions, locations,
+      deleteCharacterHistory, removeCharacterHistory, createCharacterHistory, addCharacterHistory,
+      upsertConflict, upsertForeshadow, upsertFaction, upsertLocation, queryClient],
+  )
+
   const handleClipSplit = useCallback(
-    (clip: TimelineClip, atChapter: number): void => {
-      // 切分 = 把原 clip 的 endChapter 调整为 atChapter-1
-      // 新片段会自动生成（数据层下一章创建新记录）
+    async (clip: TimelineClip, atChapter: number): Promise<void> => {
+      const plan = planClipSplit(clip.startChapter, clip.endChapter, atChapter)
+      if (!plan || !plan.second) return
+      // 1. 原片段缩为前半段
       pushHistory({
         type: 'resize',
         clip: { ...clip },
         before: { start: clip.startChapter, end: clip.endChapter },
-        after: { start: clip.startChapter, end: atChapter - 1 },
+        after: { start: plan.first.start, end: plan.first.end },
       })
-      void updateEntityRange(clip, clip.startChapter, atChapter - 1)
+      await updateEntityRange(clip, plan.first.start, plan.first.end)
+      // 2. 后半段：按 entityType 新建实体/记录
+      await createSecondHalfForSplit(clip, plan.second.start, plan.second.end)
     },
-    [pushHistory, updateEntityRange],
+    [pushHistory, updateEntityRange, createSecondHalfForSplit],
   )
 
   // ── 片段删除 ──
