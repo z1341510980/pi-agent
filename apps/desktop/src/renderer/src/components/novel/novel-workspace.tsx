@@ -39,6 +39,7 @@ import { ChapterLivePanel } from './chapter-live-view'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
 import { NovelTimelineWorkspace } from './timeline/novel-timeline-workspace'
+import { ChapterContentEditor } from './chapter-content-editor'
 
 // ── 视图切换组件（时间轴 / 画布）──
 
@@ -110,6 +111,19 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
+
+  // 正文编辑器高度（垂直分割持久化到 localStorage）
+  const [contentEditorHeight, setContentEditorHeight] = useState<number>(() => {
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('pi-agent-content-split') : null
+    return saved ? Number(saved) : 300
+  })
+
+  const handleContentEditorHeightChange = useCallback((size: number) => {
+    setContentEditorHeight(size)
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('pi-agent-content-split', String(size))
+    }
+  }, [])
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
 
@@ -428,15 +442,36 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                   </span>
                 </div>
 
-                <div className="flex-1 min-h-0">
+                <div className="flex-1 min-h-0 flex flex-col">
                   {viewMode === 'timeline' ? (
-                    <NovelTimelineWorkspace
-                      creationRunning={creationFlow.isRunning}
-                      creationChapterNumber={creationChapterNumber}
-                      onCancelCreation={handleDiscardCreation}
-                      onRegenerateChapter={handleRegenerateChapter}
-                      onStartCreationAt={handleStartCreationAt}
-                    />
+                    <>
+                      {/* 上：章节正文编辑器 */}
+                      <div style={{ height: contentEditorHeight }} className="shrink-0 min-h-[120px] overflow-hidden">
+                        <ChapterContentEditor
+                          isCreationActive={isCreationActive}
+                          creationChapterNumber={creationChapterNumber}
+                          creationChapterContent={creationFlow.chapterContent}
+                        />
+                      </div>
+                      <ResizableSplitter
+                        direction="vertical"
+                        size={contentEditorHeight}
+                        minSize={120}
+                        maxSize={800}
+                        onSizeChange={handleContentEditorHeightChange}
+                        side="top"
+                      />
+                      {/* 下：时间线编辑器 */}
+                      <div className="flex-1 min-h-[200px] overflow-hidden">
+                        <NovelTimelineWorkspace
+                          creationRunning={creationFlow.isRunning}
+                          creationChapterNumber={creationChapterNumber}
+                          onCancelCreation={handleDiscardCreation}
+                          onRegenerateChapter={handleRegenerateChapter}
+                          onStartCreationAt={handleStartCreationAt}
+                        />
+                      </div>
+                    </>
                   ) : (
                     <NovelCanvas
                       relayoutSignal={relayoutSignal}
