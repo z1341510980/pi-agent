@@ -1310,6 +1310,24 @@
   filter: drop-shadow(0 1px 1px color-mix(in oklch, var(--color-text) 20%, transparent));
 }
 
+/* In/Out 竖线标记：覆盖 .tl-marker 的方形图标样式，改为细竖线 */
+.tl-marker-inout {
+  width: 2px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+/* 覆盖 .tl-marker:hover 的 scale(1.25)，避免竖线变粗；保留 translate 居中避免跳位 */
+.tl-marker-inout:hover {
+  transform: translate(-50%, -50%);
+}
+
+.tl-marker-inout-line {
+  width: 100%;
+  height: 100%;
+  border-radius: 1px;
+}
+
 /* 悬停 tooltip */
 .tl-marker-tooltip {
   position: absolute;

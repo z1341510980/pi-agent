@@ -383,5 +383,7 @@ export function computeLoopBounds(
 ): { start: number; end: number } | null {
   if (inChapter == null || outChapter == null) return null
   if (inChapter > outChapter) return null
-  return { start: inChapter, end: Math.min(outChapter, maxChapter) }
+  const end = Math.min(outChapter, maxChapter)
+  if (inChapter > end) return null
+  return { start: inChapter, end }
 }

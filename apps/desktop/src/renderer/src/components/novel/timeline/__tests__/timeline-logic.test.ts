@@ -328,4 +328,10 @@ describe('computeLoopBounds (B2 play loop)', () => {
   it('returns null when in > out', () => {
     expect(computeLoopBounds(15, 5, 20)).toBeNull()
   })
+  it('returns single-chapter loop when in === out', () => {
+    expect(computeLoopBounds(5, 5, 20)).toEqual({ start: 5, end: 5 })
+  })
+  it('returns null when in > maxChapter after clamping out', () => {
+    expect(computeLoopBounds(5, 99, 3)).toBeNull()
+  })
 })
