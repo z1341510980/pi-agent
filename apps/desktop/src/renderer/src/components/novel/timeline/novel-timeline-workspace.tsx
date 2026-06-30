@@ -32,7 +32,7 @@ import {
   deleteMarker,
 } from '@/api/novel-client'
 import { useTimelineData, type TimelineClip, type TimelineTrack } from './use-timeline-data'
-import { rangeToRestore, planClipSplit, computeRippleShifts, type EditAction } from './timeline-logic'
+import { rangeToRestore, planClipSplit, computeRippleShifts, computeLoopBounds, type EditAction } from './timeline-logic'
 import { ElementPool, POOL_DRAG_MIME, type PoolDragPayload } from './element-pool'
 import {
   TimelineToolbar,
@@ -167,6 +167,14 @@ export function NovelTimelineWorkspace({
     return Math.max(...chapters.map((c) => c.chapterNumber), 20)
   }, [chapters])
 
+  // ── In/Out 标记与播放循环边界（B2）──
+  const inMarker = useMemo(() => markers.find((m) => m.type === 'in'), [markers])
+  const outMarker = useMemo(() => markers.find((m) => m.type === 'out'), [markers])
+  const loopBounds = useMemo(
+    () => computeLoopBounds(inMarker?.chapter ?? null, outMarker?.chapter ?? null, maxChapter),
+    [inMarker, outMarker, maxChapter],
+  )
+
   // ── 播放头章节号（创作流程联动优先）──
   const effectivePlayheadChapter = creationRunning && creationChapterNumber != null
     ? creationChapterNumber
@@ -179,7 +187,13 @@ export function NovelTimelineWorkspace({
       playIntervalRef.current = setInterval(() => {
         // 使用 store getState 读取最新值，避免闭包陈旧且无需重建 interval
         const current = useNovelStore.getState().playheadChapter
-        if (current >= maxChapter) {
+        const end = loopBounds?.end ?? maxChapter
+        const start = loopBounds?.start ?? 1
+        if (current >= end) {
+          if (loopBounds) {
+            setPlayheadChapter(start) // 循环回 in 点
+            return
+          }
           setIsPlaying(false)
           return
         }
@@ -189,7 +203,7 @@ export function NovelTimelineWorkspace({
         if (playIntervalRef.current) clearInterval(playIntervalRef.current)
       }
     }
-  }, [isPlaying, maxChapter])
+  }, [isPlaying, maxChapter, loopBounds])
 
   // ── 从后端加载标记 ──
   useEffect(() => {
@@ -711,6 +725,28 @@ export function NovelTimelineWorkspace({
     }
   }, [currentProjectId, upsertMarker])
 
+  // ── 标记：In/Out 工作区标记（B2，唯一）──
+  const handleCreateSpecialMarker = useCallback(async (type: 'in' | 'out'): Promise<void> => {
+    if (!currentProjectId) return
+    try {
+      // 移除同类型旧标记（in/out 唯一）
+      const existing = markers.filter((m) => m.type === type)
+      for (const m of existing) {
+        await deleteMarker(m.id)
+        removeMarker(m.id)
+      }
+      const created = await createMarker(currentProjectId, {
+        chapter: playheadChapter,
+        title: type === 'in' ? 'In 点' : 'Out 点',
+        type,
+        color: type === 'in' ? 'blue' : 'red',
+      })
+      upsertMarker(created)
+    } catch (err) {
+      console.error('[NovelTimelineWorkspace] 创建 In/Out 标记失败:', err)
+    }
+  }, [currentProjectId, playheadChapter, markers, deleteMarker, removeMarker, createMarker, upsertMarker])
+
   // ── 标记：移动 ──
   const handleMarkerMove = useCallback(async (marker: TimelineMarker, newChapter: number): Promise<void> => {
     try {
@@ -745,6 +781,8 @@ export function NovelTimelineWorkspace({
       'foreshadow': 'green',
       'climax': 'red',
       'note': 'purple',
+      'in': 'blue',
+      'out': 'red',
     }
     try {
       const updated = await updateMarker(markerId, { type, color: colorMap[type] })
@@ -1122,6 +1160,10 @@ export function NovelTimelineWorkspace({
         onNextChapter={handleNextChapter}
         onFirstChapter={handleFirstChapter}
         onLastChapter={handleLastChapter}
+        inChapter={inMarker?.chapter ?? null}
+        outChapter={outMarker?.chapter ?? null}
+        onSetIn={() => handleCreateSpecialMarker('in')}
+        onSetOut={() => handleCreateSpecialMarker('out')}
         canUndo={history.past.length > 0}
         canRedo={history.future.length > 0}
         onUndo={handleUndo}

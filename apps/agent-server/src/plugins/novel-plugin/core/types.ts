@@ -546,6 +546,7 @@ export interface NovelAgentLogSummary {
 
 export type NovelMarkerType =
   | 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note'
+  | 'in' | 'out'
 
 export type NovelMarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
 

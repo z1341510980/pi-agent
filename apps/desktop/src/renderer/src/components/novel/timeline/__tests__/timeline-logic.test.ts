@@ -14,6 +14,7 @@ import {
   computeTrackHeight,
   computeRippleShifts,
   truncateSummary,
+  computeLoopBounds,
   type EditAction,
 } from '../timeline-logic'
 
@@ -308,5 +309,23 @@ describe('truncateSummary (B5)', () => {
   })
   it('returns empty string for empty input', () => {
     expect(truncateSummary('', 20)).toBe('')
+  })
+})
+
+describe('computeLoopBounds (B2 play loop)', () => {
+  it('returns [in, out] when both present and in <= out', () => {
+    expect(computeLoopBounds(5, 15, 20)).toEqual({ start: 5, end: 15 })
+  })
+  it('clamps out to maxChapter', () => {
+    expect(computeLoopBounds(5, 99, 20)).toEqual({ start: 5, end: 20 })
+  })
+  it('returns null when in missing', () => {
+    expect(computeLoopBounds(null, 15, 20)).toBeNull()
+  })
+  it('returns null when out missing', () => {
+    expect(computeLoopBounds(5, null, 20)).toBeNull()
+  })
+  it('returns null when in > out', () => {
+    expect(computeLoopBounds(15, 5, 20)).toBeNull()
   })
 })

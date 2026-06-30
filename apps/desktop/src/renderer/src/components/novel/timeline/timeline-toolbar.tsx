@@ -28,6 +28,8 @@ import {
   Trash2,
   Magnet,
   Spline,
+  ArrowRightToLine,
+  ArrowRightFromLine,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -79,6 +81,11 @@ export interface TimelineToolbarProps {
   onNextChapter: () => void
   onFirstChapter: () => void
   onLastChapter: () => void
+  /** In/Out 标记组 */
+  inChapter?: number | null
+  outChapter?: number | null
+  onSetIn: () => void
+  onSetOut: () => void
   /** 编辑组 */
   canUndo: boolean
   canRedo: boolean
@@ -128,6 +135,10 @@ export function TimelineToolbar({
   onNextChapter,
   onFirstChapter,
   onLastChapter,
+  inChapter,
+  outChapter,
+  onSetIn,
+  onSetOut,
   canUndo,
   canRedo,
   onUndo,
@@ -214,6 +225,28 @@ export function TimelineToolbar({
         <span className="ml-1.5 text-[11px] tabular-nums text-muted-foreground">
           {playheadChapter} / {totalChapters}
         </span>
+      </div>
+
+      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
+      {/* In/Out 标记组 */}
+      <div className="flex items-center gap-0.5">
+        <button
+          type="button"
+          className="novel-timeline-nav-btn"
+          onClick={onSetIn}
+          title={`设置 In 点（当前：第 ${inChapter ?? '-'} 章）`}
+        >
+          <ArrowRightToLine className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          className="novel-timeline-nav-btn"
+          onClick={onSetOut}
+          title={`设置 Out 点（当前：第 ${outChapter ?? '-'} 章）`}
+        >
+          <ArrowRightFromLine className="size-3.5" />
+        </button>
       </div>
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />

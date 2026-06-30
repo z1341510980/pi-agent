@@ -372,3 +372,16 @@ export function truncateSummary(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text
   return text.slice(0, maxLen - 3) + '…'
 }
+
+// ── 播放循环（B2 In/Out 标记）──
+
+/** 计算播放循环边界：in/out 都存在且 in<=out 时返回 [in,out]，否则 null */
+export function computeLoopBounds(
+  inChapter: number | null,
+  outChapter: number | null,
+  maxChapter: number,
+): { start: number; end: number } | null {
+  if (inChapter == null || outChapter == null) return null
+  if (inChapter > outChapter) return null
+  return { start: inChapter, end: Math.min(outChapter, maxChapter) }
+}
