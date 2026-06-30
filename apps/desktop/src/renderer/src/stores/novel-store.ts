@@ -63,20 +63,30 @@ export interface NovelState {
   selectedNodeId: string | null
   selectedNodeType: NovelNodeType | null
 
-  // ── 视图模式（时间轴/画布）──
-  viewMode: 'timeline' | 'canvas'
+  // ── 视图模式（矩阵/画布）──
+  viewMode: 'matrix' | 'canvas'
 
   // ── 播放头所在章节（跨组件同步，不持久化，每次进项目从 1 开始）──
   playheadChapter: number
+
+  // ── 矩阵视图折叠分组（与 NovelSidebar 共享）──
+  // 用 string[] 而非 MatrixEntityKind[] 是因为 NovelSidebar 还有一个 'chapter' 分组
+  collapsedGroups: string[]
+
+  // ── 矩阵视图滚动信号（NovelSidebar 点章节 → MatrixView 滚动到该列）──
+  // ts 用于触发 effect 即使 chapter 相同；不持久化
+  matrixScrollTarget: { chapter: number; ts: number } | null
 
   // ── 加载状态 ──
   loading: boolean
   error: string | null
 
   // ── Actions ──
-  setViewMode: (mode: 'timeline' | 'canvas') => void
+  setViewMode: (mode: 'matrix' | 'canvas') => void
   setPlayheadChapter: (chapter: number) => void
   setCurrentProject: (projectId: string | null) => void
+  toggleCollapsedGroup: (kind: string) => void
+  setMatrixScrollTarget: (target: { chapter: number; ts: number } | null) => void
   setProjects: (projects: NovelProject[]) => void
   loadProjectData: (data: {
     characters?: NovelCharacter[]
@@ -194,9 +204,13 @@ export const useNovelStore = create<NovelState>()(
       selectedNodeId: null,
       selectedNodeType: null,
 
-      viewMode: 'timeline',
+      viewMode: 'matrix',
 
       playheadChapter: 1,
+
+      collapsedGroups: [],
+
+      matrixScrollTarget: null,
 
       loading: false,
       error: null,
@@ -206,6 +220,16 @@ export const useNovelStore = create<NovelState>()(
       setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
       setCurrentProject: (projectId) =>
         set({ currentProjectId: projectId, selectedNodeId: null, selectedNodeType: null }),
+      toggleCollapsedGroup: (kind: string) =>
+        set((state) => {
+          const has = state.collapsedGroups.includes(kind)
+          return {
+            collapsedGroups: has
+              ? state.collapsedGroups.filter((k) => k !== kind)
+              : [...state.collapsedGroups, kind],
+          }
+        }),
+      setMatrixScrollTarget: (target) => set({ matrixScrollTarget: target }),
 
       setProjects: (projects) => set({ projects }),
 
@@ -255,6 +279,8 @@ export const useNovelStore = create<NovelState>()(
           selectedNodeId: null,
           selectedNodeType: null,
           playheadChapter: 1,
+          collapsedGroups: [],
+          matrixScrollTarget: null,
         }),
 
       // ── upsert ──
@@ -366,6 +392,7 @@ export const useNovelStore = create<NovelState>()(
         selectedNodeId: state.selectedNodeId,
         selectedNodeType: state.selectedNodeType,
         viewMode: state.viewMode,
+        collapsedGroups: state.collapsedGroups,
       }),
     },
   ),

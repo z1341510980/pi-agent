@@ -1,0 +1,203 @@
+/**
+ * EntityCellMenu：实体单元格右键菜单
+ *
+ * 触发：右键单元格（已有实体的行 + 具体章节列）
+ *
+ * 按 entityType 语义化适配：
+ * - character：标记/删除出场（操作 characterHistory 关联表）
+ * - conflict/faction：扩展到本章 / 收缩端点（仅首尾端点可删）
+ * - foreshadow：标记埋设/回收点 / 取消埋设/回收
+ * - location：标记/删除出场（操作 appearChapters）
+ * - world_element：不可标记（恒全程）
+ *
+ * 所有类型均可「修改批注」（操作 clip-note marker）
+ */
+
+import { useEffect, type ReactElement } from 'react'
+import { Plus, Trash2, StickyNote } from 'lucide-react'
+import type { MatrixEntityKind } from './matrix-logic'
+
+export interface EntityCellMenuPosition {
+  x: number
+  y: number
+  entityId: string
+  entityName: string
+  entityType: MatrixEntityKind
+  chapter: number
+  /** 当前章节是否已出场 */
+  present: boolean
+  /** 是否支持出场编辑（非 world_element） */
+  editable: boolean
+  /** 是否支持「删除出场」操作（端点型实体中间格不可删） */
+  removable: boolean
+}
+
+export interface EntityCellMenuProps {
+  position: EntityCellMenuPosition | null
+  onClose: () => void
+  onMarkPresent: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
+  onRemovePresent: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
+  onEditNote: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number) => void
+}
+
+/** 按 entityType 返回「标记出场」文案 */
+function markLabel(kind: MatrixEntityKind): string {
+  switch (kind) {
+    case 'character':
+      return '标记本章出场'
+    case 'conflict':
+    case 'faction':
+      return '扩展到本章'
+    case 'foreshadow':
+      return '标记埋设/回收点'
+    case 'location':
+      return '标记本章出场'
+    case 'world_element':
+      return ''
+    default:
+      return '标记出场'
+  }
+}
+
+/** 按 entityType 返回「删除出场」文案 */
+function removeLabel(kind: MatrixEntityKind): string {
+  switch (kind) {
+    case 'character':
+      return '删除本章出场'
+    case 'conflict':
+    case 'faction':
+      return '收缩端点'
+    case 'foreshadow':
+      return '取消埋设/回收'
+    case 'location':
+      return '删除本章出场'
+    case 'world_element':
+      return ''
+    default:
+      return '删除出场'
+  }
+}
+
+/** 按 entityType 返回「标记」tooltip */
+function markTooltip(kind: MatrixEntityKind, present: boolean): string {
+  if (present) return '该章已标记'
+  switch (kind) {
+    case 'character':
+      return '写入一条 characterHistory 记录，标记该角色在本章出场'
+    case 'conflict':
+    case 'faction':
+      return '扩展 firstChapter/lastChapter 端点覆盖到本章'
+    case 'foreshadow':
+      return '未埋设则设为埋设点；已埋设则设为回收点'
+    case 'location':
+      return '将本章加入 appearChapters 数组'
+    default:
+      return '标记出场'
+  }
+}
+
+/** 按 entityType 返回「删除」tooltip */
+function removeTooltip(kind: MatrixEntityKind): string {
+  switch (kind) {
+    case 'character':
+      return '删除该角色在本章的所有 characterHistory 记录'
+    case 'conflict':
+    case 'faction':
+      return '收缩端点（仅首尾端点可删，中间格不可删）'
+    case 'foreshadow':
+      return '取消埋设点或回收点'
+    case 'location':
+      return '从 appearChapters 数组中移除本章'
+    default:
+      return '删除出场'
+  }
+}
+
+export function EntityCellMenu({
+  position, onClose, onMarkPresent, onRemovePresent, onEditNote,
+}: EntityCellMenuProps): ReactElement | null {
+  useEffect(() => {
+    if (!position) return
+    const handleClickOutside = (): void => onClose()
+    const handleEscape = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('click', handleClickOutside)
+    window.addEventListener('contextmenu', handleClickOutside)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('click', handleClickOutside)
+      window.removeEventListener('contextmenu', handleClickOutside)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [position, onClose])
+
+  if (!position) return null
+
+  const { x, y, entityId, entityName, entityType, chapter, present, editable, removable } = position
+  const adjustedX = Math.min(x, window.innerWidth - 220)
+  const adjustedY = Math.min(y, window.innerHeight - 200)
+
+  const handleMark = (): void => {
+    onMarkPresent(entityId, entityType, chapter)
+    onClose()
+  }
+  const handleRemove = (): void => {
+    onRemovePresent(entityId, entityType, chapter)
+    onClose()
+  }
+  const handleEditNote = (): void => {
+    onEditNote(entityId, entityName, entityType, chapter)
+    onClose()
+  }
+
+  return (
+    <div
+      className="fixed z-50 min-w-[200px] bg-surface-1 border border-border rounded-md shadow-lg py-1 text-xs"
+      style={{ left: adjustedX, top: adjustedY }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+      }}
+    >
+      <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wide border-b border-border mb-1 truncate">
+        {entityName} · 第 {chapter} 章
+      </div>
+      {editable && (
+        <>
+          <button
+            type="button"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-text hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={handleMark}
+            disabled={present}
+            title={markTooltip(entityType, present)}
+          >
+            <Plus className="size-3.5" />
+            <span>{markLabel(entityType)}</span>
+          </button>
+          <button
+            type="button"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={handleRemove}
+            disabled={!removable}
+            title={removeTooltip(entityType)}
+          >
+            <Trash2 className="size-3.5" />
+            <span>{removeLabel(entityType)}</span>
+          </button>
+          <div className="h-px bg-border my-1" />
+        </>
+      )}
+      <button
+        type="button"
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-text hover:bg-muted transition-colors"
+        onClick={handleEditNote}
+        title="修改此实体的批注"
+      >
+        <StickyNote className="size-3.5" />
+        <span>修改批注</span>
+      </button>
+    </div>
+  )
+}

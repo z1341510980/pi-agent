@@ -62,6 +62,9 @@ function makeMockServices(): NovelServices {
         speechStyle: '口语',
       })),
     } as any,
+    entityGenerator: {
+      generate: vi.fn(),
+    } as any,
     tools: [],
   }
 }

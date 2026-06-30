@@ -32,6 +32,7 @@ import { NovelEngine } from './core/novel-engine.js'
 import { createNovelTools } from './core/novel-tools.js'
 import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import { NovelCharacterGenerator } from './core/novel-character-generator.js'
+import { NovelEntityGenerator } from './core/novel-entity-generator.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
@@ -46,6 +47,7 @@ export interface NovelServices {
   engine: NovelEngine
   orchestrator: NovelOrchestrator
   characterGenerator: NovelCharacterGenerator
+  entityGenerator: NovelEntityGenerator
   tools: ToolDefinition[]
   /**
    * TeamManager（可选，由 teamPlugin 提供）
@@ -89,8 +91,11 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //    PluginContext.createSession 用于 generate 调用 LLM
   const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, context)
 
-  // 9. 创建 Pi Session 工具集（依赖 NovelStore）
+  // 9. 创建 NovelEntityGenerator（通用实体生成器，character 分支委托给 characterGenerator）
+  const entityGenerator = new NovelEntityGenerator(promptBuilder, promptManager, context, characterGenerator)
+
+  // 10. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, tools, teamManager }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, tools, teamManager }
 }

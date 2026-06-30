@@ -49,6 +49,9 @@ function makeMockServices(): NovelServices {
     characterGenerator: {
       generate: vi.fn(),
     } as any,
+    entityGenerator: {
+      generate: vi.fn(),
+    } as any,
     tools: [],
   }
 }

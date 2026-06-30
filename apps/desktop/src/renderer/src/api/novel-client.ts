@@ -899,6 +899,171 @@ export async function aiGenerateCharacter(
   return result
 }
 
+// ── AI 通用实体生成 ──
+
+export type EntityGenerationType = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
+
+export interface AiGenerateEntityInput {
+  entityType: EntityGenerationType
+  coreStyle: string
+}
+
+/** 实体生成进度事件（镜像后端 EntityGenerationProgressEvent） */
+export interface EntityGenerationProgressEvent {
+  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
+  message: string
+  data?: unknown
+}
+
+/** character 生成结果字段 */
+export interface GeneratedCharacterFields {
+  name: string
+  description: string
+  identity: string
+  personality: string
+  appearance: string
+  currentState: string
+  currentGoal: string
+  currentPressure: string
+  secret: string
+  arcStage: string
+  speechStyle: string
+}
+
+export interface GeneratedConflictFields {
+  description: string
+  type: ConflictType
+  intensity: number
+  stage: ConflictStage
+  tier: ConflictTier
+  participants: string
+}
+
+export interface GeneratedForeshadowFields {
+  description: string
+  category: string
+  status: ForeshadowStatus
+  linkedCharacters: string
+  linkedClues: string
+}
+
+export interface GeneratedFactionFields {
+  name: string
+  description: string
+  type: NovelFactionType
+  ideology: string
+  strength: NovelFactionStrength
+  resources: string[]
+  allies: string[]
+  enemies: string[]
+  status: NovelFactionStatus
+}
+
+export interface GeneratedLocationFields {
+  name: string
+  description: string
+  type: NovelLocationType
+  significance: NovelLocationSignificance
+  status: NovelLocationStatus
+}
+
+export interface GeneratedWorldElementFields {
+  category: NovelWorldElementCategory
+  name: string
+  description: string
+  attributes: Record<string, unknown>
+}
+
+/** 后端返回的生成结果联合（按 type 区分） */
+export type GeneratedEntityResult =
+  | { type: 'character'; data: GeneratedCharacterFields }
+  | { type: 'conflict'; data: GeneratedConflictFields }
+  | { type: 'foreshadow'; data: GeneratedForeshadowFields }
+  | { type: 'faction'; data: GeneratedFactionFields }
+  | { type: 'location'; data: GeneratedLocationFields }
+  | { type: 'world_element'; data: GeneratedWorldElementFields }
+
+/**
+ * AI 通用实体生成（SSE 流式）
+ *
+ * 后端端点 POST /api/plugins/novel/projects/:projectId/entities/ai-generate
+ * 返回 text/event-stream，事件格式：
+ *   - { type: 'progress', data: EntityGenerationProgressEvent }  阶段进度
+ *   - { type: 'result',   data: GeneratedEntityResult }          生成完成（不落库）
+ *   - { type: 'error',    error: string }                       错误
+ *
+ * 注意：与 aiGenerateCharacter 不同，本接口返回字段不落库，
+ * 前端 review 后调对应的 createXxx 落库。
+ */
+export async function aiGenerateEntity(
+  projectId: string,
+  input: AiGenerateEntityInput,
+  onProgress?: (event: EntityGenerationProgressEvent) => void,
+): Promise<GeneratedEntityResult> {
+  const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/entities/ai-generate`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(input),
+  })
+
+  if (!response.ok) {
+    throw new Error(`AI 生成失败: HTTP ${response.status} ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('响应体为空，无法读取 SSE 流')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: GeneratedEntityResult | null = null
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    let newlineIdx: number
+    while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
+      const rawEvent = buffer.slice(0, newlineIdx)
+      buffer = buffer.slice(newlineIdx + 2)
+
+      const dataLines = rawEvent
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+
+      if (dataLines.length === 0) continue
+
+      let payload: { type: string; data?: unknown; error?: string } | null = null
+      try {
+        payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
+      } catch {
+        continue
+      }
+      if (!payload) continue
+
+      if (payload.type === 'progress') {
+        onProgress?.(payload.data as EntityGenerationProgressEvent)
+      } else if (payload.type === 'result') {
+        result = payload.data as GeneratedEntityResult
+      } else if (payload.type === 'error') {
+        throw new Error(payload.error ?? 'AI 生成失败')
+      }
+    }
+  }
+
+  if (!result) {
+    throw new Error('AI 生成未返回结果')
+  }
+  return result
+}
+
 // ── Character History ──
 
 export function listCharacterHistory(

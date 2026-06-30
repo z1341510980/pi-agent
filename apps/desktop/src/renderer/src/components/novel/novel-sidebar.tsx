@@ -344,6 +344,19 @@ function ProjectTree({
   const removeLocation = useNovelStore((s) => s.removeLocation)
   const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
   const characterHistory = useNovelStore((s) => s.characterHistory)
+  // ── C-3 与 MatrixView 共享的折叠 / 选中 / 章节滚动信号 ──
+  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
+  const collapsedGroups = useNovelStore((s) => s.collapsedGroups)
+  const toggleCollapsedGroup = useNovelStore((s) => s.toggleCollapsedGroup)
+  const setMatrixScrollTarget = useNovelStore((s) => s.setMatrixScrollTarget)
+  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
+
+  // 点击章节：选中 + 滚动矩阵到该列 + 设置 playhead
+  const handleSelectChapter = useCallback((chapter: NovelChapter) => {
+    onSelectEntity(chapter.id, 'chapter')
+    setPlayheadChapter(chapter.chapterNumber)
+    setMatrixScrollTarget({ chapter: chapter.chapterNumber, ts: Date.now() })
+  }, [onSelectEntity, setPlayheadChapter, setMatrixScrollTarget])
 
   const sortedChapters = useMemo(
     () => [...chapters].sort((a, b) => a.chapterNumber - b.chapterNumber),
@@ -488,10 +501,13 @@ function ProjectTree({
     <div className="space-y-0.5 px-0.5">
       {/* 角色集合 */}
       <CollapsibleGroup
+        kind="character"
         icon={Users}
         label="角色集合"
         count={characters.length}
         accent="text-blue-500"
+        collapsed={collapsedGroups.includes('character')}
+        onToggle={toggleCollapsedGroup}
         onAdd={onOpenCharacterDialog}
         addLabel="新建角色"
       >
@@ -503,6 +519,7 @@ function ProjectTree({
               key={c.id}
               label={c.name || '未命名'}
               sublabel={c.identity}
+              selected={selectedNodeId === c.id}
               onClick={() => onSelectEntity(c.id, 'character')}
               onDragStart={(e) => setDragData(e, 'character', c.id)}
               onDelete={() => handleDelete('character', c.id, c.name || '角色')}
@@ -513,10 +530,13 @@ function ProjectTree({
 
       {/* 章节集合 */}
       <CollapsibleGroup
+        kind="chapter"
         icon={FileText}
         label="章节集合"
         count={chapters.length}
         accent="text-emerald-500"
+        collapsed={collapsedGroups.includes('chapter')}
+        onToggle={toggleCollapsedGroup}
         onAdd={handleAddChapter}
         addLabel="新建章节"
       >
@@ -531,7 +551,9 @@ function ProjectTree({
               conflicts={conflicts}
               foreshadows={foreshadows}
               characterHistory={characterHistory}
+              selected={selectedNodeId === chapter.id}
               onSelectEntity={onSelectEntity}
+              onSelectChapter={handleSelectChapter}
               onDelete={() => handleDelete('chapter', chapter.id, `第 ${chapter.chapterNumber} 章`)}
             />
           ))
@@ -540,10 +562,13 @@ function ProjectTree({
 
       {/* 伏笔集合 */}
       <CollapsibleGroup
+        kind="foreshadow"
         icon={Lightbulb}
         label="伏笔集合"
         count={foreshadows.length}
         accent="text-amber-500"
+        collapsed={collapsedGroups.includes('foreshadow')}
+        onToggle={toggleCollapsedGroup}
         onAdd={handleAddForeshadow}
         addLabel="新建伏笔"
       >
@@ -555,6 +580,7 @@ function ProjectTree({
               key={f.id}
               label={f.description.length > 18 ? `${f.description.slice(0, 18)}...` : f.description}
               sublabel={f.category}
+              selected={selectedNodeId === f.id}
               onClick={() => onSelectEntity(f.id, 'foreshadow')}
               onDragStart={(e) => setDragData(e, 'foreshadow', f.id)}
               onDelete={() => handleDelete('foreshadow', f.id, '伏笔')}
@@ -565,10 +591,13 @@ function ProjectTree({
 
       {/* 冲突集合 */}
       <CollapsibleGroup
+        kind="conflict"
         icon={Swords}
         label="冲突集合"
         count={conflicts.length}
         accent="text-rose-500"
+        collapsed={collapsedGroups.includes('conflict')}
+        onToggle={toggleCollapsedGroup}
         onAdd={handleAddConflict}
         addLabel="新建冲突"
       >
@@ -580,6 +609,7 @@ function ProjectTree({
               key={c.id}
               label={c.description.length > 18 ? `${c.description.slice(0, 18)}...` : c.description}
               sublabel={c.type}
+              selected={selectedNodeId === c.id}
               onClick={() => onSelectEntity(c.id, 'conflict')}
               onDragStart={(e) => setDragData(e, 'conflict', c.id)}
               onDelete={() => handleDelete('conflict', c.id, '冲突')}
@@ -590,10 +620,13 @@ function ProjectTree({
 
       {/* 势力集合 */}
       <CollapsibleGroup
+        kind="faction"
         icon={Users}
         label="势力集合"
         count={factions.length}
         accent="text-violet-500"
+        collapsed={collapsedGroups.includes('faction')}
+        onToggle={toggleCollapsedGroup}
         onAdd={handleAddFaction}
         addLabel="新建势力"
       >
@@ -605,6 +638,7 @@ function ProjectTree({
               key={f.id}
               label={f.name || '未命名'}
               sublabel={f.type}
+              selected={selectedNodeId === f.id}
               onClick={() => onSelectEntity(f.id, 'faction')}
               onDragStart={(e) => setDragData(e, 'faction', f.id)}
               onDelete={() => handleDelete('faction', f.id, f.name || '势力')}
@@ -615,10 +649,13 @@ function ProjectTree({
 
       {/* 地点集合 */}
       <CollapsibleGroup
+        kind="location"
         icon={MapPin}
         label="地点集合"
         count={locations.length}
         accent="text-cyan-500"
+        collapsed={collapsedGroups.includes('location')}
+        onToggle={toggleCollapsedGroup}
         onAdd={handleAddLocation}
         addLabel="新建地点"
       >
@@ -630,6 +667,7 @@ function ProjectTree({
               key={l.id}
               label={l.name || '未命名'}
               sublabel={l.type}
+              selected={selectedNodeId === l.id}
               onClick={() => onSelectEntity(l.id, 'location')}
               onDragStart={(e) => setDragData(e, 'location', l.id)}
               onDelete={() => handleDelete('location', l.id, l.name || '地点')}
@@ -640,10 +678,13 @@ function ProjectTree({
 
       {/* 世界观要素集合 */}
       <CollapsibleGroup
+        kind="world_element"
         icon={Globe}
         label="世界观要素"
         count={worldElements.length}
         accent="text-indigo-500"
+        collapsed={collapsedGroups.includes('world_element')}
+        onToggle={toggleCollapsedGroup}
         onAdd={handleAddWorldElement}
         addLabel="新建世界观要素"
       >
@@ -655,6 +696,7 @@ function ProjectTree({
               key={w.id}
               label={w.name || '未命名'}
               sublabel={w.category}
+              selected={selectedNodeId === w.id}
               onClick={() => onSelectEntity(w.id, 'world_element')}
               onDragStart={(e) => setDragData(e, 'world_element', w.id)}
               onDelete={() => handleDelete('world_element', w.id, w.name || '世界观要素')}
@@ -669,32 +711,38 @@ function ProjectTree({
 // ── 可折叠分组 ──
 
 interface CollapsibleGroupProps {
+  /** 分组标识（用于 store 同步折叠状态） */
+  kind: string
   icon: typeof Users
   label: string
   count: number
   accent: string
+  collapsed: boolean
+  onToggle: (kind: string) => void
   onAdd: () => void
   addLabel: string
   children: ReactElement | ReactElement[]
 }
 
 function CollapsibleGroup({
+  kind,
   icon: Icon,
   label,
   count,
   accent,
+  collapsed,
+  onToggle,
   onAdd,
   addLabel,
   children,
 }: CollapsibleGroupProps): ReactElement {
-  const [expanded, setExpanded] = useState(true)
-  const Chevron = expanded ? ChevronDown : ChevronRight
+  const Chevron = collapsed ? ChevronRight : ChevronDown
   return (
     <div className="rounded-md">
       <div className="flex items-center group">
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => onToggle(kind)}
           className="flex items-center gap-1.5 flex-1 min-w-0 px-1.5 py-1 rounded text-left hover:bg-muted transition-colors"
         >
           <Chevron className="size-3.5 text-muted-foreground shrink-0" />
@@ -705,7 +753,7 @@ function CollapsibleGroup({
           </Badge>
         </button>
       </div>
-      {expanded && (
+      {!collapsed && (
         <div className="ml-3 pl-2 border-l border-border/60 mt-0.5 space-y-0.5">
           {Children.toArray(children)}
           <button
@@ -728,6 +776,7 @@ function CollapsibleGroup({
 interface EntityItemProps {
   label: string
   sublabel?: string
+  selected?: boolean
   onClick: () => void
   onDragStart: (e: React.DragEvent<HTMLDivElement>) => void
   onDelete: () => void
@@ -736,6 +785,7 @@ interface EntityItemProps {
 function EntityItem({
   label,
   sublabel,
+  selected = false,
   onClick,
   onDragStart,
   onDelete,
@@ -745,11 +795,14 @@ function EntityItem({
       draggable
       onDragStart={onDragStart}
       onClick={onClick}
-      className="group flex items-center gap-1.5 px-1.5 py-1 rounded text-left hover:bg-muted transition-colors cursor-pointer"
+      className={cn(
+        'group flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors cursor-pointer',
+        selected ? 'bg-primary/10' : 'hover:bg-muted',
+      )}
     >
       <span className="size-1 rounded-full bg-muted-foreground/40 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <div className="text-xs text-text truncate">{label}</div>
+        <div className={cn('text-xs truncate', selected ? 'text-primary font-medium' : 'text-text')}>{label}</div>
         {sublabel && (
           <div className="text-[10px] text-muted-foreground truncate">{sublabel}</div>
         )}
@@ -777,7 +830,9 @@ interface ChapterItemProps {
   conflicts: NovelConflict[]
   foreshadows: NovelForeshadow[]
   characterHistory: NovelCharacterHistory[]
+  selected?: boolean
   onSelectEntity: (id: string, type: NovelNodeType) => void
+  onSelectChapter: (chapter: NovelChapter) => void
   onDelete: () => void
 }
 
@@ -787,7 +842,9 @@ function ChapterItem({
   conflicts,
   foreshadows,
   characterHistory,
+  selected = false,
   onSelectEntity,
+  onSelectChapter,
   onDelete,
 }: ChapterItemProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
@@ -839,7 +896,10 @@ function ChapterItem({
       <div
         draggable
         onDragStart={(e) => setDragData(e, 'chapter', chapter.id)}
-        className="group flex items-center gap-1.5 px-1.5 py-1 rounded text-left hover:bg-muted transition-colors cursor-pointer"
+        className={cn(
+          'group flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors cursor-pointer',
+          selected ? 'bg-primary/10' : 'hover:bg-muted',
+        )}
       >
         <button
           type="button"
@@ -855,9 +915,9 @@ function ChapterItem({
         <span className="size-1 rounded-full bg-emerald-500/60 shrink-0" aria-hidden="true" />
         <div
           className="min-w-0 flex-1 cursor-pointer"
-          onClick={() => onSelectEntity(chapter.id, 'chapter')}
+          onClick={() => onSelectChapter(chapter)}
         >
-          <div className="text-xs text-text truncate">
+          <div className={cn('text-xs truncate', selected ? 'text-primary font-medium' : 'text-text')}>
             <span className="text-muted-foreground">第 {chapter.chapterNumber} 章</span> · {title}
           </div>
         </div>

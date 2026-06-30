@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
-import { ArrowLeft, Download, Sparkles, Database, ScrollText, Clock, LayoutGrid } from 'lucide-react'
+import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import {
@@ -38,36 +38,39 @@ import { NovelDetailPanel } from './novel-detail-panel'
 import { ChapterLivePanel } from './chapter-live-view'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
-import { NovelTimelineWorkspace } from './timeline/novel-timeline-workspace'
+import { MatrixWorkspace } from './matrix/matrix-workspace'
 import { ChapterContentEditor } from './chapter-content-editor'
 
-// ── 视图切换组件（时间轴 / 画布）──
+// ── 视图切换组件（矩阵 / 画布）──
 
 interface ViewSwitcherProps {
-  value: 'timeline' | 'canvas'
-  onChange: (mode: 'timeline' | 'canvas') => void
+  value: 'matrix' | 'canvas'
+  onChange: (mode: 'matrix' | 'canvas') => void
 }
 
 function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
+  const base = 'inline-flex items-center gap-1 h-7 px-2.5 text-[11px] rounded-md transition-colors'
+  const active = 'bg-surface-3 text-text border border-border'
+  const inactive = 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent'
   return (
-    <div className="novel-view-switcher">
+    <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-1 border border-border rounded-lg">
       <button
         type="button"
-        className={`novel-view-switcher-btn ${value === 'timeline' ? 'is-active' : ''}`}
-        onClick={() => onChange('timeline')}
-        title="时间轴视图"
+        className={`${base} ${value === 'matrix' ? active : inactive}`}
+        onClick={() => onChange('matrix')}
+        title="矩阵视图"
       >
-        <Clock className="size-3.5" />
-        <span>时间轴</span>
+        <Grid3x3 className="size-3" />
+        <span className="leading-none">矩阵</span>
       </button>
       <button
         type="button"
-        className={`novel-view-switcher-btn ${value === 'canvas' ? 'is-active' : ''}`}
+        className={`${base} ${value === 'canvas' ? active : inactive}`}
         onClick={() => onChange('canvas')}
         title="画布视图"
       >
-        <LayoutGrid className="size-3.5" />
-        <span>画布</span>
+        <LayoutGrid className="size-3" />
+        <span className="leading-none">画布</span>
       </button>
     </div>
   )
@@ -398,7 +401,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           </div>
         </header>
 
-        {/* 工具栏（仅画布视图显示；时间轴视图自带工具栏） */}
+        {/* 工具栏（仅画布视图显示；矩阵视图自带工具栏） */}
         {currentProject && viewMode === 'canvas' && (
           <NovelToolbar
             onRelayout={handleRelayout}
@@ -421,7 +424,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             side="left"
           />
 
-          {/* 主内容区：时间轴 / 画布可切换 */}
+          {/* 主内容区：矩阵 / 画布可切换 */}
           <main className="flex-1 min-w-0 h-full overflow-hidden flex flex-col">
             {currentProject ? (
               <>
@@ -438,12 +441,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     className="text-[10px]"
                     style={{ color: 'var(--color-subtle)' }}
                   >
-                    {viewMode === 'timeline' ? '时间轴视图' : '画布视图'}
+                    {viewMode === 'matrix' ? '矩阵视图' : '画布视图'}
                   </span>
                 </div>
 
                 <div className="flex-1 min-h-0 flex flex-col">
-                  {viewMode === 'timeline' ? (
+                  {viewMode === 'matrix' ? (
                     <>
                       {/* 上：章节正文编辑器 */}
                       <div style={{ height: contentEditorHeight }} className="shrink-0 min-h-[120px] overflow-hidden">
@@ -461,12 +464,11 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onSizeChange={handleContentEditorHeightChange}
                         side="top"
                       />
-                      {/* 下：时间线编辑器 */}
+                      {/* 下：矩阵视图 */}
                       <div className="flex-1 min-h-[200px] overflow-hidden">
-                        <NovelTimelineWorkspace
+                        <MatrixWorkspace
                           creationRunning={creationFlow.isRunning}
                           creationChapterNumber={creationChapterNumber}
-                          onCancelCreation={handleDiscardCreation}
                           onRegenerateChapter={handleRegenerateChapter}
                           onStartCreationAt={handleStartCreationAt}
                         />

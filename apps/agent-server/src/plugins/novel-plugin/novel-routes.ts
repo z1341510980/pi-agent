@@ -506,6 +506,54 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  // ── AI 通用实体生成（不落库，前端 review 后调 createXxx） ──
+
+  const aiGenerateEntitySchema = z.object({
+    entityType: z.enum(['character', 'conflict', 'foreshadow', 'faction', 'location', 'world_element']),
+    coreStyle: z.string().min(1).max(500),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/entities/ai-generate',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(aiGenerateEntitySchema, request, reply)
+      if (!input) return reply
+
+      // SSE 设置
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      try {
+        const generated = await services.entityGenerator.generate(
+          request.params.projectId,
+          input.entityType,
+          input.coreStyle,
+          (event) => {
+            reply.raw.write(`data: ${JSON.stringify({ type: 'progress', data: event })}\n\n`)
+          },
+        )
+        // 注意：此处不落库，返回字段供前端 review，前端确认后调 createXxx
+        reply.raw.write(`data: ${JSON.stringify({ type: 'result', data: generated })}\n\n`)
+      } catch (err) {
+        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: String(err) })}\n\n`)
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.end()
+      }
+    },
+  })
+
   // ── 角色状态变更历史 ──
 
   const createCharacterHistorySchema = z.object({
