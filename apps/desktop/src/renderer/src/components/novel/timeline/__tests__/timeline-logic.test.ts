@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clampMoveRange, clampResizeRightRange, findSnapPoint } from '../timeline-logic'
+import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap } from '../timeline-logic'
 
 describe('clampMoveRange', () => {
   it('keeps original range when delta is within bounds', () => {
@@ -60,5 +60,27 @@ describe('findSnapPoint', () => {
   it('excludes the clip being dragged', () => {
     const snap = findSnapPoint(10, 14, 80, 'c1', tracks, 1, 20)
     expect(snap).toBeNull()
+  })
+})
+
+describe('finalClampAfterSnap', () => {
+  it('clamps move range after snap to keep within [1, maxChapter]', () => {
+    const r = finalClampAfterSnap('move', 19, 22, 5, 8, 20)
+    expect(r.end).toBe(20)
+    expect(r.start).toBe(17)
+  })
+  it('clamps newStart to 1 on resize-left after snap', () => {
+    const r = finalClampAfterSnap('resize-left', 0, 8, 0, 8, 20)
+    expect(r.start).toBe(1)
+    expect(r.end).toBe(8)
+  })
+  it('clamps newEnd to maxChapter on resize-right after snap', () => {
+    const r = finalClampAfterSnap('resize-right', 5, 25, 5, 8, 20)
+    expect(r.end).toBe(20)
+    expect(r.start).toBe(5)
+  })
+  it('leaves valid range untouched', () => {
+    const r = finalClampAfterSnap('move', 7, 10, 5, 8, 20)
+    expect(r).toEqual({ start: 7, end: 10 })
   })
 })

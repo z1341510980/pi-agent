@@ -43,7 +43,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
-import { clampMoveRange, clampResizeRightRange, findSnapPoint, type SnapResult } from './timeline-logic'
+import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, type SnapResult } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -549,6 +549,12 @@ export function TimelineEditor({
         setSnapLine(null)
       }
 
+      // 吸附后二次边界校验（A8）：吸附位移可能导致轻微越界，此处对 newStart/newEnd 做最终 clamp。
+      // 当未发生吸附时，输入值已被前置 clamp，此处为幂等操作。
+      const clamped = finalClampAfterSnap(dragState.type, newStart, newEnd, dragState.origStart, dragState.origEnd, maxChapter)
+      newStart = clamped.start
+      newEnd = clamped.end
+
       const update = { clipId: clip.id, start: newStart, end: newEnd }
       pendingClipUpdateRef.current = update
       setPendingClipUpdate(update)
@@ -687,6 +693,16 @@ export function TimelineEditor({
       hoverTimerRef.current = null
     }
     setHoverBubble(null)
+  }, [])
+
+  // 卸载时清理悬停定时器（A8）：避免组件卸载后 setTimeout 仍触发 setState 导致内存泄漏与告警
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) {
+        clearTimeout(hoverTimerRef.current)
+        hoverTimerRef.current = null
+      }
+    }
   }, [])
 
   // ── 播放时自动滚动 ──

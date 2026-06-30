@@ -101,3 +101,31 @@ export function findSnapPoint(
   }
   return best
 }
+
+/**
+ * 吸附后对 newStart/newEnd 做最终边界校验，防止吸附位移导致越界。
+ * - move：按 orig 时长反推 start 上界，保证 [1, maxChapter] 内完整区间
+ * - resize-left：start ∈ [1, origEnd]
+ * - resize-right：end ∈ [origStart, maxChapter]
+ */
+export function finalClampAfterSnap(
+  type: 'move' | 'resize-left' | 'resize-right',
+  newStart: number,
+  newEnd: number,
+  origStart: number,
+  origEnd: number,
+  maxChapter: number,
+): { start: number; end: number } {
+  if (type === 'move') {
+    const duration = origEnd - origStart
+    const start = Math.max(1, Math.min(newStart, maxChapter - duration))
+    return { start, end: start + duration }
+  }
+  if (type === 'resize-left') {
+    const start = Math.max(1, Math.min(newStart, origEnd))
+    return { start, end: newEnd }
+  }
+  // resize-right
+  const end = Math.max(origStart, Math.min(newEnd, maxChapter))
+  return { start: newStart, end }
+}
