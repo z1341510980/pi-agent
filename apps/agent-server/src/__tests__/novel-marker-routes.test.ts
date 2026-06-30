@@ -186,3 +186,86 @@ describe('clip-note marker (B6)', () => {
     expect(note.entityId).toBe('charA')
   })
 })
+
+describe('PATCH /markers/:id preserves fields (Zod v4 fix)', () => {
+  let projectId: string
+  beforeEach(async () => { projectId = await createProject() })
+
+  it('PATCH 仅更新 note，保留 entityType/entityId 及其他字段', async () => {
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/markers`,
+      payload: {
+        chapter: 5, type: 'clip-note', color: 'purple',
+        title: '角色A批注', note: 'n1',
+        entityType: 'character', entityId: 'charA',
+      },
+    })
+    expect(createRes.statusCode).toBe(200)
+    const created = JSON.parse(createRes.body).data
+    const markerId = created.id
+
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `${PLUGIN_PREFIX}/markers/${markerId}`,
+      payload: { note: '更新后的批注' },
+    })
+    expect(patchRes.statusCode).toBe(200)
+    const body = JSON.parse(patchRes.body)
+    expect(body.data.note).toBe('更新后的批注')
+    expect(body.data.entityType).toBe('character')
+    expect(body.data.entityId).toBe('charA')
+    expect(body.data.title).toBe('角色A批注')
+    expect(body.data.type).toBe('clip-note')
+    expect(body.data.color).toBe('purple')
+    expect(body.data.chapter).toBe(5)
+  })
+
+  it('PATCH 仅更新 chapter，保留其他字段', async () => {
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/markers`,
+      payload: {
+        chapter: 5, type: 'clip-note',
+        entityType: 'character', entityId: 'charA', note: 'n1',
+      },
+    })
+    expect(createRes.statusCode).toBe(200)
+    const markerId = JSON.parse(createRes.body).data.id
+
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `${PLUGIN_PREFIX}/markers/${markerId}`,
+      payload: { chapter: 10 },
+    })
+    expect(patchRes.statusCode).toBe(200)
+    const body = JSON.parse(patchRes.body)
+    expect(body.data.chapter).toBe(10)
+    expect(body.data.entityType).toBe('character')
+    expect(body.data.entityId).toBe('charA')
+    expect(body.data.note).toBe('n1')
+  })
+
+  it('PATCH 显式清空 note（传 null）', async () => {
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/markers`,
+      payload: {
+        chapter: 5, type: 'clip-note',
+        entityType: 'character', entityId: 'charA', note: '原始批注',
+      },
+    })
+    expect(createRes.statusCode).toBe(200)
+    const markerId = JSON.parse(createRes.body).data.id
+
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `${PLUGIN_PREFIX}/markers/${markerId}`,
+      payload: { note: null },
+    })
+    expect(patchRes.statusCode).toBe(200)
+    const body = JSON.parse(patchRes.body)
+    expect(body.data.note).toBeNull()
+    expect(body.data.entityType).toBe('character')
+  })
+})

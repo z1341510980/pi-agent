@@ -15,7 +15,7 @@
 
 import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { NovelServices } from './novel-services.js'
-import type { NovelChapter } from './core/types.js'
+import type { NovelChapter, NovelMarker } from './core/types.js'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { success } from '../../lib/api-response.js'
@@ -1558,6 +1558,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     entityId: z.string().nullable().default(null),
   })
 
+  const updateMarkerSchema = z.object({
+    chapter: z.number().int().min(1).optional(),
+    title: z.string().nullable().optional(),
+    note: z.string().nullable().optional(),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'in', 'out', 'clip-note']).optional(),
+    color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).optional(),
+    entityType: z.string().nullable().optional(),
+    entityId: z.string().nullable().optional(),
+  })
+
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/markers',
@@ -1586,10 +1596,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     method: 'PATCH',
     path: '/markers/:id',
     handler: async (request: any, reply: any) => {
-      const input = validateBody(createMarkerSchema.partial(), request, reply)
+      const input = validateBody(updateMarkerSchema, request, reply)
       if (!input) return reply
 
-      const updated = store.updateMarker(request.params.id, input)
+      const updated = store.updateMarker(request.params.id, input as Partial<NovelMarker>)
       if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `标记不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
     },
