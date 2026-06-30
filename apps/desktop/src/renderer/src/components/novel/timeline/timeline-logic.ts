@@ -129,3 +129,113 @@ export function finalClampAfterSnap(
   const end = Math.max(origStart, Math.min(newEnd, maxChapter))
   return { start: newStart, end }
 }
+
+// ── 关系层连线构建 ──
+
+const RELATION_COLOR: Record<string, string> = {
+  family: 'rgba(239, 68, 68, 0.7)',
+  friendship: 'rgba(59, 130, 246, 0.7)',
+  romance: 'rgba(236, 72, 153, 0.7)',
+  rivalry: 'rgba(30, 41, 59, 0.7)',
+  mentor: 'rgba(168, 85, 247, 0.7)',
+  ally: 'rgba(16, 185, 129, 0.7)',
+  leader: 'rgba(217, 119, 6, 0.85)',
+}
+
+const RELATION_LABEL: Record<string, string> = {
+  family: '亲情',
+  friendship: '友情',
+  romance: '爱情',
+  rivalry: '敌对',
+  mentor: '师徒',
+  ally: '盟友',
+  leader: '领袖',
+}
+
+export interface LineSegment {
+  id: string
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: string
+  label: string
+  relationType: string
+}
+
+interface RelClip { id: string; startChapter: number; endChapter: number; entityId: string }
+interface RelTrack { id: string; kind: string; clips: RelClip[] }
+interface RelRelationship { id: string; characterA: string; characterB: string; relationType?: string }
+interface RelFaction { id: string; leaderId: string | null; allies: string[] | null; enemies: string[] | null }
+
+/** 构建关系连线（纯函数，从 timeline-relation-layer.tsx 抽取） */
+export function buildRelationLines(
+  tracks: RelTrack[],
+  relationships: RelRelationship[],
+  factions: RelFaction[],
+  chapterWidth: number,
+  trackHeight: number,
+): LineSegment[] {
+  const trackClipRangeMap = new Map<string, { start: number; end: number; midX: number; midY: number }>()
+  tracks.forEach((track, idx) => {
+    if ((track.kind === 'character' || track.kind === 'faction') && track.clips.length > 0) {
+      const clip = track.clips[0]
+      const midCh = (clip.startChapter + clip.endChapter) / 2
+      trackClipRangeMap.set(clip.entityId, {
+        start: clip.startChapter,
+        end: clip.endChapter,
+        midX: (midCh - 0.5) * chapterWidth,
+        midY: idx * trackHeight + trackHeight / 2,
+      })
+    }
+  })
+
+  const lines: LineSegment[] = []
+
+  for (const rel of relationships) {
+    const a = trackClipRangeMap.get(rel.characterA)
+    const b = trackClipRangeMap.get(rel.characterB)
+    if (!a || !b) continue
+    if (a.end < b.start || b.end < a.start) continue
+    const relationType = rel.relationType ?? 'ally'
+    const color = RELATION_COLOR[relationType] ?? 'rgba(100, 100, 100, 0.5)'
+    const label = RELATION_LABEL[relationType] ?? relationType
+    lines.push({ id: rel.id, x1: a.midX, y1: a.midY, x2: b.midX, y2: b.midY, color, label, relationType })
+  }
+
+  const factionPairSeen = new Set<string>()
+  for (const f of factions) {
+    const fRange = trackClipRangeMap.get(f.id)
+    if (!fRange) continue
+    for (const allyId of f.allies ?? []) {
+      const allyRange = trackClipRangeMap.get(allyId)
+      if (!allyRange) continue
+      const key = `${[f.id, allyId].sort().join('|')}|ally`
+      if (factionPairSeen.has(key)) continue
+      factionPairSeen.add(key)
+      if (fRange.end < allyRange.start || allyRange.end < fRange.start) continue
+      lines.push({ id: `faction-ally-${key}`, x1: fRange.midX, y1: fRange.midY, x2: allyRange.midX, y2: allyRange.midY, color: RELATION_COLOR.ally, label: '同盟', relationType: 'ally' })
+    }
+    for (const enemyId of f.enemies ?? []) {
+      const enemyRange = trackClipRangeMap.get(enemyId)
+      if (!enemyRange) continue
+      const key = `${[f.id, enemyId].sort().join('|')}|enemy`
+      if (factionPairSeen.has(key)) continue
+      factionPairSeen.add(key)
+      if (fRange.end < enemyRange.start || enemyRange.end < fRange.start) continue
+      lines.push({ id: `faction-enemy-${key}`, x1: fRange.midX, y1: fRange.midY, x2: enemyRange.midX, y2: enemyRange.midY, color: RELATION_COLOR.rivalry, label: '敌对', relationType: 'rivalry' })
+    }
+  }
+
+  for (const f of factions) {
+    if (!f.leaderId) continue
+    const fRange = trackClipRangeMap.get(f.id)
+    if (!fRange) continue
+    const leaderRange = trackClipRangeMap.get(f.leaderId)
+    if (!leaderRange) continue
+    if (fRange.end < leaderRange.start || leaderRange.end < fRange.start) continue
+    lines.push({ id: `faction-leader-${f.id}-${f.leaderId}`, x1: fRange.midX, y1: fRange.midY, x2: leaderRange.midX, y2: leaderRange.midY, color: RELATION_COLOR.leader, label: '领袖', relationType: 'leader' })
+  }
+
+  return lines
+}

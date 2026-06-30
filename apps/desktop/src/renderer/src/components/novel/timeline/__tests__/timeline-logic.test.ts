@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap } from '../timeline-logic'
+import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, buildRelationLines } from '../timeline-logic'
 
 describe('clampMoveRange', () => {
   it('keeps original range when delta is within bounds', () => {
@@ -82,5 +82,63 @@ describe('finalClampAfterSnap', () => {
   it('leaves valid range untouched', () => {
     const r = finalClampAfterSnap('move', 7, 10, 5, 8, 20)
     expect(r).toEqual({ start: 7, end: 10 })
+  })
+})
+
+describe('buildRelationLines', () => {
+  it('builds character-character line when ranges overlap', () => {
+    const tracks = [
+      {
+        id: 't1', kind: 'character' as const, label: 'A', clips: [
+          { id: 'c1', startChapter: 1, endChapter: 10, effectId: 'x', entityType: 'character' as const, entityId: 'charA', label: 'A' },
+        ],
+      },
+      {
+        id: 't2', kind: 'character' as const, label: 'B', clips: [
+          { id: 'c2', startChapter: 5, endChapter: 15, effectId: 'x', entityType: 'character' as const, entityId: 'charB', label: 'B' },
+        ],
+      },
+    ]
+    const rels = [{ id: 'r1', projectId: 'p', characterA: 'charA', characterB: 'charB', relationType: 'friendship', currentStage: '', stageHistory: '', createdAt: 0, updatedAt: 0 }]
+    const lines = buildRelationLines(tracks, rels, [], 80, 36)
+    expect(lines.length).toBe(1)
+    expect(lines[0].relationType).toBe('friendship')
+  })
+
+  it('skips lines when ranges do not overlap', () => {
+    const tracks = [
+      {
+        id: 't1', kind: 'character' as const, label: 'A', clips: [
+          { id: 'c1', startChapter: 1, endChapter: 3, effectId: 'x', entityType: 'character' as const, entityId: 'charA', label: 'A' },
+        ],
+      },
+      {
+        id: 't2', kind: 'character' as const, label: 'B', clips: [
+          { id: 'c2', startChapter: 10, endChapter: 15, effectId: 'x', entityType: 'character' as const, entityId: 'charB', label: 'B' },
+        ],
+      },
+    ]
+    const rels = [{ id: 'r1', projectId: 'p', characterA: 'charA', characterB: 'charB', relationType: 'friendship', currentStage: '', stageHistory: '', createdAt: 0, updatedAt: 0 }]
+    expect(buildRelationLines(tracks, rels, [], 80, 36).length).toBe(0)
+  })
+
+  it('dedupes faction ally pairs bidirectionally', () => {
+    const tracks = [
+      {
+        id: 't1', kind: 'faction' as const, label: 'F1', clips: [
+          { id: 'c1', startChapter: 1, endChapter: 10, effectId: 'x', entityType: 'faction' as const, entityId: 'f1', label: 'F1' },
+        ],
+      },
+      {
+        id: 't2', kind: 'faction' as const, label: 'F2', clips: [
+          { id: 'c2', startChapter: 1, endChapter: 10, effectId: 'x', entityType: 'faction' as const, entityId: 'f2', label: 'F2' },
+        ],
+      },
+    ]
+    const factions = [
+      { id: 'f1', projectId: 'p', name: 'F1', description: '', type: 'organization' as const, leaderId: null, allies: ['f2'], enemies: [], strength: 'medium' as const, status: 'active' as const, createdAt: 0, updatedAt: 0 },
+      { id: 'f2', projectId: 'p', name: 'F2', description: '', type: 'organization' as const, leaderId: null, allies: ['f1'], enemies: [], strength: 'medium' as const, status: 'active' as const, createdAt: 0, updatedAt: 0 },
+    ]
+    expect(buildRelationLines(tracks, [], factions, 80, 36).length).toBe(1)
   })
 })
