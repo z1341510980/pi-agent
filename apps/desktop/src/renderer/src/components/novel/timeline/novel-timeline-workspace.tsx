@@ -731,6 +731,9 @@ export function NovelTimelineWorkspace({
     const restore = rangeToRestore(action, 'redo')
     if (restore.end >= restore.start) {
       void updateEntityRange(action.clip, restore.start, restore.end)
+    } else {
+      // 区间无效表示 redo 应"删除"该片段（delete/cut 的 after={0,-1}）：按 entityType 置空
+      void updateEntityRange(action.clip, 0, -1)
     }
     setHistory({
       past: [...cur.past, action],

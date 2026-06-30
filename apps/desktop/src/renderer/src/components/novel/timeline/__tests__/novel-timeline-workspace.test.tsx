@@ -106,3 +106,53 @@ describe('NovelTimelineWorkspace undo stack for delete (A4)', () => {
     await waitFor(() => expect(undoBtn.disabled).toBe(false))
   })
 })
+
+describe('NovelTimelineWorkspace redo for delete (A4)', () => {
+  it('redo re-deletes the clip after undo', async () => {
+    storeState.conflicts = [conflict]
+    const { updateConflict } = await import('@/api/novel-client')
+    vi.mocked(updateConflict).mockResolvedValue({ ...conflict, firstChapter: null, lastChapter: null })
+
+    render(<NovelTimelineWorkspace />)
+    await waitFor(() => expect(listMarkers).toHaveBeenCalled())
+
+    const undoBtn = screen.getByTitle('撤销') as HTMLButtonElement
+    const redoBtn = screen.getByTitle('重做') as HTMLButtonElement
+
+    // 选中冲突片段并删除（参考现有 A4 测试的选中+删除流程）
+    const clipLabel = await screen.findByText('主冲突', { selector: '.tl-clip-label' })
+    fireEvent.click(clipLabel)
+    const deleteBtn = (await screen.findByTitle('删除选中')) as HTMLButtonElement
+    await waitFor(() => expect(deleteBtn.disabled).toBe(false))
+    fireEvent.click(deleteBtn)
+
+    // 删除调用 updateConflict 置空区间
+    await waitFor(() => expect(updateConflict).toHaveBeenCalledWith(conflict.id, { firstChapter: null, lastChapter: null }))
+    const callsAfterDelete = vi.mocked(updateConflict).mock.calls.length
+    expect(callsAfterDelete).toBeGreaterThanOrEqual(1)
+
+    // undo 恢复（updateConflict 被调用恢复 3..8 区间）
+    await waitFor(() => expect(undoBtn.disabled).toBe(false))
+    fireEvent.click(undoBtn)
+    await waitFor(() => expect(redoBtn.disabled).toBe(false))
+    const callsAfterUndo = vi.mocked(updateConflict).mock.calls.length
+    expect(callsAfterUndo).toBeGreaterThan(callsAfterDelete)
+
+    // redo 重新删除：updateConflict 再次被调用置空
+    fireEvent.click(redoBtn)
+    await waitFor(() => {
+      expect(vi.mocked(updateConflict).mock.calls.length).toBeGreaterThan(callsAfterUndo)
+    })
+
+    // redo 走 updateEntityRange(clip, 0, -1) 分支：
+    // firstChapter = max(1, round(0)) = 1；lastChapter = max(1, round(-1)) = 1；
+    // 因 lastChapter === firstChapter，最终 lastChapter 传 null
+    const lastCall = vi.mocked(updateConflict).mock.calls[vi.mocked(updateConflict).mock.calls.length - 1]
+    expect(lastCall[0]).toBe(conflict.id)
+    expect(lastCall[1]).toEqual({ firstChapter: 1, lastChapter: null })
+
+    // redo 后 undo 按钮再次可用（past 栈非空），redo 按钮禁用（future 栈空）
+    await waitFor(() => expect(undoBtn.disabled).toBe(false))
+    expect(redoBtn.disabled).toBe(true)
+  })
+})
