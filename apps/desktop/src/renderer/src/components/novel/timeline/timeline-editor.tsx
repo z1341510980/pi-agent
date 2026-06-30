@@ -43,6 +43,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
+import { clampMoveRange, clampResizeRightRange } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -556,12 +557,13 @@ export function TimelineEditor({
       let newStart = dragState.origStart
       let newEnd = dragState.origEnd
       if (dragState.type === 'move') {
-        newStart = Math.max(1, dragState.origStart + deltaChapters)
-        newEnd = Math.max(newStart, dragState.origEnd + deltaChapters)
+        const r = clampMoveRange(dragState.origStart, dragState.origEnd, deltaChapters, maxChapter)
+        newStart = r.start
+        newEnd = r.end
       } else if (dragState.type === 'resize-left') {
         newStart = Math.max(1, Math.min(dragState.origEnd, dragState.origStart + deltaChapters))
       } else if (dragState.type === 'resize-right') {
-        newEnd = Math.max(dragState.origStart, Math.min(maxChapter, dragState.origEnd + deltaChapters))
+        newEnd = clampResizeRightRange(dragState.origStart, dragState.origEnd, deltaChapters, maxChapter)
       }
 
       if (useSnap) {
