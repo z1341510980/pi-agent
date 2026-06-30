@@ -293,8 +293,16 @@ export function MatrixWorkspace({
     const editable = isCellEditable(entityType)
     const present = editable && isCellPresent(entityId, entityType, chapter)
     const removable = editable && present && isCellRemovable(entityId, entityType, chapter)
-    setCellMenu({ x, y, entityId, entityName, entityType, chapter, present, editable, removable })
-  }, [isCellEditable, isCellPresent, isCellRemovable])
+    // foreshadow 动态状态：根据 firstChapter / recoverByChapter 判断下一步动作
+    let foreshadowState: 'unplanted' | 'planted' | 'recoverable' | undefined
+    if (entityType === 'foreshadow') {
+      const f = foreshadows.find((x) => x.id === entityId)
+      if (!f || f.firstChapter == null) foreshadowState = 'unplanted'
+      else if (f.recoverByChapter == null) foreshadowState = chapter > f.firstChapter ? 'planted' : 'unplanted'
+      else foreshadowState = chapter === f.recoverByChapter ? 'recoverable' : (chapter > f.firstChapter ? 'planted' : 'unplanted')
+    }
+    setCellMenu({ x, y, entityId, entityName, entityType, chapter, present, editable, removable, foreshadowState })
+  }, [isCellEditable, isCellPresent, isCellRemovable, foreshadows])
 
   const handleMarkPresent = useCallback(async (entityId: string, entityType: MatrixEntityKind, chapter: number): Promise<void> => {
     if (!currentProjectId) return
@@ -488,28 +496,93 @@ export function MatrixWorkspace({
     }
   }, [currentProjectId, noteDialog, upsertMarker, queryClient])
 
-  // ── C-4a 双击色带：编辑冲突/势力跨度 ──
+  // ── C-4a 双击色带 / 右键「编辑范围」：通用实体跨度编辑 ──
   const handleEditSpan = useCallback((entity: MatrixEntity) => {
-    if (entity.kind !== 'conflict' && entity.kind !== 'faction') return
+    if (entity.kind === 'world_element') return
     setSpanDialog({ entity })
   }, [])
 
+  // 右键菜单入口：通过 entityId 找到 MatrixEntity 再打开对话框
+  const handleEditSpanFromMenu = useCallback((entityId: string, _entityName: string, entityType: MatrixEntityKind) => {
+    if (entityType === 'world_element') return
+    const entity = matrixData.groups
+      .flatMap((g) => g.entities)
+      .find((e) => e.entityId === entityId && e.kind === entityType)
+    if (entity) setSpanDialog({ entity })
+  }, [matrixData.groups])
+
   const handleSubmitSpan = useCallback(async (entity: MatrixEntity, firstChapter: number, lastChapter: number): Promise<void> => {
+    if (!currentProjectId) return
     try {
-      if (entity.kind === 'conflict') {
-        const updated = await updateConflict(entity.entityId, { firstChapter, lastChapter })
-        useNovelStore.getState().upsertConflict(updated)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId ?? ''] })
-      } else if (entity.kind === 'faction') {
-        const updated = await updateFaction(entity.entityId, { firstChapter, lastChapter })
-        useNovelStore.getState().upsertFaction(updated)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId ?? ''] })
+      switch (entity.kind) {
+        case 'conflict': {
+          const updated = await updateConflict(entity.entityId, { firstChapter, lastChapter })
+          useNovelStore.getState().upsertConflict(updated)
+          break
+        }
+        case 'faction': {
+          const updated = await updateFaction(entity.entityId, { firstChapter, lastChapter })
+          useNovelStore.getState().upsertFaction(updated)
+          break
+        }
+        case 'foreshadow': {
+          // first → firstChapter（埋设点）；last → recoverByChapter（回收点）
+          const updated = await updateForeshadow(entity.entityId, {
+            firstChapter,
+            recoverByChapter: lastChapter,
+            status: lastChapter >= firstChapter ? 'recovered' : undefined,
+          })
+          useNovelStore.getState().upsertForeshadow(updated)
+          break
+        }
+        case 'character': {
+          // 在 [first, last] 范围每章保留/创建 characterHistory，移除范围外的
+          const inRange = characterHistory.filter(
+            (h) => h.characterId === entity.entityId && h.chapterNumber >= firstChapter && h.chapterNumber <= lastChapter,
+          )
+          const outRange = characterHistory.filter(
+            (h) => h.characterId === entity.entityId && (h.chapterNumber < firstChapter || h.chapterNumber > lastChapter),
+          )
+          // 删除范围外的
+          for (const r of outRange) {
+            await deleteCharacterHistory(currentProjectId, r.id)
+          }
+          // 创建范围内不存在的
+          const existingChs = new Set(inRange.map((h) => h.chapterNumber))
+          const toCreate: { characterId: string; chapterNumber: number }[] = []
+          for (let ch = firstChapter; ch <= lastChapter; ch++) {
+            if (!existingChs.has(ch)) {
+              toCreate.push({ characterId: entity.entityId, chapterNumber: ch })
+            }
+          }
+          if (toCreate.length > 0) {
+            const created = await batchCreateCharacterHistory(currentProjectId, toCreate)
+            setCharacterHistory([...inRange, ...created, ...characterHistory.filter((h) => h.characterId !== entity.entityId)])
+          } else {
+            setCharacterHistory([
+              ...inRange,
+              ...characterHistory.filter((h) => h.characterId !== entity.entityId),
+            ])
+          }
+          break
+        }
+        case 'location': {
+          // [first, last] 范围填满 appearChapters，移除范围外的章
+          const rangeChs: number[] = []
+          for (let ch = firstChapter; ch <= lastChapter; ch++) rangeChs.push(ch)
+          const updated = await updateLocation(entity.entityId, { appearChapters: rangeChs })
+          useNovelStore.getState().upsertLocation(updated)
+          break
+        }
+        case 'world_element':
+          break
       }
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
     } catch (err) {
       console.error('[MatrixWorkspace] 保存跨度失败:', err)
       throw err
     }
-  }, [currentProjectId, queryClient])
+  }, [currentProjectId, queryClient, characterHistory, setCharacterHistory])
 
   // ── 分组空白右键：新建实体 ──
   const handleContextMenuGroupEmpty = useCallback((kind: MatrixEntityKind) => {
@@ -718,6 +791,7 @@ export function MatrixWorkspace({
         onMarkPresent={(eid, kind, ch) => void handleMarkPresent(eid, kind, ch)}
         onRemovePresent={(eid, kind, ch) => void handleRemovePresent(eid, kind, ch)}
         onEditNote={handleEditNote}
+        onEditSpan={handleEditSpanFromMenu}
       />
 
       <EntityCreateDialog

@@ -14,7 +14,7 @@
  */
 
 import { useEffect, type ReactElement } from 'react'
-import { Plus, Trash2, StickyNote } from 'lucide-react'
+import { Plus, Trash2, StickyNote, ArrowLeftRight } from 'lucide-react'
 import type { MatrixEntityKind } from './matrix-logic'
 
 export interface EntityCellMenuPosition {
@@ -30,6 +30,8 @@ export interface EntityCellMenuPosition {
   editable: boolean
   /** 是否支持「删除出场」操作（端点型实体中间格不可删） */
   removable: boolean
+  /** foreshadow 动态文案状态：'unplanted' | 'planted' | 'recoverable' */
+  foreshadowState?: 'unplanted' | 'planted' | 'recoverable'
 }
 
 export interface EntityCellMenuProps {
@@ -38,10 +40,12 @@ export interface EntityCellMenuProps {
   onMarkPresent: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
   onRemovePresent: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
   onEditNote: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number) => void
+  /** 编辑范围：所有类型都支持（world_element 不可达，因 editable=false） */
+  onEditSpan?: (entityId: string, entityName: string, entityType: MatrixEntityKind) => void
 }
 
-/** 按 entityType 返回「标记出场」文案 */
-function markLabel(kind: MatrixEntityKind): string {
+/** 按 entityType + foreshadowState 返回「标记出场」文案 */
+function markLabel(kind: MatrixEntityKind, foreshadowState?: 'unplanted' | 'planted' | 'recoverable'): string {
   switch (kind) {
     case 'character':
       return '标记本章出场'
@@ -49,6 +53,9 @@ function markLabel(kind: MatrixEntityKind): string {
     case 'faction':
       return '扩展到本章'
     case 'foreshadow':
+      if (foreshadowState === 'unplanted') return '标记本章为埋设点'
+      if (foreshadowState === 'planted') return '标记本章为回收点'
+      if (foreshadowState === 'recoverable') return '本章已是回收点'
       return '标记埋设/回收点'
     case 'location':
       return '标记本章出场'
@@ -79,7 +86,7 @@ function removeLabel(kind: MatrixEntityKind): string {
 }
 
 /** 按 entityType 返回「标记」tooltip */
-function markTooltip(kind: MatrixEntityKind, present: boolean): string {
+function markTooltip(kind: MatrixEntityKind, present: boolean, foreshadowState?: 'unplanted' | 'planted' | 'recoverable'): string {
   if (present) return '该章已标记'
   switch (kind) {
     case 'character':
@@ -88,6 +95,9 @@ function markTooltip(kind: MatrixEntityKind, present: boolean): string {
     case 'faction':
       return '扩展 firstChapter/lastChapter 端点覆盖到本章'
     case 'foreshadow':
+      if (foreshadowState === 'unplanted') return '设 firstChapter = 本章，标记伏笔在此埋设'
+      if (foreshadowState === 'planted') return '设 recoverByChapter = 本章，标记伏笔在此回收'
+      if (foreshadowState === 'recoverable') return '本章已是回收点，无需重复标记'
       return '未埋设则设为埋设点；已埋设则设为回收点'
     case 'location':
       return '将本章加入 appearChapters 数组'
@@ -114,7 +124,7 @@ function removeTooltip(kind: MatrixEntityKind): string {
 }
 
 export function EntityCellMenu({
-  position, onClose, onMarkPresent, onRemovePresent, onEditNote,
+  position, onClose, onMarkPresent, onRemovePresent, onEditNote, onEditSpan,
 }: EntityCellMenuProps): ReactElement | null {
   useEffect(() => {
     if (!position) return
@@ -134,7 +144,7 @@ export function EntityCellMenu({
 
   if (!position) return null
 
-  const { x, y, entityId, entityName, entityType, chapter, present, editable, removable } = position
+  const { x, y, entityId, entityName, entityType, chapter, present, editable, removable, foreshadowState } = position
   const adjustedX = Math.min(x, window.innerWidth - 220)
   const adjustedY = Math.min(y, window.innerHeight - 200)
 
@@ -150,6 +160,13 @@ export function EntityCellMenu({
     onEditNote(entityId, entityName, entityType, chapter)
     onClose()
   }
+  const handleEditSpan = (): void => {
+    onEditSpan?.(entityId, entityName, entityType)
+    onClose()
+  }
+
+  // foreshadow 在 recoverable 状态（已是回收点）时标记按钮禁用
+  const markDisabled = present || (entityType === 'foreshadow' && foreshadowState === 'recoverable')
 
   return (
     <div
@@ -170,24 +187,35 @@ export function EntityCellMenu({
             type="button"
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-text hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             onClick={handleMark}
-            disabled={present}
-            title={markTooltip(entityType, present)}
+            disabled={markDisabled}
+            data-tip={markTooltip(entityType, present, foreshadowState)}
           >
             <Plus className="size-3.5" />
-            <span>{markLabel(entityType)}</span>
+            <span>{markLabel(entityType, foreshadowState)}</span>
           </button>
           <button
             type="button"
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             onClick={handleRemove}
             disabled={!removable}
-            title={removeTooltip(entityType)}
+            data-tip={removeTooltip(entityType)}
           >
             <Trash2 className="size-3.5" />
             <span>{removeLabel(entityType)}</span>
           </button>
           <div className="h-px bg-border my-1" />
         </>
+      )}
+      {editable && onEditSpan && (
+        <button
+          type="button"
+          className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-text hover:bg-muted transition-colors"
+          onClick={handleEditSpan}
+          data-tip="打开范围编辑对话框，直接指定起止章节"
+        >
+          <ArrowLeftRight className="size-3.5" />
+          <span>编辑范围</span>
+        </button>
       )}
       <button
         type="button"

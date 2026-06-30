@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Save, X, Info, History, Plus } from 'lucide-react'
+import { Save, X, Info, History, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import {
   Select,
   SelectContent,
@@ -21,7 +22,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelStore, type NovelNodeType } from '@/stores/novel-store'
 import {
   updateProject,
   updateCharacter,
@@ -72,13 +73,26 @@ function TextInput(props: React.ComponentProps<typeof Input>): ReactElement {
   return <Input {...props} />
 }
 
-function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>): ReactElement {
+type TextAreaVariant = 'short' | 'medium' | 'long'
+
+const TEXTAREA_VARIANT_CLASS: Record<TextAreaVariant, string> = {
+  short: 'min-h-[60px]',
+  medium: 'min-h-[100px]',
+  long: 'min-h-[200px]',
+}
+
+function TextArea({
+  variant = 'short',
+  className,
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { variant?: TextAreaVariant }): ReactElement {
   return (
     <textarea
       {...props}
       className={cn(
-        'w-full min-h-[60px] rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30',
-        props.className,
+        'w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30',
+        TEXTAREA_VARIANT_CLASS[variant],
+        className,
       )}
     />
   )
@@ -197,6 +211,19 @@ const WORLD_ELEMENT_CATEGORY_OPTIONS: { value: NovelWorldElementCategory; label:
   { value: 'geography', label: '地理' },
 ]
 
+// 节点类型中文标签
+const NODE_TYPE_LABELS: Record<NovelNodeType, string> = {
+  project: '项目',
+  character: '角色',
+  chapter: '章节',
+  conflict: '冲突',
+  foreshadow: '伏笔',
+  faction: '势力',
+  location: '地点',
+  world_element: '世界要素',
+  group: '分组',
+}
+
 // 动态状态字段（用于变更历史记录）
 const DYNAMIC_FIELDS: CharacterHistoryField[] = [
   'currentState',
@@ -289,7 +316,7 @@ export function NovelDetailPanel(): ReactElement {
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
         <div className="flex items-center gap-2 min-w-0">
           <Badge variant="secondary" className="shrink-0">
-            {selectedNodeType}
+            {NODE_TYPE_LABELS[selectedNodeType] ?? selectedNodeType}
           </Badge>
           <span className="text-sm font-medium text-text truncate">
             {entityTitle(entity, selectedNodeType)}
@@ -412,46 +439,70 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <FieldRow label="标题">
-        <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="题材">
-        <TextInput value={form.genre} onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="简介">
-        <TextArea value={form.synopsis} onChange={(e) => setForm((f) => ({ ...f, synopsis: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="目标字数">
-        <TextInput
-          type="number"
-          value={form.targetWords}
-          onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
-        />
-      </FieldRow>
-      <FieldRow label="当前阶段">
-        <Select value={form.currentStage} onValueChange={(v) => setForm((f) => ({ ...f, currentStage: v as StoryStage }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {STAGE_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="状态">
-        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelProject['status'] }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {PROJECT_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
+      <Card>
+        <CardHeader>
+          <CardTitle>基础信息</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="标题">
+            <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="题材">
+            <TextInput value={form.genre} onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="目标字数">
+            <TextInput
+              type="number"
+              value={form.targetWords}
+              onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
+            />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>状态</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="当前阶段">
+            <Select value={form.currentStage} onValueChange={(v) => setForm((f) => ({ ...f, currentStage: v as StoryStage }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STAGE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="状态">
+            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelProject['status'] }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROJECT_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>简介</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="简介">
+            <TextArea variant="long" value={form.synopsis} onChange={(e) => setForm((f) => ({ ...f, synopsis: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
@@ -497,48 +548,75 @@ function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <FieldRow label="姓名">
-        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="身份">
-        <TextInput value={form.identity} onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="简述">
-        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="性格">
-        <TextArea value={form.personality} onChange={(e) => setForm((f) => ({ ...f, personality: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="外貌">
-        <TextArea value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
-      </FieldRow>
+      <Card>
+        <CardHeader>
+          <CardTitle>基础</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="姓名">
+            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="身份">
+            <TextInput value={form.identity} onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
 
-      {/* 动态状态字段分组（带变更历史提示） */}
-      <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 space-y-2">
-        <p className="text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1">
-          <Info className="size-3" />
-          修改动态状态会记录到变更历史
-        </p>
-        <FieldRow label="当前状态">
-          <TextInput value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
-        </FieldRow>
-        <FieldRow label="当前目标">
-          <TextInput value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
-        </FieldRow>
-        <FieldRow label="当前压力">
-          <TextInput value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
-        </FieldRow>
-        <FieldRow label="秘密">
-          <TextArea value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
-        </FieldRow>
-        <FieldRow label="弧光阶段">
-          <TextInput value={form.arcStage} onChange={(e) => setForm((f) => ({ ...f, arcStage: e.target.value }))} />
-        </FieldRow>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>描述</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="简述">
+            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="性格">
+            <TextArea variant="medium" value={form.personality} onChange={(e) => setForm((f) => ({ ...f, personality: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="外貌">
+            <TextArea variant="medium" value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
 
-      <FieldRow label="说话风格">
-        <TextInput value={form.speechStyle} onChange={(e) => setForm((f) => ({ ...f, speechStyle: e.target.value }))} />
-      </FieldRow>
+      <Card>
+        <CardHeader>
+          <CardTitle>当前状态</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1">
+            <Info className="size-3" />
+            修改动态状态会记录到变更历史
+          </p>
+          <FieldRow label="当前状态">
+            <TextArea variant="short" value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="当前目标">
+            <TextArea variant="short" value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="当前压力">
+            <TextArea variant="short" value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="秘密">
+            <TextArea variant="medium" value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="弧光阶段">
+            <TextArea variant="short" value={form.arcStage} onChange={(e) => setForm((f) => ({ ...f, arcStage: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>说话风格</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="说话风格">
+            <TextArea variant="short" value={form.speechStyle} onChange={(e) => setForm((f) => ({ ...f, speechStyle: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
 
@@ -843,38 +921,68 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>第 {entity.chapterNumber} 章 · 卷 {entity.volume}</span>
-        <span>{entity.wordCount} 字</span>
-      </div>
-      <FieldRow label="标题">
-        <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="状态">
-        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ChapterStatus }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CHAPTER_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="内容">
-        <TextArea
-          value={form.content}
-          onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
-          className="min-h-[200px] font-mono text-xs"
-        />
-      </FieldRow>
+      <Card>
+        <CardHeader>
+          <CardTitle>元信息</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>第 {entity.chapterNumber} 章 · 卷 {entity.volume}</span>
+            <span>{entity.wordCount} 字</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>标题与状态</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="标题">
+            <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="状态">
+            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ChapterStatus }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CHAPTER_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>正文</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="内容">
+            <TextArea
+              variant="long"
+              value={form.content}
+              onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
+              className="font-mono text-xs"
+            />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {entity.narrativeTask && (
-        <FieldRow label="叙事任务">
-          <pre className="text-xs text-muted-foreground whitespace-pre-wrap rounded bg-muted/50 p-2">
-            {entity.narrativeTask}
-          </pre>
-        </FieldRow>
+        <Card>
+          <CardHeader>
+            <CardTitle>叙事任务</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="text-xs text-muted-foreground whitespace-pre-wrap rounded bg-muted/50 p-2">
+              {entity.narrativeTask}
+            </pre>
+          </CardContent>
+        </Card>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -929,60 +1037,81 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <FieldRow label="描述">
-        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="类型">
-        <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as ConflictType }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CONFLICT_TYPE_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="阶段">
-        <Select value={form.stage} onValueChange={(v) => setForm((f) => ({ ...f, stage: v as ConflictStage }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CONFLICT_STAGE_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="强度">
-        <div className="flex items-center gap-2">
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full bg-rose-500"
-              style={{ width: `${(Number(form.intensity) / 10) * 100}%` }}
-            />
-          </div>
-          <TextInput
-            type="number"
-            min={0}
-            max={10}
-            value={form.intensity}
-            onChange={(e) => setForm((f) => ({ ...f, intensity: e.target.value }))}
-            className="w-16"
-          />
-          <span className="text-xs text-muted-foreground">/10</span>
-        </div>
-      </FieldRow>
+      <Card>
+        <CardHeader>
+          <CardTitle>基本信息</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="描述">
+            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="类型">
+            <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as ConflictType }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONFLICT_TYPE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>状态</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="阶段">
+            <Select value={form.stage} onValueChange={(v) => setForm((f) => ({ ...f, stage: v as ConflictStage }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONFLICT_STAGE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="强度">
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full bg-rose-500"
+                  style={{ width: `${(Number(form.intensity) / 10) * 100}%` }}
+                />
+              </div>
+              <TextInput
+                type="number"
+                min={0}
+                max={10}
+                value={form.intensity}
+                onChange={(e) => setForm((f) => ({ ...f, intensity: e.target.value }))}
+                className="w-16"
+              />
+              <span className="text-xs text-muted-foreground">/10</span>
+            </div>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {participants.length > 0 && (
-        <FieldRow label="参与者">
-          <div className="flex flex-wrap gap-1">
-            {participants.map((id) => (
-              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-            ))}
-          </div>
-        </FieldRow>
+        <Card>
+          <CardHeader>
+            <CardTitle>参与者</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-1">
+              {participants.map((id) => (
+                <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -1009,6 +1138,14 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
   try {
     const p = JSON.parse(entity.linkedCharacters)
     if (Array.isArray(p)) linkedCharacters = p.filter((x): x is string => typeof x === 'string')
+  } catch {
+    // ignore
+  }
+
+  let linkedClues: string[] = []
+  try {
+    const c = JSON.parse(entity.linkedClues)
+    if (Array.isArray(c)) linkedClues = c.filter((x): x is string => typeof x === 'string')
   } catch {
     // ignore
   }
@@ -1045,56 +1182,99 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <FieldRow label="描述">
-        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="分类">
-        <TextInput value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="状态">
-        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ForeshadowStatus }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {FORESHADOW_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <div className="grid grid-cols-3 gap-2">
-        <FieldRow label="首次出现">
-          <TextInput
-            type="number"
-            value={form.firstChapter}
-            onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
-          />
-        </FieldRow>
-        <FieldRow label="最后强化">
-          <TextInput
-            type="number"
-            value={form.lastChapter}
-            onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
-          />
-        </FieldRow>
-        <FieldRow label="回收期限">
-          <TextInput
-            type="number"
-            value={form.recoverByChapter}
-            onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
-          />
-        </FieldRow>
-      </div>
-      {linkedCharacters.length > 0 && (
-        <FieldRow label="关联角色">
-          <div className="flex flex-wrap gap-1">
-            {linkedCharacters.map((id) => (
-              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-            ))}
-          </div>
-        </FieldRow>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>基本信息</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="描述">
+            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="分类">
+            <TextArea variant="short" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>状态</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="状态">
+            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ForeshadowStatus }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FORESHADOW_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>章节</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="首次出现">
+            <TextInput
+              type="number"
+              value={form.firstChapter}
+              onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
+            />
+          </FieldRow>
+          <FieldRow label="最后强化">
+            <TextInput
+              type="number"
+              value={form.lastChapter}
+              onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
+            />
+          </FieldRow>
+          <FieldRow label="回收期限">
+            <TextInput
+              type="number"
+              value={form.recoverByChapter}
+              onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
+            />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>关联</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="关联角色">
+            {linkedCharacters.length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {linkedCharacters.map((id) => (
+                  <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
+                ))}
+              </div>
+            ) : (
+              <span className="text-[11px] text-muted-foreground">暂无</span>
+            )}
+          </FieldRow>
+          <FieldRow label="关联线索">
+            {linkedClues.length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {linkedClues.map((id) => (
+                  <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
+                ))}
+              </div>
+            ) : (
+              <span className="text-[11px] text-muted-foreground">暂无</span>
+            )}
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
@@ -1105,6 +1285,8 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
 
 function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
   const upsertFaction = useNovelStore((s) => s.upsertFaction)
+  const characters = useNovelStore((s) => s.characters)
+  const factions = useNovelStore((s) => s.factions)
   const [form, setForm] = useState({
     name: entity.name,
     description: entity.description,
@@ -1113,12 +1295,24 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
     ideology: entity.ideology,
     strength: entity.strength,
     status: entity.status,
-    resources: entity.resources.join(', '),
-    allies: entity.allies.join(', '),
-    enemies: entity.enemies.join(', '),
+    resourcesList: [...entity.resources],
+    alliesList: [...entity.allies],
+    enemiesList: [...entity.enemies],
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const updateResource = (idx: number, val: string) =>
+    setForm((f) => ({ ...f, resourcesList: f.resourcesList.map((s, i) => (i === idx ? val : s)) }))
+  const removeResource = (idx: number) =>
+    setForm((f) => ({ ...f, resourcesList: f.resourcesList.filter((_, i) => i !== idx) }))
+  const addResource = () =>
+    setForm((f) => ({ ...f, resourcesList: [...f.resourcesList, ''] }))
+
+  const addAlly = (id: string) => setForm((f) => ({ ...f, alliesList: [...f.alliesList, id] }))
+  const removeAlly = (id: string) => setForm((f) => ({ ...f, alliesList: f.alliesList.filter((x) => x !== id) }))
+  const addEnemy = (id: string) => setForm((f) => ({ ...f, enemiesList: [...f.enemiesList, id] }))
+  const removeEnemy = (id: string) => setForm((f) => ({ ...f, enemiesList: f.enemiesList.filter((x) => x !== id) }))
 
   const dirty =
     form.name !== entity.name ||
@@ -1128,16 +1322,14 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
     form.ideology !== entity.ideology ||
     form.strength !== entity.strength ||
     form.status !== entity.status ||
-    form.resources !== entity.resources.join(', ') ||
-    form.allies !== entity.allies.join(', ') ||
-    form.enemies !== entity.enemies.join(', ')
+    form.resourcesList.join('||') !== entity.resources.join('||') ||
+    form.alliesList.join(',') !== entity.allies.join(',') ||
+    form.enemiesList.join(',') !== entity.enemies.join(',')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
     setError(null)
     try {
-      const splitList = (s: string) =>
-        s.split(',').map((x) => x.trim()).filter(Boolean)
       const updated = await updateFaction(entity.id, {
         name: form.name,
         description: form.description,
@@ -1146,9 +1338,9 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
         ideology: form.ideology,
         strength: form.strength,
         status: form.status,
-        resources: splitList(form.resources),
-        allies: splitList(form.allies),
-        enemies: splitList(form.enemies),
+        resources: form.resourcesList.filter((s) => s.trim()),
+        allies: form.alliesList,
+        enemies: form.enemiesList,
       })
       upsertFaction(updated)
     } catch (err) {
@@ -1160,83 +1352,200 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <FieldRow label="名称">
-        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="简述">
-        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
-      <div className="grid grid-cols-2 gap-2">
-        <FieldRow label="类型">
-          <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelFactionType }))}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {FACTION_TYPE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+      <Card>
+        <CardHeader>
+          <CardTitle>基础</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="名称">
+            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="简述">
+            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>属性</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="类型">
+            <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelFactionType }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FACTION_TYPE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="实力">
+            <Select value={form.strength} onValueChange={(v) => setForm((f) => ({ ...f, strength: v as NovelFactionStrength }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FACTION_STRENGTH_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="状态">
+            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelFactionStatus }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FACTION_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>领导与理念</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="首领角色">
+            <Select value={form.leaderId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, leaderId: v === '__none__' ? '' : v }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">无</SelectItem>
+                {characters.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="理念 / 信仰">
+            <TextArea variant="short" value={form.ideology} onChange={(e) => setForm((f) => ({ ...f, ideology: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>资源与关系</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="资源">
+            <div className="space-y-2">
+              {form.resourcesList.map((item, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <Input
+                    className="flex-1"
+                    placeholder="资源名称"
+                    value={item}
+                    onChange={(e) => updateResource(idx, e.target.value)}
+                  />
+                  <Button size="icon-sm" variant="ghost" onClick={() => removeResource(idx)} aria-label="删除">
+                    <Trash2 className="size-3.5 text-muted-foreground" />
+                  </Button>
+                </div>
               ))}
-            </SelectContent>
-          </Select>
-        </FieldRow>
-        <FieldRow label="实力">
-          <Select value={form.strength} onValueChange={(v) => setForm((f) => ({ ...f, strength: v as NovelFactionStrength }))}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {FACTION_STRENGTH_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FieldRow>
-      </div>
-      <FieldRow label="状态">
-        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelFactionStatus }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {FACTION_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="首领角色 ID">
-        <TextInput
-          value={form.leaderId}
-          onChange={(e) => setForm((f) => ({ ...f, leaderId: e.target.value }))}
-          placeholder="角色 ID（可留空）"
-        />
-      </FieldRow>
-      <FieldRow label="理念 / 信仰">
-        <TextArea value={form.ideology} onChange={(e) => setForm((f) => ({ ...f, ideology: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="资源（逗号分隔）">
-        <TextArea
-          value={form.resources}
-          onChange={(e) => setForm((f) => ({ ...f, resources: e.target.value }))}
-          placeholder="金钱, 矿石, 法术卷轴"
-        />
-      </FieldRow>
-      <div className="grid grid-cols-2 gap-2">
-        <FieldRow label="盟友势力 ID（逗号分隔）">
-          <TextArea
-            value={form.allies}
-            onChange={(e) => setForm((f) => ({ ...f, allies: e.target.value }))}
-            placeholder="faction-id-1, faction-id-2"
-          />
-        </FieldRow>
-        <FieldRow label="敌对势力 ID（逗号分隔）">
-          <TextArea
-            value={form.enemies}
-            onChange={(e) => setForm((f) => ({ ...f, enemies: e.target.value }))}
-            placeholder="faction-id-3, faction-id-4"
-          />
-        </FieldRow>
-      </div>
+              <Button size="sm" variant="outline" onClick={addResource}>
+                <Plus className="size-3.5 mr-1" /> 添加资源
+              </Button>
+            </div>
+          </FieldRow>
+          <FieldRow label="盟友势力">
+            <div className="space-y-2">
+              {form.alliesList.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {form.alliesList.map((id) => {
+                    const fa = factions.find((x) => x.id === id)
+                    return (
+                      <Badge key={id} variant="outline" className="text-[10px] gap-1">
+                        {fa?.name ?? id.slice(0, 8)}
+                        <button
+                          type="button"
+                          onClick={() => removeAlly(id)}
+                          className="hover:text-destructive"
+                          aria-label="移除"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </Badge>
+                    )
+                  })}
+                </div>
+              )}
+              <Select
+                value=""
+                onValueChange={(id) => {
+                  if (id && id !== '__none__' && !form.alliesList.includes(id)) addAlly(id)
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="添加盟友势力" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">无</SelectItem>
+                  {factions
+                    .filter((f) => f.id !== entity.id && !form.alliesList.includes(f.id))
+                    .map((f) => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </FieldRow>
+          <FieldRow label="敌对势力">
+            <div className="space-y-2">
+              {form.enemiesList.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {form.enemiesList.map((id) => {
+                    const fe = factions.find((x) => x.id === id)
+                    return (
+                      <Badge key={id} variant="outline" className="text-[10px] gap-1">
+                        {fe?.name ?? id.slice(0, 8)}
+                        <button
+                          type="button"
+                          onClick={() => removeEnemy(id)}
+                          className="hover:text-destructive"
+                          aria-label="移除"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </Badge>
+                    )
+                  })}
+                </div>
+              )}
+              <Select
+                value=""
+                onValueChange={(id) => {
+                  if (id && id !== '__none__' && !form.enemiesList.includes(id)) addEnemy(id)
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="添加敌对势力" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">无</SelectItem>
+                  {factions
+                    .filter((f) => f.id !== entity.id && !form.enemiesList.includes(f.id))
+                    .map((f) => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
@@ -1247,6 +1556,8 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
 
 function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
   const upsertLocation = useNovelStore((s) => s.upsertLocation)
+  const locations = useNovelStore((s) => s.locations)
+  const factions = useNovelStore((s) => s.factions)
   const [form, setForm] = useState({
     name: entity.name,
     description: entity.description,
@@ -1256,9 +1567,25 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
     significance: entity.significance,
     firstChapter: entity.firstChapter != null ? String(entity.firstChapter) : '',
     status: entity.status,
+    appearChapters: [...(entity.appearChapters ?? [])],
   })
+  const [appearChapterInput, setAppearChapterInput] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const addAppearChapter = () => {
+    const n = Number(appearChapterInput)
+    if (!appearChapterInput || Number.isNaN(n)) return
+    setForm((f) => {
+      if (f.appearChapters.includes(n)) return f
+      return { ...f, appearChapters: [...f.appearChapters, n].sort((a, b) => a - b) }
+    })
+    setAppearChapterInput('')
+  }
+
+  const removeAppearChapter = (n: number) => {
+    setForm((f) => ({ ...f, appearChapters: f.appearChapters.filter((x) => x !== n) }))
+  }
 
   const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
 
@@ -1270,7 +1597,8 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
     (entity.factionId ?? '') !== form.factionId ||
     form.significance !== entity.significance ||
     toNumOrNull(form.firstChapter) !== entity.firstChapter ||
-    form.status !== entity.status
+    form.status !== entity.status ||
+    form.appearChapters.join(',') !== (entity.appearChapters ?? []).join(',')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
@@ -1285,6 +1613,7 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
         significance: form.significance,
         firstChapter: toNumOrNull(form.firstChapter),
         status: form.status,
+        appearChapters: form.appearChapters,
       })
       upsertLocation(updated)
     } catch (err) {
@@ -1296,74 +1625,147 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <FieldRow label="名称">
-        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="简述">
-        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
-      <div className="grid grid-cols-2 gap-2">
-        <FieldRow label="类型">
-          <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelLocationType }))}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {LOCATION_TYPE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FieldRow>
-        <FieldRow label="重要程度">
-          <Select value={form.significance} onValueChange={(v) => setForm((f) => ({ ...f, significance: v as NovelLocationSignificance }))}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {LOCATION_SIGNIFICANCE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FieldRow>
-      </div>
-      <FieldRow label="状态">
-        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelLocationStatus }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {LOCATION_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <div className="grid grid-cols-2 gap-2">
-        <FieldRow label="父级地点 ID">
-          <TextInput
-            value={form.parentId}
-            onChange={(e) => setForm((f) => ({ ...f, parentId: e.target.value }))}
-            placeholder="父地点 ID（可留空）"
-          />
-        </FieldRow>
-        <FieldRow label="归属势力 ID">
-          <TextInput
-            value={form.factionId}
-            onChange={(e) => setForm((f) => ({ ...f, factionId: e.target.value }))}
-            placeholder="势力 ID（可留空）"
-          />
-        </FieldRow>
-      </div>
-      <FieldRow label="首次出现章节">
-        <TextInput
-          type="number"
-          value={form.firstChapter}
-          onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
-          placeholder="章节号（可留空）"
-        />
-      </FieldRow>
+      <Card>
+        <CardHeader>
+          <CardTitle>基础</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="名称">
+            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+          </FieldRow>
+          <FieldRow label="简述">
+            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>属性</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="类型">
+            <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelLocationType }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOCATION_TYPE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="重要程度">
+            <Select value={form.significance} onValueChange={(v) => setForm((f) => ({ ...f, significance: v as NovelLocationSignificance }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOCATION_SIGNIFICANCE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="状态">
+            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelLocationStatus }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOCATION_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>关联</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="父级地点">
+            <Select value={form.parentId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, parentId: v === '__none__' ? '' : v }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">无</SelectItem>
+                {locations.filter((l) => l.id !== entity.id).map((l) => (
+                  <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="归属势力">
+            <Select value={form.factionId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, factionId: v === '__none__' ? '' : v }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">无</SelectItem>
+                {factions.map((f) => (
+                  <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>章节出场</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="首次出现章节">
+            <TextInput
+              type="number"
+              value={form.firstChapter}
+              onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
+              placeholder="章节号（可留空）"
+            />
+          </FieldRow>
+          <FieldRow label="出场章节">
+            <div className="flex gap-2">
+              <TextInput
+                type="number"
+                value={appearChapterInput}
+                onChange={(e) => setAppearChapterInput(e.target.value)}
+                placeholder="章节号"
+              />
+              <Button size="sm" variant="outline" onClick={addAppearChapter}>
+                <Plus className="size-3" />
+                添加
+              </Button>
+            </div>
+            {form.appearChapters.length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {form.appearChapters.map((n) => (
+                  <Badge key={n} variant="outline" className="text-[10px] gap-1">
+                    第 {n} 章
+                    <button
+                      type="button"
+                      onClick={() => removeAppearChapter(n)}
+                      className="ml-0.5 hover:text-destructive"
+                      aria-label={`移除第 ${n} 章`}
+                    >
+                      <X className="size-2.5" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            ) : (
+              <span className="text-[11px] text-muted-foreground">暂无出场章节</span>
+            )}
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
@@ -1374,51 +1776,52 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
 
 function WorldElementForm({ entity }: { entity: NovelWorldElement }): ReactElement {
   const upsertWorldElement = useNovelStore((s) => s.upsertWorldElement)
+  const worldElements = useNovelStore((s) => s.worldElements)
   const [form, setForm] = useState({
     category: entity.category,
     name: entity.name,
     description: entity.description,
     parentId: entity.parentId ?? '',
-    attributesText: (() => {
-      try {
-        return JSON.stringify(entity.attributes ?? {}, null, 2)
-      } catch {
-        return '{}'
-      }
-    })(),
+    attributesList: Object.entries(entity.attributes ?? {}).map(([k, v]) => ({ key: k, value: String(v) })),
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [attributesError, setAttributesError] = useState<string | null>(null)
+
+  const updateAttr = (idx: number, patch: Partial<{ key: string; value: string }>) =>
+    setForm((f) => ({ ...f, attributesList: f.attributesList.map((it, i) => (i === idx ? { ...it, ...patch } : it)) }))
+  const removeAttr = (idx: number) =>
+    setForm((f) => ({ ...f, attributesList: f.attributesList.filter((_, i) => i !== idx) }))
+  const addAttr = () =>
+    setForm((f) => ({ ...f, attributesList: [...f.attributesList, { key: '', value: '' }] }))
+
+  const origAttributesSig = Object.entries(entity.attributes ?? {})
+    .map(([k, v]) => `${k}=${String(v)}`)
+    .join('||')
+  const currentAttributesSig = form.attributesList
+    .map(({ key, value }) => `${key}=${value}`)
+    .join('||')
 
   const dirty =
     form.category !== entity.category ||
     form.name !== entity.name ||
     form.description !== entity.description ||
     (entity.parentId ?? '') !== form.parentId ||
-    form.attributesText !== JSON.stringify(entity.attributes ?? {}, null, 2)
+    currentAttributesSig !== origAttributesSig
 
   const handleSave = useCallback(async () => {
-    setAttributesError(null)
-    let parsedAttributes: Record<string, unknown> = {}
-    try {
-      parsedAttributes = form.attributesText.trim() ? JSON.parse(form.attributesText) : {}
-      if (typeof parsedAttributes !== 'object' || parsedAttributes === null || Array.isArray(parsedAttributes)) {
-        throw new Error('附加属性必须是 JSON 对象')
-      }
-    } catch (err) {
-      setAttributesError(err instanceof Error ? err.message : '附加属性 JSON 解析失败')
-      return
-    }
     setSaving(true)
     setError(null)
     try {
+      const obj: Record<string, unknown> = {}
+      form.attributesList.forEach(({ key, value }) => {
+        if (key.trim()) obj[key.trim()] = value
+      })
       const updated = await updateWorldElement(entity.id, {
         category: form.category,
         name: form.name,
         description: form.description,
         parentId: form.parentId || null,
-        attributes: parsedAttributes,
+        attributes: obj,
       })
       upsertWorldElement(updated)
     } catch (err) {
@@ -1430,40 +1833,95 @@ function WorldElementForm({ entity }: { entity: NovelWorldElement }): ReactEleme
 
   return (
     <div className="space-y-3">
-      <FieldRow label="分类">
-        <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelWorldElementCategory }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {WORLD_ELEMENT_CATEGORY_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="名称">
-        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="描述">
-        <TextArea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="父级要素 ID">
-        <TextInput
-          value={form.parentId}
-          onChange={(e) => setForm((f) => ({ ...f, parentId: e.target.value }))}
-          placeholder="父要素 ID（可留空）"
-        />
-      </FieldRow>
-      <FieldRow label="附加属性（JSON 对象）">
-        <TextArea
-          value={form.attributesText}
-          onChange={(e) => setForm((f) => ({ ...f, attributesText: e.target.value }))}
-          className="min-h-[120px] font-mono text-xs"
-          placeholder='{"key": "value"}'
-        />
-      </FieldRow>
-      {attributesError && <p className="text-xs text-destructive">{attributesError}</p>}
+      <Card>
+        <CardHeader>
+          <CardTitle>基础</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="分类">
+            <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelWorldElementCategory }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {WORLD_ELEMENT_CATEGORY_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="名称">
+            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>描述</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="描述">
+            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>父级</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="父级要素">
+            <Select value={form.parentId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, parentId: v === '__none__' ? '' : v }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">无</SelectItem>
+                {worldElements.filter((w) => w.id !== entity.id).map((w) => (
+                  <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>属性</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FieldRow label="附加属性">
+            <div className="space-y-2">
+              {form.attributesList.map((item, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <Input
+                    className="flex-1 font-mono text-xs"
+                    placeholder="属性名"
+                    value={item.key}
+                    onChange={(e) => updateAttr(idx, { key: e.target.value })}
+                  />
+                  <Input
+                    className="flex-1 text-xs"
+                    placeholder="属性值"
+                    value={item.value}
+                    onChange={(e) => updateAttr(idx, { value: e.target.value })}
+                  />
+                  <Button size="icon-sm" variant="ghost" onClick={() => removeAttr(idx)} aria-label="删除">
+                    <Trash2 className="size-3.5 text-muted-foreground" />
+                  </Button>
+                </div>
+              ))}
+              <Button size="sm" variant="outline" onClick={addAttr}>
+                <Plus className="size-3.5 mr-1" /> 添加属性
+              </Button>
+            </div>
+          </FieldRow>
+        </CardContent>
+      </Card>
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>

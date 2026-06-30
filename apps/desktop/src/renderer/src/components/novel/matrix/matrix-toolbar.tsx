@@ -152,7 +152,10 @@ export function MatrixToolbar({
         </span>
       </Button>
 
-      {/* 过滤 chips（紧挨补全历史，无 divider） */}
+      {/* 分隔线：补全历史与筛选 chips 之间 */}
+      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
+      {/* 过滤 chips */}
       <div className="flex items-center gap-1">
         {FILTER_OPTIONS.map((opt) => {
           const active = activeFilter === opt.key

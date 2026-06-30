@@ -1,11 +1,17 @@
 /**
- * EntitySpanDialog：冲突/势力跨度编辑对话框
+ * EntitySpanDialog：通用实体跨度编辑对话框
  *
- * 触发：双击冲突或势力的色带
- * 操作：修改 firstChapter / lastChapter
+ * 触发：双击 conflict/faction 色带，或单元格右键菜单「编辑范围」
+ * 适用：所有实体类型（character/conflict/foreshadow/faction/location）
+ *
+ * 各类型语义：
+ * - character：在 [first, last] 范围每章创建/保留 characterHistory，移除范围外的记录
+ * - conflict / faction：设 firstChapter / lastChapter
+ * - foreshadow：first → firstChapter（埋设点）；last → recoverByChapter（回收点）
+ * - location：[first, last] 范围填满 appearChapters，移除范围外的章
+ * - world_element：恒全程，不支持编辑
  *
  * 约束：
- * - 仅 conflict / faction 支持（其他类型不弹此对话框）
  * - 起始 ≤ 结束
  * - 章节号范围 1..maxChapter
  */
@@ -32,6 +38,23 @@ export interface EntitySpanDialogProps {
   onSubmit: (entity: MatrixEntity, firstChapter: number, lastChapter: number) => Promise<void>
 }
 
+/** 按 entityType 返回起始/结束字段的语义化 label */
+function fieldLabels(kind: MatrixEntity['kind']): { first: string; last: string; desc: string } {
+  switch (kind) {
+    case 'character':
+      return { first: '出场起始章', last: '出场结束章', desc: '在范围内每章标记出场，范围外的出场记录将被清除' }
+    case 'foreshadow':
+      return { first: '埋设章节', last: '回收章节', desc: '埋设章节设为 firstChapter，回收章节设为 recoverByChapter' }
+    case 'location':
+      return { first: '出场起始章', last: '出场结束章', desc: '范围内每章加入 appearChapters，范围外的章会被移除' }
+    case 'conflict':
+    case 'faction':
+      return { first: '起始章', last: '结束章', desc: '修改实体起止章节' }
+    default:
+      return { first: '起始章', last: '结束章', desc: '' }
+  }
+}
+
 export function EntitySpanDialog({
   open, entity, maxChapter, onClose, onSubmit,
 }: EntitySpanDialogProps): ReactElement | null {
@@ -43,7 +66,7 @@ export function EntitySpanDialog({
   useEffect(() => {
     if (open && entity) {
       setFirst(String(entity.spanStart ?? 1))
-      setLast(String(entity.spanEnd ?? 1))
+      setLast(String(entity.spanEnd ?? entity.spanStart ?? 1))
       setError(null)
       setSubmitting(false)
     }
@@ -51,6 +74,7 @@ export function EntitySpanDialog({
 
   if (!entity) return null
   const meta = GROUP_META[entity.kind]
+  const labels = fieldLabels(entity.kind)
 
   const handleSubmit = async (): Promise<void> => {
     const firstN = Number(first)
@@ -85,7 +109,7 @@ export function EntitySpanDialog({
         <DialogHeader>
           <DialogTitle>
             <span className="mr-1.5" style={{ color: meta.color }}>{meta.icon}</span>
-            编辑跨度
+            编辑范围
           </DialogTitle>
           <DialogDescription>
             修改「{entity.name}」的起止章节。章节号范围 1–{maxChapter}。
@@ -94,7 +118,7 @@ export function EntitySpanDialog({
         <div className="py-2 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="span-first">起始章</Label>
+              <Label htmlFor="span-first">{labels.first}</Label>
               <Input
                 id="span-first"
                 type="number"
@@ -106,7 +130,7 @@ export function EntitySpanDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="span-last">结束章</Label>
+              <Label htmlFor="span-last">{labels.last}</Label>
               <Input
                 id="span-last"
                 type="number"
@@ -118,6 +142,9 @@ export function EntitySpanDialog({
               />
             </div>
           </div>
+          {labels.desc && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed">{labels.desc}</p>
+          )}
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
         <DialogFooter>
