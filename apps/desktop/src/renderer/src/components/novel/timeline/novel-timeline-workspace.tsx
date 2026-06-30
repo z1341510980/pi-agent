@@ -126,7 +126,8 @@ export function NovelTimelineWorkspace({
   const [activeTool, setActiveTool] = useState<Tool>('select')
   const [snapEnabled, setSnapEnabled] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [playheadChapter, setPlayheadChapter] = useState(1)
+  const playheadChapter = useNovelStore((s) => s.playheadChapter)
+  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
   const [history, setHistory] = useState<HistoryState>({ past: [], future: [] })
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenuPosition | null>(null)
   const [trackContextMenu, setTrackContextMenu] = useState<TrackContextMenuPosition | null>(null)
@@ -171,13 +172,13 @@ export function NovelTimelineWorkspace({
   useEffect(() => {
     if (isPlaying) {
       playIntervalRef.current = setInterval(() => {
-        setPlayheadChapter((prev) => {
-          if (prev >= maxChapter) {
-            setIsPlaying(false)
-            return prev
-          }
-          return prev + 1
-        })
+        // 使用 store getState 读取最新值，避免闭包陈旧且无需重建 interval
+        const current = useNovelStore.getState().playheadChapter
+        if (current >= maxChapter) {
+          setIsPlaying(false)
+          return
+        }
+        setPlayheadChapter(current + 1)
       }, 1000)
       return () => {
         if (playIntervalRef.current) clearInterval(playIntervalRef.current)
@@ -213,14 +214,14 @@ export function NovelTimelineWorkspace({
   const handlePrevChapter = useCallback(() => {
     if (creationRunning) return
     setIsPlaying(false)
-    setPlayheadChapter((prev) => Math.max(1, prev - 1))
-  }, [creationRunning])
+    setPlayheadChapter(Math.max(1, playheadChapter - 1))
+  }, [creationRunning, playheadChapter])
 
   const handleNextChapter = useCallback(() => {
     if (creationRunning) return
     setIsPlaying(false)
-    setPlayheadChapter((prev) => Math.min(maxChapter, prev + 1))
-  }, [creationRunning, maxChapter])
+    setPlayheadChapter(Math.min(maxChapter, playheadChapter + 1))
+  }, [creationRunning, maxChapter, playheadChapter])
 
   const handleFirstChapter = useCallback(() => {
     if (creationRunning) return
