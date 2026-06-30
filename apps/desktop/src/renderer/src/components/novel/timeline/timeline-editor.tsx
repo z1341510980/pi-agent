@@ -43,7 +43,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
-import { clampMoveRange, clampResizeRightRange } from './timeline-logic'
+import { clampMoveRange, clampResizeRightRange, findSnapPoint, type SnapResult } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -52,7 +52,6 @@ const RULER_HEIGHT = 40
 const CLIP_PADDING_Y = 4
 const CLIP_GAP = 2
 const DRAG_THRESHOLD = 3
-const SNAP_PX = 8
 
 export type Tool = 'select' | 'razor' | 'hand' | 'zoom'
 
@@ -104,55 +103,6 @@ function assignSubRows(clips: TimelineClip[]): Map<string, number> {
     }
   }
   return result
-}
-
-// ── 吸附系统 ──
-
-interface SnapResult {
-  chapter: number
-  type: 'playhead' | 'clip-end' | 'chapter'
-  priority: number
-  distance: number
-}
-
-function findSnapPoint(
-  currentStart: number,
-  currentEnd: number,
-  chapterWidth: number,
-  excludeClipId: string,
-  tracks: TimelineTrack[],
-  playheadChapter: number,
-  maxChapter: number,
-): SnapResult | null {
-  const threshold = Math.max(0.3, SNAP_PX / chapterWidth)
-  const candidates: Array<{ chapter: number; type: SnapResult['type']; priority: number }> = []
-
-  candidates.push({ chapter: playheadChapter, type: 'playhead', priority: 100 })
-
-  for (const track of tracks) {
-    for (const clip of track.clips) {
-      if (clip.id === excludeClipId) continue
-      candidates.push({ chapter: clip.startChapter, type: 'clip-end', priority: 85 })
-      candidates.push({ chapter: clip.endChapter + 1, type: 'clip-end', priority: 85 })
-    }
-  }
-
-  for (let ch = 1; ch <= maxChapter; ch++) {
-    candidates.push({ chapter: ch, type: 'chapter', priority: 70 })
-  }
-
-  let best: SnapResult | null = null
-  for (const endpoint of [currentStart, currentEnd + 1]) {
-    for (const c of candidates) {
-      const dist = Math.abs(c.chapter - endpoint)
-      if (dist > threshold) continue
-      if (!best || dist < best.distance ||
-          (dist === best.distance && c.priority > best.priority)) {
-        best = { chapter: c.chapter, type: c.type, priority: c.priority, distance: dist }
-      }
-    }
-  }
-  return best
 }
 
 // ── 拖拽状态 ──
@@ -567,7 +517,20 @@ export function TimelineEditor({
       }
 
       if (useSnap) {
-        const snap = findSnapPoint(newStart, newEnd, chapterWidth, clip.id, tracks, playheadChapter, maxChapter)
+        // 传浮点位置参与吸附判定，使 threshold = SNAP_PX/chapterWidth 在子章节精度生效；
+        // 不能传 Math.round 后的整数 newStart/newEnd，否则量化误差会吞掉真实吸附距离。
+        const floatDelta = deltaX / chapterWidth
+        let floatStart = dragState.origStart
+        let floatEnd = dragState.origEnd
+        if (dragState.type === 'move') {
+          floatStart = dragState.origStart + floatDelta
+          floatEnd = dragState.origEnd + floatDelta
+        } else if (dragState.type === 'resize-left') {
+          floatStart = dragState.origStart + floatDelta
+        } else if (dragState.type === 'resize-right') {
+          floatEnd = dragState.origEnd + floatDelta
+        }
+        const snap = findSnapPoint(floatStart, floatEnd, chapterWidth, clip.id, tracks, playheadChapter, maxChapter)
         if (snap) {
           if (dragState.type === 'move') {
             const offset = snap.chapter - newStart

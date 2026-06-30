@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { clampMoveRange, clampResizeRightRange } from '../timeline-logic'
+import { clampMoveRange, clampResizeRightRange, findSnapPoint } from '../timeline-logic'
 
 describe('clampMoveRange', () => {
   it('keeps original range when delta is within bounds', () => {
@@ -26,5 +26,39 @@ describe('clampResizeRightRange', () => {
   })
   it('clamps newEnd to at least origStart', () => {
     expect(clampResizeRightRange(5, 8, -10, 20)).toBe(5)
+  })
+})
+
+describe('findSnapPoint', () => {
+  const tracks = [
+    {
+      id: 't1', kind: 'character' as const, label: 'A', clips: [
+        { id: 'c1', startChapter: 10, endChapter: 14, effectId: 'x', entityType: 'character' as const, entityId: 'e1', label: 'A' },
+      ],
+    },
+  ]
+
+  it('snaps to playhead when within SNAP_PX/chapterWidth distance', () => {
+    const snap = findSnapPoint(5.98, 9.98, 280, 'c1', tracks, 6, 20)
+    expect(snap).not.toBeNull()
+    expect(snap!.chapter).toBe(6)
+    expect(snap!.type).toBe('playhead')
+  })
+
+  it('does NOT snap when distance exceeds threshold', () => {
+    const snap = findSnapPoint(5.8, 9.8, 280, 'c1', tracks, 6, 20)
+    expect(snap).toBeNull()
+  })
+
+  it('snaps to clip endpoint', () => {
+    const snap = findSnapPoint(11, 14, 80, 'other', tracks, 1, 20)
+    expect(snap).not.toBeNull()
+    expect(snap!.chapter).toBe(15)
+    expect(snap!.type).toBe('clip-end')
+  })
+
+  it('excludes the clip being dragged', () => {
+    const snap = findSnapPoint(10, 14, 80, 'c1', tracks, 1, 20)
+    expect(snap).toBeNull()
   })
 })
