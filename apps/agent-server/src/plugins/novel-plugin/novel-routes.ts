@@ -15,6 +15,7 @@
 
 import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { NovelServices } from './novel-services.js'
+import type { NovelChapter } from './core/types.js'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { success } from '../../lib/api-response.js'
@@ -300,7 +301,15 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(updateChapterSchema, request, reply)
       if (!input) return reply
 
-      const updated = store.updateChapter(request.params.id, input)
+      // 传 content 时自动重算 wordCount（与前端 chapter-live-view.tsx 的 countWords 一致），
+      // 避免 spread patch 保留旧 wordCount 导致统计与正文不同步。
+      let patch: Partial<NovelChapter> = input
+      if (input.content != null) {
+        const cleaned = input.content.replace(/[#*`>\-\[\]()!]/g, '').replace(/\s+/g, '')
+        patch = { ...input, wordCount: cleaned.length }
+      }
+
+      const updated = store.updateChapter(request.params.id, patch)
       if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
     },
