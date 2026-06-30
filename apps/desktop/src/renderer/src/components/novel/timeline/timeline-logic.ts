@@ -239,3 +239,19 @@ export function buildRelationLines(
 
   return lines
 }
+
+// ── 小地图视口框 ──
+
+/** 计算小地图视口框的 left/width（px），用于独立 DOM 元素定位 */
+export function computeMinimapViewportFrame(
+  viewportStartChapter: number,
+  viewportVisibleChapters: number,
+  maxChapter: number,
+  containerWidth: number,
+): { left: number; width: number } {
+  if (maxChapter <= 0) return { left: 0, width: 8 }
+  const chapterW = containerWidth / maxChapter
+  const left = (viewportStartChapter - 1) * chapterW
+  const width = Math.max(8, viewportVisibleChapters * chapterW)
+  return { left, width }
+}

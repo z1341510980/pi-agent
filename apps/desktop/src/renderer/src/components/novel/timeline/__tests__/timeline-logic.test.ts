@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { clampMoveRange, clampResizeRightRange, findSnapPoint, finalClampAfterSnap, buildRelationLines } from '../timeline-logic'
+import {
+  clampMoveRange,
+  clampResizeRightRange,
+  findSnapPoint,
+  finalClampAfterSnap,
+  buildRelationLines,
+  computeMinimapViewportFrame,
+} from '../timeline-logic'
 
 describe('clampMoveRange', () => {
   it('keeps original range when delta is within bounds', () => {
@@ -140,5 +147,20 @@ describe('buildRelationLines', () => {
       { id: 'f2', projectId: 'p', name: 'F2', description: '', type: 'organization' as const, leaderId: null, allies: ['f1'], enemies: [], strength: 'medium' as const, status: 'active' as const, createdAt: 0, updatedAt: 0 },
     ]
     expect(buildRelationLines(tracks, [], factions, 80, 36).length).toBe(1)
+  })
+})
+
+describe('computeMinimapViewportFrame', () => {
+  it('computes left/width in px from chapter range', () => {
+    // maxChapter=100, viewportStart=10, visible=20, containerWidth=500
+    const f = computeMinimapViewportFrame(10, 20, 100, 500)
+    // chapterW = 500/100 = 5; left = (10-1)*5 = 45; width = 20*5 = 100
+    expect(f.left).toBe(45)
+    expect(f.width).toBe(100)
+  })
+
+  it('enforces minimum width of 8px', () => {
+    const f = computeMinimapViewportFrame(1, 1, 1000, 100)
+    expect(f.width).toBeGreaterThanOrEqual(8)
   })
 })
