@@ -110,7 +110,7 @@ export function ClipContextMenu({
         type="button"
         className="novel-timeline-context-item is-danger"
         onClick={() => handleAction(onRippleDelete)}
-        title="删除并后移片段前移（Shift+Del）"
+        title="删除并使后续片段前移（Shift+Del）"
       >
         <Trash2 className="size-3.5" />
         <span>涟漪删除</span>

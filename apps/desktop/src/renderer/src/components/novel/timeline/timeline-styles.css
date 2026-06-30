@@ -166,6 +166,31 @@
   margin-top: 1px;
 }
 
+.tl-ruler-tick-summary {
+  font-size: 8px;
+  color: var(--tl-text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 2px;
+  margin-top: 1px;
+  opacity: 0.7;
+}
+
+.tl-clip-note-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+  background: #a855f7;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
 /* ────────────────────────────────────────────────────────────
    主体布局
    ──────────────────────────────────────────────────────────── */

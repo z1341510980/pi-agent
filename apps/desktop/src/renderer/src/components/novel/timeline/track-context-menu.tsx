@@ -12,8 +12,9 @@
 import { type ReactElement } from 'react'
 import { ChevronUp, ChevronDown, Lock, Unlock, Eye, EyeOff, AlignJustify } from 'lucide-react'
 import type { TimelineTrack } from './use-timeline-data'
+import type { TrackHeightLevel } from './timeline-logic'
 
-export type TrackHeightLevel = 'compact' | 'standard' | 'spacious'
+export type { TrackHeightLevel }
 
 export interface TrackContextMenuPosition {
   x: number
