@@ -2,13 +2,11 @@
  * NovelTimelineWorkspace：小说时间轴编辑器主容器
  *
  * 集成自研 TimelineEditor 组件（剪辑编辑器风格），提供：
- * - 工具切换（选择/剃刀/手型/缩放）
- * - 章节导航 + 播放控件
+ * - 章节号显示
  * - 撤销/重做系统
  * - 多选 + 框选
- * - 吸附系统开关
  * - 元素池拖入
- * - 片段拖动/调整/切分/删除
+ * - 片段拖动/删除
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
@@ -17,9 +15,6 @@ import { useNovelStore } from '@/stores/novel-store'
 import {
   batchCreateCharacterHistory,
   createCharacterHistory,
-  createConflict,
-  createForeshadow,
-  createFaction,
   deleteChapter,
   deleteCharacterHistory,
   updateConflict,
@@ -32,7 +27,7 @@ import {
   deleteMarker,
 } from '@/api/novel-client'
 import { useTimelineData, type TimelineClip, type TimelineTrack } from './use-timeline-data'
-import { rangeToRestore, planClipSplit, computeRippleShifts, computeLoopBounds, type EditAction } from './timeline-logic'
+import { rangeToRestore, type EditAction } from './timeline-logic'
 import { ElementPool, POOL_DRAG_MIME, type PoolDragPayload } from './element-pool'
 import {
   TimelineToolbar,
@@ -50,7 +45,7 @@ import { TrackContextMenu, type TrackContextMenuPosition, type TrackHeightLevel 
 import { MarkerContextMenu } from './marker-context-menu'
 import { MarkerEditDialog } from './marker-edit-dialog'
 import { ClipNoteDialog } from './clip-note-dialog'
-import { TimelineEditor, type Tool } from './timeline-editor'
+import { TimelineEditor } from './timeline-editor'
 import type { TimelineMarker } from './timeline-markers'
 import './timeline-styles.css'
 
@@ -63,7 +58,7 @@ export interface NovelTimelineWorkspaceProps {
 }
 
 // ── 撤销/重做类型 ──
-// EditAction 类型从 ./timeline-logic 导入（支持 move/resize/delete/paste/cut）
+// EditAction 类型从 ./timeline-logic 导入（支持 move/delete/paste/cut）
 
 interface HistoryState {
   past: EditAction[]
@@ -122,9 +117,6 @@ export function NovelTimelineWorkspace({
   const [contextMenu, setContextMenu] = useState<ChapterContextMenuPosition | null>(null)
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(new Set())
   const [dropIndicatorChapter, setDropIndicatorChapter] = useState<number | null>(null)
-  const [activeTool, setActiveTool] = useState<Tool>('select')
-  const [snapEnabled, setSnapEnabled] = useState(true)
-  const [isPlaying, setIsPlaying] = useState(false)
   const playheadChapter = useNovelStore((s) => s.playheadChapter)
   const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
   const [history, setHistory] = useState<HistoryState>({ past: [], future: [] })
@@ -170,43 +162,10 @@ export function NovelTimelineWorkspace({
     return Math.max(...chapters.map((c) => c.chapterNumber), 20)
   }, [chapters])
 
-  // ── In/Out 标记与播放循环边界（B2）──
-  const inMarker = useMemo(() => markers.find((m) => m.type === 'in'), [markers])
-  const outMarker = useMemo(() => markers.find((m) => m.type === 'out'), [markers])
-  const loopBounds = useMemo(
-    () => computeLoopBounds(inMarker?.chapter ?? null, outMarker?.chapter ?? null, maxChapter),
-    [inMarker, outMarker, maxChapter],
-  )
-
   // ── 播放头章节号（创作流程联动优先）──
   const effectivePlayheadChapter = creationRunning && creationChapterNumber != null
     ? creationChapterNumber
     : playheadChapter
-
-  // ── 播放定时器 ──
-  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  useEffect(() => {
-    if (isPlaying) {
-      playIntervalRef.current = setInterval(() => {
-        // 使用 store getState 读取最新值，避免闭包陈旧且无需重建 interval
-        const current = useNovelStore.getState().playheadChapter
-        const end = loopBounds?.end ?? maxChapter
-        const start = loopBounds?.start ?? 1
-        if (current >= end) {
-          if (loopBounds) {
-            setPlayheadChapter(start) // 循环回 in 点
-            return
-          }
-          setIsPlaying(false)
-          return
-        }
-        setPlayheadChapter(current + 1)
-      }, 1000)
-      return () => {
-        if (playIntervalRef.current) clearInterval(playIntervalRef.current)
-      }
-    }
-  }, [isPlaying, maxChapter, loopBounds])
 
   // ── 从后端加载标记 ──
   useEffect(() => {
@@ -227,36 +186,7 @@ export function NovelTimelineWorkspace({
     }
   }, [currentProjectId, setMarkers])
 
-  // ── 导航回调 ──
-  const handlePlayToggle = useCallback(() => {
-    if (creationRunning) return
-    setIsPlaying((prev) => !prev)
-  }, [creationRunning])
-
-  const handlePrevChapter = useCallback(() => {
-    if (creationRunning) return
-    setIsPlaying(false)
-    setPlayheadChapter(Math.max(1, playheadChapter - 1))
-  }, [creationRunning, playheadChapter])
-
-  const handleNextChapter = useCallback(() => {
-    if (creationRunning) return
-    setIsPlaying(false)
-    setPlayheadChapter(Math.min(maxChapter, playheadChapter + 1))
-  }, [creationRunning, maxChapter, playheadChapter])
-
-  const handleFirstChapter = useCallback(() => {
-    if (creationRunning) return
-    setIsPlaying(false)
-    setPlayheadChapter(1)
-  }, [creationRunning])
-
-  const handleLastChapter = useCallback(() => {
-    if (creationRunning) return
-    setIsPlaying(false)
-    setPlayheadChapter(maxChapter)
-  }, [creationRunning, maxChapter])
-
+  // ── 播放头变更回调 ──
   const handlePlayheadChange = useCallback((chapter: number) => {
     if (creationRunning) return
     setPlayheadChapter(chapter)
@@ -408,142 +338,9 @@ export function NovelTimelineWorkspace({
     [pushHistory, updateEntityRange],
   )
 
-  const handleClipResize = useCallback(
-    (clip: TimelineClip, newStart: number, newEnd: number): void => {
-      pushHistory({
-        type: 'resize',
-        clip: { ...clip },
-        before: { start: clip.startChapter, end: clip.endChapter },
-        after: { start: newStart, end: newEnd },
-      })
-      void updateEntityRange(clip, newStart, newEnd)
-    },
-    [pushHistory, updateEntityRange],
-  )
-
-  // ── 片段切分：原片段缩为前半段，并按 entityType 新建后半段实体/记录（A1）──
-  const createSecondHalfForSplit = useCallback(
-    async (clip: TimelineClip, start: number, end: number): Promise<void> => {
-      if (!currentProjectId) return
-      try {
-        switch (clip.entityType) {
-          case 'character': {
-            // 删除 [atChapter, end] 在原角色上的历史（updateEntityRange 已缩为前半段，但历史记录可能仍残留）
-            const recs = characterHistory.filter(
-              (h) => h.characterId === clip.entityId && h.chapterNumber != null && h.chapterNumber >= start && h.chapterNumber <= end,
-            )
-            for (const r of recs) {
-              await deleteCharacterHistory(currentProjectId, r.id)
-              removeCharacterHistory(r.id)
-            }
-            // 为同一角色补建起止边界历史记录，使连续跨度分组渲染出第二个 clip
-            const h1 = await createCharacterHistory(currentProjectId, clip.entityId, {
-              fieldName: 'currentState', oldValue: null, newValue: '【切分后半段】', reason: `切分：第 ${start} 章`, chapterNumber: start,
-            })
-            addCharacterHistory(h1)
-            if (end !== start) {
-              const h2 = await createCharacterHistory(currentProjectId, clip.entityId, {
-                fieldName: 'currentState', oldValue: null, newValue: '【切分后半段】', reason: `切分：第 ${end} 章`, chapterNumber: end,
-              })
-              addCharacterHistory(h2)
-            }
-            break
-          }
-          case 'conflict': {
-            const orig = conflicts.find((c) => c.id === clip.entityId)
-            if (!orig) break
-            // CreateConflictInput 不含 participants 字段（仅 NovelConflict 有），故不复制
-            // 与 updateEntityRange 保持一致：单章（end===start）时 lastChapter=null
-            const created = await createConflict(currentProjectId, {
-              description: `${orig.description}（后半段）`,
-              type: orig.type, intensity: orig.intensity, stage: orig.stage, tier: orig.tier,
-              firstChapter: start, lastChapter: end === start ? null : end,
-            })
-            upsertConflict(created)
-            break
-          }
-          case 'foreshadow': {
-            const orig = foreshadows.find((f) => f.id === clip.entityId)
-            if (!orig) break
-            // CreateForeshadowInput 不含 linkedCharacters/linkedClues 字段，故不复制
-            // 保留原 recoverByChapter 语义：仅当原已回收时才把回收点缩到 end，避免把"待回收"误置为"已回收"
-            const created = await createForeshadow(currentProjectId, {
-              description: `${orig.description}（后半段）`,
-              category: orig.category, status: orig.status,
-              firstChapter: start, lastChapter: end,
-              recoverByChapter: orig.recoverByChapter != null ? end : null,
-            })
-            upsertForeshadow(created)
-            break
-          }
-          case 'faction': {
-            const orig = factions.find((f) => f.id === clip.entityId)
-            if (!orig) break
-            const created = await createFaction(currentProjectId, {
-              name: `${orig.name}（后半段）`, description: orig.description,
-              type: orig.type, leaderId: orig.leaderId, strength: orig.strength,
-              ideology: orig.ideology, resources: orig.resources,
-              allies: orig.allies, enemies: orig.enemies, status: orig.status,
-              firstChapter: start, lastChapter: end,
-            })
-            upsertFaction(created)
-            break
-          }
-          case 'location': {
-            // location clip 为单章，理论上不触发切分；防御性：在新章节追加出现
-            const orig = locations.find((l) => l.id === clip.entityId)
-            if (!orig) break
-            const next = Array.from(new Set([...(orig.appearChapters ?? []), start, end])).sort((a, b) => a - b)
-            const updated = await updateLocation(orig.id, { appearChapters: next })
-            upsertLocation(updated)
-            break
-          }
-          case 'world_element':
-            break
-        }
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-      } catch (err) {
-        console.error('[NovelTimelineWorkspace] 切分后半段创建失败:', err)
-        // 重新抛出，由 handleClipSplit 捕获并回滚前半段（避免前半段已缩小、后半段未创建）
-        throw err
-      }
-    },
-    [currentProjectId, characterHistory, conflicts, foreshadows, factions, locations,
-      deleteCharacterHistory, removeCharacterHistory, createCharacterHistory, addCharacterHistory,
-      upsertConflict, upsertForeshadow, upsertFaction, upsertLocation, queryClient],
-  )
-
-  const handleClipSplit = useCallback(
-    async (clip: TimelineClip, atChapter: number): Promise<void> => {
-      const plan = planClipSplit(clip.startChapter, clip.endChapter, atChapter)
-      if (!plan || !plan.second) return
-      // 1. 原片段缩为前半段
-      pushHistory({
-        type: 'resize',
-        clip: { ...clip },
-        before: { start: clip.startChapter, end: clip.endChapter },
-        after: { start: plan.first.start, end: plan.first.end },
-      })
-      await updateEntityRange(clip, plan.first.start, plan.first.end)
-      // 2. 后半段：按 entityType 新建实体/记录（失败时回滚前半段，避免 clip 被"切掉一截"）
-      try {
-        await createSecondHalfForSplit(clip, plan.second.start, plan.second.end)
-      } catch (err) {
-        console.error('[NovelTimelineWorkspace] 切分后半段创建失败，回滚前半段:', err)
-        // 回滚前半段到原区间
-        try {
-          await updateEntityRange(clip, clip.startChapter, clip.endChapter)
-        } catch (rollbackErr) {
-          console.error('[NovelTimelineWorkspace] 回滚前半段失败:', rollbackErr)
-        }
-      }
-    },
-    [pushHistory, updateEntityRange, createSecondHalfForSplit],
-  )
-
   // ── 片段删除 ──
   const handleClipDelete = useCallback(
-    async (clipId: string, opts?: { ripple?: boolean; skipHistory?: boolean }): Promise<void> => {
+    async (clipId: string, opts?: { skipHistory?: boolean }): Promise<void> => {
       const clip = tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
       if (!clip || !currentProjectId) return
       const before = { start: clip.startChapter, end: clip.endChapter }
@@ -614,25 +411,6 @@ export function NovelTimelineWorkspace({
             before,
             after: { start: 0, end: -1 },
           })
-        }
-        // 涟漪删除（B1）：找到被删 clip 所在轨道，对后续 clip 同步前移
-        if (opts?.ripple) {
-          const track = tracks.find((t) => t.clips.some((c) => c.id === clipId))
-          if (track) {
-            const shifts = computeRippleShifts(track.clips, clipId)
-            for (const [cid, range] of shifts) {
-              const shiftedClip = track.clips.find((c) => c.id === cid)
-              if (shiftedClip) {
-                pushHistory({
-                  type: 'move',
-                  clip: { ...shiftedClip },
-                  before: { start: shiftedClip.startChapter, end: shiftedClip.endChapter },
-                  after: { start: range.start, end: range.end },
-                })
-                void updateEntityRange(shiftedClip, range.start, range.end)
-              }
-            }
-          }
         }
         // 从选择集中移除
         setSelectedClipIds((prev) => {
@@ -733,28 +511,6 @@ export function NovelTimelineWorkspace({
     }
   }, [currentProjectId, upsertMarker])
 
-  // ── 标记：In/Out 工作区标记（B2，唯一）──
-  const handleCreateSpecialMarker = useCallback(async (type: 'in' | 'out'): Promise<void> => {
-    if (!currentProjectId) return
-    try {
-      // 移除同类型旧标记（in/out 唯一）
-      const existing = markers.filter((m) => m.type === type)
-      for (const m of existing) {
-        await deleteMarker(m.id)
-        removeMarker(m.id)
-      }
-      const created = await createMarker(currentProjectId, {
-        chapter: playheadChapter,
-        title: type === 'in' ? 'In 点' : 'Out 点',
-        type,
-        color: type === 'in' ? 'blue' : 'red',
-      })
-      upsertMarker(created)
-    } catch (err) {
-      console.error('[NovelTimelineWorkspace] 创建 In/Out 标记失败:', err)
-    }
-  }, [currentProjectId, playheadChapter, markers, deleteMarker, removeMarker, createMarker, upsertMarker])
-
   // ── 标记：移动 ──
   const handleMarkerMove = useCallback(async (marker: TimelineMarker, newChapter: number): Promise<void> => {
     try {
@@ -789,8 +545,6 @@ export function NovelTimelineWorkspace({
       'foreshadow': 'green',
       'climax': 'red',
       'note': 'purple',
-      'in': 'blue',
-      'out': 'red',
       'clip-note': 'purple',
     }
     try {
@@ -999,7 +753,7 @@ export function NovelTimelineWorkspace({
     const cur = historyRef.current
     if (cur.past.length === 0) return
     const action = cur.past[cur.past.length - 1]
-    // move/resize/delete/cut 恢复 before；paste 撤销应删除（区间置空）→ before(0,-1) 表示无
+    // move/delete/cut 恢复 before；paste 撤销应删除（区间置空）→ before(0,-1) 表示无
     const restore = rangeToRestore(action, 'undo')
     if (restore.end >= restore.start) {
       void updateEntityRange(action.clip, restore.start, restore.end)
@@ -1206,27 +960,13 @@ export function NovelTimelineWorkspace({
         onFilterChange={setFilter}
         onCompleteHistory={handleCompleteHistory}
         totalChapters={Math.max(chapters.length, maxChapter)}
-        activeTool={activeTool}
-        onToolChange={setActiveTool}
         playheadChapter={effectivePlayheadChapter}
-        isPlaying={isPlaying}
-        onPlayToggle={handlePlayToggle}
-        onPrevChapter={handlePrevChapter}
-        onNextChapter={handleNextChapter}
-        onFirstChapter={handleFirstChapter}
-        onLastChapter={handleLastChapter}
-        inChapter={inMarker?.chapter ?? null}
-        outChapter={outMarker?.chapter ?? null}
-        onSetIn={() => handleCreateSpecialMarker('in')}
-        onSetOut={() => handleCreateSpecialMarker('out')}
         canUndo={history.past.length > 0}
         canRedo={history.future.length > 0}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canDelete={selectedClipIds.size > 0}
         onDelete={handleDeleteSelected}
-        snapEnabled={snapEnabled}
-        onSnapToggle={() => setSnapEnabled((prev) => !prev)}
         showRelations={showRelations}
         onToggleRelations={() => setShowRelations((prev) => !prev)}
       />
@@ -1261,9 +1001,6 @@ export function NovelTimelineWorkspace({
             selectedClipIds={selectedClipIds}
             showPlayhead
             dropIndicatorChapter={dropIndicatorChapter}
-            activeTool={activeTool}
-            snapEnabled={snapEnabled}
-            isPlaying={isPlaying}
             trackHeightLevel={trackHeightLevel}
             showWordCount
             showMinimap
@@ -1272,8 +1009,6 @@ export function NovelTimelineWorkspace({
             onSelectEntity={handleSelectEntity}
             onPlayheadChange={handlePlayheadChange}
             onClipMove={handleClipMove}
-            onClipResize={handleClipResize}
-            onClipSplit={handleClipSplit}
             onClipDelete={handleClipDelete}
             onContextMenuChapter={handleContextMenuChapter}
             onContextMenuClip={handleContextMenuClip}
@@ -1314,11 +1049,9 @@ export function NovelTimelineWorkspace({
         position={clipContextMenu}
         canPaste={clipboard != null && clipboard.length > 0}
         onClose={() => setClipContextMenu(null)}
-        onSplit={(clip) => handleClipSplit(clip, playheadChapter)}
         onCopy={handleCopyClip}
         onCut={handleCutClip}
         onDelete={(clip) => void handleClipDelete(clip.id)}
-        onRippleDelete={(clip) => void handleClipDelete(clip.id, { ripple: true })}
         onAlignToPlayhead={handleAlignToPlayhead}
         onEditDetails={handleEditClipDetails}
       />

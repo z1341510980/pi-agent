@@ -1,0 +1,13 @@
+npm warn Unknown project config "electron_mirror". This will stop working in the next major version of npm.
+npm warn Unknown project config "electron_builder_binaries_mirror". This will stop working in the next major version of npm.
+npm warn Unknown project config "shamefully-hoist". This will stop working in the next major version of npm.
+src/renderer/src/components/chat/permission-mode-switch.tsx(125,9): error TS6133: 'cycleMode' is declared but its value is never read.
+src/renderer/src/components/novel/timeline/clip-context-menu.tsx(15,26): error TS2724: '"lucide-react"' has no exported member named 'ClipboardCut'. Did you mean 'Clipboard'?
+src/renderer/src/components/novel/timeline/novel-timeline-workspace.tsx(177,13): error TS7030: Not all code paths return a value.
+src/renderer/src/components/novel/timeline/novel-timeline-workspace.tsx(660,9): error TS6133: 'handlePasteClips' is declared but its value is never read.
+src/renderer/src/components/settings/provider-manager.tsx(598,20): error TS2345: Argument of type '{ name: string; api: string; baseUrl: string; apiKey: string; models: { id: string; name: string; reasoning?: boolean | undefined; cost?: { input: number; output: number; cacheRead?: number | undefined; cacheWrite?: number | undefined; } | undefined; contextWindow?: number | undefined; maxTokens?: number | undefined...' is not assignable to parameter of type 'ProviderEntry'.
+  Types of property 'id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/renderer/src/components/settings/provider-manager.tsx(839,10): error TS6133: 'parseModels' is declared but its value is never read.
+src/renderer/src/components/settings/provider-manager.tsx(868,10): error TS6133: 'serializeModels' is declared but its value is never read.

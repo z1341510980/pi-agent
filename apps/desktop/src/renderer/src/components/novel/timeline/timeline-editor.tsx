@@ -2,9 +2,6 @@
  * TimelineEditor：自研剪辑编辑器风格时间轴核心组件
  *
  * 核心交互：
- * - 工具切换：选择(V) / 剃刀(C) / 手型(H) / 缩放(Z)
- * - 吸附系统：播放头/片段端点/章节边界
- * - 剃刀工具：点击片段在播放头位置切分
  * - 框选多选：空白拖拽矩形 + 相交命中
  * - 滚轮缩放：Ctrl/Cmd + 滚轮，以鼠标为中心
  * - Solo/Mute：轨道独显/静音
@@ -45,7 +42,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
-import { applyGroupMove, clampMoveRange, clampResizeRightRange, computeTrackHeight, findSnapPoint, finalClampAfterSnap, isTrackAudible, truncateSummary, type SnapResult, type TrackHeightLevel } from './timeline-logic'
+import { applyGroupMove, clampMoveRange, computeTrackHeight, isTrackAudible, truncateSummary, type TrackHeightLevel } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -54,8 +51,6 @@ const RULER_HEIGHT = 40
 const CLIP_PADDING_Y = 4
 const CLIP_GAP = 2
 const DRAG_THRESHOLD = 3
-
-export type Tool = 'select' | 'razor' | 'hand' | 'zoom'
 
 const TRACK_ICON: Record<TimelineTrack['kind'], LucideIcon> = {
   character: Users,
@@ -110,7 +105,7 @@ function assignSubRows(clips: TimelineClip[]): Map<string, number> {
 // ── 拖拽状态 ──
 
 interface DragState {
-  type: 'move' | 'resize-left' | 'resize-right'
+  type: 'move'
   clipId: string
   startMouseX: number
   origStart: number
@@ -129,13 +124,6 @@ interface MarqueeState {
   currentX: number
   currentY: number
   additive: boolean
-}
-
-interface PanState {
-  startMouseX: number
-  startMouseY: number
-  startScrollLeft: number
-  startScrollTop: number
 }
 
 /** 悬停气泡数据 */
@@ -161,9 +149,6 @@ export interface TimelineEditorProps {
   selectedClipIds?: Set<string>
   showPlayhead?: boolean
   dropIndicatorChapter?: number | null
-  activeTool?: Tool
-  snapEnabled?: boolean
-  isPlaying?: boolean
   trackHeightLevel?: TrackHeightLevel
   /** 显示小说特化可视化 */
   showWordCount?: boolean
@@ -173,8 +158,6 @@ export interface TimelineEditorProps {
   onSelectEntity?: (entityType: TimelineClip['entityType'], entityId: string) => void
   onPlayheadChange?: (chapter: number) => void
   onClipMove?: (clip: TimelineClip, newStart: number, newEnd: number) => void
-  onClipResize?: (clip: TimelineClip, newStart: number, newEnd: number) => void
-  onClipSplit?: (clip: TimelineClip, atChapter: number) => void
   onClipDelete?: (clipId: string) => void
   onContextMenuChapter?: (chapter: number, x: number, y: number) => void
   onContextMenuClip?: (clip: TimelineClip, x: number, y: number) => void
@@ -220,9 +203,6 @@ export function TimelineEditor({
   selectedClipIds,
   showPlayhead = true,
   dropIndicatorChapter,
-  activeTool = 'select',
-  snapEnabled = true,
-  isPlaying = false,
   trackHeightLevel = 'standard',
   showWordCount = true,
   showMinimap = true,
@@ -231,8 +211,6 @@ export function TimelineEditor({
   onSelectEntity,
   onPlayheadChange,
   onClipMove,
-  onClipResize,
-  onClipSplit,
   onContextMenuChapter,
   onContextMenuClip,
   onContextMenuTrack,
@@ -263,7 +241,6 @@ export function TimelineEditor({
   const [dragState, setDragState] = useState<DragState | null>(null)
   const [playheadDrag, setPlayheadDrag] = useState<PlayheadDragState | null>(null)
   const [marquee, setMarquee] = useState<MarqueeState | null>(null)
-  const [panState, setPanState] = useState<PanState | null>(null)
   // 轨道状态：受控/非受控兼容。父组件传 prop 时优先使用 prop；否则回退到内部 state。
   const [internalHidden, setInternalHidden] = useState<Set<string>>(new Set())
   const [internalLocked, setInternalLocked] = useState<Set<string>>(new Set())
@@ -275,8 +252,6 @@ export function TimelineEditor({
   const soloedTrack = propSoloedTrack ?? internalSoloed
   const mutedTracks = propMutedTracks ?? internalMuted
   const collapsedTracks = propCollapsedTracks ?? internalCollapsed
-  const [snapLine, setSnapLine] = useState<{ x: number; type: SnapResult['type'] } | null>(null)
-  const [razorLine, setRazorLine] = useState<number | null>(null)
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null)
   const [hoverBubble, setHoverBubble] = useState<HoverBubble | null>(null)
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, clientWidth: 0 })
@@ -352,11 +327,10 @@ export function TimelineEditor({
   }, [playheadChapter])
 
   const handleRulerClick = useCallback((e: React.MouseEvent) => {
-    if (activeTool === 'hand') return
     const relX = getRelativeX(e.clientX)
     const chapter = xToChapter(relX, chapterWidth)
     onPlayheadChange?.(chapter)
-  }, [getRelativeX, chapterWidth, onPlayheadChange, activeTool])
+  }, [getRelativeX, chapterWidth, onPlayheadChange])
 
   const handleRulerContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -418,22 +392,12 @@ export function TimelineEditor({
     return null
   }, [tracks, subRowMaps, subRowCounts, chapterWidth, getTrackHeight, collapsedTracks])
 
-  // ── 剃刀点击 ──
-  const handleRazorClick = useCallback((e: React.MouseEvent) => {
-    const clip = findClipAtPos(e.clientX, e.clientY)
-    if (!clip) return
-    if (playheadChapter > clip.startChapter && playheadChapter <= clip.endChapter) {
-      onClipSplit?.(clip, playheadChapter)
-    }
-  }, [findClipAtPos, playheadChapter, onClipSplit])
-
   // ── 片段拖拽 ──
   const handleClipMouseDown = useCallback((
     e: React.MouseEvent,
     clip: TimelineClip,
-    type: 'move' | 'resize-left' | 'resize-right',
+    type: 'move',
   ) => {
-    if (activeTool !== 'select') return
     const track = tracks.find((t) => t.clips.some((c) => c.id === clip.id))
     if (track && lockedTracks.has(track.id)) return
 
@@ -453,25 +417,10 @@ export function TimelineEditor({
       origEnd: clip.endChapter,
       started: false,
     })
-  }, [tracks, lockedTracks, activeTool, selectedSet, updateSelection, onSelectEntity])
+  }, [tracks, lockedTracks, selectedSet, updateSelection, onSelectEntity])
 
   // ── 空白区域 mousedown ──
   const handleTrackAreaMouseDown = useCallback((e: React.MouseEvent) => {
-    if (activeTool === 'hand') {
-      const vp = trackViewportRef.current
-      if (!vp) return
-      e.preventDefault()
-      setPanState({
-        startMouseX: e.clientX,
-        startMouseY: e.clientY,
-        startScrollLeft: vp.scrollLeft,
-        startScrollTop: vp.scrollTop,
-      })
-      return
-    }
-
-    if (activeTool !== 'select') return
-
     const clip = findClipAtPos(e.clientX, e.clientY)
     if (clip) return
 
@@ -489,21 +438,13 @@ export function TimelineEditor({
       additive: e.shiftKey,
     })
     if (!e.shiftKey) updateSelection(new Set())
-  }, [activeTool, findClipAtPos, updateSelection])
+  }, [findClipAtPos, updateSelection])
 
   // ── 全局鼠标事件 ──
   useEffect(() => {
-    if (!dragState && !playheadDrag && !marquee && !panState) return
+    if (!dragState && !playheadDrag && !marquee) return
 
     const handleMouseMove = (e: MouseEvent): void => {
-      if (panState) {
-        const vp = trackViewportRef.current
-        if (!vp) return
-        vp.scrollLeft = panState.startScrollLeft - (e.clientX - panState.startMouseX)
-        vp.scrollTop = panState.startScrollTop - (e.clientY - panState.startMouseY)
-        return
-      }
-
       if (marquee) {
         const vp = trackViewportRef.current
         if (!vp) return
@@ -555,60 +496,12 @@ export function TimelineEditor({
         setDragState({ ...dragState, started: true })
       }
 
-      const useSnap = snapEnabled && !e.ctrlKey && !e.metaKey
       const deltaX = e.clientX - dragState.startMouseX
       const deltaChapters = Math.round(deltaX / chapterWidth)
 
-      let newStart = dragState.origStart
-      let newEnd = dragState.origEnd
-      if (dragState.type === 'move') {
-        const r = clampMoveRange(dragState.origStart, dragState.origEnd, deltaChapters, maxChapter)
-        newStart = r.start
-        newEnd = r.end
-      } else if (dragState.type === 'resize-left') {
-        newStart = Math.max(1, Math.min(dragState.origEnd, dragState.origStart + deltaChapters))
-      } else if (dragState.type === 'resize-right') {
-        newEnd = clampResizeRightRange(dragState.origStart, dragState.origEnd, deltaChapters, maxChapter)
-      }
-
-      if (useSnap) {
-        // 传浮点位置参与吸附判定，使 threshold = SNAP_PX/chapterWidth 在子章节精度生效；
-        // 不能传 Math.round 后的整数 newStart/newEnd，否则量化误差会吞掉真实吸附距离。
-        const floatDelta = deltaX / chapterWidth
-        let floatStart = dragState.origStart
-        let floatEnd = dragState.origEnd
-        if (dragState.type === 'move') {
-          floatStart = dragState.origStart + floatDelta
-          floatEnd = dragState.origEnd + floatDelta
-        } else if (dragState.type === 'resize-left') {
-          floatStart = dragState.origStart + floatDelta
-        } else if (dragState.type === 'resize-right') {
-          floatEnd = dragState.origEnd + floatDelta
-        }
-        const snap = findSnapPoint(floatStart, floatEnd, chapterWidth, clip.id, tracks, playheadChapter, maxChapter)
-        if (snap) {
-          if (dragState.type === 'move') {
-            const offset = snap.chapter - newStart
-            newStart += offset
-            newEnd += offset
-          } else if (dragState.type === 'resize-left') {
-            newStart = snap.chapter
-          } else if (dragState.type === 'resize-right') {
-            newEnd = snap.chapter - 1
-          }
-          setSnapLine({ x: chapterToX(snap.chapter, chapterWidth), type: snap.type })
-        } else {
-          setSnapLine(null)
-        }
-      } else {
-        setSnapLine(null)
-      }
-
-      // 吸附后二次边界校验（A8）：吸附位移可能导致轻微越界，此处对 newStart/newEnd 做最终 clamp。
-      // 当未发生吸附时，输入值已被前置 clamp，此处为幂等操作。
-      const clamped = finalClampAfterSnap(dragState.type, newStart, newEnd, dragState.origStart, dragState.origEnd, maxChapter)
-      newStart = clamped.start
-      newEnd = clamped.end
+      const r = clampMoveRange(dragState.origStart, dragState.origEnd, deltaChapters, maxChapter)
+      const newStart = r.start
+      const newEnd = r.end
 
       const update = { clipId: clip.id, start: newStart, end: newEnd }
       pendingClipUpdateRef.current = update
@@ -616,33 +509,27 @@ export function TimelineEditor({
     }
 
     const handleMouseUp = (): void => {
-      if (panState) { setPanState(null); return }
       if (marquee) { setMarquee(null); return }
       if (playheadDrag) { setPlayheadDrag(null); return }
       if (dragState) {
         const clip = allClips.find((c) => c.id === dragState.clipId)
         const pending = pendingClipUpdateRef.current
         if (clip && pending && dragState.started) {
-          if (dragState.type === 'move') {
-            // 多片段成组移动（B3）：松开时对组内其他 clip 一次性应用 delta，避免拖动中频繁写库
-            if (selectedSet.size > 1 && selectedSet.has(clip.id)) {
-              const delta = pending.start - dragState.origStart
-              const group = applyGroupMove(allClips, selectedSet, delta, maxChapter)
-              group.forEach((range, id) => {
-                const c = allClips.find((x) => x.id === id)
-                if (c) onClipMove?.(c, range.start, range.end)
-              })
-            } else {
-              onClipMove?.(clip, pending.start, pending.end)
-            }
+          // 多片段成组移动（B3）：松开时对组内其他 clip 一次性应用 delta，避免拖动中频繁写库
+          if (selectedSet.size > 1 && selectedSet.has(clip.id)) {
+            const delta = pending.start - dragState.origStart
+            const group = applyGroupMove(allClips, selectedSet, delta, maxChapter)
+            group.forEach((range, id) => {
+              const c = allClips.find((x) => x.id === id)
+              if (c) onClipMove?.(c, range.start, range.end)
+            })
           } else {
-            onClipResize?.(clip, pending.start, pending.end)
+            onClipMove?.(clip, pending.start, pending.end)
           }
         }
         pendingClipUpdateRef.current = null
         setDragState(null)
         setPendingClipUpdate(null)
-        setSnapLine(null)
       }
     }
 
@@ -652,7 +539,7 @@ export function TimelineEditor({
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [dragState, playheadDrag, marquee, panState, tracks, allClips, chapterWidth, getTrackHeight, collapsedTracks, snapEnabled, playheadChapter, maxChapter, onPlayheadChange, onClipMove, onClipResize, updateSelection, selectedSet])
+  }, [dragState, playheadDrag, marquee, tracks, allClips, chapterWidth, getTrackHeight, collapsedTracks, maxChapter, onPlayheadChange, onClipMove, updateSelection, selectedSet])
 
   const getClipDisplayRange = useCallback((clip: TimelineClip): { start: number; end: number } => {
     if (pendingClipUpdate && pendingClipUpdate.clipId === clip.id) {
@@ -750,16 +637,6 @@ export function TimelineEditor({
     })
   }, [chapterWidth, onChapterWidthChange])
 
-  // ── 剃刀移动 ──
-  const handleTrackMouseMove = useCallback((e: React.MouseEvent) => {
-    if (activeTool !== 'razor') {
-      if (razorLine != null) setRazorLine(null)
-      return
-    }
-    const relX = getRelativeX(e.clientX)
-    setRazorLine(relX)
-  }, [activeTool, razorLine, getRelativeX])
-
   // ── 悬停气泡（延迟 500ms）──
   const handleClipMouseEnter = useCallback((clip: TimelineClip, e: React.MouseEvent) => {
     setHoveredClipId(clip.id)
@@ -788,28 +665,12 @@ export function TimelineEditor({
     }
   }, [])
 
-  // ── 播放时自动滚动 ──
-  useEffect(() => {
-    if (!isPlaying) return
-    const vp = trackViewportRef.current
-    if (!vp) return
-    const playheadPx = chapterToX(playheadChapter, chapterWidth)
-    const threshold = vp.clientWidth * 0.8
-    if (playheadPx - vp.scrollLeft > threshold) {
-      vp.scrollLeft = playheadPx - threshold
-    }
-  }, [playheadChapter, chapterWidth, isPlaying])
-
   const playheadX = chapterToX(playheadChapter, chapterWidth) + chapterWidth / 2
   const dropIndicatorX = dropIndicatorChapter != null
     ? chapterToX(dropIndicatorChapter, chapterWidth) + chapterWidth / 2
     : null
 
   const isEmpty = tracks.length === 0
-  const cursorClass = activeTool === 'razor' ? 'tl-cursor-razor'
-    : activeTool === 'hand' ? 'tl-cursor-hand'
-    : activeTool === 'zoom' ? 'tl-cursor-zoom'
-    : ''
 
   // 计算小地图视口参数
   const viewportVisibleChapters = Math.max(1, Math.ceil((viewportState.clientWidth || 800) / chapterWidth))
@@ -829,7 +690,7 @@ export function TimelineEditor({
   }, [conflicts])
 
   return (
-    <div className={`tl-editor-root ${cursorClass} ${isPlaying ? 'is-playing' : ''}`}>
+    <div className="tl-editor-root">
       {/* ── 顶部：标尺 ── */}
       <div className="tl-header-row" style={{ height: RULER_HEIGHT }}>
         <div className="tl-header-corner" style={{ width: HEADER_WIDTH, minWidth: HEADER_WIDTH }}>
@@ -876,13 +737,13 @@ export function TimelineEditor({
               })}
             {showPlayhead && (
               <div
-                className={`tl-playhead-handle ${playheadDrag ? 'is-dragging' : ''} ${isPlaying ? 'is-playing' : ''}`}
+                className={`tl-playhead-handle ${playheadDrag ? 'is-dragging' : ''}`}
                 style={{ left: playheadX }}
                 onMouseDown={handlePlayheadMouseDown}
                 title={`第 ${playheadChapter} 章`}
               >
                 <div className="tl-playhead-triangle" />
-                {(playheadDrag || isPlaying) && (
+                {playheadDrag && (
                   <div className="tl-playhead-tooltip">第 {playheadChapter} 章</div>
                 )}
               </div>
@@ -1007,8 +868,6 @@ export function TimelineEditor({
           onScroll={handleTrackScroll}
           onWheel={handleWheel}
           onMouseDown={handleTrackAreaMouseDown}
-          onMouseMove={handleTrackMouseMove}
-          onClick={activeTool === 'razor' ? handleRazorClick : undefined}
           onContextMenu={(e) => {
             const clip = findClipAtPos(e.clientX, e.clientY)
             if (!clip) {
@@ -1089,20 +948,18 @@ export function TimelineEditor({
                             key={clip.id}
                             className={`tl-clip tl-clip-${clip.effectId} ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''} ${isDragging ? 'is-dragging' : ''} ${isCompact ? 'is-compact' : ''}`}
                             style={{ left, width, top, height: clipHeight, opacity: heatOpacity }}
-                            onMouseDown={activeTool === 'select' ? (e) => handleClipMouseDown(e, clip, 'move') : undefined}
+                            onMouseDown={(e) => handleClipMouseDown(e, clip, 'move')}
                             onClick={(e) => {
-                              if (activeTool === 'select') {
-                                e.stopPropagation()
-                                if (e.ctrlKey || e.metaKey) {
-                                  const next = new Set(selectedSet)
-                                  if (next.has(clip.id)) next.delete(clip.id)
-                                  else next.add(clip.id)
-                                  updateSelection(next)
-                                } else if (!selectedSet.has(clip.id)) {
-                                  updateSelection(new Set([clip.id]))
-                                }
-                                onSelectEntity?.(clip.entityType, clip.entityId)
+                              e.stopPropagation()
+                              if (e.ctrlKey || e.metaKey) {
+                                const next = new Set(selectedSet)
+                                if (next.has(clip.id)) next.delete(clip.id)
+                                else next.add(clip.id)
+                                updateSelection(next)
+                              } else if (!selectedSet.has(clip.id)) {
+                                updateSelection(new Set([clip.id]))
                               }
+                              onSelectEntity?.(clip.entityType, clip.entityId)
                             }}
                             onDoubleClick={(e) => {
                               e.stopPropagation()
@@ -1127,10 +984,6 @@ export function TimelineEditor({
                             {isForeshadowResolved && (
                               <div className="tl-clip-anchor tl-clip-anchor-right" title="已回收" />
                             )}
-                            <div
-                              className="tl-clip-handle tl-clip-handle-left"
-                              onMouseDown={activeTool === 'select' ? (e) => handleClipMouseDown(e, clip, 'resize-left') : undefined}
-                            />
                             <div className="tl-clip-content">
                               <span className="tl-clip-label">{clip.label}</span>
                               {clip.tag && !isCompact && (
@@ -1147,10 +1000,6 @@ export function TimelineEditor({
                                 </span>
                               )}
                             </div>
-                            <div
-                              className="tl-clip-handle tl-clip-handle-right"
-                              onMouseDown={activeTool === 'select' ? (e) => handleClipMouseDown(e, clip, 'resize-right') : undefined}
-                            />
                           </div>
                         )
                       })}
@@ -1168,7 +1017,7 @@ export function TimelineEditor({
                 {/* 播放头竖线 */}
                 {showPlayhead && (
                   <div
-                    className={`tl-playhead-line ${playheadDrag ? 'is-dragging' : ''} ${isPlaying ? 'is-playing' : ''} ${creatingChapter != null ? 'is-creating' : ''}`}
+                    className={`tl-playhead-line ${playheadDrag ? 'is-dragging' : ''} ${creatingChapter != null ? 'is-creating' : ''}`}
                     style={{ left: playheadX, height: totalContentHeight, top: 0 }}
                   />
                 )}
@@ -1190,22 +1039,6 @@ export function TimelineEditor({
                   <div className="tl-drop-indicator" style={{ left: dropIndicatorX, height: totalContentHeight }}>
                     <div className="tl-drop-indicator-label">第 {dropIndicatorChapter} 章</div>
                   </div>
-                )}
-
-                {/* 吸附辅助线 */}
-                {snapLine && (
-                  <div
-                    className={`tl-snap-line tl-snap-${snapLine.type}`}
-                    style={{ left: snapLine.x, height: totalContentHeight }}
-                  />
-                )}
-
-                {/* 剃刀虚线 */}
-                {razorLine != null && activeTool === 'razor' && (
-                  <div
-                    className="tl-razor-line"
-                    style={{ left: razorLine, height: totalContentHeight }}
-                  />
                 )}
 
                 {/* 框选矩形 */}

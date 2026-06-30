@@ -1,20 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import {
   clampMoveRange,
-  clampResizeRightRange,
-  findSnapPoint,
-  finalClampAfterSnap,
   buildRelationLines,
   computeMinimapViewportFrame,
   rangeToRestore,
   groupContiguousSpans,
-  planClipSplit,
   isTrackAudible,
   applyGroupMove,
   computeTrackHeight,
-  computeRippleShifts,
   truncateSummary,
-  computeLoopBounds,
   type EditAction,
 } from '../timeline-logic'
 
@@ -34,71 +28,6 @@ describe('clampMoveRange', () => {
     const r = clampMoveRange(1, 5, 0, 3)
     expect(r.start).toBeGreaterThanOrEqual(1)
     expect(r.end).toBeLessThanOrEqual(3)
-  })
-})
-
-describe('clampResizeRightRange', () => {
-  it('clamps newEnd to maxChapter', () => {
-    expect(clampResizeRightRange(5, 8, 20, 20)).toBe(20)
-  })
-  it('clamps newEnd to at least origStart', () => {
-    expect(clampResizeRightRange(5, 8, -10, 20)).toBe(5)
-  })
-})
-
-describe('findSnapPoint', () => {
-  const tracks = [
-    {
-      id: 't1', kind: 'character' as const, label: 'A', clips: [
-        { id: 'c1', startChapter: 10, endChapter: 14, effectId: 'x', entityType: 'character' as const, entityId: 'e1', label: 'A' },
-      ],
-    },
-  ]
-
-  it('snaps to playhead when within SNAP_PX/chapterWidth distance', () => {
-    const snap = findSnapPoint(5.98, 9.98, 280, 'c1', tracks, 6, 20)
-    expect(snap).not.toBeNull()
-    expect(snap!.chapter).toBe(6)
-    expect(snap!.type).toBe('playhead')
-  })
-
-  it('does NOT snap when distance exceeds threshold', () => {
-    const snap = findSnapPoint(5.8, 9.8, 280, 'c1', tracks, 6, 20)
-    expect(snap).toBeNull()
-  })
-
-  it('snaps to clip endpoint', () => {
-    const snap = findSnapPoint(11, 14, 80, 'other', tracks, 1, 20)
-    expect(snap).not.toBeNull()
-    expect(snap!.chapter).toBe(15)
-    expect(snap!.type).toBe('clip-end')
-  })
-
-  it('excludes the clip being dragged', () => {
-    const snap = findSnapPoint(10, 14, 80, 'c1', tracks, 1, 20)
-    expect(snap).toBeNull()
-  })
-})
-
-describe('finalClampAfterSnap', () => {
-  it('clamps move range after snap to keep within [1, maxChapter]', () => {
-    const r = finalClampAfterSnap('move', 19, 22, 5, 8, 20)
-    expect(r.end).toBe(20)
-    expect(r.start).toBe(17)
-  })
-  it('clamps newStart to 1 on resize-left after snap', () => {
-    const r = finalClampAfterSnap('resize-left', 0, 8, 0, 8, 20)
-    expect(r.start).toBe(1)
-    expect(r.end).toBe(8)
-  })
-  it('clamps newEnd to maxChapter on resize-right after snap', () => {
-    const r = finalClampAfterSnap('resize-right', 5, 25, 5, 8, 20)
-    expect(r.end).toBe(20)
-    expect(r.start).toBe(5)
-  })
-  it('leaves valid range untouched', () => {
-    const r = finalClampAfterSnap('move', 7, 10, 5, 8, 20)
-    expect(r).toEqual({ start: 7, end: 10 })
   })
 })
 
@@ -209,21 +138,6 @@ describe('groupContiguousSpans', () => {
   })
 })
 
-describe('planClipSplit', () => {
-  it('produces first and second ranges for a split', () => {
-    expect(planClipSplit(3, 10, 7)).toEqual({
-      first: { start: 3, end: 6 },
-      second: { start: 7, end: 10 },
-    })
-  })
-  it('returns null first when atChapter <= start', () => {
-    expect(planClipSplit(5, 10, 5)).toBeNull()
-  })
-  it('returns null second when atChapter > end', () => {
-    expect(planClipSplit(5, 10, 11)).toEqual({ first: { start: 5, end: 10 }, second: null })
-  })
-})
-
 describe('isTrackAudible (Solo/Mute mutex, B7)', () => {
   it('returns true when no solo and track not muted', () => {
     expect(isTrackAudible('t1', null, new Set())).toBe(true)
@@ -274,31 +188,6 @@ describe('computeTrackHeight (B4)', () => {
   })
 })
 
-describe('computeRippleShifts (B1 ripple delete)', () => {
-  it('shifts subsequent clips on same track left by deleted duration', () => {
-    const sameTrackClips = [
-      { id: 'a', startChapter: 1, endChapter: 3 },
-      { id: 'del', startChapter: 5, endChapter: 7 }, // 被删
-      { id: 'b', startChapter: 8, endChapter: 10 },
-      { id: 'c', startChapter: 12, endChapter: 15 },
-    ]
-    const shifts = computeRippleShifts(sameTrackClips, 'del')
-    expect(shifts.get('a')).toBeUndefined()
-    expect(shifts.get('b')).toEqual({ start: 5, end: 7 })   // 8-3=5
-    expect(shifts.get('c')).toEqual({ start: 9, end: 12 })  // 12-3=9
-  })
-  it('returns empty when deleted clip not found', () => {
-    expect(computeRippleShifts([{ id: 'a', startChapter: 1, endChapter: 2 }], 'del').size).toBe(0)
-  })
-  it('does not shift clips before deleted', () => {
-    const sameTrackClips = [
-      { id: 'a', startChapter: 1, endChapter: 2 },
-      { id: 'del', startChapter: 4, endChapter: 5 },
-    ]
-    expect(computeRippleShifts(sameTrackClips, 'del').get('a')).toBeUndefined()
-  })
-})
-
 describe('truncateSummary (B5)', () => {
   it('returns full text when within limit', () => {
     expect(truncateSummary('短标题', 20)).toBe('短标题')
@@ -309,29 +198,5 @@ describe('truncateSummary (B5)', () => {
   })
   it('returns empty string for empty input', () => {
     expect(truncateSummary('', 20)).toBe('')
-  })
-})
-
-describe('computeLoopBounds (B2 play loop)', () => {
-  it('returns [in, out] when both present and in <= out', () => {
-    expect(computeLoopBounds(5, 15, 20)).toEqual({ start: 5, end: 15 })
-  })
-  it('clamps out to maxChapter', () => {
-    expect(computeLoopBounds(5, 99, 20)).toEqual({ start: 5, end: 20 })
-  })
-  it('returns null when in missing', () => {
-    expect(computeLoopBounds(null, 15, 20)).toBeNull()
-  })
-  it('returns null when out missing', () => {
-    expect(computeLoopBounds(5, null, 20)).toBeNull()
-  })
-  it('returns null when in > out', () => {
-    expect(computeLoopBounds(15, 5, 20)).toBeNull()
-  })
-  it('returns single-chapter loop when in === out', () => {
-    expect(computeLoopBounds(5, 5, 20)).toEqual({ start: 5, end: 5 })
-  })
-  it('returns null when in > maxChapter after clamping out', () => {
-    expect(computeLoopBounds(5, 99, 3)).toBeNull()
   })
 })

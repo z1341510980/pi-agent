@@ -2,10 +2,9 @@
  * TimelineToolbar：时间轴工具栏
  *
  * 功能分组：
- * - 工具组：选择/剃刀/手型/缩放
- * - 导航组：首章/上一章/播放暂停/下一章/末章 + 章节号显示
+ * - 章节号显示
  * - 编辑组：撤销/重做/删除
- * - 视图组：Snap 开关 + 缩放档位 + 过滤
+ * - 视图组：缩放档位 + 过滤
  * - 补全历史按钮
  */
 
@@ -13,27 +12,13 @@ import { type ReactElement } from 'react'
 import {
   History,
   Filter,
-  MousePointer2,
-  Scissors,
-  Hand,
-  ZoomIn,
-  Play,
-  Pause,
-  SkipBack,
-  SkipForward,
-  ChevronFirst,
-  ChevronLast,
   Undo2,
   Redo2,
   Trash2,
-  Magnet,
   Spline,
-  ArrowRightToLine,
-  ArrowRightFromLine,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { Tool } from './timeline-editor'
 
 export type ZoomLevel = 'compact' | 'standard' | 'detailed'
 
@@ -70,22 +55,8 @@ export interface TimelineToolbarProps {
   onFilterChange: (filter: TimelineFilter) => void
   onCompleteHistory: () => void
   totalChapters: number
-  /** 工具组 */
-  activeTool: Tool
-  onToolChange: (tool: Tool) => void
-  /** 导航组 */
+  /** 当前章节号显示 */
   playheadChapter: number
-  isPlaying: boolean
-  onPlayToggle: () => void
-  onPrevChapter: () => void
-  onNextChapter: () => void
-  onFirstChapter: () => void
-  onLastChapter: () => void
-  /** In/Out 标记组 */
-  inChapter?: number | null
-  outChapter?: number | null
-  onSetIn: () => void
-  onSetOut: () => void
   /** 编辑组 */
   canUndo: boolean
   canRedo: boolean
@@ -93,9 +64,6 @@ export interface TimelineToolbarProps {
   onRedo: () => void
   canDelete: boolean
   onDelete: () => void
-  /** Snap 开关 */
-  snapEnabled: boolean
-  onSnapToggle: () => void
   /** 关系连线开关 */
   showRelations: boolean
   onToggleRelations: () => void
@@ -110,13 +78,6 @@ const FILTER_OPTIONS: Array<{ key: keyof TimelineFilter; label: string; color: s
   { key: 'worldElement', label: '世界', color: 'rgb(99, 102, 241)' },
 ]
 
-const TOOLS: Array<{ tool: Tool; icon: typeof MousePointer2; label: string }> = [
-  { tool: 'select', icon: MousePointer2, label: '选择' },
-  { tool: 'razor', icon: Scissors, label: '剃刀' },
-  { tool: 'hand', icon: Hand, label: '手型' },
-  { tool: 'zoom', icon: ZoomIn, label: '缩放' },
-]
-
 export function TimelineToolbar({
   zoom,
   filter,
@@ -126,27 +87,13 @@ export function TimelineToolbar({
   onFilterChange,
   onCompleteHistory,
   totalChapters,
-  activeTool,
-  onToolChange,
   playheadChapter,
-  isPlaying,
-  onPlayToggle,
-  onPrevChapter,
-  onNextChapter,
-  onFirstChapter,
-  onLastChapter,
-  inChapter,
-  outChapter,
-  onSetIn,
-  onSetOut,
   canUndo,
   canRedo,
   onUndo,
   onRedo,
   canDelete,
   onDelete,
-  snapEnabled,
-  onSnapToggle,
   showRelations,
   onToggleRelations,
 }: TimelineToolbarProps): ReactElement {
@@ -156,97 +103,11 @@ export function TimelineToolbar({
 
   return (
     <div className="novel-timeline-toolbar">
-      {/* 工具组 */}
-      <div className="novel-timeline-toolbar-segment">
-        {TOOLS.map(({ tool, icon: Icon, label }) => (
-          <button
-            key={tool}
-            type="button"
-            className={cn(
-              'novel-timeline-toolbar-segment-btn',
-              activeTool === tool && 'is-active',
-            )}
-            onClick={() => onToolChange(tool)}
-            title={label}
-          >
-            <Icon className="size-3.5" />
-          </button>
-        ))}
-      </div>
-
-      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-
-      {/* 导航组 */}
-      <div className="flex items-center gap-0.5">
-        <button
-          type="button"
-          className="novel-timeline-nav-btn"
-          onClick={onFirstChapter}
-          title="首章"
-          disabled={playheadChapter <= 1}
-        >
-          <ChevronFirst className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className="novel-timeline-nav-btn"
-          onClick={onPrevChapter}
-          title="上一章"
-          disabled={playheadChapter <= 1}
-        >
-          <SkipBack className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className={cn('novel-timeline-nav-btn novel-timeline-play-btn', isPlaying && 'is-playing')}
-          onClick={onPlayToggle}
-          title={isPlaying ? '暂停' : '播放'}
-        >
-          {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
-        </button>
-        <button
-          type="button"
-          className="novel-timeline-nav-btn"
-          onClick={onNextChapter}
-          title="下一章"
-          disabled={playheadChapter >= totalChapters}
-        >
-          <SkipForward className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className="novel-timeline-nav-btn"
-          onClick={onLastChapter}
-          title="末章"
-          disabled={playheadChapter >= totalChapters}
-        >
-          <ChevronLast className="size-3.5" />
-        </button>
-        <span className="ml-1.5 text-[11px] tabular-nums text-muted-foreground">
+      {/* 章节号显示 */}
+      <div className="flex items-center gap-1.5">
+        <span className="text-[11px] tabular-nums text-muted-foreground">
           {playheadChapter} / {totalChapters}
         </span>
-      </div>
-
-      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-
-      {/* In/Out 标记组 */}
-      <div className="flex items-center gap-0.5">
-        <button
-          type="button"
-          className="novel-timeline-nav-btn"
-          onClick={onSetIn}
-          title={`设置 In 点（当前：第 ${inChapter ?? '-'} 章）`}
-        >
-          <ArrowRightToLine className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className="novel-timeline-nav-btn"
-          onClick={onSetOut}
-          title={`设置 Out 点（当前：第 ${outChapter ?? '-'} 章）`}
-        >
-          <ArrowRightFromLine className="size-3.5" />
-        </button>
       </div>
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
@@ -283,16 +144,6 @@ export function TimelineToolbar({
       </div>
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-
-      {/* Snap 开关 */}
-      <button
-        type="button"
-        className={cn('novel-timeline-nav-btn', snapEnabled && 'is-active')}
-        onClick={onSnapToggle}
-        title={snapEnabled ? '关闭吸附' : '开启吸附'}
-      >
-        <Magnet className="size-3.5" />
-      </button>
 
       {/* 关系连线开关 */}
       <button

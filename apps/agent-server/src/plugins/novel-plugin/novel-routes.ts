@@ -1552,7 +1552,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     chapter: z.number().int().min(1),
     title: z.string().default(''),
     note: z.string().default(''),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'in', 'out', 'clip-note']).default('bookmark'),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note']).default('bookmark'),
     color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).default('blue'),
     entityType: z.string().nullable().default(null),
     entityId: z.string().nullable().default(null),

@@ -493,7 +493,7 @@ export interface CreateCharacterHistoryInput {
 
 export type NovelMarkerType =
   | 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note'
-  | 'in' | 'out' | 'clip-note'
+  | 'clip-note'
 
 export type NovelMarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
 

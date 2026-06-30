@@ -7,9 +7,9 @@
  */
 
 import { useCallback, useState, type ReactElement } from 'react'
-import { Bookmark, Zap, Sprout, Flame, StickyNote, ArrowRightToLine, ArrowRightFromLine } from 'lucide-react'
+import { Bookmark, Zap, Sprout, Flame, StickyNote } from 'lucide-react'
 
-export type MarkerType = 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note' | 'in' | 'out' | 'clip-note'
+export type MarkerType = 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note' | 'clip-note'
 export type MarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
 
 export interface TimelineMarker {
@@ -27,8 +27,6 @@ const MARKER_CONFIG: Record<MarkerType, { color: MarkerColor; icon: typeof Bookm
   'foreshadow': { color: 'green', icon: Sprout, label: '伏笔' },
   'climax': { color: 'red', icon: Flame, label: '高潮' },
   'note': { color: 'purple', icon: StickyNote, label: '备注' },
-  'in': { color: 'blue', icon: ArrowRightToLine, label: 'In 点' },
-  'out': { color: 'red', icon: ArrowRightFromLine, label: 'Out 点' },
   'clip-note': { color: 'purple', icon: StickyNote, label: '批注' },
 }
 
@@ -110,12 +108,11 @@ export function TimelineMarkers({
         const left = (marker.chapter - 1) * chapterWidth + chapterWidth / 2
         const isDragging = draggingId === marker.id
         const isHovered = hoveredId === marker.id
-        const isInOut = marker.type === 'in' || marker.type === 'out'
         return (
           <div
             key={marker.id}
-            className={`tl-marker ${isInOut ? 'tl-marker-inout' : ''} ${isDragging ? 'is-dragging' : ''} ${isHovered ? 'is-hovered' : ''}`}
-            style={isInOut ? { left, color, height: '100%' } : { left, color }}
+            className={`tl-marker ${isDragging ? 'is-dragging' : ''} ${isHovered ? 'is-hovered' : ''}`}
+            style={{ left, color }}
             onMouseDown={(e) => handleMouseDown(e, marker)}
             onClick={(e) => {
               e.stopPropagation()
@@ -134,11 +131,7 @@ export function TimelineMarkers({
             onMouseLeave={() => setHoveredId(null)}
             title={`${config.label}：${marker.title}${marker.note ? `\n${marker.note}` : ''}`}
           >
-            {isInOut ? (
-              <div className="tl-marker-inout-line" style={{ background: color }} />
-            ) : (
-              <Icon size={12} className="tl-marker-icon" style={{ fill: color, color }} />
-            )}
+            <Icon size={12} className="tl-marker-icon" style={{ fill: color, color }} />
             {isHovered && (
               <div className="tl-marker-tooltip" style={{ borderColor: color }}>
                 <span className="tl-marker-tooltip-type">{config.label}</span>

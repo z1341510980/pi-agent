@@ -2,7 +2,6 @@
  * ClipContextMenu：片段右键菜单
  *
  * 菜单项：
- * - 在播放头切分（Ctrl+K）
  * - 复制（Ctrl+C）
  * - 剪切（Ctrl+X）
  * - 删除（Delete）
@@ -12,7 +11,7 @@
  */
 
 import { type ReactElement } from 'react'
-import { Scissors, Copy, ClipboardCut, Trash2, AlignCenterVertical, Pencil } from 'lucide-react'
+import { Copy, ClipboardCut, Trash2, AlignCenterVertical, Pencil } from 'lucide-react'
 import type { TimelineClip } from './use-timeline-data'
 
 export interface ClipContextMenuPosition {
@@ -25,11 +24,9 @@ export interface ClipContextMenuProps {
   position: ClipContextMenuPosition | null
   canPaste: boolean
   onClose: () => void
-  onSplit: (clip: TimelineClip) => void
   onCopy: (clip: TimelineClip) => void
   onCut: (clip: TimelineClip) => void
   onDelete: (clip: TimelineClip) => void
-  onRippleDelete: (clip: TimelineClip) => void
   onAlignToPlayhead: (clip: TimelineClip) => void
   onEditDetails: (clip: TimelineClip) => void
 }
@@ -38,11 +35,9 @@ export function ClipContextMenu({
   position,
   canPaste,
   onClose,
-  onSplit,
   onCopy,
   onCut,
   onDelete,
-  onRippleDelete,
   onAlignToPlayhead,
   onEditDetails,
 }: ClipContextMenuProps): ReactElement | null {
@@ -65,16 +60,6 @@ export function ClipContextMenu({
       style={{ left: adjustedX, top: adjustedY }}
       onClick={(e) => e.stopPropagation()}
     >
-      <button
-        type="button"
-        className="novel-timeline-context-item"
-        onClick={() => handleAction(onSplit)}
-        title="在播放头位置切分（Ctrl+K）"
-      >
-        <Scissors className="size-3.5" />
-        <span>在播放头切分</span>
-        <kbd>Ctrl+K</kbd>
-      </button>
       <button
         type="button"
         className="novel-timeline-context-item"
@@ -105,16 +90,6 @@ export function ClipContextMenu({
         <Trash2 className="size-3.5" />
         <span>删除</span>
         <kbd>Del</kbd>
-      </button>
-      <button
-        type="button"
-        className="novel-timeline-context-item is-danger"
-        onClick={() => handleAction(onRippleDelete)}
-        title="删除并使后续片段前移（Shift+Del）"
-      >
-        <Trash2 className="size-3.5" />
-        <span>涟漪删除</span>
-        <kbd>⇧Del</kbd>
       </button>
       <div className="novel-timeline-context-divider" />
       <button

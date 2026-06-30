@@ -18,118 +18,6 @@ export function clampMoveRange(
   return { start, end }
 }
 
-/** resize-right 拖拽：newEnd ∈ [origStart, maxChapter] */
-export function clampResizeRightRange(
-  origStart: number,
-  origEnd: number,
-  deltaChapters: number,
-  maxChapter: number,
-): number {
-  const raw = origEnd + deltaChapters
-  return Math.max(origStart, Math.min(maxChapter, raw))
-}
-
-// ── 吸附系统 ──
-
-export const SNAP_PX = 8
-
-export interface SnapResult {
-  chapter: number
-  type: 'playhead' | 'clip-end' | 'chapter'
-  priority: number
-  distance: number
-}
-
-interface SnapClip {
-  id: string
-  startChapter: number
-  endChapter: number
-}
-interface SnapTrack {
-  id: string
-  clips: SnapClip[]
-}
-
-/**
- * 吸附判定：threshold = SNAP_PX / chapterWidth（不再 Math.max 兜底）。
- * 接受浮点 currentStart/currentEnd，使吸附在子章节精度生效。
- */
-export function findSnapPoint(
-  currentStart: number,
-  currentEnd: number,
-  chapterWidth: number,
-  excludeClipId: string,
-  tracks: SnapTrack[],
-  playheadChapter: number,
-  maxChapter: number,
-): SnapResult | null {
-  const threshold = SNAP_PX / chapterWidth
-  const candidates: Array<{ chapter: number; type: SnapResult['type']; priority: number }> = []
-
-  candidates.push({ chapter: playheadChapter, type: 'playhead', priority: 100 })
-
-  // 被拖拽片段的原位章节不应作为吸附目标（否则未移动时也会出现吸附辅助线）
-  let excludedStart = NaN
-  let excludedEndPlus1 = NaN
-  for (const track of tracks) {
-    for (const clip of track.clips) {
-      if (clip.id === excludeClipId) {
-        excludedStart = clip.startChapter
-        excludedEndPlus1 = clip.endChapter + 1
-        continue
-      }
-      candidates.push({ chapter: clip.startChapter, type: 'clip-end', priority: 85 })
-      candidates.push({ chapter: clip.endChapter + 1, type: 'clip-end', priority: 85 })
-    }
-  }
-
-  for (let ch = 1; ch <= maxChapter; ch++) {
-    if (ch === excludedStart || ch === excludedEndPlus1) continue
-    candidates.push({ chapter: ch, type: 'chapter', priority: 70 })
-  }
-
-  let best: SnapResult | null = null
-  for (const endpoint of [currentStart, currentEnd + 1]) {
-    for (const c of candidates) {
-      const dist = Math.abs(c.chapter - endpoint)
-      if (dist > threshold) continue
-      if (!best || dist < best.distance ||
-          (dist === best.distance && c.priority > best.priority)) {
-        best = { chapter: c.chapter, type: c.type, priority: c.priority, distance: dist }
-      }
-    }
-  }
-  return best
-}
-
-/**
- * 吸附后对 newStart/newEnd 做最终边界校验，防止吸附位移导致越界。
- * - move：按 orig 时长反推 start 上界，保证 [1, maxChapter] 内完整区间
- * - resize-left：start ∈ [1, origEnd]
- * - resize-right：end ∈ [origStart, maxChapter]
- */
-export function finalClampAfterSnap(
-  type: 'move' | 'resize-left' | 'resize-right',
-  newStart: number,
-  newEnd: number,
-  origStart: number,
-  origEnd: number,
-  maxChapter: number,
-): { start: number; end: number } {
-  if (type === 'move') {
-    const duration = origEnd - origStart
-    const start = Math.max(1, Math.min(newStart, maxChapter - duration))
-    return { start, end: start + duration }
-  }
-  if (type === 'resize-left') {
-    const start = Math.max(1, Math.min(newStart, origEnd))
-    return { start, end: newEnd }
-  }
-  // resize-right
-  const end = Math.max(origStart, Math.min(newEnd, maxChapter))
-  return { start: newStart, end }
-}
-
 // ── 关系层连线构建 ──
 
 const RELATION_COLOR: Record<string, string> = {
@@ -258,7 +146,7 @@ export function computeMinimapViewportFrame(
 
 // ── 撤销/重做编辑动作 ──
 
-export type EditActionType = 'move' | 'resize' | 'delete' | 'paste' | 'cut'
+export type EditActionType = 'move' | 'delete' | 'paste' | 'cut'
 
 export interface EditAction {
   type: EditActionType
@@ -292,20 +180,6 @@ export function groupContiguousSpans(chapters: number[]): Array<{ start: number;
   }
   spans.push(cur)
   return spans
-}
-
-/** 规划切分：返回原 clip 的前半段 [start, atChapter-1] 与后半段 [atChapter, end] */
-export function planClipSplit(
-  origStart: number,
-  origEnd: number,
-  atChapter: number,
-): { first: { start: number; end: number }; second: { start: number; end: number } | null } | null {
-  if (atChapter <= origStart) return null
-  if (atChapter > origEnd) return { first: { start: origStart, end: origEnd }, second: null }
-  return {
-    first: { start: origStart, end: atChapter - 1 },
-    second: { start: atChapter, end: origEnd },
-  }
 }
 
 /** Solo/Mute 互斥：solo 激活时仅 solo 轨道可闻；否则按 mute 判定 */
@@ -343,47 +217,9 @@ export function computeTrackHeight(level: TrackHeightLevel, collapsed: boolean):
   return level === 'compact' ? 28 : level === 'spacious' ? 56 : 36
 }
 
-// ── 涟漪删除（B1）──
-
-/** 涟漪删除：计算同轨道被删 clip 之后的所有 clip 前移后的新区间 */
-export function computeRippleShifts(
-  sameTrackClips: Array<{ id: string; startChapter: number; endChapter: number }>,
-  deletedClipId: string,
-): Map<string, { start: number; end: number }> {
-  const deleted = sameTrackClips.find((c) => c.id === deletedClipId)
-  if (!deleted) return new Map()
-  const duration = deleted.endChapter - deleted.startChapter + 1
-  const result = new Map<string, { start: number; end: number }>()
-  for (const clip of sameTrackClips) {
-    if (clip.id === deletedClipId) continue
-    if (clip.startChapter > deleted.endChapter) {
-      result.set(clip.id, {
-        start: clip.startChapter - duration,
-        end: clip.endChapter - duration,
-      })
-    }
-  }
-  return result
-}
-
 /** 截断摘要：超长加省略号（省略号占 3 字符宽，总宽度不超过 maxLen） */
 export function truncateSummary(text: string, maxLen: number): string {
   if (!text) return ''
   if (text.length <= maxLen) return text
   return text.slice(0, maxLen - 3) + '…'
-}
-
-// ── 播放循环（B2 In/Out 标记）──
-
-/** 计算播放循环边界：in/out 都存在且 in<=out 时返回 [in,out]，否则 null */
-export function computeLoopBounds(
-  inChapter: number | null,
-  outChapter: number | null,
-  maxChapter: number,
-): { start: number; end: number } | null {
-  if (inChapter == null || outChapter == null) return null
-  if (inChapter > outChapter) return null
-  const end = Math.min(outChapter, maxChapter)
-  if (inChapter > end) return null
-  return { start: inChapter, end }
 }
