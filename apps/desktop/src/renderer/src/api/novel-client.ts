@@ -493,7 +493,7 @@ export interface CreateCharacterHistoryInput {
 
 export type NovelMarkerType =
   | 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note'
-  | 'in' | 'out'
+  | 'in' | 'out' | 'clip-note'
 
 export type NovelMarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
 
@@ -505,6 +505,8 @@ export interface NovelMarker {
   note: string
   type: NovelMarkerType
   color: NovelMarkerColor
+  entityType: string | null
+  entityId: string | null
   createdAt: number
   updatedAt: number
 }
@@ -515,6 +517,8 @@ export interface CreateMarkerInput {
   note?: string
   type?: NovelMarkerType
   color?: NovelMarkerColor
+  entityType?: string | null
+  entityId?: string | null
 }
 
 export type UpdateMarkerInput = Partial<CreateMarkerInput>

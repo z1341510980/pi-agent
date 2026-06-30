@@ -49,6 +49,7 @@ import { ClipContextMenu, type ClipContextMenuPosition } from './clip-context-me
 import { TrackContextMenu, type TrackContextMenuPosition, type TrackHeightLevel } from './track-context-menu'
 import { MarkerContextMenu } from './marker-context-menu'
 import { MarkerEditDialog } from './marker-edit-dialog'
+import { ClipNoteDialog } from './clip-note-dialog'
 import { TimelineEditor, type Tool } from './timeline-editor'
 import type { TimelineMarker } from './timeline-markers'
 import './timeline-styles.css'
@@ -141,6 +142,7 @@ export function NovelTimelineWorkspace({
   const [showRelations, setShowRelations] = useState(false)
   const [markerContextMenu, setMarkerContextMenu] = useState<{ marker: TimelineMarker; x: number; y: number } | null>(null)
   const [editingMarker, setEditingMarker] = useState<TimelineMarker | null>(null)
+  const [noteDialogClip, setNoteDialogClip] = useState<TimelineClip | null>(null)
 
   // 撤销重做历史引用（避免 stale closure）
   const historyRef = useRef(history)
@@ -156,7 +158,8 @@ export function NovelTimelineWorkspace({
     locations: filter.location ? locations : [],
     worldElements: filter.worldElement ? worldElements : [],
     characterHistory,
-  }), [filter, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, characterHistory])
+    markers,
+  }), [filter, characters, chapters, conflicts, foreshadows, factions, locations, worldElements, characterHistory, markers])
 
   const { tracks, poolCharacters, poolConflicts, poolForeshadows, poolFactions, poolLocations } =
     useTimelineData(filteredData)
@@ -704,8 +707,13 @@ export function NovelTimelineWorkspace({
     void updateEntityRange(clip, newStart, newEnd)
   }, [playheadChapter, pushHistory, updateEntityRange])
 
-  // ── 双击编辑详情（跳转到实体面板）──
+  // ── 双击片段：编辑批注（单击跳转详情面板已由 onSelectEntity 处理）──
   const handleClipDoubleClick = useCallback((clip: TimelineClip) => {
+    setNoteDialogClip(clip)
+  }, [])
+
+  // ── 右键菜单"编辑详情"：跳转到实体面板 ──
+  const handleEditClipDetails = useCallback((clip: TimelineClip) => {
     selectNode(clip.entityId, clip.entityType)
   }, [selectNode])
 
@@ -783,6 +791,7 @@ export function NovelTimelineWorkspace({
       'note': 'purple',
       'in': 'blue',
       'out': 'red',
+      'clip-note': 'purple',
     }
     try {
       const updated = await updateMarker(markerId, { type, color: colorMap[type] })
@@ -803,6 +812,52 @@ export function NovelTimelineWorkspace({
     }
     setEditingMarker(null)
   }, [upsertMarker])
+
+  // ── 片段批注：保存/删除（以 type='clip-note' 的 marker 持久化）──
+  const handleSaveClipNote = useCallback(async (note: string): Promise<void> => {
+    if (!currentProjectId || !noteDialogClip) return
+    const existing = markers.find(
+      (m) => m.type === 'clip-note' && m.entityId === noteDialogClip.entityId,
+    )
+    try {
+      if (existing) {
+        const updated = await updateMarker(existing.id, { note })
+        upsertMarker(updated)
+      } else {
+        const created = await createMarker(currentProjectId, {
+          chapter: noteDialogClip.startChapter,
+          title: `${noteDialogClip.label} 批注`,
+          type: 'clip-note',
+          color: 'purple',
+          entityType: noteDialogClip.entityType,
+          entityId: noteDialogClip.entityId,
+          note,
+        })
+        upsertMarker(created)
+      }
+      setNoteDialogClip(null)
+    } catch (err) {
+      console.error('[NovelTimelineWorkspace] 保存片段批注失败:', err)
+    }
+  }, [currentProjectId, noteDialogClip, markers, updateMarker, upsertMarker, createMarker])
+
+  const handleDeleteClipNote = useCallback(async (): Promise<void> => {
+    if (!noteDialogClip) return
+    const existing = markers.find(
+      (m) => m.type === 'clip-note' && m.entityId === noteDialogClip.entityId,
+    )
+    if (!existing) {
+      setNoteDialogClip(null)
+      return
+    }
+    try {
+      await deleteMarker(existing.id)
+      removeMarker(existing.id)
+      setNoteDialogClip(null)
+    } catch (err) {
+      console.error('[NovelTimelineWorkspace] 删除片段批注失败:', err)
+    }
+  }, [noteDialogClip, markers, deleteMarker, removeMarker])
 
   // ── 片段右键 ──
   const handleContextMenuClip = useCallback((clip: TimelineClip, x: number, y: number) => {
@@ -1265,7 +1320,7 @@ export function NovelTimelineWorkspace({
         onDelete={(clip) => void handleClipDelete(clip.id)}
         onRippleDelete={(clip) => void handleClipDelete(clip.id, { ripple: true })}
         onAlignToPlayhead={handleAlignToPlayhead}
-        onEditDetails={handleClipDoubleClick}
+        onEditDetails={handleEditClipDetails}
       />
 
       <TrackContextMenu
@@ -1298,6 +1353,14 @@ export function NovelTimelineWorkspace({
         marker={editingMarker}
         onClose={() => setEditingMarker(null)}
         onSave={handleMarkerSaveEdit}
+      />
+
+      <ClipNoteDialog
+        clip={noteDialogClip}
+        initialNote={noteDialogClip?.note ?? ''}
+        onClose={() => setNoteDialogClip(null)}
+        onSave={handleSaveClipNote}
+        onDelete={handleDeleteClipNote}
       />
     </div>
   )

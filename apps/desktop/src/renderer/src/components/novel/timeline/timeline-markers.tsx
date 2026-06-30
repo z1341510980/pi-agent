@@ -9,7 +9,7 @@
 import { useCallback, useState, type ReactElement } from 'react'
 import { Bookmark, Zap, Sprout, Flame, StickyNote, ArrowRightToLine, ArrowRightFromLine } from 'lucide-react'
 
-export type MarkerType = 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note' | 'in' | 'out'
+export type MarkerType = 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note' | 'in' | 'out' | 'clip-note'
 export type MarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
 
 export interface TimelineMarker {
@@ -29,6 +29,7 @@ const MARKER_CONFIG: Record<MarkerType, { color: MarkerColor; icon: typeof Bookm
   'note': { color: 'purple', icon: StickyNote, label: '备注' },
   'in': { color: 'blue', icon: ArrowRightToLine, label: 'In 点' },
   'out': { color: 'red', icon: ArrowRightFromLine, label: 'Out 点' },
+  'clip-note': { color: 'purple', icon: StickyNote, label: '批注' },
 }
 
 const COLOR_HEX: Record<MarkerColor, string> = {

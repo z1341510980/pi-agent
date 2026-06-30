@@ -546,7 +546,7 @@ export interface NovelAgentLogSummary {
 
 export type NovelMarkerType =
   | 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note'
-  | 'in' | 'out'
+  | 'in' | 'out' | 'clip-note'
 
 export type NovelMarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
 
@@ -563,6 +563,10 @@ export interface NovelMarker {
   type: NovelMarkerType
   /** 标记颜色 */
   color: NovelMarkerColor
+  /** clip-note 关联的实体类型（仅 type='clip-note' 时有效） */
+  entityType: string | null
+  /** clip-note 关联的实体 ID */
+  entityId: string | null
   createdAt: number
   updatedAt: number
 }

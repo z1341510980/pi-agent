@@ -1140,6 +1140,12 @@ export function TimelineEditor({
                               {clip.entityType === 'conflict' && intensity > 0 && !isCompact && (
                                 <span className="tl-clip-intensity">{intensity}/10</span>
                               )}
+                              {/* 片段批注角标 */}
+                              {clip.note && (
+                                <span className="tl-clip-note-badge" title={clip.note}>
+                                  批注
+                                </span>
+                              )}
                             </div>
                             <div
                               className="tl-clip-handle tl-clip-handle-right"

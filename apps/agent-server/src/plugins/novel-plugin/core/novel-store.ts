@@ -171,7 +171,8 @@ interface WorldElementRow {
 
 interface MarkerRow {
   id: string; project_id: string; chapter: number; title: string; note: string
-  type: string; color: string; created_at: number; updated_at: number
+  type: string; color: string; entity_type: string | null; entity_id: string | null
+  created_at: number; updated_at: number
 }
 
 interface EdgeRow {
@@ -1119,12 +1120,13 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelMarker = { ...marker, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_markers (id, project_id, chapter, title, note, type, color, created_at, updated_at)
-      VALUES (@id, @project_id, @chapter, @title, @note, @type, @color, @created_at, @updated_at)
+      INSERT INTO novel_markers (id, project_id, chapter, title, note, type, color, entity_type, entity_id, created_at, updated_at)
+      VALUES (@id, @project_id, @chapter, @title, @note, @type, @color, @entity_type, @entity_id, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, chapter: full.chapter,
       title: bindString(full.title), note: bindString(full.note),
       type: full.type, color: full.color,
+      entity_type: full.entityType ?? null, entity_id: full.entityId ?? null,
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -1137,10 +1139,12 @@ export class NovelStore implements NovelPromptStores {
     const updated = { ...current, ...patch, id, updatedAt: now() }
     this.db.prepare(`
       UPDATE novel_markers SET chapter=@chapter, title=@title, note=@note,
-      type=@type, color=@color, updated_at=@updated_at WHERE id=@id
+      type=@type, color=@color, entity_type=@entity_type, entity_id=@entity_id, updated_at=@updated_at WHERE id=@id
     `).run({
       id, chapter: updated.chapter, title: bindString(updated.title), note: bindString(updated.note),
-      type: updated.type, color: updated.color, updated_at: updated.updatedAt,
+      type: updated.type, color: updated.color,
+      entity_type: updated.entityType ?? null, entity_id: updated.entityId ?? null,
+      updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -1546,6 +1550,8 @@ export class NovelStore implements NovelPromptStores {
       title: row.title, note: row.note,
       type: row.type as NovelMarker['type'],
       color: row.color as NovelMarker['color'],
+      entityType: row.entity_type ?? null,
+      entityId: row.entity_id ?? null,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

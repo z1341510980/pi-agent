@@ -150,3 +150,39 @@ describe('POST /projects/:projectId/markers with in/out type (B2)', () => {
     expect(body.data.type).toBe('out')
   })
 })
+
+describe('clip-note marker (B6)', () => {
+  let projectId: string
+  beforeEach(async () => { projectId = await createProject() })
+
+  it('creates a clip-note marker with entityType/entityId', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/markers`,
+      payload: {
+        chapter: 5, type: 'clip-note', color: 'purple',
+        title: '角色A批注', note: '此处动机不足',
+        entityType: 'character', entityId: 'charA',
+      },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.data.type).toBe('clip-note')
+    expect(body.data.entityType).toBe('character')
+    expect(body.data.entityId).toBe('charA')
+    expect(body.data.note).toBe('此处动机不足')
+  })
+
+  it('lists clip-note markers with entityType/entityId', async () => {
+    await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/markers`,
+      payload: { chapter: 5, type: 'clip-note', entityType: 'character', entityId: 'charA', note: 'n1' },
+    })
+    const res = await app.inject({ method: 'GET', url: `${PLUGIN_PREFIX}/projects/${projectId}/markers` })
+    const body = JSON.parse(res.body)
+    const note = body.data.find((m: any) => m.type === 'clip-note')
+    expect(note.entityType).toBe('character')
+    expect(note.entityId).toBe('charA')
+  })
+})

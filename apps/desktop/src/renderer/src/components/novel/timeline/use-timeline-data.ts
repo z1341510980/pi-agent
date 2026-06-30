@@ -22,6 +22,7 @@ import type {
   NovelLocation,
   NovelWorldElement,
   NovelCharacterHistory,
+  NovelMarker,
   ConflictTier,
 } from '@/api/novel-client'
 import { groupContiguousSpans } from './timeline-logic'
@@ -46,6 +47,8 @@ export interface TimelineClip {
   label: string
   /** 副标签（如"主角"/"主要"/"已回收"等小标签） */
   tag?: string
+  /** 片段批注（来自 type='clip-note' 的 marker，按 entityId 匹配） */
+  note?: string
 }
 
 /** 轨道（剪辑编辑器中的 track） */
@@ -81,8 +84,10 @@ export function useTimelineData(params: {
   locations: NovelLocation[]
   worldElements: NovelWorldElement[]
   characterHistory: NovelCharacterHistory[]
+  /** 标记列表（用于填充 clip.note） */
+  markers?: NovelMarker[]
 }): UseTimelineDataResult {
-  const { characters, chapters, conflicts, foreshadows, factions, locations, worldElements, characterHistory } = params
+  const { characters, chapters, conflicts, foreshadows, factions, locations, worldElements, characterHistory, markers } = params
 
   return useMemo(() => {
     const tracks: TimelineTrack[] = []
@@ -310,6 +315,22 @@ export function useTimelineData(params: {
       clips: [],
     })
 
+    // ── 填充片段批注（按 entityId 匹配 type='clip-note' 的 marker）──
+    if (markers && markers.length > 0) {
+      const noteMap = new Map<string, string>()
+      for (const m of markers) {
+        if (m.type === 'clip-note' && m.entityId) {
+          noteMap.set(m.entityId, m.note || '')
+        }
+      }
+      for (const track of tracks) {
+        for (const clip of track.clips) {
+          const n = noteMap.get(clip.entityId)
+          if (n !== undefined) clip.note = n
+        }
+      }
+    }
+
     return { tracks, poolCharacters, poolConflicts, poolForeshadows, poolFactions, poolLocations }
-  }, [characters, chapters, conflicts, foreshadows, factions, locations, worldElements, characterHistory])
+  }, [characters, chapters, conflicts, foreshadows, factions, locations, worldElements, characterHistory, markers])
 }

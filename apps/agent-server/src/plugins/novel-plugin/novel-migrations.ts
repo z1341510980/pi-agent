@@ -499,4 +499,10 @@ export const novelMigrations: MigrationDefinition[] = [
     );
     CREATE INDEX IF NOT EXISTS idx_novel_markers_project ON novel_markers(project_id);`,
   },
+  {
+    // 040: 扩展标记表，支持片段批注关联实体
+    id: '040_extend_novel_markers_clip_note',
+    sql: `ALTER TABLE novel_markers ADD COLUMN entity_type TEXT;
+          ALTER TABLE novel_markers ADD COLUMN entity_id TEXT;`,
+  },
 ]
