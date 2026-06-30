@@ -283,7 +283,7 @@ export function rangeToRestore(action: EditAction, direction: 'undo' | 'redo'): 
 /** 将章节号数组按连续相邻分组为 [start,end] 跨度 */
 export function groupContiguousSpans(chapters: number[]): Array<{ start: number; end: number }> {
   if (chapters.length === 0) return []
-  const sorted = [...chapters].sort((a, b) => a - b)
+  const sorted = Array.from(new Set(chapters)).sort((a, b) => a - b)
   const spans: Array<{ start: number; end: number }> = []
   let cur = { start: sorted[0], end: sorted[0] }
   for (let i = 1; i < sorted.length; i++) {

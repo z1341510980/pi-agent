@@ -435,10 +435,11 @@ export function NovelTimelineWorkspace({
             const orig = conflicts.find((c) => c.id === clip.entityId)
             if (!orig) break
             // CreateConflictInput 不含 participants 字段（仅 NovelConflict 有），故不复制
+            // 与 updateEntityRange 保持一致：单章（end===start）时 lastChapter=null
             const created = await createConflict(currentProjectId, {
               description: `${orig.description}（后半段）`,
               type: orig.type, intensity: orig.intensity, stage: orig.stage, tier: orig.tier,
-              firstChapter: start, lastChapter: end,
+              firstChapter: start, lastChapter: end === start ? null : end,
             })
             upsertConflict(created)
             break
@@ -447,10 +448,12 @@ export function NovelTimelineWorkspace({
             const orig = foreshadows.find((f) => f.id === clip.entityId)
             if (!orig) break
             // CreateForeshadowInput 不含 linkedCharacters/linkedClues 字段，故不复制
+            // 保留原 recoverByChapter 语义：仅当原已回收时才把回收点缩到 end，避免把"待回收"误置为"已回收"
             const created = await createForeshadow(currentProjectId, {
               description: `${orig.description}（后半段）`,
               category: orig.category, status: orig.status,
-              firstChapter: start, recoverByChapter: end,
+              firstChapter: start, lastChapter: end,
+              recoverByChapter: orig.recoverByChapter != null ? end : null,
             })
             upsertForeshadow(created)
             break
@@ -461,6 +464,8 @@ export function NovelTimelineWorkspace({
             const created = await createFaction(currentProjectId, {
               name: `${orig.name}（后半段）`, description: orig.description,
               type: orig.type, leaderId: orig.leaderId, strength: orig.strength,
+              ideology: orig.ideology, resources: orig.resources,
+              allies: orig.allies, enemies: orig.enemies, status: orig.status,
               firstChapter: start, lastChapter: end,
             })
             upsertFaction(created)
@@ -481,6 +486,8 @@ export function NovelTimelineWorkspace({
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
       } catch (err) {
         console.error('[NovelTimelineWorkspace] 切分后半段创建失败:', err)
+        // 重新抛出，由 handleClipSplit 捕获并回滚前半段（避免前半段已缩小、后半段未创建）
+        throw err
       }
     },
     [currentProjectId, characterHistory, conflicts, foreshadows, factions, locations,
@@ -500,8 +507,18 @@ export function NovelTimelineWorkspace({
         after: { start: plan.first.start, end: plan.first.end },
       })
       await updateEntityRange(clip, plan.first.start, plan.first.end)
-      // 2. 后半段：按 entityType 新建实体/记录
-      await createSecondHalfForSplit(clip, plan.second.start, plan.second.end)
+      // 2. 后半段：按 entityType 新建实体/记录（失败时回滚前半段，避免 clip 被"切掉一截"）
+      try {
+        await createSecondHalfForSplit(clip, plan.second.start, plan.second.end)
+      } catch (err) {
+        console.error('[NovelTimelineWorkspace] 切分后半段创建失败，回滚前半段:', err)
+        // 回滚前半段到原区间
+        try {
+          await updateEntityRange(clip, clip.startChapter, clip.endChapter)
+        } catch (rollbackErr) {
+          console.error('[NovelTimelineWorkspace] 回滚前半段失败:', rollbackErr)
+        }
+      }
     },
     [pushHistory, updateEntityRange, createSecondHalfForSplit],
   )

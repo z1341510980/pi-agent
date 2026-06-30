@@ -7,6 +7,8 @@ import {
   buildRelationLines,
   computeMinimapViewportFrame,
   rangeToRestore,
+  groupContiguousSpans,
+  planClipSplit,
   type EditAction,
 } from '../timeline-logic'
 
@@ -181,8 +183,6 @@ describe('rangeToRestore', () => {
     expect(rangeToRestore(action, 'redo')).toEqual({ start: 0, end: -1 })
   })
 })
-
-import { groupContiguousSpans, planClipSplit } from '../timeline-logic'
 
 describe('groupContiguousSpans', () => {
   it('groups adjacent chapter numbers into spans', () => {
