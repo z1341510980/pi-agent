@@ -1,0 +1,179 @@
+.chapter-content-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-surface-1, #fff);
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.cce-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  height: 36px;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.cce-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cce-nav button {
+  background: transparent;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--color-text, #111);
+}
+
+.cce-nav button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cce-chapter-label {
+  font-weight: 500;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cce-save-state {
+  margin-left: auto;
+}
+
+.cce-saved {
+  color: var(--color-success, #16a34a);
+}
+
+.cce-saving {
+  color: var(--color-muted-foreground, #6b7280);
+}
+
+.cce-dirty {
+  color: var(--color-warning, #d97706);
+}
+
+.cce-error {
+  color: var(--color-destructive, #dc2626);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cce-error button {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: inherit;
+}
+
+.cce-word-count {
+  color: var(--color-muted-foreground, #6b7280);
+  flex-shrink: 0;
+}
+
+.cce-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 24px;
+}
+
+.cce-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--color-muted-foreground, #6b7280);
+  font-size: 13px;
+}
+
+.cce-body .ProseMirror {
+  outline: none;
+  min-height: 100%;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--color-text, #111);
+}
+
+.cce-body .ProseMirror h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 16px 0 8px;
+}
+
+.cce-body .ProseMirror h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 14px 0 6px;
+}
+
+.cce-body .ProseMirror h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 12px 0 4px;
+}
+
+.cce-body .ProseMirror p {
+  margin: 6px 0;
+}
+
+.cce-body .ProseMirror blockquote {
+  border-left: 3px solid var(--color-border, #d1d5db);
+  padding-left: 12px;
+  color: var(--color-muted-foreground, #6b7280);
+  margin: 8px 0;
+}
+
+.cce-body .ProseMirror ul,
+.cce-body .ProseMirror ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.cce-body .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--color-border, #e5e7eb);
+  margin: 12px 0;
+}
+
+.cce-body .ProseMirror strong {
+  font-weight: 600;
+}
+
+.cce-body .ProseMirror em {
+  font-style: italic;
+}
+
+.cce-body .ProseMirror code {
+  background: var(--color-surface-3, #f3f4f6);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 13px;
+}
+
+.cce-body .ProseMirror pre {
+  background: var(--color-surface-3, #f3f4f6);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.cce-body .ProseMirror pre code {
+  background: transparent;
+  padding: 0;
+}
