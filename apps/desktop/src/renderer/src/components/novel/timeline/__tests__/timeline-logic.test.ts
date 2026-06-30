@@ -12,6 +12,7 @@ import {
   isTrackAudible,
   applyGroupMove,
   computeTrackHeight,
+  computeRippleShifts,
   type EditAction,
 } from '../timeline-logic'
 
@@ -268,5 +269,30 @@ describe('computeTrackHeight (B4)', () => {
   it('returns 8 when collapsed regardless of level', () => {
     expect(computeTrackHeight('compact', true)).toBe(8)
     expect(computeTrackHeight('spacious', true)).toBe(8)
+  })
+})
+
+describe('computeRippleShifts (B1 ripple delete)', () => {
+  it('shifts subsequent clips on same track left by deleted duration', () => {
+    const sameTrackClips = [
+      { id: 'a', startChapter: 1, endChapter: 3 },
+      { id: 'del', startChapter: 5, endChapter: 7 }, // 被删
+      { id: 'b', startChapter: 8, endChapter: 10 },
+      { id: 'c', startChapter: 12, endChapter: 15 },
+    ]
+    const shifts = computeRippleShifts(sameTrackClips, 'del')
+    expect(shifts.get('a')).toBeUndefined()
+    expect(shifts.get('b')).toEqual({ start: 5, end: 7 })   // 8-3=5
+    expect(shifts.get('c')).toEqual({ start: 9, end: 12 })  // 12-3=9
+  })
+  it('returns empty when deleted clip not found', () => {
+    expect(computeRippleShifts([{ id: 'a', startChapter: 1, endChapter: 2 }], 'del').size).toBe(0)
+  })
+  it('does not shift clips before deleted', () => {
+    const sameTrackClips = [
+      { id: 'a', startChapter: 1, endChapter: 2 },
+      { id: 'del', startChapter: 4, endChapter: 5 },
+    ]
+    expect(computeRippleShifts(sameTrackClips, 'del').get('a')).toBeUndefined()
   })
 })

@@ -29,6 +29,7 @@ export interface ClipContextMenuProps {
   onCopy: (clip: TimelineClip) => void
   onCut: (clip: TimelineClip) => void
   onDelete: (clip: TimelineClip) => void
+  onRippleDelete: (clip: TimelineClip) => void
   onAlignToPlayhead: (clip: TimelineClip) => void
   onEditDetails: (clip: TimelineClip) => void
 }
@@ -41,6 +42,7 @@ export function ClipContextMenu({
   onCopy,
   onCut,
   onDelete,
+  onRippleDelete,
   onAlignToPlayhead,
   onEditDetails,
 }: ClipContextMenuProps): ReactElement | null {
@@ -103,6 +105,16 @@ export function ClipContextMenu({
         <Trash2 className="size-3.5" />
         <span>删除</span>
         <kbd>Del</kbd>
+      </button>
+      <button
+        type="button"
+        className="novel-timeline-context-item is-danger"
+        onClick={() => handleAction(onRippleDelete)}
+        title="删除并后移片段前移（Shift+Del）"
+      >
+        <Trash2 className="size-3.5" />
+        <span>涟漪删除</span>
+        <kbd>⇧Del</kbd>
       </button>
       <div className="novel-timeline-context-divider" />
       <button

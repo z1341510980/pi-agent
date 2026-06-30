@@ -342,3 +342,26 @@ export function computeTrackHeight(level: TrackHeightLevel, collapsed: boolean):
   if (collapsed) return 8
   return level === 'compact' ? 28 : level === 'spacious' ? 56 : 36
 }
+
+// ── 涟漪删除（B1）──
+
+/** 涟漪删除：计算同轨道被删 clip 之后的所有 clip 前移后的新区间 */
+export function computeRippleShifts(
+  sameTrackClips: Array<{ id: string; startChapter: number; endChapter: number }>,
+  deletedClipId: string,
+): Map<string, { start: number; end: number }> {
+  const deleted = sameTrackClips.find((c) => c.id === deletedClipId)
+  if (!deleted) return new Map()
+  const duration = deleted.endChapter - deleted.startChapter + 1
+  const result = new Map<string, { start: number; end: number }>()
+  for (const clip of sameTrackClips) {
+    if (clip.id === deletedClipId) continue
+    if (clip.startChapter > deleted.endChapter) {
+      result.set(clip.id, {
+        start: clip.startChapter - duration,
+        end: clip.endChapter - duration,
+      })
+    }
+  }
+  return result
+}

@@ -32,7 +32,7 @@ import {
   deleteMarker,
 } from '@/api/novel-client'
 import { useTimelineData, type TimelineClip, type TimelineTrack } from './use-timeline-data'
-import { rangeToRestore, planClipSplit, type EditAction } from './timeline-logic'
+import { rangeToRestore, planClipSplit, computeRippleShifts, type EditAction } from './timeline-logic'
 import { ElementPool, POOL_DRAG_MIME, type PoolDragPayload } from './element-pool'
 import {
   TimelineToolbar,
@@ -598,9 +598,24 @@ export function NovelTimelineWorkspace({
             after: { start: 0, end: -1 },
           })
         }
-        // 涟漪删除（B1 在任务 11 接入，此处预留 opts 入参）
+        // 涟漪删除（B1）：找到被删 clip 所在轨道，对后续 clip 同步前移
         if (opts?.ripple) {
-          // 实现见任务 11
+          const track = tracks.find((t) => t.clips.some((c) => c.id === clipId))
+          if (track) {
+            const shifts = computeRippleShifts(track.clips, clipId)
+            for (const [cid, range] of shifts) {
+              const shiftedClip = track.clips.find((c) => c.id === cid)
+              if (shiftedClip) {
+                pushHistory({
+                  type: 'move',
+                  clip: { ...shiftedClip },
+                  before: { start: shiftedClip.startChapter, end: shiftedClip.endChapter },
+                  after: { start: range.start, end: range.end },
+                })
+                void updateEntityRange(shiftedClip, range.start, range.end)
+              }
+            }
+          }
         }
         // 从选择集中移除
         setSelectedClipIds((prev) => {
@@ -613,7 +628,8 @@ export function NovelTimelineWorkspace({
       }
     },
     [tracks, currentProjectId, characterHistory, conflicts, foreshadows, factions, locations,
-      removeCharacterHistory, upsertConflict, upsertForeshadow, upsertFaction, upsertLocation, queryClient, pushHistory],
+      removeCharacterHistory, upsertConflict, upsertForeshadow, upsertFaction, upsertLocation, queryClient, pushHistory,
+      updateEntityRange],
   )
 
   // ── 批量删除选中 ──
@@ -1205,6 +1221,7 @@ export function NovelTimelineWorkspace({
         onCopy={handleCopyClip}
         onCut={handleCutClip}
         onDelete={(clip) => void handleClipDelete(clip.id)}
+        onRippleDelete={(clip) => void handleClipDelete(clip.id, { ripple: true })}
         onAlignToPlayhead={handleAlignToPlayhead}
         onEditDetails={handleClipDoubleClick}
       />
