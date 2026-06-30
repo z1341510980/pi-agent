@@ -66,12 +66,16 @@ export interface NovelState {
   // ── 视图模式（时间轴/画布）──
   viewMode: 'timeline' | 'canvas'
 
+  // ── 播放头所在章节（跨组件同步，不持久化，每次进项目从 1 开始）──
+  playheadChapter: number
+
   // ── 加载状态 ──
   loading: boolean
   error: string | null
 
   // ── Actions ──
   setViewMode: (mode: 'timeline' | 'canvas') => void
+  setPlayheadChapter: (chapter: number) => void
   setCurrentProject: (projectId: string | null) => void
   setProjects: (projects: NovelProject[]) => void
   loadProjectData: (data: {
@@ -192,11 +196,14 @@ export const useNovelStore = create<NovelState>()(
 
       viewMode: 'timeline',
 
+      playheadChapter: 1,
+
       loading: false,
       error: null,
 
       // ── Actions ──
       setViewMode: (mode) => set({ viewMode: mode }),
+      setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
       setCurrentProject: (projectId) =>
         set({ currentProjectId: projectId, selectedNodeId: null, selectedNodeType: null }),
 
@@ -247,6 +254,7 @@ export const useNovelStore = create<NovelState>()(
           markers: [],
           selectedNodeId: null,
           selectedNodeType: null,
+          playheadChapter: 1,
         }),
 
       // ── upsert ──
