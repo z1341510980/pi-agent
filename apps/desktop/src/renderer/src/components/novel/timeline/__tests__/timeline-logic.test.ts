@@ -13,6 +13,7 @@ import {
   applyGroupMove,
   computeTrackHeight,
   computeRippleShifts,
+  truncateSummary,
   type EditAction,
 } from '../timeline-logic'
 
@@ -294,5 +295,18 @@ describe('computeRippleShifts (B1 ripple delete)', () => {
       { id: 'del', startChapter: 4, endChapter: 5 },
     ]
     expect(computeRippleShifts(sameTrackClips, 'del').get('a')).toBeUndefined()
+  })
+})
+
+describe('truncateSummary (B5)', () => {
+  it('returns full text when within limit', () => {
+    expect(truncateSummary('短标题', 20)).toBe('短标题')
+  })
+  it('truncates with ellipsis when exceeding limit', () => {
+    const long = '这是一个非常非常非常长的章节标题超过二十个字符'
+    expect(truncateSummary(long, 20)).toBe('这是一个非常非常非常长的章节标题超…')
+  })
+  it('returns empty string for empty input', () => {
+    expect(truncateSummary('', 20)).toBe('')
   })
 })

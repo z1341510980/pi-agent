@@ -365,3 +365,10 @@ export function computeRippleShifts(
   }
   return result
 }
+
+/** 截断摘要：超长加省略号（省略号占 3 字符宽，总宽度不超过 maxLen） */
+export function truncateSummary(text: string, maxLen: number): string {
+  if (!text) return ''
+  if (text.length <= maxLen) return text
+  return text.slice(0, maxLen - 3) + '…'
+}

@@ -45,7 +45,7 @@ import { TimelineMarkers, type TimelineMarker } from './timeline-markers'
 import { TimelineMinimap } from './timeline-minimap'
 import { TimelineWordCountBar } from './timeline-word-count-bar'
 import { TimelineRelationLayer } from './timeline-relation-layer'
-import { applyGroupMove, clampMoveRange, clampResizeRightRange, computeTrackHeight, findSnapPoint, finalClampAfterSnap, isTrackAudible, type SnapResult, type TrackHeightLevel } from './timeline-logic'
+import { applyGroupMove, clampMoveRange, clampResizeRightRange, computeTrackHeight, findSnapPoint, finalClampAfterSnap, isTrackAudible, truncateSummary, type SnapResult, type TrackHeightLevel } from './timeline-logic'
 
 // ── 常量 ──
 
@@ -856,6 +856,7 @@ export function TimelineEditor({
                 const title = chapterTitleMap.get(ch)
                 const isCreating = creatingChapter === ch
                 const isCurrent = playheadChapter === ch && showPlayhead
+                const summary = chapterWidth >= 280 && title ? truncateSummary(title, 20) : ''
                 return (
                   <div
                     key={ch}
@@ -866,6 +867,9 @@ export function TimelineEditor({
                     <span className="tl-ruler-tick-num">{ch}</span>
                     {chapterWidth >= 120 && title && (
                       <span className="tl-ruler-tick-title">{title}</span>
+                    )}
+                    {summary && (
+                      <span className="tl-ruler-tick-summary">{summary}</span>
                     )}
                   </div>
                 )
