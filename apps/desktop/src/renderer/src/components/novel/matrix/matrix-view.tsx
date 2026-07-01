@@ -575,14 +575,29 @@ interface CellProps {
 }
 
 function Cell({ entity, chapter, chapterTitle, color, cellWidth, onContextMenu }: CellProps): ReactElement {
+  // D-5.3 联动收尾：单元格点击 → 选中实体 + 切播放头到该章节列
+  const selectNode = useNovelStore((s) => s.selectNode)
+  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
   const symbol = computeCellSymbol(entity, chapter)
   const tip = buildCellTooltip(symbol, entity, chapter, chapterTitle)
+
+  const handleCellClick = useCallback(() => {
+    selectNode(entity.entityId, entity.kind)
+    setPlayheadChapter(chapter)
+  }, [selectNode, setPlayheadChapter, entity.entityId, entity.kind, chapter])
+
+  const handleCellClickEvent = useCallback((e: React.MouseEvent) => {
+    // 阻止冒泡到 EntityRow 的 onClick（已通过 onEntityClick 链路选中实体，避免重复）
+    e.stopPropagation()
+    handleCellClick()
+  }, [handleCellClick])
 
   if (symbol.type === 'empty') {
     return (
       <div
-        className="h-full shrink-0 relative flex items-center justify-center border-r border-border/30"
+        className="h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer"
         style={{ width: `${cellWidth}px` }}
+        onClick={handleCellClickEvent}
         onContextMenu={onContextMenu}
       />
     )
@@ -590,9 +605,10 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onContextMenu }
 
   return (
     <div
-      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-default"
+      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer"
       style={{ width: `${cellWidth}px` }}
       data-tip={tip}
+      onClick={handleCellClickEvent}
       onContextMenu={onContextMenu}
     >
       <Symbol symbol={symbol} color={color} />

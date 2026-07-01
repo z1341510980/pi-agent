@@ -71,6 +71,9 @@ export interface NovelState {
   // ── 播放头所在章节（跨组件同步，不持久化，每次进项目从 1 开始）──
   playheadChapter: number
 
+  // ── 当前创作模式（手动编排 / AI编排，不持久化）──
+  creationMode: 'manual' | 'ai-arrange' | null
+
   // ── 矩阵视图折叠分组（与 NovelSidebar 共享）──
   // 用 string[] 而非 MatrixEntityKind[] 是因为 NovelSidebar 还有一个 'chapter' 分组
   collapsedGroups: string[]
@@ -89,6 +92,7 @@ export interface NovelState {
   // ── Actions ──
   setViewMode: (mode: 'matrix' | 'canvas') => void
   setPlayheadChapter: (chapter: number) => void
+  setCreationMode: (mode: 'manual' | 'ai-arrange' | null) => void
   setCurrentProject: (projectId: string | null) => void
   toggleCollapsedGroup: (kind: string) => void
   toggleExpandedVolume: (id: string) => void
@@ -217,6 +221,8 @@ export const useNovelStore = create<NovelState>()(
 
       playheadChapter: 1,
 
+      creationMode: null,
+
       collapsedGroups: [],
 
       expandedVolumes: [],
@@ -229,6 +235,7 @@ export const useNovelStore = create<NovelState>()(
       // ── Actions ──
       setViewMode: (mode) => set({ viewMode: mode }),
       setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
+      setCreationMode: (mode) => set({ creationMode: mode }),
       setCurrentProject: (projectId) =>
         set({ currentProjectId: projectId, selectedNodeId: null, selectedNodeType: null }),
       toggleCollapsedGroup: (kind: string) =>

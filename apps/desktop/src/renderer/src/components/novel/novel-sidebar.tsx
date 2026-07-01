@@ -70,7 +70,12 @@ function setDragData(
 
 // ── 主组件 ──
 
-export function NovelSidebar(): ReactElement {
+export interface NovelSidebarProps {
+  /** 开始创作回调（D-5 联动：手动编排 / AI编排） */
+  onStartCreation?: (mode: 'manual' | 'ai-arrange') => void
+}
+
+export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactElement {
   const queryClient = useQueryClient()
   const projects = useNovelStore((s) => s.projects)
   const currentProjectId = useNovelStore((s) => s.currentProjectId)
@@ -86,6 +91,7 @@ export function NovelSidebar(): ReactElement {
   const locations = useNovelStore((s) => s.locations)
   const worldElements = useNovelStore((s) => s.worldElements)
   const selectNode = useNovelStore((s) => s.selectNode)
+  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
   const [characterDialogOpen, setCharacterDialogOpen] = useState(false)
@@ -93,15 +99,15 @@ export function NovelSidebar(): ReactElement {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // 大纲树编排入口占位（D-3 接入实际创作流程）
-  const handleManualArrange = useCallback((_chapter: NovelChapter) => {
-    // D-3 将接入手动编排流程
-    console.log('[NovelSidebar] 手动编排（D-3 待接入）:', _chapter.id)
-  }, [])
-  const handleAiArrange = useCallback((_chapter: NovelChapter) => {
-    // D-4 将接入 AI 编排流程
-    console.log('[NovelSidebar] AI编排（D-4 待接入）:', _chapter.id)
-  }, [])
+  // 大纲树编排入口：先切播放头到目标章节，再联动 novel-workspace 的 handleStartCreation
+  const handleManualArrange = useCallback((chapter: NovelChapter) => {
+    setPlayheadChapter(chapter.chapterNumber)
+    onStartCreation?.('manual')
+  }, [setPlayheadChapter, onStartCreation])
+  const handleAiArrange = useCallback((chapter: NovelChapter) => {
+    setPlayheadChapter(chapter.chapterNumber)
+    onStartCreation?.('ai-arrange')
+  }, [setPlayheadChapter, onStartCreation])
 
   // 拉取项目列表
   useQuery({

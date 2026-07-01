@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
-import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3 } from 'lucide-react'
+import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import {
@@ -102,6 +102,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
   const viewMode = useNovelStore((s) => s.viewMode)
   const setViewMode = useNovelStore((s) => s.setViewMode)
+  const characterHistory = useNovelStore((s) => s.characterHistory)
+  const setCreationMode = useNovelStore((s) => s.setCreationMode)
 
   const queryClient = useQueryClient()
 
@@ -239,29 +241,26 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   // ── 创作流程 ──
 
-  const handleStartCreation = useCallback(async () => {
+  const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange') => {
     if (!currentProjectId || creationFlow.isRunning) return
-    const nextNumber = chapters.length > 0
-      ? Math.max(...chapters.map((c) => c.chapterNumber)) + 1
-      : 1
-    try {
-      const chapter = await createChapter(currentProjectId, {
-        chapterNumber: nextNumber,
-        narrativeTask: {
-          description: '推进主线剧情',
-          type: 'advance_mainline',
-          priority: 'medium',
-        },
-      })
-      upsertChapter(chapter)
-      setCreationChapterNumber(nextNumber)
-      // 刷新数据，确保新章节出现在画布上
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-      await creationFlow.startCreation(currentProjectId, nextNumber)
-    } catch {
-      // 静默失败
+    const playhead = useNovelStore.getState().playheadChapter
+    const chapter = chapters.find((c) => c.chapterNumber === playhead)
+    if (!chapter) return
+    setCreationMode(mode)
+    setCreationChapterNumber(playhead)
+    if (mode === 'manual') {
+      // 模式1：从矩阵本章列读取已编排实体
+      const arranged = {
+        characterIds: characterHistory.filter((h) => h.chapterNumber === playhead).map((h) => h.characterId),
+        conflictIds: conflicts.filter((c) => c.firstChapter === playhead).map((c) => c.id),
+        foreshadowIds: foreshadows.filter((f) => f.firstChapter === playhead).map((f) => f.id),
+      }
+      await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities: arranged })
+    } else {
+      // 模式2：AI 编排
+      await creationFlow.aiArrange(currentProjectId, playhead)
     }
-  }, [currentProjectId, chapters, creationFlow, upsertChapter, queryClient])
+  }, [currentProjectId, chapters, creationFlow, characterHistory, conflicts, foreshadows, setCreationMode])
 
   // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
   // 直接以原章节号启动创作流程（覆盖旧内容）
@@ -367,12 +366,22 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             <Button
               size="sm"
               variant="default"
-              onClick={handleStartCreation}
+              onClick={() => handleStartCreation('manual')}
               disabled={!currentProject || creationFlow.isRunning}
-              title="启动多 Agent 创作流程"
+              title="模式1：从矩阵本章列读取已编排实体，启动多 Agent 创作流程"
             >
               <Sparkles className="size-3.5" />
-              <span className="hidden sm:inline">开始创作</span>
+              <span className="hidden sm:inline">手动编排</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleStartCreation('ai-arrange')}
+              disabled={!currentProject || creationFlow.isRunning}
+              title="模式2：AI 自动编排实体并生成正文"
+            >
+              <Wand2 className="size-3.5" />
+              <span className="hidden sm:inline">AI编排</span>
             </Button>
             <Button
               size="icon-sm"
@@ -417,7 +426,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         <div className="flex min-h-0 flex-1">
           {/* 左侧栏 */}
           <div style={{ width: sidebarWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
-            <NovelSidebar />
+            <NovelSidebar onStartCreation={handleStartCreation} />
           </div>
           <ResizableSplitter
             direction="horizontal"
