@@ -626,6 +626,16 @@ export class NovelStore implements NovelPromptStores {
     return result.changes > 0
   }
 
+  /**
+   * 删除指定角色的全部历史记录（回滚清理用，避免孤儿 history 行）。
+   */
+  deleteCharacterHistoryByCharacter(characterId: string): number {
+    const result = this.db
+      .prepare('DELETE FROM novel_character_history WHERE character_id = ?')
+      .run(characterId)
+    return result.changes
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 伏笔 CRUD
   // ═══════════════════════════════════════════════════════════════

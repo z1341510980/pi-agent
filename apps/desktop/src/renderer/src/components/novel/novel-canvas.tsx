@@ -483,8 +483,6 @@ export interface NovelCanvasProps {
   creationPhase?: CreationPhase
   /** 创作流程是否运行中 */
   creationRunning?: boolean
-  /** 正在创作的章节编号 */
-  creationChapterNumber?: number
   /** 创作流程错误 */
   creationError?: string | null
   /** 取消创作流程 */
@@ -499,7 +497,6 @@ export function NovelCanvas({
   relayoutSignal = 0,
   creationPhase = 'idle',
   creationRunning = false,
-  creationChapterNumber,
   creationError = null,
   onCancelCreation,
   onNodeCountChange,

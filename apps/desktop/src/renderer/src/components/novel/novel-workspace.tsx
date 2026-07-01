@@ -527,7 +527,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       relayoutSignal={relayoutSignal}
                       creationPhase={creationFlow.phase}
                       creationRunning={creationFlow.isRunning}
-                      creationChapterNumber={creationChapterNumber}
                       creationError={creationFlow.error}
                       onCancelCreation={handleDiscardCreation}
                       onNodeCountChange={setNodeCount}

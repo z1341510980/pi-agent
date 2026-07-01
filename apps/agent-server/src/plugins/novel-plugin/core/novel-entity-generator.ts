@@ -299,6 +299,7 @@ export class NovelEntityGenerator {
       }
       for (const id of characterIds) {
         try {
+          this.store.deleteCharacterHistoryByCharacter(id)
           this.store.deleteCharacter(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }

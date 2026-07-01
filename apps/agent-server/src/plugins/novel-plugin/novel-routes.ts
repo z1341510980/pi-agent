@@ -1584,7 +1584,6 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.code(409).send({ error: '该章节正在编排中，请稍后' })
         return
       }
-      aiArrangeLocks.set(lockKey, Promise.resolve())
 
       // 客户端断开感知：close 事件在 reply.raw.end 后也会触发，仅在尚未结束时标记
       let clientDisconnected = false
@@ -1610,7 +1609,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
+      // 锁置入 try 块开头：确保 finally 必定执行 delete，避免 SSE 设置抛错导致锁残留
       try {
+        aiArrangeLocks.set(lockKey, Promise.resolve())
         const chNum = parseInt(chapterNumber, 10)
         const chapter = store.getChapter(projectId, chNum)
         if (!chapter) throw new Error(`章节不存在: ${chNum}`)

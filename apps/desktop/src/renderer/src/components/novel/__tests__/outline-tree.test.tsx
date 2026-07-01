@@ -85,8 +85,8 @@ const chapter: NovelChapter = {
 // 延迟 import 让 vi.mock 先生效
 async function renderTree(overrides?: {
   chapters?: NovelChapter[]
-  onManualArrange?: ReturnType<typeof vi.fn>
-  onAiArrange?: ReturnType<typeof vi.fn>
+  onManualArrange?: (chapter: NovelChapter) => void
+  onAiArrange?: (chapter: NovelChapter) => void
 }): Promise<void> {
   const { OutlineTree } = await import('../outline-tree')
   const tree: ReactElement = (
@@ -94,8 +94,8 @@ async function renderTree(overrides?: {
       project={project}
       volumes={[volume]}
       chapters={overrides?.chapters ?? [chapter]}
-      onManualArrange={overrides?.onManualArrange ?? vi.fn()}
-      onAiArrange={overrides?.onAiArrange ?? vi.fn()}
+      onManualArrange={overrides?.onManualArrange ?? vi.fn<(chapter: NovelChapter) => void>()}
+      onAiArrange={overrides?.onAiArrange ?? vi.fn<(chapter: NovelChapter) => void>()}
     />
   )
   render(tree)
