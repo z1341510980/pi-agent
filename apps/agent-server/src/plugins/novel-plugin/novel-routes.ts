@@ -23,6 +23,9 @@ import { validateBody } from '../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { RhythmController } from './core/rhythm-controller.js'
 
+/** 同一章节 ai-arrange 并发锁，key 为 `${projectId}:${chapterNumber}` */
+const aiArrangeLocks = new Map<string, Promise<void>>()
+
 /** 创建小说系统 REST API 路由 */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   const { store, memoryStore, promptManager, promptBuilder, engine } = services
@@ -1575,6 +1578,20 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const orchestrator = services.orchestrator
       const entityGenerator = services.entityGenerator
 
+      // 并发锁：同一章节不允许并发 ai-arrange，避免重复生成实体
+      const lockKey = `${projectId}:${chapterNumber}`
+      if (aiArrangeLocks.has(lockKey)) {
+        reply.code(409).send({ error: '该章节正在编排中，请稍后' })
+        return
+      }
+      aiArrangeLocks.set(lockKey, Promise.resolve())
+
+      // 客户端断开感知：close 事件在 reply.raw.end 后也会触发，仅在尚未结束时标记
+      let clientDisconnected = false
+      request.raw.on('close', () => {
+        if (!reply.raw.writableEnded) clientDisconnected = true
+      })
+
       // SSE 设置（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -1584,8 +1601,14 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Origin': request.headers.origin || '*',
         'Access-Control-Allow-Credentials': 'true',
       })
-      const write = (obj: unknown) => reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`)
-      const heartbeat = setInterval(() => reply.raw.write(': keepalive\n\n'), 15000)
+      const write = (obj: unknown) => {
+        if (clientDisconnected || reply.raw.writableEnded) return
+        reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`)
+      }
+      const heartbeat = setInterval(() => {
+        if (clientDisconnected || reply.raw.writableEnded) return
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
 
       try {
         const chNum = parseInt(chapterNumber, 10)
@@ -1604,6 +1627,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         write({ type: 'progress', data: { type: 'arrange_done', data: arrangedEntities } })
 
         // 阶段2：同一 SSE 流内衔接 create-flow，注入编排结果
+        // TODO: orchestrator 长流程无 abort 支持（需 D-3 配合），客户端断开后若已开始只能让其跑完
+        if (clientDisconnected) {
+          return
+        }
         const result = await orchestrator.createChapterWithFlow(
           projectId,
           chNum,
@@ -1625,7 +1652,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         write({ type: 'error', error: String(err) })
       } finally {
         clearInterval(heartbeat)
-        reply.raw.end()
+        if (!reply.raw.writableEnded) reply.raw.end()
+        aiArrangeLocks.delete(lockKey)
       }
     },
   })

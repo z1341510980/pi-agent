@@ -213,76 +213,108 @@ export class NovelEntityGenerator {
     const conflictIds: string[] = []
     const foreshadowIds: string[] = []
 
-    for (const spec of plan.characters) {
-      onProgress?.({ phase: 'generating', message: `生成角色：${spec.coreStyle}` })
-      const gen = await this.generate(projectId, 'character', spec.coreStyle)
-      if (gen.type !== 'character') continue
-      const created = this.store.createCharacter({
-        id: randomUUID(),
-        projectId,
-        name: gen.data.name,
-        description: gen.data.description,
-        identity: gen.data.identity,
-        personality: gen.data.personality,
-        appearance: gen.data.appearance,
-        currentState: gen.data.currentState,
-        currentGoal: gen.data.currentGoal,
-        currentPressure: gen.data.currentPressure,
-        secret: gen.data.secret,
-        arcStage: gen.data.arcStage,
-        arcHistory: '[]',
-        speechStyle: gen.data.speechStyle,
-        isProtagonist: false,
-      })
-      characterIds.push(created.id)
-      this.store.createCharacterHistory({
-        projectId,
-        characterId: created.id,
-        chapterId: null,
-        chapterNumber,
-        fieldName: 'currentState',
-        oldValue: null,
-        newValue: '本章首次出场',
-        reason: `AI编排：${outline.slice(0, 50)}`,
-      })
-    }
+    try {
+      for (const spec of plan.characters) {
+        onProgress?.({ phase: 'generating', message: `生成角色：${spec.coreStyle}` })
+        const gen = await this.generate(projectId, 'character', spec.coreStyle)
+        if (gen.type !== 'character') continue
+        const created = this.store.createCharacter({
+          id: randomUUID(),
+          projectId,
+          name: gen.data.name,
+          description: gen.data.description,
+          identity: gen.data.identity,
+          personality: gen.data.personality,
+          appearance: gen.data.appearance,
+          currentState: gen.data.currentState,
+          currentGoal: gen.data.currentGoal,
+          currentPressure: gen.data.currentPressure,
+          secret: gen.data.secret,
+          arcStage: gen.data.arcStage,
+          arcHistory: '[]',
+          speechStyle: gen.data.speechStyle,
+          isProtagonist: false,
+        })
+        characterIds.push(created.id)
+        this.store.createCharacterHistory({
+          projectId,
+          characterId: created.id,
+          chapterId: null,
+          chapterNumber,
+          fieldName: 'currentState',
+          oldValue: null,
+          newValue: '本章首次出场',
+          reason: `AI编排：${outline.slice(0, 50)}`,
+        })
+      }
 
-    for (const spec of plan.conflicts) {
-      onProgress?.({ phase: 'generating', message: `生成冲突：${spec.coreStyle}` })
-      const gen = await this.generate(projectId, 'conflict', spec.coreStyle)
-      if (gen.type !== 'conflict') continue
-      const created = this.store.createConflict({
-        id: randomUUID(),
-        projectId,
-        description: gen.data.description,
-        type: gen.data.type,
-        intensity: gen.data.intensity,
-        stage: gen.data.stage,
-        participants: gen.data.participants,
-        firstChapter: chapterNumber,
-        lastChapter: null,
-        tier: gen.data.tier,
-      })
-      conflictIds.push(created.id)
-    }
+      for (const spec of plan.conflicts) {
+        onProgress?.({ phase: 'generating', message: `生成冲突：${spec.coreStyle}` })
+        const gen = await this.generate(projectId, 'conflict', spec.coreStyle)
+        if (gen.type !== 'conflict') continue
+        const created = this.store.createConflict({
+          id: randomUUID(),
+          projectId,
+          description: gen.data.description,
+          type: gen.data.type,
+          intensity: gen.data.intensity,
+          stage: gen.data.stage,
+          participants: gen.data.participants,
+          firstChapter: chapterNumber,
+          lastChapter: null,
+          tier: gen.data.tier,
+        })
+        conflictIds.push(created.id)
+      }
 
-    for (const spec of plan.foreshadows) {
-      onProgress?.({ phase: 'generating', message: `生成伏笔：${spec.coreStyle}` })
-      const gen = await this.generate(projectId, 'foreshadow', spec.coreStyle)
-      if (gen.type !== 'foreshadow') continue
-      const created = this.store.createForeshadow({
-        id: randomUUID(),
-        projectId,
-        description: gen.data.description,
-        category: gen.data.category,
-        status: gen.data.status,
-        firstChapter: chapterNumber,
-        lastChapter: null,
-        recoverByChapter: null,
-        linkedCharacters: gen.data.linkedCharacters,
-        linkedClues: gen.data.linkedClues,
-      })
-      foreshadowIds.push(created.id)
+      for (const spec of plan.foreshadows) {
+        onProgress?.({ phase: 'generating', message: `生成伏笔：${spec.coreStyle}` })
+        const gen = await this.generate(projectId, 'foreshadow', spec.coreStyle)
+        if (gen.type !== 'foreshadow') continue
+        const created = this.store.createForeshadow({
+          id: randomUUID(),
+          projectId,
+          description: gen.data.description,
+          category: gen.data.category,
+          status: gen.data.status,
+          firstChapter: chapterNumber,
+          lastChapter: null,
+          recoverByChapter: null,
+          linkedCharacters: gen.data.linkedCharacters,
+          linkedClues: gen.data.linkedClues,
+        })
+        foreshadowIds.push(created.id)
+      }
+    } catch (err) {
+      // 反向顺序 best-effort 清理已落库实体，避免半编排脏数据污染后续 create-flow
+      for (const id of foreshadowIds) {
+        try {
+          this.store.deleteForeshadow(id)
+        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+      }
+      for (const id of conflictIds) {
+        try {
+          this.store.deleteConflict(id)
+        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+      }
+      for (const id of characterIds) {
+        try {
+          this.store.deleteCharacter(id)
+        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+      }
+      const rolledBack = characterIds.length + conflictIds.length + foreshadowIds.length
+      this.context.logger.error(
+        {
+          err,
+          created: {
+            characters: characterIds.length,
+            conflicts: conflictIds.length,
+            foreshadows: foreshadowIds.length,
+          },
+        },
+        `generateAndArrange 失败，已回滚 ${rolledBack} 个实体`,
+      )
+      throw err
     }
 
     onProgress?.({ phase: 'arranged', message: '编排完成，准备生成正文' })
@@ -325,7 +357,16 @@ export class NovelEntityGenerator {
       })
       // 优先使用流式累积结果，回退到 promptStream 返回值
       const text = result || full
-      const json = JSON.parse(extractJsonBlock(text)) as Record<string, unknown>
+      let json: Record<string, unknown>
+      try {
+        json = JSON.parse(extractJsonBlock(text)) as Record<string, unknown>
+      } catch (err) {
+        this.context.logger.warn(
+          { err, rawTextPreview: text.slice(0, 200) },
+          'planEntitiesFromOutline JSON 解析失败，使用空 plan 兜底',
+        )
+        return { characters: [], conflicts: [], foreshadows: [] }
+      }
       return {
         characters: Array.isArray(json.characters)
           ? json.characters

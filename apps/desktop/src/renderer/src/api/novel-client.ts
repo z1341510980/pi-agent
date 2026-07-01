@@ -1211,44 +1211,54 @@ export async function aiArrangeFlow(
   const decoder = new TextDecoder()
   let buffer = ''
 
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
 
-    buffer += decoder.decode(value, { stream: true })
+      buffer += decoder.decode(value, { stream: true })
 
-    // SSE 以双换行分隔事件块
-    let newlineIdx: number
-    while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
-      const rawEvent = buffer.slice(0, newlineIdx)
-      buffer = buffer.slice(newlineIdx + 2)
+      // SSE 以双换行分隔事件块
+      let newlineIdx: number
+      while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
+        const rawEvent = buffer.slice(0, newlineIdx)
+        buffer = buffer.slice(newlineIdx + 2)
 
-      // 解析事件块中的 data: 行（忽略注释行 ": keepalive"）
-      const dataLines = rawEvent
-        .split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
+        // 解析事件块中的 data: 行（忽略注释行 ": keepalive"）
+        const dataLines = rawEvent
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
 
-      if (dataLines.length === 0) continue
+        if (dataLines.length === 0) continue
 
-      let payload: { type: string; data?: unknown; error?: string } | null = null
-      try {
-        payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
-      } catch {
-        continue
-      }
-      if (!payload) continue
+        let payload: { type: string; data?: unknown; error?: string } | null = null
+        try {
+          payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
+        } catch {
+          continue
+        }
+        if (!payload) continue
 
-      if (payload.type === 'progress') {
-        options.onProgress?.(payload.data)
-      } else if (payload.type === 'checkpoint') {
-        options.onCheckpoint?.(payload.data)
-      } else if (payload.type === 'result') {
-        options.onResult?.(payload.data)
-      } else if (payload.type === 'error') {
-        options.onError?.(payload.error ?? 'AI 编排失败')
+        if (payload.type === 'progress') {
+          options.onProgress?.(payload.data)
+        } else if (payload.type === 'checkpoint') {
+          options.onCheckpoint?.(payload.data)
+        } else if (payload.type === 'result') {
+          options.onResult?.(payload.data)
+        } else if (payload.type === 'error') {
+          options.onError?.(payload.error ?? 'AI 编排失败')
+        }
       }
     }
+  } catch (err) {
+    // 用户主动取消（abort）静默处理，不抛出
+    if (options?.signal?.aborted) return
+    throw err
+  } finally {
+    try {
+      await reader.cancel()
+    } catch { /* reader 已关闭则忽略 */ }
   }
 }
 
