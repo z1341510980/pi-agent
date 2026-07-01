@@ -15,6 +15,9 @@ import {
   deleteCharacter,
   deleteConflict,
   deleteForeshadow,
+  deleteFaction,
+  deleteLocation,
+  deleteWorldElement,
   deleteNodePosition,
   type NovelEdgeType,
   type NovelNodeTypeName,
@@ -54,6 +57,9 @@ export function NovelToolbar({
   const removeCharacter = useNovelStore((s) => s.removeCharacter)
   const removeConflict = useNovelStore((s) => s.removeConflict)
   const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
+  const removeFaction = useNovelStore((s) => s.removeFaction)
+  const removeLocation = useNovelStore((s) => s.removeLocation)
+  const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
   const removeNodePosition = useNovelStore((s) => s.removeNodePosition)
   const canvasEdgeType = useNovelStore((s) => s.canvasEdgeType)
   const setCanvasEdgeType = useNovelStore((s) => s.setCanvasEdgeType)
@@ -92,6 +98,18 @@ export function NovelToolbar({
           await deleteForeshadow(selectedNodeId)
           removeForeshadow(selectedNodeId)
           break
+        case 'faction':
+          await deleteFaction(selectedNodeId)
+          removeFaction(selectedNodeId)
+          break
+        case 'location':
+          await deleteLocation(selectedNodeId)
+          removeLocation(selectedNodeId)
+          break
+        case 'world_element':
+          await deleteWorldElement(selectedNodeId)
+          removeWorldElement(selectedNodeId)
+          break
         default:
           return
       }
@@ -106,7 +124,7 @@ export function NovelToolbar({
     } catch {
       // 静默失败
     }
-  }, [currentProjectId, selectedNodeId, selectedNodeType, removeCharacter, removeConflict, removeForeshadow, removeNodePosition, clearSelection])
+  }, [currentProjectId, selectedNodeId, selectedNodeType, removeCharacter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeNodePosition, clearSelection])
 
   return (
     <div className="flex items-center gap-1 px-3 h-11 border-b border-border bg-surface-1 shrink-0">

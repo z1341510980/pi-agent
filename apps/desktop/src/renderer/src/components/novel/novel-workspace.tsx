@@ -531,7 +531,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       creationError={creationFlow.error}
                       onCancelCreation={handleDiscardCreation}
                       onNodeCountChange={setNodeCount}
-                      onRegenerateChapter={handleRegenerateChapter}
                     />
                   )}
                 </div>

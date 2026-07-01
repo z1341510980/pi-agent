@@ -15,12 +15,11 @@ import {
   type Connection,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertTriangle, Layers, Sparkles, RotateCcw, Trash2, FileText } from 'lucide-react'
+import { AlertTriangle, Layers } from 'lucide-react'
 import { useNovelStore } from '@/stores/novel-store'
 import type { NovelNodeType } from '@/stores/novel-store'
 import {
   deleteCharacter,
-  deleteChapter,
   deleteConflict,
   deleteForeshadow,
   deleteFaction,
@@ -35,7 +34,6 @@ import {
   type NodePositionInput,
   type NovelEdge,
   type NovelEdgeType,
-  type NovelChapter,
 } from '@/api/novel-client'
 import { CharacterNode } from './nodes/CharacterNode'
 import { ConflictNode } from './nodes/ConflictNode'
@@ -455,32 +453,18 @@ function buildLayout(params: {
 /** 根据创作阶段返回应高亮（脉冲）的节点 ID 集合 */
 function computePulsingNodeIds(
   phase: CreationPhase,
-  project: { id: string } | null,
-  chapters: Array<{ id: string; chapterNumber: number }>,
   characters: Array<{ id: string }>,
   conflicts: Array<{ id: string }>,
   foreshadows: Array<{ id: string }>,
-  creationChapterNumber?: number,
 ): Set<string> {
   const ids = new Set<string>()
   if (phase === 'idle' || phase === 'completed' || phase === 'cancelled' || phase === 'error') {
     return ids
   }
 
-  // directing / checkpoint_narrative：高亮项目节点
-  if (phase === 'directing' || phase === 'checkpoint_narrative') {
-    if (project) ids.add(nodeId('project', project.id))
-  }
-
-  // writing / reviewing / checkpoint_review：高亮目标章节节点
-  if (phase === 'writing' || phase === 'reviewing' || phase === 'checkpoint_review' || phase === 'revising') {
-    const targetChapter = creationChapterNumber != null
-      ? chapters.find((c) => c.chapterNumber === creationChapterNumber)
-      : chapters[chapters.length - 1]
-    if (targetChapter) ids.add(nodeId('chapter', targetChapter.id))
-  }
-
   // memory：高亮角色/冲突/伏笔节点（状态更新目标）
+  // 注：画布已收敛为纯实体关系图，project/chapter 节点不再渲染，
+  // 故 directing/writing 等阶段不再产生脉冲节点
   if (phase === 'memory') {
     characters.forEach((c) => ids.add(nodeId('character', c.id)))
     conflicts.forEach((c) => ids.add(nodeId('conflict', c.id)))
@@ -509,8 +493,6 @@ export interface NovelCanvasProps {
   onNodeCountChange?: (count: number) => void
   /** 节点删除完成后的回调（删除逻辑在画布内处理：调用 store + API） */
   onDeleteNode?: () => void
-  /** 右键章节节点时触发重新创作（传入章节编号） */
-  onRegenerateChapter?: (chapterNumber: number) => void
 }
 
 export function NovelCanvas({
@@ -522,12 +504,9 @@ export function NovelCanvas({
   onCancelCreation,
   onNodeCountChange,
   onDeleteNode,
-  onRegenerateChapter,
 }: NovelCanvasProps): ReactElement {
   const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const projects = useNovelStore((s) => s.projects)
   const characters = useNovelStore((s) => s.characters)
-  const chapters = useNovelStore((s) => s.chapters)
   const conflicts = useNovelStore((s) => s.conflicts)
   const foreshadows = useNovelStore((s) => s.foreshadows)
   const factions = useNovelStore((s) => s.factions)
@@ -542,7 +521,6 @@ export function NovelCanvas({
   const setNodePositions = useNovelStore((s) => s.setNodePositions)
   const removeNodePosition = useNovelStore((s) => s.removeNodePosition)
   const removeCharacter = useNovelStore((s) => s.removeCharacter)
-  const removeChapter = useNovelStore((s) => s.removeChapter)
   const removeConflict = useNovelStore((s) => s.removeConflict)
   const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
   const removeFaction = useNovelStore((s) => s.removeFaction)
@@ -576,17 +554,6 @@ export function NovelCanvas({
   const currentProjectIdRef = useRef(currentProjectId)
   currentProjectIdRef.current = currentProjectId
   const [showPerfWarning, setShowPerfWarning] = useState(false)
-  /** 章节节点右键菜单：定位 + 目标章节，null 表示关闭 */
-  const [chapterContextMenu, setChapterContextMenu] = useState<{
-    x: number
-    y: number
-    chapter: NovelChapter
-  } | null>(null)
-
-  const project = useMemo(
-    () => projects.find((p) => p.id === currentProjectId) ?? null,
-    [projects, currentProjectId],
-  )
 
   // 已保存的位置 Map（key: `${nodeType}:${entityId}`）
   const savedPositionsMap = useMemo(() => {
@@ -628,14 +595,11 @@ export function NovelCanvas({
   const pulsingIds = useMemo(
     () => computePulsingNodeIds(
       creationPhase,
-      project ? { id: project.id } : null,
-      chapters,
       characters,
       conflicts,
       foreshadows,
-      creationChapterNumber,
     ),
-    [creationPhase, project, chapters, characters, conflicts, foreshadows, creationChapterNumber],
+    [creationPhase, characters, conflicts, foreshadows],
   )
 
   // ── 节点删除：调用 API + 更新 store ──
@@ -853,9 +817,12 @@ export function NovelCanvas({
     return () => clearTimeout(timer)
   }, [currentProjectId, fitView])
 
-  // 切换项目时重置首次布局标记
+  // 切换项目时重置首次布局标记，并清空画布本地状态
+  // 避免旧项目的邻居 Set 残留导致新项目节点全被降至 0.2 透明度
   useEffect(() => {
     isFirstLayout.current = true
+    setHighlightedNodeIds(null)
+    setEdgeTypeFilter('all')
   }, [currentProjectId])
 
   // 同步 store 选中状态 + 创作高亮 + 邻居高亮到节点标记
@@ -973,59 +940,6 @@ export function NovelCanvas({
     void handleDeleteEdge(edge)
   }, [handleDeleteEdge])
 
-  // 右键章节节点：弹出选项菜单（生成/重新生成本章、删除章节）
-  // preventDefault 阻止浏览器默认右键菜单
-  const handleNodeContextMenu = useCallback((evt: ReactMouseEvent, node: Node) => {
-    evt.preventDefault()
-    const [type, id] = parseNodeId(node.id)
-    if (type !== 'chapter') return
-    const chapter = chapters.find((c) => c.id === id)
-    if (!chapter) return
-    setChapterContextMenu({ x: evt.clientX, y: evt.clientY, chapter })
-  }, [chapters])
-
-  // 右键菜单关闭：Escape 键关闭（点击外部通过遮罩层处理，避免 window click 监听器
-  // 与 React 合成事件的执行顺序问题导致菜单按钮点击失效）
-  useEffect(() => {
-    if (!chapterContextMenu) return
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setChapterContextMenu(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [chapterContextMenu])
-
-  // 菜单项：生成 / 重新生成本章
-  const handleMenuGenerate = useCallback(() => {
-    const chapter = chapterContextMenu?.chapter
-    setChapterContextMenu(null)
-    if (chapter) onRegenerateChapter?.(chapter.chapterNumber)
-  }, [chapterContextMenu, onRegenerateChapter])
-
-  // 菜单项：查看章节内容（已有内容时触发删除节点同款流程：选中节点供详情面板展示）
-  const handleMenuView = useCallback(() => {
-    const chapter = chapterContextMenu?.chapter
-    setChapterContextMenu(null)
-    if (chapter) selectNode(chapter.id, 'chapter')
-  }, [chapterContextMenu, selectNode])
-
-  // 菜单项：删除章节
-  const handleMenuDelete = useCallback(async () => {
-    const chapter = chapterContextMenu?.chapter
-    setChapterContextMenu(null)
-    if (!chapter) return
-    try {
-      await deleteChapter(chapter.id)
-      removeChapter(chapter.id)
-      await deleteNodePosition(currentProjectId ?? '', 'chapter', chapter.id).catch(() => {})
-      onDeleteNode?.()
-    } catch (err) {
-      console.error('[NovelCanvas] 删除章节失败:', err)
-    }
-  }, [chapterContextMenu, currentProjectId, removeChapter, onDeleteNode])
-
   // ── 关系类型过滤：按 edgeTypeFilter 过滤边（nodes 不变，只过滤 edges）──
   const filteredEdges = useMemo(() => {
     if (edgeTypeFilter === 'all') return edges
@@ -1079,7 +993,6 @@ export function NovelCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
-        onNodeContextMenu={handleNodeContextMenu}
         onEdgeClick={handleEdgeClick}
         onEdgeDoubleClick={handleEdgeDoubleClick}
         onEdgeContextMenu={handleEdgeContextMenu}
@@ -1144,73 +1057,6 @@ export function NovelCanvas({
         error={creationError}
         onCancel={() => onCancelCreation?.()}
       />
-
-      {/* 章节节点右键菜单：fixed 定位在鼠标位置，点击外部（遮罩层）/Escape 关闭 */}
-      {chapterContextMenu && (
-        <>
-          {/* 透明遮罩层：捕获菜单外部的点击，关闭菜单。z-40 低于菜单 z-50 */}
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setChapterContextMenu(null)}
-            onContextMenu={(e) => {
-              e.preventDefault()
-              setChapterContextMenu(null)
-            }}
-          />
-          <div
-            role="menu"
-            className="fixed z-50 min-w-[160px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
-            style={{
-              left: Math.min(chapterContextMenu.x, window.innerWidth - 180),
-              top: Math.min(chapterContextMenu.y, window.innerHeight - 160),
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-          <div className="px-2 py-1 text-[10px] text-muted-foreground truncate">
-            第 {chapterContextMenu.chapter.chapterNumber} 章
-            {chapterContextMenu.chapter.title && ` · ${chapterContextMenu.chapter.title}`}
-          </div>
-          <div className="my-1 h-px bg-border" />
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handleMenuGenerate}
-            disabled={creationRunning}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {chapterContextMenu.chapter.wordCount > 0 || chapterContextMenu.chapter.status !== 'planned'
-              ? <RotateCcw className="size-3.5 text-amber-500" />
-              : <Sparkles className="size-3.5 text-emerald-500" />}
-            <span>
-              {chapterContextMenu.chapter.wordCount > 0 || chapterContextMenu.chapter.status !== 'planned'
-                ? '重新生成本章'
-                : '生成本章'}
-            </span>
-          </button>
-          {(chapterContextMenu.chapter.wordCount > 0 || chapterContextMenu.chapter.content) && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={handleMenuView}
-              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-            >
-              <FileText className="size-3.5 text-blue-500" />
-              <span>查看章节内容</span>
-            </button>
-          )}
-          <div className="my-1 h-px bg-border" />
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handleMenuDelete}
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-          >
-            <Trash2 className="size-3.5" />
-            <span>删除章节</span>
-          </button>
-          </div>
-        </>
-      )}
     </div>
   )
 }
