@@ -46,6 +46,7 @@ import type { NarrativeTask, ChapterConstraints, ArrangedEntity } from './types.
 import type { ToolDefinition as PluginToolDefinition } from '../../../core/plugin/plugin-types.js'
 import { RhythmController } from './rhythm-controller.js'
 import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'
+import type { NovelAgentConfigStore } from './novel-agent-config-store.js'
 import type { NovelAgentLogStatus } from './types.js'
 
 export interface CreationOptions {
@@ -69,6 +70,8 @@ export class NovelOrchestrator extends EventEmitter {
   private userMessages: string[] = []
   /** 本章已编排实体约束（由 createChapterWithFlow 设置，runAgent 读取后清空） */
   private currentArrangedEntities?: ArrangedEntity
+  /** 小说角色温度配置存储（runAgent 中按角色合并温度） */
+  private readonly agentConfigStore: NovelAgentConfigStore
 
   constructor(
     private store: NovelStore,
@@ -77,8 +80,10 @@ export class NovelOrchestrator extends EventEmitter {
     private promptBuilder: NovelPromptBuilder,
     private engine: NovelEngine,
     private context: PluginContext,
+    agentConfigStore: NovelAgentConfigStore,
   ) {
     super()
+    this.agentConfigStore = agentConfigStore
   }
 
   /**
@@ -332,12 +337,16 @@ export class NovelOrchestrator extends EventEmitter {
 
     // 创建独立 Session 并调用 LLM
     const startTime = Date.now()
+    // 合并温度：持久化覆盖 > 角色默认值（NOVEL_AGENT_CONFIGS）
+    const temperature = this.agentConfigStore.getByType(agentType)
+
     const session = await this.context.createSession({
       systemPrompt,
       prefixUserMessage: chapterContext,
       userMessage,
       tools: filteredTools as unknown as PluginToolDefinition[],
       signal: options?.signal,
+      temperature,
     })
 
     // 在 try/catch/finally 中捕获结果与错误，finally 持久化到日志表

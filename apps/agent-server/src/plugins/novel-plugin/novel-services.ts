@@ -34,6 +34,7 @@ import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import { NovelCharacterGenerator } from './core/novel-character-generator.js'
 import { NovelEntityGenerator } from './core/novel-entity-generator.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
+import { NovelAgentConfigStore } from './core/novel-agent-config-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
@@ -49,6 +50,8 @@ export interface NovelServices {
   characterGenerator: NovelCharacterGenerator
   entityGenerator: NovelEntityGenerator
   tools: ToolDefinition[]
+  /** 小说角色温度配置存储 */
+  agentConfigStore: NovelAgentConfigStore
   /**
    * TeamManager（可选，由 teamPlugin 提供）
    * 当 teamPlugin 已注册且 plugin-loader 完成注入时可用，
@@ -83,9 +86,14 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 6. 创建 NovelEngine（依赖 NovelStore + NovelSessionFactory）
   const engine = new NovelEngine(store, sessionFactory)
 
-  // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext）
+  // 6.5 创建小说角色温度配置存储（依赖 db）
+  //     先于 orchestrator 创建：orchestrator 在 runAgent 中读取它以合并温度
+  const agentConfigStore = new NovelAgentConfigStore(db)
+
+  // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext + NovelAgentConfigStore）
   //    PluginContext.createSession 用于 runAgent 调用 LLM
-  const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context)
+  //    agentConfigStore 用于 runAgent 中按角色合并温度并传入 createSession
+  const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context, agentConfigStore)
 
   // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
   //    PluginContext.createSession 用于 generate 调用 LLM
@@ -98,5 +106,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 10. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, tools, teamManager }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, tools, agentConfigStore, teamManager }
 }
