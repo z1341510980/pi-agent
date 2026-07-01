@@ -553,9 +553,14 @@ export function AgentPage(): ReactElement {
         </p>
       </div>
 
-      {/* ── 生成参数 ── */}
+      {/* ── 全局默认温度 ── */}
       <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-3">
-        <Label>生成参数</Label>
+        <div>
+          <h3 className="text-sm font-medium">全局默认温度</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            新建 Agent 时的默认温度值。各 Agent 可在编辑弹窗中单独覆盖。
+          </p>
+        </div>
 
         <div className="grid gap-2">
           <div className="flex items-center justify-between gap-2">
