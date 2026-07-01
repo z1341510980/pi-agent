@@ -1158,6 +1158,100 @@ export function submitCheckpointDecision(
   })
 }
 
+// ── AI 编排生成（模式2：按章纲 AI 编排实体 + 衔接 create-flow 生成正文） ──
+
+/**
+ * AI 编排生成（SSE 流式）
+ *
+ * 后端端点 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/ai-arrange
+ * 同一 SSE 流内依次推送：
+ *   阶段1（AI 编排）:
+ *     - { type: 'progress', data: { type: 'arrange_start' | 'arrange_progress' | 'arrange_done', ... } }
+ *   阶段2（create-flow 衔接）:
+ *     - { type: 'progress',  data: CreationFlowEvent }   阶段变更/Agent 事件
+ *     - { type: 'checkpoint', data: CheckpointData }      等待用户决策
+ *     - { type: 'result',     data: CreationResult }      流程结束
+ *     - { type: 'error',      error: string }             错误
+ *
+ * 与 createFlow 不同，本接口不需要前端传 arrangedEntities（由后端 AI 编排产出），
+ * SSE 事件格式与 createFlow 兼容（progress/checkpoint/result/error），前端可复用同一 handleMessage。
+ */
+export interface AiArrangeFlowOptions {
+  onProgress?: (event: unknown) => void
+  onCheckpoint?: (checkpoint: unknown) => void
+  onResult?: (result: unknown) => void
+  onError?: (error: string) => void
+  signal?: AbortSignal
+}
+
+export async function aiArrangeFlow(
+  projectId: string,
+  chapterNumber: number,
+  options: AiArrangeFlowOptions,
+): Promise<void> {
+  const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/chapters/${chapterNumber}/ai-arrange`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({}),
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    throw new Error(`AI 编排启动失败: HTTP ${response.status} ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('响应体为空，无法读取 SSE 流')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE 以双换行分隔事件块
+    let newlineIdx: number
+    while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
+      const rawEvent = buffer.slice(0, newlineIdx)
+      buffer = buffer.slice(newlineIdx + 2)
+
+      // 解析事件块中的 data: 行（忽略注释行 ": keepalive"）
+      const dataLines = rawEvent
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+
+      if (dataLines.length === 0) continue
+
+      let payload: { type: string; data?: unknown; error?: string } | null = null
+      try {
+        payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
+      } catch {
+        continue
+      }
+      if (!payload) continue
+
+      if (payload.type === 'progress') {
+        options.onProgress?.(payload.data)
+      } else if (payload.type === 'checkpoint') {
+        options.onCheckpoint?.(payload.data)
+      } else if (payload.type === 'result') {
+        options.onResult?.(payload.data)
+      } else if (payload.type === 'error') {
+        options.onError?.(payload.error ?? 'AI 编排失败')
+      }
+    }
+  }
+}
+
 // ── 缓存诊断 ──
 
 export interface CacheDiagnostics {

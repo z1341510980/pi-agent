@@ -123,6 +123,15 @@ export interface UseNovelCreationFlowReturn {
   startCreation: (projectId: string, chapterNumber: number, options?: {
     arrangedEntities?: { characterIds: string[]; conflictIds: string[]; foreshadowIds: string[] }
   }) => Promise<void>
+  /**
+   * 启动 AI 编排生成流程（模式2）
+   *
+   * 后端先按章纲 AI 编排实体并落库，再在同一 SSE 流内衔接 create-flow 生成正文。
+   * SSE 事件格式与 startCreation 兼容（progress/checkpoint/result/error），
+   * 因此复用同一 handleMessage 状态机；额外增加 arrange_start/arrange_progress/arrange_done
+   * 进度事件会以 progress 类型流入 events 时间线（data.type 区分）。
+   */
+  aiArrange: (projectId: string, chapterNumber: number) => Promise<void>
   /** 提交检查点决策 */
   submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
@@ -273,30 +282,14 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     [parseSseMessage, handleMessage],
   )
 
-  const startCreation = useCallback(
-    async (projectId: string, chapterNumber: number, options?: {
-      arrangedEntities?: { characterIds: string[]; conflictIds: string[]; foreshadowIds: string[] }
-    }): Promise<void> => {
-      // 并发保护
-      if (abortControllerRef.current) return
-
-      // 重置状态
-      setPhase('idle')
-      setEvents([])
-      setCurrentCheckpoint(null)
-      setResult(null)
-      setError(null)
-      setChapterContent('')
-      setAgentOutputs([])
-      setUserMessages([])
-      setIsRunning(true)
-      projectIdRef.current = projectId
-
-      const controller = new AbortController()
-      abortControllerRef.current = controller
-
-      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-flow`
-
+  /**
+   * 内部通用 SSE 流执行器（startCreation 与 aiArrange 共用）。
+   *
+   * 负责 fetch + consumeStream + 错误处理；状态重置由调用方在调用前完成。
+   * 不持有 abortControllerRef——由调用方在 try/finally 中清理。
+   */
+  const runFlow = useCallback(
+    async (url: string, body: unknown, controller: AbortController): Promise<void> => {
       try {
         const response = await fetch(url, {
           method: 'POST',
@@ -304,7 +297,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}),
+          body: JSON.stringify(body),
           signal: controller.signal,
         })
 
@@ -330,11 +323,84 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         setPhase('error')
         setIsRunning(false)
         setCurrentCheckpoint(null)
+      }
+    },
+    [consumeStream],
+  )
+
+  const startCreation = useCallback(
+    async (projectId: string, chapterNumber: number, options?: {
+      arrangedEntities?: { characterIds: string[]; conflictIds: string[]; foreshadowIds: string[] }
+    }): Promise<void> => {
+      // 并发保护
+      if (abortControllerRef.current) return
+
+      // 重置状态
+      setPhase('idle')
+      setEvents([])
+      setCurrentCheckpoint(null)
+      setResult(null)
+      setError(null)
+      setChapterContent('')
+      setAgentOutputs([])
+      setUserMessages([])
+      setIsRunning(true)
+      projectIdRef.current = projectId
+
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-flow`
+      const body = options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}
+
+      try {
+        await runFlow(url, body, controller)
       } finally {
         abortControllerRef.current = null
       }
     },
-    [consumeStream],
+    [runFlow],
+  )
+
+  /**
+   * 启动 AI 编排生成流程（模式2）。
+   *
+   * 后端先按章纲 AI 编排实体并落库，再在同一 SSE 流内衔接 create-flow 生成正文。
+   * SSE 事件格式与 startCreation 兼容（progress/checkpoint/result/error），
+   * 因此复用 runFlow + handleMessage 状态机。
+   *
+   * arrange 阶段的 progress 事件 data 形状为 { type: 'arrange_*', ... }，
+   * 会流入 events 时间线；create-flow 阶段事件形状与 startCreation 完全一致。
+   */
+  const aiArrange = useCallback(
+    async (projectId: string, chapterNumber: number): Promise<void> => {
+      // 并发保护
+      if (abortControllerRef.current) return
+
+      // 重置状态（与 startCreation 一致）
+      setPhase('idle')
+      setEvents([])
+      setCurrentCheckpoint(null)
+      setResult(null)
+      setError(null)
+      setChapterContent('')
+      setAgentOutputs([])
+      setUserMessages([])
+      setIsRunning(true)
+      projectIdRef.current = projectId
+
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/ai-arrange`
+
+      try {
+        await runFlow(url, {}, controller)
+      } finally {
+        abortControllerRef.current = null
+      }
+    },
+    [runFlow],
   )
 
   const submitCheckpoint = useCallback(
@@ -408,6 +474,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     agentOutputs,
     userMessages,
     startCreation,
+    aiArrange,
     submitCheckpoint,
     sendMessage,
     cancel,

@@ -92,7 +92,8 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, context)
 
   // 9. 创建 NovelEntityGenerator（通用实体生成器，character 分支委托给 characterGenerator）
-  const entityGenerator = new NovelEntityGenerator(promptBuilder, promptManager, context, characterGenerator)
+  //    依赖 NovelStore 用于 generateAndArrange 落库（角色/冲突/伏笔 + 角色历史）
+  const entityGenerator = new NovelEntityGenerator(promptBuilder, promptManager, context, characterGenerator, store)
 
   // 10. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)

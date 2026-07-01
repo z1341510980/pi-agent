@@ -11,11 +11,14 @@
  * - 通过 PluginContext.createSession 创建独立 Pi Session，与主聊天隔离
  */
 
+import { randomUUID } from 'node:crypto'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacterGenerator } from './novel-character-generator.js'
+import type { NovelStore } from './novel-store.js'
 import type {
+  ArrangedEntity,
   NovelCharacter,
   NovelConflict,
   NovelForeshadow,
@@ -121,6 +124,7 @@ export class NovelEntityGenerator {
     private promptManager: PromptManager,
     private context: PluginContext,
     private characterGenerator: NovelCharacterGenerator,
+    private store: NovelStore,
   ) {}
 
   /**
@@ -179,6 +183,163 @@ export class NovelEntityGenerator {
       onProgress?.({ phase: 'fallback', message: 'AI 生成失败，使用模板兜底...' })
       const data = this.buildTemplate(entityType, coreStyle)
       return { type: entityType, data } as GeneratedEntity
+    } finally {
+      session.dispose()
+    }
+  }
+
+  /**
+   * 按章纲批量生成实体并自动编排到本章列，返回编排结果供后续 create-flow 注入。
+   *
+   * 不在此方法内调 orchestrator（由路由层在同一 SSE 流内衔接 createChapterWithFlow）。
+   * 仅依赖 store（落库）+ generate（调 LLM 生成字段）。
+   */
+  async generateAndArrange(
+    projectId: string,
+    chapterNumber: number,
+    outline: string,
+    onProgress?: (event: { phase: string; message: string; data?: unknown }) => void,
+  ): Promise<ArrangedEntity> {
+    onProgress?.({ phase: 'analyzing', message: '分析章纲，规划所需实体...' })
+
+    const plan = await this.planEntitiesFromOutline(projectId, outline)
+    onProgress?.({
+      phase: 'planned',
+      message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔`,
+      data: plan,
+    })
+
+    const characterIds: string[] = []
+    const conflictIds: string[] = []
+    const foreshadowIds: string[] = []
+
+    for (const spec of plan.characters) {
+      onProgress?.({ phase: 'generating', message: `生成角色：${spec.coreStyle}` })
+      const gen = await this.generate(projectId, 'character', spec.coreStyle)
+      if (gen.type !== 'character') continue
+      const created = this.store.createCharacter({
+        id: randomUUID(),
+        projectId,
+        name: gen.data.name,
+        description: gen.data.description,
+        identity: gen.data.identity,
+        personality: gen.data.personality,
+        appearance: gen.data.appearance,
+        currentState: gen.data.currentState,
+        currentGoal: gen.data.currentGoal,
+        currentPressure: gen.data.currentPressure,
+        secret: gen.data.secret,
+        arcStage: gen.data.arcStage,
+        arcHistory: '[]',
+        speechStyle: gen.data.speechStyle,
+        isProtagonist: false,
+      })
+      characterIds.push(created.id)
+      this.store.createCharacterHistory({
+        projectId,
+        characterId: created.id,
+        chapterId: null,
+        chapterNumber,
+        fieldName: 'currentState',
+        oldValue: null,
+        newValue: '本章首次出场',
+        reason: `AI编排：${outline.slice(0, 50)}`,
+      })
+    }
+
+    for (const spec of plan.conflicts) {
+      onProgress?.({ phase: 'generating', message: `生成冲突：${spec.coreStyle}` })
+      const gen = await this.generate(projectId, 'conflict', spec.coreStyle)
+      if (gen.type !== 'conflict') continue
+      const created = this.store.createConflict({
+        id: randomUUID(),
+        projectId,
+        description: gen.data.description,
+        type: gen.data.type,
+        intensity: gen.data.intensity,
+        stage: gen.data.stage,
+        participants: gen.data.participants,
+        firstChapter: chapterNumber,
+        lastChapter: null,
+        tier: gen.data.tier,
+      })
+      conflictIds.push(created.id)
+    }
+
+    for (const spec of plan.foreshadows) {
+      onProgress?.({ phase: 'generating', message: `生成伏笔：${spec.coreStyle}` })
+      const gen = await this.generate(projectId, 'foreshadow', spec.coreStyle)
+      if (gen.type !== 'foreshadow') continue
+      const created = this.store.createForeshadow({
+        id: randomUUID(),
+        projectId,
+        description: gen.data.description,
+        category: gen.data.category,
+        status: gen.data.status,
+        firstChapter: chapterNumber,
+        lastChapter: null,
+        recoverByChapter: null,
+        linkedCharacters: gen.data.linkedCharacters,
+        linkedClues: gen.data.linkedClues,
+      })
+      foreshadowIds.push(created.id)
+    }
+
+    onProgress?.({ phase: 'arranged', message: '编排完成，准备生成正文' })
+    return { characterIds, conflictIds, foreshadowIds }
+  }
+
+  /**
+   * 调用 LLM 解析章纲，产出待生成实体的 coreStyle 清单。
+   *
+   * 复用 extractJsonBlock / ensureString 工具函数解析返回。
+   * 使用 promptStream（与 generate 一致）以保持 Session API 调用模式统一。
+   */
+  private async planEntitiesFromOutline(
+    projectId: string,
+    outline: string,
+  ): Promise<{
+    characters: { coreStyle: string }[]
+    conflicts: { coreStyle: string }[]
+    foreshadows: { coreStyle: string }[]
+  }> {
+    const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
+    const userPrompt = [
+      '你是小说实体规划助手。根据以下章纲，规划本章需要哪些实体（只列本章新引入的）。',
+      '返回严格 JSON，格式：',
+      '{"characters":[{"coreStyle":"一句话描述"}],"conflicts":[{"coreStyle":"..."}],"foreshadows":[{"coreStyle":"..."}]}',
+      '',
+      '章纲：',
+      outline,
+    ].join('\n')
+
+    const session = await this.context.createSession({
+      systemPrompt,
+      userMessage: userPrompt,
+    })
+
+    try {
+      let result = ''
+      const full = await session.promptStream((delta) => {
+        result += delta
+      })
+      // 优先使用流式累积结果，回退到 promptStream 返回值
+      const text = result || full
+      const json = JSON.parse(extractJsonBlock(text)) as Record<string, unknown>
+      return {
+        characters: Array.isArray(json.characters)
+          ? json.characters
+              .map((c: unknown) => ({ coreStyle: ensureString((c as { coreStyle?: unknown })?.coreStyle, '新角色') }))
+          : [],
+        conflicts: Array.isArray(json.conflicts)
+          ? json.conflicts
+              .map((c: unknown) => ({ coreStyle: ensureString((c as { coreStyle?: unknown })?.coreStyle, '新冲突') }))
+          : [],
+        foreshadows: Array.isArray(json.foreshadows)
+          ? json.foreshadows
+              .map((f: unknown) => ({ coreStyle: ensureString((f as { coreStyle?: unknown })?.coreStyle, '新伏笔') }))
+          : [],
+      }
     } finally {
       session.dispose()
     }

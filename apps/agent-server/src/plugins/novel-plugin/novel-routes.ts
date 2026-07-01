@@ -1564,6 +1564,73 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 模式2：AI 编排生成（SSE）——按章纲生成实体并编排，同一流内衔接 create-flow
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/ai-arrange',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params
+      const orchestrator = services.orchestrator
+      const entityGenerator = services.entityGenerator
+
+      // SSE 设置（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      const write = (obj: unknown) => reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`)
+      const heartbeat = setInterval(() => reply.raw.write(': keepalive\n\n'), 15000)
+
+      try {
+        const chNum = parseInt(chapterNumber, 10)
+        const chapter = store.getChapter(projectId, chNum)
+        if (!chapter) throw new Error(`章节不存在: ${chNum}`)
+        if (!chapter.outline?.trim()) throw new Error('章纲为空，无法 AI 编排')
+
+        // 阶段1：AI 编排（生成实体并落库到本章列）
+        write({ type: 'progress', data: { type: 'arrange_start', message: '开始 AI 编排实体...' } })
+        const arrangedEntities = await entityGenerator.generateAndArrange(
+          projectId,
+          chNum,
+          chapter.outline,
+          (evt) => write({ type: 'progress', data: { type: 'arrange_progress', ...evt } }),
+        )
+        write({ type: 'progress', data: { type: 'arrange_done', data: arrangedEntities } })
+
+        // 阶段2：同一 SSE 流内衔接 create-flow，注入编排结果
+        const result = await orchestrator.createChapterWithFlow(
+          projectId,
+          chNum,
+          {
+            onCheckpoint: async (checkpoint) => {
+              write({ type: 'checkpoint', data: checkpoint })
+              return new Promise((resolve) => {
+                orchestrator.once(`checkpoint:${checkpoint.type}`, (decision: string) => {
+                  resolve(decision as any)
+                })
+              })
+            },
+            onProgress: (event) => write({ type: 'progress', data: event }),
+            arrangedEntities,
+          },
+        )
+        write({ type: 'result', data: result })
+      } catch (err) {
+        write({ type: 'error', error: String(err) })
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.end()
+      }
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // TeamManager 统一触发（pipeline 策略：Director → Writer → Reviewer → Reviser → Memory）
   // ═══════════════════════════════════════════════════════════════
 
