@@ -264,7 +264,11 @@ function OutlinePreviewRow({
       {icon}
       <span className="text-muted-foreground shrink-0">{label}:</span>
       <span
-        className={cn('flex-1 whitespace-pre-wrap break-words', !value && 'text-muted-foreground italic')}
+        className={cn(
+          'flex-1 break-words overflow-hidden',
+          '[display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]',
+          !value && 'text-muted-foreground italic',
+        )}
       >
         {value || placeholder}
       </span>
