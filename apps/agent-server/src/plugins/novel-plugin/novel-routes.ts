@@ -81,6 +81,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     currentChapter: z.number().int().min(0).optional(),
     currentStage: z.enum(['setup', 'rising', 'climax', 'falling', 'resolution']).optional(),
     status: z.enum(['active', 'paused', 'completed']).optional(),
+    outline: z.string().max(20000).optional(),
   })
 
   routes.push({
@@ -241,6 +242,69 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 卷管理
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/volumes',
+    handler: async (request: any) => {
+      return success(store.listVolumes(request.params.projectId), request.traceId)
+    },
+  })
+
+  const createVolumeSchema = z.object({
+    volumeNumber: z.number().int().min(1),
+    title: z.string().max(200).default(''),
+    outline: z.string().max(20000).default(''),
+    sortOrder: z.number().int().min(0).default(0),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/volumes',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createVolumeSchema, request, reply)
+      if (!input) return reply
+      const volume = store.createVolume({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        ...input,
+      })
+      return success(volume, request.traceId)
+    },
+  })
+
+  const updateVolumeSchema = z.object({
+    title: z.string().max(200).optional(),
+    outline: z.string().max(20000).optional(),
+    sortOrder: z.number().int().min(0).optional(),
+    volumeNumber: z.number().int().min(1).optional(),
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/volumes/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateVolumeSchema, request, reply)
+      if (!input) return reply
+      const updated = store.updateVolume(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `卷不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/volumes/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteVolume(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `卷不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 章节管理
   // ═══════════════════════════════════════════════════════════════
 
@@ -292,6 +356,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     title: z.string().optional(),
     content: z.string().optional(),
     status: z.enum(['planned', 'drafting', 'review', 'published', 'rejected']).optional(),
+    outline: z.string().max(20000).optional(),
+    volumeId: z.string().nullable().optional(),
   })
 
   routes.push({

@@ -37,6 +37,8 @@ export interface NovelProject {
   title: string
   genre: string
   synopsis: string
+  /** 全书大纲（一段文本） */
+  outline?: string
   targetWords: number
   currentVolume: number
   currentChapter: number
@@ -56,10 +58,34 @@ export interface NovelChapter {
   wordCount: number
   status: ChapterStatus
   narrativeTask: string
+  /** 章纲（用户编写，作为生成统一起点） */
+  outline?: string
+  /** 所属卷 ID（指向 novel_volumes.id，兼容旧数据可空） */
+  volumeId?: string | null
   acceptanceResult: string | null
   createdAt: number
   updatedAt: number
 }
+
+export interface NovelVolume {
+  id: string
+  projectId: string
+  volumeNumber: number
+  title: string
+  outline: string
+  sortOrder: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreateVolumeInput {
+  volumeNumber: number
+  title?: string
+  outline?: string
+  sortOrder?: number
+}
+
+export type UpdateVolumeInput = Partial<CreateVolumeInput>
 
 export interface NovelCharacter {
   id: string
@@ -262,6 +288,7 @@ export type UpdateProjectInput = Partial<CreateProjectInput> & {
   currentChapter?: number
   currentStage?: StoryStage
   status?: 'active' | 'paused' | 'completed'
+  outline?: string
 }
 
 export interface CreateChapterInput {
@@ -278,6 +305,8 @@ export interface UpdateChapterInput {
   title?: string
   content?: string
   status?: ChapterStatus
+  outline?: string
+  volumeId?: string | null
 }
 
 export interface CompleteChapterInput {
@@ -586,6 +615,24 @@ export function publishChapter(id: string): Promise<NovelChapter> {
 
 export function deleteChapter(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/chapters/${id}`)
+}
+
+// ── Volumes ──
+
+export function listVolumes(projectId: string): Promise<NovelVolume[]> {
+  return getApi<NovelVolume[]>(`${BASE}/projects/${projectId}/volumes`)
+}
+
+export function createVolume(projectId: string, input: CreateVolumeInput): Promise<NovelVolume> {
+  return postApi<NovelVolume>(`${BASE}/projects/${projectId}/volumes`, input)
+}
+
+export function updateVolume(id: string, input: UpdateVolumeInput): Promise<NovelVolume> {
+  return patchApi<NovelVolume>(`${BASE}/volumes/${id}`, input)
+}
+
+export function deleteVolume(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/volumes/${id}`)
 }
 
 // ── Characters ──

@@ -505,4 +505,41 @@ export const novelMigrations: MigrationDefinition[] = [
     sql: `ALTER TABLE novel_markers ADD COLUMN entity_type TEXT;
           ALTER TABLE novel_markers ADD COLUMN entity_id TEXT;`,
   },
+  {
+    // 041: 全书大纲字段 + 卷表
+    id: '041_create_novel_volumes_and_outline',
+    sql: `ALTER TABLE novel_projects ADD COLUMN outline TEXT NOT NULL DEFAULT '';
+          CREATE TABLE IF NOT EXISTS novel_volumes (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL,
+            volume_number   INTEGER NOT NULL,
+            title           TEXT NOT NULL DEFAULT '',
+            outline         TEXT NOT NULL DEFAULT '',
+            sort_order      INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+            FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS idx_novel_volumes_project ON novel_volumes(project_id);
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_volumes_project_number ON novel_volumes(project_id, volume_number);`,
+  },
+  {
+    // 042: 章节加 outline + volume_id
+    id: '042_extend_novel_chapters_outline',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN outline TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_chapters ADD COLUMN volume_id TEXT;`,
+  },
+  {
+    // 043: 数据回填——按 project 的 distinct chapter.volume 建 volume 记录并回填 volume_id
+    id: '043_backfill_novel_volumes',
+    sql: `INSERT OR IGNORE INTO novel_volumes (id, project_id, volume_number, title, outline, sort_order, created_at, updated_at)
+          SELECT lower(hex(randomblob(16))), project_id, volume, '第' || volume || '卷', '', volume, unixepoch(), unixepoch()
+          FROM (SELECT DISTINCT project_id, volume FROM novel_chapters WHERE volume_id IS NULL)
+          WHERE volume IS NOT NULL;
+          UPDATE novel_chapters
+          SET volume_id = (SELECT v.id FROM novel_volumes v
+                           WHERE v.project_id = novel_chapters.project_id
+                             AND v.volume_number = novel_chapters.volume)
+          WHERE volume_id IS NULL AND volume IS NOT NULL;`,
+  },
 ]

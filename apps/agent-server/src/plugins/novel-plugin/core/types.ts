@@ -11,6 +11,8 @@ export interface NovelProject {
   title: string
   genre: string // 玄幻/科幻/悬疑/都市...
   synopsis: string
+  /** 全书大纲（一段文本） */
+  outline?: string
   targetWords: number
   currentVolume: number
   currentChapter: number
@@ -76,6 +78,10 @@ export interface NovelChapter {
   wordCount: number
   status: ChapterStatus
   narrativeTask: string
+  /** 章纲（用户编写，作为生成统一起点） */
+  outline?: string
+  /** 所属卷 ID（指向 novel_volumes.id，兼容旧数据可空） */
+  volumeId?: string | null
   acceptanceResult: string | null // JSON
   /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
   rhythm?: ChapterRhythm
@@ -84,6 +90,19 @@ export interface NovelChapter {
 }
 
 export type ChapterStatus = 'planned' | 'drafting' | 'review' | 'published' | 'rejected'
+
+// ── 卷 ──
+
+export interface NovelVolume {
+  id: string
+  projectId: string
+  volumeNumber: number
+  title: string
+  outline: string
+  sortOrder: number
+  createdAt: number
+  updatedAt: number
+}
 
 // ── 角色 ──
 

@@ -41,12 +41,13 @@ import type {
   NovelAgentLogSummary,
   NovelAgentLogStatus,
   NovelMarker,
+  NovelVolume,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
 
 interface ProjectRow {
-  id: string; title: string; genre: string; synopsis: string
+  id: string; title: string; genre: string; synopsis: string; outline: string
   target_words: number; current_volume: number; current_chapter: number
   current_stage: string; status: string; created_at: number; updated_at: number
 }
@@ -54,8 +55,14 @@ interface ProjectRow {
 interface ChapterRow {
   id: string; project_id: string; volume: number; chapter_number: number
   title: string; content: string; word_count: number; status: string
-  narrative_task: string; acceptance_result: string | null
+  narrative_task: string; outline: string; volume_id: string | null
+  acceptance_result: string | null
   created_at: number; updated_at: number
+}
+
+interface VolumeRow {
+  id: string; project_id: string; volume_number: number; title: string
+  outline: string; sort_order: number; created_at: number; updated_at: number
 }
 
 interface CharacterRow {
@@ -418,12 +425,13 @@ export class NovelStore implements NovelPromptStores {
 
   createProject(project: Omit<NovelProject, 'createdAt' | 'updatedAt'>): NovelProject {
     const ts = now()
-    const full: NovelProject = { ...project, createdAt: ts, updatedAt: ts }
+    const full: NovelProject = { outline: '', ...project, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_projects (id, title, genre, synopsis, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at)
-      VALUES (@id, @title, @genre, @synopsis, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at)
+      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at)
+      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at)
     `).run({
       id: full.id, title: full.title, genre: full.genre, synopsis: full.synopsis,
+      outline: full.outline ?? '',
       target_words: full.targetWords, current_volume: full.currentVolume,
       current_chapter: full.currentChapter, current_stage: full.currentStage,
       status: full.status, created_at: full.createdAt, updated_at: full.updatedAt,
@@ -436,11 +444,11 @@ export class NovelStore implements NovelPromptStores {
     if (!existing) return undefined
     const updated = { ...existing, ...patch, id, updatedAt: now() }
     this.db.prepare(`
-      UPDATE novel_projects SET title=@title, genre=@genre, synopsis=@synopsis,
+      UPDATE novel_projects SET title=@title, genre=@genre, synopsis=@synopsis, outline=@outline,
       target_words=@target_words, current_volume=@current_volume, current_chapter=@current_chapter,
       current_stage=@current_stage, status=@status, updated_at=@updated_at WHERE id=@id
     `).run({
-      id, title: updated.title, genre: updated.genre, synopsis: updated.synopsis,
+      id, title: updated.title, genre: updated.genre, synopsis: updated.synopsis, outline: updated.outline ?? '',
       target_words: updated.targetWords, current_volume: updated.currentVolume,
       current_chapter: updated.currentChapter, current_stage: updated.currentStage,
       status: updated.status, updated_at: updated.updatedAt,
@@ -464,14 +472,15 @@ export class NovelStore implements NovelPromptStores {
 
   createChapter(chapter: Omit<NovelChapter, 'createdAt' | 'updatedAt'>): NovelChapter {
     const ts = now()
-    const full: NovelChapter = { ...chapter, createdAt: ts, updatedAt: ts }
+    const full: NovelChapter = { outline: '', volumeId: null, ...chapter, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, acceptance_result, created_at, updated_at)
-      VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @acceptance_result, @created_at, @updated_at)
+      INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, created_at, updated_at)
+      VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, volume: full.volume,
       chapter_number: full.chapterNumber, title: full.title, content: full.content,
       word_count: full.wordCount, status: full.status, narrative_task: full.narrativeTask,
+      outline: full.outline ?? '', volume_id: full.volumeId ?? null,
       acceptance_result: full.acceptanceResult, created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -484,11 +493,13 @@ export class NovelStore implements NovelPromptStores {
     const updated = { ...current, ...patch, id, updatedAt: now() }
     this.db.prepare(`
       UPDATE novel_chapters SET title=@title, content=@content, word_count=@word_count,
-      status=@status, narrative_task=@narrative_task, acceptance_result=@acceptance_result, updated_at=@updated_at
+      status=@status, narrative_task=@narrative_task, outline=@outline, volume_id=@volume_id,
+      acceptance_result=@acceptance_result, updated_at=@updated_at
       WHERE id=@id
     `).run({
       id, title: updated.title, content: updated.content, word_count: updated.wordCount,
       status: updated.status, narrative_task: updated.narrativeTask,
+      outline: updated.outline ?? '', volume_id: updated.volumeId ?? null,
       acceptance_result: updated.acceptanceResult, updated_at: updated.updatedAt,
     })
     return updated
@@ -508,6 +519,58 @@ export class NovelStore implements NovelPromptStores {
     this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_chapters WHERE id = ?').run(id)
     return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 卷 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  listVolumes(projectId: string): NovelVolume[] {
+    const rows = this.db.prepare('SELECT * FROM novel_volumes WHERE project_id = ? ORDER BY sort_order ASC, volume_number ASC').all(projectId) as VolumeRow[]
+    return rows.map((r) => this.rowToVolume(r))
+  }
+
+  getVolume(id: string): NovelVolume | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_volumes WHERE id = ?').get(id) as VolumeRow | undefined
+    return row ? this.rowToVolume(row) : undefined
+  }
+
+  createVolume(volume: Omit<NovelVolume, 'createdAt' | 'updatedAt'>): NovelVolume {
+    const ts = now()
+    const full: NovelVolume = { ...volume, createdAt: ts, updatedAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_volumes (id, project_id, volume_number, title, outline, sort_order, created_at, updated_at)
+      VALUES (@id, @project_id, @volume_number, @title, @outline, @sort_order, @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId, volume_number: full.volumeNumber,
+      title: full.title, outline: full.outline, sort_order: full.sortOrder,
+      created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  updateVolume(id: string, patch: Partial<NovelVolume>): NovelVolume | undefined {
+    const existing = this.getVolume(id)
+    if (!existing) return undefined
+    const updated = { ...existing, ...patch, id, updatedAt: now() }
+    this.db.prepare(`
+      UPDATE novel_volumes SET title=@title, outline=@outline, sort_order=@sort_order,
+      volume_number=@volume_number, updated_at=@updated_at WHERE id=@id
+    `).run({
+      id, title: updated.title, outline: updated.outline, sort_order: updated.sortOrder,
+      volume_number: updated.volumeNumber, updated_at: updated.updatedAt,
+    })
+    return updated
+  }
+
+  deleteVolume(id: string): boolean {
+    // 删卷时把章节的 volume_id 置空，不级联删章
+    // 用事务包裹：避免两条 SQL 中间失败导致"章节 volume_id 已置空但卷仍存在"的脏状态
+    return this.db.transaction(() => {
+      this.db.prepare('UPDATE novel_chapters SET volume_id = NULL WHERE volume_id = ?').run(id)
+      const result = this.db.prepare('DELETE FROM novel_volumes WHERE id = ?').run(id)
+      return result.changes > 0
+    })()
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1396,6 +1459,7 @@ export class NovelStore implements NovelPromptStores {
   private rowToProject(row: ProjectRow): NovelProject {
     return {
       id: row.id, title: row.title, genre: row.genre, synopsis: row.synopsis,
+      outline: row.outline,
       targetWords: row.target_words, currentVolume: row.current_volume,
       currentChapter: row.current_chapter, currentStage: row.current_stage as NovelProject['currentStage'],
       status: row.status as NovelProject['status'],
@@ -1408,7 +1472,16 @@ export class NovelStore implements NovelPromptStores {
       id: row.id, projectId: row.project_id, volume: row.volume,
       chapterNumber: row.chapter_number, title: row.title, content: row.content,
       wordCount: row.word_count, status: row.status as NovelChapter['status'],
-      narrativeTask: row.narrative_task, acceptanceResult: row.acceptance_result,
+      narrativeTask: row.narrative_task, outline: row.outline, volumeId: row.volume_id,
+      acceptanceResult: row.acceptance_result,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }
+  }
+
+  private rowToVolume(row: VolumeRow): NovelVolume {
+    return {
+      id: row.id, projectId: row.project_id, volumeNumber: row.volume_number,
+      title: row.title, outline: row.outline, sortOrder: row.sort_order,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
