@@ -284,7 +284,7 @@ export class NovelEntityGenerator {
     try {
       for (const spec of plan.characters) {
         onProgress?.({ phase: 'generating', message: `生成角色：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'character', spec.coreStyle)
+        const gen = await this.generate(projectId, 'character', spec.coreStyle, onProgress)
         if (gen.type !== 'character') continue
         const created = this.store.createCharacter({
           id: randomUUID(),
@@ -318,7 +318,7 @@ export class NovelEntityGenerator {
 
       for (const spec of plan.conflicts) {
         onProgress?.({ phase: 'generating', message: `生成冲突：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'conflict', spec.coreStyle)
+        const gen = await this.generate(projectId, 'conflict', spec.coreStyle, onProgress)
         if (gen.type !== 'conflict') continue
         const created = this.store.createConflict({
           id: randomUUID(),
@@ -337,7 +337,7 @@ export class NovelEntityGenerator {
 
       for (const spec of plan.foreshadows) {
         onProgress?.({ phase: 'generating', message: `生成伏笔：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'foreshadow', spec.coreStyle)
+        const gen = await this.generate(projectId, 'foreshadow', spec.coreStyle, onProgress)
         if (gen.type !== 'foreshadow') continue
         const created = this.store.createForeshadow({
           id: randomUUID(),

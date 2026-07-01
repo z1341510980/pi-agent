@@ -866,12 +866,17 @@ export class PluginManager {
           prompt: async (): Promise<string> => {
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
-            // 在 withAgentConfig 上下文中调用 prompt（session 已创建，但保险起见）
-            await withAgentConfig(agentConfig, async () => {
-              await threadSession.session.prompt(options.userMessage)
+            // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
+            const timeoutMs = 120_000 // 2 分钟
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)), timeoutMs)
             })
-            // Pi SDK 在 LLM 调用失败时不抛异常，而是产生 stopReason="error" 的 message_end 事件。
-            // 这里检查是否有错误，若有则抛出，避免上层收到"空响应+success"的假象。
+            await withAgentConfig(agentConfig, async () => {
+              await Promise.race([
+                threadSession.session.prompt(options.userMessage),
+                timeoutPromise,
+              ])
+            })
             if (!completeText && lastErrorMessage) {
               throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
             }
@@ -881,8 +886,6 @@ export class PluginManager {
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
             // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。
-            // 注意：外层 unsubscribe（上方）已在累积 completeText，
-            // 此处订阅只负责推送 delta，不重复累积，两个订阅并存互不干扰。
             const streamUnsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
               if (event.type === 'message_end') {
                 const message = event.message as Record<string, unknown> | undefined
@@ -901,8 +904,16 @@ export class PluginManager {
               if (delta) onDelta(delta)
             })
             try {
+              // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
+              const timeoutMs = 120_000 // 2 分钟
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)), timeoutMs)
+              })
               await withAgentConfig(agentConfig, async () => {
-                await threadSession.session.prompt(options.userMessage)
+                await Promise.race([
+                  threadSession.session.prompt(options.userMessage),
+                  timeoutPromise,
+                ])
               })
               if (!completeText && lastErrorMessage) {
                 throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
