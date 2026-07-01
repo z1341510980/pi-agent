@@ -399,8 +399,9 @@ function GroupBlock({
     >
       {/* 分组标题行：左 sticky 列显示分组名+折叠按钮，右侧色条 */}
       <div
-        className="flex h-[30px] items-stretch"
+        className="relative flex h-[30px] items-stretch"
         style={{
+          width: `${SIDEBAR_W + maxChapter * cellWidth}px`,
           background: `rgba(${colorRgb}, 0.08)`,
           borderBottom: `1px solid rgba(${colorRgb}, 0.3)`,
           borderTop: `1px solid rgba(${colorRgb}, 0.12)`,
@@ -437,7 +438,8 @@ function GroupBlock({
         </div>
         {/* 色条占位（右键空白处新建实体） */}
         <div
-          className="flex-1"
+          className="shrink-0"
+          style={{ width: `${maxChapter * cellWidth}px` }}
           onContextMenu={(e) => {
             if (!onContextMenuGroupEmpty) return
             e.preventDefault()
