@@ -542,4 +542,13 @@ export const novelMigrations: MigrationDefinition[] = [
                              AND v.volume_number = novel_chapters.volume)
           WHERE volume_id IS NULL AND volume IS NOT NULL;`,
   },
+  {
+    // 小说 Agent 角色温度运行时覆盖表（全局配置，不按 project）
+    id: '044_create_novel_agent_config',
+    sql: `CREATE TABLE IF NOT EXISTS novel_agent_config (
+      agent_type    TEXT PRIMARY KEY,
+      temperature   REAL,
+      updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    );`,
+  },
 ]

@@ -22,6 +22,7 @@ export interface NovelAgentConfig {
   identity: string
   tools: string[]
   roleTemplate: string
+  temperature: number
 }
 
 export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
@@ -32,6 +33,7 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     identity: '你是一个专业的小说导演，负责分析故事状态并规划章节叙事任务。',
     tools: ['novel_query_state', 'novel_query_factions', 'novel_query_locations'],
     roleTemplate: 'role-director',
+    temperature: 0.5,
   },
   writer: {
     type: 'writer',
@@ -40,6 +42,7 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     identity: '你是一个专业的小说作家，根据叙事任务和约束创作章节正文。审稿后可根据意见修订局部内容。',
     tools: ['novel_query_state'],
     roleTemplate: 'role-writer',
+    temperature: 0.9,
   },
   reviewer: {
     type: 'reviewer',
@@ -48,6 +51,7 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     identity: '你是一个严格的审稿编辑，检查章节的一致性、节奏和可读性。',
     tools: ['novel_query_state'],
     roleTemplate: 'role-reviewer',
+    temperature: 0.3,
   },
   memory: {
     type: 'memory',
@@ -64,6 +68,7 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
       'novel_create_world_element', 'novel_update_world_element',
     ],
     roleTemplate: 'role-memory',
+    temperature: 0.2,
   },
 }
 
