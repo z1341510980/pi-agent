@@ -205,6 +205,18 @@ export function ChatWorkspace({
     [activeThreadId, updateSessionMessages],
   )
 
+  // 读取全局默认温度（从 localStorage，由设置页 agent-config 配置）
+  const globalTemperature = useMemo(() => {
+    try {
+      const saved = window.localStorage.getItem('pi-agent.agent-config')
+      if (saved) {
+        const parsed = JSON.parse(saved) as { temperature?: number }
+        if (typeof parsed.temperature === 'number') return parsed.temperature
+      }
+    } catch { /* ignore */ }
+    return undefined
+  }, [])
+
   const {
     run,
     abort,
@@ -215,6 +227,7 @@ export function ChatWorkspace({
     onEvent: handleAguiEvent,
     model: selectedModel ?? undefined,
     agentId: activeAgentId,
+    temperature: globalTemperature,
   })
 
   // ── 从上下文状态获取 contextWindow（由 context:update 实时事件推送，来自 modelRegistry）──

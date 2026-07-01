@@ -26,6 +26,43 @@ import { RhythmController } from './core/rhythm-controller.js'
 /** 同一章节 ai-arrange 并发锁，key 为 `${projectId}:${chapterNumber}` */
 const aiArrangeLocks = new Map<string, Promise<void>>()
 
+/**
+ * 创建 ag-ui 兼容的 SSE 事件发射器
+ *
+ * 将小说编排事件映射为 ag-ui 标准事件，与 chat 的 ag-ui 协议统一技术栈：
+ * - 流开始 → RUN_STARTED
+ * - progress → CUSTOM (name: 'novel:progress')
+ * - checkpoint → CUSTOM (name: 'novel:checkpoint')
+ * - result → CUSTOM (name: 'novel:result') + RUN_FINISHED
+ * - error → RUN_ERROR
+ *
+ * 前端使用与 chat 相同的 parseSseStream 解析 SSE 流，
+ * 通过 CUSTOM 事件的 name 字段区分小说专属事件类型。
+ */
+function createNovelAgUiEmitter(
+  writeRaw: (data: string) => void,
+  threadId: string,
+  runId: string,
+) {
+  const emit = (event: Record<string, unknown>) => {
+    writeRaw(`data: ${JSON.stringify(event)}\n\n`)
+  }
+
+  emit({ type: 'RUN_STARTED', threadId, runId })
+
+  return {
+    threadId,
+    runId,
+    progress: (data: unknown) => emit({ type: 'CUSTOM', name: 'novel:progress', value: data }),
+    checkpoint: (data: unknown) => emit({ type: 'CUSTOM', name: 'novel:checkpoint', value: data }),
+    result: (data: unknown) => {
+      emit({ type: 'CUSTOM', name: 'novel:result', value: data })
+      emit({ type: 'RUN_FINISHED', threadId, runId })
+    },
+    error: (message: string) => emit({ type: 'RUN_ERROR', message }),
+  }
+}
+
 /** 创建小说系统 REST API 路由 */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   const { store, memoryStore, promptManager, promptBuilder, engine, agentConfigStore } = services
@@ -548,13 +585,17 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
+      const emitter = createNovelAgUiEmitter(
+        (data) => reply.raw.write(data),
+        `novel:character:${request.params.projectId}`,
+        randomUUID(),
+      )
+
       try {
         const generated = await services.characterGenerator.generate(
           request.params.projectId,
           input.coreStyle,
-          (event) => {
-            reply.raw.write(`data: ${JSON.stringify({ type: 'progress', data: event })}\n\n`)
-          },
+          (event) => emitter.progress(event),
         )
 
         const character = store.createCharacter({
@@ -565,9 +606,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           ...generated,
         })
 
-        reply.raw.write(`data: ${JSON.stringify({ type: 'result', data: character })}\n\n`)
+        emitter.result(character)
       } catch (err) {
-        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: String(err) })}\n\n`)
+        emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
         reply.raw.end()
@@ -603,19 +644,23 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
+      const emitter = createNovelAgUiEmitter(
+        (data) => reply.raw.write(data),
+        `novel:entity:${request.params.projectId}`,
+        randomUUID(),
+      )
+
       try {
         const generated = await services.entityGenerator.generate(
           request.params.projectId,
           input.entityType,
           input.coreStyle,
-          (event) => {
-            reply.raw.write(`data: ${JSON.stringify({ type: 'progress', data: event })}\n\n`)
-          },
+          (event) => emitter.progress(event),
         )
         // 注意：此处不落库，返回字段供前端 review，前端确认后调 createXxx
-        reply.raw.write(`data: ${JSON.stringify({ type: 'result', data: generated })}\n\n`)
+        emitter.result(generated)
       } catch (err) {
-        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: String(err) })}\n\n`)
+        emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
         reply.raw.end()
@@ -1508,6 +1553,12 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
+      const emitter = createNovelAgUiEmitter(
+        (data) => reply.raw.write(data),
+        `novel:chapter:${projectId}:${chapterNumber}`,
+        randomUUID(),
+      )
+
       // 从 body 读取本章已编排实体约束（模式1手动编排 / 模式2 AI编排产出）
       // 缺省时为 undefined，orchestrator 不注入编排段，保持向后兼容
       const body = (request.body ?? {}) as {
@@ -1527,22 +1578,20 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           parseInt(chapterNumber, 10),
           {
             onCheckpoint: async (checkpoint) => {
-              reply.raw.write(`data: ${JSON.stringify({ type: 'checkpoint', data: checkpoint })}\n\n`)
+              emitter.checkpoint(checkpoint)
               return new Promise((resolve) => {
                 orchestrator.once(`checkpoint:${checkpoint.type}`, (decision: string) => {
                   resolve(decision as any)
                 })
               })
             },
-            onProgress: (event) => {
-              reply.raw.write(`data: ${JSON.stringify({ type: 'progress', data: event })}\n\n`)
-            },
+            onProgress: (event) => emitter.progress(event),
             arrangedEntities,
           },
         )
-        reply.raw.write(`data: ${JSON.stringify({ type: 'result', data: result })}\n\n`)
+        emitter.result(result)
       } catch (err) {
-        reply.raw.write(`data: ${JSON.stringify({ type: 'error', error: String(err) })}\n\n`)
+        emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
         reply.raw.end()
@@ -1600,10 +1649,15 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Origin': request.headers.origin || '*',
         'Access-Control-Allow-Credentials': 'true',
       })
-      const write = (obj: unknown) => {
+      const writeRaw = (data: string) => {
         if (clientDisconnected || reply.raw.writableEnded) return
-        reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`)
+        reply.raw.write(data)
       }
+      const emitter = createNovelAgUiEmitter(
+        writeRaw,
+        `novel:arrange:${projectId}:${chapterNumber}`,
+        randomUUID(),
+      )
       const heartbeat = setInterval(() => {
         if (clientDisconnected || reply.raw.writableEnded) return
         reply.raw.write(': keepalive\n\n')
@@ -1618,14 +1672,14 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         if (!chapter.outline?.trim()) throw new Error('章纲为空，无法 AI 编排')
 
         // 阶段1：AI 编排（生成实体并落库到本章列）
-        write({ type: 'progress', data: { type: 'arrange_start', message: '开始 AI 编排实体...' } })
+        emitter.progress({ type: 'arrange_start', message: '开始 AI 编排实体...' })
         const arrangedEntities = await entityGenerator.generateAndArrange(
           projectId,
           chNum,
           chapter.outline,
-          (evt) => write({ type: 'progress', data: { type: 'arrange_progress', ...evt } }),
+          (evt) => emitter.progress({ type: 'arrange_progress', ...evt }),
         )
-        write({ type: 'progress', data: { type: 'arrange_done', data: arrangedEntities } })
+        emitter.progress({ type: 'arrange_done', data: arrangedEntities })
 
         // 阶段2：同一 SSE 流内衔接 create-flow，注入编排结果
         // TODO: orchestrator 长流程无 abort 支持（需 D-3 配合），客户端断开后若已开始只能让其跑完
@@ -1637,20 +1691,20 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           chNum,
           {
             onCheckpoint: async (checkpoint) => {
-              write({ type: 'checkpoint', data: checkpoint })
+              emitter.checkpoint(checkpoint)
               return new Promise((resolve) => {
                 orchestrator.once(`checkpoint:${checkpoint.type}`, (decision: string) => {
                   resolve(decision as any)
                 })
               })
             },
-            onProgress: (event) => write({ type: 'progress', data: event }),
+            onProgress: (event) => emitter.progress(event),
             arrangedEntities,
           },
         )
-        write({ type: 'result', data: result })
+        emitter.result(result)
       } catch (err) {
-        write({ type: 'error', error: String(err) })
+        emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
         if (!reply.raw.writableEnded) reply.raw.end()

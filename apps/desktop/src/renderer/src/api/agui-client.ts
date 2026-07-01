@@ -19,6 +19,8 @@ export interface RunAgentOptions {
   model?: { provider: string; modelId: string }
   /** 目标 Agent ID，默认 'default' */
   agentId?: string
+  /** 生成温度（0-2），未传则不注入 */
+  temperature?: number
 }
 
 /**
@@ -28,7 +30,7 @@ export interface RunAgentOptions {
  * 后端会发射 AG-UI 事件（RUN_STARTED → TEXT_MESSAGE_* → ... → RUN_FINISHED/RUN_ERROR）
  */
 export async function runAgent(options: RunAgentOptions): Promise<void> {
-  const { threadId, messages, signal, onEvent, onError, onDone, model } = options
+  const { threadId, messages, signal, onEvent, onError, onDone, model, temperature } = options
   const runId = options.runId ?? crypto.randomUUID()
   const agentId = options.agentId ?? 'default'
 
@@ -49,6 +51,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
             content: m.content,
           })),
           model,
+          temperature,
         }),
         signal,
       },
@@ -85,8 +88,11 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
  * SSE 格式：
  *   data: {"type":"RUN_STARTED",...}\n\n
  *   : keepalive\n\n  （注释行，跳过）
+ *
+ * 导出供小说创作流程 hook 复用——chat 与小说统一使用同一个 SSE 解析器，
+ * 通过 BaseEvent.type 与 CustomEvent.name 区分具体事件语义。
  */
-async function parseSseStream(
+export async function parseSseStream(
   body: ReadableStream<Uint8Array>,
   onEvent: (event: BaseEvent) => void,
 ): Promise<void> {

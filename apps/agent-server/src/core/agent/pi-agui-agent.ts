@@ -30,6 +30,8 @@ export interface StreamRunInput {
     provider: string
     modelId: string
   }
+  /** 生成温度（0-2），未传则不注入 */
+  temperature?: number
 }
 
 export interface StreamRunOptions {
@@ -147,6 +149,33 @@ export class PiAgUiAgent {
             message: `模型不可用：${input.model.provider}/${input.model.modelId}`
           } as RunErrorEvent)
           return
+        }
+      }
+
+      // 注入生成参数到 provider payload（max_tokens + temperature）
+      // max_tokens 从 ModelRegistry 自动读取，temperature 由前端传入
+      const inject: Record<string, unknown> = {}
+      if (input.model) {
+        const model = this.modelRegistry.find(input.model.provider, input.model.modelId)
+        if (model?.maxTokens) inject.max_tokens = model.maxTokens
+      } else if (this.modelRegistry?.getAll) {
+        const allModels = this.modelRegistry.getAll() as Array<{ maxTokens?: number }>
+        if (allModels.length > 0 && allModels[0].maxTokens) {
+          inject.max_tokens = allModels[0].maxTokens
+        }
+      }
+      if (input.temperature !== undefined) {
+        inject.temperature = input.temperature
+      }
+      if (Object.keys(inject).length > 0) {
+        const piSession = threadSession.session as {
+          agent?: { onPayload?: (payload: unknown) => unknown }
+        }
+        if (piSession.agent) {
+          piSession.agent.onPayload = (payload: unknown) => ({
+            ...(payload as Record<string, unknown>),
+            ...inject,
+          })
         }
       }
 
