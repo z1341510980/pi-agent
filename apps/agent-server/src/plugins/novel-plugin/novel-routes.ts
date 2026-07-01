@@ -28,7 +28,7 @@ const aiArrangeLocks = new Map<string, Promise<void>>()
 
 /** 创建小说系统 REST API 路由 */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
-  const { store, memoryStore, promptManager, promptBuilder, engine } = services
+  const { store, memoryStore, promptManager, promptBuilder, engine, agentConfigStore } = services
   const routes: RouteDefinition[] = []
 
   // ═══════════════════════════════════════════════════════════════
@@ -1836,6 +1836,46 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const deleted = store.deleteMarker(request.params.id)
       if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `标记不存在: ${request.params.id}`, 404)
       return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 小说 Agent 角色温度配置（全局，不按 project 区分）
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'GET',
+    path: '/agent-config',
+    handler: async (request: any) => {
+      const temperatures = agentConfigStore.getAll()
+      const result = (Object.entries(temperatures) as Array<[string, number]>).map(([agentType, temperature]) => ({
+        agentType,
+        temperature,
+      }))
+      return success(result, request.traceId)
+    },
+  })
+
+  const updateAgentConfigSchema = z.object({
+    items: z.array(z.object({
+      agentType: z.enum(['director', 'writer', 'reviewer', 'memory']),
+      temperature: z.number().min(0).max(2),
+    })),
+  })
+
+  routes.push({
+    method: 'PUT',
+    path: '/agent-config',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateAgentConfigSchema, request, reply)
+      if (!input) return reply
+      agentConfigStore.upsertMany(input.items)
+      const temperatures = agentConfigStore.getAll()
+      const result = (Object.entries(temperatures) as Array<[string, number]>).map(([agentType, temperature]) => ({
+        agentType,
+        temperature,
+      }))
+      return success(result, request.traceId)
     },
   })
 
