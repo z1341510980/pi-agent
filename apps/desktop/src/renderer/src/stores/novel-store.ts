@@ -20,6 +20,7 @@ import type {
   NovelWorldElement,
   NovelEdge,
   NovelMarker,
+  NovelVolume,
 } from '@/api/novel-client'
 
 // ── 节点类型 ──
@@ -43,6 +44,7 @@ export interface NovelState {
   projects: NovelProject[]
   characters: NovelCharacter[]
   chapters: NovelChapter[]
+  volumes: NovelVolume[]
   conflicts: NovelConflict[]
   foreshadows: NovelForeshadow[]
   relationships: NovelRelationship[]
@@ -73,6 +75,9 @@ export interface NovelState {
   // 用 string[] 而非 MatrixEntityKind[] 是因为 NovelSidebar 还有一个 'chapter' 分组
   collapsedGroups: string[]
 
+  // ── 大纲树卷折叠状态（OutlineTree 共享，存已展开的 volumeId）──
+  expandedVolumes: string[]
+
   // ── 矩阵视图滚动信号（NovelSidebar 点章节 → MatrixView 滚动到该列）──
   // ts 用于触发 effect 即使 chapter 相同；不持久化
   matrixScrollTarget: { chapter: number; ts: number } | null
@@ -86,11 +91,13 @@ export interface NovelState {
   setPlayheadChapter: (chapter: number) => void
   setCurrentProject: (projectId: string | null) => void
   toggleCollapsedGroup: (kind: string) => void
+  toggleExpandedVolume: (id: string) => void
   setMatrixScrollTarget: (target: { chapter: number; ts: number } | null) => void
   setProjects: (projects: NovelProject[]) => void
   loadProjectData: (data: {
     characters?: NovelCharacter[]
     chapters?: NovelChapter[]
+    volumes?: NovelVolume[]
     conflicts?: NovelConflict[]
     foreshadows?: NovelForeshadow[]
     relationships?: NovelRelationship[]
@@ -115,6 +122,7 @@ export interface NovelState {
   upsertProject: (project: NovelProject) => void
   upsertCharacter: (character: NovelCharacter) => void
   upsertChapter: (chapter: NovelChapter) => void
+  upsertVolume: (volume: NovelVolume) => void
   upsertConflict: (conflict: NovelConflict) => void
   upsertForeshadow: (foreshadow: NovelForeshadow) => void
   upsertRelationship: (relationship: NovelRelationship) => void
@@ -185,6 +193,7 @@ export const useNovelStore = create<NovelState>()(
       projects: [],
       characters: [],
       chapters: [],
+      volumes: [],
       conflicts: [],
       foreshadows: [],
       relationships: [],
@@ -210,6 +219,8 @@ export const useNovelStore = create<NovelState>()(
 
       collapsedGroups: [],
 
+      expandedVolumes: [],
+
       matrixScrollTarget: null,
 
       loading: false,
@@ -229,6 +240,15 @@ export const useNovelStore = create<NovelState>()(
               : [...state.collapsedGroups, kind],
           }
         }),
+      toggleExpandedVolume: (id) =>
+        set((state) => {
+          const exists = state.expandedVolumes.includes(id)
+          return {
+            expandedVolumes: exists
+              ? state.expandedVolumes.filter((v) => v !== id)
+              : [...state.expandedVolumes, id],
+          }
+        }),
       setMatrixScrollTarget: (target) => set({ matrixScrollTarget: target }),
 
       setProjects: (projects) => set({ projects }),
@@ -237,6 +257,7 @@ export const useNovelStore = create<NovelState>()(
         set((state) => ({
           characters: data.characters ?? state.characters,
           chapters: data.chapters ?? state.chapters,
+          volumes: data.volumes ?? state.volumes,
           conflicts: data.conflicts ?? state.conflicts,
           foreshadows: data.foreshadows ?? state.foreshadows,
           relationships: data.relationships ?? state.relationships,
@@ -261,6 +282,7 @@ export const useNovelStore = create<NovelState>()(
         set({
           characters: [],
           chapters: [],
+          volumes: [],
           conflicts: [],
           foreshadows: [],
           relationships: [],
@@ -280,6 +302,7 @@ export const useNovelStore = create<NovelState>()(
           selectedNodeType: null,
           playheadChapter: 1,
           collapsedGroups: [],
+          expandedVolumes: [],
           matrixScrollTarget: null,
         }),
 
@@ -287,6 +310,7 @@ export const useNovelStore = create<NovelState>()(
       upsertProject: (project) => set((state) => ({ projects: upsertInList(state.projects, project) })),
       upsertCharacter: (character) => set((state) => ({ characters: upsertInList(state.characters, character) })),
       upsertChapter: (chapter) => set((state) => ({ chapters: upsertInList(state.chapters, chapter) })),
+      upsertVolume: (volume) => set((state) => ({ volumes: upsertInList(state.volumes, volume) })),
       upsertConflict: (conflict) => set((state) => ({ conflicts: upsertInList(state.conflicts, conflict) })),
       upsertForeshadow: (foreshadow) => set((state) => ({ foreshadows: upsertInList(state.foreshadows, foreshadow) })),
       upsertRelationship: (relationship) => set((state) => ({ relationships: upsertInList(state.relationships, relationship) })),
@@ -308,6 +332,7 @@ export const useNovelStore = create<NovelState>()(
                 currentProjectId: null,
                 characters: [],
                 chapters: [],
+                volumes: [],
                 conflicts: [],
                 foreshadows: [],
                 relationships: [],
@@ -325,6 +350,7 @@ export const useNovelStore = create<NovelState>()(
                 markers: [],
                 selectedNodeId: null,
                 selectedNodeType: null,
+                expandedVolumes: [],
               }
             : {}),
         })),
@@ -374,6 +400,7 @@ export const useNovelStore = create<NovelState>()(
         projects: state.projects,
         characters: state.characters,
         chapters: state.chapters,
+        volumes: state.volumes,
         conflicts: state.conflicts,
         foreshadows: state.foreshadows,
         relationships: state.relationships,
@@ -393,6 +420,7 @@ export const useNovelStore = create<NovelState>()(
         selectedNodeType: state.selectedNodeType,
         viewMode: state.viewMode,
         collapsedGroups: state.collapsedGroups,
+        expandedVolumes: state.expandedVolumes,
       }),
     },
   ),

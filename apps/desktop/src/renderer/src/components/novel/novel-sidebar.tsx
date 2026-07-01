@@ -4,7 +4,6 @@ import {
   BookOpen,
   Plus,
   Users,
-  FileText,
   Lightbulb,
   Swords,
   ChevronRight,
@@ -30,7 +29,6 @@ import { useNovelStore, type NovelNodeType } from '@/stores/novel-store'
 import {
   listProjects,
   createProject,
-  createChapter,
   createConflict,
   createForeshadow,
   createFaction,
@@ -43,8 +41,10 @@ import {
   deleteFaction,
   deleteLocation,
   deleteWorldElement,
+  type NovelProject,
   type NovelCharacter,
   type NovelChapter,
+  type NovelVolume,
   type NovelConflict,
   type NovelForeshadow,
   type NovelCharacterHistory,
@@ -53,6 +53,7 @@ import {
   type NovelWorldElement,
 } from '@/api/novel-client'
 import { CharacterCreateDialog } from './character-create-dialog'
+import { OutlineTree } from './outline-tree'
 
 // ── 通用节点类型（用于拖拽） ──
 
@@ -78,6 +79,7 @@ export function NovelSidebar(): ReactElement {
   const upsertProject = useNovelStore((s) => s.upsertProject)
   const characters = useNovelStore((s) => s.characters)
   const chapters = useNovelStore((s) => s.chapters)
+  const volumes = useNovelStore((s) => s.volumes)
   const conflicts = useNovelStore((s) => s.conflicts)
   const foreshadows = useNovelStore((s) => s.foreshadows)
   const factions = useNovelStore((s) => s.factions)
@@ -90,6 +92,16 @@ export function NovelSidebar(): ReactElement {
   const [form, setForm] = useState({ title: '', genre: '', synopsis: '', targetWords: '300000' })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // 大纲树编排入口占位（D-3 接入实际创作流程）
+  const handleManualArrange = useCallback((_chapter: NovelChapter) => {
+    // D-3 将接入手动编排流程
+    console.log('[NovelSidebar] 手动编排（D-3 待接入）:', _chapter.id)
+  }, [])
+  const handleAiArrange = useCallback((_chapter: NovelChapter) => {
+    // D-4 将接入 AI 编排流程
+    console.log('[NovelSidebar] AI编排（D-4 待接入）:', _chapter.id)
+  }, [])
 
   // 拉取项目列表
   useQuery({
@@ -219,8 +231,10 @@ export function NovelSidebar(): ReactElement {
               <div className="mt-2 pt-2 border-t border-border">
                 <ProjectTree
                   projectId={currentProject.id}
+                  project={currentProject}
                   characters={characters}
                   chapters={chapters}
+                  volumes={volumes}
                   conflicts={conflicts}
                   foreshadows={foreshadows}
                   factions={factions}
@@ -228,6 +242,8 @@ export function NovelSidebar(): ReactElement {
                   worldElements={worldElements}
                   onSelectEntity={handleSelectEntity}
                   onOpenCharacterDialog={() => setCharacterDialogOpen(true)}
+                  onManualArrange={handleManualArrange}
+                  onAiArrange={handleAiArrange}
                 />
               </div>
             )}
@@ -307,8 +323,10 @@ export function NovelSidebar(): ReactElement {
 
 interface ProjectTreeProps {
   projectId: string
+  project: NovelProject
   characters: NovelCharacter[]
   chapters: NovelChapter[]
+  volumes: NovelVolume[]
   conflicts: NovelConflict[]
   foreshadows: NovelForeshadow[]
   factions: NovelFaction[]
@@ -316,12 +334,16 @@ interface ProjectTreeProps {
   worldElements: NovelWorldElement[]
   onSelectEntity: (id: string, type: NovelNodeType) => void
   onOpenCharacterDialog: () => void
+  onManualArrange: (chapter: NovelChapter) => void
+  onAiArrange: (chapter: NovelChapter) => void
 }
 
 function ProjectTree({
   projectId,
+  project,
   characters,
   chapters,
+  volumes,
   conflicts,
   foreshadows,
   factions,
@@ -329,6 +351,8 @@ function ProjectTree({
   worldElements,
   onSelectEntity,
   onOpenCharacterDialog,
+  onManualArrange,
+  onAiArrange,
 }: ProjectTreeProps): ReactElement {
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
   const upsertConflict = useNovelStore((s) => s.upsertConflict)
@@ -343,44 +367,10 @@ function ProjectTree({
   const removeFaction = useNovelStore((s) => s.removeFaction)
   const removeLocation = useNovelStore((s) => s.removeLocation)
   const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
-  const characterHistory = useNovelStore((s) => s.characterHistory)
   // ── C-3 与 MatrixView 共享的折叠 / 选中 / 章节滚动信号 ──
   const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
   const collapsedGroups = useNovelStore((s) => s.collapsedGroups)
   const toggleCollapsedGroup = useNovelStore((s) => s.toggleCollapsedGroup)
-  const setMatrixScrollTarget = useNovelStore((s) => s.setMatrixScrollTarget)
-  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
-
-  // 点击章节：选中 + 滚动矩阵到该列 + 设置 playhead
-  const handleSelectChapter = useCallback((chapter: NovelChapter) => {
-    onSelectEntity(chapter.id, 'chapter')
-    setPlayheadChapter(chapter.chapterNumber)
-    setMatrixScrollTarget({ chapter: chapter.chapterNumber, ts: Date.now() })
-  }, [onSelectEntity, setPlayheadChapter, setMatrixScrollTarget])
-
-  const sortedChapters = useMemo(
-    () => [...chapters].sort((a, b) => a.chapterNumber - b.chapterNumber),
-    [chapters],
-  )
-
-  const handleAddChapter = useCallback(async () => {
-    const nextNumber = chapters.length > 0
-      ? Math.max(...chapters.map((c) => c.chapterNumber)) + 1
-      : 1
-    try {
-      const chapter = await createChapter(projectId, {
-        chapterNumber: nextNumber,
-        narrativeTask: {
-          description: '推进主线剧情',
-          type: 'advance_mainline',
-          priority: 'medium',
-        },
-      })
-      upsertChapter(chapter)
-    } catch (err) {
-      console.error('[NovelSidebar] 创建章节失败:', err)
-    }
-  }, [projectId, chapters, upsertChapter])
 
   const handleAddConflict = useCallback(async () => {
     try {
@@ -528,37 +518,25 @@ function ProjectTree({
         )}
       </CollapsibleGroup>
 
-      {/* 章节集合 */}
-      <CollapsibleGroup
-        kind="chapter"
-        icon={FileText}
-        label="章节集合"
-        count={chapters.length}
-        accent="text-emerald-500"
-        collapsed={collapsedGroups.includes('chapter')}
-        onToggle={toggleCollapsedGroup}
-        onAdd={handleAddChapter}
-        addLabel="新建章节"
-      >
-        {sortedChapters.length === 0 ? (
-          <EmptyHint text="暂无章节" />
-        ) : (
-          sortedChapters.map((chapter) => (
-            <ChapterItem
-              key={chapter.id}
-              chapter={chapter}
-              characters={characters}
-              conflicts={conflicts}
-              foreshadows={foreshadows}
-              characterHistory={characterHistory}
-              selected={selectedNodeId === chapter.id}
-              onSelectEntity={onSelectEntity}
-              onSelectChapter={handleSelectChapter}
-              onDelete={() => handleDelete('chapter', chapter.id, `第 ${chapter.chapterNumber} 章`)}
-            />
-          ))
-        )}
-      </CollapsibleGroup>
+      {/* 大纲树（全书大纲 / 卷 / 章）── 替换原"章节集合"分组 */}
+      <div className="rounded-md">
+        <div className="flex items-center gap-1.5 px-1.5 py-1">
+          <BookOpen className="size-3.5 text-emerald-500 shrink-0" />
+          <span className="text-xs font-medium text-text">大纲树</span>
+          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px]">
+            {chapters.length}
+          </Badge>
+        </div>
+        <div className="ml-1 pl-1 border-l border-border/60 mt-0.5 space-y-0.5">
+          <OutlineTree
+            project={project}
+            volumes={volumes}
+            chapters={chapters}
+            onManualArrange={onManualArrange}
+            onAiArrange={onAiArrange}
+          />
+        </div>
+      </div>
 
       {/* 伏笔集合 */}
       <CollapsibleGroup

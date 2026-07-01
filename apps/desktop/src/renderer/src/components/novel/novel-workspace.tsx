@@ -27,6 +27,7 @@ import {
   listLocations,
   listWorldElements,
   listEdges,
+  listVolumes,
   createChapter,
   completeChapter,
 } from '@/api/novel-client'
@@ -150,6 +151,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         locs,
         wel,
         eds,
+        vols,
       ] = await Promise.all([
         listCharacters(currentProjectId),
         listChapters(currentProjectId),
@@ -165,6 +167,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         listLocations(currentProjectId),
         listWorldElements(currentProjectId),
         listEdges(currentProjectId),
+        listVolumes(currentProjectId),
       ])
       return {
         characters: chars,
@@ -181,6 +184,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         locations: locs,
         worldElements: wel,
         edges: eds,
+        volumes: vols,
       }
     },
     enabled: !!currentProjectId,
