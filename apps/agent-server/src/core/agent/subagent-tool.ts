@@ -39,6 +39,8 @@ export interface AgentConfig {
   identity?: string
   /** 人格模板（personality.md 内容） */
   personality?: string
+  /** LLM 温度（0-2，未配置则使用 SDK 默认） */
+  temperature?: number
 }
 
 /** subagent 执行结果 */

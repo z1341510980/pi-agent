@@ -33,6 +33,11 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);`,
   },
   {
+    // 为 agents 表补 temperature 列（兼容新旧库）
+    id: '002b_add_agents_temperature',
+    sql: `ALTER TABLE agents ADD COLUMN temperature REAL;`,
+  },
+  {
     id: '003_create_teams',
     sql: `CREATE TABLE IF NOT EXISTS teams (
       id                TEXT PRIMARY KEY,
