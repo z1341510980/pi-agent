@@ -215,6 +215,9 @@ export function MatrixView({
     <div
       ref={scrollContainerRef}
       className="overflow-x-auto overflow-y-auto h-full isolate"
+      onScroll={(e) => {
+        e.currentTarget.style.setProperty('--scroll-x', `${e.currentTarget.scrollLeft}px`)
+      }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -407,11 +410,12 @@ function GroupBlock({
         }}
       >
         <div
-          className="sticky left-0 z-30 flex items-center gap-1.5 px-2.5 cursor-pointer border-r border-border shrink-0 transition-colors"
+          className="relative z-30 flex items-center gap-1.5 px-2.5 cursor-pointer border-r border-border shrink-0 transition-colors"
           style={{
             width: `${SIDEBAR_W}px`,
             backgroundColor: 'var(--color-surface-1)',
             backgroundImage: `linear-gradient(rgba(${colorRgb}, 0.08), rgba(${colorRgb}, 0.08))`,
+            transform: 'translateX(var(--scroll-x, 0px))',
           }}
           onClick={onToggleCollapse}
           data-tip={collapsed ? `展开${group.name}` : `折叠${group.name}`}
