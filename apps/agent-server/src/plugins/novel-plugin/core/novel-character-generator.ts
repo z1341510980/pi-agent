@@ -154,12 +154,58 @@ export class NovelCharacterGenerator {
    * 解析失败时回退到模板角色（buildTemplateCharacter）。
    */
   private parseCharacterJson(text: string, coreStyle: string): GeneratedCharacter {
-    // 提取 ```json ... ``` 代码块（如有）
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-    const jsonStr = jsonMatch ? jsonMatch[1] : text
+    // 提取 JSON：先尝试完整代码块，再处理截断的未闭合代码块
+    let jsonStr: string
+    const closedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (closedMatch) {
+      jsonStr = closedMatch[1].trim()
+    } else {
+      const unclosedMatch = text.match(/```(?:json)?\s*([\s\S]*)/)
+      jsonStr = unclosedMatch ? unclosedMatch[1].trim() : text.trim()
+    }
 
+    let parsed: Record<string, unknown> | null = null
+
+    // 1. 直接解析
     try {
-      const parsed = JSON.parse(jsonStr.trim()) as Record<string, unknown>
+      parsed = JSON.parse(jsonStr) as Record<string, unknown>
+    } catch {
+      // 继续
+    }
+
+    // 2. 截尾补全：逐步回退，尝试在合理位置截断后补 }
+    if (!parsed) {
+      let truncated = jsonStr
+      for (let i = 0; i < 5; i++) {
+        const lastValid = Math.max(
+          truncated.lastIndexOf(','),
+          truncated.lastIndexOf('"'),
+          truncated.lastIndexOf('}'),
+          truncated.lastIndexOf(']'),
+        )
+        if (lastValid <= 0) break
+        truncated = truncated.slice(0, lastValid + 1)
+        truncated = truncated.replace(/,\s*$/, '')
+        const opens = (truncated.match(/[{\[]/g) ?? []).length
+        const closes = (truncated.match(/[}\]]/g) ?? []).length
+        const needClose = opens - closes
+        if (needClose <= 0) continue
+        let repaired = truncated
+        for (let j = 0; j < needClose; j++) repaired += '}'
+        try {
+          parsed = JSON.parse(repaired) as Record<string, unknown>
+          this.context.logger.info(
+            { textPreview: text.slice(0, 100) },
+            '角色 JSON 截断补全成功',
+          )
+          break
+        } catch {
+          // 继续回退
+        }
+      }
+    }
+
+    if (parsed) {
       return {
         name: ensureString(parsed.name, '未命名角色'),
         description: ensureString(parsed.description, ''),
@@ -173,13 +219,13 @@ export class NovelCharacterGenerator {
         arcStage: ensureString(parsed.arcStage, 'setup'),
         speechStyle: ensureString(parsed.speechStyle, ''),
       }
-    } catch (err) {
-      this.context.logger.warn(
-        { err, textPreview: text.slice(0, 200) },
-        '解析 LLM 返回的角色 JSON 失败，回退到模板角色',
-      )
-      return this.buildTemplateCharacter(coreStyle)
     }
+
+    this.context.logger.warn(
+      { textPreview: text.slice(0, 200) },
+      '解析 LLM 返回的角色 JSON 失败（可能被截断），回退到模板角色',
+    )
+    return this.buildTemplateCharacter(coreStyle)
   }
 
   /**

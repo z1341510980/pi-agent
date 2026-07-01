@@ -110,10 +110,77 @@ function ensureNumber(value: unknown, defaultValue: number, min?: number, max?: 
   return r
 }
 
-/** 提取 ```json ... ``` 代码块 */
+/**
+ * 提取 ```json ... ``` 代码块内容。
+ * 处理 LLM 输出被 token 截断导致代码块未闭合的情况：
+ * 1. 先尝试匹配完整闭合的代码块
+ * 2. 若无闭合标记，提取 ```json 之后的所有内容（截断场景）
+ * 3. 无代码块标记时返回原文
+ */
 function extractJsonBlock(text: string): string {
-  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  return m ? m[1] : text
+  // 完整闭合的代码块
+  const closed = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (closed) return closed[1].trim()
+
+  // 未闭合的代码块（token 截断）：提取 ```json 之后的所有内容
+  const unclosed = text.match(/```(?:json)?\s*([\s\S]*)/)
+  if (unclosed) return unclosed[1].trim()
+
+  return text.trim()
+}
+
+/**
+ * 尝试解析 JSON，处理 LLM 输出截断导致的 JSON 不完整。
+ * 策略：
+ * 1. 直接 JSON.parse
+ * 2. 失败则尝试截尾补全：找到最后一个完整的键值对结尾（逗号或引号后），截断后补 }
+ * 3. 仍然失败返回 null
+ */
+function repairAndParseJson(text: string): Record<string, unknown> | null {
+  const jsonStr = extractJsonBlock(text)
+
+  // 1. 直接解析
+  try {
+    return JSON.parse(jsonStr) as Record<string, unknown>
+  } catch {
+    // 继续
+  }
+
+  // 2. 截尾补全：逐步回退，尝试在合理位置截断后补 }
+  // 移除末尾不完整的部分（非闭合的引号、逗号、冒号等）
+  let truncated = jsonStr
+  for (let i = 0; i < 5; i++) {
+    // 尝试在最后一个逗号、引号、} 或 ] 后截断
+    const lastValid = Math.max(
+      truncated.lastIndexOf(','),
+      truncated.lastIndexOf('"'),
+      truncated.lastIndexOf('}'),
+      truncated.lastIndexOf(']'),
+    )
+    if (lastValid <= 0) break
+    truncated = truncated.slice(0, lastValid + 1)
+    // 移除末尾多余的逗号
+    truncated = truncated.replace(/,\s*$/, '')
+    // 统计未闭合的括号
+    const opens = (truncated.match(/[{\[]/g) ?? []).length
+    const closes = (truncated.match(/[}\]]/g) ?? []).length
+    const needClose = opens - closes
+    if (needClose <= 0) continue
+    // 补全闭合括号
+    let repaired = truncated
+    // 先补 ] 再补 }（数组在对象内时需要先闭数组）
+    const closeChars: string[] = []
+    // 简单策略：按需补 }
+    for (let j = 0; j < needClose; j++) closeChars.push('}')
+    repaired += closeChars.join('')
+    try {
+      return JSON.parse(repaired) as Record<string, unknown>
+    } catch {
+      // 继续回退
+    }
+  }
+
+  return null
 }
 
 // ── 主类 ──
@@ -358,13 +425,12 @@ export class NovelEntityGenerator {
       })
       // 优先使用流式累积结果，回退到 promptStream 返回值
       const text = result || full
-      let json: Record<string, unknown>
-      try {
-        json = JSON.parse(extractJsonBlock(text)) as Record<string, unknown>
-      } catch (err) {
+      let json: Record<string, unknown> | null
+      json = repairAndParseJson(text)
+      if (!json) {
         this.context.logger.warn(
-          { err, rawTextPreview: text.slice(0, 200) },
-          'planEntitiesFromOutline JSON 解析失败，使用空 plan 兜底',
+          { rawTextPreview: text.slice(0, 200) },
+          'planEntitiesFromOutline JSON 解析失败（可能被截断），使用空 plan 兜底',
         )
         return { characters: [], conflicts: [], foreshadows: [] }
       }
@@ -481,27 +547,33 @@ export class NovelEntityGenerator {
   }
 
   private parseResult(kind: EntityKind, text: string, coreStyle: string): GeneratedEntity['data'] {
-    const jsonStr = extractJsonBlock(text)
-    try {
-      const parsed = JSON.parse(jsonStr.trim()) as Record<string, unknown>
-      switch (kind) {
-        case 'conflict':
-          return this.parseConflict(parsed)
-        case 'foreshadow':
-          return this.parseForeshadow(parsed)
-        case 'faction':
-          return this.parseFaction(parsed)
-        case 'location':
-          return this.parseLocation(parsed)
-        case 'world_element':
-          return this.parseWorldElement(parsed)
-        default:
-          throw new Error(`Unsupported kind: ${kind}`)
+    const parsed = repairAndParseJson(text)
+    if (parsed) {
+      try {
+        switch (kind) {
+          case 'conflict':
+            return this.parseConflict(parsed)
+          case 'foreshadow':
+            return this.parseForeshadow(parsed)
+          case 'faction':
+            return this.parseFaction(parsed)
+          case 'location':
+            return this.parseLocation(parsed)
+          case 'world_element':
+            return this.parseWorldElement(parsed)
+          default:
+            throw new Error(`Unsupported kind: ${kind}`)
+        }
+      } catch (err) {
+        this.context.logger.warn(
+          { err, kind, textPreview: text.slice(0, 200) },
+          `解析 LLM 返回的 ${this.kindLabel(kind)} 字段失败，回退到模板`,
+        )
       }
-    } catch (err) {
+    } else {
       this.context.logger.warn(
-        { err, kind, textPreview: text.slice(0, 200) },
-        `解析 LLM 返回的 ${this.kindLabel(kind)} JSON 失败，回退到模板`,
+        { kind, textPreview: text.slice(0, 200) },
+        `解析 LLM 返回的 ${this.kindLabel(kind)} JSON 失败（可能被截断），回退到模板`,
       )
       return this.buildTemplate(kind, coreStyle) as GeneratedEntity['data']
     }
