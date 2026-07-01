@@ -84,6 +84,21 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
         }
       }
 
+      // 如果目标 Agent 配置了温度，注入 onPayload 钩子修改 provider 请求 payload
+      // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
+      if (agentConfig.temperature !== undefined) {
+        const t = agentConfig.temperature
+        const piSession = threadSession.session as {
+          agent?: { onPayload?: (payload: unknown) => unknown }
+        }
+        if (piSession.agent) {
+          piSession.agent.onPayload = (payload: unknown) => ({
+            ...(payload as Record<string, unknown>),
+            temperature: t,
+          })
+        }
+      }
+
       // 检查取消信号
       if (dispatchOptions.signal?.aborted) {
         throw new Error('子任务在执行前已被取消')
