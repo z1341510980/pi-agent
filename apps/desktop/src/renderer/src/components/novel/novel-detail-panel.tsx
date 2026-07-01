@@ -385,43 +385,43 @@ function DebouncedOutlineField({
   const [draft, setDraft] = useState(value)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isSavingRef = useRef(false)
+  // 用 ref 存最新的 value 和 onSave，避免闭包陷阱
+  const valueRef = useRef(value)
+  const onSaveRef = useRef(onSave)
+  valueRef.current = value
+  onSaveRef.current = onSave
 
-  // value 变化时同步 draft，但保存期间不覆盖（避免闭包陷阱：用户继续输入被回写覆盖）
+  // value 变化时同步 draft，但保存期间不覆盖
   useEffect(() => {
     if (!isSavingRef.current) setDraft(value)
   }, [value])
 
-  // 卸载时清理定时器，避免回调命中已卸载组件
+  // 卸载时清理定时器
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
     }
   }, [])
 
-  const doSave = useCallback(
-    async (text: string) => {
-      if (text.trim() === value.trim()) return
-      isSavingRef.current = true
-      try {
-        await onSave(text)
-      } catch (err) {
-        console.error('[DebouncedOutlineField] 保存失败:', err)
-      } finally {
-        isSavingRef.current = false
-      }
-    },
-    [value, onSave],
-  )
+  // doSave 直接从 ref 读取，不依赖闭包变量，无需 useCallback
+  const doSave = async (text: string) => {
+    if (text.trim() === valueRef.current.trim()) return
+    isSavingRef.current = true
+    try {
+      await onSaveRef.current(text)
+    } catch (err) {
+      console.error('[DebouncedOutlineField] 保存失败:', err)
+    } finally {
+      isSavingRef.current = false
+    }
+  }
 
-  const scheduleSave = useCallback(
-    (text: string) => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-      timerRef.current = setTimeout(() => {
-        void doSave(text)
-      }, 1500)
-    },
-    [doSave],
-  )
+  const scheduleSave = (text: string) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      void doSave(text)
+    }, 1500)
+  }
 
   return (
     <FieldRow label={label}>
@@ -994,7 +994,7 @@ function CharacterHistorySection({ characterId }: { characterId: string }): Reac
         <div className="flex items-center gap-1.5">
           <History className="size-3.5 text-muted-foreground" />
           <span className="text-xs font-medium text-text">状态变更历史</span>
-          <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+          <Badge variant="secondary" className="h-4 px-1 text-[10px] tabular-nums">
             {history.length}
           </Badge>
         </div>
@@ -1156,7 +1156,7 @@ function ManualHistoryDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>手动记录变更</DialogTitle>
-          <DialogDescription>记录角色动态状态的一次变更</DialogDescription>
+          <DialogDescription className="text-pretty">记录角色动态状态的一次变更</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
@@ -1263,7 +1263,7 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
       />
 
       <SectionHeader title="元信息" />
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
+      <div className="flex items-center justify-between text-xs text-muted-foreground tabular-nums">
         <span>第 {entity.chapterNumber} 章 · 卷 {entity.volume}</span>
         <span>{entity.wordCount} 字</span>
       </div>
