@@ -1,10 +1,6 @@
-import { useCallback, type ReactElement } from 'react'
+import { useCallback, type ChangeEvent, type ReactElement } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import {
-  UserPlus,
-  FilePlus,
-  Swords,
-  Lightbulb,
   Maximize,
   ZoomIn,
   ZoomOut,
@@ -16,18 +12,28 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
 import {
-  createCharacter,
-  createChapter,
-  createConflict,
-  createForeshadow,
-  deleteProject,
   deleteCharacter,
-  deleteChapter,
   deleteConflict,
   deleteForeshadow,
   deleteNodePosition,
+  type NovelEdgeType,
   type NovelNodeTypeName,
 } from '@/api/novel-client'
+
+// ── 手动连线可选的关系类型 ──
+// 注：自动边类型（appearance/involvement/member/hierarchy/association/foreshadow/base）
+// 由布局函数按实体语义派生，不在此处选择。此处仅列出用户在画布上手动拉线时
+// 可能用到的语义化关系类型。
+const RELATION_TYPES: { value: NovelEdgeType; label: string }[] = [
+  { value: 'mentor', label: '师徒' },
+  { value: 'kinship', label: '亲属' },
+  { value: 'rivalry', label: '敌对' },
+  { value: 'alliance', label: '同盟' },
+  { value: 'subordinate', label: '隶属' },
+  { value: 'trigger', label: '触发' },
+  { value: 'causality', label: '因果' },
+  { value: 'relationship', label: '关系' },
+]
 
 export interface NovelToolbarProps {
   /** 触发重新布局 */
@@ -36,111 +42,37 @@ export interface NovelToolbarProps {
   onExport?: () => void
   onImport?: () => void
 }
-
-interface AddButtonProps {
-  icon: typeof UserPlus
-  label: string
-  onClick: () => void
-  disabled?: boolean
-}
-
-function AddButton({ icon: Icon, label, onClick, disabled }: AddButtonProps): ReactElement {
-  return (
-    <Button size="sm" variant="ghost" onClick={onClick} disabled={disabled} title={`添加${label}`}>
-      <Icon className="size-3.5" />
-      <span className="hidden sm:inline">{label}</span>
-    </Button>
-  )
-}
-
 export function NovelToolbar({
   onRelayout,
   onExport,
   onImport,
 }: NovelToolbarProps): ReactElement {
   const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const upsertCharacter = useNovelStore((s) => s.upsertCharacter)
-  const upsertChapter = useNovelStore((s) => s.upsertChapter)
-  const upsertConflict = useNovelStore((s) => s.upsertConflict)
-  const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
-  const chapters = useNovelStore((s) => s.chapters)
   const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
   const selectedNodeType = useNovelStore((s) => s.selectedNodeType)
   const clearSelection = useNovelStore((s) => s.clearSelection)
-  const removeProject = useNovelStore((s) => s.removeProject)
   const removeCharacter = useNovelStore((s) => s.removeCharacter)
-  const removeChapter = useNovelStore((s) => s.removeChapter)
   const removeConflict = useNovelStore((s) => s.removeConflict)
   const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
   const removeNodePosition = useNovelStore((s) => s.removeNodePosition)
+  const canvasEdgeType = useNovelStore((s) => s.canvasEdgeType)
+  const setCanvasEdgeType = useNovelStore((s) => s.setCanvasEdgeType)
 
   const { zoomIn, zoomOut, fitView } = useReactFlow()
 
   const noProject = !currentProjectId
   const hasSelection = !!selectedNodeId && !!selectedNodeType
 
-  const handleAddCharacter = useCallback(async () => {
-    if (!currentProjectId) return
-    try {
-      const character = await createCharacter(currentProjectId, {
-        name: `新角色 ${Date.now().toString().slice(-4)}`,
-      })
-      upsertCharacter(character)
-    } catch {
-      // 静默失败（可在通知中心提示）
-    }
-  }, [currentProjectId, upsertCharacter])
-
-  const handleAddChapter = useCallback(async () => {
-    if (!currentProjectId) return
-    const nextNumber = chapters.length > 0
-      ? Math.max(...chapters.map((c) => c.chapterNumber)) + 1
-      : 1
-    try {
-      const chapter = await createChapter(currentProjectId, {
-        chapterNumber: nextNumber,
-        narrativeTask: {
-          description: '推进主线剧情',
-          type: 'advance_mainline',
-          priority: 'medium',
-        },
-      })
-      upsertChapter(chapter)
-    } catch {
-      // 静默失败
-    }
-  }, [currentProjectId, chapters, upsertChapter])
-
-  const handleAddConflict = useCallback(async () => {
-    if (!currentProjectId) return
-    try {
-      const conflict = await createConflict(currentProjectId, {
-        description: '新的冲突',
-        type: 'interest',
-        intensity: 5,
-        stage: 'latent',
-      })
-      upsertConflict(conflict)
-    } catch {
-      // 静默失败
-    }
-  }, [currentProjectId, upsertConflict])
-
-  const handleAddForeshadow = useCallback(async () => {
-    if (!currentProjectId) return
-    try {
-      const foreshadow = await createForeshadow(currentProjectId, {
-        description: '新的伏笔',
-        category: '事件',
-        status: 'planned',
-      })
-      upsertForeshadow(foreshadow)
-    } catch {
-      // 静默失败
-    }
-  }, [currentProjectId, upsertForeshadow])
+  const handleEdgeTypeChange = useCallback(
+    (e: ChangeEvent<HTMLSelectElement>) => {
+      setCanvasEdgeType(e.target.value as NovelEdgeType)
+    },
+    [setCanvasEdgeType],
+  )
 
   // ── 删除当前选中节点 ──
+  // 画布已收敛为纯实体关系图，不再渲染 project/chapter 节点，
+  // 因此删除分支仅保留实体类型。
   const handleDeleteSelected = useCallback(async () => {
     if (!currentProjectId || !selectedNodeId || !selectedNodeType) return
     // group 节点不对应持久化实体
@@ -148,17 +80,9 @@ export function NovelToolbar({
     if (!window.confirm('确认删除此节点？相关数据将被永久移除。')) return
     try {
       switch (selectedNodeType) {
-        case 'project':
-          await deleteProject(selectedNodeId)
-          removeProject(selectedNodeId)
-          break
         case 'character':
           await deleteCharacter(selectedNodeId)
           removeCharacter(selectedNodeId)
-          break
-        case 'chapter':
-          await deleteChapter(selectedNodeId)
-          removeChapter(selectedNodeId)
           break
         case 'conflict':
           await deleteConflict(selectedNodeId)
@@ -182,16 +106,29 @@ export function NovelToolbar({
     } catch {
       // 静默失败
     }
-  }, [currentProjectId, selectedNodeId, selectedNodeType, removeProject, removeCharacter, removeChapter, removeConflict, removeForeshadow, removeNodePosition, clearSelection])
+  }, [currentProjectId, selectedNodeId, selectedNodeType, removeCharacter, removeConflict, removeForeshadow, removeNodePosition, clearSelection])
 
   return (
     <div className="flex items-center gap-1 px-3 h-11 border-b border-border bg-surface-1 shrink-0">
-      {/* 添加实体 */}
-      <div className="flex items-center gap-0.5">
-        <AddButton icon={UserPlus} label="角色" onClick={handleAddCharacter} disabled={noProject} />
-        <AddButton icon={FilePlus} label="章节" onClick={handleAddChapter} disabled={noProject} />
-        <AddButton icon={Swords} label="冲突" onClick={handleAddConflict} disabled={noProject} />
-        <AddButton icon={Lightbulb} label="伏笔" onClick={handleAddForeshadow} disabled={noProject} />
+      {/* 关系类型选择器：决定手动连线的边类型 */}
+      <div className="flex items-center gap-1">
+        <label htmlFor="novel-canvas-edge-type" className="text-xs text-text-secondary">
+          关系类型
+        </label>
+        <select
+          id="novel-canvas-edge-type"
+          value={canvasEdgeType}
+          onChange={handleEdgeTypeChange}
+          disabled={noProject}
+          className="h-7 rounded border border-border bg-surface-2 px-1.5 text-xs text-text-primary disabled:opacity-50"
+          title="选择手动连线的关系类型"
+        >
+          {RELATION_TYPES.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />

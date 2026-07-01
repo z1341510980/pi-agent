@@ -422,10 +422,18 @@ export interface NovelNodePosition {
  * - member        势力 ↔ 角色（成员/首领）
  * - hierarchy     地点 ↔ 地点 / 世界观要素 ↔ 世界观要素（层级）
  * - association   其他关联（兜底）
+ * - mentor        师徒
+ * - kinship       亲属
+ * - rivalry       敌对
+ * - alliance      同盟
+ * - subordinate   隶属
+ * - trigger       触发
+ * - causality     因果
  */
 export type NovelEdgeType =
   | 'appearance' | 'relationship' | 'involvement' | 'foreshadow'
   | 'base' | 'member' | 'hierarchy' | 'association'
+  | 'mentor' | 'kinship' | 'rivalry' | 'alliance' | 'subordinate' | 'trigger' | 'causality'
 
 export interface NovelEdge {
   id: string

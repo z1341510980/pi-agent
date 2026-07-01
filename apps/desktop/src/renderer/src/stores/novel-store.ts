@@ -19,6 +19,7 @@ import type {
   NovelLocation,
   NovelWorldElement,
   NovelEdge,
+  NovelEdgeType,
   NovelMarker,
   NovelVolume,
 } from '@/api/novel-client'
@@ -68,6 +69,9 @@ export interface NovelState {
   // ── 视图模式（矩阵/画布）──
   viewMode: 'matrix' | 'canvas'
 
+  // ── 画布连线关系类型（工具栏选择，画布 onConnect 读取）──
+  canvasEdgeType: NovelEdgeType
+
   // ── 播放头所在章节（跨组件同步，不持久化，每次进项目从 1 开始）──
   playheadChapter: number
 
@@ -91,6 +95,7 @@ export interface NovelState {
 
   // ── Actions ──
   setViewMode: (mode: 'matrix' | 'canvas') => void
+  setCanvasEdgeType: (edgeType: NovelEdgeType) => void
   setPlayheadChapter: (chapter: number) => void
   setCreationMode: (mode: 'manual' | 'ai-arrange' | null) => void
   setCurrentProject: (projectId: string | null) => void
@@ -219,6 +224,8 @@ export const useNovelStore = create<NovelState>()(
 
       viewMode: 'matrix',
 
+      canvasEdgeType: 'rivalry',
+
       playheadChapter: 1,
 
       creationMode: null,
@@ -234,6 +241,7 @@ export const useNovelStore = create<NovelState>()(
 
       // ── Actions ──
       setViewMode: (mode) => set({ viewMode: mode }),
+      setCanvasEdgeType: (edgeType) => set({ canvasEdgeType: edgeType }),
       setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
       setCreationMode: (mode) => set({ creationMode: mode }),
       setCurrentProject: (projectId) =>
@@ -426,6 +434,7 @@ export const useNovelStore = create<NovelState>()(
         selectedNodeId: state.selectedNodeId,
         selectedNodeType: state.selectedNodeType,
         viewMode: state.viewMode,
+        canvasEdgeType: state.canvasEdgeType,
         collapsedGroups: state.collapsedGroups,
         expandedVolumes: state.expandedVolumes,
       }),

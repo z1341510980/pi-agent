@@ -465,6 +465,7 @@ export interface NodePositionInput {
 export type NovelEdgeType =
   | 'appearance' | 'relationship' | 'involvement' | 'foreshadow'
   | 'base' | 'member' | 'hierarchy' | 'association'
+  | 'mentor' | 'kinship' | 'rivalry' | 'alliance' | 'subordinate' | 'trigger' | 'causality'
 
 export interface NovelEdge {
   id: string
