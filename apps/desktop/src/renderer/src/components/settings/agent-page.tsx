@@ -296,7 +296,7 @@ export function AgentPage(): ReactElement {
           </div>
           <div className="flex items-center gap-2">
             {limiter && (
-              <span className="text-xs text-muted-foreground font-mono">
+              <span className="tabular-nums text-xs text-muted-foreground font-mono">
                 并发 {limiter.activeCount}/{limiter.totalCount} · 队列 {limiter.queueLength}
               </span>
             )}
@@ -454,7 +454,7 @@ export function AgentPage(): ReactElement {
               key={preset.id}
               type="button"
               onClick={() => applyPreset(preset.prompt)}
-              className="flex flex-col gap-1 p-3 rounded-lg border border-border bg-surface-3 hover:bg-surface-3/70 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex flex-col gap-1 p-3 rounded-lg border border-border bg-surface-3 hover:bg-surface-3/70 text-left transition-colors active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <div className="flex items-center gap-1.5">
                 <span className="text-sm font-[760]">{preset.label}</span>
@@ -554,7 +554,7 @@ export function AgentPage(): ReactElement {
         <div className="grid gap-2">
           <div className="flex items-center justify-between gap-2">
             <Label htmlFor="temperature" className="text-xs">Temperature</Label>
-            <span className="text-xs font-mono text-muted-foreground">{config.temperature.toFixed(2)}</span>
+            <span className="tabular-nums text-xs font-mono text-muted-foreground">{config.temperature.toFixed(2)}</span>
           </div>
           <input
             id="temperature"
@@ -736,6 +736,7 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
   const [modelProvider, setModelProvider] = useState('')
   const [modelId, setModelId] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
+  const [temperature, setTemperature] = useState(0.7)
   const [error, setError] = useState('')
 
   // 当 agent 变化时重置表单
@@ -746,6 +747,7 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
       setModelProvider(agent.model?.provider ?? '')
       setModelId(agent.model?.modelId ?? '')
       setSystemPrompt(agent.systemPrompt ?? '')
+      setTemperature(agent.temperature ?? 0.7)
       setError('')
     }
   }, [agent])
@@ -774,6 +776,7 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
       description: description.trim() || undefined,
       model,
       systemPrompt: systemPrompt.trim() || undefined,
+      temperature,
     })
   }
 
@@ -829,6 +832,21 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
               className="w-full bg-surface-3 border border-border rounded-md px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60"
             />
           </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="edit-agent-temperature" className="text-xs">
+              温度: {temperature.toFixed(2)}
+            </Label>
+            <input
+              id="edit-agent-temperature"
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={temperature}
+              onChange={(e) => setTemperature(Number(e.target.value))}
+              className="w-full accent-accent"
+            />
+          </div>
           {error && <p className="text-xs text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
@@ -861,6 +879,16 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
   const [modelProvider, setModelProvider] = useState('')
   const [modelId, setModelId] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
+  const [temperature, setTemperature] = useState(() => {
+    const saved = window.localStorage.getItem('pi-agent.agent-config')
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as { temperature?: number }
+        if (typeof parsed.temperature === 'number') return parsed.temperature
+      } catch { /* ignore */ }
+    }
+    return 0.7
+  })
   const [error, setError] = useState('')
 
   const canSubmit = id.trim().length > 0 && name.trim().length > 0
@@ -883,6 +911,7 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
     setModelProvider('')
     setModelId('')
     setSystemPrompt('')
+    setTemperature(0.7)
     setError('')
   }
 
@@ -899,6 +928,7 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
       description: description.trim() || undefined,
       model,
       systemPrompt: systemPrompt.trim() || undefined,
+      temperature,
     })
   }
 
@@ -967,6 +997,21 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
               placeholder="定义 Agent 的角色、能力和约束..."
               rows={4}
               className="w-full bg-surface-3 border border-border rounded-md px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60"
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="create-agent-temperature" className="text-xs">
+              温度: {temperature.toFixed(2)}
+            </Label>
+            <input
+              id="create-agent-temperature"
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={temperature}
+              onChange={(e) => setTemperature(Number(e.target.value))}
+              className="w-full accent-accent"
             />
           </div>
           {error && <p className="text-xs text-destructive">{error}</p>}
@@ -1076,7 +1121,7 @@ function PersonaTemplateEditor({ template, onSave, onCancel }: PersonaTemplateEd
         <span className="text-sm font-[780]">{template ? '编辑模板' : '新建模板'}</span>
         <button
           type="button"
-          className="rounded p-1 text-muted-foreground hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="relative rounded p-1 text-muted-foreground hover:bg-surface-3 before:absolute before:-inset-[10px] before:content-[''] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           onClick={onCancel}
           aria-label="取消"
         >
