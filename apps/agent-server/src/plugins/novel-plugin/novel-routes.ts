@@ -1505,6 +1505,19 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
+      // 从 body 读取本章已编排实体约束（模式1手动编排 / 模式2 AI编排产出）
+      // 缺省时为 undefined，orchestrator 不注入编排段，保持向后兼容
+      const body = (request.body ?? {}) as {
+        arrangedEntities?: { characterIds?: string[]; conflictIds?: string[]; foreshadowIds?: string[] }
+      }
+      const arrangedEntities = body.arrangedEntities
+        ? {
+            characterIds: body.arrangedEntities.characterIds ?? [],
+            conflictIds: body.arrangedEntities.conflictIds ?? [],
+            foreshadowIds: body.arrangedEntities.foreshadowIds ?? [],
+          }
+        : undefined
+
       try {
         const result = await orchestrator.createChapterWithFlow(
           projectId,
@@ -1521,6 +1534,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
             onProgress: (event) => {
               reply.raw.write(`data: ${JSON.stringify({ type: 'progress', data: event })}\n\n`)
             },
+            arrangedEntities,
           },
         )
         reply.raw.write(`data: ${JSON.stringify({ type: 'result', data: result })}\n\n`)

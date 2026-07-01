@@ -74,6 +74,7 @@ import type {
   StoryState,
   NarrativeTask,
   ChapterConstraints,
+  ArrangedEntity,
 } from './types.js'
 
 /**
@@ -96,6 +97,12 @@ export interface NovelPromptStores {
   listFactions(projectId: string): NovelFaction[]
   listLocations(projectId: string): NovelLocation[]
   listWorldElements(projectId: string): NovelWorldElement[]
+  /** 按 ID 查询角色（供 arrangedEntities 注入时使用） */
+  getCharacter(characterId: string): NovelCharacter | undefined
+  /** 按 ID 查询冲突（供 arrangedEntities 注入时使用） */
+  getConflict(conflictId: string): NovelConflict | undefined
+  /** 按 ID 查询伏笔（供 arrangedEntities 注入时使用） */
+  getForeshadow(foreshadowId: string): NovelForeshadow | undefined
 }
 
 export class NovelPromptBuilder {
@@ -201,6 +208,7 @@ export class NovelPromptBuilder {
     chapterNumber: number,
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
   ): string {
     const parts: string[] = []
 
@@ -209,6 +217,11 @@ export class NovelPromptBuilder {
 
     // ── 创作约束 ──
     parts.push(this.formatConstraints(constraints))
+
+    // ── 本章已编排实体约束（手动编排 / AI 编排产出，注入 SEMI 层）──
+    if (arrangedEntities && (arrangedEntities.characterIds.length > 0 || arrangedEntities.conflictIds.length > 0 || arrangedEntities.foreshadowIds.length > 0)) {
+      parts.push(this.formatArrangedEntities(projectId, arrangedEntities))
+    }
 
     // ── 当前故事状态（动态部分）──
     const state = this.getStoryState(projectId)
@@ -352,6 +365,52 @@ export class NovelPromptBuilder {
     }
 
     return parts.join('\n')
+  }
+
+  /**
+   * 格式化本章已编排的实体约束（手动编排 / AI 编排产出）
+   *
+   * 与 `formatConstraints` 的区别：
+   * - `formatConstraints` 输出的是「规则文本约束」（事实/认知/阶段/伏笔债务/角色弧光）
+   * - `formatArrangedEntities` 输出的是「本章必须出现的具体实体」及其当前状态，
+   *   让 Writer 在 SEMI 层就能感知到编排约束，无需通过工具查询。
+   */
+  private formatArrangedEntities(projectId: string, arranged: ArrangedEntity): string {
+    const lines: string[] = ['【本章必须出现的实体（已编排约束，Writer 必须遵守）】']
+    if (arranged.characterIds.length > 0) {
+      const chars = arranged.characterIds
+        .map((id) => this.stores.getCharacter(id))
+        .filter((c): c is NonNullable<typeof c> => c != null)
+      if (chars.length > 0) {
+        lines.push('出场角色：')
+        for (const c of chars) {
+          lines.push(`  - ${c.name}：${c.currentState || c.description || '（无状态）'}`)
+        }
+      }
+    }
+    if (arranged.conflictIds.length > 0) {
+      const confl = arranged.conflictIds
+        .map((id) => this.stores.getConflict(id))
+        .filter((c): c is NonNullable<typeof c> => c != null)
+      if (confl.length > 0) {
+        lines.push('本章冲突：')
+        for (const c of confl) {
+          lines.push(`  - ${c.description}（${c.stage}，强度${c.intensity}）`)
+        }
+      }
+    }
+    if (arranged.foreshadowIds.length > 0) {
+      const fores = arranged.foreshadowIds
+        .map((id) => this.stores.getForeshadow(id))
+        .filter((f): f is NonNullable<typeof f> => f != null)
+      if (fores.length > 0) {
+        lines.push('本章伏笔：')
+        for (const f of fores) {
+          lines.push(`  - ${f.description}（${f.status}）`)
+        }
+      }
+    }
+    return lines.join('\n')
   }
 
   /** 格式化故事状态 */
@@ -531,8 +590,11 @@ export class NovelPromptBuilder {
     chapterNumber: number,
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
   ): string {
-    const context = this.buildChapterContext(projectId, chapterNumber, narrativeTask, constraints)
-    return this.hashContent(context)
+    // arrangedEntities 参与 hash 输入，确保编排约束变化时 hash 反映出来
+    const arrangedKey = arrangedEntities ? JSON.stringify(arrangedEntities) : ''
+    const context = this.buildChapterContext(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities)
+    return this.hashContent(context + arrangedKey)
   }
 }

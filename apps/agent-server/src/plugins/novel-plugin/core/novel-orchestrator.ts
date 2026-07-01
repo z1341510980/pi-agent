@@ -42,7 +42,7 @@ import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent, type AgentOutputData } from './novel-agents.js'
-import type { NarrativeTask, ChapterConstraints } from './types.js'
+import type { NarrativeTask, ChapterConstraints, ArrangedEntity } from './types.js'
 import type { ToolDefinition as PluginToolDefinition } from '../../../core/plugin/plugin-types.js'
 import { RhythmController } from './rhythm-controller.js'
 import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'
@@ -52,6 +52,8 @@ export interface CreationOptions {
   onCheckpoint: (checkpoint: CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
   onProgress: (event: CreationFlowEvent) => void
   signal?: AbortSignal
+  /** 本章已编排实体约束（模式1手动编排 / 模式2 AI编排产出），注入 SEMI 层 */
+  arrangedEntities?: ArrangedEntity
 }
 
 export interface CreationResult {
@@ -65,6 +67,8 @@ export interface CreationResult {
 export class NovelOrchestrator extends EventEmitter {
   /** 用户在检查点期间发送的创作指令（供下一个 Agent 使用后清空） */
   private userMessages: string[] = []
+  /** 本章已编排实体约束（由 createChapterWithFlow 设置，runAgent 读取后清空） */
+  private currentArrangedEntities?: ArrangedEntity
 
   constructor(
     private store: NovelStore,
@@ -90,6 +94,9 @@ export class NovelOrchestrator extends EventEmitter {
     chapterNumber: number,
     options: CreationOptions,
   ): Promise<CreationResult> {
+    // 将本章编排实体约束暂存到实例字段，供 runAgent 构建 SEMI 层时读取。
+    // 采用临时字段方案是最小改动：无需改 runAgent 签名，也无需沿调用链透传。
+    this.currentArrangedEntities = options.arrangedEntities
     try {
       // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）
       const rhythmController = new RhythmController()
@@ -226,6 +233,9 @@ export class NovelOrchestrator extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err)
       this.emitProgress(options, 'error', { message })
       return { status: 'error', error: message }
+    } finally {
+      // 流程结束（含 rewrite 递归返回后）清理编排约束，避免泄漏到下一次创作
+      this.currentArrangedEntities = undefined
     }
   }
 
@@ -287,6 +297,7 @@ export class NovelOrchestrator extends EventEmitter {
       chapterNumber,
       narrativeTask,
       constraints,
+      this.currentArrangedEntities,
     )
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）

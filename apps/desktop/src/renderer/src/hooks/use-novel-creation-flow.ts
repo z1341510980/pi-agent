@@ -117,10 +117,12 @@ export interface UseNovelCreationFlowReturn {
   chapterContent: string
   /** 各 Agent 的输出时间线（按到达顺序） */
   agentOutputs: AgentOutput[]
-  /** 用户在创作过程中发送的消息（随检查点决策一并发送到后端） */
+  /** 用户在创作过程中发送的消息（参与创作的指令） */
   userMessages: UserMessage[]
   /** 启动创作流程 */
-  startCreation: (projectId: string, chapterNumber: number) => Promise<void>
+  startCreation: (projectId: string, chapterNumber: number, options?: {
+    arrangedEntities?: { characterIds: string[]; conflictIds: string[]; foreshadowIds: string[] }
+  }) => Promise<void>
   /** 提交检查点决策 */
   submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
@@ -272,7 +274,9 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   )
 
   const startCreation = useCallback(
-    async (projectId: string, chapterNumber: number): Promise<void> => {
+    async (projectId: string, chapterNumber: number, options?: {
+      arrangedEntities?: { characterIds: string[]; conflictIds: string[]; foreshadowIds: string[] }
+    }): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
 
@@ -300,7 +304,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({}),
+          body: JSON.stringify(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}),
           signal: controller.signal,
         })
 

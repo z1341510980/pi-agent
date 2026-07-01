@@ -495,6 +495,15 @@ export interface ChapterConstraints {
   }>
 }
 
+// ── 本章已编排的实体约束 ──
+
+/** 本章已编排的实体约束（手动编排或 AI 编排产出，注入 Writer SEMI 提示词层） */
+export interface ArrangedEntity {
+  characterIds: string[]
+  conflictIds: string[]
+  foreshadowIds: string[]
+}
+
 // ── 缓存层标记 ──
 
 /**
