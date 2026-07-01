@@ -1,12 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useCallback, type ReactElement } from 'react'
 import { ChevronRight, ChevronDown, Plus, Sparkles, Wand2, BookText } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
 import {
-  updateProject,
-  updateChapter,
   createVolume,
-  updateVolume,
   type NovelProject,
   type NovelChapter,
   type NovelVolume,
@@ -37,8 +34,6 @@ export function OutlineTree({
   const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
   const setMatrixScrollTarget = useNovelStore((s) => s.setMatrixScrollTarget)
   const toggleExpandedVolume = useNovelStore((s) => s.toggleExpandedVolume)
-  const upsertProject = useNovelStore((s) => s.upsertProject)
-  const upsertChapter = useNovelStore((s) => s.upsertChapter)
   const upsertVolume = useNovelStore((s) => s.upsertVolume)
 
   const sortedVolumes = [...volumes].sort(
@@ -74,15 +69,13 @@ export function OutlineTree({
 
   return (
     <div className="flex flex-col gap-0.5">
-      {/* 全书大纲 */}
-      <EditableOutlineRow
+      {/* 全书大纲：点击选中项目，在右边栏编辑 */}
+      <OutlinePreviewRow
         label="全书大纲"
         value={project.outline ?? ''}
         placeholder="点击编写全书大纲..."
-        onSave={async (outline) => {
-          const updated = await updateProject(project.id, { outline })
-          upsertProject(updated)
-        }}
+        selected={selectedNodeId === project.id}
+        onClick={() => selectNode(project.id, 'project')}
         icon={<BookText className="size-3.5 text-primary" />}
       />
 
@@ -119,14 +112,12 @@ export function OutlineTree({
             </div>
             {expanded && (
               <div className="ml-3 border-l border-border pl-1.5">
-                <EditableOutlineRow
+                <OutlinePreviewRow
                   label="卷纲"
                   value={vol.outline ?? ''}
                   placeholder="点击编写卷纲..."
-                  onSave={async (outline) => {
-                    const updated = await updateVolume(vol.id, { outline })
-                    upsertVolume(updated)
-                  }}
+                  selected={selectedNodeId === vol.id}
+                  onClick={() => selectNode(vol.id, 'volume')}
                   compact
                 />
                 {volChapters.map((ch) => (
@@ -138,10 +129,7 @@ export function OutlineTree({
                     onClick={() => handleSelectChapter(ch)}
                     onManualArrange={() => onManualArrange(ch)}
                     onAiArrange={() => onAiArrange(ch)}
-                    onOutlineSave={async (outline) => {
-                      const updated = await updateChapter(ch.id, { outline })
-                      upsertChapter(updated)
-                    }}
+                    onOutlineSelect={() => selectNode(ch.id, 'chapter')}
                   />
                 ))}
               </div>
@@ -162,10 +150,7 @@ export function OutlineTree({
               onClick={() => handleSelectChapter(ch)}
               onManualArrange={() => onManualArrange(ch)}
               onAiArrange={() => onAiArrange(ch)}
-              onOutlineSave={async (outline) => {
-                const updated = await updateChapter(ch.id, { outline })
-                upsertChapter(updated)
-              }}
+              onOutlineSelect={() => selectNode(ch.id, 'chapter')}
             />
           ))}
         </div>
@@ -183,7 +168,7 @@ interface ChapterRowProps {
   onClick: () => void
   onManualArrange: () => void
   onAiArrange: () => void
-  onOutlineSave: (outline: string) => Promise<void>
+  onOutlineSelect: () => void
 }
 
 function ChapterRow({
@@ -193,7 +178,7 @@ function ChapterRow({
   onClick,
   onManualArrange,
   onAiArrange,
-  onOutlineSave,
+  onOutlineSelect,
 }: ChapterRowProps): ReactElement {
   return (
     <div className="flex flex-col">
@@ -212,11 +197,12 @@ function ChapterRow({
         {isPlayhead && <span className="size-1.5 rounded-full bg-primary shrink-0" />}
       </button>
       <div className="ml-2 flex flex-col gap-0.5">
-        <EditableOutlineRow
+        <OutlinePreviewRow
           label="章纲"
           value={chapter.outline ?? ''}
           placeholder="点击编写章纲（生成的统一起点）..."
-          onSave={onOutlineSave}
+          selected={selected}
+          onClick={onOutlineSelect}
           compact
         />
         <div className="flex items-center gap-1 px-1">
@@ -245,96 +231,31 @@ function ChapterRow({
   )
 }
 
-// ── 可编辑纲要行（防抖 1.5s 保存） ──
+// ── 大纲预览行（点击选中，在右边栏编辑） ──
 
-interface EditableOutlineRowProps {
+interface OutlinePreviewRowProps {
   label: string
   value: string
   placeholder: string
-  onSave: (value: string) => Promise<void>
+  onClick: () => void
   icon?: ReactElement
   selected?: boolean
   compact?: boolean
 }
 
-function EditableOutlineRow({
+function OutlinePreviewRow({
   label,
   value,
   placeholder,
-  onSave,
+  onClick,
   icon,
   selected,
   compact,
-}: EditableOutlineRowProps): ReactElement {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isSavingRef = useRef(false)
-
-  // value 变化时同步 draft，但保存期间不覆盖（避免闭包陷阱：用户继续输入被回写覆盖）
-  useEffect(() => {
-    if (!isSavingRef.current) setDraft(value)
-  }, [value])
-
-  // 卸载时清理定时器，避免回调命中已卸载组件
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [])
-
-  const doSave = useCallback(
-    async (text: string) => {
-      if (text.trim() === value.trim()) return
-      isSavingRef.current = true
-      try {
-        await onSave(text)
-      } catch (err) {
-        console.error('[OutlineTree] 保存失败:', err)
-      } finally {
-        isSavingRef.current = false
-      }
-    },
-    [value, onSave],
-  )
-
-  const scheduleSave = useCallback(
-    (text: string) => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-      timerRef.current = setTimeout(() => {
-        void doSave(text)
-      }, 1500)
-    },
-    [doSave],
-  )
-
-  if (editing) {
-    return (
-      <textarea
-        autoFocus
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value)
-          scheduleSave(e.target.value)
-        }}
-        onBlur={() => {
-          setEditing(false)
-          if (timerRef.current) clearTimeout(timerRef.current)
-          void doSave(draft)
-        }}
-        placeholder={placeholder}
-        className={cn(
-          'w-full rounded-md border border-input bg-transparent px-2 py-1 text-[11px] outline-none focus-visible:border-ring resize-y min-h-[40px]',
-          compact ? 'text-[11px]' : 'text-xs',
-        )}
-      />
-    )
-  }
-
+}: OutlinePreviewRowProps): ReactElement {
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={onClick}
       className={cn(
         'flex items-start gap-1.5 px-2 py-1 text-left rounded-md transition-colors w-full',
         selected ? 'bg-primary/10' : 'hover:bg-muted/50',

@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save, X, Info, History, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import {
   Select,
   SelectContent,
@@ -32,6 +31,7 @@ import {
   updateFaction,
   updateLocation,
   updateWorldElement,
+  updateVolume,
   listCharacterHistory,
   createCharacterHistory,
   type NovelProject,
@@ -56,6 +56,7 @@ import {
   type NovelLocationSignificance,
   type NovelLocationStatus,
   type NovelWorldElementCategory,
+  type NovelVolume,
 } from '@/api/novel-client'
 
 // ── 字段组件 ──
@@ -365,6 +366,82 @@ function SectionHeader({ title, hint }: { title: string; hint?: string }): React
   )
 }
 
+// ── 防抖大纲字段（1.5s 防抖 + onBlur 保存，复用 D-2 的防抖保存逻辑） ──
+// 用于全书大纲 / 卷纲 / 章纲：从左边栏点击后在右边栏编辑，自动持久化。
+
+interface DebouncedOutlineFieldProps {
+  label: string
+  value: string
+  placeholder?: string
+  onSave: (value: string) => Promise<void>
+}
+
+function DebouncedOutlineField({
+  label,
+  value,
+  placeholder,
+  onSave,
+}: DebouncedOutlineFieldProps): ReactElement {
+  const [draft, setDraft] = useState(value)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isSavingRef = useRef(false)
+
+  // value 变化时同步 draft，但保存期间不覆盖（避免闭包陷阱：用户继续输入被回写覆盖）
+  useEffect(() => {
+    if (!isSavingRef.current) setDraft(value)
+  }, [value])
+
+  // 卸载时清理定时器，避免回调命中已卸载组件
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  const doSave = useCallback(
+    async (text: string) => {
+      if (text.trim() === value.trim()) return
+      isSavingRef.current = true
+      try {
+        await onSave(text)
+      } catch (err) {
+        console.error('[DebouncedOutlineField] 保存失败:', err)
+      } finally {
+        isSavingRef.current = false
+      }
+    },
+    [value, onSave],
+  )
+
+  const scheduleSave = useCallback(
+    (text: string) => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => {
+        void doSave(text)
+      }, 1500)
+    },
+    [doSave],
+  )
+
+  return (
+    <FieldRow label={label}>
+      <TextArea
+        variant="long"
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => {
+          setDraft(e.target.value)
+          scheduleSave(e.target.value)
+        }}
+        onBlur={() => {
+          if (timerRef.current) clearTimeout(timerRef.current)
+          void doSave(draft)
+        }}
+      />
+    </FieldRow>
+  )
+}
+
 // ── 选项常量 ──
 
 const STAGE_OPTIONS: { value: StoryStage; label: string }[] = [
@@ -483,6 +560,7 @@ const NODE_TYPE_LABELS: Record<NovelNodeType, string> = {
   project: '项目',
   character: '角色',
   chapter: '章节',
+  volume: '卷',
   conflict: '冲突',
   foreshadow: '伏笔',
   faction: '势力',
@@ -536,6 +614,7 @@ export function NovelDetailPanel(): ReactElement {
   const projects = useNovelStore((s) => s.projects)
   const characters = useNovelStore((s) => s.characters)
   const chapters = useNovelStore((s) => s.chapters)
+  const volumes = useNovelStore((s) => s.volumes)
   const conflicts = useNovelStore((s) => s.conflicts)
   const foreshadows = useNovelStore((s) => s.foreshadows)
   const factions = useNovelStore((s) => s.factions)
@@ -551,6 +630,8 @@ export function NovelDetailPanel(): ReactElement {
         return characters.find((c) => c.id === selectedNodeId) ?? null
       case 'chapter':
         return chapters.find((c) => c.id === selectedNodeId) ?? null
+      case 'volume':
+        return volumes.find((v) => v.id === selectedNodeId) ?? null
       case 'conflict':
         return conflicts.find((c) => c.id === selectedNodeId) ?? null
       case 'foreshadow':
@@ -564,7 +645,7 @@ export function NovelDetailPanel(): ReactElement {
       default:
         return null
     }
-  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, conflicts, foreshadows, factions, locations, worldElements])
+  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, volumes, conflicts, foreshadows, factions, locations, worldElements])
 
   if (!entity || !selectedNodeType) {
     return (
@@ -605,6 +686,9 @@ export function NovelDetailPanel(): ReactElement {
         {selectedNodeType === 'chapter' && (
           <ChapterForm key={entity.id} entity={entity as NovelChapter} />
         )}
+        {selectedNodeType === 'volume' && (
+          <VolumeForm key={entity.id} entity={entity as NovelVolume} />
+        )}
         {selectedNodeType === 'conflict' && (
           <ConflictForm key={entity.id} entity={entity as NovelConflict} />
         )}
@@ -629,6 +713,7 @@ function entityTitle(entity: unknown, type: string): string {
   const e = entity as Record<string, unknown>
   if (type === 'project') return String(e.title ?? '')
   if (type === 'chapter') return String(e.title ?? `第 ${e.chapterNumber} 章`)
+  if (type === 'volume') return String(e.title ?? `第 ${e.volumeNumber} 卷`)
   if (type === 'character') return String(e.name ?? '')
   if (type === 'faction' || type === 'location' || type === 'world_element') {
     return String(e.name ?? '')
@@ -705,70 +790,63 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
   }, [entity.id, form, upsertProject])
 
   return (
-    <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>基础信息</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="标题">
-            <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="题材">
-            <TextInput value={form.genre} onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="目标字数">
-            <TextInput
-              type="number"
-              value={form.targetWords}
-              onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
-            />
-          </FieldRow>
-        </CardContent>
-      </Card>
+    <div className="space-y-2">
+      <SectionHeader title="全书大纲" />
+      <DebouncedOutlineField
+        label="大纲内容"
+        value={entity.outline ?? ''}
+        placeholder="编写全书大纲..."
+        onSave={async (outline) => {
+          const updated = await updateProject(entity.id, { outline })
+          upsertProject(updated)
+        }}
+      />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>状态</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="当前阶段">
-            <Select value={form.currentStage} onValueChange={(v) => setForm((f) => ({ ...f, currentStage: v as StoryStage }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STAGE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-          <FieldRow label="状态">
-            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelProject['status'] }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PROJECT_STATUS_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="基础信息" />
+      <FieldRow label="标题">
+        <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="题材">
+        <TextInput value={form.genre} onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="目标字数">
+        <TextInput
+          type="number"
+          value={form.targetWords}
+          onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
+        />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>简介</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="简介">
-            <TextArea variant="long" value={form.synopsis} onChange={(e) => setForm((f) => ({ ...f, synopsis: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="状态" />
+      <FieldRow label="当前阶段">
+        <Select value={form.currentStage} onValueChange={(v) => setForm((f) => ({ ...f, currentStage: v as StoryStage }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {STAGE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="状态">
+        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelProject['status'] }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PROJECT_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+
+      <SectionHeader title="简介" />
+      <FieldRow label="简介">
+        <TextArea variant="long" value={form.synopsis} onChange={(e) => setForm((f) => ({ ...f, synopsis: e.target.value }))} />
+      </FieldRow>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -1172,70 +1250,111 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
   }, [entity.id, form, upsertChapter])
 
   return (
-    <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>元信息</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>第 {entity.chapterNumber} 章 · 卷 {entity.volume}</span>
-            <span>{entity.wordCount} 字</span>
-          </div>
-        </CardContent>
-      </Card>
+    <div className="space-y-2">
+      <SectionHeader title="章纲" />
+      <DebouncedOutlineField
+        label="章纲内容"
+        value={entity.outline ?? ''}
+        placeholder="编写章纲（生成的统一起点）..."
+        onSave={async (outline) => {
+          const updated = await updateChapter(entity.id, { outline })
+          upsertChapter(updated)
+        }}
+      />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>标题与状态</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="标题">
-            <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="状态">
-            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ChapterStatus }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {CHAPTER_STATUS_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="元信息" />
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>第 {entity.chapterNumber} 章 · 卷 {entity.volume}</span>
+        <span>{entity.wordCount} 字</span>
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>正文</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="内容">
-            <TextArea
-              variant="long"
-              value={form.content}
-              onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
-              className="font-mono text-xs"
-            />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="标题与状态" />
+      <FieldRow label="标题">
+        <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="状态">
+        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ChapterStatus }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CHAPTER_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+
+      <SectionHeader title="正文" />
+      <FieldRow label="内容">
+        <TextArea
+          variant="long"
+          value={form.content}
+          onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
+          className="font-mono text-xs"
+        />
+      </FieldRow>
 
       {entity.narrativeTask && (
-        <Card>
-          <CardHeader>
-            <CardTitle>叙事任务</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <pre className="text-xs text-muted-foreground whitespace-pre-wrap rounded bg-muted/50 p-2">
-              {entity.narrativeTask}
-            </pre>
-          </CardContent>
-        </Card>
+        <>
+          <SectionHeader title="叙事任务" />
+          <pre className="text-xs text-muted-foreground whitespace-pre-wrap rounded bg-muted/50 p-2">
+            {entity.narrativeTask}
+          </pre>
+        </>
       )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+    </div>
+  )
+}
+
+// ── 卷编辑表单 ──
+
+function VolumeForm({ entity }: { entity: NovelVolume }): ReactElement {
+  const upsertVolume = useNovelStore((s) => s.upsertVolume)
+  const [form, setForm] = useState({
+    title: entity.title,
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const dirty = form.title !== entity.title
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await updateVolume(entity.id, { title: form.title })
+      upsertVolume(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertVolume])
+
+  return (
+    <div className="space-y-2">
+      <SectionHeader title="卷纲" />
+      <DebouncedOutlineField
+        label="卷纲内容"
+        value={entity.outline ?? ''}
+        placeholder="编写卷纲..."
+        onSave={async (outline) => {
+          const updated = await updateVolume(entity.id, { outline })
+          upsertVolume(updated)
+        }}
+      />
+
+      <SectionHeader title="基础信息" />
+      <FieldRow label="标题">
+        <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+      </FieldRow>
+      <div className="text-xs text-muted-foreground">
+        第 {entity.volumeNumber} 卷
+      </div>
+
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
@@ -1288,82 +1407,66 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
   }, [entity.id, form, upsertConflict])
 
   return (
-    <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>基本信息</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="描述">
-            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="类型">
-            <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as ConflictType }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {CONFLICT_TYPE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-        </CardContent>
-      </Card>
+    <div className="space-y-2">
+      <SectionHeader title="基本信息" />
+      <FieldRow label="描述">
+        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="类型">
+        <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as ConflictType }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONFLICT_TYPE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>状态</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="阶段">
-            <Select value={form.stage} onValueChange={(v) => setForm((f) => ({ ...f, stage: v as ConflictStage }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {CONFLICT_STAGE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-          <FieldRow label="强度">
-            <div className="flex items-center gap-2">
-              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full bg-rose-500"
-                  style={{ width: `${(Number(form.intensity) / 10) * 100}%` }}
-                />
-              </div>
-              <TextInput
-                type="number"
-                min={0}
-                max={10}
-                value={form.intensity}
-                onChange={(e) => setForm((f) => ({ ...f, intensity: e.target.value }))}
-                className="w-16"
-              />
-              <span className="text-xs text-muted-foreground">/10</span>
-            </div>
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="状态" />
+      <FieldRow label="阶段">
+        <Select value={form.stage} onValueChange={(v) => setForm((f) => ({ ...f, stage: v as ConflictStage }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONFLICT_STAGE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="强度">
+        <div className="flex items-center gap-2">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full bg-rose-500"
+              style={{ width: `${(Number(form.intensity) / 10) * 100}%` }}
+            />
+          </div>
+          <TextInput
+            type="number"
+            min={0}
+            max={10}
+            value={form.intensity}
+            onChange={(e) => setForm((f) => ({ ...f, intensity: e.target.value }))}
+            className="w-16"
+          />
+          <span className="text-xs text-muted-foreground">/10</span>
+        </div>
+      </FieldRow>
 
       {participants.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>参与者</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap gap-1">
-              {participants.map((id) => (
-                <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <>
+          <SectionHeader title="参与者" />
+          <div className="flex flex-wrap gap-1">
+            {participants.map((id) => (
+              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
+            ))}
+          </div>
+        </>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -1433,99 +1536,75 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
   }, [entity.id, form, upsertForeshadow])
 
   return (
-    <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>基本信息</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="描述">
-            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="分类">
-            <TextArea variant="short" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+    <div className="space-y-2">
+      <SectionHeader title="基本信息" />
+      <FieldRow label="描述">
+        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="分类">
+        <TextArea variant="short" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>状态</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="状态">
-            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ForeshadowStatus }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FORESHADOW_STATUS_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="状态" />
+      <FieldRow label="状态">
+        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ForeshadowStatus }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FORESHADOW_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>章节</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="首次出现">
-            <TextInput
-              type="number"
-              value={form.firstChapter}
-              onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
-            />
-          </FieldRow>
-          <FieldRow label="最后强化">
-            <TextInput
-              type="number"
-              value={form.lastChapter}
-              onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
-            />
-          </FieldRow>
-          <FieldRow label="回收期限">
-            <TextInput
-              type="number"
-              value={form.recoverByChapter}
-              onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
-            />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="章节" />
+      <FieldRow label="首次出现">
+        <TextInput
+          type="number"
+          value={form.firstChapter}
+          onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
+        />
+      </FieldRow>
+      <FieldRow label="最后强化">
+        <TextInput
+          type="number"
+          value={form.lastChapter}
+          onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
+        />
+      </FieldRow>
+      <FieldRow label="回收期限">
+        <TextInput
+          type="number"
+          value={form.recoverByChapter}
+          onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
+        />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>关联</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="关联角色">
-            {linkedCharacters.length > 0 ? (
-              <div className="flex flex-wrap gap-1">
-                {linkedCharacters.map((id) => (
-                  <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-                ))}
-              </div>
-            ) : (
-              <span className="text-[11px] text-muted-foreground">暂无</span>
-            )}
-          </FieldRow>
-          <FieldRow label="关联线索">
-            {linkedClues.length > 0 ? (
-              <div className="flex flex-wrap gap-1">
-                {linkedClues.map((id) => (
-                  <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-                ))}
-              </div>
-            ) : (
-              <span className="text-[11px] text-muted-foreground">暂无</span>
-            )}
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="关联" />
+      <FieldRow label="关联角色">
+        {linkedCharacters.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {linkedCharacters.map((id) => (
+              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[11px] text-muted-foreground">暂无</span>
+        )}
+      </FieldRow>
+      <FieldRow label="关联线索">
+        {linkedClues.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {linkedClues.map((id) => (
+              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[11px] text-muted-foreground">暂无</span>
+        )}
+      </FieldRow>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -1603,95 +1682,73 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
   }, [entity.id, form, upsertFaction])
 
   return (
-    <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>基础</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="名称">
-            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="简述">
-            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+    <div className="space-y-2">
+      <SectionHeader title="基础" />
+      <FieldRow label="名称">
+        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="简述">
+        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>属性</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="类型">
-            <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelFactionType }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FACTION_TYPE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-          <FieldRow label="实力">
-            <Select value={form.strength} onValueChange={(v) => setForm((f) => ({ ...f, strength: v as NovelFactionStrength }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FACTION_STRENGTH_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-          <FieldRow label="状态">
-            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelFactionStatus }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FACTION_STATUS_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="属性" />
+      <FieldRow label="类型">
+        <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelFactionType }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FACTION_TYPE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="实力">
+        <Select value={form.strength} onValueChange={(v) => setForm((f) => ({ ...f, strength: v as NovelFactionStrength }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FACTION_STRENGTH_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="状态">
+        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelFactionStatus }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FACTION_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>领导与理念</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="首领角色">
-            <Select value={form.leaderId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, leaderId: v === '__none__' ? '' : v }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">无</SelectItem>
-                {characters.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-          <FieldRow label="理念 / 信仰">
-            <TextArea variant="short" value={form.ideology} onChange={(e) => setForm((f) => ({ ...f, ideology: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="领导与理念" />
+      <FieldRow label="首领角色">
+        <Select value={form.leaderId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, leaderId: v === '__none__' ? '' : v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">无</SelectItem>
+            {characters.map((c) => (
+              <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="理念 / 信仰">
+        <TextArea variant="short" value={form.ideology} onChange={(e) => setForm((f) => ({ ...f, ideology: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>资源与关系</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="资源">
+      <SectionHeader title="资源与关系" />
+      <FieldRow label="资源">
             <div className="space-y-2">
               {form.resourcesList.map((item, idx) => (
                 <div key={idx} className="flex items-center gap-2">
@@ -1795,8 +1852,6 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
               </Select>
             </div>
           </FieldRow>
-        </CardContent>
-      </Card>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -1877,26 +1932,16 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
 
   return (
     <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>基础</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="名称">
-            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="简述">
-            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="基础" />
+      <FieldRow label="名称">
+        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="简述">
+        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>属性</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="类型">
+      <SectionHeader title="属性" />
+      <FieldRow label="类型">
             <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as NovelLocationType }))}>
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -1932,15 +1977,9 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
               </SelectContent>
             </Select>
           </FieldRow>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>关联</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="父级地点">
+      <SectionHeader title="关联" />
+      <FieldRow label="父级地点">
             <Select value={form.parentId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, parentId: v === '__none__' ? '' : v }))}>
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -1966,15 +2005,9 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
               </SelectContent>
             </Select>
           </FieldRow>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>章节出场</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="首次出现章节">
+      <SectionHeader title="章节出场" />
+      <FieldRow label="首次出现章节">
             <TextInput
               type="number"
               value={form.firstChapter}
@@ -2015,8 +2048,6 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
               <span className="text-[11px] text-muted-foreground">暂无出场章节</span>
             )}
           </FieldRow>
-        </CardContent>
-      </Card>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -2085,94 +2116,70 @@ function WorldElementForm({ entity }: { entity: NovelWorldElement }): ReactEleme
 
   return (
     <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>基础</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="分类">
-            <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelWorldElementCategory }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {WORLD_ELEMENT_CATEGORY_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-          <FieldRow label="名称">
-            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="基础" />
+      <FieldRow label="分类">
+        <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelWorldElementCategory }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {WORLD_ELEMENT_CATEGORY_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="名称">
+        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>描述</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="描述">
-            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="描述" />
+      <FieldRow label="描述">
+        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>父级</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="父级要素">
-            <Select value={form.parentId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, parentId: v === '__none__' ? '' : v }))}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">无</SelectItem>
-                {worldElements.filter((w) => w.id !== entity.id).map((w) => (
-                  <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="父级" />
+      <FieldRow label="父级要素">
+        <Select value={form.parentId || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, parentId: v === '__none__' ? '' : v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">无</SelectItem>
+            {worldElements.filter((w) => w.id !== entity.id).map((w) => (
+              <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>属性</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="附加属性">
-            <div className="space-y-2">
-              {form.attributesList.map((item, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <Input
-                    className="flex-1 font-mono text-xs"
-                    placeholder="属性名"
-                    value={item.key}
-                    onChange={(e) => updateAttr(idx, { key: e.target.value })}
-                  />
-                  <Input
-                    className="flex-1 text-xs"
-                    placeholder="属性值"
-                    value={item.value}
-                    onChange={(e) => updateAttr(idx, { value: e.target.value })}
-                  />
-                  <Button size="icon-sm" variant="ghost" onClick={() => removeAttr(idx)} aria-label="删除">
-                    <Trash2 className="size-3.5 text-muted-foreground" />
-                  </Button>
-                </div>
-              ))}
-              <Button size="sm" variant="outline" onClick={addAttr}>
-                <Plus className="size-3.5 mr-1" /> 添加属性
+      <SectionHeader title="属性" />
+      <FieldRow label="附加属性">
+        <div className="space-y-2">
+          {form.attributesList.map((item, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <Input
+                className="flex-1 font-mono text-xs"
+                placeholder="属性名"
+                value={item.key}
+                onChange={(e) => updateAttr(idx, { key: e.target.value })}
+              />
+              <Input
+                className="flex-1 text-xs"
+                placeholder="属性值"
+                value={item.value}
+                onChange={(e) => updateAttr(idx, { value: e.target.value })}
+              />
+              <Button size="icon-sm" variant="ghost" onClick={() => removeAttr(idx)} aria-label="删除">
+                <Trash2 className="size-3.5 text-muted-foreground" />
               </Button>
             </div>
-          </FieldRow>
-        </CardContent>
-      </Card>
+          ))}
+          <Button size="sm" variant="outline" onClick={addAttr}>
+            <Plus className="size-3.5 mr-1" /> 添加属性
+          </Button>
+        </div>
+      </FieldRow>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />

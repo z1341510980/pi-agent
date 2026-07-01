@@ -30,6 +30,7 @@ export type NovelNodeType =
   | 'project'
   | 'character'
   | 'chapter'
+  | 'volume'
   | 'conflict'
   | 'foreshadow'
   | 'group'
