@@ -257,9 +257,8 @@ function OutlinePreviewRow({
       type="button"
       onClick={onClick}
       className={cn(
-        'flex items-start gap-1.5 px-2 py-1 text-left rounded-md transition-colors w-full',
+        'flex items-start gap-1.5 px-2 py-1 text-left rounded-md transition-colors w-full text-[11px]',
         selected ? 'bg-primary/10' : 'hover:bg-muted/50',
-        compact ? 'text-[11px]' : 'text-xs',
       )}
     >
       {icon}
