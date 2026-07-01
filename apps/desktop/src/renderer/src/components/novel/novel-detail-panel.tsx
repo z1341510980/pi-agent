@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save, X, Info, History, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -95,6 +95,273 @@ function TextArea({
         className,
       )}
     />
+  )
+}
+
+// ── JSON 对象编辑器 ──
+// 用于 personality / speechStyle 等"后端是 TEXT 但实际存 JSON 字符串"的字段。
+// 兼容策略：空字符串 → 空对象；合法 JSON → 结构化展示；纯文本 → 纯文本 + 转结构化按钮。
+
+function tryParseJsonObject(s: string): Record<string, unknown> | null {
+  const trimmed = s.trim()
+  if (!trimmed) return {}
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string')
+}
+
+function JsonObjectEditor({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}): ReactElement {
+  const parsed = useMemo(() => tryParseJsonObject(value), [value])
+
+  // 纯文本兜底：显示原文 + 「转为结构化」按钮（清空为空对象）
+  if (parsed === null) {
+    return (
+      <div className="space-y-1.5">
+        <TextArea variant="long" value={value} onChange={(e) => onChange(e.target.value)} />
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 text-[11px] text-muted-foreground"
+          onClick={() => onChange('{}')}
+        >
+          转为结构化编辑
+        </Button>
+      </div>
+    )
+  }
+
+  const entries = Object.entries(parsed)
+
+  const updateEntry = (key: string, newVal: unknown) => {
+    const next = { ...parsed, [key]: newVal }
+    onChange(JSON.stringify(next, null, 2))
+  }
+  const removeEntry = (key: string) => {
+    const next = { ...parsed }
+    delete next[key]
+    onChange(JSON.stringify(next, null, 2))
+  }
+  const addEntry = () => {
+    let n = 1
+    while (parsed[`字段${n}`] !== undefined) n++
+    const key = `字段${n}`
+    onChange(JSON.stringify({ ...parsed, [key]: '' }, null, 2))
+  }
+  const renameKey = (oldKey: string, newKey: string) => {
+    const trimmed = newKey.trim()
+    if (!trimmed || trimmed === oldKey) return
+    if (parsed[trimmed] !== undefined) return // 不允许重复 key
+    const next: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(parsed)) {
+      next[k === oldKey ? trimmed : k] = v
+    }
+    onChange(JSON.stringify(next, null, 2))
+  }
+
+  return (
+    <div className="space-y-2">
+      {entries.length === 0 && (
+        <p className="text-[11px] text-muted-foreground py-2 text-center">
+          暂无内容，点击下方按钮添加字段
+        </p>
+      )}
+      {entries.map(([key, val]) => (
+        <JsonObjectEntry
+          key={key}
+          entryKey={key}
+          value={val}
+          onRenameKey={(nk) => renameKey(key, nk)}
+          onChangeValue={(nv) => updateEntry(key, nv)}
+          onRemove={() => removeEntry(key)}
+        />
+      ))}
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-6 text-[11px] text-muted-foreground"
+        onClick={addEntry}
+      >
+        <Plus className="size-3" /> 添加字段
+      </Button>
+    </div>
+  )
+}
+
+function JsonObjectEntry({
+  entryKey,
+  value,
+  onRenameKey,
+  onChangeValue,
+  onRemove,
+}: {
+  entryKey: string
+  value: unknown
+  onRenameKey: (nk: string) => void
+  onChangeValue: (nv: unknown) => void
+  onRemove: () => void
+}): ReactElement {
+  const [keyInput, setKeyInput] = useState(entryKey)
+  useEffect(() => {
+    setKeyInput(entryKey)
+  }, [entryKey])
+
+  const handleKeyBlur = () => {
+    const trimmed = keyInput.trim()
+    if (trimmed && trimmed !== entryKey) {
+      onRenameKey(trimmed)
+    } else {
+      setKeyInput(entryKey)
+    }
+  }
+
+  // 按 value 类型选择控件
+  let valueControl: ReactNode
+  if (typeof value === 'string') {
+    const isLong = value.length > 30 || value.includes('\n')
+    valueControl = isLong ? (
+      <TextArea variant="short" value={value} onChange={(e) => onChangeValue(e.target.value)} />
+    ) : (
+      <Input
+        className="h-8"
+        value={value}
+        onChange={(e) => onChangeValue(e.target.value)}
+      />
+    )
+  } else if (isStringArray(value)) {
+    valueControl = <StringListEditor items={value} onChange={(items) => onChangeValue(items)} />
+  } else if (typeof value === 'number') {
+    valueControl = (
+      <Input
+        type="number"
+        className="h-8"
+        value={Number.isNaN(value) ? '' : value}
+        onChange={(e) => onChangeValue(e.target.value === '' ? '' : Number(e.target.value))}
+      />
+    )
+  } else if (typeof value === 'boolean') {
+    valueControl = (
+      <Select value={value ? 'true' : 'false'} onValueChange={(v) => onChangeValue(v === 'true')}>
+        <SelectTrigger className="h-8 w-24">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="true">是</SelectItem>
+          <SelectItem value="false">否</SelectItem>
+        </SelectContent>
+      </Select>
+    )
+  } else {
+    // 对象 / 其他数组：退化为 JSON 文本编辑
+    valueControl = (
+      <TextArea
+        variant="medium"
+        value={JSON.stringify(value, null, 2)}
+        onChange={(e) => {
+          try {
+            onChangeValue(JSON.parse(e.target.value))
+          } catch {
+            // 解析失败时忽略，等用户改对再更新
+          }
+        }}
+      />
+    )
+  }
+
+  return (
+    <div className="space-y-1 rounded-md border border-border bg-surface-2/40 p-2">
+      <div className="flex items-center gap-1.5">
+        <Input
+          className="h-7 flex-1 text-xs font-medium"
+          value={keyInput}
+          onChange={(e) => setKeyInput(e.target.value)}
+          onBlur={handleKeyBlur}
+        />
+        <Button size="icon-sm" variant="ghost" onClick={onRemove} aria-label="删除字段">
+          <Trash2 className="size-3" />
+        </Button>
+      </div>
+      {valueControl}
+    </div>
+  )
+}
+
+function StringListEditor({
+  items,
+  onChange,
+}: {
+  items: string[]
+  onChange: (items: string[]) => void
+}): ReactElement {
+  const updateItem = (i: number, val: string) => {
+    onChange(items.map((x, idx) => (idx === i ? val : x)))
+  }
+  const removeItem = (i: number) => {
+    onChange(items.filter((_, idx) => idx !== i))
+  }
+  const addItem = () => {
+    onChange([...items, ''])
+  }
+
+  return (
+    <div className="space-y-1">
+      {items.map((item, i) => (
+        <div key={i} className="flex items-start gap-1">
+          <span className="text-[10px] text-muted-foreground pt-1.5 w-4 shrink-0 tabular-nums text-right">
+            {i + 1}.
+          </span>
+          <TextArea
+            variant="short"
+            className="min-h-[40px] text-xs"
+            value={item}
+            onChange={(e) => updateItem(i, e.target.value)}
+          />
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="mt-0.5 shrink-0"
+            onClick={() => removeItem(i)}
+            aria-label="删除项"
+          >
+            <X className="size-3" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-6 text-[11px] text-muted-foreground"
+        onClick={addItem}
+      >
+        <Plus className="size-3" /> 添加项
+      </Button>
+    </div>
+  )
+}
+
+// ── 分组标题（iOS Settings 风格） ──
+
+function SectionHeader({ title, hint }: { title: string; hint?: string }): ReactElement {
+  return (
+    <div className="pt-4 pb-1.5 first:pt-0">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        {title}
+      </div>
+      {hint && <div className="text-[10px] text-muted-foreground/70 mt-0.5">{hint}</div>}
+    </div>
   )
 }
 
@@ -547,75 +814,60 @@ function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
   }, [entity.id, form, upsertCharacter])
 
   return (
-    <div className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>基础</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="姓名">
-            <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="身份">
-            <TextInput value={form.identity} onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+    <div className="space-y-2">
+      <SectionHeader title="基础信息" />
+      <FieldRow label="姓名">
+        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="身份">
+        <TextArea variant="short" value={form.identity} onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="外貌">
+        <TextArea variant="medium" value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>描述</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="简述">
-            <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="性格">
-            <TextArea variant="medium" value={form.personality} onChange={(e) => setForm((f) => ({ ...f, personality: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="外貌">
-            <TextArea variant="medium" value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="简述" />
+      <FieldRow label="简述">
+        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </FieldRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>当前状态</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1">
-            <Info className="size-3" />
-            修改动态状态会记录到变更历史
-          </p>
-          <FieldRow label="当前状态">
-            <TextArea variant="short" value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="当前目标">
-            <TextArea variant="short" value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="当前压力">
-            <TextArea variant="short" value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="秘密">
-            <TextArea variant="medium" value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
-          </FieldRow>
-          <FieldRow label="弧光阶段">
-            <TextArea variant="short" value={form.arcStage} onChange={(e) => setForm((f) => ({ ...f, arcStage: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="性格特征" hint="支持核心、优点、缺点、座右铭等结构化字段" />
+      <JsonObjectEditor value={form.personality} onChange={(v) => setForm((f) => ({ ...f, personality: v }))} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>说话风格</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <FieldRow label="说话风格">
-            <TextArea variant="short" value={form.speechStyle} onChange={(e) => setForm((f) => ({ ...f, speechStyle: e.target.value }))} />
-          </FieldRow>
-        </CardContent>
-      </Card>
+      <SectionHeader title="说话风格" hint="支持基调、特点、典型句式等结构化字段" />
+      <JsonObjectEditor value={form.speechStyle} onChange={(v) => setForm((f) => ({ ...f, speechStyle: v }))} />
+
+      <SectionHeader title="当前状态" hint="修改动态状态会记录到变更历史" />
+      <FieldRow label="当前状态">
+        <TextArea variant="short" value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="当前目标">
+        <TextArea variant="short" value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="当前压力">
+        <TextArea variant="short" value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="秘密">
+        <TextArea variant="medium" value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="弧光阶段">
+        <Select
+          value={form.arcStage || '__none__'}
+          onValueChange={(v) => setForm((f) => ({ ...f, arcStage: v === '__none__' ? '' : v }))}
+        >
+          <SelectTrigger className="h-9">
+            <SelectValue placeholder="未设置" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">未设置</SelectItem>
+            {STAGE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />

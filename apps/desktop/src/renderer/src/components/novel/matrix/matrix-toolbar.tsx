@@ -40,7 +40,7 @@ export interface MatrixToolbarProps {
 
 const FILTER_OPTIONS: Array<{ key: MatrixEntityKind | null; label: string }> = [
   { key: null, label: '全部' },
-  ...GROUP_ORDER.map((k) => ({ key: k as MatrixEntityKind | null, label: GROUP_META[k].name })),
+  ...GROUP_ORDER.map((k) => ({ key: k as MatrixEntityKind | null, label: GROUP_META[k].name }))
 ]
 
 export function MatrixToolbar({
@@ -58,7 +58,7 @@ export function MatrixToolbar({
   onUndo,
   onRedo,
   activeFilter,
-  onFilterChange,
+  onFilterChange
 }: MatrixToolbarProps): ReactElement {
   const zoomPct = Math.round((cellWidth / 36) * 100)
 
@@ -77,7 +77,9 @@ export function MatrixToolbar({
             className="w-1.5 h-1.5 rounded-full bg-amber-500"
             style={{ boxShadow: '0 0 6px #f59e0b' }}
           />
-          <span className="font-mono opacity-80">CH.{String(playheadChapter).padStart(2, '0')}</span>
+          <span className="font-mono opacity-80">
+            CH.{String(playheadChapter).padStart(2, '0')}
+          </span>
           <span className="truncate max-w-[140px]">{currentChapterTitle}</span>
         </span>
       )}
@@ -85,7 +87,7 @@ export function MatrixToolbar({
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
       {/* 编辑组：撤销/重做 */}
-      <div className="flex items-center gap-0.5">
+      {/*<div className="flex items-center gap-0.5">
         <button
           type="button"
           className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -104,7 +106,7 @@ export function MatrixToolbar({
         >
           <Redo2 className="size-3.5" />
         </button>
-      </div>
+      </div>*/}
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
@@ -119,7 +121,9 @@ export function MatrixToolbar({
         >
           <Minus className="size-3.5" />
         </button>
-        <span className="font-mono text-[11px] text-muted-foreground min-w-[42px] text-center px-1 tabular-nums">{zoomPct}%</span>
+        <span className="font-mono text-[11px] text-muted-foreground min-w-[42px] text-center px-1 tabular-nums">
+          {zoomPct}%
+        </span>
         <button
           type="button"
           className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -148,7 +152,9 @@ export function MatrixToolbar({
       >
         <History className="size-3.5" />
         <span className="hidden sm:inline">
-          {isCompleting ? '补全中…' : `补全历史${completableCount > 0 ? ` (${completableCount})` : ''}`}
+          {isCompleting
+            ? '补全中…'
+            : `补全历史${completableCount > 0 ? ` (${completableCount})` : ''}`}
         </span>
       </Button>
 
@@ -166,12 +172,12 @@ export function MatrixToolbar({
               type="button"
               onClick={() => onFilterChange(opt.key)}
               className={cn(
-                'inline-flex items-center px-2.5 py-0.5 rounded text-xs bg-surface-1 border transition-colors',
+                'inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-surface-1 border transition-colors',
                 active
                   ? color
                     ? 'text-white border-transparent'
                     : 'text-text bg-surface-3 border-border-strong'
-                  : 'text-muted-foreground border-border hover:text-text hover:border-border-strong',
+                  : 'text-muted-foreground border-border hover:text-text hover:border-border-strong'
               )}
               style={active && color ? { background: color, borderColor: color } : undefined}
               title={opt.key ? `只显示${opt.label}` : '显示全部分组'}
