@@ -865,6 +865,18 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
 
 // ── Agent 创建弹窗 ──
 
+/** 从 localStorage 读取全局默认温度 */
+function readDefaultTemperature(): number {
+  try {
+    const saved = window.localStorage.getItem('pi-agent.agent-config')
+    if (saved) {
+      const parsed = JSON.parse(saved) as { temperature?: number }
+      if (typeof parsed.temperature === 'number') return parsed.temperature
+    }
+  } catch { /* ignore */ }
+  return 0.7
+}
+
 interface AgentCreateDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -879,16 +891,7 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
   const [modelProvider, setModelProvider] = useState('')
   const [modelId, setModelId] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
-  const [temperature, setTemperature] = useState(() => {
-    const saved = window.localStorage.getItem('pi-agent.agent-config')
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as { temperature?: number }
-        if (typeof parsed.temperature === 'number') return parsed.temperature
-      } catch { /* ignore */ }
-    }
-    return 0.7
-  })
+  const [temperature, setTemperature] = useState(() => readDefaultTemperature())
   const [error, setError] = useState('')
 
   const canSubmit = id.trim().length > 0 && name.trim().length > 0
@@ -911,7 +914,7 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
     setModelProvider('')
     setModelId('')
     setSystemPrompt('')
-    setTemperature(0.7)
+    setTemperature(readDefaultTemperature())
     setError('')
   }
 
