@@ -84,17 +84,27 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
         }
       }
 
-      // 如果目标 Agent 配置了温度，注入 onPayload 钩子修改 provider 请求 payload
+      // 注入生成参数到 provider payload（temperature / max_tokens）
       // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
+      const inject: Record<string, unknown> = {}
       if (agentConfig.temperature !== undefined) {
-        const t = agentConfig.temperature
+        inject.temperature = agentConfig.temperature
+      }
+      // 从模型配置读取 maxTokens
+      if (agentConfig.model) {
+        const model = app.modelRegistry.find(agentConfig.model.provider, agentConfig.model.modelId)
+        if (model?.maxTokens) {
+          inject.max_tokens = model.maxTokens
+        }
+      }
+      if (Object.keys(inject).length > 0) {
         const piSession = threadSession.session as {
           agent?: { onPayload?: (payload: unknown) => unknown }
         }
         if (piSession.agent) {
           piSession.agent.onPayload = (payload: unknown) => ({
             ...(payload as Record<string, unknown>),
-            temperature: t,
+            ...inject,
           })
         }
       }

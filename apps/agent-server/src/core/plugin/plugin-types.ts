@@ -203,6 +203,10 @@ export interface PluginSessionOptions {
   signal?: AbortSignal
   /** LLM 温度（0-2，未配置则使用 SDK 默认） */
   temperature?: number
+  /** LLM 最大输出 token 数（未配置则从模型注册信息自动读取） */
+  maxTokens?: number
+  /** 响应格式：'json' 强制 JSON 输出（依赖 provider 支持 json_object） */
+  responseFormat?: 'json' | 'text'
 }
 
 /**

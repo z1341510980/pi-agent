@@ -224,6 +224,7 @@ export class NovelEntityGenerator {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage: userPrompt,
+      responseFormat: 'json',
     })
 
     try {
@@ -416,6 +417,7 @@ export class NovelEntityGenerator {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage: userPrompt,
+      responseFormat: 'json',
     })
 
     try {

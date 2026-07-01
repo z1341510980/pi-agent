@@ -71,6 +71,7 @@ export class NovelCharacterGenerator {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage: userPrompt,
+      responseFormat: 'json',
     })
 
     try {

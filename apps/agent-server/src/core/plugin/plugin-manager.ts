@@ -784,7 +784,8 @@ export class PluginManager {
           completeText += delta
         })
 
-        // 模型切换（如指定）
+        // 模型切换（如指定）+ 读取模型 maxTokens 配置
+        let modelMaxTokens: number | undefined
         if (options.modelId) {
           if (this.modelRegistry) {
             const targetModel = this.modelRegistry.find(
@@ -793,6 +794,7 @@ export class PluginManager {
             )
             if (targetModel) {
               await threadSession.session.setModel(targetModel)
+              modelMaxTokens = targetModel.maxTokens
             } else {
               logger.warn(
                 { provider: options.modelId.provider, modelId: options.modelId.modelId },
@@ -804,23 +806,44 @@ export class PluginManager {
               'ModelRegistry 未注入，无法切换模型，使用默认模型',
             )
           }
+        } else if (this.modelRegistry?.getAll) {
+          // 未指定 modelId 时，尝试从注册表第一个模型读取 maxTokens
+          const allModels = this.modelRegistry.getAll() as Array<{ maxTokens?: number }>
+          if (allModels.length > 0 && allModels[0].maxTokens) {
+            modelMaxTokens = allModels[0].maxTokens
+          }
         }
 
-        // 注入温度到 provider payload（如指定）
+        // 注入生成参数到 provider payload（temperature / max_tokens / response_format）
         // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
-        if (options.temperature !== undefined) {
-          const t = options.temperature
+        const effectiveMaxTokens = options.maxTokens ?? modelMaxTokens
+        const hasInjectables =
+          options.temperature !== undefined ||
+          effectiveMaxTokens !== undefined ||
+          options.responseFormat !== undefined
+
+        if (hasInjectables) {
+          const inject: Record<string, unknown> = {}
+          if (options.temperature !== undefined) inject.temperature = options.temperature
+          if (effectiveMaxTokens !== undefined) inject.max_tokens = effectiveMaxTokens
+          if (options.responseFormat === 'json') {
+            inject.response_format = { type: 'json_object' }
+          }
+
           const piSession = threadSession.session as {
             agent?: { onPayload?: (payload: unknown) => unknown }
           }
           if (piSession.agent) {
             piSession.agent.onPayload = (payload: unknown) => ({
               ...(payload as Record<string, unknown>),
-              temperature: t,
+              ...inject,
             })
-            logger.debug({ threadId, temperature: t }, '已注入 temperature 到 Pi Session')
+            logger.debug(
+              { threadId, ...inject },
+              '已注入生成参数到 Pi Session',
+            )
           } else {
-            logger.warn({ threadId, temperature: t }, 'session.agent 不可用，无法注入 temperature')
+            logger.warn({ threadId, ...inject }, 'session.agent 不可用，无法注入生成参数')
           }
         }
 
