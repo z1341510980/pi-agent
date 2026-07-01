@@ -63,7 +63,7 @@ export function MatrixToolbar({
   const zoomPct = Math.round((cellWidth / 36) * 100)
 
   return (
-    <div className="relative z-20 flex items-center gap-1 flex-wrap px-3 h-9 bg-surface-1 border-b border-border text-xs shrink-0">
+    <div className="relative z-20 flex items-center gap-1 flex-wrap px-3 min-h-9 py-1 bg-surface-1 border-b border-border text-xs shrink-0">
       {/* 章节号显示 + 当前章节 badge */}
       <span className="font-mono text-[11px] text-muted-foreground px-1 tabular-nums">
         {playheadChapter} / {totalChapters}

@@ -223,7 +223,7 @@ export function MatrixView({
         <div className="relative" style={{ width: `${totalWidth}px` }}>
           {/* 当前章节列高亮带（跨整列，从标尺下方开始避免被 sticky 标尺遮挡） */}
           <div
-            className="absolute top-[104px] bottom-0 pointer-events-none z-[5] border-x border-amber-500/30"
+            className="absolute top-[44px] bottom-0 pointer-events-none z-[5] border-x border-amber-500/30"
             style={{ left: `${highlightLeft}px`, width: `${cellWidth}px`, background: 'rgba(245, 158, 11, 0.07)' }}
             aria-hidden="true"
           />
@@ -231,7 +231,7 @@ export function MatrixView({
           {/* 拖入反馈：高亮目标章节列 */}
           {dragOverChapter != null && (
             <div
-              className="absolute top-[104px] bottom-0 pointer-events-none z-[7] border-x border-blue-500/60 rounded-sm"
+              className="absolute top-[44px] bottom-0 pointer-events-none z-[7] border-x border-blue-500/60 rounded-sm"
               style={{
                 left: `${SIDEBAR_W + (dragOverChapter - 1) * cellWidth}px`,
                 width: `${cellWidth}px`,
@@ -244,7 +244,7 @@ export function MatrixView({
           {/* 释放后闪烁反馈：蓝色脉冲 */}
           {flashChapter != null && (
             <div
-              className="absolute top-[104px] bottom-0 pointer-events-none z-[8] border-2 border-blue-500 rounded-sm animate-pulse"
+              className="absolute top-[44px] bottom-0 pointer-events-none z-[8] border-2 border-blue-500 rounded-sm animate-pulse"
               style={{
                 left: `${SIDEBAR_W + (flashChapter - 1) * cellWidth}px`,
                 width: `${cellWidth}px`,
@@ -256,8 +256,8 @@ export function MatrixView({
           )}
 
           {/* 标尺行（sticky top，垂直滚动时固定） */}
-          <div className="sticky top-0 z-40 flex h-[104px] border-b border-border bg-surface-1">
-            {/* 当前章节列在标尺内的高亮（top-0 到 104px） */}
+          <div className="sticky top-0 z-40 flex h-[44px] border-b border-border bg-surface-1">
+            {/* 当前章节列在标尺内的高亮（top-0 到 44px） */}
             <div
               className="absolute top-0 h-full pointer-events-none z-[1] border-x border-amber-500/30"
               style={{ left: `${highlightLeft}px`, width: `${cellWidth}px`, background: 'rgba(245, 158, 11, 0.07)' }}
@@ -272,7 +272,7 @@ export function MatrixView({
               />
             </div>
             {/* 左侧 sticky 列：实体＼章节 */}
-            <div className="sticky left-0 z-30 bg-surface-1 flex items-end justify-end pr-3 pb-2 border-r border-border shrink-0" style={{ width: `${SIDEBAR_W}px` }}>
+            <div className="sticky left-0 z-30 bg-surface-1 flex items-center justify-end pr-3 border-r border-border shrink-0" style={{ width: `${SIDEBAR_W}px` }}>
               <span className="font-serif text-[11px] text-hint tracking-wider">实体 ＼ 章节</span>
             </div>
             {/* 章节标尺单元格 */}
@@ -285,22 +285,12 @@ export function MatrixView({
                 return (
                   <div
                     key={ch}
-                    className="relative h-full shrink-0 flex flex-col justify-end items-center gap-1.5 pb-2 border-r border-border/40 cursor-pointer transition-colors hover:bg-muted/40"
+                    className="relative h-full shrink-0 flex flex-col justify-center items-center gap-1 border-r border-border/40 cursor-pointer transition-colors hover:bg-muted/40"
                     style={{ width: `${cellWidth}px` }}
                     onClick={() => handleRulerClick(ch)}
                     onContextMenu={(e) => handleRulerContextMenu(e, ch)}
                     data-tip={tip}
                   >
-                    <span className={`font-mono text-[11px] tracking-wide ${isCurrent ? 'text-amber-500 font-semibold' : 'text-hint'}`}>
-                      {String(ch).padStart(2, '0')}
-                    </span>
-                    {title && (
-                      <span
-                        className={`[writing-mode:vertical-rl] [text-orientation:mixed] font-serif text-xs tracking-[1.5px] whitespace-nowrap max-h-[70px] overflow-hidden leading-none ${isCurrent ? 'text-amber-500' : 'text-muted-foreground'}`}
-                      >
-                        {title}
-                      </span>
-                    )}
                     {ms.length > 0 && (
                       <div className="flex gap-0.5 absolute top-1 left-1/2 -translate-x-1/2">
                         {ms.map((m) => (
@@ -312,6 +302,9 @@ export function MatrixView({
                         ))}
                       </div>
                     )}
+                    <span className={`font-mono text-[11px] tracking-wide ${isCurrent ? 'text-amber-500 font-semibold' : 'text-hint'}`}>
+                      {String(ch).padStart(2, '0')}
+                    </span>
                   </div>
                 )
               })}
@@ -412,7 +405,7 @@ function GroupBlock({
       >
         <div
           className="sticky left-0 z-30 bg-surface-1 flex items-center gap-1.5 px-2.5 cursor-pointer border-r border-border shrink-0 hover:bg-muted/50 transition-colors"
-          style={{ width: `${SIDEBAR_W}px`, background: `rgba(${colorRgb}, 0.08)` }}
+          style={{ width: `${SIDEBAR_W}px`, boxShadow: `inset 3px 0 0 rgba(${colorRgb}, 0.5)` }}
           onClick={onToggleCollapse}
           data-tip={collapsed ? `展开${group.name}` : `折叠${group.name}`}
         >
@@ -509,8 +502,8 @@ function EntityRow({
       {/* 左侧 sticky 列：实体名（含 hover 联动提示） */}
       <div
         className={cn(
-          'group/entity sticky left-0 z-30 bg-surface-1 flex items-center gap-2 px-3 border-r border-border shrink-0',
-          isSelected ? 'bg-primary/15' : 'group-hover/entity:bg-muted/30',
+          'group/entity sticky left-0 z-30 flex items-center gap-2 px-3 border-r border-border shrink-0',
+          isSelected ? 'bg-primary/10' : 'bg-surface-1 group-hover/entity:bg-muted/50',
         )}
         style={{ width: `${SIDEBAR_W}px` }}
       >
