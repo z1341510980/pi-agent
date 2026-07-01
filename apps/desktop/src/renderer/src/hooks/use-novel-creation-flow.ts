@@ -200,13 +200,10 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             }
             return
           }
-          // 写作阶段开始累积内容占位（实际内容由 result 提供）
-          if (evt.phase === 'writing' && evt.data && typeof evt.data === 'object') {
-            const data = evt.data as { message?: string }
-            if (data.message) {
-              setChapterContent((prev) => (prev ? prev : data.message as string))
-            }
-          }
+          // phase_change 事件（准备阶段/心跳/开始生成）：只更新 events 时间线与 phase，
+          // 不覆盖 chapterContent（避免心跳消息被当作章节正文显示）。
+          // chapter-live-view 状态栏已通过 PHASE_LABELS 显示当前阶段，
+          // 心跳 message 作为 event 进入时间线供调试查看。
           return
         }
         case 'novel:checkpoint': {

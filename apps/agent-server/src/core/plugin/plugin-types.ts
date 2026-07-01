@@ -207,6 +207,8 @@ export interface PluginSessionOptions {
   maxTokens?: number
   /** 响应格式：'json' 强制 JSON 输出（依赖 provider 支持 json_object） */
   responseFormat?: 'json' | 'text'
+  /** LLM 调用超时时间（毫秒），默认 120000（2 分钟）。写作等长文本 Agent 建议设 300000+ */
+  timeoutMs?: number
 }
 
 /**

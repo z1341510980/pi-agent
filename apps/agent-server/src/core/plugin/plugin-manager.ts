@@ -867,7 +867,7 @@ export class PluginManager {
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
             // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
-            const timeoutMs = 120_000 // 2 分钟
+            const timeoutMs = options.timeoutMs ?? 120_000
             const timeoutPromise = new Promise<never>((_, reject) => {
               setTimeout(() => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)), timeoutMs)
             })
@@ -905,7 +905,7 @@ export class PluginManager {
             })
             try {
               // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
-              const timeoutMs = 120_000 // 2 分钟
+              const timeoutMs = options.timeoutMs ?? 120_000
               const timeoutPromise = new Promise<never>((_, reject) => {
                 setTimeout(() => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)), timeoutMs)
               })

@@ -335,10 +335,19 @@ export class NovelOrchestrator extends EventEmitter {
       'Agent 提示词构建完成',
     )
 
+    // 推送准备阶段进度，让前端知道 Agent 正在工作（不等 LLM 首 token）
+    const totalInputChars = systemPrompt.length + chapterContext.length + userMessage.length
+    this.emitProgress(options, phase, {
+      message: `${displayAgentName} 正在准备调用 LLM（输入约 ${totalInputChars} 字符）...`,
+    })
+
     // 创建独立 Session 并调用 LLM
     const startTime = Date.now()
     // 合并温度：持久化覆盖 > 角色默认值（NOVEL_AGENT_CONFIGS）
     const temperature = this.agentConfigStore.getByType(agentType)
+
+    // Writer Agent 生成长文本需要更长时间，使用 300s timeout
+    const timeoutMs = agentType === 'writer' ? 300_000 : 120_000
 
     const session = await this.context.createSession({
       systemPrompt,
@@ -347,6 +356,7 @@ export class NovelOrchestrator extends EventEmitter {
       tools: filteredTools as unknown as PluginToolDefinition[],
       signal: options?.signal,
       temperature,
+      timeoutMs,
     })
 
     // 在 try/catch/finally 中捕获结果与错误，finally 持久化到日志表
@@ -358,22 +368,44 @@ export class NovelOrchestrator extends EventEmitter {
       // 前端据此实时更新最后一条同类型 Agent 输出（streaming: true）。
       let streamedText = ''
       let deltaCount = 0
+      let firstDeltaReceived = false
       this.context.logger.info(
         { agentType, agentName: config.name, projectId, chapterNumber, userMessageLength: userMessage.length },
         'Agent promptStream 开始调用 LLM',
       )
-      const result = await session.promptStream((delta: string) => {
-        deltaCount++
-        streamedText += delta
+
+      // 首 token 心跳：LLM 处理大 prompt 时首 token 延迟可能很长，
+      // 期间没有 delta 事件。每 15s 推一个心跳 progress，让前端知道 Agent 还在工作。
+      const heartbeatTimer = setInterval(() => {
+        if (firstDeltaReceived) return
         this.emitProgress(options, phase, {
-          agentType: displayAgentType,
-          agentName: displayAgentName,
-          content: streamedText,
-          // 取最后 200 字符作为预览，避免 SSE 事件过大
-          preview: streamedText.slice(-200),
-          streaming: true,
-        } as AgentOutputData)
-      })
+          message: `${displayAgentName} 正在等待 LLM 响应...（已等待 ${Math.round((Date.now() - startTime) / 1000)}s）`,
+        })
+      }, 15_000)
+
+      let result: string
+      try {
+        result = await session.promptStream((delta: string) => {
+          if (!firstDeltaReceived) {
+            firstDeltaReceived = true
+            this.emitProgress(options, phase, {
+              message: `${displayAgentName} 开始生成内容...`,
+            })
+          }
+          deltaCount++
+          streamedText += delta
+          this.emitProgress(options, phase, {
+            agentType: displayAgentType,
+            agentName: displayAgentName,
+            content: streamedText,
+            // 取最后 200 字符作为预览，避免 SSE 事件过大
+            preview: streamedText.slice(-200),
+            streaming: true,
+          } as AgentOutputData)
+        })
+      } finally {
+        clearInterval(heartbeatTimer)
+      }
 
       this.context.logger.info(
         {
