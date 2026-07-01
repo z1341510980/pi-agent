@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3, Wand2 } from 'lucide-react'
@@ -40,6 +40,7 @@ import { ChapterLivePanel } from './chapter-live-view'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
+import { computeCharacterSpans } from './matrix/matrix-logic'
 import { ChapterContentEditor } from './chapter-content-editor'
 
 // ── 视图切换组件（矩阵 / 画布）──
@@ -104,12 +105,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const setViewMode = useNovelStore((s) => s.setViewMode)
   const characterHistory = useNovelStore((s) => s.characterHistory)
   const setCreationMode = useNovelStore((s) => s.setCreationMode)
+  const playheadChapter = useNovelStore((s) => s.playheadChapter)
 
   const queryClient = useQueryClient()
 
   // 创作流程
   const creationFlow = useNovelCreationFlow()
   const [creationChapterNumber, setCreationChapterNumber] = useState<number | undefined>(undefined)
+  // 互斥锁：防止 header 按钮快速双击导致 creationMode 标记与流程实际启动状态错位
+  // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
+  const startCreationLockRef = useRef(false)
 
   const [relayoutSignal, setRelayoutSignal] = useState(0)
   const [sidebarWidth, setSidebarWidth] = useState(240)
@@ -243,24 +248,51 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange') => {
     if (!currentProjectId || creationFlow.isRunning) return
-    const playhead = useNovelStore.getState().playheadChapter
-    const chapter = chapters.find((c) => c.chapterNumber === playhead)
-    if (!chapter) return
-    setCreationMode(mode)
-    setCreationChapterNumber(playhead)
-    if (mode === 'manual') {
-      // 模式1：从矩阵本章列读取已编排实体
-      const arranged = {
-        characterIds: characterHistory.filter((h) => h.chapterNumber === playhead).map((h) => h.characterId),
-        conflictIds: conflicts.filter((c) => c.firstChapter === playhead).map((c) => c.id),
-        foreshadowIds: foreshadows.filter((f) => f.firstChapter === playhead).map((f) => f.id),
+    // ref 级互斥锁：creationFlow.isRunning 是 React state（setState 异步生效），
+    // 快速双击时第二次点击仍读到 false；用 ref 在 try 块执行期间（含 await）立即拦截
+    if (startCreationLockRef.current) return
+    startCreationLockRef.current = true
+    try {
+      const playhead = playheadChapter
+      const chapter = chapters.find((c) => c.chapterNumber === playhead)
+      if (!chapter) return
+      setCreationMode(mode)
+      setCreationChapterNumber(playhead)
+      if (mode === 'manual') {
+        // 模式1：从矩阵本章列读取已编排实体
+        // 过滤逻辑与矩阵 computeCellSymbol 判定保持一致：
+        // - 角色：computeCharacterSpans 把 characterHistory.chapterNumber 分组成连续区间，playhead 落在区间内即出场
+        // - 冲突：computeSpanRange(firstChapter, lastChapter) → [first, last ?? first]，playhead 落在区间内
+        // - 伏笔：plant=firstChapter、payoff=recoverByChapter，playhead 在 [first, recoverByChapter] 内（recoverByChapter 为空表示未回收，延续到末章）
+        const arranged = {
+          characterIds: characters.filter((c) => {
+            const history = characterHistory.filter((h) => h.characterId === c.id)
+            const spans = computeCharacterSpans(history)
+            return spans.some((s) => playhead >= s.start && playhead <= s.end)
+          }).map((c) => c.id),
+          conflictIds: conflicts.filter((c) => {
+            if (c.firstChapter == null) return false
+            const end = c.lastChapter ?? c.firstChapter
+            return playhead >= c.firstChapter && playhead <= end
+          }).map((c) => c.id),
+          foreshadowIds: foreshadows.filter((f) => {
+            if (f.firstChapter == null) return false
+            return playhead >= f.firstChapter && (f.recoverByChapter == null || playhead <= f.recoverByChapter)
+          }).map((f) => f.id),
+        }
+        await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities: arranged })
+      } else {
+        // 模式2：AI 编排
+        await creationFlow.aiArrange(currentProjectId, playhead)
       }
-      await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities: arranged })
-    } else {
-      // 模式2：AI 编排
-      await creationFlow.aiArrange(currentProjectId, playhead)
+    } catch (err) {
+      console.error('[NovelWorkspace] 启动创作失败:', err)
+      setCreationMode(null)
+      setCreationChapterNumber(undefined)
+    } finally {
+      startCreationLockRef.current = false
     }
-  }, [currentProjectId, chapters, creationFlow, characterHistory, conflicts, foreshadows, setCreationMode])
+  }, [currentProjectId, chapters, creationFlow, characterHistory, conflicts, foreshadows, setCreationMode, setCreationChapterNumber, playheadChapter, characters])
 
   // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
   // 直接以原章节号启动创作流程（覆盖旧内容）
@@ -339,6 +371,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 创作激活状态：运行中或处于非 idle 阶段时，右侧栏切换为创作预览面板
   const isCreationActive = creationFlow.isRunning || creationFlow.phase !== 'idle'
 
+  // playhead 章是否存在：header 创作按钮依赖此判断，避免章节不存在时点击静默无反应
+  const playheadChapterExists = chapters.some((c) => c.chapterNumber === playheadChapter)
+
   return (
     <ReactFlowProvider>
       <div className="flex h-screen flex-col bg-app-bg text-text overflow-hidden">
@@ -367,8 +402,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               size="sm"
               variant="default"
               onClick={() => handleStartCreation('manual')}
-              disabled={!currentProject || creationFlow.isRunning}
-              title="模式1：从矩阵本章列读取已编排实体，启动多 Agent 创作流程"
+              disabled={!currentProject || creationFlow.isRunning || !playheadChapterExists}
+              title={playheadChapterExists ? '模式1：从矩阵本章列读取已编排实体，启动多 Agent 创作流程' : '请先选择章节'}
             >
               <Sparkles className="size-3.5" />
               <span className="hidden sm:inline">手动编排</span>
@@ -377,8 +412,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               size="sm"
               variant="outline"
               onClick={() => handleStartCreation('ai-arrange')}
-              disabled={!currentProject || creationFlow.isRunning}
-              title="模式2：AI 自动编排实体并生成正文"
+              disabled={!currentProject || creationFlow.isRunning || !playheadChapterExists}
+              title={playheadChapterExists ? '模式2：AI 自动编排实体并生成正文' : '请先选择章节'}
             >
               <Wand2 className="size-3.5" />
               <span className="hidden sm:inline">AI编排</span>
