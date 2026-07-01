@@ -30,7 +30,7 @@ function ProjectNodeImpl({ data, selected }: NodeProps<ProjectNodeType>): ReactE
   return (
     <div
       className={cn(
-        'group relative w-[220px] rounded-lg border bg-card text-card-foreground shadow-md transition-all',
+        'group relative w-[220px] rounded-lg border bg-card text-card-foreground shadow-md transition-[box-shadow]',
         'border-violet-500/40 dark:border-violet-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
@@ -45,7 +45,7 @@ function ProjectNodeImpl({ data, selected }: NodeProps<ProjectNodeType>): ReactE
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
           title="删除节点"
-          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 pointer-events-none transition-opacity before:absolute before:-inset-[10px] before:content-[''] hover:bg-destructive/10 hover:text-destructive active:scale-[0.96] group-hover:pointer-events-auto group-hover:opacity-100"
         >
           <X className="size-3" />
         </button>
@@ -76,13 +76,13 @@ function ProjectNodeImpl({ data, selected }: NodeProps<ProjectNodeType>): ReactE
           <span>{STAGE_LABELS[entity.currentStage] ?? entity.currentStage}</span>
         </div>
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>第 {entity.currentChapter} 章</span>
+          <span className="tabular-nums">第 {entity.currentChapter} 章</span>
           <span>{STATUS_LABELS[entity.status] ?? entity.status}</span>
         </div>
         {entity.targetWords > 0 && (
           <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className="h-full bg-violet-500 transition-all"
+              className="h-full bg-violet-500 transition-[width]"
               style={{ width: `${progress}%` }}
             />
           </div>

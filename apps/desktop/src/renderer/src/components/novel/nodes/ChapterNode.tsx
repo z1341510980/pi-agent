@@ -21,7 +21,7 @@ function ChapterNodeImpl({ data, selected }: NodeProps<ChapterNodeType>): ReactE
   return (
     <div
       className={cn(
-        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-[box-shadow]',
         'border-emerald-500/40 dark:border-emerald-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
@@ -36,7 +36,7 @@ function ChapterNodeImpl({ data, selected }: NodeProps<ChapterNodeType>): ReactE
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
           title="删除节点"
-          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 pointer-events-none transition-opacity before:absolute before:-inset-[10px] before:content-[''] hover:bg-destructive/10 hover:text-destructive active:scale-[0.96] group-hover:pointer-events-auto group-hover:opacity-100"
         >
           <X className="size-3" />
         </button>
@@ -44,7 +44,7 @@ function ChapterNodeImpl({ data, selected }: NodeProps<ChapterNodeType>): ReactE
 
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-emerald-500/10 rounded-t-lg">
         <FileText className="size-3.5 text-emerald-500 dark:text-emerald-400 shrink-0" />
-        <span className="text-xs font-medium text-emerald-600 dark:text-emerald-300">
+        <span className="tabular-nums text-xs font-medium text-emerald-600 dark:text-emerald-300">
           第 {entity.chapterNumber} 章
         </span>
         <span className={cn('ml-auto size-2 rounded-full', status.dot)} aria-hidden="true" />
@@ -57,7 +57,7 @@ function ChapterNodeImpl({ data, selected }: NodeProps<ChapterNodeType>): ReactE
           <span className={cn('rounded px-1.5 py-0.5', status.className)}>
             {status.label}
           </span>
-          <span className="text-muted-foreground">{entity.wordCount} 字</span>
+          <span className="tabular-nums text-muted-foreground">{entity.wordCount} 字</span>
         </div>
         {entity.volume > 0 && (
           <div className="text-[10px] text-hint">卷 {entity.volume}</div>

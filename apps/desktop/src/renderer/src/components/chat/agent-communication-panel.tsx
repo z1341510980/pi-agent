@@ -140,7 +140,7 @@ function ChannelsPanel(): ReactElement {
             >
               <HashIcon className="size-3 shrink-0" />
               <span className="truncate font-[760]">{ch.name}</span>
-              <Badge variant="secondary" className="ml-auto px-1 py-0 text-[9px] shrink-0">
+              <Badge variant="secondary" className="ml-auto px-1 py-0 text-[9px] shrink-0 tabular-nums">
                 {ch.messageCount}
               </Badge>
             </button>

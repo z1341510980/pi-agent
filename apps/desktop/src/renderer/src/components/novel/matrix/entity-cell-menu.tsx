@@ -178,7 +178,7 @@ export function EntityCellMenu({
         e.stopPropagation()
       }}
     >
-      <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wide border-b border-border mb-1 truncate">
+      <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wide border-b border-border mb-1 truncate tabular-nums">
         {entityName} · 第 {chapter} 章
       </div>
       {editable && (

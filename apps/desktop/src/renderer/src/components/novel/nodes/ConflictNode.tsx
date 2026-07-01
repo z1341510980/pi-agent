@@ -40,7 +40,7 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
   return (
     <div
       className={cn(
-        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-[box-shadow]',
         'border-rose-500/40 dark:border-rose-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
@@ -55,7 +55,7 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
           title="删除节点"
-          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 pointer-events-none transition-opacity before:absolute before:-inset-[10px] before:content-[''] hover:bg-destructive/10 hover:text-destructive active:scale-[0.96] group-hover:pointer-events-auto group-hover:opacity-100"
         >
           <X className="size-3" />
         </button>
@@ -75,10 +75,10 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
         <div>
           <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-0.5">
             <span>强度</span>
-            <span>{entity.intensity}/10</span>
+            <span className="tabular-nums">{entity.intensity}/10</span>
           </div>
           <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
-            <div className={cn('h-full transition-all', intensityColor)} style={{ width: `${intensityPct}%` }} />
+            <div className={cn('h-full transition-[width]', intensityColor)} style={{ width: `${intensityPct}%` }} />
           </div>
         </div>
         <div className="text-[10px] text-subtle">

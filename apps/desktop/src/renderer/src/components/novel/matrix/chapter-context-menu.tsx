@@ -93,7 +93,7 @@ export function ChapterContextMenu({
         e.stopPropagation()
       }}
     >
-      <div className="px-2 py-1 text-[10px] text-muted-foreground uppercase tracking-wide border-b border-border mb-1">
+      <div className="px-2 py-1 text-[10px] text-muted-foreground uppercase tracking-wide border-b border-border mb-1 tabular-nums">
         第 {chapterNumber} 章{chapterTitle ? ` · ${chapterTitle}` : ''}
       </div>
 

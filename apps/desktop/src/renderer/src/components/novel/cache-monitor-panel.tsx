@@ -168,13 +168,13 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
                       <layer.icon className="size-2.5" />
                       {layer.name} · {layer.label}
                     </span>
-                    <span className="text-muted-foreground">
+                    <span className="text-muted-foreground tabular-nums">
                       {layer.name === 'DYNAMIC' ? '不缓存' : `${layer.hitRate}%`}
                     </span>
                   </div>
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                     <div
-                      className={cn('h-full transition-all', layer.color)}
+                      className={cn('h-full transition-[width] duration-300', layer.color)}
                       style={{ width: `${layer.name === 'DYNAMIC' ? 100 : layer.hitRate}%` }}
                     />
                   </div>

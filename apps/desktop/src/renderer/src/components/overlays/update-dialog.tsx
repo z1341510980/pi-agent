@@ -128,7 +128,7 @@ export function UpdateDialog({
         {info?.releaseNotes && (
           <div className="grid gap-1 max-h-48 overflow-auto">
             <span className="text-subtle text-xs font-[760]">更新日志</span>
-            <pre className="bg-surface-2 border border-border rounded-md px-2.5 py-2 text-xs font-mono whitespace-pre-wrap break-anywhere m-0">
+            <pre className="bg-surface-2 rounded-md px-2.5 py-2 text-xs font-mono whitespace-pre-wrap break-anywhere m-0 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)]">
               {info.releaseNotes}
             </pre>
           </div>
@@ -139,7 +139,7 @@ export function UpdateDialog({
           <div className="grid gap-2">
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">下载中…</span>
-              <span className="font-mono text-text">{percent.toFixed(1)}%</span>
+              <span className="font-mono text-text tabular-nums">{percent.toFixed(1)}%</span>
             </div>
             <div
               className="h-2 w-full rounded-full bg-surface-2 overflow-hidden"
@@ -153,7 +153,7 @@ export function UpdateDialog({
                 style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
               />
             </div>
-            <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono">
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono tabular-nums">
               <span>{formatBytes(transferred)} / {formatBytes(total)}</span>
               <span>{formatSpeed(speed)}</span>
             </div>

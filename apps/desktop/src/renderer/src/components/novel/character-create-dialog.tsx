@@ -242,7 +242,7 @@ export function CharacterCreateDialog({
             <Sparkles className="size-4 text-primary" />
             AI 角色创建
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-pretty">
             {step === 'input'
               ? '描述角色的核心风格，AI 将自动生成完整角色设定'
               : '审阅并编辑 AI 生成的角色设定'}
@@ -261,7 +261,7 @@ export function CharacterCreateDialog({
                 className="min-h-[100px]"
                 disabled={generating}
               />
-              <div className="flex justify-end text-[10px] text-muted-foreground">
+              <div className="flex justify-end text-[10px] text-muted-foreground tabular-nums">
                 {coreStyle.length}/{MAX_CORE_STYLE}
               </div>
             </div>

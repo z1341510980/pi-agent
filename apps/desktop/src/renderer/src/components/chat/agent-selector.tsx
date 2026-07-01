@@ -343,10 +343,10 @@ export function AgentSelector({ disabled = false }: AgentSelectorProps): ReactEl
                       </Badge>
                     )}
                     {agent.id !== 'default' && (
-                      <span className="flex items-center gap-0.5 shrink-0">
+                      <span className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
-                          className="p-0.5 hover:text-accent rounded"
+                          className="size-7 flex items-center justify-center hover:text-accent rounded"
                           onClick={(e) => {
                             e.stopPropagation()
                             handleOpenEdit(agent)
@@ -356,7 +356,7 @@ export function AgentSelector({ disabled = false }: AgentSelectorProps): ReactEl
                         </button>
                         <button
                           type="button"
-                          className="p-0.5 hover:text-destructive rounded"
+                          className="size-7 flex items-center justify-center hover:text-destructive rounded"
                           onClick={(e) => {
                             e.stopPropagation()
                             handleOpenDelete(agent)

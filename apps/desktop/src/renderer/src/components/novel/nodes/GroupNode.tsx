@@ -78,7 +78,7 @@ function GroupNodeImpl({ data, selected }: NodeProps<GroupNodeType>): ReactEleme
   return (
     <div
       className={cn(
-        'group relative w-[220px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[220px] rounded-lg border bg-card text-card-foreground shadow-sm transition-[box-shadow]',
         style.border,
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
@@ -96,12 +96,12 @@ function GroupNodeImpl({ data, selected }: NodeProps<GroupNodeType>): ReactEleme
           e.stopPropagation()
           setExpanded((v) => !v)
         }}
-        className="flex w-full items-center gap-2 border-b border-border/60 px-3 py-1.5 rounded-t-lg hover:bg-muted/30"
+        className="flex w-full items-center gap-2 border-b border-border/60 px-3 py-1.5 rounded-t-lg hover:bg-muted/30 active:scale-[0.96]"
         title={expanded ? '点击折叠' : '点击展开'}
       >
         <Icon className={cn('size-3.5 shrink-0', style.text)} />
         <span className={cn('text-xs font-medium', style.text)}>{style.label}集合</span>
-        <span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        <span className="ml-auto tabular-nums rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
           {entities.length}
         </span>
         {expanded ? (

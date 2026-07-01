@@ -133,7 +133,7 @@ function AgentOutputCard({ output }: AgentOutputCardProps): ReactElement {
         >
           {output.agentName}
         </Badge>
-        <span className="text-[10px] text-muted-foreground">
+        <span className="text-[10px] text-muted-foreground tabular-nums">
           {formatTime(output.timestamp)}
         </span>
         {isStreaming && (
@@ -191,7 +191,7 @@ function AgentOutputCard({ output }: AgentOutputCardProps): ReactElement {
           className="h-5 px-0 text-[10px]"
           onClick={() => setExpanded(true)}
         >
-          查看全部 {output.content.length} 字
+          查看全部 <span className="tabular-nums">{output.content.length}</span> 字
         </Button>
       )}
     </div>
@@ -208,7 +208,7 @@ function UserMessageBubble({ message }: UserMessageBubbleProps): ReactElement {
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-2">
-        <span className="text-[10px] text-muted-foreground">
+        <span className="text-[10px] text-muted-foreground tabular-nums">
           {formatTime(message.timestamp)}
         </span>
         <Badge variant="outline" className="text-[10px] font-medium bg-primary/15 text-primary border-primary/40">
@@ -350,7 +350,7 @@ export function ChapterLivePanel({
         <FileText className="size-4 text-emerald-500 shrink-0" />
         <span className="text-sm font-semibold truncate">章节实时预览</span>
         {chapterNumber != null && (
-          <Badge variant="secondary" className="text-[10px] shrink-0">第 {chapterNumber} 章</Badge>
+          <Badge variant="secondary" className="text-[10px] shrink-0 tabular-nums">第 {chapterNumber} 章</Badge>
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {isRunning && (
@@ -380,7 +380,7 @@ export function ChapterLivePanel({
             <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium text-muted-foreground">
               <PenLine className="size-3" />
               <span>创作时间线</span>
-              <Badge variant="secondary" className="text-[10px] h-4 px-1">
+              <Badge variant="secondary" className="text-[10px] h-4 px-1 tabular-nums">
                 {timeline.length}
               </Badge>
             </div>
@@ -455,16 +455,16 @@ export function ChapterLivePanel({
 
         {/* 字数统计 */}
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground px-1">
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1 tabular-nums">
             <FileText className="size-2.5" />
             {wordCount} 字
           </span>
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1 tabular-nums">
             <Clock className="size-2.5" />
             {readTime}
           </span>
           {result?.stateChanges && result.stateChanges.length > 0 && (
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-[10px] tabular-nums">
               {result.stateChanges.length} 项状态变更
             </Badge>
           )}
@@ -474,7 +474,7 @@ export function ChapterLivePanel({
       {/* 底部固定交互区：检查点决策（上方提示条） + 用户输入（运行期间始终显示） + 完成操作（叠加模式） */}
       <div className="shrink-0 border-t border-border">
         {/* 检查点决策（出现时在输入框上方显示，不替代输入框） */}
-        <AnimatePresence>
+        <AnimatePresence initial={false}>
           {isCheckpoint && currentCheckpoint && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}

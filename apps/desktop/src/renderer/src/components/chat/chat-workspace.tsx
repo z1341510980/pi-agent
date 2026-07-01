@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FolderOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import type { BrowserConfig } from '@repo/config/shared'
@@ -479,7 +480,6 @@ export function ChatWorkspace({
                 onNewSession={handleNewSession}
                 onRenameSession={handleRenameSession}
                 onDeleteSession={handleDeleteSession}
-                onOpenSettings={onOpenSettings}
               />
             </div>
             <ResizableSplitter
@@ -528,11 +528,22 @@ export function ChatWorkspace({
                 className="size-8 text-subtle hover:text-text hover:bg-surface-3"
                 aria-label={rightPanelOpen ? '收起右侧栏' : '展开右侧栏'}
               >
-                {rightPanelOpen ? (
-                  <PanelRightClose className="size-4" aria-hidden="true" />
-                ) : (
-                  <PanelRightOpen className="size-4" aria-hidden="true" />
-                )}
+                <AnimatePresence initial={false} mode="popLayout">
+                  <motion.span
+                    key={rightPanelOpen ? 'close' : 'open'}
+                    initial={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                    animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                    exit={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                    transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
+                    className="flex items-center justify-center"
+                  >
+                    {rightPanelOpen ? (
+                      <PanelRightClose className="size-4" aria-hidden="true" />
+                    ) : (
+                      <PanelRightOpen className="size-4" aria-hidden="true" />
+                    )}
+                  </motion.span>
+                </AnimatePresence>
               </Button>
             </div>
           </header>

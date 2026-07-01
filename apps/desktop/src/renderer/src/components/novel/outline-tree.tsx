@@ -83,7 +83,7 @@ export function OutlineTree({
       <button
         type="button"
         onClick={handleCreateVolume}
-        className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-colors"
+        className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
       >
         <Plus className="size-3" /> 新建卷
       </button>
@@ -192,7 +192,7 @@ function ChapterRow({
             : 'text-text-secondary hover:bg-muted/50',
         )}
       >
-        <span className="text-muted-foreground shrink-0">第{chapter.chapterNumber}章</span>
+        <span className="text-muted-foreground shrink-0 tabular-nums">第{chapter.chapterNumber}章</span>
         <span className="truncate flex-1">{chapter.title || '未命名'}</span>
         {isPlayhead && <span className="size-1.5 rounded-full bg-primary shrink-0" />}
       </button>

@@ -49,7 +49,7 @@ function LocationNodeImpl({ data, selected }: NodeProps<LocationNodeType>): Reac
   return (
     <div
       className={cn(
-        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-[box-shadow]',
         'border-cyan-500/40 dark:border-cyan-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
@@ -63,7 +63,7 @@ function LocationNodeImpl({ data, selected }: NodeProps<LocationNodeType>): Reac
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
           title="删除节点"
-          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 pointer-events-none transition-opacity before:absolute before:-inset-[10px] before:content-[''] hover:bg-destructive/10 hover:text-destructive active:scale-[0.96] group-hover:pointer-events-auto group-hover:opacity-100"
         >
           <X className="size-3" />
         </button>
@@ -91,7 +91,7 @@ function LocationNodeImpl({ data, selected }: NodeProps<LocationNodeType>): Reac
         </div>
         <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
           <div
-            className={cn('h-full transition-all', SIGNIFICANCE_COLOR[entity.significance] ?? 'bg-cyan-500')}
+            className={cn('h-full transition-[width]', SIGNIFICANCE_COLOR[entity.significance] ?? 'bg-cyan-500')}
             style={{
               width: `${
                 entity.significance === 'critical' ? 100
@@ -104,7 +104,7 @@ function LocationNodeImpl({ data, selected }: NodeProps<LocationNodeType>): Reac
         </div>
         <div className="flex items-center justify-between text-[10px] text-subtle">
           <span>状态: {STATUS_LABELS[entity.status] ?? entity.status}</span>
-          {entity.firstChapter != null && <span>首现: 第 {entity.firstChapter} 章</span>}
+          {entity.firstChapter != null && <span className="tabular-nums">首现: 第 {entity.firstChapter} 章</span>}
         </div>
       </div>
       <Handle type="source" position={Position.Bottom} className="!bg-cyan-500" />

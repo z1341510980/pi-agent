@@ -160,7 +160,7 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
             onClick={() => setDropdownOpen((v) => !v)}
             disabled={updateMutation.isPending || gateQuery.isLoading}
             className={cn(
-              'inline-flex items-center gap-1 rounded-md px-1.5 py-1',
+              'inline-flex items-center gap-1 rounded-md px-2 h-8',
               'bg-transparent border border-border cursor-pointer',
               'hover:bg-surface-3 disabled:opacity-50 disabled:cursor-not-allowed',
               'transition-colors text-[12px]!',

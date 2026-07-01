@@ -41,15 +41,15 @@ export function FactCard({ fact, onDelete, compact }: FactCardProps) {
   const conf = confidenceLabel(fact.confidence)
 
   return (
-    <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-xs grid gap-2">
+    <div className="rounded-lg bg-card px-3 py-2.5 text-xs grid gap-2 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)]">
       <div className="flex items-start justify-between gap-2">
-        <p className="text-text leading-relaxed m-0 flex-1 min-w-0 break-words">
+        <p className="text-text leading-relaxed m-0 flex-1 min-w-0 break-words text-pretty">
           {fact.content}
         </p>
         {onDelete && (
           <Button
             variant="ghost"
-            size="icon-xs"
+            size="icon-sm"
             className="shrink-0 text-muted-foreground hover:text-danger"
             aria-label="删除事实"
             onClick={() => onDelete(fact.id)}

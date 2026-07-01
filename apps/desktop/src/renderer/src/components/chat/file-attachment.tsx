@@ -1,4 +1,5 @@
 import { useState, type ReactElement, type MouseEvent } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { FileText, Image, X, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { FileAttachment } from './types'
@@ -131,15 +132,26 @@ export function FileAttachmentCard({
         {(isCode && attachment.content && attachment.encoding === 'utf-8') && (
           <button
             type="button"
-            className="shrink-0 p-0.5 rounded hover:bg-surface-2 transition-colors"
+            className="shrink-0 size-7 flex items-center justify-center rounded hover:bg-surface-2 transition-colors"
             onClick={handleToggleExpand}
             aria-label={expanded ? '收起' : '展开'}
           >
-            {expanded ? (
-              <ChevronUp className="size-3.5 text-muted-foreground" />
-            ) : (
-              <ChevronDown className="size-3.5 text-muted-foreground" />
-            )}
+            <AnimatePresence initial={false} mode="popLayout">
+              <motion.span
+                key={expanded ? 'up' : 'down'}
+                initial={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                exit={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
+                className="flex items-center justify-center"
+              >
+                {expanded ? (
+                  <ChevronUp className="size-3.5 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="size-3.5 text-muted-foreground" />
+                )}
+              </motion.span>
+            </AnimatePresence>
           </button>
         )}
 
@@ -147,7 +159,7 @@ export function FileAttachmentCard({
         {removable && onRemove && (
           <button
             type="button"
-            className="shrink-0 p-0.5 rounded hover:bg-destructive/10 transition-colors"
+            className="shrink-0 size-7 flex items-center justify-center rounded hover:bg-destructive/10 transition-colors"
             onClick={handleRemoveClick}
             aria-label="移除附件"
           >
@@ -162,7 +174,7 @@ export function FileAttachmentCard({
           <img
             src={attachment.thumbnail}
             alt={attachment.name}
-            className="max-h-32 rounded border border-border object-contain"
+            className="max-h-32 rounded object-contain outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
           />
         </div>
       )}

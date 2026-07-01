@@ -191,9 +191,9 @@ export function EntityCreateDialog({
             <span className="mr-1.5" style={{ color: meta.color }}>{meta.icon}</span>
             新建{meta.name}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-pretty">
             {step === 'input'
-              ? <>输入一句核心描述，可直接创建或用 AI 补全完整字段{defaultChapter != null ? `，起始章节为第 ${defaultChapter} 章` : ''}。</>
+              ? <>输入一句核心描述，可直接创建或用 AI 补全完整字段{defaultChapter != null ? <>，起始章节为第 <span className="tabular-nums">{defaultChapter}</span> 章</> : ''}。</>
               : <>AI 已生成字段，可调整后确认创建。</>}
           </DialogDescription>
         </DialogHeader>

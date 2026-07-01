@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'framer-motion'
-import { BookOpen, Home, MessageSquare } from 'lucide-react'
+import { BookOpen, Home, MessageSquare, SettingsIcon } from 'lucide-react'
 import { browserConfig, initEmbeddedServerPort } from '@repo/config/browser'
 import { I18nProvider } from './i18n'
 import { ThemeProvider } from './components/theme-provider'
@@ -54,9 +54,6 @@ export default function App(): ReactElement {
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <ThemeProvider>
-            {view === 'settings' ? (
-              <SettingsPage onClose={() => setView('home')} />
-            ) : (
               <div className="flex h-screen w-screen overflow-hidden bg-app-bg">
                 {/* ── 底座左边栏（导航 rail） ── */}
                 <nav
@@ -81,11 +78,20 @@ export default function App(): ReactElement {
                     active={view === 'novel'}
                     onClick={() => setView('novel')}
                   />
+                  <RailButton
+                    icon={SettingsIcon}
+                    label="设置"
+                    active={view === 'settings'}
+                    onClick={() => setView('settings')}
+                    className="mt-auto"
+                  />
                 </nav>
 
                 {/* ── 内容区 ── */}
                 <div className="min-w-0 flex-1 overflow-hidden">
-                  {view === 'novel' ? (
+                  {view === 'settings' ? (
+                    <SettingsPage onClose={() => setView('home')} />
+                  ) : view === 'novel' ? (
                     <NovelWorkspace onClose={() => setView('home')} />
                   ) : view === 'chat' ? (
                     <ChatWorkspace
@@ -102,7 +108,6 @@ export default function App(): ReactElement {
                   )}
                 </div>
               </div>
-            )}
             {/* 自动更新对话框：发现新版本时自动展示 */}
             <UpdateDialog
               status={status}
@@ -126,18 +131,20 @@ function RailButton({
   label,
   active,
   onClick,
+  className,
 }: {
   icon: React.ComponentType<{ className?: string }>
   label: string
   active: boolean
   onClick: () => void
+  className?: string
 }): ReactElement {
   return (
     <Button
       variant="ghost"
       size="icon"
       onClick={onClick}
-      className={`size-8 ${
+      className={`size-9 ${className ?? ''} active:scale-[0.96] transition-[background-color,color,transform] ${
         active
           ? 'bg-surface-3 text-text'
           : 'text-subtle hover:text-text hover:bg-surface-3'

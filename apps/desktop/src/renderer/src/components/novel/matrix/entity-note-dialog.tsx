@@ -80,9 +80,9 @@ export function EntityNoteDialog({
             <span className="mr-1.5" style={{ color: meta.color }}>{meta.icon}</span>
             修改批注
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-pretty">
             为「{entityName ?? ''}」
-            {chapter != null ? `在第 ${chapter} 章` : ''}
+            {chapter != null ? <>在第 <span className="tabular-nums">{chapter}</span> 章</> : ''}
             {existingMarkerId ? '更新批注' : '添加批注'}。
             批注显示在实体行右侧（· 标记），hover 查看内容。
           </DialogDescription>

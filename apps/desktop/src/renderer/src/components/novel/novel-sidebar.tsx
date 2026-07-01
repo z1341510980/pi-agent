@@ -224,7 +224,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                       <div className="flex items-center gap-1.5 mt-0.5 pl-3.5 text-[10px] text-muted-foreground">
                         <span>{p.genre}</span>
                         <span aria-hidden="true">·</span>
-                        <span>第 {p.currentChapter} 章</span>
+                        <span className="tabular-nums">第 {p.currentChapter} 章</span>
                       </div>
                     </button>
                   </li>
@@ -262,7 +262,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
         <DialogContent>
           <DialogHeader>
             <DialogTitle>新建小说项目</DialogTitle>
-            <DialogDescription>创建一个新的小说创作项目</DialogDescription>
+            <DialogDescription className="text-pretty">创建一个新的小说创作项目</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
@@ -529,7 +529,7 @@ function ProjectTree({
         <div className="flex items-center gap-1.5 px-1.5 py-1">
           <BookOpen className="size-3.5 text-emerald-500 shrink-0" />
           <span className="text-xs font-medium text-text">大纲树</span>
-          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px]">
+          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px] tabular-nums">
             {chapters.length}
           </Badge>
         </div>
@@ -732,7 +732,7 @@ function CollapsibleGroup({
           <Chevron className="size-3.5 text-muted-foreground shrink-0" />
           <Icon className={cn('size-3.5 shrink-0', accent)} />
           <span className="text-xs font-medium text-text truncate">{label}</span>
-          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px]">
+          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px] tabular-nums">
             {count}
           </Badge>
         </button>
@@ -744,7 +744,7 @@ function CollapsibleGroup({
             key="add-button"
             type="button"
             onClick={onAdd}
-            className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-[color,background-color,transform] active:scale-[0.96]"
           >
             <Plus className="size-3" />
             <span>{addLabel}</span>
@@ -798,7 +798,7 @@ function EntityItem({
           onDelete()
         }}
         title="删除"
-        className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive shrink-0"
+        className="opacity-0 group-hover:opacity-100 transition-[opacity,color,transform] active:scale-[0.96] text-muted-foreground hover:text-destructive shrink-0 p-1 -m-1"
       >
         <Trash2 className="size-3" />
       </button>
@@ -902,7 +902,7 @@ function ChapterItem({
           onClick={() => onSelectChapter(chapter)}
         >
           <div className={cn('text-xs truncate', selected ? 'text-primary font-medium' : 'text-text')}>
-            <span className="text-muted-foreground">第 {chapter.chapterNumber} 章</span> · {title}
+            <span className="text-muted-foreground tabular-nums">第 {chapter.chapterNumber} 章</span> · {title}
           </div>
         </div>
         <button
@@ -912,7 +912,7 @@ function ChapterItem({
             onDelete()
           }}
           title="删除"
-          className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive shrink-0"
+          className="opacity-0 group-hover:opacity-100 transition-[opacity,color,transform] active:scale-[0.96] text-muted-foreground hover:text-destructive shrink-0 p-1 -m-1"
         >
           <Trash2 className="size-3" />
         </button>
@@ -922,7 +922,7 @@ function ChapterItem({
         <div className="ml-3 pl-2 border-l border-border/60 mt-0.5 space-y-1">
           {/* 出场角色 */}
           <div>
-            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5">
+            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5 tabular-nums">
               出场角色（{chapterCharacters.length}）
             </div>
             {chapterCharacters.length === 0 ? (
@@ -947,7 +947,7 @@ function ChapterItem({
 
           {/* 章节关联伏笔 */}
           <div>
-            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5">
+            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5 tabular-nums">
               伏笔（{chapterForeshadows.length}）
             </div>
             {chapterForeshadows.length === 0 ? (
@@ -974,7 +974,7 @@ function ChapterItem({
 
           {/* 章节关联冲突 */}
           <div>
-            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5">
+            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5 tabular-nums">
               冲突（{chapterConflicts.length}）
             </div>
             {chapterConflicts.length === 0 ? (

@@ -91,8 +91,8 @@ export function ResizableSplitter({
       className={cn(
         'shrink-0 group relative z-10',
         direction === 'horizontal'
-          ? 'w-[2px] cursor-col-resize hover:w-[3px] active:w-[3px]'
-          : 'h-[2px] cursor-row-resize hover:h-[3px] active:h-[3px]',
+          ? 'w-[2px] cursor-col-resize hover:w-[3px] active:w-[3px] before:absolute before:inset-x-[-19px] before:inset-y-0 before:content-[""]'
+          : 'h-[2px] cursor-row-resize hover:h-[3px] active:h-[3px] before:absolute before:inset-y-[-19px] before:inset-x-0 before:content-[""]',
         'transition-[width,height] duration-100',
         className,
       )}

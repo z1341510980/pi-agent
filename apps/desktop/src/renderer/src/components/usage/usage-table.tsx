@@ -71,10 +71,10 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
   }, [limit, totalPages])
 
   return (
-    <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
+    <div className="bg-surface-2 rounded-lg grid gap-2 p-3 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)]">
       <div className="flex items-center justify-between">
         <p className="text-subtle text-xs font-[760] m-0">调用明细</p>
-        <span className="text-muted-foreground text-[10px]">
+        <span className="text-muted-foreground text-[10px] tabular-nums">
           {total > 0 ? `${offset + 1}-${Math.min(offset + limit, total)} / ${total}` : '0 条'}
         </span>
       </div>
@@ -118,20 +118,20 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
                 <span className="truncate" title={item.model}>
                   {item.model.length > 16 ? `${item.model.slice(0, 14)}…` : item.model}
                 </span>
-                <span className="text-right text-muted-foreground">
+                <span className="text-right text-muted-foreground tabular-nums">
                   {formatTokens(item.inputTokens)}
                 </span>
-                <span className="text-right text-muted-foreground">
+                <span className="text-right text-muted-foreground tabular-nums">
                   {formatTokens(item.outputTokens)}
                 </span>
-                <span className="text-right font-mono">{formatCost(item.costUsd)}</span>
+                <span className="text-right font-mono tabular-nums">{formatCost(item.costUsd)}</span>
                 <span
                   className="truncate text-muted-foreground"
                   title={item.provider ?? ''}
                 >
                   {item.provider ? (item.provider.length > 8 ? `${item.provider.slice(0, 6)}…` : item.provider) : '—'}
                 </span>
-                <span className="text-right text-muted-foreground">
+                <span className="text-right text-muted-foreground tabular-nums">
                   {formatTime(item.createdAt)}
                 </span>
               </div>
@@ -140,7 +140,7 @@ export function UsageTable({ limit = 10 }: UsageTableProps): ReactElement {
 
           {/* 分页 */}
           <div className="flex items-center justify-between pt-1">
-            <span className="text-muted-foreground text-[10px]">
+            <span className="text-muted-foreground text-[10px] tabular-nums">
               第 {currentPage} / {totalPages} 页
             </span>
             <div className="flex gap-1">

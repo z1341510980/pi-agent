@@ -139,13 +139,13 @@ export function ModelsPage(): ReactElement {
                 </div>
                 <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
                   {model.contextWindow && (
-                    <span title="上下文窗口">{formatTokens(model.contextWindow)} ctx</span>
+                    <span className="tabular-nums" title="上下文窗口">{formatTokens(model.contextWindow)} ctx</span>
                   )}
                   {model.maxTokens && (
-                    <span title="最大输出">{formatTokens(model.maxTokens)} out</span>
+                    <span className="tabular-nums" title="最大输出">{formatTokens(model.maxTokens)} out</span>
                   )}
                   <button
-                    className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="relative rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors before:absolute before:-inset-[10px] before:content-[''] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     onClick={() => handleDeleteCustom(model.id)}
                     aria-label={`删除自定义模型 ${model.name}`}
                   >
@@ -209,7 +209,7 @@ export function ModelsPage(): ReactElement {
                     </div>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
                       {model.contextWindow && (
-                        <span title="上下文窗口">
+                        <span className="tabular-nums" title="上下文窗口">
                           {formatTokens(model.contextWindow)} ctx
                         </span>
                       )}
@@ -276,7 +276,7 @@ function AddCustomModelForm({ onSubmit, onCancel }: AddCustomModelFormProps): Re
         <span className="text-sm font-[780]">添加自定义模型</span>
         <button
           type="button"
-          className="rounded p-1 text-muted-foreground hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="relative rounded p-1 text-muted-foreground hover:bg-surface-3 before:absolute before:-inset-[10px] before:content-[''] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           onClick={onCancel}
           aria-label="取消"
         >

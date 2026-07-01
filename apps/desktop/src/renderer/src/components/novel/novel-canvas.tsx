@@ -1034,7 +1034,7 @@ export function NovelCanvas({
 
       {/* 节点计数 + 性能警告 */}
       <div className="absolute bottom-3 left-3 z-10 flex items-center gap-2">
-        <div className="flex items-center gap-1.5 rounded-md border border-border bg-card/90 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur-sm">
+        <div className="flex items-center gap-1.5 rounded-md border border-border bg-card/90 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur-sm tabular-nums">
           <Layers className="size-3" />
           <span>{nodeCount} 节点</span>
           {isCompact && <span className="text-amber-500">· 紧凑模式</span>}

@@ -344,7 +344,7 @@ export function MessageStream({
         {isEmpty ? (
           <EmptyState onExampleClick={onExampleClick} />
         ) : (
-          <AnimatePresence mode="wait">
+          <AnimatePresence initial={false} mode="wait">
             <motion.div
               key={sessionKey ?? 'default'}
               initial={{ opacity: 0 }}

@@ -12,7 +12,7 @@ function CharacterNodeImpl({ data, selected }: NodeProps<CharacterNodeType>): Re
   return (
     <div
       className={cn(
-        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-all',
+        'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-[box-shadow]',
         'border-blue-500/40 dark:border-blue-400/40',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
@@ -27,7 +27,7 @@ function CharacterNodeImpl({ data, selected }: NodeProps<CharacterNodeType>): Re
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
           title="删除节点"
-          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+          className="absolute top-1 right-1 z-10 flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 pointer-events-none transition-opacity before:absolute before:-inset-[10px] before:content-[''] hover:bg-destructive/10 hover:text-destructive active:scale-[0.96] group-hover:pointer-events-auto group-hover:opacity-100"
         >
           <X className="size-3" />
         </button>

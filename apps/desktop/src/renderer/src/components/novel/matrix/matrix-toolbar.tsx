@@ -114,7 +114,7 @@ export function MatrixToolbar({
       <div className="inline-flex items-center bg-surface-3 border border-border rounded-md overflow-hidden">
         <button
           type="button"
-          className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={onZoomOut}
           title="缩小单元格"
           disabled={cellWidth <= 24}
@@ -126,7 +126,7 @@ export function MatrixToolbar({
         </span>
         <button
           type="button"
-          className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={onZoomIn}
           title="放大单元格"
           disabled={cellWidth >= 56}
@@ -172,7 +172,7 @@ export function MatrixToolbar({
               type="button"
               onClick={() => onFilterChange(opt.key)}
               className={cn(
-                'inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-surface-1 border transition-colors',
+                'inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-surface-1 border transition-[color,background-color,border-color,transform] active:scale-[0.96]',
                 active
                   ? color
                     ? 'text-white border-transparent'

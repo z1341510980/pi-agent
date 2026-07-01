@@ -195,10 +195,10 @@ function CostTooltip({
 }): ReactElement | null {
   if (!active || !payload?.length) return null
   return (
-    <div className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-xs shadow-lg">
+    <div className="bg-surface-2 rounded-lg px-3 py-2 text-xs shadow-[0_4px_16px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)]">
       <p className="font-[760] mb-1">{label}</p>
       {payload.map((p) => (
-        <p key={p.name} className="m-0" style={{ color: p.color }}>
+        <p key={p.name} className="m-0 tabular-nums" style={{ color: p.color }}>
           {p.name}: {p.name === 'cost' ? `$${p.value.toFixed(4)}` : p.value.toLocaleString()}
         </p>
       ))}
@@ -217,10 +217,10 @@ function ModelTooltip({
 }): ReactElement | null {
   if (!active || !payload?.length) return null
   return (
-    <div className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-xs shadow-lg">
+    <div className="bg-surface-2 rounded-lg px-3 py-2 text-xs shadow-[0_4px_16px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)]">
       <p className="font-[760] mb-1">{label}</p>
       {payload.map((p) => (
-        <p key={p.name} className="m-0" style={{ color: p.color }}>
+        <p key={p.name} className="m-0 tabular-nums" style={{ color: p.color }}>
           {p.name === 'costUsd' ? '成本' : p.name === 'calls' ? '调用' : p.name}:{' '}
           {p.name === 'costUsd' ? `$${p.value.toFixed(4)}` : p.value.toLocaleString()}
         </p>
@@ -267,11 +267,11 @@ export function UsageCharts({ summary, isLoading, isOnline }: UsageChartsProps):
   if (isLoading) {
     return (
       <div className="grid gap-2.5">
-        <div className="bg-surface-2 border border-border rounded-lg p-3 animate-pulse">
+        <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] p-3 animate-pulse">
           <div className="h-3 bg-muted/30 rounded w-24 mb-3" />
           <div className="h-[160px] bg-muted/20 rounded" />
         </div>
-        <div className="bg-surface-2 border border-border rounded-lg p-3 animate-pulse">
+        <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] p-3 animate-pulse">
           <div className="h-3 bg-muted/30 rounded w-24 mb-3" />
           <div className="h-[160px] bg-muted/20 rounded" />
         </div>
@@ -282,7 +282,7 @@ export function UsageCharts({ summary, isLoading, isOnline }: UsageChartsProps):
   if (!summary) {
     return (
       <div className="grid gap-2.5">
-        <div className="bg-surface-2 border border-border rounded-lg p-3">
+        <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] p-3">
           <p className="text-muted-foreground text-xs">暂无图表数据</p>
         </div>
       </div>
@@ -299,7 +299,7 @@ export function UsageCharts({ summary, isLoading, isOnline }: UsageChartsProps):
   return (
     <div className="grid gap-2.5">
       {/* 成本趋势折线图 */}
-      <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
+      <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] grid gap-2 p-3">
         <div className="flex items-center justify-between flex-wrap gap-1">
           <p className="text-subtle text-xs font-[760] m-0">成本趋势</p>
           <div className="flex items-center gap-1">
@@ -369,7 +369,7 @@ export function UsageCharts({ summary, isLoading, isOnline }: UsageChartsProps):
 
       {/* 按 Provider 分组柱状图 */}
       {providerData.length > 0 && (
-        <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
+        <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] grid gap-2 p-3">
           <p className="text-subtle text-xs font-[760] m-0">Provider 明细</p>
           <div className="h-[180px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -389,7 +389,7 @@ export function UsageCharts({ summary, isLoading, isOnline }: UsageChartsProps):
 
       {/* 模型明细柱状图 */}
       {modelData.length > 0 && (
-        <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
+        <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] grid gap-2 p-3">
           <p className="text-subtle text-xs font-[760] m-0">模型明细</p>
           <div className="h-[180px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -409,7 +409,7 @@ export function UsageCharts({ summary, isLoading, isOnline }: UsageChartsProps):
 
       {/* Agent 明细柱状图 */}
       {agentData.length > 0 && (
-        <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
+        <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] grid gap-2 p-3">
           <p className="text-subtle text-xs font-[760] m-0">Agent 明细</p>
           <div className="h-[180px]">
             <ResponsiveContainer width="100%" height="100%">

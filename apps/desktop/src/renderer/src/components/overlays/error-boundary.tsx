@@ -36,8 +36,8 @@ function DefaultErrorFallback({
         <AlertTriangleIcon className="h-7 w-7 text-destructive" />
       </div>
       <div className="space-y-1.5">
-        <h2 className="text-lg font-[780]">出现错误</h2>
-        <p className="text-sm text-muted-foreground max-w-[400px]">
+        <h2 className="text-lg font-[780] text-balance">出现错误</h2>
+        <p className="text-sm text-muted-foreground max-w-[400px] text-pretty">
           应用遇到了意外错误。你可以尝试重新加载，或返回首页继续操作。
         </p>
       </div>
@@ -46,7 +46,7 @@ function DefaultErrorFallback({
         <summary className="text-xs text-muted-foreground cursor-pointer hover:text-text">
           查看错误详情
         </summary>
-        <pre className="mt-2 p-3 bg-surface-2 border border-border rounded-md text-xs font-mono text-left overflow-auto max-h-[200px]">
+        <pre className="mt-2 p-3 bg-surface-2 rounded-md text-xs font-mono text-left overflow-auto max-h-[200px] shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)]">
           <code>{error.message}</code>
           {error.stack && `\n\n${error.stack}`}
         </pre>

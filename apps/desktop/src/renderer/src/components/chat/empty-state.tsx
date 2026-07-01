@@ -22,10 +22,10 @@ export function EmptyState(_props: EmptyStateProps): ReactElement {
       role="region"
       aria-label="空状态引导"
     >
-      <h1 className="text-4xl font-bold text-text leading-tight">
+      <h1 className="text-4xl font-bold text-text leading-tight text-balance">
         PI Agent
       </h1>
-      <p className="text-2xl font-semibold text-text">
+      <p className="text-2xl font-semibold text-text text-pretty">
         你的职场超能力
       </p>
     </div>

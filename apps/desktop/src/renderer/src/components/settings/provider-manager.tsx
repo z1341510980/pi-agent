@@ -399,7 +399,7 @@ function ProviderCard({ provider, onEdit, onDelete }: ProviderCardProps): ReactE
         </div>
       </div>
       {provider.models.length > 0 && (
-        <span className="text-xs text-muted-foreground whitespace-nowrap">{provider.models.length} 模型</span>
+        <span className="tabular-nums text-xs text-muted-foreground whitespace-nowrap">{provider.models.length} 模型</span>
       )}
       <Badge variant="secondary" className="shrink-0">
         {provider.registered ? '已注册' : '本地'}
@@ -791,7 +791,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
                     </div>
                     <button
                       type="button"
-                      className="mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground hover:text-danger transition-colors"
+                      className="relative mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground hover:text-danger transition-colors before:absolute before:-inset-3 before:content-[''] active:scale-[0.96]"
                       aria-label={`移除 ${m.id}`}
                       onClick={() => {
                         const updated = [...models]

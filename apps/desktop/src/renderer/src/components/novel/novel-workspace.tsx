@@ -51,7 +51,7 @@ interface ViewSwitcherProps {
 }
 
 function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
-  const base = 'inline-flex items-center gap-1 h-7 px-2.5 text-[11px] rounded-md transition-colors'
+  const base = 'inline-flex items-center gap-1 h-7 px-2.5 text-[11px] rounded-md transition-[color,background-color,border-color,transform] active:scale-[0.96]'
   const active = 'bg-surface-3 text-text border border-border'
   const inactive = 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent'
   return (
@@ -392,7 +392,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               </span>
             )}
             {nodeCount > 0 && (
-              <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5">
+              <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 tabular-nums">
                 {nodeCount} 节点
               </span>
             )}
@@ -583,7 +583,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 <Database className="size-4 text-primary" />
                 缓存诊断
               </DialogTitle>
-              <DialogDescription className="text-xs">
+              <DialogDescription className="text-xs text-pretty">
                 提示词缓存命中率监控
               </DialogDescription>
             </DialogHeader>
@@ -601,7 +601,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 <ScrollText className="size-4 text-primary" />
                 Agent 调用日志
               </DialogTitle>
-              <DialogDescription className="text-xs">
+              <DialogDescription className="text-xs text-pretty">
                 记录每次 Agent 调用的完整上下文（系统提示词 / 章节上下文 / 任务指令 / 工具 / 结果）
               </DialogDescription>
             </DialogHeader>

@@ -44,7 +44,7 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
 
   return (
     <div
-      className="grid grid-rows-[var(--titlebar-height)_minmax(0,1fr)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text"
+      className="grid grid-rows-[var(--titlebar-height)_minmax(0,1fr)] h-full overflow-hidden bg-app-bg text-text"
       aria-label="设置中心"
     >
       {/* ── 顶部标题栏 ── */}
@@ -83,7 +83,7 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
                 type="button"
                 onClick={() => setSection(item.id)}
                 aria-current={active ? 'page' : undefined}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-left active:scale-[0.96] transition-[background-color,color,transform] ${
                   active
                     ? 'bg-primary/10 text-primary font-semibold'
                     : 'text-muted-foreground hover:bg-surface-2 hover:text-text'

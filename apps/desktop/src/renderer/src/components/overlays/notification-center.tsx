@@ -117,14 +117,14 @@ export function NotificationCenter({
       <Button
         variant="ghost"
         size="sm"
-        className="relative h-8 w-8 p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="relative h-9 w-9 p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         onClick={handleToggleOpen}
         aria-label={unreadCount > 0 ? `通知中心（${unreadCount} 条未读）` : '通知中心'}
       >
         <Bell className="h-4 w-4" aria-hidden="true" />
         {unreadCount > 0 && (
           <span
-            className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold text-destructive-foreground"
+            className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold text-destructive-foreground tabular-nums"
             aria-hidden="true"
           >
             {unreadCount > 99 ? '99+' : unreadCount}
@@ -142,7 +142,7 @@ export function NotificationCenter({
       )}
 
       {/* 通知面板：从右侧滑入（300ms） */}
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {isOpen && (
           <motion.div
             key="notification-panel"
@@ -150,7 +150,7 @@ export function NotificationCenter({
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 20, opacity: 0 }}
             transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-            className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg border border-border bg-popover shadow-lg"
+            className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg bg-popover shadow-[0_8px_32px_rgba(0,0,0,0.18),0_2px_8px_rgba(0,0,0,0.08)]"
             role="dialog"
             aria-label="通知列表"
           >
@@ -159,7 +159,7 @@ export function NotificationCenter({
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold">通知</span>
                 {unreadCount > 0 && (
-                  <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">
+                  <Badge variant="destructive" className="px-1.5 py-0 text-[10px] tabular-nums">
                     {unreadCount} 未读
                   </Badge>
                 )}
@@ -190,7 +190,7 @@ export function NotificationCenter({
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-7 w-7 p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-9 w-9 p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   onClick={() => setIsOpen(false)}
                   aria-label="关闭通知面板"
                 >
@@ -273,16 +273,16 @@ export function NotificationCenter({
                           </Badge>
                         </div>
                         {n.message && (
-                          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground text-pretty">
                             {n.message}
                           </p>
                         )}
-                        <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                        <span className="mt-0.5 block text-[10px] text-muted-foreground tabular-nums">
                           {formatTime(n.timestamp)}
                         </span>
                       </div>
                       <button
-                        className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-surface-3 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="shrink-0 rounded p-1.5 text-muted-foreground opacity-0 transition-opacity hover:bg-surface-3 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         onClick={(e) => {
                           e.stopPropagation()
                           onDismiss(n.id)

@@ -428,12 +428,12 @@ function GroupBlock({
           <span className={cn('text-[9px] text-hint transition-transform w-2 inline-block', collapsed && '-rotate-90')}>▼</span>
           <span className="text-[10px] leading-none" style={{ color }}>{icon}</span>
           <span className="font-semibold text-xs text-text tracking-wide">{group.name}</span>
-          <span className="ml-auto font-mono text-[10px] text-hint bg-surface-1 border border-border px-1.5 py-px rounded">
+          <span className="ml-auto font-mono text-[10px] text-hint bg-surface-1 border border-border px-1.5 py-px rounded tabular-nums">
             {group.entities.length}
           </span>
           <button
             type="button"
-            className="ml-1 size-6 inline-flex items-center justify-center rounded border border-dashed border-border text-muted-foreground hover:border-primary hover:bg-primary/10 hover:text-primary transition-all"
+            className="ml-1 size-6 inline-flex items-center justify-center rounded border border-dashed border-border text-muted-foreground hover:border-primary hover:bg-primary/10 hover:text-primary transition-[color,background-color,border-color,transform] active:scale-[0.96]"
             onClick={(e) => {
               e.stopPropagation()
               onContextMenuGroupEmpty?.(group.id)

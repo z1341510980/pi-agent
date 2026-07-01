@@ -168,7 +168,7 @@ export function ChapterContentEditor({
           >
             «
           </button>
-          <span className="cce-chapter-label">
+          <span className="cce-chapter-label tabular-nums">
             第 {playheadChapter} 章
             {currentChapter?.title ? ` · ${currentChapter.title}` : ''}
           </span>
@@ -224,7 +224,7 @@ export function ChapterContentEditor({
           <button type="button" onClick={() => editor?.chain().focus().undo().run()} disabled={isCreationActive || !editor?.can().undo()} title="撤销">↶</button>
           <button type="button" onClick={() => editor?.chain().focus().redo().run()} disabled={isCreationActive || !editor?.can().redo()} title="重做">↷</button>
         </div>
-        <div className="cce-word-count">{wordCount} 字</div>
+        <div className="cce-word-count tabular-nums">{wordCount} 字</div>
       </header>
       <div className="cce-body">
         {currentChapter ? (

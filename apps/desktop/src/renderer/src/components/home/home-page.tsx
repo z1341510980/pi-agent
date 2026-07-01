@@ -87,10 +87,10 @@ export function HomePage({
             π
           </div>
           <div className="min-w-0">
-            <h1 className="text-2xl font-[780] leading-tight m-0">
-              {browserConfig.appName}
-            </h1>
-            <p className="text-sm text-muted-foreground m-0 mt-1">
+            <h1 className="text-2xl font-[780] leading-tight m-0 text-balance">
+            {browserConfig.appName}
+          </h1>
+          <p className="text-sm text-muted-foreground m-0 mt-1 text-pretty">
               基于 Pi SDK 的 AG-UI 桌面 Agent 助手
               <span className="ml-2 inline-flex items-center gap-1">
                 <span
@@ -275,7 +275,7 @@ function EntryCard({
     <button
       type="button"
       onClick={onClick}
-      className="group text-left rounded-lg border border-border bg-surface-2 p-4 hover:border-primary/40 hover:bg-surface-3 transition-colors"
+      className="group text-left rounded-lg border border-border bg-surface-2 p-4 hover:border-primary/40 hover:bg-surface-3 active:scale-[0.96] transition-[border-color,background-color,transform]"
     >
       <div className="flex items-start gap-3">
         <div className={`size-9 rounded-lg bg-surface-3 flex items-center justify-center shrink-0 ${accent}`}>
@@ -284,9 +284,9 @@ function EntryCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1">
             <span className="text-sm font-[760] text-text">{title}</span>
-            <ArrowRight className="size-3 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+            <ArrowRight className="size-3 text-muted-foreground opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-[opacity,transform]" />
           </div>
-          <p className="text-xs text-muted-foreground m-0 mt-1">{description}</p>
+          <p className="text-xs text-muted-foreground m-0 mt-1 text-pretty">{description}</p>
         </div>
       </div>
     </button>

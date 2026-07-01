@@ -156,7 +156,7 @@ export function SecurityPage(): ReactElement {
                 type="button"
                 onClick={() => handleModeChange(m)}
                 disabled={saving || loading}
-                className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
+                className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors active:scale-[0.96] ${
                   active
                     ? 'border-accent bg-accent/10'
                     : 'border-border bg-surface-3 hover:bg-surface-3/70'
@@ -165,7 +165,7 @@ export function SecurityPage(): ReactElement {
                 <Icon className={`size-4 shrink-0 mt-0.5 ${active ? 'text-accent' : 'text-muted-foreground'}`} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-[760]">{cfg.label}</div>
-                  <p className="text-xs text-muted-foreground m-0 mt-0.5 leading-relaxed">{cfg.desc}</p>
+                  <p className="text-pretty text-xs text-muted-foreground m-0 mt-0.5 leading-relaxed">{cfg.desc}</p>
                 </div>
                 {active && (
                   <ShieldCheckIcon className="size-4 text-accent shrink-0 mt-0.5" />

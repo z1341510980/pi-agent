@@ -111,8 +111,8 @@ export function EntitySpanDialog({
             <span className="mr-1.5" style={{ color: meta.color }}>{meta.icon}</span>
             编辑范围
           </DialogTitle>
-          <DialogDescription>
-            修改「{entity.name}」的起止章节。章节号范围 1–{maxChapter}。
+          <DialogDescription className="text-pretty">
+            修改「{entity.name}」的起止章节。章节号范围 <span className="tabular-nums">1–{maxChapter}</span>。
           </DialogDescription>
         </DialogHeader>
         <div className="py-2 space-y-3">

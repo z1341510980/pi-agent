@@ -93,7 +93,7 @@ export function CreationProgressOverlay({
   const isCheckpoint = phase === 'checkpoint_narrative' || phase === 'checkpoint_review'
 
   return (
-    <AnimatePresence>
+    <AnimatePresence initial={false}>
       <motion.div
         initial={{ opacity: 0, y: -12, scale: 0.95 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -130,7 +130,7 @@ export function CreationProgressOverlay({
           </div>
 
           {/* 底部：百分比 + 已用时间 */}
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums">
             <span>{progress}%</span>
             {isRunning && (
               <span className="flex items-center gap-1">
