@@ -52,6 +52,7 @@ export const agentsRoute: FastifyPluginAsync = async (app) => {
     tools: z.array(z.string()).optional().describe('可用工具列表'),
     identity: z.string().max(5000).optional().describe('身份模板（identity.md 内容）'),
     personality: z.string().max(5000).optional().describe('人格模板（personality.md 内容）'),
+    temperature: z.number().min(0).max(2).optional().describe('LLM 温度（0-2，未配置则使用 SDK 默认）'),
   })
 
   app.post('/api/agents', async (req, reply) => {

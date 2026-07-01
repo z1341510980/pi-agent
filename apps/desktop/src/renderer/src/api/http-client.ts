@@ -237,6 +237,7 @@ export interface AgentInfo {
   model?: { provider: string; modelId: string }
   systemPrompt?: string
   tools?: string[]
+  temperature?: number
 }
 
 /** 频道信息 */
