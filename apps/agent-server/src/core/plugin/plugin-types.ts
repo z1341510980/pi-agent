@@ -201,6 +201,8 @@ export interface PluginSessionOptions {
   modelId?: { provider: string; modelId: string }
   /** 中止信号 */
   signal?: AbortSignal
+  /** LLM 温度（0-2，未配置则使用 SDK 默认） */
+  temperature?: number
 }
 
 /**

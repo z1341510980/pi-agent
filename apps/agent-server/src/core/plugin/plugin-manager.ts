@@ -806,6 +806,24 @@ export class PluginManager {
           }
         }
 
+        // 注入温度到 provider payload（如指定）
+        // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
+        if (options.temperature !== undefined) {
+          const t = options.temperature
+          const piSession = threadSession.session as {
+            agent?: { onPayload?: (payload: unknown) => unknown }
+          }
+          if (piSession.agent) {
+            piSession.agent.onPayload = (payload: unknown) => ({
+              ...(payload as Record<string, unknown>),
+              temperature: t,
+            })
+            logger.debug({ threadId, temperature: t }, '已注入 temperature 到 Pi Session')
+          } else {
+            logger.warn({ threadId, temperature: t }, 'session.agent 不可用，无法注入 temperature')
+          }
+        }
+
         // 中止信号转发
         if (options.signal) {
           options.signal.addEventListener(
