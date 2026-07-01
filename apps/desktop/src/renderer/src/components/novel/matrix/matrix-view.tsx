@@ -216,7 +216,11 @@ export function MatrixView({
       ref={scrollContainerRef}
       className="overflow-x-auto overflow-y-auto h-full isolate"
       onScroll={(e) => {
-        e.currentTarget.style.setProperty('--scroll-x', `${e.currentTarget.scrollLeft}px`)
+        const x = e.currentTarget.scrollLeft
+        const els = e.currentTarget.querySelectorAll<HTMLElement>('[data-sticky-title]')
+        for (let i = 0; i < els.length; i++) {
+          els[i].style.transform = `translateX(${x}px)`
+        }
       }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -415,10 +419,11 @@ function GroupBlock({
             width: `${SIDEBAR_W}px`,
             backgroundColor: 'var(--color-surface-1)',
             backgroundImage: `linear-gradient(rgba(${colorRgb}, 0.08), rgba(${colorRgb}, 0.08))`,
-            transform: 'translateX(var(--scroll-x, 0px))',
+            willChange: 'transform',
           }}
           onClick={onToggleCollapse}
           data-tip={collapsed ? `展开${group.name}` : `折叠${group.name}`}
+          data-sticky-title=""
         >
           <span className={cn('text-[9px] text-hint transition-transform w-2 inline-block', collapsed && '-rotate-90')}>▼</span>
           <span className="text-[10px] leading-none" style={{ color }}>{icon}</span>
