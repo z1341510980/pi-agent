@@ -21,6 +21,33 @@ import { success } from '../lib/api-response.js'
 import { validateBody } from '../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 
+/**
+ * 创建 Agent 的请求体 schema
+ *
+ * 用于 POST /api/agents；PUT /api/agents/:id 使用其 partial 形式（updateAgentSchema）
+ */
+export const createAgentSchema = z.object({
+  id: z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/).describe('Agent ID（小写字母、数字、下划线、连字符）'),
+  name: z.string().min(1).max(128).describe('Agent 名称'),
+  description: z.string().max(500).optional().describe('Agent 描述'),
+  model: z.object({
+    provider: z.string(),
+    modelId: z.string(),
+  }).optional().describe('模型选择'),
+  systemPrompt: z.string().max(10000).optional().describe('系统提示词覆盖'),
+  tools: z.array(z.string()).optional().describe('可用工具列表'),
+  identity: z.string().max(5000).optional().describe('身份模板（identity.md 内容）'),
+  personality: z.string().max(5000).optional().describe('人格模板（personality.md 内容）'),
+  temperature: z.number().min(0).max(2).optional().describe('LLM 温度（0-2，未配置则使用 SDK 默认）'),
+})
+
+/**
+ * 更新 Agent 的请求体 schema（所有字段可选）
+ *
+ * 用于 PUT /api/agents/:id
+ */
+export const updateAgentSchema = createAgentSchema.partial()
+
 export const agentsRoute: FastifyPluginAsync = async (app) => {
   const manager = app.subagentManager
   const channel = manager.getChannel()
@@ -40,21 +67,6 @@ export const agentsRoute: FastifyPluginAsync = async (app) => {
    *
    * Body: createAgentSchema
    */
-  const createAgentSchema = z.object({
-    id: z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/).describe('Agent ID（小写字母、数字、下划线、连字符）'),
-    name: z.string().min(1).max(128).describe('Agent 名称'),
-    description: z.string().max(500).optional().describe('Agent 描述'),
-    model: z.object({
-      provider: z.string(),
-      modelId: z.string(),
-    }).optional().describe('模型选择'),
-    systemPrompt: z.string().max(10000).optional().describe('系统提示词覆盖'),
-    tools: z.array(z.string()).optional().describe('可用工具列表'),
-    identity: z.string().max(5000).optional().describe('身份模板（identity.md 内容）'),
-    personality: z.string().max(5000).optional().describe('人格模板（personality.md 内容）'),
-    temperature: z.number().min(0).max(2).optional().describe('LLM 温度（0-2，未配置则使用 SDK 默认）'),
-  })
-
   app.post('/api/agents', async (req, reply) => {
     const input = validateBody(createAgentSchema, req, reply)
     if (!input) return reply
@@ -87,10 +99,8 @@ export const agentsRoute: FastifyPluginAsync = async (app) => {
    * PUT /api/agents/:id
    * 更新 Agent 配置
    *
-   * Body: createAgentSchema（所有字段可选）
+   * Body: updateAgentSchema（createAgentSchema 的 partial）
    */
-  const updateAgentSchema = createAgentSchema.partial()
-
   app.put<{ Params: { id: string } }>(
     '/api/agents/:id',
     async (req, reply) => {

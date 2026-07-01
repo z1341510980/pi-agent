@@ -1,17 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import Database from 'better-sqlite3'
-import { z } from 'zod'
 import { SqliteAgentStore } from '../core/agent/agent-persistence.js'
 import { AgentManager } from '../core/agent/subagent-tool.js'
 import { AgentChannel } from '../core/agent/agent-channel.js'
+import { createAgentSchema } from '../routes/agents.route.js'
 
-// 验证 Zod schema 边界校验（与 agents.route.ts 中 createAgentSchema 同款约束）
-// route 中 schema 未导出，这里内联同款 schema 验证 temperature 边界行为
-const createAgentSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  temperature: z.number().min(0).max(2).optional(),
-})
+// 直接引用 agents.route.ts 中导出的 createAgentSchema，
+// 确保 route schema 的 temperature 约束被修改时测试会失败
 
 describe('agents route temperature schema 校验', () => {
   it('temperature=0.7 通过校验', () => {
