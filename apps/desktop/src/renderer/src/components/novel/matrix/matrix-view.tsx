@@ -393,19 +393,22 @@ function GroupBlock({
 }: GroupBlockProps): ReactElement {
   const filtered = false // activeFilter 已在父组件过滤
   return (
-    <div className={cn(filtered && 'opacity-40')}>
+    <div
+      className={cn(filtered && 'opacity-40')}
+      style={{ background: `rgba(${colorRgb}, 0.03)` }}
+    >
       {/* 分组标题行：左 sticky 列显示分组名+折叠按钮，右侧色条 */}
       <div
         className="flex h-[30px] items-stretch"
         style={{
-          background: `rgba(${colorRgb}, 0.05)`,
+          background: `rgba(${colorRgb}, 0.08)`,
           borderBottom: `1px solid rgba(${colorRgb}, 0.3)`,
           borderTop: `1px solid rgba(${colorRgb}, 0.12)`,
         }}
       >
         <div
-          className="sticky left-0 z-30 bg-surface-1 flex items-center gap-1.5 px-2.5 cursor-pointer border-r border-border shrink-0 hover:bg-muted/50 transition-colors"
-          style={{ width: `${SIDEBAR_W}px`, boxShadow: `inset 3px 0 0 rgba(${colorRgb}, 0.5)` }}
+          className="sticky left-0 z-30 flex items-center gap-1.5 px-2.5 cursor-pointer border-r border-border shrink-0 transition-colors"
+          style={{ width: `${SIDEBAR_W}px`, background: `rgba(${colorRgb}, 0.08)` }}
           onClick={onToggleCollapse}
           data-tip={collapsed ? `展开${group.name}` : `折叠${group.name}`}
         >
@@ -494,7 +497,7 @@ function EntityRow({
     <div
       className={cn(
         'relative flex h-7 z-[1] transition-colors cursor-pointer border-b border-border/20',
-        isSelected ? 'bg-primary/15' : 'hover:bg-muted/30',
+        isSelected ? 'bg-primary/10' : 'hover:bg-muted/30',
       )}
       onClick={onClick}
       data-tip={entity.name}
@@ -502,10 +505,13 @@ function EntityRow({
       {/* 左侧 sticky 列：实体名（含 hover 联动提示） */}
       <div
         className={cn(
-          'group/entity sticky left-0 z-30 flex items-center gap-2 px-3 border-r border-border shrink-0',
-          isSelected ? 'bg-primary/10' : 'bg-surface-1 group-hover/entity:bg-muted/50',
+          'group/entity sticky left-0 z-30 flex items-center gap-2 px-3 border-r border-border shrink-0 transition-colors',
+          isSelected ? 'bg-primary/10' : 'hover:bg-muted/50',
         )}
-        style={{ width: `${SIDEBAR_W}px` }}
+        style={{
+          width: `${SIDEBAR_W}px`,
+          backgroundColor: isSelected ? undefined : 'var(--color-surface-1)',
+        }}
       >
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta.color }} />
         <span className={cn('truncate flex-1 text-xs', isSelected ? 'text-primary font-medium' : 'text-muted-foreground group-hover/entity:text-text')}>{entity.name}</span>
