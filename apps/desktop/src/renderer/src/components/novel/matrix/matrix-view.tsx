@@ -399,9 +399,8 @@ function GroupBlock({
     >
       {/* 分组标题行：左 sticky 列显示分组名+折叠按钮，右侧色条 */}
       <div
-        className="relative flex h-[30px] items-stretch"
+        className="relative flex h-[30px] z-[1] border-b border-border/20"
         style={{
-          width: `${SIDEBAR_W + maxChapter * cellWidth}px`,
           background: `rgba(${colorRgb}, 0.08)`,
           borderBottom: `1px solid rgba(${colorRgb}, 0.3)`,
           borderTop: `1px solid rgba(${colorRgb}, 0.12)`,
@@ -436,16 +435,19 @@ function GroupBlock({
             <Plus className="size-4" />
           </button>
         </div>
-        {/* 色条占位（右键空白处新建实体） */}
+        {/* 色条占位（右键空白处新建实体）—— 用 flex 容器 + shrink-0 cells 撑开宽度，与 EntityRow 结构一致 */}
         <div
-          className="shrink-0"
-          style={{ width: `${maxChapter * cellWidth}px` }}
+          className="relative flex"
           onContextMenu={(e) => {
             if (!onContextMenuGroupEmpty) return
             e.preventDefault()
             onContextMenuGroupEmpty(group.id)
           }}
-        />
+        >
+          {chapterColumns.map((ch) => (
+            <div key={ch} className="shrink-0 border-r border-border/40" style={{ width: `${cellWidth}px` }} />
+          ))}
+        </div>
       </div>
 
       {/* 实体行 */}
