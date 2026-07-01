@@ -179,29 +179,45 @@ export function MatrixView({
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    if (!onDropEntity) return
+    if (!onDropEntity) {
+      console.warn('[MatrixView] drop 被忽略：onDropEntity 未传入')
+      return
+    }
     e.preventDefault()
     const raw = e.dataTransfer.getData('application/novel-node')
     setDragOverChapter(null)
-    if (!raw) return
+    if (!raw) {
+      console.warn('[MatrixView] drop 被忽略：dataTransfer 无 application/novel-node 数据', e.dataTransfer.types)
+      return
+    }
     let parsed: { type?: string; id?: string } | null = null
     try {
       parsed = JSON.parse(raw) as { type?: string; id?: string }
     } catch {
+      console.warn('[MatrixView] drop 被忽略：JSON 解析失败', raw.slice(0, 100))
       return
     }
-    if (!parsed?.type || !parsed?.id) return
+    if (!parsed?.type || !parsed?.id) {
+      console.warn('[MatrixView] drop 被忽略：缺少 type 或 id', parsed)
+      return
+    }
     // 仅接受矩阵支持的实体类型（排除 chapter）
     if (parsed.type === 'chapter') return
     const validKinds: string[] = ['character', 'conflict', 'foreshadow', 'faction', 'location', 'world_element']
-    if (!validKinds.includes(parsed.type)) return
+    if (!validKinds.includes(parsed.type)) {
+      console.warn('[MatrixView] drop 被忽略：不支持的实体类型', parsed.type)
+      return
+    }
     const ch = computeChapterFromEvent(e)
-    if (ch == null) return
+    if (ch == null) {
+      console.warn('[MatrixView] drop 被忽略：无法从坐标计算章节号', { clientX: e.clientX, cellWidth, maxChapter })
+      return
+    }
     onDropEntity(parsed.id, parsed.type as MatrixEntityKind, ch)
     // 触发闪烁反馈
     setFlashChapter(ch)
     setTimeout(() => setFlashChapter(null), 800)
-  }, [onDropEntity, computeChapterFromEvent])
+  }, [onDropEntity, computeChapterFromEvent, cellWidth, maxChapter])
 
   // 整体内容宽度
   const totalWidth = SIDEBAR_W + maxChapter * cellWidth

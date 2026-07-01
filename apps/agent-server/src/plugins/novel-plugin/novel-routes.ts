@@ -1684,8 +1684,13 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         // 阶段2：同一 SSE 流内衔接 create-flow，注入编排结果
         // TODO: orchestrator 长流程无 abort 支持（需 D-3 配合），客户端断开后若已开始只能让其跑完
         if (clientDisconnected) {
+          request.log.info(
+            { projectId, chapterNumber: chNum },
+            'ai-arrange: 客户端已断开，跳过 create-flow',
+          )
           return
         }
+        emitter.progress({ type: 'create_flow_start', message: '进入创作流程...' })
         const result = await orchestrator.createChapterWithFlow(
           projectId,
           chNum,

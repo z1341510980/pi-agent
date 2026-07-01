@@ -270,7 +270,7 @@ export class NovelEntityGenerator {
   ): Promise<ArrangedEntity> {
     onProgress?.({ phase: 'analyzing', message: '分析章纲，规划所需实体...' })
 
-    const plan = await this.planEntitiesFromOutline(projectId, outline)
+    const plan = await this.planEntitiesFromOutline(projectId, outline, onProgress)
     onProgress?.({
       phase: 'planned',
       message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔`,
@@ -387,6 +387,10 @@ export class NovelEntityGenerator {
     }
 
     onProgress?.({ phase: 'arranged', message: '编排完成，准备生成正文' })
+    this.context.logger.info(
+      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length },
+      'generateAndArrange 完成：实体已落库',
+    )
     return { characterIds, conflictIds, foreshadowIds }
   }
 
@@ -399,6 +403,7 @@ export class NovelEntityGenerator {
   private async planEntitiesFromOutline(
     projectId: string,
     outline: string,
+    onProgress?: (event: { phase: string; message: string; data?: unknown }) => void,
   ): Promise<{
     characters: { coreStyle: string }[]
     conflicts: { coreStyle: string }[]
@@ -414,6 +419,12 @@ export class NovelEntityGenerator {
       outline,
     ].join('\n')
 
+    this.context.logger.info(
+      { projectId, outlineLength: outline.length },
+      'planEntitiesFromOutline 开始：调用 LLM 规划实体',
+    )
+    onProgress?.({ phase: 'planning', message: 'AI 正在规划本章实体...' })
+
     const session = await this.context.createSession({
       systemPrompt,
       userMessage: userPrompt,
@@ -422,11 +433,24 @@ export class NovelEntityGenerator {
 
     try {
       let result = ''
+      let deltaCount = 0
       const full = await session.promptStream((delta) => {
         result += delta
+        deltaCount++
+        // 流式推送进度（每 5 个 delta 推一次，避免事件过密），让前端知道 LLM 在工作
+        if (deltaCount % 5 === 0) {
+          onProgress?.({
+            phase: 'planning',
+            message: `AI 正在规划本章实体... 已生成 ${result.length} 字符`,
+          })
+        }
       })
       // 优先使用流式累积结果，回退到 promptStream 返回值
       const text = result || full
+      this.context.logger.info(
+        { projectId, resultLength: text.length, deltaCount },
+        'planEntitiesFromOutline LLM 调用完成，开始解析 JSON',
+      )
       let json: Record<string, unknown> | null
       json = repairAndParseJson(text)
       if (!json) {
@@ -436,7 +460,7 @@ export class NovelEntityGenerator {
         )
         return { characters: [], conflicts: [], foreshadows: [] }
       }
-      return {
+      const plan = {
         characters: Array.isArray(json.characters)
           ? json.characters
               .map((c: unknown) => ({ coreStyle: ensureString((c as { coreStyle?: unknown })?.coreStyle, '新角色') }))
@@ -450,6 +474,11 @@ export class NovelEntityGenerator {
               .map((f: unknown) => ({ coreStyle: ensureString((f as { coreStyle?: unknown })?.coreStyle, '新伏笔') }))
           : [],
       }
+      this.context.logger.info(
+        { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length },
+        'planEntitiesFromOutline 解析完成',
+      )
+      return plan
     } finally {
       session.dispose()
     }
