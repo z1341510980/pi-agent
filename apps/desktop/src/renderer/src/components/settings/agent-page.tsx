@@ -25,6 +25,12 @@ import {
   type AgentInfo,
   type DispatchResult,
 } from '@/api/http-client'
+import {
+  getNovelAgentConfig,
+  updateNovelAgentConfig,
+  type NovelAgentType,
+  type NovelAgentTemperature,
+} from '@/api/novel-agent-config-client'
 
 // ── 类型定义 ──
 
@@ -589,6 +595,9 @@ export function AgentPage(): ReactElement {
           保存配置
         </Button>
       </div>
+
+      {/* ── 小说创作角色温度 ── */}
+      <NovelAgentTemperatureSection />
 
       {/* ── Agent 编辑弹窗 ── */}
       <AgentEditorDialog
@@ -1176,6 +1185,93 @@ function PersonaTemplateEditor({ template, onSave, onCancel }: PersonaTemplateEd
         </Button>
       </div>
     </form>
+  )
+}
+
+// ── 小说创作角色温度配置 ──
+
+const NOVEL_AGENT_LABELS: Record<NovelAgentType, string> = {
+  director: '导演 Agent（规划稳定）',
+  writer: '写作 Agent（创作发散）',
+  reviewer: '审稿 Agent（审稿严谨）',
+  memory: '记忆 Agent（沉淀确定）',
+}
+
+function NovelAgentTemperatureSection(): ReactElement {
+  const queryClient = useQueryClient()
+  const [temps, setTemps] = useState<Record<NovelAgentType, number>>({
+    director: 0.5,
+    writer: 0.9,
+    reviewer: 0.3,
+    memory: 0.2,
+  })
+
+  const { data } = useQuery({
+    queryKey: ['novel-agent-config'],
+    queryFn: getNovelAgentConfig,
+  })
+
+  useEffect(() => {
+    if (data) {
+      const next = { director: 0.5, writer: 0.9, reviewer: 0.3, memory: 0.2 }
+      for (const item of data) {
+        next[item.agentType] = item.temperature
+      }
+      setTemps(next)
+    }
+  }, [data])
+
+  const updateMutation = useMutation({
+    mutationFn: (items: Array<{ agentType: NovelAgentType; temperature: number }>) =>
+      updateNovelAgentConfig(items),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['novel-agent-config'] })
+    },
+  })
+
+  function handleChange(agentType: NovelAgentType, value: number): void {
+    setTemps((prev) => ({ ...prev, [agentType]: value }))
+  }
+
+  function handleSave(): void {
+    const items = (Object.entries(temps) as Array<[NovelAgentType, number]>).map(
+      ([agentType, temperature]) => ({ agentType, temperature }),
+    )
+    updateMutation.mutate(items)
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-4">
+      <div>
+        <h3 className="text-sm font-medium">小说创作角色温度</h3>
+        <p className="text-xs text-muted-foreground mt-1">
+          为 4 个创作角色独立配置 LLM 温度，影响生成结果的发散性与稳定性。
+        </p>
+      </div>
+      <div className="space-y-3">
+        {(Object.keys(NOVEL_AGENT_LABELS) as NovelAgentType[]).map((agentType) => (
+          <div key={agentType} className="grid gap-1.5">
+            <Label className="text-xs">
+              {NOVEL_AGENT_LABELS[agentType]}: {temps[agentType].toFixed(2)}
+            </Label>
+            <input
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={temps[agentType]}
+              onChange={(e) => handleChange(agentType, Number(e.target.value))}
+              className="w-full accent-accent"
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending}>
+          {updateMutation.isPending ? '保存中...' : '保存角色温度'}
+        </Button>
+      </div>
+    </div>
   )
 }
 
