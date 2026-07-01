@@ -408,7 +408,11 @@ function GroupBlock({
       >
         <div
           className="sticky left-0 z-30 flex items-center gap-1.5 px-2.5 cursor-pointer border-r border-border shrink-0 transition-colors"
-          style={{ width: `${SIDEBAR_W}px`, background: `rgba(${colorRgb}, 0.08)` }}
+          style={{
+            width: `${SIDEBAR_W}px`,
+            backgroundColor: 'var(--color-surface-1)',
+            backgroundImage: `linear-gradient(rgba(${colorRgb}, 0.08), rgba(${colorRgb}, 0.08))`,
+          }}
           onClick={onToggleCollapse}
           data-tip={collapsed ? `展开${group.name}` : `折叠${group.name}`}
         >
