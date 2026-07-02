@@ -15,7 +15,17 @@
 
 import type { FastifyBaseLogger } from 'fastify'
 import type { AgentManager } from '../agent/subagent-tool.js'
+import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
+import type { AgUiEventSink } from '@repo/protocol/events'
+import type { StreamEmitter } from '../agent/stream-emitter.js'
+import type { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
+import type { ConfirmationManager } from '../tool/confirmation-manager.js'
+// pi-coding-agent 的 ToolDefinition（泛型版，由 defineTool 创建，execute 为 5 参数签名）。
+// 与下方 plugin-types 的 ToolDefinition（2 参数 execute，仅用于 registerTool 列表展示）区分。
+// registerSessionTools 注入的工具会进入 Pi SDK 的 customTools，由 createAgentSession
+// 按 5 参数签名调用，因此必须使用 pi-coding-agent 的 ToolDefinition 类型。
+import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
 
 /** 插件状态 */
 export type PluginStatus = 'loaded' | 'enabled' | 'disabled' | 'error'
@@ -150,6 +160,24 @@ export interface PluginContext {
    * 若 teamPlugin 未注册则为 undefined。
    */
   readonly teamManager?: TeamManager
+  /**
+   * AgentCallLogger（由 subagentPlugin 提供，通用 Agent 调用日志记录器）
+   *
+   * 在 subagentPlugin 之后加载的插件可通过此引用记录 Agent 调用日志。
+   * 领域插件（如 novel）可在自身编排流程中显式调用 record，
+   * 并在 metadata 携带领域扩展字段（projectId / chapterNumber 等）。
+   * 若 subagentPlugin 未注册则为 undefined。
+   */
+  readonly agentCallLogger?: AgentCallLogger
+  /**
+   * ConfirmationManager（chat 底座共享，由 app.ts 注入到 PluginManager）
+   *
+   * 供插件复用 chat 的统一确认/决策流程：
+   * - 拿到默认 120s 超时机制（避免永久 pending）
+   * - 复用 pending 列表与 'confirmation:request' / 'confirmation:resolved' 事件
+   * - 旧 boolean API（requestConfirmation/respond）与新 string API（requestDecision/respondDecision）均可调用
+   */
+  readonly confirmationManager: ConfirmationManager
   /** 注册工具 */
   registerTool(tool: ToolDefinition): void
   /** 注册 HTTP 路由（路径自动加 /api/plugins/:pluginName 前缀） */
@@ -161,7 +189,7 @@ export interface PluginContext {
   /** 注册数据库迁移（在 database 插件之后、session factory 之前执行） */
   registerMigration(migration: MigrationDefinition): void
   /** 注入 Pi Session customTools（每次创建 session 时注入） */
-  registerSessionTools(tools: ToolDefinition[]): void
+  registerSessionTools(tools: PiToolDefinition[]): void
   /** 装饰 Fastify 实例（挂载服务供路由和其他插件使用） */
   registerService(name: string, service: unknown): void
   /** 注册提示词模板目录（三级覆盖中的默认文件目录） */
@@ -175,6 +203,53 @@ export interface PluginContext {
    * @returns Session 句柄，可调用 prompt() 触发 LLM 推理并获取结果
    */
   createSession(options: PluginSessionOptions): Promise<PluginSessionHandle>
+
+  /**
+   * 创建 AG-UI Session（工厂方法，封装 StreamEmitter + ReasoningPipeline + 订阅连接）
+   *
+   * 与 createSession 的区别：createSession 只返回裸 Pi Session 句柄，
+   * 插件需要自己 new StreamEmitter + new ReasoningPipeline + session.subscribe。
+   * createAgUiSession 把这些基础设施层封装好，插件只负责编排逻辑。
+   *
+   * 工厂内部完成：
+   * 1. 调用 createSession 创建 Pi Session
+   * 2. 生成 messageId（统一格式，供 agent_start 关联）
+   * 3. new ReasoningPipeline(emit, messageId)
+   * 4. new StreamEmitter(emit, messageId, reasoningPipeline, { emitRaw })
+   * 5. session.subscribe(streamEmitter.handleSessionEvent)
+   *
+   * 插件拿到句柄后只需：
+   * - 发射 agent_start（带返回的 messageId）
+   * - 调用 handle.prompt() 触发 LLM
+   * - 调用 handle.dispose() 清理
+   *
+   * @returns AG-UI Session 句柄（含 session / streamEmitter / messageId / dispose）
+   */
+  createAgUiSession(options: PluginSessionOptions & {
+    /** AG-UI 事件 sink（StreamEmitter 发射目标） */
+    emit: AgUiEventSink
+    /** 是否发射 RAW 事件（默认 false，插件不需要；chat 显式开启用于调试） */
+    emitRaw?: boolean
+  }): Promise<AgUiSessionHandle>
+}
+
+/**
+ * AG-UI Session 句柄（由 createAgUiSession 工厂创建）
+ *
+ * 封装了 Pi Session + StreamEmitter + ReasoningPipeline，
+ * 插件不再需要自己 new 这些基础设施层实例。
+ */
+export interface AgUiSessionHandle {
+  /** 底层 Pi Session 句柄（可调用 prompt / abort） */
+  readonly session: PluginSessionHandle
+  /** StreamEmitter 实例（已订阅 Pi Session 事件流） */
+  readonly streamEmitter: StreamEmitter
+  /** ReasoningPipeline 实例 */
+  readonly reasoningPipeline: ReasoningPipeline
+  /** 本次 assistant 消息的 messageId（agent_start 用此关联 TEXT_MESSAGE_*） */
+  readonly messageId: string
+  /** 释放资源（取消订阅 + dispose session） */
+  dispose(): void
 }
 
 /**
@@ -196,7 +271,7 @@ export interface PluginSessionOptions {
   /** 首条用户消息（章节上下文/生成指令） */
   userMessage: string
   /** 自定义工具（可选，默认注入插件工具） */
-  tools?: ToolDefinition[]
+  tools?: PiToolDefinition[]
   /** 模型 ID（可选，默认使用已配置的第一个 Provider 的第一个模型） */
   modelId?: { provider: string; modelId: string }
   /** 中止信号 */
@@ -209,6 +284,15 @@ export interface PluginSessionOptions {
   responseFormat?: 'json' | 'text'
   /** LLM 调用超时时间（毫秒），默认 120000（2 分钟）。写作等长文本 Agent 建议设 300000+ */
   timeoutMs?: number
+  /**
+   * 首 token 回调（可选）
+   * 当 Pi Session 首次发射 text_delta 事件时调用，供编排层通知前端"开始生成"。
+   *
+   * 此回调由 createAgUiSession 工厂在内部订阅事件流时触发，
+   * 插件无需自行 subscribe 检测首 token，复用工厂能力即可。
+   * 回调在 StreamEmitter 处理事件的同一次订阅中同步触发，确保时序正确。
+   */
+  onFirstText?: () => void
 }
 
 /**
@@ -228,6 +312,18 @@ export interface PluginSessionHandle {
    * @returns 完整 assistant 文本（与 prompt() 返回值一致）
    */
   promptStream(onDelta: (delta: string) => void): Promise<string>
+  /**
+   * 订阅 Pi Session 原始事件流（message_update / tool_execution_* / message_end 等）。
+   *
+   * 与 promptStream(onDelta) 的区别：onDelta 只拿到 text_delta 文本片段，
+   * 而 subscribe 能拿到完整事件（含工具调用、推理过程等），供调用方
+   * 映射为 AG-UI 标准事件（TEXT_MESSAGE_* / TOOL_CALL_* / STEP_*）。
+   *
+   * 多次 subscribe 互不干扰，每个返回独立的 unsubscribe 函数。
+   *
+   * @returns unsubscribe 函数
+   */
+  subscribe(handler: (event: Record<string, unknown>) => void): () => void
   /** 中止当前推理 */
   abort(): void
   /** 释放 Session（从 SessionStore 淘汰） */
@@ -283,7 +379,7 @@ export interface PluginEntry {
   /** 已注册的数据库迁移 */
   migrations: MigrationDefinition[]
   /** 已注册的 Session 工具（注入到 Pi Session customTools） */
-  sessionTools: ToolDefinition[]
+  sessionTools: PiToolDefinition[]
   /** 已注册的 Fastify 服务 */
   services: Array<{ name: string; service: unknown }>
   /** 已注册的提示词模板目录 */

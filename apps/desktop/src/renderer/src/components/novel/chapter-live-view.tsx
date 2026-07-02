@@ -224,14 +224,14 @@ function UserMessageBubble({ message }: UserMessageBubbleProps): ReactElement {
 
 // ── 检查点内容渲染 ──
 
-/** 渲染 checkpoint.data.data 的实际内容（叙事任务/验收报告） */
+/** 渲染 checkpoint.data 的实际内容（叙事任务/验收报告） */
 function renderCheckpointData(checkpoint: CheckpointData): ReactElement | null {
-  const outer = checkpoint.data as { message?: string; data?: unknown } | undefined
-  if (!outer) return null
+  const data = checkpoint.data
+  if (data == null) return null
 
-  const inner = outer.data
-
-  if (typeof inner === 'string' && inner.trim()) {
+  // data 直接是字符串（Director/Reviewer 的完整输出文本）
+  if (typeof data === 'string') {
+    if (!data.trim()) return null
     return (
       <div className="prose prose-sm dark:prose-invert max-w-none text-xs leading-relaxed text-text
         prose-p:my-1.5 prose-headings:my-2
@@ -242,21 +242,43 @@ function renderCheckpointData(checkpoint: CheckpointData): ReactElement | null {
         prose-blockquote:my-1.5 prose-blockquote:border-l-primary
         prose-a:text-primary
       ">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{inner}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{data}</ReactMarkdown>
       </div>
     )
   }
 
-  if (inner && typeof inner === 'object') {
-    return (
-      <pre className="text-[11px] leading-relaxed bg-muted/40 border border-border rounded-md p-2 overflow-x-auto max-h-48">
-        {JSON.stringify(inner, null, 2)}
-      </pre>
-    )
-  }
+  // data 是 { message?, data? } 形状（旧兼容）
+  if (typeof data === 'object') {
+    const outer = data as { message?: string; data?: unknown }
+    const inner = outer.data
 
-  if (outer.message) {
-    return <p className="text-xs text-text-secondary">{outer.message}</p>
+    if (typeof inner === 'string' && inner.trim()) {
+      return (
+        <div className="prose prose-sm dark:prose-invert max-w-none text-xs leading-relaxed text-text
+          prose-p:my-1.5 prose-headings:my-2
+          prose-h1:text-sm prose-h2:text-xs prose-h3:text-xs
+          prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5
+          prose-pre:my-2 prose-pre:rounded-md prose-pre:bg-muted/60 prose-pre:border prose-pre:border-border prose-pre:overflow-x-auto
+          prose-code:before:content-none prose-code:after:content-none prose-code:text-primary prose-code:bg-muted/60
+          prose-blockquote:my-1.5 prose-blockquote:border-l-primary
+          prose-a:text-primary
+        ">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{inner}</ReactMarkdown>
+        </div>
+      )
+    }
+
+    if (inner && typeof inner === 'object') {
+      return (
+        <pre className="text-[11px] leading-relaxed bg-muted/40 border border-border rounded-md p-2 overflow-x-auto max-h-48">
+          {JSON.stringify(inner, null, 2)}
+        </pre>
+      )
+    }
+
+    if (outer.message) {
+      return <p className="text-xs text-text-secondary">{outer.message}</p>
+    }
   }
 
   return null

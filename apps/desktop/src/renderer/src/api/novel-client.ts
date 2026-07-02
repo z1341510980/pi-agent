@@ -1121,6 +1121,13 @@ export function listCharacterHistory(
   return getApi<NovelCharacterHistory[]>(`${BASE}/projects/${projectId}/characters/${characterId}/history`)
 }
 
+/** 项目级角色历史：用于 data_changed SSE 事件后全量刷新 */
+export function listProjectCharacterHistory(
+  projectId: string,
+): Promise<NovelCharacterHistory[]> {
+  return getApi<NovelCharacterHistory[]>(`${BASE}/projects/${projectId}/character-history`)
+}
+
 export function createCharacterHistory(
   projectId: string,
   characterId: string,

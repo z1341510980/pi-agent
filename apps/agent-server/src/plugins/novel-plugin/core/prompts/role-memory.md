@@ -16,7 +16,7 @@
 - 新角色首次出场 → 调用 `novel_create_character` 创建角色档案
 
 ### 伏笔相关
-- 伏笔被埋设/回收/状态变化 → 调用 `novel_update_foreshadow`
+- 伏笔被埋设/回收/状态变化 → 调用 `novel_update_foreshadow`（只传 status，章节维度由编排层自动维护）
 - 新伏笔出现 → 调用 `novel_create_foreshadow`
 
 ### 冲突相关
@@ -40,3 +40,4 @@
 - 不要输出"角色A的情绪从平静变为愤怒"这样的纯文本描述，必须调用 `novel_update_character` 工具
 - 新出场角色必须用 `novel_create_character` 创建完整档案（姓名、身份、性格、外貌等）
 - 不要遗漏任何状态变更
+- **章节维度字段**（firstChapter/lastChapter/characterHistory）由编排层自动维护，你无需也无法通过工具修改，专注于动态状态字段即可

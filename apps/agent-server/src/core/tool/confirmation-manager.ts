@@ -20,9 +20,14 @@ export interface ConfirmationManagerOptions {
 
 interface PendingConfirmation {
   request: ConfirmationRequest
-  resolve: (approved: boolean) => void
+  resolve: (decision: string) => void
   timer: ReturnType<typeof setTimeout>
 }
+
+/** 默认 boolean 兼容决策：批准 */
+export const DECISION_APPROVE = 'approve'
+/** 默认 boolean 兼容决策：拒绝 */
+export const DECISION_REJECT = 'reject'
 
 const defaultTimeoutMs = 120_000
 
@@ -37,7 +42,14 @@ export class ConfirmationManager {
     this.timeoutMs = options.timeoutMs ?? defaultTimeoutMs
   }
 
-  requestConfirmation(payload: ConfirmationRequestPayload): Promise<boolean> {
+  /**
+   * 发起任意字符串决策请求（如 'approve'/'reject'/'revise'/'rewrite'）
+   *
+   * 与 requestConfirmation 的区别：
+   * - 返回 Promise<string>，决策值由调用方约定
+   * - 超时后 resolve 为 DECISION_REJECT（'reject'），与旧 API 超时行为一致
+   */
+  requestDecision(payload: ConfirmationRequestPayload): Promise<string> {
     const request: ConfirmationRequest = {
       ...payload,
       id: randomUUID(),
@@ -46,7 +58,7 @@ export class ConfirmationManager {
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.resolveRequest(request.id, false)
+        this.resolveRequest(request.id, DECISION_REJECT)
       }, this.timeoutMs)
 
       this.pending.set(request.id, {
@@ -59,8 +71,32 @@ export class ConfirmationManager {
     })
   }
 
+  /**
+   * 响应决策请求，传入任意 string 决策
+   *
+   * @returns 是否成功（false 表示请求不存在或已处理）
+   */
+  respondDecision(id: string, decision: string): boolean {
+    return this.resolveRequest(id, decision)
+  }
+
+  /**
+   * 发起 boolean 决策请求（向后兼容旧 API）
+   *
+   * 内部委托给 requestDecision：approved=true → 'approve'，approved=false → 'reject'。
+   * 返回的 Promise<boolean> 由 decision === 'approve' 转换而来。
+   */
+  requestConfirmation(payload: ConfirmationRequestPayload): Promise<boolean> {
+    return this.requestDecision(payload).then((decision) => decision === DECISION_APPROVE)
+  }
+
+  /**
+   * 响应 boolean 决策请求（向后兼容旧 API）
+   *
+   * 内部委托给 respondDecision：approved=true → 'approve'，approved=false → 'reject'。
+   */
   respond(id: string, approved: boolean): boolean {
-    return this.resolveRequest(id, approved)
+    return this.respondDecision(id, approved ? DECISION_APPROVE : DECISION_REJECT)
   }
 
   listPending(): ConfirmationRequest[] {
@@ -69,20 +105,22 @@ export class ConfirmationManager {
 
   dispose(): void {
     for (const id of Array.from(this.pending.keys())) {
-      this.resolveRequest(id, false)
+      this.resolveRequest(id, DECISION_REJECT)
     }
   }
 
-  private resolveRequest(id: string, approved: boolean): boolean {
+  private resolveRequest(id: string, decision: string): boolean {
     const pending = this.pending.get(id)
     if (!pending) return false
 
     clearTimeout(pending.timer)
     this.pending.delete(id)
-    pending.resolve(approved)
+    pending.resolve(decision)
+    // 兼容字段：approved 保留供旧监听者使用，新监听者可读 decision
     this.eventBus.emit('confirmation:resolved', {
       id,
-      approved,
+      decision,
+      approved: decision === DECISION_APPROVE,
     })
     return true
   }

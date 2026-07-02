@@ -84,7 +84,16 @@ export interface CheckpointData {
 }
 
 export interface CreationFlowEvent {
-  type: 'phase_change' | 'agent_output' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
+  /**
+   * 事件类型，与 data.type 保持一致（由调用方显式指定，不再靠 emitProgress 推断）。
+   * - phase_change：阶段切换 / 心跳 / 准备中
+   * - agent_start：Agent 开始调用（带 messageId，前端据此关联后续 TEXT_MESSAGE_*）
+   * - agent_output：Agent 输出（全量，用于非流式场景或最终结果）
+   * - data_changed：数据变更通知（Memory Agent 写入完成，前端刷新画布）
+   * - checkpoint：检查点（已废弃，改用 CUSTOM(novel:checkpoint) 独立通道）
+   * - error / completed / cancelled：流程终止
+   */
+  type: 'phase_change' | 'agent_start' | 'agent_output' | 'data_changed' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
   phase: CreationPhase
   data?: unknown
   timestamp: number

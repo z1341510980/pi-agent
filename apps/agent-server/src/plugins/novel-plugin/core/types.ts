@@ -471,6 +471,8 @@ export interface StoryState {
   activeConflicts: NovelConflict[]
   pendingForeshadowing: NovelForeshadow[]
   activeClues: NovelClue[]
+  activeFactions: NovelFaction[]
+  activeLocations: NovelLocation[]
   currentStage: StoryStage
   currentChapter: number
 }
@@ -510,6 +512,8 @@ export interface ArrangedEntity {
   characterIds: string[]
   conflictIds: string[]
   foreshadowIds: string[]
+  factionIds: string[]
+  locationIds: string[]
 }
 
 // ── 缓存层标记 ──

@@ -28,6 +28,7 @@ import {
   listWorldElements,
   listEdges,
   listVolumes,
+  listProjectCharacterHistory,
   createChapter,
   completeChapter,
 } from '@/api/novel-client'
@@ -104,6 +105,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const viewMode = useNovelStore((s) => s.viewMode)
   const setViewMode = useNovelStore((s) => s.setViewMode)
   const characterHistory = useNovelStore((s) => s.characterHistory)
+  const setCharacterHistory = useNovelStore((s) => s.setCharacterHistory)
   const setCreationMode = useNovelStore((s) => s.setCreationMode)
   const playheadChapter = useNovelStore((s) => s.playheadChapter)
 
@@ -264,6 +266,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         // - 角色：computeCharacterSpans 把 characterHistory.chapterNumber 分组成连续区间，playhead 落在区间内即出场
         // - 冲突：computeSpanRange(firstChapter, lastChapter) → [first, last ?? first]，playhead 落在区间内
         // - 伏笔：plant=firstChapter、payoff=recoverByChapter，playhead 在 [first, recoverByChapter] 内（recoverByChapter 为空表示未回收，延续到末章）
+        // - 势力：同冲突，闭区间 [firstChapter, lastChapter ?? firstChapter]
+        // - 地点：appearChapters 数组包含 playhead 即出场
         const arranged = {
           characterIds: characters.filter((c) => {
             const history = characterHistory.filter((h) => h.characterId === c.id)
@@ -279,6 +283,15 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             if (f.firstChapter == null) return false
             return playhead >= f.firstChapter && (f.recoverByChapter == null || playhead <= f.recoverByChapter)
           }).map((f) => f.id),
+          factionIds: factions.filter((f) => {
+            if (f.firstChapter == null) return false
+            const end = f.lastChapter ?? f.firstChapter
+            return playhead >= f.firstChapter && playhead <= end
+          }).map((f) => f.id),
+          locationIds: locations.filter((l) => {
+            if (l.firstChapter == null) return false
+            return l.appearChapters.includes(playhead)
+          }).map((l) => l.id),
         }
         await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities: arranged })
       } else {
@@ -330,14 +343,19 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   }, [currentProjectId, chapters, creationFlow, upsertChapter, queryClient])
 
   // 收到 data_changed 事件时刷新画布（替代轮询）
-  // Memory Agent 写入实体状态后会推送带 dataChanged 标记的 agent_output，
-  // 监听 agentOutputs 末尾的 dataChanged 标记，触发 React Query 失效刷新。
+  // Memory Agent 写入实体状态 + orchestrator.syncChapterDimensions 补全章节维度后，
+  // 推送带 dataChanged 标记的事件。此处需同时刷新实体列表与角色历史（characterHistory
+  // 不在 projectDataQuery 范围内，单独拉取）。
   useEffect(() => {
     const lastOutput = creationFlow.agentOutputs[creationFlow.agentOutputs.length - 1]
     if (lastOutput?.dataChanged && currentProjectId) {
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      // 角色 history 不在 projectDataQuery 范围，单独全量拉取刷新
+      void listProjectCharacterHistory(currentProjectId)
+        .then((history) => setCharacterHistory(history))
+        .catch((err) => console.error('[NovelWorkspace] 刷新 characterHistory 失败:', err))
     }
-  }, [creationFlow.agentOutputs, currentProjectId, queryClient])
+  }, [creationFlow.agentOutputs, currentProjectId, queryClient, setCharacterHistory])
 
   // 创作完成后不自动保存——由用户通过"保存到章节"按钮手动触发，
   // 避免 useEffect 依赖 chapters 导致 completeChapter → upsertChapter → chapters 变化 → 无限循环

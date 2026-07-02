@@ -131,6 +131,21 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     customTools.push(...deps.pluginSessionTools)
   }
 
+  // 5.1 工具权限过滤：若当前在 subagent 上下文中且 AgentConfig 声明了 tools，
+  //     仅保留 allowed 列表中的工具。
+  //     - dispatchFn 已将 systemPromptBuilder / toolFilter 的结果合并进 effectiveConfig.tools
+  //     - 这使 subagent / team_execute 路径与 NovelOrchestrator.runAgent 的工具过滤行为一致
+  //     - 未声明 tools（如默认 Agent）不做过滤，保留全部 customTools
+  const agentConfigForTools = agentConfigStorage.getStore()
+  if (agentConfigForTools?.tools && agentConfigForTools.tools.length > 0) {
+    const allowedToolNames = new Set(agentConfigForTools.tools)
+    for (let i = customTools.length - 1; i >= 0; i--) {
+      if (!allowedToolNames.has(customTools[i].name)) {
+        customTools.splice(i, 1)
+      }
+    }
+  }
+
   // 6. 创建 Agent Session
   const { session } = await createAgentSession({
     authStorage: deps.authStorage,

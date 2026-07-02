@@ -225,6 +225,9 @@ export class NovelEntityGenerator {
       systemPrompt,
       userMessage: userPrompt,
       responseFormat: 'json',
+      // 实体生成（冲突/伏笔/势力/地点/世界要素）涉及详细设定，LLM 耗时较长；
+      // 默认 120s 不足，提到 300s 与 Memory Agent 一致
+      timeoutMs: 300_000,
     })
 
     try {
@@ -273,13 +276,15 @@ export class NovelEntityGenerator {
     const plan = await this.planEntitiesFromOutline(projectId, outline, onProgress)
     onProgress?.({
       phase: 'planned',
-      message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔`,
+      message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点`,
       data: plan,
     })
 
     const characterIds: string[] = []
     const conflictIds: string[] = []
     const foreshadowIds: string[] = []
+    const factionIds: string[] = []
+    const locationIds: string[] = []
 
     try {
       for (const spec of plan.characters) {
@@ -353,8 +358,61 @@ export class NovelEntityGenerator {
         })
         foreshadowIds.push(created.id)
       }
+
+      for (const spec of plan.factions) {
+        onProgress?.({ phase: 'generating', message: `生成势力：${spec.coreStyle}` })
+        const gen = await this.generate(projectId, 'faction', spec.coreStyle, onProgress)
+        if (gen.type !== 'faction') continue
+        const created = this.store.createFaction({
+          id: randomUUID(),
+          projectId,
+          name: gen.data.name,
+          description: gen.data.description,
+          type: gen.data.type,
+          leaderId: null,
+          ideology: gen.data.ideology,
+          strength: gen.data.strength,
+          resources: gen.data.resources,
+          allies: gen.data.allies,
+          enemies: gen.data.enemies,
+          status: gen.data.status,
+          firstChapter: chapterNumber,
+          lastChapter: null,
+        })
+        factionIds.push(created.id)
+      }
+
+      for (const spec of plan.locations) {
+        onProgress?.({ phase: 'generating', message: `生成地点：${spec.coreStyle}` })
+        const gen = await this.generate(projectId, 'location', spec.coreStyle, onProgress)
+        if (gen.type !== 'location') continue
+        const created = this.store.createLocation({
+          id: randomUUID(),
+          projectId,
+          name: gen.data.name,
+          description: gen.data.description,
+          type: gen.data.type,
+          parentId: null,
+          factionId: null,
+          significance: gen.data.significance,
+          status: gen.data.status,
+          firstChapter: chapterNumber,
+          appearChapters: [chapterNumber],
+        })
+        locationIds.push(created.id)
+      }
     } catch (err) {
       // 反向顺序 best-effort 清理已落库实体，避免半编排脏数据污染后续 create-flow
+      for (const id of locationIds) {
+        try {
+          this.store.deleteLocation(id)
+        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+      }
+      for (const id of factionIds) {
+        try {
+          this.store.deleteFaction(id)
+        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+      }
       for (const id of foreshadowIds) {
         try {
           this.store.deleteForeshadow(id)
@@ -371,7 +429,7 @@ export class NovelEntityGenerator {
           this.store.deleteCharacter(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
-      const rolledBack = characterIds.length + conflictIds.length + foreshadowIds.length
+      const rolledBack = characterIds.length + conflictIds.length + foreshadowIds.length + factionIds.length + locationIds.length
       this.context.logger.error(
         {
           err,
@@ -379,6 +437,8 @@ export class NovelEntityGenerator {
             characters: characterIds.length,
             conflicts: conflictIds.length,
             foreshadows: foreshadowIds.length,
+            factions: factionIds.length,
+            locations: locationIds.length,
           },
         },
         `generateAndArrange 失败，已回滚 ${rolledBack} 个实体`,
@@ -388,10 +448,10 @@ export class NovelEntityGenerator {
 
     onProgress?.({ phase: 'arranged', message: '编排完成，准备生成正文' })
     this.context.logger.info(
-      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length },
+      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, factions: factionIds.length, locations: locationIds.length },
       'generateAndArrange 完成：实体已落库',
     )
-    return { characterIds, conflictIds, foreshadowIds }
+    return { characterIds, conflictIds, foreshadowIds, factionIds, locationIds }
   }
 
   /**
@@ -408,12 +468,15 @@ export class NovelEntityGenerator {
     characters: { coreStyle: string }[]
     conflicts: { coreStyle: string }[]
     foreshadows: { coreStyle: string }[]
+    factions: { coreStyle: string }[]
+    locations: { coreStyle: string }[]
   }> {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
     const userPrompt = [
       '你是小说实体规划助手。根据以下章纲，规划本章需要哪些实体（只列本章新引入的）。',
       '返回严格 JSON，格式：',
-      '{"characters":[{"coreStyle":"一句话描述"}],"conflicts":[{"coreStyle":"..."}],"foreshadows":[{"coreStyle":"..."}]}',
+      '{"characters":[{"coreStyle":"一句话描述"}],"conflicts":[{"coreStyle":"..."}],"foreshadows":[{"coreStyle":"..."}],"factions":[{"coreStyle":"..."}],"locations":[{"coreStyle":"..."}]}',
+      'factions 为本章登场或卷入的势力，locations 为本章场景所在的地点。若无则返回空数组。',
       '',
       '章纲：',
       outline,
@@ -429,6 +492,9 @@ export class NovelEntityGenerator {
       systemPrompt,
       userMessage: userPrompt,
       responseFormat: 'json',
+      // 规划阶段可能生成大量 JSON（多个实体），LLM 耗时较长；
+      // 默认 120s 不足以完成复杂章纲的规划，提到 300s 与 Memory Agent 一致
+      timeoutMs: 300_000,
     })
 
     try {
@@ -458,7 +524,7 @@ export class NovelEntityGenerator {
           { rawTextPreview: text.slice(0, 200) },
           'planEntitiesFromOutline JSON 解析失败（可能被截断），使用空 plan 兜底',
         )
-        return { characters: [], conflicts: [], foreshadows: [] }
+        return { characters: [], conflicts: [], foreshadows: [], factions: [], locations: [] }
       }
       const plan = {
         characters: Array.isArray(json.characters)
@@ -473,9 +539,17 @@ export class NovelEntityGenerator {
           ? json.foreshadows
               .map((f: unknown) => ({ coreStyle: ensureString((f as { coreStyle?: unknown })?.coreStyle, '新伏笔') }))
           : [],
+        factions: Array.isArray(json.factions)
+          ? json.factions
+              .map((f: unknown) => ({ coreStyle: ensureString((f as { coreStyle?: unknown })?.coreStyle, '新势力') }))
+          : [],
+        locations: Array.isArray(json.locations)
+          ? json.locations
+              .map((l: unknown) => ({ coreStyle: ensureString((l as { coreStyle?: unknown })?.coreStyle, '新地点') }))
+          : [],
       }
       this.context.logger.info(
-        { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length },
+        { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length, factions: plan.factions.length, locations: plan.locations.length },
         'planEntitiesFromOutline 解析完成',
       )
       return plan
@@ -600,6 +674,7 @@ export class NovelEntityGenerator {
           { err, kind, textPreview: text.slice(0, 200) },
           `解析 LLM 返回的 ${this.kindLabel(kind)} 字段失败，回退到模板`,
         )
+        return this.buildTemplate(kind, coreStyle) as GeneratedEntity['data']
       }
     } else {
       this.context.logger.warn(

@@ -33,10 +33,13 @@ import { createNovelTools } from './core/novel-tools.js'
 import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import { NovelCharacterGenerator } from './core/novel-character-generator.js'
 import { NovelEntityGenerator } from './core/novel-entity-generator.js'
+import { NovelMemoryGenerator } from './core/novel-memory-generator.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
 import { NovelAgentConfigStore } from './core/novel-agent-config-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
+import type { AgentManager } from '../../core/agent/subagent-tool.js'
+import type { ConfirmationManager } from '../../core/tool/confirmation-manager.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 
 export interface NovelServices {
@@ -58,6 +61,21 @@ export interface NovelServices {
    * 供 novel-routes 的 create-team 路由触发统一团队执行。
    */
   teamManager?: TeamManager
+  /**
+   * AgentManager（可选，由 subagentPlugin 提供）
+   * 当用户通过 PUT /agent-config 调整温度时，需同步到 AgentManager
+   * 让 subagent / team_execute 路径也能拿到最新温度。
+   */
+  agentManager?: AgentManager
+  /**
+   * ConfirmationManager（chat 底座共享，由 PluginContext 注入）
+   *
+   * 供 novel checkpoint 流程复用 chat 的统一确认/决策机制：
+   * - 默认 120s 超时，避免 checkpoint 用户不响应导致永久 pending
+   * - 复用 pending 列表与 'confirmation:request' / 'confirmation:resolved' 事件
+   * - 调用 requestDecision/respondDecision 处理 'approve'/'reject'/'revise'/'rewrite' 等多决策
+   */
+  confirmationManager: ConfirmationManager
 }
 
 /**
@@ -66,7 +84,7 @@ export interface NovelServices {
  * @param context PluginContext（提供 db / cwd / logger / createSession 等）
  */
 export function createNovelServices(context: PluginContext): NovelServices {
-  const { db, cwd, teamManager } = context
+  const { db, cwd, teamManager, subagentManager: agentManager, confirmationManager } = context
 
   // 1. 创建 NovelStore（依赖 db）
   const store = new NovelStore(db)
@@ -86,14 +104,19 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 6. 创建 NovelEngine（依赖 NovelStore + NovelSessionFactory）
   const engine = new NovelEngine(store, sessionFactory)
 
-  // 6.5 创建小说角色温度配置存储（依赖 db）
+  // 6.5 创建小说角色温度配置存储（薄封装 AgentManager，依赖 db + agentManager）
   //     先于 orchestrator 创建：orchestrator 在 runAgent 中读取它以合并温度
-  const agentConfigStore = new NovelAgentConfigStore(db)
+  //     注：agentManager 可能为 undefined（subagentPlugin 未注册时），
+  //         NovelAgentConfigStore 内部会回退到 NOVEL_AGENT_CONFIGS 默认值
+  const agentConfigStore = new NovelAgentConfigStore(db, agentManager)
 
-  // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext + NovelAgentConfigStore）
+  // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext + NovelAgentConfigStore + NovelMemoryGenerator）
   //    PluginContext.createSession 用于 runAgent 调用 LLM
   //    agentConfigStore 用于 runAgent 中按角色合并温度并传入 createSession
-  const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context, agentConfigStore)
+  //    memoryGenerator 用于 Memory 阶段的结构化 LLM 调用（替代原工具循环模式）
+  // 7.5 先创建 NovelMemoryGenerator（orchestrator 依赖它）
+  const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store)
+  const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context, agentConfigStore, memoryGenerator)
 
   // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
   //    PluginContext.createSession 用于 generate 调用 LLM
@@ -106,5 +129,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 10. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, tools, agentConfigStore, teamManager }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, tools, agentConfigStore, teamManager, agentManager, confirmationManager }
 }

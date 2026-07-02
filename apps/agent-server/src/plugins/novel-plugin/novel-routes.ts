@@ -22,6 +22,8 @@ import { success } from '../../lib/api-response.js'
 import { validateBody } from '../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { RhythmController } from './core/rhythm-controller.js'
+import { EventType } from '@ag-ui/core'
+import type { AgUiEventSink } from '@repo/protocol/events'
 
 /** 同一章节 ai-arrange 并发锁，key 为 `${projectId}:${chapterNumber}` */
 const aiArrangeLocks = new Map<string, Promise<void>>()
@@ -29,37 +31,49 @@ const aiArrangeLocks = new Map<string, Promise<void>>()
 /**
  * 创建 ag-ui 兼容的 SSE 事件发射器
  *
- * 将小说编排事件映射为 ag-ui 标准事件，与 chat 的 ag-ui 协议统一技术栈：
- * - 流开始 → RUN_STARTED
- * - progress → CUSTOM (name: 'novel:progress')
- * - checkpoint → CUSTOM (name: 'novel:checkpoint')
- * - result → CUSTOM (name: 'novel:result') + RUN_FINISHED
- * - error → RUN_ERROR
+ * 与 chat 的 ag-ui 协议统一技术栈：
+ * - 使用 EventType 枚举（非字符串字面量）
+ * - 使用 AgUiEventSink 类型签名（非 writeRaw 原始字符串）
+ * - LLM token 流不走 CUSTOM 事件，改由 StreamEmitter 发射标准
+ *   TEXT_MESSAGE_* / TOOL_CALL_* / STEP_* 事件（在 orchestrator 中实现）
+ * - CUSTOM 事件只用于小说专属语义：阶段切换 / 检查点 / 编排进度
  *
- * 前端使用与 chat 相同的 parseSseStream 解析 SSE 流，
- * 通过 CUSTOM 事件的 name 字段区分小说专属事件类型。
+ * 返回对象包含 emit 字段（AgUiEventSink），供 StreamEmitter 直接使用。
  */
 function createNovelAgUiEmitter(
-  writeRaw: (data: string) => void,
+  emit: AgUiEventSink,
   threadId: string,
   runId: string,
 ) {
-  const emit = (event: Record<string, unknown>) => {
-    writeRaw(`data: ${JSON.stringify(event)}\n\n`)
-  }
-
-  emit({ type: 'RUN_STARTED', threadId, runId })
+  emit({ type: EventType.RUN_STARTED, threadId, runId })
 
   return {
+    emit,
     threadId,
     runId,
-    progress: (data: unknown) => emit({ type: 'CUSTOM', name: 'novel:progress', value: data }),
-    checkpoint: (data: unknown) => emit({ type: 'CUSTOM', name: 'novel:checkpoint', value: data }),
+    progress: (data: unknown) => emit({ type: EventType.CUSTOM, name: 'novel:progress', value: data }),
+    checkpoint: (data: unknown) => emit({ type: EventType.CUSTOM, name: 'novel:checkpoint', value: data }),
     result: (data: unknown) => {
-      emit({ type: 'CUSTOM', name: 'novel:result', value: data })
-      emit({ type: 'RUN_FINISHED', threadId, runId })
+      emit({ type: EventType.CUSTOM, name: 'novel:result', value: data })
+      emit({ type: EventType.RUN_FINISHED, threadId, runId })
     },
-    error: (message: string) => emit({ type: 'RUN_ERROR', message }),
+    // AG-UI 协议：错误流也必须以 RUN_FINISHED 结束，否则客户端无法判定流结束
+    error: (message: string) => {
+      emit({ type: EventType.RUN_ERROR, message })
+      emit({ type: EventType.RUN_FINISHED, threadId, runId })
+    },
+  }
+}
+
+/**
+ * 创建 SSE 写入适配器：把 AG-UI 事件序列化为 SSE data 行。
+ *
+ * 与 chat 的 /ag-ui/agent/{id}/run 端点使用相同的序列化格式，
+ * 前端用共享的 parseSseStream 解析。
+ */
+function createSseEmitterSink(writeRaw: (data: string) => void): AgUiEventSink {
+  return (event) => {
+    writeRaw(`data: ${JSON.stringify(event)}\n\n`)
   }
 }
 
@@ -580,13 +594,15 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Origin': request.headers.origin || '*',
         'Access-Control-Allow-Credentials': 'true',
       })
+      // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
+      request.raw.socket?.setNoDelay(true)
 
       const heartbeat = setInterval(() => {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
       const emitter = createNovelAgUiEmitter(
-        (data) => reply.raw.write(data),
+        createSseEmitterSink((data) => reply.raw.write(data)),
         `novel:character:${request.params.projectId}`,
         randomUUID(),
       )
@@ -645,7 +661,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       }, 15000)
 
       const emitter = createNovelAgUiEmitter(
-        (data) => reply.raw.write(data),
+        createSseEmitterSink((data) => reply.raw.write(data)),
         `novel:entity:${request.params.projectId}`,
         randomUUID(),
       )
@@ -686,6 +702,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         request.params.projectId,
         request.params.characterId,
       )
+      return success(history, request.traceId)
+    },
+  })
+
+  // 项目级角色历史：用于 data_changed SSE 事件后全量刷新（不传 characterId 返回项目全部）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/character-history',
+    handler: async (request: any) => {
+      const history = store.listCharacterHistory(request.params.projectId)
       return success(history, request.traceId)
     },
   })
@@ -1548,13 +1574,15 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Origin': request.headers.origin || '*',
         'Access-Control-Allow-Credentials': 'true',
       })
+      // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
+      request.raw.socket?.setNoDelay(true)
 
       const heartbeat = setInterval(() => {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
       const emitter = createNovelAgUiEmitter(
-        (data) => reply.raw.write(data),
+        createSseEmitterSink((data) => reply.raw.write(data)),
         `novel:chapter:${projectId}:${chapterNumber}`,
         randomUUID(),
       )
@@ -1562,13 +1590,21 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       // 从 body 读取本章已编排实体约束（模式1手动编排 / 模式2 AI编排产出）
       // 缺省时为 undefined，orchestrator 不注入编排段，保持向后兼容
       const body = (request.body ?? {}) as {
-        arrangedEntities?: { characterIds?: string[]; conflictIds?: string[]; foreshadowIds?: string[] }
+        arrangedEntities?: {
+          characterIds?: string[]
+          conflictIds?: string[]
+          foreshadowIds?: string[]
+          factionIds?: string[]
+          locationIds?: string[]
+        }
       }
       const arrangedEntities = body.arrangedEntities
         ? {
             characterIds: body.arrangedEntities.characterIds ?? [],
             conflictIds: body.arrangedEntities.conflictIds ?? [],
             foreshadowIds: body.arrangedEntities.foreshadowIds ?? [],
+            factionIds: body.arrangedEntities.factionIds ?? [],
+            locationIds: body.arrangedEntities.locationIds ?? [],
           }
         : undefined
 
@@ -1577,13 +1613,23 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           projectId,
           parseInt(chapterNumber, 10),
           {
+            emit: emitter.emit,
             onCheckpoint: async (checkpoint) => {
-              emitter.checkpoint(checkpoint)
-              return new Promise((resolve) => {
-                orchestrator.once(`checkpoint:${checkpoint.type}`, (decision: string) => {
-                  resolve(decision as any)
-                })
+              // 通过 ConfirmationManager 发起决策请求（默认 120s 超时，避免永久 pending）
+              // threadId 填 novel-checkpoint-{projectId}-{chapterNumber}，toolName 填 checkpoint_{type}
+              const toolCallId = randomUUID()
+              const decisionPromise = services.confirmationManager.requestDecision({
+                threadId: `novel-checkpoint-${projectId}-${chapterNumber}`,
+                toolCallId,
+                toolName: `checkpoint_${checkpoint.type}`,
+                args: { checkpoint } as Record<string, unknown>,
+                reason: `等待用户确认 ${checkpoint.type} 检查点`,
               })
+              // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
+              // 通过 toolCallId 反查拿到 ConfirmationRequest.id，推给前端用于决策路由
+              const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
+              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+              return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
             },
             onProgress: (event) => emitter.progress(event),
             arrangedEntities,
@@ -1600,17 +1646,25 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // 检查点决策端点
+  // 路径参数 :checkpointId 对应 ConfirmationManager 内部生成的 ConfirmationRequest.id
+  // （由 onCheckpoint 在创建决策请求后通过 SSE 推送给前端，前端在用户点决策时回传）
+  // type 仍在 body 中传递，便于日志/校验（不再作为路由参数）
   routes.push({
     method: 'POST',
-    path: '/projects/:projectId/checkpoint/:type/decision',
+    path: '/projects/:projectId/checkpoint/:checkpointId/decision',
     handler: async (request: any, reply: any) => {
-      const { projectId, type } = request.params
+      const { checkpointId } = request.params as { projectId: string; checkpointId: string }
       const { decision, userMessages } = request.body as { decision: string; userMessages?: string[] }
       // 如果有用户消息，存到 orchestrator 供下一个 Agent 使用
       if (userMessages && userMessages.length > 0) {
         services.orchestrator.setUserMessages(userMessages)
       }
-      services.orchestrator.emit(`checkpoint:${type}`, decision)
+      // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
+      const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
+      if (!accepted) {
+        reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
+        return
+      }
       return { ok: true, data: { accepted: true } }
     },
   })
@@ -1634,9 +1688,14 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         return
       }
 
-      // 客户端断开感知：close 事件在 reply.raw.end 后也会触发，仅在尚未结束时标记
+      // 客户端断开感知：必须监听 reply.raw（response）的 close 事件，
+      // 而非 request.raw（IncomingMessage）的 close。
+      // 原因：request.raw 的 close 事件在 POST 请求体读取完成后立即触发（非客户端断开），
+      // 会导致 clientDisconnected 被误判为 true，之后所有 SSE 事件被 writeRaw 静默丢弃。
+      // reply.raw 的 close 事件在 response 流关闭时触发，
+      // 配合 writableEnded 检查可区分"正常结束"与"客户端中途断开"。
       let clientDisconnected = false
-      request.raw.on('close', () => {
+      reply.raw.on('close', () => {
         if (!reply.raw.writableEnded) clientDisconnected = true
       })
 
@@ -1649,12 +1708,14 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Origin': request.headers.origin || '*',
         'Access-Control-Allow-Credentials': 'true',
       })
+      // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
+      request.raw.socket?.setNoDelay(true)
       const writeRaw = (data: string) => {
         if (clientDisconnected || reply.raw.writableEnded) return
         reply.raw.write(data)
       }
       const emitter = createNovelAgUiEmitter(
-        writeRaw,
+        createSseEmitterSink(writeRaw),
         `novel:arrange:${projectId}:${chapterNumber}`,
         randomUUID(),
       )
@@ -1695,13 +1756,23 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           projectId,
           chNum,
           {
+            emit: emitter.emit,
             onCheckpoint: async (checkpoint) => {
-              emitter.checkpoint(checkpoint)
-              return new Promise((resolve) => {
-                orchestrator.once(`checkpoint:${checkpoint.type}`, (decision: string) => {
-                  resolve(decision as any)
-                })
+              // 通过 ConfirmationManager 发起决策请求（默认 120s 超时，避免永久 pending）
+              // threadId 填 novel-checkpoint-{projectId}-{chapterNumber}，toolName 填 checkpoint_{type}
+              const toolCallId = randomUUID()
+              const decisionPromise = services.confirmationManager.requestDecision({
+                threadId: `novel-checkpoint-${projectId}-${chapterNumber}`,
+                toolCallId,
+                toolName: `checkpoint_${checkpoint.type}`,
+                args: { checkpoint } as Record<string, unknown>,
+                reason: `等待用户确认 ${checkpoint.type} 检查点`,
               })
+              // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
+              // 通过 toolCallId 反查拿到 ConfirmationRequest.id，推给前端用于决策路由
+              const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
+              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+              return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
             },
             onProgress: (event) => emitter.progress(event),
             arrangedEntities,
@@ -1835,7 +1906,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     chapter: z.number().int().min(1),
     title: z.string().default(''),
     note: z.string().default(''),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note']).default('bookmark'),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'in', 'out', 'clip-note']).default('bookmark'),
     color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).default('blue'),
     entityType: z.string().nullable().default(null),
     entityId: z.string().nullable().default(null),
@@ -1929,6 +2000,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(updateAgentConfigSchema, request, reply)
       if (!input) return reply
       agentConfigStore.upsertMany(input.items)
+      // NovelAgentConfigStore 内部已通过 agentManager.updateAgent 同步温度，
+      // subagent / team_execute 路径立即可见，无需手动同步
       const temperatures = agentConfigStore.getAll()
       const result = (Object.entries(temperatures) as Array<[string, number]>).map(([agentType, temperature]) => ({
         agentType,

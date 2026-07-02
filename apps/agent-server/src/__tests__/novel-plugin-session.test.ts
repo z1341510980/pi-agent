@@ -82,6 +82,12 @@ function createMockContext(): PluginContext {
     registerSessionTools: noop,
     registerService: noop,
     registerPromptTemplates: noop,
+    confirmationManager: {
+      requestDecision: () => Promise.resolve('approve'),
+      respondDecision: () => true,
+      listPending: () => [],
+      dispose: noop,
+    } as any,
     createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
       mockState.createSessionCalls++
       mockState.lastOptions = options
@@ -102,6 +108,9 @@ function createMockContext(): PluginContext {
           if (onDelta) onDelta(this.promptReturn)
           return this.promptReturn
         },
+        subscribe(_handler: (event: Record<string, unknown>) => void): () => void {
+          return () => {}
+        },
         abort() {
           this.abortCalls++
         },
@@ -111,6 +120,23 @@ function createMockContext(): PluginContext {
       }
       mockState.handles.push(handle)
       return handle
+    },
+    // 工厂 stub：测试不直接使用 AG-UI 基础设施，仅满足接口契约
+    async createAgUiSession(agUiOptions) {
+      const session = await this.createSession(agUiOptions)
+      const noop = () => {}
+      return {
+        session,
+        streamEmitter: {
+          handleSessionEvent: noop,
+          finishTextMessage: noop,
+        } as any,
+        reasoningPipeline: {} as any,
+        messageId: 'test-message-id',
+        dispose() {
+          try { session.dispose() } catch { /* 忽略 */ }
+        },
+      }
     },
   } as PluginContext
 }
@@ -232,6 +258,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
         return mockResult
       },
       abort: () => {},
+      subscribe: () => () => {},
       dispose: () => {},
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
@@ -252,6 +279,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
         return mockResult
       },
       abort: () => {},
+      subscribe: () => () => {},
       dispose: () => {},
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
@@ -269,6 +297,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
         return mockResult
       },
       abort: () => {},
+      subscribe: () => () => {},
       dispose: () => {},
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
@@ -285,6 +314,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
       prompt: async () => { throw new Error('LLM 调用失败') },
       promptStream: async () => { throw new Error('LLM 调用失败') },
       abort: () => {},
+      subscribe: () => () => {},
       dispose: () => {},
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
@@ -300,6 +330,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
       prompt: async () => { throw new Error('LLM 调用失败') },
       promptStream: async () => { throw new Error('LLM 调用失败') },
       abort: () => {},
+      subscribe: () => () => {},
       dispose: disposeFn,
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)

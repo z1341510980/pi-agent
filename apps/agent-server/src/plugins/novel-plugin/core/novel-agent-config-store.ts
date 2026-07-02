@@ -1,73 +1,70 @@
 /**
- * 小说 Agent 角色温度配置存储
+ * 小说 Agent 角色温度配置存储（AgentManager 薄封装）
  *
- * 持久化用户对 4 个小说 Agent 角色（director/writer/reviewer/memory）的温度覆盖。
- * 全局配置，不按 project 区分。
+ * B5 改造：原直接读写 novel_agent_config 表，现改为 AgentManager 的薄封装，
+ * 消除温度配置双轨制（novel_agent_config 表与 agents 表 temperature 字段语义重叠）。
  *
- * 合并优先级：持久化覆盖 > NOVEL_AGENT_CONFIGS 默认值
+ * - getAll / getByType：从 agentManager.getAgent(id).temperature 读取，
+ *   agentManager 不可用或 agent 未注册时回退到 NOVEL_AGENT_CONFIGS 默认值。
+ * - upsert / upsertMany：调用 agentManager.updateAgent(id, { temperature })。
+ *
+ * 向后兼容：novel_agent_config 表保留不删，但不再读写。
+ * db 参数保留用于未来扩展（如旧数据迁移），当前不读写该表。
  */
 
 import type Database from 'better-sqlite3'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
+import type { AgentManager } from '../../../core/agent/subagent-tool.js'
 
 /** 小说角色温度配置（合并后，含全部 4 角色） */
 export type NovelAgentTemperatures = Record<NovelAgentType, number>
 
 export class NovelAgentConfigStore {
-  private stmtGetAll: Database.Statement
-  private stmtGetByType: Database.Statement
-  private stmtUpsert: Database.Statement
-
-  constructor(private db: Database.Database) {
-    this.stmtGetAll = db.prepare('SELECT agent_type, temperature FROM novel_agent_config')
-    this.stmtGetByType = db.prepare('SELECT temperature FROM novel_agent_config WHERE agent_type = ?')
-    this.stmtUpsert = db.prepare(`
-      INSERT INTO novel_agent_config (agent_type, temperature)
-      VALUES (?, ?)
-      ON CONFLICT(agent_type) DO UPDATE SET
-        temperature = excluded.temperature,
-        updated_at = unixepoch()
-    `)
+  constructor(
+    private db: Database.Database,
+    private agentManager?: AgentManager,
+  ) {
+    // db 保留用于未来扩展（如旧数据迁移），当前不再读写 novel_agent_config 表
   }
 
-  /** 获取全部角色温度（合并默认值与持久化覆盖） */
+  /** 获取全部角色温度（AgentManager 覆盖 > NOVEL_AGENT_CONFIGS 默认值） */
   getAll(): NovelAgentTemperatures {
-    const rows = this.stmtGetAll.all() as Array<{ agent_type: string; temperature: number | null }>
-    const overrides = new Map<string, number>()
-    for (const row of rows) {
-      if (row.temperature !== null) {
-        overrides.set(row.agent_type, row.temperature)
+    return {
+      director: this.getByType('director'),
+      writer: this.getByType('writer'),
+      reviewer: this.getByType('reviewer'),
+      memory: this.getByType('memory'),
+    }
+  }
+
+  /** 获取单个角色温度（AgentManager 覆盖 > NOVEL_AGENT_CONFIGS 默认值） */
+  getByType(agentType: NovelAgentType): number {
+    const config = NOVEL_AGENT_CONFIGS[agentType]
+    if (this.agentManager) {
+      const agent = this.agentManager.getAgent(config.id)
+      if (agent?.temperature !== undefined) {
+        return agent.temperature
       }
     }
-    return {
-      director: overrides.get('director') ?? NOVEL_AGENT_CONFIGS.director.temperature,
-      writer: overrides.get('writer') ?? NOVEL_AGENT_CONFIGS.writer.temperature,
-      reviewer: overrides.get('reviewer') ?? NOVEL_AGENT_CONFIGS.reviewer.temperature,
-      memory: overrides.get('memory') ?? NOVEL_AGENT_CONFIGS.memory.temperature,
-    }
+    return config.temperature
   }
 
-  /** 获取单个角色温度（合并后） */
-  getByType(agentType: NovelAgentType): number {
-    const row = this.stmtGetByType.get(agentType) as { temperature: number | null } | undefined
-    if (row && row.temperature !== null) {
-      return row.temperature
-    }
-    return NOVEL_AGENT_CONFIGS[agentType].temperature
-  }
-
-  /** 覆盖单个角色温度 */
+  /** 覆盖单个角色温度（写入 AgentManager） */
   upsert(agentType: NovelAgentType, temperature: number): void {
-    this.stmtUpsert.run(agentType, temperature)
+    const config = NOVEL_AGENT_CONFIGS[agentType]
+    if (!this.agentManager) return
+    // agent 未注册时跳过（updateAgent 在 agent 不存在时会抛错）
+    // 首次注册前调用 upsert 不应报错，回退为 no-op
+    if (!this.agentManager.getAgent(config.id)) return
+    // updateAgent 为 async，但内存更新（agents.set）在首个 await 前同步完成，
+    // 后续 getAgent 立即可见新温度。持久化部分 fire-and-forget，保持 upsert 同步签名。
+    void this.agentManager.updateAgent(config.id, { temperature })
   }
 
   /** 批量覆盖 */
   upsertMany(items: Array<{ agentType: NovelAgentType; temperature: number }>): void {
-    const tx = this.db.transaction(() => {
-      for (const item of items) {
-        this.upsert(item.agentType, item.temperature)
-      }
-    })
-    tx()
+    for (const item of items) {
+      this.upsert(item.agentType, item.temperature)
+    }
   }
 }

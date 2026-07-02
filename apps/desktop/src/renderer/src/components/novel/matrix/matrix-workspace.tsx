@@ -457,6 +457,41 @@ export function MatrixWorkspace({
     }
   }, [currentProjectId, characterHistory, conflicts, factions, foreshadows, locations, setCharacterHistory, queryClient])
 
+  // ── 左键单元格：智能切换出场状态（实体类型自适应）──
+  // - character/location：空→标记出场 / 已出场→删除出场
+  // - conflict/faction：空→扩展端点 / 端点→收缩端点 / 中段→无操作（schema 闭区间不支持挖洞）
+  // - foreshadow：未埋设→设埋设点 / 已埋设未回收→设回收点 / 埋设点→取消埋设 / 回收点→取消回收
+  // - world_element：恒全程，不操作
+  const handleTogglePresent = useCallback(async (entity: MatrixEntity, chapter: number): Promise<void> => {
+    const kind = entity.kind
+    if (kind === 'world_element') return
+
+    let action: 'mark' | 'remove' | 'none' = 'none'
+    if (kind === 'foreshadow') {
+      const f = foreshadows.find((x) => x.id === entity.entityId)
+      if (!f) return
+      const plant = f.firstChapter
+      const payoff = f.recoverByChapter
+      if (plant != null && chapter === plant) action = 'remove' // 取消埋设点
+      else if (payoff != null && chapter === payoff) action = 'remove' // 取消回收点
+      else if (plant == null) action = 'mark' // 设埋设点
+      else if (payoff == null && chapter > plant) action = 'mark' // 设回收点
+      // else：跨度中段且已设回收 → none（用右键编辑范围移动）
+    } else {
+      const present = isCellPresent(entity.entityId, kind, chapter)
+      const removable = isCellRemovable(entity.entityId, kind, chapter)
+      if (!present) action = 'mark'
+      else if (removable) action = 'remove'
+      // present && !removable（冲突/势力跨度中段）→ none
+    }
+
+    if (action === 'mark') {
+      await handleMarkPresent(entity.entityId, kind, chapter)
+    } else if (action === 'remove') {
+      await handleRemovePresent(entity.entityId, kind, chapter)
+    }
+  }, [foreshadows, isCellPresent, isCellRemovable, handleMarkPresent, handleRemovePresent])
+
   // ── C-4b 修改批注：查找已有 clip-note marker ──
   const handleEditNote = useCallback((entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number) => {
     const existing = markers.find(
@@ -772,6 +807,7 @@ export function MatrixWorkspace({
           onContextMenuGroupEmpty={handleContextMenuGroupEmpty}
           onEditSpan={handleEditSpan}
           onDropEntity={handleMarkPresent}
+          onTogglePresent={handleTogglePresent}
         />
       </div>
 

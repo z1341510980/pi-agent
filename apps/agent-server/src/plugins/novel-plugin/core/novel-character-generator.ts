@@ -72,6 +72,9 @@ export class NovelCharacterGenerator {
       systemPrompt,
       userMessage: userPrompt,
       responseFormat: 'json',
+      // 角色生成涉及详细设定（外貌/性格/背景/能力/关系等），LLM 耗时较长；
+      // 默认 120s 不足，提到 300s 与 Memory Agent 一致
+      timeoutMs: 300_000,
     })
 
     try {

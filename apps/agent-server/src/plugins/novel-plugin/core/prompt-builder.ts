@@ -114,6 +114,10 @@ export interface NovelPromptStores {
   getConflict(conflictId: string): NovelConflict | undefined
   /** 按 ID 查询伏笔（供 arrangedEntities 注入时使用） */
   getForeshadow(foreshadowId: string): NovelForeshadow | undefined
+  /** 按 ID 查询势力（供 arrangedEntities 注入时使用） */
+  getFaction(factionId: string): NovelFaction | undefined
+  /** 按 ID 查询地点（供 arrangedEntities 注入时使用） */
+  getLocation(locationId: string): NovelLocation | undefined
 }
 
 export class NovelPromptBuilder {
@@ -230,7 +234,7 @@ export class NovelPromptBuilder {
     parts.push(this.formatConstraints(constraints))
 
     // ── 本章已编排实体约束（手动编排 / AI 编排产出，注入 SEMI 层）──
-    if (arrangedEntities && (arrangedEntities.characterIds.length > 0 || arrangedEntities.conflictIds.length > 0 || arrangedEntities.foreshadowIds.length > 0)) {
+    if (arrangedEntities && (arrangedEntities.characterIds.length > 0 || arrangedEntities.conflictIds.length > 0 || arrangedEntities.foreshadowIds.length > 0 || arrangedEntities.factionIds.length > 0 || arrangedEntities.locationIds.length > 0)) {
       parts.push(this.formatArrangedEntities(projectId, arrangedEntities))
     }
 
@@ -420,6 +424,41 @@ export class NovelPromptBuilder {
         }
       }
     }
+    if (arranged.factionIds.length > 0) {
+      const facs = arranged.factionIds
+        .map((id) => this.stores.getFaction(id))
+        .filter((f): f is NonNullable<typeof f> => f != null)
+      if (facs.length > 0) {
+        lines.push('本章登场势力：')
+        for (const f of facs) {
+          const parts = [`  - ${f.name}`]
+          if (f.description) parts.push(f.description)
+          if (f.type) parts.push(`类型：${f.type}`)
+          if (f.ideology) parts.push(`理念：${f.ideology}`)
+          if (f.strength) parts.push(`实力：${f.strength}`)
+          if (f.status) parts.push(`状态：${f.status}`)
+          if (f.allies && f.allies.length > 0) parts.push(`盟友：${f.allies.join('、')}`)
+          if (f.enemies && f.enemies.length > 0) parts.push(`敌对：${f.enemies.join('、')}`)
+          lines.push(parts.join('；'))
+        }
+      }
+    }
+    if (arranged.locationIds.length > 0) {
+      const locs = arranged.locationIds
+        .map((id) => this.stores.getLocation(id))
+        .filter((l): l is NonNullable<typeof l> => l != null)
+      if (locs.length > 0) {
+        lines.push('本章场景地点：')
+        for (const l of locs) {
+          const parts = [`  - ${l.name}`]
+          if (l.description) parts.push(l.description)
+          if (l.type) parts.push(`类型：${l.type}`)
+          if (l.significance) parts.push(`重要性：${l.significance}`)
+          if (l.status && l.status !== 'normal') parts.push(`状态：${l.status}`)
+          lines.push(parts.join('；'))
+        }
+      }
+    }
     return lines.join('\n')
   }
 
@@ -466,6 +505,31 @@ export class NovelPromptBuilder {
       parts.push('\n### 线索进度')
       for (const c of state.activeClues) {
         parts.push(`- ${c.description}（${c.progress}%，下一步：${c.nextStep}）`)
+      }
+    }
+
+    // 活跃势力
+    if (state.activeFactions.length > 0) {
+      parts.push('\n### 活跃势力')
+      for (const f of state.activeFactions) {
+        const segs = [`- **${f.name}**`]
+        if (f.type) segs.push(`类型：${f.type}`)
+        if (f.strength) segs.push(`实力：${f.strength}`)
+        if (f.status) segs.push(`状态：${f.status}`)
+        if (f.ideology) segs.push(`理念：${f.ideology}`)
+        parts.push(segs.join('；'))
+      }
+    }
+
+    // 已登场地点
+    if (state.activeLocations.length > 0) {
+      parts.push('\n### 已登场地点')
+      for (const l of state.activeLocations) {
+        const segs = [`- **${l.name}**`]
+        if (l.type) segs.push(`类型：${l.type}`)
+        if (l.significance) segs.push(`重要性：${l.significance}`)
+        if (l.status && l.status !== 'normal') segs.push(`状态：${l.status}`)
+        parts.push(segs.join('；'))
       }
     }
 
@@ -534,6 +598,12 @@ export class NovelPromptBuilder {
         (f) => f.status !== 'recovered' && f.status !== 'abandoned',
       ),
       activeClues: this.stores.listClues(projectId).filter((c) => c.progress < 100),
+      activeFactions: this.stores.listFactions(projectId).filter(
+        (f) => f.status !== 'destroyed',
+      ),
+      activeLocations: this.stores.listLocations(projectId).filter(
+        (l) => l.appearChapters && l.appearChapters.length > 0,
+      ),
       currentStage: project.currentStage,
       currentChapter: project.currentChapter,
     }

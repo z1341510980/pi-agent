@@ -31,25 +31,29 @@
  *
  * ── 事件流 ──
  *
- * 通过 onProgress 回调和 EventEmitter 向外推送 CreationFlowEvent，
- * 上层（如 SSE 路由）可订阅事件实现实时进度推送。
+ * 通过 onProgress 回调向外推送 CreationFlowEvent，
+ * 上层（如 SSE 路由）通过该回调实现实时进度推送。
+ * 检查点决策由上层通过 onCheckpoint 回调委托 ConfirmationManager 完成
+ * （统一超时机制 + pending 列表 + 'confirmation:*' 事件）。
  */
 
-import { EventEmitter } from 'node:events'
 import type { NovelStore } from './novel-store.js'
 import type { NovelSessionFactory } from './novel-session.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent, type AgentOutputData } from './novel-agents.js'
-import type { NarrativeTask, ChapterConstraints, ArrangedEntity } from './types.js'
-import type { ToolDefinition as PluginToolDefinition } from '../../../core/plugin/plugin-types.js'
+import type { NarrativeTask, ChapterConstraints, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation } from './types.js'
 import { RhythmController } from './rhythm-controller.js'
 import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'
+import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import type { NovelAgentConfigStore } from './novel-agent-config-store.js'
 import type { NovelAgentLogStatus } from './types.js'
+import type { AgUiEventSink } from '@repo/protocol/events'
 
 export interface CreationOptions {
+  /** AG-UI 事件发射器（与 chat 共用同一类型），供 StreamEmitter 发射标准 AG-UI 事件 */
+  emit: AgUiEventSink
   onCheckpoint: (checkpoint: CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
   onProgress: (event: CreationFlowEvent) => void
   signal?: AbortSignal
@@ -65,13 +69,15 @@ export interface CreationResult {
   error?: string
 }
 
-export class NovelOrchestrator extends EventEmitter {
+export class NovelOrchestrator {
   /** 用户在检查点期间发送的创作指令（供下一个 Agent 使用后清空） */
   private userMessages: string[] = []
   /** 本章已编排实体约束（由 createChapterWithFlow 设置，runAgent 读取后清空） */
   private currentArrangedEntities?: ArrangedEntity
   /** 小说角色温度配置存储（runAgent 中按角色合并温度） */
   private readonly agentConfigStore: NovelAgentConfigStore
+  /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
+  private readonly memoryGenerator?: NovelMemoryGenerator
 
   constructor(
     private store: NovelStore,
@@ -81,9 +87,10 @@ export class NovelOrchestrator extends EventEmitter {
     private engine: NovelEngine,
     private context: PluginContext,
     agentConfigStore: NovelAgentConfigStore,
+    memoryGenerator?: NovelMemoryGenerator,
   ) {
-    super()
     this.agentConfigStore = agentConfigStore
+    this.memoryGenerator = memoryGenerator
   }
 
   /**
@@ -123,14 +130,14 @@ export class NovelOrchestrator extends EventEmitter {
       )
 
       // Phase 1: Director
-      this.emitProgress(options, 'directing', { message: '导演 Agent 正在分析故事状态...' })
+      this.emitProgress(options, 'directing', 'phase_change', { message: '导演 Agent 正在分析故事状态...' })
       const directorResult = await this.runAgent('director', projectId, chapterNumber, {
         task: `请分析当前故事状态，为第 ${chapterNumber} 章规划叙事任务。`,
         rhythmSuggestion,
       }, options)
 
       // 检查点 1
-      this.emitProgress(options, 'checkpoint_narrative', { message: '等待用户确认叙事任务...' })
+      this.emitProgress(options, 'checkpoint_narrative', 'phase_change', { message: '等待用户确认叙事任务...' })
       const narrativeDecision = await options.onCheckpoint({
         type: 'narrative_task',
         phase: 'checkpoint_narrative',
@@ -138,26 +145,26 @@ export class NovelOrchestrator extends EventEmitter {
       })
 
       if (narrativeDecision === 'reject') {
-        this.emitProgress(options, 'cancelled', { message: '用户取消了创作流程' })
+        this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户取消了创作流程' })
         return { status: 'cancelled' }
       }
 
       // Phase 2: Writer
-      this.emitProgress(options, 'writing', { message: '写作 Agent 正在创作章节正文...' })
+      this.emitProgress(options, 'writing', 'phase_change', { message: '写作 Agent 正在创作章节正文...' })
       const writerResult = await this.runAgent('writer', projectId, chapterNumber, {
         task: `请根据叙事任务创作第 ${chapterNumber} 章正文。`,
         narrativeTask: directorResult,
       }, options)
 
       // Phase 3: Reviewer
-      this.emitProgress(options, 'reviewing', { message: '审稿 Agent 正在检查章节...' })
+      this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber, {
         task: `请验收第 ${chapterNumber} 章的内容。`,
         content: writerResult,
       }, options)
 
       // 检查点 2
-      this.emitProgress(options, 'checkpoint_review', { message: '等待用户确认验收报告...' })
+      this.emitProgress(options, 'checkpoint_review', 'phase_change', { message: '等待用户确认验收报告...' })
       const reviewDecision = await options.onCheckpoint({
         type: 'review',
         phase: 'checkpoint_review',
@@ -167,7 +174,7 @@ export class NovelOrchestrator extends EventEmitter {
       let finalContent = writerResult
 
       if (reviewDecision === 'revise') {
-        this.emitProgress(options, 'revising', { message: '写作 Agent 正在根据审稿意见修订章节...' })
+        this.emitProgress(options, 'revising', 'phase_change', { message: '写作 Agent 正在根据审稿意见修订章节...' })
         const reviseResult = await this.runAgent('writer', projectId, chapterNumber, {
           task: `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。`,
           content: writerResult,
@@ -179,18 +186,17 @@ export class NovelOrchestrator extends EventEmitter {
         })
         finalContent = reviseResult
       } else if (reviewDecision === 'rewrite') {
-        this.emitProgress(options, 'rewriting', { message: '重新创作章节...' })
+        this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
         return this.createChapterWithFlow(projectId, chapterNumber, options)
       }
 
       // Phase 5: Memory
       // 在 Memory Agent 执行前捕获实体状态快照，执行后比较差异并记录记忆事件
-      this.emitProgress(options, 'memory', { message: '记忆 Agent 正在提取状态变更...' })
+      this.emitProgress(options, 'memory', 'phase_change', { message: '记忆 Agent 正在提取状态变更...' })
       const beforeState = this.captureEntityState(projectId)
-      const memoryResult = await this.runAgent('memory', projectId, chapterNumber, {
-        task: `请从第 ${chapterNumber} 章中提取状态变更。`,
-        content: finalContent,
-      }, options)
+      const memoryResult = await this.runMemoryAgent(
+        projectId, chapterNumber, finalContent, options,
+      )
       const chapter = this.store.getChapter(projectId, chapterNumber)
       const memoryEvents = this.recordMemoryEvents(
         projectId,
@@ -199,18 +205,27 @@ export class NovelOrchestrator extends EventEmitter {
         beforeState,
       )
 
+      // 同步本章涉及实体的章节维度字段（firstChapter/lastChapter/characterHistory）
+      // 解决 Memory Agent 只改动态状态、不写章节维度导致的矩阵视图滞后问题
+      this.syncChapterDimensions(
+        projectId,
+        chapterNumber,
+        chapter?.id ?? null,
+        options.arrangedEntities,
+        beforeState,
+      )
+
       // 章节完成时保存全量状态快照（情景记忆）
       this.saveChapterSnapshot(projectId, chapterNumber)
 
       // 推送数据变更通知：Memory Agent 已写入实体状态、快照已保存，
       // 前端收到后刷新画布（替代轮询）。此事件不展示在时间线（dataChanged: true）。
-      this.emitProgress(options, 'memory', {
+      this.emitProgress(options, 'memory', 'data_changed', {
         agentType: 'memory',
         agentName: '记忆',
-        content: '数据已更新',
-        preview: '数据已更新',
+        message: '数据已更新',
         dataChanged: true,
-      } as AgentOutputData)
+      })
 
       // 自动保存章节内容到数据库（创作完成后立即持久化，无需用户手动点击"保存到章节"）
       if (chapter) {
@@ -221,7 +236,7 @@ export class NovelOrchestrator extends EventEmitter {
         })
       }
 
-      this.emitProgress(options, 'completed', { message: '章节创作完成' })
+      this.emitProgress(options, 'completed', 'completed', { message: '章节创作完成' })
 
       return {
         status: 'completed',
@@ -236,7 +251,7 @@ export class NovelOrchestrator extends EventEmitter {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      this.emitProgress(options, 'error', { message })
+      this.emitProgress(options, 'error', 'error', { message })
       return { status: 'error', error: message }
     } finally {
       // 流程结束（含 rewrite 递归返回后）清理编排约束，避免泄漏到下一次创作
@@ -250,7 +265,7 @@ export class NovelOrchestrator extends EventEmitter {
     projectId: string,
     chapterNumber: number,
     input: unknown,
-    options?: CreationOptions,
+    options: CreationOptions,
     overrides?: {
       /** 展示用的 agentType（如 writer 用于修订时展示为 reviser） */
       displayAgentType?: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
@@ -338,7 +353,7 @@ export class NovelOrchestrator extends EventEmitter {
 
     // 推送准备阶段进度，让前端知道 Agent 正在工作（不等 LLM 首 token）
     const totalInputChars = systemPrompt.length + chapterContext.length + userMessage.length
-    this.emitProgress(options, phase, {
+    this.emitProgress(options, phase, 'phase_change', {
       message: `${displayAgentName} 正在准备调用 LLM（输入约 ${totalInputChars} 字符）...`,
     })
 
@@ -347,65 +362,74 @@ export class NovelOrchestrator extends EventEmitter {
     // 合并温度：持久化覆盖 > 角色默认值（NOVEL_AGENT_CONFIGS）
     const temperature = this.agentConfigStore.getByType(agentType)
 
-    // Writer Agent 生成长文本需要更长时间，使用 300s timeout
-    const timeoutMs = agentType === 'writer' ? 300_000 : 120_000
+    // Writer 生成长文本 + Memory 调用大量工具（15+），都需要更长时间
+    const timeoutMs = (agentType === 'writer' || agentType === 'memory') ? 300_000 : 120_000
 
-    const session = await this.context.createSession({
+    // 首 token 心跳：LLM 处理大 prompt 时首 token 延迟可能很长，
+    // 期间没有 TEXT_MESSAGE_CONTENT 事件。每 15s 推一个心跳 progress。
+    // 首段 text_delta 到达后由工厂的 onFirstText 回调设置 firstTextReceived=true，心跳停止推送。
+    let firstTextReceived = false
+    const heartbeatTimer = setInterval(() => {
+      if (firstTextReceived) return
+      this.emitProgress(options, phase, 'phase_change', {
+        message: `${displayAgentName} 正在等待 LLM 响应...（已等待 ${Math.round((Date.now() - startTime) / 1000)}s）`,
+      })
+    }, 15_000)
+
+    // 通过底座工厂创建 AG-UI Session：封装 StreamEmitter + ReasoningPipeline + 订阅连接
+    // 插件不再自己 new 这些基础设施层实例，真正"依托 chat 底座能力"
+    // 首 token 检测下沉到工厂：通过 onFirstText 回调通知前端"开始生成"
+    const agUiSession = await this.context.createAgUiSession({
       systemPrompt,
       prefixUserMessage: chapterContext,
       userMessage,
-      tools: filteredTools as unknown as PluginToolDefinition[],
+      tools: filteredTools,
       signal: options?.signal,
       temperature,
       timeoutMs,
+      emit: options.emit,
+      emitRaw: false, // novel 不需要 RAW 事件（chat 才用于调试）
+      onFirstText: () => {
+        firstTextReceived = true
+        this.emitProgress(options, phase, 'phase_change', {
+          message: `${displayAgentName} 开始生成内容...`,
+        })
+      },
     })
+    const { session, streamEmitter, messageId } = agUiSession
 
     // 在 try/catch/finally 中捕获结果与错误，finally 持久化到日志表
     let logStatus: NovelAgentLogStatus = 'success'
     let logError = ''
     let logResult = ''
     try {
-      // 流式推送：每收到一段 delta 就通过 emitProgress 推送给前端，
-      // 前端据此实时更新最后一条同类型 Agent 输出（streaming: true）。
-      let streamedText = ''
-      let deltaCount = 0
-      let firstDeltaReceived = false
-      this.context.logger.info(
-        { agentType, agentName: config.name, projectId, chapterNumber, userMessageLength: userMessage.length },
-        'Agent promptStream 开始调用 LLM',
-      )
+      // 通知前端 Agent 开始：带 messageId 让前端将后续 TEXT_MESSAGE_* 事件
+      // 关联到对应 Agent 输出（前端维护 messageId → agentType 映射）
+      //
+      // ⚠️ 时序契约：此 agent_start 必须在 session.prompt() 之前发射，
+      // 否则前端收到 TEXT_MESSAGE_START 时找不到 messageId 映射，输出不显示。
+      this.emitProgress(options, phase, 'agent_start', {
+        agentType: displayAgentType,
+        agentName: displayAgentName,
+        messageId,
+      })
 
-      // 首 token 心跳：LLM 处理大 prompt 时首 token 延迟可能很长，
-      // 期间没有 delta 事件。每 15s 推一个心跳 progress，让前端知道 Agent 还在工作。
-      const heartbeatTimer = setInterval(() => {
-        if (firstDeltaReceived) return
-        this.emitProgress(options, phase, {
-          message: `${displayAgentName} 正在等待 LLM 响应...（已等待 ${Math.round((Date.now() - startTime) / 1000)}s）`,
-        })
-      }, 15_000)
+      this.context.logger.info(
+        { agentType, agentName: config.name, projectId, chapterNumber, userMessageLength: userMessage.length, messageId },
+        'Agent 开始调用 LLM（通过 createAgUiSession 工厂发射 AG-UI 标准事件）',
+      )
 
       let result: string
       try {
-        result = await session.promptStream((delta: string) => {
-          if (!firstDeltaReceived) {
-            firstDeltaReceived = true
-            this.emitProgress(options, phase, {
-              message: `${displayAgentName} 开始生成内容...`,
-            })
-          }
-          deltaCount++
-          streamedText += delta
-          this.emitProgress(options, phase, {
-            agentType: displayAgentType,
-            agentName: displayAgentName,
-            content: streamedText,
-            // 取最后 200 字符作为预览，避免 SSE 事件过大
-            preview: streamedText.slice(-200),
-            streaming: true,
-          } as AgentOutputData)
-        })
+        // 使用 prompt() 而非 promptStream()：StreamEmitter 已由工厂订阅
+        // 实时发射 TEXT_MESSAGE_CONTENT 增量事件，prompt() 只负责触发 LLM 调用。
+        // 首 token 检测由 createAgUiSession 工厂的 onFirstText 回调完成（见上方调用）。
+        result = await session.prompt()
+        streamEmitter.finishTextMessage()
       } finally {
         clearInterval(heartbeatTimer)
+        // 不再需要 heartbeatUnsubscribe()：首 token 检测已下沉到 createAgUiSession 工厂，
+        // 工厂内部 subscribe 在 dispose 时统一清理
       }
 
       this.context.logger.info(
@@ -413,23 +437,11 @@ export class NovelOrchestrator extends EventEmitter {
           agentType,
           agentName: config.name,
           projectId,
-          deltaCount,
-          streamedLength: streamedText.length,
           resultLength: result.length,
           resultPreview: result.slice(0, 200),
         },
-        'Agent promptStream 返回',
+        'Agent prompt 返回',
       )
-
-      // 推送最终完整输出（streaming: false 标记生成结束，
-      // 前端会更新最后一条同类型输出并移除"正在生成"状态）
-      this.emitProgress(options, phase, {
-        agentType: displayAgentType,
-        agentName: displayAgentName,
-        content: result,
-        preview: result.slice(0, 500),
-        streaming: false,
-      } as AgentOutputData)
 
       logResult = result
       return result
@@ -442,7 +454,7 @@ export class NovelOrchestrator extends EventEmitter {
       )
       throw err
     } finally {
-      session.dispose()
+      agUiSession.dispose()
 
       // 持久化 Agent 调用日志（fire-and-forget，失败不影响主流程）
       try {
@@ -475,6 +487,39 @@ export class NovelOrchestrator extends EventEmitter {
           'Agent 调用日志写入失败',
         )
       }
+
+      // 同步写入通用 agent_call_logs（chat 底座统一记录层）
+      // metadata 携带 novel 领域扩展字段，供跨领域查询与审计
+      if (this.context.agentCallLogger) {
+        try {
+          this.context.agentCallLogger.record({
+            agentId: config.id,
+            agentName: config.name,
+            threadId: '',
+            systemPrompt,
+            userMessage,
+            taskInput: taskInputForLog,
+            tools: JSON.stringify(filteredTools.map(t => ({ name: t.name, description: t.description }))),
+            toolNames: JSON.stringify(toolNamesForLog),
+            result: logResult,
+            resultLength: logResult.length,
+            durationMs: Date.now() - startTime,
+            status: logStatus === 'success' ? 'success' : 'error',
+            error: logError,
+            metadata: JSON.stringify({
+              projectId,
+              chapterNumber,
+              agentType,
+              phase,
+              displayAgentType,
+              displayAgentName,
+              source: 'novel-orchestrator',
+            }),
+          })
+        } catch {
+          // 通用日志写入失败不影响主流程
+        }
+      }
     }
   }
 
@@ -483,13 +528,137 @@ export class NovelOrchestrator extends EventEmitter {
   // ═══════════════════════════════════════════════════════════════
 
   /**
-   * 捕获项目当前实体状态（角色 / 冲突 / 伏笔）
+   * 运行 Memory Agent
+   *
+   * 优先使用 NovelMemoryGenerator（结构化 LLM 调用，单次完成，~30s），
+   * 回退到原 runAgent('memory', ...)（LLM 工具循环，300s 超时）。
+   *
+   * 回退场景：memoryGenerator 未注入（旧版本兼容或测试环境）。
+   * 回退时仍走原工具循环模式，记录日志并保持流程完整。
+   */
+  private async runMemoryAgent(
+    projectId: string,
+    chapterNumber: number,
+    chapterContent: string,
+    options: CreationOptions,
+  ): Promise<string> {
+    // 优先使用结构化 LLM 调用模式
+    if (this.memoryGenerator) {
+      const startTime = Date.now()
+      let status: 'success' | 'error' = 'success'
+      let errorMsg: string | undefined
+      let resultSummary = ''
+      try {
+        const result = await this.memoryGenerator.generate(
+          projectId, chapterNumber, chapterContent,
+          (event) => {
+            this.emitProgress(options, 'memory', 'phase_change', {
+              message: event.message,
+              phase: event.phase,
+              data: event.data,
+            })
+          },
+        )
+        resultSummary = result.summary
+        return result.summary
+      } catch (err) {
+        status = 'error'
+        errorMsg = err instanceof Error ? err.message : String(err)
+        this.context.logger.error(
+          { projectId, chapterNumber, err },
+          'Memory Generator 调用失败，回退到空结果',
+        )
+        // 不再回退到工具循环（容易 300s 超时），直接返回空结果让流程继续
+        resultSummary = '记忆提取失败，未应用状态变更'
+        return resultSummary
+      } finally {
+        const durationMs = Date.now() - startTime
+
+        // 持久化领域层日志
+        try {
+          this.store.insertAgentLog({
+            projectId,
+            chapterNumber,
+            agentType: 'memory',
+            agentName: '记忆',
+            displayAgentType: 'memory',
+            displayAgentName: '记忆',
+            phase: 'memory',
+            systemPrompt: '(结构化 LLM 调用 - role-memory-generator)',
+            chapterContext: '',
+            userMessage: `请从第 ${chapterNumber} 章中提取状态变更。`,
+            taskInput: chapterContent.slice(0, 500),
+            userInstructions: [],
+            tools: [],
+            toolNames: [],
+            result: resultSummary,
+            resultLength: resultSummary.length,
+            durationMs,
+            status,
+            error: errorMsg ?? '',
+            sessionId: '',
+          })
+        } catch {
+          // 日志写入失败不影响主流程
+        }
+
+        // 同步写入通用 agent_call_logs
+        if (this.context.agentCallLogger) {
+          try {
+            this.context.agentCallLogger.record({
+              agentId: 'novel-memory',
+              agentName: '记忆',
+              threadId: '',
+              systemPrompt: '(结构化 LLM 调用 - role-memory-generator)',
+              userMessage: `请从第 ${chapterNumber} 章中提取状态变更。`,
+              taskInput: chapterContent.slice(0, 500),
+              tools: '[]',
+              toolNames: '[]',
+              result: resultSummary,
+              resultLength: resultSummary.length,
+              durationMs,
+              status: status === 'success' ? 'success' : 'error',
+              error: errorMsg ?? '',
+              metadata: JSON.stringify({
+                projectId,
+                chapterNumber,
+                agentType: 'memory',
+                phase: 'memory',
+                displayAgentType: 'memory',
+                displayAgentName: '记忆',
+                source: 'novel-memory-generator',
+              }),
+            })
+          } catch {
+            // 通用日志写入失败不影响主流程
+          }
+        }
+      }
+    }
+
+    // 回退：原 LLM 工具循环模式（仅当 memoryGenerator 未注入时）
+    this.context.logger.warn(
+      { projectId, chapterNumber },
+      'memoryGenerator 未注入，回退到 LLM 工具循环模式（可能 300s 超时）',
+    )
+    return this.runAgent('memory', projectId, chapterNumber, {
+      task: `请从第 ${chapterNumber} 章中提取状态变更。`,
+      content: chapterContent,
+    }, options)
+  }
+
+
+
+  /**
+   * 捕获项目当前实体状态（角色 / 冲突 / 伏笔 / 势力 / 地点）
    * 返回按实体 ID 索引的 Map，用于 Memory Agent 执行前后差异比较
    */
   private captureEntityState(projectId: string): {
     characters: Map<string, { name: string; currentState: string; currentGoal: string; currentPressure: string; secret: string; arcStage: string }>
     conflicts: Map<string, { description: string; stage: string; intensity: number }>
     foreshadowing: Map<string, { description: string; status: string; firstChapter: number | null; lastChapter: number | null }>
+    factions: Map<string, { name: string; status: string; strength: string }>
+    locations: Map<string, { name: string; status: string; appearChapters: number[] }>
   } {
     const characters = new Map(
       this.store.listCharacters(projectId).map((c) => [
@@ -521,7 +690,19 @@ export class NovelOrchestrator extends EventEmitter {
         },
       ]),
     )
-    return { characters, conflicts, foreshadowing }
+    const factions = new Map(
+      this.store.listFactions(projectId).map((f) => [
+        f.id,
+        { name: f.name, status: f.status, strength: f.strength },
+      ]),
+    )
+    const locations = new Map(
+      this.store.listLocations(projectId).map((l) => [
+        l.id,
+        { name: l.name, status: l.status, appearChapters: l.appearChapters ? [...l.appearChapters] : [] },
+      ]),
+    )
+    return { characters, conflicts, foreshadowing, factions, locations }
   }
 
   /**
@@ -647,18 +828,236 @@ export class NovelOrchestrator extends EventEmitter {
       }
     }
 
+    // ── 势力变更 ──
+    for (const [id, afterFac] of after.factions) {
+      const beforeFac = before.factions.get(id)
+      if (!beforeFac) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'faction_change',
+          entityId: id, entityType: 'faction',
+          description: `势力创建: ${afterFac.name}`,
+          oldValue: null,
+          newValue: JSON.stringify({ name: afterFac.name, status: afterFac.status, strength: afterFac.strength }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+        continue
+      }
+      if (beforeFac.status !== afterFac.status) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'faction_change',
+          entityId: id, entityType: 'faction',
+          description: `势力状态变更: ${afterFac.name}（${beforeFac.status} → ${afterFac.status}）`,
+          oldValue: JSON.stringify({ status: beforeFac.status }),
+          newValue: JSON.stringify({ status: afterFac.status }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
+    }
+
+    // ── 地点变更 ──
+    for (const [id, afterLoc] of after.locations) {
+      const beforeLoc = before.locations.get(id)
+      if (!beforeLoc) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'location_change',
+          entityId: id, entityType: 'location',
+          description: `地点创建: ${afterLoc.name}`,
+          oldValue: null,
+          newValue: JSON.stringify({ name: afterLoc.name, status: afterLoc.status }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+        continue
+      }
+      if (beforeLoc.status !== afterLoc.status) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'location_change',
+          entityId: id, entityType: 'location',
+          description: `地点状态变更: ${afterLoc.name}（${beforeLoc.status} → ${afterLoc.status}）`,
+          oldValue: JSON.stringify({ status: beforeLoc.status }),
+          newValue: JSON.stringify({ status: afterLoc.status }),
+          cause: null, effectIds: [], significance: 5,
+        }))
+      }
+      const beforeChs = beforeLoc.appearChapters
+      const afterChs = afterLoc.appearChapters
+      if (beforeChs.join(',') !== afterChs.join(',')) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'location_change',
+          entityId: id, entityType: 'location',
+          description: `地点出场章节更新: ${afterLoc.name}`,
+          oldValue: JSON.stringify({ appearChapters: beforeChs }),
+          newValue: JSON.stringify({ appearChapters: afterChs }),
+          cause: null, effectIds: [], significance: 5,
+        }))
+      }
+    }
+
     return events
   }
 
   /**
+   * 同步本章涉及实体的章节维度字段（GAP A/B/C 统一修复）。
+   *
+   * 问题背景：
+   * - Memory Agent 工具只改实体的「动态状态」（currentState/stage/intensity/status），
+   *   不稳定写入「章节维度」字段（firstChapter/lastChapter/characterHistory）。
+   * - 矩阵视图依赖章节维度字段画跨度色带，导致 Memory 写完后矩阵图不变。
+   *
+   * 本方法在 Memory Agent 执行后统一补全，不依赖 LLM 是否传 chapterNumber：
+   * - 角色：本章编排涉及角色 + Memory 新建角色，若无本章 character_history 记录则写入
+   * - 冲突：本章编排涉及冲突 + Memory 新建冲突，firstChapter 为 null 则写本章号；lastChapter 始终更新为本章号
+   * - 伏笔：同冲突（firstChapter 兜底，lastChapter 更新）
+   * - 势力：同冲突（firstChapter/lastChapter 端点补全）
+   * - 地点：本章编排涉及地点 + Memory 新建地点，若 appearChapters 不含本章号则追加
+   */
+  private syncChapterDimensions(
+    projectId: string,
+    chapterNumber: number,
+    chapterId: string | null,
+    arrangedEntities: ArrangedEntity | undefined,
+    before: ReturnType<NovelOrchestrator['captureEntityState']>,
+  ): void {
+    // ── 角色：补全 character_history（本章出场记录）──
+    // 涉及角色 = arrangedEntities.characterIds + Memory 新建角色（before.characters 没有的）
+    const afterChars = this.store.listCharacters(projectId)
+    const newCharacterIds = afterChars
+      .filter((c) => !before.characters.has(c.id))
+      .map((c) => c.id)
+    const involvedCharacterIds = new Set<string>([
+      ...(arrangedEntities?.characterIds ?? []),
+      ...newCharacterIds,
+    ])
+
+    if (involvedCharacterIds.size > 0) {
+      // 查询本章已有的 character_history，避免重复写入
+      const existingHistory = this.store.listCharacterHistory(projectId)
+      const existingInChapter = new Set(
+        existingHistory
+          .filter((h) => h.chapterNumber === chapterNumber)
+          .map((h) => h.characterId),
+      )
+      const newEntries: Array<Omit<NovelCharacterHistory, 'id' | 'createdAt'>> = []
+      for (const characterId of involvedCharacterIds) {
+        if (existingInChapter.has(characterId)) continue
+        const character = afterChars.find((c) => c.id === characterId)
+        if (!character) continue
+        newEntries.push({
+          projectId,
+          characterId,
+          chapterId,
+          chapterNumber,
+          fieldName: 'currentState',
+          oldValue: null,
+          newValue: '本章出场',
+          reason: 'orchestrator.syncChapterDimensions 自动补全',
+        })
+      }
+      if (newEntries.length > 0) {
+        this.store.batchCreateCharacterHistory(newEntries)
+      }
+    }
+
+    // ── 冲突：补全 firstChapter/lastChapter ──
+    // 涉及冲突 = arrangedEntities.conflictIds + Memory 新建冲突
+    const afterConflicts = this.store.listConflicts(projectId)
+    const newConflictIds = afterConflicts
+      .filter((c) => !before.conflicts.has(c.id))
+      .map((c) => c.id)
+    const involvedConflictIds = new Set<string>([
+      ...(arrangedEntities?.conflictIds ?? []),
+      ...newConflictIds,
+    ])
+    for (const conflictId of involvedConflictIds) {
+      const conflict = afterConflicts.find((c) => c.id === conflictId)
+      if (!conflict) continue
+      const patch: Partial<NovelConflict> = { lastChapter: chapterNumber }
+      if (conflict.firstChapter == null) {
+        patch.firstChapter = chapterNumber
+      }
+      this.store.updateConflict(conflictId, patch)
+    }
+
+    // ── 伏笔：补全 firstChapter/lastChapter ──
+    // 涉及伏笔 = arrangedEntities.foreshadowIds + Memory 新建伏笔
+    const afterForeshadows = this.store.listForeshadowing(projectId)
+    const newForeshadowIds = afterForeshadows
+      .filter((f) => !before.foreshadowing.has(f.id))
+      .map((f) => f.id)
+    const involvedForeshadowIds = new Set<string>([
+      ...(arrangedEntities?.foreshadowIds ?? []),
+      ...newForeshadowIds,
+    ])
+    for (const foreshadowId of involvedForeshadowIds) {
+      const foreshadow = afterForeshadows.find((f) => f.id === foreshadowId)
+      if (!foreshadow) continue
+      const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
+      if (foreshadow.firstChapter == null) {
+        patch.firstChapter = chapterNumber
+      }
+      this.store.updateForeshadow(foreshadowId, patch)
+    }
+
+    // ── 势力：补全 firstChapter/lastChapter（同冲突逻辑）──
+    // 涉及势力 = arrangedEntities.factionIds + Memory 新建势力
+    const afterFactions = this.store.listFactions(projectId)
+    const newFactionIds = afterFactions
+      .filter((f) => !before.factions.has(f.id))
+      .map((f) => f.id)
+    const involvedFactionIds = new Set<string>([
+      ...(arrangedEntities?.factionIds ?? []),
+      ...newFactionIds,
+    ])
+    for (const factionId of involvedFactionIds) {
+      const faction = afterFactions.find((f) => f.id === factionId)
+      if (!faction) continue
+      const patch: Partial<NovelFaction> = { lastChapter: chapterNumber }
+      if (faction.firstChapter == null) {
+        patch.firstChapter = chapterNumber
+      }
+      this.store.updateFaction(factionId, patch)
+    }
+
+    // ── 地点：补全 appearChapters（本章出场记录）──
+    // 涉及地点 = arrangedEntities.locationIds + Memory 新建地点
+    const afterLocations = this.store.listLocations(projectId)
+    const newLocationIds = afterLocations
+      .filter((l) => !before.locations.has(l.id))
+      .map((l) => l.id)
+    const involvedLocationIds = new Set<string>([
+      ...(arrangedEntities?.locationIds ?? []),
+      ...newLocationIds,
+    ])
+    for (const locationId of involvedLocationIds) {
+      const location = afterLocations.find((l) => l.id === locationId)
+      if (!location) continue
+      const appears = location.appearChapters ?? []
+      if (!appears.includes(chapterNumber)) {
+        const next = Array.from(new Set([...appears, chapterNumber])).sort((a, b) => a - b)
+        const patch: Partial<NovelLocation> = { appearChapters: next }
+        if (location.firstChapter == null) {
+          patch.firstChapter = chapterNumber
+        }
+        this.store.updateLocation(locationId, patch)
+      }
+    }
+  }
+
+  /**
    * 保存章节完成时的全量状态快照（情景记忆）
-   * 包含角色 / 冲突 / 伏笔 / 关系的当前状态，供时间线查询
+   * 包含角色 / 冲突 / 伏笔 / 势力 / 地点 / 关系的当前状态，供时间线查询
    */
   private saveChapterSnapshot(projectId: string, chapterNumber: number): void {
     const data = {
       characters: this.store.listCharacters(projectId),
       conflicts: this.store.listConflicts(projectId),
       foreshadowing: this.store.listForeshadowing(projectId),
+      factions: this.store.listFactions(projectId),
+      locations: this.store.listLocations(projectId),
       relationships: this.store.listRelationships(projectId),
     }
     this.memoryStore.saveSnapshot({
@@ -670,16 +1069,34 @@ export class NovelOrchestrator extends EventEmitter {
     })
   }
 
-  private emitProgress(options: CreationOptions | undefined, phase: CreationPhase, data: unknown): void {
+  /**
+   * 发射编排事件。
+   *
+   * type 由调用方显式指定，与 data.type 保持一致，避免靠字段嗅探推断。
+   * phase === 'completed' | 'error' | 'cancelled' 时 type 自动跟随 phase。
+   *
+   * 时序契约：
+   * - agent_start 必须在 session.prompt() 之前发射（带 messageId），
+   *   前端用 messageId 关联后续 TEXT_MESSAGE_* 事件
+   * - data_changed 在 Memory Agent 写入完成后发射
+   * - phase_change 用于心跳 / 准备阶段 / 开始生成提示
+   *
+   * 注意：仅通过 options.onProgress 回调推送，不再 emit EventEmitter 事件
+   * （原 'event' 事件无监听者，移除继承以简化职责）。
+   */
+  private emitProgress(
+    options: CreationOptions | undefined,
+    phase: CreationPhase,
+    type: CreationFlowEvent['type'],
+    data: unknown,
+  ): void {
+    const finalType = phase === 'completed' || phase === 'error' || phase === 'cancelled' ? phase : type
     const event: CreationFlowEvent = {
-      type: phase === 'completed' || phase === 'error' || phase === 'cancelled'
-        ? phase
-        : (data && typeof data === 'object' && 'agentType' in data ? 'agent_output' : 'phase_change'),
+      type: finalType,
       phase,
-      data,
+      data: { ...((data as Record<string, unknown>) ?? {}), type: finalType },
       timestamp: Date.now(),
     }
     options?.onProgress(event)
-    this.emit('event', event)
   }
 }

@@ -52,6 +52,17 @@ function makeMockServices(): NovelServices {
     entityGenerator: {
       generate: vi.fn(),
     } as any,
+    agentConfigStore: {
+      getAll: vi.fn(() => []),
+      getByType: vi.fn(() => ({ agentType: 'writer', temperature: 0.7 })),
+      upsert: vi.fn(),
+      upsertMany: vi.fn(),
+    } as any,
+    confirmationManager: {
+      requestDecision: vi.fn(),
+      respondDecision: vi.fn(() => true),
+      listPending: vi.fn(() => []),
+    } as any,
     tools: [],
   }
 }

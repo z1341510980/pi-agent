@@ -66,6 +66,8 @@ export interface MatrixViewProps {
   onEditSpan?: (entity: MatrixEntity) => void
   /** 从 NovelSidebar 拖入实体到某章节列：标记出场 */
   onDropEntity?: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
+  /** 左键单击单元格：智能切换出场状态（实体类型自适应） */
+  onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
 }
 
 // 标记颜色映射（marker.color → Tailwind bg class）
@@ -88,7 +90,7 @@ export function MatrixView({
   characterHistory, markers, playheadChapter, cellWidth, collapsedGroups, activeFilter,
   selectedNodeId, showMarkers = true,
   onSelectEntity, onToggleCollapse, onPlayheadChange, onContextMenuChapter,
-  onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onDropEntity,
+  onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onDropEntity, onTogglePresent,
 }: MatrixViewProps): ReactElement {
   const titleMap = useMemo(() => buildChapterTitleMap(chapters), [chapters])
 
@@ -358,6 +360,7 @@ export function MatrixView({
                   onContextMenuCell={onContextMenuCell}
                   onContextMenuGroupEmpty={onContextMenuGroupEmpty}
                   onEditSpan={onEditSpan}
+                  onTogglePresent={onTogglePresent}
                 />
               )
             })}
@@ -382,7 +385,8 @@ function MatrixEmptyState(): ReactElement {
         <p className="text-sm font-medium text-text mb-1.5">暂无实体出场记录</p>
         <p className="text-xs text-muted-foreground leading-relaxed">
           请点击上方「补全历史」让 AI 自动补全角色起始章节，
-          或从左侧 <span className="text-text font-medium">NovelSidebar</span> 新建实体后右键标记出场。
+          或从左侧 <span className="text-text font-medium">NovelSidebar</span> 新建实体后，
+          <span className="text-text font-medium">左键单击单元格</span>即可切换出场状态。
         </p>
       </div>
     </div>
@@ -407,12 +411,13 @@ interface GroupBlockProps {
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
   onContextMenuGroupEmpty?: (kind: MatrixEntityKind) => void
   onEditSpan?: (entity: MatrixEntity) => void
+  onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
 }
 
 function GroupBlock({
   group, collapsed, chapterColumns, titleMap, maxChapter, cellWidth, selectedNodeId,
   color, colorRgb, icon, onToggleCollapse, onEntityClick,
-  onContextMenuCell, onContextMenuGroupEmpty, onEditSpan,
+  onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onTogglePresent,
 }: GroupBlockProps): ReactElement {
   const filtered = false // activeFilter 已在父组件过滤
   return (
@@ -488,6 +493,7 @@ function GroupBlock({
           onClick={() => onEntityClick(entity)}
           onContextMenuCell={onContextMenuCell}
           onEditSpan={onEditSpan}
+          onTogglePresent={onTogglePresent}
         />
       ))}
 
@@ -518,11 +524,12 @@ interface EntityRowProps {
   onClick: () => void
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
   onEditSpan?: (entity: MatrixEntity) => void
+  onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
 }
 
 function EntityRow({
   entity, chapterColumns, titleMap, maxChapter, cellWidth, isSelected, onClick,
-  onContextMenuCell, onEditSpan,
+  onContextMenuCell, onEditSpan, onTogglePresent,
 }: EntityRowProps): ReactElement {
   const meta = GROUP_META[entity.kind]
 
@@ -566,6 +573,7 @@ function EntityRow({
             chapterTitle={titleMap.get(ch) ?? ''}
             color={meta.color}
             cellWidth={cellWidth}
+            onTogglePresent={onTogglePresent}
             onContextMenu={(e) => {
               if (!onContextMenuCell) return
               e.preventDefault()
@@ -603,32 +611,30 @@ interface CellProps {
   chapterTitle: string
   color: string
   cellWidth: number
+  onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
-function Cell({ entity, chapter, chapterTitle, color, cellWidth, onContextMenu }: CellProps): ReactElement {
-  // D-5.3 联动收尾：单元格点击 → 选中实体 + 切播放头到该章节列
-  const selectNode = useNovelStore((s) => s.selectNode)
-  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
+function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent, onContextMenu }: CellProps): ReactElement {
+  // 左键单击单元格 → 智能切换出场状态（实体类型自适应）。
+  // 选中实体改由点击行首名字列；播放头由点击章节标尺设置。三类操作各司其职。
   const symbol = computeCellSymbol(entity, chapter)
-  const tip = buildCellTooltip(symbol, entity, chapter, chapterTitle)
-
-  const handleCellClick = useCallback(() => {
-    selectNode(entity.entityId, entity.kind)
-    setPlayheadChapter(chapter)
-  }, [selectNode, setPlayheadChapter, entity.entityId, entity.kind, chapter])
+  const tip = symbol.type === 'empty'
+    ? buildEmptyCellTip(entity, chapter, chapterTitle)
+    : buildCellTooltip(symbol, entity, chapter, chapterTitle)
 
   const handleCellClickEvent = useCallback((e: React.MouseEvent) => {
-    // 阻止冒泡到 EntityRow 的 onClick（已通过 onEntityClick 链路选中实体，避免重复）
+    // 阻止冒泡到 EntityRow 的 onClick（行首点击才选中实体）
     e.stopPropagation()
-    handleCellClick()
-  }, [handleCellClick])
+    onTogglePresent?.(entity, chapter)
+  }, [onTogglePresent, entity, chapter])
 
   if (symbol.type === 'empty') {
     return (
       <div
         className="h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer"
         style={{ width: `${cellWidth}px` }}
+        data-tip={tip}
         onClick={handleCellClickEvent}
         onContextMenu={onContextMenu}
       />
@@ -646,6 +652,26 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onContextMenu }
       <Symbol symbol={symbol} color={color} />
     </div>
   )
+}
+
+// 空单元格提示：引导用户左键标记出场（按实体类型给出语义化文案）
+function buildEmptyCellTip(entity: MatrixEntity, chapter: number, chapterTitle: string): string {
+  const chStr = `第 ${chapter} 章${chapterTitle ? ' · ' + chapterTitle : ''}`
+  switch (entity.kind) {
+    case 'character':
+      return `${chStr}｜左键：标记 ${entity.name} 出场`
+    case 'location':
+      return `${chStr}｜左键：标记 ${entity.name} 出场`
+    case 'conflict':
+    case 'faction':
+      return `${chStr}｜左键：扩展 ${entity.name} 到本章`
+    case 'foreshadow':
+      return `${chStr}｜左键：标记 ${entity.name} 埋设/回收点`
+    case 'world_element':
+      return `${chStr}｜${entity.name}（常驻）`
+    default:
+      return ''
+  }
 }
 
 // ── 符号渲染 ──

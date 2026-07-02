@@ -22,8 +22,13 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore } from '../agent/session-store.js'
 import { withAgentConfig } from '../agent/pi-session.js'
+import { StreamEmitter } from '../agent/stream-emitter.js'
+import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
+import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
+import type { ConfirmationManager } from '../tool/confirmation-manager.js'
+import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
 import type {
   Plugin,
   PluginContext,
@@ -33,6 +38,7 @@ import type {
   PluginManagerOptions,
   PluginSessionHandle,
   PluginSessionOptions,
+  AgUiSessionHandle,
   RouteDefinition,
   ToolDefinition,
   PanelDefinition,
@@ -72,9 +78,24 @@ export class PluginManager {
    * TeamManager（由 teamPlugin 提供）
    *
    * 同 AgentManager，teamPlugin 在 pluginLoaderPlugin 之前注册。
-   * 注入后插件 setup 可通过 context.teamManager 注册 Team。
+   * 注入后插件 setup 可通过 context.teamManager 访问。
    */
   private teamManager?: TeamManager
+  /**
+   * ConfirmationManager（chat 底座共享）
+   *
+   * 由 app.ts 在 pluginLoaderPlugin 注册之前创建并 decorate 到 fastify 实例，
+   * plugin-loader 在 manager.start() 之前注入到 PluginManager，
+   * 插件 setup 可通过 context.confirmationManager 复用 chat 的确认/决策流程。
+   */
+  private confirmationManager?: ConfirmationManager
+  /**
+   * AgentCallLogger（由 subagentPlugin 提供，通用 Agent 调用日志记录器）
+   *
+   * 同 AgentManager，subagentPlugin 在 pluginLoaderPlugin 之前注册。
+   * 注入后插件 setup 可通过 context.agentCallLogger 记录 Agent 调用日志。
+   */
+  private agentCallLogger?: AgentCallLogger
   /**
    * ModelRegistry（用于 createSession 的 modelId 切换）
    *
@@ -146,6 +167,31 @@ export class PluginManager {
   setTeamManager(manager: TeamManager): void {
     this.teamManager = manager
     this.logger.debug('已注入 TeamManager，插件可通过 context.teamManager 访问')
+  }
+
+  /**
+   * 注入 ConfirmationManager（在 manager.start() 之前调用）
+   *
+   * app.ts 在 pluginLoaderPlugin 注册之前创建 ConfirmationManager 并 decorate，
+   * plugin-loader 在 manager.start() 之前通过此方法注入。
+   * 注入后插件 setup 可通过 context.confirmationManager 复用 chat 的确认/决策流程
+   * （超时机制 + pending 列表 + 'confirmation:request' / 'confirmation:resolved' 事件）。
+   */
+  setConfirmationManager(manager: ConfirmationManager): void {
+    this.confirmationManager = manager
+    this.logger.debug('已注入 ConfirmationManager，插件可通过 context.confirmationManager 访问')
+  }
+
+  /**
+   * 注入 AgentCallLogger（在 manager.start() 之前调用）
+   *
+   * subagentPlugin 在 pluginLoaderPlugin 之前注册，app.agentCallLogger
+   * 在 pluginLoaderPlugin 执行时已可用。注入后插件 setup 可通过
+   * context.agentCallLogger 记录 Agent 调用日志（含领域扩展字段）。
+   */
+  setAgentCallLogger(logger: AgentCallLogger): void {
+    this.agentCallLogger = logger
+    this.logger.debug('已注入 AgentCallLogger，插件可通过 context.agentCallLogger 访问')
   }
 
   /**
@@ -361,8 +407,8 @@ export class PluginManager {
   }
 
   /** 获取所有已启用插件注入的 Pi Session 工具 */
-  getAllSessionTools(): ToolDefinition[] {
-    const all: ToolDefinition[] = []
+  getAllSessionTools(): PiToolDefinition[] {
+    const all: PiToolDefinition[] = []
     for (const entry of this.entries.values()) {
       if (entry.status === 'enabled') {
         all.push(...entry.sessionTools)
@@ -671,6 +717,8 @@ export class PluginManager {
       dataDir: this.dataDir,
       subagentManager: this.agentManager,
       teamManager: this.teamManager,
+      confirmationManager: this.confirmationManager!,
+      agentCallLogger: this.agentCallLogger,
       registerTool: (tool: ToolDefinition) => {
         entry.tools.push(tool)
         logger.debug({ tool: tool.name }, '工具已注册')
@@ -692,7 +740,7 @@ export class PluginManager {
         entry.migrations.push(migration)
         logger.debug({ migrationId: migration.id }, '已注册数据库迁移')
       },
-      registerSessionTools: (tools: ToolDefinition[]) => {
+      registerSessionTools: (tools: PiToolDefinition[]) => {
         entry.sessionTools.push(...tools)
         logger.debug({ count: tools.length }, '已注册 Session 工具')
       },
@@ -923,6 +971,9 @@ export class PluginManager {
               streamUnsubscribe()
             }
           },
+          subscribe: (handler: (event: Record<string, unknown>) => void): (() => void) => {
+            return threadSession.session.subscribe(handler)
+          },
           abort: () => {
             try {
               threadSession.session.abort()
@@ -940,6 +991,59 @@ export class PluginManager {
           },
         }
       },
+
+      /**
+       * 创建 AG-UI Session：封装 StreamEmitter + ReasoningPipeline + 订阅连接。
+       *
+       * 插件不再需要自己 new 这些基础设施层实例，只负责编排逻辑。
+       * 工厂内部：
+       * 1. createSession 创建 Pi Session
+       * 2. 生成 messageId
+       * 3. new ReasoningPipeline + new StreamEmitter
+       * 4. session.subscribe(streamEmitter.handleSessionEvent)
+       */
+      async createAgUiSession(
+        agUiOptions: PluginSessionOptions & {
+          emit: import('@repo/protocol/events').AgUiEventSink
+          emitRaw?: boolean
+        },
+      ): Promise<AgUiSessionHandle> {
+        // onFirstText 在此解构后不传入 createSession（createSession 不识别该字段）
+        const { emit, emitRaw = false, onFirstText, ...sessionOptions } = agUiOptions
+        const session = await this.createSession(sessionOptions)
+        const messageId = randomUUID()
+        const reasoningPipeline = new ReasoningPipeline(emit, messageId)
+        const streamEmitter = new StreamEmitter(emit, messageId, reasoningPipeline, { emitRaw })
+
+        // 首 token 检测：供编排层通知前端"开始生成"（只触发一次）
+        // 与 StreamEmitter 的事件处理共享同一次订阅，确保时序一致
+        let firstTextFired = false
+        const unsubscribe = session.subscribe((event) => {
+          streamEmitter.handleSessionEvent(event)
+          // 检测首段 text_delta，触发 onFirstText 回调（只触发一次）
+          if (
+            !firstTextFired
+            && onFirstText
+            && event.type === 'message_update'
+            && (event as Record<string, unknown>).assistantMessageEvent
+            && ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>).type === 'text_delta'
+            && ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>).delta
+          ) {
+            firstTextFired = true
+            try { onFirstText() } catch { /* 忽略回调错误，避免影响事件流 */ }
+          }
+        })
+        return {
+          session,
+          streamEmitter,
+          reasoningPipeline,
+          messageId,
+          dispose(): void {
+            try { unsubscribe() } catch { /* 忽略 */ }
+            try { session.dispose() } catch { /* 忽略 */ }
+          },
+        }
+      },
     }
   }
 }
@@ -953,6 +1057,7 @@ export type {
   PluginManagerOptions,
   PluginSessionHandle,
   PluginSessionOptions,
+  AgUiSessionHandle,
   ToolDefinition,
   RouteDefinition,
   PanelDefinition,

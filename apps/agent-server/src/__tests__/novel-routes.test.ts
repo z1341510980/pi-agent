@@ -48,7 +48,7 @@ function makeMockServices(): NovelServices {
       emit: vi.fn(),
     } as any,
     characterGenerator: {
-      generate: vi.fn(async (_projectId: string, _coreStyle: string) => ({
+      generate: vi.fn(async (_projectId: string, _coreStyle: string, _onProgress?: (event: unknown) => void) => ({
         name: 'AI 角色',
         description: 'AI 生成',
         identity: '身份',
@@ -64,6 +64,17 @@ function makeMockServices(): NovelServices {
     } as any,
     entityGenerator: {
       generate: vi.fn(),
+    } as any,
+    agentConfigStore: {
+      getAll: vi.fn(() => []),
+      getByType: vi.fn(() => ({ agentType: 'writer', temperature: 0.7 })),
+      upsert: vi.fn(),
+      upsertMany: vi.fn(),
+    } as any,
+    confirmationManager: {
+      requestDecision: vi.fn(),
+      respondDecision: vi.fn(() => true),
+      listPending: vi.fn(() => []),
     } as any,
     tools: [],
   }
@@ -396,12 +407,17 @@ describe('Novel API 路由 - AI 角色生成', () => {
       payload: { coreStyle: '沉默寡言的剑客' },
     })
     expect(response.statusCode).toBe(200)
-    const body = response.json()
-    expect(body.ok).toBe(true)
-    expect(body.data.name).toBe('AI 角色')
-    expect(body.data.id).toBeTruthy()
-    expect(body.data.projectId).toBe(projectId)
-    expect(body.data.arcHistory).toBe('[]')
+    expect(response.headers['content-type']).toContain('text/event-stream')
+    // SSE 流：从 novel:result 事件中提取角色数据
+    const lines = response.body.split('\n').filter((l: string) => l.startsWith('data: '))
+    const resultLine = lines.find((l: string) => l.includes('"name":"novel:result"'))
+    expect(resultLine).toBeTruthy()
+    const payload = JSON.parse(resultLine!.replace(/^data: /, ''))
+    const character = payload.value
+    expect(character.name).toBe('AI 角色')
+    expect(character.id).toBeTruthy()
+    expect(character.projectId).toBe(projectId)
+    expect(character.arcHistory).toBe('[]')
   })
 
   it('POST /projects/:projectId/characters/ai-generate 缺少 coreStyle 返回 400', async () => {

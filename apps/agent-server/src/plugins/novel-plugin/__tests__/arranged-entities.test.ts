@@ -37,6 +37,8 @@ function createStoresMock(store: NovelStore) {
     getCharacter: (id: string) => store.getCharacter(id),
     getConflict: (id: string) => store.getConflict(id),
     getForeshadow: (id: string) => store.getForeshadow(id),
+    getFaction: (id: string) => store.getFaction(id),
+    getLocation: (id: string) => store.getLocation(id),
   }
 }
 
@@ -110,7 +112,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
       { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [] },
-      { characterIds: [charId], conflictIds: [], foreshadowIds: [] },
+      { characterIds: [charId], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
     )
     expect(ctx).toContain('李四')
     expect(ctx).toContain('受伤')
@@ -139,7 +141,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
       { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [] },
-      { characterIds: [], conflictIds: [], foreshadowIds: [] },
+      { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
     )
     expect(ctx).not.toContain('本章必须出现的实体')
   })

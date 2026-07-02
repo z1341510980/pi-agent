@@ -439,6 +439,8 @@ describe('Plugin 系统 Fastify 集成', () => {
     // 禁用示例插件以避免污染（每个测试单独注册）
     process.env.PI_PLUGINS_ENABLE_EXAMPLES = 'false'
     app = Fastify({ logger: false })
+    // 装饰 mock db，pluginLoaderPlugin 启动时会读取 schema_migrations
+    app.decorate('db', createMockDb())
     await app.register(eventBusPlugin)
     await app.register(pluginLoaderPlugin)
     await app.ready()
@@ -454,9 +456,11 @@ describe('Plugin 系统 Fastify 集成', () => {
     expect(typeof app.pluginManager.list).toBe('function')
   })
 
-  it('默认不加载任何插件（禁用示例时）', () => {
+  it('默认不加载示例插件（禁用示例时）', () => {
     const list = app.pluginManager.list()
-    expect(list).toHaveLength(0)
+    // 禁用 PI_PLUGINS_ENABLE_EXAMPLES 后，hello 示例不加载，但内置插件（如 novel）仍加载
+    const names = list.map(p => p.name)
+    expect(names).not.toContain('hello')
   })
 })
 

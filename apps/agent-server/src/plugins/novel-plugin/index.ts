@@ -22,10 +22,22 @@ import type { Plugin, PluginContext } from '../../core/plugin/plugin-types.js'
 import { novelMigrations } from './novel-migrations.js'
 import { createNovelServices } from './novel-services.js'
 import { createNovelRoutes } from './novel-routes.js'
-import { NOVEL_AGENT_CONFIGS } from './core/novel-agents.js'
+import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './core/novel-agents.js'
 
 /** Novel Team ID（全局唯一，避免重复创建） */
 const NOVEL_TEAM_ID = 'novel-team'
+
+/**
+ * 从 subagent / team_execute 的 task 文本中解析 projectId。
+ *
+ * dispatchToAgent 的 task 是自由文本，无法结构化传递 projectId，
+ * 这里通过正则匹配常见前缀（"项目" / "projectId" / "project_id"）尽力提取。
+ * 命中时 systemPromptBuilder 可构建完整三层缓存 prompt；未命中则回退到 identity。
+ */
+function extractProjectId(task: string): string | undefined {
+  const match = task.match(/(?:项目ID|项目|projectId|project_id)\s*[:：]\s*([a-zA-Z0-9_-]+)/i)
+  return match?.[1]
+}
 
 export function createNovelPlugin(): Plugin {
   return {
@@ -55,25 +67,64 @@ export function createNovelPlugin(): Plugin {
 
       // 3. 注册 Novel Agent 到 AgentManager
       //    使小说 Agent 可通过统一的 subagent / team_execute 工具触发。
-      //    不限制 tools，让小说 Agent 能使用所有可用工具。
-      //    注：AgentConfig.systemPrompt 在此使用 identity 作为基础身份提示词；
-      //    NovelOrchestrator 的 createChapterWithFlow 仍通过 promptBuilder.buildSystemPrompt
-      //    构建 per-project 的完整系统提示词，二者互不影响。
+      //    字段对齐：temperature / tools / identity / personality 全部填入，
+      //    保证 create-team 路径（走 AgentManager + subagent-plugin）与 create-flow 路径
+      //    （走 NovelOrchestrator + createAgUiSession）行为一致。
+      //
+      //    A4 扩展：注入 systemPromptBuilder 和 toolFilter 回调，
+      //    使 subagent / team_execute 路径也能调用 NovelPromptBuilder 构建完整三层缓存
+      //    系统提示词（世界规则+风格+Agent 身份），并按 Agent 角色过滤工具权限。
+      //    - systemPromptBuilder 尝试从 task 文本解析 projectId，命中则构建完整 prompt；
+      //      未命中则回退到 config.identity（基础身份提示词）。
+      //    - toolFilter 直接返回 config.tools（声明即权限）。
+      //    dispatchFn 会在创建 session 前执行这两个回调，覆盖静态 systemPrompt / tools，
+      //    createPiSession 中的 buildSystemPrompt 和 customTools 过滤据此拿到最新值。
       const agentManager = context.subagentManager
       if (agentManager) {
         let registeredCount = 0
         for (const [agentType, config] of Object.entries(NOVEL_AGENT_CONFIGS)) {
+          // 动态系统提示词构造器：
+          // - 尝试从 task 文本解析 projectId（如 "项目: xxx" / "projectId: xxx"）
+          // - 命中则调用 promptBuilder.buildSystemPrompt 构建完整三层缓存 prompt
+          // - 未命中或构建失败则回退到 config.identity（基础身份）
+          const systemPromptBuilder = ({ task }: { task: string; [key: string]: unknown }): string => {
+            const projectId = extractProjectId(task)
+            if (projectId) {
+              try {
+                return services.promptBuilder.buildSystemPrompt(projectId, agentType)
+              } catch (err) {
+                context.logger.warn(
+                  { agentId: config.id, agentType, projectId, err },
+                  'systemPromptBuilder 构建失败，回退到 identity',
+                )
+              }
+            }
+            return config.identity
+          }
+          // 工具过滤器：返回该 Agent 角色允许使用的工具名列表
+          const toolFilter = (): string[] => config.tools
+
           // 跳过已注册的 Agent（避免重启时重复注册）
           if (agentManager.getAgent(config.id)) {
-            context.logger.debug({ agentId: config.id, agentType }, 'Novel Agent 已注册，跳过')
+            // 已注册则同步最新的 temperature（用户在 /agent-config 调整后需立即生效）
+            // 同时重新注入 systemPromptBuilder / toolFilter：从持久化加载的 Agent 不含函数字段
+            const temperature = services.agentConfigStore.getByType(agentType as NovelAgentType)
+            agentManager.updateAgent(config.id, { temperature, systemPromptBuilder, toolFilter })
+            context.logger.debug({ agentId: config.id, agentType, temperature }, 'Novel Agent 已注册，同步温度与回调')
             continue
           }
           try {
+            const temperature = services.agentConfigStore.getByType(agentType as NovelAgentType)
             agentManager.registerAgent({
               id: config.id,
               name: config.name,
               description: config.identity,
-              systemPrompt: config.identity,
+              systemPrompt: config.identity,  // 兜底：无 builder 时使用
+              identity: config.identity,
+              tools: config.tools,
+              temperature,
+              systemPromptBuilder,
+              toolFilter,
             })
             registeredCount++
           } catch (err) {
@@ -121,10 +172,10 @@ export function createNovelPlugin(): Plugin {
       }
 
       // 5. 注册 Pi Session 工具（注入到 customTools）
-      // 注：services.tools 为 pi-coding-agent 的 ToolDefinition（含 TSchema 泛型），
-      // 与 plugin-types 的 ToolDefinition 结构不同，需类型转换绕过编译期检查。
-      // 运行时由 pi-session.ts 的 customTools 统一消费，结构兼容。
-      context.registerSessionTools(services.tools as unknown as Parameters<typeof context.registerSessionTools>[0])
+      // services.tools 为 pi-coding-agent 的 ToolDefinition（由 defineTool 创建），
+      // registerSessionTools 现已对齐为接受 pi-coding-agent 的 ToolDefinition[]，
+      // 无需类型转换——运行时由 pi-session.ts 的 customTools 统一消费。
+      context.registerSessionTools(services.tools)
 
       // 6. 注册 REST API 路由（路径自动加 /api/plugins/novel 前缀）
       const routes = createNovelRoutes(services)

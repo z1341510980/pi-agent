@@ -77,6 +77,18 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   } else {
     log.warn('teamPlugin 未注册，插件 context.teamManager 将不可用')
   }
+  // 注入 ConfirmationManager（app.ts 已在 pluginLoaderPlugin 之前创建并 decorate）
+  // 使插件 setup 可通过 context.confirmationManager 复用 chat 的确认/决策流程
+  // （超时机制 + pending 列表 + 'confirmation:request' / 'confirmation:resolved' 事件）
+  manager.setConfirmationManager(app.confirmationManager)
+
+  // 注入 AgentCallLogger（subagentPlugin 已 decorate app.agentCallLogger）
+  // 使插件 setup 可通过 context.agentCallLogger 记录 Agent 调用日志（含领域扩展字段）
+  if (app.agentCallLogger) {
+    manager.setAgentCallLogger(app.agentCallLogger)
+  } else {
+    log.warn('subagentPlugin 未注册，插件 context.agentCallLogger 将不可用')
+  }
 
   // 初始化（扫描并加载插件）
   await manager.init()

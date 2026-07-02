@@ -199,6 +199,34 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     ALTER TABLE cron_jobs ADD COLUMN timeout_ms INTEGER NOT NULL DEFAULT 300000;
     ALTER TABLE cron_jobs ADD COLUMN last_error TEXT;`,
   },
+  {
+    // 通用 Agent 调用日志表（chat 底座能力，所有 Agent 调用统一记录）
+    // 与 EvidenceLedger（工具调用维度）互补，本表记录 Agent 调用维度：
+    // 系统提示词 / 用户消息 / 任务输入 / 工具 / 结果 / 耗时 / 状态。
+    // 领域扩展字段（如 projectId / chapterNumber / agentType / phase）通过 metadata JSON 列存储。
+    id: '012b_create_agent_call_logs',
+    sql: `CREATE TABLE IF NOT EXISTS agent_call_logs (
+      id            TEXT PRIMARY KEY,
+      agent_id      TEXT NOT NULL,
+      agent_name    TEXT NOT NULL DEFAULT '',
+      thread_id     TEXT NOT NULL DEFAULT '',
+      system_prompt TEXT NOT NULL DEFAULT '',
+      user_message  TEXT NOT NULL DEFAULT '',
+      task_input    TEXT NOT NULL DEFAULT '',
+      tools         TEXT NOT NULL DEFAULT '[]',
+      tool_names    TEXT NOT NULL DEFAULT '[]',
+      result        TEXT NOT NULL DEFAULT '',
+      result_length INTEGER NOT NULL DEFAULT 0,
+      duration_ms   INTEGER NOT NULL DEFAULT 0,
+      status        TEXT NOT NULL DEFAULT 'success',
+      error         TEXT NOT NULL DEFAULT '',
+      metadata      TEXT NOT NULL DEFAULT '{}',
+      created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_call_logs_agent ON agent_call_logs(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_call_logs_thread ON agent_call_logs(thread_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_call_logs_created ON agent_call_logs(created_at DESC);`,
+  },
 ]
 
 /** 执行所有待执行的迁移 */
