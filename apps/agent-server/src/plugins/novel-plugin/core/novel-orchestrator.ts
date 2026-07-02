@@ -303,6 +303,7 @@ export class NovelOrchestrator extends EventEmitter {
       narrativeTask,
       constraints,
       this.currentArrangedEntities,
+      agentType,
     )
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）

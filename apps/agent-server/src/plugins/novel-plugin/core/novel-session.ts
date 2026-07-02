@@ -92,6 +92,8 @@ export class NovelSessionFactory {
       config.chapterNumber,
       config.narrativeTask,
       config.constraints,
+      undefined,
+      config.agentType,
     )
   }
 

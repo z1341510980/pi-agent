@@ -209,6 +209,7 @@ export class NovelPromptBuilder {
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
+    agentType?: string,
   ): string {
     const parts: string[] = []
 
@@ -246,16 +247,20 @@ export class NovelPromptBuilder {
       parts.push(this.formatRecentSummaries(recentChapters))
     }
 
-    // ── 创作指令 ──
-    const project = this.stores.getProject(projectId)
-    const targetWords = this.computeChapterTargetWords(project)
-    const instruction = this.promptManager.render('chapter-instruction', {
-      chapter_number: String(chapterNumber),
-      narrative_task: narrativeTask.description,
-      task_type: narrativeTask.type,
-      target_words: String(targetWords),
-    }, projectId)
-    parts.push(instruction)
+    // ── 创作指令（仅 Writer 注入，其他 Agent 看到会越权写作）──
+    // chapter-instruction 模板包含"直接输出章节正文"等 Writer 专属指令，
+    // 对 Director/Reviewer/Memory 注入会导致它们越权创作正文。
+    if (agentType === 'writer') {
+      const project = this.stores.getProject(projectId)
+      const targetWords = this.computeChapterTargetWords(project)
+      const instruction = this.promptManager.render('chapter-instruction', {
+        chapter_number: String(chapterNumber),
+        narrative_task: narrativeTask.description,
+        task_type: narrativeTask.type,
+        target_words: String(targetWords),
+      }, projectId)
+      parts.push(instruction)
+    }
 
     return parts.join('\n\n---\n\n')
   }
