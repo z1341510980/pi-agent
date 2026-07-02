@@ -1,0 +1,262 @@
+{
+  "runAt": "2026-07-02T07-28-20-481Z",
+  "baseUrl": "http://127.0.0.1:3900",
+  "options": {
+    "skipTimeout": true,
+    "keepProject": false,
+    "baseUrl": "http://127.0.0.1:3900",
+    "chapter": 1
+  },
+  "context": {
+    "projectId": "4865f62e-63b5-463d-8bd5-410fe7beb237",
+    "chapterId": "801d1a47-962d-4ca3-9556-6e69166315ce",
+    "threadIdPrefix": "plugin:novel-plugin:",
+    "firstTokenAt": null,
+    "flowStartedAt": 1782977300536,
+    "flowFinishedAt": 1782977351879,
+    "checkpoints": [],
+    "sseError": null
+  },
+  "stats": {
+    "PASS": 9,
+    "FAIL": 3,
+    "WARN": 1,
+    "SKIP": 1
+  },
+  "results": [
+    {
+      "name": "环境就绪",
+      "status": "PASS",
+      "detail": {
+        "service": "agent-server",
+        "agentCount": 5,
+        "agentIds": [
+          "novel-writer",
+          "default",
+          "novel-director",
+          "novel-reviewer",
+          "novel-memory"
+        ]
+      },
+      "durationMs": 33
+    },
+    {
+      "name": "创建项目",
+      "status": "PASS",
+      "detail": {
+        "projectId": "4865f62e-63b5-463d-8bd5-410fe7beb237",
+        "title": "架构演进 E2E 验证 2026-07-02T07-28-20-481Z"
+      },
+      "durationMs": 7
+    },
+    {
+      "name": "B5 NovelAgentConfigStore 薄封装",
+      "status": "PASS",
+      "detail": {
+        "before": 0.8,
+        "after": 0.7,
+        "agentManagerWriterTemp": 0.7,
+        "agentManagerSync": true,
+        "totalAgents": 5
+      },
+      "durationMs": 6
+    },
+    {
+      "name": "创建章节 + 设置章纲",
+      "status": "PASS",
+      "detail": {
+        "chapterId": "801d1a47-962d-4ca3-9556-6e69166315ce",
+        "chapterNumber": 1,
+        "outlineLength": 293
+      },
+      "durationMs": 7
+    },
+    {
+      "name": "SSE 编排流程（L1/L2/A1/B1）",
+      "status": "FAIL",
+      "detail": {
+        "checks": {
+          "sseOpened": true,
+          "l1RunStarted": true,
+          "l1RunFinished": false,
+          "activityDetected": true,
+          "progressStreamed": true,
+          "textStreamed": false,
+          "b1FirstTokenDetected": false,
+          "toolCalls": false,
+          "checkpointCaptured": false,
+          "a1CheckpointResponded": false,
+          "noError": true
+        },
+        "eventTypes": {
+          "RUN_STARTED": 1,
+          "CUSTOM:novel:progress": 3
+        },
+        "firstActivityDeltaMs": 5,
+        "firstTokenDeltaMs": null,
+        "totalDurationMs": 51343,
+        "checkpointIds": [],
+        "toolCallCount": 0,
+        "textMessageCount": 0,
+        "progressCount": 3,
+        "error": null
+      },
+      "durationMs": 51343
+    },
+    {
+      "name": "A3 AgentCallLogger",
+      "status": "FAIL",
+      "detail": {
+        "total": 0,
+        "byAgent": {},
+        "withProjectId": 0,
+        "samples": [],
+        "ok": false,
+        "checks": {
+          "hasRows": false,
+          "metadataHasProjectId": false,
+          "multipleAgents": false
+        }
+      },
+      "durationMs": 13
+    },
+    {
+      "name": "GAP A character_history",
+      "status": "PASS",
+      "detail": {
+        "total": 2,
+        "byCharacter": {
+          "70dfe2d8-0a3b-435a-bfb6-814321aa3693": 1,
+          "218e5459-f6ce-48de-b1cc-b14c53dbc8f8": 1
+        },
+        "samples": [
+          {
+            "character_id": "70dfe2d8-0a3b-435a-bfb6-814321aa3693",
+            "chapter_number": 1,
+            "field_name": "currentState",
+            "old_value": null,
+            "new_value": "本章首次出场",
+            "reason": "AI编排：# 第1章 荒野初遇\n\n## 场景一：进入荒野\n少年叶尘背着家传长剑，独自踏入被称为\"修者坟场\"的黑",
+            "created_at": 1782977330
+          },
+          {
+            "character_id": "218e5459-f6ce-48de-b1cc-b14c53dbc8f8",
+            "chapter_number": 1,
+            "field_name": "currentState",
+            "old_value": null,
+            "new_value": "本章首次出场",
+            "reason": "AI编排：# 第1章 荒野初遇\n\n## 场景一：进入荒野\n少年叶尘背着家传长剑，独自踏入被称为\"修者坟场\"的黑",
+            "created_at": 1782977317
+          }
+        ],
+        "ok": true
+      },
+      "durationMs": 1
+    },
+    {
+      "name": "GAP C first/last_chapter",
+      "status": "PASS",
+      "detail": {
+        "conflicts": {
+          "total": 2,
+          "withFirstChapter": 2,
+          "withLastChapter": 0,
+          "samples": [
+            {
+              "id": "0955e427-783a-4b63-be8e-1041da6df0df",
+              "description": "少年叶尘初入黑松荒野，遭遇领地意识极强的赤鬃狼王突袭，被迫拔剑迎战，以祖父所传剑诀惊险击退妖兽",
+              "first_chapter": 1,
+              "last_chapter": null
+            },
+            {
+              "id": "9815daf1-64c9-4c06-96e2-c38733481233",
+              "description": "叶尘在狼王袭击后遇见自称'行路人'的青衣修士，对方主动邀约同行并提及叶家旧事，叶尘既感激其援手又本能戒备，在信任与提防之间反复权衡",
+              "first_chapter": 1,
+              "last_chapter": null
+            }
+          ]
+        },
+        "factions": {
+          "total": 0,
+          "withFirstChapter": 0,
+          "withLastChapter": 0,
+          "samples": []
+        },
+        "locations": {
+          "total": 1,
+          "withAppearChapters": 1,
+          "samples": [
+            {
+              "id": "17babc4c-e630-4c54-961f-5e6dc3158c88",
+              "name": "黑松荒野",
+              "appear_chapters": "[1]"
+            }
+          ]
+        },
+        "ok": true
+      },
+      "durationMs": 1
+    },
+    {
+      "name": "领域层 novel_agent_logs",
+      "status": "WARN",
+      "detail": {
+        "exists": true,
+        "total": 0,
+        "byAgent": {},
+        "samples": [],
+        "ok": false
+      },
+      "durationMs": 1
+    },
+    {
+      "name": "GAP B memory_events.chapter_number",
+      "status": "FAIL",
+      "detail": {
+        "total": 0,
+        "withChapterNumber": 0,
+        "samples": [],
+        "ok": false
+      },
+      "durationMs": 1
+    },
+    {
+      "name": "并发锁机制",
+      "status": "PASS",
+      "detail": {
+        "note": "SSE 端点返回 200（错误在流体内），服务器响应正常",
+        "status": 200,
+        "statusText": "OK"
+      },
+      "durationMs": 3
+    },
+    {
+      "name": "A1 无效 checkpoint 404",
+      "status": "PASS",
+      "detail": {
+        "status": 404,
+        "body": {
+          "ok": false,
+          "error": "检查点不存在或已处理"
+        }
+      },
+      "durationMs": 1
+    },
+    {
+      "name": "A1 超时保护（跳过）",
+      "status": "SKIP",
+      "detail": {
+        "reason": "使用 --with-timeout 启用"
+      },
+      "durationMs": 0
+    },
+    {
+      "name": "清理",
+      "status": "PASS",
+      "detail": {
+        "status": 200
+      },
+      "durationMs": 2
+    }
+  ]
+}
