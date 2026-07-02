@@ -148,15 +148,11 @@ export class NovelPromptBuilder {
   buildSystemPrompt(projectId: string, agentType: string): string {
     const parts: string[] = []
 
-    // ── Layer 0: Agent 身份（永不变）──
-    // 从模板文件读取，支持运行时覆盖
-    const identityPrompt = this.promptManager.render('system-base', {
-      agent_type: agentType,
-      agent_role: this.getAgentRoleDescription(agentType, projectId),
-    }, projectId)
-    parts.push(identityPrompt)
+    // ── 共享前缀（跨 Agent 相同，跨章不变，最大化 prompt cache 命中）──
+    // 顺序：世界规则 → 风格指南 → 角色定义 → Agent 身份
+    // 共享部分在前，Agent 专属部分在后，确保不同 Agent 的前缀相同可共享缓存。
 
-    // ── Layer 1: 世界规则（项目级，极少变）──
+    // ── Layer 1: 世界规则（项目级，跨 Agent 共享，跨章不变）──
     // 按 category 排序，确保顺序稳定，最大化 prompt cache 命中率
     const worldRules = this.stores.listWorldRules(projectId)
     if (worldRules.length > 0) {
@@ -164,7 +160,7 @@ export class NovelPromptBuilder {
       parts.push(this.formatWorldRules(sorted))
     }
 
-    // ── Layer 2: 风格指南（项目级，极少变）──
+    // ── Layer 2: 风格指南（项目级，跨 Agent 共享，跨章不变）──
     // 按 category 排序，确保顺序稳定，最大化 prompt cache 命中率
     const styleGuide = this.stores.listStyleGuide(projectId)
     if (styleGuide.length > 0) {
@@ -172,15 +168,29 @@ export class NovelPromptBuilder {
       parts.push(this.formatStyleGuide(sorted))
     }
 
-    // ── Layer 3: 角色定义（仅静态部分）──
+    // ── Layer 3: 角色定义（仅静态部分，跨 Agent 共享，跨章不变）──
     // ⚠️ 只包含角色的静态设定（身份/性格/外貌/说话风格）
     // 不包含动态状态（当前情绪/目标/压力）—— 那些放在章节上下文中
     // 按 name 排序，确保顺序稳定，最大化 prompt cache 命中率
+    //
+    // 放在 STATIC 层而非 SEMI 层的原因：
+    // - 角色静态设定跨章不变，放在 STATIC 层可跨章缓存命中
+    // - 如果放到 SEMI 层（章节上下文），每章上下文变化会导致缓存失效
+    // - 角色增减时整个系统提示词变化是合理的——角色变化确实影响所有后续请求
     const characters = this.stores.listCharacters(projectId)
     if (characters.length > 0) {
       const sorted = [...characters].sort((a, b) => a.name.localeCompare(b.name))
       parts.push(this.formatCharacterDefinitions(sorted))
     }
+
+    // ── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）──
+    // 放在最后，确保前面的共享部分（worldRules + styleGuide + characters）
+    // 可以跨 Agent 缓存命中。Agent 身份变化只影响尾部，不影响前缀缓存。
+    const identityPrompt = this.promptManager.render('system-base', {
+      agent_type: agentType,
+      agent_role: this.getAgentRoleDescription(agentType, projectId),
+    }, projectId)
+    parts.push(identityPrompt)
 
     return parts.join('\n\n---\n\n')
   }
