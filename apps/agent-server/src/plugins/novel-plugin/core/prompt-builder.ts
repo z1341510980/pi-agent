@@ -7,12 +7,13 @@
  *    LLM 提供商（Anthropic/OpenAI）的 prompt cache 基于前缀匹配。
  *    前缀越稳定，缓存命中率越高。
  *
- * 2. 系统提示词只包含静态数据
- *    世界规则、风格指南、角色定义（静态部分）放在系统提示词中。
- *    这些数据跨章节不变，缓存命中率最高。
+ * 2. 系统提示词只包含静态数据（不含角色定义）
+ *    世界规则、风格指南放在系统提示词中。这些数据跨章节不变，缓存命中率最高。
+ *    ⚠️ 角色定义不放在系统提示词：角色数量可能很大（200+），全部塞会导致上下文爆炸。
+ *    本章出场角色的完整定义放在章节上下文（SEMI 层），通过 arrangedEntities 注入。
  *
  * 3. 章节上下文放在首条用户消息中
- *    当前故事状态、叙事任务、约束等半静态数据放在首条用户消息中。
+ *    当前故事状态、叙事任务、约束、本章出场角色完整定义等半静态数据放在首条用户消息中。
  *    这些数据单章内不变，跨章失效。
  *
  * 4. 工具调用结果只追加到对话末尾
@@ -25,14 +26,14 @@
  * ── 缓存层级结构 ──
  *
  * [系统提示词] (STATIC - 跨章节缓存命中)
- * ├── Layer 0: Agent 身份（永不变）
  * ├── Layer 1: 世界规则（项目级，极少变）
  * ├── Layer 2: 风格指南（项目级，极少变）
- * └── Layer 3: 角色定义（仅静态部分：身份/性格/外貌/说话风格）
+ * └── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）
  *
  * [首条用户消息] (SEMI - 单章内缓存命中)
  * ├── 章节信息（卷/章/叙事任务/约束）
- * ├── 当前故事状态（角色当前状态/冲突/伏笔/线索）
+ * ├── 本章出场角色完整定义（arrangedEntities，仅本章角色）
+ * ├── 当前故事状态（所有角色的 name+动态状态，让 LLM 知道存在）
  * ├── 信息差（谁知道什么）
  * ├── 最近章节摘要
  * └── 创作指令
@@ -41,6 +42,16 @@
  * ├── 工具调用 + 结果（追加到末尾，不破坏前缀缓存）
  * ├── 生成内容
  * └── 用户引导
+ *
+ * ── 角色定义注入策略（精准注入方案）──
+ *
+ * 问题：角色数量可能很大（200+），全部塞系统提示词会导致上下文爆炸。
+ *
+ * 解决：
+ * 1. 系统提示词不含任何角色定义 → 跨章缓存命中最好
+ * 2. 章节上下文注入 arrangedEntities 中角色的完整静态+动态定义 → 单章内缓存命中
+ * 3. 其他角色通过 formatStoryState 输出 name+动态状态 → LLM 知道存在
+ * 4. 需要其他角色详情时调用 query_state 工具 → DYNAMIC 层，不破坏前缀缓存
  *
  * ── 工具调用缓存问题解决方案 ──
  *
@@ -135,21 +146,25 @@ export class NovelPromptBuilder {
   /**
    * 构建系统提示词
    *
-   * ⚠️ 此方法只读取静态数据，不读取动态状态。
-   * 系统提示词在整个项目生命周期内保持不变（除非世界规则/风格/角色定义被修改）。
+   * ⚠️ 此方法只读取静态数据，不读取动态状态，也不读取角色定义。
+   * 系统提示词在整个项目生命周期内保持不变（除非世界规则/风格被修改）。
    * 这确保 LLM 提供商的 prompt cache 能跨章节命中。
    *
+   * 角色定义不放在系统提示词的原因：
+   * - 角色数量可能很大（200+），全部塞系统提示词会导致上下文爆炸
+   * - 本章出场角色已通过 arrangedEntities 编排好，只需注入这些角色的完整定义
+   * - 其他角色 LLM 通过 formatStoryState 知道存在（name+动态状态），需要详情时调 query_state 工具
+   *
    * 构建顺序（从最稳定到最不稳定）：
-   * 1. Agent 身份（永不变）         ← 缓存命中率最高
-   * 2. 世界规则（项目级，极少变）    ← 高命中率
-   * 3. 风格指南（项目级，极少变）    ← 高命中率
-   * 4. 角色定义（偶尔变）            ← 中等命中率
+   * 1. 世界规则（项目级，极少变）    ← 高命中率
+   * 2. 风格指南（项目级，极少变）    ← 高命中率
+   * 3. Agent 身份（Agent 专属）      ← 同 Agent 跨章不变
    */
   buildSystemPrompt(projectId: string, agentType: string): string {
     const parts: string[] = []
 
     // ── 共享前缀（跨 Agent 相同，跨章不变，最大化 prompt cache 命中）──
-    // 顺序：世界规则 → 风格指南 → 角色定义 → Agent 身份
+    // 顺序：世界规则 → 风格指南 → Agent 身份
     // 共享部分在前，Agent 专属部分在后，确保不同 Agent 的前缀相同可共享缓存。
 
     // ── Layer 1: 世界规则（项目级，跨 Agent 共享，跨章不变）──
@@ -168,23 +183,8 @@ export class NovelPromptBuilder {
       parts.push(this.formatStyleGuide(sorted))
     }
 
-    // ── Layer 3: 角色定义（仅静态部分，跨 Agent 共享，跨章不变）──
-    // ⚠️ 只包含角色的静态设定（身份/性格/外貌/说话风格）
-    // 不包含动态状态（当前情绪/目标/压力）—— 那些放在章节上下文中
-    // 按 name 排序，确保顺序稳定，最大化 prompt cache 命中率
-    //
-    // 放在 STATIC 层而非 SEMI 层的原因：
-    // - 角色静态设定跨章不变，放在 STATIC 层可跨章缓存命中
-    // - 如果放到 SEMI 层（章节上下文），每章上下文变化会导致缓存失效
-    // - 角色增减时整个系统提示词变化是合理的——角色变化确实影响所有后续请求
-    const characters = this.stores.listCharacters(projectId)
-    if (characters.length > 0) {
-      const sorted = [...characters].sort((a, b) => a.name.localeCompare(b.name))
-      parts.push(this.formatCharacterDefinitions(sorted))
-    }
-
     // ── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）──
-    // 放在最后，确保前面的共享部分（worldRules + styleGuide + characters）
+    // 放在最后，确保前面的共享部分（worldRules + styleGuide）
     // 可以跨 Agent 缓存命中。Agent 身份变化只影响尾部，不影响前缀缓存。
     const identityPrompt = this.promptManager.render('system-base', {
       agent_type: agentType,
@@ -298,28 +298,6 @@ export class NovelPromptBuilder {
     return `## 风格指南\n\n${lines.join('\n')}`
   }
 
-  /**
-   * 格式化角色定义（仅静态部分）
-   *
-   * ⚠️ 不包含动态状态（currentState/currentGoal/currentPressure/secret/arcStage）
-   * 这些动态数据放在章节上下文中，避免系统提示词频繁变化导致缓存失效
-   */
-  private formatCharacterDefinitions(characters: NovelCharacter[]): string {
-    const blocks = characters.map((c) => {
-      const lines = [
-        `### ${c.name}`,
-        `- 身份：${c.identity}`,
-        `- 性格：${c.personality}`,
-        `- 外貌：${c.appearance}`,
-      ]
-      if (c.speechStyle) {
-        lines.push(`- 说话风格：${c.speechStyle}`)
-      }
-      return lines.join('\n')
-    })
-    return `## 角色定义\n\n${blocks.join('\n\n')}`
-  }
-
   /** 格式化章节信息 */
   private formatChapterInfo(projectId: string, chapterNumber: number, task: NarrativeTask): string {
     const project = this.stores.getProject(projectId)
@@ -387,8 +365,15 @@ export class NovelPromptBuilder {
    *
    * 与 `formatConstraints` 的区别：
    * - `formatConstraints` 输出的是「规则文本约束」（事实/认知/阶段/伏笔债务/角色弧光）
-   * - `formatArrangedEntities` 输出的是「本章必须出现的具体实体」及其当前状态，
-   *   让 Writer 在 SEMI 层就能感知到编排约束，无需通过工具查询。
+   * - `formatArrangedEntities` 输出的是「本章必须出现的具体实体」的完整定义，
+   *   让 Writer 在 SEMI 层就能感知到编排约束和角色详情，无需通过工具查询。
+   *
+   * ⚠️ 角色定义放在这里（SEMI 层）而不是系统提示词（STATIC 层）的原因：
+   * - 角色数量可能很大（200+），全部塞系统提示词会导致上下文爆炸
+   * - 本章出场角色已通过 arrangedEntities 编排好，只需注入这些角色的完整定义
+   * - 系统提示词不含角色定义 → 跨章缓存命中最好
+   * - 章节上下文含本章角色完整定义 → 单章内缓存命中
+   * - 其他角色 LLM 通过 formatStoryState 知道存在（name+动态状态），需要详情时调 query_state 工具
    */
   private formatArrangedEntities(projectId: string, arranged: ArrangedEntity): string {
     const lines: string[] = ['【本章必须出现的实体（已编排约束，Writer 必须遵守）】']
@@ -397,9 +382,19 @@ export class NovelPromptBuilder {
         .map((id) => this.stores.getCharacter(id))
         .filter((c): c is NonNullable<typeof c> => c != null)
       if (chars.length > 0) {
-        lines.push('出场角色：')
+        lines.push('出场角色（完整定义）：')
         for (const c of chars) {
-          lines.push(`  - ${c.name}：${c.currentState || c.description || '（无状态）'}`)
+          // 输出完整静态设定 + 动态状态，让 Writer 无需工具查询即可创作
+          const charLines = [`  ### ${c.name}`]
+          if (c.identity) charLines.push(`  - 身份：${c.identity}`)
+          if (c.personality) charLines.push(`  - 性格：${c.personality}`)
+          if (c.appearance) charLines.push(`  - 外貌：${c.appearance}`)
+          if (c.speechStyle) charLines.push(`  - 说话风格：${c.speechStyle}`)
+          if (c.currentState) charLines.push(`  - 当前状态：${c.currentState}`)
+          if (c.currentGoal) charLines.push(`  - 当前目标：${c.currentGoal}`)
+          if (c.currentPressure) charLines.push(`  - 当前压力：${c.currentPressure}`)
+          if (c.description && !c.currentState) charLines.push(`  - 简介：${c.description}`)
+          lines.push(charLines.join('\n'))
         }
       }
     }

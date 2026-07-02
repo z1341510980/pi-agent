@@ -7,12 +7,12 @@
  *
  * 1. 创建 Session（systemPromptOverride 只调用一次）
  *    └── systemPromptOverride → NovelPromptBuilder.buildSystemPrompt()
- *        └── 返回 STATIC 层：Agent 身份 + 世界规则 + 风格 + 角色定义（静态部分）
+ *        └── 返回 STATIC 层：世界规则 + 风格 + Agent 身份（不含角色定义）
  *        └── 此结果在整个 Session 生命周期内不变 → 跨章节缓存命中
  *
  * 2. 发送章节上下文作为首条 user 消息
  *    └── NovelPromptBuilder.buildChapterContext()
- *        └── 返回 SEMI 层：章节信息 + 约束 + 故事状态 + 信息差 + 摘要 + 指令
+ *        └── 返回 SEMI 层：章节信息 + 约束 + 本章出场角色完整定义 + 故事状态 + 信息差 + 摘要 + 指令
  *        └── 此消息在单章生成期间不变 → 单章内缓存命中
  *
  * 3. 注入 novel-tools（customTools）
