@@ -33,7 +33,7 @@ import type { BaseEvent, CustomEvent } from '@repo/protocol/events'
 export type CreationPhase =
   | 'idle' | 'directing' | 'checkpoint_narrative' | 'writing'
   | 'reviewing' | 'checkpoint_review' | 'revising' | 'rewriting'
-  | 'memory' | 'completed' | 'cancelled' | 'error'
+  | 'memory' | 'arranging' | 'completed' | 'cancelled' | 'error'
 
 export type CheckpointType = 'narrative_task' | 'review'
 
@@ -48,7 +48,7 @@ export interface CreationFlowEvent {
 
 /** 单个 Agent 的输出内容（用于时间线展示） */
 export interface AgentOutput {
-  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory' | 'arranger'
   agentName: string
   content: string
   preview: string
@@ -73,6 +73,8 @@ export interface CheckpointData {
   phase: CreationPhase
   data: unknown
   decision?: CheckpointDecision
+  /** 后端 ConfirmationManager 生成的决策请求 ID（UUID），用于决策端点路由 */
+  checkpointId?: string
 }
 
 export interface CreationResult {
@@ -227,12 +229,20 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const handleEvent = useCallback((event: BaseEvent): void => {
     // ── 标准 AG-UI 事件：LLM 流式文本（与 chat 共用同一协议） ──
     // TEXT_MESSAGE_START：StreamEmitter 开始发射某 messageId 的文本
+    // 如果 agent_start 已创建初始气泡（含"已启动"提示），清空 content 准备接收流式 delta
     if (event.type === 'TEXT_MESSAGE_START') {
       const { messageId } = event as { type: 'TEXT_MESSAGE_START'; messageId: string }
       const meta = messageAgentMapRef.current.get(messageId)
       if (meta) {
         setAgentOutputs((prev) => {
-          if (prev.some(o => o.messageId === messageId)) return prev
+          const idx = prev.findIndex(o => o.messageId === messageId)
+          if (idx >= 0) {
+            // 已有初始气泡（agent_start 创建）→ 清空 content，准备接收 delta
+            const updated = [...prev]
+            updated[idx] = { ...updated[idx], content: '', preview: '' }
+            return updated
+          }
+          // 无初始气泡 → 新建 streaming 气泡
           return [...prev, {
             agentType: meta.agentType,
             agentName: meta.agentName,
@@ -310,6 +320,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             dataChanged?: boolean
           }
           // agent_start：记录 messageId → agentType 映射，重置 writer 累积器
+          // 同时创建一个初始 streaming AgentOutput，展示"已启动"提示，
+          // 让用户在首 token 到达前就能看到 Agent 已启动（避免 approve 后空白等待）
           if (data?.type === 'agent_start' && data.messageId && data.agentType && data.agentName) {
             messageAgentMapRef.current.set(data.messageId, {
               agentType: data.agentType as AgentOutput['agentType'],
@@ -319,6 +331,20 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               writerContentRef.current = ''
               setChapterContent('')
             }
+            // 创建初始 streaming 气泡：TEXT_MESSAGE_START 会清空 content 准备接收流式 delta
+            const initialMsg = data.message ?? `${data.agentName} 已启动...`
+            setAgentOutputs((prev) => {
+              if (prev.some(o => o.messageId === data.messageId)) return prev
+              return [...prev, {
+                agentType: data.agentType as AgentOutput['agentType'],
+                agentName: data.agentName,
+                content: initialMsg,
+                preview: initialMsg,
+                timestamp: evt.timestamp,
+                streaming: true,
+                messageId: data.messageId,
+              }]
+            })
           }
           // data_changed：Memory Agent 数据变更通知，新增到时间线（不参与流式替换）
           if (data?.type === 'data_changed' && data.dataChanged) {
@@ -330,6 +356,56 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               timestamp: evt.timestamp,
               dataChanged: true,
             }])
+          }
+          // arrange_*：AI 编排阶段的处理步骤，作为对话气泡展示在时间线
+          // 后端 ai-arrange 仅做矩阵编排（不衔接 create-flow），故编排步骤需在此显式呈现给用户
+          if (data?.type && typeof data.type === 'string' && data.type.startsWith('arrange_')) {
+            const msg = data.message ?? ''
+            const partial = (data.data as { partial?: string } | undefined)?.partial
+            if (!msg) return
+            // 有 partial → 流式生成中的增量更新（entity-generator 的 delta 回调）
+            // → 更新最后一个 arranger streaming 气泡，避免每 token 新建气泡
+            if (partial) {
+              setAgentOutputs((prev) => {
+                const last = prev[prev.length - 1]
+                if (last && last.agentType === 'arranger' && last.streaming) {
+                  const updated = { ...last, content: `${msg}\n\n\`\`\`\n${partial}\n\`\`\``, preview: partial }
+                  return [...prev.slice(0, -1), updated]
+                }
+                return [...prev, {
+                  agentType: 'arranger',
+                  agentName: '编排',
+                  content: `${msg}\n\n\`\`\`\n${partial}\n\`\`\``,
+                  preview: partial,
+                  timestamp: evt.timestamp,
+                  streaming: true,
+                }]
+              })
+            } else {
+              // arrange_start / arrange_done / arrange_progress(无 partial)：
+              // 新阶段 → 关闭前一个 streaming 气泡，新建非流式气泡
+              setAgentOutputs((prev) => {
+                if (prev.length > 0) {
+                  const last = prev[prev.length - 1]
+                  if (last.agentType === 'arranger' && last.streaming) {
+                    return [...prev.slice(0, -1), { ...last, streaming: false }, {
+                      agentType: 'arranger',
+                      agentName: '编排',
+                      content: msg,
+                      preview: msg,
+                      timestamp: evt.timestamp,
+                    }]
+                  }
+                }
+                return [...prev, {
+                  agentType: 'arranger',
+                  agentName: '编排',
+                  content: msg,
+                  preview: msg,
+                  timestamp: evt.timestamp,
+                }]
+              })
+            }
           }
           // phase_change / 心跳：只更新 events 和 phase，不覆盖 chapterContent
           return
@@ -543,7 +619,12 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       try {
         // 将检查点期间用户发送的消息一并提交给后端，供下一个 Agent 使用
         const messagesToSend = userMessages.map((m) => m.content)
-        await submitCheckpointDecision(projectId, currentCheckpoint.type, decision, messagesToSend)
+        // 决策端点路由参数使用后端推送的 checkpointId（UUID），
+        // 而非 checkpoint.type（如 'narrative_task'），否则后端找不到对应请求返回 404
+        if (!currentCheckpoint.checkpointId) {
+          throw new Error('检查点缺少 checkpointId，无法提交决策')
+        }
+        await submitCheckpointDecision(projectId, currentCheckpoint.checkpointId, decision, messagesToSend)
         // 决策已提交，清空检查点与用户消息，等待后续 SSE 事件推进流程
         setCurrentCheckpoint(null)
         setUserMessages([])

@@ -317,36 +317,105 @@ export function MatrixWorkspace({
         }
         case 'conflict': {
           const c = conflicts.find((x) => x.id === entityId)
-          if (!c) return
-          const nextFirst = c.firstChapter == null ? chapter : Math.min(c.firstChapter, chapter)
-          const nextLast = c.lastChapter == null ? chapter : Math.max(c.lastChapter, chapter)
-          if (nextFirst === c.firstChapter && nextLast === c.lastChapter) return
-          const updated = await updateConflict(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
-          useNovelStore.getState().upsertConflict(updated)
+          if (!c) {
+            console.warn('[MatrixWorkspace] conflict 拖入：未找到冲突', entityId)
+            return
+          }
+          // 拖入冲突到矩阵的语义（与 foreshadow 一致，支持移动端点）：
+          // - 未放置（firstChapter null）→ 设 firstChapter 和 lastChapter 为该章
+          // - 已放置，拖到范围外 → 扩展范围
+          // - 已放置，拖到范围内 → 移动离 chapter 最近的端点（让用户可以调整起止位置）
+          if (c.firstChapter == null) {
+            const updated = await updateConflict(entityId, { firstChapter: chapter, lastChapter: chapter })
+            useNovelStore.getState().upsertConflict(updated)
+          } else {
+            const curLast = c.lastChapter ?? c.firstChapter
+            if (chapter < c.firstChapter || chapter > curLast) {
+              // 范围外 → 扩展
+              const nextFirst = Math.min(c.firstChapter, chapter)
+              const nextLast = Math.max(curLast, chapter)
+              const updated = await updateConflict(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
+              useNovelStore.getState().upsertConflict(updated)
+            } else {
+              // 范围内 → 移动离 chapter 最近的端点
+              const distFirst = Math.abs(chapter - c.firstChapter)
+              const distLast = Math.abs(chapter - curLast)
+              if (distFirst <= distLast) {
+                const updated = await updateConflict(entityId, { firstChapter: chapter })
+                useNovelStore.getState().upsertConflict(updated)
+              } else {
+                const updated = await updateConflict(entityId, { lastChapter: chapter })
+                useNovelStore.getState().upsertConflict(updated)
+              }
+            }
+          }
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'faction': {
           const f = factions.find((x) => x.id === entityId)
-          if (!f) return
-          const nextFirst = f.firstChapter == null ? chapter : Math.min(f.firstChapter, chapter)
-          const nextLast = f.lastChapter == null ? chapter : Math.max(f.lastChapter, chapter)
-          if (nextFirst === f.firstChapter && nextLast === f.lastChapter) return
-          const updated = await updateFaction(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
-          useNovelStore.getState().upsertFaction(updated)
+          if (!f) {
+            console.warn('[MatrixWorkspace] faction 拖入：未找到势力', entityId)
+            return
+          }
+          // 拖入势力到矩阵的语义（与 conflict/foreshadow 一致，支持移动端点）
+          if (f.firstChapter == null) {
+            const updated = await updateFaction(entityId, { firstChapter: chapter, lastChapter: chapter })
+            useNovelStore.getState().upsertFaction(updated)
+          } else {
+            const curLast = f.lastChapter ?? f.firstChapter
+            if (chapter < f.firstChapter || chapter > curLast) {
+              const nextFirst = Math.min(f.firstChapter, chapter)
+              const nextLast = Math.max(curLast, chapter)
+              const updated = await updateFaction(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
+              useNovelStore.getState().upsertFaction(updated)
+            } else {
+              const distFirst = Math.abs(chapter - f.firstChapter)
+              const distLast = Math.abs(chapter - curLast)
+              if (distFirst <= distLast) {
+                const updated = await updateFaction(entityId, { firstChapter: chapter })
+                useNovelStore.getState().upsertFaction(updated)
+              } else {
+                const updated = await updateFaction(entityId, { lastChapter: chapter })
+                useNovelStore.getState().upsertFaction(updated)
+              }
+            }
+          }
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'foreshadow': {
           const f = foreshadows.find((x) => x.id === entityId)
-          if (!f) return
-          // 若未埋设，设为埋设点；若已埋设但未回收，设为回收点
+          if (!f) {
+            console.warn('[MatrixWorkspace] foreshadow 拖入：未找到伏笔', entityId)
+            return
+          }
+          // 拖入伏笔到矩阵的语义（与左键单击 handleTogglePresent 保持一致并扩展移动端点）：
+          // - 未放置（firstChapter null）→ 设埋设点
+          // - 已埋设未回收，拖到埋设点之后 → 设回收点
+          // - 已埋设未回收，拖到埋设点之前或同章 → 移动埋设点到该章
+          // - 已回收，拖到新位置 → 移动离该章最近的端点（埋设点/回收点）
           if (f.firstChapter == null) {
-            const updated = await updateForeshadow(entityId, { firstChapter: chapter })
+            const updated = await updateForeshadow(entityId, { firstChapter: chapter, status: 'planted' })
             useNovelStore.getState().upsertForeshadow(updated)
           } else if (f.recoverByChapter == null && chapter > f.firstChapter) {
             const updated = await updateForeshadow(entityId, { recoverByChapter: chapter, status: 'recovered' })
             useNovelStore.getState().upsertForeshadow(updated)
+          } else if (f.recoverByChapter == null) {
+            // 未回收，拖到埋设点之前或同章 → 移动埋设点
+            const updated = await updateForeshadow(entityId, { firstChapter: chapter })
+            useNovelStore.getState().upsertForeshadow(updated)
+          } else {
+            // 已回收：移动离 chapter 最近的端点
+            const distPlant = Math.abs(chapter - f.firstChapter!)
+            const distPayoff = Math.abs(chapter - f.recoverByChapter)
+            if (distPlant <= distPayoff) {
+              const updated = await updateForeshadow(entityId, { firstChapter: chapter })
+              useNovelStore.getState().upsertForeshadow(updated)
+            } else {
+              const updated = await updateForeshadow(entityId, { recoverByChapter: chapter })
+              useNovelStore.getState().upsertForeshadow(updated)
+            }
           }
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break

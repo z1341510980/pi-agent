@@ -862,13 +862,14 @@ export class PluginManager {
           }
         }
 
-        // 注入生成参数到 provider payload（temperature / max_tokens / response_format）
+        // 注入生成参数到 provider payload（temperature / max_tokens / response_format / cache_control）
         // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
         const effectiveMaxTokens = options.maxTokens ?? modelMaxTokens
         const hasInjectables =
           options.temperature !== undefined ||
           effectiveMaxTokens !== undefined ||
-          options.responseFormat !== undefined
+          options.responseFormat !== undefined ||
+          options.prefixUserMessage !== undefined
 
         if (hasInjectables) {
           const inject: Record<string, unknown> = {}
@@ -882,13 +883,70 @@ export class PluginManager {
             agent?: { onPayload?: (payload: unknown) => unknown }
           }
           if (piSession.agent) {
-            piSession.agent.onPayload = (payload: unknown) => ({
-              ...(payload as Record<string, unknown>),
-              ...inject,
-            })
+            // 当存在 SEMI 层 prefixUserMessage 时，在 system 与 prefixUser 末尾
+            // 显式打 cache_control breakpoint，提升 provider 端 prompt cache 命中率。
+            // 兼容多种 provider payload 结构（Anthropic / OpenAI 兼容）：
+            // - Anthropic: system 为 string 或 content blocks 数组；messages 是数组
+            // - OpenAI 兼容: system 通常在 messages[0]，无需显式标记（自动缓存）
+            // 仅在检测到可识别结构时打标，未识别结构保持原样（不破坏现有逻辑）。
+            const applyCacheBreakpoints = (rawPayload: unknown): unknown => {
+              if (!options.prefixUserMessage) return rawPayload
+              const payload = rawPayload as Record<string, unknown>
+              const messages = Array.isArray(payload.messages) ? [...payload.messages] : null
+
+              // 1) 处理 system 字段（Anthropic 风格）
+              if (typeof payload.system === 'string' && payload.system.length > 0) {
+                payload.system = [{
+                  type: 'text',
+                  text: payload.system,
+                  cache_control: { type: 'ephemeral' },
+                }]
+              } else if (Array.isArray(payload.system) && payload.system.length > 0) {
+                const last = payload.system[payload.system.length - 1] as Record<string, unknown>
+                if (last && typeof last === 'object' && !last.cache_control) {
+                  payload.system = [...payload.system.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+                }
+              }
+
+              // 2) 处理 messages 数组：给第一条 user 消息打 cache_control
+              //    （prefixUserMessage 已在 createSession 中作为首条 user 注入）
+              if (messages && messages.length > 0) {
+                const first = messages[0] as Record<string, unknown>
+                if (first && first.role === 'user') {
+                  const content = first.content
+                  if (typeof content === 'string') {
+                    messages[0] = {
+                      ...first,
+                      content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }],
+                    }
+                  } else if (Array.isArray(content) && content.length > 0) {
+                    const lastBlock = content[content.length - 1] as Record<string, unknown>
+                    if (lastBlock && typeof lastBlock === 'object' && !lastBlock.cache_control) {
+                      messages[0] = {
+                        ...first,
+                        content: [...content.slice(0, -1), { ...lastBlock, cache_control: { type: 'ephemeral' } }],
+                      }
+                    }
+                  }
+                  payload.messages = messages
+                }
+              }
+
+              return payload
+            }
+
+            const prevOnPayload = piSession.agent.onPayload
+            piSession.agent.onPayload = (payload: unknown) => {
+              let next = prevOnPayload ? prevOnPayload(payload) : payload
+              next = applyCacheBreakpoints(next)
+              if (Object.keys(inject).length > 0) {
+                next = { ...(next as Record<string, unknown>), ...inject }
+              }
+              return next
+            }
             logger.debug(
-              { threadId, ...inject },
-              '已注入生成参数到 Pi Session',
+              { threadId, ...inject, hasCacheBreakpoints: !!options.prefixUserMessage },
+              '已注入生成参数到 Pi Session（含 cache_control breakpoint）',
             )
           } else {
             logger.warn({ threadId, ...inject }, 'session.agent 不可用，无法注入生成参数')

@@ -25,12 +25,14 @@ import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelStore } from './novel-store.js'
+import type { NovelEngine } from './novel-engine.js'
 import type {
   NovelCharacter,
   NovelConflict,
   NovelForeshadow,
   NovelFaction,
   NovelLocation,
+  NarrativeTask,
 } from './types.js'
 
 // ── 进度事件 ──
@@ -160,6 +162,7 @@ export class NovelMemoryGenerator {
     private promptManager: PromptManager,
     private context: PluginContext,
     private store: NovelStore,
+    private engine: NovelEngine,
   ) {}
 
   /**
@@ -185,10 +188,32 @@ export class NovelMemoryGenerator {
     // ── 2. 构建用户消息：章节正文 + 当前实体状态 ──
     const userPrompt = this.buildUserPrompt(projectId, chapterNumber, chapterContent)
 
-    // ── 3. 创建独立 Session 调用 LLM（单次调用，输出 JSON）──
+    // ── 3. 构建章节上下文（SEMI 层前缀，与 runAgent 一致的三层缓存设计）──
+    // 注入 prefixUserMessage 让 Memory Agent 也能命中跨章 STATIC 缓存 + 单章 SEMI 缓存。
+    // 不传入 arrangedEntities：Memory 在 director→writer→reviewer 之后执行，
+    // 编排约束已通过正文体现，无需重复注入。agentType 不传 'writer' 以跳过 chapter-instruction。
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    const narrativeTask: NarrativeTask = {
+      description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
+      type: 'advance_mainline',
+      targetEntity: null,
+      priority: 'medium',
+    }
+    const constraints = this.engine.buildChapterConstraints(projectId)
+    const chapterContext = this.promptBuilder.buildChapterContext(
+      projectId,
+      chapterNumber,
+      narrativeTask,
+      constraints,
+      undefined,
+      'memory-generator',
+    )
+
+    // ── 4. 创建独立 Session 调用 LLM（单次调用，输出 JSON）──
     onProgress?.({ phase: 'generating', message: '记忆 Agent 正在分析章节状态变更...' })
     const session = await this.context.createSession({
       systemPrompt,
+      prefixUserMessage: chapterContext,
       userMessage: userPrompt,
       responseFormat: 'json',
       // 记忆提取需要分析整章正文 + 全量实体状态，LLM 耗时较长

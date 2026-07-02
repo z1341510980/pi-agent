@@ -78,6 +78,17 @@ export class NovelOrchestrator {
   private readonly agentConfigStore: NovelAgentConfigStore
   /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
   private readonly memoryGenerator?: NovelMemoryGenerator
+  /**
+   * 单章 SEMI 层前缀缓存（projectId|chapterNumber → prefixUserMessage 字符串）
+   *
+   * 用于在 director→writer→reviewer 三次调用之间复用同一份 buildChapterContext 输出：
+   * - 这三个 Agent 都只读 query_* 工具，不会修改故事状态，SEMI 字符串完全一致
+   * - 复用字符串可：1) 节省重复构建开销 2) 确保 LLM provider 端能命中 director 写入的缓存条目
+   *
+   * 失效场景：检查点 reject / rewrite 后重新进入 createChapterWithFlow 时清空；
+   * Memory Agent 走 runMemoryAgent 不经过此缓存。
+   */
+  private semiLayerCache: { key: string; value: string } | null = null
 
   constructor(
     private store: NovelStore,
@@ -109,6 +120,9 @@ export class NovelOrchestrator {
     // 将本章编排实体约束暂存到实例字段，供 runAgent 构建 SEMI 层时读取。
     // 采用临时字段方案是最小改动：无需改 runAgent 签名，也无需沿调用链透传。
     this.currentArrangedEntities = options.arrangedEntities
+    // 清空单章 SEMI 缓存：每次进入 createChapterWithFlow（含 rewrite 递归）都重新构建，
+    // 避免上一章/上一次创作的 SEMI 字符串残留导致 LLM 缓存条目错配。
+    this.semiLayerCache = null
     try {
       // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）
       const rhythmController = new RhythmController()
@@ -304,22 +318,43 @@ export class NovelOrchestrator {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, agentType)
 
     // SEMI 层：章节上下文（作为首条 user 消息的前缀，单章内不变）
+    // 单章内 director→writer→reviewer 三次调用之间，故事状态未被修改（这三个 Agent
+    // 只读 query_* 工具），因此 chapterContext 字符串稳定。缓存按 agentType 分桶：
+    // writer 因 buildChapterContext 内部注入 chapter-instruction 与其他 Agent 不同，
+    // 需独立缓存；director/reviewer 共享同一份（buildChapterContext 内部 if 只判断 writer）。
+    // 复用字符串可：1) 节省 formatStoryState 等遍历实体的计算开销
+    //              2) 确保字符串稳定，让 LLM provider 端能命中 director 写入的缓存条目
     const chapter = this.store.getChapter(projectId, chapterNumber)
-    const narrativeTask: NarrativeTask = {
-      description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
-      type: 'advance_mainline',
-      targetEntity: null,
-      priority: 'medium',
+    const cacheKey = `${projectId}|${chapterNumber}|${agentType}`
+    let chapterContext: string
+    if (this.semiLayerCache && this.semiLayerCache.key === cacheKey) {
+      chapterContext = this.semiLayerCache.value
+      this.context.logger.debug(
+        { agentType, projectId, chapterNumber, contextLength: chapterContext.length },
+        'SEMI 层前缀命中单章缓存',
+      )
+    } else {
+      const narrativeTask: NarrativeTask = {
+        description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
+        type: 'advance_mainline',
+        targetEntity: null,
+        priority: 'medium',
+      }
+      const constraints: ChapterConstraints = this.engine.buildChapterConstraints(projectId)
+      chapterContext = this.promptBuilder.buildChapterContext(
+        projectId,
+        chapterNumber,
+        narrativeTask,
+        constraints,
+        this.currentArrangedEntities,
+        agentType,
+      )
+      this.semiLayerCache = { key: cacheKey, value: chapterContext }
+      this.context.logger.debug(
+        { agentType, projectId, chapterNumber, contextLength: chapterContext.length },
+        'SEMI 层前缀已写入单章缓存',
+      )
     }
-    const constraints: ChapterConstraints = this.engine.buildChapterConstraints(projectId)
-    const chapterContext = this.promptBuilder.buildChapterContext(
-      projectId,
-      chapterNumber,
-      narrativeTask,
-      constraints,
-      this.currentArrangedEntities,
-      agentType,
-    )
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）
     // 章节上下文（SEMI 层）通过 prefixUserMessage 独立注入，不与任务拼接，
@@ -366,15 +401,16 @@ export class NovelOrchestrator {
     const timeoutMs = (agentType === 'writer' || agentType === 'memory') ? 300_000 : 120_000
 
     // 首 token 心跳：LLM 处理大 prompt 时首 token 延迟可能很长，
-    // 期间没有 TEXT_MESSAGE_CONTENT 事件。每 15s 推一个心跳 progress。
+    // 期间没有 TEXT_MESSAGE_CONTENT 事件。每 5s 推一个心跳 progress，让用户感知到进度。
     // 首段 text_delta 到达后由工厂的 onFirstText 回调设置 firstTextReceived=true，心跳停止推送。
+    // 间隔从 15s 缩短为 5s：避免用户在 approve 后长时间无反馈而失去耐心。
     let firstTextReceived = false
     const heartbeatTimer = setInterval(() => {
       if (firstTextReceived) return
       this.emitProgress(options, phase, 'phase_change', {
         message: `${displayAgentName} 正在等待 LLM 响应...（已等待 ${Math.round((Date.now() - startTime) / 1000)}s）`,
       })
-    }, 15_000)
+    }, 5_000)
 
     // 通过底座工厂创建 AG-UI Session：封装 StreamEmitter + ReasoningPipeline + 订阅连接
     // 插件不再自己 new 这些基础设施层实例，真正"依托 chat 底座能力"
@@ -408,10 +444,13 @@ export class NovelOrchestrator {
       //
       // ⚠️ 时序契约：此 agent_start 必须在 session.prompt() 之前发射，
       // 否则前端收到 TEXT_MESSAGE_START 时找不到 messageId 映射，输出不显示。
+      // 包含 message 字段：让前端在首 token 到达前就能看到 Agent 已启动的反馈，
+      // 避免 approve 后出现"空白等待"。
       this.emitProgress(options, phase, 'agent_start', {
         agentType: displayAgentType,
         agentName: displayAgentName,
         messageId,
+        message: `${displayAgentName} 已启动，正在向 AI 发送请求...`,
       })
 
       this.context.logger.info(

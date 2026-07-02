@@ -267,8 +267,12 @@ export class NovelStore implements NovelPromptStores {
     this.stmtListForeshadowing = db.prepare('SELECT * FROM novel_foreshadowing WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListClues = db.prepare('SELECT * FROM novel_clues WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListConflicts = db.prepare('SELECT * FROM novel_conflicts WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListWorldRules = db.prepare('SELECT * FROM novel_world_rules WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListStyleGuides = db.prepare('SELECT * FROM novel_style_guides WHERE project_id = ? ORDER BY created_at ASC')
+    // 排序键：category, id（双键排序）—— category 用于业务分组，id 作为稳定次序键
+    // 避免「相同 category 下不同行因 created_at 相同/缺失导致顺序波动」破坏 system prompt 哈希
+    // 进而破坏 prompt cache 前缀匹配。原 ORDER BY created_at 在并发写入或时间戳精度不足时
+    // 可能产生顺序波动，导致同一项目跨次构建 system prompt 不一致。
+    this.stmtListWorldRules = db.prepare('SELECT * FROM novel_world_rules WHERE project_id = ? ORDER BY category ASC, id ASC')
+    this.stmtListStyleGuides = db.prepare('SELECT * FROM novel_style_guides WHERE project_id = ? ORDER BY category ASC, id ASC')
     this.stmtListConstraints = db.prepare('SELECT * FROM novel_constraints WHERE project_id = ? AND is_active = 1 ORDER BY created_at ASC')
     this.stmtListInfoLayers = db.prepare('SELECT * FROM novel_information_layers WHERE project_id = ? ORDER BY created_at ASC')
     this.stmtListRecentChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND status = ? ORDER BY chapter_number DESC LIMIT ?')
@@ -634,6 +638,17 @@ export class NovelStore implements NovelPromptStores {
       .prepare('DELETE FROM novel_character_history WHERE character_id = ?')
       .run(characterId)
     return result.changes
+  }
+
+  /**
+   * 删除单条角色历史记录（矩阵视图取消角色出场用）。
+   * 传 projectId 时附加项目级校验，避免跨项目误删。
+   */
+  deleteCharacterHistory(historyId: string, projectId?: string): boolean {
+    const result = projectId != null
+      ? this.db.prepare('DELETE FROM novel_character_history WHERE id = ? AND project_id = ?').run(historyId, projectId)
+      : this.db.prepare('DELETE FROM novel_character_history WHERE id = ?').run(historyId)
+    return result.changes > 0
   }
 
   // ═══════════════════════════════════════════════════════════════

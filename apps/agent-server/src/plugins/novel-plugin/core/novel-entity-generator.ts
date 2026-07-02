@@ -232,8 +232,13 @@ export class NovelEntityGenerator {
 
     try {
       let streamedText = ''
+      let lastEmitTs = 0
       const result = await session.promptStream((delta) => {
         streamedText += delta
+        // 节流：每 500ms 最多发一次进度，避免 token 级回调导致 SSE 事件洪泛
+        const now = Date.now()
+        if (now - lastEmitTs < 500) return
+        lastEmitTs = now
         const partial = streamedText.slice(-200)
         onProgress?.({
           phase: 'generating',

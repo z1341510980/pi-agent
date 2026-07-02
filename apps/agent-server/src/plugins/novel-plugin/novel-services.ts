@@ -115,7 +115,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //    agentConfigStore 用于 runAgent 中按角色合并温度并传入 createSession
   //    memoryGenerator 用于 Memory 阶段的结构化 LLM 调用（替代原工具循环模式）
   // 7.5 先创建 NovelMemoryGenerator（orchestrator 依赖它）
-  const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store)
+  const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine)
   const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context, agentConfigStore, memoryGenerator)
 
   // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）

@@ -151,7 +151,7 @@ export class NovelPromptBuilder {
    * 构建系统提示词
    *
    * ⚠️ 此方法只读取静态数据，不读取动态状态，也不读取角色定义。
-   * 系统提示词在整个项目生命周期内保持不变（除非世界规则/风格被修改）。
+   * 系统提示词在整个项目生命周期内保持不变（除非世界规则/风格/势力/地点被修改）。
    * 这确保 LLM 提供商的 prompt cache 能跨章节命中。
    *
    * 角色定义不放在系统提示词的原因：
@@ -159,36 +159,55 @@ export class NovelPromptBuilder {
    * - 本章出场角色已通过 arrangedEntities 编排好，只需注入这些角色的完整定义
    * - 其他角色 LLM 通过 formatStoryState 知道存在（name+动态状态），需要详情时调 query_state 工具
    *
+   * 势力 / 地点 / 世界要素 上提到系统提示词的原因：
+   * - 数量有限（通常几十个），不会导致上下文爆炸
+   * - 静态档案跨章稳定（name / description / type 等极少变）
+   * - 上提后 system prompt 长度提升到缓存阈值之上，提升缓存命中率
+   *
    * 构建顺序（从最稳定到最不稳定）：
-   * 1. 世界规则（项目级，极少变）    ← 高命中率
-   * 2. 风格指南（项目级，极少变）    ← 高命中率
-   * 3. Agent 身份（Agent 专属）      ← 同 Agent 跨章不变
+   * 1. 世界规则（项目级，极少变）              ← 高命中率
+   * 2. 风格指南（项目级，极少变）              ← 高命中率
+   * 3. 势力/地点/世界要素静态档案（项目级）     ← 高命中率
+   * 4. Agent 身份（Agent 专属）                ← 同 Agent 跨章不变
    */
   buildSystemPrompt(projectId: string, agentType: string): string {
     const parts: string[] = []
 
     // ── 共享前缀（跨 Agent 相同，跨章不变，最大化 prompt cache 命中）──
-    // 顺序：世界规则 → 风格指南 → Agent 身份
+    // 顺序：世界规则 → 风格指南 → 实体档案 → Agent 身份
     // 共享部分在前，Agent 专属部分在后，确保不同 Agent 的前缀相同可共享缓存。
 
     // ── Layer 1: 世界规则（项目级，跨 Agent 共享，跨章不变）──
-    // 按 category 排序，确保顺序稳定，最大化 prompt cache 命中率
+    // 双键排序：category 业务分组 + id 稳定次序键。
+    // 仅按 category 排序在相同 category 多行时仍可能不稳定（依赖上游 SQL 顺序），
+    // 加 id 作为次序键确保完全确定性，最大化 prompt cache 命中率。
     const worldRules = this.stores.listWorldRules(projectId)
     if (worldRules.length > 0) {
-      const sorted = [...worldRules].sort((a, b) => a.category.localeCompare(b.category))
+      const sorted = [...worldRules].sort((a, b) =>
+        a.category.localeCompare(b.category) || a.id.localeCompare(b.id),
+      )
       parts.push(this.formatWorldRules(sorted))
     }
 
     // ── Layer 2: 风格指南（项目级，跨 Agent 共享，跨章不变）──
-    // 按 category 排序，确保顺序稳定，最大化 prompt cache 命中率
+    // 双键排序：category + id（同上）
     const styleGuide = this.stores.listStyleGuide(projectId)
     if (styleGuide.length > 0) {
-      const sorted = [...styleGuide].sort((a, b) => a.category.localeCompare(b.category))
+      const sorted = [...styleGuide].sort((a, b) =>
+        a.category.localeCompare(b.category) || a.id.localeCompare(b.id),
+      )
       parts.push(this.formatStyleGuide(sorted))
     }
 
+    // ── Layer 3: 势力/地点/世界要素静态档案（项目级，跨 Agent 共享，跨章稳定）──
+    // 上提到 STATIC 层以增加 system prompt 长度（突破缓存阈值）并跨章复用。
+    // 仅输出静态字段（name/description/type 等），动态字段（status/appearChapters/
+    // firstChapter/lastChapter）仍由 SEMI 层的 formatStoryState 输出。
+    const entityArchive = this.formatEntityArchive(projectId)
+    if (entityArchive) parts.push(entityArchive)
+
     // ── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）──
-    // 放在最后，确保前面的共享部分（worldRules + styleGuide）
+    // 放在最后，确保前面的共享部分（worldRules + styleGuide + entityArchive）
     // 可以跨 Agent 缓存命中。Agent 身份变化只影响尾部，不影响前缀缓存。
     const identityPrompt = this.promptManager.render('system-base', {
       agent_type: agentType,
@@ -300,6 +319,70 @@ export class NovelPromptBuilder {
       return `- [${s.category}] ${s.rule}${example}`
     })
     return `## 风格指南\n\n${lines.join('\n')}`
+  }
+
+  /**
+   * 格式化势力/地点/世界要素的静态档案（STATIC 层）
+   *
+   * 与 formatStoryState 的区别：
+   * - formatStoryState 输出动态字段（status / appearChapters 等），随章节变化 → SEMI 层
+   * - formatEntityArchive 只输出静态字段（name / description / type / ideology 等）→ STATIC 层
+   *
+   * 上提到 STATIC 层的好处：
+   * 1. 增加 system prompt 长度，突破 LLM provider 缓存阈值（如 1024 token）
+   * 2. 跨章节稳定，缓存命中率高
+   * 3. 跨 Agent 共享（4 个 Agent 都能感知势力/地点/世界要素的基础信息）
+   *
+   * 排序：按 name 排序，确保顺序稳定（最大化缓存命中）。
+   */
+  private formatEntityArchive(projectId: string): string {
+    const sections: string[] = []
+
+    // 势力静态档案（不含 status / firstChapter / lastChapter / allies / enemies 等动态字段）
+    const factions = this.stores.listFactions(projectId)
+    if (factions.length > 0) {
+      const sorted = [...factions].sort((a, b) => a.name.localeCompare(b.name))
+      const lines = sorted.map((f) => {
+        const parts = [`- **${f.name}**`]
+        if (f.type) parts.push(`类型：${f.type}`)
+        if (f.description) parts.push(f.description)
+        if (f.ideology) parts.push(`理念：${f.ideology}`)
+        if (f.strength) parts.push(`实力：${f.strength}`)
+        return parts.join('；')
+      })
+      sections.push(`### 势力档案\n${lines.join('\n')}`)
+    }
+
+    // 地点静态档案（不含 status / firstChapter / appearChapters 等动态字段）
+    const locations = this.stores.listLocations(projectId)
+    if (locations.length > 0) {
+      const sorted = [...locations].sort((a, b) => a.name.localeCompare(b.name))
+      const lines = sorted.map((l) => {
+        const parts = [`- **${l.name}**`]
+        if (l.type) parts.push(`类型：${l.type}`)
+        if (l.description) parts.push(l.description)
+        if (l.significance) parts.push(`重要性：${l.significance}`)
+        return parts.join('；')
+      })
+      sections.push(`### 地点档案\n${lines.join('\n')}`)
+    }
+
+    // 世界要素静态档案
+    const worldElements = this.stores.listWorldElements(projectId)
+    if (worldElements.length > 0) {
+      const sorted = [...worldElements].sort((a, b) =>
+        a.category.localeCompare(b.category) || a.name.localeCompare(b.name),
+      )
+      const lines = sorted.map((w) => {
+        const parts = [`- [${w.category}] **${w.name}**`]
+        if (w.description) parts.push(w.description)
+        return parts.join('；')
+      })
+      sections.push(`### 世界要素档案\n${lines.join('\n')}`)
+    }
+
+    if (sections.length === 0) return ''
+    return `## 项目实体档案（静态）\n\n${sections.join('\n\n')}`
   }
 
   /** 格式化章节信息 */

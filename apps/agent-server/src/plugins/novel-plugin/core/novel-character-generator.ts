@@ -82,9 +82,13 @@ export class NovelCharacterGenerator {
       // 每收到一段 text_delta 就通过 onProgress 推送给前端，
       // 前端可在 SSE 通道上实时显示生成中的文本预览。
       let streamedText = ''
+      let lastEmitTs = 0
       const result = await session.promptStream((delta) => {
         streamedText += delta
-        // 取最后 200 字符作为预览，避免 SSE 事件过大
+        // 节流：每 500ms 最多发一次进度，避免 token 级回调导致 SSE 事件洪泛
+        const now = Date.now()
+        if (now - lastEmitTs < 500) return
+        lastEmitTs = now
         const partial = streamedText.slice(-200)
         onProgress?.({
           phase: 'generating',

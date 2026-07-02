@@ -1154,13 +1154,20 @@ export function batchCreateCharacterHistory(
 
 // ── Checkpoint Decision（多 Agent 创作流程检查点） ──
 
+/**
+ * 提交检查点决策。
+ * @param checkpointId 后端 ConfirmationManager 生成的决策请求 ID（UUID），
+ *                     由 novel:checkpoint 事件的 checkpointId 字段提供。
+ *                     早期实现误用 checkpoint.type（如 'narrative_task'），
+ *                     后端路由期望的是 UUID，会返回 404。
+ */
 export function submitCheckpointDecision(
   projectId: string,
-  type: string,
+  checkpointId: string,
   decision: string,
   userMessages?: string[],
 ): Promise<{ ok: boolean }> {
-  return postApi<{ ok: boolean }>(`${BASE}/projects/${projectId}/checkpoint/${type}/decision`, {
+  return postApi<{ ok: boolean }>(`${BASE}/projects/${projectId}/checkpoint/${checkpointId}/decision`, {
     decision,
     userMessages,
   })

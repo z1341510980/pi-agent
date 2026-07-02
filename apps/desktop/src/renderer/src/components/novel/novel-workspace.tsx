@@ -107,6 +107,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const characterHistory = useNovelStore((s) => s.characterHistory)
   const setCharacterHistory = useNovelStore((s) => s.setCharacterHistory)
   const setCreationMode = useNovelStore((s) => s.setCreationMode)
+  const creationMode = useNovelStore((s) => s.creationMode)
   const playheadChapter = useNovelStore((s) => s.playheadChapter)
 
   const queryClient = useQueryClient()
@@ -581,6 +582,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 currentCheckpoint={creationFlow.currentCheckpoint}
                 result={creationFlow.result}
                 error={creationFlow.error}
+                creationMode={creationMode}
                 onSubmitCheckpoint={creationFlow.submitCheckpoint}
                 onSave={handleSaveChapter}
                 onDiscard={handleDiscardCreation}

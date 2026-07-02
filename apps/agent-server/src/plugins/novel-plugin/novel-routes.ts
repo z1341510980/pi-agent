@@ -767,6 +767,17 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  // 删除单条角色历史记录（矩阵视图取消角色出场）
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/:projectId/character-history/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteCharacterHistory(request.params.id, request.params.projectId)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `角色历史记录不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
   // ═══════════════════════════════════════════════════════════════
   // 伏笔
   // ═══════════════════════════════════════════════════════════════
@@ -1678,7 +1689,6 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/chapters/:chapterNumber/ai-arrange',
     handler: async (request: any, reply: any) => {
       const { projectId, chapterNumber } = request.params
-      const orchestrator = services.orchestrator
       const entityGenerator = services.entityGenerator
 
       // 并发锁：同一章节不允许并发 ai-arrange，避免重复生成实体
@@ -1733,52 +1743,36 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         if (!chapter.outline?.trim()) throw new Error('章纲为空，无法 AI 编排')
 
         // 阶段1：AI 编排（生成实体并落库到本章列）
-        emitter.progress({ type: 'arrange_start', message: '开始 AI 编排实体...' })
+        // 注意：本接口仅做矩阵编排，不衔接 create-flow 创作流程。
+        // arrange 进度事件统一带 phase='arranging'，前端据此在对话时间线展示处理步骤。
+        emitter.progress({ type: 'arrange_start', phase: 'arranging', message: '开始 AI 编排实体...' })
         const arrangedEntities = await entityGenerator.generateAndArrange(
           projectId,
           chNum,
           chapter.outline,
-          (evt) => emitter.progress({ type: 'arrange_progress', ...evt }),
+          // 注意：...evt 必须放在 phase 之前，否则 evt.phase 会覆盖 'arranging'，
+          // 导致前端无法识别为编排阶段（前端以 phase='arranging' 作为对话气泡判定条件）。
+          (evt) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
         )
-        emitter.progress({ type: 'arrange_done', data: arrangedEntities })
-
-        // 阶段2：同一 SSE 流内衔接 create-flow，注入编排结果
-        // TODO: orchestrator 长流程无 abort 支持（需 D-3 配合），客户端断开后若已开始只能让其跑完
-        if (clientDisconnected) {
-          request.log.info(
-            { projectId, chapterNumber: chNum },
-            'ai-arrange: 客户端已断开，跳过 create-flow',
-          )
-          return
-        }
-        emitter.progress({ type: 'create_flow_start', message: '进入创作流程...' })
-        const result = await orchestrator.createChapterWithFlow(
-          projectId,
-          chNum,
-          {
-            emit: emitter.emit,
-            onCheckpoint: async (checkpoint) => {
-              // 通过 ConfirmationManager 发起决策请求（默认 120s 超时，避免永久 pending）
-              // threadId 填 novel-checkpoint-{projectId}-{chapterNumber}，toolName 填 checkpoint_{type}
-              const toolCallId = randomUUID()
-              const decisionPromise = services.confirmationManager.requestDecision({
-                threadId: `novel-checkpoint-${projectId}-${chapterNumber}`,
-                toolCallId,
-                toolName: `checkpoint_${checkpoint.type}`,
-                args: { checkpoint } as Record<string, unknown>,
-                reason: `等待用户确认 ${checkpoint.type} 检查点`,
-              })
-              // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
-              // 通过 toolCallId 反查拿到 ConfirmationRequest.id，推给前端用于决策路由
-              const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
-              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
-              return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
-            },
-            onProgress: (event) => emitter.progress(event),
-            arrangedEntities,
-          },
-        )
-        emitter.result(result)
+        const totalCount = arrangedEntities.characterIds.length
+          + arrangedEntities.conflictIds.length
+          + arrangedEntities.foreshadowIds.length
+          + arrangedEntities.factionIds.length
+          + arrangedEntities.locationIds.length
+        emitter.progress({
+          type: 'arrange_done',
+          phase: 'arranging',
+          message: `编排完成：共生成 ${totalCount} 个实体已落入矩阵`,
+          data: arrangedEntities,
+        })
+        // 编排结束：发 result（status=completed，不带 content），前端据此显示"编排完成"并关闭面板
+        emitter.result({
+          status: 'completed',
+          stateChanges: [{
+            type: 'arrange',
+            description: `AI 编排完成，已生成 ${totalCount} 个实体落入第 ${chNum} 章矩阵`,
+          }],
+        })
       } catch (err) {
         emitter.error(String(err))
       } finally {

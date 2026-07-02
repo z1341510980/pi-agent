@@ -53,6 +53,7 @@ const PHASE_LABELS: Partial<Record<CreationPhase, string>> = {
   revising: '修订重写中',
   rewriting: '重新创作中',
   memory: '记忆提取中',
+  arranging: 'AI 编排矩阵中',
   completed: '创作完成',
   cancelled: '已取消',
   error: '出错',
@@ -95,6 +96,7 @@ const AGENT_COLOR_CLASSES: Record<AgentOutput['agentType'], string> = {
   reviewer: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/40',
   reviser: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/40',
   memory: 'bg-gray-500/15 text-gray-700 dark:text-gray-300 border-gray-500/40',
+  arranger: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40',
 }
 
 /** 格式化时间戳为 HH:mm:ss */
@@ -296,6 +298,8 @@ export interface ChapterLivePanelProps {
   currentCheckpoint: CheckpointData | null
   result: CreationResult | null
   error: string | null
+  /** 创作模式：'ai-arrange' 时仅编排矩阵，完成态文案/按钮与创作流程不同 */
+  creationMode?: 'manual' | 'ai-arrange' | null
   onSubmitCheckpoint: (decision: CheckpointDecision) => void
   onSave: (content: string) => Promise<void>
   onDiscard: () => void
@@ -314,6 +318,7 @@ export function ChapterLivePanel({
   currentCheckpoint,
   result,
   error,
+  creationMode,
   onSubmitCheckpoint,
   onSave,
   onDiscard,
@@ -327,8 +332,12 @@ export function ChapterLivePanel({
 
   const isWriting = phase === 'writing'
   const isCheckpoint = phase === 'checkpoint_narrative' || phase === 'checkpoint_review'
-  const isCompleted = phase === 'completed' && !!result?.content
-  const canSave = isCompleted && !!chapterContent
+  // arrange 模式仅编排矩阵，无正文 content；完成态判定与创作流程区分
+  const isArrangeMode = creationMode === 'ai-arrange'
+  const isArrangeCompleted = isArrangeMode && phase === 'completed'
+  const isCreateCompleted = !isArrangeMode && phase === 'completed' && !!result?.content
+  const isCompleted = isArrangeMode ? isArrangeCompleted : isCreateCompleted
+  const canSave = isCreateCompleted && !!chapterContent
 
   const decisions = currentCheckpoint?.type === 'narrative_task'
     ? NARRATIVE_DECISIONS
@@ -386,7 +395,7 @@ export function ChapterLivePanel({
             </motion.span>
           )}
           {!isRunning && phase === 'completed' && (
-            <span className="text-[11px] text-success">创作完成</span>
+            <span className="text-[11px] text-success">{isArrangeMode ? '编排完成' : '创作完成'}</span>
           )}
           {!isRunning && phase === 'error' && (
             <span className="text-[11px] text-destructive">创作出错</span>
@@ -563,15 +572,24 @@ export function ChapterLivePanel({
         {/* 操作按钮（完成或出错时显示） */}
         {!isRunning && (isCompleted || phase === 'error') && (
           <div className="flex items-center justify-end gap-2 p-3">
-            <Button size="sm" variant="ghost" onClick={onDiscard}>
-              <Trash2 className="size-3" />
-              丢弃
-            </Button>
-            {canSave && (
-              <Button size="sm" onClick={handleSave} disabled={!chapterContent}>
-                <Save className="size-3" />
-                保存到章节
+            {isArrangeMode ? (
+              // arrange 模式：仅编排矩阵，无正文可保存，提供"完成"按钮关闭面板回到矩阵
+              <Button size="sm" onClick={onDiscard}>
+                完成
               </Button>
+            ) : (
+              <>
+                <Button size="sm" variant="ghost" onClick={onDiscard}>
+                  <Trash2 className="size-3" />
+                  丢弃
+                </Button>
+                {canSave && (
+                  <Button size="sm" onClick={handleSave} disabled={!chapterContent}>
+                    <Save className="size-3" />
+                    保存到章节
+                  </Button>
+                )}
+              </>
             )}
           </div>
         )}

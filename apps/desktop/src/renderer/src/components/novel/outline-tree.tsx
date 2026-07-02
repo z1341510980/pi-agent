@@ -3,6 +3,7 @@ import { ChevronRight, ChevronDown, Plus, Sparkles, Wand2, BookText } from 'luci
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
 import {
+  createChapter,
   createVolume,
   type NovelProject,
   type NovelChapter,
@@ -35,6 +36,7 @@ export function OutlineTree({
   const setMatrixScrollTarget = useNovelStore((s) => s.setMatrixScrollTarget)
   const toggleExpandedVolume = useNovelStore((s) => s.toggleExpandedVolume)
   const upsertVolume = useNovelStore((s) => s.upsertVolume)
+  const upsertChapter = useNovelStore((s) => s.upsertChapter)
 
   const sortedVolumes = [...volumes].sort(
     (a, b) => a.sortOrder - b.sortOrder || a.volumeNumber - b.volumeNumber,
@@ -67,6 +69,29 @@ export function OutlineTree({
     }
   }, [volumes, project.id, upsertVolume])
 
+  // 新建章：自动取下一章号，narrativeTask 用默认占位，用户可在右侧栏编辑章纲后编排
+  const handleCreateChapter = useCallback(async () => {
+    if (!project.id) return
+    try {
+      const nextNumber =
+        chapters.length > 0 ? Math.max(...chapters.map((c) => c.chapterNumber)) + 1 : 1
+      const chapter = await createChapter(project.id, {
+        chapterNumber: nextNumber,
+        narrativeTask: {
+          description: '待补充',
+          type: 'manual',
+          priority: 'medium',
+        },
+      })
+      upsertChapter(chapter)
+      // 选中新创建的章节，便于右侧栏立即编辑
+      selectNode(chapter.id, 'chapter')
+      setPlayheadChapter(chapter.chapterNumber)
+    } catch (err) {
+      console.error('[OutlineTree] 创建章失败:', err)
+    }
+  }, [chapters, project.id, upsertChapter, selectNode, setPlayheadChapter])
+
   return (
     <div className="flex flex-col gap-0.5">
       {/* 全书大纲：点击选中项目，在右边栏编辑 */}
@@ -79,14 +104,23 @@ export function OutlineTree({
         icon={<BookText className="size-3.5 text-primary" />}
       />
 
-      {/* 新建卷按钮 */}
-      <button
-        type="button"
-        onClick={handleCreateVolume}
-        className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
-      >
-        <Plus className="size-3" /> 新建卷
-      </button>
+      {/* 新建卷 / 新建章 按钮 */}
+      <div className="flex items-center gap-1 px-1">
+        <button
+          type="button"
+          onClick={handleCreateVolume}
+          className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
+        >
+          <Plus className="size-3" /> 新建卷
+        </button>
+        <button
+          type="button"
+          onClick={handleCreateChapter}
+          className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
+        >
+          <Plus className="size-3" /> 新建章
+        </button>
+      </div>
 
       {/* 卷 + 章 */}
       {sortedVolumes.map((vol) => {
