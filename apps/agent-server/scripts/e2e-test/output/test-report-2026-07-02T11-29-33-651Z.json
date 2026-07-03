@@ -1,0 +1,36 @@
+{
+  "runAt": "2026-07-02T11-29-33-651Z",
+  "baseUrl": "http://127.0.0.1:3900",
+  "options": {
+    "skipTimeout": true,
+    "keepProject": false,
+    "baseUrl": "http://127.0.0.1:3900",
+    "chapter": 1
+  },
+  "context": {
+    "projectId": null,
+    "chapterId": null,
+    "threadIdPrefix": "plugin:novel-plugin:",
+    "firstTokenAt": null,
+    "flowStartedAt": null,
+    "flowFinishedAt": null,
+    "checkpoints": [],
+    "sseError": null
+  },
+  "stats": {
+    "PASS": 0,
+    "FAIL": 1,
+    "WARN": 0,
+    "SKIP": 0
+  },
+  "results": [
+    {
+      "name": "环境就绪",
+      "status": "FAIL",
+      "detail": {
+        "error": "fetch failed"
+      },
+      "durationMs": 23
+    }
+  ]
+}

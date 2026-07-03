@@ -1,7 +1,7 @@
 import { memo, type ReactElement } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
-import { Swords, X } from 'lucide-react'
-import type { NovelConflict, ConflictType, ConflictStage } from '@/api/novel-client'
+import { Swords, X, Flame, Zap, AlertTriangle } from 'lucide-react'
+import type { NovelConflict, ConflictType, ConflictStage, ClimaxType } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 
 export type ConflictNodeData = { entity: NovelConflict; onDelete?: () => void }
@@ -29,6 +29,15 @@ const STAGE_LABELS: Record<ConflictStage, string> = {
   transformed: '转化',
 }
 
+const CLIMAX_TYPE_LABELS: Record<ClimaxType, string> = {
+  emotional: '情感',
+  fate: '命运',
+  character: '性格',
+  combat: '打斗',
+  theme: '主题',
+  composite: '复合',
+}
+
 function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): ReactElement {
   const { entity, onDelete } = data
   const intensityPct = Math.min(100, (entity.intensity / 10) * 100)
@@ -37,11 +46,15 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
     : entity.intensity >= 5 ? 'bg-amber-500'
     : 'bg-yellow-500'
 
+  const hasClimax = entity.climaxChapter != null || entity.climaxType != null
+  const hasTwistPotential = entity.twistPotential != null && entity.twistPotential >= 7
+
   return (
     <div
       className={cn(
         'group relative w-[200px] rounded-lg border bg-card text-card-foreground shadow-sm transition-[box-shadow]',
         'border-rose-500/40 dark:border-rose-400/40',
+        hasClimax && 'border-amber-500/60 dark:border-amber-400/60',
         selected && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
       )}
     >
@@ -84,6 +97,33 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
         <div className="text-[10px] text-subtle">
           阶段: {STAGE_LABELS[entity.stage] ?? entity.stage}
         </div>
+
+        {/* 高潮信息 */}
+        {hasClimax && (
+          <div className="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-300">
+            <Flame className="size-3 shrink-0" />
+            {entity.climaxChapter != null && <span>第{entity.climaxChapter}章</span>}
+            {entity.climaxType != null && (
+              <span>{CLIMAX_TYPE_LABELS[entity.climaxType] ?? entity.climaxType}高潮</span>
+            )}
+          </div>
+        )}
+
+        {/* 突转潜力提示 */}
+        {hasTwistPotential && (
+          <div className="flex items-center gap-1 rounded bg-purple-500/10 px-1.5 py-0.5 text-[10px] text-purple-600 dark:text-purple-300" title="突转潜力高，适合安排突转">
+            <Zap className="size-3 shrink-0" />
+            <span>突转潜力 {entity.twistPotential}/10</span>
+          </div>
+        )}
+
+        {/* 赌注 */}
+        {entity.stakes && (
+          <div className="flex items-start gap-1 text-[10px] text-muted-foreground" title={entity.stakes}>
+            <AlertTriangle className="size-3 shrink-0 mt-0.5" />
+            <span className="line-clamp-2">赌注：{entity.stakes}</span>
+          </div>
+        )}
       </div>
       <Handle type="source" position={Position.Bottom} className="!bg-rose-500" />
     </div>

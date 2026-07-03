@@ -31,6 +31,12 @@ import type {
   NarrativeTask,
   ChapterConstraints,
   NovelChapterReview,
+  ConflictTarget,
+  RhythmConstraint,
+  SuspenseHook,
+  RhythmSuggestion,
+  NovelConflict,
+  ConflictStage,
 } from './types.js'
 
 export interface ChapterCreationResult {
@@ -49,11 +55,106 @@ export class NovelEngine {
    * 构建章节约束
    *
    * 从数据库读取当前项目的所有约束，按类型分类。
+   * 当传入 chapterNumber 时，额外构建冲突推进目标、节奏约束、悬念钩子三类约束，
+   * 让 Writer 知道本章"必须推进哪些冲突、遵循什么节奏、维持或释放哪些悬念"。
+   *
+   * - conflictTargets：本章跨度内或爆发章节的活跃冲突，含目标阶段和强度变化
+   * - rhythmConstraint：来自 RhythmController 的节奏建议（仅在传入 rhythmSuggestion 时构建）
+   * - suspenseHooks：待回收伏笔 + 未揭示信息差，标注 planting/sustaining/releasing
    */
-  buildChapterConstraints(projectId: string): ChapterConstraints {
+  buildChapterConstraints(
+    projectId: string,
+    chapterNumber?: number,
+    rhythmSuggestion?: RhythmSuggestion,
+  ): ChapterConstraints {
     const constraints = this.store.listConstraints(projectId)
     const foreshadowing = this.store.listForeshadowing(projectId)
     const characters = this.store.listCharacters(projectId)
+
+    // ── 冲突推进目标 ──
+    // 筛选本章需推进的活跃冲突：章节在跨度内 / 空跨度（未放置）/ 本章为爆发章节
+    const conflictTargets: ConflictTarget[] = []
+    if (chapterNumber !== undefined) {
+      const activeConflicts = this.store.listConflicts(projectId).filter(
+        (c) => c.stage !== 'resolved' && c.stage !== 'transformed',
+      )
+      for (const conflict of activeConflicts) {
+        const inSpan = conflict.chapterSpans.some(
+          (span) => chapterNumber >= span[0] && chapterNumber <= span[1],
+        )
+        const isClimaxChapter = conflict.climaxChapter === chapterNumber
+        const noSpans = conflict.chapterSpans.length === 0
+        if (!inSpan && !isClimaxChapter && !noSpans) continue
+
+        conflictTargets.push({
+          conflict,
+          targetStage: this.computeConflictTargetStage(conflict, chapterNumber),
+          intensityDelta: this.computeIntensityDelta(
+            isClimaxChapter, rhythmSuggestion,
+          ),
+          isClimax: isClimaxChapter,
+        })
+      }
+      // 按强度降序，限制最多 5 个目标，避免 Writer 过载
+      conflictTargets.sort((a, b) => b.conflict.intensity - a.conflict.intensity)
+      if (conflictTargets.length > 5) conflictTargets.length = 5
+    }
+
+    // ── 节奏约束（仅当有节奏建议时构建）──
+    let rhythmConstraint: RhythmConstraint | undefined
+    if (rhythmSuggestion) {
+      rhythmConstraint = {
+        rhythm: rhythmSuggestion.rhythm,
+        climaxIntensity: rhythmSuggestion.climaxIntensity,
+        climaxType: rhythmSuggestion.climaxType,
+        description: rhythmSuggestion.description,
+        reason: rhythmSuggestion.reason,
+      }
+    }
+
+    // ── 悬念钩子 ──
+    // 来源：待回收伏笔（planting/sustaining/releasing）+ 未揭示信息差（sustaining/releasing）
+    const suspenseHooks: SuspenseHook[] = []
+    if (chapterNumber !== undefined) {
+      const pendingForeshadows = foreshadowing.filter(
+        (f) => f.status !== 'recovered' && f.status !== 'abandoned',
+      )
+      for (const f of pendingForeshadows) {
+        const firstChapter = f.firstChapter ?? chapterNumber
+        let status: SuspenseHook['status']
+        if (firstChapter >= chapterNumber) {
+          status = 'planting'
+        } else if (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber) {
+          status = 'releasing'
+        } else {
+          status = 'sustaining'
+        }
+        suspenseHooks.push({
+          infoLayerId: null,
+          description: f.description,
+          status,
+          sustainedChapters: Math.max(0, chapterNumber - firstChapter),
+          releaseByChapter: f.recoverByChapter,
+        })
+      }
+
+      const infoLayers = this.store.listInformationLayers(projectId)
+      for (const layer of infoLayers) {
+        if (layer.isRevealed) continue
+        const revealChapter = layer.revealChapter
+        const status: SuspenseHook['status'] =
+          revealChapter !== null && revealChapter <= chapterNumber
+            ? 'releasing'
+            : 'sustaining'
+        suspenseHooks.push({
+          infoLayerId: layer.id,
+          description: layer.infoDescription,
+          status,
+          sustainedChapters: 0,
+          releaseByChapter: revealChapter,
+        })
+      }
+    }
 
     return {
       facts: constraints.filter((c) => c.type === 'fact'),
@@ -66,7 +167,55 @@ export class NovelEngine {
         character,
         allowedNextStage: this.getNextArcStage(character.arcStage),
       })),
+      conflictTargets,
+      rhythmConstraint,
+      suspenseHooks,
     }
+  }
+
+  /**
+   * 计算冲突本章目标阶段
+   *
+   * 推进逻辑：
+   * - 本章是爆发章节 → erupting
+   * - 已 erupting → reversing（高潮后转向）
+   * - 已 reversing → resolved（突转后收束）
+   * - 其他 → 推进一阶（latent→emerging→escalating→erupting）
+   */
+  private computeConflictTargetStage(
+    conflict: NovelConflict,
+    chapterNumber: number,
+  ): ConflictStage {
+    if (conflict.climaxChapter === chapterNumber) return 'erupting'
+    const progression: ConflictStage[] = [
+      'latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved',
+    ]
+    const idx = progression.indexOf(conflict.stage)
+    if (idx === -1) return conflict.stage
+    if (conflict.stage === 'erupting') return 'reversing'
+    if (conflict.stage === 'reversing') return 'resolved'
+    return progression[idx + 1] ?? conflict.stage
+  }
+
+  /**
+   * 计算本章预期强度变化
+   *
+   * - 爆发章节 → +3（重大升级）
+   * - climax 节奏 → +2
+   * - rising 节奏 → +1
+   * - falling/resolution 节奏 → -1
+   * - 其他 → 0
+   */
+  private computeIntensityDelta(
+    isClimax: boolean,
+    rhythmSuggestion?: RhythmSuggestion,
+  ): number {
+    if (isClimax) return 3
+    const rhythm = rhythmSuggestion?.rhythm
+    if (rhythm === 'climax') return 2
+    if (rhythm === 'rising') return 1
+    if (rhythm === 'falling' || rhythm === 'resolution') return -1
+    return 0
   }
 
   /**
@@ -86,7 +235,7 @@ export class NovelEngine {
     if (!project) throw new Error(`项目不存在: ${projectId}`)
 
     // 1. 构建约束
-    const constraints = this.buildChapterConstraints(projectId)
+    const constraints = this.buildChapterConstraints(projectId, chapterNumber)
 
     // 2. 创建章节记录（planned 状态）
     const chapterId = randomUUID()

@@ -708,8 +708,7 @@ export function createNovelCreateConflictTool(store: NovelStore): ToolDefinition
         intensity: params.intensity ?? 5,
         stage: params.stage ?? 'latent',
         participants: JSON.stringify(params.participants ?? []),
-        firstChapter: null,
-        lastChapter: null,
+        chapterSpans: [],
         tier: 'secondary',
       })
       return {
@@ -800,8 +799,7 @@ export function createNovelCreateFactionTool(store: NovelStore): ToolDefinition<
         allies: params.allies ?? [],
         enemies: params.enemies ?? [],
         status: params.status ?? 'active',
-        firstChapter: null,
-        lastChapter: null,
+        chapterSpans: [],
       })
       return {
         content: [{ type: 'text', text: `已创建势力「${params.name}」，ID: ${faction.id}` }],

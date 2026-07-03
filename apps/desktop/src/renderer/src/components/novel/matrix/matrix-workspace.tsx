@@ -26,7 +26,7 @@ import {
   updateLocation,
   updateMarker,
 } from '@/api/novel-client'
-import { buildGroups, buildPool, GROUP_ORDER, type MatrixEntity, type MatrixEntityKind } from './matrix-logic'
+import { buildGroups, buildPool, findSpanAt, GROUP_ORDER, type MatrixEntity, type MatrixEntityKind } from './matrix-logic'
 import { MatrixToolbar } from './matrix-toolbar'
 import { MatrixView } from './matrix-view'
 import { MatrixLegend } from './matrix-legend'
@@ -82,7 +82,7 @@ export function MatrixWorkspace({
 
   // ── 本地 UI 状态 ──
   const [cellWidth, setCellWidth] = useState(DEFAULT_CELL_WIDTH)
-  const collapsedGroups = useMemo(() => new Set(collapsedGroupsArr), [collapsedGroupsArr])
+  const collapsedGroups = useMemo(() => new Set(collapsedGroupsArr as MatrixEntityKind[]), [collapsedGroupsArr])
   const [activeFilter, setActiveFilter] = useState<MatrixEntityKind | null>(null)
   const [isCompleting, setIsCompleting] = useState(false)
   const [contextMenu, setContextMenu] = useState<ChapterContextMenuPosition | null>(null)
@@ -225,6 +225,39 @@ export function MatrixWorkspace({
     }
   }, [currentProjectId, removeChapter, queryClient])
 
+  // ── 删除该段范围（仅 conflict/faction）──
+  // 移除 chapter 所在的整段 chapterSpan，保留其他段
+  const handleRemoveSpan = useCallback(async (
+    entityId: string,
+    entityType: MatrixEntityKind,
+    chapter: number,
+  ): Promise<void> => {
+    if (!currentProjectId) return
+    if (entityType !== 'conflict' && entityType !== 'faction') return
+    try {
+      if (entityType === 'conflict') {
+        const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
+        if (!c) return
+        const span = findSpanAt(c.chapterSpans, chapter)
+        if (span == null) return
+        const newSpans = c.chapterSpans.filter((sp) => sp !== span)
+        const updated = await updateConflict(entityId, { chapterSpans: newSpans })
+        useNovelStore.getState().upsertConflict(updated)
+      } else {
+        const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
+        if (!f) return
+        const span = findSpanAt(f.chapterSpans, chapter)
+        if (span == null) return
+        const newSpans = f.chapterSpans.filter((sp) => sp !== span)
+        const updated = await updateFaction(entityId, { chapterSpans: newSpans })
+        useNovelStore.getState().upsertFaction(updated)
+      }
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    } catch (err) {
+      console.error('[MatrixWorkspace] 删除该段范围失败:', err)
+    }
+  }, [currentProjectId, queryClient])
+
   // ── 单元格右键菜单：标记/删除出场（按 entityType 语义化适配） ──
   // - character：操作 characterHistory 关联表（batchCreate / delete）
   // - conflict/faction：扩展或收缩 firstChapter/lastChapter 端点（中间格不可删）
@@ -243,15 +276,13 @@ export function MatrixWorkspace({
       }
       case 'conflict': {
         const c = conflicts.find((x) => x.id === entityId)
-        if (!c || c.firstChapter == null) return false
-        const last = c.lastChapter ?? c.firstChapter
-        return chapter >= c.firstChapter && chapter <= last
+        if (!c) return false
+        return c.chapterSpans.some(([s, e]) => chapter >= s && chapter <= e)
       }
       case 'faction': {
         const f = factions.find((x) => x.id === entityId)
-        if (!f || f.firstChapter == null) return false
-        const last = f.lastChapter ?? f.firstChapter
-        return chapter >= f.firstChapter && chapter <= last
+        if (!f) return false
+        return f.chapterSpans.some(([s, e]) => chapter >= s && chapter <= e)
       }
       case 'foreshadow': {
         const f = foreshadows.find((x) => x.id === entityId)
@@ -279,10 +310,11 @@ export function MatrixWorkspace({
         const e = kind === 'conflict'
           ? conflicts.find((x) => x.id === entityId)
           : factions.find((x) => x.id === entityId)
-        if (!e || e.firstChapter == null) return false
-        const last = e.lastChapter ?? e.firstChapter
-        // 仅首尾端点可删，中间格不可删（schema 闭区间不支持挖洞）
-        return chapter === e.firstChapter || chapter === last
+        if (!e) return false
+        // 用 findSpanAt 定位 chapter 所在段，仅段首/段尾可删（中间格不可挖洞）
+        const span = findSpanAt(e.chapterSpans, chapter)
+        if (span == null) return false
+        return chapter === span[0] || chapter === span[1]
       }
       default:
         return true
@@ -310,77 +342,73 @@ export function MatrixWorkspace({
       switch (entityType) {
         case 'character': {
           // 用 batchCreateCharacterHistory 写入一条 chapterNumber 记录（reason 标注手动）
+          // useNovelStore.getState() 取最新数据，避免闭包陈旧导致覆盖丢失记录
           const created = await batchCreateCharacterHistory(currentProjectId, [{ characterId: entityId, chapterNumber: chapter }])
-          setCharacterHistory([...characterHistory, ...created])
+          const fresh = useNovelStore.getState().characterHistory
+          setCharacterHistory([...fresh, ...created])
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'conflict': {
-          const c = conflicts.find((x) => x.id === entityId)
+          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧导致覆盖丢失段
+          const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
           if (!c) {
             console.warn('[MatrixWorkspace] conflict 拖入：未找到冲突', entityId)
             return
           }
-          // 拖入冲突到矩阵的语义（与 foreshadow 一致，支持移动端点）：
-          // - 未放置（firstChapter null）→ 设 firstChapter 和 lastChapter 为该章
-          // - 已放置，拖到范围外 → 扩展范围
-          // - 已放置，拖到范围内 → 移动离 chapter 最近的端点（让用户可以调整起止位置）
-          if (c.firstChapter == null) {
-            const updated = await updateConflict(entityId, { firstChapter: chapter, lastChapter: chapter })
-            useNovelStore.getState().upsertConflict(updated)
+          // 拖入冲突到矩阵的语义（操作 chapterSpans 多段跨度）：
+          // - chapter 已在某段内 → 不操作
+          // - chapterSpans 为空 → 新建单章段 [[chapter, chapter]]
+          // - chapter 紧邻某段 start-1 → 扩展该段 start
+          // - chapter 紧邻某段 end+1 → 扩展该段 end
+          // - 否则 → 追加新段 [chapter, chapter] 并按起始章节排序
+          const spans = c.chapterSpans
+          if (findSpanAt(spans, chapter) != null) break
+          let newSpans: Array<[number, number]>
+          if (spans.length === 0) {
+            newSpans = [[chapter, chapter]]
           } else {
-            const curLast = c.lastChapter ?? c.firstChapter
-            if (chapter < c.firstChapter || chapter > curLast) {
-              // 范围外 → 扩展
-              const nextFirst = Math.min(c.firstChapter, chapter)
-              const nextLast = Math.max(curLast, chapter)
-              const updated = await updateConflict(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
-              useNovelStore.getState().upsertConflict(updated)
+            const adjStartIdx = spans.findIndex((sp) => sp[0] === chapter + 1)
+            const adjEndIdx = spans.findIndex((sp) => sp[1] === chapter - 1)
+            if (adjStartIdx >= 0) {
+              newSpans = spans.map((sp, i) => i === adjStartIdx ? [chapter, sp[1]] as [number, number] : sp)
+            } else if (adjEndIdx >= 0) {
+              newSpans = spans.map((sp, i) => i === adjEndIdx ? [sp[0], chapter] as [number, number] : sp)
             } else {
-              // 范围内 → 移动离 chapter 最近的端点
-              const distFirst = Math.abs(chapter - c.firstChapter)
-              const distLast = Math.abs(chapter - curLast)
-              if (distFirst <= distLast) {
-                const updated = await updateConflict(entityId, { firstChapter: chapter })
-                useNovelStore.getState().upsertConflict(updated)
-              } else {
-                const updated = await updateConflict(entityId, { lastChapter: chapter })
-                useNovelStore.getState().upsertConflict(updated)
-              }
+              newSpans = [...spans, [chapter, chapter] as [number, number]].sort((a, b) => a[0] - b[0])
             }
           }
+          const updated = await updateConflict(entityId, { chapterSpans: newSpans })
+          useNovelStore.getState().upsertConflict(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'faction': {
-          const f = factions.find((x) => x.id === entityId)
+          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧
+          const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
           if (!f) {
             console.warn('[MatrixWorkspace] faction 拖入：未找到势力', entityId)
             return
           }
-          // 拖入势力到矩阵的语义（与 conflict/foreshadow 一致，支持移动端点）
-          if (f.firstChapter == null) {
-            const updated = await updateFaction(entityId, { firstChapter: chapter, lastChapter: chapter })
-            useNovelStore.getState().upsertFaction(updated)
+          // 拖入势力到矩阵的语义（与 conflict 一致，操作 chapterSpans）
+          const spans = f.chapterSpans
+          if (findSpanAt(spans, chapter) != null) break
+          let newSpans: Array<[number, number]>
+          if (spans.length === 0) {
+            newSpans = [[chapter, chapter]]
           } else {
-            const curLast = f.lastChapter ?? f.firstChapter
-            if (chapter < f.firstChapter || chapter > curLast) {
-              const nextFirst = Math.min(f.firstChapter, chapter)
-              const nextLast = Math.max(curLast, chapter)
-              const updated = await updateFaction(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
-              useNovelStore.getState().upsertFaction(updated)
+            const adjStartIdx = spans.findIndex((sp) => sp[0] === chapter + 1)
+            const adjEndIdx = spans.findIndex((sp) => sp[1] === chapter - 1)
+            if (adjStartIdx >= 0) {
+              newSpans = spans.map((sp, i) => i === adjStartIdx ? [chapter, sp[1]] as [number, number] : sp)
+            } else if (adjEndIdx >= 0) {
+              newSpans = spans.map((sp, i) => i === adjEndIdx ? [sp[0], chapter] as [number, number] : sp)
             } else {
-              const distFirst = Math.abs(chapter - f.firstChapter)
-              const distLast = Math.abs(chapter - curLast)
-              if (distFirst <= distLast) {
-                const updated = await updateFaction(entityId, { firstChapter: chapter })
-                useNovelStore.getState().upsertFaction(updated)
-              } else {
-                const updated = await updateFaction(entityId, { lastChapter: chapter })
-                useNovelStore.getState().upsertFaction(updated)
-              }
+              newSpans = [...spans, [chapter, chapter] as [number, number]].sort((a, b) => a[0] - b[0])
             }
           }
+          const updated = await updateFaction(entityId, { chapterSpans: newSpans })
+          useNovelStore.getState().upsertFaction(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -443,55 +471,60 @@ export function MatrixWorkspace({
       switch (entityType) {
         case 'character': {
           // 找出该角色在该章的所有 history 记录，逐条删除
-          const records = characterHistory.filter((h) => h.characterId === entityId && h.chapterNumber === chapter)
+          // useNovelStore.getState() 取最新数据，避免闭包陈旧
+          const fresh = useNovelStore.getState().characterHistory
+          const records = fresh.filter((h) => h.characterId === entityId && h.chapterNumber === chapter)
           for (const r of records) {
             await deleteCharacterHistory(currentProjectId, r.id)
           }
           if (records.length > 0) {
-            setCharacterHistory(characterHistory.filter((h) => !records.some((r) => r.id === h.id)))
+            const after = useNovelStore.getState().characterHistory
+            setCharacterHistory(after.filter((h) => !records.some((r) => r.id === h.id)))
             void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           }
           break
         }
         case 'conflict': {
-          const c = conflicts.find((x) => x.id === entityId)
-          if (!c || c.firstChapter == null) return
-          const last = c.lastChapter ?? c.firstChapter
-          let nextFirst = c.firstChapter
-          let nextLast = last
-          if (chapter === c.firstChapter && c.firstChapter < last) {
-            nextFirst = c.firstChapter + 1
-          } else if (chapter === last && c.firstChapter < last) {
-            nextLast = last - 1
-          } else if (c.firstChapter === last && chapter === c.firstChapter) {
-            // 仅一章范围，整体清除
-            nextFirst = null as number | null
-            nextLast = null as number | null
+          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧
+          const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
+          if (!c) return
+          const span = findSpanAt(c.chapterSpans, chapter)
+          if (span == null) return // 不在任何段中（中间格不可删由 isCellRemovable 保证）
+          let newSpans: Array<[number, number]>
+          if (span[0] === span[1]) {
+            // 单章段 → 删除该段
+            newSpans = c.chapterSpans.filter((sp) => sp !== span)
+          } else if (chapter === span[0]) {
+            // 段首 → start +1
+            newSpans = c.chapterSpans.map((sp) => sp === span ? [span[0] + 1, span[1]] as [number, number] : sp)
+          } else if (chapter === span[1]) {
+            // 段尾 → end -1
+            newSpans = c.chapterSpans.map((sp) => sp === span ? [span[0], span[1] - 1] as [number, number] : sp)
           } else {
-            return // 中间格不可删
+            return // 中间章不可删
           }
-          const updated = await updateConflict(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
+          const updated = await updateConflict(entityId, { chapterSpans: newSpans })
           useNovelStore.getState().upsertConflict(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'faction': {
-          const f = factions.find((x) => x.id === entityId)
-          if (!f || f.firstChapter == null) return
-          const last = f.lastChapter ?? f.firstChapter
-          let nextFirst = f.firstChapter
-          let nextLast = last
-          if (chapter === f.firstChapter && f.firstChapter < last) {
-            nextFirst = f.firstChapter + 1
-          } else if (chapter === last && f.firstChapter < last) {
-            nextLast = last - 1
-          } else if (f.firstChapter === last && chapter === f.firstChapter) {
-            nextFirst = null as number | null
-            nextLast = null as number | null
+          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧
+          const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
+          if (!f) return
+          const span = findSpanAt(f.chapterSpans, chapter)
+          if (span == null) return
+          let newSpans: Array<[number, number]>
+          if (span[0] === span[1]) {
+            newSpans = f.chapterSpans.filter((sp) => sp !== span)
+          } else if (chapter === span[0]) {
+            newSpans = f.chapterSpans.map((sp) => sp === span ? [span[0] + 1, span[1]] as [number, number] : sp)
+          } else if (chapter === span[1]) {
+            newSpans = f.chapterSpans.map((sp) => sp === span ? [span[0], span[1] - 1] as [number, number] : sp)
           } else {
             return
           }
-          const updated = await updateFaction(entityId, { firstChapter: nextFirst, lastChapter: nextLast })
+          const updated = await updateFaction(entityId, { chapterSpans: newSpans })
           useNovelStore.getState().upsertFaction(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
@@ -561,6 +594,103 @@ export function MatrixWorkspace({
     }
   }, [foreshadows, isCellPresent, isCellRemovable, handleMarkPresent, handleRemovePresent])
 
+  // ── 拖动跨度端点（conflict/faction/foreshadow）调整起止章节 ──
+  // 语义：拖动端点到新章节列，移动该端点；conflict/faction 按 spanIndex 定位目标段，
+  // 反转保护：start 不能超过同段 end，end 不能低于同段 start（clamp 而非扩展另一端）。
+  const handleMoveEndpoint = useCallback(async (entityId: string, entityType: MatrixEntityKind, spanIndex: number, end: 'start' | 'end', chapter: number): Promise<void> => {
+    if (!currentProjectId) return
+    try {
+      switch (entityType) {
+        case 'conflict': {
+          const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
+          if (!c) return
+          const span = c.chapterSpans[spanIndex]
+          if (!span) return
+          // 反转保护：clamp 到同段范围内
+          const nextStart = end === 'start' ? Math.min(chapter, span[1]) : span[0]
+          const nextEnd = end === 'end' ? Math.max(chapter, span[0]) : span[1]
+          const newSpans = c.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
+          const updated = await updateConflict(entityId, { chapterSpans: newSpans })
+          useNovelStore.getState().upsertConflict(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
+        case 'faction': {
+          const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
+          if (!f) return
+          const span = f.chapterSpans[spanIndex]
+          if (!span) return
+          const nextStart = end === 'start' ? Math.min(chapter, span[1]) : span[0]
+          const nextEnd = end === 'end' ? Math.max(chapter, span[0]) : span[1]
+          const newSpans = f.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
+          const updated = await updateFaction(entityId, { chapterSpans: newSpans })
+          useNovelStore.getState().upsertFaction(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
+        case 'foreshadow': {
+          const f = useNovelStore.getState().foreshadows.find((x) => x.id === entityId)
+          if (!f || f.firstChapter == null) return
+          if (end === 'start') {
+            // 移动埋设点；若超过回收点则回收点跟随（保持 plant<=payoff）
+            let nextPlant = chapter
+            let nextPayoff = f.recoverByChapter
+            if (nextPayoff != null && nextPlant >= nextPayoff) nextPayoff = nextPlant
+            const updated = await updateForeshadow(entityId, { firstChapter: nextPlant, recoverByChapter: nextPayoff })
+            useNovelStore.getState().upsertForeshadow(updated)
+          } else {
+            // 移动回收点；若早于埋设点则埋设点跟随
+            let nextPayoff = chapter
+            let nextPlant = f.firstChapter
+            if (nextPayoff <= nextPlant) nextPlant = nextPayoff
+            const updated = await updateForeshadow(entityId, { firstChapter: nextPlant, recoverByChapter: nextPayoff, status: 'recovered' })
+            useNovelStore.getState().upsertForeshadow(updated)
+          }
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
+      }
+    } catch (err) {
+      console.error('[MatrixWorkspace] 移动端点失败:', err)
+    }
+  }, [currentProjectId, queryClient])
+
+  // ── 拖动已出场单元格（character/location）换章 ──
+  // 语义：从 fromChapter 移除、在 toChapter 新增。用 useNovelStore.getState() 取最新数据避免闭包陈旧。
+  const handleMoveCell = useCallback(async (entityId: string, entityType: MatrixEntityKind, fromChapter: number, toChapter: number): Promise<void> => {
+    if (!currentProjectId) return
+    try {
+      switch (entityType) {
+        case 'character': {
+          const fresh = useNovelStore.getState().characterHistory
+          const records = fresh.filter((h) => h.characterId === entityId && h.chapterNumber === fromChapter)
+          for (const r of records) {
+            await deleteCharacterHistory(currentProjectId, r.id)
+          }
+          const created = await batchCreateCharacterHistory(currentProjectId, [{ characterId: entityId, chapterNumber: toChapter }])
+          const next = [...fresh.filter((h) => !(h.characterId === entityId && h.chapterNumber === fromChapter)), ...created]
+          setCharacterHistory(next)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
+        case 'location': {
+          const loc = useNovelStore.getState().locations.find((l) => l.id === entityId)
+          if (!loc) return
+          const set = new Set(loc.appearChapters ?? [])
+          set.delete(fromChapter)
+          set.add(toChapter)
+          const next = Array.from(set).sort((a, b) => a - b)
+          const updated = await updateLocation(entityId, { appearChapters: next })
+          useNovelStore.getState().upsertLocation(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
+      }
+    } catch (err) {
+      console.error('[MatrixWorkspace] 移动出场失败:', err)
+    }
+  }, [currentProjectId, setCharacterHistory, queryClient])
+
   // ── C-4b 修改批注：查找已有 clip-note marker ──
   const handleEditNote = useCallback((entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number) => {
     const existing = markers.find(
@@ -620,12 +750,13 @@ export function MatrixWorkspace({
     try {
       switch (entity.kind) {
         case 'conflict': {
-          const updated = await updateConflict(entity.entityId, { firstChapter, lastChapter })
+          // 对话框只能编辑单段，多段时会覆盖为单段（后续可扩展对话框）
+          const updated = await updateConflict(entity.entityId, { chapterSpans: [[firstChapter, lastChapter]] })
           useNovelStore.getState().upsertConflict(updated)
           break
         }
         case 'faction': {
-          const updated = await updateFaction(entity.entityId, { firstChapter, lastChapter })
+          const updated = await updateFaction(entity.entityId, { chapterSpans: [[firstChapter, lastChapter]] })
           useNovelStore.getState().upsertFaction(updated)
           break
         }
@@ -642,10 +773,10 @@ export function MatrixWorkspace({
         case 'character': {
           // 在 [first, last] 范围每章保留/创建 characterHistory，移除范围外的
           const inRange = characterHistory.filter(
-            (h) => h.characterId === entity.entityId && h.chapterNumber >= firstChapter && h.chapterNumber <= lastChapter,
+            (h) => h.characterId === entity.entityId && h.chapterNumber != null && h.chapterNumber >= firstChapter && h.chapterNumber <= lastChapter,
           )
           const outRange = characterHistory.filter(
-            (h) => h.characterId === entity.entityId && (h.chapterNumber < firstChapter || h.chapterNumber > lastChapter),
+            (h) => h.characterId === entity.entityId && h.chapterNumber != null && (h.chapterNumber < firstChapter || h.chapterNumber > lastChapter),
           )
           // 删除范围外的
           for (const r of outRange) {
@@ -727,15 +858,16 @@ export function MatrixWorkspace({
               intensity: ai.data.intensity,
               stage: ai.data.stage,
               tier: ai.data.tier,
-              participants: ai.data.participants,
-              firstChapter,
-              lastChapter: firstChapter,
+              chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
+              climaxChapter: ai.data.climaxChapter ?? undefined,
+              climaxType: ai.data.climaxType ?? undefined,
+              stakes: ai.data.stakes ?? undefined,
+              twistPotential: ai.data.twistPotential,
             }
           : {
               description: data.description ?? '',
               type: 'inner' as const,
-              firstChapter,
-              lastChapter: firstChapter,
+              chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
             }
         const created = await createConflict(currentProjectId, input)
         useNovelStore.getState().upsertConflict(created)
@@ -773,13 +905,11 @@ export function MatrixWorkspace({
               allies: ai.data.allies,
               enemies: ai.data.enemies,
               status: ai.data.status,
-              firstChapter,
-              lastChapter: firstChapter,
+              chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
             }
           : {
               name: data.name ?? '',
-              firstChapter,
-              lastChapter: firstChapter,
+              chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
             }
         const created = await createFaction(currentProjectId, input)
         useNovelStore.getState().upsertFaction(created)
@@ -876,6 +1006,8 @@ export function MatrixWorkspace({
           onContextMenuGroupEmpty={handleContextMenuGroupEmpty}
           onEditSpan={handleEditSpan}
           onDropEntity={handleMarkPresent}
+          onMoveEndpoint={handleMoveEndpoint}
+          onMoveCell={handleMoveCell}
           onTogglePresent={handleTogglePresent}
         />
       </div>
@@ -897,6 +1029,7 @@ export function MatrixWorkspace({
         onRemovePresent={(eid, kind, ch) => void handleRemovePresent(eid, kind, ch)}
         onEditNote={handleEditNote}
         onEditSpan={handleEditSpanFromMenu}
+        onRemoveSpan={(eid, kind, ch) => void handleRemoveSpan(eid, kind, ch)}
       />
 
       <EntityCreateDialog

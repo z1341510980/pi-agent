@@ -297,7 +297,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     const c = store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: '主要冲突',
       type: 'inner', intensity: 7, stage: 'latent', participants: '[]',
-      firstChapter: null, lastChapter: null, tier: 'secondary',
+      chapterSpans: [], tier: 'secondary',
     })
     expect(c.id).toBe('cf-1')
     expect(c.intensity).toBe(7)
@@ -307,7 +307,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'x',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
-      firstChapter: null, lastChapter: null, tier: 'secondary',
+      chapterSpans: [], tier: 'secondary',
     })
     expect(store.getConflict('cf-1')?.description).toBe('x')
   })
@@ -316,7 +316,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'x',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
-      firstChapter: null, lastChapter: null, tier: 'secondary',
+      chapterSpans: [], tier: 'secondary',
     })
     const updated = store.updateConflict('cf-1', { intensity: 9, stage: 'erupting' })
     expect(updated).toBeDefined()
@@ -328,7 +328,7 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'x',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
-      firstChapter: null, lastChapter: null, tier: 'secondary',
+      chapterSpans: [], tier: 'secondary',
     })
     expect(store.deleteConflict('cf-1')).toBe(true)
     expect(store.getConflict('cf-1')).toBeUndefined()
@@ -338,12 +338,12 @@ describe('NovelStore - 冲突 CRUD', () => {
     store.createConflict({
       id: 'cf-1', projectId: 'p-1', description: 'A',
       type: 'inner', intensity: 5, stage: 'latent', participants: '[]',
-      firstChapter: null, lastChapter: null, tier: 'secondary',
+      chapterSpans: [], tier: 'secondary',
     })
     store.createConflict({
       id: 'cf-2', projectId: 'p-1', description: 'B',
       type: 'faction', intensity: 6, stage: 'emerging', participants: '[]',
-      firstChapter: null, lastChapter: null, tier: 'secondary',
+      chapterSpans: [], tier: 'secondary',
     })
     expect(store.listConflicts('p-1')).toHaveLength(2)
   })

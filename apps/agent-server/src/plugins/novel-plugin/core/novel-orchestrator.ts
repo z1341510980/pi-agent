@@ -43,13 +43,38 @@ import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent, type AgentOutputData } from './novel-agents.js'
-import type { NarrativeTask, ChapterConstraints, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation } from './types.js'
+import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan, RhythmSuggestion } from './types.js'
 import { RhythmController } from './rhythm-controller.js'
 import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import type { NovelAgentConfigStore } from './novel-agent-config-store.js'
 import type { NovelAgentLogStatus } from './types.js'
 import type { AgUiEventSink } from '@repo/protocol/events'
+
+/**
+ * 合并章节号到跨度数组：连续则扩展尾段，否则追加新段；保持 spans 有序。
+ * - 空数组 → [[chapter, chapter]]
+ * - 尾段 end+1 === chapter → 扩展尾段 end 为 chapter
+ * - chapter 已被尾段覆盖（chapter <= lastEnd）→ 不变（去重）
+ * - 否则 → 追加 [chapter, chapter]
+ * 返回新数组，不修改入参。
+ */
+function appendChapterToSpans(spans: ChapterSpan[], chapter: number): ChapterSpan[] {
+  if (spans.length === 0) {
+    return [[chapter, chapter]]
+  }
+  const next = spans.map((s) => [s[0], s[1]] as ChapterSpan)
+  const last = next[next.length - 1]
+  if (chapter <= last[1]) {
+    return next
+  }
+  if (last[1] + 1 === chapter) {
+    last[1] = chapter
+    return next
+  }
+  next.push([chapter, chapter])
+  return next
+}
 
 export interface CreationOptions {
   /** AG-UI 事件发射器（与 chat 共用同一类型），供 StreamEmitter 发射标准 AG-UI 事件 */
@@ -74,6 +99,20 @@ export class NovelOrchestrator {
   private userMessages: string[] = []
   /** 本章已编排实体约束（由 createChapterWithFlow 设置，runAgent 读取后清空） */
   private currentArrangedEntities?: ArrangedEntity
+  /** Director 的实时输出（方案 A：让 Director 规划真正注入 Writer）
+   *  Director 完成并经检查点确认后暂存，runAgent 构建 Writer 的 SEMI 层 chapter-instruction
+   *  模板时用作 {{narrative_task}}，替代原来的章纲字段，让 Writer 真正基于导演规划创作。
+   *  流程结束（含 rewrite 递归返回后）清空。
+   *
+   *  包含两个字段：
+   *  - outputText: Director 的完整规划文本（用于注入 {{narrative_task}} 占位符）
+   *  - task: 从 Director 输出中解析的结构化 NarrativeTask（含 type/priority/climaxTarget 等）
+   *         让 14 种 NarrativeTaskType（create_suspense/create_reversal 等）真正传递到下游
+   */
+  private currentDirectorOutput?: string
+  private currentDirectorTask?: NarrativeTask
+  /** 本章节奏建议（由 createChapterWithFlow 计算，runAgent 构建约束时注入 rhythmConstraint） */
+  private currentRhythmSuggestion?: RhythmSuggestion
   /** 小说角色温度配置存储（runAgent 中按角色合并温度） */
   private readonly agentConfigStore: NovelAgentConfigStore
   /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
@@ -136,12 +175,35 @@ export class NovelOrchestrator {
           effectiveness: 'medium' as const,
         }))
       const rhythmModel = RhythmController.MODELS.find(m => m.id === project?.rhythmModelId) ?? RhythmController.DEFAULT_MODEL
+      // 读取活跃冲突和待回收伏笔，让 RhythmController 感知故事状态
+      const activeConflicts = this.store.listConflicts(projectId).filter(
+        c => c.stage !== 'resolved' && c.stage !== 'transformed'
+      )
+      const pendingForeshadows = this.store.listForeshadowing(projectId).filter(
+        f => f.status !== 'recovered' && f.status !== 'abandoned'
+      )
       const rhythmSuggestion = rhythmController.suggestRhythm(
         chapterNumber,
         project?.currentStage ?? 'setup',
         rhythmHistory,
         rhythmModel,
+        { activeConflicts, pendingForeshadows },
       )
+      // 暂存节奏建议：runAgent 构建 ChapterConstraints 时注入 rhythmConstraint
+      this.currentRhythmSuggestion = rhythmSuggestion
+
+      // 推送节奏建议详情，让用户了解本章节奏规划（气泡展示）
+      this.emitProgress(options, 'directing', 'phase_change', {
+        message: '本章节奏建议已生成',
+        detail: {
+          kind: 'rhythm_suggestion',
+          rhythm: rhythmSuggestion.rhythm,
+          climaxIntensity: rhythmSuggestion.climaxIntensity,
+          climaxType: rhythmSuggestion.climaxType,
+          description: rhythmSuggestion.description,
+          reason: rhythmSuggestion.reason,
+        },
+      })
 
       // Phase 1: Director
       this.emitProgress(options, 'directing', 'phase_change', { message: '导演 Agent 正在分析故事状态...' })
@@ -163,11 +225,33 @@ export class NovelOrchestrator {
         return { status: 'cancelled' }
       }
 
+      // 暂存 Director 的实时输出：runAgent 构建 Writer 的 SEMI 层时，会将其注入
+      // chapter-instruction 模板的 {{narrative_task}}，替代原来的章纲字段。
+      // 这是方案 A 的核心：让 Director 的规划真正成为 Writer 的创作指导。
+      this.currentDirectorOutput = directorResult
+      // 解析 Director 输出为结构化 NarrativeTask，让 14 种任务类型真正传递到 Writer。
+      // Director 提示词要求输出"任务类型"字段（如 create_suspense/escalate_conflict），
+      // parseDirectorTask 从输出文本中提取任务类型、优先级、高潮目标等执行参数。
+      this.currentDirectorTask = this.parseDirectorTask(directorResult, rhythmSuggestion)
+
+      // 推送叙事任务详情，让用户了解 Director 解析出的结构化任务（气泡展示）
+      this.emitProgress(options, 'directing', 'phase_change', {
+        message: '叙事任务已解析',
+        detail: {
+          kind: 'narrative_task',
+          taskType: this.currentDirectorTask.type,
+          priority: this.currentDirectorTask.priority,
+          targetEntity: this.currentDirectorTask.targetEntity,
+          climaxTarget: this.currentDirectorTask.climaxTarget,
+          suspenseDuration: this.currentDirectorTask.suspenseDuration,
+          expectedIntensityDelta: this.currentDirectorTask.expectedIntensityDelta,
+        },
+      })
+
       // Phase 2: Writer
       this.emitProgress(options, 'writing', 'phase_change', { message: '写作 Agent 正在创作章节正文...' })
       const writerResult = await this.runAgent('writer', projectId, chapterNumber, {
-        task: `请根据叙事任务创作第 ${chapterNumber} 章正文。`,
-        narrativeTask: directorResult,
+        task: `请根据上方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。`,
       }, options)
 
       // Phase 3: Reviewer
@@ -233,12 +317,17 @@ export class NovelOrchestrator {
       this.saveChapterSnapshot(projectId, chapterNumber)
 
       // 推送数据变更通知：Memory Agent 已写入实体状态、快照已保存，
-      // 前端收到后刷新画布（替代轮询）。此事件不展示在时间线（dataChanged: true）。
+      // 前端收到后刷新画布（替代轮询）。同时携带提取摘要和变更明细供气泡展示。
       this.emitProgress(options, 'memory', 'data_changed', {
         agentType: 'memory',
         agentName: '记忆',
-        message: '数据已更新',
+        message: '记忆提取完成',
         dataChanged: true,
+        detail: {
+          kind: 'memory_result',
+          summary: memoryResult,
+          events: memoryEvents.map(e => ({ type: e.eventType, description: e.description })),
+        },
       })
 
       // 自动保存章节内容到数据库（创作完成后立即持久化，无需用户手动点击"保存到章节"）
@@ -268,8 +357,11 @@ export class NovelOrchestrator {
       this.emitProgress(options, 'error', 'error', { message })
       return { status: 'error', error: message }
     } finally {
-      // 流程结束（含 rewrite 递归返回后）清理编排约束，避免泄漏到下一次创作
+      // 流程结束（含 rewrite 递归返回后）清理编排约束和 Director 输出，避免泄漏到下一次创作
       this.currentArrangedEntities = undefined
+      this.currentDirectorOutput = undefined
+      this.currentDirectorTask = undefined
+      this.currentRhythmSuggestion = undefined
     }
   }
 
@@ -334,13 +426,45 @@ export class NovelOrchestrator {
         'SEMI 层前缀命中单章缓存',
       )
     } else {
-      const narrativeTask: NarrativeTask = {
-        description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
-        type: 'advance_mainline',
-        targetEntity: null,
-        priority: 'medium',
+      // Writer 优先使用 Director 的实时输出作为叙事任务（方案 A：Director 真正注入 Writer）
+      // 其他 Agent（director/reviewer/memory）仍使用章纲作为叙事任务。
+      // 这样 Writer 的 SEMI 层 chapter-instruction 模板的 {{narrative_task}} 会渲染
+      // Director 的规划（核心目标/出场角色/冲突推进/伏笔处理/节奏/验收标准），
+      // 而非数据库章纲字段。
+      const narrativeTask: NarrativeTask = (agentType === 'writer' && this.currentDirectorTask)
+        ? this.currentDirectorTask
+        : {
+            description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
+            type: 'advance_mainline',
+            targetEntity: null,
+            priority: 'medium',
+          }
+      const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
+        projectId, chapterNumber, this.currentRhythmSuggestion,
+      )
+      // 推送章节约束详情（仅 Director 首次构建时发射，避免重复）
+      // 让用户了解 Writer 将要面对的冲突推进目标、悬念钩子、节奏约束
+      if (agentType === 'director') {
+        this.emitProgress(options, phase, 'phase_change', {
+          message: '章节约束已构建',
+          detail: {
+            kind: 'chapter_context',
+            conflictTargets: constraints.conflictTargets.map(t => ({
+              description: t.conflict.description,
+              targetStage: t.targetStage,
+              intensityDelta: t.intensityDelta,
+              isClimax: t.isClimax,
+            })),
+            suspenseHooks: constraints.suspenseHooks.map(h => ({
+              description: h.description,
+              status: h.status,
+              sustainedChapters: h.sustainedChapters,
+              releaseByChapter: h.releaseByChapter,
+            })),
+            rhythmConstraint: constraints.rhythmConstraint,
+          },
+        })
       }
-      const constraints: ChapterConstraints = this.engine.buildChapterConstraints(projectId)
       chapterContext = this.promptBuilder.buildChapterContext(
         projectId,
         chapterNumber,
@@ -944,14 +1068,14 @@ export class NovelOrchestrator {
    *
    * 问题背景：
    * - Memory Agent 工具只改实体的「动态状态」（currentState/stage/intensity/status），
-   *   不稳定写入「章节维度」字段（firstChapter/lastChapter/characterHistory）。
+   *   不稳定写入「章节维度」字段（chapterSpans/firstChapter/lastChapter/characterHistory）。
    * - 矩阵视图依赖章节维度字段画跨度色带，导致 Memory 写完后矩阵图不变。
    *
    * 本方法在 Memory Agent 执行后统一补全，不依赖 LLM 是否传 chapterNumber：
    * - 角色：本章编排涉及角色 + Memory 新建角色，若无本章 character_history 记录则写入
-   * - 冲突：本章编排涉及冲突 + Memory 新建冲突，firstChapter 为 null 则写本章号；lastChapter 始终更新为本章号
-   * - 伏笔：同冲突（firstChapter 兜底，lastChapter 更新）
-   * - 势力：同冲突（firstChapter/lastChapter 端点补全）
+   * - 冲突：本章编排涉及冲突 + Memory 新建冲突，合并本章号到 chapterSpans（连续扩展或新段追加）
+   * - 伏笔：firstChapter 兜底，lastChapter 更新为本章号
+   * - 势力：同冲突（chapterSpans 合并）
    * - 地点：本章编排涉及地点 + Memory 新建地点，若 appearChapters 不含本章号则追加
    */
   private syncChapterDimensions(
@@ -1001,7 +1125,7 @@ export class NovelOrchestrator {
       }
     }
 
-    // ── 冲突：补全 firstChapter/lastChapter ──
+    // ── 冲突：补全 chapterSpans ──
     // 涉及冲突 = arrangedEntities.conflictIds + Memory 新建冲突
     const afterConflicts = this.store.listConflicts(projectId)
     const newConflictIds = afterConflicts
@@ -1014,10 +1138,8 @@ export class NovelOrchestrator {
     for (const conflictId of involvedConflictIds) {
       const conflict = afterConflicts.find((c) => c.id === conflictId)
       if (!conflict) continue
-      const patch: Partial<NovelConflict> = { lastChapter: chapterNumber }
-      if (conflict.firstChapter == null) {
-        patch.firstChapter = chapterNumber
-      }
+      const nextSpans = appendChapterToSpans(conflict.chapterSpans, chapterNumber)
+      const patch: Partial<NovelConflict> = { chapterSpans: nextSpans }
       this.store.updateConflict(conflictId, patch)
     }
 
@@ -1041,7 +1163,7 @@ export class NovelOrchestrator {
       this.store.updateForeshadow(foreshadowId, patch)
     }
 
-    // ── 势力：补全 firstChapter/lastChapter（同冲突逻辑）──
+    // ── 势力：补全 chapterSpans（同冲突逻辑）──
     // 涉及势力 = arrangedEntities.factionIds + Memory 新建势力
     const afterFactions = this.store.listFactions(projectId)
     const newFactionIds = afterFactions
@@ -1054,10 +1176,8 @@ export class NovelOrchestrator {
     for (const factionId of involvedFactionIds) {
       const faction = afterFactions.find((f) => f.id === factionId)
       if (!faction) continue
-      const patch: Partial<NovelFaction> = { lastChapter: chapterNumber }
-      if (faction.firstChapter == null) {
-        patch.firstChapter = chapterNumber
-      }
+      const nextSpans = appendChapterToSpans(faction.chapterSpans, chapterNumber)
+      const patch: Partial<NovelFaction> = { chapterSpans: nextSpans }
       this.store.updateFaction(factionId, patch)
     }
 
@@ -1137,5 +1257,91 @@ export class NovelOrchestrator {
       timestamp: Date.now(),
     }
     options?.onProgress(event)
+  }
+
+  /**
+   * 从 Director 输出文本中解析结构化 NarrativeTask
+   *
+   * Director 提示词（role-director.md）要求输出包含"任务类型"字段，
+   * 本方法从输出文本中提取任务类型、优先级、高潮目标、悬念持续章数等执行参数，
+   * 让 14 种 NarrativeTaskType（create_suspense/create_reversal/escalate_conflict 等）
+   * 真正传递到 Writer 和下游约束构建，而非被硬编码为 advance_mainline。
+   *
+   * 解析策略：正则匹配 Director 输出中的关键字段，失败时回退到 advance_mainline。
+   */
+  private parseDirectorTask(directorOutput: string, rhythmSuggestion: RhythmSuggestion): NarrativeTask {
+    const text = directorOutput
+
+    // 提取任务类型（支持中英文标识）
+    const validTypes: NarrativeTaskType[] = [
+      'advance_mainline', 'advance_subline', 'create_conflict', 'escalate_conflict',
+      'release_info', 'hide_info', 'reinforce_foreshadow', 'recover_foreshadow',
+      'change_relationship', 'change_cognition', 'create_reversal', 'create_suspense',
+      'phase_closure', 'introduce_problem',
+    ]
+    // 中文标签 → NarrativeTaskType 映射
+    const typeLabels: Record<string, NarrativeTaskType> = {
+      '推进主线': 'advance_mainline', '推进副线': 'advance_subline',
+      '创建冲突': 'create_conflict', '升级冲突': 'escalate_conflict',
+      '释放信息': 'release_info', '隐藏信息': 'hide_info',
+      '强化伏笔': 'reinforce_foreshadow', '回收伏笔': 'recover_foreshadow',
+      '改变关系': 'change_relationship', '改变认知': 'change_cognition',
+      '制造突转': 'create_reversal', '制造悬念': 'create_suspense',
+      '阶段收束': 'phase_closure', '引入问题': 'introduce_problem',
+    }
+
+    let taskType: NarrativeTaskType = 'advance_mainline'
+
+    // 先匹配英文标识
+    const englishMatch = validTypes.find(t => new RegExp(`\\b${t}\\b`, 'i').test(text))
+    if (englishMatch) {
+      taskType = englishMatch
+    } else {
+      // 再匹配中文标签
+      for (const [label, type] of Object.entries(typeLabels)) {
+        if (text.includes(label)) {
+          taskType = type
+          break
+        }
+      }
+    }
+
+    // 提取优先级
+    let priority: NarrativeTask['priority'] = 'medium'
+    if (/优先级[：:]\s*高|priority[：:]\s*high/i.test(text)) {
+      priority = 'high'
+    } else if (/优先级[：:]\s*低|priority[：:]\s*low/i.test(text)) {
+      priority = 'low'
+    }
+
+    // 构建任务对象
+    const task: NarrativeTask = {
+      description: directorOutput,
+      type: taskType,
+      targetEntity: null,
+      priority,
+    }
+
+    // 如果节奏建议是 climax，注入高潮目标
+    if (rhythmSuggestion.rhythm === 'climax' && rhythmSuggestion.climaxIntensity) {
+      task.climaxTarget = {
+        type: rhythmSuggestion.climaxType ?? 'composite',
+        intensity: rhythmSuggestion.climaxIntensity,
+      }
+    }
+
+    // 如果任务类型是 create_suspense，注入悬念持续章数（默认 3 章）
+    if (taskType === 'create_suspense') {
+      const durationMatch = text.match(/悬念持续[：:]\s*(\d+)\s*章/)
+      task.suspenseDuration = durationMatch ? parseInt(durationMatch[1], 10) : 3
+    }
+
+    // 如果任务类型是 escalate_conflict，提取预期强度变化
+    if (taskType === 'escalate_conflict') {
+      const deltaMatch = text.match(/强度变化[：:]\s*([+-]?\d+)/)
+      task.expectedIntensityDelta = deltaMatch ? parseInt(deltaMatch[1], 10) : 1
+    }
+
+    return task
   }
 }

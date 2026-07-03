@@ -40,6 +40,7 @@ export type GeneratedCharacter = Pick<
 export type GeneratedConflict = Pick<
   NovelConflict,
   'description' | 'type' | 'intensity' | 'stage' | 'tier' | 'participants'
+  | 'climaxChapter' | 'climaxType' | 'stakes' | 'twistPotential'
 >
 
 export type GeneratedForeshadow = Pick<
@@ -283,6 +284,15 @@ export class NovelEntityGenerator {
       phase: 'planned',
       message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点`,
       data: plan,
+      // 携带 detail 用于前端展示规划清单气泡
+      detail: {
+        kind: 'arrange_plan',
+        characters: plan.characters.map((s) => s.coreStyle),
+        conflicts: plan.conflicts.map((s) => s.coreStyle),
+        foreshadows: plan.foreshadows.map((s) => s.coreStyle),
+        factions: plan.factions.map((s) => s.coreStyle),
+        locations: plan.locations.map((s) => s.coreStyle),
+      },
     })
 
     const characterIds: string[] = []
@@ -290,6 +300,12 @@ export class NovelEntityGenerator {
     const foreshadowIds: string[] = []
     const factionIds: string[] = []
     const locationIds: string[] = []
+    // 收集已生成实体的描述，供 arranged 阶段详情事件使用
+    const generatedCharacters: Array<{ name: string; description: string }> = []
+    const generatedConflicts: Array<{ description: string; intensity: number; tier: string; climaxChapter: number | null; climaxType: string | null }> = []
+    const generatedForeshadows: Array<{ description: string; category: string }> = []
+    const generatedFactions: Array<{ name: string; type: string }> = []
+    const generatedLocations: Array<{ name: string; type: string }> = []
 
     try {
       for (const spec of plan.characters) {
@@ -314,6 +330,7 @@ export class NovelEntityGenerator {
           isProtagonist: false,
         })
         characterIds.push(created.id)
+        generatedCharacters.push({ name: created.name, description: created.description })
         this.store.createCharacterHistory({
           projectId,
           characterId: created.id,
@@ -338,9 +355,12 @@ export class NovelEntityGenerator {
           intensity: gen.data.intensity,
           stage: gen.data.stage,
           participants: gen.data.participants,
-          firstChapter: chapterNumber,
-          lastChapter: null,
+          chapterSpans: [[chapterNumber, chapterNumber]],
           tier: gen.data.tier,
+          climaxChapter: gen.data.climaxChapter,
+          climaxType: gen.data.climaxType,
+          stakes: gen.data.stakes,
+          twistPotential: gen.data.twistPotential,
         })
         conflictIds.push(created.id)
       }
@@ -381,8 +401,7 @@ export class NovelEntityGenerator {
           allies: gen.data.allies,
           enemies: gen.data.enemies,
           status: gen.data.status,
-          firstChapter: chapterNumber,
-          lastChapter: null,
+          chapterSpans: [[chapterNumber, chapterNumber]],
         })
         factionIds.push(created.id)
       }
@@ -592,6 +611,10 @@ export class NovelEntityGenerator {
         '- stage: 冲突当前阶段，从以下枚举中选择一个：latent/emerging/escalating/erupting/reversing/resolved/transformed',
         '- tier: 冲突层级，从以下枚举中选择一个：main/secondary/goal',
         '- participants: 参与者描述（字符串，可包含多个参与者，用逗号分隔）',
+        '- climaxChapter: 冲突预计爆发（高潮）章节号，正整数；若该冲突无明确高潮章节则填 null',
+        '- climaxType: 高潮类型，从以下枚举中选择一个：emotional/fate/character/combat/theme/composite；无高潮章节则填 null',
+        '- stakes: 赌注（一句话描述失败代价，无则填空字符串）',
+        '- twistPotential: 突转潜力，0-10 的整数（≥7 表示适合安排突转）',
       ].join('\n'),
       foreshadow: () => [
         '请根据以下核心描述，生成一个完整的伏笔设定。',
@@ -694,6 +717,11 @@ export class NovelEntityGenerator {
     const validTypes = ['inner', 'relationship', 'faction', 'interest', 'moral', 'identity', 'emotional', 'world_rule', 'survival']
     const validStages = ['latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved', 'transformed']
     const validTiers = ['main', 'secondary', 'goal']
+    const validClimaxTypes = ['emotional', 'fate', 'character', 'combat', 'theme', 'composite']
+    const climaxChapterRaw = p.climaxChapter
+    const climaxChapter = typeof climaxChapterRaw === 'number' && Number.isFinite(climaxChapterRaw) && climaxChapterRaw > 0
+      ? climaxChapterRaw
+      : null
     return {
       description: ensureString(p.description, ''),
       type: (validTypes.includes(p.type as string) ? p.type : 'relationship') as NovelConflict['type'],
@@ -701,6 +729,12 @@ export class NovelEntityGenerator {
       stage: (validStages.includes(p.stage as string) ? p.stage : 'emerging') as NovelConflict['stage'],
       tier: (validTiers.includes(p.tier as string) ? p.tier : 'secondary') as NovelConflict['tier'],
       participants: ensureString(p.participants, ''),
+      climaxChapter,
+      climaxType: (validClimaxTypes.includes(p.climaxType as string) ? p.climaxType : null) as NovelConflict['climaxType'],
+      stakes: typeof p.stakes === 'string' && p.stakes.trim() ? p.stakes.trim() : null,
+      twistPotential: typeof p.twistPotential === 'number' && Number.isFinite(p.twistPotential)
+        ? Math.max(0, Math.min(10, Math.round(p.twistPotential)))
+        : null,
     }
   }
 
@@ -773,6 +807,10 @@ export class NovelEntityGenerator {
           intensity: 5,
           stage: 'emerging',
           tier: 'secondary',
+          climaxChapter: null,
+          climaxType: null,
+          stakes: null,
+          twistPotential: null,
           participants: '',
         }
       case 'foreshadow':

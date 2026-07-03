@@ -42,6 +42,8 @@ export interface EntityCellMenuProps {
   onEditNote: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number) => void
   /** 编辑范围：所有类型都支持（world_element 不可达，因 editable=false） */
   onEditSpan?: (entityId: string, entityName: string, entityType: MatrixEntityKind) => void
+  /** 删除该段跨度（仅 conflict/faction：移除 chapter 所在的整段 chapterSpan） */
+  onRemoveSpan?: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
 }
 
 /** 按 entityType + foreshadowState 返回「标记出场」文案 */
@@ -124,7 +126,7 @@ function removeTooltip(kind: MatrixEntityKind): string {
 }
 
 export function EntityCellMenu({
-  position, onClose, onMarkPresent, onRemovePresent, onEditNote, onEditSpan,
+  position, onClose, onMarkPresent, onRemovePresent, onEditNote, onEditSpan, onRemoveSpan,
 }: EntityCellMenuProps): ReactElement | null {
   useEffect(() => {
     if (!position) return
@@ -162,6 +164,10 @@ export function EntityCellMenu({
   }
   const handleEditSpan = (): void => {
     onEditSpan?.(entityId, entityName, entityType)
+    onClose()
+  }
+  const handleRemoveSpan = (): void => {
+    onRemoveSpan?.(entityId, entityType, chapter)
     onClose()
   }
 
@@ -226,6 +232,20 @@ export function EntityCellMenu({
         <StickyNote className="size-3.5" />
         <span>修改批注</span>
       </button>
+      {(entityType === 'conflict' || entityType === 'faction') && present && onRemoveSpan && (
+        <>
+          <div className="h-px bg-border my-1" />
+          <button
+            type="button"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-500 hover:bg-red-500/10 transition-colors"
+            onClick={handleRemoveSpan}
+            data-tip="删除本章所在的整段跨度（含段内所有章节出场）"
+          >
+            <Trash2 className="size-3.5" />
+            <span>删除该段范围</span>
+          </button>
+        </>
+      )}
     </div>
   )
 }

@@ -48,12 +48,12 @@ export interface CreationFlowEvent {
 
 /** 单个 Agent 的输出内容（用于时间线展示） */
 export interface AgentOutput {
-  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory' | 'arranger'
+  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory' | 'arranger' | 'context'
   agentName: string
   content: string
   preview: string
   timestamp: number
-  /** 数据变更通知（Memory Agent 写入完成，前端据此刷新画布；不展示在时间线） */
+  /** 数据变更通知（Memory Agent 写入完成，前端据此刷新画布） */
   dataChanged?: boolean
   /** 是否仍在流式生成中（true 时 UI 显示"正在生成"动画） */
   streaming?: boolean
@@ -133,6 +133,110 @@ export interface UseNovelCreationFlowReturn {
   cancel: () => void
   /** 重置到 idle 状态（用于创作完成后切回节点详情面板） */
   reset: () => void
+}
+
+// ── 详情格式化（将后端 detail payload 转为可读 markdown 气泡内容）──
+
+const RHYTHM_LABELS: Record<string, string> = {
+  setup: '铺垫', rising: '上升', climax: '高潮', falling: '下降',
+  resolution: '收束', twist: '转折', breather: '舒缓', suspense: '悬念',
+}
+const CLIMAX_INTENSITY_LABELS: Record<string, string> = {
+  minor: '小高潮', medium: '中高潮', major: '大高潮',
+}
+const CLIMAX_TYPE_LABELS: Record<string, string> = {
+  emotional: '情感', fate: '命运', character: '性格', combat: '打斗', theme: '主题', composite: '复合',
+}
+const TASK_TYPE_LABELS: Record<string, string> = {
+  advance_mainline: '推进主线', advance_subline: '推进副线',
+  create_conflict: '创建冲突', escalate_conflict: '升级冲突',
+  release_info: '释放信息', hide_info: '隐藏信息',
+  reinforce_foreshadow: '强化伏笔', recover_foreshadow: '回收伏笔',
+  change_relationship: '改变关系', change_cognition: '改变认知',
+  create_reversal: '制造突转', create_suspense: '制造悬念',
+  phase_closure: '阶段收束', introduce_problem: '引入问题',
+}
+const PRIORITY_LABELS: Record<string, string> = { high: '高', medium: '中', low: '低' }
+const CONFLICT_STAGE_LABELS: Record<string, string> = {
+  latent: '潜伏', emerging: '浮现', escalating: '升级', erupting: '爆发',
+  reversing: '逆转', resolved: '已解决', transformed: '转化',
+}
+const SUSPENSE_STATUS_LABELS: Record<string, string> = {
+  planting: '埋设', sustaining: '维持', releasing: '释放',
+}
+
+/** 将后端 detail 事件 payload 格式化为 markdown 气泡内容 */
+function formatDetailBubble(detail: Record<string, unknown>): {
+  agentType: 'director' | 'context' | 'memory'
+  agentName: string
+  content: string
+} {
+  const kind = detail.kind as string
+  if (kind === 'rhythm_suggestion') {
+    const rhythm = detail.rhythm as string
+    const climaxIntensity = detail.climaxIntensity as string | undefined
+    const climaxType = detail.climaxType as string | undefined
+    let md = `## 本章节奏建议\n\n**节奏**：${RHYTHM_LABELS[rhythm] ?? rhythm}`
+    if (climaxIntensity) md += `\n**高潮强度**：${CLIMAX_INTENSITY_LABELS[climaxIntensity] ?? climaxIntensity}`
+    if (climaxType) md += `\n**高潮类型**：${CLIMAX_TYPE_LABELS[climaxType] ?? climaxType}高潮`
+    md += `\n\n**说明**：${detail.description as string}\n\n**原因**：${detail.reason as string}`
+    return { agentType: 'context', agentName: '节奏', content: md }
+  }
+  if (kind === 'narrative_task') {
+    const taskType = detail.taskType as string
+    const priority = detail.priority as string
+    const climaxTarget = detail.climaxTarget as { type: string; intensity: string } | undefined
+    const suspenseDuration = detail.suspenseDuration as number | undefined
+    const expectedIntensityDelta = detail.expectedIntensityDelta as number | undefined
+    let md = `## 叙事任务已解析\n\n**任务类型**：${TASK_TYPE_LABELS[taskType] ?? taskType}\n**优先级**：${PRIORITY_LABELS[priority] ?? priority}`
+    if (climaxTarget) md += `\n**高潮目标**：${CLIMAX_TYPE_LABELS[climaxTarget.type] ?? climaxTarget.type}（${CLIMAX_INTENSITY_LABELS[climaxTarget.intensity] ?? climaxTarget.intensity}）`
+    if (suspenseDuration != null) md += `\n**悬念持续**：${suspenseDuration} 章`
+    if (expectedIntensityDelta != null) md += `\n**预期强度变化**：${expectedIntensityDelta > 0 ? '+' : ''}${expectedIntensityDelta}`
+    return { agentType: 'director', agentName: '导演', content: md }
+  }
+  if (kind === 'chapter_context') {
+    const conflictTargets = (detail.conflictTargets as Array<Record<string, unknown>>) ?? []
+    const suspenseHooks = (detail.suspenseHooks as Array<Record<string, unknown>>) ?? []
+    const rhythmConstraint = detail.rhythmConstraint as Record<string, unknown> | undefined
+    let md = `## 章节约束已构建`
+    if (rhythmConstraint) {
+      md += `\n\n### 节奏约束\n\n**${RHYTHM_LABELS[rhythmConstraint.rhythm as string] ?? rhythmConstraint.rhythm}**：${rhythmConstraint.description as string}`
+    }
+    if (conflictTargets.length > 0) {
+      md += `\n\n### 冲突推进目标\n`
+      conflictTargets.forEach((t, i) => {
+        const isClimax = t.isClimax === true
+        const delta = t.intensityDelta as number
+        md += `\n${i + 1}. ${isClimax ? '🔥 ' : ''}**${t.description as string}** → ${CONFLICT_STAGE_LABELS[t.targetStage as string] ?? t.targetStage}（${delta > 0 ? '+' : ''}${delta} 强度${isClimax ? '，高潮章' : ''}）`
+      })
+    }
+    if (suspenseHooks.length > 0) {
+      md += `\n\n### 悬念钩子\n`
+      suspenseHooks.forEach((h, i) => {
+        const status = SUSPENSE_STATUS_LABELS[h.status as string] ?? (h.status as string)
+        const sustained = h.sustainedChapters as number
+        const release = h.releaseByChapter as number | null
+        md += `\n${i + 1}. [${status}] ${h.description as string}（已持续 ${sustained} 章${release != null ? `，计划第 ${release} 章释放` : ''}）`
+      })
+    }
+    if (conflictTargets.length === 0 && suspenseHooks.length === 0 && !rhythmConstraint) {
+      md += `\n\n*本章无特殊约束*`
+    }
+    return { agentType: 'context', agentName: '约束', content: md }
+  }
+  if (kind === 'memory_result') {
+    const summary = detail.summary as string
+    const events = (detail.events as Array<{ type: string; description: string }>) ?? []
+    let md = `## 记忆提取完成\n\n**摘要**：${summary}`
+    if (events.length > 0) {
+      md += `\n\n### 变更明细\n`
+      events.forEach((e, i) => {
+        md += `\n${i + 1}. [${e.type}] ${e.description}`
+      })
+    }
+    return { agentType: 'memory', agentName: '记忆', content: md }
+  }
+  return { agentType: 'context', agentName: '详情', content: '未知详情类型' }
 }
 
 /**
@@ -318,6 +422,22 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             messageId?: string
             message?: string
             dataChanged?: boolean
+            data?: unknown
+            detail?: Record<string, unknown>
+          }
+          // detail 事件：节奏建议/叙事任务/章节约束/记忆结果 → 格式化为 info 气泡
+          if (data?.detail && typeof data.detail === 'object' && data.detail.kind) {
+            const formatted = formatDetailBubble(data.detail)
+            setAgentOutputs((prev) => [...prev, {
+              agentType: formatted.agentType,
+              agentName: formatted.agentName,
+              content: formatted.content,
+              preview: data.message ?? formatted.content.slice(0, 100),
+              timestamp: evt.timestamp,
+              // memory_result 携带 dataChanged 标记，触发画布刷新
+              dataChanged: data.dataChanged === true,
+            }])
+            return
           }
           // agent_start：记录 messageId → agentType 映射，重置 writer 累积器
           // 同时创建一个初始 streaming AgentOutput，展示"已启动"提示，
@@ -337,7 +457,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               if (prev.some(o => o.messageId === data.messageId)) return prev
               return [...prev, {
                 agentType: data.agentType as AgentOutput['agentType'],
-                agentName: data.agentName,
+                agentName: data.agentName!,
                 content: initialMsg,
                 preview: initialMsg,
                 timestamp: evt.timestamp,
@@ -345,17 +465,57 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
                 messageId: data.messageId,
               }]
             })
+            return
           }
-          // data_changed：Memory Agent 数据变更通知，新增到时间线（不参与流式替换）
+          // data_changed：Memory Agent 数据变更通知
+          // 更新最后一个 memory streaming 气泡为完成态（携带摘要），同时触发画布刷新
           if (data?.type === 'data_changed' && data.dataChanged) {
-            setAgentOutputs((prev) => [...prev, {
-              agentType: (data.agentType ?? 'memory') as AgentOutput['agentType'],
-              agentName: data.agentName ?? '记忆',
-              content: data.message ?? '数据已更新',
-              preview: data.message ?? '数据已更新',
-              timestamp: evt.timestamp,
-              dataChanged: true,
-            }])
+            const detail = data.detail
+            const summary = (detail as { summary?: string } | undefined)?.summary
+            setAgentOutputs((prev) => {
+              const last = prev[prev.length - 1]
+              if (last && last.agentType === 'memory' && last.streaming) {
+                // 关闭 streaming 气泡，附加提取摘要
+                return [...prev.slice(0, -1), {
+                  ...last,
+                  content: summary ? `${last.content}\n\n---\n\n**提取摘要**：${summary}` : (data.message ?? last.content),
+                  preview: summary ?? data.message ?? last.preview,
+                  streaming: false,
+                  dataChanged: true,
+                }]
+              }
+              // 无前置 streaming 气泡 → 直接创建完成态气泡
+              return [...prev, {
+                agentType: (data.agentType ?? 'memory') as AgentOutput['agentType'],
+                agentName: data.agentName ?? '记忆',
+                content: summary ?? data.message ?? '数据已更新',
+                preview: summary ?? data.message ?? '数据已更新',
+                timestamp: evt.timestamp,
+                dataChanged: true,
+              }]
+            })
+            return
+          }
+          // memory 阶段的 phase_change：创建/更新 streaming 记忆气泡
+          // memory-generator 发射 6 个子阶段（preparing/generating/parsing/applying/completed/fallback），
+          // 每个带中文 message，让用户实时看到记忆提取进度
+          if (evt.phase === 'memory' && data?.message) {
+            setAgentOutputs((prev) => {
+              const last = prev[prev.length - 1]
+              if (last && last.agentType === 'memory' && last.streaming) {
+                // 更新现有 memory 气泡的 message
+                return [...prev.slice(0, -1), { ...last, content: data.message!, preview: data.message! }]
+              }
+              return [...prev, {
+                agentType: 'memory',
+                agentName: '记忆',
+                content: data.message!,
+                preview: data.message!,
+                timestamp: evt.timestamp,
+                streaming: true,
+              }]
+            })
+            return
           }
           // arrange_*：AI 编排阶段的处理步骤，作为对话气泡展示在时间线
           // 后端 ai-arrange 仅做矩阵编排（不衔接 create-flow），故编排步骤需在此显式呈现给用户

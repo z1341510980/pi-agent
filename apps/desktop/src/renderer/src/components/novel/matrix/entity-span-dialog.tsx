@@ -6,7 +6,7 @@
  *
  * 各类型语义：
  * - character：在 [first, last] 范围每章创建/保留 characterHistory，移除范围外的记录
- * - conflict / faction：设 firstChapter / lastChapter
+ * - conflict / faction：设 chapterSpans: [[first, last]]（单段覆盖，多段时仅保留此段）
  * - foreshadow：first → firstChapter（埋设点）；last → recoverByChapter（回收点）
  * - location：[first, last] 范围填满 appearChapters，移除范围外的章
  * - world_element：恒全程，不支持编辑

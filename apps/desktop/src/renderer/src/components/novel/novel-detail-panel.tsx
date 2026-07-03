@@ -34,6 +34,8 @@ import {
   updateVolume,
   listCharacterHistory,
   createCharacterHistory,
+  listRhythmModels,
+  type RhythmModel,
   type NovelProject,
   type NovelCharacter,
   type NovelChapter,
@@ -45,6 +47,9 @@ import {
   type ChapterStatus,
   type ConflictType,
   type ConflictStage,
+  type ConflictTier,
+  type ClimaxType,
+  type ChapterRhythm,
   type ForeshadowStatus,
   type NovelFaction,
   type NovelLocation,
@@ -488,6 +493,32 @@ const CONFLICT_STAGE_OPTIONS: { value: ConflictStage; label: string }[] = [
   { value: 'transformed', label: '转化' },
 ]
 
+const CONFLICT_TIER_OPTIONS: { value: ConflictTier; label: string }[] = [
+  { value: 'main', label: '主线' },
+  { value: 'secondary', label: '支线' },
+  { value: 'goal', label: '目标' },
+]
+
+const CLIMAX_TYPE_OPTIONS: { value: ClimaxType; label: string }[] = [
+  { value: 'emotional', label: '情感高潮' },
+  { value: 'fate', label: '命运高潮' },
+  { value: 'character', label: '性格高潮' },
+  { value: 'combat', label: '打斗高潮' },
+  { value: 'theme', label: '主题高潮' },
+  { value: 'composite', label: '复合高潮' },
+]
+
+const CHAPTER_RHYTHM_OPTIONS: { value: ChapterRhythm; label: string }[] = [
+  { value: 'setup', label: '铺垫' },
+  { value: 'rising', label: '上升' },
+  { value: 'climax', label: '高潮' },
+  { value: 'falling', label: '下降' },
+  { value: 'resolution', label: '收束' },
+  { value: 'twist', label: '转折' },
+  { value: 'breather', label: '舒缓' },
+  { value: 'suspense', label: '悬念' },
+]
+
 const FORESHADOW_STATUS_OPTIONS: { value: ForeshadowStatus; label: string }[] = [
   { value: 'planned', label: '已规划' },
   { value: 'planted', label: '已埋设' },
@@ -757,9 +788,19 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
     targetWords: String(entity.targetWords),
     currentStage: entity.currentStage,
     status: entity.status,
+    rhythmModelId: entity.rhythmModelId ?? '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [rhythmModels, setRhythmModels] = useState<RhythmModel[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    listRhythmModels()
+      .then((models) => { if (!cancelled) setRhythmModels(models) })
+      .catch(() => { /* 节奏模型加载失败不阻塞表单 */ })
+    return () => { cancelled = true }
+  }, [])
 
   const dirty =
     form.title !== entity.title ||
@@ -767,7 +808,8 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
     form.synopsis !== entity.synopsis ||
     Number(form.targetWords) !== entity.targetWords ||
     form.currentStage !== entity.currentStage ||
-    form.status !== entity.status
+    form.status !== entity.status ||
+    (form.rhythmModelId || '') !== (entity.rhythmModelId ?? '')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
@@ -780,6 +822,7 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
         targetWords: Number(form.targetWords) || 0,
         currentStage: form.currentStage,
         status: form.status,
+        rhythmModelId: form.rhythmModelId === '' ? undefined : form.rhythmModelId,
       })
       upsertProject(updated)
     } catch (err) {
@@ -838,6 +881,19 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
           <SelectContent>
             {PROJECT_STATUS_OPTIONS.map((o) => (
               <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="节奏模型">
+        <Select value={form.rhythmModelId} onValueChange={(v) => setForm((f) => ({ ...f, rhythmModelId: v === '__default__' ? '' : v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="默认模型" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__default__">默认模型</SelectItem>
+            {rhythmModels.map((m) => (
+              <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -1227,6 +1283,7 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
     title: entity.title,
     content: entity.content,
     status: entity.status,
+    rhythm: entity.rhythm ?? '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1234,13 +1291,19 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
   const dirty =
     form.title !== entity.title ||
     form.content !== entity.content ||
-    form.status !== entity.status
+    form.status !== entity.status ||
+    (form.rhythm || '') !== (entity.rhythm ?? '')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
     setError(null)
     try {
-      const updated = await updateChapter(entity.id, form)
+      const updated = await updateChapter(entity.id, {
+        title: form.title,
+        content: form.content,
+        status: form.status,
+        rhythm: form.rhythm === '' ? undefined : (form.rhythm as ChapterRhythm),
+      })
       upsertChapter(updated)
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败')
@@ -1279,6 +1342,19 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
           </SelectTrigger>
           <SelectContent>
             {CHAPTER_STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="节奏">
+        <Select value={form.rhythm} onValueChange={(v) => setForm((f) => ({ ...f, rhythm: v === '__none__' ? '' : v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="未指定" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">未指定</SelectItem>
+            {CHAPTER_RHYTHM_OPTIONS.map((o) => (
               <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
             ))}
           </SelectContent>
@@ -1370,6 +1446,11 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
     type: entity.type,
     intensity: String(entity.intensity),
     stage: entity.stage,
+    tier: entity.tier,
+    climaxChapter: entity.climaxChapter != null ? String(entity.climaxChapter) : '',
+    climaxType: entity.climaxType ?? '',
+    stakes: entity.stakes ?? '',
+    twistPotential: entity.twistPotential != null ? String(entity.twistPotential) : '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1386,17 +1467,29 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
     form.description !== entity.description ||
     form.type !== entity.type ||
     form.stage !== entity.stage ||
-    Number(form.intensity) !== entity.intensity
+    form.tier !== entity.tier ||
+    Number(form.intensity) !== entity.intensity ||
+    (form.climaxChapter || '') !== (entity.climaxChapter != null ? String(entity.climaxChapter) : '') ||
+    (form.climaxType || '') !== (entity.climaxType ?? '') ||
+    form.stakes !== (entity.stakes ?? '') ||
+    (form.twistPotential || '') !== (entity.twistPotential != null ? String(entity.twistPotential) : '')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
     setError(null)
     try {
+      const climaxChapterNum = form.climaxChapter.trim() === '' ? null : Number(form.climaxChapter)
+      const twistPotentialNum = form.twistPotential.trim() === '' ? undefined : Number(form.twistPotential)
       const updated = await updateConflict(entity.id, {
         description: form.description,
         type: form.type,
         intensity: Number(form.intensity) || 0,
         stage: form.stage,
+        tier: form.tier,
+        climaxChapter: climaxChapterNum,
+        climaxType: form.climaxType === '' ? null : (form.climaxType as ClimaxType),
+        stakes: form.stakes === '' ? null : form.stakes,
+        twistPotential: twistPotentialNum,
       })
       upsertConflict(updated)
     } catch (err) {
@@ -1419,6 +1512,18 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
           </SelectTrigger>
           <SelectContent>
             {CONFLICT_TYPE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="层级">
+        <Select value={form.tier} onValueChange={(v) => setForm((f) => ({ ...f, tier: v as ConflictTier }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONFLICT_TIER_OPTIONS.map((o) => (
               <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
             ))}
           </SelectContent>
@@ -1452,6 +1557,52 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
             max={10}
             value={form.intensity}
             onChange={(e) => setForm((f) => ({ ...f, intensity: e.target.value }))}
+            className="w-16"
+          />
+          <span className="text-xs text-muted-foreground">/10</span>
+        </div>
+      </FieldRow>
+
+      <SectionHeader title="高潮与突转" />
+      <FieldRow label="爆发章节">
+        <TextInput
+          type="number"
+          min={1}
+          value={form.climaxChapter}
+          onChange={(e) => setForm((f) => ({ ...f, climaxChapter: e.target.value }))}
+          placeholder="留空表示未指定"
+        />
+      </FieldRow>
+      <FieldRow label="高潮类型">
+        <Select value={form.climaxType} onValueChange={(v) => setForm((f) => ({ ...f, climaxType: v === '__none__' ? '' : v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="未指定" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">未指定</SelectItem>
+            {CLIMAX_TYPE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="赌注/代价">
+        <TextArea variant="short" value={form.stakes} onChange={(e) => setForm((f) => ({ ...f, stakes: e.target.value }))} placeholder="冲突失败或成功后的代价" />
+      </FieldRow>
+      <FieldRow label="突转潜力">
+        <div className="flex items-center gap-2">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full bg-amber-500"
+              style={{ width: `${(Number(form.twistPotential || 0) / 10) * 100}%` }}
+            />
+          </div>
+          <TextInput
+            type="number"
+            min={0}
+            max={10}
+            value={form.twistPotential}
+            onChange={(e) => setForm((f) => ({ ...f, twistPotential: e.target.value }))}
             className="w-16"
           />
           <span className="text-xs text-muted-foreground">/10</span>

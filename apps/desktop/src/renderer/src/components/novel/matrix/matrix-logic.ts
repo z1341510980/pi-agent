@@ -36,6 +36,40 @@ export type MatrixEntityKind =
 /** 联动右侧详情面板时使用的实体类型 */
 export type SelectableEntityType = MatrixEntityKind
 
+// ── 拖拽数据载荷（@dnd-kit useDraggable.data）──
+// 三种拖源统一用 source 字段区分，放置时由 MatrixView 根据 source 分发到不同业务回调。
+
+/** 从侧边栏拖入实体（新增出场） */
+export interface SidebarDragData {
+  source: 'sidebar'
+  entityType: MatrixEntityKind
+  entityId: string
+  name: string
+  color: string
+}
+
+/** 拖动跨度端点（conflict/faction/foreshadow 调整起止章节） */
+export interface EndpointDragData {
+  source: 'endpoint'
+  entityType: MatrixEntityKind
+  entityId: string
+  /** 'start' = 起点（firstChapter / 埋设点），'end' = 终点（lastChapter / 回收点） */
+  end: 'start' | 'end'
+  origChapter: number
+  /** conflict/faction 多段跨度中的段索引（foreshadow 单段恒为 0） */
+  spanIndex: number
+}
+
+/** 拖动已出场单元格（character/location 移动到新章节） */
+export interface CellDragData {
+  source: 'cell'
+  entityType: MatrixEntityKind
+  entityId: string
+  chapter: number
+}
+
+export type MatrixDragData = SidebarDragData | EndpointDragData | CellDragData
+
 // ── 分组元数据 ──
 
 export interface GroupMeta {
@@ -87,11 +121,17 @@ export interface MatrixEntity {
   /** 角色出场章节跨度（相邻章节合并为一段） */
   characterSpans?: Array<{ start: number; end: number }>
 
-  // ── 冲突/势力跨度 ──
-  /** 跨度起始章节（含） */
+  // ── 冲突/势力跨度（多段）──
+  /** 多段章节跨度（如 [[1,3],[10,12]]），空数组表示未放置 */
+  chapterSpans?: Array<[number, number]>
+  /** 整体跨度起始章节（含）= chapterSpans[0][0]，空数组时为 null */
   spanStart?: number | null
-  /** 跨度结束章节（含） */
+  /** 整体跨度结束章节（含）= chapterSpans[last][1]，空数组时为 null */
   spanEnd?: number | null
+
+  // ── 冲突高潮标记 ──
+  /** 冲突预计爆发章节（高潮目标章节，矩阵中显示火焰标记） */
+  climaxChapter?: number | null
 
   // ── 伏笔埋设/回收 ──
   /** 伏笔埋设章节 */
@@ -158,15 +198,29 @@ export function computeCharacterSpans(
 }
 
 /**
- * 计算跨度实体的起止章节（冲突/势力）
- * @returns { start, end } 或 null（firstChapter 为空）
+ * 计算跨度实体的整体起止章节（冲突/势力）
+ * spanStart = spans[0][0]，spanEnd = spans[last][1]
+ * @returns { start, end } 或 null（spans 为空）
  */
 export function computeSpanRange(
-  first: number | null,
-  last: number | null,
+  spans: Array<[number, number]>,
 ): { start: number; end: number } | null {
-  if (first == null) return null
-  return { start: first, end: last ?? first }
+  if (spans.length === 0) return null
+  return { start: spans[0][0], end: spans[spans.length - 1][1] }
+}
+
+/**
+ * 在多段跨度中查找包含指定章节的那一段
+ * @returns [start, end] 或 null（不在任何一段中）
+ */
+export function findSpanAt(
+  spans: Array<[number, number]>,
+  chapter: number,
+): [number, number] | null {
+  for (const span of spans) {
+    if (chapter >= span[0] && chapter <= span[1]) return span
+  }
+  return null
 }
 
 /**
@@ -257,7 +311,7 @@ export function buildGroups(params: {
     goal: '主角目的',
   }
   for (const conflict of conflicts) {
-    const range = computeSpanRange(conflict.firstChapter, conflict.lastChapter)
+    const range = computeSpanRange(conflict.chapterSpans)
     if (range == null) continue // 未放置 → 元素池
     conflictGroup.entities.push({
       id: conflict.id,
@@ -266,8 +320,10 @@ export function buildGroups(params: {
       entityId: conflict.id,
       entityType: 'conflict',
       subLabel: tierLabels[conflict.tier ?? 'secondary'],
+      chapterSpans: conflict.chapterSpans,
       spanStart: range.start,
       spanEnd: range.end,
+      climaxChapter: conflict.climaxChapter ?? null,
       note: noteMap.get(conflict.id),
     })
   }
@@ -302,7 +358,7 @@ export function buildGroups(params: {
     entities: [],
   }
   for (const faction of factions) {
-    const range = computeSpanRange(faction.firstChapter, faction.lastChapter)
+    const range = computeSpanRange(faction.chapterSpans)
     if (range == null) continue
     factionGroup.entities.push({
       id: faction.id,
@@ -310,6 +366,7 @@ export function buildGroups(params: {
       name: faction.name,
       entityId: faction.id,
       entityType: 'faction',
+      chapterSpans: faction.chapterSpans,
       spanStart: range.start,
       spanEnd: range.end,
       note: noteMap.get(faction.id),
@@ -397,9 +454,9 @@ export function buildPool(params: {
   }
   return {
     poolCharacters,
-    poolConflicts: conflicts.filter((c) => c.firstChapter == null),
+    poolConflicts: conflicts.filter((c) => c.chapterSpans.length === 0),
     poolForeshadows: foreshadows.filter((f) => f.firstChapter == null),
-    poolFactions: factions.filter((f) => f.firstChapter == null),
+    poolFactions: factions.filter((f) => f.chapterSpans.length === 0),
     poolLocations: locations.filter((l) => !l.appearChapters || l.appearChapters.length === 0),
   }
 }
@@ -412,6 +469,7 @@ export type CellSymbol =
   | { type: 'span-start' }
   | { type: 'span-end' }
   | { type: 'span-middle' }
+  | { type: 'conflict-climax' }
   | { type: 'foreshadow-plant' }
   | { type: 'foreshadow-payoff' }
   | { type: 'foreshadow-span'; recovered: boolean }
@@ -434,12 +492,15 @@ export function computeCellSymbol(
     }
     case 'conflict':
     case 'faction': {
-      const start = entity.spanStart
-      const end = entity.spanEnd
-      if (start == null || end == null) return { type: 'empty' }
-      if (chapterNumber < start || chapterNumber > end) return { type: 'empty' }
-      if (chapterNumber === start) return { type: 'span-start' }
-      if (chapterNumber === end) return { type: 'span-end' }
+      // 冲突高潮章节优先于跨度符号（火焰标记更醒目）
+      if (entity.kind === 'conflict' && entity.climaxChapter != null && entity.climaxChapter === chapterNumber) {
+        return { type: 'conflict-climax' }
+      }
+      const spans = entity.chapterSpans ?? []
+      const span = findSpanAt(spans, chapterNumber)
+      if (span == null) return { type: 'empty' }
+      if (chapterNumber === span[0]) return { type: 'span-start' }
+      if (chapterNumber === span[1]) return { type: 'span-end' }
       return { type: 'span-middle' }
     }
     case 'foreshadow': {

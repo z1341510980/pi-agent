@@ -24,6 +24,7 @@ import type {
   NovelClue,
   NovelConflict,
   ConflictTier,
+  ChapterSpan,
   NovelWorldRule,
   NovelConstraint,
   NovelInformationLayer,
@@ -98,6 +99,7 @@ interface ConflictRow {
   id: string; project_id: string; description: string; type: string
   intensity: number; stage: string; participants: string
   first_chapter: number | null; last_chapter: number | null; tier: string
+  chapter_spans: string | null
   created_at: number; updated_at: number
 }
 
@@ -159,6 +161,7 @@ interface FactionRow {
   type: string; leader_id: string | null; ideology: string; strength: string
   resources: string; allies: string; enemies: string; status: string
   first_chapter: number | null; last_chapter: number | null
+  chapter_spans: string | null
   created_at: number; updated_at: number
 }
 
@@ -207,6 +210,23 @@ interface AgentLogRow {
 
 function parseJSON<T>(s: string, fallback: T): T {
   try { return JSON.parse(s) as T } catch { return fallback }
+}
+
+/** 解析 chapter_spans JSON 字段为 ChapterSpan[]，容错处理 null/异常/非数组 */
+function parseChapterSpans(raw: string | null | undefined): ChapterSpan[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter((s): s is [number, number] =>
+        Array.isArray(s) && s.length === 2 &&
+        typeof s[0] === 'number' && typeof s[1] === 'number'
+      )
+      .map(([s, e]) => [s, e] as ChapterSpan)
+  } catch {
+    return []
+  }
 }
 
 function now(): number {
@@ -706,14 +726,17 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelConflict = { ...conflict, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_conflicts (id, project_id, description, type, intensity, stage, participants,
-      first_chapter, last_chapter, tier, created_at, updated_at)
+      first_chapter, last_chapter, chapter_spans, tier, created_at, updated_at)
       VALUES (@id, @project_id, @description, @type, @intensity, @stage, @participants,
-      @first_chapter, @last_chapter, @tier, @created_at, @updated_at)
+      @first_chapter, @last_chapter, @chapter_spans, @tier, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       type: full.type, intensity: full.intensity, stage: full.stage,
-      participants: full.participants, first_chapter: full.firstChapter,
-      last_chapter: full.lastChapter, tier: full.tier,
+      participants: full.participants,
+      first_chapter: full.chapterSpans[0]?.[0] ?? null,
+      last_chapter: full.chapterSpans[0]?.[1] ?? null,
+      chapter_spans: JSON.stringify(full.chapterSpans),
+      tier: full.tier,
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -727,11 +750,14 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_conflicts SET description=@description, type=@type, intensity=@intensity,
       stage=@stage, participants=@participants, first_chapter=@first_chapter, last_chapter=@last_chapter,
-      tier=@tier, updated_at=@updated_at WHERE id=@id
+      chapter_spans=@chapter_spans, tier=@tier, updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, type: updated.type, intensity: updated.intensity,
       stage: updated.stage, participants: updated.participants,
-      first_chapter: updated.firstChapter, last_chapter: updated.lastChapter, tier: updated.tier,
+      first_chapter: updated.chapterSpans[0]?.[0] ?? null,
+      last_chapter: updated.chapterSpans[0]?.[1] ?? null,
+      chapter_spans: JSON.stringify(updated.chapterSpans),
+      tier: updated.tier,
       updated_at: updated.updatedAt,
     })
     return updated
@@ -1152,15 +1178,18 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelFaction = { ...faction, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_factions (id, project_id, name, description, type, leader_id, ideology,
-      strength, resources, allies, enemies, status, first_chapter, last_chapter, created_at, updated_at)
+      strength, resources, allies, enemies, status, first_chapter, last_chapter, chapter_spans, created_at, updated_at)
       VALUES (@id, @project_id, @name, @description, @type, @leader_id, @ideology,
-      @strength, @resources, @allies, @enemies, @status, @first_chapter, @last_chapter, @created_at, @updated_at)
+      @strength, @resources, @allies, @enemies, @status, @first_chapter, @last_chapter, @chapter_spans, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, name: full.name, description: full.description,
       type: full.type, leader_id: full.leaderId, ideology: full.ideology,
       strength: full.strength, resources: JSON.stringify(full.resources),
       allies: JSON.stringify(full.allies), enemies: JSON.stringify(full.enemies),
-      status: full.status, first_chapter: full.firstChapter, last_chapter: full.lastChapter,
+      status: full.status,
+      first_chapter: full.chapterSpans[0]?.[0] ?? null,
+      last_chapter: full.chapterSpans[0]?.[1] ?? null,
+      chapter_spans: JSON.stringify(full.chapterSpans),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -1174,13 +1203,16 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_factions SET name=@name, description=@description, type=@type, leader_id=@leader_id,
       ideology=@ideology, strength=@strength, resources=@resources, allies=@allies, enemies=@enemies,
-      status=@status, first_chapter=@first_chapter, last_chapter=@last_chapter, updated_at=@updated_at WHERE id=@id
+      status=@status, first_chapter=@first_chapter, last_chapter=@last_chapter, chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
     `).run({
       id, name: updated.name, description: updated.description, type: updated.type,
       leader_id: updated.leaderId, ideology: updated.ideology, strength: updated.strength,
       resources: JSON.stringify(updated.resources), allies: JSON.stringify(updated.allies),
       enemies: JSON.stringify(updated.enemies), status: updated.status,
-      first_chapter: updated.firstChapter, last_chapter: updated.lastChapter, updated_at: updated.updatedAt,
+      first_chapter: updated.chapterSpans[0]?.[0] ?? null,
+      last_chapter: updated.chapterSpans[0]?.[1] ?? null,
+      chapter_spans: JSON.stringify(updated.chapterSpans),
+      updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -1556,7 +1588,7 @@ export class NovelStore implements NovelPromptStores {
       id: row.id, projectId: row.project_id, description: row.description,
       type: row.type as NovelConflict['type'], intensity: row.intensity,
       stage: row.stage as NovelConflict['stage'], participants: row.participants,
-      firstChapter: row.first_chapter, lastChapter: row.last_chapter,
+      chapterSpans: parseChapterSpans(row.chapter_spans),
       tier: (row.tier as ConflictTier) ?? 'secondary',
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
@@ -1637,7 +1669,7 @@ export class NovelStore implements NovelPromptStores {
       allies: parseJSON<string[]>(row.allies, []),
       enemies: parseJSON<string[]>(row.enemies, []),
       status: row.status as NovelFaction['status'],
-      firstChapter: row.first_chapter, lastChapter: row.last_chapter,
+      chapterSpans: parseChapterSpans(row.chapter_spans),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

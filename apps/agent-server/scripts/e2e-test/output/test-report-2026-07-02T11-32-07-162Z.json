@@ -1,0 +1,441 @@
+{
+  "runAt": "2026-07-02T11-32-07-162Z",
+  "baseUrl": "http://127.0.0.1:3900",
+  "options": {
+    "skipTimeout": true,
+    "keepProject": false,
+    "baseUrl": "http://127.0.0.1:3900",
+    "chapter": 1
+  },
+  "context": {
+    "projectId": "3cb9a222-5fc5-4383-a878-e74e800fe5f0",
+    "chapterId": "40906ae8-ed6f-4979-bcd2-9517069b69ea",
+    "threadIdPrefix": "plugin:novel-plugin:",
+    "firstTokenAt": 1782991984081,
+    "flowStartedAt": 1782991927245,
+    "flowFinishedAt": 1782992104768,
+    "checkpoints": [
+      {
+        "id": "20aa33e7-f661-4b81-800d-1297f601db93",
+        "type": "narrative_task",
+        "receivedAt": 1782992002596
+      },
+      {
+        "id": "b70f7dc3-f77b-4046-b59f-edb69c51c506",
+        "type": "review",
+        "receivedAt": 1782992077408
+      }
+    ],
+    "sseError": null
+  },
+  "stats": {
+    "PASS": 13,
+    "FAIL": 0,
+    "WARN": 0,
+    "SKIP": 1
+  },
+  "results": [
+    {
+      "name": "环境就绪",
+      "status": "PASS",
+      "detail": {
+        "service": "agent-server",
+        "agentCount": 5,
+        "agentIds": [
+          "novel-writer",
+          "default",
+          "novel-director",
+          "novel-reviewer",
+          "novel-memory"
+        ]
+      },
+      "durationMs": 39
+    },
+    {
+      "name": "创建项目",
+      "status": "PASS",
+      "detail": {
+        "projectId": "3cb9a222-5fc5-4383-a878-e74e800fe5f0",
+        "title": "架构演进 E2E 验证 2026-07-02T11-32-07-162Z"
+      },
+      "durationMs": 16
+    },
+    {
+      "name": "B5 NovelAgentConfigStore 薄封装",
+      "status": "PASS",
+      "detail": {
+        "before": 0.8,
+        "after": 0.7,
+        "agentManagerWriterTemp": 0.7,
+        "agentManagerSync": true,
+        "totalAgents": 5
+      },
+      "durationMs": 9
+    },
+    {
+      "name": "创建章节 + 设置章纲",
+      "status": "PASS",
+      "detail": {
+        "chapterId": "40906ae8-ed6f-4979-bcd2-9517069b69ea",
+        "chapterNumber": 1,
+        "outlineLength": 293
+      },
+      "durationMs": 16
+    },
+    {
+      "name": "SSE 编排流程（L1/L2/A1/B1）",
+      "status": "PASS",
+      "detail": {
+        "checks": {
+          "sseOpened": true,
+          "l1RunStarted": true,
+          "l1RunFinished": true,
+          "activityDetected": true,
+          "progressStreamed": true,
+          "textStreamed": true,
+          "b1FirstTokenDetected": true,
+          "toolCalls": false,
+          "checkpointCaptured": true,
+          "a1CheckpointResponded": true,
+          "noError": true
+        },
+        "eventTypes": {
+          "RUN_STARTED": 1,
+          "CUSTOM:novel:progress": 2123,
+          "CUSTOM:REASONING_TARGET_MESSAGE": 3,
+          "REASONING_START": 3,
+          "REASONING_MESSAGE_START": 3,
+          "THINKING_START": 3,
+          "THINKING_TEXT_MESSAGE_START": 3,
+          "REASONING_MESSAGE_CONTENT": 1651,
+          "THINKING_TEXT_MESSAGE_CONTENT": 1651,
+          "CUSTOM:REASONING_TEXT_MESSAGE_CONTENT": 1651,
+          "TEXT_MESSAGE_START": 3,
+          "TEXT_MESSAGE_CONTENT": 4987,
+          "REASONING_MESSAGE_END": 3,
+          "THINKING_TEXT_MESSAGE_END": 3,
+          "REASONING_END": 3,
+          "THINKING_END": 3,
+          "TEXT_MESSAGE_END": 3,
+          "CUSTOM:novel:checkpoint": 2,
+          "CUSTOM:novel:result": 1,
+          "RUN_FINISHED": 1
+        },
+        "firstActivityDeltaMs": 9,
+        "firstTokenDeltaMs": 56836,
+        "totalDurationMs": 177523,
+        "checkpointIds": [
+          "20aa33e7-f661-4b81-800d-1297f601db93",
+          "b70f7dc3-f77b-4046-b59f-edb69c51c506"
+        ],
+        "toolCallCount": 0,
+        "textMessageCount": 4988,
+        "progressCount": 2123,
+        "error": null
+      },
+      "durationMs": 177524
+    },
+    {
+      "name": "A3 AgentCallLogger",
+      "status": "PASS",
+      "detail": {
+        "total": 8,
+        "byAgent": {
+          "记忆": 1,
+          "审稿 Agent": 2,
+          "写作 Agent": 2,
+          "导演 Agent": 2,
+          "记忆 Agent": 1
+        },
+        "withProjectId": 8,
+        "samples": [
+          {
+            "agentId": "novel-memory",
+            "agentName": "记忆",
+            "threadId": "",
+            "resultLength": 64,
+            "durationMs": 26161,
+            "status": "success",
+            "error": "",
+            "metadata": {
+              "projectId": "3cb9a222-5fc5-4383-a878-e74e800fe5f0",
+              "chapterNumber": 1,
+              "agentType": "memory",
+              "phase": "memory",
+              "displayAgentType": "memory",
+              "displayAgentName": "记忆",
+              "source": "novel-memory-generator"
+            },
+            "systemPromptHead": "(结构化 LLM 调用 - role-memory-generator)"
+          },
+          {
+            "agentId": "novel-reviewer",
+            "agentName": "审稿 Agent",
+            "threadId": "",
+            "resultLength": 2426,
+            "durationMs": 32745,
+            "status": "success",
+            "error": "",
+            "metadata": {
+              "projectId": "3cb9a222-5fc5-4383-a878-e74e800fe5f0",
+              "chapterNumber": 1,
+              "agentType": "reviewer",
+              "phase": "reviewing",
+              "displayAgentType": "reviewer",
+              "displayAgentName": "审稿 Agent",
+              "source": "novel-orchestrator"
+            },
+            "systemPromptHead": "# 小说创作系统\r\n\r\n你是一个专业的小说创作助手。\r\n\r\n## 工作原则\r\n\r\n1. **一致性优先**：所有创作必须遵守已建立的世界规则、角色设定和剧情约束"
+          },
+          {
+            "agentId": "novel-writer",
+            "agentName": "写作 Agent",
+            "threadId": "",
+            "resultLength": 3526,
+            "durationMs": 41017,
+            "status": "success",
+            "error": "",
+            "metadata": {
+              "projectId": "3cb9a222-5fc5-4383-a878-e74e800fe5f0",
+              "chapterNumber": 1,
+              "agentType": "writer",
+              "phase": "writing",
+              "displayAgentType": "writer",
+              "displayAgentName": "写作 Agent",
+              "source": "novel-orchestrator"
+            },
+            "systemPromptHead": "# 小说创作系统\r\n\r\n你是一个专业的小说创作助手。\r\n\r\n## 工作原则\r\n\r\n1. **一致性优先**：所有创作必须遵守已建立的世界规则、角色设定和剧情约束"
+          }
+        ],
+        "ok": true,
+        "checks": {
+          "hasRows": true,
+          "metadataHasProjectId": true,
+          "multipleAgents": true
+        }
+      },
+      "durationMs": 141
+    },
+    {
+      "name": "GAP A character_history",
+      "status": "PASS",
+      "detail": {
+        "total": 2,
+        "byCharacter": {
+          "be81b253-23eb-472a-9d42-f3f3e58219ee": 1,
+          "492034ba-54fc-4c0a-9557-bb42bb09d5a7": 1
+        },
+        "samples": [
+          {
+            "character_id": "be81b253-23eb-472a-9d42-f3f3e58219ee",
+            "chapter_number": 1,
+            "field_name": "currentState",
+            "old_value": null,
+            "new_value": "本章首次出场",
+            "reason": "AI编排：# 第1章 荒野初遇\n\n## 场景一：进入荒野\n少年叶尘背着家传长剑，独自踏入被称为\"修者坟场\"的黑",
+            "created_at": 1782991968
+          },
+          {
+            "character_id": "492034ba-54fc-4c0a-9557-bb42bb09d5a7",
+            "chapter_number": 1,
+            "field_name": "currentState",
+            "old_value": null,
+            "new_value": "本章首次出场",
+            "reason": "AI编排：# 第1章 荒野初遇\n\n## 场景一：进入荒野\n少年叶尘背着家传长剑，独自踏入被称为\"修者坟场\"的黑",
+            "created_at": 1782991952
+          }
+        ],
+        "ok": true
+      },
+      "durationMs": 17
+    },
+    {
+      "name": "GAP C first/last_chapter",
+      "status": "PASS",
+      "detail": {
+        "conflicts": {
+          "total": 1,
+          "withFirstChapter": 1,
+          "withLastChapter": 1,
+          "samples": [
+            {
+              "id": "b1c3a49d-60f9-407b-ade2-4ef67dade77b",
+              "description": "叶尘初入黑松荒野便遭遇赤鬃狼王突袭，以家传剑诀迎战，首次经历生死实战，最终以幽蓝剑光斩断狼尾将其逼退。",
+              "first_chapter": 1,
+              "last_chapter": 1
+            }
+          ]
+        },
+        "factions": {
+          "total": 0,
+          "withFirstChapter": 0,
+          "withLastChapter": 0,
+          "samples": []
+        },
+        "locations": {
+          "total": 1,
+          "withAppearChapters": 1,
+          "samples": [
+            {
+              "id": "86b1c7de-f8f2-4187-96ca-f7ee3ee0a1e2",
+              "name": "黑松荒野",
+              "appear_chapters": "[1]"
+            }
+          ]
+        },
+        "ok": true
+      },
+      "durationMs": 15
+    },
+    {
+      "name": "领域层 novel_agent_logs",
+      "status": "PASS",
+      "detail": {
+        "exists": true,
+        "total": 4,
+        "byAgent": {
+          "memory": 1,
+          "reviewer": 1,
+          "writer": 1,
+          "director": 1
+        },
+        "samples": [
+          {
+            "agent_type": "memory",
+            "phase": "memory",
+            "status": "success",
+            "duration_ms": 26161,
+            "chapter_number": 1,
+            "created_at": 1782992104
+          },
+          {
+            "agent_type": "reviewer",
+            "phase": "reviewing",
+            "status": "success",
+            "duration_ms": 32743,
+            "chapter_number": 1,
+            "created_at": 1782992077
+          },
+          {
+            "agent_type": "writer",
+            "phase": "writing",
+            "status": "success",
+            "duration_ms": 41009,
+            "chapter_number": 1,
+            "created_at": 1782992044
+          },
+          {
+            "agent_type": "director",
+            "phase": "directing",
+            "status": "success",
+            "duration_ms": 22424,
+            "chapter_number": 1,
+            "created_at": 1782992002
+          }
+        ],
+        "ok": true
+      },
+      "durationMs": 11
+    },
+    {
+      "name": "GAP B memory_events.chapter_number",
+      "status": "PASS",
+      "detail": {
+        "total": 7,
+        "withChapterNumber": 7,
+        "samples": [
+          {
+            "id": "1315f045-d2c9-4eec-bcfd-a720b3dec221",
+            "chapter_id": "40906ae8-ed6f-4979-bcd2-9517069b69ea",
+            "chapter_number": 1,
+            "event_type": "character_change",
+            "entity_type": "character",
+            "description": "角色 叶尘 的 currentState 变更",
+            "significance": 6,
+            "created_at": 1782992104
+          },
+          {
+            "id": "1f3185cb-4c52-43ab-877a-fd2afb2daa3d",
+            "chapter_id": "40906ae8-ed6f-4979-bcd2-9517069b69ea",
+            "chapter_number": 1,
+            "event_type": "character_change",
+            "entity_type": "character",
+            "description": "角色 叶尘 的 currentGoal 变更",
+            "significance": 6,
+            "created_at": 1782992104
+          },
+          {
+            "id": "df32c97c-03fc-419f-9696-faef8e1cf9a5",
+            "chapter_id": "40906ae8-ed6f-4979-bcd2-9517069b69ea",
+            "chapter_number": 1,
+            "event_type": "character_change",
+            "entity_type": "character",
+            "description": "角色 叶尘 的 currentPressure 变更",
+            "significance": 6,
+            "created_at": 1782992104
+          },
+          {
+            "id": "a232f0df-cc23-4b55-a48d-e62742c15358",
+            "chapter_id": "40906ae8-ed6f-4979-bcd2-9517069b69ea",
+            "chapter_number": 1,
+            "event_type": "character_change",
+            "entity_type": "character",
+            "description": "角色 行路人 的 currentState 变更",
+            "significance": 6,
+            "created_at": 1782992104
+          },
+          {
+            "id": "ecb5e7b9-1dda-40e9-8524-f4512dd8b6a0",
+            "chapter_id": "40906ae8-ed6f-4979-bcd2-9517069b69ea",
+            "chapter_number": 1,
+            "event_type": "character_change",
+            "entity_type": "character",
+            "description": "角色 行路人 的 currentGoal 变更",
+            "significance": 6,
+            "created_at": 1782992104
+          }
+        ],
+        "ok": true
+      },
+      "durationMs": 19
+    },
+    {
+      "name": "并发锁机制",
+      "status": "PASS",
+      "detail": {
+        "note": "SSE 端点返回 200（错误在流体内），服务器响应正常",
+        "status": 200,
+        "statusText": "OK"
+      },
+      "durationMs": 60
+    },
+    {
+      "name": "A1 无效 checkpoint 404",
+      "status": "PASS",
+      "detail": {
+        "status": 404,
+        "body": {
+          "ok": false,
+          "error": "检查点不存在或已处理"
+        }
+      },
+      "durationMs": 29
+    },
+    {
+      "name": "A1 超时保护（跳过）",
+      "status": "SKIP",
+      "detail": {
+        "reason": "使用 --with-timeout 启用"
+      },
+      "durationMs": 0
+    },
+    {
+      "name": "清理",
+      "status": "PASS",
+      "detail": {
+        "status": 200
+      },
+      "durationMs": 21
+    }
+  ]
+}

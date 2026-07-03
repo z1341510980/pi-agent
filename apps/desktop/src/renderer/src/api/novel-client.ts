@@ -30,6 +30,117 @@ export type ConflictStage =
 export type ConflictTier = 'main' | 'secondary' | 'goal'
 export type ConstraintType = 'fact' | 'cognitive' | 'stage' | 'debt' | 'arc'
 
+// ── 节奏 / 高潮 / 悬念 类型（与后端 types.ts 对齐）──
+
+/** 章节节奏类型 */
+export type ChapterRhythm =
+  | 'setup' | 'rising' | 'climax' | 'falling' | 'resolution'
+  | 'twist' | 'breather' | 'suspense'
+
+/** 高潮强度等级 */
+export type ClimaxIntensity = 'minor' | 'medium' | 'major'
+
+/** 高潮类型（五种主要高潮 + 复合高潮） */
+export type ClimaxType =
+  | 'emotional' | 'fate' | 'character' | 'combat' | 'theme' | 'composite'
+
+/** 节奏序列条目（带高潮强度标注） */
+export interface RhythmSequenceEntry {
+  rhythm: ChapterRhythm
+  climaxIntensity?: ClimaxIntensity
+  climaxType?: ClimaxType
+}
+
+/** 节奏模型：定义故事弧的理想节奏序列 */
+export interface RhythmModel {
+  id: string
+  name: string
+  description: string
+  sequence: RhythmSequenceEntry[]
+}
+
+/** 节奏建议 */
+export interface RhythmSuggestion {
+  rhythm: ChapterRhythm
+  arcPosition: number
+  reason: string
+  description: string
+  climaxIntensity?: ClimaxIntensity
+  climaxType?: ClimaxType
+}
+
+/** 节奏历史记录 */
+export interface RhythmHistoryEntry {
+  chapterNumber: number
+  rhythm: ChapterRhythm
+  effectiveness: 'low' | 'medium' | 'high'
+}
+
+/** 叙事任务类型（14 种） */
+export type NarrativeTaskType =
+  | 'advance_mainline' | 'advance_subline' | 'create_conflict' | 'escalate_conflict'
+  | 'release_info' | 'hide_info' | 'reinforce_foreshadow' | 'recover_foreshadow'
+  | 'change_relationship' | 'change_cognition' | 'create_reversal' | 'create_suspense'
+  | 'phase_closure' | 'introduce_problem'
+
+/** 结构化叙事任务 */
+export interface NarrativeTask {
+  description: string
+  type: NarrativeTaskType
+  targetEntity: string | null
+  priority: 'high' | 'medium' | 'low'
+  expectedIntensityDelta?: number
+  climaxTarget?: { type: ClimaxType; intensity: ClimaxIntensity }
+  suspenseDuration?: number
+}
+
+/** 冲突推进目标 */
+export interface ConflictTarget {
+  conflict: NovelConflict
+  targetStage: ConflictStage
+  intensityDelta: number
+  isClimax: boolean
+}
+
+/** 节奏约束 */
+export interface RhythmConstraint {
+  rhythm: ChapterRhythm
+  climaxIntensity?: ClimaxIntensity
+  climaxType?: ClimaxType
+  description: string
+  reason: string
+}
+
+/** 悬念钩子 */
+export interface SuspenseHook {
+  infoLayerId: string | null
+  description: string
+  status: 'planting' | 'sustaining' | 'releasing'
+  sustainedChapters: number
+  releaseByChapter: number | null
+}
+
+/** 章节约束 */
+export interface ChapterConstraints {
+  facts: NovelConstraint[]
+  cognitive: NovelConstraint[]
+  stage: NovelConstraint[]
+  narrativeDebts: NovelForeshadow[]
+  characterArcs: Array<{ character: NovelCharacter; allowedNextStage: string | null }>
+  conflictTargets: ConflictTarget[]
+  rhythmConstraint?: RhythmConstraint
+  suspenseHooks: SuspenseHook[]
+}
+
+/** 本章已编排的实体约束 */
+export interface ArrangedEntity {
+  characterIds: string[]
+  conflictIds: string[]
+  foreshadowIds: string[]
+  factionIds: string[]
+  locationIds: string[]
+}
+
 // ── 实体类型 ──
 
 export interface NovelProject {
@@ -44,6 +155,8 @@ export interface NovelProject {
   currentChapter: number
   currentStage: StoryStage
   status: 'active' | 'paused' | 'completed'
+  /** 节奏模型 ID（缺省时使用后端 RhythmController.DEFAULT_MODEL） */
+  rhythmModelId?: string
   createdAt: number
   updatedAt: number
 }
@@ -63,6 +176,8 @@ export interface NovelChapter {
   /** 所属卷 ID（指向 novel_volumes.id，兼容旧数据可空） */
   volumeId?: string | null
   acceptanceResult: string | null
+  /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
+  rhythm?: ChapterRhythm
   createdAt: number
   updatedAt: number
 }
@@ -156,9 +271,18 @@ export interface NovelConflict {
   intensity: number
   stage: ConflictStage
   participants: string
-  firstChapter: number | null
-  lastChapter: number | null
+  chapterSpans: Array<[number, number]>
   tier: ConflictTier
+  /** 预计爆发章节（高潮目标章节） */
+  climaxChapter?: number | null
+  /** 高潮类型建议（该冲突推向高潮时的预期高潮种类） */
+  climaxType?: ClimaxType | null
+  /** 关联冲突 ID 列表（冲突网编织，JSON: string[]） */
+  relatedConflicts?: string
+  /** 赌注/代价（冲突失败或成功后的代价） */
+  stakes?: string | null
+  /** 突转潜力（0-10，越高越适合安排突转） */
+  twistPotential?: number
   createdAt: number
   updatedAt: number
 }
@@ -230,8 +354,7 @@ export interface NovelFaction {
   allies: string[]
   enemies: string[]
   status: NovelFactionStatus
-  firstChapter: number | null
-  lastChapter: number | null
+  chapterSpans: Array<[number, number]>
   createdAt: number
   updatedAt: number
 }
@@ -289,6 +412,7 @@ export type UpdateProjectInput = Partial<CreateProjectInput> & {
   currentStage?: StoryStage
   status?: 'active' | 'paused' | 'completed'
   outline?: string
+  rhythmModelId?: string
 }
 
 export interface CreateChapterInput {
@@ -307,6 +431,7 @@ export interface UpdateChapterInput {
   status?: ChapterStatus
   outline?: string
   volumeId?: string | null
+  rhythm?: ChapterRhythm
 }
 
 export interface CompleteChapterInput {
@@ -345,9 +470,13 @@ export interface CreateConflictInput {
   type: ConflictType
   intensity?: number
   stage?: ConflictStage
-  firstChapter?: number | null
-  lastChapter?: number | null
+  chapterSpans?: Array<[number, number]>
   tier?: ConflictTier
+  climaxChapter?: number | null
+  climaxType?: ClimaxType | null
+  relatedConflicts?: string
+  stakes?: string | null
+  twistPotential?: number
 }
 
 export interface CreateClueInput {
@@ -406,8 +535,7 @@ export interface CreateFactionInput {
   allies?: string[]
   enemies?: string[]
   status?: NovelFactionStatus
-  firstChapter?: number | null
-  lastChapter?: number | null
+  chapterSpans?: Array<[number, number]>
 }
 
 export type UpdateFactionInput = Partial<CreateFactionInput>
@@ -985,6 +1113,10 @@ export interface GeneratedConflictFields {
   stage: ConflictStage
   tier: ConflictTier
   participants: string
+  climaxChapter?: number | null
+  climaxType?: ClimaxType | null
+  stakes?: string | null
+  twistPotential?: number
 }
 
 export interface GeneratedForeshadowFields {
@@ -1366,6 +1498,22 @@ export function getAgentLog(id: string): Promise<NovelAgentLog> {
 
 export function deleteAgentLogs(projectId: string): Promise<{ projectId: string; deleted: number }> {
   return deleteApi<{ projectId: string; deleted: number }>(`${BASE}/projects/${projectId}/agent-logs`)
+}
+
+// ── 节奏模型与建议 ──
+
+/** 列出所有可用节奏模型（后端 RhythmController.MODELS） */
+export function listRhythmModels(): Promise<RhythmModel[]> {
+  return getApi<RhythmModel[]>(`${BASE}/rhythm-models`)
+}
+
+/** 获取下一章节奏建议（不传 chapterNumber 时默认下一章） */
+export function getRhythmSuggestion(
+  projectId: string,
+  chapterNumber?: number,
+): Promise<RhythmSuggestion> {
+  const query = chapterNumber != null ? `?chapterNumber=${chapterNumber}` : ''
+  return getApi<RhythmSuggestion>(`${BASE}/projects/${projectId}/rhythm-suggestion${query}`)
 }
 
 // ── Markers ──

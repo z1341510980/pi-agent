@@ -111,7 +111,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [] },
+      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
       { characterIds: [charId], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
     )
     expect(ctx).toContain('李四')
@@ -127,7 +127,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [] },
+      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
     )
     expect(ctx).not.toContain('本章必须出现的实体')
   })
@@ -140,7 +140,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [] },
+      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
       { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
     )
     expect(ctx).not.toContain('本章必须出现的实体')

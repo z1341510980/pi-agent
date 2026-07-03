@@ -37,6 +37,22 @@ export type ChapterRhythm =
   | 'resolution' // 收束：解决线索，回到平衡
   | 'twist'      // 转折：意料之外的走向
   | 'breather'   // 舒缓：紧张之间的缓冲
+  | 'suspense'   // 悬念：信息差累积，读者期待感拉满
+
+/** 高潮强度等级（区分小高潮/中高潮/大高潮） */
+export type ClimaxIntensity = 'minor' | 'medium' | 'major'
+// minor: 小高潮（情感强度 5-6，单卷内的阶段性爆发）
+// medium: 中高潮（情感强度 7-8，卷末或弧线高潮）
+// major: 大高潮（情感强度 9-10，全书终极高潮）
+
+/** 高潮类型（五种主要高潮种类） */
+export type ClimaxType =
+  | 'emotional'    // 情感高潮：情感冲突最激烈紧张的瞬间（如误会解除）
+  | 'fate'         // 命运高潮：主角命运生死攸关的揭晓时刻
+  | 'character'    // 性格高潮：主角独特性格在严峻考验中彰显张力
+  | 'combat'       // 打斗高潮：打斗最激烈时吸引读者视线（玄幻常见）
+  | 'theme'        // 主题高潮：主题思想升华引起读者强烈共鸣
+  | 'composite'    // 复合高潮：多种高潮共振（主题+性格+情节三者高度共振）
 
 /** 节奏模型：定义故事弧的理想节奏序列 */
 export interface RhythmModel {
@@ -44,7 +60,16 @@ export interface RhythmModel {
   name: string
   description: string
   /** 理想节奏序列（循环执行，如果章节数超过序列长度） */
-  sequence: ChapterRhythm[]
+  sequence: RhythmSequenceEntry[]
+}
+
+/** 节奏序列条目（带高潮强度标注） */
+export interface RhythmSequenceEntry {
+  rhythm: ChapterRhythm
+  /** 高潮强度（仅 rhythm='climax' 时有意义） */
+  climaxIntensity?: ClimaxIntensity
+  /** 高潮类型建议（可选，供 Director 参考） */
+  climaxType?: ClimaxType
 }
 
 /** 节奏建议 */
@@ -57,6 +82,10 @@ export interface RhythmSuggestion {
   reason: string
   /** 节奏描述（供 LLM 参考） */
   description: string
+  /** 高潮强度（仅 rhythm='climax' 时有值） */
+  climaxIntensity?: ClimaxIntensity
+  /** 高潮类型建议（可选） */
+  climaxType?: ClimaxType
 }
 
 /** 节奏历史记录 */
@@ -191,6 +220,9 @@ export interface NovelClue {
 
 // ── 冲突 ──
 
+/** 章节跨度：[start, end] 闭区间 */
+export type ChapterSpan = [number, number]
+
 export interface NovelConflict {
   id: string
   projectId: string
@@ -199,9 +231,19 @@ export interface NovelConflict {
   intensity: number // 1-10
   stage: ConflictStage
   participants: string // JSON: string[]
-  firstChapter: number | null // 冲突开始的章节
-  lastChapter: number | null // 冲突结束的章节
+  /** 非连续跨度数组，如 [[1,3],[10,12]]；空数组表示未放置 */
+  chapterSpans: ChapterSpan[]
   tier: ConflictTier // 冲突层级
+  /** 预计爆发章节（高潮目标章节） */
+  climaxChapter?: number | null
+  /** 高潮类型建议（该冲突推向高潮时的预期高潮种类） */
+  climaxType?: ClimaxType | null
+  /** 关联冲突 ID 列表（冲突网编织，JSON: string[]） */
+  relatedConflicts?: string // JSON: string[]
+  /** 赌注/代价（冲突失败或成功后的代价） */
+  stakes?: string | null
+  /** 突转潜力（0-10，越高越适合安排突转） */
+  twistPotential?: number
   createdAt: number
   updatedAt: number
 }
@@ -249,8 +291,8 @@ export interface NovelFaction {
   allies: string[] // factionId[]
   enemies: string[] // factionId[]
   status: NovelFactionStatus
-  firstChapter: number | null // 势力登场的章节
-  lastChapter: number | null // 势力退场的章节
+  /** 非连续跨度数组，如 [[1,3],[10,12]]；空数组表示未放置 */
+  chapterSpans: ChapterSpan[]
   createdAt: number
   updatedAt: number
 }
@@ -484,6 +526,15 @@ export interface NarrativeTask {
   type: NarrativeTaskType
   targetEntity: string | null
   priority: 'high' | 'medium' | 'low'
+  /** 预期冲突强度变化（如 escalate_conflict 任务时使用） */
+  expectedIntensityDelta?: number
+  /** 高潮目标（create_reversal 或 climax 章节时使用） */
+  climaxTarget?: {
+    type: ClimaxType
+    intensity: ClimaxIntensity
+  }
+  /** 悬念持续章数（create_suspense 任务时使用，默认 2-3 章） */
+  suspenseDuration?: number
 }
 
 export type NarrativeTaskType =
@@ -503,6 +554,50 @@ export interface ChapterConstraints {
     character: NovelCharacter
     allowedNextStage: string | null
   }>
+  /** 本章必须推进的冲突清单（含目标阶段和强度变化） */
+  conflictTargets: ConflictTarget[]
+  /** 本章节奏约束（含高潮强度和类型建议） */
+  rhythmConstraint?: RhythmConstraint
+  /** 本章悬念钩子（需要维持或释放的悬念） */
+  suspenseHooks: SuspenseHook[]
+}
+
+/** 冲突推进目标 */
+export interface ConflictTarget {
+  conflict: NovelConflict
+  /** 本章目标阶段 */
+  targetStage: ConflictStage
+  /** 本章预期强度变化（正数为升级，负数为降级） */
+  intensityDelta: number
+  /** 是否本章推向高潮 */
+  isClimax: boolean
+}
+
+/** 节奏约束 */
+export interface RhythmConstraint {
+  rhythm: ChapterRhythm
+  /** 高潮强度（仅 rhythm='climax' 时有值） */
+  climaxIntensity?: ClimaxIntensity
+  /** 高潮类型建议 */
+  climaxType?: ClimaxType
+  /** 节奏描述 */
+  description: string
+  /** 建议原因 */
+  reason: string
+}
+
+/** 悬念钩子 */
+export interface SuspenseHook {
+  /** 关联的信息差 ID */
+  infoLayerId: string | null
+  /** 悬念描述 */
+  description: string
+  /** 悬念状态：planting（埋设）/ sustaining（维持）/ releasing（释放） */
+  status: 'planting' | 'sustaining' | 'releasing'
+  /** 悬念已持续的章数 */
+  sustainedChapters: number
+  /** 计划释放章节 */
+  releaseByChapter: number | null
 }
 
 // ── 本章已编排的实体约束 ──

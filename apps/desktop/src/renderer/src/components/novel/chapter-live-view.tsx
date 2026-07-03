@@ -95,8 +95,9 @@ const AGENT_COLOR_CLASSES: Record<AgentOutput['agentType'], string> = {
   writer: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/40',
   reviewer: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/40',
   reviser: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/40',
-  memory: 'bg-gray-500/15 text-gray-700 dark:text-gray-300 border-gray-500/40',
+  memory: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/40',
   arranger: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40',
+  context: 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border-indigo-500/40',
 }
 
 /** 格式化时间戳为 HH:mm:ss */
@@ -349,10 +350,10 @@ export function ChapterLivePanel({
   const checkpointContent = currentCheckpoint ? renderCheckpointData(currentCheckpoint) : null
 
   // 合并 Agent 输出与用户消息，按时间戳排序
-  // 过滤掉 dataChanged 通知项（仅用于触发画布刷新，不展示在时间线）
+  // memory 气泡（dataChanged: true）同样展示在时间线，同时触发画布刷新
   const timeline = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = [
-      ...agentOutputs.filter((o) => !o.dataChanged).map((output) => ({ kind: 'agent' as const, output })),
+      ...agentOutputs.map((output) => ({ kind: 'agent' as const, output })),
       ...(userMessages ?? []).map((message) => ({ kind: 'user' as const, message })),
     ]
     return items.sort((a, b) => {

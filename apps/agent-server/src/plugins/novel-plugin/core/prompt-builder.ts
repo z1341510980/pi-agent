@@ -444,6 +444,45 @@ export class NovelPromptBuilder {
       }
     }
 
+    // 冲突推进目标（本章必须推进的冲突清单）
+    if (constraints.conflictTargets.length > 0) {
+      parts.push('\n### 冲突推进目标（本章必须推进）')
+      for (const target of constraints.conflictTargets) {
+        const c = target.conflict
+        const segs = [`- [${c.type}] ${c.description}`]
+        segs.push(`目标阶段：${target.targetStage}`)
+        segs.push(`强度变化：${target.intensityDelta > 0 ? '+' : ''}${target.intensityDelta}`)
+        if (target.isClimax) {
+          segs.push('【本章推向高潮】')
+          if (c.climaxType) segs.push(`高潮类型：${c.climaxType}`)
+        }
+        parts.push(segs.join('；'))
+      }
+    }
+
+    // 节奏约束
+    if (constraints.rhythmConstraint) {
+      const rc = constraints.rhythmConstraint
+      parts.push('\n### 节奏约束')
+      const segs = [`- 节奏类型：${rc.rhythm}`]
+      if (rc.climaxIntensity) segs.push(`高潮强度：${rc.climaxIntensity}`)
+      if (rc.climaxType) segs.push(`高潮类型：${rc.climaxType}`)
+      segs.push(`说明：${rc.description}`)
+      parts.push(segs.join('；'))
+    }
+
+    // 悬念钩子
+    if (constraints.suspenseHooks.length > 0) {
+      parts.push('\n### 悬念钩子（本章需维持或释放的悬念）')
+      for (const hook of constraints.suspenseHooks) {
+        const segs = [`- ${hook.description}`]
+        segs.push(`状态：${hook.status}`)
+        if (hook.sustainedChapters > 0) segs.push(`已持续：${hook.sustainedChapters} 章`)
+        if (hook.releaseByChapter) segs.push(`计划释放：第 ${hook.releaseByChapter} 章`)
+        parts.push(segs.join('；'))
+      }
+    }
+
     return parts.join('\n')
   }
 
@@ -492,7 +531,13 @@ export class NovelPromptBuilder {
       if (confl.length > 0) {
         lines.push('本章冲突：')
         for (const c of confl) {
-          lines.push(`  - ${c.description}（${c.stage}，强度${c.intensity}）`)
+          const parts = [`  - [${c.type}] ${c.description}`]
+          parts.push(`阶段：${c.stage}`)
+          parts.push(`强度：${c.intensity}/10`)
+          parts.push(`层级：${c.tier}`)
+          if (c.stakes) parts.push(`赌注：${c.stakes}`)
+          if (c.twistPotential != null) parts.push(`突转潜力：${c.twistPotential}/10`)
+          lines.push(parts.join('；'))
         }
       }
     }
@@ -571,7 +616,13 @@ export class NovelPromptBuilder {
     if (state.activeConflicts.length > 0) {
       parts.push('\n### 活跃冲突')
       for (const c of state.activeConflicts) {
-        parts.push(`- [${c.type}] ${c.description}（强度：${c.intensity}/10，阶段：${c.stage}）`)
+        const segs = [`- [${c.type}] ${c.description}`]
+        segs.push(`强度：${c.intensity}/10`)
+        segs.push(`阶段：${c.stage}`)
+        segs.push(`层级：${c.tier}`)
+        if (c.stakes) segs.push(`赌注：${c.stakes}`)
+        if (c.twistPotential != null) segs.push(`突转潜力：${c.twistPotential}/10`)
+        parts.push(segs.join('；'))
       }
     }
 

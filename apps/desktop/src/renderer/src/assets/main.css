@@ -293,3 +293,8 @@ button:disabled {
   transform: translateX(-50%) translateY(0);
   transition-delay: 180ms;
 }
+
+/* 鼠标在子元素上时，父元素不显示 tooltip，避免叠加 */
+[data-tip]:has(:hover)::after {
+  opacity: 0 !important;
+}

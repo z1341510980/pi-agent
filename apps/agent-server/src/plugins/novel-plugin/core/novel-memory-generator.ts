@@ -199,7 +199,7 @@ export class NovelMemoryGenerator {
       targetEntity: null,
       priority: 'medium',
     }
-    const constraints = this.engine.buildChapterConstraints(projectId)
+    const constraints = this.engine.buildChapterConstraints(projectId, chapterNumber)
     const chapterContext = this.promptBuilder.buildChapterContext(
       projectId,
       chapterNumber,
@@ -545,8 +545,7 @@ export class NovelMemoryGenerator {
         intensity: Math.max(1, Math.min(10, ensureNumber(item.intensity, 5))),
         stage: ensureString(item.stage, 'emerging') as NovelConflict['stage'],
         participants: JSON.stringify(participantIds),
-        firstChapter: null,
-        lastChapter: null,
+        chapterSpans: [],
         tier: 'secondary',
       })
       stats.conflictCreatesApplied++

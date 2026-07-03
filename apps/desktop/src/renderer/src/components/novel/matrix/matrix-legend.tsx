@@ -18,6 +18,7 @@ const LEGEND_ITEMS: LegendItem[] = [
   { symbol: '★', label: '角色出场', color: GROUP_META.character.color },
   { symbol: '▲', label: '冲突起始', color: GROUP_META.conflict.color },
   { symbol: '▼', label: '冲突结束', color: GROUP_META.conflict.color },
+  { symbol: '✦', label: '冲突高潮', color: '#f59e0b' },
   { symbol: '━', label: '跨度色带', color: GROUP_META.conflict.color },
   { symbol: '●', label: '伏笔埋设', color: GROUP_META.foreshadow.color },
   { symbol: '○', label: '伏笔回收', color: GROUP_META.foreshadow.color },

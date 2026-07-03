@@ -11,7 +11,7 @@
  *
  * 不同类型实体的字段：
  * - character：name + 11 字段（identity/personality/appearance/...）
- * - conflict：description + type + intensity + stage + tier + participants
+ * - conflict：description + type + intensity + stage + tier + participants + climaxChapter + climaxType + stakes + twistPotential
  * - foreshadow：description + category + status + linkedCharacters + linkedClues
  * - faction：name + description + type + ideology + strength + resources + allies + enemies + status
  * - location：name + description + type + significance + status
@@ -330,6 +330,8 @@ function CharacterReview({ data }: { data: import('@/api/novel-client').Generate
 }
 
 function ConflictReview({ data }: { data: import('@/api/novel-client').GeneratedConflictFields }): ReactElement {
+  const climaxChapterStr = data.climaxChapter != null ? `第 ${data.climaxChapter} 章` : ''
+  const twistPotentialStr = data.twistPotential != null ? `${data.twistPotential}/10` : ''
   return (
     <>
       <FieldRow label="描述" value={data.description} />
@@ -338,6 +340,10 @@ function ConflictReview({ data }: { data: import('@/api/novel-client').Generated
       <FieldRow label="阶段" value={data.stage} />
       <FieldRow label="层级" value={data.tier} />
       <FieldRow label="参与者" value={data.participants} />
+      <FieldRow label="高潮章节" value={climaxChapterStr} />
+      <FieldRow label="高潮类型" value={data.climaxType ?? ''} />
+      <FieldRow label="赌注" value={data.stakes ?? ''} />
+      <FieldRow label="突转潜力" value={twistPotentialStr} />
     </>
   )
 }

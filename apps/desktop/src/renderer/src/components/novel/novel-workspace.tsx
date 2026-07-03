@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
+import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
@@ -41,7 +42,7 @@ import { ChapterLivePanel } from './chapter-live-view'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
-import { computeCharacterSpans } from './matrix/matrix-logic'
+import { computeCharacterSpans, GROUP_META, type MatrixDragData } from './matrix/matrix-logic'
 import { ChapterContentEditor } from './chapter-content-editor'
 
 // ── 视图切换组件（矩阵 / 画布）──
@@ -81,6 +82,36 @@ function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
 
 export interface NovelWorkspaceProps {
   onClose: () => void
+}
+
+// ── 拖拽预览卡片：根据拖源类型渲染不同的 floating 提示 ──
+function MatrixDragPreview({ data }: { data: MatrixDragData | null }): ReactElement | null {
+  if (!data) return null
+  const meta = GROUP_META[data.entityType]
+  if (data.source === 'sidebar') {
+    return (
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border bg-surface-1 shadow-lg text-xs" style={{ borderColor: meta.color }}>
+        <span className="size-2 rounded-full" style={{ background: meta.color }} />
+        <span className="font-medium text-text">{data.name}</span>
+        <span className="text-muted-foreground">拖到章节列标记出场</span>
+      </div>
+    )
+  }
+  if (data.source === 'endpoint') {
+    return (
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border bg-surface-1 shadow-lg text-xs" style={{ borderColor: meta.color }}>
+        <span className="size-2 rounded-full" style={{ background: meta.color }} />
+        <span className="font-medium text-text">{data.end === 'start' ? '调整起点' : '调整终点'}</span>
+      </div>
+    )
+  }
+  // cell
+  return (
+    <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border bg-surface-1 shadow-lg text-xs" style={{ borderColor: meta.color }}>
+      <span className="size-2 rounded-full" style={{ background: meta.color }} />
+      <span className="font-medium text-text">移动到新章节</span>
+    </div>
+  )
 }
 
 export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
@@ -125,6 +156,15 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
+
+  // ── @dnd-kit 拖拽上下文：侧边栏 → 矩阵 + 矩阵内端点/单元格拖拽 ──
+  // PointerSensor 使用 distance:6 激活约束，区分点击（< 6px）与拖拽（≥ 6px），
+  // 保证单元格 onClick 切换出场、实体项 onClick 选中仍能正常触发。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor),
+  )
+  const [activeDrag, setActiveDrag] = useState<Active | null>(null)
 
   // 正文编辑器高度（垂直分割持久化到 localStorage）
   const [contentEditorHeight, setContentEditorHeight] = useState<number>(() => {
@@ -265,9 +305,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         // 模式1：从矩阵本章列读取已编排实体
         // 过滤逻辑与矩阵 computeCellSymbol 判定保持一致：
         // - 角色：computeCharacterSpans 把 characterHistory.chapterNumber 分组成连续区间，playhead 落在区间内即出场
-        // - 冲突：computeSpanRange(firstChapter, lastChapter) → [first, last ?? first]，playhead 落在区间内
+        // - 冲突：chapterSpans: Array<[s,e]>，playhead 落在任一区间内即出场（空数组表示未放置）
         // - 伏笔：plant=firstChapter、payoff=recoverByChapter，playhead 在 [first, recoverByChapter] 内（recoverByChapter 为空表示未回收，延续到末章）
-        // - 势力：同冲突，闭区间 [firstChapter, lastChapter ?? firstChapter]
+        // - 势力：同冲突，chapterSpans 任一区间包含 playhead 即出场
         // - 地点：appearChapters 数组包含 playhead 即出场
         const arranged = {
           characterIds: characters.filter((c) => {
@@ -275,20 +315,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             const spans = computeCharacterSpans(history)
             return spans.some((s) => playhead >= s.start && playhead <= s.end)
           }).map((c) => c.id),
-          conflictIds: conflicts.filter((c) => {
-            if (c.firstChapter == null) return false
-            const end = c.lastChapter ?? c.firstChapter
-            return playhead >= c.firstChapter && playhead <= end
-          }).map((c) => c.id),
+          conflictIds: conflicts.filter((c) =>
+            c.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
+          ).map((c) => c.id),
           foreshadowIds: foreshadows.filter((f) => {
             if (f.firstChapter == null) return false
             return playhead >= f.firstChapter && (f.recoverByChapter == null || playhead <= f.recoverByChapter)
           }).map((f) => f.id),
-          factionIds: factions.filter((f) => {
-            if (f.firstChapter == null) return false
-            const end = f.lastChapter ?? f.firstChapter
-            return playhead >= f.firstChapter && playhead <= end
-          }).map((f) => f.id),
+          factionIds: factions.filter((f) =>
+            f.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
+          ).map((f) => f.id),
           locationIds: locations.filter((l) => {
             if (l.firstChapter == null) return false
             return l.appearChapters.includes(playhead)
@@ -476,7 +512,14 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           />
         )}
 
-        {/* 主体三栏布局 */}
+        {/* 主体三栏布局（DndContext 覆盖侧边栏 + 矩阵，支持拖拽） */}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={({ active }) => setActiveDrag(active)}
+          onDragEnd={() => setActiveDrag(null)}
+          onDragCancel={() => setActiveDrag(null)}
+        >
         <div className="flex min-h-0 flex-1">
           {/* 左侧栏 */}
           <div style={{ width: sidebarWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
@@ -594,6 +637,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             )}
           </aside>
         </div>
+
+        {/* 拖拽预览：跟随光标 floating card，按拖源类型展示 */}
+        <DragOverlay dropAnimation={null}>
+          {activeDrag ? <MatrixDragPreview data={activeDrag.data.current as MatrixDragData | null} /> : null}
+        </DragOverlay>
+        </DndContext>
 
         {/* 缓存诊断弹窗 */}
         <Dialog open={cachePanelOpen} onOpenChange={setCachePanelOpen}>

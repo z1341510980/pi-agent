@@ -42,7 +42,9 @@ function makeHistory(charId: string, chapter: number): NovelCharacterHistory {
 function makeConflict(id: string, first: number | null, last: number | null, tier: 'main' | 'secondary' | 'goal' = 'main'): NovelConflict {
   return {
     id, projectId: 'p', description: id, type: 'man_vs_man' as never, intensity: 5,
-    stage: 'rising' as never, participants: '', firstChapter: first, lastChapter: last, tier,
+    stage: 'rising' as never, participants: '',
+    chapterSpans: first != null ? [[first, last ?? first]] : [],
+    tier,
     createdAt: 0, updatedAt: 0,
   }
 }
@@ -59,7 +61,9 @@ function makeFaction(id: string, first: number | null, last: number | null): Nov
   return {
     id, projectId: 'p', name: id, description: '', type: 'sect' as never, leaderId: null,
     ideology: '', strength: 'medium' as never, resources: [], allies: [], enemies: [],
-    status: 'active' as never, firstChapter: first, lastChapter: last, createdAt: 0, updatedAt: 0,
+    status: 'active' as never,
+    chapterSpans: first != null ? [[first, last ?? first]] : [],
+    createdAt: 0, updatedAt: 0,
   }
 }
 
@@ -118,14 +122,17 @@ describe('computeCharacterSpans', () => {
 // ── computeSpanRange ──
 
 describe('computeSpanRange', () => {
-  it('returns null when first is null', () => {
-    expect(computeSpanRange(null, 10)).toBeNull()
+  it('returns null for empty spans', () => {
+    expect(computeSpanRange([])).toBeNull()
   })
-  it('uses first as end when last is null', () => {
-    expect(computeSpanRange(5, null)).toEqual({ start: 5, end: 5 })
+  it('returns single-point range for degenerate span', () => {
+    expect(computeSpanRange([[5, 5]])).toEqual({ start: 5, end: 5 })
   })
-  it('returns range when both set', () => {
-    expect(computeSpanRange(3, 8)).toEqual({ start: 3, end: 8 })
+  it('returns range for single span', () => {
+    expect(computeSpanRange([[3, 8]])).toEqual({ start: 3, end: 8 })
+  })
+  it('returns overall range across multiple spans', () => {
+    expect(computeSpanRange([[1, 3], [10, 12]])).toEqual({ start: 1, end: 12 })
   })
 })
 
@@ -206,7 +213,7 @@ describe('buildGroups', () => {
     const group = data.groups.find((g) => g.id === 'conflict')!
     expect(group.entities).toHaveLength(1)
     expect(group.entities[0]).toMatchObject({
-      id: 'cf1', spanStart: 3, spanEnd: 10, subLabel: '主要冲突',
+      id: 'cf1', chapterSpans: [[3, 10]], spanStart: 3, spanEnd: 10, subLabel: '主要冲突',
     })
   })
 
@@ -230,7 +237,7 @@ describe('buildGroups', () => {
     })
     const group = data.groups.find((g) => g.id === 'faction')!
     expect(group.entities).toHaveLength(1)
-    expect(group.entities[0]).toMatchObject({ id: 'fa1', spanStart: 1, spanEnd: 12 })
+    expect(group.entities[0]).toMatchObject({ id: 'fa1', chapterSpans: [[1, 12]], spanStart: 1, spanEnd: 12 })
   })
 
   it('places location with appearChapters into location group', () => {
@@ -315,12 +322,73 @@ describe('computeCellSymbol', () => {
   it('returns span-start/middle/end for conflict', () => {
     const entity = {
       id: 'cf1', kind: 'conflict' as const, name: 'X', entityId: 'cf1', entityType: 'conflict' as const,
-      spanStart: 3, spanEnd: 8,
+      chapterSpans: [[3, 8]] as Array<[number, number]>, spanStart: 3, spanEnd: 8,
     }
     expect(computeCellSymbol(entity, 3)).toEqual({ type: 'span-start' })
     expect(computeCellSymbol(entity, 5)).toEqual({ type: 'span-middle' })
     expect(computeCellSymbol(entity, 8)).toEqual({ type: 'span-end' })
     expect(computeCellSymbol(entity, 9)).toEqual({ type: 'empty' })
+  })
+
+  it('handles multi-span conflict with gaps', () => {
+    const entity = {
+      id: 'cf2', kind: 'conflict' as const, name: 'Y', entityId: 'cf2', entityType: 'conflict' as const,
+      chapterSpans: [[1, 3], [10, 12]] as Array<[number, number]>, spanStart: 1, spanEnd: 12,
+    }
+    // 第一段中部
+    expect(computeCellSymbol(entity, 2)).toEqual({ type: 'span-middle' })
+    // gap 章节（4-9 之间）→ empty
+    expect(computeCellSymbol(entity, 4)).toEqual({ type: 'empty' })
+    expect(computeCellSymbol(entity, 9)).toEqual({ type: 'empty' })
+    // 第二段起点
+    expect(computeCellSymbol(entity, 10)).toEqual({ type: 'span-start' })
+    // 第二段终点
+    expect(computeCellSymbol(entity, 12)).toEqual({ type: 'span-end' })
+  })
+
+  it('handles multi-span faction with gaps', () => {
+    const entity = {
+      id: 'fa1', kind: 'faction' as const, name: 'Z', entityId: 'fa1', entityType: 'faction' as const,
+      chapterSpans: [[1, 3], [10, 12]] as Array<[number, number]>, spanStart: 1, spanEnd: 12,
+    }
+    // 第一段中部
+    expect(computeCellSymbol(entity, 2)).toEqual({ type: 'span-middle' })
+    // gap 章节 → empty
+    expect(computeCellSymbol(entity, 4)).toEqual({ type: 'empty' })
+    // 第二段起点
+    expect(computeCellSymbol(entity, 10)).toEqual({ type: 'span-start' })
+    // 第二段终点
+    expect(computeCellSymbol(entity, 12)).toEqual({ type: 'span-end' })
+  })
+
+  it('returns conflict-climax at climaxChapter (overrides span symbols)', () => {
+    const entity = {
+      id: 'cf3', kind: 'conflict' as const, name: 'Climax', entityId: 'cf3', entityType: 'conflict' as const,
+      chapterSpans: [[3, 8]] as Array<[number, number]>, spanStart: 3, spanEnd: 8,
+      climaxChapter: 5,
+    }
+    // 高潮章节优先于 span-middle
+    expect(computeCellSymbol(entity, 5)).toEqual({ type: 'conflict-climax' })
+    // 高潮章节与 span-start 重合时也优先
+    const entity2 = {
+      id: 'cf4', kind: 'conflict' as const, name: 'ClimaxAtStart', entityId: 'cf4', entityType: 'conflict' as const,
+      chapterSpans: [[3, 8]] as Array<[number, number]>, spanStart: 3, spanEnd: 8,
+      climaxChapter: 3,
+    }
+    expect(computeCellSymbol(entity2, 3)).toEqual({ type: 'conflict-climax' })
+    // 非高潮章节仍返回 span 符号
+    expect(computeCellSymbol(entity, 3)).toEqual({ type: 'span-start' })
+    expect(computeCellSymbol(entity, 8)).toEqual({ type: 'span-end' })
+  })
+
+  it('faction ignores climaxChapter (no conflict-climax for faction)', () => {
+    const entity = {
+      id: 'fa2', kind: 'faction' as const, name: 'F', entityId: 'fa2', entityType: 'faction' as const,
+      chapterSpans: [[3, 8]] as Array<[number, number]>, spanStart: 3, spanEnd: 8,
+      climaxChapter: 5,
+    }
+    // faction 即使有 climaxChapter 也不返回 conflict-climax
+    expect(computeCellSymbol(entity, 5)).toEqual({ type: 'span-middle' })
   })
 
   it('returns foreshadow-plant/payoff/span for foreshadow', () => {

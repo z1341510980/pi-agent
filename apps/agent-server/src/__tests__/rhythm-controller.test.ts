@@ -185,7 +185,7 @@ describe('RhythmController - 默认模型 vs 网文模型', () => {
       id: 'custom-test',
       name: '自定义',
       description: '测试模型',
-      sequence: ['setup', 'climax', 'resolution'] as ChapterRhythm[],
+      sequence: [{ rhythm: 'setup' }, { rhythm: 'climax' }, { rhythm: 'resolution' }],
     }
     const s1 = controller.suggestRhythm(1, 'setup', [], customModel)
     const s2 = controller.suggestRhythm(2, 'rising', [], customModel)
@@ -201,7 +201,7 @@ describe('RhythmController - 默认模型 vs 网文模型', () => {
       id: 'custom-test',
       name: '自定义',
       description: '测试模型',
-      sequence: ['setup', 'climax'] as ChapterRhythm[],
+      sequence: [{ rhythm: 'setup' }, { rhythm: 'climax' }],
     }
     // 第 1 章 / 2 长度 = 0.5
     const suggestion = controller.suggestRhythm(1, 'setup', [], customModel)
@@ -241,7 +241,7 @@ describe('RhythmController - 原因描述生成', () => {
       id: 'custom',
       name: 'c',
       description: '',
-      sequence: ['climax', 'climax', 'setup'] as ChapterRhythm[],
+      sequence: [{ rhythm: 'climax' }, { rhythm: 'climax' }, { rhythm: 'setup' }],
     })
     expect(suggestion.reason).toContain('连续')
     // 不应同时包含"开篇"（互斥分支）

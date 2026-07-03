@@ -1,5 +1,7 @@
 import { Children, useCallback, useMemo, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useDraggable } from '@dnd-kit/core'
+import { CSS } from '@dnd-kit/utilities'
 import {
   BookOpen,
   Plus,
@@ -11,6 +13,7 @@ import {
   Trash2,
   MapPin,
   Globe,
+  GripVertical,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -54,6 +57,7 @@ import {
 } from '@/api/novel-client'
 import { CharacterCreateDialog } from './character-create-dialog'
 import { OutlineTree } from './outline-tree'
+import { GROUP_META, type MatrixEntityKind, type SidebarDragData } from './matrix/matrix-logic'
 
 // ── 通用节点类型（用于拖拽） ──
 
@@ -360,7 +364,6 @@ function ProjectTree({
   onManualArrange,
   onAiArrange,
 }: ProjectTreeProps): ReactElement {
-  const upsertChapter = useNovelStore((s) => s.upsertChapter)
   const upsertConflict = useNovelStore((s) => s.upsertConflict)
   const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
   const upsertFaction = useNovelStore((s) => s.upsertFaction)
@@ -517,7 +520,8 @@ function ProjectTree({
               sublabel={c.identity}
               selected={selectedNodeId === c.id}
               onClick={() => onSelectEntity(c.id, 'character')}
-              onDragStart={(e) => setDragData(e, 'character', c.id)}
+              entityType="character"
+              entityId={c.id}
               onDelete={() => handleDelete('character', c.id, c.name || '角色')}
             />
           ))
@@ -566,7 +570,8 @@ function ProjectTree({
               sublabel={f.category}
               selected={selectedNodeId === f.id}
               onClick={() => onSelectEntity(f.id, 'foreshadow')}
-              onDragStart={(e) => setDragData(e, 'foreshadow', f.id)}
+              entityType="foreshadow"
+              entityId={f.id}
               onDelete={() => handleDelete('foreshadow', f.id, '伏笔')}
             />
           ))
@@ -595,7 +600,8 @@ function ProjectTree({
               sublabel={c.type}
               selected={selectedNodeId === c.id}
               onClick={() => onSelectEntity(c.id, 'conflict')}
-              onDragStart={(e) => setDragData(e, 'conflict', c.id)}
+              entityType="conflict"
+              entityId={c.id}
               onDelete={() => handleDelete('conflict', c.id, '冲突')}
             />
           ))
@@ -624,7 +630,8 @@ function ProjectTree({
               sublabel={f.type}
               selected={selectedNodeId === f.id}
               onClick={() => onSelectEntity(f.id, 'faction')}
-              onDragStart={(e) => setDragData(e, 'faction', f.id)}
+              entityType="faction"
+              entityId={f.id}
               onDelete={() => handleDelete('faction', f.id, f.name || '势力')}
             />
           ))
@@ -653,7 +660,8 @@ function ProjectTree({
               sublabel={l.type}
               selected={selectedNodeId === l.id}
               onClick={() => onSelectEntity(l.id, 'location')}
-              onDragStart={(e) => setDragData(e, 'location', l.id)}
+              entityType="location"
+              entityId={l.id}
               onDelete={() => handleDelete('location', l.id, l.name || '地点')}
             />
           ))
@@ -682,7 +690,8 @@ function ProjectTree({
               sublabel={w.category}
               selected={selectedNodeId === w.id}
               onClick={() => onSelectEntity(w.id, 'world_element')}
-              onDragStart={(e) => setDragData(e, 'world_element', w.id)}
+              entityType="world_element"
+              entityId={w.id}
               onDelete={() => handleDelete('world_element', w.id, w.name || '世界观要素')}
             />
           ))
@@ -762,7 +771,9 @@ interface EntityItemProps {
   sublabel?: string
   selected?: boolean
   onClick: () => void
-  onDragStart: (e: React.DragEvent<HTMLDivElement>) => void
+  /** 实体类型，用于构造拖拽数据 + 取色 */
+  entityType: MatrixEntityKind
+  entityId: string
   onDelete: () => void
 }
 
@@ -771,20 +782,39 @@ function EntityItem({
   sublabel,
   selected = false,
   onClick,
-  onDragStart,
+  entityType,
+  entityId,
   onDelete,
 }: EntityItemProps): ReactElement {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `sidebar:${entityType}:${entityId}`,
+    data: {
+      source: 'sidebar',
+      entityType,
+      entityId,
+      name: label,
+      color: GROUP_META[entityType].color,
+    } satisfies SidebarDragData,
+  })
+  const style: React.CSSProperties = {
+    transform: transform ? CSS.Translate.toString(transform) : undefined,
+    touchAction: 'none',
+  }
   return (
     <div
-      draggable
-      onDragStart={onDragStart}
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
       onClick={onClick}
       className={cn(
-        'group flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors cursor-pointer',
+        'group flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors cursor-grab active:cursor-grabbing',
         selected ? 'bg-primary/10' : 'hover:bg-muted',
+        isDragging && 'opacity-30',
       )}
     >
-      <span className="size-1 rounded-full bg-muted-foreground/40 shrink-0" aria-hidden="true" />
+      <GripVertical className="size-3 text-muted-foreground/40 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" aria-hidden="true" />
+      <span className="size-1.5 rounded-full shrink-0" style={{ background: GROUP_META[entityType].color }} aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <div className={cn('text-xs truncate', selected ? 'text-primary font-medium' : 'text-text')}>{label}</div>
         {sublabel && (
@@ -820,7 +850,7 @@ interface ChapterItemProps {
   onDelete: () => void
 }
 
-function ChapterItem({
+export function ChapterItem({
   chapter,
   characters,
   conflicts,

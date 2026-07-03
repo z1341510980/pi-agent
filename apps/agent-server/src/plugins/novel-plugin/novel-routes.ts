@@ -839,8 +839,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     type: z.enum(['inner', 'relationship', 'faction', 'interest', 'moral', 'identity', 'emotional', 'world_rule', 'survival']),
     intensity: z.number().int().min(1).max(10).default(5),
     stage: z.enum(['latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved', 'transformed']).default('latent'),
-    firstChapter: z.number().int().nullable().default(null),
-    lastChapter: z.number().int().nullable().default(null),
+    chapterSpans: z.array(z.tuple([z.number().int(), z.number().int()])).default([]),
     tier: z.enum(['main', 'secondary', 'goal']).default('secondary'),
   })
 
@@ -1114,8 +1113,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     allies: z.array(z.string()).default([]),
     enemies: z.array(z.string()).default([]),
     status: z.enum(['active', 'declined', 'destroyed', 'hidden']).default('active'),
-    firstChapter: z.number().int().nullable().default(null),
-    lastChapter: z.number().int().nullable().default(null),
+    chapterSpans: z.array(z.tuple([z.number().int(), z.number().int()])).default([]),
   })
 
   routes.push({
@@ -1503,6 +1501,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
                 character: c,
                 allowedNextStage: null,
               })),
+              conflictTargets: [],
+              suspenseHooks: [],
             },
           )
         } catch {

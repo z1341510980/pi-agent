@@ -551,4 +551,19 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
     );`,
   },
+  {
+    // 045: conflicts/factions 新增 chapter_spans（JSON 数组 [[start,end],...]）支持非连续跨度
+    // first_chapter/last_chapter 保留为兼容字段（不再读写，但保留列避免破坏旧代码）
+    id: '045_add_chapter_spans_to_conflicts_factions',
+    sql: `ALTER TABLE novel_conflicts ADD COLUMN chapter_spans TEXT;
+          ALTER TABLE novel_factions ADD COLUMN chapter_spans TEXT;
+          UPDATE novel_conflicts SET chapter_spans =
+            CASE WHEN first_chapter IS NULL THEN '[]'
+                 ELSE json_array(json_array(first_chapter, COALESCE(last_chapter, first_chapter)))
+            END;
+          UPDATE novel_factions SET chapter_spans =
+            CASE WHEN first_chapter IS NULL THEN '[]'
+                 ELSE json_array(json_array(first_chapter, COALESCE(last_chapter, first_chapter)))
+            END;`,
+  },
 ]
