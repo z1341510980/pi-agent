@@ -44,6 +44,10 @@ import { AgentLogPanel } from './agent-log-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
 import { computeCharacterSpans, GROUP_META, type MatrixDragData } from './matrix/matrix-logic'
 import { ChapterContentEditor } from './chapter-content-editor'
+import { ErrorBoundary } from '@/components/overlays/error-boundary'
+import { MatrixErrorFallback } from './matrix-error-fallback'
+import { CanvasErrorFallback } from './canvas-error-fallback'
+import { CreationErrorFallback } from './creation-error-fallback'
 
 // ── 视图切换组件（矩阵 / 画布）──
 
@@ -560,11 +564,21 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     <>
                       {/* 上：章节正文编辑器 */}
                       <div style={{ height: contentEditorHeight }} className="shrink-0 min-h-[120px] overflow-hidden">
-                        <ChapterContentEditor
-                          isCreationActive={isCreationActive}
-                          creationChapterNumber={creationChapterNumber}
-                          creationChapterContent={creationFlow.chapterContent}
-                        />
+                        <ErrorBoundary
+                          fallback={(err, reset) => (
+                            <MatrixErrorFallback
+                              error={err}
+                              reset={reset}
+                              onSwitchToCanvas={() => setViewMode('canvas')}
+                            />
+                          )}
+                        >
+                          <ChapterContentEditor
+                            isCreationActive={isCreationActive}
+                            creationChapterNumber={creationChapterNumber}
+                            creationChapterContent={creationFlow.chapterContent}
+                          />
+                        </ErrorBoundary>
                       </div>
                       <ResizableSplitter
                         direction="vertical"
@@ -576,23 +590,43 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       />
                       {/* 下：矩阵视图 */}
                       <div className="flex-1 min-h-[200px] overflow-hidden">
-                        <MatrixWorkspace
-                          creationRunning={creationFlow.isRunning}
-                          creationChapterNumber={creationChapterNumber}
-                          onRegenerateChapter={handleRegenerateChapter}
-                          onStartCreationAt={handleStartCreationAt}
-                        />
+                        <ErrorBoundary
+                          fallback={(err, reset) => (
+                            <MatrixErrorFallback
+                              error={err}
+                              reset={reset}
+                              onSwitchToCanvas={() => setViewMode('canvas')}
+                            />
+                          )}
+                        >
+                          <MatrixWorkspace
+                            creationRunning={creationFlow.isRunning}
+                            creationChapterNumber={creationChapterNumber}
+                            onRegenerateChapter={handleRegenerateChapter}
+                            onStartCreationAt={handleStartCreationAt}
+                          />
+                        </ErrorBoundary>
                       </div>
                     </>
                   ) : (
-                    <NovelCanvas
-                      relayoutSignal={relayoutSignal}
-                      creationPhase={creationFlow.phase}
-                      creationRunning={creationFlow.isRunning}
-                      creationError={creationFlow.error}
-                      onCancelCreation={handleDiscardCreation}
-                      onNodeCountChange={setNodeCount}
-                    />
+                    <ErrorBoundary
+                      fallback={(err, reset) => (
+                        <CanvasErrorFallback
+                          error={err}
+                          reset={reset}
+                          onSwitchToMatrix={() => setViewMode('matrix')}
+                        />
+                      )}
+                    >
+                      <NovelCanvas
+                        relayoutSignal={relayoutSignal}
+                        creationPhase={creationFlow.phase}
+                        creationRunning={creationFlow.isRunning}
+                        creationError={creationFlow.error}
+                        onCancelCreation={handleDiscardCreation}
+                        onNodeCountChange={setNodeCount}
+                      />
+                    </ErrorBoundary>
                   )}
                 </div>
               </>
@@ -616,22 +650,32 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           />
           <aside style={{ width: detailWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
             {isCreationActive ? (
-              <ChapterLivePanel
-                phase={creationFlow.phase}
-                isRunning={creationFlow.isRunning}
-                chapterContent={creationFlow.chapterContent}
-                agentOutputs={creationFlow.agentOutputs}
-                chapterNumber={creationChapterNumber}
-                currentCheckpoint={creationFlow.currentCheckpoint}
-                result={creationFlow.result}
-                error={creationFlow.error}
-                creationMode={creationMode}
-                onSubmitCheckpoint={creationFlow.submitCheckpoint}
-                onSave={handleSaveChapter}
-                onDiscard={handleDiscardCreation}
-                onSendMessage={handleSendMessage}
-                userMessages={creationFlow.userMessages}
-              />
+              <ErrorBoundary
+                fallback={(err, reset) => (
+                  <CreationErrorFallback
+                    error={err}
+                    reset={reset}
+                    onDiscardCreation={handleDiscardCreation}
+                  />
+                )}
+              >
+                <ChapterLivePanel
+                  phase={creationFlow.phase}
+                  isRunning={creationFlow.isRunning}
+                  chapterContent={creationFlow.chapterContent}
+                  agentOutputs={creationFlow.agentOutputs}
+                  chapterNumber={creationChapterNumber}
+                  currentCheckpoint={creationFlow.currentCheckpoint}
+                  result={creationFlow.result}
+                  error={creationFlow.error}
+                  creationMode={creationMode}
+                  onSubmitCheckpoint={creationFlow.submitCheckpoint}
+                  onSave={handleSaveChapter}
+                  onDiscard={handleDiscardCreation}
+                  onSendMessage={handleSendMessage}
+                  userMessages={creationFlow.userMessages}
+                />
+              </ErrorBoundary>
             ) : (
               <NovelDetailPanel />
             )}
