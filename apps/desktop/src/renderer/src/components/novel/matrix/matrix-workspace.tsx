@@ -79,6 +79,11 @@ export function MatrixWorkspace({
   const collapsedGroupsArr = useNovelStore((s) => s.collapsedGroups)
   const toggleCollapsedGroup = useNovelStore((s) => s.toggleCollapsedGroup)
   const upsertMarker = useNovelStore((s) => s.upsertMarker)
+  // ── Undo/Redo（与 MatrixToolbar 联动）──
+  const undoCount = useNovelStore((s) => s.undoCount)
+  const redoCount = useNovelStore((s) => s.redoCount)
+  const undo = useNovelStore((s) => s.undo)
+  const redo = useNovelStore((s) => s.redo)
 
   // ── 本地 UI 状态 ──
   const [cellWidth, setCellWidth] = useState(DEFAULT_CELL_WIDTH)
@@ -976,6 +981,10 @@ export function MatrixWorkspace({
         completableCount={completableCount}
         isCompleting={isCompleting}
         onCompleteHistory={handleCompleteHistory}
+        canUndo={undoCount > 0}
+        canRedo={redoCount > 0}
+        onUndo={undo}
+        onRedo={redo}
         activeFilter={activeFilter}
         onFilterChange={handleFilterChange}
       />

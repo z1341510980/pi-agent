@@ -26,6 +26,10 @@ export interface ShortcutHandlers {
   onFocusInput?: () => void
   /** Cmd/Ctrl+M — 切换权限模式 */
   onTogglePermissionMode?: () => void
+  /** Cmd/Ctrl+Z — 撤销 */
+  onUndo?: () => void
+  /** Cmd/Ctrl+Shift+Z 或 Cmd/Ctrl+Y — 重做 */
+  onRedo?: () => void
 }
 
 // ── 辅助函数 ──
@@ -152,4 +156,18 @@ export function useShortcut(handlers: ShortcutHandlers): void {
     e.preventDefault()
     handlersRef.current.onTogglePermissionMode?.()
   }, { preventDefault: false }, [])
+
+  // Cmd/Ctrl+Z — 撤销（编辑器内由 Tiptap 自行处理）
+  useHotkeys('mod+z', (e) => {
+    if (isEditableTarget(e)) return
+    e.preventDefault()
+    handlersRef.current.onUndo?.()
+  }, { enableOnFormTags: false }, [])
+
+  // Cmd/Ctrl+Shift+Z 或 Cmd/Ctrl+Y — 重做
+  useHotkeys(['mod+shift+z', 'mod+y'], (e) => {
+    if (isEditableTarget(e)) return
+    e.preventDefault()
+    handlersRef.current.onRedo?.()
+  }, { enableOnFormTags: false }, [])
 }

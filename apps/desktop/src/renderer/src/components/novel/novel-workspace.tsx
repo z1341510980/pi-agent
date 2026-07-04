@@ -34,6 +34,7 @@ import {
   completeChapter,
 } from '@/api/novel-client'
 import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
+import { useShortcut } from '@/hooks/use-shortcut'
 import { NovelSidebar } from './novel-sidebar'
 import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
@@ -144,6 +145,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const setCreationMode = useNovelStore((s) => s.setCreationMode)
   const creationMode = useNovelStore((s) => s.creationMode)
   const playheadChapter = useNovelStore((s) => s.playheadChapter)
+
+  // ── 全局快捷键：撤销/重做（编辑器内由 Tiptap 自行处理）──
+  useShortcut({
+    onUndo: () => useNovelStore.getState().undo(),
+    onRedo: () => useNovelStore.getState().redo(),
+  })
 
   const queryClient = useQueryClient()
 

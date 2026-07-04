@@ -3,7 +3,7 @@
  *
  * 功能分组：
  * - 章节号显示（当前/总数）
- * - 编辑组：撤销/重做（MVP 暂禁用，待接入编辑历史）
+ * - 编辑组：撤销/重做
  * - 缩放：单元格宽度 ± 按钮
  * - 补全角色历史
  * - 过滤 chips：角色/冲突/伏笔/势力/地点/世界要素/全部
@@ -87,7 +87,7 @@ export function MatrixToolbar({
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
       {/* 编辑组：撤销/重做 */}
-      {/*<div className="flex items-center gap-0.5">
+      <div className="flex items-center gap-0.5">
         <button
           type="button"
           className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -106,7 +106,7 @@ export function MatrixToolbar({
         >
           <Redo2 className="size-3.5" />
         </button>
-      </div>*/}
+      </div>
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
