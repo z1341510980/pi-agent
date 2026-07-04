@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { ErrorCard } from '@/components/chat/error-card'
 import { cn } from '@/lib/utils'
 import { countWords } from '@/lib/novel-utils'
 import type {
@@ -299,6 +300,10 @@ export interface ChapterLivePanelProps {
   currentCheckpoint: CheckpointData | null
   result: CreationResult | null
   error: string | null
+  /** 错误后重试回调（不传则不显示重试按钮） */
+  onRetry?: () => void
+  /** 错误后丢弃回调（不传则不显示关闭按钮） */
+  onDismissError?: () => void
   /** 创作模式：'ai-arrange' 时仅编排矩阵，完成态文案/按钮与创作流程不同 */
   creationMode?: 'manual' | 'ai-arrange' | null
   onSubmitCheckpoint: (decision: CheckpointDecision) => void
@@ -319,6 +324,8 @@ export function ChapterLivePanel({
   currentCheckpoint,
   result,
   error,
+  onRetry,
+  onDismissError,
   creationMode,
   onSubmitCheckpoint,
   onSave,
@@ -479,9 +486,11 @@ export function ChapterLivePanel({
 
           {/* 错误 */}
           {error && (
-            <div className="rounded-md bg-destructive/10 p-3 text-xs text-destructive">
-              {error}
-            </div>
+            <ErrorCard
+              message={error}
+              onRetry={onRetry}
+              onDismiss={onDismissError}
+            />
           )}
         </div>
 

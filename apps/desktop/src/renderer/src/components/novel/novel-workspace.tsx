@@ -423,6 +423,18 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
   }, [creationFlow, currentProjectId, queryClient])
 
+  const handleRetryCreation = useCallback((): void => {
+    if (!currentProject || creationChapterNumber == null) return
+    // 与 chat handleRetry 行为一致：清空错误，重新触发全新 SSE run
+    // agentOutputs 和 chapterContent 半成品保留供用户对比
+    creationFlow.reset()
+    void creationFlow.startCreation(currentProject.id, creationChapterNumber)
+  }, [currentProject, creationChapterNumber, creationFlow])
+
+  const handleDismissError = useCallback((): void => {
+    creationFlow.reset()
+  }, [creationFlow])
+
   const handleSendMessage = useCallback((message: string) => {
     creationFlow.sendMessage(message)
   }, [creationFlow])
@@ -668,6 +680,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                   currentCheckpoint={creationFlow.currentCheckpoint}
                   result={creationFlow.result}
                   error={creationFlow.error}
+                  onRetry={handleRetryCreation}
+                  onDismissError={handleDismissError}
                   creationMode={creationMode}
                   onSubmitCheckpoint={creationFlow.submitCheckpoint}
                   onSave={handleSaveChapter}
