@@ -18,6 +18,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { Plus, ChevronRight, GripVertical } from 'lucide-react'
 import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
+import { computeVisibleChapters } from '@/lib/matrix-viewport'
 import { useNovelStore } from '@/stores/novel-store'
 import {
   buildGroups,
@@ -117,6 +118,22 @@ export function MatrixView({
     for (let i = 1; i <= maxChapter; i++) cols.push(i)
     return cols
   }, [maxChapter])
+
+  // 水平虚拟化：仅渲染可见章节列 + 缓冲列，DOM 从 O(N*M) 降为 O(N*visibleM)
+  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({
+    start: 1,
+    end: Math.min(maxChapter, 20), // 初始渲染前 20 列
+  })
+
+  // 监听 maxChapter 变化时重置视口
+  useEffect(() => {
+    setVisibleRange({ start: 1, end: Math.min(maxChapter, 20) })
+  }, [maxChapter])
+
+  const visibleChapterColumns = useMemo(() => {
+    if (visibleRange.start > visibleRange.end) return []
+    return chapterColumns.slice(visibleRange.start - 1, visibleRange.end)
+  }, [chapterColumns, visibleRange])
 
   const markersByChapter = useMemo(() => {
     const m = new Map<number, NovelMarker[]>()
@@ -230,11 +247,26 @@ export function MatrixView({
       }}
       className="overflow-x-auto overflow-y-auto h-full isolate"
       onScroll={(e) => {
-        const x = e.currentTarget.scrollLeft
-        const els = e.currentTarget.querySelectorAll<HTMLElement>('[data-sticky-title]')
+        const el = e.currentTarget
+        const x = el.scrollLeft
+        // 原有 sticky title 同步逻辑
+        const els = el.querySelectorAll<HTMLElement>('[data-sticky-title]')
         for (let i = 0; i < els.length; i++) {
           els[i].style.transform = `translateX(${x}px)`
         }
+        // 水平虚拟化视口计算
+        const range = computeVisibleChapters({
+          scrollLeft: x,
+          viewportWidth: el.clientWidth,
+          sidebarWidth: SIDEBAR_W,
+          cellWidth,
+          maxChapter,
+          overscan: 3,
+        })
+        setVisibleRange((prev) => {
+          if (prev.start === range.start && prev.end === range.end) return prev
+          return { start: range.start, end: range.end }
+        })
       }}
     >
       {hasAnyEntity ? (
@@ -293,9 +325,13 @@ export function MatrixView({
             <div className="sticky left-0 z-30 bg-surface-1 flex items-center justify-end pr-3 border-r border-border shrink-0" style={{ width: `${SIDEBAR_W}px` }}>
               <span className="font-serif text-[11px] text-hint tracking-wider">实体 ＼ 章节</span>
             </div>
-            {/* 章节标尺单元格 */}
+            {/* 章节标尺单元格（仅渲染可见列） */}
             <div className="flex">
-              {chapterColumns.map((ch) => {
+              {/* 左侧占位：撑开滚动条到第一个可见章节的位置 */}
+              {visibleRange.start > 1 && (
+                <div style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} aria-hidden="true" />
+              )}
+              {visibleChapterColumns.map((ch) => {
                 const isCurrent = ch === playheadChapter
                 const title = titleMap.get(ch) ?? ''
                 const ms = markersByChapter.get(ch) ?? []
@@ -326,6 +362,10 @@ export function MatrixView({
                   </div>
                 )
               })}
+              {/* 右侧占位：撑开滚动条到最后一个可见章节之后的位置 */}
+              {visibleRange.end < maxChapter && (
+                <div style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} aria-hidden="true" />
+              )}
             </div>
           </div>
 
@@ -340,7 +380,8 @@ export function MatrixView({
                   key={group.id}
                   group={group}
                   collapsed={collapsed}
-                  chapterColumns={chapterColumns}
+                  visibleChapterColumns={visibleChapterColumns}
+                  visibleRange={visibleRange}
                   titleMap={titleMap}
                   maxChapter={maxChapter}
                   cellWidth={cellWidth}
@@ -391,7 +432,8 @@ function MatrixEmptyState(): ReactElement {
 interface GroupBlockProps {
   group: MatrixGroup
   collapsed: boolean
-  chapterColumns: number[]
+  visibleChapterColumns: number[]
+  visibleRange: { start: number; end: number }
   titleMap: Map<number, string>
   maxChapter: number
   cellWidth: number
@@ -408,7 +450,7 @@ interface GroupBlockProps {
 }
 
 function GroupBlock({
-  group, collapsed, chapterColumns, titleMap, maxChapter, cellWidth, selectedNodeId,
+  group, collapsed, visibleChapterColumns, visibleRange, titleMap, maxChapter, cellWidth, selectedNodeId,
   color, colorRgb, icon, onToggleCollapse, onEntityClick,
   onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onTogglePresent,
 }: GroupBlockProps): ReactElement {
@@ -467,9 +509,15 @@ function GroupBlock({
             onContextMenuGroupEmpty(group.id)
           }}
         >
-          {chapterColumns.map((ch) => (
+          {visibleRange.start > 1 && (
+            <div aria-hidden="true" style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} />
+          )}
+          {visibleChapterColumns.map((ch) => (
             <div key={ch} className="shrink-0 border-r border-border/40" style={{ width: `${cellWidth}px` }} />
           ))}
+          {visibleRange.end < maxChapter && (
+            <div aria-hidden="true" style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} />
+          )}
         </div>
       </div>
 
@@ -478,7 +526,8 @@ function GroupBlock({
         <EntityRow
           key={entity.id}
           entity={entity}
-          chapterColumns={chapterColumns}
+          visibleChapterColumns={visibleChapterColumns}
+          visibleRange={visibleRange}
           titleMap={titleMap}
           maxChapter={maxChapter}
           cellWidth={cellWidth}
@@ -509,7 +558,8 @@ function GroupBlock({
 
 interface EntityRowProps {
   entity: MatrixEntity
-  chapterColumns: number[]
+  visibleChapterColumns: number[]
+  visibleRange: { start: number; end: number }
   titleMap: Map<number, string>
   maxChapter: number
   cellWidth: number
@@ -521,7 +571,7 @@ interface EntityRowProps {
 }
 
 function EntityRow({
-  entity, chapterColumns, titleMap, maxChapter, cellWidth, isSelected, onClick,
+  entity, visibleChapterColumns, visibleRange, titleMap, maxChapter, cellWidth, isSelected, onClick,
   onContextMenuCell, onEditSpan, onTogglePresent,
 }: EntityRowProps): ReactElement {
   const meta = GROUP_META[entity.kind]
@@ -557,7 +607,10 @@ function EntityRow({
 
       {/* 右侧单元格容器 */}
       <div className="relative flex">
-        {chapterColumns.map((ch) => (
+        {visibleRange.start > 1 && (
+          <div aria-hidden="true" style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} />
+        )}
+        {visibleChapterColumns.map((ch) => (
           <Cell
             key={ch}
             entity={entity}
@@ -573,6 +626,9 @@ function EntityRow({
             }}
           />
         ))}
+        {visibleRange.end < maxChapter && (
+          <div aria-hidden="true" style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} />
+        )}
         {/* 跨度叠加层 */}
         <EntityOverlay
           entity={entity}
