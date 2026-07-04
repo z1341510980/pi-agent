@@ -14,6 +14,7 @@ import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacter } from './types.js'
+import { CircuitBreaker } from '../../../core/agent/circuit-breaker.js'
 
 /** 将任意 LLM 输出值安全转为 string，防止数组/对象传到 SQLite */
 function ensureString(value: unknown, defaultValue: string): string {
@@ -39,11 +40,18 @@ export interface CharacterGenerationProgressEvent {
 }
 
 export class NovelCharacterGenerator {
+  /** LLM 调用熔断器（实例级，所有 generate 调用共享） */
+  private readonly circuitBreaker: CircuitBreaker
+
   constructor(
     private promptBuilder: NovelPromptBuilder,
     private promptManager: PromptManager,
     private context: PluginContext,
-  ) {}
+    circuitBreaker?: CircuitBreaker,
+  ) {
+    // 未注入则使用默认配置（从 runtimePerformance 读取阈值）
+    this.circuitBreaker = circuitBreaker ?? new CircuitBreaker()
+  }
 
   /**
    * 生成角色设定
@@ -78,22 +86,25 @@ export class NovelCharacterGenerator {
     })
 
     try {
-      // 使用 promptStream 实现真正的流式推送：
-      // 每收到一段 text_delta 就通过 onProgress 推送给前端，
-      // 前端可在 SSE 通道上实时显示生成中的文本预览。
-      let streamedText = ''
-      let lastEmitTs = 0
-      const result = await session.promptStream((delta) => {
-        streamedText += delta
-        // 节流：每 500ms 最多发一次进度，避免 token 级回调导致 SSE 事件洪泛
-        const now = Date.now()
-        if (now - lastEmitTs < 500) return
-        lastEmitTs = now
-        const partial = streamedText.slice(-200)
-        onProgress?.({
-          phase: 'generating',
-          message: 'AI 正在生成角色设定...',
-          data: { partial },
+      // 用熔断器包装 LLM 调用：连续失败时熔断，避免雪崩
+      const result = await this.circuitBreaker.execute(async () => {
+        // 使用 promptStream 实现真正的流式推送：
+        // 每收到一段 text_delta 就通过 onProgress 推送给前端，
+        // 前端可在 SSE 通道上实时显示生成中的文本预览。
+        let streamedText = ''
+        let lastEmitTs = 0
+        return await session.promptStream((delta) => {
+          streamedText += delta
+          // 节流：每 500ms 最多发一次进度，避免 token 级回调导致 SSE 事件洪泛
+          const now = Date.now()
+          if (now - lastEmitTs < 500) return
+          lastEmitTs = now
+          const partial = streamedText.slice(-200)
+          onProgress?.({
+            phase: 'generating',
+            message: 'AI 正在生成角色设定...',
+            data: { partial },
+          })
         })
       })
       this.context.logger.info(
@@ -101,6 +112,7 @@ export class NovelCharacterGenerator {
           projectId,
           coreStylePreview: coreStyle.slice(0, 80),
           resultLength: result.length,
+          circuitBreakerState: this.circuitBreaker.state,
         },
         '角色生成 LLM 调用完成',
       )
@@ -118,6 +130,17 @@ export class NovelCharacterGenerator {
       })
       return character
     } catch (err) {
+      // 熔断器开路时给出明确错误信息
+      if (err instanceof Error && /熔断器开路/.test(err.message)) {
+        this.context.logger.warn(
+          { projectId, circuitBreakerState: this.circuitBreaker.state },
+          '角色生成被熔断器拒绝',
+        )
+        onProgress?.({
+          phase: 'fallback',
+          message: 'AI 服务暂时不可用（熔断器开路），请稍后重试',
+        })
+      }
       this.context.logger.error(
         { projectId, coreStylePreview: coreStyle.slice(0, 80), err },
         '角色生成 LLM 调用失败，回退到模板角色',
