@@ -731,19 +731,20 @@ export function MatrixWorkspace({
   }, [currentProjectId, noteDialog, upsertMarker, queryClient])
 
   // ── C-4a 双击色带 / 右键「编辑范围」：通用实体跨度编辑 ──
-  const handleEditSpan = useCallback((entity: MatrixEntity) => {
+  // 双击色带直接拿到 MatrixEntity；右键菜单通过 (entityId, entityType) 在 matrixData 里查到
+  const openSpanDialog = useCallback((entity: MatrixEntity) => {
     if (entity.kind === 'world_element') return
     setSpanDialog({ entity })
   }, [])
 
-  // 右键菜单入口：通过 entityId 找到 MatrixEntity 再打开对话框
+  // 右键菜单入口：由 (entityId, entityType) 反查 MatrixEntity 后打开对话框
   const handleEditSpanFromMenu = useCallback((entityId: string, _entityName: string, entityType: MatrixEntityKind) => {
     if (entityType === 'world_element') return
     const entity = matrixData.groups
       .flatMap((g) => g.entities)
       .find((e) => e.entityId === entityId && e.kind === entityType)
-    if (entity) setSpanDialog({ entity })
-  }, [matrixData.groups])
+    if (entity) openSpanDialog(entity)
+  }, [matrixData.groups, openSpanDialog])
 
   const handleSubmitSpan = useCallback(async (entity: MatrixEntity, firstChapter: number, lastChapter: number): Promise<void> => {
     if (!currentProjectId) return
@@ -1004,7 +1005,7 @@ export function MatrixWorkspace({
           onContextMenuChapter={handleContextMenuChapter}
           onContextMenuCell={handleContextMenuCell}
           onContextMenuGroupEmpty={handleContextMenuGroupEmpty}
-          onEditSpan={handleEditSpan}
+          onEditSpan={openSpanDialog}
           onDropEntity={handleMarkPresent}
           onMoveEndpoint={handleMoveEndpoint}
           onMoveCell={handleMoveCell}

@@ -151,13 +151,57 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  // 项目删除：软删除（移入回收站），可恢复
+  // DELETE 保留为"移入回收站"语义（用户习惯），purge 用独立端点
   routes.push({
     method: 'DELETE',
     path: '/projects/:id',
     handler: async (request: any) => {
       const deleted = store.deleteProject(request.params.id)
-      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `项目不存在: ${request.params.id}`, 404)
-      return success({ id: request.params.id, deleted: true }, request.traceId)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `项目不存在或已在回收站: ${request.params.id}`, 404)
+      return success({ id: request.params.id, trashed: true }, request.traceId)
+    },
+  })
+
+  // 回收站：列出已删除项目
+  routes.push({
+    method: 'GET',
+    path: '/projects/trash',
+    handler: async (request: any) => {
+      const projects = store.listTrashedProjects()
+      return success({ projects }, request.traceId)
+    },
+  })
+
+  // 回收站：恢复项目
+  routes.push({
+    method: 'POST',
+    path: '/projects/:id/restore',
+    handler: async (request: any) => {
+      const restored = store.restoreProject(request.params.id)
+      if (!restored) throw new AppError(ErrorCode.NOT_FOUND, `项目不在回收站: ${request.params.id}`, 404)
+      return success({ id: request.params.id, restored: true }, request.traceId)
+    },
+  })
+
+  // 回收站：永久删除单个项目（不可恢复）
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/:id/purge',
+    handler: async (request: any) => {
+      const purged = store.purgeProject(request.params.id)
+      if (!purged) throw new AppError(ErrorCode.NOT_FOUND, `项目不在回收站: ${request.params.id}`, 404)
+      return success({ id: request.params.id, purged: true }, request.traceId)
+    },
+  })
+
+  // 回收站：清空所有已删除项目
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/trash/empty',
+    handler: async (request: any) => {
+      const count = store.emptyTrash()
+      return success({ emptied: true, count }, request.traceId)
     },
   })
 
@@ -1764,6 +1808,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           phase: 'arranging',
           message: `编排完成：共生成 ${totalCount} 个实体已落入矩阵`,
           data: arrangedEntities,
+          // 携带 detail 用于前端展示编排结果汇总气泡（与 arranged 阶段事件互补）
+          detail: {
+            kind: 'arrange_summary',
+            total: totalCount,
+            characters: arrangedEntities.characterIds.length,
+            conflicts: arrangedEntities.conflictIds.length,
+            foreshadows: arrangedEntities.foreshadowIds.length,
+            factions: arrangedEntities.factionIds.length,
+            locations: arrangedEntities.locationIds.length,
+          },
         })
         // 编排结束：发 result（status=completed，不带 content），前端据此显示"编排完成"并关闭面板
         emitter.result({
@@ -1900,7 +1954,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     chapter: z.number().int().min(1),
     title: z.string().default(''),
     note: z.string().default(''),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'in', 'out', 'clip-note']).default('bookmark'),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note']).default('bookmark'),
     color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).default('blue'),
     entityType: z.string().nullable().default(null),
     entityId: z.string().nullable().default(null),
@@ -1910,7 +1964,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     chapter: z.number().int().min(1).optional(),
     title: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'in', 'out', 'clip-note']).optional(),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note']).optional(),
     color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).optional(),
     entityType: z.string().nullable().optional(),
     entityId: z.string().nullable().optional(),

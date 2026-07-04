@@ -20,6 +20,8 @@ export interface NovelProject {
   status: 'active' | 'paused' | 'completed'
   /** 节奏模型 ID（缺省时使用 RhythmController.DEFAULT_MODEL） */
   rhythmModelId?: string
+  /** 移入回收站的时间戳（null 表示正常项目，非 null 表示已软删除） */
+  deletedAt?: number | null
   createdAt: number
   updatedAt: number
 }

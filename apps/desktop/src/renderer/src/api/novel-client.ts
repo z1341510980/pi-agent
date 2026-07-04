@@ -157,6 +157,8 @@ export interface NovelProject {
   status: 'active' | 'paused' | 'completed'
   /** 节奏模型 ID（缺省时使用后端 RhythmController.DEFAULT_MODEL） */
   rhythmModelId?: string
+  /** 移入回收站的时间戳（null 表示正常项目，非 null 表示已软删除） */
+  deletedAt?: number | null
   createdAt: number
   updatedAt: number
 }
@@ -712,8 +714,29 @@ export function updateProject(id: string, input: UpdateProjectInput): Promise<No
   return patchApi<NovelProject>(`${BASE}/projects/${id}`, input)
 }
 
-export function deleteProject(id: string): Promise<{ id: string; deleted: boolean }> {
-  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/projects/${id}`)
+/** 删除项目（软删除，移入回收站，可恢复） */
+export function deleteProject(id: string): Promise<{ id: string; trashed: boolean }> {
+  return deleteApi<{ id: string; trashed: boolean }>(`${BASE}/projects/${id}`)
+}
+
+/** 列出回收站中的项目 */
+export function listTrashedProjects(): Promise<NovelProject[]> {
+  return getApi<{ projects: NovelProject[] }>(`${BASE}/projects/trash`).then((r) => r.projects)
+}
+
+/** 恢复项目（从回收站移回正常列表） */
+export function restoreProject(id: string): Promise<{ id: string; restored: boolean }> {
+  return postApi<{ id: string; restored: boolean }>(`${BASE}/projects/${id}/restore`, {})
+}
+
+/** 永久删除项目（不可恢复） */
+export function purgeProject(id: string): Promise<{ id: string; purged: boolean }> {
+  return deleteApi<{ id: string; purged: boolean }>(`${BASE}/projects/${id}/purge`)
+}
+
+/** 清空回收站（永久删除所有已删除项目） */
+export function emptyTrash(): Promise<{ emptied: boolean; count: number }> {
+  return deleteApi<{ emptied: boolean; count: number }>(`${BASE}/projects/trash/empty`)
 }
 
 // ── Chapters ──

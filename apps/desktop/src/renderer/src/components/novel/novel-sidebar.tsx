@@ -1,4 +1,4 @@
-import { Children, useCallback, useMemo, useState, type ReactElement } from 'react'
+import { Children, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
@@ -14,6 +14,7 @@ import {
   MapPin,
   Globe,
   GripVertical,
+  RotateCcw,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -44,6 +45,11 @@ import {
   deleteFaction,
   deleteLocation,
   deleteWorldElement,
+  deleteProject,
+  listTrashedProjects,
+  restoreProject,
+  purgeProject,
+  emptyTrash,
   type NovelProject,
   type NovelCharacter,
   type NovelChapter,
@@ -59,18 +65,9 @@ import { CharacterCreateDialog } from './character-create-dialog'
 import { OutlineTree } from './outline-tree'
 import { GROUP_META, type MatrixEntityKind, type SidebarDragData } from './matrix/matrix-logic'
 
-// ── 通用节点类型（用于拖拽） ──
+// ── 通用节点类型（用于删除等操作；拖拽已统一走 @dnd-kit useDraggable）──
 
 type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'faction' | 'location' | 'world_element'
-
-function setDragData(
-  e: React.DragEvent<HTMLDivElement>,
-  type: DraggableEntityType,
-  id: string,
-): void {
-  e.dataTransfer.setData('application/novel-node', JSON.stringify({ type, id }))
-  e.dataTransfer.effectAllowed = 'move'
-}
 
 // ── 主组件 ──
 
@@ -130,6 +127,31 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
     },
     [setCurrentProject],
   )
+
+  // ── 项目删除（移入回收站）──
+  const removeProject = useNovelStore((s) => s.removeProject)
+  const [trashDialogOpen, setTrashDialogOpen] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; title: string } | null>(null)
+
+  const handleDeleteProject = useCallback(
+    (id: string, title: string) => {
+      setDeleteConfirm({ id, title })
+    },
+    [],
+  )
+
+  const confirmDeleteProject = useCallback(async () => {
+    if (!deleteConfirm) return
+    try {
+      await deleteProject(deleteConfirm.id)
+      removeProject(deleteConfirm.id)
+      queryClient.invalidateQueries({ queryKey: ['novel', 'projects'] })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除项目失败')
+    } finally {
+      setDeleteConfirm(null)
+    }
+  }, [deleteConfirm, removeProject, queryClient])
 
   const handleCreateProject = useCallback(async () => {
     setError(null)
@@ -202,7 +224,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
               {projects.map((p) => {
                 const isActive = p.id === currentProjectId
                 return (
-                  <li key={p.id}>
+                  <li key={p.id} className="group relative">
                     <button
                       type="button"
                       onClick={() => handleSelectProject(p.id)}
@@ -230,6 +252,18 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                         <span aria-hidden="true">·</span>
                         <span className="tabular-nums">第 {p.currentChapter} 章</span>
                       </div>
+                    </button>
+                    {/* 删除项目按钮（hover 显示，移入回收站） */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteProject(p.id, p.title)
+                      }}
+                      aria-label="移入回收站"
+                      className="absolute top-1.5 right-1.5 z-10 size-6 flex items-center justify-center rounded text-muted-foreground opacity-0 pointer-events-none transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:pointer-events-auto group-hover:opacity-100"
+                    >
+                      <Trash2 className="size-3.5" />
                     </button>
                   </li>
                 )
@@ -261,7 +295,46 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
         )}
       </div>
 
-      {/* 新建项目对话框 */}
+      {/* 底部回收站入口 */}
+      <div className="border-t border-border p-1.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-start text-muted-foreground hover:text-text"
+          onClick={() => setTrashDialogOpen(true)}
+        >
+          <Trash2 className="size-3.5 mr-1.5" />
+          回收站
+        </Button>
+      </div>
+
+      {/* 删除确认对话框（移入回收站） */}
+      <Dialog open={deleteConfirm != null} onOpenChange={(open) => { if (!open) setDeleteConfirm(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>移入回收站</DialogTitle>
+            <DialogDescription>
+              确定将项目「{deleteConfirm?.title}」移入回收站吗？移入后可在回收站中恢复或永久删除。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>取消</Button>
+            <Button variant="destructive" onClick={confirmDeleteProject}>
+              <Trash2 className="size-3.5 mr-1.5" />
+              移入回收站
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 回收站对话框 */}
+      <TrashDialog
+        open={trashDialogOpen}
+        onOpenChange={setTrashDialogOpen}
+        onRestored={() => {
+          queryClient.invalidateQueries({ queryKey: ['novel', 'projects'] })
+        }}
+      />
       <Dialog open={projectDialogOpen} onOpenChange={setProjectDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -908,8 +981,6 @@ export function ChapterItem({
   return (
     <div>
       <div
-        draggable
-        onDragStart={(e) => setDragData(e, 'chapter', chapter.id)}
         className={cn(
           'group flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors cursor-pointer',
           selected ? 'bg-primary/10' : 'hover:bg-muted',
@@ -1031,6 +1102,184 @@ export function ChapterItem({
         </div>
       )}
     </div>
+  )
+}
+
+// ── 回收站对话框 ──
+
+interface TrashDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** 项目恢复后回调（用于刷新项目列表） */
+  onRestored?: () => void
+}
+
+function TrashDialog({ open, onOpenChange, onRestored }: TrashDialogProps): ReactElement {
+  const [trashedProjects, setTrashedProjects] = useState<NovelProject[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [purgeConfirm, setPurgeConfirm] = useState<{ id: string; title: string } | null>(null)
+  const [emptyConfirm, setEmptyConfirm] = useState(false)
+
+  // 打开时加载回收站项目列表
+  const loadTrash = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const projects = await listTrashedProjects()
+      setTrashedProjects(projects)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载回收站失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (open) loadTrash()
+  }, [open, loadTrash])
+
+  const handleRestore = useCallback(async (id: string) => {
+    try {
+      await restoreProject(id)
+      setTrashedProjects((prev) => prev.filter((p) => p.id !== id))
+      onRestored?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '恢复项目失败')
+    }
+  }, [onRestored])
+
+  const handlePurge = useCallback(async () => {
+    if (!purgeConfirm) return
+    try {
+      await purgeProject(purgeConfirm.id)
+      setTrashedProjects((prev) => prev.filter((p) => p.id !== purgeConfirm.id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '永久删除失败')
+    } finally {
+      setPurgeConfirm(null)
+    }
+  }, [purgeConfirm])
+
+  const handleEmptyTrash = useCallback(async () => {
+    try {
+      await emptyTrash()
+      setTrashedProjects([])
+      setEmptyConfirm(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清空回收站失败')
+    }
+  }, [])
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>回收站</DialogTitle>
+          <DialogDescription>
+            已删除的项目可恢复或永久删除。永久删除后数据不可恢复。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2 max-h-[400px] overflow-y-auto">
+          {loading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">加载中...</div>
+          ) : error ? (
+            <div className="py-8 text-center text-sm text-destructive">{error}</div>
+          ) : trashedProjects.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">回收站为空</div>
+          ) : (
+            <ul className="space-y-1">
+              {trashedProjects.map((p) => (
+                <li
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{p.title}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground">
+                      <span>{p.genre}</span>
+                      <span aria-hidden="true">·</span>
+                      <span className="tabular-nums">第 {p.currentChapter} 章</span>
+                      {p.deletedAt != null && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>删除于 {new Date(p.deletedAt).toLocaleDateString('zh-CN')}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-success hover:text-success"
+                    onClick={() => handleRestore(p.id)}
+                  >
+                    <RotateCcw className="size-3.5 mr-1" />
+                    恢复
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => setPurgeConfirm({ id: p.id, title: p.title })}
+                  >
+                    <Trash2 className="size-3.5 mr-1" />
+                    永久删除
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {trashedProjects.length > 0 && !loading && !error && (
+          <div className="flex justify-end pt-2 border-t border-border">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              onClick={() => setEmptyConfirm(true)}
+            >
+              <Trash2 className="size-3.5 mr-1.5" />
+              清空回收站
+            </Button>
+          </div>
+        )}
+
+        {/* 永久删除确认 */}
+        <Dialog open={purgeConfirm != null} onOpenChange={(open) => { if (!open) setPurgeConfirm(null) }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>永久删除</DialogTitle>
+              <DialogDescription>
+                确定永久删除项目「{purgeConfirm?.title}」吗？此操作不可恢复，所有章节、角色、冲突等数据将被清除。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setPurgeConfirm(null)}>取消</Button>
+              <Button variant="destructive" onClick={handlePurge}>永久删除</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 清空回收站确认 */}
+        <Dialog open={emptyConfirm} onOpenChange={setEmptyConfirm}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>清空回收站</DialogTitle>
+              <DialogDescription>
+                确定清空回收站吗？将永久删除 {trashedProjects.length} 个项目，此操作不可恢复。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEmptyConfirm(false)}>取消</Button>
+              <Button variant="destructive" onClick={handleEmptyTrash}>清空</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </DialogContent>
+    </Dialog>
   )
 }
 

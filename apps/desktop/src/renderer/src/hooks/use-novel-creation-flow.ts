@@ -236,6 +236,74 @@ function formatDetailBubble(detail: Record<string, unknown>): {
     }
     return { agentType: 'memory', agentName: '记忆', content: md }
   }
+  if (kind === 'arrange_plan') {
+    const characters = (detail.characters as string[]) ?? []
+    const conflicts = (detail.conflicts as string[]) ?? []
+    const foreshadows = (detail.foreshadows as string[]) ?? []
+    const factions = (detail.factions as string[]) ?? []
+    const locations = (detail.locations as string[]) ?? []
+    let md = `## 实体规划清单\n`
+    const sections: Array<{ label: string; items: string[] }> = [
+      { label: '角色', items: characters },
+      { label: '冲突', items: conflicts },
+      { label: '伏笔', items: foreshadows },
+      { label: '势力', items: factions },
+      { label: '地点', items: locations },
+    ]
+    for (const s of sections) {
+      if (s.items.length === 0) continue
+      md += `\n### ${s.label}（${s.items.length}）\n`
+      s.items.forEach((it, i) => { md += `\n${i + 1}. ${it}` })
+    }
+    if (characters.length + conflicts.length + foreshadows.length + factions.length + locations.length === 0) {
+      md += `\n\n*章纲未规划新实体*`
+    }
+    return { agentType: 'arranger', agentName: '规划', content: md }
+  }
+  if (kind === 'arrange_result') {
+    const characters = (detail.characters as Array<{ name: string; description: string }>) ?? []
+    const conflicts = (detail.conflicts as Array<{ description: string; intensity: number; tier: string; climaxChapter: number | null; climaxType: string | null }>) ?? []
+    const foreshadows = (detail.foreshadows as Array<{ description: string; category: string }>) ?? []
+    const factions = (detail.factions as Array<{ name: string; type: string }>) ?? []
+    const locations = (detail.locations as Array<{ name: string; type: string }>) ?? []
+    let md = `## 编排完成清单\n`
+    if (characters.length > 0) {
+      md += `\n### 角色（${characters.length}）\n`
+      characters.forEach((c, i) => { md += `\n${i + 1}. **${c.name}** — ${c.description}` })
+    }
+    if (conflicts.length > 0) {
+      md += `\n### 冲突（${conflicts.length}）\n`
+      conflicts.forEach((c, i) => {
+        const tierLabel = c.tier === 'main' ? '主要' : c.tier === 'goal' ? '主角目的' : '次要'
+        const climaxMark = c.climaxChapter != null ? ` 🔥第${c.climaxChapter}章` : ''
+        const climaxTypeLabel = c.climaxType ? ` ${CLIMAX_TYPE_LABELS[c.climaxType] ?? c.climaxType}高潮` : ''
+        md += `\n${i + 1}. [${tierLabel}] ${c.description}（强度 ${c.intensity}/10${climaxMark}${climaxTypeLabel}）`
+      })
+    }
+    if (foreshadows.length > 0) {
+      md += `\n### 伏笔（${foreshadows.length}）\n`
+      foreshadows.forEach((f, i) => { md += `\n${i + 1}. [${f.category}] ${f.description}` })
+    }
+    if (factions.length > 0) {
+      md += `\n### 势力（${factions.length}）\n`
+      factions.forEach((f, i) => { md += `\n${i + 1}. **${f.name}**（${f.type}）` })
+    }
+    if (locations.length > 0) {
+      md += `\n### 地点（${locations.length}）\n`
+      locations.forEach((l, i) => { md += `\n${i + 1}. **${l.name}**（${l.type}）` })
+    }
+    return { agentType: 'arranger', agentName: '编排', content: md }
+  }
+  if (kind === 'arrange_summary') {
+    const total = detail.total as number
+    const characters = detail.characters as number
+    const conflicts = detail.conflicts as number
+    const foreshadows = detail.foreshadows as number
+    const factions = detail.factions as number
+    const locations = detail.locations as number
+    const md = `## 编排完成\n\n**共生成 ${total} 个实体已落入矩阵**\n\n- 角色：${characters}\n- 冲突：${conflicts}\n- 伏笔：${foreshadows}\n- 势力：${factions}\n- 地点：${locations}`
+    return { agentType: 'arranger', agentName: '编排', content: md }
+  }
   return { agentType: 'context', agentName: '详情', content: '未知详情类型' }
 }
 
@@ -425,7 +493,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             data?: unknown
             detail?: Record<string, unknown>
           }
-          // detail 事件：节奏建议/叙事任务/章节约束/记忆结果 → 格式化为 info 气泡
+          // detail 事件：节奏建议/叙事任务/章节约束/记忆结果/编排规划/编排清单/编排汇总
+          // → 格式化为 info 气泡（优先于 arrange_* 分支，避免重复处理）
           if (data?.detail && typeof data.detail === 'object' && data.detail.kind) {
             const formatted = formatDetailBubble(data.detail)
             setAgentOutputs((prev) => [...prev, {

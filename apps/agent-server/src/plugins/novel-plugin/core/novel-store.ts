@@ -51,6 +51,7 @@ interface ProjectRow {
   id: string; title: string; genre: string; synopsis: string; outline: string
   target_words: number; current_volume: number; current_chapter: number
   current_stage: string; status: string; created_at: number; updated_at: number
+  deleted_at: number | null
 }
 
 interface ChapterRow {
@@ -480,13 +481,74 @@ export class NovelStore implements NovelPromptStores {
     return updated
   }
 
+  /**
+   * 软删除：将项目移入回收站（设置 deleted_at 时间戳）
+   * 项目数据保留，可在回收站中恢复或永久删除。
+   */
   deleteProject(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_projects WHERE id = ?').run(id)
+    const result = this.db.prepare(
+      'UPDATE novel_projects SET deleted_at = @ts, updated_at = @ts WHERE id = @id AND deleted_at IS NULL',
+    ).run({ id, ts: now() })
     return result.changes > 0
   }
 
+  /**
+   * 列出回收站中的项目（deleted_at 非 NULL），按移入时间倒序。
+   */
+  listTrashedProjects(): NovelProject[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM novel_projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC',
+    ).all() as ProjectRow[]
+    return rows.map((r) => this.rowToProject(r))
+  }
+
+  /**
+   * 恢复项目：清除 deleted_at，项目回到正常列表。
+   */
+  restoreProject(id: string): boolean {
+    const result = this.db.prepare(
+      'UPDATE novel_projects SET deleted_at = NULL, updated_at = @ts WHERE id = @id AND deleted_at IS NOT NULL',
+    ).run({ id, ts: now() })
+    return result.changes > 0
+  }
+
+  /**
+   * 永久删除：硬删除项目 + 清理无级联的关联表数据。
+   * 18 张有 ON DELETE CASCADE 的表会自动清理；
+   * 这里手动清理剩余 6 张无级联的表，避免孤儿数据。
+   */
+  purgeProject(id: string): boolean {
+    const result = this.db.prepare(
+      'DELETE FROM novel_projects WHERE id = ? AND deleted_at IS NOT NULL',
+    ).run(id)
+    if (result.changes === 0) return false
+    // 清理无 ON DELETE CASCADE 的关联表
+    this.db.prepare('DELETE FROM novel_node_positions WHERE project_id = ?').run(id)
+    this.db.prepare('DELETE FROM novel_character_history WHERE project_id = ?').run(id)
+    this.db.prepare('DELETE FROM novel_memory_events WHERE project_id = ?').run(id)
+    this.db.prepare('DELETE FROM novel_memory_snapshots WHERE project_id = ?').run(id)
+    this.db.prepare('DELETE FROM novel_agent_logs WHERE project_id = ?').run(id)
+    this.db.prepare('DELETE FROM novel_prompt_templates WHERE project_id = ?').run(id)
+    return true
+  }
+
+  /**
+   * 清空回收站：永久删除所有 deleted_at 非 NULL 的项目。
+   * @returns 清理的项目数量
+   */
+  emptyTrash(): number {
+    const trashed = this.listTrashedProjects()
+    let count = 0
+    for (const p of trashed) {
+      if (this.purgeProject(p.id)) count++
+    }
+    return count
+  }
+
   listProjects(): NovelProject[] {
-    const rows = this.db.prepare('SELECT * FROM novel_projects ORDER BY updated_at DESC').all() as ProjectRow[]
+    const rows = this.db.prepare(
+      'SELECT * FROM novel_projects WHERE deleted_at IS NULL ORDER BY updated_at DESC',
+    ).all() as ProjectRow[]
     return rows.map((r) => this.rowToProject(r))
   }
 
@@ -1520,6 +1582,7 @@ export class NovelStore implements NovelPromptStores {
       targetWords: row.target_words, currentVolume: row.current_volume,
       currentChapter: row.current_chapter, currentStage: row.current_stage as NovelProject['currentStage'],
       status: row.status as NovelProject['status'],
+      deletedAt: row.deleted_at,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

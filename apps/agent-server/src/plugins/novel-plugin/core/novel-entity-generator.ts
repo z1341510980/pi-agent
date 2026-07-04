@@ -275,7 +275,7 @@ export class NovelEntityGenerator {
     projectId: string,
     chapterNumber: number,
     outline: string,
-    onProgress?: (event: { phase: string; message: string; data?: unknown }) => void,
+    onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
   ): Promise<ArrangedEntity> {
     onProgress?.({ phase: 'analyzing', message: '分析章纲，规划所需实体...' })
 
@@ -302,7 +302,7 @@ export class NovelEntityGenerator {
     const locationIds: string[] = []
     // 收集已生成实体的描述，供 arranged 阶段详情事件使用
     const generatedCharacters: Array<{ name: string; description: string }> = []
-    const generatedConflicts: Array<{ description: string; intensity: number; tier: string; climaxChapter: number | null; climaxType: string | null }> = []
+    const generatedConflicts: Array<{ description: string; intensity: number; tier: string; climaxChapter?: number | null; climaxType?: string | null }> = []
     const generatedForeshadows: Array<{ description: string; category: string }> = []
     const generatedFactions: Array<{ name: string; type: string }> = []
     const generatedLocations: Array<{ name: string; type: string }> = []
@@ -363,6 +363,13 @@ export class NovelEntityGenerator {
           twistPotential: gen.data.twistPotential,
         })
         conflictIds.push(created.id)
+        generatedConflicts.push({
+          description: created.description,
+          intensity: created.intensity,
+          tier: created.tier,
+          climaxChapter: created.climaxChapter,
+          climaxType: created.climaxType,
+        })
       }
 
       for (const spec of plan.foreshadows) {
@@ -382,6 +389,7 @@ export class NovelEntityGenerator {
           linkedClues: gen.data.linkedClues,
         })
         foreshadowIds.push(created.id)
+        generatedForeshadows.push({ description: created.description, category: created.category })
       }
 
       for (const spec of plan.factions) {
@@ -404,6 +412,7 @@ export class NovelEntityGenerator {
           chapterSpans: [[chapterNumber, chapterNumber]],
         })
         factionIds.push(created.id)
+        generatedFactions.push({ name: created.name, type: created.type })
       }
 
       for (const spec of plan.locations) {
@@ -424,6 +433,7 @@ export class NovelEntityGenerator {
           appearChapters: [chapterNumber],
         })
         locationIds.push(created.id)
+        generatedLocations.push({ name: created.name, type: created.type })
       }
     } catch (err) {
       // 反向顺序 best-effort 清理已落库实体，避免半编排脏数据污染后续 create-flow
@@ -470,7 +480,19 @@ export class NovelEntityGenerator {
       throw err
     }
 
-    onProgress?.({ phase: 'arranged', message: '编排完成，准备生成正文' })
+    onProgress?.({
+      phase: 'arranged',
+      message: '编排完成，准备生成正文',
+      // 携带 detail 用于前端展示编排完成清单气泡
+      detail: {
+        kind: 'arrange_result',
+        characters: generatedCharacters,
+        conflicts: generatedConflicts,
+        foreshadows: generatedForeshadows,
+        factions: generatedFactions,
+        locations: generatedLocations,
+      },
+    })
     this.context.logger.info(
       { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, factions: factionIds.length, locations: locationIds.length },
       'generateAndArrange 完成：实体已落库',
@@ -487,7 +509,7 @@ export class NovelEntityGenerator {
   private async planEntitiesFromOutline(
     projectId: string,
     outline: string,
-    onProgress?: (event: { phase: string; message: string; data?: unknown }) => void,
+    onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
   ): Promise<{
     characters: { coreStyle: string }[]
     conflicts: { coreStyle: string }[]
@@ -734,7 +756,7 @@ export class NovelEntityGenerator {
       stakes: typeof p.stakes === 'string' && p.stakes.trim() ? p.stakes.trim() : null,
       twistPotential: typeof p.twistPotential === 'number' && Number.isFinite(p.twistPotential)
         ? Math.max(0, Math.min(10, Math.round(p.twistPotential)))
-        : null,
+        : undefined,
     }
   }
 
@@ -810,7 +832,7 @@ export class NovelEntityGenerator {
           climaxChapter: null,
           climaxType: null,
           stakes: null,
-          twistPotential: null,
+          twistPotential: undefined,
           participants: '',
         }
       case 'foreshadow':

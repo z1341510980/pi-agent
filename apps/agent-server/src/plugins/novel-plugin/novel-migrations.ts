@@ -566,4 +566,10 @@ export const novelMigrations: MigrationDefinition[] = [
                  ELSE json_array(json_array(first_chapter, COALESCE(last_chapter, first_chapter)))
             END;`,
   },
+  {
+    // 046: 项目回收站——软删除字段
+    // deleted_at 为 NULL 表示正常项目，非 NULL 表示已移入回收站（值为移入时间戳）
+    id: '046_add_deleted_at_to_novel_projects',
+    sql: `ALTER TABLE novel_projects ADD COLUMN deleted_at INTEGER;`,
+  },
 ]

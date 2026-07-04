@@ -15,7 +15,7 @@
 import { useMemo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import { useDroppable, useDndMonitor, useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
-import { Plus, ChevronRight } from 'lucide-react'
+import { Plus, ChevronRight, GripVertical } from 'lucide-react'
 import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
@@ -650,12 +650,19 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
     )
   }
 
+  // 跨度中段格（conflict/faction/foreshadow span-middle/foreshadow-span/world-element）
+  // 点击无操作，cursor 改 default 避免误导；tooltip 引导用户用右键或拖端点
+  const isReadOnlyMiddle =
+    symbol.type === 'span-middle' ||
+    symbol.type === 'foreshadow-span' ||
+    symbol.type === 'world-element'
+
   return (
     <div
-      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer"
+      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30"
       style={{ width: `${cellWidth}px` }}
       data-tip={tip}
-      onClick={handleCellClickEvent}
+      onClick={isReadOnlyMiddle ? undefined : handleCellClickEvent}
       onContextMenu={onContextMenu}
     >
       <Symbol symbol={symbol} color={color} />
@@ -710,6 +717,11 @@ function DraggablePresentCell({
       )}
     >
       <Symbol symbol={symbol} color={color} />
+      {/* hover 时显示 GripVertical 手柄提示可拖拽 */}
+      <GripVertical
+        className="absolute left-0.5 top-1/2 -translate-y-1/2 size-2.5 text-foreground/30 opacity-0 group-hover/cell:opacity-100 transition-opacity pointer-events-none"
+        aria-hidden
+      />
     </div>
   )
 }
@@ -964,7 +976,7 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
       title={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
       data-tip={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
       className={cn(
-        'absolute top-1/2 size-3 rounded-full flex items-center justify-center cursor-ew-resize pointer-events-auto transition-transform z-[5] group-hover/span:scale-110',
+        'absolute top-1/2 size-3.5 rounded-full flex items-center justify-center cursor-ew-resize pointer-events-auto transition-transform z-[5] hover:scale-125',
         isDragging && 'scale-150',
       )}
       style={{
@@ -976,7 +988,7 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
         boxShadow: '0 0 0 2px var(--color-surface-1), 0 0 4px rgba(0,0,0,0.3)',
       }}
     >
-      <span className="text-[7px] text-white leading-none font-bold select-none">
+      <span className="text-[8px] text-white leading-none font-bold select-none">
         {end === 'start' ? '◀' : '▶'}
       </span>
     </div>
@@ -1000,7 +1012,7 @@ function buildCellTooltip(
     case 'span-end':
       return `${chStr}｜${entity.name} 结束`
     case 'span-middle':
-      return `${chStr}｜${entity.name}（跨度中）`
+      return `${chStr}｜${entity.name}（跨度中，拖动端点或右键编辑范围）`
     case 'conflict-climax':
       return `${chStr}｜${entity.name} 冲突高潮（爆发点）`
     case 'foreshadow-plant':
