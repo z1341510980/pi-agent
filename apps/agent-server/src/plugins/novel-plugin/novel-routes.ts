@@ -456,6 +456,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     status: z.enum(['planned', 'drafting', 'review', 'published', 'rejected']).optional(),
     outline: z.string().max(20000).optional(),
     volumeId: z.string().nullable().optional(),
+    tension: z.number().int().min(1).max(10).nullable().optional(),
   })
 
   routes.push({

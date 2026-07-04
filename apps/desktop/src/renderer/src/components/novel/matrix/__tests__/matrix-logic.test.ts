@@ -10,6 +10,8 @@ import {
   computeCellSymbol,
   GROUP_META,
   GROUP_ORDER,
+  tensionToBgClass,
+  tensionToLabel,
 } from '../matrix-logic'
 import type { NovelChapter, NovelCharacter, NovelConflict, NovelCharacterHistory, NovelForeshadow, NovelFaction, NovelLocation, NovelWorldElement } from '@/api/novel-client'
 
@@ -443,5 +445,33 @@ describe('GROUP_ORDER', () => {
   it('lists character first, world_element last', () => {
     expect(GROUP_ORDER[0]).toBe('character')
     expect(GROUP_ORDER[GROUP_ORDER.length - 1]).toBe('world_element')
+  })
+})
+
+// ── TensionLevel 色阶 ──
+
+describe('TensionLevel 矩阵色阶', () => {
+  it('tension=1 (LOW) 返回最浅色阶', () => {
+    expect(tensionToBgClass(1)).toContain('bg-amber')
+    expect(tensionToLabel(1)).toBe('LOW')
+  })
+
+  it('tension=10 (EXTREME) 返回最深色阶', () => {
+    expect(tensionToBgClass(10)).toContain('bg-red')
+    expect(tensionToLabel(10)).toBe('EXTREME')
+  })
+
+  it('tension=null/undefined 返回空字符串', () => {
+    expect(tensionToBgClass(null)).toBe('')
+    expect(tensionToBgClass(undefined)).toBe('')
+    expect(tensionToLabel(null)).toBe('')
+    expect(tensionToLabel(undefined)).toBe('')
+  })
+
+  it('tension 阶梯映射：1-3 浅色, 4-6 中色, 7-8 深色, 9-10 极深', () => {
+    expect(tensionToBgClass(3)).toMatch(/bg-amber-100|bg-amber-200/)
+    expect(tensionToBgClass(6)).toMatch(/bg-amber-300|bg-amber-400/)
+    expect(tensionToBgClass(8)).toMatch(/bg-red-400|bg-red-500/)
+    expect(tensionToBgClass(10)).toMatch(/bg-red-600|bg-red-700/)
   })
 })

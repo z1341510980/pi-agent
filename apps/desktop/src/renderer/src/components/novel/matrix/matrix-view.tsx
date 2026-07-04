@@ -25,6 +25,8 @@ import {
   computeCellSymbol,
   GROUP_META,
   GROUP_ORDER,
+  tensionToBgClass,
+  tensionToLabel,
   type MatrixEntityKind,
   type MatrixEntity,
   type MatrixGroup,
@@ -96,6 +98,12 @@ function buildChapterTitleMap(chapters: NovelChapter[]): Map<number, string> {
   return m
 }
 
+function buildChapterByNumberMap(chapters: NovelChapter[]): Map<number, NovelChapter> {
+  const m = new Map<number, NovelChapter>()
+  for (const c of chapters) m.set(c.chapterNumber, c)
+  return m
+}
+
 export function MatrixView({
   chapters, characters, conflicts, foreshadows, factions, locations, worldElements,
   characterHistory, markers, playheadChapter, cellWidth, collapsedGroups, activeFilter,
@@ -104,6 +112,7 @@ export function MatrixView({
   onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onDropEntity, onMoveEndpoint, onMoveCell, onTogglePresent,
 }: MatrixViewProps): ReactElement {
   const titleMap = useMemo(() => buildChapterTitleMap(chapters), [chapters])
+  const chapterByNumber = useMemo(() => buildChapterByNumberMap(chapters), [chapters])
 
   const { groups, maxChapter } = useMemo(
     () => buildGroups({
@@ -355,11 +364,14 @@ export function MatrixView({
                 const isCurrent = ch === playheadChapter
                 const title = titleMap.get(ch) ?? ''
                 const ms = markersByChapter.get(ch) ?? []
-                const tip = `第 ${ch} 章${title ? ' · ' + title : ''}${isCurrent ? '（当前章节）' : ''}`
+                const chapter = chapterByNumber.get(ch)
+                const tensionBg = chapter?.tension ? tensionToBgClass(chapter.tension) : ''
+                const tensionLabel = chapter?.tension ? tensionToLabel(chapter.tension) : ''
+                const tip = `第 ${ch} 章${title ? ' · ' + title : ''}${chapter?.tension ? ` · 张力 ${chapter.tension} (${tensionLabel})` : ''}${isCurrent ? '（当前章节）' : ''}`
                 return (
                   <div
                     key={ch}
-                    className="relative h-full shrink-0 flex flex-col justify-center items-center gap-1 border-r border-border/40 cursor-pointer transition-colors hover:bg-muted/40"
+                    className={`relative h-full shrink-0 flex flex-col justify-center items-center gap-1 border-r border-border/40 cursor-pointer transition-colors hover:bg-muted/40 ${tensionBg}`}
                     style={{ width: `${cellWidth}px` }}
                     onClick={() => handleRulerClick(ch)}
                     onContextMenu={(e) => handleRulerContextMenu(e, ch)}
@@ -379,6 +391,9 @@ export function MatrixView({
                     <span className={`font-mono text-[11px] tracking-wide ${isCurrent ? 'text-amber-500 font-semibold' : 'text-hint'}`}>
                       {String(ch).padStart(2, '0')}
                     </span>
+                    {tensionLabel && (
+                      <span className="text-[9px] text-hint/70 mt-0.5">{tensionLabel}</span>
+                    )}
                   </div>
                 )
               })}

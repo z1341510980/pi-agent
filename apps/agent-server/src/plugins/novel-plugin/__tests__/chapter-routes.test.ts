@@ -123,3 +123,136 @@ describe('PATCH /chapters/:id wordCount 重算', () => {
     expect(body.data.wordCount).toBe(6)
   })
 })
+
+describe('PATCH /chapters/:id tension 字段', () => {
+  let db: Database.Database
+  let store: NovelStore
+  let app: FastifyInstance
+  let chapterId: string
+
+  beforeEach(async () => {
+    db = createTestDb()
+    store = new NovelStore(db)
+    const project = store.createProject({
+      id: randomUUID(),
+      title: '测试项目',
+      genre: 'test',
+      synopsis: '',
+      targetWords: 0,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active',
+    })
+    chapterId = randomUUID()
+    store.createChapter({
+      id: chapterId,
+      projectId: project.id,
+      volume: 1,
+      chapterNumber: 1,
+      title: '第一章',
+      content: '',
+      wordCount: 0,
+      status: 'planned',
+      narrativeTask: '',
+      acceptanceResult: null,
+    })
+    app = await buildApp(store)
+  })
+
+  afterEach(async () => {
+    await app.close()
+    db.close()
+  })
+
+  it('PATCH tension=8 后 GET 返回 tension=8', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 8 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().data.tension).toBe(8)
+
+    const get = await app.inject({ method: 'GET', url: `/chapters/${chapterId}` })
+    expect(get.json().data.tension).toBe(8)
+  })
+
+  it('不传 tension 时保持原值（不覆盖）', async () => {
+    // 先设为 7
+    await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 7 },
+    })
+    // 再 PATCH title，tension 应保持 7
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { title: '新标题' },
+    })
+    expect(res.json().data.tension).toBe(7)
+  })
+
+  it('tension 超出 1-10 范围时返回 400', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 11 },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('tension=null 清除张力值', async () => {
+    await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 5 },
+    })
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: null },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().data.tension).toBeNull()
+  })
+
+  it('tension=0 返回 400（低于下界）', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 0 },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('tension=1 合法（下界）', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 1 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().data.tension).toBe(1)
+  })
+
+  it('tension=10 合法（上界）', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 10 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().data.tension).toBe(10)
+  })
+
+  it('tension=1.5 返回 400（非整数）', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { tension: 1.5 },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+})

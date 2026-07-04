@@ -527,3 +527,48 @@ export function computeCellSymbol(
     }
   }
 }
+
+// ── TensionLevel 色阶（借鉴 PlotPilot TensionLevel 10 级非线性标度）──
+// 1-2 LOW      → bg-amber-100
+// 3-4 RISING   → bg-amber-200
+// 5-6 ELEVATED → bg-amber-300
+// 7   HIGH     → bg-amber-500
+// 8   HIGH+    → bg-red-400
+// 9   INTENSE  → bg-red-500
+// 10  EXTREME  → bg-red-600
+
+const TENSION_BG_MAP: Record<number, string> = {
+  1: 'bg-amber-100',
+  2: 'bg-amber-100',
+  3: 'bg-amber-200',
+  4: 'bg-amber-200',
+  5: 'bg-amber-300',
+  6: 'bg-amber-300',
+  7: 'bg-amber-500',
+  8: 'bg-red-400',
+  9: 'bg-red-500',
+  10: 'bg-red-600',
+}
+
+const TENSION_LABEL_MAP: Record<number, string> = {
+  1: 'LOW',
+  2: 'LOW',
+  3: 'RISING',
+  4: 'RISING',
+  5: 'ELEVATED',
+  6: 'ELEVATED',
+  7: 'HIGH',
+  8: 'HIGH',
+  9: 'INTENSE',
+  10: 'EXTREME',
+}
+
+export function tensionToBgClass(tension: number | null | undefined): string {
+  if (tension == null) return ''
+  return TENSION_BG_MAP[tension] ?? ''
+}
+
+export function tensionToLabel(tension: number | null | undefined): string {
+  if (tension == null) return ''
+  return TENSION_LABEL_MAP[tension] ?? ''
+}

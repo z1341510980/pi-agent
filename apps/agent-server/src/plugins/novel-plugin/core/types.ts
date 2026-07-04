@@ -114,6 +114,11 @@ export interface NovelChapter {
   /** 所属卷 ID（指向 novel_volumes.id，兼容旧数据可空） */
   volumeId?: string | null
   acceptanceResult: string | null // JSON
+  /** 章节张力等级（1-10，NULL 表示未设定）
+   *  借鉴 PlotPilot TensionLevel：1=LOW, 3-4=RISING, 5-6=ELEVATED,
+   *  7-8=HIGH, 9=INTENSE, 10=EXTREME
+   *  由 Director Agent 在规划时建议，或用户手动调整 */
+  tension?: number | null
   /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
   rhythm?: ChapterRhythm
   createdAt: number

@@ -572,4 +572,10 @@ export const novelMigrations: MigrationDefinition[] = [
     id: '046_add_deleted_at_to_novel_projects',
     sql: `ALTER TABLE novel_projects ADD COLUMN deleted_at INTEGER;`,
   },
+  {
+    // 047: 章节张力曲线（1-10，NULL 表示未设定）
+    // 借鉴 PlotPilot TensionLevel：LOW=1 → EXTREME=10 非线性标度
+    id: '047_add_tension_to_novel_chapters',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN tension INTEGER;`,
+  },
 ]

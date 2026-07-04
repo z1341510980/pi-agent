@@ -66,6 +66,7 @@ interface ChapterRow {
   title: string; content: string; word_count: number; status: string
   narrative_task: string; outline: string; volume_id: string | null
   acceptance_result: string | null
+  tension: number | null
   created_at: number; updated_at: number
 }
 
@@ -567,14 +568,15 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelChapter = { outline: '', volumeId: null, ...chapter, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, created_at, updated_at)
-      VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @created_at, @updated_at)
+      INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, tension, created_at, updated_at)
+      VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @tension, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, volume: full.volume,
       chapter_number: full.chapterNumber, title: full.title, content: full.content,
       word_count: full.wordCount, status: full.status, narrative_task: full.narrativeTask,
       outline: full.outline ?? '', volume_id: full.volumeId ?? null,
-      acceptance_result: full.acceptanceResult, created_at: full.createdAt, updated_at: full.updatedAt,
+      acceptance_result: full.acceptanceResult, tension: full.tension ?? null,
+      created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
   }
@@ -587,13 +589,14 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_chapters SET title=@title, content=@content, word_count=@word_count,
       status=@status, narrative_task=@narrative_task, outline=@outline, volume_id=@volume_id,
-      acceptance_result=@acceptance_result, updated_at=@updated_at
+      acceptance_result=@acceptance_result, tension=@tension, updated_at=@updated_at
       WHERE id=@id
     `).run({
       id, title: updated.title, content: updated.content, word_count: updated.wordCount,
       status: updated.status, narrative_task: updated.narrativeTask,
       outline: updated.outline ?? '', volume_id: updated.volumeId ?? null,
-      acceptance_result: updated.acceptanceResult, updated_at: updated.updatedAt,
+      acceptance_result: updated.acceptanceResult, tension: updated.tension ?? null,
+      updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -1691,6 +1694,7 @@ export class NovelStore implements NovelPromptStores {
       wordCount: row.word_count, status: row.status as NovelChapter['status'],
       narrativeTask: row.narrative_task, outline: row.outline, volumeId: row.volume_id,
       acceptanceResult: row.acceptance_result,
+      tension: row.tension ?? null,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

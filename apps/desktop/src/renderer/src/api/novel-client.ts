@@ -178,6 +178,8 @@ export interface NovelChapter {
   /** 所属卷 ID（指向 novel_volumes.id，兼容旧数据可空） */
   volumeId?: string | null
   acceptanceResult: string | null
+  /** 章节张力等级（1-10，NULL 表示未设定） */
+  tension?: number | null
   /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
   rhythm?: ChapterRhythm
   createdAt: number
