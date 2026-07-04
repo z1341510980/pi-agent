@@ -125,10 +125,30 @@ export function MatrixView({
     end: Math.min(maxChapter, 20), // 初始渲染前 20 列
   })
 
-  // 监听 maxChapter 变化时重置视口
+  // maxChapter 或 cellWidth 变化时，按当前 scrollLeft 重新计算视口（不重置到第 1 章）
   useEffect(() => {
-    setVisibleRange({ start: 1, end: Math.min(maxChapter, 20) })
-  }, [maxChapter])
+    const el = scrollContainerRef.current
+    if (!el) {
+      // 容器还未挂载，clamp 既有 range 到新 maxChapter
+      setVisibleRange((prev) => ({
+        start: Math.min(prev.start, Math.max(1, maxChapter)),
+        end: Math.min(prev.end, Math.max(0, maxChapter)),
+      }))
+      return
+    }
+    const range = computeVisibleChapters({
+      scrollLeft: el.scrollLeft,
+      viewportWidth: el.clientWidth,
+      sidebarWidth: SIDEBAR_W,
+      cellWidth,
+      maxChapter,
+      overscan: 3,
+    })
+    setVisibleRange((prev) => {
+      if (prev.start === range.start && prev.end === range.end) return prev
+      return { start: range.start, end: range.end }
+    })
+  }, [maxChapter, cellWidth])
 
   const visibleChapterColumns = useMemo(() => {
     if (visibleRange.start > visibleRange.end) return []
