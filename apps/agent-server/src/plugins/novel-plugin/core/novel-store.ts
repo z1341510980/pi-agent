@@ -15,6 +15,13 @@
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { NovelPromptStores } from './prompt-builder.js'
+import {
+  createChapterRenumberSpec,
+  shiftChapterSpans,
+  shiftChapterList,
+  CHAPTER_RENUMBER_FIELDS,
+} from './chapter-renumber.js'
+import type { ChapterRenumberSpec } from './chapter-renumber.js'
 import type {
   NovelProject,
   NovelChapter,
@@ -602,9 +609,99 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteChapter(id: string): boolean {
-    this.deleteEdgesByEntity(id)
-    const result = this.db.prepare('DELETE FROM novel_chapters WHERE id = ?').run(id)
-    return result.changes > 0
+    // 使用事务包裹整个删除+重排流程，保证原子性：
+    //   - 读章节、删画布连线、删章节行、重排引用任一步失败 → 整体回滚
+    //   - 与 deleteVolume 模式一致，避免 renumber 失败时留下"章节已删但引用未重排"的脏状态
+    return this.db.transaction(() => {
+      // 1. 读取章节信息（需要 projectId 和 chapterNumber 做重排）
+      const chapter = this.getChapterById(id)
+      if (!chapter) return false
+
+      // 2. 删除与该章节关联的画布连线
+      this.deleteEdgesByEntity(id)
+
+      // 3. 删除章节行
+      const result = this.db.prepare('DELETE FROM novel_chapters WHERE id = ?').run(id)
+      if (result.changes === 0) return false
+
+      // 4. 重排后续章节号（借鉴 PlotPilot ChapterRenumberSpec）
+      //    调用方已在事务内，renumberChapterReferences 不再自行开事务
+      const spec = createChapterRenumberSpec(chapter.chapterNumber)
+      this.renumberChapterReferences(chapter.projectId, spec)
+
+      return true
+    })()
+  }
+
+  /**
+   * 重排所有引用了 chapter_number 的字段
+   * 按 CHAPTER_RENUMBER_FIELDS 常量遍历，逐表执行 UPDATE
+   *
+   * 注意：调用方（deleteChapter）已在外层开启事务，此处不再包裹。
+   * JSON 解析失败会抛错，触发外层事务整体回滚（强一致优于静默跳过）。
+   */
+  private renumberChapterReferences(projectId: string, spec: ChapterRenumberSpec): void {
+    for (const field of CHAPTER_RENUMBER_FIELDS) {
+      if (field.kind === 'scalar') {
+        // 标量字段：等于被删章的行需要处理（NOT NULL 列 DELETE，可空列 SET NULL）
+        if (field.nullable) {
+          this.db.prepare(
+            `UPDATE ${field.table} SET ${field.column} = NULL WHERE ${field.column} = ? AND project_id = ?`,
+          ).run(spec.deletedChapter, projectId)
+        } else {
+          // NOT NULL 列（如 markers.chapter, memory_events.chapter_number）无法置空，直接删除行
+          // 注意：novel_chapters 的被删行已在 deleteChapter 中删除，此处 DELETE 为 no-op
+          this.db.prepare(
+            `DELETE FROM ${field.table} WHERE project_id = ? AND ${field.column} = ?`,
+          ).run(projectId, spec.deletedChapter)
+        }
+        // 大于被删章的统一 -1
+        this.db.prepare(
+          `UPDATE ${field.table} SET ${field.column} = ${field.column} - 1 WHERE ${field.column} IS NOT NULL AND ${field.column} > ? AND project_id = ?`,
+        ).run(spec.deletedChapter, projectId)
+      } else if (field.kind === 'spans') {
+        // JSON 跨度数组：读取所有行 → JS 处理 → 逐行 UPDATE
+        const rows = this.db.prepare(
+          `SELECT id, ${field.column} AS spans FROM ${field.table} WHERE project_id = ?`,
+        ).all(projectId) as Array<{ id: string; spans: string | null }>
+        for (const row of rows) {
+          // NULL 行视为合法（未设置跨度），跳过；非 NULL 但损坏的 JSON 视为错误，抛错触发回滚
+          if (!row.spans) continue
+          const parsed = JSON.parse(row.spans)
+          if (!Array.isArray(parsed)) {
+            throw new Error(`非法 ${field.column} JSON: table=${field.table} id=${row.id}`)
+          }
+          if (!parsed.every((p) => Array.isArray(p) && p.length === 2
+            && typeof p[0] === 'number' && typeof p[1] === 'number')) {
+            throw new Error(`非法 ${field.column} 元素结构: table=${field.table} id=${row.id}`)
+          }
+          const shifted = shiftChapterSpans(parsed as Array<[number, number]>, spec)
+          this.db.prepare(
+            `UPDATE ${field.table} SET ${field.column} = ? WHERE id = ?`,
+          ).run(JSON.stringify(shifted), row.id)
+        }
+      } else if (field.kind === 'list') {
+        // JSON 列表：同样读取所有行 → JS 处理 → 逐行 UPDATE
+        const rows = this.db.prepare(
+          `SELECT id, ${field.column} AS list FROM ${field.table} WHERE project_id = ?`,
+        ).all(projectId) as Array<{ id: string; list: string | null }>
+        for (const row of rows) {
+          // NULL 行视为合法（未设置列表），跳过；非 NULL 但损坏的 JSON 视为错误，抛错触发回滚
+          if (!row.list) continue
+          const parsed = JSON.parse(row.list)
+          if (!Array.isArray(parsed)) {
+            throw new Error(`非法 ${field.column} JSON: table=${field.table} id=${row.id}`)
+          }
+          if (!parsed.every((p) => typeof p === 'number')) {
+            throw new Error(`非法 ${field.column} 元素结构: table=${field.table} id=${row.id}`)
+          }
+          const shifted = shiftChapterList(parsed as number[], spec)
+          this.db.prepare(
+            `UPDATE ${field.table} SET ${field.column} = ? WHERE id = ?`,
+          ).run(JSON.stringify(shifted), row.id)
+        }
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
