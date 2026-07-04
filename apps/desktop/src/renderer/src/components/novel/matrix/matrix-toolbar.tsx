@@ -92,7 +92,7 @@ export function MatrixToolbar({
           type="button"
           className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={onUndo}
-          title="撤销"
+          title="撤销 (Cmd/Ctrl+Z)"
           disabled={!canUndo}
         >
           <Undo2 className="size-3.5" />
@@ -101,7 +101,7 @@ export function MatrixToolbar({
           type="button"
           className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 text-muted-foreground hover:text-text hover:bg-muted rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={onRedo}
-          title="重做"
+          title="重做 (Cmd/Ctrl+Shift+Z)"
           disabled={!canRedo}
         >
           <Redo2 className="size-3.5" />
