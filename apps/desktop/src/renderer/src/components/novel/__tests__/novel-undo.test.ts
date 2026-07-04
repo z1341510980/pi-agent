@@ -86,4 +86,40 @@ describe('novel-store undo/redo', () => {
     // 数据本身不丢
     expect(useNovelStore.getState().characters).toHaveLength(1)
   })
+
+  it('undoCount/redoCount 随操作正确同步', () => {
+    const { upsertCharacter, undo, redo } = useNovelStore.getState()
+    expect(useNovelStore.getState().undoCount).toBe(0)
+    expect(useNovelStore.getState().redoCount).toBe(0)
+
+    upsertCharacter(mockCharacter('c1', '测试同步'))
+    expect(useNovelStore.getState().undoCount).toBe(1)
+    expect(useNovelStore.getState().redoCount).toBe(0)
+
+    undo()
+    expect(useNovelStore.getState().undoCount).toBe(0)
+    expect(useNovelStore.getState().redoCount).toBe(1)
+
+    redo()
+    expect(useNovelStore.getState().undoCount).toBe(1)
+    expect(useNovelStore.getState().redoCount).toBe(0)
+  })
+
+  it('项目切换清理历史栈，避免跨项目数据污染', () => {
+    const { upsertCharacter, setCurrentProject, canUndo, undo } = useNovelStore.getState()
+    upsertCharacter(mockCharacter('c1', '项目A角色'))
+    expect(canUndo()).toBe(true)
+    expect(useNovelStore.getState().undoCount).toBe(1)
+
+    // 切换到项目 B：历史栈应被清空
+    setCurrentProject('project-b')
+    expect(useNovelStore.getState().currentProjectId).toBe('project-b')
+    expect(canUndo()).toBe(false)
+    expect(useNovelStore.getState().undoCount).toBe(0)
+    expect(useNovelStore.getState().redoCount).toBe(0)
+
+    // undo 不应回退到项目 A 的状态
+    undo()
+    expect(useNovelStore.getState().currentProjectId).toBe('project-b')
+  })
 })

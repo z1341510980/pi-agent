@@ -210,7 +210,7 @@ function removeFromList<T extends { id: string }>(list: T[], id: string): T[] {
 export const useNovelStore = create<NovelState>()(
   temporal(
     persist(
-      (set): NovelState => ({
+      (set, get): NovelState => ({
         // ── 初始状态 ──
         currentProjectId: null,
         projects: [],
@@ -258,8 +258,14 @@ export const useNovelStore = create<NovelState>()(
         setCanvasEdgeType: (edgeType) => set({ canvasEdgeType: edgeType }),
         setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
         setCreationMode: (mode) => set({ creationMode: mode }),
-        setCurrentProject: (projectId) =>
-          set({ currentProjectId: projectId, selectedNodeId: null, selectedNodeType: null }),
+        setCurrentProject: (projectId) => {
+          const prevId = get().currentProjectId
+          set({ currentProjectId: projectId, selectedNodeId: null, selectedNodeType: null })
+          // 项目切换时清理历史栈，避免跨项目 undo 导致数据污染
+          if (prevId !== projectId) {
+            useNovelStore.temporal.getState().clear()
+          }
+        },
         toggleCollapsedGroup: (kind: string) =>
           set((state) => {
             const has = state.collapsedGroups.includes(kind)
