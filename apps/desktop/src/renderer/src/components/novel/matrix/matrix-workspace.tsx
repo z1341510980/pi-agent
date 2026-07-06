@@ -36,6 +36,37 @@ import { EntityCreateDialog } from './entity-create-dialog'
 import { EntitySpanDialog } from './entity-span-dialog'
 import { EntityNoteDialog } from './entity-note-dialog'
 
+/**
+ * 把新区间合并进现有跨度列表：
+ * - 与新区间相交（含相邻）的段合并为一个段 [min, max]
+ * - 不相交的段保留
+ * - 结果按 start 升序排序
+ *
+ * 用于 EntitySpanDialog 提交时：对话框编辑单段，需保留其他段不被覆盖。
+ */
+function mergeSpanIntoList(
+  existing: Array<[number, number]>,
+  newSpan: [number, number],
+): Array<[number, number]> {
+  const [ns, ne] = newSpan
+  let mergedStart = ns
+  let mergedEnd = ne
+  const kept: Array<[number, number]> = []
+  for (const [s, e] of existing) {
+    // 相交或相邻（区间 [s,e] 与 [mergedStart,mergedEnd] 有重叠或首尾相连）
+    const overlaps = s <= mergedEnd + 1 && e >= mergedStart - 1
+    if (overlaps) {
+      mergedStart = Math.min(mergedStart, s)
+      mergedEnd = Math.max(mergedEnd, e)
+    } else {
+      kept.push([s, e])
+    }
+  }
+  const result: Array<[number, number]> = [...kept, [mergedStart, mergedEnd]]
+  result.sort((a, b) => a[0] - b[0])
+  return result
+}
+
 export interface MatrixWorkspaceProps {
   creationRunning?: boolean
   creationChapterNumber?: number
@@ -667,13 +698,20 @@ export function MatrixWorkspace({
     try {
       switch (entityType) {
         case 'character': {
-          const fresh = useNovelStore.getState().characterHistory
-          const records = fresh.filter((h) => h.characterId === entityId && h.chapterNumber === fromChapter)
-          for (const r of records) {
+          // 先创建新记录，成功后再删除旧记录：创建失败时旧记录仍在，避免数据丢失
+          // （后端 batchCreateCharacterHistory 是单次请求，整体成功或整体失败）
+          const created = await batchCreateCharacterHistory(currentProjectId, [{ characterId: entityId, chapterNumber: toChapter }])
+          // 创建成功后再删除旧记录；await 后重新取最新 state 避免闭包陈旧
+          const freshAfterCreate = useNovelStore.getState().characterHistory
+          const oldRecords = freshAfterCreate.filter((h) => h.characterId === entityId && h.chapterNumber === fromChapter)
+          for (const r of oldRecords) {
             await deleteCharacterHistory(currentProjectId, r.id)
           }
-          const created = await batchCreateCharacterHistory(currentProjectId, [{ characterId: entityId, chapterNumber: toChapter }])
-          const next = [...fresh.filter((h) => !(h.characterId === entityId && h.chapterNumber === fromChapter)), ...created]
+          // 重新取最新 state 计算最终值，避免 await 期间并发修改被覆盖
+          const freshAfterDelete = useNovelStore.getState().characterHistory
+          const next = freshAfterDelete
+            .filter((h) => !(h.characterId === entityId && h.chapterNumber === fromChapter))
+            .concat(created)
           setCharacterHistory(next)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
@@ -756,13 +794,18 @@ export function MatrixWorkspace({
     try {
       switch (entity.kind) {
         case 'conflict': {
-          // 对话框只能编辑单段，多段时会覆盖为单段（后续可扩展对话框）
-          const updated = await updateConflict(entity.entityId, { chapterSpans: [[firstChapter, lastChapter]] })
+          // 合并而非覆盖：把与 [firstChapter, lastChapter] 相交的现有段合并为新段，
+          // 保留不相交的段。避免对话框编辑单段时静默丢失其他段。
+          const existing = entity.chapterSpans ?? []
+          const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
+          const updated = await updateConflict(entity.entityId, { chapterSpans: newSpans })
           useNovelStore.getState().upsertConflict(updated)
           break
         }
         case 'faction': {
-          const updated = await updateFaction(entity.entityId, { chapterSpans: [[firstChapter, lastChapter]] })
+          const existing = entity.chapterSpans ?? []
+          const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
+          const updated = await updateFaction(entity.entityId, { chapterSpans: newSpans })
           useNovelStore.getState().upsertFaction(updated)
           break
         }

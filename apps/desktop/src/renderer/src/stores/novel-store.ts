@@ -455,6 +455,15 @@ export const useNovelStore = create<NovelState>()(
       {
         name: 'pi-agent-novel',
         storage: createJSONStorage(() => localStorage),
+        // 修复 zundo + persist 嵌套时的经典问题：hydrate 期间 temporal 会把"空初始状态"
+        // 压入 pastStates，导致用户首次点撤销会把整个 store 还原成空状态。
+        // onRehydrateStorage 在 hydrate 完成后回调，此时立即 clear() 历史栈，
+        // 丢弃 hydrate 过程产生的伪快照。
+        onRehydrateStorage: () => (state) => {
+          if (state) {
+            useNovelStore.temporal.getState().clear()
+          }
+        },
         // 只持久化数据字段，不持久化 actions 与瞬时状态
         partialize: (state) => ({
           currentProjectId: state.currentProjectId,
@@ -488,8 +497,10 @@ export const useNovelStore = create<NovelState>()(
     ),
     {
       // temporal 选项：仅追踪数据字段，UI 状态与 actions 不进入历史栈
+      // 注意：currentProjectId 不进 temporal——它是导航状态，undo 恢复它
+      // 会把已删除项目 ID 恢复但不会触发 setCurrentProject 的 clearHistory 副作用，
+      // 导致状态不一致。切项目时由 setCurrentProject 手动 clear() 历史栈。
       partialize: (state) => ({
-        currentProjectId: state.currentProjectId,
         projects: state.projects,
         characters: state.characters,
         chapters: state.chapters,
