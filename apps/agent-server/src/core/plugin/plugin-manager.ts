@@ -1027,7 +1027,8 @@ export class PluginManager {
               // 时间结束才被 GC，长生命周期下会累积大量 pending timer。
               if (timeoutTimer) clearTimeout(timeoutTimer)
             }
-            if (!completeText && lastErrorMessage) {
+            // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
+            if (lastErrorMessage) {
               throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
             }
             return completeText
@@ -1055,17 +1056,30 @@ export class PluginManager {
             })
             try {
               // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
-              const timeoutMs = options.timeoutMs ?? 120_000
+              // 与 prompt 方法一致，从 runtimePerformance 读取默认值（300s），
+              // 避免流式调用超时比非流式短导致长输出被误杀
+              const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
+              let timeoutTimer: ReturnType<typeof setTimeout> | null = null
               const timeoutPromise = new Promise<never>((_, reject) => {
-                setTimeout(() => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)), timeoutMs)
+                timeoutTimer = setTimeout(
+                  () => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)),
+                  timeoutMs,
+                )
               })
-              await withAgentConfig(agentConfig, async () => {
-                await Promise.race([
-                  threadSession.session.prompt(options.userMessage),
-                  timeoutPromise,
-                ])
-              })
-              if (!completeText && lastErrorMessage) {
+              try {
+                await withAgentConfig(agentConfig, async () => {
+                  await Promise.race([
+                    threadSession.session.prompt(options.userMessage),
+                    timeoutPromise,
+                  ])
+                })
+              } finally {
+                // 必须清理 timer：streamUnsubscribe 只取消事件订阅，
+                // 不清理 timer 会导致句柄存活到超时时间结束才被 GC
+                if (timeoutTimer) clearTimeout(timeoutTimer)
+              }
+              // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
+              if (lastErrorMessage) {
                 throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
               }
               return completeText

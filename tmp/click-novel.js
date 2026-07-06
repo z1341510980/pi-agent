@@ -1,1 +1,0 @@
-document.querySelector('nav button[aria-label="小说创作"]').click();

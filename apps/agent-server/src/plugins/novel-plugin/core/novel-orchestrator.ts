@@ -46,6 +46,7 @@ import { runtimePerformance } from '../../../config/performance.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent, type AgentOutputData } from './novel-agents.js'
 import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan, RhythmSuggestion } from './types.js'
 import { RhythmController } from './rhythm-controller.js'
+import { scanCliches, formatClicheReport } from './cliche-scanner.js'
 import { NovelMemoryStore, type MemoryEvent } from './novel-memory-store.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import type { NovelAgentConfigStore } from './novel-agent-config-store.js'
@@ -260,12 +261,15 @@ export class NovelOrchestrator {
 
       // Phase 3: Reviewer
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
+      // 对 Writer 输出做防 AI 腔扫描，把命中模式作为 Reviewer 的评审依据
+      // （role-reviewer.md 提示词已承诺收到【防 AI 腔扫描】报告时需逐条给修改建议）
+      const clicheReport = formatClicheReport(scanCliches(writerResult))
       // ⚠️ 不能传 JSON 对象 { task, content }：runAgent 会 JSON.stringify 它，
       // 导致 Writer 输出的正文被压缩在 JSON 的 content 字段中（换行变 \n、引号被转义），
       // LLM 需要解析 JSON 才能提取正文，不同模型解析能力不同，行为不稳定。
       // 改为结构化 Markdown 字符串：明确的标题分隔，让 LLM 直接看到正文。
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber,
-        `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${writerResult}`,
+        `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${writerResult}\n\n---\n\n${clicheReport}`,
         options,
       )
 
