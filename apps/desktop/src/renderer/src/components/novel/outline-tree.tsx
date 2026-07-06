@@ -1,5 +1,6 @@
 import { useCallback, type ReactElement } from 'react'
 import { ChevronRight, ChevronDown, Plus, Sparkles, Wand2, BookText } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
 import {
@@ -37,6 +38,7 @@ export function OutlineTree({
   const toggleExpandedVolume = useNovelStore((s) => s.toggleExpandedVolume)
   const upsertVolume = useNovelStore((s) => s.upsertVolume)
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
+  const queryClient = useQueryClient()
 
   const sortedVolumes = [...volumes].sort(
     (a, b) => a.sortOrder - b.sortOrder || a.volumeNumber - b.volumeNumber,
@@ -64,10 +66,12 @@ export function OutlineTree({
         title: `第${nextNumber}卷`,
       })
       upsertVolume(vol)
+      // 刷新 React Query 缓存，避免后台 refetch 返回旧数据覆盖本地新建
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', project.id] })
     } catch (err) {
       console.error('[OutlineTree] 创建卷失败:', err)
     }
-  }, [volumes, project.id, upsertVolume])
+  }, [volumes, project.id, upsertVolume, queryClient])
 
   // 新建章：自动取下一章号，narrativeTask 用默认占位，用户可在右侧栏编辑章纲后编排
   const handleCreateChapter = useCallback(async () => {
@@ -87,10 +91,13 @@ export function OutlineTree({
       // 选中新创建的章节，便于右侧栏立即编辑
       selectNode(chapter.id, 'chapter')
       setPlayheadChapter(chapter.chapterNumber)
+      // 刷新 React Query 缓存，与 handleStartCreationAt 保持一致，
+      // 避免后台 refetch 返回旧数据（不含新章节）触发 loadProjectData 全量替换擦除新章节
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', project.id] })
     } catch (err) {
       console.error('[OutlineTree] 创建章失败:', err)
     }
-  }, [chapters, project.id, upsertChapter, selectNode, setPlayheadChapter])
+  }, [chapters, project.id, upsertChapter, selectNode, setPlayheadChapter, queryClient])
 
   return (
     <div className="flex flex-col gap-0.5">

@@ -207,6 +207,19 @@ function removeFromList<T extends { id: string }>(list: T[], id: string): T[] {
   return list.filter((x) => x.id !== id)
 }
 
+/**
+ * 合并两个实体列表：以后端列表为基础，但保留本地列表中存在但后端列表中不存在的条目。
+ * 用于 loadProjectData，避免后台 refetch 返回旧数据时擦除本地新建的实体。
+ * 同 id 时以后端数据为准（后端是最新权威数据）。
+ */
+function mergeListById<T extends { id: string }>(local: T[], remote: T[] | undefined): T[] {
+  if (!remote) return local
+  const remoteIds = new Set(remote.map((x) => x.id))
+  // 保留本地存在但后端没有的（新建未同步）；后端有则用后端的
+  const localOnly = local.filter((x) => !remoteIds.has(x.id))
+  return [...remote, ...localOnly]
+}
+
 // ── Store ──
 
 // flag：persist hydrate 完成后置 true，store 创建后据此清除 temporal 伪快照
@@ -295,20 +308,24 @@ export const useNovelStore = create<NovelState>()(
 
         loadProjectData: (data) =>
           set((state) => ({
-            characters: data.characters ?? state.characters,
-            chapters: data.chapters ?? state.chapters,
-            volumes: data.volumes ?? state.volumes,
-            conflicts: data.conflicts ?? state.conflicts,
-            foreshadows: data.foreshadows ?? state.foreshadows,
-            relationships: data.relationships ?? state.relationships,
-            clues: data.clues ?? state.clues,
-            worldRules: data.worldRules ?? state.worldRules,
-            styleGuides: data.styleGuides ?? state.styleGuides,
-            constraints: data.constraints ?? state.constraints,
-            infoLayers: data.infoLayers ?? state.infoLayers,
-            factions: data.factions ?? state.factions,
-            locations: data.locations ?? state.locations,
-            worldElements: data.worldElements ?? state.worldElements,
+            // 合并语义：以后端数据为基础，但保留本地新建但后端尚未返回的条目
+            // （按 id 去重，本地条目优先），避免竞态条件下新建实体被全量替换擦除。
+            // 场景：用户新建章节 → upsertChapter 本地写入 → 后台 projectDataQuery
+            // refetch 返回旧数据（不含新章节）→ 全量替换会擦除新章节 → 选中悬空。
+            characters: mergeListById(state.characters, data.characters),
+            chapters: mergeListById(state.chapters, data.chapters),
+            volumes: mergeListById(state.volumes, data.volumes),
+            conflicts: mergeListById(state.conflicts, data.conflicts),
+            foreshadows: mergeListById(state.foreshadows, data.foreshadows),
+            relationships: mergeListById(state.relationships, data.relationships),
+            clues: mergeListById(state.clues, data.clues),
+            worldRules: mergeListById(state.worldRules, data.worldRules),
+            styleGuides: mergeListById(state.styleGuides, data.styleGuides),
+            constraints: mergeListById(state.constraints, data.constraints),
+            infoLayers: mergeListById(state.infoLayers, data.infoLayers),
+            factions: mergeListById(state.factions, data.factions),
+            locations: mergeListById(state.locations, data.locations),
+            worldElements: mergeListById(state.worldElements, data.worldElements),
             edges: data.edges ?? state.edges,
             markers: data.markers ?? state.markers,
           })),
