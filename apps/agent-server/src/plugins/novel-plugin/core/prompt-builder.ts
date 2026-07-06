@@ -87,6 +87,7 @@ import type {
   ChapterConstraints,
   ArrangedEntity,
 } from './types.js'
+import type { MemoryEvent, MemoryEventType } from './novel-memory-store.js'
 
 /**
  * Store 接口：NovelPromptBuilder 只需要读取数据，不关心存储实现
@@ -101,6 +102,8 @@ export interface NovelPromptStores {
   listForeshadowing(projectId: string): NovelForeshadow[]
   listClues(projectId: string): NovelClue[]
   listInformationLayers(projectId: string): NovelInformationLayer[]
+  /** 按 ID 查询单个信息差（P3-2：供伏笔反向展示承载的信息差） */
+  getInformationLayer(infoLayerId: string): NovelInformationLayer | undefined
   listConstraints(projectId: string): NovelConstraint[]
   listRecentChapters(projectId: string, limit: number): NovelChapter[]
   getChapter(projectId: string, chapterNumber: number): NovelChapter | undefined
@@ -124,6 +127,15 @@ export class NovelPromptBuilder {
   constructor(
     private promptManager: PromptManager,
     private stores: NovelPromptStores,
+    /**
+     * 长期记忆存储（可选）。
+     *
+     * 提供时：buildChapterContext 会注入"近期因果链"摘要到 SEMI 层，
+     * 让 Director/Writer/Reviewer 理解最近章节关键事件的因果联系。
+     *
+     * 不提供时（如 novel-session 的手动对话流）：跳过该部分，不影响其他 section。
+     */
+    private memoryStore?: { listEvents(projectId: string, options?: { minSignificance?: number; limit?: number }): MemoryEvent[]; getCausalChain(eventId: string): { causes: MemoryEvent[]; effects: MemoryEvent[] } },
   ) {}
 
   /**
@@ -243,11 +255,12 @@ export class NovelPromptBuilder {
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
     agentType?: string,
+    directorOutput?: string,
   ): string {
     const parts: string[] = []
 
     // ── 章节信息 ──
-    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask))
+    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask, agentType))
 
     // ── 创作约束 ──
     parts.push(this.formatConstraints(constraints))
@@ -258,8 +271,10 @@ export class NovelPromptBuilder {
     }
 
     // ── 当前故事状态（动态部分）──
+    // ⚠️ 跳过本章已编排的实体（角色/冲突/伏笔），避免与 formatArrangedEntities
+    // 和 formatConstraints 重复注入。这些实体的完整定义已在前面段落输出。
     const state = this.getStoryState(projectId)
-    parts.push(this.formatStoryState(state))
+    parts.push(this.formatStoryState(state, arrangedEntities))
 
     // ── 实体关联（画布手动 + 自动连线，作为故事状态的补充）──
     const edges = this.stores.listEdges(projectId)
@@ -271,7 +286,7 @@ export class NovelPromptBuilder {
     // ── 信息差 ──
     const infoLayers = this.stores.listInformationLayers(projectId)
     if (infoLayers.length > 0) {
-      parts.push(this.formatInfoLayers(infoLayers))
+      parts.push(this.formatInfoLayers(projectId, infoLayers))
     }
 
     // ── 最近章节摘要 ──
@@ -280,15 +295,30 @@ export class NovelPromptBuilder {
       parts.push(this.formatRecentSummaries(recentChapters))
     }
 
+    // ── 近期因果链（最近章节的关键事件及其因果联系）──
+    // 注入历史因果可让 Director/Writer/Reviewer 理解"为什么会变成现在这样"，
+    // 避免脱离前因后果地规划/创作。当前章事件尚未生成，所以查询的是历史章节。
+    if (this.memoryStore) {
+      const causalSummary = this.formatRecentCausalChain(projectId, chapterNumber)
+      if (causalSummary) parts.push(causalSummary)
+    }
+
     // ── 创作指令（仅 Writer 注入，其他 Agent 看到会越权写作）──
     // chapter-instruction 模板包含"直接输出章节正文"等 Writer 专属指令，
     // 对 Director/Reviewer/Memory 注入会导致它们越权创作正文。
+    //
+    // ⚠️ 缓存关键：narrative_task 占位符优先用 Director 的实时输出（directorOutput），
+    // 而上面的 formatChapterInfo 用的是数据库章纲（narrativeTask.description）。
+    // 这样 SEMI 层前缀（章节信息 + 约束 + 故事状态 + ...）跨 Agent 完全一致，
+    // 只有末尾的 chapter-instruction（仅 Writer）会因 directorOutput 变化，
+    // 不破坏前缀缓存匹配。Director 输出作为 SEMI 层末尾内容注入，符合
+    // "前缀稳定，尾部可变"的 prompt cache 最佳实践。
     if (agentType === 'writer') {
       const project = this.stores.getProject(projectId)
       const targetWords = this.computeChapterTargetWords(project)
       const instruction = this.promptManager.render('chapter-instruction', {
         chapter_number: String(chapterNumber),
-        narrative_task: narrativeTask.description,
+        narrative_task: directorOutput ?? narrativeTask.description,
         task_type: narrativeTask.type,
         target_words: String(targetWords),
       }, projectId)
@@ -385,20 +415,36 @@ export class NovelPromptBuilder {
     return `## 项目实体档案（静态）\n\n${sections.join('\n\n')}`
   }
 
-  /** 格式化章节信息 */
-  private formatChapterInfo(projectId: string, chapterNumber: number, task: NarrativeTask): string {
+  /**
+   * 格式化章节信息
+   *
+   * ⚠️ 缓存关键：所有 Agent（Director/Writer/Reviewer/Memory）必须输出完全相同的
+   * 章节信息，确保 SEMI 层前缀跨 Agent 一致，让 LLM provider 端能命中 prompt cache。
+   *
+   * Writer 的完整叙事任务（Director 实时输出）由 chapter-instruction 模板在
+   * SEMI 层末尾渲染，此处只输出数据库章纲描述（跨 Agent 一致）。
+   * 类型/优先级等信息也由 chapter-instruction 模板输出，此处不重复。
+   */
+  private formatChapterInfo(
+    projectId: string,
+    chapterNumber: number,
+    task: NarrativeTask,
+    agentType?: string,
+  ): string {
+    void agentType // 不再区分 agentType，保留参数仅为向后兼容
     const project = this.stores.getProject(projectId)
     const volume = project?.currentVolume ?? 1
     const targetWords = this.computeChapterTargetWords(project)
-    return [
+    const lines = [
       `## 当前章节`,
       ``,
       `- 卷：第${volume}卷`,
       `- 章：第${chapterNumber}章`,
-      `- 叙事任务：${task.description}（类型：${task.type}）`,
+      `- 叙事任务：${task.description}`,
       `- 优先级：${task.priority}`,
       `- 目标字数：${targetWords} 字`,
-    ].join('\n')
+    ]
+    return lines.join('\n')
   }
 
   /** 格式化创作约束 */
@@ -503,24 +549,140 @@ export class NovelPromptBuilder {
    */
   private formatArrangedEntities(projectId: string, arranged: ArrangedEntity): string {
     const lines: string[] = ['【本章必须出现的实体（已编排约束，Writer 必须遵守）】']
+    // 功能位中文映射（让 Writer 直观理解每个角色的本章推动作用）
+    const plotFunctionLabel: Record<string, string> = {
+      provide_resource: '提供资源',
+      create_obstacle: '制造阻碍',
+      amplify_conflict: '放大冲突',
+      open_phase: '打开新阶段',
+      change_judgment: '改变主角判断',
+      advance_relationship: '推进感情线',
+      reveal_world_rule: '暴露世界规则',
+    }
+    const plotRoleLabel: Record<string, string> = {
+      protagonist: '主角',
+      main_opponent: '主要对手',
+      supporting: '重要配角',
+      function: '功能配角',
+      background: '背景人物',
+    }
+    // ── P2-1：冲突推进模式中文映射 ──
+    const progressionModeLabel: Record<string, string> = {
+      linear: '线性升级',
+      mutation: '突变',
+      stagnation: '停滞',
+      regression: '降级',
+      reversal: '反转',
+    }
+    // ── P2-2：伏笔 category / plantMethod / recoverMethod 中文映射 ──
+    const foreshadowCategoryLabel: Record<string, string> = {
+      item: '物品',
+      spoken: '言语',
+      event: '事件',
+      identity: '身份',
+      secret: '秘密',
+      prophecy: '预言',
+      promise: '承诺',
+      quote: '台词',
+    }
+    const plantMethodLabel: Record<string, string> = {
+      explicit: '明写',
+      implicit: '暗写',
+      indirect: '侧写',
+    }
+    const recoverMethodLabel: Record<string, string> = {
+      explicit: '点破',
+      implicit: '暗示',
+      reverse: '反向',
+      progressive: '递进',
+    }
     if (arranged.characterIds.length > 0) {
+      // 过滤占位角色：名字含"（待定）"/"待补充"等的是 AI 编排未命名的占位角色，
+      // 其字段全是"待补充（占位）"模板文本，对 Writer 无意义且浪费上下文
+      const isPlaceholderName = (name: string): boolean =>
+        /（待定）|待补充|待定$/.test(name)
       const chars = arranged.characterIds
         .map((id) => this.stores.getCharacter(id))
         .filter((c): c is NonNullable<typeof c> => c != null)
+        .filter((c) => !isPlaceholderName(c.name))
       if (chars.length > 0) {
+        // 按功能位索引，便于角色查到对应功能
+        const functionMap = new Map<string, { function: string; note?: string }>()
+        for (const entry of arranged.characterFunctions ?? []) {
+          functionMap.set(entry.characterId, { function: entry.function, note: entry.note })
+        }
         lines.push('出场角色（完整定义）：')
         for (const c of chars) {
-          // 输出完整静态设定 + 动态状态，让 Writer 无需工具查询即可创作
+          // 输出完整静态设定 + 动态状态 + 四层逻辑字段，让 Writer 无需工具查询即可创作
           const charLines = [`  ### ${c.name}`]
           if (c.identity) charLines.push(`  - 身份：${c.identity}`)
           if (c.personality) charLines.push(`  - 性格：${c.personality}`)
           if (c.appearance) charLines.push(`  - 外貌：${c.appearance}`)
           if (c.speechStyle) charLines.push(`  - 说话风格：${c.speechStyle}`)
           if (c.currentState) charLines.push(`  - 当前状态：${c.currentState}`)
-          if (c.currentGoal) charLines.push(`  - 当前目标：${c.currentGoal}`)
+          if (c.currentGoal) charLines.push(`  - 当前目标（短期）：${c.currentGoal}`)
+          // 四层逻辑①：长期欲望（跨章节稳定的发动机）
+          if (c.longTermDesire) charLines.push(`  - 长期欲望：${c.longTermDesire}`)
           if (c.currentPressure) charLines.push(`  - 当前压力：${c.currentPressure}`)
+          // 四层逻辑②：角色层级（决定笔墨分配）
+          const roleLabel = plotRoleLabel[c.plotRole] ?? c.plotRole
+          charLines.push(`  - 角色层级：${roleLabel}`)
+          // 四层逻辑③：本章功能位（关键，避免工具人化）
+          const fn = functionMap.get(c.id)
+          if (fn) {
+            const fnLabel = plotFunctionLabel[fn.function] ?? fn.function
+            charLines.push(`  - ⚡ 本章功能位：${fnLabel}${fn.note ? `（${fn.note}）` : ''}`)
+          }
+          if (c.secret) charLines.push(`  - 隐藏秘密：${c.secret}`)
           if (c.description && !c.currentState) charLines.push(`  - 简介：${c.description}`)
+          // 四层逻辑④：删掉影响（让 Writer 知道这个角色不可替代什么）
+          if (c.removalImpact && c.removalImpact !== '暂无关键影响') {
+            charLines.push(`  - 删掉影响：${c.removalImpact}`)
+          }
           lines.push(charLines.join('\n'))
+        }
+      }
+    }
+    // ── 本章角色之间的关系状态（四层逻辑②：动态关系）──
+    // 让 Writer 知道本章角色之间的当前关系状态 + 阵营 + 走向 + 本章约束提示
+    if (arranged.characterIds.length > 1) {
+      const charIdSet = new Set(arranged.characterIds)
+      const relations = this.stores.listRelationships(projectId)
+        .filter((r) => charIdSet.has(r.characterA) && charIdSet.has(r.characterB))
+      if (relations.length > 0) {
+        lines.push('')
+        lines.push('本章出场角色之间的关系（动态状态 + 阵营 + 走向，影响互动方式）：')
+        const charNameMap = new Map(arranged.characterIds
+          .map((id) => this.stores.getCharacter(id))
+          .filter((c): c is NonNullable<typeof c> => c != null)
+          .map((c) => [c.id, c.name]))
+        const alignmentLabel: Record<string, string> = {
+          ally: '同一边',
+          temporary_ally: '暂时同路',
+          opponent: '对立',
+          temporary_opponent: '暂时对立',
+          neutral: '中立',
+          pending_shift: '待转变',
+        }
+        const trendLabel: Record<string, string> = {
+          stable: '稳定',
+          warming: '升温',
+          cooling: '降温',
+          breaking: '即将破裂',
+          reconciling: '和解中',
+        }
+        for (const r of relations) {
+          const nameA = charNameMap.get(r.characterA) ?? r.characterA
+          const nameB = charNameMap.get(r.characterB) ?? r.characterB
+          const parts = [`  - ${nameA} ↔ ${nameB}`]
+          if (r.relationType) parts.push(`关系：${r.relationType}`)
+          if (r.currentStage) parts.push(`当前阶段：${r.currentStage}`)
+          // ── 四层逻辑②：动态字段 ──
+          if (r.dynamicRole) parts.push(`功能位：${r.dynamicRole}`)
+          parts.push(`阵营：${alignmentLabel[r.alignment] ?? r.alignment}`)
+          parts.push(`走向：${trendLabel[r.trend] ?? r.trend}`)
+          if (r.chapterHint) parts.push(`⚡ 本章约束：${r.chapterHint}`)
+          lines.push(parts.join('；'))
         }
       }
     }
@@ -530,11 +692,37 @@ export class NovelPromptBuilder {
         .filter((c): c is NonNullable<typeof c> => c != null)
       if (confl.length > 0) {
         lines.push('本章冲突：')
+        // 用于把 participants（JSON: string[]）解析为角色名
+        const allChars = this.stores.listCharacters(projectId)
+        const charNameMap = new Map(allChars.map((c) => [c.id, c.name]))
         for (const c of confl) {
           const parts = [`  - [${c.type}] ${c.description}`]
           parts.push(`阶段：${c.stage}`)
           parts.push(`强度：${c.intensity}/10`)
           parts.push(`层级：${c.tier}`)
+          // ── P2-1：冲突功能位 + 推进模式（让 Writer 知道这个冲突在本章的推动作用与演变规律）──
+          if (c.plotFunction) {
+            parts.push(`⚡ 功能位：${plotFunctionLabel[c.plotFunction] ?? c.plotFunction}`)
+          }
+          if (c.progressionMode) {
+            parts.push(`推进模式：${progressionModeLabel[c.progressionMode] ?? c.progressionMode}`)
+          }
+          // ── 四层逻辑④：participants 双向关联 ──
+          // 输出参与方角色名，让 Writer 知道这个冲突涉及谁
+          let participantNames: string[] = []
+          try {
+            const parsed = JSON.parse(c.participants)
+            if (Array.isArray(parsed)) {
+              participantNames = parsed
+                .map((id: unknown) => typeof id === 'string' ? charNameMap.get(id) : undefined)
+                .filter((n: unknown): n is string => typeof n === 'string')
+            }
+          } catch {
+            // 旧数据可能不是 JSON，忽略
+          }
+          if (participantNames.length > 0) {
+            parts.push(`参与方：${participantNames.join('、')}`)
+          }
           if (c.stakes) parts.push(`赌注：${c.stakes}`)
           if (c.twistPotential != null) parts.push(`突转潜力：${c.twistPotential}/10`)
           lines.push(parts.join('；'))
@@ -548,7 +736,36 @@ export class NovelPromptBuilder {
       if (fores.length > 0) {
         lines.push('本章伏笔：')
         for (const f of fores) {
-          lines.push(`  - ${f.description}（${f.status}）`)
+          const parts = [`  - ${f.description}`]
+          // ── P2-2：category + plantMethod + recoverMethod 让 Writer 知道如何埋设/回收 ──
+          parts.push(`类别：${foreshadowCategoryLabel[f.category] ?? f.category}`)
+          parts.push(`状态：${f.status}`)
+          if (f.plantMethod) {
+            parts.push(`埋设方式：${plantMethodLabel[f.plantMethod] ?? f.plantMethod}`)
+          }
+          if (f.recoverMethod) {
+            parts.push(`回收方式：${recoverMethodLabel[f.recoverMethod] ?? f.recoverMethod}`)
+          }
+          if (f.recoverByChapter != null) {
+            parts.push(`应在第 ${f.recoverByChapter} 章前回收`)
+          }
+          // ── P3-2：反向展示 linkedInfoLayers（本伏笔承载了哪些信息差）──
+          // 让 Writer 在回收伏笔时同步翻转读者认知（避免伏笔回收了但信息差没揭露）
+          const linkedInfoLayerIds = this.parseIdListSafe(f.linkedInfoLayers)
+          if (linkedInfoLayerIds.length > 0) {
+            const linkedInfoDescs: string[] = []
+            for (const ilId of linkedInfoLayerIds) {
+              const il = this.stores.getInformationLayer(ilId)
+              if (il) {
+                const ilReader = il.readerKnows ? '读者已知' : '读者未知'
+                linkedInfoDescs.push(`${il.infoDescription}（${ilReader}）`)
+              }
+            }
+            if (linkedInfoDescs.length > 0) {
+              parts.push(`⚡ 承载信息差：${linkedInfoDescs.join('；')}`)
+            }
+          }
+          lines.push(parts.join('；'))
         }
       }
     }
@@ -590,18 +807,40 @@ export class NovelPromptBuilder {
     return lines.join('\n')
   }
 
-  /** 格式化故事状态 */
-  private formatStoryState(state: StoryState): string {
+  /**
+   * 格式化故事状态
+   *
+   * @param state 故事状态
+   * @param arrangedEntities 本章已编排实体（用于去重：本章已编排的角色/冲突/伏笔
+   *   已在 formatArrangedEntities 和 formatConstraints 中输出完整定义，
+   *   此处跳过避免重复注入，减少约 4800 字冗余）
+   */
+  private formatStoryState(state: StoryState, arrangedEntities?: ArrangedEntity): string {
     const parts: string[] = ['## 当前故事状态']
 
-    // 角色动态状态
-    parts.push('\n### 角色当前状态')
-    for (const c of state.characters) {
-      const lines = [`- **${c.name}**`]
-      if (c.currentState) lines.push(`  状态：${c.currentState}`)
-      if (c.currentGoal) lines.push(`  目标：${c.currentGoal}`)
-      if (c.currentPressure) lines.push(`  压力：${c.currentPressure}`)
-      parts.push(lines.join('\n'))
+    // 本章已编排实体 ID 集合（用于去重）
+    const arrangedCharIds = new Set(arrangedEntities?.characterIds ?? [])
+    const arrangedConflictIds = new Set(arrangedEntities?.conflictIds ?? [])
+    const arrangedForeshadowIds = new Set(arrangedEntities?.foreshadowIds ?? [])
+
+    // 占位实体过滤：名字含"（待定）"/"待补充"/"新的"的是 AI 编排未命名的占位实体，
+    // 对 Writer 无意义且污染上下文，跳过输出
+    const isPlaceholder = (name: string): boolean =>
+      /（待定）|待补充|待定$|^新的$|^测试角色/.test(name)
+
+    // 角色动态状态（跳过本章已编排角色 + 占位角色）
+    const otherChars = state.characters.filter(
+      (c) => !arrangedCharIds.has(c.id) && !isPlaceholder(c.name),
+    )
+    if (otherChars.length > 0) {
+      parts.push('\n### 角色当前状态')
+      for (const c of otherChars) {
+        const lines = [`- **${c.name}**`]
+        if (c.currentState) lines.push(`  状态：${c.currentState}`)
+        if (c.currentGoal) lines.push(`  目标：${c.currentGoal}`)
+        if (c.currentPressure) lines.push(`  压力：${c.currentPressure}`)
+        parts.push(lines.join('\n'))
+      }
     }
 
     // 关系状态
@@ -612,10 +851,13 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 活跃冲突
-    if (state.activeConflicts.length > 0) {
+    // 活跃冲突（跳过本章已编排冲突 + 占位冲突）
+    const otherConflicts = state.activeConflicts.filter(
+      (c) => !arrangedConflictIds.has(c.id) && !isPlaceholder(c.description),
+    )
+    if (otherConflicts.length > 0) {
       parts.push('\n### 活跃冲突')
-      for (const c of state.activeConflicts) {
+      for (const c of otherConflicts) {
         const segs = [`- [${c.type}] ${c.description}`]
         segs.push(`强度：${c.intensity}/10`)
         segs.push(`阶段：${c.stage}`)
@@ -626,10 +868,13 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 待回收伏笔
-    if (state.pendingForeshadowing.length > 0) {
+    // 待回收伏笔（跳过本章已编排伏笔 + 占位伏笔）
+    const otherForeshadows = state.pendingForeshadowing.filter(
+      (f) => !arrangedForeshadowIds.has(f.id) && !isPlaceholder(f.description),
+    )
+    if (otherForeshadows.length > 0) {
       parts.push('\n### 伏笔状态')
-      for (const f of state.pendingForeshadowing) {
+      for (const f of otherForeshadows) {
         parts.push(`- [${f.status}] ${f.description}`)
       }
     }
@@ -642,10 +887,11 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 活跃势力
-    if (state.activeFactions.length > 0) {
+    // 活跃势力（过滤占位势力）
+    const realFactions = state.activeFactions.filter((f) => !isPlaceholder(f.name))
+    if (realFactions.length > 0) {
       parts.push('\n### 活跃势力')
-      for (const f of state.activeFactions) {
+      for (const f of realFactions) {
         const segs = [`- **${f.name}**`]
         if (f.type) segs.push(`类型：${f.type}`)
         if (f.strength) segs.push(`实力：${f.strength}`)
@@ -655,10 +901,11 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 已登场地点
-    if (state.activeLocations.length > 0) {
+    // 已登场地点（过滤占位地点）
+    const realLocations = state.activeLocations.filter((l) => !isPlaceholder(l.name))
+    if (realLocations.length > 0) {
       parts.push('\n### 已登场地点')
-      for (const l of state.activeLocations) {
+      for (const l of realLocations) {
         const segs = [`- **${l.name}**`]
         if (l.type) segs.push(`类型：${l.type}`)
         if (l.significance) segs.push(`重要性：${l.significance}`)
@@ -670,15 +917,51 @@ export class NovelPromptBuilder {
     return parts.join('\n')
   }
 
-  /** 格式化信息差 */
-  private formatInfoLayers(layers: NovelInformationLayer[]): string {
+  /**
+   * 格式化信息差
+   *
+   * P3-2：扩展展示关联伏笔描述，让 Writer/Reviewer 意识到"这个信息差由哪些伏笔承载"，
+   * 在写作时能协同伏笔回收与信息差揭露的时机，避免伏笔回收时未同步翻转读者认知。
+   */
+  private formatInfoLayers(projectId: string, layers: NovelInformationLayer[]): string {
     const parts: string[] = ['## 信息差']
     for (const layer of layers) {
       const readerStatus = layer.readerKnows ? '读者已知' : '读者未知'
       const revealStatus = layer.isRevealed ? '已揭露' : `计划揭露：${layer.revealStage ?? '未定'}`
-      parts.push(`- ${layer.infoDescription}（${readerStatus}，${revealStatus}）`)
+      const head = `- ${layer.infoDescription}（${readerStatus}，${revealStatus}）`
+      // ── P3-2：解析 linkedForeshadows 反向展示关联伏笔 ──
+      // 让 Agent 知道本信息差由哪些伏笔承载，写作时协同回收时机
+      const linkedIds = this.parseIdListSafe(layer.linkedForeshadows)
+      if (linkedIds.length > 0) {
+        const linkedDescs: string[] = []
+        for (const fid of linkedIds) {
+          const f = this.stores.getForeshadow(fid)
+          if (f) {
+            linkedDescs.push(`${f.description}（${f.status}）`)
+          }
+        }
+        if (linkedDescs.length > 0) {
+          parts.push(`${head}\n  - 承载伏笔：${linkedDescs.join('；')}`)
+          continue
+        }
+      }
+      parts.push(head)
     }
     return parts.join('\n')
+  }
+
+  /** 容错解析 JSON 字符串数组（旧数据/非法 JSON 返回空数组） */
+  private parseIdListSafe(raw: string | null | undefined): string[] {
+    if (!raw) return []
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        return parsed.filter((x): x is string => typeof x === 'string')
+      }
+    } catch {
+      // 旧数据可能不是 JSON，忽略
+    }
+    return []
   }
 
   /**
@@ -710,6 +993,78 @@ export class NovelPromptBuilder {
       parts.push(`- 第${ch.chapterNumber}章《${ch.title}》：${summary}`)
     }
     return parts.join('\n')
+  }
+
+  /**
+   * 格式化近期因果链：最近 2 章的高重要性事件及其因果联系。
+   *
+   * 设计意图：
+   * - "最近章节摘要"展示剧情梗概；本节展示"为什么会这样"的因果脉络
+   * - 让 Director 在规划本章时承接前因；让 Writer 在创作时保持动机连贯
+   * - 仅取 significance >= 6 的事件，避免噪音；按章节分组，最近 2 章优先
+   * - 因果展示策略：每个事件若有 cause，展示"直接原因"一行（不递归根因）
+   *
+   * @param projectId 项目 ID
+   * @param currentChapterNumber 当前正在创作的章节号（仅展示此章之前的事件）
+   */
+  private formatRecentCausalChain(projectId: string, currentChapterNumber: number): string {
+    if (!this.memoryStore) return ''
+    // 拉取最近的高重要性事件（significance >= 6，最多 30 条）
+    const allEvents = this.memoryStore.listEvents(projectId, { minSignificance: 6, limit: 30 })
+    // 仅展示当前章之前的事件（当前章事件尚未生成；未来章不存在）
+    const pastEvents = allEvents
+      .filter((e) => e.chapterNumber < currentChapterNumber)
+      .sort((a, b) => b.chapterNumber - a.chapterNumber || a.createdAt - b.createdAt)
+    if (pastEvents.length === 0) return ''
+
+    // 按章节分组，取最近 2 章
+    const byChapter = new Map<number, MemoryEvent[]>()
+    for (const e of pastEvents) {
+      const list = byChapter.get(e.chapterNumber)
+      if (list) list.push(e)
+      else byChapter.set(e.chapterNumber, [e])
+    }
+    const chaptersToShow = [...byChapter.keys()].sort((a, b) => b - a).slice(0, 2)
+    if (chaptersToShow.length === 0) return ''
+
+    const sections: string[] = []
+    for (const ch of chaptersToShow) {
+      const events = byChapter.get(ch) ?? []
+      const lines: string[] = []
+      for (const e of events) {
+        const typeLabel = this.translateMemoryEventType(e.eventType)
+        let line = `- [${typeLabel}] ${e.description}`
+        // 若有 cause，查询并展示"直接原因"（chain.causes 数组最后一个元素）
+        // chain.causes 已 reverse，[0]=root cause，[last]=direct cause
+        if (e.cause) {
+          const chain = this.memoryStore!.getCausalChain(e.id)
+          const directCause = chain.causes[chain.causes.length - 1]
+          if (directCause) {
+            line += `\n  ← 由"${directCause.description}"引发`
+          }
+        }
+        lines.push(line)
+      }
+      sections.push(`### 第${ch}章\n${lines.join('\n')}`)
+    }
+
+    return `## 近期因果链（最近章节关键事件的因果联系）\n\n${sections.join('\n\n')}`
+  }
+
+  /** 事件类型 → 中文标签 */
+  private translateMemoryEventType(t: MemoryEventType): string {
+    const map: Record<MemoryEventType, string> = {
+      character_change: '角色变更',
+      conflict_change: '冲突变更',
+      foreshadow_change: '伏笔变更',
+      faction_change: '势力变更',
+      location_change: '地点变更',
+      relationship_change: '关系变更',
+      info_layer_change: '信息差变更',
+      plot_event: '剧情事件',
+      world_change: '世界变更',
+    }
+    return map[t] ?? t
   }
 
   // ═══════════════════════════════════════════════════════════════

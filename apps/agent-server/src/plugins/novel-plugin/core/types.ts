@@ -142,6 +142,22 @@ export interface NovelVolume {
 
 // ── 角色 ──
 
+/**
+ * 角色层级（持久化，回答"他在故事里是什么位置"）
+ *
+ * 区别于 PlotFunction（本章临时功能位），plot_role 是角色在整本书里的层级：
+ * - protagonist: 主角，整本书的核心视角
+ * - main_opponent: 主要对手，长期对抗主角的核心反派
+ * - supporting: 重要配角，有人物深度，参与多条线
+ * - function: 功能配角，主要为推动特定剧情而存在
+ * - background: 背景人物，仅作为环境/陪衬
+ *
+ * 系统对 function/background 层级角色不要求长期欲望深度，
+ * 让 LLM 写作时知道哪些角色值得花笔墨。
+ */
+export type NovelCharacterPlotRole =
+  | 'protagonist' | 'main_opponent' | 'supporting' | 'function' | 'background'
+
 export interface NovelCharacter {
   id: string
   projectId: string
@@ -162,6 +178,16 @@ export interface NovelCharacter {
   // 说话风格
   speechStyle: string
   isProtagonist: boolean // 是否主角
+  // ── 四层逻辑补全（迁移 048）──
+  /** 长期欲望：跨章节稳定的发动机，区别于 currentGoal 短期目标 */
+  longTermDesire: string
+  /** 角色层级：决定笔墨分配与功能位约束深度 */
+  plotRole: NovelCharacterPlotRole
+  /** 删掉影响：一句话描述"删掉这个角色哪段剧情会受影响" */
+  removalImpact: string
+  // ── 四层逻辑④：影响层反向索引（迁移 050）──
+  /** 参与的冲突 ID 列表（JSON: string[]，由冲突 CRUD 时自动同步，回答"删掉他会断几条冲突线"） */
+  participatingConflicts: string
   createdAt: number
   updatedAt: number
 }
@@ -176,14 +202,59 @@ export interface ArcChange {
 
 // ── 关系 ──
 
+/**
+ * 关系阵营关系（动态，回答"同一边还是暂时同路 / 后面会不会变"）
+ * - ally: 同一边（长期盟友）
+ * - temporary_ally: 暂时同路（短期合作，可能反目）
+ * - opponent: 对立（长期敌对）
+ * - temporary_opponent: 暂时对立（短期冲突，可能和解）
+ * - neutral: 中立（无明确立场）
+ * - pending_shift: 待转变（关系临界点，本章可能翻盘）
+ */
+export type RelationshipAlignment =
+  | 'ally' | 'temporary_ally' | 'opponent'
+  | 'temporary_opponent' | 'neutral' | 'pending_shift'
+
+/**
+ * 关系走向（动态，回答"后面会不会变，往哪边变"）
+ * - stable: 稳定
+ * - warming: 升温（关系在变好）
+ * - cooling: 降温（关系在变冷，但未破裂）
+ * - breaking: 即将破裂
+ * - reconciling: 正在和解
+ */
+export type RelationshipTrend =
+  | 'stable' | 'warming' | 'cooling' | 'breaking' | 'reconciling'
+
+/** 关系阶段变更历史条目 */
+export interface RelationChange {
+  chapter: number
+  fromStage: string
+  toStage: string
+  /** 变更原因 / 触发事件 */
+  reason: string
+  timestamp: number
+}
+
 export interface NovelRelationship {
   id: string
   projectId: string
   characterA: string
   characterB: string
-  relationType: string // 敌对/合作/师徒/恋人/亲属...
+  relationType: string // 敌对/合作/师徒/恋人/亲属...（持久化标签）
   currentStage: string
   stageHistory: string // JSON: RelationChange[]
+  // ── 四层逻辑②：动态关系补全字段（迁移 049）──
+  /** 动态功能位："在帮主角什么 / 拦主角什么"（一句话描述本关系对剧情的推动作用） */
+  dynamicRole: string
+  /** 阵营关系：同一边 / 暂时同路 / 对立 / 待转变 */
+  alignment: RelationshipAlignment
+  /** 走向：升温 / 降温 / 稳定 / 即将破裂 / 和解 */
+  trend: RelationshipTrend
+  /** 本章关系约束提示（一句话说明本章关系应如何变化，可空） */
+  chapterHint: string
+  /** 最后一次更新的章节号（用于追溯关系演变节奏） */
+  lastUpdatedChapter: number | null
   createdAt: number
   updatedAt: number
 }
@@ -194,13 +265,23 @@ export interface NovelForeshadow {
   id: string
   projectId: string
   description: string
-  category: string // 物品/身份/事件/承诺/台词...
+  /** 伏笔类别（结构化枚举，四层逻辑③：功能层）
+   *  不同类型有不同回收规律，提示 LLM 写回收时按类型给指导 */
+  category: NovelForeshadowCategory
   status: ForeshadowStatus
   firstChapter: number | null
   lastChapter: number | null
   recoverByChapter: number | null
   linkedCharacters: string // JSON: string[]
   linkedClues: string // JSON: string[]
+  // ── 四层逻辑③：埋设/回收方式（结构化）──
+  /** 埋设方式（明写/暗写/侧写），指导 LLM 写埋设时的手法 */
+  plantMethod?: ForeshadowPlantMethod
+  /** 回收方式（点破/暗示/反向/递进），指导 LLM 写回收时的手法 */
+  recoverMethod?: ForeshadowRecoverMethod
+  /** ── P3-2：关联信息差 ID 数组（JSON: string[]）
+   * 一个伏笔可以承载多个信息差（如同一物品伏笔同时承载"身份未明"+"读者不知来源"两条信息差） */
+  linkedInfoLayers: string
   createdAt: number
   updatedAt: number
 }
@@ -208,6 +289,33 @@ export interface NovelForeshadow {
 export type ForeshadowStatus =
   | 'planned' | 'planted' | 'reinforced' | 'partially_revealed'
   | 'recovering' | 'recovered' | 'abandoned'
+
+/** 伏笔类别枚举（四层逻辑③：功能层）
+ *  不同类别有不同回收规律：
+ *  - item 物品：物品再次出现时回收
+ *  - spoken 言语：在说出者面前应验时回收
+ *  - event 事件：事件触发时回收
+ *  - identity 身份：身份揭晓时回收
+ *  - secret 秘密：秘密暴露时回收
+ *  - prophecy 预言：兑现时回收
+ *  - promise 承诺：在承诺人面前兑现时回收
+ *  - quote 台词：台词应验时回收 */
+export type NovelForeshadowCategory =
+  | 'item' | 'spoken' | 'event' | 'identity'
+  | 'secret' | 'prophecy' | 'promise' | 'quote'
+
+/** 伏笔埋设方式（指导 LLM 写埋设时的手法）
+ *  - explicit: 明写（直接点破，读者立刻知道是伏笔）
+ *  - implicit: 暗写（藏在对话或动作里，读者需要细品）
+ *  - indirect: 侧写（通过他人视角提及，间接埋设） */
+export type ForeshadowPlantMethod = 'explicit' | 'implicit' | 'indirect'
+
+/** 伏笔回收方式（指导 LLM 写回收时的手法）
+ *  - explicit: 明回收（直接点破，与埋设呼应）
+ *  - implicit: 暗回收（让读者自己悟，不点破）
+ *  - reverse: 反向回收（与埋设相反，制造反转）
+ *  - progressive: 递进回收（多次点破，逐步释放） */
+export type ForeshadowRecoverMethod = 'explicit' | 'implicit' | 'reverse' | 'progressive'
 
 // ── 线索 ──
 
@@ -251,6 +359,21 @@ export interface NovelConflict {
   stakes?: string | null
   /** 突转潜力（0-10，越高越适合安排突转） */
   twistPotential?: number
+  // ── 四层逻辑③：功能层 + 推进模式 ──
+  /** 剧情功能位（复用 PlotFunction 七值枚举，避免类型爆炸）
+   * - amplify_conflict: 放大冲突（让冲突升级到更高强度）
+   * - open_phase: 打开新阶段（开启下一段故事）
+   * - reveal_world_rule: 暴露世界规则（通过冲突展现世界运作方式）
+   * - change_judgment: 改变主角判断（让主角重新评估）
+   * - 其他值（provide_resource/create_obstacle/advance_relationship）理论可用但较少 */
+  plotFunction?: PlotFunction
+  /** 推进模式（决定 engine.computeConflictTargetStage 的推进路径）
+   * - linear: 默认线性推进 latent→emerging→escalating→erupting→reversing→resolved
+   * - mutation: 突变跳跃（latent 直接 erupting，跳过多阶）
+   * - stagnation: 停滞（保持当前阶段，仅强度变化，用于潜伏长冲突）
+   * - regression: 降级（erupting→escalating，因外部干预或形势缓和）
+   * - reversal: 反复（resolved 重新 emerging，旧仇重燃 / 误解决） */
+  progressionMode?: ConflictProgressionMode
   createdAt: number
   updatedAt: number
 }
@@ -264,6 +387,10 @@ export type ConflictStage =
   | 'reversing' | 'resolved' | 'transformed'
 
 export type ConflictTier = 'main' | 'secondary' | 'goal'
+
+/** 冲突推进模式（四层逻辑③：非线性推进支持） */
+export type ConflictProgressionMode =
+  | 'linear' | 'mutation' | 'stagnation' | 'regression' | 'reversal'
 
 // ── 世界规则 ──
 
@@ -373,6 +500,9 @@ export interface NovelInformationLayer {
   revealStage: string | null
   revealChapter: number | null
   isRevealed: boolean
+  /** ── P3-2：关联伏笔 ID 数组（JSON: string[]）
+   * 一条信息差可被多个伏笔承载（如"主角真实身份"可由吊坠伏笔+预言伏笔共同暗示） */
+  linkedForeshadows: string
   createdAt: number
   updatedAt: number
 }
@@ -609,6 +739,36 @@ export interface SuspenseHook {
 
 // ── 本章已编排的实体约束 ──
 
+/**
+ * 本章角色剧情功能位（临时编排结果，回答"他这次出场负责推动什么"）
+ *
+ * 区别于 NovelCharacterPlotRole（角色层级，持久化），PlotFunction 是某角色在本章
+ * 的具体推动作用，每章可变。回答四层逻辑第三句"他这次出场负责推动什么"。
+ *
+ * 七种功能位对应四层逻辑列出的常见剧情功能：
+ * - provide_resource: 提供资源（信息/物品/人脉/能力）
+ * - create_obstacle: 制造阻碍（直接拦主角或制造麻烦）
+ * - amplify_conflict: 放大冲突（让现有冲突升级或暴露）
+ * - open_phase: 打开新阶段（引入新场景/新角色/新规则）
+ * - change_judgment: 改变主角判断（让主角重新评估或转变想法）
+ * - advance_relationship: 推进感情线（让某段关系发生质变）
+ * - reveal_world_rule: 暴露世界规则（通过他展示世界运作方式）
+ *
+ * 同一角色同章可承担多个功能位（如既提供资源又放大冲突）。
+ */
+export type PlotFunction =
+  | 'provide_resource' | 'create_obstacle' | 'amplify_conflict'
+  | 'open_phase' | 'change_judgment' | 'advance_relationship' | 'reveal_world_rule'
+
+/** 单个角色本章的功能位编排（不持久化，仅注入 Writer SEMI 层） */
+export interface CharacterFunctionEntry {
+  characterId: string
+  /** 功能位（必填，决定该角色本章推动什么） */
+  function: PlotFunction
+  /** 功能位的具体描述（可选，让 Writer 知道如何执行） */
+  note?: string
+}
+
 /** 本章已编排的实体约束（手动编排或 AI 编排产出，注入 Writer SEMI 提示词层） */
 export interface ArrangedEntity {
   characterIds: string[]
@@ -616,6 +776,12 @@ export interface ArrangedEntity {
   foreshadowIds: string[]
   factionIds: string[]
   locationIds: string[]
+  /**
+   * 角色本章功能位编排（可选，未指定时不约束）。
+   * 由 planEntitiesFromOutline 在编排阶段为每个新角色规划，注入 Writer 让其明确
+   * "这角色这次出场负责推动什么"，避免"在场 + 说话"的工具人化。
+   */
+  characterFunctions?: CharacterFunctionEntry[]
 }
 
 // ── 缓存层标记 ──

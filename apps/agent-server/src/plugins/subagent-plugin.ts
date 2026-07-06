@@ -121,10 +121,14 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
           agent?: { onPayload?: (payload: unknown) => unknown }
         }
         if (piSession.agent) {
-          piSession.agent.onPayload = (payload: unknown) => ({
-            ...(payload as Record<string, unknown>),
-            ...inject,
-          })
+          // 必须保留并 await prevOnPayload：Pi SDK 默认的 onPayload 是 async 函数，
+          // 若直接替换不调用 prevOnPayload，会绕过 before_provider_request 扩展钩子；
+          // 且若不 await，spread Promise 会丢失 messages 字段，导致 LLM 400 错误。
+          const prevOnPayload = piSession.agent.onPayload
+          piSession.agent.onPayload = async (payload: unknown) => {
+            let next = prevOnPayload ? await prevOnPayload(payload) : payload
+            return { ...(next as Record<string, unknown>), ...inject }
+          }
         }
       }
 

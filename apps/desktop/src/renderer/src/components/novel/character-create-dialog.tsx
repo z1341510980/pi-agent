@@ -25,6 +25,7 @@ import {
   updateCharacter,
   deleteCharacter,
   type NovelCharacter,
+  type NovelCharacterPlotRole,
   type CreateCharacterInput,
 } from '@/api/novel-client'
 
@@ -47,6 +48,15 @@ const ARC_STAGE_OPTIONS = [
   { value: 'resolution', label: '收束' },
 ]
 
+/** 角色层级选项（四层逻辑②：决定笔墨分配） */
+const PLOT_ROLE_OPTIONS: Array<{ value: NovelCharacterPlotRole; label: string; hint: string }> = [
+  { value: 'protagonist', label: '主角', hint: '整本书的核心视角' },
+  { value: 'main_opponent', label: '主要对手', hint: '长期对抗主角的核心反派' },
+  { value: 'supporting', label: '重要配角', hint: '有人物深度，参与多条线' },
+  { value: 'function', label: '功能配角', hint: '推动特定剧情，工具人风险高' },
+  { value: 'background', label: '背景人物', hint: '仅作环境/陪衬' },
+]
+
 type Step = 'input' | 'review'
 
 interface EditableForm {
@@ -61,6 +71,10 @@ interface EditableForm {
   secret: string
   arcStage: string
   speechStyle: string
+  // 四层逻辑补全字段
+  longTermDesire: string
+  plotRole: NovelCharacterPlotRole
+  removalImpact: string
 }
 
 function toForm(c: NovelCharacter): EditableForm {
@@ -76,6 +90,9 @@ function toForm(c: NovelCharacter): EditableForm {
     secret: c.secret,
     arcStage: c.arcStage,
     speechStyle: c.speechStyle,
+    longTermDesire: c.longTermDesire ?? '',
+    plotRole: c.plotRole ?? 'supporting',
+    removalImpact: c.removalImpact ?? '',
   }
 }
 
@@ -198,6 +215,10 @@ export function CharacterCreateDialog({
         secret: form.secret,
         arcStage: form.arcStage,
         speechStyle: form.speechStyle,
+        // 四层逻辑补全字段
+        longTermDesire: form.longTermDesire,
+        plotRole: form.plotRole,
+        removalImpact: form.removalImpact,
       }
       const updated = await updateCharacter(generated.id, payload)
       upsertCharacter(updated)
@@ -393,6 +414,49 @@ export function CharacterCreateDialog({
                   <Input
                     value={form.speechStyle}
                     onChange={(e) => setForm((f) => (f ? { ...f, speechStyle: e.target.value } : f))}
+                  />
+                </div>
+              </div>
+
+              {/* 四层逻辑补全：长期欲望 / 角色层级 / 删掉影响 */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">长期欲望（跨章节稳定动机）</Label>
+                <TextArea
+                  value={form.longTermDesire}
+                  onChange={(e) => setForm((f) => (f ? { ...f, longTermDesire: e.target.value } : f))}
+                  placeholder="例如：找到杀父仇人 / 想让天下没有冻死的人"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">角色层级</Label>
+                  <Select
+                    value={form.plotRole}
+                    onValueChange={(v) =>
+                      setForm((f) => (f ? { ...f, plotRole: v as NovelCharacterPlotRole } : f))
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="选择层级" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PLOT_ROLE_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          <div className="flex flex-col">
+                            <span>{o.label}</span>
+                            <span className="text-[10px] text-muted-foreground">{o.hint}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">删掉影响</Label>
+                  <Input
+                    value={form.removalImpact}
+                    onChange={(e) => setForm((f) => (f ? { ...f, removalImpact: e.target.value } : f))}
+                    placeholder="例如：第二卷的师徒线将断裂"
                   />
                 </div>
               </div>

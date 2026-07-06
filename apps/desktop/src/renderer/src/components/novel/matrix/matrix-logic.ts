@@ -32,6 +32,7 @@ export type MatrixEntityKind =
   | 'faction'
   | 'location'
   | 'world_element'
+  | 'info_layer'
 
 /** 联动右侧详情面板时使用的实体类型 */
 export type SelectableEntityType = MatrixEntityKind
@@ -90,11 +91,12 @@ export const GROUP_META: Record<MatrixEntityKind, GroupMeta> = {
   faction: { id: 'faction', name: '势力', color: '#a855f7', colorRgb: '168,85,247', icon: '◆' },
   location: { id: 'location', name: '地点', color: '#06b6d4', colorRgb: '6,182,212', icon: '◇' },
   world_element: { id: 'world_element', name: '世界要素', color: '#6366f1', colorRgb: '99,102,241', icon: '■' },
+  info_layer: { id: 'info_layer', name: '信息差', color: '#14b8a6', colorRgb: '20,184,166', icon: '◈' },
 }
 
-/** 分组顺序（角色→冲突→伏笔→势力→地点→世界要素） */
+/** 分组顺序（角色→冲突→伏笔→势力→地点→世界要素→信息差） */
 export const GROUP_ORDER: MatrixEntityKind[] = [
-  'character', 'conflict', 'foreshadow', 'faction', 'location', 'world_element',
+  'character', 'conflict', 'foreshadow', 'faction', 'location', 'world_element', 'info_layer',
 ]
 
 // ── 实体（矩阵行）──
@@ -525,6 +527,9 @@ export function computeCellSymbol(
       if (chapterNumber >= start && chapterNumber <= end) return { type: 'world-element' }
       return { type: 'empty' }
     }
+    case 'info_layer':
+      // 信息差暂不在矩阵视图中渲染单元格符号（侧边栏管理）
+      return { type: 'empty' }
   }
 }
 

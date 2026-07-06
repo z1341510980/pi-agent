@@ -49,7 +49,8 @@ export interface ModelConfig {
 }
 
 export interface ProviderEntry {
-  id: string
+  /** 添加时可能未生成 id，落库前由调用方用 `id || name` 推导 */
+  id?: string
   name: string
   api: string
   baseUrl: string
@@ -417,7 +418,7 @@ function ProviderCard({ provider, onEdit, onDelete }: ProviderCardProps): ReactE
           variant="ghost"
           size="icon-sm"
           aria-label={`删除 ${provider.name}`}
-          onClick={() => void onDelete(provider.id)}
+          onClick={() => void onDelete(provider.id ?? provider.name)}
         >
           <TrashIcon className="size-3.5" />
         </Button>
@@ -836,18 +837,6 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
 
 // ── 工具函数 ──
 
-function parseModels(text: string, presetModels?: ModelConfig[]): ModelConfig[] {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
-  return lines.map((line) => {
-    const [id, name] = line.split('|').map((s) => s.trim())
-    const presetModel = presetModels?.find((m) => m.id === id)
-    if (presetModel) {
-      return { ...presetModel, name: name || presetModel.name }
-    }
-    return { id, name: name || generateReadableName(id) }
-  })
-}
-
 /**
  * 从模型 ID 生成可读名称
  * 例如：'deepseek-chat' → 'Deepseek Chat', 'gpt-4o-mini' → 'Gpt 4o Mini'
@@ -863,10 +852,6 @@ function generateReadableName(id: string): string {
       return part.charAt(0).toUpperCase() + part.slice(1)
     })
     .join(' ')
-}
-
-function serializeModels(models: ModelConfig[]): string {
-  return models.map((m) => `${m.id} | ${m.name}`).join('\n')
 }
 
 function loadLocalProviders(): ProviderEntry[] {

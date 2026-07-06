@@ -167,7 +167,7 @@ const SUSPENSE_STATUS_LABELS: Record<string, string> = {
 
 /** 将后端 detail 事件 payload 格式化为 markdown 气泡内容 */
 function formatDetailBubble(detail: Record<string, unknown>): {
-  agentType: 'director' | 'context' | 'memory'
+  agentType: 'director' | 'context' | 'memory' | 'arranger'
   agentName: string
   content: string
 } {
@@ -493,20 +493,23 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             data?: unknown
             detail?: Record<string, unknown>
           }
-          // detail 事件：节奏建议/叙事任务/章节约束/记忆结果/编排规划/编排清单/编排汇总
-          // → 格式化为 info 气泡（优先于 arrange_* 分支，避免重复处理）
+          // detail 事件：节奏建议/叙事任务/章节约束/记忆结果
+          // → 格式化为 info 气泡（arrange_* 详情由下方专门分支处理，需要 dataChanged / streaming 语义）
           if (data?.detail && typeof data.detail === 'object' && data.detail.kind) {
-            const formatted = formatDetailBubble(data.detail)
-            setAgentOutputs((prev) => [...prev, {
-              agentType: formatted.agentType,
-              agentName: formatted.agentName,
-              content: formatted.content,
-              preview: data.message ?? formatted.content.slice(0, 100),
-              timestamp: evt.timestamp,
-              // memory_result 携带 dataChanged 标记，触发画布刷新
-              dataChanged: data.dataChanged === true,
-            }])
-            return
+            const detailKind = data.detail.kind as string
+            if (!detailKind.startsWith('arrange_')) {
+              const formatted = formatDetailBubble(data.detail)
+              setAgentOutputs((prev) => [...prev, {
+                agentType: formatted.agentType,
+                agentName: formatted.agentName,
+                content: formatted.content,
+                preview: data.message ?? formatted.content.slice(0, 100),
+                timestamp: evt.timestamp,
+                // memory_result 携带 dataChanged 标记，触发画布刷新
+                dataChanged: data.dataChanged === true,
+              }])
+              return
+            }
           }
           // agent_start：记录 messageId → agentType 映射，重置 writer 累积器
           // 同时创建一个初始 streaming AgentOutput，展示"已启动"提示，
@@ -588,53 +591,113 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           }
           // arrange_*：AI 编排阶段的处理步骤，作为对话气泡展示在时间线
           // 后端 ai-arrange 仅做矩阵编排（不衔接 create-flow），故编排步骤需在此显式呈现给用户
-          if (data?.type && typeof data.type === 'string' && data.type.startsWith('arrange_')) {
-            const msg = data.message ?? ''
-            const partial = (data.data as { partial?: string } | undefined)?.partial
-            if (!msg) return
+          //
+          // ⚠️ 关键：arrange_* 的 type 在 evt.type（外层 CreationFlowEvent.type），
+          //    而非 data.type（data = evt.data）。detail 可能在 evt.detail（top-level）
+          //    或 data.detail（nested in evt.data），两种结构都需兼容。
+          const pushArrangerBubble = (
+            content: string,
+            preview: string,
+            timestamp: number,
+            agentName: string,
+            dataChanged: boolean,
+          ) => {
+            setAgentOutputs((prev) => {
+              const last = prev[prev.length - 1]
+              if (last && last.agentType === 'arranger' && last.streaming) {
+                return [...prev.slice(0, -1), { ...last, streaming: false }, {
+                  agentType: 'arranger',
+                  agentName,
+                  content,
+                  preview,
+                  timestamp,
+                  dataChanged,
+                }]
+              }
+              return [...prev, {
+                agentType: 'arranger',
+                agentName,
+                content,
+                preview,
+                timestamp,
+                dataChanged,
+              }]
+            })
+          }
+          const evtType = (evt as { type?: string }).type
+          if (typeof evtType === 'string' && evtType.startsWith('arrange_')) {
+            const evtMsg = (evt as { message?: string }).message ?? data?.message ?? ''
+            const evtDetail = (evt as { detail?: Record<string, unknown> }).detail
+            const detail = evtDetail ?? data?.detail
+            const detailKind = detail?.kind as string | undefined
+            const partial = (data as { partial?: string } | undefined)?.partial
+              ?? (evtDetail as { partial?: string } | undefined)?.partial
+
+            // arrange_done + arrange_summary：编排完成，实体已落库
+            // → 渲染汇总气泡 + dataChanged: true 触发画布/侧边栏刷新
+            if (evtType === 'arrange_done' && detail && detailKind === 'arrange_summary') {
+              const formatted = formatDetailBubble(detail)
+              const content = formatted.content
+              pushArrangerBubble(content, content.slice(0, 100), evt.timestamp, '编排', true)
+              return
+            }
+
+            // arrange_result：完整生成结果清单 → 独立气泡
+            if (detail && detailKind === 'arrange_result') {
+              const formatted = formatDetailBubble(detail)
+              const content = formatted.content
+              pushArrangerBubble(content, content.slice(0, 100), evt.timestamp, '编排', false)
+              return
+            }
+
+            // arrange_plan：规划清单 → 独立气泡
+            if (detail && detailKind === 'arrange_plan') {
+              const formatted = formatDetailBubble(detail)
+              const content = formatted.content
+              pushArrangerBubble(content, content.slice(0, 100), evt.timestamp, '规划', false)
+              return
+            }
+
             // 有 partial → 流式生成中的增量更新（entity-generator 的 delta 回调）
             // → 更新最后一个 arranger streaming 气泡，避免每 token 新建气泡
             if (partial) {
+              const streamContent = `${evtMsg}\n\n\`\`\`\n${partial}\n\`\`\``
               setAgentOutputs((prev) => {
                 const last = prev[prev.length - 1]
                 if (last && last.agentType === 'arranger' && last.streaming) {
-                  const updated = { ...last, content: `${msg}\n\n\`\`\`\n${partial}\n\`\`\``, preview: partial }
-                  return [...prev.slice(0, -1), updated]
+                  return [...prev.slice(0, -1), { ...last, content: streamContent, preview: partial }]
                 }
                 return [...prev, {
                   agentType: 'arranger',
                   agentName: '编排',
-                  content: `${msg}\n\n\`\`\`\n${partial}\n\`\`\``,
+                  content: streamContent,
                   preview: partial,
                   timestamp: evt.timestamp,
                   streaming: true,
                 }]
               })
-            } else {
-              // arrange_start / arrange_done / arrange_progress(无 partial)：
-              // 新阶段 → 关闭前一个 streaming 气泡，新建非流式气泡
+              return
+            }
+
+            // arrange_start / arrange_progress（无 partial/无 detail）：
+            // 进度心跳 → 更新最后一个 arranger streaming 气泡（避免每条进度新建气泡）
+            if (evtMsg) {
               setAgentOutputs((prev) => {
-                if (prev.length > 0) {
-                  const last = prev[prev.length - 1]
-                  if (last.agentType === 'arranger' && last.streaming) {
-                    return [...prev.slice(0, -1), { ...last, streaming: false }, {
-                      agentType: 'arranger',
-                      agentName: '编排',
-                      content: msg,
-                      preview: msg,
-                      timestamp: evt.timestamp,
-                    }]
-                  }
+                const last = prev[prev.length - 1]
+                if (last && last.agentType === 'arranger' && last.streaming) {
+                  return [...prev.slice(0, -1), { ...last, content: evtMsg, preview: evtMsg }]
                 }
                 return [...prev, {
                   agentType: 'arranger',
                   agentName: '编排',
-                  content: msg,
-                  preview: msg,
+                  content: evtMsg,
+                  preview: evtMsg,
                   timestamp: evt.timestamp,
+                  streaming: true,
                 }]
               })
             }
+            return
           }
           // phase_change / 心跳：只更新 events 和 phase，不覆盖 chapterContent
           return

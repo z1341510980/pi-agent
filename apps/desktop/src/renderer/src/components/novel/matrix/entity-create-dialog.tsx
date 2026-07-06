@@ -68,6 +68,7 @@ const CORE_LABEL: Record<MatrixEntityKind, string> = {
   faction: '势力核心描述',
   location: '地点核心描述',
   world_element: '要素核心描述',
+  info_layer: '信息差核心描述',
 }
 
 const CORE_PLACEHOLDER: Record<MatrixEntityKind, string> = {
@@ -77,6 +78,7 @@ const CORE_PLACEHOLDER: Record<MatrixEntityKind, string> = {
   faction: '如：青衫会，江南最大的江湖势力',
   location: '如：青衫会总舵，藏于云雾山中',
   world_element: '如：玉佩之力，可镇压邪灵',
+  info_layer: '如：林墨真实身世，读者暂不知',
 }
 
 export function EntityCreateDialog({

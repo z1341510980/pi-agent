@@ -40,7 +40,22 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     id: 'novel-writer',
     name: '写作 Agent',
     identity: '你是一个专业的小说作家，根据叙事任务和约束创作章节正文。审稿后可根据意见修订局部内容。',
-    tools: ['novel_query_state'],
+    // ⚠️ Writer 无需工具：状态已通过 SEMI 层 chapterContext 注入：
+    //   - formatStoryState 输出所有角色动态状态、活跃冲突、伏笔、势力、地点
+    //   - formatArrangedEntities 注入本章出场角色完整定义
+    //   - formatInfoLayers 注入信息差
+    //   - formatConstraints 注入创作约束
+    //   - formatEdges 注入实体关联（画布连线）
+    //
+    // 给 Writer 提供 novel_query_state 反而会让 LLM 在生成正文前先调用工具
+    // 重复查询已知状态，工具返回的 JSON（listCharacters 全表）会让上下文
+    // 进一步膨胀，最终导致首 token 时间 = LLM 处理(原 prompt) + 工具调用 +
+    // LLM 处理(原 prompt + 工具结果) + 生成正文，超过 300s 超时。
+    //
+    // tools=[] 让 LLM 直接基于 SEMI 层注入的状态生成正文，无工具循环。
+    // 配合 pi-session.ts 的过滤逻辑（tools=[] 清空 customTools）确保
+    // Writer 看不到任何工具，不会触发 tool_calls 导致的 messages 不一致。
+    tools: [],
     roleTemplate: 'role-writer',
     temperature: 0.9,
   },

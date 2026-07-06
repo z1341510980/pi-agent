@@ -9,6 +9,7 @@
 
 import { getApi, postApi, putApi, patchApi, deleteApi } from './http-client'
 import { browserConfig } from '@repo/config/browser'
+import { parseSseStream } from './agui-client'
 
 // ── 基础路径 ──
 
@@ -29,6 +30,30 @@ export type ConflictStage =
   | 'reversing' | 'resolved' | 'transformed'
 export type ConflictTier = 'main' | 'secondary' | 'goal'
 export type ConstraintType = 'fact' | 'cognitive' | 'stage' | 'debt' | 'arc'
+
+// ── P2-1：冲突功能位 + 非线性推进（与后端 types.ts 对齐）──
+
+/** 冲突剧情功能位（复用 PlotFunction 七值枚举） */
+export type ConflictPlotFunction =
+  | 'provide_resource' | 'create_obstacle' | 'amplify_conflict'
+  | 'open_phase' | 'change_judgment' | 'advance_relationship' | 'reveal_world_rule'
+
+/** 冲突推进模式：决定 engine.computeConflictTargetStage 的推进路径 */
+export type ConflictProgressionMode =
+  | 'linear' | 'mutation' | 'stagnation' | 'regression' | 'reversal'
+
+// ── P2-2：伏笔 category 枚举 + 埋设/回收方式（与后端 types.ts 对齐）──
+
+/** 伏笔类别（8 值枚举） */
+export type NovelForeshadowCategory =
+  | 'item' | 'spoken' | 'event' | 'identity'
+  | 'secret' | 'prophecy' | 'promise' | 'quote'
+
+/** 伏笔埋设方式（3 值枚举） */
+export type ForeshadowPlantMethod = 'explicit' | 'implicit' | 'indirect'
+
+/** 伏笔回收方式（4 值枚举） */
+export type ForeshadowRecoverMethod = 'explicit' | 'implicit' | 'reverse' | 'progressive'
 
 // ── 节奏 / 高潮 / 悬念 类型（与后端 types.ts 对齐）──
 
@@ -132,6 +157,18 @@ export interface ChapterConstraints {
   suspenseHooks: SuspenseHook[]
 }
 
+/** 本章角色剧情功能位（临时编排结果，回答"他这次出场负责推动什么"） */
+export type PlotFunction =
+  | 'provide_resource' | 'create_obstacle' | 'amplify_conflict'
+  | 'open_phase' | 'change_judgment' | 'advance_relationship' | 'reveal_world_rule'
+
+/** 单个角色本章的功能位编排 */
+export interface CharacterFunctionEntry {
+  characterId: string
+  function: PlotFunction
+  note?: string
+}
+
 /** 本章已编排的实体约束 */
 export interface ArrangedEntity {
   characterIds: string[]
@@ -139,6 +176,8 @@ export interface ArrangedEntity {
   foreshadowIds: string[]
   factionIds: string[]
   locationIds: string[]
+  /** 角色本章功能位编排（可选，未指定时不约束） */
+  characterFunctions?: CharacterFunctionEntry[]
 }
 
 // ── 实体类型 ──
@@ -206,6 +245,10 @@ export interface CreateVolumeInput {
 
 export type UpdateVolumeInput = Partial<CreateVolumeInput>
 
+/** 角色层级（持久化，回答"他在故事里是什么位置"） */
+export type NovelCharacterPlotRole =
+  | 'protagonist' | 'main_opponent' | 'supporting' | 'function' | 'background'
+
 export interface NovelCharacter {
   id: string
   projectId: string
@@ -222,8 +265,36 @@ export interface NovelCharacter {
   arcHistory: string
   speechStyle: string
   isProtagonist: boolean
+  // ── 四层逻辑补全字段 ──
+  /** 长期欲望：跨章节稳定的发动机 */
+  longTermDesire: string
+  /** 角色层级：决定笔墨分配 */
+  plotRole: NovelCharacterPlotRole
+  /** 删掉影响：一句话描述"删掉这个角色哪段剧情会受影响" */
+  removalImpact: string
+  // ── 四层逻辑④：影响层反向索引 ──
+  /** 参与的冲突 ID 列表（JSON: string[]，由冲突 CRUD 自动同步） */
+  participatingConflicts: string
   createdAt: number
   updatedAt: number
+}
+
+/** 阵营关系（四层逻辑②关系层）：关系当前在同一阵线的状态 */
+export type RelationshipAlignment =
+  | 'ally' | 'temporary_ally' | 'opponent'
+  | 'temporary_opponent' | 'neutral' | 'pending_shift'
+
+/** 关系走向（四层逻辑②关系层）：动态趋势判断 */
+export type RelationshipTrend =
+  | 'stable' | 'warming' | 'cooling' | 'breaking' | 'reconciling'
+
+/** 关系阶段变更历史条目（NovelRelationship.stageHistory 的 JSON 元素） */
+export interface RelationChange {
+  chapter: number
+  fromStage: string
+  toStage: string
+  reason: string
+  timestamp: number
 }
 
 export interface NovelRelationship {
@@ -234,6 +305,17 @@ export interface NovelRelationship {
   relationType: string
   currentStage: string
   stageHistory: string
+  // ── 四层逻辑②：关系层动态字段 ──
+  /** 动态功能位（本章关系承载的剧情功能） */
+  dynamicRole: string
+  /** 阵营关系（ally/temporary_ally/opponent/temporary_opponent/neutral/pending_shift） */
+  alignment: RelationshipAlignment
+  /** 走向（stable/warming/cooling/breaking/reconciling） */
+  trend: RelationshipTrend
+  /** 本章约束提示（注入章节上下文，提示 Writer 本章关系走向） */
+  chapterHint: string
+  /** 最后更新章节号（用于矩阵视图按章节维度排序/筛选） */
+  lastUpdatedChapter: number | null
   createdAt: number
   updatedAt: number
 }
@@ -242,13 +324,18 @@ export interface NovelForeshadow {
   id: string
   projectId: string
   description: string
-  category: string
+  category: NovelForeshadowCategory
   status: ForeshadowStatus
   firstChapter: number | null
   lastChapter: number | null
   recoverByChapter: number | null
   linkedCharacters: string
   linkedClues: string
+  // ── P2-2：埋设/回收方式 ──
+  plantMethod?: ForeshadowPlantMethod
+  recoverMethod?: ForeshadowRecoverMethod
+  // ── P3-2：关联信息差 ID 数组（JSON: string[]）──
+  linkedInfoLayers: string
   createdAt: number
   updatedAt: number
 }
@@ -287,6 +374,11 @@ export interface NovelConflict {
   stakes?: string | null
   /** 突转潜力（0-10，越高越适合安排突转） */
   twistPotential?: number
+  // ── P2-1：冲突功能位 + 非线性推进 ──
+  /** 剧情功能位（复用 PlotFunction 七值枚举） */
+  plotFunction?: ConflictPlotFunction
+  /** 推进模式（决定 engine.computeConflictTargetStage 的推进路径） */
+  progressionMode?: ConflictProgressionMode
   createdAt: number
   updatedAt: number
 }
@@ -334,6 +426,8 @@ export interface NovelInformationLayer {
   revealStage: string | null
   revealChapter: number | null
   isRevealed: boolean
+  // ── P3-2：关联伏笔 ID 数组（JSON: string[]）──
+  linkedForeshadows: string
   createdAt: number
   updatedAt: number
 }
@@ -456,17 +550,27 @@ export interface CreateCharacterInput {
   arcStage?: string
   speechStyle?: string
   isProtagonist?: boolean
+  // ── 四层逻辑补全字段 ──
+  /** 长期欲望：跨章节稳定的发动机 */
+  longTermDesire?: string
+  /** 角色层级：protagonist/main_opponent/supporting/function/background */
+  plotRole?: NovelCharacterPlotRole
+  /** 删掉影响：一句话描述"删掉这个角色哪段剧情会受影响" */
+  removalImpact?: string
 }
 
 export type UpdateCharacterInput = Partial<CreateCharacterInput>
 
 export interface CreateForeshadowInput {
   description: string
-  category?: string
+  category?: NovelForeshadowCategory
   status?: ForeshadowStatus
   firstChapter?: number | null
   lastChapter?: number | null
   recoverByChapter?: number | null
+  // ── P2-2：埋设/回收方式 ──
+  plantMethod?: ForeshadowPlantMethod
+  recoverMethod?: ForeshadowRecoverMethod
 }
 
 export interface CreateConflictInput {
@@ -474,6 +578,8 @@ export interface CreateConflictInput {
   type: ConflictType
   intensity?: number
   stage?: ConflictStage
+  /** 参与者角色 ID 列表（前端传数组，后端 JSON.stringify 后落库） */
+  participants?: string[]
   chapterSpans?: Array<[number, number]>
   tier?: ConflictTier
   climaxChapter?: number | null
@@ -481,6 +587,9 @@ export interface CreateConflictInput {
   relatedConflicts?: string
   stakes?: string | null
   twistPotential?: number
+  // ── P2-1：冲突功能位 + 非线性推进 ──
+  plotFunction?: ConflictPlotFunction
+  progressionMode?: ConflictProgressionMode
 }
 
 export interface CreateClueInput {
@@ -498,6 +607,38 @@ export interface CreateRelationshipInput {
   characterB: string
   relationType: string
   currentStage?: string
+  // ── 四层逻辑②：关系层动态字段（创建时可选，更新时单独 PATCH）──
+  /** 动态功能位（本章关系承载的剧情功能） */
+  dynamicRole?: string
+  /** 阵营关系 */
+  alignment?: RelationshipAlignment
+  /** 走向 */
+  trend?: RelationshipTrend
+  /** 本章约束提示 */
+  chapterHint?: string
+}
+
+/** 更新关系输入：所有字段可选，与后端 PATCH /relationships/:id 路由对齐
+ *
+ * 注意：路由层不提供 stageHistory 自动追加（那是工具层 novel_update_relationship
+ * 的便捷功能，供 Memory Agent LLM 使用）。前端如需追加阶段历史，需读取
+ * 当前 stageHistory JSON → push RelationChange → 整体覆盖写入。
+ */
+export interface UpdateRelationshipInput {
+  /** 角色对（变更角色对时需保证无向匹配，避免重复创建） */
+  characterA?: string
+  characterB?: string
+  relationType?: string
+  currentStage?: string
+  /** 阶段历史（JSON: RelationChange[]，整体覆盖） */
+  stageHistory?: string
+  // ── 动态字段 ──
+  dynamicRole?: string
+  alignment?: RelationshipAlignment
+  trend?: RelationshipTrend
+  chapterHint?: string
+  /** 最后更新章节号（前端需手动维护，路由不会自动追加 stageHistory） */
+  lastUpdatedChapter?: number | null
 }
 
 export interface CreateWorldRuleInput {
@@ -526,6 +667,11 @@ export interface CreateInfoLayerInput {
   readerKnows?: boolean
   revealStage?: string | null
   revealChapter?: number | null
+}
+
+export type UpdateInfoLayerInput = Partial<CreateInfoLayerInput> & {
+  isRevealed?: boolean
+  linkedForeshadows?: string
 }
 
 export interface CreateFactionInput {
@@ -574,6 +720,7 @@ export type NovelNodeTypeName =
   | 'project' | 'character' | 'chapter'
   | 'conflict' | 'foreshadow' | 'group'
   | 'faction' | 'location' | 'world_element'
+  | 'info_layer'
 
 export interface NovelNodePosition {
   id: string
@@ -817,6 +964,12 @@ export function createRelationship(projectId: string, input: CreateRelationshipI
   return postApi<NovelRelationship>(`${BASE}/projects/${projectId}/relationships`, input)
 }
 
+/** 更新关系（PATCH /relationships/:id）
+ *  与后端 updateRelationshipSchema 对齐，所有字段 optional 不覆盖未传字段 */
+export function updateRelationship(id: string, input: UpdateRelationshipInput): Promise<NovelRelationship> {
+  return patchApi<NovelRelationship>(`${BASE}/relationships/${id}`, input)
+}
+
 export function deleteRelationship(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/relationships/${id}`)
 }
@@ -927,6 +1080,33 @@ export function deleteInfoLayer(id: string): Promise<{ id: string; deleted: bool
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/info-layers/${id}`)
 }
 
+export function updateInfoLayer(id: string, input: UpdateInfoLayerInput): Promise<NovelInformationLayer> {
+  return patchApi<NovelInformationLayer>(`${BASE}/info-layers/${id}`, input)
+}
+
+// ── P3-2：伏笔↔信息差双向关联 ──
+
+export function linkForeshadowToInfoLayer(
+  projectId: string,
+  foreshadowId: string,
+  infoLayerId: string,
+): Promise<{ foreshadowId: string; infoLayerId: string; linked: boolean }> {
+  return postApi<{ foreshadowId: string; infoLayerId: string; linked: boolean }>(
+    `${BASE}/projects/${projectId}/foreshadow-info-layer-links`,
+    { foreshadowId, infoLayerId },
+  )
+}
+
+export function unlinkForeshadowFromInfoLayer(
+  projectId: string,
+  foreshadowId: string,
+  infoLayerId: string,
+): Promise<{ foreshadowId: string; infoLayerId: string; linked: boolean }> {
+  return deleteApi<{ foreshadowId: string; infoLayerId: string; linked: boolean }>(
+    `${BASE}/projects/${projectId}/foreshadow-info-layer-links?foreshadowId=${foreshadowId}&infoLayerId=${infoLayerId}`,
+  )
+}
+
 // ── Factions ──
 
 export function listFactions(projectId: string): Promise<NovelFaction[]> {
@@ -1022,12 +1202,13 @@ export function deleteEdge(id: string): Promise<{ id: string; deleted: boolean }
  * AI 角色生成（SSE 流式）
  *
  * 后端端点 POST /api/plugins/novel/projects/:projectId/characters/ai-generate
- * 返回 text/event-stream，事件格式：
- *   - { type: 'progress', data: CharacterGenerationProgressEvent }  阶段进度
- *   - { type: 'result',   data: NovelCharacter }                   生成完成
- *   - { type: 'error',    error: string }                          错误
+ * 返回 text/event-stream，AG-UI 标准事件格式：
+ *   - { type: 'CUSTOM', name: 'novel:progress', value: CharacterGenerationProgressEvent }  阶段进度
+ *   - { type: 'CUSTOM', name: 'novel:result',   value: NovelCharacter }                    生成完成
+ *   - { type: 'RUN_ERROR', message: string }                                              错误
+ *   - { type: 'RUN_FINISHED', threadId, runId }                                           流结束
  *
- * SSE 消费参考 use-novel-creation-flow.ts 中的 consumeStream 实现。
+ * SSE 解析复用 parseSseStream（与 chat / 创作流程统一），与 use-novel-creation-flow.ts 对齐。
  */
 export async function aiGenerateCharacter(
   projectId: string,
@@ -1051,49 +1232,26 @@ export async function aiGenerateCharacter(
     throw new Error('响应体为空，无法读取 SSE 流')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
   let result: NovelCharacter | null = null
+  let streamError: string | null = null
 
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-
-    // SSE 以双换行分隔事件块
-    let newlineIdx: number
-    while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
-      const rawEvent = buffer.slice(0, newlineIdx)
-      buffer = buffer.slice(newlineIdx + 2)
-
-      // 解析事件块中的 data: 行（忽略注释行 ": keepalive"）
-      const dataLines = rawEvent
-        .split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
-
-      if (dataLines.length === 0) continue
-
-      let payload: { type: string; data?: unknown; error?: string } | null = null
-      try {
-        payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
-      } catch {
-        continue
+  await parseSseStream(response.body, (event) => {
+    if (event.type === 'CUSTOM') {
+      const custom = event as { type: 'CUSTOM'; name: string; value: unknown }
+      if (custom.name === 'novel:progress') {
+        onProgress?.(custom.value as CharacterGenerationProgressEvent)
+      } else if (custom.name === 'novel:result') {
+        result = custom.value as NovelCharacter
       }
-      if (!payload) continue
-
-      if (payload.type === 'progress') {
-        onProgress?.(payload.data as CharacterGenerationProgressEvent)
-      } else if (payload.type === 'result') {
-        result = payload.data as NovelCharacter
-      } else if (payload.type === 'error') {
-        throw new Error(payload.error ?? 'AI 生成失败')
-      }
+    } else if (event.type === 'RUN_ERROR') {
+      const errEvent = event as { type: 'RUN_ERROR'; message: string }
+      streamError = errEvent.message ?? 'AI 生成失败'
     }
-  }
+  })
 
+  if (streamError) {
+    throw new Error(streamError)
+  }
   if (!result) {
     throw new Error('AI 生成未返回结果')
   }
@@ -1142,14 +1300,20 @@ export interface GeneratedConflictFields {
   climaxType?: ClimaxType | null
   stakes?: string | null
   twistPotential?: number
+  // ── P2-1：冲突功能位 + 非线性推进 ──
+  plotFunction?: ConflictPlotFunction
+  progressionMode?: ConflictProgressionMode
 }
 
 export interface GeneratedForeshadowFields {
   description: string
-  category: string
+  category: NovelForeshadowCategory
   status: ForeshadowStatus
   linkedCharacters: string
   linkedClues: string
+  // ── P2-2：埋设/回收方式 ──
+  plantMethod?: ForeshadowPlantMethod
+  recoverMethod?: ForeshadowRecoverMethod
 }
 
 export interface GeneratedFactionFields {
@@ -1192,10 +1356,11 @@ export type GeneratedEntityResult =
  * AI 通用实体生成（SSE 流式）
  *
  * 后端端点 POST /api/plugins/novel/projects/:projectId/entities/ai-generate
- * 返回 text/event-stream，事件格式：
- *   - { type: 'progress', data: EntityGenerationProgressEvent }  阶段进度
- *   - { type: 'result',   data: GeneratedEntityResult }          生成完成（不落库）
- *   - { type: 'error',    error: string }                       错误
+ * 返回 text/event-stream，AG-UI 标准事件格式：
+ *   - { type: 'CUSTOM', name: 'novel:progress', value: EntityGenerationProgressEvent }  阶段进度
+ *   - { type: 'CUSTOM', name: 'novel:result',   value: GeneratedEntityResult }          生成完成（不落库）
+ *   - { type: 'RUN_ERROR', message: string }                                            错误
+ *   - { type: 'RUN_FINISHED', threadId, runId }                                         流结束
  *
  * 注意：与 aiGenerateCharacter 不同，本接口返回字段不落库，
  * 前端 review 后调对应的 createXxx 落库。
@@ -1222,47 +1387,26 @@ export async function aiGenerateEntity(
     throw new Error('响应体为空，无法读取 SSE 流')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
   let result: GeneratedEntityResult | null = null
+  let streamError: string | null = null
 
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-
-    let newlineIdx: number
-    while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
-      const rawEvent = buffer.slice(0, newlineIdx)
-      buffer = buffer.slice(newlineIdx + 2)
-
-      const dataLines = rawEvent
-        .split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim())
-
-      if (dataLines.length === 0) continue
-
-      let payload: { type: string; data?: unknown; error?: string } | null = null
-      try {
-        payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
-      } catch {
-        continue
+  await parseSseStream(response.body, (event) => {
+    if (event.type === 'CUSTOM') {
+      const custom = event as { type: 'CUSTOM'; name: string; value: unknown }
+      if (custom.name === 'novel:progress') {
+        onProgress?.(custom.value as EntityGenerationProgressEvent)
+      } else if (custom.name === 'novel:result') {
+        result = custom.value as GeneratedEntityResult
       }
-      if (!payload) continue
-
-      if (payload.type === 'progress') {
-        onProgress?.(payload.data as EntityGenerationProgressEvent)
-      } else if (payload.type === 'result') {
-        result = payload.data as GeneratedEntityResult
-      } else if (payload.type === 'error') {
-        throw new Error(payload.error ?? 'AI 生成失败')
-      }
+    } else if (event.type === 'RUN_ERROR') {
+      const errEvent = event as { type: 'RUN_ERROR'; message: string }
+      streamError = errEvent.message ?? 'AI 生成失败'
     }
-  }
+  })
 
+  if (streamError) {
+    throw new Error(streamError)
+  }
   if (!result) {
     throw new Error('AI 生成未返回结果')
   }

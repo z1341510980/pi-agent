@@ -42,6 +42,7 @@ import type { NovelSessionFactory } from './novel-session.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
+import { runtimePerformance } from '../../../config/performance.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CheckpointData, type CreationFlowEvent, type AgentOutputData } from './novel-agents.js'
 import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan, RhythmSuggestion } from './types.js'
 import { RhythmController } from './rhythm-controller.js'
@@ -207,10 +208,11 @@ export class NovelOrchestrator {
 
       // Phase 1: Director
       this.emitProgress(options, 'directing', 'phase_change', { message: '导演 Agent 正在分析故事状态...' })
-      const directorResult = await this.runAgent('director', projectId, chapterNumber, {
-        task: `请分析当前故事状态，为第 ${chapterNumber} 章规划叙事任务。`,
-        rhythmSuggestion,
-      }, options)
+      // input 统一为字符串：避免 runAgent JSON.stringify 对象导致 LLM 收到 JSON 字符串
+      const directorResult = await this.runAgent('director', projectId, chapterNumber,
+        `请分析当前故事状态，为第 ${chapterNumber} 章规划叙事任务。\n\n---\n\n## 节奏建议\n\n${JSON.stringify(rhythmSuggestion, null, 2)}`,
+        options,
+      )
 
       // 检查点 1
       this.emitProgress(options, 'checkpoint_narrative', 'phase_change', { message: '等待用户确认叙事任务...' })
@@ -250,16 +252,22 @@ export class NovelOrchestrator {
 
       // Phase 2: Writer
       this.emitProgress(options, 'writing', 'phase_change', { message: '写作 Agent 正在创作章节正文...' })
-      const writerResult = await this.runAgent('writer', projectId, chapterNumber, {
-        task: `请根据上方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。`,
-      }, options)
+      // input 统一为字符串：避免 runAgent JSON.stringify 对象导致 LLM 收到 JSON 字符串
+      const writerResult = await this.runAgent('writer', projectId, chapterNumber,
+        `请根据上方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。`,
+        options,
+      )
 
       // Phase 3: Reviewer
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
-      const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber, {
-        task: `请验收第 ${chapterNumber} 章的内容。`,
-        content: writerResult,
-      }, options)
+      // ⚠️ 不能传 JSON 对象 { task, content }：runAgent 会 JSON.stringify 它，
+      // 导致 Writer 输出的正文被压缩在 JSON 的 content 字段中（换行变 \n、引号被转义），
+      // LLM 需要解析 JSON 才能提取正文，不同模型解析能力不同，行为不稳定。
+      // 改为结构化 Markdown 字符串：明确的标题分隔，让 LLM 直接看到正文。
+      const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber,
+        `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${writerResult}`,
+        options,
+      )
 
       // 检查点 2
       this.emitProgress(options, 'checkpoint_review', 'phase_change', { message: '等待用户确认验收报告...' })
@@ -273,15 +281,16 @@ export class NovelOrchestrator {
 
       if (reviewDecision === 'revise') {
         this.emitProgress(options, 'revising', 'phase_change', { message: '写作 Agent 正在根据审稿意见修订章节...' })
-        const reviseResult = await this.runAgent('writer', projectId, chapterNumber, {
-          task: `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。`,
-          content: writerResult,
-          issues: reviewResult,
-        }, options, {
-          phase: 'revising',
-          displayAgentType: 'reviser',
-          displayAgentName: '修订',
-        })
+        // ⚠️ 同 Reviewer：不能传 JSON 对象，改为结构化 Markdown 字符串
+        const reviseResult = await this.runAgent('writer', projectId, chapterNumber,
+          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${writerResult}\n\n---\n\n## 审稿意见\n\n${reviewResult}`,
+          options,
+          {
+            phase: 'revising',
+            displayAgentType: 'reviser',
+            displayAgentName: '修订',
+          },
+        )
         finalContent = reviseResult
       } else if (reviewDecision === 'rewrite') {
         this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
@@ -426,19 +435,23 @@ export class NovelOrchestrator {
         'SEMI 层前缀命中单章缓存',
       )
     } else {
-      // Writer 优先使用 Director 的实时输出作为叙事任务（方案 A：Director 真正注入 Writer）
-      // 其他 Agent（director/reviewer/memory）仍使用章纲作为叙事任务。
-      // 这样 Writer 的 SEMI 层 chapter-instruction 模板的 {{narrative_task}} 会渲染
-      // Director 的规划（核心目标/出场角色/冲突推进/伏笔处理/节奏/验收标准），
-      // 而非数据库章纲字段。
-      const narrativeTask: NarrativeTask = (agentType === 'writer' && this.currentDirectorTask)
-        ? this.currentDirectorTask
-        : {
-            description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
-            type: 'advance_mainline',
-            targetEntity: null,
-            priority: 'medium',
-          }
+      // ⚠️ 缓存关键：所有 Agent 的 narrativeTask 统一用数据库章纲，确保 SEMI 层前缀
+      // （章节信息 + 约束 + 故事状态 + ...）跨 Agent 完全一致，最大化 LLM provider
+      // 端的 prompt cache 命中率。
+      //
+      // Director 的实时输出（this.currentDirectorTask）只通过 buildChapterContext
+      // 的 directorOutput 参数注入到 SEMI 层末尾的 chapter-instruction 模板，
+      // 不影响前缀缓存匹配。
+      //
+      // 历史背景：b4f720b 改动让 Writer 的 narrativeTask 直接用 Director 实时输出，
+      // 导致 formatChapterInfo 对 Writer 用摘要、对其他 Agent 用完整描述，
+      // SEMI 层第一段就分叉，跨 Agent 缓存全 miss。现已回退。
+      const narrativeTask: NarrativeTask = {
+        description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
+        type: 'advance_mainline',
+        targetEntity: null,
+        priority: 'medium',
+      }
       const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
         projectId, chapterNumber, this.currentRhythmSuggestion,
       )
@@ -472,6 +485,9 @@ export class NovelOrchestrator {
         constraints,
         this.currentArrangedEntities,
         agentType,
+        // directorOutput：Director 的实时输出，仅 Writer 的 chapter-instruction
+        // 模板会渲染它（在 SEMI 层末尾，不破坏前缀缓存）。其他 Agent 传入但不会被使用。
+        this.currentDirectorTask?.description,
       )
       this.semiLayerCache = { key: cacheKey, value: chapterContext }
       this.context.logger.debug(
@@ -521,8 +537,12 @@ export class NovelOrchestrator {
     // 合并温度：持久化覆盖 > 角色默认值（NOVEL_AGENT_CONFIGS）
     const temperature = this.agentConfigStore.getByType(agentType)
 
-    // Writer 生成长文本 + Memory 调用大量工具（15+），都需要更长时间
-    const timeoutMs = (agentType === 'writer' || agentType === 'memory') ? 300_000 : 120_000
+    // LLM 调用超时：统一走 runtimePerformance（默认 300s，可通过环境变量
+    // PI_LLM_TIMEOUT_MS 调大）。国内 OpenAI 兼容网关首 token 偏慢、长输出耗时
+    // 较长，原 Director/Reviewer 120s 容易超时，且硬编码值无法在不改代码的情况下
+    // 适配不同 Provider 速度。取消 writer/memory 与其他 Agent 的差异化：所有 Agent
+    // 共享同一超时阈值，由 env 统一调控。
+    const timeoutMs = runtimePerformance.llm.timeoutMs
 
     // 首 token 心跳：LLM 处理大 prompt 时首 token 延迟可能很长，
     // 期间没有 TEXT_MESSAGE_CONTENT 事件。每 5s 推一个心跳 progress，让用户感知到进度。
@@ -813,15 +833,25 @@ export class NovelOrchestrator {
 
 
   /**
-   * 捕获项目当前实体状态（角色 / 冲突 / 伏笔 / 势力 / 地点）
+   * 捕获项目当前实体状态（角色 / 冲突 / 伏笔 / 势力 / 地点 / 关系）
    * 返回按实体 ID 索引的 Map，用于 Memory Agent 执行前后差异比较
+   *
+   * 关系层（四层逻辑②）跟踪字段：
+   * - currentStage / dynamicRole / alignment / trend / chapterHint / lastUpdatedChapter
+   * - 任意字段变化都会触发 relationship_change 记忆事件
+   *
+   * 影响层（四层逻辑④）跟踪字段：
+   * - character.participatingConflicts（由冲突 CRUD 自动同步的反向索引）
+   * - 变化时记录"角色参与冲突变更"事件，让用户知道哪些冲突线被接入/切断
    */
   private captureEntityState(projectId: string): {
-    characters: Map<string, { name: string; currentState: string; currentGoal: string; currentPressure: string; secret: string; arcStage: string }>
-    conflicts: Map<string, { description: string; stage: string; intensity: number }>
-    foreshadowing: Map<string, { description: string; status: string; firstChapter: number | null; lastChapter: number | null }>
+    characters: Map<string, { name: string; currentState: string; currentGoal: string; currentPressure: string; secret: string; arcStage: string; longTermDesire: string; removalImpact: string; participatingConflicts: string[] }>
+    conflicts: Map<string, { description: string; stage: string; intensity: number; plotFunction: string | undefined; progressionMode: string | undefined }>
+    foreshadowing: Map<string, { description: string; status: string; firstChapter: number | null; lastChapter: number | null; plantMethod: string | undefined; recoverMethod: string | undefined; linkedInfoLayers: string[] }>
     factions: Map<string, { name: string; status: string; strength: string }>
     locations: Map<string, { name: string; status: string; appearChapters: number[] }>
+    relationships: Map<string, { characterA: string; characterB: string; relationType: string; currentStage: string; dynamicRole: string; alignment: string; trend: string; chapterHint: string; lastUpdatedChapter: number | null }>
+    infoLayers: Map<string, { infoDescription: string; readerKnows: boolean; isRevealed: boolean; revealChapter: number | null; linkedForeshadows: string[] }>
   } {
     const characters = new Map(
       this.store.listCharacters(projectId).map((c) => [
@@ -833,13 +863,23 @@ export class NovelOrchestrator {
           currentPressure: c.currentPressure,
           secret: c.secret,
           arcStage: c.arcStage,
+          longTermDesire: c.longTermDesire,
+          removalImpact: c.removalImpact,
+          // 反向索引同步由 store 维护，这里只读快照用于差异比较
+          participatingConflicts: this.parseIdList(c.participatingConflicts),
         },
       ]),
     )
     const conflicts = new Map(
       this.store.listConflicts(projectId).map((c) => [
         c.id,
-        { description: c.description, stage: c.stage, intensity: c.intensity },
+        {
+          description: c.description,
+          stage: c.stage,
+          intensity: c.intensity,
+          plotFunction: c.plotFunction,
+          progressionMode: c.progressionMode,
+        },
       ]),
     )
     const foreshadowing = new Map(
@@ -850,6 +890,10 @@ export class NovelOrchestrator {
           status: f.status,
           firstChapter: f.firstChapter,
           lastChapter: f.lastChapter,
+          plantMethod: f.plantMethod,
+          recoverMethod: f.recoverMethod,
+          // P3-2：跟踪 linkedInfoLayers 变化（用于 Rule 4 关联 info_layer_change）
+          linkedInfoLayers: this.parseIdList(f.linkedInfoLayers),
         },
       ]),
     )
@@ -865,7 +909,47 @@ export class NovelOrchestrator {
         { name: l.name, status: l.status, appearChapters: l.appearChapters ? [...l.appearChapters] : [] },
       ]),
     )
-    return { characters, conflicts, foreshadowing, factions, locations }
+    const relationships = new Map(
+      this.store.listRelationships(projectId).map((r) => [
+        r.id,
+        {
+          characterA: r.characterA,
+          characterB: r.characterB,
+          relationType: r.relationType,
+          currentStage: r.currentStage,
+          dynamicRole: r.dynamicRole,
+          alignment: r.alignment,
+          trend: r.trend,
+          chapterHint: r.chapterHint,
+          lastUpdatedChapter: r.lastUpdatedChapter,
+        },
+      ]),
+    )
+    // P3-2：捕获信息差状态用于差异比较
+    const infoLayers = new Map(
+      this.store.listInformationLayers(projectId).map((l) => [
+        l.id,
+        {
+          infoDescription: l.infoDescription,
+          readerKnows: l.readerKnows,
+          isRevealed: l.isRevealed,
+          revealChapter: l.revealChapter,
+          linkedForeshadows: this.parseIdList(l.linkedForeshadows),
+        },
+      ]),
+    )
+    return { characters, conflicts, foreshadowing, factions, locations, relationships, infoLayers }
+  }
+
+  /** 容错解析 JSON: string[]，避免非 JSON / 旧数据格式导致 captureEntityState 抛错 */
+  private parseIdList(raw: string): string[] {
+    if (!raw) return []
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+    } catch {
+      return []
+    }
   }
 
   /**
@@ -884,7 +968,7 @@ export class NovelOrchestrator {
     const after = this.captureEntityState(projectId)
 
     // ── 角色变更 ──
-    const characterFields = ['currentState', 'currentGoal', 'currentPressure', 'secret', 'arcStage'] as const
+    const characterFields = ['currentState', 'currentGoal', 'currentPressure', 'secret', 'arcStage', 'longTermDesire', 'removalImpact'] as const
     for (const [id, afterChar] of after.characters) {
       const beforeChar = before.characters.get(id)
       if (!beforeChar) {
@@ -912,6 +996,24 @@ export class NovelOrchestrator {
           }))
         }
       }
+      // ── 四层逻辑④：参与冲突线变更（角色端反向索引）──
+      // 当 syncConflictParticipantsToCharacters 在 store 层自动同步时，
+      // 这里捕获快照差异，让用户感知"角色接入了 X 冲突 / 切断了 Y 冲突"。
+      const beforeConflicts = beforeChar.participatingConflicts
+      const afterConflicts = afterChar.participatingConflicts
+      const addedConflicts = afterConflicts.filter((cid) => !beforeConflicts.includes(cid))
+      const removedConflicts = beforeConflicts.filter((cid) => !afterConflicts.includes(cid))
+      if (addedConflicts.length > 0 || removedConflicts.length > 0) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'character_change',
+          entityId: id, entityType: 'character',
+          description: `角色 ${afterChar.name} 参与冲突变更（新增 ${addedConflicts.length} 条，切断 ${removedConflicts.length} 条）`,
+          oldValue: JSON.stringify({ participatingConflicts: beforeConflicts }),
+          newValue: JSON.stringify({ participatingConflicts: afterConflicts }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
     }
 
     // ── 冲突变更 ──
@@ -924,7 +1026,7 @@ export class NovelOrchestrator {
           entityId: id, entityType: 'conflict',
           description: `冲突创建: ${afterConflict.description}`,
           oldValue: null,
-          newValue: JSON.stringify({ stage: afterConflict.stage, intensity: afterConflict.intensity }),
+          newValue: JSON.stringify({ stage: afterConflict.stage, intensity: afterConflict.intensity, plotFunction: afterConflict.plotFunction, progressionMode: afterConflict.progressionMode }),
           cause: null, effectIds: [], significance: 7,
         }))
         continue
@@ -950,6 +1052,30 @@ export class NovelOrchestrator {
           cause: null, effectIds: [], significance: 5,
         }))
       }
+      // ── P2-1：功能位变更事件 ──
+      if (beforeConflict.plotFunction !== afterConflict.plotFunction) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'conflict_change',
+          entityId: id, entityType: 'conflict',
+          description: `冲突功能位变更: ${afterConflict.description}（${beforeConflict.plotFunction ?? '(未指定)'} → ${afterConflict.plotFunction ?? '(未指定)'}）`,
+          oldValue: JSON.stringify({ plotFunction: beforeConflict.plotFunction }),
+          newValue: JSON.stringify({ plotFunction: afterConflict.plotFunction }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
+      // ── P2-1：推进模式变更事件 ──
+      if (beforeConflict.progressionMode !== afterConflict.progressionMode) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'conflict_change',
+          entityId: id, entityType: 'conflict',
+          description: `冲突推进模式变更: ${afterConflict.description}（${beforeConflict.progressionMode ?? 'linear'} → ${afterConflict.progressionMode ?? 'linear'}）`,
+          oldValue: JSON.stringify({ progressionMode: beforeConflict.progressionMode }),
+          newValue: JSON.stringify({ progressionMode: afterConflict.progressionMode }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
     }
 
     // ── 伏笔变更 ──
@@ -962,7 +1088,7 @@ export class NovelOrchestrator {
           entityId: id, entityType: 'foreshadow',
           description: `伏笔创建: ${afterF.description}`,
           oldValue: null,
-          newValue: JSON.stringify({ status: afterF.status }),
+          newValue: JSON.stringify({ status: afterF.status, plantMethod: afterF.plantMethod, recoverMethod: afterF.recoverMethod }),
           cause: null, effectIds: [], significance: 7,
         }))
         continue
@@ -987,6 +1113,30 @@ export class NovelOrchestrator {
           oldValue: JSON.stringify({ lastChapter: beforeF.lastChapter }),
           newValue: JSON.stringify({ lastChapter: afterF.lastChapter }),
           cause: null, effectIds: [], significance: 8,
+        }))
+      }
+      // ── P2-2：埋设方式变更事件 ──
+      if (beforeF.plantMethod !== afterF.plantMethod) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'foreshadow_change',
+          entityId: id, entityType: 'foreshadow',
+          description: `伏笔埋设方式变更: ${afterF.description}（${beforeF.plantMethod ?? '(未指定)'} → ${afterF.plantMethod ?? '(未指定)'}）`,
+          oldValue: JSON.stringify({ plantMethod: beforeF.plantMethod }),
+          newValue: JSON.stringify({ plantMethod: afterF.plantMethod }),
+          cause: null, effectIds: [], significance: 5,
+        }))
+      }
+      // ── P2-2：回收方式变更事件 ──
+      if (beforeF.recoverMethod !== afterF.recoverMethod) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'foreshadow_change',
+          entityId: id, entityType: 'foreshadow',
+          description: `伏笔回收方式变更: ${afterF.description}（${beforeF.recoverMethod ?? '(未指定)'} → ${afterF.recoverMethod ?? '(未指定)'}）`,
+          oldValue: JSON.stringify({ recoverMethod: beforeF.recoverMethod }),
+          newValue: JSON.stringify({ recoverMethod: afterF.recoverMethod }),
+          cause: null, effectIds: [], significance: 5,
         }))
       }
     }
@@ -1060,7 +1210,246 @@ export class NovelOrchestrator {
       }
     }
 
+    // ── 关系变更（四层逻辑②关系层）──
+    // currentStage / dynamicRole / alignment / trend / chapterHint / lastUpdatedChapter
+    // 任一字段变化都生成 relationship_change 事件，让 Memory Agent 的关系更新可追溯。
+    // 关系是小说动态骨架的核心，所以阶段/阵营/走向变更都用 significance 6+ 强提示。
+    const relationshipFields = ['currentStage', 'dynamicRole', 'alignment', 'trend', 'chapterHint', 'lastUpdatedChapter'] as const
+    for (const [id, afterRel] of after.relationships) {
+      const beforeRel = before.relationships.get(id)
+      if (!beforeRel) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'relationship_change',
+          entityId: id, entityType: 'relationship',
+          description: `关系创建: ${afterRel.characterA} ↔ ${afterRel.characterB}（${afterRel.relationType}）`,
+          oldValue: null,
+          newValue: JSON.stringify({
+            relationType: afterRel.relationType,
+            currentStage: afterRel.currentStage,
+            alignment: afterRel.alignment,
+            trend: afterRel.trend,
+          }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+        continue
+      }
+      for (const field of relationshipFields) {
+        if (beforeRel[field] !== afterRel[field]) {
+          // 阶段变更最重要（剧情节点切换）；其他字段（功能位/阵营/走向）次之
+          const significance = field === 'currentStage' ? 7 : 6
+          events.push(this.memoryStore.recordEvent({
+            projectId, chapterId, chapterNumber,
+            eventType: 'relationship_change',
+            entityId: id, entityType: 'relationship',
+            description: `关系 ${afterRel.characterA} ↔ ${afterRel.characterB} 的 ${field} 变更`,
+            oldValue: JSON.stringify({ [field]: beforeRel[field] }),
+            newValue: JSON.stringify({ [field]: afterRel[field] }),
+            cause: null, effectIds: [], significance,
+          }))
+        }
+      }
+    }
+
+    // ── P3-2：信息差变更 ──
+    // 监控 readerKnows / isRevealed / linkedForeshadows 三个关键维度：
+    // - readerKnows: 读者认知翻转（从不知道到知道，是揭示性事件）
+    // - isRevealed: 信息差正式揭露（与 revealChapter 配对）
+    // - linkedForeshadows: 关联伏笔变化（手动 link/unlink 时触发）
+    for (const [id, afterLayer] of after.infoLayers) {
+      const beforeLayer = before.infoLayers.get(id)
+      if (!beforeLayer) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'info_layer_change',
+          entityId: id, entityType: 'relationship',
+          description: `信息差创建: ${afterLayer.infoDescription}`,
+          oldValue: null,
+          newValue: JSON.stringify({ readerKnows: afterLayer.readerKnows, isRevealed: afterLayer.isRevealed }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+        continue
+      }
+      if (beforeLayer.readerKnows !== afterLayer.readerKnows) {
+        // 读者认知翻转是重大叙事节点（揭示性事件）
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'info_layer_change',
+          entityId: id, entityType: 'relationship',
+          description: `信息差读者认知翻转: ${afterLayer.infoDescription}（读者未知 → 读者已知）`,
+          oldValue: JSON.stringify({ readerKnows: beforeLayer.readerKnows }),
+          newValue: JSON.stringify({ readerKnows: afterLayer.readerKnows }),
+          cause: null, effectIds: [], significance: 8,
+        }))
+      }
+      if (beforeLayer.isRevealed !== afterLayer.isRevealed) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'info_layer_change',
+          entityId: id, entityType: 'relationship',
+          description: `信息差揭露状态变更: ${afterLayer.infoDescription}（${beforeLayer.isRevealed ? '已揭露' : '未揭露'} → ${afterLayer.isRevealed ? '已揭露' : '未揭露'}）`,
+          oldValue: JSON.stringify({ isRevealed: beforeLayer.isRevealed }),
+          newValue: JSON.stringify({ isRevealed: afterLayer.isRevealed }),
+          cause: null, effectIds: [], significance: 7,
+        }))
+      }
+      const beforeLinks = beforeLayer.linkedForeshadows
+      const afterLinks = afterLayer.linkedForeshadows
+      if (beforeLinks.join(',') !== afterLinks.join(',')) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'info_layer_change',
+          entityId: id, entityType: 'relationship',
+          description: `信息差关联伏笔变更: ${afterLayer.infoDescription}（新增 ${afterLinks.filter(x => !beforeLinks.includes(x)).length} 条，解除 ${beforeLinks.filter(x => !afterLinks.includes(x)).length} 条）`,
+          oldValue: JSON.stringify({ linkedForeshadows: beforeLinks }),
+          newValue: JSON.stringify({ linkedForeshadows: afterLinks }),
+          cause: null, effectIds: [], significance: 5,
+        }))
+      }
+    }
+
+    // ── P3-1：跨实体因果链启发式连边 ──
+    // 在所有事件落库完成后，根据本章实体关联性自动建立 cause/effect 边。
+    // 不依赖 LLM 主动推断，纯基于 events 数组内的实体引用关系回填。
+    // linkCause 内部已处理"已有 cause 则跳过"，所以无需在外层去重。
+    this.applyHeuristicCausalLinks(events, projectId)
+
     return events
+  }
+
+  /**
+   * 启发式因果连边：根据本章 events 间的实体引用关系自动建立 cause/effect 边。
+   *
+   * 3 条规则（基于 docs/novel/character-conflict-foreshadow-analysis.md P3-1 定义）：
+   *
+   * 规则 1（角色→冲突）：
+   *   角色 participatingConflicts 变更（参与冲突线接入或切断）
+   *   → 该冲突在同章后续发生的 conflict_change 事件的 cause
+   *   场景：角色被卷入冲突后，冲突立刻升级或爆发
+   *
+   * 规则 2（冲突→关系）：
+   *   冲突 stage → erupting（爆发）
+   *   → 同章涉及该冲突参与者的下一个 relationship_change 事件的 cause
+   *   场景：冲突爆发导致参与者之间的关系失衡
+   *
+   * 规则 3（伏笔→角色）：
+   *   伏笔 status → recovered（已回收）
+   *   → 同章该伏笔 linkedCharacters 中角色的下一个 character_change 事件的 cause
+   *   场景：伏笔回收揭示真相，改变角色认知/状态
+   *
+   * 每个 effect 事件只接受第一个匹配的 cause（首次写入后 linkCause 自动跳过后续）。
+   */
+  private applyHeuristicCausalLinks(events: MemoryEvent[], projectId: string): void {
+    if (events.length === 0) return
+
+    // 预构建索引：按 entityId 分组本章事件，便于按实体查找后续事件
+    const eventsByEntity = new Map<string, MemoryEvent[]>()
+    for (const e of events) {
+      const list = eventsByEntity.get(e.entityId)
+      if (list) list.push(e)
+      else eventsByEntity.set(e.entityId, [e])
+    }
+
+    // ── 规则 1：角色参与冲突变更 → 冲突的下一个 conflict_change 的 cause ──
+    for (const e of events) {
+      if (e.eventType !== 'character_change') continue
+      if (!e.newValue) continue
+      let parsed: { participatingConflicts?: unknown } = {}
+      try { parsed = JSON.parse(e.newValue) } catch { continue }
+      if (!Array.isArray(parsed.participatingConflicts) || parsed.participatingConflicts.length === 0) continue
+      const conflictIds = parsed.participatingConflicts.filter((x): x is string => typeof x === 'string')
+      if (conflictIds.length === 0) continue
+
+      for (const conflictId of conflictIds) {
+        // 找该冲突在同章后续发生的 conflict_change 事件（按 createdAt 升序）
+        const conflictEvents = (eventsByEntity.get(conflictId) ?? [])
+          .filter(ev => ev.eventType === 'conflict_change' && ev.createdAt >= e.createdAt)
+          .sort((a, b) => a.createdAt - b.createdAt)
+        if (conflictEvents.length === 0) continue
+        // 只连第一个未带 cause 的 conflict_change
+        this.memoryStore.linkCause(conflictEvents[0].id, e.id)
+        break
+      }
+    }
+
+    // ── 规则 2：冲突 stage=erupting → 涉及参与者的 relationship_change 的 cause ──
+    for (const e of events) {
+      if (e.eventType !== 'conflict_change') continue
+      if (!e.newValue) continue
+      let parsed: { stage?: unknown } = {}
+      try { parsed = JSON.parse(e.newValue) } catch { continue }
+      if (parsed.stage !== 'erupting') continue
+
+      // 查询该冲突的 participants（captureEntityState 快照未含此字段，需查 store）
+      const conflict = this.store.getConflict(e.entityId)
+      if (!conflict) continue
+      const participantIds = this.parseIdList(conflict.participants)
+      if (participantIds.length === 0) continue
+
+      // 找本章内涉及这些参与者的 relationship_change 事件（在冲突爆发之后发生）
+      for (const relEvent of events) {
+        if (relEvent.eventType !== 'relationship_change') continue
+        if (relEvent.createdAt < e.createdAt) continue
+        const rel = this.store.getRelationship(relEvent.entityId)
+        if (!rel) continue
+        // 关系涉及的角色是否是冲突的参与者（characterA/B 是角色 ID）
+        const involves = participantIds.includes(rel.characterA) || participantIds.includes(rel.characterB)
+        if (!involves) continue
+        this.memoryStore.linkCause(relEvent.id, e.id)
+        break // 该冲突只连第一个匹配的关系变更
+      }
+    }
+
+    // ── 规则 3：伏笔 status=recovered → linkedCharacters 的 character_change 的 cause ──
+    for (const e of events) {
+      if (e.eventType !== 'foreshadow_change') continue
+      if (!e.newValue) continue
+      let parsed: { status?: unknown } = {}
+      try { parsed = JSON.parse(e.newValue) } catch { continue }
+      if (parsed.status !== 'recovered') continue
+
+      // 查询伏笔的 linkedCharacters（captureEntityState 快照未含此字段，需查 store）
+      const foreshadow = this.store.getForeshadow(e.entityId)
+      if (!foreshadow) continue
+      const linkedCharIds = this.parseIdList(foreshadow.linkedCharacters)
+      if (linkedCharIds.length === 0) continue
+
+      for (const charId of linkedCharIds) {
+        // 找该角色在同章后续发生的 character_change 事件
+        const charEvents = (eventsByEntity.get(charId) ?? [])
+          .filter(ev => ev.eventType === 'character_change' && ev.createdAt >= e.createdAt)
+          .sort((a, b) => a.createdAt - b.createdAt)
+        if (charEvents.length === 0) continue
+        this.memoryStore.linkCause(charEvents[0].id, e.id)
+      }
+    }
+
+    // ── 规则 4（P3-2）：伏笔回收 → 关联信息差的 info_layer_change 的 cause ──
+    // 场景：伏笔回收揭示真相，导致承载的信息差 readerKnows 翻转或 isRevealed=true
+    // 实现：伏笔 status=recovered 时，找其 linkedInfoLayers 对应的 info_layer_change 事件
+    for (const e of events) {
+      if (e.eventType !== 'foreshadow_change') continue
+      if (!e.newValue) continue
+      let parsed: { status?: unknown } = {}
+      try { parsed = JSON.parse(e.newValue) } catch { continue }
+      if (parsed.status !== 'recovered') continue
+
+      // 查询伏笔的 linkedInfoLayers（P3-2 双向关联字段）
+      const foreshadow = this.store.getForeshadow(e.entityId)
+      if (!foreshadow) continue
+      const linkedInfoLayerIds = this.parseIdList(foreshadow.linkedInfoLayers)
+      if (linkedInfoLayerIds.length === 0) continue
+
+      for (const infoLayerId of linkedInfoLayerIds) {
+        // 找该信息差在同章后续发生的 info_layer_change 事件（读者认知翻转或揭露状态变更）
+        const infoEvents = (eventsByEntity.get(infoLayerId) ?? [])
+          .filter(ev => ev.eventType === 'info_layer_change' && ev.createdAt >= e.createdAt)
+          .sort((a, b) => a.createdAt - b.createdAt)
+        if (infoEvents.length === 0) continue
+        // 只连第一个匹配的 info_layer_change（最接近伏笔回收时刻的事件）
+        this.memoryStore.linkCause(infoEvents[0].id, e.id)
+      }
+    }
   }
 
   /**

@@ -87,6 +87,18 @@ const UpdateForeshadowParams = Type.Object({
     Type.Literal('abandoned'),
   ], { description: '新状态' }),
   chapterNumber: Type.Optional(Type.Number({ description: '当前章节号（用于记录 first/last chapter）' })),
+  // ── P2-2：伏笔埋设/回收方式 ──
+  plantMethod: Type.Optional(Type.Union([
+    Type.Literal('explicit'),
+    Type.Literal('implicit'),
+    Type.Literal('indirect'),
+  ], { description: '埋设方式：explicit=明写 / implicit=暗写 / indirect=侧写' })),
+  recoverMethod: Type.Optional(Type.Union([
+    Type.Literal('explicit'),
+    Type.Literal('implicit'),
+    Type.Literal('reverse'),
+    Type.Literal('progressive'),
+  ], { description: '回收方式：explicit=点破 / implicit=暗示 / reverse=反向 / progressive=递进' })),
 })
 
 const UpdateConflictParams = Type.Object({
@@ -101,6 +113,27 @@ const UpdateConflictParams = Type.Object({
     Type.Literal('transformed'),
   ], { description: '冲突阶段' })),
   intensity: Type.Optional(Type.Number({ minimum: 1, maximum: 10, description: '强度 1-10' })),
+  // ── 四层逻辑④：双向关联 ──
+  participants: Type.Optional(Type.Array(Type.String(), {
+    description: '参与方角色 ID 列表（更新后会自动同步到角色的 participating_conflicts 反向索引）',
+  })),
+  // ── P2-1：冲突功能位 + 非线性推进 ──
+  plotFunction: Type.Optional(Type.Union([
+    Type.Literal('provide_resource'),
+    Type.Literal('create_obstacle'),
+    Type.Literal('amplify_conflict'),
+    Type.Literal('open_phase'),
+    Type.Literal('change_judgment'),
+    Type.Literal('advance_relationship'),
+    Type.Literal('reveal_world_rule'),
+  ], { description: '剧情功能位：provide_resource=提供资源 / create_obstacle=制造障碍 / amplify_conflict=放大冲突 / open_phase=开启新阶段 / change_judgment=改变主角判断 / advance_relationship=推进关系 / reveal_world_rule=揭示世界规则' })),
+  progressionMode: Type.Optional(Type.Union([
+    Type.Literal('linear'),
+    Type.Literal('mutation'),
+    Type.Literal('stagnation'),
+    Type.Literal('regression'),
+    Type.Literal('reversal'),
+  ], { description: '推进模式：linear=线性升级 / mutation=突变 / stagnation=停滞 / regression=降级 / reversal=反转' })),
 })
 
 const UpdateClueParams = Type.Object({
@@ -112,7 +145,69 @@ const UpdateClueParams = Type.Object({
 
 const UpdateRelationshipParams = Type.Object({
   relationshipId: Type.String({ description: '关系 ID' }),
-  currentStage: Type.String({ description: '新阶段' }),
+  currentStage: Type.Optional(Type.String({ description: '新阶段（如：合作→信任→反目）' })),
+  // ── 四层逻辑②：动态关系补全 ──
+  dynamicRole: Type.Optional(Type.String({
+    description: '动态功能位："在帮主角什么 / 拦主角什么"，一句话描述本关系对剧情的推动作用',
+  })),
+  alignment: Type.Optional(Type.Union([
+    Type.Literal('ally'),
+    Type.Literal('temporary_ally'),
+    Type.Literal('opponent'),
+    Type.Literal('temporary_opponent'),
+    Type.Literal('neutral'),
+    Type.Literal('pending_shift'),
+  ], { description: '阵营关系：ally=同一边 / temporary_ally=暂时同路 / opponent=对立 / temporary_opponent=暂时对立 / neutral=中立 / pending_shift=待转变' })),
+  trend: Type.Optional(Type.Union([
+    Type.Literal('stable'),
+    Type.Literal('warming'),
+    Type.Literal('cooling'),
+    Type.Literal('breaking'),
+    Type.Literal('reconciling'),
+  ], { description: '走向：stable=稳定 / warming=升温 / cooling=降温 / breaking=即将破裂 / reconciling=和解' })),
+  chapterHint: Type.Optional(Type.String({
+    description: '本章关系约束提示：一句话说明本章关系应如何变化（可空，空表示本章不约束）',
+  })),
+  chapterNumber: Type.Optional(Type.Number({
+    description: '当前章节号（用于更新 lastUpdatedChapter 并自动追加 stageHistory 条目）',
+  })),
+  changeReason: Type.Optional(Type.String({
+    description: '阶段变更原因（与 chapterNumber 一起写入 stageHistory 的 reason 字段）',
+  })),
+})
+
+const CreateRelationshipParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+  characterA: Type.String({ description: '角色 A ID' }),
+  characterB: Type.String({ description: '角色 B ID' }),
+  relationType: Type.String({ description: '关系类型标签：敌对/合作/师徒/恋人/亲属...' }),
+  currentStage: Type.Optional(Type.String({ description: '当前阶段（如：初识/合作/反目），默认空' })),
+  // ── 四层逻辑②：动态关系补全 ──
+  dynamicRole: Type.Optional(Type.String({
+    description: '动态功能位："在帮主角什么 / 拦主角什么"',
+  })),
+  alignment: Type.Optional(Type.Union([
+    Type.Literal('ally'),
+    Type.Literal('temporary_ally'),
+    Type.Literal('opponent'),
+    Type.Literal('temporary_opponent'),
+    Type.Literal('neutral'),
+    Type.Literal('pending_shift'),
+  ], { description: '阵营关系（默认 neutral）' })),
+  trend: Type.Optional(Type.Union([
+    Type.Literal('stable'),
+    Type.Literal('warming'),
+    Type.Literal('cooling'),
+    Type.Literal('breaking'),
+    Type.Literal('reconciling'),
+  ], { description: '走向（默认 stable）' })),
+  chapterHint: Type.Optional(Type.String({
+    description: '本章关系约束提示',
+  })),
+})
+
+const DeleteRelationshipParams = Type.Object({
+  relationshipId: Type.String({ description: '关系 ID' }),
 })
 
 const CreateCharacterParams = Type.Object({
@@ -128,15 +223,50 @@ const CreateCharacterParams = Type.Object({
   secret: Type.Optional(Type.String({ description: '秘密' })),
   arcStage: Type.Optional(Type.String({ description: '弧光阶段' })),
   speechStyle: Type.Optional(Type.String({ description: '说话风格' })),
+  // ── 四层逻辑补全字段 ──
+  longTermDesire: Type.Optional(Type.String({
+    description: '长期欲望：跨章节稳定的发动机（与当前目标的区别：当前目标会随剧情变化，长期欲望贯穿全书）',
+  })),
+  plotRole: Type.Optional(Type.Union([
+    Type.Literal('protagonist'),
+    Type.Literal('main_opponent'),
+    Type.Literal('supporting'),
+    Type.Literal('function'),
+    Type.Literal('background'),
+  ], { description: '角色层级：protagonist=主角 / main_opponent=主要对手 / supporting=重要配角 / function=功能配角 / background=背景人物' })),
+  removalImpact: Type.Optional(Type.String({
+    description: '删掉影响：一句话描述"删掉这个角色哪段剧情会受影响"',
+  })),
 })
 
 const CreateForeshadowParams = Type.Object({
   projectId: Type.String({ description: '项目 ID' }),
   description: Type.String({ description: '伏笔描述' }),
-  category: Type.Optional(Type.String({ description: '类别（物品/身份/事件/承诺/台词...）' })),
+  category: Type.Optional(Type.Union([
+    Type.Literal('item'),
+    Type.Literal('spoken'),
+    Type.Literal('event'),
+    Type.Literal('identity'),
+    Type.Literal('secret'),
+    Type.Literal('prophecy'),
+    Type.Literal('promise'),
+    Type.Literal('quote'),
+  ], { description: '类别：item=物品 / spoken=言语 / event=事件 / identity=身份 / secret=秘密 / prophecy=预言 / promise=承诺 / quote=台词' })),
   recoverByChapter: Type.Optional(Type.Number({ description: '应在第几章前回收' })),
   linkedCharacters: Type.Optional(Type.Array(Type.String(), { description: '关联角色 ID 列表' })),
   linkedClues: Type.Optional(Type.Array(Type.String(), { description: '关联线索 ID 列表' })),
+  // ── P2-2：伏笔埋设/回收方式 ──
+  plantMethod: Type.Optional(Type.Union([
+    Type.Literal('explicit'),
+    Type.Literal('implicit'),
+    Type.Literal('indirect'),
+  ], { description: '埋设方式：explicit=明写 / implicit=暗写 / indirect=侧写' })),
+  recoverMethod: Type.Optional(Type.Union([
+    Type.Literal('explicit'),
+    Type.Literal('implicit'),
+    Type.Literal('reverse'),
+    Type.Literal('progressive'),
+  ], { description: '回收方式：explicit=点破 / implicit=暗示 / reverse=反向 / progressive=递进' })),
 })
 
 const CreateConflictParams = Type.Object({
@@ -164,6 +294,23 @@ const CreateConflictParams = Type.Object({
     Type.Literal('transformed'),
   ], { description: '冲突阶段' })),
   participants: Type.Optional(Type.Array(Type.String(), { description: '参与方 ID 列表' })),
+  // ── P2-1：冲突功能位 + 非线性推进 ──
+  plotFunction: Type.Optional(Type.Union([
+    Type.Literal('provide_resource'),
+    Type.Literal('create_obstacle'),
+    Type.Literal('amplify_conflict'),
+    Type.Literal('open_phase'),
+    Type.Literal('change_judgment'),
+    Type.Literal('advance_relationship'),
+    Type.Literal('reveal_world_rule'),
+  ], { description: '剧情功能位：provide_resource=提供资源 / create_obstacle=制造障碍 / amplify_conflict=放大冲突 / open_phase=开启新阶段 / change_judgment=改变主角判断 / advance_relationship=推进关系 / reveal_world_rule=揭示世界规则' })),
+  progressionMode: Type.Optional(Type.Union([
+    Type.Literal('linear'),
+    Type.Literal('mutation'),
+    Type.Literal('stagnation'),
+    Type.Literal('regression'),
+    Type.Literal('reversal'),
+  ], { description: '推进模式：linear=线性升级 / mutation=突变 / stagnation=停滞 / regression=降级 / reversal=反转' })),
 })
 
 const CreateClueParams = Type.Object({
@@ -477,8 +624,10 @@ export function createNovelUpdateForeshadowTool(store: NovelStore): ToolDefiniti
     promptSnippet: '更新伏笔状态',
     parameters: UpdateForeshadowParams,
     async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
-      const { foreshadowId, status, chapterNumber } = params
+      const { foreshadowId, status, chapterNumber, plantMethod, recoverMethod } = params
       const patch: Record<string, unknown> = { status }
+      if (plantMethod !== undefined) patch.plantMethod = plantMethod
+      if (recoverMethod !== undefined) patch.recoverMethod = recoverMethod
 
       // 自动更新 first/last chapter
       if (chapterNumber !== undefined) {
@@ -519,10 +668,14 @@ export function createNovelUpdateConflictTool(store: NovelStore): ToolDefinition
     promptSnippet: '更新冲突状态',
     parameters: UpdateConflictParams,
     async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
-      const { conflictId, ...updates } = params
+      const { conflictId, participants, ...restUpdates } = params
       const patch: Record<string, unknown> = {}
-      for (const [key, value] of Object.entries(updates)) {
+      for (const [key, value] of Object.entries(restUpdates)) {
         if (value !== undefined) patch[key] = value
+      }
+      // participants 单独处理：JSON.stringify 为 string 落库
+      if (participants !== undefined) {
+        patch.participants = JSON.stringify(participants)
       }
 
       const updated = store.updateConflict(conflictId, patch as any)
@@ -577,19 +730,64 @@ export function createNovelUpdateClueTool(store: NovelStore): ToolDefinition<typ
 
 /**
  * 创建关系状态更新工具
+ *
+ * 写工具：更新角色间关系的动态字段（currentStage / dynamicRole / alignment / trend / chapterHint）。
+ * 当传入 chapterNumber 且 currentStage 发生变化时，自动追加一条 RelationChange 到 stageHistory，
+ * 让关系演变有可追溯的历史轨迹（修复四层逻辑②批评的"stageHistory 永远是 []"问题）。
  */
 export function createNovelUpdateRelationshipTool(store: NovelStore): ToolDefinition<typeof UpdateRelationshipParams> {
   return defineTool({
     name: 'novel_update_relationship',
     label: '更新关系状态',
     description:
-      '更新角色间关系的当前阶段。用于推进关系的演变。',
+      '更新角色间关系的当前阶段与动态字段（功能位 / 阵营 / 走向 / 本章提示）。' +
+      '当传入 chapterNumber 且阶段变化时，自动追加历史条目到 stageHistory。',
     promptSnippet: '更新角色关系状态',
     parameters: UpdateRelationshipParams,
     async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
-      const { relationshipId, currentStage } = params
-      const updated = store.updateRelationship(relationshipId, { currentStage })
+      const {
+        relationshipId, currentStage, dynamicRole, alignment, trend,
+        chapterHint, chapterNumber, changeReason,
+      } = params
 
+      const existing = store.getRelationship(relationshipId)
+      if (!existing) {
+        return {
+          content: [{ type: 'text', text: `关系不存在: ${relationshipId}` }],
+          details: undefined,
+        }
+      }
+
+      // 构造 patch：仅传非 undefined 字段，避免覆盖未指定字段
+      const patch: Partial<import('./types.js').NovelRelationship> = {}
+      if (currentStage !== undefined) patch.currentStage = currentStage
+      if (dynamicRole !== undefined) patch.dynamicRole = dynamicRole
+      if (alignment !== undefined) patch.alignment = alignment
+      if (trend !== undefined) patch.trend = trend
+      if (chapterHint !== undefined) patch.chapterHint = chapterHint
+      if (chapterNumber !== undefined) patch.lastUpdatedChapter = chapterNumber
+
+      // 阶段变化 + 有章节号 → 追加 stageHistory 条目
+      if (chapterNumber !== undefined && currentStage !== undefined && currentStage !== existing.currentStage) {
+        const history: import('./types.js').RelationChange[] = (() => {
+          try {
+            const parsed = JSON.parse(existing.stageHistory)
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        })()
+        history.push({
+          chapter: chapterNumber,
+          fromStage: existing.currentStage,
+          toStage: currentStage,
+          reason: changeReason ?? '',
+          timestamp: Date.now(),
+        })
+        patch.stageHistory = JSON.stringify(history)
+      }
+
+      const updated = store.updateRelationship(relationshipId, patch)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `关系不存在: ${relationshipId}` }],
@@ -597,8 +795,79 @@ export function createNovelUpdateRelationshipTool(store: NovelStore): ToolDefini
         }
       }
 
+      const summaryParts: string[] = []
+      if (currentStage !== undefined) summaryParts.push(`阶段=${currentStage}`)
+      if (dynamicRole !== undefined) summaryParts.push(`功能位=${dynamicRole}`)
+      if (alignment !== undefined) summaryParts.push(`阵营=${alignment}`)
+      if (trend !== undefined) summaryParts.push(`走向=${trend}`)
+      if (chapterHint !== undefined) summaryParts.push(`本章提示=${chapterHint}`)
+      const summary = summaryParts.length > 0 ? summaryParts.join('，') : '（无字段变更）'
+
       return {
-        content: [{ type: 'text', text: `关系 ${updated.characterA} ↔ ${updated.characterB} 阶段已更新为: ${currentStage}` }],
+        content: [{ type: 'text', text: `关系 ${updated.characterA} ↔ ${updated.characterB} 已更新：${summary}` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/**
+ * 创建角色间关系工具
+ *
+ * 写工具：新建一对角色的关系记录，含动态字段（功能位 / 阵营 / 走向 / 本章提示）。
+ */
+export function createNovelCreateRelationshipTool(store: NovelStore): ToolDefinition<typeof CreateRelationshipParams> {
+  return defineTool({
+    name: 'novel_create_relationship',
+    label: '创建角色关系',
+    description:
+      '在项目中创建一对角色间的关系，含动态字段（功能位 / 阵营 / 走向 / 本章提示）。' +
+      '用于建立角色间的叙事连接，后续可通过 novel_update_relationship 推进演变。',
+    promptSnippet: '创建角色关系',
+    parameters: CreateRelationshipParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const rel = store.createRelationship({
+        id: randomUUID(),
+        projectId: params.projectId,
+        characterA: params.characterA,
+        characterB: params.characterB,
+        relationType: params.relationType,
+        currentStage: params.currentStage ?? '',
+        stageHistory: '[]',
+        dynamicRole: params.dynamicRole ?? '',
+        alignment: params.alignment ?? 'neutral',
+        trend: params.trend ?? 'stable',
+        chapterHint: params.chapterHint ?? '',
+        lastUpdatedChapter: null,
+      })
+      return {
+        content: [{ type: 'text', text: `已创建关系 ${params.characterA} ↔ ${params.characterB}（${params.relationType}），ID: ${rel.id}` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/**
+ * 删除角色间关系工具
+ */
+export function createNovelDeleteRelationshipTool(store: NovelStore): ToolDefinition<typeof DeleteRelationshipParams> {
+  return defineTool({
+    name: 'novel_delete_relationship',
+    label: '删除角色关系',
+    description: '删除一对角色间的关系记录（不可恢复）。',
+    promptSnippet: '删除角色关系',
+    parameters: DeleteRelationshipParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const deleted = store.deleteRelationship(params.relationshipId)
+      if (!deleted) {
+        return {
+          content: [{ type: 'text', text: `关系不存在: ${params.relationshipId}` }],
+          details: undefined,
+        }
+      }
+      return {
+        content: [{ type: 'text', text: `已删除关系: ${params.relationshipId}` }],
         details: undefined,
       }
     },
@@ -641,6 +910,10 @@ export function createNovelCreateCharacterTool(store: NovelStore): ToolDefinitio
         arcHistory: '[]',
         speechStyle: params.speechStyle ?? '',
         isProtagonist: false,
+        // 四层逻辑补全字段（缺省值与数据库默认一致）
+        longTermDesire: params.longTermDesire ?? '',
+        plotRole: params.plotRole ?? 'supporting',
+        removalImpact: params.removalImpact ?? '',
       })
       return {
         content: [{ type: 'text', text: `已创建角色「${params.name}」，ID: ${character.id}` }],
@@ -676,6 +949,9 @@ export function createNovelCreateForeshadowTool(store: NovelStore): ToolDefiniti
         recoverByChapter: params.recoverByChapter ?? null,
         linkedCharacters: JSON.stringify(params.linkedCharacters ?? []),
         linkedClues: JSON.stringify(params.linkedClues ?? []),
+        plantMethod: params.plantMethod,
+        recoverMethod: params.recoverMethod,
+        linkedInfoLayers: '[]',
       })
       return {
         content: [{ type: 'text', text: `已创建伏笔「${params.description}」，ID: ${foreshadow.id}` }],
@@ -710,6 +986,8 @@ export function createNovelCreateConflictTool(store: NovelStore): ToolDefinition
         participants: JSON.stringify(params.participants ?? []),
         chapterSpans: [],
         tier: 'secondary',
+        plotFunction: params.plotFunction,
+        progressionMode: params.progressionMode,
       })
       return {
         content: [{ type: 'text', text: `已创建冲突「${params.description}」，ID: ${conflict.id}` }],
@@ -1004,6 +1282,9 @@ export function createNovelTools(store: NovelStore): ToolDefinition[] {
     createNovelCreateForeshadowTool(store),
     createNovelCreateConflictTool(store),
     createNovelCreateClueTool(store),
+    createNovelCreateRelationshipTool(store),
+    // 删除类工具
+    createNovelDeleteRelationshipTool(store),
     // 势力/地点/世界观要素工具
     createNovelQueryFactionsTool(store),
     createNovelCreateFactionTool(store),

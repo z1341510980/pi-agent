@@ -1,0 +1,4 @@
+interface:
+  display_name: "去除 AI 味道"
+  short_description: "识别并改写文章里的 AI 味、模板腔、资料味和翻译腔内容"
+  default_prompt: "请使用 $remove-ai-flavor 帮我去掉这篇文章里的 AI 味，让表达更自然。"

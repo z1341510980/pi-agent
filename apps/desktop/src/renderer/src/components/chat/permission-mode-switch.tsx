@@ -122,12 +122,6 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
     setPendingMode(null)
   }, [])
 
-  const cycleMode = (): void => {
-    const idx = MODE_ORDER.indexOf(currentMode)
-    const next = MODE_ORDER[(idx + 1) % MODE_ORDER.length]
-    applyMode(next)
-  }
-
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 

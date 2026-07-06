@@ -152,7 +152,6 @@ export function OutlineTree({
                   placeholder="点击编写卷纲..."
                   selected={selectedNodeId === vol.id}
                   onClick={() => selectNode(vol.id, 'volume')}
-                  compact
                 />
                 {volChapters.map((ch) => (
                   <ChapterRow
@@ -237,10 +236,9 @@ function ChapterRow({
           placeholder="点击编写章纲（生成的统一起点）..."
           selected={selected}
           onClick={onOutlineSelect}
-          compact
         />
         <div className="flex items-center gap-1 px-1">
-          <Button
+          {/* <Button
             size="sm"
             variant="ghost"
             className="h-6 px-2 text-[10px]"
@@ -248,7 +246,7 @@ function ChapterRow({
             title="手动编排"
           >
             <Sparkles className="size-3" /> 手动编排
-          </Button>
+          </Button> */}
           <Button
             size="sm"
             variant="ghost"
@@ -274,7 +272,6 @@ interface OutlinePreviewRowProps {
   onClick: () => void
   icon?: ReactElement
   selected?: boolean
-  compact?: boolean
 }
 
 function OutlinePreviewRow({
@@ -284,7 +281,6 @@ function OutlinePreviewRow({
   onClick,
   icon,
   selected,
-  compact,
 }: OutlinePreviewRowProps): ReactElement {
   return (
     <button

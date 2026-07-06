@@ -15,7 +15,7 @@
 
 import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { NovelServices } from './novel-services.js'
-import type { NovelChapter, NovelMarker } from './core/types.js'
+import type { NovelChapter, NovelMarker, NovelInformationLayer } from './core/types.js'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { success } from '../../lib/api-response.js'
@@ -51,10 +51,30 @@ function createNovelAgUiEmitter(
     emit,
     threadId,
     runId,
-    progress: (data: unknown) => emit({ type: EventType.CUSTOM, name: 'novel:progress', value: data }),
-    checkpoint: (data: unknown) => emit({ type: EventType.CUSTOM, name: 'novel:checkpoint', value: data }),
+    // 统一注入 timestamp: Date.now()，避免每个调用点手工塞
+    // 前端 AgentOutput.timestamp / CreationFlowEvent.timestamp 依赖此字段
+    progress: (data: unknown) => emit({
+      type: EventType.CUSTOM,
+      name: 'novel:progress',
+      value: typeof data === 'object' && data !== null
+        ? { timestamp: Date.now(), ...(data as Record<string, unknown>) }
+        : data,
+    }),
+    checkpoint: (data: unknown) => emit({
+      type: EventType.CUSTOM,
+      name: 'novel:checkpoint',
+      value: typeof data === 'object' && data !== null
+        ? { timestamp: Date.now(), ...(data as Record<string, unknown>) }
+        : data,
+    }),
     result: (data: unknown) => {
-      emit({ type: EventType.CUSTOM, name: 'novel:result', value: data })
+      emit({
+        type: EventType.CUSTOM,
+        name: 'novel:result',
+        value: typeof data === 'object' && data !== null
+          ? { timestamp: Date.now(), ...(data as Record<string, unknown>) }
+          : data,
+      })
       emit({ type: EventType.RUN_FINISHED, threadId, runId })
     },
     // AG-UI 协议：错误流也必须以 RUN_FINISHED 结束，否则客户端无法判定流结束
@@ -306,6 +326,55 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const deleted = store.deleteInfoLayer(request.params.id)
       if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `信息差不存在: ${request.params.id}`, 404)
       return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // P3-2：信息差 PATCH（更新字段，不传的字段保持不变）
+  routes.push({
+    method: 'PATCH',
+    path: '/info-layers/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateInfoLayerSchema, request, reply)
+      if (!input) return reply
+      const updated = store.updateInfoLayer(request.params.id, input as Partial<NovelInformationLayer>)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `信息差不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  // P3-2：建立伏笔↔信息差双向关联
+  // 请求体：{ foreshadowId, infoLayerId }
+  // 幂等：已关联时返回成功不重复写入
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/foreshadow-info-layer-links',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(linkForeshadowInfoLayerSchema, request, reply)
+      if (!input) return reply
+      // 校验伏笔和信息差都存在
+      if (!store.getForeshadow(input.foreshadowId)) {
+        throw new AppError(ErrorCode.NOT_FOUND, `伏笔不存在: ${input.foreshadowId}`, 404)
+      }
+      if (!store.listInformationLayers(request.params.projectId).some(l => l.id === input.infoLayerId)) {
+        throw new AppError(ErrorCode.NOT_FOUND, `信息差不存在: ${input.infoLayerId}`, 404)
+      }
+      store.linkForeshadowToInfoLayer(input.foreshadowId, input.infoLayerId)
+      return success({ foreshadowId: input.foreshadowId, infoLayerId: input.infoLayerId, linked: true }, request.traceId)
+    },
+  })
+
+  // P3-2：解除伏笔↔信息差双向关联
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/:projectId/foreshadow-info-layer-links',
+    handler: async (request: any) => {
+      const foreshadowId = (request.query as Record<string, string | undefined>)?.foreshadowId
+      const infoLayerId = (request.query as Record<string, string | undefined>)?.infoLayerId
+      if (!foreshadowId || !infoLayerId) {
+        throw new AppError(ErrorCode.BAD_REQUEST, '需要提供 foreshadowId 和 infoLayerId 查询参数', 400)
+      }
+      store.unlinkForeshadowFromInfoLayer(foreshadowId, infoLayerId)
+      return success({ foreshadowId, infoLayerId, linked: false }, request.traceId)
     },
   })
 
@@ -575,6 +644,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     arcStage: z.string().default(''),
     speechStyle: z.string().default(''),
     isProtagonist: z.boolean().default(false),
+    // 四层逻辑补全字段
+    longTermDesire: z.string().default(''),
+    plotRole: z.enum(['protagonist', 'main_opponent', 'supporting', 'function', 'background']).default('supporting'),
+    removalImpact: z.string().default(''),
   })
 
   routes.push({
@@ -829,11 +902,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
 
   const createForeshadowSchema = z.object({
     description: z.string().min(1),
-    category: z.string().default(''),
+    // ── P2-2：category 改为枚举（旧自由字符串由 store 层 normalize 兜底）──
+    // 用 .optional() 而非 .default()，避免 PATCH .partial() 在 Zod v4 下保留默认值覆盖现有数据
+    category: z.enum(['item', 'spoken', 'event', 'identity', 'secret', 'prophecy', 'promise', 'quote']).optional(),
     status: z.enum(['planned', 'planted', 'reinforced', 'partially_revealed', 'recovering', 'recovered', 'abandoned']).default('planned'),
     firstChapter: z.number().int().nullable().default(null),
     lastChapter: z.number().int().nullable().default(null),
     recoverByChapter: z.number().int().nullable().default(null),
+    // ── P2-2：埋设/回收方式（可选，不设默认值以兼容 PATCH .partial()）──
+    plantMethod: z.enum(['explicit', 'implicit', 'indirect']).optional(),
+    recoverMethod: z.enum(['explicit', 'implicit', 'reverse', 'progressive']).optional(),
   })
 
   routes.push({
@@ -848,6 +926,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         projectId: request.params.projectId,
         linkedCharacters: '[]',
         linkedClues: '[]',
+        linkedInfoLayers: '[]',
+        // category 未传时兜底 'event'（与原 .default('event') 行为一致）
+        category: 'event',
         ...input,
       })
       return success(foreshadow, request.traceId)
@@ -886,6 +967,11 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     stage: z.enum(['latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved', 'transformed']).default('latent'),
     chapterSpans: z.array(z.tuple([z.number().int(), z.number().int()])).default([]),
     tier: z.enum(['main', 'secondary', 'goal']).default('secondary'),
+    // ── 四层逻辑④：双向关联 ──
+    participants: z.array(z.string()).default([]),
+    // ── P2-1：冲突功能位 + 非线性推进（可选，不设默认值）──
+    plotFunction: z.enum(['provide_resource', 'create_obstacle', 'amplify_conflict', 'open_phase', 'change_judgment', 'advance_relationship', 'reveal_world_rule']).optional(),
+    progressionMode: z.enum(['linear', 'mutation', 'stagnation', 'regression', 'reversal']).optional(),
   })
 
   routes.push({
@@ -895,11 +981,13 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(createConflictSchema, request, reply)
       if (!input) return reply
 
+      // participants 在 schema 层是 string[]，落库前 JSON.stringify 为 string
+      const { participants, ...rest } = input
       const conflict = store.createConflict({
         id: randomUUID(),
         projectId: request.params.projectId,
-        participants: '[]',
-        ...input,
+        participants: JSON.stringify(participants ?? []),
+        ...rest,
       })
       return success(conflict, request.traceId)
     },
@@ -913,14 +1001,35 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  // PATCH 冲突：注意 participants 在 schema 层是 string[]，落库前需要 JSON.stringify
+  const updateConflictSchema = z.object({
+    description: z.string().min(1).optional(),
+    type: z.enum(['inner', 'relationship', 'faction', 'interest', 'moral', 'identity', 'emotional', 'world_rule', 'survival']).optional(),
+    intensity: z.number().int().min(1).max(10).optional(),
+    stage: z.enum(['latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved', 'transformed']).optional(),
+    chapterSpans: z.array(z.tuple([z.number().int(), z.number().int()])).optional(),
+    tier: z.enum(['main', 'secondary', 'goal']).optional(),
+    participants: z.array(z.string()).optional(),
+    // ── P2-1：冲突功能位 + 非线性推进（.optional() 无 .default() 避免覆盖未传字段）──
+    plotFunction: z.enum(['provide_resource', 'create_obstacle', 'amplify_conflict', 'open_phase', 'change_judgment', 'advance_relationship', 'reveal_world_rule']).optional(),
+    progressionMode: z.enum(['linear', 'mutation', 'stagnation', 'regression', 'reversal']).optional(),
+  })
+
   routes.push({
     method: 'PATCH',
     path: '/conflicts/:id',
     handler: async (request: any, reply: any) => {
-      const input = validateBody(createConflictSchema.partial(), request, reply)
+      const input = validateBody(updateConflictSchema, request, reply)
       if (!input) return reply
 
-      const updated = store.updateConflict(request.params.id, input)
+      // participants 单独 JSON.stringify
+      const { participants, ...rest } = input
+      const patch: Record<string, unknown> = { ...rest }
+      if (participants !== undefined) {
+        patch.participants = JSON.stringify(participants)
+      }
+
+      const updated = store.updateConflict(request.params.id, patch as any)
       if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `冲突不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
     },
@@ -973,6 +1082,11 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     characterB: z.string().min(1),
     relationType: z.string().min(1),
     currentStage: z.string().default(''),
+    // ── 四层逻辑②：动态关系补全字段 ──
+    dynamicRole: z.string().default(''),
+    alignment: z.enum(['ally', 'temporary_ally', 'opponent', 'temporary_opponent', 'neutral', 'pending_shift']).default('neutral'),
+    trend: z.enum(['stable', 'warming', 'cooling', 'breaking', 'reconciling']).default('stable'),
+    chapterHint: z.string().default(''),
   })
 
   routes.push({
@@ -986,9 +1100,38 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         id: randomUUID(),
         projectId: request.params.projectId,
         stageHistory: '[]',
+        lastUpdatedChapter: null,
         ...input,
       })
       return success(rel, request.traceId)
+    },
+  })
+
+  // PATCH 关系：支持全部动态字段（与工具 novel_update_relationship 对齐）
+  // 注意：所有字段 .optional() 无 .default()，避免覆盖未传字段（与 updateMarkerSchema 同原则）
+  const updateRelationshipSchema = z.object({
+    characterA: z.string().min(1).optional(),
+    characterB: z.string().min(1).optional(),
+    relationType: z.string().min(1).optional(),
+    currentStage: z.string().optional(),
+    stageHistory: z.string().optional(),
+    dynamicRole: z.string().optional(),
+    alignment: z.enum(['ally', 'temporary_ally', 'opponent', 'temporary_opponent', 'neutral', 'pending_shift']).optional(),
+    trend: z.enum(['stable', 'warming', 'cooling', 'breaking', 'reconciling']).optional(),
+    chapterHint: z.string().optional(),
+    lastUpdatedChapter: z.number().int().min(0).nullable().optional(),
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/relationships/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateRelationshipSchema, request, reply)
+      if (!input) return reply
+
+      const updated = store.updateRelationship(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `关系不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
     },
   })
 
@@ -1117,6 +1260,24 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     revealChapter: z.number().int().nullable().default(null),
   })
 
+  // P3-2：信息差 PATCH schema（与 updateMarkerSchema 同原则：所有字段 .optional() 无 .default()，避免覆盖未传字段）
+  const updateInfoLayerSchema = z.object({
+    infoDescription: z.string().min(1).optional(),
+    authorKnows: z.boolean().optional(),
+    readerKnows: z.boolean().optional(),
+    revealStage: z.string().nullable().optional(),
+    revealChapter: z.number().int().nullable().optional(),
+    isRevealed: z.boolean().optional(),
+    characterKnowledge: z.string().optional(),
+    linkedForeshadows: z.string().optional(),
+  })
+
+  // P3-2：建立伏笔↔信息差关联的请求 schema
+  const linkForeshadowInfoLayerSchema = z.object({
+    foreshadowId: z.string().min(1),
+    infoLayerId: z.string().min(1),
+  })
+
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/info-layers',
@@ -1129,6 +1290,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         projectId: request.params.projectId,
         characterKnowledge: '{}',
         isRevealed: false,
+        linkedForeshadows: '[]',
         ...input,
       })
       return success(layer, request.traceId)

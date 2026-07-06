@@ -112,6 +112,7 @@ describe('NovelStore - 角色 CRUD', () => {
       currentState: '初始', currentGoal: '目标', currentPressure: '压力',
       secret: '秘密', arcStage: 'setup', arcHistory: '[]', speechStyle: '口语',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
     expect(c.id).toBe('c-1')
     expect(c.name).toBe('主角')
@@ -125,6 +126,7 @@ describe('NovelStore - 角色 CRUD', () => {
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
     const c = store.getCharacter('c-1')
     expect(c).toBeDefined()
@@ -142,6 +144,7 @@ describe('NovelStore - 角色 CRUD', () => {
       currentState: '旧状态', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
     const updated = store.updateCharacter('c-1', { name: '新名', currentState: '新状态' })
     expect(updated).toBeDefined()
@@ -160,6 +163,7 @@ describe('NovelStore - 角色 CRUD', () => {
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
     expect(store.deleteCharacter('c-1')).toBe(true)
     expect(store.getCharacter('c-1')).toBeUndefined()
@@ -176,6 +180,7 @@ describe('NovelStore - 角色 CRUD', () => {
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
     store.createCharacter({
       id: 'c-2', projectId: 'p-1', name: 'B', description: '',
@@ -183,6 +188,7 @@ describe('NovelStore - 角色 CRUD', () => {
       currentState: '', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
     expect(store.listCharacters('p-1')).toHaveLength(2)
   })
@@ -360,8 +366,8 @@ describe('NovelStore - 伏笔 CRUD', () => {
   it('createForeshadow 创建伏笔', () => {
     const f = store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: '神秘物品',
-      category: '物品', status: 'planned', firstChapter: 1, lastChapter: null,
-      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]',
+      category: 'item', status: 'planned', firstChapter: 1, lastChapter: null,
+      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
     })
     expect(f.id).toBe('f-1')
     expect(f.firstChapter).toBe(1)
@@ -370,8 +376,8 @@ describe('NovelStore - 伏笔 CRUD', () => {
   it('getForeshadow 读取伏笔', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
-      category: '', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]',
+      category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
     })
     expect(store.getForeshadow('f-1')?.description).toBe('x')
   })
@@ -379,8 +385,8 @@ describe('NovelStore - 伏笔 CRUD', () => {
   it('updateForeshadow 更新伏笔', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
-      category: '', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]',
+      category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
     })
     const updated = store.updateForeshadow('f-1', { status: 'planted', firstChapter: 3 })
     expect(updated).toBeDefined()
@@ -391,8 +397,8 @@ describe('NovelStore - 伏笔 CRUD', () => {
   it('deleteForeshadow 删除伏笔', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
-      category: '', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]',
+      category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
     })
     expect(store.deleteForeshadow('f-1')).toBe(true)
     expect(store.getForeshadow('f-1')).toBeUndefined()
@@ -401,15 +407,88 @@ describe('NovelStore - 伏笔 CRUD', () => {
   it('listForeshadowing 返回项目下所有伏笔', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'A',
-      category: '', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]',
+      category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
     })
     store.createForeshadow({
       id: 'f-2', projectId: 'p-1', description: 'B',
-      category: '', status: 'planted', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]',
+      category: 'item', status: 'planted', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
     })
     expect(store.listForeshadowing('p-1')).toHaveLength(2)
+  })
+})
+
+describe('NovelStore - P3-2 伏笔↔信息差双向联动', () => {
+  beforeEach(() => {
+    store.createProject({
+      id: 'p-1', title: 'x', genre: 'x', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    })
+  })
+
+  function seedForeshadowAndInfoLayer() {
+    store.createForeshadow({
+      id: 'f-1', projectId: 'p-1', description: '神秘戒指',
+      category: 'item', status: 'planned', firstChapter: 1, lastChapter: null,
+      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      plantMethod: 'implicit', recoverMethod: 'explicit',
+    })
+    store.createInformationLayer({
+      id: 'il-1', projectId: 'p-1', infoDescription: '读者不知道戒指是神器',
+      authorKnows: true, readerKnows: false, characterKnowledge: '{}',
+      revealStage: null, revealChapter: null, isRevealed: false, linkedForeshadows: '[]',
+    })
+  }
+
+  it('linkForeshadowToInfoLayer 双向写入（伏笔端 + 信息差端）', () => {
+    seedForeshadowAndInfoLayer()
+    store.linkForeshadowToInfoLayer('f-1', 'il-1')
+    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe(JSON.stringify(['il-1']))
+    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe(JSON.stringify(['f-1']))
+  })
+
+  it('linkForeshadowToInfoLayer 幂等：重复调用不重复写入', () => {
+    seedForeshadowAndInfoLayer()
+    store.linkForeshadowToInfoLayer('f-1', 'il-1')
+    store.linkForeshadowToInfoLayer('f-1', 'il-1')
+    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe(JSON.stringify(['il-1']))
+    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe(JSON.stringify(['f-1']))
+  })
+
+  it('unlinkForeshadowFromInfoLayer 双向移除', () => {
+    seedForeshadowAndInfoLayer()
+    store.linkForeshadowToInfoLayer('f-1', 'il-1')
+    store.unlinkForeshadowFromInfoLayer('f-1', 'il-1')
+    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe('[]')
+    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe('[]')
+  })
+
+  it('deleteForeshadow 自动清理信息差的 linkedForeshadows', () => {
+    seedForeshadowAndInfoLayer()
+    store.linkForeshadowToInfoLayer('f-1', 'il-1')
+    store.deleteForeshadow('f-1')
+    // 伏笔被删，信息差的 linkedForeshadows 应自动清空
+    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe('[]')
+  })
+
+  it('deleteInfoLayer 自动清理伏笔的 linkedInfoLayers', () => {
+    seedForeshadowAndInfoLayer()
+    store.linkForeshadowToInfoLayer('f-1', 'il-1')
+    store.deleteInfoLayer('il-1')
+    // 信息差被删，伏笔的 linkedInfoLayers 应自动清空
+    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe('[]')
+  })
+
+  it('getInformationLayer 按 ID 查询单个信息差', () => {
+    seedForeshadowAndInfoLayer()
+    const layer = store.getInformationLayer('il-1')
+    expect(layer).toBeDefined()
+    expect(layer!.infoDescription).toBe('读者不知道戒指是神器')
+  })
+
+  it('getInformationLayer 不存在返回 undefined', () => {
+    expect(store.getInformationLayer('nonexistent')).toBeUndefined()
   })
 })
 
@@ -468,6 +547,7 @@ describe('NovelStore - 角色历史 CRUD', () => {
       currentState: '初始', currentGoal: '', currentPressure: '',
       secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
   })
 

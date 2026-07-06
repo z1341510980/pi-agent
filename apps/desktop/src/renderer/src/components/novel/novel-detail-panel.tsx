@@ -32,12 +32,14 @@ import {
   updateLocation,
   updateWorldElement,
   updateVolume,
+  updateInfoLayer,
   listCharacterHistory,
   createCharacterHistory,
   listRhythmModels,
   type RhythmModel,
   type NovelProject,
   type NovelCharacter,
+  type NovelCharacterPlotRole,
   type NovelChapter,
   type NovelConflict,
   type NovelForeshadow,
@@ -48,9 +50,12 @@ import {
   type ConflictType,
   type ConflictStage,
   type ConflictTier,
+  type ConflictPlotFunction,
+  type ConflictProgressionMode,
   type ClimaxType,
   type ChapterRhythm,
   type ForeshadowStatus,
+  type NovelForeshadowCategory,
   type NovelFaction,
   type NovelLocation,
   type NovelWorldElement,
@@ -62,6 +67,7 @@ import {
   type NovelLocationStatus,
   type NovelWorldElementCategory,
   type NovelVolume,
+  type NovelInformationLayer,
 } from '@/api/novel-client'
 
 // ── 字段组件 ──
@@ -358,6 +364,36 @@ function StringListEditor({
   )
 }
 
+// ── 工具：容错解析 JSON: string[]（旧数据/非法 JSON 返回空数组）──
+
+function safeParseParticipants(raw: string): string[] {
+  try {
+    const p = JSON.parse(raw)
+    if (Array.isArray(p)) return p.filter((x): x is string => typeof x === 'string')
+  } catch {
+    // ignore
+  }
+  return []
+}
+
+// ── 三层模型：角色参与的冲突反向索引只读 Badge 列表 ──
+
+function ParticipatingConflictsBadges({ raw }: { raw: string }): ReactElement {
+  const ids = safeParseParticipants(raw)
+  if (ids.length === 0) {
+    return <span className="text-[11px] text-muted-foreground">暂无参与冲突</span>
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {ids.map((id) => (
+        <Badge key={id} variant="secondary" className="h-5 px-1.5 text-[10px] font-mono">
+          {id.slice(0, 8)}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
 // ── 分组标题（iOS Settings 风格） ──
 
 function SectionHeader({ title, hint }: { title: string; hint?: string }): ReactElement {
@@ -508,6 +544,34 @@ const CLIMAX_TYPE_OPTIONS: { value: ClimaxType; label: string }[] = [
   { value: 'composite', label: '复合高潮' },
 ]
 
+// ── P2-1：冲突功能位（7 值枚举）+ 非线性推进模式（5 值枚举）──
+const CONFLICT_PLOT_FUNCTION_OPTIONS: { value: ConflictPlotFunction; label: string }[] = [
+  { value: 'provide_resource', label: '提供资源' },
+  { value: 'create_obstacle', label: '制造障碍' },
+  { value: 'amplify_conflict', label: '激化冲突' },
+  { value: 'open_phase', label: '开启阶段' },
+  { value: 'change_judgment', label: '改变判断' },
+  { value: 'advance_relationship', label: '推进关系' },
+  { value: 'reveal_world_rule', label: '揭示世界规则' },
+]
+
+const CONFLICT_PROGRESSION_MODE_OPTIONS: { value: ConflictProgressionMode; label: string }[] = [
+  { value: 'linear', label: '线性升级' },
+  { value: 'mutation', label: '突变' },
+  { value: 'stagnation', label: '停滞' },
+  { value: 'regression', label: '降级' },
+  { value: 'reversal', label: '反转' },
+]
+
+// ── 三层模型：角色层级（5 值枚举）──
+const CHARACTER_PLOT_ROLE_OPTIONS: { value: NovelCharacterPlotRole; label: string }[] = [
+  { value: 'protagonist', label: '主角' },
+  { value: 'main_opponent', label: '主对手' },
+  { value: 'supporting', label: '配角' },
+  { value: 'function', label: '功能性' },
+  { value: 'background', label: '背景' },
+]
+
 const CHAPTER_RHYTHM_OPTIONS: { value: ChapterRhythm; label: string }[] = [
   { value: 'setup', label: '铺垫' },
   { value: 'rising', label: '上升' },
@@ -527,6 +591,18 @@ const FORESHADOW_STATUS_OPTIONS: { value: ForeshadowStatus; label: string }[] = 
   { value: 'recovering', label: '回收中' },
   { value: 'recovered', label: '已回收' },
   { value: 'abandoned', label: '已废弃' },
+]
+
+// ── P2-2：伏笔分类枚举（与后端 NovelForeshadowCategory 对齐）──
+const FORESHADOW_CATEGORY_OPTIONS: { value: NovelForeshadowCategory; label: string }[] = [
+  { value: 'item', label: '物品' },
+  { value: 'spoken', label: '言语' },
+  { value: 'event', label: '事件' },
+  { value: 'identity', label: '身份' },
+  { value: 'secret', label: '秘密' },
+  { value: 'prophecy', label: '预言' },
+  { value: 'promise', label: '承诺' },
+  { value: 'quote', label: '台词' },
 ]
 
 const FACTION_TYPE_OPTIONS: { value: NovelFactionType; label: string }[] = [
@@ -597,6 +673,7 @@ const NODE_TYPE_LABELS: Record<NovelNodeType, string> = {
   faction: '势力',
   location: '地点',
   world_element: '世界要素',
+  info_layer: '信息差',
   group: '分组',
 }
 
@@ -651,6 +728,7 @@ export function NovelDetailPanel(): ReactElement {
   const factions = useNovelStore((s) => s.factions)
   const locations = useNovelStore((s) => s.locations)
   const worldElements = useNovelStore((s) => s.worldElements)
+  const infoLayers = useNovelStore((s) => s.infoLayers)
 
   const entity = useMemo(() => {
     if (!selectedNodeId || !selectedNodeType) return null
@@ -673,10 +751,12 @@ export function NovelDetailPanel(): ReactElement {
         return locations.find((l) => l.id === selectedNodeId) ?? null
       case 'world_element':
         return worldElements.find((w) => w.id === selectedNodeId) ?? null
+      case 'info_layer':
+        return infoLayers.find((l) => l.id === selectedNodeId) ?? null
       default:
         return null
     }
-  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, volumes, conflicts, foreshadows, factions, locations, worldElements])
+  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, volumes, conflicts, foreshadows, factions, locations, worldElements, infoLayers])
 
   if (!entity || !selectedNodeType) {
     return (
@@ -735,6 +815,9 @@ export function NovelDetailPanel(): ReactElement {
         {selectedNodeType === 'world_element' && (
           <WorldElementForm key={entity.id} entity={entity as NovelWorldElement} />
         )}
+        {selectedNodeType === 'info_layer' && (
+          <InfoLayerForm key={entity.id} entity={entity as NovelInformationLayer} />
+        )}
       </div>
     </div>
   )
@@ -749,8 +832,8 @@ function entityTitle(entity: unknown, type: string): string {
   if (type === 'faction' || type === 'location' || type === 'world_element') {
     return String(e.name ?? '')
   }
-  if (type === 'conflict' || type === 'foreshadow') {
-    const d = String(e.description ?? '')
+  if (type === 'conflict' || type === 'foreshadow' || type === 'info_layer') {
+    const d = String(e.description ?? e.infoDescription ?? '')
     return d.length > 20 ? `${d.slice(0, 20)}...` : d
   }
   return ''
@@ -926,6 +1009,10 @@ function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
     arcStage: entity.arcStage,
     speechStyle: entity.speechStyle,
     description: entity.description,
+    // ── 三层模型：长期欲望 / 角色层级 / 删掉影响 ──
+    longTermDesire: entity.longTermDesire,
+    plotRole: entity.plotRole,
+    removalImpact: entity.removalImpact,
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -958,6 +1045,27 @@ function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
       </FieldRow>
       <FieldRow label="外貌">
         <TextArea variant="medium" value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
+      </FieldRow>
+
+      {/* 三层模型：长期欲望 / 角色层级 / 删掉影响 */}
+      <SectionHeader title="角色定位" hint="跨章节稳定的发动机与功能位约束" />
+      <FieldRow label="长期欲望">
+        <TextArea variant="short" value={form.longTermDesire} onChange={(e) => setForm((f) => ({ ...f, longTermDesire: e.target.value }))} placeholder="区别于当前目标，跨章节稳定" />
+      </FieldRow>
+      <FieldRow label="角色层级">
+        <Select value={form.plotRole} onValueChange={(v) => setForm((f) => ({ ...f, plotRole: v as NovelCharacterPlotRole }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CHARACTER_PLOT_ROLE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="删掉影响">
+        <TextArea variant="short" value={form.removalImpact} onChange={(e) => setForm((f) => ({ ...f, removalImpact: e.target.value }))} placeholder="删掉这个角色哪段剧情会受影响" />
       </FieldRow>
 
       <SectionHeader title="简述" />
@@ -1002,6 +1110,10 @@ function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
           </SelectContent>
         </Select>
       </FieldRow>
+
+      {/* 三层模型④：影响层反向索引（只读，由冲突 CRUD 自动同步） */}
+      <SectionHeader title="参与冲突" hint="反向索引：由冲突编辑时的 participants 自动同步" />
+      <ParticipatingConflictsBadges raw={entity.participatingConflicts} />
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -1451,17 +1563,13 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
     climaxType: entity.climaxType ?? '',
     stakes: entity.stakes ?? '',
     twistPotential: entity.twistPotential != null ? String(entity.twistPotential) : '',
+    // ── P2-1：功能位 + 推进模式 + 参与者（可编辑）──
+    plotFunction: entity.plotFunction ?? '',
+    progressionMode: entity.progressionMode ?? '',
+    participantsList: safeParseParticipants(entity.participants),
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  let participants: string[] = []
-  try {
-    const p = JSON.parse(entity.participants)
-    if (Array.isArray(p)) participants = p.filter((x): x is string => typeof x === 'string')
-  } catch {
-    // ignore
-  }
 
   const dirty =
     form.description !== entity.description ||
@@ -1472,7 +1580,10 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
     (form.climaxChapter || '') !== (entity.climaxChapter != null ? String(entity.climaxChapter) : '') ||
     (form.climaxType || '') !== (entity.climaxType ?? '') ||
     form.stakes !== (entity.stakes ?? '') ||
-    (form.twistPotential || '') !== (entity.twistPotential != null ? String(entity.twistPotential) : '')
+    (form.twistPotential || '') !== (entity.twistPotential != null ? String(entity.twistPotential) : '') ||
+    (form.plotFunction || '') !== (entity.plotFunction ?? '') ||
+    (form.progressionMode || '') !== (entity.progressionMode ?? '') ||
+    form.participantsList.join('\n') !== safeParseParticipants(entity.participants).join('\n')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
@@ -1490,6 +1601,10 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
         climaxType: form.climaxType === '' ? null : (form.climaxType as ClimaxType),
         stakes: form.stakes === '' ? null : form.stakes,
         twistPotential: twistPotentialNum,
+        // ── P2-1：提交新增三字段 ──
+        plotFunction: form.plotFunction === '' ? undefined : (form.plotFunction as ConflictPlotFunction),
+        progressionMode: form.progressionMode === '' ? undefined : (form.progressionMode as ConflictProgressionMode),
+        participants: form.participantsList.filter((s) => s.trim()),
       })
       upsertConflict(updated)
     } catch (err) {
@@ -1524,6 +1639,33 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
           </SelectTrigger>
           <SelectContent>
             {CONFLICT_TIER_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      {/* P2-1：功能位（7 值枚举）+ 推进模式（5 值枚举） */}
+      <FieldRow label="功能位">
+        <Select value={form.plotFunction || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, plotFunction: v === '__none__' ? '' : v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="未指定" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">未指定</SelectItem>
+            {CONFLICT_PLOT_FUNCTION_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="推进模式">
+        <Select value={form.progressionMode || '__none__'} onValueChange={(v) => setForm((f) => ({ ...f, progressionMode: v === '__none__' ? '' : v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="未指定" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">未指定</SelectItem>
+            {CONFLICT_PROGRESSION_MODE_OPTIONS.map((o) => (
               <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
             ))}
           </SelectContent>
@@ -1609,16 +1751,13 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
         </div>
       </FieldRow>
 
-      {participants.length > 0 && (
-        <>
-          <SectionHeader title="参与者" />
-          <div className="flex flex-wrap gap-1">
-            {participants.map((id) => (
-              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-            ))}
-          </div>
-        </>
-      )}
+      <SectionHeader title="参与方" />
+      <FieldRow label="参与者">
+        <StringListEditor
+          items={form.participantsList}
+          onChange={(items) => setForm((f) => ({ ...f, participantsList: items }))}
+        />
+      </FieldRow>
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
     </div>
@@ -1629,6 +1768,7 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
 
 function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
   const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
+  const infoLayers = useNovelStore((s) => s.infoLayers)
   const [form, setForm] = useState({
     description: entity.description,
     category: entity.category,
@@ -1655,6 +1795,24 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
   } catch {
     // ignore
   }
+
+  // ── P3-2：解析 linkedInfoLayers，展示伏笔承载的信息差 ──
+  let linkedInfoLayerIds: string[] = []
+  try {
+    const l = JSON.parse(entity.linkedInfoLayers)
+    if (Array.isArray(l)) linkedInfoLayerIds = l.filter((x): x is string => typeof x === 'string')
+  } catch {
+    // ignore
+  }
+  // 将信息差 ID 解析为描述，用于展示
+  const linkedInfoLayerItems = linkedInfoLayerIds.map((id) => {
+    const layer = infoLayers.find((l) => l.id === id)
+    return {
+      id,
+      description: layer?.infoDescription ?? id,
+      readerKnows: layer?.readerKnows ?? false,
+    }
+  })
 
   const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
 
@@ -1693,7 +1851,16 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
         <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
       </FieldRow>
       <FieldRow label="分类">
-        <TextArea variant="short" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} />
+        <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelForeshadowCategory }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FORESHADOW_CATEGORY_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </FieldRow>
 
       <SectionHeader title="状态" />
@@ -1751,6 +1918,176 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
             {linkedClues.map((id) => (
               <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
             ))}
+          </div>
+        ) : (
+          <span className="text-[11px] text-muted-foreground">暂无</span>
+        )}
+      </FieldRow>
+      <FieldRow label="⚡ 承载信息差">
+        {linkedInfoLayerItems.length > 0 ? (
+          <div className="space-y-1">
+            {linkedInfoLayerItems.map((item) => {
+              const desc = item.description.length > 16 ? `${item.description.slice(0, 16)}...` : item.description
+              return (
+                <div key={item.id} className="flex items-center gap-1.5">
+                  <Badge variant="outline" className="text-[10px]">{desc}</Badge>
+                  <span className="text-[10px] text-muted-foreground">
+                    {item.readerKnows ? '读者已知' : '读者未知'}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <span className="text-[11px] text-muted-foreground">暂无</span>
+        )}
+      </FieldRow>
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+    </div>
+  )
+}
+
+// ── 信息差编辑表单（P3-2） ──
+
+function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): ReactElement {
+  const upsertInfoLayer = useNovelStore((s) => s.upsertInfoLayer)
+  const foreshadows = useNovelStore((s) => s.foreshadows)
+  const [form, setForm] = useState({
+    infoDescription: entity.infoDescription,
+    authorKnows: entity.authorKnows ? 'true' : 'false',
+    readerKnows: entity.readerKnows ? 'true' : 'false',
+    revealStage: entity.revealStage ?? '',
+    revealChapter: entity.revealChapter != null ? String(entity.revealChapter) : '',
+    isRevealed: entity.isRevealed ? 'true' : 'false',
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // 解析 linkedForeshadows JSON，映射为带描述的展示项
+  let linkedForeshadowIds: string[] = []
+  try {
+    const arr = JSON.parse(entity.linkedForeshadows)
+    if (Array.isArray(arr)) linkedForeshadowIds = arr.filter((x): x is string => typeof x === 'string')
+  } catch {
+    // ignore
+  }
+  const linkedForeshadowItems = linkedForeshadowIds.map((id) => {
+    const f = foreshadows.find((x) => x.id === id)
+    return {
+      id,
+      description: f?.description ?? id,
+      status: f?.status ?? '',
+    }
+  })
+
+  const toStrOrNull = (v: string): string | null => (v === '' ? null : v)
+  const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
+
+  const dirty =
+    form.infoDescription !== entity.infoDescription ||
+    (form.authorKnows === 'true') !== entity.authorKnows ||
+    (form.readerKnows === 'true') !== entity.readerKnows ||
+    (form.revealStage || '') !== (entity.revealStage ?? '') ||
+    toNumOrNull(form.revealChapter) !== entity.revealChapter ||
+    (form.isRevealed === 'true') !== entity.isRevealed
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await updateInfoLayer(entity.id, {
+        infoDescription: form.infoDescription,
+        authorKnows: form.authorKnows === 'true',
+        readerKnows: form.readerKnows === 'true',
+        revealStage: toStrOrNull(form.revealStage),
+        revealChapter: toNumOrNull(form.revealChapter),
+        isRevealed: form.isRevealed === 'true',
+      })
+      upsertInfoLayer(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertInfoLayer])
+
+  return (
+    <div className="space-y-2">
+      <SectionHeader title="基本信息" />
+      <FieldRow label="信息描述">
+        <TextArea variant="medium" value={form.infoDescription} onChange={(e) => setForm((f) => ({ ...f, infoDescription: e.target.value }))} placeholder="例如：林墨的真实身世是前朝皇族后裔" />
+      </FieldRow>
+
+      <SectionHeader title="认知状态" hint="作者与读者对这条信息的掌握程度" />
+      <FieldRow label="作者是否知晓">
+        <Select value={form.authorKnows} onValueChange={(v) => setForm((f) => ({ ...f, authorKnows: v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="true">是</SelectItem>
+            <SelectItem value="false">否</SelectItem>
+          </SelectContent>
+        </Select>
+      </FieldRow>
+      <FieldRow label="读者是否知晓">
+        <Select value={form.readerKnows} onValueChange={(v) => setForm((f) => ({ ...f, readerKnows: v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="true">是</SelectItem>
+            <SelectItem value="false">否</SelectItem>
+          </SelectContent>
+        </Select>
+      </FieldRow>
+
+      <SectionHeader title="揭示" hint="信息差何时、以何种方式向读者揭示" />
+      <FieldRow label="揭示阶段">
+        <TextInput
+          value={form.revealStage}
+          onChange={(e) => setForm((f) => ({ ...f, revealStage: e.target.value }))}
+          placeholder="如：setup / rising / climax，留空表示未指定"
+        />
+      </FieldRow>
+      <FieldRow label="揭示章节">
+        <TextInput
+          type="number"
+          min={1}
+          value={form.revealChapter}
+          onChange={(e) => setForm((f) => ({ ...f, revealChapter: e.target.value }))}
+          placeholder="留空表示未指定"
+        />
+      </FieldRow>
+      <FieldRow label="是否已揭示">
+        <Select value={form.isRevealed} onValueChange={(v) => setForm((f) => ({ ...f, isRevealed: v }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="true">是</SelectItem>
+            <SelectItem value="false">否</SelectItem>
+          </SelectContent>
+        </Select>
+      </FieldRow>
+
+      <SectionHeader title="关联伏笔" hint="此信息差承载的伏笔列表（双向关联，由伏笔侧或矩阵视图管理）" />
+      <FieldRow label="⚡ 承载伏笔">
+        {linkedForeshadowItems.length > 0 ? (
+          <div className="space-y-1">
+            {linkedForeshadowItems.map((item) => {
+              const desc = item.description.length > 16 ? `${item.description.slice(0, 16)}...` : item.description
+              return (
+                <div key={item.id} className="flex items-center gap-1.5">
+                  <Badge variant="outline" className="text-[10px]">{desc}</Badge>
+                  <span className="text-[10px] text-muted-foreground">
+                    {item.status || '未设定'}
+                  </span>
+                </div>
+              )
+            })}
           </div>
         ) : (
           <span className="text-[11px] text-muted-foreground">暂无</span>

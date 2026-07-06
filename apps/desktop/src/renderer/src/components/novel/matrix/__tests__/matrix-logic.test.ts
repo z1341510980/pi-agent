@@ -29,7 +29,9 @@ function makeCharacter(id: string, name: string, isProtagonist = false): NovelCh
   return {
     id, projectId: 'p', name, description: '', identity: '', personality: '', appearance: '',
     currentState: '', currentGoal: '', currentPressure: '', secret: '', arcStage: '', arcHistory: '',
-    speechStyle: '', isProtagonist, createdAt: 0, updatedAt: 0,
+    speechStyle: '', isProtagonist,
+    longTermDesire: '', plotRole: 'supporting', removalImpact: '', participatingConflicts: '[]',
+    createdAt: 0, updatedAt: 0,
   }
 }
 
@@ -53,7 +55,7 @@ function makeConflict(id: string, first: number | null, last: number | null, tie
 
 function makeForeshadow(id: string, first: number | null, recover: number | null): NovelForeshadow {
   return {
-    id, projectId: 'p', description: id, category: 'main', status: 'planted' as never,
+    id, projectId: 'p', description: id, category: 'item', status: 'planted' as never,
     firstChapter: first, lastChapter: null, recoverByChapter: recover, linkedCharacters: '',
     linkedClues: '', createdAt: 0, updatedAt: 0,
   }

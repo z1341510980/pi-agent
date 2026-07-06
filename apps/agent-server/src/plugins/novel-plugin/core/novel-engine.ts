@@ -174,27 +174,110 @@ export class NovelEngine {
   }
 
   /**
-   * 计算冲突本章目标阶段
+   * 计算冲突本章目标阶段（支持非线性推进）
    *
-   * 推进逻辑：
-   * - 本章是爆发章节 → erupting
-   * - 已 erupting → reversing（高潮后转向）
-   * - 已 reversing → resolved（突转后收束）
-   * - 其他 → 推进一阶（latent→emerging→escalating→erupting）
+   * 推进模式（progressionMode，默认 'linear'）：
+   *
+   * - linear（线性推进，向后兼容旧逻辑）：
+   *   本章是爆发章节 → erupting
+   *   已 erupting → reversing（高潮后转向）
+   *   已 reversing → resolved（突转后收束）
+   *   其他 → 推进一阶（latent→emerging→escalating→erupting）
+   *
+   * - mutation（突变跳跃，跳过多阶）：
+   *   latent → erupting（直接爆发，适合突袭型冲突）
+   *   emerging → erupting
+   *   escalating → reversing（升级后立即反转）
+   *   erupting → reversing
+   *   reversing → resolved
+   *   resolved/transformed → 保持（已收束）
+   *
+   * - stagnation（停滞，保持当前阶段，仅强度变化）：
+   *   始终返回 conflict.stage（适合潜伏长冲突，避免每章都推进）
+   *   但 climaxChapter 仍能强行推进到 erupting
+   *
+   * - regression（降级，回退一阶）：
+   *   erupting → escalating（外部干预，紧张度下降）
+   *   escalating → emerging
+   *   emerging → latent
+   *   latent/reversing/resolved/transformed → 保持（无法继续降级）
+   *
+   * - reversal（反复，旧仇重燃）：
+   *   resolved → emerging（重新点燃）
+   *   transformed → emerging（变形后再次启动）
+   *   其他 → 走 linear 路径（保持推进逻辑）
+   *
+   * 设计权衡：climaxChapter 是硬约束（爆发章节必须 erupting），
+   * 即使 stagnation 模式也会被 climaxChapter 强行推进到 erupting，
+   * 否则冲突网会因伏笔未爆发而断裂。
    */
   private computeConflictTargetStage(
     conflict: NovelConflict,
     chapterNumber: number,
   ): ConflictStage {
+    // 爆发章节硬约束：所有模式都必须达到 erupting（保证冲突网兑现伏笔）
     if (conflict.climaxChapter === chapterNumber) return 'erupting'
+
     const progression: ConflictStage[] = [
       'latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved',
     ]
     const idx = progression.indexOf(conflict.stage)
-    if (idx === -1) return conflict.stage
-    if (conflict.stage === 'erupting') return 'reversing'
-    if (conflict.stage === 'reversing') return 'resolved'
-    return progression[idx + 1] ?? conflict.stage
+    if (idx === -1) {
+      // transformed 等非主线阶段：保持不变
+      return conflict.stage
+    }
+
+    const mode = conflict.progressionMode ?? 'linear'
+
+    switch (mode) {
+      case 'linear':
+        // 旧逻辑：线性推进一阶，erupting/reversing 各自转向
+        if (conflict.stage === 'erupting') return 'reversing'
+        if (conflict.stage === 'reversing') return 'resolved'
+        return progression[idx + 1] ?? conflict.stage
+
+      case 'mutation': {
+        // 突变跳跃：根据当前阶段跳到更靠后的阶段
+        const mutationMap: Partial<Record<ConflictStage, ConflictStage>> = {
+          latent: 'erupting',
+          emerging: 'erupting',
+          escalating: 'reversing',
+          erupting: 'reversing',
+          reversing: 'resolved',
+        }
+        return mutationMap[conflict.stage] ?? conflict.stage
+      }
+
+      case 'stagnation':
+        // 停滞：保持当前阶段，仅靠 intensity 变化体现张力
+        return conflict.stage
+
+      case 'regression': {
+        // 降级：回退一阶（但不能越过 latent）
+        const regressionMap: Partial<Record<ConflictStage, ConflictStage>> = {
+          erupting: 'escalating',
+          escalating: 'emerging',
+          emerging: 'latent',
+        }
+        return regressionMap[conflict.stage] ?? conflict.stage
+      }
+
+      case 'reversal': {
+        // 反复：resolved/transformed 重新 emerging；其他走 linear 路径
+        const reversalMap: Partial<Record<ConflictStage, ConflictStage>> = {
+          resolved: 'emerging',
+          transformed: 'emerging',
+        }
+        if (reversalMap[conflict.stage]) return reversalMap[conflict.stage]!
+        // 非 resolved/transformed：走 linear 推进
+        if (conflict.stage === 'erupting') return 'reversing'
+        if (conflict.stage === 'reversing') return 'resolved'
+        return progression[idx + 1] ?? conflict.stage
+      }
+
+      default:
+        return conflict.stage
+    }
   }
 
   /**

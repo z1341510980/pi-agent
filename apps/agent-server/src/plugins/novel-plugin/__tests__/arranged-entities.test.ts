@@ -81,6 +81,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
       arcHistory: '[]',
       speechStyle: '',
       isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
     store.createChapter({
       id: randomUUID(),

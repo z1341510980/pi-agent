@@ -18,6 +18,10 @@ const mockCharacter = (id: string, name: string): NovelCharacter => ({
   arcHistory: '',
   speechStyle: '',
   isProtagonist: false,
+  longTermDesire: '',
+  plotRole: 'supporting',
+  removalImpact: '',
+  participatingConflicts: '[]',
   createdAt: 0,
   updatedAt: 0,
 })

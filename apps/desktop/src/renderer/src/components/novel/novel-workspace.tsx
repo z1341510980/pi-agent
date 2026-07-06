@@ -484,9 +484,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               title={playheadChapterExists ? '模式1：从矩阵本章列读取已编排实体，启动多 Agent 创作流程' : '请先选择章节'}
             >
               <Sparkles className="size-3.5" />
-              <span className="hidden sm:inline">手动编排</span>
+              <span className="hidden sm:inline">生成当前章节</span>
             </Button>
-            <Button
+            {/* <Button
               size="sm"
               variant="outline"
               onClick={() => handleStartCreation('ai-arrange')}
@@ -495,7 +495,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             >
               <Wand2 className="size-3.5" />
               <span className="hidden sm:inline">AI编排</span>
-            </Button>
+            </Button> */}
             <Button
               size="icon-sm"
               variant="ghost"

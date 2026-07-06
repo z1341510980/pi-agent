@@ -578,4 +578,73 @@ export const novelMigrations: MigrationDefinition[] = [
     id: '047_add_tension_to_novel_chapters',
     sql: `ALTER TABLE novel_chapters ADD COLUMN tension INTEGER;`,
   },
+  {
+    // 048: 角色四层逻辑补全（目标层 / 功能层 / 影响层）
+    // - long_term_desire: 长期欲望（跨章节稳定的发动机，区别于 current_goal 短期目标）
+    // - plot_role: 角色层级（protagonist 主角 / main_opponent 主要对手 / supporting 重要配角 / function 功能配角 / background 背景）
+    // - removal_impact: 删掉影响（一句话描述"删掉这个角色哪段剧情会受影响"，回答四层逻辑第四句）
+    id: '048_add_character_plot_fields',
+    sql: `ALTER TABLE novel_characters ADD COLUMN long_term_desire TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_characters ADD COLUMN plot_role TEXT NOT NULL DEFAULT 'supporting';
+          ALTER TABLE novel_characters ADD COLUMN removal_impact TEXT NOT NULL DEFAULT '';`,
+  },
+  {
+    // 049: 关系四层逻辑②动态化（关系层补全）
+    // - dynamic_role: 动态功能位（在帮主角什么 / 拦主角什么，一句话描述本关系对剧情的推动作用）
+    // - alignment: 阵营关系（ally/temporary_ally/opponent/temporary_opponent/neutral/pending_shift）
+    // - trend: 走向（stable/warming/cooling/breaking/reconciling）
+    // - chapter_hint: 本章关系约束提示（一句话说明本章关系应如何变化）
+    // - last_updated_chapter: 最后一次更新的章节号
+    id: '049_add_relationship_dynamic_fields',
+    sql: `ALTER TABLE novel_relationships ADD COLUMN dynamic_role TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_relationships ADD COLUMN alignment TEXT NOT NULL DEFAULT 'neutral';
+          ALTER TABLE novel_relationships ADD COLUMN trend TEXT NOT NULL DEFAULT 'stable';
+          ALTER TABLE novel_relationships ADD COLUMN chapter_hint TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_relationships ADD COLUMN last_updated_chapter INTEGER;`,
+  },
+  {
+    // 050: 角色反向索引到冲突（四层逻辑④：影响层）
+    // - participating_conflicts: JSON: string[]，由冲突 CRUD 时自动同步
+    //   回答"删掉这个角色哪段冲突线会断"，与 removal_impact 互补
+    id: '050_add_character_participating_conflicts',
+    sql: `ALTER TABLE novel_characters ADD COLUMN participating_conflicts TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    // 051: 冲突四层逻辑③：功能层 + 推进模式
+    // - plot_function: 剧情功能位（复用 PlotFunction 七值枚举，常用 4 值：
+    //   amplify_conflict 放大冲突 / open_phase 打开新阶段 /
+    //   reveal_world_rule 暴露世界规则 / change_judgment 改变主角判断）
+    // - progression_mode: 推进模式（linear/mutation/stagnation/regression/reversal）
+    //   默认 'linear'（向后兼容旧数据的线性推进），由 engine.computeConflictTargetStage 分支处理
+    id: '051_add_conflict_plot_function_and_progression',
+    sql: `ALTER TABLE novel_conflicts ADD COLUMN plot_function TEXT;
+          ALTER TABLE novel_conflicts ADD COLUMN progression_mode TEXT NOT NULL DEFAULT 'linear';`,
+  },
+  {
+    // 052: 伏笔四层逻辑③：埋设/回收方式结构化
+    // - plant_method: 埋设方式（explicit 明写/implicit 暗写/indirect 侧写）
+    // - recover_method: 回收方式（explicit 明回收/implicit 暗回收/reverse 反向/progressive 递进）
+    // 注意：category 列保持原样（自由字符串），由代码层做容错转换为新枚举 NovelForeshadowCategory，
+    // 这样旧数据不会因迁移失败，未匹配的旧 category 在 rowToForeshadow 里回退到 'item'
+    id: '052_add_foreshadow_plant_recover_methods',
+    sql: `ALTER TABLE novel_foreshadowing ADD COLUMN plant_method TEXT;
+          ALTER TABLE novel_foreshadowing ADD COLUMN recover_method TEXT;`,
+  },
+  {
+    // 053: 跨实体因果链 — 为 cause 字段建索引，加速 getCausalChain 向上追溯
+    // cause 字段存储上游事件 ID，未建索引时反向查询需全表扫描
+    id: '053_add_cause_index_to_memory_events',
+    sql: `CREATE INDEX IF NOT EXISTS idx_memory_events_cause ON novel_memory_events(cause) WHERE cause IS NOT NULL;`,
+  },
+  {
+    // 054: P3-2 打通伏笔↔信息差 — 双向关联字段
+    // - novel_foreshadowing 加 linked_info_layers (JSON: string[])：本伏笔承载哪些信息差
+    // - novel_information_layers 加 linked_foreshadows (JSON: string[])：本信息差被哪些伏笔承载
+    // 双向同步由 NovelStore.linkForeshadowToInfoLayer 维护，删除时由 store 层清理对端
+    id: '054_add_foreshadow_infolayer_link_columns',
+    sql: `
+      ALTER TABLE novel_foreshadowing ADD COLUMN linked_info_layers TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE novel_information_layers ADD COLUMN linked_foreshadows TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ]

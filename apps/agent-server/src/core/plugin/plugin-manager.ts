@@ -24,6 +24,7 @@ import type { PiSessionStore } from '../agent/session-store.js'
 import { withAgentConfig } from '../agent/pi-session.js'
 import { StreamEmitter } from '../agent/stream-emitter.js'
 import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
+import { runtimePerformance } from '../../config/performance.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
 import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
@@ -764,11 +765,27 @@ export class PluginManager {
         // systemPrompt 并拼入系统提示词的 `## Agent 自定义指令` 部分
         // （参考 core/agent/pi-session.ts），不再拼接到 userMessage 头部，
         // 从而保持 userMessage 纯净，不破坏 prompt cache 前缀匹配。
+        //
+        // ⚠️ tools 白名单透传：options.tools 是 PiToolDefinition[]（含 execute 实现），
+        // 但 AgentConfig.tools 是 string[]（工具名白名单）。
+        // pi-session.ts 会把全部 pluginSessionTools 注入 customTools，
+        // 然后按 AgentConfig.tools 做白名单过滤（pi-session.ts line 145）。
+        //
+        // 三种语义：
+        // - options.tools === undefined → 不透传 → AgentConfig.tools undefined → 不过滤（默认 Agent）
+        // - options.tools === [] → 透传 tools: [] → 清空 customTools（Writer/Reviewer 无工具场景）
+        // - options.tools === [...] → 透传 tools: [...] → 白名单过滤
+        //
+        // 之前用 `length > 0` 判断导致 tools=[] 被误解为"不过滤"，customTools 保留全部。
+        // 现在 Array.isArray 区分 undefined 和 []：[] 也透传，pi-session 看到 [] 后清空。
         const agentConfig: AgentConfig = {
           id: `plugin-session-${randomUUID()}`,
           name: `${pluginName} session`,
           systemPrompt: options.systemPrompt,
           ...(options.modelId ? { model: options.modelId } : {}),
+          ...(Array.isArray(options.tools)
+            ? { tools: options.tools.map(t => t.name) }
+            : {}),
         }
 
         // 在 withAgentConfig 上下文中创建 session：
@@ -877,6 +894,18 @@ export class PluginManager {
           if (effectiveMaxTokens !== undefined) inject.max_tokens = effectiveMaxTokens
           if (options.responseFormat === 'json') {
             inject.response_format = { type: 'json_object' }
+            // 实体规划/生成阶段只需纯 JSON 输出，不需要工具调用。
+            // 禁用工具可避免某些 OpenAI 兼容网关在 response_format=json 时
+            // 仍 emit tool_calls 导致 messages 历史不一致
+            // （LLM 网关报 400 "tool_calls must be followed by tool messages"）。
+            //
+            // ⚠️ 仅限 responseFormat='json' 场景：
+            //   - planEntitiesFromOutline（实体规划）
+            //   - generate()（5 类实体生成）
+            //   - character-generator / memory-generator 的纯 JSON 生成
+            // Writer/Reviewer/Memory 等 create-flow Agent 走 createAgUiSession，
+            // 不传 responseFormat，因此仍保留全部工具能力。
+            inject.tool_choice = 'none'
           }
 
           const piSession = threadSession.session as {
@@ -936,8 +965,11 @@ export class PluginManager {
             }
 
             const prevOnPayload = piSession.agent.onPayload
-            piSession.agent.onPayload = (payload: unknown) => {
-              let next = prevOnPayload ? prevOnPayload(payload) : payload
+            // 必须使用 async/await：Pi SDK 默认的 onPayload 是 async 函数，
+            // 返回 Promise<payload>。若不 await，后续 spread Promise 会得到空对象，
+            // 导致 messages 字段丢失，LLM 网关返回 400 "missing field 'messages'"。
+            piSession.agent.onPayload = async (payload: unknown) => {
+              let next = prevOnPayload ? await prevOnPayload(payload) : payload
               next = applyCacheBreakpoints(next)
               if (Object.keys(inject).length > 0) {
                 next = { ...(next as Record<string, unknown>), ...inject }
@@ -972,17 +1004,29 @@ export class PluginManager {
           prompt: async (): Promise<string> => {
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
-            // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
-            const timeoutMs = options.timeoutMs ?? 120_000
+            // 超时保护：防止 LLM 调用永不返回导致整个流程卡死。
+            // 优先用调用方传入的 timeoutMs，回退到 runtimePerformance.llm.timeoutMs
+            // （默认 300s，可通过 PI_LLM_TIMEOUT_MS 调整）。
+            const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
+            let timeoutTimer: ReturnType<typeof setTimeout> | null = null
             const timeoutPromise = new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)), timeoutMs)
+              timeoutTimer = setTimeout(
+                () => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)),
+                timeoutMs,
+              )
             })
-            await withAgentConfig(agentConfig, async () => {
-              await Promise.race([
-                threadSession.session.prompt(options.userMessage),
-                timeoutPromise,
-              ])
-            })
+            try {
+              await withAgentConfig(agentConfig, async () => {
+                await Promise.race([
+                  threadSession.session.prompt(options.userMessage),
+                  timeoutPromise,
+                ])
+              })
+            } finally {
+              // 必须清理 timer：否则即使 prompt 正常返回，timer 句柄仍会存活到超时
+              // 时间结束才被 GC，长生命周期下会累积大量 pending timer。
+              if (timeoutTimer) clearTimeout(timeoutTimer)
+            }
             if (!completeText && lastErrorMessage) {
               throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
             }

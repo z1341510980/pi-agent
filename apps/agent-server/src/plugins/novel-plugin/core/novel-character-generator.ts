@@ -30,6 +30,7 @@ export type GeneratedCharacter = Pick<
   | 'name' | 'description' | 'identity' | 'personality' | 'appearance'
   | 'currentState' | 'currentGoal' | 'currentPressure' | 'secret'
   | 'arcStage' | 'speechStyle'
+  | 'longTermDesire' | 'plotRole' | 'removalImpact'
 >
 
 /** 角色生成进度事件（由 SSE 推送给前端） */
@@ -170,11 +171,27 @@ export class NovelCharacterGenerator {
       '- personality: 性格特征（含优缺点）',
       '- appearance: 外貌描写',
       '- currentState: 当前情绪/处境状态',
-      '- currentGoal: 当前短期目标',
+      '- currentGoal: 当前短期目标（本章/近几章可达成）',
       '- currentPressure: 当前面临的压力',
       '- secret: 隐藏的秘密',
       '- arcStage: 角色弧光当前阶段（如 setup/rising/climax/falling/resolution）',
       '- speechStyle: 说话风格特征',
+      '',
+      '【四层逻辑补全字段（重要）】',
+      '- longTermDesire: 长期欲望（跨章节稳定的发动机，区别于 currentGoal 短期目标）',
+      '  · 想保住什么 / 争到什么 / 躲开什么，最好能一句话说清',
+      '  · 例：复仇/夺回家族产业/守护某人/找到失散的妹妹/成为最强剑客',
+      '  · 注意：不是"打倒 BOSS"这种短期目标，而是支撑他跨整本书行动的内在驱动',
+      '- plotRole: 角色层级，从以下枚举中选择一个：',
+      '  · protagonist: 主角（整本书的核心视角，唯一）',
+      '  · main_opponent: 主要对手（长期对抗主角的核心反派）',
+      '  · supporting: 重要配角（有人物深度，参与多条线）',
+      '  · function: 功能配角（主要为推动特定剧情而存在，工具人风险高）',
+      '  · background: 背景人物（仅作为环境/陪衬）',
+      '- removalImpact: 删掉影响（一句话描述"删掉这个角色哪段剧情会受影响"）',
+      '  · 例：删掉他，主角将失去信息来源，第 12 章的转折将无法触发',
+      '  · 若该角色尚未承担剧情功能，填"暂无关键影响"',
+      '',
     ].join('\n')
   }
 
@@ -249,6 +266,9 @@ export class NovelCharacterGenerator {
         secret: ensureString(parsed.secret, ''),
         arcStage: ensureString(parsed.arcStage, 'setup'),
         speechStyle: ensureString(parsed.speechStyle, ''),
+        longTermDesire: ensureString(parsed.longTermDesire, ''),
+        plotRole: this.normalizePlotRole(parsed.plotRole),
+        removalImpact: ensureString(parsed.removalImpact, '暂无关键影响'),
       }
     }
 
@@ -290,6 +310,9 @@ export class NovelCharacterGenerator {
       secret: '隐藏秘密待补充（占位）',
       arcStage,
       speechStyle: this.inferSpeechStyle(trimmed),
+      longTermDesire: '长期欲望待补充（占位）',
+      plotRole: 'supporting',
+      removalImpact: '暂无关键影响（占位角色）',
     }
   }
 
@@ -312,6 +335,15 @@ export class NovelCharacterGenerator {
     if (/冷|酷/.test(coreStyle)) traits.push('冷静', '理性')
     if (traits.length === 0) traits.push('性格待定')
     return traits.join('、')
+  }
+
+  /** 基于 coreStyle 推断角色层级（默认按配角起步，仇恨/对手关键词推断 main_opponent） */
+  private normalizePlotRole(value: unknown): NovelCharacter['plotRole'] {
+    const valid: NovelCharacter['plotRole'][] = ['protagonist', 'main_opponent', 'supporting', 'function', 'background']
+    if (typeof value === 'string' && valid.includes(value as NovelCharacter['plotRole'])) {
+      return value as NovelCharacter['plotRole']
+    }
+    return 'supporting'
   }
 
   /** 基于核心风格关键词推断说话风格 */

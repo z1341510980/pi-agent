@@ -28,6 +28,7 @@ export type MemoryEventType =
   | 'faction_change'
   | 'location_change'
   | 'relationship_change'
+  | 'info_layer_change'
   | 'plot_event'
   | 'world_change'
 
@@ -226,7 +227,7 @@ export class NovelMemoryStore {
       .get(eventId) as MemoryEventRow | undefined
     if (!event) return { causes: [], effects: [] }
 
-    // 向上追溯原因（防止循环引用导致死循环）
+    // 向上追溯原因（链式，防止循环引用导致死循环）
     const causes: MemoryEvent[] = []
     const visited = new Set<string>([event.id])
     let currentCauseId = event.cause
@@ -238,22 +239,81 @@ export class NovelMemoryStore {
         .get(currentCauseId) as MemoryEventRow | undefined
       if (!causeRow) break
       causes.push(this.rowToEvent(causeRow))
-      // cause 可能是事件 ID，也可能是描述字符串；非 ID 形式时 prepare 仍能返回 undefined
       currentCauseId = causeRow.cause
     }
 
-    // 向下追溯影响
+    // 向下追溯影响（BFS 递归，遍历所有 effect_ids 子树）
     const effects: MemoryEvent[] = []
-    const effectIds = parseEffectIds(event.effect_ids)
-    for (const effectId of effectIds) {
+    const queue: string[] = parseEffectIds(event.effect_ids)
+    while (queue.length > 0) {
+      const effectId = queue.shift()!
       if (visited.has(effectId)) continue
+      visited.add(effectId)
       const effectRow = this.db
         .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
         .get(effectId) as MemoryEventRow | undefined
-      if (effectRow) effects.push(this.rowToEvent(effectRow))
+      if (!effectRow) continue
+      effects.push(this.rowToEvent(effectRow))
+      // 把当前事件的下游继续入队，实现递归展开
+      const childEffectIds = parseEffectIds(effectRow.effect_ids)
+      for (const childId of childEffectIds) {
+        if (!visited.has(childId)) queue.push(childId)
+      }
     }
 
     return { causes: causes.reverse(), effects }
+  }
+
+  /**
+   * 事后追加因果关系边：把 causeId 标记为 eventId 的上游原因
+   * 同时在 causeId 的 effect_ids 数组里追加 eventId（双向维护）
+   */
+  linkCause(eventId: string, causeId: string): void {
+    const event = this.db
+      .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
+      .get(eventId) as MemoryEventRow | undefined
+    if (!event) return
+    // 已有 cause 则不覆盖（保留首次写入的因果）
+    if (event.cause) return
+    this.db.prepare('UPDATE novel_memory_events SET cause = ? WHERE id = ?').run(causeId, eventId)
+    // 反向维护 causeId 的 effect_ids
+    const causeEvent = this.db
+      .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
+      .get(causeId) as MemoryEventRow | undefined
+    if (causeEvent) {
+      const existing = parseEffectIds(causeEvent.effect_ids)
+      if (!existing.includes(eventId)) {
+        existing.push(eventId)
+        this.db
+          .prepare('UPDATE novel_memory_events SET effect_ids = ? WHERE id = ?')
+          .run(JSON.stringify(existing), causeId)
+      }
+    }
+  }
+
+  /**
+   * 事后追加因果关系边：把 effectId 标记为 eventId 的下游影响
+   * 同时在 effectId 的 cause 字段回填 eventId（双向维护）
+   */
+  linkEffect(eventId: string, effectId: string): void {
+    const event = this.db
+      .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
+      .get(eventId) as MemoryEventRow | undefined
+    if (!event) return
+    const existing = parseEffectIds(event.effect_ids)
+    if (!existing.includes(effectId)) {
+      existing.push(effectId)
+      this.db
+        .prepare('UPDATE novel_memory_events SET effect_ids = ? WHERE id = ?')
+        .run(JSON.stringify(existing), eventId)
+    }
+    // 反向维护 effectId 的 cause（不覆盖已有值）
+    const effectEvent = this.db
+      .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
+      .get(effectId) as MemoryEventRow | undefined
+    if (effectEvent && !effectEvent.cause) {
+      this.db.prepare('UPDATE novel_memory_events SET cause = ? WHERE id = ?').run(eventId, effectId)
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════

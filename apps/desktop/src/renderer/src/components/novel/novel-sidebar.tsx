@@ -15,6 +15,7 @@ import {
   Globe,
   GripVertical,
   RotateCcw,
+  Layers,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -60,6 +61,9 @@ import {
   type NovelFaction,
   type NovelLocation,
   type NovelWorldElement,
+  type NovelInformationLayer,
+  createInfoLayer,
+  deleteInfoLayer,
 } from '@/api/novel-client'
 import { CharacterCreateDialog } from './character-create-dialog'
 import { OutlineTree } from './outline-tree'
@@ -67,7 +71,7 @@ import { GROUP_META, type MatrixEntityKind, type SidebarDragData } from './matri
 
 // ── 通用节点类型（用于删除等操作；拖拽已统一走 @dnd-kit useDraggable）──
 
-type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'faction' | 'location' | 'world_element'
+type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'faction' | 'location' | 'world_element' | 'info_layer'
 
 // ── 主组件 ──
 
@@ -91,6 +95,9 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   const factions = useNovelStore((s) => s.factions)
   const locations = useNovelStore((s) => s.locations)
   const worldElements = useNovelStore((s) => s.worldElements)
+  const infoLayers = useNovelStore((s) => s.infoLayers)
+  const upsertInfoLayer = useNovelStore((s) => s.upsertInfoLayer)
+  const removeInfoLayer = useNovelStore((s) => s.removeInfoLayer)
   const selectNode = useNovelStore((s) => s.selectNode)
   const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
 
@@ -284,6 +291,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                   factions={factions}
                   locations={locations}
                   worldElements={worldElements}
+                  infoLayers={infoLayers}
                   onSelectEntity={handleSelectEntity}
                   onOpenCharacterDialog={() => setCharacterDialogOpen(true)}
                   onManualArrange={handleManualArrange}
@@ -415,6 +423,7 @@ interface ProjectTreeProps {
   factions: NovelFaction[]
   locations: NovelLocation[]
   worldElements: NovelWorldElement[]
+  infoLayers: NovelInformationLayer[]
   onSelectEntity: (id: string, type: NovelNodeType) => void
   onOpenCharacterDialog: () => void
   onManualArrange: (chapter: NovelChapter) => void
@@ -432,6 +441,7 @@ function ProjectTree({
   factions,
   locations,
   worldElements,
+  infoLayers,
   onSelectEntity,
   onOpenCharacterDialog,
   onManualArrange,
@@ -442,6 +452,7 @@ function ProjectTree({
   const upsertFaction = useNovelStore((s) => s.upsertFaction)
   const upsertLocation = useNovelStore((s) => s.upsertLocation)
   const upsertWorldElement = useNovelStore((s) => s.upsertWorldElement)
+  const upsertInfoLayer = useNovelStore((s) => s.upsertInfoLayer)
   const removeCharacter = useNovelStore((s) => s.removeCharacter)
   const removeChapter = useNovelStore((s) => s.removeChapter)
   const removeConflict = useNovelStore((s) => s.removeConflict)
@@ -449,6 +460,7 @@ function ProjectTree({
   const removeFaction = useNovelStore((s) => s.removeFaction)
   const removeLocation = useNovelStore((s) => s.removeLocation)
   const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
+  const removeInfoLayer = useNovelStore((s) => s.removeInfoLayer)
   // ── C-3 与 MatrixView 共享的折叠 / 选中 / 章节滚动信号 ──
   const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
   const collapsedGroups = useNovelStore((s) => s.collapsedGroups)
@@ -472,7 +484,7 @@ function ProjectTree({
     try {
       const foreshadow = await createForeshadow(projectId, {
         description: '新的伏笔',
-        category: '事件',
+        category: 'event',
         status: 'planned',
       })
       upsertForeshadow(foreshadow)
@@ -524,6 +536,19 @@ function ProjectTree({
     }
   }, [projectId, upsertWorldElement])
 
+  const handleAddInfoLayer = useCallback(async () => {
+    try {
+      const layer = await createInfoLayer(projectId, {
+        infoDescription: '新的信息差',
+        authorKnows: true,
+        readerKnows: false,
+      })
+      upsertInfoLayer(layer)
+    } catch (err) {
+      console.error('[NovelSidebar] 创建信息差失败:', err)
+    }
+  }, [projectId, upsertInfoLayer])
+
   const handleDelete = useCallback(
     async (
       type: DraggableEntityType,
@@ -561,12 +586,16 @@ function ProjectTree({
             await deleteWorldElement(id)
             removeWorldElement(id)
             break
+          case 'info_layer':
+            await deleteInfoLayer(id)
+            removeInfoLayer(id)
+            break
         }
       } catch (err) {
         console.error('[NovelSidebar] 删除实体失败:', err)
       }
     },
-    [removeCharacter, removeChapter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement],
+    [removeCharacter, removeChapter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeInfoLayer],
   )
 
   return (
@@ -766,6 +795,36 @@ function ProjectTree({
               entityType="world_element"
               entityId={w.id}
               onDelete={() => handleDelete('world_element', w.id, w.name || '世界观要素')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
+
+      {/* 信息差集合（P3-2：伏笔↔信息差双向联动） */}
+      <CollapsibleGroup
+        kind="info_layer"
+        icon={Layers}
+        label="信息差集合"
+        count={infoLayers.length}
+        accent="text-teal-500"
+        collapsed={collapsedGroups.includes('info_layer')}
+        onToggle={toggleCollapsedGroup}
+        onAdd={handleAddInfoLayer}
+        addLabel="新建信息差"
+      >
+        {infoLayers.length === 0 ? (
+          <EmptyHint text="暂无信息差" />
+        ) : (
+          infoLayers.map((l) => (
+            <EntityItem
+              key={l.id}
+              label={l.infoDescription.length > 18 ? `${l.infoDescription.slice(0, 18)}...` : l.infoDescription}
+              sublabel={l.readerKnows ? '读者已知' : '读者未知'}
+              selected={selectedNodeId === l.id}
+              onClick={() => onSelectEntity(l.id, 'info_layer')}
+              entityType="info_layer"
+              entityId={l.id}
+              onDelete={() => handleDelete('info_layer', l.id, '信息差')}
             />
           ))
         )}

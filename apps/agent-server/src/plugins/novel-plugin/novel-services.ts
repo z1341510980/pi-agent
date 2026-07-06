@@ -95,8 +95,10 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 3. 创建 PromptManager（依赖 db + cwd）
   const promptManager = new PromptManager(db, cwd)
 
-  // 4. 创建 NovelPromptBuilder（依赖 PromptManager + NovelStore）
-  const promptBuilder = new NovelPromptBuilder(promptManager, store)
+  // 4. 创建 NovelPromptBuilder（依赖 PromptManager + NovelStore + NovelMemoryStore）
+  //    注入 memoryStore 让 buildChapterContext 在 SEMI 层追加"近期因果链"摘要，
+  //    Director/Writer/Reviewer 因此能感知最近章节关键事件的因果联系。
+  const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
 
   // 5. 创建 NovelSessionFactory（复用共享的 store 和 promptManager）
   const sessionFactory = new NovelSessionFactory(store, promptManager)

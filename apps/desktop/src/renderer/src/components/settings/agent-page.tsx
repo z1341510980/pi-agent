@@ -29,7 +29,6 @@ import {
   getNovelAgentConfig,
   updateNovelAgentConfig,
   type NovelAgentType,
-  type NovelAgentTemperature,
 } from '@/api/novel-agent-config-client'
 
 // ── 类型定义 ──

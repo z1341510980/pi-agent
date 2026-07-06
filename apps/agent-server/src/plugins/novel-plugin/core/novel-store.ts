@@ -31,6 +31,11 @@ import type {
   NovelClue,
   NovelConflict,
   ConflictTier,
+  ConflictProgressionMode,
+  PlotFunction,
+  NovelForeshadowCategory,
+  ForeshadowPlantMethod,
+  ForeshadowRecoverMethod,
   ChapterSpan,
   NovelWorldRule,
   NovelConstraint,
@@ -81,12 +86,16 @@ interface CharacterRow {
   current_state: string; current_goal: string; current_pressure: string
   secret: string; arc_stage: string; arc_history: string; speech_style: string
   is_protagonist: number
+  long_term_desire: string; plot_role: string; removal_impact: string
+  participating_conflicts: string
   created_at: number; updated_at: number
 }
 
 interface RelationshipRow {
   id: string; project_id: string; character_a: string; character_b: string
   relation_type: string; current_stage: string; stage_history: string
+  dynamic_role: string; alignment: string; trend: string
+  chapter_hint: string; last_updated_chapter: number | null
   created_at: number; updated_at: number
 }
 
@@ -94,6 +103,8 @@ interface ForeshadowRow {
   id: string; project_id: string; description: string; category: string
   status: string; first_chapter: number | null; last_chapter: number | null
   recover_by_chapter: number | null; linked_characters: string; linked_clues: string
+  plant_method: string | null; recover_method: string | null
+  linked_info_layers: string
   created_at: number; updated_at: number
 }
 
@@ -109,6 +120,8 @@ interface ConflictRow {
   intensity: number; stage: string; participants: string
   first_chapter: number | null; last_chapter: number | null; tier: string
   chapter_spans: string | null
+  plot_function: string | null
+  progression_mode: string | null
   created_at: number; updated_at: number
 }
 
@@ -127,6 +140,7 @@ interface InfoLayerRow {
   id: string; project_id: string; info_description: string
   author_knows: number; reader_knows: number; character_knowledge: string
   reveal_stage: string | null; reveal_chapter: number | null; is_revealed: number
+  linked_foreshadows: string
   created_at: number; updated_at: number
 }
 
@@ -249,6 +263,74 @@ function bindString(v: unknown, fallback = ''): string {
   if (Array.isArray(v)) return JSON.stringify(v)
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)
+}
+
+// ── 四层逻辑③：枚举值容错转换（row → NovelXxx 类型）──
+// 目的：旧数据 / LLM 输出的非法值不阻塞主流程，统一回退到默认值
+
+const VALID_PLOT_FUNCTIONS: PlotFunction[] = [
+  'provide_resource', 'create_obstacle', 'amplify_conflict',
+  'open_phase', 'change_judgment', 'advance_relationship', 'reveal_world_rule',
+]
+
+const VALID_PROGRESSION_MODES: ConflictProgressionMode[] = [
+  'linear', 'mutation', 'stagnation', 'regression', 'reversal',
+]
+
+const VALID_FORESHADOW_CATEGORIES: NovelForeshadowCategory[] = [
+  'item', 'spoken', 'event', 'identity', 'secret', 'prophecy', 'promise', 'quote',
+]
+
+const VALID_PLANT_METHODS: ForeshadowPlantMethod[] = ['explicit', 'implicit', 'indirect']
+
+const VALID_RECOVER_METHODS: ForeshadowRecoverMethod[] = [
+  'explicit', 'implicit', 'reverse', 'progressive',
+]
+
+/** 中文 → 英文 category 映射（兼容旧数据可能存的中文枚举值） */
+const FORESHADOW_CATEGORY_CN_MAP: Record<string, NovelForeshadowCategory> = {
+  '物品': 'item', '言语': 'spoken', '事件': 'event', '身份': 'identity',
+  '秘密': 'secret', '预言': 'prophecy', '承诺': 'promise', '台词': 'quote',
+}
+
+function normalizeConflictPlotFunction(raw: string | null | undefined): PlotFunction | undefined {
+  if (!raw) return undefined
+  if (VALID_PLOT_FUNCTIONS.includes(raw as PlotFunction)) return raw as PlotFunction
+  return undefined
+}
+
+function normalizeConflictProgressionMode(raw: string | null | undefined): ConflictProgressionMode {
+  if (!raw) return 'linear'
+  if (VALID_PROGRESSION_MODES.includes(raw as ConflictProgressionMode)) return raw as ConflictProgressionMode
+  return 'linear'
+}
+
+function normalizeForeshadowCategory(raw: string | null | undefined): NovelForeshadowCategory {
+  if (!raw) return 'item'
+  // 优先匹配英文枚举
+  if (VALID_FORESHADOW_CATEGORIES.includes(raw as NovelForeshadowCategory)) {
+    return raw as NovelForeshadowCategory
+  }
+  // 兼容中文旧数据
+  if (FORESHADOW_CATEGORY_CN_MAP[raw]) return FORESHADOW_CATEGORY_CN_MAP[raw]
+  // 大小写容错（Item/ITEM → item）
+  const lower = raw.toLowerCase()
+  if (VALID_FORESHADOW_CATEGORIES.includes(lower as NovelForeshadowCategory)) {
+    return lower as NovelForeshadowCategory
+  }
+  return 'item'
+}
+
+function normalizeForeshadowPlantMethod(raw: string | null | undefined): ForeshadowPlantMethod | undefined {
+  if (!raw) return undefined
+  if (VALID_PLANT_METHODS.includes(raw as ForeshadowPlantMethod)) return raw as ForeshadowPlantMethod
+  return undefined
+}
+
+function normalizeForeshadowRecoverMethod(raw: string | null | undefined): ForeshadowRecoverMethod | undefined {
+  if (!raw) return undefined
+  if (VALID_RECOVER_METHODS.includes(raw as ForeshadowRecoverMethod)) return raw as ForeshadowRecoverMethod
+  return undefined
 }
 
 // ── NovelStore ──
@@ -400,6 +482,12 @@ export class NovelStore implements NovelPromptStores {
 
   listInformationLayers(projectId: string): NovelInformationLayer[] {
     return (this.stmtListInfoLayers.all(projectId) as InfoLayerRow[]).map((r) => this.rowToInfoLayer(r))
+  }
+
+  /** 按 ID 查询单个信息差（P3-2：供 prompt-builder 反向展示伏笔承载的信息差） */
+  getInformationLayer(id: string): NovelInformationLayer | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
+    return row ? this.rowToInfoLayer(row) : undefined
   }
 
   listConstraints(projectId: string): NovelConstraint[] {
@@ -763,14 +851,18 @@ export class NovelStore implements NovelPromptStores {
   // 角色 CRUD
   // ═══════════════════════════════════════════════════════════════
 
-  createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt'>): NovelCharacter {
+  createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt' | 'participatingConflicts'> & { participatingConflicts?: string }): NovelCharacter {
     const ts = now()
-    const full: NovelCharacter = { ...character, createdAt: ts, updatedAt: ts }
+    // participatingConflicts 默认 '[]'（反向索引由冲突 CRUD 自动同步，创建时一般为空）
+    // 显式赋值在 spread 之前，character 提供的值会覆盖默认
+    const full: NovelCharacter = { participatingConflicts: '[]', ...character, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_characters (id, project_id, name, description, identity, personality, appearance,
-      current_state, current_goal, current_pressure, secret, arc_stage, arc_history, speech_style, is_protagonist, created_at, updated_at)
+      current_state, current_goal, current_pressure, secret, arc_stage, arc_history, speech_style, is_protagonist,
+      long_term_desire, plot_role, removal_impact, participating_conflicts, created_at, updated_at)
       VALUES (@id, @project_id, @name, @description, @identity, @personality, @appearance,
-      @current_state, @current_goal, @current_pressure, @secret, @arc_stage, @arc_history, @speech_style, @is_protagonist, @created_at, @updated_at)
+      @current_state, @current_goal, @current_pressure, @secret, @arc_stage, @arc_history, @speech_style, @is_protagonist,
+      @long_term_desire, @plot_role, @removal_impact, @participating_conflicts, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId,
       name: bindString(full.name, '未命名'), description: bindString(full.description),
@@ -778,6 +870,10 @@ export class NovelStore implements NovelPromptStores {
       current_state: bindString(full.currentState), current_goal: bindString(full.currentGoal), current_pressure: bindString(full.currentPressure),
       secret: bindString(full.secret), arc_stage: bindString(full.arcStage, 'introduction'), arc_history: bindString(full.arcHistory, '[]'),
       speech_style: bindString(full.speechStyle), is_protagonist: full.isProtagonist ? 1 : 0,
+      long_term_desire: bindString(full.longTermDesire),
+      plot_role: bindString(full.plotRole, 'supporting'),
+      removal_impact: bindString(full.removalImpact),
+      participating_conflicts: bindString(full.participatingConflicts ?? '[]', '[]'),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -792,6 +888,8 @@ export class NovelStore implements NovelPromptStores {
       UPDATE novel_characters SET name=@name, description=@description, identity=@identity, personality=@personality,
       appearance=@appearance, current_state=@current_state, current_goal=@current_goal, current_pressure=@current_pressure,
       secret=@secret, arc_stage=@arc_stage, arc_history=@arc_history, speech_style=@speech_style, is_protagonist=@is_protagonist,
+      long_term_desire=@long_term_desire, plot_role=@plot_role, removal_impact=@removal_impact,
+      participating_conflicts=@participating_conflicts,
       updated_at=@updated_at
       WHERE id=@id
     `).run({
@@ -801,6 +899,10 @@ export class NovelStore implements NovelPromptStores {
       current_pressure: bindString(updated.currentPressure), secret: bindString(updated.secret),
       arc_stage: bindString(updated.arcStage, 'introduction'), arc_history: bindString(updated.arcHistory, '[]'),
       speech_style: bindString(updated.speechStyle), is_protagonist: updated.isProtagonist ? 1 : 0,
+      long_term_desire: bindString(updated.longTermDesire),
+      plot_role: bindString(updated.plotRole, 'supporting'),
+      removal_impact: bindString(updated.removalImpact),
+      participating_conflicts: bindString(updated.participatingConflicts ?? '[]', '[]'),
       updated_at: updated.updatedAt,
     })
     return updated
@@ -842,14 +944,17 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelForeshadow = { ...foreshadow, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_foreshadowing (id, project_id, description, category, status, first_chapter, last_chapter,
-      recover_by_chapter, linked_characters, linked_clues, created_at, updated_at)
+      recover_by_chapter, linked_characters, linked_clues, plant_method, recover_method, linked_info_layers, created_at, updated_at)
       VALUES (@id, @project_id, @description, @category, @status, @first_chapter, @last_chapter,
-      @recover_by_chapter, @linked_characters, @linked_clues, @created_at, @updated_at)
+      @recover_by_chapter, @linked_characters, @linked_clues, @plant_method, @recover_method, @linked_info_layers, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       category: full.category, status: full.status, first_chapter: full.firstChapter,
       last_chapter: full.lastChapter, recover_by_chapter: full.recoverByChapter,
       linked_characters: full.linkedCharacters, linked_clues: full.linkedClues,
+      plant_method: full.plantMethod ?? null,
+      recover_method: full.recoverMethod ?? null,
+      linked_info_layers: full.linkedInfoLayers ?? '[]',
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -863,18 +968,27 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_foreshadowing SET description=@description, category=@category, status=@status,
       first_chapter=@first_chapter, last_chapter=@last_chapter, recover_by_chapter=@recover_by_chapter,
-      linked_characters=@linked_characters, linked_clues=@linked_clues, updated_at=@updated_at WHERE id=@id
+      linked_characters=@linked_characters, linked_clues=@linked_clues,
+      plant_method=@plant_method, recover_method=@recover_method,
+      linked_info_layers=@linked_info_layers,
+      updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, category: updated.category, status: updated.status,
       first_chapter: updated.firstChapter, last_chapter: updated.lastChapter,
       recover_by_chapter: updated.recoverByChapter, linked_characters: updated.linkedCharacters,
-      linked_clues: updated.linkedClues, updated_at: updated.updatedAt,
+      linked_clues: updated.linkedClues,
+      plant_method: updated.plantMethod ?? null,
+      recover_method: updated.recoverMethod ?? null,
+      linked_info_layers: updated.linkedInfoLayers ?? '[]',
+      updated_at: updated.updatedAt,
     })
     return updated
   }
 
   deleteForeshadow(id: string): boolean {
     this.deleteEdgesByEntity(id)
+    // P3-2：清理信息差中 linkedForeshadows 的反向引用
+    this.pruneForeshadowFromInfoLayers(id)
     const result = this.db.prepare('DELETE FROM novel_foreshadowing WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -888,9 +1002,9 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelConflict = { ...conflict, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_conflicts (id, project_id, description, type, intensity, stage, participants,
-      first_chapter, last_chapter, chapter_spans, tier, created_at, updated_at)
+      first_chapter, last_chapter, chapter_spans, tier, plot_function, progression_mode, created_at, updated_at)
       VALUES (@id, @project_id, @description, @type, @intensity, @stage, @participants,
-      @first_chapter, @last_chapter, @chapter_spans, @tier, @created_at, @updated_at)
+      @first_chapter, @last_chapter, @chapter_spans, @tier, @plot_function, @progression_mode, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       type: full.type, intensity: full.intensity, stage: full.stage,
@@ -899,8 +1013,13 @@ export class NovelStore implements NovelPromptStores {
       last_chapter: full.chapterSpans[0]?.[1] ?? null,
       chapter_spans: JSON.stringify(full.chapterSpans),
       tier: full.tier,
+      // plot_function 可选（旧数据 NULL）；progression_mode 默认 'linear'（向后兼容）
+      plot_function: full.plotFunction ?? null,
+      progression_mode: full.progressionMode ?? 'linear',
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
+    // 同步反向索引到角色（participating_conflicts）
+    this.syncConflictParticipantsToCharacters(full.id, this.parseConflictParticipants(full.participants), [])
     return full
   }
 
@@ -912,7 +1031,8 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_conflicts SET description=@description, type=@type, intensity=@intensity,
       stage=@stage, participants=@participants, first_chapter=@first_chapter, last_chapter=@last_chapter,
-      chapter_spans=@chapter_spans, tier=@tier, updated_at=@updated_at WHERE id=@id
+      chapter_spans=@chapter_spans, tier=@tier, plot_function=@plot_function, progression_mode=@progression_mode,
+      updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, type: updated.type, intensity: updated.intensity,
       stage: updated.stage, participants: updated.participants,
@@ -920,15 +1040,86 @@ export class NovelStore implements NovelPromptStores {
       last_chapter: updated.chapterSpans[0]?.[1] ?? null,
       chapter_spans: JSON.stringify(updated.chapterSpans),
       tier: updated.tier,
+      plot_function: updated.plotFunction ?? null,
+      progression_mode: updated.progressionMode ?? 'linear',
       updated_at: updated.updatedAt,
     })
+    // 同步反向索引：旧参与者中不在新列表的移除，新参与者中不在旧列表的追加
+    if (patch.participants !== undefined) {
+      const oldIds = this.parseConflictParticipants(current.participants)
+      const newIds = this.parseConflictParticipants(updated.participants)
+      this.syncConflictParticipantsToCharacters(id, newIds, oldIds)
+    }
     return updated
   }
 
   deleteConflict(id: string): boolean {
+    // 先取出旧参与者，删除后从他们的反向索引里移除该冲突 ID
+    const existing = this.db.prepare('SELECT * FROM novel_conflicts WHERE id = ?').get(id) as ConflictRow | undefined
+    const oldParticipantIds = existing ? this.parseConflictParticipants(existing.participants) : []
     this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_conflicts WHERE id = ?').run(id)
+    if (result.changes > 0) {
+      this.syncConflictParticipantsToCharacters(id, [], oldParticipantIds)
+    }
     return result.changes > 0
+  }
+
+  /**
+   * 解析 conflict.participants（JSON: string[]）为字符 ID 数组。
+   * 容错：非 JSON / 解析失败时返回空数组（不抛错，避免阻塞主流程）。
+   */
+  private parseConflictParticipants(raw: string | null | undefined): string[] {
+    if (!raw) return []
+    try {
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return []
+      return parsed.filter((x): x is string => typeof x === 'string' && x.length > 0)
+    } catch {
+      // 旧数据可能是逗号分隔的名字串（entity-generator 历史遗留）
+      // 这里不再做名字→ID 转换（让上游 entity-generator 统一处理），直接返回空
+      return []
+    }
+  }
+
+  /**
+   * 同步冲突反向索引到角色的 participating_conflicts 字段。
+   *
+   * - 对新增的 participantIds（newIds 中有，oldIds 中无）：把 conflictId 追加到他们的 participating_conflicts
+   * - 对移除的 participantIds（oldIds 中有，newIds 中无）：把 conflictId 从他们的 participating_conflicts 移除
+   * - 对不变的 participantIds：不动
+   *
+   * 该方法被 createConflict / updateConflict / deleteConflict 调用，
+   * 让 NovelCharacter.participatingConflicts 始终是 conflict.participants 的反向镜像，
+   * 回答四层逻辑第四句"删掉这个角色哪段冲突线会断"。
+   */
+  private syncConflictParticipantsToCharacters(
+    conflictId: string,
+    newParticipantIds: string[],
+    oldParticipantIds: string[],
+  ): void {
+    const added = newParticipantIds.filter((id) => !oldParticipantIds.includes(id))
+    const removed = oldParticipantIds.filter((id) => !newParticipantIds.includes(id))
+    if (added.length === 0 && removed.length === 0) return
+
+    const updateOne = (characterId: string, mode: 'add' | 'remove') => {
+      const row = this.db.prepare('SELECT participating_conflicts FROM novel_characters WHERE id = ?').get(characterId) as { participating_conflicts?: string } | undefined
+      if (!row) return
+      const current = this.parseConflictParticipants(row.participating_conflicts)
+      let next: string[]
+      if (mode === 'add') {
+        if (current.includes(conflictId)) return
+        next = [...current, conflictId]
+      } else {
+        next = current.filter((id) => id !== conflictId)
+      }
+      this.db.prepare('UPDATE novel_characters SET participating_conflicts = ? WHERE id = ?').run(
+        JSON.stringify(next), characterId,
+      )
+    }
+
+    for (const id of added) updateOne(id, 'add')
+    for (const id of removed) updateOne(id, 'remove')
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -981,12 +1172,19 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelRelationship = { ...rel, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_relationships (id, project_id, character_a, character_b, relation_type, current_stage, stage_history, created_at, updated_at)
-      VALUES (@id, @project_id, @character_a, @character_b, @relation_type, @current_stage, @stage_history, @created_at, @updated_at)
+      INSERT INTO novel_relationships (id, project_id, character_a, character_b, relation_type, current_stage, stage_history,
+      dynamic_role, alignment, trend, chapter_hint, last_updated_chapter, created_at, updated_at)
+      VALUES (@id, @project_id, @character_a, @character_b, @relation_type, @current_stage, @stage_history,
+      @dynamic_role, @alignment, @trend, @chapter_hint, @last_updated_chapter, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, character_a: full.characterA,
       character_b: full.characterB, relation_type: full.relationType,
       current_stage: full.currentStage, stage_history: full.stageHistory,
+      dynamic_role: full.dynamicRole ?? '',
+      alignment: full.alignment ?? 'neutral',
+      trend: full.trend ?? 'stable',
+      chapter_hint: full.chapterHint ?? '',
+      last_updated_chapter: full.lastUpdatedChapter ?? null,
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -999,11 +1197,20 @@ export class NovelStore implements NovelPromptStores {
     const updated = { ...current, ...patch, id, updatedAt: now() }
     this.db.prepare(`
       UPDATE novel_relationships SET character_a=@character_a, character_b=@character_b,
-      relation_type=@relation_type, current_stage=@current_stage, stage_history=@stage_history, updated_at=@updated_at WHERE id=@id
+      relation_type=@relation_type, current_stage=@current_stage, stage_history=@stage_history,
+      dynamic_role=@dynamic_role, alignment=@alignment, trend=@trend,
+      chapter_hint=@chapter_hint, last_updated_chapter=@last_updated_chapter,
+      updated_at=@updated_at WHERE id=@id
     `).run({
       id, character_a: updated.characterA, character_b: updated.characterB,
       relation_type: updated.relationType, current_stage: updated.currentStage,
-      stage_history: updated.stageHistory, updated_at: updated.updatedAt,
+      stage_history: updated.stageHistory,
+      dynamic_role: updated.dynamicRole ?? '',
+      alignment: updated.alignment ?? 'neutral',
+      trend: updated.trend ?? 'stable',
+      chapter_hint: updated.chapterHint ?? '',
+      last_updated_chapter: updated.lastUpdatedChapter ?? null,
+      updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -1145,13 +1352,14 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelInformationLayer = { ...layer, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_information_layers (id, project_id, info_description, author_knows, reader_knows, character_knowledge, reveal_stage, reveal_chapter, is_revealed, created_at, updated_at)
-      VALUES (@id, @project_id, @info_description, @author_knows, @reader_knows, @character_knowledge, @reveal_stage, @reveal_chapter, @is_revealed, @created_at, @updated_at)
+      INSERT INTO novel_information_layers (id, project_id, info_description, author_knows, reader_knows, character_knowledge, reveal_stage, reveal_chapter, is_revealed, linked_foreshadows, created_at, updated_at)
+      VALUES (@id, @project_id, @info_description, @author_knows, @reader_knows, @character_knowledge, @reveal_stage, @reveal_chapter, @is_revealed, @linked_foreshadows, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, info_description: full.infoDescription,
       author_knows: full.authorKnows ? 1 : 0, reader_knows: full.readerKnows ? 1 : 0,
       character_knowledge: full.characterKnowledge, reveal_stage: full.revealStage,
       reveal_chapter: full.revealChapter, is_revealed: full.isRevealed ? 1 : 0,
+      linked_foreshadows: full.linkedForeshadows ?? '[]',
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -1177,8 +1385,86 @@ export class NovelStore implements NovelPromptStores {
   }
 
   deleteInfoLayer(id: string): boolean {
+    this.deleteEdgesByEntity(id)
+    // P3-2：清理伏笔中 linkedInfoLayers 的反向引用
+    this.pruneInfoLayerFromForeshadows(id)
     const result = this.db.prepare('DELETE FROM novel_information_layers WHERE id = ?').run(id)
     return result.changes > 0
+  }
+
+  /**
+   * P3-2：建立伏笔↔信息差双向关联
+   *
+   * - 在 foreshadow.linked_info_layers 数组追加 infoLayerId（去重）
+   * - 在 infoLayer.linked_foreshadows 数组追加 foreshadowId（去重）
+   * - 已存在则幂等返回
+   * - 双向同步避免单端遗漏
+   */
+  linkForeshadowToInfoLayer(foreshadowId: string, infoLayerId: string): void {
+    // 更新伏笔端
+    const fRow = this.db.prepare('SELECT linked_info_layers FROM novel_foreshadowing WHERE id = ?').get(foreshadowId) as { linked_info_layers: string } | undefined
+    if (fRow) {
+      const ids = this.parseIdListSafe(fRow.linked_info_layers)
+      if (!ids.includes(infoLayerId)) {
+        ids.push(infoLayerId)
+        this.db.prepare('UPDATE novel_foreshadowing SET linked_info_layers = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), foreshadowId)
+      }
+    }
+    // 更新信息差端
+    const iRow = this.db.prepare('SELECT linked_foreshadows FROM novel_information_layers WHERE id = ?').get(infoLayerId) as { linked_foreshadows: string } | undefined
+    if (iRow) {
+      const ids = this.parseIdListSafe(iRow.linked_foreshadows)
+      if (!ids.includes(foreshadowId)) {
+        ids.push(foreshadowId)
+        this.db.prepare('UPDATE novel_information_layers SET linked_foreshadows = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), infoLayerId)
+      }
+    }
+  }
+
+  /**
+   * P3-2：解除伏笔↔信息差双向关联（如果存在）
+   * 用于测试或用户手动取消关联
+   */
+  unlinkForeshadowFromInfoLayer(foreshadowId: string, infoLayerId: string): void {
+    const fRow = this.db.prepare('SELECT linked_info_layers FROM novel_foreshadowing WHERE id = ?').get(foreshadowId) as { linked_info_layers: string } | undefined
+    if (fRow) {
+      const ids = this.parseIdListSafe(fRow.linked_info_layers).filter(id => id !== infoLayerId)
+      this.db.prepare('UPDATE novel_foreshadowing SET linked_info_layers = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), foreshadowId)
+    }
+    const iRow = this.db.prepare('SELECT linked_foreshadows FROM novel_information_layers WHERE id = ?').get(infoLayerId) as { linked_foreshadows: string } | undefined
+    if (iRow) {
+      const ids = this.parseIdListSafe(iRow.linked_foreshadows).filter(id => id !== foreshadowId)
+      this.db.prepare('UPDATE novel_information_layers SET linked_foreshadows = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), infoLayerId)
+    }
+  }
+
+  /** 删除伏笔时，从所有信息差的 linkedForeshadows 数组中移除该伏笔 ID */
+  private pruneForeshadowFromInfoLayers(foreshadowId: string): void {
+    const rows = this.db.prepare("SELECT id, linked_foreshadows FROM novel_information_layers WHERE linked_foreshadows LIKE ?").all(`%${foreshadowId}%`) as Array<{ id: string; linked_foreshadows: string }>
+    for (const row of rows) {
+      const ids = this.parseIdListSafe(row.linked_foreshadows).filter(id => id !== foreshadowId)
+      this.db.prepare('UPDATE novel_information_layers SET linked_foreshadows = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), row.id)
+    }
+  }
+
+  /** 删除信息差时，从所有伏笔的 linkedInfoLayers 数组中移除该信息差 ID */
+  private pruneInfoLayerFromForeshadows(infoLayerId: string): void {
+    const rows = this.db.prepare("SELECT id, linked_info_layers FROM novel_foreshadowing WHERE linked_info_layers LIKE ?").all(`%${infoLayerId}%`) as Array<{ id: string; linked_info_layers: string }>
+    for (const row of rows) {
+      const ids = this.parseIdListSafe(row.linked_info_layers).filter(id => id !== infoLayerId)
+      this.db.prepare('UPDATE novel_foreshadowing SET linked_info_layers = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), row.id)
+    }
+  }
+
+  /** 容错解析 JSON: string[]（与 parseIdList 一致，但用于 P3-2 双向字段） */
+  private parseIdListSafe(raw: string | null | undefined): string[] {
+    if (!raw) return []
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+    } catch {
+      return []
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1708,6 +1994,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   private rowToCharacter(row: CharacterRow): NovelCharacter {
+    const validPlotRoles = ['protagonist', 'main_opponent', 'supporting', 'function', 'background']
     return {
       id: row.id, projectId: row.project_id, name: row.name, description: row.description,
       identity: row.identity, personality: row.personality, appearance: row.appearance,
@@ -1715,15 +2002,26 @@ export class NovelStore implements NovelPromptStores {
       currentPressure: row.current_pressure, secret: row.secret,
       arcStage: row.arc_stage, arcHistory: row.arc_history, speechStyle: row.speech_style,
       isProtagonist: row.is_protagonist === 1,
+      longTermDesire: row.long_term_desire,
+      plotRole: (validPlotRoles.includes(row.plot_role) ? row.plot_role : 'supporting') as NovelCharacter['plotRole'],
+      removalImpact: row.removal_impact,
+      participatingConflicts: row.participating_conflicts ?? '[]',
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
 
   private rowToRelationship(row: RelationshipRow): NovelRelationship {
+    const validAlignments = ['ally', 'temporary_ally', 'opponent', 'temporary_opponent', 'neutral', 'pending_shift']
+    const validTrends = ['stable', 'warming', 'cooling', 'breaking', 'reconciling']
     return {
       id: row.id, projectId: row.project_id, characterA: row.character_a,
       characterB: row.character_b, relationType: row.relation_type,
       currentStage: row.current_stage, stageHistory: row.stage_history,
+      dynamicRole: row.dynamic_role ?? '',
+      alignment: (validAlignments.includes(row.alignment) ? row.alignment : 'neutral') as NovelRelationship['alignment'],
+      trend: (validTrends.includes(row.trend) ? row.trend : 'stable') as NovelRelationship['trend'],
+      chapterHint: row.chapter_hint ?? '',
+      lastUpdatedChapter: row.last_updated_chapter ?? null,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -1731,10 +2029,18 @@ export class NovelStore implements NovelPromptStores {
   private rowToForeshadow(row: ForeshadowRow): NovelForeshadow {
     return {
       id: row.id, projectId: row.project_id, description: row.description,
-      category: row.category, status: row.status as NovelForeshadow['status'],
+      // category 容错转换：旧数据可能是自由字符串（如 "物品"/"身份"），
+      // 通过 normalizeForeshadowCategory 解析为新枚举，未匹配的回退到 'item'
+      category: normalizeForeshadowCategory(row.category),
+      status: row.status as NovelForeshadow['status'],
       firstChapter: row.first_chapter, lastChapter: row.last_chapter,
       recoverByChapter: row.recover_by_chapter, linkedCharacters: row.linked_characters,
-      linkedClues: row.linked_clues, createdAt: row.created_at, updatedAt: row.updated_at,
+      linkedClues: row.linked_clues,
+      plantMethod: normalizeForeshadowPlantMethod(row.plant_method),
+      recoverMethod: normalizeForeshadowRecoverMethod(row.recover_method),
+      // P3-2：双向关联字段（NULL 容错，迁移前的行可能未填默认 '[]'）
+      linkedInfoLayers: row.linked_info_layers ?? '[]',
+      createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
 
@@ -1754,6 +2060,9 @@ export class NovelStore implements NovelPromptStores {
       stage: row.stage as NovelConflict['stage'], participants: row.participants,
       chapterSpans: parseChapterSpans(row.chapter_spans),
       tier: (row.tier as ConflictTier) ?? 'secondary',
+      // 四层逻辑③：功能层 + 推进模式（NULL/无效值回退到默认）
+      plotFunction: normalizeConflictPlotFunction(row.plot_function),
+      progressionMode: normalizeConflictProgressionMode(row.progression_mode),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -1780,6 +2089,8 @@ export class NovelStore implements NovelPromptStores {
       authorKnows: row.author_knows === 1, readerKnows: row.reader_knows === 1,
       characterKnowledge: row.character_knowledge, revealStage: row.reveal_stage,
       revealChapter: row.reveal_chapter, isRevealed: row.is_revealed === 1,
+      // P3-2：双向关联字段（NULL 容错）
+      linkedForeshadows: row.linked_foreshadows ?? '[]',
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

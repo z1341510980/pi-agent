@@ -38,6 +38,7 @@ export type NovelNodeType =
   | 'faction'
   | 'location'
   | 'world_element'
+  | 'info_layer'
 
 // ── Store 状态 ──
 
@@ -155,6 +156,7 @@ export interface NovelState {
   removeFaction: (id: string) => void
   removeLocation: (id: string) => void
   removeWorldElement: (id: string) => void
+  removeInfoLayer: (id: string) => void
 
   // ── 节点位置 ──
   setNodePositions: (positions: NovelNodePosition[]) => void
@@ -396,6 +398,7 @@ export const useNovelStore = create<NovelState>()(
         removeFaction: (id) => set((state) => ({ factions: removeFromList(state.factions, id) })),
         removeLocation: (id) => set((state) => ({ locations: removeFromList(state.locations, id) })),
         removeWorldElement: (id) => set((state) => ({ worldElements: removeFromList(state.worldElements, id) })),
+        removeInfoLayer: (id) => set((state) => ({ infoLayers: removeFromList(state.infoLayers, id) })),
 
         // ── 节点位置 ──
         setNodePositions: (positions) => set({ nodePositions: positions }),

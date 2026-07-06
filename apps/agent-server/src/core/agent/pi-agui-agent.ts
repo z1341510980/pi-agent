@@ -169,13 +169,19 @@ export class PiAgUiAgent {
       }
       if (Object.keys(inject).length > 0) {
         const piSession = threadSession.session as {
-          agent?: { onPayload?: (payload: unknown) => unknown }
+          agent?: { onPayload?: (payload: unknown) => unknown | Promise<unknown> }
         }
         if (piSession.agent) {
-          piSession.agent.onPayload = (payload: unknown) => ({
-            ...(payload as Record<string, unknown>),
-            ...inject,
-          })
+          // 必须使用 async/await：Pi SDK 默认的 onPayload 是 async 函数，
+          // 返回 Promise<payload>。若不 await，spread Promise 会得到空对象，
+          // 导致 messages 字段丢失，LLM 网关返回 400。
+          // 这与 plugin-manager.ts createSession 的 onPayload 修复保持一致。
+          const prevOnPayload = piSession.agent.onPayload
+          piSession.agent.onPayload = async (payload: unknown) => {
+            let next = prevOnPayload ? await prevOnPayload(payload) : payload
+            next = { ...(next as Record<string, unknown>), ...inject }
+            return next
+          }
         }
       }
 

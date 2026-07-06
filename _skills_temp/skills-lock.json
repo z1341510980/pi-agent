@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "de-AI-writing": {
+      "source": "oubigfa/de-ai-prompt-enhancer-writer-booster-skill",
+      "sourceType": "github",
+      "skillPath": "de-AI-writing/SKILL.md",
+      "computedHash": "57fbdabc6424239dd3d3cae81caad455f16742b2f62d2db243caedca27ce129a"
+    },
+    "humanizer-zh": {
+      "source": "op7418/humanizer-zh",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "dede9681d9fea5caed2fb9d88656af3024c9ec0136fc833415ffc6e16d762429"
+    },
+    "novel-writer": {
+      "source": "yangsonhung/awesome-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/en/novel-writer/SKILL.md",
+      "computedHash": "10fbd5e2d6e5e05b934b176a4ce1a3109dae69f975feab68f4efebff65804d34"
+    },
+    "qu-ai-wei": {
+      "source": "lifelonglazylearner/qu-ai-wei",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "9fb201c7ce8a469b7c042051fee9e23e02bff35dd4595ba54cefe99678c65cbb"
+    },
+    "remove-ai-flavor": {
+      "source": "chujianyun/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remove-ai-flavor/SKILL.md",
+      "computedHash": "4c30e55b0a32cbf3278d973ddc1a8e09f19aa62d392c2a28f1521c2b022aff82"
+    },
+    "shuorenhua": {
+      "source": "mrgediao/shuorenhua",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "da41937ddfbc2b92804e433acb03a88448d5c59ce4dac704a249673adbfa597f"
+    },
+    "story-deslop": {
+      "source": "worldwonderer/oh-story-claudecode",
+      "sourceType": "github",
+      "skillPath": "skills/story-deslop/SKILL.md",
+      "computedHash": "e46db68c3d55d6edad906df7b31fc7d8f3b10cb11c64c1ace0bea2796c7c7b9e"
+    },
+    "story-long-write": {
+      "source": "worldwonderer/oh-story-claudecode",
+      "sourceType": "github",
+      "skillPath": "skills/story-long-write/SKILL.md",
+      "computedHash": "fd10766915fe90b42144d2f7316a51c74dac26ad88811e22ca4582d40ec382e7"
+    }
+  }
+}
