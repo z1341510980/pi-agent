@@ -13,6 +13,7 @@ import { NovelWorkspace } from './components/novel/novel-workspace'
 import { HomePage } from './components/home/home-page'
 import { ErrorBoundary } from './components/overlays/error-boundary'
 import { UpdateDialog, useUpdateStatus } from './components/overlays/update-dialog'
+import { Toaster } from '@/components/ui/toaster'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -116,6 +117,8 @@ export default function App(): ReactElement {
               onDownload={() => void download()}
               onInstall={() => void install()}
             />
+            {/* 全局 Toast 通知：用于暴露事件处理器中的错误给用户 */}
+            <Toaster />
             </ThemeProvider>
           </I18nProvider>
         </QueryClientProvider>

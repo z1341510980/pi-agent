@@ -35,6 +35,7 @@ import { EntityCellMenu, type EntityCellMenuPosition } from './entity-cell-menu'
 import { EntityCreateDialog } from './entity-create-dialog'
 import { EntitySpanDialog } from './entity-span-dialog'
 import { EntityNoteDialog } from './entity-note-dialog'
+import { toastError } from '@/hooks/use-toast'
 
 /**
  * 把新区间合并进现有跨度列表：
@@ -231,6 +232,7 @@ export function MatrixWorkspace({
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
     } catch (err) {
       console.error('[MatrixWorkspace] 补全历史失败:', err)
+      toastError('补全历史失败', err instanceof Error ? err.message : String(err))
     } finally {
       setIsCompleting(false)
     }
@@ -592,6 +594,7 @@ export function MatrixWorkspace({
       }
     } catch (err) {
       console.error('[MatrixWorkspace] 删除出场失败:', err)
+      toastError('删除出场失败', err instanceof Error ? err.message : String(err))
     }
   }, [currentProjectId, characterHistory, conflicts, factions, foreshadows, locations, setCharacterHistory, queryClient])
 
@@ -864,6 +867,7 @@ export function MatrixWorkspace({
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
     } catch (err) {
       console.error('[MatrixWorkspace] 保存跨度失败:', err)
+      toastError('保存跨度失败', err instanceof Error ? err.message : String(err))
       throw err
     }
   }, [currentProjectId, queryClient, characterHistory, setCharacterHistory])
