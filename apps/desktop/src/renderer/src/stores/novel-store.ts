@@ -209,6 +209,9 @@ function removeFromList<T extends { id: string }>(list: T[], id: string): T[] {
 
 // ── Store ──
 
+// flag：persist hydrate 完成后置 true，store 创建后据此清除 temporal 伪快照
+let needsClearTemporal = false
+
 export const useNovelStore = create<NovelState>()(
   temporal(
     persist(
@@ -457,12 +460,12 @@ export const useNovelStore = create<NovelState>()(
         storage: createJSONStorage(() => localStorage),
         // 修复 zundo + persist 嵌套时的经典问题：hydrate 期间 temporal 会把"空初始状态"
         // 压入 pastStates，导致用户首次点撤销会把整个 store 还原成空状态。
-        // onRehydrateStorage 在 hydrate 完成后回调，此时立即 clear() 历史栈，
-        // 丢弃 hydrate 过程产生的伪快照。
-        onRehydrateStorage: () => (state) => {
-          if (state) {
-            useNovelStore.temporal.getState().clear()
-          }
+        // 用 flag 标记 hydrate 完成，在 store 创建后延迟 clear() 历史栈，
+        // 避免 onRehydrateStorage 回调中引用 useNovelStore 导致 TDZ
+        // （localStorage 是同步 hydrate，回调在 create() 执行期间触发，
+        //  此时 useNovelStore const 尚未赋值）
+        onRehydrateStorage: () => () => {
+          needsClearTemporal = true
         },
         // 只持久化数据字段，不持久化 actions 与瞬时状态
         partialize: (state) => ({
@@ -527,6 +530,14 @@ export const useNovelStore = create<NovelState>()(
     },
   ),
 )
+
+// store 创建后：如果 persist 已 hydrate，清除 temporal 中 hydrate 期间产生的伪快照
+// 用 queueMicrotask 确保在当前同步执行栈完成后执行，避免影响 store 初始化
+if (needsClearTemporal) {
+  queueMicrotask(() => {
+    useNovelStore.temporal.getState().clear()
+  })
+}
 
 // 同步 undoCount/redoCount 派生字段（订阅 temporal store 状态变化）
 // temporal store 是独立 vanilla store，其 pastStates/futureStates 变化时
