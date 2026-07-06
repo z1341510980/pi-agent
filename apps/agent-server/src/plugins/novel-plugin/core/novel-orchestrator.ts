@@ -435,6 +435,33 @@ export class NovelOrchestrator {
         'SEMI 层前缀命中单章缓存',
       )
     } else {
+      // ⚠️ Token 优化：Reviewer 使用精简版 buildReviewContext，只包含章节信息 +
+      // 创作约束 + 本章编排实体，不注入完整故事状态/实体关联/信息差/摘要/因果链。
+      // Writer 全文已通过 user_message 注入，Reviewer 不需要这些上下文。
+      // 预期节省 ~6K 字符 / 5K tokens。
+      if (agentType === 'reviewer') {
+        const narrativeTask: NarrativeTask = {
+          description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
+          type: 'advance_mainline',
+          targetEntity: null,
+          priority: 'medium',
+        }
+        const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
+          projectId, chapterNumber, this.currentRhythmSuggestion,
+        )
+        chapterContext = this.promptBuilder.buildReviewContext(
+          projectId,
+          chapterNumber,
+          narrativeTask,
+          constraints,
+          this.currentArrangedEntities,
+        )
+        this.semiLayerCache = { key: cacheKey, value: chapterContext }
+        this.context.logger.debug(
+          { agentType, projectId, chapterNumber, contextLength: chapterContext.length },
+          'Reviewer 使用精简版 SEMI 层（buildReviewContext）',
+        )
+      } else {
       // ⚠️ 缓存关键：所有 Agent 的 narrativeTask 统一用数据库章纲，确保 SEMI 层前缀
       // （章节信息 + 约束 + 故事状态 + ...）跨 Agent 完全一致，最大化 LLM provider
       // 端的 prompt cache 命中率。
@@ -494,6 +521,7 @@ export class NovelOrchestrator {
         { agentType, projectId, chapterNumber, contextLength: chapterContext.length },
         'SEMI 层前缀已写入单章缓存',
       )
+      }
     }
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）

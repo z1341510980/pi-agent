@@ -31,7 +31,21 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     id: 'novel-director',
     name: '导演 Agent',
     identity: '你是一个专业的小说导演，负责分析故事状态并规划章节叙事任务。',
-    tools: ['novel_query_state', 'novel_query_factions', 'novel_query_locations'],
+    // ⚠️ Token 优化：Director 无需 query 工具。所有实体信息已通过 SEMI 层
+    // chapterContext 一次性注入：
+    //   - formatStoryState 输出所有角色动态状态、活跃冲突、伏笔、势力、地点
+    //   - formatArrangedEntities 注入本章出场角色完整定义
+    //   - formatEntityArchive 注入势力/地点/世界要素静态档案
+    //   - formatInfoLayers 注入信息差
+    //   - formatConstraints 注入创作约束
+    //   - formatEdges 注入实体关联（画布连线）
+    //   - formatRecentSummaries 注入最近章节摘要
+    //   - formatRecentCausalChain 注入因果链
+    // 给 Director 提供 query 工具反而会让 LLM 在规划前先调用工具重复查询已知
+    // 状态，每次工具调用都会把完整对话历史重发，3 次工具调用 = 3 倍 system_prompt
+    // + chapter_context 的 token 消耗。移除工具后 Director 单次调用完成，
+    // 省 ~18K tokens。
+    tools: [],
     roleTemplate: 'role-director',
     temperature: 0.5,
   },
@@ -64,7 +78,14 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     id: 'novel-reviewer',
     name: '审稿 Agent',
     identity: '你是一个严格的审稿编辑，检查章节的一致性、节奏和可读性。',
-    tools: ['novel_query_state'],
+    // ⚠️ Token 优化：Reviewer 无需 query 工具。验收所需信息已通过 SEMI 层
+    // buildReviewContext（精简版）注入：
+    //   - formatChapterInfo 章号 + 目标字数（字数验收）
+    //   - formatConstraints 创作约束（一致性验收）
+    //   - formatArrangedEntities 本章编排实体（角色一致性验收）
+    // Writer 全文通过 user_message 注入。
+    // 移除工具后 Reviewer 单次调用完成，省 ~5K tokens。
+    tools: [],
     roleTemplate: 'role-reviewer',
     temperature: 0.3,
   },

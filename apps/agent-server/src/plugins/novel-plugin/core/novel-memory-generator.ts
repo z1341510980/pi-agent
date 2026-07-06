@@ -34,7 +34,6 @@ import type {
   NovelLocation,
   NovelRelationship,
   RelationChange,
-  NarrativeTask,
 } from './types.js'
 
 // ── 进度事件 ──
@@ -244,36 +243,21 @@ export class NovelMemoryGenerator {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'memory-generator')
 
     // ── 2. 构建用户消息：章节正文 + 当前实体状态 ──
+    // ⚠️ Token 优化：Memory 的任务是"从章节正文中提取状态变更"，只需要：
+    //   - 章节正文（已在 userPrompt 中）
+    //   - 当前实体状态（已在 userPrompt 中通过 getCurrentEntityState 注入）
+    //   - system_prompt（system-base.md + role-memory-generator.md，含全局铁律）
+    // 不需要注入 chapterContext（章节信息 + 约束 + 故事状态 + 摘要 + 因果链），
+    // 这些对"状态变更提取"无用，且会让 Memory 的输入膨胀 10K+ 字符。
+    // 预期节省 ~10K 字符 / 7K tokens。
     const userPrompt = this.buildUserPrompt(projectId, chapterNumber, chapterContent)
 
-    // ── 3. 构建章节上下文（SEMI 层前缀，与 runAgent 一致的三层缓存设计）──
-    // 注入 prefixUserMessage 让 Memory Agent 也能命中跨章 STATIC 缓存 + 单章 SEMI 缓存。
-    // 不传入 arrangedEntities：Memory 在 director→writer→reviewer 之后执行，
-    // 编排约束已通过正文体现，无需重复注入。agentType 不传 'writer' 以跳过 chapter-instruction。
-    const chapter = this.store.getChapter(projectId, chapterNumber)
-    const narrativeTask: NarrativeTask = {
-      description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
-      type: 'advance_mainline',
-      targetEntity: null,
-      priority: 'medium',
-    }
-    const constraints = this.engine.buildChapterConstraints(projectId, chapterNumber)
-    const chapterContext = this.promptBuilder.buildChapterContext(
-      projectId,
-      chapterNumber,
-      narrativeTask,
-      constraints,
-      undefined,
-      'memory-generator',
-      // directorOutput：Memory Agent 不需要 Director 输出，传 undefined
-      undefined,
-    )
-
-    // ── 4. 创建独立 Session 调用 LLM（单次调用，输出 JSON）──
+    // ── 3. 创建独立 Session 调用 LLM（单次调用，输出 JSON）──
     onProgress?.({ phase: 'generating', message: '记忆 Agent 正在分析章节状态变更...' })
     const session = await this.context.createSession({
       systemPrompt,
-      prefixUserMessage: chapterContext,
+      // 不注入 prefixUserMessage（chapterContext）：Memory 不需要章节上下文，
+      // 只需要章节正文 + 当前实体状态（均在 userMessage 中）
       userMessage: userPrompt,
       responseFormat: 'json',
       // 记忆提取需要分析整章正文 + 全量实体状态，LLM 耗时较长

@@ -186,7 +186,7 @@ export class NovelPromptBuilder {
     const parts: string[] = []
 
     // ── 共享前缀（跨 Agent 相同，跨章不变，最大化 prompt cache 命中）──
-    // 顺序：世界规则 → 风格指南 → 实体档案 → Agent 身份
+    // 顺序：世界规则 → 风格指南 → Agent 身份
     // 共享部分在前，Agent 专属部分在后，确保不同 Agent 的前缀相同可共享缓存。
 
     // ── Layer 1: 世界规则（项目级，跨 Agent 共享，跨章不变）──
@@ -211,15 +211,16 @@ export class NovelPromptBuilder {
       parts.push(this.formatStyleGuide(sorted))
     }
 
-    // ── Layer 3: 势力/地点/世界要素静态档案（项目级，跨 Agent 共享，跨章稳定）──
-    // 上提到 STATIC 层以增加 system prompt 长度（突破缓存阈值）并跨章复用。
-    // 仅输出静态字段（name/description/type 等），动态字段（status/appearChapters/
-    // firstChapter/lastChapter）仍由 SEMI 层的 formatStoryState 输出。
-    const entityArchive = this.formatEntityArchive(projectId)
-    if (entityArchive) parts.push(entityArchive)
+    // ── Layer 3: 势力/地点/世界要素静态档案 ──
+    // ⚠️ Token 优化：已从 STATIC 层移除。原因：
+    // 1. 本章编排实体已在 SEMI 层 formatArrangedEntities 中输出完整定义
+    // 2. 其他已登场实体在 SEMI 层 formatStoryState 中有 name + type + status
+    // 3. 未登场实体对当前章节创作不是必须的，Director/Writer 不需要知道
+    // 4. 移除后 STATIC 层从 ~8000 字符降到 ~2000 字符，跨章缓存更容易命中
+    // 5. formatEntityArchive 方法保留，未被调用（dead code 可后续清理）
 
     // ── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）──
-    // 放在最后，确保前面的共享部分（worldRules + styleGuide + entityArchive）
+    // 放在最后，确保前面的共享部分（worldRules + styleGuide）
     // 可以跨 Agent 缓存命中。Agent 身份变化只影响尾部，不影响前缀缓存。
     const identityPrompt = this.promptManager.render('system-base', {
       agent_type: agentType,
@@ -323,6 +324,47 @@ export class NovelPromptBuilder {
         target_words: String(targetWords),
       }, projectId)
       parts.push(instruction)
+    }
+
+    return parts.join('\n\n---\n\n')
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 审稿上下文（Reviewer 专用 - 精简版 SEMI 层）
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 构建审稿上下文（Reviewer 专用精简版）
+   *
+   * ⚠️ Token 优化：Reviewer 的任务是验收 Writer 输出是否符合约束，
+   * 不需要完整的故事状态、实体关联、信息差、最近摘要、因果链。
+   * 只需要：
+   * 1. 章节信息（章号 + 目标字数 - 用于字数检查）
+   * 2. 创作约束（验收标准来源 - 用于一致性检查）
+   * 3. 本章编排实体（角色一致性检查）
+   *
+   * Writer 全文通过 user_message 注入，不在此处重复。
+   *
+   * 预期收益：Reviewer 输入从 ~10000 字符降到 ~4000 字符，单章省 5K tokens。
+   */
+  buildReviewContext(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
+  ): string {
+    const parts: string[] = []
+
+    // ── 章节信息（章号 + 目标字数，用于字数验收）──
+    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask))
+
+    // ── 创作约束（验收标准来源）──
+    parts.push(this.formatConstraints(constraints))
+
+    // ── 本章编排实体（角色一致性检查）──
+    if (arrangedEntities && (arrangedEntities.characterIds.length > 0 || arrangedEntities.conflictIds.length > 0 || arrangedEntities.foreshadowIds.length > 0 || arrangedEntities.factionIds.length > 0 || arrangedEntities.locationIds.length > 0)) {
+      parts.push(this.formatArrangedEntities(projectId, arrangedEntities))
     }
 
     return parts.join('\n\n---\n\n')
@@ -810,6 +852,19 @@ export class NovelPromptBuilder {
   /**
    * 格式化故事状态
    *
+   * ⚠️ Token 优化：此处只输出非本章编排实体的"存在感 + 大致状态"，
+   * 让 LLM 知道这些实体存在但不需要完整定义。本章编排实体的完整定义
+   * 已在 formatArrangedEntities 中输出。
+   *
+   * 字段精简原则：
+   * - 角色：只保留 name + currentState + currentGoal（去掉 currentPressure，
+   *   该字段在 arrangedEntities 完整定义中已有，非本章角色不需要）
+   * - 冲突：只保留 type + description + stage + intensity（去掉 stakes/
+   *   twistPotential/tier，非本章冲突不需要这些细节）
+   * - 势力：只保留 name + type + status（去掉 strength/ideology，已在
+   *   STATIC 层 entityArchive 或 arrangedEntities 中）
+   * - 地点：只保留 name + type（去掉 significance/status）
+   *
    * @param state 故事状态
    * @param arrangedEntities 本章已编排实体（用于去重：本章已编排的角色/冲突/伏笔
    *   已在 formatArrangedEntities 和 formatConstraints 中输出完整定义，
@@ -829,6 +884,7 @@ export class NovelPromptBuilder {
       /（待定）|待补充|待定$|^新的$|^测试角色/.test(name)
 
     // 角色动态状态（跳过本章已编排角色 + 占位角色）
+    // 精简：只保留 name + currentState + currentGoal
     const otherChars = state.characters.filter(
       (c) => !arrangedCharIds.has(c.id) && !isPlaceholder(c.name),
     )
@@ -838,12 +894,11 @@ export class NovelPromptBuilder {
         const lines = [`- **${c.name}**`]
         if (c.currentState) lines.push(`  状态：${c.currentState}`)
         if (c.currentGoal) lines.push(`  目标：${c.currentGoal}`)
-        if (c.currentPressure) lines.push(`  压力：${c.currentPressure}`)
         parts.push(lines.join('\n'))
       }
     }
 
-    // 关系状态
+    // 关系状态（精简：单行输出）
     if (state.relationships.length > 0) {
       parts.push('\n### 关系当前状态')
       for (const r of state.relationships) {
@@ -852,23 +907,19 @@ export class NovelPromptBuilder {
     }
 
     // 活跃冲突（跳过本章已编排冲突 + 占位冲突）
+    // 精简：只保留 type + description + stage + intensity
     const otherConflicts = state.activeConflicts.filter(
       (c) => !arrangedConflictIds.has(c.id) && !isPlaceholder(c.description),
     )
     if (otherConflicts.length > 0) {
       parts.push('\n### 活跃冲突')
       for (const c of otherConflicts) {
-        const segs = [`- [${c.type}] ${c.description}`]
-        segs.push(`强度：${c.intensity}/10`)
-        segs.push(`阶段：${c.stage}`)
-        segs.push(`层级：${c.tier}`)
-        if (c.stakes) segs.push(`赌注：${c.stakes}`)
-        if (c.twistPotential != null) segs.push(`突转潜力：${c.twistPotential}/10`)
-        parts.push(segs.join('；'))
+        parts.push(`- [${c.type}] ${c.description}（${c.stage}，强度 ${c.intensity}/10）`)
       }
     }
 
     // 待回收伏笔（跳过本章已编排伏笔 + 占位伏笔）
+    // 精简：只保留 status + description
     const otherForeshadows = state.pendingForeshadowing.filter(
       (f) => !arrangedForeshadowIds.has(f.id) && !isPlaceholder(f.description),
     )
@@ -888,28 +939,26 @@ export class NovelPromptBuilder {
     }
 
     // 活跃势力（过滤占位势力）
+    // 精简：只保留 name + type + status
     const realFactions = state.activeFactions.filter((f) => !isPlaceholder(f.name))
     if (realFactions.length > 0) {
       parts.push('\n### 活跃势力')
       for (const f of realFactions) {
         const segs = [`- **${f.name}**`]
         if (f.type) segs.push(`类型：${f.type}`)
-        if (f.strength) segs.push(`实力：${f.strength}`)
         if (f.status) segs.push(`状态：${f.status}`)
-        if (f.ideology) segs.push(`理念：${f.ideology}`)
         parts.push(segs.join('；'))
       }
     }
 
     // 已登场地点（过滤占位地点）
+    // 精简：只保留 name + type
     const realLocations = state.activeLocations.filter((l) => !isPlaceholder(l.name))
     if (realLocations.length > 0) {
       parts.push('\n### 已登场地点')
       for (const l of realLocations) {
         const segs = [`- **${l.name}**`]
         if (l.type) segs.push(`类型：${l.type}`)
-        if (l.significance) segs.push(`重要性：${l.significance}`)
-        if (l.status && l.status !== 'normal') segs.push(`状态：${l.status}`)
         parts.push(segs.join('；'))
       }
     }
