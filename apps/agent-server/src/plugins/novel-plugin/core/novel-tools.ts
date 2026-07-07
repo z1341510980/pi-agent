@@ -952,6 +952,8 @@ export function createNovelCreateForeshadowTool(store: NovelStore): ToolDefiniti
         plantMethod: params.plantMethod,
         recoverMethod: params.recoverMethod,
         linkedInfoLayers: '[]',
+        // 迁移 055：未指定 firstChapter 时 chapterSpans 为 []（进元素池，矩阵不渲染行）
+        chapterSpans: [],
       })
       return {
         content: [{ type: 'text', text: `已创建伏笔「${params.description}」，ID: ${foreshadow.id}` }],

@@ -647,4 +647,19 @@ export const novelMigrations: MigrationDefinition[] = [
       ALTER TABLE novel_information_layers ADD COLUMN linked_foreshadows TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    // 055: 伏笔支持多段章节跨度（与 conflicts/factions 迁移 045 同模式）
+    // - novel_foreshadowing 加 chapter_spans (JSON 数组 [[start,end],...])，支持非连续活跃区间
+    // - first_chapter 仍作为埋设点语义标记（plant），recover_by_chapter 作为回收点语义标记（payoff）
+    // - chapter_spans 描述伏笔"活跃"区间（可多段），矩阵按色带样式渲染（参照 conflict）
+    // - first_chapter/last_chapter/recover_by_chapter 保留为兼容字段，store 层读写时与 chapterSpans 同步
+    // 旧数据回填：用 [first_chapter, COALESCE(recover_by_chapter, first_chapter)] 单段跨度；
+    // 无 first_chapter 的伏笔回填 '[]'（未放置，进元素池）
+    id: '055_add_chapter_spans_to_foreshadowing',
+    sql: `ALTER TABLE novel_foreshadowing ADD COLUMN chapter_spans TEXT;
+          UPDATE novel_foreshadowing SET chapter_spans =
+            CASE WHEN first_chapter IS NULL THEN '[]'
+                 ELSE json_array(json_array(first_chapter, COALESCE(recover_by_chapter, first_chapter)))
+            END;`,
+  },
 ]

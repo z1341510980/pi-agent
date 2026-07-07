@@ -115,34 +115,45 @@ export function MatrixView({
   const chapterByNumber = useMemo(() => buildChapterByNumberMap(chapters), [chapters])
 
   const { groups, maxChapter } = useMemo(
-    () => buildGroups({
-      chapters, characters, conflicts, foreshadows, factions, locations, worldElements,
-      characterHistory, markers,
-    }),
+    () => {
+      const result = buildGroups({
+        chapters, characters, conflicts, foreshadows, factions, locations, worldElements,
+        characterHistory, markers,
+      })
+      console.log('[MatrixView] buildGroups result:', {
+        maxChapter: result.maxChapter,
+        groupsCount: result.groups.length,
+        totalEntities: result.groups.reduce((s, g) => s + g.entities.length, 0),
+        chaptersInput: chapters.length,
+      })
+      return result
+    },
     [chapters, characters, conflicts, foreshadows, factions, locations, worldElements, characterHistory, markers],
   )
 
   const chapterColumns = useMemo(() => {
     const cols: number[] = []
     for (let i = 1; i <= maxChapter; i++) cols.push(i)
+    console.log('[MatrixView] chapterColumns computed:', { maxChapter, length: cols.length, first: cols[0], last: cols[cols.length - 1] })
     return cols
   }, [maxChapter])
 
+  // 滚动容器 ref（提前定义，供 visibleRange 相关 hook 和滚动逻辑共用）
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+
   // 水平虚拟化：仅渲染可见章节列 + 缓冲列，DOM 从 O(N*M) 降为 O(N*visibleM)
-  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({
-    start: 1,
-    end: Math.min(maxChapter, 20), // 初始渲染前 20 列
+  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>(() => {
+    // 初始值：保证 end >= start，避免空标尺
+    const end = Math.max(1, Math.min(maxChapter, 20))
+    console.log('[MatrixView] visibleRange initial:', { start: 1, end, maxChapter, cellWidth })
+    return { start: 1, end }
   })
 
-  // maxChapter 或 cellWidth 变化时，按当前 scrollLeft 重新计算视口（不重置到第 1 章）
-  useEffect(() => {
+  // 视口重算逻辑（抽成函数，供 effect 和 ResizeObserver 复用）
+  const recomputeVisibleRange = useCallback(() => {
     const el = scrollContainerRef.current
     if (!el) {
-      // 容器还未挂载，clamp 既有 range 到新 maxChapter
-      setVisibleRange((prev) => ({
-        start: Math.min(prev.start, Math.max(1, maxChapter)),
-        end: Math.min(prev.end, Math.max(0, maxChapter)),
-      }))
+      console.log('[MatrixView] recomputeVisibleRange: scrollContainerRef.current is null')
       return
     }
     const range = computeVisibleChapters({
@@ -153,15 +164,63 @@ export function MatrixView({
       maxChapter,
       overscan: 3,
     })
+    console.log('[MatrixView] recomputeVisibleRange:', {
+      scrollLeft: el.scrollLeft,
+      viewportWidth: el.clientWidth,
+      cellWidth,
+      maxChapter,
+      computedRange: range,
+    })
     setVisibleRange((prev) => {
       if (prev.start === range.start && prev.end === range.end) return prev
+      console.log('[MatrixView] visibleRange changed:', { from: prev, to: range })
       return { start: range.start, end: range.end }
     })
-  }, [maxChapter, cellWidth])
+  }, [cellWidth, maxChapter])
+
+  // maxChapter 或 cellWidth 变化时，按当前 scrollLeft 重新计算视口（不重置到第 1 章）
+  useEffect(() => {
+    const el = scrollContainerRef.current
+    console.log('[MatrixView] useEffect[maxChapter,cellWidth]:', { maxChapter, cellWidth, hasContainer: !!el })
+    if (!el) {
+      // 容器还未挂载，clamp 既有 range 到新 maxChapter，保证 end >= 1
+      setVisibleRange((prev) => {
+        const next = { start: 1, end: Math.max(1, Math.min(prev.end, maxChapter)) }
+        console.log('[MatrixView] useEffect[maxChapter,cellWidth] no container, clamp:', { prev, next })
+        return next
+      })
+      return
+    }
+    recomputeVisibleRange()
+  }, [maxChapter, cellWidth, recomputeVisibleRange])
+
+  // ResizeObserver：容器尺寸变化时重算视口
+  // 解决：tab 切换/窗口 resize/侧边栏拖宽后容器 clientWidth 从 0 变为实际值，
+  // 但无 scroll 事件触发，导致 visibleRange 保持初始错误值，章节轴不显示。
+  useEffect(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      recomputeVisibleRange()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [recomputeVisibleRange])
 
   const visibleChapterColumns = useMemo(() => {
-    if (visibleRange.start > visibleRange.end) return []
-    return chapterColumns.slice(visibleRange.start - 1, visibleRange.end)
+    if (visibleRange.start > visibleRange.end) {
+      console.log('[MatrixView] visibleChapterColumns: start > end, returning []', visibleRange)
+      return []
+    }
+    const result = chapterColumns.slice(visibleRange.start - 1, visibleRange.end)
+    console.log('[MatrixView] visibleChapterColumns:', {
+      visibleRange,
+      chapterColumnsLength: chapterColumns.length,
+      resultLength: result.length,
+      first: result[0],
+      last: result[result.length - 1],
+    })
+    return result
   }, [chapterColumns, visibleRange])
 
   const markersByChapter = useMemo(() => {
@@ -177,7 +236,6 @@ export function MatrixView({
   }, [markers, showMarkers])
 
   // ── C-3c 滚动到指定章节列（监听 store 的 matrixScrollTarget）──
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const matrixScrollTarget = useNovelStore((s) => s.matrixScrollTarget)
   useEffect(() => {
     if (!matrixScrollTarget) return
@@ -278,6 +336,7 @@ export function MatrixView({
       onScroll={(e) => {
         const el = e.currentTarget
         const x = el.scrollLeft
+        console.log('[MatrixView] onScroll:', { scrollLeft: x, viewportWidth: el.clientWidth })
         // 原有 sticky title 同步逻辑
         const els = el.querySelectorAll<HTMLElement>('[data-sticky-title]')
         for (let i = 0; i < els.length; i++) {
@@ -298,27 +357,26 @@ export function MatrixView({
         })
       }}
     >
-      {hasAnyEntity ? (
-        <div className="relative" style={{ width: `${totalWidth}px` }}>
-          {/* 当前章节列高亮带（跨整列，从标尺下方开始避免被 sticky 标尺遮挡） */}
+      <div className="relative" style={{ width: `${totalWidth}px` }}>
+        {/* 当前章节列高亮带（跨整列，从标尺下方开始避免被 sticky 标尺遮挡） */}
+        <div
+          className="absolute top-[44px] bottom-0 pointer-events-none z-[5] border-x border-amber-500/30"
+          style={{ left: `${highlightLeft}px`, width: `${cellWidth}px`, background: 'rgba(245, 158, 11, 0.07)' }}
+          aria-hidden="true"
+        />
+
+        {/* 拖入反馈：高亮目标章节列（仅在拖拽元素悬停于矩阵上时显示） */}
+        {isOver && dragOverChapter != null && (
           <div
-            className="absolute top-[44px] bottom-0 pointer-events-none z-[5] border-x border-amber-500/30"
-            style={{ left: `${highlightLeft}px`, width: `${cellWidth}px`, background: 'rgba(245, 158, 11, 0.07)' }}
+            className="absolute top-[44px] bottom-0 pointer-events-none z-[7] border-x border-blue-500/60 rounded-sm"
+            style={{
+              left: `${SIDEBAR_W + (dragOverChapter - 1) * cellWidth}px`,
+              width: `${cellWidth}px`,
+              background: 'rgba(59, 130, 246, 0.18)',
+            }}
             aria-hidden="true"
           />
-
-          {/* 拖入反馈：高亮目标章节列（仅在拖拽元素悬停于矩阵上时显示） */}
-          {isOver && dragOverChapter != null && (
-            <div
-              className="absolute top-[44px] bottom-0 pointer-events-none z-[7] border-x border-blue-500/60 rounded-sm"
-              style={{
-                left: `${SIDEBAR_W + (dragOverChapter - 1) * cellWidth}px`,
-                width: `${cellWidth}px`,
-                background: 'rgba(59, 130, 246, 0.18)',
-              }}
-              aria-hidden="true"
-            />
-          )}
+        )}
 
           {/* 释放后闪烁反馈：蓝色脉冲 */}
           {flashChapter != null && (
@@ -356,6 +414,7 @@ export function MatrixView({
             </div>
             {/* 章节标尺单元格（仅渲染可见列） */}
             <div className="flex">
+              {console.log('[MatrixView] RULER RENDER:', { visibleRange, visibleChapterColumnsLen: visibleChapterColumns.length, maxChapter, cellWidth })}
               {/* 左侧占位：撑开滚动条到第一个可见章节的位置 */}
               {visibleRange.start > 1 && (
                 <div style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} aria-hidden="true" />
@@ -404,41 +463,42 @@ export function MatrixView({
             </div>
           </div>
 
-          {/* 分组 + 实体行 */}
+          {/* 分组 + 实体行（无实体时显示空状态引导，但章节标尺仍然显示） */}
           <div className="relative z-[6]">
-            {groups.map((group) => {
-              if (activeFilter != null && group.id !== activeFilter) return null
-              const meta = GROUP_META[group.id]
-              const collapsed = collapsedGroups.has(group.id)
-              return (
-                <GroupBlock
-                  key={group.id}
-                  group={group}
-                  collapsed={collapsed}
-                  visibleChapterColumns={visibleChapterColumns}
-                  visibleRange={visibleRange}
-                  titleMap={titleMap}
-                  maxChapter={maxChapter}
-                  cellWidth={cellWidth}
-                  selectedNodeId={selectedNodeId}
-                  color={meta.color}
-                  colorRgb={meta.colorRgb}
-                  icon={meta.icon}
-                  onToggleCollapse={() => onToggleCollapse(group.id)}
-                  onEntityClick={handleEntityClick}
-                  onContextMenuCell={onContextMenuCell}
-                  onContextMenuGroupEmpty={onContextMenuGroupEmpty}
-                  onEditSpan={onEditSpan}
-                  onTogglePresent={onTogglePresent}
-                />
-              )
-            })}
+            {hasAnyEntity ? (
+              groups.map((group) => {
+                if (activeFilter != null && group.id !== activeFilter) return null
+                const meta = GROUP_META[group.id]
+                const collapsed = collapsedGroups.has(group.id)
+                return (
+                  <GroupBlock
+                    key={group.id}
+                    group={group}
+                    collapsed={collapsed}
+                    visibleChapterColumns={visibleChapterColumns}
+                    visibleRange={visibleRange}
+                    titleMap={titleMap}
+                    maxChapter={maxChapter}
+                    cellWidth={cellWidth}
+                    selectedNodeId={selectedNodeId}
+                    color={meta.color}
+                    colorRgb={meta.colorRgb}
+                    icon={meta.icon}
+                    onToggleCollapse={() => onToggleCollapse(group.id)}
+                    onEntityClick={handleEntityClick}
+                    onContextMenuCell={onContextMenuCell}
+                    onContextMenuGroupEmpty={onContextMenuGroupEmpty}
+                    onEditSpan={onEditSpan}
+                    onTogglePresent={onTogglePresent}
+                  />
+                )
+              })
+            ) : (
+              <MatrixEmptyState />
+            )}
           </div>
         </div>
-      ) : (
-        <MatrixEmptyState />
-      )}
-    </div>
+      </div>
   )
 }
 
@@ -955,51 +1015,108 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
       )
     }
     case 'foreshadow': {
+      // 迁移 055：伏笔改为多段跨度色带样式（参照 conflict），保留 plant/payoff 端点语义标记
+      // - 多段跨度用色带渲染活跃区间
+      // - plant 章节显示埋设点手柄（▶ 标记）
+      // - payoff 章节显示回收点手柄（▶ 标记，仅已回收）
+      // - 拖动 plant 手柄调整 firstChapter（埋设点）
+      // - 拖动 payoff 手柄调整 recoverByChapter（回收点）
+      const spans = entity.chapterSpans ?? []
+      if (spans.length === 0) return null
       const plant = entity.plantChapter
-      if (plant == null) return null
       const payoff = entity.payoffChapter
       const recovered = payoff != null
-      const endChapter = payoff ?? maxChapter
-      const lineLeft = (plant - 1) * cellWidth + cellWidth / 2
-      const lineWidth = (endChapter - plant) * cellWidth
-      const arrowLeft = (maxChapter - 1) * cellWidth + cellWidth / 2
-      const plantHandleLeft = (plant - 1) * cellWidth + cellWidth / 2
-      const payoffHandleLeft = payoff != null ? (payoff - 1) * cellWidth + cellWidth / 2 : null
       return (
-        <div className="absolute inset-0 z-[2] pointer-events-none">
-          <span
-            className={`absolute top-1/2 -translate-y-1/2 h-0 rounded ${recovered ? 'opacity-60' : 'opacity-50 border-t-dashed'}`}
-            style={{ left: lineLeft, width: lineWidth, borderTop: `1.5px solid ${color}` }}
-          />
-          {!recovered && (
-            <span
-              className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 text-xs font-mono z-[3] [text-shadow:0_0_6px_currentColor]"
-              style={{ left: arrowLeft, color }}
-            >→</span>
+        <>
+          {spans.map((span, idx) => {
+            const [s, e] = span
+            const left = (s - 1) * cellWidth
+            const width = (e - s + 1) * cellWidth
+            return (
+              <div
+                key={`span-${idx}`}
+                className="group/span absolute top-1/2 h-[15px] -translate-y-1/2 rounded z-[2] cursor-pointer hover:brightness-110 transition-[filter] overflow-visible"
+                style={{
+                  position: 'absolute',
+                  left, width,
+                  // 已回收伏笔色带更淡，待回收伏笔色带更亮（视觉区分状态）
+                  background: `rgba(${colorRgb}, ${recovered ? 0.10 : 0.18})`,
+                  border: `1px solid rgba(${colorRgb}, ${recovered ? 0.25 : 0.4})`,
+                  // 未回收时色带虚线（暗示"还在持续"），已回收时实线（"已完成"）
+                  borderStyle: recovered ? 'solid' : 'dashed',
+                }}
+                data-tip="双击编辑跨度 · 拖动两端圆点调整范围"
+                onDoubleClick={(ev) => {
+                  ev.stopPropagation()
+                  onEditSpan?.(entity)
+                }}
+                onContextMenu={(ev) => {
+                  if (!onContextMenuCell) return
+                  ev.preventDefault()
+                  ev.stopPropagation()
+                  const rect = ev.currentTarget.getBoundingClientRect()
+                  const offset = Math.floor((ev.clientX - rect.left) / cellWidth)
+                  const ch = Math.min(e, Math.max(s, s + offset))
+                  onContextMenuCell(entity.entityId, entity.name, entity.kind, ch, ev.clientX, ev.clientY)
+                }}
+              >
+                {/* 跨度段端点手柄（每段都有，可独立调整该段起止） */}
+                <EndpointHandle
+                  entityId={entity.entityId}
+                  entityType={entity.kind}
+                  spanIndex={idx}
+                  end="start"
+                  origChapter={s}
+                  left={cellWidth / 2}
+                  color={color}
+                />
+                <EndpointHandle
+                  entityId={entity.entityId}
+                  entityType={entity.kind}
+                  spanIndex={idx}
+                  end="end"
+                  origChapter={e}
+                  left={width - cellWidth / 2}
+                  color={color}
+                />
+              </div>
+            )
+          })}
+          {/* 埋设点 plant 语义标记（在 plant 章节列中心显示，区别于跨度端点） */}
+          {plant != null && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 z-[4] pointer-events-none flex items-center justify-center"
+              style={{
+                left: (plant - 1) * cellWidth + cellWidth / 2 - 8,
+                width: 16, height: 16,
+              }}
+              aria-hidden="true"
+            >
+              <span
+                className="text-[10px] font-mono font-bold leading-none"
+                style={{ color, textShadow: '0 0 4px var(--color-surface-1)' }}
+                title="埋设点"
+              >●</span>
+            </div>
           )}
-          {/* 埋设点手柄 */}
-          <EndpointHandle
-            entityId={entity.entityId}
-            entityType={entity.kind}
-            spanIndex={0}
-            end="start"
-            origChapter={plant}
-            left={plantHandleLeft}
-            color={color}
-          />
-          {/* 回收点手柄（仅已回收） */}
-          {payoff != null && payoffHandleLeft != null && (
-            <EndpointHandle
-              entityId={entity.entityId}
-              entityType={entity.kind}
-              spanIndex={0}
-              end="end"
-              origChapter={payoff}
-              left={payoffHandleLeft}
-              color={color}
-            />
+          {/* 回收点 payoff 语义标记（仅已回收时显示） */}
+          {payoff != null && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 z-[4] pointer-events-none flex items-center justify-center"
+              style={{
+                left: (payoff - 1) * cellWidth + cellWidth / 2 - 8,
+                width: 16, height: 16,
+              }}
+              aria-hidden="true"
+            >
+              <span
+                className="text-[10px] font-mono font-bold leading-none"
+                style={{ color, textShadow: '0 0 4px var(--color-surface-1)' }}
+                title="回收点"
+              >✓</span>
+            </div>
           )}
-        </div>
+        </>
       )
     }
     case 'world_element': {
@@ -1055,8 +1172,11 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
       origChapter,
     } satisfies EndpointDragData,
   })
+  // ⚠️ 把 transform.y 钉死为 0：章节换算 computeChapterFromRect 只用 X 坐标，
+  // Y 坐标完全不影响结果。如果不限制 Y，拖动时手柄会跨行跑（视觉错乱），
+  // 用户反馈"三角形超过自己的轨道"。直接丢弃 Y 位移，手柄只在 X 轴移动。
   const tf = transform
-    ? `translate(-50%, -50%) translate3d(${transform.x}px, ${transform.y}px, 0)`
+    ? `translate(-50%, -50%) translate3d(${transform.x}px, 0px, 0)`
     : 'translate(-50%, -50%)'
   return (
     <div

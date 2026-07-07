@@ -336,6 +336,9 @@ export interface NovelForeshadow {
   recoverMethod?: ForeshadowRecoverMethod
   // ── P3-2：关联信息差 ID 数组（JSON: string[]）──
   linkedInfoLayers: string
+  // ── 迁移 055：多段章节跨度（与 conflicts/factions 同模式）
+  // 描述伏笔"活跃"区间，可非连续多段；firstChapter 仍为埋设点 plant，recoverByChapter 为回收点 payoff
+  chapterSpans: Array<[number, number]>
   createdAt: number
   updatedAt: number
 }
@@ -571,6 +574,8 @@ export interface CreateForeshadowInput {
   // ── P2-2：埋设/回收方式 ──
   plantMethod?: ForeshadowPlantMethod
   recoverMethod?: ForeshadowRecoverMethod
+  // ── 迁移 055：多段章节跨度 ──
+  chapterSpans?: Array<[number, number]>
 }
 
 export interface CreateConflictInput {
@@ -831,6 +836,27 @@ export interface CreateMarkerInput {
 }
 
 export type UpdateMarkerInput = Partial<CreateMarkerInput>
+
+// ── 实体去重（整理功能）──
+
+export type DeduplicateEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location'
+
+export interface DeduplicateGroup {
+  kind: DeduplicateEntityKind
+  /** 用于判重的字段值（character/faction/location 为 name，conflict/foreshadow 为 description） */
+  key: string
+  /** 保留的实体 ID（每组保留 createdAt 最早的） */
+  keptId: string
+  /** 保留实体的显示名称 */
+  keptName: string
+  /** 待删除的实体列表 */
+  removed: Array<{ id: string; name: string; createdAt: number }>
+}
+
+export interface DeduplicateReport {
+  groups: DeduplicateGroup[]
+  totalRemoved: number
+}
 
 // ── AI 角色生成 ──
 
@@ -1578,7 +1604,85 @@ export async function aiArrangeFlow(
   }
 }
 
-// ── 缓存诊断 ──
+/**
+ * 从正文反推实体到矩阵（SSE 流式）
+ *
+ * 后端端点 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/reverse-arrange
+ * 用户手写章节正文后，调用此接口从正文提取实体并落库到矩阵。
+ * SSE 事件格式与 aiArrangeFlow 一致（progress/result/error），无 checkpoint。
+ */
+export async function reverseArrangeFlow(
+  projectId: string,
+  chapterNumber: number,
+  options: AiArrangeFlowOptions,
+): Promise<void> {
+  const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/chapters/${chapterNumber}/reverse-arrange`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({}),
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    throw new Error(`反推实体启动失败: HTTP ${response.status} ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('响应体为空，无法读取 SSE 流')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      let newlineIdx: number
+      while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
+        const rawEvent = buffer.slice(0, newlineIdx)
+        buffer = buffer.slice(newlineIdx + 2)
+
+        const dataLines = rawEvent
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
+
+        if (dataLines.length === 0) continue
+
+        let payload: { type: string; data?: unknown; error?: string } | null = null
+        try {
+          payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
+        } catch {
+          continue
+        }
+        if (!payload) continue
+
+        if (payload.type === 'progress') {
+          options.onProgress?.(payload.data)
+        } else if (payload.type === 'result') {
+          options.onResult?.(payload.data)
+        } else if (payload.type === 'error') {
+          options.onError?.(payload.error ?? '反推实体失败')
+        }
+      }
+    }
+  } catch (err) {
+    if (options?.signal?.aborted) return
+    throw err
+  } finally {
+    try {
+      await reader.cancel()
+    } catch { /* reader 已关闭则忽略 */ }
+  }
+}
 
 export interface CacheDiagnostics {
   systemPromptHashes: Record<string, string>
@@ -1701,4 +1805,20 @@ export function updateMarker(id: string, input: UpdateMarkerInput): Promise<Nove
 
 export function deleteMarker(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/markers/${id}`)
+}
+
+// ── 实体去重（整理功能）──
+
+/**
+ * 扫描并合并重复实体。
+ *
+ * @param dryRun true 只扫描返回报告，不实际合并；默认 false 实际执行
+ *
+ * 判重规则：
+ * - character / faction / location：按 name 完全相同（trim + 小写归一化）
+ * - conflict / foreshadow：按 description 完全相同（trim）
+ * 合并策略：保留 createdAt 最早的，迁移关联数据后删除其余
+ */
+export function deduplicateEntities(projectId: string, dryRun = false): Promise<DeduplicateReport> {
+  return postApi<DeduplicateReport>(`${BASE}/projects/${projectId}/entities/deduplicate`, { dryRun })
 }

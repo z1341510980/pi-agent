@@ -409,6 +409,26 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 实体去重（整理功能）
+  // ═══════════════════════════════════════════════════════════════
+
+  const deduplicateSchema = z.object({
+    /** dryRun=true 只扫描返回报告，不实际合并；默认 false 实际执行 */
+    dryRun: z.boolean().optional().default(false),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/entities/deduplicate',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(deduplicateSchema, request, reply)
+      if (!input) return reply
+      const report = store.deduplicateEntities(request.params.projectId, { dryRun: input.dryRun })
+      return success(report, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 卷管理
   // ═══════════════════════════════════════════════════════════════
 
@@ -912,6 +932,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     // ── P2-2：埋设/回收方式（可选，不设默认值以兼容 PATCH .partial()）──
     plantMethod: z.enum(['explicit', 'implicit', 'indirect']).optional(),
     recoverMethod: z.enum(['explicit', 'implicit', 'reverse', 'progressive']).optional(),
+    // ── 迁移 055：多段章节跨度（可选，未传时 store 层兜底为 []）
+    // 用 .optional() 而非 .default([]) 以兼容 PATCH .partial()
+    chapterSpans: z.array(z.tuple([z.number().int(), z.number().int()])).optional(),
   })
 
   routes.push({
@@ -929,6 +952,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         linkedInfoLayers: '[]',
         // category 未传时兜底 'event'（与原 .default('event') 行为一致）
         category: 'event',
+        // chapterSpans 未传时兜底 []（进元素池，矩阵不渲染行）
+        chapterSpans: [],
         ...input,
       })
       return success(foreshadow, request.traceId)
@@ -1833,8 +1858,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           {
             emit: emitter.emit,
             onCheckpoint: async (checkpoint) => {
-              // 通过 ConfirmationManager 发起决策请求（默认 120s 超时，避免永久 pending）
-              // threadId 填 novel-checkpoint-{projectId}-{chapterNumber}，toolName 填 checkpoint_{type}
+              // 通过 ConfirmationManager 发起决策请求
+              // timeoutMs=0 表示无超时：用户可能需要长时间阅读/checkpoint 内容并思考，
+              // 不应因超时自动 reject 导致弹框消失、创作被取消
               const toolCallId = randomUUID()
               const decisionPromise = services.confirmationManager.requestDecision({
                 threadId: `novel-checkpoint-${projectId}-${chapterNumber}`,
@@ -1842,7 +1868,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
                 toolName: `checkpoint_${checkpoint.type}`,
                 args: { checkpoint } as Record<string, unknown>,
                 reason: `等待用户确认 ${checkpoint.type} 检查点`,
-              })
+              }, 0)
               // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
               // 通过 toolCallId 反查拿到 ConfirmationRequest.id，推给前端用于决策路由
               const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
@@ -1988,6 +2014,105 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           stateChanges: [{
             type: 'arrange',
             description: `AI 编排完成，已生成 ${totalCount} 个实体落入第 ${chNum} 章矩阵`,
+          }],
+        })
+      } catch (err) {
+        emitter.error(String(err))
+      } finally {
+        clearInterval(heartbeat)
+        if (!reply.raw.writableEnded) reply.raw.end()
+        aiArrangeLocks.delete(lockKey)
+      }
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 模式3：从已写好的正文反推实体到矩阵（SSE）
+  // 用户手写了章节正文，调用此接口从正文提取实体（角色/冲突/伏笔/势力/地点）并落库到矩阵
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/reverse-arrange',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params
+      const entityGenerator = services.entityGenerator
+
+      // 并发锁：与 ai-arrange 共用锁池，同一章节不允许并发编排
+      const lockKey = `${projectId}:${chapterNumber}`
+      if (aiArrangeLocks.has(lockKey)) {
+        reply.code(409).send({ error: '该章节正在编排中，请稍后' })
+        return
+      }
+
+      let clientDisconnected = false
+      reply.raw.on('close', () => {
+        if (!reply.raw.writableEnded) clientDisconnected = true
+      })
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      request.raw.socket?.setNoDelay(true)
+      const writeRaw = (data: string) => {
+        if (clientDisconnected || reply.raw.writableEnded) return
+        reply.raw.write(data)
+      }
+      const emitter = createNovelAgUiEmitter(
+        createSseEmitterSink(writeRaw),
+        `novel:reverse-arrange:${projectId}:${chapterNumber}`,
+        randomUUID(),
+      )
+      const heartbeat = setInterval(() => {
+        if (clientDisconnected || reply.raw.writableEnded) return
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      try {
+        aiArrangeLocks.set(lockKey, Promise.resolve())
+        const chNum = parseInt(chapterNumber, 10)
+        const chapter = store.getChapter(projectId, chNum)
+        if (!chapter) throw new Error(`章节不存在: ${chNum}`)
+        if (!chapter.content?.trim()) throw new Error('章节正文为空，无法反推实体')
+
+        emitter.progress({ type: 'arrange_start', phase: 'arranging', message: '开始从正文反推实体...' })
+        const arrangedEntities = await entityGenerator.generateAndArrange(
+          projectId,
+          chNum,
+          chapter.content,
+          (evt) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
+          'content', // source='content' 表示从正文反推
+        )
+        const totalCount = arrangedEntities.characterIds.length
+          + arrangedEntities.conflictIds.length
+          + arrangedEntities.foreshadowIds.length
+          + arrangedEntities.factionIds.length
+          + arrangedEntities.locationIds.length
+        emitter.progress({
+          type: 'arrange_done',
+          phase: 'arranging',
+          message: `反推完成：共提取 ${totalCount} 个实体已落入矩阵`,
+          data: arrangedEntities,
+          detail: {
+            kind: 'arrange_summary',
+            total: totalCount,
+            characters: arrangedEntities.characterIds.length,
+            conflicts: arrangedEntities.conflictIds.length,
+            foreshadows: arrangedEntities.foreshadowIds.length,
+            factions: arrangedEntities.factionIds.length,
+            locations: arrangedEntities.locationIds.length,
+          },
+        })
+        emitter.result({
+          status: 'completed',
+          stateChanges: [{
+            type: 'reverse-arrange',
+            description: `从正文反推完成，已提取 ${totalCount} 个实体落入第 ${chNum} 章矩阵`,
           }],
         })
       } catch (err) {

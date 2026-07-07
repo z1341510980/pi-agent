@@ -169,7 +169,7 @@ export function OutlineTree({
                     onClick={() => handleSelectChapter(ch)}
                     onManualArrange={() => onManualArrange(ch)}
                     onAiArrange={() => onAiArrange(ch)}
-                    onOutlineSelect={() => selectNode(ch.id, 'chapter')}
+                    onOutlineSelect={() => handleSelectChapter(ch)}
                   />
                 ))}
               </div>
@@ -190,7 +190,7 @@ export function OutlineTree({
               onClick={() => handleSelectChapter(ch)}
               onManualArrange={() => onManualArrange(ch)}
               onAiArrange={() => onAiArrange(ch)}
-              onOutlineSelect={() => selectNode(ch.id, 'chapter')}
+              onOutlineSelect={() => handleSelectChapter(ch)}
             />
           ))}
         </div>

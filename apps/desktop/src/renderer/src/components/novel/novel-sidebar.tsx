@@ -77,7 +77,7 @@ type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' |
 
 export interface NovelSidebarProps {
   /** 开始创作回调（D-5 联动：手动编排 / AI编排） */
-  onStartCreation?: (mode: 'manual' | 'ai-arrange') => void
+  onStartCreation?: (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => void
 }
 
 export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactElement {
@@ -108,13 +108,17 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   const [error, setError] = useState<string | null>(null)
 
   // 大纲树编排入口：先切播放头到目标章节，再联动 novel-workspace 的 handleStartCreation
+  // ⚠️ 必须把 chapterNumber 直接透传给 onStartCreation，不能只靠 setPlayheadChapter 中转：
+  // setPlayheadChapter 是 zustand set（同步生效），但 novel-workspace 的 handleStartCreation
+  // 是 useCallback 闭包，捕获的 playheadChapter 是旧值，新值要等下一次 React render 才生效。
+  // 同步连调 onStartCreation 时闭包仍读旧值，会传错章节号（默认 1）。
   const handleManualArrange = useCallback((chapter: NovelChapter) => {
     setPlayheadChapter(chapter.chapterNumber)
-    onStartCreation?.('manual')
+    onStartCreation?.('manual', chapter.chapterNumber)
   }, [setPlayheadChapter, onStartCreation])
   const handleAiArrange = useCallback((chapter: NovelChapter) => {
     setPlayheadChapter(chapter.chapterNumber)
-    onStartCreation?.('ai-arrange')
+    onStartCreation?.('ai-arrange', chapter.chapterNumber)
   }, [setPlayheadChapter, onStartCreation])
 
   // 拉取项目列表

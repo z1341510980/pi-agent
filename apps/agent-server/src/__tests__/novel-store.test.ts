@@ -367,7 +367,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     const f = store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: '神秘物品',
       category: 'item', status: 'planned', firstChapter: 1, lastChapter: null,
-      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [[1, 10]],
     })
     expect(f.id).toBe('f-1')
     expect(f.firstChapter).toBe(1)
@@ -377,7 +377,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
     })
     expect(store.getForeshadow('f-1')?.description).toBe('x')
   })
@@ -386,7 +386,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
     })
     const updated = store.updateForeshadow('f-1', { status: 'planted', firstChapter: 3 })
     expect(updated).toBeDefined()
@@ -398,7 +398,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
     })
     expect(store.deleteForeshadow('f-1')).toBe(true)
     expect(store.getForeshadow('f-1')).toBeUndefined()
@@ -408,12 +408,12 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'A',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
     })
     store.createForeshadow({
       id: 'f-2', projectId: 'p-1', description: 'B',
       category: 'item', status: 'planted', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
     })
     expect(store.listForeshadowing('p-1')).toHaveLength(2)
   })
@@ -431,7 +431,7 @@ describe('NovelStore - P3-2 伏笔↔信息差双向联动', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: '神秘戒指',
       category: 'item', status: 'planned', firstChapter: 1, lastChapter: null,
-      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]',
+      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [[1, 10]],
       plantMethod: 'implicit', recoverMethod: 'explicit',
     })
     store.createInformationLayer({

@@ -282,6 +282,11 @@ export interface NovelForeshadow {
   /** ── P3-2：关联信息差 ID 数组（JSON: string[]）
    * 一个伏笔可以承载多个信息差（如同一物品伏笔同时承载"身份未明"+"读者不知来源"两条信息差） */
   linkedInfoLayers: string
+  /** ── 多段章节跨度（迁移 055，与 conflicts/factions 同模式）
+   * 描述伏笔"活跃"区间，可非连续多段（如 [[1,3],[10,12]]）
+   * firstChapter 仍为埋设点（plant）语义标记，recoverByChapter 为回收点（payoff）语义标记
+   * 矩阵按色带样式渲染，与 conflict 一致 */
+  chapterSpans: ChapterSpan[]
   createdAt: number
   updatedAt: number
 }
@@ -877,4 +882,30 @@ export interface NovelMarker {
   entityId: string | null
   createdAt: number
   updatedAt: number
+}
+
+// ── 实体去重（整理功能）──
+
+/** 支持去重的实体类型（不含 world_element，因其无独立 name 且 description 自由） */
+export type DeduplicateEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location'
+
+/** 一组重复实体：保留一个，删除其余 */
+export interface DeduplicateGroup {
+  kind: DeduplicateEntityKind
+  /** 用于判重的字段值（character/faction/location 为 name，conflict/foreshadow 为 description） */
+  key: string
+  /** 保留的实体 ID（每组保留 createdAt 最早的） */
+  keptId: string
+  /** 保留实体的显示名称 */
+  keptName: string
+  /** 待删除的实体列表 */
+  removed: Array<{ id: string; name: string; createdAt: number }>
+}
+
+/** 去重报告 */
+export interface DeduplicateReport {
+  /** 所有重复组（按 character → conflict → foreshadow → faction → location 顺序） */
+  groups: DeduplicateGroup[]
+  /** 总共待删除/已删除的实体数（所有 removed 之和） */
+  totalRemoved: number
 }

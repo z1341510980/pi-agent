@@ -55,6 +55,9 @@ import type {
   NovelAgentLogStatus,
   NovelMarker,
   NovelVolume,
+  DeduplicateEntityKind,
+  DeduplicateGroup,
+  DeduplicateReport,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
@@ -105,6 +108,7 @@ interface ForeshadowRow {
   recover_by_chapter: number | null; linked_characters: string; linked_clues: string
   plant_method: string | null; recover_method: string | null
   linked_info_layers: string
+  chapter_spans: string | null
   created_at: number; updated_at: number
 }
 
@@ -944,9 +948,11 @@ export class NovelStore implements NovelPromptStores {
     const full: NovelForeshadow = { ...foreshadow, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_foreshadowing (id, project_id, description, category, status, first_chapter, last_chapter,
-      recover_by_chapter, linked_characters, linked_clues, plant_method, recover_method, linked_info_layers, created_at, updated_at)
+      recover_by_chapter, linked_characters, linked_clues, plant_method, recover_method, linked_info_layers,
+      chapter_spans, created_at, updated_at)
       VALUES (@id, @project_id, @description, @category, @status, @first_chapter, @last_chapter,
-      @recover_by_chapter, @linked_characters, @linked_clues, @plant_method, @recover_method, @linked_info_layers, @created_at, @updated_at)
+      @recover_by_chapter, @linked_characters, @linked_clues, @plant_method, @recover_method, @linked_info_layers,
+      @chapter_spans, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       category: full.category, status: full.status, first_chapter: full.firstChapter,
@@ -955,6 +961,7 @@ export class NovelStore implements NovelPromptStores {
       plant_method: full.plantMethod ?? null,
       recover_method: full.recoverMethod ?? null,
       linked_info_layers: full.linkedInfoLayers ?? '[]',
+      chapter_spans: JSON.stringify(full.chapterSpans ?? []),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -971,6 +978,7 @@ export class NovelStore implements NovelPromptStores {
       linked_characters=@linked_characters, linked_clues=@linked_clues,
       plant_method=@plant_method, recover_method=@recover_method,
       linked_info_layers=@linked_info_layers,
+      chapter_spans=@chapter_spans,
       updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, category: updated.category, status: updated.status,
@@ -980,6 +988,7 @@ export class NovelStore implements NovelPromptStores {
       plant_method: updated.plantMethod ?? null,
       recover_method: updated.recoverMethod ?? null,
       linked_info_layers: updated.linkedInfoLayers ?? '[]',
+      chapter_spans: JSON.stringify(updated.chapterSpans ?? []),
       updated_at: updated.updatedAt,
     })
     return updated
@@ -1778,6 +1787,313 @@ export class NovelStore implements NovelPromptStores {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // 实体去重（整理功能）
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 扫描并合并重复实体。
+   *
+   * 判重规则：
+   * - character / faction / location：按 name 完全相同（trim + 小写归一化）
+   * - conflict / foreshadow：按 description 完全相同（trim）
+   * - 不做模糊匹配，避免误判；用户如需合并相似但非完全相同的实体，可在画布上手动删除
+   *
+   * 合并策略：
+   * - 每组保留 createdAt 最早的实体
+   * - 删除前迁移关联数据（edges、character_history、relationships、JSON 反向引用等）
+   * - 自环（合并后实体指向自身）的 edges / relationships 会被删除
+   *
+   * @param dryRun true 只扫描返回报告，不实际合并
+   */
+  deduplicateEntities(projectId: string, options?: { dryRun?: boolean }): DeduplicateReport {
+    const dryRun = options?.dryRun ?? false
+    const groups: DeduplicateGroup[] = []
+
+    // 按 character → conflict → foreshadow → faction → location 顺序扫描
+    groups.push(...this.findDuplicateGroups(projectId, 'character'))
+    groups.push(...this.findDuplicateGroups(projectId, 'conflict'))
+    groups.push(...this.findDuplicateGroups(projectId, 'foreshadow'))
+    groups.push(...this.findDuplicateGroups(projectId, 'faction'))
+    groups.push(...this.findDuplicateGroups(projectId, 'location'))
+
+    if (dryRun || groups.length === 0) {
+      return { groups, totalRemoved: groups.reduce((s, g) => s + g.removed.length, 0) }
+    }
+
+    // 执行合并：每组迁移关联 + 删除重复实体
+    // 用事务包裹，保证原子性（任一失败回滚）
+    this.db.transaction(() => {
+      for (const g of groups) {
+        this.mergeDuplicateGroup(g)
+      }
+    })()
+
+    return { groups, totalRemoved: groups.reduce((s, g) => s + g.removed.length, 0) }
+  }
+
+  /** 扫描某种实体的重复组 */
+  private findDuplicateGroups(projectId: string, kind: DeduplicateEntityKind): DeduplicateGroup[] {
+    // 按 kind 取出实体列表，统一为 { id, name, createdAt } 形态
+    type Unified = { id: string; name: string; createdAt: number }
+    let entities: Unified[] = []
+    switch (kind) {
+      case 'character':
+        entities = this.listCharacters(projectId).map((c) => ({ id: c.id, name: c.name, createdAt: c.createdAt }))
+        break
+      case 'conflict':
+        entities = this.listConflicts(projectId).map((c) => ({ id: c.id, name: c.description, createdAt: c.createdAt }))
+        break
+      case 'foreshadow':
+        entities = this.listForeshadowing(projectId).map((f) => ({ id: f.id, name: f.description, createdAt: f.createdAt }))
+        break
+      case 'faction':
+        entities = this.listFactions(projectId).map((f) => ({ id: f.id, name: f.name, createdAt: f.createdAt }))
+        break
+      case 'location':
+        entities = this.listLocations(projectId).map((l) => ({ id: l.id, name: l.name, createdAt: l.createdAt }))
+        break
+    }
+
+    // 按 key 分组（character/faction/location 用 name 小写归一化，conflict/foreshadow 用 description trim）
+    const byKey = new Map<string, Unified[]>()
+    const isNamedKind = kind === 'character' || kind === 'faction' || kind === 'location'
+    for (const e of entities) {
+      const raw = e.name?.trim() ?? ''
+      if (!raw) continue
+      const key = isNamedKind ? raw.toLowerCase() : raw
+      const arr = byKey.get(key) ?? []
+      arr.push(e)
+      byKey.set(key, arr)
+    }
+
+    const groups: DeduplicateGroup[] = []
+    for (const [key, arr] of byKey) {
+      if (arr.length < 2) continue
+      // 按 createdAt 升序，保留最早的
+      arr.sort((a, b) => a.createdAt - b.createdAt)
+      const kept = arr[0]
+      const removed = arr.slice(1)
+      groups.push({
+        kind,
+        // 报告中展示原始 key（保留大小写），便于用户识别
+        key: arr[0].name,
+        keptId: kept.id,
+        keptName: kept.name,
+        removed: removed.map((e) => ({ id: e.id, name: e.name, createdAt: e.createdAt })),
+      })
+    }
+    return groups
+  }
+
+  /** 执行单组合并：迁移关联数据 + 删除重复实体 */
+  private mergeDuplicateGroup(group: DeduplicateGroup): void {
+    const { kind, keptId, removed } = group
+    const removedIds = removed.map((r) => r.id)
+
+    // 通用：迁移 edges（source_id/target_id 替换为 keptId，自环删除）
+    this.retargetEdges(keptId, removedIds)
+
+    // 按实体类型迁移关联
+    switch (kind) {
+      case 'character':
+        this.mergeCharacterAssociations(keptId, removedIds)
+        break
+      case 'conflict':
+        this.mergeConflictAssociations(keptId, removedIds)
+        break
+      case 'foreshadow':
+        this.mergeForeshadowAssociations(keptId, removedIds)
+        break
+      case 'faction':
+        this.mergeFactionAssociations(keptId, removedIds)
+        break
+      case 'location':
+        this.mergeLocationAssociations(keptId, removedIds)
+        break
+    }
+
+    // 删除重复实体（edges 已迁移，deleteXxx 会再次尝试清理 edges，no-op）
+    for (const id of removedIds) {
+      switch (kind) {
+        case 'character':
+          // character 删除前需先清理 history（deleteCharacter 不自动级联）
+          this.deleteCharacterHistoryByCharacter(id)
+          this.deleteCharacter(id)
+          break
+        case 'conflict':
+          this.deleteConflict(id)
+          break
+        case 'foreshadow':
+          this.deleteForeshadow(id)
+          break
+        case 'faction':
+          this.deleteFaction(id)
+          break
+        case 'location':
+          this.deleteLocation(id)
+          break
+      }
+    }
+  }
+
+  /**
+   * 迁移 edges：把 removedIds 的 source_id/target_id 改为 keptId，删除自环。
+   * 顺序很重要：
+   * 1. 删除 source 和 target 都在 removedIds 中的边（合并后必然自环）
+   * 2. 删除 source 或 target 是 keptId，另一个在 removedIds 中的边（合并后自环 keptId→keptId）
+   * 3. UPDATE 其他边的 source_id/target_id
+   */
+  private retargetEdges(keptId: string, removedIds: string[]): void {
+    if (removedIds.length === 0) return
+    const placeholders = removedIds.map(() => '?').join(',')
+    // 1. 删除 removedIds 内部的边
+    this.db.prepare(
+      `DELETE FROM novel_edges WHERE source_id IN (${placeholders}) AND target_id IN (${placeholders})`,
+    ).run(...removedIds, ...removedIds)
+    // 2. 删除 keptId ↔ removedIds 的边（合并后自环）
+    this.db.prepare(
+      `DELETE FROM novel_edges WHERE (source_id = ? AND target_id IN (${placeholders}))
+       OR (source_id IN (${placeholders}) AND target_id = ?)`,
+    ).run(keptId, ...removedIds, ...removedIds, keptId)
+    // 3. UPDATE 其他边
+    this.db.prepare(
+      `UPDATE novel_edges SET source_id = ? WHERE source_id IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+    this.db.prepare(
+      `UPDATE novel_edges SET target_id = ? WHERE target_id IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+  }
+
+  /** character 关联迁移：character_history、relationships、conflicts.participants、factions.leader_id */
+  private mergeCharacterAssociations(keptId: string, removedIds: string[]): void {
+    if (removedIds.length === 0) return
+    const placeholders = removedIds.map(() => '?').join(',')
+
+    // 1. character_history：直接改 character_id
+    this.db.prepare(
+      `UPDATE novel_character_history SET character_id = ? WHERE character_id IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+
+    // 2. relationships：character_a/b 改为 keptId，自环（a==b）删除
+    //    先删除自环（a 和 b 都在 removedIds 中，或 a==b 且都在合并集合）
+    this.db.prepare(
+      `DELETE FROM novel_relationships WHERE character_a IN (${placeholders}) AND character_b IN (${placeholders})`,
+    ).run(...removedIds, ...removedIds)
+    //    删除合并后自环（一方是 keptId，另一方在 removedIds 中）
+    this.db.prepare(
+      `DELETE FROM novel_relationships WHERE (character_a = ? AND character_b IN (${placeholders}))
+       OR (character_a IN (${placeholders}) AND character_b = ?)`,
+    ).run(keptId, ...removedIds, ...removedIds, keptId)
+    //    UPDATE 其他关系的 a/b
+    this.db.prepare(
+      `UPDATE novel_relationships SET character_a = ? WHERE character_a IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+    this.db.prepare(
+      `UPDATE novel_relationships SET character_b = ? WHERE character_b IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+
+    // 3. conflicts.participants (JSON: string[])：把 removedIds 替换为 keptId（去重）
+    this.retargetJsonArrayField(
+      'novel_conflicts', 'participants',
+      keptId, removedIds,
+    )
+
+    // 4. factions.leader_id：直接改
+    this.db.prepare(
+      `UPDATE novel_factions SET leader_id = ? WHERE leader_id IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+  }
+
+  /** conflict 关联迁移：characters.participating_conflicts（JSON 反向索引） */
+  private mergeConflictAssociations(keptId: string, removedIds: string[]): void {
+    if (removedIds.length === 0) return
+    // 把 characters.participating_conflicts 中的 removedIds 替换为 keptId（去重）
+    this.retargetJsonArrayField(
+      'novel_characters', 'participating_conflicts',
+      keptId, removedIds,
+    )
+  }
+
+  /** foreshadow 关联迁移：clues.linked_foreshadow（单 ID）、info_layers.linked_foreshadows（JSON 数组） */
+  private mergeForeshadowAssociations(keptId: string, removedIds: string[]): void {
+    if (removedIds.length === 0) return
+    const placeholders = removedIds.map(() => '?').join(',')
+
+    // 1. clues.linked_foreshadow（单 ID，TEXT）：直接 UPDATE，但要避免与 keptId 冲突
+    //    先删除指向 keptId 的重复线索（避免 UPDATE 后产生重复指向）
+    //    实际上 linked_foreshadow 是单值，不会产生重复，直接 UPDATE 即可
+    this.db.prepare(
+      `UPDATE novel_clues SET linked_foreshadow = ? WHERE linked_foreshadow IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+
+    // 2. info_layers.linked_foreshadows (JSON: string[])：把 removedIds 替换为 keptId（去重）
+    this.retargetJsonArrayField(
+      'novel_information_layers', 'linked_foreshadows',
+      keptId, removedIds,
+    )
+  }
+
+  /** faction 关联迁移：locations.faction_id */
+  private mergeFactionAssociations(keptId: string, removedIds: string[]): void {
+    if (removedIds.length === 0) return
+    const placeholders = removedIds.map(() => '?').join(',')
+    this.db.prepare(
+      `UPDATE novel_locations SET faction_id = ? WHERE faction_id IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+  }
+
+  /** location 关联迁移：locations.parent_id（自引用层级） */
+  private mergeLocationAssociations(keptId: string, removedIds: string[]): void {
+    if (removedIds.length === 0) return
+    const placeholders = removedIds.map(() => '?').join(',')
+    // 把指向 removedIds 的 parent_id 改为 keptId
+    // 注意：如果某个 location 的 parent_id 是自己（理论上不应该），不会受影响
+    this.db.prepare(
+      `UPDATE novel_locations SET parent_id = ? WHERE parent_id IN (${placeholders})`,
+    ).run(keptId, ...removedIds)
+  }
+
+  /**
+   * 通用 JSON 数组字段迁移：把表中某 JSON 数组字段里的 removedIds 替换为 keptId（去重）。
+   * 用于 conflicts.participants / characters.participating_conflicts / info_layers.linked_foreshadows 等反向索引。
+   *
+   * 实现策略：
+   * - 用 LIKE '%id%' 粗筛出可能包含任意 removedId 的行
+   * - 逐行解析 JSON、替换、去重、回写
+   *
+   * @param table 表名（如 'novel_characters'）
+   * @param field JSON 数组字段名（如 'participating_conflicts'）
+   */
+  private retargetJsonArrayField(
+    table: string,
+    field: string,
+    keptId: string,
+    removedIds: string[],
+  ): void {
+    if (removedIds.length === 0) return
+    // 用 LIKE 粗筛出可能包含任意 removedId 的行（避免全表扫描）
+    // 每个 removedId 单独 LIKE，OR 连接
+    const likeClauses = removedIds.map(() => `${field} LIKE ?`).join(' OR ')
+    const likeParams = removedIds.map((id) => `%"${id}"%`)
+    const rows = this.db.prepare(
+      `SELECT id, ${field} as arr FROM ${table} WHERE ${likeClauses}`,
+    ).all(...likeParams) as Array<{ id: string; arr: string | null }>
+
+    const updateStmt = this.db.prepare(
+      `UPDATE ${table} SET ${field} = ? WHERE id = ?`,
+    )
+    for (const row of rows) {
+      const ids = this.parseIdListSafe(row.arr)
+      const next = ids.filter((id) => !removedIds.includes(id))
+      if (ids.some((id) => removedIds.includes(id))) {
+        // 只有确实命中 removedIds 时才加 keptId（避免无谓写入）
+        if (!next.includes(keptId)) next.push(keptId)
+        updateStmt.run(JSON.stringify(next), row.id)
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // 世界观要素 CRUD
   // ═══════════════════════════════════════════════════════════════
 
@@ -2040,6 +2356,8 @@ export class NovelStore implements NovelPromptStores {
       recoverMethod: normalizeForeshadowRecoverMethod(row.recover_method),
       // P3-2：双向关联字段（NULL 容错，迁移前的行可能未填默认 '[]'）
       linkedInfoLayers: row.linked_info_layers ?? '[]',
+      // 迁移 055：多段章节跨度（NULL 容错，迁移前的行 chapterSpans 为 []）
+      chapterSpans: parseChapterSpans(row.chapter_spans),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

@@ -11,8 +11,11 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from 'tiptap-markdown'
+import { Sparkles } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNovelStore } from '@/stores/novel-store'
-import { updateChapter } from '@/api/novel-client'
+import { updateChapter, reverseArrangeFlow } from '@/api/novel-client'
+import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { countWords } from '@/lib/novel-utils'
 import './chapter-content-editor.css'
 
@@ -35,14 +38,17 @@ export function ChapterContentEditor({
   creationChapterNumber,
   creationChapterContent,
 }: ChapterContentEditorProps): ReactElement {
+  const currentProjectId = useNovelStore((s) => s.currentProjectId)
   const playheadChapter = useNovelStore((s) => s.playheadChapter)
   const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
   const chapters = useNovelStore((s) => s.chapters)
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
+  const queryClient = useQueryClient()
 
   const [draftContent, setDraftContent] = useState('')
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [reverseArranging, setReverseArranging] = useState(false)
 
   // ── 避免闭包问题：setTimeout 捕获旧值 ──
   const saveStateRef = useRef<SaveState>('saved')
@@ -69,6 +75,46 @@ export function ChapterContentEditor({
       setErrorMsg(err instanceof Error ? err.message : '保存失败')
     }
   }, [chapters, playheadChapter, upsertChapter])
+
+  // ── 从正文反推实体到矩阵 ──
+  // 先 flushSave 确保最新正文落库，再调用 reverse-arrange SSE 接口
+  const handleReverseArrange = useCallback(async () => {
+    if (!currentProjectId || reverseArranging || isCreationActive) return
+    const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
+    if (!targetChapter) return
+    const content = draftContentRef.current.trim()
+    if (!content) {
+      toastError('正文为空', '请先写好章节正文，再反推实体')
+      return
+    }
+    setReverseArranging(true)
+    // 先强制保存正文，确保后端能读到最新内容
+    if (saveStateRef.current === 'dirty') {
+      await flushSave()
+    }
+    toastSuccess('开始反推实体', `正在从第 ${playheadChapter} 章正文提取实体到矩阵...`)
+    try {
+      await reverseArrangeFlow(currentProjectId, playheadChapter, {
+        onProgress: (evt: unknown) => {
+          const e = evt as { type?: string; message?: string }
+          if (e?.type === 'arrange_done' && e.message) {
+            toastSuccess('反推完成', e.message)
+          }
+        },
+        onResult: () => {
+          // 刷新项目数据（store 会在 query 重新拉取后同步矩阵）
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        },
+        onError: (err: string) => {
+          toastError('反推失败', err)
+        },
+      })
+    } catch (err) {
+      toastError('反推失败', err instanceof Error ? err.message : '未知错误')
+    } finally {
+      setReverseArranging(false)
+    }
+  }, [currentProjectId, reverseArranging, isCreationActive, chapters, playheadChapter, flushSave, queryClient])
 
   // ── 1.5s 防抖保存 ──
   const scheduleDebouncedSave = useCallback(() => {
@@ -104,7 +150,11 @@ export function ChapterContentEditor({
     }
     // 避免重载循环：content 变化（保存后 upsertChapter）不触发重载
     if (loadedChapterIdRef.current === targetChapter.id) return
+
+    // 记住旧章节 id，用于保存未保存的改动到旧章节（而非新章节）
+    const previousChapterId = loadedChapterIdRef.current
     loadedChapterIdRef.current = targetChapter.id
+
     const switchTo = () => {
       const content = targetChapter.content ?? ''
       setDraftContent(content)
@@ -112,13 +162,30 @@ export function ChapterContentEditor({
       setErrorMsg(null)
       if (editor) editor.commands.setContent(content, { emitUpdate: false })
     }
-    // 章节切换前，若有未保存改动，先强制落库
-    if (saveStateRef.current === 'dirty') {
-      void flushSave().finally(switchTo)
+
+    // 章节切换前，若有未保存改动，先保存到旧章节（通过 previousChapterId 定位）
+    if (saveStateRef.current === 'dirty' && previousChapterId) {
+      const previousChapter = chapters.find((c) => c.id === previousChapterId)
+      if (previousChapter) {
+        setSaveState('saving')
+        setErrorMsg(null)
+        updateChapter(previousChapter.id, { content: draftContentRef.current })
+          .then((updated) => {
+            upsertChapter(updated)
+            setSaveState('saved')
+          })
+          .catch((err) => {
+            setSaveState('error')
+            setErrorMsg(err instanceof Error ? err.message : '保存失败')
+          })
+          .finally(switchTo)
+      } else {
+        switchTo()
+      }
     } else {
       switchTo()
     }
-  }, [playheadChapter, isCreationActive, chapters, editor, flushSave])
+  }, [playheadChapter, isCreationActive, chapters, editor, upsertChapter])
 
   // ── 卸载清理 + 强制落库 ──
   useEffect(() => {
@@ -224,7 +291,19 @@ export function ChapterContentEditor({
           <button type="button" onClick={() => editor?.chain().focus().undo().run()} disabled={isCreationActive || !editor?.can().undo()} title="撤销">↶</button>
           <button type="button" onClick={() => editor?.chain().focus().redo().run()} disabled={isCreationActive || !editor?.can().redo()} title="重做">↷</button>
         </div>
-        <div className="cce-word-count tabular-nums">{wordCount} 字</div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleReverseArrange}
+            disabled={isCreationActive || reverseArranging || !currentChapter || wordCount === 0}
+            title="从当前正文提取角色/冲突/伏笔等实体到矩阵"
+            className="inline-flex items-center gap-1 h-7 px-2.5 text-[11px] rounded-md bg-violet-500/10 text-violet-600 border border-violet-500/20 hover:bg-violet-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Sparkles className="size-3" />
+            <span>{reverseArranging ? '反推中...' : '反推实体'}</span>
+          </button>
+          <div className="cce-word-count tabular-nums">{wordCount} 字</div>
+        </div>
       </header>
       <div className="cce-body">
         {currentChapter ? (

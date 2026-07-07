@@ -80,6 +80,7 @@ interface DecisionButton {
 
 const NARRATIVE_DECISIONS: DecisionButton[] = [
   { decision: 'approve', label: '确认', icon: Check, variant: 'default' },
+  { decision: 'rewrite', label: '按意见重写', icon: RotateCcw, variant: 'outline' },
   { decision: 'reject', label: '取消创作', icon: X, variant: 'destructive' },
 ]
 
@@ -533,6 +534,11 @@ export function ChapterLivePanel({
                   {checkpointContent}
                 </div>
               )}
+              {currentCheckpoint.type === 'narrative_task' && (
+                <p className="text-[11px] text-muted-foreground mb-2">
+                  可在下方输入框补充修改意见，点击「按意见重写」让导演重新规划；或直接「确认」进入写作。
+                </p>
+              )}
               <div className="flex items-center gap-2 flex-wrap">
                 {decisions.map((d) => (
                   <Button
@@ -556,7 +562,11 @@ export function ChapterLivePanel({
             <div className="flex items-end gap-2">
               <textarea
                 className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm min-h-[40px] max-h-[120px] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                placeholder={isCheckpoint ? '补充指令（可选，随决策一起发送）...' : '输入指令参与创作（如：加一段环境描写）...'}
+                placeholder={isCheckpoint
+                  ? (currentCheckpoint?.type === 'narrative_task'
+                    ? '补充修改意见，点「按意见重写」让导演重新规划...'
+                    : '补充修改意见，随决策一起发送...')
+                  : '输入指令参与创作（如：加一段环境描写）...'}
                 value={userInput}
                 onChange={(e) => setUserInput(e.target.value)}
                 onKeyDown={(e) => {

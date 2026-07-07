@@ -6,11 +6,12 @@
  * - 编辑组：撤销/重做
  * - 缩放：单元格宽度 ± 按钮
  * - 补全角色历史
+ * - 实体去重（整理功能）
  * - 过滤 chips：角色/冲突/伏笔/势力/地点/世界要素/全部
  */
 
 import { type ReactElement } from 'react'
-import { Undo2, Redo2, History, Minus, Plus } from 'lucide-react'
+import { Undo2, Redo2, History, Minus, Plus, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { GROUP_META, GROUP_ORDER, type MatrixEntityKind } from './matrix-logic'
@@ -36,6 +37,9 @@ export interface MatrixToolbarProps {
   /** 过滤 */
   activeFilter: MatrixEntityKind | null
   onFilterChange: (filter: MatrixEntityKind | null) => void
+  /** 实体去重（整理功能） */
+  onDeduplicateScan?: () => void
+  dedupScanning?: boolean
 }
 
 const FILTER_OPTIONS: Array<{ key: MatrixEntityKind | null; label: string }> = [
@@ -58,7 +62,9 @@ export function MatrixToolbar({
   onUndo,
   onRedo,
   activeFilter,
-  onFilterChange
+  onFilterChange,
+  onDeduplicateScan,
+  dedupScanning = false
 }: MatrixToolbarProps): ReactElement {
   const zoomPct = Math.round((cellWidth / 36) * 100)
 
@@ -157,6 +163,23 @@ export function MatrixToolbar({
             : `补全历史${completableCount > 0 ? ` (${completableCount})` : ''}`}
         </span>
       </Button>
+
+      {/* 实体去重（整理功能） */}
+      {onDeduplicateScan && (
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onDeduplicateScan}
+          disabled={dedupScanning}
+          title="扫描并合并势力、地点、伏笔、冲突、角色中的重复条目"
+          className="h-7"
+        >
+          <Wand2 className="size-3.5" />
+          <span className="hidden sm:inline">
+            {dedupScanning ? '整理中…' : '整理重复'}
+          </span>
+        </Button>
+      )}
 
       {/* 分隔线：补全历史与筛选 chips 之间 */}
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />

@@ -32,9 +32,13 @@ import {
   listProjectCharacterHistory,
   createChapter,
   completeChapter,
+  deduplicateEntities,
+  type DeduplicateReport,
+  type DeduplicateEntityKind,
 } from '@/api/novel-client'
 import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
 import { useShortcut } from '@/hooks/use-shortcut'
+import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { NovelSidebar } from './novel-sidebar'
 import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
@@ -87,6 +91,19 @@ function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
 
 export interface NovelWorkspaceProps {
   onClose: () => void
+}
+
+// ── 实体类型中文标签（去重报告展示用）──
+const DEDUP_KIND_LABEL: Record<DeduplicateEntityKind, string> = {
+  character: '角色',
+  conflict: '冲突',
+  foreshadow: '伏笔',
+  faction: '势力',
+  location: '地点',
+}
+
+function kindLabel(kind: DeduplicateEntityKind): string {
+  return DEDUP_KIND_LABEL[kind] ?? kind
 }
 
 // ── 拖拽预览卡片：根据拖源类型渲染不同的 floating 提示 ──
@@ -167,6 +184,13 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
+
+  // ── 实体去重（整理功能）──
+  // 扫描阶段：dryRun=true 拉取报告 → 用户在 Dialog 中确认 → dryRun=false 实际执行
+  const [dedupDialogOpen, setDedupDialogOpen] = useState(false)
+  const [dedupReport, setDedupReport] = useState<DeduplicateReport | null>(null)
+  const [dedupScanning, setDedupScanning] = useState(false)
+  const [dedupApplying, setDedupApplying] = useState(false)
 
   // ── @dnd-kit 拖拽上下文：侧边栏 → 矩阵 + 矩阵内端点/单元格拖拽 ──
   // PointerSensor 使用 distance:6 激活约束，区分点击（< 6px）与拖拽（≥ 6px），
@@ -298,16 +322,63 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     URL.revokeObjectURL(url)
   }, [currentProject, characters, chapters, conflicts, foreshadows, relationships, clues, worldRules, styleGuides, constraints, infoLayers, factions, locations, worldElements])
 
+  // ── 实体去重（整理功能）──
+  // 扫描：dryRun=true 拉取重复报告，弹 Dialog 让用户确认
+  const handleDeduplicateScan = useCallback(async () => {
+    if (!currentProjectId || dedupScanning || dedupApplying) return
+    setDedupScanning(true)
+    try {
+      const report = await deduplicateEntities(currentProjectId, true)
+      setDedupReport(report)
+      setDedupDialogOpen(true)
+      if (report.totalRemoved === 0) {
+        toastSuccess('未发现重复实体', '所有实体条目均唯一，无需整理')
+      }
+    } catch (err) {
+      toastError('扫描失败', err instanceof Error ? err.message : '未知错误')
+    } finally {
+      setDedupScanning(false)
+    }
+  }, [currentProjectId, dedupScanning, dedupApplying])
+
+  // 执行合并：dryRun=false 实际合并，刷新数据 + toast 报告
+  const handleDeduplicateApply = useCallback(async () => {
+    if (!currentProjectId || dedupApplying) return
+    setDedupApplying(true)
+    try {
+      const report = await deduplicateEntities(currentProjectId, false)
+      // 刷新项目数据（store 会在 query 重新拉取后同步）
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      setDedupDialogOpen(false)
+      setDedupReport(null)
+      if (report.totalRemoved > 0) {
+        toastSuccess(
+          `已合并 ${report.totalRemoved} 个重复实体`,
+          report.groups.map((g) => `${kindLabel(g.kind)}：${g.key}（删除 ${g.removed.length} 个）`).join('\n'),
+        )
+      } else {
+        toastSuccess('未发现重复实体', '所有实体条目均唯一')
+      }
+    } catch (err) {
+      toastError('合并失败', err instanceof Error ? err.message : '未知错误')
+    } finally {
+      setDedupApplying(false)
+    }
+  }, [currentProjectId, dedupApplying, queryClient])
+
   // ── 创作流程 ──
 
-  const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange') => {
+  const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
     if (!currentProjectId || creationFlow.isRunning) return
     // ref 级互斥锁：creationFlow.isRunning 是 React state（setState 异步生效），
     // 快速双击时第二次点击仍读到 false；用 ref 在 try 块执行期间（含 await）立即拦截
     if (startCreationLockRef.current) return
     startCreationLockRef.current = true
     try {
-      const playhead = playheadChapter
+      // 优先用入参 chapterNumber（来自大纲树右键直接传值），回退到 playheadChapter
+      // 修复 React state 闭包陷阱：setPlayheadChapter 后同步连调 onStartCreation 时，
+      // 闭包内的 playheadChapter 还是旧值，必须用入参绕开
+      const playhead = chapterNumber ?? playheadChapter
       const chapter = chapters.find((c) => c.chapterNumber === playhead)
       if (!chapter) return
       setCreationMode(mode)
@@ -448,6 +519,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   // 创作激活状态：运行中或处于非 idle 阶段时，右侧栏切换为创作预览面板
   const isCreationActive = creationFlow.isRunning || creationFlow.phase !== 'idle'
+  // 编辑器只读：仅在真正运行中（含 checkpoint 等待）时锁定，终态（completed/cancelled/error）恢复可编辑
+  const isCreationRunning = creationFlow.isRunning
 
   // playhead 章是否存在：header 创作按钮依赖此判断，避免章节不存在时点击静默无反应
   const playheadChapterExists = chapters.some((c) => c.chapterNumber === playheadChapter)
@@ -593,7 +666,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                           )}
                         >
                           <ChapterContentEditor
-                            isCreationActive={isCreationActive}
+                            isCreationActive={isCreationRunning}
                             creationChapterNumber={creationChapterNumber}
                             creationChapterContent={creationFlow.chapterContent}
                           />
@@ -623,6 +696,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             creationChapterNumber={creationChapterNumber}
                             onRegenerateChapter={handleRegenerateChapter}
                             onStartCreationAt={handleStartCreationAt}
+                            onDeduplicateScan={handleDeduplicateScan}
+                            dedupScanning={dedupScanning}
                           />
                         </ErrorBoundary>
                       </div>
@@ -741,6 +816,78 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </DialogHeader>
             <div className="h-[70vh]">
               <AgentLogPanel chapterNumber={creationChapterNumber} />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* 实体去重确认对话框 */}
+        <Dialog open={dedupDialogOpen} onOpenChange={(open) => {
+          if (!dedupApplying) setDedupDialogOpen(open)
+        }}>
+          <DialogContent className="sm:max-w-2xl max-h-[80vh] p-0 gap-0">
+            <DialogHeader className="px-4 py-3 border-b border-border">
+              <DialogTitle className="flex items-center gap-2 text-sm">
+                <Wand2 className="size-4 text-primary" />
+                整理去重
+              </DialogTitle>
+              <DialogDescription className="text-xs text-pretty">
+                扫描重复实体并合并到保留项（createdAt 最早的），关联数据会自动迁移到保留项
+              </DialogDescription>
+            </DialogHeader>
+            <div className="overflow-y-auto p-4 max-h-[55vh]">
+              {dedupReport == null ? (
+                <div className="text-xs text-muted-foreground py-8 text-center">扫描中...</div>
+              ) : dedupReport.groups.length === 0 ? (
+                <div className="text-xs text-muted-foreground py-8 text-center">
+                  未发现重复实体，所有条目均唯一
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-xs text-muted-foreground">
+                    共发现 <span className="text-text font-medium">{dedupReport.groups.length}</span> 组重复，
+                    将删除 <span className="text-amber-500 font-medium">{dedupReport.totalRemoved}</span> 个重复实体
+                  </div>
+                  {dedupReport.groups.map((g, idx) => (
+                    <div key={`${g.kind}-${g.keptId}-${idx}`} className="rounded-md border border-border p-3 bg-surface-2/50">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                          {kindLabel(g.kind)}
+                        </span>
+                        <span className="text-sm font-medium text-text truncate">
+                          {g.key}
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted-foreground space-y-0.5">
+                        <div>
+                          保留：<span className="text-text">{g.keptName}</span>
+                        </div>
+                        <div>
+                          删除：<span className="text-amber-600">{g.removed.map((r) => r.name).join('、')}</span>
+                          <span className="text-muted-foreground ml-1">（共 {g.removed.length} 个）</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-surface-1/50">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setDedupDialogOpen(false)}
+                disabled={dedupApplying}
+              >
+                取消
+              </Button>
+              <Button
+                size="sm"
+                variant="default"
+                onClick={handleDeduplicateApply}
+                disabled={dedupApplying || dedupReport == null || dedupReport.totalRemoved === 0}
+              >
+                {dedupApplying ? '合并中...' : `确认合并${dedupReport && dedupReport.totalRemoved > 0 ? `（${dedupReport.totalRemoved} 个）` : ''}`}
+              </Button>
             </div>
           </DialogContent>
         </Dialog>

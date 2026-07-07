@@ -21,7 +21,7 @@ export interface ConfirmationManagerOptions {
 interface PendingConfirmation {
   request: ConfirmationRequest
   resolve: (decision: string) => void
-  timer: ReturnType<typeof setTimeout>
+  timer: ReturnType<typeof setTimeout> | null
 }
 
 /** 默认 boolean 兼容决策：批准 */
@@ -48,8 +48,10 @@ export class ConfirmationManager {
    * 与 requestConfirmation 的区别：
    * - 返回 Promise<string>，决策值由调用方约定
    * - 超时后 resolve 为 DECISION_REJECT（'reject'），与旧 API 超时行为一致
+   *
+   * @param timeoutMs 单次超时覆盖，0 表示无超时（永久等待用户决策）
    */
-  requestDecision(payload: ConfirmationRequestPayload): Promise<string> {
+  requestDecision(payload: ConfirmationRequestPayload, timeoutMs?: number): Promise<string> {
     const request: ConfirmationRequest = {
       ...payload,
       id: randomUUID(),
@@ -57,9 +59,12 @@ export class ConfirmationManager {
     }
 
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.resolveRequest(request.id, DECISION_REJECT)
-      }, this.timeoutMs)
+      const effectiveTimeout = timeoutMs !== undefined ? timeoutMs : this.timeoutMs
+      const timer = effectiveTimeout > 0
+        ? setTimeout(() => {
+          this.resolveRequest(request.id, DECISION_REJECT)
+        }, effectiveTimeout)
+        : null
 
       this.pending.set(request.id, {
         request,
@@ -113,7 +118,7 @@ export class ConfirmationManager {
     const pending = this.pending.get(id)
     if (!pending) return false
 
-    clearTimeout(pending.timer)
+    if (pending.timer) clearTimeout(pending.timer)
     this.pending.delete(id)
     pending.resolve(decision)
     // 兼容字段：approved 保留供旧监听者使用，新监听者可读 decision

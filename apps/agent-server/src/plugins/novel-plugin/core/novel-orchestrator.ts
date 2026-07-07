@@ -207,25 +207,46 @@ export class NovelOrchestrator {
         },
       })
 
-      // Phase 1: Director
-      this.emitProgress(options, 'directing', 'phase_change', { message: '导演 Agent 正在分析故事状态...' })
-      // input 统一为字符串：避免 runAgent JSON.stringify 对象导致 LLM 收到 JSON 字符串
-      const directorResult = await this.runAgent('director', projectId, chapterNumber,
-        `请分析当前故事状态，为第 ${chapterNumber} 章规划叙事任务。\n\n---\n\n## 节奏建议\n\n${JSON.stringify(rhythmSuggestion, null, 2)}`,
-        options,
-      )
+      // Phase 1: Director（支持 rewrite 循环：用户在检查点补充修改意见后可重写）
+      const chapter = this.store.getChapter(projectId, chapterNumber)
+      const outlineHint = chapter?.outline?.trim()
+        ? `\n\n---\n\n## 用户章纲（必须严格遵循，作为规划统一起点）\n\n${chapter.outline.trim()}`
+        : ''
+      let directorResult = ''
+      let needRewrite = true
+      while (needRewrite) {
+        this.emitProgress(options, 'directing', 'phase_change', { message: '导演 Agent 正在分析故事状态...' })
+        // input 统一为字符串：避免 runAgent JSON.stringify 对象导致 LLM 收到 JSON 字符串
+        // ⚠️ 章纲（outline）已通过 formatChapterInfo 注入 SEMI 层，Director 在 chapter_context
+        // 中可以看到。这里在 user_message 中再次强调，确保 Director 把章纲作为规划起点。
+        // rewrite 时 runAgent 会把 userMessages 作为"用户修改意见"注入 Director 输入
+        directorResult = await this.runAgent('director', projectId, chapterNumber,
+          `请分析当前故事状态，为第 ${chapterNumber} 章规划叙事任务。\n\n---\n\n## 节奏建议\n\n${JSON.stringify(rhythmSuggestion, null, 2)}${outlineHint}`,
+          options,
+        )
 
-      // 检查点 1
-      this.emitProgress(options, 'checkpoint_narrative', 'phase_change', { message: '等待用户确认叙事任务...' })
-      const narrativeDecision = await options.onCheckpoint({
-        type: 'narrative_task',
-        phase: 'checkpoint_narrative',
-        data: directorResult,
-      })
+        // 检查点 1
+        this.emitProgress(options, 'checkpoint_narrative', 'phase_change', { message: '等待用户确认叙事任务...' })
+        const narrativeDecision = await options.onCheckpoint({
+          type: 'narrative_task',
+          phase: 'checkpoint_narrative',
+          data: directorResult,
+        })
 
-      if (narrativeDecision === 'reject') {
-        this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户取消了创作流程' })
-        return { status: 'cancelled' }
+        if (narrativeDecision === 'reject') {
+          this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户取消了创作流程' })
+          return { status: 'cancelled' }
+        }
+
+        if (narrativeDecision === 'rewrite') {
+          // 用户补充了修改意见，重新调用 Director
+          // userMessages 已由 setUserMessages 设置，runAgent 会注入 Director 输入
+          this.emitProgress(options, 'directing', 'phase_change', { message: '按修改意见重新规划叙事任务...' })
+          continue
+        }
+
+        // approve → 跳出循环
+        needRewrite = false
       }
 
       // 暂存 Director 的实时输出：runAgent 构建 Writer 的 SEMI 层时，会将其注入
@@ -308,7 +329,7 @@ export class NovelOrchestrator {
       const memoryResult = await this.runMemoryAgent(
         projectId, chapterNumber, finalContent, options,
       )
-      const chapter = this.store.getChapter(projectId, chapterNumber)
+      // 复用 line 215 的 chapter 变量，避免重复查询数据库
       const memoryEvents = this.recordMemoryEvents(
         projectId,
         chapterNumber,
@@ -345,10 +366,19 @@ export class NovelOrchestrator {
 
       // 自动保存章节内容到数据库（创作完成后立即持久化，无需用户手动点击"保存到章节"）
       if (chapter) {
+        // ⚠️ 清洗 LLM 输出开头的"思考前缀"（如 "看完了全部约束...开始写作。\n---\n正文"）
+        // 避免思考旁白被原样存入 novel_chapters.content 污染最终正文
+        const cleanedContent = this.stripThinkingPrelude(finalContent)
+        if (cleanedContent !== finalContent) {
+          this.context.logger.info(
+            { projectId, chapterNumber, originalLen: finalContent.length, cleanedLen: cleanedContent.length },
+            '已清洗 Writer 输出开头的思考前缀',
+          )
+        }
         this.store.updateChapter(chapter.id, {
-          content: finalContent,
+          content: cleanedContent,
           status: 'review',
-          wordCount: finalContent.length,
+          wordCount: cleanedContent.length,
         })
       }
 
@@ -417,6 +447,13 @@ export class NovelOrchestrator {
       const userInstructions = this.userMessages.map((m, i) => `${i + 1}. ${m}`).join('\n')
       inputText += `\n\n## 用户创作指令\n用户在创作过程中提出以下指令，请在创作中予以考虑：\n${userInstructions}`
       this.userMessages = []
+    }
+
+    // 对输出自然语言的 Agent（director/writer/reviewer），在 DYNAMIC 层末尾追加铁律提醒。
+    // LLM 最后看到的是 userMessage，末尾提醒利用 recency bias 强化破折号禁令。
+    // memory agent 输出工具调用 JSON，不追加。
+    if (agentType === 'director' || agentType === 'writer' || agentType === 'reviewer') {
+      inputText += '\n\n---\n\n## 最后提醒（最高优先级）\n你的输出中绝不使用破折号"——"，所有转折用逗号或句号自然完成。'
     }
 
     // STATIC 层：系统提示词（Agent 身份 + 世界规则 + 风格 + 角色定义）
@@ -657,6 +694,20 @@ export class NovelOrchestrator {
         },
         'Agent prompt 返回',
       )
+
+      // 后处理：兜底清洗破折号"——"为中文逗号"，"
+      // 即便 systemPrompt 已注入破折号铁律，部分 LLM 仍不遵守。
+      // 此处统一替换所有 Agent 输出，确保 checkpoint 显示、日志、最终保存的正文均无破折号。
+      // 注意：流式增量事件已实时发射给前端，此处无法覆盖流式过程中的显示，
+      // 但 finalContent 保存到数据库时会再次清洗，最终落库版本无破折号。
+      if (result.includes('——')) {
+        const cleaned = result.replace(/——/g, '，')
+        this.context.logger.info(
+          { agentType, agentName: config.name, projectId, originalLength: result.length, cleanedLength: cleaned.length, dashCount: (result.match(/——/g) || []).length },
+          'Agent 输出破折号兜底清洗',
+        )
+        result = cleaned
+      }
 
       logResult = result
       return result
@@ -1647,6 +1698,55 @@ export class NovelOrchestrator {
       entityId: null,
       snapshotData: JSON.stringify(data),
     })
+  }
+
+  /**
+   * 清洗 LLM 输出开头的"思考前缀"。
+   *
+   * 问题：国内兼容网关背后的模型经常在正式输出前先输出一段思考旁白，
+   * 例如 "看完了全部约束。第 2 章是一章突转……开始写作。\n---\n正式正文..."
+   * 这段思考旁白会被原样存入 novel_chapters.content，污染最终章节正文。
+   *
+   * 清洗规则（保守，避免误伤合法正文）：
+   * 1. 如果开头有 `智库...智库结束` 或 `思考...思考结束` 标签块，去掉整个块
+   * 2. 如果开头 500 字符内有 "---" 或 "***" 分隔符（独占一行），取第一个分隔符之后的内容
+   *    - 额外校验：分隔符之前内容不含至少 2 个句号结尾的句子，避免误伤合法用 --- 分段的正文
+   * 3. 否则保持原样
+   */
+  private stripThinkingPrelude(content: string): string {
+    if (!content) return content
+    const trimmed = content.trimStart()
+    if (!trimmed) return content
+
+    // 规则 1：智库块（兼容各种写法）
+    const thinkBlockMatch = trimmed.match(/^智库[\s\S]*?智库结束\s*/)
+    if (thinkBlockMatch) {
+      const stripped = trimmed.slice(thinkBlockMatch[0].length)
+      this.context.logger.debug(
+        { originalLen: content.length, strippedLen: stripped.length },
+        'stripThinkingPrelude: 移除智库块',
+      )
+      return stripped.trimStart()
+    }
+
+    // 规则 2：开头 500 字符内的 "---" 或 "***" 分隔符
+    const head = trimmed.slice(0, 500)
+    const separatorMatch = head.match(/^([\s\S]{0,400}?)\n\s*(?:---+|\*\*+)\s*\n/)
+    if (separatorMatch) {
+      const prelude = separatorMatch[1]
+      // 启发式：前缀部分如果包含至少 2 个句号结尾的句子，可能是合法正文，不清洗
+      const sentenceEndings = (prelude.match(/[。！？.!?]["'"）]?\s*$/gm) || []).length
+      if (sentenceEndings < 2) {
+        const stripped = trimmed.slice(separatorMatch[0].length)
+        this.context.logger.debug(
+          { originalLen: content.length, strippedLen: stripped.length, preludeLen: prelude.length },
+          'stripThinkingPrelude: 移除 --- 分隔符前的思考前缀',
+        )
+        return stripped.trimStart()
+      }
+    }
+
+    return content
   }
 
   /**

@@ -141,6 +141,7 @@ export const CHAPTER_RENUMBER_FIELDS: ChapterRenumberField[] = [
   { table: 'novel_markers', column: 'chapter', kind: 'scalar', nullable: false },
   { table: 'novel_conflicts', column: 'chapter_spans', kind: 'spans' },
   { table: 'novel_factions', column: 'chapter_spans', kind: 'spans' },
+  { table: 'novel_foreshadowing', column: 'chapter_spans', kind: 'spans' },
   { table: 'novel_locations', column: 'appear_chapters', kind: 'list' },
 ]
 

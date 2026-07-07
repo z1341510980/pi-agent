@@ -73,6 +73,9 @@ export interface MatrixWorkspaceProps {
   creationChapterNumber?: number
   onRegenerateChapter?: (chapterNumber: number) => void
   onStartCreationAt?: (chapterNumber: number) => void
+  /** 实体去重（整理功能）扫描 */
+  onDeduplicateScan?: () => void
+  dedupScanning?: boolean
 }
 
 const DEFAULT_CELL_WIDTH = 36
@@ -85,6 +88,8 @@ export function MatrixWorkspace({
   creationChapterNumber,
   onRegenerateChapter,
   onStartCreationAt,
+  onDeduplicateScan,
+  dedupScanning = false,
 }: MatrixWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
@@ -668,23 +673,39 @@ export function MatrixWorkspace({
           break
         }
         case 'foreshadow': {
+          // 迁移 055：伏笔改为多段跨度后，endpoint 拖动调整 chapterSpans
+          // - 拖动 span 段 start/end → 更新该段 chapterSpans（参照 conflict/faction）
+          // - 同时保持 plant/payoff 语义同步：
+          //   * 若拖动第一段 start 且 plant == 原 start → firstChapter 跟随新 start
+          //   * 若拖动最后一段 end 且 payoff == 原 end → recoverByChapter 跟随新 end
+          //   * 若拖动最后一段 end 到新章节且原 payoff 为 null → 设 recoverByChapter = 新 end（标记回收）
+          // 反转保护：clamp 到同段范围内
           const f = useNovelStore.getState().foreshadows.find((x) => x.id === entityId)
-          if (!f || f.firstChapter == null) return
-          if (end === 'start') {
-            // 移动埋设点；若超过回收点则回收点跟随（保持 plant<=payoff）
-            let nextPlant = chapter
-            let nextPayoff = f.recoverByChapter
-            if (nextPayoff != null && nextPlant >= nextPayoff) nextPayoff = nextPlant
-            const updated = await updateForeshadow(entityId, { firstChapter: nextPlant, recoverByChapter: nextPayoff })
-            useNovelStore.getState().upsertForeshadow(updated)
-          } else {
-            // 移动回收点；若早于埋设点则埋设点跟随
-            let nextPayoff = chapter
-            let nextPlant = f.firstChapter
-            if (nextPayoff <= nextPlant) nextPlant = nextPayoff
-            const updated = await updateForeshadow(entityId, { firstChapter: nextPlant, recoverByChapter: nextPayoff, status: 'recovered' })
-            useNovelStore.getState().upsertForeshadow(updated)
+          if (!f) return
+          const span = f.chapterSpans[spanIndex]
+          if (!span) return
+          const nextStart = end === 'start' ? Math.min(chapter, span[1]) : span[0]
+          const nextEnd = end === 'end' ? Math.max(chapter, span[0]) : span[1]
+          const newSpans = f.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
+          // 计算 plant/payoff 同步
+          const patch: { chapterSpans: Array<[number, number]>; firstChapter?: number; recoverByChapter?: number | null; status?: 'recovered' } = { chapterSpans: newSpans }
+          const isFirstSpan = spanIndex === 0
+          const isLastSpan = spanIndex === f.chapterSpans.length - 1
+          if (isFirstSpan && end === 'start' && f.firstChapter === span[0]) {
+            patch.firstChapter = nextStart
           }
+          if (isLastSpan && end === 'end') {
+            if (f.recoverByChapter === span[1]) {
+              // payoff 原本对齐该段 end → 跟随新 end
+              patch.recoverByChapter = nextEnd
+            } else if (f.recoverByChapter == null && nextEnd > span[1]) {
+              // payoff 原本为 null（待回收）且用户把 end 拖到更远章节 → 标记回收
+              patch.recoverByChapter = nextEnd
+              patch.status = 'recovered'
+            }
+          }
+          const updated = await updateForeshadow(entityId, patch)
+          useNovelStore.getState().upsertForeshadow(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -1034,6 +1055,8 @@ export function MatrixWorkspace({
         onRedo={redo}
         activeFilter={activeFilter}
         onFilterChange={handleFilterChange}
+        onDeduplicateScan={onDeduplicateScan}
+        dedupScanning={dedupScanning}
       />
 
       <MatrixLegend />

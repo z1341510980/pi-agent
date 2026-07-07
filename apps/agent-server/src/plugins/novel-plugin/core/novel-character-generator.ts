@@ -192,6 +192,9 @@ export class NovelCharacterGenerator {
       '  · 例：删掉他，主角将失去信息来源，第 12 章的转折将无法触发',
       '  · 若该角色尚未承担剧情功能，填"暂无关键影响"',
       '',
+      '【输出约束（必须遵守）】',
+      '所有输出的文本字段（name / description / personality / appearance / currentState 等）绝不使用破折号"——"，所有转折用自然语句完成。',
+      '',
     ].join('\n')
   }
 

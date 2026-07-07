@@ -54,10 +54,15 @@ function makeConflict(id: string, first: number | null, last: number | null, tie
 }
 
 function makeForeshadow(id: string, first: number | null, recover: number | null): NovelForeshadow {
+  // 迁移 055：chapterSpans 为活跃区间，至少包含 [first, recover ?? first] 一段
+  // 无 first 时 chapterSpans 为 []（进元素池，矩阵不渲染行）
+  const chapterSpans: Array<[number, number]> = first == null
+    ? []
+    : [[first, recover ?? first]]
   return {
     id, projectId: 'p', description: id, category: 'item', status: 'planted' as never,
     firstChapter: first, lastChapter: null, recoverByChapter: recover, linkedCharacters: '',
-    linkedClues: '', createdAt: 0, updatedAt: 0,
+    linkedClues: '', linkedInfoLayers: '[]', chapterSpans, createdAt: 0, updatedAt: 0,
   }
 }
 
@@ -221,7 +226,7 @@ describe('buildGroups', () => {
     })
   })
 
-  it('places foreshadow with firstChapter into foreshadow group', () => {
+  it('places foreshadow with chapterSpans into foreshadow group', () => {
     const data = buildGroups({
       chapters: [], characters: [], conflicts: [],
       foreshadows: [makeForeshadow('f1', 1, 11), makeForeshadow('f2', 7, null), makeForeshadow('f3', null, null)],
@@ -396,9 +401,10 @@ describe('computeCellSymbol', () => {
   })
 
   it('returns foreshadow-plant/payoff/span for foreshadow', () => {
+    // 迁移 055：伏笔改为多段跨度后，span 区间由 chapterSpans 决定
     const entity = {
       id: 'f1', kind: 'foreshadow' as const, name: 'Y', entityId: 'f1', entityType: 'foreshadow' as const,
-      plantChapter: 2, payoffChapter: 10,
+      plantChapter: 2, payoffChapter: 10, chapterSpans: [[2, 10]] as Array<[number, number]>,
     }
     expect(computeCellSymbol(entity, 2)).toEqual({ type: 'foreshadow-plant' })
     expect(computeCellSymbol(entity, 5)).toEqual({ type: 'foreshadow-span', recovered: true })
@@ -409,9 +415,10 @@ describe('computeCellSymbol', () => {
   it('returns unrecovered span for foreshadow without payoff', () => {
     const entity = {
       id: 'f2', kind: 'foreshadow' as const, name: 'Y', entityId: 'f2', entityType: 'foreshadow' as const,
-      plantChapter: 5, payoffChapter: null,
+      plantChapter: 5, payoffChapter: null, chapterSpans: [[5, 5]] as Array<[number, number]>,
     }
-    expect(computeCellSymbol(entity, 7)).toEqual({ type: 'foreshadow-span', recovered: false })
+    expect(computeCellSymbol(entity, 5)).toEqual({ type: 'foreshadow-plant' })
+    expect(computeCellSymbol(entity, 7)).toEqual({ type: 'empty' })
   })
 
   it('returns location for appearChapters', () => {

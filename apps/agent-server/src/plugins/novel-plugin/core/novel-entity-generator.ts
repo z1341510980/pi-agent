@@ -22,6 +22,7 @@ import type {
   CharacterFunctionEntry,
   PlotFunction,
   ChapterSpan,
+  NovelAgentLogStatus,
   NovelCharacter,
   NovelConflict,
   NovelForeshadow,
@@ -300,10 +301,27 @@ export class NovelEntityGenerator {
     chapterNumber: number,
     outline: string,
     onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
+    source: 'outline' | 'content' = 'outline',
   ): Promise<ArrangedEntity> {
-    onProgress?.({ phase: 'analyzing', message: '分析章纲，规划所需实体...' })
+    // ── 编排日志采集变量 ──
+    // 与 runAgent 的日志写入模式对齐：startTime / logStatus / logError / logResult
+    const startTime = Date.now()
+    let logStatus: NovelAgentLogStatus = 'success'
+    let logError = ''
+    /** 规划阶段的 LLM 调用上下文（systemPrompt / userMessage / rawResult），由 planEntitiesFromOutline 返回 */
+    let planLogContext: {
+      systemPrompt: string
+      userMessage: string
+      rawResult: string
+      status: 'success' | 'error'
+      error: string
+    } | null = null
 
-    const plan = await this.planEntitiesFromOutline(projectId, outline, onProgress)
+    const isReverse = source === 'content'
+    onProgress?.({ phase: 'analyzing', message: isReverse ? '分析正文，反推本章实体...' : '分析章纲，规划所需实体...' })
+
+    const { plan, logContext } = await this.planEntitiesFromOutline(projectId, chapterNumber, outline, onProgress, source)
+    planLogContext = logContext
     onProgress?.({
       phase: 'planned',
       message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点`,
@@ -519,6 +537,22 @@ export class NovelEntityGenerator {
             ?? [...existingForeshadowByDesc.values()].find((f) => f.description.includes(hint.name))
           if (existing) {
             onProgress?.({ phase: 'generating', message: `复用已有伏笔：${existing.description.slice(0, 30)}` })
+            // 补全章节维度字段（参考 syncChapterDimensions + conflict 扩展 chapterSpans 逻辑）：
+            // - lastChapter 更新为本章（兼容字段，标记伏笔在本章延续/出现）
+            // - firstChapter 为 null（旧数据）时补为本章（埋设点 plant 语义标记）
+            // - chapterSpans 扩展包含本章（若尚未包含），矩阵按色带样式渲染活跃区间
+            const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
+            if (existing.firstChapter == null) {
+              patch.firstChapter = chapterNumber
+            }
+            const spans = existing.chapterSpans ?? []
+            const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
+            if (!alreadyCovers) {
+              patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+            }
+            this.store.updateForeshadow(existing.id, patch)
+            // 同步内存 map，避免后续同名合并分支拿到旧数据
+            existingForeshadowByDesc.set(existing.description.slice(0, 40), { ...existing, ...patch })
             foreshadowIds.push(existing.id)
             generatedForeshadows.push({ description: existing.description, category: existing.category })
             continue
@@ -532,6 +566,18 @@ export class NovelEntityGenerator {
         const dup = existingForeshadowByDesc.get(dupKey)
         if (dup) {
           onProgress?.({ phase: 'generating', message: `检测到相似伏笔，合并为已有实体` })
+          // 同上：补全章节维度字段 + 扩展 chapterSpans 包含本章
+          const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
+          if (dup.firstChapter == null) {
+            patch.firstChapter = chapterNumber
+          }
+          const spans = dup.chapterSpans ?? []
+          const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
+          if (!alreadyCovers) {
+            patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+          }
+          this.store.updateForeshadow(dup.id, patch)
+          existingForeshadowByDesc.set(dupKey, { ...dup, ...patch })
           foreshadowIds.push(dup.id)
           generatedForeshadows.push({ description: dup.description, category: dup.category })
           continue
@@ -550,6 +596,9 @@ export class NovelEntityGenerator {
           plantMethod: gen.data.plantMethod,
           recoverMethod: gen.data.recoverMethod,
           linkedInfoLayers: '[]',
+          // 新建伏笔：埋设点 = 本章，活跃区间初始为单点段 [chapter, chapter]
+          // 待回收时由用户拖动终点扩展，回收后 chapterSpans 末段 end = recoverByChapter
+          chapterSpans: [[chapterNumber, chapterNumber] as ChapterSpan],
         })
         existingForeshadowByDesc.set(created.description.slice(0, 40), created)
         foreshadowIds.push(created.id)
@@ -672,6 +721,9 @@ export class NovelEntityGenerator {
         generatedLocations.push({ name: created.name, type: created.type })
       }
     } catch (err) {
+      // 标记日志状态为失败，供 finally 块写入日志使用
+      logStatus = 'error'
+      logError = err instanceof Error ? err.message : String(err)
       // 反向顺序 best-effort 清理已落库实体，避免半编排脏数据污染后续 create-flow
       for (const id of locationIds) {
         try {
@@ -714,6 +766,69 @@ export class NovelEntityGenerator {
         `generateAndArrange 失败，已回滚 ${rolledBack} 个实体`,
       )
       throw err
+    } finally {
+      // ── 持久化编排日志（agent_type='arranger'）──
+      // 参考 runAgent 的日志写入模式（novel-orchestrator.ts line 691），
+      // 把编排的完整输入输出写入 novel_agent_logs，让用户能在 Agent 日志面板审计编排流程。
+      // fire-and-forget：日志写入失败不影响主流程
+      try {
+        const logResultStr = JSON.stringify({
+          // 规划阶段：LLM 看到的输入 + 原始输出
+          planning: {
+            systemPromptPreview: planLogContext?.systemPrompt.slice(0, 500) ?? '',
+            userMessage: planLogContext?.userMessage ?? '',
+            rawLlmOutput: planLogContext?.rawResult ?? '',
+            planningStatus: planLogContext?.status ?? 'unknown',
+            planningError: planLogContext?.error ?? '',
+          },
+          // 执行阶段：实际生成/复用的实体清单
+          execution: {
+            characters: generatedCharacters,
+            conflicts: generatedConflicts,
+            foreshadows: generatedForeshadows,
+            factions: generatedFactions,
+            locations: generatedLocations,
+          },
+          // 汇总计数
+          summary: {
+            characterCount: characterIds.length,
+            conflictCount: conflictIds.length,
+            foreshadowCount: foreshadowIds.length,
+            factionCount: factionIds.length,
+            locationCount: locationIds.length,
+            characterFunctionCount: characterFunctions.length,
+          },
+        }, null, 2)
+        this.store.insertAgentLog({
+          projectId,
+          chapterNumber,
+          agentType: 'arranger',
+          agentName: '编排',
+          displayAgentType: 'arranger',
+          displayAgentName: '编排',
+          phase: 'arranging',
+          systemPrompt: planLogContext?.systemPrompt ?? '',
+          // chapterContext 留空：编排阶段不依赖 chapterContext，相关上下文已在 userMessage 中
+          chapterContext: '',
+          userMessage: planLogContext?.userMessage ?? '',
+          taskInput: outline,
+          userInstructions: [],
+          tools: [],
+          toolNames: [],
+          result: logResultStr,
+          resultLength: logResultStr.length,
+          durationMs: Date.now() - startTime,
+          status: logStatus,
+          error: logError,
+          sessionId: '',
+        })
+      } catch (logErr) {
+        // 日志写入失败不影响主流程
+        this.context.logger.warn(
+          { projectId, chapterNumber, err: logErr },
+          '编排日志写入失败',
+        )
+      }
     }
 
     onProgress?.({
@@ -811,14 +926,26 @@ export class NovelEntityGenerator {
    */
   private async planEntitiesFromOutline(
     projectId: string,
+    chapterNumber: number,
     outline: string,
     onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
+    source: 'outline' | 'content' = 'outline',
   ): Promise<{
-    characters: Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>
-    conflicts: { coreStyle: string }[]
-    foreshadows: { coreStyle: string }[]
-    factions: { coreStyle: string }[]
-    locations: { coreStyle: string }[]
+    plan: {
+      characters: Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>
+      conflicts: { coreStyle: string }[]
+      foreshadows: { coreStyle: string }[]
+      factions: { coreStyle: string }[]
+      locations: { coreStyle: string }[]
+    }
+    // 附带 LLM 调用上下文，供 generateAndArrange 写入 agent 日志使用
+    logContext: {
+      systemPrompt: string
+      userMessage: string
+      rawResult: string
+      status: 'success' | 'error'
+      error: string
+    }
   }> {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
 
@@ -833,25 +960,67 @@ export class NovelEntityGenerator {
     const existingFactions = this.store.listFactions(projectId)
     const existingLocations = this.store.listLocations(projectId)
 
+    // ── 收集三层大纲：项目大纲 + 卷纲 + 章纲 ──
+    // ⚠️ 历史问题：之前只传 chapter.outline，LLM 看不到项目整体大纲和当前卷的卷纲，
+    // 无法理解这一章在全局的位置，导致编排的实体与设定不符。
+    // 现在把三层大纲都注入 prompt，让 LLM 在完整上下文下规划。
+    const project = this.store.getProject(projectId)
+    const projectOutline = project?.outline?.trim() ?? ''
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    const volumeOutline = (() => {
+      if (!chapter?.volumeId) return ''
+      const vol = this.store.getVolume(chapter.volumeId)
+      return vol?.outline?.trim() ?? ''
+    })()
+
     const formatExistingList = (
       items: Array<{ name?: string; description?: string }>,
       fallbackLabel: string,
     ): string => {
       if (items.length === 0) return `（暂无${fallbackLabel}）`
       return items
-        .map((it, i) => `${i + 1}. ${it.name ?? fallbackLabel}${it.description ? `：${it.description.slice(0, 60)}` : ''}`)
+        .map((it, i) => `${i + 1}. ${it.name ?? fallbackLabel}${it.description ? `：${it.description.slice(0, 100)}` : ''}`)
         .join('\n')
     }
 
+    // ── 根据 source 构建不同的 userPrompt ──
+    // source='outline': 从章纲编排实体（原有逻辑）
+    // source='content': 从已写好的正文反推实体（新功能）
+    const isReverse = source === 'content'
+    const sourceInstruction = isReverse
+      ? '你是小说实体反推助手。根据以下已写好的章节正文，反推本章涉及哪些实体（角色/冲突/伏笔/势力/地点），包括已有实体和新出现的实体。'
+      : '你是小说实体规划助手。根据以下三层大纲（项目大纲 + 卷纲 + 章纲），规划本章需要哪些实体（包括已有 + 新增）。'
+
     const userPrompt = [
-      '你是小说实体规划助手。根据以下章纲，规划本章需要哪些实体（包括已有 + 新增）。',
+      sourceInstruction,
       '',
-      '【已有实体清单（重要）】',
-      '以下是项目里已经存在的实体。本章需要的实体如果已在清单中，**必须返回**——',
-      '在 coreStyle 里写 "已有：<名字>"（如 "已有：林墨"），后端会按名匹配并更新 chapterSpans/appearChapters',
-      '让矩阵标记本章出场。如果本章需要但实体不在清单中，才返回新增项（coreStyle 写一句话描述）。',
+      isReverse
+        ? '【三层上下文（项目大纲提供全局设定背景，卷纲提供当前卷走向，正文是反推的唯一依据）】'
+        : '【三层大纲（按重要性递减，章纲最具体必须严格遵循，项目大纲提供全局设定背景）】',
       '',
-      '**关键**：返回的数组要包含"本章需要登场的所有实体"，不要因为是已有就跳过。空数组意味着"本章不需要任何实体"。',
+      '### 项目大纲（全局设定背景）',
+      projectOutline || '（未填写）',
+      '',
+      '### 卷纲（当前卷主题与走向）',
+      volumeOutline || '（未填写）',
+      '',
+      isReverse
+        ? `### 章节正文（反推依据 - 从中提取本章涉及的所有实体）`
+        : '### 章纲（本章具体内容 - 必须严格遵循）',
+      outline,
+      '',
+      '【已有实体清单（重要 - 复用优先）】',
+      '以下是项目里已经存在的实体。**本章需要的实体如果已在清单中，必须复用，不要新建同名/同描述的实体**。',
+      '',
+      '复用写法（coreStyle 字段）：',
+      '- 角色/势力/地点（有独立 name 字段）：写 "已有：<name>"，如 "已有：林墨"、"已有：国安总局"',
+      '- 冲突/伏笔（无 name 字段，只有 description）：写 "已有：<描述前 40 字>"，',
+      '  必须原样复制下方清单中的描述前 40 字（后端按前 40 字匹配）',
+      '- 新增实体：写一句话描述其核心特征（不要加"已有："前缀）',
+      '',
+      '**关键**：返回的数组要包含"本章需要登场的所有实体"，不要因为是已有就跳过。',
+      '空数组意味着"本章不需要任何该类实体"。',
+      '如果本章不需要新增某类实体且已有实体都不延续到本章，返回空数组。',
       '',
       `### 已有角色（${existingCharacters.length}）`,
       formatExistingList(existingCharacters.map((c) => ({ name: c.name, description: c.description })), '角色'),
@@ -869,13 +1038,8 @@ export class NovelEntityGenerator {
       formatExistingList(existingLocations.map((l) => ({ name: l.name, description: l.description })), '地点'),
       '',
       '【返回格式】',
-      '返回严格 JSON，格式：',
-      '{"characters":[{"coreStyle":"已有：林墨 / 新角色一句话描述","plotFunction":"功能位枚举","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：冲突描述前缀 / 新冲突一句话描述"}],"foreshadows":[{"coreStyle":"..."}],"factions":[{"coreStyle":"..."}],"locations":[{"coreStyle":"..."}]}',
-      '',
-      'coreStyle 写法：',
-      '- 已有实体："已有：<名字或描述关键词>"（后端按名匹配 upsert）',
-      '- 新增实体：一句话描述其核心特征（后端按名查重，未命中则 create）',
-      '若本章某类实体确实不需要（如不引入新冲突且已有冲突都不延续到本章），返回空数组。',
+      '返回严格 JSON：',
+      '{"characters":[{"coreStyle":"已有：林墨","plotFunction":"open_phase","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：主角今日必须凑齐定额镇魔石料，否则将被逐出大阵庇护范围，暴露于"}],"foreshadows":[{"coreStyle":"已有：玉佩只剩一半，另一半留在蓝星，暗示两界通讯依赖成对玉佩的完整性"}],"factions":[{"coreStyle":"已有：国安总局"}],"locations":[{"coreStyle":"已有：国安总局指挥大厅"}]}',
       '',
       '【角色功能位编排（重要，避免工具人化）】',
       '每个返回的角色（无论已有/新增）必须指定 plotFunction（从以下 7 个枚举选一）：',
@@ -889,8 +1053,11 @@ export class NovelEntityGenerator {
       'functionNote 用一句话说明该功能位在本章具体如何执行（如"通过透露边关军情让主角判断转变"）。',
       '不允许两个角色承担相同功能位——如果出现重复，合并或换一个功能位。',
       '',
-      '章纲：',
-      outline,
+      '【输出约束（必须遵守）】',
+      '1. 所有输出的文本字段（coreStyle / functionNote / description 等）绝不使用破折号"——"，所有转折用自然语句完成。',
+      '2. 复用已有实体时，如原描述含破折号，规划时也不要在新字段中引入破折号。',
+      '',
+      '请基于上方' + (isReverse ? '正文反推实体' : '三层大纲规划实体') + '。',
     ].join('\n')
 
     this.context.logger.info(
@@ -917,19 +1084,40 @@ export class NovelEntityGenerator {
     try {
       let result = ''
       let deltaCount = 0
-      const full = await session.promptStream((delta) => {
-        result += delta
-        deltaCount++
-        // 流式推送进度（每 5 个 delta 推一次，避免事件过密），让前端知道 LLM 在工作
-        if (deltaCount % 5 === 0) {
-          onProgress?.({
-            phase: 'planning',
-            message: `AI 正在规划本章实体... 已生成 ${result.length} 字符`,
-          })
+      let text = ''
+      try {
+        const full = await session.promptStream((delta) => {
+          result += delta
+          deltaCount++
+          // 流式推送进度（每 5 个 delta 推一次，避免事件过密），让前端知道 LLM 在工作
+          if (deltaCount % 5 === 0) {
+            onProgress?.({
+              phase: 'planning',
+              message: `AI 正在规划本章实体... 已生成 ${result.length} 字符`,
+            })
+          }
+        })
+        // 优先使用流式累积结果，回退到 promptStream 返回值
+        text = result || full
+      } catch (llmErr) {
+        // LLM 调用失败：返回空 plan + 错误日志上下文，让 generateAndArrange 能写入失败日志
+        const errMsg = llmErr instanceof Error ? llmErr.message : String(llmErr)
+        this.context.logger.error(
+          { projectId, err: llmErr, resultLength: result.length },
+          'planEntitiesFromOutline LLM 调用失败',
+        )
+        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] }
+        return {
+          plan: emptyPlan,
+          logContext: {
+            systemPrompt,
+            userMessage: userPrompt,
+            rawResult: result,
+            status: 'error',
+            error: `LLM 调用失败：${errMsg}`,
+          },
         }
-      })
-      // 优先使用流式累积结果，回退到 promptStream 返回值
-      const text = result || full
+      }
       this.context.logger.info(
         { projectId, resultLength: text.length, deltaCount },
         'planEntitiesFromOutline LLM 调用完成，开始解析 JSON',
@@ -941,7 +1129,17 @@ export class NovelEntityGenerator {
           { rawTextPreview: text.slice(0, 200) },
           'planEntitiesFromOutline JSON 解析失败（可能被截断），使用空 plan 兜底',
         )
-        return { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] }
+        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] }
+        return {
+          plan: emptyPlan,
+          logContext: {
+            systemPrompt,
+            userMessage: userPrompt,
+            rawResult: text,
+            status: 'error',
+            error: 'JSON 解析失败（可能被截断），使用空 plan 兜底',
+          },
+        }
       }
       const validPlotFunctions: PlotFunction[] = [
         'provide_resource', 'create_obstacle', 'amplify_conflict',
@@ -984,7 +1182,16 @@ export class NovelEntityGenerator {
         { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length, factions: plan.factions.length, locations: plan.locations.length },
         'planEntitiesFromOutline 解析完成',
       )
-      return plan
+      return {
+        plan,
+        logContext: {
+          systemPrompt,
+          userMessage: userPrompt,
+          rawResult: text,
+          status: 'success',
+          error: '',
+        },
+      }
     } finally {
       session.dispose()
     }
@@ -1038,6 +1245,9 @@ export class NovelEntityGenerator {
         '    - stagnation: 停滞（保持当前阶段，仅强度变化，适合潜伏长冲突）',
         '    - regression: 降级（回退一阶，因外部干预或形势缓和）',
         '    - reversal: 反复（resolved 重新 emerging，旧仇重燃）',
+        '',
+        '【输出约束（必须遵守）】',
+        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
       ].join('\n'),
       foreshadow: () => [
         '请根据以下核心描述，生成一个完整的伏笔设定。',
@@ -1069,6 +1279,9 @@ export class NovelEntityGenerator {
         '    - implicit: 暗回收（让读者自己悟，不点破）',
         '    - reverse: 反向回收（与埋设相反，制造反转）',
         '    - progressive: 递进回收（多次点破，逐步释放）',
+        '',
+        '【输出约束（必须遵守）】',
+        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
       ].join('\n'),
       faction: () => [
         '请根据以下核心描述，生成一个完整的势力设定。',
@@ -1087,6 +1300,9 @@ export class NovelEntityGenerator {
         '- allies: 盟友描述（字符串数组，每项一个盟友势力名）',
         '- enemies: 敌对描述（字符串数组，每项一个敌对势力名）',
         '- status: 势力状态，从以下枚举中选择一个：active/declined/destroyed/hidden',
+        '',
+        '【输出约束（必须遵守）】',
+        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
       ].join('\n'),
       location: () => [
         '请根据以下核心描述，生成一个完整的地点设定。',
@@ -1101,6 +1317,9 @@ export class NovelEntityGenerator {
         '- type: 地点类型，从以下枚举中选择一个：continent/country/city/building/dungeon/region/wilderness',
         '- significance: 地点重要性，从以下枚举中选择一个：minor/moderate/major/critical',
         '- status: 地点状态，从以下枚举中选择一个：normal/destroyed/changed/hidden',
+        '',
+        '【输出约束（必须遵守）】',
+        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
       ].join('\n'),
       world_element: () => [
         '请根据以下核心描述，生成一个完整的世界要素设定。',
@@ -1114,6 +1333,9 @@ export class NovelEntityGenerator {
         '- name: 要素名称',
         '- description: 要素一句话描述',
         '- attributes: 要素属性（对象，键值对形式，如 { "key": "value" }）',
+        '',
+        '【输出约束（必须遵守）】',
+        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
       ].join('\n'),
     }
     return builders[kind as Exclude<EntityKind, 'character'>]()

@@ -1393,7 +1393,6 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
   const upsertChapter = useNovelStore((s) => s.upsertChapter)
   const [form, setForm] = useState({
     title: entity.title,
-    content: entity.content,
     status: entity.status,
     rhythm: entity.rhythm ?? '',
   })
@@ -1402,7 +1401,6 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
 
   const dirty =
     form.title !== entity.title ||
-    form.content !== entity.content ||
     form.status !== entity.status ||
     (form.rhythm || '') !== (entity.rhythm ?? '')
 
@@ -1412,7 +1410,6 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
     try {
       const updated = await updateChapter(entity.id, {
         title: form.title,
-        content: form.content,
         status: form.status,
         rhythm: form.rhythm === '' ? undefined : (form.rhythm as ChapterRhythm),
       })
@@ -1471,16 +1468,6 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
             ))}
           </SelectContent>
         </Select>
-      </FieldRow>
-
-      <SectionHeader title="正文" />
-      <FieldRow label="内容">
-        <TextArea
-          variant="long"
-          value={form.content}
-          onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
-          className="font-mono text-xs"
-        />
       </FieldRow>
 
       {entity.narrativeTask && (

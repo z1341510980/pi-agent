@@ -211,13 +211,16 @@ export class NovelPromptBuilder {
       parts.push(this.formatStyleGuide(sorted))
     }
 
-    // ── Layer 3: 势力/地点/世界要素静态档案 ──
-    // ⚠️ Token 优化：已从 STATIC 层移除。原因：
-    // 1. 本章编排实体已在 SEMI 层 formatArrangedEntities 中输出完整定义
-    // 2. 其他已登场实体在 SEMI 层 formatStoryState 中有 name + type + status
-    // 3. 未登场实体对当前章节创作不是必须的，Director/Writer 不需要知道
-    // 4. 移除后 STATIC 层从 ~8000 字符降到 ~2000 字符，跨章缓存更容易命中
-    // 5. formatEntityArchive 方法保留，未被调用（dead code 可后续清理）
+    // ── Layer 3: 势力/地点/世界要素静态档案（项目级，跨 Agent 共享，跨章稳定）──
+    // 上提到 STATIC 层以增加 system prompt 长度（突破缓存阈值）并跨章复用。
+    // 仅输出静态字段（name/description/type 等），动态字段（status/appearChapters/
+    // firstChapter/lastChapter）仍由 SEMI 层的 formatStoryState 输出。
+    //
+    // ⚠️ 不可移除：Writer 创作时角色可能引用未在本章编排的势力/地点/世界要素，
+    // 需要完整定义才能保证描写与设定一致。方案 6 实验性移除后发现大项目（20+ 章）
+    // 中 Writer 描写未登场实体时偏离设定，已回退。
+    const entityArchive = this.formatEntityArchive(projectId)
+    if (entityArchive) parts.push(entityArchive)
 
     // ── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）──
     // 放在最后，确保前面的共享部分（worldRules + styleGuide）
@@ -466,6 +469,11 @@ export class NovelPromptBuilder {
    * Writer 的完整叙事任务（Director 实时输出）由 chapter-instruction 模板在
    * SEMI 层末尾渲染，此处只输出数据库章纲描述（跨 Agent 一致）。
    * 类型/优先级等信息也由 chapter-instruction 模板输出，此处不重复。
+   *
+   * ⚠️ outline 字段：用户在前端 DebouncedOutlineField 填写的章纲内容，
+   * 是创作的统一起点。这里优先注入 outline，narrativeTask 仅作为任务类型标签保留。
+   * 历史问题：b4f720b 之前只注入 narrativeTask（如"推进主线剧情"6 字标签），
+   * 导致 LLM 看不到用户写的章纲，Director 只能自由发挥，正文偏离用户设定。
    */
   private formatChapterInfo(
     projectId: string,
@@ -477,15 +485,24 @@ export class NovelPromptBuilder {
     const project = this.stores.getProject(projectId)
     const volume = project?.currentVolume ?? 1
     const targetWords = this.computeChapterTargetWords(project)
+    const chapter = this.stores.getChapter(projectId, chapterNumber)
     const lines = [
       `## 当前章节`,
       ``,
       `- 卷：第${volume}卷`,
       `- 章：第${chapterNumber}章`,
-      `- 叙事任务：${task.description}`,
+      `- 任务类型：${task.description}`,
       `- 优先级：${task.priority}`,
       `- 目标字数：${targetWords} 字`,
     ]
+    // 注入用户编写的章纲（outline）作为创作统一起点
+    // 如果 outline 为空，回退使用 narrativeTask（保持向后兼容）
+    const outline = chapter?.outline?.trim()
+    if (outline) {
+      lines.push(``, `### 章纲（用户编写 - 创作统一起点，必须严格遵循）`, ``, outline)
+    } else if (task.description) {
+      lines.push(``, `### 章纲`, ``, task.description)
+    }
     return lines.join('\n')
   }
 
