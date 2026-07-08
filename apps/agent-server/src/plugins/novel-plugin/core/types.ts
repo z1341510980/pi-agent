@@ -121,6 +121,12 @@ export interface NovelChapter {
   tension?: number | null
   /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
   rhythm?: ChapterRhythm
+  /** 时间线偏移（相对第1章的天数，用于追踪故事时间线，NULL 表示未设定） */
+  timeOffset?: number | null
+  /** 章尾钩子类型（Director 规划，Writer 执行，Reviewer 评估，NULL 表示未设定） */
+  chapterEndingHook?: ChapterEndingHookType | null
+  /** 前情提要（章节完成后自动生成，50-100 字，供连载展示） */
+  recap?: string | null
   createdAt: number
   updatedAt: number
 }
@@ -666,6 +672,8 @@ export interface StoryState {
 export interface NarrativeTask {
   description: string
   type: NarrativeTaskType
+  /** 次要任务类型（最多 2 个，允许一章兼顾多个任务） */
+  secondaryTasks?: NarrativeTaskType[]
   targetEntity: string | null
   priority: 'high' | 'medium' | 'low'
   /** 预期冲突强度变化（如 escalate_conflict 任务时使用） */
@@ -677,7 +685,18 @@ export interface NarrativeTask {
   }
   /** 悬念持续章数（create_suspense 任务时使用，默认 2-3 章） */
   suspenseDuration?: number
+  /** 章尾钩子类型（Director 规划，Writer 执行） */
+  chapterEndingHook?: ChapterEndingHookType
+  /** 本章 POV（视点人物）角色名列表，Writer 必须严格使用这些角色的视角 */
+  povCharacters?: string[]
+  /** 本章场景数（1=单场景写透，2-3=多场景快推），引导 Writer 控制节奏速率 */
+  sceneCount?: number
+  /** 时间线偏移（相对第1章的天数，由 Director 规划，持久化到章节） */
+  timeOffset?: number | null
 }
+
+/** 章尾钩子类型 */
+export type ChapterEndingHookType = 'suspense' | 'reversal' | 'emotional' | 'action' | 'none'
 
 export type NarrativeTaskType =
   | 'advance_mainline' | 'advance_subline' | 'create_conflict' | 'escalate_conflict'
@@ -702,6 +721,12 @@ export interface ChapterConstraints {
   rhythmConstraint?: RhythmConstraint
   /** 本章悬念钩子（需要维持或释放的悬念） */
   suspenseHooks: SuspenseHook[]
+  /** 本章 POV（视点人物）角色 ID 列表，Writer 必须严格使用这些角色的视角 */
+  povCharacters?: string[]
+  /** 本章场景数（1=单场景写透，2-3=多场景快推），引导 Writer 控制节奏速率 */
+  sceneCount?: number
+  /** 本章时间线偏移（相对第1章的天数，引导 Writer 把握时间推进） */
+  timeOffset?: number | null
 }
 
 /** 冲突推进目标 */

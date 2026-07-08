@@ -428,7 +428,10 @@ export function buildGroups(params: {
  */
 export function computeMaxChapter(chapters: NovelChapter[]): number {
   if (chapters.length === 0) return 20
-  return Math.max(...chapters.map((c) => c.chapterNumber), 20)
+  const numbers = chapters.map((c) => c.chapterNumber)
+  const valid = numbers.filter((n) => typeof n === 'number' && !Number.isNaN(n))
+  if (valid.length === 0) return 20
+  return Math.max(...valid, 20)
 }
 
 /**

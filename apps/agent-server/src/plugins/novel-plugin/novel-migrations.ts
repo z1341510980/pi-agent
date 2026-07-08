@@ -662,4 +662,14 @@ export const novelMigrations: MigrationDefinition[] = [
                  ELSE json_array(json_array(first_chapter, COALESCE(recover_by_chapter, first_chapter)))
             END;`,
   },
+  {
+    // 056: 章节增加时间线偏移、章尾钩子、前情提要字段
+    // - time_offset：相对第1章的天数，用于时间线管理
+    // - chapter_ending_hook：章尾钩子类型（suspense/reversal/emotional/action/none）
+    // - recap：前情提要（章节完成后自动生成，50-100 字）
+    id: '056_add_novel_chapters_timeline_hook_recap',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN time_offset INTEGER;
+          ALTER TABLE novel_chapters ADD COLUMN chapter_ending_hook TEXT;
+          ALTER TABLE novel_chapters ADD COLUMN recap TEXT;`,
+  },
 ]

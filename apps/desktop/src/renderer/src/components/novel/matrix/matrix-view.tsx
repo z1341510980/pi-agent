@@ -16,7 +16,7 @@ import { useMemo, useCallback, useEffect, useRef, useState, type ReactElement } 
 import { useDroppable, useDndMonitor, useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { Plus, ChevronRight, GripVertical } from 'lucide-react'
-import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker } from '@/api/novel-client'
+import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 import { computeVisibleChapters } from '@/lib/matrix-viewport'
 import { useNovelStore } from '@/stores/novel-store'
@@ -120,12 +120,6 @@ export function MatrixView({
         chapters, characters, conflicts, foreshadows, factions, locations, worldElements,
         characterHistory, markers,
       })
-      console.log('[MatrixView] buildGroups result:', {
-        maxChapter: result.maxChapter,
-        groupsCount: result.groups.length,
-        totalEntities: result.groups.reduce((s, g) => s + g.entities.length, 0),
-        chaptersInput: chapters.length,
-      })
       return result
     },
     [chapters, characters, conflicts, foreshadows, factions, locations, worldElements, characterHistory, markers],
@@ -134,7 +128,6 @@ export function MatrixView({
   const chapterColumns = useMemo(() => {
     const cols: number[] = []
     for (let i = 1; i <= maxChapter; i++) cols.push(i)
-    console.log('[MatrixView] chapterColumns computed:', { maxChapter, length: cols.length, first: cols[0], last: cols[cols.length - 1] })
     return cols
   }, [maxChapter])
 
@@ -145,7 +138,6 @@ export function MatrixView({
   const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>(() => {
     // 初始值：保证 end >= start，避免空标尺
     const end = Math.max(1, Math.min(maxChapter, 20))
-    console.log('[MatrixView] visibleRange initial:', { start: 1, end, maxChapter, cellWidth })
     return { start: 1, end }
   })
 
@@ -153,7 +145,6 @@ export function MatrixView({
   const recomputeVisibleRange = useCallback(() => {
     const el = scrollContainerRef.current
     if (!el) {
-      console.log('[MatrixView] recomputeVisibleRange: scrollContainerRef.current is null')
       return
     }
     const range = computeVisibleChapters({
@@ -164,16 +155,8 @@ export function MatrixView({
       maxChapter,
       overscan: 3,
     })
-    console.log('[MatrixView] recomputeVisibleRange:', {
-      scrollLeft: el.scrollLeft,
-      viewportWidth: el.clientWidth,
-      cellWidth,
-      maxChapter,
-      computedRange: range,
-    })
     setVisibleRange((prev) => {
       if (prev.start === range.start && prev.end === range.end) return prev
-      console.log('[MatrixView] visibleRange changed:', { from: prev, to: range })
       return { start: range.start, end: range.end }
     })
   }, [cellWidth, maxChapter])
@@ -181,12 +164,10 @@ export function MatrixView({
   // maxChapter 或 cellWidth 变化时，按当前 scrollLeft 重新计算视口（不重置到第 1 章）
   useEffect(() => {
     const el = scrollContainerRef.current
-    console.log('[MatrixView] useEffect[maxChapter,cellWidth]:', { maxChapter, cellWidth, hasContainer: !!el })
     if (!el) {
       // 容器还未挂载，clamp 既有 range 到新 maxChapter，保证 end >= 1
       setVisibleRange((prev) => {
         const next = { start: 1, end: Math.max(1, Math.min(prev.end, maxChapter)) }
-        console.log('[MatrixView] useEffect[maxChapter,cellWidth] no container, clamp:', { prev, next })
         return next
       })
       return
@@ -209,17 +190,9 @@ export function MatrixView({
 
   const visibleChapterColumns = useMemo(() => {
     if (visibleRange.start > visibleRange.end) {
-      console.log('[MatrixView] visibleChapterColumns: start > end, returning []', visibleRange)
       return []
     }
     const result = chapterColumns.slice(visibleRange.start - 1, visibleRange.end)
-    console.log('[MatrixView] visibleChapterColumns:', {
-      visibleRange,
-      chapterColumnsLength: chapterColumns.length,
-      resultLength: result.length,
-      first: result[0],
-      last: result[result.length - 1],
-    })
     return result
   }, [chapterColumns, visibleRange])
 
@@ -336,7 +309,6 @@ export function MatrixView({
       onScroll={(e) => {
         const el = e.currentTarget
         const x = el.scrollLeft
-        console.log('[MatrixView] onScroll:', { scrollLeft: x, viewportWidth: el.clientWidth })
         // 原有 sticky title 同步逻辑
         const els = el.querySelectorAll<HTMLElement>('[data-sticky-title]')
         for (let i = 0; i < els.length; i++) {
@@ -414,7 +386,6 @@ export function MatrixView({
             </div>
             {/* 章节标尺单元格（仅渲染可见列） */}
             <div className="flex">
-              {console.log('[MatrixView] RULER RENDER:', { visibleRange, visibleChapterColumnsLen: visibleChapterColumns.length, maxChapter, cellWidth })}
               {/* 左侧占位：撑开滚动条到第一个可见章节的位置 */}
               {visibleRange.start > 1 && (
                 <div style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} aria-hidden="true" />
@@ -463,6 +434,17 @@ export function MatrixView({
             </div>
           </div>
 
+          {/* 章尾钩子轨道行（仅当存在任何已设定钩子的章节时显示） */}
+          <HookTrackRow
+            chapters={chapters}
+            chapterByNumber={chapterByNumber}
+            visibleChapterColumns={visibleChapterColumns}
+            visibleRange={visibleRange}
+            maxChapter={maxChapter}
+            cellWidth={cellWidth}
+            playheadChapter={playheadChapter}
+          />
+
           {/* 分组 + 实体行（无实体时显示空状态引导，但章节标尺仍然显示） */}
           <div className="relative z-[6]">
             {hasAnyEntity ? (
@@ -499,6 +481,93 @@ export function MatrixView({
           </div>
         </div>
       </div>
+  )
+}
+
+// ── 章尾钩子轨道行 ──
+
+/** 钩子类型 → 显示元数据（颜色/图标/标签） */
+const HOOK_META: Record<ChapterEndingHookType, { color: string; bg: string; icon: string; label: string }> = {
+  suspense:  { color: '#a855f7', bg: 'rgba(168, 85, 247, 0.22)', icon: '?', label: '悬念' },
+  reversal:  { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)',  icon: '!', label: '反转' },
+  emotional: { color: '#ec4899', bg: 'rgba(236, 72, 153, 0.22)', icon: '♥', label: '情感' },
+  action:    { color: '#f97316', bg: 'rgba(249, 115, 22, 0.22)', icon: '⚡', label: '动作' },
+  none:      { color: '#6b7280', bg: 'transparent',              icon: '',  label: '无'   },
+}
+
+interface HookTrackRowProps {
+  chapters: NovelChapter[]
+  chapterByNumber: Map<number, NovelChapter>
+  visibleChapterColumns: number[]
+  visibleRange: { start: number; end: number }
+  maxChapter: number
+  cellWidth: number
+  playheadChapter: number
+}
+
+function HookTrackRow({
+  chapterByNumber, visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
+}: HookTrackRowProps): ReactElement | null {
+  // 仅当存在任何已设定钩子的章节时显示该轨道行
+  const hasAnyHook = Array.from(chapterByNumber.values()).some(
+    (c) => c.chapterEndingHook && c.chapterEndingHook !== 'none',
+  )
+  if (!hasAnyHook) return null
+
+  return (
+    <div className="relative z-20 flex h-[26px] border-b border-border/60 bg-surface-1/60">
+      {/* 左侧 sticky 列：轨道标签 */}
+      <div
+        className="sticky left-0 z-30 bg-surface-1 flex items-center justify-end pr-2 border-r border-border shrink-0"
+        style={{ width: `${SIDEBAR_W}px` }}
+      >
+        <span className="font-serif text-[10px] text-hint tracking-wider">章尾钩子</span>
+      </div>
+      {/* 钩子单元格（仅渲染可见列） */}
+      <div className="flex relative">
+        {/* 左侧占位 */}
+        {visibleRange.start > 1 && (
+          <div style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} aria-hidden="true" />
+        )}
+        {visibleChapterColumns.map((ch) => {
+          const chapter = chapterByNumber.get(ch)
+          const hook = chapter?.chapterEndingHook
+          const meta = hook ? HOOK_META[hook] : null
+          const isCurrent = ch === playheadChapter
+          const tip = chapter
+            ? `第 ${ch} 章 · ${meta && hook !== 'none' ? meta.label + '钩子' : '无钩子'}`
+            : `第 ${ch} 章 · 未设定`
+          return (
+            <div
+              key={ch}
+              className={cn(
+                'relative h-full shrink-0 flex items-center justify-center border-r border-border/30',
+                isCurrent && 'bg-amber-500/5',
+              )}
+              style={{
+                width: `${cellWidth}px`,
+                background: meta && hook && hook !== 'none' ? meta.bg : undefined,
+              }}
+              data-tip={tip}
+            >
+              {meta && hook && hook !== 'none' && (
+                <span
+                  className="flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold leading-none"
+                  style={{ color: meta.color, border: `1px solid ${meta.color}` }}
+                  aria-label={meta.label}
+                >
+                  {meta.icon}
+                </span>
+              )}
+            </div>
+          )
+        })}
+        {/* 右侧占位 */}
+        {visibleRange.end < maxChapter && (
+          <div style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} aria-hidden="true" />
+        )}
+      </div>
+    </div>
   )
 }
 

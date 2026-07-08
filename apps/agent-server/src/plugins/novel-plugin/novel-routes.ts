@@ -546,6 +546,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     outline: z.string().max(20000).optional(),
     volumeId: z.string().nullable().optional(),
     tension: z.number().int().min(1).max(10).nullable().optional(),
+    timeOffset: z.number().int().nullable().optional(),
+    chapterEndingHook: z.enum(['suspense', 'reversal', 'emotional', 'action', 'none']).nullable().optional(),
+    recap: z.string().max(500).nullable().optional(),
   })
 
   routes.push({

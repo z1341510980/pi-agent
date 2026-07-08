@@ -252,7 +252,9 @@ export class NovelOrchestrator {
       // 暂存 Director 的实时输出：runAgent 构建 Writer 的 SEMI 层时，会将其注入
       // chapter-instruction 模板的 {{narrative_task}}，替代原来的章纲字段。
       // 这是方案 A 的核心：让 Director 的规划真正成为 Writer 的创作指导。
-      this.currentDirectorOutput = directorResult
+      // ⚠️ 清洗破折号：Director 输出中可能含"——"，注入 Writer 后会被模仿，
+      // 必须在注入前替换为逗号，从源头切断破折号的上下文示范传播链。
+      this.currentDirectorOutput = this.sanitizeDirectorOutput(directorResult)
       // 解析 Director 输出为结构化 NarrativeTask，让 14 种任务类型真正传递到 Writer。
       // Director 提示词要求输出"任务类型"字段（如 create_suspense/escalate_conflict），
       // parseDirectorTask 从输出文本中提取任务类型、优先级、高潮目标等执行参数。
@@ -272,13 +274,61 @@ export class NovelOrchestrator {
         },
       })
 
-      // Phase 2: Writer
-      this.emitProgress(options, 'writing', 'phase_change', { message: '写作 Agent 正在创作章节正文...' })
-      // input 统一为字符串：避免 runAgent JSON.stringify 对象导致 LLM 收到 JSON 字符串
-      const writerResult = await this.runAgent('writer', projectId, chapterNumber,
-        `请根据上方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。`,
-        options,
-      )
+      // Phase 2: Writer（支持 pushback：Writer 发现叙事任务有逻辑问题时可推回给 Director）
+      let writerResult = ''
+      let directorPushbackCount = 0
+      const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
+
+      while (true) {
+        this.emitProgress(options, 'writing', 'phase_change', {
+          message: directorPushbackCount > 0
+            ? '写作 Agent 正在根据调整后的叙事任务重新创作...'
+            : '写作 Agent 正在创作章节正文...',
+        })
+        const pushbackHint = directorPushbackCount === 0
+          ? '\n\n---\n\n## Writer 推回机制\n\n如果你认为叙事任务存在明显逻辑问题（如角色在此场景不会这样做、任务与前置剧情矛盾、约束条件不合理），可以在输出开头标记 `[DIRECTOR_PUSHBACK]` 并用 1-2 句话说明原因。系统会让 Director 重新规划。如果任务没有问题，直接创作正文即可。'
+          : ''
+        writerResult = await this.runAgent('writer', projectId, chapterNumber,
+          `请根据上方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。${pushbackHint}`,
+          options,
+        )
+
+        // 检测 Writer 是否标记推回
+        if (writerResult.trimStart().startsWith('[DIRECTOR_PUSHBACK]') && directorPushbackCount < MAX_PUSHBACK) {
+          const pushbackReason = writerResult.replace(/\[DIRECTOR_PUSHBACK\]/i, '').trim()
+          directorPushbackCount++
+          this.emitProgress(options, 'directing', 'phase_change', {
+            message: `写作 Agent 认为叙事任务存在问题，Director 正在重新规划...（推回原因：${pushbackReason.slice(0, 100)}）`,
+          })
+          this.context.logger.info(
+            { projectId, chapterNumber, pushbackCount: directorPushbackCount, pushbackReason: pushbackReason.slice(0, 200) },
+            'Writer 推回 Director，重新规划叙事任务',
+          )
+
+          // 将 Writer 的推回原因注入 Director，重新规划
+          this.currentDirectorOutput = undefined
+          const rewriteDirectorResult = await this.runAgent('director', projectId, chapterNumber,
+            `写作 Agent 对之前的叙事任务提出了异议，请重新规划第 ${chapterNumber} 章的叙事任务。\n\n---\n\n## 写作 Agent 的推回原因\n\n${pushbackReason}\n\n---\n\n## 节奏建议\n\n${JSON.stringify(rhythmSuggestion, null, 2)}${outlineHint}`,
+            options,
+          )
+          this.currentDirectorOutput = this.sanitizeDirectorOutput(rewriteDirectorResult)
+          this.currentDirectorTask = this.parseDirectorTask(rewriteDirectorResult, rhythmSuggestion)
+          this.emitProgress(options, 'directing', 'phase_change', {
+            message: '叙事任务已根据写作 Agent 的反馈调整',
+            detail: {
+              kind: 'narrative_task',
+              taskType: this.currentDirectorTask.type,
+              priority: this.currentDirectorTask.priority,
+              pushback: true,
+            },
+          })
+          // 继续循环，让 Writer 基于新任务重新创作
+          continue
+        }
+
+        // 没有 pushback 或已达上限，进入 Reviewer
+        break
+      }
 
       // Phase 3: Reviewer
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
@@ -350,6 +400,43 @@ export class NovelOrchestrator {
       // 章节完成时保存全量状态快照（情景记忆）
       this.saveChapterSnapshot(projectId, chapterNumber)
 
+      // 定期全量校准：每 10 章触发一次，修复 Memory Agent 逐章提取可能遗漏的状态变更
+      // 设计意图：LLM 逐章提取状态变更时可能漏掉微妙的转变，累积下来状态系统会与正文脱节。
+      // 每 10 章做一次"查漏补缺"式全量扫描，拉取最近 5 章正文对比当前状态。
+      if (chapterNumber > 0 && chapterNumber % 10 === 0 && this.memoryGenerator) {
+        this.emitProgress(options, 'memory', 'phase_change', { message: '触发全量状态校准（每 10 章一次）...' })
+        try {
+          const calibrationResult = await this.memoryGenerator.runFullCalibration(
+            projectId, chapterNumber,
+            (event) => {
+              this.emitProgress(options, 'memory', 'phase_change', {
+                message: event.message,
+                phase: event.phase,
+                data: event.data,
+              })
+            },
+          )
+          if (calibrationResult.stats.total > 0) {
+            this.emitProgress(options, 'memory', 'data_changed', {
+              agentType: 'memory',
+              agentName: '记忆',
+              message: `全量校准完成：补充 ${calibrationResult.stats.total} 项遗漏变更`,
+              dataChanged: true,
+              detail: {
+                kind: 'calibration_result',
+                summary: calibrationResult.summary,
+                stats: calibrationResult.stats,
+              },
+            })
+          }
+        } catch (err) {
+          this.context.logger.error(
+            { projectId, chapterNumber, err },
+            '全量校准失败，不影响主流程',
+          )
+        }
+      }
+
       // 推送数据变更通知：Memory Agent 已写入实体状态、快照已保存，
       // 前端收到后刷新画布（替代轮询）。同时携带提取摘要和变更明细供气泡展示。
       this.emitProgress(options, 'memory', 'data_changed', {
@@ -379,7 +466,37 @@ export class NovelOrchestrator {
           content: cleanedContent,
           status: 'review',
           wordCount: cleanedContent.length,
+          // 持久化 Director 规划的结构化字段（时间线偏移、章尾钩子）
+          timeOffset: this.currentDirectorTask?.timeOffset ?? null,
+          chapterEndingHook: this.currentDirectorTask?.chapterEndingHook ?? null,
         })
+
+        // 生成候选章节标题（3 个，供用户选择）+ 前情提要
+        try {
+          const [titleCandidates, recap] = await Promise.all([
+            this.generateChapterTitles(projectId, chapterNumber, cleanedContent),
+            this.generateChapterRecap(projectId, chapterNumber, cleanedContent),
+          ])
+          if (titleCandidates.length > 0 || recap) {
+            this.emitProgress(options, 'completed', 'data_changed', {
+              agentType: 'writer',
+              agentName: '写作',
+              message: '已生成候选标题' + (recap ? '和前情提要' : ''),
+              dataChanged: false,
+              detail: {
+                kind: 'title_candidates',
+                titles: titleCandidates,
+                recap: recap || undefined,
+              },
+            })
+          }
+          // 持久化前情提要到章节记录
+          if (recap) {
+            this.store.updateChapter(chapter.id, { recap })
+          }
+        } catch (err) {
+          this.context.logger.warn({ projectId, chapterNumber, err }, '标题/提要生成失败，不影响主流程')
+        }
       }
 
       this.emitProgress(options, 'completed', 'completed', { message: '章节创作完成' })
@@ -543,6 +660,9 @@ export class NovelOrchestrator {
               releaseByChapter: h.releaseByChapter,
             })),
             rhythmConstraint: constraints.rhythmConstraint,
+            povCharacters: narrativeTask.povCharacters,
+            sceneCount: narrativeTask.sceneCount,
+            timeOffset: narrativeTask.timeOffset,
           },
         })
       }
@@ -1781,6 +1901,113 @@ export class NovelOrchestrator {
   }
 
   /**
+   * 清洗 Director 输出：在注入 Writer 前移除破折号。
+   *
+   * 根因：Director 的叙事规划中大量使用"——"做转折/补充说明，这些输出通过
+   * currentDirectorOutput 注入 Writer 的 SEMI 层，Writer 在模仿 Director 的叙事腔调时
+   * 会继承破折号习惯。将"——"替换为逗号，保留语义但切断示范传播。
+   */
+  private sanitizeDirectorOutput(text: string): string {
+    return text.replace(/——/g, '，')
+  }
+
+  /**
+   * 生成候选章节标题（3 个，4-8 字，供用户选择）。
+   *
+   * 设计意图：网文章节标题是吸引读者点击的重要手段（"第3章 赵岩的烟杆" vs "第3章"）。
+   * 章节创作完成后，用一次轻量 LLM 调用基于正文内容生成 3 个候选标题。
+   */
+  private async generateChapterTitles(
+    projectId: string,
+    chapterNumber: number,
+    content: string,
+  ): Promise<string[]> {
+    // 截取正文前 800 字 + 后 200 字（开头结尾最能代表章节特征）
+    const excerpt = content.length > 1000
+      ? content.slice(0, 800) + '\n...\n' + content.slice(-200)
+      : content
+
+    const systemPrompt = '你是一个网文编辑，擅长起吸引人的章节标题。'
+    const userMessage = `请基于以下章节正文，生成 3 个候选章节标题。
+
+要求：
+- 每个标题 4-8 个字
+- 标题应反映本章核心事件或情感
+- 风格参考网文章节标题（如"赵岩的烟杆""玉佩的秘密""深夜搜查"）
+- 不要使用破折号
+- 直接输出 3 个标题，每行一个，不要编号，不要解释
+
+章节正文：
+${excerpt}`
+
+    const session = await this.context.createSession({
+      systemPrompt,
+      userMessage,
+      timeoutMs: 15_000,
+    })
+
+    try {
+      const result = await session.prompt()
+      const titles = result
+        .split('\n')
+        .map(t => t.trim())
+        .filter(t => t.length >= 2 && t.length <= 12)
+        // 去除可能的前缀编号
+        .map(t => t.replace(/^[0-9]+[.、\s]+/, '').trim())
+        .filter(t => t.length >= 2 && t.length <= 12)
+        .slice(0, 3)
+      return titles
+    } finally {
+      session.dispose()
+    }
+  }
+
+  /**
+   * 生成前情提要（50-100 字，供连载展示）。
+   *
+   * 设计意图：连载网文每章开头通常需要简短的前情提要帮助读者回忆。
+   * 章节完成后自动生成，存入 chapter.recap 字段，用户可选择是否展示。
+   */
+  private async generateChapterRecap(
+    projectId: string,
+    chapterNumber: number,
+    content: string,
+  ): Promise<string | null> {
+    // 截取正文前 600 字 + 后 200 字（开头结尾最能代表章节特征）
+    const excerpt = content.length > 800
+      ? content.slice(0, 600) + '\n...\n' + content.slice(-200)
+      : content
+
+    const systemPrompt = '你是一个网文编辑，擅长写简短的前情提要。'
+    const userMessage = `请基于以下章节正文，写一段 50-100 字的前情提要。
+
+要求：
+- 概括本章核心事件和关键转折
+- 语言简洁有力，像"上回说到……"的风格
+- 不要剧透下一章
+- 不要使用破折号
+- 直接输出提要内容，不要加标题或解释
+
+章节正文：
+${excerpt}`
+
+    const session = await this.context.createSession({
+      systemPrompt,
+      userMessage,
+      timeoutMs: 15_000,
+    })
+
+    try {
+      const result = await session.prompt()
+      const recap = result.trim()
+      if (recap.length < 10 || recap.length > 200) return null
+      return recap
+    } finally {
+      session.dispose()
+    }
+  }
+
+  /**
    * 从 Director 输出文本中解析结构化 NarrativeTask
    *
    * Director 提示词（role-director.md）要求输出包含"任务类型"字段，
@@ -1861,6 +2088,63 @@ export class NovelOrchestrator {
     if (taskType === 'escalate_conflict') {
       const deltaMatch = text.match(/强度变化[：:]\s*([+-]?\d+)/)
       task.expectedIntensityDelta = deltaMatch ? parseInt(deltaMatch[1], 10) : 1
+    }
+
+    // 提取次要任务（最多 2 个）
+    const secondarySection = text.match(/##\s*次要任务[^\n]*\n([\s\S]*?)(?=\n##\s|$)/i)
+    if (secondarySection) {
+      const secondaryTypes: NarrativeTaskType[] = []
+      for (const validType of validTypes) {
+        if (validType === taskType) continue // 不重复主任务
+        if (new RegExp(`\\b${validType}\\b`, 'i').test(secondarySection[1])) {
+          secondaryTypes.push(validType)
+        }
+        if (secondaryTypes.length >= 2) break
+      }
+      if (secondaryTypes.length > 0) task.secondaryTasks = secondaryTypes
+    }
+
+    // 提取章尾钩子类型
+    const hookSection = text.match(/##\s*章尾钩子设计[^\n]*\n([\s\S]*?)(?=\n##\s|$)/i)
+    if (hookSection) {
+      const hookText = hookSection[1]
+      if (/悬念钩子|suspense/i.test(hookText)) task.chapterEndingHook = 'suspense'
+      else if (/反转钩子|reversal/i.test(hookText)) task.chapterEndingHook = 'reversal'
+      else if (/情感钩子|emotional/i.test(hookText)) task.chapterEndingHook = 'emotional'
+      else if (/行动钩子|action/i.test(hookText)) task.chapterEndingHook = 'action'
+    }
+
+    // 解析 POV 角色
+    const povMatch = directorOutput.match(/##\s*POV[\s\S]*?本章\s*POV\s*角色[：:]\s*(.+)/i)
+    if (povMatch) {
+      const povNames = povMatch[1].split(/[、,，]/).map(s => s.trim()).filter(Boolean)
+      if (povNames.length > 0) task.povCharacters = povNames
+    }
+
+    // 解析场景数
+    const sceneMatch = directorOutput.match(/##\s*场景数[\s\S]*?场景数[：:]\s*(\d)/i)
+    if (sceneMatch) {
+      const n = parseInt(sceneMatch[1], 10)
+      if (n >= 1 && n <= 5) task.sceneCount = n
+    }
+
+    // 解析时间线偏移（相对第1章的天数）
+    // 支持格式："+3天" / "-2天" / "第1天" / "同日" / "3天后"
+    const timeMatch = directorOutput.match(/##\s*时间线偏移[\s\S]*?时间线[：:]\s*(.+)/i)
+    if (timeMatch) {
+      const timeText = timeMatch[1].trim()
+      const plusMatch = timeText.match(/\+(\d+)\s*天/)
+      const minusMatch = timeText.match(/-(\d+)\s*天/)
+      const dayNMatch = timeText.match(/第\s*(\d+)\s*天/)
+      if (plusMatch) {
+        task.timeOffset = parseInt(plusMatch[1], 10)
+      } else if (minusMatch) {
+        task.timeOffset = -parseInt(minusMatch[1], 10)
+      } else if (dayNMatch) {
+        task.timeOffset = parseInt(dayNMatch[1], 10) - 1
+      } else if (/同日|当天|当日/.test(timeText)) {
+        task.timeOffset = 0
+      }
     }
 
     return task

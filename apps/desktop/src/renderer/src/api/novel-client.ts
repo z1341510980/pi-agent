@@ -221,9 +221,18 @@ export interface NovelChapter {
   tension?: number | null
   /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
   rhythm?: ChapterRhythm
+  /** 时间线偏移（相对第1章的天数） */
+  timeOffset?: number | null
+  /** 章尾钩子类型 */
+  chapterEndingHook?: ChapterEndingHookType | null
+  /** 前情提要（章节完成后自动生成，50-100 字） */
+  recap?: string | null
   createdAt: number
   updatedAt: number
 }
+
+/** 章尾钩子类型 */
+export type ChapterEndingHookType = 'suspense' | 'reversal' | 'emotional' | 'action' | 'none'
 
 export interface NovelVolume {
   id: string

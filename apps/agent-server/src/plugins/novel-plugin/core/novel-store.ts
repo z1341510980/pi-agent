@@ -75,6 +75,9 @@ interface ChapterRow {
   narrative_task: string; outline: string; volume_id: string | null
   acceptance_result: string | null
   tension: number | null
+  time_offset: number | null
+  chapter_ending_hook: string | null
+  recap: string | null
   created_at: number; updated_at: number
 }
 
@@ -660,14 +663,17 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelChapter = { outline: '', volumeId: null, ...chapter, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, tension, created_at, updated_at)
-      VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @tension, @created_at, @updated_at)
+      INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, tension, time_offset, chapter_ending_hook, recap, created_at, updated_at)
+      VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @tension, @time_offset, @chapter_ending_hook, @recap, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, volume: full.volume,
       chapter_number: full.chapterNumber, title: full.title, content: full.content,
       word_count: full.wordCount, status: full.status, narrative_task: full.narrativeTask,
       outline: full.outline ?? '', volume_id: full.volumeId ?? null,
       acceptance_result: full.acceptanceResult, tension: full.tension ?? null,
+      time_offset: full.timeOffset ?? null,
+      chapter_ending_hook: full.chapterEndingHook ?? null,
+      recap: full.recap ?? null,
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -681,13 +687,18 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_chapters SET title=@title, content=@content, word_count=@word_count,
       status=@status, narrative_task=@narrative_task, outline=@outline, volume_id=@volume_id,
-      acceptance_result=@acceptance_result, tension=@tension, updated_at=@updated_at
+      acceptance_result=@acceptance_result, tension=@tension,
+      time_offset=@time_offset, chapter_ending_hook=@chapter_ending_hook, recap=@recap,
+      updated_at=@updated_at
       WHERE id=@id
     `).run({
       id, title: updated.title, content: updated.content, word_count: updated.wordCount,
       status: updated.status, narrative_task: updated.narrativeTask,
       outline: updated.outline ?? '', volume_id: updated.volumeId ?? null,
       acceptance_result: updated.acceptanceResult, tension: updated.tension ?? null,
+      time_offset: updated.timeOffset ?? null,
+      chapter_ending_hook: updated.chapterEndingHook ?? null,
+      recap: updated.recap ?? null,
       updated_at: updated.updatedAt,
     })
     return updated
@@ -2267,6 +2278,13 @@ export class NovelStore implements NovelPromptStores {
     return rows.map((r) => this.rowToAgentLogSummary(r))
   }
 
+  /** 查询项目级完整 Agent 日志（含 result 字段，供 prompt-builder 使用） */
+  listAgentLogsByProject(projectId: string, limit: number): NovelAgentLog[] {
+    const effectiveLimit = Math.min(Math.max(limit, 1), 500)
+    const rows = this.stmtListAgentLogsByProject.all(projectId, effectiveLimit) as AgentLogRow[]
+    return rows.map((r) => this.rowToAgentLog(r))
+  }
+
   /** 删除项目下所有日志（项目删除时级联调用） */
   deleteAgentLogsByProject(projectId: string): number {
     const result = this.stmtDeleteAgentLogsByProject.run(projectId)
@@ -2297,6 +2315,9 @@ export class NovelStore implements NovelPromptStores {
       narrativeTask: row.narrative_task, outline: row.outline, volumeId: row.volume_id,
       acceptanceResult: row.acceptance_result,
       tension: row.tension ?? null,
+      timeOffset: row.time_offset ?? null,
+      chapterEndingHook: (row.chapter_ending_hook as NovelChapter['chapterEndingHook']) ?? null,
+      recap: row.recap ?? null,
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

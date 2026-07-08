@@ -318,6 +318,130 @@ export class NovelMemoryGenerator {
     return { summary, stats }
   }
 
+  /**
+   * 全量校准：扫描最近 N 章正文，对比当前实体状态，修复遗漏的状态变更。
+   *
+   * 设计意图：
+   * - Memory Agent 逐章提取状态变更，但如果 LLM 漏提取了某个变更（如角色微妙的态度转变），
+   *   这个信息会永远丢失。长篇小说累积下来，状态系统会和正文越来越脱节。
+   * - 每 10 章触发一次全量校准，拉取最近 5 章正文 + 当前实体状态，
+   *   让 LLM 做一次"查漏补缺"式的状态提取。
+   * - 复用 generate 的 LLM 调用 + JSON 解析 + applyChanges 逻辑，
+   *   但 userPrompt 改为"多章对比校准"模式。
+   *
+   * @param projectId 项目 ID
+   * @param currentChapterNumber 当前章节号（校准范围：currentChapterNumber-4 到 currentChapterNumber）
+   * @param onProgress 进度回调
+   */
+  async runFullCalibration(
+    projectId: string,
+    currentChapterNumber: number,
+    onProgress?: (event: MemoryGenerationProgressEvent) => void,
+  ): Promise<MemoryGenerationResult> {
+    const calibrationRange = 5 // 校准最近 5 章
+    const startChapter = Math.max(1, currentChapterNumber - calibrationRange + 1)
+
+    onProgress?.({ phase: 'preparing', message: `正在构建全量校准提示词（第 ${startChapter}-${currentChapterNumber} 章）...` })
+
+    // 拉取最近 N 章正文
+    const recentChapters = this.store.listRecentChapters(projectId, calibrationRange)
+      .filter(ch => ch.chapterNumber >= startChapter && ch.chapterNumber <= currentChapterNumber)
+      .filter(ch => ch.content && ch.content.trim().length > 50)
+      .sort((a, b) => a.chapterNumber - b.chapterNumber)
+
+    if (recentChapters.length === 0) {
+      return { summary: '全量校准跳过：无可用章节正文', stats: this.emptyStats() }
+    }
+
+    // 构建校准专用 userPrompt
+    const parts: string[] = []
+    parts.push('## 全量状态校准')
+    parts.push('')
+    parts.push('你正在进行全量状态校准。以下是最近几章的正文和当前实体状态。')
+    parts.push('请仔细对比正文内容与当前实体状态，找出**遗漏的状态变更**——那些在正文中发生但当前状态未反映的变化。')
+    parts.push('')
+    parts.push('### 校准范围')
+    parts.push(`第 ${startChapter} 章 到 第 ${currentChapterNumber} 章（共 ${recentChapters.length} 章）`)
+    parts.push('')
+
+    for (const ch of recentChapters) {
+      // 每章截取前 1500 字（避免 prompt 过大）
+      const content = ch.content.slice(0, 1500)
+      parts.push(`### 第 ${ch.chapterNumber} 章《${ch.title}》`)
+      parts.push(content)
+      if (ch.content.length > 1500) parts.push('...(截断)')
+      parts.push('')
+    }
+
+    // 当前实体状态
+    const entityState = this.getCurrentEntityState(projectId)
+    if (entityState) {
+      parts.push('## 当前实体状态（校准基准）')
+      parts.push(entityState)
+      parts.push('')
+    }
+
+    parts.push('## 输出要求')
+    parts.push('请返回 JSON 格式的变更列表，只包含**遗漏的、当前状态未反映的**变更。')
+    parts.push('不要重复已有状态，只补充缺失的状态变更。格式与单章提取一致。')
+
+    const userPrompt = parts.join('\n')
+    const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'memory-generator')
+
+    // 创建 LLM Session
+    onProgress?.({ phase: 'generating', message: '全量校准 Agent 正在分析最近章节状态...' })
+    const session = await this.context.createSession({
+      systemPrompt,
+      userMessage: userPrompt,
+      responseFormat: 'json',
+      timeoutMs: 300_000,
+    })
+
+    let payload: MemoryUpdatePayload
+    try {
+      let streamedText = ''
+      const result = await session.promptStream((delta) => {
+        streamedText += delta
+        const partial = streamedText.slice(-200)
+        onProgress?.({
+          phase: 'generating',
+          message: '全量校准 Agent 正在分析最近章节状态...',
+          data: { partial },
+        })
+      })
+
+      this.context.logger.info(
+        { projectId, currentChapterNumber, calibrationRange: recentChapters.length, resultLength: result.length },
+        '全量校准 LLM 调用完成',
+      )
+
+      onProgress?.({ phase: 'parsing', message: '正在解析校准变更列表...' })
+      payload = this.parseResult(result)
+    } catch (err) {
+      this.context.logger.error(
+        { projectId, currentChapterNumber, err },
+        '全量校准 LLM 调用失败',
+      )
+      onProgress?.({ phase: 'fallback', message: '全量校准失败，跳过' })
+      return { summary: '全量校准失败', stats: this.emptyStats() }
+    } finally {
+      session.dispose()
+    }
+
+    // 应用校准变更
+    onProgress?.({ phase: 'applying', message: '正在应用校准变更到故事系统...' })
+    const stats = this.applyChanges(projectId, payload, currentChapterNumber)
+
+    const summary = payload.summary?.trim() || `全量校准完成：应用 ${stats.total} 项遗漏变更`
+    onProgress?.({
+      phase: 'completed',
+      message: `全量校准完成：${summary}（应用 ${stats.total} 项变更）`,
+      data: { stats, calibration: true },
+    })
+
+    return { summary, stats }
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 提示词构建
   // ═══════════════════════════════════════════════════════════════

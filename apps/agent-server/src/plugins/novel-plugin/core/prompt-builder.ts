@@ -82,10 +82,13 @@ import type {
   NovelLocation,
   NovelWorldElement,
   NovelEdge,
+  NovelVolume,
   StoryState,
   NarrativeTask,
   ChapterConstraints,
   ArrangedEntity,
+  ChapterRhythm,
+  NovelAgentLog,
 } from './types.js'
 import type { MemoryEvent, MemoryEventType } from './novel-memory-store.js'
 
@@ -121,6 +124,10 @@ export interface NovelPromptStores {
   getFaction(factionId: string): NovelFaction | undefined
   /** 按 ID 查询地点（供 arrangedEntities 注入时使用） */
   getLocation(locationId: string): NovelLocation | undefined
+  /** 查询项目的所有卷（供注入卷纲） */
+  listVolumes(projectId: string): NovelVolume[]
+  /** 查询项目级 Agent 调用日志（供 Reviewer 反馈回流 Director） */
+  listAgentLogsByProject?(projectId: string, limit: number): NovelAgentLog[]
 }
 
 export class NovelPromptBuilder {
@@ -149,10 +156,17 @@ export class NovelPromptBuilder {
    * - 100 万字 → 2000 字/章（保底）
    * - 500 万字 → 5000 字/章（上限）
    * - 未设置   → 3000 字/章（默认）
+   *
+   * 节奏联动：breather/setup 偏短（×0.8），climax 偏长（×1.3），其余不变
    */
-  private computeChapterTargetWords(project: NovelProject | undefined): number {
-    if (!project || project.targetWords <= 0) return 3000
-    return Math.min(5000, Math.max(2000, Math.round(project.targetWords / 1000)))
+  private computeChapterTargetWords(project: NovelProject | undefined, rhythm?: ChapterRhythm): number {
+    let base: number
+    if (!project || project.targetWords <= 0) base = 3000
+    else base = Math.min(5000, Math.max(2500, Math.round(project.targetWords / 1000)))
+    // 节奏联动调整
+    if (rhythm === 'climax') base = Math.round(base * 1.3)
+    else if (rhythm === 'breather' || rhythm === 'setup') base = Math.round(base * 0.85)
+    return Math.min(6000, Math.max(2000, base))
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -186,8 +200,40 @@ export class NovelPromptBuilder {
     const parts: string[] = []
 
     // ── 共享前缀（跨 Agent 相同，跨章不变，最大化 prompt cache 命中）──
-    // 顺序：世界规则 → 风格指南 → Agent 身份
+    // 顺序：全书大纲 → 卷纲 → 世界规则 → 风格指南 → Agent 身份
     // 共享部分在前，Agent 专属部分在后，确保不同 Agent 的前缀相同可共享缓存。
+
+    // ── Layer -1: 全书大纲 + 当前卷纲（项目级，跨 Agent 共享，跨章不变）──
+    // 全书大纲让 Director 规划时不偏离主线走向，Writer 创作时知道故事全局方向。
+    // 卷纲让 Director 和 Writer 明确当前卷的起承转合和核心冲突。
+    const project = this.stores.getProject(projectId)
+    if (project) {
+      if (project.synopsis?.trim()) {
+        parts.push(`## 故事简介\n\n${project.synopsis.trim()}`)
+      }
+      if (project.outline?.trim()) {
+        parts.push(`## 全书大纲（Director 规划必须服务于此，Writer 创作必须知晓此方向）\n\n${project.outline.trim()}`)
+      }
+      // 注入当前卷纲 + 相邻卷纲摘要
+      const volumes = this.stores.listVolumes(projectId)
+      const currentVolNum = project.currentVolume
+      const currentVol = volumes.find(v => v.volumeNumber === currentVolNum)
+      const prevVol = volumes.find(v => v.volumeNumber === currentVolNum - 1)
+      const nextVol = volumes.find(v => v.volumeNumber === currentVolNum + 1)
+
+      // 前卷纲要回顾：让 Director/Writer 知道上一卷的收束情况，避免断裂
+      if (prevVol?.outline?.trim()) {
+        parts.push(`## 前卷回顾（第${prevVol.volumeNumber}卷《${prevVol.title}》的卷纲，供衔接参考）\n\n${prevVol.outline.trim()}`)
+      }
+      // 当前卷纲：Director 规划必须服务于此
+      if (currentVol?.outline?.trim()) {
+        parts.push(`## 当前卷纲（第${currentVol.volumeNumber}卷《${currentVol.title}》的叙事规划）\n\n${currentVol.outline.trim()}`)
+      }
+      // 下卷预告：让 Director 在卷末规划时能提前衔接下一卷方向
+      if (nextVol?.outline?.trim()) {
+        parts.push(`## 下卷预告（第${nextVol.volumeNumber}卷《${nextVol.title}》的卷纲，供卷末衔接参考）\n\n${nextVol.outline.trim()}`)
+      }
+    }
 
     // ── Layer 1: 世界规则（项目级，跨 Agent 共享，跨章不变）──
     // 双键排序：category 业务分组 + id 稳定次序键。
@@ -299,6 +345,21 @@ export class NovelPromptBuilder {
       parts.push(this.formatRecentSummaries(recentChapters))
     }
 
+    // ── 叙事声音锚点（Writer/Reviewer 注入，让 LLM 感受前文叙事腔调）──
+    if (agentType === 'writer' || agentType === 'reviewer') {
+      const soundAnchor = this.formatSoundAnchor(recentChapters)
+      if (soundAnchor) parts.push(soundAnchor)
+    }
+
+    // ── 宏观节奏分布（Director 注入，让规划能看到最近节奏曲线）──
+    if (agentType === 'director') {
+      const macroRhythm = this.formatMacroRhythm(projectId, chapterNumber)
+      if (macroRhythm) parts.push(macroRhythm)
+      // Reviewer 反馈回流（让 Director 知道之前哪些方面做得不好）
+      const reviewerFeedback = this.formatReviewerFeedback(projectId)
+      if (reviewerFeedback) parts.push(reviewerFeedback)
+    }
+
     // ── 近期因果链（最近章节的关键事件及其因果联系）──
     // 注入历史因果可让 Director/Writer/Reviewer 理解"为什么会变成现在这样"，
     // 避免脱离前因后果地规划/创作。当前章事件尚未生成，所以查询的是历史章节。
@@ -319,12 +380,16 @@ export class NovelPromptBuilder {
     // "前缀稳定，尾部可变"的 prompt cache 最佳实践。
     if (agentType === 'writer') {
       const project = this.stores.getProject(projectId)
-      const targetWords = this.computeChapterTargetWords(project)
+      const rhythm = constraints.rhythmConstraint?.rhythm
+      const targetWords = this.computeChapterTargetWords(project, rhythm)
+      // 条件注入写法理论：根据任务类型/节奏只注入相关理论片段
+      const writingTheory = this.buildWritingTheory(narrativeTask.type, rhythm, constraints.conflictTargets.some(t => t.isClimax))
       const instruction = this.promptManager.render('chapter-instruction', {
         chapter_number: String(chapterNumber),
         narrative_task: directorOutput ?? narrativeTask.description,
         task_type: narrativeTask.type,
         target_words: String(targetWords),
+        writing_theory: writingTheory,
       }, projectId)
       parts.push(instruction)
     }
@@ -368,6 +433,13 @@ export class NovelPromptBuilder {
     // ── 本章编排实体（角色一致性检查）──
     if (arrangedEntities && (arrangedEntities.characterIds.length > 0 || arrangedEntities.conflictIds.length > 0 || arrangedEntities.foreshadowIds.length > 0 || arrangedEntities.factionIds.length > 0 || arrangedEntities.locationIds.length > 0)) {
       parts.push(this.formatArrangedEntities(projectId, arrangedEntities))
+    }
+
+    // ── 叙事声音锚点（让 Reviewer 对比本章与前文腔调）──
+    const recentChapters = this.stores.listRecentChapters(projectId, 3)
+    if (recentChapters.length > 0) {
+      const soundAnchor = this.formatSoundAnchor(recentChapters)
+      if (soundAnchor) parts.push(soundAnchor)
     }
 
     return parts.join('\n\n---\n\n')
@@ -506,14 +578,31 @@ export class NovelPromptBuilder {
     return lines.join('\n')
   }
 
-  /** 格式化创作约束 */
+  /**
+   * 将文本中的关键数字（百分比、次数、年份、频率等）加粗标注。
+   *
+   * 设计意图：LLM 在长上下文中容易"记错"具体数字（如把"三次脉冲"写成"七次"）。
+   * 用 **加粗** 突出关键数字，利用 LLM 对 markdown 强调的注意力偏好，
+   * 降低数字篡改概率。
+   */
+  private boldKeyNumbers(text: string): string {
+    return text
+      // 百分比：73% → **73%**
+      .replace(/(\d+(?:\.\d+)?%)/g, '**$1**')
+      // 次数/量词：七次、3次、27年 → **七次**、**3次**、**27年**
+      .replace(/(\d+|[一二三四五六七八九十百千万]+)(次|遍|个|年|月|天|日|时|刻|分|秒|轮|道|条|块|人|名|位)/g, '**$1$2**')
+      // 频率/参数：7.83Hz、42摄氏度
+      .replace(/(\d+(?:\.\d+)?(?:Hz|赫兹|摄氏度|℃|度|米|公里|公斤|千克|吨))/g, '**$1**')
+  }
+
   private formatConstraints(constraints: ChapterConstraints): string {
     const parts: string[] = ['## 创作约束']
 
     if (constraints.facts.length > 0) {
       parts.push('\n### 事实约束（不能违反）')
+      parts.push('⚠️ 关键数字已加粗标注，正文必须与此一致。')
       for (const c of constraints.facts) {
-        parts.push(`- ${c.rule}`)
+        parts.push(`- ${this.boldKeyNumbers(c.rule)}`)
       }
     }
 
@@ -533,11 +622,14 @@ export class NovelPromptBuilder {
 
     if (constraints.narrativeDebts.length > 0) {
       parts.push('\n### 叙事债务（待回收的伏笔）')
+      parts.push('⚠️ 伏笔描述中的关键数字已用 **加粗** 标注，正文必须与此一致，不得篡改。')
       for (const f of constraints.narrativeDebts) {
         const status = f.status === 'planted' ? '已埋下' :
           f.status === 'reinforced' ? '已强化' :
           f.status === 'partially_revealed' ? '部分揭露' : '待回收'
-        parts.push(`- [${status}] ${f.description}（首次：第${f.firstChapter}章）`)
+        // 关键数字加粗：防止 Writer 在正文中篡改设定数据
+        const desc = this.boldKeyNumbers(f.description)
+        parts.push(`- [${status}] ${desc}（首次：第${f.firstChapter}章）`)
       }
     }
 
@@ -585,6 +677,37 @@ export class NovelPromptBuilder {
         if (hook.sustainedChapters > 0) segs.push(`已持续：${hook.sustainedChapters} 章`)
         if (hook.releaseByChapter) segs.push(`计划释放：第 ${hook.releaseByChapter} 章`)
         parts.push(segs.join('；'))
+      }
+    }
+
+    // POV（视点人物）约束
+    if (constraints.povCharacters && constraints.povCharacters.length > 0) {
+      parts.push('\n### POV 约束（视点人物）')
+      parts.push(`本章必须严格使用以下角色的视角：${constraints.povCharacters.join('、')}`)
+      parts.push('不得出现未列在此处的角色的内心独白。如需切换视角，必须用明确的场景分隔。')
+    }
+
+    // 场景数（节奏速率引导）
+    if (constraints.sceneCount && constraints.sceneCount > 0) {
+      parts.push('\n### 场景数（节奏速率引导）')
+      if (constraints.sceneCount === 1) {
+        parts.push('本章 1 个场景：单场景写透，深入挖掘细节和情感，不赶进度')
+      } else if (constraints.sceneCount === 2) {
+        parts.push('本章 2 个场景：两个场景各有侧重，中间用场景切换自然过渡')
+      } else {
+        parts.push(`本章 ${constraints.sceneCount} 个场景：多场景快推，每个场景点到为止，保持节奏明快`)
+      }
+    }
+
+    // 时间线偏移（引导 Writer 把握时间推进）
+    if (constraints.timeOffset != null) {
+      parts.push('\n### 时间线（相对第1章的偏移）')
+      if (constraints.timeOffset === 0) {
+        parts.push('本章与第1章同日发生，时间不推进')
+      } else if (constraints.timeOffset > 0) {
+        parts.push(`本章时间相对第1章推进 **${constraints.timeOffset} 天**，请在叙述中自然体现时间流逝（如环境、作息、日期感受）`)
+      } else {
+        parts.push(`本章时间相对第1章倒退 ${Math.abs(constraints.timeOffset)} 天（闪回/倒叙），请在叙述中明确标记这是回忆或往事`)
       }
     }
 
@@ -677,7 +800,7 @@ export class NovelPromptBuilder {
           if (c.identity) charLines.push(`  - 身份：${c.identity}`)
           if (c.personality) charLines.push(`  - 性格：${c.personality}`)
           if (c.appearance) charLines.push(`  - 外貌：${c.appearance}`)
-          if (c.speechStyle) charLines.push(`  - 说话风格：${c.speechStyle}`)
+          if (c.speechStyle) charLines.push(`  - 说话风格（写作时对话必须符合此风格）：${c.speechStyle}`)
           if (c.currentState) charLines.push(`  - 当前状态：${c.currentState}`)
           if (c.currentGoal) charLines.push(`  - 当前目标（短期）：${c.currentGoal}`)
           // 四层逻辑①：长期欲望（跨章节稳定的发动机）
@@ -1059,6 +1182,155 @@ export class NovelPromptBuilder {
       parts.push(`- 第${ch.chapterNumber}章《${ch.title}》：${summary}`)
     }
     return parts.join('\n')
+  }
+
+  /**
+   * 格式化叙事声音锚点：最近 2-3 章的开头段落原文。
+   *
+   * 设计意图：
+   * - 风格指南是静态规则（"用短句""避免华丽修辞"），无法捕捉一部小说的整体声音质感
+   * - 注入最近章节的原文开头（约 200 字），让 LLM 直接感受叙事腔调
+   * - Writer 据此保持声音一致；Reviewer 据此检查声音偏差
+   */
+  private formatSoundAnchor(recentChapters: NovelChapter[]): string {
+    // recentChapters 是倒序（最新在前），取最近 2 章有内容的开头
+    const anchors: string[] = []
+    for (const ch of recentChapters) {
+      if (ch.content && ch.content.trim().length > 50) {
+        const opening = ch.content.trim().slice(0, 200)
+        anchors.push(`- 第${ch.chapterNumber}章开头：${opening}${ch.content.length > 200 ? '...' : ''}`)
+      }
+      if (anchors.length >= 2) break
+    }
+    if (anchors.length === 0) return ''
+    return `## 叙事声音锚点（参照前文腔调，保持一致）\n\n${anchors.join('\n')}`
+  }
+
+  /**
+   * 格式化宏观节奏分布：最近 10 章的节奏类型统计。
+   *
+   * 设计意图：
+   * - 让 Director 在规划时看到宏观节奏曲线，避免连续高潮或连续铺垫
+   * - 标注连续高潮/转折次数，提醒是否需要 breather 缓冲
+   */
+  private formatMacroRhythm(projectId: string, currentChapterNumber: number): string {
+    // 获取最近 10 章（不含当前章）
+    const recent = this.stores.listRecentChapters(projectId, 10)
+      .filter(ch => ch.chapterNumber < currentChapterNumber)
+      .sort((a, b) => a.chapterNumber - b.chapterNumber)
+    if (recent.length === 0) return ''
+
+    const rhythms = recent.map(ch => ch.rhythm ?? 'setup')
+    const rhythmCounts = new Map<string, number>()
+    for (const r of rhythms) rhythmCounts.set(r, (rhythmCounts.get(r) ?? 0) + 1)
+
+    // 计算连续高潮/转折次数
+    let consecutiveClimax = 0
+    for (let i = rhythms.length - 1; i >= 0; i--) {
+      if (rhythms[i] === 'climax' || rhythms[i] === 'twist') consecutiveClimax++
+      else break
+    }
+
+    const lines = ['## 最近章节节奏分布（宏观节奏管理参考）', '']
+    lines.push(`最近 ${recent.length} 章节奏序列：${rhythms.join(' → ')}`)
+    lines.push('')
+    lines.push('节奏统计：')
+    for (const [rhythm, count] of rhythmCounts) {
+      lines.push(`- ${rhythm}：${count} 章`)
+    }
+    if (consecutiveClimax >= 2) {
+      lines.push('')
+      lines.push(`⚠️ 已连续 ${consecutiveClimax} 章高潮/转折，本章建议安排 breather 或 setup 缓冲`)
+    }
+    return lines.join('\n')
+  }
+
+  /**
+   * 格式化 Reviewer 反馈摘要：最近 3 章 Reviewer 的审稿结论和关键问题。
+   *
+   * 设计意图：
+   * - 如果 Reviewer 连续多章发现同类问题，Director 应该知道并改进规划
+   * - 提取 Reviewer 日志中的结论（accept/revise/reject）和问题摘要
+   */
+  private formatReviewerFeedback(projectId: string): string {
+    if (!this.stores.listAgentLogsByProject) return ''
+    const logs = this.stores.listAgentLogsByProject(projectId, 20)
+    // 筛选 Reviewer 日志，取最近 3 条
+    const reviewerLogs = logs
+      .filter(l => l.agentType === 'reviewer' && l.status === 'success')
+      .slice(0, 3)
+    if (reviewerLogs.length === 0) return ''
+
+    const lines = ['## 最近审稿反馈（改进规划参考）', '']
+    for (const log of reviewerLogs) {
+      // 从 result 中提取结论和关键问题（截取前 300 字避免过长）
+      const result = log.result?.slice(0, 300) ?? ''
+      const verdict = result.match(/结论[:：]\s*(accept|revise|reject)/i)?.[1] ?? 'unknown'
+      const lines_result = result.split('\n').filter(l => l.includes('问题') || l.includes('建议')).slice(0, 3)
+      lines.push(`- 第${log.chapterNumber}章审稿结论：${verdict}`)
+      if (lines_result.length > 0) {
+        lines.push(`  关键反馈：${lines_result.join('；')}`)
+      }
+    }
+    return lines.join('\n')
+  }
+
+  /**
+   * 构建条件写法理论：根据本章任务类型/节奏只注入相关理论片段。
+   *
+   * 设计意图：
+   * - 原来 Writer 的 role-writer.md 包含 80 行理论，每次全量注入浪费 token 且干扰创作
+   * - 现在根据任务类型条件触发，只注入相关理论，省 token + 减少约束
+   * - 理论片段从 role-writer.md 原有内容中提取精简版
+   */
+  private buildWritingTheory(
+    taskType: string,
+    rhythm?: ChapterRhythm,
+    isClimax?: boolean,
+  ): string {
+    const sections: string[] = []
+
+    // 高潮写法（climax 节奏或冲突标记高潮）
+    if (rhythm === 'climax' || isClimax) {
+      sections.push(`### 高潮写法
+
+- **蓄势释放**：高潮前先写压抑（主角被压制、陷入困境），释放点干脆利落。蓄势占高潮段落 60% 以上
+- **大小区别**：minor 单章解决（强度 5-6），medium 跨 2-3 章铺垫（7-8），major 跨卷铺垫（9-10）
+- **类型写法**：emotional 聚焦情感爆发（对话+心理），fate 聚焦命运揭晓（信息递进），character 突出性格魅力，combat 聚焦新奇场面，theme 承载思想重量，composite 多线共振`)
+    }
+
+    // 突转写法
+    if (taskType === 'create_reversal' || rhythm === 'twist') {
+      sections.push(`### 突转写法
+
+- **前置呼应**：突转必须呼应前 1-2 章的误导线索和更早的伏笔
+- **角色动机一致**：突转后角色行为符合性格逻辑，不为突转而突转
+- **信息差利用**：通过角色不知道的信息制造突转，非凭空降神
+- **突转节奏**：铺垫要慢（让读者相信 A 方向），突转要快（一个事件改变一切）`)
+    }
+
+    // 悬念写法
+    if (taskType === 'create_suspense' || rhythm === 'suspense') {
+      sections.push(`### 悬念写法
+
+- **埋设（planting）**：通过角色不知道的信息制造紧张感
+- **维持（sustaining）**：每章释放一点信息但不说破
+- **释放（releasing）**：真相揭晓，情感与信息同时爆发
+- **技巧**：信息不对称、倒计时压力、部分揭露、误导与红鲱鱼`)
+    }
+
+    // 冲突推进写法（当有冲突推进目标时）
+    if (taskType === 'create_conflict' || taskType === 'escalate_conflict') {
+      sections.push(`### 冲突推进写法
+
+- **latent → emerging**：暗示冲突存在，角色尚未察觉
+- **emerging → escalating**：冲突显性化，角色开始交锋
+- **escalating → erupting**：冲突爆发，强度拉满
+- 按类型调整：inner/moral 慢节奏心理描写，relationship/emotional 中节奏对话，faction/world_rule 快节奏群像，survival 快节奏动作`)
+    }
+
+    if (sections.length === 0) return '（本章无特殊写法理论需要参考，按创作核心原则自由发挥即可）'
+    return sections.join('\n\n')
   }
 
   /**
