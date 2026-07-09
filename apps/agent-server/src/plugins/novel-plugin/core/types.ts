@@ -768,6 +768,8 @@ export interface NarrativeTask {
   suspenseDuration?: number
   /** 章尾钩子类型（Director 规划，Writer 执行） */
   chapterEndingHook?: ChapterEndingHookType
+  /** v0.2：章尾钩子描述文本（Director 规划的完整描述，用于创建钩子实体） */
+  chapterEndingHookDescription?: string
   /** 本章 POV（视点人物）角色名列表，Writer 必须严格使用这些角色的视角 */
   povCharacters?: string[]
   /** 本章场景数（1=单场景写透，2-3=多场景快推），引导 Writer 控制节奏速率 */

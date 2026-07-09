@@ -37,6 +37,8 @@
  * （统一超时机制 + pending 列表 + 'confirmation:*' 事件）。
  */
 
+import { randomUUID } from 'node:crypto'
+
 import type { NovelStore } from './novel-store.js'
 import type { NovelSessionFactory } from './novel-session.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
@@ -283,6 +285,33 @@ export class NovelOrchestrator {
           expectedIntensityDelta: this.currentDirectorTask.expectedIntensityDelta,
         },
       })
+
+      // v0.2：Director 规划通过后，创建本章钩子实体（替代只填枚举字段）
+      if (this.currentDirectorTask?.chapterEndingHook &&
+          this.currentDirectorTask.chapterEndingHook !== 'none' &&
+          this.currentDirectorTask.chapterEndingHookDescription) {
+        try {
+          const hookId = randomUUID()
+          this.store.createHook({
+            id: hookId,
+            projectId,
+            chapterNumber,
+            hookType: this.currentDirectorTask.chapterEndingHook,
+            description: this.currentDirectorTask.chapterEndingHookDescription,
+            status: 'thrown',
+            fulfilledAtChapter: null,
+            fulfilledDescription: null,
+            linkedForeshadowId: null,
+            linkedConflictId: null,
+          })
+          this.context.logger.info(
+            { projectId, chapterNumber, hookId, hookType: this.currentDirectorTask.chapterEndingHook },
+            'v0.2: 已创建本章钩子实体',
+          )
+        } catch (err) {
+          this.context.logger.warn({ projectId, chapterNumber, err }, 'v0.2: 创建钩子实体失败，不影响主流程')
+        }
+      }
 
       // Phase 2: Writer（支持 pushback：Writer 发现叙事任务有逻辑问题时可推回给 Director）
       let writerResult = ''
@@ -2220,10 +2249,13 @@ ${excerpt}`
       if (secondaryTypes.length > 0) task.secondaryTasks = secondaryTypes
     }
 
-    // 提取章尾钩子类型
+    // 提取章尾钩子类型 + 描述（v0.2：钩子升级为实体，需要描述文本）
     const hookSection = text.match(/##\s*章尾钩子设计[^\n]*\n([\s\S]*?)(?=\n##\s|$)/i)
     if (hookSection) {
-      const hookText = hookSection[1]
+      const hookText = hookSection[1].trim()
+      // 保留完整描述供创建钩子实体
+      task.chapterEndingHookDescription = hookText.slice(0, 200)
+      // 保留现有的类型解析逻辑（suspense/reversal/emotional/action）
       if (/悬念钩子|suspense/i.test(hookText)) task.chapterEndingHook = 'suspense'
       else if (/反转钩子|reversal/i.test(hookText)) task.chapterEndingHook = 'reversal'
       else if (/情感钩子|emotional/i.test(hookText)) task.chapterEndingHook = 'emotional'
