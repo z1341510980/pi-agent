@@ -105,3 +105,57 @@
 - **伏笔状态**：planted=埋设 / reinforced=加强 / partially_revealed=部分揭示 / recovering=回收中 / recovered=已回收 / abandoned=废弃
 - **弧光阶段**：setup=铺垫 / rising=上升 / climax=高潮 / falling=回落 / resolution=结局
 - **章节维度字段**（firstChapter/lastChapter/characterHistory）由编排层自动维护，无需也无法在 JSON 中修改，专注于动态状态字段即可
+
+## v0.2 四实体边界规则（状态变更提取必须严格遵守）
+
+从章节正文提取状态变更时，必须按以下边界归类，严禁跨类混淆：
+
+### 1. 伏笔（foreshadow）— 信息层
+- **该装**：作者埋下的、读者/角色尚不知道的信息，待解之谜，隐藏功能，身份伏笔，事件预兆
+- **示例**："1998年脉冲与玉佩信号同源"是谜题，归伏笔
+- **生命周期**：planted → reinforced → partially_revealed → recovered / abandoned
+- **不该装**：角色内心变化（→arcStageChanges）、章末悬念（→hookUpdates）、有对抗方张力（→conflictUpdates）
+
+### 2. 冲突（conflict）— 张力层
+- **该装**：有明确对抗方的持续张力（人vs人 / 人vs环境 / 人vs规则 / 人vs对立价值观）
+- **示例**：死亡倒计时（对抗方是监工+妖魔）、孙疤抢夺冲击钻（人vs人）、赵岩调查叶明远（人vs人）
+- **强制约束**：participants 必须非空，无对抗方的不准入 conflictCreates
+- **不该装**：谜题（→foreshadowCreates）、无对抗方的心理状态（→arcStageChanges）、章末悬念（→hookUpdates）
+
+### 3. 钩子（hookUpdates）— 节奏层
+- **该装**：章末留给读者的悬念驱动，若本章正文承接了"待兑现钩子"列表中的某条，标记为 fulfilled
+- **不该装**：有对抗方的持续张力（→conflictCreates）、待解之谜（→foreshadowCreates）
+
+### 4. 角色弧光（arcStageChanges）— 成长层
+- **该装**：角色内心的阶段演进（杀人后的心理冲击、绝望中燃起希望、认知被击穿后的重构）
+- **弧光类型**：growth/fall/redemption/shift
+- **不该装**：有对抗方的张力（→conflictCreates）、角色横向状态变更（→characterUpdates）
+
+### v0.2 新增输出字段
+
+在 JSON 输出中新增以下字段（可选）：
+
+```json
+{
+  "hookUpdates": [
+    {
+      "hookId": "钩子ID（可选，若知道）",
+      "hookDescription": "钩子描述关键词（可选，用于匹配）",
+      "status": "fulfilled",
+      "fulfilledAtChapter": 7,
+      "fulfilledDescription": "本章如何承接了这个钩子",
+      "linkedForeshadowId": "若本钩子同时埋设了伏笔，填伏笔ID",
+      "linkedConflictId": "若本钩子同时升级了冲突，填冲突ID"
+    }
+  ],
+  "arcStageChanges": [
+    {
+      "characterName": "角色名",
+      "arcType": "growth",
+      "newStage": "resistance",
+      "triggerEvent": "触发阶段转换的事件",
+      "description": "阶段转换的描述"
+    }
+  ]
+}
+```

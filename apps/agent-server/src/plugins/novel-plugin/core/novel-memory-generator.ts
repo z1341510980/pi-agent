@@ -35,6 +35,7 @@ import type {
   NovelRelationship,
   RelationChange,
   ArrangedEntity,
+  NovelHook,
 } from './types.js'
 
 // ── 进度事件 ──
@@ -157,6 +158,30 @@ interface LocationUpdateItem {
   status?: string
 }
 
+// ── v0.2：钩子兑现更新（标记上一章钩子 thrown→fulfilled）──
+interface HookUpdateItem {
+  /** 钩子 ID 或描述关键词（用于匹配） */
+  hookId?: string
+  hookDescription?: string
+  status?: 'thrown' | 'fulfilled' | 'abandoned'
+  fulfilledAtChapter?: number
+  fulfilledDescription?: string
+  /** 建立关联：若本章创建了伏笔/冲突，回填其 ID */
+  linkedForeshadowId?: string
+  linkedConflictId?: string
+}
+
+// ── v0.2：角色弧光阶段转换 ──
+interface ArcStageChangeItem {
+  /** 角色名匹配 */
+  characterName?: string
+  characterId?: string
+  arcType?: 'growth' | 'fall' | 'redemption' | 'shift'
+  newStage?: string
+  triggerEvent?: string
+  description?: string
+}
+
 interface MemoryUpdatePayload {
   characterUpdates?: CharacterUpdateItem[]
   characterCreates?: CharacterCreateItem[]
@@ -169,6 +194,9 @@ interface MemoryUpdatePayload {
   // ── 四层逻辑②：关系层 Memory Agent 支持 ──
   relationshipUpdates?: RelationshipUpdateItem[]
   relationshipCreates?: RelationshipCreateItem[]
+  // ── v0.2：钩子兑现 + 角色弧光 ──
+  hookUpdates?: HookUpdateItem[]
+  arcStageChanges?: ArcStageChangeItem[]
   summary?: string
 }
 
@@ -185,6 +213,8 @@ export interface MemoryApplyStats {
   locationUpdatesApplied: number
   relationshipUpdatesApplied: number
   relationshipCreatesApplied: number
+  hookUpdatesApplied: number
+  arcStageChangesApplied: number
   total: number
 }
 
@@ -258,7 +288,9 @@ export class NovelMemoryGenerator {
     // 不需要注入 chapterContext（章节信息 + 约束 + 故事状态 + 摘要 + 因果链），
     // 这些对"状态变更提取"无用，且会让 Memory 的输入膨胀 10K+ 字符。
     // 预期节省 ~10K 字符 / 7K tokens。
-    const userPrompt = this.buildUserPrompt(projectId, chapterNumber, chapterContent, arrangedEntities)
+    // v0.2：查询待兑现钩子注入 Memory Agent
+    const pendingHooks = this.store.listUnfulfilledHooksBefore(projectId, chapterNumber)
+    const userPrompt = this.buildUserPrompt(projectId, chapterNumber, chapterContent, arrangedEntities, pendingHooks)
 
     // ── 3. 创建独立 Session 调用 LLM（单次调用，输出 JSON）──
     onProgress?.({ phase: 'generating', message: '记忆 Agent 正在分析章节状态变更...' })
@@ -478,6 +510,7 @@ export class NovelMemoryGenerator {
     chapterNumber: number,
     chapterContent: string,
     arrangedEntities?: ArrangedEntity,
+    pendingHooks: NovelHook[] = [],
   ): string {
     const parts: string[] = []
 
@@ -508,6 +541,15 @@ export class NovelMemoryGenerator {
     if (entityState) {
       parts.push('\n## 当前实体状态（用于判断变更）\n')
       parts.push(entityState)
+    }
+
+    // ── v0.2：待兑现钩子列表 ──
+    // Memory Agent 需要知道哪些钩子待兑现，才能在后续章节承接时标记 fulfilled
+    if (pendingHooks.length > 0) {
+      parts.push(`\n## 待兑现钩子（若本章正文承接了某钩子，请在 hookUpdates 中标记 fulfilled）\n`)
+      for (const h of pendingHooks) {
+        parts.push(`- [${h.id}] 第${h.chapterNumber}章 ${h.hookType}钩子：${h.description}`)
+      }
     }
 
     parts.push('\n## 输出要求\n')
@@ -867,7 +909,20 @@ export class NovelMemoryGenerator {
     }
 
     // ── 冲突创建 ──
-    for (const item of payload.conflictCreates ?? []) {
+    // v0.2 边界校验：冲突必须有对抗方（participants 非空）
+    // 无对抗方的"内心冲突"应归角色弧光，不入冲突表
+    const filteredConflictCreates = (payload.conflictCreates ?? []).filter(c => {
+      const participants = c.participants ?? []
+      if (participants.length === 0) {
+        this.context.logger.warn(
+          { description: c.description, projectId },
+          '记忆 Agent：拒绝入库无对抗方冲突（应归角色弧光）',
+        )
+        return false
+      }
+      return true
+    })
+    for (const item of filteredConflictCreates) {
       if (!item.description) continue
       // participants 通过名字查找 ID
       const participantIds = (item.participants ?? [])
@@ -1038,6 +1093,81 @@ export class NovelMemoryGenerator {
       + stats.factionUpdatesApplied + stats.locationUpdatesApplied
       + stats.relationshipUpdatesApplied + stats.relationshipCreatesApplied
 
+    // ── v0.2：应用钩子兑现更新 ──
+    let hookUpdatesApplied = 0
+    for (const item of payload.hookUpdates ?? []) {
+      // 优先用 hookId 匹配，其次用 description 关键词匹配
+      let hook = item.hookId ? this.store.getHook(item.hookId) : undefined
+      if (!hook && item.hookDescription) {
+        const allHooks = this.store.listHooks(projectId)
+        hook = allHooks.find(h =>
+          h.status === 'thrown' &&
+          (h.description.includes(item.hookDescription!) || item.hookDescription!.includes(h.description))
+        )
+      }
+      if (hook) {
+        this.store.updateHook(hook.id, {
+          status: item.status ?? 'fulfilled',
+          fulfilledAtChapter: item.fulfilledAtChapter ?? chapterNumber ?? null,
+          fulfilledDescription: item.fulfilledDescription ?? null,
+          linkedForeshadowId: item.linkedForeshadowId ?? hook.linkedForeshadowId,
+          linkedConflictId: item.linkedConflictId ?? hook.linkedConflictId,
+        })
+        hookUpdatesApplied++
+      }
+    }
+
+    // ── v0.2：应用角色弧光阶段转换 ──
+    let arcStageChangesApplied = 0
+    for (const item of payload.arcStageChanges ?? []) {
+      // 通过 characterName 或 characterId 定位角色
+      let characterId = item.characterId
+      if (!characterId && item.characterName) {
+        const chars = this.store.listCharacters(projectId)
+        const ch = chars.find(c => c.name === item.characterName)
+        characterId = ch?.id
+      }
+      if (!characterId) continue
+
+      // 获取或创建弧光
+      let arc = this.store.getCharacterArcByCharacter(projectId, characterId)
+      if (!arc && item.arcType && item.newStage) {
+        arc = this.store.createCharacterArc({
+          id: randomUUID(), projectId, characterId,
+          arcType: item.arcType,
+          currentStage: item.newStage,
+          stageHistory: [{
+            stage: item.newStage,
+            triggerEvent: item.triggerEvent ?? '',
+            description: item.description ?? '',
+            chapterNumber: chapterNumber ?? 0,
+            changedAt: Date.now(),
+          }],
+          description: null,
+        })
+        arcStageChangesApplied++
+      } else if (arc && item.newStage && arc.currentStage !== item.newStage) {
+        const newHistory = [...arc.stageHistory, {
+          stage: item.newStage,
+          triggerEvent: item.triggerEvent ?? '',
+          description: item.description ?? '',
+          chapterNumber: chapterNumber ?? 0,
+          changedAt: Date.now(),
+        }]
+        this.store.updateCharacterArc(arc.id, {
+          currentStage: item.newStage,
+          stageHistory: newHistory,
+        })
+        // 同步镜像到 character.arcStage
+        this.store.updateCharacter(characterId, { arcStage: item.newStage })
+        arcStageChangesApplied++
+      }
+    }
+
+    stats.hookUpdatesApplied = hookUpdatesApplied
+    stats.arcStageChangesApplied = arcStageChangesApplied
+    stats.total += hookUpdatesApplied + arcStageChangesApplied
+
     return stats
   }
 
@@ -1110,6 +1240,8 @@ export class NovelMemoryGenerator {
       locationUpdatesApplied: 0,
       relationshipUpdatesApplied: 0,
       relationshipCreatesApplied: 0,
+      hookUpdatesApplied: 0,
+      arcStageChangesApplied: 0,
       total: 0,
     }
   }
