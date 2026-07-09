@@ -13,10 +13,12 @@
  */
 
 import { useMemo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useDroppable, useDndMonitor, useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { Plus, ChevronRight, GripVertical } from 'lucide-react'
-import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType } from '@/api/novel-client'
+import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType, NovelHook } from '@/api/novel-client'
+import { listHooks } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 import { computeVisibleChapters } from '@/lib/matrix-viewport'
 import { useNovelStore } from '@/stores/novel-store'
@@ -207,6 +209,15 @@ export function MatrixView({
     }
     return m
   }, [markers, showMarkers])
+
+  // ── v0.2：章尾钩子实体（从 chapter.chapterEndingHook 字段迁移为独立实体）──
+  // 钩子轨道行数据源切换：不再依赖 chapter.chapterEndingHook，改为从 hooks 实体查询。
+  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const { data: hooks = [] } = useQuery({
+    queryKey: ['novel', 'hooks', currentProjectId],
+    queryFn: () => listHooks(currentProjectId!),
+    enabled: !!currentProjectId,
+  })
 
   // ── C-3c 滚动到指定章节列（监听 store 的 matrixScrollTarget）──
   const matrixScrollTarget = useNovelStore((s) => s.matrixScrollTarget)
@@ -436,8 +447,7 @@ export function MatrixView({
 
           {/* 章尾钩子轨道行（仅当存在任何已设定钩子的章节时显示） */}
           <HookTrackRow
-            chapters={chapters}
-            chapterByNumber={chapterByNumber}
+            hooks={hooks}
             visibleChapterColumns={visibleChapterColumns}
             visibleRange={visibleRange}
             maxChapter={maxChapter}
@@ -496,8 +506,7 @@ const HOOK_META: Record<ChapterEndingHookType, { color: string; bg: string; icon
 }
 
 interface HookTrackRowProps {
-  chapters: NovelChapter[]
-  chapterByNumber: Map<number, NovelChapter>
+  hooks: NovelHook[]
   visibleChapterColumns: number[]
   visibleRange: { start: number; end: number }
   maxChapter: number
@@ -506,13 +515,21 @@ interface HookTrackRowProps {
 }
 
 function HookTrackRow({
-  chapterByNumber, visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
+  hooks, visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
 }: HookTrackRowProps): ReactElement | null {
-  // 仅当存在任何已设定钩子的章节时显示该轨道行
-  const hasAnyHook = Array.from(chapterByNumber.values()).some(
-    (c) => c.chapterEndingHook && c.chapterEndingHook !== 'none',
-  )
-  if (!hasAnyHook) return null
+  // 按 chapterNumber 分组 hooks（一章可能有多个钩子，通常只有一个）
+  const hooksByChapter = useMemo(() => {
+    const m = new Map<number, NovelHook[]>()
+    for (const h of hooks) {
+      const arr = m.get(h.chapterNumber) ?? []
+      arr.push(h)
+      m.set(h.chapterNumber, arr)
+    }
+    return m
+  }, [hooks])
+
+  // 仅当存在任何钩子时显示该轨道行
+  if (hooks.length === 0) return null
 
   return (
     <div className="relative z-20 flex h-[26px] border-b border-border/60 bg-surface-1/60">
@@ -530,34 +547,44 @@ function HookTrackRow({
           <div style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} aria-hidden="true" />
         )}
         {visibleChapterColumns.map((ch) => {
-          const chapter = chapterByNumber.get(ch)
-          const hook = chapter?.chapterEndingHook
-          const meta = hook ? HOOK_META[hook] : null
+          const chapterHooks = hooksByChapter.get(ch) ?? []
           const isCurrent = ch === playheadChapter
-          const tip = chapter
-            ? `第 ${ch} 章 · ${meta && hook !== 'none' ? meta.label + '钩子' : '无钩子'}`
-            : `第 ${ch} 章 · 未设定`
+          // 单元格背景：取第一个钩子的类型颜色（多钩子时用主钩子着色）
+          const primaryHook = chapterHooks[0]
+          const meta = primaryHook ? HOOK_META[primaryHook.hookType] : null
+          const tip = chapterHooks.length === 0
+            ? `第 ${ch} 章 · 未设定`
+            : chapterHooks.map((h) => {
+                const hm = HOOK_META[h.hookType]
+                const statusLabel =
+                  h.status === 'fulfilled' ? '已兑现' :
+                  h.status === 'thrown' ? '已抛出' : '已放弃'
+                return `${hm.label}钩子（${statusLabel}）${h.description ? '：' + h.description : ''}`
+              }).join('｜')
           return (
             <div
               key={ch}
               className={cn(
-                'relative h-full shrink-0 flex items-center justify-center border-r border-border/30',
+                'relative h-full shrink-0 flex items-center justify-center gap-0.5 border-r border-border/30',
                 isCurrent && 'bg-amber-500/5',
               )}
               style={{
                 width: `${cellWidth}px`,
-                background: meta && hook && hook !== 'none' ? meta.bg : undefined,
+                background: meta && primaryHook?.hookType !== 'none' ? meta.bg : undefined,
               }}
               data-tip={tip}
             >
-              {meta && hook && hook !== 'none' && (
-                <span
-                  className="flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold leading-none"
-                  style={{ color: meta.color, border: `1px solid ${meta.color}` }}
-                  aria-label={meta.label}
-                >
-                  {meta.icon}
-                </span>
+              {chapterHooks.length === 1 && primaryHook && primaryHook.hookType !== 'none' && (
+                <HookGlyph hook={primaryHook} meta={HOOK_META[primaryHook.hookType]} />
+              )}
+              {chapterHooks.length > 1 && (
+                <div className="flex items-center gap-0.5">
+                  {chapterHooks.slice(0, 4).map((h) => {
+                    const hm = HOOK_META[h.hookType]
+                    if (h.hookType === 'none') return null
+                    return <HookDot key={h.id} hook={h} color={hm.color} />
+                  })}
+                </div>
               )}
             </div>
           )
@@ -568,6 +595,50 @@ function HookTrackRow({
         )}
       </div>
     </div>
+  )
+}
+
+// 单钩子图标：保持原圆形带字符样式，根据兑现状态区分实心/虚线
+// - fulfilled：实心填充（类型色背景 + 白字）
+// - thrown：空心虚线边框（半透明，暗示"待兑现"）
+// - abandoned：空心虚线边框（更淡，暗示"已放弃"）
+function HookGlyph({ hook, meta }: {
+  hook: NovelHook
+  meta: { color: string; icon: string; label: string }
+}): ReactElement {
+  const isFulfilled = hook.status === 'fulfilled'
+  const isAbandoned = hook.status === 'abandoned'
+  return (
+    <span
+      className="flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold leading-none"
+      style={{
+        color: isFulfilled ? '#fff' : meta.color,
+        background: isFulfilled ? meta.color : undefined,
+        border: `1px ${isFulfilled ? 'solid' : 'dashed'} ${meta.color}`,
+        opacity: isAbandoned ? 0.35 : (hook.status === 'thrown' ? 0.75 : 1),
+      }}
+      aria-label={meta.label}
+    >
+      {meta.icon}
+    </span>
+  )
+}
+
+// 多钩子小圆点（每钩子一个点，颜色对应类型，状态决定实心/虚线）
+function HookDot({ hook, color }: { hook: NovelHook; color: string }): ReactElement {
+  const isFulfilled = hook.status === 'fulfilled'
+  const isAbandoned = hook.status === 'abandoned'
+  return (
+    <span
+      className="rounded-full"
+      style={{
+        width: 6,
+        height: 6,
+        background: isFulfilled ? color : 'transparent',
+        border: `1px ${isFulfilled ? 'solid' : 'dashed'} ${color}`,
+        opacity: isAbandoned ? 0.35 : (hook.status === 'thrown' ? 0.75 : 1),
+      }}
+    />
   )
 }
 

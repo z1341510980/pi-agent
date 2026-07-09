@@ -1858,3 +1858,74 @@ export function mergeSimilarityEntities(
 ): Promise<{ totalMerged: number }> {
   return postApi<{ totalMerged: number }>(`${BASE}/projects/${projectId}/entities/merge-similarity`, { groups })
 }
+
+// ── v0.2：钩子（章尾钩子实体化，支持兑现状态追踪） ──
+
+/** 钩子兑现状态：thrown=已抛出 / fulfilled=已兑现 / abandoned=已放弃 */
+export type HookStatus = 'thrown' | 'fulfilled' | 'abandoned'
+
+/** 章尾钩子实体（v0.2：从 chapter.chapterEndingHook 字段迁移为独立实体） */
+export interface NovelHook {
+  id: string
+  projectId: string
+  chapterNumber: number
+  hookType: ChapterEndingHookType
+  description: string
+  status: HookStatus
+  fulfilledAtChapter: number | null
+  fulfilledDescription: string | null
+  linkedForeshadowId: string | null
+  linkedConflictId: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export function listHooks(projectId: string): Promise<NovelHook[]> {
+  return getApi<NovelHook[]>(`${BASE}/projects/${projectId}/hooks`)
+}
+
+export function createHook(
+  projectId: string,
+  hook: Omit<NovelHook, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>,
+): Promise<NovelHook> {
+  return postApi<NovelHook>(`${BASE}/projects/${projectId}/hooks`, hook)
+}
+
+export function updateHook(id: string, patch: Partial<NovelHook>): Promise<NovelHook> {
+  return putApi<NovelHook>(`${BASE}/hooks/${id}`, patch)
+}
+
+export function deleteHook(id: string): Promise<void> {
+  return deleteApi(`${BASE}/hooks/${id}`)
+}
+
+// ── v0.2：角色弧光（独立实体，追踪角色成长/堕落/救赎/转变轨迹） ──
+
+/** 弧光类型：growth=成长 / fall=堕落 / redemption=救赎 / shift=转变 */
+export type ArcType = 'growth' | 'fall' | 'redemption' | 'shift'
+
+/** 弧光阶段历史条目（每次阶段变更记录） */
+export interface ArcStageHistoryEntry {
+  stage: string
+  triggerEvent: string
+  description: string
+  chapterNumber: number
+  changedAt: number
+}
+
+/** 角色弧光实体 */
+export interface NovelCharacterArc {
+  id: string
+  projectId: string
+  characterId: string
+  arcType: ArcType
+  currentStage: string
+  stageHistory: ArcStageHistoryEntry[]
+  description: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export function listCharacterArcs(projectId: string): Promise<NovelCharacterArc[]> {
+  return getApi<NovelCharacterArc[]>(`${BASE}/projects/${projectId}/character-arcs`)
+}
