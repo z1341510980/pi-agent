@@ -55,6 +55,11 @@ import type {
   NovelAgentLogStatus,
   NovelMarker,
   NovelVolume,
+  NovelHook,
+  HookStatus,
+  NovelCharacterArc,
+  ArcType,
+  ArcStageHistoryEntry,
   DeduplicateEntityKind,
   DeduplicateGroup,
   DeduplicateReport,
@@ -131,6 +136,33 @@ interface ConflictRow {
   plot_function: string | null
   progression_mode: string | null
   created_at: number; updated_at: number
+}
+
+interface HookRow {
+  id: string
+  project_id: string
+  chapter_number: number
+  hook_type: string
+  description: string
+  status: string
+  fulfilled_at_chapter: number | null
+  fulfilled_description: string | null
+  linked_foreshadow_id: string | null
+  linked_conflict_id: string | null
+  created_at: number
+  updated_at: number
+}
+
+interface CharacterArcRow {
+  id: string
+  project_id: string
+  character_id: string
+  arc_type: string
+  current_stage: string
+  stage_history: string
+  description: string | null
+  created_at: number
+  updated_at: number
 }
 
 interface WorldRuleRow {
@@ -1152,6 +1184,172 @@ export class NovelStore implements NovelPromptStores {
 
     for (const id of added) updateOne(id, 'add')
     for (const id of removed) updateOne(id, 'remove')
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 钩子 CRUD（v0.2）
+  // ═══════════════════════════════════════════════════════════════
+
+  private rowToHook(row: HookRow): NovelHook {
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      chapterNumber: row.chapter_number,
+      hookType: row.hook_type as NovelHook['hookType'],
+      description: row.description,
+      status: row.status as NovelHook['status'],
+      fulfilledAtChapter: row.fulfilled_at_chapter,
+      fulfilledDescription: row.fulfilled_description,
+      linkedForeshadowId: row.linked_foreshadow_id,
+      linkedConflictId: row.linked_conflict_id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  listHooks(projectId: string): NovelHook[] {
+    const rows = this.db.prepare('SELECT * FROM novel_hooks WHERE project_id = ? ORDER BY chapter_number ASC, created_at ASC').all(projectId) as HookRow[]
+    return rows.map(r => this.rowToHook(r))
+  }
+
+  /** 查询指定章节抛出的钩子 */
+  listHooksByChapter(projectId: string, chapterNumber: number): NovelHook[] {
+    const rows = this.db.prepare('SELECT * FROM novel_hooks WHERE project_id = ? AND chapter_number = ? ORDER BY created_at ASC').all(projectId, chapterNumber) as HookRow[]
+    return rows.map(r => this.rowToHook(r))
+  }
+
+  /** 查询指定章节之前抛出且未兑现的钩子（供 Writer 承接） */
+  listUnfulfilledHooksBefore(projectId: string, beforeChapter: number): NovelHook[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM novel_hooks WHERE project_id = ? AND chapter_number < ? AND status = ? ORDER BY chapter_number DESC, created_at ASC'
+    ).all(projectId, beforeChapter, 'thrown') as HookRow[]
+    return rows.map(r => this.rowToHook(r))
+  }
+
+  getHook(id: string): NovelHook | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_hooks WHERE id = ?').get(id) as HookRow | undefined
+    return row ? this.rowToHook(row) : undefined
+  }
+
+  createHook(hook: Omit<NovelHook, 'createdAt' | 'updatedAt'>): NovelHook {
+    const ts = now()
+    const full: NovelHook = { ...hook, createdAt: ts, updatedAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_hooks (id, project_id, chapter_number, hook_type, description, status,
+      fulfilled_at_chapter, fulfilled_description, linked_foreshadow_id, linked_conflict_id,
+      created_at, updated_at)
+      VALUES (@id, @project_id, @chapter_number, @hook_type, @description, @status,
+      @fulfilled_at_chapter, @fulfilled_description, @linked_foreshadow_id, @linked_conflict_id,
+      @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId, chapter_number: full.chapterNumber,
+      hook_type: full.hookType, description: full.description, status: full.status,
+      fulfilled_at_chapter: full.fulfilledAtChapter,
+      fulfilled_description: full.fulfilledDescription,
+      linked_foreshadow_id: full.linkedForeshadowId,
+      linked_conflict_id: full.linkedConflictId,
+      created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  updateHook(id: string, patch: Partial<NovelHook>): NovelHook | undefined {
+    const existing = this.db.prepare('SELECT * FROM novel_hooks WHERE id = ?').get(id) as HookRow | undefined
+    if (!existing) return undefined
+    const current = this.rowToHook(existing)
+    const updated = { ...current, ...patch, id, updatedAt: now() }
+    this.db.prepare(`
+      UPDATE novel_hooks SET hook_type=@hook_type, description=@description, status=@status,
+      fulfilled_at_chapter=@fulfilled_at_chapter, fulfilled_description=@fulfilled_description,
+      linked_foreshadow_id=@linked_foreshadow_id, linked_conflict_id=@linked_conflict_id,
+      updated_at=@updated_at WHERE id=@id
+    `).run({
+      id, hook_type: updated.hookType, description: updated.description, status: updated.status,
+      fulfilled_at_chapter: updated.fulfilledAtChapter,
+      fulfilled_description: updated.fulfilledDescription,
+      linked_foreshadow_id: updated.linkedForeshadowId,
+      linked_conflict_id: updated.linkedConflictId,
+      updated_at: updated.updatedAt,
+    })
+    return updated
+  }
+
+  deleteHook(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_hooks WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 角色弧光 CRUD（v0.2）
+  // ═══════════════════════════════════════════════════════════════
+
+  private rowToArc(row: CharacterArcRow): NovelCharacterArc {
+    let stageHistory: ArcStageHistoryEntry[] = []
+    try { stageHistory = JSON.parse(row.stage_history) } catch { stageHistory = [] }
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      characterId: row.character_id,
+      arcType: row.arc_type as NovelCharacterArc['arcType'],
+      currentStage: row.current_stage,
+      stageHistory,
+      description: row.description,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  listCharacterArcs(projectId: string): NovelCharacterArc[] {
+    const rows = this.db.prepare('SELECT * FROM novel_character_arcs WHERE project_id = ? ORDER BY created_at ASC').all(projectId) as CharacterArcRow[]
+    return rows.map(r => this.rowToArc(r))
+  }
+
+  getCharacterArc(id: string): NovelCharacterArc | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_character_arcs WHERE id = ?').get(id) as CharacterArcRow | undefined
+    return row ? this.rowToArc(row) : undefined
+  }
+
+  getCharacterArcByCharacter(projectId: string, characterId: string): NovelCharacterArc | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_character_arcs WHERE project_id = ? AND character_id = ?').get(projectId, characterId) as CharacterArcRow | undefined
+    return row ? this.rowToArc(row) : undefined
+  }
+
+  createCharacterArc(arc: Omit<NovelCharacterArc, 'createdAt' | 'updatedAt'>): NovelCharacterArc {
+    const ts = now()
+    const full: NovelCharacterArc = { ...arc, createdAt: ts, updatedAt: ts }
+    this.db.prepare(`
+      INSERT INTO novel_character_arcs (id, project_id, character_id, arc_type, current_stage,
+      stage_history, description, created_at, updated_at)
+      VALUES (@id, @project_id, @character_id, @arc_type, @current_stage,
+      @stage_history, @description, @created_at, @updated_at)
+    `).run({
+      id: full.id, project_id: full.projectId, character_id: full.characterId,
+      arc_type: full.arcType, current_stage: full.currentStage,
+      stage_history: JSON.stringify(full.stageHistory),
+      description: full.description, created_at: full.createdAt, updated_at: full.updatedAt,
+    })
+    return full
+  }
+
+  updateCharacterArc(id: string, patch: Partial<NovelCharacterArc>): NovelCharacterArc | undefined {
+    const existing = this.db.prepare('SELECT * FROM novel_character_arcs WHERE id = ?').get(id) as CharacterArcRow | undefined
+    if (!existing) return undefined
+    const current = this.rowToArc(existing)
+    const updated = { ...current, ...patch, id, updatedAt: now() }
+    this.db.prepare(`
+      UPDATE novel_character_arcs SET arc_type=@arc_type, current_stage=@current_stage,
+      stage_history=@stage_history, description=@description, updated_at=@updated_at WHERE id=@id
+    `).run({
+      id, arc_type: updated.arcType, current_stage: updated.currentStage,
+      stage_history: JSON.stringify(updated.stageHistory),
+      description: updated.description, updated_at: updated.updatedAt,
+    })
+    return updated
+  }
+
+  deleteCharacterArc(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM novel_character_arcs WHERE id = ?').run(id)
+    return result.changes > 0
   }
 
   // ═══════════════════════════════════════════════════════════════

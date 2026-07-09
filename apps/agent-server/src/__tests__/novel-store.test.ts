@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 
@@ -586,5 +587,195 @@ describe('NovelStore - 角色历史 CRUD', () => {
     const list = store.listCharacterHistory('p-1', 'c-1')
     expect(list).toHaveLength(1)
     expect(list[0].characterId).toBe('c-1')
+  })
+})
+
+describe('NovelStore v0.2 — Hook CRUD', () => {
+  let testProjectId: string
+
+  beforeEach(() => {
+    testProjectId = randomUUID()
+    store.createProject({
+      id: testProjectId, title: 'test', genre: 'test', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    })
+  })
+
+  it('createHook + getHook round-trip', () => {
+    const id = randomUUID()
+    const hook = store.createHook({
+      id, projectId: testProjectId, chapterNumber: 5,
+      hookType: 'suspense', description: '尸体被发现的风险',
+      status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null,
+      linkedForeshadowId: null, linkedConflictId: null,
+    })
+    expect(hook.status).toBe('thrown')
+    const got = store.getHook(id)
+    expect(got?.description).toBe('尸体被发现的风险')
+  })
+
+  it('listUnfulfilledHooksBefore returns only thrown hooks before given chapter', () => {
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 4, hookType: 'suspense', description: 'h4', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'action', description: 'h5', status: 'fulfilled', fulfilledAtChapter: 6, fulfilledDescription: 'done', linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 3, hookType: 'emotional', description: 'h3', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    // 第7章创作时查询未兑现钩子：应返回 h3（ch3, thrown）和 h4（ch4, thrown），不含 h5（fulfilled）
+    const result = store.listUnfulfilledHooksBefore(testProjectId, 7)
+    expect(result).toHaveLength(2)
+    expect(result.map(h => h.chapterNumber)).toEqual([4, 3]) // DESC by chapter
+  })
+
+  it('listHooksByChapter returns hooks of given chapter', () => {
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 4, hookType: 'suspense', description: 'h4', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'action', description: 'h5', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    const result = store.listHooksByChapter(testProjectId, 5)
+    expect(result).toHaveLength(1)
+    expect(result[0].description).toBe('h5')
+  })
+
+  it('updateHook marks fulfilled', () => {
+    const id = randomUUID()
+    store.createHook({ id, projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    const updated = store.updateHook(id, { status: 'fulfilled', fulfilledAtChapter: 6, fulfilledDescription: '承接了' })
+    expect(updated?.status).toBe('fulfilled')
+    expect(updated?.fulfilledAtChapter).toBe(6)
+  })
+
+  it('updateHook 不存在返回 undefined', () => {
+    expect(store.updateHook('nonexistent', { status: 'abandoned' })).toBeUndefined()
+  })
+
+  it('deleteHook', () => {
+    const id = randomUUID()
+    store.createHook({ id, projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    expect(store.deleteHook(id)).toBe(true)
+    expect(store.getHook(id)).toBeUndefined()
+  })
+
+  it('deleteHook 不存在返回 false', () => {
+    expect(store.deleteHook('nonexistent')).toBe(false)
+  })
+
+  it('listHooks 按章节号升序', () => {
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h5', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 3, hookType: 'emotional', description: 'h3', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    const list = store.listHooks(testProjectId)
+    expect(list.map(h => h.chapterNumber)).toEqual([3, 5])
+  })
+})
+
+describe('NovelStore v0.2 — CharacterArc CRUD', () => {
+  let testProjectId: string
+  let testCharacterId: string
+
+  beforeEach(() => {
+    testProjectId = randomUUID()
+    testCharacterId = randomUUID()
+    store.createProject({
+      id: testProjectId, title: 'test', genre: 'test', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    })
+    store.createCharacter({
+      id: testCharacterId, projectId: testProjectId, name: '叶明远', description: '',
+      identity: '', personality: '', appearance: '',
+      currentState: '', currentGoal: '', currentPressure: '',
+      secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: true,
+      longTermDesire: '', plotRole: 'protagonist' as const, removalImpact: '',
+    })
+  })
+
+  it('createCharacterArc + getCharacterArc round-trip', () => {
+    const id = randomUUID()
+    store.createCharacterArc({
+      id, projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'growth', currentStage: 'denial', stageHistory: [], description: '从懦弱到坚定',
+    })
+    const got = store.getCharacterArc(id)
+    expect(got?.arcType).toBe('growth')
+    expect(got?.currentStage).toBe('denial')
+    expect(got?.description).toBe('从懦弱到坚定')
+    expect(got?.stageHistory).toEqual([])
+  })
+
+  it('getCharacterArcByCharacter returns 1:1', () => {
+    const id = randomUUID()
+    store.createCharacterArc({
+      id, projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'shift', currentStage: 'old_framework', stageHistory: [], description: '认知重构',
+    })
+    const got = store.getCharacterArcByCharacter(testProjectId, testCharacterId)
+    expect(got?.id).toBe(id)
+  })
+
+  it('getCharacterArc 不存在返回 undefined', () => {
+    expect(store.getCharacterArc('nonexistent')).toBeUndefined()
+  })
+
+  it('updateCharacterArc appends stage history', () => {
+    const id = randomUUID()
+    store.createCharacterArc({
+      id, projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'growth', currentStage: 'denial', stageHistory: [], description: '',
+    })
+    const updated = store.updateCharacterArc(id, {
+      currentStage: 'resistance',
+      stageHistory: [{ stage: 'resistance', triggerEvent: '首次杀人', description: '心理冲击', chapterNumber: 7, changedAt: Date.now() }],
+    })
+    expect(updated?.currentStage).toBe('resistance')
+    expect(updated?.stageHistory).toHaveLength(1)
+    expect(updated?.stageHistory[0].triggerEvent).toBe('首次杀人')
+  })
+
+  it('updateCharacterArc 不存在返回 undefined', () => {
+    expect(store.updateCharacterArc('nonexistent', { currentStage: 'x' })).toBeUndefined()
+  })
+
+  it('deleteCharacterArc', () => {
+    const id = randomUUID()
+    store.createCharacterArc({
+      id, projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'growth', currentStage: 'denial', stageHistory: [], description: '',
+    })
+    expect(store.deleteCharacterArc(id)).toBe(true)
+    expect(store.getCharacterArc(id)).toBeUndefined()
+  })
+
+  it('deleteCharacterArc 不存在返回 false', () => {
+    expect(store.deleteCharacterArc('nonexistent')).toBe(false)
+  })
+
+  it('listCharacterArcs 返回项目下所有弧光', () => {
+    const otherCharacterId = randomUUID()
+    store.createCharacter({
+      id: otherCharacterId, projectId: testProjectId, name: '配角', description: '',
+      identity: '', personality: '', appearance: '',
+      currentState: '', currentGoal: '', currentPressure: '',
+      secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
+    })
+    store.createCharacterArc({
+      id: randomUUID(), projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'growth', currentStage: 'denial', stageHistory: [], description: '',
+    })
+    store.createCharacterArc({
+      id: randomUUID(), projectId: testProjectId, characterId: otherCharacterId,
+      arcType: 'fall', currentStage: 'temptation', stageHistory: [], description: '',
+    })
+    const list = store.listCharacterArcs(testProjectId)
+    expect(list).toHaveLength(2)
+  })
+
+  it('rowToArc 容错：损坏的 stage_history JSON 回退为空数组', () => {
+    // 直接写入损坏的 JSON 验证容错
+    const id = randomUUID()
+    store.createCharacterArc({
+      id, projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'growth', currentStage: 'denial', stageHistory: [], description: '',
+    })
+    // 直接 SQL 写入损坏的 stage_history
+    store['db'].prepare('UPDATE novel_character_arcs SET stage_history = ? WHERE id = ?').run('{not valid json', id)
+    const got = store.getCharacterArc(id)
+    expect(got?.stageHistory).toEqual([])
   })
 })
