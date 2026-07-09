@@ -672,4 +672,17 @@ export const novelMigrations: MigrationDefinition[] = [
           ALTER TABLE novel_chapters ADD COLUMN chapter_ending_hook TEXT;
           ALTER TABLE novel_chapters ADD COLUMN recap TEXT;`,
   },
+  {
+    // 057: AgentLog 表增加 LLM usage 字段（cache token 诊断）
+    // 记录 LLM provider 真实返回的 input/output/cache_read/cache_write tokens，
+    // 供 AgentLog 面板展示真实缓存命中率。SQLite 的 ALTER TABLE ADD COLUMN
+    // 不支持 IF NOT EXISTS，用 catch 容错（旧库已存在则跳过）。
+    id: '057_add_usage_to_novel_agent_logs',
+    sql: `ALTER TABLE novel_agent_logs ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN llm_provider TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_agent_logs ADD COLUMN llm_model TEXT NOT NULL DEFAULT '';`,
+  },
 ]

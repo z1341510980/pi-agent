@@ -468,7 +468,7 @@ describe('Plugin 系统 API 路由', () => {
   let app: FastifyInstance
 
   beforeAll(async () => {
-    process.env.PI_AGENT_AUTH_TOKEN = 'test-token-123'
+    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     process.env.PI_PLUGINS_ENABLE_EXAMPLES = 'true'
     const { createApp } = await import('../app.js')
     app = await createApp()
@@ -477,7 +477,7 @@ describe('Plugin 系统 API 路由', () => {
 
   afterAll(async () => {
     await app.close()
-    delete process.env.PI_AGENT_AUTH_TOKEN
+    delete process.env.WENLANG_AGENT_AUTH_TOKEN
     delete process.env.PI_PLUGINS_ENABLE_EXAMPLES
   })
 

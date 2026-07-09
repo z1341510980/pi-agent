@@ -117,11 +117,10 @@ export interface UseNovelCreationFlowReturn {
     }
   }) => Promise<void>
   /**
-   * 启动 AI 编排生成流程（模式2）
+   * 启动 AI 编排流程（模式2）
    *
-   * 后端先按章纲 AI 编排实体并落库，再在同一 SSE 流内衔接 create-flow 生成正文。
-   * ag-ui 事件格式与 startCreation 兼容（novel:progress/novel:checkpoint/novel:result + RUN_*），
-   * 因此复用同一 handleEvent 状态机；额外增加 arrange_start/arrange_progress/arrange_done
+   * 后端按章纲 AI 编排实体并落库，不生成正文。
+   * ag-ui 事件格式与 startCreation 共用同一 handleEvent 状态机；额外增加 arrange_start/arrange_progress/arrange_done
    * 进度事件会以 CUSTOM(novel:progress) 流入 events 时间线（value.type 区分）。
    */
   aiArrange: (projectId: string, chapterNumber: number) => Promise<void>
@@ -856,14 +855,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   )
 
   /**
-   * 启动 AI 编排生成流程（模式2）。
+   * 启动 AI 编排流程（模式2）。
    *
-   * 后端先按章纲 AI 编排实体并落库，再在同一 SSE 流内衔接 create-flow 生成正文。
-   * ag-ui 事件格式与 startCreation 兼容（novel:progress/novel:checkpoint/novel:result + RUN_*），
-   * 因此复用 runFlow + handleEvent 状态机。
+   * 后端按章纲 AI 编排实体并落库，不生成正文。
+   * ag-ui 事件格式与 startCreation 共用 runFlow + handleEvent 状态机。
    *
    * arrange 阶段的 CUSTOM(novel:progress) value 形状为 { type: 'arrange_*', ... }，
-   * 会流入 events 时间线；create-flow 阶段事件形状与 startCreation 完全一致。
+   * 会流入 events 时间线；正文生成需由 create-flow 单独触发。
    */
   const aiArrange = useCallback(
     async (projectId: string, chapterNumber: number): Promise<void> => {

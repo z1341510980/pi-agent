@@ -208,16 +208,31 @@ function removeFromList<T extends { id: string }>(list: T[], id: string): T[] {
 }
 
 /**
- * 合并两个实体列表：以后端列表为基础，但保留本地列表中存在但后端列表中不存在的条目。
- * 用于 loadProjectData，避免后台 refetch 返回旧数据时擦除本地新建的实体。
- * 同 id 时以后端数据为准（后端是最新权威数据）。
+ * 合并两个实体列表：以后端列表为权威数据源。
+ *
+ * 策略：
+ *   - 后端返回了列表（remote 存在）→ 直接采用后端列表，丢弃本地所有条目。
+ *     这样能自动清除本地残留的 phantom 实体（后端数据库中根本不存在的条目），
+ *     避免前端把不存在的 foreshadow/character ID 传给后端导致 400 "编排实体不属于当前项目或不存在"。
+ *     所有创建实体的路径都是先 `await createXxx()` 成功再 `upsertXxx()`，然后 `invalidateQueries`
+ *     触发 refetch，refetch 返回的最新数据必然包含新建实体，因此不存在"新建未同步"丢失风险。
+ *   - 后端未返回该类型（remote 为 undefined）→ 仅保留属于当前项目的本地条目，
+ *     过滤掉切换项目后 persist hydrate 恢复的上一个项目残留。
+ *
+ * @param currentProjectId 当前项目 ID，仅用于 remote 为 undefined 时过滤本地残留。
  */
-function mergeListById<T extends { id: string }>(local: T[], remote: T[] | undefined): T[] {
-  if (!remote) return local
-  const remoteIds = new Set(remote.map((x) => x.id))
-  // 保留本地存在但后端没有的（新建未同步）；后端有则用后端的
-  const localOnly = local.filter((x) => !remoteIds.has(x.id))
-  return [...remote, ...localOnly]
+function mergeListById<T extends { id: string; projectId?: string }>(
+  local: T[],
+  remote: T[] | undefined,
+  currentProjectId?: string,
+): T[] {
+  if (!remote) {
+    return currentProjectId
+      ? local.filter((x) => x.projectId === currentProjectId)
+      : local
+  }
+  // 后端是权威数据源，直接采用后端列表，丢弃本地所有条目（含 phantom 实体）
+  return remote
 }
 
 // ── Store ──
@@ -278,11 +293,37 @@ export const useNovelStore = create<NovelState>()(
         setCreationMode: (mode) => set({ creationMode: mode }),
         setCurrentProject: (projectId) => {
           const prevId = get().currentProjectId
-          set({ currentProjectId: projectId, selectedNodeId: null, selectedNodeType: null })
-          // 项目切换时清理历史栈，避免跨项目 undo 导致数据污染
+          // 项目切换时清空所有实体数组，防止上一个项目的实体残留混入新项目。
+          // 根因：loadProjectData 用 mergeListById 合并（保留本地新建未同步条目），
+          // 不清空会导致切换项目后旧项目的 foreshadow/character 等残留，
+          // 前端过滤 arrangedEntities 时会把不属于当前项目的实体传给后端导致 400。
+          // persist 的 localStorage 也会跨会话携带残留，必须在此清空。
           if (prevId !== projectId) {
             useNovelStore.temporal.getState().clear()
+            set({
+              characters: [],
+              chapters: [],
+              volumes: [],
+              conflicts: [],
+              foreshadows: [],
+              relationships: [],
+              clues: [],
+              worldRules: [],
+              styleGuides: [],
+              constraints: [],
+              infoLayers: [],
+              factions: [],
+              locations: [],
+              worldElements: [],
+              edges: [],
+              characterHistory: [],
+              nodePositions: [],
+              markers: [],
+              selectedNodeId: null,
+              selectedNodeType: null,
+            })
           }
+          set({ currentProjectId: projectId })
         },
         toggleCollapsedGroup: (kind: string) =>
           set((state) => {
@@ -307,28 +348,32 @@ export const useNovelStore = create<NovelState>()(
         setProjects: (projects) => set({ projects }),
 
         loadProjectData: (data) =>
-          set((state) => ({
-            // 合并语义：以后端数据为基础，但保留本地新建但后端尚未返回的条目
-            // （按 id 去重，本地条目优先），避免竞态条件下新建实体被全量替换擦除。
-            // 场景：用户新建章节 → upsertChapter 本地写入 → 后台 projectDataQuery
-            // refetch 返回旧数据（不含新章节）→ 全量替换会擦除新章节 → 选中悬空。
-            characters: mergeListById(state.characters, data.characters),
-            chapters: mergeListById(state.chapters, data.chapters),
-            volumes: mergeListById(state.volumes, data.volumes),
-            conflicts: mergeListById(state.conflicts, data.conflicts),
-            foreshadows: mergeListById(state.foreshadows, data.foreshadows),
-            relationships: mergeListById(state.relationships, data.relationships),
-            clues: mergeListById(state.clues, data.clues),
-            worldRules: mergeListById(state.worldRules, data.worldRules),
-            styleGuides: mergeListById(state.styleGuides, data.styleGuides),
-            constraints: mergeListById(state.constraints, data.constraints),
-            infoLayers: mergeListById(state.infoLayers, data.infoLayers),
-            factions: mergeListById(state.factions, data.factions),
-            locations: mergeListById(state.locations, data.locations),
-            worldElements: mergeListById(state.worldElements, data.worldElements),
-            edges: data.edges ?? state.edges,
-            markers: data.markers ?? state.markers,
-          })),
+          set((state) => {
+            const pid = state.currentProjectId ?? undefined
+            // 合并语义：以后端数据为权威源直接采用，自动清除本地 phantom 实体
+            // （后端数据库中根本不存在的条目），避免前端把不存在的 ID 传给后端导致 400。
+            // 创建实体的路径都是先 await 后端成功再 upsert 本地 + invalidateQueries 触发 refetch，
+            // refetch 返回的最新数据必然包含新建实体，因此不存在"新建未同步"丢失风险。
+            // 传入 currentProjectId 仅用于后端未返回某类型时过滤本地残留（跨项目污染防御）。
+            return {
+              characters: mergeListById(state.characters, data.characters, pid),
+              chapters: mergeListById(state.chapters, data.chapters, pid),
+              volumes: mergeListById(state.volumes, data.volumes, pid),
+              conflicts: mergeListById(state.conflicts, data.conflicts, pid),
+              foreshadows: mergeListById(state.foreshadows, data.foreshadows, pid),
+              relationships: mergeListById(state.relationships, data.relationships, pid),
+              clues: mergeListById(state.clues, data.clues, pid),
+              worldRules: mergeListById(state.worldRules, data.worldRules, pid),
+              styleGuides: mergeListById(state.styleGuides, data.styleGuides, pid),
+              constraints: mergeListById(state.constraints, data.constraints, pid),
+              infoLayers: mergeListById(state.infoLayers, data.infoLayers, pid),
+              factions: mergeListById(state.factions, data.factions, pid),
+              locations: mergeListById(state.locations, data.locations, pid),
+              worldElements: mergeListById(state.worldElements, data.worldElements, pid),
+              edges: data.edges ?? state.edges,
+              markers: data.markers ?? state.markers,
+            }
+          }),
 
         setLoading: (loading) => set({ loading }),
         setError: (error) => set({ error }),
@@ -473,7 +518,7 @@ export const useNovelStore = create<NovelState>()(
         redoCount: 0,
       }),
       {
-        name: 'pi-agent-novel',
+        name: 'wenlang-agent-novel',
         storage: createJSONStorage(() => localStorage),
         // 修复 zundo + persist 嵌套时的经典问题：hydrate 期间 temporal 会把"空初始状态"
         // 压入 pastStates，导致用户首次点撤销会把整个 store 还原成空状态。

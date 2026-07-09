@@ -1,5 +1,5 @@
 import { useCallback, type ReactElement } from 'react'
-import { ChevronRight, ChevronDown, Plus, Sparkles, Wand2, BookText } from 'lucide-react'
+import { ChevronRight, ChevronDown, Plus, Wand2, BookText } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
@@ -26,7 +26,6 @@ export function OutlineTree({
   project,
   volumes,
   chapters,
-  onManualArrange,
   onAiArrange,
 }: OutlineTreeProps): ReactElement {
   const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
@@ -73,8 +72,10 @@ export function OutlineTree({
     }
   }, [volumes, project.id, upsertVolume, queryClient])
 
-  // 新建章：自动取下一章号，narrativeTask 用默认占位，用户可在右侧栏编辑章纲后编排
-  const handleCreateChapter = useCallback(async () => {
+  // 新建章：在指定卷内创建，避免章节游离在所有卷之外
+  // 章节号全局唯一（不是卷内唯一），取所有章节最大号 +1
+  // volumeId 必传：用户在大纲树点卷内"+ 新建章"按钮调用，确保新章直接归属该卷
+  const handleCreateChapter = useCallback(async (volumeId: string) => {
     if (!project.id) return
     try {
       const nextNumber =
@@ -86,8 +87,13 @@ export function OutlineTree({
           type: 'manual',
           priority: 'medium',
         },
+        volumeId,
       })
       upsertChapter(chapter)
+      // 确保目标卷已展开，让新创建的章节立即可见
+      if (!expandedVolumes.includes(volumeId)) {
+        toggleExpandedVolume(volumeId)
+      }
       // 选中新创建的章节，便于右侧栏立即编辑
       selectNode(chapter.id, 'chapter')
       setPlayheadChapter(chapter.chapterNumber)
@@ -97,7 +103,7 @@ export function OutlineTree({
     } catch (err) {
       console.error('[OutlineTree] 创建章失败:', err)
     }
-  }, [chapters, project.id, upsertChapter, selectNode, setPlayheadChapter, queryClient])
+  }, [chapters, project.id, upsertChapter, selectNode, setPlayheadChapter, queryClient, expandedVolumes, toggleExpandedVolume])
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -111,7 +117,7 @@ export function OutlineTree({
         icon={<BookText className="size-3.5 text-primary" />}
       />
 
-      {/* 新建卷 / 新建章 按钮 */}
+      {/* 新建卷按钮（新建章入口在卷内，避免章节游离在所有卷之外） */}
       <div className="flex items-center gap-1 px-1">
         <button
           type="button"
@@ -119,13 +125,6 @@ export function OutlineTree({
           className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
         >
           <Plus className="size-3" /> 新建卷
-        </button>
-        <button
-          type="button"
-          onClick={handleCreateChapter}
-          className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
-        >
-          <Plus className="size-3" /> 新建章
         </button>
       </div>
 
@@ -167,11 +166,18 @@ export function OutlineTree({
                     selected={selectedNodeId === ch.id}
                     isPlayhead={playheadChapter === ch.chapterNumber}
                     onClick={() => handleSelectChapter(ch)}
-                    onManualArrange={() => onManualArrange(ch)}
                     onAiArrange={() => onAiArrange(ch)}
                     onOutlineSelect={() => handleSelectChapter(ch)}
                   />
                 ))}
+                {/* 卷内新建章：新章节直接归属该卷，不会游离到所有卷之外 */}
+                <button
+                  type="button"
+                  onClick={() => handleCreateChapter(vol.id)}
+                  className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
+                >
+                  <Plus className="size-3" /> 新建章
+                </button>
               </div>
             )}
           </div>
@@ -188,7 +194,6 @@ export function OutlineTree({
               selected={selectedNodeId === ch.id}
               isPlayhead={playheadChapter === ch.chapterNumber}
               onClick={() => handleSelectChapter(ch)}
-              onManualArrange={() => onManualArrange(ch)}
               onAiArrange={() => onAiArrange(ch)}
               onOutlineSelect={() => handleSelectChapter(ch)}
             />
@@ -206,7 +211,6 @@ interface ChapterRowProps {
   selected: boolean
   isPlayhead: boolean
   onClick: () => void
-  onManualArrange: () => void
   onAiArrange: () => void
   onOutlineSelect: () => void
 }
@@ -216,7 +220,6 @@ function ChapterRow({
   selected,
   isPlayhead,
   onClick,
-  onManualArrange,
   onAiArrange,
   onOutlineSelect,
 }: ChapterRowProps): ReactElement {
@@ -245,15 +248,6 @@ function ChapterRow({
           onClick={onOutlineSelect}
         />
         <div className="flex items-center gap-1 px-1">
-          {/* <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-[10px]"
-            onClick={onManualArrange}
-            title="手动编排"
-          >
-            <Sparkles className="size-3" /> 手动编排
-          </Button> */}
           <Button
             size="sm"
             variant="ghost"

@@ -1,4 +1,4 @@
-appId: com.pi-agent.app
+appId: com.wenlang-agent.app
 productName: PI Agent
 directories:
   buildResources: build
@@ -12,7 +12,7 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: pi-agent
+  executableName: wenlang-agent
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

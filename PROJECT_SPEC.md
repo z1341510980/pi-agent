@@ -1,8 +1,8 @@
-# pi-agent 项目规范文档
+# wenlang-agent 项目规范文档
 
 ## 1. 项目概述
 
-pi-agent 是一个基于 **pnpm monorepo** 的 AI Agent 桌面应用项目，包含以下核心组成部分：
+wenlang-agent 是一个基于 **pnpm monorepo** 的 AI Agent 桌面应用项目，包含以下核心组成部分：
 
 | 模块 | 路径 | 描述 |
 |------|------|------|
@@ -29,7 +29,7 @@ pi-agent 是一个基于 **pnpm monorepo** 的 AI Agent 桌面应用项目，包
 ## 3. 目录结构规范
 
 ```
-pi-agent/
+wenlang-agent/
 ├── apps/                          # 应用层（可独立运行的程序）
 │   ├── agent-server/              # 后端服务
 │   │   ├── src/
@@ -242,7 +242,7 @@ index.ts          # 入口：启动 Fastify 服务器
       │   ├── copilotkit.route.ts   # CopilotKit 路由
       │   └── health.route.ts       # 健康检查
       ├── agents/
-      │   └── pi-agent.ts           # Agent 定义
+      │   └── wenlang-agent.ts           # Agent 定义
       └── lib/
           ├── api-response.ts       # 统一响应格式
           ├── sse.ts                # Server-Sent Events

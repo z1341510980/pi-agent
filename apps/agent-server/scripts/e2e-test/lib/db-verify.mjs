@@ -1,9 +1,9 @@
 /**
  * SQLite 数据库验证模块
  *
- * 直接读取 pi-agent.db 文件，验证 L2/A3/GAP 等架构演进改动是否真正落库。
+ * 直接读取 wenlang-agent.db 文件，验证 L2/A3/GAP 等架构演进改动是否真正落库。
  *
- * 默认数据路径：~/.pi/pi-agent.db
+ * 默认数据路径：~/.pi/wenlang-agent.db
  * 可通过 PI_DATA_DIR 环境变量覆盖
  */
 
@@ -17,7 +17,7 @@ export const RUN_ID = randomUUID()
 
 export function resolveDbPath() {
   const dataDir = process.env.PI_DATA_DIR ?? join(homedir(), '.pi')
-  return join(dataDir, 'pi-agent.db')
+  return join(dataDir, 'wenlang-agent.db')
 }
 
 /**

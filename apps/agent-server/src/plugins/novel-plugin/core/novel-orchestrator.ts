@@ -52,6 +52,13 @@ import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import type { NovelAgentConfigStore } from './novel-agent-config-store.js'
 import type { NovelAgentLogStatus } from './types.js'
 import type { AgUiEventSink } from '@repo/protocol/events'
+import {
+  addLlmUsage,
+  applySafeRevision,
+  extractLlmUsageFromMessage,
+  hasLlmUsage,
+  type LlmUsageSnapshot,
+} from './agent-run-utils.js'
 
 /**
  * 合并章节号到跨度数组：连续则扩展尾段，否则追加新段；保持 spans 有序。
@@ -120,16 +127,18 @@ export class NovelOrchestrator {
   /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
   private readonly memoryGenerator?: NovelMemoryGenerator
   /**
-   * 单章 SEMI 层前缀缓存（projectId|chapterNumber → prefixUserMessage 字符串）
+   * 单章 SEMI 层 shared 前缀缓存（projectId|chapterNumber → shared 字符串）
    *
-   * 用于在 director→writer→reviewer 三次调用之间复用同一份 buildChapterContext 输出：
-   * - 这三个 Agent 都只读 query_* 工具，不会修改故事状态，SEMI 字符串完全一致
-   * - 复用字符串可：1) 节省重复构建开销 2) 确保 LLM provider 端能命中 director 写入的缓存条目
+   * "共享前缀 + Agent 专属后缀"分离：shared 部分跨 Agent 完全相同，
+   * 通过 prefixUserMessage 数组第一条注入，打 cache_control breakpoint 后
+   * 能跨 Agent 命中 prompt cache（Director 写入 → Writer/Reviewer/Reviser 命中）。
+   *
+   * suffix 部分各 Agent 不同，每次调用实时构建（内容少，无需缓存）。
    *
    * 失效场景：检查点 reject / rewrite 后重新进入 createChapterWithFlow 时清空；
    * Memory Agent 走 runMemoryAgent 不经过此缓存。
    */
-  private semiLayerCache: { key: string; value: string } | null = null
+  private semiLayerSharedCache: { key: string; value: string } | null = null
 
   constructor(
     private store: NovelStore,
@@ -161,9 +170,9 @@ export class NovelOrchestrator {
     // 将本章编排实体约束暂存到实例字段，供 runAgent 构建 SEMI 层时读取。
     // 采用临时字段方案是最小改动：无需改 runAgent 签名，也无需沿调用链透传。
     this.currentArrangedEntities = options.arrangedEntities
-    // 清空单章 SEMI 缓存：每次进入 createChapterWithFlow（含 rewrite 递归）都重新构建，
-    // 避免上一章/上一次创作的 SEMI 字符串残留导致 LLM 缓存条目错配。
-    this.semiLayerCache = null
+    // 清空单章 SEMI shared 缓存：每次进入 createChapterWithFlow（含 rewrite 递归）都重新构建，
+    // 避免上一章/上一次创作的 shared 字符串残留导致 LLM 缓存条目错配。
+    this.semiLayerSharedCache = null
     try {
       // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）
       const rhythmController = new RhythmController()
@@ -209,8 +218,9 @@ export class NovelOrchestrator {
 
       // Phase 1: Director（支持 rewrite 循环：用户在检查点补充修改意见后可重写）
       const chapter = this.store.getChapter(projectId, chapterNumber)
+      // 用户章纲注入前清洗破折号，防止用户输入的破折号成为 LLM 的示范
       const outlineHint = chapter?.outline?.trim()
-        ? `\n\n---\n\n## 用户章纲（必须严格遵循，作为规划统一起点）\n\n${chapter.outline.trim()}`
+        ? `\n\n---\n\n## 用户章纲（必须严格遵循，作为规划统一起点）\n\n${this.promptBuilder.stripEmDash(chapter.outline.trim())}`
         : ''
       let directorResult = ''
       let needRewrite = true
@@ -252,9 +262,9 @@ export class NovelOrchestrator {
       // 暂存 Director 的实时输出：runAgent 构建 Writer 的 SEMI 层时，会将其注入
       // chapter-instruction 模板的 {{narrative_task}}，替代原来的章纲字段。
       // 这是方案 A 的核心：让 Director 的规划真正成为 Writer 的创作指导。
-      // ⚠️ 清洗破折号：Director 输出中可能含"——"，注入 Writer 后会被模仿，
-      // 必须在注入前替换为逗号，从源头切断破折号的上下文示范传播链。
-      this.currentDirectorOutput = this.sanitizeDirectorOutput(directorResult)
+      // 注入前清洗破折号：Director 输出可能含破折号，注入 Writer 后会被模仿，
+      // 在注入点清洗切断示范传播链。
+      this.currentDirectorOutput = this.promptBuilder.stripEmDash(directorResult)
       // 解析 Director 输出为结构化 NarrativeTask，让 14 种任务类型真正传递到 Writer。
       // Director 提示词要求输出"任务类型"字段（如 create_suspense/escalate_conflict），
       // parseDirectorTask 从输出文本中提取任务类型、优先级、高潮目标等执行参数。
@@ -288,8 +298,11 @@ export class NovelOrchestrator {
         const pushbackHint = directorPushbackCount === 0
           ? '\n\n---\n\n## Writer 推回机制\n\n如果你认为叙事任务存在明显逻辑问题（如角色在此场景不会这样做、任务与前置剧情矛盾、约束条件不合理），可以在输出开头标记 `[DIRECTOR_PUSHBACK]` 并用 1-2 句话说明原因。系统会让 Director 重新规划。如果任务没有问题，直接创作正文即可。'
           : ''
+        const directorPlanBlock = this.currentDirectorOutput
+          ? `\n\n---\n\n## 本章叙事任务（Director 规划，必须遵循）\n\n${this.currentDirectorOutput}`
+          : ''
         writerResult = await this.runAgent('writer', projectId, chapterNumber,
-          `请根据上方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。${pushbackHint}`,
+          `请根据下方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。${directorPlanBlock}${pushbackHint}`,
           options,
         )
 
@@ -306,12 +319,13 @@ export class NovelOrchestrator {
           )
 
           // 将 Writer 的推回原因注入 Director，重新规划
+          // 注入前清洗破折号：Writer 输出的推回原因可能含破折号
           this.currentDirectorOutput = undefined
           const rewriteDirectorResult = await this.runAgent('director', projectId, chapterNumber,
-            `写作 Agent 对之前的叙事任务提出了异议，请重新规划第 ${chapterNumber} 章的叙事任务。\n\n---\n\n## 写作 Agent 的推回原因\n\n${pushbackReason}\n\n---\n\n## 节奏建议\n\n${JSON.stringify(rhythmSuggestion, null, 2)}${outlineHint}`,
+            `写作 Agent 对之前的叙事任务提出了异议，请重新规划第 ${chapterNumber} 章的叙事任务。\n\n---\n\n## 写作 Agent 的推回原因\n\n${this.promptBuilder.stripEmDash(pushbackReason)}\n\n---\n\n## 节奏建议\n\n${JSON.stringify(rhythmSuggestion, null, 2)}${outlineHint}`,
             options,
           )
-          this.currentDirectorOutput = this.sanitizeDirectorOutput(rewriteDirectorResult)
+          this.currentDirectorOutput = this.promptBuilder.stripEmDash(rewriteDirectorResult)
           this.currentDirectorTask = this.parseDirectorTask(rewriteDirectorResult, rhythmSuggestion)
           this.emitProgress(options, 'directing', 'phase_change', {
             message: '叙事任务已根据写作 Agent 的反馈调整',
@@ -334,6 +348,10 @@ export class NovelOrchestrator {
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
       // 对 Writer 输出做防 AI 腔扫描，把命中模式作为 Reviewer 的评审依据
       // （role-reviewer.md 提示词已承诺收到【防 AI 腔扫描】报告时需逐条给修改建议）
+      // ⚠️ 扫描和注入 Reviewer 的正文必须是同一个版本（writerResult 原始版），
+      // 否则报告说"7次破折号"但注入的正文已被清洗掉破折号，Reviewer 会误判为误报。
+      // 设计意图：不在 Writer 输出后做后处理清洗，依赖 prompt 约束 + Reviewer 检测。
+      // 若 Writer 仍产出破折号，Reviewer 检测到后会触发 revise，Reviser 负责清除。
       const clicheReport = formatClicheReport(scanCliches(writerResult))
       // ⚠️ 不能传 JSON 对象 { task, content }：runAgent 会 JSON.stringify 它，
       // 导致 Writer 输出的正文被压缩在 JSON 的 content 字段中（换行变 \n、引号被转义），
@@ -355,18 +373,48 @@ export class NovelOrchestrator {
       let finalContent = writerResult
 
       if (reviewDecision === 'revise') {
-        this.emitProgress(options, 'revising', 'phase_change', { message: '写作 Agent 正在根据审稿意见修订章节...' })
+        this.emitProgress(options, 'revising', 'phase_change', { message: '修订 Agent 正在根据审稿意见修订章节...' })
         // ⚠️ 同 Reviewer：不能传 JSON 对象，改为结构化 Markdown 字符串
-        const reviseResult = await this.runAgent('writer', projectId, chapterNumber,
-          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${writerResult}\n\n---\n\n## 审稿意见\n\n${reviewResult}`,
+        // 使用独立的 'reviser' agent 类型，加载 role-reviser.md（最小改动原则），
+        // 而非复用 'writer'（会加载 role-writer.md + chapter-instruction.md 导致
+        // LLM 把任务误解为"重新创作"，只输出修订片段覆盖原正文）。
+        // 注入原始 writerResult（含破折号）：Reviser 需要看到破折号在哪才能清除它们，
+        // 审稿意见中的破折号由 stripEmDash 清洗（审稿意见是 Reviewer 产出，非正文）。
+        const reviseResult = await this.runAgent('reviser', projectId, chapterNumber,
+          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${writerResult}\n\n---\n\n## 审稿意见\n\n${this.promptBuilder.stripEmDash(reviewResult)}`,
           options,
           {
             phase: 'revising',
-            displayAgentType: 'reviser',
-            displayAgentName: '修订',
           },
         )
-        finalContent = reviseResult
+        // 代码层保护正文：Reviser 可能输出"修订说明"/局部片段/对比格式。
+        // 优先把"原文/修改后"格式应用回原正文；只有确认是完整正文且保留了足够原文段落时才整体替换。
+        const revisionDecision = applySafeRevision(writerResult, reviseResult)
+        if (!revisionDecision.accepted) {
+          this.context.logger.warn(
+            {
+              projectId,
+              chapterNumber,
+              originalLength: writerResult.length,
+              revisedLength: reviseResult.length,
+              reason: revisionDecision.reason,
+            },
+            '修订输出不是可安全落库的完整正文，保留原正文',
+          )
+          finalContent = writerResult
+        } else {
+          this.context.logger.info(
+            {
+              projectId,
+              chapterNumber,
+              mode: revisionDecision.mode,
+              originalLength: writerResult.length,
+              revisedLength: revisionDecision.content.length,
+            },
+            '修订结果已安全合并到章节正文',
+          )
+          finalContent = revisionDecision.content
+        }
       } else if (reviewDecision === 'rewrite') {
         this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
         return this.createChapterWithFlow(projectId, chapterNumber, options)
@@ -376,8 +424,18 @@ export class NovelOrchestrator {
       // 在 Memory Agent 执行前捕获实体状态快照，执行后比较差异并记录记忆事件
       this.emitProgress(options, 'memory', 'phase_change', { message: '记忆 Agent 正在提取状态变更...' })
       const beforeState = this.captureEntityState(projectId)
+      // 复用 SEMI 层 shared 前缀缓存：Memory Agent 注入 shared 前缀后能跨 Agent 命中
+      // prompt cache（director/writer/reviewer 已写入缓存），显著降低 miss tokens。
+      // ⚠️ 类型断言绕过 TS 控制流收窄：L175 的 `this.semiLayerSharedCache = null` 让 TS
+      // 在本方法内把属性类型收窄为 null，导致 `.key` 访问报 never 错误。实际属性声明
+      // 类型为 `{ key: string; value: string } | null`，runAgent 中已正常赋值。
+      const sharedCache = this.semiLayerSharedCache as { key: string; value: string } | null
+      let memorySharedPrefix: string | undefined
+      if (sharedCache && sharedCache.key === `${projectId}|${chapterNumber}`) {
+        memorySharedPrefix = sharedCache.value
+      }
       const memoryResult = await this.runMemoryAgent(
-        projectId, chapterNumber, finalContent, options,
+        projectId, chapterNumber, finalContent, options, memorySharedPrefix,
       )
       // 复用 line 215 的 chapter 变量，避免重复查询数据库
       const memoryEvents = this.recordMemoryEvents(
@@ -546,6 +604,7 @@ export class NovelOrchestrator {
     const phaseMap: Record<NovelAgentType, CreationPhase> = {
       director: 'directing',
       writer: 'writing',
+      reviser: 'revising',
       reviewer: 'reviewing',
       memory: 'memory',
     }
@@ -554,6 +613,15 @@ export class NovelOrchestrator {
     const displayAgentName = overrides?.displayAgentName ?? config.name
 
     let inputText = typeof input === 'string' ? input : JSON.stringify(input)
+
+    // ⚠️ 缓存关键：Agent 身份段（system-base.md）注入到 DYNAMIC 层 userMessage 开头，
+    // 而非 STATIC 层 systemPrompt 末尾。这样 4 个 Agent 的 systemPrompt 完全相同，
+    // provider 端能跨 Agent 命中 system 缓存块。
+    // 身份段在 userMessage 开头不影响 LLM 理解——LLM 会先读取 system（共享上下文），
+    // 再读取 userMessage 首段（身份），再读取后续任务指令。
+    const agentIdentity = this.promptBuilder.buildAgentIdentity(projectId, agentType)
+    inputText = agentIdentity + '\n\n---\n\n' + inputText
+
     // 保存原始任务输入（用于日志记录），再附加用户指令
     const taskInputForLog = inputText
 
@@ -561,129 +629,105 @@ export class NovelOrchestrator {
     // 保留副本用于日志记录
     const userInstructionsForLog = this.userMessages.slice()
     if (this.userMessages.length > 0) {
-      const userInstructions = this.userMessages.map((m, i) => `${i + 1}. ${m}`).join('\n')
+      // 注入前清洗破折号：用户指令可能含破折号，防止成为 LLM 的示范
+      const userInstructions = this.userMessages.map((m, i) => `${i + 1}. ${this.promptBuilder.stripEmDash(m)}`).join('\n')
       inputText += `\n\n## 用户创作指令\n用户在创作过程中提出以下指令，请在创作中予以考虑：\n${userInstructions}`
       this.userMessages = []
     }
 
-    // 对输出自然语言的 Agent（director/writer/reviewer），在 DYNAMIC 层末尾追加铁律提醒。
+    // 对输出自然语言的 Agent（director/writer/reviser/reviewer），在 DYNAMIC 层末尾追加铁律提醒。
     // LLM 最后看到的是 userMessage，末尾提醒利用 recency bias 强化破折号禁令。
     // memory agent 输出工具调用 JSON，不追加。
-    if (agentType === 'director' || agentType === 'writer' || agentType === 'reviewer') {
-      inputText += '\n\n---\n\n## 最后提醒（最高优先级）\n你的输出中绝不使用破折号"——"，所有转折用逗号或句号自然完成。'
+    if (agentType === 'director' || agentType === 'writer' || agentType === 'reviser' || agentType === 'reviewer') {
+      inputText += '\n\n---\n\n## 最后提醒（最高优先级）\n你的输出中绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。生成时如发现自己在写"——"，立即改用上述替代方式。'
     }
 
     // STATIC 层：系统提示词（Agent 身份 + 世界规则 + 风格 + 角色定义）
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, agentType)
 
-    // SEMI 层：章节上下文（作为首条 user 消息的前缀，单章内不变）
-    // 单章内 director→writer→reviewer 三次调用之间，故事状态未被修改（这三个 Agent
-    // 只读 query_* 工具），因此 chapterContext 字符串稳定。缓存按 agentType 分桶：
-    // writer 因 buildChapterContext 内部注入 chapter-instruction 与其他 Agent 不同，
-    // 需独立缓存；director/reviewer 共享同一份（buildChapterContext 内部 if 只判断 writer）。
-    // 复用字符串可：1) 节省 formatStoryState 等遍历实体的计算开销
-    //              2) 确保字符串稳定，让 LLM provider 端能命中 director 写入的缓存条目
+    // SEMI 层：章节上下文（"共享前缀 + Agent 专属后缀"分离）
+    //
+    // shared 部分跨 Agent 完全相同（章节信息 + 约束 + 故事状态 + 实体关联 + 信息差
+    // + 摘要 + 因果链），通过 prefixUserMessage 数组第一条注入，打 cache_control
+    // breakpoint 后能跨 Agent 命中 prompt cache（Director 写入 → 其他 Agent 命中）。
+    //
+    // suffix 部分各 Agent 不同（Director: 节奏+反馈；Writer: 结尾+锚点+指令；
+    // Reviser/Reviewer: 结尾+锚点），通过 prefixUserMessage 数组第二条注入。
+    // suffix 内容少，每次实时构建，无需缓存。
+    //
+    // ⚠️ 缓存关键：所有 Agent 的 narrativeTask 统一用数据库章纲，确保 shared 部分
+    // 跨 Agent 完全一致。Director 的实时输出不进入 SEMI 层（通过 DYNAMIC 层 userMessage 注入）。
     const chapter = this.store.getChapter(projectId, chapterNumber)
-    const cacheKey = `${projectId}|${chapterNumber}|${agentType}`
-    let chapterContext: string
-    if (this.semiLayerCache && this.semiLayerCache.key === cacheKey) {
-      chapterContext = this.semiLayerCache.value
+    const narrativeTask: NarrativeTask = {
+      description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
+      type: 'advance_mainline',
+      targetEntity: null,
+      priority: 'medium',
+    }
+    const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
+      projectId, chapterNumber, this.currentRhythmSuggestion,
+    )
+
+    // 推送章节约束详情（仅 Director 首次构建时发射，避免重复）
+    // 让用户了解 Writer 将要面对的冲突推进目标、悬念钩子、节奏约束
+    if (agentType === 'director') {
+      this.emitProgress(options, phase, 'phase_change', {
+        message: '章节约束已构建',
+        detail: {
+          kind: 'chapter_context',
+          conflictTargets: constraints.conflictTargets.map(t => ({
+            description: t.conflict.description,
+            targetStage: t.targetStage,
+            intensityDelta: t.intensityDelta,
+            isClimax: t.isClimax,
+          })),
+          suspenseHooks: constraints.suspenseHooks.map(h => ({
+            description: h.description,
+            status: h.status,
+            sustainedChapters: h.sustainedChapters,
+            releaseByChapter: h.releaseByChapter,
+          })),
+          rhythmConstraint: constraints.rhythmConstraint,
+          povCharacters: narrativeTask.povCharacters,
+          sceneCount: narrativeTask.sceneCount,
+          timeOffset: narrativeTask.timeOffset,
+        },
+      })
+    }
+
+    // shared 部分：单章缓存（跨 Agent 复用，projectId|chapterNumber 为 key）
+    const sharedCacheKey = `${projectId}|${chapterNumber}`
+    let sharedContext: string
+    if (this.semiLayerSharedCache && this.semiLayerSharedCache.key === sharedCacheKey) {
+      sharedContext = this.semiLayerSharedCache.value
       this.context.logger.debug(
-        { agentType, projectId, chapterNumber, contextLength: chapterContext.length },
-        'SEMI 层前缀命中单章缓存',
+        { agentType, projectId, chapterNumber, sharedLength: sharedContext.length },
+        'SEMI 层 shared 前缀命中单章缓存',
       )
     } else {
-      // ⚠️ Token 优化：Reviewer 使用精简版 buildReviewContext，只包含章节信息 +
-      // 创作约束 + 本章编排实体，不注入完整故事状态/实体关联/信息差/摘要/因果链。
-      // Writer 全文已通过 user_message 注入，Reviewer 不需要这些上下文。
-      // 预期节省 ~6K 字符 / 5K tokens。
-      if (agentType === 'reviewer') {
-        const narrativeTask: NarrativeTask = {
-          description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
-          type: 'advance_mainline',
-          targetEntity: null,
-          priority: 'medium',
-        }
-        const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
-          projectId, chapterNumber, this.currentRhythmSuggestion,
-        )
-        chapterContext = this.promptBuilder.buildReviewContext(
-          projectId,
-          chapterNumber,
-          narrativeTask,
-          constraints,
-          this.currentArrangedEntities,
-        )
-        this.semiLayerCache = { key: cacheKey, value: chapterContext }
-        this.context.logger.debug(
-          { agentType, projectId, chapterNumber, contextLength: chapterContext.length },
-          'Reviewer 使用精简版 SEMI 层（buildReviewContext）',
-        )
-      } else {
-      // ⚠️ 缓存关键：所有 Agent 的 narrativeTask 统一用数据库章纲，确保 SEMI 层前缀
-      // （章节信息 + 约束 + 故事状态 + ...）跨 Agent 完全一致，最大化 LLM provider
-      // 端的 prompt cache 命中率。
-      //
-      // Director 的实时输出（this.currentDirectorTask）只通过 buildChapterContext
-      // 的 directorOutput 参数注入到 SEMI 层末尾的 chapter-instruction 模板，
-      // 不影响前缀缓存匹配。
-      //
-      // 历史背景：b4f720b 改动让 Writer 的 narrativeTask 直接用 Director 实时输出，
-      // 导致 formatChapterInfo 对 Writer 用摘要、对其他 Agent 用完整描述，
-      // SEMI 层第一段就分叉，跨 Agent 缓存全 miss。现已回退。
-      const narrativeTask: NarrativeTask = {
-        description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
-        type: 'advance_mainline',
-        targetEntity: null,
-        priority: 'medium',
-      }
-      const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
-        projectId, chapterNumber, this.currentRhythmSuggestion,
-      )
-      // 推送章节约束详情（仅 Director 首次构建时发射，避免重复）
-      // 让用户了解 Writer 将要面对的冲突推进目标、悬念钩子、节奏约束
-      if (agentType === 'director') {
-        this.emitProgress(options, phase, 'phase_change', {
-          message: '章节约束已构建',
-          detail: {
-            kind: 'chapter_context',
-            conflictTargets: constraints.conflictTargets.map(t => ({
-              description: t.conflict.description,
-              targetStage: t.targetStage,
-              intensityDelta: t.intensityDelta,
-              isClimax: t.isClimax,
-            })),
-            suspenseHooks: constraints.suspenseHooks.map(h => ({
-              description: h.description,
-              status: h.status,
-              sustainedChapters: h.sustainedChapters,
-              releaseByChapter: h.releaseByChapter,
-            })),
-            rhythmConstraint: constraints.rhythmConstraint,
-            povCharacters: narrativeTask.povCharacters,
-            sceneCount: narrativeTask.sceneCount,
-            timeOffset: narrativeTask.timeOffset,
-          },
-        })
-      }
-      chapterContext = this.promptBuilder.buildChapterContext(
+      sharedContext = this.promptBuilder.buildChapterContextShared(
         projectId,
         chapterNumber,
         narrativeTask,
         constraints,
         this.currentArrangedEntities,
-        agentType,
-        // directorOutput：Director 的实时输出，仅 Writer 的 chapter-instruction
-        // 模板会渲染它（在 SEMI 层末尾，不破坏前缀缓存）。其他 Agent 传入但不会被使用。
-        this.currentDirectorTask?.description,
       )
-      this.semiLayerCache = { key: cacheKey, value: chapterContext }
+      this.semiLayerSharedCache = { key: sharedCacheKey, value: sharedContext }
       this.context.logger.debug(
-        { agentType, projectId, chapterNumber, contextLength: chapterContext.length },
-        'SEMI 层前缀已写入单章缓存',
+        { agentType, projectId, chapterNumber, sharedLength: sharedContext.length },
+        'SEMI 层 shared 前缀已写入单章缓存',
       )
-      }
     }
+
+    // suffix 部分：每次实时构建（内容少，各 Agent 不同）
+    const suffixContext = this.promptBuilder.buildChapterContextSuffix(
+      projectId,
+      chapterNumber,
+      narrativeTask,
+      constraints,
+      this.currentArrangedEntities,
+      agentType,
+    )
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）
     // 章节上下文（SEMI 层）通过 prefixUserMessage 独立注入，不与任务拼接，
@@ -705,8 +749,10 @@ export class NovelOrchestrator {
         chapterNumber,
         systemPromptLength: systemPrompt.length,
         systemPromptPreview: systemPrompt.slice(0, 500),
-        prefixUserMessageLength: chapterContext.length,
-        prefixUserMessagePreview: chapterContext.slice(0, 500),
+        sharedLength: sharedContext.length,
+        sharedPreview: sharedContext.slice(0, 500),
+        suffixLength: suffixContext.length,
+        suffixPreview: suffixContext.slice(0, 500),
         userMessageLength: userMessage.length,
         userMessagePreview: userMessage.slice(0, 500),
         toolsCount: filteredTools.length,
@@ -716,7 +762,7 @@ export class NovelOrchestrator {
     )
 
     // 推送准备阶段进度，让前端知道 Agent 正在工作（不等 LLM 首 token）
-    const totalInputChars = systemPrompt.length + chapterContext.length + userMessage.length
+    const totalInputChars = systemPrompt.length + sharedContext.length + suffixContext.length + userMessage.length
     this.emitProgress(options, phase, 'phase_change', {
       message: `${displayAgentName} 正在准备调用 LLM（输入约 ${totalInputChars} 字符）...`,
     })
@@ -750,7 +796,9 @@ export class NovelOrchestrator {
     // 首 token 检测下沉到工厂：通过 onFirstText 回调通知前端"开始生成"
     const agUiSession = await this.context.createAgUiSession({
       systemPrompt,
-      prefixUserMessage: chapterContext,
+      // SEMI 层：[shared, suffix] 数组。shared 跨 Agent 一致（缓存命中），
+      // suffix 各 Agent 不同。plugin-manager 会给每条打 cache_control breakpoint。
+      prefixUserMessage: [sharedContext, suffixContext],
       userMessage,
       tools: filteredTools,
       signal: options?.signal,
@@ -766,6 +814,19 @@ export class NovelOrchestrator {
       },
     })
     const { session, streamEmitter, messageId } = agUiSession
+
+    // 订阅 Pi Session 事件流，捕获 message_end 中的 usage 数据
+    // （inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/model/provider）
+    // 供 AgentLog 面板展示真实缓存命中率。
+    // 多次 subscribe 互不干扰，工厂内部的 StreamEmitter 订阅不受影响。
+    let capturedUsage: LlmUsageSnapshot | undefined
+    const unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
+      if (event.type !== 'message_end') return
+      const msg = (event as { message?: Record<string, unknown> }).message
+      if (!msg || msg.role !== 'assistant') return
+      const usage = extractLlmUsageFromMessage(msg)
+      if (usage) capturedUsage = addLlmUsage(capturedUsage, usage)
+    })
 
     // 在 try/catch/finally 中捕获结果与错误，finally 持久化到日志表
     let logStatus: NovelAgentLogStatus = 'success'
@@ -815,19 +876,9 @@ export class NovelOrchestrator {
         'Agent prompt 返回',
       )
 
-      // 后处理：兜底清洗破折号"——"为中文逗号"，"
-      // 即便 systemPrompt 已注入破折号铁律，部分 LLM 仍不遵守。
-      // 此处统一替换所有 Agent 输出，确保 checkpoint 显示、日志、最终保存的正文均无破折号。
-      // 注意：流式增量事件已实时发射给前端，此处无法覆盖流式过程中的显示，
-      // 但 finalContent 保存到数据库时会再次清洗，最终落库版本无破折号。
-      if (result.includes('——')) {
-        const cleaned = result.replace(/——/g, '，')
-        this.context.logger.info(
-          { agentType, agentName: config.name, projectId, originalLength: result.length, cleanedLength: cleaned.length, dashCount: (result.match(/——/g) || []).length },
-          'Agent 输出破折号兜底清洗',
-        )
-        result = cleaned
-      }
+      // 破折号控制完全依赖 prompt 铁律禁令 + 正面示范，不做正则后处理。
+      // 正则替换会破坏语义，应由 LLM 从源头学会不输出破折号。
+      // 若仍有破折号，Reviewer 的 cliche-scanner 会检测到并触发 revise。
 
       logResult = result
       return result
@@ -841,6 +892,11 @@ export class NovelOrchestrator {
       throw err
     } finally {
       agUiSession.dispose()
+      unsubscribeUsage()
+
+      const usageForLog = hasLlmUsage(capturedUsage)
+        ? capturedUsage
+        : this.readUsageFromLedgerWindow(startTime, Date.now())
 
       // 持久化 Agent 调用日志（fire-and-forget，失败不影响主流程）
       try {
@@ -853,7 +909,9 @@ export class NovelOrchestrator {
           displayAgentName,
           phase,
           systemPrompt,
-          chapterContext,
+          chapterContext: suffixContext
+            ? `${sharedContext}\n\n---\n\n${suffixContext}`
+            : sharedContext,
           userMessage,
           taskInput: taskInputForLog,
           userInstructions: userInstructionsForLog,
@@ -865,6 +923,12 @@ export class NovelOrchestrator {
           status: logStatus,
           error: logError,
           sessionId: '',
+          inputTokens: usageForLog?.inputTokens ?? 0,
+          outputTokens: usageForLog?.outputTokens ?? 0,
+          cacheReadTokens: usageForLog?.cacheReadTokens ?? 0,
+          cacheWriteTokens: usageForLog?.cacheWriteTokens ?? 0,
+          llmProvider: usageForLog?.llmProvider ?? '',
+          llmModel: usageForLog?.llmModel ?? '',
         })
       } catch (logErr) {
         // 日志写入失败不影响主流程
@@ -909,6 +973,55 @@ export class NovelOrchestrator {
     }
   }
 
+  /**
+   * 从通用 usage_records 表回填本次 Agent 调用的 token 用量。
+   *
+   * 背景：部分 Pi SDK/Provider 事件在插件侧订阅不到 usage，但底座 usage-ledger
+   * 已经通过同一个 message_end 事件写入 usage_records。AgentLog 需要真实 cache read
+   * 数据用于诊断命中率，因此在订阅未采集到 usage 时按调用时间窗口聚合回填。
+   */
+  private readUsageFromLedgerWindow(startTime: number, endTime: number): LlmUsageSnapshot | undefined {
+    try {
+      const rows = this.context.db.prepare(`
+        SELECT provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, timestamp
+        FROM usage_records
+        WHERE timestamp >= ? AND timestamp <= ?
+        ORDER BY timestamp ASC
+      `).all(startTime - 500, endTime + 500) as Array<{
+        provider: string
+        model: string
+        input_tokens: number
+        output_tokens: number
+        cache_read_tokens: number | null
+        cache_write_tokens: number | null
+        timestamp: number
+      }>
+      if (rows.length === 0) return undefined
+
+      const latest = rows[rows.length - 1]
+      const usage = rows.reduce<LlmUsageSnapshot>((sum, row) => ({
+        inputTokens: sum.inputTokens + (row.input_tokens ?? 0),
+        outputTokens: sum.outputTokens + (row.output_tokens ?? 0),
+        cacheReadTokens: sum.cacheReadTokens + (row.cache_read_tokens ?? 0),
+        cacheWriteTokens: sum.cacheWriteTokens + (row.cache_write_tokens ?? 0),
+        llmProvider: row.provider || sum.llmProvider,
+        llmModel: row.model || sum.llmModel,
+      }), {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        llmProvider: latest.provider ?? '',
+        llmModel: latest.model ?? '',
+      })
+
+      return hasLlmUsage(usage) ? usage : undefined
+    } catch (err) {
+      this.context.logger.debug({ err }, 'AgentLog usage 回填失败')
+      return undefined
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 长期记忆：实体状态捕获 + 记忆事件记录
   // ═══════════════════════════════════════════════════════════════
@@ -927,6 +1040,7 @@ export class NovelOrchestrator {
     chapterNumber: number,
     chapterContent: string,
     options: CreationOptions,
+    sharedContextPrefix?: string,
   ): Promise<string> {
     // 优先使用结构化 LLM 调用模式
     if (this.memoryGenerator) {
@@ -934,6 +1048,8 @@ export class NovelOrchestrator {
       let status: 'success' | 'error' = 'success'
       let errorMsg: string | undefined
       let resultSummary = ''
+      let logSystemPrompt = '(结构化 LLM 调用 - role-memory-generator)'
+      let logUserMessage = `请从第 ${chapterNumber} 章中提取状态变更。`
       try {
         const result = await this.memoryGenerator.generate(
           projectId, chapterNumber, chapterContent,
@@ -944,7 +1060,11 @@ export class NovelOrchestrator {
               data: event.data,
             })
           },
+          this.currentArrangedEntities,
+          sharedContextPrefix,
         )
+        logSystemPrompt = result.logContext?.systemPrompt ?? logSystemPrompt
+        logUserMessage = result.logContext?.userMessage ?? logUserMessage
         resultSummary = result.summary
         return result.summary
       } catch (err) {
@@ -959,6 +1079,7 @@ export class NovelOrchestrator {
         return resultSummary
       } finally {
         const durationMs = Date.now() - startTime
+        const usageForLog = this.readUsageFromLedgerWindow(startTime, Date.now())
 
         // 持久化领域层日志
         try {
@@ -970,10 +1091,10 @@ export class NovelOrchestrator {
             displayAgentType: 'memory',
             displayAgentName: '记忆',
             phase: 'memory',
-            systemPrompt: '(结构化 LLM 调用 - role-memory-generator)',
+            systemPrompt: logSystemPrompt,
             chapterContext: '',
-            userMessage: `请从第 ${chapterNumber} 章中提取状态变更。`,
-            taskInput: chapterContent.slice(0, 500),
+            userMessage: logUserMessage,
+            taskInput: chapterContent,
             userInstructions: [],
             tools: [],
             toolNames: [],
@@ -983,6 +1104,12 @@ export class NovelOrchestrator {
             status,
             error: errorMsg ?? '',
             sessionId: '',
+            inputTokens: usageForLog?.inputTokens ?? 0,
+            outputTokens: usageForLog?.outputTokens ?? 0,
+            cacheReadTokens: usageForLog?.cacheReadTokens ?? 0,
+            cacheWriteTokens: usageForLog?.cacheWriteTokens ?? 0,
+            llmProvider: usageForLog?.llmProvider ?? '',
+            llmModel: usageForLog?.llmModel ?? '',
           })
         } catch {
           // 日志写入失败不影响主流程
@@ -1901,17 +2028,6 @@ export class NovelOrchestrator {
   }
 
   /**
-   * 清洗 Director 输出：在注入 Writer 前移除破折号。
-   *
-   * 根因：Director 的叙事规划中大量使用"——"做转折/补充说明，这些输出通过
-   * currentDirectorOutput 注入 Writer 的 SEMI 层，Writer 在模仿 Director 的叙事腔调时
-   * 会继承破折号习惯。将"——"替换为逗号，保留语义但切断示范传播。
-   */
-  private sanitizeDirectorOutput(text: string): string {
-    return text.replace(/——/g, '，')
-  }
-
-  /**
    * 生成候选章节标题（3 个，4-8 字，供用户选择）。
    *
    * 设计意图：网文章节标题是吸引读者点击的重要手段（"第3章 赵岩的烟杆" vs "第3章"）。
@@ -1934,7 +2050,7 @@ export class NovelOrchestrator {
 - 每个标题 4-8 个字
 - 标题应反映本章核心事件或情感
 - 风格参考网文章节标题（如"赵岩的烟杆""玉佩的秘密""深夜搜查"）
-- 不要使用破折号
+- 绝不使用破折号"——"。转折用句号，补充用逗号，列举用顿号。
 - 直接输出 3 个标题，每行一个，不要编号，不要解释
 
 章节正文：
@@ -1985,7 +2101,7 @@ ${excerpt}`
 - 概括本章核心事件和关键转折
 - 语言简洁有力，像"上回说到……"的风格
 - 不要剧透下一章
-- 不要使用破折号
+- 绝不使用破折号"——"。转折用句号，补充用逗号，列举用顿号。
 - 直接输出提要内容，不要加标题或解释
 
 章节正文：

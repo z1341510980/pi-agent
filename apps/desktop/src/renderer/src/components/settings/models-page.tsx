@@ -39,7 +39,7 @@ interface CustomModel {
 
 // ── 常量 ──
 
-const CUSTOM_MODELS_STORAGE_KEY = 'pi-agent.custom-models'
+const CUSTOM_MODELS_STORAGE_KEY = 'wenlang-agent.custom-models'
 
 // ── 主组件 ──
 

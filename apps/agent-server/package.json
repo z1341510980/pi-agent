@@ -1,6 +1,6 @@
 {
   "name": "agent-server",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "AI Agent 后端服务，基于 Fastify 提供 AG-UI 协议与 CopilotKit 运行时接口",
   "main": "dist/index.js",
   "scripts": {

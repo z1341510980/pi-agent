@@ -151,6 +151,9 @@ export function EntityCreateDialog({
       if (!currentProjectId) {
         throw new Error('未找到当前项目 ID')
       }
+      if (!entityType || entityType === 'info_layer') {
+        throw new Error('当前实体类型暂不支持 AI 补全')
+      }
       const result = await aiGenerateEntity(
         currentProjectId,
         { entityType, coreStyle: trimmed },

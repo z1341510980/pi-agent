@@ -48,7 +48,7 @@ import type {
 } from './plugin-types.js'
 
 /** npm 插件包名前缀 */
-const NPM_PLUGIN_PREFIX = 'pi-agent-plugin-'
+const NPM_PLUGIN_PREFIX = 'wenlang-agent-plugin-'
 
 export class PluginManager {
   private readonly entries = new Map<string, PluginEntry>()
@@ -798,21 +798,28 @@ export class PluginManager {
         // 注入 SEMI 层前缀消息（章节上下文）：作为独立首条 user 消息加入对话历史，
         // 不触发 LLM 调用。这样 LLM 收到的对话为 system → prefixUserMessage → userMessage，
         // prefixUserMessage 跨 Agent 稳定，可被 prompt cache 命中。
+        //
+        // 支持 string | string[]：数组时每条作为独立 user 消息注入，各自打 cache_control
+        // breakpoint。用于"共享前缀 + Agent 专属后缀"分离，最大化跨 Agent 缓存命中。
         if (options.prefixUserMessage) {
           const piSession = threadSession.session as {
             agent?: { state?: { messages?: unknown[] } }
           }
           if (piSession.agent?.state) {
-            const prefixMessage = {
+            const prefixes = Array.isArray(options.prefixUserMessage)
+              ? options.prefixUserMessage
+              : [options.prefixUserMessage]
+            const now = Date.now()
+            const prefixMessages = prefixes.map((content, i) => ({
               role: 'user',
-              content: options.prefixUserMessage,
-              timestamp: Date.now(),
-            }
+              content,
+              timestamp: now + i,
+            }))
             const existing = piSession.agent.state.messages ?? []
-            piSession.agent.state.messages = [...existing, prefixMessage]
+            piSession.agent.state.messages = [...existing, ...prefixMessages]
             logger.debug(
-              { threadId, prefixLength: options.prefixUserMessage.length },
-              '已注入 SEMI 层前缀消息（章节上下文）',
+              { threadId, prefixCount: prefixMessages.length, prefixLengths: prefixes.map(p => p.length) },
+              '已注入 SEMI 层前缀消息（每条独立打 cache_control breakpoint）',
             )
           } else {
             logger.warn(
@@ -912,8 +919,14 @@ export class PluginManager {
             agent?: { onPayload?: (payload: unknown) => unknown }
           }
           if (piSession.agent) {
-            // 当存在 SEMI 层 prefixUserMessage 时，在 system 与 prefixUser 末尾
+            // 当存在 SEMI 层 prefixUserMessage 时，在 system 与每条 prefix user 消息末尾
             // 显式打 cache_control breakpoint，提升 provider 端 prompt cache 命中率。
+            //
+            // "共享前缀 + Agent 专属后缀"分离策略：
+            // - shared 消息末尾 breakpoint → 缓存 [system, shared]，跨 Agent 命中
+            // - suffix 消息末尾 breakpoint → 缓存 [system, shared, suffix]，同 Agent 重试命中
+            //
+            // Anthropic 限制最多 4 个 breakpoint（含 system 的 1 个），因此 prefix 最多打 3 个。
             // 兼容多种 provider payload 结构（Anthropic / OpenAI 兼容）：
             // - Anthropic: system 为 string 或 content blocks 数组；messages 是数组
             // - OpenAI 兼容: system 通常在 messages[0]，无需显式标记（自动缓存）
@@ -923,7 +936,7 @@ export class PluginManager {
               const payload = rawPayload as Record<string, unknown>
               const messages = Array.isArray(payload.messages) ? [...payload.messages] : null
 
-              // 1) 处理 system 字段（Anthropic 风格）
+              // 1) 处理 system 字段（Anthropic 风格）：在 system 末尾打 breakpoint
               if (typeof payload.system === 'string' && payload.system.length > 0) {
                 payload.system = [{
                   type: 'text',
@@ -937,26 +950,46 @@ export class PluginManager {
                 }
               }
 
-              // 2) 处理 messages 数组：给第一条 user 消息打 cache_control
-              //    （prefixUserMessage 已在 createSession 中作为首条 user 注入）
+              // 2) 处理 messages 数组：给每条 prefix user 消息的最后一个 content block 打 breakpoint
+              //    prefixUserMessage 可能是 string（1条）或 string[]（多条）。
+              //    prefix 消息在 createSession 中已作为首 N 条 user 消息注入到 messages 数组前部。
+              //    每条 prefix 末尾打 breakpoint，使得：
+              //    - shared 部分末尾 breakpoint → [system, shared] 跨 Agent 命中缓存
+              //    - suffix 部分末尾 breakpoint → [system, shared, suffix] 同 Agent 重试命中
+              //    Anthropic 限制最多 4 个 breakpoint（含 system 的 1 个），prefix 最多打 3 个。
               if (messages && messages.length > 0) {
-                const first = messages[0] as Record<string, unknown>
-                if (first && first.role === 'user') {
-                  const content = first.content
+                const prefixes = Array.isArray(options.prefixUserMessage)
+                  ? options.prefixUserMessage
+                  : [options.prefixUserMessage]
+                // 最多给前 3 条 prefix 消息打 breakpoint（加上 system 共 4 个，不超 Anthropic 限制）
+                const maxPrefixBreakpoints = 3
+                const prefixCount = Math.min(prefixes.length, maxPrefixBreakpoints, messages.length)
+                let markedAny = false
+
+                for (let i = 0; i < prefixCount; i++) {
+                  const msg = messages[i] as Record<string, unknown>
+                  if (!msg || msg.role !== 'user') break
+
+                  const content = msg.content
                   if (typeof content === 'string') {
-                    messages[0] = {
-                      ...first,
+                    messages[i] = {
+                      ...msg,
                       content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }],
                     }
+                    markedAny = true
                   } else if (Array.isArray(content) && content.length > 0) {
                     const lastBlock = content[content.length - 1] as Record<string, unknown>
                     if (lastBlock && typeof lastBlock === 'object' && !lastBlock.cache_control) {
-                      messages[0] = {
-                        ...first,
+                      messages[i] = {
+                        ...msg,
                         content: [...content.slice(0, -1), { ...lastBlock, cache_control: { type: 'ephemeral' } }],
                       }
+                      markedAny = true
                     }
                   }
+                }
+
+                if (markedAny) {
                   payload.messages = messages
                 }
               }

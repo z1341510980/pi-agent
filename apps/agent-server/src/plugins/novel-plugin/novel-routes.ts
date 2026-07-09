@@ -97,6 +97,18 @@ function createSseEmitterSink(writeRaw: (data: string) => void): AgUiEventSink {
   }
 }
 
+const arrangedEntitiesSchema = z.object({
+  characterIds: z.array(z.string()).max(200).optional().default([]),
+  conflictIds: z.array(z.string()).max(200).optional().default([]),
+  foreshadowIds: z.array(z.string()).max(200).optional().default([]),
+  factionIds: z.array(z.string()).max(200).optional().default([]),
+  locationIds: z.array(z.string()).max(200).optional().default([]),
+})
+
+const createFlowBodySchema = z.object({
+  arrangedEntities: arrangedEntitiesSchema.optional(),
+}).optional().default({})
+
 /** 创建小说系统 REST API 路由 */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   const { store, memoryStore, promptManager, promptBuilder, engine, agentConfigStore } = services
@@ -429,6 +441,105 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // LLM 相似度扫描 + 字段级合并（SSE + 检查点）
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // 与 /entities/deduplicate 互补：
+  // - deduplicate：基于完全匹配 name/description 的快速去重（同步、无 LLM）
+  // - similarity-scan：LLM 驱动的语义相似扫描（SSE 流式推送扫描进度 + 最终报告）
+  // - merge-similarity：根据用户在弹框中勾选的组执行字段级合并（独立 REST POST）
+  //
+  // 拆分两步的原因：
+  // 用户在弹框中需要逐组勾选（多选框），决定哪些组合并、哪些跳过。
+  // checkpoint 模式只能 approve/reject 全部，无法承载"选中的子集"，
+  // 因此 SSE 扫描完直接推送 report 后结束，合并决策改为独立 REST 调用，
+  // 前端把勾选的 groups 通过 POST body 传回。
+  //
+  // 流程：
+  // 1. SSE: scanner.scan 推送 preparing/generating/parsing/completed 进度
+  // 2. SSE: 推送 result（含完整 report），流结束
+  // 3. 前端弹框显示 report，每组带 checkbox，用户勾选
+  // 4. REST: POST /entities/merge-similarity { groups: 选中的组 }
+  //         后端调用 store.mergeWithPlan 执行字段级合并 + 关联迁移 + 删除
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/entities/similarity-scan',
+    handler: async (request: any, reply: any) => {
+      const { projectId } = request.params
+
+      // 设置 SSE（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
+      request.raw.socket?.setNoDelay(true)
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      const emitter = createNovelAgUiEmitter(
+        createSseEmitterSink((data) => reply.raw.write(data)),
+        `novel:similarity:${projectId}`,
+        randomUUID(),
+      )
+
+      try {
+        // 1. 调用 scanner.scan 推送扫描进度
+        const report = await services.similarityScanner.scan(projectId, (evt) => {
+          emitter.progress({ type: 'phase_change', data: evt })
+        })
+
+        // 2. 推送扫描结果（含完整 report），前端据此弹框让用户多选
+        emitter.result({ status: 'completed', report })
+      } catch (err) {
+        emitter.error(String(err))
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.end()
+      }
+    },
+  })
+
+  // 执行相似实体合并（用户在弹框中勾选的组）
+  // body: { groups: SimilarityGroup[] } —— 仅合并用户选中的组，未勾选的跳过
+  const mergeSimilaritySchema = z.object({
+    groups: z.array(z.object({
+      kind: z.enum(['character', 'conflict', 'foreshadow', 'faction', 'location', 'world_element']),
+      reason: z.string().default(''),
+      similarity: z.number().min(0).max(1).default(0),
+      keptId: z.string(),
+      removed: z.array(z.object({
+        id: z.string(),
+        name: z.string().default(''),
+      })),
+      fieldMerges: z.array(z.object({
+        field: z.string(),
+        fromId: z.string(),
+        fromName: z.string().default(''),
+        reason: z.string().default(''),
+      })).optional().default([]),
+    })),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/entities/merge-similarity',
+    handler: async (request: any, reply: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const input = validateBody(mergeSimilaritySchema, request, reply)
+      if (!input) return reply
+      const result = store.mergeWithPlan(projectId, input.groups)
+      return success({ totalMerged: result.totalMerged }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 卷管理
   // ═══════════════════════════════════════════════════════════════
 
@@ -503,6 +614,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       targetEntity: z.string().nullable().optional(),
       priority: z.enum(['high', 'medium', 'low']).default('medium'),
     }),
+    // 可选卷归属：传入则新建章节直接挂在该卷下，避免章节游离在所有卷之外
+    volumeId: z.string().nullable().optional(),
   })
 
   routes.push({
@@ -516,6 +629,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         request.params.projectId,
         input.chapterNumber,
         input.narrativeTask as any,
+        input.volumeId ?? undefined,
       )
       return success(result, request.traceId)
     },
@@ -1715,40 +1829,48 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
 
       // 章节上下文哈希（SEMI 层）- 单章内缓存命中指标
       let chapterContextHash: string | undefined
+      const chapterContextHashes: Record<string, string> = {}
       if (chapterNumber != null && !Number.isNaN(chapterNumber)) {
-        try {
-          // 使用默认叙事任务与约束计算哈希（诊断用途）
-          chapterContextHash = promptBuilder.getChapterContextHash(
-            projectId,
-            chapterNumber,
-            {
-              description: '诊断请求',
-              type: 'advance_mainline',
-              targetEntity: null,
-              priority: 'medium',
-            },
-            {
-              facts: store.listConstraints(projectId).filter((c: any) => c.type === 'fact'),
-              cognitive: store.listConstraints(projectId).filter((c: any) => c.type === 'cognitive'),
-              stage: store.listConstraints(projectId).filter((c: any) => c.type === 'stage'),
-              narrativeDebts: store.listForeshadowing(projectId),
-              characterArcs: store.listCharacters(projectId).map((c: any) => ({
-                character: c,
-                allowedNextStage: null,
-              })),
-              conflictTargets: [],
-              suspenseHooks: [],
-            },
-          )
-        } catch {
-          chapterContextHash = 'error'
+        const diagnosticTask = {
+          description: '诊断请求',
+          type: 'advance_mainline' as const,
+          targetEntity: null,
+          priority: 'medium' as const,
         }
+        const diagnosticConstraints = {
+          facts: store.listConstraints(projectId).filter((c: any) => c.type === 'fact'),
+          cognitive: store.listConstraints(projectId).filter((c: any) => c.type === 'cognitive'),
+          stage: store.listConstraints(projectId).filter((c: any) => c.type === 'stage'),
+          narrativeDebts: store.listForeshadowing(projectId),
+          characterArcs: store.listCharacters(projectId).map((c: any) => ({
+            character: c,
+            allowedNextStage: null,
+          })),
+          conflictTargets: [],
+          suspenseHooks: [],
+        }
+        for (const agentType of agentTypes) {
+          try {
+            chapterContextHashes[agentType] = promptBuilder.getChapterContextHash(
+              projectId,
+              chapterNumber,
+              diagnosticTask,
+              diagnosticConstraints,
+              undefined,
+              agentType,
+            )
+          } catch {
+            chapterContextHashes[agentType] = 'error'
+          }
+        }
+        chapterContextHash = chapterContextHashes.director
       }
 
       return success(
         {
           systemPromptHashes,
           chapterContextHash,
+          chapterContextHashes,
           agentTypes,
           timestamp: Date.now(),
         },
@@ -1808,6 +1930,40 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     handler: async (request: any, reply: any) => {
       const { projectId, chapterNumber } = request.params
       const orchestrator = services.orchestrator
+      const input = validateBody(createFlowBodySchema, request, reply)
+      if (!input) return reply
+      const arrangedEntities = input.arrangedEntities
+        ? {
+            characterIds: input.arrangedEntities.characterIds,
+            conflictIds: input.arrangedEntities.conflictIds,
+            foreshadowIds: input.arrangedEntities.foreshadowIds,
+            factionIds: input.arrangedEntities.factionIds,
+            locationIds: input.arrangedEntities.locationIds,
+          }
+        : undefined
+
+      if (arrangedEntities) {
+        const invalid: string[] = []
+        for (const id of arrangedEntities.characterIds) {
+          if (store.getCharacter(id)?.projectId !== projectId) invalid.push(`character:${id}`)
+        }
+        for (const id of arrangedEntities.conflictIds) {
+          if (store.getConflict(id)?.projectId !== projectId) invalid.push(`conflict:${id}`)
+        }
+        for (const id of arrangedEntities.foreshadowIds) {
+          if (store.getForeshadow(id)?.projectId !== projectId) invalid.push(`foreshadow:${id}`)
+        }
+        for (const id of arrangedEntities.factionIds) {
+          if (store.getFaction(id)?.projectId !== projectId) invalid.push(`faction:${id}`)
+        }
+        for (const id of arrangedEntities.locationIds) {
+          if (store.getLocation(id)?.projectId !== projectId) invalid.push(`location:${id}`)
+        }
+        if (invalid.length > 0) {
+          reply.code(400).send({ ok: false, error: `编排实体不属于当前项目或不存在: ${invalid.join(', ')}` })
+          return
+        }
+      }
 
       // 设置 SSE
       // 注意：reply.raw.writeHead 绕过 Fastify 的 CORS 中间件，需手动附加 CORS 头，
@@ -1832,27 +1988,6 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         `novel:chapter:${projectId}:${chapterNumber}`,
         randomUUID(),
       )
-
-      // 从 body 读取本章已编排实体约束（模式1手动编排 / 模式2 AI编排产出）
-      // 缺省时为 undefined，orchestrator 不注入编排段，保持向后兼容
-      const body = (request.body ?? {}) as {
-        arrangedEntities?: {
-          characterIds?: string[]
-          conflictIds?: string[]
-          foreshadowIds?: string[]
-          factionIds?: string[]
-          locationIds?: string[]
-        }
-      }
-      const arrangedEntities = body.arrangedEntities
-        ? {
-            characterIds: body.arrangedEntities.characterIds ?? [],
-            conflictIds: body.arrangedEntities.conflictIds ?? [],
-            foreshadowIds: body.arrangedEntities.foreshadowIds ?? [],
-            factionIds: body.arrangedEntities.factionIds ?? [],
-            locationIds: body.arrangedEntities.locationIds ?? [],
-          }
-        : undefined
 
       try {
         const result = await orchestrator.createChapterWithFlow(
@@ -1900,11 +2035,12 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     method: 'POST',
     path: '/projects/:projectId/checkpoint/:checkpointId/decision',
     handler: async (request: any, reply: any) => {
-      const { checkpointId } = request.params as { projectId: string; checkpointId: string }
+      const { projectId, checkpointId } = request.params as { projectId: string; checkpointId: string }
       const { decision, userMessages } = request.body as { decision: string; userMessages?: string[] }
-      // 如果有用户消息，存到 orchestrator 供下一个 Agent 使用
-      if (userMessages && userMessages.length > 0) {
-        services.orchestrator.setUserMessages(userMessages)
+      const pending = services.confirmationManager.listPending().find((r) => r.id === checkpointId)
+      if (!pending || !pending.threadId.startsWith(`novel-checkpoint-${projectId}-`)) {
+        reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
+        return
       }
       // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
       const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
@@ -1912,12 +2048,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
         return
       }
+      // 确认 checkpoint 有效后再写用户消息，避免过期/跨项目请求污染下一轮 Agent。
+      if (userMessages && userMessages.length > 0) {
+        services.orchestrator.setUserMessages(userMessages)
+      }
       return { ok: true, data: { accepted: true } }
     },
   })
 
   // ═══════════════════════════════════════════════════════════════
-  // 模式2：AI 编排生成（SSE）——按章纲生成实体并编排，同一流内衔接 create-flow
+  // 模式2：AI 编排（SSE）——按章纲生成实体并编排到矩阵，不生成正文
   // ═══════════════════════════════════════════════════════════════
 
   routes.push({

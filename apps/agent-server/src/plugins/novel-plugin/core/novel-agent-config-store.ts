@@ -32,6 +32,7 @@ export class NovelAgentConfigStore {
     return {
       director: this.getByType('director'),
       writer: this.getByType('writer'),
+      reviser: this.getByType('reviser'),
       reviewer: this.getByType('reviewer'),
       memory: this.getByType('memory'),
     }

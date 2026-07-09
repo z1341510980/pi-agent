@@ -65,6 +65,9 @@ function makeMockServices(): NovelServices {
     entityGenerator: {
       generate: vi.fn(),
     } as any,
+    similarityScanner: {
+      scan: vi.fn(),
+    } as any,
     agentConfigStore: {
       getAll: vi.fn(() => []),
       getByType: vi.fn(() => ({ agentType: 'writer', temperature: 0.7 })),

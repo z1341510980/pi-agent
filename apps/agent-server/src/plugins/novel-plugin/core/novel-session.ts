@@ -11,9 +11,9 @@
  *        └── 此结果在整个 Session 生命周期内不变 → 跨章节缓存命中
  *
  * 2. 发送章节上下文作为首条 user 消息
- *    └── NovelPromptBuilder.buildChapterContext()
- *        └── 返回 SEMI 层：章节信息 + 约束 + 本章出场角色完整定义 + 故事状态 + 信息差 + 摘要 + 指令
- *        └── 此消息在单章生成期间不变 → 单章内缓存命中
+ *    └── NovelPromptBuilder.buildChapterContextShared() + buildChapterContextSuffix()
+ *        └── 返回 SEMI 层：shared（跨 Agent 一致）+ suffix（Agent 专属）
+ *        └── shared 在单章生成期间不变 → 跨 Agent 缓存命中
  *
  * 3. 注入 novel-tools（customTools）
  *    └── 读工具：查询 DB 最新状态，结果追加到对话末尾（DYNAMIC）
@@ -81,13 +81,20 @@ export class NovelSessionFactory {
   }
 
   /**
-   * 构建章节上下文（作为首条 user 消息）
+   * 构建章节上下文（shared + suffix 拼接，用于 engine.ts 约束构建副作用预触发）
    *
    * ⚠️ 此方法在章节生成开始时调用一次，生成的内容在单章内不变。
    * 这确保单章内的后续 LLM 调用能命中此前缀缓存。
    */
   buildChapterContext(config: NovelSessionConfig): string {
-    return this.promptBuilder.buildChapterContext(
+    const shared = this.promptBuilder.buildChapterContextShared(
+      config.projectId,
+      config.chapterNumber,
+      config.narrativeTask,
+      config.constraints,
+      undefined,
+    )
+    const suffix = this.promptBuilder.buildChapterContextSuffix(
       config.projectId,
       config.chapterNumber,
       config.narrativeTask,
@@ -95,6 +102,7 @@ export class NovelSessionFactory {
       undefined,
       config.agentType,
     )
+    return suffix ? `${shared}\n\n---\n\n${suffix}` : shared
   }
 
   /**

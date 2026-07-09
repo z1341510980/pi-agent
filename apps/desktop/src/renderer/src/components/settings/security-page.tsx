@@ -18,7 +18,7 @@ interface GateState {
 
 // ── 常量 ──
 
-const whitelistStorageKey = 'pi-agent.dir-whitelist'
+const whitelistStorageKey = 'wenlang-agent.dir-whitelist'
 
 const modeConfig: Record<GateMode, { label: string; icon: typeof ShieldIcon; desc: string; badge: 'default' | 'secondary' | 'destructive' }> = {
   auto: {

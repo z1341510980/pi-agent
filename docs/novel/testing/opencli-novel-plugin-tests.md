@@ -49,7 +49,7 @@ opencli browser --session novel wait time 3
 opencli browser --session novel screenshot "$shots\01-home.png"
 ```
 
-期望:`title: Electron`,页面显示 PI Agent Desktop 主页,含主导航栏(首页/对话工作台/小说创作/设置)。
+期望:`title: Electron`,页面显示 Wenlang Agent Desktop 主页,含主导航栏(首页/对话工作台/小说创作/设置)。
 
 ### 1.5 导航到小说创作页
 

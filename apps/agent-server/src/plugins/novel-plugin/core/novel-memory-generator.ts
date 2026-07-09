@@ -34,6 +34,7 @@ import type {
   NovelLocation,
   NovelRelationship,
   RelationChange,
+  ArrangedEntity,
 } from './types.js'
 
 // ── 进度事件 ──
@@ -192,6 +193,11 @@ export interface MemoryGenerationResult {
   summary: string
   /** 应用统计 */
   stats: MemoryApplyStats
+  /** 写 AgentLog 用的真实 LLM 输入上下文 */
+  logContext?: {
+    systemPrompt: string
+    userMessage: string
+  }
 }
 
 /** 将任意 LLM 输出值安全转为 string，防止数组/对象传到 SQLite */
@@ -236,6 +242,8 @@ export class NovelMemoryGenerator {
     chapterNumber: number,
     chapterContent: string,
     onProgress?: (event: MemoryGenerationProgressEvent) => void,
+    arrangedEntities?: ArrangedEntity,
+    sharedContextPrefix?: string,
   ): Promise<MemoryGenerationResult> {
     // ── 1. 构建系统提示词（与 character-generator 一致的技术栈）──
     // agentType 使用 'memory-generator'，promptBuilder 通过 role-memory-generator 模板加载角色定义
@@ -250,20 +258,36 @@ export class NovelMemoryGenerator {
     // 不需要注入 chapterContext（章节信息 + 约束 + 故事状态 + 摘要 + 因果链），
     // 这些对"状态变更提取"无用，且会让 Memory 的输入膨胀 10K+ 字符。
     // 预期节省 ~10K 字符 / 7K tokens。
-    const userPrompt = this.buildUserPrompt(projectId, chapterNumber, chapterContent)
+    const userPrompt = this.buildUserPrompt(projectId, chapterNumber, chapterContent, arrangedEntities)
 
     // ── 3. 创建独立 Session 调用 LLM（单次调用，输出 JSON）──
     onProgress?.({ phase: 'generating', message: '记忆 Agent 正在分析章节状态变更...' })
-    const session = await this.context.createSession({
+    // 若 orchestrator 传入了 SEMI 层 shared 前缀，作为 prefixUserMessage 注入。
+    // shared 前缀跨 Agent 完全一致（章节信息/约束/故事状态/摘要/因果链），
+    // director/writer/reviewer 已写入 provider 端缓存，Memory 注入后能命中，
+    // 显著降低 miss tokens（从 ~16K miss 降至 ~6K miss）。
+    const sessionOptions: {
+      systemPrompt: string
+      prefixUserMessage?: string
+      userMessage: string
+      responseFormat: 'json'
+      timeoutMs: number
+    } = {
       systemPrompt,
       // 不注入 prefixUserMessage（chapterContext）：Memory 不需要章节上下文，
       // 只需要章节正文 + 当前实体状态（均在 userMessage 中）
-      userMessage: userPrompt,
+      // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
+      userMessage: this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
+        + '\n\n---\n\n' + userPrompt,
       responseFormat: 'json',
       // 记忆提取需要分析整章正文 + 全量实体状态，LLM 耗时较长
       // 但远低于工具循环模式的 300s（单次调用通常 30-60s）
       timeoutMs: 300_000,
-    })
+    }
+    if (sharedContextPrefix) {
+      sessionOptions.prefixUserMessage = sharedContextPrefix
+    }
+    const session = await this.context.createSession(sessionOptions)
 
     let payload: MemoryUpdatePayload
     try {
@@ -299,6 +323,7 @@ export class NovelMemoryGenerator {
       return {
         summary: '记忆提取失败，未应用状态变更',
         stats: this.emptyStats(),
+        logContext: { systemPrompt, userMessage: userPrompt },
       }
     } finally {
       session.dispose()
@@ -315,7 +340,7 @@ export class NovelMemoryGenerator {
       data: { stats },
     })
 
-    return { summary, stats }
+    return { summary, stats, logContext: { systemPrompt, userMessage: userPrompt } }
   }
 
   /**
@@ -358,7 +383,7 @@ export class NovelMemoryGenerator {
     parts.push('## 全量状态校准')
     parts.push('')
     parts.push('你正在进行全量状态校准。以下是最近几章的正文和当前实体状态。')
-    parts.push('请仔细对比正文内容与当前实体状态，找出**遗漏的状态变更**——那些在正文中发生但当前状态未反映的变化。')
+    parts.push('请仔细对比正文内容与当前实体状态，找出**遗漏的状态变更**，即那些在正文中发生但当前状态未反映的变化。')
     parts.push('')
     parts.push('### 校准范围')
     parts.push(`第 ${startChapter} 章 到 第 ${currentChapterNumber} 章（共 ${recentChapters.length} 章）`)
@@ -374,7 +399,7 @@ export class NovelMemoryGenerator {
     }
 
     // 当前实体状态
-    const entityState = this.getCurrentEntityState(projectId)
+    const entityState = this.getCurrentEntityState(projectId, { includeAll: true })
     if (entityState) {
       parts.push('## 当前实体状态（校准基准）')
       parts.push(entityState)
@@ -392,7 +417,9 @@ export class NovelMemoryGenerator {
     onProgress?.({ phase: 'generating', message: '全量校准 Agent 正在分析最近章节状态...' })
     const session = await this.context.createSession({
       systemPrompt,
-      userMessage: userPrompt,
+      // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
+      userMessage: this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
+        + '\n\n---\n\n' + userPrompt,
       responseFormat: 'json',
       timeoutMs: 300_000,
     })
@@ -439,23 +466,45 @@ export class NovelMemoryGenerator {
       data: { stats, calibration: true },
     })
 
-    return { summary, stats }
+    return { summary, stats, logContext: { systemPrompt, userMessage: userPrompt } }
   }
 
   // ═══════════════════════════════════════════════════════════════
   // 提示词构建
   // ═══════════════════════════════════════════════════════════════
 
-  private buildUserPrompt(projectId: string, chapterNumber: number, chapterContent: string): string {
+  private buildUserPrompt(
+    projectId: string,
+    chapterNumber: number,
+    chapterContent: string,
+    arrangedEntities?: ArrangedEntity,
+  ): string {
     const parts: string[] = []
 
     parts.push(`请从第 ${chapterNumber} 章中提取状态变更，按指定 JSON 格式输出。`)
 
-    parts.push('## 章节正文\n')
+    // 注入章节叙事任务，让 Memory 知道本章的核心目标，判断哪些是"本章发生的变更"
+    // 而非"既定设定"。历史问题：Memory 缺乏章节上下文，无法判断哪些是变更。
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    if (chapter?.narrativeTask?.trim()) {
+      parts.push('\n## 本章叙事任务（用于判断变更方向）\n')
+      parts.push(chapter.narrativeTask.trim())
+    }
+    if (chapter?.outline?.trim()) {
+      parts.push('\n## 本章章纲\n')
+      parts.push(chapter.outline.trim())
+    }
+
+    parts.push('\n## 章节正文\n')
     parts.push(chapterContent)
 
-    // 当前实体状态（精简版，只含 name + 关键动态字段，避免 prompt 过大）
-    const entityState = this.getCurrentEntityState(projectId)
+    // 当前实体状态默认只注入本章相关实体，降低 Memory 首轮 prompt 体积。
+    // 正文中自然提到但未编排的实体，会通过名称匹配自动补入；周期性的
+    // runFullCalibration 仍负责全量查漏补缺。
+    const entityState = this.getCurrentEntityState(projectId, {
+      chapterContent,
+      arrangedEntities,
+    })
     if (entityState) {
       parts.push('\n## 当前实体状态（用于判断变更）\n')
       parts.push(entityState)
@@ -463,16 +512,35 @@ export class NovelMemoryGenerator {
 
     parts.push('\n## 输出要求\n')
     parts.push('请返回 JSON 格式的变更列表，只包含发生变化的字段。不要复述章节内容，不要创作正文。')
+    parts.push('⚠️ 必须返回合法的 JSON 对象，不要返回自然语言总结。JSON 格式见系统提示词。')
 
     return parts.join('\n')
   }
 
   /** 获取当前实体状态的精简描述（仅含 name + 动态字段，避免 prompt 过大） */
-  private getCurrentEntityState(projectId: string): string {
+  private getCurrentEntityState(
+    projectId: string,
+    options?: {
+      chapterContent?: string
+      arrangedEntities?: ArrangedEntity
+      includeAll?: boolean
+    },
+  ): string {
     const parts: string[] = []
+    const chapterContent = options?.chapterContent ?? ''
+    const arranged = options?.arrangedEntities
+    const includeAll = options?.includeAll === true
+    const includesText = (text: string | null | undefined): boolean => {
+      const t = text?.trim()
+      return !!t && t.length >= 2 && chapterContent.includes(t)
+    }
 
     // 角色
-    const characters = this.store.listCharacters(projectId)
+    const allCharacters = this.store.listCharacters(projectId)
+    const arrangedCharacterIds = new Set(arranged?.characterIds ?? [])
+    const characters = includeAll
+      ? allCharacters
+      : allCharacters.filter((c) => arrangedCharacterIds.has(c.id) || includesText(c.name))
     if (characters.length > 0) {
       parts.push('### 角色')
       for (const c of characters) {
@@ -490,7 +558,12 @@ export class NovelMemoryGenerator {
     }
 
     // 冲突
-    const conflicts = this.store.listConflicts(projectId)
+    const arrangedConflictIds = new Set(arranged?.conflictIds ?? [])
+    const conflicts = includeAll
+      ? this.store.listConflicts(projectId)
+      : this.store.listConflicts(projectId).filter((c) =>
+          arrangedConflictIds.has(c.id) || includesText(c.description.slice(0, 12)),
+        )
     if (conflicts.length > 0) {
       parts.push('\n### 冲突')
       for (const c of conflicts) {
@@ -505,7 +578,12 @@ export class NovelMemoryGenerator {
     }
 
     // 伏笔
-    const foreshadows = this.store.listForeshadowing(projectId)
+    const arrangedForeshadowIds = new Set(arranged?.foreshadowIds ?? [])
+    const foreshadows = includeAll
+      ? this.store.listForeshadowing(projectId)
+      : this.store.listForeshadowing(projectId).filter((f) =>
+          arrangedForeshadowIds.has(f.id) || includesText(f.description.slice(0, 12)),
+        )
     if (foreshadows.length > 0) {
       parts.push('\n### 伏笔')
       for (const f of foreshadows) {
@@ -520,7 +598,10 @@ export class NovelMemoryGenerator {
     }
 
     // 势力
-    const factions = this.store.listFactions(projectId)
+    const arrangedFactionIds = new Set(arranged?.factionIds ?? [])
+    const factions = includeAll
+      ? this.store.listFactions(projectId)
+      : this.store.listFactions(projectId).filter((f) => arrangedFactionIds.has(f.id) || includesText(f.name))
     if (factions.length > 0) {
       parts.push('\n### 势力')
       for (const f of factions) {
@@ -529,7 +610,10 @@ export class NovelMemoryGenerator {
     }
 
     // 地点
-    const locations = this.store.listLocations(projectId)
+    const arrangedLocationIds = new Set(arranged?.locationIds ?? [])
+    const locations = includeAll
+      ? this.store.listLocations(projectId)
+      : this.store.listLocations(projectId).filter((l) => arrangedLocationIds.has(l.id) || includesText(l.name))
     if (locations.length > 0) {
       parts.push('\n### 地点')
       for (const l of locations) {
@@ -538,9 +622,14 @@ export class NovelMemoryGenerator {
     }
 
     // 关系（四层逻辑②：让 Memory Agent 看到当前关系状态，以便判断关系变更）
-    const relationships = this.store.listRelationships(projectId)
+    const relevantCharacterIds = new Set(characters.map((c) => c.id))
+    const relationships = includeAll
+      ? this.store.listRelationships(projectId)
+      : this.store.listRelationships(projectId).filter((r) =>
+          relevantCharacterIds.has(r.characterA) || relevantCharacterIds.has(r.characterB),
+        )
     if (relationships.length > 0) {
-      const charNameMap = new Map(characters.map((c) => [c.id, c.name]))
+      const charNameMap = new Map(allCharacters.map((c) => [c.id, c.name]))
       parts.push('\n### 关系')
       for (const r of relationships) {
         const nameA = charNameMap.get(r.characterA) ?? r.characterA
@@ -555,6 +644,13 @@ export class NovelMemoryGenerator {
         if (r.chapterHint) fields.push(`chapterHint: ${r.chapterHint}`)
         parts.push(`- ${nameA} ↔ ${nameB}（ID: ${r.id}）: ${fields.join(' | ')}`)
       }
+    }
+
+    if (parts.length === 0 && !includeAll) {
+      return [
+        '### 本章相关实体',
+        '未从编排矩阵或正文名称中命中既有实体。若正文出现新状态、新角色、新冲突或新伏笔，请按输出格式新建或补录。',
+      ].join('\n')
     }
 
     return parts.join('\n')
@@ -612,10 +708,20 @@ export class NovelMemoryGenerator {
     }
 
     if (!parsed || typeof parsed !== 'object') {
+      // 解析失败：LLM 可能返回了自然语言总结而非 JSON。
+      // 记录完整输出前 1000 字用于排查（前 200 字往往不足以判断 LLM 为何返回非 JSON）。
       this.context.logger.warn(
-        { textPreview: text.slice(0, 200) },
-        '记忆 Agent JSON 解析失败，使用空变更',
+        {
+          textPreview: text.slice(0, 1000),
+          textLength: text.length,
+        },
+        '记忆 Agent JSON 解析失败，使用空变更。LLM 可能返回了自然语言总结而非 JSON，请检查 role-memory-generator.md 的输出格式约束是否被遵守。',
       )
+      // 尝试从自然语言中提取 summary（LLM 可能返回了一段总结文字）
+      const naturalLangSummary = text.trim().split('\n').find((l) => l.length > 20)
+      if (naturalLangSummary) {
+        return { summary: naturalLangSummary.slice(0, 200) }
+      }
       return {}
     }
 

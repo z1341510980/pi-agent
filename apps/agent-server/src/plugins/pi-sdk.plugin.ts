@@ -13,14 +13,14 @@ import { ProxyManager } from '../core/config/proxy-manager.js'
  * 创建 AuthStorage、ModelRegistry、SessionManager 并挂载到 Fastify 实例
  *
  * 数据目录解析顺序：
- * 1. PI_DATA_DIR 环境变量（pi-agent 自定义）
+ * 1. PI_DATA_DIR 环境变量（wenlang-agent 自定义）
  * 2. 默认 ~/.pi（与 Pi SDK 默认一致）
  *
  * 子目录结构：
  * - ${dataDir}/agent/auth.json     凭证存储
  * - ${dataDir}/agent/models.json   模型注册表
  * - ${dataDir}/agent/sessions/     会话持久化
- * - ${dataDir}/pi-agent.db         SQLite 数据库（providers、proxy_config 等表）
+ * - ${dataDir}/wenlang-agent.db         SQLite 数据库（providers、proxy_config 等表）
  *
  * Provider 配置：
  * - 所有 LLM Provider 配置由前端用户在设置页面配置

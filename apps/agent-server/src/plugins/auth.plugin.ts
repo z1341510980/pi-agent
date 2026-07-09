@@ -8,17 +8,17 @@ const PUBLIC_PATHS = ["/api/health"];
 
 /**
  * Bearer Token 认证插件
- * Token 由 Electron Main 进程启动时生成，通过环境变量 PI_AGENT_AUTH_TOKEN 传入
+ * Token 由 Electron Main 进程启动时生成，通过环境变量 WENLANG_AGENT_AUTH_TOKEN 传入
  */
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
-  const expectedToken = process.env.PI_AGENT_AUTH_TOKEN;
+  const expectedToken = process.env.WENLANG_AGENT_AUTH_TOKEN;
 
   // 生产环境必须设置 Token
   if (!expectedToken) {
     if (process.env.NODE_ENV === "production") {
-      throw new Error("生产环境必须设置 PI_AGENT_AUTH_TOKEN");
+      throw new Error("生产环境必须设置 WENLANG_AGENT_AUTH_TOKEN");
     }
-    app.log.warn("PI_AGENT_AUTH_TOKEN 未设置，认证已禁用（仅限开发模式）");
+    app.log.warn("WENLANG_AGENT_AUTH_TOKEN 未设置，认证已禁用（仅限开发模式）");
     return;
   }
 

@@ -14,7 +14,7 @@ function messageContentToText(message: Message | undefined): string {
   return JSON.stringify(content);
 }
 
-export function createPiAgent() {
+export function createWenlangAgent() {
   return new BuiltInAgent({
     type: "custom",
     factory: async function* ({ input, abortSignal }): AsyncIterable<BaseEvent> {

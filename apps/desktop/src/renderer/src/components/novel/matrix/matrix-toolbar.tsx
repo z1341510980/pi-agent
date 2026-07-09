@@ -37,9 +37,9 @@ export interface MatrixToolbarProps {
   /** 过滤 */
   activeFilter: MatrixEntityKind | null
   onFilterChange: (filter: MatrixEntityKind | null) => void
-  /** 实体去重（整理功能） */
-  onDeduplicateScan?: () => void
-  dedupScanning?: boolean
+  /** LLM 相似度扫描（语义相似智能合并） */
+  onSimilarityScan?: () => void
+  similarityScanning?: boolean
 }
 
 const FILTER_OPTIONS: Array<{ key: MatrixEntityKind | null; label: string }> = [
@@ -63,8 +63,8 @@ export function MatrixToolbar({
   onRedo,
   activeFilter,
   onFilterChange,
-  onDeduplicateScan,
-  dedupScanning = false
+  onSimilarityScan,
+  similarityScanning = false,
 }: MatrixToolbarProps): ReactElement {
   const zoomPct = Math.round((cellWidth / 36) * 100)
 
@@ -164,19 +164,19 @@ export function MatrixToolbar({
         </span>
       </Button>
 
-      {/* 实体去重（整理功能） */}
-      {onDeduplicateScan && (
+      {/* LLM 相似度扫描（AI 整理）：语义相似智能合并 */}
+      {onSimilarityScan && (
         <Button
           size="sm"
           variant="ghost"
-          onClick={onDeduplicateScan}
-          disabled={dedupScanning}
-          title="扫描并合并势力、地点、伏笔、冲突、角色中的重复条目"
+          onClick={onSimilarityScan}
+          disabled={similarityScanning}
+          title="LLM 分析语义相似的实体并智能合并"
           className="h-7"
         >
           <Wand2 className="size-3.5" />
           <span className="hidden sm:inline">
-            {dedupScanning ? '整理中…' : '整理重复'}
+            {similarityScanning ? 'AI 整理中…' : 'AI 整理'}
           </span>
         </Button>
       )}

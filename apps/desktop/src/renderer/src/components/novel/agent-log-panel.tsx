@@ -73,6 +73,20 @@ function formatDuration(ms: number): string {
   return `${m}m${s}s`
 }
 
+/** 格式化 token 数：>1000 显示为 k，>1_000_000 显示为 M */
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`
+  return String(tokens)
+}
+
+/** 计算单条日志的缓存命中率：cacheRead / (cacheRead + input) */
+function cacheHitRate(log: NovelAgentLogSummary): number | null {
+  const promptTokens = log.cacheReadTokens + log.inputTokens
+  if (promptTokens === 0) return null // 无 usage 数据
+  return (log.cacheReadTokens / promptTokens) * 100
+}
+
 // ── 详情展开行 ──
 
 interface LogDetailProps {
@@ -161,6 +175,49 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
           <span className="text-destructive">错误：{log.error.slice(0, 100)}</span>
         )}
       </div>
+
+      {/* LLM usage 诊断：input/output/cache read/cache write tokens */}
+      {(log.inputTokens > 0 || log.cacheReadTokens > 0 || log.cacheWriteTokens > 0) && (
+        <div className="rounded-md bg-surface-2 border border-border p-2 space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium text-text">LLM Usage 诊断</span>
+            {log.llmProvider && (
+              <span className="text-[10px] text-muted-foreground tabular-nums">
+                {log.llmProvider}/{log.llmModel}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 flex-wrap text-[10px] tabular-nums">
+            <span className="text-muted-foreground">
+              input <span className="text-text font-medium">{formatTokens(log.inputTokens)}</span>
+            </span>
+            <span className="text-muted-foreground">
+              output <span className="text-text font-medium">{formatTokens(log.outputTokens)}</span>
+            </span>
+            <span className="text-emerald-600 dark:text-emerald-400">
+              cache read <span className="font-medium">{formatTokens(log.cacheReadTokens)}</span>
+            </span>
+            <span className="text-blue-600 dark:text-blue-400">
+              cache write <span className="font-medium">{formatTokens(log.cacheWriteTokens)}</span>
+            </span>
+            {(() => {
+              const promptTokens = log.cacheReadTokens + log.inputTokens
+              if (promptTokens === 0) return null
+              const rate = (log.cacheReadTokens / promptTokens) * 100
+              return (
+                <span className={cn(
+                  'font-medium px-1 rounded',
+                  rate >= 50 ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10'
+                    : rate >= 20 ? 'text-amber-600 dark:text-amber-400 bg-amber-500/10'
+                      : 'text-destructive bg-destructive/10',
+                )}>
+                  命中率 {rate.toFixed(1)}%
+                </span>
+              )
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* 工具列表 */}
       {log.toolNames.length > 0 && (
@@ -295,7 +352,29 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
     const errors = logs.filter((l) => l.status === 'error').length
     const totalDuration = logs.reduce((sum, l) => sum + l.durationMs, 0)
     const totalResult = logs.reduce((sum, l) => sum + l.resultLength, 0)
-    return { total, errors, totalDuration, totalResult }
+    // 缓存命中率：cacheReadTokens / (cacheReadTokens + inputTokens)
+    // 只统计有 usage 数据的记录（inputTokens > 0 或 cacheReadTokens > 0）
+    const withUsage = logs.filter((l) => l.inputTokens > 0 || l.cacheReadTokens > 0)
+    const totalInput = withUsage.reduce((sum, l) => sum + l.inputTokens, 0)
+    const totalCacheRead = withUsage.reduce((sum, l) => sum + l.cacheReadTokens, 0)
+    const totalCacheWrite = withUsage.reduce((sum, l) => sum + l.cacheWriteTokens, 0)
+    const totalOutput = withUsage.reduce((sum, l) => sum + l.outputTokens, 0)
+    const totalPromptTokens = totalInput + totalCacheRead
+    const cacheHitRate = totalPromptTokens > 0 ? (totalCacheRead / totalPromptTokens) * 100 : 0
+    const missCount = withUsage.filter((l) => l.cacheReadTokens === 0).length
+    return {
+      total,
+      errors,
+      totalDuration,
+      totalResult,
+      totalInput,
+      totalCacheRead,
+      totalCacheWrite,
+      totalOutput,
+      cacheHitRate,
+      missCount,
+      withUsageCount: withUsage.length,
+    }
   }, [logs])
 
   if (!currentProjectId) {
@@ -366,10 +445,33 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
 
       {/* 汇总信息 */}
       {logs.length > 0 && (
-        <div className="flex items-center gap-3 px-3 py-1 text-[10px] text-muted-foreground border-b border-border bg-background/30 tabular-nums">
-          <span>总耗时 {formatDuration(stats.totalDuration)}</span>
-          <span>总输出 {stats.totalResult} 字符</span>
-          <span>平均 {logs.length > 0 ? formatDuration(Math.round(stats.totalDuration / logs.length)) : '-'}</span>
+        <div className="px-3 py-1.5 text-[10px] text-muted-foreground border-b border-border bg-background/30 tabular-nums space-y-1">
+          <div className="flex items-center gap-3">
+            <span>总耗时 {formatDuration(stats.totalDuration)}</span>
+            <span>总输出 {stats.totalResult} 字符</span>
+            <span>平均 {logs.length > 0 ? formatDuration(Math.round(stats.totalDuration / logs.length)) : '-'}</span>
+          </div>
+          {stats.withUsageCount > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-muted-foreground/80">缓存诊断</span>
+              <span className={cn(
+                'font-medium',
+                stats.cacheHitRate >= 50 ? 'text-emerald-600 dark:text-emerald-400'
+                  : stats.cacheHitRate >= 20 ? 'text-amber-600 dark:text-amber-400'
+                    : 'text-destructive',
+              )}>
+                命中率 {stats.cacheHitRate.toFixed(1)}%
+              </span>
+              <span className="text-muted-foreground/70">
+                ({formatTokens(stats.totalCacheRead)} / {formatTokens(stats.totalInput + stats.totalCacheRead)})
+              </span>
+              {stats.missCount > 0 && (
+                <span className="text-destructive/80">miss {stats.missCount} 次</span>
+              )}
+              <span className="text-muted-foreground/70">写入 {formatTokens(stats.totalCacheWrite)}</span>
+              <span className="text-muted-foreground/70">输出 {formatTokens(stats.totalOutput)}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -398,6 +500,7 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
             const statusStyle = STATUS_STYLE[log.status] ?? STATUS_STYLE.success
             const StatusIcon = statusStyle.icon
             const isExpanded = expandedId === log.id
+            const hitRate = cacheHitRate(log)
             return (
               <div key={log.id} className="bg-surface-1">
                 <button
@@ -422,6 +525,21 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
                   <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
                     {log.resultLength} 字
                   </span>
+                  {hitRate !== null && (
+                    <span
+                      className={cn(
+                        'text-[10px] shrink-0 tabular-nums font-medium px-1 rounded',
+                        hitRate >= 50
+                          ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10'
+                          : hitRate >= 20
+                            ? 'text-amber-600 dark:text-amber-400 bg-amber-500/10'
+                            : 'text-destructive bg-destructive/10',
+                      )}
+                      title={`input ${formatTokens(log.inputTokens)} / cache read ${formatTokens(log.cacheReadTokens)} / cache write ${formatTokens(log.cacheWriteTokens)}${log.llmProvider ? ` / ${log.llmProvider}/${log.llmModel}` : ''}`}
+                    >
+                      {hitRate === 0 ? 'cache miss' : `缓存 ${hitRate.toFixed(0)}%`}
+                    </span>
+                  )}
                   {log.toolNames.length > 0 && (
                     <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
                       {log.toolNames.length} 工具

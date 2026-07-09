@@ -96,8 +96,6 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   const locations = useNovelStore((s) => s.locations)
   const worldElements = useNovelStore((s) => s.worldElements)
   const infoLayers = useNovelStore((s) => s.infoLayers)
-  const upsertInfoLayer = useNovelStore((s) => s.upsertInfoLayer)
-  const removeInfoLayer = useNovelStore((s) => s.removeInfoLayer)
   const selectNode = useNovelStore((s) => s.selectNode)
   const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
 

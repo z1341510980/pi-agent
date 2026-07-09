@@ -261,13 +261,21 @@ export interface PluginSessionOptions {
   /**
    * 前缀用户消息（SEMI 层，跨 Agent 稳定的章节上下文）。
    *
-   * 若提供，会在 session 创建后、prompt() 调用前，作为一条独立 user 消息
+   * 若提供，会在 session 创建后、prompt() 调用前，作为独立 user 消息
    * 注入到对话历史首部。这样 LLM 收到的对话为：
-   *   system → prefixUserMessage → userMessage
+   *   system → prefixUserMessage[0] → prefixUserMessage[1] → ... → userMessage
+   *
+   * 支持两种形式：
+   * - **string**：单条前缀消息，整条打一个 cache_control breakpoint
+   * - **string[]**：多条前缀消息，每条独立打 cache_control breakpoint。
+   *   用于"共享前缀 + Agent 专属后缀"分离：shared 跨 Agent 完全相同，
+   *   suffix 各 Agent 不同。这样 shared 部分能跨 Agent 命中 prompt cache，
+   *   suffix 部分 miss 但内容少。
+   *
    * prefixUserMessage 前缀稳定，可被 prompt cache 命中；
    * userMessage 为 DYNAMIC 层（每次任务不同）。
    */
-  prefixUserMessage?: string
+  prefixUserMessage?: string | string[]
   /** 首条用户消息（章节上下文/生成指令） */
   userMessage: string
   /** 自定义工具（可选，默认注入插件工具） */

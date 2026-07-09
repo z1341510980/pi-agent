@@ -208,7 +208,7 @@ export function ChatWorkspace({
   // 读取全局默认温度（从 localStorage，由设置页 agent-config 配置）
   const globalTemperature = useMemo(() => {
     try {
-      const saved = window.localStorage.getItem('pi-agent.agent-config')
+      const saved = window.localStorage.getItem('wenlang-agent.agent-config')
       if (saved) {
         const parsed = JSON.parse(saved) as { temperature?: number }
         if (typeof parsed.temperature === 'number') return parsed.temperature

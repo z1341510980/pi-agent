@@ -73,9 +73,9 @@ export interface MatrixWorkspaceProps {
   creationChapterNumber?: number
   onRegenerateChapter?: (chapterNumber: number) => void
   onStartCreationAt?: (chapterNumber: number) => void
-  /** 实体去重（整理功能）扫描 */
-  onDeduplicateScan?: () => void
-  dedupScanning?: boolean
+  /** LLM 相似度扫描：语义相似智能合并 */
+  onSimilarityScan?: () => void
+  similarityScanning?: boolean
 }
 
 const DEFAULT_CELL_WIDTH = 36
@@ -88,8 +88,8 @@ export function MatrixWorkspace({
   creationChapterNumber,
   onRegenerateChapter,
   onStartCreationAt,
-  onDeduplicateScan,
-  dedupScanning = false,
+  onSimilarityScan,
+  similarityScanning = false,
 }: MatrixWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
@@ -1055,8 +1055,8 @@ export function MatrixWorkspace({
         onRedo={redo}
         activeFilter={activeFilter}
         onFilterChange={handleFilterChange}
-        onDeduplicateScan={onDeduplicateScan}
-        dedupScanning={dedupScanning}
+        onSimilarityScan={onSimilarityScan}
+        similarityScanning={similarityScanning}
       />
 
       <MatrixLegend />

@@ -49,10 +49,10 @@ async function main() {
     type: 'plot_advancement',
     priority: 'high',
   })
-  console.log('章节已创建:', chapter.chapterId)
+  console.log('章节已创建:', chapter.id)
 
   // 设置章纲
-  store.updateChapter(chapter.chapterId, {
+  store.updateChapter(chapter.id, {
     outline: [
       '# 第1章 荒野初遇',
       '',

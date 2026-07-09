@@ -1,10 +1,10 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type PiAgentSession = any
-type PiSessionFactory = (threadId: string) => Promise<PiAgentSession>
+type WenlangAgentSession = any
+type PiSessionFactory = (threadId: string) => Promise<WenlangAgentSession>
 
 export interface PiThreadSession {
   threadId: string
-  session: PiAgentSession
+  session: WenlangAgentSession
   createdAt: number
   lastAccessedAt: number
   lastRunId?: string

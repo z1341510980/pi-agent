@@ -533,6 +533,8 @@ export interface CreateChapterInput {
     targetEntity?: string | null
     priority?: 'high' | 'medium' | 'low'
   }
+  // 可选卷归属：传入则新建章节直接挂在该卷下，避免章节游离在所有卷之外
+  volumeId?: string | null
 }
 
 export interface UpdateChapterInput {
@@ -845,27 +847,6 @@ export interface CreateMarkerInput {
 }
 
 export type UpdateMarkerInput = Partial<CreateMarkerInput>
-
-// ── 实体去重（整理功能）──
-
-export type DeduplicateEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location'
-
-export interface DeduplicateGroup {
-  kind: DeduplicateEntityKind
-  /** 用于判重的字段值（character/faction/location 为 name，conflict/foreshadow 为 description） */
-  key: string
-  /** 保留的实体 ID（每组保留 createdAt 最早的） */
-  keptId: string
-  /** 保留实体的显示名称 */
-  keptName: string
-  /** 待删除的实体列表 */
-  removed: Array<{ id: string; name: string; createdAt: number }>
-}
-
-export interface DeduplicateReport {
-  groups: DeduplicateGroup[]
-  totalRemoved: number
-}
 
 // ── AI 角色生成 ──
 
@@ -1509,23 +1490,18 @@ export function submitCheckpointDecision(
   })
 }
 
-// ── AI 编排生成（模式2：按章纲 AI 编排实体 + 衔接 create-flow 生成正文） ──
+// ── AI 编排（模式2：按章纲 AI 编排实体到矩阵，不生成正文） ──
 
 /**
- * AI 编排生成（SSE 流式）
+ * AI 编排（SSE 流式）
  *
  * 后端端点 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/ai-arrange
- * 同一 SSE 流内依次推送：
- *   阶段1（AI 编排）:
- *     - { type: 'progress', data: { type: 'arrange_start' | 'arrange_progress' | 'arrange_done', ... } }
- *   阶段2（create-flow 衔接）:
- *     - { type: 'progress',  data: CreationFlowEvent }   阶段变更/Agent 事件
- *     - { type: 'checkpoint', data: CheckpointData }      等待用户决策
- *     - { type: 'result',     data: CreationResult }      流程结束
- *     - { type: 'error',      error: string }             错误
+ * SSE 流内只推送 AI 编排阶段事件：
+ *   - { type: 'progress', data: { type: 'arrange_start' | 'arrange_progress' | 'arrange_done', ... } }
+ *   - { type: 'result', data: { status: 'completed', data: ArrangedEntities, content: '' } }
+ *   - { type: 'error', error: string }
  *
- * 与 createFlow 不同，本接口不需要前端传 arrangedEntities（由后端 AI 编排产出），
- * SSE 事件格式与 createFlow 兼容（progress/checkpoint/result/error），前端可复用同一 handleMessage。
+ * 与 createFlow 不同，本接口不生成正文；用户确认矩阵后再单独触发 create-flow。
  */
 export interface AiArrangeFlowOptions {
   onProgress?: (event: unknown) => void
@@ -1728,6 +1704,18 @@ export interface NovelAgentLogSummary {
   durationMs: number
   status: NovelAgentLogStatus
   error: string
+  /** LLM input tokens（不含 cache read） */
+  inputTokens: number
+  /** LLM output tokens */
+  outputTokens: number
+  /** prompt cache 命中读取的 tokens（0 = 完全 miss） */
+  cacheReadTokens: number
+  /** prompt cache 写入的 tokens（首次写入） */
+  cacheWriteTokens: number
+  /** LLM provider 名 */
+  llmProvider: string
+  /** LLM 模型名 */
+  llmModel: string
   createdAt: number
 }
 
@@ -1753,6 +1741,12 @@ export interface NovelAgentLog {
   status: NovelAgentLogStatus
   error: string
   sessionId: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  llmProvider: string
+  llmModel: string
   createdAt: number
 }
 
@@ -1816,18 +1810,51 @@ export function deleteMarker(id: string): Promise<{ id: string; deleted: boolean
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/markers/${id}`)
 }
 
-// ── 实体去重（整理功能）──
+// ── LLM 相似度扫描（SSE 流式扫描 + 独立 REST 合并）──
+
+export type SimilarityEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
+
+/** 一组相似实体（LLM 判定） */
+export interface SimilarityGroup {
+  kind: SimilarityEntityKind
+  /** LLM 给出的相似度理由 */
+  reason: string
+  /** 相似度分数 0-1（>0.6 才报告） */
+  similarity: number
+  /** LLM 建议保留的实体 ID */
+  keptId: string
+  /** 建议删除的实体列表 */
+  removed: Array<{ id: string; name: string }>
+  /** 字段级合并建议：保留实体的字段应该用哪个来源的值 */
+  fieldMerges?: Array<{
+    field: string
+    fromId: string
+    fromName: string
+    reason: string
+  }>
+}
+
+/** 相似度扫描报告 */
+export interface SimilarityScanReport {
+  groups: SimilarityGroup[]
+  totalCandidates: number
+}
+
+/** 相似度扫描进度事件（镜像后端 SimilarityScanProgressEvent） */
+export interface SimilarityScanProgressEvent {
+  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
+  message: string
+  data?: unknown
+}
 
 /**
- * 扫描并合并重复实体。
- *
- * @param dryRun true 只扫描返回报告，不实际合并；默认 false 实际执行
- *
- * 判重规则：
- * - character / faction / location：按 name 完全相同（trim + 小写归一化）
- * - conflict / foreshadow：按 description 完全相同（trim）
- * 合并策略：保留 createdAt 最早的，迁移关联数据后删除其余
+ * 执行相似实体合并（用户在弹框中勾选的组）
+ * @param projectId 项目 ID
+ * @param groups 用户勾选的相似组（未勾选的不传）
  */
-export function deduplicateEntities(projectId: string, dryRun = false): Promise<DeduplicateReport> {
-  return postApi<DeduplicateReport>(`${BASE}/projects/${projectId}/entities/deduplicate`, { dryRun })
+export function mergeSimilarityEntities(
+  projectId: string,
+  groups: SimilarityGroup[],
+): Promise<{ totalMerged: number }> {
+  return postApi<{ totalMerged: number }>(`${BASE}/projects/${projectId}/entities/merge-similarity`, { groups })
 }

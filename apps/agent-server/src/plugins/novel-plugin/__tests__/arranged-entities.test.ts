@@ -42,7 +42,7 @@ function createStoresMock(store: NovelStore) {
   }
 }
 
-describe('buildChapterContext 注入 arrangedEntities', () => {
+describe('buildChapterContextShared 注入 arrangedEntities', () => {
   let db: Database.Database
   let store: NovelStore
   let projectId: string
@@ -108,7 +108,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
     } as any
     // 构造函数签名：(promptManager, stores)
     const builder = new NovelPromptBuilder(promptManager, stores as any)
-    const ctx = builder.buildChapterContext(
+    const ctx = builder.buildChapterContextShared(
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
@@ -124,7 +124,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
     const stores = createStoresMock(store)
     const promptManager = { render: () => 'instruction', getTemplate: () => '' } as any
     const builder = new NovelPromptBuilder(promptManager, stores as any)
-    const ctx = builder.buildChapterContext(
+    const ctx = builder.buildChapterContextShared(
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
@@ -137,7 +137,7 @@ describe('buildChapterContext 注入 arrangedEntities', () => {
     const stores = createStoresMock(store)
     const promptManager = { render: () => 'instruction', getTemplate: () => '' } as any
     const builder = new NovelPromptBuilder(promptManager, stores as any)
-    const ctx = builder.buildChapterContext(
+    const ctx = builder.buildChapterContextShared(
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },

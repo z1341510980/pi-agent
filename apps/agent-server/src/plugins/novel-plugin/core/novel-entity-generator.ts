@@ -17,6 +17,12 @@ import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacterGenerator } from './novel-character-generator.js'
 import type { NovelStore } from './novel-store.js'
+import {
+  addLlmUsage,
+  extractLlmUsageFromMessage,
+  hasLlmUsage,
+  type LlmUsageSnapshot,
+} from './agent-run-utils.js'
 import type {
   ArrangedEntity,
   CharacterFunctionEntry,
@@ -30,6 +36,28 @@ import type {
   NovelLocation,
   NovelWorldElement,
 } from './types.js'
+
+type EntityPlan = {
+  characters: Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>
+  conflicts: { coreStyle: string }[]
+  foreshadows: { coreStyle: string }[]
+  factions: { coreStyle: string }[]
+  locations: { coreStyle: string }[]
+}
+
+type EntityPlanLogContext = {
+  systemPrompt: string
+  userMessage: string
+  rawResult: string
+  status: 'success' | 'error'
+  error: string
+  usage?: LlmUsageSnapshot
+}
+
+type EntityPlanResult = {
+  plan: EntityPlan
+  logContext: EntityPlanLogContext
+}
 
 // ── 生成结果类型 ──
 
@@ -226,7 +254,9 @@ export class NovelEntityGenerator {
     // 其余 5 类走通用流程
     onProgress?.({ phase: 'preparing', message: `正在构建${this.kindLabel(entityType)}生成提示词...` })
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
-    const userPrompt = this.buildUserPrompt(entityType, coreStyle)
+    // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
+    const userPrompt = this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
+      + '\n\n---\n\n' + this.buildUserPrompt(entityType, coreStyle)
 
     onProgress?.({ phase: 'generating', message: `AI 正在生成${this.kindLabel(entityType)}设定...` })
     const session = await this.context.createSession({
@@ -273,10 +303,9 @@ export class NovelEntityGenerator {
   }
 
   /**
-   * 按章纲批量生成实体并自动编排到本章列，返回编排结果供后续 create-flow 注入。
+   * 按章纲批量生成实体并自动编排到本章列。
    *
-   * 不在此方法内调 orchestrator（由路由层在同一 SSE 流内衔接 createChapterWithFlow）。
-   * 仅依赖 store（落库）+ generate（调 LLM 生成字段）。
+   * 不在此方法内调 orchestrator。编排只负责矩阵落库，正文生成由 create-flow 单独触发。
    */
   /**
    * 解析 LLM 返回的 coreStyle，判断是否指向已有实体。
@@ -309,19 +338,16 @@ export class NovelEntityGenerator {
     let logStatus: NovelAgentLogStatus = 'success'
     let logError = ''
     /** 规划阶段的 LLM 调用上下文（systemPrompt / userMessage / rawResult），由 planEntitiesFromOutline 返回 */
-    let planLogContext: {
-      systemPrompt: string
-      userMessage: string
-      rawResult: string
-      status: 'success' | 'error'
-      error: string
-    } | null = null
+    let planLogContext: EntityPlanLogContext | null = null
 
     const isReverse = source === 'content'
     onProgress?.({ phase: 'analyzing', message: isReverse ? '分析正文，反推本章实体...' : '分析章纲，规划所需实体...' })
 
     const { plan, logContext } = await this.planEntitiesFromOutline(projectId, chapterNumber, outline, onProgress, source)
     planLogContext = logContext
+    const planningErrorMessage = logContext.status === 'error'
+      ? (logContext.error || 'AI 实体规划失败')
+      : ''
     onProgress?.({
       phase: 'planned',
       message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点`,
@@ -342,6 +368,12 @@ export class NovelEntityGenerator {
     const foreshadowIds: string[] = []
     const factionIds: string[] = []
     const locationIds: string[] = []
+    const createdCharacterIds: string[] = []
+    const createdConflictIds: string[] = []
+    const createdForeshadowIds: string[] = []
+    const createdFactionIds: string[] = []
+    const createdLocationIds: string[] = []
+    const rollbackActions: Array<() => void> = []
     /** 本章角色功能位编排（与新角色一一对应） */
     const characterFunctions: CharacterFunctionEntry[] = []
     // 收集已生成实体的描述，供 arranged 阶段详情事件使用
@@ -352,6 +384,10 @@ export class NovelEntityGenerator {
     const generatedLocations: Array<{ name: string; type: string }> = []
 
     try {
+      if (planningErrorMessage) {
+        throw new Error(planningErrorMessage)
+      }
+
       // 预拉一次已有角色清单（按名查重），避免循环内重复查询
       // 注意：循环内 createCharacter 后需要把新角色也加入此 map，避免后续重复创建同名角色
       const existingCharacterByName = new Map<string, NovelCharacter>()
@@ -368,7 +404,7 @@ export class NovelEntityGenerator {
           const existing = existingCharacterByName.get(hint.name)
           if (existing) {
             onProgress?.({ phase: 'generating', message: `复用已有角色：${existing.name}` })
-            this.store.createCharacterHistory({
+            const history = this.store.createCharacterHistory({
               projectId,
               characterId: existing.id,
               chapterId: null,
@@ -378,6 +414,7 @@ export class NovelEntityGenerator {
               newValue: `AI再编排：本章出场（状态保留）`,
               reason: `AI再编排：复用已有角色「${existing.name}」，${outline.slice(0, 50)}`,
             })
+            rollbackActions.push(() => { this.store.deleteCharacterHistory(history.id, projectId) })
             this.context.logger.info(
               { projectId, chapterNumber, characterId: existing.id, name: existing.name },
               'generateAndArrange：复用已有角色，追加 history',
@@ -398,7 +435,7 @@ export class NovelEntityGenerator {
           onProgress?.({ phase: 'generating', message: `未找到已有角色「${hint.name}」，按新建处理...` })
           const gen = await this.generate(projectId, 'character', hint.name, onProgress)
           if (gen.type !== 'character') continue
-          await this.processNewCharacter(gen.data, projectId, chapterNumber, outline, existingCharacterByName, characterIds, characterFunctions, generatedCharacters, spec)
+          await this.processNewCharacter(gen.data, projectId, chapterNumber, outline, existingCharacterByName, characterIds, createdCharacterIds, characterFunctions, generatedCharacters, spec)
           continue
         }
 
@@ -411,7 +448,7 @@ export class NovelEntityGenerator {
         const dup = existingCharacterByName.get(gen.data.name)
         if (dup) {
           onProgress?.({ phase: 'generating', message: `检测到同名角色「${gen.data.name}」，合并为已有实体` })
-          this.store.createCharacterHistory({
+          const history = this.store.createCharacterHistory({
             projectId,
             characterId: dup.id,
             chapterId: null,
@@ -421,6 +458,7 @@ export class NovelEntityGenerator {
             newValue: gen.data.currentState ?? '本章再次出场',
             reason: `AI再编排：LLM 生成同名角色，按更新处理，${outline.slice(0, 50)}`,
           })
+          rollbackActions.push(() => { this.store.deleteCharacterHistory(history.id, projectId) })
           characterIds.push(dup.id)
           if (spec.plotFunction) {
             characterFunctions.push({ characterId: dup.id, function: spec.plotFunction, note: spec.functionNote })
@@ -434,7 +472,7 @@ export class NovelEntityGenerator {
           continue
         }
 
-        await this.processNewCharacter(gen.data, projectId, chapterNumber, outline, existingCharacterByName, characterIds, characterFunctions, generatedCharacters, spec)
+        await this.processNewCharacter(gen.data, projectId, chapterNumber, outline, existingCharacterByName, characterIds, createdCharacterIds, characterFunctions, generatedCharacters, spec)
       }
 
       // ── 冲突：按描述模糊匹配已有实体 ──
@@ -457,6 +495,7 @@ export class NovelEntityGenerator {
             const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
             if (!alreadyCovers) {
               const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+              rollbackActions.push(() => { this.store.updateConflict(existing.id, { chapterSpans: existing.chapterSpans }) })
               this.store.updateConflict(existing.id, { chapterSpans: mergedSpans })
             }
             conflictIds.push(existing.id)
@@ -484,6 +523,7 @@ export class NovelEntityGenerator {
           const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
           if (!alreadyCovers) {
             const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+            rollbackActions.push(() => { this.store.updateConflict(dup.id, { chapterSpans: dup.chapterSpans }) })
             this.store.updateConflict(dup.id, { chapterSpans: mergedSpans })
           }
           conflictIds.push(dup.id)
@@ -515,6 +555,7 @@ export class NovelEntityGenerator {
         })
         existingConflictByDesc.set(created.description.slice(0, 40), created)
         conflictIds.push(created.id)
+        createdConflictIds.push(created.id)
         generatedConflicts.push({
           description: created.description,
           intensity: created.intensity,
@@ -550,6 +591,13 @@ export class NovelEntityGenerator {
             if (!alreadyCovers) {
               patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
             }
+            rollbackActions.push(() => {
+              this.store.updateForeshadow(existing.id, {
+                firstChapter: existing.firstChapter,
+                lastChapter: existing.lastChapter,
+                chapterSpans: existing.chapterSpans,
+              })
+            })
             this.store.updateForeshadow(existing.id, patch)
             // 同步内存 map，避免后续同名合并分支拿到旧数据
             existingForeshadowByDesc.set(existing.description.slice(0, 40), { ...existing, ...patch })
@@ -576,6 +624,13 @@ export class NovelEntityGenerator {
           if (!alreadyCovers) {
             patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
           }
+          rollbackActions.push(() => {
+            this.store.updateForeshadow(dup.id, {
+              firstChapter: dup.firstChapter,
+              lastChapter: dup.lastChapter,
+              chapterSpans: dup.chapterSpans,
+            })
+          })
           this.store.updateForeshadow(dup.id, patch)
           existingForeshadowByDesc.set(dupKey, { ...dup, ...patch })
           foreshadowIds.push(dup.id)
@@ -602,6 +657,7 @@ export class NovelEntityGenerator {
         })
         existingForeshadowByDesc.set(created.description.slice(0, 40), created)
         foreshadowIds.push(created.id)
+        createdForeshadowIds.push(created.id)
         generatedForeshadows.push({ description: created.description, category: created.category })
       }
 
@@ -622,6 +678,7 @@ export class NovelEntityGenerator {
             const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
             if (!alreadyCovers) {
               const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+              rollbackActions.push(() => { this.store.updateFaction(existing.id, { chapterSpans: existing.chapterSpans }) })
               this.store.updateFaction(existing.id, { chapterSpans: mergedSpans })
             }
             factionIds.push(existing.id)
@@ -640,6 +697,7 @@ export class NovelEntityGenerator {
           const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
           if (!alreadyCovers) {
             const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+            rollbackActions.push(() => { this.store.updateFaction(dup.id, { chapterSpans: dup.chapterSpans }) })
             this.store.updateFaction(dup.id, { chapterSpans: mergedSpans })
           }
           factionIds.push(dup.id)
@@ -663,6 +721,7 @@ export class NovelEntityGenerator {
         })
         existingFactionByName.set(created.name, created)
         factionIds.push(created.id)
+        createdFactionIds.push(created.id)
         generatedFactions.push({ name: created.name, type: created.type })
       }
 
@@ -680,8 +739,21 @@ export class NovelEntityGenerator {
             onProgress?.({ phase: 'generating', message: `复用已有地点：${existing.name}` })
             // 追加本章到 appearChapters（如尚未包含）
             const appears = existing.appearChapters ?? []
+            const patch: Partial<NovelLocation> = {}
             if (!appears.includes(chapterNumber)) {
-              this.store.updateLocation(existing.id, { appearChapters: [...appears, chapterNumber] })
+              patch.appearChapters = [...appears, chapterNumber]
+            }
+            if (existing.firstChapter == null) {
+              patch.firstChapter = chapterNumber
+            }
+            if (Object.keys(patch).length > 0) {
+              rollbackActions.push(() => {
+                this.store.updateLocation(existing.id, {
+                  firstChapter: existing.firstChapter,
+                  appearChapters: existing.appearChapters,
+                })
+              })
+              this.store.updateLocation(existing.id, patch)
             }
             locationIds.push(existing.id)
             generatedLocations.push({ name: existing.name, type: existing.type })
@@ -696,8 +768,21 @@ export class NovelEntityGenerator {
         if (dup) {
           onProgress?.({ phase: 'generating', message: `检测到同名地点「${gen.data.name}」，合并为已有实体` })
           const appears = dup.appearChapters ?? []
+          const patch: Partial<NovelLocation> = {}
           if (!appears.includes(chapterNumber)) {
-            this.store.updateLocation(dup.id, { appearChapters: [...appears, chapterNumber] })
+            patch.appearChapters = [...appears, chapterNumber]
+          }
+          if (dup.firstChapter == null) {
+            patch.firstChapter = chapterNumber
+          }
+          if (Object.keys(patch).length > 0) {
+            rollbackActions.push(() => {
+              this.store.updateLocation(dup.id, {
+                firstChapter: dup.firstChapter,
+                appearChapters: dup.appearChapters,
+              })
+            })
+            this.store.updateLocation(dup.id, patch)
           }
           locationIds.push(dup.id)
           generatedLocations.push({ name: dup.name, type: dup.type })
@@ -718,52 +803,59 @@ export class NovelEntityGenerator {
         })
         existingLocationByName.set(created.name, created)
         locationIds.push(created.id)
+        createdLocationIds.push(created.id)
         generatedLocations.push({ name: created.name, type: created.type })
       }
     } catch (err) {
       // 标记日志状态为失败，供 finally 块写入日志使用
       logStatus = 'error'
       logError = err instanceof Error ? err.message : String(err)
-      // 反向顺序 best-effort 清理已落库实体，避免半编排脏数据污染后续 create-flow
-      for (const id of locationIds) {
+      // 反向顺序 best-effort 清理本次写入，避免半编排脏数据污染矩阵。
+      // 注意：只删除本次新建实体，复用实体只撤销本次追加的 history/span/appearChapters。
+      for (const rollback of rollbackActions.reverse()) {
+        try {
+          rollback()
+        } catch { /* best-effort 清理，忽略单个撤销失败 */ }
+      }
+      for (const id of createdLocationIds) {
         try {
           this.store.deleteLocation(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
-      for (const id of factionIds) {
+      for (const id of createdFactionIds) {
         try {
           this.store.deleteFaction(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
-      for (const id of foreshadowIds) {
+      for (const id of createdForeshadowIds) {
         try {
           this.store.deleteForeshadow(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
-      for (const id of conflictIds) {
+      for (const id of createdConflictIds) {
         try {
           this.store.deleteConflict(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
-      for (const id of characterIds) {
+      for (const id of createdCharacterIds) {
         try {
           this.store.deleteCharacterHistoryByCharacter(id)
           this.store.deleteCharacter(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
-      const rolledBack = characterIds.length + conflictIds.length + foreshadowIds.length + factionIds.length + locationIds.length
+      const rolledBack = createdCharacterIds.length + createdConflictIds.length + createdForeshadowIds.length + createdFactionIds.length + createdLocationIds.length
       this.context.logger.error(
         {
           err,
           created: {
-            characters: characterIds.length,
-            conflicts: conflictIds.length,
-            foreshadows: foreshadowIds.length,
-            factions: factionIds.length,
-            locations: locationIds.length,
+            characters: createdCharacterIds.length,
+            conflicts: createdConflictIds.length,
+            foreshadows: createdForeshadowIds.length,
+            factions: createdFactionIds.length,
+            locations: createdLocationIds.length,
           },
         },
-        `generateAndArrange 失败，已回滚 ${rolledBack} 个实体`,
+        `generateAndArrange 失败，已回滚 ${rolledBack} 个新建实体并撤销复用实体变更`,
       )
       throw err
     } finally {
@@ -799,6 +891,11 @@ export class NovelEntityGenerator {
             characterFunctionCount: characterFunctions.length,
           },
         }, null, 2)
+        const usageFromLedger = this.readUsageFromLedgerWindow(startTime, Date.now())
+        const usageForLog = usageFromLedger ?? (planLogContext?.usage && hasLlmUsage(planLogContext.usage)
+          ? planLogContext.usage
+          : undefined)
+
         this.store.insertAgentLog({
           projectId,
           chapterNumber,
@@ -821,6 +918,12 @@ export class NovelEntityGenerator {
           status: logStatus,
           error: logError,
           sessionId: '',
+          inputTokens: usageForLog?.inputTokens ?? 0,
+          outputTokens: usageForLog?.outputTokens ?? 0,
+          cacheReadTokens: usageForLog?.cacheReadTokens ?? 0,
+          cacheWriteTokens: usageForLog?.cacheWriteTokens ?? 0,
+          llmProvider: usageForLog?.llmProvider ?? '',
+          llmModel: usageForLog?.llmModel ?? '',
         })
       } catch (logErr) {
         // 日志写入失败不影响主流程
@@ -833,7 +936,7 @@ export class NovelEntityGenerator {
 
     onProgress?.({
       phase: 'arranged',
-      message: '编排完成，准备生成正文',
+      message: '编排完成，实体已落入矩阵',
       // 携带 detail 用于前端展示编排完成清单气泡
       detail: {
         kind: 'arrange_result',
@@ -871,6 +974,7 @@ export class NovelEntityGenerator {
     outline: string,
     existingByName: Map<string, NovelCharacter>,
     characterIds: string[],
+    createdCharacterIds: string[],
     characterFunctions: CharacterFunctionEntry[],
     generatedCharacters: Array<{ name: string; description: string; plotFunction?: PlotFunction; functionNote?: string }>,
     spec: { coreStyle: string; plotFunction?: PlotFunction; functionNote?: string },
@@ -897,6 +1001,7 @@ export class NovelEntityGenerator {
     })
     existingByName.set(created.name, created)  // 加入 map 避免后续重复创建同名角色
     characterIds.push(created.id)
+    createdCharacterIds.push(created.id)
     if (spec.plotFunction) {
       characterFunctions.push({ characterId: created.id, function: spec.plotFunction, note: spec.functionNote })
     }
@@ -930,23 +1035,7 @@ export class NovelEntityGenerator {
     outline: string,
     onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
     source: 'outline' | 'content' = 'outline',
-  ): Promise<{
-    plan: {
-      characters: Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>
-      conflicts: { coreStyle: string }[]
-      foreshadows: { coreStyle: string }[]
-      factions: { coreStyle: string }[]
-      locations: { coreStyle: string }[]
-    }
-    // 附带 LLM 调用上下文，供 generateAndArrange 写入 agent 日志使用
-    logContext: {
-      systemPrompt: string
-      userMessage: string
-      rawResult: string
-      status: 'success' | 'error'
-      error: string
-    }
-  }> {
+  ): Promise<EntityPlanResult> {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
 
     // ── 收集已有实体清单，避免重复生成 ──
@@ -1051,10 +1140,10 @@ export class NovelEntityGenerator {
       '- advance_relationship: 推进感情线（让某段关系发生质变）',
       '- reveal_world_rule: 暴露世界规则（通过他展示世界运作方式）',
       'functionNote 用一句话说明该功能位在本章具体如何执行（如"通过透露边关军情让主角判断转变"）。',
-      '不允许两个角色承担相同功能位——如果出现重复，合并或换一个功能位。',
+      '不允许两个角色承担相同功能位。如果出现重复，合并或换一个功能位。',
       '',
       '【输出约束（必须遵守）】',
-      '1. 所有输出的文本字段（coreStyle / functionNote / description 等）绝不使用破折号"——"，所有转折用自然语句完成。',
+      '1. 所有输出的文本字段（coreStyle / functionNote / description 等）绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       '2. 复用已有实体时，如原描述含破折号，规划时也不要在新字段中引入破折号。',
       '',
       '请基于上方' + (isReverse ? '正文反推实体' : '三层大纲规划实体') + '。',
@@ -1074,11 +1163,21 @@ export class NovelEntityGenerator {
 
     const session = await this.context.createSession({
       systemPrompt,
-      userMessage: userPrompt,
+      // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
+      userMessage: this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
+        + '\n\n---\n\n' + userPrompt,
       responseFormat: 'json',
       // 规划阶段可能生成大量 JSON（多个实体），LLM 耗时较长；
       // 默认 120s 不足以完成复杂章纲的规划，提到 300s 与 Memory Agent 一致
       timeoutMs: 300_000,
+    })
+    let capturedUsage: LlmUsageSnapshot | undefined
+    const unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
+      if (event.type !== 'message_end') return
+      const msg = (event as { message?: Record<string, unknown> }).message
+      if (!msg || msg.role !== 'assistant') return
+      const usage = extractLlmUsageFromMessage(msg)
+      if (usage) capturedUsage = addLlmUsage(capturedUsage, usage)
     })
 
     try {
@@ -1115,6 +1214,7 @@ export class NovelEntityGenerator {
             rawResult: result,
             status: 'error',
             error: `LLM 调用失败：${errMsg}`,
+            usage: capturedUsage,
           },
         }
       }
@@ -1138,6 +1238,7 @@ export class NovelEntityGenerator {
             rawResult: text,
             status: 'error',
             error: 'JSON 解析失败（可能被截断），使用空 plan 兜底',
+            usage: capturedUsage,
           },
         }
       }
@@ -1190,10 +1291,54 @@ export class NovelEntityGenerator {
           rawResult: text,
           status: 'success',
           error: '',
+          usage: capturedUsage,
         },
       }
     } finally {
+      unsubscribeUsage()
       session.dispose()
+    }
+  }
+
+  private readUsageFromLedgerWindow(startTime: number, endTime: number): LlmUsageSnapshot | undefined {
+    try {
+      const rows = this.context.db.prepare(`
+        SELECT provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, timestamp
+        FROM usage_records
+        WHERE timestamp >= ? AND timestamp <= ?
+        ORDER BY timestamp ASC
+      `).all(startTime - 500, endTime + 500) as Array<{
+        provider: string
+        model: string
+        input_tokens: number
+        output_tokens: number
+        cache_read_tokens: number | null
+        cache_write_tokens: number | null
+        timestamp: number
+      }>
+      if (rows.length === 0) return undefined
+
+      const latest = rows[rows.length - 1]
+      const usage = rows.reduce<LlmUsageSnapshot>((sum, row) => ({
+        inputTokens: sum.inputTokens + (row.input_tokens ?? 0),
+        outputTokens: sum.outputTokens + (row.output_tokens ?? 0),
+        cacheReadTokens: sum.cacheReadTokens + (row.cache_read_tokens ?? 0),
+        cacheWriteTokens: sum.cacheWriteTokens + (row.cache_write_tokens ?? 0),
+        llmProvider: row.provider || sum.llmProvider,
+        llmModel: row.model || sum.llmModel,
+      }), {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        llmProvider: latest.provider ?? '',
+        llmModel: latest.model ?? '',
+      })
+
+      return hasLlmUsage(usage) ? usage : undefined
+    } catch (err) {
+      this.context.logger.debug({ err }, '编排 AgentLog usage 回填失败')
+      return undefined
     }
   }
 
@@ -1247,7 +1392,7 @@ export class NovelEntityGenerator {
         '    - reversal: 反复（resolved 重新 emerging，旧仇重燃）',
         '',
         '【输出约束（必须遵守）】',
-        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
+        '所有输出的文本字段绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       ].join('\n'),
       foreshadow: () => [
         '请根据以下核心描述，生成一个完整的伏笔设定。',
@@ -1281,7 +1426,7 @@ export class NovelEntityGenerator {
         '    - progressive: 递进回收（多次点破，逐步释放）',
         '',
         '【输出约束（必须遵守）】',
-        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
+        '所有输出的文本字段绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       ].join('\n'),
       faction: () => [
         '请根据以下核心描述，生成一个完整的势力设定。',
@@ -1302,7 +1447,7 @@ export class NovelEntityGenerator {
         '- status: 势力状态，从以下枚举中选择一个：active/declined/destroyed/hidden',
         '',
         '【输出约束（必须遵守）】',
-        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
+        '所有输出的文本字段绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       ].join('\n'),
       location: () => [
         '请根据以下核心描述，生成一个完整的地点设定。',
@@ -1319,7 +1464,7 @@ export class NovelEntityGenerator {
         '- status: 地点状态，从以下枚举中选择一个：normal/destroyed/changed/hidden',
         '',
         '【输出约束（必须遵守）】',
-        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
+        '所有输出的文本字段绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       ].join('\n'),
       world_element: () => [
         '请根据以下核心描述，生成一个完整的世界要素设定。',
@@ -1335,7 +1480,7 @@ export class NovelEntityGenerator {
         '- attributes: 要素属性（对象，键值对形式，如 { "key": "value" }）',
         '',
         '【输出约束（必须遵守）】',
-        '所有输出的文本字段绝不使用破折号"——"，所有转折用自然语句完成。',
+        '所有输出的文本字段绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       ].join('\n'),
     }
     return builders[kind as Exclude<EntityKind, 'character'>]()

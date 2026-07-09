@@ -34,6 +34,7 @@ import { NovelOrchestrator } from './core/novel-orchestrator.js'
 import { NovelCharacterGenerator } from './core/novel-character-generator.js'
 import { NovelEntityGenerator } from './core/novel-entity-generator.js'
 import { NovelMemoryGenerator } from './core/novel-memory-generator.js'
+import { NovelSimilarityScanner } from './core/novel-similarity-scanner.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
 import { NovelAgentConfigStore } from './core/novel-agent-config-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
@@ -52,6 +53,8 @@ export interface NovelServices {
   orchestrator: NovelOrchestrator
   characterGenerator: NovelCharacterGenerator
   entityGenerator: NovelEntityGenerator
+  /** LLM 驱动的相似实体扫描器（语义相似去重，与 deduplicateEntities 互补） */
+  similarityScanner: NovelSimilarityScanner
   tools: ToolDefinition[]
   /** 小说角色温度配置存储 */
   agentConfigStore: NovelAgentConfigStore
@@ -128,8 +131,13 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //    依赖 NovelStore 用于 generateAndArrange 落库（角色/冲突/伏笔 + 角色历史）
   const entityGenerator = new NovelEntityGenerator(promptBuilder, promptManager, context, characterGenerator, store)
 
+  // 9.5 创建 NovelSimilarityScanner（LLM 驱动的相似实体扫描器）
+  //     与 store.deduplicateEntities 互补：deduplicateEntities 处理"完全相同"的重复，
+  //     similarityScanner 处理"语义相似但表述不同"的重复，支持字段级合并方案
+  const similarityScanner = new NovelSimilarityScanner(promptBuilder, promptManager, context, store)
+
   // 10. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, tools, agentConfigStore, teamManager, agentManager, confirmationManager }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, agentConfigStore, teamManager, agentManager, confirmationManager }
 }

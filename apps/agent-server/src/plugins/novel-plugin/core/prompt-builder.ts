@@ -268,16 +268,32 @@ export class NovelPromptBuilder {
     const entityArchive = this.formatEntityArchive(projectId)
     if (entityArchive) parts.push(entityArchive)
 
-    // ── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）──
-    // 放在最后，确保前面的共享部分（worldRules + styleGuide）
-    // 可以跨 Agent 缓存命中。Agent 身份变化只影响尾部，不影响前缀缓存。
-    const identityPrompt = this.promptManager.render('system-base', {
+    // ⚠️ 缓存关键：Agent 身份段（system-base.md + agent_type + agent_role）已从此处移除，
+    // 改为在 DYNAMIC 层 userMessage 开头注入（见 buildAgentIdentity）。
+    //
+    // 原设计把身份段放在 systemPrompt 末尾，假设"前面的共享部分可跨 Agent 缓存命中"。
+    // 但 provider 端的 cache_control breakpoint 打在 system 末尾，整个 system 是一个缓存块，
+    // 只要末尾的 agent_type 不同，整个 system 块就 cache miss——4 个 Agent 的 system
+    // 各不相同，跨 Agent 缓存全部失效。
+    //
+    // 移除身份段后，4 个 Agent 的 systemPrompt 完全相同（故事简介+大纲+卷纲+世界规则+
+    // 风格指南+实体档案），provider 端能跨 Agent 命中 system 缓存，大幅提升命中率。
+
+    return parts.join('\n\n---\n\n')
+  }
+
+  /**
+   * 构建 Agent 身份段（原 STATIC 层末尾的 system-base.md 渲染）。
+   *
+   * 已从 buildSystemPrompt 移到 DYNAMIC 层 userMessage 开头注入，
+   * 避免 agent_type 差异导致整个 system 缓存块失效。
+   * 调用方：NovelOrchestrator.runAgent 在拼接 inputText 时调用。
+   */
+  buildAgentIdentity(projectId: string, agentType: string): string {
+    return this.promptManager.render('system-base', {
       agent_type: agentType,
       agent_role: this.getAgentRoleDescription(agentType, projectId),
     }, projectId)
-    parts.push(identityPrompt)
-
-    return parts.join('\n\n---\n\n')
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -285,79 +301,87 @@ export class NovelPromptBuilder {
   // ═══════════════════════════════════════════════════════════════
 
   /**
-   * 构建章节上下文（作为首条用户消息）
+   * 构建章节上下文 - 共享前缀部分（SEMI 层 shared，跨 Agent 完全相同）
    *
-   * 此方法在章节生成开始时调用一次，生成的内容在整个章节生成过程中不变。
-   * LLM 提供商的 prompt cache 在单章内的后续 LLM 调用中能命中此前缀。
+   * 此部分包含所有 Agent 都需要的、跨 Agent 完全一致的章节上下文。
+   * 通过 prefixUserMessage 数组的第一条注入，打 cache_control breakpoint 后
+   * 能跨 Agent 命中 prompt cache（Director 写入 → Writer/Reviewer/Reviser/Memory 命中）。
+   *
+   * ⚠️ 缓存关键：此方法的输出必须对所有 Agent 完全一致（不依赖 agentType）。
+   * 任何 Agent 专属内容都应放入 buildChapterContextSuffix。
    *
    * 包含：
    * 1. 章节信息（卷/章号/叙事任务/约束）
-   * 2. 当前故事状态（角色动态状态/冲突/伏笔/线索）
-   * 3. 实体关联（画布连线，作为故事状态补充）
-   * 4. 信息差（谁知道什么）
-   * 5. 最近章节摘要
-   * 6. 创作指令
+   * 2. 创作约束
+   * 3. 本章已编排实体约束
+   * 4. 当前故事状态（角色/冲突/伏笔/线索/势力/地点，含编排实体去重）
+   * 5. 实体关联（画布连线）
+   * 6. 信息差
+   * 7. 最近章节摘要（覆盖最近 3 章）
+   * 8. 近期因果链
    */
-  buildChapterContext(
+  buildChapterContextShared(
     projectId: string,
     chapterNumber: number,
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
-    agentType?: string,
-    directorOutput?: string,
   ): string {
+    void constraints // constraints 已在 formatConstraints 中使用，此处 void 避免未使用警告
     const parts: string[] = []
+    const relevantEntityIds = this.collectRelevantEntityIds(arrangedEntities)
 
     // ── 章节信息 ──
-    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask, agentType))
+    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask))
 
     // ── 创作约束 ──
     parts.push(this.formatConstraints(constraints))
 
     // ── 本章已编排实体约束（手动编排 / AI 编排产出，注入 SEMI 层）──
-    if (arrangedEntities && (arrangedEntities.characterIds.length > 0 || arrangedEntities.conflictIds.length > 0 || arrangedEntities.foreshadowIds.length > 0 || arrangedEntities.factionIds.length > 0 || arrangedEntities.locationIds.length > 0)) {
+    const hasArranged = this.hasArrangedEntities(arrangedEntities)
+    if (hasArranged && arrangedEntities) {
       parts.push(this.formatArrangedEntities(projectId, arrangedEntities))
     }
 
-    // ── 当前故事状态（动态部分）──
-    // ⚠️ 跳过本章已编排的实体（角色/冲突/伏笔），避免与 formatArrangedEntities
-    // 和 formatConstraints 重复注入。这些实体的完整定义已在前面段落输出。
+    // ── 当前故事状态（所有 Agent 共享，含编排实体去重）──
+    // 历史问题：Writer+arranged 曾跳过 formatStoryState 以"节省 token"，但这破坏了
+    // 跨 Agent 缓存一致性（Writer 的 shared 与其他 Agent 不同 → 全部 miss）。
+    // 现在统一注入：formatStoryState 内部已对 arranged 实体去重，不与
+    // formatArrangedEntities 冗余；且这部分 token 走 cache read（廉价）。
     const state = this.getStoryState(projectId)
     parts.push(this.formatStoryState(state, arrangedEntities))
 
     // ── 实体关联（画布手动 + 自动连线，作为故事状态的补充）──
-    const edges = this.stores.listEdges(projectId)
+    const edges = this.filterRelevantEdges(this.stores.listEdges(projectId), relevantEntityIds)
     if (edges.length > 0) {
       const edgeSection = this.formatEdges(projectId, edges)
       if (edgeSection) parts.push(edgeSection)
     }
 
     // ── 信息差 ──
-    const infoLayers = this.stores.listInformationLayers(projectId)
+    const infoLayers = this.filterRelevantInfoLayers(this.stores.listInformationLayers(projectId), arrangedEntities)
     if (infoLayers.length > 0) {
       parts.push(this.formatInfoLayers(projectId, infoLayers))
     }
 
-    // ── 最近章节摘要 ──
-    const recentChapters = this.stores.listRecentChapters(projectId, 3)
-    if (recentChapters.length > 0) {
-      parts.push(this.formatRecentSummaries(recentChapters))
+    // ── 最近章节摘要（覆盖当前章前 3 章，让 Writer/Reviewer 理解前后文因果）──
+    // ⚠️ 必须按当前章 chapterNumber 为基准向前取，不能用 listRecentChapters：
+    // listRecentChapters 的 SQL 是 ORDER BY chapter_number DESC LIMIT 3，返回的是
+    // 全局章节号最大的 3 章，与"当前生成第几章"无关。当重新生成中间章节（如第7章）
+    // 而后续章节（第8、9章）已有内容时，listRecentChapters 会返回 [9,8,7]，过滤当前章
+    // 后变成 [8,9]——formatPreviousChapterEnding 会把第9章结尾当"上一章结尾"，
+    // formatSoundAnchor 会把第8、9章开头当"叙事声音锚点"，剧情全面错乱。
+    // 正确做法：按 chapterNumber 精确取前 3 章，排除当前章及之后所有章节。
+    const prevChapters: NovelChapter[] = []
+    for (let n = chapterNumber - 1; n >= 1 && prevChapters.length < 3; n--) {
+      const ch = this.stores.getChapter(projectId, n)
+      if (ch && ch.content && ch.content.trim().length > 0) {
+        prevChapters.push(ch)
+      }
     }
-
-    // ── 叙事声音锚点（Writer/Reviewer 注入，让 LLM 感受前文叙事腔调）──
-    if (agentType === 'writer' || agentType === 'reviewer') {
-      const soundAnchor = this.formatSoundAnchor(recentChapters)
-      if (soundAnchor) parts.push(soundAnchor)
-    }
-
-    // ── 宏观节奏分布（Director 注入，让规划能看到最近节奏曲线）──
-    if (agentType === 'director') {
-      const macroRhythm = this.formatMacroRhythm(projectId, chapterNumber)
-      if (macroRhythm) parts.push(macroRhythm)
-      // Reviewer 反馈回流（让 Director 知道之前哪些方面做得不好）
-      const reviewerFeedback = this.formatReviewerFeedback(projectId)
-      if (reviewerFeedback) parts.push(reviewerFeedback)
+    prevChapters.reverse() // 升序（旧→新），供 formatRecentSummaries/formatPreviousChapterEnding/formatSoundAnchor 使用
+    if (prevChapters.length > 0) {
+      parts.push(this.formatRecentSummaries(prevChapters))
     }
 
     // ── 近期因果链（最近章节的关键事件及其因果联系）──
@@ -368,16 +392,66 @@ export class NovelPromptBuilder {
       if (causalSummary) parts.push(causalSummary)
     }
 
+    // ── 上一章结尾 + 叙事声音锚点（向后看：本章开头承接此处钩子）──
+    // 从 suffix 移到 shared：Writer/Reviser/Reviewer 都需要这两段，跨 Agent 完全一致，
+    // 放 shared 层能让 director→writer→reviewer→reviser 之间多命中这部分缓存。
+    // Director 不需要，但多注入走 cache read 廉价（且 Director 是首个调用者会写入缓存）。
+    if (prevChapters.length > 0) {
+      const prevEnding = this.formatPreviousChapterEnding(prevChapters)
+      if (prevEnding) parts.push(prevEnding)
+      const soundAnchor = this.formatSoundAnchor(prevChapters)
+      if (soundAnchor) parts.push(soundAnchor)
+    }
+
+    // ── 下一章开头 + 前情提要（向前看：本章结尾必须过渡到此处场景）──
+    // 重新生成中间章节时，后续章节可能已有内容。若不注入下一章信息，Writer 生成的
+    // 本章结尾可能与已存在的下一章开头对不上，导致剧情断裂。注入下一章开头 + recap
+    // 让 Writer 知道本章结尾钩子要自然过渡到什么场景。
+    // 仅当下一章有实际内容时注入（正常顺序生成时下一章不存在，跳过此段）。
+    const nextChapter = this.stores.getChapter(projectId, chapterNumber + 1)
+    const nextAnchor = this.formatNextChapterAnchor(nextChapter)
+    if (nextAnchor) parts.push(nextAnchor)
+
+    return this.stripEmDash(parts.join('\n\n---\n\n'))
+  }
+
+  /**
+   * 构建章节上下文 - Agent 专属后缀部分（SEMI 层 suffix，各 Agent 不同）
+   *
+   * 此部分包含各 Agent 专属的上下文，跨 Agent 不同。通过 prefixUserMessage
+   * 数组的第二条注入，打 cache_control breakpoint 后仅同 Agent 重试命中。
+   *
+   * 各 Agent suffix 内容：
+   * - Director：宏观节奏分布 + Reviewer 反馈回流
+   * - Writer：创作指令（chapter-instruction）
+   * - Reviser：空（上一章结尾+叙事声音锚点已在 shared 层）
+   * - Reviewer：空（上一章结尾+叙事声音锚点已在 shared 层）
+   * - Memory：空（无专属后缀）
+   */
+  buildChapterContextSuffix(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
+    agentType?: string,
+  ): string {
+    void arrangedEntities
+    if (!agentType) return ''
+
+    const parts: string[] = []
+
+    // ── 宏观节奏分布 + Reviewer 反馈回流（Director 注入）──
+    if (agentType === 'director') {
+      const macroRhythm = this.formatMacroRhythm(projectId, chapterNumber)
+      if (macroRhythm) parts.push(macroRhythm)
+      const reviewerFeedback = this.formatReviewerFeedback(projectId)
+      if (reviewerFeedback) parts.push(reviewerFeedback)
+    }
+
     // ── 创作指令（仅 Writer 注入，其他 Agent 看到会越权写作）──
     // chapter-instruction 模板包含"直接输出章节正文"等 Writer 专属指令，
     // 对 Director/Reviewer/Memory 注入会导致它们越权创作正文。
-    //
-    // ⚠️ 缓存关键：narrative_task 占位符优先用 Director 的实时输出（directorOutput），
-    // 而上面的 formatChapterInfo 用的是数据库章纲（narrativeTask.description）。
-    // 这样 SEMI 层前缀（章节信息 + 约束 + 故事状态 + ...）跨 Agent 完全一致，
-    // 只有末尾的 chapter-instruction（仅 Writer）会因 directorOutput 变化，
-    // 不破坏前缀缓存匹配。Director 输出作为 SEMI 层末尾内容注入，符合
-    // "前缀稳定，尾部可变"的 prompt cache 最佳实践。
     if (agentType === 'writer') {
       const project = this.stores.getProject(projectId)
       const rhythm = constraints.rhythmConstraint?.rhythm
@@ -386,7 +460,7 @@ export class NovelPromptBuilder {
       const writingTheory = this.buildWritingTheory(narrativeTask.type, rhythm, constraints.conflictTargets.some(t => t.isClimax))
       const instruction = this.promptManager.render('chapter-instruction', {
         chapter_number: String(chapterNumber),
-        narrative_task: directorOutput ?? narrativeTask.description,
+        narrative_task: narrativeTask.description,
         task_type: narrativeTask.type,
         target_words: String(targetWords),
         writing_theory: writingTheory,
@@ -394,55 +468,8 @@ export class NovelPromptBuilder {
       parts.push(instruction)
     }
 
-    return parts.join('\n\n---\n\n')
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // 审稿上下文（Reviewer 专用 - 精简版 SEMI 层）
-  // ═══════════════════════════════════════════════════════════════
-
-  /**
-   * 构建审稿上下文（Reviewer 专用精简版）
-   *
-   * ⚠️ Token 优化：Reviewer 的任务是验收 Writer 输出是否符合约束，
-   * 不需要完整的故事状态、实体关联、信息差、最近摘要、因果链。
-   * 只需要：
-   * 1. 章节信息（章号 + 目标字数 - 用于字数检查）
-   * 2. 创作约束（验收标准来源 - 用于一致性检查）
-   * 3. 本章编排实体（角色一致性检查）
-   *
-   * Writer 全文通过 user_message 注入，不在此处重复。
-   *
-   * 预期收益：Reviewer 输入从 ~10000 字符降到 ~4000 字符，单章省 5K tokens。
-   */
-  buildReviewContext(
-    projectId: string,
-    chapterNumber: number,
-    narrativeTask: NarrativeTask,
-    constraints: ChapterConstraints,
-    arrangedEntities?: ArrangedEntity,
-  ): string {
-    const parts: string[] = []
-
-    // ── 章节信息（章号 + 目标字数，用于字数验收）──
-    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask))
-
-    // ── 创作约束（验收标准来源）──
-    parts.push(this.formatConstraints(constraints))
-
-    // ── 本章编排实体（角色一致性检查）──
-    if (arrangedEntities && (arrangedEntities.characterIds.length > 0 || arrangedEntities.conflictIds.length > 0 || arrangedEntities.foreshadowIds.length > 0 || arrangedEntities.factionIds.length > 0 || arrangedEntities.locationIds.length > 0)) {
-      parts.push(this.formatArrangedEntities(projectId, arrangedEntities))
-    }
-
-    // ── 叙事声音锚点（让 Reviewer 对比本章与前文腔调）──
-    const recentChapters = this.stores.listRecentChapters(projectId, 3)
-    if (recentChapters.length > 0) {
-      const soundAnchor = this.formatSoundAnchor(recentChapters)
-      if (soundAnchor) parts.push(soundAnchor)
-    }
-
-    return parts.join('\n\n---\n\n')
+    if (parts.length === 0) return ''
+    return this.stripEmDash(parts.join('\n\n---\n\n'))
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -989,6 +1016,58 @@ export class NovelPromptBuilder {
     return lines.join('\n')
   }
 
+  private hasArrangedEntities(arranged?: ArrangedEntity): boolean {
+    return !!arranged && (
+      arranged.characterIds.length > 0
+      || arranged.conflictIds.length > 0
+      || arranged.foreshadowIds.length > 0
+      || arranged.factionIds.length > 0
+      || arranged.locationIds.length > 0
+    )
+  }
+
+  private collectRelevantEntityIds(arranged?: ArrangedEntity): Set<string> {
+    const ids = new Set<string>()
+    if (!arranged) return ids
+    for (const id of arranged.characterIds) ids.add(id)
+    for (const id of arranged.conflictIds) ids.add(id)
+    for (const id of arranged.foreshadowIds) ids.add(id)
+    for (const id of arranged.factionIds) ids.add(id)
+    for (const id of arranged.locationIds) ids.add(id)
+    return ids
+  }
+
+  private filterRelevantEdges(edges: NovelEdge[], relevantEntityIds: Set<string>): NovelEdge[] {
+    if (edges.length === 0) return []
+    if (relevantEntityIds.size === 0) return edges.slice(0, 20)
+    return edges
+      .filter((e) => relevantEntityIds.has(e.sourceId) || relevantEntityIds.has(e.targetId))
+      .slice(0, 20)
+  }
+
+  private filterRelevantInfoLayers(
+    layers: NovelInformationLayer[],
+    arranged?: ArrangedEntity,
+  ): NovelInformationLayer[] {
+    if (layers.length === 0) return []
+    const relevantForeshadowIds = new Set(arranged?.foreshadowIds ?? [])
+    if (relevantForeshadowIds.size === 0) {
+      return layers
+        .filter((layer) => !layer.isRevealed)
+        .slice(0, 8)
+    }
+
+    const relevant = layers.filter((layer) => {
+      if (!layer.isRevealed) return true
+      const linked = this.parseIdListSafe(layer.linkedForeshadows)
+      return linked.some((id) => relevantForeshadowIds.has(id))
+    })
+    if (relevant.length > 0) return relevant.slice(0, 8)
+
+    // 兼容旧数据：linkedForeshadows 可能为空，只回退到未揭露信息差。
+    return layers.filter((layer) => !layer.isRevealed).slice(0, 8)
+  }
+
   /**
    * 格式化故事状态
    *
@@ -1027,7 +1106,7 @@ export class NovelPromptBuilder {
     // 精简：只保留 name + currentState + currentGoal
     const otherChars = state.characters.filter(
       (c) => !arrangedCharIds.has(c.id) && !isPlaceholder(c.name),
-    )
+    ).slice(0, 12)
     if (otherChars.length > 0) {
       parts.push('\n### 角色当前状态')
       for (const c of otherChars) {
@@ -1039,9 +1118,10 @@ export class NovelPromptBuilder {
     }
 
     // 关系状态（精简：单行输出）
-    if (state.relationships.length > 0) {
+    const relationships = state.relationships.slice(0, 12)
+    if (relationships.length > 0) {
       parts.push('\n### 关系当前状态')
-      for (const r of state.relationships) {
+      for (const r of relationships) {
         parts.push(`- ${r.characterA} ↔ ${r.characterB}：${r.relationType}（${r.currentStage}）`)
       }
     }
@@ -1050,7 +1130,7 @@ export class NovelPromptBuilder {
     // 精简：只保留 type + description + stage + intensity
     const otherConflicts = state.activeConflicts.filter(
       (c) => !arrangedConflictIds.has(c.id) && !isPlaceholder(c.description),
-    )
+    ).slice(0, 10)
     if (otherConflicts.length > 0) {
       parts.push('\n### 活跃冲突')
       for (const c of otherConflicts) {
@@ -1062,7 +1142,7 @@ export class NovelPromptBuilder {
     // 精简：只保留 status + description
     const otherForeshadows = state.pendingForeshadowing.filter(
       (f) => !arrangedForeshadowIds.has(f.id) && !isPlaceholder(f.description),
-    )
+    ).slice(0, 12)
     if (otherForeshadows.length > 0) {
       parts.push('\n### 伏笔状态')
       for (const f of otherForeshadows) {
@@ -1071,16 +1151,17 @@ export class NovelPromptBuilder {
     }
 
     // 活跃线索
-    if (state.activeClues.length > 0) {
+    const activeClues = state.activeClues.slice(0, 8)
+    if (activeClues.length > 0) {
       parts.push('\n### 线索进度')
-      for (const c of state.activeClues) {
+      for (const c of activeClues) {
         parts.push(`- ${c.description}（${c.progress}%，下一步：${c.nextStep}）`)
       }
     }
 
     // 活跃势力（过滤占位势力）
     // 精简：只保留 name + type + status
-    const realFactions = state.activeFactions.filter((f) => !isPlaceholder(f.name))
+    const realFactions = state.activeFactions.filter((f) => !isPlaceholder(f.name)).slice(0, 8)
     if (realFactions.length > 0) {
       parts.push('\n### 活跃势力')
       for (const f of realFactions) {
@@ -1093,7 +1174,7 @@ export class NovelPromptBuilder {
 
     // 已登场地点（过滤占位地点）
     // 精简：只保留 name + type
-    const realLocations = state.activeLocations.filter((l) => !isPlaceholder(l.name))
+    const realLocations = state.activeLocations.filter((l) => !isPlaceholder(l.name)).slice(0, 8)
     if (realLocations.length > 0) {
       parts.push('\n### 已登场地点')
       for (const l of realLocations) {
@@ -1175,13 +1256,61 @@ export class NovelPromptBuilder {
   private formatRecentSummaries(chapters: NovelChapter[]): string {
     const parts: string[] = ['## 最近章节摘要']
     for (const ch of chapters) {
-      // 优先使用 narrative_task 作为摘要（比 content 截取更有语义）
-      const summary = ch.narrativeTask
-        ? ch.narrativeTask
-        : ch.content.slice(0, 200) + (ch.content.length > 200 ? '...' : '')
+      // 优先使用 Memory Agent 生成的 recap 字段（50-100 字真实剧情摘要）。
+      // recap 是章节完成后由 generateChapterRecap 调用 LLM 提炼的真正剧情梗概，
+      // 包含核心事件和关键转折，能让下游 Agent 准确理解前后文因果。
+      //
+      // 历史问题（2026-07 修复）：
+      // - 旧实现用 content.slice(0, 300) 截取正文开头作为"摘要"。
+      //   但正文开头往往是场景描写/对话切入，并非剧情概括，导致下游 Agent
+      //   看到的"摘要"既不是真正的剧情梗概，又损失了章末关键转折信息。
+      // - 用 narrativeTask 作摘要更不可靠——它是章纲标签（如"推进主线"），
+      //   不是剧情摘要。
+      //
+      // 回退链：recap（真实摘要）→ content.slice(0, 300)（正文开头兜底）
+      // → narrativeTask（章纲标签兜底）→ (无正文)
+      let summary: string
+      if (ch.recap && ch.recap.trim().length > 0) {
+        // Memory Agent 生成的真实剧情摘要，直接使用
+        summary = ch.recap.trim()
+      } else if (ch.content && ch.content.trim().length > 50) {
+        // recap 缺失（章节刚生成、Memory Agent 尚未生成 recap，或生成失败）：
+        // 回退到正文开头 300 字兜底，保证有内容可用
+        summary = ch.content.trim().slice(0, 300)
+        if (ch.content.length > 300) summary += '...'
+      } else if (ch.narrativeTask) {
+        summary = ch.narrativeTask
+      } else {
+        summary = '(无正文)'
+      }
       parts.push(`- 第${ch.chapterNumber}章《${ch.title}》：${summary}`)
     }
     return parts.join('\n')
+  }
+
+  /**
+   * 格式化上一章结尾段落（衔接锚点）。
+   *
+   * 设计意图：
+   * - Writer 必须知道上一章如何收尾，才能让本章开头自然承接上一章的钩子。
+   * - 注入上一章结尾 200-400 字，作为衔接的硬性锚点。
+   * - 若无上一章（第1章或无内容），返回空字符串。
+   */
+  private formatPreviousChapterEnding(recentChapters: NovelChapter[]): string {
+    // recentChapters 是升序（旧→新），取最后一章有内容的结尾（即第 N-1 章）
+    // ⚠️ 顺序修正：listRecentChapters 返回升序（ORDER BY DESC + reverse），
+    // 之前注释误写为"倒序"，导致取到最旧的章节而非第 N-1 章。
+    for (let i = recentChapters.length - 1; i >= 0; i--) {
+      const ch = recentChapters[i]
+      if (ch.content && ch.content.trim().length > 100) {
+        const content = ch.content.trim()
+        // 取结尾 400 字（覆盖一个完整的场景收尾 + 钩子）
+        const ending = content.length > 400 ? content.slice(-400) : content
+        const prefix = content.length > 400 ? '...' : ''
+        return `## 上一章结尾（本章开头必须自然承接此处的悬念钩子）\n\n第${ch.chapterNumber}章《${ch.title}》结尾：\n\n${prefix}${ending}`
+      }
+    }
+    return ''
   }
 
   /**
@@ -1193,9 +1322,11 @@ export class NovelPromptBuilder {
    * - Writer 据此保持声音一致；Reviewer 据此检查声音偏差
    */
   private formatSoundAnchor(recentChapters: NovelChapter[]): string {
-    // recentChapters 是倒序（最新在前），取最近 2 章有内容的开头
+    // recentChapters 是升序（旧→新），取最后 2 章有内容的开头
+    // ⚠️ 顺序修正：listRecentChapters 返回升序，从末尾向前取最近 2 章。
     const anchors: string[] = []
-    for (const ch of recentChapters) {
+    for (let i = recentChapters.length - 1; i >= 0; i--) {
+      const ch = recentChapters[i]
       if (ch.content && ch.content.trim().length > 50) {
         const opening = ch.content.trim().slice(0, 200)
         anchors.push(`- 第${ch.chapterNumber}章开头：${opening}${ch.content.length > 200 ? '...' : ''}`)
@@ -1204,6 +1335,36 @@ export class NovelPromptBuilder {
     }
     if (anchors.length === 0) return ''
     return `## 叙事声音锚点（参照前文腔调，保持一致）\n\n${anchors.join('\n')}`
+  }
+
+  /**
+   * 格式化下一章开头锚点（前向衔接）。
+   *
+   * 设计意图：
+   * - 重新生成中间章节时，后续章节可能已有内容。若不注入下一章信息，Writer 生成的
+   *   本章结尾可能与已存在的下一章开头对不上，导致剧情断裂。
+   * - 注入下一章开头 200-400 字 + recap（前情提要），让 Writer 知道本章结尾钩子
+   *   要自然过渡到什么场景，保持章节间衔接连贯。
+   * - 仅当下一章有实际内容时返回，否则返回空字符串（正常顺序生成时下一章不存在）。
+   *
+   * 与 formatPreviousChapterEnding 成对：前者向后看（本章开头承接上一章钩子），
+   * 本方法向前看（本章结尾过渡到下一章场景），形成双向衔接锚定。
+   */
+  private formatNextChapterAnchor(nextChapter: NovelChapter | undefined): string {
+    if (!nextChapter) return ''
+    const content = nextChapter.content?.trim() ?? ''
+    // 下一章内容过短（如刚创建的 planned 状态空章节）不注入，避免误导 Writer
+    if (content.length < 50) return ''
+    // 取开头 400 字（覆盖一个完整的场景切入，让 Writer 知道过渡目标）
+    const opening = content.slice(0, 400)
+    const suffix = content.length > 400 ? '...' : ''
+    // recap 是 Memory Agent 为下一章生成的前情提要（50-100 字），比正文开头更能
+    // 概括下一章核心事件。若存在则一并注入，让 Writer 双重锚定过渡目标。
+    const recap = nextChapter.recap?.trim()
+    const recapLine = recap && recap.length > 0
+      ? `\n\n第${nextChapter.chapterNumber}章前情提要：${recap}`
+      : ''
+    return `## 下一章开头（本章结尾必须自然过渡到此处的场景，钩子要对得上）\n\n第${nextChapter.chapterNumber}章《${nextChapter.title}》开头：\n\n${opening}${suffix}${recapLine}`
   }
 
   /**
@@ -1437,6 +1598,49 @@ export class NovelPromptBuilder {
   }
 
   /**
+   * 清洗文本中的破折号"——"，用于注入 LLM 上下文前切断示范传播链。
+   *
+   * 设计意图：LLM 会模仿输入上下文中的标点习惯。历史章节正文、Director 输出、
+   * 实体描述等字段可能含破折号，直接注入会导致下游 LLM 模仿输出破折号。
+   * 在注入点清洗（而非 LLM 输出后处理），从源头切断示范传播。
+   *
+   * 替换策略：
+   * - 句末/标点旁的破折号 → 删除（保留原标点）
+   * - 连续破折号列举 → 顿号
+   * - 句中破折号 → 逗号
+   *
+   * 注意：此方法仅用于"注入 LLM 上下文的数据字段"清洗，
+   * 不用于 LLM 输出后处理（输出后处理已废弃，依赖 prompt 约束 + Reviewer 检测）。
+   * 禁令文本中的"——"（如 system-base.md 的铁律）在 STATIC 层，不经过此方法。
+   */
+  stripEmDash(text: string | undefined | null): string {
+    if (!text) return ''
+    return text
+      // 1. 句末标点前的破折号：删除破折号，保留句末标点
+      .replace(/——([。！？…])/g, '$1')
+      // 2. 标点后的破折号：删除破折号，保留原标点
+      .replace(/([。！？，；：])——/g, '$1')
+      // 3. 连续破折号列举（3个及以上文字段用——分隔）：替换为顿号
+      .replace(/(\S)——(\S)——/g, '$1、$2、')
+      // 4. 行首破折号：直接删除
+      .replace(/^——/gm, '')
+      // 5. 剩余句中破折号（前后均为文字）：智能替换
+      //    破折号在中文里有两种常见用法：
+      //    a) 补充说明（"他拿起剑——父亲留下的遗物"）→ 逗号承接
+      //    b) 语气延展/转折（"他推开门——门外站着一个人"）→ 句号断句，更接近铁律推荐的"用句号分割成独立句"
+      //    判据：破折号前一字若是动词/形容词常见字（了/着/的/开/起/住/动/响/亮/白/红 等），
+      //    多为语气延展，用句号；否则默认用逗号承接。
+      //    这比一律替换为逗号更自然，避免"炸开，"这类生硬停顿。
+      .replace(/(\S)——(\S)/g, (match, before: string, after: string) => {
+        // 语气延展判定：前字为常见动词/状态词尾
+        if (/[了着的起着住动响亮白红透碎开落来去见闻]/.test(before)) {
+          return `${before}。${after}`
+        }
+        return `${before}，${after}`
+      })
+  }
+
+  /**
    * 构建实体 ID → 可读名称的映射表（供格式化边数据时查询实体名称）
    * 覆盖画布上所有节点类型：project/character/chapter/conflict/foreshadow/faction/location/world_element
    */
@@ -1498,10 +1702,12 @@ export class NovelPromptBuilder {
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
+    agentType?: string,
   ): string {
     // arrangedEntities 参与 hash 输入，确保编排约束变化时 hash 反映出来
     const arrangedKey = arrangedEntities ? JSON.stringify(arrangedEntities) : ''
-    const context = this.buildChapterContext(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities)
-    return this.hashContent(context + arrangedKey)
+    const shared = this.buildChapterContextShared(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities)
+    const suffix = this.buildChapterContextSuffix(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities, agentType)
+    return this.hashContent(shared + '\n\n---\n\n' + suffix + arrangedKey)
   }
 }

@@ -59,9 +59,9 @@ interface DispatchHistoryEntry {
 
 // ── 常量 ──
 
-const configStorageKey = 'pi-agent.agent-config'
-const templatesStorageKey = 'pi-agent.persona-templates'
-const dispatchHistoryKey = 'pi-agent.dispatch-history'
+const configStorageKey = 'wenlang-agent.agent-config'
+const templatesStorageKey = 'wenlang-agent.persona-templates'
+const dispatchHistoryKey = 'wenlang-agent.dispatch-history'
 
 const defaultConfig: AgentConfig = {
   systemPrompt: '',
@@ -881,7 +881,7 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
 /** 从 localStorage 读取全局默认温度 */
 function readDefaultTemperature(): number {
   try {
-    const saved = window.localStorage.getItem('pi-agent.agent-config')
+    const saved = window.localStorage.getItem('wenlang-agent.agent-config')
     if (saved) {
       const parsed = JSON.parse(saved) as { temperature?: number }
       if (typeof parsed.temperature === 'number') return parsed.temperature

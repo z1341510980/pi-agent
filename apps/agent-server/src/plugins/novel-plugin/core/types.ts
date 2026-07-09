@@ -857,6 +857,18 @@ export interface NovelAgentLog {
   status: NovelAgentLogStatus
   error: string
   sessionId: string
+  /** LLM 返回的 input tokens（不含 cache read） */
+  inputTokens: number
+  /** LLM 返回的 output tokens */
+  outputTokens: number
+  /** LLM prompt cache 命中读取的 tokens（0 = 完全 miss） */
+  cacheReadTokens: number
+  /** LLM prompt cache 写入的 tokens（首次写入缓存） */
+  cacheWriteTokens: number
+  /** LLM provider 名（如 deepseek） */
+  llmProvider: string
+  /** LLM 模型名（如 deepseek-v4-flash） */
+  llmModel: string
   createdAt: number
 }
 
@@ -877,6 +889,18 @@ export interface NovelAgentLogSummary {
   durationMs: number
   status: NovelAgentLogStatus
   error: string
+  /** LLM 返回的 input tokens（不含 cache read） */
+  inputTokens: number
+  /** LLM 返回的 output tokens */
+  outputTokens: number
+  /** LLM prompt cache 命中读取的 tokens（0 = 完全 miss） */
+  cacheReadTokens: number
+  /** LLM prompt cache 写入的 tokens（首次写入缓存） */
+  cacheWriteTokens: number
+  /** LLM provider 名（如 deepseek） */
+  llmProvider: string
+  /** LLM 模型名（如 deepseek-v4-flash） */
+  llmModel: string
   createdAt: number
 }
 
@@ -933,4 +957,43 @@ export interface DeduplicateReport {
   groups: DeduplicateGroup[]
   /** 总共待删除/已删除的实体数（所有 removed 之和） */
   totalRemoved: number
+}
+
+// ── LLM 相似度扫描 ──
+
+/** LLM 相似度扫描支持的实体类型（含 world_element） */
+export type SimilarityEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
+
+/** 一组相似实体（LLM 判定） */
+export interface SimilarityGroup {
+  /** 实体类型 */
+  kind: SimilarityEntityKind
+  /** LLM 给出的相似度理由（如"都是寻找失落神器的角色"） */
+  reason: string
+  /** 相似度分数 0-1（LLM 主观判断，>0.6 才报告） */
+  similarity: number
+  /** LLM 建议保留的实体 ID */
+  keptId: string
+  /** 建议删除的实体列表 */
+  removed: Array<{ id: string; name: string }>
+  /** 字段级合并建议：保留实体的字段应该用哪个来源的值 */
+  fieldMerges?: Array<{
+    field: string
+    fromId: string
+    fromName: string
+    reason: string
+  }>
+}
+
+/** 相似度扫描报告 */
+export interface SimilarityScanReport {
+  groups: SimilarityGroup[]
+  totalCandidates: number
+}
+
+/** 相似度扫描进度事件 */
+export interface SimilarityScanProgressEvent {
+  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
+  message: string
+  data?: unknown
 }

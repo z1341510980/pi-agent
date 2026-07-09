@@ -58,6 +58,7 @@ import type {
   DeduplicateEntityKind,
   DeduplicateGroup,
   DeduplicateReport,
+  SimilarityGroup,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
@@ -234,6 +235,9 @@ interface AgentLogRow {
   result: string; result_length: number
   duration_ms: number; status: string; error: string
   session_id: string; created_at: number
+  input_tokens: number; output_tokens: number
+  cache_read_tokens: number; cache_write_tokens: number
+  llm_provider: string; llm_model: string
 }
 
 // ── 工具函数 ──
@@ -393,7 +397,11 @@ export class NovelStore implements NovelPromptStores {
     this.stmtListStyleGuides = db.prepare('SELECT * FROM novel_style_guides WHERE project_id = ? ORDER BY category ASC, id ASC')
     this.stmtListConstraints = db.prepare('SELECT * FROM novel_constraints WHERE project_id = ? AND is_active = 1 ORDER BY created_at ASC')
     this.stmtListInfoLayers = db.prepare('SELECT * FROM novel_information_layers WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListRecentChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND status = ? ORDER BY chapter_number DESC LIMIT ?')
+    // 返回所有"有内容"的章节：content 非空即纳入。不再依赖 status 字段，因为
+    // 章节可能因异常中断而停留在 planned 状态但实际已有内容（如生成成功但状态
+    // 未更新为 review）。按 status 过滤会漏掉这类章节，导致 Writer 看不到上一章
+    // 内容，衔接断裂。
+    this.stmtListRecentChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND content IS NOT NULL AND length(content) > 0 ORDER BY chapter_number DESC LIMIT ?')
     this.stmtListNodePositions = db.prepare('SELECT * FROM novel_node_positions WHERE project_id = ? ORDER BY updated_at ASC')
     this.stmtUpsertNodePosition = db.prepare(`
       INSERT INTO novel_node_positions (id, project_id, node_type, entity_id, pos_x, pos_y, updated_at)
@@ -425,14 +433,18 @@ export class NovelStore implements NovelPromptStores {
         system_prompt, chapter_context, user_message,
         task_input, user_instructions, tools, tool_names,
         result, result_length, duration_ms, status, error,
-        session_id, created_at
+        session_id, created_at,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        llm_provider, llm_model
       ) VALUES (
         @id, @project_id, @chapter_number, @agent_type, @agent_name,
         @display_agent_type, @display_agent_name, @phase,
         @system_prompt, @chapter_context, @user_message,
         @task_input, @user_instructions, @tools, @tool_names,
         @result, @result_length, @duration_ms, @status, @error,
-        @session_id, @created_at
+        @session_id, @created_at,
+        @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
+        @llm_provider, @llm_model
       )
     `)
     this.stmtGetAgentLog = db.prepare('SELECT * FROM novel_agent_logs WHERE id = ?')
@@ -502,7 +514,7 @@ export class NovelStore implements NovelPromptStores {
   }
 
   listRecentChapters(projectId: string, limit: number): NovelChapter[] {
-    const rows = this.stmtListRecentChapters.all(projectId, 'published', limit) as ChapterRow[]
+    const rows = this.stmtListRecentChapters.all(projectId, limit) as ChapterRow[]
     return rows.map((r) => this.rowToChapter(r)).reverse()
   }
 
@@ -1842,6 +1854,204 @@ export class NovelStore implements NovelPromptStores {
     return { groups, totalRemoved: groups.reduce((s, g) => s + g.removed.length, 0) }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // LLM 相似度合并（mergeWithPlan）
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 按 LLM 给出的相似度合并方案执行字段级合并 + 关联迁移 + 删除重复实体。
+   *
+   * 与 deduplicateEntities 的差异：
+   * - deduplicateEntities 按 createdAt 最早的保留（快速去重，处理"完全相同"的重复）
+   * - mergeWithPlan 接受 LLM 的 SimilarityGroup 列表，保留 LLM 指定的 keptId
+   *   （处理"语义相似但表述不同"的重复）
+   * - 支持 fieldMerges：先把删除项的字段值迁移到保留项，再走 retargetEdges
+   *   + merge*Associations + delete 流程
+   *
+   * 整体在事务中执行，保证原子性（任一组失败回滚全部）。
+   *
+   * @param projectId 当前项目 ID，用于执行合并前的实体归属校验
+   * @param groups LLM 给出的相似度合并方案（由 NovelSimilarityScanner 产出，用户确认后传入）
+   * @returns 合并统计：被合并（删除）的实体总数
+   */
+  mergeWithPlan(projectId: string, groups: SimilarityGroup[]): { totalMerged: number } {
+    if (groups.length === 0) return { totalMerged: 0 }
+
+    this.db.transaction(() => {
+      for (const g of groups) {
+        this.assertSimilarityGroupBelongsToProject(projectId, g)
+        this.mergeSimilarityGroup(g)
+      }
+    })()
+
+    return { totalMerged: groups.reduce((s, g) => s + g.removed.length, 0) }
+  }
+
+  private assertSimilarityGroupBelongsToProject(projectId: string, group: SimilarityGroup): void {
+    const { kind, keptId, removed, fieldMerges } = group
+    const ids = new Set<string>([keptId, ...removed.map((r) => r.id)])
+    for (const fm of fieldMerges ?? []) {
+      ids.add(fm.fromId)
+    }
+    for (const id of ids) {
+      const entityProjectId = this.getEntityProjectId(kind, id)
+      if (entityProjectId !== projectId) {
+        throw new Error(`相似实体合并包含非当前项目实体：${kind}/${id}`)
+      }
+    }
+  }
+
+  private getEntityProjectId(kind: SimilarityGroup['kind'], id: string): string | undefined {
+    switch (kind) {
+      case 'character':
+        return this.getCharacter(id)?.projectId
+      case 'conflict':
+        return this.getConflict(id)?.projectId
+      case 'foreshadow':
+        return this.getForeshadow(id)?.projectId
+      case 'faction':
+        return this.getFaction(id)?.projectId
+      case 'location':
+        return this.getLocation(id)?.projectId
+      case 'world_element':
+        return this.getWorldElement(id)?.projectId
+    }
+  }
+
+  /** 执行单组相似度合并：字段级合并 → 迁移 edges → 迁移关联 → 删除重复实体 */
+  private mergeSimilarityGroup(group: SimilarityGroup): void {
+    const { kind, keptId, removed, fieldMerges } = group
+    const removedIds = removed.map((r) => r.id)
+
+    // 1. 字段级合并：先把 fieldMerges 中标注的字段值从 fromId 迁移到 keptId
+    //    必须在 retargetEdges / delete 之前执行，否则 fromId 实体已被删除无法读取
+    if (fieldMerges && fieldMerges.length > 0) {
+      this.applyFieldMerges(kind, keptId, fieldMerges)
+    }
+
+    // 2. 通用：迁移 edges（source_id/target_id 替换为 keptId，自环删除）
+    this.retargetEdges(keptId, removedIds)
+
+    // 3. 按实体类型迁移关联表（world_element 没有关联表，只走 retargetEdges + delete）
+    switch (kind) {
+      case 'character':
+        this.mergeCharacterAssociations(keptId, removedIds)
+        break
+      case 'conflict':
+        this.mergeConflictAssociations(keptId, removedIds)
+        break
+      case 'foreshadow':
+        this.mergeForeshadowAssociations(keptId, removedIds)
+        break
+      case 'faction':
+        this.mergeFactionAssociations(keptId, removedIds)
+        break
+      case 'location':
+        this.mergeLocationAssociations(keptId, removedIds)
+        break
+      case 'world_element':
+        // world_element 无独立关联表（无 leader_id / parent_id 等外键反查）
+        // edges 已通过 retargetEdges 迁移，直接进入删除阶段
+        break
+    }
+
+    // 4. 删除 removedIds 对应的实体（edges 已迁移，deleteXxx 内部会再次尝试清理 edges，no-op）
+    for (const id of removedIds) {
+      switch (kind) {
+        case 'character':
+          // character 删除前需先清理 history（deleteCharacter 不自动级联）
+          this.deleteCharacterHistoryByCharacter(id)
+          this.deleteCharacter(id)
+          break
+        case 'conflict':
+          this.deleteConflict(id)
+          break
+        case 'foreshadow':
+          this.deleteForeshadow(id)
+          break
+        case 'faction':
+          this.deleteFaction(id)
+          break
+        case 'location':
+          this.deleteLocation(id)
+          break
+        case 'world_element':
+          this.deleteWorldElement(id)
+          break
+      }
+    }
+  }
+
+  /**
+   * 字段级合并：按 fieldMerges 把 fromId 实体的字段值迁移到 keptId 实体的同名字段。
+   *
+   * 同一 fromId 的多个字段批量处理（一次 update 调用），避免多次写库。
+   * 必须在删除 fromId 之前调用（依赖 get* 读取源实体的当前值）。
+   */
+  private applyFieldMerges(
+    kind: SimilarityGroup['kind'],
+    keptId: string,
+    fieldMerges: NonNullable<SimilarityGroup['fieldMerges']>,
+  ): void {
+    // 按 fromId 分组：每个 fromId 的多个字段一次性 patch 到 keptId
+    const byFromId = new Map<string, string[]>()
+    for (const fm of fieldMerges) {
+      const arr = byFromId.get(fm.fromId) ?? []
+      arr.push(fm.field)
+      byFromId.set(fm.fromId, arr)
+    }
+
+    for (const [fromId, fields] of byFromId) {
+      switch (kind) {
+        case 'character': {
+          const patch = this.pickFields(this.getCharacter(fromId), fields)
+          if (Object.keys(patch).length > 0) this.updateCharacter(keptId, patch)
+          break
+        }
+        case 'conflict': {
+          const patch = this.pickFields(this.getConflict(fromId), fields)
+          if (Object.keys(patch).length > 0) this.updateConflict(keptId, patch)
+          break
+        }
+        case 'foreshadow': {
+          const patch = this.pickFields(this.getForeshadow(fromId), fields)
+          if (Object.keys(patch).length > 0) this.updateForeshadow(keptId, patch)
+          break
+        }
+        case 'faction': {
+          const patch = this.pickFields(this.getFaction(fromId), fields)
+          if (Object.keys(patch).length > 0) this.updateFaction(keptId, patch)
+          break
+        }
+        case 'location': {
+          const patch = this.pickFields(this.getLocation(fromId), fields)
+          if (Object.keys(patch).length > 0) this.updateLocation(keptId, patch)
+          break
+        }
+        case 'world_element': {
+          const patch = this.pickFields(this.getWorldElement(fromId), fields)
+          if (Object.keys(patch).length > 0) this.updateWorldElement(keptId, patch)
+          break
+        }
+      }
+    }
+  }
+
+  /**
+   * 从源对象按字段名列表提取 patch（用于字段级合并）。
+   * 只提取源对象实际存在的字段，避免 undefined 覆盖保留项的现有值。
+   */
+  private pickFields<T extends object>(src: T | undefined, fields: string[]): Partial<T> {
+    const patch: Partial<T> = {}
+    if (!src) return patch
+    const srcRecord = src as Record<string, unknown>
+    const patchRecord = patch as Record<string, unknown>
+    for (const f of fields) {
+      if (f in srcRecord) patchRecord[f] = srcRecord[f]
+    }
+    return patch
+  }
+
   /** 扫描某种实体的重复组 */
   private findDuplicateGroups(projectId: string, kind: DeduplicateEntityKind): DeduplicateGroup[] {
     // 按 kind 取出实体列表，统一为 { id, name, createdAt } 形态
@@ -2244,6 +2454,12 @@ export class NovelStore implements NovelPromptStores {
       error: full.error,
       session_id: full.sessionId,
       created_at: full.createdAt,
+      input_tokens: full.inputTokens ?? 0,
+      output_tokens: full.outputTokens ?? 0,
+      cache_read_tokens: full.cacheReadTokens ?? 0,
+      cache_write_tokens: full.cacheWriteTokens ?? 0,
+      llm_provider: full.llmProvider ?? '',
+      llm_model: full.llmModel ?? '',
     })
     return full
   }
@@ -2558,6 +2774,12 @@ export class NovelStore implements NovelPromptStores {
       status: row.status as NovelAgentLogStatus,
       error: row.error,
       sessionId: row.session_id,
+      inputTokens: row.input_tokens ?? 0,
+      outputTokens: row.output_tokens ?? 0,
+      cacheReadTokens: row.cache_read_tokens ?? 0,
+      cacheWriteTokens: row.cache_write_tokens ?? 0,
+      llmProvider: row.llm_provider ?? '',
+      llmModel: row.llm_model ?? '',
       createdAt: row.created_at,
     }
   }
@@ -2579,6 +2801,12 @@ export class NovelStore implements NovelPromptStores {
       durationMs: row.duration_ms,
       status: row.status as NovelAgentLogStatus,
       error: row.error,
+      inputTokens: row.input_tokens ?? 0,
+      outputTokens: row.output_tokens ?? 0,
+      cacheReadTokens: row.cache_read_tokens ?? 0,
+      cacheWriteTokens: row.cache_write_tokens ?? 0,
+      llmProvider: row.llm_provider ?? '',
+      llmModel: row.llm_model ?? '',
       createdAt: row.created_at,
     }
   }

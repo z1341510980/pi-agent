@@ -34,7 +34,7 @@ const translations: Record<Locale, Record<string, unknown>> = {
 }
 
 /** localStorage 存储 key */
-const LOCALE_STORAGE_KEY = 'pi-agent.locale'
+const LOCALE_STORAGE_KEY = 'wenlang-agent.locale'
 
 /** 在嵌套字典中按点分路径查找值 */
 function lookupPath(dict: Record<string, unknown>, key: string): unknown {

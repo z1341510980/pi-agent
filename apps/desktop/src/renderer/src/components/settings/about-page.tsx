@@ -59,7 +59,7 @@ export function AboutPage(): ReactElement {
             <Badge variant="secondary">v1.0.0</Badge>
           </div>
           <p className="text-xs text-muted-foreground m-0 mt-0.5">
-            基于 Pi SDK 的 AG-UI 桌面 Agent 助手
+            让AI如臂使指
           </p>
         </div>
       </div>

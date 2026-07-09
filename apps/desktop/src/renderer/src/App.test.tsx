@@ -4,7 +4,7 @@ import { EventType } from '@repo/protocol/events'
 
 vi.mock('@repo/config/browser', () => ({
   browserConfig: {
-    appName: 'PI Agent Desktop',
+    appName: 'Wenlang Agent Desktop',
     apiBaseUrl: 'http://127.0.0.1:3900',
     aguiBaseUrl: 'http://127.0.0.1:3900',
     mode: 'test'
@@ -48,7 +48,7 @@ describe('App shell', () => {
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
   })
 
-  it('renders the pi-agent workspace instead of the CopilotKit sidebar shell', async () => {
+  it('renders the wenlang-agent workspace instead of the CopilotKit sidebar shell', async () => {
     vi.stubGlobal('fetch', createFetchMock())
 
     const { default: App } = await import('./App')
@@ -299,7 +299,7 @@ describe('App shell', () => {
 
   it('TC-10: toggles theme between light and dark', async () => {
     // 预设 localStorage 为 light，验证 .dark class 同步
-    window.localStorage.setItem('pi-agent.theme', 'light')
+    window.localStorage.setItem('wenlang-agent.theme', 'light')
 
     vi.stubGlobal('fetch', createFetchMock())
 

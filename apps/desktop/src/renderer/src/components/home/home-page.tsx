@@ -91,7 +91,7 @@ export function HomePage({
             {browserConfig.appName}
           </h1>
           <p className="text-sm text-muted-foreground m-0 mt-1 text-pretty">
-              基于 Pi SDK 的 AG-UI 桌面 Agent 助手
+              让AI如臂使指
               <span className="ml-2 inline-flex items-center gap-1">
                 <span
                   className={`size-1.5 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-muted-foreground'}`}
@@ -158,8 +158,8 @@ export function HomePage({
                 </div>
               ) : (
                 <ul className="m-0 p-0 list-none divide-y divide-border">
-                  {recentSessions.map((s) => (
-                    <li key={s.id}>
+                  {recentSessions.map((s, idx) => (
+                    <li key={s.id ?? `session-${idx}`}>
                       <button
                         type="button"
                         onClick={onOpenChat}
@@ -205,8 +205,8 @@ export function HomePage({
                 </div>
               ) : (
                 <ul className="m-0 p-0 list-none divide-y divide-border">
-                  {recentProjects.map((p) => (
-                    <li key={p.id}>
+                  {recentProjects.map((p, idx) => (
+                    <li key={p.id ?? `project-${idx}`}>
                       <button
                         type="button"
                         onClick={onOpenNovel}

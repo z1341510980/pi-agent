@@ -135,7 +135,7 @@ type ProviderFormValues = z.infer<typeof providerFormSchema>
 
 // ── 常量 ──
 
-const storageKey = 'pi-agent.providers'
+const storageKey = 'wenlang-agent.providers'
 
 const apiTypes = [
   { value: 'openai-completions', label: 'OpenAI Completions' },

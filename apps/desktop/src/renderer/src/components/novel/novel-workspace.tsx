@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
-import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3, Wand2 } from 'lucide-react'
+import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import {
@@ -32,11 +32,10 @@ import {
   listProjectCharacterHistory,
   createChapter,
   completeChapter,
-  deduplicateEntities,
-  type DeduplicateReport,
-  type DeduplicateEntityKind,
+  type SimilarityEntityKind,
 } from '@/api/novel-client'
 import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
+import { useNovelSimilarityScan } from '@/hooks/use-novel-similarity-scan'
 import { useShortcut } from '@/hooks/use-shortcut'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { NovelSidebar } from './novel-sidebar'
@@ -44,6 +43,7 @@ import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
 import { ChapterLivePanel } from './chapter-live-view'
+import { SimilarityScanPanel } from './similarity-scan-panel'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
@@ -93,17 +93,18 @@ export interface NovelWorkspaceProps {
   onClose: () => void
 }
 
-// ── 实体类型中文标签（去重报告展示用）──
-const DEDUP_KIND_LABEL: Record<DeduplicateEntityKind, string> = {
+// ── 相似度扫描实体类型中文标签（含 world_element）──
+const SIMILARITY_KIND_LABEL: Record<SimilarityEntityKind, string> = {
   character: '角色',
   conflict: '冲突',
   foreshadow: '伏笔',
   faction: '势力',
   location: '地点',
+  world_element: '世界要素',
 }
 
-function kindLabel(kind: DeduplicateEntityKind): string {
-  return DEDUP_KIND_LABEL[kind] ?? kind
+function similarityKindLabel(kind: SimilarityEntityKind): string {
+  return SIMILARITY_KIND_LABEL[kind] ?? kind
 }
 
 // ── 拖拽预览卡片：根据拖源类型渲染不同的 floating 提示 ──
@@ -185,12 +186,13 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
 
-  // ── 实体去重（整理功能）──
-  // 扫描阶段：dryRun=true 拉取报告 → 用户在 Dialog 中确认 → dryRun=false 实际执行
-  const [dedupDialogOpen, setDedupDialogOpen] = useState(false)
-  const [dedupReport, setDedupReport] = useState<DeduplicateReport | null>(null)
-  const [dedupScanning, setDedupScanning] = useState(false)
-  const [dedupApplying, setDedupApplying] = useState(false)
+  // ── LLM 相似度扫描（SSE 流式扫描 + 多选弹框 + REST 合并）──
+  const similarityScan = useNovelSimilarityScan()
+  const [similarityDialogOpen, setSimilarityDialogOpen] = useState(false)
+  // 用户勾选的组索引集合（默认全选）
+  const [selectedGroupIndices, setSelectedGroupIndices] = useState<Set<number>>(new Set())
+  // 记录是否已对本次扫描 toast 过"开始扫描"，避免重复
+  const similarityStartedRef = useRef(false)
 
   // ── @dnd-kit 拖拽上下文：侧边栏 → 矩阵 + 矩阵内端点/单元格拖拽 ──
   // PointerSensor 使用 distance:6 激活约束，区分点击（< 6px）与拖拽（≥ 6px），
@@ -203,14 +205,14 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   // 正文编辑器高度（垂直分割持久化到 localStorage）
   const [contentEditorHeight, setContentEditorHeight] = useState<number>(() => {
-    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('pi-agent-content-split') : null
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('wenlang-agent-content-split') : null
     return saved ? Number(saved) : 300
   })
 
   const handleContentEditorHeightChange = useCallback((size: number) => {
     setContentEditorHeight(size)
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem('pi-agent-content-split', String(size))
+      window.localStorage.setItem('wenlang-agent-content-split', String(size))
     }
   }, [])
 
@@ -322,51 +324,133 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     URL.revokeObjectURL(url)
   }, [currentProject, characters, chapters, conflicts, foreshadows, relationships, clues, worldRules, styleGuides, constraints, infoLayers, factions, locations, worldElements])
 
-  // ── 实体去重（整理功能）──
-  // 扫描：dryRun=true 拉取重复报告，弹 Dialog 让用户确认
-  const handleDeduplicateScan = useCallback(async () => {
-    if (!currentProjectId || dedupScanning || dedupApplying) return
-    setDedupScanning(true)
-    try {
-      const report = await deduplicateEntities(currentProjectId, true)
-      setDedupReport(report)
-      setDedupDialogOpen(true)
-      if (report.totalRemoved === 0) {
-        toastSuccess('未发现重复实体', '所有实体条目均唯一，无需整理')
-      }
-    } catch (err) {
-      toastError('扫描失败', err instanceof Error ? err.message : '未知错误')
-    } finally {
-      setDedupScanning(false)
-    }
-  }, [currentProjectId, dedupScanning, dedupApplying])
+  // ── LLM 相似度扫描（SSE 流式扫描 + 多选弹框 + REST 合并）──
 
-  // 执行合并：dryRun=false 实际合并，刷新数据 + toast 报告
-  const handleDeduplicateApply = useCallback(async () => {
-    if (!currentProjectId || dedupApplying) return
-    setDedupApplying(true)
+  // 启动扫描：重置 ref 标记并调用 hook
+  const handleStartSimilarityScan = useCallback(async () => {
+    if (!currentProjectId || similarityScan.isScanning) return
+    similarityStartedRef.current = false
+    setSelectedGroupIndices(new Set())
+    await similarityScan.startScan(currentProjectId)
+  }, [currentProjectId, similarityScan])
+
+  // 监听扫描阶段变化：打开/关闭弹框 + toast 关键节点
+  // 注意：依赖项只取 phase/report/error/reset 这些稳定引用，不能放整个 similarityScan 对象
+  // （hook 每次重渲染返回新对象引用，会导致 effect 重复触发 → setState → 无限循环）
+  const { phase: scanPhase, report: scanReport, error: scanError, reset: scanReset } = similarityScan
+  useEffect(() => {
+    // scanning 开始时 toast 一次
+    if (scanPhase === 'scanning' && !similarityStartedRef.current) {
+      similarityStartedRef.current = true
+      toastSuccess('开始 AI 相似度扫描', '正在用 LLM 分析语义相似的实体...')
+    }
+    // 扫描完成且有报告 → 打开弹框，默认全选
+    if (scanPhase === 'completed' && scanReport) {
+      if (scanReport.groups.length === 0) {
+        toastSuccess('未发现相似实体', '所有实体条目均唯一，无需整理')
+        scanReset()
+        return
+      }
+      // 默认全选所有组
+      setSelectedGroupIndices(new Set(scanReport.groups.map((_, i) => i)))
+      setSimilarityDialogOpen(true)
+    }
+    // 取消 → 关闭弹框
+    if (scanPhase === 'cancelled') {
+      setSimilarityDialogOpen(false)
+    }
+    // 错误 → toast
+    if (scanPhase === 'error' && scanError) {
+      setSimilarityDialogOpen(false)
+      toastError('相似度扫描失败', scanError)
+    }
+  }, [scanPhase, scanReport, scanError, scanReset])
+
+  // 切换某组的勾选状态
+  const toggleGroupSelection = useCallback((idx: number) => {
+    setSelectedGroupIndices((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }, [])
+
+  // 全选 / 全不选
+  const toggleAllGroups = useCallback((selectAll: boolean) => {
+    if (!similarityScan.report) return
+    setSelectedGroupIndices(selectAll ? new Set(similarityScan.report.groups.map((_, i) => i)) : new Set())
+  }, [similarityScan.report])
+
+  // 确认合并：把勾选的组提交给后端执行字段级合并
+  const handleSimilarityMerge = useCallback(async () => {
+    if (!currentProjectId || !similarityScan.report || similarityScan.isMerging) return
+    const selectedGroups = similarityScan.report.groups.filter((_, i) => selectedGroupIndices.has(i))
+    if (selectedGroups.length === 0) return
     try {
-      const report = await deduplicateEntities(currentProjectId, false)
-      // 刷新项目数据（store 会在 query 重新拉取后同步）
+      const result = await similarityScan.mergeSelected(currentProjectId, selectedGroups)
+
+      // 后端已删除 removed 中的实体，但本地 store 的 loadProjectData 用 mergeListById
+      // 会保留"本地有但后端没有"的条目（本意是保护新建未同步的实体），
+      // 这会导致被删除的实体仍残留在 UI。这里主动按 kind 从本地 store 移除。
+      const store = useNovelStore.getState()
+      for (const g of selectedGroups) {
+        for (const r of g.removed) {
+          switch (g.kind) {
+            case 'character': store.removeCharacter(r.id); break
+            case 'conflict': store.removeConflict(r.id); break
+            case 'foreshadow': store.removeForeshadow(r.id); break
+            case 'faction': store.removeFaction(r.id); break
+            case 'location': store.removeLocation(r.id); break
+            case 'world_element': store.removeWorldElement(r.id); break
+          }
+        }
+      }
+
+      // 后台刷新项目数据，确保 edges/关联表等也同步
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-      setDedupDialogOpen(false)
-      setDedupReport(null)
-      if (report.totalRemoved > 0) {
+      setSimilarityDialogOpen(false)
+      similarityScan.reset()
+      if (result.totalMerged > 0) {
         toastSuccess(
-          `已合并 ${report.totalRemoved} 个重复实体`,
-          report.groups.map((g) => `${kindLabel(g.kind)}：${g.key}（删除 ${g.removed.length} 个）`).join('\n'),
+          `已合并 ${result.totalMerged} 个相似实体`,
+          selectedGroups.map((g) => `${similarityKindLabel(g.kind)}：${g.removed.map((r) => r.name).join('、')}`).join('\n'),
         )
       } else {
-        toastSuccess('未发现重复实体', '所有实体条目均唯一')
+        toastSuccess('合并完成', '未实际删除实体')
       }
     } catch (err) {
       toastError('合并失败', err instanceof Error ? err.message : '未知错误')
-    } finally {
-      setDedupApplying(false)
     }
-  }, [currentProjectId, dedupApplying, queryClient])
+  }, [currentProjectId, similarityScan, selectedGroupIndices, queryClient])
 
   // ── 创作流程 ──
+
+  // 从矩阵本章列读取已编排实体（与矩阵 computeCellSymbol 判定保持一致）。
+  // 提取为独立函数供 handleStartCreation / handleRegenerateChapter / handleStartCreationAt 复用，
+  // 避免任一入口漏传 arrangedEntities 导致 Writer 看不到矩阵编排约束。
+  const collectArrangedEntities = useCallback((playhead: number) => {
+    return {
+      characterIds: characters.filter((c) => {
+        const history = characterHistory.filter((h) => h.characterId === c.id)
+        const spans = computeCharacterSpans(history)
+        return spans.some((s) => playhead >= s.start && playhead <= s.end)
+      }).map((c) => c.id),
+      conflictIds: conflicts.filter((c) =>
+        c.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
+      ).map((c) => c.id),
+      foreshadowIds: foreshadows.filter((f) => {
+        if (f.firstChapter == null) return false
+        return playhead >= f.firstChapter && (f.recoverByChapter == null || playhead <= f.recoverByChapter)
+      }).map((f) => f.id),
+      factionIds: factions.filter((f) =>
+        f.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
+      ).map((f) => f.id),
+      locationIds: locations.filter((l) => {
+        return l.appearChapters.includes(playhead)
+      }).map((l) => l.id),
+    }
+  }, [characters, characterHistory, conflicts, foreshadows, factions, locations])
 
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
     if (!currentProjectId || creationFlow.isRunning) return
@@ -385,34 +469,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       setCreationChapterNumber(playhead)
       if (mode === 'manual') {
         // 模式1：从矩阵本章列读取已编排实体
-        // 过滤逻辑与矩阵 computeCellSymbol 判定保持一致：
-        // - 角色：computeCharacterSpans 把 characterHistory.chapterNumber 分组成连续区间，playhead 落在区间内即出场
-        // - 冲突：chapterSpans: Array<[s,e]>，playhead 落在任一区间内即出场（空数组表示未放置）
-        // - 伏笔：plant=firstChapter、payoff=recoverByChapter，playhead 在 [first, recoverByChapter] 内（recoverByChapter 为空表示未回收，延续到末章）
-        // - 势力：同冲突，chapterSpans 任一区间包含 playhead 即出场
-        // - 地点：appearChapters 数组包含 playhead 即出场
-        const arranged = {
-          characterIds: characters.filter((c) => {
-            const history = characterHistory.filter((h) => h.characterId === c.id)
-            const spans = computeCharacterSpans(history)
-            return spans.some((s) => playhead >= s.start && playhead <= s.end)
-          }).map((c) => c.id),
-          conflictIds: conflicts.filter((c) =>
-            c.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
-          ).map((c) => c.id),
-          foreshadowIds: foreshadows.filter((f) => {
-            if (f.firstChapter == null) return false
-            return playhead >= f.firstChapter && (f.recoverByChapter == null || playhead <= f.recoverByChapter)
-          }).map((f) => f.id),
-          factionIds: factions.filter((f) =>
-            f.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
-          ).map((f) => f.id),
-          locationIds: locations.filter((l) => {
-            if (l.firstChapter == null) return false
-            return l.appearChapters.includes(playhead)
-          }).map((l) => l.id),
-        }
-        await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities: arranged })
+        await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities: collectArrangedEntities(playhead) })
       } else {
         // 模式2：AI 编排
         await creationFlow.aiArrange(currentProjectId, playhead)
@@ -424,17 +481,19 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     } finally {
       startCreationLockRef.current = false
     }
-  }, [currentProjectId, chapters, creationFlow, characterHistory, conflicts, foreshadows, setCreationMode, setCreationChapterNumber, playheadChapter, characters])
+  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, setCreationMode, setCreationChapterNumber, playheadChapter])
 
   // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
   // 直接以原章节号启动创作流程（覆盖旧内容）
+  // ⚠️ 必须传入 arrangedEntities：重新生成时 Writer 仍需看到矩阵本章列的编排约束，
+  // 否则 Writer 完全不知道哪些角色/冲突/伏笔必须出场，导致剧情错乱。
   const handleRegenerateChapter = useCallback(async (chapterNumber: number) => {
     if (!currentProjectId || creationFlow.isRunning) return
     const chapter = chapters.find((c) => c.chapterNumber === chapterNumber)
     if (!chapter) return
     setCreationChapterNumber(chapterNumber)
-    await creationFlow.startCreation(currentProjectId, chapterNumber)
-  }, [currentProjectId, chapters, creationFlow])
+    await creationFlow.startCreation(currentProjectId, chapterNumber, { arrangedEntities: collectArrangedEntities(chapterNumber) })
+  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities])
 
   // 从指定章节开始新创作流程（用于时间轴右键菜单"从此章开始创作"）
   // 若该章节号不存在，先创建空章节再启动流程
@@ -458,8 +517,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       }
     }
     setCreationChapterNumber(chapterNumber)
-    await creationFlow.startCreation(currentProjectId, chapterNumber)
-  }, [currentProjectId, chapters, creationFlow, upsertChapter, queryClient])
+    await creationFlow.startCreation(currentProjectId, chapterNumber, { arrangedEntities: collectArrangedEntities(chapterNumber) })
+  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, upsertChapter, queryClient])
 
   // 收到 data_changed 事件时刷新画布（替代轮询）
   // Memory Agent 写入实体状态 + orchestrator.syncChapterDimensions 补全章节维度后，
@@ -557,14 +616,14 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               title={playheadChapterExists ? '模式1：从矩阵本章列读取已编排实体，启动多 Agent 创作流程' : '请先选择章节'}
             >
               <Sparkles className="size-3.5" />
-              <span className="hidden sm:inline">生成当前章节</span>
+              <span className="hidden sm:inline">生成第{playheadChapter}章</span>
             </Button>
             {/* <Button
               size="sm"
               variant="outline"
               onClick={() => handleStartCreation('ai-arrange')}
               disabled={!currentProject || creationFlow.isRunning || !playheadChapterExists}
-              title={playheadChapterExists ? '模式2：AI 自动编排实体并生成正文' : '请先选择章节'}
+              title={playheadChapterExists ? '模式2：AI 自动编排实体到矩阵' : '请先选择章节'}
             >
               <Wand2 className="size-3.5" />
               <span className="hidden sm:inline">AI编排</span>
@@ -696,8 +755,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             creationChapterNumber={creationChapterNumber}
                             onRegenerateChapter={handleRegenerateChapter}
                             onStartCreationAt={handleStartCreationAt}
-                            onDeduplicateScan={handleDeduplicateScan}
-                            dedupScanning={dedupScanning}
+                            onSimilarityScan={handleStartSimilarityScan}
+                            similarityScanning={similarityScan.isScanning}
                           />
                         </ErrorBoundary>
                       </div>
@@ -772,6 +831,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                   userMessages={creationFlow.userMessages}
                 />
               </ErrorBoundary>
+            ) : scanPhase !== 'idle' ? (
+              <SimilarityScanPanel
+                phase={scanPhase}
+                isScanning={similarityScan.isScanning}
+                progressEvents={similarityScan.progressEvents}
+                groupCount={scanReport?.groups.length ?? 0}
+                error={scanError}
+                onCancel={similarityScan.cancel}
+                onReset={similarityScan.reset}
+              />
             ) : (
               <NovelDetailPanel />
             )}
@@ -820,74 +889,149 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           </DialogContent>
         </Dialog>
 
-        {/* 实体去重确认对话框 */}
-        <Dialog open={dedupDialogOpen} onOpenChange={(open) => {
-          if (!dedupApplying) setDedupDialogOpen(open)
+        {/* LLM 相似度扫描多选对话框（勾选的组才合并） */}
+        <Dialog open={similarityDialogOpen} onOpenChange={(open) => {
+          // 合并执行中不允许通过点击遮罩/ESC 关闭，避免中断
+          if (!similarityScan.isMerging) setSimilarityDialogOpen(open)
         }}>
-          <DialogContent className="sm:max-w-2xl max-h-[80vh] p-0 gap-0">
+          <DialogContent className="sm:max-w-2xl max-h-[85vh] p-0 gap-0">
             <DialogHeader className="px-4 py-3 border-b border-border">
               <DialogTitle className="flex items-center gap-2 text-sm">
-                <Wand2 className="size-4 text-primary" />
-                整理去重
+                <Sparkle className="size-4 text-primary" />
+                AI 相似度整理
               </DialogTitle>
               <DialogDescription className="text-xs text-pretty">
-                扫描重复实体并合并到保留项（createdAt 最早的），关联数据会自动迁移到保留项
+                勾选需要合并的组，未勾选的将跳过。合并后删除项的关联数据会迁移到保留项
               </DialogDescription>
             </DialogHeader>
-            <div className="overflow-y-auto p-4 max-h-[55vh]">
-              {dedupReport == null ? (
-                <div className="text-xs text-muted-foreground py-8 text-center">扫描中...</div>
-              ) : dedupReport.groups.length === 0 ? (
+            <div className="overflow-y-auto p-4 max-h-[60vh]">
+              {similarityScan.report == null ? (
+                <div className="text-xs text-muted-foreground py-8 text-center">等待扫描结果...</div>
+              ) : similarityScan.report.groups.length === 0 ? (
                 <div className="text-xs text-muted-foreground py-8 text-center">
-                  未发现重复实体，所有条目均唯一
+                  未发现相似实体，所有条目均唯一
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="text-xs text-muted-foreground">
-                    共发现 <span className="text-text font-medium">{dedupReport.groups.length}</span> 组重复，
-                    将删除 <span className="text-amber-500 font-medium">{dedupReport.totalRemoved}</span> 个重复实体
-                  </div>
-                  {dedupReport.groups.map((g, idx) => (
-                    <div key={`${g.kind}-${g.keptId}-${idx}`} className="rounded-md border border-border p-3 bg-surface-2/50">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
-                          {kindLabel(g.kind)}
-                        </span>
-                        <span className="text-sm font-medium text-text truncate">
-                          {g.key}
-                        </span>
-                      </div>
-                      <div className="text-xs text-muted-foreground space-y-0.5">
-                        <div>
-                          保留：<span className="text-text">{g.keptName}</span>
-                        </div>
-                        <div>
-                          删除：<span className="text-amber-600">{g.removed.map((r) => r.name).join('、')}</span>
-                          <span className="text-muted-foreground ml-1">（共 {g.removed.length} 个）</span>
-                        </div>
-                      </div>
+                  {/* 全选 / 取消全选 + 统计 */}
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-border">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-text select-none">
+                      <input
+                        type="checkbox"
+                        className="size-3.5 rounded border-border accent-primary cursor-pointer"
+                        checked={selectedGroupIndices.size === similarityScan.report.groups.length}
+                        ref={(el) => {
+                          if (el && similarityScan.report) {
+                            el.indeterminate = selectedGroupIndices.size > 0 && selectedGroupIndices.size < similarityScan.report.groups.length
+                          }
+                        }}
+                        onChange={(e) => toggleAllGroups(e.target.checked)}
+                      />
+                      <span className="font-medium">
+                        {selectedGroupIndices.size === similarityScan.report.groups.length ? '取消全选' : '全选'}
+                      </span>
+                    </label>
+                    <div className="text-xs text-muted-foreground">
+                      已选 <span className="text-text font-medium tabular-nums">{selectedGroupIndices.size}</span>
+                      {' / '}
+                      <span className="tabular-nums">{similarityScan.report.groups.length}</span> 组
                     </div>
-                  ))}
+                  </div>
+
+                  {similarityScan.report.groups.map((g, idx) => {
+                    const checked = selectedGroupIndices.has(idx)
+                    return (
+                      <label
+                        key={`${g.kind}-${g.keptId}-${idx}`}
+                        className={`block rounded-md border p-3 cursor-pointer transition-colors select-none ${checked ? 'border-primary/40 bg-primary/5' : 'border-border bg-surface-2/50 hover:bg-surface-2'}`}
+                      >
+                        <div className="flex items-start gap-2.5">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 size-3.5 rounded border-border accent-primary cursor-pointer shrink-0"
+                            checked={checked}
+                            onChange={() => toggleGroupSelection(idx)}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                                {similarityKindLabel(g.kind)}
+                              </span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 font-medium tabular-nums">
+                                相似度 {Math.round(g.similarity * 100)}%
+                              </span>
+                            </div>
+                            <div className="text-xs text-muted-foreground mb-2 italic leading-relaxed">
+                              {g.reason}
+                            </div>
+                            <div className="text-xs space-y-1">
+                              <div className="text-emerald-700">
+                                保留：<span className="font-mono text-[11px]">{g.keptId.slice(0, 8)}</span>
+                              </div>
+                              <div className="text-amber-600">
+                                删除：{g.removed.map((r) => (
+                                  <span key={r.id} className="inline-block mr-1">
+                                    {r.name}
+                                    <span className="text-muted-foreground ml-0.5 text-[10px]">({r.id.slice(0, 8)})</span>
+                                  </span>
+                                ))}
+                                <span className="text-muted-foreground ml-1">（共 {g.removed.length} 个）</span>
+                              </div>
+                              {g.fieldMerges && g.fieldMerges.length > 0 && (
+                                <div className="mt-2 pt-2 border-t border-border/60">
+                                  <div className="text-[11px] text-muted-foreground mb-1">字段级合并建议：</div>
+                                  <div className="space-y-1">
+                                    {g.fieldMerges.map((fm, fidx) => (
+                                      <div key={fidx} className="text-[11px] text-muted-foreground leading-relaxed pl-2 border-l border-border">
+                                        <span className="text-text font-medium">{fm.field}</span>
+                                        <span className="mx-1">←</span>
+                                        <span className="text-text">{fm.fromName}</span>
+                                        <span className="text-muted-foreground ml-1 text-[10px]">({fm.fromId.slice(0, 8)})</span>
+                                        <div className="text-[10px] italic">{fm.reason}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })}
                 </div>
               )}
             </div>
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-surface-1/50">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setDedupDialogOpen(false)}
-                disabled={dedupApplying}
-              >
-                取消
-              </Button>
-              <Button
-                size="sm"
-                variant="default"
-                onClick={handleDeduplicateApply}
-                disabled={dedupApplying || dedupReport == null || dedupReport.totalRemoved === 0}
-              >
-                {dedupApplying ? '合并中...' : `确认合并${dedupReport && dedupReport.totalRemoved > 0 ? `（${dedupReport.totalRemoved} 个）` : ''}`}
-              </Button>
+            <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border bg-surface-1/50">
+              <div className="text-xs text-muted-foreground">
+                {selectedGroupIndices.size > 0 && (
+                  <>将合并 <span className="text-amber-500 font-medium tabular-nums">{selectedGroupIndices.size}</span> 组</>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setSimilarityDialogOpen(false)
+                    similarityScan.reset()
+                  }}
+                  disabled={similarityScan.isMerging}
+                >
+                  取消
+                </Button>
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={() => void handleSimilarityMerge()}
+                  disabled={
+                    similarityScan.isMerging ||
+                    selectedGroupIndices.size === 0
+                  }
+                >
+                  {similarityScan.isMerging ? '合并中...' : `确认合并${selectedGroupIndices.size > 0 ? `（${selectedGroupIndices.size} 组）` : ''}`}
+                </Button>
+              </div>
             </div>
           </DialogContent>
         </Dialog>

@@ -73,7 +73,9 @@ export class NovelCharacterGenerator {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
 
     // ── 2. 构建用户消息（核心风格描述 + 生成指令）──
-    const userPrompt = this.buildUserPrompt(coreStyle)
+    // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
+    const userPrompt = this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
+      + '\n\n---\n\n' + this.buildUserPrompt(coreStyle)
 
     // ── 3. 创建独立 Session 调用 LLM ──
     onProgress?.({ phase: 'generating', message: 'AI 正在生成角色设定...' })
@@ -193,7 +195,7 @@ export class NovelCharacterGenerator {
       '  · 若该角色尚未承担剧情功能，填"暂无关键影响"',
       '',
       '【输出约束（必须遵守）】',
-      '所有输出的文本字段（name / description / personality / appearance / currentState 等）绝不使用破折号"——"，所有转折用自然语句完成。',
+      '所有输出的文本字段（name / description / personality / appearance / currentState 等）绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       '',
     ].join('\n')
   }

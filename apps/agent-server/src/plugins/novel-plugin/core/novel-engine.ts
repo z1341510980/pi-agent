@@ -313,14 +313,17 @@ export class NovelEngine {
     projectId: string,
     chapterNumber: number,
     narrativeTask: NarrativeTask,
-  ): Promise<{ chapterId: string; context: string; systemPrompt: string }> {
+    volumeId?: string | null,
+  ): Promise<NovelChapter> {
     const project = this.store.getProject(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
 
-    // 1. 构建约束
+    // 1. 构建约束（用于后续写作流程；此处仅创建章节记录，不直接使用）
     const constraints = this.buildChapterConstraints(projectId, chapterNumber)
 
     // 2. 创建章节记录（planned 状态）
+    //    volumeId 优先使用调用方传入值（来自 outline-tree 的卷内新建章），
+    //    未传则回退到 project.currentVolume 对应的卷 id（向后兼容）。
     const chapterId = randomUUID()
     const chapter = this.store.createChapter({
       id: chapterId,
@@ -333,9 +336,10 @@ export class NovelEngine {
       status: 'planned',
       narrativeTask: narrativeTask.description,
       acceptanceResult: null,
+      volumeId: volumeId ?? null,
     })
 
-    // 3. 构建系统提示词和章节上下文
+    // 3. 触发约束构建以保持副作用一致（部分约束会写入 store）
     const config = {
       projectId,
       agentType: 'writer',
@@ -343,11 +347,10 @@ export class NovelEngine {
       narrativeTask,
       constraints,
     }
+    this.sessionFactory.buildSystemPrompt(config)
+    this.sessionFactory.buildChapterContext(config)
 
-    const systemPrompt = this.sessionFactory.buildSystemPrompt(config)
-    const context = this.sessionFactory.buildChapterContext(config)
-
-    return { chapterId, context, systemPrompt }
+    return chapter
   }
 
   /**

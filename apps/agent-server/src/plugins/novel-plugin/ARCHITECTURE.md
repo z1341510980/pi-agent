@@ -342,7 +342,7 @@ NovelPromptBuilder 只读取数据，定义了 18 个读方法。除了常规 li
 
 1. **模式 1：手动编排**（前端用户在画布上选择实体）→ `create-flow` 路由从 `request.body.arrangedEntities` 读取 → 传入 `orchestrator.createChapterWithFlow({ arrangedEntities })`
 
-2. **模式 2：AI 编排**（按章纲自动生成）→ `ai-arrange` 路由调用 `entityGenerator.generateAndArrange(...)` → 返回 `ArrangedEntity` → 同一 SSE 流内衔接 `createChapterWithFlow({ arrangedEntities })`
+2. **模式 2：AI 编排**（按章纲自动生成）→ `ai-arrange` 路由调用 `entityGenerator.generateAndArrange(...)` → 返回 `ArrangedEntity`，只落矩阵，不生成正文；用户确认矩阵后再单独触发 `create-flow`
 
 **消费路径**：
 

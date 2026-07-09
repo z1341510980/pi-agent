@@ -184,7 +184,7 @@ export const useSessionStore = create<SessionState>()(
         }),
     }),
     {
-      name: 'pi-agent-session',
+      name: 'wenlang-agent-session',
       storage: createJSONStorage(() => localStorage),
       // 只持久化数据字段，不持久化 actions
       partialize: (state) => ({
