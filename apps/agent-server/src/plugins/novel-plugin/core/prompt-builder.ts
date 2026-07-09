@@ -74,6 +74,7 @@ import type {
   NovelChapter,
   NovelConflict,
   NovelForeshadow,
+  NovelHook,
   NovelClue,
   NovelInformationLayer,
   NovelConstraint,
@@ -109,6 +110,10 @@ export interface NovelPromptStores {
   getInformationLayer(infoLayerId: string): NovelInformationLayer | undefined
   listConstraints(projectId: string): NovelConstraint[]
   listRecentChapters(projectId: string, limit: number): NovelChapter[]
+  /** 查询指定章节之前抛出且未兑现的钩子（v0.2：供 Writer 承接） */
+  listUnfulfilledHooksBefore(projectId: string, beforeChapter: number): NovelHook[]
+  /** 查询指定章节抛出的钩子（v0.2：供 Writer 知道本章要抛出什么） */
+  listHooksByChapter(projectId: string, chapterNumber: number): NovelHook[]
   getChapter(projectId: string, chapterNumber: number): NovelChapter | undefined
   listEdges(projectId: string): NovelEdge[]
   listFactions(projectId: string): NovelFaction[]
@@ -411,6 +416,21 @@ export class NovelPromptBuilder {
     const nextChapter = this.stores.getChapter(projectId, chapterNumber + 1)
     const nextAnchor = this.formatNextChapterAnchor(nextChapter)
     if (nextAnchor) parts.push(nextAnchor)
+
+    // ── 未兑现钩子（Writer 必须承接上一章抛出的悬念）──
+    // v0.2 核心改动：Writer 现在能看到上一章抛出但尚未兑现的钩子，
+    // 必须在本章正文中承接。这是解决"前后章衔接对不上"的数据基础。
+    const unfulfilledHooks = this.stores.listUnfulfilledHooksBefore(projectId, chapterNumber)
+    if (unfulfilledHooks.length > 0) {
+      parts.push(this.formatUnfulfilledHooks(unfulfilledHooks))
+    }
+
+    // ── 本章规划钩子（Writer 必须在章末抛出）──
+    // Director 在检查点1 后已创建本章钩子实体，Writer 需要知道要抛出什么
+    const currentHooks = this.stores.listHooksByChapter(projectId, chapterNumber)
+    if (currentHooks.length > 0) {
+      parts.push(this.formatCurrentChapterHooks(currentHooks))
+    }
 
     return this.stripEmDash(parts.join('\n\n---\n\n'))
   }
@@ -1365,6 +1385,35 @@ export class NovelPromptBuilder {
       ? `\n\n第${nextChapter.chapterNumber}章前情提要：${recap}`
       : ''
     return `## 下一章开头（本章结尾必须自然过渡到此处的场景，钩子要对得上）\n\n第${nextChapter.chapterNumber}章《${nextChapter.title}》开头：\n\n${opening}${suffix}${recapLine}`
+  }
+
+  /**
+   * 格式化未兑现钩子列表（v0.2）。
+   *
+   * 设计意图：
+   * - Writer 必须承接上一章抛出的悬念，否则章节衔接断裂
+   * - 注入未兑现钩子的描述，让 Writer 知道本章开头要承接什么
+   * - 与 formatPreviousChapterEnding 配合：前者是上一章结尾原文，这里是悬念的结构化描述
+   */
+  private formatUnfulfilledHooks(hooks: NovelHook[]): string {
+    const lines = hooks.map(h =>
+      `- 第${h.chapterNumber}章 ${h.hookType}钩子：${h.description}`
+    )
+    return `## 未兑现钩子（本章开头必须自然承接以下悬念，否则读者会感到断裂）\n\n${lines.join('\n')}`
+  }
+
+  /**
+   * 格式化本章规划钩子（v0.2）。
+   *
+   * 设计意图：
+   * - Director 已规划本章章末钩子，Writer 必须在正文结尾抛出
+   * - 让 Writer 知道要抛出什么类型、什么内容的钩子
+   */
+  private formatCurrentChapterHooks(hooks: NovelHook[]): string {
+    const lines = hooks.map(h =>
+      `- ${h.hookType}钩子：${h.description}`
+    )
+    return `## 本章规划钩子（本章正文结尾必须抛出此悬念，驱动读者看下一章）\n\n${lines.join('\n')}`
   }
 
   /**
