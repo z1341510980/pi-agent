@@ -11,6 +11,11 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+# 后端 bytenode 字节码 + 原生模块，不进 asar 便于直接 require
+extraResources:
+  - from: ../agent-server/dist
+    to: server
+    filter: ['**/*', '!**/*.map']
 win:
   executableName: wenlang-agent
 nsis:

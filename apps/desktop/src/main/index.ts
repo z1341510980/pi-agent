@@ -5,7 +5,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { createTray, attachMinimizeToTray, destroyTray } from './tray'
 import { setupAutoUpdater, destroyAutoUpdater } from './auto-updater'
-// import { startEmbeddedServer, stopEmbeddedServer } from './server'
+import { startEmbeddedServer, stopEmbeddedServer } from './server'
 
 /** 当前工作目录 */
 let currentCwd = process.env.PI_CWD ?? process.cwd()
@@ -161,13 +161,15 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // 启动嵌入式后端服务（已禁用，手动启动 agent-server）
-  // try {
-  //   serverPort = await startEmbeddedServer()
-  //   console.log(`嵌入式 Agent Server 运行于 http://127.0.0.1:${serverPort}`)
-  // } catch (err) {
-  //   console.error('嵌入式 Agent Server 启动失败:', err)
-  // }
+  // 启动嵌入式后端服务
+  // 开发模式：spawn 系统 Node + tsx 运行源码
+  // 生产模式：ELECTRON_RUN_AS_NODE 复用 Electron 内置 Node，运行 bytenode 字节码
+  try {
+    serverPort = await startEmbeddedServer()
+    console.log(`嵌入式 Agent Server 运行于 http://127.0.0.1:${serverPort}`)
+  } catch (err) {
+    console.error('嵌入式 Agent Server 启动失败:', err)
+  }
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
@@ -203,7 +205,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  // stopEmbeddedServer()
+  stopEmbeddedServer()
   destroyTray()
   destroyAutoUpdater()
 })
