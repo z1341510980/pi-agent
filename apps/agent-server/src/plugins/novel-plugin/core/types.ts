@@ -403,6 +403,87 @@ export type ConflictTier = 'main' | 'secondary' | 'goal'
 export type ConflictProgressionMode =
   | 'linear' | 'mutation' | 'stagnation' | 'regression' | 'reversal'
 
+// ── 钩子（v0.2：章末悬念驱动实体）──
+
+/** 钩子状态：thrown（抛出）→ fulfilled（兑现）/ abandoned（弃用） */
+export type HookStatus = 'thrown' | 'fulfilled' | 'abandoned'
+
+/**
+ * 章尾钩子实体（v0.2 新增）
+ *
+ * 职能边界：节奏层，追踪章末悬念的「抛出→兑现」闭环。
+ * 与伏笔/冲突正交：伏笔是信息层（埋设-回收），冲突是张力层（有对抗方），
+ * 钩子是节奏层（单章末的读者驱动设计）。
+ *
+ * 创建时机：Director 规划本章时创建（status=thrown）
+ * 兑现时机：Memory Agent 检测到后续章节承接时标记 fulfilled
+ * 关联建立：Memory Agent 创建伏笔/冲突后回填 linked_*_id
+ */
+export interface NovelHook {
+  id: string
+  projectId: string
+  /** 抛出钩子的章节号 */
+  chapterNumber: number
+  hookType: ChapterEndingHookType
+  /** 钩子内容描述（Director 规划时填） */
+  description: string
+  status: HookStatus
+  /** 兑现章节号（fulfilled 时填） */
+  fulfilledAtChapter: number | null
+  /** 兑现方式描述（Writer 兑现后填） */
+  fulfilledDescription: string | null
+  /** 可选关联伏笔（钩子是伏笔的埋设） */
+  linkedForeshadowId: string | null
+  /** 可选关联冲突（钩子是冲突升级） */
+  linkedConflictId: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+// ── 角色弧光（v0.2：角色内心阶段演进）──
+
+/** 弧光类型：growth成长 / fall堕落 / redemption救赎 / shift转变 */
+export type ArcType = 'growth' | 'fall' | 'redemption' | 'shift'
+
+/** 弧光阶段历史记录项 */
+export interface ArcStageHistoryEntry {
+  stage: string
+  triggerEvent: string
+  description: string
+  chapterNumber: number
+  changedAt: number
+}
+
+/**
+ * 角色弧光实体（v0.2 新增）
+ *
+ * 职能边界：成长层，追踪角色内心的阶段演进。
+ * 与 character_history 正交：character_history 记录横向状态变更（currentState/goal），
+ * 弧光记录纵向成长线（只在阶段转换时更新）。
+ *
+ * 1:1 关联角色（一个角色一条主弧光线，多弧光留到 v0.3）。
+ * character.arcStage 字段保留作弧光当前阶段的镜像。
+ */
+export interface NovelCharacterArc {
+  id: string
+  projectId: string
+  characterId: string
+  arcType: ArcType
+  currentStage: string
+  stageHistory: ArcStageHistoryEntry[]
+  description: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** 弧光阶段模型（按 arcType 对应不同阶段序列） */
+export const ARC_STAGE_MODELS: Record<ArcType, string[]> = {
+  growth: ['denial', 'resistance', 'acceptance', 'transformation'],
+  fall: ['temptation', 'rationalization', 'corruption', 'point_of_no_return'],
+  redemption: ['guilt', 'atonement', 'sacrifice', 'redemption'],
+  shift: ['old_framework', 'disruption', 'exploration', 'new_framework'],
+}
+
 // ── 世界规则 ──
 
 export interface NovelWorldRule {
