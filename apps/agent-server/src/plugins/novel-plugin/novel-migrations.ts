@@ -685,4 +685,45 @@ export const novelMigrations: MigrationDefinition[] = [
           ALTER TABLE novel_agent_logs ADD COLUMN llm_provider TEXT NOT NULL DEFAULT '';
           ALTER TABLE novel_agent_logs ADD COLUMN llm_model TEXT NOT NULL DEFAULT '';`,
   },
+  {
+    // v0.2：钩子实体表（章末悬念驱动，追踪 thrown→fulfilled 闭环）
+    id: '058_create_novel_hooks',
+    sql: `CREATE TABLE IF NOT EXISTS novel_hooks (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      hook_type       TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'thrown',
+      fulfilled_at_chapter INTEGER,
+      fulfilled_description TEXT,
+      linked_foreshadow_id TEXT,
+      linked_conflict_id   TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_hooks_project ON novel_hooks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_hooks_status ON novel_hooks(status);
+    CREATE INDEX IF NOT EXISTS idx_novel_hooks_chapter ON novel_hooks(chapter_number);`,
+  },
+  {
+    // v0.2：角色弧光表（角色内心阶段演进，1:1 关联角色）
+    id: '059_create_novel_character_arcs',
+    sql: `CREATE TABLE IF NOT EXISTS novel_character_arcs (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      character_id    TEXT NOT NULL,
+      arc_type        TEXT NOT NULL,
+      current_stage   TEXT NOT NULL,
+      stage_history   TEXT NOT NULL DEFAULT '[]',
+      description     TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (character_id) REFERENCES novel_characters(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_arcs_project ON novel_character_arcs(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_arcs_character ON novel_character_arcs(character_id);`,
+  },
 ]
