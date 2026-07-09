@@ -7,7 +7,7 @@
  *   实为同一人、不同章节录入时写法不同）
  *
  * 技术方案（与 novel-memory-generator 一致）：
- * 1. 单次 LLM 调用，输入全部 6 类实体清单（id + name/description + 关键字段）
+ * 1. 单次 LLM 调用，输入全部 8 类实体清单（id + name/description + 关键字段）
  * 2. LLM 输出结构化 JSON：相似组 + 字段级合并建议
  * 3. scan 方法只返回报告，不落库；落库由 novel-store.mergeWithPlan 完成
  *
@@ -47,7 +47,7 @@ export class NovelSimilarityScanner {
   ) {}
 
   /**
-   * 扫描全部 6 类实体，找出语义相似的重复项。
+   * 扫描全部 8 类实体，找出语义相似的重复项。
    *
    * 不落库，只返回 LLM 给出的合并方案。落库由调用方决定（通常在用户检查点确认后
    * 调用 store.mergeWithPlan）。
@@ -64,7 +64,7 @@ export class NovelSimilarityScanner {
     onProgress?.({ phase: 'preparing', message: '正在构建相似度扫描提示词...' })
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'similarity-scanner')
 
-    // ── 2. 构建用户消息：注入全部 6 类实体清单 ──
+    // ── 2. 构建用户消息：注入全部 8 类实体清单 ──
     const userMessage = this.promptBuilder.buildAgentIdentity(projectId, 'similarity-scanner')
       + '\n\n---\n\n' + this.buildUserPrompt(projectId)
 
@@ -129,14 +129,14 @@ export class NovelSimilarityScanner {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // 提示词构建：列出全部 6 类实体（id + name/description + 关键字段）
+  // 提示词构建：列出全部 8 类实体（id + name/description + 关键字段）
   // ═══════════════════════════════════════════════════════════════
 
   private buildUserPrompt(projectId: string): string {
     const parts: string[] = []
     parts.push('## 待扫描实体清单')
     parts.push('')
-    parts.push('请扫描以下全部 6 类实体，找出语义相似（但名字/描述不完全相同）的重复项。')
+    parts.push('请扫描以下全部 8 类实体，找出语义相似（但名字/描述不完全相同）的重复项。')
     parts.push('每个实体都标注了 id（用于填充 keptId / removed.id / fieldMerges.fromId）。')
     parts.push('')
 
@@ -247,10 +247,42 @@ export class NovelSimilarityScanner {
       parts.push('')
     }
 
+    // ── 钩子（v0.2 新增）──
+    const hooks = this.store.listHooks(projectId)
+    if (hooks.length > 0) {
+      parts.push('### 钩子（hook）')
+      for (const h of hooks) {
+        const fields = [
+          `chapterNumber: ${h.chapterNumber}`,
+          `hookType: ${h.hookType}`,
+          `description: ${h.description}`,
+          `status: ${h.status}`,
+        ]
+        parts.push(`- ID: ${h.id} | ${fields.join(' | ')}`)
+      }
+      parts.push('')
+    }
+
+    // ── 角色弧光（v0.2 新增）──
+    const arcs = this.store.listCharacterArcs(projectId)
+    if (arcs.length > 0) {
+      parts.push('### 角色弧光（character_arc）')
+      for (const a of arcs) {
+        const fields = [
+          `arcType: ${a.arcType}`,
+          `currentStage: ${a.currentStage}`,
+          `description: ${a.description || '(空)'}`,
+        ]
+        parts.push(`- ID: ${a.id} | characterId: ${a.characterId} | ${fields.join(' | ')}`)
+      }
+      parts.push('')
+    }
+
     // 实体总数提示
     const totalEntities =
       characters.length + conflicts.length + foreshadows.length
       + factions.length + locations.length + worldElements.length
+      + hooks.length + arcs.length
     parts.push(`## 实体总数：${totalEntities}`)
     if (totalEntities === 0) {
       parts.push('（实体清单为空，直接返回空报告即可）')

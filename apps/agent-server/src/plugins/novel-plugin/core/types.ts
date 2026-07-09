@@ -1042,8 +1042,8 @@ export interface DeduplicateReport {
 
 // ── LLM 相似度扫描 ──
 
-/** LLM 相似度扫描支持的实体类型（含 world_element） */
-export type SimilarityEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
+/** LLM 相似度扫描支持的实体类型（含 world_element / hook / character_arc） */
+export type SimilarityEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element' | 'hook' | 'character_arc'
 
 /** 一组相似实体（LLM 判定） */
 export interface SimilarityGroup {
