@@ -1178,6 +1178,160 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 钩子（v0.2：章末悬念驱动实体）
+  // ═══════════════════════════════════════════════════════════════
+
+  const createHookSchema = z.object({
+    chapterNumber: z.number().int().min(1),
+    hookType: z.enum(['suspense', 'reversal', 'emotional', 'action']),
+    description: z.string().min(1),
+    status: z.enum(['thrown', 'fulfilled', 'abandoned']).default('thrown'),
+    fulfilledAtChapter: z.number().int().nullable().default(null),
+    fulfilledDescription: z.string().nullable().default(null),
+    linkedForeshadowId: z.string().nullable().default(null),
+    linkedConflictId: z.string().nullable().default(null),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/hooks',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createHookSchema, request, reply)
+      if (!input) return reply
+
+      const hook = store.createHook({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        ...input,
+      })
+      return success(hook, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/hooks',
+    handler: async (request: any) => {
+      return success(store.listHooks(request.params.projectId), request.traceId)
+    },
+  })
+
+  // PUT 钩子：所有字段 .optional() 无 .default()，避免覆盖未传字段（与 updateMarkerSchema 同原则）
+  const updateHookSchema = z.object({
+    chapterNumber: z.number().int().min(1).optional(),
+    hookType: z.enum(['suspense', 'reversal', 'emotional', 'action']).optional(),
+    description: z.string().min(1).optional(),
+    status: z.enum(['thrown', 'fulfilled', 'abandoned']).optional(),
+    fulfilledAtChapter: z.number().int().nullable().optional(),
+    fulfilledDescription: z.string().nullable().optional(),
+    linkedForeshadowId: z.string().nullable().optional(),
+    linkedConflictId: z.string().nullable().optional(),
+  })
+
+  routes.push({
+    method: 'PUT',
+    path: '/hooks/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateHookSchema, request, reply)
+      if (!input) return reply
+
+      const updated = store.updateHook(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `钩子不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/hooks/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteHook(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `钩子不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 角色弧光（v0.2：角色内心阶段演进）
+  // ═══════════════════════════════════════════════════════════════
+
+  const createCharacterArcSchema = z.object({
+    characterId: z.string().min(1),
+    arcType: z.enum(['growth', 'fall', 'redemption', 'shift']),
+    currentStage: z.string().min(1),
+    stageHistory: z.array(z.object({
+      stage: z.string(),
+      triggerEvent: z.string(),
+      description: z.string(),
+      chapterNumber: z.number().int(),
+      changedAt: z.number(),
+    })).default([]),
+    description: z.string().nullable().default(null),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/character-arcs',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createCharacterArcSchema, request, reply)
+      if (!input) return reply
+
+      const arc = store.createCharacterArc({
+        id: randomUUID(),
+        projectId: request.params.projectId,
+        ...input,
+      })
+      return success(arc, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/character-arcs',
+    handler: async (request: any) => {
+      return success(store.listCharacterArcs(request.params.projectId), request.traceId)
+    },
+  })
+
+  // PUT 角色弧光：所有字段 .optional() 无 .default()，避免覆盖未传字段
+  const updateCharacterArcSchema = z.object({
+    characterId: z.string().min(1).optional(),
+    arcType: z.enum(['growth', 'fall', 'redemption', 'shift']).optional(),
+    currentStage: z.string().min(1).optional(),
+    stageHistory: z.array(z.object({
+      stage: z.string(),
+      triggerEvent: z.string(),
+      description: z.string(),
+      chapterNumber: z.number().int(),
+      changedAt: z.number(),
+    })).optional(),
+    description: z.string().nullable().optional(),
+  })
+
+  routes.push({
+    method: 'PUT',
+    path: '/character-arcs/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateCharacterArcSchema, request, reply)
+      if (!input) return reply
+
+      const updated = store.updateCharacterArc(request.params.id, input)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `角色弧光不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/character-arcs/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteCharacterArc(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `角色弧光不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 线索
   // ═══════════════════════════════════════════════════════════════
 
