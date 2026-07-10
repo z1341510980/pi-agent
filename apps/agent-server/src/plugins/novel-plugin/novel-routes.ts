@@ -2185,6 +2185,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // 路径参数 :checkpointId 对应 ConfirmationManager 内部生成的 ConfirmationRequest.id
   // （由 onCheckpoint 在创建决策请求后通过 SSE 推送给前端，前端在用户点决策时回传）
   // type 仍在 body 中传递，便于日志/校验（不再作为路由参数）
+  //
+  // 同时接受 workflow（novel-checkpoint-）与群聊（novel-discussion-）两种 threadId 前缀：
+  // 前端 use-novel-creation-flow.ts 的 submitCheckpoint 统一调用本端点，
+  // 群聊模式的 /discussion-checkpoint/.../decision 端点作为别名保留。
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/checkpoint/:checkpointId/decision',
@@ -2192,7 +2196,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const { projectId, checkpointId } = request.params as { projectId: string; checkpointId: string }
       const { decision, userMessages } = request.body as { decision: string; userMessages?: string[] }
       const pending = services.confirmationManager.listPending().find((r) => r.id === checkpointId)
-      if (!pending || !pending.threadId.startsWith(`novel-checkpoint-${projectId}-`)) {
+      const isWorkflow = pending?.threadId.startsWith(`novel-checkpoint-${projectId}-`)
+      const isDiscussion = pending?.threadId.startsWith(`novel-discussion-${projectId}-`)
+      if (!pending || (!isWorkflow && !isDiscussion)) {
         reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
         return
       }
@@ -2203,7 +2209,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         return
       }
       // 确认 checkpoint 有效后再写用户消息，避免过期/跨项目请求污染下一轮 Agent。
-      if (userMessages && userMessages.length > 0) {
+      // 仅 workflow 模式通过 orchestrator.setUserMessages 注入用户消息；
+      // 群聊模式有独立的用户消息机制，不在此处注入（与 discussion-checkpoint 端点行为一致）。
+      if (isWorkflow && userMessages && userMessages.length > 0) {
         services.orchestrator.setUserMessages(userMessages)
       }
       return { ok: true, data: { accepted: true } }
