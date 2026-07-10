@@ -127,6 +127,9 @@ ${memberList}
 
   /** 降级决策：Moderator LLM 不可用时按规则协调 */
   private fallbackDecide(members: DiscussionMember[], state: ModeratorState): ModeratorDecision {
+    if (members.length === 0) {
+      return { type: 'observe', reason: '降级模式：无可用成员' }
+    }
     if (state.round >= 3) {
       const converger = members.find(m => m.canConverge)
       if (converger) {
@@ -156,6 +159,34 @@ ${memberList}
     const parsed = JSON.parse(jsonMatch[0])
     if (!['invite', 'pause', 'converge', 'next_scene', 'observe'].includes(parsed.type)) {
       throw new Error(`Moderator 输出 type 非法: ${parsed.type}`)
+    }
+    // 校验各类型必填字段，缺失时抛错触发重试/降级
+    switch (parsed.type) {
+      case 'invite':
+        if (typeof parsed.agentId !== 'string' || !parsed.agentId) {
+          throw new Error('Moderator invite 决策缺少 agentId')
+        }
+        if (typeof parsed.prompt !== 'string' || !parsed.prompt) {
+          throw new Error('Moderator invite 决策缺少 prompt')
+        }
+        break
+      case 'pause':
+        if (typeof parsed.question !== 'string' || !parsed.question) {
+          throw new Error('Moderator pause 决策缺少 question')
+        }
+        break
+      case 'converge':
+        if (typeof parsed.agentId !== 'string' || !parsed.agentId) {
+          throw new Error('Moderator converge 决策缺少 agentId')
+        }
+        if (parsed.scope !== 'scene' && parsed.scope !== 'chapter') {
+          throw new Error(`Moderator converge 决策 scope 非法: ${parsed.scope}`)
+        }
+        break
+      case 'next_scene':
+      case 'observe':
+        // 无额外必填字段
+        break
     }
     return parsed as ModeratorDecision
   }

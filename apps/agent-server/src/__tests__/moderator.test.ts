@@ -51,6 +51,7 @@ describe('Moderator', () => {
       expect(decision.agentId).toBe('novel-director')
       expect(decision.prompt).toContain('规划')
     }
+    expect(ctx.mockSession.dispose).toHaveBeenCalled()
   })
 
   it('解析 pause 决策', async () => {
@@ -125,6 +126,22 @@ describe('Moderator', () => {
     const decision = await moderator.decide(goal, history, members, state)
     // 降级为规则协调：round=0 → invite 第一个成员
     expect(decision.type).toBe('invite')
+    expect(ctx.createSession).toHaveBeenCalledTimes(2) // 初次 + 重试
+    expect(mockSession.dispose).toHaveBeenCalled()
+  })
+
+  it('容错：prompt() reject 时降级为规则协调', async () => {
+    const mockSession = {
+      prompt: vi.fn().mockRejectedValue(new Error('timeout')),
+      dispose: vi.fn(),
+    }
+    const ctx = {
+      createSession: vi.fn().mockResolvedValue(mockSession),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+    }
+    const moderator = new Moderator(ctx as any)
+    const decision = await moderator.decide(goal, history, members, state)
+    expect(decision.type).toBe('invite') // 降级
     expect(ctx.createSession).toHaveBeenCalledTimes(2) // 初次 + 重试
   })
 
