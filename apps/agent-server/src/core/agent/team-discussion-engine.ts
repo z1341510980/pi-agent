@@ -298,16 +298,32 @@ export class TeamDiscussionEngine {
       emit: options.emit,
       emitRaw: false,
       onFirstText: () => {
+        // 首 token 到达：发射 phase_change 表示"开始生成内容"。
+        // agent_start 已在 prompt() 之前发射，此处不再重复，避免时序错乱。
         this.emitProgress(options, ctx.phase, {
-          type: 'agent_start',
-          data: { agentName: member.name, message: `${member.name} 开始发言...` },
+          type: 'phase_change',
+          data: { message: `${member.name} 开始发言...` },
         })
+      },
+    })
+    const { session, streamEmitter, messageId } = handle
+
+    // agent_start 必须在 prompt() 之前发射，否则前端收到 TEXT_MESSAGE_START 时
+    // 找不到 messageId 映射，成员输出不显示。携带 messageId + agentType 对齐 workflow 模式契约。
+    this.emitProgress(options, ctx.phase, {
+      type: 'agent_start',
+      data: {
+        agentId: member.id,
+        agentType: member.type === 'character' ? 'character' : member.id.replace('novel-', ''),
+        agentName: member.name,
+        messageId,
+        message: `${member.name} 已启动，正在向 AI 发送请求...`,
       },
     })
 
     try {
-      const result = await handle.session.prompt()
-      handle.streamEmitter.finishTextMessage()
+      const result = await session.prompt()
+      streamEmitter.finishTextMessage()
       return result
     } finally {
       handle.dispose()
