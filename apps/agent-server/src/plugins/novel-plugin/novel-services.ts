@@ -37,6 +37,8 @@ import { NovelMemoryGenerator } from './core/novel-memory-generator.js'
 import { NovelSimilarityScanner } from './core/novel-similarity-scanner.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
 import { NovelAgentConfigStore } from './core/novel-agent-config-store.js'
+import { NovelDiscussionRunner } from './core/novel-discussion-runner.js'
+import { DiscussionSettingsStore } from '../../core/agent/discussion-settings-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { AgentManager } from '../../core/agent/subagent-tool.js'
@@ -79,6 +81,10 @@ export interface NovelServices {
    * - 调用 requestDecision/respondDecision 处理 'approve'/'reject'/'revise'/'rewrite' 等多决策
    */
   confirmationManager: ConfirmationManager
+  /** 群聊共创模式 Runner */
+  discussionRunner: NovelDiscussionRunner
+  /** 群聊设置存储 */
+  discussionSettingsStore: DiscussionSettingsStore
 }
 
 /**
@@ -123,6 +129,15 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine)
   const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context, agentConfigStore, memoryGenerator)
 
+  // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/sessionFactory/promptBuilder/engine/context + memoryGenerator）
+  //     discussionSettingsStore 读取持久化的 moderatorModel 传入 runner 构造函数
+  const discussionSettingsStore = new DiscussionSettingsStore(db)
+  const discussionRunner = new NovelDiscussionRunner(
+    store, memoryStore, sessionFactory, promptBuilder, engine, context,
+    discussionSettingsStore.get().moderatorModel,
+    memoryGenerator,
+  )
+
   // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
   //    PluginContext.createSession 用于 generate 调用 LLM
   const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, context)
@@ -139,5 +154,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 10. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, agentConfigStore, teamManager, agentManager, confirmationManager }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, agentConfigStore, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore }
 }
