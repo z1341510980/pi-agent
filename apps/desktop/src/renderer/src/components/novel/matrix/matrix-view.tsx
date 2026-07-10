@@ -217,6 +217,9 @@ export function MatrixView({
     queryKey: ['novel', 'hooks', currentProjectId],
     queryFn: () => listHooks(currentProjectId!),
     enabled: !!currentProjectId,
+    // 路由不存在（404）时不重试，避免拖累主矩阵渲染；占位空数组保证渲染期间有默认值
+    retry: false,
+    placeholderData: [],
   })
 
   // ── v0.2：角色弧光（独立实体，追踪角色成长/堕落/救赎/转变轨迹）──
@@ -224,6 +227,9 @@ export function MatrixView({
     queryKey: ['novel', 'character-arcs', currentProjectId],
     queryFn: () => listCharacterArcs(currentProjectId!),
     enabled: !!currentProjectId,
+    // 路由不存在（404）时不重试，避免拖累主矩阵渲染；占位空数组保证渲染期间有默认值
+    retry: false,
+    placeholderData: [],
   })
 
   // 角色名映射：characterId → name（从已有的 characters prop 构建，避免重复拉取）
@@ -559,11 +565,11 @@ function HookTrackRow({
   if (hooks.length === 0) return null
 
   return (
-    <div className="relative z-20 flex h-[26px] border-b border-border/60 bg-surface-1/60">
+    <div className="relative z-[1] flex h-7 border-b border-border/20 hover:bg-muted/30 transition-colors">
       {/* 左侧 sticky 列：轨道标签 */}
       <div
-        className="sticky left-0 z-30 bg-surface-1 flex items-center justify-end pr-2 border-r border-border shrink-0"
-        style={{ width: `${SIDEBAR_W}px` }}
+        className="sticky left-0 z-30 flex items-center justify-end pr-2 border-r border-border shrink-0"
+        style={{ width: `${SIDEBAR_W}px`, backgroundColor: 'var(--color-surface-1)' }}
       >
         <span className="font-serif text-[10px] text-hint tracking-wider">章尾钩子</span>
       </div>
@@ -663,11 +669,11 @@ function ArcTrackRow({
   }
 
   return (
-    <div className="relative z-20 flex h-[26px] border-b border-border/60 bg-surface-1/60">
+    <div className="relative z-[1] flex h-7 border-b border-border/20 hover:bg-muted/30 transition-colors">
       {/* 左侧 sticky 列：轨道标签 */}
       <div
-        className="sticky left-0 z-30 bg-surface-1 flex items-center justify-end pr-2 border-r border-border shrink-0"
-        style={{ width: `${SIDEBAR_W}px` }}
+        className="sticky left-0 z-30 flex items-center justify-end pr-2 border-r border-border shrink-0"
+        style={{ width: `${SIDEBAR_W}px`, backgroundColor: 'var(--color-surface-1)' }}
       >
         <span className="font-serif text-[10px] text-hint tracking-wider">角色弧光</span>
       </div>
@@ -996,6 +1002,7 @@ function EntityRow({
           colorRgb={meta.colorRgb}
           onEditSpan={onEditSpan}
           onContextMenuCell={onContextMenuCell}
+          onEntityClick={onClick}
         />
       </div>
 
@@ -1211,9 +1218,11 @@ interface EntityOverlayProps {
   colorRgb: string
   onEditSpan?: (entity: MatrixEntity) => void
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
+  /** 左键点击色带：选中该实体（与点击行首效果一致） */
+  onEntityClick: () => void
 }
 
-function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditSpan, onContextMenuCell }: EntityOverlayProps): ReactElement | null {
+function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditSpan, onContextMenuCell, onEntityClick }: EntityOverlayProps): ReactElement | null {
   switch (entity.kind) {
     case 'conflict':
     case 'faction': {
@@ -1236,6 +1245,10 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
                   border: `1px solid rgba(${colorRgb}, 0.3)`,
                 }}
                 data-tip="双击编辑跨度 · 拖动两端圆点调整范围"
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  onEntityClick()
+                }}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation()
                   onEditSpan?.(entity)
@@ -1309,6 +1322,10 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
                   borderStyle: recovered ? 'solid' : 'dashed',
                 }}
                 data-tip="双击编辑跨度 · 拖动两端圆点调整范围"
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  onEntityClick()
+                }}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation()
                   onEditSpan?.(entity)
