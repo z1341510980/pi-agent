@@ -400,19 +400,19 @@ describe('computeCellSymbol', () => {
     expect(computeCellSymbol(entity, 5)).toEqual({ type: 'span-middle' })
   })
 
-  it('returns foreshadow-plant/payoff/span for foreshadow', () => {
-    // 迁移 055：伏笔改为多段跨度后，span 区间由 chapterSpans 决定
+  it('returns foreshadow-plant/payoff/empty for foreshadow', () => {
+    // 伏笔只有 plant/payoff 两个端点，中间章节为 empty（虚线连线由 overlay 渲染）
     const entity = {
       id: 'f1', kind: 'foreshadow' as const, name: 'Y', entityId: 'f1', entityType: 'foreshadow' as const,
       plantChapter: 2, payoffChapter: 10, chapterSpans: [[2, 10]] as Array<[number, number]>,
     }
     expect(computeCellSymbol(entity, 2)).toEqual({ type: 'foreshadow-plant' })
-    expect(computeCellSymbol(entity, 5)).toEqual({ type: 'foreshadow-span', recovered: true })
+    expect(computeCellSymbol(entity, 5)).toEqual({ type: 'empty' })
     expect(computeCellSymbol(entity, 10)).toEqual({ type: 'foreshadow-payoff' })
     expect(computeCellSymbol(entity, 15)).toEqual({ type: 'empty' })
   })
 
-  it('returns unrecovered span for foreshadow without payoff', () => {
+  it('returns empty for foreshadow without payoff (only plant has symbol)', () => {
     const entity = {
       id: 'f2', kind: 'foreshadow' as const, name: 'Y', entityId: 'f2', entityType: 'foreshadow' as const,
       plantChapter: 5, payoffChapter: null, chapterSpans: [[5, 5]] as Array<[number, number]>,

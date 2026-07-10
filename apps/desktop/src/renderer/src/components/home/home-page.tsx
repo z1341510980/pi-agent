@@ -13,6 +13,7 @@ import { browserConfig } from '@repo/config/browser'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { getApi } from '@/api/http-client'
+import logoImage from '@/assets/logo.png'
 
 // ── 类型 ──
 
@@ -83,9 +84,11 @@ export function HomePage({
       <div className="mx-auto max-w-4xl px-6 py-10">
         {/* ── Hero ── */}
         <section className="mb-10 flex items-center gap-4">
-          <div className="size-14 rounded-2xl bg-accent text-accent-foreground flex items-center justify-center text-3xl font-extrabold shrink-0">
-            π
-          </div>
+          <img
+            src={logoImage}
+            alt="PI Agent"
+            className="size-14 rounded-2xl shrink-0 object-cover"
+          />
           <div className="min-w-0">
             <h1 className="text-2xl font-[780] leading-tight m-0 text-balance">
             {browserConfig.appName}

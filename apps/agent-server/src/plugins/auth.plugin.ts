@@ -8,17 +8,16 @@ const PUBLIC_PATHS = ["/api/health"];
 
 /**
  * Bearer Token 认证插件
- * Token 由 Electron Main 进程启动时生成，通过环境变量 WENLANG_AGENT_AUTH_TOKEN 传入
+ *
+ * 仅当设置环境变量 WENLANG_AGENT_AUTH_TOKEN 时才启用认证。
+ * 本地打包不依赖外部 auth 机制，默认不设置 token 即禁用认证。
  */
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
   const expectedToken = process.env.WENLANG_AGENT_AUTH_TOKEN;
 
-  // 生产环境必须设置 Token
+  // 未设置 Token 时禁用认证（本地打包模式）
   if (!expectedToken) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("生产环境必须设置 WENLANG_AGENT_AUTH_TOKEN");
-    }
-    app.log.warn("WENLANG_AGENT_AUTH_TOKEN 未设置，认证已禁用（仅限开发模式）");
+    app.log.warn("WENLANG_AGENT_AUTH_TOKEN 未设置，认证已禁用");
     return;
   }
 

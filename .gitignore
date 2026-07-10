@@ -63,3 +63,4 @@ apps/agent-server/scripts/e2e-test/output/
 # Pi SDK 本地数据目录（会话、凭证、模型配置）
 .pi-data/
 .pi/
+graphify-out/*

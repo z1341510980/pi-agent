@@ -16,8 +16,9 @@ import { useMemo, useCallback, useEffect, useRef, useState, type ReactElement } 
 import { useQuery } from '@tanstack/react-query'
 import { useDroppable, useDndMonitor, useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
+import { useDrag } from '@use-gesture/react'
 import { Plus, ChevronRight, GripVertical } from 'lucide-react'
-import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType, NovelHook, NovelCharacterArc, ArcStageHistoryEntry } from '@/api/novel-client'
+import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType, NovelHook, NovelCharacterArc } from '@/api/novel-client'
 import { listHooks, listCharacterArcs } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 import { computeVisibleChapters } from '@/lib/matrix-viewport'
@@ -232,15 +233,6 @@ export function MatrixView({
     placeholderData: [],
   })
 
-  // 角色名映射：characterId → name（从已有的 characters prop 构建，避免重复拉取）
-  const characterNameMap = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const c of characters ?? []) {
-      m.set(c.id, c.name)
-    }
-    return m
-  }, [characters])
-
   // ── C-3c 滚动到指定章节列（监听 store 的 matrixScrollTarget）──
   const matrixScrollTarget = useNovelStore((s) => s.matrixScrollTarget)
   useEffect(() => {
@@ -324,6 +316,55 @@ export function MatrixView({
     },
   })
 
+  // ── 鼠标按住拖动滚动（pan-to-scroll）──
+  // 用 @use-gesture/react 的 useDrag 实现，替代手写 mousedown/mousemove。
+  // - filterTaps:true + threshold:6 → 位移 <6px 视为 tap（不吞 click），≥6px 才进入 pan
+  //   与 @dnd-kit PointerSensor activationConstraint.distance 对齐，消除 1px 空窗
+  // - pointer:{ buttons:1 } → 仅左键启动
+  // - mousedown 时 target 过滤：在 draggable / 表单控件 / 带 data-tip 的单元格上不启动，
+  //   让 @dnd-kit 和 click 各司其职
+  const [isPanning, setIsPanning] = useState(false)
+  const panStartRef = useRef<{ startX: number; startScrollLeft: number } | null>(null)
+
+  const bindPan = useDrag(({ down, movement: [mx], first, cancel, event }) => {
+    const evt = event as PointerEvent
+    // 首次触发时校验 target：交互元素上 cancel 整个手势
+    if (first) {
+      const target = evt.target as HTMLElement
+      if (
+        target.closest('[aria-roledescription="draggable"]') ||
+        target.closest('button, a, input, select, textarea, [role="button"]') ||
+        target.closest('[data-tip]')
+      ) {
+        cancel()
+        return
+      }
+      const el = scrollContainerRef.current
+      if (!el) {
+        cancel()
+        return
+      }
+      panStartRef.current = { startX: evt.clientX, startScrollLeft: el.scrollLeft }
+    }
+
+    // down=true 表示手势进行中；一旦超过 threshold 进入 panning 状态
+    if (down && panStartRef.current) {
+      setIsPanning(true)
+      const el = scrollContainerRef.current
+      if (el) {
+        el.scrollLeft = panStartRef.current.startScrollLeft - mx
+      }
+    } else {
+      // up：结束 pan，清理状态
+      setIsPanning(false)
+      panStartRef.current = null
+    }
+  }, {
+    filterTaps: true,
+    threshold: 6,
+    pointer: { buttons: 1 },
+  })
+
   // 整体内容宽度
   const totalWidth = SIDEBAR_W + maxChapter * cellWidth
   // 当前章节列高亮 left（在内容容器内）
@@ -338,7 +379,11 @@ export function MatrixView({
         scrollContainerRef.current = el
         setDropRef(el)
       }}
-      className="overflow-x-auto overflow-y-auto h-full isolate"
+      className={cn(
+        'overflow-x-auto overflow-y-auto h-full isolate touch-none',
+        isPanning ? 'cursor-grabbing select-none' : 'cursor-default',
+      )}
+      {...bindPan()}
       onScroll={(e) => {
         const el = e.currentTarget
         const x = el.scrollLeft
@@ -477,17 +522,6 @@ export function MatrixView({
             playheadChapter={playheadChapter}
           />
 
-          {/* 角色弧光轨道行（仅当存在任何弧光阶段转换时显示） */}
-          <ArcTrackRow
-            arcs={characterArcs}
-            characterNameMap={characterNameMap}
-            visibleChapterColumns={visibleChapterColumns}
-            visibleRange={visibleRange}
-            maxChapter={maxChapter}
-            cellWidth={cellWidth}
-            playheadChapter={playheadChapter}
-          />
-
           {/* 分组 + 实体行（无实体时显示空状态引导，但章节标尺仍然显示） */}
           <div className="relative z-[6]">
             {hasAnyEntity ? (
@@ -509,6 +543,7 @@ export function MatrixView({
                     color={meta.color}
                     colorRgb={meta.colorRgb}
                     icon={meta.icon}
+                    characterArcs={characterArcs}
                     onToggleCollapse={() => onToggleCollapse(group.id)}
                     onEntityClick={handleEntityClick}
                     onContextMenuCell={onContextMenuCell}
@@ -631,7 +666,7 @@ function HookTrackRow({
   )
 }
 
-// ── 角色弧光轨道行 ──
+// ── 弧光类型元数据（角色行叠加标记用） ──
 
 /** 弧光类型 → 显示元数据（颜色/背景/标签） */
 const ARC_TYPE_META: Record<string, { label: string; color: string; bg: string }> = {
@@ -639,92 +674,6 @@ const ARC_TYPE_META: Record<string, { label: string; color: string; bg: string }
   fall: { label: '堕落', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
   redemption: { label: '救赎', color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
   shift: { label: '转变', color: '#3b82f6', bg: 'rgba(59,130,246,0.15)' },
-}
-
-interface ArcTrackRowProps {
-  arcs: NovelCharacterArc[]
-  characterNameMap: Map<string, string>
-  visibleChapterColumns: number[]
-  visibleRange: { start: number; end: number }
-  maxChapter: number
-  cellWidth: number
-  playheadChapter: number
-}
-
-function ArcTrackRow({
-  arcs, characterNameMap, visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
-}: ArcTrackRowProps): ReactElement | null {
-  // 仅当存在弧光数据时显示
-  if (arcs.length === 0) return null
-
-  // 收集所有阶段转换点，按章节号分组
-  const transitionsByChapter = new Map<number, Array<{ arc: NovelCharacterArc; entry: ArcStageHistoryEntry; characterName: string }>>()
-  for (const arc of arcs) {
-    const characterName = characterNameMap.get(arc.characterId) ?? '未知角色'
-    for (const entry of arc.stageHistory) {
-      const arr = transitionsByChapter.get(entry.chapterNumber) ?? []
-      arr.push({ arc, entry, characterName })
-      transitionsByChapter.set(entry.chapterNumber, arr)
-    }
-  }
-
-  return (
-    <div className="relative z-[1] flex h-7 border-b border-border/20 hover:bg-muted/30 transition-colors">
-      {/* 左侧 sticky 列：轨道标签 */}
-      <div
-        className="sticky left-0 z-30 flex items-center justify-end pr-2 border-r border-border shrink-0"
-        style={{ width: `${SIDEBAR_W}px`, backgroundColor: 'var(--color-surface-1)' }}
-      >
-        <span className="font-serif text-[10px] text-hint tracking-wider">角色弧光</span>
-      </div>
-      {/* 弧光单元格（仅渲染可见列） */}
-      <div className="flex relative">
-        {/* 左侧占位 */}
-        {visibleRange.start > 1 && (
-          <div style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} aria-hidden="true" />
-        )}
-        {visibleChapterColumns.map((ch) => {
-          const transitions = transitionsByChapter.get(ch) ?? []
-          const isCurrent = ch === playheadChapter
-          const tip = transitions.length === 0
-            ? `第 ${ch} 章`
-            : transitions.map((t) => {
-                const meta = ARC_TYPE_META[t.arc.arcType] ?? ARC_TYPE_META.growth
-                return `${t.characterName} ${meta.label}弧光 → ${t.entry.stage}：${t.entry.triggerEvent}`
-              }).join('｜')
-          return (
-            <div
-              key={ch}
-              className={cn(
-                'relative h-full shrink-0 flex items-center justify-center gap-0.5 border-r border-border/30',
-                isCurrent && 'bg-amber-500/5',
-              )}
-              style={{ width: `${cellWidth}px` }}
-              data-tip={tip}
-            >
-              {transitions.map((t, i) => {
-                const meta = ARC_TYPE_META[t.arc.arcType] ?? ARC_TYPE_META.growth
-                return (
-                  <span
-                    key={i}
-                    className="inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[8px] font-bold leading-none"
-                    style={{ color: meta.color, background: meta.bg }}
-                    title={`${t.characterName} ${meta.label}弧光 → ${t.entry.stage}：${t.entry.triggerEvent}`}
-                  >
-                    {meta.label[0]}
-                  </span>
-                )
-              })}
-            </div>
-          )
-        })}
-        {/* 右侧占位 */}
-        {visibleRange.end < maxChapter && (
-          <div style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} aria-hidden="true" />
-        )}
-      </div>
-    </div>
-  )
 }
 
 // 单钩子图标：保持原圆形带字符样式，根据兑现状态区分实心/虚线
@@ -784,7 +733,8 @@ function MatrixEmptyState(): ReactElement {
         <p className="text-xs text-muted-foreground leading-relaxed">
           请点击上方「补全历史」让 AI 自动补全角色起始章节，
           或从左侧 <span className="text-text font-medium">NovelSidebar</span> 新建实体后，
-          <span className="text-text font-medium">左键单击单元格</span>即可切换出场状态。
+          <span className="text-text font-medium">左键单击空单元格</span>标记出场，
+          <span className="text-text font-medium">右键单元格</span>删除出场或修改范围。
         </p>
       </div>
     </div>
@@ -805,6 +755,8 @@ interface GroupBlockProps {
   color: string
   colorRgb: string
   icon: string
+  /** 角色弧光（叠加到角色行，按 characterId 匹配） */
+  characterArcs?: NovelCharacterArc[]
   onToggleCollapse: () => void
   onEntityClick: (entity: MatrixEntity) => void
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
@@ -815,7 +767,7 @@ interface GroupBlockProps {
 
 function GroupBlock({
   group, collapsed, visibleChapterColumns, visibleRange, titleMap, maxChapter, cellWidth, selectedNodeId,
-  color, colorRgb, icon, onToggleCollapse, onEntityClick,
+  color, colorRgb, icon, characterArcs, onToggleCollapse, onEntityClick,
   onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onTogglePresent,
 }: GroupBlockProps): ReactElement {
   const filtered = false // activeFilter 已在父组件过滤
@@ -896,6 +848,7 @@ function GroupBlock({
           maxChapter={maxChapter}
           cellWidth={cellWidth}
           isSelected={selectedNodeId === entity.entityId}
+          characterArcs={characterArcs}
           onClick={() => onEntityClick(entity)}
           onContextMenuCell={onContextMenuCell}
           onEditSpan={onEditSpan}
@@ -928,6 +881,8 @@ interface EntityRowProps {
   maxChapter: number
   cellWidth: number
   isSelected: boolean
+  /** 角色弧光（角色行叠加弧光转换点标记） */
+  characterArcs?: NovelCharacterArc[]
   onClick: () => void
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
   onEditSpan?: (entity: MatrixEntity) => void
@@ -936,9 +891,27 @@ interface EntityRowProps {
 
 function EntityRow({
   entity, visibleChapterColumns, visibleRange, titleMap, maxChapter, cellWidth, isSelected, onClick,
-  onContextMenuCell, onEditSpan, onTogglePresent,
+  characterArcs, onContextMenuCell, onEditSpan, onTogglePresent,
 }: EntityRowProps): ReactElement {
   const meta = GROUP_META[entity.kind]
+
+  // 角色弧光转换点（按 characterId 匹配）：在角色行顶部边缘叠加小色标
+  const arcMarkers = useMemo(() => {
+    if (entity.kind !== 'character' || !characterArcs || characterArcs.length === 0) return []
+    const arc = characterArcs.find((a) => a.characterId === entity.entityId)
+    if (!arc || arc.stageHistory.length === 0) return []
+    return arc.stageHistory.map((entry) => {
+      const am = ARC_TYPE_META[arc.arcType] ?? ARC_TYPE_META.growth
+      return {
+        chapter: entry.chapterNumber,
+        label: am.label,
+        color: am.color,
+        bg: am.bg,
+        stage: entry.stage,
+        triggerEvent: entry.triggerEvent,
+      }
+    })
+  }, [entity.kind, entity.entityId, characterArcs])
 
   return (
     <div
@@ -1004,6 +977,20 @@ function EntityRow({
           onContextMenuCell={onContextMenuCell}
           onEntityClick={onClick}
         />
+        {/* 角色弧光转换点标记（叠加在角色行顶部边缘，不遮挡出场圆点） */}
+        {arcMarkers.length > 0 && arcMarkers.map((m, i) => {
+          const left = (m.chapter - 1) * cellWidth + cellWidth / 2 - 6
+          return (
+            <span
+              key={`arc-${i}`}
+              className="absolute top-0 z-[5] inline-flex items-center justify-center w-3 h-3 rounded-sm text-[8px] font-bold leading-none pointer-events-none ring-1 ring-surface-1"
+              style={{ left, color: m.color, background: m.bg }}
+              title={`${m.label}弧光 → ${m.stage}：${m.triggerEvent}`}
+            >
+              {m.label[0]}
+            </span>
+          )
+        })}
       </div>
 
       {/* 选中环 */}
@@ -1030,8 +1017,11 @@ interface CellProps {
 }
 
 function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent, onContextMenu }: CellProps): ReactElement {
-  // 左键单击单元格 → 智能切换出场状态（实体类型自适应）。
-  // 选中实体改由点击行首名字列；播放头由点击章节标尺设置。三类操作各司其职。
+  // 交互模型（click 永远非破坏性，破坏性操作走拖拽或右键）：
+  // - 空单元格 click → 标记出场（构造性，无拖拽，无冲突）
+  // - 已出场单元格(character/location) → 拖拽换章；click 不触发删除，冒泡到 EntityRow 选中实体
+  // - 删除出场 → 右键菜单（EntityCellMenu）
+  // - 跨度中段格 → 只读，点击无操作
   const symbol = computeCellSymbol(entity, chapter)
   const tip = symbol.type === 'empty'
     ? buildEmptyCellTip(entity, chapter, chapterTitle)
@@ -1065,17 +1055,15 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
         color={color}
         tip={tip}
         symbol={symbol}
-        onClick={handleCellClickEvent}
         onContextMenu={onContextMenu}
       />
     )
   }
 
-  // 跨度中段格（conflict/faction/foreshadow span-middle/foreshadow-span/world-element）
+  // 跨度中段格（conflict/faction span-middle/world-element）
   // 点击无操作，cursor 改 default 避免误导；tooltip 引导用户用右键或拖端点
   const isReadOnlyMiddle =
     symbol.type === 'span-middle' ||
-    symbol.type === 'foreshadow-span' ||
     symbol.type === 'world-element'
 
   return (
@@ -1092,8 +1080,8 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
 }
 
 // ── 可拖拽的已出场单元格（character/location）──
-// 点击仍触发 onTogglePresent（移除出场），拖动则换章。
-// 点击/拖动通过 PointerSensor 的 distance 激活约束区分（< 8px 为点击）。
+// 拖拽换章；click 不绑定任何操作，自然冒泡到 EntityRow → 选中实体（非破坏性）。
+// 删除出场走右键菜单（EntityCellMenu），避免 click 与 drag 在同元素上冲突。
 
 interface DraggablePresentCellProps {
   entity: MatrixEntity
@@ -1102,12 +1090,11 @@ interface DraggablePresentCellProps {
   color: string
   tip: string
   symbol: ReturnType<typeof computeCellSymbol>
-  onClick: (e: React.MouseEvent) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
 function DraggablePresentCell({
-  entity, chapter, cellWidth, color, tip, symbol, onClick, onContextMenu,
+  entity, chapter, cellWidth, color, tip, symbol, onContextMenu,
 }: DraggablePresentCellProps): ReactElement {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `cell:${entity.entityId}:${chapter}`,
@@ -1129,7 +1116,6 @@ function DraggablePresentCell({
       style={style}
       {...attributes}
       {...listeners}
-      onClick={onClick}
       onContextMenu={onContextMenu}
       data-tip={tip}
       className={cn(
@@ -1197,8 +1183,6 @@ function Symbol({ symbol, color }: { symbol: ReturnType<typeof computeCellSymbol
       return <span className="text-[11px] leading-none transition-transform inline-block opacity-90 [filter:drop-shadow(0_0_3px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>●</span>
     case 'foreshadow-payoff':
       return <span className="text-[11px] leading-none transition-transform inline-block [filter:drop-shadow(0_0_4px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>○</span>
-    case 'foreshadow-span':
-      return <span className="text-[11px] leading-none inline-block" />
     case 'location':
       return <span className="text-[11px] leading-none transition-transform inline-block [filter:drop-shadow(0_0_3px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>◆</span>
     case 'world-element':
@@ -1291,109 +1275,82 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
       )
     }
     case 'foreshadow': {
-      // 迁移 055：伏笔改为多段跨度色带样式（参照 conflict），保留 plant/payoff 端点语义标记
-      // - 多段跨度用色带渲染活跃区间
-      // - plant 章节显示埋设点手柄（▶ 标记）
-      // - payoff 章节显示回收点手柄（▶ 标记，仅已回收）
-      // - 拖动 plant 手柄调整 firstChapter（埋设点）
-      // - 拖动 payoff 手柄调整 recoverByChapter（回收点）
-      const spans = entity.chapterSpans ?? []
-      if (spans.length === 0) return null
+      // 伏笔：plant 章节 ● + payoff 章节 ○ + 之间虚线连线
+      // - 未回收：从 plant 虚线延伸到末章（表示"悬而未决"）
+      // - 已回收：从 plant 实线/虚线到 payoff（表示"已回收"）
+      // 不用色带，只用两点 + 连线
       const plant = entity.plantChapter
       const payoff = entity.payoffChapter
+      if (plant == null) return null
+      const lineEnd = payoff ?? maxChapter
+      const lineLeft = (plant - 1) * cellWidth + cellWidth / 2
+      const lineRight = (lineEnd - 1) * cellWidth + cellWidth / 2
+      const lineWidth = lineRight - lineLeft
       const recovered = payoff != null
       return (
         <>
-          {spans.map((span, idx) => {
-            const [s, e] = span
-            const left = (s - 1) * cellWidth
-            const width = (e - s + 1) * cellWidth
-            return (
-              <div
-                key={`span-${idx}`}
-                className="group/span absolute top-1/2 h-[15px] -translate-y-1/2 rounded z-[2] cursor-pointer hover:brightness-110 transition-[filter] overflow-visible"
-                style={{
-                  position: 'absolute',
-                  left, width,
-                  // 已回收伏笔色带更淡，待回收伏笔色带更亮（视觉区分状态）
-                  background: `rgba(${colorRgb}, ${recovered ? 0.10 : 0.18})`,
-                  border: `1px solid rgba(${colorRgb}, ${recovered ? 0.25 : 0.4})`,
-                  // 未回收时色带虚线（暗示"还在持续"），已回收时实线（"已完成"）
-                  borderStyle: recovered ? 'solid' : 'dashed',
-                }}
-                data-tip="双击编辑跨度 · 拖动两端圆点调整范围"
-                onClick={(ev) => {
-                  ev.stopPropagation()
-                  onEntityClick()
-                }}
-                onDoubleClick={(ev) => {
-                  ev.stopPropagation()
-                  onEditSpan?.(entity)
-                }}
-                onContextMenu={(ev) => {
-                  if (!onContextMenuCell) return
-                  ev.preventDefault()
-                  ev.stopPropagation()
-                  const rect = ev.currentTarget.getBoundingClientRect()
-                  const offset = Math.floor((ev.clientX - rect.left) / cellWidth)
-                  const ch = Math.min(e, Math.max(s, s + offset))
-                  onContextMenuCell(entity.entityId, entity.name, entity.kind, ch, ev.clientX, ev.clientY)
-                }}
-              >
-                {/* 跨度段端点手柄（每段都有，可独立调整该段起止） */}
-                <EndpointHandle
-                  entityId={entity.entityId}
-                  entityType={entity.kind}
-                  spanIndex={idx}
-                  end="start"
-                  origChapter={s}
-                  left={cellWidth / 2}
-                  color={color}
-                />
-                <EndpointHandle
-                  entityId={entity.entityId}
-                  entityType={entity.kind}
-                  spanIndex={idx}
-                  end="end"
-                  origChapter={e}
-                  left={width - cellWidth / 2}
-                  color={color}
-                />
-              </div>
-            )
-          })}
-          {/* 埋设点 plant 语义标记（在 plant 章节列中心显示，区别于跨度端点） */}
-          {plant != null && (
-            <div
-              className="absolute top-1/2 -translate-y-1/2 z-[4] pointer-events-none flex items-center justify-center"
-              style={{
-                left: (plant - 1) * cellWidth + cellWidth / 2 - 8,
-                width: 16, height: 16,
-              }}
-              aria-hidden="true"
-            >
-              <span
-                className="text-[10px] font-mono font-bold leading-none"
-                style={{ color, textShadow: '0 0 4px var(--color-surface-1)' }}
-                title="埋设点"
-              >●</span>
-            </div>
-          )}
-          {/* 回收点 payoff 语义标记（仅已回收时显示） */}
+          {/* 虚线连线：plant → payoff（或末章，未回收时） */}
+          <div
+            className="absolute top-1/2 -translate-y-1/2 h-px z-[2] pointer-events-none"
+            style={{
+              left: lineLeft,
+              width: lineWidth,
+              borderTop: `1.5px dashed rgba(${colorRgb}, ${recovered ? 0.4 : 0.5})`,
+            }}
+            aria-hidden="true"
+          />
+          {/* plant 端点手柄（可拖拽调整埋设点） */}
+          <div
+            className="absolute top-1/2 -translate-y-1/2 z-[3] cursor-pointer"
+            style={{ left: lineLeft - 8, width: 16, height: 16 }}
+            data-tip="拖动调整埋设点 · 右键更多操作"
+            onClick={(ev) => {
+              ev.stopPropagation()
+              onEntityClick()
+            }}
+            onContextMenu={(ev) => {
+              if (!onContextMenuCell) return
+              ev.preventDefault()
+              ev.stopPropagation()
+              onContextMenuCell(entity.entityId, entity.name, entity.kind, plant, ev.clientX, ev.clientY)
+            }}
+          >
+            <EndpointHandle
+              entityId={entity.entityId}
+              entityType={entity.kind}
+              spanIndex={0}
+              end="start"
+              origChapter={plant}
+              left={8}
+              color={color}
+            />
+          </div>
+          {/* payoff 端点手柄（仅已回收时显示，可拖拽调整回收点） */}
           {payoff != null && (
             <div
-              className="absolute top-1/2 -translate-y-1/2 z-[4] pointer-events-none flex items-center justify-center"
-              style={{
-                left: (payoff - 1) * cellWidth + cellWidth / 2 - 8,
-                width: 16, height: 16,
+              className="absolute top-1/2 -translate-y-1/2 z-[3] cursor-pointer"
+              style={{ left: lineRight - 8, width: 16, height: 16 }}
+              data-tip="拖动调整回收点 · 右键更多操作"
+              onClick={(ev) => {
+                ev.stopPropagation()
+                onEntityClick()
               }}
-              aria-hidden="true"
+              onContextMenu={(ev) => {
+                if (!onContextMenuCell) return
+                ev.preventDefault()
+                ev.stopPropagation()
+                onContextMenuCell(entity.entityId, entity.name, entity.kind, payoff, ev.clientX, ev.clientY)
+              }}
             >
-              <span
-                className="text-[10px] font-mono font-bold leading-none"
-                style={{ color, textShadow: '0 0 4px var(--color-surface-1)' }}
-                title="回收点"
-              >✓</span>
+              <EndpointHandle
+                entityId={entity.entityId}
+                entityType={entity.kind}
+                spanIndex={0}
+                end="end"
+                origChapter={payoff}
+                left={8}
+                color={color}
+              />
             </div>
           )}
         </>
@@ -1463,6 +1420,9 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      // 拖拽手柄的 click/doubleClick 不冒泡到父级 EntityOverlay 色带：
+      // 防止拖动松手后的 click 误触发色带 onClick（选中实体）或 onDoubleClick（编辑跨度）。
+      onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       title={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
       data-tip={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
@@ -1479,9 +1439,12 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
         boxShadow: '0 0 0 2px var(--color-surface-1), 0 0 4px rgba(0,0,0,0.3)',
       }}
     >
-      <span className="text-[8px] text-white leading-none font-bold select-none">
-        {end === 'start' ? '◀' : '▶'}
-      </span>
+      {/* 伏笔端点不显示三角箭头：与单元格 ●/○ 符号叠加会错位，仅保留圆形拖拽手柄 */}
+      {entityType !== 'foreshadow' && (
+        <span className="text-[8px] text-white leading-none font-bold select-none">
+          {end === 'start' ? '◀' : '▶'}
+        </span>
+      )}
     </div>
   )
 }
@@ -1510,8 +1473,6 @@ function buildCellTooltip(
       return `${chStr}｜${entity.name} 埋设${entity.note ? ' · ' + entity.note : ''}`
     case 'foreshadow-payoff':
       return `${chStr}｜${entity.name} 回收`
-    case 'foreshadow-span':
-      return `${chStr}｜${entity.name}（${symbol.recovered ? '已回收' : '待回收'}）`
     case 'location':
       return `${chStr}｜${entity.name}`
     case 'world-element':

@@ -139,6 +139,15 @@ export interface UseNovelCreationFlowReturn {
    * 进度事件会以 CUSTOM(novel:progress) 流入 events 时间线（value.type 区分）。
    */
   aiArrange: (projectId: string, chapterNumber: number) => Promise<void>
+  /**
+   * 启动反推流程（模式3）
+   *
+   * 后端从已写好的章节正文反推实体（角色/冲突/伏笔/势力/地点）并落库到矩阵。
+   * ag-ui 事件格式与 aiArrange 共用同一 runFlow + handleEvent 状态机；
+   * arrange_start/arrange_progress/arrange_done 进度事件以 CUSTOM(novel:progress) 流入时间线。
+   * 需要章节已有正文，否则后端返回错误。
+   */
+  reverseArrange: (projectId: string, chapterNumber: number) => Promise<void>
   /** 提交检查点决策 */
   submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
@@ -969,6 +978,51 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     [runFlow],
   )
 
+  /**
+   * 启动反推流程（模式3）。
+   *
+   * 后端从已写好的章节正文反推实体并落库到矩阵，不生成正文。
+   * ag-ui 事件格式与 aiArrange 共用同一 runFlow + handleEvent 状态机。
+   * 章节需已有正文，否则后端返回错误（经 runFlow catch 后进入 error 阶段）。
+   */
+  const reverseArrange = useCallback(
+    async (projectId: string, chapterNumber: number): Promise<void> => {
+      // 并发保护
+      if (abortControllerRef.current) return
+
+      // 重置状态（与 aiArrange 一致）
+      setPhase('idle')
+      setEvents([])
+      setCurrentCheckpoint(null)
+      setResult(null)
+      setError(null)
+      setChapterContent('')
+      setAgentOutputs([])
+      setUserMessages([])
+      messageAgentMapRef.current.clear()
+      writerContentRef.current = ''
+      deltaBufferRef.current.clear()
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+      setIsRunning(true)
+      projectIdRef.current = projectId
+
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/reverse-arrange`
+
+      try {
+        await runFlow(url, {}, controller)
+      } finally {
+        abortControllerRef.current = null
+      }
+    },
+    [runFlow],
+  )
+
   const submitCheckpoint = useCallback(
     async (decision: CheckpointDecision): Promise<void> => {
       const projectId = projectIdRef.current
@@ -1060,6 +1114,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     startCreation,
     startDiscussion,
     aiArrange,
+    reverseArrange,
     submitCheckpoint,
     sendMessage,
     cancel,

@@ -8,6 +8,8 @@ allowBuilds:
   electron: true
   electron-winstaller: true
   esbuild: true
+  phantomjs-prebuilt: set this to true or false
   protobufjs: true
 overrides:
   "@copilotkit/runtime>zod": "3.25.76"
+  "@electron/get": "^3.1.0"

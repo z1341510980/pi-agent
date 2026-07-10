@@ -2,20 +2,23 @@ appId: com.wenlang-agent.app
 productName: PI Agent
 directories:
   buildResources: build
+# electron-vite 已将 main/preload/renderer 全部 bundle 到 out/，
+# 运行时不需要 node_modules（原生模块通过 extraResources + asarUnpack 处理）。
+# 用白名单模式避免 electron-builder 扫描 pnpm 全量 node_modules（极慢）。
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - out/**
+  - package.json
 asarUnpack:
   - resources/**
 # 后端 bytenode 字节码 + 原生模块，不进 asar 便于直接 require
+# electron-builder 的 createFilter 硬编码排除根 node_modules（filter.js#L43），
+# 需要单独添加一条 extraResources 来复制 node_modules 目录
 extraResources:
   - from: ../agent-server/dist
     to: server
-    filter: ['**/*', '!**/*.map']
+    filter: ['**/*', '!**/*.map', '!node_modules/**']
+  - from: ../agent-server/dist/node_modules
+    to: server/node_modules
 win:
   executableName: wenlang-agent
 nsis:
@@ -42,7 +45,9 @@ linux:
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}
-npmRebuild: false
+# beforeBuild 返回 false → areNodeModulesHandledExternally = true
+# 跳过 node module collector（pnpm store 全量扫描极慢/卡死）
+beforeBuild: build/beforeBuild.js
 publish:
   provider: generic
   url: https://example.com/auto-updates

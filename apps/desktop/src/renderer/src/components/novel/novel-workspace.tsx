@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
-import { ArrowLeft, Download, Sparkles, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
+import { cn } from '@/lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -42,7 +43,7 @@ import { NovelSidebar } from './novel-sidebar'
 import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
-import { ChapterLivePanel } from './chapter-live-view'
+import { NovelConversationPanel, type NovelFlowType } from './novel-conversation-panel'
 import { SimilarityScanPanel } from './similarity-scan-panel'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
@@ -175,8 +176,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 创作流程
   const creationFlow = useNovelCreationFlow()
   const [creationChapterNumber, setCreationChapterNumber] = useState<number | undefined>(undefined)
-  // 创作子模式切换：编排模式（create-flow）/ 群聊模式（create-discussion）
-  const [creationMode2, setCreationMode2] = useState<'workflow' | 'discussion'>('workflow')
+  // 创作子模式切换：编排模式（create-flow）/ 群聊模式（create-discussion）/ 反推（reverse-arrange）/ AI编排（ai-arrange）
+  // 由右栏 NovelConversationPanel 的 Tab 控制，这里仅持有状态供 handleStartFlow 读取
+  const [flowType, setFlowType] = useState<NovelFlowType>('workflow')
+  // 右栏视图切换：对话面板（选流程+开始+消息流）/ 详情面板（节点详情）
+  // 创作运行中自动锁定到对话面板，结束后用户可手动切回详情
+  const [rightPanelView, setRightPanelView] = useState<'conversation' | 'detail'>('conversation')
   // 互斥锁：防止 header 按钮快速双击导致 creationMode 标记与流程实际启动状态错位
   // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
   const startCreationLockRef = useRef(false)
@@ -286,6 +291,23 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       loadProjectData(projectDataQuery.data)
     }
   }, [projectDataQuery.data, loadProjectData])
+
+  // 项目加载/切换时拉取 characterHistory（loadProjectData 不含此数据，矩阵依赖它显示角色）
+  useEffect(() => {
+    if (!currentProjectId) {
+      setCharacterHistory([])
+      return
+    }
+    let cancelled = false
+    void listProjectCharacterHistory(currentProjectId)
+      .then((history) => {
+        if (!cancelled) setCharacterHistory(history)
+      })
+      .catch((err) => console.error('[NovelWorkspace] 加载 characterHistory 失败:', err))
+    return () => {
+      cancelled = true
+    }
+  }, [currentProjectId, setCharacterHistory])
 
   // 切换项目时清空旧数据
   useEffect(() => {
@@ -470,12 +492,22 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       setCreationMode(mode)
       setCreationChapterNumber(playhead)
       if (mode === 'manual') {
-        // 模式1：从矩阵本章列读取已编排实体
-        // 根据 creationMode2 选择编排模式（create-flow）或群聊模式（create-discussion）
-        const arrangedEntities = collectArrangedEntities(playhead)
-        if (creationMode2 === 'discussion') {
+        // 根据 flowType 分发：编排 / 群聊 / 反推
+        if (flowType === 'discussion') {
+          const arrangedEntities = collectArrangedEntities(playhead)
           await creationFlow.startDiscussion(currentProjectId, playhead, { arrangedEntities })
+        } else if (flowType === 'reverse') {
+          // 反推需要章节已有正文，提前校验避免后端报错
+          if (!chapter.content?.trim()) {
+            toastError('章节正文为空，无法反推实体。请先编写正文或切换到编排模式。')
+            setCreationMode(null)
+            setCreationChapterNumber(undefined)
+            return
+          }
+          await creationFlow.reverseArrange(currentProjectId, playhead)
         } else {
+          // 默认编排模式
+          const arrangedEntities = collectArrangedEntities(playhead)
           await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities })
         }
       } else {
@@ -489,7 +521,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     } finally {
       startCreationLockRef.current = false
     }
-  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, setCreationMode, setCreationChapterNumber, playheadChapter, creationMode2])
+  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, setCreationMode, setCreationChapterNumber, playheadChapter, flowType])
 
   // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
   // 直接以原章节号启动创作流程（覆盖旧内容）
@@ -584,13 +616,24 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     creationFlow.sendMessage(message)
   }, [creationFlow])
 
+  // 右栏对话面板"开始"按钮：根据 flowType 分发到对应流程
+  const handleStartFlow = useCallback(() => {
+    if (flowType === 'arrange') {
+      void handleStartCreation('ai-arrange')
+    } else {
+      void handleStartCreation('manual')
+    }
+  }, [flowType, handleStartCreation])
+
   // 创作激活状态：运行中或处于非 idle 阶段时，右侧栏切换为创作预览面板
   const isCreationActive = creationFlow.isRunning || creationFlow.phase !== 'idle'
   // 编辑器只读：仅在真正运行中（含 checkpoint 等待）时锁定，终态（completed/cancelled/error）恢复可编辑
   const isCreationRunning = creationFlow.isRunning
 
-  // playhead 章是否存在：header 创作按钮依赖此判断，避免章节不存在时点击静默无反应
-  const playheadChapterExists = chapters.some((c) => c.chapterNumber === playheadChapter)
+  // 创作激活时自动锁定右栏到对话面板，创作结束（reset 回 idle）后用户可手动切回详情
+  useEffect(() => {
+    if (isCreationActive) setRightPanelView('conversation')
+  }, [isCreationActive])
 
   return (
     <ReactFlowProvider>
@@ -616,47 +659,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             )}
           </div>
           <div className="flex items-center gap-1">
-            {/* 创作子模式切换：编排模式（create-flow）/ 群聊模式（create-discussion） */}
-            <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-1 border border-border rounded-lg">
-              <button
-                type="button"
-                className={`inline-flex items-center h-6 px-2 text-[11px] rounded-md transition-[color,background-color,border-color,transform] active:scale-[0.96] ${creationMode2 === 'workflow' ? 'bg-surface-3 text-text border border-border' : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent'}`}
-                onClick={() => setCreationMode2('workflow')}
-                disabled={creationFlow.isRunning}
-                title="编排模式：多 Agent 编排创作流程"
-              >
-                <span className="leading-none">编排</span>
-              </button>
-              <button
-                type="button"
-                className={`inline-flex items-center h-6 px-2 text-[11px] rounded-md transition-[color,background-color,border-color,transform] active:scale-[0.96] ${creationMode2 === 'discussion' ? 'bg-surface-3 text-text border border-border' : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent'}`}
-                onClick={() => setCreationMode2('discussion')}
-                disabled={creationFlow.isRunning}
-                title="群聊模式：多 Agent 群聊讨论创作"
-              >
-                <span className="leading-none">群聊</span>
-              </button>
-            </div>
-            <Button
-              size="sm"
-              variant="default"
-              onClick={() => handleStartCreation('manual')}
-              disabled={!currentProject || creationFlow.isRunning || !playheadChapterExists}
-              title={playheadChapterExists ? `${creationMode2 === 'discussion' ? '群聊模式' : '编排模式'}：从矩阵本章列读取已编排实体，启动多 Agent 创作流程` : '请先选择章节'}
-            >
-              <Sparkles className="size-3.5" />
-              <span className="hidden sm:inline">生成第{playheadChapter}章</span>
-            </Button>
-            {/* <Button
-              size="sm"
-              variant="outline"
-              onClick={() => handleStartCreation('ai-arrange')}
-              disabled={!currentProject || creationFlow.isRunning || !playheadChapterExists}
-              title={playheadChapterExists ? '模式2：AI 自动编排实体到矩阵' : '请先选择章节'}
-            >
-              <Wand2 className="size-3.5" />
-              <span className="hidden sm:inline">AI编排</span>
-            </Button> */}
             <Button
               size="icon-sm"
               variant="ghost"
@@ -830,49 +832,91 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             onSizeChange={setDetailWidth}
             side="right"
           />
-          <aside style={{ width: detailWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
-            {isCreationActive ? (
-              <ErrorBoundary
-                fallback={(err, reset) => (
-                  <CreationErrorFallback
-                    error={err}
-                    reset={reset}
-                    onDiscardCreation={handleDiscardCreation}
-                  />
-                )}
-              >
-                <ChapterLivePanel
-                  phase={creationFlow.phase}
-                  isRunning={creationFlow.isRunning}
-                  chapterContent={creationFlow.chapterContent}
-                  agentOutputs={creationFlow.agentOutputs}
-                  chapterNumber={creationChapterNumber}
-                  currentCheckpoint={creationFlow.currentCheckpoint}
-                  result={creationFlow.result}
-                  error={creationFlow.error}
-                  onRetry={handleRetryCreation}
-                  onDismissError={handleDismissError}
-                  creationMode={creationMode}
-                  onSubmitCheckpoint={creationFlow.submitCheckpoint}
-                  onSave={handleSaveChapter}
-                  onDiscard={handleDiscardCreation}
-                  onSendMessage={handleSendMessage}
-                  userMessages={creationFlow.userMessages}
-                />
-              </ErrorBoundary>
-            ) : scanPhase !== 'idle' ? (
-              <SimilarityScanPanel
-                phase={scanPhase}
-                isScanning={similarityScan.isScanning}
-                progressEvents={similarityScan.progressEvents}
-                groupCount={scanReport?.groups.length ?? 0}
-                error={scanError}
-                onCancel={similarityScan.cancel}
-                onReset={similarityScan.reset}
-              />
-            ) : (
-              <NovelDetailPanel />
+          <aside style={{ width: detailWidth }} className="shrink-0 h-full min-h-0 overflow-hidden flex flex-col">
+            {/* 右栏视图切换：对话 / 详情（相似度扫描进行中时隐藏） */}
+            {scanPhase === 'idle' && (
+              <div className="shrink-0 flex items-center gap-0.5 px-2 py-1 border-b border-border bg-surface-1">
+                <button
+                  type="button"
+                  onClick={() => setRightPanelView('conversation')}
+                  className={cn(
+                    'inline-flex items-center gap-1 h-6 px-2.5 text-[11px] rounded-md transition-colors',
+                    rightPanelView === 'conversation' || isCreationActive
+                      ? 'bg-surface-3 text-text border border-border'
+                      : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent',
+                  )}
+                >
+                  <MessageSquare className="size-3" />
+                  <span className="leading-none">对话</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => !isCreationActive && setRightPanelView('detail')}
+                  disabled={isCreationActive}
+                  className={cn(
+                    'inline-flex items-center gap-1 h-6 px-2.5 text-[11px] rounded-md transition-colors',
+                    rightPanelView === 'detail' && !isCreationActive
+                      ? 'bg-surface-3 text-text border border-border'
+                      : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent',
+                    'disabled:cursor-not-allowed disabled:opacity-50',
+                  )}
+                  title={isCreationActive ? '创作进行中，无法切换到详情' : '查看节点详情'}
+                >
+                  <Info className="size-3" />
+                  <span className="leading-none">详情</span>
+                </button>
+              </div>
             )}
+
+            {/* 内容区 */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {scanPhase !== 'idle' ? (
+                <SimilarityScanPanel
+                  phase={scanPhase}
+                  isScanning={similarityScan.isScanning}
+                  progressEvents={similarityScan.progressEvents}
+                  groupCount={scanReport?.groups.length ?? 0}
+                  error={scanError}
+                  onCancel={similarityScan.cancel}
+                  onReset={similarityScan.reset}
+                />
+              ) : isCreationActive || rightPanelView === 'conversation' ? (
+                <ErrorBoundary
+                  fallback={(err, reset) => (
+                    <CreationErrorFallback
+                      error={err}
+                      reset={reset}
+                      onDiscardCreation={handleDiscardCreation}
+                    />
+                  )}
+                >
+                  <NovelConversationPanel
+                    phase={creationFlow.phase}
+                    isRunning={creationFlow.isRunning}
+                    chapterContent={creationFlow.chapterContent}
+                    agentOutputs={creationFlow.agentOutputs}
+                    chapterNumber={creationChapterNumber}
+                    currentCheckpoint={creationFlow.currentCheckpoint}
+                    result={creationFlow.result}
+                    error={creationFlow.error}
+                    onRetry={handleRetryCreation}
+                    onDismissError={handleDismissError}
+                    creationMode={creationMode}
+                    onSubmitCheckpoint={creationFlow.submitCheckpoint}
+                    onSave={handleSaveChapter}
+                    onDiscard={handleDiscardCreation}
+                    onSendMessage={handleSendMessage}
+                    userMessages={creationFlow.userMessages}
+                    flowType={flowType}
+                    onFlowTypeChange={setFlowType}
+                    onStartFlow={handleStartFlow}
+                    onCancelFlow={handleDiscardCreation}
+                  />
+                </ErrorBoundary>
+              ) : (
+                <NovelDetailPanel />
+              )}
+            </div>
           </aside>
         </div>
 

@@ -135,11 +135,9 @@ export function EntityCellMenu({
       if (e.key === 'Escape') onClose()
     }
     window.addEventListener('click', handleClickOutside)
-    window.addEventListener('contextmenu', handleClickOutside)
     window.addEventListener('keydown', handleEscape)
     return () => {
       window.removeEventListener('click', handleClickOutside)
-      window.removeEventListener('contextmenu', handleClickOutside)
       window.removeEventListener('keydown', handleEscape)
     }
   }, [position, onClose])

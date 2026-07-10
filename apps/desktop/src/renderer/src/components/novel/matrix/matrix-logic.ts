@@ -337,11 +337,9 @@ export function buildGroups(params: {
     entities: [],
   }
   for (const f of foreshadows) {
-    // 迁移 055：伏笔改为多段跨度（参照 conflict），保留 plant/payoff 端点语义标记
-    // - chapterSpans 描述伏笔"活跃"区间，矩阵按色带样式渲染
-    // - plantChapter = firstChapter（埋设点），payoffChapter = recoverByChapter（回收点）
-    const range = computeSpanRange(f.chapterSpans ?? [])
-    if (range == null) continue // 未放置 → 元素池
+    // 伏笔以 firstChapter（埋设点）作为入矩阵条件；无埋设点 → 元素池
+    // plant/payoff 两个端点 + 虚线连线由 EntityOverlay 渲染
+    if (f.firstChapter == null) continue
     foreshadowGroup.entities.push({
       id: f.id,
       kind: 'foreshadow',
@@ -351,9 +349,8 @@ export function buildGroups(params: {
       subLabel: f.recoverByChapter != null ? '已回收' : '待回收',
       plantChapter: f.firstChapter,
       payoffChapter: f.recoverByChapter,
-      chapterSpans: f.chapterSpans ?? [],
-      spanStart: range.start,
-      spanEnd: range.end,
+      spanStart: f.firstChapter,
+      spanEnd: f.recoverByChapter ?? null,
       note: noteMap.get(f.id),
     })
   }
@@ -482,7 +479,6 @@ export type CellSymbol =
   | { type: 'conflict-climax' }
   | { type: 'foreshadow-plant' }
   | { type: 'foreshadow-payoff' }
-  | { type: 'foreshadow-span'; recovered: boolean }
   | { type: 'location' }
   | { type: 'world-element' }
 
@@ -514,22 +510,14 @@ export function computeCellSymbol(
       return { type: 'span-middle' }
     }
     case 'foreshadow': {
-      // 迁移 055：伏笔改为多段跨度后，单元格符号按多段跨度判定
-      // - 在跨度区间内的章节显示 foreshadow-span（中段）
-      // - plant 章节显示 foreshadow-plant（埋设点语义标记，优先级高于 span-start）
-      // - payoff 章节显示 foreshadow-payoff（回收点语义标记，优先级高于 span-end）
-      // - 不在任何跨度内的章节显示 empty
+      // 伏笔只有 plant/payoff 两个端点，中间章节无符号（虚线连线由 EntityOverlay 渲染）
+      // - plant 章节：foreshadow-plant（埋设点 ●）
+      // - payoff 章节：foreshadow-payoff（回收点 ○，仅已回收时存在）
+      // - 其他章节：empty
       const plant = entity.plantChapter
       const payoff = entity.payoffChapter
-      // plant/payoff 端点优先（语义标记更醒目）
       if (plant != null && chapterNumber === plant) return { type: 'foreshadow-plant' }
       if (payoff != null && chapterNumber === payoff) return { type: 'foreshadow-payoff' }
-      // 在多段跨度内显示 span（中段），用 recovered 标记是否已回收
-      const spans = entity.chapterSpans ?? []
-      const inSpan = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-      if (inSpan) {
-        return { type: 'foreshadow-span', recovered: payoff != null }
-      }
       return { type: 'empty' }
     }
     case 'location': {

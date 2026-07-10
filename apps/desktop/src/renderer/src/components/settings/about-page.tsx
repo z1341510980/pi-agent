@@ -5,6 +5,7 @@ import { browserConfig } from '@repo/config/browser'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { UpdateDialog, useUpdateStatus } from '@/components/overlays/update-dialog'
+import logoImage from '@/assets/logo.png'
 
 type UpdateState = 'idle' | 'checking' | 'no-update' | 'has-update' | 'error'
 
@@ -50,9 +51,11 @@ export function AboutPage(): ReactElement {
 
       {/* ── 应用信息 ── */}
       <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center gap-4">
-        <div className="size-12 rounded-xl bg-accent text-accent-foreground flex items-center justify-center text-2xl font-extrabold shrink-0">
-          π
-        </div>
+        <img
+          src={logoImage}
+          alt="PI Agent"
+          className="size-12 rounded-xl shrink-0 object-cover"
+        />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-base font-[780]">{browserConfig.appName}</span>

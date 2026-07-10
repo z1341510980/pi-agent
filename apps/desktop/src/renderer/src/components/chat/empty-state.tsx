@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react'
+import logoImage from '@/assets/logo.png'
 
 // ── 类型定义 ──
 
@@ -22,6 +23,11 @@ export function EmptyState(_props: EmptyStateProps): ReactElement {
       role="region"
       aria-label="空状态引导"
     >
+      <img
+        src={logoImage}
+        alt="PI Agent"
+        className="size-16 rounded-2xl object-cover mb-2"
+      />
       <h1 className="text-4xl font-bold text-text leading-tight text-balance">
         PI Agent
       </h1>
