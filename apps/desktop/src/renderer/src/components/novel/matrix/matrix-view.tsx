@@ -17,8 +17,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useDroppable, useDndMonitor, useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { Plus, ChevronRight, GripVertical } from 'lucide-react'
-import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType, NovelHook } from '@/api/novel-client'
-import { listHooks } from '@/api/novel-client'
+import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType, NovelHook, NovelCharacterArc, ArcStageHistoryEntry } from '@/api/novel-client'
+import { listHooks, listCharacterArcs } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 import { computeVisibleChapters } from '@/lib/matrix-viewport'
 import { useNovelStore } from '@/stores/novel-store'
@@ -218,6 +218,22 @@ export function MatrixView({
     queryFn: () => listHooks(currentProjectId!),
     enabled: !!currentProjectId,
   })
+
+  // ── v0.2：角色弧光（独立实体，追踪角色成长/堕落/救赎/转变轨迹）──
+  const { data: characterArcs = [] } = useQuery({
+    queryKey: ['novel', 'character-arcs', currentProjectId],
+    queryFn: () => listCharacterArcs(currentProjectId!),
+    enabled: !!currentProjectId,
+  })
+
+  // 角色名映射：characterId → name（从已有的 characters prop 构建，避免重复拉取）
+  const characterNameMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of characters ?? []) {
+      m.set(c.id, c.name)
+    }
+    return m
+  }, [characters])
 
   // ── C-3c 滚动到指定章节列（监听 store 的 matrixScrollTarget）──
   const matrixScrollTarget = useNovelStore((s) => s.matrixScrollTarget)
@@ -455,6 +471,17 @@ export function MatrixView({
             playheadChapter={playheadChapter}
           />
 
+          {/* 角色弧光轨道行（仅当存在任何弧光阶段转换时显示） */}
+          <ArcTrackRow
+            arcs={characterArcs}
+            characterNameMap={characterNameMap}
+            visibleChapterColumns={visibleChapterColumns}
+            visibleRange={visibleRange}
+            maxChapter={maxChapter}
+            cellWidth={cellWidth}
+            playheadChapter={playheadChapter}
+          />
+
           {/* 分组 + 实体行（无实体时显示空状态引导，但章节标尺仍然显示） */}
           <div className="relative z-[6]">
             {hasAnyEntity ? (
@@ -586,6 +613,102 @@ function HookTrackRow({
                   })}
                 </div>
               )}
+            </div>
+          )
+        })}
+        {/* 右侧占位 */}
+        {visibleRange.end < maxChapter && (
+          <div style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} aria-hidden="true" />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── 角色弧光轨道行 ──
+
+/** 弧光类型 → 显示元数据（颜色/背景/标签） */
+const ARC_TYPE_META: Record<string, { label: string; color: string; bg: string }> = {
+  growth: { label: '成长', color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
+  fall: { label: '堕落', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
+  redemption: { label: '救赎', color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
+  shift: { label: '转变', color: '#3b82f6', bg: 'rgba(59,130,246,0.15)' },
+}
+
+interface ArcTrackRowProps {
+  arcs: NovelCharacterArc[]
+  characterNameMap: Map<string, string>
+  visibleChapterColumns: number[]
+  visibleRange: { start: number; end: number }
+  maxChapter: number
+  cellWidth: number
+  playheadChapter: number
+}
+
+function ArcTrackRow({
+  arcs, characterNameMap, visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
+}: ArcTrackRowProps): ReactElement | null {
+  // 仅当存在弧光数据时显示
+  if (arcs.length === 0) return null
+
+  // 收集所有阶段转换点，按章节号分组
+  const transitionsByChapter = new Map<number, Array<{ arc: NovelCharacterArc; entry: ArcStageHistoryEntry; characterName: string }>>()
+  for (const arc of arcs) {
+    const characterName = characterNameMap.get(arc.characterId) ?? '未知角色'
+    for (const entry of arc.stageHistory) {
+      const arr = transitionsByChapter.get(entry.chapterNumber) ?? []
+      arr.push({ arc, entry, characterName })
+      transitionsByChapter.set(entry.chapterNumber, arr)
+    }
+  }
+
+  return (
+    <div className="relative z-20 flex h-[26px] border-b border-border/60 bg-surface-1/60">
+      {/* 左侧 sticky 列：轨道标签 */}
+      <div
+        className="sticky left-0 z-30 bg-surface-1 flex items-center justify-end pr-2 border-r border-border shrink-0"
+        style={{ width: `${SIDEBAR_W}px` }}
+      >
+        <span className="font-serif text-[10px] text-hint tracking-wider">角色弧光</span>
+      </div>
+      {/* 弧光单元格（仅渲染可见列） */}
+      <div className="flex relative">
+        {/* 左侧占位 */}
+        {visibleRange.start > 1 && (
+          <div style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} aria-hidden="true" />
+        )}
+        {visibleChapterColumns.map((ch) => {
+          const transitions = transitionsByChapter.get(ch) ?? []
+          const isCurrent = ch === playheadChapter
+          const tip = transitions.length === 0
+            ? `第 ${ch} 章`
+            : transitions.map((t) => {
+                const meta = ARC_TYPE_META[t.arc.arcType] ?? ARC_TYPE_META.growth
+                return `${t.characterName} ${meta.label}弧光 → ${t.entry.stage}：${t.entry.triggerEvent}`
+              }).join('｜')
+          return (
+            <div
+              key={ch}
+              className={cn(
+                'relative h-full shrink-0 flex items-center justify-center gap-0.5 border-r border-border/30',
+                isCurrent && 'bg-amber-500/5',
+              )}
+              style={{ width: `${cellWidth}px` }}
+              data-tip={tip}
+            >
+              {transitions.map((t, i) => {
+                const meta = ARC_TYPE_META[t.arc.arcType] ?? ARC_TYPE_META.growth
+                return (
+                  <span
+                    key={i}
+                    className="inline-flex items-center justify-center w-3.5 h-3.5 rounded text-[8px] font-bold leading-none"
+                    style={{ color: meta.color, background: meta.bg }}
+                    title={`${t.characterName} ${meta.label}弧光 → ${t.entry.stage}：${t.entry.triggerEvent}`}
+                  >
+                    {meta.label[0]}
+                  </span>
+                )
+              })}
             </div>
           )
         })}
