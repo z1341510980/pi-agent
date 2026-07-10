@@ -117,6 +117,21 @@ export interface UseNovelCreationFlowReturn {
     }
   }) => Promise<void>
   /**
+   * 启动群聊模式创作流程。
+   *
+   * 与 startCreation 结构一致，仅后端端点不同（/create-discussion），
+   * ag-ui 事件格式与状态机共用同一 handleEvent。
+   */
+  startDiscussion: (projectId: string, chapterNumber: number, options?: {
+    arrangedEntities?: {
+      characterIds: string[]
+      conflictIds: string[]
+      foreshadowIds: string[]
+      factionIds: string[]
+      locationIds: string[]
+    }
+  }) => Promise<void>
+  /**
    * 启动 AI 编排流程（模式2）
    *
    * 后端按章纲 AI 编排实体并落库，不生成正文。
@@ -855,6 +870,59 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   )
 
   /**
+   * 启动群聊模式创作流程。
+   *
+   * 与 startCreation 结构完全一致，仅后端端点改为 /create-discussion。
+   * ag-ui 事件格式与状态机共用同一 handleEvent / runFlow。
+   */
+  const startDiscussion = useCallback(
+    async (projectId: string, chapterNumber: number, options?: {
+      arrangedEntities?: {
+        characterIds: string[]
+        conflictIds: string[]
+        foreshadowIds: string[]
+        factionIds: string[]
+        locationIds: string[]
+      }
+    }): Promise<void> => {
+      // 并发保护
+      if (abortControllerRef.current) return
+
+      // 重置状态
+      setPhase('idle')
+      setEvents([])
+      setCurrentCheckpoint(null)
+      setResult(null)
+      setError(null)
+      setChapterContent('')
+      setAgentOutputs([])
+      setUserMessages([])
+      messageAgentMapRef.current.clear()
+      writerContentRef.current = ''
+      deltaBufferRef.current.clear()
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+      setIsRunning(true)
+      projectIdRef.current = projectId
+
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-discussion`
+      const body = options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}
+
+      try {
+        await runFlow(url, body, controller)
+      } finally {
+        abortControllerRef.current = null
+      }
+    },
+    [runFlow],
+  )
+
+  /**
    * 启动 AI 编排流程（模式2）。
    *
    * 后端按章纲 AI 编排实体并落库，不生成正文。
@@ -990,6 +1058,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     agentOutputs,
     userMessages,
     startCreation,
+    startDiscussion,
     aiArrange,
     submitCheckpoint,
     sendMessage,

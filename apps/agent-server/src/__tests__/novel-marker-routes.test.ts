@@ -66,6 +66,13 @@ function makeMockServices(): NovelServices {
       respondDecision: vi.fn(() => true),
       listPending: vi.fn(() => []),
     } as any,
+    discussionRunner: {
+      run: vi.fn(),
+    } as any,
+    discussionSettingsStore: {
+      get: vi.fn(() => ({})),
+      update: vi.fn(),
+    } as any,
     tools: [],
   }
 }

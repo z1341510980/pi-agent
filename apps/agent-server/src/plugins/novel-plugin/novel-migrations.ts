@@ -726,4 +726,13 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_novel_arcs_project ON novel_character_arcs(project_id);
     CREATE INDEX IF NOT EXISTS idx_novel_arcs_character ON novel_character_arcs(character_id);`,
   },
+  {
+    // 群聊模式设置（单行表，key-value 式存储）
+    id: '060_create_novel_discussion_settings',
+    sql: `CREATE TABLE IF NOT EXISTS novel_discussion_settings (
+      key           TEXT PRIMARY KEY,
+      value         TEXT NOT NULL,
+      updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    );`,
+  },
 ]

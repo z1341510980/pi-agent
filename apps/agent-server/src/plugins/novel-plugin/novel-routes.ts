@@ -2185,6 +2185,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // 路径参数 :checkpointId 对应 ConfirmationManager 内部生成的 ConfirmationRequest.id
   // （由 onCheckpoint 在创建决策请求后通过 SSE 推送给前端，前端在用户点决策时回传）
   // type 仍在 body 中传递，便于日志/校验（不再作为路由参数）
+  //
+  // 同时接受 workflow（novel-checkpoint-）与群聊（novel-discussion-）两种 threadId 前缀：
+  // 前端 use-novel-creation-flow.ts 的 submitCheckpoint 统一调用本端点，
+  // 群聊模式的 /discussion-checkpoint/.../decision 端点作为别名保留。
   routes.push({
     method: 'POST',
     path: '/projects/:projectId/checkpoint/:checkpointId/decision',
@@ -2192,7 +2196,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const { projectId, checkpointId } = request.params as { projectId: string; checkpointId: string }
       const { decision, userMessages } = request.body as { decision: string; userMessages?: string[] }
       const pending = services.confirmationManager.listPending().find((r) => r.id === checkpointId)
-      if (!pending || !pending.threadId.startsWith(`novel-checkpoint-${projectId}-`)) {
+      const isWorkflow = pending?.threadId.startsWith(`novel-checkpoint-${projectId}-`)
+      const isDiscussion = pending?.threadId.startsWith(`novel-discussion-${projectId}-`)
+      if (!pending || (!isWorkflow && !isDiscussion)) {
         reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
         return
       }
@@ -2203,10 +2209,181 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         return
       }
       // 确认 checkpoint 有效后再写用户消息，避免过期/跨项目请求污染下一轮 Agent。
-      if (userMessages && userMessages.length > 0) {
+      // 仅 workflow 模式通过 orchestrator.setUserMessages 注入用户消息；
+      // 群聊模式有独立的用户消息机制，不在此处注入（与 discussion-checkpoint 端点行为一致）。
+      if (isWorkflow && userMessages && userMessages.length > 0) {
         services.orchestrator.setUserMessages(userMessages)
       }
       return { ok: true, data: { accepted: true } }
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 群聊共创模式（SSE + 检查点）
+  // ═══════════════════════════════════════════════════════════════
+
+  // 群聊创作流程启动端点（SSE）
+  // 与 /create-flow 结构一致，把 orchestrator.createChapterWithFlow 换成 discussionRunner.run。
+  // 每次运行时从 discussionSettingsStore 读取最新 moderatorModel，使 PUT /discussion-settings 的修改即时生效。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/create-discussion',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params
+      const discussionRunner = services.discussionRunner
+
+      // 解析请求体中的 arrangedEntities（与 create-flow 端点一致，复用同一 schema）
+      const input = validateBody(createFlowBodySchema, request, reply)
+      if (!input) return reply
+      const arrangedEntities = input.arrangedEntities
+        ? {
+            characterIds: input.arrangedEntities.characterIds,
+            conflictIds: input.arrangedEntities.conflictIds,
+            foreshadowIds: input.arrangedEntities.foreshadowIds,
+            factionIds: input.arrangedEntities.factionIds,
+            locationIds: input.arrangedEntities.locationIds,
+          }
+        : undefined
+
+      // 校验编排实体属于当前项目（与 create-flow 一致）
+      if (arrangedEntities) {
+        const invalid: string[] = []
+        for (const id of arrangedEntities.characterIds) {
+          if (store.getCharacter(id)?.projectId !== projectId) invalid.push(`character:${id}`)
+        }
+        for (const id of arrangedEntities.conflictIds) {
+          if (store.getConflict(id)?.projectId !== projectId) invalid.push(`conflict:${id}`)
+        }
+        for (const id of arrangedEntities.foreshadowIds) {
+          if (store.getForeshadow(id)?.projectId !== projectId) invalid.push(`foreshadow:${id}`)
+        }
+        for (const id of arrangedEntities.factionIds) {
+          if (store.getFaction(id)?.projectId !== projectId) invalid.push(`faction:${id}`)
+        }
+        for (const id of arrangedEntities.locationIds) {
+          if (store.getLocation(id)?.projectId !== projectId) invalid.push(`location:${id}`)
+        }
+        if (invalid.length > 0) {
+          reply.code(400).send({ ok: false, error: `编排实体不属于当前项目或不存在: ${invalid.join(', ')}` })
+          return
+        }
+      }
+
+      // 设置 SSE（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
+      request.raw.socket?.setNoDelay(true)
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      const emitter = createNovelAgUiEmitter(
+        createSseEmitterSink((data) => reply.raw.write(data)),
+        `novel:discussion:${projectId}:${chapterNumber}`,
+        randomUUID(),
+      )
+
+      try {
+        // 运行时读取最新设置，让 moderatorModel / 其他参数的修改即时生效
+        const settings = services.discussionSettingsStore.get()
+        const result = await discussionRunner.run(
+          projectId,
+          parseInt(chapterNumber, 10),
+          {
+            emit: emitter.emit,
+            onCheckpoint: async (checkpoint) => {
+              // 通过 ConfirmationManager 发起决策请求（与 create-flow 的 onCheckpoint 一致）
+              // timeoutMs=0 表示无超时：用户可能需要长时间阅读检查点内容并思考
+              const toolCallId = randomUUID()
+              const decisionPromise = services.confirmationManager.requestDecision({
+                threadId: `novel-discussion-${projectId}-${chapterNumber}`,
+                toolCallId,
+                toolName: `discussion_${checkpoint.type}`,
+                args: { checkpoint } as Record<string, unknown>,
+                reason: `等待用户确认群聊检查点：${checkpoint.question}`,
+              }, 0)
+              // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
+              const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
+              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+              return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
+            },
+            onProgress: (event) => emitter.progress(event),
+            moderatorModel: settings.moderatorModel,
+          },
+          arrangedEntities,
+        )
+        emitter.result(result)
+      } catch (err) {
+        emitter.error(String(err))
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.end()
+      }
+    },
+  })
+
+  // 群聊检查点决策端点
+  // 与 create-flow 的 checkpoint decision 端点对应，threadId 前缀为 novel-discussion-。
+  // 不调用 orchestrator.setUserMessages（群聊流程的用户消息机制独立于 orchestrator）。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/discussion-checkpoint/:checkpointId/decision',
+    handler: async (request: any, reply: any) => {
+      const { projectId, checkpointId } = request.params as { projectId: string; checkpointId: string }
+      const { decision } = request.body as { decision: string }
+      const pending = services.confirmationManager.listPending().find((r) => r.id === checkpointId)
+      if (!pending || !pending.threadId.startsWith(`novel-discussion-${projectId}-`)) {
+        reply.code(404).send({ ok: false, error: '群聊检查点不存在或已处理' })
+        return
+      }
+      // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
+      const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
+      if (!accepted) {
+        reply.code(404).send({ ok: false, error: '群聊检查点不存在或已处理' })
+        return
+      }
+      return { ok: true, data: { accepted: true } }
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 群聊模式设置
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'GET',
+    path: '/discussion-settings',
+    handler: async (request: any) => {
+      return success(services.discussionSettingsStore.get(), request.traceId)
+    },
+  })
+
+  const updateDiscussionSettingsSchema = z.object({
+    moderatorModel: z.object({
+      provider: z.string().min(1),
+      modelId: z.string().min(1),
+    }).optional(),
+    maxRounds: z.number().int().min(1).optional(),
+    maxRoundsPerScene: z.number().int().min(1).optional(),
+    characterTemperature: z.number().min(0).max(2).optional(),
+  })
+
+  routes.push({
+    method: 'PUT',
+    path: '/discussion-settings',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateDiscussionSettingsSchema, request, reply)
+      if (!input) return reply
+      services.discussionSettingsStore.update(input)
+      return success(services.discussionSettingsStore.get(), request.traceId)
     },
   })
 
