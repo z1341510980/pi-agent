@@ -17,9 +17,11 @@ import { Moderator } from '../../../core/agent/moderator.js'
 import { TeamDiscussionEngine } from '../../../core/agent/team-discussion-engine.js'
 import { ChapterFinalizer } from '../../../core/agent/chapter-finalizer.js'
 import type {
+  DiscussionFlowEvent,
   DiscussionGoal,
   DiscussionMember,
   DiscussionOptions,
+  DiscussionPhase,
   DiscussionResult,
 } from '../../../core/agent/discussion-types.js'
 import { NovelStore } from './novel-store.js'
@@ -27,6 +29,7 @@ import { NovelMemoryStore } from './novel-memory-store.js'
 import { NovelPromptBuilder } from './prompt-builder.js'
 import { NovelEngine } from './novel-engine.js'
 import { NovelSessionFactory } from './novel-session.js'
+import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
 import type { NovelCharacter, NarrativeTask } from './types.js'
 
@@ -42,7 +45,7 @@ export class NovelDiscussionRunner {
     private engine: NovelEngine,
     private context: PluginContext,
     private moderatorModel?: { provider: string; modelId: string },
-    private memoryGenerator?: unknown,
+    private memoryGenerator?: NovelMemoryGenerator,
   ) {}
 
   /**
@@ -60,112 +63,135 @@ export class NovelDiscussionRunner {
     chapterNumber: number,
     options: DiscussionOptions,
   ): Promise<DiscussionResult> {
-    // 1. 构建约束 + 默认叙事任务
-    const constraints = this.engine.buildChapterConstraints(projectId, chapterNumber)
-    const narrativeTask = this.buildDefaultNarrativeTask(chapterNumber)
+    try {
+      // 1. 构建约束 + 默认叙事任务
+      const constraints = this.engine.buildChapterConstraints(projectId, chapterNumber)
+      const narrativeTask = this.buildDefaultNarrativeTask(chapterNumber)
 
-    // 2. 构建 shared 上下文（SEMI 层前缀，跨成员复用 prompt cache）
-    const sharedContext = this.promptBuilder.buildChapterContextShared(
-      projectId,
-      chapterNumber,
-      narrativeTask,
-      constraints,
-    )
+      // 2. 构建 shared 上下文（SEMI 层前缀，跨成员复用 prompt cache）
+      const sharedContext = this.promptBuilder.buildChapterContextShared(
+        projectId,
+        chapterNumber,
+        narrativeTask,
+        constraints,
+      )
 
-    // 3. 构建目标
-    const goal: DiscussionGoal = {
-      task: `创作第 ${chapterNumber} 章正文`,
-      context: sharedContext,
-      constraints: {
-        facts: constraints.facts.map((c) => c.rule),
-        cognitive: constraints.cognitive.map((c) => c.rule),
-      },
-    }
+      // 3. 构建目标
+      const goal: DiscussionGoal = {
+        task: `创作第 ${chapterNumber} 章正文`,
+        context: sharedContext,
+        constraints: {
+          facts: constraints.facts.map((c) => c.rule),
+          cognitive: constraints.cognitive.map((c) => c.rule),
+        },
+      }
 
-    // 4. 构建成员列表
-    const members = this.buildMembers(projectId, chapterNumber)
+      // 4. 构建成员列表
+      const members = this.buildMembers(projectId, chapterNumber)
 
-    // 5. 构建引擎并运行
-    const channel = new AgentChannel()
-    const moderator = new Moderator(
-      {
-        createSession: async (opts) => {
-          return this.context.createSession({
+      // 5. 构建引擎并运行
+      const channel = new AgentChannel()
+      const moderator = new Moderator(
+        {
+          createSession: async (opts) => {
+            return this.context.createSession({
+              systemPrompt: opts.systemPrompt,
+              userMessage: opts.userMessage,
+              timeoutMs: opts.timeoutMs,
+              modelId: opts.model,
+            })
+          },
+          logger: this.context.logger,
+        },
+        options.moderatorModel ?? this.moderatorModel,
+      )
+      const discussionEngine = new TeamDiscussionEngine(moderator, channel, {
+        createAgUiSession: async (opts) => {
+          return this.context.createAgUiSession({
             systemPrompt: opts.systemPrompt,
+            prefixUserMessage: opts.prefixUserMessage,
             userMessage: opts.userMessage,
+            tools: opts.tools as never[],
+            signal: opts.signal,
+            temperature: opts.temperature,
             timeoutMs: opts.timeoutMs,
-            modelId: opts.model,
+            emit: opts.emit,
+            emitRaw: opts.emitRaw,
+            onFirstText: opts.onFirstText,
           })
         },
         logger: this.context.logger,
-      },
-      options.moderatorModel ?? this.moderatorModel,
-    )
-    const discussionEngine = new TeamDiscussionEngine(moderator, channel, {
-      createAgUiSession: async (opts) => {
-        return this.context.createAgUiSession({
-          systemPrompt: opts.systemPrompt,
-          prefixUserMessage: opts.prefixUserMessage,
-          userMessage: opts.userMessage,
-          tools: opts.tools as never[],
-          signal: opts.signal,
-          temperature: opts.temperature,
-          timeoutMs: opts.timeoutMs,
-          emit: opts.emit,
-          emitRaw: opts.emitRaw,
-          onFirstText: opts.onFirstText,
+      })
+
+      // 6. 运行群聊
+      const result = await discussionEngine.run(goal, members, options)
+
+      // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
+      if (result.status === 'completed' && result.content) {
+        const finalizer = new ChapterFinalizer(
+          this.store,
+          this.memoryStore,
+          this.promptBuilder,
+          this.engine,
+          this.context,
+          this.memoryGenerator,
+        )
+        const finalizeResult = await finalizer.finalize({
+          projectId,
+          chapterNumber,
+          content: result.content,
+          options: {
+            emit: options.emit,
+            onCheckpoint: async (checkpoint) => {
+              const reply = await options.onCheckpoint({
+                type: 'discussion_pause',
+                phase: checkpoint.phase,
+                question: checkpoint.type === 'narrative_task' ? '叙事任务确认' : '验收报告确认',
+              })
+              return reply as 'approve' | 'reject' | 'revise' | 'rewrite'
+            },
+            onProgress: (event) => {
+              const phaseMap: Record<string, DiscussionPhase> = {
+                memory: 'memory',
+                completed: 'completed',
+                error: 'error',
+                cancelled: 'cancelled',
+                reviewing: 'reviewing',
+              }
+              options.onProgress({
+                type: (event.type === 'checkpoint' ? 'pause' : event.type) as DiscussionFlowEvent['type'],
+                phase: phaseMap[event.phase] ?? 'completed',
+                data: event.data,
+                timestamp: event.timestamp,
+              })
+            },
+            signal: options.signal,
+          },
+          chapterId: null,
+          sharedContextPrefix: sharedContext,
         })
-      },
-      logger: this.context.logger,
-    })
+        return {
+          ...result,
+          stateChanges: finalizeResult.stateChanges,
+        }
+      }
 
-    // 6. 运行群聊
-    const result = await discussionEngine.run(goal, members, options)
-
-    // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
-    if (result.status === 'completed' && result.content) {
-      const finalizer = new ChapterFinalizer(
-        this.store,
-        this.memoryStore,
-        this.promptBuilder,
-        this.engine,
-        this.context,
-        this.memoryGenerator as never,
-      )
-      const finalizeResult = await finalizer.finalize({
-        projectId,
-        chapterNumber,
-        content: result.content,
-        options: {
-          emit: options.emit,
-          onCheckpoint: async (checkpoint) => {
-            const reply = await options.onCheckpoint({
-              type: 'discussion_pause',
-              phase: checkpoint.phase,
-              question: checkpoint.type === 'narrative_task' ? '叙事任务确认' : '验收报告确认',
-            })
-            return reply as 'approve' | 'reject' | 'revise' | 'rewrite'
-          },
-          onProgress: (event) => {
-            options.onProgress({
-              type: event.type as never,
-              phase: 'completed',
-              data: event.data,
-              timestamp: event.timestamp,
-            })
-          },
-          signal: options.signal,
-        },
-        chapterId: null,
-        sharedContextPrefix: sharedContext,
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      options.onProgress({
+        type: 'error',
+        phase: 'error',
+        data: { message },
+        timestamp: Date.now(),
       })
       return {
-        ...result,
-        stateChanges: finalizeResult.stateChanges,
+        status: 'error',
+        error: message,
+        transcript: [],
+        scenes: [],
       }
     }
-
-    return result
   }
 
   /**
