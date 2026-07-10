@@ -57,6 +57,8 @@ export interface PiSessionDeps {
   subagentManager?: AgentManager
   /** Team 管理器（由 teamPlugin 提供，用于注入 team_execute 工具） */
   teamManager?: TeamManager
+  /** 插件注入的 Pi Session 工具（由 PluginManager 提供，用于注入 novel_* 等插件工具） */
+  pluginSessionTools?: ToolDefinition[]
   config: {
     cwd: string
     dataDir: string
@@ -113,7 +115,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     )
   }
 
-  // 5. 构建 customTools：subagent 系列工具 + team_execute 工具
+  // 5. 构建 customTools：subagent 系列工具 + team_execute 工具 + 小说工具
   const customTools: ToolDefinition[] = []
   if (deps.subagentManager) {
     customTools.push(
@@ -124,6 +126,29 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   }
   if (deps.teamManager) {
     customTools.push(createTeamExecuteTool(deps.teamManager))
+  }
+  if (deps.pluginSessionTools && deps.pluginSessionTools.length > 0) {
+    customTools.push(...deps.pluginSessionTools)
+  }
+
+  // 5.1 工具权限过滤：若当前在 subagent 上下文中且 AgentConfig 声明了 tools，
+  //     仅保留 allowed 列表中的工具。
+  //     - dispatchFn 已将 systemPromptBuilder / toolFilter 的结果合并进 effectiveConfig.tools
+  //     - 这使 subagent / team_execute 路径与 NovelOrchestrator.runAgent 的工具过滤行为一致
+  //     - 未声明 tools（undefined，如默认 Agent）不做过滤，保留全部 customTools
+  //     - 声明 tools=[]（空数组）表示"明确无工具"，清空 customTools
+  //       （Writer/Reviewer 等纯生成 Agent 不需要工具，状态已通过 SEMI 层注入）
+  //     - 声明 tools=[...] 表示白名单，仅保留列出的工具
+  //     ⚠️ 之前用 `length > 0` 判断导致 tools=[] 被误解为"不过滤"，customTools 保留全部，
+  //     LLM 看到全部 18 个工具可能误调写工具导致 messages 不一致 → 网关报 400。
+  const agentConfigForTools = agentConfigStorage.getStore()
+  if (agentConfigForTools?.tools && Array.isArray(agentConfigForTools.tools)) {
+    const allowedToolNames = new Set(agentConfigForTools.tools)
+    for (let i = customTools.length - 1; i >= 0; i--) {
+      if (!allowedToolNames.has(customTools[i].name)) {
+        customTools.splice(i, 1)
+      }
+    }
   }
 
   // 6. 创建 Agent Session

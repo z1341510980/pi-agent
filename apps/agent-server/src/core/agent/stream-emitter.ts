@@ -29,6 +29,9 @@ function safeSerializeForRawEvent(value: unknown): unknown {
 
 /**
  * StreamEmitter：Pi SDK 事件 → AG-UI 事件映射
+ *
+ * 选项：
+ * - emitRaw: 是否发射 RAW 事件（默认 true，chat 用；novel 关闭以减少 SSE 噪声）
  */
 export class StreamEmitter {
   private startedTextMessageId: string | null = null
@@ -39,6 +42,7 @@ export class StreamEmitter {
     private readonly emit: AgUiEventSink,
     private readonly assistantResponseMessageId: string,
     private readonly reasoningPipeline: ReasoningPipeline,
+    private readonly options: { emitRaw?: boolean } = {},
   ) {}
 
   private ensureTextStarted(): string {
@@ -80,11 +84,14 @@ export class StreamEmitter {
   }
 
   handleSessionEvent(event: Record<string, unknown>): void {
-    this.emit({
-      type: EventType.RAW,
-      source: 'pi-session-event',
-      event: safeSerializeForRawEvent(event),
-    } as RawEvent)
+    // RAW 事件默认开启（chat 用于调试），novel 关闭以减少 SSE 噪声
+    if (this.options.emitRaw !== false) {
+      this.emit({
+        type: EventType.RAW,
+        source: 'pi-session-event',
+        event: safeSerializeForRawEvent(event),
+      } as RawEvent)
+    }
 
     const eventType = event.type as string
 

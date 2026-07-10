@@ -22,6 +22,8 @@ export interface UseStreamingRunOptions {
   model?: { provider: string; modelId: string }
   /** 目标 Agent ID，默认 'default' */
   agentId?: string
+  /** 生成温度（0-2），未传则不注入 */
+  temperature?: number
 }
 
 export interface UseStreamingRunReturn {
@@ -57,7 +59,7 @@ export interface UseStreamingRunReturn {
 export function useStreamingRun(
   options: UseStreamingRunOptions,
 ): UseStreamingRunReturn {
-  const { threadId, onEvent, onFinished, onError, model, agentId } = options
+  const { threadId, onEvent, onFinished, onError, model, agentId, temperature } = options
 
   const [status, setStatus] = useState<StreamingRunStatus>('idle')
   const [currentRunId, setCurrentRunId] = useState<string | null>(null)
@@ -94,6 +96,7 @@ export function useStreamingRun(
         signal: controller.signal,
         model,
         agentId,
+        temperature,
         onEvent: (event) => {
           // 根据 AG-UI 事件类型更新状态
           if (event.type === EventType.RUN_FINISHED) {
@@ -127,7 +130,7 @@ export function useStreamingRun(
       // 清理资源（无论成功/失败/中断都必须清理，否则后续 run 会被拒绝）
       abortControllerRef.current = null
     },
-    [threadId, model, agentId],
+    [threadId, model, agentId, temperature],
   )
 
   const abort = useCallback(() => {

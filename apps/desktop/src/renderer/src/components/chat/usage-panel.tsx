@@ -192,7 +192,7 @@ export function UsagePanel({ isOnline }: UsagePanelProps): ReactElement {
             <span className="text-danger text-[10px]">{budgetError}</span>
           )}
           {budgetInfo && budgetInfo.monthlyBudgetUsd > 0 && (
-            <span className="text-muted-foreground text-[10px] ml-auto">
+            <span className="text-muted-foreground text-[10px] ml-auto tabular-nums">
               当月 {budgetInfo.costUsd.toFixed(4)} / {budgetInfo.monthlyBudgetUsd.toFixed(2)} USD（{budgetInfo.percentage.toFixed(1)}%）
             </span>
           )}

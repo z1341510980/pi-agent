@@ -30,6 +30,8 @@ export interface StreamRunInput {
     provider: string
     modelId: string
   }
+  /** 生成温度（0-2），未传则不注入 */
+  temperature?: number
 }
 
 export interface StreamRunOptions {
@@ -147,6 +149,39 @@ export class PiAgUiAgent {
             message: `模型不可用：${input.model.provider}/${input.model.modelId}`
           } as RunErrorEvent)
           return
+        }
+      }
+
+      // 注入生成参数到 provider payload（max_tokens + temperature）
+      // max_tokens 从 ModelRegistry 自动读取，temperature 由前端传入
+      const inject: Record<string, unknown> = {}
+      if (input.model) {
+        const model = this.modelRegistry.find(input.model.provider, input.model.modelId)
+        if (model?.maxTokens) inject.max_tokens = model.maxTokens
+      } else if (this.modelRegistry?.getAll) {
+        const allModels = this.modelRegistry.getAll() as Array<{ maxTokens?: number }>
+        if (allModels.length > 0 && allModels[0].maxTokens) {
+          inject.max_tokens = allModels[0].maxTokens
+        }
+      }
+      if (input.temperature !== undefined) {
+        inject.temperature = input.temperature
+      }
+      if (Object.keys(inject).length > 0) {
+        const piSession = threadSession.session as {
+          agent?: { onPayload?: (payload: unknown) => unknown | Promise<unknown> }
+        }
+        if (piSession.agent) {
+          // 必须使用 async/await：Pi SDK 默认的 onPayload 是 async 函数，
+          // 返回 Promise<payload>。若不 await，spread Promise 会得到空对象，
+          // 导致 messages 字段丢失，LLM 网关返回 400。
+          // 这与 plugin-manager.ts createSession 的 onPayload 修复保持一致。
+          const prevOnPayload = piSession.agent.onPayload
+          piSession.agent.onPayload = async (payload: unknown) => {
+            let next = prevOnPayload ? await prevOnPayload(payload) : payload
+            next = { ...(next as Record<string, unknown>), ...inject }
+            return next
+          }
         }
       }
 

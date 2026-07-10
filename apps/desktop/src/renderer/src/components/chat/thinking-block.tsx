@@ -31,7 +31,7 @@ export function ThinkingBlock({ content, isStreaming }: ThinkingBlockProps) {
       <motion.button
         type="button"
         onClick={() => setExpanded(!expanded)}
-        whileTap={{ scale: 0.98 }}
+        whileTap={{ scale: 0.96 }}
         transition={{ duration: 0.1 }}
         className={cn(
           'flex w-full items-start gap-3 px-3.5 py-2.5 text-left',

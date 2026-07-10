@@ -5,7 +5,7 @@ describe('AG-UI 路由', () => {
   let app: Awaited<ReturnType<typeof createApp>>
 
   beforeAll(async () => {
-    process.env.PI_AGENT_AUTH_TOKEN = 'test-token-123'
+    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     app = await createApp()
     await app.ready()
   })

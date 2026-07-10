@@ -6,6 +6,7 @@ const parsed = browserEnvSchema.parse({
   VITE_APP_NAME: import.meta.env.VITE_APP_NAME,
   VITE_API_BASE_URL: import.meta.env.VITE_API_BASE_URL,
   VITE_AGUI_BASE_URL: import.meta.env.VITE_AGUI_BASE_URL,
+  VITE_REPOSITORY_URL: import.meta.env.VITE_REPOSITORY_URL,
 });
 
 export const browserConfig: BrowserConfig = {
@@ -13,6 +14,7 @@ export const browserConfig: BrowserConfig = {
   appName: parsed.VITE_APP_NAME,
   apiBaseUrl: parsed.VITE_API_BASE_URL,
   aguiBaseUrl: parsed.VITE_AGUI_BASE_URL,
+  repositoryUrl: parsed.VITE_REPOSITORY_URL,
 };
 
 /**

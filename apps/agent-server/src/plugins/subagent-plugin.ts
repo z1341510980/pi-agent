@@ -16,6 +16,7 @@ import fp from 'fastify-plugin'
 import { AgentChannel } from '../core/agent/agent-channel.js'
 import { AgentManager, type AgentConfig } from '../core/agent/subagent-tool.js'
 import { SqliteAgentStore } from '../core/agent/agent-persistence.js'
+import { AgentCallLogger } from '../core/agent/agent-call-logger.js'
 import { withAgentConfig } from '../core/agent/pi-session.js'
 import { DEFAULT_LIMITS, type ConcurrencyLimits } from '../core/agent/concurrency-limiter.js'
 
@@ -35,18 +36,22 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
   // 2. 创建 SQLite 持久化存储
   const store = new SqliteAgentStore(app.db)
 
-  // 3. 创建 AgentManager（持有 ConcurrencyLimiter + 持久化存储）
+  // 3. 创建通用 Agent 调用日志记录器（chat 底座能力，所有 Agent 调用统一记录）
+  const callLogger = new AgentCallLogger(app.db)
+
+  // 4. 创建 AgentManager（持有 ConcurrencyLimiter + 持久化存储 + 调用日志器）
   const limits: ConcurrencyLimits = { ...DEFAULT_LIMITS, ...options.limits }
   const manager = new AgentManager({
     limits,
     channel,
     store,
+    callLogger,
   })
 
-  // 4. 从数据库加载已持久化的 Agent
+  // 5. 从数据库加载已持久化的 Agent
   manager.loadPersistedAgents()
 
-  // 5. 注册默认 Agent（如果不存在）
+  // 6. 注册默认 Agent（如果不存在）
   if (!manager.getAgent('default')) {
     const defaultAgent: AgentConfig = {
       id: 'default',
@@ -56,31 +61,74 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
     manager.registerAgent(defaultAgent)
   }
 
-  // 6. 注册用户提供的 Agent
+  // 7. 注册用户提供的 Agent
   if (options.agents) {
     for (const agent of options.agents) {
       manager.registerAgent(agent)
     }
   }
 
-  // 7. 注入派遣函数：使用 PiSessionStore 创建隔离 Session 执行子任务
+  // 8. 注入派遣函数：使用 PiSessionStore 创建隔离 Session 执行子任务
   manager.setDispatchFn(async (agentId, task, dispatchOptions) => {
     const agentConfig = manager.getAgent(agentId)
     if (!agentConfig) {
       throw new Error(`Agent 不存在: ${agentId}`)
     }
 
-    // 在 AgentConfig 上下文中创建 session，使 buildSystemPrompt 能注入身份/人格模板
-    return withAgentConfig(agentConfig, async () => {
+    // 计算 effective 配置：若 Agent 提供了 systemPromptBuilder / toolFilter，
+    // 在创建 session 前执行回调，覆盖静态 systemPrompt / tools。
+    // 这样 createPiSession 的 buildSystemPrompt 与 customTools 过滤都能拿到最新值，
+    // 使 subagent / team_execute 路径与 NovelOrchestrator.runAgent 行为一致。
+    const builderCtx = { task }
+    const builtPrompt = agentConfig.systemPromptBuilder?.(builderCtx)
+    const filteredTools = agentConfig.toolFilter?.(builderCtx)
+    const effectiveConfig: AgentConfig = {
+      ...agentConfig,
+      ...(builtPrompt !== undefined ? { systemPrompt: builtPrompt } : {}),
+      ...(filteredTools !== undefined ? { tools: filteredTools } : {}),
+    }
+
+    // 在 AgentConfig 上下文中创建 session，使 buildSystemPrompt 能注入身份/人格模板，
+    // 以及（若 effectiveConfig.tools 存在）让 createPiSession 据此过滤 customTools
+    return withAgentConfig(effectiveConfig, async () => {
       // 为 subagent 创建独立的 threadId
       const subagentThreadId = `subagent-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       const threadSession = await app.piSessionStore.getOrCreate(subagentThreadId)
 
       // 如果目标 Agent 配置了模型，切换模型
-      if (agentConfig.model) {
-        const targetModel = app.modelRegistry.find(agentConfig.model.provider, agentConfig.model.modelId)
+      if (effectiveConfig.model) {
+        const targetModel = app.modelRegistry.find(effectiveConfig.model.provider, effectiveConfig.model.modelId)
         if (targetModel) {
           await threadSession.session.setModel(targetModel)
+        }
+      }
+
+      // 注入生成参数到 provider payload（temperature / max_tokens）
+      // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
+      const inject: Record<string, unknown> = {}
+      if (effectiveConfig.temperature !== undefined) {
+        inject.temperature = effectiveConfig.temperature
+      }
+      // 从模型配置读取 maxTokens
+      if (effectiveConfig.model) {
+        const model = app.modelRegistry.find(effectiveConfig.model.provider, effectiveConfig.model.modelId)
+        if (model?.maxTokens) {
+          inject.max_tokens = model.maxTokens
+        }
+      }
+      if (Object.keys(inject).length > 0) {
+        const piSession = threadSession.session as {
+          agent?: { onPayload?: (payload: unknown) => unknown }
+        }
+        if (piSession.agent) {
+          // 必须保留并 await prevOnPayload：Pi SDK 默认的 onPayload 是 async 函数，
+          // 若直接替换不调用 prevOnPayload，会绕过 before_provider_request 扩展钩子；
+          // 且若不 await，spread Promise 会丢失 messages 字段，导致 LLM 400 错误。
+          const prevOnPayload = piSession.agent.onPayload
+          piSession.agent.onPayload = async (payload: unknown) => {
+            let next = prevOnPayload ? await prevOnPayload(payload) : payload
+            return { ...(next as Record<string, unknown>), ...inject }
+          }
         }
       }
 
@@ -135,8 +183,9 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
     })
   })
 
-  // 8. 挂载到 Fastify 实例
+  // 9. 挂载到 Fastify 实例
   app.decorate('subagentManager', manager)
+  app.decorate('agentCallLogger', callLogger)
 
   app.log.info(
     { agentCount: manager.listAgents().length, limits },

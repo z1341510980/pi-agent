@@ -154,7 +154,7 @@ export function FactList({ initialTag }: FactListProps) {
         {searchQuery && (
           <button
             type="button"
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-text"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 grid size-6 place-items-center rounded text-muted-foreground hover:text-text hover:bg-surface-2"
             onClick={handleClearSearch}
             aria-label="清除搜索"
           >
@@ -212,7 +212,7 @@ export function FactList({ initialTag }: FactListProps) {
       {/* 分页 */}
       {!isSearchMode && totalPages > 1 && (
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
+          <span className="tabular-nums">
             共 {total} 条 · 第 {page + 1}/{totalPages} 页
           </span>
           <div className="flex gap-1">

@@ -106,6 +106,7 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
           runId: input.runId,
           messages: (input.messages ?? []) as StreamRunInput['messages'],
           model: input.model,
+          temperature: input.temperature,
         },
         (event) => sendSseEvent(reply, event),
         { signal: abortController.signal }

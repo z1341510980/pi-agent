@@ -1,6 +1,6 @@
 import { useState, type ReactElement } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { BotIcon, PlusIcon } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { BotIcon, PlusIcon, PencilIcon, TrashIcon } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -21,7 +21,13 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { getAgents, type AgentInfo } from '@/api/http-client'
+import {
+  getAgents,
+  createAgent,
+  updateAgent,
+  deleteAgent,
+  type AgentInfo,
+} from '@/api/http-client'
 import { useSessionStore } from '@/stores/session-store'
 
 /** Agent 选择器属性 */
@@ -30,63 +36,108 @@ export interface AgentSelectorProps {
   disabled?: boolean
 }
 
-/** 添加自定义 Agent 弹窗属性 */
-interface AddAgentDialogProps {
+/** 弹窗模式：创建或编辑 */
+type DialogMode = 'create' | 'edit'
+
+/** Agent 表单弹窗属性 */
+interface AgentFormDialogProps {
   open: boolean
+  mode: DialogMode
+  agent?: AgentInfo | null
   onOpenChange: (open: boolean) => void
-  onAdd: (agent: AgentInfo) => void
+  onSuccess: () => void
 }
 
-/** 添加自定义 Agent 弹窗 */
-function AddAgentDialog({ open, onOpenChange, onAdd }: AddAgentDialogProps): ReactElement {
-  const [id, setId] = useState('')
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [modelProvider, setModelProvider] = useState('')
-  const [modelId, setModelId] = useState('')
-  const [systemPrompt, setSystemPrompt] = useState('')
+/** Agent 表单弹窗（创建 + 编辑共用） */
+function AgentFormDialog({ open, mode, agent, onOpenChange, onSuccess }: AgentFormDialogProps): ReactElement {
+  const isEdit = mode === 'edit'
+  const [id, setId] = useState(agent?.id ?? '')
+  const [name, setName] = useState(agent?.name ?? '')
+  const [description, setDescription] = useState(agent?.description ?? '')
+  const [modelProvider, setModelProvider] = useState(agent?.model?.provider ?? '')
+  const [modelId, setModelId] = useState(agent?.model?.modelId ?? '')
+  const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '')
+  const [error, setError] = useState('')
 
-  const canSubmit = id.trim() && name.trim()
+  const canSubmit = isEdit ? name.trim().length > 0 : id.trim().length > 0 && name.trim().length > 0
 
-  function handleSubmit(e: React.FormEvent): void {
-    e.preventDefault()
-    if (!canSubmit) return
-    onAdd({
-      id: id.trim(),
-      name: name.trim(),
-      description: description.trim() || undefined,
-      model: modelProvider.trim() && modelId.trim()
-        ? { provider: modelProvider.trim(), modelId: modelId.trim() }
-        : undefined,
-      systemPrompt: systemPrompt.trim() || undefined,
-    })
-    // 重置表单
+  const createMutation = useMutation({
+    mutationFn: (agent: AgentInfo) => createAgent(agent),
+    onSuccess: () => {
+      onSuccess()
+      handleClose()
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: (patch: Partial<AgentInfo>) => updateAgent(agent!.id, patch),
+    onSuccess: () => {
+      onSuccess()
+      handleClose()
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  function handleClose(): void {
     setId('')
     setName('')
     setDescription('')
     setModelProvider('')
     setModelId('')
     setSystemPrompt('')
+    setError('')
     onOpenChange(false)
   }
 
+  function handleSubmit(e: React.FormEvent): void {
+    e.preventDefault()
+    if (!canSubmit) return
+    setError('')
+
+    const model = modelProvider.trim() && modelId.trim()
+      ? { provider: modelProvider.trim(), modelId: modelId.trim() }
+      : undefined
+
+    if (isEdit) {
+      updateMutation.mutate({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        model,
+        systemPrompt: systemPrompt.trim() || undefined,
+      })
+    } else {
+      createMutation.mutate({
+        id: id.trim(),
+        name: name.trim(),
+        description: description.trim() || undefined,
+        model,
+        systemPrompt: systemPrompt.trim() || undefined,
+      })
+    }
+  }
+
+  const isPending = createMutation.isPending || updateMutation.isPending
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(v) => v ? null : handleClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>添加自定义 Agent</DialogTitle>
+          <DialogTitle>{isEdit ? '编辑 Agent' : '添加自定义 Agent'}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-3">
-          <div className="grid gap-1.5">
-            <Label htmlFor="agent-id" className="text-xs">Agent ID *</Label>
-            <Input
-              id="agent-id"
-              value={id}
-              onChange={(e) => setId(e.target.value)}
-              placeholder="例如：coder"
-              required
-            />
-          </div>
+          {!isEdit && (
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-id" className="text-xs">Agent ID *</Label>
+              <Input
+                id="agent-id"
+                value={id}
+                onChange={(e) => setId(e.target.value)}
+                placeholder="例如：coder"
+                required
+              />
+            </div>
+          )}
           <div className="grid gap-1.5">
             <Label htmlFor="agent-name" className="text-xs">名称 *</Label>
             <Input
@@ -137,16 +188,69 @@ function AddAgentDialog({ open, onOpenChange, onAdd }: AddAgentDialogProps): Rea
               className="w-full bg-surface-3 border border-border rounded-md px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60"
             />
           </div>
+          {error && (
+            <p className="text-xs text-destructive">{error}</p>
+          )}
           <DialogFooter>
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="ghost" size="sm" onClick={handleClose}>
               取消
             </Button>
-            <Button type="submit" size="sm" disabled={!canSubmit}>
-              <PlusIcon className="size-3.5" />
-              添加
+            <Button type="submit" size="sm" disabled={!canSubmit || isPending}>
+              {isEdit ? '保存' : '添加'}
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 删除确认弹窗 */
+function DeleteConfirmDialog({
+  open,
+  agent,
+  onOpenChange,
+  onSuccess,
+}: {
+  open: boolean
+  agent: AgentInfo | null
+  onOpenChange: (open: boolean) => void
+  onSuccess: () => void
+}): ReactElement {
+  const [error, setError] = useState('')
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteAgent(id),
+    onSuccess: () => {
+      onSuccess()
+      onOpenChange(false)
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) setError(''); onOpenChange(v) }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>删除 Agent</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          确认删除 Agent「{agent?.name}」？此操作不可撤销。
+        </p>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <DialogFooter>
+          <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={deleteMutation.isPending}
+            onClick={() => agent && deleteMutation.mutate(agent.id)}
+          >
+            {deleteMutation.isPending ? '删除中...' : '删除'}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )
@@ -157,15 +261,19 @@ function AddAgentDialog({ open, onOpenChange, onAdd }: AddAgentDialogProps): Rea
  *
  * - 从 GET /api/agents 获取可用 Agent 列表
  * - 选择后更新 session-store 的 activeAgentId
- * - 显示当前 Agent 名称和描述
- * - 支持添加自定义 Agent（弹窗表单）
+ * - 支持创建自定义 Agent（调用后端 API 持久化）
+ * - 支持编辑和删除 Agent
  */
 export function AgentSelector({ disabled = false }: AgentSelectorProps): ReactElement {
+  const queryClient = useQueryClient()
   const activeAgentId = useSessionStore((s) => s.activeAgentId)
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId)
-  const [addDialogOpen, setAddDialogOpen] = useState(false)
-  // 本地自定义 Agent 列表（后端可能尚未注册）
-  const [localAgents, setLocalAgents] = useState<AgentInfo[]>([])
+
+  const [formOpen, setFormOpen] = useState(false)
+  const [formMode, setFormMode] = useState<DialogMode>('create')
+  const [editTarget, setEditTarget] = useState<AgentInfo | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<AgentInfo | null>(null)
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   // 从后端获取 Agent 列表
   const agentsQuery = useQuery({
@@ -174,20 +282,28 @@ export function AgentSelector({ disabled = false }: AgentSelectorProps): ReactEl
     refetchInterval: 30_000,
   })
 
-  // 合并后端和本地 Agent
-  const allAgents = [
-    ...(agentsQuery.data ?? []),
-    ...localAgents.filter(
-      (local) => !(agentsQuery.data ?? []).some((a) => a.id === local.id),
-    ),
-  ]
+  const agents = agentsQuery.data ?? []
+  const currentAgent = agents.find((a) => a.id === activeAgentId)
 
-  const currentAgent = allAgents.find((a) => a.id === activeAgentId)
+  function invalidateAgents(): void {
+    queryClient.invalidateQueries({ queryKey: ['agents'] })
+  }
 
-  function handleAddAgent(agent: AgentInfo): void {
-    setLocalAgents((prev) => [...prev, agent])
-    // 自动选中新添加的 Agent
-    setActiveAgentId(agent.id)
+  function handleOpenCreate(): void {
+    setFormMode('create')
+    setEditTarget(null)
+    setFormOpen(true)
+  }
+
+  function handleOpenEdit(agent: AgentInfo): void {
+    setFormMode('edit')
+    setEditTarget(agent)
+    setFormOpen(true)
+  }
+
+  function handleOpenDelete(agent: AgentInfo): void {
+    setDeleteTarget(agent)
+    setDeleteOpen(true)
   }
 
   return (
@@ -210,21 +326,45 @@ export function AgentSelector({ disabled = false }: AgentSelectorProps): ReactEl
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {allAgents.length === 0 ? (
+          {agents.length === 0 ? (
             <div className="px-2 py-4 text-center text-xs text-muted-foreground">
               暂无可用 Agent
             </div>
           ) : (
             <SelectGroup>
               <SelectLabel>可用 Agent</SelectLabel>
-              {allAgents.map((agent) => (
+              {agents.map((agent) => (
                 <SelectItem key={agent.id} value={agent.id}>
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="truncate">{agent.name}</span>
+                  <div className="flex items-center gap-1.5 min-w-0 w-full">
+                    <span className="truncate flex-1">{agent.name}</span>
                     {agent.id === 'default' && (
                       <Badge variant="secondary" className="px-1 py-0 text-[10px] shrink-0">
                         默认
                       </Badge>
+                    )}
+                    {agent.id !== 'default' && (
+                      <span className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          className="size-7 flex items-center justify-center hover:text-accent rounded"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleOpenEdit(agent)
+                          }}
+                        >
+                          <PencilIcon className="size-3" />
+                        </button>
+                        <button
+                          type="button"
+                          className="size-7 flex items-center justify-center hover:text-destructive rounded"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleOpenDelete(agent)
+                          }}
+                        >
+                          <TrashIcon className="size-3" />
+                        </button>
+                      </span>
                     )}
                   </div>
                 </SelectItem>
@@ -236,7 +376,7 @@ export function AgentSelector({ disabled = false }: AgentSelectorProps): ReactEl
       <Button
         variant="ghost"
         size="icon-sm"
-        onClick={() => setAddDialogOpen(true)}
+        onClick={handleOpenCreate}
         disabled={disabled}
         aria-label="添加自定义 Agent"
       >
@@ -247,10 +387,18 @@ export function AgentSelector({ disabled = false }: AgentSelectorProps): ReactEl
           {currentAgent.description}
         </span>
       )}
-      <AddAgentDialog
-        open={addDialogOpen}
-        onOpenChange={setAddDialogOpen}
-        onAdd={handleAddAgent}
+      <AgentFormDialog
+        open={formOpen}
+        mode={formMode}
+        agent={editTarget}
+        onOpenChange={setFormOpen}
+        onSuccess={invalidateAgents}
+      />
+      <DeleteConfirmDialog
+        open={deleteOpen}
+        agent={deleteTarget}
+        onOpenChange={setDeleteOpen}
+        onSuccess={invalidateAgents}
       />
     </div>
   )

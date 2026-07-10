@@ -12,7 +12,7 @@ export function atomicWriteSync(filePath: string, content: string): void {
 
   const tmpFile = join(
     tmpdir(),
-    `pi-agent-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`
+    `wenlang-agent-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`
   )
 
   try {

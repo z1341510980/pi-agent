@@ -25,7 +25,7 @@ export function createHelloPlugin(): Plugin {
       name: 'hello',
       version: '1.0.0',
       description: '示例插件：演示工具、路由、事件监听、UI 面板注册',
-      author: 'pi-agent',
+      author: 'wenlang-agent',
       builtin: true,
     },
 

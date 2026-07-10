@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { createModuleLogger } from '../lib/logger.js'
 import { PluginManager } from '../core/plugin/plugin-manager.js'
 import { createHelloPlugin } from './examples/hello-plugin/index.js'
+import { createNovelPlugin } from './novel-plugin/index.js'
 
 export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'plugin-loader')
@@ -32,8 +33,15 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
     process.env.PI_PLUGINS_ENABLE_EXAMPLES !== 'false' &&
     process.env.PI_PLUGINS_ENABLE_EXAMPLES !== '0'
 
+  // 工作目录与数据目录（与 app.ts 保持一致）
+  const cwd = process.env.PI_CWD ?? process.cwd()
+  const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
+
   // 准备内置插件列表
-  const builtinPlugins = enableExamples ? [{ plugin: createHelloPlugin() }] : []
+  const builtinPlugins = [
+    ...(enableExamples ? [{ plugin: createHelloPlugin() }] : []),
+    { plugin: createNovelPlugin() },
+  ]
 
   log.info(
     {
@@ -41,22 +49,111 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       enableNpmPlugins,
       enableExamples,
       builtinCount: builtinPlugins.length,
+      cwd,
+      dataDir,
     },
     '初始化插件系统',
   )
 
   // 创建 PluginManager
-  const manager = new PluginManager(log, app.eventBus, {
+  const manager = new PluginManager(log, app.eventBus, app.db, cwd, dataDir, {
     localPluginsDir,
     enableNpmPlugins,
     builtinPlugins,
   })
 
+  // 注入 subagentPlugin / teamPlugin 已装饰的 Manager
+  // subagentPlugin 与 teamPlugin 在 pluginLoaderPlugin 之前注册，
+  // 因此 app.subagentManager / app.teamManager 此时已可用。
+  // 在 manager.start()（调用插件 setup）之前注入，
+  // 使插件 setup 可通过 context.subagentManager / context.teamManager 访问。
+  if (app.subagentManager) {
+    manager.setAgentManager(app.subagentManager)
+  } else {
+    log.warn('subagentPlugin 未注册，插件 context.subagentManager 将不可用')
+  }
+  if (app.teamManager) {
+    manager.setTeamManager(app.teamManager)
+  } else {
+    log.warn('teamPlugin 未注册，插件 context.teamManager 将不可用')
+  }
+  // 注入 ConfirmationManager（app.ts 已在 pluginLoaderPlugin 之前创建并 decorate）
+  // 使插件 setup 可通过 context.confirmationManager 复用 chat 的确认/决策流程
+  // （超时机制 + pending 列表 + 'confirmation:request' / 'confirmation:resolved' 事件）
+  manager.setConfirmationManager(app.confirmationManager)
+
+  // 注入 AgentCallLogger（subagentPlugin 已 decorate app.agentCallLogger）
+  // 使插件 setup 可通过 context.agentCallLogger 记录 Agent 调用日志（含领域扩展字段）
+  if (app.agentCallLogger) {
+    manager.setAgentCallLogger(app.agentCallLogger)
+  } else {
+    log.warn('subagentPlugin 未注册，插件 context.agentCallLogger 将不可用')
+  }
+
   // 初始化（扫描并加载插件）
   await manager.init()
 
+  // 执行插件静态声明的数据库迁移（在 start/setup 之前）
+  // 这确保依赖数据库表的插件 setup 能成功执行
+  const staticMigrations = manager.getLoadedMigrations()
+  if (staticMigrations.length > 0) {
+    log.info({ count: staticMigrations.length }, '开始执行插件静态数据库迁移')
+    for (const migration of staticMigrations) {
+      // 检查是否已执行
+      const applied = app.db
+        .prepare('SELECT id FROM schema_migrations WHERE id = ?')
+        .get(migration.id) as { id: string } | undefined
+      if (applied) {
+        log.debug({ id: migration.id }, '迁移已应用，跳过')
+        continue
+      }
+      try {
+        app.db.exec(migration.sql)
+        app.db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
+        log.info({ id: migration.id }, '迁移已执行')
+      } catch (err) {
+        log.error({ id: migration.id, err }, '迁移执行失败')
+      }
+    }
+  }
+
   // 启动所有插件（调用 setup）
   await manager.start()
+
+  // 执行 setup 中动态注册的数据库迁移（通过 context.registerMigration 注册）
+  // 静态迁移已在上一步执行，此处只会执行 setup 中新增的迁移
+  const dynamicMigrations = manager.getAllMigrations()
+  if (dynamicMigrations.length > 0) {
+    log.info({ count: dynamicMigrations.length }, '开始执行插件动态数据库迁移')
+    for (const migration of dynamicMigrations) {
+      // 检查是否已执行
+      const applied = app.db
+        .prepare('SELECT id FROM schema_migrations WHERE id = ?')
+        .get(migration.id) as { id: string } | undefined
+      if (applied) {
+        log.debug({ id: migration.id }, '迁移已应用，跳过')
+        continue
+      }
+      try {
+        app.db.exec(migration.sql)
+        app.db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
+        log.info({ id: migration.id }, '迁移已执行')
+      } catch (err) {
+        log.error({ id: migration.id, err }, '迁移执行失败')
+      }
+    }
+  }
+
+  // 装饰 Fastify 实例（插件注册的服务）
+  const services = manager.getAllServices()
+  for (const { pluginName, name, service } of services) {
+    try {
+      app.decorate(name, service)
+      log.info({ pluginName, serviceName: name }, '已装饰 Fastify 服务')
+    } catch (err) {
+      log.error({ pluginName, serviceName: name, err }, '装饰 Fastify 服务失败')
+    }
+  }
 
   // 将插件注册的路由集成到 Fastify
   // 路由路径格式：/api/plugins/:pluginName + route.path
@@ -108,6 +205,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       enabledPlugins: manager.list().filter((p) => p.status === 'enabled').length,
       totalTools: manager.getAllTools().length,
       totalRoutes: routes.length,
+      totalMigrations: staticMigrations.length + dynamicMigrations.length,
+      totalServices: services.length,
     },
     '插件系统初始化完成',
   )

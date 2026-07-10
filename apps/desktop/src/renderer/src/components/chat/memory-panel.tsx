@@ -112,7 +112,7 @@ export function MemoryPanel({ isOnline }: MemoryPanelProps) {
         {searchQuery && (
           <button
             type="button"
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-text"
+            className="absolute right-1 top-1/2 -translate-y-1/2 size-7 flex items-center justify-center text-muted-foreground hover:text-text"
             onClick={() => setSearchQuery('')}
             aria-label="清除搜索"
           >
@@ -125,7 +125,7 @@ export function MemoryPanel({ isOnline }: MemoryPanelProps) {
       <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">
         <div className="flex items-center justify-between">
           <p className="text-subtle text-xs font-[760] m-0">记忆概览</p>
-          <span className="text-muted-foreground text-xs">
+          <span className="text-muted-foreground text-xs tabular-nums">
             {isFiltered ? `${facts.length}/${total} 条` : `${total} 条事实`}
           </span>
         </div>

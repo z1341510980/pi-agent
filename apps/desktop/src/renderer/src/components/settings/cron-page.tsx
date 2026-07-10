@@ -240,9 +240,9 @@ export function CronPage(): ReactElement {
                   <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                     <code className="font-mono bg-surface-3 px-1.5 py-0.5 rounded">{job.schedule}</code>
                     <span>Agent: {job.agentId}</span>
-                    <span>超时: {(job.timeoutMs / 1000).toFixed(0)}s</span>
+                    <span className="tabular-nums">超时: {(job.timeoutMs / 1000).toFixed(0)}s</span>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{job.prompt}</p>
+                  <p className="text-pretty text-xs text-muted-foreground mt-1 line-clamp-2">{job.prompt}</p>
                   <div className="flex items-center gap-3 mt-1 text-[10px] text-muted-foreground">
                     <span>上次执行: {job.lastRunAt ? formatTime(job.lastRunAt) : '未执行'}</span>
                     {job.lastError && (

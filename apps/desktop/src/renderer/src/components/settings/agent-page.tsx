@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactElement } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BotIcon, SaveIcon, RotateCcwIcon, SparklesIcon, PlusIcon,
   EditIcon, Trash2Icon, XIcon, CircleDotIcon, SendIcon,
@@ -19,9 +19,17 @@ import {
   getAgents,
   getLimiterStats,
   dispatchSubtask,
+  createAgent,
+  updateAgent,
+  deleteAgent,
   type AgentInfo,
   type DispatchResult,
 } from '@/api/http-client'
+import {
+  getNovelAgentConfig,
+  updateNovelAgentConfig,
+  type NovelAgentType,
+} from '@/api/novel-agent-config-client'
 
 // ── 类型定义 ──
 
@@ -51,9 +59,9 @@ interface DispatchHistoryEntry {
 
 // ── 常量 ──
 
-const configStorageKey = 'pi-agent.agent-config'
-const templatesStorageKey = 'pi-agent.persona-templates'
-const dispatchHistoryKey = 'pi-agent.dispatch-history'
+const configStorageKey = 'wenlang-agent.agent-config'
+const templatesStorageKey = 'wenlang-agent.persona-templates'
+const dispatchHistoryKey = 'wenlang-agent.dispatch-history'
 
 const defaultConfig: AgentConfig = {
   systemPrompt: '',
@@ -91,7 +99,6 @@ const builtinPresets: Array<{ id: string; label: string; desc: string; prompt: s
 // ── 主组件 ──
 
 export function AgentPage(): ReactElement {
-  const queryClient = useQueryClient()
   const [config, setConfig] = useState<AgentConfig>(() => loadConfig())
   const [savedConfig, setSavedConfig] = useState<AgentConfig>(() => loadConfig())
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
@@ -103,6 +110,11 @@ export function AgentPage(): ReactElement {
   // Agent 编辑弹窗
   const [editingAgent, setEditingAgent] = useState<AgentInfo | null>(null)
   const [agentEditorOpen, setAgentEditorOpen] = useState(false)
+  // Agent 创建弹窗
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  // Agent 删除确认弹窗
+  const [deletingAgent, setDeletingAgent] = useState<AgentInfo | null>(null)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   // 派遣弹窗
   const [dispatchAgentId, setDispatchAgentId] = useState<string | null>(null)
   const [dispatchTask, setDispatchTask] = useState('')
@@ -203,6 +215,12 @@ export function AgentPage(): ReactElement {
     setAgentEditorOpen(true)
   }
 
+  // 删除 Agent
+  function handleDeleteAgent(agent: AgentInfo): void {
+    setDeletingAgent(agent)
+    setDeleteDialogOpen(true)
+  }
+
   // 派遣子任务
   async function handleDispatch(): Promise<void> {
     if (!dispatchAgentId || !dispatchTask.trim()) return
@@ -283,10 +301,18 @@ export function AgentPage(): ReactElement {
           </div>
           <div className="flex items-center gap-2">
             {limiter && (
-              <span className="text-xs text-muted-foreground font-mono">
+              <span className="tabular-nums text-xs text-muted-foreground font-mono">
                 并发 {limiter.activeCount}/{limiter.totalCount} · 队列 {limiter.queueLength}
               </span>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCreateDialogOpen(true)}
+            >
+              <PlusIcon className="size-3.5" />
+              新建
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -343,6 +369,16 @@ export function AgentPage(): ReactElement {
                   >
                     <EditIcon className="size-3" />
                   </Button>
+                  {agent.id !== 'default' && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => handleDeleteAgent(agent)}
+                      aria-label={`删除 ${agent.name}`}
+                    >
+                      <Trash2Icon className="size-3" />
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -423,7 +459,7 @@ export function AgentPage(): ReactElement {
               key={preset.id}
               type="button"
               onClick={() => applyPreset(preset.prompt)}
-              className="flex flex-col gap-1 p-3 rounded-lg border border-border bg-surface-3 hover:bg-surface-3/70 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex flex-col gap-1 p-3 rounded-lg border border-border bg-surface-3 hover:bg-surface-3/70 text-left transition-colors active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <div className="flex items-center gap-1.5">
                 <span className="text-sm font-[760]">{preset.label}</span>
@@ -516,14 +552,19 @@ export function AgentPage(): ReactElement {
         </p>
       </div>
 
-      {/* ── 生成参数 ── */}
+      {/* ── 全局默认温度 ── */}
       <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-3">
-        <Label>生成参数</Label>
+        <div>
+          <h3 className="text-sm font-medium">全局默认温度</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            新建 Agent 时的默认温度值。各 Agent 可在编辑弹窗中单独覆盖。
+          </p>
+        </div>
 
         <div className="grid gap-2">
           <div className="flex items-center justify-between gap-2">
             <Label htmlFor="temperature" className="text-xs">Temperature</Label>
-            <span className="text-xs font-mono text-muted-foreground">{config.temperature.toFixed(2)}</span>
+            <span className="tabular-nums text-xs font-mono text-muted-foreground">{config.temperature.toFixed(2)}</span>
           </div>
           <input
             id="temperature"
@@ -559,6 +600,9 @@ export function AgentPage(): ReactElement {
         </Button>
       </div>
 
+      {/* ── 小说创作角色温度 ── */}
+      <NovelAgentTemperatureSection />
+
       {/* ── Agent 编辑弹窗 ── */}
       <AgentEditorDialog
         agent={editingAgent}
@@ -570,8 +614,22 @@ export function AgentPage(): ReactElement {
         onSave={() => {
           setAgentEditorOpen(false)
           setEditingAgent(null)
-          void queryClient.invalidateQueries({ queryKey: ['agents'] })
         }}
+      />
+
+      {/* ── Agent 创建弹窗 ── */}
+      <AgentCreateDialog
+        open={createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+        onSuccess={() => {}}
+      />
+
+      {/* ── Agent 删除确认弹窗 ── */}
+      <AgentDeleteDialog
+        agent={deletingAgent}
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        onSuccess={() => setDeletingAgent(null)}
       />
 
       {/* ── 派遣任务弹窗 ── */}
@@ -685,11 +743,14 @@ interface AgentEditorDialogProps {
 }
 
 function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDialogProps): ReactElement {
+  const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [modelProvider, setModelProvider] = useState('')
   const [modelId, setModelId] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
+  const [temperature, setTemperature] = useState(0.7)
+  const [error, setError] = useState('')
 
   // 当 agent 变化时重置表单
   useEffect(() => {
@@ -699,16 +760,37 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
       setModelProvider(agent.model?.provider ?? '')
       setModelId(agent.model?.modelId ?? '')
       setSystemPrompt(agent.systemPrompt ?? '')
+      setTemperature(agent.temperature ?? 0.7)
+      setError('')
     }
   }, [agent])
 
-  const canSubmit = name.trim()
+  const canSubmit = name.trim().length > 0
+
+  const updateMutation = useMutation({
+    mutationFn: (patch: Partial<AgentInfo>) => updateAgent(agent!.id, patch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      onSave()
+      onOpenChange(false)
+    },
+    onError: (err: Error) => setError(err.message),
+  })
 
   function handleSubmit(e: React.FormEvent): void {
     e.preventDefault()
     if (!canSubmit || !agent) return
-    // 目前仅本地编辑，后端注册 API 暂未实现
-    onSave()
+    setError('')
+    const model = modelProvider.trim() && modelId.trim()
+      ? { provider: modelProvider.trim(), modelId: modelId.trim() }
+      : undefined
+    updateMutation.mutate({
+      name: name.trim(),
+      description: description.trim() || undefined,
+      model,
+      systemPrompt: systemPrompt.trim() || undefined,
+      temperature,
+    })
   }
 
   return (
@@ -763,16 +845,256 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
               className="w-full bg-surface-3 border border-border rounded-md px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60"
             />
           </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="edit-agent-temperature" className="text-xs">
+              温度: {temperature.toFixed(2)}
+            </Label>
+            <input
+              id="edit-agent-temperature"
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={temperature}
+              onChange={(e) => setTemperature(Number(e.target.value))}
+              className="w-full accent-accent"
+            />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
               取消
             </Button>
-            <Button type="submit" size="sm" disabled={!canSubmit}>
+            <Button type="submit" size="sm" disabled={!canSubmit || updateMutation.isPending}>
               <SaveIcon className="size-3.5" />
-              保存
+              {updateMutation.isPending ? '保存中...' : '保存'}
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Agent 创建弹窗 ──
+
+/** 从 localStorage 读取全局默认温度 */
+function readDefaultTemperature(): number {
+  try {
+    const saved = window.localStorage.getItem('wenlang-agent.agent-config')
+    if (saved) {
+      const parsed = JSON.parse(saved) as { temperature?: number }
+      if (typeof parsed.temperature === 'number') return parsed.temperature
+    }
+  } catch { /* ignore */ }
+  return 0.7
+}
+
+interface AgentCreateDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSuccess: () => void
+}
+
+function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogProps): ReactElement {
+  const queryClient = useQueryClient()
+  const [id, setId] = useState('')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [modelProvider, setModelProvider] = useState('')
+  const [modelId, setModelId] = useState('')
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [temperature, setTemperature] = useState(() => readDefaultTemperature())
+  const [error, setError] = useState('')
+
+  const canSubmit = id.trim().length > 0 && name.trim().length > 0
+
+  const createMutation = useMutation({
+    mutationFn: (agent: AgentInfo) => createAgent(agent),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      handleReset()
+      onSuccess()
+      onOpenChange(false)
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  function handleReset(): void {
+    setId('')
+    setName('')
+    setDescription('')
+    setModelProvider('')
+    setModelId('')
+    setSystemPrompt('')
+    setTemperature(readDefaultTemperature())
+    setError('')
+  }
+
+  function handleSubmit(e: React.FormEvent): void {
+    e.preventDefault()
+    if (!canSubmit) return
+    setError('')
+    const model = modelProvider.trim() && modelId.trim()
+      ? { provider: modelProvider.trim(), modelId: modelId.trim() }
+      : undefined
+    createMutation.mutate({
+      id: id.trim(),
+      name: name.trim(),
+      description: description.trim() || undefined,
+      model,
+      systemPrompt: systemPrompt.trim() || undefined,
+      temperature,
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) handleReset(); onOpenChange(v) }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>新建自定义 Agent</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="grid gap-3">
+          <div className="grid gap-1.5">
+            <Label htmlFor="create-agent-id" className="text-xs">Agent ID *</Label>
+            <Input
+              id="create-agent-id"
+              value={id}
+              onChange={(e) => setId(e.target.value)}
+              placeholder="例如：coder"
+              required
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="create-agent-name" className="text-xs">名称 *</Label>
+            <Input
+              id="create-agent-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="例如：编程助手"
+              required
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="create-agent-desc" className="text-xs">描述</Label>
+            <Input
+              id="create-agent-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Agent 的专长和用途"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="create-agent-model-provider" className="text-xs">模型 Provider</Label>
+              <Input
+                id="create-agent-model-provider"
+                value={modelProvider}
+                onChange={(e) => setModelProvider(e.target.value)}
+                placeholder="openai"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="create-agent-model-id" className="text-xs">模型 ID</Label>
+              <Input
+                id="create-agent-model-id"
+                value={modelId}
+                onChange={(e) => setModelId(e.target.value)}
+                placeholder="gpt-4o"
+              />
+            </div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="create-agent-system-prompt" className="text-xs">系统提示词</Label>
+            <textarea
+              id="create-agent-system-prompt"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              placeholder="定义 Agent 的角色、能力和约束..."
+              rows={4}
+              className="w-full bg-surface-3 border border-border rounded-md px-3 py-2 text-sm font-mono resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60"
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="create-agent-temperature" className="text-xs">
+              温度: {temperature.toFixed(2)}
+            </Label>
+            <input
+              id="create-agent-temperature"
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={temperature}
+              onChange={(e) => setTemperature(Number(e.target.value))}
+              className="w-full accent-accent"
+            />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+              取消
+            </Button>
+            <Button type="submit" size="sm" disabled={!canSubmit || createMutation.isPending}>
+              <PlusIcon className="size-3.5" />
+              {createMutation.isPending ? '创建中...' : '创建'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Agent 删除确认弹窗 ──
+
+interface AgentDeleteDialogProps {
+  agent: AgentInfo | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSuccess: () => void
+}
+
+function AgentDeleteDialog({ agent, open, onOpenChange, onSuccess }: AgentDeleteDialogProps): ReactElement {
+  const queryClient = useQueryClient()
+  const [error, setError] = useState('')
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteAgent(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      setError('')
+      onSuccess()
+      onOpenChange(false)
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) setError(''); onOpenChange(v) }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>删除 Agent</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground m-0">
+          确认删除 Agent「{agent?.name}」？此操作不可撤销。
+        </p>
+        {error && <p className="text-xs text-destructive m-0">{error}</p>}
+        <DialogFooter>
+          <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={deleteMutation.isPending}
+            onClick={() => agent && deleteMutation.mutate(agent.id)}
+          >
+            <Trash2Icon className="size-3.5" />
+            {deleteMutation.isPending ? '删除中...' : '删除'}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )
@@ -815,7 +1137,7 @@ function PersonaTemplateEditor({ template, onSave, onCancel }: PersonaTemplateEd
         <span className="text-sm font-[780]">{template ? '编辑模板' : '新建模板'}</span>
         <button
           type="button"
-          className="rounded p-1 text-muted-foreground hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="relative rounded p-1 text-muted-foreground hover:bg-surface-3 before:absolute before:-inset-[10px] before:content-[''] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           onClick={onCancel}
           aria-label="取消"
         >
@@ -867,6 +1189,93 @@ function PersonaTemplateEditor({ template, onSave, onCancel }: PersonaTemplateEd
         </Button>
       </div>
     </form>
+  )
+}
+
+// ── 小说创作角色温度配置 ──
+
+const NOVEL_AGENT_LABELS: Record<NovelAgentType, string> = {
+  director: '导演 Agent（规划稳定）',
+  writer: '写作 Agent（创作发散）',
+  reviewer: '审稿 Agent（审稿严谨）',
+  memory: '记忆 Agent（沉淀确定）',
+}
+
+function NovelAgentTemperatureSection(): ReactElement {
+  const queryClient = useQueryClient()
+  const [temps, setTemps] = useState<Record<NovelAgentType, number>>({
+    director: 0.5,
+    writer: 0.9,
+    reviewer: 0.3,
+    memory: 0.2,
+  })
+
+  const { data } = useQuery({
+    queryKey: ['novel-agent-config'],
+    queryFn: getNovelAgentConfig,
+  })
+
+  useEffect(() => {
+    if (data) {
+      const next = { director: 0.5, writer: 0.9, reviewer: 0.3, memory: 0.2 }
+      for (const item of data) {
+        next[item.agentType] = item.temperature
+      }
+      setTemps(next)
+    }
+  }, [data])
+
+  const updateMutation = useMutation({
+    mutationFn: (items: Array<{ agentType: NovelAgentType; temperature: number }>) =>
+      updateNovelAgentConfig(items),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['novel-agent-config'] })
+    },
+  })
+
+  function handleChange(agentType: NovelAgentType, value: number): void {
+    setTemps((prev) => ({ ...prev, [agentType]: value }))
+  }
+
+  function handleSave(): void {
+    const items = (Object.entries(temps) as Array<[NovelAgentType, number]>).map(
+      ([agentType, temperature]) => ({ agentType, temperature }),
+    )
+    updateMutation.mutate(items)
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-surface-2 p-4 space-y-4">
+      <div>
+        <h3 className="text-sm font-medium">小说创作角色温度</h3>
+        <p className="text-xs text-muted-foreground mt-1">
+          为 4 个创作角色独立配置 LLM 温度，影响生成结果的发散性与稳定性。
+        </p>
+      </div>
+      <div className="space-y-3">
+        {(Object.keys(NOVEL_AGENT_LABELS) as NovelAgentType[]).map((agentType) => (
+          <div key={agentType} className="grid gap-1.5">
+            <Label className="text-xs">
+              {NOVEL_AGENT_LABELS[agentType]}: {temps[agentType].toFixed(2)}
+            </Label>
+            <input
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={temps[agentType]}
+              onChange={(e) => handleChange(agentType, Number(e.target.value))}
+              className="w-full accent-accent"
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending}>
+          {updateMutation.isPending ? '保存中...' : '保存角色温度'}
+        </Button>
+      </div>
+    </div>
   )
 }
 

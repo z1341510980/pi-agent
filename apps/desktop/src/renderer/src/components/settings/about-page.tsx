@@ -59,7 +59,7 @@ export function AboutPage(): ReactElement {
             <Badge variant="secondary">v1.0.0</Badge>
           </div>
           <p className="text-xs text-muted-foreground m-0 mt-0.5">
-            基于 Pi SDK 的 AG-UI 桌面 Agent 助手
+            让AI如臂使指
           </p>
         </div>
       </div>
@@ -78,6 +78,7 @@ export function AboutPage(): ReactElement {
       </div>
 
       {/* ── GitHub 链接 ── */}
+      {browserConfig.repositoryUrl && (
       <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-[760] m-0">源代码</p>
@@ -89,16 +90,17 @@ export function AboutPage(): ReactElement {
           asChild
         >
           <a
-            href="https://github.com/pi-agent/pi-agent"
+            href={browserConfig.repositoryUrl}
             target="_blank"
             rel="noopener noreferrer"
-            aria-label="GitHub 仓库（占位链接）"
+            aria-label="GitHub 仓库"
           >
             <ExternalLinkIcon className="size-3.5" />
             GitHub
           </a>
         </Button>
       </div>
+      )}
 
       {/* ── 检查更新 ── */}
       <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center justify-between gap-3">

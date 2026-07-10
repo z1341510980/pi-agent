@@ -129,7 +129,7 @@ export function CommandPalette({
       onClick={() => onOpenChange(false)}
     >
       <div
-        className="w-full max-w-[560px] mx-4 bg-surface-1 border border-border rounded-xl shadow-2xl overflow-hidden"
+        className="w-full max-w-[560px] mx-4 bg-surface-1 rounded-xl overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.18),0_2px_8px_rgba(0,0,0,0.08)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── 搜索框 ── */}
@@ -179,7 +179,7 @@ export function CommandPalette({
                         cmd.action()
                         onOpenChange(false)
                       }}
-                      className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors ${
+                      className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
                         active ? 'bg-surface-2' : 'hover:bg-surface-2/50'
                       }`}
                     >
@@ -222,7 +222,7 @@ export function CommandPalette({
               关闭
             </span>
           </div>
-          <span>{filtered.length} 个命令</span>
+          <span className="tabular-nums">{filtered.length} 个命令</span>
         </div>
       </div>
     </div>

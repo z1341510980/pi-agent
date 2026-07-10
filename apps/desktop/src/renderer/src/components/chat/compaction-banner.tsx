@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { ArchiveIcon, XIcon, ChevronDownIcon, ChevronUpIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -98,24 +99,35 @@ export function CompactionBanner({
               <span className="text-xs text-muted-foreground shrink-0">自动触发</span>
             )}
             {reductionPct !== null && reduction !== null && (
-              <span className="text-xs text-muted-foreground shrink-0">
+              <span className="text-xs text-muted-foreground shrink-0 tabular-nums">
                 减少 {reductionPct}% ({formatTokens(reduction)})
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             {(event.tokensBefore || event.messagesCompacted) && (
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="size-6"
+                className="size-8"
                 onClick={() => setExpanded((v) => !v)}
                 aria-label={expanded ? '收起详情' : '展开详情'}
                 aria-expanded={expanded}
               >
-                {expanded ? <ChevronUpIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
+                <AnimatePresence initial={false} mode="popLayout">
+                  <motion.span
+                    key={expanded ? 'up' : 'down'}
+                    initial={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                    animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                    exit={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                    transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
+                    className="flex items-center justify-center"
+                  >
+                    {expanded ? <ChevronUpIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
+                  </motion.span>
+                </AnimatePresence>
               </Button>
             )}
             {event.state !== 'running' && (
@@ -123,7 +135,7 @@ export function CompactionBanner({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="size-6"
+                className="size-8"
                 onClick={() => {
                   setVisible(false)
                   onDismiss()

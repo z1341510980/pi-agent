@@ -142,6 +142,35 @@ export async function putApi<T>(path: string, payload: unknown): Promise<T> {
   return body.data
 }
 
+export async function patchApi<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`${browserConfig.apiBaseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const body = (await safeParseJson(response)) as ApiResponse<T> | null
+
+  if (!body) {
+    throw new ApiClientError(
+      `API 请求失败: HTTP ${response.status} ${response.statusText}`,
+      'API_ERROR'
+    )
+  }
+
+  if (!body.ok) {
+    const errorMsg = body.error?.message ?? `API 请求失败: HTTP ${response.status}`
+    throw new ApiClientError(
+      errorMsg,
+      body.error?.code ?? 'API_ERROR',
+      body.meta?.traceId,
+      body.error?.details
+    )
+  }
+
+  return body.data
+}
+
 export async function deleteApi<T>(path: string): Promise<T> {
   const response = await fetch(`${browserConfig.apiBaseUrl}${path}`, {
     method: 'DELETE'
@@ -208,6 +237,7 @@ export interface AgentInfo {
   model?: { provider: string; modelId: string }
   systemPrompt?: string
   tools?: string[]
+  temperature?: number
 }
 
 /** 频道信息 */
@@ -258,6 +288,26 @@ export interface LimiterStats {
 /** 获取所有可用 Agent 列表 */
 export async function getAgents(): Promise<AgentInfo[]> {
   return getApi<AgentInfo[]>('/api/agents')
+}
+
+/** 创建 Agent（持久化到 SQLite） */
+export async function createAgent(agent: AgentInfo): Promise<AgentInfo> {
+  return postApi<AgentInfo>('/api/agents', agent)
+}
+
+/** 更新 Agent 配置 */
+export async function updateAgent(id: string, patch: Partial<AgentInfo>): Promise<AgentInfo> {
+  return putApi<AgentInfo>(`/api/agents/${id}`, patch)
+}
+
+/** 删除 Agent */
+export async function deleteAgent(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`/api/agents/${id}`)
+}
+
+/** 获取并发限流器状态 */
+export async function getLimiterStats(): Promise<LimiterStats> {
+  return getApi<LimiterStats>('/api/agents/limiter/stats')
 }
 
 /** 获取所有频道 */
@@ -317,9 +367,4 @@ export async function subscribeAgentToChannel(
   channel: string,
 ): Promise<{ agentId: string; channel: string; subscribed: boolean }> {
   return postApi(`/api/agents/${agentId}/subscribe`, { channel })
-}
-
-/** 获取并发限流器状态 */
-export async function getLimiterStats(): Promise<LimiterStats> {
-  return getApi<LimiterStats>('/api/agents/limiter/stats')
 }

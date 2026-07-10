@@ -67,6 +67,16 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(usageLedgerPlugin)
   await app.register(memoryStorePlugin)
 
+  // 创建 ConfirmationManager 并提前 decorate 到 Fastify 实例
+  // （必须在 pluginLoaderPlugin 之前完成，使 plugin-loader 能在 manager.start() 之前
+  // 通过 setConfirmationManager 注入到 PluginManager，进而供插件 setup 复用 chat 的确认/决策流程）
+  const confirmationManager = new ConfirmationManager(app.eventBus)
+  app.decorate('confirmationManager', confirmationManager)
+
+  // 插件加载器（依赖 eventBus 和 app.db；扫描并加载所有插件，注册插件路由）
+  // 必须在 sessionStore.setSessionFactory 之前注册，因为 setSessionFactory 的闭包在运行时访问 app.pluginManager
+  await app.register(pluginLoaderPlugin)
+
   // 创建 CredentialBridge、Gate、SessionStore
   const cwd = process.env.PI_CWD ?? process.cwd()
   const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
@@ -76,7 +86,6 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
     workspace: cwd,
     agentDir: dataDir,
   })
-  const confirmationManager = new ConfirmationManager(app.eventBus)
   const sessionStore = new PiSessionStore()
 
   // 注入 Session 工厂（注入 subagentManager 用于 customTools）
@@ -95,6 +104,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       factStore: app.factStore,
       subagentManager: app.subagentManager,
       teamManager: app.teamManager,
+      pluginSessionTools: app.pluginManager?.getAllSessionTools() ?? [],
       db: app.db,
       config: {
         cwd,
@@ -103,10 +113,16 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
     })
   })
 
+  // 注入 SessionStore 到 PluginManager（供插件 createSession API 使用）
+  // PluginManager 在 pluginLoaderPlugin 中创建（line 73），早于 SessionStore（line 85），
+  // 因此通过 setter 延迟注入。createSession 在请求期调用，此时必然已注入。
+  app.pluginManager?.setSessionStore(sessionStore)
+  // 注入 ModelRegistry（供 createSession 的 modelId 切换）
+  app.pluginManager?.setModelRegistry(app.modelRegistry)
+
   const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.eventBus)
 
-  // 挂载到 Fastify 实例
-  app.decorate('confirmationManager', confirmationManager)
+  // 挂载到 Fastify 实例（confirmationManager 已在 pluginLoaderPlugin 之前 decorate）
   app.decorate('piAgUiAgent', piAgUiAgent)
   app.decorate('piSessionStore', sessionStore)
   app.decorate('gate', gate)
@@ -114,9 +130,6 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
     confirmationManager.dispose()
     sessionStore.dispose()
   })
-
-  // 插件加载器（依赖 eventBus；扫描并加载所有插件，注册插件路由）
-  await app.register(pluginLoaderPlugin)
 
   // Cron 调度器插件（依赖 eventBus）
   await app.register(cronPlugin)

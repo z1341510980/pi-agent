@@ -3,6 +3,7 @@ import type { EventBus } from '@repo/shared/events'
 import type { PiAgUiAgent } from '../core/agent/pi-agui-agent.js'
 import type { PiSessionStore } from '../core/agent/session-store.js'
 import type { AgentManager } from '../core/agent/subagent-tool.js'
+import type { AgentCallLogger } from '../core/agent/agent-call-logger.js'
 import type { TeamManager } from '../core/agent/team-manager.js'
 import type { ConfirmationManager } from '../core/tool/confirmation-manager.js'
 import type { Gate } from '../core/tool/gate.js'
@@ -48,6 +49,7 @@ declare module 'fastify' {
     proxyManager: ProxyManager
     subagentManager: AgentManager
     teamManager: TeamManager
+    agentCallLogger: AgentCallLogger
     pluginManager: PluginManager
     cronScheduler: CronScheduler
     db: Database.Database

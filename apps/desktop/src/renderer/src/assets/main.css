@@ -175,13 +175,6 @@ body {
   overflow: hidden;
 }
 
-button,
-textarea,
-input,
-select {
-  font: inherit;
-}
-
 button {
   cursor: pointer;
 }
@@ -264,4 +257,44 @@ button:disabled {
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
+}
+
+/* ── 矩阵单元格 tooltip（data-tip 属性，零 JS）── */
+
+[data-tip] {
+  position: relative;
+}
+
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: var(--color-popover);
+  color: var(--color-popover-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+[data-tip]:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  transition-delay: 180ms;
+}
+
+/* 鼠标在子元素上时，父元素不显示 tooltip，避免叠加 */
+[data-tip]:has(:hover)::after {
+  opacity: 0 !important;
 }

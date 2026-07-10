@@ -165,7 +165,7 @@ export function ContextPanel({
             aria-valuemax={100}
           >
             <div
-              className={`h-full transition-all duration-500 ${contextLevel === 'critical' ? 'bg-error' : contextLevel === 'warning' ? 'bg-warning' : 'bg-primary'}`}
+              className={`h-full transition-[width,background-color] duration-500 ${contextLevel === 'critical' ? 'bg-error' : contextLevel === 'warning' ? 'bg-warning' : 'bg-primary'}`}
               style={{ width: `${tokenPct}%` }}
             />
           </div>
@@ -194,7 +194,7 @@ export function ContextPanel({
         </div>
 
         {/* 统计指标行 */}
-        <div className="flex items-center gap-2 text-[10px] text-subtle flex-wrap">
+        <div className="flex items-center gap-2 text-[10px] text-subtle flex-wrap tabular-nums">
           <span className="inline-flex items-center gap-0.5">
             <ZapIcon className="size-2.5" />
             {stats.generationCount ?? 0} 次生成

@@ -3,8 +3,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { DropdownMenu } from 'radix-ui'
 import {
   Pencil,
-  Trash2,
-  SettingsIcon
+  Trash2
 } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Button } from '@/components/ui/button'
@@ -35,7 +34,6 @@ export interface SessionListProps {
   onNewSession: () => void
   onRenameSession: (id: string, newTitle: string) => void
   onDeleteSession: (id: string) => void
-  onOpenSettings?: () => void
 }
 
 /** 按更新时间分组会话 */
@@ -90,8 +88,7 @@ export function SessionList({
   onSelectSession,
   onNewSession,
   onRenameSession,
-  onDeleteSession,
-  onOpenSettings
+  onDeleteSession
 }: SessionListProps): ReactElement {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -144,7 +141,7 @@ export function SessionList({
     >
       {/* 新建会话按钮 */}
       <Button
-        className="w-full justify-center rounded-md h-9 text-sm font-medium bg-primary hover:bg-primary/95 text-primary-foreground shadow-sm"
+        className="w-full justify-center rounded-md h-10 text-sm font-medium bg-primary hover:bg-primary/95 text-primary-foreground shadow-sm active:scale-[0.96] transition-[background-color,transform]"
         onClick={onNewSession}
         aria-label="新建会话"
       >
@@ -216,19 +213,6 @@ export function SessionList({
             })}
           </div>
         )}
-      </div>
-
-      {/* 底部设置按钮 */}
-      <div className="mt-auto pt-3">
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="flex items-center gap-2.5 w-full h-9 rounded-md px-2.5 text-sm text-text-secondary hover:bg-surface-3 cursor-pointer transition-colors"
-          aria-label="打开设置"
-        >
-          <SettingsIcon className="size-4 text-subtle shrink-0" />
-          <span>设置</span>
-        </button>
       </div>
 
       {/* 重命名对话框 */}
@@ -352,7 +336,7 @@ function SessionItem({
         <DropdownMenu.Trigger asChild>
           <button
             type="button"
-            className="size-5 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-surface-2 transition-opacity text-subtle"
+            className="size-8 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-surface-2 active:scale-[0.96] transition-[opacity,background-color,transform] text-subtle"
             aria-label="会话操作"
             onClick={(e) => e.stopPropagation()}
           >
@@ -368,7 +352,7 @@ function SessionItem({
           sideOffset={4}
         >
           <DropdownMenu.Item
-            className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
+            className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
             onSelect={onRename}
           >
             <Pencil className="size-3.5" />
@@ -376,7 +360,7 @@ function SessionItem({
           </DropdownMenu.Item>
           <DropdownMenu.Separator className="my-1 h-px bg-border" />
           <DropdownMenu.Item
-            className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none select-none hover:bg-destructive/10 hover:text-destructive data-disabled:pointer-events-none data-disabled:opacity-50"
+            className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm outline-none select-none hover:bg-destructive/10 hover:text-destructive data-disabled:pointer-events-none data-disabled:opacity-50"
             onSelect={onDelete}
           >
             <Trash2 className="size-3.5" />

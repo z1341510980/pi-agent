@@ -20,7 +20,7 @@ export type ProviderSettings = {
   apiKey: string
 }
 
-const storageKey = 'pi-agent.provider'
+const storageKey = 'wenlang-agent.provider'
 
 const defaultSettings: ProviderSettings = {
   provider: 'openai',

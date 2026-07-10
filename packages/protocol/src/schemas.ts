@@ -15,6 +15,8 @@ export const runAgentInputSchema = z.object({
     provider: z.string().min(1),
     modelId: z.string().min(1),
   }).optional(),
+  // 生成参数：temperature（0-2），未传则不注入（使用 provider 默认值）
+  temperature: z.number().min(0).max(2).optional(),
 })
 
 /** 线程消息输入（steer / follow-up 共用） */

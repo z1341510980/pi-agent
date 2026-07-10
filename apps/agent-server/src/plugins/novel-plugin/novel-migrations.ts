@@ -1,0 +1,729 @@
+/**
+ * 小说创作系统数据库迁移
+ *
+ * 从 core/db/migrations.ts 提取的 013-026 迁移，
+ * 由 novel-plugin 在 setup 时通过 context.registerMigration 注册。
+ *
+ * 所有迁移使用 IF NOT EXISTS 保证幂等，可安全重复执行。
+ */
+
+import type { MigrationDefinition } from '../../core/plugin/plugin-types.js'
+
+export const novelMigrations: MigrationDefinition[] = [
+  {
+    // 小说项目表
+    id: '013_create_novel_projects',
+    sql: `CREATE TABLE IF NOT EXISTS novel_projects (
+      id              TEXT PRIMARY KEY,
+      title           TEXT NOT NULL,
+      genre           TEXT NOT NULL,
+      synopsis        TEXT NOT NULL DEFAULT '',
+      target_words    INTEGER NOT NULL DEFAULT 0,
+      current_volume  INTEGER NOT NULL DEFAULT 1,
+      current_chapter INTEGER NOT NULL DEFAULT 0,
+      current_stage   TEXT NOT NULL DEFAULT 'setup',
+      status          TEXT NOT NULL DEFAULT 'active',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_projects_status ON novel_projects(status);`,
+  },
+  {
+    // 小说章节表
+    id: '014_create_novel_chapters',
+    sql: `CREATE TABLE IF NOT EXISTS novel_chapters (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      volume          INTEGER NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      title           TEXT NOT NULL DEFAULT '',
+      content         TEXT NOT NULL DEFAULT '',
+      word_count      INTEGER NOT NULL DEFAULT 0,
+      status          TEXT NOT NULL DEFAULT 'planned',
+      narrative_task  TEXT NOT NULL DEFAULT '',
+      acceptance_result TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_chapters_project ON novel_chapters(project_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_chapters_project_chapter ON novel_chapters(project_id, chapter_number);`,
+  },
+  {
+    // 小说角色表
+    id: '015_create_novel_characters',
+    sql: `CREATE TABLE IF NOT EXISTS novel_characters (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      identity        TEXT NOT NULL DEFAULT '',
+      personality     TEXT NOT NULL DEFAULT '',
+      appearance      TEXT NOT NULL DEFAULT '',
+      current_state   TEXT NOT NULL DEFAULT '',
+      current_goal    TEXT NOT NULL DEFAULT '',
+      current_pressure TEXT NOT NULL DEFAULT '',
+      secret          TEXT NOT NULL DEFAULT '',
+      arc_stage      TEXT NOT NULL DEFAULT '',
+      arc_history     TEXT NOT NULL DEFAULT '[]',
+      speech_style    TEXT NOT NULL DEFAULT '',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_characters_project ON novel_characters(project_id);`,
+  },
+  {
+    // 角色关系表
+    id: '016_create_novel_relationships',
+    sql: `CREATE TABLE IF NOT EXISTS novel_relationships (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      character_a     TEXT NOT NULL,
+      character_b     TEXT NOT NULL,
+      relation_type   TEXT NOT NULL,
+      current_stage   TEXT NOT NULL DEFAULT '',
+      stage_history   TEXT NOT NULL DEFAULT '[]',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_relationships_project ON novel_relationships(project_id);`,
+  },
+  {
+    // 伏笔表
+    id: '017_create_novel_foreshadowing',
+    sql: `CREATE TABLE IF NOT EXISTS novel_foreshadowing (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      category        TEXT NOT NULL DEFAULT '',
+      status          TEXT NOT NULL DEFAULT 'planned',
+      first_chapter   INTEGER,
+      last_chapter    INTEGER,
+      recover_by_chapter INTEGER,
+      linked_characters TEXT NOT NULL DEFAULT '[]',
+      linked_clues     TEXT NOT NULL DEFAULT '[]',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_foreshadowing_project ON novel_foreshadowing(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_foreshadowing_status ON novel_foreshadowing(status);`,
+  },
+  {
+    // 线索表
+    id: '018_create_novel_clues',
+    sql: `CREATE TABLE IF NOT EXISTS novel_clues (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      points_to       TEXT NOT NULL DEFAULT '',
+      progress        INTEGER NOT NULL DEFAULT 0,
+      current_step    TEXT NOT NULL DEFAULT '',
+      next_step       TEXT NOT NULL DEFAULT '',
+      is_misleading   INTEGER NOT NULL DEFAULT 0,
+      linked_foreshadow TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_clues_project ON novel_clues(project_id);`,
+  },
+  {
+    // 冲突表
+    id: '019_create_novel_conflicts',
+    sql: `CREATE TABLE IF NOT EXISTS novel_conflicts (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      type            TEXT NOT NULL,
+      intensity       INTEGER NOT NULL DEFAULT 5,
+      stage           TEXT NOT NULL DEFAULT 'latent',
+      participants    TEXT NOT NULL DEFAULT '[]',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_conflicts_project ON novel_conflicts(project_id);`,
+  },
+  {
+    // 世界规则表
+    id: '020_create_novel_world_rules',
+    sql: `CREATE TABLE IF NOT EXISTS novel_world_rules (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      category        TEXT NOT NULL,
+      rule            TEXT NOT NULL,
+      cost            TEXT,
+      is_fixed        INTEGER NOT NULL DEFAULT 1,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_world_rules_project ON novel_world_rules(project_id);`,
+  },
+  {
+    // 创作约束表
+    id: '021_create_novel_constraints',
+    sql: `CREATE TABLE IF NOT EXISTS novel_constraints (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      type            TEXT NOT NULL,
+      scope           TEXT NOT NULL DEFAULT 'global',
+      rule            TEXT NOT NULL,
+      is_active       INTEGER NOT NULL DEFAULT 1,
+      related_entity_id TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_constraints_project ON novel_constraints(project_id);`,
+  },
+  {
+    // 信息差表
+    id: '022_create_novel_information_layers',
+    sql: `CREATE TABLE IF NOT EXISTS novel_information_layers (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      info_description TEXT NOT NULL,
+      author_knows    INTEGER NOT NULL DEFAULT 1,
+      reader_knows    INTEGER NOT NULL DEFAULT 0,
+      character_knowledge TEXT NOT NULL DEFAULT '{}',
+      reveal_stage    TEXT,
+      reveal_chapter  INTEGER,
+      is_revealed      INTEGER NOT NULL DEFAULT 0,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_info_layers_project ON novel_information_layers(project_id);`,
+  },
+  {
+    // 风格指南表
+    id: '023_create_novel_style_guides',
+    sql: `CREATE TABLE IF NOT EXISTS novel_style_guides (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      category        TEXT NOT NULL,
+      rule            TEXT NOT NULL,
+      example         TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_style_guides_project ON novel_style_guides(project_id);`,
+  },
+  {
+    // 作者意图表
+    id: '024_create_novel_author_intents',
+    sql: `CREATE TABLE IF NOT EXISTS novel_author_intents (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_id      TEXT,
+      intent_type     TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      target_entity_id TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_intents_project ON novel_author_intents(project_id);`,
+  },
+  {
+    // 章节验收表
+    id: '025_create_novel_chapter_reviews',
+    sql: `CREATE TABLE IF NOT EXISTS novel_chapter_reviews (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_id      TEXT NOT NULL,
+      consistency_score REAL,
+      character_score REAL,
+      task_completion_score REAL,
+      clue_progress_score REAL,
+      foreshadow_status_score REAL,
+      conflict_change_score REAL,
+      pacing_score REAL,
+      info_control_score REAL,
+      reader_hook_score REAL,
+      style_score REAL,
+      overall_score REAL,
+      verdict        TEXT,
+      issues          TEXT,
+      suggestions     TEXT,
+      reviewed_by     TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_reviews_chapter ON novel_chapter_reviews(chapter_id);`,
+  },
+  {
+    // 提示词模板表（PromptManager 运行时覆盖）
+    id: '026_create_novel_prompt_templates',
+    sql: `CREATE TABLE IF NOT EXISTS novel_prompt_templates (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT,
+      name            TEXT NOT NULL,
+      content         TEXT NOT NULL,
+      description     TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_prompt_templates_name ON novel_prompt_templates(name);
+    CREATE INDEX IF NOT EXISTS idx_novel_prompt_templates_project ON novel_prompt_templates(project_id);`,
+  },
+  {
+    // 节点位置表（前端画布节点坐标持久化）
+    id: '027_create_novel_node_positions',
+    sql: `CREATE TABLE IF NOT EXISTS novel_node_positions (
+      id          TEXT PRIMARY KEY,
+      project_id  TEXT NOT NULL,
+      node_type   TEXT NOT NULL,
+      entity_id   TEXT NOT NULL,
+      pos_x       REAL NOT NULL,
+      pos_y       REAL NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      UNIQUE(project_id, node_type, entity_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_node_positions_project ON novel_node_positions(project_id);`,
+  },
+  {
+    // 角色状态变更历史表
+    id: '028_create_novel_character_history',
+    sql: `CREATE TABLE IF NOT EXISTS novel_character_history (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      character_id    TEXT NOT NULL,
+      chapter_id      TEXT,
+      chapter_number  INTEGER,
+      field_name      TEXT NOT NULL,
+      old_value       TEXT,
+      new_value       TEXT,
+      reason          TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_char_history_character ON novel_character_history(character_id);
+    CREATE INDEX IF NOT EXISTS idx_char_history_project ON novel_character_history(project_id);`,
+  },
+  {
+    // 长期记忆事件表（情景记忆：跨章节的事件/状态变更时间线 + 因果链）
+    id: '029_create_novel_memory',
+    sql: `CREATE TABLE IF NOT EXISTS novel_memory_events (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_id      TEXT,
+      chapter_number  INTEGER NOT NULL,
+      event_type      TEXT NOT NULL,
+      entity_id       TEXT NOT NULL,
+      entity_type     TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      old_value       TEXT,
+      new_value       TEXT,
+      cause           TEXT,
+      effect_ids      TEXT,
+      significance    INTEGER DEFAULT 5,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_events_project ON novel_memory_events(project_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_events_chapter ON novel_memory_events(chapter_number);
+    CREATE INDEX IF NOT EXISTS idx_memory_events_entity ON novel_memory_events(entity_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_events_type ON novel_memory_events(event_type);
+
+    CREATE TABLE IF NOT EXISTS novel_memory_snapshots (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      snapshot_type   TEXT NOT NULL,
+      entity_id       TEXT,
+      snapshot_data   TEXT NOT NULL,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_snapshots_project ON novel_memory_snapshots(project_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_snapshots_chapter ON novel_memory_snapshots(chapter_number);`,
+  },
+  {
+    // 势力表（组织/门派/王国/家族/公会/邪教）
+    id: '030_create_novel_factions',
+    sql: `CREATE TABLE IF NOT EXISTS novel_factions (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      type            TEXT NOT NULL DEFAULT 'organization',
+      leader_id       TEXT,
+      ideology        TEXT NOT NULL DEFAULT '',
+      strength        TEXT NOT NULL DEFAULT 'medium',
+      resources       TEXT NOT NULL DEFAULT '[]',
+      allies          TEXT NOT NULL DEFAULT '[]',
+      enemies         TEXT NOT NULL DEFAULT '[]',
+      status          TEXT NOT NULL DEFAULT 'active',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_factions_project ON novel_factions(project_id);`,
+  },
+  {
+    // 地点表（大陆/国家/城市/建筑/地下城/区域/荒野），自引用构建层级树
+    id: '031_create_novel_locations',
+    sql: `CREATE TABLE IF NOT EXISTS novel_locations (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      type            TEXT NOT NULL DEFAULT 'city',
+      parent_id       TEXT,
+      faction_id      TEXT,
+      significance    TEXT NOT NULL DEFAULT 'minor',
+      first_chapter   INTEGER,
+      status          TEXT NOT NULL DEFAULT 'normal',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_locations_project ON novel_locations(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_locations_parent ON novel_locations(parent_id);`,
+  },
+  {
+    // 世界观结构化要素表（力量体系/历史/文化/宗教/科技/经济/地理）
+    id: '032_create_novel_world_elements',
+    sql: `CREATE TABLE IF NOT EXISTS novel_world_elements (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      category        TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      parent_id       TEXT,
+      attributes      TEXT NOT NULL DEFAULT '{}',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_world_elements_project ON novel_world_elements(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_world_elements_category ON novel_world_elements(category);`,
+  },
+  {
+    // 画布连线表（手动连线的持久化 + 自动边存储）
+    // source_type/target_type: character/chapter/conflict/foreshadow/faction/location/world_element/group
+    // edge_type: appearance/relationship/involvement/foreshadow/base/member/hierarchy/association
+    // auto: 0=手动创建, 1=自动生成
+    id: '033_create_novel_edges',
+    sql: `CREATE TABLE IF NOT EXISTS novel_edges (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      source_id       TEXT NOT NULL,
+      source_type     TEXT NOT NULL,
+      target_id       TEXT NOT NULL,
+      target_type     TEXT NOT NULL,
+      edge_type       TEXT NOT NULL,
+      label           TEXT NOT NULL DEFAULT '',
+      auto            INTEGER NOT NULL DEFAULT 0,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_edges_project ON novel_edges(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_edges_source ON novel_edges(source_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_edges_target ON novel_edges(target_id);`,
+  },
+  {
+    // Agent 调用日志表（记录每次 Agent 调用的完整上下文：系统提示词/章节上下文/任务指令/工具/结果）
+    // 用于调试提示词构建、排查 Agent 行为、审计创作流程
+    id: '034_create_novel_agent_logs',
+    sql: `CREATE TABLE IF NOT EXISTS novel_agent_logs (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      agent_type      TEXT NOT NULL,
+      agent_name      TEXT NOT NULL DEFAULT '',
+      display_agent_type TEXT NOT NULL DEFAULT '',
+      display_agent_name TEXT NOT NULL DEFAULT '',
+      phase           TEXT NOT NULL DEFAULT '',
+      system_prompt   TEXT NOT NULL DEFAULT '',
+      chapter_context TEXT NOT NULL DEFAULT '',
+      user_message    TEXT NOT NULL DEFAULT '',
+      task_input      TEXT NOT NULL DEFAULT '',
+      user_instructions TEXT NOT NULL DEFAULT '[]',
+      tools           TEXT NOT NULL DEFAULT '[]',
+      tool_names      TEXT NOT NULL DEFAULT '[]',
+      result          TEXT NOT NULL DEFAULT '',
+      result_length   INTEGER NOT NULL DEFAULT 0,
+      duration_ms     INTEGER NOT NULL DEFAULT 0,
+      status          TEXT NOT NULL DEFAULT 'success',
+      error           TEXT NOT NULL DEFAULT '',
+      session_id      TEXT NOT NULL DEFAULT '',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_project ON novel_agent_logs(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_chapter ON novel_agent_logs(project_id, chapter_number);
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_agent ON novel_agent_logs(project_id, agent_type);
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_created ON novel_agent_logs(created_at DESC);`,
+  },
+  {
+    // 035: 扩展冲突表，支持章节区间 + 层级分类
+    id: '035_extend_novel_conflicts',
+    sql: `ALTER TABLE novel_conflicts ADD COLUMN first_chapter INTEGER;
+          ALTER TABLE novel_conflicts ADD COLUMN last_chapter INTEGER;
+          ALTER TABLE novel_conflicts ADD COLUMN tier TEXT NOT NULL DEFAULT 'secondary';`,
+  },
+  {
+    // 036: 扩展势力表，支持章节区间
+    id: '036_extend_novel_factions',
+    sql: `ALTER TABLE novel_factions ADD COLUMN first_chapter INTEGER;
+          ALTER TABLE novel_factions ADD COLUMN last_chapter INTEGER;`,
+  },
+  {
+    // 037: 扩展地点表，支持多次出现
+    id: '037_extend_novel_locations',
+    sql: `ALTER TABLE novel_locations ADD COLUMN appear_chapters TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    // 038: 扩展角色表，标记主角
+    id: '038_extend_novel_characters',
+    sql: `ALTER TABLE novel_characters ADD COLUMN is_protagonist INTEGER NOT NULL DEFAULT 0;`,
+  },
+  {
+    // 时间轴标记表
+    id: '039_create_novel_markers',
+    sql: `CREATE TABLE IF NOT EXISTS novel_markers (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter         INTEGER NOT NULL,
+      title           TEXT NOT NULL DEFAULT '',
+      note            TEXT NOT NULL DEFAULT '',
+      type            TEXT NOT NULL DEFAULT 'bookmark',
+      color           TEXT NOT NULL DEFAULT 'blue',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_markers_project ON novel_markers(project_id);`,
+  },
+  {
+    // 040: 扩展标记表，支持片段批注关联实体
+    id: '040_extend_novel_markers_clip_note',
+    sql: `ALTER TABLE novel_markers ADD COLUMN entity_type TEXT;
+          ALTER TABLE novel_markers ADD COLUMN entity_id TEXT;`,
+  },
+  {
+    // 041: 全书大纲字段 + 卷表
+    id: '041_create_novel_volumes_and_outline',
+    sql: `ALTER TABLE novel_projects ADD COLUMN outline TEXT NOT NULL DEFAULT '';
+          CREATE TABLE IF NOT EXISTS novel_volumes (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL,
+            volume_number   INTEGER NOT NULL,
+            title           TEXT NOT NULL DEFAULT '',
+            outline         TEXT NOT NULL DEFAULT '',
+            sort_order      INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+            FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS idx_novel_volumes_project ON novel_volumes(project_id);
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_volumes_project_number ON novel_volumes(project_id, volume_number);`,
+  },
+  {
+    // 042: 章节加 outline + volume_id
+    id: '042_extend_novel_chapters_outline',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN outline TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_chapters ADD COLUMN volume_id TEXT;`,
+  },
+  {
+    // 043: 数据回填——按 project 的 distinct chapter.volume 建 volume 记录并回填 volume_id
+    id: '043_backfill_novel_volumes',
+    sql: `INSERT OR IGNORE INTO novel_volumes (id, project_id, volume_number, title, outline, sort_order, created_at, updated_at)
+          SELECT lower(hex(randomblob(16))), project_id, volume, '第' || volume || '卷', '', volume, unixepoch(), unixepoch()
+          FROM (SELECT DISTINCT project_id, volume FROM novel_chapters WHERE volume_id IS NULL)
+          WHERE volume IS NOT NULL;
+          UPDATE novel_chapters
+          SET volume_id = (SELECT v.id FROM novel_volumes v
+                           WHERE v.project_id = novel_chapters.project_id
+                             AND v.volume_number = novel_chapters.volume)
+          WHERE volume_id IS NULL AND volume IS NOT NULL;`,
+  },
+  {
+    // 小说 Agent 角色温度运行时覆盖表（全局配置，不按 project）
+    id: '044_create_novel_agent_config',
+    sql: `CREATE TABLE IF NOT EXISTS novel_agent_config (
+      agent_type    TEXT PRIMARY KEY,
+      temperature   REAL,
+      updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    );`,
+  },
+  {
+    // 045: conflicts/factions 新增 chapter_spans（JSON 数组 [[start,end],...]）支持非连续跨度
+    // first_chapter/last_chapter 保留为兼容字段（不再读写，但保留列避免破坏旧代码）
+    id: '045_add_chapter_spans_to_conflicts_factions',
+    sql: `ALTER TABLE novel_conflicts ADD COLUMN chapter_spans TEXT;
+          ALTER TABLE novel_factions ADD COLUMN chapter_spans TEXT;
+          UPDATE novel_conflicts SET chapter_spans =
+            CASE WHEN first_chapter IS NULL THEN '[]'
+                 ELSE json_array(json_array(first_chapter, COALESCE(last_chapter, first_chapter)))
+            END;
+          UPDATE novel_factions SET chapter_spans =
+            CASE WHEN first_chapter IS NULL THEN '[]'
+                 ELSE json_array(json_array(first_chapter, COALESCE(last_chapter, first_chapter)))
+            END;`,
+  },
+  {
+    // 046: 项目回收站——软删除字段
+    // deleted_at 为 NULL 表示正常项目，非 NULL 表示已移入回收站（值为移入时间戳）
+    id: '046_add_deleted_at_to_novel_projects',
+    sql: `ALTER TABLE novel_projects ADD COLUMN deleted_at INTEGER;`,
+  },
+  {
+    // 047: 章节张力曲线（1-10，NULL 表示未设定）
+    // 借鉴 PlotPilot TensionLevel：LOW=1 → EXTREME=10 非线性标度
+    id: '047_add_tension_to_novel_chapters',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN tension INTEGER;`,
+  },
+  {
+    // 048: 角色四层逻辑补全（目标层 / 功能层 / 影响层）
+    // - long_term_desire: 长期欲望（跨章节稳定的发动机，区别于 current_goal 短期目标）
+    // - plot_role: 角色层级（protagonist 主角 / main_opponent 主要对手 / supporting 重要配角 / function 功能配角 / background 背景）
+    // - removal_impact: 删掉影响（一句话描述"删掉这个角色哪段剧情会受影响"，回答四层逻辑第四句）
+    id: '048_add_character_plot_fields',
+    sql: `ALTER TABLE novel_characters ADD COLUMN long_term_desire TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_characters ADD COLUMN plot_role TEXT NOT NULL DEFAULT 'supporting';
+          ALTER TABLE novel_characters ADD COLUMN removal_impact TEXT NOT NULL DEFAULT '';`,
+  },
+  {
+    // 049: 关系四层逻辑②动态化（关系层补全）
+    // - dynamic_role: 动态功能位（在帮主角什么 / 拦主角什么，一句话描述本关系对剧情的推动作用）
+    // - alignment: 阵营关系（ally/temporary_ally/opponent/temporary_opponent/neutral/pending_shift）
+    // - trend: 走向（stable/warming/cooling/breaking/reconciling）
+    // - chapter_hint: 本章关系约束提示（一句话说明本章关系应如何变化）
+    // - last_updated_chapter: 最后一次更新的章节号
+    id: '049_add_relationship_dynamic_fields',
+    sql: `ALTER TABLE novel_relationships ADD COLUMN dynamic_role TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_relationships ADD COLUMN alignment TEXT NOT NULL DEFAULT 'neutral';
+          ALTER TABLE novel_relationships ADD COLUMN trend TEXT NOT NULL DEFAULT 'stable';
+          ALTER TABLE novel_relationships ADD COLUMN chapter_hint TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_relationships ADD COLUMN last_updated_chapter INTEGER;`,
+  },
+  {
+    // 050: 角色反向索引到冲突（四层逻辑④：影响层）
+    // - participating_conflicts: JSON: string[]，由冲突 CRUD 时自动同步
+    //   回答"删掉这个角色哪段冲突线会断"，与 removal_impact 互补
+    id: '050_add_character_participating_conflicts',
+    sql: `ALTER TABLE novel_characters ADD COLUMN participating_conflicts TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    // 051: 冲突四层逻辑③：功能层 + 推进模式
+    // - plot_function: 剧情功能位（复用 PlotFunction 七值枚举，常用 4 值：
+    //   amplify_conflict 放大冲突 / open_phase 打开新阶段 /
+    //   reveal_world_rule 暴露世界规则 / change_judgment 改变主角判断）
+    // - progression_mode: 推进模式（linear/mutation/stagnation/regression/reversal）
+    //   默认 'linear'（向后兼容旧数据的线性推进），由 engine.computeConflictTargetStage 分支处理
+    id: '051_add_conflict_plot_function_and_progression',
+    sql: `ALTER TABLE novel_conflicts ADD COLUMN plot_function TEXT;
+          ALTER TABLE novel_conflicts ADD COLUMN progression_mode TEXT NOT NULL DEFAULT 'linear';`,
+  },
+  {
+    // 052: 伏笔四层逻辑③：埋设/回收方式结构化
+    // - plant_method: 埋设方式（explicit 明写/implicit 暗写/indirect 侧写）
+    // - recover_method: 回收方式（explicit 明回收/implicit 暗回收/reverse 反向/progressive 递进）
+    // 注意：category 列保持原样（自由字符串），由代码层做容错转换为新枚举 NovelForeshadowCategory，
+    // 这样旧数据不会因迁移失败，未匹配的旧 category 在 rowToForeshadow 里回退到 'item'
+    id: '052_add_foreshadow_plant_recover_methods',
+    sql: `ALTER TABLE novel_foreshadowing ADD COLUMN plant_method TEXT;
+          ALTER TABLE novel_foreshadowing ADD COLUMN recover_method TEXT;`,
+  },
+  {
+    // 053: 跨实体因果链 — 为 cause 字段建索引，加速 getCausalChain 向上追溯
+    // cause 字段存储上游事件 ID，未建索引时反向查询需全表扫描
+    id: '053_add_cause_index_to_memory_events',
+    sql: `CREATE INDEX IF NOT EXISTS idx_memory_events_cause ON novel_memory_events(cause) WHERE cause IS NOT NULL;`,
+  },
+  {
+    // 054: P3-2 打通伏笔↔信息差 — 双向关联字段
+    // - novel_foreshadowing 加 linked_info_layers (JSON: string[])：本伏笔承载哪些信息差
+    // - novel_information_layers 加 linked_foreshadows (JSON: string[])：本信息差被哪些伏笔承载
+    // 双向同步由 NovelStore.linkForeshadowToInfoLayer 维护，删除时由 store 层清理对端
+    id: '054_add_foreshadow_infolayer_link_columns',
+    sql: `
+      ALTER TABLE novel_foreshadowing ADD COLUMN linked_info_layers TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE novel_information_layers ADD COLUMN linked_foreshadows TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
+  {
+    // 055: 伏笔支持多段章节跨度（与 conflicts/factions 迁移 045 同模式）
+    // - novel_foreshadowing 加 chapter_spans (JSON 数组 [[start,end],...])，支持非连续活跃区间
+    // - first_chapter 仍作为埋设点语义标记（plant），recover_by_chapter 作为回收点语义标记（payoff）
+    // - chapter_spans 描述伏笔"活跃"区间（可多段），矩阵按色带样式渲染（参照 conflict）
+    // - first_chapter/last_chapter/recover_by_chapter 保留为兼容字段，store 层读写时与 chapterSpans 同步
+    // 旧数据回填：用 [first_chapter, COALESCE(recover_by_chapter, first_chapter)] 单段跨度；
+    // 无 first_chapter 的伏笔回填 '[]'（未放置，进元素池）
+    id: '055_add_chapter_spans_to_foreshadowing',
+    sql: `ALTER TABLE novel_foreshadowing ADD COLUMN chapter_spans TEXT;
+          UPDATE novel_foreshadowing SET chapter_spans =
+            CASE WHEN first_chapter IS NULL THEN '[]'
+                 ELSE json_array(json_array(first_chapter, COALESCE(recover_by_chapter, first_chapter)))
+            END;`,
+  },
+  {
+    // 056: 章节增加时间线偏移、章尾钩子、前情提要字段
+    // - time_offset：相对第1章的天数，用于时间线管理
+    // - chapter_ending_hook：章尾钩子类型（suspense/reversal/emotional/action/none）
+    // - recap：前情提要（章节完成后自动生成，50-100 字）
+    id: '056_add_novel_chapters_timeline_hook_recap',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN time_offset INTEGER;
+          ALTER TABLE novel_chapters ADD COLUMN chapter_ending_hook TEXT;
+          ALTER TABLE novel_chapters ADD COLUMN recap TEXT;`,
+  },
+  {
+    // 057: AgentLog 表增加 LLM usage 字段（cache token 诊断）
+    // 记录 LLM provider 真实返回的 input/output/cache_read/cache_write tokens，
+    // 供 AgentLog 面板展示真实缓存命中率。SQLite 的 ALTER TABLE ADD COLUMN
+    // 不支持 IF NOT EXISTS，用 catch 容错（旧库已存在则跳过）。
+    id: '057_add_usage_to_novel_agent_logs',
+    sql: `ALTER TABLE novel_agent_logs ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE novel_agent_logs ADD COLUMN llm_provider TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_agent_logs ADD COLUMN llm_model TEXT NOT NULL DEFAULT '';`,
+  },
+  {
+    // v0.2：钩子实体表（章末悬念驱动，追踪 thrown→fulfilled 闭环）
+    id: '058_create_novel_hooks',
+    sql: `CREATE TABLE IF NOT EXISTS novel_hooks (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      hook_type       TEXT NOT NULL,
+      description     TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'thrown',
+      fulfilled_at_chapter INTEGER,
+      fulfilled_description TEXT,
+      linked_foreshadow_id TEXT,
+      linked_conflict_id   TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_hooks_project ON novel_hooks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_hooks_status ON novel_hooks(status);
+    CREATE INDEX IF NOT EXISTS idx_novel_hooks_chapter ON novel_hooks(chapter_number);`,
+  },
+  {
+    // v0.2：角色弧光表（角色内心阶段演进，1:1 关联角色）
+    id: '059_create_novel_character_arcs',
+    sql: `CREATE TABLE IF NOT EXISTS novel_character_arcs (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      character_id    TEXT NOT NULL,
+      arc_type        TEXT NOT NULL,
+      current_stage   TEXT NOT NULL,
+      stage_history   TEXT NOT NULL DEFAULT '[]',
+      description     TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (character_id) REFERENCES novel_characters(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_arcs_project ON novel_character_arcs(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_arcs_character ON novel_character_arcs(character_id);`,
+  },
+]

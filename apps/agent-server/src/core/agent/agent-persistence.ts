@@ -31,8 +31,8 @@ export class SqliteAgentStore implements AgentPersistenceStore {
     this.stmtSelectAll = db.prepare('SELECT * FROM agents ORDER BY created_at')
     this.stmtSelectById = db.prepare('SELECT * FROM agents WHERE id = ?')
     this.stmtUpsert = db.prepare(`
-      INSERT INTO agents (id, name, description, model, system_prompt, tools, identity, personality)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, name, description, model, system_prompt, tools, identity, personality, temperature)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         description = excluded.description,
@@ -41,6 +41,7 @@ export class SqliteAgentStore implements AgentPersistenceStore {
         tools = excluded.tools,
         identity = excluded.identity,
         personality = excluded.personality,
+        temperature = excluded.temperature,
         updated_at = unixepoch()
     `)
     this.stmtDelete = db.prepare('DELETE FROM agents WHERE id = ?')
@@ -67,6 +68,7 @@ export class SqliteAgentStore implements AgentPersistenceStore {
       agent.tools ? JSON.stringify(agent.tools) : null,
       agent.identity ?? null,
       agent.personality ?? null,
+      agent.temperature ?? null,
     )
   }
 
@@ -95,6 +97,7 @@ export class SqliteAgentStore implements AgentPersistenceStore {
       tools: row.tools ? JSON.parse(row.tools) : undefined,
       identity: row.identity ?? undefined,
       personality: row.personality ?? undefined,
+      temperature: row.temperature ?? undefined,
     }
   }
 }

@@ -42,6 +42,23 @@ pnpm-debug.log*
 # 临时文件
 *.tmp
 *.bak
+tmp/
+
+# AI 写作 skills 临时缓存（外部导入的参考资料，不属于本项目）
+_skills_temp/
+
+# 运行日志目录
+log/
+
+# 命令输出捕获文件（pnpm/tsc/typecheck 等重定向输出）
+*-output.txt
+tsc-output.txt
+typecheck-output.txt
+pnpm-install-output.txt
+
+# 测试生成的小说内容与 e2e 测试报告
+apps/agent-server/novel/
+apps/agent-server/scripts/e2e-test/output/
 
 # Pi SDK 本地数据目录（会话、凭证、模型配置）
 .pi-data/

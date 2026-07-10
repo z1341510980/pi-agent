@@ -171,7 +171,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     const connect = () => {
       if (cancelled) return
 
-      const token = localStorage.getItem('pi-agent.auth-token') ?? ''
+      const token = localStorage.getItem('wenlang-agent.auth-token') ?? ''
       const params = new URLSearchParams()
       if (threadId) params.set('threadId', threadId)
       // 从 apiBaseUrl 派生 WebSocket 基础 URL（http(s):// → ws(s)://）

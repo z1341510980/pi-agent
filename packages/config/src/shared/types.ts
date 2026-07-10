@@ -5,6 +5,7 @@ export type BrowserConfig = {
   appName: string;
   apiBaseUrl: string;
   aguiBaseUrl: string;
+  repositoryUrl: string;
 };
 
 export type NodeConfig = {

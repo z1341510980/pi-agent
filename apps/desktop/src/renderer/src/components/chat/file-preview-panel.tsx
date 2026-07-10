@@ -62,7 +62,7 @@ export function FilePreviewPanel({ file, onClose }: FilePreviewPanelProps): Reac
             <img
               src={file.thumbnail}
               alt={file.name}
-              className="max-w-full max-h-full object-contain rounded"
+              className="max-w-full max-h-full object-contain rounded outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
             />
           </div>
         ) : file.content && file.encoding === 'utf-8' ? (

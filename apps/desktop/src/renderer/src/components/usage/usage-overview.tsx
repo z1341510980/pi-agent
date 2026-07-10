@@ -61,14 +61,14 @@ interface StatCardProps {
 
 function StatCard({ icon, label, value, sublabel, accent }: StatCardProps): ReactElement {
   return (
-    <div className="bg-surface-2 border border-border rounded-lg grid gap-1 p-3">
+    <div className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] grid gap-1 p-3">
       <div className="flex items-center gap-1.5">
         <span className={cn('size-3.5', accent ? 'text-accent' : 'text-muted-foreground')}>
           {icon}
         </span>
         <p className="text-subtle text-xs font-[760] m-0">{label}</p>
       </div>
-      <strong className={cn('font-[780] leading-tight text-lg', accent && 'text-accent')}>
+      <strong className={cn('font-[780] leading-tight text-lg tabular-nums', accent && 'text-accent')}>
         {value}
       </strong>
       {sublabel && <p className="text-muted-foreground text-[10px] m-0">{sublabel}</p>}
@@ -88,7 +88,7 @@ export function UsageOverview({ summary, isLoading, budget }: UsageOverviewProps
     return (
       <div className="grid grid-cols-2 gap-2.5">
         {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="bg-surface-2 border border-border rounded-lg p-3 animate-pulse">
+          <div key={i} className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] p-3 animate-pulse">
             <div className="h-3 bg-muted/30 rounded w-12 mb-2" />
             <div className="h-5 bg-muted/30 rounded w-16" />
           </div>
@@ -119,7 +119,7 @@ export function UsageOverview({ summary, isLoading, budget }: UsageOverviewProps
             <p className="font-[760] m-0">
               {budgetExceeded ? '预算已超出' : '预算告警'}
             </p>
-            <p className="m-0 text-[11px]">
+            <p className="m-0 text-[11px] tabular-nums">
               当月已用 {formatCost(budget!.costUsd)} / 预算 {formatCost(budget!.monthlyBudgetUsd)}
               （{budget!.percentage.toFixed(1)}%）
             </p>

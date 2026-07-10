@@ -17,6 +17,7 @@ import { ConcurrencyLimiter, type ConcurrencyLimits, type ReleaseFunction } from
 import { AgentChannel } from './agent-channel.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { AgentPersistenceStore } from './agent-persistence.js'
+import type { AgentCallLogger } from './agent-call-logger.js'
 
 /** Agent 配置 */
 export interface AgentConfig {
@@ -39,6 +40,20 @@ export interface AgentConfig {
   identity?: string
   /** 人格模板（personality.md 内容） */
   personality?: string
+  /** LLM 温度（0-2，未配置则使用 SDK 默认） */
+  temperature?: number
+  /**
+   * 动态系统提示词构造器（可选）
+   * 若提供，dispatchFn 调用前会执行此构造器，覆盖 AgentConfig.systemPrompt
+   * 用于需要 per-call 动态构造 prompt 的场景（如 novel 的三层缓存 prompt）
+   */
+  systemPromptBuilder?: (context: { task: string; [key: string]: unknown }) => string
+  /**
+   * 工具过滤器（可选）
+   * 若提供，dispatchFn 调用前会执行此过滤器，返回允许使用的工具名列表
+   * 用于按 Agent 角色限制工具权限（覆盖静态 tools 字段）
+   */
+  toolFilter?: (context: { task: string; [key: string]: unknown }) => string[]
 }
 
 /** subagent 执行结果 */
@@ -124,6 +139,8 @@ export class AgentManager {
   private readonly limiter: ConcurrencyLimiter
   private readonly channel: AgentChannel
   private readonly store?: AgentPersistenceStore
+  /** 通用 Agent 调用日志记录器（可选，注入后 dispatchToAgent 自动记录调用日志） */
+  private readonly callLogger?: AgentCallLogger
   private dispatchFn?: DispatchFn
   /** 活跃的子 Agent session 注册表 */
   private readonly activeSubagentSessions = new Map<string, {
@@ -136,10 +153,13 @@ export class AgentManager {
     limits?: ConcurrencyLimits
     channel: AgentChannel
     store?: AgentPersistenceStore
+    /** 通用 Agent 调用日志记录器（可选） */
+    callLogger?: AgentCallLogger
   }) {
     this.limiter = new ConcurrencyLimiter(options.limits)
     this.channel = options.channel
     this.store = options.store
+    this.callLogger = options.callLogger
   }
 
   /** 设置派遣函数（由插件注入实际执行逻辑） */
@@ -266,6 +286,12 @@ export class AgentManager {
       }
     }
 
+    // 用于 finally 块记录日志的状态变量
+    let callResult = ''
+    let callThreadId = ''
+    let callError = ''
+    let callSuccess = true
+
     try {
       const { result, threadId } = await depthStorage.run(childDepth, () =>
         this.dispatchFn!(agentId, task, {
@@ -274,6 +300,9 @@ export class AgentManager {
           onProgress: options.onProgress,
         }),
       )
+
+      callResult = result
+      callThreadId = threadId
 
       // 记录活跃 session
       this.activeSubagentSessions.set(threadId, {
@@ -292,19 +321,44 @@ export class AgentManager {
         threadId,
       }
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
+      callSuccess = false
+      callError = error instanceof Error ? error.message : String(error)
       return {
         agentId,
         task,
         result: '',
         success: false,
-        error: errorMsg,
+        error: callError,
         durationMs: Date.now() - startedAt,
         depth: childDepth,
       }
     } finally {
       clearTimeout(timeoutTimer)
       release()
+
+      // 自动记录 Agent 调用日志（fire-and-forget，失败不影响主流程）
+      if (this.callLogger) {
+        try {
+          this.callLogger.record({
+            agentId,
+            agentName: agent.name,
+            threadId: callThreadId,
+            systemPrompt: agent.systemPrompt ?? '',
+            userMessage: task,
+            taskInput: task,
+            tools: JSON.stringify(agent.tools ?? []),
+            toolNames: JSON.stringify(agent.tools ?? []),
+            result: callResult,
+            resultLength: callResult.length,
+            durationMs: Date.now() - startedAt,
+            status: callSuccess ? 'success' : 'error',
+            error: callError,
+            metadata: JSON.stringify({ depth: childDepth, source: 'subagent' }),
+          })
+        } catch {
+          // 日志写入失败不影响主流程
+        }
+      }
     }
   }
 

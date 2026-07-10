@@ -56,6 +56,15 @@
 | 45 | Cron 自动化 | CronScheduler（定时任务调度） |
 | 46 | server-info | agent-server 启动后写入端口信息，Main 进程读取连接 |
 | 47 | 会话标题 | 首轮对话后 LLM 自动生成会话标题 |
+| 48 | 小说创作系统 | Novel Plugin（4 Agent 流水线：Director → Writer → Reviewer → Memory） |
+| 49 | 三层提示词缓存 | STATIC / SEMI / DYNAMIC 分层，prefix cache 命中率优化 |
+| 50 | 矩阵视图 | 实体 × 章节二维表 + DnD 拖拽编排（@dnd-kit/core） |
+| 51 | 多 Agent 检查点 | ConfirmationManager 统一决策（approve/reject/revise/rewrite） |
+| 52 | Per-Agent 温度 | NovelAgentConfigStore 薄封装 AgentManager，温度按角色配置 |
+| 53 | 结构化记忆提取 | NovelMemoryGenerator 单次 LLM 调用替代工具循环（JSON 输出） |
+| 54 | AG-UI 协议统一 | Novel 与 Chat 共用 parseSseStream + StreamEmitter |
+| 55 | 画布可视化 | React Flow 关系图（7 种实体节点 + 15 种边类型） |
+| 56 | 长期记忆分层 | NovelMemoryStore（事件 + 快照 + 因果链） |
 
 ---
 
@@ -87,26 +96,30 @@ pi-agent (Service Locator):
 ### 2.3 Service 注册示例
 
 ```typescript
-// core/agent/agent-manager.plugin.ts
+// plugins/subagent-plugin.ts
 import type { FastifyPluginAsync } from 'fastify'
-import { AgentManager } from './agent-manager.js'
+import { AgentManager } from '../core/agent/subagent-tool.js'
 
 declare module 'fastify' {
   interface FastifyInstance {
-    agentManager: AgentManager
+    subagentManager: AgentManager
+    agentCallLogger: AgentCallLogger
   }
 }
 
-export const agentManagerPlugin: FastifyPluginAsync = async (app) => {
+export const subagentPlugin: FastifyPluginAsync = async (app) => {
   const manager = new AgentManager({
-    agentsDir: app.configService.getAgentsDir(),
-    getLLMService: () => app.llmService,
+    store: new SqliteAgentStore(app.db),
+    dispatchFn: createDispatchFn(app),
   })
   await manager.init()
-  app.decorate('agentManager', manager)
+  app.decorate('subagentManager', manager)
+  app.decorate('agentCallLogger', new AgentCallLogger(app.db))
   app.addHook('onClose', () => manager.dispose())
 }
 ```
+
+> **实际注册的 Service 列表**（24+ 项）：traceId、authToken、eventBus、db、authStorage、modelRegistry、sessionManager、providerConfigStore、proxyConfigStore、proxyManager、getApiKey、subagentManager、agentCallLogger、teamManager、usageLedger、factStore、summaryStore、confirmationManager、pluginManager、credentialBridge、gate、piSessionStore、piAgUiAgent、cronScheduler + 插件动态注册的 service。
 
 ---
 
@@ -741,34 +754,21 @@ POST /ag-ui/agent/:id/tools/active
 
 | 组件 | 职责 | 存储 |
 |------|------|------|
-| **FactStore** | 存储事实性记忆，支持标签/关键词检索 | sql.js（WASM SQLite，无原生依赖） |
-| **SessionSummaryManager** | LLM 驱动的会话摘要压缩 | 文件 (`summaries/*.md`) |
-| **MemoryTicker** | 定时触发：编译记忆 → 更新 md 文件 → 刷新 system prompt | 内存调度器 |
+| **FactStore** | 存储事实性记忆，支持标签/关键词检索 | better-sqlite3（facts 表 + LRU 缓存） |
+| **SessionSummaryStore** | LLM 驱动的会话摘要压缩 | SQLite（session_summaries 表） |
+| **MemoryTicker** | 定时触发：turn-based + 启动检查 + 崩溃恢复 | 内存调度器 |
 
 ### 6.3 记忆检索策略
 
 **无向量搜索**，采用标签/关键词检索 + LLM 注意力机制：
 
 - **显式检索**：`memory_search` 工具，标签匹配 + 关键词搜索
-- **隐式检索**：编译后的 `memory.md` 注入 system prompt，LLM 通过注意力自动提取相关记忆
+- **隐式检索**：编译后的摘要注入 system prompt，LLM 通过注意力自动提取相关记忆
 - **记忆量级**：单用户桌面应用，记忆量不会超过关键词检索能力
 
-预留 `MemoryStore` 接口的 `semanticSearch()` 方法，后续可扩展向量搜索。
+### 6.3.1 FactStore LRU 缓存
 
-### 6.3.1 为什么选 sql.js 而非 better-sqlite3
-
-| 维度 | better-sqlite3 | sql.js |
-|------|---------------|--------|
-| 原生依赖 | 需要 node-gyp + Python + C++ 编译工具链 | 纯 WASM，零原生依赖 |
-| Electron 打包 | 需要 electron-rebuild，平台特定二进制 | 单一 .wasm 文件，跨平台 |
-| 性能 | 更快（C++ 绑定） | 略慢（WASM），但桌面单用户场景可忽略 |
-| 安装体验 | Windows 用户常遇 node-gyp 编译失败 | `pnpm install` 即可 |
-
-**结论**：桌面应用 + Electron 场景下，sql.js 的零原生依赖优势远大于 better-sqlite3 的性能优势。
-
-### 6.3.2 FactStore LRU 缓存
-
-sql.js 是 WASM 实现，每次查询都涉及磁盘 I/O。为减少磁盘读取，在 FactStore 上层加 LRU 缓存：
+FactStore 在 SQLite 查询上层加 LRU 缓存（lruSize=100、maxFacts=1000），减少重复查询：
 
 ```typescript
 // core/memory/fact-store.ts
@@ -993,17 +993,17 @@ class EventBus {
 
 | 事件 | 发布者 | 订阅者 | 用途 |
 |------|--------|--------|------|
-| `llm:call_complete` | LLMService | UsageLedger, SessionCoordinator | LLM 调用完成（含 token 用量） |
-| `llm:call_error` | LLMService | UsageLedger, MidTurnSteerer | LLM 调用失败 |
+| `llm:call_complete` | Pi Session（事件订阅） | UsageLedger | LLM 调用完成（含 token 用量） |
 | `memory:compiled` | MemoryTicker | WebSocket 推送 | 记忆编译完成 |
 | `memory:compile_failed` | MemoryTicker | WebSocket 推送, DevLog | 记忆编译失败 |
-| `tool:confirmation_request` | GateWrapper | WebSocket 推送 | 工具需要用户确认 |
-| `tool:confirmation_response` | WebSocket handler | GateWrapper | 用户确认/拒绝 |
-| `session:compacted` | SessionCoordinator | WebSocket 推送 | 会话压缩完成 |
-| `session:health_check` | SessionHealth | WebSocket 推送 | 会话健康状态变更 |
+| `confirmation:request` | ConfirmationManager | WebSocket 推送 | 工具/检查点需要用户确认 |
+| `confirmation:resolved` | ConfirmationManager | WebSocket 推送 | 用户确认/拒绝/修订 |
+| `tool:executed` | afterToolCall 钩子 | EventBus, EvidenceLedger | 工具执行完成 |
+| `session:compacted` | Pi SDK Compaction | WebSocket 推送 | 会话压缩完成 |
 | `agent:status_change` | AgentManager | WebSocket 推送 | Agent 状态变更 |
 | `plugin:loaded` | PluginManager | DevLog | 插件加载 |
-| `cron:job_executed` | CronScheduler | WebSocket 推送 | 定时任务执行完成 |
+| `cron:tick` | CronScheduler | WebSocket 推送 | 定时任务触发 |
+| `usage:recorded` | UsageLedger | WebSocket 推送 | 用量记录完成（含 cost） |
 
 ### 7.5.4 与 WebSocket 推送的关系
 
@@ -1359,6 +1359,310 @@ interface PluginSDK {
   getTheme(): ThemeInfo
 }
 ```
+
+### 10.4 PluginContext 完整能力
+
+插件通过 `PluginContext` 获得宿主能力。当前实现的完整接口：
+
+```typescript
+interface PluginContext {
+  // 基础设施
+  logger: FastifyBaseLogger
+  eventBus: EventBus
+  db: Database                    // better-sqlite3 实例
+  cwd: string                     // 工作目录
+  dataDir: string                 // 数据目录
+
+  // 注册能力
+  registerTool(tool: ToolDefinition): void
+  registerRoute(route: RouteDefinition): void
+  registerPanel(panel: PanelDefinition): void
+  registerMigration(migration: MigrationDefinition): void
+  registerSessionTools(tools: ToolDefinition[]): void
+  registerService(name: string, service: unknown): void
+  registerPromptTemplates(templates: PromptTemplate[]): void
+  onEvent(eventName: string, handler: EventHandler): void
+
+  // Session 工厂（核心）
+  createSession(options: PluginSessionOptions): Promise<PluginSessionHandle>
+  createAgUiSession(options: AgUiSessionOptions): Promise<AgUiSessionHandle>
+
+  // 宿主服务（注入式）
+  subagentManager?: AgentManager
+  teamManager?: TeamManager
+  confirmationManager: ConfirmationManager
+  agentCallLogger: AgentCallLogger
+}
+```
+
+**PluginSessionOptions 关键字段**：
+
+| 字段 | 用途 |
+|------|------|
+| `systemPrompt` | STATIC 层系统提示词 |
+| `prefixUserMessage` | SEMI 层前缀（带 cache_control 断点） |
+| `userMessage` | DYNAMIC 层用户消息 |
+| `tools` | 工具白名单 |
+| `temperature` | 温度注入（onPayload hook） |
+| `maxTokens` | max_tokens 注入 |
+| `responseFormat` | `{ type: 'json_object' }` 强制 JSON 输出 |
+| `timeoutMs` | 超时保护 |
+| `onFirstText` | 首 token 检测回调 |
+
+---
+
+## 10.5 Novel Plugin 架构（小说创作系统）
+
+> Novel Plugin 是 pi-agent 中基于多 Agent 协作的长篇小说创作系统，作为内置插件实现。
+> 复用 chat 底座的 Session 工厂、ConfirmationManager、AgentManager、AgentCallLogger，
+> 通过 AG-UI 协议统一 SSE 事件流。
+
+### 10.5.1 整体架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Novel Plugin                              │
+│  apps/agent-server/src/plugins/novel-plugin/                │
+├─────────────────────────────────────────────────────────────┤
+│  index.ts          插件入口（7 步 setup）                     │
+│  novel-services.ts 服务组装（NovelServices）                 │
+│  novel-routes.ts   50+ REST/SSE 路由                         │
+│  novel-migrations.ts  33 个数据库迁移（013-045）              │
+│  core/                                                    │
+│    novel-orchestrator.ts  多 Agent 编排引擎                  │
+│    novel-agents.ts        4 个 Agent 配置定义                │
+│    novel-engine.ts        核心引擎（约束构建 + 章节状态机）   │
+│    novel-session.ts       Session 工厂                       │
+│    novel-store.ts         统一存储层（SQLite CRUD）          │
+│    novel-memory-store.ts  长期记忆（事件 + 快照 + 因果链）    │
+│    novel-agent-config-store.ts  温度配置（AgentManager 薄封装）│
+│    novel-character-generator.ts  AI 角色生成器               │
+│    novel-entity-generator.ts     通用实体生成器              │
+│    novel-memory-generator.ts     结构化记忆提取              │
+│    novel-tools.ts         17 个 Pi Session 工具              │
+│    prompt-builder.ts      三层缓存提示词构建器               │
+│    prompt-manager.ts      三级覆盖模板管理器                 │
+│    rhythm-controller.ts   节奏控制器                         │
+│    types.ts               全部数据模型（25+ 接口）            │
+│    prompts/*.md           11 个提示词模板                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 10.5.2 多 Agent 协作流程
+
+4 个 Agent 角色通过流水线协作完成章节创作，含 2 个用户检查点：
+
+```
+Director ──→ [检查点1: narrative_task] ──→ Writer ──→ Reviewer
+                                                ↓
+                                    [检查点2: review]
+                                          ↓
+                    ┌─────────────────────┼─────────────────────┐
+                    ↓                     ↓                     ↓
+                 revise                rewrite               approve
+                    ↓                     ↓                     ↓
+              Writer 修订          (递归重新开始)             Memory Agent
+                    ↓                                         ↓
+                 Memory                                      完成
+```
+
+**Agent 角色配置**：
+
+| Agent | id | 温度 | 工具权限 | 职责 |
+|-------|-----|------|----------|------|
+| director | novel-director | 0.5 | 3 个只读查询工具 | 分析故事状态，规划叙事任务 |
+| writer | novel-writer | 0.9 | 1 个只读查询工具 | 创作章节正文（不能写状态） |
+| reviewer | novel-reviewer | 0.3 | 1 个只读查询工具 | 一致性检查 + 评分 + 验收 |
+| memory | novel-memory | 0.2 | 全部 17 个工具 | 更新实体状态 + 记忆事件 |
+
+**关键设计**：
+- Director 输出注入 Writer 的 `{{narrative_task}}`（方案 A：修复 Director 越权写作）
+- Agent 专属指令（如「直接输出章节正文」）仅注入到目标 Agent 上下文
+- 系统提示词构建顺序：世界规则 → 风格指南 → 角色定义 → Agent 身份
+- Writer 严格遵循 4 条写作风格规则（禁破折号、开头直接进入场景、结尾止于画面、语言干净）
+
+### 10.5.3 三层提示词缓存
+
+缓存命中率是关键成本指标，采用 STATIC / SEMI / DYNAMIC 三层结构：
+
+```
+[系统提示词] (STATIC - 跨章节缓存命中)
+├── 世界规则（项目级，按 category+id 双键排序）
+├── 风格指南（项目级，按 category+id 双键排序）
+├── 势力/地点/世界要素静态档案
+└── Agent 身份（system-base 模板渲染）
+（不含角色定义 ← 角色多时避免上下文爆炸）
+
+[首条用户消息 prefixUserMessage] (SEMI - 单章内缓存命中)
+├── 章节信息
+├── 创作约束（facts/cognitive/stage/debts/characterArcs）
+├── 本章已编排实体约束（arrangedEntities）← 矩阵视图核心
+├── 当前故事状态
+├── 实体关联（edges）
+├── 信息差（informationLayers）
+├── 最近章节摘要（取最近 3 章 published）
+└── 创作指令（仅 Writer 注入，chapter-instruction 模板）
+
+[对话消息] (DYNAMIC - 不缓存)
+├── 工具调用 + 结果
+├── 生成内容
+└── 用户引导
+```
+
+**SEMI 层单章缓存**：director → writer → reviewer 三次调用复用同一份 `buildChapterContext` 输出（这三个 Agent 只读 query_* 工具，不修改故事状态）。进入 `createChapterWithFlow`（含 rewrite 递归）时清空。
+
+**缓存诊断**：`GET /projects/:projectId/cache-diagnostics?chapterNumber=N` 返回 4 个 Agent 的 systemPromptHash + chapterContextHash。
+
+### 10.5.4 矩阵视图（Matrix View）
+
+矩阵视图是「实体 × 章节」的二维表，支持手动编排和 AI 编排两种模式。
+
+**实体章节维度字段**：
+
+| 实体 | 章节维度字段 | 类型 |
+|------|-------------|------|
+| 角色 | characterHistory | `NovelCharacterHistory[]`（按 chapterNumber 索引） |
+| 冲突 | chapterSpans | `ChapterSpan[]`（非连续跨度，如 `[[1,3],[10,12]]`） |
+| 伏笔 | firstChapter / lastChapter | `number \| null` |
+| 势力 | chapterSpans | `ChapterSpan[]` |
+| 地点 | appearChapters / firstChapter | `number[]` / `number \| null` |
+
+**三种拖拽操作**（@dnd-kit/core，PointerSensor distance:6）：
+
+| 拖源 | 数据结构 | 业务回调 |
+|------|----------|----------|
+| 侧边栏拖入实体 | `SidebarDragData` | `handleMarkPresent`（新增出场） |
+| 拖动跨度端点 | `EndpointDragData` | `handleMoveEndpoint`（调整起止章节，含反转保护） |
+| 拖动已出场单元格 | `CellDragData` | `handleMoveCell`（移动到新章节） |
+
+**端点反转保护**：`handleMoveEndpoint` 对 `start ≤ end`、`plant ≤ payoff` 做 clamp，避免逻辑倒置。
+
+**`appendChapterToSpans` 算法**（非连续跨度合并）：
+- 已被覆盖 → 去重
+- 连续（`last[1] + 1 === chapter`）→ 扩展尾段
+- 不连续 → 追加新段
+
+### 10.5.5 实体生成与 AI 编排
+
+**两种编排模式**：
+
+1. **手动编排**：用户在矩阵视图中拖拽实体，调用 `create-flow` 时传入 `arrangedEntities`
+2. **AI 编排**：调用 `/chapters/:chapterNumber/ai-arrange`，内部 `generateAndArrange`：
+   - `planEntitiesFromOutline`（LLM 解析章纲，产出 coreStyle 清单）
+   - 逐个调用 `generate` 生成实体字段并落库
+   - 返回 `ArrangedEntity`（含所有生成实体的 ID）
+   - 失败时反向顺序 best-effort 清理
+
+**实体类型**：character / conflict / foreshadow / faction / location / world_element（6 种）
+
+**结构化记忆提取**（NovelMemoryGenerator）：
+- 替代原 Memory Agent 的「LLM 工具循环」模式（18 个工具、易不收敛、300s 超时）
+- 改为单次 LLM 调用，输出 JSON 变更列表（`MemoryUpdatePayload`）
+- `applyChanges` 遍历 JSON，调用 store API 批量应用变更
+- 实体查找：精确匹配优先，包含匹配兜底
+
+### 10.5.6 检查点机制
+
+复用 chat 底座的 `ConfirmationManager` 统一确认机制：
+
+```typescript
+// 请求决策
+const decisionPromise = services.confirmationManager.requestDecision({
+  threadId: `novel-checkpoint-${projectId}-${chapterNumber}`,
+  toolCallId: randomUUID(),
+  toolName: `checkpoint_${checkpoint.type}`,
+  args: { checkpoint },
+  reason: `等待用户确认 ${checkpoint.type} 检查点`,
+})
+// 推送给前端
+emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+// 决策端点
+POST /projects/:projectId/checkpoint/:checkpointId/decision
+body: { decision, userMessages? }
+```
+
+- 默认 120s 超时（避免 checkpoint 用户不响应导致永久 pending）
+- 支持 4 种决策：`approve` / `reject` / `revise` / `rewrite`
+- 决策端点路由参数必须使用后端推送的 `checkpointId`（UUID），而非 `checkpoint.type`
+
+### 10.5.7 温度配置
+
+`NovelAgentConfigStore` 是 **AgentManager 的薄封装**，消除温度配置双轨制：
+
+- `getByType(agentType)` — 从 `agentManager.getAgent(id).temperature` 读取，回退到 `NOVEL_AGENT_CONFIGS` 默认值
+- `upsert(agentType, temperature)` — 调用 `agentManager.updateAgent(id, { temperature })`
+- `novel_agent_config` 表保留不删，但不再读写
+
+温度通过 `PluginSessionOptions.temperature` → `onPayload` hook 注入到 provider 请求。
+
+### 10.5.8 长期记忆分层
+
+`NovelMemoryStore` 提供三层记忆能力：
+
+| 层 | 用途 | 实现 |
+|----|------|------|
+| 工作记忆 | 当前章节生成期间的临时上下文 | prompt-builder 中实现 |
+| 情景记忆 | 按章节存储的事件/状态快照 | memory_events + memory_snapshots 表 |
+| 语义记忆 | 跨章节的实体关系和因果链 | getCausalChain（防循环引用） |
+
+**事件类型**：`character_change` / `conflict_change` / `foreshadow_change` / `faction_change` / `location_change` / `relationship_change` / `plot_event` / `world_change`
+
+### 10.5.9 数据库迁移
+
+33 个迁移（id `013` ~ `045`），覆盖：
+
+| ID 范围 | 内容 |
+|---------|------|
+| 013-026 | 核心表：projects / chapters / characters / relationships / foreshadowing / clues / conflicts / world_rules / constraints / information_layers / style_guides / author_intents / chapter_reviews / prompt_templates |
+| 027-032 | node_positions / character_history / memory_events / memory_snapshots / factions / locations / world_elements |
+| 033-034 | edges（画布连线） / agent_logs（Agent 调用日志） |
+| 035-040 | 扩展字段 / markers（时间轴标记）/ clip-note |
+| 041-043 | volumes 表 + chapters.outline/volume_id |
+| 044-045 | agent_config / chapter_spans（JSON 数组支持非连续跨度） |
+
+### 10.5.10 API 路由
+
+所有路由前缀 `/api/plugins/novel`，主要端点：
+
+| 类别 | 端点 |
+|------|------|
+| 项目管理 | `POST/GET/PATCH/DELETE /projects` |
+| 卷管理 | `GET/POST /projects/:projectId/volumes`、`PATCH/DELETE /volumes/:id` |
+| 章节管理 | `POST/GET /projects/:projectId/chapters`、`PATCH/POST /chapters/:id/complete\|publish` |
+| 实体 CRUD | 每类实体（角色/伏笔/冲突/线索/关系/世界规则/风格指南/约束/信息差/势力/地点/世界要素）的 `POST/GET/PATCH` |
+| AI 实体生成（SSE） | `POST /projects/:projectId/characters/ai-generate`、`POST /projects/:projectId/entities/ai-generate` |
+| 多 Agent 创作流程（SSE） | `POST /projects/:projectId/chapters/:chapterNumber/create-flow`、`POST /checkpoint/:checkpointId/decision`、`POST /chapters/:chapterNumber/ai-arrange`、`POST /chapters/:chapterNumber/create-team` |
+| 角色状态变更历史 | `GET/POST /projects/:projectId/characters/:characterId/history`、`POST /character-history/batch` |
+| 节点位置 | `GET/PUT/DELETE /projects/:projectId/node-positions` |
+| 画布连线 | `GET/POST /projects/:projectId/edges`、`DELETE /edges/:id` |
+| 长期记忆 | `GET /projects/:projectId/memory-events`（支持 chapterNumber/entityType/eventType/minSignificance 过滤）、`GET /memory-events/timeline/:entityId`、`GET /memory-events/causal/:eventId`、`GET /memory-snapshots` |
+| 缓存诊断 | `GET /projects/:projectId/cache-diagnostics` |
+| 提示词模板 | `GET/PUT /prompts` |
+| Agent 调用日志 | `GET/DELETE /projects/:projectId/agent-logs`、`GET /agent-logs/:id` |
+| 时间轴标记 | `POST/GET/PATCH/DELETE /markers` |
+| Agent 温度配置 | `GET/PUT /agent-config` |
+| 节奏控制 | `GET /rhythm-models`、`GET /projects/:projectId/rhythm-suggestion` |
+
+### 10.5.11 与 Chat 底座的集成
+
+| 能力 | 来源 | Novel Plugin 用途 |
+|------|------|-------------------|
+| `context.db` | databasePlugin | NovelStore / NovelMemoryStore / PromptManager |
+| `context.createSession` | chat 底座 | CharacterGenerator / EntityGenerator / MemoryGenerator 调用 LLM |
+| `context.createAgUiSession` | chat 底座 | Orchestrator.runAgent 创建 AG-UI Session |
+| `context.subagentManager` | subagentPlugin | 注册 4 个 Novel Agent + 温度同步 |
+| `context.teamManager` | teamPlugin | 注册 novel-team（pipeline 策略） |
+| `context.confirmationManager` | app.ts 注入 | 检查点决策 |
+| `context.agentCallLogger` | subagentPlugin | 通用 Agent 调用日志（双写） |
+
+**AG-UI 协议统一**：
+- 使用 `@ag-ui/core` 的 `EventType` 枚举（非字符串字面量）
+- `createNovelAgUiEmitter` 创建 AG-UI 兼容的事件发射器
+- `createSseEmitterSink` 把 AG-UI 事件序列化为 SSE `data:` 行
+- 前端用共享的 `parseSseStream` 解析（chat 与 novel 共用同一解析器）
+- CUSTOM 事件仅用于小说专属语义（`novel:progress` / `novel:checkpoint` / `novel:result`）
+- LLM token 流走标准 `TEXT_MESSAGE_*` / `TOOL_CALL_*` / `STEP_*` 事件
+- `emitRaw: false` 禁用 RAW 事件减少噪声
 
 ---
 
@@ -3229,131 +3533,312 @@ async function generateSessionTitle(
 
 ## 25. 共享包划分
 
+三个共享包都是「叶子包」，彼此无 workspace 依赖。无构建步骤，`exports` 直接指向 `src/**/*.ts` 源文件，消费方在自身构建时一并编译。
+
 ### 25.1 @repo/shared
 
-纯工具函数 + 通用类型，不依赖任何运行时环境。
+纯工具函数 + 通用类型 + 进程内基础设施，不依赖任何运行时环境（仅依赖 `zod`）。
 
 ```
 @repo/shared/
-  ├── api/          # ApiSuccess / ApiFailure / PageQuery / PageResult
-  ├── errors/       # AppError / ErrorSeverity / ErrorCategory / ERROR_DEFS
-  └── utils/        # 通用工具函数
+  ├── agent/        # AgentMessage / AgentRunInput / AgentRole / Team 多 Agent 模型
+  ├── agui/         # AguiClientEvent（CLIENT_CONNECTED / CLIENT_ERROR）
+  ├── api/          # ApiResponse<T> / ApiSuccess / ApiFailure / PageQuery / PageResult
+  ├── errors/       # AppError / ErrorCode 枚举 / sanitizeErrorMessage（API Key/路径脱敏）
+  ├── events/       # EventBus 进程内事件总线（异常隔离）
+  ├── types/        # RecordType / MaybeAsync
+  └── utils/        # atomicWriteSync / retryWithJitter / i18n（zh-CN/en-US）
 ```
+
+**关键设计**：
+- `AppError` 双字段设计：`userMessage`（脱敏，响应体）+ `internalMessage`（原始，仅日志）
+- `sanitizeErrorMessage` 覆盖三类敏感信息：API Key（Anthropic/OpenAI/Google）、Bearer Token、文件路径
+- `EventBus` 异常隔离：同步 handler 抛错被吞掉，异步 handler 挂 `.catch` 防 unhandled rejection
+- `retryWithJitter` 采用 AWS 推荐的 Decorrelated Jitter 策略
 
 ### 25.2 @repo/protocol
 
-AG-UI 协议定义 + API 请求/响应契约。前后端都依赖此包保证协议一致。
+AG-UI 协议定义 + API 请求校验。前后端都依赖此包保证协议一致。依赖 `@ag-ui/core` + `zod`。
 
 ```
 @repo/protocol/
-  ├── agui/         # AG-UI 事件类型（RUN_STARTED, TEXT_MESSAGE_CONTENT, ...）
-  ├── agent/        # AgentMessage / AgentRunInput / AgentRole
-  ├── ws/           # WebSocket 事件类型（WsServerEvent / WsClientEvent）
-  └── api/          # API 路由的请求/响应类型
+  ├── events.ts     # 从 @ag-ui/core 重导出 28 个事件类型 + AgUiEventSink
+  └── schemas.ts    # 12 个 Zod schema（AG-UI 路由请求体校验）
 ```
+
+**12 个 Schema**：runAgentInput、threadMessage、forkThread、navigateThread、compactThread、toolsActive、reload、modelSelection、thinkingSettings、booleanToggle、queueMode、sessionName
+
+**设计要点**：
+- `runAgentInputSchema.messages` 用 `z.array(z.unknown())` 宽松校验（下游二次校验）
+- `temperature` 限定 `0-2`，与 provider 默认值解耦
+- `model` 字段允许前端动态指定 provider + modelId
 
 ### 25.3 @repo/config
 
-配置 Schema + 环境变量解析。
+配置 Schema + 环境变量解析。依赖 `dotenv` + `zod`，分端入口。
 
 ```
 @repo/config/
-  ├── shared/       # RuntimeMode / BrowserConfig / NodeConfig
-  ├── node/         # nodeEnvSchema / nodeConfig
-  ├── browser/      # browserEnvSchema / browserConfig
-  └── schema/       # 三层配置的 Zod Schema
-      ├── preferences-schema.ts   # Global 配置
-      ├── agent-config-schema.ts  # Agent 配置
-      └── session-meta-schema.ts  # Session 配置
+  ├── shared/       # RuntimeMode / BrowserConfig / NodeConfig 类型
+  ├── node/         # nodeEnvSchema（dotenv + process.env）→ nodeConfig
+  └── browser/      # browserEnvSchema（Vite import.meta.env）+ initEmbeddedServerPort()
 ```
+
+**关键设计**：
+- `node/` 所有数字字段使用 `z.coerce.number()`，允许从 `process.env` 字符串自动转换
+- `browser/` 的 `initEmbeddedServerPort()` 用于 Electron 嵌入式服务器场景，检测 preload 暴露的 `window.api?.server?.getPort`，动态改写 `apiBaseUrl`/`aguiBaseUrl`
+- `tsconfig` 额外注入 `types: ["node", "vite/client"]`
+
+### 25.4 包间依赖关系
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  应用层                                                      │
+│   apps/agent-server  apps/desktop                            │
+│         │ workspace:*  │ workspace:*                         │
+└─────────┼──────────────┼───────────────────────────────────┘
+          ▼              ▼
+   ┌────────────┐ ┌────────────┐ ┌────────────┐
+   │ @repo/     │ │ @repo/     │ │ @repo/     │
+   │ config     │ │ protocol   │ │ shared     │
+   └─────┬──────┘ └─────┬──────┘ └────────────┘
+         │ dotenv        │ @ag-ui/core
+         │ zod           │ zod
+         └───────────────┘
+   三个共享包彼此无依赖（叶子包）
+```
+
+**外部依赖**：
+- `@repo/shared`：`zod ^4.4.3`
+- `@repo/protocol`：`@ag-ui/core ^0.0.56`、`zod ^4.4.3`
+- `@repo/config`：`dotenv ^17.4.2`、`zod ^4.4.3`
 
 ---
 
-## 26. 目录结构（重组后）
+## 26. 目录结构
+
+### 26.1 Monorepo 总体结构
+
+```
+pi-agent/
+  ├── apps/
+  │   ├── agent-server/          # Fastify 后端（Agent 运行时）
+  │   └── desktop/               # Electron + React 前端
+  ├── packages/
+  │   ├── shared/                # @repo/shared（工具函数 + 通用类型）
+  │   ├── protocol/              # @repo/protocol（AG-UI 协议 + Zod schema）
+  │   └── config/                # @repo/config（环境变量解析）
+  ├── docs/                      # 文档
+  ├── pnpm-workspace.yaml        # 工作区配置
+  └── package.json               # 根配置（engines: node>=20, pnpm>=9）
+```
+
+### 26.2 agent-server 目录结构
 
 ```
 agent-server/src/
-  core/                          # 核心领域（按领域分）
+  core/
     agent/
-      pi-session.ts              # Pi SDK createAgentSession 工厂 + 钩子注入
-      pi-agui-agent.ts           # PiAgUiAgent（AG-UI 适配层，参考 pi-agui 模板）
+      pi-session.ts              # Pi SDK Session 工厂 + AsyncLocalStorage 身份注入
+      pi-agui-agent.ts           # PiAgUiAgent（AG-UI 适配层）
       stream-emitter.ts          # Pi SDK 事件 → AG-UI 事件映射
-      session-store.ts           # PiSessionStore（活跃会话管理）
+      reasoning-pipeline.ts      # thinking/reasoning 事件流管理
+      session-store.ts           # PiSessionStore（LRU 缓存 + 线程互斥）
+      agent-channel.ts           # Agent 间通信（broadcast/DM）
+      agent-persistence.ts       # SqliteAgentStore（agents 表 CRUD）
+      agent-call-logger.ts       # AgentCallLogger（agent_call_logs 表）
+      concurrency-limiter.ts     # Subagent 并发限流（maxConcurrent=5）
       instruction-loader.ts      # 项目级指令加载
-      concurrency-limiter.ts     # Subagent 并发限流
-      cron-scheduler.ts          # 定时任务调度
-    session/
-      session-health.ts          # 健康检查 + 孤儿修复
-      session-file-registry.ts   # 会话文件生命周期管理
-      # 注：SessionManager/SessionStore/Compaction 由 Pi SDK 内置提供
-    memory/
-      fact-store.ts              # sql.js（WASM SQLite）事实存储 + LRU 缓存
-      session-summary.ts         # LLM 会话摘要
-      memory-ticker.ts           # 定时编译调度（turn-based + 启动检查 + 崩溃恢复）
-      memory-store.ts            # 接口定义
-      memory-reflection.ts       # 记忆反思（shadow/write 模式）
-      memory.plugin.ts
+      subagent-tool.ts           # AgentManager + subagent 工具
+      team-manager.ts            # TeamManager（4 种策略）
+      team-persistence.ts        # SqliteTeamStore
+      team-tool.ts               # team_execute 工具
     config/
       config-coordinator.ts      # 三层配置合并
-      preferences-store.ts       # Global 配置读写
-      credential-bridge.ts       # Electron safeStorage → Pi SDK getApiKey 桥接
-      outbound-proxy.ts          # 出站网络代理（HTTP/HTTPS/SOCKS）
-      config-schema.ts           # Zod Schema
-      config.plugin.ts
+      credential-bridge.ts       # API Key 解析（custom → env → PI_API_KEY）
+      provider-config-store.ts   # ProviderConfigStore（providers 表）
+      proxy-config-store.ts      # ProxyConfigStore（proxy_config 表）
+      proxy-manager.ts           # ProxyManager（undici 全局 dispatcher）
+    plugin/
+      plugin-manager.ts          # PluginManager（1107 行）
+      plugin-types.ts            # Plugin / PluginContext / PluginSessionOptions
     tool/
-      gate.ts                    # 权限检查接口（Gate + DefaultGate）
-      evidence-ledger.ts         # 任务验证（Evidence + Final Readiness）
-      search-rate-limiter.ts     # 搜索 API 速率限制
-      # 注：内置工具（read/bash/edit/write/grep/find/ls）由 Pi SDK 提供
-      # 注：工具注册/查询由 Pi SDK ToolRegistry 提供
-    migration/
-      migration-runner.ts        # 迁移执行器
-      migrations/                # 各迁移实现
-        001-clean-dangling-providers.ts
-        002-migrate-model-refs.ts
-        ...
+      confirmation-manager.ts    # ConfirmationManager（统一确认机制）
+      confirmation-tools.ts      # createBeforeToolCall hook
+      gate.ts                    # Gate 权限控制（auto/plan/readonly/full）
+      evidence-ledger.ts         # EvidenceLedger（任务验证）
+      output-truncator.ts        # 32KB head+tail 截断
+      storm-breaker.ts           # 死循环检测（Jaccard 相似度）
+    memory/
+      fact-store.ts              # FactStore（facts 表 + LRU 缓存）
+      memory-ticker.ts           # MemoryTicker（turn-based 调度）
+      memory-reflection.ts       # MemoryReflector（shadow/write 模式）
+      memory-tools.ts            # memory_search 工具
+      session-summary.ts         # SessionSummaryStore
+    session/
+      session-file-registry.ts   # managed_cache 文件去重
+      session-health.ts          # 健康检查 + 孤儿修复
     usage/
-      usage-ledger.ts            # LLM 用量追踪
-      cost-rates.ts              # 成本估算价格表
-      usage.plugin.ts
-  extensions/                    # Pi SDK Extensions（自定义工具）
-    web-search.ts                # web_search + web_fetch 扩展
-    memory-search.ts             # memory_search 扩展
-    ...
-  routes/                        # HTTP 路由（薄层）
-    agui.route.ts                # AG-UI 协议（参考 pi-agui 模板完整路由）
-    copilotkit.route.ts          # CopilotKit 适配
-    config.route.ts              # 配置读写 + Provider 刷新
-    usage.route.ts               # 用量查询
-    health.route.ts              # 健康检查
+      usage-ledger.ts            # UsageLedger（usage_records 表）
+      cost-rates.ts              # COST_RATES 模型单价表
+    cron/
+      cron-scheduler.ts          # CronScheduler（5 字段 cron）
+    db/
+      migrations.ts              # 13 个核心迁移
+    i18n/
+      i18n.ts                    # i18n 容器
+      locales/                   # en-US.json / zh-CN.json
+  extensions/
+    web-search.ts                # web_search + web_fetch 工具骨架
+  routes/                        # 18 个路由文件
+    agui.route.ts                # AG-UI 协议（12 个端点 + SSE）
+    agents.route.ts              # Agent 管理
+    teams.route.ts               # Team 管理
+    confirmation.route.ts        # 确认机制
+    session.route.ts             # 会话管理
+    gate.route.ts                # Gate 权限
+    memory.route.ts              # Memory
+    usage.route.ts               # Usage
+    provider.route.ts            # Provider
+    settings.route.ts            # Settings（proxy）
+    plugins.route.ts             # Plugins
+    i18n.route.ts                # i18n
+    cron.route.ts                # Cron
+    workspace.route.ts           # Workspace
+    skills.route.ts              # Skills
+    websocket.route.ts           # WebSocket
+    health.route.ts              # Health
+    copilotkit.route.ts          # CopilotKit（已弃用，返回 410）
   plugins/                       # Fastify 插件
-    pi-sdk.plugin.ts             # Pi SDK 核心对象注册（AuthStorage/ModelRegistry/SessionManager）
-    event-bus.plugin.ts          # EventBus 注册
-    cors.plugin.ts               # CORS 白名单
+    pi-sdk.plugin.ts             # Pi SDK 核心对象注册
+    subagent-plugin.ts           # AgentManager + AgentCallLogger
+    team-plugin.ts               # TeamManager
+    database.plugin.ts           # better-sqlite3 + 迁移
+    event-bus.plugin.ts          # EventBus
+    cors.plugin.ts               # CORS
     auth.plugin.ts               # Bearer Token 认证
     rate-limit.plugin.ts         # 速率限制
     error-handler.plugin.ts      # 错误处理
-  lib/                           # 基础设施
-    sse.ts                       # SSE 工具
-    validate.ts                  # 请求校验
+    request-context.plugin.ts    # traceId 注入
+    websocket.plugin.ts          # WebSocket 支持
+    memory-store.plugin.ts       # FactStore + SummaryStore
+    usage-ledger.plugin.ts       # UsageLedger
+    cron-plugin.ts               # CronScheduler
+    plugin-loader.plugin.ts      # PluginManager
+    novel-plugin/                # Novel Plugin（见 §10.5）
+  lib/
+    api-response.ts              # success / failure / createTraceId
+    i18n.ts                      # re-export t / setLocale
     logger.ts                    # createModuleLogger
-    errors.ts                    # AppError 工厂 + 错误脱敏
-    retry.ts                     # Decorrelated Jitter 重试
-    safe-fs.ts                   # atomicWriteSync / safeReadYAMLSync
-    event-bus.ts                 # EventBus 进程内事件总线
-    ws-events.ts                 # WebSocket 事件类型
-    i18n.ts                      # 国际化
-  app.ts                         # Fastify 应用（注册所有插件和路由 + graceful shutdown）
-  index.ts                       # 入口
+    sse.ts                       # SSE 工具（setupSse / sendSseEvent / closeSse）
+    validate.ts                  # validateBody（Zod schema 校验）
+  app.ts                         # Fastify 应用（21 步插件注册）
+  index.ts                       # 进程入口
 ```
 
-> **与原方案的主要差异**：
-> - `core/llm/` 目录删除（LLMService、agent-loop、stream-parsers、mid-turn-steer 等由 Pi SDK 内置）
-> - `core/tool/tools/` 目录删除（内置工具由 Pi SDK 提供，自建工具移到 `extensions/`）
-> - `core/session/` 精简（SessionManager/Compaction 由 Pi SDK 内置）
-> - 新增 `extensions/` 目录（Pi SDK Extensions 机制）
-> - 新增 `plugins/pi-sdk.plugin.ts`（Pi SDK 核心对象注册）
-> - `credential-store.ts` → `credential-bridge.ts`（桥接 safeStorage → Pi SDK）
+### 26.3 desktop 目录结构
+
+```
+desktop/src/
+  main/                          # Electron 主进程
+    index.ts                     # 窗口管理 + CSP 动态注入
+    server.ts                    # 嵌入式服务器（spawn 子进程）
+    tray.ts                      # 系统托盘
+    auto-updater.ts              # 自动更新
+  preload/
+    index.ts                     # contextBridge 暴露 PiAPI
+    index.d.ts                   # 类型声明
+  renderer/src/
+    App.tsx                      # 状态机式路由（AppView: home/chat/novel/settings）
+    main.tsx                     # 入口
+    api/
+      agui-client.ts             # SSE 核心（parseSseStream 共用）
+      http-client.ts             # 通用 HTTP（自动 unwrap ApiResponse）
+      novel-client.ts            # 小说业务 API
+      novel-agent-config-client.ts
+      index.ts
+    stores/                      # Zustand 5
+      novel-store.ts             # 小说持久化（key: pi-agent-novel）
+      session-store.ts           # 会话持久化（key: pi-agent-session）
+      ui-store.ts                # UI 临时态
+      connection-store.ts        # 连接状态
+      index.ts
+    hooks/
+      use-websocket.ts           # WebSocket（指数退避重连）
+      use-realtime-events.ts     # 实时事件管理
+      use-streaming-run.ts       # Chat AG-UI 状态机
+      use-novel-creation-flow.ts # 小说多 Agent SSE Hook
+      use-tool-executions.ts     # 工具执行状态机
+      use-shortcut.ts            # 全局快捷键
+    components/
+      chat/                      # 对话组件（20+ 个）
+        chat-workspace.tsx       # 对话工作台
+        session-list.tsx
+        message-stream.tsx
+        message-bubble.tsx
+        input-area.tsx
+        tool-call-card.tsx
+        confirmation-dialog.tsx
+        permission-mode-switch.tsx
+        ...
+      novel/                     # 小说组件
+        novel-workspace.tsx      # 小说工作台（DndContext + ReactFlowProvider）
+        novel-sidebar.tsx        # 项目列表 + 大纲树
+        novel-canvas.tsx         # React Flow 画布
+        novel-toolbar.tsx
+        novel-detail-panel.tsx
+        outline-tree.tsx         # 卷/章树
+        chapter-content-editor.tsx
+        chapter-live-view.tsx
+        agent-log-panel.tsx
+        creation-progress-overlay.tsx
+        matrix/                  # 矩阵视图
+          matrix-view.tsx        # 矩阵主视图（DnD 拖拽）
+          matrix-workspace.tsx   # 矩阵工作区集成
+          matrix-toolbar.tsx
+          matrix-legend.tsx
+          matrix-logic.ts        # 纯函数（buildGroups/buildPool/computeCellSymbol）
+          entity-cell-menu.tsx
+          entity-create-dialog.tsx
+          entity-note-dialog.tsx
+          entity-span-dialog.tsx
+          chapter-context-menu.tsx
+        nodes/                   # React Flow 节点（7 种）
+          CharacterNode.tsx
+          ConflictNode.tsx
+          ForeshadowNode.tsx
+          FactionNode.tsx
+          LocationNode.tsx
+          WorldElementNode.tsx
+          GroupNode.tsx
+          ChapterNode.tsx
+          ProjectNode.tsx
+      settings/                  # 设置组件（7 节）
+        settings-page.tsx
+        provider-manager.tsx
+        models-page.tsx
+        agent-page.tsx
+        security-page.tsx
+        cron-page.tsx
+        general-settings.tsx
+        about-page.tsx
+      ui/                        # shadcn/ui 基础组件
+      overlays/                  # 浮层
+        command-palette.tsx
+        error-boundary.tsx
+        devlog-panel.tsx
+        notification-center.tsx
+        update-dialog.tsx
+      home/
+        home-page.tsx
+      theme-provider.tsx
+    lib/
+      utils.ts                   # cn()（clsx + twMerge）
+      novel-utils.ts
+    i18n/
+      index.tsx                  # I18nProvider
+      locales/                   # en-US.json / zh-CN.json
+```
 
 ---
 
@@ -3371,7 +3856,7 @@ agent-server/src/
 - 核心领域逻辑必须有单元测试
 - API 路由用 `fastify.inject()` 做集成测试
 - Pi SDK 调用在测试中 mock
-- FactStore 测试用 sql.js 内存模式（`:memory:`）
+- FactStore 测试用 better-sqlite3 内存模式（`:memory:`）
 
 ---
 
@@ -3548,7 +4033,7 @@ token 预算超限时自动截断。
 
 | 内容 | 交付物 |
 |------|--------|
-| FactStore（sql.js 事实存储 + LRU 缓存 + 标签/关键词检索） | 结构化记忆 |
+| FactStore（better-sqlite3 事实存储 + LRU 缓存 + 标签/关键词检索） | 结构化记忆 |
 | SessionSummary（LLM 会话摘要） | 会话压缩 |
 | MemoryTicker（完整调度：turn-based + 启动检查 + 崩溃恢复 + 步骤健康） | 记忆编译流水线 |
 | Memory Reflection（shadow/write 双模式） | 记忆质量验证 |
@@ -3668,7 +4153,7 @@ token 预算超限时自动截断。
 - P5 工具系统（Gate 权限控制）
 - P6 Session 管理（JSONL append-only）
 - P7 Session Compaction（异步后台压缩）
-- P8 Memory 系统（sql.js + LRU 缓存 + 启动检查）
+- P8 Memory 系统（better-sqlite3 + LRU 缓存 + 启动检查）
 - P9 Usage Ledger
 - P10 WebSocket 双向通信（含认证）
 - P13a 前端最小集（Provider 设置页面）
@@ -3690,7 +4175,7 @@ token 预算超限时自动截断。
 
 ### 29.1 当前状态盘点
 
-**已完成（P0-P4 等价交付）：**
+**已完成（P0-P4 SDK 集成等价交付）：**
 
 | 模块 | 交付物 | 测试 |
 |------|--------|------|
@@ -3703,6 +4188,18 @@ token 预算超限时自动截断。
 | 核心适配层 | StreamEmitter + ReasoningPipeline + PiAgUiAgent + SessionStore + Gate | 12 |
 | AG-UI 路由 | 12 个 REST 端点 + SSE 流式 + CopilotKit 弃用层 | 5 |
 | 启动逻辑 | 优雅关闭 + 端点日志 + web-search 扩展骨架 | - |
+
+**已完成（v1.1+ 扩展功能）：**
+
+| 模块 | 交付物 |
+|------|--------|
+| Plugin 系统 | 完整插件架构（PluginManager + PluginContext + Session 工厂） |
+| Subagent 协作 | AgentManager + 4 种 Team 策略 + 并发限流 |
+| Novel Plugin | 4 Agent 流水线 + 矩阵视图 + 画布 + 长期记忆（33 个迁移，50+ 路由） |
+| 前端完善 | i18n + Cron + Usage 面板 + 小说工作台 + 矩阵视图 + 画布 |
+| Per-Agent 温度 | NovelAgentConfigStore 薄封装 AgentManager |
+| 结构化记忆提取 | NovelMemoryGenerator 单次 LLM 调用替代工具循环 |
+| AG-UI 协议统一 | Novel 与 Chat 共用 parseSseStream + StreamEmitter |
 
 **已知遗留问题（不阻塞 Alpha，但需在 Beta 前修复）：**
 
@@ -3785,7 +4282,7 @@ token 预算超限时自动截断。
 
 | 任务 | 依赖 | 验证标准 | 状态 |
 |------|------|----------|------|
-| FactStore（sql.js + LRU 缓存 + 标签检索） | B1 | 结构化记忆可读写 | ✅ |
+| FactStore（better-sqlite3 + LRU 缓存 + 标签检索） | B1 | 结构化记忆可读写 | ✅ |
 | SessionSummary（LLM 会话摘要） | B1 | 会话压缩可用 | ✅ |
 | MemoryTicker（turn-based + 启动检查 + 崩溃恢复） | B1 | 记忆编译流水线运行 | ✅ |
 | Memory Reflection（shadow/write 双模式） | B1 | 记忆质量验证 | ✅ |
@@ -3856,13 +4353,17 @@ token 预算超限时自动截断。
 - P11 Plugin 系统 — ✅ 已完成（v1.1）
 - P12 Subagent 协作 — ✅ 已完成（v1.1）
 - P13b 前端完善（i18n + Cron + Usage 面板）— ✅ 已完成（v1.2）
+- Novel Plugin（4 Agent 流水线 + 矩阵视图 + 画布 + 长期记忆）— ✅ 已完成（v1.3）
+- Per-Agent 温度配置 — ✅ 已完成（v1.3）
+- 结构化记忆提取（NovelMemoryGenerator）— ✅ 已完成（v1.3）
+- AG-UI 协议统一（Novel 与 Chat 共用 parseSseStream）— ✅ 已完成（v1.3）
 
 ### 29.6 风险与缓解
 
 | 风险 | 概率 | 影响 | 缓解措施 |
 |------|------|------|----------|
 | Pi SDK API 与文档不符（L1） | 高 | 高 | 端到端启动验证时优先确认，必要时联系 SDK 作者 |
-| sql.js 在 Electron 中加载问题 | 中 | 中 | 预先做 spike，备选 better-sqlite3 |
+| better-sqlite3 原生模块编译问题 | 低 | 中 | pnpm onlyBuiltDependencies 白名单已配置 |
 | WebSocket 认证与 SSE 认证冲突 | 中 | 中 | 统一 Token 来源，upgrade 时复用 Bearer Token |
 | 前端 SSE 兼容性（Edge/Firefox） | 低 | 低 | 使用 EventSource polyfill |
 | Memory 编译失败影响对话 | 中 | 高 | Memory Reflection shadow 模式 + 失败降级 |
@@ -3903,8 +4404,8 @@ token 预算超限时自动截断。
 | 样式 | Tailwind CSS v4（CSS 变量驱动主题） | utility-first，与 shadcn/ui 同源 |
 | 组件库 | shadcn/ui + Radix UI | 可定制、a11y 内置、无运行时 license 风险 |
 | 图标 | Lucide React | tree-shakeable，与 shadcn/ui 默认搭配 |
-| 客户端状态 | Zustand 5 | §12 指定，轻量、无 Provider |
-| 服务端状态 | TanStack Query 5 | 已有，SSE/WS 数据缓存与同步 |
+| 客户端状态 | Zustand 5（+ persist 中间件） | 轻量、无 Provider，localStorage 持久化 |
+| 服务端状态 | TanStack Query 5 | SSE/WS 数据缓存与同步 |
 | 动画 | Framer Motion 11 | 声明式动画，layout 动画 |
 | Markdown | react-markdown + remark-gfm + rehype-highlight | Agent 输出渲染 |
 | 代码高亮 | Shiki | VS Code 级别，与后端同源 |
@@ -3912,9 +4413,13 @@ token 预算超限时自动截断。
 | 图表 | Recharts 2 | 用量面板折线/饼/柱状图 |
 | 虚拟列表 | @tanstack/react-virtual 3 | 会话列表/消息流长列表 |
 | 快捷键 | react-hotkeys-hook | 全局快捷键 |
-| 拖拽 | @dnd-kit/core | 会话排序、面板拖拽 |
+| 拖拽 | @dnd-kit/core 6.3 + @dnd-kit/utilities | 矩阵视图拖拽编排 |
+| 画布 | @xyflow/react 12.11（React Flow） | 小说关系图可视化 |
+| 编辑器 | @tiptap/react | 章节正文编辑 |
+| 路由 | 状态机式（本地 useState，非 react-router） | 4 个 AppView 切换，简单可控 |
 
 > **CopilotKit 决策**：v1.0 移除 CopilotKit，自建完整对话 UI。原因：CopilotKit Sidebar 无法满足工具卡/思考块/确认卡等复杂需求，自研 UI 更好对接 AG-UI 协议细粒度事件，减少依赖体积。
+> CopilotKit 路由保留为兼容层（`/copilotkit/*` 返回 410 Gone），引导迁移到 AG-UI。
 
 ### 30.2 信息架构与后端能力映射
 
@@ -3935,6 +4440,11 @@ token 预算超限时自动截断。
 | Cron | §24.8 CronScheduler | HTTP REST | v1.2 |
 | DevLog | §23.2 DevLog | WebSocket | P10 |
 | 通知 | §7.5 EventBus → WebSocket | WebSocket | P10 |
+| 小说创作流程 | §10.5 Novel Plugin | SSE (AG-UI) + HTTP REST | Novel Plugin |
+| 矩阵视图 | §10.5.4 矩阵视图 | HTTP REST + DnD | Novel Plugin |
+| 多 Agent 检查点 | §10.5.6 检查点机制 | SSE (CUSTOM) + HTTP REST | Novel Plugin |
+| 画布关系图 | §10.5 Novel Plugin | HTTP REST | Novel Plugin |
+| Agent 温度配置 | §10.5.7 温度配置 | HTTP REST | Novel Plugin |
 
 ### 30.3 前端阶段与后端阶段并行策略
 
@@ -3974,7 +4484,7 @@ token 预算超限时自动截断。
 | 自定义标题栏组件 | 可拖拽，最小/最大/关闭可用 | ✅ |
 | 三栏布局骨架 | 左/中/右栏可折叠 | ✅ |
 | 主题系统（Light/Dark/System） | 切换生效并持久化 | ✅ |
-| 路由骨架（react-router） | `/` 与 `/settings` 可切 | ✅ |
+| 路由骨架（状态机式 AppView） | home/chat/novel/settings 可切 | ✅ |
 | 移除 CopilotSidebar，自建空壳 | 编译通过 | ✅ |
 | 全局状态栏 | 显示占位状态 | ✅ |
 
@@ -4111,29 +4621,32 @@ token 预算超限时自动截断。
 
 ```
 apps/desktop/src/renderer/src/
+├── App.tsx                     # 状态机式路由（AppView，非 react-router）
+├── main.tsx                    # 入口
+├── api/                        # API 调用层（5 个）
+│   ├── agui-client.ts          # SSE 核心（parseSseStream 共用）
+│   ├── http-client.ts          # 通用 HTTP
+│   ├── novel-client.ts         # 小说业务 API
+│   └── novel-agent-config-client.ts
 ├── components/
-│   ├── ui/                    # shadcn/ui 基础组件（generated，约 20 个）
-│   ├── chat/                  # 对话专用（11 个）
-│   │   ├── chat-workspace.tsx
-│   │   ├── session-list.tsx
-│   │   ├── message-stream.tsx
-│   │   ├── message-bubble.tsx
-│   │   ├── thinking-block.tsx
-│   │   ├── tool-call-card.tsx
-│   │   ├── confirmation-card.tsx
-│   │   ├── input-area.tsx
-│   │   └── steer-indicator.tsx
-│   ├── settings/              # 设置专用（10 个）
-│   ├── overlays/              # 浮层（4 个）
-│   └── shared/                # 通用业务组件（6 个）
-├── hooks/                     # 自定义 hooks（6 个）
-├── stores/                    # Zustand stores（4 个）
-├── lib/                       # 工具函数（6 个）
-├── routes/                    # 路由（2 个）
-└── types/                     # 前端专用类型
+│   ├── ui/                     # shadcn/ui 基础组件
+│   ├── chat/                   # 对话组件（20+ 个）
+│   ├── novel/                  # 小说组件（含 matrix/ 和 nodes/ 子目录）
+│   ├── settings/               # 设置组件（7 节）
+│   ├── overlays/               # 浮层（5 个）
+│   ├── home/                   # 首页
+│   └── theme-provider.tsx
+├── hooks/                      # 自定义 hooks（6 个）
+├── stores/                     # Zustand stores（4 个 + index）
+├── lib/                        # 工具函数（utils.ts + novel-utils.ts）
+└── i18n/                       # 国际化（index.tsx + locales/）
 ```
 
-预估组件总数：**约 70 个文件**。
+**关键设计**：
+- **状态机式路由**（非 react-router）：4 个 `AppView`（home/chat/novel/settings）通过本地 `useState` 切换
+- **主导航栏始终可见**：RailButton 组件支持 `className` prop，设置按钮位于底部（`mt-auto`）
+- **Zustand 持久化 + TanStack Query 分层**：Query 负责 API 调用，成功后通过 store actions 同步进 Zustand
+- **chat 与 novel 共用 `parseSseStream`**：通过 `BaseEvent.type` 与 `CustomEvent.name` 区分语义
 
 ### 30.9 前后端契约对齐
 
@@ -4165,13 +4678,13 @@ import type {
 |------|----------|------|
 | Service Locator | Service Container | Fastify 插件即容器，`fastify.xxx` 按名访问 |
 | 工厂方法 | Pi Session | `createPiSession(deps)` + `createAgentSession()` 工厂 |
+| 工厂方法 | PluginContext | `createSession` / `createAgUiSession` 统一插件 Session 创建 |
 | 观察者 | EventBus | 进程内事件解耦，on/once/emit，WebSocket handler 订阅转发 |
 | 适配器 | StreamEmitter | Pi SDK 事件 → AG-UI 事件格式转换（参考 pi-agui 模板） |
 | 策略 | 权限模式 | Auto / Plan / Read-only 三种执行策略（beforeToolCall 钩子） |
-| 策略 | SearchRateLimiter | per-Provider 独立速率策略 |
+| 策略 | TeamManager | sequential / parallel / pipeline / coordinated 四种策略 |
 | 模板方法 | Prompt 拼装 | DefaultResourceLoader + systemPromptOverride |
 | 门面 | PiAgUiAgent | 对 Pi SDK AgentSession 的 AG-UI 适配门面 |
-| 代理 | CopilotKit 适配 | CopilotKit 请求代理到 PiAgUiAgent |
 | 扩展 | Extensions | Pi SDK Extensions 机制注册自定义工具 |
 | 迁移模式 | Migration 系统 | 版本化迁移表 + 增量执行 + 幂等 |
 | 策略 | CredentialBridge | Electron safeStorage 加密 + Pi SDK getApiKey 回调 |
@@ -4181,6 +4694,14 @@ import type {
 | 重试 | withRetry | Decorrelated Jitter，AppError.retryable 驱动 |
 | 证据 | EvidenceLedger | 任务完成验证 + Final Readiness Check |
 | 反思 | MemoryReflection | shadow/write 双模式验证记忆质量 |
+| 流水线 | NovelOrchestrator | Director → Writer → Reviewer → Memory 多 Agent 编排 |
+| 三层缓存 | NovelPromptBuilder | STATIC / SEMI / DYNAMIC 提示词分层，prefix cache 优化 |
+| 检查点 | ConfirmationManager | 统一确认机制（approve/reject/revise/rewrite） |
+| 薄封装 | NovelAgentConfigStore | AgentManager 薄封装，消除温度配置双轨制 |
+| 状态机 | use-novel-creation-flow | idle → directing → checkpoint → writing → reviewing → memory → completed |
+| rAF 批处理 | use-novel-creation-flow | 高频 SSE delta 合并到单帧 setState，降低 re-render 频率 |
+| 纯函数 | matrix-logic.ts | buildGroups/buildPool/computeCellSymbol，无副作用 |
+| 反转保护 | handleMoveEndpoint | start ≤ end、plant ≤ payoff clamp |
 
 ## 附录 B：参考项目对比
 

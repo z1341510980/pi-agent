@@ -30,7 +30,7 @@ interface ProxyConfig {
 
 // ── 常量 ──
 
-const proxyStorageKey = 'pi-agent.proxy'
+const proxyStorageKey = 'wenlang-agent.proxy'
 
 const defaultProxy: ProxyConfig = {
   mode: 'system',

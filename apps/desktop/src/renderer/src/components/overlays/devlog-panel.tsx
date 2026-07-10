@@ -70,7 +70,7 @@ export function DevLogPanel({
       {/* 底部抽屉 */}
       <div
         className={cn(
-          'flex flex-col border-t border-border bg-surface-1 transition-all duration-200',
+          'flex flex-col border-t border-border bg-surface-1 transition-[height] duration-200',
           isOpen ? 'h-48' : 'h-7'
         )}
       >
@@ -83,12 +83,12 @@ export function DevLogPanel({
             <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs font-medium">DevLog</span>
             {errorCount > 0 && (
-              <span className="rounded bg-destructive/20 px-1.5 py-0.5 text-[10px] font-bold text-destructive">
+              <span className="rounded bg-destructive/20 px-1.5 py-0.5 text-[10px] font-bold text-destructive tabular-nums">
                 {errorCount} 错误
               </span>
             )}
             {warnCount > 0 && (
-              <span className="rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-bold text-accent-foreground">
+              <span className="rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-bold text-accent-foreground tabular-nums">
                 {warnCount} 警告
               </span>
             )}
@@ -119,7 +119,7 @@ export function DevLogPanel({
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-[10px]"
+                  className="h-8 px-2 text-[10px]"
                   onClick={(e) => {
                     e.stopPropagation()
                     onClear()
@@ -130,7 +130,7 @@ export function DevLogPanel({
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 w-6 p-0"
+                  className="h-8 w-8 p-0"
                   onClick={(e) => {
                     e.stopPropagation()
                     setAutoScroll((v) => !v)
@@ -144,7 +144,7 @@ export function DevLogPanel({
             <Button
               variant="ghost"
               size="sm"
-              className="h-6 w-6 p-0"
+              className="h-8 w-8 p-0"
               onClick={(e) => {
                 e.stopPropagation()
                 onOpenChange(!isOpen)

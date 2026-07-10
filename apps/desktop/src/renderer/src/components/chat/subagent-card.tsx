@@ -1,4 +1,5 @@
 import { useState, type ReactElement } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { BotIcon, ChevronDownIcon, ChevronRightIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 
@@ -134,17 +135,28 @@ export function SubagentCard({
             className="text-accent hover:underline ml-auto flex items-center gap-0.5"
             onClick={() => setExpanded(!expanded)}
           >
-            {expanded ? (
-              <>
-                收起
-                <ChevronDownIcon className="size-3" />
-              </>
-            ) : (
-              <>
-                详情
-                <ChevronRightIcon className="size-3" />
-              </>
-            )}
+            <AnimatePresence initial={false} mode="popLayout">
+              <motion.span
+                key={expanded ? 'collapse' : 'expand'}
+                initial={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                exit={{ opacity: 0, scale: 0.25, filter: 'blur(4px)' }}
+                transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
+                className="flex items-center gap-0.5"
+              >
+                {expanded ? (
+                  <>
+                    收起
+                    <ChevronDownIcon className="size-3" />
+                  </>
+                ) : (
+                  <>
+                    详情
+                    <ChevronRightIcon className="size-3" />
+                  </>
+                )}
+              </motion.span>
+            </AnimatePresence>
           </button>
         )}
       </footer>

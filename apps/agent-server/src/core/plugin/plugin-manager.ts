@@ -14,10 +14,22 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import type Database from 'better-sqlite3'
 import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
+import type { PiSessionStore } from '../agent/session-store.js'
+import { withAgentConfig } from '../agent/pi-session.js'
+import { StreamEmitter } from '../agent/stream-emitter.js'
+import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
+import { runtimePerformance } from '../../config/performance.js'
+import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
+import type { AgentCallLogger } from '../agent/agent-call-logger.js'
+import type { TeamManager } from '../agent/team-manager.js'
+import type { ConfirmationManager } from '../tool/confirmation-manager.js'
+import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
 import type {
   Plugin,
   PluginContext,
@@ -25,26 +37,162 @@ import type {
   PluginFactory,
   PluginListItem,
   PluginManagerOptions,
+  PluginSessionHandle,
+  PluginSessionOptions,
+  AgUiSessionHandle,
   RouteDefinition,
   ToolDefinition,
   PanelDefinition,
   EventHandler,
+  MigrationDefinition,
 } from './plugin-types.js'
 
 /** npm 插件包名前缀 */
-const NPM_PLUGIN_PREFIX = 'pi-agent-plugin-'
+const NPM_PLUGIN_PREFIX = 'wenlang-agent-plugin-'
 
 export class PluginManager {
   private readonly entries = new Map<string, PluginEntry>()
   private readonly logger: FastifyBaseLogger
   private readonly eventBus: EventBus
   private readonly options: PluginManagerOptions
+  private readonly db: Database.Database
+  private readonly cwd: string
+  private readonly dataDir: string
   private initialized = false
+  /**
+   * Pi SessionStore（用于 createSession API）
+   *
+   * 通过 setSessionStore() 在 app.ts 启动后期注入，
+   * 因为 PluginManager 在 pluginLoaderPlugin 中创建（app.ts:73），
+   * 而 SessionStore 在其后创建（app.ts:85）。
+   */
+  private sessionStore?: PiSessionStore
+  /**
+   * AgentManager（由 subagentPlugin 提供）
+   *
+   * 在 pluginLoaderPlugin 中创建 PluginManager 之前 subagentPlugin 已注册，
+   * 因此可在 manager.start() 之前通过 setAgentManager 注入。
+   * 注入后插件 setup 可通过 context.subagentManager 注册 Agent。
+   */
+  private agentManager?: AgentManager
+  /**
+   * TeamManager（由 teamPlugin 提供）
+   *
+   * 同 AgentManager，teamPlugin 在 pluginLoaderPlugin 之前注册。
+   * 注入后插件 setup 可通过 context.teamManager 访问。
+   */
+  private teamManager?: TeamManager
+  /**
+   * ConfirmationManager（chat 底座共享）
+   *
+   * 由 app.ts 在 pluginLoaderPlugin 注册之前创建并 decorate 到 fastify 实例，
+   * plugin-loader 在 manager.start() 之前注入到 PluginManager，
+   * 插件 setup 可通过 context.confirmationManager 复用 chat 的确认/决策流程。
+   */
+  private confirmationManager?: ConfirmationManager
+  /**
+   * AgentCallLogger（由 subagentPlugin 提供，通用 Agent 调用日志记录器）
+   *
+   * 同 AgentManager，subagentPlugin 在 pluginLoaderPlugin 之前注册。
+   * 注入后插件 setup 可通过 context.agentCallLogger 记录 Agent 调用日志。
+   */
+  private agentCallLogger?: AgentCallLogger
+  /**
+   * ModelRegistry（用于 createSession 的 modelId 切换）
+   *
+   * 通过 setModelRegistry() 在 app.ts 启动后期注入，
+   * 与 SessionStore 同时期注入。
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private modelRegistry?: any
 
-  constructor(logger: FastifyBaseLogger, eventBus: EventBus, options: PluginManagerOptions = {}) {
+  constructor(
+    logger: FastifyBaseLogger,
+    eventBus: EventBus,
+    db: Database.Database,
+    cwd: string,
+    dataDir: string,
+    options: PluginManagerOptions = {},
+  ) {
     this.logger = logger
     this.eventBus = eventBus
+    this.db = db
+    this.cwd = cwd
+    this.dataDir = dataDir
     this.options = options
+  }
+
+  /**
+   * 注入 PiSessionStore（在 SessionStore 创建后调用）
+   *
+   * PluginManager 在 pluginLoaderPlugin 注册时创建，但 SessionStore
+   * 在其后才创建。因此通过 setter 延迟注入。
+   * createSession 调用时（请求期）SessionStore 必然已注入。
+   */
+  setSessionStore(store: PiSessionStore): void {
+    this.sessionStore = store
+    this.logger.info('已注入 PiSessionStore，插件可使用 createSession API')
+  }
+
+  /**
+   * 注入 ModelRegistry（在 SessionStore 创建后调用）
+   *
+   * 用于 createSession 的 modelId 切换：
+   * 通过 modelRegistry.find() 查找模型后调用 session.setModel()。
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setModelRegistry(registry: any): void {
+    this.modelRegistry = registry
+    this.logger.info('已注入 ModelRegistry，插件 createSession 支持 modelId 切换')
+  }
+
+  /**
+   * 注入 AgentManager（在 manager.start() 之前调用）
+   *
+   * subagentPlugin 在 pluginLoaderPlugin 之前注册，app.subagentManager
+   * 在 pluginLoaderPlugin 执行时已可用。注入后插件 setup 可通过
+   * context.subagentManager 访问。
+   */
+  setAgentManager(manager: AgentManager): void {
+    this.agentManager = manager
+    this.logger.debug('已注入 AgentManager，插件可通过 context.subagentManager 访问')
+  }
+
+  /**
+   * 注入 TeamManager（在 manager.start() 之前调用）
+   *
+   * teamPlugin 在 pluginLoaderPlugin 之前注册，app.teamManager
+   * 在 pluginLoaderPlugin 执行时已可用。注入后插件 setup 可通过
+   * context.teamManager 访问。
+   */
+  setTeamManager(manager: TeamManager): void {
+    this.teamManager = manager
+    this.logger.debug('已注入 TeamManager，插件可通过 context.teamManager 访问')
+  }
+
+  /**
+   * 注入 ConfirmationManager（在 manager.start() 之前调用）
+   *
+   * app.ts 在 pluginLoaderPlugin 注册之前创建 ConfirmationManager 并 decorate，
+   * plugin-loader 在 manager.start() 之前通过此方法注入。
+   * 注入后插件 setup 可通过 context.confirmationManager 复用 chat 的确认/决策流程
+   * （超时机制 + pending 列表 + 'confirmation:request' / 'confirmation:resolved' 事件）。
+   */
+  setConfirmationManager(manager: ConfirmationManager): void {
+    this.confirmationManager = manager
+    this.logger.debug('已注入 ConfirmationManager，插件可通过 context.confirmationManager 访问')
+  }
+
+  /**
+   * 注入 AgentCallLogger（在 manager.start() 之前调用）
+   *
+   * subagentPlugin 在 pluginLoaderPlugin 之前注册，app.agentCallLogger
+   * 在 pluginLoaderPlugin 执行时已可用。注入后插件 setup 可通过
+   * context.agentCallLogger 记录 Agent 调用日志（含领域扩展字段）。
+   */
+  setAgentCallLogger(logger: AgentCallLogger): void {
+    this.agentCallLogger = logger
+    this.logger.debug('已注入 AgentCallLogger，插件可通过 context.agentCallLogger 访问')
   }
 
   /**
@@ -186,6 +334,9 @@ export class PluginManager {
       routeCount: entry.routes.length,
       panelCount: entry.panels.length,
       eventHandlerCount: entry.eventHandlers.length,
+      migrationCount: entry.migrations.length,
+      sessionToolCount: entry.sessionTools.length,
+      serviceCount: entry.services.length,
     }))
   }
 
@@ -227,6 +378,68 @@ export class PluginManager {
       }
     }
     return panels
+  }
+
+  /** 获取所有已启用插件的数据库迁移（按 id 排序） */
+  getAllMigrations(): MigrationDefinition[] {
+    const all: MigrationDefinition[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        all.push(...entry.migrations)
+      }
+    }
+    return all.sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  /**
+   * 获取所有已加载插件的数据库迁移（按 id 排序）
+   *
+   * 与 getAllMigrations 的区别：不要求插件为 enabled 状态。
+   * 用于在 start() 之前执行静态迁移，确保 setup 时表已存在。
+   */
+  getLoadedMigrations(): MigrationDefinition[] {
+    const all: MigrationDefinition[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'loaded' || entry.status === 'enabled') {
+        all.push(...entry.migrations)
+      }
+    }
+    return all.sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  /** 获取所有已启用插件注入的 Pi Session 工具 */
+  getAllSessionTools(): PiToolDefinition[] {
+    const all: PiToolDefinition[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        all.push(...entry.sessionTools)
+      }
+    }
+    return all
+  }
+
+  /** 获取所有已启用插件注册的 Fastify 服务 */
+  getAllServices(): Array<{ pluginName: string; name: string; service: unknown }> {
+    const all: Array<{ pluginName: string; name: string; service: unknown }> = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        for (const { name, service } of entry.services) {
+          all.push({ pluginName: entry.manifest.name, name, service })
+        }
+      }
+    }
+    return all
+  }
+
+  /** 获取所有已启用插件注册的提示词模板目录 */
+  getAllPromptTemplateDirs(): string[] {
+    const all: string[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.status === 'enabled') {
+        all.push(...entry.promptTemplateDirs)
+      }
+    }
+    return all
   }
 
   // ============ 内部实现 ============
@@ -402,6 +615,11 @@ export class PluginManager {
         routes: [],
         panels: [],
         eventHandlers: [],
+        // 收集插件静态声明的迁移（在 setup 之前执行，确保 setup 时表已存在）
+        migrations: [...(plugin.migrations ?? [])],
+        sessionTools: [],
+        services: [],
+        promptTemplateDirs: [],
       }
       this.entries.set(manifest.name, entry)
       this.logger.info(
@@ -421,10 +639,15 @@ export class PluginManager {
 
     try {
       // 清空之前的注册项（防止重复启动累积）
+      // 注意：migrations 保留静态声明的部分，setup 中通过 registerMigration 注册的会在 setup 时追加
       entry.tools = []
       entry.routes = []
       entry.panels = []
       entry.eventHandlers = []
+      entry.migrations = [...(entry.plugin.migrations ?? [])]
+      entry.sessionTools = []
+      entry.services = []
+      entry.promptTemplateDirs = []
 
       const context = this.createPluginContext(entry)
       await entry.plugin.setup(context)
@@ -473,6 +696,10 @@ export class PluginManager {
     entry.routes = []
     entry.panels = []
     entry.eventHandlers = []
+    entry.migrations = []
+    entry.sessionTools = []
+    entry.services = []
+    entry.promptTemplateDirs = []
     entry.status = 'disabled'
 
     this.logger.info({ plugin: name }, '插件已禁用')
@@ -486,6 +713,13 @@ export class PluginManager {
     return {
       pluginName,
       logger,
+      db: this.db,
+      cwd: this.cwd,
+      dataDir: this.dataDir,
+      subagentManager: this.agentManager,
+      teamManager: this.teamManager,
+      confirmationManager: this.confirmationManager!,
+      agentCallLogger: this.agentCallLogger,
       registerTool: (tool: ToolDefinition) => {
         entry.tools.push(tool)
         logger.debug({ tool: tool.name }, '工具已注册')
@@ -503,6 +737,462 @@ export class PluginManager {
         entry.panels.push(panel)
         logger.debug({ panel: panel.id }, 'UI 面板已注册')
       },
+      registerMigration: (migration: MigrationDefinition) => {
+        entry.migrations.push(migration)
+        logger.debug({ migrationId: migration.id }, '已注册数据库迁移')
+      },
+      registerSessionTools: (tools: PiToolDefinition[]) => {
+        entry.sessionTools.push(...tools)
+        logger.debug({ count: tools.length }, '已注册 Session 工具')
+      },
+      registerService: (name: string, service: unknown) => {
+        entry.services.push({ name, service })
+        logger.debug({ serviceName: name }, '已注册 Fastify 服务')
+      },
+      registerPromptTemplates: (dir: string) => {
+        entry.promptTemplateDirs.push(dir)
+        logger.debug({ dir }, '已注册提示词模板目录')
+      },
+      createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
+        if (!this.sessionStore) {
+          throw new Error('SessionStore 未注入，无法创建 Pi Session')
+        }
+
+        const threadId = `plugin:${pluginName}:${randomUUID()}`
+
+        // 构建 AgentConfig，通过 withAgentConfig 注入 systemPrompt 到 system role。
+        // createPiSession 内的 buildSystemPrompt 会从 agentConfigStorage 读取
+        // systemPrompt 并拼入系统提示词的 `## Agent 自定义指令` 部分
+        // （参考 core/agent/pi-session.ts），不再拼接到 userMessage 头部，
+        // 从而保持 userMessage 纯净，不破坏 prompt cache 前缀匹配。
+        //
+        // ⚠️ tools 白名单透传：options.tools 是 PiToolDefinition[]（含 execute 实现），
+        // 但 AgentConfig.tools 是 string[]（工具名白名单）。
+        // pi-session.ts 会把全部 pluginSessionTools 注入 customTools，
+        // 然后按 AgentConfig.tools 做白名单过滤（pi-session.ts line 145）。
+        //
+        // 三种语义：
+        // - options.tools === undefined → 不透传 → AgentConfig.tools undefined → 不过滤（默认 Agent）
+        // - options.tools === [] → 透传 tools: [] → 清空 customTools（Writer/Reviewer 无工具场景）
+        // - options.tools === [...] → 透传 tools: [...] → 白名单过滤
+        //
+        // 之前用 `length > 0` 判断导致 tools=[] 被误解为"不过滤"，customTools 保留全部。
+        // 现在 Array.isArray 区分 undefined 和 []：[] 也透传，pi-session 看到 [] 后清空。
+        const agentConfig: AgentConfig = {
+          id: `plugin-session-${randomUUID()}`,
+          name: `${pluginName} session`,
+          systemPrompt: options.systemPrompt,
+          ...(options.modelId ? { model: options.modelId } : {}),
+          ...(Array.isArray(options.tools)
+            ? { tools: options.tools.map(t => t.name) }
+            : {}),
+        }
+
+        // 在 withAgentConfig 上下文中创建 session：
+        // buildSystemPrompt 在 resourceLoader.reload() 时被调用，因此
+        // 必须在 session 创建期间持有 agentConfigStorage 上下文。
+        const threadSession = await withAgentConfig(agentConfig, async () => {
+          return await this.sessionStore!.getOrCreate(threadId)
+        })
+
+        // 注入 SEMI 层前缀消息（章节上下文）：作为独立首条 user 消息加入对话历史，
+        // 不触发 LLM 调用。这样 LLM 收到的对话为 system → prefixUserMessage → userMessage，
+        // prefixUserMessage 跨 Agent 稳定，可被 prompt cache 命中。
+        //
+        // 支持 string | string[]：数组时每条作为独立 user 消息注入，各自打 cache_control
+        // breakpoint。用于"共享前缀 + Agent 专属后缀"分离，最大化跨 Agent 缓存命中。
+        if (options.prefixUserMessage) {
+          const piSession = threadSession.session as {
+            agent?: { state?: { messages?: unknown[] } }
+          }
+          if (piSession.agent?.state) {
+            const prefixes = Array.isArray(options.prefixUserMessage)
+              ? options.prefixUserMessage
+              : [options.prefixUserMessage]
+            const now = Date.now()
+            const prefixMessages = prefixes.map((content, i) => ({
+              role: 'user',
+              content,
+              timestamp: now + i,
+            }))
+            const existing = piSession.agent.state.messages ?? []
+            piSession.agent.state.messages = [...existing, ...prefixMessages]
+            logger.debug(
+              { threadId, prefixCount: prefixMessages.length, prefixLengths: prefixes.map(p => p.length) },
+              '已注入 SEMI 层前缀消息（每条独立打 cache_control breakpoint）',
+            )
+          } else {
+            logger.warn(
+              { threadId },
+              '无法注入前缀消息：session.agent.state 不可用，将回退到拼接模式',
+            )
+          }
+        }
+
+        // 收集 assistant 文本（事件格式参考 core/agent/stream-emitter.ts）
+        let completeText = ''
+        // Pi SDK 在 LLM 调用失败时不抛异常，而是产生 stopReason="error" 的 message_end 事件。
+        // 这里捕获错误信息，供 prompt/promptStream 在调用后检查并抛出，避免"空响应+success"的假象。
+        let lastErrorMessage = ''
+        const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+          if (event.type === 'message_end') {
+            const message = event.message as Record<string, unknown> | undefined
+            if (message && message.role === 'assistant' && message.stopReason === 'error') {
+              lastErrorMessage = (message.errorMessage as string) ?? 'Unknown LLM error'
+              logger.error(
+                { threadId, errorMessage: lastErrorMessage, provider: message.provider, model: message.model },
+                'Pi Session LLM 调用失败（message_end stopReason=error）',
+              )
+            }
+            return
+          }
+          if (event.type !== 'message_update') return
+          const assistantMessageEvent = event.assistantMessageEvent as
+            | Record<string, unknown>
+            | undefined
+          if (!assistantMessageEvent) return
+          if (assistantMessageEvent.type !== 'text_delta') return
+          const delta = (assistantMessageEvent.delta as string) ?? ''
+          completeText += delta
+        })
+
+        // 模型切换（如指定）+ 读取模型 maxTokens 配置
+        let modelMaxTokens: number | undefined
+        if (options.modelId) {
+          if (this.modelRegistry) {
+            const targetModel = this.modelRegistry.find(
+              options.modelId.provider,
+              options.modelId.modelId,
+            )
+            if (targetModel) {
+              await threadSession.session.setModel(targetModel)
+              modelMaxTokens = targetModel.maxTokens
+            } else {
+              logger.warn(
+                { provider: options.modelId.provider, modelId: options.modelId.modelId },
+                'modelRegistry 未找到指定模型，使用默认模型',
+              )
+            }
+          } else {
+            logger.warn(
+              'ModelRegistry 未注入，无法切换模型，使用默认模型',
+            )
+          }
+        } else if (this.modelRegistry?.getAll) {
+          // 未指定 modelId 时，尝试从注册表第一个模型读取 maxTokens
+          const allModels = this.modelRegistry.getAll() as Array<{ maxTokens?: number }>
+          if (allModels.length > 0 && allModels[0].maxTokens) {
+            modelMaxTokens = allModels[0].maxTokens
+          }
+        }
+
+        // 注入生成参数到 provider payload（temperature / max_tokens / response_format / cache_control）
+        // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
+        const effectiveMaxTokens = options.maxTokens ?? modelMaxTokens
+        const hasInjectables =
+          options.temperature !== undefined ||
+          effectiveMaxTokens !== undefined ||
+          options.responseFormat !== undefined ||
+          options.prefixUserMessage !== undefined
+
+        if (hasInjectables) {
+          const inject: Record<string, unknown> = {}
+          if (options.temperature !== undefined) inject.temperature = options.temperature
+          if (effectiveMaxTokens !== undefined) inject.max_tokens = effectiveMaxTokens
+          if (options.responseFormat === 'json') {
+            inject.response_format = { type: 'json_object' }
+            // 实体规划/生成阶段只需纯 JSON 输出，不需要工具调用。
+            // 禁用工具可避免某些 OpenAI 兼容网关在 response_format=json 时
+            // 仍 emit tool_calls 导致 messages 历史不一致
+            // （LLM 网关报 400 "tool_calls must be followed by tool messages"）。
+            //
+            // ⚠️ 仅限 responseFormat='json' 场景：
+            //   - planEntitiesFromOutline（实体规划）
+            //   - generate()（5 类实体生成）
+            //   - character-generator / memory-generator 的纯 JSON 生成
+            // Writer/Reviewer/Memory 等 create-flow Agent 走 createAgUiSession，
+            // 不传 responseFormat，因此仍保留全部工具能力。
+            inject.tool_choice = 'none'
+          }
+
+          const piSession = threadSession.session as {
+            agent?: { onPayload?: (payload: unknown) => unknown }
+          }
+          if (piSession.agent) {
+            // 当存在 SEMI 层 prefixUserMessage 时，在 system 与每条 prefix user 消息末尾
+            // 显式打 cache_control breakpoint，提升 provider 端 prompt cache 命中率。
+            //
+            // "共享前缀 + Agent 专属后缀"分离策略：
+            // - shared 消息末尾 breakpoint → 缓存 [system, shared]，跨 Agent 命中
+            // - suffix 消息末尾 breakpoint → 缓存 [system, shared, suffix]，同 Agent 重试命中
+            //
+            // Anthropic 限制最多 4 个 breakpoint（含 system 的 1 个），因此 prefix 最多打 3 个。
+            // 兼容多种 provider payload 结构（Anthropic / OpenAI 兼容）：
+            // - Anthropic: system 为 string 或 content blocks 数组；messages 是数组
+            // - OpenAI 兼容: system 通常在 messages[0]，无需显式标记（自动缓存）
+            // 仅在检测到可识别结构时打标，未识别结构保持原样（不破坏现有逻辑）。
+            const applyCacheBreakpoints = (rawPayload: unknown): unknown => {
+              if (!options.prefixUserMessage) return rawPayload
+              const payload = rawPayload as Record<string, unknown>
+              const messages = Array.isArray(payload.messages) ? [...payload.messages] : null
+
+              // 1) 处理 system 字段（Anthropic 风格）：在 system 末尾打 breakpoint
+              if (typeof payload.system === 'string' && payload.system.length > 0) {
+                payload.system = [{
+                  type: 'text',
+                  text: payload.system,
+                  cache_control: { type: 'ephemeral' },
+                }]
+              } else if (Array.isArray(payload.system) && payload.system.length > 0) {
+                const last = payload.system[payload.system.length - 1] as Record<string, unknown>
+                if (last && typeof last === 'object' && !last.cache_control) {
+                  payload.system = [...payload.system.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+                }
+              }
+
+              // 2) 处理 messages 数组：给每条 prefix user 消息的最后一个 content block 打 breakpoint
+              //    prefixUserMessage 可能是 string（1条）或 string[]（多条）。
+              //    prefix 消息在 createSession 中已作为首 N 条 user 消息注入到 messages 数组前部。
+              //    每条 prefix 末尾打 breakpoint，使得：
+              //    - shared 部分末尾 breakpoint → [system, shared] 跨 Agent 命中缓存
+              //    - suffix 部分末尾 breakpoint → [system, shared, suffix] 同 Agent 重试命中
+              //    Anthropic 限制最多 4 个 breakpoint（含 system 的 1 个），prefix 最多打 3 个。
+              if (messages && messages.length > 0) {
+                const prefixes = Array.isArray(options.prefixUserMessage)
+                  ? options.prefixUserMessage
+                  : [options.prefixUserMessage]
+                // 最多给前 3 条 prefix 消息打 breakpoint（加上 system 共 4 个，不超 Anthropic 限制）
+                const maxPrefixBreakpoints = 3
+                const prefixCount = Math.min(prefixes.length, maxPrefixBreakpoints, messages.length)
+                let markedAny = false
+
+                for (let i = 0; i < prefixCount; i++) {
+                  const msg = messages[i] as Record<string, unknown>
+                  if (!msg || msg.role !== 'user') break
+
+                  const content = msg.content
+                  if (typeof content === 'string') {
+                    messages[i] = {
+                      ...msg,
+                      content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }],
+                    }
+                    markedAny = true
+                  } else if (Array.isArray(content) && content.length > 0) {
+                    const lastBlock = content[content.length - 1] as Record<string, unknown>
+                    if (lastBlock && typeof lastBlock === 'object' && !lastBlock.cache_control) {
+                      messages[i] = {
+                        ...msg,
+                        content: [...content.slice(0, -1), { ...lastBlock, cache_control: { type: 'ephemeral' } }],
+                      }
+                      markedAny = true
+                    }
+                  }
+                }
+
+                if (markedAny) {
+                  payload.messages = messages
+                }
+              }
+
+              return payload
+            }
+
+            const prevOnPayload = piSession.agent.onPayload
+            // 必须使用 async/await：Pi SDK 默认的 onPayload 是 async 函数，
+            // 返回 Promise<payload>。若不 await，后续 spread Promise 会得到空对象，
+            // 导致 messages 字段丢失，LLM 网关返回 400 "missing field 'messages'"。
+            piSession.agent.onPayload = async (payload: unknown) => {
+              let next = prevOnPayload ? await prevOnPayload(payload) : payload
+              next = applyCacheBreakpoints(next)
+              if (Object.keys(inject).length > 0) {
+                next = { ...(next as Record<string, unknown>), ...inject }
+              }
+              return next
+            }
+            logger.debug(
+              { threadId, ...inject, hasCacheBreakpoints: !!options.prefixUserMessage },
+              '已注入生成参数到 Pi Session（含 cache_control breakpoint）',
+            )
+          } else {
+            logger.warn({ threadId, ...inject }, 'session.agent 不可用，无法注入生成参数')
+          }
+        }
+
+        // 中止信号转发
+        if (options.signal) {
+          options.signal.addEventListener(
+            'abort',
+            () => {
+              try {
+                threadSession.session.abort()
+              } catch (err) {
+                logger.warn({ err }, '中止 Pi Session 失败')
+              }
+            },
+            { once: true },
+          )
+        }
+
+        return {
+          prompt: async (): Promise<string> => {
+            completeText = '' // 重置
+            lastErrorMessage = '' // 重置
+            // 超时保护：防止 LLM 调用永不返回导致整个流程卡死。
+            // 优先用调用方传入的 timeoutMs，回退到 runtimePerformance.llm.timeoutMs
+            // （默认 300s，可通过 PI_LLM_TIMEOUT_MS 调整）。
+            const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
+            let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              timeoutTimer = setTimeout(
+                () => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)),
+                timeoutMs,
+              )
+            })
+            try {
+              await withAgentConfig(agentConfig, async () => {
+                await Promise.race([
+                  threadSession.session.prompt(options.userMessage),
+                  timeoutPromise,
+                ])
+              })
+            } finally {
+              // 必须清理 timer：否则即使 prompt 正常返回，timer 句柄仍会存活到超时
+              // 时间结束才被 GC，长生命周期下会累积大量 pending timer。
+              if (timeoutTimer) clearTimeout(timeoutTimer)
+            }
+            // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
+            if (lastErrorMessage) {
+              throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+            }
+            return completeText
+          },
+          promptStream: async (onDelta: (delta: string) => void): Promise<string> => {
+            completeText = '' // 重置
+            lastErrorMessage = '' // 重置
+            // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。
+            const streamUnsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
+              if (event.type === 'message_end') {
+                const message = event.message as Record<string, unknown> | undefined
+                if (message && message.role === 'assistant' && message.stopReason === 'error') {
+                  lastErrorMessage = (message.errorMessage as string) ?? 'Unknown LLM error'
+                }
+                return
+              }
+              if (event.type !== 'message_update') return
+              const assistantMessageEvent = event.assistantMessageEvent as
+                | Record<string, unknown>
+                | undefined
+              if (!assistantMessageEvent) return
+              if (assistantMessageEvent.type !== 'text_delta') return
+              const delta = (assistantMessageEvent.delta as string) ?? ''
+              if (delta) onDelta(delta)
+            })
+            try {
+              // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
+              // 与 prompt 方法一致，从 runtimePerformance 读取默认值（300s），
+              // 避免流式调用超时比非流式短导致长输出被误杀
+              const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
+              let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                timeoutTimer = setTimeout(
+                  () => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)),
+                  timeoutMs,
+                )
+              })
+              try {
+                await withAgentConfig(agentConfig, async () => {
+                  await Promise.race([
+                    threadSession.session.prompt(options.userMessage),
+                    timeoutPromise,
+                  ])
+                })
+              } finally {
+                // 必须清理 timer：streamUnsubscribe 只取消事件订阅，
+                // 不清理 timer 会导致句柄存活到超时时间结束才被 GC
+                if (timeoutTimer) clearTimeout(timeoutTimer)
+              }
+              // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
+              if (lastErrorMessage) {
+                throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+              }
+              return completeText
+            } finally {
+              streamUnsubscribe()
+            }
+          },
+          subscribe: (handler: (event: Record<string, unknown>) => void): (() => void) => {
+            return threadSession.session.subscribe(handler)
+          },
+          abort: () => {
+            try {
+              threadSession.session.abort()
+            } catch (err) {
+              logger.warn({ err }, '中止 Pi Session 失败')
+            }
+          },
+          dispose: () => {
+            // 取消订阅；PiSessionStore 自带 LRU 淘汰，无需显式 delete
+            try {
+              unsubscribe()
+            } catch (err) {
+              logger.warn({ err }, '取消订阅 Pi Session 事件失败')
+            }
+          },
+        }
+      },
+
+      /**
+       * 创建 AG-UI Session：封装 StreamEmitter + ReasoningPipeline + 订阅连接。
+       *
+       * 插件不再需要自己 new 这些基础设施层实例，只负责编排逻辑。
+       * 工厂内部：
+       * 1. createSession 创建 Pi Session
+       * 2. 生成 messageId
+       * 3. new ReasoningPipeline + new StreamEmitter
+       * 4. session.subscribe(streamEmitter.handleSessionEvent)
+       */
+      async createAgUiSession(
+        agUiOptions: PluginSessionOptions & {
+          emit: import('@repo/protocol/events').AgUiEventSink
+          emitRaw?: boolean
+        },
+      ): Promise<AgUiSessionHandle> {
+        // onFirstText 在此解构后不传入 createSession（createSession 不识别该字段）
+        const { emit, emitRaw = false, onFirstText, ...sessionOptions } = agUiOptions
+        const session = await this.createSession(sessionOptions)
+        const messageId = randomUUID()
+        const reasoningPipeline = new ReasoningPipeline(emit, messageId)
+        const streamEmitter = new StreamEmitter(emit, messageId, reasoningPipeline, { emitRaw })
+
+        // 首 token 检测：供编排层通知前端"开始生成"（只触发一次）
+        // 与 StreamEmitter 的事件处理共享同一次订阅，确保时序一致
+        let firstTextFired = false
+        const unsubscribe = session.subscribe((event) => {
+          streamEmitter.handleSessionEvent(event)
+          // 检测首段 text_delta，触发 onFirstText 回调（只触发一次）
+          if (
+            !firstTextFired
+            && onFirstText
+            && event.type === 'message_update'
+            && (event as Record<string, unknown>).assistantMessageEvent
+            && ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>).type === 'text_delta'
+            && ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>).delta
+          ) {
+            firstTextFired = true
+            try { onFirstText() } catch { /* 忽略回调错误，避免影响事件流 */ }
+          }
+        })
+        return {
+          session,
+          streamEmitter,
+          reasoningPipeline,
+          messageId,
+          dispose(): void {
+            try { unsubscribe() } catch { /* 忽略 */ }
+            try { session.dispose() } catch { /* 忽略 */ }
+          },
+        }
+      },
     }
   }
 }
@@ -514,6 +1204,9 @@ export type {
   PluginEntry,
   PluginListItem,
   PluginManagerOptions,
+  PluginSessionHandle,
+  PluginSessionOptions,
+  AgUiSessionHandle,
   ToolDefinition,
   RouteDefinition,
   PanelDefinition,

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { atomicWriteSync } from '../utils/safe-fs.js'
 
-const testDir = join(tmpdir(), 'pi-agent-test-safe-fs')
+const testDir = join(tmpdir(), 'wenlang-agent-test-safe-fs')
 
 describe('atomicWriteSync', () => {
   beforeEach(() => {

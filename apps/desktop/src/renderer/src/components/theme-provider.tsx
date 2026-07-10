@@ -17,7 +17,7 @@ const ThemeProviderContext = createContext<ThemeProviderState>({
   setTheme: () => {},
 })
 
-const STORAGE_KEY = 'pi-agent.theme'
+const STORAGE_KEY = 'wenlang-agent.theme'
 
 // ── Provider ──
 

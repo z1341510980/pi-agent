@@ -5,14 +5,14 @@ describe('安全基线', () => {
   let app: Awaited<ReturnType<typeof createApp>>
 
   beforeAll(async () => {
-    process.env.PI_AGENT_AUTH_TOKEN = 'test-token-123'
+    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     app = await createApp()
     await app.ready()
   })
 
   afterAll(async () => {
     await app.close()
-    delete process.env.PI_AGENT_AUTH_TOKEN
+    delete process.env.WENLANG_AGENT_AUTH_TOKEN
   })
 
   it('非白名单来源被 CORS 拒绝', async () => {
