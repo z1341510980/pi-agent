@@ -137,8 +137,13 @@ export class TeamDiscussionEngine {
             rounds++
 
             if (decision.type === 'converge' && decision.scope === 'scene') {
-              const sceneContent = await this.weaveScene(decision.agentId, history, scene, members, options)
-              sceneContents.push(sceneContent)
+              try {
+                const sceneContent = await this.weaveScene(decision.agentId, history, scene, members, options)
+                sceneContents.push(sceneContent)
+              } catch (err) {
+                this.context.logger.warn({ err, sceneId: scene.sceneId }, 'weaveScene 失败，记录空片段')
+                sceneContents.push(`[场景 ${scene.title} 编织失败]`)
+              }
               sceneDone = true
             } else if (decision.type === 'next_scene') {
               sceneDone = true
@@ -147,13 +152,34 @@ export class TeamDiscussionEngine {
               if (noProgressRounds >= DISCUSSION_LIMITS.MAX_OBSERVE_ROUNDS) {
                 const writer = members.find(m => m.canConverge)
                 if (writer) {
-                  const sceneContent = await this.weaveScene(writer.id, history, scene, members, options)
-                  sceneContents.push(sceneContent)
+                  try {
+                    const sceneContent = await this.weaveScene(writer.id, history, scene, members, options)
+                    sceneContents.push(sceneContent)
+                  } catch (err) {
+                    this.context.logger.warn({ err, sceneId: scene.sceneId }, 'weaveScene 失败，记录空片段')
+                    sceneContents.push(`[场景 ${scene.title} 编织失败]`)
+                  }
                   sceneDone = true
                 }
               }
             } else {
               noProgressRounds = 0
+            }
+          }
+
+          // while 循环退出后，检查是否超限退出
+          if (!sceneDone) {
+            // 超限兜底：强制 weaveScene
+            const writer = members.find(m => m.canConverge)
+            const fallbackWriterId = writer?.id ?? (chapterConvergerId ?? members[0]?.id)
+            if (fallbackWriterId) {
+              try {
+                const sceneContent = await this.weaveScene(fallbackWriterId, history, scene, members, options)
+                sceneContents.push(sceneContent)
+              } catch (err) {
+                this.context.logger.warn({ err, sceneId: scene.sceneId }, '场景超限兜底 weaveScene 失败')
+                sceneContents.push(`[场景 ${scene.title} 因轮数超限未能产出正文]`)
+              }
             }
           }
         }
@@ -356,7 +382,7 @@ ${combined}
 
   /** 解析 Director 输出为场景列表 */
   private parseScenes(history: DiscussionMessage[], members: DiscussionMember[]): SceneDefinition[] {
-    const directorMsg = [...history].reverse().find(m => m.type === 'member' && m.fromId.startsWith('novel-'))
+    const directorMsg = [...history].reverse().find(m => m.type === 'member')
     if (!directorMsg) return []
 
     const nameToId = new Map<string, string>()

@@ -158,4 +158,51 @@ describe('TeamDiscussionEngine', () => {
     const result = await engine.run(goal, members, makeOptions())
     expect(result.transcript.some(m => m.type === 'error')).toBe(true)
   })
+
+  it('场景循环：Director 拆场 → 角色演出 → Writer 整理', async () => {
+    const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-1', name: '赵岩', type: 'character' }),
+    ]
+    // Director 输出含场景拆分
+    const directorOutput = `### 场景 1：客厅对峙
+- 地点：客厅
+- 时间：傍晚
+- 在场角色：赵岩
+- 冲突：父子冲突
+- 目标：展现对立`
+    // mock createAgUiSession 第一次返回 directorOutput，之后返回普通内容
+    let callCount = 0
+    const ctx = {
+      createAgUiSession: vi.fn().mockImplementation(async () => {
+        callCount++
+        return {
+          session: { prompt: vi.fn().mockResolvedValue(callCount === 1 ? directorOutput : '成员发言') },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: 'msg-test',
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    // Moderator 决策序列：invite director → converge(chapter) → (场景1) invite char-1 → converge(scene) → converge(chapter)
+    const moderatorDecisions: ModeratorDecision[] = [
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      { type: 'converge', agentId: 'novel-director', scope: 'chapter', reason: '规划完成' },
+      // Phase 2 场景 1
+      { type: 'invite', agentId: 'char-1', prompt: '演出', reason: '角色发言' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'scene', reason: '场景演完' },
+      // Phase 3
+      { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '全章完成' },
+    ]
+    const moderator = makeMockModerator(moderatorDecisions)
+    const channel = new AgentChannel()
+    const engine = new TeamDiscussionEngine(moderator, channel, ctx as any)
+
+    const result = await engine.run(goal, members, makeOptions())
+    expect(result.status).toBe('completed')
+    expect(result.scenes.length).toBe(1)
+    expect(result.scenes[0].title).toBe('客厅对峙')
+  })
 })
