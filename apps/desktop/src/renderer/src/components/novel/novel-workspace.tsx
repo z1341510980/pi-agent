@@ -175,6 +175,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 创作流程
   const creationFlow = useNovelCreationFlow()
   const [creationChapterNumber, setCreationChapterNumber] = useState<number | undefined>(undefined)
+  // 创作子模式切换：编排模式（create-flow）/ 群聊模式（create-discussion）
+  const [creationMode2, setCreationMode2] = useState<'workflow' | 'discussion'>('workflow')
   // 互斥锁：防止 header 按钮快速双击导致 creationMode 标记与流程实际启动状态错位
   // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
   const startCreationLockRef = useRef(false)
@@ -469,7 +471,13 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       setCreationChapterNumber(playhead)
       if (mode === 'manual') {
         // 模式1：从矩阵本章列读取已编排实体
-        await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities: collectArrangedEntities(playhead) })
+        // 根据 creationMode2 选择编排模式（create-flow）或群聊模式（create-discussion）
+        const arrangedEntities = collectArrangedEntities(playhead)
+        if (creationMode2 === 'discussion') {
+          await creationFlow.startDiscussion(currentProjectId, playhead, { arrangedEntities })
+        } else {
+          await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities })
+        }
       } else {
         // 模式2：AI 编排
         await creationFlow.aiArrange(currentProjectId, playhead)
@@ -481,7 +489,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     } finally {
       startCreationLockRef.current = false
     }
-  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, setCreationMode, setCreationChapterNumber, playheadChapter])
+  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, setCreationMode, setCreationChapterNumber, playheadChapter, creationMode2])
 
   // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
   // 直接以原章节号启动创作流程（覆盖旧内容）
@@ -608,12 +616,33 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             )}
           </div>
           <div className="flex items-center gap-1">
+            {/* 创作子模式切换：编排模式（create-flow）/ 群聊模式（create-discussion） */}
+            <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-1 border border-border rounded-lg">
+              <button
+                type="button"
+                className={`inline-flex items-center h-6 px-2 text-[11px] rounded-md transition-[color,background-color,border-color,transform] active:scale-[0.96] ${creationMode2 === 'workflow' ? 'bg-surface-3 text-text border border-border' : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent'}`}
+                onClick={() => setCreationMode2('workflow')}
+                disabled={creationFlow.isRunning}
+                title="编排模式：多 Agent 编排创作流程"
+              >
+                <span className="leading-none">编排</span>
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center h-6 px-2 text-[11px] rounded-md transition-[color,background-color,border-color,transform] active:scale-[0.96] ${creationMode2 === 'discussion' ? 'bg-surface-3 text-text border border-border' : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent'}`}
+                onClick={() => setCreationMode2('discussion')}
+                disabled={creationFlow.isRunning}
+                title="群聊模式：多 Agent 群聊讨论创作"
+              >
+                <span className="leading-none">群聊</span>
+              </button>
+            </div>
             <Button
               size="sm"
               variant="default"
               onClick={() => handleStartCreation('manual')}
               disabled={!currentProject || creationFlow.isRunning || !playheadChapterExists}
-              title={playheadChapterExists ? '模式1：从矩阵本章列读取已编排实体，启动多 Agent 创作流程' : '请先选择章节'}
+              title={playheadChapterExists ? `${creationMode2 === 'discussion' ? '群聊模式' : '编排模式'}：从矩阵本章列读取已编排实体，启动多 Agent 创作流程` : '请先选择章节'}
             >
               <Sparkles className="size-3.5" />
               <span className="hidden sm:inline">生成第{playheadChapter}章</span>
