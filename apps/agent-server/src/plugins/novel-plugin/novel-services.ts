@@ -136,6 +136,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     store, memoryStore, sessionFactory, promptBuilder, engine, context,
     discussionSettingsStore.get().moderatorModel,
     memoryGenerator,
+    discussionSettingsStore,
   )
 
   // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）

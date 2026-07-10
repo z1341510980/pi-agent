@@ -127,6 +127,12 @@ export interface DiscussionOptions {
   signal?: AbortSignal
   /** Moderator 使用的模型配置（未配置时用最便宜模型） */
   moderatorModel?: { provider: string; modelId: string }
+  /** 引擎运行时限制（覆盖默认 DISCUSSION_LIMITS，来自 DiscussionSettingsStore） */
+  limits?: {
+    maxRounds?: number
+    maxRoundsPerScene?: number
+    characterTemperature?: number
+  }
 }
 
 /** 群聊运行结果 */

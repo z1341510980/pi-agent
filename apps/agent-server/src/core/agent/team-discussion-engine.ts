@@ -64,6 +64,14 @@ export class TeamDiscussionEngine {
     members: DiscussionMember[],
     options: DiscussionOptions,
   ): Promise<DiscussionResult> {
+    // 合并运行时限制：options.limits（来自 DiscussionSettingsStore）覆盖默认 DISCUSSION_LIMITS
+    const limits = {
+      maxRounds: options.limits?.maxRounds ?? DISCUSSION_LIMITS.MAX_ROUNDS,
+      maxRoundsPerScene: options.limits?.maxRoundsPerScene ?? DISCUSSION_LIMITS.MAX_ROUNDS_PER_SCENE,
+      maxObserveRounds: DISCUSSION_LIMITS.MAX_OBSERVE_ROUNDS,
+      characterTemperature: options.limits?.characterTemperature ?? 0.8,
+    }
+
     const history: DiscussionMessage[] = []
     const channelName = `discuss-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -85,7 +93,7 @@ export class TeamDiscussionEngine {
     try {
       // ── Phase 1：规划 ──
       let planningDone = false
-      while (!planningDone && rounds < DISCUSSION_LIMITS.MAX_ROUNDS) {
+      while (!planningDone && rounds < limits.maxRounds) {
         const state: ModeratorState = {
           phase: 'planning',
           round: rounds,
@@ -102,7 +110,7 @@ export class TeamDiscussionEngine {
         }
         if (decision.type === 'observe') {
           noProgressRounds++
-          if (noProgressRounds >= DISCUSSION_LIMITS.MAX_OBSERVE_ROUNDS) {
+          if (noProgressRounds >= limits.maxObserveRounds) {
             planningDone = true
             scenes = []
           }
@@ -124,7 +132,7 @@ export class TeamDiscussionEngine {
           const activeMembers = this.filterMembersByScene(members, scene)
           let sceneDone = false
 
-          while (!sceneDone && rounds < DISCUSSION_LIMITS.MAX_ROUNDS_PER_SCENE) {
+          while (!sceneDone && rounds < limits.maxRoundsPerScene) {
             const state: ModeratorState = {
               phase: 'acting',
               round: rounds,
@@ -149,7 +157,7 @@ export class TeamDiscussionEngine {
               sceneDone = true
             } else if (decision.type === 'observe') {
               noProgressRounds++
-              if (noProgressRounds >= DISCUSSION_LIMITS.MAX_OBSERVE_ROUNDS) {
+              if (noProgressRounds >= limits.maxObserveRounds) {
                 const writer = members.find(m => m.canConverge)
                 if (writer) {
                   try {
@@ -285,7 +293,7 @@ export class TeamDiscussionEngine {
       userMessage,
       tools: [],
       signal: options.signal,
-      temperature: member.type === 'character' ? 0.8 : 0.7,
+      temperature: member.type === 'character' ? (options.limits?.characterTemperature ?? 0.8) : 0.7,
       timeoutMs: 300_000,
       emit: options.emit,
       emitRaw: false,
@@ -361,9 +369,20 @@ ${transcript}
       return result
     }
 
-    const combined = sceneContents.map((content, i) => {
-      const scene = scenes[i]
-      return `### 场景${i + 1}：${scene?.title ?? ''}\n\n${content}`
+    // 过滤掉 weaveScene 失败的占位文本（[场景 X 编织失败] / [场景 X 因轮数超限未能产出正文]），
+    // 避免占位提示混入最终正文。同时保持 sceneContents 与 scenes 的索引对齐。
+    const validEntries = sceneContents
+      .map((content, i) => ({ content, scene: scenes[i] }))
+      .filter(entry => !entry.content.startsWith('[场景'))
+
+    if (validEntries.length === 0) {
+      // 所有场景都编织失败，基于群聊记录直接产出
+      const result = await this.invokeMember(writer, '所有场景编织均失败，请基于群聊记录直接产出完整章节正文', [], options, { phase: 'chapter_weaving' })
+      return result
+    }
+
+    const combined = validEntries.map((entry, i) => {
+      return `### 场景${i + 1}：${entry.scene?.title ?? ''}\n\n${entry.content}`
     }).join('\n\n---\n\n')
 
     const prompt = `请将以下各场景的正文片段合并为完整章节正文。

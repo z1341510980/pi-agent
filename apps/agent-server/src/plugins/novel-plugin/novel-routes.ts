@@ -2232,6 +2232,43 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const { projectId, chapterNumber } = request.params
       const discussionRunner = services.discussionRunner
 
+      // 解析请求体中的 arrangedEntities（与 create-flow 端点一致，复用同一 schema）
+      const input = validateBody(createFlowBodySchema, request, reply)
+      if (!input) return reply
+      const arrangedEntities = input.arrangedEntities
+        ? {
+            characterIds: input.arrangedEntities.characterIds,
+            conflictIds: input.arrangedEntities.conflictIds,
+            foreshadowIds: input.arrangedEntities.foreshadowIds,
+            factionIds: input.arrangedEntities.factionIds,
+            locationIds: input.arrangedEntities.locationIds,
+          }
+        : undefined
+
+      // 校验编排实体属于当前项目（与 create-flow 一致）
+      if (arrangedEntities) {
+        const invalid: string[] = []
+        for (const id of arrangedEntities.characterIds) {
+          if (store.getCharacter(id)?.projectId !== projectId) invalid.push(`character:${id}`)
+        }
+        for (const id of arrangedEntities.conflictIds) {
+          if (store.getConflict(id)?.projectId !== projectId) invalid.push(`conflict:${id}`)
+        }
+        for (const id of arrangedEntities.foreshadowIds) {
+          if (store.getForeshadow(id)?.projectId !== projectId) invalid.push(`foreshadow:${id}`)
+        }
+        for (const id of arrangedEntities.factionIds) {
+          if (store.getFaction(id)?.projectId !== projectId) invalid.push(`faction:${id}`)
+        }
+        for (const id of arrangedEntities.locationIds) {
+          if (store.getLocation(id)?.projectId !== projectId) invalid.push(`location:${id}`)
+        }
+        if (invalid.length > 0) {
+          reply.code(400).send({ ok: false, error: `编排实体不属于当前项目或不存在: ${invalid.join(', ')}` })
+          return
+        }
+      }
+
       // 设置 SSE（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -2281,6 +2318,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
             onProgress: (event) => emitter.progress(event),
             moderatorModel: settings.moderatorModel,
           },
+          arrangedEntities,
         )
         emitter.result(result)
       } catch (err) {

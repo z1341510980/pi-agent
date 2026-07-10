@@ -24,6 +24,7 @@ import type {
   DiscussionPhase,
   DiscussionResult,
 } from '../../../core/agent/discussion-types.js'
+import type { DiscussionSettingsStore } from '../../../core/agent/discussion-settings-store.js'
 import { NovelStore } from './novel-store.js'
 import { NovelMemoryStore } from './novel-memory-store.js'
 import { NovelPromptBuilder } from './prompt-builder.js'
@@ -31,7 +32,7 @@ import { NovelEngine } from './novel-engine.js'
 import { NovelSessionFactory } from './novel-session.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
-import type { NovelCharacter, NarrativeTask } from './types.js'
+import type { NovelCharacter, NarrativeTask, ArrangedEntity } from './types.js'
 
 /** 群聊参与工种（不含 memory，memory 由 ChapterFinalizer 收尾阶段调用） */
 const DISCUSSION_AGENT_TYPES: NovelAgentType[] = ['director', 'writer', 'reviewer', 'reviser']
@@ -46,6 +47,7 @@ export class NovelDiscussionRunner {
     private context: PluginContext,
     private moderatorModel?: { provider: string; modelId: string },
     private memoryGenerator?: NovelMemoryGenerator,
+    private discussionSettingsStore?: DiscussionSettingsStore,
   ) {}
 
   /**
@@ -62,6 +64,7 @@ export class NovelDiscussionRunner {
     projectId: string,
     chapterNumber: number,
     options: DiscussionOptions,
+    arrangedEntities?: ArrangedEntity,
   ): Promise<DiscussionResult> {
     try {
       // 1. 构建约束 + 默认叙事任务
@@ -124,7 +127,42 @@ export class NovelDiscussionRunner {
       })
 
       // 6. 运行群聊
-      const result = await discussionEngine.run(goal, members, options)
+      // DiscussionPhase → CreationPhase 映射：前端 CreationPhase 不含群聊专属 phase
+      // （planning/scene_setup/acting/scene_weaving/chapter_weaving），
+      // 需在 onProgress 翻译器中映射到前端可识别的最近语义 phase。
+      const phaseMap: Record<string, string> = {
+        planning: 'directing',       // 规划 ≈ 导演阶段
+        scene_setup: 'directing',    // 场景设置 ≈ 导演
+        acting: 'writing',           // 演出 ≈ 写作
+        scene_weaving: 'writing',    // 场景编织 ≈ 写作
+        chapter_weaving: 'writing',  // 全章编织 ≈ 写作
+        reviewing: 'reviewing',
+        memory: 'memory',
+        completed: 'completed',
+        error: 'error',
+        cancelled: 'cancelled',
+      }
+      // 从 discussionSettingsStore 读取运行时限制（maxRounds/maxRoundsPerScene/characterTemperature），
+      // 覆盖引擎默认 DISCUSSION_LIMITS，让设置页的修改即时生效。
+      const settings = this.discussionSettingsStore?.get() ?? {}
+      const engineOptions: DiscussionOptions = {
+        ...options,
+        onProgress: (event) => {
+          const mappedPhase = phaseMap[event.phase] ?? 'writing'
+          options.onProgress({
+            type: event.type,
+            phase: mappedPhase as DiscussionPhase,
+            data: event.data,
+            timestamp: event.timestamp,
+          })
+        },
+        limits: {
+          maxRounds: settings.maxRounds,
+          maxRoundsPerScene: settings.maxRoundsPerScene,
+          characterTemperature: settings.characterTemperature,
+        },
+      }
+      const result = await discussionEngine.run(goal, members, engineOptions)
 
       // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
       if (result.status === 'completed' && result.content) {
@@ -140,6 +178,7 @@ export class NovelDiscussionRunner {
           projectId,
           chapterNumber,
           content: result.content,
+          arrangedEntities,
           options: {
             emit: options.emit,
             onCheckpoint: async (checkpoint) => {
