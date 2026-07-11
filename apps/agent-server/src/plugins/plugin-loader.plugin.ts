@@ -21,6 +21,7 @@ import { createModuleLogger } from '../lib/logger.js'
 import { PluginManager } from '../core/plugin/plugin-manager.js'
 import { createHelloPlugin } from './examples/hello-plugin/index.js'
 import { createNovelPlugin } from './novel-plugin/index.js'
+import { createWebSearchPlugin } from './web-search-plugin/index.js'
 
 export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'plugin-loader')
@@ -41,6 +42,7 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const builtinPlugins = [
     ...(enableExamples ? [{ plugin: createHelloPlugin() }] : []),
     { plugin: createNovelPlugin() },
+    { plugin: createWebSearchPlugin() },
   ]
 
   log.info(
