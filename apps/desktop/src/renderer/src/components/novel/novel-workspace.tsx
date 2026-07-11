@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { cn } from '@/lib/utils'
@@ -63,27 +63,41 @@ interface ViewSwitcherProps {
 }
 
 function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
-  const base = 'inline-flex items-center gap-1 h-7 px-2.5 text-[11px] rounded-md transition-[color,background-color,border-color,transform] active:scale-[0.96]'
-  const active = 'bg-surface-3 text-text border border-border'
-  const inactive = 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent'
+  // 现代极简 segmented control：低对比容器 + active 高亮 + 微动效
+  // - 容器用 surface-2 营造内陷感，无边框（极简）
+  // - active 用 surface-1（白底）+ 微妙阴影上浮，营造物理层级
+  // - hover 柔和过渡，active:scale 反馈点击
+  const base =
+    'inline-flex items-center gap-1.5 h-7 px-3 text-[11px] font-medium rounded-[6px] ' +
+    'transition-all duration-200 ease-out active:scale-[0.96]'
+  const active = 'bg-surface-1 text-text shadow-sm'
+  const inactive = 'text-subtle hover:text-text hover:bg-surface-1/50'
   return (
-    <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-1 border border-border rounded-lg">
+    <div
+      className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg"
+      role="tablist"
+      aria-label="视图切换"
+    >
       <button
         type="button"
+        role="tab"
+        aria-selected={value === 'matrix'}
         className={`${base} ${value === 'matrix' ? active : inactive}`}
         onClick={() => onChange('matrix')}
         title="矩阵视图"
       >
-        <Grid3x3 className="size-3" />
+        <Grid3x3 className="size-3.5" />
         <span className="leading-none">矩阵</span>
       </button>
       <button
         type="button"
+        role="tab"
+        aria-selected={value === 'canvas'}
         className={`${base} ${value === 'canvas' ? active : inactive}`}
         onClick={() => onChange('canvas')}
         title="画布视图"
       >
-        <LayoutGrid className="size-3" />
+        <LayoutGrid className="size-3.5" />
         <span className="leading-none">画布</span>
       </button>
     </div>
@@ -638,33 +652,44 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   return (
     <ReactFlowProvider>
       <div className="flex h-screen flex-col bg-app-bg text-text overflow-hidden">
-        {/* 顶部标题栏 */}
-        <header className="flex items-center justify-between h-11 px-3 border-b border-border bg-surface-1 shrink-0">
-          <div className="flex items-center gap-2">
-            <Button size="icon-sm" variant="ghost" onClick={onClose} aria-label="返回">
+        {/* 顶部标题栏：三栏 grid（左项目信息 / 中视图切换 / 右操作按钮） */}
+        <header className="grid grid-cols-[1fr_auto_1fr] items-center h-12 px-4 bg-surface-1 border-b border-border/60 shrink-0">
+          {/* 左：项目信息 */}
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Button size="icon-sm" variant="ghost" onClick={onClose} aria-label="返回项目列表" className="text-subtle hover:text-text">
               <ArrowLeft className="size-4" />
             </Button>
-            <span className="text-sm font-semibold">
-              {currentProject?.title ?? '小说工作台'}
-            </span>
-            {currentProject && (
-              <span className="text-xs text-muted-foreground">
-                · {currentProject.genre}
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm font-semibold text-text truncate">
+                {currentProject?.title ?? '小说工作台'}
               </span>
-            )}
-            {nodeCount > 0 && (
-              <span className="text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 tabular-nums">
-                {nodeCount} 节点
-              </span>
-            )}
+              {currentProject && (
+                <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/8 text-primary tabular-nums">
+                  {currentProject.genre}
+                </span>
+              )}
+              {nodeCount > 0 && (
+                <span className="shrink-0 text-[10px] text-hint tabular-nums">
+                  {nodeCount} 节点
+                </span>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-1">
+
+          {/* 中：视图切换（仅有项目时显示） */}
+          <div className="flex items-center justify-center">
+            {currentProject && <ViewSwitcher value={viewMode} onChange={setViewMode} />}
+          </div>
+
+          {/* 右：操作按钮组 */}
+          <div className="flex items-center justify-end gap-0.5">
             <Button
               size="icon-sm"
               variant="ghost"
               onClick={() => setCachePanelOpen(true)}
               disabled={!currentProject}
               title="缓存诊断"
+              className="text-subtle hover:text-text"
             >
               <Database className="size-3.5" />
             </Button>
@@ -674,6 +699,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               onClick={() => setLogPanelOpen(true)}
               disabled={!currentProject}
               title="Agent 调用日志"
+              className="text-subtle hover:text-text"
             >
               <ScrollText className="size-3.5" />
             </Button>
@@ -683,9 +709,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               onClick={handleExport}
               disabled={!currentProject}
               title="导出项目数据"
+              className="text-subtle hover:text-text gap-1.5"
             >
               <Download className="size-3.5" />
-              <span className="hidden sm:inline">导出</span>
+              <span className="hidden sm:inline text-xs">导出</span>
             </Button>
           </div>
         </header>
@@ -720,27 +747,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             side="left"
           />
 
-          {/* 主内容区：矩阵 / 画布可切换 */}
+          {/* 主内容区：矩阵 / 画布可切换（视图切换已整合到 Header） */}
           <main className="flex-1 min-w-0 h-full overflow-hidden flex flex-col">
             {currentProject ? (
               <>
-                {/* 视图切换条 */}
-                <div
-                  className="flex items-center justify-between px-3 h-9 border-b shrink-0"
-                  style={{
-                    background: 'var(--color-surface-1)',
-                    borderColor: 'var(--color-border)',
-                  }}
-                >
-                  <ViewSwitcher value={viewMode} onChange={setViewMode} />
-                  <span
-                    className="text-[10px]"
-                    style={{ color: 'var(--color-subtle)' }}
-                  >
-                    {viewMode === 'matrix' ? '矩阵视图' : '画布视图'}
-                  </span>
-                </div>
-
                 <div className="flex-1 min-h-0 flex flex-col">
                   {viewMode === 'matrix' ? (
                     <>
@@ -815,9 +825,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 </div>
               </>
             ) : (
-              <div className="flex h-full items-center justify-center text-muted-foreground">
-                <div className="text-center">
-                  <p className="text-sm">请在左侧选择或创建一个项目</p>
+              <div className="flex h-full items-center justify-center p-8">
+                <div className="text-center max-w-[280px]">
+                  {/* 装饰图标：对齐原型 empty-card 风格 */}
+                  <div className="mx-auto mb-4 size-14 rounded-xl bg-primary/8 flex items-center justify-center shadow-sm">
+                    <BookOpen className="size-7 text-primary" />
+                  </div>
+                  <h3 className="text-sm font-semibold text-text mb-1.5">开始你的小说创作</h3>
+                  <p className="text-xs text-subtle leading-relaxed">
+                    在左侧选择已有项目，或点击「新建项目」开始一段新的故事旅程
+                  </p>
                 </div>
               </div>
             )}
@@ -833,40 +850,54 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             side="right"
           />
           <aside style={{ width: detailWidth }} className="shrink-0 h-full min-h-0 overflow-hidden flex flex-col">
-            {/* 右栏视图切换：对话 / 详情（相似度扫描进行中时隐藏） */}
-            {scanPhase === 'idle' && (
-              <div className="shrink-0 flex items-center gap-0.5 px-2 py-1 border-b border-border bg-surface-1">
-                <button
-                  type="button"
-                  onClick={() => setRightPanelView('conversation')}
-                  className={cn(
-                    'inline-flex items-center gap-1 h-6 px-2.5 text-[11px] rounded-md transition-colors',
-                    rightPanelView === 'conversation' || isCreationActive
-                      ? 'bg-surface-3 text-text border border-border'
-                      : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent',
-                  )}
-                >
-                  <MessageSquare className="size-3" />
-                  <span className="leading-none">对话</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => !isCreationActive && setRightPanelView('detail')}
-                  disabled={isCreationActive}
-                  className={cn(
-                    'inline-flex items-center gap-1 h-6 px-2.5 text-[11px] rounded-md transition-colors',
-                    rightPanelView === 'detail' && !isCreationActive
-                      ? 'bg-surface-3 text-text border border-border'
-                      : 'text-muted-foreground hover:text-text hover:bg-muted/50 border border-transparent',
-                    'disabled:cursor-not-allowed disabled:opacity-50',
-                  )}
-                  title={isCreationActive ? '创作进行中，无法切换到详情' : '查看节点详情'}
-                >
-                  <Info className="size-3" />
-                  <span className="leading-none">详情</span>
-                </button>
-              </div>
-            )}
+            {/* 右栏视图切换：对话 / 详情（与 Header 的 ViewSwitcher 风格统一）
+                扫描进行时显示"相似度扫描"标签，保持 tab 栏位置稳定避免布局抖动 */}
+            <div className="shrink-0 flex items-center gap-0.5 p-1 mx-2 my-1.5 bg-surface-2 rounded-lg">
+              {scanPhase === 'idle' ? (
+                <>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={rightPanelView === 'conversation' || isCreationActive}
+                    onClick={() => setRightPanelView('conversation')}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                      'transition-all duration-200 ease-out active:scale-[0.96]',
+                      rightPanelView === 'conversation' || isCreationActive
+                        ? 'bg-surface-1 text-text shadow-sm'
+                        : 'text-subtle hover:text-text hover:bg-surface-1/50',
+                    )}
+                  >
+                    <MessageSquare className="size-3" />
+                    <span className="leading-none">对话</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={rightPanelView === 'detail' && !isCreationActive}
+                    onClick={() => !isCreationActive && setRightPanelView('detail')}
+                    disabled={isCreationActive}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                      'transition-all duration-200 ease-out active:scale-[0.96]',
+                      rightPanelView === 'detail' && !isCreationActive
+                        ? 'bg-surface-1 text-text shadow-sm'
+                        : 'text-subtle hover:text-text hover:bg-surface-1/50',
+                      'disabled:cursor-not-allowed disabled:opacity-50',
+                    )}
+                    title={isCreationActive ? '创作进行中，无法切换到详情' : '查看节点详情'}
+                  >
+                    <Info className="size-3" />
+                    <span className="leading-none">详情</span>
+                  </button>
+                </>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] bg-surface-1 text-text shadow-sm">
+                  <Sparkle className="size-3 text-primary" />
+                  <span className="leading-none">相似度扫描</span>
+                </div>
+              )}
+            </div>
 
             {/* 内容区 */}
             <div className="flex-1 min-h-0 overflow-hidden">

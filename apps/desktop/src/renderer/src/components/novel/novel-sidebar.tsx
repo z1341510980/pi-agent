@@ -8,7 +8,6 @@ import {
   Users,
   Lightbulb,
   Swords,
-  ChevronRight,
   ChevronDown,
   Trash2,
   MapPin,
@@ -205,12 +204,12 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   )
 
   return (
-    <div className="flex h-full flex-col bg-surface-1 border-r border-border">
+    <div className="flex h-full flex-col bg-surface-1 border-r border-border/60">
       {/* 头部 */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-border shrink-0">
         <div className="flex items-center gap-2">
           <BookOpen className="size-4 text-primary" />
-          <span className="text-sm font-semibold text-text">小说项目</span>
+          <span className="text-[13px] font-semibold text-text">小说项目</span>
         </div>
         <Button size="icon-sm" variant="ghost" onClick={() => setProjectDialogOpen(true)} aria-label="新建项目">
           <Plus className="size-4" />
@@ -238,9 +237,9 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                       type="button"
                       onClick={() => handleSelectProject(p.id)}
                       className={cn(
-                        'w-full text-left rounded-md px-2.5 py-2 transition-colors',
+                        'w-full text-left rounded-lg px-2.5 py-2 transition-colors duration-150 ease-out',
                         isActive
-                          ? 'bg-primary/10 text-text'
+                          ? 'bg-primary/[0.08] text-text'
                           : 'hover:bg-muted text-text-secondary',
                       )}
                     >
@@ -863,16 +862,21 @@ function CollapsibleGroup({
   addLabel,
   children,
 }: CollapsibleGroupProps): ReactElement {
-  const Chevron = collapsed ? ChevronRight : ChevronDown
   return (
-    <div className="rounded-md">
+    <div className="rounded-lg">
       <div className="flex items-center group">
         <button
           type="button"
           onClick={() => onToggle(kind)}
-          className="flex items-center gap-1.5 flex-1 min-w-0 px-1.5 py-1 rounded text-left hover:bg-muted transition-colors"
+          className="flex items-center gap-1.5 flex-1 min-w-0 px-1.5 py-1 rounded-lg text-left hover:bg-muted transition-colors duration-150 ease-out"
         >
-          <Chevron className="size-3.5 text-muted-foreground shrink-0" />
+          {/* chevron 旋转动画：始终用 ChevronDown，折叠时 rotate(-90deg)，200ms ease-out */}
+          <ChevronDown
+            className={cn(
+              'size-3.5 text-muted-foreground shrink-0 transition-transform duration-200 ease-out',
+              collapsed && '-rotate-90',
+            )}
+          />
           <Icon className={cn('size-3.5 shrink-0', accent)} />
           <span className="text-xs font-medium text-text truncate">{label}</span>
           <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px] tabular-nums">
@@ -887,7 +891,7 @@ function CollapsibleGroup({
             key="add-button"
             type="button"
             onClick={onAdd}
-            className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-[color,background-color,transform] active:scale-[0.96]"
+            className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded-lg text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96]"
           >
             <Plus className="size-3" />
             <span>{addLabel}</span>
@@ -942,8 +946,8 @@ function EntityItem({
       {...listeners}
       onClick={onClick}
       className={cn(
-        'group flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors cursor-grab active:cursor-grabbing',
-        selected ? 'bg-primary/10' : 'hover:bg-muted',
+        'group flex items-center gap-1.5 px-1.5 py-1 rounded-lg text-left transition-colors duration-150 ease-out cursor-grab active:cursor-grabbing',
+        selected ? 'bg-primary/[0.08]' : 'hover:bg-muted',
         isDragging && 'opacity-30',
       )}
     >
@@ -996,7 +1000,6 @@ export function ChapterItem({
   onDelete,
 }: ChapterItemProps): ReactElement {
   const [expanded, setExpanded] = useState(false)
-  const Chevron = expanded ? ChevronDown : ChevronRight
   const title = chapter.title || `第 ${chapter.chapterNumber} 章`
 
   // 该章关联的伏笔（按 firstChapter / recoverByChapter 匹配章节号）
@@ -1056,7 +1059,12 @@ export function ChapterItem({
           className="shrink-0 text-muted-foreground hover:text-foreground"
           aria-label={expanded ? '收起' : '展开'}
         >
-          <Chevron className="size-3.5" />
+          <ChevronDown
+            className={cn(
+              'size-3.5 transition-transform duration-200 ease-out',
+              !expanded && '-rotate-90',
+            )}
+          />
         </button>
         <span className="size-1 rounded-full bg-emerald-500/60 shrink-0" aria-hidden="true" />
         <div

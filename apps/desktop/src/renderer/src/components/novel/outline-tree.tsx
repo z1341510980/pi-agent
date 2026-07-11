@@ -1,5 +1,5 @@
 import { useCallback, type ReactElement } from 'react'
-import { ChevronRight, ChevronDown, Plus, Wand2, BookText } from 'lucide-react'
+import { ChevronDown, Plus, Wand2, BookText } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { useNovelStore } from '@/stores/novel-store'
@@ -142,11 +142,12 @@ export function OutlineTree({
                 onClick={() => toggleExpandedVolume(vol.id)}
                 className="flex items-center gap-1 px-1 py-1 text-xs font-medium text-text hover:bg-muted/50 rounded-md flex-1 min-w-0"
               >
-                {expanded ? (
-                  <ChevronDown className="size-3 shrink-0" />
-                ) : (
-                  <ChevronRight className="size-3 shrink-0" />
-                )}
+                <ChevronDown
+                  className={cn(
+                    'size-3 shrink-0 transition-transform duration-200 ease-out',
+                    !expanded && '-rotate-90',
+                  )}
+                />
                 <span className="truncate">{vol.title || `第${vol.volumeNumber}卷`}</span>
               </button>
             </div>

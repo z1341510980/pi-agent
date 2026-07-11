@@ -184,7 +184,7 @@ export function MatrixToolbar({
       {/* 分隔线：补全历史与筛选 chips 之间 */}
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
-      {/* 过滤 chips */}
+      {/* 过滤 chips：每个 chip 带分类颜色圆点，active 时用分类色填充 */}
       <div className="flex items-center gap-1">
         {FILTER_OPTIONS.map((opt) => {
           const active = activeFilter === opt.key
@@ -195,7 +195,7 @@ export function MatrixToolbar({
               type="button"
               onClick={() => onFilterChange(opt.key)}
               className={cn(
-                'inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-surface-1 border transition-[color,background-color,border-color,transform] active:scale-[0.96]',
+                'inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] text-[11px] bg-surface-1 border transition-[color,background-color,border-color,transform] active:scale-[0.96]',
                 active
                   ? color
                     ? 'text-white border-transparent'
@@ -205,6 +205,13 @@ export function MatrixToolbar({
               style={active && color ? { background: color, borderColor: color } : undefined}
               title={opt.key ? `只显示${opt.label}` : '显示全部分组'}
             >
+              {/* 分类颜色圆点（active 时变白） */}
+              {color && (
+                <span
+                  className={cn('w-1.5 h-1.5 rounded-full shrink-0 transition-colors', active && 'bg-white')}
+                  style={!active ? { background: color } : undefined}
+                />
+              )}
               {opt.label}
             </button>
           )

@@ -91,25 +91,20 @@ export function ResizableSplitter({
       className={cn(
         'shrink-0 group relative z-10',
         direction === 'horizontal'
-          ? 'w-[2px] cursor-col-resize hover:w-[3px] active:w-[3px] before:absolute before:inset-x-[-19px] before:inset-y-0 before:content-[""]'
-          : 'h-[2px] cursor-row-resize hover:h-[3px] active:h-[3px] before:absolute before:inset-y-[-19px] before:inset-x-0 before:content-[""]',
-        'transition-[width,height] duration-100',
+          ? 'w-[3px] cursor-col-resize before:absolute before:inset-x-[-19px] before:inset-y-0 before:content-[""]'
+          : 'h-[3px] cursor-row-resize before:absolute before:inset-y-[-19px] before:inset-x-0 before:content-[""]',
+        'bg-surface-2 hover:bg-surface-3',
+        'transition-colors duration-150 ease-out',
         className,
       )}
       onMouseDown={handleMouseDown}
     >
+      {/* 中心手柄装饰：32px 长细条（与 HTML 样例对齐） */}
       <div
         className={cn(
-          'absolute inset-0',
-          direction === 'horizontal'
-            ? effectiveSide === 'left'
-              ? '-right-[2px] w-[5px]'
-              : '-left-[2px] w-[5px]'
-            : effectiveSide === 'top'
-              ? '-bottom-[2px] h-[5px]'
-              : '-top-[2px] h-[5px]',
-          'bg-transparent group-hover:bg-primary/30 group-active:bg-primary/50',
-          'transition-colors duration-100',
+          'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none',
+          'bg-border group-hover:bg-subtle transition-colors duration-150 ease-out',
+          direction === 'horizontal' ? 'w-[2px] h-[32px]' : 'w-[32px] h-[2px]',
         )}
       />
     </div>

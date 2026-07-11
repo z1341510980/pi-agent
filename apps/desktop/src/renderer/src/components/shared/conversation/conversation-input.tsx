@@ -92,8 +92,9 @@ export function ConversationInput({
     >
       <div
         className={cn(
-          'relative rounded-[12px] border-2 bg-input-bg transition-colors',
-          'border-border focus-within:border-primary',
+          // 与 HTML 样例对齐：1px 边框 + 圆角 + focus 时主色边框 + 3px 外发光阴影
+          'relative rounded-[10px] border bg-input-bg transition-[border-color,box-shadow] duration-150 ease-out',
+          'border-border focus-within:border-primary focus-within:shadow-[0_0_0_3px_rgb(99_102_241_/_0.08)]',
         )}
       >
         <textarea

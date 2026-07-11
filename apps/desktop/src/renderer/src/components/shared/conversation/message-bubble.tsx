@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { motion } from 'framer-motion'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import {
@@ -30,10 +31,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   if (isUser) {
     return (
-      <article className="flex justify-end">
+      <motion.article
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
+        className="flex justify-end"
+      >
         <div className="relative max-w-[75%]">
           {displayContent ? (
-            <div className="rounded-[10px] bg-primary px-3 py-2 text-xs leading-relaxed text-primary-foreground break-words">
+            <div className="rounded-[10px] bg-primary px-3 py-2 text-sm leading-relaxed text-primary-foreground break-words">
               <p className="whitespace-pre-wrap">{displayContent}</p>
               <div className="mt-1 text-[10px] text-primary-foreground/70">
                 {formatTimestamp(message.timestamp)}
@@ -41,7 +47,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             </div>
           ) : null}
         </div>
-      </article>
+      </motion.article>
     )
   }
 
@@ -54,7 +60,12 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isError = message.status === 'error'
 
   return (
-    <article className="flex max-w-[85%] min-w-0 items-start gap-2 justify-start">
+    <motion.article
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: 'easeOut' }}
+      className="flex max-w-[85%] min-w-0 items-start gap-2 justify-start"
+    >
       {/* 头像 */}
       <div
         className={cn(
@@ -79,7 +90,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           )}
           {isStreaming && (
             <span className="flex items-center gap-1 text-[10px] text-hint">
-              <span className="size-1 animate-pulse rounded-full bg-primary" aria-hidden="true" />
+              {/* streaming-dot：6px 双重脉动（opacity + scale） */}
+              <span
+                className="size-1.5 rounded-full bg-primary animate-[streaming-pulse_1.2s_ease-in-out_infinite]"
+                aria-hidden="true"
+              />
               正在生成...
             </span>
           )}
@@ -97,20 +112,26 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             <div
               className={cn(
                 'prose prose-sm max-w-none',
-                'prose-p:my-1 prose-p:leading-relaxed prose-p:text-xs',
+                'prose-p:my-1 prose-p:leading-relaxed',
                 'prose-headings:my-2 prose-headings:leading-tight',
-                'prose-h1:text-sm prose-h2:text-xs prose-h3:text-xs',
                 'prose-ul:my-1 prose-ol:my-1 prose-li:my-0',
-                'prose-pre:my-2 prose-pre:rounded-md prose-pre:bg-muted/60 prose-pre:border prose-pre:border-border prose-pre:overflow-x-auto prose-pre:max-w-full prose-pre:text-[11px]',
+                'prose-pre:my-2 prose-pre:rounded-md prose-pre:bg-muted/60 prose-pre:border prose-pre:border-border prose-pre:overflow-x-auto prose-pre:max-w-full prose-pre:text-[12px]',
                 'prose-code:before:content-none prose-code:after:content-none prose-code:text-primary prose-code:bg-muted/60 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em]',
                 'prose-blockquote:my-1 prose-blockquote:border-l-primary prose-blockquote:text-muted-foreground',
                 'prose-hr:my-2 prose-hr:border-border',
                 'prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
                 'prose-strong:text-text prose-em:text-text-secondary',
-                'prose-table:text-[10px]',
+                'prose-table:text-xs',
               )}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
+              {/* 流式时末尾闪烁光标 */}
+              {isStreaming && (
+                <span
+                  className="inline-block w-[2px] h-[14px] ml-0.5 align-text-bottom bg-primary animate-[cursor-blink_1s_step-end_infinite]"
+                  aria-hidden="true"
+                />
+              )}
             </div>
           </div>
         ) : null}
@@ -127,6 +148,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <div className="text-[10px] text-hint">{formatTimestamp(message.timestamp)}</div>
         ) : null}
       </div>
-    </article>
+    </motion.article>
   )
 }

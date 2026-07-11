@@ -54,7 +54,7 @@ export function ConversationStream({
     <section
       ref={scrollRef}
       onScroll={handleScroll}
-      className="flex min-h-0 h-full flex-1 flex-col overflow-y-auto overflow-x-hidden px-3 py-3"
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-3 py-3"
       aria-label="消息流"
     >
       <div

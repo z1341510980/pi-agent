@@ -155,6 +155,7 @@ body {
   min-width: 320px;
   color: var(--color-text);
   background: var(--color-app-bg);
+  font-size: 13px;
   line-height: 1.6;
   font-family:
     'Plus Jakarta Sans',
@@ -261,7 +262,7 @@ button:disabled {
 
 /* ── 矩阵单元格 tooltip（data-tip 属性，零 JS）── */
 
-[data-tip] {
+[data-tip]:not(.sticky) {
   position: relative;
 }
 
@@ -297,4 +298,28 @@ button:disabled {
 /* 鼠标在子元素上时，父元素不显示 tooltip，避免叠加 */
 [data-tip]:has(:hover)::after {
   opacity: 0 !important;
+}
+
+/* ── 动画关键帧（与 HTML 样例对齐）── */
+
+/* streaming-dot：双重脉动（opacity 0.4↔1 + scale 0.8↔1.2） */
+@keyframes streaming-pulse {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* cursor-blink：光标闪烁（0-50% 可见，51-100% 隐藏） */
+@keyframes cursor-blink {
+  0%, 50% {
+    opacity: 1;
+  }
+  51%, 100% {
+    opacity: 0;
+  }
 }

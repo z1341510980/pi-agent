@@ -10,45 +10,108 @@
 .cce-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  padding: 6px 12px;
-  height: 36px;
-  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  padding: 8px 16px;
+  height: 38px;
+  border-bottom: 1px solid rgba(229, 231, 235, 0.6);
   flex-shrink: 0;
   font-size: 12px;
 }
 
-.cce-nav {
+/* editor-title：图标 + "章节正文" 标题（与 HTML 样例对齐） */
+.cce-title {
   display: flex;
   align-items: center;
-  gap: 6px;
-}
-
-.cce-nav button {
-  background: transparent;
-  border: 1px solid var(--color-border, #e5e7eb);
-  border-radius: 4px;
-  padding: 2px 8px;
-  cursor: pointer;
-  font-size: 14px;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--color-text, #111);
+  flex-shrink: 0;
 }
 
-.cce-nav button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.cce-chapter-label {
+/* chapter-badge：琥珀色胶囊徽章 + 发光圆点（与 HTML 样例对齐） */
+.chapter-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #d97706;
+  font-size: 11px;
   font-weight: 500;
   max-width: 280px;
+}
+
+.chapter-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 6px #f59e0b;
+  flex-shrink: 0;
+}
+
+.chapter-badge .ch-num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.chapter-badge .ch-title {
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* dark 模式下琥珀色微调 */
+.dark .chapter-badge {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+.dark .chapter-badge .dot {
+  background: #fbbf24;
+  box-shadow: 0 0 6px #fbbf24;
+}
+
+.cce-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* 导航按钮：极简图标按钮，无边框，hover 浮底 */
+.cce-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-subtle, #6b7280);
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+
+.cce-nav-btn:hover:not(:disabled) {
+  background: var(--color-surface-3, #f3f4f6);
+  color: var(--color-text, #111);
+}
+
+.cce-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .cce-save-state {
-  margin-left: auto;
+  font-size: 11px;
 }
 
 .cce-saved {
@@ -181,8 +244,11 @@
 .cce-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 16px;
+  gap: 2px;
+  padding: 4px 12px;
+  height: 32px;
+  border-bottom: 1px solid rgba(229, 231, 235, 0.6);
+  flex-shrink: 0;
 }
 
 .cce-toolbar button {
@@ -217,4 +283,54 @@
   font-size: 12px;
   background: var(--color-surface-1, #fff);
   color: var(--color-text, #111);
+}
+
+/* ── 底部工具条（footer）── */
+.cce-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px;
+  height: 32px;
+  border-top: 1px solid rgba(229, 231, 235, 0.6);
+  flex-shrink: 0;
+}
+
+.cce-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 反推实体按钮：紫色软底胶囊 */
+.cce-reverse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  color: #7c3aed;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 150ms ease-out;
+}
+
+.cce-reverse-btn:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.18);
+}
+
+.cce-reverse-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dark .cce-reverse-btn {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.3);
+  color: #a78bfa;
 }

@@ -380,18 +380,13 @@ export function MatrixView({
         setDropRef(el)
       }}
       className={cn(
-        'overflow-x-auto overflow-y-auto h-full isolate touch-none',
+        'relative overflow-x-auto overflow-y-auto h-full isolate touch-none',
         isPanning ? 'cursor-grabbing select-none' : 'cursor-default',
       )}
       {...bindPan()}
       onScroll={(e) => {
         const el = e.currentTarget
         const x = el.scrollLeft
-        // 原有 sticky title 同步逻辑
-        const els = el.querySelectorAll<HTMLElement>('[data-sticky-title]')
-        for (let i = 0; i < els.length; i++) {
-          els[i].style.transform = `translateX(${x}px)`
-        }
         // 水平虚拟化视口计算
         const range = computeVisibleChapters({
           scrollLeft: x,
@@ -407,7 +402,7 @@ export function MatrixView({
         })
       }}
     >
-      <div className="relative" style={{ width: `${totalWidth}px` }}>
+      <div style={{ width: `${totalWidth}px` }}>
         {/* 当前章节列高亮带（跨整列，从标尺下方开始避免被 sticky 标尺遮挡） */}
         <div
           className="absolute top-[44px] bottom-0 pointer-events-none z-[5] border-x border-amber-500/30"
@@ -522,41 +517,71 @@ export function MatrixView({
             playheadChapter={playheadChapter}
           />
 
-          {/* 分组 + 实体行（无实体时显示空状态引导，但章节标尺仍然显示） */}
-          <div className="relative z-[6]">
-            {hasAnyEntity ? (
-              groups.map((group) => {
-                if (activeFilter != null && group.id !== activeFilter) return null
-                const meta = GROUP_META[group.id]
-                const collapsed = collapsedGroups.has(group.id)
-                return (
-                  <GroupBlock
-                    key={group.id}
-                    group={group}
-                    collapsed={collapsed}
-                    visibleChapterColumns={visibleChapterColumns}
-                    visibleRange={visibleRange}
-                    titleMap={titleMap}
-                    maxChapter={maxChapter}
-                    cellWidth={cellWidth}
-                    selectedNodeId={selectedNodeId}
-                    color={meta.color}
-                    colorRgb={meta.colorRgb}
-                    icon={meta.icon}
-                    characterArcs={characterArcs}
-                    onToggleCollapse={() => onToggleCollapse(group.id)}
-                    onEntityClick={handleEntityClick}
-                    onContextMenuCell={onContextMenuCell}
-                    onContextMenuGroupEmpty={onContextMenuGroupEmpty}
-                    onEditSpan={onEditSpan}
-                    onTogglePresent={onTogglePresent}
-                  />
-                )
-              })
-            ) : (
-              <MatrixEmptyState />
-            )}
-          </div>
+          {/* 分组 + 实体行：统一用 MatrixRow 渲染（分组行是 type='group' 的变体） */}
+          {hasAnyEntity ? (
+            groups.flatMap((group) => {
+              if (activeFilter != null && group.id !== activeFilter) return []
+              const meta = GROUP_META[group.id]
+              const collapsed = collapsedGroups.has(group.id)
+              const rows: ReactElement[] = []
+              // 分组分隔行（与实体行用同一个 MatrixRow 组件，type='group'）
+              rows.push(
+                <MatrixRow
+                  key={`divider-${group.id}`}
+                  type="group"
+                  group={group}
+                  collapsed={collapsed}
+                  visibleChapterColumns={visibleChapterColumns}
+                  visibleRange={visibleRange}
+                  maxChapter={maxChapter}
+                  cellWidth={cellWidth}
+                  color={meta.color}
+                  colorRgb={meta.colorRgb}
+                  icon={meta.icon}
+                  onToggleCollapse={() => onToggleCollapse(group.id)}
+                  onContextMenuGroupEmpty={onContextMenuGroupEmpty}
+                />
+              )
+              if (!collapsed) {
+                for (const entity of group.entities) {
+                  rows.push(
+                    <MatrixRow
+                      key={entity.id}
+                      type="entity"
+                      entity={entity}
+                      visibleChapterColumns={visibleChapterColumns}
+                      visibleRange={visibleRange}
+                      titleMap={titleMap}
+                      maxChapter={maxChapter}
+                      cellWidth={cellWidth}
+                      isSelected={selectedNodeId === entity.entityId}
+                      characterArcs={characterArcs}
+                      onClick={() => handleEntityClick(entity)}
+                      onContextMenuCell={onContextMenuCell}
+                      onEditSpan={onEditSpan}
+                      onTogglePresent={onTogglePresent}
+                    />
+                  )
+                }
+                if (group.entities.length === 0) {
+                  rows.push(
+                    <div
+                      key={`empty-${group.id}`}
+                      className="h-10 border-b border-border/20"
+                      onContextMenu={(e) => {
+                        if (!onContextMenuGroupEmpty) return
+                        e.preventDefault()
+                        onContextMenuGroupEmpty(group.id)
+                      }}
+                    />
+                  )
+                }
+              }
+              return rows
+            })
+          ) : (
+            <MatrixEmptyState />
+          )}
         </div>
       </div>
   )
@@ -741,163 +766,47 @@ function MatrixEmptyState(): ReactElement {
   )
 }
 
-// ── 分组块 ──
+// ── 统一行组件（分组行 + 实体行共用同一 DOM 结构，确保 sticky 行为一致） ──
+// 对照 preview-html：.matrix-row { display:flex; align-items:stretch; height:32px } 无 position:relative
+// 左侧 sticky 列：.entity-name-cell / .group-label-cell { position:sticky; left:0; z-index:6; 不透明背景 }
 
-interface GroupBlockProps {
-  group: MatrixGroup
-  collapsed: boolean
-  visibleChapterColumns: number[]
-  visibleRange: { start: number; end: number }
-  titleMap: Map<number, string>
-  maxChapter: number
-  cellWidth: number
-  selectedNodeId?: string | null
-  color: string
-  colorRgb: string
-  icon: string
-  /** 角色弧光（叠加到角色行，按 characterId 匹配） */
-  characterArcs?: NovelCharacterArc[]
-  onToggleCollapse: () => void
-  onEntityClick: (entity: MatrixEntity) => void
-  onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
+interface MatrixRowProps {
+  type: 'group' | 'entity'
+  // group 类型所需
+  group?: MatrixGroup
+  collapsed?: boolean
+  color?: string
+  colorRgb?: string
+  icon?: string
+  onToggleCollapse?: () => void
   onContextMenuGroupEmpty?: (kind: MatrixEntityKind) => void
-  onEditSpan?: (entity: MatrixEntity) => void
-  onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
-}
-
-function GroupBlock({
-  group, collapsed, visibleChapterColumns, visibleRange, titleMap, maxChapter, cellWidth, selectedNodeId,
-  color, colorRgb, icon, characterArcs, onToggleCollapse, onEntityClick,
-  onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onTogglePresent,
-}: GroupBlockProps): ReactElement {
-  const filtered = false // activeFilter 已在父组件过滤
-  return (
-    <div
-      className={cn(filtered && 'opacity-40')}
-      style={{ background: `rgba(${colorRgb}, 0.03)` }}
-    >
-      {/* 分组标题行：左 sticky 列显示分组名+折叠按钮，右侧色条 */}
-      <div
-        className="relative flex h-[30px] z-[1] border-b border-border/20"
-        style={{
-          background: `rgba(${colorRgb}, 0.08)`,
-          borderBottom: `1px solid rgba(${colorRgb}, 0.3)`,
-          borderTop: `1px solid rgba(${colorRgb}, 0.12)`,
-        }}
-      >
-        <div
-          className="relative z-30 flex items-center gap-1.5 px-2.5 cursor-pointer border-r border-border shrink-0 transition-colors"
-          style={{
-            width: `${SIDEBAR_W}px`,
-            backgroundColor: 'var(--color-surface-1)',
-            backgroundImage: `linear-gradient(rgba(${colorRgb}, 0.08), rgba(${colorRgb}, 0.08))`,
-            willChange: 'transform',
-          }}
-          onClick={onToggleCollapse}
-          data-tip={collapsed ? `展开${group.name}` : `折叠${group.name}`}
-          data-sticky-title=""
-        >
-          <span className={cn('text-[9px] text-hint transition-transform w-2 inline-block', collapsed && '-rotate-90')}>▼</span>
-          <span className="text-[10px] leading-none" style={{ color }}>{icon}</span>
-          <span className="font-semibold text-xs text-text tracking-wide">{group.name}</span>
-          <span className="ml-auto font-mono text-[10px] text-hint bg-surface-1 border border-border px-1.5 py-px rounded tabular-nums">
-            {group.entities.length}
-          </span>
-          <button
-            type="button"
-            className="ml-1 size-6 inline-flex items-center justify-center rounded border border-dashed border-border text-muted-foreground hover:border-primary hover:bg-primary/10 hover:text-primary transition-[color,background-color,border-color,transform] active:scale-[0.96]"
-            onClick={(e) => {
-              e.stopPropagation()
-              onContextMenuGroupEmpty?.(group.id)
-            }}
-            data-tip={`新建${group.name}`}
-            aria-label={`新建${group.name}`}
-          >
-            <Plus className="size-4" />
-          </button>
-        </div>
-        {/* 色条占位（右键空白处新建实体）—— 用 flex 容器 + shrink-0 cells 撑开宽度，与 EntityRow 结构一致 */}
-        <div
-          className="relative flex"
-          onContextMenu={(e) => {
-            if (!onContextMenuGroupEmpty) return
-            e.preventDefault()
-            onContextMenuGroupEmpty(group.id)
-          }}
-        >
-          {visibleRange.start > 1 && (
-            <div aria-hidden="true" style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} />
-          )}
-          {visibleChapterColumns.map((ch) => (
-            <div key={ch} className="shrink-0 border-r border-border/40" style={{ width: `${cellWidth}px` }} />
-          ))}
-          {visibleRange.end < maxChapter && (
-            <div aria-hidden="true" style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} />
-          )}
-        </div>
-      </div>
-
-      {/* 实体行 */}
-      {!collapsed && group.entities.map((entity) => (
-        <EntityRow
-          key={entity.id}
-          entity={entity}
-          visibleChapterColumns={visibleChapterColumns}
-          visibleRange={visibleRange}
-          titleMap={titleMap}
-          maxChapter={maxChapter}
-          cellWidth={cellWidth}
-          isSelected={selectedNodeId === entity.entityId}
-          characterArcs={characterArcs}
-          onClick={() => onEntityClick(entity)}
-          onContextMenuCell={onContextMenuCell}
-          onEditSpan={onEditSpan}
-          onTogglePresent={onTogglePresent}
-        />
-      ))}
-
-      {/* 折叠或空分组：留出空白右键区域 */}
-      {!collapsed && group.entities.length === 0 && (
-        <div
-          className="h-10 border-b border-border/20"
-          onContextMenu={(e) => {
-            if (!onContextMenuGroupEmpty) return
-            e.preventDefault()
-            onContextMenuGroupEmpty(group.id)
-          }}
-        />
-      )}
-    </div>
-  )
-}
-
-// ── 实体行 ──
-
-interface EntityRowProps {
-  entity: MatrixEntity
-  visibleChapterColumns: number[]
-  visibleRange: { start: number; end: number }
-  titleMap: Map<number, string>
-  maxChapter: number
-  cellWidth: number
-  isSelected: boolean
-  /** 角色弧光（角色行叠加弧光转换点标记） */
+  // entity 类型所需
+  entity?: MatrixEntity
+  titleMap?: Map<number, string>
+  isSelected?: boolean
   characterArcs?: NovelCharacterArc[]
-  onClick: () => void
+  onClick?: () => void
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
   onEditSpan?: (entity: MatrixEntity) => void
   onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
+  // 共用
+  visibleChapterColumns: number[]
+  visibleRange: { start: number; end: number }
+  maxChapter: number
+  cellWidth: number
 }
 
-function EntityRow({
-  entity, visibleChapterColumns, visibleRange, titleMap, maxChapter, cellWidth, isSelected, onClick,
-  characterArcs, onContextMenuCell, onEditSpan, onTogglePresent,
-}: EntityRowProps): ReactElement {
-  const meta = GROUP_META[entity.kind]
+function MatrixRow(props: MatrixRowProps): ReactElement {
+  const {
+    type, group, collapsed, color, colorRgb, icon, onToggleCollapse, onContextMenuGroupEmpty,
+    entity, titleMap, isSelected, characterArcs, onClick,
+    onContextMenuCell, onEditSpan, onTogglePresent,
+    visibleChapterColumns, visibleRange, maxChapter, cellWidth,
+  } = props
 
-  // 角色弧光转换点（按 characterId 匹配）：在角色行顶部边缘叠加小色标
+  // ── 角色弧光标记（仅 entity 类型） ──
   const arcMarkers = useMemo(() => {
-    if (entity.kind !== 'character' || !characterArcs || characterArcs.length === 0) return []
+    if (type !== 'entity' || !entity || entity.kind !== 'character' || !characterArcs || characterArcs.length === 0) return []
     const arc = characterArcs.find((a) => a.characterId === entity.entityId)
     if (!arc || arc.stageHistory.length === 0) return []
     return arc.stageHistory.map((entry) => {
@@ -911,93 +820,163 @@ function EntityRow({
         triggerEvent: entry.triggerEvent,
       }
     })
-  }, [entity.kind, entity.entityId, characterArcs])
+  }, [type, entity, characterArcs])
+
+  const isGroup = type === 'group'
+  const meta = entity ? GROUP_META[entity.kind] : null
+
+  // 行容器：严格按 preview-html 的 .matrix-row（无 position:relative）
+  // 分组行额外加 .group-divider 的背景和边框样式
+  const rowClassName = cn(
+    'flex h-7 z-[6] border-b border-border/20',
+    isGroup
+      ? 'cursor-pointer'
+      : cn('cursor-pointer transition-colors', isSelected ? 'bg-primary/10' : 'hover:bg-muted/30'),
+  )
+  const rowStyle = isGroup
+    ? {
+        background: `rgba(${colorRgb}, 0.08)`,
+        borderBottom: `1px solid rgba(${colorRgb}, 0.3)`,
+        borderTop: `1px solid rgba(${colorRgb}, 0.12)`,
+      }
+    : undefined
+  const rowOnClick = isGroup ? onToggleCollapse : onClick
+
+  // 左侧 sticky 列：严格按 preview-html 的 .entity-name-cell / .group-label-cell
+  // position:sticky; left:0; z-index:6/30; 不透明背景; border-right
+  const leftCellClassName = cn(
+    'sticky left-0 z-30 flex items-center gap-2 px-3 border-r border-border shrink-0',
+    isGroup
+      ? 'cursor-pointer'
+      : cn('transition-colors', isSelected ? 'bg-primary/10' : 'hover:bg-muted/50'),
+  )
+  const leftCellStyle = {
+    width: `${SIDEBAR_W}px`,
+    backgroundColor: isGroup
+      ? 'var(--color-surface-1)'
+      : (isSelected ? undefined : 'var(--color-surface-1)'),
+  }
 
   return (
     <div
-      className={cn(
-        'relative flex h-7 z-[1] transition-colors cursor-pointer border-b border-border/20',
-        isSelected ? 'bg-primary/10' : 'hover:bg-muted/30',
-      )}
-      onClick={onClick}
+      className={rowClassName}
+      style={rowStyle}
+      onClick={rowOnClick}
     >
-      {/* 左侧 sticky 列：实体名（含 hover 联动提示） */}
+      {/* 左侧 sticky 列 */}
       <div
-        className={cn(
-          'group/entity sticky left-0 z-30 flex items-center gap-2 px-3 border-r border-border shrink-0 transition-colors',
-          isSelected ? 'bg-primary/10' : 'hover:bg-muted/50',
-        )}
-        style={{
-          width: `${SIDEBAR_W}px`,
-          backgroundColor: isSelected ? undefined : 'var(--color-surface-1)',
-        }}
+        className={leftCellClassName}
+        style={leftCellStyle}
+        data-tip={isGroup
+          ? (collapsed ? `展开${group!.name}` : `折叠${group!.name}`)
+          : undefined}
       >
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta.color }} />
-        <span className={cn('truncate flex-1 text-xs', isSelected ? 'text-primary font-medium' : 'text-muted-foreground group-hover/entity:text-text')}>{entity.name}</span>
-        {entity.isProtagonist && (
-          <span className="text-[9px] text-amber-500 font-semibold shrink-0">主</span>
+        {isGroup ? (
+          <>
+            <span className={cn('text-[9px] text-hint transition-transform w-2 inline-block shrink-0', collapsed && '-rotate-90')}>▼</span>
+            <span className="text-[10px] leading-none shrink-0" style={{ color }}>{icon}</span>
+            <span className="font-semibold text-xs text-text tracking-wide truncate flex-1">{group!.name}</span>
+            <span className="font-mono text-[10px] text-hint bg-surface-1 border border-border px-1.5 py-px rounded tabular-nums shrink-0">
+              {group!.entities.length}
+            </span>
+            <button
+              type="button"
+              className="ml-1 size-6 inline-flex items-center justify-center rounded border border-dashed border-border text-muted-foreground hover:border-primary hover:bg-primary/10 hover:text-primary transition-[color,background-color,border-color,transform] active:scale-[0.96] shrink-0"
+              onClick={(e) => {
+                e.stopPropagation()
+                onContextMenuGroupEmpty?.(group!.id)
+              }}
+              data-tip={`新建${group!.name}`}
+              aria-label={`新建${group!.name}`}
+            >
+              <Plus className="size-4" />
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta!.color }} />
+            <span className={cn('truncate flex-1 text-xs', isSelected ? 'text-primary font-medium' : 'text-muted-foreground')}>{entity!.name}</span>
+            {entity!.isProtagonist && (
+              <span className="text-[9px] text-amber-500 font-semibold shrink-0">主</span>
+            )}
+            <ChevronRight className={cn('size-3 text-muted-foreground shrink-0 transition-opacity', isSelected ? 'opacity-100 text-primary' : 'opacity-0')} />
+            {isSelected && <span className="absolute right-0 top-0 bottom-0 w-0.5 bg-primary" />}
+          </>
         )}
-        {/* hover 提示：点击查看详情 */}
-        <ChevronRight className={cn('size-3 text-muted-foreground shrink-0 transition-opacity', isSelected ? 'opacity-100 text-primary' : 'opacity-0 group-hover/entity:opacity-60')} />
-        {isSelected && <span className="absolute right-0 top-0 bottom-0 w-0.5 bg-primary" />}
       </div>
 
       {/* 右侧单元格容器 */}
-      <div className="relative flex">
+      <div
+        className="relative flex"
+        onContextMenu={isGroup ? (e) => {
+          if (!onContextMenuGroupEmpty) return
+          e.preventDefault()
+          onContextMenuGroupEmpty(group!.id)
+        } : undefined}
+      >
         {visibleRange.start > 1 && (
           <div aria-hidden="true" style={{ width: `${(visibleRange.start - 1) * cellWidth}px` }} />
         )}
-        {visibleChapterColumns.map((ch) => (
-          <Cell
-            key={ch}
-            entity={entity}
-            chapter={ch}
-            chapterTitle={titleMap.get(ch) ?? ''}
-            color={meta.color}
-            cellWidth={cellWidth}
-            onTogglePresent={onTogglePresent}
-            onContextMenu={(e) => {
-              if (!onContextMenuCell) return
-              e.preventDefault()
-              onContextMenuCell(entity.entityId, entity.name, entity.kind, ch, e.clientX, e.clientY)
-            }}
-          />
-        ))}
+        {isGroup ? (
+          visibleChapterColumns.map((ch) => (
+            <div key={ch} className="shrink-0 border-r border-border/40" style={{ width: `${cellWidth}px` }} />
+          ))
+        ) : (
+          visibleChapterColumns.map((ch) => (
+            <Cell
+              key={ch}
+              entity={entity!}
+              chapter={ch}
+              chapterTitle={titleMap!.get(ch) ?? ''}
+              color={meta!.color}
+              cellWidth={cellWidth}
+              onTogglePresent={onTogglePresent}
+              onContextMenu={(e) => {
+                if (!onContextMenuCell) return
+                e.preventDefault()
+                onContextMenuCell(entity!.entityId, entity!.name, entity!.kind, ch, e.clientX, e.clientY)
+              }}
+            />
+          ))
+        )}
         {visibleRange.end < maxChapter && (
           <div aria-hidden="true" style={{ width: `${(maxChapter - visibleRange.end) * cellWidth}px` }} />
         )}
-        {/* 跨度叠加层 */}
-        <EntityOverlay
-          entity={entity}
-          maxChapter={maxChapter}
-          cellWidth={cellWidth}
-          color={meta.color}
-          colorRgb={meta.colorRgb}
-          onEditSpan={onEditSpan}
-          onContextMenuCell={onContextMenuCell}
-          onEntityClick={onClick}
-        />
-        {/* 角色弧光转换点标记（叠加在角色行顶部边缘，不遮挡出场圆点） */}
-        {arcMarkers.length > 0 && arcMarkers.map((m, i) => {
-          const left = (m.chapter - 1) * cellWidth + cellWidth / 2 - 6
-          return (
-            <span
-              key={`arc-${i}`}
-              className="absolute top-0 z-[5] inline-flex items-center justify-center w-3 h-3 rounded-sm text-[8px] font-bold leading-none pointer-events-none ring-1 ring-surface-1"
-              style={{ left, color: m.color, background: m.bg }}
-              title={`${m.label}弧光 → ${m.stage}：${m.triggerEvent}`}
-            >
-              {m.label[0]}
-            </span>
-          )
-        })}
+        {/* 跨度叠加层 + 弧光标记（仅 entity 类型） */}
+        {!isGroup && entity && (
+          <>
+            <EntityOverlay
+              entity={entity}
+              maxChapter={maxChapter}
+              cellWidth={cellWidth}
+              color={meta!.color}
+              colorRgb={meta!.colorRgb}
+              onEditSpan={onEditSpan}
+              onContextMenuCell={onContextMenuCell}
+              onEntityClick={onClick ?? (() => {})}
+            />
+            {arcMarkers.length > 0 && arcMarkers.map((m, i) => {
+              const left = (m.chapter - 1) * cellWidth + cellWidth / 2 - 6
+              return (
+                <span
+                  key={`arc-${i}`}
+                  className="absolute top-0 z-[5] inline-flex items-center justify-center w-3 h-3 rounded-sm text-[8px] font-bold leading-none pointer-events-none ring-1 ring-surface-1"
+                  style={{ left, color: m.color, background: m.bg }}
+                  title={`${m.label}弧光 → ${m.stage}：${m.triggerEvent}`}
+                >
+                  {m.label[0]}
+                </span>
+              )
+            })}
+          </>
+        )}
       </div>
 
-      {/* 选中环 */}
-      {isSelected && <span className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-primary/40" />}
-
-      {/* 批注提示（inline position:absolute 覆盖 [data-tip]{position:relative}） */}
-      {entity.note && (
+      {/* 选中环 + 批注提示（仅 entity 类型） */}
+      {!isGroup && isSelected && (
+        <span className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-primary/40" />
+      )}
+      {!isGroup && entity?.note && (
         <div className="absolute right-1 top-1/2 -translate-y-1/2 text-amber-500 text-sm leading-none pointer-events-none opacity-70" style={{ position: 'absolute' }} data-tip={`批注：${entity.note}`}>·</div>
       )}
     </div>
@@ -1036,12 +1015,15 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
   if (symbol.type === 'empty') {
     return (
       <div
-        className="h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer"
+        className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-colors hover:bg-primary/8"
         style={{ width: `${cellWidth}px` }}
         data-tip={tip}
         onClick={handleCellClickEvent}
         onContextMenu={onContextMenu}
-      />
+      >
+        {/* hover 时显示 + 号提示可标记出场 */}
+        <span className="text-primary text-sm font-light opacity-0 group-hover/cell:opacity-60 transition-opacity pointer-events-none select-none leading-none">+</span>
+      </div>
     )
   }
 
@@ -1068,13 +1050,16 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
 
   return (
     <div
-      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30"
+      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 transition-colors hover:bg-muted/20"
       style={{ width: `${cellWidth}px` }}
       data-tip={tip}
       onClick={isReadOnlyMiddle ? undefined : handleCellClickEvent}
       onContextMenu={onContextMenu}
     >
-      <Symbol symbol={symbol} color={color} />
+      {/* hover 时符号放大 */}
+      <div className="transition-transform duration-150 ease-out group-hover/cell:scale-[1.25] origin-center">
+        <Symbol symbol={symbol} color={color} />
+      </div>
     </div>
   )
 }
@@ -1123,7 +1108,10 @@ function DraggablePresentCell({
         isDragging && 'opacity-30',
       )}
     >
-      <Symbol symbol={symbol} color={color} />
+      {/* hover 时符号放大（scale 1.3）+ drop-shadow 增强可见性 */}
+      <div className="transition-transform duration-150 ease-out group-hover/cell:scale-[1.3] origin-center">
+        <Symbol symbol={symbol} color={color} />
+      </div>
       {/* hover 时显示 GripVertical 手柄提示可拖拽 */}
       <GripVertical
         className="absolute left-0.5 top-1/2 -translate-y-1/2 size-2.5 text-foreground/30 opacity-0 group-hover/cell:opacity-100 transition-opacity pointer-events-none"
@@ -1415,31 +1403,42 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
   const tf = transform
     ? `translate(-50%, -50%) translate3d(${transform.x}px, 0px, 0)`
     : 'translate(-50%, -50%)'
+
+  // 伏笔端点透明化：让 Cell 的 ●/○ 符号作视觉，EndpointHandle 只做拖拽手柄
+  const isForeshadow = entityType === 'foreshadow'
+
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      // 拖拽手柄的 click/doubleClick 不冒泡到父级 EntityOverlay 色带：
-      // 防止拖动松手后的 click 误触发色带 onClick（选中实体）或 onDoubleClick（编辑跨度）。
-      onClick={(e) => e.stopPropagation()}
+      // doubleClick 仍阻止冒泡（防止拖拽手柄双击误触发编辑跨度）
       onDoubleClick={(e) => e.stopPropagation()}
       title={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
       data-tip={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
       className={cn(
-        'absolute top-1/2 size-3.5 rounded-full flex items-center justify-center cursor-ew-resize pointer-events-auto transition-transform z-[5] hover:scale-125',
+        'group/endpoint absolute top-1/2 rounded-full flex items-center justify-center cursor-ew-resize pointer-events-auto transition-[transform,box-shadow] duration-150 ease-out z-[5] hover:scale-140',
+        isForeshadow ? 'size-4' : 'size-3.5',
         isDragging && 'scale-150',
       )}
       style={{
         position: 'absolute',
         left,
-        background: color,
+        background: isForeshadow ? 'transparent' : color,
         transform: tf,
         touchAction: 'none',
-        boxShadow: '0 0 0 2px var(--color-surface-1), 0 0 4px rgba(0,0,0,0.3)',
+        boxShadow: isForeshadow ? 'none' : '0 0 0 2px var(--color-surface-1), 0 0 4px rgba(0,0,0,0.3)',
       }}
     >
-      {/* 伏笔端点不显示三角箭头：与单元格 ●/○ 符号叠加会错位，仅保留圆形拖拽手柄 */}
+      {/* hover 时增强 glow（非伏笔端点）*/}
+      {!isForeshadow && (
+        <span
+          className="absolute inset-0 rounded-full opacity-0 group-hover/endpoint:opacity-100 transition-opacity duration-150 pointer-events-none"
+          style={{ boxShadow: `0 0 0 4px ${color}22, 0 0 12px ${color}66` }}
+          aria-hidden
+        />
+      )}
+      {/* conflict/faction 端点显示三角箭头；伏笔端点不显示（Cell 的 ●/○ 已作视觉） */}
       {entityType !== 'foreshadow' && (
         <span className="text-[8px] text-white leading-none font-bold select-none">
           {end === 'start' ? '◀' : '▶'}

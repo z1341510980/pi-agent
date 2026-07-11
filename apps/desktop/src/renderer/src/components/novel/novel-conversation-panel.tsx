@@ -14,9 +14,8 @@
  */
 
 import { useMemo, useCallback, type ReactElement } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Workflow, MessagesSquare, RotateCcw, LayoutGrid, Sparkles, type LucideIcon } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { Badge } from '@/components/ui/badge'
 import { ErrorCard } from '@/components/chat/error-card'
 import { cn } from '@/lib/utils'
 import {
@@ -41,13 +40,14 @@ export type NovelFlowType = 'workflow' | 'discussion' | 'reverse' | 'arrange'
 interface FlowTab {
   type: NovelFlowType
   label: string
+  icon: LucideIcon
 }
 
 const FLOW_TABS: FlowTab[] = [
-  { type: 'workflow', label: '工作流' },
-  { type: 'discussion', label: '群聊' },
-  { type: 'reverse', label: '反推' },
-  { type: 'arrange', label: '矩阵编排' },
+  { type: 'workflow', label: '工作流', icon: Workflow },
+  { type: 'discussion', label: '群聊', icon: MessagesSquare },
+  { type: 'reverse', label: '反推', icon: RotateCcw },
+  { type: 'arrange', label: '矩阵编排', icon: LayoutGrid },
 ]
 
 // ── 阶段标签 ──
@@ -286,48 +286,61 @@ export function NovelConversationPanel({
       ? '点击"开始"让 AI 自动编排本章矩阵实体'
       : '点击"开始"启动创作流程'
 
+  // 空状态标题
+  const emptyTitle = isReverseMode
+    ? '反推实体'
+    : isArrangeMode
+      ? 'AI 矩阵编排'
+      : '开始创作'
+  const isEmpty = messages.length === 0
+
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* ── 流程 Tab ── */}
-      <header className="shrink-0 border-b border-border bg-surface-1">
-        <div className="flex items-center gap-1 px-2 pt-2">
-          {FLOW_TABS.map((tab) => (
-            <button
-              key={tab.type}
-              onClick={() => !isRunning && onFlowTypeChange(tab.type)}
-              disabled={isRunning}
-              className={cn(
-                'px-3 py-1.5 text-xs font-medium rounded-t-md transition-colors',
-                'disabled:cursor-not-allowed disabled:opacity-50',
-                flowType === tab.type
-                  ? 'bg-background text-text border-x border-t border-border -mb-px'
-                  : 'text-muted-foreground hover:text-text hover:bg-surface-2',
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
+      {/* ── 流程 Tab：底部主色下划线 active 样式 + 图标（对齐 HTML 原型 flow-tabs）── */}
+      <header className="shrink-0 border-b border-border/60 bg-surface-1">
+        <div className="flex items-center gap-0 px-2">
+          {FLOW_TABS.map((tab) => {
+            const Icon = tab.icon
+            return (
+              <button
+                key={tab.type}
+                onClick={() => !isRunning && onFlowTypeChange(tab.type)}
+                disabled={isRunning}
+                className={cn(
+                  'relative inline-flex items-center gap-1 px-2.5 h-[30px] text-[11px] font-medium transition-colors',
+                  'disabled:cursor-not-allowed disabled:opacity-50',
+                  'active:scale-[0.96]',
+                  flowType === tab.type
+                    ? 'text-primary border-b-2 border-primary -mb-px'
+                    : 'text-muted-foreground border-b-2 border-transparent hover:text-text',
+                )}
+              >
+                <Icon className="size-3" />
+                {tab.label}
+              </button>
+            )
+          })}
         </div>
-        {/* 状态栏 */}
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-background border-t border-border">
+        {/* 状态栏：独立圆角卡片样式（对齐原型 status-bar + status-badge 胶囊 + 语义状态色） */}
+        <div className="mx-2 mt-2 mb-3 flex items-center gap-2 px-3 py-1.5 bg-surface-2 rounded-lg">
           {chapterNumber != null && (
-            <Badge variant="secondary" className="text-[10px] shrink-0 tabular-nums">
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-surface-3 text-text-secondary text-[10px] font-medium tabular-nums shrink-0">
               第 {chapterNumber} 章
-            </Badge>
+            </span>
           )}
           <div className="ml-auto flex items-center gap-1.5">
             {isRunning && (
               <motion.span
                 animate={{ opacity: [0.5, 1, 0.5] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
-                className="flex items-center gap-1 text-[11px] text-muted-foreground"
+                className="flex items-center gap-1 text-[11px] text-primary"
               >
                 <Loader2 className="size-3 animate-spin" />
                 {PHASE_LABELS[phase] ?? phase}
               </motion.span>
             )}
             {!isRunning && isCompleted && (
-              <span className="text-[11px] text-emerald-600">
+              <span className="text-[11px] text-success">
                 {completedActionLabel}完成
               </span>
             )}
@@ -342,10 +355,21 @@ export function NovelConversationPanel({
       </header>
 
       {/* ── 消息流 ── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {error ? (
           <div className="p-3">
             <ErrorCard message={error} onRetry={onRetry} onDismiss={onDismissError} />
+          </div>
+        ) : isEmpty ? (
+          /* 空状态：精致卡片（图标 + 标题 + 描述），对齐整体视觉风格 */
+          <div className="flex flex-1 items-center justify-center p-6">
+            <div className="text-center max-w-[240px]">
+              <div className="mx-auto mb-3 size-12 rounded-xl bg-primary/8 flex items-center justify-center shadow-sm">
+                <Sparkles className="size-6 text-primary" />
+              </div>
+              <h4 className="text-sm font-semibold text-text mb-1.5">{emptyTitle}</h4>
+              <p className="text-xs text-subtle leading-relaxed">{emptyHint}</p>
+            </div>
           </div>
         ) : (
           <ConversationStream

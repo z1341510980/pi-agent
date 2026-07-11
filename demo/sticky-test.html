@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Sticky 测试</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: sans-serif; font-size: 13px; }
+
+  /* 模拟 matrix-scroll */
+  .scroll-container {
+    position: relative;
+    overflow: auto;
+    width: 600px;
+    height: 300px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+  }
+
+  /* 模拟内容容器（无 position:relative） */
+  .content {
+    width: 2000px;
+  }
+
+  /* 模拟标尺行 */
+  .ruler-row {
+    display: flex;
+    height: 40px;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  .ruler-row .left-cell {
+    width: 160px;
+    min-width: 160px;
+    position: sticky;
+    left: 0;
+    z-index: 30;
+    background: #f9fafb;
+    border-right: 1px solid #e5e7eb;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+  }
+  .ruler-row .ch-cell {
+    width: 40px;
+    min-width: 40px;
+    border-right: 1px solid #f0f0f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 模拟分组行（与实体行完全相同的结构） */
+  .matrix-row {
+    display: flex;
+    height: 28px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .matrix-row .left-cell {
+    width: 160px;
+    min-width: 160px;
+    position: sticky;
+    left: 0;
+    z-index: 30;
+    background: #fff;
+    border-right: 1px solid #e5e7eb;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+  }
+  .matrix-row.group .left-cell {
+    background: #f9fafb;
+    font-weight: 600;
+  }
+  .matrix-row .ch-cell {
+    width: 40px;
+    min-width: 40px;
+    border-right: 1px solid #f0f0f0;
+  }
+
+  /* 测试用 isolate */
+  .scroll-container.isolate-test {
+    isolation: isolate;
+  }
+</style>
+</head>
+<body>
+  <h3 style="margin: 10px;">无 isolate（对照）</h3>
+  <div class="scroll-container" id="test1">
+    <div class="content">
+      <div class="ruler-row">
+        <div class="left-cell">实体 / 章节</div>
+        <div class="ch-cell">1</div><div class="ch-cell">2</div><div class="ch-cell">3</div>
+        <div class="ch-cell">4</div><div class="ch-cell">5</div><div class="ch-cell">6</div>
+        <div class="ch-cell">7</div><div class="ch-cell">8</div><div class="ch-cell">9</div>
+        <div class="ch-cell">10</div><div class="ch-cell">11</div><div class="ch-cell">12</div>
+      </div>
+      <div class="matrix-row group">
+        <div class="left-cell">▼ 角色 (3)</div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+      </div>
+      <div class="matrix-row">
+        <div class="left-cell">● 林晚星</div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+      </div>
+      <div class="matrix-row">
+        <div class="left-cell">● 苏墨白</div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin: 10px;">有 isolate（测试）</h3>
+  <div class="scroll-container isolate-test" id="test2">
+    <div class="content">
+      <div class="ruler-row">
+        <div class="left-cell">实体 / 章节</div>
+        <div class="ch-cell">1</div><div class="ch-cell">2</div><div class="ch-cell">3</div>
+        <div class="ch-cell">4</div><div class="ch-cell">5</div><div class="ch-cell">6</div>
+        <div class="ch-cell">7</div><div class="ch-cell">8</div><div class="ch-cell">9</div>
+        <div class="ch-cell">10</div><div class="ch-cell">11</div><div class="ch-cell">12</div>
+      </div>
+      <div class="matrix-row group">
+        <div class="left-cell">▼ 角色 (3)</div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+      </div>
+      <div class="matrix-row">
+        <div class="left-cell">● 林晚星</div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+      </div>
+      <div class="matrix-row">
+        <div class="left-cell">● 苏墨白</div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+        <div class="ch-cell"></div><div class="ch-cell"></div><div class="ch-cell"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
