@@ -3,6 +3,12 @@ import { success, failure } from '../lib/api-response.js'
 import { ErrorCode } from '@repo/shared/errors'
 import { search } from '../plugins/web-search-plugin/search-service.js'
 
+/** 安全读取环境变量整数，非法值回退到 fallback */
+function envInt(name: string, fallback: number): number {
+  const v = Number(process.env[name])
+  return Number.isFinite(v) && v > 0 ? v : fallback
+}
+
 export const searchRoute: FastifyPluginAsync = async (app) => {
   // GET /api/search?q={query}&max={n}
   app.get('/api/search', async (request, reply) => {
@@ -24,9 +30,9 @@ export const searchRoute: FastifyPluginAsync = async (app) => {
     const result = await search(query, {
       searxngUrl: process.env.SEARXNG_URL ?? 'http://localhost:8888',
       maxResults,
-      fetchTimeoutMs: Number(process.env.WEB_SEARCH_FETCH_TIMEOUT ?? 8000),
-      maxContentChars: Number(process.env.WEB_SEARCH_MAX_CONTENT_CHARS ?? 2000),
-      concurrency: Number(process.env.WEB_SEARCH_CONCURRENCY ?? 3),
+      fetchTimeoutMs: envInt('WEB_SEARCH_FETCH_TIMEOUT', 8000),
+      maxContentChars: envInt('WEB_SEARCH_MAX_CONTENT_CHARS', 2000),
+      concurrency: envInt('WEB_SEARCH_CONCURRENCY', 3),
     })
 
     return success(result, request.traceId)

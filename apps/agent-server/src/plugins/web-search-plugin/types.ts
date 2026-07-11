@@ -54,6 +54,7 @@ export interface SearchResultItem {
 export interface SearchResponse {
   ok: boolean
   results: SearchResultItem[]
+  /** 返回的结果条数 */
   total: number
   error?: string
 }

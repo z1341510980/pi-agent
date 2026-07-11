@@ -44,6 +44,7 @@ export async function fetchUrl(
     })
 
     if (response.statusCode !== 200) {
+      await response.body.dump()
       return {
         ok: false,
         url,

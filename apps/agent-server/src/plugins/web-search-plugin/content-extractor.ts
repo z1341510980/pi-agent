@@ -30,8 +30,9 @@ export async function extractContent(
     return { ok: false, error: 'HTML 内容为空' }
   }
 
+  let dom: JSDOM | null = null
   try {
-    const dom = new JSDOM(html, { url })
+    dom = new JSDOM(html, { url })
     const reader = new Readability(dom.window.document)
     const article = reader.parse()
 
@@ -55,5 +56,7 @@ export async function extractContent(
       ok: false,
       error: `正文提取失败: ${(err as Error).message}`,
     }
+  } finally {
+    dom?.window.close()
   }
 }
