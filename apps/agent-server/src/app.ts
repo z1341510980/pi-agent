@@ -32,6 +32,7 @@ import { i18nRoute } from './routes/i18n.route.js'
 import { cronRoute } from './routes/cron.route.js'
 import { workspaceRoute } from './routes/workspace.route.js'
 import { skillsRoute } from './routes/skills.route.js'
+import { searchRoute } from './routes/search.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { Gate } from './core/tool/gate.js'
@@ -153,6 +154,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(cronRoute)
   await app.register(workspaceRoute)
   await app.register(skillsRoute)
+  await app.register(searchRoute)
 
   return app
 }
