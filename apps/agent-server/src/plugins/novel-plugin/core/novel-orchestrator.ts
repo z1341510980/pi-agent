@@ -38,6 +38,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 import type { NovelStore } from './novel-store.js'
 import type { NovelSessionFactory } from './novel-session.js'
@@ -63,45 +64,27 @@ import {
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
 export type { CreationOptions, CreationResult } from '../../../core/agent/chapter-finalizer.js'
 
+interface CreationRunContext {
+  arrangedEntities?: ArrangedEntity
+  directorOutput?: string
+  directorTask?: NarrativeTask
+  rhythmSuggestion?: RhythmSuggestion
+  semiLayerSharedCache: { key: string; value: string } | null
+}
+
 export class NovelOrchestrator {
-  /** 用户在检查点期间发送的创作指令（供下一个 Agent 使用后清空） */
-  private userMessages: string[] = []
-  /** 本章已编排实体约束（由 createChapterWithFlow 设置，runAgent 读取后清空） */
-  private currentArrangedEntities?: ArrangedEntity
-  /** Director 的实时输出（方案 A：让 Director 规划真正注入 Writer）
-   *  Director 完成并经检查点确认后暂存，runAgent 构建 Writer 的 SEMI 层 chapter-instruction
-   *  模板时用作 {{narrative_task}}，替代原来的章纲字段，让 Writer 真正基于导演规划创作。
-   *  流程结束（含 rewrite 递归返回后）清空。
-   *
-   *  包含两个字段：
-   *  - outputText: Director 的完整规划文本（用于注入 {{narrative_task}} 占位符）
-   *  - task: 从 Director 输出中解析的结构化 NarrativeTask（含 type/priority/climaxTarget 等）
-   *         让 14 种 NarrativeTaskType（create_suspense/create_reversal 等）真正传递到下游
-   */
-  private currentDirectorOutput?: string
-  private currentDirectorTask?: NarrativeTask
-  /** 本章节奏建议（由 createChapterWithFlow 计算，runAgent 构建约束时注入 rhythmConstraint） */
-  private currentRhythmSuggestion?: RhythmSuggestion
+  /** PostWriteGuard 自动重写上限：超过则降级交给 Reviewer 人工判断，避免无限递归 */
+  private static readonly MAX_GUARD_REWRITE = 2
+  /** 每次 create-flow 独立的异步运行上下文，防止并发章节互相覆盖状态。 */
+  private readonly runStorage = new AsyncLocalStorage<CreationRunContext>()
+  /** 检查点请求来自另一条 HTTP 请求，按项目和章节暂存用户指令。 */
+  private readonly pendingUserMessages = new Map<string, string[]>()
   /** 小说角色温度配置存储（runAgent 中按角色合并温度） */
   private readonly agentConfigStore: NovelAgentConfigStore
   /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
   private readonly memoryGenerator?: NovelMemoryGenerator
   /** 章节收尾逻辑（Memory 阶段 + 实体同步 + 快照 + 持久化），workflow 和 discussion 共用 */
   private readonly finalizer: ChapterFinalizer
-  /**
-   * 单章 SEMI 层 shared 前缀缓存（projectId|chapterNumber → shared 字符串）
-   *
-   * "共享前缀 + Agent 专属后缀"分离：shared 部分跨 Agent 完全相同，
-   * 通过 prefixUserMessage 数组第一条注入，打 cache_control breakpoint 后
-   * 能跨 Agent 命中 prompt cache（Director 写入 → Writer/Reviewer/Reviser 命中）。
-   *
-   * suffix 部分各 Agent 不同，每次调用实时构建（内容少，无需缓存）。
-   *
-   * 失效场景：检查点 reject / rewrite 后重新进入 createChapterWithFlow 时清空；
-   * Memory 阶段由 ChapterFinalizer.finalize 处理，不经过此缓存。
-   */
-  private semiLayerSharedCache: { key: string; value: string } | null = null
-
   constructor(
     private store: NovelStore,
     private memoryStore: NovelMemoryStore,
@@ -131,21 +114,42 @@ export class NovelOrchestrator {
    * 设置用户在检查点期间发送的创作指令
    * 这些指令会在下一个 Agent 执行时附加到其输入中，随后清空
    */
-  setUserMessages(messages: string[]): void {
-    this.userMessages = messages.slice()
+  setUserMessages(projectId: string, chapterNumber: number, messages: string[]): void {
+    this.pendingUserMessages.set(this.runKey(projectId, chapterNumber), messages.slice())
   }
 
   async createChapterWithFlow(
     projectId: string,
     chapterNumber: number,
     options: CreationOptions,
+    /** PostWriteGuard 自动重写计数（内部递归用，外部调用不传） */
+    guardRewriteCount = 0,
   ): Promise<CreationResult> {
+    if (this.runStorage.getStore()) {
+      return this.createChapterWithFlowInContext(projectId, chapterNumber, options, guardRewriteCount)
+    }
+    return this.runStorage.run(
+      {
+        arrangedEntities: options.arrangedEntities,
+        semiLayerSharedCache: null,
+      },
+      () => this.createChapterWithFlowInContext(projectId, chapterNumber, options, guardRewriteCount),
+    )
+  }
+
+  private async createChapterWithFlowInContext(
+    projectId: string,
+    chapterNumber: number,
+    options: CreationOptions,
+    guardRewriteCount: number,
+  ): Promise<CreationResult> {
+    const run = this.requireRunContext()
     // 将本章编排实体约束暂存到实例字段，供 runAgent 构建 SEMI 层时读取。
     // 采用临时字段方案是最小改动：无需改 runAgent 签名，也无需沿调用链透传。
-    this.currentArrangedEntities = options.arrangedEntities
+    run.arrangedEntities = options.arrangedEntities
     // 清空单章 SEMI shared 缓存：每次进入 createChapterWithFlow（含 rewrite 递归）都重新构建，
     // 避免上一章/上一次创作的 shared 字符串残留导致 LLM 缓存条目错配。
-    this.semiLayerSharedCache = null
+    run.semiLayerSharedCache = null
     try {
       // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）
       const rhythmController = new RhythmController()
@@ -174,7 +178,7 @@ export class NovelOrchestrator {
         { activeConflicts, pendingForeshadows },
       )
       // 暂存节奏建议：runAgent 构建 ChapterConstraints 时注入 rhythmConstraint
-      this.currentRhythmSuggestion = rhythmSuggestion
+      run.rhythmSuggestion = rhythmSuggestion
 
       // 推送节奏建议详情，让用户了解本章节奏规划（气泡展示）
       this.emitProgress(options, 'directing', 'phase_change', {
@@ -237,38 +241,38 @@ export class NovelOrchestrator {
       // 这是方案 A 的核心：让 Director 的规划真正成为 Writer 的创作指导。
       // 注入前清洗破折号：Director 输出可能含破折号，注入 Writer 后会被模仿，
       // 在注入点清洗切断示范传播链。
-      this.currentDirectorOutput = this.promptBuilder.stripEmDash(directorResult)
+      run.directorOutput = this.promptBuilder.stripEmDash(directorResult)
       // 解析 Director 输出为结构化 NarrativeTask，让 14 种任务类型真正传递到 Writer。
       // Director 提示词要求输出"任务类型"字段（如 create_suspense/escalate_conflict），
       // parseDirectorTask 从输出文本中提取任务类型、优先级、高潮目标等执行参数。
-      this.currentDirectorTask = this.parseDirectorTask(directorResult, rhythmSuggestion)
+      run.directorTask = this.parseDirectorTask(directorResult, rhythmSuggestion)
 
       // 推送叙事任务详情，让用户了解 Director 解析出的结构化任务（气泡展示）
       this.emitProgress(options, 'directing', 'phase_change', {
         message: '叙事任务已解析',
         detail: {
           kind: 'narrative_task',
-          taskType: this.currentDirectorTask.type,
-          priority: this.currentDirectorTask.priority,
-          targetEntity: this.currentDirectorTask.targetEntity,
-          climaxTarget: this.currentDirectorTask.climaxTarget,
-          suspenseDuration: this.currentDirectorTask.suspenseDuration,
-          expectedIntensityDelta: this.currentDirectorTask.expectedIntensityDelta,
+          taskType: run.directorTask.type,
+          priority: run.directorTask.priority,
+          targetEntity: run.directorTask.targetEntity,
+          climaxTarget: run.directorTask.climaxTarget,
+          suspenseDuration: run.directorTask.suspenseDuration,
+          expectedIntensityDelta: run.directorTask.expectedIntensityDelta,
         },
       })
 
       // v0.2：Director 规划通过后，创建本章钩子实体（替代只填枚举字段）
-      if (this.currentDirectorTask?.chapterEndingHook &&
-          this.currentDirectorTask.chapterEndingHook !== 'none' &&
-          this.currentDirectorTask.chapterEndingHookDescription) {
+      if (run.directorTask?.chapterEndingHook &&
+          run.directorTask.chapterEndingHook !== 'none' &&
+          run.directorTask.chapterEndingHookDescription) {
         try {
           const hookId = randomUUID()
           this.store.createHook({
             id: hookId,
             projectId,
             chapterNumber,
-            hookType: this.currentDirectorTask.chapterEndingHook,
-            description: this.currentDirectorTask.chapterEndingHookDescription,
+            hookType: run.directorTask.chapterEndingHook,
+            description: run.directorTask.chapterEndingHookDescription,
             status: 'thrown',
             fulfilledAtChapter: null,
             fulfilledDescription: null,
@@ -276,7 +280,7 @@ export class NovelOrchestrator {
             linkedConflictId: null,
           })
           this.context.logger.info(
-            { projectId, chapterNumber, hookId, hookType: this.currentDirectorTask.chapterEndingHook },
+            { projectId, chapterNumber, hookId, hookType: run.directorTask.chapterEndingHook },
             'v0.2: 已创建本章钩子实体',
           )
         } catch (err) {
@@ -298,8 +302,8 @@ export class NovelOrchestrator {
         const pushbackHint = directorPushbackCount === 0
           ? '\n\n---\n\n## Writer 推回机制\n\n如果你认为叙事任务存在明显逻辑问题（如角色在此场景不会这样做、任务与前置剧情矛盾、约束条件不合理），可以在输出开头标记 `[DIRECTOR_PUSHBACK]` 并用 1-2 句话说明原因。系统会让 Director 重新规划。如果任务没有问题，直接创作正文即可。'
           : ''
-        const directorPlanBlock = this.currentDirectorOutput
-          ? `\n\n---\n\n## 本章叙事任务（Director 规划，必须遵循）\n\n${this.currentDirectorOutput}`
+        const directorPlanBlock = run.directorOutput
+          ? `\n\n---\n\n## 本章叙事任务（Director 规划，必须遵循）\n\n${run.directorOutput}`
           : ''
         writerResult = await this.runAgent('writer', projectId, chapterNumber,
           `请根据下方"本章叙事任务"中的导演规划，创作第 ${chapterNumber} 章正文。${directorPlanBlock}${pushbackHint}`,
@@ -320,19 +324,19 @@ export class NovelOrchestrator {
 
           // 将 Writer 的推回原因注入 Director，重新规划
           // 注入前清洗破折号：Writer 输出的推回原因可能含破折号
-          this.currentDirectorOutput = undefined
+          run.directorOutput = undefined
           const rewriteDirectorResult = await this.runAgent('director', projectId, chapterNumber,
             `写作 Agent 对之前的叙事任务提出了异议，请重新规划第 ${chapterNumber} 章的叙事任务。\n\n---\n\n## 写作 Agent 的推回原因\n\n${this.promptBuilder.stripEmDash(pushbackReason)}\n\n---\n\n## 节奏建议\n\n${JSON.stringify(rhythmSuggestion, null, 2)}${outlineHint}`,
             options,
           )
-          this.currentDirectorOutput = this.promptBuilder.stripEmDash(rewriteDirectorResult)
-          this.currentDirectorTask = this.parseDirectorTask(rewriteDirectorResult, rhythmSuggestion)
+          run.directorOutput = this.promptBuilder.stripEmDash(rewriteDirectorResult)
+          run.directorTask = this.parseDirectorTask(rewriteDirectorResult, rhythmSuggestion)
           this.emitProgress(options, 'directing', 'phase_change', {
             message: '叙事任务已根据写作 Agent 的反馈调整',
             detail: {
               kind: 'narrative_task',
-              taskType: this.currentDirectorTask.type,
-              priority: this.currentDirectorTask.priority,
+              taskType: run.directorTask.type,
+              priority: run.directorTask.priority,
               pushback: true,
             },
           })
@@ -346,6 +350,33 @@ export class NovelOrchestrator {
 
       // Phase 3: Reviewer
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
+
+      // ── PostWriteGuard：正文后确定性检测（借鉴 oh-story-claudecode）──
+      // 在 Reviewer 之前做确定性检测，捕获模型退化等致命问题，避免浪费 Reviewer token
+      const postWriteGuard = this.runPostWriteGuard(writerResult, projectId, chapterNumber)
+      if (postWriteGuard.shouldRewrite) {
+        if (guardRewriteCount >= NovelOrchestrator.MAX_GUARD_REWRITE) {
+          // 超过重写上限：降级交给 Reviewer 人工判断，避免无限递归
+          this.context.logger.warn(
+            { projectId, chapterNumber, guardRewriteCount, reason: postWriteGuard.reason, details: postWriteGuard.details },
+            'PostWriteGuard 重写已达上限，降级交给 Reviewer',
+          )
+          this.emitProgress(options, 'reviewing', 'phase_change', {
+            message: `PostWriteGuard 已重写 ${guardRewriteCount} 次仍未通过（${postWriteGuard.reason}），交给审稿 Agent 人工判断`,
+          })
+          // 不重写，继续走 Reviewer 流程
+        } else {
+          this.emitProgress(options, 'rewriting', 'phase_change', {
+            message: `PostWriteGuard 检测到致命问题，自动触发重写（第 ${guardRewriteCount + 1}/${NovelOrchestrator.MAX_GUARD_REWRITE} 次）：${postWriteGuard.reason}`,
+          })
+          this.context.logger.warn(
+            { projectId, chapterNumber, guardRewriteCount, reason: postWriteGuard.reason, details: postWriteGuard.details },
+            'PostWriteGuard 触发自动重写',
+          )
+          return this.createChapterWithFlow(projectId, chapterNumber, options, guardRewriteCount + 1)
+        }
+      }
+
       // 对 Writer 输出做防 AI 腔扫描，把命中模式作为 Reviewer 的评审依据
       // （role-reviewer.md 提示词已承诺收到【防 AI 腔扫描】报告时需逐条给修改建议）
       // ⚠️ 扫描和注入 Reviewer 的正文必须是同一个版本（writerResult 原始版），
@@ -423,10 +454,8 @@ export class NovelOrchestrator {
       // Phase 5: Memory（收尾逻辑委托给 ChapterFinalizer）
       // 复用 SEMI 层 shared 前缀缓存：Memory Agent 注入 shared 前缀后能跨 Agent 命中
       // prompt cache（director/writer/reviewer 已写入缓存），显著降低 miss tokens。
-      // ⚠️ 类型断言绕过 TS 控制流收窄：上方 `this.semiLayerSharedCache = null` 让 TS
-      // 在本方法内把属性类型收窄为 null，导致 `.key` 访问报 never 错误。实际属性声明
-      // 类型为 `{ key: string; value: string } | null`，runAgent 中已正常赋值。
-      const sharedCache = this.semiLayerSharedCache as { key: string; value: string } | null
+      // runAgent 会在异步调用中写入缓存，TS 控制流无法感知该副作用。
+      const sharedCache = run.semiLayerSharedCache as { key: string; value: string } | null
       const sharedContextPrefix = sharedCache && sharedCache.key === `${projectId}|${chapterNumber}`
         ? sharedCache.value
         : undefined
@@ -436,7 +465,7 @@ export class NovelOrchestrator {
         content: finalContent,
         options,
         arrangedEntities: options.arrangedEntities,
-        directorTask: this.currentDirectorTask,
+        directorTask: run.directorTask,
         chapterId: chapter?.id ?? null,
         sharedContextPrefix,
       })
@@ -445,12 +474,81 @@ export class NovelOrchestrator {
       this.emitProgress(options, 'error', 'error', { message })
       return { status: 'error', error: message }
     } finally {
-      // 流程结束（含 rewrite 递归返回后）清理编排约束和 Director 输出，避免泄漏到下一次创作
-      this.currentArrangedEntities = undefined
-      this.currentDirectorOutput = undefined
-      this.currentDirectorTask = undefined
-      this.currentRhythmSuggestion = undefined
+      // AsyncLocalStorage 会在本次 create-flow Promise 结束后释放运行上下文。
     }
+  }
+
+  /**
+   * PostWriteGuard：正文后确定性检测
+   *
+   * 在 Reviewer 之前运行，捕获模型退化等致命问题，避免浪费 Reviewer token。
+   * 检测项：
+   * 1. 模型退化（复读/截断/拒绝/工程词泄漏）→ 自动重写
+   * 2. 字数严重偏离（< 50% 或 > 200% 目标字数）→ 自动重写
+   * 3. 大纲边界检查（简化版：检测是否包含工程词）
+   */
+  private runPostWriteGuard(
+    content: string,
+    projectId: string,
+    chapterNumber: number,
+  ): { shouldRewrite: boolean; reason: string; details?: string } {
+    // 1. 模型退化检测（复用 cliche-scanner 的模型退化模式）
+    const clicheHits = scanCliches(content)
+    const modelDegradationHits = clicheHits.filter(
+      h => h.severity === 'high' && (
+        h.pattern === 'model_repetition' ||
+        h.pattern === 'model_refusal' ||
+        h.pattern === 'engineering_leak' ||
+        h.pattern === 'engineering_words_cn'
+      ),
+    )
+
+    if (modelDegradationHits.length > 0) {
+      const hitNames = modelDegradationHits.map(h => `${h.name}(${h.count}次)`).join(', ')
+      return {
+        shouldRewrite: true,
+        reason: '模型退化检测命中',
+        details: hitNames,
+      }
+    }
+
+    // 2. 字数检测
+    const wordCount = content.replace(/\s/g, '').length
+    const project = this.store.getProject(projectId)
+    if (project) {
+      // 复用 prompt-builder 的 computeChapterTargetWords（含节奏系数），
+      // 确保 Guard 的目标字数与 Writer 提示词注入的 target_words 一致。
+      const targetWords = this.promptBuilder.computeChapterTargetWords(
+        project,
+        this.requireRunContext().rhythmSuggestion?.rhythm,
+      )
+
+      // 字数严重偏离检测（< 50% 或 > 200%）
+      if (wordCount < targetWords * 0.5) {
+        return {
+          shouldRewrite: true,
+          reason: '字数严重不足',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（仅 ${Math.round((wordCount / targetWords) * 100)}%）`,
+        }
+      }
+      if (wordCount > targetWords * 2) {
+        return {
+          shouldRewrite: true,
+          reason: '字数严重超标',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
+        }
+      }
+
+      // 字数偏差警告（不触发重写，但记录日志）
+      if (wordCount < targetWords * 0.75 || wordCount > targetWords * 1.3) {
+        this.context.logger.warn(
+          { projectId, chapterNumber, wordCount, targetWords, ratio: Math.round((wordCount / targetWords) * 100) },
+          'PostWriteGuard：字数偏差较大（未触发重写，但需 Reviewer 关注）',
+        )
+      }
+    }
+
+    return { shouldRewrite: false, reason: '' }
   }
 
   /** 运行单个 Agent（通过 Pi SDK Session，流式推送 delta） */
@@ -469,6 +567,7 @@ export class NovelOrchestrator {
       phase?: CreationPhase
     },
   ): Promise<string> {
+    const run = this.requireRunContext()
     const config = NOVEL_AGENT_CONFIGS[agentType]
     // agentType → 阶段映射（config 无 phase 字段，这里显式维护）
     const phaseMap: Record<NovelAgentType, CreationPhase> = {
@@ -497,12 +596,14 @@ export class NovelOrchestrator {
 
     // 附加用户在检查点期间发送的创作指令（消费后清空）
     // 保留副本用于日志记录
-    const userInstructionsForLog = this.userMessages.slice()
-    if (this.userMessages.length > 0) {
+    const pendingMessageKey = this.runKey(projectId, chapterNumber)
+    const userMessages = this.pendingUserMessages.get(pendingMessageKey) ?? []
+    this.pendingUserMessages.delete(pendingMessageKey)
+    const userInstructionsForLog = userMessages.slice()
+    if (userMessages.length > 0) {
       // 注入前清洗破折号：用户指令可能含破折号，防止成为 LLM 的示范
-      const userInstructions = this.userMessages.map((m, i) => `${i + 1}. ${this.promptBuilder.stripEmDash(m)}`).join('\n')
+      const userInstructions = userMessages.map((m, i) => `${i + 1}. ${this.promptBuilder.stripEmDash(m)}`).join('\n')
       inputText += `\n\n## 用户创作指令\n用户在创作过程中提出以下指令，请在创作中予以考虑：\n${userInstructions}`
-      this.userMessages = []
     }
 
     // 对输出自然语言的 Agent（director/writer/reviser/reviewer），在 DYNAMIC 层末尾追加铁律提醒。
@@ -535,7 +636,7 @@ export class NovelOrchestrator {
       priority: 'medium',
     }
     const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
-      projectId, chapterNumber, this.currentRhythmSuggestion,
+      projectId, chapterNumber, run.rhythmSuggestion,
     )
 
     // 推送章节约束详情（仅 Director 首次构建时发射，避免重复）
@@ -568,8 +669,8 @@ export class NovelOrchestrator {
     // shared 部分：单章缓存（跨 Agent 复用，projectId|chapterNumber 为 key）
     const sharedCacheKey = `${projectId}|${chapterNumber}`
     let sharedContext: string
-    if (this.semiLayerSharedCache && this.semiLayerSharedCache.key === sharedCacheKey) {
-      sharedContext = this.semiLayerSharedCache.value
+    if (run.semiLayerSharedCache && run.semiLayerSharedCache.key === sharedCacheKey) {
+      sharedContext = run.semiLayerSharedCache.value
       this.context.logger.debug(
         { agentType, projectId, chapterNumber, sharedLength: sharedContext.length },
         'SEMI 层 shared 前缀命中单章缓存',
@@ -580,9 +681,9 @@ export class NovelOrchestrator {
         chapterNumber,
         narrativeTask,
         constraints,
-        this.currentArrangedEntities,
+        run.arrangedEntities,
       )
-      this.semiLayerSharedCache = { key: sharedCacheKey, value: sharedContext }
+      run.semiLayerSharedCache = { key: sharedCacheKey, value: sharedContext }
       this.context.logger.debug(
         { agentType, projectId, chapterNumber, sharedLength: sharedContext.length },
         'SEMI 层 shared 前缀已写入单章缓存',
@@ -595,7 +696,7 @@ export class NovelOrchestrator {
       chapterNumber,
       narrativeTask,
       constraints,
-      this.currentArrangedEntities,
+      run.arrangedEntities,
       agentType,
     )
 
@@ -1067,5 +1168,15 @@ export class NovelOrchestrator {
     }
 
     return task
+  }
+
+  private requireRunContext(): CreationRunContext {
+    const run = this.runStorage.getStore()
+    if (!run) throw new Error('create-flow 运行上下文不存在')
+    return run
+  }
+
+  private runKey(projectId: string, chapterNumber: number): string {
+    return `${projectId}|${chapterNumber}`
   }
 }

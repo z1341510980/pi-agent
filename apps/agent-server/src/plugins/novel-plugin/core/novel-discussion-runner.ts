@@ -69,14 +69,17 @@ export class NovelDiscussionRunner {
     try {
       // 1. 构建约束 + 默认叙事任务
       const constraints = this.engine.buildChapterConstraints(projectId, chapterNumber)
-      const narrativeTask = this.buildDefaultNarrativeTask(chapterNumber)
+      const narrativeTask = this.buildDefaultNarrativeTask(projectId, chapterNumber)
 
       // 2. 构建 shared 上下文（SEMI 层前缀，跨成员复用 prompt cache）
+      // ⚠️ 必须传递 arrangedEntities，否则矩阵中为本章编排的实体（角色/冲突/伏笔等）
+      // 不会注入 SEMI 层共享上下文，群聊成员看不到矩阵约束。
       const sharedContext = this.promptBuilder.buildChapterContextShared(
         projectId,
         chapterNumber,
         narrativeTask,
         constraints,
+        arrangedEntities,
       )
 
       // 3. 构建目标
@@ -147,6 +150,8 @@ export class NovelDiscussionRunner {
       const settings = this.discussionSettingsStore?.get() ?? {}
       const engineOptions: DiscussionOptions = {
         ...options,
+        resolveCharacterMembers: (characterNames) =>
+          this.resolveCharacterMembers(projectId, characterNames),
         onProgress: (event) => {
           const mappedPhase = phaseMap[event.phase] ?? 'writing'
           options.onProgress({
@@ -238,6 +243,13 @@ export class NovelDiscussionRunner {
    *
    * 4 个工种 Agent（director/writer/reviewer/reviser，不含 memory）
    * + 项目活跃角色（跳过 arcStage === 'resolved' 且无 currentGoal 的角色）
+   *
+   * ⚠️ 群聊模式必须注入 role 身份段（discussion=true）：
+   * - Director 加载 role-director-discussion.md（含场景拆分格式，避免直接写正文）
+   * - Writer 加载 role-writer-discussion.md（含剧本编织约束）
+   * - 角色成员加载 role-character-actor.md（含剧本演出格式 [动作] "台词"）
+   * 不注入会导致 Agent 不知道群聊职责，出现 Director 直接写正文、
+   * 角色写小说叙述等问题（见 create-flow 无限回退 bug 的姊妹问题）。
    */
   private buildMembers(projectId: string, _chapterNumber: number): DiscussionMember[] {
     const members: DiscussionMember[] = []
@@ -251,23 +263,33 @@ export class NovelDiscussionRunner {
         name: config.name,
         expertise: config.identity,
         canConverge: agentType === 'writer' || agentType === 'reviser',
+        // 拼接故事背景（buildSystemPrompt）+ 群聊 role 身份段（buildAgentIdentity discussion=true）
+        // 群聊 role 优先读 role-{agentType}-discussion.md，回退到 role-{agentType}.md
         buildSystemPrompt: () =>
-          this.promptBuilder.buildSystemPrompt(projectId, agentType),
+          this.promptBuilder.buildSystemPrompt(projectId, agentType) +
+          '\n\n---\n\n' +
+          this.promptBuilder.buildAgentIdentity(projectId, agentType, true),
+        buildFinalReviewSystemPrompt: agentType === 'reviewer'
+          ? () =>
+              this.promptBuilder.buildSystemPrompt(projectId, agentType) +
+              '\n\n---\n\n' +
+              this.promptBuilder.buildAgentIdentity(projectId, agentType, false)
+          : undefined,
       })
     }
 
-    // 项目活跃角色（跳过 arcStage === 'resolved' 且无 currentGoal 的角色）
+    // 项目全部角色都建立 Agent。是否出场由 Director 的 presentCharacters 决定，
+    // 不能在成员构建阶段过滤，否则 Director 需要已退场角色短暂返场时会找不到 Agent。
     const characters = this.store.listCharacters(projectId)
     for (const char of characters) {
-      if (char.arcStage === 'resolved' && !char.currentGoal) continue
-      members.push(this.buildCharacterMember(char))
+      members.push(this.buildCharacterMember(projectId, char))
     }
 
     return members
   }
 
   /** 构建角色成员 */
-  private buildCharacterMember(char: NovelCharacter): DiscussionMember {
+  private buildCharacterMember(projectId: string, char: NovelCharacter): DiscussionMember {
     return {
       id: `char-${char.id}`,
       type: 'character',
@@ -282,18 +304,23 @@ export class NovelDiscussionRunner {
         arcStage: char.arcStage,
         participatingConflicts: this.parseIdList(char.participatingConflicts),
       },
-      buildSystemPrompt: () => this.buildCharacterPrompt(char),
+      // 拼接角色人设 + role-character-actor.md（剧本演出格式约束）
+      buildSystemPrompt: () => this.buildCharacterPrompt(projectId, char),
     }
   }
 
   /**
    * 构建角色人设 prompt
    *
-   * 注入角色人设字段，让角色 Agent 以第一人称视角参与群聊。
+   * 注入角色人设字段 + role-character-actor.md（剧本格式约束），
+   * 让角色 Agent 以第一人称视角、剧本格式参与群聊演出。
+   *
+   * ⚠️ 必须加载 role-character-actor.md：否则角色成员不知道要用
+   * `[动作] "台词"` 格式演出，会直接写小说叙述，导致群聊失去意义。
    */
-  private buildCharacterPrompt(char: NovelCharacter): string {
+  private buildCharacterPrompt(projectId: string, char: NovelCharacter): string {
     const lines: string[] = [
-      `你是小说中的角色「${char.name}」，以第一人称视角参与群聊讨论。`,
+      `你是小说中的角色「${char.name}」，以第一人称视角参与群聊共创。`,
       '',
       '## 你的设定',
     ]
@@ -304,17 +331,73 @@ export class NovelDiscussionRunner {
     if (char.secret) lines.push(`- 隐藏秘密：${char.secret}`)
     if (char.arcStage) lines.push(`- 角色弧光阶段：${char.arcStage}`)
     lines.push('')
-    lines.push('## 发言要求')
-    lines.push('- 以角色口吻发言，保持性格一致')
-    lines.push('- 基于当前状态和目标表达观点')
-    lines.push('- 绝不使用破折号"——"，转折用句号，补充用逗号，列举用顿号')
+    // 拼接 role-character-actor.md（剧本演出格式约束）
+    // discussion=true 让 getAgentRoleDescription 读 role-character-actor-discussion.md，
+    // 不存在则回退到 role-character-actor.md
+    lines.push(this.promptBuilder.buildAgentIdentity(projectId, 'character-actor', true))
     return lines.join('\n')
   }
 
-  /** 构建默认叙事任务（群聊模式下 Director 在群聊中规划，此处仅提供占位） */
-  private buildDefaultNarrativeTask(chapterNumber: number): NarrativeTask {
+  /** 为 Director 临时引入、但角色库尚未建档的人物创建本次运行使用的 Agent。 */
+  private resolveCharacterMembers(projectId: string, characterNames: string[]): DiscussionMember[] {
+    const existingCharacters = this.store.listCharacters(projectId)
+    const byName = new Map(
+      existingCharacters.map(character => [this.normalizeCharacterName(character.name), character]),
+    )
+
+    return characterNames.map((name) => {
+      const existing = byName.get(this.normalizeCharacterName(name))
+      if (existing) return this.buildCharacterMember(projectId, existing)
+
+      const stableSuffix = Array.from(name)
+        .map(char => char.codePointAt(0)?.toString(16) ?? '')
+        .join('-')
+      const member: DiscussionMember = {
+        id: `char-ephemeral-${stableSuffix}`,
+        type: 'character',
+        name: name.trim(),
+        expertise: 'Director 在本章场景中临时引入的角色，尚无持久化角色卡',
+        canConverge: false,
+        characterProfile: {
+          personality: '未指定',
+          currentState: '按当前场景行动',
+          currentGoal: '推进当前场景目标',
+          secret: '',
+          arcStage: '未指定',
+          participatingConflicts: [],
+        },
+        buildSystemPrompt: () => [
+          `你是小说中的临时角色「${name.trim()}」。当前角色库没有你的完整角色卡。`,
+          '只依据 Director 给出的场景信息行动，不得自行虚构重大背景、秘密或世界设定。',
+          '如果缺少决定行为所必需的信息，用最保守的方式回应。',
+          '',
+          this.promptBuilder.buildAgentIdentity(projectId, 'character-actor', true),
+        ].join('\n'),
+      }
+      this.context.logger.warn(
+        { projectId, characterName: name, memberId: member.id },
+        'Director 引入了未建档角色，已创建本次群聊使用的临时角色 Agent',
+      )
+      return member
+    })
+  }
+
+  private normalizeCharacterName(name: string): string {
+    return name.normalize('NFKC').trim().toLocaleLowerCase()
+  }
+
+  /**
+   * 构建默认叙事任务
+   *
+   * 群聊模式下 Director 在群聊中规划具体任务，此处仅提供初始占位。
+   * 优先使用章节已存储的 narrativeTask（由创建章节时写入），
+   * 让 formatChapterInfo 在 outline 为空时也能显示有意义的章纲。
+   */
+  private buildDefaultNarrativeTask(projectId: string, chapterNumber: number): NarrativeTask {
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    const storedTask = chapter?.narrativeTask?.trim()
     return {
-      description: `推进第 ${chapterNumber} 章主线剧情`,
+      description: storedTask || `推进第 ${chapterNumber} 章主线剧情`,
       type: 'advance_mainline',
       targetEntity: null,
       priority: 'high',

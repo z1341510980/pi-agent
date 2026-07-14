@@ -12,7 +12,6 @@
   "type": "module",
   "exports": {
     "./browser": "./src/browser/index.ts",
-    "./node": "./src/node/index.ts",
     "./shared": "./src/shared/index.ts"
   },
   "dependencies": {

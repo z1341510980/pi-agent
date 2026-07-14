@@ -133,6 +133,76 @@ const PATTERNS: ClichePattern[] = [
     hint: '比喻词密度过高。建议精简，仅保留最具表现力的比喻。',
     severity: 'low',
   },
+
+  // ═══════════════════════════════════════════════════════════════
+  // 模型退化检测（4 类）—— 借鉴 oh-story-claudecode 的模型退化检测
+  // 这些模式意味着模型输出质量退化，需要立即干预（重写或重新生成）
+  // ═══════════════════════════════════════════════════════════════
+  {
+    pattern: 'model_repetition',
+    name: '模型复读（连续重复）',
+    // 同一 2-20 字短语连续出现 3 次以上
+    regex: /([\u4e00-\u9fa5]{2,20})\1{2,}/g,
+    threshold: 1,
+    hint: '检测到模型复读：同一短语连续重复出现。这是模型退化信号，该段必须重写。',
+    severity: 'high',
+  },
+  {
+    pattern: 'model_refusal',
+    name: '模型拒绝输出',
+    regex: /(我不能|我无法|作为AI|作为语言模型|作为一个人工智能|对不起，我|抱歉，我(?:不能|无法)|我(?:被|受)(?:编程|训练|设计)(?:为|来))/g,
+    threshold: 1,
+    hint: '检测到模型拒绝输出的措辞。模型触发了安全策略，该段必须重写。',
+    severity: 'high',
+  },
+  {
+    pattern: 'engineering_leak',
+    name: '工程词泄漏（英文）',
+    regex: /(system\s*prompt|role\s*[:：]|assistant\s*[:：]|user\s*[:：]|```[a-z]*|【system】|\[INST\]|<\|im_start\|>|<\|im_end\|>)/gi,
+    threshold: 1,
+    hint: '检测到提示词工程相关词汇泄漏到正文。模型输出了内部指令，必须立即清理。',
+    severity: 'high',
+  },
+  {
+    pattern: 'engineering_words_cn',
+    name: '工程词泄漏（中文）',
+    // 移除"任务类型""叙事任务"：在军事/谍战/任务流题材中是正常用语，会误判。
+    // 保留明确的工程词：提示词/系统提示/角色设定/章节约束/创作约束/字数要求/输出格式/验收标准
+    regex: /(提示词|系统提示|角色设定|章节约束|创作约束|字数要求|输出格式|验收标准)/g,
+    threshold: 1,
+    hint: '检测到创作系统的工程词汇泄漏到正文中。这些词属于提示词模板，不应出现在小说正文。',
+    severity: 'high',
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // Gate G 检测（解释腔/上帝感/安排感）—— 借鉴 oh-story-claudecode 7 Gate 体系
+  // 这些模式是 AI 写作最深层的"腔调"问题，比表面词汇滥用更难察觉
+  // ═══════════════════════════════════════════════════════════════
+  {
+    pattern: 'explanation_tone',
+    name: '解释腔（替读者总结）',
+    regex: /(这意味着|换句话说|也就是说|简而言之|总的来说|换言之|这并不是说|从某种意义上说|换句话说)/g,
+    threshold: 1,
+    hint: '出现解释腔：替读者总结"这意味着什么"。小说应让读者自己体会，不要替他总结。',
+    severity: 'high',
+  },
+  {
+    pattern: 'god_view_arrangement',
+    name: '上帝感/安排感',
+    regex: /(命运(?:的安排|使然|注定|轨迹)|注定(?:要|会|得)|冥冥之中|上天的安排|命运的齿轮|巧合的是|恰好在那时|就在这时|正巧|碰巧|不偏不倚)/g,
+    threshold: 1,
+    hint: '出现上帝感/安排感措辞。情节应通过角色行动和因果推进，不要用"命运/注定/恰好"等词强行安排。',
+    severity: 'high',
+  },
+  {
+    pattern: 'over_analysis',
+    name: '过度心理分析',
+    // 连续多句心理分析（"他想...他明白...他意识到...他感到..."）
+    regex: /(他想道|他想到|他明白|他意识到|他感到|他感觉到|他知道|他清楚|他理解|他领悟|他认识到)/g,
+    threshold: 4,
+    hint: '心理分析词汇密度过高。建议用动作、对话和微表情承载心理变化，而非直接告知"他想/他明白/他意识到"。',
+    severity: 'medium',
+  },
 ]
 
 export class ClicheScanner {
@@ -145,6 +215,7 @@ export class ClicheScanner {
   scan(text: string): ClicheHit[] {
     if (!text) return []
     const hits: ClicheHit[] = []
+    // 1. 正则模式检测
     for (const p of this.patterns) {
       // 重置 regex lastIndex（g 标志会保留状态）
       p.regex.lastIndex = 0
@@ -165,6 +236,124 @@ export class ClicheScanner {
           severity: p.severity,
         })
       }
+    }
+    // 2. 结构性检测（长段落/碎句号/过度压缩/比喻密度）
+    hits.push(...this.scanStructural(text))
+    return hits
+  }
+
+  /**
+   * 结构性检测：无法用单一正则表达，需要分析段落/句子结构
+   */
+  private scanStructural(text: string): ClicheHit[] {
+    const hits: ClicheHit[] = []
+    hits.push(...this.scanLongParagraph(text))
+    hits.push(...this.scanFragmentSentences(text))
+    hits.push(...this.scanOverCompression(text))
+    return hits
+  }
+
+  /**
+   * 长段落检测：单段超过 200 字
+   * 长段落通常是 AI 一次性输出过多内容，缺少分段节奏感
+   */
+  private scanLongParagraph(text: string): ClicheHit[] {
+    const hits: ClicheHit[] = []
+    const paragraphs = text.split(/\n+/)
+    let offset = 0
+    let longCount = 0
+    const positions: number[] = []
+    for (const para of paragraphs) {
+      const paraStart = text.indexOf(para, offset)
+      // 中文段落字数（去除空白）
+      const charCount = para.replace(/\s/g, '').length
+      if (charCount > 200) {
+        longCount++
+        if (paraStart >= 0) positions.push(paraStart)
+      }
+      if (paraStart >= 0) offset = paraStart + para.length
+    }
+    if (longCount >= 1) {
+      hits.push({
+        pattern: 'long_paragraph',
+        name: '长段落（单段 >200 字）',
+        count: longCount,
+        positions,
+        hint: '存在超过 200 字的超长段落。建议适当分段，增强阅读节奏感。网文段落宜短不宜长。',
+        severity: 'low',
+      })
+    }
+    return hits
+  }
+
+  /**
+   * 碎句号检测：连续多个超短句（每句 < 8 字）
+   * 碎句号是过度压缩的标志——模型把本应连贯的叙述拆成了碎片
+   */
+  private scanFragmentSentences(text: string): ClicheHit[] {
+    const hits: ClicheHit[] = []
+    // 按句号/问号/感叹号分句
+    const sentences = text.split(/[。！？\n]+/).filter(s => s.trim().length > 0)
+    let consecutive = 0
+    let maxConsecutive = 0
+    let fragCount = 0
+    for (const s of sentences) {
+      const len = s.replace(/\s/g, '').length
+      if (len > 0 && len < 8) {
+        consecutive++
+        if (consecutive > maxConsecutive) maxConsecutive = consecutive
+      } else {
+        if (consecutive >= 3) fragCount += consecutive
+        consecutive = 0
+      }
+    }
+    if (consecutive >= 3) fragCount += consecutive
+    // 连续 3+ 个超短句才算碎句号
+    if (maxConsecutive >= 3) {
+      hits.push({
+        pattern: 'fragment_sentences',
+        name: '碎句号（连续超短句）',
+        count: fragCount,
+        positions: [],
+        hint: `检测到连续 ${maxConsecutive} 个超短句（<8字）。叙述过于碎片化，建议合并为连贯的长句，长短句交替。`,
+        severity: 'medium',
+      })
+    }
+    return hits
+  }
+
+  /**
+   * 过度压缩检测：连续大量超短段落（1-2 行）
+   * 过度压缩是模型为了控制字数而把内容压扁，牺牲了描写的丰满度
+   */
+  private scanOverCompression(text: string): ClicheHit[] {
+    const hits: ClicheHit[] = []
+    const paragraphs = text.split(/\n+/).filter(p => p.trim().length > 0)
+    let consecutive = 0
+    let maxConsecutive = 0
+    let compressCount = 0
+    for (const p of paragraphs) {
+      const len = p.replace(/\s/g, '').length
+      // 单段不足 30 字视为超短段
+      if (len > 0 && len < 30) {
+        consecutive++
+        if (consecutive > maxConsecutive) maxConsecutive = consecutive
+      } else {
+        if (consecutive >= 4) compressCount += consecutive
+        consecutive = 0
+      }
+    }
+    if (consecutive >= 4) compressCount += consecutive
+    // 连续 4+ 个超短段才算过度压缩
+    if (maxConsecutive >= 4) {
+      hits.push({
+        pattern: 'over_compression',
+        name: '过度压缩（连续超短段）',
+        count: compressCount,
+        positions: [],
+        hint: `检测到连续 ${maxConsecutive} 个超短段落（<30字）。内容可能被过度压缩，建议丰富描写、合并相关段落。`,
+        severity: 'medium',
+      })
     }
     return hits
   }

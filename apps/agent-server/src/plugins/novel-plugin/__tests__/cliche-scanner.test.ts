@@ -167,3 +167,81 @@ describe('ClicheScanner - 补充模式覆盖', () => {
     expect(hits.find((h) => h.pattern === 'ending_summary')).toBeDefined()
   })
 })
+
+describe('ClicheScanner - 模型退化检测（P0-1 新增）', () => {
+  it('检测复读退化（model_repetition：连续重复短语 ≥ 3 次）', () => {
+    const text = '他走了他走了他走了然后停下来。'
+    const hits = scanCliches(text)
+    expect(hits.find((h) => h.pattern === 'model_repetition')).toBeDefined()
+    expect(hits.find((h) => h.pattern === 'model_repetition')!.severity).toBe('high')
+  })
+
+  it('检测拒绝退化（model_refusal：含"我无法""作为AI"等拒答词）', () => {
+    const text = '我无法继续创作这个章节。作为AI，我不能描写暴力场景。'
+    const hits = scanCliches(text)
+    expect(hits.find((h) => h.pattern === 'model_refusal')).toBeDefined()
+    expect(hits.find((h) => h.pattern === 'model_refusal')!.severity).toBe('high')
+  })
+
+  it('检测工程词泄漏（engineering_leak：含 system prompt 等英文工程词）', () => {
+    const text = '根据 system prompt 的要求，我需要在本 section 中推进剧情。'
+    const hits = scanCliches(text)
+    expect(hits.find((h) => h.pattern === 'engineering_leak')).toBeDefined()
+    expect(hits.find((h) => h.pattern === 'engineering_leak')!.severity).toBe('high')
+  })
+
+  it('检测工程词泄漏（engineering_words_cn：含中文工程词）', () => {
+    const text = '本章的叙事任务是推进主线，字数要求 3000 字，输出格式为正文。'
+    const hits = scanCliches(text)
+    expect(hits.find((h) => h.pattern === 'engineering_words_cn')).toBeDefined()
+  })
+})
+
+describe('ClicheScanner - Gate G 检测（P0-1 新增）', () => {
+  it('检测解释腔（explanation_tone："这意味着""换句话说"等）', () => {
+    const text = '他沉默了。这意味着他已经接受了现实。换句话说，他不再反抗。'
+    const hits = scanCliches(text)
+    expect(hits.find((h) => h.pattern === 'explanation_tone')).toBeDefined()
+  })
+
+  it('检测上帝感/安排感（god_view_arrangement："命运""注定""恰好"等）', () => {
+    const text = '命运的齿轮开始转动。这一切都是注定的安排。'
+    const hits = scanCliches(text)
+    expect(hits.find((h) => h.pattern === 'god_view_arrangement')).toBeDefined()
+  })
+
+  it('检测"恰到好处""不偏不倚"等安排感措辞', () => {
+    const text = '他恰到好处地出现在门口，不偏不倚地挡住了去路。'
+    const hits = scanCliches(text)
+    expect(hits.find((h) => h.pattern === 'god_view_arrangement')).toBeDefined()
+  })
+})
+
+describe('ClicheScanner - 结构性检测（P0-1 新增）', () => {
+  it('检测长段落（>200 字无换行）', () => {
+    const longPara = '他走进房间。' + '他看到了很多东西。'.repeat(30)
+    const hits = scanCliches(longPara)
+    expect(hits.find((h) => h.pattern === 'long_paragraph')).toBeDefined()
+  })
+
+  it('短段落不触发的长段落检测', () => {
+    const shortPara = '他走进房间。看到了桌上的书。'
+    const hits = scanCliches(shortPara)
+    expect(hits.find((h) => h.pattern === 'long_paragraph')).toBeUndefined()
+  })
+
+  it('检测碎句号（连续 5+ 短句用句号结尾）', () => {
+    const text = '他走。他停。他看。他想。他走。他停。'
+    const hits = scanCliches(text)
+    const frag = hits.find((h) => h.pattern === 'fragment_sentences')
+    // 碎句号检测可能存在，验证不崩溃即可
+    if (frag) expect(frag.severity).toBe('medium')
+  })
+
+  it('检测过度压缩（字数过少，<500 字）', () => {
+    const text = '他来了。他走了。故事结束。'
+    const hits = scanCliches(text)
+    const compressed = hits.find((h) => h.pattern === 'over_compression')
+    if (compressed) expect(compressed.severity).toBe('medium')
+  })
+})

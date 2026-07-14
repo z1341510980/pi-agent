@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
+import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
@@ -13,7 +14,8 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
   listCharacters,
   listChapters,
@@ -36,6 +38,7 @@ import {
   type SimilarityEntityKind,
 } from '@/api/novel-client'
 import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
+import { useChapterChat } from '@/hooks/use-chapter-chat'
 import { useNovelSimilarityScan } from '@/hooks/use-novel-similarity-scan'
 import { useShortcut } from '@/hooks/use-shortcut'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
@@ -44,6 +47,7 @@ import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
 import { NovelConversationPanel, type NovelFlowType } from './novel-conversation-panel'
+import type { MentionOption } from '@/components/shared/conversation'
 import { SimilarityScanPanel } from './similarity-scan-panel'
 import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
@@ -116,6 +120,8 @@ const SIMILARITY_KIND_LABEL: Record<SimilarityEntityKind, string> = {
   faction: '势力',
   location: '地点',
   world_element: '世界要素',
+  hook: '钩子',
+  character_arc: '角色弧光',
 }
 
 function similarityKindLabel(kind: SimilarityEntityKind): string {
@@ -153,36 +159,36 @@ function MatrixDragPreview({ data }: { data: MatrixDragData | null }): ReactElem
 }
 
 export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const projects = useNovelStore((s) => s.projects)
-  const loadProjectData = useNovelStore((s) => s.loadProjectData)
-  const clearProjectData = useNovelStore((s) => s.clearProjectData)
-  const characters = useNovelStore((s) => s.characters)
-  const chapters = useNovelStore((s) => s.chapters)
-  const conflicts = useNovelStore((s) => s.conflicts)
-  const foreshadows = useNovelStore((s) => s.foreshadows)
-  const relationships = useNovelStore((s) => s.relationships)
-  const clues = useNovelStore((s) => s.clues)
-  const worldRules = useNovelStore((s) => s.worldRules)
-  const styleGuides = useNovelStore((s) => s.styleGuides)
-  const constraints = useNovelStore((s) => s.constraints)
-  const infoLayers = useNovelStore((s) => s.infoLayers)
-  const factions = useNovelStore((s) => s.factions)
-  const locations = useNovelStore((s) => s.locations)
-  const worldElements = useNovelStore((s) => s.worldElements)
-  const upsertChapter = useNovelStore((s) => s.upsertChapter)
-  const viewMode = useNovelStore((s) => s.viewMode)
-  const setViewMode = useNovelStore((s) => s.setViewMode)
-  const characterHistory = useNovelStore((s) => s.characterHistory)
-  const setCharacterHistory = useNovelStore((s) => s.setCharacterHistory)
-  const setCreationMode = useNovelStore((s) => s.setCreationMode)
-  const creationMode = useNovelStore((s) => s.creationMode)
-  const playheadChapter = useNovelStore((s) => s.playheadChapter)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  const projects = useNovelDataStore((s) => s.projects)
+  const loadProjectData = useNovelDataStore((s) => s.loadProjectData)
+  const clearProjectData = useNovelDataStore((s) => s.clearProjectData)
+  const characters = useNovelDataStore((s) => s.characters)
+  const chapters = useNovelDataStore((s) => s.chapters)
+  const conflicts = useNovelDataStore((s) => s.conflicts)
+  const foreshadows = useNovelDataStore((s) => s.foreshadows)
+  const relationships = useNovelDataStore((s) => s.relationships)
+  const clues = useNovelDataStore((s) => s.clues)
+  const worldRules = useNovelDataStore((s) => s.worldRules)
+  const styleGuides = useNovelDataStore((s) => s.styleGuides)
+  const constraints = useNovelDataStore((s) => s.constraints)
+  const infoLayers = useNovelDataStore((s) => s.infoLayers)
+  const factions = useNovelDataStore((s) => s.factions)
+  const locations = useNovelDataStore((s) => s.locations)
+  const worldElements = useNovelDataStore((s) => s.worldElements)
+  const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
+  const viewMode = useNovelUiStore((s) => s.viewMode)
+  const setViewMode = useNovelUiStore((s) => s.setViewMode)
+  const characterHistory = useNovelDataStore((s) => s.characterHistory)
+  const setCharacterHistory = useNovelDataStore((s) => s.setCharacterHistory)
+  const setCreationMode = useNovelUiStore((s) => s.setCreationMode)
+  const creationMode = useNovelUiStore((s) => s.creationMode)
+  const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
 
   // ── 全局快捷键：撤销/重做（编辑器内由 Tiptap 自行处理）──
   useShortcut({
-    onUndo: () => useNovelStore.getState().undo(),
-    onRedo: () => useNovelStore.getState().redo(),
+    onUndo: () => useNovelDataStore.getState().undo(),
+    onRedo: () => useNovelDataStore.getState().redo(),
   })
 
   const queryClient = useQueryClient()
@@ -206,6 +212,11 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
+
+  // ── 章节自由聊天（"聊天" Tab）──
+  const chapterChat = useChapterChat()
+  // 聊天目标章节：优先创作流程章节，回退到当前选中章节
+  const chatChapterNumber = creationChapterNumber ?? playheadChapter ?? undefined
 
   // ── LLM 相似度扫描（SSE 流式扫描 + 多选弹框 + REST 合并）──
   const similarityScan = useNovelSimilarityScan()
@@ -431,7 +442,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       // 后端已删除 removed 中的实体，但本地 store 的 loadProjectData 用 mergeListById
       // 会保留"本地有但后端没有"的条目（本意是保护新建未同步的实体），
       // 这会导致被删除的实体仍残留在 UI。这里主动按 kind 从本地 store 移除。
-      const store = useNovelStore.getState()
+      const store = useNovelDataStore.getState()
       for (const g of selectedGroups) {
         for (const r of g.removed) {
           switch (g.kind) {
@@ -638,6 +649,52 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       void handleStartCreation('manual')
     }
   }, [flowType, handleStartCreation])
+
+  // ── 章节自由聊天回调 ──
+  // ⚠️ 只依赖 hook 返回的稳定方法（useCallback 引用），不依赖整个 chapterChat 对象，
+  // 避免 NovelConversationPanel 因回调引用变化而频繁重渲染
+  const chapterChatSendMessage = chapterChat.sendMessage
+  const chapterChatAbort = chapterChat.abort
+  const handleSendChapterChat = useCallback(
+    (message: string, mentionedAgents?: string[]) => {
+      if (!currentProjectId || chatChapterNumber == null) return
+      void chapterChatSendMessage(currentProjectId, chatChapterNumber, message, mentionedAgents)
+    },
+    [currentProjectId, chatChapterNumber, chapterChatSendMessage],
+  )
+
+  const handleAbortChapterChat = useCallback(() => {
+    chapterChatAbort()
+  }, [chapterChatAbort])
+
+  // 切换章节时加载该章节的聊天历史
+  // ⚠️ 只依赖 loadHistory（稳定的 useCallback 引用），不能依赖整个 chapterChat 对象，
+  // 否则每次渲染都会触发 effect → 疯狂调用 loadHistory → 接口死循环
+  const chapterChatLoadHistory = chapterChat.loadHistory
+  useEffect(() => {
+    if (!currentProjectId || chatChapterNumber == null) return
+    void chapterChatLoadHistory(currentProjectId, chatChapterNumber)
+  }, [currentProjectId, chatChapterNumber, chapterChatLoadHistory])
+
+  // 构建 @ 提及候选列表：4 工种 Agent + 活跃角色（与后端 buildMembers 一致）
+  const chatMentionOptions = useMemo<MentionOption[]>(() => {
+    const options: MentionOption[] = [
+      { id: 'novel-director', label: '导演 Agent', description: '分析故事状态，规划叙事' },
+      { id: 'novel-writer', label: '写作 Agent', description: '创作章节正文' },
+      { id: 'novel-reviewer', label: '审稿 Agent', description: '检查一致性与可读性' },
+      { id: 'novel-reviser', label: '修订 Agent', description: '根据审稿意见修订' },
+    ]
+    for (const char of characters) {
+      // 与后端一致：已 resolved 且无 currentGoal 的角色不参与
+      if (char.arcStage === 'resolved' && !char.currentGoal) continue
+      options.push({
+        id: `char-${char.id}`,
+        label: char.name,
+        description: char.identity || char.personality || undefined,
+      })
+    }
+    return options
+  }, [characters])
 
   // 创作激活状态：运行中或处于非 idle 阶段时，右侧栏切换为创作预览面板
   const isCreationActive = creationFlow.isRunning || creationFlow.phase !== 'idle'
@@ -901,52 +958,88 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
             {/* 内容区 */}
             <div className="flex-1 min-h-0 overflow-hidden">
-              {scanPhase !== 'idle' ? (
-                <SimilarityScanPanel
-                  phase={scanPhase}
-                  isScanning={similarityScan.isScanning}
-                  progressEvents={similarityScan.progressEvents}
-                  groupCount={scanReport?.groups.length ?? 0}
-                  error={scanError}
-                  onCancel={similarityScan.cancel}
-                  onReset={similarityScan.reset}
-                />
-              ) : isCreationActive || rightPanelView === 'conversation' ? (
-                <ErrorBoundary
-                  fallback={(err, reset) => (
-                    <CreationErrorFallback
-                      error={err}
-                      reset={reset}
-                      onDiscardCreation={handleDiscardCreation}
+              <AnimatePresence mode="wait">
+                {scanPhase !== 'idle' ? (
+                  <motion.div
+                    key="scan"
+                    className="h-full"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <SimilarityScanPanel
+                      phase={scanPhase}
+                      isScanning={similarityScan.isScanning}
+                      progressEvents={similarityScan.progressEvents}
+                      groupCount={scanReport?.groups.length ?? 0}
+                      error={scanError}
+                      onCancel={similarityScan.cancel}
+                      onReset={similarityScan.reset}
                     />
-                  )}
-                >
-                  <NovelConversationPanel
-                    phase={creationFlow.phase}
-                    isRunning={creationFlow.isRunning}
-                    chapterContent={creationFlow.chapterContent}
-                    agentOutputs={creationFlow.agentOutputs}
-                    chapterNumber={creationChapterNumber}
-                    currentCheckpoint={creationFlow.currentCheckpoint}
-                    result={creationFlow.result}
-                    error={creationFlow.error}
-                    onRetry={handleRetryCreation}
-                    onDismissError={handleDismissError}
-                    creationMode={creationMode}
-                    onSubmitCheckpoint={creationFlow.submitCheckpoint}
-                    onSave={handleSaveChapter}
-                    onDiscard={handleDiscardCreation}
-                    onSendMessage={handleSendMessage}
-                    userMessages={creationFlow.userMessages}
-                    flowType={flowType}
-                    onFlowTypeChange={setFlowType}
-                    onStartFlow={handleStartFlow}
-                    onCancelFlow={handleDiscardCreation}
-                  />
-                </ErrorBoundary>
-              ) : (
-                <NovelDetailPanel />
-              )}
+                  </motion.div>
+                ) : isCreationActive || rightPanelView === 'conversation' ? (
+                  <motion.div
+                    key="conversation"
+                    className="h-full"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <ErrorBoundary
+                      fallback={(err, reset) => (
+                        <CreationErrorFallback
+                          error={err}
+                          reset={reset}
+                          onDiscardCreation={handleDiscardCreation}
+                        />
+                      )}
+                    >
+                      <NovelConversationPanel
+                        phase={creationFlow.phase}
+                        isRunning={creationFlow.isRunning}
+                        chapterContent={creationFlow.chapterContent}
+                        agentOutputs={creationFlow.agentOutputs}
+                        chapterNumber={creationChapterNumber}
+                        currentCheckpoint={creationFlow.currentCheckpoint}
+                        result={creationFlow.result}
+                        error={creationFlow.error}
+                        onRetry={handleRetryCreation}
+                        onDismissError={handleDismissError}
+                        creationMode={creationMode}
+                        onSubmitCheckpoint={creationFlow.submitCheckpoint}
+                        onSave={handleSaveChapter}
+                        onDiscard={handleDiscardCreation}
+                        onSendMessage={handleSendMessage}
+                        userMessages={creationFlow.userMessages}
+                        flowType={flowType}
+                        onFlowTypeChange={setFlowType}
+                        onStartFlow={handleStartFlow}
+                        onCancelFlow={handleDiscardCreation}
+                        chapterChatMessages={chapterChat.messages}
+                        chapterChatAgentOutputs={chapterChat.agentOutputs}
+                        chapterChatRunning={chapterChat.isRunning}
+                        chapterChatError={chapterChat.error}
+                        onSendChapterChat={handleSendChapterChat}
+                        onAbortChapterChat={handleAbortChapterChat}
+                        chatMentionOptions={chatMentionOptions}
+                      />
+                    </ErrorBoundary>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="detail"
+                    className="h-full"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <NovelDetailPanel />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </aside>
         </div>

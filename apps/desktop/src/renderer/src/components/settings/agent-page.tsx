@@ -768,6 +768,29 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
   const [temperature, setTemperature] = useState(0.7)
   const [error, setError] = useState('')
 
+  // 获取 provider 列表（用于下拉选择）
+  const providersQuery = useQuery({
+    queryKey: ['providers-for-agent'],
+    queryFn: () => getApi<ProviderBrief[]>('/api/providers'),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const providers = providersQuery.data ?? []
+
+  // 当前选中 provider 下的可选模型
+  const availableModels = providers.find((p) => p.id === modelProvider)?.models ?? []
+
+  // 当 provider 切换后，若当前 modelId 不在新 provider 的模型列表中，则清空
+  useEffect(() => {
+    if (
+      modelId &&
+      availableModels.length > 0 &&
+      !availableModels.some((m) => m.id === modelId)
+    ) {
+      setModelId('')
+    }
+  }, [modelProvider, modelId, availableModels])
+
   // 当 agent 变化时重置表单
   useEffect(() => {
     if (agent) {
@@ -836,19 +859,80 @@ function AgentEditorDialog({ agent, open, onOpenChange, onSave }: AgentEditorDia
           <div className="grid grid-cols-2 gap-2">
             <div className="grid gap-1.5">
               <Label htmlFor="edit-agent-model-provider" className="text-xs">模型 Provider</Label>
-              <Input
-                id="edit-agent-model-provider"
-                value={modelProvider}
-                onChange={(e) => setModelProvider(e.target.value)}
-              />
+              {providersQuery.isLoading ? (
+                <p className="text-xs text-muted-foreground m-0">加载中...</p>
+              ) : providersQuery.isError ? (
+                <Input
+                  id="edit-agent-model-provider"
+                  value={modelProvider}
+                  onChange={(e) => setModelProvider(e.target.value)}
+                  placeholder="provider id（例如 openai）"
+                />
+              ) : providers.length === 0 ? (
+                <Input
+                  id="edit-agent-model-provider"
+                  value={modelProvider}
+                  onChange={(e) => setModelProvider(e.target.value)}
+                  placeholder="provider id（例如 openai）"
+                />
+              ) : (
+                <Select
+                  value={modelProvider}
+                  onValueChange={(v) => {
+                    setModelProvider(v)
+                    setModelId('')
+                  }}
+                >
+                  <SelectTrigger id="edit-agent-model-provider" className="w-full">
+                    <SelectValue placeholder="选择 Provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {providers.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name || p.id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="edit-agent-model-id" className="text-xs">模型 ID</Label>
-              <Input
-                id="edit-agent-model-id"
-                value={modelId}
-                onChange={(e) => setModelId(e.target.value)}
-              />
+              {providersQuery.isLoading ? (
+                <p className="text-xs text-muted-foreground m-0">加载中...</p>
+              ) : providersQuery.isError || providers.length === 0 ? (
+                <Input
+                  id="edit-agent-model-id"
+                  value={modelId}
+                  onChange={(e) => setModelId(e.target.value)}
+                  placeholder="model id（例如 gpt-4o）"
+                />
+              ) : (
+                <Select
+                  value={modelId}
+                  onValueChange={setModelId}
+                  disabled={!modelProvider || availableModels.length === 0}
+                >
+                  <SelectTrigger id="edit-agent-model-id" className="w-full">
+                    <SelectValue
+                      placeholder={
+                        !modelProvider
+                          ? '先选择 Provider'
+                          : availableModels.length === 0
+                            ? '该 Provider 无模型'
+                            : '选择模型'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableModels.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.name || m.id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
           <div className="grid gap-1.5">
@@ -922,6 +1006,29 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
   const [systemPrompt, setSystemPrompt] = useState('')
   const [temperature, setTemperature] = useState(() => readDefaultTemperature())
   const [error, setError] = useState('')
+
+  // 获取 provider 列表（用于下拉选择）
+  const providersQuery = useQuery({
+    queryKey: ['providers-for-agent'],
+    queryFn: () => getApi<ProviderBrief[]>('/api/providers'),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const providers = providersQuery.data ?? []
+
+  // 当前选中 provider 下的可选模型
+  const availableModels = providers.find((p) => p.id === modelProvider)?.models ?? []
+
+  // 当 provider 切换后，若当前 modelId 不在新 provider 的模型列表中，则清空
+  useEffect(() => {
+    if (
+      modelId &&
+      availableModels.length > 0 &&
+      !availableModels.some((m) => m.id === modelId)
+    ) {
+      setModelId('')
+    }
+  }, [modelProvider, modelId, availableModels])
 
   const canSubmit = id.trim().length > 0 && name.trim().length > 0
 
@@ -1003,21 +1110,80 @@ function AgentCreateDialog({ open, onOpenChange, onSuccess }: AgentCreateDialogP
           <div className="grid grid-cols-2 gap-2">
             <div className="grid gap-1.5">
               <Label htmlFor="create-agent-model-provider" className="text-xs">模型 Provider</Label>
-              <Input
-                id="create-agent-model-provider"
-                value={modelProvider}
-                onChange={(e) => setModelProvider(e.target.value)}
-                placeholder="openai"
-              />
+              {providersQuery.isLoading ? (
+                <p className="text-xs text-muted-foreground m-0">加载中...</p>
+              ) : providersQuery.isError ? (
+                <Input
+                  id="create-agent-model-provider"
+                  value={modelProvider}
+                  onChange={(e) => setModelProvider(e.target.value)}
+                  placeholder="provider id（例如 openai）"
+                />
+              ) : providers.length === 0 ? (
+                <Input
+                  id="create-agent-model-provider"
+                  value={modelProvider}
+                  onChange={(e) => setModelProvider(e.target.value)}
+                  placeholder="provider id（例如 openai）"
+                />
+              ) : (
+                <Select
+                  value={modelProvider}
+                  onValueChange={(v) => {
+                    setModelProvider(v)
+                    setModelId('')
+                  }}
+                >
+                  <SelectTrigger id="create-agent-model-provider" className="w-full">
+                    <SelectValue placeholder="选择 Provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {providers.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name || p.id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="create-agent-model-id" className="text-xs">模型 ID</Label>
-              <Input
-                id="create-agent-model-id"
-                value={modelId}
-                onChange={(e) => setModelId(e.target.value)}
-                placeholder="gpt-4o"
-              />
+              {providersQuery.isLoading ? (
+                <p className="text-xs text-muted-foreground m-0">加载中...</p>
+              ) : providersQuery.isError || providers.length === 0 ? (
+                <Input
+                  id="create-agent-model-id"
+                  value={modelId}
+                  onChange={(e) => setModelId(e.target.value)}
+                  placeholder="model id（例如 gpt-4o）"
+                />
+              ) : (
+                <Select
+                  value={modelId}
+                  onValueChange={setModelId}
+                  disabled={!modelProvider || availableModels.length === 0}
+                >
+                  <SelectTrigger id="create-agent-model-id" className="w-full">
+                    <SelectValue
+                      placeholder={
+                        !modelProvider
+                          ? '先选择 Provider'
+                          : availableModels.length === 0
+                            ? '该 Provider 无模型'
+                            : '选择模型'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableModels.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.name || m.id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
           <div className="grid gap-1.5">

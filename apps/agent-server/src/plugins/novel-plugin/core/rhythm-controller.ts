@@ -9,6 +9,7 @@ import type {
   ClimaxType,
   NovelConflict,
   NovelForeshadow,
+  ChapterPositioning,
 } from './types.js'
 
 /**
@@ -80,6 +81,72 @@ export class RhythmController {
     RhythmController.DEFAULT_MODEL,
     RhythmController.WEBNOVEL_MODEL,
   ]
+
+  // ═══════════════════════════════════════════════════════════════
+  // 章节定位六型 → 节奏规则映射（借鉴 oh-story-claudecode）
+  // 不同定位有不同的钩子密度、爽点频率和节奏要求
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 章节定位规则：每种定位对应的节奏偏好和创作指导
+   */
+  static readonly POSITIONING_RULES: Record<ChapterPositioning, {
+    preferredRhythm: ChapterRhythm[]
+    hookDensity: 'dense' | 'normal' | 'sparse'
+    pacing: 'fast' | 'medium' | 'slow'
+    wordBudgetMultiplier: number
+    guidance: string
+  }> = {
+    high_pressure: {
+      preferredRhythm: ['climax', 'twist', 'suspense'],
+      hookDensity: 'dense',
+      pacing: 'fast',
+      wordBudgetMultiplier: 1.3,
+      guidance: '高压章：冲突爆发/高潮/生死搏斗。节奏快，每段都要有张力。钩子密集，章尾必留强钩。对话短促，动作密集。',
+    },
+    advancement: {
+      preferredRhythm: ['rising', 'climax'],
+      hookDensity: 'normal',
+      pacing: 'medium',
+      wordBudgetMultiplier: 1.0,
+      guidance: '推进章：主线推进/信息释放。节奏中等，爽点明确。每 500 字至少一个信息增量或爽点。章尾留钩推动下一章。',
+    },
+    cultivation: {
+      preferredRhythm: ['setup', 'rising', 'breather'],
+      hookDensity: 'normal',
+      pacing: 'slow',
+      wordBudgetMultiplier: 0.9,
+      guidance: '修炼试错章：升级/试错/领悟。节奏偏慢，成长感强。侧重过程描写（修炼细节、失败反思），结尾给出突破或新方向。',
+    },
+    relationship: {
+      preferredRhythm: ['breather', 'rising', 'falling'],
+      hookDensity: 'normal',
+      pacing: 'medium',
+      wordBudgetMultiplier: 0.95,
+      guidance: '关系回收章：角色互动/关系变化。节奏中等，情感线为主。对话占比偏高（55-65%），通过互动承载关系变化。',
+    },
+    low_pressure: {
+      preferredRhythm: ['breather', 'setup', 'resolution'],
+      hookDensity: 'sparse',
+      pacing: 'slow',
+      wordBudgetMultiplier: 0.85,
+      guidance: '低压生活章：日常/过渡/铺垫。节奏慢，世界观展示。可写生活细节、角色日常，但必须有至少一个信息增量或伏笔，不能纯水。',
+    },
+    information: {
+      preferredRhythm: ['setup', 'suspense', 'rising'],
+      hookDensity: 'normal',
+      pacing: 'slow',
+      wordBudgetMultiplier: 0.9,
+      guidance: '信息整理章：线索整理/布局/计划。节奏慢，信息密度高。角色梳理线索、制定计划，但必须通过场景和对话承载，不能变成清单。',
+    },
+  }
+
+  /**
+   * 根据章节定位获取节奏规则
+   */
+  getPositioningRules(positioning: ChapterPositioning) {
+    return RhythmController.POSITIONING_RULES[positioning]
+  }
 
   /**
    * 建议下一章的节奏

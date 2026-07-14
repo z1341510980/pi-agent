@@ -18,6 +18,7 @@ import type { NovelServices } from './novel-services.js'
 import type { NovelChapter, NovelMarker, NovelInformationLayer } from './core/types.js'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
+import { PassThrough } from 'node:stream'
 import { success } from '../../lib/api-response.js'
 import { validateBody } from '../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
@@ -123,6 +124,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     genre: z.string().min(1).max(50),
     synopsis: z.string().max(5000).default(''),
     targetWords: z.number().int().min(0).default(0),
+    targetPlatform: z.enum(['fanqie', 'qidian', 'zhihu_yanyan', 'general']).optional(),
   })
 
   routes.push({
@@ -168,6 +170,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     currentStage: z.enum(['setup', 'rising', 'climax', 'falling', 'resolution']).optional(),
     status: z.enum(['active', 'paused', 'completed']).optional(),
     outline: z.string().max(20000).optional(),
+    targetPlatform: z.enum(['fanqie', 'qidian', 'zhihu_yanyan', 'general']).nullable().optional(),
   })
 
   routes.push({
@@ -477,7 +480,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Credentials': 'true',
       })
       // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
-      request.raw.socket?.setNoDelay(true)
+      request.raw.socket?.setNoDelay?.(true)
 
       const heartbeat = setInterval(() => {
         reply.raw.write(': keepalive\n\n')
@@ -838,10 +841,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(aiGenerateCharacterSchema, request, reply)
       if (!input) return reply
 
-      // SSE 设置
-      // 注意：reply.raw.writeHead 绕过 Fastify 的 CORS 中间件，需手动附加 CORS 头，
-      // 否则浏览器会以 CORS 策略拦截跨域 SSE 请求（参考 create-flow 实现）。
-      reply.raw.writeHead(200, {
+      const stream = new PassThrough()
+      reply.headers({
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
@@ -850,18 +851,19 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Credentials': 'true',
       })
       // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
-      request.raw.socket?.setNoDelay(true)
+      request.raw.socket?.setNoDelay?.(true)
 
       const heartbeat = setInterval(() => {
-        reply.raw.write(': keepalive\n\n')
+        stream.write(': keepalive\n\n')
       }, 15000)
 
       const emitter = createNovelAgUiEmitter(
-        createSseEmitterSink((data) => reply.raw.write(data)),
+        createSseEmitterSink((data) => stream.write(data)),
         `novel:character:${request.params.projectId}`,
         randomUUID(),
       )
 
+      reply.send(stream)
       try {
         const generated = await services.characterGenerator.generate(
           request.params.projectId,
@@ -882,8 +884,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
-        reply.raw.end()
+        stream.end()
       }
+      return reply
     },
   })
 
@@ -901,8 +904,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(aiGenerateEntitySchema, request, reply)
       if (!input) return reply
 
-      // SSE 设置
-      reply.raw.writeHead(200, {
+      const stream = new PassThrough()
+      reply.headers({
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
@@ -912,15 +915,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       })
 
       const heartbeat = setInterval(() => {
-        reply.raw.write(': keepalive\n\n')
+        stream.write(': keepalive\n\n')
       }, 15000)
 
       const emitter = createNovelAgUiEmitter(
-        createSseEmitterSink((data) => reply.raw.write(data)),
+        createSseEmitterSink((data) => stream.write(data)),
         `novel:entity:${request.params.projectId}`,
         randomUUID(),
       )
 
+      reply.send(stream)
       try {
         const generated = await services.entityGenerator.generate(
           request.params.projectId,
@@ -934,8 +938,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
-        reply.raw.end()
+        stream.end()
       }
+      return reply
     },
   })
 
@@ -2131,7 +2136,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Credentials': 'true',
       })
       // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
-      request.raw.socket?.setNoDelay(true)
+      request.raw.socket?.setNoDelay?.(true)
 
       const heartbeat = setInterval(() => {
         reply.raw.write(': keepalive\n\n')
@@ -2202,17 +2207,20 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
         return
       }
+      // 先写入用户消息，再唤醒等待中的 create-flow，避免恢复后的 Agent 抢先读取空消息。
+      if (isWorkflow && userMessages && userMessages.length > 0) {
+        const chapterText = pending.threadId.slice(`novel-checkpoint-${projectId}-`.length)
+        const chapterNumber = Number(chapterText)
+        if (Number.isInteger(chapterNumber) && chapterNumber > 0) {
+          services.orchestrator.setUserMessages(projectId, chapterNumber, userMessages)
+        }
+      }
+
       // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
       const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
       if (!accepted) {
         reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
         return
-      }
-      // 确认 checkpoint 有效后再写用户消息，避免过期/跨项目请求污染下一轮 Agent。
-      // 仅 workflow 模式通过 orchestrator.setUserMessages 注入用户消息；
-      // 群聊模式有独立的用户消息机制，不在此处注入（与 discussion-checkpoint 端点行为一致）。
-      if (isWorkflow && userMessages && userMessages.length > 0) {
-        services.orchestrator.setUserMessages(userMessages)
       }
       return { ok: true, data: { accepted: true } }
     },
@@ -2279,7 +2287,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Credentials': 'true',
       })
       // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
-      request.raw.socket?.setNoDelay(true)
+      request.raw.socket?.setNoDelay?.(true)
 
       const heartbeat = setInterval(() => {
         reply.raw.write(': keepalive\n\n')
@@ -2426,7 +2434,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Credentials': 'true',
       })
       // 禁用 Nagle 算法，确保 SSE 事件立即 flush 到客户端
-      request.raw.socket?.setNoDelay(true)
+      request.raw.socket?.setNoDelay?.(true)
       const writeRaw = (data: string) => {
         if (clientDisconnected || reply.raw.writableEnded) return
         reply.raw.write(data)
@@ -2532,7 +2540,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         'Access-Control-Allow-Origin': request.headers.origin || '*',
         'Access-Control-Allow-Credentials': 'true',
       })
-      request.raw.socket?.setNoDelay(true)
+      request.raw.socket?.setNoDelay?.(true)
       const writeRaw = (data: string) => {
         if (clientDisconnected || reply.raw.writableEnded) return
         reply.raw.write(data)
@@ -2716,7 +2724,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     chapter: z.number().int().min(1),
     title: z.string().default(''),
     note: z.string().default(''),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note']).default('bookmark'),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note', 'in', 'out']).default('bookmark'),
     color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).default('blue'),
     entityType: z.string().nullable().default(null),
     entityId: z.string().nullable().default(null),
@@ -2726,7 +2734,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     chapter: z.number().int().min(1).optional(),
     title: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
-    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note']).optional(),
+    type: z.enum(['bookmark', 'turning-point', 'foreshadow', 'climax', 'note', 'clip-note', 'in', 'out']).optional(),
     color: z.enum(['blue', 'yellow', 'green', 'red', 'purple']).optional(),
     entityType: z.string().nullable().optional(),
     entityId: z.string().nullable().optional(),
@@ -2818,6 +2826,136 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         temperature,
       }))
       return success(result, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 章节聊天（按章节持久化用户输入 + 自由聊天）
+  // ═══════════════════════════════════════════════════════════════
+
+  // GET /projects/:projectId/chapters/:chapterNumber/chat — 获取章节聊天历史
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/chapters/:chapterNumber/chat',
+    handler: async (request: any) => {
+      const { projectId, chapterNumber } = request.params
+      const messages = services.chapterChatStore.list(projectId, parseInt(chapterNumber, 10))
+      return success(messages, request.traceId)
+    },
+  })
+
+  // DELETE /projects/:projectId/chapters/:chapterNumber/chat — 清空章节聊天历史
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/:projectId/chapters/:chapterNumber/chat',
+    handler: async (request: any) => {
+      const { projectId, chapterNumber } = request.params
+      services.chapterChatStore.clear(projectId, parseInt(chapterNumber, 10))
+      return success({ cleared: true }, request.traceId)
+    },
+  })
+
+  // POST /projects/:projectId/chapters/:chapterNumber/chat — 自由聊天（SSE 流式）
+  //
+  // Body: { message: string, mentionedAgents?: string[] }
+  // - mentionedAgents 非空时，依次让被 @ 的 Agent 回复
+  // - 否则由 Moderator 单轮决策选一个 Agent 回复
+  const chatBodySchema = z.object({
+    message: z.string().min(1).max(8000),
+    mentionedAgents: z.array(z.string()).max(10).optional(),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/chat',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params
+      const input = validateBody(chatBodySchema, request, reply)
+      if (!input) return reply
+
+      const chapterNum = parseInt(chapterNumber, 10)
+      const settings = services.discussionSettingsStore.get()
+
+      // SSE 设置（与 create-flow / create-discussion 一致）
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      request.raw.socket?.setNoDelay?.(true)
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      const threadId = `novel:chat:${projectId}:${chapterNum}`
+      const emitter = createNovelAgUiEmitter(
+        createSseEmitterSink((data) => reply.raw.write(data)),
+        threadId,
+        randomUUID(),
+      )
+
+      try {
+        const result = await services.chapterChatRunner.run(
+          projectId,
+          chapterNum,
+          { message: input.message, mentionedAgents: input.mentionedAgents },
+          {
+            emit: emitter.emit,
+            moderatorModel: settings.moderatorModel,
+          },
+        )
+        emitter.result({ status: 'completed', replies: result.replies })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        emitter.error(message)
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.end()
+      }
+    },
+  })
+
+  // POST /projects/:projectId/chapters/:chapterNumber/chat/persist — 持久化创作流程中的用户输入
+  //
+  // 供前端在创作流程各阶段（启动前/检查点/群聊）调用，把用户输入落库。
+  // Body: {
+  //   phase: 'pre_creation' | 'checkpoint' | 'discussion' | 'review',
+  //   role: 'user' | 'system',
+  //   content: string,
+  //   fromId?: string, fromName?: string,
+  //   metadata?: object
+  // }
+  const persistChatSchema = z.object({
+    phase: z.enum(['pre_creation', 'checkpoint', 'discussion', 'review']),
+    role: z.enum(['user', 'system']).default('user'),
+    content: z.string().min(1).max(20000),
+    fromId: z.string().optional().default('user'),
+    fromName: z.string().optional().default('用户'),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/chat/persist',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params
+      const input = validateBody(persistChatSchema, request, reply)
+      if (!input) return reply
+      const message = services.chapterChatStore.add({
+        projectId,
+        chapterNumber: parseInt(chapterNumber, 10),
+        role: input.role,
+        fromId: input.fromId,
+        fromName: input.fromName,
+        content: input.content,
+        phase: input.phase,
+        metadata: input.metadata as Record<string, unknown> | undefined,
+      })
+      return success(message, request.traceId)
     },
   })
 

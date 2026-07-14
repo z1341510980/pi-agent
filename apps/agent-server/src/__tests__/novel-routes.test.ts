@@ -86,6 +86,14 @@ function makeMockServices(): NovelServices {
       get: vi.fn(() => ({})),
       update: vi.fn(),
     } as any,
+    chapterChatStore: {
+      add: vi.fn(),
+      list: vi.fn(() => []),
+      clear: vi.fn(),
+    } as any,
+    chapterChatRunner: {
+      run: vi.fn(),
+    } as any,
     tools: [],
   }
 }
@@ -416,7 +424,7 @@ describe('Novel API 路由 - AI 角色生成', () => {
       url: `${PLUGIN_PREFIX}/projects/${projectId}/characters/ai-generate`,
       payload: { coreStyle: '沉默寡言的剑客' },
     })
-    expect(response.statusCode).toBe(200)
+    expect(response.statusCode, response.body).toBe(200)
     expect(response.headers['content-type']).toContain('text/event-stream')
     // SSE 流：从 novel:result 事件中提取角色数据
     const lines = response.body.split('\n').filter((l: string) => l.startsWith('data: '))

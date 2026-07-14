@@ -123,7 +123,7 @@ describe('NovelDiscussionRunner', () => {
     const runner = new NovelDiscussionRunner(
       store, memoryStore, sessionFactory, promptBuilder, engine, mockContext, {} as any,
     )
-    const prompt = (runner as any).buildCharacterPrompt(char)
+    const prompt = (runner as any).buildCharacterPrompt(project.id, char)
     expect(prompt).toContain('李明')
     expect(prompt).toContain('沉稳冷静')
     expect(prompt).toContain('焦虑')
@@ -131,5 +131,101 @@ describe('NovelDiscussionRunner', () => {
     expect(prompt).toContain('欠债')
     expect(prompt).toContain('挣扎')
     expect(prompt).toContain('绝不使用破折号')
+  })
+
+  it('buildMembers 工种 Agent 注入群聊 role 身份段（含场景拆分/剧本编织约束）', () => {
+    const project = store.createProject({
+      id: 'p-test-3',
+      title: '测试',
+      genre: '都市',
+      synopsis: '',
+      outline: '',
+      targetWords: 0,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active',
+    } as any)
+
+    const promptManager = new PromptManager(db, process.cwd())
+    const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
+    const sessionFactory = new NovelSessionFactory(store, promptManager)
+    const engine = new NovelEngine(store, sessionFactory)
+    const mockContext = {
+      createAgUiSession: vi.fn(),
+      createSession: vi.fn(),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+    } as any
+
+    const runner = new NovelDiscussionRunner(
+      store, memoryStore, sessionFactory, promptBuilder, engine, mockContext, {} as any,
+    )
+
+    const members = (runner as any).buildMembers(project.id, 1)
+    const director = members.find((m: any) => m.id === 'novel-director')
+    expect(director).toBeDefined()
+    const directorPrompt = director.buildSystemPrompt()
+    // role-director-discussion.md 应含"场景拆分"字段（群聊专属，普通 role-director.md 没有）
+    expect(directorPrompt).toContain('场景拆分')
+    // role-director-discussion.md 应含"### 场景N：标题"格式说明
+    expect(directorPrompt).toContain('### 场景1：标题')
+
+    const writer = members.find((m: any) => m.id === 'novel-writer')
+    expect(writer).toBeDefined()
+    const writerPrompt = writer.buildSystemPrompt()
+    // role-writer-discussion.md 应含"编织"约束
+    expect(writerPrompt).toContain('编织')
+    expect(writerPrompt).toContain('剧本')
+  })
+
+  it('buildMembers 角色成员注入 role-character-actor.md（剧本演出格式）', () => {
+    const project = store.createProject({
+      id: 'p-test-4',
+      title: '测试',
+      genre: '都市',
+      synopsis: '',
+      outline: '',
+      targetWords: 0,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active',
+    } as any)
+    store.createCharacter({
+      id: 'c-actortest',
+      projectId: project.id,
+      name: '王芳',
+      personality: '机敏聪慧',
+      currentState: '警觉',
+      currentGoal: '搜集情报',
+      secret: '双面间谍',
+      arcStage: '潜伏',
+    } as any)
+
+    const promptManager = new PromptManager(db, process.cwd())
+    const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
+    const sessionFactory = new NovelSessionFactory(store, promptManager)
+    const engine = new NovelEngine(store, sessionFactory)
+    const mockContext = {
+      createAgUiSession: vi.fn(),
+      createSession: vi.fn(),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+    } as any
+
+    const runner = new NovelDiscussionRunner(
+      store, memoryStore, sessionFactory, promptBuilder, engine, mockContext, {} as any,
+    )
+
+    const members = (runner as any).buildMembers(project.id, 1)
+    const character = members.find((m: any) => m.type === 'character')
+    expect(character).toBeDefined()
+    const charPrompt = character.buildSystemPrompt()
+    // role-character-actor.md 应含剧本格式约束
+    expect(charPrompt).toContain('[动作')
+    expect(charPrompt).toContain('台词')
+    expect(charPrompt).toContain('PUSHBACK')
+    // 角色人设字段也保留
+    expect(charPrompt).toContain('王芳')
+    expect(charPrompt).toContain('机敏聪慧')
   })
 })

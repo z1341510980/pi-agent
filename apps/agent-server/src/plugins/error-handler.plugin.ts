@@ -52,7 +52,13 @@ export const errorHandlerPlugin: FastifyPluginAsync = fp(async (app) => {
     }
 
     // 未知错误：脱敏后返回 500
-    request.log.error({ traceId, error });
+    request.log.error({
+      traceId,
+      error,
+      errorName: fastifyError.name,
+      errorMessage: fastifyError.message,
+      errorStack: fastifyError.stack,
+    });
     return reply.status(500).send(
       failure(ErrorCode.INTERNAL_SERVER_ERROR, "服务器内部错误", traceId),
     );

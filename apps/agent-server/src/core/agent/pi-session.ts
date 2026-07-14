@@ -1,6 +1,8 @@
-import { createAgentSession, DefaultResourceLoader } from '@earendil-works/pi-coding-agent'
-import type { AuthStorage, ModelRegistry, SessionManager, AgentSession, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { createAgentSession, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent'
+import type { AuthStorage, ModelRegistry, AgentSession, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import type { Gate } from '../tool/gate.js'
 import type { EventBus } from '@repo/shared/events'
@@ -151,11 +153,26 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     }
   }
 
-  // 6. 创建 Agent Session
+  // 6. 选择 SessionManager：
+  //    - plugin:* 线程每次创建独立 SessionManager，避免不同 Agent 调用共享同一 Pi SDK 会话树，
+  //      从而防止历史消息（含 tool 消息）跨 Agent 泄漏，导致网关报 400。
+  //    - 其他线程（chat）复用共享 sessionManager，保持多轮对话状态。
+  const isPluginSession = deps.threadId.startsWith('plugin:')
+  const sessionManager = isPluginSession
+    ? SessionManager.create(
+        deps.config.cwd,
+        typeof deps.sessionManager.getSessionDir === 'function'
+          ? deps.sessionManager.getSessionDir()
+          : join(deps.config.dataDir, 'agent', 'sessions'),
+        { id: randomUUID() },
+      )
+    : deps.sessionManager
+
+  // 7. 创建 Agent Session
   const { session } = await createAgentSession({
     authStorage: deps.authStorage,
     modelRegistry: deps.modelRegistry,
-    sessionManager: deps.sessionManager,
+    sessionManager,
     resourceLoader,
     cwd: deps.config.cwd,
     model: defaultModel,

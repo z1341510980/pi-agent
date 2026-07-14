@@ -7,7 +7,8 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
   batchCreateCharacterHistory,
   createCharacter,
@@ -94,33 +95,33 @@ export function MatrixWorkspace({
   const queryClient = useQueryClient()
 
   // ── store 数据 ──
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const characters = useNovelStore((s) => s.characters)
-  const chapters = useNovelStore((s) => s.chapters)
-  const conflicts = useNovelStore((s) => s.conflicts)
-  const foreshadows = useNovelStore((s) => s.foreshadows)
-  const factions = useNovelStore((s) => s.factions)
-  const locations = useNovelStore((s) => s.locations)
-  const worldElements = useNovelStore((s) => s.worldElements)
-  const characterHistory = useNovelStore((s) => s.characterHistory)
-  const relationships = useNovelStore((s) => s.relationships)
-  const markers = useNovelStore((s) => s.markers)
-  const setMarkers = useNovelStore((s) => s.setMarkers)
-  const selectNode = useNovelStore((s) => s.selectNode)
-  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
-  const playheadChapter = useNovelStore((s) => s.playheadChapter)
-  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
-  const removeChapter = useNovelStore((s) => s.removeChapter)
-  const setCharacterHistory = useNovelStore((s) => s.setCharacterHistory)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  const characters = useNovelDataStore((s) => s.characters)
+  const chapters = useNovelDataStore((s) => s.chapters)
+  const conflicts = useNovelDataStore((s) => s.conflicts)
+  const foreshadows = useNovelDataStore((s) => s.foreshadows)
+  const factions = useNovelDataStore((s) => s.factions)
+  const locations = useNovelDataStore((s) => s.locations)
+  const worldElements = useNovelDataStore((s) => s.worldElements)
+  const characterHistory = useNovelDataStore((s) => s.characterHistory)
+  const relationships = useNovelDataStore((s) => s.relationships)
+  const markers = useNovelDataStore((s) => s.markers)
+  const setMarkers = useNovelDataStore((s) => s.setMarkers)
+  const selectNode = useNovelUiStore((s) => s.selectNode)
+  const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
+  const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
+  const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
+  const removeChapter = useNovelDataStore((s) => s.removeChapter)
+  const setCharacterHistory = useNovelDataStore((s) => s.setCharacterHistory)
   // ── C-3 折叠分组从 store 共享（与 NovelSidebar 联动）──
-  const collapsedGroupsArr = useNovelStore((s) => s.collapsedGroups)
-  const toggleCollapsedGroup = useNovelStore((s) => s.toggleCollapsedGroup)
-  const upsertMarker = useNovelStore((s) => s.upsertMarker)
+  const collapsedGroupsArr = useNovelUiStore((s) => s.collapsedGroups)
+  const toggleCollapsedGroup = useNovelUiStore((s) => s.toggleCollapsedGroup)
+  const upsertMarker = useNovelDataStore((s) => s.upsertMarker)
   // ── Undo/Redo（与 MatrixToolbar 联动）──
-  const undoCount = useNovelStore((s) => s.undoCount)
-  const redoCount = useNovelStore((s) => s.redoCount)
-  const undo = useNovelStore((s) => s.undo)
-  const redo = useNovelStore((s) => s.redo)
+  const undoCount = useNovelDataStore((s) => s.undoCount)
+  const redoCount = useNovelDataStore((s) => s.redoCount)
+  const undo = useNovelDataStore((s) => s.undo)
+  const redo = useNovelDataStore((s) => s.redo)
 
   // ── 本地 UI 状态 ──
   const [cellWidth, setCellWidth] = useState(DEFAULT_CELL_WIDTH)
@@ -279,21 +280,21 @@ export function MatrixWorkspace({
     if (entityType !== 'conflict' && entityType !== 'faction') return
     try {
       if (entityType === 'conflict') {
-        const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
+        const c = useNovelDataStore.getState().conflicts.find((x) => x.id === entityId)
         if (!c) return
         const span = findSpanAt(c.chapterSpans, chapter)
         if (span == null) return
         const newSpans = c.chapterSpans.filter((sp) => sp !== span)
         const updated = await updateConflict(entityId, { chapterSpans: newSpans })
-        useNovelStore.getState().upsertConflict(updated)
+        useNovelDataStore.getState().upsertConflict(updated)
       } else {
-        const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
+        const f = useNovelDataStore.getState().factions.find((x) => x.id === entityId)
         if (!f) return
         const span = findSpanAt(f.chapterSpans, chapter)
         if (span == null) return
         const newSpans = f.chapterSpans.filter((sp) => sp !== span)
         const updated = await updateFaction(entityId, { chapterSpans: newSpans })
-        useNovelStore.getState().upsertFaction(updated)
+        useNovelDataStore.getState().upsertFaction(updated)
       }
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
     } catch (err) {
@@ -391,16 +392,16 @@ export function MatrixWorkspace({
       switch (entityType) {
         case 'character': {
           // 用 batchCreateCharacterHistory 写入一条 chapterNumber 记录（reason 标注手动）
-          // useNovelStore.getState() 取最新数据，避免闭包陈旧导致覆盖丢失记录
+          // useNovelDataStore.getState() 取最新数据，避免闭包陈旧导致覆盖丢失记录
           const created = await batchCreateCharacterHistory(currentProjectId, [{ characterId: entityId, chapterNumber: chapter }])
-          const fresh = useNovelStore.getState().characterHistory
+          const fresh = useNovelDataStore.getState().characterHistory
           setCharacterHistory([...fresh, ...created])
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'conflict': {
-          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧导致覆盖丢失段
-          const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
+          // 用 useNovelDataStore.getState() 取最新数据，避免闭包陈旧导致覆盖丢失段
+          const c = useNovelDataStore.getState().conflicts.find((x) => x.id === entityId)
           if (!c) {
             console.warn('[MatrixWorkspace] conflict 拖入：未找到冲突', entityId)
             return
@@ -428,13 +429,13 @@ export function MatrixWorkspace({
             }
           }
           const updated = await updateConflict(entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertConflict(updated)
+          useNovelDataStore.getState().upsertConflict(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'faction': {
-          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧
-          const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
+          // 用 useNovelDataStore.getState() 取最新数据，避免闭包陈旧
+          const f = useNovelDataStore.getState().factions.find((x) => x.id === entityId)
           if (!f) {
             console.warn('[MatrixWorkspace] faction 拖入：未找到势力', entityId)
             return
@@ -457,7 +458,7 @@ export function MatrixWorkspace({
             }
           }
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertFaction(updated)
+          useNovelDataStore.getState().upsertFaction(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -474,24 +475,24 @@ export function MatrixWorkspace({
           // - 已回收，拖到新位置 → 移动离该章最近的端点（埋设点/回收点）
           if (f.firstChapter == null) {
             const updated = await updateForeshadow(entityId, { firstChapter: chapter, status: 'planted' })
-            useNovelStore.getState().upsertForeshadow(updated)
+            useNovelDataStore.getState().upsertForeshadow(updated)
           } else if (f.recoverByChapter == null && chapter > f.firstChapter) {
             const updated = await updateForeshadow(entityId, { recoverByChapter: chapter, status: 'recovered' })
-            useNovelStore.getState().upsertForeshadow(updated)
+            useNovelDataStore.getState().upsertForeshadow(updated)
           } else if (f.recoverByChapter == null) {
             // 未回收，拖到埋设点之前或同章 → 移动埋设点
             const updated = await updateForeshadow(entityId, { firstChapter: chapter })
-            useNovelStore.getState().upsertForeshadow(updated)
+            useNovelDataStore.getState().upsertForeshadow(updated)
           } else {
             // 已回收：移动离 chapter 最近的端点
             const distPlant = Math.abs(chapter - f.firstChapter!)
             const distPayoff = Math.abs(chapter - f.recoverByChapter)
             if (distPlant <= distPayoff) {
               const updated = await updateForeshadow(entityId, { firstChapter: chapter })
-              useNovelStore.getState().upsertForeshadow(updated)
+              useNovelDataStore.getState().upsertForeshadow(updated)
             } else {
               const updated = await updateForeshadow(entityId, { recoverByChapter: chapter })
-              useNovelStore.getState().upsertForeshadow(updated)
+              useNovelDataStore.getState().upsertForeshadow(updated)
             }
           }
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
@@ -502,7 +503,7 @@ export function MatrixWorkspace({
           if (!loc) return
           const next = Array.from(new Set([...(loc.appearChapters ?? []), chapter])).sort((a, b) => a - b)
           const updated = await updateLocation(entityId, { appearChapters: next })
-          useNovelStore.getState().upsertLocation(updated)
+          useNovelDataStore.getState().upsertLocation(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -520,22 +521,22 @@ export function MatrixWorkspace({
       switch (entityType) {
         case 'character': {
           // 找出该角色在该章的所有 history 记录，逐条删除
-          // useNovelStore.getState() 取最新数据，避免闭包陈旧
-          const fresh = useNovelStore.getState().characterHistory
+          // useNovelDataStore.getState() 取最新数据，避免闭包陈旧
+          const fresh = useNovelDataStore.getState().characterHistory
           const records = fresh.filter((h) => h.characterId === entityId && h.chapterNumber === chapter)
           for (const r of records) {
             await deleteCharacterHistory(currentProjectId, r.id)
           }
           if (records.length > 0) {
-            const after = useNovelStore.getState().characterHistory
+            const after = useNovelDataStore.getState().characterHistory
             setCharacterHistory(after.filter((h) => !records.some((r) => r.id === h.id)))
             void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           }
           break
         }
         case 'conflict': {
-          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧
-          const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
+          // 用 useNovelDataStore.getState() 取最新数据，避免闭包陈旧
+          const c = useNovelDataStore.getState().conflicts.find((x) => x.id === entityId)
           if (!c) return
           const span = findSpanAt(c.chapterSpans, chapter)
           if (span == null) return // 不在任何段中（中间格不可删由 isCellRemovable 保证）
@@ -553,13 +554,13 @@ export function MatrixWorkspace({
             return // 中间章不可删
           }
           const updated = await updateConflict(entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertConflict(updated)
+          useNovelDataStore.getState().upsertConflict(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'faction': {
-          // 用 useNovelStore.getState() 取最新数据，避免闭包陈旧
-          const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
+          // 用 useNovelDataStore.getState() 取最新数据，避免闭包陈旧
+          const f = useNovelDataStore.getState().factions.find((x) => x.id === entityId)
           if (!f) return
           const span = findSpanAt(f.chapterSpans, chapter)
           if (span == null) return
@@ -574,7 +575,7 @@ export function MatrixWorkspace({
             return
           }
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertFaction(updated)
+          useNovelDataStore.getState().upsertFaction(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -583,10 +584,10 @@ export function MatrixWorkspace({
           if (!f) return
           if (chapter === f.firstChapter) {
             const updated = await updateForeshadow(entityId, { firstChapter: null })
-            useNovelStore.getState().upsertForeshadow(updated)
+            useNovelDataStore.getState().upsertForeshadow(updated)
           } else if (chapter === f.recoverByChapter) {
             const updated = await updateForeshadow(entityId, { recoverByChapter: null, status: 'planted' })
-            useNovelStore.getState().upsertForeshadow(updated)
+            useNovelDataStore.getState().upsertForeshadow(updated)
           }
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
@@ -596,7 +597,7 @@ export function MatrixWorkspace({
           if (!loc) return
           const next = (loc.appearChapters ?? []).filter((c) => c !== chapter)
           const updated = await updateLocation(entityId, { appearChapters: next })
-          useNovelStore.getState().upsertLocation(updated)
+          useNovelDataStore.getState().upsertLocation(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -652,7 +653,7 @@ export function MatrixWorkspace({
     try {
       switch (entityType) {
         case 'conflict': {
-          const c = useNovelStore.getState().conflicts.find((x) => x.id === entityId)
+          const c = useNovelDataStore.getState().conflicts.find((x) => x.id === entityId)
           if (!c) return
           const span = c.chapterSpans[spanIndex]
           if (!span) return
@@ -661,12 +662,12 @@ export function MatrixWorkspace({
           const nextEnd = end === 'end' ? Math.max(chapter, span[0]) : span[1]
           const newSpans = c.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
           const updated = await updateConflict(entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertConflict(updated)
+          useNovelDataStore.getState().upsertConflict(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
         case 'faction': {
-          const f = useNovelStore.getState().factions.find((x) => x.id === entityId)
+          const f = useNovelDataStore.getState().factions.find((x) => x.id === entityId)
           if (!f) return
           const span = f.chapterSpans[spanIndex]
           if (!span) return
@@ -674,7 +675,7 @@ export function MatrixWorkspace({
           const nextEnd = end === 'end' ? Math.max(chapter, span[0]) : span[1]
           const newSpans = f.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertFaction(updated)
+          useNovelDataStore.getState().upsertFaction(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -683,7 +684,7 @@ export function MatrixWorkspace({
           // - 拖动 start 端点 → 更新 firstChapter（埋设点）
           // - 拖动 end 端点 → 更新 recoverByChapter（回收点）
           // 反转保护：plant 不能晚于 payoff，payoff 不能早于 plant
-          const f = useNovelStore.getState().foreshadows.find((x) => x.id === entityId)
+          const f = useNovelDataStore.getState().foreshadows.find((x) => x.id === entityId)
           if (!f) return
           const patch: { firstChapter?: number; recoverByChapter?: number | null; status?: 'recovered' } = {}
           if (end === 'start') {
@@ -698,7 +699,7 @@ export function MatrixWorkspace({
             patch.status = 'recovered'
           }
           const updated = await updateForeshadow(entityId, patch)
-          useNovelStore.getState().upsertForeshadow(updated)
+          useNovelDataStore.getState().upsertForeshadow(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -709,7 +710,7 @@ export function MatrixWorkspace({
   }, [currentProjectId, chapters, queryClient])
 
   // ── 拖动已出场单元格（character/location）换章 ──
-  // 语义：从 fromChapter 移除、在 toChapter 新增。用 useNovelStore.getState() 取最新数据避免闭包陈旧。
+  // 语义：从 fromChapter 移除、在 toChapter 新增。用 useNovelDataStore.getState() 取最新数据避免闭包陈旧。
   const handleMoveCell = useCallback(async (entityId: string, entityType: MatrixEntityKind, fromChapter: number, toChapter: number): Promise<void> => {
     if (!currentProjectId) return
     try {
@@ -719,13 +720,13 @@ export function MatrixWorkspace({
           // （后端 batchCreateCharacterHistory 是单次请求，整体成功或整体失败）
           const created = await batchCreateCharacterHistory(currentProjectId, [{ characterId: entityId, chapterNumber: toChapter }])
           // 创建成功后再删除旧记录；await 后重新取最新 state 避免闭包陈旧
-          const freshAfterCreate = useNovelStore.getState().characterHistory
+          const freshAfterCreate = useNovelDataStore.getState().characterHistory
           const oldRecords = freshAfterCreate.filter((h) => h.characterId === entityId && h.chapterNumber === fromChapter)
           for (const r of oldRecords) {
             await deleteCharacterHistory(currentProjectId, r.id)
           }
           // 重新取最新 state 计算最终值，避免 await 期间并发修改被覆盖
-          const freshAfterDelete = useNovelStore.getState().characterHistory
+          const freshAfterDelete = useNovelDataStore.getState().characterHistory
           const next = freshAfterDelete
             .filter((h) => !(h.characterId === entityId && h.chapterNumber === fromChapter))
             .concat(created)
@@ -734,14 +735,14 @@ export function MatrixWorkspace({
           break
         }
         case 'location': {
-          const loc = useNovelStore.getState().locations.find((l) => l.id === entityId)
+          const loc = useNovelDataStore.getState().locations.find((l) => l.id === entityId)
           if (!loc) return
           const set = new Set(loc.appearChapters ?? [])
           set.delete(fromChapter)
           set.add(toChapter)
           const next = Array.from(set).sort((a, b) => a - b)
           const updated = await updateLocation(entityId, { appearChapters: next })
-          useNovelStore.getState().upsertLocation(updated)
+          useNovelDataStore.getState().upsertLocation(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -816,14 +817,14 @@ export function MatrixWorkspace({
           const existing = entity.chapterSpans ?? []
           const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
           const updated = await updateConflict(entity.entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertConflict(updated)
+          useNovelDataStore.getState().upsertConflict(updated)
           break
         }
         case 'faction': {
           const existing = entity.chapterSpans ?? []
           const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
           const updated = await updateFaction(entity.entityId, { chapterSpans: newSpans })
-          useNovelStore.getState().upsertFaction(updated)
+          useNovelDataStore.getState().upsertFaction(updated)
           break
         }
         case 'foreshadow': {
@@ -833,7 +834,7 @@ export function MatrixWorkspace({
             recoverByChapter: lastChapter,
             status: lastChapter >= firstChapter ? 'recovered' : undefined,
           })
-          useNovelStore.getState().upsertForeshadow(updated)
+          useNovelDataStore.getState().upsertForeshadow(updated)
           break
         }
         case 'character': {
@@ -872,7 +873,7 @@ export function MatrixWorkspace({
           const rangeChs: number[] = []
           for (let ch = firstChapter; ch <= lastChapter; ch++) rangeChs.push(ch)
           const updated = await updateLocation(entity.entityId, { appearChapters: rangeChs })
-          useNovelStore.getState().upsertLocation(updated)
+          useNovelDataStore.getState().upsertLocation(updated)
           break
         }
         case 'world_element':
@@ -913,7 +914,7 @@ export function MatrixWorkspace({
             }
           : { name: data.name ?? '' }
         const created = await createCharacter(currentProjectId, input)
-        useNovelStore.getState().upsertCharacter(created)
+        useNovelDataStore.getState().upsertCharacter(created)
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         break
       }
@@ -937,7 +938,7 @@ export function MatrixWorkspace({
               chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
             }
         const created = await createConflict(currentProjectId, input)
-        useNovelStore.getState().upsertConflict(created)
+        useNovelDataStore.getState().upsertConflict(created)
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         break
       }
@@ -956,7 +957,7 @@ export function MatrixWorkspace({
               firstChapter,
             }
         const created = await createForeshadow(currentProjectId, input)
-        useNovelStore.getState().upsertForeshadow(created)
+        useNovelDataStore.getState().upsertForeshadow(created)
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         break
       }
@@ -979,7 +980,7 @@ export function MatrixWorkspace({
               chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
             }
         const created = await createFaction(currentProjectId, input)
-        useNovelStore.getState().upsertFaction(created)
+        useNovelDataStore.getState().upsertFaction(created)
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         break
       }
@@ -1000,7 +1001,7 @@ export function MatrixWorkspace({
               appearChapters: firstChapter != null ? [firstChapter] : [],
             }
         const created = await createLocation(currentProjectId, input)
-        useNovelStore.getState().upsertLocation(created)
+        useNovelDataStore.getState().upsertLocation(created)
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         break
       }
@@ -1017,7 +1018,7 @@ export function MatrixWorkspace({
               category: 'history' as const,
             }
         const created = await createWorldElement(currentProjectId, input)
-        useNovelStore.getState().upsertWorldElement(created)
+        useNovelDataStore.getState().upsertWorldElement(created)
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         break
       }

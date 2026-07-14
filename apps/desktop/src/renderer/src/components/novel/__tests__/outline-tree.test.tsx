@@ -5,8 +5,8 @@ import type { NovelProject, NovelChapter, NovelVolume } from '@/api/novel-client
 
 // ── mock store：用 vi.hoisted 保证 mock 对象在 vi.mock factory 中可访问 ──
 
-const { mockStore } = vi.hoisted(() => ({
-  mockStore: {
+const { mockUiStore, mockDataStore } = vi.hoisted(() => ({
+  mockUiStore: {
     selectedNodeId: null as string | null,
     playheadChapter: 1,
     expandedVolumes: [] as string[],
@@ -14,14 +14,20 @@ const { mockStore } = vi.hoisted(() => ({
     setPlayheadChapter: vi.fn(),
     setMatrixScrollTarget: vi.fn(),
     toggleExpandedVolume: vi.fn(),
+  },
+  mockDataStore: {
     upsertProject: vi.fn(),
     upsertChapter: vi.fn(),
     upsertVolume: vi.fn(),
   },
 }))
 
-vi.mock('@/stores/novel-store', () => ({
-  useNovelStore: (sel: (s: typeof mockStore) => unknown) => sel(mockStore),
+vi.mock('@/stores/novel-ui-store', () => ({
+  useNovelUiStore: (sel: (s: typeof mockUiStore) => unknown) => sel(mockUiStore),
+}))
+
+vi.mock('@/stores/novel-data-store', () => ({
+  useNovelDataStore: (sel: (s: typeof mockDataStore) => unknown) => sel(mockDataStore),
 }))
 
 // ── mock api：避免组件中网络调用真实后端 ──
@@ -107,15 +113,15 @@ describe('OutlineTree', () => {
   })
 
   beforeEach(() => {
-    mockStore.selectedNodeId = null
-    mockStore.playheadChapter = 1
-    mockStore.expandedVolumes = ['v1']
-    mockStore.selectNode.mockClear()
-    mockStore.setPlayheadChapter.mockClear()
-    mockStore.setMatrixScrollTarget.mockClear()
-    mockStore.upsertProject.mockClear()
-    mockStore.upsertChapter.mockClear()
-    mockStore.upsertVolume.mockClear()
+    mockUiStore.selectedNodeId = null
+    mockUiStore.playheadChapter = 1
+    mockUiStore.expandedVolumes = ['v1']
+    mockUiStore.selectNode.mockClear()
+    mockUiStore.setPlayheadChapter.mockClear()
+    mockUiStore.setMatrixScrollTarget.mockClear()
+    mockDataStore.upsertProject.mockClear()
+    mockDataStore.upsertChapter.mockClear()
+    mockDataStore.upsertVolume.mockClear()
   })
 
   it('渲染全书大纲、卷、章节点', async () => {
@@ -128,13 +134,13 @@ describe('OutlineTree', () => {
   it('点击章节点触发选中 + playhead + 滚动', async () => {
     await renderTree()
     fireEvent.click(screen.getByText(/第一章/))
-    expect(mockStore.selectNode).toHaveBeenCalledWith('c1', 'chapter')
-    expect(mockStore.setPlayheadChapter).toHaveBeenCalledWith(1)
-    expect(mockStore.setMatrixScrollTarget).toHaveBeenCalled()
+    expect(mockUiStore.selectNode).toHaveBeenCalledWith('c1', 'chapter')
+    expect(mockUiStore.setPlayheadChapter).toHaveBeenCalledWith(1)
+    expect(mockUiStore.setMatrixScrollTarget).toHaveBeenCalled()
   })
 
   it('当前 playhead 章高亮', async () => {
-    mockStore.selectedNodeId = 'c1'
+    mockUiStore.selectedNodeId = 'c1'
     await renderTree()
     const chapterItem = screen.getByText(/第一章/).closest('button')
     expect(chapterItem).toBeTruthy()

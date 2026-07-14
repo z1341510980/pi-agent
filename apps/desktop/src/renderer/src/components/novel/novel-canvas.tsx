@@ -16,8 +16,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { AlertTriangle, Layers } from 'lucide-react'
-import { useNovelStore } from '@/stores/novel-store'
-import type { NovelNodeType } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore, type NovelNodeType } from '@/stores/novel-ui-store'
 import {
   deleteCharacter,
   deleteConflict,
@@ -502,33 +502,33 @@ export function NovelCanvas({
   onNodeCountChange,
   onDeleteNode,
 }: NovelCanvasProps): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const characters = useNovelStore((s) => s.characters)
-  const conflicts = useNovelStore((s) => s.conflicts)
-  const foreshadows = useNovelStore((s) => s.foreshadows)
-  const factions = useNovelStore((s) => s.factions)
-  const locations = useNovelStore((s) => s.locations)
-  const worldElements = useNovelStore((s) => s.worldElements)
-  const nodePositions = useNovelStore((s) => s.nodePositions)
-  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
-  const selectedNodeType = useNovelStore((s) => s.selectedNodeType)
-  const selectNode = useNovelStore((s) => s.selectNode)
-  const clearSelection = useNovelStore((s) => s.clearSelection)
-  const upsertNodePosition = useNovelStore((s) => s.upsertNodePosition)
-  const setNodePositions = useNovelStore((s) => s.setNodePositions)
-  const removeNodePosition = useNovelStore((s) => s.removeNodePosition)
-  const removeCharacter = useNovelStore((s) => s.removeCharacter)
-  const removeConflict = useNovelStore((s) => s.removeConflict)
-  const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
-  const removeFaction = useNovelStore((s) => s.removeFaction)
-  const removeLocation = useNovelStore((s) => s.removeLocation)
-  const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  const characters = useNovelDataStore((s) => s.characters)
+  const conflicts = useNovelDataStore((s) => s.conflicts)
+  const foreshadows = useNovelDataStore((s) => s.foreshadows)
+  const factions = useNovelDataStore((s) => s.factions)
+  const locations = useNovelDataStore((s) => s.locations)
+  const worldElements = useNovelDataStore((s) => s.worldElements)
+  const nodePositions = useNovelDataStore((s) => s.nodePositions)
+  const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
+  const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
+  const selectNode = useNovelUiStore((s) => s.selectNode)
+  const clearSelection = useNovelUiStore((s) => s.clearSelection)
+  const upsertNodePosition = useNovelDataStore((s) => s.upsertNodePosition)
+  const setNodePositions = useNovelDataStore((s) => s.setNodePositions)
+  const removeNodePosition = useNovelDataStore((s) => s.removeNodePosition)
+  const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
+  const removeConflict = useNovelDataStore((s) => s.removeConflict)
+  const removeForeshadow = useNovelDataStore((s) => s.removeForeshadow)
+  const removeFaction = useNovelDataStore((s) => s.removeFaction)
+  const removeLocation = useNovelDataStore((s) => s.removeLocation)
+  const removeWorldElement = useNovelDataStore((s) => s.removeWorldElement)
   // 边数据：手动边来自 store（已持久化），与 buildLayout 自动边合并后渲染
   // 注意：store 的 addEdge/removeEdge 与 xyflow 的 addEdge 同名，这里别名以避免冲突
-  const manualEdges = useNovelStore((s) => s.edges)
-  const addEdgeToStore = useNovelStore((s) => s.addEdge)
-  const removeEdgeFromStore = useNovelStore((s) => s.removeEdge)
-  const canvasEdgeType = useNovelStore((s) => s.canvasEdgeType)
+  const manualEdges = useNovelDataStore((s) => s.edges)
+  const addEdgeToStore = useNovelDataStore((s) => s.addEdge)
+  const removeEdgeFromStore = useNovelDataStore((s) => s.removeEdge)
+  const canvasEdgeType = useNovelUiStore((s) => s.canvasEdgeType)
 
   const { fitView } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])

@@ -40,7 +40,7 @@ import {
   type EntityGenerationProgressEvent,
   type GeneratedEntityResult,
 } from '@/api/novel-client'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
 
 export interface EntityCreateDialogProps {
   open: boolean
@@ -95,7 +95,7 @@ export function EntityCreateDialog({
   const [aiGenerating, setAiGenerating] = useState(false)
   const [progressMsg, setProgressMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
 
   useEffect(() => {
     if (open) {

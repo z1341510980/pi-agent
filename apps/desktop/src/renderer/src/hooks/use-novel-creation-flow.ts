@@ -24,7 +24,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { browserConfig } from '@repo/config/browser'
-import { submitCheckpointDecision } from '@/api/novel-client'
+import { submitCheckpointDecision, persistChapterChat } from '@/api/novel-client'
 import { parseSseStream } from '@/api/agui-client'
 import type { BaseEvent, CustomEvent } from '@repo/protocol/events'
 
@@ -48,7 +48,7 @@ export interface CreationFlowEvent {
 
 /** 单个 Agent 的输出内容（用于时间线展示） */
 export interface AgentOutput {
-  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory' | 'arranger' | 'context'
+  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory' | 'arranger' | 'context' | 'character' | 'moderator'
   agentName: string
   content: string
   preview: string
@@ -351,6 +351,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const projectIdRef = useRef<string | null>(null)
+  /** 当前章节号（供 sendMessage 持久化聊天记录用） */
+  const chapterNumberRef = useRef<number | null>(null)
   /** messageId → { agentType, agentName } 映射：agent_start 时记录，TEXT_MESSAGE_* 时查询 */
   const messageAgentMapRef = useRef<Map<string, { agentType: AgentOutput['agentType']; agentName: string }>>(new Map())
   /** writer/reviser 累积文本（delta 累积，避免每次 setState 丢失增量） */
@@ -422,6 +424,9 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    * 不再用 CUSTOM(novel:progress) 的 agent_output.content 全量推送。
    */
   const handleEvent = useCallback((event: BaseEvent): void => {
+    // 已取消：跳过所有后续事件处理，避免 setState 覆盖 reset() 的 idle
+    if (abortControllerRef.current?.signal.aborted) return
+
     // ── 标准 AG-UI 事件：LLM 流式文本（与 chat 共用同一协议） ──
     // TEXT_MESSAGE_START：StreamEmitter 开始发射某 messageId 的文本
     // 如果 agent_start 已创建初始气泡（含"已启动"提示），清空 content 准备接收流式 delta
@@ -515,6 +520,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             dataChanged?: boolean
             data?: unknown
             detail?: Record<string, unknown>
+            scene?: { sceneId: number; title: string; location: string; time: string; conflict?: string; goal: string }
           }
           // detail 事件：节奏建议/叙事任务/章节约束/记忆结果
           // → 格式化为 info 气泡（arrange_* 详情由下方专门分支处理，需要 dataChanged / streaming 语义）
@@ -722,6 +728,32 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             }
             return
           }
+          // 群聊过程事件：scene_change（场景切换）→ 创建 director 系统气泡
+          // 让用户看到群聊的场景拆分和切换过程
+          if (data?.type === 'scene_change' && data.scene) {
+            const scene = data.scene
+            const content = `## 场景${scene.sceneId}：${scene.title}\n- 地点：${scene.location}\n- 时间：${scene.time}\n- 冲突：${scene.conflict ?? '无'}\n- 目标：${scene.goal}`
+            setAgentOutputs((prev) => [...prev, {
+              agentType: 'director',
+              agentName: '场景',
+              content,
+              preview: `场景${scene.sceneId}：${scene.title}`,
+              timestamp: evt.timestamp,
+            }])
+            return
+          }
+          // 群聊过程事件：phase_change 带 message（如"导演 开始发言..."）→ 创建 moderator 系统气泡
+          // 注意：带 detail 的 phase_change 已被上方 detail 分支处理，此处只处理纯 message 进度
+          if (data?.type === 'phase_change' && data.message && !data.detail) {
+            setAgentOutputs((prev) => [...prev, {
+              agentType: 'moderator',
+              agentName: '主持人',
+              content: data.message!,
+              preview: data.message!,
+              timestamp: evt.timestamp,
+            }])
+            return
+          }
           // phase_change / 心跳：只更新 events 和 phase，不覆盖 chapterContent
           return
         }
@@ -814,9 +846,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         // 复用 chat 的 parseSseStream：统一 SSE 解析逻辑
         await parseSseStream(response.body, handleEvent)
       } catch (err) {
-        // 用户主动取消（abort）不算错误
+        // 用户主动取消（abort）：cancel()/reset() 已同步处理状态，不覆盖 phase
         if (controller.signal.aborted) {
-          setPhase('cancelled')
           setIsRunning(false)
           setCurrentCheckpoint(null)
           return
@@ -862,6 +893,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       }
       setIsRunning(true)
       projectIdRef.current = projectId
+      chapterNumberRef.current = chapterNumber
 
       const controller = new AbortController()
       abortControllerRef.current = controller
@@ -915,6 +947,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       }
       setIsRunning(true)
       projectIdRef.current = projectId
+      chapterNumberRef.current = chapterNumber
 
       const controller = new AbortController()
       abortControllerRef.current = controller
@@ -963,6 +996,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       }
       setIsRunning(true)
       projectIdRef.current = projectId
+      chapterNumberRef.current = chapterNumber
 
       const controller = new AbortController()
       abortControllerRef.current = controller
@@ -1008,6 +1042,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       }
       setIsRunning(true)
       projectIdRef.current = projectId
+      chapterNumberRef.current = chapterNumber
 
       const controller = new AbortController()
       abortControllerRef.current = controller
@@ -1058,7 +1093,19 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         timestamp: Date.now(),
       },
     ])
-  }, [])
+    // 持久化到章节聊天历史（fire-and-forget，不阻塞创作流程）
+    const projectId = projectIdRef.current
+    const chapterNumber = chapterNumberRef.current
+    if (projectId && chapterNumber != null) {
+      const persistPhase = currentCheckpoint ? 'checkpoint' : 'discussion'
+      persistChapterChat(projectId, chapterNumber, {
+        phase: persistPhase,
+        content: trimmed,
+      }).catch(() => {
+        // 持久化失败不影响创作流程
+      })
+    }
+  }, [currentCheckpoint])
 
   const cancel = useCallback((): void => {
     if (!abortControllerRef.current) return
@@ -1069,7 +1116,9 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       rafIdRef.current = null
     }
     deltaBufferRef.current.clear()
-    // 状态在 startCreation 的 catch / finally 中清理
+    // 立即重置运行状态，避免 SSE 异步 catch 覆盖 reset() 的 idle
+    setIsRunning(false)
+    setCurrentCheckpoint(null)
   }, [])
 
   /**

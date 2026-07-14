@@ -72,7 +72,7 @@ interface ProjectRow {
   id: string; title: string; genre: string; synopsis: string; outline: string
   target_words: number; current_volume: number; current_chapter: number
   current_stage: string; status: string; created_at: number; updated_at: number
-  deleted_at: number | null
+  deleted_at: number | null; target_platform: string | null
 }
 
 interface ChapterRow {
@@ -599,14 +599,15 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelProject = { outline: '', ...project, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at)
-      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at)
+      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at, target_platform)
+      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at, @target_platform)
     `).run({
       id: full.id, title: full.title, genre: full.genre, synopsis: full.synopsis,
       outline: full.outline ?? '',
       target_words: full.targetWords, current_volume: full.currentVolume,
       current_chapter: full.currentChapter, current_stage: full.currentStage,
       status: full.status, created_at: full.createdAt, updated_at: full.updatedAt,
+      target_platform: full.targetPlatform ?? null,
     })
     return full
   }
@@ -618,12 +619,14 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_projects SET title=@title, genre=@genre, synopsis=@synopsis, outline=@outline,
       target_words=@target_words, current_volume=@current_volume, current_chapter=@current_chapter,
-      current_stage=@current_stage, status=@status, updated_at=@updated_at WHERE id=@id
+      current_stage=@current_stage, status=@status, updated_at=@updated_at,
+      target_platform=@target_platform WHERE id=@id
     `).run({
       id, title: updated.title, genre: updated.genre, synopsis: updated.synopsis, outline: updated.outline ?? '',
       target_words: updated.targetWords, current_volume: updated.currentVolume,
       current_chapter: updated.currentChapter, current_stage: updated.currentStage,
       status: updated.status, updated_at: updated.updatedAt,
+      target_platform: updated.targetPlatform ?? null,
     })
     return updated
   }
@@ -2717,6 +2720,7 @@ export class NovelStore implements NovelPromptStores {
       currentChapter: row.current_chapter, currentStage: row.current_stage as NovelProject['currentStage'],
       status: row.status as NovelProject['status'],
       deletedAt: row.deleted_at,
+      targetPlatform: row.target_platform as NovelProject['targetPlatform'],
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

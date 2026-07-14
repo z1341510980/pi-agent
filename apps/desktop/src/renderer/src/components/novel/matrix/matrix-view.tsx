@@ -22,7 +22,8 @@ import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, Nove
 import { listHooks, listCharacterArcs } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 import { computeVisibleChapters } from '@/lib/matrix-viewport'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
   buildGroups,
   computeCellSymbol,
@@ -213,7 +214,7 @@ export function MatrixView({
 
   // ── v0.2：章尾钩子实体（从 chapter.chapterEndingHook 字段迁移为独立实体）──
   // 钩子轨道行数据源切换：不再依赖 chapter.chapterEndingHook，改为从 hooks 实体查询。
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const { data: hooks = [] } = useQuery({
     queryKey: ['novel', 'hooks', currentProjectId],
     queryFn: () => listHooks(currentProjectId!),
@@ -234,7 +235,7 @@ export function MatrixView({
   })
 
   // ── C-3c 滚动到指定章节列（监听 store 的 matrixScrollTarget）──
-  const matrixScrollTarget = useNovelStore((s) => s.matrixScrollTarget)
+  const matrixScrollTarget = useNovelUiStore((s) => s.matrixScrollTarget)
   useEffect(() => {
     if (!matrixScrollTarget) return
     const el = scrollContainerRef.current
@@ -954,6 +955,7 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
               onEditSpan={onEditSpan}
               onContextMenuCell={onContextMenuCell}
               onEntityClick={onClick ?? (() => {})}
+              onTogglePresent={onTogglePresent}
             />
             {arcMarkers.length > 0 && arcMarkers.map((m, i) => {
               const left = (m.chapter - 1) * cellWidth + cellWidth / 2 - 6
@@ -1192,9 +1194,10 @@ interface EntityOverlayProps {
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
   /** 左键点击色带：选中该实体（与点击行首效果一致） */
   onEntityClick: () => void
+  onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
 }
 
-function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditSpan, onContextMenuCell, onEntityClick }: EntityOverlayProps): ReactElement | null {
+function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditSpan, onContextMenuCell, onEntityClick, onTogglePresent }: EntityOverlayProps): ReactElement | null {
   switch (entity.kind) {
     case 'conflict':
     case 'faction': {
@@ -1295,6 +1298,7 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
             onClick={(ev) => {
               ev.stopPropagation()
               onEntityClick()
+              onTogglePresent?.(entity, plant)
             }}
             onContextMenu={(ev) => {
               if (!onContextMenuCell) return
@@ -1322,6 +1326,7 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
               onClick={(ev) => {
                 ev.stopPropagation()
                 onEntityClick()
+                onTogglePresent?.(entity, payoff)
               }}
               onContextMenu={(ev) => {
                 if (!onContextMenuCell) return

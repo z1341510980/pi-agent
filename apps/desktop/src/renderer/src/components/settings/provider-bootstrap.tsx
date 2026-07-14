@@ -124,7 +124,7 @@ export function ProviderBootstrap(): ReactElement {
           id="model"
           value={settings.model}
           onChange={(event) => updateSettings('model', event.target.value)}
-          placeholder="gpt-4.1-mini"
+          placeholder="gpt-5.4-mini"
         />
       </div>
 

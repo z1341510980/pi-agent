@@ -159,4 +159,37 @@ describe('Moderator', () => {
     const decision = await moderator.decide(goal, history, members, lateState)
     expect(decision.type).toBe('converge')
   })
+
+  it('降级模式：演出阶段只邀请当前场景角色', async () => {
+    const mockSession = {
+      prompt: vi.fn().mockResolvedValue('invalid'),
+      dispose: vi.fn(),
+    }
+    const ctx = {
+      createSession: vi.fn().mockResolvedValue(mockSession),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+    }
+    const actingMembers: DiscussionMember[] = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'novel-reviewer', name: '审稿' }),
+      makeMember({ id: 'char-zhaoyan', name: '赵岩', type: 'character' }),
+    ]
+    const moderator = new Moderator(ctx as any)
+    const decision = await moderator.decide(goal, history, actingMembers, {
+      phase: 'acting',
+      round: 0,
+      scenesDefined: true,
+      currentScene: {
+        sceneId: 1,
+        title: '对峙',
+        location: '客厅',
+        time: '夜',
+        presentCharacters: ['char-zhaoyan'],
+        goal: '推进冲突',
+      },
+    })
+
+    expect(decision).toMatchObject({ type: 'invite', agentId: 'char-zhaoyan' })
+  })
 })

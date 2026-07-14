@@ -28,8 +28,16 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { useNovelStore, type NovelNodeType } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore, type NovelNodeType } from '@/stores/novel-ui-store'
 import {
   listProjects,
   createProject,
@@ -61,6 +69,7 @@ import {
   type NovelLocation,
   type NovelWorldElement,
   type NovelInformationLayer,
+  type TargetPlatform,
   createInfoLayer,
   deleteInfoLayer,
 } from '@/api/novel-client'
@@ -72,6 +81,72 @@ import { GROUP_META, type MatrixEntityKind, type SidebarDragData } from './matri
 
 type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'faction' | 'location' | 'world_element' | 'info_layer'
 
+// ── 目标平台选项（与 novel-detail-panel.tsx 保持一致）──
+
+const SIDEBAR_PLATFORM_OPTIONS: { value: TargetPlatform | '__none__'; label: string }[] = [
+  { value: '__none__', label: '未设定' },
+  { value: 'fanqie', label: '番茄' },
+  { value: 'qidian', label: '起点' },
+  { value: 'zhihu_yanyan', label: '知乎盐言' },
+  { value: 'general', label: '通用' },
+]
+
+// ── 风格模板预设 ──
+
+interface StyleTemplate {
+  id: string
+  name: string
+  description: string
+  emoji: string
+  platform: TargetPlatform | null
+  rhythmModelId: string
+  targetWords: string
+  genre: string
+}
+
+const STYLE_TEMPLATES: StyleTemplate[] = [
+  {
+    id: 'fanqie',
+    name: '番茄爽文',
+    description: '节奏快、爽感强，每章必有小高潮',
+    emoji: '🔥',
+    platform: 'fanqie',
+    rhythmModelId: 'webnovel',
+    targetWords: '2000000',
+    genre: '玄幻',
+  },
+  {
+    id: 'qidian',
+    name: '起点精品',
+    description: '世界观完整、伏笔系统性强',
+    emoji: '📚',
+    platform: 'qidian',
+    rhythmModelId: 'default',
+    targetWords: '1000000',
+    genre: '玄幻',
+  },
+  {
+    id: 'zhihu',
+    name: '知乎短篇',
+    description: '开篇抓人、反转精巧、篇幅精炼',
+    emoji: '✍️',
+    platform: 'zhihu_yanyan',
+    rhythmModelId: 'default',
+    targetWords: '50000',
+    genre: '悬疑',
+  },
+  {
+    id: 'custom',
+    name: '自定义',
+    description: '不预设，手动填写所有字段',
+    emoji: '⚙️',
+    platform: null,
+    rhythmModelId: 'default',
+    targetWords: '300000',
+    genre: '',
+  },
+]
+
 // ── 主组件 ──
 
 export interface NovelSidebarProps {
@@ -81,26 +156,27 @@ export interface NovelSidebarProps {
 
 export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactElement {
   const queryClient = useQueryClient()
-  const projects = useNovelStore((s) => s.projects)
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const setCurrentProject = useNovelStore((s) => s.setCurrentProject)
-  const setProjects = useNovelStore((s) => s.setProjects)
-  const upsertProject = useNovelStore((s) => s.upsertProject)
-  const characters = useNovelStore((s) => s.characters)
-  const chapters = useNovelStore((s) => s.chapters)
-  const volumes = useNovelStore((s) => s.volumes)
-  const conflicts = useNovelStore((s) => s.conflicts)
-  const foreshadows = useNovelStore((s) => s.foreshadows)
-  const factions = useNovelStore((s) => s.factions)
-  const locations = useNovelStore((s) => s.locations)
-  const worldElements = useNovelStore((s) => s.worldElements)
-  const infoLayers = useNovelStore((s) => s.infoLayers)
-  const selectNode = useNovelStore((s) => s.selectNode)
-  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
+  const projects = useNovelDataStore((s) => s.projects)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  const setCurrentProject = useNovelDataStore((s) => s.setCurrentProject)
+  const setProjects = useNovelDataStore((s) => s.setProjects)
+  const upsertProject = useNovelDataStore((s) => s.upsertProject)
+  const characters = useNovelDataStore((s) => s.characters)
+  const chapters = useNovelDataStore((s) => s.chapters)
+  const volumes = useNovelDataStore((s) => s.volumes)
+  const conflicts = useNovelDataStore((s) => s.conflicts)
+  const foreshadows = useNovelDataStore((s) => s.foreshadows)
+  const factions = useNovelDataStore((s) => s.factions)
+  const locations = useNovelDataStore((s) => s.locations)
+  const worldElements = useNovelDataStore((s) => s.worldElements)
+  const infoLayers = useNovelDataStore((s) => s.infoLayers)
+  const selectNode = useNovelUiStore((s) => s.selectNode)
+  const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
   const [characterDialogOpen, setCharacterDialogOpen] = useState(false)
-  const [form, setForm] = useState({ title: '', genre: '', synopsis: '', targetWords: '300000' })
+  const [form, setForm] = useState({ title: '', genre: '', synopsis: '', targetWords: '300000', targetPlatform: '__none__' as TargetPlatform | '__none__' })
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('custom')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -137,7 +213,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   )
 
   // ── 项目删除（移入回收站）──
-  const removeProject = useNovelStore((s) => s.removeProject)
+  const removeProject = useNovelDataStore((s) => s.removeProject)
   const [trashDialogOpen, setTrashDialogOpen] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; title: string } | null>(null)
 
@@ -178,18 +254,20 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
         genre: form.genre.trim(),
         synopsis: form.synopsis.trim(),
         targetWords: Number(form.targetWords) || 0,
+        targetPlatform: form.targetPlatform === '__none__' ? undefined : form.targetPlatform,
       })
       upsertProject(project)
       setCurrentProject(project.id)
       setProjectDialogOpen(false)
-      setForm({ title: '', genre: '', synopsis: '', targetWords: '300000' })
+      setForm({ title: '', genre: '', synopsis: '', targetWords: '300000', targetPlatform: '__none__' as TargetPlatform | '__none__' })
+      setSelectedTemplate('custom')
       void queryClient.invalidateQueries({ queryKey: ['novel-projects'] })
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建项目失败')
     } finally {
       setSubmitting(false)
     }
-  }, [form, upsertProject, setCurrentProject, queryClient])
+  }, [form, selectedTemplate, upsertProject, setCurrentProject, queryClient])
 
   const currentProject = useMemo(
     () => projects.find((p) => p.id === currentProjectId) ?? null,
@@ -345,12 +423,47 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
         }}
       />
       <Dialog open={projectDialogOpen} onOpenChange={setProjectDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>新建小说项目</DialogTitle>
-            <DialogDescription className="text-pretty">创建一个新的小说创作项目</DialogDescription>
+            <DialogDescription className="text-pretty">选择风格模板快速开始，或自定义配置</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-4">
+            {/* 风格模板卡片选择 */}
+            <div className="space-y-2">
+              <Label>风格模板</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {STYLE_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedTemplate(tpl.id)
+                      // 选择模板时自动填充字段（标题和简介保留用户输入）
+                      setForm((f) => ({
+                        ...f,
+                        genre: tpl.genre || f.genre,
+                        targetWords: tpl.targetWords,
+                        targetPlatform: (tpl.platform ?? '__none__') as TargetPlatform | '__none__',
+                      }))
+                    }}
+                    className={cn(
+                      'flex flex-col items-start gap-0.5 rounded-lg border p-3 text-left transition-colors',
+                      selectedTemplate === tpl.id
+                        ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                        : 'border-border hover:border-primary/40 hover:bg-accent/50',
+                    )}
+                  >
+                    <span className="flex items-center gap-1.5 text-sm font-medium">
+                      <span className="text-base">{tpl.emoji}</span>
+                      {tpl.name}
+                    </span>
+                    <span className="text-xs text-muted-foreground line-clamp-1">{tpl.description}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="space-y-1.5">
               <Label htmlFor="np-title">标题</Label>
               <Input
@@ -387,6 +500,22 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                 value={form.targetWords}
                 onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label>目标平台</Label>
+              <Select
+                value={form.targetPlatform}
+                onValueChange={(v) => setForm((f) => ({ ...f, targetPlatform: v as TargetPlatform | '__none__' }))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="选择目标平台" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SIDEBAR_PLATFORM_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
@@ -448,24 +577,24 @@ function ProjectTree({
   onManualArrange,
   onAiArrange,
 }: ProjectTreeProps): ReactElement {
-  const upsertConflict = useNovelStore((s) => s.upsertConflict)
-  const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
-  const upsertFaction = useNovelStore((s) => s.upsertFaction)
-  const upsertLocation = useNovelStore((s) => s.upsertLocation)
-  const upsertWorldElement = useNovelStore((s) => s.upsertWorldElement)
-  const upsertInfoLayer = useNovelStore((s) => s.upsertInfoLayer)
-  const removeCharacter = useNovelStore((s) => s.removeCharacter)
-  const removeChapter = useNovelStore((s) => s.removeChapter)
-  const removeConflict = useNovelStore((s) => s.removeConflict)
-  const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
-  const removeFaction = useNovelStore((s) => s.removeFaction)
-  const removeLocation = useNovelStore((s) => s.removeLocation)
-  const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
-  const removeInfoLayer = useNovelStore((s) => s.removeInfoLayer)
+  const upsertConflict = useNovelDataStore((s) => s.upsertConflict)
+  const upsertForeshadow = useNovelDataStore((s) => s.upsertForeshadow)
+  const upsertFaction = useNovelDataStore((s) => s.upsertFaction)
+  const upsertLocation = useNovelDataStore((s) => s.upsertLocation)
+  const upsertWorldElement = useNovelDataStore((s) => s.upsertWorldElement)
+  const upsertInfoLayer = useNovelDataStore((s) => s.upsertInfoLayer)
+  const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
+  const removeChapter = useNovelDataStore((s) => s.removeChapter)
+  const removeConflict = useNovelDataStore((s) => s.removeConflict)
+  const removeForeshadow = useNovelDataStore((s) => s.removeForeshadow)
+  const removeFaction = useNovelDataStore((s) => s.removeFaction)
+  const removeLocation = useNovelDataStore((s) => s.removeLocation)
+  const removeWorldElement = useNovelDataStore((s) => s.removeWorldElement)
+  const removeInfoLayer = useNovelDataStore((s) => s.removeInfoLayer)
   // ── C-3 与 MatrixView 共享的折叠 / 选中 / 章节滚动信号 ──
-  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
-  const collapsedGroups = useNovelStore((s) => s.collapsedGroups)
-  const toggleCollapsedGroup = useNovelStore((s) => s.toggleCollapsedGroup)
+  const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
+  const collapsedGroups = useNovelUiStore((s) => s.collapsedGroups)
+  const toggleCollapsedGroup = useNovelUiStore((s) => s.toggleCollapsedGroup)
 
   const handleAddConflict = useCallback(async () => {
     try {

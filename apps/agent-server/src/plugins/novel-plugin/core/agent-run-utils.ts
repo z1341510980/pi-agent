@@ -91,6 +91,67 @@ function paragraphRetentionRatio(original: string, revised: string): number {
   return retained / paragraphs.length
 }
 
+/**
+ * 获取原文中被修订删除的段落（≥30字的段落，前80字不在修订中出现）
+ */
+function getDeletedParagraphs(original: string, revised: string): string[] {
+  const paragraphs = original
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => normalizeText(p).length >= 30)
+  if (paragraphs.length === 0) return []
+
+  const revisedNormalized = normalizeText(revised)
+  return paragraphs.filter((p) => !revisedNormalized.includes(normalizeText(p).slice(0, 80)))
+}
+
+/**
+ * 计算删除比例：被删除段落的字数占原文有效段落总字数的比例
+ *
+ * 与 paragraphRetentionRatio 互补：
+ * - retentionRatio 按段落计数（保留了几个段落）
+ * - deletionRatio 按字数计量（删掉了多少字）
+ * 一个修订可能保留 60% 的段落（通过 35% 阈值），但删掉的段落可能字数更多
+ */
+function computeDeletionRatio(original: string, revised: string): number {
+  const paragraphs = original
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => normalizeText(p).length >= 30)
+  if (paragraphs.length === 0) return 0
+
+  const revisedNormalized = normalizeText(revised)
+  const totalChars = paragraphs.reduce((sum, p) => sum + normalizeText(p).length, 0)
+  const deletedChars = paragraphs
+    .filter((p) => !revisedNormalized.includes(normalizeText(p).slice(0, 80)))
+    .reduce((sum, p) => sum + normalizeText(p).length, 0)
+
+  return totalChars > 0 ? deletedChars / totalChars : 0
+}
+
+/**
+ * 剧情功能保护：检查段落是否包含剧情关键内容
+ *
+ * 检测以下类别的关键词：
+ * - 伏笔/铺垫：暗示、埋下、伏笔、暗藏、草蛇灰线
+ * - 悬念/钩子：悬念、谜团、秘密、未解、疑问
+ * - 角色特征：性格、习惯、口头禅、标志动作
+ * - 关键道具：玉佩、信物、密令等（通过"道具/信物/密令"等词识别）
+ */
+function containsCriticalContent(paragraph: string): boolean {
+  const patterns: RegExp[] = [
+    // 伏笔/铺垫类
+    /(伏笔|暗示|埋下|暗藏|蛛丝马迹|草蛇灰线|铺垫|伏线)/,
+    // 悬念/钩子类
+    /(悬念|谜团|秘密|未解|疑问|疑点|蹊跷|不对劲)/,
+    // 角色特征类
+    /(性格|习惯|口头禅|标志动作|招牌|特征|印记|习惯性)/,
+    // 关键道具类
+    /(信物|密令|密函|凭证|玉佩|令牌|印记|契约)/,
+  ]
+  return patterns.some((p) => p.test(paragraph))
+}
+
 function looksLikeRevisionReport(text: string): boolean {
   const head = text.trimStart().slice(0, 300)
   // 开头自我描述类（"修订完成。以下是…"/"已根据审稿意见修改…"/"以下是修改项总结"等）
@@ -177,6 +238,29 @@ export function applySafeRevision(original: string, rawRevision: string): Revisi
       accepted: false,
       mode: 'rejected',
       reason: 'low_original_retention',
+    }
+  }
+
+  // 删除比例检测（>35% 标记 deletion_exceeded）
+  // 与 retentionRatio 互补：retentionRatio 按段落计数，deletionRatio 按字数计量
+  const deletionRatio = computeDeletionRatio(original, revision)
+  if (deletionRatio > 0.35) {
+    // 剧情功能保护：检查被删除段落是否包含伏笔/钩子/角色特征等关键内容
+    const deletedParagraphs = getDeletedParagraphs(original, revision)
+    const hasCriticalDeletion = deletedParagraphs.some((p) => containsCriticalContent(p))
+    if (hasCriticalDeletion) {
+      return {
+        content: original,
+        accepted: false,
+        mode: 'rejected',
+        reason: 'critical_content_deleted',
+      }
+    }
+    return {
+      content: original,
+      accepted: false,
+      mode: 'rejected',
+      reason: 'deletion_exceeded',
     }
   }
 

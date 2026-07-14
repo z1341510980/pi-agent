@@ -35,6 +35,8 @@ export interface DiscussionMember {
   }
   /** 构建该成员 system prompt 的工厂函数 */
   buildSystemPrompt: () => string
+  /** 最终章节审查时使用的完整审稿 prompt；未提供时复用 buildSystemPrompt */
+  buildFinalReviewSystemPrompt?: () => string
 }
 
 /** 群聊目标 */
@@ -55,8 +57,14 @@ export interface SceneDefinition {
   time: string
   /** 在场角色成员 ID 列表（格式与 DiscussionMember.id 一致） */
   presentCharacters: string[]
+  /** Director 输出的原始角色名，用于动态解析与诊断 */
+  presentCharacterNames?: string[]
+  /** 当前未能解析为成员的角色名 */
+  unresolvedCharacterNames?: string[]
   conflict?: string
   goal: string
+  /** 本场景的情绪走向（如"从警惕转向震惊"），角色 Agent 演出时承载，Writer 编织时呼应 */
+  emotion?: string
 }
 
 /** 群聊消息 */
@@ -91,6 +99,7 @@ export interface ModeratorState {
 
 /** 群聊阶段 */
 export type DiscussionPhase =
+  | 'free_chat'
   | 'planning'
   | 'scene_setup'
   | 'acting'
@@ -104,7 +113,7 @@ export type DiscussionPhase =
 
 /** 群聊检查点 */
 export interface DiscussionCheckpoint {
-  type: 'discussion_pause'
+  type: 'discussion_pause' | 'review'
   phase: string
   question: string
   options?: string[]
@@ -127,6 +136,10 @@ export interface DiscussionOptions {
   signal?: AbortSignal
   /** Moderator 使用的模型配置（未配置时用最便宜模型） */
   moderatorModel?: { provider: string; modelId: string }
+  /** 根据 Director 输出的未知角色名动态创建本次运行使用的角色 Agent */
+  resolveCharacterMembers?: (
+    characterNames: string[],
+  ) => DiscussionMember[] | Promise<DiscussionMember[]>
   /** 引擎运行时限制（覆盖默认 DISCUSSION_LIMITS，来自 DiscussionSettingsStore） */
   limits?: {
     maxRounds?: number

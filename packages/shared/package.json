@@ -7,10 +7,9 @@
     "./api": "./src/api/index.ts",
     "./errors": "./src/errors/index.ts",
     "./agent": "./src/agent/index.ts",
-    "./agui": "./src/agui/index.ts",
     "./events": "./src/events/index.ts",
-    "./types": "./src/types/index.ts",
-    "./utils": "./src/utils/index.ts"
+    "./utils": "./src/utils/index.ts",
+    "./novel": "./src/novel/index.ts"
   },
   "scripts": {
     "test": "vitest run",

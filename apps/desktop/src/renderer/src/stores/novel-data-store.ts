@@ -20,29 +20,14 @@ import type {
   NovelLocation,
   NovelWorldElement,
   NovelEdge,
-  NovelEdgeType,
   NovelMarker,
   NovelVolume,
 } from '@/api/novel-client'
-
-// ── 节点类型 ──
-
-export type NovelNodeType =
-  | 'project'
-  | 'character'
-  | 'chapter'
-  | 'volume'
-  | 'conflict'
-  | 'foreshadow'
-  | 'group'
-  | 'faction'
-  | 'location'
-  | 'world_element'
-  | 'info_layer'
+import { useNovelUiStore } from './novel-ui-store'
 
 // ── Store 状态 ──
 
-export interface NovelState {
+export interface NovelDataState {
   // ── 数据 ──
   currentProjectId: string | null
   projects: NovelProject[]
@@ -65,46 +50,8 @@ export interface NovelState {
   edges: NovelEdge[]
   markers: NovelMarker[]
 
-  // ── 选中节点 ──
-  selectedNodeId: string | null
-  selectedNodeType: NovelNodeType | null
-
-  // ── 视图模式（矩阵/画布）──
-  viewMode: 'matrix' | 'canvas'
-
-  // ── 画布连线关系类型（工具栏选择，画布 onConnect 读取）──
-  canvasEdgeType: NovelEdgeType
-
-  // ── 播放头所在章节（跨组件同步，不持久化，每次进项目从 1 开始）──
-  playheadChapter: number
-
-  // ── 当前创作模式（手动编排 / AI编排，不持久化）──
-  creationMode: 'manual' | 'ai-arrange' | null
-
-  // ── 矩阵视图折叠分组（与 NovelSidebar 共享）──
-  // 用 string[] 而非 MatrixEntityKind[] 是因为 NovelSidebar 还有一个 'chapter' 分组
-  collapsedGroups: string[]
-
-  // ── 大纲树卷折叠状态（OutlineTree 共享，存已展开的 volumeId）──
-  expandedVolumes: string[]
-
-  // ── 矩阵视图滚动信号（NovelSidebar 点章节 → MatrixView 滚动到该列）──
-  // ts 用于触发 effect 即使 chapter 相同；不持久化
-  matrixScrollTarget: { chapter: number; ts: number } | null
-
-  // ── 加载状态 ──
-  loading: boolean
-  error: string | null
-
   // ── Actions ──
-  setViewMode: (mode: 'matrix' | 'canvas') => void
-  setCanvasEdgeType: (edgeType: NovelEdgeType) => void
-  setPlayheadChapter: (chapter: number) => void
-  setCreationMode: (mode: 'manual' | 'ai-arrange' | null) => void
   setCurrentProject: (projectId: string | null) => void
-  toggleCollapsedGroup: (kind: string) => void
-  toggleExpandedVolume: (id: string) => void
-  setMatrixScrollTarget: (target: { chapter: number; ts: number } | null) => void
   setProjects: (projects: NovelProject[]) => void
   loadProjectData: (data: {
     characters?: NovelCharacter[]
@@ -124,10 +71,6 @@ export interface NovelState {
     edges?: NovelEdge[]
     markers?: NovelMarker[]
   }) => void
-  setLoading: (loading: boolean) => void
-  setError: (error: string | null) => void
-  selectNode: (id: string | null, type: NovelNodeType | null) => void
-  clearSelection: () => void
   clearProjectData: () => void
 
   // ── 实体 upsert ──
@@ -235,15 +178,39 @@ function mergeListById<T extends { id: string; projectId?: string }>(
   return remote
 }
 
+// 清空所有实体数组的公共部分（不含 currentProjectId）
+function emptyEntities() {
+  return {
+    characters: [],
+    chapters: [],
+    volumes: [],
+    conflicts: [],
+    foreshadows: [],
+    relationships: [],
+    clues: [],
+    worldRules: [],
+    styleGuides: [],
+    constraints: [],
+    infoLayers: [],
+    factions: [],
+    locations: [],
+    worldElements: [],
+    edges: [],
+    characterHistory: [],
+    nodePositions: [],
+    markers: [],
+  }
+}
+
 // ── Store ──
 
 // flag：persist hydrate 完成后置 true，store 创建后据此清除 temporal 伪快照
 let needsClearTemporal = false
 
-export const useNovelStore = create<NovelState>()(
+export const useNovelDataStore = create<NovelDataState>()(
   temporal(
     persist(
-      (set, get): NovelState => ({
+      (set, get): NovelDataState => ({
         // ── 初始状态 ──
         currentProjectId: null,
         projects: [],
@@ -266,31 +233,7 @@ export const useNovelStore = create<NovelState>()(
         edges: [],
         markers: [],
 
-        selectedNodeId: null,
-        selectedNodeType: null,
-
-        viewMode: 'matrix',
-
-        canvasEdgeType: 'rivalry',
-
-        playheadChapter: 1,
-
-        creationMode: null,
-
-        collapsedGroups: [],
-
-        expandedVolumes: [],
-
-        matrixScrollTarget: null,
-
-        loading: false,
-        error: null,
-
         // ── Actions ──
-        setViewMode: (mode) => set({ viewMode: mode }),
-        setCanvasEdgeType: (edgeType) => set({ canvasEdgeType: edgeType }),
-        setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
-        setCreationMode: (mode) => set({ creationMode: mode }),
         setCurrentProject: (projectId) => {
           const prevId = get().currentProjectId
           // 项目切换时清空所有实体数组，防止上一个项目的实体残留混入新项目。
@@ -299,51 +242,15 @@ export const useNovelStore = create<NovelState>()(
           // 前端过滤 arrangedEntities 时会把不属于当前项目的实体传给后端导致 400。
           // persist 的 localStorage 也会跨会话携带残留，必须在此清空。
           if (prevId !== projectId) {
-            useNovelStore.temporal.getState().clear()
+            useNovelDataStore.temporal.getState().clear()
+            // 同时清除 UI store 的选中状态
+            useNovelUiStore.getState().clearSelection()
             set({
-              characters: [],
-              chapters: [],
-              volumes: [],
-              conflicts: [],
-              foreshadows: [],
-              relationships: [],
-              clues: [],
-              worldRules: [],
-              styleGuides: [],
-              constraints: [],
-              infoLayers: [],
-              factions: [],
-              locations: [],
-              worldElements: [],
-              edges: [],
-              characterHistory: [],
-              nodePositions: [],
-              markers: [],
-              selectedNodeId: null,
-              selectedNodeType: null,
+              ...emptyEntities(),
             })
           }
           set({ currentProjectId: projectId })
         },
-        toggleCollapsedGroup: (kind: string) =>
-          set((state) => {
-            const has = state.collapsedGroups.includes(kind)
-            return {
-              collapsedGroups: has
-                ? state.collapsedGroups.filter((k) => k !== kind)
-                : [...state.collapsedGroups, kind],
-            }
-          }),
-        toggleExpandedVolume: (id) =>
-          set((state) => {
-            const exists = state.expandedVolumes.includes(id)
-            return {
-              expandedVolumes: exists
-                ? state.expandedVolumes.filter((v) => v !== id)
-                : [...state.expandedVolumes, id],
-            }
-          }),
-        setMatrixScrollTarget: (target) => set({ matrixScrollTarget: target }),
 
         setProjects: (projects) => set({ projects }),
 
@@ -375,38 +282,22 @@ export const useNovelStore = create<NovelState>()(
             }
           }),
 
-        setLoading: (loading) => set({ loading }),
-        setError: (error) => set({ error }),
-
-        selectNode: (id, type) => set({ selectedNodeId: id, selectedNodeType: type }),
-        clearSelection: () => set({ selectedNodeId: null, selectedNodeType: null }),
-        clearProjectData: () =>
+        clearProjectData: () => {
+          // 同时清除 UI store 的相关状态
+          const ui = useNovelUiStore.getState()
+          ui.clearSelection()
+          ui.setPlayheadChapter(1)
           set({
-            characters: [],
-            chapters: [],
-            volumes: [],
-            conflicts: [],
-            foreshadows: [],
-            relationships: [],
-            clues: [],
-            worldRules: [],
-            styleGuides: [],
-            constraints: [],
-            infoLayers: [],
-            factions: [],
-            locations: [],
-            worldElements: [],
-            nodePositions: [],
-            characterHistory: [],
-            edges: [],
-            markers: [],
-            selectedNodeId: null,
-            selectedNodeType: null,
-            playheadChapter: 1,
+            ...emptyEntities(),
+            // UI store 负责自己的状态，这里只清数据
+          })
+          // UI store 中 collapsedGroups/expandedVolumes/matrixScrollTarget 也需清空
+          useNovelUiStore.setState({
             collapsedGroups: [],
             expandedVolumes: [],
             matrixScrollTarget: null,
-          }),
+          })
+        },
 
         // ── upsert ──
         upsertProject: (project) => set((state) => ({ projects: upsertInList(state.projects, project) })),
@@ -427,35 +318,19 @@ export const useNovelStore = create<NovelState>()(
 
         // ── remove ──
         removeProject: (id) =>
-          set((state) => ({
-            projects: removeFromList(state.projects, id),
-            ...(state.currentProjectId === id
-              ? {
-                  currentProjectId: null,
-                  characters: [],
-                  chapters: [],
-                  volumes: [],
-                  conflicts: [],
-                  foreshadows: [],
-                  relationships: [],
-                  clues: [],
-                  worldRules: [],
-                  styleGuides: [],
-                  constraints: [],
-                  infoLayers: [],
-                  factions: [],
-                  locations: [],
-                  worldElements: [],
-                  nodePositions: [],
-                  characterHistory: [],
-                  edges: [],
-                  markers: [],
-                  selectedNodeId: null,
-                  selectedNodeType: null,
-                  expandedVolumes: [],
-                }
-              : {}),
-          })),
+          set((state) => {
+            if (state.currentProjectId === id) {
+              // 删除当前项目：清空数据 + 清空 UI 选中状态
+              useNovelUiStore.getState().clearSelection()
+              useNovelUiStore.setState({ expandedVolumes: [] })
+              return {
+                projects: removeFromList(state.projects, id),
+                currentProjectId: null,
+                ...emptyEntities(),
+              }
+            }
+            return { projects: removeFromList(state.projects, id) }
+          }),
         removeCharacter: (id) => set((state) => ({ characters: removeFromList(state.characters, id) })),
         removeChapter: (id) => set((state) => ({ chapters: removeFromList(state.chapters, id) })),
         removeConflict: (id) => set((state) => ({ conflicts: removeFromList(state.conflicts, id) })),
@@ -496,21 +371,21 @@ export const useNovelStore = create<NovelState>()(
 
         // ── Undo/Redo ──
         undo: () => {
-          useNovelStore.temporal.getState().undo()
+          useNovelDataStore.temporal.getState().undo()
         },
         redo: () => {
-          useNovelStore.temporal.getState().redo()
+          useNovelDataStore.temporal.getState().redo()
         },
         canUndo: () => {
-          const { pastStates } = useNovelStore.temporal.getState()
+          const { pastStates } = useNovelDataStore.temporal.getState()
           return pastStates.length > 0
         },
         canRedo: () => {
-          const { futureStates } = useNovelStore.temporal.getState()
+          const { futureStates } = useNovelDataStore.temporal.getState()
           return futureStates.length > 0
         },
         clearHistory: () => {
-          useNovelStore.temporal.getState().clear()
+          useNovelDataStore.temporal.getState().clear()
         },
 
         // ── 派生字段（由 temporal store 订阅同步）──
@@ -518,14 +393,14 @@ export const useNovelStore = create<NovelState>()(
         redoCount: 0,
       }),
       {
-        name: 'wenlang-agent-novel',
+        name: 'wenlang-agent-novel-data',
         storage: createJSONStorage(() => localStorage),
         // 修复 zundo + persist 嵌套时的经典问题：hydrate 期间 temporal 会把"空初始状态"
         // 压入 pastStates，导致用户首次点撤销会把整个 store 还原成空状态。
         // 用 flag 标记 hydrate 完成，在 store 创建后延迟 clear() 历史栈，
-        // 避免 onRehydrateStorage 回调中引用 useNovelStore 导致 TDZ
+        // 避免 onRehydrateStorage 回调中引用 useNovelDataStore 导致 TDZ
         // （localStorage 是同步 hydrate，回调在 create() 执行期间触发，
-        //  此时 useNovelStore const 尚未赋值）
+        //  此时 useNovelDataStore const 尚未赋值）
         onRehydrateStorage: () => () => {
           needsClearTemporal = true
         },
@@ -551,12 +426,6 @@ export const useNovelStore = create<NovelState>()(
           characterHistory: state.characterHistory,
           edges: state.edges,
           markers: state.markers,
-          selectedNodeId: state.selectedNodeId,
-          selectedNodeType: state.selectedNodeType,
-          viewMode: state.viewMode,
-          canvasEdgeType: state.canvasEdgeType,
-          collapsedGroups: state.collapsedGroups,
-          expandedVolumes: state.expandedVolumes,
         }),
       },
     ),
@@ -597,15 +466,15 @@ export const useNovelStore = create<NovelState>()(
 // 用 queueMicrotask 确保在当前同步执行栈完成后执行，避免影响 store 初始化
 if (needsClearTemporal) {
   queueMicrotask(() => {
-    useNovelStore.temporal.getState().clear()
+    useNovelDataStore.temporal.getState().clear()
   })
 }
 
 // 同步 undoCount/redoCount 派生字段（订阅 temporal store 状态变化）
 // temporal store 是独立 vanilla store，其 pastStates/futureStates 变化时
 // 需同步到主 store 的 undoCount/redoCount 以触发 React 重渲染
-useNovelStore.temporal.subscribe((state) => {
-  useNovelStore.setState({
+useNovelDataStore.temporal.subscribe((state) => {
+  useNovelDataStore.setState({
     undoCount: state.pastStates.length,
     redoCount: state.futureStates.length,
   })

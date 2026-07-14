@@ -2,7 +2,8 @@ import { useCallback, type ReactElement } from 'react'
 import { ChevronDown, Plus, Wand2, BookText } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
   createChapter,
   createVolume,
@@ -28,15 +29,15 @@ export function OutlineTree({
   chapters,
   onAiArrange,
 }: OutlineTreeProps): ReactElement {
-  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
-  const playheadChapter = useNovelStore((s) => s.playheadChapter)
-  const expandedVolumes = useNovelStore((s) => s.expandedVolumes)
-  const selectNode = useNovelStore((s) => s.selectNode)
-  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
-  const setMatrixScrollTarget = useNovelStore((s) => s.setMatrixScrollTarget)
-  const toggleExpandedVolume = useNovelStore((s) => s.toggleExpandedVolume)
-  const upsertVolume = useNovelStore((s) => s.upsertVolume)
-  const upsertChapter = useNovelStore((s) => s.upsertChapter)
+  const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
+  const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
+  const expandedVolumes = useNovelUiStore((s) => s.expandedVolumes)
+  const selectNode = useNovelUiStore((s) => s.selectNode)
+  const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
+  const setMatrixScrollTarget = useNovelUiStore((s) => s.setMatrixScrollTarget)
+  const toggleExpandedVolume = useNovelUiStore((s) => s.toggleExpandedVolume)
+  const upsertVolume = useNovelDataStore((s) => s.upsertVolume)
+  const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
   const queryClient = useQueryClient()
 
   const sortedVolumes = [...volumes].sort(

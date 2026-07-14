@@ -30,7 +30,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
 import {
   listAgentLogs,
   getAgentLog,
@@ -307,7 +307,7 @@ export interface AgentLogPanelProps {
 }
 
 export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const [refreshKey, setRefreshKey] = useState(0)
   const [agentFilter, setAgentFilter] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)

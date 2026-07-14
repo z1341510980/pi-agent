@@ -735,4 +735,26 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
     );`,
   },
+  {
+    id: '061_add_target_platform_to_novel_projects',
+    sql: `ALTER TABLE novel_projects ADD COLUMN target_platform TEXT;`,
+  },
+  {
+    // 章节聊天消息表（按章节持久化用户输入与 Agent 回复）
+    id: '062_create_novel_chapter_chat_messages',
+    sql: `CREATE TABLE IF NOT EXISTS novel_chapter_chat_messages (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      role            TEXT NOT NULL,
+      from_id         TEXT NOT NULL,
+      from_name       TEXT NOT NULL,
+      content         TEXT NOT NULL,
+      phase           TEXT NOT NULL DEFAULT 'free_chat',
+      metadata        TEXT,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_chapter_chat_project_chapter
+      ON novel_chapter_chat_messages(project_id, chapter_number, created_at);`,
+  },
 ]

@@ -456,6 +456,12 @@ const UpdateLocationParams = Type.Object({
   ], { description: '地点状态' })),
 })
 
+const AskStoryParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+  question: Type.String({ description: '自然语言问题，例如"上一章结尾是什么？""角色林深的当前目标是什么？"' }),
+  chapterNumber: Type.Optional(Type.Number({ description: '当前章节号（可选，用于上下文过滤）' })),
+})
+
 const CreateWorldElementParams = Type.Object({
   projectId: Type.String({ description: '项目 ID' }),
   category: Type.Union([
@@ -489,6 +495,226 @@ const UpdateWorldElementParams = Type.Object({
   parentId: Type.Optional(Type.String({ description: '父级要素 ID' })),
   attributes: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: '附加属性（键值对）' })),
 })
+
+/**
+ * 创建小说信息问答工具（A+B 语义化查询）
+ *
+ * 让 Director / Writer / Reviewer / Reviser 用自然语言按需查询故事信息，
+ * 避免一次性 dump 全表导致上下文膨胀，也避免完全关闭工具导致创作中无法核对细节。
+ */
+export function createNovelAskStoryTool(store: NovelStore): ToolDefinition<typeof AskStoryParams> {
+  return defineTool({
+    name: 'novel_ask_story',
+    label: '小说信息问答',
+    description:
+      '用自然语言向小说创作系统提问，获取当前项目的故事状态、角色、冲突、伏笔、上一章内容等信息。' +
+      '适用于创作过程中按需查询，不必记忆全部设定。只读工具，不修改任何状态。',
+    promptSnippet: '小说信息问答',
+    parameters: AskStoryParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const { projectId, question, chapterNumber } = params
+      const q = question.toLowerCase()
+
+      function quotedName(s: string): string | undefined {
+        const m = s.match(/[“"""「『]([^""""」』]+)[""""」』]/)
+        return m?.[1].trim()
+      }
+
+      if (q.includes('上一章') || q.includes('最近章节') || q.includes('结尾') || q.includes('前情') || q.includes('recap')) {
+        return answerRecentChapter(store, projectId)
+      }
+      if (q.includes('角色') || q.includes('人物') || q.includes('谁') || q.includes('主角') || quotedName(question)) {
+        return answerCharacter(store, projectId, quotedName(question))
+      }
+      if (q.includes('冲突') || q.includes('矛盾') || q.includes('危机') || q.includes('张力')) {
+        return answerConflicts(store, projectId)
+      }
+      if (q.includes('伏笔') || q.includes('铺垫') || q.includes('回收')) {
+        return answerForeshadows(store, projectId, chapterNumber)
+      }
+      if (q.includes('线索') || q.includes('真相') || q.includes('谜题')) {
+        return answerClues(store, projectId)
+      }
+      if (q.includes('风格') || q.includes('文风') || q.includes('写法') || q.includes('语言')) {
+        return answerStyle(store, projectId)
+      }
+      if (q.includes('大纲') || q.includes('结构') || q.includes('整体') || q.includes('主线')) {
+        return answerOutline(store, projectId)
+      }
+      if (q.includes('世界') || q.includes('设定') || q.includes('规则') || q.includes('势力') || q.includes('地点')) {
+        return answerWorld(store, projectId)
+      }
+
+      return answerGuide()
+    },
+  })
+}
+
+function answerRecentChapter(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+  const chapters = store.listRecentChapters(projectId, 3)
+  if (chapters.length === 0) {
+    return { content: [{ type: 'text', text: '尚未生成任何章节。' }], details: undefined }
+  }
+  const latest = chapters[chapters.length - 1]
+  const ending = latest.content ? latest.content.slice(-500) : '（无内容）'
+  const recap = latest.recap ? `\n\n前情提要：${latest.recap}` : ''
+  const text = [
+    `## 最近章节：第${latest.chapterNumber}章 ${latest.title}`,
+    `状态：${latest.status} | 字数：${latest.wordCount || 0}`,
+    ``,
+    `### 结尾片段（最后 500 字）`,
+    ending,
+    recap,
+  ].join('\n')
+  return { content: [{ type: 'text', text }], details: undefined }
+}
+
+function answerCharacter(store: NovelStore, projectId: string, nameHint?: string): AgentToolResult<undefined> {
+  const characters = store.listCharacters(projectId)
+  if (characters.length === 0) {
+    return { content: [{ type: 'text', text: '项目中暂无角色。' }], details: undefined }
+  }
+
+  let target = characters.find((c) => c.isProtagonist)
+  if (nameHint) {
+    const exact = characters.find((c) => c.name === nameHint)
+    const fuzzy = characters.find((c) => c.name.includes(nameHint) || nameHint.includes(c.name))
+    target = exact ?? fuzzy ?? target
+  }
+
+  if (target) {
+    const text = [
+      `## 角色：${target.name}`,
+      `身份：${target.identity || '未设定'}`,
+      `性格：${target.personality || '未设定'}`,
+      `外貌：${target.appearance || '未设定'}`,
+      `说话风格：${target.speechStyle || '未设定'}`,
+      `当前状态：${target.currentState || '未设定'}`,
+      `当前目标：${target.currentGoal || '未设定'}`,
+      `当前压力：${target.currentPressure || '未设定'}`,
+      `长期欲望：${target.longTermDesire || '未设定'}`,
+      `角色层级：${target.plotRole || '未设定'}`,
+      `弧光阶段：${target.arcStage || '未设定'}`,
+      `秘密：${target.secret || '无'}`,
+    ].join('\n')
+    return { content: [{ type: 'text', text }], details: undefined }
+  }
+
+  const list = characters
+    .map((c) => `- ${c.name}${c.isProtagonist ? '（主角）' : ''}：${c.identity || c.description || '暂无简介'}`)
+    .join('\n')
+  return { content: [{ type: 'text', text: `## 角色列表\n${list}` }], details: undefined }
+}
+
+function answerConflicts(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+  const conflicts = store.listConflicts(projectId)
+    .filter((c) => c.stage !== 'resolved' && c.stage !== 'transformed')
+    .sort((a, b) => b.intensity - a.intensity)
+    .slice(0, 5)
+  if (conflicts.length === 0) {
+    return { content: [{ type: 'text', text: '当前没有活跃冲突。' }], details: undefined }
+  }
+  const list = conflicts
+    .map((c) => `- ${c.description}（强度 ${c.intensity}/10，阶段 ${c.stage}）`)
+    .join('\n')
+  return { content: [{ type: 'text', text: `## 活跃冲突（Top 5）\n${list}` }], details: undefined }
+}
+
+function answerForeshadows(store: NovelStore, projectId: string, chapterNumber?: number): AgentToolResult<undefined> {
+  let foreshadows = store.listForeshadowing(projectId)
+    .filter((f) => f.status === 'planned' || f.status === 'planted' || f.status === 'reinforced')
+
+  if (chapterNumber !== undefined) {
+    foreshadows = foreshadows.filter((f) => !f.recoverByChapter || f.recoverByChapter <= chapterNumber + 5)
+  }
+
+  foreshadows = foreshadows.slice(0, 10)
+  if (foreshadows.length === 0) {
+    return { content: [{ type: 'text', text: '当前没有待回收伏笔。' }], details: undefined }
+  }
+  const list = foreshadows
+    .map((f) => `- ${f.description}（类别 ${f.category}，状态 ${f.status}${f.recoverByChapter ? `，预计第 ${f.recoverByChapter} 章前回收` : ''}）`)
+    .join('\n')
+  return { content: [{ type: 'text', text: `## 未回收伏笔（Top 10）\n${list}` }], details: undefined }
+}
+
+function answerClues(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+  const clues = store.listClues(projectId)
+    .filter((c) => c.progress < 100)
+    .sort((a, b) => b.progress - a.progress)
+    .slice(0, 8)
+  if (clues.length === 0) {
+    return { content: [{ type: 'text', text: '当前没有进行中的线索。' }], details: undefined }
+  }
+  const list = clues
+    .map((c) => `- ${c.description}（进度 ${c.progress}%${c.isMisleading ? '，误导线索' : ''}）`)
+    .join('\n')
+  return { content: [{ type: 'text', text: `## 进行中线索（Top 8）\n${list}` }], details: undefined }
+}
+
+function answerStyle(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+  const guides = store.listStyleGuide(projectId)
+  if (guides.length === 0) {
+    return { content: [{ type: 'text', text: '尚未配置风格指南。' }], details: undefined }
+  }
+  const list = guides.map((g) => `- ${g.category}：${g.rule}${g.example ? `（示例：${g.example}）` : ''}`).join('\n')
+  return { content: [{ type: 'text', text: `## 风格指南\n${list}` }], details: undefined }
+}
+
+function answerOutline(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+  const project = store.getProject(projectId)
+  if (!project) {
+    return { content: [{ type: 'text', text: '项目不存在。' }], details: undefined }
+  }
+  const text = [
+    `## 项目：${project.title}`,
+    `类型：${project.genre || '未设定'}`,
+    `阶段：${project.currentStage || '未设定'} | 当前卷：${project.currentVolume} | 当前章：${project.currentChapter}`,
+    ``,
+    `### 简介`,
+    project.synopsis || '（暂无）',
+    ``,
+    `### 大纲`,
+    project.outline || '（暂无）',
+  ].join('\n')
+  return { content: [{ type: 'text', text }], details: undefined }
+}
+
+function answerWorld(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+  const rules = store.listWorldRules(projectId)
+  const factions = store.listFactions(projectId)
+  const locations = store.listLocations(projectId)
+
+  const parts: string[] = ['## 世界设定']
+  if (rules.length > 0) {
+    parts.push('\n### 世界规则\n' + rules.map((r) => `- [${r.category}] ${r.rule}${r.cost ? `（代价：${r.cost}）` : ''}`).join('\n'))
+  }
+  if (factions.length > 0) {
+    parts.push('\n### 势力\n' + factions.slice(0, 10).map((f) => `- ${f.name}（${f.type}，实力 ${f.strength}，状态 ${f.status}）`).join('\n'))
+  }
+  if (locations.length > 0) {
+    parts.push('\n### 地点\n' + locations.slice(0, 10).map((l) => `- ${l.name}（${l.type}，重要度 ${l.significance}）`).join('\n'))
+  }
+  if (rules.length === 0 && factions.length === 0 && locations.length === 0) {
+    parts.push('暂无世界设定。')
+  }
+  return { content: [{ type: 'text', text: parts.join('\n') }], details: undefined }
+}
+
+function answerGuide(): AgentToolResult<undefined> {
+  const text = [
+    '## 小说信息问答使用指南',
+    '你可以用自然语言提问，例如：',
+    '- 上一章结尾是什么？',
+    '- 角色 "林深" 的当前目标是什么？',
+    '- 当前最大的冲突是什么？',
+    '- 有哪些未回收的伏笔？',
+    '- 故事的风格要求是什么？',
+    '- 全书大纲是什么？',
+    '- 世界设定/势力/地点有哪些？',
+  ].join('\n')
+  return { content: [{ type: 'text', text }], details: undefined }
+}
 
 // ── 工具创建函数 ──
 
@@ -1273,6 +1499,8 @@ export function createNovelUpdateWorldElementTool(store: NovelStore): ToolDefini
  */
 export function createNovelTools(store: NovelStore): ToolDefinition[] {
   const tools: ToolDefinition[] = [
+    // A+B：语义化查询工具，优先放在列表前面便于 prompt cache 稳定
+    createNovelAskStoryTool(store),
     createNovelQueryStateTool(store),
     createNovelUpdateCharacterTool(store),
     createNovelUpdateForeshadowTool(store),

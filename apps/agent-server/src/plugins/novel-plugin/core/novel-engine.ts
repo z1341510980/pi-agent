@@ -37,6 +37,8 @@ import type {
   RhythmSuggestion,
   NovelConflict,
   ConflictStage,
+  ChapterPositioning,
+  WordBudget,
 } from './types.js'
 
 export interface ChapterCreationResult {
@@ -66,6 +68,7 @@ export class NovelEngine {
     projectId: string,
     chapterNumber?: number,
     rhythmSuggestion?: RhythmSuggestion,
+    positioning?: ChapterPositioning | null,
   ): ChapterConstraints {
     const constraints = this.store.listConstraints(projectId)
     const foreshadowing = this.store.listForeshadowing(projectId)
@@ -156,6 +159,40 @@ export class NovelEngine {
       }
     }
 
+    // ── 字数预算（基于章节定位调整）──
+    // 若传入了 positioning，按定位的 wordBudgetMultiplier 调整目标字数
+    // 否则使用系统默认目标字数（与 prompt-builder 的 computeChapterTargetWords 逻辑一致）
+    let wordBudget: WordBudget | null = null
+    if (positioning) {
+      const project = this.store.getProject(projectId)
+      let baseTarget: number
+      if (!project || project.targetWords <= 0) baseTarget = 3000
+      else baseTarget = Math.min(5000, Math.max(2500, Math.round(project.targetWords / 1000)))
+
+      // 节奏联动调整（与 prompt-builder 一致）
+      if (rhythmSuggestion?.rhythm === 'climax') baseTarget = Math.round(baseTarget * 1.3)
+      else if (rhythmSuggestion?.rhythm === 'breather' || rhythmSuggestion?.rhythm === 'setup') {
+        baseTarget = Math.round(baseTarget * 0.85)
+      }
+
+      // 定位倍率（与 rhythm-controller 的 POSITIONING_RULES 一致）
+      const positioningMultipliers: Record<ChapterPositioning, number> = {
+        high_pressure: 1.3,
+        advancement: 1.0,
+        cultivation: 0.9,
+        relationship: 0.95,
+        low_pressure: 0.85,
+        information: 0.9,
+      }
+      const multiplier = positioningMultipliers[positioning]
+      const target = Math.round(baseTarget * multiplier)
+      wordBudget = {
+        min: Math.round(target * 0.85),
+        max: Math.round(target * 1.15),
+        target,
+      }
+    }
+
     return {
       facts: constraints.filter((c) => c.type === 'fact'),
       cognitive: constraints.filter((c) => c.type === 'cognitive'),
@@ -170,6 +207,8 @@ export class NovelEngine {
       conflictTargets,
       rhythmConstraint,
       suspenseHooks,
+      wordBudget,
+      positioning: positioning ?? null,
     }
   }
 

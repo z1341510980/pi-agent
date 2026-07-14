@@ -4,246 +4,55 @@
  * 所有端点位于 /api/plugins/novel 下，返回 ApiResponse 包装格式
  * （由 http-client 自动解包为 data）。
  *
- * 类型镜像后端 apps/agent-server/src/core/novel/types.ts
+ * 实体类型从 @repo/shared/novel 共享包引入（与后端共用同一份类型定义）。
  */
 
 import { getApi, postApi, putApi, patchApi, deleteApi } from './http-client'
 import { browserConfig } from '@repo/config/browser'
 import { parseSseStream } from './agui-client'
+import type { BaseEvent } from '@repo/protocol/events'
+
+// ── 共享类型（re-export + 本地引用）──
+
+import type {
+  NovelProject, NovelChapter, NovelVolume, NovelCharacter,
+  NovelRelationship, NovelForeshadow, NovelConflict, NovelClue,
+  NovelWorldRule, NovelStyleGuide, NovelConstraint, NovelInformationLayer,
+  NovelFaction, NovelLocation, NovelWorldElement,
+  NovelNodePosition, NovelEdge,
+  NovelCharacterHistory, NovelMarker,
+  NovelHook, NovelCharacterArc,
+  NovelAgentLog, NovelAgentLogSummary,
+  RhythmModel, RhythmSuggestion,
+  StoryStage, ChapterStatus, ChapterRhythm,
+  TargetPlatform,
+  NovelCharacterPlotRole,
+  NovelForeshadowCategory, ForeshadowStatus, ForeshadowPlantMethod, ForeshadowRecoverMethod,
+  ConflictType, ConflictStage, ConflictTier, ClimaxType, ConflictProgressionMode,
+  RelationshipAlignment, RelationshipTrend,
+  ConstraintType,
+  NovelFactionType, NovelFactionStrength, NovelFactionStatus,
+  NovelLocationType, NovelLocationSignificance, NovelLocationStatus,
+  NovelWorldElementCategory, NovelEdgeType,
+  CharacterHistoryField, NovelMarkerType, NovelMarkerColor,
+  SimilarityGroup,
+} from '@repo/shared/novel'
+
+// re-export 共享类型供外部消费者使用
+export * from '@repo/shared/novel'
 
 // ── 基础路径 ──
 
 const BASE = '/api/plugins/novel'
 
-// ── 通用类型 ──
+// ── 前端独有类型 ──
 
-export type StoryStage = 'setup' | 'rising' | 'climax' | 'falling' | 'resolution'
-export type ChapterStatus = 'planned' | 'drafting' | 'review' | 'published' | 'rejected'
-export type ForeshadowStatus =
-  | 'planned' | 'planted' | 'reinforced' | 'partially_revealed'
-  | 'recovering' | 'recovered' | 'abandoned'
-export type ConflictType =
-  | 'inner' | 'relationship' | 'faction' | 'interest'
-  | 'moral' | 'identity' | 'emotional' | 'world_rule' | 'survival'
-export type ConflictStage =
-  | 'latent' | 'emerging' | 'escalating' | 'erupting'
-  | 'reversing' | 'resolved' | 'transformed'
-export type ConflictTier = 'main' | 'secondary' | 'goal'
-export type ConstraintType = 'fact' | 'cognitive' | 'stage' | 'debt' | 'arc'
-
-// ── P2-1：冲突功能位 + 非线性推进（与后端 types.ts 对齐）──
-
-/** 冲突剧情功能位（复用 PlotFunction 七值枚举） */
+/** 冲突剧情功能位（前端别名，与后端 PlotFunction 七值枚举同义） */
 export type ConflictPlotFunction =
   | 'provide_resource' | 'create_obstacle' | 'amplify_conflict'
   | 'open_phase' | 'change_judgment' | 'advance_relationship' | 'reveal_world_rule'
 
-/** 冲突推进模式：决定 engine.computeConflictTargetStage 的推进路径 */
-export type ConflictProgressionMode =
-  | 'linear' | 'mutation' | 'stagnation' | 'regression' | 'reversal'
-
-// ── P2-2：伏笔 category 枚举 + 埋设/回收方式（与后端 types.ts 对齐）──
-
-/** 伏笔类别（8 值枚举） */
-export type NovelForeshadowCategory =
-  | 'item' | 'spoken' | 'event' | 'identity'
-  | 'secret' | 'prophecy' | 'promise' | 'quote'
-
-/** 伏笔埋设方式（3 值枚举） */
-export type ForeshadowPlantMethod = 'explicit' | 'implicit' | 'indirect'
-
-/** 伏笔回收方式（4 值枚举） */
-export type ForeshadowRecoverMethod = 'explicit' | 'implicit' | 'reverse' | 'progressive'
-
-// ── 节奏 / 高潮 / 悬念 类型（与后端 types.ts 对齐）──
-
-/** 章节节奏类型 */
-export type ChapterRhythm =
-  | 'setup' | 'rising' | 'climax' | 'falling' | 'resolution'
-  | 'twist' | 'breather' | 'suspense'
-
-/** 高潮强度等级 */
-export type ClimaxIntensity = 'minor' | 'medium' | 'major'
-
-/** 高潮类型（五种主要高潮 + 复合高潮） */
-export type ClimaxType =
-  | 'emotional' | 'fate' | 'character' | 'combat' | 'theme' | 'composite'
-
-/** 节奏序列条目（带高潮强度标注） */
-export interface RhythmSequenceEntry {
-  rhythm: ChapterRhythm
-  climaxIntensity?: ClimaxIntensity
-  climaxType?: ClimaxType
-}
-
-/** 节奏模型：定义故事弧的理想节奏序列 */
-export interface RhythmModel {
-  id: string
-  name: string
-  description: string
-  sequence: RhythmSequenceEntry[]
-}
-
-/** 节奏建议 */
-export interface RhythmSuggestion {
-  rhythm: ChapterRhythm
-  arcPosition: number
-  reason: string
-  description: string
-  climaxIntensity?: ClimaxIntensity
-  climaxType?: ClimaxType
-}
-
-/** 节奏历史记录 */
-export interface RhythmHistoryEntry {
-  chapterNumber: number
-  rhythm: ChapterRhythm
-  effectiveness: 'low' | 'medium' | 'high'
-}
-
-/** 叙事任务类型（14 种） */
-export type NarrativeTaskType =
-  | 'advance_mainline' | 'advance_subline' | 'create_conflict' | 'escalate_conflict'
-  | 'release_info' | 'hide_info' | 'reinforce_foreshadow' | 'recover_foreshadow'
-  | 'change_relationship' | 'change_cognition' | 'create_reversal' | 'create_suspense'
-  | 'phase_closure' | 'introduce_problem'
-
-/** 结构化叙事任务 */
-export interface NarrativeTask {
-  description: string
-  type: NarrativeTaskType
-  targetEntity: string | null
-  priority: 'high' | 'medium' | 'low'
-  expectedIntensityDelta?: number
-  climaxTarget?: { type: ClimaxType; intensity: ClimaxIntensity }
-  suspenseDuration?: number
-}
-
-/** 冲突推进目标 */
-export interface ConflictTarget {
-  conflict: NovelConflict
-  targetStage: ConflictStage
-  intensityDelta: number
-  isClimax: boolean
-}
-
-/** 节奏约束 */
-export interface RhythmConstraint {
-  rhythm: ChapterRhythm
-  climaxIntensity?: ClimaxIntensity
-  climaxType?: ClimaxType
-  description: string
-  reason: string
-}
-
-/** 悬念钩子 */
-export interface SuspenseHook {
-  infoLayerId: string | null
-  description: string
-  status: 'planting' | 'sustaining' | 'releasing'
-  sustainedChapters: number
-  releaseByChapter: number | null
-}
-
-/** 章节约束 */
-export interface ChapterConstraints {
-  facts: NovelConstraint[]
-  cognitive: NovelConstraint[]
-  stage: NovelConstraint[]
-  narrativeDebts: NovelForeshadow[]
-  characterArcs: Array<{ character: NovelCharacter; allowedNextStage: string | null }>
-  conflictTargets: ConflictTarget[]
-  rhythmConstraint?: RhythmConstraint
-  suspenseHooks: SuspenseHook[]
-}
-
-/** 本章角色剧情功能位（临时编排结果，回答"他这次出场负责推动什么"） */
-export type PlotFunction =
-  | 'provide_resource' | 'create_obstacle' | 'amplify_conflict'
-  | 'open_phase' | 'change_judgment' | 'advance_relationship' | 'reveal_world_rule'
-
-/** 单个角色本章的功能位编排 */
-export interface CharacterFunctionEntry {
-  characterId: string
-  function: PlotFunction
-  note?: string
-}
-
-/** 本章已编排的实体约束 */
-export interface ArrangedEntity {
-  characterIds: string[]
-  conflictIds: string[]
-  foreshadowIds: string[]
-  factionIds: string[]
-  locationIds: string[]
-  /** 角色本章功能位编排（可选，未指定时不约束） */
-  characterFunctions?: CharacterFunctionEntry[]
-}
-
-// ── 实体类型 ──
-
-export interface NovelProject {
-  id: string
-  title: string
-  genre: string
-  synopsis: string
-  /** 全书大纲（一段文本） */
-  outline?: string
-  targetWords: number
-  currentVolume: number
-  currentChapter: number
-  currentStage: StoryStage
-  status: 'active' | 'paused' | 'completed'
-  /** 节奏模型 ID（缺省时使用后端 RhythmController.DEFAULT_MODEL） */
-  rhythmModelId?: string
-  /** 移入回收站的时间戳（null 表示正常项目，非 null 表示已软删除） */
-  deletedAt?: number | null
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelChapter {
-  id: string
-  projectId: string
-  volume: number
-  chapterNumber: number
-  title: string
-  content: string
-  wordCount: number
-  status: ChapterStatus
-  narrativeTask: string
-  /** 章纲（用户编写，作为生成统一起点） */
-  outline?: string
-  /** 所属卷 ID（指向 novel_volumes.id，兼容旧数据可空） */
-  volumeId?: string | null
-  acceptanceResult: string | null
-  /** 章节张力等级（1-10，NULL 表示未设定） */
-  tension?: number | null
-  /** 章节节奏（由 RhythmController 建议，可手动覆盖） */
-  rhythm?: ChapterRhythm
-  /** 时间线偏移（相对第1章的天数） */
-  timeOffset?: number | null
-  /** 章尾钩子类型 */
-  chapterEndingHook?: ChapterEndingHookType | null
-  /** 前情提要（章节完成后自动生成，50-100 字） */
-  recap?: string | null
-  createdAt: number
-  updatedAt: number
-}
-
-/** 章尾钩子类型 */
-export type ChapterEndingHookType = 'suspense' | 'reversal' | 'emotional' | 'action' | 'none'
-
-export interface NovelVolume {
-  id: string
-  projectId: string
-  volumeNumber: number
-  title: string
-  outline: string
-  sortOrder: number
-  createdAt: number
-  updatedAt: number
-}
+// ── 创建/更新载荷类型 ──
 
 export interface CreateVolumeInput {
   volumeNumber: number
@@ -254,266 +63,12 @@ export interface CreateVolumeInput {
 
 export type UpdateVolumeInput = Partial<CreateVolumeInput>
 
-/** 角色层级（持久化，回答"他在故事里是什么位置"） */
-export type NovelCharacterPlotRole =
-  | 'protagonist' | 'main_opponent' | 'supporting' | 'function' | 'background'
-
-export interface NovelCharacter {
-  id: string
-  projectId: string
-  name: string
-  description: string
-  identity: string
-  personality: string
-  appearance: string
-  currentState: string
-  currentGoal: string
-  currentPressure: string
-  secret: string
-  arcStage: string
-  arcHistory: string
-  speechStyle: string
-  isProtagonist: boolean
-  // ── 四层逻辑补全字段 ──
-  /** 长期欲望：跨章节稳定的发动机 */
-  longTermDesire: string
-  /** 角色层级：决定笔墨分配 */
-  plotRole: NovelCharacterPlotRole
-  /** 删掉影响：一句话描述"删掉这个角色哪段剧情会受影响" */
-  removalImpact: string
-  // ── 四层逻辑④：影响层反向索引 ──
-  /** 参与的冲突 ID 列表（JSON: string[]，由冲突 CRUD 自动同步） */
-  participatingConflicts: string
-  createdAt: number
-  updatedAt: number
-}
-
-/** 阵营关系（四层逻辑②关系层）：关系当前在同一阵线的状态 */
-export type RelationshipAlignment =
-  | 'ally' | 'temporary_ally' | 'opponent'
-  | 'temporary_opponent' | 'neutral' | 'pending_shift'
-
-/** 关系走向（四层逻辑②关系层）：动态趋势判断 */
-export type RelationshipTrend =
-  | 'stable' | 'warming' | 'cooling' | 'breaking' | 'reconciling'
-
-/** 关系阶段变更历史条目（NovelRelationship.stageHistory 的 JSON 元素） */
-export interface RelationChange {
-  chapter: number
-  fromStage: string
-  toStage: string
-  reason: string
-  timestamp: number
-}
-
-export interface NovelRelationship {
-  id: string
-  projectId: string
-  characterA: string
-  characterB: string
-  relationType: string
-  currentStage: string
-  stageHistory: string
-  // ── 四层逻辑②：关系层动态字段 ──
-  /** 动态功能位（本章关系承载的剧情功能） */
-  dynamicRole: string
-  /** 阵营关系（ally/temporary_ally/opponent/temporary_opponent/neutral/pending_shift） */
-  alignment: RelationshipAlignment
-  /** 走向（stable/warming/cooling/breaking/reconciling） */
-  trend: RelationshipTrend
-  /** 本章约束提示（注入章节上下文，提示 Writer 本章关系走向） */
-  chapterHint: string
-  /** 最后更新章节号（用于矩阵视图按章节维度排序/筛选） */
-  lastUpdatedChapter: number | null
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelForeshadow {
-  id: string
-  projectId: string
-  description: string
-  category: NovelForeshadowCategory
-  status: ForeshadowStatus
-  firstChapter: number | null
-  lastChapter: number | null
-  recoverByChapter: number | null
-  linkedCharacters: string
-  linkedClues: string
-  // ── P2-2：埋设/回收方式 ──
-  plantMethod?: ForeshadowPlantMethod
-  recoverMethod?: ForeshadowRecoverMethod
-  // ── P3-2：关联信息差 ID 数组（JSON: string[]）──
-  linkedInfoLayers: string
-  // ── 迁移 055：多段章节跨度（与 conflicts/factions 同模式）
-  // 描述伏笔"活跃"区间，可非连续多段；firstChapter 仍为埋设点 plant，recoverByChapter 为回收点 payoff
-  chapterSpans: Array<[number, number]>
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelClue {
-  id: string
-  projectId: string
-  description: string
-  pointsTo: string
-  progress: number
-  currentStep: string
-  nextStep: string
-  isMisleading: boolean
-  linkedForeshadow: string | null
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelConflict {
-  id: string
-  projectId: string
-  description: string
-  type: ConflictType
-  intensity: number
-  stage: ConflictStage
-  participants: string
-  chapterSpans: Array<[number, number]>
-  tier: ConflictTier
-  /** 预计爆发章节（高潮目标章节） */
-  climaxChapter?: number | null
-  /** 高潮类型建议（该冲突推向高潮时的预期高潮种类） */
-  climaxType?: ClimaxType | null
-  /** 关联冲突 ID 列表（冲突网编织，JSON: string[]） */
-  relatedConflicts?: string
-  /** 赌注/代价（冲突失败或成功后的代价） */
-  stakes?: string | null
-  /** 突转潜力（0-10，越高越适合安排突转） */
-  twistPotential?: number
-  // ── P2-1：冲突功能位 + 非线性推进 ──
-  /** 剧情功能位（复用 PlotFunction 七值枚举） */
-  plotFunction?: ConflictPlotFunction
-  /** 推进模式（决定 engine.computeConflictTargetStage 的推进路径） */
-  progressionMode?: ConflictProgressionMode
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelWorldRule {
-  id: string
-  projectId: string
-  category: string
-  rule: string
-  cost: string | null
-  isFixed: boolean
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelStyleGuide {
-  id: string
-  projectId: string
-  category: string
-  rule: string
-  example: string | null
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelConstraint {
-  id: string
-  projectId: string
-  type: ConstraintType
-  scope: 'global' | 'volume' | 'chapter'
-  rule: string
-  isActive: boolean
-  relatedEntityId: string | null
-  createdAt: number
-  updatedAt: number
-}
-
-export interface NovelInformationLayer {
-  id: string
-  projectId: string
-  infoDescription: string
-  authorKnows: boolean
-  readerKnows: boolean
-  characterKnowledge: string
-  revealStage: string | null
-  revealChapter: number | null
-  isRevealed: boolean
-  // ── P3-2：关联伏笔 ID 数组（JSON: string[]）──
-  linkedForeshadows: string
-  createdAt: number
-  updatedAt: number
-}
-
-// ── 势力 / 地点 / 世界观要素 ──
-
-export type NovelFactionType =
-  | 'organization' | 'sect' | 'kingdom' | 'family' | 'guild' | 'cult'
-export type NovelFactionStrength = 'weak' | 'medium' | 'strong' | 'overwhelming'
-export type NovelFactionStatus = 'active' | 'declined' | 'destroyed' | 'hidden'
-
-export interface NovelFaction {
-  id: string
-  projectId: string
-  name: string
-  description: string
-  type: NovelFactionType
-  leaderId: string | null
-  ideology: string
-  strength: NovelFactionStrength
-  resources: string[]
-  allies: string[]
-  enemies: string[]
-  status: NovelFactionStatus
-  chapterSpans: Array<[number, number]>
-  createdAt: number
-  updatedAt: number
-}
-
-export type NovelLocationType =
-  | 'continent' | 'country' | 'city' | 'building'
-  | 'dungeon' | 'region' | 'wilderness'
-export type NovelLocationSignificance = 'minor' | 'moderate' | 'major' | 'critical'
-export type NovelLocationStatus = 'normal' | 'destroyed' | 'changed' | 'hidden'
-
-export interface NovelLocation {
-  id: string
-  projectId: string
-  name: string
-  description: string
-  type: NovelLocationType
-  parentId: string | null
-  factionId: string | null
-  significance: NovelLocationSignificance
-  firstChapter: number | null
-  appearChapters: number[]
-  status: NovelLocationStatus
-  createdAt: number
-  updatedAt: number
-}
-
-export type NovelWorldElementCategory =
-  | 'power_system' | 'history' | 'culture' | 'religion'
-  | 'technology' | 'economy' | 'geography'
-
-export interface NovelWorldElement {
-  id: string
-  projectId: string
-  category: NovelWorldElementCategory
-  name: string
-  description: string
-  parentId: string | null
-  attributes: Record<string, unknown>
-  createdAt: number
-  updatedAt: number
-}
-
-// ── 创建/更新载荷类型 ──
-
 export interface CreateProjectInput {
   title: string
   genre: string
   synopsis?: string
   targetWords?: number
+  targetPlatform?: TargetPlatform
 }
 
 export type UpdateProjectInput = Partial<CreateProjectInput> & {
@@ -523,6 +78,7 @@ export type UpdateProjectInput = Partial<CreateProjectInput> & {
   status?: 'active' | 'paused' | 'completed'
   outline?: string
   rhythmModelId?: string
+  targetPlatform?: TargetPlatform | null
 }
 
 export interface CreateChapterInput {
@@ -738,16 +294,6 @@ export type NovelNodeTypeName =
   | 'faction' | 'location' | 'world_element'
   | 'info_layer'
 
-export interface NovelNodePosition {
-  id: string
-  projectId: string
-  nodeType: NovelNodeTypeName
-  entityId: string
-  posX: number
-  posY: number
-  updatedAt: number
-}
-
 export interface NodePositionInput {
   nodeType: NovelNodeTypeName
   entityId: string
@@ -756,26 +302,6 @@ export interface NodePositionInput {
 }
 
 // ── 画布连线 ──
-
-export type NovelEdgeType =
-  | 'appearance' | 'relationship' | 'involvement' | 'foreshadow'
-  | 'base' | 'member' | 'hierarchy' | 'association'
-  | 'mentor' | 'kinship' | 'rivalry' | 'alliance' | 'subordinate' | 'trigger' | 'causality'
-
-export interface NovelEdge {
-  id: string
-  projectId: string
-  sourceId: string
-  sourceType: NovelNodeTypeName
-  targetId: string
-  targetType: NovelNodeTypeName
-  edgeType: NovelEdgeType
-  label: string
-  /** true=自动生成, false=手动创建 */
-  auto: boolean
-  createdAt: number
-  updatedAt: number
-}
 
 export interface CreateEdgeInput {
   sourceId: string
@@ -789,23 +315,6 @@ export interface CreateEdgeInput {
 
 // ── 角色历史 ──
 
-export type CharacterHistoryField =
-  | 'currentState' | 'currentGoal' | 'currentPressure'
-  | 'secret' | 'arcStage'
-
-export interface NovelCharacterHistory {
-  id: string
-  projectId: string
-  characterId: string
-  chapterId: string | null
-  chapterNumber: number | null
-  fieldName: CharacterHistoryField
-  oldValue: string | null
-  newValue: string | null
-  reason: string | null
-  createdAt: number
-}
-
 export interface CreateCharacterHistoryInput {
   fieldName: CharacterHistoryField
   oldValue: string | null
@@ -815,26 +324,6 @@ export interface CreateCharacterHistoryInput {
 }
 
 // ── 时间轴标记 ──
-
-export type NovelMarkerType =
-  | 'bookmark' | 'turning-point' | 'foreshadow' | 'climax' | 'note'
-  | 'clip-note'
-
-export type NovelMarkerColor = 'blue' | 'yellow' | 'green' | 'red' | 'purple'
-
-export interface NovelMarker {
-  id: string
-  projectId: string
-  chapter: number
-  title: string
-  note: string
-  type: NovelMarkerType
-  color: NovelMarkerColor
-  entityType: string | null
-  entityId: string | null
-  createdAt: number
-  updatedAt: number
-}
 
 export interface CreateMarkerInput {
   chapter: number
@@ -852,6 +341,7 @@ export type UpdateMarkerInput = Partial<CreateMarkerInput>
 
 export interface AiGenerateCharacterInput {
   coreStyle: string
+  modelId?: string
 }
 
 /** 角色生成进度事件（镜像后端 CharacterGenerationProgressEvent） */
@@ -1686,70 +1176,6 @@ export function getCacheDiagnostics(
 
 // ── Agent 调用日志 ──
 
-export type NovelAgentLogStatus = 'success' | 'error' | 'cancelled'
-
-export interface NovelAgentLogSummary {
-  id: string
-  projectId: string
-  chapterNumber: number
-  agentType: string
-  agentName: string
-  displayAgentType: string
-  displayAgentName: string
-  phase: string
-  systemPromptLength: number
-  userMessageLength: number
-  toolNames: string[]
-  resultLength: number
-  durationMs: number
-  status: NovelAgentLogStatus
-  error: string
-  /** LLM input tokens（不含 cache read） */
-  inputTokens: number
-  /** LLM output tokens */
-  outputTokens: number
-  /** prompt cache 命中读取的 tokens（0 = 完全 miss） */
-  cacheReadTokens: number
-  /** prompt cache 写入的 tokens（首次写入） */
-  cacheWriteTokens: number
-  /** LLM provider 名 */
-  llmProvider: string
-  /** LLM 模型名 */
-  llmModel: string
-  createdAt: number
-}
-
-export interface NovelAgentLog {
-  id: string
-  projectId: string
-  chapterNumber: number
-  agentType: string
-  agentName: string
-  displayAgentType: string
-  displayAgentName: string
-  phase: string
-  systemPrompt: string
-  chapterContext: string
-  userMessage: string
-  taskInput: string
-  userInstructions: string[]
-  tools: unknown[]
-  toolNames: string[]
-  result: string
-  resultLength: number
-  durationMs: number
-  status: NovelAgentLogStatus
-  error: string
-  sessionId: string
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheWriteTokens: number
-  llmProvider: string
-  llmModel: string
-  createdAt: number
-}
-
 export interface ListAgentLogsParams {
   chapterNumber?: number
   agentType?: string
@@ -1812,41 +1238,6 @@ export function deleteMarker(id: string): Promise<{ id: string; deleted: boolean
 
 // ── LLM 相似度扫描（SSE 流式扫描 + 独立 REST 合并）──
 
-export type SimilarityEntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
-
-/** 一组相似实体（LLM 判定） */
-export interface SimilarityGroup {
-  kind: SimilarityEntityKind
-  /** LLM 给出的相似度理由 */
-  reason: string
-  /** 相似度分数 0-1（>0.6 才报告） */
-  similarity: number
-  /** LLM 建议保留的实体 ID */
-  keptId: string
-  /** 建议删除的实体列表 */
-  removed: Array<{ id: string; name: string }>
-  /** 字段级合并建议：保留实体的字段应该用哪个来源的值 */
-  fieldMerges?: Array<{
-    field: string
-    fromId: string
-    fromName: string
-    reason: string
-  }>
-}
-
-/** 相似度扫描报告 */
-export interface SimilarityScanReport {
-  groups: SimilarityGroup[]
-  totalCandidates: number
-}
-
-/** 相似度扫描进度事件（镜像后端 SimilarityScanProgressEvent） */
-export interface SimilarityScanProgressEvent {
-  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
-  message: string
-  data?: unknown
-}
-
 /**
  * 执行相似实体合并（用户在弹框中勾选的组）
  * @param projectId 项目 ID
@@ -1860,25 +1251,6 @@ export function mergeSimilarityEntities(
 }
 
 // ── v0.2：钩子（章尾钩子实体化，支持兑现状态追踪） ──
-
-/** 钩子兑现状态：thrown=已抛出 / fulfilled=已兑现 / abandoned=已放弃 */
-export type HookStatus = 'thrown' | 'fulfilled' | 'abandoned'
-
-/** 章尾钩子实体（v0.2：从 chapter.chapterEndingHook 字段迁移为独立实体） */
-export interface NovelHook {
-  id: string
-  projectId: string
-  chapterNumber: number
-  hookType: ChapterEndingHookType
-  description: string
-  status: HookStatus
-  fulfilledAtChapter: number | null
-  fulfilledDescription: string | null
-  linkedForeshadowId: string | null
-  linkedConflictId: string | null
-  createdAt: number
-  updatedAt: number
-}
 
 export function listHooks(projectId: string): Promise<NovelHook[]> {
   return getApi<NovelHook[]>(`${BASE}/projects/${projectId}/hooks`)
@@ -1901,31 +1273,122 @@ export function deleteHook(id: string): Promise<void> {
 
 // ── v0.2：角色弧光（独立实体，追踪角色成长/堕落/救赎/转变轨迹） ──
 
-/** 弧光类型：growth=成长 / fall=堕落 / redemption=救赎 / shift=转变 */
-export type ArcType = 'growth' | 'fall' | 'redemption' | 'shift'
-
-/** 弧光阶段历史条目（每次阶段变更记录） */
-export interface ArcStageHistoryEntry {
-  stage: string
-  triggerEvent: string
-  description: string
-  chapterNumber: number
-  changedAt: number
-}
-
-/** 角色弧光实体 */
-export interface NovelCharacterArc {
-  id: string
-  projectId: string
-  characterId: string
-  arcType: ArcType
-  currentStage: string
-  stageHistory: ArcStageHistoryEntry[]
-  description: string | null
-  createdAt: number
-  updatedAt: number
-}
-
 export function listCharacterArcs(projectId: string): Promise<NovelCharacterArc[]> {
   return getApi<NovelCharacterArc[]>(`${BASE}/projects/${projectId}/character-arcs`)
+}
+
+// ── 章节聊天（按章节持久化用户输入 + 自由聊天） ──
+
+/** 章节聊天消息阶段 */
+export type ChapterChatPhase = 'pre_creation' | 'checkpoint' | 'discussion' | 'free_chat' | 'review'
+
+/** 章节聊天消息角色 */
+export type ChapterChatRole = 'user' | 'agent' | 'system'
+
+/** 章节聊天消息（与后端 ChapterChatMessage 对齐） */
+export interface ChapterChatMessage {
+  id: string
+  projectId: string
+  chapterNumber: number
+  role: ChapterChatRole
+  fromId: string
+  fromName: string
+  content: string
+  phase: ChapterChatPhase
+  metadata?: {
+    checkpointId?: string
+    decision?: string
+    agentType?: string
+    mentionedAgents?: string[]
+    flowMode?: 'workflow' | 'discussion'
+  }
+  createdAt: number
+}
+
+/** 获取章节聊天历史（按时间升序） */
+export function listChapterChat(
+  projectId: string,
+  chapterNumber: number,
+): Promise<ChapterChatMessage[]> {
+  return getApi<ChapterChatMessage[]>(`${BASE}/projects/${projectId}/chapters/${chapterNumber}/chat`)
+}
+
+/** 清空章节聊天历史 */
+export function clearChapterChat(
+  projectId: string,
+  chapterNumber: number,
+): Promise<{ cleared: boolean }> {
+  return deleteApi<{ cleared: boolean }>(`${BASE}/projects/${projectId}/chapters/${chapterNumber}/chat`)
+}
+
+/** 持久化创作流程中的用户输入（启动指令/检查点反馈/群聊发言/回看聊天） */
+export function persistChapterChat(
+  projectId: string,
+  chapterNumber: number,
+  input: {
+    phase: Exclude<ChapterChatPhase, 'free_chat'>
+    content: string
+    role?: ChapterChatRole
+    fromId?: string
+    fromName?: string
+    metadata?: Record<string, unknown>
+  },
+): Promise<ChapterChatMessage> {
+  return postApi<ChapterChatMessage>(`${BASE}/projects/${projectId}/chapters/${chapterNumber}/chat/persist`, {
+    phase: input.phase,
+    role: input.role ?? 'user',
+    content: input.content,
+    fromId: input.fromId ?? 'user',
+    fromName: input.fromName ?? '用户',
+    metadata: input.metadata,
+  })
+}
+
+/** 自由聊天的 SSE 回调选项 */
+export interface ChapterChatFlowOptions {
+  /** AG-UI 事件回调（TEXT_MESSAGE_* / CUSTOM / RUN_FINISHED / RUN_ERROR 等） */
+  onEvent: (event: BaseEvent) => void
+  signal?: AbortSignal
+}
+
+/**
+ * 发起章节自由聊天（SSE 流式）
+ *
+ * 后端端点 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/chat
+ * - mentionedAgents 非空时，依次让被 @ 的 Agent 回复
+ * - 否则由 Moderator 单轮决策选一个 Agent 回复
+ *
+ * 复用共享的 parseSseStream 解析 SSE 流，通过 onEvent 回调暴露所有 AG-UI 事件，
+ * 与 use-novel-creation-flow 的 runFlow 模式一致：
+ *   - TEXT_MESSAGE_START / CONTENT / END：Agent 流式发言
+ *   - CUSTOM(novel:progress)：Agent 开始/结束发言元数据
+ *   - CUSTOM(novel:result)：流程完成，含最终 replies
+ *   - RUN_FINISHED / RUN_ERROR：流结束/错误
+ */
+export async function sendChapterChat(
+  projectId: string,
+  chapterNumber: number,
+  message: string,
+  mentionedAgents: string[] | undefined,
+  options: ChapterChatFlowOptions,
+): Promise<void> {
+  const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/chapters/${chapterNumber}/chat`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({ message, mentionedAgents }),
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    throw new Error(`章节聊天启动失败: HTTP ${response.status} ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('响应体为空，无法读取 SSE 流')
+  }
+
+  await parseSseStream(response.body, options.onEvent)
 }

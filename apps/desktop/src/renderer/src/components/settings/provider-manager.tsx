@@ -165,8 +165,12 @@ export const providerPresets: Record<string, { baseUrl: string; api: string; mod
     baseUrl: 'https://api.openai.com/v1',
     api: 'openai-completions',
     models: [
-      { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', cost: { input: 0.4, output: 1.6 }, contextWindow: 1047576, maxTokens: 32768 },
-      { id: 'gpt-4.1', name: 'GPT-4.1', cost: { input: 2, output: 8 }, contextWindow: 1047576, maxTokens: 32768 },
+      { id: 'gpt-5.4', name: 'GPT-5.4', cost: { input: 2, output: 8 }, contextWindow: 1047576, maxTokens: 32768 },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', cost: { input: 0.4, output: 1.6 }, contextWindow: 1047576, maxTokens: 32768 },
+      { id: 'gpt-5.5', name: 'GPT-5.5', cost: { input: 2.5, output: 10 }, contextWindow: 1047576, maxTokens: 32768 },
+      { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', cost: { input: 3, output: 12 }, contextWindow: 1047576, maxTokens: 32768 },
+      { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', cost: { input: 3, output: 12 }, contextWindow: 1047576, maxTokens: 32768 },
+      { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', cost: { input: 3, output: 12 }, contextWindow: 1047576, maxTokens: 32768 },
     ],
   },
   anthropic: {
@@ -466,6 +470,12 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
   const [saving, setSaving] = useState(false)
   const [presetKey, setPresetKey] = useState<string>('')
   const [fetchingModels, setFetchingModels] = useState(false)
+  // 手动添加模型表单状态
+  const [showAddModelForm, setShowAddModelForm] = useState(false)
+  const [newModelId, setNewModelId] = useState('')
+  const [newModelName, setNewModelName] = useState('')
+  const [newModelCtx, setNewModelCtx] = useState('')
+  const [newModelMaxTokens, setNewModelMaxTokens] = useState('')
 
   // 当 entry 变化时重置表单
   useEffect(() => {
@@ -474,6 +484,11 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
     setShowKey(false)
     setSaveError(null)
     setPresetKey('')
+    setShowAddModelForm(false)
+    setNewModelId('')
+    setNewModelName('')
+    setNewModelCtx('')
+    setNewModelMaxTokens('')
   }, [entry, reset])
 
   const models = watch('models')
@@ -542,10 +557,40 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
 
       setValue('models', fetchedModels)
     } catch (err) {
+      // 拉取失败时清掉占位模型（避免 placeholder 残留导致保存时误提交）
+      const currentModels = getValues('models')
+      if (currentModels.length === 1 && currentModels[0].id === 'placeholder') {
+        setValue('models', [])
+      }
       setSaveError(err instanceof Error ? err.message : '拉取模型失败')
     } finally {
       setFetchingModels(false)
     }
+  }
+
+  // 手动添加一个模型到列表（不依赖远端拉取）
+  function handleAddModelManually(): void {
+    const id = newModelId.trim()
+    if (!id) return
+    const name = newModelName.trim() || id
+    const existing = getValues('models')
+    if (existing.some((m) => m.id === id)) {
+      setSaveError(`模型 "${id}" 已存在`)
+      return
+    }
+    const newModel: ModelConfig = {
+      id,
+      name,
+      contextWindow: newModelCtx ? Number(newModelCtx) : undefined,
+      maxTokens: newModelMaxTokens ? Number(newModelMaxTokens) : undefined,
+    }
+    setValue('models', [...existing, newModel], { shouldValidate: true })
+    setNewModelId('')
+    setNewModelName('')
+    setNewModelCtx('')
+    setNewModelMaxTokens('')
+    setShowAddModelForm(false)
+    setSaveError(null)
   }
 
   async function handleTestConnection(): Promise<void> {
@@ -606,7 +651,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{formId ? '编辑 Provider' : '添加 Provider'}</DialogTitle>
         </DialogHeader>
@@ -726,17 +771,92 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
           <div className="grid gap-1.5">
             <div className="flex items-center justify-between">
               <Label>模型列表</Label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={fetchingModels || !baseUrl || !apiKey}
-                onClick={() => void handleFetchModels()}
-              >
-                <RefreshCwIcon className={`size-3.5 mr-1.5 ${fetchingModels ? 'animate-spin' : ''}`} />
-                {fetchingModels ? '拉取中...' : '拉取模型'}
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { setShowAddModelForm((v) => !v); setSaveError(null) }}
+                >
+                  <PlusIcon className="size-3.5" />
+                  手动添加
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={fetchingModels || !baseUrl || !apiKey}
+                  onClick={() => void handleFetchModels()}
+                >
+                  <RefreshCwIcon className={`size-3.5 ${fetchingModels ? 'animate-spin' : ''}`} />
+                  {fetchingModels ? '拉取中...' : '拉取模型'}
+                </Button>
+              </div>
             </div>
+
+            {/* 手动添加模型表单 */}
+            {showAddModelForm && (
+              <div className="grid gap-2 rounded-md border border-input bg-surface-3 p-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="grid gap-1">
+                    <label className="text-[9px] text-muted-foreground">Model ID *</label>
+                    <input
+                      type="text"
+                      placeholder="gpt-5.4"
+                      value={newModelId}
+                      onChange={(e) => setNewModelId(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModelManually() } }}
+                      className="bg-surface-2 border border-border rounded px-1.5 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-[9px] text-muted-foreground">显示名称</label>
+                    <input
+                      type="text"
+                      placeholder="GPT-5.4"
+                      value={newModelName}
+                      onChange={(e) => setNewModelName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModelManually() } }}
+                      className="bg-surface-2 border border-border rounded px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/40"
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-[9px] text-muted-foreground">上下文窗口</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="128000"
+                      value={newModelCtx}
+                      onChange={(e) => setNewModelCtx(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModelManually() } }}
+                      className="bg-surface-2 border border-border rounded px-1.5 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-[9px] text-muted-foreground">最大输出</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="8192"
+                      value={newModelMaxTokens}
+                      onChange={(e) => setNewModelMaxTokens(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModelManually() } }}
+                      className="bg-surface-2 border border-border rounded px-1.5 py-1 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-1.5">
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setShowAddModelForm(false)}>
+                    取消
+                  </Button>
+                  <Button type="button" size="sm" disabled={!newModelId.trim()} onClick={handleAddModelManually}>
+                    <PlusIcon className="size-3" />
+                    添加
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {models.length > 0 ? (
               <div className="grid gap-1.5 rounded-md border border-input bg-transparent p-3">
                 {models.map((m, idx) => (
@@ -807,8 +927,8 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
               </div>
             ) : (
               <div className="flex items-center justify-center rounded-md border border-dashed border-input bg-transparent p-4 min-h-[80px]">
-                <span className="text-xs text-muted-foreground">
-                  填写 Base URL 和 API Key 后点击「拉取模型」自动获取
+                <span className="text-xs text-muted-foreground text-center">
+                  点击「手动添加」填写模型，或填写 Base URL 和 API Key 后「拉取模型」自动获取
                 </span>
               </div>
             )}

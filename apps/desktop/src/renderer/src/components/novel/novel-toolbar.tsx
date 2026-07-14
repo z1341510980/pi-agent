@@ -10,7 +10,8 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
   deleteCharacter,
   deleteConflict,
@@ -50,19 +51,19 @@ export function NovelToolbar({
   onExport,
   onImport,
 }: NovelToolbarProps): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
-  const selectedNodeType = useNovelStore((s) => s.selectedNodeType)
-  const clearSelection = useNovelStore((s) => s.clearSelection)
-  const removeCharacter = useNovelStore((s) => s.removeCharacter)
-  const removeConflict = useNovelStore((s) => s.removeConflict)
-  const removeForeshadow = useNovelStore((s) => s.removeForeshadow)
-  const removeFaction = useNovelStore((s) => s.removeFaction)
-  const removeLocation = useNovelStore((s) => s.removeLocation)
-  const removeWorldElement = useNovelStore((s) => s.removeWorldElement)
-  const removeNodePosition = useNovelStore((s) => s.removeNodePosition)
-  const canvasEdgeType = useNovelStore((s) => s.canvasEdgeType)
-  const setCanvasEdgeType = useNovelStore((s) => s.setCanvasEdgeType)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
+  const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
+  const clearSelection = useNovelUiStore((s) => s.clearSelection)
+  const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
+  const removeConflict = useNovelDataStore((s) => s.removeConflict)
+  const removeForeshadow = useNovelDataStore((s) => s.removeForeshadow)
+  const removeFaction = useNovelDataStore((s) => s.removeFaction)
+  const removeLocation = useNovelDataStore((s) => s.removeLocation)
+  const removeWorldElement = useNovelDataStore((s) => s.removeWorldElement)
+  const removeNodePosition = useNovelDataStore((s) => s.removeNodePosition)
+  const canvasEdgeType = useNovelUiStore((s) => s.canvasEdgeType)
+  const setCanvasEdgeType = useNovelUiStore((s) => s.setCanvasEdgeType)
 
   const { zoomIn, zoomOut, fitView } = useReactFlow()
 

@@ -185,27 +185,54 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
       )
     }
 
-    // OpenAI 兼容格式：{ data: [{ id, ... }] }
-    const data = (json as { data?: unknown }).data
-    if (!Array.isArray(data)) {
+    // 兼容多种 OpenAI 中转服务的响应格式：
+    //  - 标准 OpenAI:  { data: [{ id, ... }] }
+    //  - 部分中转:     { models: [{ id, ... }] }
+    //  - 直接数组:     [{ id, ... }]
+    let rawModels: unknown[]
+    if (Array.isArray(json)) {
+      rawModels = json
+    } else if (json && typeof json === 'object') {
+      const obj = json as { data?: unknown; models?: unknown }
+      if (Array.isArray(obj.data)) {
+        rawModels = obj.data
+      } else if (Array.isArray(obj.models)) {
+        rawModels = obj.models
+      } else {
+        rawModels = []
+      }
+    } else {
+      rawModels = []
+    }
+
+    if (rawModels.length === 0) {
       throw new AppError(
         ErrorCode.INTERNAL_SERVER_ERROR,
-        'Provider 远端服务返回的模型列表格式无效',
+        'Provider 远端服务返回的模型列表为空或格式无效（中转服务可能不支持 /v1/models 接口，请手动添加模型）',
         502,
-        '远端 /v1/models 响应缺少 data 数组'
+        '远端 /v1/models 响应未包含可识别的模型数组（已尝试 data / models / 顶层数组 三种格式）'
       )
     }
 
     // 前端只需要 id 和 name 字段；name 缺失时回退为 id
-    const models = data
+    const models = rawModels
       .filter(
         (m): m is { id: string; name?: unknown } =>
           typeof m === 'object' && m !== null && typeof (m as { id?: unknown }).id === 'string'
       )
       .map((m) => ({
         id: m.id,
-        name: typeof m.name === 'string' ? m.name : m.id
+        name: typeof m.name === 'string' && m.name.length > 0 ? m.name : m.id
       }))
+
+    if (models.length === 0) {
+      throw new AppError(
+        ErrorCode.INTERNAL_SERVER_ERROR,
+        'Provider 远端服务返回的模型列表中无有效模型（缺少 id 字段）',
+        502,
+        '远端 /v1/models 响应的模型数组中没有任何包含字符串 id 的条目'
+      )
+    }
 
     return success(models, request.traceId)
   })

@@ -1631,7 +1631,7 @@ body: { decision, userMessages? }
 | 章节管理 | `POST/GET /projects/:projectId/chapters`、`PATCH/POST /chapters/:id/complete\|publish` |
 | 实体 CRUD | 每类实体（角色/伏笔/冲突/线索/关系/世界规则/风格指南/约束/信息差/势力/地点/世界要素）的 `POST/GET/PATCH` |
 | AI 实体生成（SSE） | `POST /projects/:projectId/characters/ai-generate`、`POST /projects/:projectId/entities/ai-generate` |
-| 多 Agent 创作流程（SSE） | `POST /projects/:projectId/chapters/:chapterNumber/create-flow`、`POST /checkpoint/:checkpointId/decision`、`POST /chapters/:chapterNumber/ai-arrange`、`POST /chapters/:chapterNumber/create-team` |
+| 多 Agent 创作流程（SSE） | `POST /projects/:projectId/chapters/:chapterNumber/create-flow`、`POST /projects/:projectId/chapters/:chapterNumber/create-discussion`、`POST /projects/:projectId/checkpoint/:checkpointId/decision`、`POST /projects/:projectId/chapters/:chapterNumber/ai-arrange`、`POST /projects/:projectId/chapters/:chapterNumber/create-team`；完整页面级清单见 [NOVEL_CREATION_API.md](./NOVEL_CREATION_API.md) |
 | 角色状态变更历史 | `GET/POST /projects/:projectId/characters/:characterId/history`、`POST /character-history/batch` |
 | 节点位置 | `GET/PUT/DELETE /projects/:projectId/node-positions` |
 | 画布连线 | `GET/POST /projects/:projectId/edges`、`DELETE /edges/:id` |

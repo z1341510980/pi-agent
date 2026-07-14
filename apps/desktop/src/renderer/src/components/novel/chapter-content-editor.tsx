@@ -13,7 +13,8 @@ import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from 'tiptap-markdown'
 import { Sparkles, FileText, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore } from '@/stores/novel-ui-store'
 import { updateChapter, reverseArrangeFlow } from '@/api/novel-client'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { countWords } from '@/lib/novel-utils'
@@ -38,11 +39,11 @@ export function ChapterContentEditor({
   creationChapterNumber,
   creationChapterContent,
 }: ChapterContentEditorProps): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const playheadChapter = useNovelStore((s) => s.playheadChapter)
-  const setPlayheadChapter = useNovelStore((s) => s.setPlayheadChapter)
-  const chapters = useNovelStore((s) => s.chapters)
-  const upsertChapter = useNovelStore((s) => s.upsertChapter)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
+  const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
+  const chapters = useNovelDataStore((s) => s.chapters)
+  const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
   const queryClient = useQueryClient()
 
   const [draftContent, setDraftContent] = useState('')

@@ -46,7 +46,9 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     // 状态，每次工具调用都会把完整对话历史重发，3 次工具调用 = 3 倍 system_prompt
     // + chapter_context 的 token 消耗。移除工具后 Director 单次调用完成，
     // 省 ~18K tokens。
-    tools: [],
+    // A+B：给 Director 开放语义化查询工具 novel_ask_story，用于在规划前按需获取关键信息。
+    // 不开放全量 query 工具，避免 token 爆炸和无效工具循环。
+    tools: ['novel_ask_story'],
     roleTemplate: 'role-director',
     temperature: 0.5,
   },
@@ -70,7 +72,9 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     // tools=[] 让 LLM 直接基于 SEMI 层注入的状态生成正文，无工具循环。
     // 配合 pi-session.ts 的过滤逻辑（tools=[] 清空 customTools）确保
     // Writer 看不到任何工具，不会触发 tool_calls 导致的 messages 不一致。
-    tools: [],
+    // A+B：给 Writer 开放语义化查询工具 novel_ask_story，用于创作中按需核对角色/伏笔/上文。
+    // 状态仍通过 SEMI 层 chapterContext 完整注入，工具仅作为补充查询手段。
+    tools: ['novel_ask_story'],
     roleTemplate: 'role-writer',
     temperature: 0.9,
   },
@@ -82,7 +86,8 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     // Reviser 复用 Writer 的工具集（空）。原章节正文 + 审稿意见通过 user_message 注入，
     // 无需 query 工具。role-reviser.md 明确要求"只改问题段落，不动正常段落"，
     // 并要求"输出完整正文（含修订和未修订部分）"，因此由代码层整体替换 finalContent。
-    tools: [],
+    // A+B：给 Reviser 开放语义化查询工具 novel_ask_story，用于修订时核对上下文和角色状态。
+    tools: ['novel_ask_story'],
     roleTemplate: 'role-reviser',
     // 温度略低于 Writer：修订需要更精确地遵循审稿意见，减少发散
     temperature: 0.7,
@@ -99,7 +104,8 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     //   - suffix: formatPreviousChapterEnding + formatSoundAnchor（衔接检查）
     // Writer 全文通过 user_message 注入。
     // 移除工具后 Reviewer 单次调用完成，省 ~5K tokens。
-    tools: [],
+    // A+B：给 Reviewer 开放语义化查询工具 novel_ask_story，用于审稿时快速核对一致性。
+    tools: ['novel_ask_story'],
     roleTemplate: 'role-reviewer',
     temperature: 0.3,
   },

@@ -73,6 +73,14 @@ function makeMockServices(): NovelServices {
       get: vi.fn(() => ({})),
       update: vi.fn(),
     } as any,
+    chapterChatStore: {
+      add: vi.fn(),
+      list: vi.fn(() => []),
+      clear: vi.fn(),
+    } as any,
+    chapterChatRunner: {
+      run: vi.fn(),
+    } as any,
     tools: [],
   }
 }

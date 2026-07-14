@@ -15,7 +15,7 @@ import { RefreshCw, CheckCircle2, AlertCircle, Hash, Brain, Zap, Database } from
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { useNovelStore } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
 import { getCacheDiagnostics, type CacheDiagnostics } from '@/api/novel-client'
 
 // ── Agent 类型中文标签 ──
@@ -46,7 +46,7 @@ export interface CacheMonitorPanelProps {
 }
 
 export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const [refreshKey, setRefreshKey] = useState(0)
   /** 上一次的哈希快照，用于对比是否变化 */
   const prevHashesRef = useRef<Record<string, string>>({})

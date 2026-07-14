@@ -64,3 +64,4 @@ apps/agent-server/scripts/e2e-test/output/
 .pi-data/
 .pi/
 graphify-out/*
+.gitnexus

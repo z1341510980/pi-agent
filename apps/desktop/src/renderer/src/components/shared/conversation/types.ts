@@ -1,7 +1,7 @@
 /** Agent 类型（用于颜色映射） */
 export type ConversationAgentType =
   | 'director' | 'writer' | 'reviewer' | 'reviser'
-  | 'memory' | 'arranger' | 'context' | 'extractor' | 'moderator'
+  | 'memory' | 'arranger' | 'context' | 'extractor' | 'moderator' | 'character'
 
 /** 统一消息类型，chat 和 novel 共用 */
 export interface ConversationMessage {
@@ -52,6 +52,7 @@ export const AGENT_COLORS: Record<ConversationAgentType, AgentColorConfig> = {
   context:   { avatarClass: 'bg-indigo-500',  badgeClass: 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border-indigo-500/40', borderColor: 'rgba(99,102,241,0.3)' },
   extractor: { avatarClass: 'bg-amber-500',   badgeClass: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40',    borderColor: 'rgba(245,158,11,0.3)' },
   moderator: { avatarClass: 'bg-pink-500',    badgeClass: 'bg-pink-500/15 text-pink-700 dark:text-pink-300 border-pink-500/40',        borderColor: 'rgba(236,72,153,0.3)' },
+  character: { avatarClass: 'bg-rose-500',    badgeClass: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/40',        borderColor: 'rgba(244,63,94,0.3)' },
 }
 
 /** Agent 类型对应的中文标签 */
@@ -65,6 +66,7 @@ export const AGENT_LABELS: Record<ConversationAgentType, string> = {
   context: '上下文',
   extractor: '反推',
   moderator: '主持人',
+  character: '角色',
 }
 
 /** 格式化时间戳为 HH:mm */

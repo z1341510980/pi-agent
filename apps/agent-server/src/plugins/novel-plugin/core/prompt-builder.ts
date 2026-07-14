@@ -164,7 +164,12 @@ export class NovelPromptBuilder {
    *
    * 节奏联动：breather/setup 偏短（×0.8），climax 偏长（×1.3），其余不变
    */
-  private computeChapterTargetWords(project: NovelProject | undefined, rhythm?: ChapterRhythm): number {
+  /**
+   * 计算章节目标字数（应用节奏系数）
+   *
+   * public 暴露：PostWriteGuard 字数检测需复用同一逻辑，避免与 Writer 提示词目标不一致。
+   */
+  computeChapterTargetWords(project: NovelProject | undefined, rhythm?: ChapterRhythm): number {
     let base: number
     if (!project || project.targetWords <= 0) base = 3000
     else base = Math.min(5000, Math.max(2500, Math.round(project.targetWords / 1000)))
@@ -293,11 +298,16 @@ export class NovelPromptBuilder {
    * 已从 buildSystemPrompt 移到 DYNAMIC 层 userMessage 开头注入，
    * 避免 agent_type 差异导致整个 system 缓存块失效。
    * 调用方：NovelOrchestrator.runAgent 在拼接 inputText 时调用。
+   *
+   * @param discussion 是否为群聊共创模式。true 时优先加载 `role-{agentType}-discussion`
+   *   模板（如 role-director-discussion.md 含场景拆分格式、role-writer-discussion.md
+   *   含剧本编织约束、role-character-actor.md 含剧本演出格式）。
+   *   群聊模式必须传 true，否则 Agent 不知道自己的群聊职责，会出现 Director 直接写正文等问题。
    */
-  buildAgentIdentity(projectId: string, agentType: string): string {
+  buildAgentIdentity(projectId: string, agentType: string, discussion = false): string {
     return this.promptManager.render('system-base', {
       agent_type: agentType,
-      agent_role: this.getAgentRoleDescription(agentType, projectId),
+      agent_role: this.getAgentRoleDescription(agentType, projectId, discussion),
     }, projectId)
   }
 
@@ -432,6 +442,17 @@ export class NovelPromptBuilder {
       parts.push(this.formatCurrentChapterHooks(currentHooks))
     }
 
+    // ── 文风指纹（从前几章提取的文风基准，抗 compaction）──
+    // 注入文风特征快照，让 Writer/Reviewer 在 context compaction 后仍能保持文风一致
+    if (prevChapters.length > 0) {
+      const fingerprint = this.formatStyleFingerprint(prevChapters)
+      if (fingerprint) parts.push(fingerprint)
+    }
+
+    // ── 待回收伏笔预警（超过 N 章未回收的伏笔标记为急需回收）──
+    const urgentForeshadows = this.formatUrgentForeshadows(projectId, chapterNumber)
+    if (urgentForeshadows) parts.push(urgentForeshadows)
+
     return this.stripEmDash(parts.join('\n\n---\n\n'))
   }
 
@@ -467,6 +488,12 @@ export class NovelPromptBuilder {
       if (macroRhythm) parts.push(macroRhythm)
       const reviewerFeedback = this.formatReviewerFeedback(projectId)
       if (reviewerFeedback) parts.push(reviewerFeedback)
+    }
+
+    // ── 平台 Rubric（仅 Reviewer 注入，按目标平台调整评分权重）──
+    if (agentType === 'reviewer') {
+      const platformRubric = this.formatPlatformRubric(projectId)
+      if (platformRubric) parts.push(platformRubric)
     }
 
     // ── 创作指令（仅 Writer 注入，其他 Agent 看到会越权写作）──
@@ -513,6 +540,50 @@ export class NovelPromptBuilder {
       return `- [${s.category}] ${s.rule}${example}`
     })
     return `## 风格指南\n\n${lines.join('\n')}`
+  }
+
+  /**
+   * 平台 Rubric：按目标平台注入差异化评分权重
+   *
+   * 仅在项目设置了 targetPlatform 且非 general 时注入。
+   * null 或 general 时返回空字符串（不注入）。
+   */
+  private formatPlatformRubric(projectId: string): string {
+    const project = this.stores.getProject(projectId)
+    const platform = project?.targetPlatform
+    if (!platform || platform === 'general') return ''
+
+    const rubrics: Record<Exclude<NonNullable<typeof platform>, 'general'>, string> = {
+      fanqie: `## 平台 Rubric（番茄·免费阅读平台）
+
+本章按番茄平台的读者偏好调整评分权重：
+
+- **核心权重**：节奏快、爽感强、每章必有小高潮
+- **扣分项**：节奏拖沓（< 6 分直接 revise）、铺垫过长、无爽点
+- **加分项**：反转密集、打脸爽快、金手指清晰
+
+⚠️ 番茄读者属于浅阅读，节奏和爽感是生命线。若本章无爽点或节奏过慢，即使文笔再好也应降分。`,
+      qidian: `## 平台 Rubric（起点·付费订阅平台）
+
+本章按起点平台的读者偏好调整评分权重：
+
+- **核心权重**：世界观完整、人物刻画深、伏笔系统性强
+- **扣分项**：设定漏洞、人物扁平、逻辑不自洽
+- **加分项**：体系清晰、配角有记忆点、伏笔回收惊艳
+
+⚠️ 起点读者付费阅读，对设定一致性和逻辑严密性要求高。设定漏洞和人物扁平比节奏问题更严重。`,
+      zhihu_yanyan: `## 平台 Rubric（知乎盐言·短篇故事平台）
+
+本章按知乎盐言平台的读者偏好调整评分权重：
+
+- **核心权重**：开篇抓人、反转精巧、篇幅精炼
+- **扣分项**：开头拖沓、反转生硬、注水
+- **加分项**：第一句就入戏、结尾有余味、情绪密度高
+
+⚠️ 知乎盐言是短篇平台，每一段都必须有信息增量。注水和拖沓是致命伤。`,
+    }
+
+    return rubrics[platform] ?? ''
   }
 
   /**
@@ -1647,6 +1718,124 @@ export class NovelPromptBuilder {
   }
 
   /**
+   * 文风指纹：从前几章正文中提取文风特征快照
+   *
+   * 注入 Writer/Reviewer 的 SEMI 层，让 LLM 在 context compaction 后仍能保持文风一致。
+   * 提取指标：平均句长、短句/长句占比、对话占比、比喻密度、段落长度、人称、情感温度
+   */
+  private formatStyleFingerprint(prevChapters: NovelChapter[]): string {
+    if (prevChapters.length === 0) return ''
+
+    // 取最近 2-3 章的正文合并分析
+    const sampleText = prevChapters
+      .map(ch => ch.content || '')
+      .filter(c => c.trim().length > 100)
+      .join('\n\n')
+
+    if (sampleText.trim().length < 200) return ''
+
+    // 分句（按句号/问号/感叹号）
+    const sentences = sampleText.split(/[。！？\n]+/).filter(s => s.trim().length > 0)
+    if (sentences.length === 0) return ''
+
+    const sentenceLengths = sentences.map(s => s.replace(/\s/g, '').length)
+    const totalChars = sentenceLengths.reduce((sum, len) => sum + len, 0)
+    const avgSentenceLength = Math.round(totalChars / sentences.length)
+    const shortSentences = sentenceLengths.filter(len => len < 15).length
+    const longSentences = sentenceLengths.filter(len => len > 40).length
+    const shortSentenceRatio = Math.round((shortSentences / sentences.length) * 100)
+    const longSentenceRatio = Math.round((longSentences / sentences.length) * 100)
+
+    // 对话占比（含引号的段落字数 / 总字数）
+    const paragraphs = sampleText.split(/\n+/).filter(p => p.trim().length > 0)
+    const totalParaChars = paragraphs.reduce((sum, p) => sum + p.replace(/\s/g, '').length, 0)
+    const dialogueChars = paragraphs
+      .filter(p => /["「『""']/.test(p))
+      .reduce((sum, p) => sum + p.replace(/\s/g, '').length, 0)
+    const dialogueRatio = totalParaChars > 0 ? Math.round((dialogueChars / totalParaChars) * 100) : 0
+
+    // 比喻密度（每千字比喻词出现次数）
+    const metaphorWords = (sampleText.match(/犹如|宛若|仿佛|恍若|好似|有如/g) || []).length
+    const metaphorDensity = totalChars > 0 ? Math.round((metaphorWords / totalChars) * 1000) : 0
+
+    // 段落平均长度
+    const avgParagraphLength = paragraphs.length > 0 ? Math.round(totalParaChars / paragraphs.length) : 0
+
+    // 叙事人称检测
+    const firstPersonCount = (sampleText.match(/我(?!们|国|方|军|辈)/g) || []).length
+    const thirdPersonCount = (sampleText.match(/他|她|它/g) || []).length
+    const narrativePerson: 'first' | 'third' | 'mixed' =
+      firstPersonCount > thirdPersonCount * 2 ? 'first' :
+      thirdPersonCount > firstPersonCount * 2 ? 'third' : 'mixed'
+
+    // 情感温度（通过情感词密度估算，0=冷峻，10=热烈）
+    const hotWords = (sampleText.match(/怒|吼|咆哮|狂|爆|燃|热血|激昂|疯狂/g) || []).length
+    const coldWords = (sampleText.match(/冷|静|默|沉|淡|克制|漠然/g) || []).length
+    const emotionalTemperature = Math.min(10, Math.max(0, Math.round(5 + (hotWords - coldWords) * 0.5)))
+
+    const sampleRange: [number, number] = [prevChapters[0].chapterNumber, prevChapters[prevChapters.length - 1].chapterNumber]
+
+    const lines: string[] = [
+      `## 文风指纹（第${sampleRange[0]}-${sampleRange[1]}章提取，文风基准）`,
+      '',
+      `- 平均句长：${avgSentenceLength} 字`,
+      `- 短句占比（<15字）：${shortSentenceRatio}%`,
+      `- 长句占比（>40字）：${longSentenceRatio}%`,
+      `- 对话占比：${dialogueRatio}%`,
+      `- 比喻密度：${metaphorDensity}/千字`,
+      `- 段落平均长度：${avgParagraphLength} 字`,
+      `- 叙事人称：${narrativePerson === 'first' ? '第一人称' : narrativePerson === 'third' ? '第三人称' : '混合人称'}`,
+      `- 情感温度：${emotionalTemperature}/10（0=冷峻克制，10=热烈奔放）`,
+      '',
+      '⚠️ 本章文风必须与此指纹保持一致。如指纹显示短句占比高+情感温度低，本章不可突然变成长句+煽情。',
+    ]
+
+    return lines.join('\n')
+  }
+
+  /**
+   * 待回收伏笔预警：标注超过 N 章未回收的伏笔为"急需回收"
+   *
+   * 超过 20 章未回收 → 标记"急需回收"
+   * 超过 50 章未回收 → 标记"即将过期"
+   */
+  private formatUrgentForeshadows(projectId: string, chapterNumber: number): string {
+    const foreshadows = this.stores.listForeshadowing(projectId)
+    const pending = foreshadows.filter(f => f.status !== 'recovered' && f.status !== 'abandoned')
+
+    if (pending.length === 0) return ''
+
+    const urgent: Array<{ desc: string; plantedAt: number; gap: number; level: string }> = []
+    for (const f of pending) {
+      // 获取伏笔埋设章号
+      const plantedAt = f.firstChapter || 0
+      if (plantedAt <= 0) continue
+      const gap = chapterNumber - plantedAt
+      if (gap >= 50) {
+        urgent.push({ desc: f.description, plantedAt, gap, level: '即将过期' })
+      } else if (gap >= 20) {
+        urgent.push({ desc: f.description, plantedAt, gap, level: '急需回收' })
+      }
+    }
+
+    if (urgent.length === 0) return ''
+
+    const lines: string[] = [
+      '## 待回收伏笔预警',
+      '',
+      '以下伏笔已埋设较久，需考虑在本章或近几章回收：',
+      '',
+    ]
+    for (const u of urgent) {
+      lines.push(`- **[${u.level}]** ${u.desc}（第${u.plantedAt}章埋设，已隔 ${u.gap} 章）`)
+    }
+    lines.push('')
+    lines.push('⚠️ 超过 50 章未回收的伏笔读者可能已遗忘，需评估是否废弃或重新强化提醒。')
+
+    return lines.join('\n')
+  }
+
+  /**
    * 清洗文本中的破折号"——"，用于注入 LLM 上下文前切断示范传播链。
    *
    * 设计意图：LLM 会模仿输入上下文中的标点习惯。历史章节正文、Director 输出、
@@ -1665,6 +1854,10 @@ export class NovelPromptBuilder {
   stripEmDash(text: string | undefined | null): string {
     if (!text) return ''
     return text
+      // 0. 话语中断（对话末尾的破折号，表示话语被打断）：替换为省略号
+      //    如 "我本来想——" → "我本来想……"
+      //    检测：引号内的破折号且后跟引号收束
+      .replace(/——(["」』""']\s*[。！？]?)/g, '……$1')
       // 1. 句末标点前的破折号：删除破折号，保留句末标点
       .replace(/——([。！？…])/g, '$1')
       // 2. 标点后的破折号：删除破折号，保留原标点
@@ -1718,10 +1911,23 @@ export class NovelPromptBuilder {
     return null
   }
 
-  /** 获取 Agent 角色描述（从模板读取，可配置） */
-  private getAgentRoleDescription(agentType: string, projectId?: string): string {
+  /**
+   * 获取 Agent 角色描述（从模板读取，可配置）
+   *
+   * @param agentType Agent 类型（如 'director'/'writer'/'character-actor'）
+   * @param projectId 项目 ID（用于读取项目级覆盖模板）
+   * @param discussion 是否为群聊共创模式。true 时优先读 `role-{agentType}-discussion`，
+   *   回退到 `role-{agentType}`，让群聊模式加载场景拆分/剧本格式等群聊专属约束。
+   */
+  private getAgentRoleDescription(agentType: string, projectId?: string, discussion = false): string {
     try {
-      // 尝试从 role-{agentType} 模板读取
+      if (discussion) {
+        try {
+          return this.promptManager.getTemplate(`role-${agentType}-discussion`, projectId)
+        } catch {
+          // 群聊专用模板不存在，回退到通用模板
+        }
+      }
       return this.promptManager.getTemplate(`role-${agentType}`, projectId)
     } catch {
       // 模板不存在时回退到通用描述

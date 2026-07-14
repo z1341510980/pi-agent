@@ -21,7 +21,9 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { useNovelStore, type NovelNodeType } from '@/stores/novel-store'
+import { useNovelDataStore } from '@/stores/novel-data-store'
+import { useNovelUiStore, type NovelNodeType } from '@/stores/novel-ui-store'
+import { toastSuccess, toastError } from '@/hooks/use-toast'
 import {
   updateProject,
   updateCharacter,
@@ -46,6 +48,7 @@ import {
   type NovelCharacterHistory,
   type CharacterHistoryField,
   type StoryStage,
+  type TargetPlatform,
   type ChapterStatus,
   type ConflictType,
   type ConflictStage,
@@ -499,6 +502,14 @@ const PROJECT_STATUS_OPTIONS = [
   { value: 'completed', label: '已完成' },
 ]
 
+const TARGET_PLATFORM_OPTIONS: { value: TargetPlatform | '__none__'; label: string; hint: string }[] = [
+  { value: '__none__', label: '未设定', hint: '不调整评分权重' },
+  { value: 'fanqie', label: '番茄', hint: '重节奏和爽感' },
+  { value: 'qidian', label: '起点', hint: '重世界观和伏笔' },
+  { value: 'zhihu_yanyan', label: '知乎盐言', hint: '重开篇和反转' },
+  { value: 'general', label: '通用', hint: '不调整评分权重' },
+]
+
 const CHAPTER_STATUS_OPTIONS: { value: ChapterStatus; label: string }[] = [
   { value: 'planned', label: '已规划' },
   { value: 'drafting', label: '草稿中' },
@@ -716,19 +727,19 @@ function relativeTime(timestamp: number): string {
 // ── 主组件 ──
 
 export function NovelDetailPanel(): ReactElement {
-  const selectedNodeId = useNovelStore((s) => s.selectedNodeId)
-  const selectedNodeType = useNovelStore((s) => s.selectedNodeType)
-  const clearSelection = useNovelStore((s) => s.clearSelection)
-  const projects = useNovelStore((s) => s.projects)
-  const characters = useNovelStore((s) => s.characters)
-  const chapters = useNovelStore((s) => s.chapters)
-  const volumes = useNovelStore((s) => s.volumes)
-  const conflicts = useNovelStore((s) => s.conflicts)
-  const foreshadows = useNovelStore((s) => s.foreshadows)
-  const factions = useNovelStore((s) => s.factions)
-  const locations = useNovelStore((s) => s.locations)
-  const worldElements = useNovelStore((s) => s.worldElements)
-  const infoLayers = useNovelStore((s) => s.infoLayers)
+  const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
+  const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
+  const clearSelection = useNovelUiStore((s) => s.clearSelection)
+  const projects = useNovelDataStore((s) => s.projects)
+  const characters = useNovelDataStore((s) => s.characters)
+  const chapters = useNovelDataStore((s) => s.chapters)
+  const volumes = useNovelDataStore((s) => s.volumes)
+  const conflicts = useNovelDataStore((s) => s.conflicts)
+  const foreshadows = useNovelDataStore((s) => s.foreshadows)
+  const factions = useNovelDataStore((s) => s.factions)
+  const locations = useNovelDataStore((s) => s.locations)
+  const worldElements = useNovelDataStore((s) => s.worldElements)
+  const infoLayers = useNovelDataStore((s) => s.infoLayers)
 
   const entity = useMemo(() => {
     if (!selectedNodeId || !selectedNodeType) return null
@@ -863,7 +874,7 @@ function SaveButton({
 // ── 项目表单 ──
 
 function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
-  const upsertProject = useNovelStore((s) => s.upsertProject)
+  const upsertProject = useNovelDataStore((s) => s.upsertProject)
   const [form, setForm] = useState({
     title: entity.title,
     genre: entity.genre,
@@ -872,6 +883,7 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
     currentStage: entity.currentStage,
     status: entity.status,
     rhythmModelId: entity.rhythmModelId ?? '',
+    targetPlatform: entity.targetPlatform ?? '__none__',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -892,7 +904,8 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
     Number(form.targetWords) !== entity.targetWords ||
     form.currentStage !== entity.currentStage ||
     form.status !== entity.status ||
-    (form.rhythmModelId || '') !== (entity.rhythmModelId ?? '')
+    (form.rhythmModelId || '') !== (entity.rhythmModelId ?? '') ||
+    form.targetPlatform !== (entity.targetPlatform ?? '__none__')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
@@ -906,10 +919,14 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
         currentStage: form.currentStage,
         status: form.status,
         rhythmModelId: form.rhythmModelId === '' ? undefined : form.rhythmModelId,
+        targetPlatform: form.targetPlatform === '__none__' ? null : form.targetPlatform,
       })
       upsertProject(updated)
+      toastSuccess('项目已保存', '修改已生效')
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存失败')
+      const msg = err instanceof Error ? err.message : '保存失败'
+      setError(msg)
+      toastError('保存失败', msg)
     } finally {
       setSaving(false)
     }
@@ -981,6 +998,20 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
           </SelectContent>
         </Select>
       </FieldRow>
+      <FieldRow label="目标平台">
+        <Select value={form.targetPlatform} onValueChange={(v) => setForm((f) => ({ ...f, targetPlatform: v as TargetPlatform | '__none__' }))}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TARGET_PLATFORM_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}{o.hint ? `（${o.hint}）` : ''}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FieldRow>
 
       <SectionHeader title="简介" />
       <FieldRow label="简介">
@@ -996,7 +1027,7 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
 // ── 角色表单 ──
 
 function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
-  const upsertCharacter = useNovelStore((s) => s.upsertCharacter)
+  const upsertCharacter = useNovelDataStore((s) => s.upsertCharacter)
   const [form, setForm] = useState({
     name: entity.name,
     identity: entity.identity,
@@ -1127,8 +1158,8 @@ function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
 // ── 角色状态变更历史 ──
 
 function CharacterHistorySection({ characterId }: { characterId: string }): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
-  const addCharacterHistory = useNovelStore((s) => s.addCharacterHistory)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  const addCharacterHistory = useNovelDataStore((s) => s.addCharacterHistory)
   const queryClient = useQueryClient()
   const [manualOpen, setManualOpen] = useState(false)
 
@@ -1273,7 +1304,7 @@ function ManualHistoryDialog({
   characterId,
   onCreated,
 }: ManualHistoryDialogProps): ReactElement {
-  const currentProjectId = useNovelStore((s) => s.currentProjectId)
+  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const [fieldName, setFieldName] = useState<CharacterHistoryField>('currentState')
   const [oldValue, setOldValue] = useState('')
   const [newValue, setNewValue] = useState('')
@@ -1390,7 +1421,7 @@ function ManualHistoryDialog({
 // ── 章节表单 ──
 
 function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
-  const upsertChapter = useNovelStore((s) => s.upsertChapter)
+  const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
   const [form, setForm] = useState({
     title: entity.title,
     status: entity.status,
@@ -1487,7 +1518,7 @@ function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement {
 // ── 卷编辑表单 ──
 
 function VolumeForm({ entity }: { entity: NovelVolume }): ReactElement {
-  const upsertVolume = useNovelStore((s) => s.upsertVolume)
+  const upsertVolume = useNovelDataStore((s) => s.upsertVolume)
   const [form, setForm] = useState({
     title: entity.title,
   })
@@ -1539,7 +1570,7 @@ function VolumeForm({ entity }: { entity: NovelVolume }): ReactElement {
 // ── 冲突编辑表单 ──
 
 function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
-  const upsertConflict = useNovelStore((s) => s.upsertConflict)
+  const upsertConflict = useNovelDataStore((s) => s.upsertConflict)
   const [form, setForm] = useState({
     description: entity.description,
     type: entity.type,
@@ -1754,8 +1785,8 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
 // ── 伏笔编辑表单 ──
 
 function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
-  const upsertForeshadow = useNovelStore((s) => s.upsertForeshadow)
-  const infoLayers = useNovelStore((s) => s.infoLayers)
+  const upsertForeshadow = useNovelDataStore((s) => s.upsertForeshadow)
+  const infoLayers = useNovelDataStore((s) => s.infoLayers)
   const [form, setForm] = useState({
     description: entity.description,
     category: entity.category,
@@ -1939,8 +1970,8 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
 // ── 信息差编辑表单（P3-2） ──
 
 function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): ReactElement {
-  const upsertInfoLayer = useNovelStore((s) => s.upsertInfoLayer)
-  const foreshadows = useNovelStore((s) => s.foreshadows)
+  const upsertInfoLayer = useNovelDataStore((s) => s.upsertInfoLayer)
+  const foreshadows = useNovelDataStore((s) => s.foreshadows)
   const [form, setForm] = useState({
     infoDescription: entity.infoDescription,
     authorKnows: entity.authorKnows ? 'true' : 'false',
@@ -2090,9 +2121,9 @@ function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): ReactElem
 // ── 势力编辑表单 ──
 
 function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
-  const upsertFaction = useNovelStore((s) => s.upsertFaction)
-  const characters = useNovelStore((s) => s.characters)
-  const factions = useNovelStore((s) => s.factions)
+  const upsertFaction = useNovelDataStore((s) => s.upsertFaction)
+  const characters = useNovelDataStore((s) => s.characters)
+  const factions = useNovelDataStore((s) => s.factions)
   const [form, setForm] = useState({
     name: entity.name,
     description: entity.description,
@@ -2337,9 +2368,9 @@ function FactionForm({ entity }: { entity: NovelFaction }): ReactElement {
 // ── 地点编辑表单 ──
 
 function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
-  const upsertLocation = useNovelStore((s) => s.upsertLocation)
-  const locations = useNovelStore((s) => s.locations)
-  const factions = useNovelStore((s) => s.factions)
+  const upsertLocation = useNovelDataStore((s) => s.upsertLocation)
+  const locations = useNovelDataStore((s) => s.locations)
+  const factions = useNovelDataStore((s) => s.factions)
   const [form, setForm] = useState({
     name: entity.name,
     description: entity.description,
@@ -2533,8 +2564,8 @@ function LocationForm({ entity }: { entity: NovelLocation }): ReactElement {
 // ── 世界观要素编辑表单 ──
 
 function WorldElementForm({ entity }: { entity: NovelWorldElement }): ReactElement {
-  const upsertWorldElement = useNovelStore((s) => s.upsertWorldElement)
-  const worldElements = useNovelStore((s) => s.worldElements)
+  const upsertWorldElement = useNovelDataStore((s) => s.upsertWorldElement)
+  const worldElements = useNovelDataStore((s) => s.worldElements)
   const [form, setForm] = useState({
     category: entity.category,
     name: entity.name,
