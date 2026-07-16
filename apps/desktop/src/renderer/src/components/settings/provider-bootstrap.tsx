@@ -24,7 +24,7 @@ const storageKey = 'wenlang-agent.provider'
 
 const defaultSettings: ProviderSettings = {
   provider: 'openai',
-  model: 'gpt-4.1-mini',
+  model: 'gpt-5.4-mini',
   apiKey: ''
 }
 

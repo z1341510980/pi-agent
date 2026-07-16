@@ -83,6 +83,11 @@ export interface CreationResult {
   content?: string
   stateChanges?: Array<{ type: string; description: string }>
   error?: string
+  /** 群聊运行快照 ID（用于断点续跑） */
+  discussionRunId?: string
+  /** 本次是否可直接从 Writer 阶段继续 */
+  canResume?: boolean
+  failedPhase?: string
 }
 
 // ── Hook 返回值 ──
@@ -131,6 +136,8 @@ export interface UseNovelCreationFlowReturn {
       locationIds: string[]
     }
   }) => Promise<void>
+  /** 从失败的群聊快照直接恢复 Writer 全章编织阶段 */
+  resumeDiscussion: (projectId: string, chapterNumber: number, runId: string) => Promise<void>
   /**
    * 启动 AI 编排流程（模式2）
    *
@@ -353,6 +360,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const projectIdRef = useRef<string | null>(null)
   /** 当前章节号（供 sendMessage 持久化聊天记录用） */
   const chapterNumberRef = useRef<number | null>(null)
+  /** 当前创作模式（供持久化用户发言时区分工作流/群聊） */
+  const flowModeRef = useRef<'workflow' | 'discussion'>('workflow')
   /** messageId → { agentType, agentName } 映射：agent_start 时记录，TEXT_MESSAGE_* 时查询 */
   const messageAgentMapRef = useRef<Map<string, { agentType: AgentOutput['agentType']; agentName: string }>>(new Map())
   /** writer/reviser 累积文本（delta 累积，避免每次 setState 丢失增量） */
@@ -836,7 +845,21 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         })
 
         if (!response.ok) {
-          throw new Error(`创作流程启动失败: HTTP ${response.status} ${response.statusText}`)
+          let serverMessage = ''
+          try {
+            const payload = await response.json() as {
+              error?: string | { message?: string }
+              message?: string
+            }
+            serverMessage = typeof payload.error === 'string'
+              ? payload.error
+              : payload.error?.message ?? payload.message ?? ''
+          } catch {
+            // 非 JSON 错误响应保留 HTTP 状态作为兜底。
+          }
+          throw new Error(serverMessage
+            ? `创作流程启动失败：${serverMessage}`
+            : `创作流程启动失败: HTTP ${response.status} ${response.statusText}`)
         }
 
         if (!response.body) {
@@ -894,6 +917,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setIsRunning(true)
       projectIdRef.current = projectId
       chapterNumberRef.current = chapterNumber
+      flowModeRef.current = 'workflow'
 
       const controller = new AbortController()
       abortControllerRef.current = controller
@@ -948,6 +972,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setIsRunning(true)
       projectIdRef.current = projectId
       chapterNumberRef.current = chapterNumber
+      flowModeRef.current = 'discussion'
 
       const controller = new AbortController()
       abortControllerRef.current = controller
@@ -957,6 +982,42 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       try {
         await runFlow(url, body, controller)
+      } finally {
+        abortControllerRef.current = null
+      }
+    },
+    [runFlow],
+  )
+
+  const resumeDiscussion = useCallback(
+    async (projectId: string, chapterNumber: number, runId: string): Promise<void> => {
+      if (abortControllerRef.current) return
+
+      setPhase('idle')
+      setEvents([])
+      setCurrentCheckpoint(null)
+      setResult(null)
+      setError(null)
+      setChapterContent('')
+      setAgentOutputs([])
+      setUserMessages([])
+      messageAgentMapRef.current.clear()
+      writerContentRef.current = ''
+      deltaBufferRef.current.clear()
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+      setIsRunning(true)
+      projectIdRef.current = projectId
+      chapterNumberRef.current = chapterNumber
+      flowModeRef.current = 'discussion'
+
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-discussion/${runId}/resume`
+      try {
+        await runFlow(url, {}, controller)
       } finally {
         abortControllerRef.current = null
       }
@@ -1101,6 +1162,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       persistChapterChat(projectId, chapterNumber, {
         phase: persistPhase,
         content: trimmed,
+        metadata: { flowMode: flowModeRef.current },
       }).catch(() => {
         // 持久化失败不影响创作流程
       })
@@ -1108,8 +1170,23 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   }, [currentCheckpoint])
 
   const cancel = useCallback((): void => {
-    if (!abortControllerRef.current) return
-    abortControllerRef.current.abort()
+    const controller = abortControllerRef.current
+    const projectId = projectIdRef.current
+    const chapterNumber = chapterNumberRef.current
+    if (!controller) return
+
+    // 显式通知后端中止任务；keepalive 确保紧接着关闭 SSE/面板时请求仍能送达。
+    if (projectId && chapterNumber != null) {
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/cancel-active-flow`
+      void fetch(url, {
+        method: 'POST',
+        keepalive: true,
+      }).catch(() => {
+        // SSE 断开也会触发后端取消，显式取消请求失败时无需覆盖 UI。
+      })
+    }
+    abortControllerRef.current = null
+    controller?.abort()
     // 清理可能挂起的 rAF，避免 abort 后还触发 setState
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current)
@@ -1162,6 +1239,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     userMessages,
     startCreation,
     startDiscussion,
+    resumeDiscussion,
     aiArrange,
     reverseArrange,
     submitCheckpoint,

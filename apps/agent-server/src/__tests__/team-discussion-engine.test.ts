@@ -49,7 +49,7 @@ function makeMockModerator(decisions: ModeratorDecision[]): Moderator {
 }
 
 /** mock 引擎上下文（createAgUiSession 工厂） */
-function makeMockEngineContext() {
+function makeMockEngineContext(): Record<string, unknown> {
   return {
     createAgUiSession: vi.fn().mockResolvedValue({
       session: { prompt: vi.fn().mockResolvedValue('成员发言内容') },
@@ -63,6 +63,133 @@ function makeMockEngineContext() {
 
 describe('TeamDiscussionEngine', () => {
   const goal: DiscussionGoal = { task: '测试任务', context: '上下文' }
+
+  it('每次成员调用完成后发送完整审计信息', async () => {
+    const member = makeMember({
+      id: 'novel-director',
+      name: '导演',
+      modelId: { provider: 'xai', modelId: 'grok-4' },
+    })
+    const moderator = makeMockModerator([{ type: 'observe', reason: '等待' }])
+    const ctx = makeMockEngineContext()
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+    const onMemberInvocation = vi.fn()
+
+    const content = await (engine as any).invokeMember(
+      member,
+      '规划本章',
+      [],
+      makeOptions({ onMemberInvocation }),
+      { phase: 'planning' },
+    )
+
+    expect(content).toBe('成员发言内容')
+    expect(ctx.createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: { provider: 'xai', modelId: 'grok-4' },
+    }))
+    expect(onMemberInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      member,
+      phase: 'planning',
+      chapterContext: '',
+      userMessage: expect.stringContaining('规划本章'),
+      result: '成员发言内容',
+      status: 'success',
+    }))
+  })
+
+  it('共享上下文只作为缓存前缀发送一次，成员身份位于共享前缀之后', async () => {
+    const members = [
+      makeMember({
+        id: 'novel-director',
+        name: '导演',
+        buildSystemPrompt: () => '共享 system',
+        buildIdentityPrompt: () => '导演身份',
+      }),
+      makeMember({
+        id: 'novel-writer',
+        name: '写作',
+        canConverge: true,
+        buildSystemPrompt: () => '共享 system',
+        buildIdentityPrompt: () => '写作身份',
+      }),
+    ]
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '完成' },
+    ])
+    const calls: Array<{ systemPrompt: string; prefixUserMessage?: string | string[]; userMessage: string }> = []
+    const ctx = {
+      createAgUiSession: vi.fn().mockImplementation(async (opts) => {
+        calls.push(opts)
+        return {
+          session: { prompt: vi.fn().mockResolvedValue('成员发言内容') },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: 'msg-cache',
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+
+    await engine.run(goal, members, makeOptions())
+
+    const directorCall = calls[0]
+    expect(directorCall.systemPrompt).toBe('共享 system')
+    expect(directorCall.prefixUserMessage).toEqual(['上下文', '导演身份'])
+    expect(directorCall.userMessage).not.toContain('上下文')
+    expect(directorCall.userMessage.match(/上下文/g)).toBeNull()
+  })
+
+  it('把 provider 返回的缓存 usage 透传给成员调用日志', async () => {
+    const member = makeMember({ id: 'novel-director', name: '导演' })
+    const onMemberInvocation = vi.fn()
+    let usageListener: ((event: Record<string, unknown>) => void) | undefined
+    const ctx = {
+      createAgUiSession: vi.fn().mockResolvedValue({
+        session: {
+          subscribe: vi.fn((listener) => {
+            usageListener = listener
+            return vi.fn()
+          }),
+          prompt: vi.fn().mockImplementation(async () => {
+            usageListener?.({
+              type: 'message_end',
+              message: {
+                role: 'assistant',
+                provider: 'anthropic',
+                model: 'claude-test',
+                usage: { input: 1200, output: 300, cacheRead: 900, cacheWrite: 100 },
+              },
+            })
+            return '规划结果'
+          }),
+        },
+        streamEmitter: { finishTextMessage: vi.fn() },
+        messageId: 'msg-usage',
+        dispose: vi.fn(),
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const engine = new TeamDiscussionEngine(makeMockModerator([]), new AgentChannel(), ctx as any)
+
+    await (engine as any).invokeMember(
+      member,
+      '规划本章',
+      [],
+      makeOptions({ onMemberInvocation }),
+      { phase: 'planning' },
+    )
+
+    expect(onMemberInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      inputTokens: 1200,
+      outputTokens: 300,
+      cacheReadTokens: 900,
+      cacheWriteTokens: 100,
+      llmProvider: 'anthropic',
+      llmModel: 'claude-test',
+    }))
+  })
 
   it('执行 invite → converge(chapter) 完整流程', async () => {
     const members = [
@@ -337,5 +464,115 @@ describe('TeamDiscussionEngine', () => {
       .map(([event]) => event)
       .filter(event => event.type === 'agent_start' && event.data.agentId === 'novel-reviewer')
     expect(reviewerStarts).toHaveLength(1)
+  })
+
+  it('从 chapter_weaving 快照恢复时跳过 Moderator 和角色推演', async () => {
+    const members = [
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'novel-reviewer', name: '审稿' }),
+      makeMember({ id: 'char-1', name: '叶明远', type: 'character' }),
+    ]
+    const prompts: string[] = []
+    // 正文需超过 PostWriteGuard 的 100 字下限，否则测试会进入重写分支。
+    const recoveredContent = '矿道深处传来碎石滚落声，叶明远稳住呼吸，沿着石壁继续向前。'.repeat(5)
+    const outputs = [recoveredContent, '## 结论：accept']
+    let callCount = 0
+    const ctx = {
+      createAgUiSession: vi.fn().mockImplementation(async (opts: { userMessage: string }) => {
+        prompts.push(opts.userMessage)
+        return {
+          session: { prompt: vi.fn().mockResolvedValue(outputs[callCount++] ?? '') },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: `resume-msg-${callCount}`,
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const moderator = makeMockModerator([])
+    const decide = vi.spyOn(moderator, 'decide')
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+
+    const result = await engine.resumeChapterWeaving(
+      goal,
+      members,
+      makeOptions(),
+      {
+        phase: 'chapter_weaving',
+        transcript: [{
+          id: 'saved-role-line',
+          fromId: 'char-1',
+          fromName: '叶明远',
+          content: '已保存的角色推演',
+          timestamp: 1,
+          type: 'member',
+          sceneId: 1,
+        }],
+        scenes: [{
+          sceneId: 1,
+          title: '突破',
+          location: '矿道',
+          time: '夜',
+          presentCharacters: ['char-1'],
+          goal: '完成突破',
+        }],
+      },
+    )
+
+    expect(result.status).toBe('completed')
+    expect(result.content).toBe(recoveredContent)
+    expect(result.transcript).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'saved-role-line' }),
+      expect.objectContaining({ fromId: 'novel-writer', content: recoveredContent }),
+      expect.objectContaining({ fromId: 'novel-reviewer', content: '## 结论：accept' }),
+    ]))
+    expect(decide).not.toHaveBeenCalled()
+    expect(prompts).toHaveLength(2)
+    expect(prompts[0]).toContain('已保存的角色推演')
+  })
+
+  it('中止信号会让群聊断点续跑返回 cancelled 并保留快照', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('用户手动停止'))
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]),
+      new AgentChannel(),
+      {
+        createAgUiSession: vi.fn().mockRejectedValue(controller.signal.reason),
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+      } as any,
+    )
+    const transcript: DiscussionMessage[] = [{
+      id: 'saved-before-cancel',
+      fromId: 'char-1',
+      fromName: '叶明远',
+      content: '已保存的推演',
+      timestamp: 1,
+      type: 'member',
+      sceneId: 1,
+    }]
+
+    const result = await engine.resumeChapterWeaving(
+      goal,
+      [makeMember({ id: 'novel-writer', name: '写作', canConverge: true })],
+      makeOptions({ signal: controller.signal }),
+      {
+        phase: 'chapter_weaving',
+        transcript,
+        scenes: [{
+          sceneId: 1,
+          title: '突破',
+          location: '矿道',
+          time: '夜',
+          presentCharacters: ['char-1'],
+          goal: '完成突破',
+        }],
+      },
+    )
+
+    expect(result.status).toBe('cancelled')
+    expect(result.transcript).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'saved-before-cancel' }),
+    ]))
   })
 })

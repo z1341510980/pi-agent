@@ -161,6 +161,94 @@ export interface NovelChapter {
 
 export type ChapterStatus = 'planned' | 'drafting' | 'review' | 'published' | 'rejected'
 
+// ── 章节正文版本历史 ──
+
+/** 章节版本来源阶段，标识这版正文是怎么产生的 */
+export type ChapterVersionPhase =
+  | 'writer_initial'        // create-flow Writer 初稿落库
+  | 'reviser_final'         // Reviser 修订后落库
+  | 'rewrite_pre'           // rewrite 递归重写前（显式快照，预留枚举）
+  | 'postwrite_guard_pre'   // PostWriteGuard 自动重写前（显式快照，预留枚举）
+  | 'discussion_weaver'     // 群聊 weaveChapter 落库
+  | 'manual_patch'          // 用户手动 PATCH content
+  | 'rollback_pre'          // 回滚前安全存当前
+  | 'rollback_applied'      // 回滚写入的正文
+  | 'manual_snapshot'       // 手动创建快照（POST /versions）
+  | 'import'                // 外部导入
+
+/** 章节正文版本（详情，含全文） */
+export interface ChapterVersion {
+  id: string
+  chapterId: string
+  projectId: string
+  content: string
+  wordCount: number
+  phase: ChapterVersionPhase | null
+  agentType: string | null
+  trigger: string | null
+  sequence: number
+  createdAt: number
+}
+
+/** 章节版本摘要（列表用，不含 content 全文，省流量） */
+export interface ChapterVersionSummary {
+  id: string
+  sequence: number
+  phase: ChapterVersionPhase | null
+  agentType: string | null
+  trigger: string | null
+  wordCount: number
+  /** 与上一版的字数差（正/负/0），方便前端展示"增了 200 字" */
+  wordCountDelta: number
+  createdAt: number
+  /** 是否对应当前正文（最新一版为 true） */
+  isCurrent: boolean
+}
+
+/**
+ * 版本来源元数据，由调用方传入 updateChapter/updateChapterContent。
+ * - 传对象：拦截时存入版本表，元数据取自该对象
+ * - 传 'skip'：调用方已手动存过版本，拦截跳过（避免重复存档）
+ * - 传 undefined：拦截仍存版本，但元数据为 null（兼容现有调用方）
+ */
+export type VersionSource =
+  | { phase: ChapterVersionPhase; agentType?: string; trigger?: string }
+  | 'skip'
+  | undefined
+
+/** 段落级 diff 的单个段落片段 */
+export type ChapterVersionDiffSegment =
+  | { type: 'unchanged'; content: string; fromIndex: number; toIndex: number }
+  | { type: 'added'; content: string; toIndex: number }
+  | { type: 'removed'; content: string; fromIndex: number }
+  | { type: 'modified'; fromContent: string; toContent: string; fromIndex: number; toIndex: number }
+
+/** 两个版本之间的段落级 diff 结果 */
+export interface ChapterVersionDiff {
+  fromVersionId: string
+  toVersionId: string
+  fromSequence: number
+  toSequence: number
+  segments: ChapterVersionDiffSegment[]
+  stats: {
+    added: number
+    removed: number
+    modified: number
+    unchanged: number
+    wordCountDelta: number
+  }
+}
+
+/** 回滚操作返回结果 */
+export interface RollbackResult {
+  success: boolean
+  /** 回滚前安全存的版本 ID（rollback_pre） */
+  savedVersionId: string
+  /** 回滚后的当前正文 */
+  currentContent: string
+  currentWordCount: number
+}
+
 // ── 卷 ──
 
 export interface NovelVolume {
@@ -316,13 +404,25 @@ export interface NovelForeshadow {
   /** ── P3-2：关联信息差 ID 数组（JSON: string[]）
    * 一个伏笔可以承载多个信息差（如同一物品伏笔同时承载"身份未明"+"读者不知来源"两条信息差） */
   linkedInfoLayers: string
-  /** ── 多段章节跨度（迁移 055，与 conflicts/factions 同模式）
-   * 描述伏笔"活跃"区间，可非连续多段（如 [[1,3],[10,12]]）
-   * firstChapter 仍为埋设点（plant）语义标记，recoverByChapter 为回收点（payoff）语义标记
-   * 矩阵按色带样式渲染，与 conflict 一致 */
+  /** 旧版伏笔活跃区间，仅保留用于历史数据兼容；新逻辑不得据此推断中间章节与伏笔关联。 */
   chapterSpans: ChapterSpan[]
+  /**
+   * 伏笔事件链：只记录伏笔实际发生的章节，不把埋设到回收之间的章节视为连续关联。
+   * 旧数据可缺省，读取时由 firstChapter/recoverByChapter 兼容生成端点事件。
+   */
+  beats?: ForeshadowBeat[]
   createdAt: number
   updatedAt: number
+}
+
+/** 伏笔在具体章节发生的离散叙事事件。 */
+export type ForeshadowBeatType = 'plant' | 'reinforce' | 'reveal' | 'payoff'
+
+export interface ForeshadowBeat {
+  chapter: number
+  type: ForeshadowBeatType
+  /** 本次埋设、强化、揭示或回收的具体内容。 */
+  note?: string
 }
 
 export type ForeshadowStatus =
@@ -638,6 +738,43 @@ export interface NovelStyleGuide {
   createdAt: number
   updatedAt: number
 }
+
+/**
+ * 项目级叙事文风档案。
+ *
+ * 风格指南仍用于零散规则；文风档案负责描述整本书的稳定声音，
+ * 由 PromptFactory 按 Agent 类型编译成 Writer/Reviser/Reviewer 提示词。
+ */
+export type WritingStyleNarrativePerson = 'first' | 'third' | 'mixed'
+export type WritingStyleDistance = 'intimate' | 'limited' | 'omniscient'
+export type WritingStyleRhythm = 'short' | 'balanced' | 'long'
+export type WritingStyleRegister = 'colloquial' | 'plain' | 'literary' | 'classical'
+
+export interface NovelWritingStyleProfile {
+  id: string
+  projectId: string
+  name: string
+  preset: string
+  narrativePerson: WritingStyleNarrativePerson
+  narrativeDistance: WritingStyleDistance
+  sentenceRhythm: WritingStyleRhythm
+  dialogueRatio: number
+  emotionalTemperature: number
+  imageryDensity: number
+  vocabularyRegister: WritingStyleRegister
+  hardRules: string[]
+  softRules: string[]
+  positiveExamples: string[]
+  notes: string
+  version: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type NovelWritingStyleProfileInput = Omit<
+  NovelWritingStyleProfile,
+  'id' | 'projectId' | 'version' | 'createdAt' | 'updatedAt'
+>
 
 // ── 作者意图 ──
 

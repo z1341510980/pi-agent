@@ -31,7 +31,7 @@ export async function search(
   try {
     searxResults = await searchSearXng(
       options.searxngUrl,
-      { query, maxResults: options.maxResults },
+      { query, maxResults: options.maxResults, timeRange: options.timeRange },
       signal,
     )
   } catch (err) {
@@ -46,9 +46,10 @@ export async function search(
   }
 
   // 2. 并发抓取+提取（按 concurrency 分批，批内并行）
+  const concurrency = Math.max(1, options.concurrency)
   const items: SearchResultItem[] = []
-  for (let i = 0; i < searxResults.length; i += options.concurrency) {
-    const batch = searxResults.slice(i, i + options.concurrency)
+  for (let i = 0; i < searxResults.length; i += concurrency) {
+    const batch = searxResults.slice(i, i + concurrency)
     const batchResults = await Promise.all(
       batch.map(async (r) => {
         // 默认回退到 snippet

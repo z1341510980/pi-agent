@@ -111,9 +111,14 @@ function renderCheckpointContent(checkpoint: CheckpointData): string {
 // ── Agent 类型映射 ──
 
 /** 将 creationFlow 的 agentType 映射到 ConversationAgentType */
-function mapAgentType(agentType: AgentOutput['agentType']): ConversationAgentType {
-  // creationFlow 的 agentType 已与 ConversationAgentType 兼容
-  return agentType as ConversationAgentType
+function mapAgentType(agentType: string): ConversationAgentType {
+  const knownTypes: ConversationAgentType[] = [
+    'director', 'writer', 'reviewer', 'reviser', 'memory',
+    'arranger', 'context', 'extractor', 'moderator', 'character',
+  ]
+  return knownTypes.includes(agentType as ConversationAgentType)
+    ? agentType as ConversationAgentType
+    : 'context'
 }
 
 // ── Props ──
@@ -139,6 +144,8 @@ export interface NovelConversationPanelProps {
   onRetry?: () => void
   /** 错误后丢弃回调 */
   onDismissError?: () => void
+  /** 从持久化群聊快照继续 */
+  onResumeDiscussion?: (runId: string) => void
   /** 创作模式 */
   creationMode?: 'manual' | 'ai-arrange' | null
   /** 提交检查点决策 */
@@ -184,9 +191,11 @@ export function NovelConversationPanel({
   agentOutputs,
   chapterNumber,
   currentCheckpoint,
+  result,
   error,
   onRetry,
   onDismissError,
+  onResumeDiscussion,
   onSubmitCheckpoint,
   onSave,
   onDiscard,
@@ -276,6 +285,48 @@ export function NovelConversationPanel({
     // 创作流程模式：agentOutputs + userMessages + checkpoint → ConversationMessage[]
     const msgs: ConversationMessage[] = []
 
+    // 群聊历史已按章节持久化。切换章节、重启应用或 reset 后，仍可在“群聊”Tab 复盘。
+    if (flowType === 'discussion') {
+      for (const msg of chapterChatMessages ?? []) {
+        if (msg.phase !== 'discussion' || msg.metadata?.flowMode !== 'discussion') continue
+        if (msg.role === 'user') {
+          msgs.push({
+            id: `discussion-history-${msg.id}`,
+            role: 'user',
+            content: msg.content,
+            status: 'complete',
+            timestamp: msg.createdAt,
+          })
+        } else if (msg.role === 'agent') {
+          msgs.push({
+            id: `discussion-history-${msg.id}`,
+            role: 'assistant',
+            agentName: msg.fromName,
+            agentType: mapAgentType(msg.metadata?.agentType ?? 'unknown'),
+            content: msg.content,
+            status: 'complete',
+            timestamp: msg.createdAt,
+          })
+        } else {
+          const resumeRunId = msg.metadata?.discussionMessageType === 'run_end'
+            && msg.metadata.discussionRunStatus === 'error'
+            && msg.metadata.discussionCanResume === true
+            ? msg.metadata.discussionRunId
+            : undefined
+          msgs.push({
+            id: `discussion-history-${msg.id}`,
+            role: 'system',
+            content: msg.content,
+            status: 'complete',
+            timestamp: msg.createdAt,
+            systemActions: resumeRunId
+              ? [{ label: '从中断处继续', action: `resume-discussion:${resumeRunId}`, variant: 'default' as const }]
+              : undefined,
+          })
+        }
+      }
+    }
+
     // Agent 输出 → assistant 消息
     for (const output of agentOutputs) {
       msgs.push({
@@ -335,7 +386,7 @@ export function NovelConversationPanel({
 
     // 按时间戳排序
     return msgs.sort((a, b) => a.timestamp - b.timestamp)
-  }, [isChatMode, chapterChatMessages, chapterChatAgentOutputs, agentOutputs, userMessages, currentCheckpoint, isCompleted, completedActionLabel, canSave, chapterNumber])
+  }, [isChatMode, flowType, chapterChatMessages, chapterChatAgentOutputs, agentOutputs, userMessages, currentCheckpoint, isCompleted, completedActionLabel, canSave, chapterNumber])
 
   // ── 回调 ──
   const handleSend = useCallback((text: string) => {
@@ -369,8 +420,10 @@ export function NovelConversationPanel({
       if (chapterContent) void onSave(chapterContent)
     } else if (action === 'discard') {
       onDiscard()
+    } else if (action.startsWith('resume-discussion:')) {
+      onResumeDiscussion?.(action.slice('resume-discussion:'.length))
     }
-  }, [chapterContent, onSave, onDiscard])
+  }, [chapterContent, onSave, onDiscard, onResumeDiscussion])
 
   // 空状态提示
   const emptyHint = isChatMode
@@ -464,15 +517,21 @@ export function NovelConversationPanel({
 
       {/* ── 消息流 ── */}
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-        {activeError ? (
-          <div className="p-3">
+        {activeError && (
+          <div className="p-3 shrink-0">
             <ErrorCard
               message={activeError}
-              onRetry={!isChatMode ? onRetry : undefined}
+              onRetry={!isChatMode
+                ? result?.canResume && result.discussionRunId
+                  ? () => onResumeDiscussion?.(result.discussionRunId!)
+                  : onRetry
+                : undefined}
+              retryLabel={result?.canResume ? '从中断处继续' : '重试'}
               onDismiss={!isChatMode ? onDismissError : undefined}
             />
           </div>
-        ) : isEmpty ? (
+        )}
+        {isEmpty ? (
           /* 空状态：精致卡片（图标 + 标题 + 描述），对齐整体视觉风格 */
           <div className="flex flex-1 items-center justify-center p-6">
             <div className="text-center max-w-[240px]">
@@ -499,6 +558,7 @@ export function NovelConversationPanel({
           onSend={handleSend}
           onAbort={handleAbort}
           isRunning={activeIsRunning}
+          allowSendWhileRunning={!isChatMode && !isReverseMode && !isArrangeMode}
           // 反推和AI编排时用户不参与，输入框始终禁用；聊天模式始终可用
           disabled={!isChatMode && (isReverseMode || isArrangeMode)}
           placeholder={

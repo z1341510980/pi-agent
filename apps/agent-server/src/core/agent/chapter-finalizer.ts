@@ -19,7 +19,7 @@ import type { NovelEngine } from '../../plugins/novel-plugin/core/novel-engine.j
 import type { PluginContext } from '../plugin/plugin-types.js'
 import { NovelMemoryStore, type MemoryEvent } from '../../plugins/novel-plugin/core/novel-memory-store.js'
 import type { NovelMemoryGenerator } from '../../plugins/novel-plugin/core/novel-memory-generator.js'
-import type { NarrativeTask, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan } from '../../plugins/novel-plugin/core/types.js'
+import type { NarrativeTask, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan, VersionSource } from '../../plugins/novel-plugin/core/types.js'
 import type { NovelAgentType, CreationPhase, CreationFlowEvent } from '../../plugins/novel-plugin/core/novel-agents.js'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import {
@@ -89,6 +89,8 @@ export interface FinalizeParams {
   directorTask?: NarrativeTask
   chapterId: string | null
   sharedContextPrefix?: string
+  /** 版本来源元数据，由调用方传入，落库时透传给 store.updateChapter 拦截存档 */
+  versionSource?: VersionSource
 }
 
 /**
@@ -132,6 +134,7 @@ export class ChapterFinalizer {
    */
   async finalize(params: FinalizeParams): Promise<CreationResult> {
     const { projectId, chapterNumber, content, options, arrangedEntities, directorTask, chapterId, sharedContextPrefix } = params
+    options.signal?.throwIfAborted()
 
     // Phase 5: Memory
     // 在 Memory Agent 执行前捕获实体状态快照，执行后比较差异并记录记忆事件
@@ -175,6 +178,7 @@ export class ChapterFinalizer {
               data: event.data,
             })
           },
+          options.signal,
         )
         if (calibrationResult.stats.total > 0) {
           this.emitProgress(options, 'memory', 'data_changed', {
@@ -190,6 +194,7 @@ export class ChapterFinalizer {
           })
         }
       } catch (err) {
+        if (options.signal?.aborted) throw err
         this.context.logger.error(
           { projectId, chapterNumber, err },
           '全量校准失败，不影响主流程',
@@ -229,13 +234,13 @@ export class ChapterFinalizer {
         // 持久化 Director 规划的结构化字段（时间线偏移、章尾钩子）
         timeOffset: directorTask?.timeOffset ?? null,
         chapterEndingHook: directorTask?.chapterEndingHook ?? null,
-      })
+      }, params.versionSource)
 
       // 生成候选章节标题（3 个，供用户选择）+ 前情提要
       try {
         const [titleCandidates, recap] = await Promise.all([
-          this.generateChapterTitles(projectId, chapterNumber, cleanedContent),
-          this.generateChapterRecap(projectId, chapterNumber, cleanedContent),
+          this.generateChapterTitles(projectId, chapterNumber, cleanedContent, options.signal),
+          this.generateChapterRecap(projectId, chapterNumber, cleanedContent, options.signal),
         ])
         if (titleCandidates.length > 0 || recap) {
           this.emitProgress(options, 'completed', 'data_changed', {
@@ -255,6 +260,7 @@ export class ChapterFinalizer {
           this.store.updateChapter(chapterId, { recap })
         }
       } catch (err) {
+        if (options.signal?.aborted) throw err
         this.context.logger.warn({ projectId, chapterNumber, err }, '标题/提要生成失败，不影响主流程')
       }
     }
@@ -300,6 +306,7 @@ export class ChapterFinalizer {
       let status: 'success' | 'error' = 'success'
       let errorMsg: string | undefined
       let resultSummary = ''
+      let logSessionId = ''
       let logSystemPrompt = '(结构化 LLM 调用 - role-memory-generator)'
       let logUserMessage = `请从第 ${chapterNumber} 章中提取状态变更。`
       try {
@@ -314,9 +321,11 @@ export class ChapterFinalizer {
           },
           options.arrangedEntities,
           sharedContextPrefix,
+          options.signal,
         )
         logSystemPrompt = result.logContext?.systemPrompt ?? logSystemPrompt
         logUserMessage = result.logContext?.userMessage ?? logUserMessage
+        logSessionId = result.logContext?.sessionId ?? ''
         resultSummary = result.summary
         return result.summary
       } catch (err) {
@@ -331,7 +340,7 @@ export class ChapterFinalizer {
         return resultSummary
       } finally {
         const durationMs = Date.now() - startTime
-        const usageForLog = this.readUsageFromLedgerWindow(startTime, Date.now())
+        const usageForLog = this.readUsageFromLedgerWindow(startTime, Date.now(), logSessionId)
 
         // 持久化领域层日志
         try {
@@ -355,7 +364,7 @@ export class ChapterFinalizer {
             durationMs,
             status,
             error: errorMsg ?? '',
-            sessionId: '',
+            sessionId: logSessionId,
             inputTokens: usageForLog?.inputTokens ?? 0,
             outputTokens: usageForLog?.outputTokens ?? 0,
             cacheReadTokens: usageForLog?.cacheReadTokens ?? 0,
@@ -1050,7 +1059,7 @@ export class ChapterFinalizer {
    * 本方法在 Memory Agent 执行后统一补全，不依赖 LLM 是否传 chapterNumber：
    * - 角色：本章编排涉及角色 + Memory 新建角色，若无本章 character_history 记录则写入
    * - 冲突：本章编排涉及冲突 + Memory 新建冲突，合并本章号到 chapterSpans（连续扩展或新段追加）
-   * - 伏笔：firstChapter 兜底，lastChapter 更新为本章号
+   * - 伏笔：仅在尚未埋设时补一个 plant 事件；后续语义节点由 Memory Agent 明确记录
    * - 势力：同冲突（chapterSpans 合并）
    * - 地点：本章编排涉及地点 + Memory 新建地点，若 appearChapters 不含本章号则追加
    */
@@ -1119,7 +1128,7 @@ export class ChapterFinalizer {
       this.store.updateConflict(conflictId, patch)
     }
 
-    // ── 伏笔：补全 firstChapter/lastChapter ──
+    // ── 伏笔：仅补全首次埋设，不把后续每章自动视为伏笔节点 ──
     // 涉及伏笔 = arrangedEntities.foreshadowIds + Memory 新建伏笔
     const afterForeshadows = this.store.listForeshadowing(projectId)
     const newForeshadowIds = afterForeshadows
@@ -1133,8 +1142,9 @@ export class ChapterFinalizer {
       const foreshadow = afterForeshadows.find((f) => f.id === foreshadowId)
       if (!foreshadow) continue
       const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
-      if (foreshadow.firstChapter == null) {
-        patch.firstChapter = chapterNumber
+      const beats = foreshadow.beats ?? []
+      if (!beats.some((beat) => beat.type === 'plant')) {
+        patch.beats = [...beats, { chapter: chapterNumber, type: 'plant' }]
       }
       this.store.updateForeshadow(foreshadowId, patch)
     }
@@ -1263,6 +1273,7 @@ export class ChapterFinalizer {
     projectId: string,
     chapterNumber: number,
     content: string,
+    signal?: AbortSignal,
   ): Promise<string[]> {
     // 截取正文前 800 字 + 后 200 字（开头结尾最能代表章节特征）
     const excerpt = content.length > 1000
@@ -1286,6 +1297,7 @@ ${excerpt}`
       systemPrompt,
       userMessage,
       timeoutMs: 15_000,
+      signal,
     })
 
     try {
@@ -1314,6 +1326,7 @@ ${excerpt}`
     projectId: string,
     chapterNumber: number,
     content: string,
+    signal?: AbortSignal,
   ): Promise<string | null> {
     // 截取正文前 600 字 + 后 200 字（开头结尾最能代表章节特征）
     const excerpt = content.length > 800
@@ -1337,6 +1350,7 @@ ${excerpt}`
       systemPrompt,
       userMessage,
       timeoutMs: 15_000,
+      signal,
     })
 
     try {
@@ -1380,16 +1394,17 @@ ${excerpt}`
    *
    * 背景：部分 Pi SDK/Provider 事件在插件侧订阅不到 usage，但底座 usage-ledger
    * 已经通过同一个 message_end 事件写入 usage_records。AgentLog 需要真实 cache read
-   * 数据用于诊断命中率，因此在订阅未采集到 usage 时按调用时间窗口聚合回填。
+   * 数据用于诊断命中率，因此在订阅未采集到 usage 时按 session 精确回填。
    */
-  private readUsageFromLedgerWindow(startTime: number, endTime: number): LlmUsageSnapshot | undefined {
+  private readUsageFromLedgerWindow(startTime: number, endTime: number, sessionId?: string): LlmUsageSnapshot | undefined {
     try {
+      if (!sessionId) return undefined
       const rows = this.context.db.prepare(`
         SELECT provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, timestamp
         FROM usage_records
-        WHERE timestamp >= ? AND timestamp <= ?
+        WHERE timestamp >= ? AND timestamp <= ? AND session_id = ?
         ORDER BY timestamp ASC
-      `).all(startTime - 500, endTime + 500) as Array<{
+      `).all(startTime - 500, endTime + 500, sessionId) as Array<{
         provider: string
         model: string
         input_tokens: number

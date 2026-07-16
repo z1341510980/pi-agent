@@ -23,6 +23,7 @@ import type {
   DiscussionOptions,
   DiscussionPhase,
   DiscussionResult,
+  DiscussionResumeState,
 } from '../../../core/agent/discussion-types.js'
 import type { DiscussionSettingsStore } from '../../../core/agent/discussion-settings-store.js'
 import { NovelStore } from './novel-store.js'
@@ -32,7 +33,8 @@ import { NovelEngine } from './novel-engine.js'
 import { NovelSessionFactory } from './novel-session.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
-import type { NovelCharacter, NarrativeTask, ArrangedEntity } from './types.js'
+import type { NovelCharacter, NarrativeTask, ArrangedEntity, VersionSource } from './types.js'
+import { sanitizeNovelProse } from './agent-run-utils.js'
 
 /** 群聊参与工种（不含 memory，memory 由 ChapterFinalizer 收尾阶段调用） */
 const DISCUSSION_AGENT_TYPES: NovelAgentType[] = ['director', 'writer', 'reviewer', 'reviser']
@@ -65,7 +67,10 @@ export class NovelDiscussionRunner {
     chapterNumber: number,
     options: DiscussionOptions,
     arrangedEntities?: ArrangedEntity,
+    resumeState?: DiscussionResumeState,
   ): Promise<DiscussionResult> {
+    let discussionResult: DiscussionResult | undefined
+    let outerPhase: DiscussionPhase | undefined
     try {
       // 1. 构建约束 + 默认叙事任务
       const constraints = this.engine.buildChapterConstraints(projectId, chapterNumber)
@@ -86,6 +91,7 @@ export class NovelDiscussionRunner {
       const goal: DiscussionGoal = {
         task: `创作第 ${chapterNumber} 章正文`,
         context: sharedContext,
+        targetWords: this.promptBuilder.computeChapterTargetWords(this.store.getProject(projectId)),
         constraints: {
           facts: constraints.facts.map((c) => c.rule),
           cognitive: constraints.cognitive.map((c) => c.rule),
@@ -93,7 +99,7 @@ export class NovelDiscussionRunner {
       }
 
       // 4. 构建成员列表
-      const members = this.buildMembers(projectId, chapterNumber)
+      const members = this.buildMembers(projectId, chapterNumber, arrangedEntities)
 
       // 5. 构建引擎并运行
       const channel = new AgentChannel()
@@ -105,6 +111,7 @@ export class NovelDiscussionRunner {
               userMessage: opts.userMessage,
               timeoutMs: opts.timeoutMs,
               modelId: opts.model,
+              signal: opts.signal,
             })
           },
           logger: this.context.logger,
@@ -121,6 +128,7 @@ export class NovelDiscussionRunner {
             signal: opts.signal,
             temperature: opts.temperature,
             timeoutMs: opts.timeoutMs,
+            modelId: opts.modelId,
             emit: opts.emit,
             emitRaw: opts.emitRaw,
             onFirstText: opts.onFirstText,
@@ -166,11 +174,52 @@ export class NovelDiscussionRunner {
           maxRoundsPerScene: settings.maxRoundsPerScene,
           characterTemperature: settings.characterTemperature,
         },
+        // 最终整章 Reviewer 已覆盖整体质量门，默认关闭逐角色即时审查，
+        // 避免角色数 × 对戏轮数的额外 LLM 调用。底层引擎仍保留显式开启能力。
+        reviewCharacterSpeech: false,
+        onMemberInvocation: (invocation) => {
+          const agentType = invocation.member.type === 'character'
+            ? 'character'
+            : invocation.member.id.replace(/^novel-/, '')
+          this.store.insertAgentLog({
+            projectId,
+            chapterNumber,
+            agentType,
+            agentName: invocation.member.name,
+            displayAgentType: agentType,
+            displayAgentName: invocation.member.name,
+            phase: invocation.phase,
+            systemPrompt: invocation.systemPrompt,
+            chapterContext: invocation.chapterContext,
+            userMessage: invocation.userMessage,
+            taskInput: invocation.userMessage,
+            userInstructions: [],
+            tools: [],
+            toolNames: [],
+            result: invocation.result,
+            resultLength: invocation.result.length,
+            durationMs: invocation.durationMs,
+            status: invocation.status,
+            error: invocation.error,
+            sessionId: invocation.sessionId,
+            inputTokens: invocation.inputTokens,
+            outputTokens: invocation.outputTokens,
+            cacheReadTokens: invocation.cacheReadTokens,
+            cacheWriteTokens: invocation.cacheWriteTokens,
+            llmProvider: invocation.llmProvider || invocation.member.modelId?.provider || '',
+            llmModel: invocation.llmModel || invocation.member.modelId?.modelId || '',
+          })
+        },
       }
-      const result = await discussionEngine.run(goal, members, engineOptions)
+      const result = resumeState
+        ? await discussionEngine.resumeChapterWeaving(goal, members, engineOptions, resumeState)
+        : await discussionEngine.run(goal, members, engineOptions)
+      discussionResult = result
 
       // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
       if (result.status === 'completed' && result.content) {
+        outerPhase = 'memory'
+        const sanitizedContent = sanitizeNovelProse(result.content)
         const finalizer = new ChapterFinalizer(
           this.store,
           this.memoryStore,
@@ -182,8 +231,13 @@ export class NovelDiscussionRunner {
         const finalizeResult = await finalizer.finalize({
           projectId,
           chapterNumber,
-          content: result.content,
+          content: sanitizedContent,
           arrangedEntities,
+          versionSource: {
+            phase: 'discussion_weaver',
+            agentType: 'writer',
+            trigger: '群聊共创编织',
+          } satisfies VersionSource,
           options: {
             emit: options.emit,
             onCheckpoint: async (checkpoint) => {
@@ -211,11 +265,12 @@ export class NovelDiscussionRunner {
             },
             signal: options.signal,
           },
-          chapterId: null,
+          chapterId: this.store.getChapter(projectId, chapterNumber)?.id ?? null,
           sharedContextPrefix: sharedContext,
         })
         return {
           ...result,
+          content: sanitizedContent,
           stateChanges: finalizeResult.stateChanges,
         }
       }
@@ -223,6 +278,20 @@ export class NovelDiscussionRunner {
       return result
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      if (options.signal?.aborted) {
+        options.onProgress({
+          type: 'cancelled',
+          phase: 'cancelled',
+          data: { message: '用户已停止群聊创作流程' },
+          timestamp: Date.now(),
+        })
+        return {
+          status: 'cancelled',
+          content: discussionResult?.content,
+          transcript: discussionResult?.transcript ?? resumeState?.transcript ?? [],
+          scenes: discussionResult?.scenes ?? resumeState?.scenes ?? [],
+        }
+      }
       options.onProgress({
         type: 'error',
         phase: 'error',
@@ -232,8 +301,10 @@ export class NovelDiscussionRunner {
       return {
         status: 'error',
         error: message,
-        transcript: [],
-        scenes: [],
+        failedPhase: outerPhase ?? discussionResult?.failedPhase,
+        content: discussionResult?.content,
+        transcript: discussionResult?.transcript ?? resumeState?.transcript ?? [],
+        scenes: discussionResult?.scenes ?? resumeState?.scenes ?? [],
       }
     }
   }
@@ -251,36 +322,49 @@ export class NovelDiscussionRunner {
    * 不注入会导致 Agent 不知道群聊职责，出现 Director 直接写正文、
    * 角色写小说叙述等问题（见 create-flow 无限回退 bug 的姊妹问题）。
    */
-  private buildMembers(projectId: string, _chapterNumber: number): DiscussionMember[] {
+  private buildMembers(
+    projectId: string,
+    _chapterNumber: number,
+    arrangedEntities?: ArrangedEntity,
+  ): DiscussionMember[] {
     const members: DiscussionMember[] = []
 
     // 4 个工种 Agent
     for (const agentType of DISCUSSION_AGENT_TYPES) {
       const config = NOVEL_AGENT_CONFIGS[agentType]
+      // 从 AgentManager 读取该 Agent 在 AgentPage 配置的 model/temperature
+      // （未配置 model 则走默认 Provider；temperature 读取 AgentManager.temperature）
+      const agentConfig = this.context.subagentManager?.getAgent(config.id)
       members.push({
         id: config.id,
         type: 'role',
         name: config.name,
         expertise: config.identity,
         canConverge: agentType === 'writer' || agentType === 'reviser',
-        // 拼接故事背景（buildSystemPrompt）+ 群聊 role 身份段（buildAgentIdentity discussion=true）
-        // 群聊 role 优先读 role-{agentType}-discussion.md，回退到 role-{agentType}.md
-        buildSystemPrompt: () =>
-          this.promptBuilder.buildSystemPrompt(projectId, agentType) +
-          '\n\n---\n\n' +
-          this.promptBuilder.buildAgentIdentity(projectId, agentType, true),
+        // system 只放项目级静态背景，4 个工种完全相同；成员身份作为第二条
+        // prefix user message 注入。请求顺序为 system → shared → identity → task，
+        // 因此 shared 末尾的 cache breakpoint 可跨工种命中。
+        buildSystemPrompt: () => this.promptBuilder.buildSystemPrompt(projectId, agentType),
+        buildIdentityPrompt: () => this.promptBuilder.buildAgentIdentity(projectId, agentType, true),
         buildFinalReviewSystemPrompt: agentType === 'reviewer'
-          ? () =>
-              this.promptBuilder.buildSystemPrompt(projectId, agentType) +
-              '\n\n---\n\n' +
-              this.promptBuilder.buildAgentIdentity(projectId, agentType, false)
+          ? () => this.promptBuilder.buildSystemPrompt(projectId, agentType)
           : undefined,
+        buildFinalReviewIdentityPrompt: agentType === 'reviewer'
+          ? () => this.promptBuilder.buildAgentIdentity(projectId, agentType, false)
+          : undefined,
+        // 透传 AgentPage 配置的 modelId / temperature，让 4 大 Agent 的群聊调用按用户配置走
+        modelId: agentConfig?.model,
+        temperature: agentConfig?.temperature,
       })
     }
 
-    // 项目全部角色都建立 Agent。是否出场由 Director 的 presentCharacters 决定，
-    // 不能在成员构建阶段过滤，否则 Director 需要已退场角色短暂返场时会找不到 Agent。
+    // 有矩阵编排时只预加载本章角色，避免全部角色进入 Moderator 成员清单。
+    // Director 临时引入的其他角色会在 resolveSceneCharacters 中按名动态补入。
+    const arrangedCharacterIds = arrangedEntities?.characterIds?.length
+      ? new Set(arrangedEntities.characterIds)
+      : undefined
     const characters = this.store.listCharacters(projectId)
+      .filter(character => !arrangedCharacterIds || arrangedCharacterIds.has(character.id))
     for (const char of characters) {
       members.push(this.buildCharacterMember(projectId, char))
     }
@@ -304,8 +388,10 @@ export class NovelDiscussionRunner {
         arcStage: char.arcStage,
         participatingConflicts: this.parseIdList(char.participatingConflicts),
       },
-      // 拼接角色人设 + role-character-actor.md（剧本演出格式约束）
-      buildSystemPrompt: () => this.buildCharacterPrompt(projectId, char),
+      // 角色共用一个极小且稳定的 system；角色卡和演出职责放在 identity 前缀。
+      // 这样同章多个角色之间也能复用 shared 章节上下文缓存。
+      buildSystemPrompt: () => this.buildCharacterSystemPrompt(),
+      buildIdentityPrompt: () => this.buildCharacterPrompt(projectId, char),
     }
   }
 
@@ -338,6 +424,11 @@ export class NovelDiscussionRunner {
     return lines.join('\n')
   }
 
+  /** 所有角色成员共享的稳定 system prompt。 */
+  private buildCharacterSystemPrompt(): string {
+    return '你参与小说章节的角色推演。严格依据后续章节上下文和角色身份行动，不得自行改写世界设定。'
+  }
+
   /** 为 Director 临时引入、但角色库尚未建档的人物创建本次运行使用的 Agent。 */
   private resolveCharacterMembers(projectId: string, characterNames: string[]): DiscussionMember[] {
     const existingCharacters = this.store.listCharacters(projectId)
@@ -366,7 +457,8 @@ export class NovelDiscussionRunner {
           arcStage: '未指定',
           participatingConflicts: [],
         },
-        buildSystemPrompt: () => [
+        buildSystemPrompt: () => this.buildCharacterSystemPrompt(),
+        buildIdentityPrompt: () => [
           `你是小说中的临时角色「${name.trim()}」。当前角色库没有你的完整角色卡。`,
           '只依据 Director 给出的场景信息行动，不得自行虚构重大背景、秘密或世界设定。',
           '如果缺少决定行为所必需的信息，用最保守的方式回应。',

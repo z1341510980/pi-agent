@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { SunIcon, MoonIcon, MonitorIcon, LanguagesIcon, DatabaseIcon, FolderIcon, GlobeIcon, NetworkIcon, CheckCircleIcon } from 'lucide-react'
+import { SunIcon, MoonIcon, MonitorIcon, LanguagesIcon, DatabaseIcon, FolderIcon, GlobeIcon, NetworkIcon, CheckCircleIcon, ClockIcon, ShieldAlertIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { putApi, postApi } from '@/api'
+import { getApi, putApi, postApi } from '@/api'
 import { useTranslation, LOCALES, type Locale } from '@/i18n'
 import { useTheme } from '@/components/theme-provider'
 
@@ -48,6 +48,12 @@ export function GeneralSettings(): ReactElement {
   const [proxy, setProxy] = useState<ProxyConfig>(() => loadProxy())
   const [proxyTesting, setProxyTesting] = useState(false)
   const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [llmTimeoutSeconds, setLlmTimeoutSeconds] = useState(300)
+  const [llmTimeoutSaving, setLlmTimeoutSaving] = useState(false)
+  const [llmTimeoutError, setLlmTimeoutError] = useState<string | null>(null)
+  const [stripStreamOptions, setStripStreamOptions] = useState(false)
+  const [stripStreamOptionsSaving, setStripStreamOptionsSaving] = useState(false)
+  const [stripStreamOptionsError, setStripStreamOptionsError] = useState<string | null>(null)
 
   // 持久化代理配置到 localStorage + 同步到后端
   useEffect(() => {
@@ -55,6 +61,28 @@ export function GeneralSettings(): ReactElement {
     // 同步到后端（非阻塞，失败不影响前端）
     void syncProxyToBackend(proxy)
   }, [proxy])
+
+  useEffect(() => {
+    void getApi<{ timeoutMs: number }>('/api/settings/llm')
+      .then((data) => {
+        if (Number.isFinite(data.timeoutMs) && data.timeoutMs >= 1_000) {
+          setLlmTimeoutSeconds(Math.round(data.timeoutMs / 1000))
+        }
+      })
+      .catch(() => {
+        // 后端不可用时保留默认值，设置页仍可编辑
+      })
+  }, [])
+
+  useEffect(() => {
+    void getApi<{ stripStreamOptions: boolean }>('/api/settings/stream-options')
+      .then((data) => {
+        setStripStreamOptions(data.stripStreamOptions === true)
+      })
+      .catch(() => {
+        // 后端不可用时保留默认值（关闭）
+      })
+  }, [])
 
   function updateTheme(value: string): void {
     setTheme(value as 'light' | 'dark' | 'system')
@@ -74,6 +102,35 @@ export function GeneralSettings(): ReactElement {
     setProxyTestResult(null)
   }
 
+  async function saveLlmTimeout(): Promise<void> {
+    const seconds = Math.min(3_600, Math.max(1, Math.round(llmTimeoutSeconds)))
+    setLlmTimeoutSeconds(seconds)
+    setLlmTimeoutSaving(true)
+    setLlmTimeoutError(null)
+    try {
+      await putApi('/api/settings/llm', { timeoutMs: seconds * 1000 })
+    } catch (err) {
+      setLlmTimeoutError(err instanceof Error ? err.message : '保存 LLM 超时设置失败')
+    } finally {
+      setLlmTimeoutSaving(false)
+    }
+  }
+
+  async function toggleStripStreamOptions(next: boolean): Promise<void> {
+    setStripStreamOptions(next)
+    setStripStreamOptionsSaving(true)
+    setStripStreamOptionsError(null)
+    try {
+      await putApi('/api/settings/stream-options', { stripStreamOptions: next })
+    } catch (err) {
+      // 失败回滚
+      setStripStreamOptions(!next)
+      setStripStreamOptionsError(err instanceof Error ? err.message : '保存设置失败')
+    } finally {
+      setStripStreamOptionsSaving(false)
+    }
+  }
+
   async function handleTestProxy(): Promise<void> {
     if (proxy.mode === 'manual' && (!proxy.host || !proxy.port)) {
       setProxyTestResult({ ok: false, message: '请填写代理主机和端口' })
@@ -82,7 +139,7 @@ export function GeneralSettings(): ReactElement {
     setProxyTesting(true)
     setProxyTestResult(null)
     try {
-      const result = await postApi<{ ok: boolean; message: string }>('/settings/proxy/test', proxy)
+      const result = await postApi<{ ok: boolean; message: string }>('/api/settings/proxy/test', proxy)
       setProxyTestResult(result)
     } catch (err) {
       // 后端不可用时回退到本地模拟
@@ -139,6 +196,59 @@ export function GeneralSettings(): ReactElement {
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground m-0">选择应用主题，或跟随系统偏好自动切换。</p>
+      </div>
+
+      {/* ── LLM 请求超时 ── */}
+      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+        <div className="flex items-center gap-2">
+          <ClockIcon className="size-4 text-muted-foreground" />
+          <Label htmlFor="llm-timeout-seconds">LLM 请求超时</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Input
+            id="llm-timeout-seconds"
+            type="number"
+            min={1}
+            max={3600}
+            step={10}
+            value={llmTimeoutSeconds}
+            onChange={(event) => setLlmTimeoutSeconds(Number(event.target.value) || 1)}
+            onBlur={() => void saveLlmTimeout()}
+            className="w-32"
+            aria-describedby="llm-timeout-help"
+          />
+          <span className="text-sm text-muted-foreground">秒</span>
+          {llmTimeoutSaving && <span className="text-xs text-muted-foreground">保存中...</span>}
+        </div>
+        <p id="llm-timeout-help" className="text-xs text-muted-foreground m-0">
+          控制 Provider 等待响应的最长时间，默认 300 秒，适合较慢的模型或长文本生成。
+        </p>
+        {llmTimeoutError && <p className="text-xs text-destructive m-0">{llmTimeoutError}</p>}
+      </div>
+
+      {/* ── stream_options 屏蔽开关 ── */}
+      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldAlertIcon className="size-4 text-muted-foreground" />
+          <Label htmlFor="strip-stream-options">屏蔽 stream_options（中转兼容）</Label>
+          {stripStreamOptionsSaving && <span className="text-xs text-muted-foreground">保存中...</span>}
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            id="strip-stream-options"
+            type="checkbox"
+            checked={stripStreamOptions}
+            onChange={(event) => void toggleStripStreamOptions(event.target.checked)}
+            className="size-4 cursor-pointer"
+          />
+          <span className="text-sm">开启屏蔽</span>
+        </label>
+        <p className="text-xs text-muted-foreground m-0">
+          某些 OpenAI 兼容中转（如 fastaitoken.com）不兼容 <code className="text-[10px] bg-muted px-1 py-0.5 rounded">stream_options.include_usage</code> 参数，
+          会导致流式响应被立即断开（报错 <code className="text-[10px] bg-muted px-1 py-0.5 rounded">Stream ended without finish_reason</code>）。
+          开启后会在请求发出前移除该字段，代价是失去 token 用量统计。
+        </p>
+        {stripStreamOptionsError && <p className="text-xs text-destructive m-0">{stripStreamOptionsError}</p>}
       </div>
 
       {/* ── 语言切换 ── */}
@@ -339,7 +449,7 @@ function saveProxy(config: ProxyConfig): void {
  */
 async function syncProxyToBackend(config: ProxyConfig): Promise<void> {
   try {
-    await putApi('/settings/proxy', config)
+    await putApi('/api/settings/proxy', config)
   } catch {
     // 后端不可用或配置应用失败时静默处理，前端仍保留 localStorage 配置
   }

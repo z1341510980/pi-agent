@@ -3,7 +3,12 @@ import {
   groupContiguousSpans,
   computeCharacterSpans,
   computeSpanRange,
+  shiftChapterSpan,
   computeForeshadowLine,
+  moveForeshadowEndpointBeat,
+  resolveForeshadowLeftClickBeat,
+  setForeshadowBeatNote,
+  upsertForeshadowBeat,
   computeMaxChapter,
   buildGroups,
   buildPool,
@@ -145,6 +150,17 @@ describe('computeSpanRange', () => {
   })
 })
 
+describe('shiftChapterSpan', () => {
+  it('keeps span duration while moving it by chapter delta', () => {
+    expect(shiftChapterSpan([3, 8], 2, 20)).toEqual([5, 10])
+  })
+
+  it('clamps a moved span to both timeline edges', () => {
+    expect(shiftChapterSpan([3, 8], -20, 20)).toEqual([1, 6])
+    expect(shiftChapterSpan([15, 20], 20, 20)).toEqual([15, 20])
+  })
+})
+
 // ── computeForeshadowLine ──
 
 describe('computeForeshadowLine', () => {
@@ -156,10 +172,70 @@ describe('computeForeshadowLine', () => {
       start: 1, end: 11, recovered: true,
     })
   })
-  it('extends to maxChapter when not recovered', () => {
+  it('does not imply every later chapter is related when not recovered', () => {
     expect(computeForeshadowLine(7, null, 20)).toEqual({
-      start: 7, end: 20, recovered: false,
+      start: 7, end: 7, recovered: false,
     })
+  })
+})
+
+describe('resolveForeshadowLeftClickBeat', () => {
+  it('sets the plant point when the chain has not started', () => {
+    expect(resolveForeshadowLeftClickBeat([], 4)).toBe('plant')
+  })
+
+  it('moves the plant point earlier when clicking before it', () => {
+    expect(resolveForeshadowLeftClickBeat([{ chapter: 5, type: 'plant' }], 3)).toBe('plant')
+  })
+
+  it('quick-adds a reinforce point inside an active chain', () => {
+    expect(resolveForeshadowLeftClickBeat([
+      { chapter: 2, type: 'plant' },
+      { chapter: 8, type: 'payoff' },
+    ], 5)).toBe('reinforce')
+  })
+
+  it('does not overwrite an existing point or add after payoff', () => {
+    const beats = [
+      { chapter: 2, type: 'plant' as const },
+      { chapter: 5, type: 'reveal' as const },
+      { chapter: 8, type: 'payoff' as const },
+    ]
+    expect(resolveForeshadowLeftClickBeat(beats, 5)).toBeNull()
+    expect(resolveForeshadowLeftClickBeat(beats, 9)).toBeNull()
+  })
+})
+
+describe('foreshadow beat notes', () => {
+  it('修改同章节点类型时保留节点内容', () => {
+    const beats = [
+      { chapter: 2, type: 'plant' as const, note: '镜背有一道划痕' },
+      { chapter: 5, type: 'reinforce' as const, note: '划痕与徽记相似' },
+    ]
+
+    expect(upsertForeshadowBeat(beats, 5, 'reveal')).toEqual([
+      beats[0],
+      { chapter: 5, type: 'reveal', note: '划痕与徽记相似' },
+    ])
+  })
+
+  it('编辑内容时裁掉首尾空白，清空时移除 note 字段', () => {
+    const beats = [{ chapter: 2, type: 'plant' as const }]
+    const noted = setForeshadowBeatNote(beats, 2, '  镜背有一道划痕  ')
+    expect(noted).toEqual([{ chapter: 2, type: 'plant', note: '镜背有一道划痕' }])
+    expect(setForeshadowBeatNote(noted, 2, '   ')).toEqual(beats)
+  })
+
+  it('拖动埋设或回收节点时保留节点内容', () => {
+    const beats = [
+      { chapter: 2, type: 'plant' as const, note: '镜子首次出现' },
+      { chapter: 8, type: 'payoff' as const, note: '镜后暗格开启' },
+    ]
+
+    expect(moveForeshadowEndpointBeat(beats, 'plant', 3)).toEqual([
+      { chapter: 3, type: 'plant', note: '镜子首次出现' },
+      beats[1],
+    ])
   })
 })
 
@@ -234,8 +310,8 @@ describe('buildGroups', () => {
     })
     const group = data.groups.find((g) => g.id === 'foreshadow')!
     expect(group.entities).toHaveLength(2)
-    expect(group.entities[0]).toMatchObject({ id: 'f1', subLabel: '已回收' })
-    expect(group.entities[1]).toMatchObject({ id: 'f2', subLabel: '待回收' })
+    expect(group.entities[0]).toMatchObject({ id: 'f1', subLabel: '2 个节点 · 已回收' })
+    expect(group.entities[1]).toMatchObject({ id: 'f2', subLabel: '1 个节点 · 待回收' })
   })
 
   it('places faction with firstChapter into faction group', () => {
@@ -401,7 +477,7 @@ describe('computeCellSymbol', () => {
   })
 
   it('returns foreshadow-plant/payoff/empty for foreshadow', () => {
-    // 伏笔只有 plant/payoff 两个端点，中间章节为 empty（虚线连线由 overlay 渲染）
+    // 旧数据仍兼容 plant/payoff 端点；没有显式节点的中间章节必须保持 empty。
     const entity = {
       id: 'f1', kind: 'foreshadow' as const, name: 'Y', entityId: 'f1', entityType: 'foreshadow' as const,
       plantChapter: 2, payoffChapter: 10, chapterSpans: [[2, 10]] as Array<[number, number]>,
@@ -419,6 +495,24 @@ describe('computeCellSymbol', () => {
     }
     expect(computeCellSymbol(entity, 5)).toEqual({ type: 'foreshadow-plant' })
     expect(computeCellSymbol(entity, 7)).toEqual({ type: 'empty' })
+  })
+
+  it('renders only explicit foreshadow event chapters', () => {
+    const entity = {
+      id: 'f3', kind: 'foreshadow' as const, name: '事件链', entityId: 'f3', entityType: 'foreshadow' as const,
+      plantChapter: 2, payoffChapter: 12,
+      foreshadowBeats: [
+        { chapter: 2, type: 'plant' as const },
+        { chapter: 5, type: 'reinforce' as const },
+        { chapter: 8, type: 'reveal' as const },
+        { chapter: 12, type: 'payoff' as const },
+      ],
+    }
+    expect(computeCellSymbol(entity, 2)).toEqual({ type: 'foreshadow-plant' })
+    expect(computeCellSymbol(entity, 5)).toEqual({ type: 'foreshadow-reinforce' })
+    expect(computeCellSymbol(entity, 8)).toEqual({ type: 'foreshadow-reveal' })
+    expect(computeCellSymbol(entity, 12)).toEqual({ type: 'foreshadow-payoff' })
+    expect(computeCellSymbol(entity, 6)).toEqual({ type: 'empty' })
   })
 
   it('returns location for appearChapters', () => {

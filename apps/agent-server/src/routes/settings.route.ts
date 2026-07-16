@@ -5,6 +5,10 @@
  * - GET /api/settings/proxy  — 获取当前代理配置（密码字段脱敏）
  * - PUT /api/settings/proxy  — 更新代理配置（持久化 + 立即应用）
  * - POST /api/settings/proxy/test — 测试代理连通性
+ * - GET /api/settings/llm — 获取 LLM 请求超时
+ * - PUT /api/settings/llm — 更新 LLM 请求超时
+ * - GET /api/settings/stream-options — 获取 stream_options 屏蔽开关
+ * - PUT /api/settings/stream-options — 更新 stream_options 屏蔽开关
  *
  * 前端设置中心保存代理配置时调用此 API，
  * 后端将配置持久化到 proxy.json 并应用到全局 HTTP 客户端（undici）。
@@ -15,6 +19,7 @@ import { z } from 'zod'
 import { success } from '../lib/api-response.js'
 import { validateBody } from '../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import { setRuntimeLlmTimeoutMs } from '../config/performance.js'
 
 const proxyConfigSchema = z.object({
   mode: z.enum(['none', 'system', 'manual']),
@@ -24,9 +29,59 @@ const proxyConfigSchema = z.object({
   password: z.string(),
 })
 
+const llmConfigSchema = z.object({
+  /** LLM 请求超时（毫秒），范围 1 秒到 1 小时 */
+  timeoutMs: z.number().int().min(1_000).max(3_600_000),
+})
+
+const streamOptionsSchema = z.object({
+  /** 是否屏蔽 stream_options.include_usage 字段（兼容不完整的中转网关） */
+  stripStreamOptions: z.boolean(),
+})
+
 export const settingsRoute: FastifyPluginAsync = async (app) => {
   const store = app.proxyConfigStore
   const manager = app.proxyManager
+
+  // GET /api/settings/llm — 获取 LLM 请求超时
+  app.get('/api/settings/llm', async (request) => {
+    return success({ timeoutMs: app.settingsManager.getHttpIdleTimeoutMs() }, request.traceId)
+  })
+
+  // PUT /api/settings/llm — 更新 LLM 请求超时
+  app.put('/api/settings/llm', async (request, reply) => {
+    const input = validateBody(llmConfigSchema, request, reply)
+    if (!input) return
+
+    app.settingsManager.setHttpIdleTimeoutMs(input.timeoutMs)
+    await app.settingsManager.flush()
+    setRuntimeLlmTimeoutMs(input.timeoutMs)
+    app.log.info({ traceId: request.traceId, timeoutMs: input.timeoutMs }, 'LLM 请求超时已更新')
+    return success({ timeoutMs: input.timeoutMs }, request.traceId)
+  })
+
+  // GET /api/settings/stream-options — 获取 stream_options 屏蔽开关
+  app.get('/api/settings/stream-options', async (request) => {
+    return success(
+      { stripStreamOptions: app.providerConfigStore.getStripStreamOptions() },
+      request.traceId,
+    )
+  })
+
+  // PUT /api/settings/stream-options — 更新 stream_options 屏蔽开关
+  app.put('/api/settings/stream-options', async (request, reply) => {
+    const input = validateBody(streamOptionsSchema, request, reply)
+    if (!input) return
+
+    app.providerConfigStore.setStripStreamOptions(input.stripStreamOptions)
+    // 清除 Session 缓存：让后续请求重建 Session 时使用新配置
+    app.piSessionStore.clear()
+    app.log.info(
+      { traceId: request.traceId, stripStreamOptions: input.stripStreamOptions },
+      'stream_options 屏蔽开关已更新，Session 缓存已清除',
+    )
+    return success({ stripStreamOptions: input.stripStreamOptions }, request.traceId)
+  })
 
   // GET /api/settings/proxy — 获取当前代理配置（密码脱敏）
   app.get('/api/settings/proxy', async (request) => {

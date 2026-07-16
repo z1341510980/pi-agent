@@ -242,6 +242,8 @@ export interface PluginContext {
 export interface AgUiSessionHandle {
   /** 底层 Pi Session 句柄（可调用 prompt / abort） */
   readonly session: PluginSessionHandle
+  /** 底层 Pi Session 的稳定 ID，用于精确关联 usage_records */
+  readonly sessionId?: string
   /** StreamEmitter 实例（已订阅 Pi Session 事件流） */
   readonly streamEmitter: StreamEmitter
   /** ReasoningPipeline 实例 */
@@ -307,6 +309,8 @@ export interface PluginSessionOptions {
  * 插件创建的 Pi Session 句柄
  */
 export interface PluginSessionHandle {
+  /** 底层 Pi Session 的稳定 ID，用于用量账本关联 */
+  readonly sessionId?: string
   /** 触发 LLM 推理，返回完整 assistant 文本 */
   prompt(): Promise<string>
   /**

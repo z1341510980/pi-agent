@@ -66,6 +66,7 @@ export class NovelCharacterGenerator {
     projectId: string,
     coreStyle: string,
     onProgress?: (event: CharacterGenerationProgressEvent) => void,
+    signal?: AbortSignal,
   ): Promise<GeneratedCharacter> {
     // ── 1. 构建系统提示词（包含项目级世界规则、风格指南、角色定义等上下文）──
     // agentType 使用 'character-generator'，promptBuilder 会回退到通用角色描述
@@ -86,6 +87,7 @@ export class NovelCharacterGenerator {
       // 角色生成涉及详细设定（外貌/性格/背景/能力/关系等），LLM 耗时较长；
       // 默认 120s 不足，提到 300s 与 Memory Agent 一致
       timeoutMs: 300_000,
+      signal,
     })
 
     try {

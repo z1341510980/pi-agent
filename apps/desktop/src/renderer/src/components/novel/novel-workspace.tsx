@@ -53,6 +53,13 @@ import { CacheMonitorPanel } from './cache-monitor-panel'
 import { AgentLogPanel } from './agent-log-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
 import { computeCharacterSpans, GROUP_META, type MatrixDragData } from './matrix/matrix-logic'
+import {
+  foreshadowHasBeatAtChapter,
+  resolveChapterTaskKind,
+  resolveRetryChapterTask,
+  resolveWritingTaskKind,
+  type ChapterTaskSnapshot,
+} from './chapter-task'
 import { ChapterContentEditor } from './chapter-content-editor'
 import { ErrorBoundary } from '@/components/overlays/error-boundary'
 import { MatrixErrorFallback } from './matrix-error-fallback'
@@ -144,8 +151,19 @@ function MatrixDragPreview({ data }: { data: MatrixDragData | null }): ReactElem
   if (data.source === 'endpoint') {
     return (
       <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border bg-surface-1 shadow-lg text-xs" style={{ borderColor: meta.color }}>
-        <span className="size-2 rounded-full" style={{ background: meta.color }} />
+        <span className="text-[10px] font-bold leading-none" style={{ color: meta.color }}>
+          {data.entityType === 'foreshadow' ? (data.end === 'start' ? '●' : '○') : (data.end === 'start' ? '◀' : '▶')}
+        </span>
         <span className="font-medium text-text">{data.end === 'start' ? '调整起点' : '调整终点'}</span>
+      </div>
+    )
+  }
+  if (data.source === 'span') {
+    return (
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border bg-surface-1 shadow-lg text-xs" style={{ borderColor: meta.color }}>
+        <span className="h-2 w-5 rounded-sm" style={{ background: meta.color }} />
+        <span className="font-medium text-text">移动范围</span>
+        <span className="font-mono text-muted-foreground tabular-nums">{data.startChapter}-{data.endChapter}</span>
       </div>
     )
   }
@@ -199,6 +217,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 创作子模式切换：编排模式（create-flow）/ 群聊模式（create-discussion）/ 反推（reverse-arrange）/ AI编排（ai-arrange）
   // 由右栏 NovelConversationPanel 的 Tab 控制，这里仅持有状态供 handleStartFlow 读取
   const [flowType, setFlowType] = useState<NovelFlowType>('workflow')
+  // 保存实际启动的任务，而不是在重试时重新读取可能已经切换的 Tab。
+  const [activeChapterTask, setActiveChapterTask] = useState<ChapterTaskSnapshot | null>(null)
   // 右栏视图切换：对话面板（选流程+开始+消息流）/ 详情面板（节点详情）
   // 创作运行中自动锁定到对话面板，结束后用户可手动切回详情
   const [rightPanelView, setRightPanelView] = useState<'conversation' | 'detail'>('conversation')
@@ -215,6 +235,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   // ── 章节自由聊天（"聊天" Tab）──
   const chapterChat = useChapterChat()
+  const chapterChatLoadHistory = chapterChat.loadHistory
   // 聊天目标章节：优先创作流程章节，回退到当前选中章节
   const chatChapterNumber = creationChapterNumber ?? playheadChapter ?? undefined
 
@@ -488,10 +509,11 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       conflictIds: conflicts.filter((c) =>
         c.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
       ).map((c) => c.id),
-      foreshadowIds: foreshadows.filter((f) => {
-        if (f.firstChapter == null) return false
-        return playhead >= f.firstChapter && (f.recoverByChapter == null || playhead <= f.recoverByChapter)
-      }).map((f) => f.id),
+      // 伏笔是离散事件链：只把本章确有“埋设/强化/揭示/回收”节点的伏笔交给 Writer。
+      // 不能把埋设到回收之间的所有章节都当作伏笔出场章。
+      foreshadowIds: foreshadows
+        .filter((f) => foreshadowHasBeatAtChapter(f, playhead))
+        .map((f) => f.id),
       factionIds: factions.filter((f) =>
         f.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
       ).map((f) => f.id),
@@ -500,6 +522,39 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       }).map((l) => l.id),
     }
   }, [characters, characterHistory, conflicts, foreshadows, factions, locations])
+
+  /** 所有章节任务的唯一分发入口；同时记录快照，保证失败重试执行同一种任务。 */
+  const runChapterTask = useCallback(async (task: ChapterTaskSnapshot): Promise<void> => {
+    if (task.kind === 'reverse') {
+      const chapter = chapters.find((item) => item.chapterNumber === task.chapterNumber)
+      if (!chapter?.content?.trim()) {
+        toastError('章节正文为空，无法反推实体。请先编写正文或切换到编排模式。')
+        setCreationMode(null)
+        setCreationChapterNumber(undefined)
+        return
+      }
+    }
+
+    setActiveChapterTask(task)
+    setCreationMode(task.kind === 'arrange' ? 'ai-arrange' : 'manual')
+    setCreationChapterNumber(task.chapterNumber)
+
+    if (task.kind === 'arrange') {
+      await creationFlow.aiArrange(task.projectId, task.chapterNumber)
+      return
+    }
+    if (task.kind === 'reverse') {
+      await creationFlow.reverseArrange(task.projectId, task.chapterNumber)
+      return
+    }
+
+    const arrangedEntities = collectArrangedEntities(task.chapterNumber)
+    if (task.kind === 'discussion') {
+      await creationFlow.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities })
+      return
+    }
+    await creationFlow.startCreation(task.projectId, task.chapterNumber, { arrangedEntities })
+  }, [chapters, creationFlow, collectArrangedEntities, setCreationMode])
 
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
     if (!currentProjectId || creationFlow.isRunning) return
@@ -514,31 +569,11 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       const playhead = chapterNumber ?? playheadChapter
       const chapter = chapters.find((c) => c.chapterNumber === playhead)
       if (!chapter) return
-      setCreationMode(mode)
-      setCreationChapterNumber(playhead)
-      if (mode === 'manual') {
-        // 根据 flowType 分发：编排 / 群聊 / 反推
-        if (flowType === 'discussion') {
-          const arrangedEntities = collectArrangedEntities(playhead)
-          await creationFlow.startDiscussion(currentProjectId, playhead, { arrangedEntities })
-        } else if (flowType === 'reverse') {
-          // 反推需要章节已有正文，提前校验避免后端报错
-          if (!chapter.content?.trim()) {
-            toastError('章节正文为空，无法反推实体。请先编写正文或切换到编排模式。')
-            setCreationMode(null)
-            setCreationChapterNumber(undefined)
-            return
-          }
-          await creationFlow.reverseArrange(currentProjectId, playhead)
-        } else {
-          // 默认编排模式
-          const arrangedEntities = collectArrangedEntities(playhead)
-          await creationFlow.startCreation(currentProjectId, playhead, { arrangedEntities })
-        }
-      } else {
-        // 模式2：AI 编排
-        await creationFlow.aiArrange(currentProjectId, playhead)
-      }
+      await runChapterTask({
+        kind: resolveChapterTaskKind(flowType, mode),
+        projectId: currentProjectId,
+        chapterNumber: playhead,
+      })
     } catch (err) {
       console.error('[NovelWorkspace] 启动创作失败:', err)
       setCreationMode(null)
@@ -546,7 +581,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     } finally {
       startCreationLockRef.current = false
     }
-  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, setCreationMode, setCreationChapterNumber, playheadChapter, flowType])
+  }, [currentProjectId, chapters, runChapterTask, setCreationMode, playheadChapter, flowType])
 
   // 重新创作已有章节：右键章节节点触发，章节已存在无需 createChapter，
   // 直接以原章节号启动创作流程（覆盖旧内容）
@@ -556,9 +591,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     if (!currentProjectId || creationFlow.isRunning) return
     const chapter = chapters.find((c) => c.chapterNumber === chapterNumber)
     if (!chapter) return
-    setCreationChapterNumber(chapterNumber)
-    await creationFlow.startCreation(currentProjectId, chapterNumber, { arrangedEntities: collectArrangedEntities(chapterNumber) })
-  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities])
+    await runChapterTask({
+      kind: resolveWritingTaskKind(flowType),
+      projectId: currentProjectId,
+      chapterNumber,
+    })
+  }, [currentProjectId, chapters, creationFlow.isRunning, flowType, runChapterTask])
 
   // 从指定章节开始新创作流程（用于时间轴右键菜单"从此章开始创作"）
   // 若该章节号不存在，先创建空章节再启动流程
@@ -581,9 +619,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         return
       }
     }
-    setCreationChapterNumber(chapterNumber)
-    await creationFlow.startCreation(currentProjectId, chapterNumber, { arrangedEntities: collectArrangedEntities(chapterNumber) })
-  }, [currentProjectId, chapters, creationFlow, collectArrangedEntities, upsertChapter, queryClient])
+    await runChapterTask({
+      kind: resolveWritingTaskKind(flowType),
+      projectId: currentProjectId,
+      chapterNumber,
+    })
+  }, [currentProjectId, chapters, creationFlow.isRunning, flowType, runChapterTask, upsertChapter, queryClient])
 
   // 收到 data_changed 事件时刷新画布（替代轮询）
   // Memory Agent 写入实体状态 + orchestrator.syncChapterDimensions 补全章节维度后，
@@ -612,30 +653,57 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
       // 保存成功后重置创作流程状态，切回节点详情面板
       creationFlow.reset()
+      await chapterChatLoadHistory(currentProjectId, creationChapterNumber)
     } catch (err) {
       console.error('[NovelWorkspace] 保存章节失败:', err)
     }
-  }, [currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient, creationFlow])
+  }, [currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient, creationFlow, chapterChatLoadHistory])
 
   const handleDiscardCreation = useCallback(() => {
     creationFlow.cancel()
     creationFlow.reset()
     if (currentProjectId) {
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      if (creationChapterNumber != null) {
+        void chapterChatLoadHistory(currentProjectId, creationChapterNumber)
+      }
     }
-  }, [creationFlow, currentProjectId, queryClient])
+  }, [creationFlow, currentProjectId, creationChapterNumber, queryClient, chapterChatLoadHistory])
 
   const handleRetryCreation = useCallback((): void => {
     if (!currentProject || creationChapterNumber == null) return
-    // 与 chat handleRetry 行为一致：清空错误，重新触发全新 SSE run
-    // agentOutputs 和 chapterContent 半成品保留供用户对比
+    const projectId = currentProject.id
+    const chapterNumber = creationChapterNumber
+    const task = resolveRetryChapterTask(
+      activeChapterTask,
+      flowType,
+      projectId,
+      chapterNumber,
+    )
     creationFlow.reset()
-    void creationFlow.startCreation(currentProject.id, creationChapterNumber)
-  }, [currentProject, creationChapterNumber, creationFlow])
+    void chapterChatLoadHistory(projectId, chapterNumber).then(() => {
+      return runChapterTask(task)
+    })
+  }, [currentProject, creationChapterNumber, activeChapterTask, creationFlow, chapterChatLoadHistory, flowType, runChapterTask])
 
   const handleDismissError = useCallback((): void => {
     creationFlow.reset()
-  }, [creationFlow])
+    if (currentProjectId && creationChapterNumber != null) {
+      void chapterChatLoadHistory(currentProjectId, creationChapterNumber)
+    }
+  }, [creationFlow, currentProjectId, creationChapterNumber, chapterChatLoadHistory])
+
+  const handleResumeDiscussion = useCallback((runId: string): void => {
+    if (!currentProjectId) return
+    const chapterNumber = creationChapterNumber ?? chatChapterNumber
+    if (chapterNumber == null) return
+    setFlowType('discussion')
+    setCreationMode('manual')
+    setCreationChapterNumber(chapterNumber)
+    setActiveChapterTask({ kind: 'discussion', projectId: currentProjectId, chapterNumber })
+    creationFlow.reset()
+    void creationFlow.resumeDiscussion(currentProjectId, chapterNumber, runId)
+  }, [currentProjectId, creationChapterNumber, chatChapterNumber, creationFlow, setCreationMode])
 
   const handleSendMessage = useCallback((message: string) => {
     creationFlow.sendMessage(message)
@@ -670,7 +738,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 切换章节时加载该章节的聊天历史
   // ⚠️ 只依赖 loadHistory（稳定的 useCallback 引用），不能依赖整个 chapterChat 对象，
   // 否则每次渲染都会触发 effect → 疯狂调用 loadHistory → 接口死循环
-  const chapterChatLoadHistory = chapterChat.loadHistory
   useEffect(() => {
     if (!currentProjectId || chatChapterNumber == null) return
     void chapterChatLoadHistory(currentProjectId, chatChapterNumber)
@@ -1007,6 +1074,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         error={creationFlow.error}
                         onRetry={handleRetryCreation}
                         onDismissError={handleDismissError}
+                        onResumeDiscussion={handleResumeDiscussion}
                         creationMode={creationMode}
                         onSubmitCheckpoint={creationFlow.submitCheckpoint}
                         onSave={handleSaveChapter}

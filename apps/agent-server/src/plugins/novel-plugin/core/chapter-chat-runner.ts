@@ -24,6 +24,7 @@ import { ChapterChatStore, type ChapterChatMessage } from './chapter-chat-store.
 import { NovelStore } from './novel-store.js'
 import { NovelPromptBuilder } from './prompt-builder.js'
 import { NovelEngine } from './novel-engine.js'
+import { runtimePerformance } from '../../../config/performance.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
 import type { NovelCharacter } from './types.js'
 
@@ -109,8 +110,8 @@ export class ChapterChatRunner {
     const respondents = await this.selectRespondents(members, input.mentionedAgents, options, input.message)
 
     // 4. 依次调用 Agent 发言
-    const history = this.chatStore.list(projectId, chapterNumber)
     for (const member of respondents) {
+      const history = this.chatStore.list(projectId, chapterNumber)
       try {
         const content = await this.invokeMember(member, input.message, history, options)
         const agentType = this.inferAgentType(member.id)
@@ -199,6 +200,7 @@ export class ChapterChatRunner {
             userMessage: opts.userMessage,
             timeoutMs: opts.timeoutMs,
             modelId: opts.model,
+            signal: opts.signal,
           })
         },
         logger: this.context.logger,
@@ -228,7 +230,7 @@ export class ChapterChatRunner {
       },
     ]
 
-    const decision = await moderator.decide(goal, history, members, state)
+    const decision = await moderator.decide(goal, history, members, state, options.signal)
     if (decision.type === 'invite') {
       return members.find((m) => m.id === decision.agentId) ?? null
     }
@@ -262,7 +264,7 @@ export class ChapterChatRunner {
       tools: [],
       signal: options.signal,
       temperature: member.type === 'character' ? 0.8 : 0.5,
-      timeoutMs: 120_000,
+      timeoutMs: runtimePerformance.llm.timeoutMs,
       emit: options.emit,
       emitRaw: false,
       onFirstText: () => {

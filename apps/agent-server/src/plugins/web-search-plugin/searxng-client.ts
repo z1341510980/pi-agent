@@ -38,6 +38,8 @@ export async function searchSearXng(
       headers: {
         Accept: 'application/json',
       },
+      headersTimeout: 5_000,
+      bodyTimeout: 10_000,
       signal,
     })
   } catch (err) {
@@ -63,6 +65,10 @@ export async function searchSearXng(
       publishedDate?: string
     }>
     number_of_results?: number
+  }
+
+  if (!Array.isArray(body?.results)) {
+    throw new SearXngError('SearXNG 返回格式异常：results 不是数组')
   }
 
   const max = options.maxResults ?? 5

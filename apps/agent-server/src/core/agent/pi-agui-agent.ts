@@ -167,7 +167,9 @@ export class PiAgUiAgent {
       if (input.temperature !== undefined) {
         inject.temperature = input.temperature
       }
-      if (Object.keys(inject).length > 0) {
+      // stream_options 屏蔽：与 plugin-manager.ts createSession 保持一致
+      const stripStreamOptions = this.providerConfigStore.getStripStreamOptions()
+      if (Object.keys(inject).length > 0 || stripStreamOptions) {
         const piSession = threadSession.session as {
           agent?: { onPayload?: (payload: unknown) => unknown | Promise<unknown> }
         }
@@ -179,18 +181,45 @@ export class PiAgUiAgent {
           const prevOnPayload = piSession.agent.onPayload
           piSession.agent.onPayload = async (payload: unknown) => {
             let next = prevOnPayload ? await prevOnPayload(payload) : payload
-            next = { ...(next as Record<string, unknown>), ...inject }
+            if (Object.keys(inject).length > 0) {
+              next = { ...(next as Record<string, unknown>), ...inject }
+            }
+            if (stripStreamOptions) {
+              const p = next as Record<string, unknown>
+              if (p && typeof p === 'object' && 'stream_options' in p) {
+                const { stream_options: _removed, ...rest } = p
+                console.info('[pi-agui-agent] ✅ 已移除 stream_options 字段（兼容中转网关）', { threadId })
+                next = rest
+              }
+            }
             return next
           }
+          console.info(
+            '[pi-agui-agent] 🔧 已注入 onPayload 钩子',
+            { threadId, stripStreamOptions, injectKeys: Object.keys(inject) },
+          )
         }
       }
 
       const assistantResponseMessageId = randomUUID()
       const reasoningPipeline = new ReasoningPipeline(emit, assistantResponseMessageId)
       const streamEmitter = new StreamEmitter(emit, assistantResponseMessageId, reasoningPipeline)
+      let lastAssistantError = ''
 
       unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
         streamEmitter.handleSessionEvent(event)
+
+        // Pi SDK 会把部分 LLM 故障表示为 message_end(stopReason="error")，
+        // session.prompt() 在自动重试耗尽后仍可能正常 resolve。记录最后一次
+        // assistant 终态，避免将“空响应 + 503”等故障误报为 RUN_FINISHED。
+        if (event.type === 'message_end') {
+          const message = event.message as Record<string, unknown> | undefined
+          if (message?.role === 'assistant') {
+            lastAssistantError = message.stopReason === 'error'
+              ? ((message.errorMessage as string) || '未知 LLM 错误')
+              : ''
+          }
+        }
       })
 
       abortHandler = () => {
@@ -212,6 +241,10 @@ export class PiAgUiAgent {
       }
 
       await threadSession.session.prompt(userText)
+
+      if (lastAssistantError) {
+        throw new Error(`LLM 调用失败: ${lastAssistantError}`)
+      }
 
       // 正常完成：先关闭文本消息，再发射 RUN_FINISHED
       streamEmitter.finishTextMessage()

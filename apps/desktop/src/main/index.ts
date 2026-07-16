@@ -96,7 +96,7 @@ function createWindow(): void {
     height: 900,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -152,7 +152,8 @@ function createWindow(): void {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(async () => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  // 必须与 electron-builder.yml 的 appId 一致，否则 Windows 任务栏会回退到 Electron 默认图标
+  electronApp.setAppUserModelId('com.wenlang-agent.app')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

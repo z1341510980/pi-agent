@@ -66,6 +66,7 @@ export interface SearchServiceOptions {
   fetchTimeoutMs: number
   maxContentChars: number
   concurrency: number
+  timeRange?: 'day' | 'week' | 'month' | 'year'
 }
 
 /** web_search 工具入参 */

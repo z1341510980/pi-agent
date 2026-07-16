@@ -15,7 +15,8 @@
 
 import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { NovelServices } from './novel-services.js'
-import type { NovelChapter, NovelMarker, NovelInformationLayer } from './core/types.js'
+import type { NovelChapter, NovelMarker, NovelInformationLayer, ChapterVersion, ChapterVersionSummary, ChapterVersionDiff, RollbackResult } from './core/types.js'
+import { diffChapterVersions } from './core/chapter-version-diff.js'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { PassThrough } from 'node:stream'
@@ -25,9 +26,31 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 import { RhythmController } from './core/rhythm-controller.js'
 import { EventType } from '@ag-ui/core'
 import type { AgUiEventSink } from '@repo/protocol/events'
+import { persistDiscussionHistory } from './core/discussion-history.js'
+import type { DiscussionResult } from '../../core/agent/discussion-types.js'
 
 /** 同一章节 ai-arrange 并发锁，key 为 `${projectId}:${chapterNumber}` */
 const aiArrangeLocks = new Map<string, Promise<void>>()
+/** 同一章节正文创作互斥锁，create-flow 与 create-discussion 共用。 */
+const chapterCreationLocks = new Set<string>()
+type NovelChapterTaskKind = 'workflow' | 'discussion' | 'discussion-resume' | 'ai-arrange' | 'reverse-arrange'
+interface ActiveNovelChapterTask {
+  kind: NovelChapterTaskKind
+  controller: AbortController
+  startedAt: number
+}
+/** 运行中章节任务：用于把前端“停止”传递到后端 LLM 调用。 */
+const activeNovelChapterTasks = new Map<string, ActiveNovelChapterTask>()
+
+function registerNovelChapterTask(lockKey: string, kind: NovelChapterTaskKind): ActiveNovelChapterTask {
+  const task = { kind, controller: new AbortController(), startedAt: Date.now() }
+  activeNovelChapterTasks.set(lockKey, task)
+  return task
+}
+
+function finishNovelChapterTask(lockKey: string, task: ActiveNovelChapterTask): void {
+  if (activeNovelChapterTasks.get(lockKey) === task) activeNovelChapterTasks.delete(lockKey)
+}
 
 /**
  * 创建 ag-ui 兼容的 SSE 事件发射器
@@ -678,12 +701,14 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       // 传 content 时自动重算 wordCount（与前端 chapter-live-view.tsx 的 countWords 一致），
       // 避免 spread patch 保留旧 wordCount 导致统计与正文不同步。
       let patch: Partial<NovelChapter> = input
+      let versionSource: import('./core/types.js').VersionSource = undefined
       if (input.content != null) {
         const cleaned = input.content.replace(/[#*`>\-\[\]()!]/g, '').replace(/\s+/g, '')
         patch = { ...input, wordCount: cleaned.length }
+        versionSource = { phase: 'manual_patch', trigger: '用户手动编辑' }
       }
 
-      const updated = store.updateChapter(request.params.id, patch)
+      const updated = store.updateChapter(request.params.id, patch, versionSource)
       if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
     },
@@ -712,6 +737,123 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     handler: async (request: any) => {
       const chapter = await engine.publishChapter(request.params.id)
       return success(chapter, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 章节正文版本历史
+  // ═══════════════════════════════════════════════════════════════
+
+  // GET /chapters/:id/versions — 列出章节所有版本摘要（按 sequence 倒序，不含 content 全文）
+  routes.push({
+    method: 'GET',
+    path: '/chapters/:id/versions',
+    handler: async (request: any) => {
+      const chapter = store.getChapterById(request.params.id)
+      if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      const versions: ChapterVersionSummary[] = store.listChapterVersions(request.params.id)
+      return success(versions, request.traceId)
+    },
+  })
+
+  // GET /chapters/:id/versions/diff — 两个版本的段落级 diff
+  // ⚠️ 必须在 /chapters/:id/versions/:versionId 之前注册，否则 'diff' 会被当成 versionId
+  routes.push({
+    method: 'GET',
+    path: '/chapters/:id/versions/diff',
+    handler: async (request: any) => {
+      const { from, to } = request.query ?? {}
+      if (!from || !to) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, '缺少 from 或 to 查询参数', 400)
+      }
+      const fromVersion = store.getChapterVersion(from)
+      if (!fromVersion) throw new AppError(ErrorCode.NOT_FOUND, `版本不存在: ${from}`, 404)
+      if (fromVersion.chapterId !== request.params.id) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, 'from 版本不属于该章节', 400)
+      }
+      const toVersion = store.getChapterVersion(to)
+      if (!toVersion) throw new AppError(ErrorCode.NOT_FOUND, `版本不存在: ${to}`, 404)
+      if (toVersion.chapterId !== request.params.id) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, 'to 版本不属于该章节', 400)
+      }
+
+      const diffResult = diffChapterVersions(fromVersion.content, toVersion.content)
+      const result: ChapterVersionDiff = {
+        fromVersionId: from,
+        toVersionId: to,
+        fromSequence: fromVersion.sequence,
+        toSequence: toVersion.sequence,
+        segments: diffResult.segments,
+        stats: diffResult.stats,
+      }
+      return success(result, request.traceId)
+    },
+  })
+
+  // GET /chapters/:id/versions/:versionId — 获取特定版本详情（含全文）
+  routes.push({
+    method: 'GET',
+    path: '/chapters/:id/versions/:versionId',
+    handler: async (request: any) => {
+      const version: ChapterVersion | undefined = store.getChapterVersion(request.params.versionId)
+      if (!version) throw new AppError(ErrorCode.NOT_FOUND, `版本不存在: ${request.params.versionId}`, 404)
+      if (version.chapterId !== request.params.id) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, '版本不属于该章节', 400)
+      }
+      return success(version, request.traceId)
+    },
+  })
+
+  // POST /chapters/:id/versions/:versionId/rollback — 安全回滚到指定版本
+  routes.push({
+    method: 'POST',
+    path: '/chapters/:id/versions/:versionId/rollback',
+    handler: async (request: any) => {
+      try {
+        const result = store.rollbackToVersion(request.params.id, request.params.versionId)
+        const rollbackResult: RollbackResult = {
+          success: true,
+          savedVersionId: result.savedVersionId,
+          currentContent: result.currentContent,
+          currentWordCount: result.currentWordCount,
+        }
+        return success(rollbackResult, request.traceId)
+      } catch (err: any) {
+        const msg = err?.message ?? ''
+        if (msg.includes('不存在')) {
+          throw new AppError(ErrorCode.NOT_FOUND, msg, 404)
+        }
+        if (msg.includes('不属于') || msg.includes('无需回滚')) {
+          throw new AppError(ErrorCode.VALIDATION_ERROR, msg, 400)
+        }
+        throw err
+      }
+    },
+  })
+
+  // POST /chapters/:id/versions — 手动创建快照
+  const createSnapshotSchema = z.object({
+    trigger: z.string().max(200).optional(),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/chapters/:id/versions',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createSnapshotSchema, request, reply)
+      if (!input) return reply
+
+      const chapter = store.getChapterById(request.params.id)
+      if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+
+      const version = store.createVersionSnapshot(request.params.id, {
+        phase: 'manual_snapshot',
+        trigger: input.trigger ?? '用户手动创建快照',
+      })
+      if (!version) {
+        throw new AppError(ErrorCode.INTERNAL_SERVER_ERROR, '创建快照失败', 500)
+      }
+      return success(version, request.traceId)
     },
   })
 
@@ -1047,16 +1189,23 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     // ── P2-2：category 改为枚举（旧自由字符串由 store 层 normalize 兜底）──
     // 用 .optional() 而非 .default()，避免 PATCH .partial() 在 Zod v4 下保留默认值覆盖现有数据
     category: z.enum(['item', 'spoken', 'event', 'identity', 'secret', 'prophecy', 'promise', 'quote']).optional(),
-    status: z.enum(['planned', 'planted', 'reinforced', 'partially_revealed', 'recovering', 'recovered', 'abandoned']).default('planned'),
-    firstChapter: z.number().int().nullable().default(null),
-    lastChapter: z.number().int().nullable().default(null),
-    recoverByChapter: z.number().int().nullable().default(null),
+    // 创建默认值统一在 POST 处理器补齐。这里不能使用 .default()：Zod v4 的
+    // object.partial() 仍会应用字段默认值，导致只 PATCH beats 时把现有章节清空。
+    status: z.enum(['planned', 'planted', 'reinforced', 'partially_revealed', 'recovering', 'recovered', 'abandoned']).optional(),
+    firstChapter: z.number().int().nullable().optional(),
+    lastChapter: z.number().int().nullable().optional(),
+    recoverByChapter: z.number().int().nullable().optional(),
     // ── P2-2：埋设/回收方式（可选，不设默认值以兼容 PATCH .partial()）──
     plantMethod: z.enum(['explicit', 'implicit', 'indirect']).optional(),
     recoverMethod: z.enum(['explicit', 'implicit', 'reverse', 'progressive']).optional(),
     // ── 迁移 055：多段章节跨度（可选，未传时 store 层兜底为 []）
     // 用 .optional() 而非 .default([]) 以兼容 PATCH .partial()
     chapterSpans: z.array(z.tuple([z.number().int(), z.number().int()])).optional(),
+    beats: z.array(z.object({
+      chapter: z.number().int().positive(),
+      type: z.enum(['plant', 'reinforce', 'reveal', 'payoff']),
+      note: z.string().optional(),
+    })).optional(),
   })
 
   routes.push({
@@ -1074,6 +1223,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         linkedInfoLayers: '[]',
         // category 未传时兜底 'event'（与原 .default('event') 行为一致）
         category: 'event',
+        status: 'planned',
+        firstChapter: null,
+        lastChapter: null,
+        recoverByChapter: null,
         // chapterSpans 未传时兜底 []（进元素池，矩阵不渲染行）
         chapterSpans: [],
         ...input,
@@ -1510,6 +1663,55 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/style-guides',
     handler: async (request: any) => {
       return success(store.listStyleGuide(request.params.projectId), request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 项目级叙事文风档案
+  // ═══════════════════════════════════════════════════════════════
+
+  const writingStyleProfileSchema = z.object({
+    name: z.string().trim().min(1).max(80),
+    preset: z.string().trim().min(1).max(40).default('custom'),
+    narrativePerson: z.enum(['first', 'third', 'mixed']).default('third'),
+    narrativeDistance: z.enum(['intimate', 'limited', 'omniscient']).default('limited'),
+    sentenceRhythm: z.enum(['short', 'balanced', 'long']).default('balanced'),
+    dialogueRatio: z.number().min(10).max(90).default(45),
+    emotionalTemperature: z.number().min(0).max(10).default(5),
+    imageryDensity: z.number().min(0).max(10).default(3),
+    vocabularyRegister: z.enum(['colloquial', 'plain', 'literary', 'classical']).default('plain'),
+    hardRules: z.array(z.string().trim().min(1).max(300)).max(20).default([]),
+    softRules: z.array(z.string().trim().min(1).max(300)).max(20).default([]),
+    positiveExamples: z.array(z.string().trim().min(20).max(3000)).max(5).default([]),
+    notes: z.string().max(2000).default(''),
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/writing-style-profile',
+    handler: async (request: any) => {
+      return success(store.getWritingStyleProfile(request.params.projectId) ?? null, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PUT',
+    path: '/projects/:projectId/writing-style-profile',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(writingStyleProfileSchema, request, reply)
+      if (!input) return reply
+      const profile = store.upsertWritingStyleProfile(request.params.projectId, input)
+      return success(profile, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/writing-style-profile/preview',
+    handler: async (request: any) => {
+      const target = request.query?.target
+      const normalizedTarget = target === 'reviser' || target === 'reviewer' ? target : 'writer'
+      return success(services.promptBuilder.buildWritingStylePrompt(request.params.projectId, normalizedTarget) ?? null, request.traceId)
     },
   })
 
@@ -2082,6 +2284,37 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // 多 Agent 创作流程（SSE + 检查点）
   // ═══════════════════════════════════════════════════════════════
 
+  // 章节大流程统一取消：工作流、群聊、编排、反推均使用同一个任务控制器。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/cancel-active-flow',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params as { projectId: string; chapterNumber: string }
+      const lockKey = `${projectId}:${chapterNumber}`
+      const task = activeNovelChapterTasks.get(lockKey)
+      if (!task) {
+        return reply.send({ ok: true, data: { cancelled: false, reason: '当前没有运行中的章节流程' } })
+      }
+
+      // 检查点可能正在等待一个无超时 Promise。先用 reject 唤醒它，再中止 LLM。
+      const workflowThreadId = `novel-checkpoint-${projectId}-${chapterNumber}`
+      const discussionThreadId = `novel-discussion-${projectId}-${chapterNumber}`
+      for (const pending of services.confirmationManager.listPending()) {
+        if (pending.threadId === workflowThreadId || pending.threadId === discussionThreadId) {
+          services.confirmationManager.respondDecision(pending.id, 'reject')
+        }
+      }
+      if (!task.controller.signal.aborted) {
+        task.controller.abort(new Error('用户手动停止创作流程'))
+      }
+
+      return reply.send({
+        ok: true,
+        data: { cancelled: true, kind: task.kind, startedAt: task.startedAt },
+      })
+    },
+  })
+
   // 创作流程启动端点（SSE）
   routes.push({
     method: 'POST',
@@ -2124,6 +2357,12 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         }
       }
 
+      const creationLockKey = `${projectId}:${chapterNumber}`
+      if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
+        reply.code(409).send({ ok: false, error: '该章节正在创作中，请勿重复启动编排或群聊流程' })
+        return
+      }
+
       // 设置 SSE
       // 注意：reply.raw.writeHead 绕过 Fastify 的 CORS 中间件，需手动附加 CORS 头，
       // 否则浏览器会以 CORS 策略拦截跨域 SSE 请求（如 localhost:5173 → 127.0.0.1:3900）。
@@ -2147,8 +2386,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         `novel:chapter:${projectId}:${chapterNumber}`,
         randomUUID(),
       )
+      const task = registerNovelChapterTask(creationLockKey, 'workflow')
+      const abortOnDisconnect = () => {
+        if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
+          task.controller.abort(new Error('客户端已断开创作流'))
+        }
+      }
+      reply.raw.once('close', abortOnDisconnect)
 
       try {
+        chapterCreationLocks.add(creationLockKey)
         const result = await orchestrator.createChapterWithFlow(
           projectId,
           parseInt(chapterNumber, 10),
@@ -2173,6 +2420,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
               return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
             },
             onProgress: (event) => emitter.progress(event),
+            signal: task.controller.signal,
             arrangedEntities,
           },
         )
@@ -2181,6 +2429,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
+        reply.raw.off('close', abortOnDisconnect)
+        finishNovelChapterTask(creationLockKey, task)
+        chapterCreationLocks.delete(creationLockKey)
         reply.raw.end()
       }
     },
@@ -2277,6 +2528,12 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         }
       }
 
+      const creationLockKey = `${projectId}:${chapterNumber}`
+      if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
+        reply.code(409).send({ ok: false, error: '该章节正在创作中，请勿重复启动编排或群聊流程' })
+        return
+      }
+
       // 设置 SSE（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -2293,13 +2550,22 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
+      const discussionRunId = randomUUID()
       const emitter = createNovelAgUiEmitter(
         createSseEmitterSink((data) => reply.raw.write(data)),
         `novel:discussion:${projectId}:${chapterNumber}`,
-        randomUUID(),
+        discussionRunId,
       )
+      const task = registerNovelChapterTask(creationLockKey, 'discussion')
+      const abortOnDisconnect = () => {
+        if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
+          task.controller.abort(new Error('客户端已断开群聊创作流'))
+        }
+      }
+      reply.raw.once('close', abortOnDisconnect)
 
       try {
+        chapterCreationLocks.add(creationLockKey)
         // 运行时读取最新设置，让 moderatorModel / 其他参数的修改即时生效
         const settings = services.discussionSettingsStore.get()
         const result = await discussionRunner.run(
@@ -2325,14 +2591,184 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
             },
             onProgress: (event) => emitter.progress(event),
             moderatorModel: settings.moderatorModel,
+            signal: task.controller.signal,
           },
           arrangedEntities,
         )
-        emitter.result(result)
+        services.discussionRunStore.save({
+          id: discussionRunId,
+          projectId,
+          chapterNumber: parseInt(chapterNumber, 10),
+          status: result.status,
+          failedPhase: result.failedPhase,
+          transcript: result.transcript,
+          scenes: result.scenes,
+          arrangedEntities,
+          content: result.content,
+          error: result.error,
+        })
+        try {
+          persistDiscussionHistory(
+            services.chapterChatStore,
+            projectId,
+            parseInt(chapterNumber, 10),
+            result,
+            discussionRunId,
+          )
+        } catch (historyError) {
+          request.log.error(
+            { err: historyError, projectId, chapterNumber, discussionRunId },
+            '群聊历史持久化失败',
+          )
+        }
+        emitter.result({
+          ...result,
+          discussionRunId,
+          canResume: result.status === 'error' && result.failedPhase === 'chapter_weaving',
+        })
       } catch (err) {
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
+        reply.raw.off('close', abortOnDisconnect)
+        finishNovelChapterTask(creationLockKey, task)
+        chapterCreationLocks.delete(creationLockKey)
+        reply.raw.end()
+      }
+    },
+  })
+
+  // 群聊断点续跑：仅支持 Writer 全章编织阶段，复用已持久化的场景和 transcript。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/create-discussion/:runId/resume',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber, runId } = request.params as {
+        projectId: string
+        chapterNumber: string
+        runId: string
+      }
+      const chapter = parseInt(chapterNumber, 10)
+      const snapshot = services.discussionRunStore.get(runId)
+      if (!snapshot || snapshot.projectId !== projectId || snapshot.chapterNumber !== chapter) {
+        reply.code(404).send({ ok: false, error: '未找到该章节的群聊中断记录' })
+        return
+      }
+      if (snapshot.status !== 'error' || snapshot.failedPhase !== 'chapter_weaving') {
+        reply.code(409).send({ ok: false, error: '该群聊记录不支持从写作阶段继续' })
+        return
+      }
+
+      const creationLockKey = `${projectId}:${chapterNumber}`
+      if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
+        reply.code(409).send({ ok: false, error: '该章节正在创作中，请勿重复启动断点续跑' })
+        return
+      }
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      request.raw.socket?.setNoDelay?.(true)
+      const heartbeat = setInterval(() => reply.raw.write(': keepalive\n\n'), 15000)
+      const resumeRunId = randomUUID()
+      const emitter = createNovelAgUiEmitter(
+        createSseEmitterSink((data) => reply.raw.write(data)),
+        `novel:discussion-resume:${projectId}:${chapterNumber}`,
+        resumeRunId,
+      )
+      const task = registerNovelChapterTask(creationLockKey, 'discussion-resume')
+      const abortOnDisconnect = () => {
+        if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
+          task.controller.abort(new Error('客户端已断开群聊断点续跑'))
+        }
+      }
+      reply.raw.once('close', abortOnDisconnect)
+
+      try {
+        chapterCreationLocks.add(creationLockKey)
+        const settings = services.discussionSettingsStore.get()
+        const result = await services.discussionRunner.run(
+          projectId,
+          chapter,
+          {
+            emit: emitter.emit,
+            onCheckpoint: async (checkpoint) => {
+              const toolCallId = randomUUID()
+              const decisionPromise = services.confirmationManager.requestDecision({
+                threadId: `novel-discussion-${projectId}-${chapterNumber}`,
+                toolCallId,
+                toolName: `discussion_${checkpoint.type}`,
+                args: { checkpoint } as Record<string, unknown>,
+                reason: `等待用户确认群聊断点续跑检查点：${checkpoint.question}`,
+              }, 0)
+              const pending = services.confirmationManager.listPending().find(request => request.toolCallId === toolCallId)
+              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+              return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
+            },
+            onProgress: event => emitter.progress(event),
+            moderatorModel: settings.moderatorModel,
+            signal: task.controller.signal,
+          },
+          snapshot.arrangedEntities,
+          {
+            phase: 'chapter_weaving',
+            transcript: snapshot.transcript,
+            scenes: snapshot.scenes,
+          },
+        )
+
+        services.discussionRunStore.save({
+          id: resumeRunId,
+          projectId,
+          chapterNumber: chapter,
+          status: result.status,
+          failedPhase: result.failedPhase,
+          transcript: result.transcript,
+          scenes: result.scenes,
+          arrangedEntities: snapshot.arrangedEntities,
+          content: result.content,
+          error: result.error,
+          resumedFromRunId: runId,
+        })
+
+        const previousMessageIds = new Set(snapshot.transcript.map(message => message.id))
+        const historyDelta: DiscussionResult = {
+          ...result,
+          transcript: result.transcript.filter(message => !previousMessageIds.has(message.id)),
+        }
+        try {
+          persistDiscussionHistory(
+            services.chapterChatStore,
+            projectId,
+            chapter,
+            historyDelta,
+            resumeRunId,
+          )
+        } catch (historyError) {
+          request.log.error(
+            { err: historyError, projectId, chapterNumber, resumeRunId },
+            '群聊断点续跑历史持久化失败',
+          )
+        }
+
+        emitter.result({
+          ...result,
+          discussionRunId: resumeRunId,
+          resumedFromRunId: runId,
+          canResume: result.status === 'error' && result.failedPhase === 'chapter_weaving',
+        })
+      } catch (err) {
+        emitter.error(String(err))
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.off('close', abortOnDisconnect)
+        finishNovelChapterTask(creationLockKey, task)
+        chapterCreationLocks.delete(creationLockKey)
         reply.raw.end()
       }
     },
@@ -2408,7 +2844,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
 
       // 并发锁：同一章节不允许并发 ai-arrange，避免重复生成实体
       const lockKey = `${projectId}:${chapterNumber}`
-      if (aiArrangeLocks.has(lockKey)) {
+      if (aiArrangeLocks.has(lockKey) || chapterCreationLocks.has(lockKey) || activeNovelChapterTasks.has(lockKey)) {
         reply.code(409).send({ error: '该章节正在编排中，请稍后' })
         return
       }
@@ -2420,9 +2856,14 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       // reply.raw 的 close 事件在 response 流关闭时触发，
       // 配合 writableEnded 检查可区分"正常结束"与"客户端中途断开"。
       let clientDisconnected = false
-      reply.raw.on('close', () => {
-        if (!reply.raw.writableEnded) clientDisconnected = true
-      })
+      const task = registerNovelChapterTask(lockKey, 'ai-arrange')
+      const abortOnDisconnect = () => {
+        if (!reply.raw.writableEnded) {
+          clientDisconnected = true
+          if (!task.controller.signal.aborted) task.controller.abort(new Error('客户端已断开 AI 编排流'))
+        }
+      }
+      reply.raw.on('close', abortOnDisconnect)
 
       // SSE 设置（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
       reply.raw.writeHead(200, {
@@ -2468,6 +2909,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           // 注意：...evt 必须放在 phase 之前，否则 evt.phase 会覆盖 'arranging'，
           // 导致前端无法识别为编排阶段（前端以 phase='arranging' 作为对话气泡判定条件）。
           (evt) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
+          'outline',
+          task.controller.signal,
         )
         const totalCount = arrangedEntities.characterIds.length
           + arrangedEntities.conflictIds.length
@@ -2502,6 +2945,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
+        reply.raw.off('close', abortOnDisconnect)
+        finishNovelChapterTask(lockKey, task)
         if (!reply.raw.writableEnded) reply.raw.end()
         aiArrangeLocks.delete(lockKey)
       }
@@ -2522,15 +2967,20 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
 
       // 并发锁：与 ai-arrange 共用锁池，同一章节不允许并发编排
       const lockKey = `${projectId}:${chapterNumber}`
-      if (aiArrangeLocks.has(lockKey)) {
+      if (aiArrangeLocks.has(lockKey) || chapterCreationLocks.has(lockKey) || activeNovelChapterTasks.has(lockKey)) {
         reply.code(409).send({ error: '该章节正在编排中，请稍后' })
         return
       }
 
       let clientDisconnected = false
-      reply.raw.on('close', () => {
-        if (!reply.raw.writableEnded) clientDisconnected = true
-      })
+      const task = registerNovelChapterTask(lockKey, 'reverse-arrange')
+      const abortOnDisconnect = () => {
+        if (!reply.raw.writableEnded) {
+          clientDisconnected = true
+          if (!task.controller.signal.aborted) task.controller.abort(new Error('客户端已断开反推编排流'))
+        }
+      }
+      reply.raw.on('close', abortOnDisconnect)
 
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -2569,6 +3019,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
           chapter.content,
           (evt) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
           'content', // source='content' 表示从正文反推
+          task.controller.signal,
         )
         const totalCount = arrangedEntities.characterIds.length
           + arrangedEntities.conflictIds.length
@@ -2601,6 +3052,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
+        reply.raw.off('close', abortOnDisconnect)
+        finishNovelChapterTask(lockKey, task)
         if (!reply.raw.writableEnded) reply.raw.end()
         aiArrangeLocks.delete(lockKey)
       }
@@ -2806,7 +3259,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
 
   const updateAgentConfigSchema = z.object({
     items: z.array(z.object({
-      agentType: z.enum(['director', 'writer', 'reviewer', 'memory']),
+      agentType: z.enum(['director', 'writer', 'reviser', 'reviewer', 'memory']),
       temperature: z.number().min(0).max(2),
     })),
   })

@@ -63,13 +63,15 @@ export interface NovelUiState {
   setError: (error: string | null) => void
   selectNode: (id: string | null, type: NovelNodeType | null) => void
   clearSelection: () => void
+  /** 项目切换/删除时统一清理项目相关的 UI 状态 */
+  resetForProjectSwitch: () => void
 }
 
 // ── Store ──
 
 export const useNovelUiStore = create<NovelUiState>()(
   persist(
-    (set): NovelUiState => ({
+    (set, get): NovelUiState => ({
       // ── 初始状态 ──
       selectedNodeId: null,
       selectedNodeType: null,
@@ -122,6 +124,16 @@ export const useNovelUiStore = create<NovelUiState>()(
 
       selectNode: (id, type) => set({ selectedNodeId: id, selectedNodeType: type }),
       clearSelection: () => set({ selectedNodeId: null, selectedNodeType: null }),
+      /** 项目切换/删除时统一清理项目相关的 UI 状态 */
+      resetForProjectSwitch: () => {
+        set({
+          collapsedGroups: [],
+          expandedVolumes: [],
+          matrixScrollTarget: null,
+        })
+        get().clearSelection()
+        get().setPlayheadChapter(1)
+      },
     }),
     {
       name: 'wenlang-agent-novel-ui',

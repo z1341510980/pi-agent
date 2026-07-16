@@ -199,6 +199,7 @@ export function ProviderManager(): ReactElement {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [editing, setEditing] = useState<ProviderEntry | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [defaultProviderId, setDefaultProviderId] = useState<string | null>(null)
 
   const localById = new Map(localProviders.map((p) => [p.id, p]))
   const backendIds = new Set(backendProviders.map((p) => p.id))
@@ -226,7 +227,10 @@ export function ProviderManager(): ReactElement {
     setLoading(true)
     setLoadError(null)
     try {
-      const data = await getApi<BackendProvider[]>('/api/providers')
+      const [data, defaultRes] = await Promise.all([
+        getApi<BackendProvider[]>('/api/providers'),
+        getApi<{ id: string | null }>('/api/providers/default'),
+      ])
       setBackendProviders(
         data.map((p) => ({
           ...p,
@@ -235,10 +239,23 @@ export function ProviderManager(): ReactElement {
           registered: true,
         }))
       )
+      setDefaultProviderId(defaultRes.id)
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '加载 Provider 列表失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleSetDefault(id: string): Promise<void> {
+    const prevId = defaultProviderId
+    setDefaultProviderId(id) // 乐观更新
+    try {
+      await postApi('/api/providers/default', { id })
+      void queryClient.invalidateQueries({ queryKey: ['agui-models'] })
+    } catch (err) {
+      setDefaultProviderId(prevId) // 回滚
+      setLoadError(err instanceof Error ? err.message : '设置默认 Provider 失败')
     }
   }
 
@@ -279,11 +296,12 @@ export function ProviderManager(): ReactElement {
 
   async function handleSave(entry: ProviderEntry): Promise<void> {
     // ID 优先使用已有值，否则从名称自动生成（小写+连字符）
-    const id = entry.id || entry.name
+    const derivedId = entry.name
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
+    const id = entry.id || derivedId || `provider-${Math.random().toString(36).slice(2, 10)}`
     if (!id) {
       throw new Error('请填写 Provider 名称')
     }
@@ -350,6 +368,8 @@ export function ProviderManager(): ReactElement {
           <ProviderCard
             key={`backend-${provider.id}`}
             provider={provider}
+            isDefault={defaultProviderId === provider.id}
+            onSetDefault={(id) => void handleSetDefault(id)}
             onEdit={handleEdit}
             onDelete={handleDelete}
           />
@@ -358,6 +378,8 @@ export function ProviderManager(): ReactElement {
           <ProviderCard
             key={`local-${provider.id}`}
             provider={provider}
+            isDefault={false}
+            onSetDefault={() => {}}
             onEdit={handleEdit}
             onDelete={handleDelete}
           />
@@ -386,18 +408,37 @@ export function ProviderManager(): ReactElement {
 
 interface ProviderCardProps {
   provider: ProviderEntry
+  isDefault: boolean
+  onSetDefault: (id: string) => void
   onEdit: (provider: ProviderEntry) => void
   onDelete: (id: string) => void
 }
 
-function ProviderCard({ provider, onEdit, onDelete }: ProviderCardProps): ReactElement {
+function ProviderCard({ provider, isDefault, onSetDefault, onEdit, onDelete }: ProviderCardProps): ReactElement {
+  const providerId = provider.id ?? provider.name
   return (
     <div className="bg-surface-2 border border-border rounded-lg p-3 flex items-center gap-3">
+      {/* 默认 Provider 单选圆圈 */}
+      <button
+        type="button"
+        className="size-4 rounded-full border-2 border-border flex items-center justify-center shrink-0 transition-colors hover:border-accent"
+        aria-label={isDefault ? `${provider.name} 是默认 Provider` : `将 ${provider.name} 设为默认`}
+        aria-pressed={isDefault}
+        title={isDefault ? '默认 Provider' : '点击设为默认 Provider'}
+        onClick={() => onSetDefault(providerId)}
+      >
+        {isDefault && <span className="size-2 rounded-full bg-accent" />}
+      </button>
       <div className="size-8 rounded-md bg-surface-3 flex items-center justify-center text-sm font-[780] shrink-0">
         {provider.name.charAt(0).toUpperCase() || '?'}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-[760]">{provider.name}</div>
+        <div className="text-sm font-[760] flex items-center gap-1.5">
+          {provider.name}
+          {isDefault && (
+            <Badge variant="default" className="text-[9px] px-1 py-0">默认</Badge>
+          )}
+        </div>
         <div className="text-xs text-muted-foreground truncate">
           {provider.api}
           {provider.baseUrl ? ` · ${provider.baseUrl}` : ''}
@@ -571,18 +612,31 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
   // 手动添加一个模型到列表（不依赖远端拉取）
   function handleAddModelManually(): void {
     const id = newModelId.trim()
-    if (!id) return
+    if (!id) {
+      setSaveError('请填写 Model ID')
+      return
+    }
     const name = newModelName.trim() || id
     const existing = getValues('models')
     if (existing.some((m) => m.id === id)) {
       setSaveError(`模型 "${id}" 已存在`)
       return
     }
+    const ctx = newModelCtx ? Number(newModelCtx) : undefined
+    const maxTok = newModelMaxTokens ? Number(newModelMaxTokens) : undefined
+    if (ctx !== undefined && (!Number.isFinite(ctx) || ctx <= 0)) {
+      setSaveError('上下文窗口必须是正数')
+      return
+    }
+    if (maxTok !== undefined && (!Number.isFinite(maxTok) || maxTok <= 0)) {
+      setSaveError('最大输出必须是正数')
+      return
+    }
     const newModel: ModelConfig = {
       id,
       name,
-      contextWindow: newModelCtx ? Number(newModelCtx) : undefined,
-      maxTokens: newModelMaxTokens ? Number(newModelMaxTokens) : undefined,
+      contextWindow: ctx,
+      maxTokens: maxTok,
     }
     setValue('models', [...existing, newModel], { shouldValidate: true })
     setNewModelId('')

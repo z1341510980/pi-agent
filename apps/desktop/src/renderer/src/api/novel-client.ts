@@ -17,7 +17,7 @@ import type { BaseEvent } from '@repo/protocol/events'
 import type {
   NovelProject, NovelChapter, NovelVolume, NovelCharacter,
   NovelRelationship, NovelForeshadow, NovelConflict, NovelClue,
-  NovelWorldRule, NovelStyleGuide, NovelConstraint, NovelInformationLayer,
+  NovelWorldRule, NovelStyleGuide, NovelWritingStyleProfile, NovelWritingStyleProfileInput, NovelConstraint, NovelInformationLayer,
   NovelFaction, NovelLocation, NovelWorldElement,
   NovelNodePosition, NovelEdge,
   NovelCharacterHistory, NovelMarker,
@@ -36,6 +36,7 @@ import type {
   NovelWorldElementCategory, NovelEdgeType,
   CharacterHistoryField, NovelMarkerType, NovelMarkerColor,
   SimilarityGroup,
+  ChapterVersion, ChapterVersionSummary, ChapterVersionDiff, ChapterVersionPhase, RollbackResult,
 } from '@repo/shared/novel'
 
 // re-export 共享类型供外部消费者使用
@@ -143,6 +144,8 @@ export interface CreateForeshadowInput {
   recoverMethod?: ForeshadowRecoverMethod
   // ── 迁移 055：多段章节跨度 ──
   chapterSpans?: Array<[number, number]>
+  /** 离散伏笔事件链（埋设/强化/揭示/回收） */
+  beats?: NonNullable<NovelForeshadow['beats']>
 }
 
 export interface CreateConflictInput {
@@ -424,6 +427,34 @@ export function deleteChapter(id: string): Promise<{ id: string; deleted: boolea
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/chapters/${id}`)
 }
 
+// ── 章节正文版本历史 ──
+
+export function listChapterVersions(chapterId: string): Promise<ChapterVersionSummary[]> {
+  return getApi<ChapterVersionSummary[]>(`${BASE}/chapters/${chapterId}/versions`)
+}
+
+export function getChapterVersion(chapterId: string, versionId: string): Promise<ChapterVersion> {
+  return getApi<ChapterVersion>(`${BASE}/chapters/${chapterId}/versions/${versionId}`)
+}
+
+export function diffChapterVersions(
+  chapterId: string,
+  fromVersionId: string,
+  toVersionId: string,
+): Promise<ChapterVersionDiff> {
+  return getApi<ChapterVersionDiff>(
+    `${BASE}/chapters/${chapterId}/versions/diff?from=${encodeURIComponent(fromVersionId)}&to=${encodeURIComponent(toVersionId)}`,
+  )
+}
+
+export function rollbackChapter(chapterId: string, versionId: string): Promise<RollbackResult> {
+  return postApi<RollbackResult>(`${BASE}/chapters/${chapterId}/versions/${versionId}/rollback`, {})
+}
+
+export function createChapterSnapshot(chapterId: string, trigger?: string): Promise<ChapterVersion> {
+  return postApi<ChapterVersion>(`${BASE}/chapters/${chapterId}/versions`, { trigger })
+}
+
 // ── Volumes ──
 
 export function listVolumes(projectId: string): Promise<NovelVolume[]> {
@@ -556,6 +587,32 @@ export function createStyleGuide(projectId: string, input: CreateStyleGuideInput
 
 export function deleteStyleGuide(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/style-guides/${id}`)
+}
+
+export function getWritingStyleProfile(projectId: string): Promise<NovelWritingStyleProfile | null> {
+  return getApi<NovelWritingStyleProfile | null>(`${BASE}/projects/${projectId}/writing-style-profile`)
+}
+
+export function saveWritingStyleProfile(
+  projectId: string,
+  input: NovelWritingStyleProfileInput,
+): Promise<NovelWritingStyleProfile> {
+  return putApi<NovelWritingStyleProfile>(`${BASE}/projects/${projectId}/writing-style-profile`, input)
+}
+
+export interface WritingStylePromptPreview {
+  profileId: string
+  profileVersion: number
+  profileHash: string
+  target: 'writer' | 'reviser' | 'reviewer'
+  content: string
+}
+
+export function getWritingStylePromptPreview(
+  projectId: string,
+  target: 'writer' | 'reviser' | 'reviewer' = 'writer',
+): Promise<WritingStylePromptPreview | null> {
+  return getApi<WritingStylePromptPreview | null>(`${BASE}/projects/${projectId}/writing-style-profile/preview?target=${target}`)
 }
 
 // ── Constraints ──
@@ -1301,6 +1358,11 @@ export interface ChapterChatMessage {
     agentType?: string
     mentionedAgents?: string[]
     flowMode?: 'workflow' | 'discussion'
+    discussionRunId?: string
+    discussionMessageType?: string
+    discussionRunStatus?: 'completed' | 'cancelled' | 'error'
+    discussionCanResume?: boolean
+    sceneId?: number
   }
   createdAt: number
 }

@@ -208,8 +208,9 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   const handleSelectProject = useCallback(
     (id: string) => {
       setCurrentProject(id)
+      selectNode(id, 'project')
     },
-    [setCurrentProject],
+    [selectNode, setCurrentProject],
   )
 
   // ── 项目删除（移入回收站）──

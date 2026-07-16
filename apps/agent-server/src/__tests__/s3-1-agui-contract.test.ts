@@ -52,7 +52,10 @@ function createMockSession(
 function createAgentWithMockSession(mockSessionReturn: any) {
   const store = new PiSessionStore()
   store.setSessionFactory(async () => mockSessionReturn)
-  const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, { list: () => [] } as any)
+  const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, {
+    list: () => [],
+    getStripStreamOptions: () => false
+  } as any)
   return { store, agent }
 }
 
@@ -508,7 +511,10 @@ describe('S3-1 并发契约', () => {
     const { session } = createMockSession()
     const store = new PiSessionStore()
     store.setSessionFactory(async (threadId) => ({ ...session, threadId }))
-    const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, { list: () => [] } as any)
+    const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, {
+      list: () => [],
+      getStripStreamOptions: () => false
+    } as any)
 
     const events1: BaseEvent[] = []
     const events2: BaseEvent[] = []
@@ -541,6 +547,62 @@ describe('S3-1 错误处理契约', () => {
     expect(errorIdx).toBeGreaterThanOrEqual(0)
     expect(errorIdx).toBe(events.length - 1)
     expect((events[errorIdx] as any).message).toContain('LLM 服务不可用')
+  })
+
+  it('TC-22: Pi SDK 以 stopReason=error 结束时发射 RUN_ERROR', async () => {
+    const { session, emit } = createMockSession()
+    session.prompt.mockImplementation(async () => {
+      emit({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          provider: 'grok',
+          model: 'grok-4.5',
+          stopReason: 'error',
+          errorMessage: '503 Service temporarily unavailable'
+        }
+      })
+    })
+    const { agent } = createAgentWithMockSession(session)
+
+    const { events, promise } = collectEvents(agent, createInput())
+    await promise
+
+    const terminalEvents = events.filter(
+      (event) => event.type === EventType.RUN_FINISHED || event.type === EventType.RUN_ERROR
+    )
+    expect(terminalEvents).toHaveLength(1)
+    expect(terminalEvents[0].type).toBe(EventType.RUN_ERROR)
+    expect((terminalEvents[0] as any).message).toContain('503 Service temporarily unavailable')
+  })
+
+  it('TC-22b: 自动重试后成功时清除之前的 assistant 错误', async () => {
+    const { session, emit } = createMockSession()
+    session.prompt.mockImplementation(async () => {
+      emit({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'error',
+          errorMessage: '503 Service temporarily unavailable'
+        }
+      })
+      emit({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'stop'
+        }
+      })
+    })
+    const { agent } = createAgentWithMockSession(session)
+
+    const { events, promise } = collectEvents(agent, createInput())
+    await promise
+
+    expect(events[events.length - 1].type).toBe(EventType.RUN_FINISHED)
+    expect(events.some((event) => event.type === EventType.RUN_ERROR)).toBe(false)
   })
 
   it('TC-23: 空 messages 数组走空 userText 路径，仍发射 RUN_FINISHED', async () => {

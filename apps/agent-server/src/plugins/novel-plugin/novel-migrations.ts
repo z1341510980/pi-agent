@@ -757,4 +757,80 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_chapter_chat_project_chapter
       ON novel_chapter_chat_messages(project_id, chapter_number, created_at);`,
   },
+  {
+    // 项目级叙事文风档案（结构化配置 + 正向样本）
+    id: '063_create_novel_writing_style_profiles',
+    sql: `CREATE TABLE IF NOT EXISTS novel_writing_style_profiles (
+      id                    TEXT PRIMARY KEY,
+      project_id            TEXT NOT NULL UNIQUE,
+      name                  TEXT NOT NULL DEFAULT '默认文风',
+      preset                TEXT NOT NULL DEFAULT 'custom',
+      narrative_person      TEXT NOT NULL DEFAULT 'third',
+      narrative_distance    TEXT NOT NULL DEFAULT 'limited',
+      sentence_rhythm       TEXT NOT NULL DEFAULT 'balanced',
+      dialogue_ratio        REAL NOT NULL DEFAULT 45,
+      emotional_temperature REAL NOT NULL DEFAULT 5,
+      imagery_density      REAL NOT NULL DEFAULT 3,
+      vocabulary_register   TEXT NOT NULL DEFAULT 'plain',
+      hard_rules            TEXT NOT NULL DEFAULT '[]',
+      soft_rules            TEXT NOT NULL DEFAULT '[]',
+      positive_examples     TEXT NOT NULL DEFAULT '[]',
+      notes                 TEXT NOT NULL DEFAULT '',
+      version               INTEGER NOT NULL DEFAULT 1,
+      created_at            INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at            INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_writing_style_profiles_project
+      ON novel_writing_style_profiles(project_id);`,
+  },
+  {
+    // 群聊运行快照：支持 Writer 阶段失败后从 chapter_weaving 断点续跑
+    id: '064_create_novel_discussion_runs',
+    sql: `CREATE TABLE IF NOT EXISTS novel_discussion_runs (
+      id                    TEXT PRIMARY KEY,
+      project_id            TEXT NOT NULL,
+      chapter_number        INTEGER NOT NULL,
+      status                TEXT NOT NULL,
+      failed_phase          TEXT,
+      transcript            TEXT NOT NULL DEFAULT '[]',
+      scenes                TEXT NOT NULL DEFAULT '[]',
+      arranged_entities     TEXT,
+      content               TEXT,
+      error                 TEXT,
+      resumed_from_run_id   TEXT,
+      created_at            INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at            INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_discussion_runs_chapter
+      ON novel_discussion_runs(project_id, chapter_number, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_novel_discussion_runs_resumed_from
+      ON novel_discussion_runs(resumed_from_run_id);`,
+  },
+  {
+    // 伏笔事件链：只保存实际发生的埋设/强化/揭示/回收节点，不再用连续跨度表达伏笔生命周期
+    id: '065_add_foreshadow_beats',
+    sql: `ALTER TABLE novel_foreshadowing ADD COLUMN beats TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    // 章节正文版本历史：每次正文覆盖前自动存档，支持版本列表、diff、回滚。
+    // 章节删除时版本通过 ON DELETE CASCADE 自动清理。
+    id: '066_create_novel_chapter_versions',
+    sql: `CREATE TABLE IF NOT EXISTS novel_chapter_versions (
+      id          TEXT PRIMARY KEY,
+      chapter_id  TEXT NOT NULL,
+      project_id  TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      word_count  INTEGER NOT NULL,
+      phase       TEXT,
+      agent_type  TEXT,
+      trigger     TEXT,
+      sequence    INTEGER NOT NULL,
+      created_at  INTEGER NOT NULL,
+      FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_chapter_versions_chapter ON novel_chapter_versions(chapter_id, sequence);
+    CREATE INDEX IF NOT EXISTS idx_chapter_versions_project ON novel_chapter_versions(project_id, created_at);`,
+  },
 ]

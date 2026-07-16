@@ -120,6 +120,7 @@ function createDeps(
     providerConfigStore: {
       getApiKey: (provider: string) => provider === 'openai' ? 'test-key' : undefined,
       list: () => [{ id: 'openai', models: [{ id: 'gpt-4.1-mini' }] }],
+      getDefaultProviderId: () => undefined,
     } as unknown as ProviderConfigStore,
     getApiKey: async (provider: string) => provider === 'openai' ? 'test-key' : undefined,
     gate: new Gate({ confirmationTools: ['bash'] }),

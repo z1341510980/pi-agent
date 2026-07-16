@@ -19,6 +19,7 @@ let memoryStore: NovelMemoryStore
 let promptManager: PromptManager
 let promptBuilder: NovelPromptBuilder
 let app: FastifyInstance
+let services: NovelServices
 
 /** mock characterGenerator.generate 返回固定角色 */
 function makeMockServices(): NovelServices {
@@ -64,6 +65,7 @@ function makeMockServices(): NovelServices {
     } as any,
     entityGenerator: {
       generate: vi.fn(),
+      generateAndArrange: vi.fn(),
     } as any,
     similarityScanner: {
       scan: vi.fn(),
@@ -85,6 +87,10 @@ function makeMockServices(): NovelServices {
     discussionSettingsStore: {
       get: vi.fn(() => ({})),
       update: vi.fn(),
+    } as any,
+    discussionRunStore: {
+      save: vi.fn(),
+      get: vi.fn(),
     } as any,
     chapterChatStore: {
       add: vi.fn(),
@@ -113,7 +119,7 @@ beforeAll(async () => {
   await app.register(requestContextPlugin)
   await app.register(errorHandlerPlugin)
 
-  const services = makeMockServices()
+  services = makeMockServices()
   const routes = createNovelRoutes(services)
   for (const route of routes) {
     const fullPath = `${PLUGIN_PREFIX}${route.path}`
@@ -147,6 +153,8 @@ afterAll(async () => {
 beforeEach(() => {
   // 清空所有表数据，确保测试独立
   db.exec(`
+    DELETE FROM novel_discussion_runs;
+    DELETE FROM novel_chapter_chat_messages;
     DELETE FROM novel_node_positions;
     DELETE FROM novel_character_history;
     DELETE FROM novel_memory_events;
@@ -224,6 +232,50 @@ describe('Novel API 路由 - 项目', () => {
     expect(response.statusCode).toBe(404)
     const body = response.json()
     expect(body.ok).toBe(false)
+  })
+})
+
+describe('Novel API 路由 - 伏笔事件链', () => {
+  it('PATCH 只更新 beats 时保留埋设点，不注入 null 覆盖兼容字段', async () => {
+    const projectRes = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects`,
+      payload: { title: '伏笔测试', genre: '悬疑', synopsis: '', targetWords: 0 },
+    })
+    const projectId = projectRes.json().data.id
+
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/foreshadowing`,
+      payload: {
+        description: '旧钥匙',
+        beats: [{ chapter: 2, type: 'plant' }],
+      },
+    })
+    const foreshadowId = createRes.json().data.id
+
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `${PLUGIN_PREFIX}/foreshadowing/${foreshadowId}`,
+      payload: {
+        beats: [
+          { chapter: 2, type: 'plant', note: '钥匙齿纹与旧锁吻合' },
+          { chapter: 5, type: 'reinforce', note: '钥匙再次出现在密室门边' },
+        ],
+      },
+    })
+
+    expect(patchRes.statusCode).toBe(200)
+    expect(patchRes.json().data).toMatchObject({
+      firstChapter: 2,
+      lastChapter: 5,
+      recoverByChapter: null,
+      status: 'reinforced',
+      beats: [
+        { chapter: 2, type: 'plant', note: '钥匙齿纹与旧锁吻合' },
+        { chapter: 5, type: 'reinforce', note: '钥匙再次出现在密室门边' },
+      ],
+    })
   })
 })
 
@@ -455,6 +507,83 @@ describe('Novel API 路由 - AI 角色生成', () => {
   })
 })
 
+describe('Novel API 路由 - 文风工厂', () => {
+  it('保存文风档案并预览 Writer 编译结果', async () => {
+    const createProject = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects`,
+      payload: { title: '文风测试', genre: '悬疑', synopsis: '', targetWords: 100000 },
+    })
+    const projectId = createProject.json().data.id
+    const saveResponse = await app.inject({
+      method: 'PUT',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/writing-style-profile`,
+      payload: {
+        name: '冷峻克制',
+        preset: 'restrained',
+        narrativePerson: 'third',
+        narrativeDistance: 'limited',
+        sentenceRhythm: 'short',
+        dialogueRatio: 40,
+        emotionalTemperature: 3,
+        imageryDensity: 2,
+        vocabularyRegister: 'plain',
+        hardRules: ['不替读者总结'],
+        softRules: ['动作优先'],
+        positiveExamples: ['雨落下来，院子里没有人动。檐下的水一滴一滴砸在石阶上。'],
+        notes: '',
+      },
+    })
+
+    expect(saveResponse.statusCode, saveResponse.body).toBe(200)
+    expect(saveResponse.json().data).toMatchObject({ name: '冷峻克制', version: 1 })
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/writing-style-profile`,
+    })
+    expect(getResponse.statusCode).toBe(200)
+    expect(getResponse.json().data.hardRules).toEqual(['不替读者总结'])
+
+    const previewResponse = await app.inject({
+      method: 'GET',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/writing-style-profile/preview?target=writer`,
+    })
+    expect(previewResponse.statusCode, previewResponse.body).toBe(200)
+    expect(previewResponse.json().data.content).toContain('项目文风档案：冷峻克制')
+    expect(previewResponse.json().data.profileHash).toHaveLength(16)
+  })
+
+  it('拒绝超出范围的文风参数', async () => {
+    const createProject = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects`,
+      payload: { title: '文风校验', genre: '悬疑', synopsis: '', targetWords: 100000 },
+    })
+    const projectId = createProject.json().data.id
+    const response = await app.inject({
+      method: 'PUT',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/writing-style-profile`,
+      payload: {
+        name: '非法参数',
+        preset: 'custom',
+        narrativePerson: 'third',
+        narrativeDistance: 'limited',
+        sentenceRhythm: 'balanced',
+        dialogueRatio: 100,
+        emotionalTemperature: 5,
+        imageryDensity: 3,
+        vocabularyRegister: 'plain',
+        hardRules: [],
+        softRules: [],
+        positiveExamples: [],
+        notes: '',
+      },
+    })
+    expect(response.statusCode).toBe(400)
+  })
+})
+
 describe('Novel API 路由 - 响应格式', () => {
   it('所有响应包含 ok/data/meta 字段', async () => {
     const response = await app.inject({
@@ -485,5 +614,95 @@ describe('Novel API 路由 - 响应格式', () => {
     })
     expect(response.headers['x-trace-id']).toBe('custom-trace-123')
     expect(response.json().meta.traceId).toBe('custom-trace-123')
+  })
+})
+
+describe('Novel API 路由 - 大流程统一取消', () => {
+  it.each([
+    ['workflow', 'create-flow'],
+    ['discussion', 'create-discussion'],
+    ['ai-arrange', 'ai-arrange'],
+    ['reverse-arrange', 'reverse-arrange'],
+  ] as const)('%s 会把取消信号传到后端任务并释放锁', async (kind, endpoint) => {
+    const project = store.createProject({
+      id: `cancel-${kind}`,
+      title: `${kind} 取消测试`,
+      genre: '都市',
+      synopsis: '',
+      outline: '',
+      targetWords: 3000,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active',
+    } as any)
+    store.createChapter({
+      id: `chapter-${kind}`,
+      projectId: project.id,
+      volume: 1,
+      chapterNumber: 9,
+      title: '第九章',
+      outline: '有效章纲',
+      content: '已写好的章节正文，用于反推编排测试。',
+      wordCount: 20,
+      status: 'planned',
+      narrativeTask: '',
+      acceptanceResult: null,
+    } as any)
+
+    let started!: (signal: AbortSignal) => void
+    const taskStarted = new Promise<AbortSignal>((resolve) => { started = resolve })
+    const completeWhenAborted = <T>(signal: AbortSignal, value: T): Promise<T> => {
+      started(signal)
+      return new Promise<T>((resolve) => {
+        if (signal.aborted) return resolve(value)
+        signal.addEventListener('abort', () => resolve(value), { once: true })
+      })
+    }
+
+    if (kind === 'workflow') {
+      services.orchestrator.createChapterWithFlow = vi.fn((_projectId, _chapterNumber, options) =>
+        completeWhenAborted(options.signal!, { status: 'cancelled' })) as any
+    } else if (kind === 'discussion') {
+      services.discussionRunner.run = vi.fn((_projectId, _chapterNumber, options) =>
+        completeWhenAborted(options.signal!, { status: 'cancelled', transcript: [], scenes: [] })) as any
+    } else {
+      services.entityGenerator.generateAndArrange = vi.fn(
+        (_projectId, _chapterNumber, _source, _onProgress, _sourceType, signal) => {
+          started(signal)
+          return new Promise((_resolve, reject) => {
+            const rejectAbort = () => reject(signal.reason ?? new Error('已取消'))
+            if (signal.aborted) return rejectAbort()
+            signal.addEventListener('abort', rejectAbort, { once: true })
+          })
+        },
+      ) as any
+    }
+
+    const flowResponsePromise = app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${project.id}/chapters/9/${endpoint}`,
+      payload: {},
+    })
+    const signal = await taskStarted
+    expect(signal.aborted).toBe(false)
+
+    const cancelResponse = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${project.id}/chapters/9/cancel-active-flow`,
+      payload: {},
+    })
+    expect(cancelResponse.statusCode, cancelResponse.body).toBe(200)
+    expect(cancelResponse.json().data).toMatchObject({ cancelled: true, kind })
+
+    await flowResponsePromise
+    expect(signal.aborted).toBe(true)
+
+    const afterFinished = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${project.id}/chapters/9/cancel-active-flow`,
+      payload: {},
+    })
+    expect(afterFinished.json().data.cancelled).toBe(false)
   })
 })

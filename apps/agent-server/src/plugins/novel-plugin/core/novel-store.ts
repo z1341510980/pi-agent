@@ -19,6 +19,7 @@ import {
   createChapterRenumberSpec,
   shiftChapterSpans,
   shiftChapterList,
+  shiftChapterEvents,
   CHAPTER_RENUMBER_FIELDS,
 } from './chapter-renumber.js'
 import type { ChapterRenumberSpec } from './chapter-renumber.js'
@@ -41,6 +42,8 @@ import type {
   NovelConstraint,
   NovelInformationLayer,
   NovelStyleGuide,
+  NovelWritingStyleProfile,
+  NovelWritingStyleProfileInput,
   NovelAuthorIntent,
   NovelChapterReview,
   NovelCharacterHistory,
@@ -64,6 +67,10 @@ import type {
   DeduplicateGroup,
   DeduplicateReport,
   SimilarityGroup,
+  ChapterVersion,
+  ChapterVersionSummary,
+  ChapterVersionPhase,
+  VersionSource,
 } from './types.js'
 
 // ── 行类型（SQLite snake_case → TypeScript camelCase 映射）──
@@ -118,6 +125,7 @@ interface ForeshadowRow {
   plant_method: string | null; recover_method: string | null
   linked_info_layers: string
   chapter_spans: string | null
+  beats: string | null
   created_at: number; updated_at: number
 }
 
@@ -187,6 +195,15 @@ interface InfoLayerRow {
 interface StyleGuideRow {
   id: string; project_id: string; category: string; rule: string
   example: string | null; created_at: number; updated_at: number
+}
+
+interface WritingStyleProfileRow {
+  id: string; project_id: string; name: string; preset: string
+  narrative_person: string; narrative_distance: string; sentence_rhythm: string
+  dialogue_ratio: number; emotional_temperature: number; imagery_density: number
+  vocabulary_register: string; hard_rules: string; soft_rules: string
+  positive_examples: string; notes: string; version: number
+  created_at: number; updated_at: number
 }
 
 interface AuthorIntentRow {
@@ -272,6 +289,19 @@ interface AgentLogRow {
   llm_provider: string; llm_model: string
 }
 
+interface ChapterVersionRow {
+  id: string
+  chapter_id: string
+  project_id: string
+  content: string
+  word_count: number
+  phase: string | null
+  agent_type: string | null
+  trigger: string | null
+  sequence: number
+  created_at: number
+}
+
 // ── 工具函数 ──
 
 function parseJSON<T>(s: string, fallback: T): T {
@@ -293,6 +323,55 @@ function parseChapterSpans(raw: string | null | undefined): ChapterSpan[] {
   } catch {
     return []
   }
+}
+
+type ForeshadowBeat = NonNullable<NovelForeshadow['beats']>[number]
+const FORESHADOW_BEAT_TYPES = new Set(['plant', 'reinforce', 'reveal', 'payoff'])
+
+/** 规范化事件链，并为旧数据从 firstChapter/recoverByChapter 补出端点事件。 */
+function normalizeForeshadowBeats(
+  input: unknown,
+  firstChapter: number | null,
+  recoverByChapter: number | null,
+): ForeshadowBeat[] {
+  const source = Array.isArray(input) ? input : []
+  const byChapter = new Map<number, ForeshadowBeat>()
+  for (const raw of source) {
+    if (!raw || typeof raw !== 'object') continue
+    const candidate = raw as Record<string, unknown>
+    const chapter = candidate.chapter
+    const type = candidate.type
+    if (!Number.isInteger(chapter) || (chapter as number) < 1 || typeof type !== 'string' || !FORESHADOW_BEAT_TYPES.has(type)) continue
+    byChapter.set(chapter as number, {
+      chapter: chapter as number,
+      type: type as ForeshadowBeat['type'],
+      ...(typeof candidate.note === 'string' && candidate.note.trim() ? { note: candidate.note.trim() } : {}),
+    })
+  }
+  if (![...byChapter.values()].some((beat) => beat.type === 'plant') && firstChapter != null) {
+    byChapter.set(firstChapter, { chapter: firstChapter, type: 'plant' })
+  }
+  if (![...byChapter.values()].some((beat) => beat.type === 'payoff') && recoverByChapter != null) {
+    byChapter.set(recoverByChapter, { chapter: recoverByChapter, type: 'payoff' })
+  }
+  // 埋设与回收各自只能有一个；强化、部分揭示可以在不同章节重复出现。
+  const sorted = [...byChapter.values()].sort((a, b) => a.chapter - b.chapter)
+  const plant = sorted.find((beat) => beat.type === 'plant')
+  if (!plant) return []
+  const payoff = sorted.find((beat) => beat.type === 'payoff' && beat.chapter > plant.chapter)
+  return sorted.filter((beat) => {
+    if (beat.type === 'plant') return beat === plant
+    if (beat.chapter <= plant.chapter) return false
+    if (beat.type === 'payoff') return beat === payoff
+    return payoff == null || beat.chapter < payoff.chapter
+  })
+}
+
+function deriveForeshadowStatus(beats: ForeshadowBeat[]): NovelForeshadow['status'] {
+  if (beats.some((beat) => beat.type === 'payoff')) return 'recovered'
+  if (beats.some((beat) => beat.type === 'reveal')) return 'partially_revealed'
+  if (beats.some((beat) => beat.type === 'reinforce')) return 'reinforced'
+  return beats.some((beat) => beat.type === 'plant') ? 'planted' : 'planned'
 }
 
 function now(): number {
@@ -511,6 +590,11 @@ export class NovelStore implements NovelPromptStores {
     return (this.stmtListStyleGuides.all(projectId) as StyleGuideRow[]).map((r) => this.rowToStyleGuide(r))
   }
 
+  getWritingStyleProfile(projectId: string): NovelWritingStyleProfile | undefined {
+    const row = this.db.prepare('SELECT * FROM novel_writing_style_profiles WHERE project_id = ?').get(projectId) as WritingStyleProfileRow | undefined
+    return row ? this.rowToWritingStyleProfile(row) : undefined
+  }
+
   listCharacters(projectId: string): NovelCharacter[] {
     return (this.stmtListCharacters.all(projectId) as CharacterRow[]).map((r) => this.rowToCharacter(r))
   }
@@ -726,10 +810,14 @@ export class NovelStore implements NovelPromptStores {
     return full
   }
 
-  updateChapter(id: string, patch: Partial<NovelChapter>): NovelChapter | undefined {
+  updateChapter(id: string, patch: Partial<NovelChapter>, versionSource?: VersionSource): NovelChapter | undefined {
     const existing = this.db.prepare('SELECT * FROM novel_chapters WHERE id = ?').get(id) as ChapterRow | undefined
     if (!existing) return undefined
     const current = this.rowToChapter(existing)
+    // 拦截：content 被覆盖且与旧值不同时，先把旧 content 存为版本（versionSource='skip' 时跳过）
+    if (versionSource !== 'skip' && patch.content !== undefined && patch.content !== current.content) {
+      this.saveChapterVersionInternal(current, versionSource ?? null)
+    }
     const updated = { ...current, ...patch, id, updatedAt: now() }
     this.db.prepare(`
       UPDATE novel_chapters SET title=@title, content=@content, word_count=@word_count,
@@ -752,9 +840,159 @@ export class NovelStore implements NovelPromptStores {
   }
 
   /** 更新章节内容（仅 content 和 wordCount） */
-  updateChapterContent(id: string, content: string, wordCount: number): NovelChapter | undefined {
+  updateChapterContent(id: string, content: string, wordCount: number, versionSource?: VersionSource): NovelChapter | undefined {
+    const current = this.getChapterById(id)
+    if (current && versionSource !== 'skip' && content !== current.content) {
+      this.saveChapterVersionInternal(current, versionSource ?? null)
+    }
     this.db.prepare('UPDATE novel_chapters SET content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?').run(content, wordCount, id)
     return this.getChapterById(id) ?? undefined
+  }
+
+  // ── 章节正文版本历史 ──
+
+  /** 内部方法：把当前章节的 content 存为新版本 */
+  private saveChapterVersionInternal(chapter: NovelChapter, source: VersionSource | null): void {
+    const maxSeq = (this.db.prepare(
+      'SELECT MAX(sequence) as maxSeq FROM novel_chapter_versions WHERE chapter_id = ?'
+    ).get(chapter.id) as { maxSeq: number | null } | undefined)?.maxSeq ?? 0
+
+    const phase = source && source !== 'skip' ? source.phase : null
+    const agentType = source && source !== 'skip' ? (source.agentType ?? null) : null
+    const trigger = source && source !== 'skip' ? (source.trigger ?? null) : null
+
+    this.db.prepare(`
+      INSERT INTO novel_chapter_versions
+        (id, chapter_id, project_id, content, word_count, phase, agent_type, trigger, sequence, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(),
+      chapter.id,
+      chapter.projectId,
+      chapter.content,
+      chapter.wordCount,
+      phase,
+      agentType,
+      trigger,
+      maxSeq + 1,
+      now(),
+    )
+  }
+
+  /** 列出章节所有版本摘要（按 sequence 倒序，不含 content 全文） */
+  listChapterVersions(chapterId: string): ChapterVersionSummary[] {
+    const rows = this.db.prepare(
+      `SELECT id, chapter_id, project_id, word_count, phase, agent_type, trigger,
+              sequence, created_at
+       FROM novel_chapter_versions WHERE chapter_id = ? ORDER BY sequence ASC`
+    ).all(chapterId) as Omit<ChapterVersionRow, 'content'>[]
+
+    if (rows.length === 0) return []
+
+    // 按 sequence 正序算每版与前一版的 wordCount 差，再倒序返回
+    const summaries: ChapterVersionSummary[] = rows.map((row, idx) => {
+      const prevWordCount = idx > 0 ? rows[idx - 1].word_count : row.word_count
+      return {
+        id: row.id,
+        sequence: row.sequence,
+        phase: (row.phase as ChapterVersionPhase | null) ?? null,
+        agentType: row.agent_type,
+        trigger: row.trigger,
+        wordCount: row.word_count,
+        wordCountDelta: idx > 0 ? row.word_count - prevWordCount : 0,
+        createdAt: row.created_at,
+        isCurrent: idx === rows.length - 1, // 正序最后一版（最新版）= 当前
+      }
+    })
+
+    return summaries.reverse()
+  }
+
+  /** 获取特定版本详情（含全文） */
+  getChapterVersion(versionId: string): ChapterVersion | undefined {
+    const row = this.db.prepare(
+      'SELECT * FROM novel_chapter_versions WHERE id = ?'
+    ).get(versionId) as ChapterVersionRow | undefined
+    return row ? this.rowToChapterVersion(row) : undefined
+  }
+
+  /** 显式创建版本快照（用于 rollback_pre / rollback_applied / 手动快照） */
+  createVersionSnapshot(chapterId: string, source: VersionSource): ChapterVersion | undefined {
+    if (source === 'skip' || source === undefined) return undefined
+    const chapter = this.getChapterById(chapterId)
+    if (!chapter) return undefined
+    this.saveChapterVersionInternal(chapter, source)
+    return this.getLatestVersion(chapterId)
+  }
+
+  /** 获取章节最新版本 */
+  getLatestVersion(chapterId: string): ChapterVersion | undefined {
+    const row = this.db.prepare(
+      'SELECT * FROM novel_chapter_versions WHERE chapter_id = ? ORDER BY sequence DESC LIMIT 1'
+    ).get(chapterId) as ChapterVersionRow | undefined
+    return row ? this.rowToChapterVersion(row) : undefined
+  }
+
+  private rowToChapterVersion(row: ChapterVersionRow): ChapterVersion {
+    return {
+      id: row.id,
+      chapterId: row.chapter_id,
+      projectId: row.project_id,
+      content: row.content,
+      wordCount: row.word_count,
+      phase: (row.phase as ChapterVersionPhase | null) ?? null,
+      agentType: row.agent_type,
+      trigger: row.trigger,
+      sequence: row.sequence,
+      createdAt: row.created_at,
+    }
+  }
+
+  /**
+   * 安全回滚到指定版本：3 步原子事务
+   *   1. 存当前正文为 rollback_pre 版本
+   *   2. 用目标版本覆盖当前正文（跳过拦截避免重复）
+   *   3. 显式存回滚后的正文为 rollback_applied 版本
+   *
+   * @returns 回滚结果（含 savedVersionId 和回滚后的当前正文）
+   * @throws 当章节不存在 / 版本不存在 / 当前正文已是目标内容 时抛出 Error
+   */
+  rollbackToVersion(chapterId: string, targetVersionId: string): {
+    savedVersionId: string
+    currentContent: string
+    currentWordCount: number
+  } {
+    const target = this.getChapterVersion(targetVersionId)
+    if (!target) throw new Error(`版本不存在: ${targetVersionId}`)
+    if (target.chapterId !== chapterId) throw new Error('版本不属于该章节')
+
+    const current = this.getChapterById(chapterId)
+    if (!current) throw new Error(`章节不存在: ${chapterId}`)
+    if (current.content === target.content) throw new Error('当前正文已是该版本内容，无需回滚')
+
+    return this.db.transaction(() => {
+      // 1. 安全存当前（rollback_pre）
+      const saved = this.createVersionSnapshot(chapterId, {
+        phase: 'rollback_pre',
+        trigger: `回滚到版本 ${targetVersionId}（seq ${target.sequence}）`,
+      })
+
+      // 2. 覆盖当前正文，跳过拦截（避免与第 1 步重复存）
+      this.updateChapterContent(chapterId, target.content, target.wordCount, 'skip')
+
+      // 3. 显式存回滚后的正文（rollback_applied）
+      this.createVersionSnapshot(chapterId, {
+        phase: 'rollback_applied',
+        trigger: `回滚自版本 ${targetVersionId}`,
+      })
+
+      const updated = this.getChapterById(chapterId)
+      return {
+        savedVersionId: saved?.id ?? '',
+        currentContent: updated?.content ?? target.content,
+        currentWordCount: updated?.wordCount ?? target.wordCount,
+      }
+    })()
   }
 
   listChapters(projectId: string): NovelChapter[] {
@@ -853,7 +1091,48 @@ export class NovelStore implements NovelPromptStores {
             `UPDATE ${field.table} SET ${field.column} = ? WHERE id = ?`,
           ).run(JSON.stringify(shifted), row.id)
         }
+      } else if (field.kind === 'events') {
+        const rows = this.db.prepare(
+          `SELECT id, ${field.column} AS events FROM ${field.table} WHERE project_id = ?`,
+        ).all(projectId) as Array<{ id: string; events: string | null }>
+        for (const row of rows) {
+          if (!row.events) continue
+          const parsed = JSON.parse(row.events)
+          if (!Array.isArray(parsed) || !parsed.every((event) => event && typeof event === 'object' && typeof event.chapter === 'number')) {
+            throw new Error(`非法 ${field.column} 事件结构: table=${field.table} id=${row.id}`)
+          }
+          const shifted = shiftChapterEvents(parsed as Array<{ chapter: number; [key: string]: unknown }>, spec)
+          this.db.prepare(`UPDATE ${field.table} SET ${field.column} = ? WHERE id = ?`)
+            .run(JSON.stringify(shifted), row.id)
+        }
       }
+    }
+
+    // 事件与兼容标量分别完成重排后，再以事件链为准统一端点和状态。
+    // 例如删除 plant 所在章时，必须清掉后续孤立节点与 recoverByChapter。
+    const foreshadows = this.db.prepare(
+      `SELECT id, beats, first_chapter, recover_by_chapter
+       FROM novel_foreshadowing WHERE project_id = ?`,
+    ).all(projectId) as Array<{
+      id: string
+      beats: string | null
+      first_chapter: number | null
+      recover_by_chapter: number | null
+    }>
+    for (const row of foreshadows) {
+      const parsed = row.beats ? JSON.parse(row.beats) : []
+      const beats = normalizeForeshadowBeats(parsed, row.first_chapter, row.recover_by_chapter)
+      const firstChapter = beats.find((beat) => beat.type === 'plant')?.chapter ?? null
+      const recoverByChapter = beats.find((beat) => beat.type === 'payoff')?.chapter ?? null
+      const lastChapter = beats.at(-1)?.chapter ?? null
+      this.db.prepare(`
+        UPDATE novel_foreshadowing
+        SET beats = ?, first_chapter = ?, recover_by_chapter = ?, last_chapter = ?, status = ?
+        WHERE id = ?
+      `).run(
+        JSON.stringify(beats), firstChapter, recoverByChapter, lastChapter,
+        deriveForeshadowStatus(beats), row.id,
+      )
     }
   }
 
@@ -1003,14 +1282,29 @@ export class NovelStore implements NovelPromptStores {
 
   createForeshadow(foreshadow: Omit<NovelForeshadow, 'createdAt' | 'updatedAt'>): NovelForeshadow {
     const ts = now()
-    const full: NovelForeshadow = { ...foreshadow, createdAt: ts, updatedAt: ts }
+    const beats = normalizeForeshadowBeats(foreshadow.beats, foreshadow.firstChapter, foreshadow.recoverByChapter)
+    const beatsAreAuthoritative = foreshadow.beats !== undefined
+    const full: NovelForeshadow = {
+      ...foreshadow,
+      beats,
+      ...(beatsAreAuthoritative
+        ? {
+            firstChapter: beats.find((beat) => beat.type === 'plant')?.chapter ?? null,
+            recoverByChapter: beats.find((beat) => beat.type === 'payoff')?.chapter ?? null,
+            lastChapter: beats.at(-1)?.chapter ?? null,
+            status: deriveForeshadowStatus(beats),
+          }
+        : {}),
+      createdAt: ts,
+      updatedAt: ts,
+    }
     this.db.prepare(`
       INSERT INTO novel_foreshadowing (id, project_id, description, category, status, first_chapter, last_chapter,
       recover_by_chapter, linked_characters, linked_clues, plant_method, recover_method, linked_info_layers,
-      chapter_spans, created_at, updated_at)
+      chapter_spans, beats, created_at, updated_at)
       VALUES (@id, @project_id, @description, @category, @status, @first_chapter, @last_chapter,
       @recover_by_chapter, @linked_characters, @linked_clues, @plant_method, @recover_method, @linked_info_layers,
-      @chapter_spans, @created_at, @updated_at)
+      @chapter_spans, @beats, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       category: full.category, status: full.status, first_chapter: full.firstChapter,
@@ -1020,6 +1314,7 @@ export class NovelStore implements NovelPromptStores {
       recover_method: full.recoverMethod ?? null,
       linked_info_layers: full.linkedInfoLayers ?? '[]',
       chapter_spans: JSON.stringify(full.chapterSpans ?? []),
+      beats: JSON.stringify(full.beats ?? []),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -1029,14 +1324,44 @@ export class NovelStore implements NovelPromptStores {
     const existing = this.db.prepare('SELECT * FROM novel_foreshadowing WHERE id = ?').get(id) as ForeshadowRow | undefined
     if (!existing) return undefined
     const current = this.rowToForeshadow(existing)
-    const updated = { ...current, ...patch, id, updatedAt: now() }
+    const updated: NovelForeshadow = { ...current, ...patch, id, updatedAt: now() }
+    // patch.beats 非空（length > 0）时，使用 current 的标量端点作为 fallback 传给 normalize，
+    // 防止前端发送不含 plant 的 beats（如仅 reinforce/reveal）时整条链被清空。
+    // patch.beats 为空数组（用户主动删除 plant）时不补，保持删除语义。
+    const patchBeatsIsNonEmpty = Array.isArray(patch.beats) && patch.beats.length > 0
+    let beats = patch.beats !== undefined
+      ? normalizeForeshadowBeats(
+          patch.beats,
+          patchBeatsIsNonEmpty ? current.firstChapter : null,
+          patchBeatsIsNonEmpty ? current.recoverByChapter : null,
+        )
+      : normalizeForeshadowBeats(updated.beats, updated.firstChapter, updated.recoverByChapter)
+    if (patch.firstChapter !== undefined) {
+      beats = beats.filter((beat) => beat.type !== 'plant')
+      if (patch.firstChapter != null) beats.push({ chapter: patch.firstChapter, type: 'plant' })
+    }
+    if (patch.recoverByChapter !== undefined) {
+      beats = beats.filter((beat) => beat.type !== 'payoff')
+      if (patch.recoverByChapter != null) beats.push({ chapter: patch.recoverByChapter, type: 'payoff' })
+    }
+    // 走到这里时 beats 已包含旧数据兼容补点以及本次显式修改。
+    // 再用旧的标量端点兜底会把用户刚删除的 plant/payoff 重新补回来，
+    // 因此最终规范化必须把事件链视为权威来源。
+    beats = normalizeForeshadowBeats(beats, null, null)
+    if (patch.beats !== undefined || patch.firstChapter !== undefined || patch.recoverByChapter !== undefined) {
+      updated.firstChapter = beats.find((beat) => beat.type === 'plant')?.chapter ?? null
+      updated.recoverByChapter = beats.find((beat) => beat.type === 'payoff')?.chapter ?? null
+      updated.lastChapter = beats.length > 0 ? beats[beats.length - 1].chapter : null
+      updated.status = deriveForeshadowStatus(beats)
+    }
+    updated.beats = beats
     this.db.prepare(`
       UPDATE novel_foreshadowing SET description=@description, category=@category, status=@status,
       first_chapter=@first_chapter, last_chapter=@last_chapter, recover_by_chapter=@recover_by_chapter,
       linked_characters=@linked_characters, linked_clues=@linked_clues,
       plant_method=@plant_method, recover_method=@recover_method,
       linked_info_layers=@linked_info_layers,
-      chapter_spans=@chapter_spans,
+      chapter_spans=@chapter_spans, beats=@beats,
       updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, category: updated.category, status: updated.status,
@@ -1047,6 +1372,7 @@ export class NovelStore implements NovelPromptStores {
       recover_method: updated.recoverMethod ?? null,
       linked_info_layers: updated.linkedInfoLayers ?? '[]',
       chapter_spans: JSON.stringify(updated.chapterSpans ?? []),
+      beats: JSON.stringify(updated.beats ?? []),
       updated_at: updated.updatedAt,
     })
     return updated
@@ -1533,6 +1859,72 @@ export class NovelStore implements NovelPromptStores {
   deleteStyleGuide(id: string): boolean {
     const result = this.db.prepare('DELETE FROM novel_style_guides WHERE id = ?').run(id)
     return result.changes > 0
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 叙事文风档案 CRUD
+  // ═══════════════════════════════════════════════════════════════
+
+  upsertWritingStyleProfile(projectId: string, input: NovelWritingStyleProfileInput): NovelWritingStyleProfile {
+    const existing = this.getWritingStyleProfile(projectId)
+    const ts = now()
+    const full: NovelWritingStyleProfile = {
+      id: existing?.id ?? randomUUID(),
+      projectId,
+      ...input,
+      version: (existing?.version ?? 0) + 1,
+      createdAt: existing?.createdAt ?? ts,
+      updatedAt: ts,
+    }
+    this.db.prepare(`
+      INSERT INTO novel_writing_style_profiles (
+        id, project_id, name, preset, narrative_person, narrative_distance,
+        sentence_rhythm, dialogue_ratio, emotional_temperature, imagery_density,
+        vocabulary_register, hard_rules, soft_rules, positive_examples, notes,
+        version, created_at, updated_at
+      ) VALUES (
+        @id, @project_id, @name, @preset, @narrative_person, @narrative_distance,
+        @sentence_rhythm, @dialogue_ratio, @emotional_temperature, @imagery_density,
+        @vocabulary_register, @hard_rules, @soft_rules, @positive_examples, @notes,
+        @version, @created_at, @updated_at
+      )
+      ON CONFLICT(project_id) DO UPDATE SET
+        name = excluded.name,
+        preset = excluded.preset,
+        narrative_person = excluded.narrative_person,
+        narrative_distance = excluded.narrative_distance,
+        sentence_rhythm = excluded.sentence_rhythm,
+        dialogue_ratio = excluded.dialogue_ratio,
+        emotional_temperature = excluded.emotional_temperature,
+        imagery_density = excluded.imagery_density,
+        vocabulary_register = excluded.vocabulary_register,
+        hard_rules = excluded.hard_rules,
+        soft_rules = excluded.soft_rules,
+        positive_examples = excluded.positive_examples,
+        notes = excluded.notes,
+        version = excluded.version,
+        updated_at = excluded.updated_at
+    `).run({
+      id: full.id,
+      project_id: full.projectId,
+      name: full.name,
+      preset: full.preset,
+      narrative_person: full.narrativePerson,
+      narrative_distance: full.narrativeDistance,
+      sentence_rhythm: full.sentenceRhythm,
+      dialogue_ratio: full.dialogueRatio,
+      emotional_temperature: full.emotionalTemperature,
+      imagery_density: full.imageryDensity,
+      vocabulary_register: full.vocabularyRegister,
+      hard_rules: JSON.stringify(full.hardRules),
+      soft_rules: JSON.stringify(full.softRules),
+      positive_examples: JSON.stringify(full.positiveExamples),
+      notes: full.notes,
+      version: full.version,
+      created_at: full.createdAt,
+      updated_at: full.updatedAt,
+    })
+    return full
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -2797,6 +3189,7 @@ export class NovelStore implements NovelPromptStores {
       linkedInfoLayers: row.linked_info_layers ?? '[]',
       // 迁移 055：多段章节跨度（NULL 容错，迁移前的行 chapterSpans 为 []）
       chapterSpans: parseChapterSpans(row.chapter_spans),
+      beats: normalizeForeshadowBeats(parseJSON<unknown[]>(row.beats ?? '[]', []), row.first_chapter, row.recover_by_chapter),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -2856,6 +3249,50 @@ export class NovelStore implements NovelPromptStores {
     return {
       id: row.id, projectId: row.project_id, category: row.category, rule: row.rule,
       example: row.example, createdAt: row.created_at, updatedAt: row.updated_at,
+    }
+  }
+
+  private rowToWritingStyleProfile(row: WritingStyleProfileRow): NovelWritingStyleProfile {
+    const parseArray = (raw: string | null | undefined): string[] => {
+      if (!raw) return []
+      try {
+        const value = JSON.parse(raw)
+        return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+      } catch {
+        return []
+      }
+    }
+    const narrativePerson = ['first', 'third', 'mixed'].includes(row.narrative_person)
+      ? row.narrative_person as NovelWritingStyleProfile['narrativePerson']
+      : 'third'
+    const narrativeDistance = ['intimate', 'limited', 'omniscient'].includes(row.narrative_distance)
+      ? row.narrative_distance as NovelWritingStyleProfile['narrativeDistance']
+      : 'limited'
+    const sentenceRhythm = ['short', 'balanced', 'long'].includes(row.sentence_rhythm)
+      ? row.sentence_rhythm as NovelWritingStyleProfile['sentenceRhythm']
+      : 'balanced'
+    const vocabularyRegister = ['colloquial', 'plain', 'literary', 'classical'].includes(row.vocabulary_register)
+      ? row.vocabulary_register as NovelWritingStyleProfile['vocabularyRegister']
+      : 'plain'
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      preset: row.preset,
+      narrativePerson,
+      narrativeDistance,
+      sentenceRhythm,
+      dialogueRatio: Math.min(90, Math.max(10, Number(row.dialogue_ratio) || 45)),
+      emotionalTemperature: Math.min(10, Math.max(0, Number(row.emotional_temperature) || 5)),
+      imageryDensity: Math.min(10, Math.max(0, Number(row.imagery_density) || 3)),
+      vocabularyRegister,
+      hardRules: parseArray(row.hard_rules),
+      softRules: parseArray(row.soft_rules),
+      positiveExamples: parseArray(row.positive_examples),
+      notes: row.notes ?? '',
+      version: Math.max(1, Number(row.version) || 1),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     }
   }
 

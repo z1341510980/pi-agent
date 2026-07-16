@@ -2,11 +2,13 @@ import fp from 'fastify-plugin'
 import type { FastifyPluginAsync } from 'fastify'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { AuthStorage, ModelRegistry, SessionManager } from '@earendil-works/pi-coding-agent'
+import { AuthStorage, ModelRegistry, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent'
 import { createModuleLogger } from '../lib/logger.js'
 import { ProviderConfigStore } from '../core/config/provider-config-store.js'
 import { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import { ProxyManager } from '../core/config/proxy-manager.js'
+import { setRuntimeLlmTimeoutMs } from '../config/performance.js'
+import { normalizeProviderBaseUrl } from '../core/config/provider-base-url.js'
 
 /**
  * Pi SDK 核心对象注册插件
@@ -64,6 +66,11 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   const sessionManager = SessionManager.create(cwd, sessionDir)
   app.decorate('sessionManager', sessionManager)
 
+  // 共享 Pi 设置管理器：Provider 请求超时等配置由设置页持久化，所有新会话实时读取
+  const settingsManager = SettingsManager.create(cwd, agentDir)
+  app.decorate('settingsManager', settingsManager)
+  setRuntimeLlmTimeoutMs(settingsManager.getHttpIdleTimeoutMs())
+
   // ProviderConfigStore：前端动态注册的 Provider 配置
   // 所有 LLM 配置由前端用户在设置页面配置，不读取环境变量
   // 持久化到 SQLite providers 表（app.db），进程重启后自动恢复
@@ -87,7 +94,7 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
       // 注册到 ModelRegistry
       modelRegistry.registerProvider(config.id, {
         name: config.name,
-        baseUrl: config.baseUrl,
+        baseUrl: normalizeProviderBaseUrl(config.api, config.baseUrl),
         apiKey: config.apiKey,
         api: config.api,
         authHeader: config.authHeader ?? true,

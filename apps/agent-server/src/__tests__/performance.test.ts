@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { runtimePerformance, reloadPerformanceFromEnv } from '../config/performance.js'
+import {
+  runtimePerformance,
+  reloadPerformanceFromEnv,
+  setRuntimeLlmTimeoutMs,
+} from '../config/performance.js'
 
 describe('runtimePerformance 后端配置', () => {
   const originalEnv = { ...process.env }
@@ -30,6 +34,12 @@ describe('runtimePerformance 后端配置', () => {
     process.env.PI_LLM_TIMEOUT_MS = '600000'
     reloadPerformanceFromEnv()
     expect(runtimePerformance.llm.timeoutMs).toBe(600_000)
+  })
+
+  it('设置页可在运行时更新 LLM 超时', () => {
+    setRuntimeLlmTimeoutMs(900_000)
+    expect(runtimePerformance.llm.timeoutMs).toBe(900_000)
+    expect(runtimePerformance.sse.throttleMs).toBe(100)
   })
 
   it('env 非法值回退到默认', () => {

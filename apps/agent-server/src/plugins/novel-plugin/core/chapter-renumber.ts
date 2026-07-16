@@ -6,10 +6,11 @@
  * - 等于被删章节的：清除（返回 null / 从数组移除）
  * - 小于被删章节的：不变
  *
- * 三类字段处理：
+ * 四类字段处理：
  * 1. 标量 chapter_number：shiftChapterNumber
  * 2. JSON 数组 [[start,end],...]：shiftChapterSpans（冲突/势力跨度）
  * 3. JSON 列表 [n,n,...]：shiftChapterList（地点出现章节）
+ * 4. JSON 事件数组 [{chapter,...}]：shiftChapterEvents（伏笔事件链）
  *
  * 字段映射常量 CHAPTER_RENUMBER_FIELDS 在 NovelStore.deleteChapter 中使用，
  * 列出所有需要被重排的表/列，便于后续扩展。
@@ -111,6 +112,17 @@ export function shiftChapterList(
   return result
 }
 
+/** 重排带 chapter 字段的离散事件（如伏笔事件链）。 */
+export function shiftChapterEvents<T extends { chapter: number }>(
+  events: T[],
+  spec: ChapterRenumberSpec,
+): T[] {
+  return events.flatMap((event) => {
+    const chapter = shiftChapterNumber(event.chapter, spec)
+    return chapter == null ? [] : [{ ...event, chapter }]
+  })
+}
+
 /**
  * 字段映射常量：列出所有引用 chapter_number 的表和列
  *
@@ -130,6 +142,7 @@ export type ChapterRenumberField =
   | { table: string; column: string; kind: 'scalar'; nullable: boolean }
   | { table: string; column: string; kind: 'spans' }
   | { table: string; column: string; kind: 'list' }
+  | { table: string; column: string; kind: 'events' }
 
 export const CHAPTER_RENUMBER_FIELDS: ChapterRenumberField[] = [
   // novel_chapters 的被删行已在 deleteChapter 中删除，此处 nullable 不影响（DELETE/SET NULL 均为 no-op）
@@ -142,6 +155,10 @@ export const CHAPTER_RENUMBER_FIELDS: ChapterRenumberField[] = [
   { table: 'novel_conflicts', column: 'chapter_spans', kind: 'spans' },
   { table: 'novel_factions', column: 'chapter_spans', kind: 'spans' },
   { table: 'novel_foreshadowing', column: 'chapter_spans', kind: 'spans' },
+  { table: 'novel_foreshadowing', column: 'first_chapter', kind: 'scalar', nullable: true },
+  { table: 'novel_foreshadowing', column: 'last_chapter', kind: 'scalar', nullable: true },
+  { table: 'novel_foreshadowing', column: 'recover_by_chapter', kind: 'scalar', nullable: true },
+  { table: 'novel_foreshadowing', column: 'beats', kind: 'events' },
   { table: 'novel_locations', column: 'appear_chapters', kind: 'list' },
 ]
 

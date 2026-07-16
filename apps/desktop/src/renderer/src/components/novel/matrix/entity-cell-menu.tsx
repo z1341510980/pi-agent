@@ -6,15 +6,16 @@
  * 按 entityType 语义化适配：
  * - character：标记/删除出场（操作 characterHistory 关联表）
  * - conflict/faction：扩展到本章 / 收缩端点（仅首尾端点可删）
- * - foreshadow：标记埋设/回收点 / 取消埋设/回收
+ * - foreshadow：管理埋设/强化/部分揭示/回收事件链节点
  * - location：标记/删除出场（操作 appearChapters）
  * - world_element：不可标记（恒全程）
  *
- * 所有类型均可「修改批注」（操作 clip-note marker）
+ * 普通实体可修改 clip-note marker；伏笔已有节点可编辑 beats[].note。
  */
 
 import { useEffect, type ReactElement } from 'react'
-import { Plus, Trash2, StickyNote, ArrowLeftRight } from 'lucide-react'
+import { Plus, Trash2, StickyNote, ArrowLeftRight, Sparkles, Eye, CircleDot } from 'lucide-react'
+import type { ForeshadowBeatType } from '@/api/novel-client'
 import type { MatrixEntityKind } from './matrix-logic'
 
 export interface EntityCellMenuPosition {
@@ -30,8 +31,12 @@ export interface EntityCellMenuPosition {
   editable: boolean
   /** 是否支持「删除出场」操作（端点型实体中间格不可删） */
   removable: boolean
-  /** foreshadow 动态文案状态：'unplanted' | 'planted' | 'recoverable' */
-  foreshadowState?: 'unplanted' | 'planted' | 'recoverable'
+  /** 伏笔事件链所处状态 */
+  foreshadowState?: 'unplanted' | 'active' | 'recovered'
+  /** 本章已有的伏笔节点类型 */
+  foreshadowBeatType?: ForeshadowBeatType
+  /** 本章伏笔节点的具体写作内容 */
+  foreshadowBeatNote?: string
 }
 
 export interface EntityCellMenuProps {
@@ -44,10 +49,15 @@ export interface EntityCellMenuProps {
   onEditSpan?: (entityId: string, entityName: string, entityType: MatrixEntityKind) => void
   /** 删除该段跨度（仅 conflict/faction：移除 chapter 所在的整段 chapterSpan） */
   onRemoveSpan?: (entityId: string, entityType: MatrixEntityKind, chapter: number) => void
+  /** 在指定章节新增一种伏笔事件节点 */
+  onMarkForeshadowBeat?: (entityId: string, chapter: number, type: ForeshadowBeatType, editAfterCreate: boolean) => void
 }
 
+const menuItemClass = 'w-full min-h-10 flex items-center gap-2 px-3 py-2 text-left text-text hover:bg-muted focus-visible:outline-none focus-visible:bg-muted transition-[background-color,scale] duration-150 ease-out active:scale-[0.96]'
+const destructiveMenuItemClass = 'w-full min-h-10 flex items-center gap-2 px-3 py-2 text-left text-red-500 hover:bg-red-500/10 focus-visible:outline-none focus-visible:bg-red-500/10 transition-[background-color,scale] duration-150 ease-out active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed'
+
 /** 按 entityType + foreshadowState 返回「标记出场」文案 */
-function markLabel(kind: MatrixEntityKind, foreshadowState?: 'unplanted' | 'planted' | 'recoverable'): string {
+function markLabel(kind: MatrixEntityKind): string {
   switch (kind) {
     case 'character':
       return '标记本章出场'
@@ -55,10 +65,7 @@ function markLabel(kind: MatrixEntityKind, foreshadowState?: 'unplanted' | 'plan
     case 'faction':
       return '扩展到本章'
     case 'foreshadow':
-      if (foreshadowState === 'unplanted') return '标记本章为埋设点'
-      if (foreshadowState === 'planted') return '标记本章为回收点'
-      if (foreshadowState === 'recoverable') return '本章已是回收点'
-      return '标记埋设/回收点'
+      return '添加伏笔节点'
     case 'location':
       return '标记本章出场'
     case 'world_element':
@@ -77,7 +84,7 @@ function removeLabel(kind: MatrixEntityKind): string {
     case 'faction':
       return '收缩端点'
     case 'foreshadow':
-      return '取消埋设/回收'
+      return '删除本章伏笔节点'
     case 'location':
       return '删除本章出场'
     case 'world_element':
@@ -88,7 +95,7 @@ function removeLabel(kind: MatrixEntityKind): string {
 }
 
 /** 按 entityType 返回「标记」tooltip */
-function markTooltip(kind: MatrixEntityKind, present: boolean, foreshadowState?: 'unplanted' | 'planted' | 'recoverable'): string {
+function markTooltip(kind: MatrixEntityKind, present: boolean): string {
   if (present) return '该章已标记'
   switch (kind) {
     case 'character':
@@ -97,10 +104,7 @@ function markTooltip(kind: MatrixEntityKind, present: boolean, foreshadowState?:
     case 'faction':
       return '扩展 firstChapter/lastChapter 端点覆盖到本章'
     case 'foreshadow':
-      if (foreshadowState === 'unplanted') return '设 firstChapter = 本章，标记伏笔在此埋设'
-      if (foreshadowState === 'planted') return '设 recoverByChapter = 本章，标记伏笔在此回收'
-      if (foreshadowState === 'recoverable') return '本章已是回收点，无需重复标记'
-      return '未埋设则设为埋设点；已埋设则设为回收点'
+      return '为本章选择埋设、强化、揭示或回收语义'
     case 'location':
       return '将本章加入 appearChapters 数组'
     default:
@@ -117,7 +121,7 @@ function removeTooltip(kind: MatrixEntityKind): string {
     case 'faction':
       return '收缩端点（仅首尾端点可删，中间格不可删）'
     case 'foreshadow':
-      return '取消埋设点或回收点'
+      return '删除本章节点；若删除埋设点，将同时清空整条事件链'
     case 'location':
       return '从 appearChapters 数组中移除本章'
     default:
@@ -126,7 +130,7 @@ function removeTooltip(kind: MatrixEntityKind): string {
 }
 
 export function EntityCellMenu({
-  position, onClose, onMarkPresent, onRemovePresent, onEditNote, onEditSpan, onRemoveSpan,
+  position, onClose, onMarkPresent, onRemovePresent, onEditNote, onEditSpan, onRemoveSpan, onMarkForeshadowBeat,
 }: EntityCellMenuProps): ReactElement | null {
   useEffect(() => {
     if (!position) return
@@ -144,9 +148,12 @@ export function EntityCellMenu({
 
   if (!position) return null
 
-  const { x, y, entityId, entityName, entityType, chapter, present, editable, removable, foreshadowState } = position
-  const adjustedX = Math.min(x, window.innerWidth - 220)
-  const adjustedY = Math.min(y, window.innerHeight - 200)
+  const {
+    x, y, entityId, entityName, entityType, chapter, present, editable, removable,
+    foreshadowState, foreshadowBeatType, foreshadowBeatNote,
+  } = position
+  const adjustedX = Math.max(8, Math.min(x, window.innerWidth - 264))
+  const adjustedY = Math.max(8, Math.min(y, window.innerHeight - 360))
 
   const handleMark = (): void => {
     onMarkPresent(entityId, entityType, chapter)
@@ -168,13 +175,17 @@ export function EntityCellMenu({
     onRemoveSpan?.(entityId, entityType, chapter)
     onClose()
   }
+  const handleForeshadowBeat = (type: ForeshadowBeatType): void => {
+    onMarkForeshadowBeat?.(entityId, chapter, type, true)
+    onClose()
+  }
 
   // foreshadow 在 recoverable 状态（已是回收点）时标记按钮禁用
-  const markDisabled = present || (entityType === 'foreshadow' && foreshadowState === 'recoverable')
+  const markDisabled = present
 
   return (
     <div
-      className="fixed z-50 min-w-[200px] bg-surface-1 border border-border rounded-md shadow-lg py-1 text-xs"
+      className="fixed z-50 min-w-[240px] max-w-[320px] bg-surface-1 border border-border rounded-lg shadow-lg py-1 text-xs"
       style={{ left: adjustedX, top: adjustedY }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => {
@@ -187,33 +198,75 @@ export function EntityCellMenu({
       </div>
       {editable && (
         <>
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-text hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            onClick={handleMark}
-            disabled={markDisabled}
-            data-tip={markTooltip(entityType, present, foreshadowState)}
-          >
-            <Plus className="size-3.5" />
-            <span>{markLabel(entityType, foreshadowState)}</span>
-          </button>
-          <button
-            type="button"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            onClick={handleRemove}
-            disabled={!removable}
-            data-tip={removeTooltip(entityType)}
-          >
-            <Trash2 className="size-3.5" />
-            <span>{removeLabel(entityType)}</span>
-          </button>
+          {entityType === 'foreshadow' ? (
+            <>
+              {foreshadowBeatType ? (
+                <>
+                  <div className="px-3 py-1.5 text-muted-foreground">
+                    本章节点：{{ plant: '埋设', reinforce: '强化', reveal: '部分揭示', payoff: '回收' }[foreshadowBeatType]}
+                  </div>
+                  {foreshadowBeatNote && (
+                    <div className="mx-2 mb-1 rounded-md bg-amber-500/8 px-2.5 py-2 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.12)]">
+                      <div className="mb-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">节点内容</div>
+                      <p className="max-w-[280px] text-pretty leading-relaxed text-text line-clamp-3">{foreshadowBeatNote}</p>
+                    </div>
+                  )}
+                </>
+              ) : foreshadowState === 'unplanted' ? (
+                <button type="button" className={menuItemClass} onClick={() => handleForeshadowBeat('plant')}>
+                  <CircleDot className="size-3.5" /><span>设为埋设点</span>
+                </button>
+              ) : foreshadowState === 'active' ? (
+                <>
+                  <button type="button" className={menuItemClass} onClick={() => handleForeshadowBeat('reinforce')}>
+                    <Sparkles className="size-3.5" /><span>强化伏笔</span>
+                  </button>
+                  <button type="button" className={menuItemClass} onClick={() => handleForeshadowBeat('reveal')}>
+                    <Eye className="size-3.5" /><span>部分揭示</span>
+                  </button>
+                  <button type="button" className={menuItemClass} onClick={() => handleForeshadowBeat('payoff')}>
+                    <CircleDot className="size-3.5" /><span>回收伏笔</span>
+                  </button>
+                </>
+              ) : (
+                <div className="px-3 py-1.5 text-muted-foreground">伏笔已回收，不能在回收章之后新增节点</div>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              className={`${menuItemClass} disabled:opacity-40 disabled:cursor-not-allowed`}
+              onClick={handleMark}
+              disabled={markDisabled}
+              data-tip={markTooltip(entityType, present)}
+            >
+              <Plus className="size-3.5" />
+              <span>{markLabel(entityType)}</span>
+            </button>
+          )}
+          {entityType === 'foreshadow' && foreshadowBeatType === 'plant' ? (
+            <div className="px-3 py-1.5 text-muted-foreground leading-relaxed">
+              埋设点是伏笔链的根节点，可拖动调整；如需移回元素池，请在详情中清空埋设章节。
+            </div>
+          ) : (
+            <button
+              type="button"
+              className={destructiveMenuItemClass}
+              onClick={handleRemove}
+              disabled={!removable}
+              data-tip={removeTooltip(entityType)}
+            >
+              <Trash2 className="size-3.5" />
+              <span>{removeLabel(entityType)}</span>
+            </button>
+          )}
           <div className="h-px bg-border my-1" />
         </>
       )}
-      {editable && onEditSpan && (
+      {editable && entityType !== 'foreshadow' && onEditSpan && (
         <button
           type="button"
-          className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-text hover:bg-muted transition-colors"
+          className={menuItemClass}
           onClick={handleEditSpan}
           data-tip="打开范围编辑对话框，直接指定起止章节"
         >
@@ -221,21 +274,27 @@ export function EntityCellMenu({
           <span>编辑范围</span>
         </button>
       )}
-      <button
-        type="button"
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-text hover:bg-muted transition-colors"
-        onClick={handleEditNote}
-        title="修改此实体的批注"
-      >
-        <StickyNote className="size-3.5" />
-        <span>修改批注</span>
-      </button>
+      {(entityType !== 'foreshadow' || foreshadowBeatType) && (
+        <button
+          type="button"
+          className={menuItemClass}
+          onClick={handleEditNote}
+          title={entityType === 'foreshadow' ? '编辑本章伏笔节点的具体写作内容' : '修改此实体的批注'}
+        >
+          <StickyNote className="size-3.5" />
+          <span>
+            {entityType === 'foreshadow'
+              ? (foreshadowBeatNote ? '编辑节点内容' : '添加节点内容')
+              : '修改批注'}
+          </span>
+        </button>
+      )}
       {(entityType === 'conflict' || entityType === 'faction') && present && onRemoveSpan && (
         <>
           <div className="h-px bg-border my-1" />
           <button
             type="button"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-500 hover:bg-red-500/10 transition-colors"
+            className={destructiveMenuItemClass}
             onClick={handleRemoveSpan}
             data-tip="删除本章所在的整段跨度（含段内所有章节出场）"
           >

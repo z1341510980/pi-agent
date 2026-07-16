@@ -17,11 +17,11 @@ import { useQuery } from '@tanstack/react-query'
 import { useDroppable, useDndMonitor, useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { useDrag } from '@use-gesture/react'
-import { Plus, ChevronRight, GripVertical } from 'lucide-react'
+import { Plus, ChevronRight, GripVertical, LocateFixed } from 'lucide-react'
 import type { NovelChapter, NovelRelationship, NovelConflict, NovelFaction, NovelMarker, ChapterEndingHookType, NovelHook, NovelCharacterArc } from '@/api/novel-client'
 import { listHooks, listCharacterArcs } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
-import { computeVisibleChapters } from '@/lib/matrix-viewport'
+import { computeVisibleChapters, getChapterNavigationTarget } from '@/lib/matrix-viewport'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
@@ -31,11 +31,13 @@ import {
   GROUP_ORDER,
   tensionToBgClass,
   tensionToLabel,
+  shiftChapterSpan,
   type MatrixEntityKind,
   type MatrixEntity,
   type MatrixGroup,
   type MatrixDragData,
   type EndpointDragData,
+  type SpanDragData,
   type CellDragData,
 } from './matrix-logic'
 
@@ -81,6 +83,8 @@ export interface MatrixViewProps {
   /** 拖动跨度端点（▲起点/▼终点）到新章节：调整 conflict/faction/foreshadow 起止
    *  spanIndex 标识 conflict/faction 多段跨度中的段索引（foreshadow 恒为 0） */
   onMoveEndpoint?: (entityId: string, entityType: MatrixEntityKind, spanIndex: number, end: 'start' | 'end', chapter: number) => void
+  /** 拖动整段冲突/势力色带，保持时长平移 */
+  onMoveSpan?: (entityId: string, entityType: 'conflict' | 'faction', spanIndex: number, startChapter: number, endChapter: number) => void
   /** 拖动已出场单元格到新章节：移动 character/location 出场位置 */
   onMoveCell?: (entityId: string, entityType: MatrixEntityKind, fromChapter: number, toChapter: number) => void
   /** 左键单击单元格：智能切换出场状态（实体类型自适应） */
@@ -113,7 +117,7 @@ export function MatrixView({
   characterHistory, markers, playheadChapter, cellWidth, collapsedGroups, activeFilter,
   selectedNodeId, showMarkers = true,
   onSelectEntity, onToggleCollapse, onPlayheadChange, onContextMenuChapter,
-  onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onDropEntity, onMoveEndpoint, onMoveCell, onTogglePresent,
+  onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onDropEntity, onMoveEndpoint, onMoveSpan, onMoveCell, onTogglePresent,
 }: MatrixViewProps): ReactElement {
   const titleMap = useMemo(() => buildChapterTitleMap(chapters), [chapters])
   const chapterByNumber = useMemo(() => buildChapterByNumberMap(chapters), [chapters])
@@ -234,17 +238,34 @@ export function MatrixView({
     placeholderData: [],
   })
 
+  const focusChapter = useCallback((chapter: number, behavior: ScrollBehavior = 'smooth') => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const clampedChapter = Math.min(maxChapter, Math.max(1, chapter))
+    const targetLeft = SIDEBAR_W + (clampedChapter - 1) * cellWidth
+    // 居中显示：减去视口宽度的一半
+    const scrollTo = Math.max(0, targetLeft - el.clientWidth / 2 + cellWidth / 2)
+    el.scrollTo({ left: scrollTo, behavior })
+  }, [cellWidth, maxChapter])
+
   // ── C-3c 滚动到指定章节列（监听 store 的 matrixScrollTarget）──
   const matrixScrollTarget = useNovelUiStore((s) => s.matrixScrollTarget)
   useEffect(() => {
     if (!matrixScrollTarget) return
-    const el = scrollContainerRef.current
-    if (!el) return
-    const targetLeft = SIDEBAR_W + (matrixScrollTarget.chapter - 1) * cellWidth
-    // 居中显示：减去视口宽度的一半
-    const scrollTo = Math.max(0, targetLeft - el.clientWidth / 2 + cellWidth / 2)
-    el.scrollTo({ left: scrollTo, behavior: 'smooth' })
-  }, [matrixScrollTarget, cellWidth])
+    focusChapter(matrixScrollTarget.chapter)
+  }, [matrixScrollTarget, focusChapter])
+
+  const handleLocatePlayhead = useCallback(() => {
+    focusChapter(playheadChapter)
+  }, [focusChapter, playheadChapter])
+
+  const handleRulerKeyDown = useCallback((event: React.KeyboardEvent) => {
+    const target = getChapterNavigationTarget(event.key, playheadChapter, maxChapter)
+    if (target == null) return
+    event.preventDefault()
+    onPlayheadChange(target)
+    focusChapter(target)
+  }, [focusChapter, maxChapter, onPlayheadChange, playheadChapter])
 
   const handleRulerClick = useCallback((chapter: number) => {
     onPlayheadChange(chapter)
@@ -261,7 +282,15 @@ export function MatrixView({
 
   // ── 拖入实体到章节列：@dnd-kit 放置区 + 坐标计算章节号 ──
   const [dragOverChapter, setDragOverChapter] = useState<number | null>(null)
+  const [dragOverRange, setDragOverRange] = useState<{ start: number; end: number } | null>(null)
+  const [endpointDragPreview, setEndpointDragPreview] = useState<{
+    chapter: number
+    entityType: MatrixEntityKind
+    end: 'start' | 'end'
+    rowCenter: number
+  } | null>(null)
   const [flashChapter, setFlashChapter] = useState<number | null>(null)
+  const [flashRange, setFlashRange] = useState<{ start: number; end: number } | null>(null)
 
   const { setNodeRef: setDropRef, isOver } = useDroppable({ id: 'matrix-grid' })
 
@@ -280,20 +309,68 @@ export function MatrixView({
     return ch
   }, [cellWidth, maxChapter])
 
+  const computeSpanDropRange = useCallback((
+    data: SpanDragData,
+    initial: { left: number } | null | undefined,
+    translated: { left: number } | null | undefined,
+  ): { start: number; end: number } => {
+    if (!initial || !translated) return { start: data.startChapter, end: data.endChapter }
+    const deltaChapters = Math.round((translated.left - initial.left) / cellWidth)
+    const [start, end] = shiftChapterSpan([data.startChapter, data.endChapter], deltaChapters, maxChapter)
+    return { start, end }
+  }, [cellWidth, maxChapter])
+
+  const computeEndpointRowCenter = useCallback((initial: { top: number; height: number } | null | undefined): number | null => {
+    const el = scrollContainerRef.current
+    if (!el || !initial) return null
+    const containerRect = el.getBoundingClientRect()
+    return initial.top + initial.height / 2 - containerRect.top + el.scrollTop
+  }, [])
+
   // useDndMonitor：监听 DndContext 内所有拖拽事件，MatrixView 自包含高亮 + 放置分发。
   // onDragMove 仅在章节变化时 setState，避免高频 re-render。
   useDndMonitor({
     onDragMove: ({ active }) => {
+      const data = active.data.current as MatrixDragData | undefined
+      if (!data) return
+      if (data.source === 'span') {
+        const range = computeSpanDropRange(data, active.rect.current.initial, active.rect.current.translated)
+        setDragOverChapter(null)
+        setEndpointDragPreview(null)
+        setDragOverRange((prev) => prev?.start === range.start && prev.end === range.end ? prev : range)
+        return
+      }
       const ch = computeChapterFromRect(active.rect.current.translated)
       setDragOverChapter((prev) => (prev === ch ? prev : ch))
+      setDragOverRange(null)
+      if (data.source === 'endpoint' && ch != null) {
+        const rowCenter = computeEndpointRowCenter(active.rect.current.initial)
+        setEndpointDragPreview((prev) => (
+          prev?.chapter === ch && prev.entityType === data.entityType && prev.end === data.end && prev.rowCenter === rowCenter
+            ? prev
+            : rowCenter == null ? null : { chapter: ch, entityType: data.entityType, end: data.end, rowCenter }
+        ))
+      } else {
+        setEndpointDragPreview(null)
+      }
     },
     onDragEnd: ({ active, over }) => {
       setDragOverChapter(null)
+      setDragOverRange(null)
+      setEndpointDragPreview(null)
       if (!over || over.id !== 'matrix-grid') return
-      const ch = computeChapterFromRect(active.rect.current.translated)
-      if (ch == null) return
       const data = active.data.current as MatrixDragData | undefined
       if (!data) return
+      if (data.source === 'span') {
+        const range = computeSpanDropRange(data, active.rect.current.initial, active.rect.current.translated)
+        onMoveSpan?.(data.entityId, data.entityType, data.spanIndex, range.start, range.end)
+        setFlashChapter(null)
+        setFlashRange(range)
+        window.setTimeout(() => setFlashRange(null), 800)
+        return
+      }
+      const ch = computeChapterFromRect(active.rect.current.translated)
+      if (ch == null) return
       switch (data.source) {
         case 'sidebar':
           onDropEntity?.(data.entityId, data.entityType, ch)
@@ -309,11 +386,14 @@ export function MatrixView({
           break
       }
       // 触发闪烁反馈
+      setFlashRange(null)
       setFlashChapter(ch)
       window.setTimeout(() => setFlashChapter(null), 800)
     },
     onDragCancel: () => {
       setDragOverChapter(null)
+      setDragOverRange(null)
+      setEndpointDragPreview(null)
     },
   })
 
@@ -370,6 +450,7 @@ export function MatrixView({
   const totalWidth = SIDEBAR_W + maxChapter * cellWidth
   // 当前章节列高亮 left（在内容容器内）
   const highlightLeft = SIDEBAR_W + (playheadChapter - 1) * cellWidth
+  const isPlayheadVisible = playheadChapter >= visibleRange.start && playheadChapter <= visibleRange.end
 
   // ── C-1 空状态判定 ──
   const hasAnyEntity = groups.some((g) => g.entities.length > 0)
@@ -381,9 +462,11 @@ export function MatrixView({
         setDropRef(el)
       }}
       className={cn(
-        'relative overflow-x-auto overflow-y-auto h-full isolate touch-none',
+        'relative overflow-x-auto overflow-y-auto h-full isolate touch-none focus:outline-none',
         isPanning ? 'cursor-grabbing select-none' : 'cursor-default',
       )}
+      role="region"
+      aria-label="章节实体矩阵"
       {...bindPan()}
       onScroll={(e) => {
         const el = e.currentTarget
@@ -413,16 +496,77 @@ export function MatrixView({
 
         {/* 拖入反馈：高亮目标章节列（仅在拖拽元素悬停于矩阵上时显示） */}
         {isOver && dragOverChapter != null && (
+          <>
+            <div
+              className="absolute top-[44px] bottom-0 pointer-events-none z-[7] border-x border-blue-500/60 rounded-sm"
+              style={{
+                left: `${SIDEBAR_W + (dragOverChapter - 1) * cellWidth}px`,
+                width: `${cellWidth}px`,
+                background: 'rgba(59, 130, 246, 0.18)',
+              }}
+              aria-hidden="true"
+            />
+            <div
+              className="absolute top-[50px] z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-medium text-white shadow-lg whitespace-nowrap"
+              data-matrix-drag-preview="chapter"
+              style={{ left: `${SIDEBAR_W + (dragOverChapter - 0.5) * cellWidth}px` }}
+              aria-hidden="true"
+            >
+              第 {dragOverChapter} 章{titleMap.get(dragOverChapter) ? ` · ${titleMap.get(dragOverChapter)}` : ''}
+            </div>
+          </>
+        )}
+
+        {/* 整段色带平移：按完整目标范围预览，而不是只高亮中心章节。 */}
+        {isOver && dragOverRange != null && (
+          <>
+            <div
+              className="absolute top-[44px] bottom-0 pointer-events-none z-[7] rounded-sm border-x border-sky-500/70 bg-sky-500/12"
+              style={{
+                left: `${SIDEBAR_W + (dragOverRange.start - 1) * cellWidth}px`,
+                width: `${(dragOverRange.end - dragOverRange.start + 1) * cellWidth}px`,
+              }}
+              aria-hidden="true"
+            />
+            <div
+              className="absolute top-[50px] z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-sky-600 px-2 py-1 text-[10px] font-medium text-white shadow-lg whitespace-nowrap tabular-nums"
+              data-matrix-drag-preview="range"
+              style={{
+                left: `${SIDEBAR_W + ((dragOverRange.start + dragOverRange.end) / 2 - 0.5) * cellWidth}px`,
+              }}
+              aria-hidden="true"
+            >
+              第 {dragOverRange.start}-{dragOverRange.end} 章
+            </div>
+          </>
+        )}
+
+        {/* 端点裁剪预览：目标手柄直接画在目标章节中心和原轨道行交点。 */}
+        {isOver && endpointDragPreview != null && (
           <div
-            className="absolute top-[44px] bottom-0 pointer-events-none z-[7] border-x border-blue-500/60 rounded-sm"
+            className="absolute z-[11] pointer-events-none flex size-4 items-center justify-center rounded-full bg-surface-1 shadow-[0_0_0_2px_var(--color-surface-1),0_0_12px_rgba(59,130,246,0.65)]"
+            data-matrix-drag-preview="endpoint"
             style={{
-              left: `${SIDEBAR_W + (dragOverChapter - 1) * cellWidth}px`,
-              width: `${cellWidth}px`,
-              background: 'rgba(59, 130, 246, 0.18)',
+              left: `${SIDEBAR_W + (endpointDragPreview.chapter - 0.5) * cellWidth}px`,
+              top: `${endpointDragPreview.rowCenter}px`,
+              color: GROUP_META[endpointDragPreview.entityType].color,
+              transform: 'translate(-50%, -50%)',
             }}
             aria-hidden="true"
-          />
+          >
+            <span className="text-[10px] font-bold leading-none">
+              {endpointDragPreview.entityType === 'foreshadow'
+                ? endpointDragPreview.end === 'start' ? '●' : '○'
+                : endpointDragPreview.end === 'start' ? '◀' : '▶'}
+            </span>
+          </div>
         )}
+
+        <div className="sr-only" aria-live="polite" aria-atomic="true">
+          {isOver && dragOverRange != null
+            ? `移动目标：第 ${dragOverRange.start} 至 ${dragOverRange.end} 章`
+            : isOver && dragOverChapter != null ? `拖放目标：第 ${dragOverChapter} 章` : ''}
+        </div>
 
           {/* 释放后闪烁反馈：蓝色脉冲 */}
           {flashChapter != null && (
@@ -433,6 +577,18 @@ export function MatrixView({
                 width: `${cellWidth}px`,
                 background: 'rgba(59, 130, 246, 0.25)',
                 boxShadow: '0 0 12px rgba(59, 130, 246, 0.6)',
+              }}
+              aria-hidden="true"
+            />
+          )}
+          {flashRange != null && (
+            <div
+              className="absolute top-[44px] bottom-0 pointer-events-none z-[8] rounded-sm border-2 border-sky-500 animate-pulse"
+              style={{
+                left: `${SIDEBAR_W + (flashRange.start - 1) * cellWidth}px`,
+                width: `${(flashRange.end - flashRange.start + 1) * cellWidth}px`,
+                background: 'rgba(14, 165, 233, 0.16)',
+                boxShadow: '0 0 12px rgba(14, 165, 233, 0.5)',
               }}
               aria-hidden="true"
             />
@@ -455,8 +611,23 @@ export function MatrixView({
               />
             </div>
             {/* 左侧 sticky 列：实体＼章节 */}
-            <div className="sticky left-0 z-30 bg-surface-1 flex items-center justify-end pr-3 border-r border-border shrink-0" style={{ width: `${SIDEBAR_W}px` }}>
-              <span className="font-serif text-[11px] text-hint tracking-wider">实体 ＼ 章节</span>
+            <div className="sticky left-0 z-30 bg-surface-1 flex items-center justify-between gap-2 px-2 border-r border-border shrink-0" style={{ width: `${SIDEBAR_W}px` }}>
+              <span className="font-serif text-[11px] text-hint tracking-wider whitespace-nowrap">实体 ＼ 章节</span>
+              <button
+                type="button"
+                onClick={handleLocatePlayhead}
+                className={cn(
+                  'inline-flex h-8 items-center gap-1 rounded-md px-2 font-mono text-[10px] tabular-nums transition-[color,background-color,transform,box-shadow] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50',
+                  isPlayheadVisible
+                    ? 'text-muted-foreground hover:bg-muted hover:text-text'
+                    : 'bg-amber-500/12 text-amber-500 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.25)] hover:bg-amber-500/18',
+                )}
+                data-tip={`定位到第 ${playheadChapter} 章`}
+                aria-label={`定位到当前第 ${playheadChapter} 章`}
+              >
+                <LocateFixed className="size-3.5" aria-hidden="true" />
+                {String(playheadChapter).padStart(2, '0')}
+              </button>
             </div>
             {/* 章节标尺单元格（仅渲染可见列） */}
             <div className="flex">
@@ -473,16 +644,20 @@ export function MatrixView({
                 const tensionLabel = chapter?.tension ? tensionToLabel(chapter.tension) : ''
                 const tip = `第 ${ch} 章${title ? ' · ' + title : ''}${chapter?.tension ? ` · 张力 ${chapter.tension} (${tensionLabel})` : ''}${isCurrent ? '（当前章节）' : ''}`
                 return (
-                  <div
+                  <button
                     key={ch}
-                    className={`relative h-full shrink-0 flex flex-col justify-center items-center gap-1 border-r border-border/40 cursor-pointer transition-colors hover:bg-muted/40 ${tensionBg}`}
+                    type="button"
+                    className={`relative h-full shrink-0 flex flex-col justify-center items-center gap-1 border-r border-border/40 cursor-pointer transition-[color,background-color,box-shadow] hover:bg-muted/40 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60 ${tensionBg}`}
                     style={{ width: `${cellWidth}px` }}
                     onClick={() => handleRulerClick(ch)}
+                    onKeyDown={handleRulerKeyDown}
                     onContextMenu={(e) => handleRulerContextMenu(e, ch)}
                     data-tip={tip}
+                    aria-label={tip}
+                    aria-current={isCurrent ? 'step' : undefined}
                   >
                     {ms.length > 0 && (
-                      <div className="flex gap-0.5 absolute top-1 left-1/2 -translate-x-1/2">
+                      <span className="flex gap-0.5 absolute top-1 left-1/2 -translate-x-1/2">
                         {ms.map((m) => (
                           <span
                             key={m.id}
@@ -490,7 +665,7 @@ export function MatrixView({
                             data-tip={`${m.title}${m.note ? '：' + m.note : ''}`}
                           />
                         ))}
-                      </div>
+                      </span>
                     )}
                     <span className={`font-mono text-[11px] tracking-wide ${isCurrent ? 'text-amber-500 font-semibold' : 'text-hint'}`}>
                       {String(ch).padStart(2, '0')}
@@ -498,7 +673,7 @@ export function MatrixView({
                     {tensionLabel && (
                       <span className="text-[9px] text-hint/70 mt-0.5">{tensionLabel}</span>
                     )}
-                  </div>
+                  </button>
                 )
               })}
               {/* 右侧占位：撑开滚动条到最后一个可见章节之后的位置 */}
@@ -846,7 +1021,7 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
   // 左侧 sticky 列：严格按 preview-html 的 .entity-name-cell / .group-label-cell
   // position:sticky; left:0; z-index:6/30; 不透明背景; border-right
   const leftCellClassName = cn(
-    'sticky left-0 z-30 flex items-center gap-2 px-3 border-r border-border shrink-0',
+    'sticky left-0 z-30 flex items-center gap-1 px-2 border-r border-border shrink-0',
     isGroup
       ? 'cursor-pointer'
       : cn('transition-colors', isSelected ? 'bg-primary/10' : 'hover:bg-muted/50'),
@@ -874,15 +1049,26 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
       >
         {isGroup ? (
           <>
-            <span className={cn('text-[9px] text-hint transition-transform w-2 inline-block shrink-0', collapsed && '-rotate-90')}>▼</span>
-            <span className="text-[10px] leading-none shrink-0" style={{ color }}>{icon}</span>
-            <span className="font-semibold text-xs text-text tracking-wide truncate flex-1">{group!.name}</span>
-            <span className="font-mono text-[10px] text-hint bg-surface-1 border border-border px-1.5 py-px rounded tabular-nums shrink-0">
-              {group!.entities.length}
-            </span>
             <button
               type="button"
-              className="ml-1 size-6 inline-flex items-center justify-center rounded border border-dashed border-border text-muted-foreground hover:border-primary hover:bg-primary/10 hover:text-primary transition-[color,background-color,border-color,transform] active:scale-[0.96] shrink-0"
+              className="flex h-full min-w-0 flex-1 items-center gap-2 rounded px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
+              onClick={(event) => {
+                event.stopPropagation()
+                onToggleCollapse?.()
+              }}
+              aria-expanded={!collapsed}
+              aria-label={`${collapsed ? '展开' : '折叠'}${group!.name}分组`}
+            >
+              <span className={cn('text-[9px] text-hint transition-transform w-2 inline-block shrink-0', collapsed && '-rotate-90')}>▼</span>
+              <span className="text-[10px] leading-none shrink-0" style={{ color }}>{icon}</span>
+              <span className="font-semibold text-xs text-text tracking-wide truncate flex-1">{group!.name}</span>
+              <span className="font-mono text-[10px] text-hint bg-surface-1 border border-border px-1.5 py-px rounded tabular-nums shrink-0">
+                {group!.entities.length}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="size-7 inline-flex items-center justify-center rounded border border-dashed border-border text-muted-foreground hover:border-primary hover:bg-primary/10 hover:text-primary transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0"
               onClick={(e) => {
                 e.stopPropagation()
                 onContextMenuGroupEmpty?.(group!.id)
@@ -894,7 +1080,16 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
             </button>
           </>
         ) : (
-          <>
+          <button
+            type="button"
+            className="flex h-full min-w-0 flex-1 items-center gap-2 rounded px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
+            onClick={(event) => {
+              event.stopPropagation()
+              onClick?.()
+            }}
+            aria-pressed={isSelected}
+            aria-label={`选择${GROUP_META[entity!.kind].name}${entity!.name}`}
+          >
             <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta!.color }} />
             <span className={cn('truncate flex-1 text-xs', isSelected ? 'text-primary font-medium' : 'text-muted-foreground')}>{entity!.name}</span>
             {entity!.isProtagonist && (
@@ -902,7 +1097,7 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
             )}
             <ChevronRight className={cn('size-3 text-muted-foreground shrink-0 transition-opacity', isSelected ? 'opacity-100 text-primary' : 'opacity-0')} />
             {isSelected && <span className="absolute right-0 top-0 bottom-0 w-0.5 bg-primary" />}
-          </>
+          </button>
         )}
       </div>
 
@@ -932,6 +1127,7 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
               color={meta!.color}
               cellWidth={cellWidth}
               onTogglePresent={onTogglePresent}
+              onSelectEntity={onClick}
               onContextMenu={(e) => {
                 if (!onContextMenuCell) return
                 e.preventDefault()
@@ -955,7 +1151,6 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
               onEditSpan={onEditSpan}
               onContextMenuCell={onContextMenuCell}
               onEntityClick={onClick ?? (() => {})}
-              onTogglePresent={onTogglePresent}
             />
             {arcMarkers.length > 0 && arcMarkers.map((m, i) => {
               const left = (m.chapter - 1) * cellWidth + cellWidth / 2 - 6
@@ -994,38 +1189,45 @@ interface CellProps {
   color: string
   cellWidth: number
   onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
+  onSelectEntity?: () => void
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
-function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent, onContextMenu }: CellProps): ReactElement {
-  // 交互模型（click 永远非破坏性，破坏性操作走拖拽或右键）：
-  // - 空单元格 click → 标记出场（构造性，无拖拽，无冲突）
-  // - 已出场单元格(character/location) → 拖拽换章；click 不触发删除，冒泡到 EntityRow 选中实体
-  // - 删除出场 → 右键菜单（EntityCellMenu）
-  // - 跨度中段格 → 只读，点击无操作
+function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent, onSelectEntity, onContextMenu }: CellProps): ReactElement {
+  // 时间轴交互模型：空格单击新增；已有点/区间单击只选中；删除统一走右键菜单。
   const symbol = computeCellSymbol(entity, chapter)
   const tip = symbol.type === 'empty'
     ? buildEmptyCellTip(entity, chapter, chapterTitle)
     : buildCellTooltip(symbol, entity, chapter, chapterTitle)
+  const foreshadowBeatNote = entity.kind === 'foreshadow'
+    ? entity.foreshadowBeats?.find((beat) => beat.chapter === chapter)?.note
+    : undefined
 
-  const handleCellClickEvent = useCallback((e: React.MouseEvent) => {
+  const handleCellActivate = useCallback((e: React.SyntheticEvent) => {
     // 阻止冒泡到 EntityRow 的 onClick（行首点击才选中实体）
     e.stopPropagation()
     onTogglePresent?.(entity, chapter)
   }, [onTogglePresent, entity, chapter])
 
+  const handleCellSelect = useCallback((e: React.SyntheticEvent) => {
+    e.stopPropagation()
+    onSelectEntity?.()
+  }, [onSelectEntity])
+
   if (symbol.type === 'empty') {
     return (
-      <div
-        className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-colors hover:bg-primary/8"
+      <button
+        type="button"
+        className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-[color,background-color,box-shadow,transform] hover:bg-primary/8 active:scale-[0.96] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
         style={{ width: `${cellWidth}px` }}
         data-tip={tip}
-        onClick={handleCellClickEvent}
+        onClick={handleCellActivate}
         onContextMenu={onContextMenu}
+        aria-label={tip}
       >
         {/* hover 时显示 + 号提示可标记出场 */}
         <span className="text-primary text-sm font-light opacity-0 group-hover/cell:opacity-60 transition-opacity pointer-events-none select-none leading-none">+</span>
-      </div>
+      </button>
     )
   }
 
@@ -1044,24 +1246,34 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
     )
   }
 
-  // 跨度中段格（conflict/faction span-middle/world-element）
-  // 点击无操作，cursor 改 default 避免误导；tooltip 引导用户用右键或拖端点
-  const isReadOnlyMiddle =
-    symbol.type === 'span-middle' ||
-    symbol.type === 'world-element'
+  const canSelect = onSelectEntity != null
 
   return (
     <div
-      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 transition-colors hover:bg-muted/20"
+      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-[color,background-color,box-shadow] hover:bg-muted/20 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
       style={{ width: `${cellWidth}px` }}
       data-tip={tip}
-      onClick={isReadOnlyMiddle ? undefined : handleCellClickEvent}
+      role={canSelect ? 'button' : undefined}
+      tabIndex={canSelect ? 0 : undefined}
+      aria-label={tip || undefined}
+      onClick={canSelect ? handleCellSelect : undefined}
+      onKeyDown={canSelect ? (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        handleCellSelect(event)
+      } : undefined}
       onContextMenu={onContextMenu}
     >
       {/* hover 时符号放大 */}
       <div className="transition-transform duration-150 ease-out group-hover/cell:scale-[1.25] origin-center">
         <Symbol symbol={symbol} color={color} />
       </div>
+      {foreshadowBeatNote && (
+        <span
+          className="pointer-events-none absolute right-1 top-1 z-[4] size-1.5 rounded-full bg-amber-400 shadow-[0_0_0_1px_rgba(255,255,255,0.65),0_1px_3px_rgba(245,158,11,0.45)]"
+          aria-hidden="true"
+        />
+      )}
     </div>
   )
 }
@@ -1105,8 +1317,9 @@ function DraggablePresentCell({
       {...listeners}
       onContextMenu={onContextMenu}
       data-tip={tip}
+      aria-label={`${tip}，可拖动到其他章节`}
       className={cn(
-        'group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-grab active:cursor-grabbing transition-opacity',
+        'group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-grab active:cursor-grabbing transition-[opacity,box-shadow] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
         isDragging && 'opacity-30',
       )}
     >
@@ -1128,14 +1341,14 @@ function buildEmptyCellTip(entity: MatrixEntity, chapter: number, chapterTitle: 
   const chStr = `第 ${chapter} 章${chapterTitle ? ' · ' + chapterTitle : ''}`
   switch (entity.kind) {
     case 'character':
-      return `${chStr}｜左键：标记 ${entity.name} 出场`
+      return `${chStr}｜单击新增 ${entity.name} 出场`
     case 'location':
-      return `${chStr}｜左键：标记 ${entity.name} 出场`
+      return `${chStr}｜单击新增 ${entity.name} 出场`
     case 'conflict':
     case 'faction':
-      return `${chStr}｜左键：扩展 ${entity.name} 到本章`
+      return `${chStr}｜单击将 ${entity.name} 扩展到本章`
     case 'foreshadow':
-      return `${chStr}｜左键：标记 ${entity.name} 埋设/回收点`
+      return `${chStr}｜单击快速添加 ${entity.name} 的伏笔点 · 右键选择强化、揭示或回收`
     case 'world_element':
       return `${chStr}｜${entity.name}（常驻）`
     default:
@@ -1171,6 +1384,10 @@ function Symbol({ symbol, color }: { symbol: ReturnType<typeof computeCellSymbol
       )
     case 'foreshadow-plant':
       return <span className="text-[11px] leading-none transition-transform inline-block opacity-90 [filter:drop-shadow(0_0_3px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>●</span>
+    case 'foreshadow-reinforce':
+      return <span className="text-[12px] leading-none transition-transform inline-block opacity-90 [filter:drop-shadow(0_0_3px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>◆</span>
+    case 'foreshadow-reveal':
+      return <span className="text-[12px] leading-none transition-transform inline-block opacity-95 [filter:drop-shadow(0_0_4px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>◐</span>
     case 'foreshadow-payoff':
       return <span className="text-[11px] leading-none transition-transform inline-block [filter:drop-shadow(0_0_4px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>○</span>
     case 'location':
@@ -1194,10 +1411,9 @@ interface EntityOverlayProps {
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
   /** 左键点击色带：选中该实体（与点击行首效果一致） */
   onEntityClick: () => void
-  onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
 }
 
-function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditSpan, onContextMenuCell, onEntityClick, onTogglePresent }: EntityOverlayProps): ReactElement | null {
+function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditSpan, onContextMenuCell, onEntityClick }: EntityOverlayProps): ReactElement | null {
   switch (entity.kind) {
     case 'conflict':
     case 'faction': {
@@ -1207,98 +1423,59 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
         <>
           {spans.map((span, idx) => {
             const [s, e] = span
-            const left = (s - 1) * cellWidth
-            const width = (e - s + 1) * cellWidth
             return (
-              <div
+              <DraggableSpan
                 key={`span-${idx}`}
-                className="group/span absolute top-1/2 h-[15px] -translate-y-1/2 rounded z-[2] cursor-pointer hover:brightness-110 transition-[filter] overflow-visible"
-                style={{
-                  position: 'absolute',
-                  left, width,
-                  background: `rgba(${colorRgb}, 0.16)`,
-                  border: `1px solid rgba(${colorRgb}, 0.3)`,
-                }}
-                data-tip="双击编辑跨度 · 拖动两端圆点调整范围"
-                onClick={(ev) => {
-                  ev.stopPropagation()
-                  onEntityClick()
-                }}
-                onDoubleClick={(ev) => {
-                  ev.stopPropagation()
-                  onEditSpan?.(entity)
-                }}
-                onContextMenu={(ev) => {
-                  if (!onContextMenuCell) return
-                  ev.preventDefault()
-                  ev.stopPropagation()
-                  // 根据点击位置计算实际 chapter（clamp 到 [s, e]）
-                  const rect = ev.currentTarget.getBoundingClientRect()
-                  const offset = Math.floor((ev.clientX - rect.left) / cellWidth)
-                  const ch = Math.min(e, Math.max(s, s + offset))
-                  onContextMenuCell(entity.entityId, entity.name, entity.kind, ch, ev.clientX, ev.clientY)
-                }}
-              >
-                {/* 起点手柄：对齐到 start 章节列中心 */}
-                <EndpointHandle
-                  entityId={entity.entityId}
-                  entityType={entity.kind}
-                  spanIndex={idx}
-                  end="start"
-                  origChapter={s}
-                  left={cellWidth / 2}
-                  color={color}
-                />
-                {/* 终点手柄：对齐到 end 章节列中心 */}
-                <EndpointHandle
-                  entityId={entity.entityId}
-                  entityType={entity.kind}
-                  spanIndex={idx}
-                  end="end"
-                  origChapter={e}
-                  left={width - cellWidth / 2}
-                  color={color}
-                />
-              </div>
+                entity={entity}
+                entityType={entity.kind as 'conflict' | 'faction'}
+                spanIndex={idx}
+                startChapter={s}
+                endChapter={e}
+                cellWidth={cellWidth}
+                color={color}
+                colorRgb={colorRgb}
+                onEntityClick={onEntityClick}
+                onEditSpan={onEditSpan}
+                onContextMenuCell={onContextMenuCell}
+              />
             )
           })}
         </>
       )
     }
     case 'foreshadow': {
-      // 伏笔：plant 章节 ● + payoff 章节 ○ + 之间虚线连线
-      // - 未回收：从 plant 虚线延伸到末章（表示"悬而未决"）
-      // - 已回收：从 plant 实线/虚线到 payoff（表示"已回收"）
-      // 不用色带，只用两点 + 连线
+      // 伏笔事件链只连接实际存在的节点；未回收时不再延伸到末章。
+      // 中间空白章节保持空白，避免被误解为每章都与伏笔关联。
       const plant = entity.plantChapter
       const payoff = entity.payoffChapter
       if (plant == null) return null
-      const lineEnd = payoff ?? maxChapter
+      const beats = entity.foreshadowBeats ?? []
+      const lineEnd = beats.length > 1 ? beats[beats.length - 1].chapter : plant
       const lineLeft = (plant - 1) * cellWidth + cellWidth / 2
       const lineRight = (lineEnd - 1) * cellWidth + cellWidth / 2
       const lineWidth = lineRight - lineLeft
       const recovered = payoff != null
       return (
         <>
-          {/* 虚线连线：plant → payoff（或末章，未回收时） */}
-          <div
-            className="absolute top-1/2 -translate-y-1/2 h-px z-[2] pointer-events-none"
-            style={{
-              left: lineLeft,
-              width: lineWidth,
-              borderTop: `1.5px dashed rgba(${colorRgb}, ${recovered ? 0.4 : 0.5})`,
-            }}
-            aria-hidden="true"
-          />
+          {lineWidth > 0 && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 h-px z-[2] pointer-events-none"
+              style={{
+                left: lineLeft,
+                width: lineWidth,
+                borderTop: `1.5px dashed rgba(${colorRgb}, ${recovered ? 0.4 : 0.3})`,
+              }}
+              aria-hidden="true"
+            />
+          )}
           {/* plant 端点手柄（可拖拽调整埋设点） */}
           <div
             className="absolute top-1/2 -translate-y-1/2 z-[3] cursor-pointer"
-            style={{ left: lineLeft - 8, width: 16, height: 16 }}
-            data-tip="拖动调整埋设点 · 右键更多操作"
+            style={{ position: 'absolute', left: lineLeft - 8, width: 16, height: 16 }}
+            data-tip="单击选择 · 拖动调整埋设点 · 右键更多"
             onClick={(ev) => {
               ev.stopPropagation()
               onEntityClick()
-              onTogglePresent?.(entity, plant)
             }}
             onContextMenu={(ev) => {
               if (!onContextMenuCell) return
@@ -1321,12 +1498,11 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
           {payoff != null && (
             <div
               className="absolute top-1/2 -translate-y-1/2 z-[3] cursor-pointer"
-              style={{ left: lineRight - 8, width: 16, height: 16 }}
-              data-tip="拖动调整回收点 · 右键更多操作"
+              style={{ position: 'absolute', left: lineRight - 8, width: 16, height: 16 }}
+              data-tip="单击选择 · 拖动调整回收点 · 右键更多"
               onClick={(ev) => {
                 ev.stopPropagation()
                 onEntityClick()
-                onTogglePresent?.(entity, payoff)
               }}
               onContextMenu={(ev) => {
                 if (!onContextMenuCell) return
@@ -1374,6 +1550,114 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
   }
 }
 
+interface DraggableSpanProps {
+  entity: MatrixEntity
+  entityType: 'conflict' | 'faction'
+  spanIndex: number
+  startChapter: number
+  endChapter: number
+  cellWidth: number
+  color: string
+  colorRgb: string
+  onEntityClick: () => void
+  onEditSpan?: (entity: MatrixEntity) => void
+  onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
+}
+
+/** 时间轴色带：拖动主体平移，拖动两端手柄裁剪。 */
+function DraggableSpan({
+  entity, entityType, spanIndex, startChapter, endChapter, cellWidth, color, colorRgb,
+  onEntityClick, onEditSpan, onContextMenuCell,
+}: DraggableSpanProps): ReactElement {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } = useDraggable({
+    id: `span:${entity.entityId}:${spanIndex}`,
+    data: {
+      source: 'span',
+      entityType,
+      entityId: entity.entityId,
+      spanIndex,
+      startChapter,
+      endChapter,
+    } satisfies SpanDragData,
+  })
+  const width = (endChapter - startChapter + 1) * cellWidth
+  const left = (startChapter - 1) * cellWidth
+  const spanTip = '单击选择 · 双击编辑范围 · 拖动色带平移 · 拖动两端裁剪 · 右键更多'
+
+  const handleContextMenu = (event: React.MouseEvent): void => {
+    if (!onContextMenuCell) return
+    event.preventDefault()
+    event.stopPropagation()
+    const rect = event.currentTarget.getBoundingClientRect()
+    const offset = Math.floor((event.clientX - rect.left) / cellWidth)
+    const chapter = Math.min(endChapter, Math.max(startChapter, startChapter + offset))
+    onContextMenuCell(entity.entityId, entity.name, entityType, chapter, event.clientX, event.clientY)
+  }
+
+  return (
+    <div
+      className="absolute top-1/2 z-[2] h-[15px] -translate-y-1/2 overflow-visible rounded"
+      style={{ left, width }}
+    >
+      <div
+        ref={setNodeRef}
+        className={cn(
+          'relative h-full w-full rounded transition-[filter,opacity] hover:brightness-110',
+          isDragging && 'opacity-35',
+        )}
+        style={{
+          background: `rgba(${colorRgb}, 0.16)`,
+          border: `1px solid rgba(${colorRgb}, 0.3)`,
+          transform: transform ? `translate3d(${transform.x}px, 0, 0)` : undefined,
+        }}
+      >
+        <div
+          ref={setActivatorNodeRef}
+          {...attributes}
+          {...listeners}
+          className="absolute inset-0 z-[1] cursor-grab active:cursor-grabbing"
+          style={{ position: 'absolute' }}
+          data-tip={spanTip}
+          onClick={(event) => {
+            event.stopPropagation()
+            onEntityClick()
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation()
+            onEditSpan?.(entity)
+          }}
+          onContextMenu={handleContextMenu}
+          aria-label={spanTip}
+        />
+        <EndpointHandle
+          entityId={entity.entityId}
+          entityType={entityType}
+          spanIndex={spanIndex}
+          end="start"
+          origChapter={startChapter}
+          left={cellWidth / 2}
+          color={color}
+          onContextMenu={onContextMenuCell
+            ? (event) => onContextMenuCell(entity.entityId, entity.name, entityType, startChapter, event.clientX, event.clientY)
+            : undefined}
+        />
+        <EndpointHandle
+          entityId={entity.entityId}
+          entityType={entityType}
+          spanIndex={spanIndex}
+          end="end"
+          origChapter={endChapter}
+          left={width - cellWidth / 2}
+          color={color}
+          onContextMenu={onContextMenuCell
+            ? (event) => onContextMenuCell(entity.entityId, entity.name, entityType, endChapter, event.clientX, event.clientY)
+            : undefined}
+        />
+      </div>
+    </div>
+  )
+}
+
 // ── 跨度端点拖拽手柄 ──
 // 拖动起点/终点圆点到目标章节列即可调整 conflict/faction/foreshadow 的起止位置。
 // 用 translate(-50%,-50%) 居中，叠加 @dnd-kit 的位移 transform。
@@ -1388,10 +1672,11 @@ interface EndpointHandleProps {
   /** 相对父容器左边缘的 px 偏移（圆点中心） */
   left: number
   color: string
+  onContextMenu?: (event: React.MouseEvent) => void
 }
 
-function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, left, color }: EndpointHandleProps): ReactElement {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, left, color, onContextMenu }: EndpointHandleProps): ReactElement {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `endpoint:${entityId}:${spanIndex}:${end}`,
     data: {
       source: 'endpoint',
@@ -1402,13 +1687,6 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
       origChapter,
     } satisfies EndpointDragData,
   })
-  // ⚠️ 把 transform.y 钉死为 0：章节换算 computeChapterFromRect 只用 X 坐标，
-  // Y 坐标完全不影响结果。如果不限制 Y，拖动时手柄会跨行跑（视觉错乱），
-  // 用户反馈"三角形超过自己的轨道"。直接丢弃 Y 位移，手柄只在 X 轴移动。
-  const tf = transform
-    ? `translate(-50%, -50%) translate3d(${transform.x}px, 0px, 0)`
-    : 'translate(-50%, -50%)'
-
   // 伏笔端点透明化：让 Cell 的 ●/○ 符号作视觉，EndpointHandle 只做拖拽手柄
   const isForeshadow = entityType === 'foreshadow'
 
@@ -1419,18 +1697,23 @@ function EndpointHandle({ entityId, entityType, spanIndex, end, origChapter, lef
       {...listeners}
       // doubleClick 仍阻止冒泡（防止拖拽手柄双击误触发编辑跨度）
       onDoubleClick={(e) => e.stopPropagation()}
+      onContextMenu={onContextMenu ? (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onContextMenu(event)
+      } : undefined}
       title={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
       data-tip={end === 'start' ? '拖动调整起点' : '拖动调整终点'}
       className={cn(
-        'group/endpoint absolute top-1/2 rounded-full flex items-center justify-center cursor-ew-resize pointer-events-auto transition-[transform,box-shadow] duration-150 ease-out z-[5] hover:scale-140',
+        'group/endpoint absolute top-1/2 rounded-full flex items-center justify-center cursor-ew-resize pointer-events-auto transition-[opacity,box-shadow] duration-150 ease-out z-[5]',
         isForeshadow ? 'size-4' : 'size-3.5',
-        isDragging && 'scale-150',
+        isDragging && 'opacity-0',
       )}
       style={{
         position: 'absolute',
         left,
         background: isForeshadow ? 'transparent' : color,
-        transform: tf,
+        transform: 'translate(-50%, -50%)',
         touchAction: 'none',
         boxShadow: isForeshadow ? 'none' : '0 0 0 2px var(--color-surface-1), 0 0 4px rgba(0,0,0,0.3)',
       }}
@@ -1462,25 +1745,33 @@ function buildCellTooltip(
   chapterTitle: string,
 ): string {
   const chStr = `第 ${chapter} 章${chapterTitle ? ' · ' + chapterTitle : ''}`
+  const foreshadowBeatNote = entity.kind === 'foreshadow'
+    ? entity.foreshadowBeats?.find((beat) => beat.chapter === chapter)?.note
+    : undefined
+  const beatNoteText = foreshadowBeatNote ? ` · 节点内容：${foreshadowBeatNote}` : ''
   switch (symbol.type) {
     case 'present':
-      return `${chStr}｜${entity.name} 出场${symbol.protagonist ? '（主角）' : ''}`
+      return `${chStr}｜${entity.name} 出场${symbol.protagonist ? '（主角）' : ''} · 单击选择 · 拖动换章 · 右键更多`
     case 'span-start':
-      return `${chStr}｜${entity.name} 起始`
+      return `${chStr}｜${entity.name} 起始 · 单击选择 · 拖动端点裁剪 · 右键更多`
     case 'span-end':
-      return `${chStr}｜${entity.name} 结束`
+      return `${chStr}｜${entity.name} 结束 · 单击选择 · 拖动端点裁剪 · 右键更多`
     case 'span-middle':
-      return `${chStr}｜${entity.name}（跨度中，拖动端点或右键编辑范围）`
+      return `${chStr}｜${entity.name} · 单击选择 · 拖动色带平移 · 双击编辑范围 · 右键更多`
     case 'conflict-climax':
-      return `${chStr}｜${entity.name} 冲突高潮（爆发点）`
+      return `${chStr}｜${entity.name} 冲突高潮 · 单击选择 · 拖动色带平移 · 右键更多`
     case 'foreshadow-plant':
-      return `${chStr}｜${entity.name} 埋设${entity.note ? ' · ' + entity.note : ''}`
+      return `${chStr}｜${entity.name} 埋设${beatNoteText} · 单击选择 · 拖动调整 · 右键编辑节点内容`
+    case 'foreshadow-reinforce':
+      return `${chStr}｜${entity.name} 强化${beatNoteText} · 右键编辑节点内容`
+    case 'foreshadow-reveal':
+      return `${chStr}｜${entity.name} 部分揭示${beatNoteText} · 右键编辑节点内容`
     case 'foreshadow-payoff':
-      return `${chStr}｜${entity.name} 回收`
+      return `${chStr}｜${entity.name} 回收${beatNoteText} · 单击选择 · 拖动调整 · 右键编辑节点内容`
     case 'location':
-      return `${chStr}｜${entity.name}`
+      return `${chStr}｜${entity.name} · 单击选择 · 拖动换章 · 右键更多`
     case 'world-element':
-      return `${chStr}｜${entity.name}（常驻世界要素）`
+      return `${chStr}｜${entity.name}（常驻世界要素）· 单击选择 · 右键更多`
     case 'empty':
       return ''
   }

@@ -395,6 +395,77 @@ describe('NovelStore - 伏笔 CRUD', () => {
     expect(updated!.firstChapter).toBe(3)
   })
 
+  it('用离散事件链持久化伏笔，并同步兼容字段和状态', () => {
+    const created = store.createForeshadow({
+      id: 'f-chain', projectId: 'p-1', description: '旧钥匙',
+      category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      beats: [
+        { chapter: 2, type: 'plant' },
+        { chapter: 5, type: 'reinforce', note: '再次出现' },
+        { chapter: 8, type: 'reinforce' },
+        { chapter: 11, type: 'reveal' },
+      ],
+    })
+    expect(created.firstChapter).toBe(2)
+    expect(created.lastChapter).toBe(11)
+    expect(created.status).toBe('partially_revealed')
+    expect(store.getForeshadow('f-chain')?.beats).toEqual(created.beats)
+
+    const recovered = store.updateForeshadow('f-chain', {
+      beats: [...created.beats!, { chapter: 14, type: 'payoff' }],
+    })!
+    expect(recovered.recoverByChapter).toBe(14)
+    expect(recovered.lastChapter).toBe(14)
+    expect(recovered.status).toBe('recovered')
+  })
+
+  it('事件链 PATCH 删除节点时不被旧兼容端点重新补回', () => {
+    store.createForeshadow({
+      id: 'f-remove-beat', projectId: 'p-1', description: '将被修改的事件链',
+      category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      beats: [
+        { chapter: 2, type: 'plant' },
+        { chapter: 5, type: 'reinforce' },
+        { chapter: 9, type: 'payoff' },
+      ],
+    })
+
+    const updated = store.updateForeshadow('f-remove-beat', {
+      beats: [
+        { chapter: 2, type: 'plant' },
+        { chapter: 5, type: 'reinforce' },
+      ],
+    })!
+
+    expect(updated.beats).toEqual([
+      { chapter: 2, type: 'plant' },
+      { chapter: 5, type: 'reinforce' },
+    ])
+    expect(updated.recoverByChapter).toBeNull()
+    expect(updated.lastChapter).toBe(5)
+    expect(updated.status).toBe('reinforced')
+  })
+
+  it('丢弃未埋设、埋设前和回收后的无效伏笔节点', () => {
+    const created = store.createForeshadow({
+      id: 'f-invalid', projectId: 'p-1', description: '异常链',
+      category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
+      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      beats: [
+        { chapter: 1, type: 'reinforce' },
+        { chapter: 3, type: 'plant' },
+        { chapter: 6, type: 'payoff' },
+        { chapter: 9, type: 'reveal' },
+      ],
+    })
+    expect(created.beats).toEqual([
+      { chapter: 3, type: 'plant' },
+      { chapter: 6, type: 'payoff' },
+    ])
+  })
+
   it('deleteForeshadow 删除伏笔', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',

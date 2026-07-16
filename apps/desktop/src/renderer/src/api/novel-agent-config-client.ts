@@ -2,7 +2,7 @@
  * 小说 Agent 角色温度配置 API 客户端
  *
  * 端点（自动加 /api/plugins/novel 前缀）：
- * - GET  /agent-config  → 获取 4 角色温度列表
+ * - GET  /agent-config  → 获取 5 角色温度列表
  * - PUT  /agent-config  → 批量更新角色温度
  *
  * 类型镜像后端 apps/agent-server/src/plugins/novel-plugin/core/novel-agent-config-store.ts
@@ -16,7 +16,7 @@ const BASE = '/api/plugins/novel'
 
 // ── 类型 ──
 
-export type NovelAgentType = 'director' | 'writer' | 'reviewer' | 'memory'
+export type NovelAgentType = 'director' | 'writer' | 'reviser' | 'reviewer' | 'memory'
 
 export interface NovelAgentTemperature {
   agentType: NovelAgentType

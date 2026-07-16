@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 export interface ErrorCardProps {
   message: string
   onRetry?: () => void
+  retryLabel?: string
   onDismiss?: () => void
 }
 
@@ -12,7 +13,7 @@ export interface ErrorCardProps {
  *
  * RUN_ERROR 或网络错误时显示，提供重试和关闭按钮
  */
-export function ErrorCard({ message, onRetry, onDismiss }: ErrorCardProps) {
+export function ErrorCard({ message, onRetry, retryLabel = '重试', onDismiss }: ErrorCardProps) {
   return (
     <div className="flex items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3">
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
@@ -26,7 +27,7 @@ export function ErrorCard({ message, onRetry, onDismiss }: ErrorCardProps) {
             className="mt-2 h-7 text-xs text-destructive hover:bg-destructive/20"
           >
             <RotateCcw className="mr-1 h-3 w-3" />
-            重试
+            {retryLabel}
           </Button>
         )}
       </div>

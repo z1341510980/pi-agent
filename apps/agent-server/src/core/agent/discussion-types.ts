@@ -35,8 +35,31 @@ export interface DiscussionMember {
   }
   /** 构建该成员 system prompt 的工厂函数 */
   buildSystemPrompt: () => string
+  /**
+   * 构建成员专属身份提示词。
+   *
+   * 身份放在共享章节上下文之后、动态任务之前，避免它污染 system/shared
+   * 缓存前缀。未提供时表示 buildSystemPrompt 已包含完整身份（向后兼容）。
+   */
+  buildIdentityPrompt?: () => string
   /** 最终章节审查时使用的完整审稿 prompt；未提供时复用 buildSystemPrompt */
   buildFinalReviewSystemPrompt?: () => string
+  /** 最终章节审查时使用的成员专属身份提示词。 */
+  buildFinalReviewIdentityPrompt?: () => string
+  /**
+   * 该成员使用的 LLM 模型（可选，未配置则走默认 Provider）
+   *
+   * 工种成员（director/writer/reviewer/reviser）从 AgentManager 中该 Agent 的
+   * model 配置读取，角色成员不填（走默认 Provider）。
+   */
+  modelId?: { provider: string; modelId: string }
+  /**
+   * 该成员使用的 LLM 温度（可选，未配置时工种成员回退到 0.7，角色成员回退到 characterTemperature）
+   *
+   * 工种成员从 AgentManager 中该 Agent 的 temperature 配置读取（即 AgentPage 角色温度配置），
+   * 角色成员不填（由引擎用 characterTemperature）。
+   */
+  temperature?: number
 }
 
 /** 群聊目标 */
@@ -45,6 +68,8 @@ export interface DiscussionGoal {
   task: string
   /** 上下文（SEMI 层 shared 前缀，跨成员复用 prompt cache） */
   context: string
+  /** Writer 必须遵守的单章目标字数，按正文非空白字符计。 */
+  targetWords?: number
   /** 约束（序列化对象，供 Moderator 参考） */
   constraints?: unknown
 }
@@ -146,6 +171,30 @@ export interface DiscussionOptions {
     maxRoundsPerScene?: number
     characterTemperature?: number
   }
+  /** 是否在每次角色发言后额外调用 Reviewer。Novel runner 默认关闭，避免角色数 × 轮数的 token 放大。 */
+  reviewCharacterSpeech?: boolean
+  /** 成员 LLM 调用完成后的审计回调，由业务适配层决定如何持久化。 */
+  onMemberInvocation?: (invocation: DiscussionMemberInvocation) => void
+}
+
+/** 单次群聊成员 LLM 调用的审计信息。 */
+export interface DiscussionMemberInvocation {
+  member: DiscussionMember
+  phase: DiscussionPhase
+  systemPrompt: string
+  chapterContext: string
+  userMessage: string
+  result: string
+  durationMs: number
+  status: 'success' | 'error' | 'cancelled'
+  error: string
+  sessionId: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  llmProvider: string
+  llmModel: string
 }
 
 /** 群聊运行结果 */
@@ -156,6 +205,15 @@ export interface DiscussionResult {
   scenes: SceneDefinition[]
   stateChanges?: Array<{ type: string; description: string }>
   error?: string
+  /** 异常终止时所在阶段；chapter_weaving 可直接从 Writer 断点续跑。 */
+  failedPhase?: DiscussionPhase
+}
+
+/** 从已持久化群聊快照恢复 Writer 编织阶段所需的最小状态。 */
+export interface DiscussionResumeState {
+  phase: 'chapter_weaving'
+  transcript: DiscussionMessage[]
+  scenes: SceneDefinition[]
 }
 
 /** 群聊引擎常量 */

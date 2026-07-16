@@ -17,6 +17,8 @@ export interface ConversationInputProps {
   onAbort: () => void
   /** 是否正在运行 */
   isRunning: boolean
+  /** 运行中是否仍允许发送消息；启用后会同时显示发送与停止按钮 */
+  allowSendWhileRunning?: boolean
   /** 禁用输入 */
   disabled?: boolean
   /** 占位符 */
@@ -63,6 +65,7 @@ export function ConversationInput({
   onSend,
   onAbort,
   isRunning,
+  allowSendWhileRunning = false,
   disabled = false,
   placeholder = '输入消息...',
   startLabel = '开始',
@@ -114,7 +117,7 @@ export function ConversationInput({
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim()
-    if (!trimmed || isRunning || disabled) return
+    if (!trimmed || (isRunning && !allowSendWhileRunning) || disabled) return
     if (onSendWithMentions) {
       onSendWithMentions(trimmed, Array.from(mentionedIdsRef.current))
     } else {
@@ -129,7 +132,7 @@ export function ConversationInput({
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, isRunning, disabled, onSend, onSendWithMentions])
+  }, [text, isRunning, allowSendWhileRunning, disabled, onSend, onSendWithMentions])
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -160,9 +163,9 @@ export function ConversationInput({
       }
       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault()
-        if (isRunning) {
+        if (isRunning && !allowSendWhileRunning) {
           onAbort()
-        } else if (showStart) {
+        } else if (!isRunning && showStart) {
           onStart?.()
         } else {
           handleSend()
@@ -175,6 +178,7 @@ export function ConversationInput({
       mentionIndex,
       selectMention,
       isRunning,
+      allowSendWhileRunning,
       onAbort,
       showStart,
       onStart,
@@ -198,7 +202,7 @@ export function ConversationInput({
       aria-label="发送消息"
       onSubmit={(e) => {
         e.preventDefault()
-        if (!isRunning && !showStart) handleSend()
+        if ((!isRunning || allowSendWhileRunning) && !showStart) handleSend()
       }}
     >
       <div
@@ -287,6 +291,17 @@ export function ConversationInput({
 
           {/* 右侧：发送 / 开始 / 停止 */}
           <div className="flex items-center gap-2">
+            {isRunning && allowSendWhileRunning ? (
+              <Button
+                type="submit"
+                size="icon"
+                disabled={!canSend}
+                className="rounded-full size-8 bg-primary text-primary-foreground hover:bg-primary/90"
+                aria-label="发送"
+              >
+                <Send className="size-4" aria-hidden="true" />
+              </Button>
+            ) : null}
             {isRunning ? (
               <Button
                 type="button"

@@ -114,3 +114,17 @@ export const runtimePerformance: RuntimePerformanceConfig = (() => {
 export function reloadPerformanceFromEnv(): void {
   applyConfig(runtimePerformance, buildConfig())
 }
+
+/** 设置页热更新 LLM 超时，同时保留其他运行时性能配置。 */
+export function setRuntimeLlmTimeoutMs(timeoutMs: number): void {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) {
+    throw new RangeError('LLM timeoutMs 必须是大于等于 1000 的整数')
+  }
+  applyConfig(runtimePerformance, {
+    ...runtimePerformance,
+    llm: {
+      ...runtimePerformance.llm,
+      timeoutMs,
+    },
+  })
+}

@@ -46,14 +46,17 @@
   "foreshadowUpdates": [
     {
       "description": "伏笔描述片段（用于匹配）",
-      "status": "planted|reinforced|partially_revealed|recovering|recovered|abandoned"
+      "status": "planted|reinforced|partially_revealed|recovering|recovered|abandoned",
+      "beatType": "plant|reinforce|reveal|payoff",
+      "beatNote": "本章如何埋设、强化、揭示或回收（简短具体）"
     }
   ],
   "foreshadowCreates": [
     {
       "description": "伏笔描述",
       "category": "物品|身份|事件|承诺|台词",
-      "linkedCharacters": ["角色名1", "角色名2"]
+      "linkedCharacters": ["角色名1", "角色名2"],
+      "beatNote": "本章首次埋设的具体表现"
     }
   ],
   "conflictUpdates": [
@@ -103,8 +106,10 @@
 - **状态描述要具体**：如"愤怒"而非"情绪变化"，如"刺杀国王"而非"行动"
 - **冲突阶段**：latent=潜伏 / emerging=浮现 / escalating=升级 / erupting=爆发 / reversing=反转 / resolved=解决 / transformed=转化
 - **伏笔状态**：planted=埋设 / reinforced=加强 / partially_revealed=部分揭示 / recovering=回收中 / recovered=已回收 / abandoned=废弃
+- **伏笔事件节点**：只有本章正文真实发生了埋设、强化、部分揭示或回收时才填写 `beatType`；仅仅提到或仍处于某状态时不要填写。每个节点必须用 `beatNote` 说明本章具体发生了什么
+- **伏笔不是连续区间**：埋设与回收之间的章节默认不关联伏笔，禁止因为伏笔尚未回收就把所有后续章节算作节点
 - **弧光阶段**：setup=铺垫 / rising=上升 / climax=高潮 / falling=回落 / resolution=结局
-- **章节维度字段**（firstChapter/lastChapter/characterHistory）由编排层自动维护，无需也无法在 JSON 中修改，专注于动态状态字段即可
+- **章节维度字段**（firstChapter/lastChapter/characterHistory）由系统自动维护，无需也无法在 JSON 中修改
 
 ## v0.2 四实体边界规则（状态变更提取必须严格遵守）
 

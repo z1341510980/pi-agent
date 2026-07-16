@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest'
+import { describe, expect, it, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
@@ -8,6 +8,8 @@ import { NovelEngine } from '../plugins/novel-plugin/core/novel-engine.js'
 import { NovelSessionFactory } from '../plugins/novel-plugin/core/novel-session.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { NovelDiscussionRunner } from '../plugins/novel-plugin/core/novel-discussion-runner.js'
+import { TeamDiscussionEngine } from '../core/agent/team-discussion-engine.js'
+import { ChapterFinalizer } from '../core/agent/chapter-finalizer.js'
 import type { DiscussionOptions } from '../core/agent/discussion-types.js'
 
 function setupTestDb(): Database.Database {
@@ -16,14 +18,6 @@ function setupTestDb(): Database.Database {
     db.exec(migration.sql)
   }
   return db
-}
-
-function makeOptions(): DiscussionOptions {
-  return {
-    emit: vi.fn(),
-    onCheckpoint: vi.fn().mockResolvedValue('approve'),
-    onProgress: vi.fn(),
-  }
 }
 
 describe('NovelDiscussionRunner', () => {
@@ -39,6 +33,10 @@ describe('NovelDiscussionRunner', () => {
 
   afterAll(() => {
     db.close()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('buildMembers 包含 4 个工种 Agent + 项目角色', () => {
@@ -164,7 +162,7 @@ describe('NovelDiscussionRunner', () => {
     const members = (runner as any).buildMembers(project.id, 1)
     const director = members.find((m: any) => m.id === 'novel-director')
     expect(director).toBeDefined()
-    const directorPrompt = director.buildSystemPrompt()
+    const directorPrompt = director.buildIdentityPrompt()
     // role-director-discussion.md 应含"场景拆分"字段（群聊专属，普通 role-director.md 没有）
     expect(directorPrompt).toContain('场景拆分')
     // role-director-discussion.md 应含"### 场景N：标题"格式说明
@@ -172,13 +170,14 @@ describe('NovelDiscussionRunner', () => {
 
     const writer = members.find((m: any) => m.id === 'novel-writer')
     expect(writer).toBeDefined()
-    const writerPrompt = writer.buildSystemPrompt()
-    // role-writer-discussion.md 应含"编织"约束
+    const writerPrompt = writer.buildIdentityPrompt()
+    // role-writer-discussion.md 应含推演编织和代词消歧约束
     expect(writerPrompt).toContain('编织')
-    expect(writerPrompt).toContain('剧本')
+    expect(writerPrompt).toContain('意图、心理、应对')
+    expect(writerPrompt).toContain('指代消歧')
   })
 
-  it('buildMembers 角色成员注入 role-character-actor.md（剧本演出格式）', () => {
+  it('buildMembers 角色成员注入 role-character-actor.md（简短推演格式）', () => {
     const project = store.createProject({
       id: 'p-test-4',
       title: '测试',
@@ -219,13 +218,187 @@ describe('NovelDiscussionRunner', () => {
     const members = (runner as any).buildMembers(project.id, 1)
     const character = members.find((m: any) => m.type === 'character')
     expect(character).toBeDefined()
-    const charPrompt = character.buildSystemPrompt()
-    // role-character-actor.md 应含剧本格式约束
-    expect(charPrompt).toContain('[动作')
-    expect(charPrompt).toContain('台词')
+    const charPrompt = character.buildIdentityPrompt()
+    // 角色只演出一个可继续衔接的动作单元，不展开完整场景
+    expect(charPrompt).toContain('[动作/表情/心理外化]')
+    expect(charPrompt).toContain('2-6 行剧本')
     expect(charPrompt).toContain('PUSHBACK')
     // 角色人设字段也保留
     expect(charPrompt).toContain('王芳')
     expect(charPrompt).toContain('机敏聪慧')
   })
+
+  it('run 绑定真实章节并把群聊成员调用写入 Agent 日志', async () => {
+    const project = store.createProject({
+      id: 'p-test-5',
+      title: '日志测试',
+      genre: '都市',
+      synopsis: '',
+      outline: '',
+      targetWords: 3000,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active',
+    } as any)
+    const chapter = store.createChapter({
+      id: 'ch-test-5',
+      projectId: project.id,
+      volume: 1,
+      chapterNumber: 1,
+      title: '第一章',
+      content: '',
+      wordCount: 0,
+      status: 'planned',
+      narrativeTask: '',
+      acceptanceResult: null,
+    } as any)
+
+    let capturedOptions: any
+    vi.spyOn(TeamDiscussionEngine.prototype, 'run').mockImplementation(async (_goal, _members, options) => {
+      capturedOptions = options
+      return { status: 'completed', content: `${'正文'.repeat(2000)}。`, transcript: [], scenes: [] }
+    })
+    const finalizeSpy = vi.spyOn(ChapterFinalizer.prototype, 'finalize').mockResolvedValue({
+      status: 'completed',
+      content: '修订后的正文',
+      stateChanges: [],
+    })
+
+    const promptManager = new PromptManager(db, process.cwd())
+    const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
+    const sessionFactory = new NovelSessionFactory(store, promptManager)
+    const engine = new NovelEngine(store, sessionFactory)
+    const runner = new NovelDiscussionRunner(
+      store,
+      memoryStore,
+      sessionFactory,
+      promptBuilder,
+      engine,
+      {
+        createAgUiSession: vi.fn(),
+        createSession: vi.fn(),
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      } as any,
+      {} as any,
+    )
+
+    const result = await runner.run(project.id, 1, makeOptionsForRun())
+    expect(result.content).toBe(`${'正文'.repeat(2000)}。`)
+    expect(finalizeSpy).toHaveBeenCalledWith(expect.objectContaining({ chapterId: chapter.id }))
+
+    capturedOptions.onMemberInvocation({
+      member: {
+        id: 'novel-writer',
+        type: 'role',
+        name: '写作',
+        expertise: '写作',
+        canConverge: true,
+        buildSystemPrompt: () => 'system',
+        modelId: { provider: 'xai', modelId: 'grok-4' },
+      },
+      phase: 'chapter_weaving',
+      systemPrompt: 'system',
+      chapterContext: 'context',
+      userMessage: 'message',
+      result: '正文',
+      durationMs: 12,
+      status: 'success',
+      error: '',
+      sessionId: 'session-1',
+    })
+
+    const logs = store.listAgentLogsByProject(project.id, 10)
+    expect(logs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentType: 'writer',
+        phase: 'chapter_weaving',
+        result: '正文',
+        llmProvider: 'xai',
+        llmModel: 'grok-4',
+      }),
+    ]))
+  })
+
+  it('断点续跑在收尾阶段失败时保留 Writer 结果和快照', async () => {
+    const project = store.createProject({
+      id: 'p-test-resume-finalize',
+      title: '断点收尾测试',
+      genre: '都市',
+      synopsis: '',
+      outline: '',
+      targetWords: 3000,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active',
+    } as any)
+    const transcript = [{
+      id: 'saved-message',
+      fromId: 'char-1',
+      fromName: '叶明远',
+      content: '已保存的推演',
+      timestamp: 1,
+      type: 'member' as const,
+      sceneId: 1,
+    }]
+    const scenes = [{
+      sceneId: 1,
+      title: '突破',
+      location: '矿道',
+      time: '夜',
+      presentCharacters: ['char-1'],
+      goal: '完成突破',
+    }]
+    vi.spyOn(TeamDiscussionEngine.prototype, 'resumeChapterWeaving').mockResolvedValue({
+      status: 'completed',
+      content: '已恢复的正文',
+      transcript,
+      scenes,
+    })
+    vi.spyOn(ChapterFinalizer.prototype, 'finalize').mockRejectedValue(new Error('Memory 写入失败'))
+
+    const promptManager = new PromptManager(db, process.cwd())
+    const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
+    const sessionFactory = new NovelSessionFactory(store, promptManager)
+    const engine = new NovelEngine(store, sessionFactory)
+    const runner = new NovelDiscussionRunner(
+      store,
+      memoryStore,
+      sessionFactory,
+      promptBuilder,
+      engine,
+      {
+        createAgUiSession: vi.fn(),
+        createSession: vi.fn(),
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      } as any,
+      {} as any,
+    )
+
+    const result = await runner.run(
+      project.id,
+      9,
+      makeOptionsForRun(),
+      undefined,
+      { phase: 'chapter_weaving', transcript, scenes },
+    )
+
+    expect(result).toMatchObject({
+      status: 'error',
+      error: 'Memory 写入失败',
+      failedPhase: 'memory',
+      content: '已恢复的正文',
+      transcript: [{ id: 'saved-message' }],
+      scenes: [{ title: '突破' }],
+    })
+  })
 })
+
+function makeOptionsForRun(): DiscussionOptions {
+  return {
+    emit: vi.fn(),
+    onCheckpoint: vi.fn().mockResolvedValue('approve'),
+    onProgress: vi.fn(),
+  }
+}

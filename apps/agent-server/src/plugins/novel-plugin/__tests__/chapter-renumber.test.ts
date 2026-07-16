@@ -5,6 +5,7 @@ import {
   shiftChapterNumber,
   shiftChapterSpans,
   shiftChapterList,
+  shiftChapterEvents,
   type ChapterRenumberSpec,
   createChapterRenumberSpec,
 } from '../core/chapter-renumber.js'
@@ -89,6 +90,19 @@ describe('ChapterRenumberSpec - appear_chapters JSON 列表 shift', () => {
 
   it('含重复值 [1,1,3,3] 删第 3 章 → [1,1]（两个 3 都被移除）', () => {
     expect(shiftChapterList([1, 1, 3, 3], createChapterRenumberSpec(3))).toEqual([1, 1])
+  })
+})
+
+describe('ChapterRenumberSpec - 离散事件链 shift', () => {
+  it('删除事件所在章节并前移后续事件，同时保留事件类型和备注', () => {
+    expect(shiftChapterEvents([
+      { chapter: 1, type: 'plant', note: '埋设' },
+      { chapter: 3, type: 'reinforce', note: '删除此章' },
+      { chapter: 5, type: 'payoff', note: '回收' },
+    ], createChapterRenumberSpec(3))).toEqual([
+      { chapter: 1, type: 'plant', note: '埋设' },
+      { chapter: 4, type: 'payoff', note: '回收' },
+    ])
   })
 })
 
@@ -218,6 +232,76 @@ describe('NovelStore.deleteChapter 集成 - 章节重排', () => {
     store.deleteChapter(ch3.id)
     const locations = store.listLocations(projectId)
     expect(locations[0].appearChapters).toEqual([1, 4]) // 3 被移除，5 → 4
+  })
+
+  it('删除章节时同步重排伏笔事件链和兼容端点字段', () => {
+    const ch3 = store.listChapters(projectId).find((c) => c.chapterNumber === 3)!
+    store.createForeshadow({
+      id: randomUUID(), projectId, description: '旧钥匙', category: 'item', status: 'planned',
+      firstChapter: null, lastChapter: null, recoverByChapter: null,
+      linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      beats: [
+        { chapter: 1, type: 'plant' },
+        { chapter: 3, type: 'reinforce' },
+        { chapter: 5, type: 'payoff' },
+      ],
+    })
+
+    store.deleteChapter(ch3.id)
+
+    const foreshadow = store.listForeshadowing(projectId)[0]
+    expect(foreshadow.beats).toEqual([
+      { chapter: 1, type: 'plant' },
+      { chapter: 4, type: 'payoff' },
+    ])
+    expect(foreshadow.firstChapter).toBe(1)
+    expect(foreshadow.recoverByChapter).toBe(4)
+  })
+
+  it('删除伏笔埋设章时清空整条孤立事件链', () => {
+    const ch1 = store.listChapters(projectId).find((c) => c.chapterNumber === 1)!
+    store.createForeshadow({
+      id: randomUUID(), projectId, description: '旧钥匙', category: 'item', status: 'planned',
+      firstChapter: null, lastChapter: null, recoverByChapter: null,
+      linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      beats: [
+        { chapter: 1, type: 'plant' },
+        { chapter: 3, type: 'reinforce' },
+        { chapter: 5, type: 'payoff' },
+      ],
+    })
+
+    store.deleteChapter(ch1.id)
+
+    const foreshadow = store.listForeshadowing(projectId)[0]
+    expect(foreshadow.beats).toEqual([])
+    expect(foreshadow.firstChapter).toBeNull()
+    expect(foreshadow.recoverByChapter).toBeNull()
+    expect(foreshadow.status).toBe('planned')
+  })
+
+  it('删除伏笔回收章时保留此前节点并恢复为未回收', () => {
+    const ch5 = store.listChapters(projectId).find((c) => c.chapterNumber === 5)!
+    store.createForeshadow({
+      id: randomUUID(), projectId, description: '旧钥匙', category: 'item', status: 'planned',
+      firstChapter: null, lastChapter: null, recoverByChapter: null,
+      linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      beats: [
+        { chapter: 1, type: 'plant' },
+        { chapter: 3, type: 'reinforce' },
+        { chapter: 5, type: 'payoff' },
+      ],
+    })
+
+    store.deleteChapter(ch5.id)
+
+    const foreshadow = store.listForeshadowing(projectId)[0]
+    expect(foreshadow.beats).toEqual([
+      { chapter: 1, type: 'plant' },
+      { chapter: 3, type: 'reinforce' },
+    ])
+    expect(foreshadow.recoverByChapter).toBeNull()
+    expect(foreshadow.status).toBe('reinforced')
   })
 
   it('NOT NULL chapter_number 列（memory_events）等于被删章时删除行，不报约束错误', () => {

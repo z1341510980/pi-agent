@@ -11,13 +11,14 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from 'tiptap-markdown'
-import { Sparkles, FileText, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Sparkles, FileText, ChevronLeft, ChevronRight, History } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import { updateChapter, reverseArrangeFlow } from '@/api/novel-client'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { countWords } from '@/lib/novel-utils'
+import { ChapterVersionPanel } from './chapter-version-panel'
 import './chapter-content-editor.css'
 
 export interface ChapterContentEditorProps {
@@ -50,6 +51,7 @@ export function ChapterContentEditor({
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [reverseArranging, setReverseArranging] = useState(false)
+  const [versionPanelOpen, setVersionPanelOpen] = useState(false)
 
   // ── 避免闭包问题：setTimeout 捕获旧值 ──
   const saveStateRef = useRef<SaveState>('saved')
@@ -116,6 +118,25 @@ export function ChapterContentEditor({
       setReverseArranging(false)
     }
   }, [currentProjectId, reverseArranging, isCreationActive, chapters, playheadChapter, flushSave, queryClient])
+
+  // ── 版本回滚成功回调 ──
+  // 用回滚后的正文覆盖编辑器显示和 draft，同步 store 中的 chapter 记录
+  // 注意：必须 setSaveState('saved') 避免防抖保存把回滚后的正文再次覆盖（虽然内容相同，但避免无谓请求）
+  const handleRollbackSuccess = useCallback((content: string, wordCount: number) => {
+    setDraftContent(content)
+    setSaveState('saved')
+    setErrorMsg(null)
+    if (editor) editor.commands.setContent(content, { emitUpdate: false })
+    const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
+    if (targetChapter) {
+      upsertChapter({
+        ...targetChapter,
+        content,
+        wordCount,
+        updatedAt: Date.now(),
+      })
+    }
+  }, [editor, chapters, playheadChapter, upsertChapter])
 
   // ── 1.5s 防抖保存 ──
   const scheduleDebouncedSave = useCallback(() => {
@@ -323,9 +344,26 @@ export function ChapterContentEditor({
             <Sparkles className="size-3" />
             <span>{reverseArranging ? '反推中...' : '反推实体'}</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setVersionPanelOpen(true)}
+            disabled={!currentChapter}
+            title="查看章节正文的历史版本并支持回滚"
+            className="cce-reverse-btn"
+          >
+            <History className="size-3" />
+            <span>历史版本</span>
+          </button>
           <div className="cce-word-count tabular-nums">{wordCount} 字</div>
         </div>
       </footer>
+
+      <ChapterVersionPanel
+        open={versionPanelOpen}
+        onOpenChange={setVersionPanelOpen}
+        chapterId={currentChapter?.id ?? null}
+        onRollbackSuccess={handleRollbackSuccess}
+      />
     </div>
   )
 }

@@ -48,6 +48,9 @@ export class ProviderConfigStore {
   private readonly stmtSelectAll: Database.Statement
   private readonly stmtUpsert: Database.Statement
   private readonly stmtDelete: Database.Statement
+  private readonly stmtGetSetting: Database.Statement
+  private readonly stmtSetSetting: Database.Statement
+  private readonly stmtDeleteSetting: Database.Statement
 
   constructor(db: Database.Database) {
     // 预编译 SQL，提升反复执行性能
@@ -65,6 +68,12 @@ export class ProviderConfigStore {
         updated_at  = unixepoch()
     `)
     this.stmtDelete = db.prepare('DELETE FROM providers WHERE id = ?')
+    this.stmtGetSetting = db.prepare('SELECT value FROM app_settings WHERE key = ?')
+    this.stmtSetSetting = db.prepare(`
+      INSERT INTO app_settings (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `)
+    this.stmtDeleteSetting = db.prepare('DELETE FROM app_settings WHERE key = ?')
 
     // 启动时把所有 providers 加载到内存 Map 作为读缓存
     const rows = this.stmtSelectAll.all() as ProviderRow[]
@@ -119,11 +128,15 @@ export class ProviderConfigStore {
     return Array.from(this.providers.values())
   }
 
-  /** 删除 Provider 配置 */
+  /** 删除 Provider 配置；若被删的是默认 Provider，同步清空默认设置 */
   delete(id: string): boolean {
     const result = this.providers.delete(id)
     if (result) {
       this.stmtDelete.run(id)
+      // 清理默认 Provider 设置（如果被删的正好是默认的）
+      if (this.getDefaultProviderId() === id) {
+        this.clearDefaultProviderId()
+      }
     }
     return result
   }
@@ -131,5 +144,54 @@ export class ProviderConfigStore {
   /** 获取指定 Provider 的 API Key */
   getApiKey(providerId: string): string | undefined {
     return this.providers.get(providerId)?.apiKey
+  }
+
+  // ── 默认 Provider 设置 ──
+
+  private static readonly DEFAULT_PROVIDER_KEY = 'default_provider_id'
+
+  /** 读取默认 Provider ID；未设置或指向已不存在的 Provider 时返回 undefined */
+  getDefaultProviderId(): string | undefined {
+    const row = this.stmtGetSetting.get(ProviderConfigStore.DEFAULT_PROVIDER_KEY) as { value: string } | undefined
+    const id = row?.value
+    if (!id) return undefined
+    // 校验对应的 Provider 仍然存在，避免脏数据
+    return this.providers.has(id) ? id : undefined
+  }
+
+  /** 设置默认 Provider ID */
+  setDefaultProviderId(id: string): void {
+    if (!this.providers.has(id)) {
+      throw new Error(`Provider "${id}" 不存在，无法设为默认`)
+    }
+    this.stmtSetSetting.run(ProviderConfigStore.DEFAULT_PROVIDER_KEY, id)
+  }
+
+  /** 清除默认 Provider 设置 */
+  clearDefaultProviderId(): void {
+    this.stmtDeleteSetting.run(ProviderConfigStore.DEFAULT_PROVIDER_KEY)
+  }
+
+  // ── stream_options 屏蔽开关 ──
+
+  private static readonly STRIP_STREAM_OPTIONS_KEY = 'strip_stream_options'
+
+  /**
+   * 读取 stream_options 屏蔽开关。
+   *
+   * 某些 OpenAI 兼容中转（如 fastaitoken.com）不兼容 OpenAI 1.x 的
+   * `stream_options.include_usage` 参数，收到后会断流导致
+   * `Stream ended without finish_reason`。开启后 Pi SDK 发请求前会移除该字段。
+   *
+   * 默认关闭（false）以保留 token 用量统计能力。
+   */
+  getStripStreamOptions(): boolean {
+    const row = this.stmtGetSetting.get(ProviderConfigStore.STRIP_STREAM_OPTIONS_KEY) as { value: string } | undefined
+    return row?.value === 'true'
+  }
+
+  /** 设置 stream_options 屏蔽开关 */
+  setStripStreamOptions(enabled: boolean): void {
+    this.stmtSetSetting.run(ProviderConfigStore.STRIP_STREAM_OPTIONS_KEY, enabled ? 'true' : 'false')
   }
 }

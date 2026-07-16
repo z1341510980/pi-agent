@@ -17,6 +17,7 @@ import { z } from 'zod'
 import { success } from '../lib/api-response.js'
 import { validateBody } from '../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import { buildProviderModelsUrl, normalizeProviderBaseUrl } from '../core/config/provider-base-url.js'
 
 const providerModelSchema = z.object({
   id: z.string().min(1),
@@ -65,7 +66,7 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     // 2. 注册到 ModelRegistry（供 Agent Session 使用）
     modelRegistry.registerProvider(config.id, {
       name: config.name,
-      baseUrl: config.baseUrl,
+      baseUrl: normalizeProviderBaseUrl(config.api, config.baseUrl),
       apiKey: config.apiKey,
       api: config.api,
       authHeader: config.authHeader ?? true,
@@ -119,6 +120,30 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     return success({ deleted: true }, request.traceId)
   })
 
+  // GET /api/providers/default — 获取默认 Provider ID
+  app.get('/api/providers/default', async (request) => {
+    const id = store.getDefaultProviderId()
+    return success({ id: id ?? null }, request.traceId)
+  })
+
+  // POST /api/providers/default — 设置默认 Provider
+  app.post('/api/providers/default', async (request, reply) => {
+    const body = request.body as { id?: string } | null
+    const id = body?.id
+    if (!id || typeof id !== 'string') {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'id 字段不能为空', 400)
+    }
+    if (!store.get(id)) {
+      throw new AppError(ErrorCode.NOT_FOUND, `Provider "${id}" 不存在`, 404)
+    }
+    store.setDefaultProviderId(id)
+    // 清除 Session 缓存：让后续 createPiSession 重新选择默认 Provider 的模型，
+    // 否则已缓存的 session 会继续使用旧 Provider（如从 DeepSeek 切到 OpenAI 时不生效）。
+    sessionStore.clear()
+    app.log.info(`默认 Provider 已设置为 "${id}"，Session 缓存已清除`)
+    return success({ id }, request.traceId)
+  })
+
   // GET /api/providers/:id/models — 拉取远端 Provider 可用模型列表
   // 代理调用 Provider 的 /v1/models（OpenAI 兼容格式），返回 [{ id, name }]
   app.get('/api/providers/:id/models', async (request) => {
@@ -132,21 +157,20 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
       throw new AppError(ErrorCode.NOT_FOUND, `Provider "${id}" 不存在`, 404)
     }
 
-    // 拼接远端 /v1/models URL（避免 baseUrl 已包含 /v1 时重复添加）
-    const normalizedBase = config.baseUrl.replace(/\/+$/, '')
-    const modelsUrl = normalizedBase.endsWith('/v1')
-      ? `${normalizedBase}/models`
-      : `${normalizedBase}/v1/models`
+    const modelsUrl = buildProviderModelsUrl(config.api, config.baseUrl)
 
     // 调用远端 /v1/models
     let response: Response
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15_000)
     try {
       const headers: Record<string, string> = {}
       if (config.authHeader !== false) {
         headers['Authorization'] = `Bearer ${config.apiKey}`
       }
-      response = await fetch(modelsUrl, { headers })
+      response = await fetch(modelsUrl, { headers, signal: controller.signal })
     } catch (err) {
+      clearTimeout(timeout)
       app.log.error(
         { traceId: request.traceId, providerId: id, modelsUrl, err },
         '拉取远端模型列表失败（网络错误）'
@@ -158,11 +182,13 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
         `拉取远端模型列表网络错误: ${(err as Error).message}`
       )
     }
+    clearTimeout(timeout)
 
     if (!response.ok) {
       const body = await response.text().catch(() => '')
+      const safeBody = body.length > 200 ? body.slice(0, 200) + '...(已截断)' : body
       app.log.error(
-        { traceId: request.traceId, providerId: id, modelsUrl, status: response.status, body },
+        { traceId: request.traceId, providerId: id, modelsUrl, status: response.status, body: safeBody },
         '拉取远端模型列表失败（HTTP 错误）'
       )
       throw new AppError(

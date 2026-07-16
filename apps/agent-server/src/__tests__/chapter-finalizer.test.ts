@@ -60,4 +60,48 @@ describe('ChapterFinalizer', () => {
       expect(finalizer.parseIdList('["a", 1, true, "b"]')).toEqual(['a', 'b'])
     })
   })
+
+  describe('syncChapterDimensions - 伏笔事件链', () => {
+    const emptyBefore = {
+      characters: new Map(), conflicts: new Map(), foreshadowing: new Map(),
+      factions: new Map(), locations: new Map(), relationships: new Map(), infoLayers: new Map(),
+    } as any
+
+    function makeFinalizer(foreshadows: any[]): { finalizer: ChapterFinalizer; updateForeshadow: ReturnType<typeof vi.fn> } {
+      const updateForeshadow = vi.fn()
+      const store = {
+        listCharacters: vi.fn(() => []),
+        listConflicts: vi.fn(() => []),
+        listForeshadowing: vi.fn(() => foreshadows),
+        listFactions: vi.fn(() => []),
+        listLocations: vi.fn(() => []),
+        updateForeshadow,
+      }
+      return {
+        finalizer: new ChapterFinalizer(store as any, {} as any, {} as any, {} as any, mockContext),
+        updateForeshadow,
+      }
+    }
+
+    it('已有埋设点时不把本章自动追加为伏笔节点', () => {
+      const foreshadow = { id: 'f1', beats: [{ chapter: 1, type: 'plant' }], firstChapter: 1 }
+      const { finalizer, updateForeshadow } = makeFinalizer([foreshadow])
+
+      finalizer.syncChapterDimensions('p1', 5, null, { foreshadowIds: ['f1'] } as any, emptyBefore)
+
+      expect(updateForeshadow).toHaveBeenCalledWith('f1', { lastChapter: 5 })
+    })
+
+    it('尚未埋设时只补一个 plant 节点', () => {
+      const foreshadow = { id: 'f2', beats: [], firstChapter: null }
+      const { finalizer, updateForeshadow } = makeFinalizer([foreshadow])
+
+      finalizer.syncChapterDimensions('p1', 3, null, { foreshadowIds: ['f2'] } as any, emptyBefore)
+
+      expect(updateForeshadow).toHaveBeenCalledWith('f2', {
+        lastChapter: 3,
+        beats: [{ chapter: 3, type: 'plant' }],
+      })
+    })
+  })
 })

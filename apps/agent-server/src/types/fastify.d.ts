@@ -13,6 +13,7 @@ import type { SessionSummaryStore } from '../core/memory/session-summary.js'
 import type { ProviderConfigStore } from '../core/config/provider-config-store.js'
 import type { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import type { ProxyManager } from '../core/config/proxy-manager.js'
+import type { SettingsManager } from '@earendil-works/pi-coding-agent'
 import type { PluginManager } from '../core/plugin/plugin-manager.js'
 import type { CronScheduler } from '../core/cron/cron-scheduler.js'
 import type Database from 'better-sqlite3'
@@ -35,6 +36,7 @@ declare module 'fastify' {
     authStorage: PiAuthStorage
     modelRegistry: PiModelRegistry
     sessionManager: PiSessionManager
+    settingsManager: SettingsManager
     getApiKey: (provider: string) => Promise<string | undefined>
     eventBus: EventBus
     confirmationManager: ConfirmationManager

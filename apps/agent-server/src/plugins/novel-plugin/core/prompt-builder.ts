@@ -66,11 +66,13 @@
 
 import { createHash } from 'node:crypto'
 import type { PromptManager } from './prompt-manager.js'
+import { compileWritingStylePrompt, type WritingStylePromptTarget } from './writing-style-prompt-factory.js'
 import type {
   NovelProject,
   NovelCharacter,
   NovelWorldRule,
   NovelStyleGuide,
+  NovelWritingStyleProfile,
   NovelChapter,
   NovelConflict,
   NovelForeshadow,
@@ -100,6 +102,7 @@ export interface NovelPromptStores {
   getProject(projectId: string): NovelProject | undefined
   listWorldRules(projectId: string): NovelWorldRule[]
   listStyleGuide(projectId: string): NovelStyleGuide[]
+  getWritingStyleProfile?(projectId: string): NovelWritingStyleProfile | undefined
   listCharacters(projectId: string): NovelCharacter[]
   listRelationships(projectId: string): NovelRelationship[]
   listConflicts(projectId: string): NovelConflict[]
@@ -150,10 +153,20 @@ export class NovelPromptBuilder {
     private memoryStore?: { listEvents(projectId: string, options?: { minSignificance?: number; limit?: number }): MemoryEvent[]; getCausalChain(eventId: string): { causes: MemoryEvent[]; effects: MemoryEvent[] } },
   ) {}
 
+  /** 按 Agent 职责编译当前项目的文风档案，供预览和日志审计复用。 */
+  buildWritingStylePrompt(
+    projectId: string,
+    target: WritingStylePromptTarget,
+  ): ReturnType<typeof compileWritingStylePrompt> | undefined {
+    const profile = this.stores.getWritingStyleProfile?.(projectId)
+    return profile ? compileWritingStylePrompt(profile, target) : undefined
+  }
+
   /**
    * 计算单章目标字数
    *
-   * 估算逻辑：项目总字数 / 1000（估计章节数），限制在 [2000, 5000] 区间。
+   * 估算逻辑：小于等于 10000 的值按章节目标字数处理；更大的值按项目总字数 / 1000
+   * 估算单章字数，最终限制在 [2000, 5000] 区间。
    * 不再用 / 30（假设全书 30 章）——300 万字小说实际有 1000+ 章，
    * / 30 会导致单章要求 10 万字，远超 LLM 单次输出能力和合理章节长度。
    *
@@ -172,7 +185,9 @@ export class NovelPromptBuilder {
   computeChapterTargetWords(project: NovelProject | undefined, rhythm?: ChapterRhythm): number {
     let base: number
     if (!project || project.targetWords <= 0) base = 3000
-    else base = Math.min(5000, Math.max(2500, Math.round(project.targetWords / 1000)))
+    else if (project.targetWords <= 10000) base = project.targetWords
+    else base = Math.round(project.targetWords / 1000)
+    base = Math.min(5000, Math.max(2500, base))
     // 节奏联动调整
     if (rhythm === 'climax') base = Math.round(base * 1.3)
     else if (rhythm === 'breather' || rhythm === 'setup') base = Math.round(base * 0.85)
@@ -207,6 +222,7 @@ export class NovelPromptBuilder {
    * 4. Agent 身份（Agent 专属）                ← 同 Agent 跨章不变
    */
   buildSystemPrompt(projectId: string, agentType: string): string {
+    void agentType
     const parts: string[] = []
 
     // ── 共享前缀（跨 Agent 相同，跨章不变，最大化 prompt cache 命中）──
@@ -305,10 +321,15 @@ export class NovelPromptBuilder {
    *   群聊模式必须传 true，否则 Agent 不知道自己的群聊职责，会出现 Director 直接写正文等问题。
    */
   buildAgentIdentity(projectId: string, agentType: string, discussion = false): string {
-    return this.promptManager.render('system-base', {
+    const identity = this.promptManager.render('system-base', {
       agent_type: agentType,
       agent_role: this.getAgentRoleDescription(agentType, projectId, discussion),
     }, projectId)
+    if (agentType !== 'writer' && agentType !== 'reviser' && agentType !== 'reviewer') {
+      return identity
+    }
+    const compiledStyle = this.buildWritingStylePrompt(projectId, agentType)
+    return compiledStyle ? `${identity}\n\n---\n\n${compiledStyle.content}` : identity
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -355,7 +376,7 @@ export class NovelPromptBuilder {
     // ── 本章已编排实体约束（手动编排 / AI 编排产出，注入 SEMI 层）──
     const hasArranged = this.hasArrangedEntities(arrangedEntities)
     if (hasArranged && arrangedEntities) {
-      parts.push(this.formatArrangedEntities(projectId, arrangedEntities))
+      parts.push(this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities))
     }
 
     // ── 当前故事状态（所有 Agent 共享，含编排实体去重）──
@@ -432,7 +453,24 @@ export class NovelPromptBuilder {
     // 必须在本章正文中承接。这是解决"前后章衔接对不上"的数据基础。
     const unfulfilledHooks = this.stores.listUnfulfilledHooksBefore(projectId, chapterNumber)
     if (unfulfilledHooks.length > 0) {
-      parts.push(this.formatUnfulfilledHooks(unfulfilledHooks))
+      // 上一章钩子必须完整承接；更早的遗留项只保留最近 2 条作为债务提醒，
+      // 避免每一章都重复累积整本书的钩子历史。
+      const previousChapterHooks = unfulfilledHooks
+        .filter((hook) => hook.chapterNumber === chapterNumber - 1)
+        // 同一章重跑 Director 可能留下多条 thrown 记录。优先保留最新结果，
+        // 同类型同描述去重，并限制为最多 3 个主钩子。
+        .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))
+        .filter((hook, index, hooks) =>
+          hooks.findIndex((candidate) =>
+            candidate.hookType === hook.hookType
+            && candidate.description.trim() === hook.description.trim(),
+          ) === index,
+        )
+        .slice(0, 3)
+      const olderBacklog = unfulfilledHooks
+        .filter((hook) => hook.chapterNumber < chapterNumber - 1)
+        .slice(0, 2)
+      parts.push(this.formatUnfulfilledHooks([...previousChapterHooks, ...olderBacklog]))
     }
 
     // ── 本章规划钩子（Writer 必须在章末抛出）──
@@ -466,7 +504,7 @@ export class NovelPromptBuilder {
    * - Director：宏观节奏分布 + Reviewer 反馈回流
    * - Writer：创作指令（chapter-instruction）
    * - Reviser：空（上一章结尾+叙事声音锚点已在 shared 层）
-   * - Reviewer：空（上一章结尾+叙事声音锚点已在 shared 层）
+   * - Reviewer：平台 Rubric + 已批准的 Director 方案
    * - Memory：空（无专属后缀）
    */
   buildChapterContextSuffix(
@@ -494,6 +532,9 @@ export class NovelPromptBuilder {
     if (agentType === 'reviewer') {
       const platformRubric = this.formatPlatformRubric(projectId)
       if (platformRubric) parts.push(platformRubric)
+      if (narrativeTask.description.trim()) {
+        parts.push(`## 已批准的本章叙事任务\n\n${narrativeTask.description.trim()}`)
+      }
     }
 
     // ── 创作指令（仅 Writer 注入，其他 Agent 看到会越权写作）──
@@ -738,10 +779,15 @@ export class NovelPromptBuilder {
       }
     }
 
-    if (constraints.narrativeDebts.length > 0) {
+    // suspenseHooks 已携带同一伏笔的本章动作时，不再以“叙事债务”重复一遍。
+    const suspenseDescriptions = new Set(constraints.suspenseHooks.map((hook) => hook.description))
+    const standaloneDebts = constraints.narrativeDebts.filter(
+      (foreshadow) => !suspenseDescriptions.has(foreshadow.description),
+    )
+    if (standaloneDebts.length > 0) {
       parts.push('\n### 叙事债务（待回收的伏笔）')
       parts.push('⚠️ 伏笔描述中的关键数字已用 **加粗** 标注，正文必须与此一致，不得篡改。')
-      for (const f of constraints.narrativeDebts) {
+      for (const f of standaloneDebts) {
         const status = f.status === 'planted' ? '已埋下' :
           f.status === 'reinforced' ? '已强化' :
           f.status === 'partially_revealed' ? '部分揭露' : '待回收'
@@ -847,7 +893,7 @@ export class NovelPromptBuilder {
    * - 章节上下文含本章角色完整定义 → 单章内缓存命中
    * - 其他角色 LLM 通过 formatStoryState 知道存在（name+动态状态），需要详情时调 query_state 工具
    */
-  private formatArrangedEntities(projectId: string, arranged: ArrangedEntity): string {
+  private formatArrangedEntities(projectId: string, chapterNumber: number, arranged: ArrangedEntity): string {
     const lines: string[] = ['【本章必须出现的实体（已编排约束，Writer 必须遵守）】']
     // 功能位中文映射（让 Writer 直观理解每个角色的本章推动作用）
     const plotFunctionLabel: Record<string, string> = {
@@ -1048,6 +1094,17 @@ export class NovelPromptBuilder {
           }
           if (f.recoverByChapter != null) {
             parts.push(`应在第 ${f.recoverByChapter} 章前回收`)
+          }
+          const currentBeat = f.beats?.find((beat) => beat.chapter === chapterNumber)
+          if (currentBeat) {
+            const beatLabel = {
+              plant: '埋设',
+              reinforce: '强化',
+              reveal: '部分揭示',
+              payoff: '回收',
+            }[currentBeat.type]
+            parts.push(`本章节点：${beatLabel}`)
+            if (currentBeat.note) parts.push(`节点内容：${currentBeat.note}`)
           }
           // ── P3-2：反向展示 linkedInfoLayers（本伏笔承载了哪些信息差）──
           // 让 Writer 在回收伏笔时同步翻转读者认知（避免伏笔回收了但信息差没揭露）

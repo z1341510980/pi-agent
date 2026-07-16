@@ -20,14 +20,28 @@ import {
   createWorldElement,
   deleteCharacterHistory,
   deleteChapter,
+  deleteMarker,
   listMarkers,
   updateConflict,
   updateFaction,
   updateForeshadow,
   updateLocation,
   updateMarker,
+  type ForeshadowBeatType,
+  type NovelForeshadow,
 } from '@/api/novel-client'
-import { buildGroups, buildPool, findSpanAt, GROUP_ORDER, type MatrixEntity, type MatrixEntityKind } from './matrix-logic'
+import {
+  buildGroups,
+  buildPool,
+  findSpanAt,
+  GROUP_ORDER,
+  moveForeshadowEndpointBeat,
+  resolveForeshadowLeftClickBeat,
+  setForeshadowBeatNote,
+  upsertForeshadowBeat,
+  type MatrixEntity,
+  type MatrixEntityKind,
+} from './matrix-logic'
 import { MatrixToolbar } from './matrix-toolbar'
 import { MatrixView } from './matrix-view'
 import { MatrixLegend } from './matrix-legend'
@@ -69,6 +83,20 @@ function mergeSpanIntoList(
   return result
 }
 
+function getForeshadowBeats(foreshadow: NovelForeshadow): NonNullable<NovelForeshadow['beats']> {
+  // beats 为空时从 firstChapter/recoverByChapter fallback 补点；
+  // beats 非空但缺失 plant/payoff 时也要补——避免旧数据（迁移前用 firstChapter/recoverByChapter
+  // 的伏笔）的 beats=[] 状态在用户操作时被当作权威源送回后端，导致 normalize 清空整条链。
+  const beats = foreshadow.beats && foreshadow.beats.length > 0 ? [...foreshadow.beats] : []
+  if (!beats.some((beat) => beat.type === 'plant') && foreshadow.firstChapter != null) {
+    beats.push({ chapter: foreshadow.firstChapter, type: 'plant' as const })
+  }
+  if (!beats.some((beat) => beat.type === 'payoff') && foreshadow.recoverByChapter != null) {
+    beats.push({ chapter: foreshadow.recoverByChapter, type: 'payoff' as const })
+  }
+  return beats.sort((a, b) => a.chapter - b.chapter)
+}
+
 export interface MatrixWorkspaceProps {
   creationRunning?: boolean
   creationChapterNumber?: number
@@ -107,6 +135,7 @@ export function MatrixWorkspace({
   const relationships = useNovelDataStore((s) => s.relationships)
   const markers = useNovelDataStore((s) => s.markers)
   const setMarkers = useNovelDataStore((s) => s.setMarkers)
+  const removeMarker = useNovelDataStore((s) => s.removeMarker)
   const selectNode = useNovelUiStore((s) => s.selectNode)
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
   const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
@@ -133,10 +162,12 @@ export function MatrixWorkspace({
   const [createDialog, setCreateDialog] = useState<{ kind: MatrixEntityKind; chapter: number | null } | null>(null)
   const [spanDialog, setSpanDialog] = useState<{ entity: MatrixEntity } | null>(null)
   const [noteDialog, setNoteDialog] = useState<{
+    scope: 'entity' | 'foreshadow-beat'
     entityId: string
     entityName: string
     entityType: MatrixEntityKind
     chapter: number
+    beatType: ForeshadowBeatType | null
     initialNote: string
     existingMarkerId: string | null
   } | null>(null)
@@ -330,10 +361,11 @@ export function MatrixWorkspace({
       }
       case 'foreshadow': {
         const f = foreshadows.find((x) => x.id === entityId)
-        if (!f || f.firstChapter == null) return false
-        const recover = f.recoverByChapter
-        if (recover == null) return chapter === f.firstChapter
-        return chapter === f.firstChapter || chapter === recover
+        if (!f) return false
+        const beat = getForeshadowBeats(f).find((item) => item.chapter === chapter)
+        // 埋设点是矩阵行的锚点。普通单元格菜单不允许误删根节点，
+        // 否则整条事件链会被清空，伏笔行也会立即移回元素池。
+        return beat != null && beat.type !== 'plant'
       }
       case 'location': {
         const l = locations.find((x) => x.id === entityId)
@@ -361,10 +393,9 @@ export function MatrixWorkspace({
         return chapter === span[0] || chapter === span[1]
       }
       case 'foreshadow': {
-        // 伏笔只有 plant/payoff 两个端点可删（取消埋设/回收），中间章节不可删
         const f = foreshadows.find((x) => x.id === entityId)
         if (!f) return false
-        return chapter === f.firstChapter || chapter === f.recoverByChapter
+        return getForeshadowBeats(f).some((beat) => beat.chapter === chapter)
       }
       default:
         return true
@@ -375,15 +406,27 @@ export function MatrixWorkspace({
     const editable = isCellEditable(entityType)
     const present = editable && isCellPresent(entityId, entityType, chapter)
     const removable = editable && present && isCellRemovable(entityId, entityType, chapter)
-    // foreshadow 动态状态：根据 firstChapter / recoverByChapter 判断下一步动作
-    let foreshadowState: 'unplanted' | 'planted' | 'recoverable' | undefined
+    // foreshadow 动态状态：根据离散事件链判断下一步动作
+    let foreshadowState: 'unplanted' | 'active' | 'recovered' | undefined
+    let foreshadowBeatType: ForeshadowBeatType | undefined
+    let foreshadowBeatNote: string | undefined
     if (entityType === 'foreshadow') {
       const f = foreshadows.find((x) => x.id === entityId)
-      if (!f || f.firstChapter == null) foreshadowState = 'unplanted'
-      else if (f.recoverByChapter == null) foreshadowState = chapter > f.firstChapter ? 'planted' : 'unplanted'
-      else foreshadowState = chapter === f.recoverByChapter ? 'recoverable' : (chapter > f.firstChapter ? 'planted' : 'unplanted')
+      const beats = f ? getForeshadowBeats(f) : []
+      const currentBeat = beats.find((beat) => beat.chapter === chapter)
+      foreshadowBeatType = currentBeat?.type
+      foreshadowBeatNote = currentBeat?.note
+      const plant = beats.find((beat) => beat.type === 'plant')?.chapter
+      const payoff = beats.find((beat) => beat.type === 'payoff')?.chapter
+      if (plant == null) foreshadowState = 'unplanted'
+      else if (chapter < plant) foreshadowState = 'unplanted'
+      else if (payoff != null && chapter > payoff) foreshadowState = 'recovered'
+      else foreshadowState = 'active'
     }
-    setCellMenu({ x, y, entityId, entityName, entityType, chapter, present, editable, removable, foreshadowState })
+    setCellMenu({
+      x, y, entityId, entityName, entityType, chapter, present, editable, removable,
+      foreshadowState, foreshadowBeatType, foreshadowBeatNote,
+    })
   }, [isCellEditable, isCellPresent, isCellRemovable, foreshadows])
 
   const handleMarkPresent = useCallback(async (entityId: string, entityType: MatrixEntityKind, chapter: number): Promise<void> => {
@@ -468,32 +511,11 @@ export function MatrixWorkspace({
             console.warn('[MatrixWorkspace] foreshadow 拖入：未找到伏笔', entityId)
             return
           }
-          // 拖入伏笔到矩阵的语义（与左键单击 handleTogglePresent 保持一致并扩展移动端点）：
-          // - 未放置（firstChapter null）→ 设埋设点
-          // - 已埋设未回收，拖到埋设点之后 → 设回收点
-          // - 已埋设未回收，拖到埋设点之前或同章 → 移动埋设点到该章
-          // - 已回收，拖到新位置 → 移动离该章最近的端点（埋设点/回收点）
+          // 从元素池首次拖入只负责建立埋设点。后续强化、揭示、回收必须通过
+          // 单元格右键显式选择语义，避免“拖到后面 = 自动回收”的歧义。
           if (f.firstChapter == null) {
-            const updated = await updateForeshadow(entityId, { firstChapter: chapter, status: 'planted' })
+            const updated = await updateForeshadow(entityId, { beats: [{ chapter, type: 'plant' }] })
             useNovelDataStore.getState().upsertForeshadow(updated)
-          } else if (f.recoverByChapter == null && chapter > f.firstChapter) {
-            const updated = await updateForeshadow(entityId, { recoverByChapter: chapter, status: 'recovered' })
-            useNovelDataStore.getState().upsertForeshadow(updated)
-          } else if (f.recoverByChapter == null) {
-            // 未回收，拖到埋设点之前或同章 → 移动埋设点
-            const updated = await updateForeshadow(entityId, { firstChapter: chapter })
-            useNovelDataStore.getState().upsertForeshadow(updated)
-          } else {
-            // 已回收：移动离 chapter 最近的端点
-            const distPlant = Math.abs(chapter - f.firstChapter!)
-            const distPayoff = Math.abs(chapter - f.recoverByChapter)
-            if (distPlant <= distPayoff) {
-              const updated = await updateForeshadow(entityId, { firstChapter: chapter })
-              useNovelDataStore.getState().upsertForeshadow(updated)
-            } else {
-              const updated = await updateForeshadow(entityId, { recoverByChapter: chapter })
-              useNovelDataStore.getState().upsertForeshadow(updated)
-            }
           }
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
@@ -582,13 +604,14 @@ export function MatrixWorkspace({
         case 'foreshadow': {
           const f = foreshadows.find((x) => x.id === entityId)
           if (!f) return
-          if (chapter === f.firstChapter) {
-            const updated = await updateForeshadow(entityId, { firstChapter: null })
-            useNovelDataStore.getState().upsertForeshadow(updated)
-          } else if (chapter === f.recoverByChapter) {
-            const updated = await updateForeshadow(entityId, { recoverByChapter: null, status: 'planted' })
-            useNovelDataStore.getState().upsertForeshadow(updated)
-          }
+          const existing = getForeshadowBeats(f)
+          const removed = existing.find((beat) => beat.chapter === chapter)
+          // 埋设点是事件链的根；删除根节点时清空整条链，避免留下没有起因的孤立事件。
+          const beats = removed?.type === 'plant'
+            ? []
+            : existing.filter((beat) => beat.chapter !== chapter)
+          const updated = await updateForeshadow(entityId, { beats })
+          useNovelDataStore.getState().upsertForeshadow(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -610,40 +633,62 @@ export function MatrixWorkspace({
     }
   }, [currentProjectId, characterHistory, conflicts, factions, foreshadows, locations, setCharacterHistory, queryClient])
 
-  // ── 左键单元格：智能切换出场状态（实体类型自适应）──
-  // - character/location：空→标记出场 / 已出场→删除出场
-  // - conflict/faction：空→扩展端点 / 端点→收缩端点 / 中段→无操作（schema 闭区间不支持挖洞）
-  // - foreshadow：未埋设→设埋设点 / 已埋设未回收→设回收点 / 埋设点→取消埋设 / 回收点→取消回收
-  // - world_element：恒全程，不操作
+  const handleMarkForeshadowBeat = useCallback(async (
+    entityId: string,
+    chapter: number,
+    type: ForeshadowBeatType,
+    editAfterCreate = false,
+  ): Promise<void> => {
+    if (!currentProjectId) return
+    try {
+      const foreshadow = useNovelDataStore.getState().foreshadows.find((item) => item.id === entityId)
+      if (!foreshadow) return
+      const existing = getForeshadowBeats(foreshadow)
+      const beats = upsertForeshadowBeat(existing, chapter, type)
+      const updated = await updateForeshadow(entityId, { beats })
+      useNovelDataStore.getState().upsertForeshadow(updated)
+      if (editAfterCreate) {
+        const savedBeat = getForeshadowBeats(updated).find((beat) => beat.chapter === chapter)
+        if (savedBeat) {
+          const legacyMarker = useNovelDataStore.getState().markers.find(
+            (marker) => marker.type === 'clip-note' && marker.entityId === entityId,
+          )
+          setNoteDialog({
+            scope: 'foreshadow-beat',
+            entityId,
+            entityName: updated.description,
+            entityType: 'foreshadow',
+            chapter,
+            beatType: savedBeat.type,
+            initialNote: savedBeat.note ?? legacyMarker?.note ?? '',
+            existingMarkerId: legacyMarker?.id ?? null,
+          })
+        }
+      }
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    } catch (err) {
+      console.error('[MatrixWorkspace] 标记伏笔节点失败:', err)
+      toastError('标记伏笔节点失败', err instanceof Error ? err.message : String(err))
+    }
+  }, [currentProjectId, queryClient])
+
+  // ── 空单元格单击：构造性快速新增；删除/收缩统一走右键菜单 ──
   const handleTogglePresent = useCallback(async (entity: MatrixEntity, chapter: number): Promise<void> => {
     const kind = entity.kind
     if (kind === 'world_element') return
 
-    let action: 'mark' | 'remove' | 'none' = 'none'
     if (kind === 'foreshadow') {
-      const f = foreshadows.find((x) => x.id === entity.entityId)
-      if (!f) return
-      const plant = f.firstChapter
-      const payoff = f.recoverByChapter
-      if (plant != null && chapter === plant) action = 'remove' // 取消埋设点
-      else if (payoff != null && chapter === payoff) action = 'remove' // 取消回收点
-      else if (plant == null) action = 'mark' // 设埋设点
-      else if (payoff == null && chapter > plant) action = 'mark' // 设回收点
-      // else：跨度中段且已设回收 → none（用右键编辑范围移动）
-    } else {
-      const present = isCellPresent(entity.entityId, kind, chapter)
-      const removable = isCellRemovable(entity.entityId, kind, chapter)
-      if (!present) action = 'mark'
-      else if (removable) action = 'remove'
-      // present && !removable（冲突/势力跨度中段）→ none
+      const foreshadow = useNovelDataStore.getState().foreshadows.find((item) => item.id === entity.entityId)
+      if (!foreshadow) return
+      const type = resolveForeshadowLeftClickBeat(getForeshadowBeats(foreshadow), chapter)
+      if (type) await handleMarkForeshadowBeat(entity.entityId, chapter, type)
+      return
     }
 
-    if (action === 'mark') {
+    if (!isCellPresent(entity.entityId, kind, chapter)) {
       await handleMarkPresent(entity.entityId, kind, chapter)
-    } else if (action === 'remove') {
-      await handleRemovePresent(entity.entityId, kind, chapter)
     }
-  }, [foreshadows, isCellPresent, isCellRemovable, handleMarkPresent, handleRemovePresent])
+  }, [isCellPresent, handleMarkPresent, handleMarkForeshadowBeat])
 
   // ── 拖动跨度端点（conflict/faction/foreshadow）调整起止章节 ──
   // 语义：拖动端点到新章节列，移动该端点；conflict/faction 按 spanIndex 定位目标段，
@@ -680,25 +725,23 @@ export function MatrixWorkspace({
           break
         }
         case 'foreshadow': {
-          // 伏笔端点拖拽：直接操作 firstChapter（埋设点）/ recoverByChapter（回收点）
-          // - 拖动 start 端点 → 更新 firstChapter（埋设点）
-          // - 拖动 end 端点 → 更新 recoverByChapter（回收点）
-          // 反转保护：plant 不能晚于 payoff，payoff 不能早于 plant
+          // 伏笔端点拖拽移动完整 beat，保留该节点的 note。
           const f = useNovelDataStore.getState().foreshadows.find((x) => x.id === entityId)
           if (!f) return
-          const patch: { firstChapter?: number; recoverByChapter?: number | null; status?: 'recovered' } = {}
+          const existing = getForeshadowBeats(f)
+          let beats = existing
           if (end === 'start') {
             // 拖动 plant：不能超过 payoff（若已回收），否则不超过现有最大章节
-            const maxStart = f.recoverByChapter ?? Math.max(20, ...chapters.map((c) => c.chapterNumber), 1)
-            patch.firstChapter = Math.min(chapter, maxStart)
+            const maxStart = f.recoverByChapter != null
+              ? Math.max(1, f.recoverByChapter - 1)
+              : Math.max(20, ...chapters.map((c) => c.chapterNumber), 1)
+            beats = moveForeshadowEndpointBeat(existing, 'plant', Math.min(chapter, maxStart))
           } else {
-            // 拖动 payoff：不能早于 plant
-            const minEnd = f.firstChapter ?? 1
-            const newPayoff = Math.max(chapter, minEnd)
-            patch.recoverByChapter = newPayoff
-            patch.status = 'recovered'
+            // 拖动 payoff：必须晚于 plant，避免两个端点落在同章时覆盖节点
+            const minEnd = (f.firstChapter ?? 0) + 1
+            beats = moveForeshadowEndpointBeat(existing, 'payoff', Math.max(chapter, minEnd))
           }
-          const updated = await updateForeshadow(entityId, patch)
+          const updated = await updateForeshadow(entityId, { beats })
           useNovelDataStore.getState().upsertForeshadow(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
@@ -708,6 +751,38 @@ export function MatrixWorkspace({
       console.error('[MatrixWorkspace] 移动端点失败:', err)
     }
   }, [currentProjectId, chapters, queryClient])
+
+  // ── 拖动整段色带：保持跨度时长平移；与其他段相交时自动合并 ──
+  const handleMoveSpan = useCallback(async (
+    entityId: string,
+    entityType: 'conflict' | 'faction',
+    spanIndex: number,
+    startChapter: number,
+    endChapter: number,
+  ): Promise<void> => {
+    if (!currentProjectId) return
+    try {
+      if (entityType === 'conflict') {
+        const entity = useNovelDataStore.getState().conflicts.find((item) => item.id === entityId)
+        if (!entity?.chapterSpans[spanIndex]) return
+        const otherSpans = entity.chapterSpans.filter((_, index) => index !== spanIndex)
+        const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
+        const updated = await updateConflict(entityId, { chapterSpans })
+        useNovelDataStore.getState().upsertConflict(updated)
+      } else {
+        const entity = useNovelDataStore.getState().factions.find((item) => item.id === entityId)
+        if (!entity?.chapterSpans[spanIndex]) return
+        const otherSpans = entity.chapterSpans.filter((_, index) => index !== spanIndex)
+        const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
+        const updated = await updateFaction(entityId, { chapterSpans })
+        useNovelDataStore.getState().upsertFaction(updated)
+      }
+      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    } catch (err) {
+      console.error('[MatrixWorkspace] 移动跨度失败:', err)
+      toastError('移动范围失败', err instanceof Error ? err.message : String(err))
+    }
+  }, [currentProjectId, queryClient])
 
   // ── 拖动已出场单元格（character/location）换章 ──
   // 语义：从 fromChapter 移除、在 toChapter 新增。用 useNovelDataStore.getState() 取最新数据避免闭包陈旧。
@@ -754,14 +829,35 @@ export function MatrixWorkspace({
 
   // ── C-4b 修改批注：查找已有 clip-note marker ──
   const handleEditNote = useCallback((entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number) => {
+    if (entityType === 'foreshadow') {
+      const foreshadow = useNovelDataStore.getState().foreshadows.find((item) => item.id === entityId)
+      const beat = foreshadow ? getForeshadowBeats(foreshadow).find((item) => item.chapter === chapter) : undefined
+      if (!beat) return
+      const legacyMarker = markers.find(
+        (marker) => marker.type === 'clip-note' && marker.entityId === entityId,
+      )
+      setNoteDialog({
+        scope: 'foreshadow-beat',
+        entityId,
+        entityName,
+        entityType,
+        chapter,
+        beatType: beat.type,
+        initialNote: beat.note ?? legacyMarker?.note ?? '',
+        existingMarkerId: legacyMarker?.id ?? null,
+      })
+      return
+    }
     const existing = markers.find(
       (m) => m.type === 'clip-note' && m.entityId === entityId,
     )
     setNoteDialog({
+      scope: 'entity',
       entityId,
       entityName,
       entityType,
       chapter,
+      beatType: null,
       initialNote: existing?.note ?? '',
       existingMarkerId: existing?.id ?? null,
     })
@@ -770,7 +866,28 @@ export function MatrixWorkspace({
   const handleSubmitNote = useCallback(async (note: string): Promise<void> => {
     if (!currentProjectId || !noteDialog) return
     try {
-      if (noteDialog.existingMarkerId) {
+      if (noteDialog.scope === 'foreshadow-beat') {
+        const foreshadow = useNovelDataStore.getState().foreshadows.find((item) => item.id === noteDialog.entityId)
+        if (!foreshadow) throw new Error('伏笔不存在或已被删除')
+        const beats = setForeshadowBeatNote(
+          getForeshadowBeats(foreshadow),
+          noteDialog.chapter,
+          note,
+        )
+        const updated = await updateForeshadow(noteDialog.entityId, { beats })
+        useNovelDataStore.getState().upsertForeshadow(updated)
+        // 旧版本把伏笔批注存在 clip-note marker。首次保存节点内容时完成惰性迁移，
+        // 避免同一内容在实体行和节点格重复展示。
+        if (noteDialog.existingMarkerId) {
+          try {
+            await deleteMarker(noteDialog.existingMarkerId)
+            removeMarker(noteDialog.existingMarkerId)
+          } catch (migrationError) {
+            // 节点内容已经保存成功，旧 marker 清理失败不应把主操作报告为失败。
+            console.warn('[MatrixWorkspace] 清理旧伏笔批注失败:', migrationError)
+          }
+        }
+      } else if (noteDialog.existingMarkerId) {
         const updated = await updateMarker(noteDialog.existingMarkerId, { note })
         upsertMarker(updated)
       } else {
@@ -789,18 +906,18 @@ export function MatrixWorkspace({
       console.error('[MatrixWorkspace] 保存批注失败:', err)
       throw err
     }
-  }, [currentProjectId, noteDialog, upsertMarker, queryClient])
+  }, [currentProjectId, noteDialog, upsertMarker, removeMarker, queryClient])
 
   // ── C-4a 双击色带 / 右键「编辑范围」：通用实体跨度编辑 ──
   // 双击色带直接拿到 MatrixEntity；右键菜单通过 (entityId, entityType) 在 matrixData 里查到
   const openSpanDialog = useCallback((entity: MatrixEntity) => {
-    if (entity.kind === 'world_element') return
+    if (entity.kind === 'world_element' || entity.kind === 'foreshadow') return
     setSpanDialog({ entity })
   }, [])
 
   // 右键菜单入口：由 (entityId, entityType) 反查 MatrixEntity 后打开对话框
   const handleEditSpanFromMenu = useCallback((entityId: string, _entityName: string, entityType: MatrixEntityKind) => {
-    if (entityType === 'world_element') return
+    if (entityType === 'world_element' || entityType === 'foreshadow') return
     const entity = matrixData.groups
       .flatMap((g) => g.entities)
       .find((e) => e.entityId === entityId && e.kind === entityType)
@@ -1081,6 +1198,7 @@ export function MatrixWorkspace({
           onEditSpan={openSpanDialog}
           onDropEntity={handleMarkPresent}
           onMoveEndpoint={handleMoveEndpoint}
+          onMoveSpan={handleMoveSpan}
           onMoveCell={handleMoveCell}
           onTogglePresent={handleTogglePresent}
         />
@@ -1104,6 +1222,7 @@ export function MatrixWorkspace({
         onEditNote={handleEditNote}
         onEditSpan={handleEditSpanFromMenu}
         onRemoveSpan={(eid, kind, ch) => void handleRemoveSpan(eid, kind, ch)}
+        onMarkForeshadowBeat={(eid, ch, type, editAfterCreate) => void handleMarkForeshadowBeat(eid, ch, type, editAfterCreate)}
       />
 
       <EntityCreateDialog
@@ -1130,6 +1249,8 @@ export function MatrixWorkspace({
         chapter={noteDialog?.chapter ?? null}
         initialNote={noteDialog?.initialNote ?? ''}
         existingMarkerId={noteDialog?.existingMarkerId ?? null}
+        noteScope={noteDialog?.scope ?? 'entity'}
+        foreshadowBeatType={noteDialog?.beatType ?? null}
         onClose={() => setNoteDialog(null)}
         onSubmit={(note) => handleSubmitNote(note)}
       />

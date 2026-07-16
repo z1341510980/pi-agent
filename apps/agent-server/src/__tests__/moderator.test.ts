@@ -192,4 +192,18 @@ describe('Moderator', () => {
 
     expect(decision).toMatchObject({ type: 'invite', agentId: 'char-zhaoyan' })
   })
+
+  it('收到中止信号时不重试也不降级调度', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('用户手动停止'))
+    const ctx = {
+      createSession: vi.fn().mockRejectedValue(controller.signal.reason),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+    }
+    const moderator = new Moderator(ctx as any)
+
+    await expect(moderator.decide(goal, history, members, state, controller.signal))
+      .rejects.toThrow('用户手动停止')
+    expect(ctx.createSession).toHaveBeenCalledTimes(1)
+  })
 })

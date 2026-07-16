@@ -73,6 +73,33 @@ export class NovelEngine {
     const constraints = this.store.listConstraints(projectId)
     const foreshadowing = this.store.listForeshadowing(projectId)
     const characters = this.store.listCharacters(projectId)
+    const pendingForeshadows = foreshadowing.filter(
+      (f) => f.status !== 'recovered' && f.status !== 'abandoned',
+    )
+
+    // 只把本章需要动作的伏笔放进“硬约束”。长期未回收伏笔仍会以紧凑的
+    // story-state 快照出现，但不能每章都被误写成“本章必须维持/释放”。
+    // beats 是伏笔真正发生的离散章节；旧数据会由 NovelStore 用首章/回收章
+    // 补出端点 beat，因此这里同时兼容新旧数据。
+    const relevantForeshadows = chapterNumber === undefined
+      ? pendingForeshadows.slice(0, 8)
+      : pendingForeshadows
+          .filter((f) =>
+            f.beats?.some((beat) => beat.chapter === chapterNumber)
+            || f.firstChapter === chapterNumber
+            || (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber),
+          )
+          .sort((a, b) => {
+            const aBeat = a.beats?.find((beat) => beat.chapter === chapterNumber)
+            const bBeat = b.beats?.find((beat) => beat.chapter === chapterNumber)
+            const priority = (type: string | undefined): number =>
+              type === 'payoff' ? 0 : type === 'reveal' ? 1 : type === 'reinforce' ? 2 : 3
+            return priority(aBeat?.type) - priority(bBeat?.type)
+              || (a.recoverByChapter ?? Number.MAX_SAFE_INTEGER)
+                - (b.recoverByChapter ?? Number.MAX_SAFE_INTEGER)
+              || a.id.localeCompare(b.id)
+          })
+          .slice(0, 8)
 
     // ── 冲突推进目标 ──
     // 筛选本章需推进的活跃冲突：章节在跨度内 / 空跨度（未放置）/ 本章为爆发章节
@@ -119,15 +146,17 @@ export class NovelEngine {
     // 来源：待回收伏笔（planting/sustaining/releasing）+ 未揭示信息差（sustaining/releasing）
     const suspenseHooks: SuspenseHook[] = []
     if (chapterNumber !== undefined) {
-      const pendingForeshadows = foreshadowing.filter(
-        (f) => f.status !== 'recovered' && f.status !== 'abandoned',
-      )
-      for (const f of pendingForeshadows) {
-        const firstChapter = f.firstChapter ?? chapterNumber
+      for (const f of relevantForeshadows) {
+        const firstChapter: number = f.firstChapter ?? chapterNumber
+        const currentBeat = f.beats?.find((beat) => beat.chapter === chapterNumber)
         let status: SuspenseHook['status']
-        if (firstChapter >= chapterNumber) {
+        if (currentBeat?.type === 'plant' || firstChapter === chapterNumber) {
           status = 'planting'
-        } else if (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber) {
+        } else if (
+          currentBeat?.type === 'payoff'
+          || currentBeat?.type === 'reveal'
+          || (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber)
+        ) {
           status = 'releasing'
         } else {
           status = 'sustaining'
@@ -142,8 +171,16 @@ export class NovelEngine {
       }
 
       const infoLayers = this.store.listInformationLayers(projectId)
-      for (const layer of infoLayers) {
-        if (layer.isRevealed) continue
+      const relevantInfoLayers = infoLayers
+        .filter((layer) => !layer.isRevealed)
+        .filter((layer) => layer.revealChapter !== null && layer.revealChapter <= chapterNumber)
+        .sort((a, b) =>
+          (a.revealChapter ?? Number.MAX_SAFE_INTEGER)
+            - (b.revealChapter ?? Number.MAX_SAFE_INTEGER)
+          || a.id.localeCompare(b.id),
+        )
+        .slice(0, Math.max(0, 8 - suspenseHooks.length))
+      for (const layer of relevantInfoLayers) {
         const revealChapter = layer.revealChapter
         const status: SuspenseHook['status'] =
           revealChapter !== null && revealChapter <= chapterNumber
@@ -197,9 +234,7 @@ export class NovelEngine {
       facts: constraints.filter((c) => c.type === 'fact'),
       cognitive: constraints.filter((c) => c.type === 'cognitive'),
       stage: constraints.filter((c) => c.type === 'stage'),
-      narrativeDebts: foreshadowing.filter(
-        (f) => f.status !== 'recovered' && f.status !== 'abandoned',
-      ),
+      narrativeDebts: relevantForeshadows,
       characterArcs: characters.map((character) => ({
         character,
         allowedNextStage: this.getNextArcStage(character.arcStage),

@@ -43,7 +43,7 @@ export interface ClicheHit {
 const PATTERNS: ClichePattern[] = [
   {
     pattern: 'em_dash_abuse',
-    name: '滥用破折号"——"',
+    name: '滥用长横线破折号',
     regex: /——/g,
     threshold: 1,
     hint: '不使用破折号做情节转折或插说。所有转折通过角色的行动、对话或心理变化自然完成。',

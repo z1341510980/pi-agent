@@ -14,12 +14,7 @@ import { Type } from 'typebox'
 import { defineTool } from '@earendil-works/pi-coding-agent'
 import type { Plugin } from '../../core/plugin/plugin-types.js'
 import { search } from './search-service.js'
-
-/** 安全读取环境变量整数，非法值回退到 fallback */
-function envInt(name: string, fallback: number): number {
-  const v = Number(process.env[name])
-  return Number.isFinite(v) && v > 0 ? v : fallback
-}
+import { envInt } from './env.js'
 
 /** web_search 工具参数 Schema（TypeBox） */
 const WebSearchParams = Type.Object({
@@ -69,8 +64,9 @@ const webSearchTool = defineTool({
         fetchTimeoutMs: envInt('WEB_SEARCH_FETCH_TIMEOUT', 8000),
         maxContentChars: envInt('WEB_SEARCH_MAX_CONTENT_CHARS', 2000),
         concurrency: envInt('WEB_SEARCH_CONCURRENCY', 3),
+        timeRange: params.time_range,
       },
-      signal ?? undefined,
+      signal,
     )
 
     // 失败时 result.error 透传到 tool result 文本里

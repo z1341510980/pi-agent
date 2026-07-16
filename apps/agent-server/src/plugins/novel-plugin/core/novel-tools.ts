@@ -821,7 +821,7 @@ export function createNovelUpdateCharacterTool(store: NovelStore): ToolDefinitio
         }
       }
 
-      const updated = store.updateCharacter(characterId, patch as any)
+      const updated = store.updateCharacter(characterId, patch as Partial<import('./types.js').NovelCharacter>)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `角色不存在: ${characterId}` }],
@@ -866,7 +866,7 @@ export function createNovelUpdateForeshadowTool(store: NovelStore): ToolDefiniti
         }
       }
 
-      const updated = store.updateForeshadow(foreshadowId, patch as any)
+      const updated = store.updateForeshadow(foreshadowId, patch as Partial<import('./types.js').NovelForeshadow>)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `伏笔不存在: ${foreshadowId}` }],
@@ -904,7 +904,7 @@ export function createNovelUpdateConflictTool(store: NovelStore): ToolDefinition
         patch.participants = JSON.stringify(participants)
       }
 
-      const updated = store.updateConflict(conflictId, patch as any)
+      const updated = store.updateConflict(conflictId, patch as Partial<import('./types.js').NovelConflict>)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `冲突不存在: ${conflictId}` }],
@@ -938,7 +938,7 @@ export function createNovelUpdateClueTool(store: NovelStore): ToolDefinition<typ
         if (value !== undefined) patch[key] = value
       }
 
-      const updated = store.updateClue(clueId, patch as any)
+      const updated = store.updateClue(clueId, patch as Partial<import('./types.js').NovelClue>)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `线索不存在: ${clueId}` }],
@@ -1331,7 +1331,7 @@ export function createNovelUpdateFactionTool(store: NovelStore): ToolDefinition<
       for (const [key, value] of Object.entries(updates)) {
         if (value !== undefined) patch[key] = value
       }
-      const updated = store.updateFaction(factionId, patch as any)
+      const updated = store.updateFaction(factionId, patch as Partial<import('./types.js').NovelFaction>)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `势力不存在: ${factionId}` }],
@@ -1416,7 +1416,7 @@ export function createNovelUpdateLocationTool(store: NovelStore): ToolDefinition
       for (const [key, value] of Object.entries(updates)) {
         if (value !== undefined) patch[key] = value
       }
-      const updated = store.updateLocation(locationId, patch as any)
+      const updated = store.updateLocation(locationId, patch as Partial<import('./types.js').NovelLocation>)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `地点不存在: ${locationId}` }],
@@ -1477,7 +1477,7 @@ export function createNovelUpdateWorldElementTool(store: NovelStore): ToolDefini
       for (const [key, value] of Object.entries(updates)) {
         if (value !== undefined) patch[key] = value
       }
-      const updated = store.updateWorldElement(worldElementId, patch as any)
+      const updated = store.updateWorldElement(worldElementId, patch as Partial<import('./types.js').NovelWorldElement>)
       if (!updated) {
         return {
           content: [{ type: 'text', text: `世界观要素不存在: ${worldElementId}` }],

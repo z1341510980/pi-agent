@@ -96,6 +96,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       authStorage: app.authStorage,
       modelRegistry: app.modelRegistry,
       sessionManager: app.sessionManager,
+      settingsManager: app.settingsManager,
       credentialBridge,
       providerConfigStore: app.providerConfigStore,
       gate,
@@ -120,6 +121,8 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   app.pluginManager?.setSessionStore(sessionStore)
   // 注入 ModelRegistry（供 createSession 的 modelId 切换）
   app.pluginManager?.setModelRegistry(app.modelRegistry)
+  // 注入 ProviderConfigStore（供 onPayload 读取 stream_options 屏蔽开关等应用级配置）
+  app.pluginManager?.setProviderConfigStore(app.providerConfigStore)
 
   const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.eventBus)
 

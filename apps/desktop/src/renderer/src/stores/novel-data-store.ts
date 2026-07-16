@@ -243,8 +243,8 @@ export const useNovelDataStore = create<NovelDataState>()(
           // persist 的 localStorage 也会跨会话携带残留，必须在此清空。
           if (prevId !== projectId) {
             useNovelDataStore.temporal.getState().clear()
-            // 同时清除 UI store 的选中状态
-            useNovelUiStore.getState().clearSelection()
+            // 项目切换时统一清理 UI store 的项目相关状态
+            useNovelUiStore.getState().resetForProjectSwitch()
             set({
               ...emptyEntities(),
             })
@@ -283,19 +283,11 @@ export const useNovelDataStore = create<NovelDataState>()(
           }),
 
         clearProjectData: () => {
-          // 同时清除 UI store 的相关状态
-          const ui = useNovelUiStore.getState()
-          ui.clearSelection()
-          ui.setPlayheadChapter(1)
+          // 统一清理 UI store 的项目相关状态
+          useNovelUiStore.getState().resetForProjectSwitch()
           set({
             ...emptyEntities(),
             // UI store 负责自己的状态，这里只清数据
-          })
-          // UI store 中 collapsedGroups/expandedVolumes/matrixScrollTarget 也需清空
-          useNovelUiStore.setState({
-            collapsedGroups: [],
-            expandedVolumes: [],
-            matrixScrollTarget: null,
           })
         },
 
@@ -320,9 +312,8 @@ export const useNovelDataStore = create<NovelDataState>()(
         removeProject: (id) =>
           set((state) => {
             if (state.currentProjectId === id) {
-              // 删除当前项目：清空数据 + 清空 UI 选中状态
-              useNovelUiStore.getState().clearSelection()
-              useNovelUiStore.setState({ expandedVolumes: [] })
+              // 删除当前项目：清空数据 + 统一清理 UI store 的项目相关状态
+              useNovelUiStore.getState().resetForProjectSwitch()
               return {
                 projects: removeFromList(state.projects, id),
                 currentProjectId: null,

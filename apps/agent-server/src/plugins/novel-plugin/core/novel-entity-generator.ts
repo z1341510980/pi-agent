@@ -59,6 +59,29 @@ type EntityPlanResult = {
   logContext: EntityPlanLogContext
 }
 
+type BatchPlanSpec = { coreStyle: string }
+
+type BatchGenerationRun = {
+  generated: Map<object, GeneratedEntity>
+  itemCount: number
+  batchCount: number
+  retryCount: number
+  fallbackCount: number
+  unbatchedGenerationCount: number
+  usage?: LlmUsageSnapshot
+}
+
+type BatchRequestItem = {
+  index: number
+  coreStyle: string
+}
+
+type BatchRequestResult = {
+  generated: Map<number, GeneratedEntity>
+  failedIndexes: number[]
+  usage?: LlmUsageSnapshot
+}
+
 // ── 生成结果类型 ──
 
 /** character 生成结果（与 NovelCharacterGenerator.GeneratedCharacter 一致） */
@@ -244,10 +267,11 @@ export class NovelEntityGenerator {
     entityType: EntityKind,
     coreStyle: string,
     onProgress?: (event: EntityGenerationProgressEvent) => void,
+    signal?: AbortSignal,
   ): Promise<GeneratedEntity> {
     // character 委托给现有 generator（保持 prompt 一致性）
     if (entityType === 'character') {
-      const data = await this.characterGenerator.generate(projectId, coreStyle, onProgress)
+      const data = await this.characterGenerator.generate(projectId, coreStyle, onProgress, signal)
       return { type: 'character', data }
     }
 
@@ -259,13 +283,18 @@ export class NovelEntityGenerator {
       + '\n\n---\n\n' + this.buildUserPrompt(entityType, coreStyle)
 
     onProgress?.({ phase: 'generating', message: `AI 正在生成${this.kindLabel(entityType)}设定...` })
+    // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
+    // 未配置则走默认 Provider。
+    const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
     const session = await this.context.createSession({
       systemPrompt,
       userMessage: userPrompt,
       responseFormat: 'json',
+      modelId: directorModel,
       // 实体生成（冲突/伏笔/势力/地点/世界要素）涉及详细设定，LLM 耗时较长；
       // 默认 120s 不足，提到 300s 与 Memory Agent 一致
       timeoutMs: 300_000,
+      signal,
     })
 
     try {
@@ -290,6 +319,7 @@ export class NovelEntityGenerator {
       onProgress?.({ phase: 'completed', message: `${this.kindLabel(entityType)}生成完成` })
       return { type: entityType, data } as GeneratedEntity
     } catch (err) {
+      if (signal?.aborted) throw err
       this.context.logger.error(
         { projectId, entityType, coreStylePreview: coreStyle.slice(0, 80), err },
         `${this.kindLabel(entityType)}生成 LLM 调用失败，回退到模板`,
@@ -331,7 +361,9 @@ export class NovelEntityGenerator {
     outline: string,
     onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
     source: 'outline' | 'content' = 'outline',
+    signal?: AbortSignal,
   ): Promise<ArrangedEntity> {
+    signal?.throwIfAborted()
     // ── 编排日志采集变量 ──
     // 与 runAgent 的日志写入模式对齐：startTime / logStatus / logError / logResult
     const startTime = Date.now()
@@ -343,7 +375,7 @@ export class NovelEntityGenerator {
     const isReverse = source === 'content'
     onProgress?.({ phase: 'analyzing', message: isReverse ? '分析正文，反推本章实体...' : '分析章纲，规划所需实体...' })
 
-    const { plan, logContext } = await this.planEntitiesFromOutline(projectId, chapterNumber, outline, onProgress, source)
+    const { plan, logContext } = await this.planEntitiesFromOutline(projectId, chapterNumber, outline, onProgress, source, signal)
     planLogContext = logContext
     const planningErrorMessage = logContext.status === 'error'
       ? (logContext.error || 'AI 实体规划失败')
@@ -382,10 +414,32 @@ export class NovelEntityGenerator {
     const generatedForeshadows: Array<{ description: string; category: string }> = []
     const generatedFactions: Array<{ name: string; type: string }> = []
     const generatedLocations: Array<{ name: string; type: string }> = []
+    let batchGeneration: BatchGenerationRun = {
+      generated: new Map(),
+      itemCount: 0,
+      batchCount: 0,
+      retryCount: 0,
+      fallbackCount: 0,
+      unbatchedGenerationCount: 0,
+    }
 
     try {
       if (planningErrorMessage) {
         throw new Error(planningErrorMessage)
+      }
+
+      batchGeneration = await this.generatePlanInBatches(projectId, plan, onProgress, signal)
+      const resolveGenerated = async (
+        spec: BatchPlanSpec,
+        kind: EntityKind,
+        coreStyle = spec.coreStyle,
+      ): Promise<GeneratedEntity> => {
+        const batched = batchGeneration.generated.get(spec)
+        if (batched) return batched
+
+        // 仅“已有：X”未命中项目数据时会走到这里。这类项无法提前判断，单独生成并在日志中标记。
+        batchGeneration.unbatchedGenerationCount += 1
+        return this.generate(projectId, kind, coreStyle, onProgress, signal)
       }
 
       // 预拉一次已有角色清单（按名查重），避免循环内重复查询
@@ -396,6 +450,7 @@ export class NovelEntityGenerator {
       }
 
       for (const spec of plan.characters) {
+        signal?.throwIfAborted()
         const hint = this.parseExistingHint(spec.coreStyle)
 
         // 命中"已有：X"标记 → 优先按名查重，找到则不创建，仅追加 history 标记本章出场
@@ -433,7 +488,7 @@ export class NovelEntityGenerator {
           }
           // LLM 标注"已有：X"但项目里没找到 → 降级为新建，用 hint.name 作为 coreStyle
           onProgress?.({ phase: 'generating', message: `未找到已有角色「${hint.name}」，按新建处理...` })
-          const gen = await this.generate(projectId, 'character', hint.name, onProgress)
+          const gen = await resolveGenerated(spec, 'character', hint.name)
           if (gen.type !== 'character') continue
           await this.processNewCharacter(gen.data, projectId, chapterNumber, outline, existingCharacterByName, characterIds, createdCharacterIds, characterFunctions, generatedCharacters, spec)
           continue
@@ -441,7 +496,7 @@ export class NovelEntityGenerator {
 
         // 新角色：保持原有 create 流程
         onProgress?.({ phase: 'generating', message: `生成角色：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'character', spec.coreStyle, onProgress)
+        const gen = await resolveGenerated(spec, 'character')
         if (gen.type !== 'character') continue
 
         // 二次查重：LLM 可能仍生成与已有角色同名的"新角色"（即使提示词要求标注"已有"）
@@ -483,6 +538,7 @@ export class NovelEntityGenerator {
       }
 
       for (const spec of plan.conflicts) {
+        signal?.throwIfAborted()
         const hint = this.parseExistingHint(spec.coreStyle)
         // "已有：xxx" → 尝试按描述前缀匹配
         if (hint.mode === 'existing') {
@@ -512,7 +568,7 @@ export class NovelEntityGenerator {
 
         // 新冲突
         onProgress?.({ phase: 'generating', message: `生成冲突：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'conflict', spec.coreStyle, onProgress)
+        const gen = await resolveGenerated(spec, 'conflict')
         if (gen.type !== 'conflict') continue
         // 二次查重
         const dupKey = gen.data.description.slice(0, 40)
@@ -572,35 +628,30 @@ export class NovelEntityGenerator {
       }
 
       for (const spec of plan.foreshadows) {
+        signal?.throwIfAborted()
         const hint = this.parseExistingHint(spec.coreStyle)
         if (hint.mode === 'existing') {
           const existing = existingForeshadowByDesc.get(hint.name.slice(0, 40))
             ?? [...existingForeshadowByDesc.values()].find((f) => f.description.includes(hint.name))
           if (existing) {
             onProgress?.({ phase: 'generating', message: `复用已有伏笔：${existing.description.slice(0, 30)}` })
-            // 补全章节维度字段（参考 syncChapterDimensions + conflict 扩展 chapterSpans 逻辑）：
-            // - lastChapter 更新为本章（兼容字段，标记伏笔在本章延续/出现）
-            // - firstChapter 为 null（旧数据）时补为本章（埋设点 plant 语义标记）
-            // - chapterSpans 扩展包含本章（若尚未包含），矩阵按色带样式渲染活跃区间
+            // 复用已有伏笔时只为尚未埋设的旧数据补 plant；后续节点由 Memory Agent
+            // 根据正文明确记录，不能把“本章复用”自动解释为连续活跃区间。
             const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
-            if (existing.firstChapter == null) {
-              patch.firstChapter = chapterNumber
-            }
-            const spans = existing.chapterSpans ?? []
-            const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-            if (!alreadyCovers) {
-              patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+            if (!(existing.beats ?? []).some((beat) => beat.type === 'plant')) {
+              patch.beats = [...(existing.beats ?? []), { chapter: chapterNumber, type: 'plant' }]
             }
             rollbackActions.push(() => {
               this.store.updateForeshadow(existing.id, {
                 firstChapter: existing.firstChapter,
                 lastChapter: existing.lastChapter,
                 chapterSpans: existing.chapterSpans,
+                beats: existing.beats,
               })
             })
-            this.store.updateForeshadow(existing.id, patch)
+            const updated = this.store.updateForeshadow(existing.id, patch) ?? existing
             // 同步内存 map，避免后续同名合并分支拿到旧数据
-            existingForeshadowByDesc.set(existing.description.slice(0, 40), { ...existing, ...patch })
+            existingForeshadowByDesc.set(existing.description.slice(0, 40), updated)
             foreshadowIds.push(existing.id)
             generatedForeshadows.push({ description: existing.description, category: existing.category })
             continue
@@ -608,31 +659,27 @@ export class NovelEntityGenerator {
         }
 
         onProgress?.({ phase: 'generating', message: `生成伏笔：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'foreshadow', spec.coreStyle, onProgress)
+        const gen = await resolveGenerated(spec, 'foreshadow')
         if (gen.type !== 'foreshadow') continue
         const dupKey = gen.data.description.slice(0, 40)
         const dup = existingForeshadowByDesc.get(dupKey)
         if (dup) {
           onProgress?.({ phase: 'generating', message: `检测到相似伏笔，合并为已有实体` })
-          // 同上：补全章节维度字段 + 扩展 chapterSpans 包含本章
+          // 同上：只补首次 plant，不构造连续 chapterSpans。
           const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
-          if (dup.firstChapter == null) {
-            patch.firstChapter = chapterNumber
-          }
-          const spans = dup.chapterSpans ?? []
-          const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-          if (!alreadyCovers) {
-            patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+          if (!(dup.beats ?? []).some((beat) => beat.type === 'plant')) {
+            patch.beats = [...(dup.beats ?? []), { chapter: chapterNumber, type: 'plant' }]
           }
           rollbackActions.push(() => {
             this.store.updateForeshadow(dup.id, {
               firstChapter: dup.firstChapter,
               lastChapter: dup.lastChapter,
               chapterSpans: dup.chapterSpans,
+              beats: dup.beats,
             })
           })
-          this.store.updateForeshadow(dup.id, patch)
-          existingForeshadowByDesc.set(dupKey, { ...dup, ...patch })
+          const updated = this.store.updateForeshadow(dup.id, patch) ?? dup
+          existingForeshadowByDesc.set(dupKey, updated)
           foreshadowIds.push(dup.id)
           generatedForeshadows.push({ description: dup.description, category: dup.category })
           continue
@@ -651,9 +698,8 @@ export class NovelEntityGenerator {
           plantMethod: gen.data.plantMethod,
           recoverMethod: gen.data.recoverMethod,
           linkedInfoLayers: '[]',
-          // 新建伏笔：埋设点 = 本章，活跃区间初始为单点段 [chapter, chapter]
-          // 待回收时由用户拖动终点扩展，回收后 chapterSpans 末段 end = recoverByChapter
-          chapterSpans: [[chapterNumber, chapterNumber] as ChapterSpan],
+          chapterSpans: [],
+          beats: [{ chapter: chapterNumber, type: 'plant' }],
         })
         existingForeshadowByDesc.set(created.description.slice(0, 40), created)
         foreshadowIds.push(created.id)
@@ -668,6 +714,7 @@ export class NovelEntityGenerator {
       }
 
       for (const spec of plan.factions) {
+        signal?.throwIfAborted()
         const hint = this.parseExistingHint(spec.coreStyle)
         if (hint.mode === 'existing') {
           const existing = existingFactionByName.get(hint.name)
@@ -688,7 +735,7 @@ export class NovelEntityGenerator {
         }
 
         onProgress?.({ phase: 'generating', message: `生成势力：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'faction', spec.coreStyle, onProgress)
+        const gen = await resolveGenerated(spec, 'faction')
         if (gen.type !== 'faction') continue
         const dup = existingFactionByName.get(gen.data.name)
         if (dup) {
@@ -732,6 +779,7 @@ export class NovelEntityGenerator {
       }
 
       for (const spec of plan.locations) {
+        signal?.throwIfAborted()
         const hint = this.parseExistingHint(spec.coreStyle)
         if (hint.mode === 'existing') {
           const existing = existingLocationByName.get(hint.name)
@@ -762,7 +810,7 @@ export class NovelEntityGenerator {
         }
 
         onProgress?.({ phase: 'generating', message: `生成地点：${spec.coreStyle}` })
-        const gen = await this.generate(projectId, 'location', spec.coreStyle, onProgress)
+        const gen = await resolveGenerated(spec, 'location')
         if (gen.type !== 'location') continue
         const dup = existingLocationByName.get(gen.data.name)
         if (dup) {
@@ -881,6 +929,14 @@ export class NovelEntityGenerator {
             factions: generatedFactions,
             locations: generatedLocations,
           },
+          batchGeneration: {
+            itemCount: batchGeneration.itemCount,
+            batchCount: batchGeneration.batchCount,
+            retryCount: batchGeneration.retryCount,
+            fallbackCount: batchGeneration.fallbackCount,
+            unbatchedGenerationCount: batchGeneration.unbatchedGenerationCount,
+            capturedUsage: batchGeneration.usage ?? null,
+          },
           // 汇总计数
           summary: {
             characterCount: characterIds.length,
@@ -891,10 +947,14 @@ export class NovelEntityGenerator {
             characterFunctionCount: characterFunctions.length,
           },
         }, null, 2)
-        const usageFromLedger = this.readUsageFromLedgerWindow(startTime, Date.now())
-        const usageForLog = usageFromLedger ?? (planLogContext?.usage && hasLlmUsage(planLogContext.usage)
-          ? planLogContext.usage
-          : undefined)
+        let capturedUsage = planLogContext?.usage
+        if (batchGeneration.usage) capturedUsage = addLlmUsage(capturedUsage, batchGeneration.usage)
+        // 正常批次路径使用 session 事件中的精确 usage。只有“已有实体未命中”触发旧单项生成时，
+        // 才回退到时间窗账本，避免漏记这部分 token。
+        const usageFromLedger = batchGeneration.unbatchedGenerationCount > 0 || !hasLlmUsage(capturedUsage)
+          ? this.readUsageFromLedgerWindow(startTime, Date.now())
+          : undefined
+        const usageForLog = usageFromLedger ?? (hasLlmUsage(capturedUsage) ? capturedUsage : undefined)
 
         this.store.insertAgentLog({
           projectId,
@@ -1035,6 +1095,7 @@ export class NovelEntityGenerator {
     outline: string,
     onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
     source: 'outline' | 'content' = 'outline',
+    signal?: AbortSignal,
   ): Promise<EntityPlanResult> {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
 
@@ -1067,9 +1128,25 @@ export class NovelEntityGenerator {
       fallbackLabel: string,
     ): string => {
       if (items.length === 0) return `（暂无${fallbackLabel}）`
-      return items
-        .map((it, i) => `${i + 1}. ${it.name ?? fallbackLabel}${it.description ? `：${it.description.slice(0, 100)}` : ''}`)
-        .join('\n')
+      // 旧实现把项目内全部实体描述原样塞进规划 prompt，项目变大后会让
+      // 每次 ai-arrange/reverse-arrange 的输入 token 随历史线性膨胀。
+      // 保留稳定排序后的前缀条目，超出预算的实体仍可在生成阶段按名查重。
+      const maxChars = 5000
+      const lines: string[] = []
+      let usedChars = 0
+      const stableItems = [...items].sort((a, b) =>
+        (a.name ?? a.description ?? '').localeCompare(b.name ?? b.description ?? ''),
+      )
+      for (const [index, it] of stableItems.entries()) {
+        const line = `${index + 1}. ${it.name ?? fallbackLabel}${it.description ? `：${it.description.slice(0, 100)}` : ''}`
+        if (usedChars + line.length > maxChars) break
+        lines.push(line)
+        usedChars += line.length + 1
+      }
+      if (lines.length < stableItems.length) {
+        lines.push(`...其余 ${stableItems.length - lines.length} 个${fallbackLabel}省略，生成阶段会继续按名称/描述查重`)
+      }
+      return lines.join('\n')
     }
 
     // ── 根据 source 构建不同的 userPrompt ──
@@ -1161,15 +1238,20 @@ export class NovelEntityGenerator {
     )
     onProgress?.({ phase: 'planning', message: 'AI 正在规划本章实体...' })
 
+    // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
+    // 未配置则走默认 Provider。
+    const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
     const session = await this.context.createSession({
       systemPrompt,
       // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
       userMessage: this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
         + '\n\n---\n\n' + userPrompt,
       responseFormat: 'json',
+      modelId: directorModel,
       // 规划阶段可能生成大量 JSON（多个实体），LLM 耗时较长；
       // 默认 120s 不足以完成复杂章纲的规划，提到 300s 与 Memory Agent 一致
       timeoutMs: 300_000,
+      signal,
     })
     let capturedUsage: LlmUsageSnapshot | undefined
     const unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
@@ -1199,6 +1281,7 @@ export class NovelEntityGenerator {
         // 优先使用流式累积结果，回退到 promptStream 返回值
         text = result || full
       } catch (llmErr) {
+        if (signal?.aborted) throw llmErr
         // LLM 调用失败：返回空 plan + 错误日志上下文，让 generateAndArrange 能写入失败日志
         const errMsg = llmErr instanceof Error ? llmErr.message : String(llmErr)
         this.context.logger.error(
@@ -1297,6 +1380,341 @@ export class NovelEntityGenerator {
     } finally {
       unsubscribeUsage()
       session.dispose()
+    }
+  }
+
+  /**
+   * 将规划中的新实体按类型分批生成。已有实体提示不进入批次，避免为可复用数据消耗 token。
+   * 每批最多 4 项；无效项只重试自身，第二次仍失败才使用本地模板。
+   */
+  private async generatePlanInBatches(
+    projectId: string,
+    plan: EntityPlan,
+    onProgress?: (event: { phase: string; message: string; data?: unknown }) => void,
+    signal?: AbortSignal,
+  ): Promise<BatchGenerationRun> {
+    const run: BatchGenerationRun = {
+      generated: new Map(),
+      itemCount: 0,
+      batchCount: 0,
+      retryCount: 0,
+      fallbackCount: 0,
+      unbatchedGenerationCount: 0,
+    }
+    const groups: Array<{ kind: EntityKind; specs: BatchPlanSpec[] }> = [
+      { kind: 'character', specs: plan.characters },
+      { kind: 'conflict', specs: plan.conflicts },
+      { kind: 'foreshadow', specs: plan.foreshadows },
+      { kind: 'faction', specs: plan.factions },
+      { kind: 'location', specs: plan.locations },
+    ]
+    const batchSize = 4
+
+    for (const { kind, specs } of groups) {
+      signal?.throwIfAborted()
+      const candidates = specs.filter((spec) => this.parseExistingHint(spec.coreStyle).mode === 'new')
+      run.itemCount += candidates.length
+
+      for (let offset = 0; offset < candidates.length; offset += batchSize) {
+        const chunk = candidates.slice(offset, offset + batchSize)
+        const requestItems = chunk.map((spec, index) => ({ index, coreStyle: spec.coreStyle }))
+        run.batchCount += 1
+        onProgress?.({
+          phase: 'generating',
+          message: `批量生成${this.kindLabel(kind)}：第 ${Math.floor(offset / batchSize) + 1} 批，共 ${chunk.length} 项`,
+          data: { entityType: kind, batchSize: chunk.length, maxBatchSize: batchSize },
+        })
+
+        const batch = await this.generateEntityBatch(projectId, kind, requestItems, onProgress, false, signal)
+        if (batch.usage) run.usage = addLlmUsage(run.usage, batch.usage)
+
+        for (const [index, entity] of batch.generated) {
+          const spec = chunk[index]
+          if (spec) run.generated.set(spec, entity)
+        }
+
+        for (const failedIndex of batch.failedIndexes) {
+          const spec = chunk[failedIndex]
+          if (!spec) continue
+          run.retryCount += 1
+          onProgress?.({
+            phase: 'generating',
+            message: `${this.kindLabel(kind)}批次第 ${failedIndex + 1} 项校验失败，正在单独重试`,
+            data: { entityType: kind, coreStyle: spec.coreStyle },
+          })
+
+          const retry = await this.generateEntityBatch(
+            projectId,
+            kind,
+            [{ index: 0, coreStyle: spec.coreStyle }],
+            onProgress,
+            true,
+            signal,
+          )
+          if (retry.usage) run.usage = addLlmUsage(run.usage, retry.usage)
+          const retriedEntity = retry.generated.get(0)
+          if (retriedEntity) {
+            run.generated.set(spec, retriedEntity)
+            continue
+          }
+
+          run.fallbackCount += 1
+          run.generated.set(spec, {
+            type: kind,
+            data: this.buildBatchTemplate(kind, spec.coreStyle),
+          } as GeneratedEntity)
+          this.context.logger.error(
+            { projectId, entityType: kind, coreStylePreview: spec.coreStyle.slice(0, 80) },
+            '实体批量生成单项重试仍失败，使用模板兜底',
+          )
+        }
+      }
+    }
+
+    this.context.logger.info(
+      {
+        projectId,
+        itemCount: run.itemCount,
+        batchCount: run.batchCount,
+        retryCount: run.retryCount,
+        fallbackCount: run.fallbackCount,
+        usage: run.usage,
+      },
+      '实体批量生成完成',
+    )
+    return run
+  }
+
+  private async generateEntityBatch(
+    projectId: string,
+    kind: EntityKind,
+    items: BatchRequestItem[],
+    onProgress: ((event: { phase: string; message: string; data?: unknown }) => void) | undefined,
+    isRetry: boolean,
+    signal?: AbortSignal,
+  ): Promise<BatchRequestResult> {
+    let capturedUsage: LlmUsageSnapshot | undefined
+    const failedResult = (): BatchRequestResult => ({
+      generated: new Map(),
+      failedIndexes: items.map((item) => item.index),
+      usage: capturedUsage,
+    })
+
+    try {
+      const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
+      const userMessage = this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
+        + '\n\n---\n\n' + this.buildBatchUserPrompt(kind, items)
+      // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
+      // 未配置则走默认 Provider。
+      const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
+      const session = await this.context.createSession({
+        systemPrompt,
+        userMessage,
+        responseFormat: 'json',
+        modelId: directorModel,
+        timeoutMs: 300_000,
+        signal,
+      })
+      const unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
+        if (event.type !== 'message_end') return
+        const message = (event as { message?: Record<string, unknown> }).message
+        if (!message || message.role !== 'assistant') return
+        const usage = extractLlmUsageFromMessage(message)
+        if (usage) capturedUsage = addLlmUsage(capturedUsage, usage)
+      })
+
+      try {
+        let streamedText = ''
+        let lastEmitTs = 0
+        const full = await session.promptStream((delta) => {
+          streamedText += delta
+          const now = Date.now()
+          if (now - lastEmitTs < 500) return
+          lastEmitTs = now
+          onProgress?.({
+            phase: 'generating',
+            message: `${isRetry ? '单项重试' : '批量生成'}${this.kindLabel(kind)}中...`,
+            data: { entityType: kind, partial: streamedText.slice(-200) },
+          })
+        })
+        const text = streamedText || full
+        const parsed = repairAndParseJson(text)
+        const resultItems = parsed && Array.isArray(parsed.items) ? parsed.items : []
+        const generated = new Map<number, GeneratedEntity>()
+
+        for (const rawItem of resultItems) {
+          if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) continue
+          const item = rawItem as Record<string, unknown>
+          const index = typeof item.index === 'number' && Number.isInteger(item.index) ? item.index : -1
+          if (!items.some((request) => request.index === index) || generated.has(index)) continue
+          const data = item.result ?? item.data
+          if (!this.isValidBatchItem(kind, data)) continue
+          const coreStyle = items.find((request) => request.index === index)?.coreStyle ?? ''
+          generated.set(index, {
+            type: kind,
+            data: this.parseBatchItem(kind, data, coreStyle, projectId),
+          } as GeneratedEntity)
+        }
+
+        const failedIndexes = items
+          .map((item) => item.index)
+          .filter((index) => !generated.has(index))
+        if (failedIndexes.length > 0) {
+          this.context.logger.warn(
+            {
+              projectId,
+              entityType: kind,
+              isRetry,
+              requestedCount: items.length,
+              validCount: generated.size,
+              failedIndexes,
+              resultLength: text.length,
+            },
+            '实体批量生成存在未通过逐项校验的结果',
+          )
+        } else {
+          this.context.logger.info(
+            {
+              projectId,
+              entityType: kind,
+              isRetry,
+              itemCount: items.length,
+              resultLength: text.length,
+              usage: capturedUsage,
+            },
+            '实体批量生成请求完成',
+          )
+        }
+        return { generated, failedIndexes, usage: capturedUsage }
+      } finally {
+        unsubscribeUsage()
+        session.dispose()
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err
+      this.context.logger.error(
+        { projectId, entityType: kind, isRetry, itemCount: items.length, err },
+        '实体批量生成请求失败',
+      )
+      return failedResult()
+    }
+  }
+
+  private buildBatchUserPrompt(kind: EntityKind, items: BatchRequestItem[]): string {
+    return [
+      `一次生成 ${items.length} 个${this.kindLabel(kind)}。每个输入项必须独立处理，不得混合设定。`,
+      '',
+      '【输入项】',
+      JSON.stringify(items),
+      '',
+      '【单项字段规则】',
+      this.batchFieldRules(kind),
+      '',
+      '【返回格式】',
+      '只返回一个 JSON 对象，格式为：{"items":[{"index":0,"result":{}}]}。',
+      'items 必须覆盖每个输入 index，顺序与输入一致。result 必须包含该类型要求的全部字段。',
+      '文本字段禁止使用 U+2013、U+2014、U+2015 长横线。转折改用句号，补充说明改用逗号。',
+    ].join('\n')
+  }
+
+  private batchFieldRules(kind: EntityKind): string {
+    switch (kind) {
+      case 'character':
+        return [
+          'name、description、identity、personality、appearance、currentState、currentGoal、currentPressure、secret、arcStage、speechStyle、longTermDesire、plotRole、removalImpact。',
+          'plotRole: protagonist/main_opponent/supporting/function/background。arcStage: setup/rising/climax/falling/resolution。longTermDesire 是跨章节稳定欲望，currentGoal 是短期目标。',
+        ].join('\n')
+      case 'conflict':
+        return [
+          'description、type、intensity、stage、tier、participants、climaxChapter、climaxType、stakes、twistPotential、plotFunction、progressionMode。',
+          'type: inner/relationship/faction/interest/moral/identity/emotional/world_rule/survival。stage: latent/emerging/escalating/erupting/reversing/resolved/transformed。tier: main/secondary/goal。',
+          'climaxType: emotional/fate/character/combat/theme/composite。plotFunction: provide_resource/create_obstacle/amplify_conflict/open_phase/change_judgment/advance_relationship/reveal_world_rule。progressionMode: linear/mutation/stagnation/regression/reversal。',
+          'intensity 为 1-10 整数，twistPotential 为 0-10 整数，participants 为角色姓名数组；无高潮时 climaxChapter 和 climaxType 为 null。',
+        ].join('\n')
+      case 'foreshadow':
+        return [
+          'description、category、status、linkedCharacters、linkedClues、plantMethod、recoverMethod。',
+          'category: item/spoken/event/identity/secret/prophecy/promise/quote。status: planned/planted/reinforced/partially_revealed/recovering/recovered/abandoned。plantMethod: explicit/implicit/indirect。recoverMethod: explicit/implicit/reverse/progressive。',
+        ].join('\n')
+      case 'faction':
+        return 'name、description、type、ideology、strength、resources、allies、enemies、status。type: organization/sect/kingdom/family/guild/cult。strength: weak/medium/strong/overwhelming。status: active/declined/destroyed/hidden。resources、allies、enemies 为字符串数组。'
+      case 'location':
+        return 'name、description、type、significance、status。type: continent/country/city/building/dungeon/region/wilderness。significance: minor/moderate/major/critical。status: normal/destroyed/changed/hidden。'
+      case 'world_element':
+        return 'category、name、description、attributes。category: power_system/history/culture/religion/technology/economy/geography。attributes 为 JSON 对象。'
+    }
+  }
+
+  private isValidBatchItem(kind: EntityKind, value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const item = value as Record<string, unknown>
+    const requiredFields: Record<EntityKind, string[]> = {
+      character: ['name', 'description', 'identity', 'personality', 'appearance', 'currentState', 'currentGoal', 'currentPressure', 'secret', 'arcStage', 'speechStyle', 'longTermDesire', 'plotRole', 'removalImpact'],
+      conflict: ['description', 'type', 'intensity', 'stage', 'tier', 'participants', 'climaxChapter', 'climaxType', 'stakes', 'twistPotential', 'plotFunction', 'progressionMode'],
+      foreshadow: ['description', 'category', 'status', 'linkedCharacters', 'linkedClues', 'plantMethod', 'recoverMethod'],
+      faction: ['name', 'description', 'type', 'ideology', 'strength', 'resources', 'allies', 'enemies', 'status'],
+      location: ['name', 'description', 'type', 'significance', 'status'],
+      world_element: ['category', 'name', 'description', 'attributes'],
+    }
+    if (!requiredFields[kind].every((field) => Object.prototype.hasOwnProperty.call(item, field))) return false
+
+    const identityField = kind === 'conflict' || kind === 'foreshadow' ? 'description' : 'name'
+    if (typeof item[identityField] !== 'string' || !item[identityField].trim()) return false
+    if (kind === 'conflict' && !Number.isFinite(Number(item.intensity))) return false
+    if (kind === 'world_element' && (typeof item.attributes !== 'object' || item.attributes == null || Array.isArray(item.attributes))) return false
+    return true
+  }
+
+  private parseBatchItem(
+    kind: EntityKind,
+    item: Record<string, unknown>,
+    coreStyle: string,
+    projectId: string,
+  ): GeneratedEntity['data'] {
+    if (kind !== 'character') {
+      return this.parseResult(kind, JSON.stringify(item), coreStyle, projectId)
+    }
+
+    const validPlotRoles: NovelCharacter['plotRole'][] = ['protagonist', 'main_opponent', 'supporting', 'function', 'background']
+    return {
+      name: ensureString(item.name, '未命名角色'),
+      description: ensureString(item.description, ''),
+      identity: ensureString(item.identity, ''),
+      personality: ensureString(item.personality, ''),
+      appearance: ensureString(item.appearance, ''),
+      currentState: ensureString(item.currentState, ''),
+      currentGoal: ensureString(item.currentGoal, ''),
+      currentPressure: ensureString(item.currentPressure, ''),
+      secret: ensureString(item.secret, ''),
+      arcStage: ensureString(item.arcStage, 'setup'),
+      speechStyle: ensureString(item.speechStyle, ''),
+      longTermDesire: ensureString(item.longTermDesire, ''),
+      plotRole: validPlotRoles.includes(item.plotRole as NovelCharacter['plotRole'])
+        ? item.plotRole as NovelCharacter['plotRole']
+        : 'supporting',
+      removalImpact: ensureString(item.removalImpact, '暂无关键影响'),
+    }
+  }
+
+  private buildBatchTemplate(kind: EntityKind, coreStyle: string): GeneratedEntity['data'] {
+    if (kind !== 'character') return this.buildTemplate(kind, coreStyle)
+    const trimmed = coreStyle.trim()
+    const nameSeed = trimmed.slice(0, 4).replace(/[^\u4e00-\u9fa5a-zA-Z]/g, '')
+    return {
+      name: nameSeed.length >= 2 ? `${nameSeed}（待定）` : '未命名角色',
+      description: `基于“${trimmed.slice(0, 30)}”生成的占位角色`,
+      identity: '身份背景待补充',
+      personality: '性格特征待补充',
+      appearance: '外貌描写待补充',
+      currentState: '初始状态，待发展',
+      currentGoal: '当前目标待补充',
+      currentPressure: '当前压力待补充',
+      secret: '隐藏秘密待补充',
+      arcStage: 'setup',
+      speechStyle: '说话风格待补充',
+      longTermDesire: '长期欲望待补充',
+      plotRole: 'supporting',
+      removalImpact: '暂无关键影响',
     }
   }
 

@@ -57,3 +57,28 @@ export function computeVisibleChapters(params: ComputeVisibleChaptersParams): Vi
 export function getChapterLeft(chapter: number, sidebarWidth: number, cellWidth: number): number {
   return sidebarWidth + (chapter - 1) * cellWidth
 }
+
+/**
+ * 将章节标尺的方向键转换为目标章节号。
+ * 返回 null 表示该按键不属于标尺导航，交还浏览器处理。
+ */
+export function getChapterNavigationTarget(
+  key: string,
+  currentChapter: number,
+  maxChapter: number,
+): number | null {
+  if (maxChapter <= 0) return null
+
+  switch (key) {
+    case 'ArrowLeft':
+      return Math.max(1, currentChapter - 1)
+    case 'ArrowRight':
+      return Math.min(maxChapter, currentChapter + 1)
+    case 'Home':
+      return 1
+    case 'End':
+      return maxChapter
+    default:
+      return null
+  }
+}

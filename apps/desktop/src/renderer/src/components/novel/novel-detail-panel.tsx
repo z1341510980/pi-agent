@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore, type NovelNodeType } from '@/stores/novel-ui-store'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
+import { WritingStyleProfileEditor } from './writing-style-profile-editor'
 import {
   updateProject,
   updateCharacter,
@@ -1020,6 +1021,9 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+
+      <SectionHeader title="文风工厂" />
+      <WritingStyleProfileEditor projectId={entity.id} />
     </div>
   )
 }
@@ -1797,6 +1801,18 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const beats = entity.beats && entity.beats.length > 0
+    ? [...entity.beats].sort((a, b) => a.chapter - b.chapter)
+    : [
+        ...(entity.firstChapter != null ? [{ chapter: entity.firstChapter, type: 'plant' as const }] : []),
+        ...(entity.recoverByChapter != null ? [{ chapter: entity.recoverByChapter, type: 'payoff' as const }] : []),
+      ]
+  const beatLabels = {
+    plant: '埋设',
+    reinforce: '强化',
+    reveal: '部分揭示',
+    payoff: '回收',
+  } as const
 
   let linkedCharacters: string[] = []
   try {
@@ -1896,26 +1912,45 @@ function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
       </FieldRow>
 
       <SectionHeader title="章节" />
-      <FieldRow label="首次出现">
+      <FieldRow label="埋设章节">
         <TextInput
           type="number"
           value={form.firstChapter}
           onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
         />
       </FieldRow>
-      <FieldRow label="最后强化">
+      <FieldRow label="最后节点">
         <TextInput
           type="number"
           value={form.lastChapter}
           onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
         />
       </FieldRow>
-      <FieldRow label="回收期限">
+      <FieldRow label="回收章节">
         <TextInput
           type="number"
           value={form.recoverByChapter}
           onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
         />
+      </FieldRow>
+
+      <SectionHeader title="事件链" />
+      <FieldRow label="实际节点">
+        {beats.length > 0 ? (
+          <div className="space-y-1.5">
+            {beats.map((beat) => (
+              <div key={`${beat.chapter}-${beat.type}`} className="rounded border border-border px-2 py-1.5">
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="outline" className="text-[10px] tabular-nums">第 {beat.chapter} 章</Badge>
+                  <span className="text-[11px] font-medium">{beatLabels[beat.type]}</span>
+                </div>
+                {beat.note && <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{beat.note}</p>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <span className="text-[11px] text-muted-foreground">尚未埋设</span>
+        )}
       </FieldRow>
 
       <SectionHeader title="关联" />

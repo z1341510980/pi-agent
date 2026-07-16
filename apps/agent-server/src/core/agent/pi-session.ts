@@ -1,5 +1,5 @@
 import { createAgentSession, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent'
-import type { AuthStorage, ModelRegistry, AgentSession, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { AuthStorage, ModelRegistry, AgentSession, SettingsManager, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -44,6 +44,7 @@ export interface PiSessionDeps {
   authStorage: AuthStorage
   modelRegistry: ModelRegistry
   sessionManager: SessionManager
+  settingsManager: SettingsManager
   credentialBridge: CredentialBridge
   providerConfigStore: ProviderConfigStore
   gate: Gate
@@ -94,8 +95,18 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
 
   // 4. 解析默认模型：完全从 ProviderConfigStore（前端用户配置）获取
   //    不再从环境变量读取 LLM_PROVIDER/LLM_MODEL
+  //    用户在设置页指定的默认 Provider 排在最前优先选中；未指定时按插入顺序
   let defaultModel = undefined
+  const defaultProviderId = deps.providerConfigStore.getDefaultProviderId()
   const providers = deps.providerConfigStore.list()
+  // 排序：默认 Provider 排第一，其余保持原序
+  if (defaultProviderId) {
+    providers.sort((a, b) => {
+      if (a.id === defaultProviderId) return -1
+      if (b.id === defaultProviderId) return 1
+      return 0
+    })
+  }
   for (const provider of providers) {
     const firstModel = provider.models[0]
     if (firstModel) {
@@ -173,6 +184,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     authStorage: deps.authStorage,
     modelRegistry: deps.modelRegistry,
     sessionManager,
+    settingsManager: deps.settingsManager,
     resourceLoader,
     cwd: deps.config.cwd,
     model: defaultModel,

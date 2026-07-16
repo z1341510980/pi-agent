@@ -227,6 +227,14 @@ const MIGRATIONS: { id: string; sql: string }[] = [
     CREATE INDEX IF NOT EXISTS idx_agent_call_logs_thread ON agent_call_logs(thread_id);
     CREATE INDEX IF NOT EXISTS idx_agent_call_logs_created ON agent_call_logs(created_at DESC);`,
   },
+  {
+    // 通用应用设置表（key-value），用于存储默认 Provider 等全局偏好
+    id: '013_create_app_settings',
+    sql: `CREATE TABLE IF NOT EXISTS app_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );`,
+  },
 ]
 
 /** 执行所有待执行的迁移 */

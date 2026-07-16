@@ -1379,6 +1379,7 @@ function PersonaTemplateEditor({ template, onSave, onCancel }: PersonaTemplateEd
 const NOVEL_AGENT_LABELS: Record<NovelAgentType, string> = {
   director: '导演 Agent（规划稳定）',
   writer: '写作 Agent（创作发散）',
+  reviser: '修订 Agent（修订精确）',
   reviewer: '审稿 Agent（审稿严谨）',
   memory: '记忆 Agent（沉淀确定）',
 }
@@ -1388,6 +1389,7 @@ function NovelAgentTemperatureSection(): ReactElement {
   const [temps, setTemps] = useState<Record<NovelAgentType, number>>({
     director: 0.5,
     writer: 0.9,
+    reviser: 0.7,
     reviewer: 0.3,
     memory: 0.2,
   })
@@ -1399,7 +1401,13 @@ function NovelAgentTemperatureSection(): ReactElement {
 
   useEffect(() => {
     if (data) {
-      const next = { director: 0.5, writer: 0.9, reviewer: 0.3, memory: 0.2 }
+      const next: Record<NovelAgentType, number> = {
+        director: 0.5,
+        writer: 0.9,
+        reviser: 0.7,
+        reviewer: 0.3,
+        memory: 0.2,
+      }
       for (const item of data) {
         next[item.agentType] = item.temperature
       }

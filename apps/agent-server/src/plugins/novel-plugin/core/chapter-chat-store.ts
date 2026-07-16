@@ -46,6 +46,16 @@ export interface ChapterChatMessage {
     mentionedAgents?: string[]
     /** 创作模式（'workflow' | 'discussion'） */
     flowMode?: 'workflow' | 'discussion'
+    /** 群聊运行 ID，用于区分同一章节的多次创作尝试 */
+    discussionRunId?: string
+    /** 群聊消息类型（member/moderator/system/run_start/run_end） */
+    discussionMessageType?: string
+    /** 群聊运行终态 */
+    discussionRunStatus?: 'completed' | 'cancelled' | 'error'
+    /** 该终态是否可从持久化快照恢复 */
+    discussionCanResume?: boolean
+    /** 群聊场景 ID */
+    sceneId?: number
   }
   createdAt: number
 }
@@ -65,6 +75,7 @@ interface ChatRow {
 
 export class ChapterChatStore {
   private stmtList: Database.Statement
+  private stmtListByPhase: Database.Statement
   private stmtInsert: Database.Statement
   private stmtClear: Database.Statement
   private stmtClearPhase: Database.Statement
@@ -75,7 +86,14 @@ export class ChapterChatStore {
              content, phase, metadata, created_at
       FROM novel_chapter_chat_messages
       WHERE project_id = ? AND chapter_number = ?
-      ORDER BY created_at ASC
+      ORDER BY created_at ASC, rowid ASC
+    `)
+    this.stmtListByPhase = db.prepare(`
+      SELECT id, project_id, chapter_number, role, from_id, from_name,
+             content, phase, metadata, created_at
+      FROM novel_chapter_chat_messages
+      WHERE project_id = ? AND chapter_number = ? AND phase = ?
+      ORDER BY created_at ASC, rowid ASC
     `)
     this.stmtInsert = db.prepare(`
       INSERT INTO novel_chapter_chat_messages
@@ -99,14 +117,14 @@ export class ChapterChatStore {
 
   /** 列出指定阶段的消息 */
   listByPhase(projectId: string, chapterNumber: number, phase: ChapterChatPhase): ChapterChatMessage[] {
-    const all = this.list(projectId, chapterNumber)
-    return all.filter((m) => m.phase === phase)
+    const rows = this.stmtListByPhase.all(projectId, chapterNumber, phase) as ChatRow[]
+    return rows.map(this.rowToMessage)
   }
 
   /** 新增单条消息 */
-  add(input: Omit<ChapterChatMessage, 'id' | 'createdAt'> & { id?: string }): ChapterChatMessage {
+  add(input: Omit<ChapterChatMessage, 'id' | 'createdAt'> & { id?: string; createdAt?: number }): ChapterChatMessage {
     const id = input.id ?? randomUUID()
-    const createdAt = Date.now()
+    const createdAt = input.createdAt ?? Date.now()
     this.stmtInsert.run(
       id,
       input.projectId,
@@ -123,7 +141,7 @@ export class ChapterChatStore {
   }
 
   /** 批量新增（事务） */
-  addMany(messages: Array<Omit<ChapterChatMessage, 'id' | 'createdAt'>>): void {
+  addMany(messages: Array<Omit<ChapterChatMessage, 'id'> & { createdAt?: number }>): void {
     const tx = this.db.transaction((msgs: typeof messages) => {
       for (const msg of msgs) this.add(msg)
     })

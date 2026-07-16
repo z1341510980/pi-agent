@@ -21,6 +21,7 @@ import type {
   NovelWorldElement,
   NovelCharacterHistory,
   ConflictTier,
+  ForeshadowBeatType,
 } from '@/api/novel-client'
 
 // ── 实体类型（分组）──
@@ -38,7 +39,7 @@ export type MatrixEntityKind =
 export type SelectableEntityType = MatrixEntityKind
 
 // ── 拖拽数据载荷（@dnd-kit useDraggable.data）──
-// 三种拖源统一用 source 字段区分，放置时由 MatrixView 根据 source 分发到不同业务回调。
+// 四种拖源统一用 source 字段区分，放置时由 MatrixView 根据 source 分发到不同业务回调。
 
 /** 从侧边栏拖入实体（新增出场） */
 export interface SidebarDragData {
@@ -61,6 +62,16 @@ export interface EndpointDragData {
   spanIndex: number
 }
 
+/** 拖动整段跨度（conflict/faction 保持时长平移） */
+export interface SpanDragData {
+  source: 'span'
+  entityType: 'conflict' | 'faction'
+  entityId: string
+  spanIndex: number
+  startChapter: number
+  endChapter: number
+}
+
 /** 拖动已出场单元格（character/location 移动到新章节） */
 export interface CellDragData {
   source: 'cell'
@@ -69,7 +80,7 @@ export interface CellDragData {
   chapter: number
 }
 
-export type MatrixDragData = SidebarDragData | EndpointDragData | CellDragData
+export type MatrixDragData = SidebarDragData | EndpointDragData | SpanDragData | CellDragData
 
 // ── 分组元数据 ──
 
@@ -140,6 +151,8 @@ export interface MatrixEntity {
   plantChapter?: number | null
   /** 伏笔回收章节（null 表示待回收） */
   payoffChapter?: number | null
+  /** 伏笔实际发生的离散事件节点 */
+  foreshadowBeats?: NonNullable<NovelForeshadow['beats']>
 
   // ── 地点出场 ──
   /** 地点出场章节列表 */
@@ -212,6 +225,21 @@ export function computeSpanRange(
 }
 
 /**
+ * 按章节偏移平移一段跨度，并把结果限制在矩阵边界内。
+ * 时间轴整体拖动保持跨度时长不变，端点裁剪仍由 EndpointDragData 负责。
+ */
+export function shiftChapterSpan(
+  span: readonly [number, number],
+  deltaChapters: number,
+  maxChapter: number,
+): [number, number] {
+  const duration = Math.max(0, span[1] - span[0])
+  const maxStart = Math.max(1, maxChapter - duration)
+  const start = Math.min(maxStart, Math.max(1, span[0] + deltaChapters))
+  return [start, start + duration]
+}
+
+/**
  * 在多段跨度中查找包含指定章节的那一段
  * @returns [start, end] 或 null（不在任何一段中）
  */
@@ -229,18 +257,90 @@ export function findSpanAt(
  * 计算伏笔的埋设→回收连线
  * @param first 埋设章节
  * @param recover 回收章节（null 表示未回收）
- * @param maxChapter 最大章节号（未回收时连线延伸到末章）
+ * 未回收时不再延伸到末章，避免把所有后续章节误解为关联章节。
  */
 export function computeForeshadowLine(
   first: number | null,
   recover: number | null,
-  maxChapter: number,
+  _maxChapter: number,
 ): { start: number; end: number; recovered: boolean } | null {
   if (first == null) return null
   if (recover == null) {
-    return { start: first, end: maxChapter, recovered: false }
+    return { start: first, end: first, recovered: false }
   }
   return { start: first, end: recover, recovered: true }
+}
+
+/**
+ * 伏笔空单元格的左键快捷语义。
+ *
+ * - 尚无埋设点，或点击位于现有埋设点之前：设置/前移埋设点
+ * - 埋设与回收之间：快速新增“强化”节点
+ * - 已有节点、回收点及其后方：不执行隐式修改，交给右键菜单精确处理
+ */
+export function resolveForeshadowLeftClickBeat(
+  beats: NonNullable<NovelForeshadow['beats']>,
+  chapter: number,
+): ForeshadowBeatType | null {
+  if (beats.some((beat) => beat.chapter === chapter)) return null
+
+  const plant = beats.find((beat) => beat.type === 'plant')
+  if (!plant || chapter < plant.chapter) return 'plant'
+
+  const payoff = beats.find((beat) => beat.type === 'payoff')
+  if (payoff && chapter >= payoff.chapter) return null
+
+  return 'reinforce'
+}
+
+/** 新增或修改同章伏笔节点；修改类型时保留该章已有的具体内容。 */
+export function upsertForeshadowBeat(
+  beats: NonNullable<NovelForeshadow['beats']>,
+  chapter: number,
+  type: ForeshadowBeatType,
+): NonNullable<NovelForeshadow['beats']> {
+  const current = beats.find((beat) => beat.chapter === chapter)
+  const withoutChapter = beats.filter((beat) => beat.chapter !== chapter)
+  const base = type === 'plant' || type === 'payoff'
+    ? withoutChapter.filter((beat) => beat.type !== type)
+    : withoutChapter
+  return [
+    ...base,
+    {
+      chapter,
+      type,
+      ...(current?.note ? { note: current.note } : {}),
+    },
+  ].sort((a, b) => a.chapter - b.chapter)
+}
+
+/** 更新一个既有伏笔节点的具体内容；空白内容表示清除 note 字段。 */
+export function setForeshadowBeatNote(
+  beats: NonNullable<NovelForeshadow['beats']>,
+  chapter: number,
+  note: string,
+): NonNullable<NovelForeshadow['beats']> {
+  const trimmed = note.trim()
+  return beats.map((beat) => {
+    if (beat.chapter !== chapter) return beat
+    return trimmed
+      ? { ...beat, note: trimmed }
+      : { chapter: beat.chapter, type: beat.type }
+  })
+}
+
+/** 拖动埋设/回收端点时移动完整节点，避免丢失节点内容。 */
+export function moveForeshadowEndpointBeat(
+  beats: NonNullable<NovelForeshadow['beats']>,
+  type: Extract<ForeshadowBeatType, 'plant' | 'payoff'>,
+  chapter: number,
+): NonNullable<NovelForeshadow['beats']> {
+  const current = beats.find((beat) => beat.type === type)
+  if (!current) return beats
+  return [
+    ...beats.filter((beat) => beat.type !== type && beat.chapter !== chapter),
+    { ...current, chapter },
+  ].sort((a, b) => a.chapter - b.chapter)
 }
 
 /**
@@ -337,18 +437,26 @@ export function buildGroups(params: {
     entities: [],
   }
   for (const f of foreshadows) {
-    // 伏笔以 firstChapter（埋设点）作为入矩阵条件；无埋设点 → 元素池
-    // plant/payoff 两个端点 + 虚线连线由 EntityOverlay 渲染
+    // 伏笔以 firstChapter（埋设点）作为入矩阵条件；无埋设点 → 元素池。
+    // 仅实际事件节点占用章节格，虚线只表达节点之间的先后关系。
     if (f.firstChapter == null) continue
+    const beats = f.beats && f.beats.length > 0
+      ? [...f.beats].sort((a, b) => a.chapter - b.chapter)
+      : [
+          { chapter: f.firstChapter, type: 'plant' as const },
+          ...(f.recoverByChapter != null ? [{ chapter: f.recoverByChapter, type: 'payoff' as const }] : []),
+        ]
+    const isRecovered = beats.some((beat) => beat.type === 'payoff')
     foreshadowGroup.entities.push({
       id: f.id,
       kind: 'foreshadow',
       name: f.description,
       entityId: f.id,
       entityType: 'foreshadow',
-      subLabel: f.recoverByChapter != null ? '已回收' : '待回收',
+      subLabel: `${beats.length} 个节点 · ${isRecovered ? '已回收' : '待回收'}`,
       plantChapter: f.firstChapter,
       payoffChapter: f.recoverByChapter,
+      foreshadowBeats: beats,
       spanStart: f.firstChapter,
       spanEnd: f.recoverByChapter ?? null,
       note: noteMap.get(f.id),
@@ -478,6 +586,8 @@ export type CellSymbol =
   | { type: 'span-middle' }
   | { type: 'conflict-climax' }
   | { type: 'foreshadow-plant' }
+  | { type: 'foreshadow-reinforce' }
+  | { type: 'foreshadow-reveal' }
   | { type: 'foreshadow-payoff' }
   | { type: 'location' }
   | { type: 'world-element' }
@@ -510,14 +620,14 @@ export function computeCellSymbol(
       return { type: 'span-middle' }
     }
     case 'foreshadow': {
-      // 伏笔只有 plant/payoff 两个端点，中间章节无符号（虚线连线由 EntityOverlay 渲染）
-      // - plant 章节：foreshadow-plant（埋设点 ●）
-      // - payoff 章节：foreshadow-payoff（回收点 ○，仅已回收时存在）
-      // - 其他章节：empty
-      const plant = entity.plantChapter
-      const payoff = entity.payoffChapter
-      if (plant != null && chapterNumber === plant) return { type: 'foreshadow-plant' }
-      if (payoff != null && chapterNumber === payoff) return { type: 'foreshadow-payoff' }
+      // 新数据使用离散事件链；旧数据仍从 plantChapter/payoffChapter 显示端点。
+      const beat = entity.foreshadowBeats?.find((item) => item.chapter === chapterNumber)
+      if (beat?.type === 'plant') return { type: 'foreshadow-plant' }
+      if (beat?.type === 'reinforce') return { type: 'foreshadow-reinforce' }
+      if (beat?.type === 'reveal') return { type: 'foreshadow-reveal' }
+      if (beat?.type === 'payoff') return { type: 'foreshadow-payoff' }
+      if (entity.plantChapter === chapterNumber) return { type: 'foreshadow-plant' }
+      if (entity.payoffChapter === chapterNumber) return { type: 'foreshadow-payoff' }
       return { type: 'empty' }
     }
     case 'location': {

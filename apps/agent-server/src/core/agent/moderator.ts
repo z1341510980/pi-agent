@@ -24,6 +24,7 @@ export interface ModeratorContext {
     userMessage: string
     timeoutMs: number
     model?: { provider: string; modelId: string }
+    signal?: AbortSignal
   }): Promise<PluginSessionHandle>
   logger: FastifyBaseLogger
 }
@@ -39,22 +40,25 @@ export class Moderator {
     history: DiscussionMessage[],
     members: DiscussionMember[],
     state: ModeratorState,
+    signal?: AbortSignal,
   ): Promise<ModeratorDecision> {
     const systemPrompt = this.buildSystemPrompt(members, state)
     const userMessage = this.buildUserPrompt(goal, history, state)
 
     try {
-      const result = await this.callLlm(systemPrompt, userMessage)
+      const result = await this.callLlm(systemPrompt, userMessage, signal)
       return this.enforceDecision(this.parseDecision(result), members, state)
     } catch (err) {
+      if (signal?.aborted) throw err
       this.context.logger.warn(
         { err, phase: state.phase, round: state.round, reason: err instanceof Error ? err.message : String(err) },
         'Moderator LLM 调用失败，尝试重试',
       )
       try {
-        const retryResult = await this.callLlm(systemPrompt, userMessage)
+        const retryResult = await this.callLlm(systemPrompt, userMessage, signal)
         return this.enforceDecision(this.parseDecision(retryResult), members, state)
       } catch (retryErr) {
+        if (signal?.aborted) throw retryErr
         this.context.logger.error(
           {
             err: retryErr,
@@ -70,12 +74,13 @@ export class Moderator {
     }
   }
 
-  private async callLlm(systemPrompt: string, userMessage: string): Promise<string> {
+  private async callLlm(systemPrompt: string, userMessage: string, signal?: AbortSignal): Promise<string> {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage,
       timeoutMs: 15_000,
       model: this.model,
+      signal,
     })
     try {
       return await session.prompt()
@@ -265,6 +270,7 @@ ${memberList}
     decision: ModeratorDecision,
     members: DiscussionMember[],
     state: ModeratorState,
+    signal?: AbortSignal,
   ): ModeratorDecision {
     if (decision.type === 'invite') {
       const selected = members.find(member => member.id === decision.agentId)

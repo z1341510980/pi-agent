@@ -26,6 +26,12 @@ import { StreamEmitter } from '../agent/stream-emitter.js'
 import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
+import type { ProviderConfigStore } from '../config/provider-config-store.js'
+import {
+  getAssistantTerminalError,
+  isFinalAssistantSuccess,
+  waitForFinalAssistantOrPrompt,
+} from './plugin-session-outcome.js'
 import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
@@ -105,6 +111,13 @@ export class PluginManager {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private modelRegistry?: any
+  /**
+   * ProviderConfigStore（用于读取 stream_options 屏蔽开关等应用级配置）
+   *
+   * 通过 setProviderConfigStore() 在 app.ts 启动后期注入，
+   * 与 SessionStore / ModelRegistry 同时期注入。
+   */
+  private providerConfigStore?: ProviderConfigStore
 
   constructor(
     logger: FastifyBaseLogger,
@@ -144,6 +157,17 @@ export class PluginManager {
   setModelRegistry(registry: any): void {
     this.modelRegistry = registry
     this.logger.info('已注入 ModelRegistry，插件 createSession 支持 modelId 切换')
+  }
+
+  /**
+   * 注入 ProviderConfigStore（在 SessionStore 创建后调用）
+   *
+   * 用于读取应用级配置（如 stream_options 屏蔽开关），
+   * 与 SessionStore / ModelRegistry 同时期在 app.ts 注入。
+   */
+  setProviderConfigStore(store: ProviderConfigStore): void {
+    this.providerConfigStore = store
+    this.logger.debug('已注入 ProviderConfigStore，onPayload 可读取应用级配置')
   }
 
   /**
@@ -834,15 +858,22 @@ export class PluginManager {
         // Pi SDK 在 LLM 调用失败时不抛异常，而是产生 stopReason="error" 的 message_end 事件。
         // 这里捕获错误信息，供 prompt/promptStream 在调用后检查并抛出，避免"空响应+success"的假象。
         let lastErrorMessage = ''
+        let resolveFinalAssistant: (() => void) | undefined
         const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
           if (event.type === 'message_end') {
             const message = event.message as Record<string, unknown> | undefined
-            if (message && message.role === 'assistant' && message.stopReason === 'error') {
-              lastErrorMessage = (message.errorMessage as string) ?? 'Unknown LLM error'
+            const terminalError = getAssistantTerminalError(message)
+            if (terminalError !== null) {
+              lastErrorMessage = terminalError
+            }
+            if (terminalError) {
               logger.error(
-                { threadId, errorMessage: lastErrorMessage, provider: message.provider, model: message.model },
+                { threadId, errorMessage: lastErrorMessage, provider: message?.provider, model: message?.model },
                 'Pi Session LLM 调用失败（message_end stopReason=error）',
               )
+            }
+            if (isFinalAssistantSuccess(message)) {
+              resolveFinalAssistant?.()
             }
             return
           }
@@ -855,6 +886,30 @@ export class PluginManager {
           const delta = (assistantMessageEvent.delta as string) ?? ''
           completeText += delta
         })
+
+        const runPromptUntilFinalAssistant = async (): Promise<void> => {
+          const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
+          let resolveCurrentFinalAssistant: (() => void) | undefined
+          const finalAssistantPromise = new Promise<void>((resolve) => {
+            resolveCurrentFinalAssistant = resolve
+            resolveFinalAssistant = resolve
+          })
+          const promptPromise = withAgentConfig(agentConfig, async () => {
+            await threadSession.session.prompt(options.userMessage)
+          })
+
+          try {
+            await waitForFinalAssistantOrPrompt({
+              promptPromise,
+              finalAssistantPromise,
+              timeoutMs,
+            })
+          } finally {
+            if (resolveFinalAssistant === resolveCurrentFinalAssistant) {
+              resolveFinalAssistant = undefined
+            }
+          }
+        }
 
         // 模型切换（如指定）+ 读取模型 maxTokens 配置
         let modelMaxTokens: number | undefined
@@ -895,7 +950,13 @@ export class PluginManager {
           options.responseFormat !== undefined ||
           options.prefixUserMessage !== undefined
 
-        if (hasInjectables) {
+        // stream_options 屏蔽：某些 OpenAI 兼容中转（如 fastaitoken.com）不兼容
+        // stream_options.include_usage 参数，收到后会断流导致
+        // "Stream ended without finish_reason"。开启后 onPayload 移除该字段。
+        // 开关由前端设置页控制，持久化到 app_settings.strip_stream_options。
+        const stripStreamOptions = this.providerConfigStore?.getStripStreamOptions() ?? false
+
+        if (hasInjectables || stripStreamOptions) {
           const inject: Record<string, unknown> = {}
           if (options.temperature !== undefined) inject.temperature = options.temperature
           if (effectiveMaxTokens !== undefined) inject.max_tokens = effectiveMaxTokens
@@ -997,21 +1058,43 @@ export class PluginManager {
               return payload
             }
 
+            // 移除 stream_options 字段（兼容不完整的中转网关）
+            const stripStreamOptionsFromPayload = (rawPayload: unknown): unknown => {
+              const payload = rawPayload as Record<string, unknown>
+              if (payload && typeof payload === 'object' && 'stream_options' in payload) {
+                const { stream_options: _removed, ...rest } = payload
+                logger.info({ threadId }, '✅ 已移除 stream_options 字段（兼容中转网关）')
+                return rest
+              }
+              logger.warn({ threadId, hasStreamOptions: false }, '⚠️ strip 开启但 payload 未检测到 stream_options 字段')
+              return payload
+            }
+
             const prevOnPayload = piSession.agent.onPayload
             // 必须使用 async/await：Pi SDK 默认的 onPayload 是 async 函数，
             // 返回 Promise<payload>。若不 await，后续 spread Promise 会得到空对象，
             // 导致 messages 字段丢失，LLM 网关返回 400 "missing field 'messages'"。
             piSession.agent.onPayload = async (payload: unknown) => {
               let next = prevOnPayload ? await prevOnPayload(payload) : payload
-              next = applyCacheBreakpoints(next)
               if (Object.keys(inject).length > 0) {
                 next = { ...(next as Record<string, unknown>), ...inject }
               }
+              next = applyCacheBreakpoints(next)
+              if (stripStreamOptions) {
+                next = stripStreamOptionsFromPayload(next)
+              }
               return next
             }
-            logger.debug(
-              { threadId, ...inject, hasCacheBreakpoints: !!options.prefixUserMessage },
-              '已注入生成参数到 Pi Session（含 cache_control breakpoint）',
+            logger.info(
+              {
+                threadId,
+                hasInjectables,
+                stripStreamOptions,
+                hasProviderConfigStore: !!this.providerConfigStore,
+                hasCacheBreakpoints: !!options.prefixUserMessage,
+                injectKeys: Object.keys(inject),
+              },
+              '🔧 已注入 onPayload 钩子到 Pi Session',
             )
           } else {
             logger.warn({ threadId, ...inject }, 'session.agent 不可用，无法注入生成参数')
@@ -1034,32 +1117,13 @@ export class PluginManager {
         }
 
         return {
+          sessionId: (threadSession.session as { sessionId?: string }).sessionId,
           prompt: async (): Promise<string> => {
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
-            // 超时保护：防止 LLM 调用永不返回导致整个流程卡死。
-            // 优先用调用方传入的 timeoutMs，回退到 runtimePerformance.llm.timeoutMs
-            // （默认 300s，可通过 PI_LLM_TIMEOUT_MS 调整）。
-            const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
-            let timeoutTimer: ReturnType<typeof setTimeout> | null = null
-            const timeoutPromise = new Promise<never>((_, reject) => {
-              timeoutTimer = setTimeout(
-                () => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)),
-                timeoutMs,
-              )
-            })
-            try {
-              await withAgentConfig(agentConfig, async () => {
-                await Promise.race([
-                  threadSession.session.prompt(options.userMessage),
-                  timeoutPromise,
-                ])
-              })
-            } finally {
-              // 必须清理 timer：否则即使 prompt 正常返回，timer 句柄仍会存活到超时
-              // 时间结束才被 GC，长生命周期下会累积大量 pending timer。
-              if (timeoutTimer) clearTimeout(timeoutTimer)
-            }
+            // message_end(stop/length) 已代表正文完成。Pi SDK 随后的自动压缩
+            // 属于 Session 维护，不应阻塞一次性的 create-flow Agent。
+            await runPromptUntilFinalAssistant()
             // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
             if (lastErrorMessage) {
               throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
@@ -1073,8 +1137,9 @@ export class PluginManager {
             const streamUnsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
               if (event.type === 'message_end') {
                 const message = event.message as Record<string, unknown> | undefined
-                if (message && message.role === 'assistant' && message.stopReason === 'error') {
-                  lastErrorMessage = (message.errorMessage as string) ?? 'Unknown LLM error'
+                const terminalError = getAssistantTerminalError(message)
+                if (terminalError !== null) {
+                  lastErrorMessage = terminalError
                 }
                 return
               }
@@ -1088,29 +1153,7 @@ export class PluginManager {
               if (delta) onDelta(delta)
             })
             try {
-              // 超时保护：防止 LLM 调用永不返回导致整个流程卡死
-              // 与 prompt 方法一致，从 runtimePerformance 读取默认值（300s），
-              // 避免流式调用超时比非流式短导致长输出被误杀
-              const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
-              let timeoutTimer: ReturnType<typeof setTimeout> | null = null
-              const timeoutPromise = new Promise<never>((_, reject) => {
-                timeoutTimer = setTimeout(
-                  () => reject(new Error(`LLM 调用超时（${timeoutMs / 1000}s）`)),
-                  timeoutMs,
-                )
-              })
-              try {
-                await withAgentConfig(agentConfig, async () => {
-                  await Promise.race([
-                    threadSession.session.prompt(options.userMessage),
-                    timeoutPromise,
-                  ])
-                })
-              } finally {
-                // 必须清理 timer：streamUnsubscribe 只取消事件订阅，
-                // 不清理 timer 会导致句柄存活到超时时间结束才被 GC
-                if (timeoutTimer) clearTimeout(timeoutTimer)
-              }
+              await runPromptUntilFinalAssistant()
               // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
               if (lastErrorMessage) {
                 throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
@@ -1184,6 +1227,7 @@ export class PluginManager {
         })
         return {
           session,
+          sessionId: session.sessionId,
           streamEmitter,
           reasoningPipeline,
           messageId,

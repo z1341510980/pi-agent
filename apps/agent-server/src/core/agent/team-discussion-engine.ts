@@ -34,6 +34,7 @@ import type {
   ModeratorDecision,
   SceneDefinition,
   DiscussionPhase,
+  DiscussionResumeState,
 } from './discussion-types.js'
 import { DISCUSSION_LIMITS } from './discussion-types.js'
 
@@ -47,6 +48,8 @@ export interface EngineContext {
     signal?: AbortSignal
     temperature?: number
     timeoutMs?: number
+    /** 成员配置的 modelId（透传给底层 createAgUiSession） */
+    modelId?: { provider: string; modelId: string }
     emit: AgUiEventSink
     emitRaw?: boolean
     onFirstText?: () => void
@@ -85,14 +88,17 @@ export class TeamDiscussionEngine {
       this.channel.subscribe(channelName, member.id)
     }
 
-    // 注入初始系统消息
-    history.push(this.systemMessage(`目标：${goal.task}\n\n## 上下文\n${goal.context}`))
+    // 只把目标写入可增长的群聊历史。完整章节上下文由 invokeMember 作为
+    // prefixUserMessage 单独注入；若同时写入 history，首轮 userMessage 会重复
+    // 一整份上下文，既浪费 token，也让动态消息吞掉缓存收益。
+    history.push(this.systemMessage(`目标：${goal.task}`))
 
     let scenes: SceneDefinition[] = []
     let finalContent = ''
     let rounds = 0
     let noProgressRounds = 0
     let chapterConvergerId: string | undefined
+    let activePhase: DiscussionPhase = 'planning'
 
     try {
       // 记录当前目标，供 invokeMember 注入成员 prefixUserMessage
@@ -106,7 +112,7 @@ export class TeamDiscussionEngine {
           round: rounds,
           scenesDefined: scenes.length > 0,
         }
-        const decision = await this.moderator.decide(goal, history, members, state)
+        const decision = await this.moderator.decide(goal, history, members, state, options.signal)
         await this.handleDecision(decision, history, members, options, channelName, { phase: 'planning' })
         rounds++
 
@@ -132,6 +138,7 @@ export class TeamDiscussionEngine {
       // 所有场景推演完毕后，Phase 3 的 weaveChapter 一次性整合全章剧本为正文。
       // 这样 Writer 只触发 1 次，避免多次触发导致的风格割裂和 token 浪费。
       if (scenes.length > 0) {
+        activePhase = 'scene_setup'
         for (let i = 0; i < scenes.length; i++) {
           const scene = scenes[i]
           rounds = 0
@@ -144,6 +151,7 @@ export class TeamDiscussionEngine {
           let sceneDone = false
 
           while (!sceneDone && rounds < limits.maxRoundsPerScene) {
+            activePhase = 'acting'
             const state: ModeratorState = {
               phase: 'acting',
               round: rounds,
@@ -151,7 +159,7 @@ export class TeamDiscussionEngine {
               scenesRemaining: scenes.length - i - 1,
               scenesDefined: true,
             }
-            const decision = await this.moderator.decide(goal, history, activeMembers, state)
+            const decision = await this.moderator.decide(goal, history, activeMembers, state, options.signal)
             await this.handleDecision(decision, history, activeMembers, options, channelName, { phase: 'acting', sceneId: scene.sceneId })
             rounds++
 
@@ -175,11 +183,14 @@ export class TeamDiscussionEngine {
       }
 
       // ── Phase 3：全章编织（一次性整合所有场景剧本）──
+      activePhase = 'chapter_weaving'
       this.emitProgress(options, 'chapter_weaving', { type: 'phase_change', data: { message: '正在编织完整章节' } })
       finalContent = await this.weaveChapter(members, history, scenes, goal, options, chapterConvergerId)
+      this.recordWriterOutput(members, history, finalContent)
 
       // ── Phase 4：最终正文质量门 ──
-      const qualityResult = await this.reviewFinalChapter(finalContent, members, history, options)
+      activePhase = 'reviewing'
+      const qualityResult = await this.reviewFinalChapter(finalContent, members, history, options, goal.targetWords)
       if (qualityResult.status === 'cancelled') {
         return { status: 'cancelled', transcript: history, scenes }
       }
@@ -194,12 +205,104 @@ export class TeamDiscussionEngine {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       this.context.logger.error({ err }, '群聊引擎异常')
-      return { status: 'error', error: message, transcript: history, scenes }
+      if (options.signal?.aborted) {
+        return { status: 'cancelled', content: finalContent || undefined, transcript: history, scenes }
+      }
+      return {
+        status: 'error',
+        error: message,
+        failedPhase: activePhase,
+        content: finalContent || undefined,
+        transcript: history,
+        scenes,
+      }
     } finally {
       for (const member of members) {
         this.channel.unsubscribe(channelName, member.id)
       }
     }
+  }
+
+  /**
+   * 从持久化快照直接恢复全章编织，不再调用 Moderator、Director 或角色 Agent。
+   * Writer 成功后继续执行 Reviewer/Reviser 与原有检查点流程。
+   */
+  async resumeChapterWeaving(
+    goal: DiscussionGoal,
+    members: DiscussionMember[],
+    options: DiscussionOptions,
+    resumeState: DiscussionResumeState,
+  ): Promise<DiscussionResult> {
+    const history = resumeState.transcript.map(message => ({ ...message }))
+    const scenes = resumeState.scenes.map(scene => ({
+      ...scene,
+      presentCharacters: [...scene.presentCharacters],
+      presentCharacterNames: scene.presentCharacterNames ? [...scene.presentCharacterNames] : undefined,
+      unresolvedCharacterNames: scene.unresolvedCharacterNames ? [...scene.unresolvedCharacterNames] : undefined,
+    }))
+    const channelName = `discuss-resume-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    let finalContent = ''
+    let activePhase: DiscussionPhase = 'chapter_weaving'
+
+    for (const member of members) this.channel.subscribe(channelName, member.id)
+
+    try {
+      this.currentGoal = goal
+      this.emitProgress(options, 'chapter_weaving', {
+        type: 'phase_change',
+        data: { message: '已恢复群聊记录，正在从写作 Agent 继续' },
+      })
+      finalContent = await this.weaveChapter(members, history, scenes, goal, options)
+      this.recordWriterOutput(members, history, finalContent)
+
+      activePhase = 'reviewing'
+      const qualityResult = await this.reviewFinalChapter(
+        finalContent,
+        members,
+        history,
+        options,
+        goal.targetWords,
+      )
+      if (qualityResult.status === 'cancelled') {
+        return { status: 'cancelled', content: finalContent, transcript: history, scenes }
+      }
+      finalContent = qualityResult.content
+      return { status: 'completed', content: finalContent, transcript: history, scenes }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.context.logger.error({ err }, '群聊断点续跑异常')
+      if (options.signal?.aborted) {
+        return { status: 'cancelled', content: finalContent || undefined, transcript: history, scenes }
+      }
+      return {
+        status: 'error',
+        error: message,
+        failedPhase: activePhase,
+        content: finalContent || undefined,
+        transcript: history,
+        scenes,
+      }
+    } finally {
+      for (const member of members) this.channel.unsubscribe(channelName, member.id)
+    }
+  }
+
+  private recordWriterOutput(
+    members: DiscussionMember[],
+    history: DiscussionMessage[],
+    content: string,
+  ): void {
+    const writer = members.find(member => member.id === 'novel-writer')
+      ?? members.find(member => member.canConverge)
+    if (!writer || !content) return
+    history.push({
+      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      fromId: writer.id,
+      fromName: writer.name,
+      content,
+      timestamp: Date.now(),
+      type: 'member',
+    })
   }
 
   /** 处理 Moderator 决策 */
@@ -254,7 +357,7 @@ export class TeamDiscussionEngine {
           let content = await this.invokeMember(member, decision.prompt, history, options, ctx)
 
           // 角色成员发言后触发 Reviewer 实时审查（最多重发 1 次）
-          if (member.type === 'character') {
+          if (member.type === 'character' && options.reviewCharacterSpeech !== false) {
             const reviewResult = await this.reviewCharacterSpeech(
               member, content, history, members, options, ctx,
             )
@@ -334,20 +437,33 @@ ${reviewResult.rewrite_suggestion}
     visibility: 'public' | 'internal' = 'public',
   ): Promise<string> {
     const systemPrompt = member.buildSystemPrompt()
+    const identityPrompt = member.buildIdentityPrompt?.() ?? ''
+    const prefixMessages = [this.currentGoal?.context ?? '', identityPrompt]
+      .filter(message => message.trim().length > 0)
     const transcriptSummary = this.formatTranscriptForMember(history, member.id)
     const userMessage = `${prompt}\n\n---\n\n## 群聊记录\n\n${transcriptSummary}`
+    const startTime = Date.now()
+    let result = ''
+    let status: 'success' | 'error' | 'cancelled' = 'success'
+    let error = ''
 
     const handle = await this.context.createAgUiSession({
       systemPrompt,
       // 注入章节/矩阵共享上下文到 SEMI 层，确保每个成员都能看到完整背景。
       // 群聊目标中的 context 由 NovelDiscussionRunner 通过 promptBuilder 构建，
       // 包含章节约束、实体关系、矩阵状态等关键信息。
-      prefixUserMessage: this.currentGoal?.context,
+      prefixUserMessage: prefixMessages.length === 1 ? prefixMessages[0] : prefixMessages,
       userMessage,
       tools: [],
       signal: options.signal,
-      temperature: member.type === 'character' ? (options.limits?.characterTemperature ?? 0.8) : 0.7,
+      // 温度优先级：member.temperature（工种成员从 AgentPage 角色温度配置读取）
+      // > 角色成员回退到 characterTemperature > 默认 0.7
+      temperature: member.temperature
+        ?? (member.type === 'character' ? (options.limits?.characterTemperature ?? 0.8) : 0.7),
       timeoutMs: 300_000,
+      // 透传成员配置的 modelId：工种成员从 AgentManager 读取该 Agent 的 model 配置，
+      // 角色成员不填（走默认 Provider）。
+      modelId: member.modelId,
       emit: options.emit,
       emitRaw: false,
       onFirstText: () => {
@@ -358,6 +474,17 @@ ${reviewResult.rewrite_suggestion}
       },
     })
     const { session, streamEmitter, messageId } = handle
+    let capturedUsage: DiscussionUsage | undefined
+    const usageSession = session as unknown as {
+      subscribe?: (listener: (event: Record<string, unknown>) => void) => () => void
+    }
+    const unsubscribeUsage = usageSession.subscribe?.((event) => {
+      if (event.type !== 'message_end') return
+      const message = event.message as Record<string, unknown> | undefined
+      if (!message || message.role !== 'assistant') return
+      const usage = extractDiscussionUsage(message)
+      if (usage) capturedUsage = addDiscussionUsage(capturedUsage, usage)
+    })
 
     // agent_start 必须在 prompt() 之前发射，否则前端收到 TEXT_MESSAGE_START 时
     // 找不到 messageId 映射，成员输出不显示。携带 messageId + agentType 对齐 workflow 模式契约。
@@ -375,10 +502,37 @@ ${reviewResult.rewrite_suggestion}
     }
 
     try {
-      const result = await session.prompt()
+      result = await session.prompt()
       streamEmitter.finishTextMessage()
       return result
+    } catch (err) {
+      status = options.signal?.aborted ? 'cancelled' : 'error'
+      error = err instanceof Error ? err.message : String(err)
+      throw err
     } finally {
+      unsubscribeUsage?.()
+      try {
+        options.onMemberInvocation?.({
+          member,
+          phase: ctx.phase,
+          systemPrompt,
+          chapterContext: prefixMessages.join('\n\n---\n\n'),
+          userMessage,
+          result,
+          durationMs: Date.now() - startTime,
+          status,
+          error,
+          sessionId: handle.sessionId ?? session.sessionId ?? '',
+          inputTokens: capturedUsage?.inputTokens ?? 0,
+          outputTokens: capturedUsage?.outputTokens ?? 0,
+          cacheReadTokens: capturedUsage?.cacheReadTokens ?? 0,
+          cacheWriteTokens: capturedUsage?.cacheWriteTokens ?? 0,
+          llmProvider: capturedUsage?.llmProvider ?? member.modelId?.provider ?? '',
+          llmModel: capturedUsage?.llmModel ?? member.modelId?.modelId ?? '',
+        })
+      } catch (logError) {
+        this.context.logger.warn({ err: logError, memberId: member.id }, '群聊成员调用日志写入失败')
+      }
       handle.dispose()
     }
   }
@@ -470,6 +624,125 @@ ${speech}
   }
 
   /**
+   * 正文后确定性检测：模型退化 / 字数失控。
+   *
+   * 群聊编织完成后、Reviewer 审稿前运行，捕获模型失控问题，避免浪费 Reviewer token。
+   * 命中则让 Writer 重写一次（最多 1 次），重写后不再检测，交给 reviewFinalChapter 兜底。
+   *
+   * 检测项（轻量级，不依赖 novel-plugin 的 cliche-scanner，保持引擎通用）：
+   * 1. 空输出或过短（< 100 字）
+   * 2. 模型拒绝标记（开头包含"我无法"/"作为AI"等）
+   * 3. 重复模式（同一行重复 >= 3 次，长度 >= 10 字）
+   * 4. 字数严重偏离（< 85% 或 > 130% 目标字数，与 reviewFinalChapter 阈值一致）
+   */
+  private runDiscussionPostWriteGuard(
+    content: string,
+    targetWords?: number,
+  ): { shouldRewrite: boolean; reason: string; details?: string } {
+    const wordCount = content.replace(/\s/g, '').length
+
+    // 1. 空输出或过短
+    if (wordCount < 100) {
+      return {
+        shouldRewrite: true,
+        reason: '正文过短',
+        details: `仅 ${wordCount} 字，模型可能未正常输出正文`,
+      }
+    }
+
+    // 2. 模型拒绝标记（只检查前 300 字，避免误判正文中的引用）
+    const head = content.slice(0, 300)
+    const refusalPatterns = [
+      /作为(?:一个)?(?:AI|人工智能|语言模型)/,
+      /我(?:无法|不能|不可以)[\s\S]{0,15}(?:创作|写|生成|提供|完成)/,
+      /抱歉[\s\S]{0,10}(?:无法|不能)/,
+    ]
+    for (const pattern of refusalPatterns) {
+      if (pattern.test(head)) {
+        return {
+          shouldRewrite: true,
+          reason: '模型拒绝输出',
+          details: `正文开头包含拒绝标记`,
+        }
+      }
+    }
+
+    // 3. 重复模式：同一行重复 >= 3 次（长度 >= 10 字才算，避免短台词误判）
+    const lines = content.split('\n').map(l => l.trim()).filter(l => l.length >= 10)
+    const lineCounts = new Map<string, number>()
+    for (const line of lines) {
+      lineCounts.set(line, (lineCounts.get(line) ?? 0) + 1)
+    }
+    for (const [line, count] of lineCounts) {
+      if (count >= 3) {
+        return {
+          shouldRewrite: true,
+          reason: '模型复读',
+          details: `行重复 ${count} 次：${line.slice(0, 40)}${line.length > 40 ? '...' : ''}`,
+        }
+      }
+    }
+
+    // 4. 字数严重偏离（与 reviewFinalChapter 阈值一致：85% - 130%）
+    if (targetWords != null && targetWords > 0) {
+      if (wordCount < targetWords * 0.85) {
+        return {
+          shouldRewrite: true,
+          reason: '字数严重不足',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
+        }
+      }
+      if (wordCount > targetWords * 1.30) {
+        return {
+          shouldRewrite: true,
+          reason: '字数严重超标',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
+        }
+      }
+    }
+
+    return { shouldRewrite: false, reason: '' }
+  }
+
+  /**
+   * 对 Writer 编织后的正文执行 PostWriteGuard，命中则重写一次。
+   *
+   * 重写策略：在原始 prompt 后追加"上一次输出问题"提示，让 Writer 针对性修正。
+   * 最多重写 1 次，重写后不再检测（避免无限循环），交给 reviewFinalChapter 兜底。
+   */
+  private async guardAndMaybeRewrite(
+    content: string,
+    writer: DiscussionMember,
+    originalPrompt: string,
+    options: DiscussionOptions,
+    targetWords?: number,
+  ): Promise<string> {
+    const guard = this.runDiscussionPostWriteGuard(content, targetWords)
+    if (!guard.shouldRewrite) return content
+
+    this.emitProgress(options, 'chapter_weaving', {
+      type: 'phase_change',
+      data: {
+        message: `正文质量门命中：${guard.reason}（${guard.details ?? ''}），写作 Agent 正在重写...`,
+      },
+    })
+    this.context.logger.warn(
+      { reason: guard.reason, details: guard.details, contentLength: content.length },
+      '群聊正文质量门命中，触发 Writer 重写',
+    )
+
+    const rewritePrompt = `${originalPrompt}\n\n---\n\n## 上一次输出问题（请避免）\n\n- ${guard.reason}：${guard.details ?? ''}\n\n请重新编织完整章节正文，确保本次输出完整、字数达标、无重复或拒绝内容。`
+    const rewritten = await this.invokeMember(
+      writer,
+      rewritePrompt,
+      [],
+      options,
+      { phase: 'chapter_weaving' },
+    )
+    return rewritten
+  }
+
+  /**
    * 全章编织：一次性整合所有场景的剧本记录为完整章节正文。
    *
    * 设计变更：不再逐场景 weaveScene，而是收集所有场景的角色推演剧本，
@@ -505,8 +778,13 @@ ${speech}
     // 不会出现"双重生成"（双重生成的根因是 role 未注入导致第一个 Agent 直接写正文）。
     const hasAnyScript = sceneScripts.some(s => s.transcript.length > 0)
     if (scenes.length === 0 || !hasAnyScript) {
-      const result = await this.invokeMember(writer, '请基于群聊记录产出完整章节正文', [], options, { phase: 'chapter_weaving' })
-      return result
+      const targetHint = goal.targetWords
+        ? `正文必须控制在 ${Math.round(goal.targetWords * 0.85)}-${Math.round(goal.targetWords * 1.30)} 字，目标约 ${goal.targetWords} 字。生成后自行计数并删减或补足。`
+        : ''
+      const fallbackPrompt = `请基于群聊记录产出完整章节正文。${targetHint}`
+      const result = await this.invokeMember(writer, fallbackPrompt, [], options, { phase: 'chapter_weaving' })
+      // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
+      return this.guardAndMaybeRewrite(result, writer, fallbackPrompt, options, goal.targetWords)
     }
 
     // 构建全章剧本上下文：每个场景的信息 + 角色推演记录
@@ -526,21 +804,29 @@ ${speech}
 ${scriptBlock}`
     }).join('\n\n---\n\n')
 
-    const prompt = `请将以下各场景的角色推演剧本一次性编织为完整章节正文。
+    const targetHint = goal.targetWords
+      ? `本章目标字数为 ${goal.targetWords} 字，允许范围 ${Math.round(goal.targetWords * 0.85)}-${Math.round(goal.targetWords * 1.30)} 字。输出前自行估算正文长度，必须在此范围内。`
+      : '控制正文长度，不要无目的扩写。'
+    const prompt = `请将以下各场景的角色推演一次性编织为完整章节正文。
+
+## 字数硬约束
+${targetHint}
 
 ## 全章剧本（共 ${scenes.length} 个场景）
 ${combined}
 
 ## 编织要求
-1. 把剧本格式（[动作] "台词"）编织为小说叙事，保留角色台词的核心内容，但可调整措辞以适应叙事节奏
+1. 把角色的“意图 / 心理 / 应对”推演转化为小说叙事，不要把推演标签原样写入正文
 2. 统一叙事视角，加入环境描写和节奏控制
 3. 场景之间自然过渡，不要生硬拼接，确保整体节奏流畅
-4. 保留角色演出中的情绪信号（动作节奏、台词语气），不要把情绪丰富的剧本压成干瘪的情节交代
+4. 根据角色推演补全必要的动作和台词，但不得擅自改变角色意图、心理状态和应对策略
 5. 各场景的情绪应衔接成完整的全章情绪曲线，与 Director 规划的情绪走向呼应
-6. 绝不使用破折号"——"`
+6. 多名同性角色同场时，段首、动作主体切换和对话归属必须写角色姓名；“他/她”只能在唯一先行词明确时使用
+7. 绝不使用长横线破折号`
 
     const result = await this.invokeMember(writer, prompt, [], options, { phase: 'chapter_weaving' })
-    return result
+    // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
+    return this.guardAndMaybeRewrite(result, writer, prompt, options, goal.targetWords)
   }
 
   /** 对 Writer 编织后的完整正文执行 Reviewer + 可选 Reviser 闭环。 */
@@ -549,6 +835,7 @@ ${combined}
     members: DiscussionMember[],
     history: DiscussionMessage[],
     options: DiscussionOptions,
+    targetWords?: number,
   ): Promise<{ status: 'completed'; content: string } | { status: 'cancelled' }> {
     const reviewer = members.find(member => member.id === 'novel-reviewer')
     if (!reviewer) return { status: 'completed', content }
@@ -558,11 +845,19 @@ ${combined}
       data: { message: '审稿 Agent 正在验收完整章节' },
     })
     const finalReviewer = reviewer.buildFinalReviewSystemPrompt
-      ? { ...reviewer, buildSystemPrompt: reviewer.buildFinalReviewSystemPrompt }
+      ? {
+          ...reviewer,
+          buildSystemPrompt: reviewer.buildFinalReviewSystemPrompt,
+          buildIdentityPrompt: reviewer.buildFinalReviewIdentityPrompt
+            ?? reviewer.buildIdentityPrompt,
+        }
       : reviewer
+    const targetHint = targetWords
+      ? `\n\n## 字数验收\n目标 ${targetWords} 字，允许范围 ${Math.round(targetWords * 0.85)}-${Math.round(targetWords * 1.30)} 字。超出范围必须给出 revise，不得 accept。`
+      : ''
     const report = await this.invokeMember(
       finalReviewer,
-      `请验收以下群聊编织完成的章节正文，并按审稿格式给出 accept/revise/reject 结论。
+      `请验收以下群聊编织完成的章节正文，并按审稿格式给出 accept/revise/reject 结论。${targetHint}
 
 ## 待审稿章节正文
 
@@ -588,7 +883,14 @@ ${content}`,
       context: report,
     })
     if (decision === 'reject') return { status: 'cancelled' }
-    if (decision !== 'revise' && decision !== 'rewrite') {
+    const wordCount = content.replace(/\s/g, '').length
+    // 字数阈值与 PostWriteGuard（novel-orchestrator.runPostWriteGuard）保持一致：
+    // 下限 85%，上限 130%。130% 内的超出由 Reviewer 评估是否需要精简，
+    // 超过 130% 才视为需要 Reviser 介入。115% 过紧会让高潮章节被强制修订。
+    const lengthOutOfRange = targetWords != null && (
+      wordCount < targetWords * 0.85 || wordCount > targetWords * 1.30
+    )
+    if (decision !== 'revise' && decision !== 'rewrite' && !lengthOutOfRange) {
       return { status: 'completed', content }
     }
 
@@ -596,7 +898,7 @@ ${content}`,
     if (!reviser) return { status: 'completed', content }
     const revisedContent = await this.invokeMember(
       reviser,
-      `请根据审稿意见修订章节，并直接输出完整正文。
+      `请根据审稿意见修订章节，并直接输出完整正文。${targetWords ? `正文必须控制在 ${Math.round(targetWords * 0.85)}-${Math.round(targetWords * 1.30)} 字，目标约 ${targetWords} 字。` : ''}
 
 ## 原章节正文
 
@@ -767,8 +1069,8 @@ ${report}`,
     return name
       .normalize('NFKC')
       .trim()
-      .replace(/^[「『\[【]/, '')
-      .replace(/[」』\]】]$/, '')
+      .replace(/^(?:「|『|【|\[)/, '')
+      .replace(/(?:」|』|】|\])$/, '')
       .toLocaleLowerCase()
   }
 
@@ -812,5 +1114,64 @@ ${report}`,
       data,
       timestamp: Date.now(),
     })
+  }
+}
+
+interface DiscussionUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  llmProvider: string
+  llmModel: string
+}
+
+function usageRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : undefined
+}
+
+function usageNumber(source: Record<string, unknown> | undefined, keys: string[]): number {
+  if (!source) return 0
+  for (const key of keys) {
+    const value = source[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && Number.isFinite(Number(value))) return Number(value)
+  }
+  return 0
+}
+
+function usageString(source: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    if (typeof source[key] === 'string') return source[key] as string
+  }
+  return ''
+}
+
+function extractDiscussionUsage(message: Record<string, unknown>): DiscussionUsage | undefined {
+  const usage = usageRecord(message.usage) ?? message
+  const snapshot: DiscussionUsage = {
+    inputTokens: usageNumber(usage, ['input', 'inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens']),
+    outputTokens: usageNumber(usage, ['output', 'outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens']),
+    cacheReadTokens: usageNumber(usage, ['cacheRead', 'cacheReadTokens', 'cache_read_tokens', 'cachedTokens', 'cached_tokens', 'prompt_cache_hit_tokens']),
+    cacheWriteTokens: usageNumber(usage, ['cacheWrite', 'cacheWriteTokens', 'cache_write_tokens', 'prompt_cache_miss_tokens']),
+    llmProvider: usageString(message, ['provider', 'providerId']),
+    llmModel: usageString(message, ['model', 'modelId']),
+  }
+  return snapshot.inputTokens + snapshot.outputTokens + snapshot.cacheReadTokens + snapshot.cacheWriteTokens > 0
+    ? snapshot
+    : undefined
+}
+
+function addDiscussionUsage(
+  current: DiscussionUsage | undefined,
+  next: DiscussionUsage,
+): DiscussionUsage {
+  return {
+    inputTokens: (current?.inputTokens ?? 0) + next.inputTokens,
+    outputTokens: (current?.outputTokens ?? 0) + next.outputTokens,
+    cacheReadTokens: (current?.cacheReadTokens ?? 0) + next.cacheReadTokens,
+    cacheWriteTokens: (current?.cacheWriteTokens ?? 0) + next.cacheWriteTokens,
+    llmProvider: next.llmProvider || current?.llmProvider || '',
+    llmModel: next.llmModel || current?.llmModel || '',
   }
 }

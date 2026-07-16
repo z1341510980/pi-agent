@@ -40,6 +40,7 @@ import { NovelAgentConfigStore } from './core/novel-agent-config-store.js'
 import { NovelDiscussionRunner } from './core/novel-discussion-runner.js'
 import { ChapterChatRunner } from './core/chapter-chat-runner.js'
 import { ChapterChatStore } from './core/chapter-chat-store.js'
+import { DiscussionRunStore } from './core/discussion-run-store.js'
 import { DiscussionSettingsStore } from '../../core/agent/discussion-settings-store.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
@@ -87,6 +88,8 @@ export interface NovelServices {
   discussionRunner: NovelDiscussionRunner
   /** 群聊设置存储 */
   discussionSettingsStore: DiscussionSettingsStore
+  /** 群聊运行快照存储（断点续跑） */
+  discussionRunStore: DiscussionRunStore
   /** 章节聊天消息存储（按章节持久化用户输入与 Agent 回复） */
   chapterChatStore: ChapterChatStore
   /** 章节级自由聊天 Runner */
@@ -138,6 +141,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/sessionFactory/promptBuilder/engine/context + memoryGenerator）
   //     discussionSettingsStore 读取持久化的 moderatorModel 传入 runner 构造函数
   const discussionSettingsStore = new DiscussionSettingsStore(db)
+  const discussionRunStore = new DiscussionRunStore(db)
   const discussionRunner = new NovelDiscussionRunner(
     store, memoryStore, sessionFactory, promptBuilder, engine, context,
     discussionSettingsStore.get().moderatorModel,
@@ -169,5 +173,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 10. 创建 Pi Session 工具集（依赖 NovelStore）
   const tools = createNovelTools(store)
 
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, agentConfigStore, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, chapterChatStore, chapterChatRunner }
+  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, agentConfigStore, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner }
 }

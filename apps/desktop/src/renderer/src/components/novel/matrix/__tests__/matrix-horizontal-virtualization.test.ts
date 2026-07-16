@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { computeVisibleChapters, getChapterLeft } from '@/lib/matrix-viewport'
+import {
+  computeVisibleChapters,
+  getChapterLeft,
+  getChapterNavigationTarget,
+} from '@/lib/matrix-viewport'
 
 describe('computeVisibleChapters', () => {
   const base = {
@@ -58,5 +62,24 @@ describe('getChapterLeft', () => {
 
   it('章节 N 的 left = sidebarWidth + (N-1) * cellWidth', () => {
     expect(getChapterLeft(5, 200, 36)).toBe(200 + 4 * 36)
+  })
+})
+
+describe('getChapterNavigationTarget', () => {
+  it('左右方向键逐章移动并限制在边界内', () => {
+    expect(getChapterNavigationTarget('ArrowLeft', 1, 20)).toBe(1)
+    expect(getChapterNavigationTarget('ArrowLeft', 8, 20)).toBe(7)
+    expect(getChapterNavigationTarget('ArrowRight', 8, 20)).toBe(9)
+    expect(getChapterNavigationTarget('ArrowRight', 20, 20)).toBe(20)
+  })
+
+  it('Home 和 End 分别跳到首章和末章', () => {
+    expect(getChapterNavigationTarget('Home', 8, 20)).toBe(1)
+    expect(getChapterNavigationTarget('End', 8, 20)).toBe(20)
+  })
+
+  it('忽略不属于标尺导航的按键', () => {
+    expect(getChapterNavigationTarget('Enter', 8, 20)).toBeNull()
+    expect(getChapterNavigationTarget('ArrowDown', 8, 20)).toBeNull()
   })
 })

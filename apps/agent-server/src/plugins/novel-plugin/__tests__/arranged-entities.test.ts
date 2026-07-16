@@ -33,12 +33,15 @@ function createStoresMock(store: NovelStore) {
     listFactions: (id: string) => store.listFactions(id),
     listLocations: (id: string) => store.listLocations(id),
     listWorldElements: (id: string) => store.listWorldElements(id),
+    listUnfulfilledHooksBefore: (id: string, before: number) => store.listUnfulfilledHooksBefore(id, before),
+    listHooksByChapter: (id: string, chapter: number) => store.listHooksByChapter(id, chapter),
     // 以下为 D-3 新增的实体按 ID 查询方法
     getCharacter: (id: string) => store.getCharacter(id),
     getConflict: (id: string) => store.getConflict(id),
     getForeshadow: (id: string) => store.getForeshadow(id),
     getFaction: (id: string) => store.getFaction(id),
     getLocation: (id: string) => store.getLocation(id),
+    getInformationLayer: (id: string) => store.getInformationLayer(id),
   }
 }
 
@@ -118,6 +121,44 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     expect(ctx).toContain('李四')
     expect(ctx).toContain('受伤')
     expect(ctx).toContain('本章必须出现的实体')
+  })
+
+  it('把本章伏笔节点类型和具体内容注入 Writer 上下文', () => {
+    const foreshadowId = randomUUID()
+    store.createForeshadow({
+      id: foreshadowId,
+      projectId,
+      description: '镜中暗格',
+      category: 'secret',
+      status: 'planned',
+      firstChapter: null,
+      lastChapter: null,
+      recoverByChapter: null,
+      linkedCharacters: '[]',
+      linkedClues: '[]',
+      linkedInfoLayers: '[]',
+      chapterSpans: [],
+      beats: [
+        { chapter: 1, type: 'plant', note: '擦拭镜面时看见背后的细小划痕' },
+        { chapter: 3, type: 'reinforce', note: '划痕与家族徽记吻合' },
+      ],
+    })
+    const builder = new NovelPromptBuilder(
+      { render: () => 'instruction', getTemplate: () => '' } as any,
+      createStoresMock(store) as any,
+    )
+
+    const ctx = builder.buildChapterContextShared(
+      projectId,
+      1,
+      { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
+      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
+      { characterIds: [], conflictIds: [], foreshadowIds: [foreshadowId], factionIds: [], locationIds: [] },
+    )
+
+    expect(ctx).toContain('本章节点：埋设')
+    expect(ctx).toContain('节点内容：擦拭镜面时看见背后的细小划痕')
+    expect(ctx).not.toContain('划痕与家族徽记吻合')
   })
 
   it('不传 arrangedEntities 时不注入编排段（保持向后兼容）', () => {

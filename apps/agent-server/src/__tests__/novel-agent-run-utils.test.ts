@@ -3,6 +3,7 @@ import {
   addLlmUsage,
   applySafeRevision,
   extractLlmUsageFromMessage,
+  sanitizeNovelProse,
 } from '../plugins/novel-plugin/core/agent-run-utils.js'
 
 const originalChapter = [
@@ -91,5 +92,17 @@ describe('agent-run-utils - usage', () => {
       llmProvider: 'p2',
       llmModel: 'm2',
     })
+  })
+})
+
+describe('agent-run-utils - prose sanitization', () => {
+  it('按语境清理双破折号、单破折号和短横线', () => {
+    expect(sanitizeNovelProse('他推开门——门外站着一个人。')).toBe('他推开门。门外站着一个人。')
+    expect(sanitizeNovelProse('“我本来想—”')).toBe('“我本来想……”')
+    expect(sanitizeNovelProse('刀–剑–枪')).toBe('刀，剑，枪')
+  })
+
+  it('保留普通连字符', () => {
+    expect(sanitizeNovelProse('版本 v1-2 与 A-B 组')).toBe('版本 v1-2 与 A-B 组')
   })
 })

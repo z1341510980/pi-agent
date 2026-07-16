@@ -84,6 +84,10 @@ interface CharacterCreateItem {
 interface ForeshadowUpdateItem {
   description?: string
   status?: string
+  /** 本章真实发生的伏笔节点；没有发生则不填。 */
+  beatType?: 'plant' | 'reinforce' | 'reveal' | 'payoff'
+  /** 本章节点的具体表现，供复盘使用。 */
+  beatNote?: string
   // ── P2-2：伏笔埋设/回收方式 ──
   plantMethod?: string
   recoverMethod?: string
@@ -93,6 +97,7 @@ interface ForeshadowCreateItem {
   description?: string
   category?: string
   linkedCharacters?: string[]
+  beatNote?: string
   // ── P2-2：伏笔埋设/回收方式 ──
   plantMethod?: string
   recoverMethod?: string
@@ -227,6 +232,7 @@ export interface MemoryGenerationResult {
   logContext?: {
     systemPrompt: string
     userMessage: string
+    sessionId?: string
   }
 }
 
@@ -273,7 +279,8 @@ export class NovelMemoryGenerator {
     chapterContent: string,
     onProgress?: (event: MemoryGenerationProgressEvent) => void,
     arrangedEntities?: ArrangedEntity,
-    sharedContextPrefix?: string,
+    _sharedContextPrefix?: string,
+    signal?: AbortSignal,
   ): Promise<MemoryGenerationResult> {
     // ── 1. 构建系统提示词（与 character-generator 一致的技术栈）──
     // agentType 使用 'memory-generator'，promptBuilder 通过 role-memory-generator 模板加载角色定义
@@ -294,30 +301,24 @@ export class NovelMemoryGenerator {
 
     // ── 3. 创建独立 Session 调用 LLM（单次调用，输出 JSON）──
     onProgress?.({ phase: 'generating', message: '记忆 Agent 正在分析章节状态变更...' })
-    // 若 orchestrator 传入了 SEMI 层 shared 前缀，作为 prefixUserMessage 注入。
-    // shared 前缀跨 Agent 完全一致（章节信息/约束/故事状态/摘要/因果链），
-    // director/writer/reviewer 已写入 provider 端缓存，Memory 注入后能命中，
-    // 显著降低 miss tokens（从 ~16K miss 降至 ~6K miss）。
+    // Memory 不复用创作阶段的 shared context。缓存命中不能抵消无关上下文
+    // 对上下文窗口和 cache-read 计费的占用；Memory 只保留正文、相关实体状态和待兑现钩子。
+    const fullUserMessage = this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
+      + '\n\n---\n\n' + userPrompt
     const sessionOptions: {
       systemPrompt: string
-      prefixUserMessage?: string
       userMessage: string
       responseFormat: 'json'
       timeoutMs: number
+      signal?: AbortSignal
     } = {
       systemPrompt,
-      // 不注入 prefixUserMessage（chapterContext）：Memory 不需要章节上下文，
-      // 只需要章节正文 + 当前实体状态（均在 userMessage 中）
-      // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
-      userMessage: this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
-        + '\n\n---\n\n' + userPrompt,
+      userMessage: fullUserMessage,
       responseFormat: 'json',
       // 记忆提取需要分析整章正文 + 全量实体状态，LLM 耗时较长
       // 但远低于工具循环模式的 300s（单次调用通常 30-60s）
       timeoutMs: 300_000,
-    }
-    if (sharedContextPrefix) {
-      sessionOptions.prefixUserMessage = sharedContextPrefix
+      signal,
     }
     const session = await this.context.createSession(sessionOptions)
 
@@ -355,7 +356,7 @@ export class NovelMemoryGenerator {
       return {
         summary: '记忆提取失败，未应用状态变更',
         stats: this.emptyStats(),
-        logContext: { systemPrompt, userMessage: userPrompt },
+        logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId },
       }
     } finally {
       session.dispose()
@@ -372,7 +373,7 @@ export class NovelMemoryGenerator {
       data: { stats },
     })
 
-    return { summary, stats, logContext: { systemPrompt, userMessage: userPrompt } }
+    return { summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId } }
   }
 
   /**
@@ -394,6 +395,7 @@ export class NovelMemoryGenerator {
     projectId: string,
     currentChapterNumber: number,
     onProgress?: (event: MemoryGenerationProgressEvent) => void,
+    signal?: AbortSignal,
   ): Promise<MemoryGenerationResult> {
     const calibrationRange = 5 // 校准最近 5 章
     const startChapter = Math.max(1, currentChapterNumber - calibrationRange + 1)
@@ -454,6 +456,7 @@ export class NovelMemoryGenerator {
         + '\n\n---\n\n' + userPrompt,
       responseFormat: 'json',
       timeoutMs: 300_000,
+      signal,
     })
 
     let payload: MemoryUpdatePayload
@@ -632,6 +635,7 @@ export class NovelMemoryGenerator {
         const fields = [
           `status=${f.status}`,
           `category=${f.category}`,
+          `beats=${(f.beats ?? []).map((beat) => `${beat.chapter}:${beat.type}`).join(',') || '(无)'}`,
           `plantMethod=${f.plantMethod ?? '(未指定)'}`,
           `recoverMethod=${f.recoverMethod ?? '(未指定)'}`,
         ]
@@ -840,7 +844,29 @@ export class NovelMemoryGenerator {
         continue
       }
       const patch: Partial<NovelForeshadow> = {}
-      if (item.status !== undefined) patch.status = ensureString(item.status, foreshadow.status) as NovelForeshadow['status']
+      const nextStatus = item.status !== undefined
+        ? ensureString(item.status, foreshadow.status) as NovelForeshadow['status']
+        : undefined
+      if (nextStatus !== undefined) patch.status = nextStatus
+      const validBeatTypes = ['plant', 'reinforce', 'reveal', 'payoff'] as const
+      const explicitBeatType = validBeatTypes.includes(item.beatType as typeof validBeatTypes[number])
+        ? item.beatType as typeof validBeatTypes[number]
+        : undefined
+      const inferredBeatType = nextStatus !== undefined && nextStatus !== foreshadow.status
+        ? ({ planted: 'plant', reinforced: 'reinforce', partially_revealed: 'reveal', recovered: 'payoff' } as const)[nextStatus as 'planted' | 'reinforced' | 'partially_revealed' | 'recovered']
+        : undefined
+      const beatType = explicitBeatType ?? inferredBeatType
+      if (chapterNumber !== undefined && beatType !== undefined) {
+        const beats = (foreshadow.beats ?? []).filter((beat) => beat.chapter !== chapterNumber)
+        patch.beats = [
+          ...beats,
+          {
+            chapter: chapterNumber,
+            type: beatType,
+            ...(item.beatNote?.trim() ? { note: item.beatNote.trim() } : {}),
+          },
+        ]
+      }
       // ── P2-2：埋设/回收方式 ──
       if (item.plantMethod !== undefined) {
         patch.plantMethod = ensureString(item.plantMethod, '') as NovelForeshadow['plantMethod']
@@ -874,8 +900,14 @@ export class NovelMemoryGenerator {
         plantMethod: item.plantMethod as NovelForeshadow['plantMethod'],
         recoverMethod: item.recoverMethod as NovelForeshadow['recoverMethod'],
         linkedInfoLayers: '[]',
-        // 迁移 055：未指定 firstChapter 时 chapterSpans 为 []（进元素池，矩阵不渲染行）
         chapterSpans: [],
+        beats: chapterNumber !== undefined
+          ? [{
+              chapter: chapterNumber,
+              type: 'plant',
+              ...(item.beatNote?.trim() ? { note: item.beatNote.trim() } : {}),
+            }]
+          : undefined,
       })
       stats.foreshadowCreatesApplied++
     }
