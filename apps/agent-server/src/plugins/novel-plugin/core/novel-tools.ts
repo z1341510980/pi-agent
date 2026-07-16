@@ -1270,6 +1270,7 @@ export function createNovelCreateClueTool(store: NovelStore): ToolDefinition<typ
         nextStep: params.nextStep ?? '',
         isMisleading: params.isMisleading ?? false,
         linkedForeshadow: params.linkedForeshadow ?? null,
+        chapterSpans: [],
       })
       return {
         content: [{ type: 'text', text: `已创建线索「${params.description}」，ID: ${clue.id}` }],

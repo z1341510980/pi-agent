@@ -134,6 +134,7 @@ interface ClueRow {
   id: string; project_id: string; description: string; points_to: string
   progress: number; current_step: string; next_step: string
   is_misleading: number; linked_foreshadow: string | null
+  chapter_spans: string | null
   created_at: number; updated_at: number
 }
 
@@ -1692,13 +1693,14 @@ export class NovelStore implements NovelPromptStores {
     const ts = now()
     const full: NovelClue = { ...clue, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_clues (id, project_id, description, points_to, progress, current_step, next_step, is_misleading, linked_foreshadow, created_at, updated_at)
-      VALUES (@id, @project_id, @description, @points_to, @progress, @current_step, @next_step, @is_misleading, @linked_foreshadow, @created_at, @updated_at)
+      INSERT INTO novel_clues (id, project_id, description, points_to, progress, current_step, next_step, is_misleading, linked_foreshadow, chapter_spans, created_at, updated_at)
+      VALUES (@id, @project_id, @description, @points_to, @progress, @current_step, @next_step, @is_misleading, @linked_foreshadow, @chapter_spans, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       points_to: full.pointsTo, progress: full.progress, current_step: full.currentStep,
       next_step: full.nextStep, is_misleading: full.isMisleading ? 1 : 0,
-      linked_foreshadow: full.linkedForeshadow, created_at: full.createdAt, updated_at: full.updatedAt,
+      linked_foreshadow: full.linkedForeshadow, chapter_spans: JSON.stringify(full.chapterSpans ?? []),
+      created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
   }
@@ -1711,11 +1713,12 @@ export class NovelStore implements NovelPromptStores {
     this.db.prepare(`
       UPDATE novel_clues SET description=@description, points_to=@points_to, progress=@progress,
       current_step=@current_step, next_step=@next_step, is_misleading=@is_misleading,
-      linked_foreshadow=@linked_foreshadow, updated_at=@updated_at WHERE id=@id
+      linked_foreshadow=@linked_foreshadow, chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, points_to: updated.pointsTo, progress: updated.progress,
       current_step: updated.currentStep, next_step: updated.nextStep,
       is_misleading: updated.isMisleading ? 1 : 0, linked_foreshadow: updated.linkedForeshadow,
+      chapter_spans: JSON.stringify(updated.chapterSpans ?? []),
       updated_at: updated.updatedAt,
     })
     return updated
@@ -3203,7 +3206,8 @@ export class NovelStore implements NovelPromptStores {
       id: row.id, projectId: row.project_id, description: row.description,
       pointsTo: row.points_to, progress: row.progress, currentStep: row.current_step,
       nextStep: row.next_step, isMisleading: row.is_misleading === 1,
-      linkedForeshadow: row.linked_foreshadow, createdAt: row.created_at, updatedAt: row.updated_at,
+      linkedForeshadow: row.linked_foreshadow, chapterSpans: parseChapterSpans(row.chapter_spans),
+      createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
 

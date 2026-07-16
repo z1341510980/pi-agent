@@ -48,6 +48,7 @@ export interface MatrixViewProps {
   chapters: NovelChapter[]
   characters: Parameters<typeof buildGroups>[0]['characters']
   conflicts: NovelConflict[]
+  clues: Parameters<typeof buildGroups>[0]['clues']
   foreshadows: Parameters<typeof buildGroups>[0]['foreshadows']
   factions: NovelFaction[]
   locations: Parameters<typeof buildGroups>[0]['locations']
@@ -113,7 +114,7 @@ function buildChapterByNumberMap(chapters: NovelChapter[]): Map<number, NovelCha
 }
 
 export function MatrixView({
-  chapters, characters, conflicts, foreshadows, factions, locations, worldElements,
+  chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
   characterHistory, markers, playheadChapter, cellWidth, collapsedGroups, activeFilter,
   selectedNodeId, showMarkers = true,
   onSelectEntity, onToggleCollapse, onPlayheadChange, onContextMenuChapter,
@@ -125,12 +126,12 @@ export function MatrixView({
   const { groups, maxChapter } = useMemo(
     () => {
       const result = buildGroups({
-        chapters, characters, conflicts, foreshadows, factions, locations, worldElements,
+        chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
         characterHistory, markers,
       })
       return result
     },
-    [chapters, characters, conflicts, foreshadows, factions, locations, worldElements, characterHistory, markers],
+    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, characterHistory, markers],
   )
 
   const chapterColumns = useMemo(() => {
@@ -711,6 +712,7 @@ export function MatrixView({
                   visibleRange={visibleRange}
                   maxChapter={maxChapter}
                   cellWidth={cellWidth}
+                  playheadChapter={playheadChapter}
                   color={meta.color}
                   colorRgb={meta.colorRgb}
                   icon={meta.icon}
@@ -730,6 +732,7 @@ export function MatrixView({
                       titleMap={titleMap}
                       maxChapter={maxChapter}
                       cellWidth={cellWidth}
+                      playheadChapter={playheadChapter}
                       isSelected={selectedNodeId === entity.entityId}
                       characterArcs={characterArcs}
                       onClick={() => handleEntityClick(entity)}
@@ -970,6 +973,7 @@ interface MatrixRowProps {
   visibleRange: { start: number; end: number }
   maxChapter: number
   cellWidth: number
+  playheadChapter: number
 }
 
 function MatrixRow(props: MatrixRowProps): ReactElement {
@@ -977,7 +981,7 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
     type, group, collapsed, color, colorRgb, icon, onToggleCollapse, onContextMenuGroupEmpty,
     entity, titleMap, isSelected, characterArcs, onClick,
     onContextMenuCell, onEditSpan, onTogglePresent,
-    visibleChapterColumns, visibleRange, maxChapter, cellWidth,
+    visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
   } = props
 
   // ── 角色弧光标记（仅 entity 类型） ──
@@ -1115,7 +1119,11 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
         )}
         {isGroup ? (
           visibleChapterColumns.map((ch) => (
-            <div key={ch} className="shrink-0 border-r border-border/40" style={{ width: `${cellWidth}px` }} />
+            <div
+              key={ch}
+              className={cn('shrink-0 border-r border-border/40', ch === playheadChapter && 'bg-amber-500/[0.09]')}
+              style={{ width: `${cellWidth}px` }}
+            />
           ))
         ) : (
           visibleChapterColumns.map((ch) => (
@@ -1126,6 +1134,7 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
               chapterTitle={titleMap!.get(ch) ?? ''}
               color={meta!.color}
               cellWidth={cellWidth}
+              isCurrent={ch === playheadChapter}
               onTogglePresent={onTogglePresent}
               onSelectEntity={onClick}
               onContextMenu={(e) => {
@@ -1188,12 +1197,13 @@ interface CellProps {
   chapterTitle: string
   color: string
   cellWidth: number
+  isCurrent: boolean
   onTogglePresent?: (entity: MatrixEntity, chapter: number) => void
   onSelectEntity?: () => void
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
-function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent, onSelectEntity, onContextMenu }: CellProps): ReactElement {
+function Cell({ entity, chapter, chapterTitle, color, cellWidth, isCurrent, onTogglePresent, onSelectEntity, onContextMenu }: CellProps): ReactElement {
   // 时间轴交互模型：空格单击新增；已有点/区间单击只选中；删除统一走右键菜单。
   const symbol = computeCellSymbol(entity, chapter)
   const tip = symbol.type === 'empty'
@@ -1218,7 +1228,10 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
     return (
       <button
         type="button"
-        className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-[color,background-color,box-shadow,transform] hover:bg-primary/8 active:scale-[0.96] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
+        className={cn(
+          'group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-[color,background-color,box-shadow,transform] hover:bg-primary/8 active:scale-[0.96] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
+          isCurrent && 'bg-amber-500/[0.09]',
+        )}
         style={{ width: `${cellWidth}px` }}
         data-tip={tip}
         onClick={handleCellActivate}
@@ -1241,6 +1254,7 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
         color={color}
         tip={tip}
         symbol={symbol}
+        isCurrent={isCurrent}
         onContextMenu={onContextMenu}
       />
     )
@@ -1250,7 +1264,10 @@ function Cell({ entity, chapter, chapterTitle, color, cellWidth, onTogglePresent
 
   return (
     <div
-      className="group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-[color,background-color,box-shadow] hover:bg-muted/20 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
+      className={cn(
+        'group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-pointer transition-[color,background-color,box-shadow] hover:bg-muted/20 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
+        isCurrent && 'bg-amber-500/[0.09]',
+      )}
       style={{ width: `${cellWidth}px` }}
       data-tip={tip}
       role={canSelect ? 'button' : undefined}
@@ -1289,11 +1306,12 @@ interface DraggablePresentCellProps {
   color: string
   tip: string
   symbol: ReturnType<typeof computeCellSymbol>
+  isCurrent: boolean
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
 function DraggablePresentCell({
-  entity, chapter, cellWidth, color, tip, symbol, onContextMenu,
+  entity, chapter, cellWidth, color, tip, symbol, isCurrent, onContextMenu,
 }: DraggablePresentCellProps): ReactElement {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `cell:${entity.entityId}:${chapter}`,
@@ -1320,6 +1338,7 @@ function DraggablePresentCell({
       aria-label={`${tip}，可拖动到其他章节`}
       className={cn(
         'group/cell h-full shrink-0 relative flex items-center justify-center border-r border-border/30 cursor-grab active:cursor-grabbing transition-[opacity,box-shadow] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
+        isCurrent && 'bg-amber-500/[0.09]',
         isDragging && 'opacity-30',
       )}
     >
@@ -1347,6 +1366,8 @@ function buildEmptyCellTip(entity: MatrixEntity, chapter: number, chapterTitle: 
     case 'conflict':
     case 'faction':
       return `${chStr}｜单击将 ${entity.name} 扩展到本章`
+    case 'clue':
+      return `${chStr}｜单击标记 ${entity.name} 在本章发现或推进`
     case 'foreshadow':
       return `${chStr}｜单击快速添加 ${entity.name} 的伏笔点 · 右键选择强化、揭示或回收`
     case 'world_element':
@@ -1382,6 +1403,8 @@ function Symbol({ symbol, color }: { symbol: ReturnType<typeof computeCellSymbol
           style={{ color: 'rgb(245, 158, 11)' }}
         >✦</span>
       )
+    case 'clue-progress':
+      return <span className="text-[12px] leading-none transition-transform inline-block opacity-95 [filter:drop-shadow(0_0_4px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>◇</span>
     case 'foreshadow-plant':
       return <span className="text-[11px] leading-none transition-transform inline-block opacity-90 [filter:drop-shadow(0_0_3px_currentColor)] group-hover/cell:scale-[1.35]" style={style}>●</span>
     case 'foreshadow-reinforce':
@@ -1760,6 +1783,8 @@ function buildCellTooltip(
       return `${chStr}｜${entity.name} · 单击选择 · 拖动色带平移 · 双击编辑范围 · 右键更多`
     case 'conflict-climax':
       return `${chStr}｜${entity.name} 冲突高潮 · 单击选择 · 拖动色带平移 · 右键更多`
+    case 'clue-progress':
+      return `${chStr}｜${entity.name} 线索发现/推进 · 单击选择 · 右键更多`
     case 'foreshadow-plant':
       return `${chStr}｜${entity.name} 埋设${beatNoteText} · 单击选择 · 拖动调整 · 右键编辑节点内容`
     case 'foreshadow-reinforce':

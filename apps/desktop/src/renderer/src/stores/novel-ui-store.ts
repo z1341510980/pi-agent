@@ -10,6 +10,7 @@ export type NovelNodeType =
   | 'chapter'
   | 'volume'
   | 'conflict'
+  | 'clue'
   | 'foreshadow'
   | 'group'
   | 'faction'

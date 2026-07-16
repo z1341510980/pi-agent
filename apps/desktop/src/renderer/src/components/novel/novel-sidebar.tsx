@@ -15,6 +15,7 @@ import {
   GripVertical,
   RotateCcw,
   Layers,
+  Search,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -42,6 +43,7 @@ import {
   listProjects,
   createProject,
   createConflict,
+  createClue,
   createForeshadow,
   createFaction,
   createLocation,
@@ -49,6 +51,7 @@ import {
   deleteCharacter,
   deleteChapter,
   deleteConflict,
+  deleteClue,
   deleteForeshadow,
   deleteFaction,
   deleteLocation,
@@ -63,6 +66,7 @@ import {
   type NovelChapter,
   type NovelVolume,
   type NovelConflict,
+  type NovelClue,
   type NovelForeshadow,
   type NovelCharacterHistory,
   type NovelFaction,
@@ -79,7 +83,7 @@ import { GROUP_META, type MatrixEntityKind, type SidebarDragData } from './matri
 
 // ── 通用节点类型（用于删除等操作；拖拽已统一走 @dnd-kit useDraggable）──
 
-type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'faction' | 'location' | 'world_element' | 'info_layer'
+type DraggableEntityType = 'character' | 'chapter' | 'foreshadow' | 'conflict' | 'clue' | 'faction' | 'location' | 'world_element' | 'info_layer'
 
 // ── 目标平台选项（与 novel-detail-panel.tsx 保持一致）──
 
@@ -165,6 +169,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   const chapters = useNovelDataStore((s) => s.chapters)
   const volumes = useNovelDataStore((s) => s.volumes)
   const conflicts = useNovelDataStore((s) => s.conflicts)
+  const clues = useNovelDataStore((s) => s.clues)
   const foreshadows = useNovelDataStore((s) => s.foreshadows)
   const factions = useNovelDataStore((s) => s.factions)
   const locations = useNovelDataStore((s) => s.locations)
@@ -367,6 +372,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                   chapters={chapters}
                   volumes={volumes}
                   conflicts={conflicts}
+                  clues={clues}
                   foreshadows={foreshadows}
                   factions={factions}
                   locations={locations}
@@ -550,6 +556,7 @@ interface ProjectTreeProps {
   chapters: NovelChapter[]
   volumes: NovelVolume[]
   conflicts: NovelConflict[]
+  clues: NovelClue[]
   foreshadows: NovelForeshadow[]
   factions: NovelFaction[]
   locations: NovelLocation[]
@@ -568,6 +575,7 @@ function ProjectTree({
   chapters,
   volumes,
   conflicts,
+  clues,
   foreshadows,
   factions,
   locations,
@@ -579,6 +587,7 @@ function ProjectTree({
   onAiArrange,
 }: ProjectTreeProps): ReactElement {
   const upsertConflict = useNovelDataStore((s) => s.upsertConflict)
+  const upsertClue = useNovelDataStore((s) => s.upsertClue)
   const upsertForeshadow = useNovelDataStore((s) => s.upsertForeshadow)
   const upsertFaction = useNovelDataStore((s) => s.upsertFaction)
   const upsertLocation = useNovelDataStore((s) => s.upsertLocation)
@@ -587,6 +596,7 @@ function ProjectTree({
   const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
   const removeChapter = useNovelDataStore((s) => s.removeChapter)
   const removeConflict = useNovelDataStore((s) => s.removeConflict)
+  const removeClue = useNovelDataStore((s) => s.removeClue)
   const removeForeshadow = useNovelDataStore((s) => s.removeForeshadow)
   const removeFaction = useNovelDataStore((s) => s.removeFaction)
   const removeLocation = useNovelDataStore((s) => s.removeLocation)
@@ -623,6 +633,23 @@ function ProjectTree({
       console.error('[NovelSidebar] 创建伏笔失败:', err)
     }
   }, [projectId, upsertForeshadow])
+
+  const handleAddClue = useCallback(async () => {
+    try {
+      const clue = await createClue(projectId, {
+        description: '新的线索',
+        pointsTo: '待确认',
+        progress: 0,
+        currentStep: '',
+        nextStep: '',
+        isMisleading: false,
+        chapterSpans: [],
+      })
+      upsertClue(clue)
+    } catch (err) {
+      console.error('[NovelSidebar] 创建线索失败:', err)
+    }
+  }, [projectId, upsertClue])
 
   const handleAddFaction = useCallback(async () => {
     try {
@@ -701,6 +728,10 @@ function ProjectTree({
             await deleteConflict(id)
             removeConflict(id)
             break
+          case 'clue':
+            await deleteClue(id)
+            removeClue(id)
+            break
           case 'foreshadow':
             await deleteForeshadow(id)
             removeForeshadow(id)
@@ -726,7 +757,7 @@ function ProjectTree({
         console.error('[NovelSidebar] 删除实体失败:', err)
       }
     },
-    [removeCharacter, removeChapter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeInfoLayer],
+    [removeCharacter, removeChapter, removeConflict, removeClue, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeInfoLayer],
   )
 
   return (
@@ -806,6 +837,36 @@ function ProjectTree({
               entityType="foreshadow"
               entityId={f.id}
               onDelete={() => handleDelete('foreshadow', f.id, '伏笔')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
+
+      {/* 线索集合：普通证据/调查进展，与需要回收的伏笔分开 */}
+      <CollapsibleGroup
+        kind="clue"
+        icon={Search}
+        label="线索集合"
+        count={clues.length}
+        accent="text-green-500"
+        collapsed={collapsedGroups.includes('clue')}
+        onToggle={toggleCollapsedGroup}
+        onAdd={handleAddClue}
+        addLabel="新建线索"
+      >
+        {clues.length === 0 ? (
+          <EmptyHint text="暂无线索" />
+        ) : (
+          clues.map((clue) => (
+            <EntityItem
+              key={clue.id}
+              label={clue.description.length > 18 ? `${clue.description.slice(0, 18)}...` : clue.description}
+              sublabel={`${clue.progress}% · ${clue.isMisleading ? '误导' : '真实'}`}
+              selected={selectedNodeId === clue.id}
+              onClick={() => onSelectEntity(clue.id, 'clue')}
+              entityType="clue"
+              entityId={clue.id}
+              onDelete={() => handleDelete('clue', clue.id, '线索')}
             />
           ))
         )}

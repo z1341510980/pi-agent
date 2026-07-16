@@ -175,6 +175,7 @@ export interface CreateClueInput {
   nextStep?: string
   isMisleading?: boolean
   linkedForeshadow?: string | null
+  chapterSpans?: Array<[number, number]>
 }
 
 export interface CreateRelationshipInput {
@@ -555,6 +556,10 @@ export function listClues(projectId: string): Promise<NovelClue[]> {
 
 export function createClue(projectId: string, input: CreateClueInput): Promise<NovelClue> {
   return postApi<NovelClue>(`${BASE}/projects/${projectId}/clues`, input)
+}
+
+export function updateClue(id: string, input: Partial<CreateClueInput>): Promise<NovelClue> {
+  return patchApi<NovelClue>(`${BASE}/clues/${id}`, input)
 }
 
 export function deleteClue(id: string): Promise<{ id: string; deleted: boolean }> {

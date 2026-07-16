@@ -64,6 +64,7 @@ export interface EntityCreatePayload {
 const CORE_LABEL: Record<MatrixEntityKind, string> = {
   character: '角色核心风格',
   conflict: '冲突核心描述',
+  clue: '线索核心描述',
   foreshadow: '伏笔核心描述',
   faction: '势力核心描述',
   location: '地点核心描述',
@@ -74,6 +75,7 @@ const CORE_LABEL: Record<MatrixEntityKind, string> = {
 const CORE_PLACEHOLDER: Record<MatrixEntityKind, string> = {
   character: '如：沉默寡言的剑客，背负血海深仇',
   conflict: '如：林墨与苏晚之间的信任危机',
+  clue: '如：现场留下一枚不属于死者的铜扣',
   foreshadow: '如：林墨母亲留下的玉佩',
   faction: '如：青衫会，江南最大的江湖势力',
   location: '如：青衫会总舵，藏于云雾山中',
@@ -151,7 +153,7 @@ export function EntityCreateDialog({
       if (!currentProjectId) {
         throw new Error('未找到当前项目 ID')
       }
-      if (!entityType || entityType === 'info_layer') {
+      if (!entityType || entityType === 'info_layer' || entityType === 'clue') {
         throw new Error('当前实体类型暂不支持 AI 补全')
       }
       const result = await aiGenerateEntity(
@@ -238,14 +240,16 @@ export function EntityCreateDialog({
           {step === 'input' ? (
             <>
               <Button variant="ghost" onClick={onClose} disabled={submitting || aiGenerating}>取消</Button>
-              <Button
-                variant="outline"
-                onClick={() => void handleAiGenerate()}
-                disabled={aiGenerating || submitting || !coreStyle.trim()}
-              >
-                {aiGenerating ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-                <span className="ml-1">AI 补全</span>
-              </Button>
+              {entityType !== 'clue' && entityType !== 'info_layer' && (
+                <Button
+                  variant="outline"
+                  onClick={() => void handleAiGenerate()}
+                  disabled={aiGenerating || submitting || !coreStyle.trim()}
+                >
+                  {aiGenerating ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                  <span className="ml-1">AI 补全</span>
+                </Button>
+              )}
               <Button
                 onClick={() => void handleSimpleCreate()}
                 disabled={submitting || aiGenerating || !coreStyle.trim()}

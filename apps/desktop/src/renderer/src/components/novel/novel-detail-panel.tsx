@@ -30,6 +30,7 @@ import {
   updateCharacter,
   updateChapter,
   updateConflict,
+  updateClue,
   updateForeshadow,
   updateFaction,
   updateLocation,
@@ -45,6 +46,7 @@ import {
   type NovelCharacterPlotRole,
   type NovelChapter,
   type NovelConflict,
+  type NovelClue,
   type NovelForeshadow,
   type NovelCharacterHistory,
   type CharacterHistoryField,
@@ -681,6 +683,7 @@ const NODE_TYPE_LABELS: Record<NovelNodeType, string> = {
   chapter: '章节',
   volume: '卷',
   conflict: '冲突',
+  clue: '线索',
   foreshadow: '伏笔',
   faction: '势力',
   location: '地点',
@@ -736,6 +739,7 @@ export function NovelDetailPanel(): ReactElement {
   const chapters = useNovelDataStore((s) => s.chapters)
   const volumes = useNovelDataStore((s) => s.volumes)
   const conflicts = useNovelDataStore((s) => s.conflicts)
+  const clues = useNovelDataStore((s) => s.clues)
   const foreshadows = useNovelDataStore((s) => s.foreshadows)
   const factions = useNovelDataStore((s) => s.factions)
   const locations = useNovelDataStore((s) => s.locations)
@@ -755,6 +759,8 @@ export function NovelDetailPanel(): ReactElement {
         return volumes.find((v) => v.id === selectedNodeId) ?? null
       case 'conflict':
         return conflicts.find((c) => c.id === selectedNodeId) ?? null
+      case 'clue':
+        return clues.find((c) => c.id === selectedNodeId) ?? null
       case 'foreshadow':
         return foreshadows.find((f) => f.id === selectedNodeId) ?? null
       case 'faction':
@@ -768,7 +774,7 @@ export function NovelDetailPanel(): ReactElement {
       default:
         return null
     }
-  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, volumes, conflicts, foreshadows, factions, locations, worldElements, infoLayers])
+  }, [selectedNodeId, selectedNodeType, projects, characters, chapters, volumes, conflicts, clues, foreshadows, factions, locations, worldElements, infoLayers])
 
   if (!entity || !selectedNodeType) {
     return (
@@ -815,6 +821,9 @@ export function NovelDetailPanel(): ReactElement {
         {selectedNodeType === 'conflict' && (
           <ConflictForm key={entity.id} entity={entity as NovelConflict} />
         )}
+        {selectedNodeType === 'clue' && (
+          <ClueForm key={entity.id} entity={entity as NovelClue} />
+        )}
         {selectedNodeType === 'foreshadow' && (
           <ForeshadowForm key={entity.id} entity={entity as NovelForeshadow} />
         )}
@@ -844,7 +853,7 @@ function entityTitle(entity: unknown, type: string): string {
   if (type === 'faction' || type === 'location' || type === 'world_element') {
     return String(e.name ?? '')
   }
-  if (type === 'conflict' || type === 'foreshadow' || type === 'info_layer') {
+  if (type === 'conflict' || type === 'clue' || type === 'foreshadow' || type === 'info_layer') {
     const d = String(e.description ?? e.infoDescription ?? '')
     return d.length > 20 ? `${d.slice(0, 20)}...` : d
   }
@@ -1782,6 +1791,84 @@ function ConflictForm({ entity }: { entity: NovelConflict }): ReactElement {
       </FieldRow>
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+    </div>
+  )
+}
+
+// ── 线索编辑表单 ──
+
+function ClueForm({ entity }: { entity: NovelClue }): ReactElement {
+  const upsertClue = useNovelDataStore((s) => s.upsertClue)
+  const [form, setForm] = useState({
+    description: entity.description,
+    pointsTo: entity.pointsTo,
+    progress: String(entity.progress),
+    currentStep: entity.currentStep,
+    nextStep: entity.nextStep,
+    isMisleading: entity.isMisleading,
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const dirty = form.description !== entity.description
+    || form.pointsTo !== entity.pointsTo
+    || Number(form.progress) !== entity.progress
+    || form.currentStep !== entity.currentStep
+    || form.nextStep !== entity.nextStep
+    || form.isMisleading !== entity.isMisleading
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const updated = await updateClue(entity.id, {
+        description: form.description.trim(),
+        pointsTo: form.pointsTo.trim(),
+        progress: Math.max(0, Math.min(100, Number(form.progress) || 0)),
+        currentStep: form.currentStep.trim(),
+        nextStep: form.nextStep.trim(),
+        isMisleading: form.isMisleading,
+      })
+      upsertClue(updated)
+      toastSuccess('线索已保存')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '保存失败'
+      setError(message)
+      toastError('保存线索失败', message)
+    } finally {
+      setSaving(false)
+    }
+  }, [entity.id, form, upsertClue])
+
+  return (
+    <div className="space-y-3">
+      <SectionHeader title="线索内容" />
+      <FieldRow label="描述">
+        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((value) => ({ ...value, description: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="指向的真相/对象">
+        <TextArea variant="short" value={form.pointsTo} onChange={(e) => setForm((value) => ({ ...value, pointsTo: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="推进进度">
+        <div className="flex items-center gap-2">
+          <TextInput type="number" min={0} max={100} value={form.progress} onChange={(e) => setForm((value) => ({ ...value, progress: e.target.value }))} />
+          <span className="text-xs text-muted-foreground">%</span>
+        </div>
+      </FieldRow>
+      <FieldRow label="当前进展">
+        <TextArea variant="short" value={form.currentStep} onChange={(e) => setForm((value) => ({ ...value, currentStep: e.target.value }))} />
+      </FieldRow>
+      <FieldRow label="下一步">
+        <TextArea variant="short" value={form.nextStep} onChange={(e) => setForm((value) => ({ ...value, nextStep: e.target.value }))} />
+      </FieldRow>
+      <label className="flex items-center gap-2 text-xs text-text">
+        <input type="checkbox" checked={form.isMisleading} onChange={(e) => setForm((value) => ({ ...value, isMisleading: e.target.checked }))} />
+        这是误导线索
+      </label>
+      {entity.chapterSpans.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">关联章节：{entity.chapterSpans.map(([start, end]) => start === end ? `第 ${start} 章` : `第 ${start}-${end} 章`).join('、')}</p>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <SaveButton onSave={handleSave} disabled={!dirty || !form.description.trim()} saving={saving} />
     </div>
   )
 }

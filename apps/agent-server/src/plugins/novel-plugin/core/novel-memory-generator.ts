@@ -984,6 +984,10 @@ export class NovelMemoryGenerator {
       if (item.nextStep !== undefined) patch.nextStep = ensureString(item.nextStep, clue.nextStep)
       if (item.isMisleading !== undefined) patch.isMisleading = item.isMisleading === true
       if (linkedForeshadow) patch.linkedForeshadow = linkedForeshadow.id
+      if (chapterNumber !== undefined && !clue.chapterSpans.some(([start, end]) => chapterNumber >= start && chapterNumber <= end)) {
+        patch.chapterSpans = [...clue.chapterSpans, [chapterNumber, chapterNumber] as [number, number]]
+          .sort((a, b) => a[0] - b[0])
+      }
       if (Object.keys(patch).length === 0) continue
       this.store.updateClue(clue.id, patch)
       stats.clueUpdatesApplied++
@@ -1007,6 +1011,7 @@ export class NovelMemoryGenerator {
         nextStep: ensureString(item.nextStep, ''),
         isMisleading: item.isMisleading === true,
         linkedForeshadow: linkedForeshadow?.id ?? null,
+        chapterSpans: chapterNumber !== undefined ? [[chapterNumber, chapterNumber]] : [],
       })
       stats.clueCreatesApplied++
     }

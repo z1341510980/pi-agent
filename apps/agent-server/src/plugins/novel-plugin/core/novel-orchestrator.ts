@@ -301,18 +301,24 @@ export class NovelOrchestrator {
       // Phase 2: Writer（支持 pushback：Writer 发现叙事任务有逻辑问题时可推回给 Director）
       let writerResult = ''
       let directorPushbackCount = 0
+      let writerGuardRewriteCount = guardRewriteCount
+      let writerGuardRewriteReason = ''
       const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
 
       while (true) {
         this.emitProgress(options, 'writing', 'phase_change', {
-          message: directorPushbackCount > 0
+          message: writerGuardRewriteReason
+            ? `写作 Agent 正在沿用已批准的导演方案重写正文（${writerGuardRewriteCount}/${NovelOrchestrator.MAX_GUARD_REWRITE}）...`
+            : directorPushbackCount > 0
             ? '写作 Agent 正在根据调整后的叙事任务重新创作...'
             : '写作 Agent 正在创作章节正文...',
         })
         // Director 的完整方案由 Writer 专属 suffix 注入，并带独立缓存断点；
         // 推回机制已在 role-writer 中定义，动态消息无需重复。
         writerResult = await this.runAgent('writer', projectId, chapterNumber,
-          `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
+          writerGuardRewriteReason
+            ? `请沿用已批准的本章叙事任务，只重写第 ${chapterNumber} 章正文，不要重新规划或推回 Director。上一稿未通过确定性检查：${writerGuardRewriteReason}`
+            : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
           options,
         )
 
@@ -350,45 +356,39 @@ export class NovelOrchestrator {
           continue
         }
 
-        // 没有 pushback 或已达上限，进入 Reviewer
+        // PostWriteGuard 只重写 Writer，保留已批准的 Director 方案和本轮缓存。
+        // 旧逻辑递归 createChapterWithFlow，会从 Director 开始整条重跑。
+        const postWriteGuard = this.runPostWriteGuard(
+          writerResult, projectId, chapterNumber, run.arrangedEntities,
+        )
+        if (postWriteGuard.shouldRewrite && writerGuardRewriteCount < NovelOrchestrator.MAX_GUARD_REWRITE) {
+          writerGuardRewriteCount++
+          writerGuardRewriteReason = postWriteGuard.reason
+          this.emitProgress(options, 'rewriting', 'phase_change', {
+            message: `PostWriteGuard 检测到致命问题，仅重写正文，不重新调用 Director（第 ${writerGuardRewriteCount}/${NovelOrchestrator.MAX_GUARD_REWRITE} 次）：${postWriteGuard.reason}`,
+          })
+          this.context.logger.warn(
+            { projectId, chapterNumber, writerGuardRewriteCount, reason: postWriteGuard.reason, details: postWriteGuard.details },
+            'PostWriteGuard 触发 Writer 原地重写',
+          )
+          continue
+        }
+        if (postWriteGuard.shouldRewrite) {
+          this.context.logger.warn(
+            { projectId, chapterNumber, writerGuardRewriteCount, reason: postWriteGuard.reason, details: postWriteGuard.details },
+            'PostWriteGuard Writer 重写已达上限，降级交给 Reviewer',
+          )
+          this.emitProgress(options, 'reviewing', 'phase_change', {
+            message: `PostWriteGuard 已让 Writer 重写 ${writerGuardRewriteCount} 次仍未通过（${postWriteGuard.reason}），交给审稿 Agent 判断`,
+          })
+        }
+
+        // 没有 pushback，且 Writer 确定性检查已结束，进入 Reviewer
         break
       }
 
       // Phase 3: Reviewer
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
-
-      // ── PostWriteGuard：正文后确定性检测（借鉴 oh-story-claudecode）──
-      // 在 Reviewer 之前做确定性检测，捕获模型退化等致命问题，避免浪费 Reviewer token
-      const postWriteGuard = this.runPostWriteGuard(
-        writerResult, projectId, chapterNumber, run.arrangedEntities,
-      )
-      if (postWriteGuard.shouldRewrite) {
-        if (guardRewriteCount >= NovelOrchestrator.MAX_GUARD_REWRITE) {
-          // 超过重写上限：降级交给 Reviewer 人工判断，避免无限递归
-          this.context.logger.warn(
-            { projectId, chapterNumber, guardRewriteCount, reason: postWriteGuard.reason, details: postWriteGuard.details },
-            'PostWriteGuard 重写已达上限，降级交给 Reviewer',
-          )
-          this.emitProgress(options, 'reviewing', 'phase_change', {
-            message: `PostWriteGuard 已重写 ${guardRewriteCount} 次仍未通过（${postWriteGuard.reason}），交给审稿 Agent 人工判断`,
-          })
-          // 不重写，继续走 Reviewer 流程
-        } else {
-          this.emitProgress(options, 'rewriting', 'phase_change', {
-            message: `PostWriteGuard 检测到致命问题，自动触发重写（第 ${guardRewriteCount + 1}/${NovelOrchestrator.MAX_GUARD_REWRITE} 次）：${postWriteGuard.reason}`,
-          })
-          this.context.logger.warn(
-            { projectId, chapterNumber, guardRewriteCount, reason: postWriteGuard.reason, details: postWriteGuard.details },
-            'PostWriteGuard 触发自动重写',
-          )
-          return this.createChapterWithFlow(
-            projectId,
-            chapterNumber,
-            { ...options, arrangedEntities: run.arrangedEntities },
-            guardRewriteCount + 1,
-          )
-        }
-      }
 
       // 先执行确定性的符号清理，再让 Reviewer 审查最终会落库的同一版本。
       const reviewContent = sanitizeNovelProse(writerResult)
@@ -511,8 +511,8 @@ export class NovelOrchestrator {
       const isReviserPath = finalContent !== reviewContent
       const versionSource: VersionSource = isReviserPath
         ? { phase: 'reviser_final', agentType: 'reviser', trigger: 'Reviser 修订后落库' }
-        : guardRewriteCount > 0
-          ? { phase: 'writer_initial', agentType: 'writer', trigger: `PostWriteGuard/rewrite 后重写（第 ${guardRewriteCount} 次）` }
+        : writerGuardRewriteCount > 0
+          ? { phase: 'writer_initial', agentType: 'writer', trigger: `PostWriteGuard 原地重写后落库（第 ${writerGuardRewriteCount} 次）` }
           : { phase: 'writer_initial', agentType: 'writer', trigger: 'Writer 初稿落库' }
       return await this.finalizer.finalize({
         projectId,

@@ -1237,44 +1237,76 @@ export class NovelPromptBuilder {
   }
 
   /**
-   * 格式化故事状态
+   * 格式化故事状态（SEMI 层注入，严格按编排筛选）
    *
-   * ⚠️ Token 优化：此处只输出非本章编排实体的"存在感 + 大致状态"，
-   * 让 LLM 知道这些实体存在但不需要完整定义。本章编排实体的完整定义
-   * 已在 formatArrangedEntities 中输出。
-   *
-   * 字段精简原则：
-   * - 角色：只保留 name + currentState + currentGoal（去掉 currentPressure，
-   *   该字段在 arrangedEntities 完整定义中已有，非本章角色不需要）
-   * - 冲突：只保留 type + description + stage + intensity（去掉 stakes/
-   *   twistPotential/tier，非本章冲突不需要这些细节）
-   * - 势力：只保留 name + type + status（去掉 strength/ideology，已在
-   *   STATIC 层 entityArchive 或 arrangedEntities 中）
-   * - 地点：只保留 name + type（去掉 significance/status）
+   * 设计变更（2026-07-16）：原实现注入全量实体的精简状态"让 LLM 知道存在"，
+   * 但这会让 Writer 看到用户未编排的冲突/伏笔，可能主动写入本章、绕过编排控制。
+   * 现改为严格按 arrangedEntities 筛选：
+   * - 有编排时：只注入编排角色之间的关系（编排实体本身的完整定义已在
+   *   formatArrangedEntities 中给出，此处不重复）；非编排实体严格隔离
+   * - 无编排时（兜底）：保持原全量精简注入，避免空上下文
    *
    * @param state 故事状态
-   * @param arrangedEntities 本章已编排实体（用于去重：本章已编排的角色/冲突/伏笔
-   *   已在 formatArrangedEntities 和 formatConstraints 中输出完整定义，
-   *   此处跳过避免重复注入，减少约 4800 字冗余）
+   * @param arrangedEntities 本章已编排实体（严格筛选依据）
    */
   private formatStoryState(state: StoryState, arrangedEntities?: ArrangedEntity): string {
-    const parts: string[] = ['## 当前故事状态']
-
-    // 本章已编排实体 ID 集合（用于去重）
-    const arrangedCharIds = new Set(arrangedEntities?.characterIds ?? [])
-    const arrangedConflictIds = new Set(arrangedEntities?.conflictIds ?? [])
-    const arrangedForeshadowIds = new Set(arrangedEntities?.foreshadowIds ?? [])
-
     // 占位实体过滤：名字含"（待定）"/"待补充"/"新的"的是 AI 编排未命名的占位实体，
     // 对 Writer 无意义且污染上下文，跳过输出
     const isPlaceholder = (name: string): boolean =>
       /（待定）|待补充|待定$|^新的$|^测试角色/.test(name)
 
-    // 角色动态状态（跳过本章已编排角色 + 占位角色）
-    // 精简：只保留 name + currentState + currentGoal
-    const otherChars = state.characters.filter(
-      (c) => !arrangedCharIds.has(c.id) && !isPlaceholder(c.name),
-    ).slice(0, 12)
+    // 无编排时兜底：保持原全量精简注入，避免空上下文
+    // 触发场景：旧项目无编排、AI 编排失败降级、纯 Reviewer 评估无 arrangedEntities
+    const hasArranged = this.hasArrangedEntities(arrangedEntities)
+    if (!hasArranged) {
+      return this.formatStoryStateFullFallback(state, isPlaceholder)
+    }
+
+    // ── 有编排：严格按 arrangedEntities 筛选 ──
+    const parts: string[] = ['## 当前故事状态']
+
+    // 编排角色 ID → name 集合（关系字段存的是角色名而非 ID，需按 name 匹配）
+    const arrangedCharIds = new Set(arrangedEntities!.characterIds)
+    const arrangedCharNameSet = new Set(
+      state.characters.filter((c) => arrangedCharIds.has(c.id)).map((c) => c.name),
+    )
+
+    // 关系：只注入编排角色之间的关系
+    // 设计意图：编排了林寒和沈烬，则注入他俩的关系阶段，让 Writer 知道当前关系状态
+    // 非编排角色之间的关系不注入，避免干扰
+    const relevantRelationships = state.relationships.filter((r) => {
+      const aInArranged = arrangedCharNameSet.has(r.characterA)
+      const bInArranged = arrangedCharNameSet.has(r.characterB)
+      return aInArranged && bInArranged
+    }).slice(0, 12)
+    if (relevantRelationships.length > 0) {
+      parts.push('\n### 编排角色关系')
+      for (const r of relevantRelationships) {
+        parts.push(`- ${r.characterA} ↔ ${r.characterB}：${r.relationType}（${r.currentStage}）`)
+      }
+    }
+
+    // 角色当前状态、活跃冲突、待回收伏笔、活跃线索、活跃势力、已登场地点
+    // 均不注入：这些实体的完整定义已在 formatArrangedEntities 中给出，
+    // 非编排实体严格隔离，避免 Writer 被未选实体干扰。
+
+    return parts.length > 1 ? parts.join('\n') : ''
+  }
+
+  /**
+   * 无编排时的兜底：全量精简注入故事状态
+   *
+   * 触发场景：旧项目无编排、AI 编排失败降级、纯 Reviewer 评估无 arrangedEntities。
+   * 保持原 formatStoryState 的全量精简行为，避免空上下文导致 Writer 失去全局感知。
+   */
+  private formatStoryStateFullFallback(
+    state: StoryState,
+    isPlaceholder: (name: string) => boolean,
+  ): string {
+    const parts: string[] = ['## 当前故事状态']
+
+    // 角色动态状态（过滤占位）
+    const otherChars = state.characters.filter((c) => !isPlaceholder(c.name)).slice(0, 12)
     if (otherChars.length > 0) {
       parts.push('\n### 角色当前状态')
       for (const c of otherChars) {
@@ -1294,10 +1326,9 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 活跃冲突（跳过本章已编排冲突 + 占位冲突）
-    // 精简：只保留 type + description + stage + intensity
+    // 活跃冲突（过滤占位）
     const otherConflicts = state.activeConflicts.filter(
-      (c) => !arrangedConflictIds.has(c.id) && !isPlaceholder(c.description),
+      (c) => !isPlaceholder(c.description),
     ).slice(0, 10)
     if (otherConflicts.length > 0) {
       parts.push('\n### 活跃冲突')
@@ -1306,10 +1337,9 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 待回收伏笔（跳过本章已编排伏笔 + 占位伏笔）
-    // 精简：只保留 status + description
+    // 待回收伏笔（过滤占位）
     const otherForeshadows = state.pendingForeshadowing.filter(
-      (f) => !arrangedForeshadowIds.has(f.id) && !isPlaceholder(f.description),
+      (f) => !isPlaceholder(f.description),
     ).slice(0, 12)
     if (otherForeshadows.length > 0) {
       parts.push('\n### 伏笔状态')
@@ -1327,8 +1357,7 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 活跃势力（过滤占位势力）
-    // 精简：只保留 name + type + status
+    // 活跃势力（过滤占位）
     const realFactions = state.activeFactions.filter((f) => !isPlaceholder(f.name)).slice(0, 8)
     if (realFactions.length > 0) {
       parts.push('\n### 活跃势力')
@@ -1340,8 +1369,7 @@ export class NovelPromptBuilder {
       }
     }
 
-    // 已登场地点（过滤占位地点）
-    // 精简：只保留 name + type
+    // 已登场地点（过滤占位）
     const realLocations = state.activeLocations.filter((l) => !isPlaceholder(l.name)).slice(0, 8)
     if (realLocations.length > 0) {
       parts.push('\n### 已登场地点')

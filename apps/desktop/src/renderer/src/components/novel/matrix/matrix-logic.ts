@@ -15,6 +15,7 @@ import type {
   NovelCharacter,
   NovelChapter,
   NovelConflict,
+  NovelClue,
   NovelForeshadow,
   NovelFaction,
   NovelLocation,
@@ -29,6 +30,7 @@ import type {
 export type MatrixEntityKind =
   | 'character'
   | 'conflict'
+  | 'clue'
   | 'foreshadow'
   | 'faction'
   | 'location'
@@ -98,6 +100,7 @@ export interface GroupMeta {
 export const GROUP_META: Record<MatrixEntityKind, GroupMeta> = {
   character: { id: 'character', name: '角色', color: '#3b82f6', colorRgb: '59,130,246', icon: '●' },
   conflict: { id: 'conflict', name: '冲突', color: '#ef4444', colorRgb: '239,68,68', icon: '▲' },
+  clue: { id: 'clue', name: '线索', color: '#22c55e', colorRgb: '34,197,94', icon: '◇' },
   foreshadow: { id: 'foreshadow', name: '伏笔', color: '#f59e0b', colorRgb: '245,158,11', icon: '◐' },
   faction: { id: 'faction', name: '势力', color: '#a855f7', colorRgb: '168,85,247', icon: '◆' },
   location: { id: 'location', name: '地点', color: '#06b6d4', colorRgb: '6,182,212', icon: '◇' },
@@ -105,9 +108,9 @@ export const GROUP_META: Record<MatrixEntityKind, GroupMeta> = {
   info_layer: { id: 'info_layer', name: '信息差', color: '#14b8a6', colorRgb: '20,184,166', icon: '◈' },
 }
 
-/** 分组顺序（角色→冲突→伏笔→势力→地点→世界要素→信息差） */
+/** 分组顺序（角色→冲突→线索→伏笔→势力→地点→世界要素→信息差） */
 export const GROUP_ORDER: MatrixEntityKind[] = [
-  'character', 'conflict', 'foreshadow', 'faction', 'location', 'world_element', 'info_layer',
+  'character', 'conflict', 'clue', 'foreshadow', 'faction', 'location', 'world_element', 'info_layer',
 ]
 
 // ── 实体（矩阵行）──
@@ -352,6 +355,7 @@ export function buildGroups(params: {
   chapters: NovelChapter[]
   characters: NovelCharacter[]
   conflicts: NovelConflict[]
+  clues: NovelClue[]
   foreshadows: NovelForeshadow[]
   factions: NovelFaction[]
   locations: NovelLocation[]
@@ -361,7 +365,7 @@ export function buildGroups(params: {
   markers?: Array<{ type: string; entityId: string | null; note: string }>
 }): MatrixData {
   const {
-    chapters, characters, conflicts, foreshadows, factions, locations, worldElements,
+    chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
     characterHistory, markers,
   } = params
 
@@ -430,6 +434,30 @@ export function buildGroups(params: {
     })
   }
   groups.push(conflictGroup)
+
+  // ── 线索分组（只渲染实际发现/推进节点）──
+  const clueGroup: MatrixGroup = {
+    ...GROUP_META.clue,
+    entities: [],
+  }
+  for (const clue of clues) {
+    const spans = clue.chapterSpans ?? []
+    const range = computeSpanRange(spans)
+    if (range == null) continue
+    clueGroup.entities.push({
+      id: clue.id,
+      kind: 'clue',
+      name: clue.description,
+      entityId: clue.id,
+      entityType: 'clue',
+      subLabel: `${clue.progress}% · ${clue.isMisleading ? '误导线索' : '真实线索'}`,
+      chapterSpans: spans,
+      spanStart: range.start,
+      spanEnd: range.end,
+      note: noteMap.get(clue.id),
+    })
+  }
+  groups.push(clueGroup)
 
   // ── 伏笔分组 ──
   const foreshadowGroup: MatrixGroup = {
@@ -525,6 +553,12 @@ export function buildGroups(params: {
   }
   groups.push(worldGroup)
 
+  // 信息差暂时只在侧边栏管理，但保留空分组以使轨道顺序、筛选项和折叠状态一致。
+  groups.push({
+    ...GROUP_META.info_layer,
+    entities: [],
+  })
+
   return { groups, maxChapter }
 }
 
@@ -545,6 +579,7 @@ export function computeMaxChapter(chapters: NovelChapter[]): number {
 export function buildPool(params: {
   characters: NovelCharacter[]
   conflicts: NovelConflict[]
+  clues: NovelClue[]
   foreshadows: NovelForeshadow[]
   factions: NovelFaction[]
   locations: NovelLocation[]
@@ -552,11 +587,12 @@ export function buildPool(params: {
 }): {
   poolCharacters: NovelCharacter[]
   poolConflicts: NovelConflict[]
+  poolClues: NovelClue[]
   poolForeshadows: NovelForeshadow[]
   poolFactions: NovelFaction[]
   poolLocations: NovelLocation[]
 } {
-  const { characters, conflicts, foreshadows, factions, locations, characterHistory } = params
+  const { characters, conflicts, clues, foreshadows, factions, locations, characterHistory } = params
   const poolCharacters: NovelCharacter[] = []
   for (const c of characters) {
     const history = characterHistory.filter((h) => h.characterId === c.id)
@@ -570,6 +606,7 @@ export function buildPool(params: {
   return {
     poolCharacters,
     poolConflicts: conflicts.filter((c) => c.chapterSpans.length === 0),
+    poolClues: clues.filter((c) => !c.chapterSpans || c.chapterSpans.length === 0),
     poolForeshadows: foreshadows.filter((f) => f.firstChapter == null),
     poolFactions: factions.filter((f) => f.chapterSpans.length === 0),
     poolLocations: locations.filter((l) => !l.appearChapters || l.appearChapters.length === 0),
@@ -585,6 +622,7 @@ export type CellSymbol =
   | { type: 'span-end' }
   | { type: 'span-middle' }
   | { type: 'conflict-climax' }
+  | { type: 'clue-progress' }
   | { type: 'foreshadow-plant' }
   | { type: 'foreshadow-reinforce' }
   | { type: 'foreshadow-reveal' }
@@ -629,6 +667,10 @@ export function computeCellSymbol(
       if (entity.plantChapter === chapterNumber) return { type: 'foreshadow-plant' }
       if (entity.payoffChapter === chapterNumber) return { type: 'foreshadow-payoff' }
       return { type: 'empty' }
+    }
+    case 'clue': {
+      const span = findSpanAt(entity.chapterSpans ?? [], chapterNumber)
+      return span == null ? { type: 'empty' } : { type: 'clue-progress' }
     }
     case 'location': {
       const appears = entity.appearChapters ?? []

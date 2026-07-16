@@ -458,6 +458,9 @@ export type ForeshadowRecoverMethod = 'explicit' | 'implicit' | 'reverse' | 'pro
 
 // ── 线索 ──
 
+/** 章节跨度：[start, end] 闭区间 */
+export type ChapterSpan = [number, number]
+
 export interface NovelClue {
   id: string
   projectId: string
@@ -468,14 +471,13 @@ export interface NovelClue {
   nextStep: string
   isMisleading: boolean
   linkedForeshadow: string | null
+  /** 线索被发现、验证或推进的章节；空数组表示尚未编排 */
+  chapterSpans: ChapterSpan[]
   createdAt: number
   updatedAt: number
 }
 
 // ── 冲突 ──
-
-/** 章节跨度：[start, end] 闭区间 */
-export type ChapterSpan = [number, number]
 
 export interface NovelConflict {
   id: string

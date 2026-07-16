@@ -18,7 +18,7 @@ import {
   tensionToBgClass,
   tensionToLabel,
 } from '../matrix-logic'
-import type { NovelChapter, NovelCharacter, NovelConflict, NovelCharacterHistory, NovelForeshadow, NovelFaction, NovelLocation, NovelWorldElement } from '@/api/novel-client'
+import type { NovelChapter, NovelCharacter, NovelConflict, NovelClue, NovelCharacterHistory, NovelForeshadow, NovelFaction, NovelLocation, NovelWorldElement } from '@/api/novel-client'
 
 // ── 测试夹具 ──
 
@@ -37,6 +37,14 @@ function makeCharacter(id: string, name: string, isProtagonist = false): NovelCh
     speechStyle: '', isProtagonist,
     longTermDesire: '', plotRole: 'supporting', removalImpact: '', participatingConflicts: '[]',
     createdAt: 0, updatedAt: 0,
+  }
+}
+
+function makeClue(id: string, chapterSpans: Array<[number, number]>): NovelClue {
+  return {
+    id, projectId: 'p', description: '铜扣', pointsTo: '真凶', progress: 25,
+    currentStep: '已发现', nextStep: '查来源', isMisleading: false,
+    linkedForeshadow: null, chapterSpans, createdAt: 0, updatedAt: 0,
   }
 }
 
@@ -256,9 +264,9 @@ describe('computeMaxChapter', () => {
 // ── buildGroups ──
 
 describe('buildGroups', () => {
-  it('builds 6 groups in fixed order even when some empty', () => {
+  it('builds all groups in fixed order even when some empty', () => {
     const data = buildGroups({
-      chapters: [], characters: [], conflicts: [], foreshadows: [], factions: [],
+      chapters: [], characters: [], conflicts: [], clues: [], foreshadows: [], factions: [],
       locations: [], worldElements: [], characterHistory: [],
     })
     expect(data.groups.map((g) => g.id)).toEqual(GROUP_ORDER)
@@ -269,7 +277,7 @@ describe('buildGroups', () => {
     const data = buildGroups({
       chapters: [makeChapter(1), makeChapter(2)],
       characters: [makeCharacter('c1', '主角', true)],
-      conflicts: [], foreshadows: [], factions: [], locations: [], worldElements: [],
+      conflicts: [], clues: [], foreshadows: [], factions: [], locations: [], worldElements: [],
       characterHistory: [makeHistory('c1', 1), makeHistory('c1', 2)],
     })
     const charGroup = data.groups.find((g) => g.id === 'character')!
@@ -283,7 +291,7 @@ describe('buildGroups', () => {
   it('skips character without history (goes to pool)', () => {
     const data = buildGroups({
       chapters: [], characters: [makeCharacter('c1', '路人')],
-      conflicts: [], foreshadows: [], factions: [], locations: [], worldElements: [],
+      conflicts: [], clues: [], foreshadows: [], factions: [], locations: [], worldElements: [],
       characterHistory: [],
     })
     expect(data.groups.find((g) => g.id === 'character')!.entities).toHaveLength(0)
@@ -293,7 +301,7 @@ describe('buildGroups', () => {
     const data = buildGroups({
       chapters: [], characters: [],
       conflicts: [makeConflict('cf1', 3, 10, 'main'), makeConflict('cf2', null, null)],
-      foreshadows: [], factions: [], locations: [], worldElements: [], characterHistory: [],
+      clues: [], foreshadows: [], factions: [], locations: [], worldElements: [], characterHistory: [],
     })
     const group = data.groups.find((g) => g.id === 'conflict')!
     expect(group.entities).toHaveLength(1)
@@ -304,7 +312,7 @@ describe('buildGroups', () => {
 
   it('places foreshadow with chapterSpans into foreshadow group', () => {
     const data = buildGroups({
-      chapters: [], characters: [], conflicts: [],
+      chapters: [], characters: [], conflicts: [], clues: [],
       foreshadows: [makeForeshadow('f1', 1, 11), makeForeshadow('f2', 7, null), makeForeshadow('f3', null, null)],
       factions: [], locations: [], worldElements: [], characterHistory: [],
     })
@@ -314,9 +322,20 @@ describe('buildGroups', () => {
     expect(group.entities[1]).toMatchObject({ id: 'f2', subLabel: '1 个节点 · 待回收' })
   })
 
+  it('places a scheduled clue into the clue track', () => {
+    const data = buildGroups({
+      chapters: [], characters: [], conflicts: [], clues: [makeClue('cl1', [[2, 2], [5, 5]])],
+      foreshadows: [], factions: [], locations: [], worldElements: [], characterHistory: [],
+    })
+    const clue = data.groups.find((group) => group.id === 'clue')!.entities[0]
+    expect(clue).toMatchObject({ id: 'cl1', kind: 'clue', chapterSpans: [[2, 2], [5, 5]] })
+    expect(computeCellSymbol(clue, 2)).toEqual({ type: 'clue-progress' })
+    expect(computeCellSymbol(clue, 3)).toEqual({ type: 'empty' })
+  })
+
   it('places faction with firstChapter into faction group', () => {
     const data = buildGroups({
-      chapters: [], characters: [], conflicts: [], foreshadows: [],
+      chapters: [], characters: [], conflicts: [], clues: [], foreshadows: [],
       factions: [makeFaction('fa1', 1, 12)],
       locations: [], worldElements: [], characterHistory: [],
     })
@@ -327,7 +346,7 @@ describe('buildGroups', () => {
 
   it('places location with appearChapters into location group', () => {
     const data = buildGroups({
-      chapters: [], characters: [], conflicts: [], foreshadows: [], factions: [],
+      chapters: [], characters: [], conflicts: [], clues: [], foreshadows: [], factions: [],
       locations: [makeLocation('l1', [3, 1, 2])],
       worldElements: [], characterHistory: [],
     })
@@ -339,7 +358,7 @@ describe('buildGroups', () => {
 
   it('places all world elements as always-present', () => {
     const data = buildGroups({
-      chapters: [makeChapter(15)], characters: [], conflicts: [], foreshadows: [], factions: [],
+      chapters: [makeChapter(15)], characters: [], conflicts: [], clues: [], foreshadows: [], factions: [],
       locations: [], worldElements: [makeWorldElement('w1')], characterHistory: [],
     })
     const group = data.groups.find((g) => g.id === 'world_element')!
@@ -350,7 +369,7 @@ describe('buildGroups', () => {
   it('fills note from clip-note markers by entityId', () => {
     const data = buildGroups({
       chapters: [], characters: [makeCharacter('c1', 'A')],
-      conflicts: [], foreshadows: [], factions: [], locations: [], worldElements: [],
+      conflicts: [], clues: [], foreshadows: [], factions: [], locations: [], worldElements: [],
       characterHistory: [makeHistory('c1', 1)],
       markers: [
         { type: 'clip-note', entityId: 'c1', note: '批注内容' },
@@ -368,7 +387,7 @@ describe('buildPool', () => {
   it('returns characters without history', () => {
     const pool = buildPool({
       characters: [makeCharacter('c1', 'A'), makeCharacter('c2', 'B')],
-      conflicts: [], foreshadows: [], factions: [], locations: [],
+      conflicts: [], clues: [], foreshadows: [], factions: [], locations: [],
       characterHistory: [makeHistory('c1', 1)],
     })
     expect(pool.poolCharacters.map((c) => c.id)).toEqual(['c2'])
@@ -377,14 +396,14 @@ describe('buildPool', () => {
   it('returns conflicts without firstChapter', () => {
     const pool = buildPool({
       characters: [], conflicts: [makeConflict('cf1', null, null), makeConflict('cf2', 1, 5)],
-      foreshadows: [], factions: [], locations: [], characterHistory: [],
+      clues: [], foreshadows: [], factions: [], locations: [], characterHistory: [],
     })
     expect(pool.poolConflicts.map((c) => c.id)).toEqual(['cf1'])
   })
 
   it('returns locations without appearChapters', () => {
     const pool = buildPool({
-      characters: [], conflicts: [], foreshadows: [], factions: [],
+      characters: [], conflicts: [], clues: [], foreshadows: [], factions: [],
       locations: [makeLocation('l1', []), makeLocation('l2', [1])],
       characterHistory: [],
     })
@@ -538,16 +557,16 @@ describe('computeCellSymbol', () => {
 // ── GROUP_META / GROUP_ORDER ──
 
 describe('GROUP_META', () => {
-  it('has entries for all 6 kinds', () => {
-    expect(Object.keys(GROUP_META)).toHaveLength(6)
+  it('has entries for all matrix kinds', () => {
+    expect(Object.keys(GROUP_META)).toHaveLength(8)
     expect(GROUP_META.character.color).toBe('#3b82f6')
   })
 })
 
 describe('GROUP_ORDER', () => {
-  it('lists character first, world_element last', () => {
+  it('lists character first, info_layer last', () => {
     expect(GROUP_ORDER[0]).toBe('character')
-    expect(GROUP_ORDER[GROUP_ORDER.length - 1]).toBe('world_element')
+    expect(GROUP_ORDER[GROUP_ORDER.length - 1]).toBe('info_layer')
   })
 })
 

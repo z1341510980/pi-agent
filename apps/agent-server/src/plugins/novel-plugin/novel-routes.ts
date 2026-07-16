@@ -1503,6 +1503,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     nextStep: z.string().default(''),
     isMisleading: z.boolean().default(false),
     linkedForeshadow: z.string().nullable().default(null),
+    chapterSpans: z.array(z.tuple([z.number().int().positive(), z.number().int().positive()])).default([]),
   })
 
   routes.push({
@@ -1526,6 +1527,18 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/clues',
     handler: async (request: any) => {
       return success(store.listClues(request.params.projectId), request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/clues/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createClueSchema.partial(), request, reply)
+      if (!input) return reply
+      const clue = store.updateClue(request.params.id, input)
+      if (!clue) throw new AppError(ErrorCode.NOT_FOUND, `线索不存在: ${request.params.id}`, 404)
+      return success(clue, request.traceId)
     },
   })
 

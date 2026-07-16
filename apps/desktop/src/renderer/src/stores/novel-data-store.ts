@@ -95,6 +95,7 @@ export interface NovelDataState {
   removeCharacter: (id: string) => void
   removeChapter: (id: string) => void
   removeConflict: (id: string) => void
+  removeClue: (id: string) => void
   removeForeshadow: (id: string) => void
   removeFaction: (id: string) => void
   removeLocation: (id: string) => void
@@ -325,6 +326,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         removeCharacter: (id) => set((state) => ({ characters: removeFromList(state.characters, id) })),
         removeChapter: (id) => set((state) => ({ chapters: removeFromList(state.chapters, id) })),
         removeConflict: (id) => set((state) => ({ conflicts: removeFromList(state.conflicts, id) })),
+        removeClue: (id) => set((state) => ({ clues: removeFromList(state.clues, id) })),
         removeForeshadow: (id) => set((state) => ({ foreshadows: removeFromList(state.foreshadows, id) })),
         removeFaction: (id) => set((state) => ({ factions: removeFromList(state.factions, id) })),
         removeLocation: (id) => set((state) => ({ locations: removeFromList(state.locations, id) })),

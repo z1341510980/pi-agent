@@ -839,4 +839,10 @@ export const novelMigrations: MigrationDefinition[] = [
     id: '067_add_novel_chapter_positioning',
     sql: `ALTER TABLE novel_chapters ADD COLUMN positioning TEXT;`,
   },
+  {
+    // 线索在矩阵中的章节节点。与冲突/势力保持同一数据形式，
+    // 但语义是“本章发现或推进过该线索”，而非线索全生命周期。
+    id: '068_add_clue_chapter_spans',
+    sql: `ALTER TABLE novel_clues ADD COLUMN chapter_spans TEXT NOT NULL DEFAULT '[]';`,
+  },
 ]

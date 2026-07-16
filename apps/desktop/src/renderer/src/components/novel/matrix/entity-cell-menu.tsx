@@ -64,6 +64,8 @@ function markLabel(kind: MatrixEntityKind): string {
     case 'conflict':
     case 'faction':
       return '扩展到本章'
+    case 'clue':
+      return '标记本章推进'
     case 'foreshadow':
       return '添加伏笔节点'
     case 'location':
@@ -83,6 +85,8 @@ function removeLabel(kind: MatrixEntityKind): string {
     case 'conflict':
     case 'faction':
       return '收缩端点'
+    case 'clue':
+      return '删除本章线索节点'
     case 'foreshadow':
       return '删除本章伏笔节点'
     case 'location':
@@ -103,6 +107,8 @@ function markTooltip(kind: MatrixEntityKind, present: boolean): string {
     case 'conflict':
     case 'faction':
       return '扩展 firstChapter/lastChapter 端点覆盖到本章'
+    case 'clue':
+      return '标记该线索在本章被发现、验证或推进'
     case 'foreshadow':
       return '为本章选择埋设、强化、揭示或回收语义'
     case 'location':
@@ -120,6 +126,8 @@ function removeTooltip(kind: MatrixEntityKind): string {
     case 'conflict':
     case 'faction':
       return '收缩端点（仅首尾端点可删，中间格不可删）'
+    case 'clue':
+      return '删除该线索在本章的推进记录'
     case 'foreshadow':
       return '删除本章节点；若删除埋设点，将同时清空整条事件链'
     case 'location':
