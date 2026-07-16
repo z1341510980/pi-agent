@@ -979,6 +979,13 @@ export function MatrixWorkspace({
           useNovelDataStore.getState().upsertConflict(updated)
           break
         }
+        case 'clue': {
+          const existing = entity.chapterSpans ?? []
+          const chapterSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
+          const updated = await updateClue(entity.entityId, { chapterSpans })
+          useNovelDataStore.getState().upsertClue(updated)
+          break
+        }
         case 'faction': {
           const existing = entity.chapterSpans ?? []
           const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])

@@ -356,6 +356,26 @@ describe('NovelStore - 冲突 CRUD', () => {
   })
 })
 
+describe('NovelStore - 线索 CRUD', () => {
+  it('持久化并更新线索的章节节点', () => {
+    store.createProject({
+      id: 'p-1', title: 'x', genre: 'x', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    })
+    const created = store.createClue({
+      id: 'clue-1', projectId: 'p-1', description: '铜扣', pointsTo: '真凶', progress: 20,
+      currentStep: '发现', nextStep: '查来源', isMisleading: false,
+      linkedForeshadow: null, chapterSpans: [[2, 2]],
+    })
+    expect(created.chapterSpans).toEqual([[2, 2]])
+    expect(store.listClues('p-1')[0].chapterSpans).toEqual([[2, 2]])
+
+    const updated = store.updateClue('clue-1', { chapterSpans: [[2, 2], [5, 5]], progress: 40 })
+    expect(updated?.chapterSpans).toEqual([[2, 2], [5, 5]])
+    expect(updated?.progress).toBe(40)
+  })
+})
+
 describe('NovelStore - 伏笔 CRUD', () => {
   beforeEach(() => {
     store.createProject({

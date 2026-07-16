@@ -83,4 +83,48 @@ describe('NovelOrchestrator request context', () => {
     expect(result.reason).toBe('未完整执行矩阵编排')
     expect(result.details).toContain('李四')
   })
+
+  it('PostWriteGuard 失败时只重跑 Writer，不重跑 Director', async () => {
+    const orchestrator = Object.create(NovelOrchestrator.prototype) as any
+    orchestrator.runStorage = new AsyncLocalStorage()
+    orchestrator.pendingUserMessages = new Map()
+    orchestrator.store = {
+      getProject: () => ({ currentStage: 'setup', rhythmModelId: 'default', currentChapter: 1 }),
+      listChapters: () => [],
+      listConflicts: () => [],
+      listForeshadowing: () => [],
+      getChapter: () => ({ id: 'chapter-1', positioning: null }),
+      listHooksByChapter: () => [],
+    }
+    orchestrator.promptBuilder = {
+      stripEmDash: (value: string) => value,
+    }
+    orchestrator.context = {
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    }
+    const agentCalls: string[] = []
+    orchestrator.runAgent = vi.fn(async (agentType: string) => {
+      agentCalls.push(agentType)
+      if (agentType === 'director') return '任务类型：advance_plot\n优先级：high'
+      if (agentType === 'writer') return agentCalls.filter((item) => item === 'writer').length === 1 ? '过短初稿' : '通过的完整正文'
+      return '验收通过'
+    })
+    orchestrator.runPostWriteGuard = vi.fn()
+      .mockReturnValueOnce({ shouldRewrite: true, reason: '正文过短', details: '' })
+      .mockReturnValueOnce({ shouldRewrite: false, reason: '', details: '' })
+    orchestrator.finalizer = {
+      finalize: vi.fn(async () => ({ status: 'completed', content: '通过的完整正文' })),
+    }
+
+    const result = await orchestrator.createChapterWithFlow('project', 1, {
+      arrangedEntities: { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
+      onCheckpoint: vi.fn(async () => 'approve'),
+      onProgress: vi.fn(),
+    })
+
+    expect(result.status).toBe('completed')
+    expect(agentCalls.filter((item) => item === 'director')).toHaveLength(1)
+    expect(agentCalls.filter((item) => item === 'writer')).toHaveLength(2)
+    expect(agentCalls.filter((item) => item === 'reviewer')).toHaveLength(1)
+  })
 })
