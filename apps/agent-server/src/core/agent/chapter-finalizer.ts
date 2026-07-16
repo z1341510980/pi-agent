@@ -78,7 +78,6 @@ export interface CreationResult {
  * - arrangedEntities：本章编排实体（用于 syncChapterDimensions）
  * - directorTask：Director 解析的结构化任务（用于持久化 timeOffset / chapterEndingHook）
  * - chapterId：章节记录 ID（null 时跳过 updateChapter / 标题 / 提要）
- * - sharedContextPrefix：SEMI 层 shared 前缀缓存值，注入 Memory Agent 命中 prompt cache
  */
 export interface FinalizeParams {
   projectId: string
@@ -88,7 +87,6 @@ export interface FinalizeParams {
   arrangedEntities?: ArrangedEntity
   directorTask?: NarrativeTask
   chapterId: string | null
-  sharedContextPrefix?: string
   /** 版本来源元数据，由调用方传入，落库时透传给 store.updateChapter 拦截存档 */
   versionSource?: VersionSource
 }
@@ -133,40 +131,53 @@ export class ChapterFinalizer {
    * 行为与原实现完全一致：清洗思考前缀后落库、生成标题候选和前情提要、推送 data_changed 事件。
    */
   async finalize(params: FinalizeParams): Promise<CreationResult> {
-    const { projectId, chapterNumber, content, options, arrangedEntities, directorTask, chapterId, sharedContextPrefix } = params
+    const { projectId, chapterNumber, content, options, arrangedEntities, directorTask, chapterId } = params
     options.signal?.throwIfAborted()
 
     // Phase 5: Memory
-    // 在 Memory Agent 执行前捕获实体状态快照，执行后比较差异并记录记忆事件
-    this.emitProgress(options, 'memory', 'phase_change', { message: '记忆 Agent 正在提取状态变更...' })
+    // 重写中间章节时，全局实体状态已经包含后续章节结果。直接让 Memory 写入会把
+    // 第 N 章的变化叠加到未来状态上，污染第 N+1 章之后的时间线。因此历史重写
+    // 只保存正文，不修改全局实体状态；后续状态需要从该章起显式重建。
+    const historicalRewrite = this.hasLaterCompletedChapter(projectId, chapterNumber)
+    this.emitProgress(options, 'memory', 'phase_change', {
+      message: historicalRewrite
+        ? '检测到中间章节重写：为保护后续时间线，本次跳过全局状态写入'
+        : '记忆 Agent 正在提取状态变更...',
+    })
     const beforeState = this.captureEntityState(projectId)
-    const memoryResult = await this.runMemoryAgent(
-      projectId, chapterNumber, content, options, sharedContextPrefix,
-    )
-    const memoryEvents = this.recordMemoryEvents(
-      projectId,
-      chapterNumber,
-      chapterId,
-      beforeState,
-    )
+    const memoryResult = historicalRewrite
+      ? '中间章节正文已更新；为避免污染后续章节，全局实体状态未自动改写'
+      : await this.runMemoryAgent(projectId, chapterNumber, content, options)
+    const memoryEvents = historicalRewrite
+      ? []
+      : this.recordMemoryEvents(
+          projectId,
+          chapterNumber,
+          chapterId,
+          beforeState,
+        )
 
     // 同步本章涉及实体的章节维度字段（firstChapter/lastChapter/characterHistory）
     // 解决 Memory Agent 只改动态状态、不写章节维度导致的矩阵视图滞后问题
-    this.syncChapterDimensions(
-      projectId,
-      chapterNumber,
-      chapterId,
-      arrangedEntities,
-      beforeState,
-    )
+    if (!historicalRewrite) {
+      this.syncChapterDimensions(
+        projectId,
+        chapterNumber,
+        chapterId,
+        arrangedEntities,
+        beforeState,
+      )
+    }
 
     // 章节完成时保存全量状态快照（情景记忆）
-    this.saveChapterSnapshot(projectId, chapterNumber)
+    if (!historicalRewrite) {
+      this.saveChapterSnapshot(projectId, chapterNumber)
+    }
 
     // 定期全量校准：每 10 章触发一次，修复 Memory Agent 逐章提取可能遗漏的状态变更
     // 设计意图：LLM 逐章提取状态变更时可能漏掉微妙的转变，累积下来状态系统会与正文脱节。
     // 每 10 章做一次"查漏补缺"式全量扫描，拉取最近 5 章正文对比当前状态。
-    if (chapterNumber > 0 && chapterNumber % 10 === 0 && this.memoryGenerator) {
+    if (!historicalRewrite && chapterNumber > 0 && chapterNumber % 10 === 0 && this.memoryGenerator) {
       this.emitProgress(options, 'memory', 'phase_change', { message: '触发全量状态校准（每 10 章一次）...' })
       try {
         const calibrationResult = await this.memoryGenerator.runFullCalibration(
@@ -207,10 +218,10 @@ export class ChapterFinalizer {
     this.emitProgress(options, 'memory', 'data_changed', {
       agentType: 'memory',
       agentName: '记忆',
-      message: '记忆提取完成',
-      dataChanged: true,
+      message: historicalRewrite ? '中间章节已保存，后续状态保持不变' : '记忆提取完成',
+      dataChanged: !historicalRewrite,
       detail: {
-        kind: 'memory_result',
+        kind: historicalRewrite ? 'historical_rewrite_protected' : 'memory_result',
         summary: memoryResult,
         events: memoryEvents.map(e => ({ type: e.eventType, description: e.description })),
       },
@@ -231,7 +242,10 @@ export class ChapterFinalizer {
         content: cleanedContent,
         status: 'review',
         wordCount: cleanedContent.length,
-        // 持久化 Director 规划的结构化字段（时间线偏移、章尾钩子）
+        // 持久化 Director 规划的结构化字段（章节定位、时间线偏移、章尾钩子）
+        positioning: directorTask?.positioning
+          ?? this.store.getChapter(projectId, chapterNumber)?.positioning
+          ?? null,
         timeOffset: directorTask?.timeOffset ?? null,
         chapterEndingHook: directorTask?.chapterEndingHook ?? null,
       }, params.versionSource)
@@ -271,7 +285,7 @@ export class ChapterFinalizer {
       status: 'completed',
       content,
       stateChanges: [
-        { type: 'memory', description: memoryResult.slice(0, 200) },
+        { type: historicalRewrite ? 'historical_rewrite' : 'memory', description: memoryResult.slice(0, 200) },
         ...memoryEvents.map((e) => ({
           type: e.eventType,
           description: e.description,
@@ -283,6 +297,17 @@ export class ChapterFinalizer {
   // ═══════════════════════════════════════════════════════════════
   // 长期记忆：实体状态捕获 + 记忆事件记录
   // ═══════════════════════════════════════════════════════════════
+
+  /** 当前章之后是否已有正文；用于识别会影响既有时间线的中间章节重写。 */
+  private hasLaterCompletedChapter(projectId: string, chapterNumber: number): boolean {
+    const project = this.store.getProject(projectId)
+    if (!project || project.currentChapter <= chapterNumber) return false
+    for (let n = chapterNumber + 1; n <= project.currentChapter; n++) {
+      const chapter = this.store.getChapter(projectId, n)
+      if (chapter?.content?.trim()) return true
+    }
+    return false
+  }
 
   /**
    * 运行 Memory Agent
@@ -298,7 +323,6 @@ export class ChapterFinalizer {
     chapterNumber: number,
     chapterContent: string,
     options: CreationOptions,
-    sharedContextPrefix?: string,
   ): Promise<string> {
     // 优先使用结构化 LLM 调用模式
     if (this.memoryGenerator) {
@@ -320,7 +344,6 @@ export class ChapterFinalizer {
             })
           },
           options.arrangedEntities,
-          sharedContextPrefix,
           options.signal,
         )
         logSystemPrompt = result.logContext?.systemPrompt ?? logSystemPrompt
@@ -1194,13 +1217,14 @@ export class ChapterFinalizer {
 
   /**
    * 保存章节完成时的全量状态快照（情景记忆）
-   * 包含角色 / 冲突 / 伏笔 / 势力 / 地点 / 关系的当前状态，供时间线查询
+   * 包含角色 / 冲突 / 伏笔 / 线索 / 势力 / 地点 / 关系的当前状态，供时间线查询
    */
   saveChapterSnapshot(projectId: string, chapterNumber: number): void {
     const data = {
       characters: this.store.listCharacters(projectId),
       conflicts: this.store.listConflicts(projectId),
       foreshadowing: this.store.listForeshadowing(projectId),
+      clues: this.store.listClues(projectId),
       factions: this.store.listFactions(projectId),
       locations: this.store.listLocations(projectId),
       relationships: this.store.listRelationships(projectId),

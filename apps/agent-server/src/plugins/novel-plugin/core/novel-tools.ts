@@ -48,6 +48,7 @@ import { randomUUID } from 'node:crypto'
 import { Type, type Static } from 'typebox'
 import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import type { NovelStore } from './novel-store.js'
+import { isAdmissibleNewForeshadow } from './foreshadow-policy.js'
 
 // ── 工具参数 Schema ──
 
@@ -242,6 +243,16 @@ const CreateCharacterParams = Type.Object({
 const CreateForeshadowParams = Type.Object({
   projectId: Type.String({ description: '项目 ID' }),
   description: Type.String({ description: '伏笔描述' }),
+  importance: Type.Union([
+    Type.Literal('major'),
+    Type.Literal('critical'),
+  ], { description: '重要级别：只允许 major（重要）或 critical（关键）' }),
+  narrativeRole: Type.Union([
+    Type.Literal('dark_line'),
+    Type.Literal('major_reveal'),
+  ], { description: '叙事作用：推进暗线，或服务重大揭示/反转' }),
+  hiddenQuestion: Type.String({ description: '该伏笔建立、推进或改写的隐藏问题' }),
+  plannedPayoff: Type.String({ description: '计划如何揭示或回收，以及回收后改变什么' }),
   category: Type.Optional(Type.Union([
     Type.Literal('item'),
     Type.Literal('spoken'),
@@ -1159,11 +1170,20 @@ export function createNovelCreateForeshadowTool(store: NovelStore): ToolDefiniti
     name: 'novel_create_foreshadow',
     label: '创建伏笔',
     description:
-      '在小说项目中创建一个新伏笔，包含描述、类别、回收章节和关联实体。' +
-      '用于埋设叙事债务，后续可通过 novel_update_foreshadow 管理其生命周期。',
+      '仅为重要暗线或重大揭示创建伏笔，并明确隐藏问题与计划回收。' +
+      '普通疑点/证据应创建线索，即时危险应创建冲突，章末吸引力属于钩子；默认不要创建伏笔。',
     promptSnippet: '创建新伏笔',
     parameters: CreateForeshadowParams,
     async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      if (!isAdmissibleNewForeshadow(params)) {
+        return {
+          content: [{
+            type: 'text',
+            text: '未创建伏笔：必须是重要或关键的暗线/重大揭示节点，并提供明确的隐藏问题与计划回收。普通疑点请改用 novel_create_clue。',
+          }],
+          details: undefined,
+        }
+      }
       const foreshadow = store.createForeshadow({
         id: randomUUID(),
         projectId: params.projectId,

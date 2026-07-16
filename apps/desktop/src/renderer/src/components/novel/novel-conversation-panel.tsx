@@ -128,6 +128,8 @@ export interface NovelConversationPanelProps {
   phase: CreationPhase
   /** 是否正在运行 */
   isRunning: boolean
+  /** SSE 当前详细进度；同一位置原位更新，不作为聊天消息展示 */
+  progressMessage?: string | null
   /** 累积的章节内容 */
   chapterContent: string
   /** 各 Agent 的输出时间线 */
@@ -187,6 +189,7 @@ export interface NovelConversationPanelProps {
 export function NovelConversationPanel({
   phase,
   isRunning,
+  progressMessage,
   chapterContent,
   agentOutputs,
   chapterNumber,
@@ -491,10 +494,13 @@ export function NovelConversationPanel({
               <motion.span
                 animate={{ opacity: [0.5, 1, 0.5] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
-                className="flex items-center gap-1 text-[11px] text-primary"
+                className="flex min-w-0 max-w-[240px] items-center gap-1 text-[11px] text-primary"
+                title={isChatMode ? 'Agent 回复中' : (progressMessage ?? PHASE_LABELS[phase] ?? phase)}
               >
-                <Loader2 className="size-3 animate-spin" />
-                {isChatMode ? 'Agent 回复中' : (PHASE_LABELS[phase] ?? phase)}
+                <Loader2 className="size-3 shrink-0 animate-spin" />
+                <span className="truncate">
+                  {isChatMode ? 'Agent 回复中' : (progressMessage ?? PHASE_LABELS[phase] ?? phase)}
+                </span>
               </motion.span>
             )}
             {!activeIsRunning && isChatMode && (

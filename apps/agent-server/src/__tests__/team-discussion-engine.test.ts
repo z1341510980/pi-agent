@@ -64,6 +64,19 @@ function makeMockEngineContext(): Record<string, unknown> {
 describe('TeamDiscussionEngine', () => {
   const goal: DiscussionGoal = { task: '测试任务', context: '上下文' }
 
+  it('群聊质量门拦截正文遗漏的矩阵实体', () => {
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
+    )
+    const content = Array.from({ length: 20 }, (_, i) => `第${i + 1}段是各不相同的场景描写和人物行动。`).join('\n')
+
+    const result = (engine as any).runDiscussionPostWriteGuard(content, undefined, ['李四'])
+
+    expect(result.shouldRewrite).toBe(true)
+    expect(result.reason).toBe('未完整执行矩阵编排')
+    expect(result.details).toContain('李四')
+  })
+
   it('每次成员调用完成后发送完整审计信息', async () => {
     const member = makeMember({
       id: 'novel-director',

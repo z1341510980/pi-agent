@@ -26,10 +26,12 @@ import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelStore } from './novel-store.js'
 import type { NovelEngine } from './novel-engine.js'
+import { selectAdmissibleNewForeshadows } from './foreshadow-policy.js'
 import type {
   NovelCharacter,
   NovelConflict,
   NovelForeshadow,
+  NovelClue,
   NovelFaction,
   NovelLocation,
   NovelRelationship,
@@ -101,6 +103,30 @@ interface ForeshadowCreateItem {
   // ── P2-2：伏笔埋设/回收方式 ──
   plantMethod?: string
   recoverMethod?: string
+  /** 新伏笔准入证据：缺少任一项时程序侧拒绝创建。 */
+  importance?: 'major' | 'critical'
+  narrativeRole?: 'dark_line' | 'major_reveal'
+  hiddenQuestion?: string
+  plannedPayoff?: string
+}
+
+interface ClueUpdateItem {
+  description?: string
+  progress?: number
+  currentStep?: string
+  nextStep?: string
+  isMisleading?: boolean
+  linkedForeshadowDescription?: string
+}
+
+interface ClueCreateItem {
+  description?: string
+  pointsTo?: string
+  progress?: number
+  currentStep?: string
+  nextStep?: string
+  isMisleading?: boolean
+  linkedForeshadowDescription?: string
 }
 
 interface ConflictUpdateItem {
@@ -192,6 +218,8 @@ interface MemoryUpdatePayload {
   characterCreates?: CharacterCreateItem[]
   foreshadowUpdates?: ForeshadowUpdateItem[]
   foreshadowCreates?: ForeshadowCreateItem[]
+  clueUpdates?: ClueUpdateItem[]
+  clueCreates?: ClueCreateItem[]
   conflictUpdates?: ConflictUpdateItem[]
   conflictCreates?: ConflictCreateItem[]
   factionUpdates?: FactionUpdateItem[]
@@ -212,6 +240,8 @@ export interface MemoryApplyStats {
   characterCreatesApplied: number
   foreshadowUpdatesApplied: number
   foreshadowCreatesApplied: number
+  clueUpdatesApplied: number
+  clueCreatesApplied: number
   conflictUpdatesApplied: number
   conflictCreatesApplied: number
   factionUpdatesApplied: number
@@ -279,7 +309,6 @@ export class NovelMemoryGenerator {
     chapterContent: string,
     onProgress?: (event: MemoryGenerationProgressEvent) => void,
     arrangedEntities?: ArrangedEntity,
-    _sharedContextPrefix?: string,
     signal?: AbortSignal,
   ): Promise<MemoryGenerationResult> {
     // ── 1. 构建系统提示词（与 character-generator 一致的技术栈）──
@@ -643,6 +672,20 @@ export class NovelMemoryGenerator {
       }
     }
 
+    // 线索：普通证据/异常应优先更新这里，而不是创建新伏笔。
+    const clues = this.store.listClues(projectId).filter((clue) =>
+      includeAll
+      || includesText(clue.description.slice(0, 12))
+      || includesText(clue.pointsTo.slice(0, 12))
+      || (clue.linkedForeshadow ? arrangedForeshadowIds.has(clue.linkedForeshadow) : false),
+    )
+    if (clues.length > 0) {
+      parts.push('\n### 线索')
+      for (const clue of clues) {
+        parts.push(`- ${clue.description.slice(0, 60)}（ID: ${clue.id}）: pointsTo=${clue.pointsTo.slice(0, 60)} | progress=${clue.progress} | currentStep=${clue.currentStep || '(空)'} | nextStep=${clue.nextStep || '(空)'} | misleading=${clue.isMisleading}`)
+      }
+    }
+
     // 势力
     const arrangedFactionIds = new Set(arranged?.factionIds ?? [])
     const factions = includeAll
@@ -695,7 +738,7 @@ export class NovelMemoryGenerator {
     if (parts.length === 0 && !includeAll) {
       return [
         '### 本章相关实体',
-        '未从编排矩阵或正文名称中命中既有实体。若正文出现新状态、新角色、新冲突或新伏笔，请按输出格式新建或补录。',
+        '未从编排矩阵或正文名称中命中既有实体。若正文出现新状态、新角色、新冲突或新线索，请按输出格式新建或补录；新伏笔仍须满足暗线/重大揭示准入规则。',
       ].join('\n')
     }
 
@@ -880,8 +923,17 @@ export class NovelMemoryGenerator {
     }
 
     // ── 伏笔创建 ──
-    for (const item of payload.foreshadowCreates ?? []) {
+    const admissibleForeshadowCreates = selectAdmissibleNewForeshadows(payload.foreshadowCreates ?? [])
+    const rejectedForeshadowCreateCount = (payload.foreshadowCreates?.length ?? 0) - admissibleForeshadowCreates.length
+    if (rejectedForeshadowCreateCount > 0) {
+      this.context.logger.info(
+        { projectId, chapterNumber, rejectedForeshadowCreateCount },
+        '记忆 Agent：已拦截不满足暗线/重大揭示准入条件或超出单章上限的新伏笔',
+      )
+    }
+    for (const item of admissibleForeshadowCreates) {
       if (!item.description) continue
+      if (this.findForeshadowByDescription(projectId, item.description)) continue
       // linkedCharacters 通过名字查找 ID
       const linkedCharacterIds = (item.linkedCharacters ?? [])
         .map((name) => this.findCharacterByName(projectId, name)?.id)
@@ -910,6 +962,53 @@ export class NovelMemoryGenerator {
           : undefined,
       })
       stats.foreshadowCreatesApplied++
+    }
+
+    // ── 线索更新 ──
+    // 普通异常、证据和调查进展进入线索系统，避免被错误升级成需要长期回收的伏笔。
+    for (const item of payload.clueUpdates ?? []) {
+      const clue = this.findClueByDescription(projectId, item.description)
+      if (!clue) {
+        this.context.logger.warn(
+          { description: item.description, projectId },
+          '记忆 Agent：未找到要更新的线索，跳过',
+        )
+        continue
+      }
+      const linkedForeshadow = item.linkedForeshadowDescription
+        ? this.findForeshadowByDescription(projectId, item.linkedForeshadowDescription)
+        : undefined
+      const patch: Partial<NovelClue> = {}
+      if (item.progress !== undefined) patch.progress = Math.max(0, Math.min(100, ensureNumber(item.progress, clue.progress)))
+      if (item.currentStep !== undefined) patch.currentStep = ensureString(item.currentStep, clue.currentStep)
+      if (item.nextStep !== undefined) patch.nextStep = ensureString(item.nextStep, clue.nextStep)
+      if (item.isMisleading !== undefined) patch.isMisleading = item.isMisleading === true
+      if (linkedForeshadow) patch.linkedForeshadow = linkedForeshadow.id
+      if (Object.keys(patch).length === 0) continue
+      this.store.updateClue(clue.id, patch)
+      stats.clueUpdatesApplied++
+    }
+
+    // ── 线索创建 ──
+    for (const item of payload.clueCreates ?? []) {
+      if (!item.description?.trim() || !item.pointsTo?.trim()) continue
+      const existing = this.findClueByDescription(projectId, item.description)
+      if (existing) continue
+      const linkedForeshadow = item.linkedForeshadowDescription
+        ? this.findForeshadowByDescription(projectId, item.linkedForeshadowDescription)
+        : undefined
+      this.store.createClue({
+        id: randomUUID(),
+        projectId,
+        description: item.description.trim(),
+        pointsTo: item.pointsTo.trim(),
+        progress: Math.max(0, Math.min(100, ensureNumber(item.progress, 10))),
+        currentStep: ensureString(item.currentStep, '本章首次发现'),
+        nextStep: ensureString(item.nextStep, ''),
+        isMisleading: item.isMisleading === true,
+        linkedForeshadow: linkedForeshadow?.id ?? null,
+      })
+      stats.clueCreatesApplied++
     }
 
     // ── 冲突更新 ──
@@ -1121,6 +1220,7 @@ export class NovelMemoryGenerator {
     stats.total =
       stats.characterUpdatesApplied + stats.characterCreatesApplied
       + stats.foreshadowUpdatesApplied + stats.foreshadowCreatesApplied
+      + stats.clueUpdatesApplied + stats.clueCreatesApplied
       + stats.conflictUpdatesApplied + stats.conflictCreatesApplied
       + stats.factionUpdatesApplied + stats.locationUpdatesApplied
       + stats.relationshipUpdatesApplied + stats.relationshipCreatesApplied
@@ -1242,6 +1342,17 @@ export class NovelMemoryGenerator {
     return found
   }
 
+  private findClueByDescription(projectId: string, description?: string): NovelClue | undefined {
+    if (!description) return undefined
+    const clues = this.store.listClues(projectId)
+    let found = clues.find((clue) => clue.description === description)
+    if (found) return found
+    found = clues.find(
+      (clue) => clue.description.includes(description) || description.includes(clue.description.slice(0, 20)),
+    )
+    return found
+  }
+
   private findFactionByName(projectId: string, name?: string): NovelFaction | undefined {
     if (!name) return undefined
     const factions = this.store.listFactions(projectId)
@@ -1266,6 +1377,8 @@ export class NovelMemoryGenerator {
       characterCreatesApplied: 0,
       foreshadowUpdatesApplied: 0,
       foreshadowCreatesApplied: 0,
+      clueUpdatesApplied: 0,
+      clueCreatesApplied: 0,
       conflictUpdatesApplied: 0,
       conflictCreatesApplied: 0,
       factionUpdatesApplied: 0,

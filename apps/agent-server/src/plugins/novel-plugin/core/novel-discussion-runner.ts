@@ -73,7 +73,13 @@ export class NovelDiscussionRunner {
     let outerPhase: DiscussionPhase | undefined
     try {
       // 1. 构建约束 + 默认叙事任务
-      const constraints = this.engine.buildChapterConstraints(projectId, chapterNumber)
+      const chapter = this.store.getChapter(projectId, chapterNumber)
+      const constraints = this.engine.buildChapterConstraints(
+        projectId,
+        chapterNumber,
+        undefined,
+        chapter?.positioning,
+      )
       const narrativeTask = this.buildDefaultNarrativeTask(projectId, chapterNumber)
 
       // 2. 构建 shared 上下文（SEMI 层前缀，跨成员复用 prompt cache）
@@ -91,7 +97,15 @@ export class NovelDiscussionRunner {
       const goal: DiscussionGoal = {
         task: `创作第 ${chapterNumber} 章正文`,
         context: sharedContext,
-        targetWords: this.promptBuilder.computeChapterTargetWords(this.store.getProject(projectId)),
+        targetWords: constraints.wordBudget?.target
+          ?? this.promptBuilder.computeChapterTargetWords(this.store.getProject(projectId)),
+        requiredMentions: arrangedEntities
+          ? [
+              ...arrangedEntities.characterIds.map(id => this.store.getCharacter(id)?.name),
+              ...arrangedEntities.factionIds.map(id => this.store.getFaction(id)?.name),
+              ...arrangedEntities.locationIds.map(id => this.store.getLocation(id)?.name),
+            ].filter((name): name is string => !!name && !/（待定）|待补充|待定$/.test(name))
+          : undefined,
         constraints: {
           facts: constraints.facts.map((c) => c.rule),
           cognitive: constraints.cognitive.map((c) => c.rule),
@@ -266,7 +280,6 @@ export class NovelDiscussionRunner {
             signal: options.signal,
           },
           chapterId: this.store.getChapter(projectId, chapterNumber)?.id ?? null,
-          sharedContextPrefix: sharedContext,
         })
         return {
           ...result,

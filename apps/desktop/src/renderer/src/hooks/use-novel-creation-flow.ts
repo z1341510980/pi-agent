@@ -97,6 +97,8 @@ export interface UseNovelCreationFlowReturn {
   phase: CreationPhase
   /** 是否正在运行 */
   isRunning: boolean
+  /** 当前可覆盖的流程进度文案（纯 phase_change 不进入对话时间线） */
+  progressMessage: string | null
   /** 所有已收到的事件（用于回放/调试） */
   events: CreationFlowEvent[]
   /** 待处理的检查点（用户需决策） */
@@ -348,6 +350,7 @@ function formatDetailBubble(detail: Record<string, unknown>): {
 export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const [phase, setPhase] = useState<CreationPhase>('idle')
   const [isRunning, setIsRunning] = useState(false)
+  const [progressMessage, setProgressMessage] = useState<string | null>(null)
   const [events, setEvents] = useState<CreationFlowEvent[]>([])
   const [currentCheckpoint, setCurrentCheckpoint] = useState<CheckpointData | null>(null)
   const [result, setResult] = useState<CreationResult | null>(null)
@@ -441,6 +444,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     // 如果 agent_start 已创建初始气泡（含"已启动"提示），清空 content 准备接收流式 delta
     if (event.type === 'TEXT_MESSAGE_START') {
       const { messageId } = event as { type: 'TEXT_MESSAGE_START'; messageId: string }
+      // 首 token 已到达，等待类心跳文案已失效，回退显示当前阶段名称。
+      setProgressMessage(null)
       const meta = messageAgentMapRef.current.get(messageId)
       if (meta) {
         setAgentOutputs((prev) => {
@@ -531,6 +536,11 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             detail?: Record<string, unknown>
             scene?: { sceneId: number; title: string; location: string; time: string; conflict?: string; goal: string }
           }
+          const isPhaseProgress = evt.type === 'phase_change' || data?.type === 'phase_change'
+          if (isPhaseProgress && data?.message) {
+            // 心跳/阶段进度只覆盖状态栏中的同一条文案，不追加聊天气泡。
+            setProgressMessage(data.message)
+          }
           // detail 事件：节奏建议/叙事任务/章节约束/记忆结果
           // → 格式化为 info 气泡（arrange_* 详情由下方专门分支处理，需要 dataChanged / streaming 语义）
           if (data?.detail && typeof data.detail === 'object' && data.detail.kind) {
@@ -549,6 +559,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               return
             }
           }
+          // 纯 phase_change 是瞬时运行状态；保留在 events 供调试，但不进入 Agent 对话时间线。
+          if (isPhaseProgress) return
           // agent_start：记录 messageId → agentType 映射，重置 writer 累积器
           // 同时创建一个初始 streaming AgentOutput，展示"已启动"提示，
           // 让用户在首 token 到达前就能看到 Agent 已启动（避免 approve 后空白等待）
@@ -751,23 +763,12 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             }])
             return
           }
-          // 群聊过程事件：phase_change 带 message（如"导演 开始发言..."）→ 创建 moderator 系统气泡
-          // 注意：带 detail 的 phase_change 已被上方 detail 分支处理，此处只处理纯 message 进度
-          if (data?.type === 'phase_change' && data.message && !data.detail) {
-            setAgentOutputs((prev) => [...prev, {
-              agentType: 'moderator',
-              agentName: '主持人',
-              content: data.message!,
-              preview: data.message!,
-              timestamp: evt.timestamp,
-            }])
-            return
-          }
           // phase_change / 心跳：只更新 events 和 phase，不覆盖 chapterContent
           return
         }
         case 'novel:checkpoint': {
           const checkpoint = custom.value as CheckpointData
+          setProgressMessage(null)
           setCurrentCheckpoint(checkpoint)
           setPhase(checkpoint.phase)
           return
@@ -775,6 +776,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         case 'novel:result': {
           const resultData = custom.value as CreationResult
           setResult(resultData)
+          setProgressMessage(null)
           // 先取消可能挂起的 rAF，再清空缓冲（result.content 是权威全量）
           if (rafIdRef.current !== null) {
             cancelAnimationFrame(rafIdRef.current)
@@ -808,6 +810,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     if (event.type === 'RUN_ERROR') {
       const errEvent = event as { type: 'RUN_ERROR'; message: string }
       setError(errEvent.message)
+      setProgressMessage(null)
       setPhase('error')
       setIsRunning(false)
       setCurrentCheckpoint(null)
@@ -816,6 +819,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
     if (event.type === 'RUN_FINISHED') {
       setIsRunning(false)
+      setProgressMessage(null)
       setCurrentCheckpoint(null)
     }
 
@@ -877,6 +881,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         }
         const message = err instanceof Error ? err.message : String(err)
         setError(message)
+        setProgressMessage(null)
         setPhase('error')
         setIsRunning(false)
         setCurrentCheckpoint(null)
@@ -900,6 +905,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       // 重置状态
       setPhase('idle')
+      setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
       setResult(null)
@@ -955,6 +961,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       // 重置状态
       setPhase('idle')
+      setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
       setResult(null)
@@ -994,6 +1001,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       if (abortControllerRef.current) return
 
       setPhase('idle')
+      setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
       setResult(null)
@@ -1041,6 +1049,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       // 重置状态（与 startCreation 一致）
       setPhase('idle')
+      setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
       setResult(null)
@@ -1087,6 +1096,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       // 重置状态（与 aiArrange 一致）
       setPhase('idle')
+      setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
       setResult(null)
@@ -1195,6 +1205,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     deltaBufferRef.current.clear()
     // 立即重置运行状态，避免 SSE 异步 catch 覆盖 reset() 的 idle
     setIsRunning(false)
+    setProgressMessage(null)
     setCurrentCheckpoint(null)
   }, [])
 
@@ -1211,6 +1222,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const reset = useCallback((): void => {
     setPhase('idle')
     setIsRunning(false)
+    setProgressMessage(null)
     setEvents([])
     setCurrentCheckpoint(null)
     setResult(null)
@@ -1230,6 +1242,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   return {
     phase,
     isRunning,
+    progressMessage,
     events,
     currentCheckpoint,
     result,

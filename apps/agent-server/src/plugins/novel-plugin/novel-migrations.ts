@@ -833,4 +833,10 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_chapter_versions_chapter ON novel_chapter_versions(chapter_id, sequence);
     CREATE INDEX IF NOT EXISTS idx_chapter_versions_project ON novel_chapter_versions(project_id, created_at);`,
   },
+  {
+    // 章节六型定位。此前共享类型和 Director 提示词已有 positioning，
+    // 但数据库未落列，导致矩阵/Director 规划无法传到 Writer 约束。
+    id: '067_add_novel_chapter_positioning',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN positioning TEXT;`,
+  },
 ]

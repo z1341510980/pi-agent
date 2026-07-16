@@ -70,6 +70,8 @@ export interface DiscussionGoal {
   context: string
   /** Writer 必须遵守的单章目标字数，按正文非空白字符计。 */
   targetWords?: number
+  /** 正文必须直接出现的矩阵实体名称（角色/势力/地点）。 */
+  requiredMentions?: string[]
   /** 约束（序列化对象，供 Moderator 参考） */
   constraints?: unknown
 }

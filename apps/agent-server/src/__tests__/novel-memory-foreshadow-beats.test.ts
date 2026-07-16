@@ -54,4 +54,76 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
 
     expect(updateForeshadow).toHaveBeenCalledWith('f1', { status: 'reinforced' })
   })
+
+  it('普通疑点进入线索系统，不满足准入条件的新伏笔会被拦截', () => {
+    const createForeshadow = vi.fn()
+    const createClue = vi.fn()
+    const store = {
+      listForeshadowing: vi.fn(() => []),
+      createForeshadow,
+      listClues: vi.fn(() => []),
+      createClue,
+    }
+    const context = {
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    }
+    const generator = new NovelMemoryGenerator({} as any, {} as any, context as any, store as any, {} as any)
+
+    const stats = (generator as any).applyChanges('p1', {
+      foreshadowCreates: [{
+        description: '赵岩没有询问孙疤去向',
+        category: 'event',
+        beatNote: '赵岩保持沉默',
+      }],
+      clueCreates: [{
+        description: '赵岩对孙疤失踪只字未提',
+        pointsTo: '赵岩可能知道孙疤失踪的内情',
+        progress: 10,
+        currentStep: '叶明远注意到异常沉默',
+        nextStep: '观察赵岩是否暗中调查',
+      }],
+    }, 9)
+
+    expect(createForeshadow).not.toHaveBeenCalled()
+    expect(createClue).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'p1',
+      description: '赵岩对孙疤失踪只字未提',
+      pointsTo: '赵岩可能知道孙疤失踪的内情',
+      progress: 10,
+    }))
+    expect(stats.foreshadowCreatesApplied).toBe(0)
+    expect(stats.clueCreatesApplied).toBe(1)
+  })
+
+  it('高价值暗线伏笔有隐藏问题和回收计划时才允许创建', () => {
+    const createForeshadow = vi.fn()
+    const store = {
+      listForeshadowing: vi.fn(() => []),
+      createForeshadow,
+    }
+    const context = {
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    }
+    const generator = new NovelMemoryGenerator({} as any, {} as any, context as any, store as any, {} as any)
+
+    const stats = (generator as any).applyChanges('p1', {
+      foreshadowCreates: [{
+        description: '父亲遗物编号与旧案卷宗一致',
+        category: 'secret',
+        importance: 'critical',
+        narrativeRole: 'dark_line',
+        hiddenQuestion: '父亲真正因何死亡',
+        plannedPayoff: '查到旧案主谋时揭示编号来源',
+        beatNote: '主角第一次看到相同编号',
+      }],
+    }, 3)
+
+    expect(createForeshadow).toHaveBeenCalledTimes(1)
+    expect(createForeshadow).toHaveBeenCalledWith(expect.objectContaining({
+      description: '父亲遗物编号与旧案卷宗一致',
+      status: 'planted',
+      beats: [{ chapter: 3, type: 'plant', note: '主角第一次看到相同编号' }],
+    }))
+    expect(stats.foreshadowCreatesApplied).toBe(1)
+  })
 })

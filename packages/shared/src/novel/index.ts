@@ -1037,6 +1037,8 @@ export interface NarrativeTask {
   povCharacters?: string[]
   /** 本章场景数（1=单场景写透，2-3=多场景快推），引导 Writer 控制节奏速率 */
   sceneCount?: number
+  /** 章节定位（Director 规划或用户手动指定，决定节奏与字数预算） */
+  positioning?: ChapterPositioning | null
   /** 时间线偏移（相对第1章的天数，由 Director 规划，持久化到章节） */
   timeOffset?: number | null
 }

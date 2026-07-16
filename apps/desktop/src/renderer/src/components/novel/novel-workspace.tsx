@@ -1066,6 +1066,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       <NovelConversationPanel
                         phase={creationFlow.phase}
                         isRunning={creationFlow.isRunning}
+                        progressMessage={creationFlow.progressMessage}
                         chapterContent={creationFlow.chapterContent}
                         agentOutputs={creationFlow.agentOutputs}
                         chapterNumber={creationChapterNumber}

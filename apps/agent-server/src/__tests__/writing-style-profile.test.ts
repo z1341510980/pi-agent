@@ -73,6 +73,23 @@ describe('writing style profile', () => {
     expect(reviewer.profileHash).not.toBe(writer.profileHash)
   })
 
+  it('限制文风档案注入体积，避免 Agent 身份被用户长文本撑大', () => {
+    const profile = store.upsertWritingStyleProfile('project-1', profileInput)
+    const compiled = compileWritingStylePrompt({
+      ...profile,
+      hardRules: Array.from({ length: 20 }, (_, i) => `硬规则${i + 1}：${'必须保持一致。'.repeat(50)}`),
+      softRules: Array.from({ length: 20 }, (_, i) => `软偏好${i + 1}：${'可以适度使用。'.repeat(50)}`),
+      positiveExamples: Array.from({ length: 5 }, (_, i) => `样本${i + 1}：${'角色推开门，屋内无人。'.repeat(100)}`),
+      notes: '补充说明。'.repeat(500),
+    }, 'writer')
+
+    expect(compiled.content.length).toBeLessThan(6000)
+    expect(compiled.content).toContain('硬规则8')
+    expect(compiled.content).not.toContain('硬规则9')
+    expect(compiled.content).toContain('【样本 2】')
+    expect(compiled.content).not.toContain('【样本 3】')
+  })
+
   it('保持共享 system prompt，并只在正文 Agent 身份层注入完整文风档案', () => {
     store.upsertWritingStyleProfile('project-1', profileInput)
     const builder = new NovelPromptBuilder(new PromptManager(db, process.cwd()), store)

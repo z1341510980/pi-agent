@@ -119,25 +119,6 @@ export function ChapterContentEditor({
     }
   }, [currentProjectId, reverseArranging, isCreationActive, chapters, playheadChapter, flushSave, queryClient])
 
-  // ── 版本回滚成功回调 ──
-  // 用回滚后的正文覆盖编辑器显示和 draft，同步 store 中的 chapter 记录
-  // 注意：必须 setSaveState('saved') 避免防抖保存把回滚后的正文再次覆盖（虽然内容相同，但避免无谓请求）
-  const handleRollbackSuccess = useCallback((content: string, wordCount: number) => {
-    setDraftContent(content)
-    setSaveState('saved')
-    setErrorMsg(null)
-    if (editor) editor.commands.setContent(content, { emitUpdate: false })
-    const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
-    if (targetChapter) {
-      upsertChapter({
-        ...targetChapter,
-        content,
-        wordCount,
-        updatedAt: Date.now(),
-      })
-    }
-  }, [editor, chapters, playheadChapter, upsertChapter])
-
   // ── 1.5s 防抖保存 ──
   const scheduleDebouncedSave = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -159,6 +140,26 @@ export function ChapterContentEditor({
       scheduleDebouncedSave()
     },
   })
+
+  // ── 版本回滚成功回调 ──
+  // 用回滚后的正文覆盖编辑器显示和 draft，同步 store 中的 chapter 记录
+  // 注意：必须在 editor 初始化之后声明；useCallback 的依赖数组会在渲染时立即读取 editor
+  // 必须 setSaveState('saved') 避免防抖保存把回滚后的正文再次覆盖（虽然内容相同，但避免无谓请求）
+  const handleRollbackSuccess = useCallback((content: string, wordCount: number) => {
+    setDraftContent(content)
+    setSaveState('saved')
+    setErrorMsg(null)
+    if (editor) editor.commands.setContent(content, { emitUpdate: false })
+    const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
+    if (targetChapter) {
+      upsertChapter({
+        ...targetChapter,
+        content,
+        wordCount,
+        updatedAt: Date.now(),
+      })
+    }
+  }, [editor, chapters, playheadChapter, upsertChapter])
 
   // ── 章节切换联动（播放头驱动，单向）──
   useEffect(() => {

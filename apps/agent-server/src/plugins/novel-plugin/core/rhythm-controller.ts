@@ -130,7 +130,7 @@ export class RhythmController {
       hookDensity: 'sparse',
       pacing: 'slow',
       wordBudgetMultiplier: 0.85,
-      guidance: '低压生活章：日常/过渡/铺垫。节奏慢，世界观展示。可写生活细节、角色日常，但必须有至少一个信息增量或伏笔，不能纯水。',
+      guidance: '低压生活章：日常/过渡/铺垫。节奏慢，世界观展示。可写生活细节、角色日常，但必须有至少一个信息增量或关系变化，不能纯水。不要为满足增量要求临时制造伏笔。',
     },
     information: {
       preferredRhythm: ['setup', 'suspense', 'rising'],
@@ -252,7 +252,7 @@ export class RhythmController {
   /** 获取节奏描述（供 LLM 参考） */
   private getRhythmDescription(rhythm: ChapterRhythm, climaxIntensity?: ClimaxIntensity): string {
     const descriptions: Record<ChapterRhythm, string> = {
-      setup: '本章为铺垫章节。重点介绍背景、人物设定、世界观。节奏舒缓，信息密度适中，为后续冲突埋下伏笔。',
+      setup: '本章为铺垫章节。重点介绍背景、人物设定、世界观。节奏舒缓，信息密度适中，为后续冲突建立因果基础；只有矩阵明确安排时才埋设伏笔。',
       rising: '本章为上升章节。推进冲突，加剧紧张感。角色面临挑战，局势逐渐升级。',
       climax: climaxIntensity === 'major'
         ? '本章为大高潮章节。冲突全面爆发，情节达到转折点。情感强度最高（9-10），关键真相揭露或决战发生。需要充分的前置蓄势，高潮时将各种线索收拢到主线。'

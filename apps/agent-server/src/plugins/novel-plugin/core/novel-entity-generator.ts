@@ -18,6 +18,12 @@ import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacterGenerator } from './novel-character-generator.js'
 import type { NovelStore } from './novel-store.js'
 import {
+  FORESHADOW_ADMISSION_PROMPT,
+  isAdmissibleNewForeshadow,
+  selectAdmissibleNewForeshadows,
+  type ForeshadowAdmissionFields,
+} from './foreshadow-policy.js'
+import {
   addLlmUsage,
   extractLlmUsageFromMessage,
   hasLlmUsage,
@@ -40,7 +46,7 @@ import type {
 type EntityPlan = {
   characters: Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>
   conflicts: { coreStyle: string }[]
-  foreshadows: { coreStyle: string }[]
+  foreshadows: Array<{ coreStyle: string; chapterAction?: unknown } & ForeshadowAdmissionFields>
   factions: { coreStyle: string }[]
   locations: { coreStyle: string }[]
 }
@@ -148,6 +154,34 @@ function ensureString(value: unknown, defaultValue: string): string {
   if (Array.isArray(value)) return value.join(', ')
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+
+/** 解析并执行新伏笔准入门槛；已有伏笔复用不受“新增一条”上限影响。 */
+export function normalizePlannedForeshadows(
+  value: unknown,
+): Array<{ coreStyle: string; chapterAction?: unknown } & ForeshadowAdmissionFields> {
+  if (!Array.isArray(value)) return []
+  const rawForeshadows = value.map((f: unknown) => {
+    const obj = f as Record<string, unknown>
+    return {
+      coreStyle: ensureString(obj?.coreStyle, '新伏笔'),
+      importance: obj?.importance,
+      narrativeRole: obj?.narrativeRole,
+      hiddenQuestion: obj?.hiddenQuestion,
+      plannedPayoff: obj?.plannedPayoff,
+      chapterAction: obj?.chapterAction,
+    }
+  })
+  const validChapterActions = new Set(['plant', 'reinforce', 'reveal', 'payoff'])
+  const existing = rawForeshadows.filter((f) =>
+    f.coreStyle.trim().startsWith('已有：')
+    && isAdmissibleNewForeshadow(f)
+    && validChapterActions.has(String(f.chapterAction)),
+  )
+  const created = selectAdmissibleNewForeshadows(
+    rawForeshadows.filter((f) => !f.coreStyle.trim().startsWith('已有：')),
+  )
+  return [...existing, ...created]
 }
 
 /** 将任意 LLM 输出值安全转为 string[] */
@@ -1106,7 +1140,9 @@ export class NovelEntityGenerator {
     // 生成阶段会按名查重执行 upsert，这里仅提供"已有什么"作为决策上下文
     const existingCharacters = this.store.listCharacters(projectId)
     const existingConflicts = this.store.listConflicts(projectId)
+    // 已回收/废弃伏笔不再参与新章节编排，避免把已结清叙事债务重新当成待推进事项。
     const existingForeshadows = this.store.listForeshadowing(projectId)
+      .filter((foreshadow) => foreshadow.status !== 'recovered' && foreshadow.status !== 'abandoned')
     const existingFactions = this.store.listFactions(projectId)
     const existingLocations = this.store.listLocations(projectId)
 
@@ -1160,6 +1196,8 @@ export class NovelEntityGenerator {
     const userPrompt = [
       sourceInstruction,
       '',
+      FORESHADOW_ADMISSION_PROMPT,
+      '',
       isReverse
         ? '【三层上下文（项目大纲提供全局设定背景，卷纲提供当前卷走向，正文是反推的唯一依据）】'
         : '【三层大纲（按重要性递减，章纲最具体必须严格遵循，项目大纲提供全局设定背景）】',
@@ -1205,7 +1243,8 @@ export class NovelEntityGenerator {
       '',
       '【返回格式】',
       '返回严格 JSON：',
-      '{"characters":[{"coreStyle":"已有：林墨","plotFunction":"open_phase","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：主角今日必须凑齐定额镇魔石料，否则将被逐出大阵庇护范围，暴露于"}],"foreshadows":[{"coreStyle":"已有：玉佩只剩一半，另一半留在蓝星，暗示两界通讯依赖成对玉佩的完整性"}],"factions":[{"coreStyle":"已有：国安总局"}],"locations":[{"coreStyle":"已有：国安总局指挥大厅"}]}',
+      '{"characters":[{"coreStyle":"已有：林墨","plotFunction":"open_phase","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：主角今日必须凑齐定额镇魔石料，否则将被逐出大阵庇护范围，暴露于"}],"foreshadows":[{"coreStyle":"已有：父亲遗物上的编号","importance":"critical","narrativeRole":"dark_line","hiddenQuestion":"父亲真正因何死亡","plannedPayoff":"在查到旧案主谋时揭示编号来源并回收","chapterAction":"reinforce"}],"factions":[{"coreStyle":"已有：国安总局"}],"locations":[{"coreStyle":"已有：国安总局指挥大厅"}]}',
+      '所有伏笔都必须返回 importance、narrativeRole、hiddenQuestion、plannedPayoff。复用已有伏笔还必须返回本章实际动作 chapterAction=plant|reinforce|reveal|payoff；缺少任一项都会被过滤。',
       '',
       '【角色功能位编排（重要，避免工具人化）】',
       '每个返回的角色（无论已有/新增）必须指定 plotFunction（从以下 7 个枚举选一）：',
@@ -1349,10 +1388,7 @@ export class NovelEntityGenerator {
           ? json.conflicts
               .map((c: unknown) => ({ coreStyle: ensureString((c as { coreStyle?: unknown })?.coreStyle, '新冲突') }))
           : [],
-        foreshadows: Array.isArray(json.foreshadows)
-          ? json.foreshadows
-              .map((f: unknown) => ({ coreStyle: ensureString((f as { coreStyle?: unknown })?.coreStyle, '新伏笔') }))
-          : [],
+        foreshadows: normalizePlannedForeshadows(json.foreshadows),
         factions: Array.isArray(json.factions)
           ? json.factions
               .map((f: unknown) => ({ coreStyle: ensureString((f as { coreStyle?: unknown })?.coreStyle, '新势力') }))
@@ -1814,6 +1850,8 @@ export class NovelEntityGenerator {
       ].join('\n'),
       foreshadow: () => [
         '请根据以下核心描述，生成一个完整的伏笔设定。',
+        '',
+        FORESHADOW_ADMISSION_PROMPT,
         '',
         '【核心描述】',
         coreStyle,

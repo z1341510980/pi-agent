@@ -61,6 +61,23 @@ describe('ChapterFinalizer', () => {
     })
   })
 
+  describe('中间章节重写保护', () => {
+    it('后续已有正文时识别为历史重写', () => {
+      const store = {
+        getProject: () => ({ currentChapter: 4 }),
+        getChapter: (_projectId: string, chapterNumber: number) => ({
+          content: chapterNumber === 3 ? '第三章已有正文' : '',
+        }),
+      }
+      const guardedFinalizer = new ChapterFinalizer(
+        store as any, {} as any, {} as any, {} as any, mockContext,
+      ) as any
+
+      expect(guardedFinalizer.hasLaterCompletedChapter('p1', 2)).toBe(true)
+      expect(guardedFinalizer.hasLaterCompletedChapter('p1', 4)).toBe(false)
+    })
+  })
+
   describe('syncChapterDimensions - 伏笔事件链', () => {
     const emptyBefore = {
       characters: new Map(), conflicts: new Map(), foreshadowing: new Map(),

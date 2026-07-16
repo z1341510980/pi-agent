@@ -411,6 +411,7 @@ export class NovelEngine {
       narrativeTask: narrativeTask.description,
       acceptanceResult: null,
       volumeId: volumeId ?? null,
+      positioning: narrativeTask.positioning ?? null,
     })
 
     // 3. 触发约束构建以保持副作用一致（部分约束会写入 store）

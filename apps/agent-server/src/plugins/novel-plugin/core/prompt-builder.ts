@@ -25,18 +25,19 @@
  *
  * ── 缓存层级结构 ──
  *
- * [系统提示词] (STATIC - 跨章节缓存命中)
+ * [系统提示词] (STATIC - 跨章节、跨 Agent 缓存命中)
  * ├── Layer 1: 世界规则（项目级，极少变）
  * ├── Layer 2: 风格指南（项目级，极少变）
- * └── Layer 0: Agent 身份（Agent 专属，同 Agent 跨章不变）
+ * └── 不含 Agent 身份，保证不同 Agent 的公共前缀完全一致
  *
- * [首条用户消息] (SEMI - 单章内缓存命中)
+ * [前缀用户消息] (SEMI - 单章内缓存命中)
  * ├── 章节信息（卷/章/叙事任务/约束）
  * ├── 本章出场角色完整定义（arrangedEntities，仅本章角色）
  * ├── 当前故事状态（所有角色的 name+动态状态，让 LLM 知道存在）
  * ├── 信息差（谁知道什么）
  * ├── 最近章节摘要
- * └── 创作指令
+ * ├── Agent 身份（独立缓存断点）
+ * └── Agent 专属后缀（Director 方案、Rubric 等，最易变化）
  *
  * [对话消息] (DYNAMIC - 不缓存)
  * ├── 工具调用 + 结果（追加到末尾，不破坏前缀缓存）
@@ -93,7 +94,7 @@ import type {
   ChapterRhythm,
   NovelAgentLog,
 } from './types.js'
-import type { MemoryEvent, MemoryEventType } from './novel-memory-store.js'
+import type { MemoryEvent, MemoryEventType, MemorySnapshot } from './novel-memory-store.js'
 
 /**
  * Store 接口：NovelPromptBuilder 只需要读取数据，不关心存储实现
@@ -150,7 +151,11 @@ export class NovelPromptBuilder {
      *
      * 不提供时（如 novel-session 的手动对话流）：跳过该部分，不影响其他 section。
      */
-    private memoryStore?: { listEvents(projectId: string, options?: { minSignificance?: number; limit?: number }): MemoryEvent[]; getCausalChain(eventId: string): { causes: MemoryEvent[]; effects: MemoryEvent[] } },
+    private memoryStore?: {
+      listEvents(projectId: string, options?: { minSignificance?: number; limit?: number }): MemoryEvent[]
+      getCausalChain(eventId: string): { causes: MemoryEvent[]; effects: MemoryEvent[] }
+      getSnapshot?(projectId: string, chapterNumber: number, options?: { snapshotType?: 'full' }): MemorySnapshot | undefined
+    },
   ) {}
 
   /** 按 Agent 职责编译当前项目的文风档案，供预览和日志审计复用。 */
@@ -185,7 +190,6 @@ export class NovelPromptBuilder {
   computeChapterTargetWords(project: NovelProject | undefined, rhythm?: ChapterRhythm): number {
     let base: number
     if (!project || project.targetWords <= 0) base = 3000
-    else if (project.targetWords <= 10000) base = project.targetWords
     else base = Math.round(project.targetWords / 1000)
     base = Math.min(5000, Math.max(2500, base))
     // 节奏联动调整
@@ -384,7 +388,7 @@ export class NovelPromptBuilder {
     // 跨 Agent 缓存一致性（Writer 的 shared 与其他 Agent 不同 → 全部 miss）。
     // 现在统一注入：formatStoryState 内部已对 arranged 实体去重，不与
     // formatArrangedEntities 冗余；且这部分 token 走 cache read（廉价）。
-    const state = this.getStoryState(projectId)
+    const state = this.getStoryState(projectId, chapterNumber)
     parts.push(this.formatStoryState(state, arrangedEntities))
 
     // ── 实体关联（画布手动 + 自动连线，作为故事状态的补充）──
@@ -543,14 +547,26 @@ export class NovelPromptBuilder {
     if (agentType === 'writer') {
       const project = this.stores.getProject(projectId)
       const rhythm = constraints.rhythmConstraint?.rhythm
-      const targetWords = this.computeChapterTargetWords(project, rhythm)
+      const targetWords = constraints.wordBudget?.target
+        ?? this.computeChapterTargetWords(project, rhythm)
       // 条件注入写法理论：根据任务类型/节奏只注入相关理论片段
       const writingTheory = this.buildWritingTheory(narrativeTask.type, rhythm, constraints.conflictTargets.some(t => t.isClimax))
+      const positioningGuidance: Record<string, string> = {
+        high_pressure: '高压章：快节奏、高张力、动作密集，章尾留强钩。',
+        advancement: '推进章：节奏适中，每个场景都要产生信息或局势增量。',
+        cultivation: '修炼试错章：写清过程、代价和成长，结尾给出突破或新方向。',
+        relationship: '关系回收章：以互动和对话承载关系变化。',
+        low_pressure: '低压生活章：允许放缓，但至少推进一项信息或关系；不得为了避免空转临时制造伏笔。',
+        information: '信息整理章：用场景和对话承载信息，避免写成清单。',
+      }
       const instruction = this.promptManager.render('chapter-instruction', {
         chapter_number: String(chapterNumber),
         narrative_task: narrativeTask.description,
         task_type: narrativeTask.type,
         target_words: String(targetWords),
+        positioning_guidance: constraints.positioning
+          ? positioningGuidance[constraints.positioning]
+          : '未单独指定定位，按已批准的叙事任务和节奏约束执行。',
         writing_theory: writingTheory,
       }, projectId)
       parts.push(instruction)
@@ -953,9 +969,11 @@ export class NovelPromptBuilder {
         .filter((c) => !isPlaceholderName(c.name))
       if (chars.length > 0) {
         // 按功能位索引，便于角色查到对应功能
-        const functionMap = new Map<string, { function: string; note?: string }>()
+        const functionMap = new Map<string, Array<{ function: string; note?: string }>>()
         for (const entry of arranged.characterFunctions ?? []) {
-          functionMap.set(entry.characterId, { function: entry.function, note: entry.note })
+          const entries = functionMap.get(entry.characterId) ?? []
+          entries.push({ function: entry.function, note: entry.note })
+          functionMap.set(entry.characterId, entries)
         }
         lines.push('出场角色（完整定义）：')
         for (const c of chars) {
@@ -974,8 +992,8 @@ export class NovelPromptBuilder {
           const roleLabel = plotRoleLabel[c.plotRole] ?? c.plotRole
           charLines.push(`  - 角色层级：${roleLabel}`)
           // 四层逻辑③：本章功能位（关键，避免工具人化）
-          const fn = functionMap.get(c.id)
-          if (fn) {
+          const functions = functionMap.get(c.id) ?? []
+          for (const fn of functions) {
             const fnLabel = plotFunctionLabel[fn.function] ?? fn.function
             charLines.push(`  - ⚡ 本章功能位：${fnLabel}${fn.note ? `（${fn.note}）` : ''}`)
           }
@@ -1161,6 +1179,8 @@ export class NovelPromptBuilder {
         }
       }
     }
+    lines.push('')
+    lines.push('矩阵执行验收：正文必须让上述实体实际参与本章事件，不得只在叙述中点名；角色必须完成其本章功能位，冲突/伏笔必须按标注的推进节点执行。Reviewer 必须逐项核对。')
     return lines.join('\n')
   }
 
@@ -1747,10 +1767,55 @@ export class NovelPromptBuilder {
   // 辅助方法
   // ═══════════════════════════════════════════════════════════════
 
-  /** 获取故事状态快照 */
-  private getStoryState(projectId: string): StoryState {
+  /**
+   * 获取故事状态快照。
+   *
+   * 重写中间章节时，必须读取第 N-1 章保存的全量快照，不能把全局最新状态
+   * 当成本章开篇状态，否则未来章节的人物/冲突结果会倒灌进历史章节。
+   */
+  private getStoryState(projectId: string, chapterNumber: number): StoryState {
     const project = this.stores.getProject(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
+
+    // 兼容旧项目 currentChapter 未随正文推进的情况：只要数据库里存在更后面的
+    // 已写章节，就应把当前请求视为历史章节重写并读取 N-1 快照。
+    const latestWrittenChapter = this.stores.listRecentChapters(projectId, 1).at(-1)?.chapterNumber ?? 0
+    const latestKnownChapter = Math.max(project.currentChapter, latestWrittenChapter)
+    if (chapterNumber > 1 && latestKnownChapter > chapterNumber) {
+      const snapshot = this.memoryStore?.getSnapshot?.(projectId, chapterNumber - 1, { snapshotType: 'full' })
+      if (snapshot) {
+        try {
+          const data = JSON.parse(snapshot.snapshotData) as {
+            characters?: NovelCharacter[]
+            conflicts?: NovelConflict[]
+            foreshadowing?: NovelForeshadow[]
+            clues?: NovelClue[]
+            factions?: NovelFaction[]
+            locations?: NovelLocation[]
+            relationships?: NovelRelationship[]
+          }
+          const conflicts = data.conflicts ?? []
+          const foreshadowing = data.foreshadowing ?? []
+          const factions = data.factions ?? []
+          const locations = data.locations ?? []
+          return {
+            project: { ...project, currentChapter: chapterNumber - 1 },
+            characters: data.characters ?? [],
+            relationships: data.relationships ?? [],
+            activeConflicts: conflicts.filter(c => c.stage !== 'resolved' && c.stage !== 'transformed'),
+            pendingForeshadowing: foreshadowing.filter(f => f.status !== 'recovered' && f.status !== 'abandoned'),
+            // 新快照读取当时的线索；旧快照缺少 clues 时保持空数组，绝不倒灌未来线索。
+            activeClues: data.clues ?? [],
+            activeFactions: factions.filter(f => f.status !== 'destroyed'),
+            activeLocations: locations.filter(l => l.appearChapters?.some(ch => ch < chapterNumber)),
+            currentStage: project.currentStage,
+            currentChapter: chapterNumber - 1,
+          }
+        } catch {
+          // 损坏/旧格式快照降级为当前状态，保持创作流程可用。
+        }
+      }
+    }
 
     return {
       project,

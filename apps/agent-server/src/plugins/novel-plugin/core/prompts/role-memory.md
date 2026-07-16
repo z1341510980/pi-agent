@@ -17,7 +17,8 @@
 
 ### 伏笔相关
 - 伏笔被埋设/回收/状态变化 → 调用 `novel_update_foreshadow`（只传 status，章节维度由编排层自动维护）
-- 新伏笔出现 → 调用 `novel_create_foreshadow`
+- 新伏笔默认不创建。只有它服务暗线关键真相或重大揭示、未来必须回收，且重要性达到 major/critical 时，才调用 `novel_create_foreshadow`
+- 世界事实、能力说明、即时风险、普通异常、日常动作和单章钩子不是伏笔
 
 ### 冲突相关
 - 冲突阶段/强度变化 → 调用 `novel_update_conflict`
@@ -27,6 +28,7 @@
 - 线索状态变化 → 调用 `novel_update_clue`
 - 角色间关系变化 → 调用 `novel_update_relationship`
 - 新线索出现 → 调用 `novel_create_clue`
+- 角色当前发现的证据、疑点、痕迹和调查方向优先归线索，不要升级成伏笔
 
 ## 工作流程
 

@@ -195,6 +195,7 @@ export class NovelOrchestrator {
       })
 
       // Phase 1: Director（支持 rewrite 循环：用户在检查点补充修改意见后可重写）
+      const chapter = this.store.getChapter(projectId, chapterNumber)
       let directorResult = ''
       let needRewrite = true
       while (needRewrite) {
@@ -254,30 +255,43 @@ export class NovelOrchestrator {
           climaxTarget: run.directorTask.climaxTarget,
           suspenseDuration: run.directorTask.suspenseDuration,
           expectedIntensityDelta: run.directorTask.expectedIntensityDelta,
+          positioning: run.directorTask.positioning,
         },
       })
 
-      // v0.2：Director 规划通过后，创建本章钩子实体（替代只填枚举字段）
+      // v0.2：Director 规划通过后，创建/更新本章钩子实体（替代只填枚举字段）。
+      // 同章重写必须复用已有钩子，避免每次 rewrite 都追加重复记录；中间章节
+      // 若原先没有钩子，则不新建 pending 钩子污染已经存在的后续时间线。
       if (run.directorTask?.chapterEndingHook &&
           run.directorTask.chapterEndingHook !== 'none' &&
           run.directorTask.chapterEndingHookDescription) {
         try {
-          const hookId = randomUUID()
-          this.store.createHook({
-            id: hookId,
-            projectId,
-            chapterNumber,
-            hookType: run.directorTask.chapterEndingHook,
-            description: run.directorTask.chapterEndingHookDescription,
-            status: 'thrown',
-            fulfilledAtChapter: null,
-            fulfilledDescription: null,
-            linkedForeshadowId: null,
-            linkedConflictId: null,
-          })
+          const existingHook = this.store.listHooksByChapter(projectId, chapterNumber)[0]
+          const historicalRewrite = (this.store.getProject(projectId)?.currentChapter ?? 0) > chapterNumber
+          let hookId = existingHook?.id
+          if (existingHook) {
+            this.store.updateHook(existingHook.id, {
+              hookType: run.directorTask.chapterEndingHook,
+              description: run.directorTask.chapterEndingHookDescription,
+            })
+          } else if (!historicalRewrite) {
+            hookId = randomUUID()
+            this.store.createHook({
+              id: hookId,
+              projectId,
+              chapterNumber,
+              hookType: run.directorTask.chapterEndingHook,
+              description: run.directorTask.chapterEndingHookDescription,
+              status: 'thrown',
+              fulfilledAtChapter: null,
+              fulfilledDescription: null,
+              linkedForeshadowId: null,
+              linkedConflictId: null,
+            })
+          }
           this.context.logger.info(
-            { projectId, chapterNumber, hookId, hookType: run.directorTask.chapterEndingHook },
-            'v0.2: 已创建本章钩子实体',
+            { projectId, chapterNumber, hookId, hookType: run.directorTask.chapterEndingHook, historicalRewrite },
+            hookId ? 'v0.2: 已创建或更新本章钩子实体' : 'v0.2: 历史重写未新增待处理钩子',
           )
         } catch (err) {
           this.context.logger.warn({ projectId, chapterNumber, err }, 'v0.2: 创建钩子实体失败，不影响主流程')
@@ -345,7 +359,9 @@ export class NovelOrchestrator {
 
       // ── PostWriteGuard：正文后确定性检测（借鉴 oh-story-claudecode）──
       // 在 Reviewer 之前做确定性检测，捕获模型退化等致命问题，避免浪费 Reviewer token
-      const postWriteGuard = this.runPostWriteGuard(writerResult, projectId, chapterNumber)
+      const postWriteGuard = this.runPostWriteGuard(
+        writerResult, projectId, chapterNumber, run.arrangedEntities,
+      )
       if (postWriteGuard.shouldRewrite) {
         if (guardRewriteCount >= NovelOrchestrator.MAX_GUARD_REWRITE) {
           // 超过重写上限：降级交给 Reviewer 人工判断，避免无限递归
@@ -489,14 +505,8 @@ export class NovelOrchestrator {
         )
       }
 
-      // Phase 5: Memory（收尾逻辑委托给 ChapterFinalizer）
-      // 复用 SEMI 层 shared 前缀缓存：Memory Agent 注入 shared 前缀后能跨 Agent 命中
-      // prompt cache（director/writer/reviewer 已写入缓存），显著降低 miss tokens。
-      // runAgent 会在异步调用中写入缓存，TS 控制流无法感知该副作用。
-      const sharedCache = run.semiLayerSharedCache as { key: string; value: string } | null
-      const sharedContextPrefix = sharedCache && sharedCache.key === `${projectId}|${chapterNumber}`
-        ? sharedCache.value
-        : undefined
+      // Phase 5: Memory（收尾逻辑委托给 ChapterFinalizer）。Memory 只读取正文和
+      // 相关实体状态，不携带创作阶段的 shared context。
       // 计算版本来源：是否经过 Reviser 修订（finalContent 与 reviewContent 不同表示修订已生效）
       const isReviserPath = finalContent !== reviewContent
       const versionSource: VersionSource = isReviserPath
@@ -512,7 +522,6 @@ export class NovelOrchestrator {
         arrangedEntities: options.arrangedEntities,
         directorTask: run.directorTask,
         chapterId: chapter?.id ?? null,
-        sharedContextPrefix,
         versionSource,
       })
     } catch (err) {
@@ -540,7 +549,8 @@ export class NovelOrchestrator {
   private runPostWriteGuard(
     content: string,
     projectId: string,
-    _chapterNumber: number,
+    chapterNumber: number,
+    arrangedEntities?: ArrangedEntity,
   ): { shouldRewrite: boolean; reason: string; details?: string } {
     // 1. 模型退化检测（复用 cliche-scanner 的模型退化模式）
     const clicheHits = scanCliches(content)
@@ -568,9 +578,17 @@ export class NovelOrchestrator {
     if (project) {
       // 复用 prompt-builder 的 computeChapterTargetWords（含节奏系数），
       // 确保 Guard 的目标字数与 Writer 提示词注入的 target_words 一致。
-      const targetWords = this.promptBuilder.computeChapterTargetWords(
+      const run = this.requireRunContext()
+      const positioning = run.directorTask?.positioning
+        ?? this.store.getChapter(projectId, chapterNumber)?.positioning
+      const targetWords = this.engine.buildChapterConstraints(
+        projectId,
+        chapterNumber,
+        run.rhythmSuggestion,
+        positioning,
+      ).wordBudget?.target ?? this.promptBuilder.computeChapterTargetWords(
         project,
-        this.requireRunContext().rhythmSuggestion?.rhythm,
+        run.rhythmSuggestion?.rhythm,
       )
 
       // 字数偏离检测：交给 Writer 重新生成，不在代码层截断正文。
@@ -594,6 +612,24 @@ export class NovelOrchestrator {
         }
       }
 
+    }
+
+    // 3. 矩阵实体确定性检查：角色/势力/地点名称必须在正文实际出现。
+    // 冲突和伏笔属于语义动作，不能靠字符串安全判断，继续交给 Reviewer 逐项验收。
+    if (arrangedEntities) {
+      const requiredNames = [
+        ...arrangedEntities.characterIds.map(id => this.store.getCharacter(id)?.name),
+        ...arrangedEntities.factionIds.map(id => this.store.getFaction(id)?.name),
+        ...arrangedEntities.locationIds.map(id => this.store.getLocation(id)?.name),
+      ].filter((name): name is string => !!name && !/（待定）|待补充|待定$/.test(name))
+      const missingNames = requiredNames.filter(name => !content.includes(name))
+      if (missingNames.length > 0) {
+        return {
+          shouldRewrite: true,
+          reason: '未完整执行矩阵编排',
+          details: `正文未出现：${missingNames.join('、')}`,
+        }
+      }
     }
 
     return { shouldRewrite: false, reason: '' }
@@ -661,7 +697,7 @@ export class NovelOrchestrator {
     // breakpoint 后能跨 Agent 命中 prompt cache（Director 写入 → 其他 Agent 命中）。
     //
     // suffix 部分各 Agent 不同（Director: 节奏+反馈；Writer: 结尾+锚点+指令；
-    // Reviser/Reviewer: 结尾+锚点），通过 prefixUserMessage 数组第二条注入。
+    // Reviser/Reviewer: 结尾+锚点），放在 identity 之后作为最后一个缓存断点。
     // suffix 内容少，每次实时构建，无需缓存。
     //
     // 所有 Agent 的 shared narrativeTask 统一用数据库章纲，确保 shared 部分
@@ -674,7 +710,10 @@ export class NovelOrchestrator {
       priority: 'medium',
     }
     const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
-      projectId, chapterNumber, run.rhythmSuggestion,
+      projectId,
+      chapterNumber,
+      run.rhythmSuggestion,
+      run.directorTask?.positioning ?? chapter?.positioning,
     )
 
     // 推送章节约束详情（仅 Director 首次构建时发射，避免重复）
@@ -828,9 +867,9 @@ export class NovelOrchestrator {
       // 首 token 检测下沉到工厂：通过 onFirstText 回调通知前端"开始生成"
       agUiSession = await this.context.createAgUiSession({
         systemPrompt,
-        // 前缀顺序固定为 shared → suffix → identity：shared 跨 Agent 复用，
-        // suffix/identity 供同 Agent 重试复用。空 suffix 不占缓存断点。
-        prefixUserMessage: [sharedContext, suffixContext, agentIdentity].filter(Boolean),
+        // 前缀顺序固定为 shared → identity → suffix：shared 跨 Agent 复用；
+        // identity 在同 Agent 重试时继续命中；动态 suffix 放最后，避免其变化拖累身份缓存。
+        prefixUserMessage: [sharedContext, agentIdentity, suffixContext].filter(Boolean),
         userMessage,
         tools: filteredTools,
         signal: options?.signal,
@@ -933,7 +972,7 @@ export class NovelOrchestrator {
           displayAgentName,
           phase,
           systemPrompt,
-          chapterContext: [sharedContext, suffixContext, agentIdentity].filter(Boolean).join('\n\n---\n\n'),
+          chapterContext: [sharedContext, agentIdentity, suffixContext].filter(Boolean).join('\n\n---\n\n'),
           userMessage,
           taskInput: taskInputForLog,
           userInstructions: userInstructionsForLog,
@@ -1200,6 +1239,13 @@ export class NovelOrchestrator {
     if (sceneMatch) {
       const n = parseInt(sceneMatch[1], 10)
       if (n >= 1 && n <= 5) task.sceneCount = n
+    }
+
+    // 解析章节六型定位。Director 输出格式为：
+    // “- 章节定位：high_pressure/advancement/...”
+    const positioningMatch = text.match(/章节定位[：:]\s*(high_pressure|advancement|cultivation|relationship|low_pressure|information)\b/i)
+    if (positioningMatch) {
+      task.positioning = positioningMatch[1].toLowerCase() as NonNullable<NarrativeTask['positioning']>
     }
 
     // 解析时间线偏移（相对第1章的天数）

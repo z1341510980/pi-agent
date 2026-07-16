@@ -43,9 +43,9 @@ function cleanText(value: string, maxLength: number): string {
     .slice(0, maxLength)
 }
 
-function listSection(title: string, values: string[], limit: number): string {
+function listSection(title: string, values: string[], limit: number, itemMaxLength = 180): string {
   const lines = values
-    .map(value => cleanText(value, 300))
+    .map(value => cleanText(value, itemMaxLength))
     .filter(Boolean)
     .slice(0, limit)
   if (lines.length === 0) return ''
@@ -66,17 +66,19 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
       `- 情感温度：${profile.emotionalTemperature}/10`,
       `- 意象与比喻密度：${profile.imageryDensity}/10`,
     ].join('\n'),
-    listSection('硬约束', profile.hardRules, 12),
-    listSection('软偏好', profile.softRules, 10),
+    // 文风档案属于 Agent identity，必须有明确体积预算。优先保留靠前规则，
+    // 避免用户粘贴大量说明后让每次 Writer/Reviewer 调用膨胀数千字符。
+    listSection('硬约束', profile.hardRules, 8),
+    listSection('软偏好', profile.softRules, 6),
   ].filter(Boolean)
 
-  const notes = cleanText(profile.notes, 800)
+  const notes = cleanText(profile.notes, 400)
   if (notes) sections.push(`### 补充说明\n${notes}`)
 
   const examples = profile.positiveExamples
-    .map(example => cleanText(example, 1200))
+    .map(example => cleanText(example, 700))
     .filter(Boolean)
-    .slice(0, 3)
+    .slice(0, 2)
   if (examples.length > 0) {
     sections.push([
       '### 正向文风样本',

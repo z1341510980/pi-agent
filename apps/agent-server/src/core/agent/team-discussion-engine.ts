@@ -638,6 +638,7 @@ ${speech}
   private runDiscussionPostWriteGuard(
     content: string,
     targetWords?: number,
+    requiredMentions?: string[],
   ): { shouldRewrite: boolean; reason: string; details?: string } {
     const wordCount = content.replace(/\s/g, '').length
 
@@ -701,6 +702,15 @@ ${speech}
       }
     }
 
+    const missingMentions = (requiredMentions ?? []).filter(name => !content.includes(name))
+    if (missingMentions.length > 0) {
+      return {
+        shouldRewrite: true,
+        reason: '未完整执行矩阵编排',
+        details: `正文未出现：${missingMentions.join('、')}`,
+      }
+    }
+
     return { shouldRewrite: false, reason: '' }
   }
 
@@ -716,8 +726,9 @@ ${speech}
     originalPrompt: string,
     options: DiscussionOptions,
     targetWords?: number,
+    requiredMentions?: string[],
   ): Promise<string> {
-    const guard = this.runDiscussionPostWriteGuard(content, targetWords)
+    const guard = this.runDiscussionPostWriteGuard(content, targetWords, requiredMentions)
     if (!guard.shouldRewrite) return content
 
     this.emitProgress(options, 'chapter_weaving', {
@@ -784,7 +795,9 @@ ${speech}
       const fallbackPrompt = `请基于群聊记录产出完整章节正文。${targetHint}`
       const result = await this.invokeMember(writer, fallbackPrompt, [], options, { phase: 'chapter_weaving' })
       // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
-      return this.guardAndMaybeRewrite(result, writer, fallbackPrompt, options, goal.targetWords)
+      return this.guardAndMaybeRewrite(
+        result, writer, fallbackPrompt, options, goal.targetWords, goal.requiredMentions,
+      )
     }
 
     // 构建全章剧本上下文：每个场景的信息 + 角色推演记录
@@ -826,7 +839,9 @@ ${combined}
 
     const result = await this.invokeMember(writer, prompt, [], options, { phase: 'chapter_weaving' })
     // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
-    return this.guardAndMaybeRewrite(result, writer, prompt, options, goal.targetWords)
+    return this.guardAndMaybeRewrite(
+      result, writer, prompt, options, goal.targetWords, goal.requiredMentions,
+    )
   }
 
   /** 对 Writer 编织后的完整正文执行 Reviewer + 可选 Reviser 闭环。 */
