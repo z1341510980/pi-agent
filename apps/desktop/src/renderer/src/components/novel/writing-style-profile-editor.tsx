@@ -57,6 +57,7 @@ const DEFAULT_PROFILE: NovelWritingStyleProfileInput = {
   hardRules: ['不使用长横线破折号', '不以总结或感悟收尾', '保持 POV 信息边界'],
   softRules: ['优先用动作和感官展示情绪', '场景压力越高，句子越短'],
   positiveExamples: [],
+  negativeExamples: [],
   notes: ''
 }
 
@@ -114,7 +115,8 @@ function cloneProfile(profile: NovelWritingStyleProfileInput): NovelWritingStyle
     ...profile,
     hardRules: [...profile.hardRules],
     softRules: [...profile.softRules],
-    positiveExamples: [...profile.positiveExamples]
+    positiveExamples: [...profile.positiveExamples],
+    negativeExamples: [...(profile.negativeExamples ?? [])]
   }
 }
 
@@ -389,6 +391,9 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
         softRules: markdownToRules(softRulesDraft),
         positiveExamples: form.positiveExamples
           .map((example) => example.trim())
+          .filter((example) => example.length >= 20),
+        negativeExamples: form.negativeExamples
+          .map((example) => example.trim())
           .filter((example) => example.length >= 20)
       }
       const saved = await saveWritingStyleProfile(projectId, input)
@@ -422,6 +427,10 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
     return <p className="py-3 text-xs text-muted-foreground">正在加载文风档案...</p>
   }
 
+  const styleBaselineReady = Boolean(
+    version && form.positiveExamples.length > 0 && form.negativeExamples.length > 0
+  )
+
   return (
     <>
       <div className="space-y-3 border-y border-border/70 py-3">
@@ -436,6 +445,16 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
                 <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
                   {version ? `v${version}` : '未保存'}
                 </span>
+                <span
+                  className={cn(
+                    'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                    styleBaselineReady
+                      ? 'bg-emerald-500/10 text-emerald-600'
+                      : 'bg-amber-500/10 text-amber-600'
+                  )}
+                >
+                  {styleBaselineReady ? '质量基线已就绪' : '缺少正反样本'}
+                </span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 {PERSON_LABEL[form.narrativePerson]} · {DISTANCE_LABEL[form.narrativeDistance]} ·{' '}
@@ -449,7 +468,7 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
           </Button>
         </div>
 
-        <div className="grid grid-cols-3 divide-x divide-border/70 text-center">
+        <div className="grid grid-cols-4 divide-x divide-border/70 text-center">
           <div>
             <div className="text-xs font-medium tabular-nums text-text">{form.dialogueRatio}%</div>
             <div className="mt-0.5 text-[10px] text-muted-foreground">对话占比</div>
@@ -464,7 +483,13 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
             <div className="text-xs font-medium tabular-nums text-text">
               {form.positiveExamples.length}
             </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">参考样本</div>
+            <div className="mt-0.5 text-[10px] text-muted-foreground">正向样本</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium tabular-nums text-text">
+              {form.negativeExamples.length}
+            </div>
+            <div className="mt-0.5 text-[10px] text-muted-foreground">反向样本</div>
           </div>
         </div>
       </div>
@@ -765,6 +790,69 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
                     </section>
                   ))
                 )}
+
+                <div className="mt-8 flex items-center justify-between gap-3 border-t border-border pt-5">
+                  <div>
+                    <h3 className="text-sm font-medium text-text">反向文风样本</h3>
+                    <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+                      用于标记不希望模型模仿的句式和段落节奏，{form.negativeExamples.length} / 5
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={form.negativeExamples.length >= 5}
+                    onClick={() =>
+                      setForm((current) => ({
+                        ...current,
+                        negativeExamples: [...current.negativeExamples, '## 不希望出现的写法\n\n']
+                      }))
+                    }
+                  >
+                    <Plus className="size-4" />
+                    添加反例
+                  </Button>
+                </div>
+
+                {form.negativeExamples.map((example, index) => (
+                  <section key={`negative-${index}`} className="border-t border-border pt-4">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                        反例 {index + 1}
+                      </span>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        title={`删除反例 ${index + 1}`}
+                        aria-label={`删除反例 ${index + 1}`}
+                        onClick={() =>
+                          setForm((current) => ({
+                            ...current,
+                            negativeExamples: current.negativeExamples.filter(
+                              (_, itemIndex) => itemIndex !== index
+                            )
+                          }))
+                        }
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                    <MarkdownField
+                      label={`反例 ${index + 1} 内容`}
+                      value={example}
+                      onChange={(value) =>
+                        setForm((current) => ({
+                          ...current,
+                          negativeExamples: current.negativeExamples.map((item, itemIndex) =>
+                            itemIndex === index ? value : item
+                          )
+                        }))
+                      }
+                      minHeight={220}
+                    />
+                  </section>
+                ))}
               </div>
             </TabsContent>
 

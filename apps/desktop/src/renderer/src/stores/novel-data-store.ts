@@ -243,12 +243,16 @@ export const useNovelDataStore = create<NovelDataState>()(
           // 前端过滤 arrangedEntities 时会把不属于当前项目的实体传给后端导致 400。
           // persist 的 localStorage 也会跨会话携带残留，必须在此清空。
           if (prevId !== projectId) {
-            useNovelDataStore.temporal.getState().clear()
             // 项目切换时统一清理 UI store 的项目相关状态
             useNovelUiStore.getState().resetForProjectSwitch()
             set({
               ...emptyEntities(),
+              currentProjectId: projectId,
             })
+            // 清空实体本身会被 zundo 记录为一次可撤销操作，因此必须在 set 之后
+            // 再清历史，避免 undo 把上一个项目的数据带回当前项目。
+            useNovelDataStore.temporal.getState().clear()
+            return
           }
           set({ currentProjectId: projectId })
         },

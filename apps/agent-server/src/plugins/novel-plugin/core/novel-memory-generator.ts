@@ -673,8 +673,10 @@ export class NovelMemoryGenerator {
     }
 
     // 线索：普通证据/异常应优先更新这里，而不是创建新伏笔。
+    const arrangedClueIds = new Set(arranged?.clueIds ?? [])
     const clues = this.store.listClues(projectId).filter((clue) =>
       includeAll
+      || arrangedClueIds.has(clue.id)
       || includesText(clue.description.slice(0, 12))
       || includesText(clue.pointsTo.slice(0, 12))
       || (clue.linkedForeshadow ? arrangedForeshadowIds.has(clue.linkedForeshadow) : false),

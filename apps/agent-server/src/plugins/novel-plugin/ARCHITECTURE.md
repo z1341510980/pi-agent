@@ -110,6 +110,9 @@ export interface ArrangedEntity {
   characterIds: string[]
   conflictIds: string[]
   foreshadowIds: string[]
+  clueIds?: string[]
+  factionIds: string[]
+  locationIds: string[]
 }
 ```
 
@@ -130,6 +133,7 @@ export interface ArrangedEntity {
 | `getChapterById(chapterId)` | 按 ID 查章节 |
 | `getCharacter(characterId)` | 按 ID 查角色（供 arrangedEntities 注入用） |
 | `getForeshadow(foreshadowId)` | 按 ID 查伏笔 |
+| `getClue(clueId)` | 按 ID 查线索 |
 | `getConflict(conflictId)` | 按 ID 查冲突 |
 | `getClue(clueId)` | 按 ID 查线索 |
 | `getRelationship(relationshipId)` | 按 ID 查关系 |
@@ -312,14 +316,20 @@ NovelPromptBuilder 只读取数据，定义了 18 个读方法。除了常规 li
   │     任务："请根据叙事任务创作第 N 章正文。"
   │     附带 narrativeTask: directorResult
   │
-  ├── Phase 3: Reviewer  runAgent('reviewer', ...)
-  │     任务："请验收第 N 章的内容。"
-  │     附带 content: writerResult
+  ├── 确定性质量门
+  │     PostWriteGuard：退化、字数失控、矩阵角色缺失
+  │     ProseQualityEvaluator：碎段、短段、解释腔、模板句式
+  │
+  ├── Phase 3a: 文字盲审  runAgent('reviewer', contextMode='identity_only')
+  │     只携带正文、文风档案和形态扫描，不携带 Director 方案或世界状态
+  │
+  ├── Phase 3b: 完整 Reviewer  runAgent('reviewer', ...)
+  │     综合盲审意见、矩阵、连续性和 Director 方案输出最终报告
   │
   ├── 检查点 2（review）
   │   onCheckpoint({ type: 'review', data: reviewResult })
   │   ├─ approve  → 跳过修订，直接进 Memory
-  │   ├─ revise   → runAgent('writer', 修订, displayAgentType='reviser')
+  │   ├─ revise   → runAgent('reviser') 输出“原文/修改后”局部补丁
   │   └─ rewrite  → 递归调用 createChapterWithFlow（重新开始）
   │
   ├── Phase 5: Memory  runAgent('memory', ...)
@@ -333,7 +343,7 @@ NovelPromptBuilder 只读取数据，定义了 18 个读方法。除了常规 li
   │
   └── [出口] 返回 { status: 'completed', content, stateChanges }
 
-  finally: this.currentArrangedEntities = undefined
+  运行态通过 AsyncLocalStorage 隔离，并发章节不会共享 arrangedEntities
 ```
 
 ### 6.2 arrangedEntities 数据流（**重点**）
@@ -378,9 +388,17 @@ options.arrangedEntities
 
 ### 6.4 长期记忆机制
 
-- `captureEntityState(projectId)` — 捕获角色/冲突/伏笔的 Map
-- `recordMemoryEvents(...)` — 比较前后差异，记录 `character_change` / `conflict_change` / `foreshadow_change` 三类事件到 `NovelMemoryStore`
+- `captureEntityState(projectId)` — 捕获角色、冲突、伏笔、线索、势力、地点、关系和信息差状态
+- `recordMemoryEvents(...)` — 比较前后差异，把角色、冲突、伏笔、线索等变化记录到 `NovelMemoryStore`
 - `saveChapterSnapshot` — 保存全量状态快照（characters + conflicts + foreshadowing + relationships）
+
+### 6.5 Discussion 正文质量边界
+
+- Moderator 只给角色刺激、风险和选择，不得预设结论、方案、台词或情绪答案。
+- 工种成员读取矩阵 shared context；角色成员读取 `buildContextPrompt()` 生成的私有上下文，只包含上一章结尾、当前场景、本角色相关冲突及其知道/怀疑/误解的信息。
+- 角色输出必须符合 `[可见动作] “角色台词”`。格式错误重试一次，仍失败时保守归一化；“意图/心理/应对”提纲不进入 Writer 剧本。
+- Writer 只接收按场景整理后的角色演出，不接收 Moderator 的完整决策历史。
+- 完章后与 create-flow 共用“正文形态扫描 → 文字盲审 → 完整 Reviewer → applySafeRevision 局部修订 → ChapterFinalizer”。
 
 ---
 
@@ -568,7 +586,7 @@ interface NovelCharacter {
 | `role-writer.md` | 写作职责：根据任务创作正文、保持文风、推进弧光/伏笔/冲突；含写作风格要求（禁破折号转折、开头直接进场景、结尾止于画面、语言干净） | writer 的 `agent_role` |
 | `role-reviewer.md` | 审稿职责：检查一致性、评估任务完成度、检查信息差、评分 accept/revise/reject；绝不创作或改写 | reviewer 的 `agent_role` |
 | `role-memory.md` | 记忆职责：**必须通过工具更新状态**，含角色/伏笔/冲突/线索/关系工具使用指南，工作流程 | memory 的 `agent_role` |
-| `role-reviser.md` | 修订职责：根据审稿反馈重写局部、保持上下文衔接、不破坏整体结构 | （通过 `displayAgentType='reviser'` 在修订阶段使用，但实际仍用 writer agentType 的 system prompt） |
+| `role-reviser.md` | 修订职责：根据审稿 Findings 输出可精确定位的“原文/修改后”局部补丁 | reviser 的 `agent_role`，补丁由 `applySafeRevision` 确定性应用 |
 | `role-character.md` | 角色管家：管理静态设定、跟踪动态状态、维护弧光、管理关系 | （备用角色模板，未在 4 个核心 Agent 中直接使用） |
 | `role-clue.md` | 线索管家：管理伏笔生命周期、跟踪线索进度、确保叙事债务回收 | （备用） |
 | `role-settings.md` | 设定管家：管理力量体系/魔法/科技/政治经济、确保规则一致性、区分固定/阶段规则 | （备用） |

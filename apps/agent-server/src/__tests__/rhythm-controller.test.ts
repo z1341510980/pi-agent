@@ -8,19 +8,25 @@ describe('RhythmController - 静态模型', () => {
   })
 
   it('DEFAULT_MODEL 第 6 章为小高潮 climax', () => {
-    expect(RhythmController.DEFAULT_MODEL.sequence[5]).toBe('climax')
+    expect(RhythmController.DEFAULT_MODEL.sequence[5]).toEqual({
+      rhythm: 'climax', climaxIntensity: 'minor',
+    })
   })
 
   it('DEFAULT_MODEL 第 12 章为大高潮 climax', () => {
-    expect(RhythmController.DEFAULT_MODEL.sequence[11]).toBe('climax')
+    expect(RhythmController.DEFAULT_MODEL.sequence[11]).toEqual({
+      rhythm: 'climax', climaxIntensity: 'major', climaxType: 'composite',
+    })
   })
 
   it('WEBNOVEL_MODEL 第 3 章为 climax', () => {
-    expect(RhythmController.WEBNOVEL_MODEL.sequence[2]).toBe('climax')
+    expect(RhythmController.WEBNOVEL_MODEL.sequence[2]).toEqual({
+      rhythm: 'climax', climaxIntensity: 'minor', climaxType: 'combat',
+    })
   })
 
   it('WEBNOVEL_MODEL 第 8 章为 twist 转折', () => {
-    expect(RhythmController.WEBNOVEL_MODEL.sequence[7]).toBe('twist')
+    expect(RhythmController.WEBNOVEL_MODEL.sequence[7]).toEqual({ rhythm: 'twist' })
   })
 
   it('MODELS 包含两个模型', () => {

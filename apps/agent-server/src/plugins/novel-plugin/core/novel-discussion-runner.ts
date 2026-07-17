@@ -34,7 +34,9 @@ import { NovelSessionFactory } from './novel-session.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
 import type { NovelCharacter, NarrativeTask, ArrangedEntity, VersionSource } from './types.js'
-import { sanitizeNovelProse } from './agent-run-utils.js'
+import { applySafeRevision, sanitizeNovelProse } from './agent-run-utils.js'
+import { parseChapterReviewReport } from './chapter-review-parser.js'
+import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
 
 /** 群聊参与工种（不含 memory，memory 由 ChapterFinalizer 收尾阶段调用） */
 const DISCUSSION_AGENT_TYPES: NovelAgentType[] = ['director', 'writer', 'reviewer', 'reviser']
@@ -72,6 +74,23 @@ export class NovelDiscussionRunner {
     let discussionResult: DiscussionResult | undefined
     let outerPhase: DiscussionPhase | undefined
     try {
+      const styleProfile = this.store.getWritingStyleProfile(projectId)
+      if (!styleProfile || styleProfile.positiveExamples.length === 0 || styleProfile.negativeExamples.length === 0) {
+        options.onProgress({
+          type: 'phase_change',
+          phase: 'planning',
+          data: {
+            message: '文风质量基线尚未完整配置，本次仍可创作，但正文声音可能不稳定',
+            detail: {
+              kind: 'style_baseline_warning',
+              hasProfile: Boolean(styleProfile),
+              positiveExamples: styleProfile?.positiveExamples.length ?? 0,
+              negativeExamples: styleProfile?.negativeExamples.length ?? 0,
+            },
+          },
+          timestamp: Date.now(),
+        })
+      }
       // 1. 构建约束 + 默认叙事任务
       const chapter = this.store.getChapter(projectId, chapterNumber)
       const constraints = this.engine.buildChapterConstraints(
@@ -79,6 +98,7 @@ export class NovelDiscussionRunner {
         chapterNumber,
         undefined,
         chapter?.positioning,
+        arrangedEntities,
       )
       const narrativeTask = this.buildDefaultNarrativeTask(projectId, chapterNumber)
 
@@ -100,11 +120,9 @@ export class NovelDiscussionRunner {
         targetWords: constraints.wordBudget?.target
           ?? this.promptBuilder.computeChapterTargetWords(this.store.getProject(projectId)),
         requiredMentions: arrangedEntities
-          ? [
-              ...arrangedEntities.characterIds.map(id => this.store.getCharacter(id)?.name),
-              ...arrangedEntities.factionIds.map(id => this.store.getFaction(id)?.name),
-              ...arrangedEntities.locationIds.map(id => this.store.getLocation(id)?.name),
-            ].filter((name): name is string => !!name && !/（待定）|待补充|待定$/.test(name))
+          ? arrangedEntities.characterIds
+              .map(id => this.store.getCharacter(id)?.name)
+              .filter((name): name is string => !!name && !/（待定）|待补充|待定$/.test(name))
           : undefined,
         constraints: {
           facts: constraints.facts.map((c) => c.rule),
@@ -173,7 +191,7 @@ export class NovelDiscussionRunner {
       const engineOptions: DiscussionOptions = {
         ...options,
         resolveCharacterMembers: (characterNames) =>
-          this.resolveCharacterMembers(projectId, characterNames),
+          this.resolveCharacterMembers(projectId, chapterNumber, arrangedEntities, characterNames),
         onProgress: (event) => {
           const mappedPhase = phaseMap[event.phase] ?? 'writing'
           options.onProgress({
@@ -191,6 +209,8 @@ export class NovelDiscussionRunner {
         // 最终整章 Reviewer 已覆盖整体质量门，默认关闭逐角色即时审查，
         // 避免角色数 × 对戏轮数的额外 LLM 调用。底层引擎仍保留显式开启能力。
         reviewCharacterSpeech: false,
+        buildProseQualityReport: content => formatProseQualityReport(evaluateProseQuality(content)),
+        applyRevision: (original, rawRevision) => applySafeRevision(original, rawRevision),
         onMemberInvocation: (invocation) => {
           const agentType = invocation.member.type === 'character'
             ? 'character'
@@ -229,6 +249,26 @@ export class NovelDiscussionRunner {
         ? await discussionEngine.resumeChapterWeaving(goal, members, engineOptions, resumeState)
         : await discussionEngine.run(goal, members, engineOptions)
       discussionResult = result
+
+      const reviewerReport = [...result.transcript]
+        .reverse()
+        .find((message) => message.fromId === 'novel-reviewer')?.content
+      const reviewedChapter = this.store.getChapter(projectId, chapterNumber)
+      if (reviewerReport && reviewedChapter) {
+        try {
+          await this.engine.saveReview({
+            projectId,
+            chapterId: reviewedChapter.id,
+            ...parseChapterReviewReport(reviewerReport),
+            reviewedBy: 'novel-reviewer',
+          })
+        } catch (error) {
+          this.context.logger.warn(
+            { error, projectId, chapterNumber },
+            '群聊章节审稿报告持久化失败，不阻断创作流程',
+          )
+        }
+      }
 
       // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
       if (result.status === 'completed' && result.content) {
@@ -365,6 +405,9 @@ export class NovelDiscussionRunner {
         buildFinalReviewIdentityPrompt: agentType === 'reviewer'
           ? () => this.promptBuilder.buildAgentIdentity(projectId, agentType, false)
           : undefined,
+        buildProseEditorIdentityPrompt: agentType === 'reviewer'
+          ? () => this.promptBuilder.buildProseEditorIdentity(projectId)
+          : undefined,
         // 透传 AgentPage 配置的 modelId / temperature，让 4 大 Agent 的群聊调用按用户配置走
         modelId: agentConfig?.model,
         temperature: agentConfig?.temperature,
@@ -379,14 +422,19 @@ export class NovelDiscussionRunner {
     const characters = this.store.listCharacters(projectId)
       .filter(character => !arrangedCharacterIds || arrangedCharacterIds.has(character.id))
     for (const char of characters) {
-      members.push(this.buildCharacterMember(projectId, char))
+      members.push(this.buildCharacterMember(projectId, _chapterNumber, char, arrangedEntities))
     }
 
     return members
   }
 
   /** 构建角色成员 */
-  private buildCharacterMember(projectId: string, char: NovelCharacter): DiscussionMember {
+  private buildCharacterMember(
+    projectId: string,
+    chapterNumber: number,
+    char: NovelCharacter,
+    arrangedEntities?: ArrangedEntity,
+  ): DiscussionMember {
     return {
       id: `char-${char.id}`,
       type: 'character',
@@ -402,8 +450,14 @@ export class NovelDiscussionRunner {
         participatingConflicts: this.parseIdList(char.participatingConflicts),
       },
       // 角色共用一个极小且稳定的 system；角色卡和演出职责放在 identity 前缀。
-      // 这样同章多个角色之间也能复用 shared 章节上下文缓存。
+      // 角色不再读取工种的全知 shared context，而是只读取本人可见上下文。
       buildSystemPrompt: () => this.buildCharacterSystemPrompt(),
+      buildContextPrompt: () => this.buildCharacterVisibleContext(
+        projectId,
+        chapterNumber,
+        char,
+        arrangedEntities,
+      ),
       buildIdentityPrompt: () => this.buildCharacterPrompt(projectId, char),
     }
   }
@@ -443,7 +497,12 @@ export class NovelDiscussionRunner {
   }
 
   /** 为 Director 临时引入、但角色库尚未建档的人物创建本次运行使用的 Agent。 */
-  private resolveCharacterMembers(projectId: string, characterNames: string[]): DiscussionMember[] {
+  private resolveCharacterMembers(
+    projectId: string,
+    chapterNumber: number,
+    arrangedEntities: ArrangedEntity | undefined,
+    characterNames: string[],
+  ): DiscussionMember[] {
     const existingCharacters = this.store.listCharacters(projectId)
     const byName = new Map(
       existingCharacters.map(character => [this.normalizeCharacterName(character.name), character]),
@@ -451,7 +510,7 @@ export class NovelDiscussionRunner {
 
     return characterNames.map((name) => {
       const existing = byName.get(this.normalizeCharacterName(name))
-      if (existing) return this.buildCharacterMember(projectId, existing)
+      if (existing) return this.buildCharacterMember(projectId, chapterNumber, existing, arrangedEntities)
 
       const stableSuffix = Array.from(name)
         .map(char => char.codePointAt(0)?.toString(16) ?? '')
@@ -471,6 +530,12 @@ export class NovelDiscussionRunner {
           participatingConflicts: [],
         },
         buildSystemPrompt: () => this.buildCharacterSystemPrompt(),
+        buildContextPrompt: () => this.buildCharacterVisibleContext(
+          projectId,
+          chapterNumber,
+          undefined,
+          arrangedEntities,
+        ),
         buildIdentityPrompt: () => [
           `你是小说中的临时角色「${name.trim()}」。当前角色库没有你的完整角色卡。`,
           '只依据 Director 给出的场景信息行动，不得自行虚构重大背景、秘密或世界设定。',
@@ -485,6 +550,65 @@ export class NovelDiscussionRunner {
       )
       return member
     })
+  }
+
+  /**
+   * 角色可见上下文：只给场景锚点、上一章结尾和角色本人确实知道/怀疑/误解的信息。
+   * 作者真相、其他角色秘密、全局信息差状态继续留在 Director/Writer/Reviewer 上下文。
+   */
+  private buildCharacterVisibleContext(
+    projectId: string,
+    chapterNumber: number,
+    char: NovelCharacter | undefined,
+    arrangedEntities?: ArrangedEntity,
+  ): string {
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    const previous = chapterNumber > 1 ? this.store.getChapter(projectId, chapterNumber - 1) : undefined
+    const previousTail = previous?.content?.trim().slice(-900) ?? ''
+    const lines = [
+      `## 本回合可见背景`,
+      `- 当前章节：第 ${chapterNumber} 章`,
+      `- 本章任务：${chapter?.outline?.trim() || chapter?.narrativeTask?.trim() || '由当前场景推动'}`,
+    ]
+    if (chapter?.positioning) lines.push(`- 章节定位：${chapter.positioning}`)
+    if (previousTail) lines.push(`\n### 上一章结尾（角色只能按自身经历理解）\n${previousTail}`)
+
+    const conflictLines = (arrangedEntities?.conflictIds ?? [])
+      .map(id => this.store.getConflict(id))
+      .filter(conflict => conflict && (!char || this.parseIdList(conflict.participants).includes(char.id)))
+      .slice(0, 3)
+      .map(conflict => `- ${conflict!.description}；当前阶段：${conflict!.stage}；代价：${conflict!.stakes || '未明'}`)
+    if (conflictLines.length > 0) lines.push(`\n### 你正身处的冲突\n${conflictLines.join('\n')}`)
+
+    const locationLines = (arrangedEntities?.locationIds ?? [])
+      .map(id => this.store.getLocation(id))
+      .filter((location): location is NonNullable<typeof location> => !!location)
+      .slice(0, 3)
+      .map(location => `- ${location.name}：${location.description.slice(0, 180)}`)
+    if (locationLines.length > 0) lines.push(`\n### 当前可能出现的地点\n${locationLines.join('\n')}`)
+
+    if (char) {
+      const knowledge: string[] = []
+      for (const layer of this.store.listInformationLayers(projectId)) {
+        try {
+          const map = JSON.parse(layer.characterKnowledge) as Record<string, {
+            knows?: boolean
+            suspects?: boolean
+            misunderstands?: string
+          }>
+          const state = map[char.id]
+          if (!state) continue
+          if (state.knows) knowledge.push(`- 你知道：${layer.infoDescription}`)
+          else if (state.suspects) knowledge.push(`- 你有所怀疑：${layer.infoDescription}`)
+          else if (state.misunderstands) knowledge.push(`- 你目前相信：${state.misunderstands}`)
+        } catch {
+          // 旧数据可能不是合法 JSON；宁可不注入，也不把作者真相暴露给角色。
+        }
+      }
+      if (knowledge.length > 0) lines.push(`\n### 你的认知边界\n${knowledge.slice(0, 8).join('\n')}`)
+    }
+    lines.push('\n只依据以上内容、角色卡、当前场景和已经听到的台词行动。未出现的信息视为不知道。')
+    return lines.join('\n')
   }
 
   private normalizeCharacterName(name: string): string {

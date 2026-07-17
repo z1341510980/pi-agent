@@ -28,6 +28,7 @@ import { EventType } from '@ag-ui/core'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import { persistDiscussionHistory } from './core/discussion-history.js'
 import type { DiscussionResult } from '../../core/agent/discussion-types.js'
+import { evaluateProseQuality } from './core/prose-quality-evaluator.js'
 
 /** 同一章节 ai-arrange 并发锁，key 为 `${projectId}:${chapterNumber}` */
 const aiArrangeLocks = new Map<string, Promise<void>>()
@@ -125,6 +126,7 @@ const arrangedEntitiesSchema = z.object({
   characterIds: z.array(z.string()).max(200).optional().default([]),
   conflictIds: z.array(z.string()).max(200).optional().default([]),
   foreshadowIds: z.array(z.string()).max(200).optional().default([]),
+  clueIds: z.array(z.string()).max(200).optional().default([]),
   factionIds: z.array(z.string()).max(200).optional().default([]),
   locationIds: z.array(z.string()).max(200).optional().default([]),
 })
@@ -1698,6 +1700,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     hardRules: z.array(z.string().trim().min(1).max(300)).max(20).default([]),
     softRules: z.array(z.string().trim().min(1).max(300)).max(20).default([]),
     positiveExamples: z.array(z.string().trim().min(20).max(3000)).max(5).default([]),
+    negativeExamples: z.array(z.string().trim().min(20).max(3000)).max(5).default([]),
     notes: z.string().max(2000).default(''),
   })
 
@@ -1727,6 +1730,21 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const target = request.query?.target
       const normalizedTarget = target === 'reviser' || target === 'reviewer' ? target : 'writer'
       return success(services.promptBuilder.buildWritingStylePrompt(request.params.projectId, normalizedTarget) ?? null, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/chapters/:chapterNumber/prose-quality',
+    handler: async (request: any) => {
+      const chapterNumber = Number(request.params.chapterNumber)
+      const chapter = Number.isInteger(chapterNumber)
+        ? store.getChapter(request.params.projectId, chapterNumber)
+        : undefined
+      if (!chapter) {
+        throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.chapterNumber}`, 404)
+      }
+      return success(evaluateProseQuality(chapter.content ?? ''), request.traceId)
     },
   })
 
@@ -2344,6 +2362,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
             characterIds: input.arrangedEntities.characterIds,
             conflictIds: input.arrangedEntities.conflictIds,
             foreshadowIds: input.arrangedEntities.foreshadowIds,
+            clueIds: input.arrangedEntities.clueIds,
             factionIds: input.arrangedEntities.factionIds,
             locationIds: input.arrangedEntities.locationIds,
           }
@@ -2359,6 +2378,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         }
         for (const id of arrangedEntities.foreshadowIds) {
           if (store.getForeshadow(id)?.projectId !== projectId) invalid.push(`foreshadow:${id}`)
+        }
+        for (const id of arrangedEntities.clueIds) {
+          if (store.getClue(id)?.projectId !== projectId) invalid.push(`clue:${id}`)
         }
         for (const id of arrangedEntities.factionIds) {
           if (store.getFaction(id)?.projectId !== projectId) invalid.push(`faction:${id}`)
@@ -2514,6 +2536,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
             characterIds: input.arrangedEntities.characterIds,
             conflictIds: input.arrangedEntities.conflictIds,
             foreshadowIds: input.arrangedEntities.foreshadowIds,
+            clueIds: input.arrangedEntities.clueIds,
             factionIds: input.arrangedEntities.factionIds,
             locationIds: input.arrangedEntities.locationIds,
           }
@@ -2530,6 +2553,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         }
         for (const id of arrangedEntities.foreshadowIds) {
           if (store.getForeshadow(id)?.projectId !== projectId) invalid.push(`foreshadow:${id}`)
+        }
+        for (const id of arrangedEntities.clueIds) {
+          if (store.getClue(id)?.projectId !== projectId) invalid.push(`clue:${id}`)
         }
         for (const id of arrangedEntities.factionIds) {
           if (store.getFaction(id)?.projectId !== projectId) invalid.push(`faction:${id}`)
@@ -2930,6 +2956,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         const totalCount = arrangedEntities.characterIds.length
           + arrangedEntities.conflictIds.length
           + arrangedEntities.foreshadowIds.length
+          + (arrangedEntities.clueIds ?? []).length
           + arrangedEntities.factionIds.length
           + arrangedEntities.locationIds.length
         emitter.progress({
@@ -2944,6 +2971,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
             characters: arrangedEntities.characterIds.length,
             conflicts: arrangedEntities.conflictIds.length,
             foreshadows: arrangedEntities.foreshadowIds.length,
+            clues: (arrangedEntities.clueIds ?? []).length,
             factions: arrangedEntities.factionIds.length,
             locations: arrangedEntities.locationIds.length,
           },
@@ -3039,6 +3067,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         const totalCount = arrangedEntities.characterIds.length
           + arrangedEntities.conflictIds.length
           + arrangedEntities.foreshadowIds.length
+          + (arrangedEntities.clueIds ?? []).length
           + arrangedEntities.factionIds.length
           + arrangedEntities.locationIds.length
         emitter.progress({
@@ -3052,6 +3081,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
             characters: arrangedEntities.characterIds.length,
             conflicts: arrangedEntities.conflictIds.length,
             foreshadows: arrangedEntities.foreshadowIds.length,
+            clues: (arrangedEntities.clueIds ?? []).length,
             factions: arrangedEntities.factionIds.length,
             locations: arrangedEntities.locationIds.length,
           },

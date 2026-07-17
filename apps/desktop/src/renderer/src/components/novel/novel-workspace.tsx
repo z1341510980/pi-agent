@@ -514,6 +514,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       foreshadowIds: foreshadows
         .filter((f) => foreshadowHasBeatAtChapter(f, playhead))
         .map((f) => f.id),
+      clueIds: clues.filter((clue) =>
+        clue.chapterSpans.some(([start, end]) => playhead >= start && playhead <= end)
+      ).map((clue) => clue.id),
       factionIds: factions.filter((f) =>
         f.chapterSpans.some(([s, e]) => playhead >= s && playhead <= e)
       ).map((f) => f.id),
@@ -521,7 +524,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         return l.appearChapters.includes(playhead)
       }).map((l) => l.id),
     }
-  }, [characters, characterHistory, conflicts, foreshadows, factions, locations])
+  }, [characters, characterHistory, conflicts, foreshadows, clues, factions, locations])
 
   /** 所有章节任务的唯一分发入口；同时记录快照，保证失败重试执行同一种任务。 */
   const runChapterTask = useCallback(async (task: ChapterTaskSnapshot): Promise<void> => {

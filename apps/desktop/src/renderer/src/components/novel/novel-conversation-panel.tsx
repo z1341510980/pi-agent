@@ -44,11 +44,17 @@ interface FlowTab {
   type: NovelFlowType
   label: string
   icon: LucideIcon
+  description?: string
 }
 
 const FLOW_TABS: FlowTab[] = [
   { type: 'workflow', label: '工作流', icon: Workflow },
-  { type: 'discussion', label: '群聊', icon: MessagesSquare },
+  {
+    type: 'discussion',
+    label: '群聊·高级',
+    icon: MessagesSquare,
+    description: '适合多角色谈判、博弈和高潮场景；调用轮次和耗时高于默认工作流',
+  },
   { type: 'reverse', label: '反推', icon: RotateCcw },
   { type: 'arrange', label: '矩阵编排', icon: LayoutGrid },
   { type: 'chat', label: '聊天', icon: MessageCircle },
@@ -435,7 +441,9 @@ export function NovelConversationPanel({
       ? '点击"开始"从章节正文反向提取实体到矩阵'
       : isArrangeMode
         ? '点击"开始"让 AI 自动编排本章矩阵实体'
-        : '点击"开始"启动创作流程'
+        : flowType === 'discussion'
+          ? '用于多角色谈判、博弈和高潮场景。普通章节优先使用工作流'
+          : '点击"开始"启动创作流程'
 
   // 空状态标题
   const emptyTitle = isChatMode
@@ -444,7 +452,9 @@ export function NovelConversationPanel({
       ? '反推实体'
       : isArrangeMode
         ? 'AI 矩阵编排'
-        : '开始创作'
+        : flowType === 'discussion'
+          ? '高级群聊共创'
+          : '开始创作'
   const isEmpty = messages.length === 0
   const activeError = isChatMode ? chapterChatError : error
   const activeIsRunning = isChatMode ? !!chapterChatRunning : isRunning
@@ -467,6 +477,7 @@ export function NovelConversationPanel({
                   }
                 }}
                 disabled={tabDisabled}
+                title={tab.description}
                 className={cn(
                   'relative inline-flex items-center gap-1 px-2.5 h-[30px] text-[11px] font-medium transition-colors',
                   'disabled:cursor-not-allowed disabled:opacity-50',

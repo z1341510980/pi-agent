@@ -23,6 +23,7 @@ const profileInput: NovelWritingStyleProfileInput = {
   hardRules: ['不使用长横线破折号', '不替读者总结'],
   softRules: ['动作优先'],
   positiveExamples: ['雨落下来——院子里没有人动。檐下的水一滴一滴砸在石阶上。'],
+  negativeExamples: ['这不是普通的雨，而是命运的预告。这意味着真正的故事才刚刚开始。'],
   notes: '观察距离贴近当前角色。',
 }
 
@@ -58,6 +59,7 @@ describe('writing style profile', () => {
       name: '第二版',
       hardRules: profileInput.hardRules,
       positiveExamples: profileInput.positiveExamples,
+      negativeExamples: profileInput.negativeExamples,
     })
   })
 
@@ -68,6 +70,7 @@ describe('writing style profile', () => {
 
     expect(writer.content).toContain('项目文风档案：冷峻测试文风')
     expect(writer.content).toContain('正向文风样本')
+    expect(writer.content).toContain('反向文风样本')
     expect(writer.content).not.toContain('——')
     expect(reviewer.content).toContain('文风验收方式')
     expect(reviewer.profileHash).not.toBe(writer.profileHash)
@@ -80,6 +83,7 @@ describe('writing style profile', () => {
       hardRules: Array.from({ length: 20 }, (_, i) => `硬规则${i + 1}：${'必须保持一致。'.repeat(50)}`),
       softRules: Array.from({ length: 20 }, (_, i) => `软偏好${i + 1}：${'可以适度使用。'.repeat(50)}`),
       positiveExamples: Array.from({ length: 5 }, (_, i) => `样本${i + 1}：${'角色推开门，屋内无人。'.repeat(100)}`),
+      negativeExamples: Array.from({ length: 5 }, (_, i) => `反例${i + 1}：${'这意味着一切才刚刚开始。'.repeat(100)}`),
       notes: '补充说明。'.repeat(500),
     }, 'writer')
 

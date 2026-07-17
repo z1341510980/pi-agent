@@ -266,18 +266,18 @@ export function ContextPanel({
         {memorySummary ? (
           <div className="grid gap-1">
             <p className="text-[10px] text-text-secondary m-0 line-clamp-3">{memorySummary.summary}</p>
-            {memorySummary.topics.length > 0 && (
+            {(memorySummary.topics?.length ?? 0) > 0 && (
               <div className="flex flex-wrap gap-1">
-                {memorySummary.topics.slice(0, 4).map((topic) => (
+                {memorySummary.topics?.slice(0, 4).map((topic) => (
                   <span key={topic} className="text-[9px] px-1 py-px rounded bg-surface-3 text-subtle">
                     {topic}
                   </span>
                 ))}
               </div>
             )}
-            {memorySummary.keyDecisions.length > 0 && (
+            {(memorySummary.keyDecisions?.length ?? 0) > 0 && (
               <ul className="grid gap-0.5">
-                {memorySummary.keyDecisions.slice(0, 3).map((decision, i) => (
+                {memorySummary.keyDecisions?.slice(0, 3).map((decision, i) => (
                   <li key={i} className="text-[10px] text-subtle m-0 truncate">
                     · {decision}
                   </li>

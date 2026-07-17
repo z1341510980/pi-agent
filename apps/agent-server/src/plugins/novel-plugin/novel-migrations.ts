@@ -845,4 +845,9 @@ export const novelMigrations: MigrationDefinition[] = [
     id: '068_add_clue_chapter_spans',
     sql: `ALTER TABLE novel_clues ADD COLUMN chapter_spans TEXT NOT NULL DEFAULT '[]';`,
   },
+  {
+    // 文风反例：与正向样本一起形成可回归的项目级质量基线。
+    id: '069_add_writing_style_negative_examples',
+    sql: `ALTER TABLE novel_writing_style_profiles ADD COLUMN negative_examples TEXT NOT NULL DEFAULT '[]';`,
+  },
 ]

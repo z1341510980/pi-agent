@@ -22,7 +22,7 @@
  * 检查点 1（narrative_task）：在 Director 生成叙事任务后，等待用户确认。
  *   - approve：继续 Writer 阶段
  *   - reject：取消整个创作流程
- *   - revise/rewrite：当前实现中视为 approve 继续（可扩展）
+ *   - revise/rewrite：根据用户意见重新调用 Director
  *
  * 检查点 2（review）：在 Reviewer 生成验收报告后，等待用户确认。
  *   - approve：跳过修订，直接进入 Memory 阶段
@@ -63,6 +63,8 @@ import {
   type LlmUsageSnapshot,
 } from './agent-run-utils.js'
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
+import { parseChapterReviewReport } from './chapter-review-parser.js'
+import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
 export type { CreationOptions, CreationResult } from '../../../core/agent/chapter-finalizer.js'
 
 interface CreationRunContext {
@@ -71,6 +73,14 @@ interface CreationRunContext {
   directorTask?: NarrativeTask
   rhythmSuggestion?: RhythmSuggestion
   semiLayerSharedCache: { key: string; value: string } | null
+}
+
+interface PostWriteGuardResult {
+  shouldRewrite: boolean
+  reason: string
+  details?: string
+  /** 非致命偏差：不重写整章，交给 Reviewer 做语义和质量判断。 */
+  advisory?: boolean
 }
 
 export class NovelOrchestrator {
@@ -152,6 +162,18 @@ export class NovelOrchestrator {
     // 避免上一章/上一次创作的 shared 字符串残留导致 LLM 缓存条目错配。
     run.semiLayerSharedCache = null
     try {
+      const styleProfile = this.store.getWritingStyleProfile(projectId)
+      if (!styleProfile || styleProfile.positiveExamples.length === 0 || styleProfile.negativeExamples.length === 0) {
+        this.emitProgress(options, 'directing', 'phase_change', {
+          message: '文风质量基线尚未完整配置，本次仍可创作，但正文声音可能不稳定',
+          detail: {
+            kind: 'style_baseline_warning',
+            hasProfile: Boolean(styleProfile),
+            positiveExamples: styleProfile?.positiveExamples.length ?? 0,
+            negativeExamples: styleProfile?.negativeExamples.length ?? 0,
+          },
+        })
+      }
       // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）
       const rhythmController = new RhythmController()
       const project = this.store.getProject(projectId)
@@ -222,7 +244,7 @@ export class NovelOrchestrator {
           return { status: 'cancelled' }
         }
 
-        if (narrativeDecision === 'rewrite') {
+        if (narrativeDecision === 'rewrite' || narrativeDecision === 'revise') {
           // 用户补充了修改意见，重新调用 Director
           // userMessages 已由 setUserMessages 设置，runAgent 会注入 Director 输入
           this.emitProgress(options, 'directing', 'phase_change', { message: '按修改意见重新规划叙事任务...' })
@@ -303,6 +325,9 @@ export class NovelOrchestrator {
       let directorPushbackCount = 0
       let writerGuardRewriteCount = guardRewriteCount
       let writerGuardRewriteReason = ''
+      let writerGuardRewriteDetails = ''
+      let finalPostWriteGuard: PostWriteGuardResult | undefined
+      let bestWriterCandidate: { content: string; score: number } | undefined
       const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
 
       while (true) {
@@ -317,7 +342,7 @@ export class NovelOrchestrator {
         // 推回机制已在 role-writer 中定义，动态消息无需重复。
         writerResult = await this.runAgent('writer', projectId, chapterNumber,
           writerGuardRewriteReason
-            ? `请沿用已批准的本章叙事任务，只重写第 ${chapterNumber} 章正文，不要重新规划或推回 Director。上一稿未通过确定性检查：${writerGuardRewriteReason}`
+            ? `请沿用已批准的本章叙事任务，只重写第 ${chapterNumber} 章正文，不要重新规划或推回 Director。上一稿未通过确定性检查：${writerGuardRewriteReason}${writerGuardRewriteDetails ? `。具体问题：${writerGuardRewriteDetails}` : ''}。立即输出完整章节正文，不要输出核对过程、计划或重写说明。`
             : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
           options,
         )
@@ -361,9 +386,14 @@ export class NovelOrchestrator {
         const postWriteGuard = this.runPostWriteGuard(
           writerResult, projectId, chapterNumber, run.arrangedEntities,
         )
+        const candidateScore = this.scoreWriterCandidate(writerResult, postWriteGuard)
+        if (!bestWriterCandidate || candidateScore > bestWriterCandidate.score) {
+          bestWriterCandidate = { content: writerResult, score: candidateScore }
+        }
         if (postWriteGuard.shouldRewrite && writerGuardRewriteCount < NovelOrchestrator.MAX_GUARD_REWRITE) {
           writerGuardRewriteCount++
           writerGuardRewriteReason = postWriteGuard.reason
+          writerGuardRewriteDetails = postWriteGuard.details ?? ''
           this.emitProgress(options, 'rewriting', 'phase_change', {
             message: `PostWriteGuard 检测到致命问题，仅重写正文，不重新调用 Director（第 ${writerGuardRewriteCount}/${NovelOrchestrator.MAX_GUARD_REWRITE} 次）：${postWriteGuard.reason}`,
           })
@@ -374,13 +404,43 @@ export class NovelOrchestrator {
           continue
         }
         if (postWriteGuard.shouldRewrite) {
+          // 最后一次重试若退化成计划/说明或更差的草稿，不允许覆盖此前较好的正文。
+          // 选回最佳候选后重新跑 Guard，并把仍存在的问题交给 Reviewer 判断。
+          if (bestWriterCandidate && bestWriterCandidate.content !== writerResult) {
+            const discardedWordCount = writerResult.replace(/\s/g, '').length
+            writerResult = bestWriterCandidate.content
+            finalPostWriteGuard = this.runPostWriteGuard(
+              writerResult, projectId, chapterNumber, run.arrangedEntities,
+            )
+            this.context.logger.warn(
+              {
+                projectId,
+                chapterNumber,
+                writerGuardRewriteCount,
+                discardedWordCount,
+                restoredLength: writerResult.replace(/\s/g, '').length,
+                reason: postWriteGuard.reason,
+              },
+              'Writer 最后一次重试质量退化，已恢复此前最佳正文',
+            )
+          } else {
+            finalPostWriteGuard = postWriteGuard
+          }
           this.context.logger.warn(
-            { projectId, chapterNumber, writerGuardRewriteCount, reason: postWriteGuard.reason, details: postWriteGuard.details },
+            {
+              projectId,
+              chapterNumber,
+              writerGuardRewriteCount,
+              reason: finalPostWriteGuard.reason,
+              details: finalPostWriteGuard.details,
+            },
             'PostWriteGuard Writer 重写已达上限，降级交给 Reviewer',
           )
           this.emitProgress(options, 'reviewing', 'phase_change', {
-            message: `PostWriteGuard 已让 Writer 重写 ${writerGuardRewriteCount} 次仍未通过（${postWriteGuard.reason}），交给审稿 Agent 判断`,
+            message: `PostWriteGuard 已让 Writer 重写 ${writerGuardRewriteCount} 次仍未通过（${finalPostWriteGuard.reason}），交给审稿 Agent 判断`,
           })
+        } else {
+          finalPostWriteGuard = postWriteGuard
         }
 
         // 没有 pushback，且 Writer 确定性检查已结束，进入 Reviewer
@@ -394,6 +454,11 @@ export class NovelOrchestrator {
       const reviewContent = sanitizeNovelProse(writerResult)
       const clicheHits = scanCliches(reviewContent)
       const clicheReport = formatClicheReport(clicheHits)
+      const proseQuality = evaluateProseQuality(reviewContent)
+      const proseQualityReport = formatProseQualityReport(proseQuality)
+      const guardReviewReport = finalPostWriteGuard?.reason
+        ? `## PostWriteGuard 检查提示\n\n${finalPostWriteGuard.reason}${finalPostWriteGuard.details ? `：${finalPostWriteGuard.details}` : ''}\n\n请结合正文语义判断是否真的缺失；这是验收提示，不代表必须整章重写。`
+        : ''
       const autoReviseHits = clicheHits.filter(hit => (
         hit.pattern === 'ending_summary'
         || hit.pattern === 'explanation_tone'
@@ -401,14 +466,46 @@ export class NovelOrchestrator {
         || hit.pattern === 'fragment_sentences'
         || hit.pattern === 'over_compression'
       ))
+      const severeProseIssues = proseQuality.issues.filter(issue => issue.severity === 'error')
+      this.emitProgress(options, 'reviewing', 'phase_change', { message: '文字编辑正在盲审正文读感...' })
+      const proseEditorResult = await this.runAgent(
+        'reviewer',
+        projectId,
+        chapterNumber,
+        `请只从文字读感审查以下正文。\n\n## 待审正文\n\n${reviewContent}\n\n---\n\n${proseQualityReport}`,
+        options,
+        {
+          phase: 'reviewing',
+          displayAgentType: 'reviewer',
+          displayAgentName: '文字编辑',
+          contextMode: 'identity_only',
+          identityPrompt: this.promptBuilder.buildProseEditorIdentity(projectId),
+          consumeUserMessages: false,
+        },
+      )
       // ⚠️ 不能传 JSON 对象 { task, content }：runAgent 会 JSON.stringify 它，
       // 导致 Writer 输出的正文被压缩在 JSON 的 content 字段中（换行变 \n、引号被转义），
       // LLM 需要解析 JSON 才能提取正文，不同模型解析能力不同，行为不稳定。
       // 改为结构化 Markdown 字符串：明确的标题分隔，让 LLM 直接看到正文。
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber,
-        `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${reviewContent}\n\n---\n\n${clicheReport}`,
+        `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${reviewContent}\n\n---\n\n${clicheReport}\n\n---\n\n${proseQualityReport}\n\n---\n\n## 盲审文字编辑意见\n\n${this.promptBuilder.stripEmDash(proseEditorResult)}${guardReviewReport ? `\n\n---\n\n${guardReviewReport}` : ''}`,
         options,
       )
+      if (chapter?.id) {
+        try {
+          await this.engine.saveReview({
+            projectId,
+            chapterId: chapter.id,
+            ...parseChapterReviewReport(reviewResult),
+            reviewedBy: 'novel-reviewer',
+          })
+        } catch (error) {
+          this.context.logger.warn(
+            { error, projectId, chapterNumber },
+            '章节审稿报告持久化失败，不阻断创作流程',
+          )
+        }
+      }
 
       // 检查点 2
       this.emitProgress(options, 'checkpoint_review', 'phase_change', { message: '等待用户确认验收报告...' })
@@ -425,9 +522,16 @@ export class NovelOrchestrator {
         return { status: 'cancelled' }
       }
 
-      if (reviewDecision === 'revise' || (reviewDecision === 'approve' && autoReviseHits.length > 0)) {
-        const autoReviseReason = autoReviseHits.length > 0
-          ? `确定性质量门命中：${autoReviseHits.map(hit => hit.name).join('、')}`
+      if (
+        reviewDecision === 'revise'
+        || (reviewDecision === 'approve' && (autoReviseHits.length > 0 || severeProseIssues.length > 0))
+      ) {
+        const autoReviseLabels = [
+          ...autoReviseHits.map(hit => hit.name),
+          ...severeProseIssues.map(issue => issue.message),
+        ]
+        const autoReviseReason = autoReviseLabels.length > 0
+          ? `确定性质量门命中：${autoReviseLabels.join('、')}`
           : ''
         this.emitProgress(options, 'revising', 'phase_change', {
           message: autoReviseReason
@@ -447,8 +551,8 @@ export class NovelOrchestrator {
             phase: 'revising',
           },
         )
-        // 代码层保护正文：Reviser 可能输出"修订说明"/局部片段/对比格式。
-        // 优先把"原文/修改后"格式应用回原正文；只有确认是完整正文且保留了足够原文段落时才整体替换。
+        // 代码层保护正文：优先应用“原文/修改后”局部补丁；兼容旧模型偶尔返回
+        // 完整正文，但只有保留足够原文段落时才允许整体替换。
         const revisionDecision = applySafeRevision(reviewContent, reviseResult)
         if (!revisionDecision.accepted) {
           this.context.logger.warn(
@@ -543,7 +647,7 @@ export class NovelOrchestrator {
    * 在 Reviewer 之前运行，捕获模型退化等致命问题，避免浪费 Reviewer token。
    * 检测项：
    * 1. 模型退化（复读/截断/拒绝/工程词泄漏）→ 自动重写
-   * 2. 字数偏离（低于 85% 或高于 115% 目标字数）→ 自动重写
+   * 2. 字数严重偏离（低于 75% 或高于 130%）→ 自动重写；轻微偏离交 Reviewer
    * 3. 大纲边界检查（简化版：检测是否包含工程词）
    */
   private runPostWriteGuard(
@@ -551,7 +655,22 @@ export class NovelOrchestrator {
     projectId: string,
     chapterNumber: number,
     arrangedEntities?: ArrangedEntity,
-  ): { shouldRewrite: boolean; reason: string; details?: string } {
+  ): PostWriteGuardResult {
+    const wordCount = content.replace(/\s/g, '').length
+
+    // 单独拦截“说明了要写什么，却没有输出正文”的退化结果。
+    // 这类输出可能未命中通用工程词扫描，但绝不能覆盖此前已生成的正文。
+    if (
+      wordCount < 500
+      && /(?:先核对|按(?:章纲|已批准方案|导演方案)|重写第\s*\d+\s*章|输出(?:完整)?正文|创作第\s*\d+\s*章正文)/.test(content)
+    ) {
+      return {
+        shouldRewrite: true,
+        reason: '模型未输出正文',
+        details: `仅输出了 ${wordCount} 字的计划或写作说明`,
+      }
+    }
+
     // 1. 模型退化检测（复用 cliche-scanner 的模型退化模式）
     const clicheHits = scanCliches(content)
     const modelDegradationHits = clicheHits.filter(
@@ -573,8 +692,8 @@ export class NovelOrchestrator {
     }
 
     // 2. 字数检测
-    const wordCount = content.replace(/\s/g, '').length
     const project = this.store.getProject(projectId)
+    const advisories: Array<{ reason: string; details: string }> = []
     if (project) {
       // 复用 prompt-builder 的 computeChapterTargetWords（含节奏系数），
       // 确保 Guard 的目标字数与 Writer 提示词注入的 target_words 一致。
@@ -586,18 +705,15 @@ export class NovelOrchestrator {
         chapterNumber,
         run.rhythmSuggestion,
         positioning,
+        arrangedEntities,
       ).wordBudget?.target ?? this.promptBuilder.computeChapterTargetWords(
         project,
         run.rhythmSuggestion?.rhythm,
       )
 
-      // 字数偏离检测：交给 Writer 重新生成，不在代码层截断正文。
-      // 下限 85% 保持严格（字数不足通常意味着内容缺失，必须重写）；
-      // 上限放宽到 130%：创意写作中高潮段落、情绪爆发、多角色对戏场景
-      // 常需要超出目标字数才能写透，115% 过紧会迫使 Writer 草草收尾，
-      // 反而损失叙事质量。130% 内的超出由 Reviewer 评估是否需要精简，
-      // 超过 130% 才视为模型失控（注水/重复）触发自动重写。
-      if (wordCount < targetWords * 0.85) {
+      // 只有明显失控才整章重写。75%-85% 与 115%-130% 属于轻微偏差，
+      // 交给 Reviewer 结合章节完整性判断，避免边界差几个字就浪费一次 Writer 调用。
+      if (wordCount < targetWords * 0.75) {
         return {
           shouldRewrite: true,
           reason: '字数严重不足',
@@ -611,28 +727,76 @@ export class NovelOrchestrator {
           details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
         }
       }
+      if (wordCount < targetWords * 0.85) {
+        advisories.push({
+          reason: '字数略低于建议范围',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
+        })
+      } else if (wordCount > targetWords * 1.15) {
+        advisories.push({
+          reason: '字数略高于建议范围',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
+        })
+      }
 
     }
 
-    // 3. 矩阵实体确定性检查：角色/势力/地点名称必须在正文实际出现。
-    // 冲突和伏笔属于语义动作，不能靠字符串安全判断，继续交给 Reviewer 逐项验收。
+    // 3. 矩阵实体检查：角色姓名缺失属于确定性失败；势力和地点可能使用简称、
+    // 场景别称或空间描述，精确字符串缺失只能作为 Reviewer 的语义验收提示。
+    // 冲突和伏笔同样属于语义动作，继续交给 Reviewer 逐项验收。
     if (arrangedEntities) {
-      const requiredNames = [
-        ...arrangedEntities.characterIds.map(id => this.store.getCharacter(id)?.name),
-        ...arrangedEntities.factionIds.map(id => this.store.getFaction(id)?.name),
-        ...arrangedEntities.locationIds.map(id => this.store.getLocation(id)?.name),
-      ].filter((name): name is string => !!name && !/（待定）|待补充|待定$/.test(name))
-      const missingNames = requiredNames.filter(name => !content.includes(name))
-      if (missingNames.length > 0) {
+      const isConcreteName = (name: string | undefined): name is string => (
+        !!name && !/（待定）|待补充|待定$/.test(name)
+      )
+      const characterNames = arrangedEntities.characterIds
+        .map(id => this.store.getCharacter(id)?.name)
+        .filter(isConcreteName)
+      const missingCharacters = characterNames.filter(name => !content.includes(name))
+      if (missingCharacters.length > 0) {
         return {
           shouldRewrite: true,
           reason: '未完整执行矩阵编排',
-          details: `正文未出现：${missingNames.join('、')}`,
+          details: `正文未出现矩阵角色：${missingCharacters.join('、')}`,
         }
+      }
+
+      const semanticEntityNames = [
+        ...arrangedEntities.factionIds.map(id => this.store.getFaction(id)?.name),
+        ...arrangedEntities.locationIds.map(id => this.store.getLocation(id)?.name),
+      ].filter(isConcreteName)
+      const missingSemanticEntities = semanticEntityNames.filter(name => !content.includes(name))
+      if (missingSemanticEntities.length > 0) {
+        advisories.push({
+          reason: '矩阵实体需要语义验收',
+          details: `正文未出现全名（可能使用简称或场景描述）：${missingSemanticEntities.join('、')}`,
+        })
       }
     }
 
+    if (advisories.length > 0) {
+      return {
+        shouldRewrite: false,
+        advisory: true,
+        reason: advisories.length === 1 ? advisories[0].reason : '确定性检查提示',
+        details: advisories.map(item => `${item.reason}：${item.details}`).join('；'),
+      }
+    }
     return { shouldRewrite: false, reason: '' }
+  }
+
+  /**
+   * 为 Writer 重试结果做保底排序。通过 Guard 的正文优先；矩阵缺项但仍是完整正文
+   * 次之；模型退化/元说明最低。用于重试上限后的回退，不替代 Reviewer 评分。
+   */
+  private scoreWriterCandidate(content: string, guard: PostWriteGuardResult): number {
+    const wordCount = content.replace(/\s/g, '').length
+    if (guard.reason === '模型退化检测命中' || guard.reason === '模型未输出正文') {
+      return -1_000_000 + wordCount
+    }
+    if (!guard.shouldRewrite) return 1_000_000 + wordCount
+    if (guard.reason === '未完整执行矩阵编排') return 500_000 + wordCount
+    if (guard.reason === '字数严重超标') return 100_000 - wordCount
+    return wordCount
   }
 
   /** 运行单个 Agent（通过 Pi SDK Session，流式推送 delta） */
@@ -649,6 +813,12 @@ export class NovelOrchestrator {
       displayAgentName?: string
       /** 当前阶段（默认按 agentType 推断） */
       phase?: CreationPhase
+      /** identity_only 用于盲审：不注入全局 system、章节 shared/suffix 和工具。 */
+      contextMode?: 'full' | 'identity_only'
+      /** 覆盖成员身份提示词，例如盲审文字编辑。 */
+      identityPrompt?: string
+      /** 是否消费流程中追加的用户指令；盲审应留给完整 Reviewer。 */
+      consumeUserMessages?: boolean
     },
   ): Promise<string> {
     const run = this.requireRunContext()
@@ -669,7 +839,9 @@ export class NovelOrchestrator {
 
     // Agent 身份保持在公共 system 之后，既不破坏跨 Agent 的 system/shared 缓存，
     // 又作为独立 prefix 获得缓存断点，供同 Agent 重试命中。
-    const agentIdentity = this.promptBuilder.buildAgentIdentity(projectId, agentType)
+    const identityOnly = overrides?.contextMode === 'identity_only'
+    const agentIdentity = overrides?.identityPrompt
+      ?? this.promptBuilder.buildAgentIdentity(projectId, agentType)
 
     // 保存真正的原始任务输入（用于日志记录），再附加用户指令。
     // agentIdentity 是真实前缀，不再伪装成 taskInput 的一部分。
@@ -678,8 +850,11 @@ export class NovelOrchestrator {
     // 附加用户在检查点期间发送的创作指令（消费后清空）
     // 保留副本用于日志记录
     const pendingMessageKey = this.runKey(projectId, chapterNumber)
-    const userMessages = this.pendingUserMessages.get(pendingMessageKey) ?? []
-    this.pendingUserMessages.delete(pendingMessageKey)
+    const consumeUserMessages = overrides?.consumeUserMessages !== false
+    const userMessages = consumeUserMessages
+      ? this.pendingUserMessages.get(pendingMessageKey) ?? []
+      : []
+    if (consumeUserMessages) this.pendingUserMessages.delete(pendingMessageKey)
     const userInstructionsForLog = userMessages.slice()
     if (userMessages.length > 0) {
       // 注入前清洗破折号：用户指令可能含破折号，防止成为 LLM 的示范
@@ -688,7 +863,9 @@ export class NovelOrchestrator {
     }
 
     // STATIC 层：系统提示词（Agent 身份 + 世界规则 + 风格 + 角色定义）
-    const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, agentType)
+    const systemPrompt = identityOnly
+      ? ''
+      : this.promptBuilder.buildSystemPrompt(projectId, agentType)
 
     // SEMI 层：章节上下文（"共享前缀 + Agent 专属后缀"分离）
     //
@@ -714,6 +891,7 @@ export class NovelOrchestrator {
       chapterNumber,
       run.rhythmSuggestion,
       run.directorTask?.positioning ?? chapter?.positioning,
+      run.arrangedEntities,
     )
 
     // 推送章节约束详情（仅 Director 首次构建时发射，避免重复）
@@ -746,7 +924,9 @@ export class NovelOrchestrator {
     // shared 部分：单章缓存（跨 Agent 复用，projectId|chapterNumber 为 key）
     const sharedCacheKey = `${projectId}|${chapterNumber}`
     let sharedContext: string
-    if (run.semiLayerSharedCache && run.semiLayerSharedCache.key === sharedCacheKey) {
+    if (identityOnly) {
+      sharedContext = ''
+    } else if (run.semiLayerSharedCache && run.semiLayerSharedCache.key === sharedCacheKey) {
       sharedContext = run.semiLayerSharedCache.value
       this.context.logger.debug(
         { agentType, projectId, chapterNumber, sharedLength: sharedContext.length },
@@ -774,14 +954,16 @@ export class NovelOrchestrator {
     ) ? run.directorTask : narrativeTask
 
     // suffix 部分：每次实时构建（各 Agent 不同，可供同 Agent 重试缓存）
-    const suffixContext = this.promptBuilder.buildChapterContextSuffix(
-      projectId,
-      chapterNumber,
-      suffixNarrativeTask,
-      constraints,
-      run.arrangedEntities,
-      agentType,
-    )
+    const suffixContext = identityOnly
+      ? ''
+      : this.promptBuilder.buildChapterContextSuffix(
+          projectId,
+          chapterNumber,
+          suffixNarrativeTask,
+          constraints,
+          run.arrangedEntities,
+          agentType,
+        )
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）
     // 章节上下文（SEMI 层）通过 prefixUserMessage 独立注入，不与任务拼接，
@@ -791,7 +973,9 @@ export class NovelOrchestrator {
     // 按 Agent 类型过滤工具权限
     const allNovelTools = this.sessionFactory.getNovelTools()
     const allowedToolNames = config.tools
-    const filteredTools = allNovelTools.filter(t => allowedToolNames.includes(t.name))
+    const filteredTools = identityOnly
+      ? []
+      : allNovelTools.filter(t => allowedToolNames.includes(t.name))
     const toolNamesForLog = filteredTools.map(t => t.name)
 
     // 记录提示词日志（STATIC + SEMI + DYNAMIC 三层）

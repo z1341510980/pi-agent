@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AuthStorage, ModelRegistry, SessionManager } from '@earendil-works/pi-coding-agent'
+import type { AuthStorage, ModelRegistry, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent'
 import Database from 'better-sqlite3'
 import { EventBus } from '@repo/shared/events'
 import { AppError, ErrorCode } from '@repo/shared/errors'
@@ -8,7 +8,7 @@ import { ConfirmationManager } from '../core/tool/confirmation-manager.js'
 import { Gate } from '../core/tool/gate.js'
 import type { CredentialBridge } from '../core/config/credential-bridge.js'
 import type { ProviderConfigStore } from '../core/config/provider-config-store.js'
-import type { PiSessionDeps } from '../core/agent/pi-session.js'
+import { createPiSession, type PiSessionDeps } from '../core/agent/pi-session.js'
 
 interface ModelStub {
   provider: string
@@ -66,8 +66,6 @@ describe('createPiSession beforeToolCall integration', () => {
   })
 
   it('TC-01: installs beforeToolCall hook on session.agent', async () => {
-    const { createPiSession } = await import('../core/agent/pi-session.js')
-
     await createPiSession(createDeps([
       { provider: 'openai', id: 'gpt-4.1-mini' },
     ]))
@@ -76,8 +74,6 @@ describe('createPiSession beforeToolCall integration', () => {
   })
 
   it('TC-02: selects configured OpenAI model instead of DeepSeek when both exist', async () => {
-    const { createPiSession } = await import('../core/agent/pi-session.js')
-
     await createPiSession(createDeps([
       { provider: 'deepseek', id: 'deepseek-chat' },
       { provider: 'openai', id: 'gpt-4.1-mini' },
@@ -89,8 +85,6 @@ describe('createPiSession beforeToolCall integration', () => {
   })
 
   it('TC-03: throws CONFIG_ERROR when configured model is missing', async () => {
-    const { createPiSession } = await import('../core/agent/pi-session.js')
-
     await expect(createPiSession(createDeps([
       { provider: 'deepseek', id: 'deepseek-chat' },
     ]))).rejects.toMatchObject({
@@ -116,6 +110,7 @@ function createDeps(
       ),
     } as unknown as ModelRegistry,
     sessionManager: {} as unknown as SessionManager,
+    settingsManager: {} as SettingsManager,
     credentialBridge: {} as CredentialBridge,
     providerConfigStore: {
       getApiKey: (provider: string) => provider === 'openai' ? 'test-key' : undefined,

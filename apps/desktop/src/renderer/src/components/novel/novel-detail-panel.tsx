@@ -893,7 +893,7 @@ function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
     currentStage: entity.currentStage,
     status: entity.status,
     rhythmModelId: entity.rhythmModelId ?? '',
-    targetPlatform: entity.targetPlatform ?? '__none__',
+    targetPlatform: (entity.targetPlatform ?? '__none__') as TargetPlatform | '__none__',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)

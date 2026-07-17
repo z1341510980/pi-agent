@@ -86,6 +86,17 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
       ...examples.map((example, index) => `\n【样本 ${index + 1}】\n${example}`),
     ].join('\n'))
   }
+  const negativeExamples = profile.negativeExamples
+    .map(example => cleanText(example, 500))
+    .filter(Boolean)
+    .slice(0, 2)
+  if (negativeExamples.length > 0) {
+    sections.push([
+      '### 反向文风样本',
+      '以下样本只用于识别并避开其句式、解释方式和段落节奏，不得复述或模仿。',
+      ...negativeExamples.map((example, index) => `\n【反例 ${index + 1}】\n${example}`),
+    ].join('\n'))
+  }
   return sections
 }
 

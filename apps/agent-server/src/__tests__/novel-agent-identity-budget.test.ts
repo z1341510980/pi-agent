@@ -26,7 +26,7 @@ describe('小说 Agent 身份预算与契约', () => {
       '## 本章核心叙事目标', '## 任务类型', '## 次要任务',
       '## 上一章钩子处理', '## 出场角色', '## 冲突推进计划',
       '## 情绪曲线', '## 伏笔处理计划', '## 悬念设计',
-      '## 预期节奏和氛围', '## 字数预算', '## 创作要点',
+      '## 预期节奏和氛围', '## 篇幅密度', '## 创作要点',
       '## 章尾钩子设计', '## POV', '## 场景数与节奏速率',
       '## 时间线偏移', '## 验收标准',
     ]
@@ -43,7 +43,7 @@ describe('小说 Agent 身份预算与契约', () => {
 
     expect(prompt).toContain('只输出完整章节正文')
     expect(prompt).toContain('[DIRECTOR_PUSHBACK]')
-    expect(prompt).toContain('矩阵中的角色、冲突、伏笔、势力和地点')
+    expect(prompt).toContain('矩阵中的角色、冲突、伏笔、线索、势力和地点')
     expect(prompt).toContain('承接上一章结尾')
     expect(prompt).toContain('下一章锚点')
     expect(prompt).toContain('信息差')
@@ -58,6 +58,7 @@ describe('小说 Agent 身份预算与契约', () => {
     expect(prompt).toContain('【防 AI 腔扫描】')
     expect(prompt).toContain('`ai_tone`')
     expect(prompt).toContain('## Findings 汇总')
+    expect(prompt).toContain('## 十维评分')
     expect(prompt).toContain('## 结论：accept / revise / reject')
     expect(prompt).toContain('存在 S1 必须 reject')
     expect(prompt).toContain('存在未解决 S2 必须 revise')

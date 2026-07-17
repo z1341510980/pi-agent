@@ -582,6 +582,27 @@ describe('Novel API 路由 - 文风工厂', () => {
     })
     expect(response.statusCode).toBe(400)
   })
+
+  it('可以对已有章节执行确定性正文形态扫描', async () => {
+    const project = store.createProject({
+      id: 'prose-quality-project', title: '正文扫描', genre: '悬疑', synopsis: '', targetWords: 100000,
+      currentVolume: 1, currentChapter: 1, currentStage: 'setup', status: 'active',
+    })
+    store.createChapter({
+      id: 'prose-quality-chapter', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '测试章', content: Array.from({ length: 30 }, (_, index) => `他停下了${index}。`).join('\n\n'),
+      wordCount: 180, status: 'drafting', narrativeTask: '测试', acceptanceResult: null,
+    })
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `${PLUGIN_PREFIX}/projects/${project.id}/chapters/1/prose-quality`,
+    })
+
+    expect(response.statusCode, response.body).toBe(200)
+    expect(response.json().data.metrics.singleSentenceParagraphs).toBe(30)
+    expect(response.json().data.issues.map((issue: { code: string }) => issue.code)).toContain('fragmented_paragraphs')
+  })
 })
 
 describe('Novel API 路由 - 响应格式', () => {

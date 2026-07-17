@@ -72,4 +72,30 @@ describe('NovelEngine chapter constraint relevance', () => {
       'sustaining',
     ])
   })
+
+  it('传入矩阵时只构建选中冲突和伏笔的硬约束', () => {
+    const store = {
+      listConstraints: () => [],
+      listCharacters: () => [],
+      listInformationLayers: () => [],
+      listForeshadowing: () => [
+        foreshadow({ id: 'selected-foreshadow', description: '选中伏笔', beats: [{ chapter: 10, type: 'reinforce' }] }),
+        foreshadow({ id: 'ignored-foreshadow', description: '未选伏笔', beats: [{ chapter: 10, type: 'payoff' }] }),
+      ],
+      listConflicts: () => [
+        { id: 'selected-conflict', stage: 'rising', chapterSpans: [], climaxChapter: null, intensity: 5 },
+        { id: 'ignored-conflict', stage: 'rising', chapterSpans: [], climaxChapter: null, intensity: 9 },
+      ],
+    }
+    const engine = new NovelEngine(store as never, {} as never)
+
+    const result = engine.buildChapterConstraints(
+      'project-1', 10, undefined, null,
+      { characterIds: [], conflictIds: ['selected-conflict'], foreshadowIds: ['selected-foreshadow'], clueIds: [], factionIds: [], locationIds: [] },
+    )
+
+    expect(result.narrativeDebts.map((item) => item.id)).toEqual(['selected-foreshadow'])
+    expect(result.conflictTargets.map((item) => item.conflict.id)).toEqual(['selected-conflict'])
+    expect(result.suspenseHooks.map((item) => item.description)).toEqual(['选中伏笔'])
+  })
 })

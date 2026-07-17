@@ -39,6 +39,7 @@ import type {
   ConflictStage,
   ChapterPositioning,
   WordBudget,
+  ArrangedEntity,
 } from './types.js'
 
 export interface ChapterCreationResult {
@@ -69,12 +70,18 @@ export class NovelEngine {
     chapterNumber?: number,
     rhythmSuggestion?: RhythmSuggestion,
     positioning?: ChapterPositioning | null,
+    arrangedEntities?: ArrangedEntity,
   ): ChapterConstraints {
     const constraints = this.store.listConstraints(projectId)
     const foreshadowing = this.store.listForeshadowing(projectId)
+    const selectedCharacterIds = arrangedEntities ? new Set(arrangedEntities.characterIds) : null
+    const selectedConflictIds = arrangedEntities ? new Set(arrangedEntities.conflictIds) : null
+    const selectedForeshadowIds = arrangedEntities ? new Set(arrangedEntities.foreshadowIds) : null
     const characters = this.store.listCharacters(projectId)
+      .filter((character) => !selectedCharacterIds || selectedCharacterIds.has(character.id))
     const pendingForeshadows = foreshadowing.filter(
-      (f) => f.status !== 'recovered' && f.status !== 'abandoned',
+      (f) => f.status !== 'recovered' && f.status !== 'abandoned'
+        && (!selectedForeshadowIds || selectedForeshadowIds.has(f.id)),
     )
 
     // 只把本章需要动作的伏笔放进“硬约束”。长期未回收伏笔仍会以紧凑的
@@ -106,7 +113,8 @@ export class NovelEngine {
     const conflictTargets: ConflictTarget[] = []
     if (chapterNumber !== undefined) {
       const activeConflicts = this.store.listConflicts(projectId).filter(
-        (c) => c.stage !== 'resolved' && c.stage !== 'transformed',
+        (c) => c.stage !== 'resolved' && c.stage !== 'transformed'
+          && (!selectedConflictIds || selectedConflictIds.has(c.id)),
       )
       for (const conflict of activeConflicts) {
         const inSpan = conflict.chapterSpans.some(
@@ -170,9 +178,38 @@ export class NovelEngine {
         })
       }
 
+      const selectedInfoLayerIds = new Set<string>()
+      for (const foreshadow of relevantForeshadows) {
+        try {
+          const parsed = JSON.parse(foreshadow.linkedInfoLayers ?? '[]')
+          if (Array.isArray(parsed)) {
+            for (const id of parsed) if (typeof id === 'string') selectedInfoLayerIds.add(id)
+          }
+        } catch {
+          // 兼容旧数据。
+        }
+      }
       const infoLayers = this.store.listInformationLayers(projectId)
       const relevantInfoLayers = infoLayers
         .filter((layer) => !layer.isRevealed)
+        .filter((layer) => {
+          if (!arrangedEntities) return true
+          if (selectedInfoLayerIds.has(layer.id)) return true
+          try {
+            const linked = JSON.parse(layer.linkedForeshadows ?? '[]')
+            if (Array.isArray(linked) && linked.some(
+              (id) => typeof id === 'string' && selectedForeshadowIds?.has(id),
+            )) return true
+          } catch {
+            // 兼容旧数据。
+          }
+          try {
+            const knowledge = JSON.parse(layer.characterKnowledge ?? '{}') as Record<string, unknown>
+            return [...(selectedCharacterIds ?? [])].some((id) => Object.hasOwn(knowledge, id))
+          } catch {
+            return false
+          }
+        })
         .filter((layer) => layer.revealChapter !== null && layer.revealChapter <= chapterNumber)
         .sort((a, b) =>
           (a.revealChapter ?? Number.MAX_SAFE_INTEGER)

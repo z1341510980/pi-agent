@@ -36,6 +36,11 @@ export interface DiscussionMember {
   /** 构建该成员 system prompt 的工厂函数 */
   buildSystemPrompt: () => string
   /**
+   * 成员可见的章节上下文。未提供时使用 DiscussionGoal.context。
+   * 角色成员应提供只含本人已知信息的私有上下文，避免共享全知视角。
+   */
+  buildContextPrompt?: () => string
+  /**
    * 构建成员专属身份提示词。
    *
    * 身份放在共享章节上下文之后、动态任务之前，避免它污染 system/shared
@@ -46,6 +51,8 @@ export interface DiscussionMember {
   buildFinalReviewSystemPrompt?: () => string
   /** 最终章节审查时使用的成员专属身份提示词。 */
   buildFinalReviewIdentityPrompt?: () => string
+  /** 最终审查前的盲审文字编辑身份提示词。 */
+  buildProseEditorIdentityPrompt?: () => string
   /**
    * 该成员使用的 LLM 模型（可选，未配置则走默认 Provider）
    *
@@ -177,6 +184,13 @@ export interface DiscussionOptions {
   reviewCharacterSpeech?: boolean
   /** 成员 LLM 调用完成后的审计回调，由业务适配层决定如何持久化。 */
   onMemberInvocation?: (invocation: DiscussionMemberInvocation) => void
+  /** 业务层提供的正文形态扫描，用于最终 Reviewer 复核。 */
+  buildProseQualityReport?: (content: string) => string
+  /** 业务层提供的安全修订应用器；拒绝危险修订时返回原文。 */
+  applyRevision?: (
+    original: string,
+    rawRevision: string,
+  ) => { content: string; accepted: boolean; mode: 'full' | 'patch' | 'rejected'; reason?: string }
 }
 
 /** 单次群聊成员 LLM 调用的审计信息。 */

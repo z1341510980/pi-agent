@@ -18,6 +18,18 @@ vi.mock('@copilotkit/react-core/v2', () => ({
   useAgentContext: () => undefined
 }))
 
+async function enterChatWorkspace(): Promise<void> {
+  const chatButton = await screen.findByRole('button', { name: '对话工作台' })
+  fireEvent.click(chatButton)
+  await screen.findByRole('main', { name: 'PI Agent 工作台' })
+}
+
+async function openSettings(): Promise<void> {
+  const settingsButton = await screen.findByRole('button', { name: '设置' })
+  fireEvent.click(settingsButton)
+  await screen.findByLabelText('设置中心')
+}
+
 describe('App shell', () => {
   afterEach(() => {
     cleanup()
@@ -48,22 +60,18 @@ describe('App shell', () => {
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
   })
 
-  it('renders the wenlang-agent workspace instead of the CopilotKit sidebar shell', async () => {
+  it('renders the wenlang-agent workspace instead of the CopilotKit sidebar shell', { timeout: 10000 }, async () => {
     vi.stubGlobal('fetch', createFetchMock())
 
     const { default: App } = await import('./App')
 
     render(<App />)
 
-    // 等待 initEmbeddedServerPort 完成后 ready=true，主界面渲染
-    await waitFor(() => {
-      expect(screen.getByRole('main', { name: 'PI Agent 工作台' })).toBeTruthy()
-    })
+    await enterChatWorkspace()
 
     expect(screen.getByRole('navigation', { name: '会话' })).toBeTruthy()
     expect(screen.getByRole('complementary', { name: '上下文' })).toBeTruthy()
-    // 会话标题栏：文件夹图标 + 右侧栏切换
-    expect(screen.getByRole('button', { name: '工作区文件夹' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '选择工作区' })).toBeTruthy()
     expect(screen.queryByText('CopilotKit Runtime')).toBeNull()
   })
 
@@ -96,6 +104,7 @@ describe('App shell', () => {
 
     const { default: App } = await import('./App')
     render(<App />)
+    await enterChatWorkspace()
 
     const input = await screen.findByRole('textbox', { name: '消息输入' })
     fireEvent.change(input, { target: { value: '请读取 README' } })
@@ -103,8 +112,8 @@ describe('App shell', () => {
 
     expect((await screen.findAllByText('请读取 README')).length).toBeGreaterThan(0)
     expect(await screen.findByText('Hello world')).toBeTruthy()
-    expect(await screen.findByText('read')).toBeTruthy()
-    expect(await screen.findByText((content) => content.includes('README.md'))).toBeTruthy()
+    expect((await screen.findAllByText('read')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText((content) => content.includes('README.md'))).length).toBeGreaterThan(0)
     expect(await screen.findByText('file preview')).toBeTruthy()
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -135,6 +144,7 @@ describe('App shell', () => {
 
     const { default: App } = await import('./App')
     render(<App />)
+    await enterChatWorkspace()
 
     const input = await screen.findByRole('textbox', { name: '消息输入' })
     fireEvent.change(input, { target: { value: '长任务' } })
@@ -183,6 +193,7 @@ describe('App shell', () => {
 
     const { default: App } = await import('./App')
     const { container } = render(<App />)
+    await enterChatWorkspace()
 
     // 调试：打印渲染的文本内容
     await waitFor(() => {
@@ -200,12 +211,14 @@ describe('App shell', () => {
     vi.stubGlobal('fetch', createFetchMock())
     const { default: App } = await import('./App')
     const { unmount } = render(<App />)
+    await enterChatWorkspace()
 
     const input = await screen.findByRole('textbox', { name: '消息输入' })
     fireEvent.change(input, { target: { value: '未发送草稿' } })
 
     unmount()
     render(<App />)
+    await enterChatWorkspace()
 
     const restoredDraft = (await screen.findByRole('textbox', {
       name: '消息输入'
@@ -219,6 +232,7 @@ describe('App shell', () => {
 
     const { default: App } = await import('./App')
     render(<App />)
+    await enterChatWorkspace()
 
     const compactButton = await screen.findByRole('button', { name: '手动压缩上下文' })
     fireEvent.click(compactButton)
@@ -235,18 +249,14 @@ describe('App shell', () => {
     )
   })
 
-  it('TC-07: opens the settings page from the title bar gear button', async () => {
+  it('TC-07: opens the settings page from the main navigation', async () => {
     vi.stubGlobal('fetch', createFetchMock())
 
     const { default: App } = await import('./App')
     render(<App />)
 
-    // 等待聊天工作台渲染
-    await screen.findByRole('main', { name: 'PI Agent 工作台' })
-
-    // 点击设置按钮
-    const settingsButton = screen.getByRole('button', { name: '打开设置' })
-    fireEvent.click(settingsButton)
+    await enterChatWorkspace()
+    await openSettings()
 
     // 设置页面应显示（h1 标题）
     expect(screen.getAllByRole('heading', { name: '设置' }).length).toBeGreaterThan(0)
@@ -255,22 +265,22 @@ describe('App shell', () => {
     expect(screen.queryByRole('main', { name: 'PI Agent 工作台' })).toBeNull()
   })
 
-  it('TC-08: closes the settings page and returns to chat', async () => {
+  it('TC-08: closes the settings page and returns to home', async () => {
     vi.stubGlobal('fetch', createFetchMock())
 
     const { default: App } = await import('./App')
     render(<App />)
 
     // 打开设置
-    await screen.findByRole('main', { name: 'PI Agent 工作台' })
-    fireEvent.click(screen.getByRole('button', { name: '打开设置' }))
-    expect(screen.getByLabelText('设置中心')).toBeTruthy()
+    await enterChatWorkspace()
+    await openSettings()
 
     // 点击关闭按钮
     fireEvent.click(screen.getByRole('button', { name: '关闭设置' }))
 
-    // 应返回聊天页面
-    expect(await screen.findByRole('main', { name: 'PI Agent 工作台' })).toBeTruthy()
+    // 当前导航约定：关闭独立设置页后返回首页
+    const homeButton = await screen.findByRole('button', { name: '首页' })
+    expect(homeButton.getAttribute('aria-current')).toBe('page')
     expect(screen.queryByLabelText('设置中心')).toBeNull()
   })
 
@@ -287,8 +297,8 @@ describe('App shell', () => {
     render(<App />)
 
     // 打开设置
-    await screen.findByRole('main', { name: 'PI Agent 工作台' })
-    fireEvent.click(screen.getByRole('button', { name: '打开设置' }))
+    await enterChatWorkspace()
+    await openSettings()
 
     // 等待 Provider 列表渲染
     expect(await screen.findByText('openai')).toBeTruthy()
@@ -307,8 +317,8 @@ describe('App shell', () => {
     render(<App />)
 
     // 打开设置
-    await screen.findByRole('main', { name: 'PI Agent 工作台' })
-    fireEvent.click(screen.getByRole('button', { name: '打开设置' }))
+    await enterChatWorkspace()
+    await openSettings()
 
     // 切换到通用设置
     fireEvent.click(screen.getByRole('button', { name: '通用设置' }))

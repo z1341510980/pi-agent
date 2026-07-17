@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
 import type { NovelProject, NovelChapter, NovelVolume } from '@/api/novel-client'
 
@@ -104,7 +105,13 @@ async function renderTree(overrides?: {
       onAiArrange={overrides?.onAiArrange ?? vi.fn<(chapter: NovelChapter) => void>()}
     />
   )
-  render(tree)
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  })
+  render(<QueryClientProvider client={queryClient}>{tree}</QueryClientProvider>)
 }
 
 describe('OutlineTree', () => {

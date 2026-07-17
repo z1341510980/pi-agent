@@ -414,6 +414,12 @@ export class NovelEntityGenerator {
     const planningErrorMessage = logContext.status === 'error'
       ? (logContext.error || 'AI 实体规划失败')
       : ''
+    const clueIds = this.store.listClues(projectId)
+      .filter((clue) => clue.chapterSpans.some(
+        ([start, end]) => chapterNumber >= start && chapterNumber <= end,
+      ))
+      .map((clue) => clue.id)
+
     onProgress?.({
       phase: 'planned',
       message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点`,
@@ -1042,13 +1048,14 @@ export class NovelEntityGenerator {
       },
     })
     this.context.logger.info(
-      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, factions: factionIds.length, locations: locationIds.length, characterFunctions: characterFunctions.length },
+      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, characterFunctions: characterFunctions.length },
       'generateAndArrange 完成：实体已落库',
     )
     return {
       characterIds,
       conflictIds,
       foreshadowIds,
+      clueIds,
       factionIds,
       locationIds,
       characterFunctions: characterFunctions.length > 0 ? characterFunctions : undefined,

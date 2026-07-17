@@ -204,7 +204,7 @@ interface WritingStyleProfileRow {
   narrative_person: string; narrative_distance: string; sentence_rhythm: string
   dialogue_ratio: number; emotional_temperature: number; imagery_density: number
   vocabulary_register: string; hard_rules: string; soft_rules: string
-  positive_examples: string; notes: string; version: number
+  positive_examples: string; negative_examples: string; notes: string; version: number
   created_at: number; updated_at: number
 }
 
@@ -494,7 +494,7 @@ export class NovelStore implements NovelPromptStores {
   private readonly stmtDeleteAgentLogsByProject: Database.Statement
 
   constructor(private db: Database.Database) {
-    this.stmtGetProject = db.prepare('SELECT * FROM novel_projects WHERE id = ?')
+    this.stmtGetProject = db.prepare('SELECT * FROM novel_projects WHERE id = ? AND deleted_at IS NULL')
     this.stmtListChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? ORDER BY chapter_number ASC')
     this.stmtGetChapter = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND chapter_number = ?')
     this.stmtListCharacters = db.prepare('SELECT * FROM novel_characters WHERE project_id = ? ORDER BY created_at ASC')
@@ -1329,16 +1329,10 @@ export class NovelStore implements NovelPromptStores {
     if (!existing) return undefined
     const current = this.rowToForeshadow(existing)
     const updated: NovelForeshadow = { ...current, ...patch, id, updatedAt: now() }
-    // patch.beats 非空（length > 0）时，使用 current 的标量端点作为 fallback 传给 normalize，
-    // 防止前端发送不含 plant 的 beats（如仅 reinforce/reveal）时整条链被清空。
-    // patch.beats 为空数组（用户主动删除 plant）时不补，保持删除语义。
-    const patchBeatsIsNonEmpty = Array.isArray(patch.beats) && patch.beats.length > 0
+    // 显式 patch.beats 是整条事件链的权威值，不能再用旧标量端点补点，
+    // 否则用户删除的 plant/payoff 会被 firstChapter/recoverByChapter 重新补回。
     let beats = patch.beats !== undefined
-      ? normalizeForeshadowBeats(
-          patch.beats,
-          patchBeatsIsNonEmpty ? current.firstChapter : null,
-          patchBeatsIsNonEmpty ? current.recoverByChapter : null,
-        )
+      ? normalizeForeshadowBeats(patch.beats, null, null)
       : normalizeForeshadowBeats(updated.beats, updated.firstChapter, updated.recoverByChapter)
     if (patch.firstChapter !== undefined) {
       beats = beats.filter((beat) => beat.type !== 'plant')
@@ -1886,12 +1880,12 @@ export class NovelStore implements NovelPromptStores {
       INSERT INTO novel_writing_style_profiles (
         id, project_id, name, preset, narrative_person, narrative_distance,
         sentence_rhythm, dialogue_ratio, emotional_temperature, imagery_density,
-        vocabulary_register, hard_rules, soft_rules, positive_examples, notes,
+        vocabulary_register, hard_rules, soft_rules, positive_examples, negative_examples, notes,
         version, created_at, updated_at
       ) VALUES (
         @id, @project_id, @name, @preset, @narrative_person, @narrative_distance,
         @sentence_rhythm, @dialogue_ratio, @emotional_temperature, @imagery_density,
-        @vocabulary_register, @hard_rules, @soft_rules, @positive_examples, @notes,
+        @vocabulary_register, @hard_rules, @soft_rules, @positive_examples, @negative_examples, @notes,
         @version, @created_at, @updated_at
       )
       ON CONFLICT(project_id) DO UPDATE SET
@@ -1907,6 +1901,7 @@ export class NovelStore implements NovelPromptStores {
         hard_rules = excluded.hard_rules,
         soft_rules = excluded.soft_rules,
         positive_examples = excluded.positive_examples,
+        negative_examples = excluded.negative_examples,
         notes = excluded.notes,
         version = excluded.version,
         updated_at = excluded.updated_at
@@ -1925,6 +1920,7 @@ export class NovelStore implements NovelPromptStores {
       hard_rules: JSON.stringify(full.hardRules),
       soft_rules: JSON.stringify(full.softRules),
       positive_examples: JSON.stringify(full.positiveExamples),
+      negative_examples: JSON.stringify(full.negativeExamples),
       notes: full.notes,
       version: full.version,
       created_at: full.createdAt,
@@ -3297,6 +3293,7 @@ export class NovelStore implements NovelPromptStores {
       hardRules: parseArray(row.hard_rules),
       softRules: parseArray(row.soft_rules),
       positiveExamples: parseArray(row.positive_examples),
+      negativeExamples: parseArray(row.negative_examples),
       notes: row.notes ?? '',
       version: Math.max(1, Number(row.version) || 1),
       createdAt: row.created_at,

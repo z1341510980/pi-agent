@@ -354,7 +354,29 @@ export class TeamDiscussionEngine {
           data: { message: moderatorMsg.content },
         })
         try {
-          let content = await this.invokeMember(member, decision.prompt, history, options, ctx)
+          const memberPrompt = member.type === 'character'
+            ? `${decision.prompt}\n\n主持人的任务只说明本回合关注点，不代表预设结果。你可以拒绝不符合人设、已知信息或当前目标的结论。只演此刻一个动作单元。`
+            : decision.prompt
+          let content = await this.invokeMember(member, memberPrompt, history, options, ctx)
+
+          // 剧本协议是角色推演能否被 Writer 当作现场素材的边界。格式错误时先重试，
+          // 仍失败则做保守归一化，禁止“意图/心理/应对”提纲直接进入全章编织。
+          if (member.type === 'character' && !this.isValidCharacterSpeech(content)) {
+            this.emitProgress(options, ctx.phase, {
+              type: 'phase_change',
+              data: { message: `${member.name} 未按剧本格式发言，正在纠正当前发言` },
+            })
+            const retry = await this.invokeMember(
+              member,
+              `上一条输出不是角色演出。重新演出当前回合，只输出 2-6 行，每行严格使用：[可见动作] “角色台词”。\n不得输出“意图、心理、应对、分析、说明”等标签，不得替其他角色说话。\n\n当前回合：${memberPrompt}`,
+              history,
+              options,
+              ctx,
+            )
+            content = this.isValidCharacterSpeech(retry)
+              ? retry
+              : this.normalizeCharacterSpeech(retry || content, member.name)
+          }
 
           // 角色成员发言后触发 Reviewer 实时审查（最多重发 1 次）
           if (member.type === 'character' && options.reviewCharacterSpeech !== false) {
@@ -438,7 +460,8 @@ ${reviewResult.rewrite_suggestion}
   ): Promise<string> {
     const systemPrompt = member.buildSystemPrompt()
     const identityPrompt = member.buildIdentityPrompt?.() ?? ''
-    const prefixMessages = [this.currentGoal?.context ?? '', identityPrompt]
+    const visibleChapterContext = member.buildContextPrompt?.() ?? this.currentGoal?.context ?? ''
+    const prefixMessages = [visibleChapterContext, identityPrompt]
       .filter(message => message.trim().length > 0)
     const transcriptSummary = this.formatTranscriptForMember(history, member.id)
     const userMessage = `${prompt}\n\n---\n\n## 群聊记录\n\n${transcriptSummary}`
@@ -449,9 +472,8 @@ ${reviewResult.rewrite_suggestion}
 
     const handle = await this.context.createAgUiSession({
       systemPrompt,
-      // 注入章节/矩阵共享上下文到 SEMI 层，确保每个成员都能看到完整背景。
-      // 群聊目标中的 context 由 NovelDiscussionRunner 通过 promptBuilder 构建，
-      // 包含章节约束、实体关系、矩阵状态等关键信息。
+      // 工种成员使用共享章节上下文；角色成员可通过 buildContextPrompt 使用
+      // 只含本人已知信息的私有上下文，避免角色看到全知状态和他人秘密。
       prefixUserMessage: prefixMessages.length === 1 ? prefixMessages[0] : prefixMessages,
       userMessage,
       tools: [],
@@ -535,6 +557,29 @@ ${reviewResult.rewrite_suggestion}
       }
       handle.dispose()
     }
+  }
+
+  private isValidCharacterSpeech(content: string): boolean {
+    const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    if (lines.length < 1 || lines.length > 6) return false
+    return lines.every(line => (
+      /^\[[^\]\n]{1,100}\]\s*[“「『"][^”」』"\n]{1,300}[”」』"](?:\s*\[PUSHBACK\][^\n]*)?$/.test(line)
+    ))
+  }
+
+  private normalizeCharacterSpeech(content: string, characterName: string): string {
+    const quoted = [...content.matchAll(/[“「『"]([^”」』"\n]{1,220})[”」』"]/g)]
+      .map(match => match[1].trim())
+      .filter(Boolean)
+      .slice(0, 3)
+    if (quoted.length > 0) {
+      return quoted.map(line => `[${characterName}按住没有说出口的话] “${line}”`).join('\n')
+    }
+    const response = content.match(/(?:应对|回应|台词)\s*[：:]\s*([^\n]{2,180})/)?.[1]
+      ?.replace(/^[“「『"]|[”」』"]$/g, '')
+      .trim()
+    if (response) return `[${characterName}看向对方] “${response}”`
+    return `[${characterName}没有立刻表态] “先把眼前这件事说清楚。”`
   }
 
   /**
@@ -633,7 +678,7 @@ ${speech}
    * 1. 空输出或过短（< 100 字）
    * 2. 模型拒绝标记（开头包含"我无法"/"作为AI"等）
    * 3. 重复模式（同一行重复 >= 3 次，长度 >= 10 字）
-   * 4. 字数严重偏离（< 85% 或 > 130% 目标字数，与 reviewFinalChapter 阈值一致）
+   * 4. 字数严重偏离（< 75% 或 > 130% 目标字数，与 create-flow 一致）
    */
   private runDiscussionPostWriteGuard(
     content: string,
@@ -641,6 +686,17 @@ ${speech}
     requiredMentions?: string[],
   ): { shouldRewrite: boolean; reason: string; details?: string } {
     const wordCount = content.replace(/\s/g, '').length
+
+    if (
+      wordCount < 500
+      && /(?:先核对|按(?:章纲|已批准方案|导演方案)|重写第\s*\d+\s*章|输出(?:完整)?正文|创作第\s*\d+\s*章正文|确保(?:冲突|伏笔|钩子))/.test(content)
+    ) {
+      return {
+        shouldRewrite: true,
+        reason: '模型未输出正文',
+        details: `仅输出了 ${wordCount} 字的计划或写作说明`,
+      }
+    }
 
     // 1. 空输出或过短
     if (wordCount < 100) {
@@ -684,9 +740,9 @@ ${speech}
       }
     }
 
-    // 4. 字数严重偏离（与 reviewFinalChapter 阈值一致：85% - 130%）
+    // 4. 只有明显失控才自动重写；75%-85% 交给 Reviewer 判断完整性。
     if (targetWords != null && targetWords > 0) {
-      if (wordCount < targetWords * 0.85) {
+      if (wordCount < targetWords * 0.75) {
         return {
           shouldRewrite: true,
           reason: '字数严重不足',
@@ -750,6 +806,21 @@ ${speech}
       options,
       { phase: 'chapter_weaving' },
     )
+    const rewrittenGuard = this.runDiscussionPostWriteGuard(
+      rewritten,
+      targetWords,
+      requiredMentions,
+    )
+    if (
+      rewrittenGuard.shouldRewrite
+      && ['正文过短', '模型未输出正文', '模型拒绝输出', '模型复读'].includes(rewrittenGuard.reason)
+    ) {
+      this.context.logger.warn(
+        { reason: rewrittenGuard.reason, details: rewrittenGuard.details },
+        '群聊 Writer 重写结果退化，保留原正文交给 Reviewer',
+      )
+      return content
+    }
     return rewritten
   }
 
@@ -868,15 +939,32 @@ ${combined}
         }
       : reviewer
     const targetHint = targetWords
-      ? `\n\n## 字数验收\n目标 ${targetWords} 字，允许范围 ${Math.round(targetWords * 0.85)}-${Math.round(targetWords * 1.30)} 字。超出范围必须给出 revise，不得 accept。`
+      ? `\n\n## 字数验收\n目标 ${targetWords} 字，建议范围 ${Math.round(targetWords * 0.85)}-${Math.round(targetWords * 1.15)} 字。轻微偏离需结合章节完整性判断；只有低于 ${Math.round(targetWords * 0.75)} 或高于 ${Math.round(targetWords * 1.30)} 字才必须给出 revise。`
       : ''
+    const proseQualityReport = options.buildProseQualityReport?.(content) ?? ''
+    const proseEditor: DiscussionMember = {
+      ...reviewer,
+      name: '文字编辑',
+      buildSystemPrompt: () => '',
+      buildContextPrompt: () => '',
+      buildIdentityPrompt: reviewer.buildProseEditorIdentityPrompt
+        ?? reviewer.buildFinalReviewIdentityPrompt
+        ?? reviewer.buildIdentityPrompt,
+    }
+    const proseEditorReport = await this.invokeMember(
+      proseEditor,
+      `请只从文字读感盲审以下正文。\n\n## 待审正文\n\n${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}`,
+      [],
+      options,
+      { phase: 'reviewing' },
+    )
     const report = await this.invokeMember(
       finalReviewer,
       `请验收以下群聊编织完成的章节正文，并按审稿格式给出 accept/revise/reject 结论。${targetHint}
 
 ## 待审稿章节正文
 
-${content}`,
+${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}\n\n---\n\n## 盲审文字编辑意见\n\n${proseEditorReport}`,
       [],
       options,
       { phase: 'reviewing' },
@@ -899,11 +987,9 @@ ${content}`,
     })
     if (decision === 'reject') return { status: 'cancelled' }
     const wordCount = content.replace(/\s/g, '').length
-    // 字数阈值与 PostWriteGuard（novel-orchestrator.runPostWriteGuard）保持一致：
-    // 下限 85%，上限 130%。130% 内的超出由 Reviewer 评估是否需要精简，
-    // 超过 130% 才视为需要 Reviser 介入。115% 过紧会让高潮章节被强制修订。
+    // 仅严重偏离触发自动 Reviser；轻微偏离由 Reviewer/用户决定。
     const lengthOutOfRange = targetWords != null && (
-      wordCount < targetWords * 0.85 || wordCount > targetWords * 1.30
+      wordCount < targetWords * 0.75 || wordCount > targetWords * 1.30
     )
     if (decision !== 'revise' && decision !== 'rewrite' && !lengthOutOfRange) {
       return { status: 'completed', content }
@@ -911,9 +997,9 @@ ${content}`,
 
     const reviser = members.find(member => member.id === 'novel-reviser')
     if (!reviser) return { status: 'completed', content }
-    const revisedContent = await this.invokeMember(
+    const rawRevision = await this.invokeMember(
       reviser,
-      `请根据审稿意见修订章节，并直接输出完整正文。${targetWords ? `正文必须控制在 ${Math.round(targetWords * 0.85)}-${Math.round(targetWords * 1.30)} 字，目标约 ${targetWords} 字。` : ''}
+      `请根据审稿意见修订章节，只输出需要替换的“原文/修改后”配对。${targetWords ? `修订后正文目标约 ${targetWords} 字。` : ''}
 
 ## 原章节正文
 
@@ -926,11 +1012,20 @@ ${report}`,
       options,
       { phase: 'reviewing' },
     )
+    const revision = options.applyRevision?.(content, rawRevision)
+      ?? { content: rawRevision, accepted: true, mode: 'full' as const }
+    const revisedContent = revision.content
+    if (!revision.accepted) {
+      this.context.logger.warn(
+        { reason: revision.reason, mode: revision.mode },
+        '群聊 Reviser 输出未通过安全修订，保留原正文',
+      )
+    }
     history.push({
       id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       fromId: reviser.id,
       fromName: reviser.name,
-      content: revisedContent,
+      content: rawRevision,
       timestamp: Date.now(),
       type: 'member',
     })

@@ -81,6 +81,7 @@ describe('ChapterFinalizer', () => {
   describe('syncChapterDimensions - 伏笔事件链', () => {
     const emptyBefore = {
       characters: new Map(), conflicts: new Map(), foreshadowing: new Map(),
+      clues: new Map(),
       factions: new Map(), locations: new Map(), relationships: new Map(), infoLayers: new Map(),
     } as any
 
@@ -90,6 +91,7 @@ describe('ChapterFinalizer', () => {
         listCharacters: vi.fn(() => []),
         listConflicts: vi.fn(() => []),
         listForeshadowing: vi.fn(() => foreshadows),
+        listClues: vi.fn(() => []),
         listFactions: vi.fn(() => []),
         listLocations: vi.fn(() => []),
         updateForeshadow,
@@ -119,6 +121,35 @@ describe('ChapterFinalizer', () => {
         lastChapter: 3,
         beats: [{ chapter: 3, type: 'plant' }],
       })
+    })
+  })
+
+  describe('syncChapterDimensions - 线索轨道', () => {
+    it('把矩阵选中的线索补入本章跨度', () => {
+      const updateClue = vi.fn()
+      const store = {
+        listCharacters: vi.fn(() => []), listCharacterHistory: vi.fn(() => []),
+        listConflicts: vi.fn(() => []), listForeshadowing: vi.fn(() => []),
+        listClues: vi.fn(() => [{ id: 'clue-1', chapterSpans: [[1, 1]] }]),
+        listFactions: vi.fn(() => []), listLocations: vi.fn(() => []),
+        updateClue,
+      }
+      const clueFinalizer = new ChapterFinalizer(
+        store as any, {} as any, {} as any, {} as any, mockContext,
+      )
+      const before = {
+        characters: new Map(), conflicts: new Map(), foreshadowing: new Map(), clues: new Map([
+          ['clue-1', { chapterSpans: [[1, 1]] }],
+        ]), factions: new Map(), locations: new Map(), relationships: new Map(), infoLayers: new Map(),
+      } as any
+
+      clueFinalizer.syncChapterDimensions(
+        'p1', 3, null,
+        { characterIds: [], conflictIds: [], foreshadowIds: [], clueIds: ['clue-1'], factionIds: [], locationIds: [] },
+        before,
+      )
+
+      expect(updateClue).toHaveBeenCalledWith('clue-1', { chapterSpans: [[1, 1], [3, 3]] })
     })
   })
 })

@@ -64,6 +64,76 @@ function makeMockEngineContext(): Record<string, unknown> {
 describe('TeamDiscussionEngine', () => {
   const goal: DiscussionGoal = { task: '测试任务', context: '上下文' }
 
+  it('角色成员只读取私有上下文，不继承工种全知上下文', async () => {
+    const createAgUiSession = vi.fn().mockResolvedValue({
+      session: { prompt: vi.fn().mockResolvedValue('[抬眼] “我只按自己知道的事回答。”') },
+      streamEmitter: { finishTextMessage: vi.fn() },
+      messageId: 'private-context',
+      dispose: vi.fn(),
+    })
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]),
+      new AgentChannel(),
+      { createAgUiSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+    ) as any
+    engine.currentGoal = { task: '测试', context: '作者真相：凶手是父亲' }
+    const member = makeMember({
+      id: 'char-1',
+      type: 'character',
+      buildContextPrompt: () => '角色已知：门昨晚开过',
+    })
+
+    await engine.invokeMember(member, '回应', [], makeOptions(), { phase: 'acting', sceneId: 1 })
+
+    expect(createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({
+      prefixUserMessage: '角色已知：门昨晚开过',
+    }))
+    expect(JSON.stringify(createAgUiSession.mock.calls[0][0])).not.toContain('凶手是父亲')
+  })
+
+  it('角色提纲输出会被归一化为动作和台词，不直接流入 Writer', () => {
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
+    ) as any
+    const outline = '意图：拖延时间\n心理：担心秘密暴露\n应对：我需要先确认门外是谁。'
+
+    expect(engine.isValidCharacterSpeech(outline)).toBe(false)
+    expect(engine.normalizeCharacterSpeech(outline, '赵岩')).toBe('[赵岩看向对方] “我需要先确认门外是谁。”')
+    expect(engine.isValidCharacterSpeech('[赵岩看向对方] “我需要先确认门外是谁。”')).toBe(true)
+  })
+
+  it('群聊 Reviser 结果必须经过业务层安全修订应用器', async () => {
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
+    ) as any
+    engine.invokeMember = vi.fn()
+      .mockResolvedValueOnce('盲审：需要修订')
+      .mockResolvedValueOnce('## 结论：revise')
+      .mockResolvedValueOnce('原文：\n旧句。\n\n修改后：\n新句。')
+    const applyRevision = vi.fn().mockReturnValue({
+      content: '第一段。\n\n新句。', accepted: true, mode: 'patch',
+    })
+
+    const result = await engine.reviewFinalChapter(
+      '第一段。\n\n旧句。',
+      [
+        makeMember({ id: 'novel-reviewer', name: '审稿' }),
+        makeMember({ id: 'novel-reviser', name: '修订', canConverge: true }),
+      ],
+      [],
+      makeOptions({
+        onCheckpoint: vi.fn().mockResolvedValue('revise'),
+        applyRevision,
+      }),
+    )
+
+    expect(applyRevision).toHaveBeenCalledWith(
+      '第一段。\n\n旧句。',
+      '原文：\n旧句。\n\n修改后：\n新句。',
+    )
+    expect(result.content).toBe('第一段。\n\n新句。')
+  })
+
   it('群聊质量门拦截正文遗漏的矩阵实体', () => {
     const engine = new TeamDiscussionEngine(
       makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
@@ -75,6 +145,52 @@ describe('TeamDiscussionEngine', () => {
     expect(result.shouldRewrite).toBe(true)
     expect(result.reason).toBe('未完整执行矩阵编排')
     expect(result.details).toContain('李四')
+  })
+
+  it('群聊质量门不因正文达到目标 80% 就自动重写', () => {
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
+    )
+    const content = Array.from({ length: 2400 }, (_, index) =>
+      String.fromCodePoint(0x4e00 + (index % 1800)),
+    ).join('')
+
+    const result = (engine as any).runDiscussionPostWriteGuard(content, 3000)
+
+    expect(result.shouldRewrite).toBe(false)
+  })
+
+  it('群聊质量门拦截只输出写作说明而没有正文的结果', () => {
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
+    )
+    const content = '我将先核对人物设定、章节目标和矩阵约束，然后按照导演方案分场景展开，确保冲突升级、伏笔推进和结尾钩子都得到落实。'.repeat(4)
+
+    const result = (engine as any).runDiscussionPostWriteGuard(content)
+
+    expect(result.shouldRewrite).toBe(true)
+    expect(result.reason).toBe('模型未输出正文')
+  })
+
+  it('群聊重写结果退化为写作说明时保留原正文', async () => {
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
+    ) as any
+    const original = Array.from({ length: 20 }, (_, i) => `第${i + 1}段是各不相同的场景描写和人物行动。`).join('\n')
+    engine.invokeMember = vi.fn().mockResolvedValue(
+      '我将先核对章纲、矩阵和导演方案，然后确保冲突、伏笔、钩子全部落实，再输出完整正文。'.repeat(4),
+    )
+
+    const result = await engine.guardAndMaybeRewrite(
+      original,
+      makeMember({ id: 'novel-writer', canConverge: true }),
+      '写正文',
+      makeOptions(),
+      undefined,
+      ['李四'],
+    )
+
+    expect(result).toBe(original)
   })
 
   it('每次成员调用完成后发送完整审计信息', async () => {
@@ -446,6 +562,7 @@ describe('TeamDiscussionEngine', () => {
       }),
       '[抬头直视] "这件事我绝不退。"',
       '完整章节正文',
+      '盲审：人物声音成立',
       '## 结论：accept',
     ]
     const ctx = {
@@ -476,7 +593,7 @@ describe('TeamDiscussionEngine', () => {
     const reviewerStarts = onProgress.mock.calls
       .map(([event]) => event)
       .filter(event => event.type === 'agent_start' && event.data.agentId === 'novel-reviewer')
-    expect(reviewerStarts).toHaveLength(1)
+    expect(reviewerStarts).toHaveLength(2)
   })
 
   it('从 chapter_weaving 快照恢复时跳过 Moderator 和角色推演', async () => {
@@ -488,7 +605,7 @@ describe('TeamDiscussionEngine', () => {
     const prompts: string[] = []
     // 正文需超过 PostWriteGuard 的 100 字下限，否则测试会进入重写分支。
     const recoveredContent = '矿道深处传来碎石滚落声，叶明远稳住呼吸，沿着石壁继续向前。'.repeat(5)
-    const outputs = [recoveredContent, '## 结论：accept']
+    const outputs = [recoveredContent, '盲审：通过', '## 结论：accept']
     let callCount = 0
     const ctx = {
       createAgUiSession: vi.fn().mockImplementation(async (opts: { userMessage: string }) => {
@@ -540,7 +657,7 @@ describe('TeamDiscussionEngine', () => {
       expect.objectContaining({ fromId: 'novel-reviewer', content: '## 结论：accept' }),
     ]))
     expect(decide).not.toHaveBeenCalled()
-    expect(prompts).toHaveLength(2)
+    expect(prompts).toHaveLength(3)
     expect(prompts[0]).toContain('已保存的角色推演')
   })
 

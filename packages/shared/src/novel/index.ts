@@ -767,6 +767,8 @@ export interface NovelWritingStyleProfile {
   hardRules: string[]
   softRules: string[]
   positiveExamples: string[]
+  /** 明确不希望正文模仿的反例，只用于识别句式和叙述习惯，不作为事实上下文。 */
+  negativeExamples: string[]
   notes: string
   version: number
   createdAt: number
@@ -1158,6 +1160,8 @@ export interface ArrangedEntity {
   characterIds: string[]
   conflictIds: string[]
   foreshadowIds: string[]
+  /** 本章需要呈现或推进的线索；可选以兼容旧版矩阵快照。 */
+  clueIds?: string[]
   factionIds: string[]
   locationIds: string[]
   /**

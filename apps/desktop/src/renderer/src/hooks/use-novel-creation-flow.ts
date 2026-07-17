@@ -119,6 +119,7 @@ export interface UseNovelCreationFlowReturn {
       characterIds: string[]
       conflictIds: string[]
       foreshadowIds: string[]
+      clueIds: string[]
       factionIds: string[]
       locationIds: string[]
     }
@@ -134,6 +135,7 @@ export interface UseNovelCreationFlowReturn {
       characterIds: string[]
       conflictIds: string[]
       foreshadowIds: string[]
+      clueIds: string[]
       factionIds: string[]
       locationIds: string[]
     }
@@ -896,6 +898,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         characterIds: string[]
         conflictIds: string[]
         foreshadowIds: string[]
+        clueIds: string[]
         factionIds: string[]
         locationIds: string[]
       }
@@ -952,6 +955,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         characterIds: string[]
         conflictIds: string[]
         foreshadowIds: string[]
+        clueIds: string[]
         factionIds: string[]
         locationIds: string[]
       }

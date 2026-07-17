@@ -36,7 +36,7 @@ import type {
   NovelWorldElementCategory, NovelEdgeType,
   CharacterHistoryField, NovelMarkerType, NovelMarkerColor,
   SimilarityGroup,
-  ChapterVersion, ChapterVersionSummary, ChapterVersionDiff, ChapterVersionPhase, RollbackResult,
+  ChapterVersion, ChapterVersionSummary, ChapterVersionDiff, RollbackResult,
 } from '@repo/shared/novel'
 
 // re-export 共享类型供外部消费者使用
@@ -72,7 +72,7 @@ export interface CreateProjectInput {
   targetPlatform?: TargetPlatform
 }
 
-export type UpdateProjectInput = Partial<CreateProjectInput> & {
+export type UpdateProjectInput = Omit<Partial<CreateProjectInput>, 'targetPlatform'> & {
   currentVolume?: number
   currentChapter?: number
   currentStage?: StoryStage
@@ -618,6 +618,28 @@ export function getWritingStylePromptPreview(
   target: 'writer' | 'reviser' | 'reviewer' = 'writer',
 ): Promise<WritingStylePromptPreview | null> {
   return getApi<WritingStylePromptPreview | null>(`${BASE}/projects/${projectId}/writing-style-profile/preview?target=${target}`)
+}
+
+export interface ProseQualityReport {
+  score: number
+  metrics: {
+    characterCount: number
+    paragraphCount: number
+    sentenceCount: number
+    singleSentenceParagraphs: number
+    shortParagraphs: number
+    maxConsecutiveSingleSentenceParagraphs: number
+    dialogueRatio: number
+    patternCounts: Record<string, number>
+  }
+  issues: Array<{ code: string; severity: 'warning' | 'error'; message: string }>
+}
+
+export function getChapterProseQuality(
+  projectId: string,
+  chapterNumber: number,
+): Promise<ProseQualityReport> {
+  return getApi<ProseQualityReport>(`${BASE}/projects/${projectId}/chapters/${chapterNumber}/prose-quality`)
 }
 
 // ── Constraints ──

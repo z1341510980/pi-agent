@@ -17,7 +17,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { toast, toastSuccess, toastError } from '@/hooks/use-toast'
+import { toastSuccess, toastError } from '@/hooks/use-toast'
 import {
   listChapterVersions, getChapterVersion, diffChapterVersions,
   rollbackChapter, createChapterSnapshot,
@@ -96,6 +96,9 @@ export function ChapterVersionPanel({
   const [diffLoading, setDiffLoading] = useState(false)
   const [confirmRollbackId, setConfirmRollbackId] = useState<string | null>(null)
   const [rolling, setRolling] = useState(false)
+  const selectedIsCurrent = versions.some(
+    (version) => version.id === selectedDetail?.id && version.isCurrent,
+  )
 
   // 加载版本列表
   const loadVersions = useCallback(async () => {
@@ -336,7 +339,7 @@ export function ChapterVersionPanel({
                     <pre className="whitespace-pre-wrap text-sm leading-relaxed font-sans bg-muted/30 p-3 rounded-md border">
                       {selectedDetail.content || '（空正文）'}
                     </pre>
-                    {!selectedDetail.isCurrent && (
+                    {!selectedIsCurrent && (
                       <div className="pt-2">
                         <Button
                           size="sm"

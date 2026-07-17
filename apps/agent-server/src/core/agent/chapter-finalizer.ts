@@ -467,6 +467,7 @@ export class ChapterFinalizer {
     characters: Map<string, { name: string; currentState: string; currentGoal: string; currentPressure: string; secret: string; arcStage: string; longTermDesire: string; removalImpact: string; participatingConflicts: string[] }>
     conflicts: Map<string, { description: string; stage: string; intensity: number; plotFunction: string | undefined; progressionMode: string | undefined }>
     foreshadowing: Map<string, { description: string; status: string; firstChapter: number | null; lastChapter: number | null; plantMethod: string | undefined; recoverMethod: string | undefined; linkedInfoLayers: string[] }>
+    clues: Map<string, { description: string; pointsTo: string; progress: number; currentStep: string; nextStep: string; isMisleading: boolean; chapterSpans: ChapterSpan[] }>
     factions: Map<string, { name: string; status: string; strength: string }>
     locations: Map<string, { name: string; status: string; appearChapters: number[] }>
     relationships: Map<string, { characterA: string; characterB: string; relationType: string; currentStage: string; dynamicRole: string; alignment: string; trend: string; chapterHint: string; lastUpdatedChapter: number | null }>
@@ -516,6 +517,20 @@ export class ChapterFinalizer {
         },
       ]),
     )
+    const clues = new Map(
+      this.store.listClues(projectId).map((clue) => [
+        clue.id,
+        {
+          description: clue.description,
+          pointsTo: clue.pointsTo,
+          progress: clue.progress,
+          currentStep: clue.currentStep,
+          nextStep: clue.nextStep,
+          isMisleading: clue.isMisleading,
+          chapterSpans: clue.chapterSpans.map((span) => [...span] as ChapterSpan),
+        },
+      ]),
+    )
     const factions = new Map(
       this.store.listFactions(projectId).map((f) => [
         f.id,
@@ -557,7 +572,7 @@ export class ChapterFinalizer {
         },
       ]),
     )
-    return { characters, conflicts, foreshadowing, factions, locations, relationships, infoLayers }
+    return { characters, conflicts, foreshadowing, clues, factions, locations, relationships, infoLayers }
   }
 
   /** 容错解析 JSON: string[]，避免非 JSON / 旧数据格式导致 captureEntityState 抛错 */
@@ -756,6 +771,32 @@ export class ChapterFinalizer {
           oldValue: JSON.stringify({ recoverMethod: beforeF.recoverMethod }),
           newValue: JSON.stringify({ recoverMethod: afterF.recoverMethod }),
           cause: null, effectIds: [], significance: 5,
+        }))
+      }
+    }
+
+    // ── 线索变更 ──
+    for (const [id, afterClue] of after.clues) {
+      const beforeClue = before.clues.get(id)
+      if (!beforeClue) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'clue_change', entityId: id, entityType: 'clue',
+          description: `线索创建: ${afterClue.description}`,
+          oldValue: null, newValue: JSON.stringify(afterClue),
+          cause: null, effectIds: [], significance: 6,
+        }))
+        continue
+      }
+      const trackedFields = ['pointsTo', 'progress', 'currentStep', 'nextStep', 'isMisleading'] as const
+      const changed = trackedFields.filter((field) => beforeClue[field] !== afterClue[field])
+      if (changed.length > 0) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'clue_change', entityId: id, entityType: 'clue',
+          description: `线索推进: ${afterClue.description}（${changed.join('、')}）`,
+          oldValue: JSON.stringify(beforeClue), newValue: JSON.stringify(afterClue),
+          cause: null, effectIds: [], significance: 6,
         }))
       }
     }
@@ -1170,6 +1211,23 @@ export class ChapterFinalizer {
         patch.beats = [...beats, { chapter: chapterNumber, type: 'plant' }]
       }
       this.store.updateForeshadow(foreshadowId, patch)
+    }
+
+    // ── 线索：补全 chapterSpans ──
+    const afterClues = this.store.listClues(projectId)
+    const newClueIds = afterClues
+      .filter((clue) => !before.clues.has(clue.id))
+      .map((clue) => clue.id)
+    const involvedClueIds = new Set<string>([
+      ...(arrangedEntities?.clueIds ?? []),
+      ...newClueIds,
+    ])
+    for (const clueId of involvedClueIds) {
+      const clue = afterClues.find((item) => item.id === clueId)
+      if (!clue) continue
+      this.store.updateClue(clueId, {
+        chapterSpans: appendChapterToSpans(clue.chapterSpans, chapterNumber),
+      })
     }
 
     // ── 势力：补全 chapterSpans（同冲突逻辑）──
