@@ -5,21 +5,18 @@ describe('gate route', () => {
   let app: Awaited<ReturnType<typeof createApp>>
 
   beforeAll(async () => {
-    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     app = await createApp()
     await app.ready()
   })
 
   afterAll(async () => {
     await app.close()
-    delete process.env.WENLANG_AGENT_AUTH_TOKEN
   })
 
   it('GET /api/gate 返回当前权限模式（默认 auto）', async () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/gate',
-      headers: { authorization: 'Bearer test-token-123' },
     })
 
     expect(response.statusCode).toBe(200)
@@ -32,7 +29,6 @@ describe('gate route', () => {
     const response = await app.inject({
       method: 'PUT',
       url: '/api/gate/mode',
-      headers: { authorization: 'Bearer test-token-123' },
       body: { mode: 'plan' },
     })
 
@@ -48,7 +44,6 @@ describe('gate route', () => {
     const response = await app.inject({
       method: 'PUT',
       url: '/api/gate/mode',
-      headers: { authorization: 'Bearer test-token-123' },
       body: { mode: 'readonly' },
     })
 
@@ -61,7 +56,6 @@ describe('gate route', () => {
     const response = await app.inject({
       method: 'PUT',
       url: '/api/gate/mode',
-      headers: { authorization: 'Bearer test-token-123' },
       body: { mode: 'auto' },
     })
 
@@ -74,7 +68,6 @@ describe('gate route', () => {
     const response = await app.inject({
       method: 'PUT',
       url: '/api/gate/mode',
-      headers: { authorization: 'Bearer test-token-123' },
       body: { mode: 'invalid-mode' },
     })
 

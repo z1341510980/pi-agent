@@ -468,7 +468,6 @@ describe('Plugin 系统 API 路由', () => {
   let app: FastifyInstance
 
   beforeAll(async () => {
-    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     process.env.PI_PLUGINS_ENABLE_EXAMPLES = 'true'
     const { createApp } = await import('../app.js')
     app = await createApp()
@@ -477,19 +476,13 @@ describe('Plugin 系统 API 路由', () => {
 
   afterAll(async () => {
     await app.close()
-    delete process.env.WENLANG_AGENT_AUTH_TOKEN
     delete process.env.PI_PLUGINS_ENABLE_EXAMPLES
   })
-
-  const authHeaders = {
-    authorization: 'Bearer test-token-123',
-  }
 
   it('GET /api/plugins 返回插件列表', async () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/plugins',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(200)
@@ -508,7 +501,6 @@ describe('Plugin 系统 API 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/plugins/hello',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(200)
@@ -523,7 +515,6 @@ describe('Plugin 系统 API 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/plugins/nonexistent',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(404)
@@ -533,7 +524,6 @@ describe('Plugin 系统 API 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/plugins/hello/status',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(200)
@@ -546,7 +536,7 @@ describe('Plugin 系统 API 路由', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/plugins/hello/greet',
-      headers: { ...authHeaders, 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' },
       body: { name: 'Tester', language: 'zh', times: 2 },
     })
 
@@ -560,7 +550,6 @@ describe('Plugin 系统 API 路由', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/plugins/hello/disable',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(200)
@@ -577,14 +566,12 @@ describe('Plugin 系统 API 路由', () => {
     await app.inject({
       method: 'POST',
       url: '/api/plugins/hello/disable',
-      headers: authHeaders,
     })
 
     // 再启用
     const response = await app.inject({
       method: 'POST',
       url: '/api/plugins/hello/enable',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(200)
@@ -596,7 +583,6 @@ describe('Plugin 系统 API 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/plugins/hello/tools',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(200)
@@ -610,7 +596,6 @@ describe('Plugin 系统 API 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/plugins/panels/all',
-      headers: authHeaders,
     })
 
     expect(response.statusCode).toBe(200)

@@ -5,7 +5,6 @@ describe('AG-UI 路由', () => {
   let app: Awaited<ReturnType<typeof createApp>>
 
   beforeAll(async () => {
-    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     app = await createApp()
     await app.ready()
   })
@@ -14,15 +13,10 @@ describe('AG-UI 路由', () => {
     await app.close()
   })
 
-  const authHeaders = {
-    authorization: 'Bearer test-token-123',
-  }
-
   it('GET /ag-ui/info 返回协议信息', async () => {
     const response = await app.inject({
       method: 'GET',
       url: '/ag-ui/info',
-      headers: authHeaders,
     })
     expect(response.statusCode).toBe(200)
     const body = response.json()
@@ -36,7 +30,6 @@ describe('AG-UI 路由', () => {
       method: 'POST',
       url: '/ag-ui/agent/default/run',
       headers: {
-        ...authHeaders,
         'content-type': 'application/json',
       },
       body: {
@@ -52,7 +45,6 @@ describe('AG-UI 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/ag-ui/agent/default/models',
-      headers: authHeaders,
     })
     expect(response.statusCode).toBe(400)
   })
@@ -61,7 +53,6 @@ describe('AG-UI 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/ag-ui/agent/default/tools',
-      headers: authHeaders,
     })
     expect(response.statusCode).toBe(400)
   })
@@ -70,7 +61,6 @@ describe('AG-UI 路由', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/ag-ui/agent/nonexistent/models?threadId=t1',
-      headers: authHeaders,
     })
     expect(response.statusCode).toBe(404)
   })

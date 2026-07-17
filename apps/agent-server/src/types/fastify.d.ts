@@ -32,7 +32,6 @@ declare module 'fastify' {
   }
 
   interface FastifyInstance {
-    authToken?: string
     authStorage: PiAuthStorage
     modelRegistry: PiModelRegistry
     sessionManager: PiSessionManager

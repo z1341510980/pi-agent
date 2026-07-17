@@ -45,6 +45,7 @@
       "electron",
       "electron-winstaller",
       "esbuild",
+      "phantomjs-prebuilt",
       "protobufjs"
     ]
   },

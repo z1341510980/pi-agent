@@ -83,9 +83,10 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     id: 'novel-reviser',
     name: '修订 Agent',
     identity: '你是小说的修订者，负责根据审稿人反馈精确修订章节中的问题段落，遵循最小改动原则。',
-    // Reviser 复用 Writer 的工具集（空）。原章节正文 + 审稿意见通过 user_message 注入，
-    // 无需 query 工具。role-reviser.md 明确要求"只改问题段落，不动正常段落"，
-    // 并要求"输出完整正文（含修订和未修订部分）"，因此由代码层整体替换 finalContent。
+    // Reviser 复用 Writer 的工具集。原章节正文 + 审稿意见通过 user_message 注入，
+    // 无需 query 工具。role-reviser.md 明确要求"只输出原文/修改后局部补丁"，
+    // 禁止输出完整章节正文。代码层 applySafeRevision 优先解析补丁配对应用，
+    // 仅在补丁解析失败且通过保留率校验时才回退到整体替换。
     // A+B：给 Reviser 开放语义化查询工具 novel_ask_story，用于修订时核对上下文和角色状态。
     tools: ['novel_ask_story'],
     roleTemplate: 'role-reviser',

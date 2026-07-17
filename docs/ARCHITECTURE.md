@@ -3716,7 +3716,6 @@ agent-server/src/
     database.plugin.ts           # better-sqlite3 + 迁移
     event-bus.plugin.ts          # EventBus
     cors.plugin.ts               # CORS
-    auth.plugin.ts               # Bearer Token 认证
     rate-limit.plugin.ts         # 速率限制
     error-handler.plugin.ts      # 错误处理
     request-context.plugin.ts    # traceId 注入

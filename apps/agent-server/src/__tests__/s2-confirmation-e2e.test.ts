@@ -69,14 +69,12 @@ describe('S2 端到端：危险工具确认往返', () => {
   let app: Awaited<ReturnType<typeof createApp>>
 
   beforeAll(async () => {
-    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     app = await createApp()
     await app.ready()
   })
 
   afterAll(async () => {
     await app.close()
-    delete process.env.WENLANG_AGENT_AUTH_TOKEN
   })
 
   it('用户批准危险工具：confirmation_request → response(approved=true) → resolved → beforeToolCall 放行', async () => {
@@ -85,7 +83,6 @@ describe('S2 端到端：危险工具确认往返', () => {
 
     // 模拟桌面客户端连接 WebSocket
     const socket = (await app.injectWS('/ws?threadId=thread-s2-approve', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     // 创建 beforeToolCall 钩子（与 pi-session.ts 中一致）
@@ -131,7 +128,6 @@ describe('S2 端到端：危险工具确认往返', () => {
     app.gate.setMode('auto')
 
     const socket = (await app.injectWS('/ws?threadId=thread-s2-deny', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     const beforeToolCall = createBeforeToolCall({
@@ -173,7 +169,6 @@ describe('S2 端到端：危险工具确认往返', () => {
     app.gate.setMode('readonly')
 
     const socket = (await app.injectWS('/ws?threadId=thread-s2-readonly', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     const beforeToolCall = createBeforeToolCall({
@@ -208,7 +203,6 @@ describe('S2 端到端：危险工具确认往返', () => {
     app.gate.setMode('auto')
 
     const socket = (await app.injectWS('/ws?threadId=thread-s2-safe', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     const beforeToolCall = createBeforeToolCall({

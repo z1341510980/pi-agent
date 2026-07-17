@@ -1,6 +1,5 @@
 import Fastify from 'fastify'
 import { corsPlugin } from './plugins/cors.plugin.js'
-import { authPlugin } from './plugins/auth.plugin.js'
 import { rateLimitPlugin } from './plugins/rate-limit.plugin.js'
 import { errorHandlerPlugin } from './plugins/error-handler.plugin.js'
 import { requestContextPlugin } from './plugins/request-context.plugin.js'
@@ -48,7 +47,6 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // 核心插件（顺序重要）
   await app.register(requestContextPlugin)
   await app.register(corsPlugin)
-  await app.register(authPlugin)
   await app.register(rateLimitPlugin)
   await app.register(errorHandlerPlugin)
   await app.register(eventBusPlugin)

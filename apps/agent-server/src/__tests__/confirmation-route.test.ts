@@ -5,14 +5,12 @@ describe('confirmation route', () => {
   let app: Awaited<ReturnType<typeof createApp>>
 
   beforeAll(async () => {
-    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     app = await createApp()
     await app.ready()
   })
 
   afterAll(async () => {
     await app.close()
-    delete process.env.WENLANG_AGENT_AUTH_TOKEN
   })
 
   it('lists pending confirmations', async () => {
@@ -27,9 +25,6 @@ describe('confirmation route', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/confirmations',
-      headers: {
-        authorization: 'Bearer test-token-123',
-      },
     })
 
     expect(response.statusCode).toBe(200)
@@ -52,9 +47,6 @@ describe('confirmation route', () => {
     const response = await app.inject({
       method: 'POST',
       url: `/api/confirmations/${pending!.id}/respond`,
-      headers: {
-        authorization: 'Bearer test-token-123',
-      },
       body: {
         approved: true,
       },
@@ -69,9 +61,6 @@ describe('confirmation route', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/confirmations/missing/respond',
-      headers: {
-        authorization: 'Bearer test-token-123',
-      },
       body: {
         approved: true,
       },

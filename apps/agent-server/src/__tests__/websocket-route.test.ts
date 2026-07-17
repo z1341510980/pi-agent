@@ -42,19 +42,16 @@ describe('websocket route', () => {
   let app: Awaited<ReturnType<typeof createApp>>
 
   beforeAll(async () => {
-    process.env.WENLANG_AGENT_AUTH_TOKEN = 'test-token-123'
     app = await createApp()
     await app.ready()
   })
 
   afterAll(async () => {
     await app.close()
-    delete process.env.WENLANG_AGENT_AUTH_TOKEN
   })
 
   it('推送 confirmation_request 到连接的客户端', async () => {
     const socket = (await app.injectWS('/ws', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     const messagePromise = nextMessage(socket)
@@ -77,7 +74,6 @@ describe('websocket route', () => {
 
   it('接收 confirmation_response 并解析确认请求', async () => {
     const socket = (await app.injectWS('/ws', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     // 发起确认请求
@@ -108,7 +104,6 @@ describe('websocket route', () => {
 
   it('ping 消息返回 pong', async () => {
     const socket = (await app.injectWS('/ws', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     const pongPromise = waitForType(socket, 'pong')
@@ -121,7 +116,6 @@ describe('websocket route', () => {
 
   it('threadId 过滤：只推送匹配的确认请求', async () => {
     const socket = (await app.injectWS('/ws?threadId=thread-A', {
-      headers: { authorization: 'Bearer test-token-123' },
     })) as unknown as TestSocket
 
     // 发送给 thread-B 的确认请求不应推送到此客户端
