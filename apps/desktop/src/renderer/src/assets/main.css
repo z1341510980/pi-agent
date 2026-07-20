@@ -4,7 +4,7 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ────────────────────────────────────────────────────────────
-   主题变量（light-first，oklch 色彩空间）
+   主题变量（TRAE Work 设计系统对齐）
    默认 :root 为浅色，通过 .dark class 切换深色
    ──────────────────────────────────────────────────────────── */
 
@@ -16,125 +16,126 @@
   --chat-header-height: 60px;
   --statusbar-height: 32px;
 
-  /* ── shadcn 语义色（Craft 风格） ── */
+  /* ── shadcn 语义色（TRAE Work 风格） ── */
   --color-background: #ffffff;
-  --color-foreground: #111827;
-  --color-card: #ffffff;
-  --color-card-foreground: #111827;
+  --color-foreground: #171717;
+  --color-card: #f5f5f5;
+  --color-card-foreground: #171717;
   --color-popover: #ffffff;
-  --color-popover-foreground: #111827;
-  --color-primary: #6366f1;
+  --color-popover-foreground: #171717;
+  --color-primary: #4b3fe3;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #f9fafb;
-  --color-secondary-foreground: #374151;
-  --color-muted: #f3f4f6;
-  --color-muted-foreground: #6b7280;
-  --color-accent: #eef0ff;
-  --color-accent-foreground: #111827;
-  --color-destructive: #ef4444;
+  --color-secondary: #f5f5f5;
+  --color-secondary-foreground: #404040;
+  --color-muted: #e5e5e5;
+  --color-muted-foreground: #404040;
+  --color-accent: rgba(75, 63, 227, 0.08);
+  --color-accent-foreground: #171717;
+  --color-destructive: #e8463a;
   --color-destructive-foreground: #ffffff;
-  --color-border: #e5e7eb;
-  --color-input: #e5e7eb;
-  --color-ring: #6366f1;
+  --color-border: rgba(115, 115, 115, 0.12);
+  --color-input: rgba(115, 115, 115, 0.18);
+  --color-ring: #4b3fe3;
 
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* ── 圆角（TRAE Work 标准） ── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
 
-  /* ── 应用语义色（Craft 风格） ── */
-  --color-app-bg: #f7f8fa;
-  --color-app-bg-alt: #f9fafb;
+  /* ── 应用语义色（TRAE Work 风格） ── */
+  --color-app-bg: #f5f5f5;
+  --color-app-bg-alt: #fafafa;
   --color-surface-1: #ffffff;
-  --color-surface-2: #f9fafb;
-  --color-surface-3: #f3f4f6;
-  --color-surface-4: #f1f5f9;
-  --color-border-strong: #e5e7eb;
-  --color-text: #111827;
-  --color-text-secondary: #374151;
-  --color-subtle: #6b7280;
-  --color-hint: #9ca3af;
-  --color-primary-strong: #4f46e5;
-  --color-success: #10b981;
-  --color-danger: #ef4444;
+  --color-surface-2: #f5f5f5;
+  --color-surface-3: #e5e5e5;
+  --color-surface-4: rgba(115, 115, 115, 0.08);
+  --color-border-strong: rgba(115, 115, 115, 0.18);
+  --color-text: #171717;
+  --color-text-secondary: #404040;
+  --color-subtle: #737373;
+  --color-hint: #a1a1a1;
+  --color-primary-strong: #3f31c6;
+  --color-success: #15a877;
+  --color-danger: #e8463a;
 
   /* Title bar */
   --color-titlebar-bg: #ffffff;
-  --color-titlebar-border: transparent;
+  --color-titlebar-border: rgba(115, 115, 115, 0.12);
 
   /* Chat header */
   --color-chat-header-bg: #ffffff;
 
   /* Chat workspace */
-  --color-workspace-bg: #f7f8fa;
+  --color-workspace-bg: #f5f5f5;
 
   /* Status bar */
   --color-statusbar-bg: #ffffff;
-  --color-statusbar-border: #e5e7eb;
+  --color-statusbar-border: rgba(115, 115, 115, 0.12);
 
   /* Input */
   --color-input-bg: #ffffff;
 
   /* Context panel card */
-  --color-card-bg: #f8fafc;
+  --color-card-bg: #f5f5f5;
 
   /* Agent avatar */
-  --color-avatar-bg: #6366f1;
+  --color-avatar-bg: #4b3fe3;
   --color-avatar-text: #ffffff;
 
   /* User avatar */
-  --color-user-avatar-bg: #111827;
+  --color-user-avatar-bg: #262626;
   --color-user-avatar-text: #ffffff;
 }
 
 /* ── Dark 主题：通过 .dark class 切换 ── */
 
 .dark {
-  --color-background: #111827;
-  --color-foreground: #f3f4f6;
-  --color-card: #1f2937;
-  --color-card-foreground: #f3f4f6;
-  --color-popover: #1f2937;
-  --color-popover-foreground: #f3f4f6;
-  --color-primary: #818cf8;
+  --color-background: #171717;
+  --color-foreground: #e5e5e5;
+  --color-card: #262626;
+  --color-card-foreground: #e5e5e5;
+  --color-popover: #262626;
+  --color-popover-foreground: #e5e5e5;
+  --color-primary: #6a6fff;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #1f2937;
-  --color-secondary-foreground: #e5e7eb;
-  --color-muted: #374151;
-  --color-muted-foreground: #9ca3af;
-  --color-accent: #312e81;
-  --color-accent-foreground: #e5e7eb;
-  --color-destructive: #f87171;
+  --color-secondary: #262626;
+  --color-secondary-foreground: #d4d4d4;
+  --color-muted: #404040;
+  --color-muted-foreground: #a1a1a1;
+  --color-accent: rgba(106, 111, 255, 0.16);
+  --color-accent-foreground: #e5e5e5;
+  --color-destructive: #ea574c;
   --color-destructive-foreground: #ffffff;
-  --color-border: #374151;
-  --color-input: #374151;
-  --color-app-bg: #0b0f19;
-  --color-app-bg-alt: #0b0f19;
-  --color-surface-1: #1f2937;
-  --color-surface-2: #111827;
-  --color-surface-3: #374151;
-  --color-surface-4: #1e293b;
-  --color-border-strong: #4b5563;
-  --color-text: #f3f4f6;
-  --color-text-secondary: #e5e7eb;
-  --color-subtle: #9ca3af;
-  --color-hint: #6b7280;
-  --color-success: #34d399;
-  --color-danger: #f87171;
+  --color-border: rgba(115, 115, 115, 0.36);
+  --color-input: rgba(115, 115, 115, 0.36);
+  --color-app-bg: #0a0a0a;
+  --color-app-bg-alt: #0a0a0a;
+  --color-surface-1: #262626;
+  --color-surface-2: #171717;
+  --color-surface-3: #404040;
+  --color-surface-4: rgba(115, 115, 115, 0.16);
+  --color-border-strong: rgba(115, 115, 115, 0.36);
+  --color-text: #e5e5e5;
+  --color-text-secondary: #d4d4d4;
+  --color-subtle: #a1a1a1;
+  --color-hint: #737373;
+  --color-success: #2fb287;
+  --color-danger: #ea574c;
 
-  --color-titlebar-bg: #111827;
-  --color-titlebar-border: transparent;
+  --color-titlebar-bg: #171717;
+  --color-titlebar-border: rgba(115, 115, 115, 0.36);
 
-  --color-chat-header-bg: #111827;
+  --color-chat-header-bg: #171717;
 
-  --color-workspace-bg: #0b0f19;
+  --color-workspace-bg: #0a0a0a;
 
-  --color-statusbar-bg: #111827;
-  --color-statusbar-border: #374151;
+  --color-statusbar-bg: #171717;
+  --color-statusbar-border: rgba(115, 115, 115, 0.36);
 
-  --color-input-bg: #1f2937;
+  --color-input-bg: #262626;
 
-  --color-card-bg: #1e293b;
+  --color-card-bg: #1a1a1a;
 }
 
 /* ── Base resets ── */
@@ -155,20 +156,16 @@ body {
   min-width: 320px;
   color: var(--color-text);
   background: var(--color-app-bg);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.43;
+  letter-spacing: -0.02em;
   font-family:
-    'Plus Jakarta Sans',
+    'SF Pro Text',
+    'PingFang SC',
+    system-ui,
     -apple-system,
-    BlinkMacSystemFont,
     'Segoe UI',
     Roboto,
-    Oxygen,
-    Ubuntu,
-    Cantarell,
-    'Fira Sans',
-    'Droid Sans',
-    'Helvetica Neue',
     sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -229,7 +226,7 @@ button:disabled {
   }
 }
 
-/* ── 自定义滚动条 ── */
+/* ── 自定义滚动条（TRAE Work 风格：中性灰色） ── */
 
 *::-webkit-scrollbar {
   width: 6px;
@@ -241,13 +238,13 @@ button:disabled {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: rgba(115, 115, 115, 0.24);
   border-radius: 3px;
   transition: background 150ms ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--color-subtle);
+  background: rgba(115, 115, 115, 0.36);
 }
 
 *::-webkit-scrollbar-corner {
@@ -257,7 +254,7 @@ button:disabled {
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
+  scrollbar-color: rgba(115, 115, 115, 0.24) transparent;
 }
 
 /* ── 矩阵单元格 tooltip（data-tip 属性，零 JS）── */
@@ -275,10 +272,10 @@ button:disabled {
   background: var(--color-popover);
   color: var(--color-popover-foreground);
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 5px 9px;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.45;
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
@@ -286,7 +283,7 @@ button:disabled {
     opacity 120ms ease,
     transform 120ms ease;
   z-index: 100;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
 [data-tip]:hover::after {
@@ -300,7 +297,7 @@ button:disabled {
   opacity: 0 !important;
 }
 
-/* ── 动画关键帧（与 HTML 样例对齐）── */
+/* ── 动画关键帧 ── */
 
 /* streaming-dot：双重脉动（opacity 0.4↔1 + scale 0.8↔1.2） */
 @keyframes streaming-pulse {

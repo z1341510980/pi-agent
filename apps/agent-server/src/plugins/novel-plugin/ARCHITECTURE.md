@@ -398,7 +398,7 @@ options.arrangedEntities
 - 工种成员读取矩阵 shared context；角色成员读取 `buildContextPrompt()` 生成的私有上下文，只包含上一章结尾、当前场景、本角色相关冲突及其知道/怀疑/误解的信息。
 - 角色输出必须符合 `[可见动作] “角色台词”`。格式错误重试一次，仍失败时保守归一化；“意图/心理/应对”提纲不进入 Writer 剧本。
 - Writer 只接收按场景整理后的角色演出，不接收 Moderator 的完整决策历史。
-- 完章后与 create-flow 共用“正文形态扫描 → 文字盲审 → 完整 Reviewer → applySafeRevision 局部修订 → ChapterFinalizer”。
+- 完章后与 create-flow 共用“正文形态扫描 → 文字盲审 → 完整 Reviewer → Reviser 通过 `novel_apply_revision` 工具局部修订 → ChapterFinalizer”。
 
 ---
 
@@ -586,7 +586,7 @@ interface NovelCharacter {
 | `role-writer.md` | 写作职责：根据任务创作正文、保持文风、推进弧光/伏笔/冲突；含写作风格要求（禁破折号转折、开头直接进场景、结尾止于画面、语言干净） | writer 的 `agent_role` |
 | `role-reviewer.md` | 审稿职责：检查一致性、评估任务完成度、检查信息差、评分 accept/revise/reject；绝不创作或改写 | reviewer 的 `agent_role` |
 | `role-memory.md` | 记忆职责：**必须通过工具更新状态**，含角色/伏笔/冲突/线索/关系工具使用指南，工作流程 | memory 的 `agent_role` |
-| `role-reviser.md` | 修订职责：根据审稿 Findings 输出可精确定位的“原文/修改后”局部补丁 | reviser 的 `agent_role`，补丁由 `applySafeRevision` 确定性应用 |
+| `role-reviser.md` | 修订职责：必须通过 `novel_apply_revision` 工具应用修改，传入 `pairs: [{from, to}]`，工具内部用 `String.replace` 做精确替换 | reviser 的 `agent_role`，工具通过 `extraTools` 注入，draft 持有当前正文 |
 | `role-character.md` | 角色管家：管理静态设定、跟踪动态状态、维护弧光、管理关系 | （备用角色模板，未在 4 个核心 Agent 中直接使用） |
 | `role-clue.md` | 线索管家：管理伏笔生命周期、跟踪线索进度、确保叙事债务回收 | （备用） |
 | `role-settings.md` | 设定管家：管理力量体系/魔法/科技/政治经济、确保规则一致性、区分固定/阶段规则 | （备用） |

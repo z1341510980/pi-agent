@@ -32,6 +32,8 @@ import {
   tensionToBgClass,
   tensionToLabel,
   shiftChapterSpan,
+  isMajorGridline,
+  isMinorGridline,
   type MatrixEntityKind,
   type MatrixEntity,
   type MatrixGroup,
@@ -41,8 +43,8 @@ import {
   type CellDragData,
 } from './matrix-logic'
 
-// 左侧固定实体名列宽度
-const SIDEBAR_W = 200
+// 左侧固定实体名列宽度（默认值）
+const SIDEBAR_W_DEFAULT = 200
 
 export interface MatrixViewProps {
   chapters: NovelChapter[]
@@ -53,6 +55,7 @@ export interface MatrixViewProps {
   factions: NovelFaction[]
   locations: Parameters<typeof buildGroups>[0]['locations']
   worldElements: Parameters<typeof buildGroups>[0]['worldElements']
+  items: Parameters<typeof buildGroups>[0]['items']
   characterHistory: Parameters<typeof buildGroups>[0]['characterHistory']
   relationships: NovelRelationship[]
   markers: NovelMarker[]
@@ -85,7 +88,7 @@ export interface MatrixViewProps {
    *  spanIndex 标识 conflict/faction 多段跨度中的段索引（foreshadow 恒为 0） */
   onMoveEndpoint?: (entityId: string, entityType: MatrixEntityKind, spanIndex: number, end: 'start' | 'end', chapter: number) => void
   /** 拖动整段冲突/势力色带，保持时长平移 */
-  onMoveSpan?: (entityId: string, entityType: 'conflict' | 'faction', spanIndex: number, startChapter: number, endChapter: number) => void
+  onMoveSpan?: (entityId: string, entityType: 'conflict' | 'faction' | 'item', spanIndex: number, startChapter: number, endChapter: number) => void
   /** 拖动已出场单元格到新章节：移动 character/location 出场位置 */
   onMoveCell?: (entityId: string, entityType: MatrixEntityKind, fromChapter: number, toChapter: number) => void
   /** 左键单击单元格：智能切换出场状态（实体类型自适应） */
@@ -115,7 +118,7 @@ function buildChapterByNumberMap(chapters: NovelChapter[]): Map<number, NovelCha
 
 export function MatrixView({
   chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-  characterHistory, markers, playheadChapter, cellWidth, collapsedGroups, activeFilter,
+  items, characterHistory, markers, playheadChapter, cellWidth, collapsedGroups, activeFilter,
   selectedNodeId, showMarkers = true,
   onSelectEntity, onToggleCollapse, onPlayheadChange, onContextMenuChapter,
   onContextMenuCell, onContextMenuGroupEmpty, onEditSpan, onDropEntity, onMoveEndpoint, onMoveSpan, onMoveCell, onTogglePresent,
@@ -127,11 +130,11 @@ export function MatrixView({
     () => {
       const result = buildGroups({
         chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-        characterHistory, markers,
+        items, characterHistory, markers,
       })
       return result
     },
-    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, characterHistory, markers],
+    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, items, characterHistory, markers],
   )
 
   const chapterColumns = useMemo(() => {
@@ -142,6 +145,26 @@ export function MatrixView({
 
   // 滚动容器 ref（提前定义，供 visibleRange 相关 hook 和滚动逻辑共用）
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+
+  // 左侧面板可拖拽调整宽度
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_W_DEFAULT)
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  const bindResize = useDrag(({ down, movement: [mx], first, event }) => {
+    const evt = event as PointerEvent
+    if (first) {
+      resizeStartRef.current = { startX: evt.clientX, startWidth: sidebarWidth }
+      setIsResizing(true)
+    }
+    if (down && resizeStartRef.current) {
+      const next = Math.max(120, Math.min(400, resizeStartRef.current.startWidth + mx))
+      setSidebarWidth(next)
+    } else {
+      setIsResizing(false)
+      resizeStartRef.current = null
+    }
+  }, { filterTaps: true, threshold: 2, pointer: { buttons: 1 } })
 
   // 水平虚拟化：仅渲染可见章节列 + 缓冲列，DOM 从 O(N*M) 降为 O(N*visibleM)
   const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>(() => {
@@ -159,7 +182,7 @@ export function MatrixView({
     const range = computeVisibleChapters({
       scrollLeft: el.scrollLeft,
       viewportWidth: el.clientWidth,
-      sidebarWidth: SIDEBAR_W,
+      sidebarWidth,
       cellWidth,
       maxChapter,
       overscan: 3,
@@ -168,7 +191,7 @@ export function MatrixView({
       if (prev.start === range.start && prev.end === range.end) return prev
       return { start: range.start, end: range.end }
     })
-  }, [cellWidth, maxChapter])
+  }, [cellWidth, maxChapter, sidebarWidth])
 
   // maxChapter 或 cellWidth 变化时，按当前 scrollLeft 重新计算视口（不重置到第 1 章）
   useEffect(() => {
@@ -243,7 +266,7 @@ export function MatrixView({
     const el = scrollContainerRef.current
     if (!el) return
     const clampedChapter = Math.min(maxChapter, Math.max(1, chapter))
-    const targetLeft = SIDEBAR_W + (clampedChapter - 1) * cellWidth
+    const targetLeft = sidebarWidth + (clampedChapter - 1) * cellWidth
     // 居中显示：减去视口宽度的一半
     const scrollTo = Math.max(0, targetLeft - el.clientWidth / 2 + cellWidth / 2)
     el.scrollTo({ left: scrollTo, behavior })
@@ -303,7 +326,7 @@ export function MatrixView({
     if (!el || !rect) return null
     const containerRect = el.getBoundingClientRect()
     const contentX = rect.left + rect.width / 2 - containerRect.left + el.scrollLeft
-    const colX = contentX - SIDEBAR_W
+    const colX = contentX - sidebarWidth
     if (colX < 0) return null
     const ch = Math.floor(colX / cellWidth) + 1
     if (ch < 1 || ch > maxChapter) return null
@@ -448,9 +471,9 @@ export function MatrixView({
   })
 
   // 整体内容宽度
-  const totalWidth = SIDEBAR_W + maxChapter * cellWidth
+  const totalWidth = sidebarWidth + maxChapter * cellWidth
   // 当前章节列高亮 left（在内容容器内）
-  const highlightLeft = SIDEBAR_W + (playheadChapter - 1) * cellWidth
+  const highlightLeft = sidebarWidth + (playheadChapter - 1) * cellWidth
   const isPlayheadVisible = playheadChapter >= visibleRange.start && playheadChapter <= visibleRange.end
 
   // ── C-1 空状态判定 ──
@@ -476,7 +499,7 @@ export function MatrixView({
         const range = computeVisibleChapters({
           scrollLeft: x,
           viewportWidth: el.clientWidth,
-          sidebarWidth: SIDEBAR_W,
+          sidebarWidth,
           cellWidth,
           maxChapter,
           overscan: 3,
@@ -494,6 +517,14 @@ export function MatrixView({
           style={{ left: `${highlightLeft}px`, width: `${cellWidth}px`, background: 'rgba(245, 158, 11, 0.07)' }}
           aria-hidden="true"
         />
+        {/* 当前章节浮动标签（甘特图"今日线"指示器） */}
+        <div
+          className="absolute top-[44px] z-[6] pointer-events-none -translate-x-1/2 flex items-center gap-0.5 rounded-md bg-amber-500 px-1.5 h-[16px] text-[10px] font-semibold text-white shadow-md whitespace-nowrap tabular-nums"
+          style={{ left: `${highlightLeft + cellWidth / 2}px` }}
+          aria-hidden="true"
+        >
+          CH.{String(playheadChapter).padStart(2, '0')}
+        </div>
 
         {/* 拖入反馈：高亮目标章节列（仅在拖拽元素悬停于矩阵上时显示） */}
         {isOver && dragOverChapter != null && (
@@ -501,7 +532,7 @@ export function MatrixView({
             <div
               className="absolute top-[44px] bottom-0 pointer-events-none z-[7] border-x border-blue-500/60 rounded-sm"
               style={{
-                left: `${SIDEBAR_W + (dragOverChapter - 1) * cellWidth}px`,
+                left: `${sidebarWidth + (dragOverChapter - 1) * cellWidth}px`,
                 width: `${cellWidth}px`,
                 background: 'rgba(59, 130, 246, 0.18)',
               }}
@@ -510,7 +541,7 @@ export function MatrixView({
             <div
               className="absolute top-[50px] z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-medium text-white shadow-lg whitespace-nowrap"
               data-matrix-drag-preview="chapter"
-              style={{ left: `${SIDEBAR_W + (dragOverChapter - 0.5) * cellWidth}px` }}
+              style={{ left: `${sidebarWidth + (dragOverChapter - 0.5) * cellWidth}px` }}
               aria-hidden="true"
             >
               第 {dragOverChapter} 章{titleMap.get(dragOverChapter) ? ` · ${titleMap.get(dragOverChapter)}` : ''}
@@ -524,7 +555,7 @@ export function MatrixView({
             <div
               className="absolute top-[44px] bottom-0 pointer-events-none z-[7] rounded-sm border-x border-sky-500/70 bg-sky-500/12"
               style={{
-                left: `${SIDEBAR_W + (dragOverRange.start - 1) * cellWidth}px`,
+                left: `${sidebarWidth + (dragOverRange.start - 1) * cellWidth}px`,
                 width: `${(dragOverRange.end - dragOverRange.start + 1) * cellWidth}px`,
               }}
               aria-hidden="true"
@@ -533,7 +564,7 @@ export function MatrixView({
               className="absolute top-[50px] z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-sky-600 px-2 py-1 text-[10px] font-medium text-white shadow-lg whitespace-nowrap tabular-nums"
               data-matrix-drag-preview="range"
               style={{
-                left: `${SIDEBAR_W + ((dragOverRange.start + dragOverRange.end) / 2 - 0.5) * cellWidth}px`,
+                left: `${sidebarWidth + ((dragOverRange.start + dragOverRange.end) / 2 - 0.5) * cellWidth}px`,
               }}
               aria-hidden="true"
             >
@@ -548,7 +579,7 @@ export function MatrixView({
             className="absolute z-[11] pointer-events-none flex size-4 items-center justify-center rounded-full bg-surface-1 shadow-[0_0_0_2px_var(--color-surface-1),0_0_12px_rgba(59,130,246,0.65)]"
             data-matrix-drag-preview="endpoint"
             style={{
-              left: `${SIDEBAR_W + (endpointDragPreview.chapter - 0.5) * cellWidth}px`,
+              left: `${sidebarWidth + (endpointDragPreview.chapter - 0.5) * cellWidth}px`,
               top: `${endpointDragPreview.rowCenter}px`,
               color: GROUP_META[endpointDragPreview.entityType].color,
               transform: 'translate(-50%, -50%)',
@@ -574,7 +605,7 @@ export function MatrixView({
             <div
               className="absolute top-[44px] bottom-0 pointer-events-none z-[8] border-2 border-blue-500 rounded-sm animate-pulse"
               style={{
-                left: `${SIDEBAR_W + (flashChapter - 1) * cellWidth}px`,
+                left: `${sidebarWidth + (flashChapter - 1) * cellWidth}px`,
                 width: `${cellWidth}px`,
                 background: 'rgba(59, 130, 246, 0.25)',
                 boxShadow: '0 0 12px rgba(59, 130, 246, 0.6)',
@@ -586,7 +617,7 @@ export function MatrixView({
             <div
               className="absolute top-[44px] bottom-0 pointer-events-none z-[8] rounded-sm border-2 border-sky-500 animate-pulse"
               style={{
-                left: `${SIDEBAR_W + (flashRange.start - 1) * cellWidth}px`,
+                left: `${sidebarWidth + (flashRange.start - 1) * cellWidth}px`,
                 width: `${(flashRange.end - flashRange.start + 1) * cellWidth}px`,
                 background: 'rgba(14, 165, 233, 0.16)',
                 boxShadow: '0 0 12px rgba(14, 165, 233, 0.5)',
@@ -612,7 +643,7 @@ export function MatrixView({
               />
             </div>
             {/* 左侧 sticky 列：实体＼章节 */}
-            <div className="sticky left-0 z-30 bg-surface-1 flex items-center justify-between gap-2 px-2 border-r border-border shrink-0" style={{ width: `${SIDEBAR_W}px` }}>
+            <div className="sticky left-0 z-30 bg-surface-1 flex items-center justify-between gap-2 px-2 border-r border-border shrink-0" style={{ width: `${sidebarWidth}px` }}>
               <span className="font-serif text-[11px] text-hint tracking-wider whitespace-nowrap">实体 ＼ 章节</span>
               <button
                 type="button"
@@ -630,6 +661,17 @@ export function MatrixView({
                 {String(playheadChapter).padStart(2, '0')}
               </button>
             </div>
+            {/* 拖拽调整宽度手柄 */}
+            <div
+              {...bindResize()}
+              className={cn(
+                'absolute top-0 bottom-0 z-[35] w-1.5 cursor-col-resize -right-0.5 shrink-0',
+                'bg-transparent hover:bg-primary/30 active:bg-primary/50 transition-colors',
+                isResizing && 'bg-primary/40',
+              )}
+              data-tip="拖拽调整宽度"
+              aria-hidden="true"
+            />
             {/* 章节标尺单元格（仅渲染可见列） */}
             <div className="flex">
               {/* 左侧占位：撑开滚动条到第一个可见章节的位置 */}
@@ -644,11 +686,17 @@ export function MatrixView({
                 const tensionBg = chapter?.tension ? tensionToBgClass(chapter.tension) : ''
                 const tensionLabel = chapter?.tension ? tensionToLabel(chapter.tension) : ''
                 const tip = `第 ${ch} 章${title ? ' · ' + title : ''}${chapter?.tension ? ` · 张力 ${chapter.tension} (${tensionLabel})` : ''}${isCurrent ? '（当前章节）' : ''}`
+                const major = isMajorGridline(ch)
+                const minor = isMinorGridline(ch)
                 return (
                   <button
                     key={ch}
                     type="button"
-                    className={`relative h-full shrink-0 flex flex-col justify-center items-center gap-1 border-r border-border/40 cursor-pointer transition-[color,background-color,box-shadow] hover:bg-muted/40 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60 ${tensionBg}`}
+                    className={cn(
+                      'relative h-full shrink-0 flex flex-col justify-center items-center gap-1 cursor-pointer transition-[color,background-color,box-shadow] hover:bg-muted/40 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
+                      major ? 'border-r-2 border-border-strong' : 'border-r border-border/40',
+                      tensionBg,
+                    )}
                     style={{ width: `${cellWidth}px` }}
                     onClick={() => handleRulerClick(ch)}
                     onKeyDown={handleRulerKeyDown}
@@ -668,7 +716,16 @@ export function MatrixView({
                         ))}
                       </span>
                     )}
-                    <span className={`font-mono text-[11px] tracking-wide ${isCurrent ? 'text-amber-500 font-semibold' : 'text-hint'}`}>
+                    <span className={cn(
+                      'font-mono tracking-wide',
+                      isCurrent
+                        ? 'text-amber-500 font-semibold text-[11px]'
+                        : major
+                          ? 'text-text font-semibold text-[11px]'
+                          : minor
+                            ? 'text-subtle text-[11px]'
+                            : 'text-hint text-[11px]',
+                    )}>
                       {String(ch).padStart(2, '0')}
                     </span>
                     {tensionLabel && (
@@ -691,6 +748,7 @@ export function MatrixView({
             visibleRange={visibleRange}
             maxChapter={maxChapter}
             cellWidth={cellWidth}
+            sidebarWidth={sidebarWidth}
             playheadChapter={playheadChapter}
           />
 
@@ -712,6 +770,7 @@ export function MatrixView({
                   visibleRange={visibleRange}
                   maxChapter={maxChapter}
                   cellWidth={cellWidth}
+                  sidebarWidth={sidebarWidth}
                   playheadChapter={playheadChapter}
                   color={meta.color}
                   colorRgb={meta.colorRgb}
@@ -721,7 +780,8 @@ export function MatrixView({
                 />
               )
               if (!collapsed) {
-                for (const entity of group.entities) {
+                for (let ei = 0; ei < group.entities.length; ei++) {
+                  const entity = group.entities[ei]
                   rows.push(
                     <MatrixRow
                       key={entity.id}
@@ -732,8 +792,10 @@ export function MatrixView({
                       titleMap={titleMap}
                       maxChapter={maxChapter}
                       cellWidth={cellWidth}
+                      sidebarWidth={sidebarWidth}
                       playheadChapter={playheadChapter}
                       isSelected={selectedNodeId === entity.entityId}
+                      isEvenRow={ei % 2 === 1}
                       characterArcs={characterArcs}
                       onClick={() => handleEntityClick(entity)}
                       onContextMenuCell={onContextMenuCell}
@@ -771,7 +833,7 @@ export function MatrixView({
 /** 钩子类型 → 显示元数据（颜色/图标/标签） */
 const HOOK_META: Record<ChapterEndingHookType, { color: string; bg: string; icon: string; label: string }> = {
   suspense:  { color: '#a855f7', bg: 'rgba(168, 85, 247, 0.22)', icon: '?', label: '悬念' },
-  reversal:  { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)',  icon: '!', label: '反转' },
+  reversal:  { color: '#e8463a', bg: 'rgba(232, 70, 58, 0.22)',  icon: '!', label: '反转' },
   emotional: { color: '#ec4899', bg: 'rgba(236, 72, 153, 0.22)', icon: '♥', label: '情感' },
   action:    { color: '#f97316', bg: 'rgba(249, 115, 22, 0.22)', icon: '⚡', label: '动作' },
   none:      { color: '#6b7280', bg: 'transparent',              icon: '',  label: '无'   },
@@ -783,11 +845,12 @@ interface HookTrackRowProps {
   visibleRange: { start: number; end: number }
   maxChapter: number
   cellWidth: number
+  sidebarWidth: number
   playheadChapter: number
 }
 
 function HookTrackRow({
-  hooks, visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
+  hooks, visibleChapterColumns, visibleRange, maxChapter, cellWidth, sidebarWidth, playheadChapter,
 }: HookTrackRowProps): ReactElement | null {
   // 按 chapterNumber 分组 hooks（一章可能有多个钩子，通常只有一个）
   const hooksByChapter = useMemo(() => {
@@ -808,7 +871,7 @@ function HookTrackRow({
       {/* 左侧 sticky 列：轨道标签 */}
       <div
         className="sticky left-0 z-30 flex items-center justify-end pr-2 border-r border-border shrink-0"
-        style={{ width: `${SIDEBAR_W}px`, backgroundColor: 'var(--color-surface-1)' }}
+        style={{ width: `${sidebarWidth}px`, backgroundColor: 'var(--color-surface-1)' }}
       >
         <span className="font-serif text-[10px] text-hint tracking-wider">章尾钩子</span>
       </div>
@@ -874,8 +937,8 @@ function HookTrackRow({
 
 /** 弧光类型 → 显示元数据（颜色/背景/标签） */
 const ARC_TYPE_META: Record<string, { label: string; color: string; bg: string }> = {
-  growth: { label: '成长', color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
-  fall: { label: '堕落', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
+  growth: { label: '成长', color: '#15a877', bg: 'rgba(21,168,119,0.15)' },
+  fall: { label: '堕落', color: '#e8463a', bg: 'rgba(232,70,58,0.15)' },
   redemption: { label: '救赎', color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
   shift: { label: '转变', color: '#3b82f6', bg: 'rgba(59,130,246,0.15)' },
 }
@@ -963,6 +1026,7 @@ interface MatrixRowProps {
   entity?: MatrixEntity
   titleMap?: Map<number, string>
   isSelected?: boolean
+  isEvenRow?: boolean
   characterArcs?: NovelCharacterArc[]
   onClick?: () => void
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
@@ -973,15 +1037,16 @@ interface MatrixRowProps {
   visibleRange: { start: number; end: number }
   maxChapter: number
   cellWidth: number
+  sidebarWidth: number
   playheadChapter: number
 }
 
 function MatrixRow(props: MatrixRowProps): ReactElement {
   const {
     type, group, collapsed, color, colorRgb, icon, onToggleCollapse, onContextMenuGroupEmpty,
-    entity, titleMap, isSelected, characterArcs, onClick,
+    entity, titleMap, isSelected, isEvenRow, characterArcs, onClick,
     onContextMenuCell, onEditSpan, onTogglePresent,
-    visibleChapterColumns, visibleRange, maxChapter, cellWidth, playheadChapter,
+    visibleChapterColumns, visibleRange, maxChapter, cellWidth, sidebarWidth, playheadChapter,
   } = props
 
   // ── 角色弧光标记（仅 entity 类型） ──
@@ -1008,10 +1073,10 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
   // 行容器：严格按 preview-html 的 .matrix-row（无 position:relative）
   // 分组行额外加 .group-divider 的背景和边框样式
   const rowClassName = cn(
-    'flex h-7 z-[6] border-b border-border/20',
+    'flex h-8 z-[6] border-b border-border/20',
     isGroup
       ? 'cursor-pointer'
-      : cn('cursor-pointer transition-colors', isSelected ? 'bg-primary/10' : 'hover:bg-muted/30'),
+      : cn('cursor-pointer transition-colors', isSelected ? 'bg-primary/10' : isEvenRow ? 'bg-surface-4' : 'hover:bg-muted/30'),
   )
   const rowStyle = isGroup
     ? {
@@ -1031,7 +1096,7 @@ function MatrixRow(props: MatrixRowProps): ReactElement {
       : cn('transition-colors', isSelected ? 'bg-primary/10' : 'hover:bg-muted/50'),
   )
   const leftCellStyle = {
-    width: `${SIDEBAR_W}px`,
+    width: `${sidebarWidth}px`,
     backgroundColor: isGroup
       ? 'var(--color-surface-1)'
       : (isSelected ? undefined : 'var(--color-surface-1)'),
@@ -1439,7 +1504,8 @@ interface EntityOverlayProps {
 function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditSpan, onContextMenuCell, onEntityClick }: EntityOverlayProps): ReactElement | null {
   switch (entity.kind) {
     case 'conflict':
-    case 'faction': {
+    case 'faction':
+    case 'item': {
       const spans = entity.chapterSpans ?? []
       if (spans.length === 0) return null
       return (
@@ -1450,7 +1516,7 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
               <DraggableSpan
                 key={`span-${idx}`}
                 entity={entity}
-                entityType={entity.kind as 'conflict' | 'faction'}
+                entityType={entity.kind as 'conflict' | 'faction' | 'item'}
                 spanIndex={idx}
                 startChapter={s}
                 endChapter={e}
@@ -1575,7 +1641,7 @@ function EntityOverlay({ entity, maxChapter, cellWidth, color, colorRgb, onEditS
 
 interface DraggableSpanProps {
   entity: MatrixEntity
-  entityType: 'conflict' | 'faction'
+  entityType: 'conflict' | 'faction' | 'item'
   spanIndex: number
   startChapter: number
   endChapter: number
@@ -1619,20 +1685,20 @@ function DraggableSpan({
 
   return (
     <div
-      className="absolute top-1/2 z-[2] h-[15px] -translate-y-1/2 overflow-visible rounded"
+      className="absolute top-1/2 z-[2] h-[19px] -translate-y-1/2 overflow-visible rounded-md"
       style={{ left, width }}
     >
       <div
         ref={setNodeRef}
         className={cn(
-          'relative h-full w-full rounded transition-[filter,opacity] hover:brightness-110',
-          isDragging && 'opacity-35',
-        )}
-        style={{
-          background: `rgba(${colorRgb}, 0.16)`,
-          border: `1px solid rgba(${colorRgb}, 0.3)`,
-          transform: transform ? `translate3d(${transform.x}px, 0, 0)` : undefined,
-        }}
+          'relative h-full w-full rounded-md transition-[filter,opacity] hover:brightness-110',
+      isDragging && 'opacity-35',
+    )}
+    style={{
+      background: `rgba(${colorRgb}, 0.16)`,
+      border: `1px solid rgba(${colorRgb}, 0.3)`,
+      transform: transform ? `translate3d(${transform.x}px, 0, 0)` : undefined,
+    }}
       >
         <div
           ref={setActivatorNodeRef}

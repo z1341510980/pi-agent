@@ -102,17 +102,29 @@ describe('TeamDiscussionEngine', () => {
     expect(engine.isValidCharacterSpeech('[赵岩看向对方] “我需要先确认门外是谁。”')).toBe(true)
   })
 
-  it('群聊 Reviser 结果必须经过业务层安全修订应用器', async () => {
+  it('群聊 Reviser 通过业务层工具化修订（buildReviserToolset）应用修改', async () => {
     const engine = new TeamDiscussionEngine(
       makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
     ) as any
     engine.invokeMember = vi.fn()
       .mockResolvedValueOnce('盲审：需要修订')
       .mockResolvedValueOnce('## 结论：revise')
-      .mockResolvedValueOnce('原文：\n旧句。\n\n修改后：\n新句。')
-    const applyRevision = vi.fn().mockReturnValue({
-      content: '第一段。\n\n新句。', accepted: true, mode: 'patch',
+      .mockResolvedValueOnce('Reviser 已调用 novel_apply_revision 工具')
+    // ⚠️ 工具化方案：业务层通过 buildReviserToolset 提供 draft + 工具。
+    // 引擎把工具注入 Reviser 的 LLM 调用，Reviser 调用工具修改 draft.content，
+    // 引擎在 Reviser 结束后调用 extractResult() 得到最终正文。
+    // 旧 applyRevision 回调让 Reviser 输出"原文/修改后"配对文本再正则解析，
+    // 已被工具化方案替代。
+    const extractResult = vi.fn().mockReturnValue({
+      content: '第一段。\n\n新句。',
+      appliedPatchCount: 1,
+      successCount: 1,
+      mode: 'patch' as const,
     })
+    const buildReviserToolset = vi.fn().mockImplementation((originalContent: string) => ({
+      tools: [{ name: 'novel_apply_revision' }],
+      extractResult,
+    }))
 
     const result = await engine.reviewFinalChapter(
       '第一段。\n\n旧句。',
@@ -123,15 +135,48 @@ describe('TeamDiscussionEngine', () => {
       [],
       makeOptions({
         onCheckpoint: vi.fn().mockResolvedValue('revise'),
-        applyRevision,
+        buildReviserToolset,
       }),
     )
 
-    expect(applyRevision).toHaveBeenCalledWith(
-      '第一段。\n\n旧句。',
-      '原文：\n旧句。\n\n修改后：\n新句。',
-    )
+    // 引擎必须用原章节正文调用工厂
+    expect(buildReviserToolset).toHaveBeenCalledWith('第一段。\n\n旧句。')
+    // 工具集必须传递给 invokeMember 的 ctx.extraTools
+    const reviserCall = engine.invokeMember.mock.calls[2]
+    expect(reviserCall[4].extraTools).toEqual([{ name: 'novel_apply_revision' }])
+    // Reviser 提示词必须强制工具调用，禁止输出"原文/修改后"配对
+    expect(reviserCall[1]).toContain('novel_apply_revision')
+    expect(reviserCall[1]).not.toContain('只输出需要替换的"原文/修改后"配对')
+    // 引擎必须调用 extractResult 取得最终正文
+    expect(extractResult).toHaveBeenCalled()
     expect(result.content).toBe('第一段。\n\n新句。')
+  })
+
+  it('业务层未提供 buildReviserToolset 时，群聊 Reviser 修订不应用，保留原正文', async () => {
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,
+    ) as any
+    engine.invokeMember = vi.fn()
+      .mockResolvedValueOnce('盲审：需要修订')
+      .mockResolvedValueOnce('## 结论：revise')
+      // 模拟旧模式：Reviser 输出"原文/修改后"配对文本（不会被引擎解析）
+      .mockResolvedValueOnce('原文：\n旧句。\n\n修改后：\n新句。')
+
+    const result = await engine.reviewFinalChapter(
+      '第一段。\n\n旧句。',
+      [
+        makeMember({ id: 'novel-reviewer', name: '审稿' }),
+        makeMember({ id: 'novel-reviser', name: '修订', canConverge: true }),
+      ],
+      [],
+      makeOptions({
+        onCheckpoint: vi.fn().mockResolvedValue('revise'),
+        // 不提供 buildReviserToolset：引擎应保留原正文，不把 Reviser 文本当作正文落库
+      }),
+    )
+
+    // 关键安全保证：未走工具化路径时，原正文保留，"修改意见"不会覆盖正文
+    expect(result.content).toBe('第一段。\n\n旧句。')
   })
 
   it('群聊质量门拦截正文遗漏的矩阵实体', () => {

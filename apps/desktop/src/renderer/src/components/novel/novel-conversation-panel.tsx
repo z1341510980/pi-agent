@@ -33,6 +33,7 @@ import type {
   AgentOutput,
   UserMessage,
 } from '@/hooks/use-novel-creation-flow'
+import { formatDetailBubble } from '@/hooks/use-novel-creation-flow'
 import type { ChapterChatMessage } from '@/api/novel-client'
 import type { ChatAgentOutput } from '@/hooks/use-chapter-chat'
 
@@ -92,6 +93,29 @@ const REVIEW_OPTIONS = [
   { label: '重写', action: 'rewrite', variant: 'ghost' as const },
 ]
 
+// PostWriteGuard 命中后让用户选择是否重写 Writer
+const POST_WRITE_GUARD_OPTIONS = [
+  { label: '重写', action: 'rewrite', variant: 'default' as const },
+  { label: '接受草稿', action: 'approve', variant: 'outline' as const },
+  { label: '转 Reviser', action: 'revise', variant: 'ghost' as const },
+  { label: '取消', action: 'reject', variant: 'destructive' as const },
+]
+
+// Writer 推回 Director 时让用户选择是否同意推回
+const WRITER_PUSHBACK_OPTIONS = [
+  { label: '同意推回', action: 'approve', variant: 'default' as const },
+  { label: '强制继续', action: 'rewrite', variant: 'outline' as const },
+  { label: '取消创作', action: 'reject', variant: 'destructive' as const },
+]
+
+// Guard 达上限后让用户选择是否接受当前草稿
+const GUARD_DEGRADED_OPTIONS = [
+  { label: '接受草稿', action: 'approve', variant: 'default' as const },
+  { label: '从头重写', action: 'rewrite', variant: 'outline' as const },
+  { label: '转 Reviser', action: 'revise', variant: 'ghost' as const },
+  { label: '取消', action: 'reject', variant: 'destructive' as const },
+]
+
 // ── 检查点内容渲染 ──
 
 /** 渲染 checkpoint.data 的实际内容 */
@@ -104,6 +128,15 @@ function renderCheckpointContent(checkpoint: CheckpointData): string {
   }
 
   if (typeof data === 'object') {
+    // ⚠️ 工具化方案：若 data 携带 kind 字段（如 narrative_task），
+    // 复用 formatDetailBubble 格式化为可读 markdown，与 emitProgress 推送的 detail 气泡保持一致展示。
+    // 避免 CheckpointMessage 直接展示 LLM 原始文本（如"叙事任务已通过工具提交"这种解释性回复）。
+    const detailRecord = data as Record<string, unknown>
+    if (typeof detailRecord.kind === 'string') {
+      const formatted = formatDetailBubble(detailRecord)
+      if (formatted.content) return formatted.content
+    }
+
     const outer = data as { message?: string; data?: unknown }
     const inner = outer.data
     if (typeof inner === 'string') return inner
@@ -337,9 +370,14 @@ export function NovelConversationPanel({
     }
 
     // Agent 输出 → assistant 消息
-    for (const output of agentOutputs) {
+    // ⚠️ id 需保证唯一：同一毫秒可能推送多条同 agentType 的 detail 气泡（如节奏+约束+详情均为 'context'），
+    // 仅用 timestamp+agentType 会冲突，故追加数组索引作为兜底。
+    // 优先用 messageId（流式输出有此字段），否则用 timestamp+agentType+index 组合。
+    agentOutputs.forEach((output, index) => {
       msgs.push({
-        id: `agent-${output.timestamp}-${output.agentType}`,
+        id: output.messageId
+          ? `agent-${output.messageId}`
+          : `agent-${output.timestamp}-${output.agentType}-${index}`,
         role: 'assistant',
         agentName: output.agentName,
         agentType: mapAgentType(output.agentType),
@@ -348,7 +386,7 @@ export function NovelConversationPanel({
         status: output.streaming ? 'streaming' : 'complete',
         timestamp: output.timestamp,
       })
-    }
+    })
 
     // 用户消息 → user 消息
     for (const msg of userMessages ?? []) {
@@ -363,15 +401,41 @@ export function NovelConversationPanel({
 
     // 检查点 → checkpoint 消息
     if (currentCheckpoint) {
-      const isNarrative = currentCheckpoint.type === 'narrative_task'
+      // 按 checkpoint.type 选取选项和展示类型
+      // 旧逻辑只支持 narrative_task / review 两类，新增 3 类静默重写场景的检查点
+      let checkpointType: NonNullable<ConversationMessage['checkpointType']> = 'review'
+      let checkpointOptions: NonNullable<ConversationMessage['checkpointOptions']> = REVIEW_OPTIONS
+      switch (currentCheckpoint.type) {
+        case 'narrative_task':
+          checkpointType = 'narrative_task'
+          checkpointOptions = NARRATIVE_OPTIONS
+          break
+        case 'post_write_guard':
+          checkpointType = 'post_write_guard'
+          checkpointOptions = POST_WRITE_GUARD_OPTIONS
+          break
+        case 'writer_pushback':
+          checkpointType = 'writer_pushback'
+          checkpointOptions = WRITER_PUSHBACK_OPTIONS
+          break
+        case 'guard_degraded':
+          checkpointType = 'guard_degraded'
+          checkpointOptions = GUARD_DEGRADED_OPTIONS
+          break
+        case 'review':
+        default:
+          checkpointType = 'review'
+          checkpointOptions = REVIEW_OPTIONS
+          break
+      }
       msgs.push({
         id: `checkpoint-${currentCheckpoint.checkpointId ?? currentCheckpoint.phase}`,
         role: 'checkpoint',
         content: renderCheckpointContent(currentCheckpoint),
         status: 'complete',
         timestamp: Date.now(),
-        checkpointType: isNarrative ? 'narrative' : 'review',
-        checkpointOptions: isNarrative ? NARRATIVE_OPTIONS : REVIEW_OPTIONS,
+        checkpointType,
+        checkpointOptions,
         checkpointResolved: currentCheckpoint.decision,
       })
     }
@@ -415,10 +479,12 @@ export function NovelConversationPanel({
   const handleAbort = useCallback(() => {
     if (isChatMode) {
       onAbortChapterChat?.()
-    } else {
-      onCancelFlow()
+    } else if (phase !== 'cancelling') {
+      // onCancelFlow 是 async（等待后端真实断开），void 明确忽略返回的 Promise
+      // cancelling 状态下禁用重复取消
+      void onCancelFlow()
     }
-  }, [isChatMode, onAbortChapterChat, onCancelFlow])
+  }, [isChatMode, onAbortChapterChat, onCancelFlow, phase])
 
   const handleCheckpointResolve = useCallback((action: string) => {
     onSubmitCheckpoint(action as CheckpointDecision)
@@ -427,12 +493,14 @@ export function NovelConversationPanel({
   const handleSystemAction = useCallback((action: string) => {
     if (action === 'save') {
       if (chapterContent) void onSave(chapterContent)
-    } else if (action === 'discard') {
-      onDiscard()
+    } else if (action === 'discard' && phase !== 'cancelling') {
+      // onDiscard 是 async（等待后端真实断开），void 明确忽略返回的 Promise
+      // cancelling 状态下禁用重复 discard
+      void onDiscard()
     } else if (action.startsWith('resume-discussion:')) {
       onResumeDiscussion?.(action.slice('resume-discussion:'.length))
     }
-  }, [chapterContent, onSave, onDiscard, onResumeDiscussion])
+  }, [chapterContent, onSave, onDiscard, onResumeDiscussion, phase])
 
   // 空状态提示
   const emptyHint = isChatMode

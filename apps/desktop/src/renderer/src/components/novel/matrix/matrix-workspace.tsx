@@ -16,6 +16,7 @@ import {
   createClue,
   createFaction,
   createForeshadow,
+  createItem,
   createLocation,
   createMarker,
   createWorldElement,
@@ -27,6 +28,7 @@ import {
   updateClue,
   updateFaction,
   updateForeshadow,
+  updateItem,
   updateLocation,
   updateMarker,
   type ForeshadowBeatType,
@@ -134,6 +136,7 @@ export function MatrixWorkspace({
   const factions = useNovelDataStore((s) => s.factions)
   const locations = useNovelDataStore((s) => s.locations)
   const worldElements = useNovelDataStore((s) => s.worldElements)
+  const items = useNovelDataStore((s) => s.items)
   const characterHistory = useNovelDataStore((s) => s.characterHistory)
   const relationships = useNovelDataStore((s) => s.relationships)
   const markers = useNovelDataStore((s) => s.markers)
@@ -198,15 +201,15 @@ export function MatrixWorkspace({
   const matrixData = useMemo(
     () => buildGroups({
       chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-      characterHistory, markers,
+      items, characterHistory, markers,
     }),
-    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, characterHistory, markers],
+    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, items, characterHistory, markers],
   )
 
   // ── 元素池（补全历史用）──
   const pool = useMemo(
-    () => buildPool({ characters, conflicts, clues, foreshadows, factions, locations, characterHistory }),
-    [characters, conflicts, clues, foreshadows, factions, locations, characterHistory],
+    () => buildPool({ characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory }),
+    [characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory],
   )
 
   // ── 播放头（创作流程联动）──
@@ -374,6 +377,11 @@ export function MatrixWorkspace({
         // 否则整条事件链会被清空，伏笔行也会立即移回元素池。
         return beat != null && beat.type !== 'plant'
       }
+      case 'item': {
+        const it = useNovelDataStore.getState().items.find((x) => x.id === entityId)
+        if (!it) return false
+        return (it.chapterSpans ?? []).some(([s, e]) => chapter >= s && chapter <= e)
+      }
       case 'location': {
         const l = locations.find((x) => x.id === entityId)
         return !!l?.appearChapters?.includes(chapter)
@@ -389,13 +397,16 @@ export function MatrixWorkspace({
   const isCellRemovable = useCallback((entityId: string, kind: MatrixEntityKind, chapter: number): boolean => {
     switch (kind) {
       case 'conflict':
-      case 'faction': {
+      case 'faction':
+      case 'item': {
         const e = kind === 'conflict'
           ? conflicts.find((x) => x.id === entityId)
-          : factions.find((x) => x.id === entityId)
+          : kind === 'faction'
+            ? factions.find((x) => x.id === entityId)
+            : useNovelDataStore.getState().items.find((x) => x.id === entityId)
         if (!e) return false
         // 用 findSpanAt 定位 chapter 所在段，仅段首/段尾可删（中间格不可挖洞）
-        const span = findSpanAt(e.chapterSpans, chapter)
+        const span = findSpanAt(e.chapterSpans ?? [], chapter)
         if (span == null) return false
         return chapter === span[0] || chapter === span[1]
       }
@@ -523,6 +534,34 @@ export function MatrixWorkspace({
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
+        case 'item': {
+          // 物品拖入语义：与 faction 一致，操作 chapterSpans 多段跨度
+          const it = useNovelDataStore.getState().items.find((x) => x.id === entityId)
+          if (!it) {
+            console.warn('[MatrixWorkspace] item 拖入：未找到物品', entityId)
+            return
+          }
+          const spans = it.chapterSpans ?? []
+          if (findSpanAt(spans, chapter) != null) break
+          let newSpans: Array<[number, number]>
+          if (spans.length === 0) {
+            newSpans = [[chapter, chapter]]
+          } else {
+            const adjStartIdx = spans.findIndex((sp) => sp[0] === chapter + 1)
+            const adjEndIdx = spans.findIndex((sp) => sp[1] === chapter - 1)
+            if (adjStartIdx >= 0) {
+              newSpans = spans.map((sp, i) => i === adjStartIdx ? [chapter, sp[1]] as [number, number] : sp)
+            } else if (adjEndIdx >= 0) {
+              newSpans = spans.map((sp, i) => i === adjEndIdx ? [sp[0], chapter] as [number, number] : sp)
+            } else {
+              newSpans = [...spans, [chapter, chapter] as [number, number]].sort((a, b) => a[0] - b[0])
+            }
+          }
+          const updated = await updateItem(entityId, { chapterSpans: newSpans })
+          useNovelDataStore.getState().upsertItem(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
         case 'foreshadow': {
           const f = foreshadows.find((x) => x.id === entityId)
           if (!f) {
@@ -640,6 +679,27 @@ export function MatrixWorkspace({
           }
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertFaction(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
+        case 'item': {
+          const it = useNovelDataStore.getState().items.find((x) => x.id === entityId)
+          if (!it) return
+          const spans = it.chapterSpans ?? []
+          const span = findSpanAt(spans, chapter)
+          if (span == null) return
+          let newSpans: Array<[number, number]>
+          if (span[0] === span[1]) {
+            newSpans = spans.filter((sp) => sp !== span)
+          } else if (chapter === span[0]) {
+            newSpans = spans.map((sp) => sp === span ? [span[0] + 1, span[1]] as [number, number] : sp)
+          } else if (chapter === span[1]) {
+            newSpans = spans.map((sp) => sp === span ? [span[0], span[1] - 1] as [number, number] : sp)
+          } else {
+            return
+          }
+          const updated = await updateItem(entityId, { chapterSpans: newSpans })
+          useNovelDataStore.getState().upsertItem(updated)
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
@@ -766,6 +826,20 @@ export function MatrixWorkspace({
           void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
           break
         }
+        case 'item': {
+          const it = useNovelDataStore.getState().items.find((x) => x.id === entityId)
+          if (!it) return
+          const spans = it.chapterSpans ?? []
+          const span = spans[spanIndex]
+          if (!span) return
+          const nextStart = end === 'start' ? Math.min(chapter, span[1]) : span[0]
+          const nextEnd = end === 'end' ? Math.max(chapter, span[0]) : span[1]
+          const newSpans = spans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
+          const updated = await updateItem(entityId, { chapterSpans: newSpans })
+          useNovelDataStore.getState().upsertItem(updated)
+          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          break
+        }
         case 'foreshadow': {
           // 伏笔端点拖拽移动完整 beat，保留该节点的 note。
           const f = useNovelDataStore.getState().foreshadows.find((x) => x.id === entityId)
@@ -797,7 +871,7 @@ export function MatrixWorkspace({
   // ── 拖动整段色带：保持跨度时长平移；与其他段相交时自动合并 ──
   const handleMoveSpan = useCallback(async (
     entityId: string,
-    entityType: 'conflict' | 'faction',
+    entityType: 'conflict' | 'faction' | 'item',
     spanIndex: number,
     startChapter: number,
     endChapter: number,
@@ -811,13 +885,20 @@ export function MatrixWorkspace({
         const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
         const updated = await updateConflict(entityId, { chapterSpans })
         useNovelDataStore.getState().upsertConflict(updated)
-      } else {
+      } else if (entityType === 'faction') {
         const entity = useNovelDataStore.getState().factions.find((item) => item.id === entityId)
         if (!entity?.chapterSpans[spanIndex]) return
         const otherSpans = entity.chapterSpans.filter((_, index) => index !== spanIndex)
         const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
         const updated = await updateFaction(entityId, { chapterSpans })
         useNovelDataStore.getState().upsertFaction(updated)
+      } else {
+        const entity = useNovelDataStore.getState().items.find((item) => item.id === entityId)
+        if (!entity?.chapterSpans?.[spanIndex]) return
+        const otherSpans = entity.chapterSpans.filter((_, index) => index !== spanIndex)
+        const chapterSpans = mergeSpanIntoList(otherSpans, [startChapter, endChapter])
+        const updated = await updateItem(entityId, { chapterSpans })
+        useNovelDataStore.getState().upsertItem(updated)
       }
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
     } catch (err) {
@@ -991,6 +1072,13 @@ export function MatrixWorkspace({
           const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
           const updated = await updateFaction(entity.entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertFaction(updated)
+          break
+        }
+        case 'item': {
+          const existing = entity.chapterSpans ?? []
+          const newSpans = mergeSpanIntoList(existing, [firstChapter, lastChapter])
+          const updated = await updateItem(entity.entityId, { chapterSpans: newSpans })
+          useNovelDataStore.getState().upsertItem(updated)
           break
         }
         case 'foreshadow': {
@@ -1181,6 +1269,17 @@ export function MatrixWorkspace({
         void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
         break
       }
+      case 'item': {
+        const input = {
+          name: data.name ?? '',
+          firstChapter,
+          chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
+        }
+        const created = await createItem(currentProjectId, input)
+        useNovelDataStore.getState().upsertItem(created)
+        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        break
+      }
       case 'world_element': {
         const input = ai?.type === 'world_element'
           ? {
@@ -1241,6 +1340,7 @@ export function MatrixWorkspace({
           factions={factions}
           locations={locations}
           worldElements={worldElements}
+          items={items}
           characterHistory={characterHistory}
           relationships={relationships}
           markers={markers}

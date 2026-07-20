@@ -515,6 +515,15 @@ export interface NovelConflict {
    * - regression: 降级（erupting→escalating，因外部干预或形势缓和）
    * - reversal: 反复（resolved 重新 emerging，旧仇重燃 / 误解决） */
   progressionMode?: ConflictProgressionMode
+  // ── 推进粒度（类比 NovelClue.currentStep/nextStep）──
+  // stage 只能描述粗粒度阶段（emerging/escalating/...），无法承载"已出现图案"vs"已验证图案"
+  // 这类细粒度进展。引入 currentStep / nextStep 后，memory-generator 每章可写入具体推进点，
+  // formatArrangedEntities/formatConstraints 输出"当前进展+下一步"，让 Writer/Director 感知
+  // 冲突真实推进状态，避免反复验证同一个粗状态。
+  /** 当前进展（一句话描述本章冲突推进到哪一步，如"已出现图案"） */
+  currentStep?: string
+  /** 下一步（一句话描述下章应推进的方向，如"验证图案含义"） */
+  nextStep?: string
   createdAt: number
   updatedAt: number
 }
@@ -672,6 +681,60 @@ export interface NovelLocation {
   firstChapter: number | null
   status: NovelLocationStatus
   appearChapters: number[] // 地点出现的章节列表
+  createdAt: number
+  updatedAt: number
+}
+
+// ── 物品 ──
+
+/**
+ * 物品类型
+ *
+ * 设计意图：追踪角色拥有的关键物品（玉佩、冲击钻、法器、钥匙等），
+ * 用于跨章节一致性（物品在哪章获得、哪章使用、当前在谁手里）和
+ * 提示词注入（让 Agent 知道本章出场角色拥有什么物品）。
+ *
+ * 与伏笔 category=item 的区别：
+ * - 伏笔追踪的是"物品再次出现时回收"的叙事债务
+ * - NovelItem 追踪的是物品本身的实体属性和归属
+ */
+export type NovelItemType =
+  | 'weapon'      // 武器
+  | 'armor'       // 防具
+  | 'artifact'    // 法器/神器
+  | 'consumable'  // 消耗品
+  | 'key'         // 关键道具/钥匙
+  | 'material'    // 材料
+  | 'info'        // 信息载体（书籍/信件/玉简）
+  | 'misc'        // 其他
+
+export type NovelItemStatus =
+  | 'active'      // 正常持有
+  | 'lost'        // 丢失
+  | 'destroyed'   // 损坏
+  | 'transformed' // 升级/变化
+  | 'sealed'      // 封印
+  | 'transferred' // 转手
+
+export interface NovelItem {
+  id: string
+  projectId: string
+  name: string
+  description: string
+  /** 物品类型 */
+  type: NovelItemType
+  /** 当前拥有者角色 ID（null 表示无主/已丢弃） */
+  ownerId: string | null
+  /** 物品状态 */
+  status: NovelItemStatus
+  /** 物品能力/效果描述（法器有什么用、武器什么属性） */
+  abilities: string
+  /** 物品来源（哪章获得/怎么获得的） */
+  origin: string
+  /** 首次登场章节 */
+  firstChapter: number | null
+  /** 非连续出场章节跨度，如 [[1,3],[10,12]]；空数组表示未放置 */
+  chapterSpans: ChapterSpan[]
   createdAt: number
   updatedAt: number
 }
@@ -838,7 +901,7 @@ export interface NovelCharacterHistory {
 
 export type NovelNodeType =
   | 'project' | 'character' | 'chapter' | 'conflict' | 'foreshadow' | 'group'
-  | 'faction' | 'location' | 'world_element' | 'info_layer'
+  | 'faction' | 'location' | 'world_element' | 'info_layer' | 'item'
 
 export interface NovelNodePosition {
   id: string
@@ -913,6 +976,8 @@ export interface StoryState {
   activeClues: NovelClue[]
   activeFactions: NovelFaction[]
   activeLocations: NovelLocation[]
+  /** 项目内所有物品（含丢失/损坏的，用于跨章节一致性追踪） */
+  items: NovelItem[]
   currentStage: StoryStage
   currentChapter: number
 }
@@ -1164,6 +1229,8 @@ export interface ArrangedEntity {
   clueIds?: string[]
   factionIds: string[]
   locationIds: string[]
+  /** 本章需要出场的物品；可选以兼容旧版矩阵快照。 */
+  itemIds?: string[]
   /**
    * 角色本章功能位编排（可选，未指定时不约束）。
    * 由 planEntitiesFromOutline 在编排阶段为每个新角色规划，注入 Writer 让其明确
@@ -1354,4 +1421,304 @@ export interface SimilarityScanProgressEvent {
   phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
   message: string
   data?: unknown
+}
+
+// ── 创作流程事件协议（前后端共享） ──
+//
+// 以下类型由后端 apps/agent-server/.../novel-plugin/core/novel-agents.ts 与
+// 前端 apps/desktop/.../hooks/use-novel-creation-flow.ts 共用，
+// 经此共享包消除重复定义与字段漂移。
+
+/** 创作流程阶段（14 值并集：含 arranging 用于 AI 编排模式进度事件，cancelling 用于取消中） */
+export type CreationPhase =
+  | 'idle' | 'directing' | 'checkpoint_narrative' | 'writing'
+  | 'reviewing' | 'checkpoint_review' | 'revising' | 'rewriting'
+  | 'memory' | 'arranging' | 'completed' | 'cancelled' | 'error'
+  | 'cancelling'
+
+/** 检查点类型 */
+export type CheckpointType =
+  | 'narrative_task'
+  | 'review'
+  // PostWriteGuard 命中（字数失控/模型退化/矩阵缺项等）且未达上限时的重写决策点
+  | 'post_write_guard'
+  // Writer 主动推回 Director 时的决策点（用户可选同意推回、强制继续、取消）
+  | 'writer_pushback'
+  // PostWriteGuard 重写达 MAX_GUARD_REWRITE 上限后的降级决策点
+  | 'guard_degraded'
+
+/** 检查点决策（4 值） */
+export type CheckpointDecision = 'approve' | 'reject' | 'revise' | 'rewrite'
+
+/** 检查点数据（前后端共享，前端附 checkpointId? 用于决策端点路由） */
+export interface CheckpointData {
+  type: CheckpointType
+  phase: CreationPhase
+  data: unknown
+  decision?: CheckpointDecision
+  /** 后端 ConfirmationManager 生成的决策请求 ID（UUID），用于决策端点路由 */
+  checkpointId?: string
+}
+
+/**
+ * 创作流程事件（CUSTOM(novel:progress) 的 value 载体）
+ *
+ * type 联合采用前后端并集：
+ * - phase_change / agent_output / checkpoint / error / completed / cancelled：通用
+ * - agent_start：后端发射，Agent 开始调用（带 messageId）
+ * - agent_event：前端用于聚合 agent_start / agent_output 的别名
+ * - data_changed：Memory Agent 数据变更通知，前端据此刷新画布
+ */
+export interface CreationFlowEvent {
+  type:
+    | 'phase_change' | 'agent_start' | 'agent_event' | 'agent_output'
+    | 'data_changed' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
+  phase: CreationPhase
+  data?: unknown
+  timestamp: number
+}
+
+/** Agent 输出（命名统一为 AgentOutput，后端原 AgentOutputData 重命名） */
+export interface AgentOutput {
+  /** Agent 类型（9 值并集，覆盖工作流 + 群聊 + 编排所有路径） */
+  agentType:
+    | 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+    | 'arranger' | 'context' | 'character' | 'moderator'
+  /** Agent 名称（中文） */
+  agentName: string
+  /** Agent 的完整输出文本 */
+  content: string
+  /** 输出预览（前 500 字符，供 UI 折叠展示） */
+  preview: string
+  /** 时间戳（前端必填，用于时间线排序） */
+  timestamp: number
+  /** 标记为数据变更通知（Memory Agent 写入完成后推送，前端据此刷新画布，不展示在时间线） */
+  dataChanged?: boolean
+  /** 是否为流式增量推送（true 表示 Agent 仍在生成中，前端应更新最后一条同类型输出而非新增） */
+  streaming?: boolean
+  /** 关联的 AG-UI TEXT_MESSAGE_* 事件 messageId（用于 delta 累积） */
+  messageId?: string
+}
+
+/** 创作流程最终结果（后端权威定义原在 chapter-finalizer.ts，迁入共享包） */
+export interface CreationResult {
+  status: 'completed' | 'cancelled' | 'error'
+  chapterId?: string
+  content?: string
+  stateChanges?: Array<{ type: string; description: string }>
+  error?: string
+  /** 群聊运行快照 ID（用于断点续跑） */
+  discussionRunId?: string
+  /** 本次是否可直接从 Writer 阶段继续 */
+  canResume?: boolean
+  /** 失败阶段（status='error' 时标注） */
+  failedPhase?: string
+}
+
+// ── 章节聊天（ChapterChatStore 持久化的消息）──
+
+/** 聊天消息角色 */
+export type ChapterChatRole = 'user' | 'agent' | 'system'
+
+/** 聊天消息阶段（标识消息产生于哪种场景） */
+export type ChapterChatPhase =
+  | 'pre_creation'
+  | 'checkpoint'
+  | 'discussion'
+  | 'free_chat'
+  | 'review'
+
+/** 章节聊天消息元数据（从 ChapterChatMessage.metadata 提取为命名类型） */
+export interface ChapterChatMetadata {
+  /** 检查点 ID（phase=checkpoint 时） */
+  checkpointId?: string
+  /** 检查点决策（phase=checkpoint 时） */
+  decision?: string
+  /** Agent 类型（role=agent 时，如 'director'/'writer'/'character'） */
+  agentType?: string
+  /** 用户 @ 指定的 Agent ID 列表（phase=free_chat 时） */
+  mentionedAgents?: string[]
+  /** 创作模式（'workflow' | 'discussion'） */
+  flowMode?: 'workflow' | 'discussion'
+  /** 群聊运行 ID，用于区分同一章节的多次创作尝试 */
+  discussionRunId?: string
+  /** 群聊消息类型（member/moderator/system/run_start/run_end） */
+  discussionMessageType?: string
+  /** 群聊运行终态 */
+  discussionRunStatus?: 'completed' | 'cancelled' | 'error'
+  /** 该终态是否可从持久化快照恢复 */
+  discussionCanResume?: boolean
+  /** 群聊场景 ID */
+  sceneId?: number
+}
+
+/** 章节聊天消息（前后端共享，由 ChapterChatStore 持久化） */
+export interface ChapterChatMessage {
+  id: string
+  projectId: string
+  chapterNumber: number
+  role: ChapterChatRole
+  fromId: string
+  fromName: string
+  content: string
+  phase: ChapterChatPhase
+  metadata?: ChapterChatMetadata
+  createdAt: number
+}
+
+// ── 角色生成进度事件 ──
+
+/** 角色生成进度事件（由 SSE 推送给前端） */
+export interface CharacterGenerationProgressEvent {
+  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
+  message: string
+  data?: unknown
+}
+
+// ── 跨章节一致性审计 ──
+
+/** 伏笔检查结果 */
+export interface ForeshadowAudit {
+  total: number
+  byStatus: Record<ForeshadowStatus, number>
+  /** 回收率 = recovered / total */
+  recoveryRate: number
+  /** 急需回收（gap ≥ 20 且未回收/废弃） */
+  urgent: Array<{ id: string; description: string; gap: number; status: ForeshadowStatus; firstChapter: number | null }>
+  /** 即将过期（gap ≥ 50 且未回收/废弃） */
+  expired: Array<{ id: string; description: string; gap: number; status: ForeshadowStatus; firstChapter: number | null }>
+}
+
+/** 钩子检查结果 */
+export interface HookAudit {
+  total: number
+  /** 兑现率 = fulfilled / total */
+  fulfilledRate: number
+  /** 悬挂钩子（thrown 且未兑现，跨章未处理） */
+  hanging: Array<{
+    id: string
+    description: string
+    hookType: string
+    thrownAt: number
+    /** 悬挂章数 = 当前最新章节 - 抛出章节 */
+    gap: number
+  }>
+}
+
+/** 孤儿实体检查结果 */
+export interface OrphanEntityAudit {
+  /** 编排了但正文未出现名字的角色 */
+  characters: Array<{
+    id: string
+    name: string
+    /** 编排出现在哪些章节（chapterSpans/history 推断） */
+    arrangedChapters: number[]
+    /** 正文未出现名字的章节列表 */
+    missingChapters: number[]
+  }>
+  /** 编排了但正文未出现名字的势力 */
+  factions: Array<{
+    id: string
+    name: string
+    arrangedChapters: number[]
+    missingChapters: number[]
+  }>
+  /** 编排了但正文未出现名字的地点 */
+  locations: Array<{
+    id: string
+    name: string
+    arrangedChapters: number[]
+    missingChapters: number[]
+  }>
+}
+
+/** 时间线检查结果 */
+export interface TimelineAudit {
+  /** timeOffset 是否单调递增 */
+  monotonic: boolean
+  /** 违反单调性的章节列表 */
+  violations: Array<{
+    chapter: number
+    timeOffset: number
+    previousChapter: number
+    previousOffset: number
+  }>
+}
+
+/** 完整一致性报告 */
+export interface ConsistencyReport {
+  projectId: string
+  /** 生成时间戳（秒） */
+  generatedAt: number
+  /** 项目总章数 */
+  totalChapters: number
+  /** 已完成（有正文）的章节数 */
+  writtenChapters: number
+  foreshadow: ForeshadowAudit
+  hooks: HookAudit
+  orphanEntities: OrphanEntityAudit
+  timeline: TimelineAudit
+  /** 整体健康度评分（0-100，加权计算） */
+  healthScore: number
+  /** 关键问题摘要（用于前端展示） */
+  summary: string[]
+}
+
+// ── 统一关系图查询层 ──
+
+/** 图节点摘要（轻量视图，用于遍历结果） */
+export interface GraphNode {
+  id: string
+  type: NovelNodeType
+  name: string
+}
+
+/** 统一的图边视图（合并 edges 表 + 派生边 + relationships 三处数据源） */
+export interface GraphEdge {
+  /** 边的唯一标识（派生边用计算 ID，持久化边用真实 ID） */
+  id: string
+  /** 源实体 ID */
+  sourceId: string
+  /** 源实体类型 */
+  sourceType: NovelNodeType
+  /** 目标实体 ID */
+  targetId: string
+  /** 目标实体类型 */
+  targetType: NovelNodeType
+  /** 边类型 */
+  edgeType: NovelEdgeType
+  /** 边标签（手动边可能有，派生边为空） */
+  label: string
+  /** 是否自动派生（true=派生计算，false=用户手动创建） */
+  auto: boolean
+  /** 是否来自 novel_relationships 表（承载富语义字段） */
+  fromRelationship?: boolean
+  /** 如果来自 novel_relationships，附带原始关系数据 */
+  relationship?: NovelRelationship
+  /** 创建时间（派生边为 0） */
+  createdAt: number
+  /** 更新时间（派生边为 0） */
+  updatedAt: number
+}
+
+/** 路径查找结果 */
+export interface GraphPath {
+  /** 路径上的节点序列（起点到终点） */
+  nodes: GraphNode[]
+  /** 路径上的边序列 */
+  edges: GraphEdge[]
+  /** 是否找到路径 */
+  found: boolean
+}
+
+/** 实体在某章节的出场信息 */
+export interface EntityChapterPresence {
+  /** 实体 ID */
+  entityId: string
+  /** 实体类型 */
+  entityType: NovelNodeType
+  /** 实体名称 */
+  name: string
+  /** 出现的章节号列表（已排序） */
+  chapters: number[]
 }

@@ -21,6 +21,7 @@ import { NovelMemoryStore, type MemoryEvent } from '../../plugins/novel-plugin/c
 import type { NovelMemoryGenerator } from '../../plugins/novel-plugin/core/novel-memory-generator.js'
 import type { NarrativeTask, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan, VersionSource } from '../../plugins/novel-plugin/core/types.js'
 import type { NovelAgentType, CreationPhase, CreationFlowEvent } from '../../plugins/novel-plugin/core/novel-agents.js'
+import type { CreationResult } from '@repo/shared/novel'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import {
   hasLlmUsage,
@@ -62,13 +63,8 @@ export interface CreationOptions {
   arrangedEntities?: ArrangedEntity
 }
 
-export interface CreationResult {
-  status: 'completed' | 'cancelled' | 'error'
-  chapterId?: string
-  content?: string
-  stateChanges?: Array<{ type: string; description: string }>
-  error?: string
-}
+/** CreationResult 已迁入 @repo/shared/novel 共享包，此处通过顶部 import 引入 */
+export type { CreationResult }
 
 /**
  * finalize() 的入参，承载创作流程产出的上下文。

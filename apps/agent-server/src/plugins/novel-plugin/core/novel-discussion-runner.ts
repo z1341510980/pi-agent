@@ -30,12 +30,12 @@ import { NovelStore } from './novel-store.js'
 import { NovelMemoryStore } from './novel-memory-store.js'
 import { NovelPromptBuilder } from './prompt-builder.js'
 import { NovelEngine } from './novel-engine.js'
-import { NovelSessionFactory } from './novel-session.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
 import type { NovelCharacter, NarrativeTask, ArrangedEntity, VersionSource } from './types.js'
-import { applySafeRevision, sanitizeNovelProse } from './agent-run-utils.js'
-import { parseChapterReviewReport } from './chapter-review-parser.js'
+import { sanitizeNovelProse } from './agent-run-utils.js'
+import { createNovelApplyRevisionTool, type RevisionDraftHolder } from './novel-tools.js'
+import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-tools.js'
 import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
 
 /** 群聊参与工种（不含 memory，memory 由 ChapterFinalizer 收尾阶段调用） */
@@ -45,7 +45,6 @@ export class NovelDiscussionRunner {
   constructor(
     private store: NovelStore,
     private memoryStore: NovelMemoryStore,
-    private sessionFactory: NovelSessionFactory,
     private promptBuilder: NovelPromptBuilder,
     private engine: NovelEngine,
     private context: PluginContext,
@@ -210,7 +209,49 @@ export class NovelDiscussionRunner {
         // 避免角色数 × 对戏轮数的额外 LLM 调用。底层引擎仍保留显式开启能力。
         reviewCharacterSpeech: false,
         buildProseQualityReport: content => formatProseQualityReport(evaluateProseQuality(content)),
-        applyRevision: (original, rawRevision) => applySafeRevision(original, rawRevision),
+        // ⚠️ 工具化修订方案：业务层通过 buildReviserToolset 提供 draft + 工具。
+        // 引擎在调用 Reviser 前传入原章节正文，工厂创建 draft（持有原正文）+ 工具，
+        // 引擎把工具注入 Reviser 的 LLM 调用。Reviser 必须调用 novel_apply_revision
+        // 工具才能修改正文，工具内部用 String.replace 做精确替换，完全绕开正则解析。
+        // 旧方案让 Reviser 输出"原文/修改后"配对文本，引擎再用 applySafeRevision 正则解析，
+        // LLM 不严格遵守格式时会走 full 兜底把"修改意见"当作完整正文落库。
+        buildReviserToolset: originalContent => {
+          const draft: RevisionDraftHolder = {
+            content: originalContent,
+            appliedPatches: [],
+          }
+          return {
+            tools: [createNovelApplyRevisionTool(draft)],
+            extractResult: () => {
+              const successCount = draft.appliedPatches.filter(p => p.success).length
+              return {
+                content: draft.content,
+                appliedPatchCount: draft.appliedPatches.length,
+                successCount,
+                mode: successCount > 0 ? 'patch' as const : 'rejected' as const,
+                reason: draft.appliedPatches.length === 0
+                  ? 'tool_not_called'
+                  : 'all_patches_failed',
+              }
+            },
+          }
+        },
+        // ⚠️ 工具化方案：业务层通过 buildReviewerToolset 提供 draft + 工具。
+        // 引擎把工具注入 Reviewer 的 LLM 调用。Reviewer 必须调用 novel_submit_review
+        // 工具才能提交结构化验收对象（十维评分 + verdict + issues + suggestions），
+        // 工具参数 schema 强制校验，完全绕开正则解析。
+        // 旧路径让 Reviewer 输出 Markdown 报告，再用 parseChapterReviewReport 正则解析，
+        // LLM 不严格遵守格式时评分/结论降级为 null，Reviewer 的真实判断丢失。
+        buildReviewerToolset: () => {
+          const draft: ReviewDraftHolder = {}
+          return {
+            tools: [createNovelSubmitReviewTool(draft)],
+            extractResult: () => ({
+              toolCalled: Boolean(draft.review),
+              review: draft.review ?? null,
+            }),
+          }
+        },
         onMemberInvocation: (invocation) => {
           const agentType = invocation.member.type === 'character'
             ? 'character'
@@ -250,16 +291,21 @@ export class NovelDiscussionRunner {
         : await discussionEngine.run(goal, members, engineOptions)
       discussionResult = result
 
-      const reviewerReport = [...result.transcript]
-        .reverse()
-        .find((message) => message.fromId === 'novel-reviewer')?.content
+      // ⚠️ 工具化方案：Reviewer 通过 novel_submit_review 工具提交结构化验收对象，
+      // 引擎在 result.review 中透传 ReviewerOutcome（含 review 字段，未知类型）。
+      // 业务层在此做类型断言为 NovelChapterReview 的核心字段，直接交给 saveReview，
+      // 完全绕开正则解析。未调用工具时 review 为 null，跳过结构化存档。
+      const reviewOutcome = result.review
       const reviewedChapter = this.store.getChapter(projectId, chapterNumber)
-      if (reviewerReport && reviewedChapter) {
+      if (reviewOutcome?.review && reviewedChapter) {
         try {
           await this.engine.saveReview({
             projectId,
             chapterId: reviewedChapter.id,
-            ...parseChapterReviewReport(reviewerReport),
+            ...(reviewOutcome.review as Omit<
+              import('@repo/shared/novel').NovelChapterReview,
+              'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt'
+            >),
             reviewedBy: 'novel-reviewer',
           })
         } catch (error) {
@@ -268,6 +314,11 @@ export class NovelDiscussionRunner {
             '群聊章节审稿报告持久化失败，不阻断创作流程',
           )
         }
+      } else if (reviewedChapter && reviewOutcome && !reviewOutcome.toolCalled) {
+        this.context.logger.warn(
+          { projectId, chapterNumber },
+          '群聊 Reviewer 未调用 novel_submit_review 工具，验收报告未持久化',
+        )
       }
 
       // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
@@ -483,6 +534,12 @@ export class NovelDiscussionRunner {
     if (char.currentGoal) lines.push(`- 当前目标：${char.currentGoal}`)
     if (char.secret) lines.push(`- 隐藏秘密：${char.secret}`)
     if (char.arcStage) lines.push(`- 角色弧光阶段：${char.arcStage}`)
+    // 说话风格必须注入：否则角色演员看不到自己的 speechStyle，
+    // 群聊里所有人会按 LLM 默认腔调说话，角色台词趋同。
+    // role-character-actor.md 的"台词必须符合角色说话风格"规则形同虚设。
+    if (char.speechStyle?.trim()) {
+      lines.push(`- 说话风格（你的台词必须严格符合此风格，包括长短句、用词、口头禅、语气词；不得与其他角色趋同）：${char.speechStyle}`)
+    }
     lines.push('')
     // 拼接 role-character-actor.md（剧本演出格式约束）
     // discussion=true 让 getAgentRoleDescription 读 role-character-actor-discussion.md，

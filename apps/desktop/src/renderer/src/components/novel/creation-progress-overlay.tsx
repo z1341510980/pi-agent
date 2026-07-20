@@ -42,6 +42,7 @@ const PHASE_META: Partial<Record<CreationPhase, PhaseMeta>> = {
   rewriting: { label: '重新创作中', icon: RefreshCw, progress: 30, color: 'text-amber-500' },
   memory: { label: '记忆提取中', icon: Brain, progress: 90, color: 'text-cyan-500' },
   completed: { label: '创作完成', icon: CheckCircle2, progress: 100, color: 'text-success' },
+  cancelling: { label: '正在取消中', icon: X, progress: 0, color: 'text-amber-500' },
   cancelled: { label: '已取消', icon: X, progress: 0, color: 'text-muted-foreground' },
   error: { label: '出错', icon: X, progress: 0, color: 'text-destructive' },
 }
@@ -111,10 +112,13 @@ export function CreationProgressOverlay({
             <Icon className="size-4" />
           </motion.div>
           <span className="text-sm font-medium text-text flex-1 truncate">{meta.label}</span>
-          {isRunning && (
+          {isRunning && phase !== 'cancelling' && (
             <Button size="icon-xs" variant="ghost" onClick={onCancel} title="取消" aria-label="取消创作">
               <X className="size-3" />
             </Button>
+          )}
+          {phase === 'cancelling' && (
+            <RefreshCw className="size-3 animate-spin text-muted-foreground" aria-label="取消中" />
           )}
         </div>
 

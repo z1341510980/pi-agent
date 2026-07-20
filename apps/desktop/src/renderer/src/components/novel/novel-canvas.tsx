@@ -1,17 +1,15 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
 import {
   ReactFlow,
   Background,
   BackgroundVariant,
   Controls,
-  MiniMap,
   useNodesState,
   useEdgesState,
   useReactFlow,
   addEdge,
   type Node,
   type Edge,
-  type NodeTypes,
   type Connection,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -35,444 +33,14 @@ import {
   type NovelEdge,
   type NovelEdgeType,
 } from '@/api/novel-client'
-import { CharacterNode } from './nodes/CharacterNode'
-import { ConflictNode } from './nodes/ConflictNode'
-import { ForeshadowNode } from './nodes/ForeshadowNode'
-import { GroupNode } from './nodes/GroupNode'
-import { FactionNode } from './nodes/FactionNode'
-import { LocationNode } from './nodes/LocationNode'
-import { WorldElementNode } from './nodes/WorldElementNode'
 import { CreationProgressOverlay } from './creation-progress-overlay'
 import type { CreationPhase } from '@/hooks/use-novel-creation-flow'
 import { cn } from '@/lib/utils'
-
-// ── 节点类型注册（必须在组件外定义，避免每次渲染重建） ──
-
-const nodeTypes: NodeTypes = {
-  character: CharacterNode,
-  conflict: ConflictNode,
-  foreshadow: ForeshadowNode,
-  group: GroupNode,
-  faction: FactionNode,
-  location: LocationNode,
-  world_element: WorldElementNode,
-}
-
-// ── MiniMap 性能优化 ──
-// 说明：@xyflow/react v12 的 <MiniMap> 不再接受 onlyRenderVisibleElements 属性
-// （该属性在 v11 中曾存在，v12 将其合并到 <ReactFlow> 顶层，控制 NodeRenderer /
-//  EdgeRenderer 的视口裁剪）。因此这里采用两种互补优化：
-//   1. 在 <ReactFlow> 上启用 onlyRenderVisibleElements（节点/边虚拟化）
-//   2. 将 <MiniMap> 包装为 memo 组件，仅在节点数 > COMPACT_THRESHOLD 时挂载
-//      小项目下 MiniMap 价值有限，省去 SVG 全量渲染开销；大项目时才出现
-//      导航缩略图。nodeColor 提到模块作用域以稳定 props 引用，避免不必要重渲染。
-
-function miniMapNodeColor(n: Node): string {
-  const type = n.type
-  if (type === 'character') return '#3b82f6'
-  if (type === 'conflict') return '#f43f5e'
-  if (type === 'foreshadow') return '#f59e0b'
-  if (type === 'group') return '#6366f1'
-  if (type === 'faction') return '#a855f7'
-  if (type === 'location') return '#06b6d4'
-  if (type === 'world_element') return '#4f46e5'
-  return '#6b7280'
-}
-
-const MemoizedMiniMap = memo(function MemoizedMiniMap({ visible }: { visible: boolean }) {
-  if (!visible) return null
-  return (
-    <MiniMap
-      pannable
-      zoomable
-      className="!bg-card !border !border-border"
-      maskColor="rgba(0,0,0,0.05)"
-      nodeColor={miniMapNodeColor}
-    />
-  )
-})
-
-// ── 布局常量 ──
-
-const CHAR_X = -380
-const CONFLICT_X_OFFSET = 200
-const FORESHADOW_Y = 280
-const FORESHADOW_X_START = -380
-const FACTION_X = 380
-const FACTION_Y_START = -280
-const LOCATION_Y = 560
-const LOCATION_X_START = -380
-const WORLD_ELEMENT_Y = 820
-const WORLD_ELEMENT_X_START = -380
-const NODE_SPACING_Y = 110
-const NODE_SPACING_X = 240
-
-/** 节点数超过此阈值时切换紧凑渲染 */
-const COMPACT_THRESHOLD = 50
-/** 节点数超过此阈值时显示性能警告 */
-const WARNING_THRESHOLD = 100
-
-/** 位置持久化防抖时间 */
-const POSITION_SYNC_DEBOUNCE_MS = 1000
-
-// ── 节点 ID 前缀工具 ──
-
-function nodeId(type: NovelNodeType, id: string): string {
-  return `${type}:${id}`
-}
-
-/**
- * 解析节点 ID：仅在第一个冒号处拆分。
- *
- * 必须使用 indexOf 而非 split(':')，否则当 id 本身含冒号时
- * （例如 "chapter:uuid:1" 这种复合 ID），split 会把 id 截断，
- * 导致后续按 entityId 发起的 DELETE / GET 请求拿到不完整的 id 而 404。
- */
-function parseNodeId(nodeId: string): [string, string] {
-  const idx = nodeId.indexOf(':')
-  return idx >= 0 ? [nodeId.slice(0, idx), nodeId.slice(idx + 1)] : [nodeId, '']
-}
-
-function parseParticipants(raw: string): string[] {
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
-  } catch {
-    return []
-  }
-}
-
-// ── 边打包：统计同一 target 的边数，用于降低视觉密度 ──
-
-function computeTargetBundleCount(edges: Edge[]): Map<string, number> {
-  const counts = new Map<string, number>()
-  for (const e of edges) {
-    if (e.target) {
-      counts.set(e.target, (counts.get(e.target) ?? 0) + 1)
-    }
-  }
-  return counts
-}
-
-// ── 连接规则校验 ──
-
-/**
- * 判断源节点到目标节点的连接是否合法（纯实体关系图）。
- * 允许：
- *   - character ↔ character  （角色关系）
- *   - conflict  → character   （冲突涉及角色，方向性）
- *   - faction   ↔ character   （势力与角色：首领/成员）
- *   - location  ↔ location    （地点层级：父/子）
- *   - faction   ↔ location    （势力归属地点）
- *   - faction   ↔ faction     （势力间盟友/敌对关系）
- *   - foreshadow ↔ any / any ↔ foreshadow （伏笔可关联任意实体）
- *   - group     ↔ any / any ↔ group       （视觉分组可关联任意实体）
- *   - world_element → any / any → world_element （世界观要素可关联任意实体）
- * 禁止：
- *   - character → conflict    （应使用 conflict → character）
- */
-function isValidConnection(sourceType: string, targetType: string): boolean {
-  // 明确禁止：character → conflict（方向性冲突，应反向连接）
-  if (sourceType === 'character' && targetType === 'conflict') return false
-
-  // world_element 与任意实体可互连（世界观要素是元数据层）
-  if (sourceType === 'world_element' || targetType === 'world_element') return true
-
-  // foreshadow 与任意实体可互连（伏笔可关联角色/冲突等）
-  if (sourceType === 'foreshadow' || targetType === 'foreshadow') return true
-
-  // group 与任意实体可互连（视觉分组）
-  if (sourceType === 'group' || targetType === 'group') return true
-
-  // character ↔ character
-  if (sourceType === 'character' && targetType === 'character') return true
-
-  // conflict → character（方向性，反向已被上方规则禁止）
-  if (sourceType === 'conflict' && targetType === 'character') return true
-
-  // faction ↔ character（势力首领/成员）
-  if (
-    (sourceType === 'faction' && targetType === 'character') ||
-    (sourceType === 'character' && targetType === 'faction')
-  ) return true
-
-  // location ↔ location（地点层级：父/子）
-  if (sourceType === 'location' && targetType === 'location') return true
-
-  // faction ↔ location（势力归属地点）
-  if (
-    (sourceType === 'faction' && targetType === 'location') ||
-    (sourceType === 'location' && targetType === 'faction')
-  ) return true
-
-  // faction ↔ faction（势力间盟友/敌对关系）
-  if (sourceType === 'faction' && targetType === 'faction') return true
-
-  return false
-}
-
-// ── 边类型标签（过滤下拉用）──
-
-const EDGE_TYPE_LABELS: Record<NovelEdgeType, string> = {
-  appearance: '出场',
-  relationship: '关系',
-  involvement: '参与',
-  foreshadow: '伏笔',
-  base: '场景',
-  member: '成员',
-  hierarchy: '层级',
-  association: '关联',
-  mentor: '师徒',
-  kinship: '亲属',
-  rivalry: '敌对',
-  alliance: '同盟',
-  subordinate: '隶属',
-  trigger: '触发',
-  causality: '因果',
-}
-
-// ── 布局函数：根据 store 数据生成节点与边 ──
-
-interface LayoutResult {
-  nodes: Node[]
-  edges: Edge[]
-}
-
-function buildLayout(params: {
-  characters: Array<{ id: string; name: string; identity: string; arcStage: string; currentState: string }>
-  conflicts: Array<{ id: string; description: string; type: string; intensity: number; stage: string; participants: string }>
-  foreshadows: Array<{ id: string; description: string; category: string; status: string; firstChapter: number | null; lastChapter: number | null; recoverByChapter: number | null }>
-  factions: Array<{ id: string; name: string; description: string; type: string; strength: string; status: string; leaderId: string | null; allies: string[]; enemies: string[] }>
-  locations: Array<{ id: string; name: string; description: string; type: string; parentId: string | null; factionId: string | null; significance: string; firstChapter: number | null; status: string }>
-  worldElements: Array<{ id: string; name: string; description: string; category: string; parentId: string | null; attributes: Record<string, unknown> }>
-  savedPositions: Map<string, { x: number; y: number }>
-  /** 已持久化的手动边（auto=false），与自动边合并并按 source-target 去重 */
-  manualEdges: NovelEdge[]
-}): LayoutResult {
-  const { characters, conflicts, foreshadows, factions, locations, worldElements, savedPositions, manualEdges } = params
-  const nodes: Node[] = []
-  const edges: Edge[] = []
-
-  /** 优先使用已保存位置，否则使用计算位置 */
-  const resolvePos = (type: string, id: string, computed: { x: number; y: number }) => {
-    const saved = savedPositions.get(`${type}:${id}`)
-    return saved ?? computed
-  }
-
-  // 角色节点（左侧竖向排列）
-  const charYStart = -((characters.length - 1) * NODE_SPACING_Y) / 2
-  characters.forEach((c, i) => {
-    nodes.push({
-      id: nodeId('character', c.id),
-      type: 'character',
-      position: resolvePos('character', c.id, { x: CHAR_X, y: charYStart + i * NODE_SPACING_Y }),
-      data: { entity: c },
-    })
-  })
-
-  // 冲突节点（连接到参与角色，保留原有 conflict → character 边）
-  conflicts.forEach((cf, i) => {
-    const participants = parseParticipants(cf.participants)
-    const firstParticipant = participants[0]
-    const charIdx = firstParticipant ? characters.findIndex((c) => c.id === firstParticipant) : -1
-    const baseY = charIdx >= 0 ? -((characters.length - 1) * NODE_SPACING_Y) / 2 + charIdx * NODE_SPACING_Y : i * NODE_SPACING_Y
-    nodes.push({
-      id: nodeId('conflict', cf.id),
-      type: 'conflict',
-      position: resolvePos('conflict', cf.id, { x: CHAR_X + CONFLICT_X_OFFSET, y: baseY + 60 }),
-      data: { entity: cf },
-    })
-    // 连接冲突 → 参与角色
-    participants.forEach((pid) => {
-      if (characters.some((c) => c.id === pid)) {
-        edges.push({
-          id: `e-conf-${cf.id}-char-${pid}`,
-          source: nodeId('conflict', cf.id),
-          target: nodeId('character', pid),
-          style: { stroke: 'var(--color-danger)', strokeWidth: 1.5, strokeDasharray: '4 3' },
-          data: { auto: true, edgeType: 'involvement' as NovelEdgeType },
-        })
-      }
-    })
-  })
-
-  // 伏笔节点（横向排列，纯实体关系图不再关联章节）
-  foreshadows.forEach((f, i) => {
-    nodes.push({
-      id: nodeId('foreshadow', f.id),
-      type: 'foreshadow',
-      position: resolvePos('foreshadow', f.id, { x: FORESHADOW_X_START + i * NODE_SPACING_X, y: FORESHADOW_Y }),
-      data: { entity: f },
-    })
-  })
-
-  // 势力节点（右侧竖向排列，连接首领角色与盟友/敌对势力）
-  factions.forEach((f, i) => {
-    nodes.push({
-      id: nodeId('faction', f.id),
-      type: 'faction',
-      position: resolvePos('faction', f.id, { x: FACTION_X, y: FACTION_Y_START + i * NODE_SPACING_Y }),
-      data: { entity: f },
-    })
-    // 势力 → 首领角色
-    if (f.leaderId && characters.some((c) => c.id === f.leaderId)) {
-      edges.push({
-        id: `e-fac-${f.id}-leader-${f.leaderId}`,
-        source: nodeId('faction', f.id),
-        target: nodeId('character', f.leaderId),
-        style: { stroke: '#a855f7', strokeWidth: 1.5 },
-        data: { auto: true, edgeType: 'member' as NovelEdgeType },
-      })
-    }
-    // 势力 → 盟友势力
-    f.allies.forEach((aid) => {
-      if (factions.some((x) => x.id === aid)) {
-        edges.push({
-          id: `e-fac-${f.id}-ally-${aid}`,
-          source: nodeId('faction', f.id),
-          target: nodeId('faction', aid),
-          style: { stroke: '#10b981', strokeWidth: 1, strokeDasharray: '2 3' },
-          data: { auto: true, edgeType: 'alliance' as NovelEdgeType },
-        })
-      }
-    })
-    // 势力 → 敌对势力
-    f.enemies.forEach((eid) => {
-      if (factions.some((x) => x.id === eid)) {
-        edges.push({
-          id: `e-fac-${f.id}-enemy-${eid}`,
-          source: nodeId('faction', f.id),
-          target: nodeId('faction', eid),
-          style: { stroke: '#f43f5e', strokeWidth: 1, strokeDasharray: '4 2' },
-          data: { auto: true, edgeType: 'rivalry' as NovelEdgeType },
-        })
-      }
-    })
-  })
-
-  // 地点节点（左下方横向排列，构建父子层级与势力归属）
-  locations.forEach((l, i) => {
-    nodes.push({
-      id: nodeId('location', l.id),
-      type: 'location',
-      position: resolvePos('location', l.id, { x: LOCATION_X_START + i * NODE_SPACING_X, y: LOCATION_Y }),
-      data: { entity: l },
-    })
-    // 地点 → 父级地点
-    if (l.parentId && locations.some((x) => x.id === l.parentId)) {
-      edges.push({
-        id: `e-loc-${l.id}-parent-${l.parentId}`,
-        source: nodeId('location', l.id),
-        target: nodeId('location', l.parentId),
-        style: { stroke: '#06b6d4', strokeWidth: 1, strokeDasharray: '2 3' },
-        data: { auto: true, edgeType: 'hierarchy' as NovelEdgeType },
-      })
-    }
-    // 地点 → 归属势力
-    if (l.factionId && factions.some((x) => x.id === l.factionId)) {
-      edges.push({
-        id: `e-loc-${l.id}-fac-${l.factionId}`,
-        source: nodeId('location', l.id),
-        target: nodeId('faction', l.factionId),
-        style: { stroke: '#0891b2', strokeWidth: 1, strokeDasharray: '3 2' },
-        data: { auto: true, edgeType: 'association' as NovelEdgeType },
-      })
-    }
-  })
-
-  // 世界观要素节点（最下方横向排列，构建父子层级）
-  worldElements.forEach((we, i) => {
-    nodes.push({
-      id: nodeId('world_element', we.id),
-      type: 'world_element',
-      position: resolvePos('world_element', we.id, { x: WORLD_ELEMENT_X_START + i * NODE_SPACING_X, y: WORLD_ELEMENT_Y }),
-      data: { entity: we },
-    })
-    // 世界观要素 → 父级要素
-    if (we.parentId && worldElements.some((x) => x.id === we.parentId)) {
-      edges.push({
-        id: `e-we-${we.id}-parent-${we.parentId}`,
-        source: nodeId('world_element', we.id),
-        target: nodeId('world_element', we.parentId),
-        style: { stroke: '#4f46e5', strokeWidth: 1, strokeDasharray: '2 3' },
-        data: { auto: true, edgeType: 'hierarchy' as NovelEdgeType },
-      })
-    }
-  })
-
-  // ── 合并手动边（从 store 读取的已持久化边，auto=false）──
-  // 与自动边按 source-target 去重，手动边优先保留（用户意图优先于算法推断）
-  const manualFlowEdges: Edge[] = manualEdges
-    .filter((e) => !e.auto)
-    .map((e) => ({
-      id: `edge-${e.id}`,
-      source: `${e.sourceType}:${e.sourceId}`,
-      target: `${e.targetType}:${e.targetId}`,
-      type: 'smoothstep',
-      animated: false,
-      // cursor:pointer + 略粗线宽提示可交互（hover/选中样式由全局 CSS 控制）
-      style: { stroke: 'var(--color-primary)', strokeWidth: 1.5, cursor: 'pointer' },
-      data: { auto: false, edgeId: e.id, edgeType: e.edgeType },
-    }))
-
-  if (manualFlowEdges.length > 0) {
-    const seen = new Set<string>()
-    for (const e of edges) {
-      const key = `${e.source}-${e.target}`
-      seen.add(key)
-    }
-    for (const me of manualFlowEdges) {
-      const key = `${me.source}-${me.target}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      edges.push(me)
-    }
-  }
-
-  // ── 边打包：同一 target 有多条边时降低透明度与线宽 ──
-  const bundleCounts = computeTargetBundleCount(edges)
-  for (const e of edges) {
-    const count = e.target ? bundleCounts.get(e.target) ?? 0 : 0
-    if (count > 3) {
-      // 打包：使用 smoothstep 类型 + 降低视觉权重
-      e.type = 'smoothstep'
-      e.animated = false
-      e.style = {
-        ...(e.style ?? {}),
-        strokeWidth: 1,
-        opacity: 0.5,
-      }
-    }
-  }
-
-  return { nodes, edges }
-}
-
-// ── 创作流程节点高亮 ──
-
-/** 根据创作阶段返回应高亮（脉冲）的节点 ID 集合 */
-function computePulsingNodeIds(
-  phase: CreationPhase,
-  characters: Array<{ id: string }>,
-  conflicts: Array<{ id: string }>,
-  foreshadows: Array<{ id: string }>,
-): Set<string> {
-  const ids = new Set<string>()
-  if (phase === 'idle' || phase === 'completed' || phase === 'cancelled' || phase === 'error') {
-    return ids
-  }
-
-  // memory：高亮角色/冲突/伏笔节点（状态更新目标）
-  // 注：画布已收敛为纯实体关系图，project/chapter 节点不再渲染，
-  // 故 directing/writing 等阶段不再产生脉冲节点
-  if (phase === 'memory') {
-    characters.forEach((c) => ids.add(nodeId('character', c.id)))
-    conflicts.forEach((c) => ids.add(nodeId('conflict', c.id)))
-    foreshadows.forEach((f) => ids.add(nodeId('foreshadow', f.id)))
-  }
-
-  return ids
-}
+import { applyForceLayout } from './force-layout'
+import { COMPACT_THRESHOLD, WARNING_THRESHOLD, POSITION_SYNC_DEBOUNCE_MS, EDGE_TYPE_LABELS } from './canvas/constants'
+import { parseNodeId } from './canvas/node-utils'
+import { buildLayout, isValidConnection, computePulsingNodeIds } from './canvas/layout'
+import { MemoizedMiniMap, nodeTypes } from './canvas/mini-map'
 
 // ── 主组件 ──
 
@@ -529,6 +97,12 @@ export function NovelCanvas({
   const addEdgeToStore = useNovelDataStore((s) => s.addEdge)
   const removeEdgeFromStore = useNovelDataStore((s) => s.removeEdge)
   const canvasEdgeType = useNovelUiStore((s) => s.canvasEdgeType)
+  // 画布布局模式：grouped（按类型分区）/ force（d3-force 力导向，相关节点聚类）
+  const canvasLayoutMode = useNovelUiStore((s) => s.canvasLayoutMode)
+  // 来自 toolbar 按钮的高亮（API 驱动，比本地点击高亮更全面）
+  const storeHighlightedNodeIds = useNovelUiStore((s) => s.highlightedNodeIds)
+  const storeHighlightedEdgeIds = useNovelUiStore((s) => s.highlightedEdgeIds)
+  const clearStoreHighlight = useNovelUiStore((s) => s.clearHighlight)
 
   const { fitView } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
@@ -537,7 +111,7 @@ export function NovelCanvas({
   /** 关系类型过滤：'all' 或具体 edge_type */
   const [edgeTypeFilter, setEdgeTypeFilter] = useState<NovelEdgeType | 'all'>('all')
   /** 点节点高亮的邻居集合（null=未选中，所有节点 opacity 1） */
-  const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string> | null>(null)
+  const [localHighlightedNodeIds, setLocalHighlightedNodeIds] = useState<Set<string> | null>(null)
   const isFirstLayout = useRef(true)
   /** 位置批量同步 API 的防抖定时器 */
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -545,11 +119,13 @@ export function NovelCanvas({
   const pendingPositionsRef = useRef<Map<string, NodePositionInput>>(new Map())
   /** relayout 时跳过 prev 位置保留的标记 */
   const skipPrevPositionsRef = useRef(false)
-  /** 通过 ref 访问最新的 nodePositions / currentProjectId，避免在 relayout effect 中引入额外依赖 */
+  /** 通过 ref 访问最新的 nodePositions / currentProjectId / canvasLayoutMode，避免在 effect 中引入额外依赖 */
   const nodePositionsRef = useRef(nodePositions)
   nodePositionsRef.current = nodePositions
   const currentProjectIdRef = useRef(currentProjectId)
   currentProjectIdRef.current = currentProjectId
+  const canvasLayoutModeRef = useRef(canvasLayoutMode)
+  canvasLayoutModeRef.current = canvasLayoutMode
   const [showPerfWarning, setShowPerfWarning] = useState(false)
 
   // 已保存的位置 Map（key: `${nodeType}:${entityId}`）
@@ -564,19 +140,54 @@ export function NovelCanvas({
   }, [nodePositions, currentProjectId])
 
   // 计算布局（memoized）
-  const layout = useMemo(
-    () => buildLayout({
+  // grouped 模式：buildLayout 按实体类型分区（角色左、势力右等）
+  // force 模式：在 buildLayout 基础上叠加 d3-force 力导向，让相关节点自然聚类
+  //   - 所有节点都参与力模拟（不锁定），让用户立即看到聚类效果
+  //   - 不持久化 force 结果，切回 grouped 仍能看到原 savedPositions
+  //   - 初始位置取 buildLayout 的 computed（忽略 savedPositions），避免锁定
+  //   - 边改为 straight 类型：力导向布局下直线最清晰，避免 smoothstep 折线交叉
+  const layout = useMemo(() => {
+    if (canvasLayoutMode !== 'force') {
+      return buildLayout({
+        characters,
+        conflicts,
+        foreshadows,
+        factions,
+        locations,
+        worldElements,
+        savedPositions: savedPositionsMap,
+        manualEdges,
+      })
+    }
+    // force 模式：用空 savedPositions 让 buildLayout 返回 computed 初始位置
+    // 再叠加力导向，所有节点都参与模拟
+    const base = buildLayout({
       characters,
       conflicts,
       foreshadows,
       factions,
       locations,
       worldElements,
-      savedPositions: savedPositionsMap,
+      savedPositions: new Map(),  // 忽略已保存位置，让所有节点都参与力模拟
       manualEdges,
-    }),
-    [characters, conflicts, foreshadows, factions, locations, worldElements, savedPositionsMap, manualEdges],
-  )
+    })
+    const forceNodes = applyForceLayout(base.nodes, base.edges, new Set())
+    // force 模式下边用 default（贝塞尔曲线）类型：参考 graphify 风格，
+    // 曲线连线在多对多关系下能自然分离，避免直线交叉的视觉混乱
+    // 移除 smoothstep 折线（折线在力导向下会显得生硬）
+    // 边样式统一：略低透明度 + 保持原颜色，让节点成为视觉焦点
+    const forceEdges = base.edges.map((e) => ({
+      ...e,
+      type: 'default' as const,
+      animated: false,
+      style: {
+        ...(e.style ?? {}),
+        strokeWidth: 1.2,
+        opacity: 0.6,
+      },
+    }))
+    return { nodes: forceNodes, edges: forceEdges }
+  }, [characters, conflicts, foreshadows, factions, locations, worldElements, savedPositionsMap, manualEdges, canvasLayoutMode])
 
   // 节点总数
   const nodeCount = layout.nodes.length
@@ -662,12 +273,16 @@ export function NovelCanvas({
   }, [])
 
   // ── 节点拖拽结束：更新 store + 入队 + 防抖 API 同步 ──
+  // force 模式下不持久化位置：力导向布局是"探索视图"，用户切回 grouped 仍应看到原位置
+  // grouped 模式下正常持久化（与原行为一致）
   const handleNodeDragStop = useCallback((_evt: MouseEvent | TouchEvent, node: Node) => {
     const pid = currentProjectIdRef.current
     if (!pid) return
     const [nodeType, entityId] = parseNodeId(node.id) as [NovelNodeTypeName, string]
     // group 节点不持久化位置
     if (nodeType === 'group') return
+    // force 模式下跳过持久化（位置仅在当前会话有效）
+    if (canvasLayoutModeRef.current === 'force') return
     // 查找现有位置记录以保留 id（避免在 upsertInList 中产生重复）
     const existing = nodePositionsRef.current.find(
       (p) => p.nodeType === nodeType && p.entityId === entityId && p.projectId === pid,
@@ -742,6 +357,7 @@ export function NovelCanvas({
   // ── 同步布局到 nodes/edges ──
   // - 保留已存在节点的拖拽位置（prev）
   // - 新节点使用 layout 中的位置（saved 或 computed）
+  // - 切换 layoutMode 时跳过 prev 位置（避免旧位置覆盖新布局）
   // - 为每个节点注入 onDelete 回调
   useEffect(() => {
     setNodes((prev) => {
@@ -775,6 +391,21 @@ export function NovelCanvas({
     })
     setEdges(layout.edges)
   }, [layout, setNodes, setEdges, handleDeleteNode])
+
+  // ── 切换布局模式：跳过 prev 位置 + 自动 fitView ──
+  // force 模式的力导向位置 / grouped 模式的分区位置都应该完整应用，
+  // 不被 prev 拖拽位置覆盖。fitView 让用户立即看到新布局全貌。
+  useEffect(() => {
+    skipPrevPositionsRef.current = true
+    const timer = setTimeout(() => {
+      try {
+        fitView({ padding: 0.2, duration: 400 })
+      } catch {
+        // ignore
+      }
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [canvasLayoutMode, fitView])
 
   // ── relayout：清除已保存位置 + 重建为计算位置 ──
   useEffect(() => {
@@ -818,12 +449,20 @@ export function NovelCanvas({
   // 避免旧项目的邻居 Set 残留导致新项目节点全被降至 0.2 透明度
   useEffect(() => {
     isFirstLayout.current = true
-    setHighlightedNodeIds(null)
+    setLocalHighlightedNodeIds(null)
+    clearStoreHighlight()
     setEdgeTypeFilter('all')
-  }, [currentProjectId])
+  }, [currentProjectId, clearStoreHighlight])
 
-  // 同步 store 选中状态 + 创作高亮 + 邻居高亮到节点标记
+  // 同步 store 选中状态 + 创作高亮 + 邻居高亮（本地点击 + store API）到节点标记
   useEffect(() => {
+    // 合并本地点击高亮与 store API 高亮：任一非空即激活"高亮模式"
+    const storeNodeSet = storeHighlightedNodeIds.length > 0
+      ? new Set(storeHighlightedNodeIds)
+      : null
+    const localSet = localHighlightedNodeIds
+    const hasAnyHighlight = storeNodeSet !== null || localSet !== null
+
     setNodes((prev) =>
       prev.map((n) => {
         const [type, id] = parseNodeId(n.id) as [NovelNodeType, string]
@@ -834,14 +473,71 @@ export function NovelCanvas({
           isPulsing && 'novel-node-pulsing',
           isCompact && 'novel-node-compact',
         )
-        // 邻居高亮：未选中时 opacity 1；选中时邻居 1，非邻居 0.2
-        const opacity = highlightedNodeIds === null ? 1 : (highlightedNodeIds.has(n.id) ? 1 : 0.2)
+        // 高亮模式下：在 localSet 或 storeNodeSet 中 opacity 1，否则 0.2
+        const isInHighlight =
+          (localSet?.has(n.id) ?? false) || (storeNodeSet?.has(n.id) ?? false)
+        const opacity = hasAnyHighlight ? (isInHighlight ? 1 : 0.2) : 1
         const currentOpacity = n.style?.opacity ?? 1
         if (n.selected === nextSelected && n.className === nextClassName && currentOpacity === opacity) return n
         return { ...n, selected: nextSelected, className: nextClassName, style: { ...n.style, opacity } }
       }),
     )
-  }, [selectedNodeId, selectedNodeType, setNodes, pulsingIds, isCompact, highlightedNodeIds])
+  }, [selectedNodeId, selectedNodeType, setNodes, pulsingIds, isCompact, localHighlightedNodeIds, storeHighlightedNodeIds])
+
+  // 同步 store 边高亮到 xyflow edges style
+  // 高亮的边：stroke 加粗 + 颜色 primary；非高亮：opacity 0.15
+  useEffect(() => {
+    if (storeHighlightedEdgeIds.length === 0) {
+      // 恢复默认（移除高亮 override）
+      setEdges((prev) =>
+        prev.map((e) => {
+          if (!e.data?.highlightOverride) return e
+          // 移除高亮 override，恢复原始 style
+          const { highlightOverride, ...restData } = e.data as any
+          const origStyle = (e.data as any)?.origStyle
+          return {
+            ...e,
+            style: origStyle ?? e.style,
+            data: restData,
+          }
+        }),
+      )
+      return
+    }
+    const highlightSet = new Set(storeHighlightedEdgeIds)
+    setEdges((prev) =>
+      prev.map((e) => {
+        const isHighlighted = highlightSet.has(e.id)
+        const alreadyHighlighted = (e.data as any)?.highlightOverride === true
+        if (isHighlighted && alreadyHighlighted) return e
+        if (!isHighlighted && !(e.data as any)?.highlightOverride) {
+          // 非高亮且未标记：只设置 opacity（保留原 stroke）
+          return {
+            ...e,
+            style: { ...e.style, opacity: 0.15 },
+            data: { ...e.data, highlightOverride: false, origStyle: e.style },
+          }
+        }
+        if (isHighlighted) {
+          return {
+            ...e,
+            style: {
+              ...e.style,
+              stroke: 'var(--color-primary)',
+              strokeWidth: 2.5,
+              opacity: 1,
+            },
+            data: { ...e.data, highlightOverride: true, origStyle: e.style },
+          }
+        }
+        // 非高亮但已被标记：降级 opacity
+        return {
+          ...e,
+          style: { ...e.style, opacity: 0.15 },
+        }
+      }),
+    )
+  }, [storeHighlightedEdgeIds, setEdges])
 
   // ── 边删除：调用 API + 更新 store + 移除 xyflow 边 ──
   // 手动边（data.edgeId 存在）调 API + 更新 store；自动边仅从 xyflow state 移除
@@ -902,22 +598,25 @@ export function NovelCanvas({
       // group 节点内部处理点击（展开/折叠），不参与选中
       if (type === 'group') return
       selectNode(id, type as NovelNodeType)
+      // 切换到本地点击高亮模式，清掉 store 的 toolbar 高亮
+      clearStoreHighlight()
       // 高亮邻居：当前节点 + 所有直接相连节点
       const neighbors = new Set<string>([node.id])
       edges.forEach((e) => {
         if (e.source === node.id) neighbors.add(e.target)
         if (e.target === node.id) neighbors.add(e.source)
       })
-      setHighlightedNodeIds(neighbors)
+      setLocalHighlightedNodeIds(neighbors)
     },
-    [selectNode, edges],
+    [selectNode, edges, clearStoreHighlight],
   )
 
   const handlePaneClick = useCallback(() => {
     clearSelection()
     setSelectedEdgeId(null)
-    setHighlightedNodeIds(null)
-  }, [clearSelection])
+    setLocalHighlightedNodeIds(null)
+    clearStoreHighlight()
+  }, [clearSelection, clearStoreHighlight])
 
   // 点击边：选中（用于键盘删除）；仅在画布内追踪，不污染 store 选中状态
   const handleEdgeClick = useCallback((_evt: ReactMouseEvent, edge: Edge) => {
@@ -977,9 +676,9 @@ export function NovelCanvas({
         /* 选中边：粗线 + 醒目强调色 + 轻微动画 */
         .novel-canvas .react-flow__edge.novel-edge-selected .react-flow__edge-path,
         .novel-canvas .react-flow__edge.selected .react-flow__edge-path {
-          stroke: #6366f1;
+          stroke: #4b3fe3;
           stroke-width: 3;
-          filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.5));
+          filter: drop-shadow(0 0 4px rgba(75, 63, 227, 0.5));
         }
       `}</style>
 
@@ -1052,7 +751,7 @@ export function NovelCanvas({
         phase={creationPhase}
         isRunning={creationRunning}
         error={creationError}
-        onCancel={() => onCancelCreation?.()}
+        onCancel={() => { void onCancelCreation?.() }}
       />
     </div>
   )

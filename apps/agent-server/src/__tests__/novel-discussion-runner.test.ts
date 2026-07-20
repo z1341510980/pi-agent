@@ -5,7 +5,6 @@ import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-stor
 import { PromptManager } from '../plugins/novel-plugin/core/prompt-manager.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
 import { NovelEngine } from '../plugins/novel-plugin/core/novel-engine.js'
-import { NovelSessionFactory } from '../plugins/novel-plugin/core/novel-session.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { NovelDiscussionRunner } from '../plugins/novel-plugin/core/novel-discussion-runner.js'
 import { TeamDiscussionEngine } from '../core/agent/team-discussion-engine.js'
@@ -65,8 +64,7 @@ describe('NovelDiscussionRunner', () => {
 
     const promptManager = new PromptManager(db, process.cwd())
     const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
-    const sessionFactory = new NovelSessionFactory(store, promptManager)
-    const engine = new NovelEngine(store, sessionFactory)
+    const engine = new NovelEngine(store)
     const mockContext = {
       createAgUiSession: vi.fn(),
       createSession: vi.fn(),
@@ -74,7 +72,7 @@ describe('NovelDiscussionRunner', () => {
     } as any
 
     const runner = new NovelDiscussionRunner(
-      store, memoryStore, sessionFactory, promptBuilder, engine, mockContext, {} as any,
+      store, memoryStore, promptBuilder, engine, mockContext, {} as any,
     )
 
     const members = (runner as any).buildMembers(project.id, 1)
@@ -110,8 +108,7 @@ describe('NovelDiscussionRunner', () => {
 
     const promptManager = new PromptManager(db, process.cwd())
     const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
-    const sessionFactory = new NovelSessionFactory(store, promptManager)
-    const engine = new NovelEngine(store, sessionFactory)
+    const engine = new NovelEngine(store)
     const mockContext = {
       createAgUiSession: vi.fn(),
       createSession: vi.fn(),
@@ -119,7 +116,7 @@ describe('NovelDiscussionRunner', () => {
     } as any
 
     const runner = new NovelDiscussionRunner(
-      store, memoryStore, sessionFactory, promptBuilder, engine, mockContext, {} as any,
+      store, memoryStore, promptBuilder, engine, mockContext, {} as any,
     )
     const prompt = (runner as any).buildCharacterPrompt(project.id, char)
     expect(prompt).toContain('李明')
@@ -128,7 +125,7 @@ describe('NovelDiscussionRunner', () => {
     expect(prompt).toContain('保护家人')
     expect(prompt).toContain('欠债')
     expect(prompt).toContain('挣扎')
-    expect(prompt).toContain('绝不使用破折号')
+    expect(prompt).toContain('绝不使用长横线破折号')
   })
 
   it('buildMembers 工种 Agent 注入群聊 role 身份段（含场景拆分/剧本编织约束）', () => {
@@ -147,8 +144,7 @@ describe('NovelDiscussionRunner', () => {
 
     const promptManager = new PromptManager(db, process.cwd())
     const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
-    const sessionFactory = new NovelSessionFactory(store, promptManager)
-    const engine = new NovelEngine(store, sessionFactory)
+    const engine = new NovelEngine(store)
     const mockContext = {
       createAgUiSession: vi.fn(),
       createSession: vi.fn(),
@@ -156,7 +152,7 @@ describe('NovelDiscussionRunner', () => {
     } as any
 
     const runner = new NovelDiscussionRunner(
-      store, memoryStore, sessionFactory, promptBuilder, engine, mockContext, {} as any,
+      store, memoryStore, promptBuilder, engine, mockContext, {} as any,
     )
 
     const members = (runner as any).buildMembers(project.id, 1)
@@ -203,8 +199,7 @@ describe('NovelDiscussionRunner', () => {
 
     const promptManager = new PromptManager(db, process.cwd())
     const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
-    const sessionFactory = new NovelSessionFactory(store, promptManager)
-    const engine = new NovelEngine(store, sessionFactory)
+    const engine = new NovelEngine(store)
     const mockContext = {
       createAgUiSession: vi.fn(),
       createSession: vi.fn(),
@@ -212,7 +207,7 @@ describe('NovelDiscussionRunner', () => {
     } as any
 
     const runner = new NovelDiscussionRunner(
-      store, memoryStore, sessionFactory, promptBuilder, engine, mockContext, {} as any,
+      store, memoryStore, promptBuilder, engine, mockContext, {} as any,
     )
 
     const members = (runner as any).buildMembers(project.id, 1)
@@ -267,12 +262,10 @@ describe('NovelDiscussionRunner', () => {
 
     const promptManager = new PromptManager(db, process.cwd())
     const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
-    const sessionFactory = new NovelSessionFactory(store, promptManager)
-    const engine = new NovelEngine(store, sessionFactory)
+    const engine = new NovelEngine(store)
     const runner = new NovelDiscussionRunner(
       store,
       memoryStore,
-      sessionFactory,
       promptBuilder,
       engine,
       {
@@ -360,12 +353,10 @@ describe('NovelDiscussionRunner', () => {
 
     const promptManager = new PromptManager(db, process.cwd())
     const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
-    const sessionFactory = new NovelSessionFactory(store, promptManager)
-    const engine = new NovelEngine(store, sessionFactory)
+    const engine = new NovelEngine(store)
     const runner = new NovelDiscussionRunner(
       store,
       memoryStore,
-      sessionFactory,
       promptBuilder,
       engine,
       {

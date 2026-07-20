@@ -32,6 +32,7 @@ function createStoresMock(store: NovelStore) {
     listEdges: (id: string) => store.listEdges(id),
     listFactions: (id: string) => store.listFactions(id),
     listLocations: (id: string) => store.listLocations(id),
+    listItems: (id: string) => store.listItems(id),
     listWorldElements: (id: string) => store.listWorldElements(id),
     listUnfulfilledHooksBefore: (id: string, before: number) => store.listUnfulfilledHooksBefore(id, before),
     listHooksByChapter: (id: string, chapter: number) => store.listHooksByChapter(id, chapter),
@@ -128,7 +129,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     expect(ctx).toContain('李四')
     expect(ctx).toContain('受伤')
     expect(ctx).toContain('本章必须出现的实体')
-    expect(ctx).toContain('矩阵执行验收')
+    // 矩阵执行验收已移至 Reviewer 专属 suffix（2026-07-18），不再注入共享 chapterContext
     expect(ctx).toContain('提供资源（交出地图）')
     expect(ctx).toContain('改变主角判断（揭示误判）')
   })

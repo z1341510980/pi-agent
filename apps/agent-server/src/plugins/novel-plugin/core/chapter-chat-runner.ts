@@ -342,11 +342,19 @@ export class ChapterChatRunner {
     return members
   }
 
-  /** 构建工种 Agent 的自由聊天 prompt */
+  /** 构建工种 Agent 的自由聊天 prompt
+   *
+   * ⚠️ 文风档案注入：必须用 buildAgentIdentity 而非只 buildSystemPrompt。
+   * 历史问题：本方法只调 buildSystemPrompt，导致 writer/reviser/reviewer 在
+   * "章节自由聊天"模式下完全看不到文风档案，用户反馈"文风档案没起作用"。
+   * buildSystemPrompt 是 STATIC 层（跨 Agent 共享，不含文风），
+   * buildAgentIdentity 才会把 compileWritingStylePrompt 的输出拼到 identity 后。
+   */
   private buildRolePrompt(agentType: NovelAgentType, projectId: string): string {
     const basePrompt = this.promptBuilder.buildSystemPrompt(projectId, agentType)
+    const identity = this.promptBuilder.buildAgentIdentity(projectId, agentType)
     const roleHint = `\n\n## 当前模式：章节自由聊天\n你正在与用户就当前章节进行自由对话。回答要简洁、聚焦，不要写小说正文，不要使用破折号"——"。`
-    return basePrompt + roleHint
+    return basePrompt + '\n\n---\n\n' + identity + roleHint
   }
 
   /** 构建角色成员 */

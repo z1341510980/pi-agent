@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { cn } from '@/lib/utils'
@@ -30,6 +30,7 @@ import {
   listFactions,
   listLocations,
   listWorldElements,
+  listItems,
   listEdges,
   listVolumes,
   listProjectCharacterHistory,
@@ -47,6 +48,7 @@ import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
 import { NovelConversationPanel, type NovelFlowType } from './novel-conversation-panel'
+import { ConsistencyAuditPanel } from './consistency-audit-panel'
 import type { MentionOption } from '@/components/shared/conversation'
 import { SimilarityScanPanel } from './similarity-scan-panel'
 import { CacheMonitorPanel } from './cache-monitor-panel'
@@ -194,6 +196,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const factions = useNovelDataStore((s) => s.factions)
   const locations = useNovelDataStore((s) => s.locations)
   const worldElements = useNovelDataStore((s) => s.worldElements)
+  const items = useNovelDataStore((s) => s.items)
   const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
   const viewMode = useNovelUiStore((s) => s.viewMode)
   const setViewMode = useNovelUiStore((s) => s.setViewMode)
@@ -219,9 +222,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [flowType, setFlowType] = useState<NovelFlowType>('workflow')
   // 保存实际启动的任务，而不是在重试时重新读取可能已经切换的 Tab。
   const [activeChapterTask, setActiveChapterTask] = useState<ChapterTaskSnapshot | null>(null)
-  // 右栏视图切换：对话面板（选流程+开始+消息流）/ 详情面板（节点详情）
+  // 右栏视图切换：对话面板（选流程+开始+消息流）/ 详情面板（节点详情）/ 审计面板（一致性报告）
   // 创作运行中自动锁定到对话面板，结束后用户可手动切回详情
-  const [rightPanelView, setRightPanelView] = useState<'conversation' | 'detail'>('conversation')
+  const [rightPanelView, setRightPanelView] = useState<'conversation' | 'detail' | 'audit'>('conversation')
   // 互斥锁：防止 header 按钮快速双击导致 creationMode 标记与流程实际启动状态错位
   // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
   const startCreationLockRef = useRef(false)
@@ -290,6 +293,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         facs,
         locs,
         wel,
+        its,
         eds,
         vols,
       ] = await Promise.all([
@@ -306,6 +310,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         listFactions(currentProjectId),
         listLocations(currentProjectId),
         listWorldElements(currentProjectId),
+        listItems(currentProjectId),
         listEdges(currentProjectId),
         listVolumes(currentProjectId),
       ])
@@ -323,6 +328,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         factions: facs,
         locations: locs,
         worldElements: wel,
+        items: its,
         edges: eds,
         volumes: vols,
       }
@@ -383,6 +389,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       factions,
       locations,
       worldElements,
+      items,
       exportedAt: new Date().toISOString(),
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
@@ -392,7 +399,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     a.download = `${currentProject.title || 'novel'}-export.json`
     a.click()
     URL.revokeObjectURL(url)
-  }, [currentProject, characters, chapters, conflicts, foreshadows, relationships, clues, worldRules, styleGuides, constraints, infoLayers, factions, locations, worldElements])
+  }, [currentProject, characters, chapters, conflicts, foreshadows, relationships, clues, worldRules, styleGuides, constraints, infoLayers, factions, locations, worldElements, items])
 
   // ── LLM 相似度扫描（SSE 流式扫描 + 多选弹框 + REST 合并）──
 
@@ -662,8 +669,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
   }, [currentProjectId, creationChapterNumber, chapters, upsertChapter, queryClient, creationFlow, chapterChatLoadHistory])
 
-  const handleDiscardCreation = useCallback(() => {
-    creationFlow.cancel()
+  const handleDiscardCreation = useCallback(async () => {
+    // 等待后端真实断开后再 reset，确保 chapterCreationLocks 被清理（避免 409）
+    await creationFlow.cancel()
     creationFlow.reset()
     if (currentProjectId) {
       void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
@@ -1017,6 +1025,25 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     <Info className="size-3" />
                     <span className="leading-none">详情</span>
                   </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={rightPanelView === 'audit' && !isCreationActive}
+                    onClick={() => !isCreationActive && setRightPanelView('audit')}
+                    disabled={isCreationActive}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                      'transition-all duration-200 ease-out active:scale-[0.96]',
+                      rightPanelView === 'audit' && !isCreationActive
+                        ? 'bg-surface-1 text-text shadow-sm'
+                        : 'text-subtle hover:text-text hover:bg-surface-1/50',
+                      'disabled:cursor-not-allowed disabled:opacity-50',
+                    )}
+                    title={isCreationActive ? '创作进行中，无法切换到审计' : '查看一致性审计报告'}
+                  >
+                    <ShieldCheck className="size-3" />
+                    <span className="leading-none">审计</span>
+                  </button>
                 </>
               ) : (
                 <div className="inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] bg-surface-1 text-text shadow-sm">
@@ -1097,6 +1124,27 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onAbortChapterChat={handleAbortChapterChat}
                         chatMentionOptions={chatMentionOptions}
                       />
+                    </ErrorBoundary>
+                  </motion.div>
+                ) : rightPanelView === 'audit' ? (
+                  <motion.div
+                    key="audit"
+                    className="h-full"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <ErrorBoundary
+                      fallback={(err, reset) => (
+                        <CreationErrorFallback
+                          error={err}
+                          reset={reset}
+                          onDiscardCreation={handleDiscardCreation}
+                        />
+                      )}
+                    >
+                      <ConsistencyAuditPanel />
                     </ErrorBoundary>
                   </motion.div>
                 ) : (

@@ -34,6 +34,7 @@ import type {
   NovelClue,
   NovelFaction,
   NovelLocation,
+  NovelItem,
   NovelRelationship,
   RelationChange,
   ArrangedEntity,
@@ -136,6 +137,11 @@ interface ConflictUpdateItem {
   // ── P2-1：冲突功能位 + 非线性推进 ──
   plotFunction?: string
   progressionMode?: string
+  // ── 071：推进粒度（类比 clueUpdates.currentStep/nextStep）──
+  // 让 memory-generator 能记录"本章冲突推进到哪一步"，避免下一章上下文仍输出
+  // 同一个粗 stage，导致 Writer/Director 反复验证同一个状态。
+  currentStep?: string
+  nextStep?: string
 }
 
 interface ConflictCreateItem {
@@ -147,6 +153,9 @@ interface ConflictCreateItem {
   // ── P2-1：冲突功能位 + 非线性推进 ──
   plotFunction?: string
   progressionMode?: string
+  // ── 071：推进粒度（新冲突可初始化本章已到达的进展点）──
+  currentStep?: string
+  nextStep?: string
 }
 
 interface RelationshipUpdateItem {
@@ -189,6 +198,31 @@ interface LocationUpdateItem {
   status?: string
 }
 
+// ── 物品：归属层状态变更 ──
+interface ItemUpdateItem {
+  /** 物品名（用于匹配已有物品） */
+  name?: string
+  /** 新持有者角色名（空字符串表示变为无主；undefined 表示不变更） */
+  ownerName?: string
+  /** 物品状态 */
+  status?: string
+  /** 物品能力/效果新描述 */
+  abilities?: string
+  /** 物品描述新内容 */
+  description?: string
+}
+
+interface ItemCreateItem {
+  name?: string
+  description?: string
+  type?: string
+  /** 持有者角色名（无主填空字符串） */
+  ownerName?: string
+  status?: string
+  abilities?: string
+  origin?: string
+}
+
 // ── v0.2：钩子兑现更新（标记上一章钩子 thrown→fulfilled）──
 interface HookUpdateItem {
   /** 钩子 ID 或描述关键词（用于匹配） */
@@ -227,6 +261,9 @@ interface MemoryUpdatePayload {
   // ── 四层逻辑②：关系层 Memory Agent 支持 ──
   relationshipUpdates?: RelationshipUpdateItem[]
   relationshipCreates?: RelationshipCreateItem[]
+  // ── 物品归属层 ──
+  itemUpdates?: ItemUpdateItem[]
+  itemCreates?: ItemCreateItem[]
   // ── v0.2：钩子兑现 + 角色弧光 ──
   hookUpdates?: HookUpdateItem[]
   arcStageChanges?: ArcStageChangeItem[]
@@ -248,6 +285,8 @@ export interface MemoryApplyStats {
   locationUpdatesApplied: number
   relationshipUpdatesApplied: number
   relationshipCreatesApplied: number
+  itemUpdatesApplied: number
+  itemCreatesApplied: number
   hookUpdatesApplied: number
   arcStageChangesApplied: number
   total: number
@@ -636,8 +675,8 @@ export class NovelMemoryGenerator {
     const conflicts = includeAll
       ? this.store.listConflicts(projectId)
       : this.store.listConflicts(projectId).filter((c) =>
-          arrangedConflictIds.has(c.id) || includesText(c.description.slice(0, 12)),
-        )
+        arrangedConflictIds.has(c.id) || includesText(c.description.slice(0, 12)),
+      )
     if (conflicts.length > 0) {
       parts.push('\n### 冲突')
       for (const c of conflicts) {
@@ -646,6 +685,10 @@ export class NovelMemoryGenerator {
           `intensity=${c.intensity}`,
           `plotFunction=${c.plotFunction ?? '(未指定)'}`,
           `progressionMode=${c.progressionMode ?? 'linear'}`,
+          // 071：把当前进展和下一步喂给 LLM，让它能识别"已经推进到哪了"
+          // 而不是看到粗 stage 后又重复输出同一个状态。
+          `currentStep=${c.currentStep || '(空)'}`,
+          `nextStep=${c.nextStep || '(空)'}`,
         ]
         parts.push(`- ${c.description.slice(0, 60)}（ID: ${c.id}）: ${fields.join(' | ')}`)
       }
@@ -709,6 +752,20 @@ export class NovelMemoryGenerator {
       parts.push('\n### 地点')
       for (const l of locations) {
         parts.push(`- ${l.name}（ID: ${l.id}）: status=${l.status}`)
+      }
+    }
+
+    // 物品（注入当前归属与状态，便于 Memory Agent 判断转手/损坏/封印等变更）
+    const arrangedItemIds = new Set(arranged?.itemIds ?? [])
+    const charNameById = new Map(allCharacters.map((c) => [c.id, c.name]))
+    const items = includeAll
+      ? this.store.listItems(projectId)
+      : this.store.listItems(projectId).filter((it) => arrangedItemIds.has(it.id) || includesText(it.name))
+    if (items.length > 0) {
+      parts.push('\n### 物品')
+      for (const it of items) {
+        const ownerName = it.ownerId ? (charNameById.get(it.ownerId) ?? it.ownerId) : '(无主)'
+        parts.push(`- ${it.name}（ID: ${it.id}）: type=${it.type} | owner=${ownerName} | status=${it.status} | abilities=${it.abilities || '(空)'}`)
       }
     }
 
@@ -1041,6 +1098,16 @@ export class NovelMemoryGenerator {
       if (item.progressionMode !== undefined) {
         patch.progressionMode = ensureString(item.progressionMode, '') as NovelConflict['progressionMode']
       }
+      // ── 071：推进粒度 ──
+      // currentStep 用本章正文真实推进点覆盖（如"已出现图案"）；
+      // nextStep 写入下章应推进方向（如"验证图案含义"）。
+      // 二者都允许传空串清空（避免 stale nextStep 长期残留）。
+      if (item.currentStep !== undefined) {
+        patch.currentStep = ensureString(item.currentStep, '')
+      }
+      if (item.nextStep !== undefined) {
+        patch.nextStep = ensureString(item.nextStep, '')
+      }
       if (Object.keys(patch).length === 0) continue
       this.store.updateConflict(conflict.id, patch)
       stats.conflictUpdatesApplied++
@@ -1078,6 +1145,9 @@ export class NovelMemoryGenerator {
         tier: 'secondary',
         plotFunction: item.plotFunction as NovelConflict['plotFunction'],
         progressionMode: item.progressionMode as NovelConflict['progressionMode'],
+        // 071：新冲突初始化推进粒度（若有）
+        currentStep: item.currentStep ? ensureString(item.currentStep, '') : '',
+        nextStep: item.nextStep ? ensureString(item.nextStep, '') : '',
       })
       stats.conflictCreatesApplied++
     }
@@ -1115,6 +1185,95 @@ export class NovelMemoryGenerator {
       if (Object.keys(patch).length === 0) continue
       this.store.updateLocation(location.id, patch)
       stats.locationUpdatesApplied++
+    }
+
+    // ── 物品更新（转手/状态变化/能力变化）──
+    const validItemStatuses = ['active', 'lost', 'destroyed', 'transformed', 'sealed', 'transferred']
+    for (const item of payload.itemUpdates ?? []) {
+      const existing = this.findItemByName(projectId, item.name)
+      if (!existing) {
+        this.context.logger.warn(
+          { name: item.name, projectId },
+          '记忆 Agent：未找到要更新的物品，跳过',
+        )
+        continue
+      }
+      const patch: Partial<NovelItem> = {}
+      // ownerName：空字符串表示变为无主；非空字符串按角色名解析为 ID
+      if (item.ownerName !== undefined) {
+        const ownerName = item.ownerName.trim()
+        if (ownerName === '') {
+          patch.ownerId = null
+        } else {
+          const owner = this.findCharacterByName(projectId, ownerName)
+          if (owner) {
+            patch.ownerId = owner.id
+          } else {
+            this.context.logger.warn(
+              { name: item.name, ownerName, projectId },
+              '记忆 Agent：物品转手但未找到新持有者角色，跳过 owner 变更',
+            )
+          }
+        }
+      }
+      if (item.status !== undefined) {
+        const s = ensureString(item.status, existing.status)
+        patch.status = (validItemStatuses.includes(s) ? s : existing.status) as NovelItem['status']
+      }
+      if (item.abilities !== undefined) patch.abilities = ensureString(item.abilities, existing.abilities)
+      if (item.description !== undefined) patch.description = ensureString(item.description, existing.description)
+      // 章节号 + chapterSpans 追加（与 locationStore 等保持一致的"自动追加本章"模式）
+      if (chapterNumber !== undefined && !existing.chapterSpans.some(([start, end]) => chapterNumber >= start && chapterNumber <= end)) {
+        patch.chapterSpans = [...existing.chapterSpans, [chapterNumber, chapterNumber] as [number, number]]
+          .sort((a, b) => a[0] - b[0])
+      }
+      if (Object.keys(patch).length === 0) continue
+      this.store.updateItem(existing.id, patch)
+      stats.itemUpdatesApplied++
+    }
+
+    // ── 物品创建 ──
+    const validItemTypes = ['weapon', 'armor', 'artifact', 'consumable', 'key', 'material', 'info', 'misc']
+    for (const item of payload.itemCreates ?? []) {
+      if (!item.name?.trim()) continue
+      // 防重复：按名匹配已有物品则跳过
+      if (this.findItemByName(projectId, item.name)) {
+        this.context.logger.warn(
+          { name: item.name, projectId },
+          '记忆 Agent：物品已存在，跳过创建（如需更新请用 itemUpdates）',
+        )
+        continue
+      }
+      // ownerId 解析：空字符串/无 ownerName → null；否则按角色名查找
+      let ownerId: string | null = null
+      const ownerName = (item.ownerName ?? '').trim()
+      if (ownerName !== '') {
+        const owner = this.findCharacterByName(projectId, ownerName)
+        if (owner) {
+          ownerId = owner.id
+        } else {
+          this.context.logger.warn(
+            { name: item.name, ownerName, projectId },
+            '记忆 Agent：新建物品但未找到持有者角色，物品按无主入库',
+          )
+        }
+      }
+      const typeRaw = ensureString(item.type, 'misc')
+      const statusRaw = ensureString(item.status, 'active')
+      this.store.createItem({
+        id: randomUUID(),
+        projectId,
+        name: item.name.trim(),
+        description: ensureString(item.description, ''),
+        type: (validItemTypes.includes(typeRaw) ? typeRaw : 'misc') as NovelItem['type'],
+        ownerId,
+        status: (validItemStatuses.includes(statusRaw) ? statusRaw : 'active') as NovelItem['status'],
+        abilities: ensureString(item.abilities, ''),
+        origin: ensureString(item.origin, ''),
+        firstChapter: chapterNumber ?? null,
+        chapterSpans: chapterNumber !== undefined ? [[chapterNumber, chapterNumber]] : [],
+      })
+      stats.itemCreatesApplied++
     }
 
     // ── 关系更新（四层逻辑②：让 Memory Agent 感知关系演变）──
@@ -1231,6 +1390,7 @@ export class NovelMemoryGenerator {
       + stats.conflictUpdatesApplied + stats.conflictCreatesApplied
       + stats.factionUpdatesApplied + stats.locationUpdatesApplied
       + stats.relationshipUpdatesApplied + stats.relationshipCreatesApplied
+      + stats.itemUpdatesApplied + stats.itemCreatesApplied
 
     // ── v0.2：应用钩子兑现更新 ──
     let hookUpdatesApplied = 0
@@ -1378,6 +1538,15 @@ export class NovelMemoryGenerator {
     return found
   }
 
+  private findItemByName(projectId: string, name?: string): NovelItem | undefined {
+    if (!name) return undefined
+    const items = this.store.listItems(projectId)
+    let found = items.find((it) => it.name === name)
+    if (found) return found
+    found = items.find((it) => it.name.includes(name) || name.includes(it.name))
+    return found
+  }
+
   private emptyStats(): MemoryApplyStats {
     return {
       characterUpdatesApplied: 0,
@@ -1392,6 +1561,8 @@ export class NovelMemoryGenerator {
       locationUpdatesApplied: 0,
       relationshipUpdatesApplied: 0,
       relationshipCreatesApplied: 0,
+      itemUpdatesApplied: 0,
+      itemCreatesApplied: 0,
       hookUpdatesApplied: 0,
       arcStageChangesApplied: 0,
       total: 0,

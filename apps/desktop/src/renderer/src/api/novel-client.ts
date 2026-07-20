@@ -18,7 +18,7 @@ import type {
   NovelProject, NovelChapter, NovelVolume, NovelCharacter,
   NovelRelationship, NovelForeshadow, NovelConflict, NovelClue,
   NovelWorldRule, NovelStyleGuide, NovelWritingStyleProfile, NovelWritingStyleProfileInput, NovelConstraint, NovelInformationLayer,
-  NovelFaction, NovelLocation, NovelWorldElement,
+  NovelFaction, NovelLocation, NovelWorldElement, NovelItem,
   NovelNodePosition, NovelEdge,
   NovelCharacterHistory, NovelMarker,
   NovelHook, NovelCharacterArc,
@@ -34,9 +34,16 @@ import type {
   NovelFactionType, NovelFactionStrength, NovelFactionStatus,
   NovelLocationType, NovelLocationSignificance, NovelLocationStatus,
   NovelWorldElementCategory, NovelEdgeType,
+  NovelItemType, NovelItemStatus,
   CharacterHistoryField, NovelMarkerType, NovelMarkerColor,
   SimilarityGroup,
   ChapterVersion, ChapterVersionSummary, ChapterVersionDiff, RollbackResult,
+  // 次级类型（PR-1 迁移）
+  NovelNodeType, PlotFunction,
+  CharacterGenerationProgressEvent,
+  GraphNode, GraphEdge, GraphPath, EntityChapterPresence,
+  ConsistencyReport,
+  ChapterChatRole, ChapterChatPhase, ChapterChatMessage,
 } from '@repo/shared/novel'
 
 // re-export 共享类型供外部消费者使用
@@ -48,10 +55,8 @@ const BASE = '/api/plugins/novel'
 
 // ── 前端独有类型 ──
 
-/** 冲突剧情功能位（前端别名，与后端 PlotFunction 七值枚举同义） */
-export type ConflictPlotFunction =
-  | 'provide_resource' | 'create_obstacle' | 'amplify_conflict'
-  | 'open_phase' | 'change_judgment' | 'advance_relationship' | 'reveal_world_rule'
+/** 冲突剧情功能位（转发别名，等同于共享包 PlotFunction 七值枚举） */
+export type ConflictPlotFunction = PlotFunction
 
 // ── 创建/更新载荷类型 ──
 
@@ -165,6 +170,9 @@ export interface CreateConflictInput {
   // ── P2-1：冲突功能位 + 非线性推进 ──
   plotFunction?: ConflictPlotFunction
   progressionMode?: ConflictProgressionMode
+  // ── 071：推进粒度（类比 clue.currentStep/nextStep，让 Writer 看到冲突真实推进点）──
+  currentStep?: string
+  nextStep?: string
 }
 
 export interface CreateClueInput {
@@ -280,6 +288,20 @@ export interface CreateLocationInput {
 
 export type UpdateLocationInput = Partial<CreateLocationInput>
 
+export interface CreateItemInput {
+  name: string
+  description?: string
+  type?: NovelItemType
+  ownerId?: string | null
+  status?: NovelItemStatus
+  abilities?: string
+  origin?: string
+  firstChapter?: number | null
+  chapterSpans?: Array<[number, number]>
+}
+
+export type UpdateItemInput = Partial<CreateItemInput>
+
 export interface CreateWorldElementInput {
   category: NovelWorldElementCategory
   name: string
@@ -292,11 +314,8 @@ export type UpdateWorldElementInput = Partial<CreateWorldElementInput>
 
 // ── 节点位置 ──
 
-export type NovelNodeTypeName =
-  | 'project' | 'character' | 'chapter'
-  | 'conflict' | 'foreshadow' | 'group'
-  | 'faction' | 'location' | 'world_element'
-  | 'info_layer'
+/** 节点类型名（转发别名，等同于共享包 NovelNodeType 10 值枚举） */
+export type NovelNodeTypeName = NovelNodeType
 
 export interface NodePositionInput {
   nodeType: NovelNodeTypeName
@@ -348,12 +367,7 @@ export interface AiGenerateCharacterInput {
   modelId?: string
 }
 
-/** 角色生成进度事件（镜像后端 CharacterGenerationProgressEvent） */
-export interface CharacterGenerationProgressEvent {
-  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
-  message: string
-  data?: unknown
-}
+// CharacterGenerationProgressEvent 已迁入 @repo/shared/novel 共享包（顶部 import）
 
 // ── Projects ──
 
@@ -733,6 +747,24 @@ export function deleteLocation(id: string): Promise<{ id: string; deleted: boole
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/locations/${id}`)
 }
 
+// ── Items ──
+
+export function listItems(projectId: string): Promise<NovelItem[]> {
+  return getApi<NovelItem[]>(`${BASE}/projects/${projectId}/items`)
+}
+
+export function createItem(projectId: string, input: CreateItemInput): Promise<NovelItem> {
+  return postApi<NovelItem>(`${BASE}/projects/${projectId}/items`, input)
+}
+
+export function updateItem(id: string, input: UpdateItemInput): Promise<NovelItem> {
+  return patchApi<NovelItem>(`${BASE}/items/${id}`, input)
+}
+
+export function deleteItem(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/items/${id}`)
+}
+
 // ── World Elements ──
 
 export function listWorldElements(projectId: string): Promise<NovelWorldElement[]> {
@@ -784,6 +816,53 @@ export function createEdge(projectId: string, input: CreateEdgeInput): Promise<N
 
 export function deleteEdge(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/edges/${id}`)
+}
+
+// ── Graph（统一关系查询层：聚合 edges + 派生边 + relationships）──
+// GraphNode/GraphEdge/GraphPath/EntityChapterPresence 已迁入 @repo/shared/novel 共享包（顶部 import）。
+
+export function listGraphNodes(projectId: string): Promise<GraphNode[]> {
+  return getApi<GraphNode[]>(`${BASE}/projects/${projectId}/graph/nodes`)
+}
+
+export function listGraphEdges(projectId: string): Promise<GraphEdge[]> {
+  return getApi<GraphEdge[]>(`${BASE}/projects/${projectId}/graph/edges`)
+}
+
+export function findGraphNeighbors(
+  entityId: string,
+  edgeTypes?: NovelEdgeType[],
+): Promise<GraphEdge[]> {
+  const qs = edgeTypes && edgeTypes.length > 0
+    ? `?edgeTypes=${encodeURIComponent(edgeTypes.join(','))}`
+    : ''
+  return getApi<GraphEdge[]>(`${BASE}/graph/neighbors/${entityId}${qs}`)
+}
+
+export function findGraphPath(
+  fromId: string,
+  toId: string,
+  maxDepth?: number,
+): Promise<GraphPath> {
+  const qs = maxDepth != null ? `?maxDepth=${maxDepth}` : ''
+  return getApi<GraphPath>(`${BASE}/graph/path/${fromId}/${toId}${qs}`)
+}
+
+export function findEntityChapters(
+  entityId: string,
+  entityType?: NovelNodeTypeName,
+): Promise<EntityChapterPresence> {
+  const qs = entityType ? `?entityType=${entityType}` : ''
+  return getApi<EntityChapterPresence>(`${BASE}/graph/entity-chapters/${entityId}${qs}`)
+}
+
+// ── Consistency Audit（跨章节一致性审计）──
+// ForeshadowAudit/HookAudit/OrphanEntityAudit/TimelineAudit/ConsistencyReport
+// 已迁入 @repo/shared/novel 共享包（顶部 import）。
+// 旧别名 ForeshadowStatusKey 已删除，请直接使用 ForeshadowStatus。
+
+export function getConsistencyReport(projectId: string): Promise<ConsistencyReport> {
+  return getApi<ConsistencyReport>(`${BASE}/projects/${projectId}/consistency-report`)
 }
 
 // ── AI Character Generation ──
@@ -893,6 +972,9 @@ export interface GeneratedConflictFields {
   // ── P2-1：冲突功能位 + 非线性推进 ──
   plotFunction?: ConflictPlotFunction
   progressionMode?: ConflictProgressionMode
+  // ── 071：推进粒度（AI 生成冲突时可初始化推进点）──
+  currentStep?: string
+  nextStep?: string
 }
 
 export interface GeneratedForeshadowFields {
@@ -1108,58 +1190,28 @@ export async function aiArrangeFlow(
     throw new Error('响应体为空，无法读取 SSE 流')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
+  // 后端发射 AG-UI 事件：CUSTOM(novel:progress/novel:checkpoint/novel:result) + RUN_ERROR
+  // 与 aiGenerateCharacter/aiGenerateEntity/sendChapterChat 共用同一个 parseSseStream。
   try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-
-      // SSE 以双换行分隔事件块
-      let newlineIdx: number
-      while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
-        const rawEvent = buffer.slice(0, newlineIdx)
-        buffer = buffer.slice(newlineIdx + 2)
-
-        // 解析事件块中的 data: 行（忽略注释行 ": keepalive"）
-        const dataLines = rawEvent
-          .split('\n')
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trim())
-
-        if (dataLines.length === 0) continue
-
-        let payload: { type: string; data?: unknown; error?: string } | null = null
-        try {
-          payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
-        } catch {
-          continue
+    await parseSseStream(response.body, (event) => {
+      if (event.type === 'CUSTOM') {
+        const custom = event as { type: 'CUSTOM'; name: string; value: unknown }
+        if (custom.name === 'novel:progress') {
+          options.onProgress?.(custom.value)
+        } else if (custom.name === 'novel:checkpoint') {
+          options.onCheckpoint?.(custom.value)
+        } else if (custom.name === 'novel:result') {
+          options.onResult?.(custom.value)
         }
-        if (!payload) continue
-
-        if (payload.type === 'progress') {
-          options.onProgress?.(payload.data)
-        } else if (payload.type === 'checkpoint') {
-          options.onCheckpoint?.(payload.data)
-        } else if (payload.type === 'result') {
-          options.onResult?.(payload.data)
-        } else if (payload.type === 'error') {
-          options.onError?.(payload.error ?? 'AI 编排失败')
-        }
+      } else if (event.type === 'RUN_ERROR') {
+        const errEvent = event as { type: 'RUN_ERROR'; message: string }
+        options.onError?.(errEvent.message ?? 'AI 编排失败')
       }
-    }
+    })
   } catch (err) {
     // 用户主动取消（abort）静默处理，不抛出
     if (options?.signal?.aborted) return
     throw err
-  } finally {
-    try {
-      await reader.cancel()
-    } catch { /* reader 已关闭则忽略 */ }
   }
 }
 
@@ -1193,53 +1245,24 @@ export async function reverseArrangeFlow(
     throw new Error('响应体为空，无法读取 SSE 流')
   }
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
+  // 反推无 checkpoint 事件，其余 SSE 事件格式与 aiArrangeFlow 一致。
   try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-
-      let newlineIdx: number
-      while ((newlineIdx = buffer.indexOf('\n\n')) >= 0) {
-        const rawEvent = buffer.slice(0, newlineIdx)
-        buffer = buffer.slice(newlineIdx + 2)
-
-        const dataLines = rawEvent
-          .split('\n')
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trim())
-
-        if (dataLines.length === 0) continue
-
-        let payload: { type: string; data?: unknown; error?: string } | null = null
-        try {
-          payload = JSON.parse(dataLines.join('\n')) as { type: string; data?: unknown; error?: string }
-        } catch {
-          continue
+    await parseSseStream(response.body, (event) => {
+      if (event.type === 'CUSTOM') {
+        const custom = event as { type: 'CUSTOM'; name: string; value: unknown }
+        if (custom.name === 'novel:progress') {
+          options.onProgress?.(custom.value)
+        } else if (custom.name === 'novel:result') {
+          options.onResult?.(custom.value)
         }
-        if (!payload) continue
-
-        if (payload.type === 'progress') {
-          options.onProgress?.(payload.data)
-        } else if (payload.type === 'result') {
-          options.onResult?.(payload.data)
-        } else if (payload.type === 'error') {
-          options.onError?.(payload.error ?? '反推实体失败')
-        }
+      } else if (event.type === 'RUN_ERROR') {
+        const errEvent = event as { type: 'RUN_ERROR'; message: string }
+        options.onError?.(errEvent.message ?? '反推实体失败')
       }
-    }
+    })
   } catch (err) {
     if (options?.signal?.aborted) return
     throw err
-  } finally {
-    try {
-      await reader.cancel()
-    } catch { /* reader 已关闭则忽略 */ }
   }
 }
 
@@ -1362,37 +1385,7 @@ export function listCharacterArcs(projectId: string): Promise<NovelCharacterArc[
 }
 
 // ── 章节聊天（按章节持久化用户输入 + 自由聊天） ──
-
-/** 章节聊天消息阶段 */
-export type ChapterChatPhase = 'pre_creation' | 'checkpoint' | 'discussion' | 'free_chat' | 'review'
-
-/** 章节聊天消息角色 */
-export type ChapterChatRole = 'user' | 'agent' | 'system'
-
-/** 章节聊天消息（与后端 ChapterChatMessage 对齐） */
-export interface ChapterChatMessage {
-  id: string
-  projectId: string
-  chapterNumber: number
-  role: ChapterChatRole
-  fromId: string
-  fromName: string
-  content: string
-  phase: ChapterChatPhase
-  metadata?: {
-    checkpointId?: string
-    decision?: string
-    agentType?: string
-    mentionedAgents?: string[]
-    flowMode?: 'workflow' | 'discussion'
-    discussionRunId?: string
-    discussionMessageType?: string
-    discussionRunStatus?: 'completed' | 'cancelled' | 'error'
-    discussionCanResume?: boolean
-    sceneId?: number
-  }
-  createdAt: number
-}
+// ChapterChatRole/ChapterChatPhase/ChapterChatMessage 已迁入 @repo/shared/novel 共享包（顶部 import）。
 
 /** 获取章节聊天历史（按时间升序） */
 export function listChapterChat(

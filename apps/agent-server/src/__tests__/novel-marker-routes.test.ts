@@ -5,6 +5,8 @@ import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { PromptManager } from '../plugins/novel-plugin/core/prompt-manager.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
+import { ConsistencyAuditor } from '../plugins/novel-plugin/core/consistency-auditor.js'
+import { RelationshipGraph } from '../plugins/novel-plugin/core/novel-relationship-graph.js'
 import { createNovelRoutes } from '../plugins/novel-plugin/novel-routes.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import type { NovelServices } from '../plugins/novel-plugin/novel-services.js'
@@ -26,16 +28,8 @@ function makeMockServices(): NovelServices {
     memoryStore,
     promptManager,
     promptBuilder,
-    sessionFactory: {
-      buildSystemPrompt: () => 'mock-system-prompt',
-      buildChapterContext: () => 'mock-chapter-context',
-      getNovelTools: () => [],
-      logSystemPromptHash: () => 'mock-hash',
-      logChapterContextHash: () => 'mock-hash',
-      store,
-      promptManager,
-      promptBuilder,
-    } as any,
+    relationshipGraph: new RelationshipGraph(store, memoryStore),
+    consistencyAuditor: new ConsistencyAuditor(store),
     engine: {
       createChapter: vi.fn(),
       completeChapter: vi.fn(),
@@ -54,12 +48,6 @@ function makeMockServices(): NovelServices {
     } as any,
     similarityScanner: {
       scan: vi.fn(),
-    } as any,
-    agentConfigStore: {
-      getAll: vi.fn(() => []),
-      getByType: vi.fn(() => ({ agentType: 'writer', temperature: 0.7 })),
-      upsert: vi.fn(),
-      upsertMany: vi.fn(),
     } as any,
     confirmationManager: {
       requestDecision: vi.fn(),

@@ -24,7 +24,6 @@
 
 import { randomUUID } from 'node:crypto'
 import type { NovelStore } from './novel-store.js'
-import type { NovelSessionFactory } from './novel-session.js'
 import type {
   NovelProject,
   NovelChapter,
@@ -51,7 +50,6 @@ export interface ChapterCreationResult {
 export class NovelEngine {
   constructor(
     private store: NovelStore,
-    private sessionFactory: NovelSessionFactory,
   ) {}
 
   /**
@@ -124,11 +122,12 @@ export class NovelEngine {
         const noSpans = conflict.chapterSpans.length === 0
         if (!inSpan && !isClimaxChapter && !noSpans) continue
 
+        const targetStage = this.computeConflictTargetStage(conflict, chapterNumber)
         conflictTargets.push({
           conflict,
-          targetStage: this.computeConflictTargetStage(conflict, chapterNumber),
+          targetStage,
           intensityDelta: this.computeIntensityDelta(
-            isClimaxChapter, rhythmSuggestion,
+            isClimaxChapter, rhythmSuggestion, conflict.stage, targetStage,
           ),
           isClimax: isClimaxChapter,
         })
@@ -403,7 +402,32 @@ export class NovelEngine {
   private computeIntensityDelta(
     isClimax: boolean,
     rhythmSuggestion?: RhythmSuggestion,
+    currentStage?: ConflictStage,
+    targetStage?: ConflictStage,
   ): number {
+    // 跨阶段推进必须有强度变化，否则 Director 会看到"目标阶段 erupting 但强度变化 0"的矛盾
+    // 修复（2026-07-18）：原实现只按 rhythm 推断，忽略了 stage 跨阶需要强度变化。
+    // 若 currentStage !== targetStage，至少 +2（跨阶段推进的最低强度增量）。
+    if (currentStage && targetStage && currentStage !== targetStage) {
+      const progression: ConflictStage[] = [
+        'latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved',
+      ]
+      const currentIdx = progression.indexOf(currentStage)
+      const targetIdx = progression.indexOf(targetStage)
+      if (currentIdx !== -1 && targetIdx !== -1) {
+        const stageDelta = targetIdx - currentIdx
+        // 前进 N 阶：强度 +N*2（最低 +2，最高 +10）
+        if (stageDelta > 0) {
+          return Math.min(10, Math.max(2, stageDelta * 2))
+        }
+        // 后退 N 阶（regression/reversal 模式）：强度 -N*2
+        if (stageDelta < 0) {
+          return Math.max(-10, stageDelta * 2)
+        }
+      }
+    }
+
+    // 同阶段（stagnation 或未跨阶）：按节奏推断
     if (isClimax) return 3
     const rhythm = rhythmSuggestion?.rhythm
     if (rhythm === 'climax') return 2
@@ -451,16 +475,8 @@ export class NovelEngine {
       positioning: narrativeTask.positioning ?? null,
     })
 
-    // 3. 触发约束构建以保持副作用一致（部分约束会写入 store）
-    const config = {
-      projectId,
-      agentType: 'writer',
-      chapterNumber,
-      narrativeTask,
-      constraints,
-    }
-    this.sessionFactory.buildSystemPrompt(config)
-    this.sessionFactory.buildChapterContext(config)
+    // 注：原此处调用 sessionFactory.buildSystemPrompt/buildChapterContext 以"触发约束构建副作用"，
+    // 但 prompt-builder 实现是纯读取（无 store 写入），属于历史遗留死代码，已删除。
 
     return chapter
   }

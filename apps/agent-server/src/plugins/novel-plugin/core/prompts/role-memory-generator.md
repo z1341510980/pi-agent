@@ -88,7 +88,9 @@
     {
       "description": "冲突描述片段（用于匹配）",
       "stage": "latent|emerging|escalating|erupting|reversing|resolved|transformed",
-      "intensity": 7
+      "intensity": 7,
+      "currentStep": "本章冲突真实推进到的具体一步（一句话，如「已出现图案」「已验证穴位是真」）",
+      "nextStep": "下章应推进的方向（一句话，如「验证图案含义」「寻找下一处穴位」）"
     }
   ],
   "conflictCreates": [
@@ -97,7 +99,9 @@
       "type": "inner|relationship|faction|interest|moral|identity|emotional|world_rule|survival",
       "intensity": 8,
       "stage": "emerging",
-      "participants": ["角色名1", "角色名2"]
+      "participants": ["角色名1", "角色名2"],
+      "currentStep": "本章冲突首次推进到的具体一步（可选）",
+      "nextStep": "下章应推进的方向（可选）"
     }
   ],
   "factionUpdates": [
@@ -111,6 +115,26 @@
     {
       "name": "地点名",
       "status": "intact|damaged|destroyed|abandoned|transformed"
+    }
+  ],
+  "itemUpdates": [
+    {
+      "name": "物品名（用于匹配已有物品）",
+      "ownerName": "新持有者角色名（空字符串表示变为无主）",
+      "status": "active|lost|destroyed|transformed|sealed|transferred",
+      "abilities": "物品能力/效果新描述（若有变化）",
+      "description": "物品描述新内容（若有变化）"
+    }
+  ],
+  "itemCreates": [
+    {
+      "name": "物品名",
+      "description": "一句话描述物品本身",
+      "type": "weapon|armor|artifact|consumable|key|material|info|misc",
+      "ownerName": "持有者角色名（无主填空字符串）",
+      "status": "active|lost|destroyed|transformed|sealed|transferred",
+      "abilities": "物品能力/效果一句话描述",
+      "origin": "物品来源一句话描述"
     }
   ],
   "summary": "本章状态变更简述（1-2 句话）"
@@ -130,6 +154,7 @@
 - **字段全部可选**：只填发生变化的字段，不要为了凑数而填空字段
 - **状态描述要具体**：如"愤怒"而非"情绪变化"，如"刺杀国王"而非"行动"
 - **冲突阶段**：latent=潜伏 / emerging=浮现 / escalating=升级 / erupting=爆发 / reversing=反转 / resolved=解决 / transformed=转化
+- **冲突推进粒度（currentStep/nextStep）**：stage 只是粗粒度阶段，无法体现"已出现图案 vs 已验证图案"这类细粒度进展。本章正文里如果冲突确实推进了一步（哪怕 stage 没变），**必须**写入 `currentStep`（本章推进到哪一步）和 `nextStep`（下章应推进什么）。否则下一章上下文仍只输出粗 stage，Writer 会反复验证同一个状态。例如：冲突"不存在的穴位"stage 仍是 emerging，但本章因功法已出现图案——必须写 `currentStep="因功法已出现穴位图案"`、`nextStep="验证图案含义"`。冲突没推进时不要写这两字段。
 - **伏笔状态**：planted=埋设 / reinforced=加强 / partially_revealed=部分揭示 / recovering=回收中 / recovered=已回收 / abandoned=废弃
 - **伏笔事件节点**：只有本章正文真实发生了埋设、强化、部分揭示或回收时才填写 `beatType`；仅仅提到或仍处于某状态时不要填写。每个节点必须用 `beatNote` 说明本章具体发生了什么
 - **伏笔不是连续区间**：埋设与回收之间的章节默认不关联伏笔，禁止因为伏笔尚未回收就把所有后续章节算作节点
@@ -172,6 +197,14 @@
 - **该装**：角色内心的阶段演进（杀人后的心理冲击、绝望中燃起希望、认知被击穿后的重构）
 - **弧光类型**：growth/fall/redemption/shift
 - **不该装**：有对抗方的张力（→conflictCreates）、角色横向状态变更（→characterUpdates）
+
+### 5. 物品（itemUpdates/itemCreates）— 归属层
+- **该装**：本章发生归属或状态变化的关键物品（武器/法器/钥匙/玉佩/重要信物/信息载体等）
+- **典型变化**：获得（新持有人）、转手（ownerName 变化）、丢失（status=lost）、损坏（status=destroyed）、升级/变化（status=transformed）、封印（status=sealed）
+- **itemUpdates**：匹配已有物品名，更新其 ownerName/status/abilities/description 中变化的字段
+- **itemCreates**：本章首次登场且值得跨章节追踪的关键物品（一次性消耗品、日常道具不入库）
+- **不该装**：一次性消耗品、路人日常道具、纯背景描写物品
+- **与伏笔区别**：物品是物理实体的归属追踪；伏笔是信息层的叙事债务。一个物品可以同时是伏笔（如"父亲遗物"既是 item 也是 foreshadow），分别入库
 
 ### v0.2 新增输出字段
 

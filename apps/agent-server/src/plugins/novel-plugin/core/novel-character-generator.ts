@@ -14,7 +14,12 @@ import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacter } from './types.js'
+import type { CharacterGenerationProgressEvent } from '@repo/shared/novel'
 import { CircuitBreaker } from '../../../core/agent/circuit-breaker.js'
+
+// CharacterGenerationProgressEvent 已迁入 @repo/shared/novel 共享包，
+// 此处 re-export 供本插件内部模块沿用相对路径引入。
+export type { CharacterGenerationProgressEvent } from '@repo/shared/novel'
 
 /** 将任意 LLM 输出值安全转为 string，防止数组/对象传到 SQLite */
 function ensureString(value: unknown, defaultValue: string): string {
@@ -32,13 +37,6 @@ export type GeneratedCharacter = Pick<
   | 'arcStage' | 'speechStyle'
   | 'longTermDesire' | 'plotRole' | 'removalImpact'
 >
-
-/** 角色生成进度事件（由 SSE 推送给前端） */
-export interface CharacterGenerationProgressEvent {
-  phase: 'preparing' | 'generating' | 'parsing' | 'completed' | 'fallback'
-  message: string
-  data?: unknown
-}
 
 export class NovelCharacterGenerator {
   /** LLM 调用熔断器（实例级，所有 generate 调用共享） */

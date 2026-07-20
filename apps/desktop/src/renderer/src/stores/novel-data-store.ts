@@ -19,6 +19,7 @@ import type {
   NovelFaction,
   NovelLocation,
   NovelWorldElement,
+  NovelItem,
   NovelEdge,
   NovelMarker,
   NovelVolume,
@@ -45,6 +46,7 @@ export interface NovelDataState {
   factions: NovelFaction[]
   locations: NovelLocation[]
   worldElements: NovelWorldElement[]
+  items: NovelItem[]
   nodePositions: NovelNodePosition[]
   characterHistory: NovelCharacterHistory[]
   edges: NovelEdge[]
@@ -68,6 +70,7 @@ export interface NovelDataState {
     factions?: NovelFaction[]
     locations?: NovelLocation[]
     worldElements?: NovelWorldElement[]
+    items?: NovelItem[]
     edges?: NovelEdge[]
     markers?: NovelMarker[]
   }) => void
@@ -89,6 +92,7 @@ export interface NovelDataState {
   upsertFaction: (faction: NovelFaction) => void
   upsertLocation: (location: NovelLocation) => void
   upsertWorldElement: (element: NovelWorldElement) => void
+  upsertItem: (item: NovelItem) => void
 
   // ── 实体删除 ──
   removeProject: (id: string) => void
@@ -100,6 +104,7 @@ export interface NovelDataState {
   removeFaction: (id: string) => void
   removeLocation: (id: string) => void
   removeWorldElement: (id: string) => void
+  removeItem: (id: string) => void
   removeInfoLayer: (id: string) => void
 
   // ── 节点位置 ──
@@ -196,6 +201,7 @@ function emptyEntities() {
     factions: [],
     locations: [],
     worldElements: [],
+    items: [],
     edges: [],
     characterHistory: [],
     nodePositions: [],
@@ -229,6 +235,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         factions: [],
         locations: [],
         worldElements: [],
+        items: [],
         nodePositions: [],
         characterHistory: [],
         edges: [],
@@ -282,6 +289,7 @@ export const useNovelDataStore = create<NovelDataState>()(
               factions: mergeListById(state.factions, data.factions, pid),
               locations: mergeListById(state.locations, data.locations, pid),
               worldElements: mergeListById(state.worldElements, data.worldElements, pid),
+              items: mergeListById(state.items, data.items, pid),
               edges: data.edges ?? state.edges,
               markers: data.markers ?? state.markers,
             }
@@ -312,6 +320,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         upsertFaction: (faction) => set((state) => ({ factions: upsertInList(state.factions, faction) })),
         upsertLocation: (location) => set((state) => ({ locations: upsertInList(state.locations, location) })),
         upsertWorldElement: (element) => set((state) => ({ worldElements: upsertInList(state.worldElements, element) })),
+        upsertItem: (item) => set((state) => ({ items: upsertInList(state.items, item) })),
 
         // ── remove ──
         removeProject: (id) =>
@@ -335,6 +344,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         removeFaction: (id) => set((state) => ({ factions: removeFromList(state.factions, id) })),
         removeLocation: (id) => set((state) => ({ locations: removeFromList(state.locations, id) })),
         removeWorldElement: (id) => set((state) => ({ worldElements: removeFromList(state.worldElements, id) })),
+        removeItem: (id) => set((state) => ({ items: removeFromList(state.items, id) })),
         removeInfoLayer: (id) => set((state) => ({ infoLayers: removeFromList(state.infoLayers, id) })),
 
         // ── 节点位置 ──
@@ -419,6 +429,7 @@ export const useNovelDataStore = create<NovelDataState>()(
           factions: state.factions,
           locations: state.locations,
           worldElements: state.worldElements,
+          items: state.items,
           nodePositions: state.nodePositions,
           characterHistory: state.characterHistory,
           edges: state.edges,
@@ -447,6 +458,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         factions: state.factions,
         locations: state.locations,
         worldElements: state.worldElements,
+        items: state.items,
         nodePositions: state.nodePositions,
         characterHistory: state.characterHistory,
         edges: state.edges,

@@ -58,7 +58,7 @@ describe('NovelEngine chapter constraint relevance', () => {
         }),
       ],
     }
-    const engine = new NovelEngine(store as never, {} as never)
+    const engine = new NovelEngine(store as never)
 
     const result = engine.buildChapterConstraints('project-1', 10)
 
@@ -87,7 +87,7 @@ describe('NovelEngine chapter constraint relevance', () => {
         { id: 'ignored-conflict', stage: 'rising', chapterSpans: [], climaxChapter: null, intensity: 9 },
       ],
     }
-    const engine = new NovelEngine(store as never, {} as never)
+    const engine = new NovelEngine(store as never)
 
     const result = engine.buildChapterConstraints(
       'project-1', 10, undefined, null,

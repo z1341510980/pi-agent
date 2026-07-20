@@ -6,20 +6,18 @@
  * - NovelMemoryStore：长期记忆分层存储（事件 + 快照 + 因果链）
  * - PromptManager：提示词模板管理器（三级覆盖）
  * - NovelPromptBuilder：缓存优化的提示词构建器
- * - NovelSessionFactory：Session 工厂（集成 Pi SDK）
  * - NovelEngine：核心引擎（流程编排）
  * - NovelOrchestrator：多 Agent 编排引擎（Director → Writer → Reviewer → Reviser → Memory）
  * - NovelCharacterGenerator：AI 角色生成器
  * - tools：Pi Session 自定义工具集
  *
- * 依赖关系（与原 novel.plugin.ts 保持一致）：
+ * 依赖关系：
  * - NovelStore 依赖 db
  * - NovelMemoryStore 依赖 db
  * - PromptManager 依赖 db + cwd
- * - NovelPromptBuilder 依赖 PromptManager + NovelStore
- * - NovelSessionFactory 依赖 NovelStore + PromptManager
- * - NovelEngine 依赖 NovelStore + NovelSessionFactory
- * - NovelOrchestrator 依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext
+ * - NovelPromptBuilder 依赖 PromptManager + NovelStore + NovelMemoryStore + RelationshipGraph + ConsistencyAuditor
+ * - NovelEngine 依赖 NovelStore
+ * - NovelOrchestrator 依赖 NovelStore + NovelMemoryStore + tools + NovelPromptBuilder + NovelEngine + PluginContext + NovelMemoryGenerator
  * - NovelCharacterGenerator 依赖 NovelPromptBuilder + PromptManager + PluginContext
  * - createNovelTools 依赖 NovelStore
  */
@@ -27,7 +25,6 @@
 import { NovelStore } from './core/novel-store.js'
 import { PromptManager } from './core/prompt-manager.js'
 import { NovelPromptBuilder } from './core/prompt-builder.js'
-import { NovelSessionFactory } from './core/novel-session.js'
 import { NovelEngine } from './core/novel-engine.js'
 import { createNovelTools } from './core/novel-tools.js'
 import { NovelOrchestrator } from './core/novel-orchestrator.js'
@@ -36,12 +33,13 @@ import { NovelEntityGenerator } from './core/novel-entity-generator.js'
 import { NovelMemoryGenerator } from './core/novel-memory-generator.js'
 import { NovelSimilarityScanner } from './core/novel-similarity-scanner.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
-import { NovelAgentConfigStore } from './core/novel-agent-config-store.js'
 import { NovelDiscussionRunner } from './core/novel-discussion-runner.js'
 import { ChapterChatRunner } from './core/chapter-chat-runner.js'
 import { ChapterChatStore } from './core/chapter-chat-store.js'
 import { DiscussionRunStore } from './core/discussion-run-store.js'
 import { DiscussionSettingsStore } from '../../core/agent/discussion-settings-store.js'
+import { ConsistencyAuditor } from './core/consistency-auditor.js'
+import { RelationshipGraph } from './core/novel-relationship-graph.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { AgentManager } from '../../core/agent/subagent-tool.js'
@@ -53,7 +51,16 @@ export interface NovelServices {
   memoryStore: NovelMemoryStore
   promptManager: PromptManager
   promptBuilder: NovelPromptBuilder
-  sessionFactory: NovelSessionFactory
+  /**
+   * 统一关系图查询层（聚合 edges + JSON 派生 + relationships）
+   * 与 novel-routes 共享同一实例，避免重复实例化
+   */
+  relationshipGraph: RelationshipGraph
+  /**
+   * 跨章节一致性审计器（伏笔/钩子/孤儿实体/时间线）
+   * 与 novel-routes 共享同一实例，避免重复实例化
+   */
+  consistencyAuditor: ConsistencyAuditor
   engine: NovelEngine
   orchestrator: NovelOrchestrator
   characterGenerator: NovelCharacterGenerator
@@ -61,8 +68,6 @@ export interface NovelServices {
   /** LLM 驱动的相似实体扫描器（语义相似去重，与 deduplicateEntities 互补） */
   similarityScanner: NovelSimilarityScanner
   tools: ToolDefinition[]
-  /** 小说角色温度配置存储 */
-  agentConfigStore: NovelAgentConfigStore
   /**
    * TeamManager（可选，由 teamPlugin 提供）
    * 当 teamPlugin 已注册且 plugin-loader 完成注入时可用，
@@ -113,37 +118,47 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 3. 创建 PromptManager（依赖 db + cwd）
   const promptManager = new PromptManager(db, cwd)
 
+  // 3.5 创建统一关系图查询层 + 跨章节一致性审计器
+  //     提升到 services 层供 novel-routes 与 NovelPromptBuilder 共享同一实例：
+  //     - RelationshipGraph：让 prompt 注入派生边（冲突参与/势力敌对/盟友/地点归属等）
+  //     - ConsistencyAuditor：让 prompt 注入跨章一致性报告（孤儿实体/悬挂钩子/时间线）
+  //     C3 prompt 增强核心依赖
+  const relationshipGraph = new RelationshipGraph(store, memoryStore)
+  const consistencyAuditor = new ConsistencyAuditor(store)
+
   // 4. 创建 NovelPromptBuilder（依赖 PromptManager + NovelStore + NovelMemoryStore）
   //    注入 memoryStore 让 buildChapterContext 在 SEMI 层追加"近期因果链"摘要，
   //    Director/Writer/Reviewer 因此能感知最近章节关键事件的因果联系。
-  const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
+  //    注入 relationshipGraph + consistencyAuditor（C3 prompt 增强）：
+  //    - relationshipGraph 让 formatEdges 拿到派生边（冲突→角色、势力→盟友等 7 类）
+  //    - consistencyAuditor 让 formatUrgentForeshadows 去重本地计算，并新增"跨章一致性"section
+  const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore, relationshipGraph, consistencyAuditor)
 
-  // 5. 创建 NovelSessionFactory（复用共享的 store 和 promptManager）
-  const sessionFactory = new NovelSessionFactory(store, promptManager)
+  // 5. 创建 NovelEngine（依赖 NovelStore）
+  //    原 NovelSessionFactory 已删除（薄封装空壳）：
+  //    - promptBuilder 直接由外部共享实例使用（避免 factory 内部 new 出"残缺版"实例）
+  //    - novelTools 通过 createNovelTools(store) 创建后直接注入 orchestrator
+  const engine = new NovelEngine(store)
 
-  // 6. 创建 NovelEngine（依赖 NovelStore + NovelSessionFactory）
-  const engine = new NovelEngine(store, sessionFactory)
+  // 6. 创建 Pi Session 工具集（依赖 NovelStore）
+  //    提前到 orchestrator 之前：orchestrator 需要它替代原 sessionFactory.getNovelTools()
+  const tools = createNovelTools(store)
 
-  // 6.5 创建小说角色温度配置存储（薄封装 AgentManager，依赖 db + agentManager）
-  //     先于 orchestrator 创建：orchestrator 在 runAgent 中读取它以合并温度
-  //     注：agentManager 可能为 undefined（subagentPlugin 未注册时），
-  //         NovelAgentConfigStore 内部会回退到 NOVEL_AGENT_CONFIGS 默认值
-  const agentConfigStore = new NovelAgentConfigStore(db, agentManager)
-
-  // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + NovelSessionFactory + NovelPromptBuilder + NovelEngine + PluginContext + NovelAgentConfigStore + NovelMemoryGenerator）
+  // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + novelTools + NovelPromptBuilder + NovelEngine + PluginContext + NovelMemoryGenerator）
   //    PluginContext.createSession 用于 runAgent 调用 LLM
-  //    agentConfigStore 用于 runAgent 中按角色合并温度并传入 createSession
+  //    novelTools 替代原 sessionFactory.getNovelTools()
+  //    温度合并通过 NOVEL_AGENT_CONFIGS 工具函数 + context.subagentManager 直接完成（删除原 NovelAgentConfigStore 空壳）
   //    memoryGenerator 用于 Memory 阶段的结构化 LLM 调用（替代原工具循环模式）
   // 7.5 先创建 NovelMemoryGenerator（orchestrator 依赖它）
   const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine)
-  const orchestrator = new NovelOrchestrator(store, memoryStore, sessionFactory, promptBuilder, engine, context, agentConfigStore, memoryGenerator)
+  const orchestrator = new NovelOrchestrator(store, memoryStore, tools, promptBuilder, engine, context, memoryGenerator)
 
-  // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/sessionFactory/promptBuilder/engine/context + memoryGenerator）
+  // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/promptBuilder/engine/context + memoryGenerator）
   //     discussionSettingsStore 读取持久化的 moderatorModel 传入 runner 构造函数
   const discussionSettingsStore = new DiscussionSettingsStore(db)
   const discussionRunStore = new DiscussionRunStore(db)
   const discussionRunner = new NovelDiscussionRunner(
-    store, memoryStore, sessionFactory, promptBuilder, engine, context,
+    store, memoryStore, promptBuilder, engine, context,
     discussionSettingsStore.get().moderatorModel,
     memoryGenerator,
     discussionSettingsStore,
@@ -170,8 +185,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     similarityScanner 处理"语义相似但表述不同"的重复，支持字段级合并方案
   const similarityScanner = new NovelSimilarityScanner(promptBuilder, promptManager, context, store)
 
-  // 10. 创建 Pi Session 工具集（依赖 NovelStore）
-  const tools = createNovelTools(store)
-
-  return { store, memoryStore, promptManager, promptBuilder, sessionFactory, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, agentConfigStore, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner }
+  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner }
 }

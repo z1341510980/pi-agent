@@ -4,7 +4,6 @@ import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { PromptManager } from '../plugins/novel-plugin/core/prompt-manager.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
-import { NovelSessionFactory } from '../plugins/novel-plugin/core/novel-session.js'
 import { NovelEngine } from '../plugins/novel-plugin/core/novel-engine.js'
 import { NovelCharacterGenerator } from '../plugins/novel-plugin/core/novel-character-generator.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
@@ -15,7 +14,6 @@ let store: NovelStore
 let memoryStore: NovelMemoryStore
 let promptManager: PromptManager
 let promptBuilder: NovelPromptBuilder
-let sessionFactory: NovelSessionFactory
 let engine: NovelEngine
 let characterGenerator: NovelCharacterGenerator
 
@@ -46,8 +44,7 @@ beforeEach(() => {
   memoryStore = new NovelMemoryStore(db)
   promptManager = new PromptManager(db, process.cwd())
   promptBuilder = new NovelPromptBuilder(promptManager, store)
-  sessionFactory = new NovelSessionFactory(store, promptManager)
-  engine = new NovelEngine(store, sessionFactory)
+  engine = new NovelEngine(store)
 
   mockState = {
     createSessionCalls: 0,

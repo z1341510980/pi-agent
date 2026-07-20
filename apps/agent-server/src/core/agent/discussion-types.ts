@@ -186,11 +186,79 @@ export interface DiscussionOptions {
   onMemberInvocation?: (invocation: DiscussionMemberInvocation) => void
   /** 业务层提供的正文形态扫描，用于最终 Reviewer 复核。 */
   buildProseQualityReport?: (content: string) => string
-  /** 业务层提供的安全修订应用器；拒绝危险修订时返回原文。 */
-  applyRevision?: (
-    original: string,
-    rawRevision: string,
-  ) => { content: string; accepted: boolean; mode: 'full' | 'patch' | 'rejected'; reason?: string }
+  /**
+   * 业务层为 Reviser 提供"工具化修订"能力。
+   *
+   * ⚠️ 工具化方案：旧 applyRevision 回调让 Reviser 输出"原文/修改后"配对文本，
+   * 再由引擎用正则解析，LLM 不严格遵守格式时解析失败会走 full 兜底把"修改意见"
+   * 当作完整正文落库。新方案：业务层在工厂里创建 draft（持有当前章节正文）+ 工具，
+   * 引擎把工具注入 Reviser 的 LLM 调用，Reviser 必须调用工具才能修改正文，
+   * 工具内部用 String.replace 做精确替换，完全绕开自然语言解析。
+   * Reviser 返回后引擎调用 extractResult() 得到最终正文。
+   */
+  buildReviserToolset?: (originalContent: string) => ReviserToolset
+  /**
+   * 业务层为 Reviewer 提供"工具化验收"能力。
+   *
+   * ⚠️ 工具化方案：旧路径让 Reviewer 输出 Markdown 报告（十维评分表 + Findings 表格 + 结论），
+   * 再由 discussion runner 用 parseChapterReviewReport 正则解析 11 个评分 + verdict + issues + suggestions。
+   * LLM 不严格遵守格式时正则解析失败，评分/结论降级为 null，Reviewer 的真实判断丢失。
+   * 新方案：业务层在工厂里创建 draft + 工具，引擎把工具注入 Reviewer 的 LLM 调用，
+   * Reviewer 必须调用工具才能提交结构化验收对象，工具参数 schema 强制校验。
+   * Reviewer 返回后引擎调用 extractResult() 得到结构化验收对象。
+   */
+  buildReviewerToolset?: () => ReviewerToolset
+}
+
+/**
+ * Reviser 工具集：业务层创建的 draft + 工具，引擎在调用 Reviser 前取得。
+ *
+ * 工具集通过闭包引用 draft 对象，Reviser 调用工具时直接修改 draft.content，
+ * 引擎在 Reviser 结束后通过 extractResult() 读取 draft 状态，无需解析 Reviser 输出。
+ */
+export interface ReviserToolset {
+  /** 注入 Reviser LLM 调用的工具列表（工具内部已绑定 draft） */
+  tools: unknown[]
+  /** Reviser 结束后调用，返回最终正文 + 应用情况 */
+  extractResult: () => ReviserOutcome
+}
+
+/** Reviser 工具化修订结果 */
+export interface ReviserOutcome {
+  /** 最终正文（已应用所有成功 patch） */
+  content: string
+  /** 总 patch 数 */
+  appliedPatchCount: number
+  /** 成功 patch 数（0 表示 Reviser 未调用工具或全部定位失败） */
+  successCount: number
+  /** 修订模式：patch=通过工具应用，rejected=未应用任何修订（保留原正文） */
+  mode: 'patch' | 'rejected'
+  /** 未应用原因（mode=rejected 时填写） */
+  reason?: string
+}
+
+/**
+ * Reviewer 工具集：业务层创建的 draft + 工具，引擎在调用 Reviewer 前取得。
+ *
+ * 工具集通过闭包引用 draft 对象，Reviewer 调用工具时直接写入 draft.review，
+ * 引擎在 Reviewer 结束后通过 extractResult() 读取 draft 状态，无需解析 Reviewer 输出。
+ */
+export interface ReviewerToolset {
+  /** 注入 Reviewer LLM 调用的工具列表（工具内部已绑定 draft） */
+  tools: unknown[]
+  /** Reviewer 结束后调用，返回结构化验收结果 */
+  extractResult: () => ReviewerOutcome
+}
+
+/** Reviewer 工具化验收结果 */
+export interface ReviewerOutcome {
+  /** Reviewer 是否调用了工具提交验收报告 */
+  toolCalled: boolean
+  /**
+   * Reviewer 提交的验收对象（未调用工具时为 null）。
+   * 引擎不感知其内部结构，由业务层（如 novel-discussion-runner）做类型断言。
+   */
+  review: unknown | null
 }
 
 /** 单次群聊成员 LLM 调用的审计信息。 */
@@ -223,6 +291,11 @@ export interface DiscussionResult {
   error?: string
   /** 异常终止时所在阶段；chapter_weaving 可直接从 Writer 断点续跑。 */
   failedPhase?: DiscussionPhase
+  /**
+   * Reviewer 工具化验收结果（仅 completed 状态且业务层提供 buildReviewerToolset 时存在）。
+   * 业务层据此持久化结构化验收报告，无需再从 transcript 中正则解析 Reviewer 输出。
+   */
+  review?: ReviewerOutcome
 }
 
 /** 从已持久化群聊快照恢复 Writer 编织阶段所需的最小状态。 */

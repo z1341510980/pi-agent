@@ -1,5 +1,5 @@
 import { useCallback, type ChangeEvent, type ReactElement } from 'react'
-import { useReactFlow } from '@xyflow/react'
+import { useReactFlow, type Edge as XYEdge } from '@xyflow/react'
 import {
   Maximize,
   ZoomIn,
@@ -7,6 +7,11 @@ import {
   Download,
   Upload,
   Trash2,
+  Share2,
+  Route,
+  Eraser,
+  LayoutGrid,
+  Network,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -20,9 +25,12 @@ import {
   deleteLocation,
   deleteWorldElement,
   deleteNodePosition,
+  findGraphNeighbors,
+  findGraphPath,
   type NovelEdgeType,
   type NovelNodeTypeName,
 } from '@/api/novel-client'
+import { toast, toastError, toastSuccess } from '@/hooks/use-toast'
 
 // ── 手动连线可选的关系类型 ──
 // 注：自动边类型（appearance/involvement/member/hierarchy/association/foreshadow/base）
@@ -64,11 +72,149 @@ export function NovelToolbar({
   const removeNodePosition = useNovelDataStore((s) => s.removeNodePosition)
   const canvasEdgeType = useNovelUiStore((s) => s.canvasEdgeType)
   const setCanvasEdgeType = useNovelUiStore((s) => s.setCanvasEdgeType)
+  // 画布布局模式：grouped（按类型分区）/ force（d3-force 力导向）
+  const canvasLayoutMode = useNovelUiStore((s) => s.canvasLayoutMode)
+  const setCanvasLayoutMode = useNovelUiStore((s) => s.setCanvasLayoutMode)
+  const setHighlight = useNovelUiStore((s) => s.setHighlight)
+  const clearHighlight = useNovelUiStore((s) => s.clearHighlight)
+  const pathFindSourceId = useNovelUiStore((s) => s.pathFindSourceId)
+  const setPathFindSource = useNovelUiStore((s) => s.setPathFindSource)
+  const highlightedNodeIds = useNovelUiStore((s) => s.highlightedNodeIds)
+  const characters = useNovelDataStore((s) => s.characters)
+  const conflicts = useNovelDataStore((s) => s.conflicts)
+  const factions = useNovelDataStore((s) => s.factions)
+  const locations = useNovelDataStore((s) => s.locations)
+  const worldElements = useNovelDataStore((s) => s.worldElements)
+  const foreshadows = useNovelDataStore((s) => s.foreshadows)
 
-  const { zoomIn, zoomOut, fitView } = useReactFlow()
+  const { zoomIn, zoomOut, fitView, getEdges } = useReactFlow()
 
   const noProject = !currentProjectId
   const hasSelection = !!selectedNodeId && !!selectedNodeType
+  const hasHighlight = highlightedNodeIds.length > 0
+
+  /** 把 entityId + entityType 转为 xyflow node id（"type:id"） */
+  const toNodeId = useCallback(
+    (entityId: string, entityType: NovelNodeTypeName): string => `${entityType}:${entityId}`,
+    [],
+  )
+
+  /** 从 store 中查找实体名称（用于 toast 提示） */
+  const findEntityName = useCallback(
+    (entityId: string, entityType: NovelNodeTypeName): string => {
+      // 各实体的"显示名"字段：character/faction/location/world_element 用 name，
+      // conflict/foreshadow 用 description（它们没有 name 字段）
+      switch (entityType) {
+        case 'character':
+          return characters.find((e) => e.id === entityId)?.name ?? entityId
+        case 'faction':
+          return factions.find((e) => e.id === entityId)?.name ?? entityId
+        case 'location':
+          return locations.find((e) => e.id === entityId)?.name ?? entityId
+        case 'world_element':
+          return worldElements.find((e) => e.id === entityId)?.name ?? entityId
+        case 'conflict':
+          return conflicts.find((e) => e.id === entityId)?.description ?? entityId
+        case 'foreshadow':
+          return foreshadows.find((e) => e.id === entityId)?.description ?? entityId
+        default:
+          return entityId
+      }
+    },
+    [characters, conflicts, factions, locations, worldElements, foreshadows],
+  )
+
+  // ── 高亮邻居：调用 graph API，高亮选中节点 + 所有邻居节点 + 相关边 ──
+  const handleHighlightNeighbors = useCallback(async () => {
+    if (!selectedNodeId || !selectedNodeType) return
+    const currentXYId = toNodeId(selectedNodeId, selectedNodeType as NovelNodeTypeName)
+    try {
+      const graphEdges = await findGraphNeighbors(selectedNodeId)
+      // 收集所有邻居节点 xyflow id
+      const neighborNodeIds = new Set<string>([currentXYId])
+      for (const ge of graphEdges) {
+        neighborNodeIds.add(toNodeId(ge.sourceId, ge.sourceType))
+        neighborNodeIds.add(toNodeId(ge.targetId, ge.targetType))
+      }
+      // 匹配画布上对应的边
+      const allEdges: XYEdge[] = getEdges()
+      const matchedEdgeIds: string[] = []
+      for (const e of allEdges) {
+        if (neighborNodeIds.has(e.source) && neighborNodeIds.has(e.target)) {
+          matchedEdgeIds.push(e.id)
+        }
+      }
+      setHighlight([...neighborNodeIds], matchedEdgeIds)
+      toastSuccess(
+        `已高亮 ${graphEdges.length} 条关系`,
+        `涉及 ${neighborNodeIds.size} 个节点`,
+      )
+    } catch (err) {
+      toastError('高亮邻居失败', err instanceof Error ? err.message : undefined)
+    }
+  }, [selectedNodeId, selectedNodeType, toNodeId, getEdges, setHighlight])
+
+  // ── 查找路径：两步交互，第一次设起点，第二次调 API 查最短路径 ──
+  const handleFindPath = useCallback(async () => {
+    if (!selectedNodeId || !selectedNodeType) return
+
+    // 第一步：设置起点
+    if (!pathFindSourceId) {
+      setPathFindSource(selectedNodeId)
+      const name = findEntityName(selectedNodeId, selectedNodeType as NovelNodeTypeName)
+      toast({
+        title: '已选起点',
+        description: `${name}，请选择终点节点后再次点击"查找路径"`,
+        duration: 6000,
+      })
+      return
+    }
+
+    // 起点终点相同
+    if (pathFindSourceId === selectedNodeId) {
+      toastError('起点和终点相同', '请选择不同的节点作为终点')
+      setPathFindSource(null)
+      return
+    }
+
+    // 第二步：调用 API 查路径
+    const fromId = pathFindSourceId
+    const toId = selectedNodeId
+    setPathFindSource(null)  // 立即清空，避免重复触发
+    try {
+      const path = await findGraphPath(fromId, toId, 6)
+      if (!path.found || path.nodes.length === 0) {
+        toastError('未找到路径', '两个节点之间不存在可达关系链')
+        return
+      }
+      const pathNodeIds = path.nodes.map((n) => toNodeId(n.id, n.type))
+      // 匹配画布上的边（按路径节点顺序匹配连续的边）
+      const allEdges: XYEdge[] = getEdges()
+      const matchedEdgeIds: string[] = []
+      for (let i = 0; i < pathNodeIds.length - 1; i++) {
+        const s = pathNodeIds[i]
+        const t = pathNodeIds[i + 1]
+        const found = allEdges.find(
+          (e) =>
+            (e.source === s && e.target === t) ||
+            (e.source === t && e.target === s),
+        )
+        if (found) matchedEdgeIds.push(found.id)
+      }
+      setHighlight(pathNodeIds, matchedEdgeIds)
+      toastSuccess(
+        `找到路径`,
+        `共 ${path.nodes.length} 个节点 · ${path.edges.length} 条边`,
+      )
+    } catch (err) {
+      toastError('查找路径失败', err instanceof Error ? err.message : undefined)
+    }
+  }, [selectedNodeId, selectedNodeType, pathFindSourceId, setPathFindSource, findEntityName, toNodeId, getEdges, setHighlight])
+
+  const handleClearHighlight = useCallback(() => {
+    clearHighlight()
+    setPathFindSource(null)
+  }, [clearHighlight, setPathFindSource])
 
   const handleEdgeTypeChange = useCallback(
     (e: ChangeEvent<HTMLSelectElement>) => {
@@ -129,6 +275,34 @@ export function NovelToolbar({
 
   return (
     <div className="flex items-center gap-1 px-3 h-11 border-b border-border bg-surface-1 shrink-0">
+      {/* 布局模式切换：分组（按类型分区）/ 图谱（力导向聚类） */}
+      <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg" role="group" aria-label="画布布局模式">
+        <Button
+          size="sm"
+          variant={canvasLayoutMode === 'grouped' ? 'default' : 'ghost'}
+          onClick={() => setCanvasLayoutMode('grouped')}
+          disabled={noProject}
+          title="按实体类型分区布局（角色左、势力右等）"
+          className="h-6 px-2"
+        >
+          <LayoutGrid className="size-3" />
+          <span className="hidden sm:inline text-[11px]">分组</span>
+        </Button>
+        <Button
+          size="sm"
+          variant={canvasLayoutMode === 'force' ? 'default' : 'ghost'}
+          onClick={() => setCanvasLayoutMode('force')}
+          disabled={noProject}
+          title="力导向布局：相关节点自然聚类，已保存位置锁定"
+          className="h-6 px-2"
+        >
+          <Network className="size-3" />
+          <span className="hidden sm:inline text-[11px]">图谱</span>
+        </Button>
+      </div>
+
+      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
       {/* 关系类型选择器：决定手动连线的边类型 */}
       <div className="flex items-center gap-1">
         <label htmlFor="novel-canvas-edge-type" className="text-xs text-text-secondary">
@@ -173,6 +347,49 @@ export function NovelToolbar({
           disabled={noProject}
         >
           <Maximize className="size-3.5" />
+        </Button>
+      </div>
+
+      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
+      {/* 关系图分析：高亮邻居 / 查找路径 / 清除高亮 */}
+      <div className="flex items-center gap-0.5">
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          onClick={handleHighlightNeighbors}
+          disabled={!hasSelection}
+          title="高亮选中节点的所有邻居关系"
+          className={cn(!hasSelection && 'opacity-50')}
+        >
+          <Share2 className="size-3.5" />
+        </Button>
+        <Button
+          size="sm"
+          variant={pathFindSourceId ? 'default' : 'ghost'}
+          onClick={handleFindPath}
+          disabled={!hasSelection}
+          title={
+            pathFindSourceId
+              ? '已选起点，选中终点节点后点击此按钮查找路径'
+              : '查找两个节点之间的最短路径（点击设置起点）'
+          }
+          className={cn(!hasSelection && 'opacity-50')}
+        >
+          <Route className="size-3.5" />
+          <span className="hidden sm:inline">
+            {pathFindSourceId ? '选终点' : '路径'}
+          </span>
+        </Button>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          onClick={handleClearHighlight}
+          disabled={!hasHighlight && !pathFindSourceId}
+          title="清除高亮"
+          className={cn(!hasHighlight && !pathFindSourceId && 'opacity-50')}
+        >
+          <Eraser className="size-3.5" />
         </Button>
       </div>
 

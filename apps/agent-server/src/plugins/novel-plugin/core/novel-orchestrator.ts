@@ -41,29 +41,30 @@ import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 
 import type { NovelStore } from './novel-store.js'
-import type { NovelSessionFactory } from './novel-session.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { runtimePerformance } from '../../../config/performance.js'
-import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CreationFlowEvent } from './novel-agents.js'
+import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CreationFlowEvent, getNovelAgentTemperature } from './novel-agents.js'
 import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, RhythmSuggestion, VersionSource } from './types.js'
 import { RhythmController } from './rhythm-controller.js'
 import { scanCliches, formatClicheReport } from './cliche-scanner.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
-import type { NovelAgentConfigStore } from './novel-agent-config-store.js'
 import type { NovelAgentLogStatus } from './types.js'
 import {
   addLlmUsage,
-  applySafeRevision,
   extractLlmUsageFromMessage,
   hasLlmUsage,
   sanitizeNovelProse,
   type LlmUsageSnapshot,
 } from './agent-run-utils.js'
+import { createNovelApplyRevisionTool, type RevisionDraftHolder } from './novel-tools.js'
+import { createNovelSubmitNarrativeTaskTool, type NarrativeTaskDraftHolder } from './novel-tools.js'
+import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-tools.js'
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
-import { parseChapterReviewReport } from './chapter-review-parser.js'
+import { cancelDebug } from '../utils/cancel-debug-log.js'
 import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
 export type { CreationOptions, CreationResult } from '../../../core/agent/chapter-finalizer.js'
 
@@ -90,8 +91,6 @@ export class NovelOrchestrator {
   private readonly runStorage = new AsyncLocalStorage<CreationRunContext>()
   /** 检查点请求来自另一条 HTTP 请求，按项目和章节暂存用户指令。 */
   private readonly pendingUserMessages = new Map<string, string[]>()
-  /** 小说角色温度配置存储（runAgent 中按角色合并温度） */
-  private readonly agentConfigStore: NovelAgentConfigStore
   /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
   private readonly memoryGenerator?: NovelMemoryGenerator
   /** 章节收尾逻辑（Memory 阶段 + 实体同步 + 快照 + 持久化），workflow 和 discussion 共用 */
@@ -99,14 +98,12 @@ export class NovelOrchestrator {
   constructor(
     private store: NovelStore,
     private memoryStore: NovelMemoryStore,
-    private sessionFactory: NovelSessionFactory,
+    private novelTools: ToolDefinition[],
     private promptBuilder: NovelPromptBuilder,
     private engine: NovelEngine,
     private context: PluginContext,
-    agentConfigStore: NovelAgentConfigStore,
     memoryGenerator?: NovelMemoryGenerator,
   ) {
-    this.agentConfigStore = agentConfigStore
     this.memoryGenerator = memoryGenerator
     // 创建 ChapterFinalizer，注入相同的依赖 + runAgent 回调（用于 memoryGenerator 未注入时的回退）
     this.finalizer = new ChapterFinalizer(
@@ -220,23 +217,61 @@ export class NovelOrchestrator {
       const chapter = this.store.getChapter(projectId, chapterNumber)
       let directorResult = ''
       let needRewrite = true
+      // Director 未调用工具时的重试计数器，避免无限循环
+      let directorToolMissedCount = 0
+      const MAX_DIRECTOR_TOOL_MISS = 2
+      // narrativeDraft 提到 while 外：Director 成功调用工具后，循环退出仍需读取 draft.task
+      let narrativeDraft: NarrativeTaskDraftHolder = {}
       while (needRewrite) {
         this.emitProgress(options, 'directing', 'phase_change', { message: '导演 Agent 正在分析故事状态...' })
         // input 统一为字符串：避免 runAgent JSON.stringify 对象导致 LLM 收到 JSON 字符串
         // 章纲和节奏建议已分别进入 shared context 的「章节信息」「创作约束」，
         // 动态消息只保留本轮动作，避免把同一份内容再发一次。
         // rewrite 时 runAgent 会把 userMessages 作为"用户修改意见"注入 Director 输入
+        // ⚠️ 工具化方案：通过 novel_submit_narrative_task 工具协议化输入。
+        // 旧方案让 Director 输出 Markdown 自由文本，再用 parseDirectorTask 用 18 处正则提取字段。
+        // LLM 不严格遵守格式时正则解析失败，降级到默认值，Director 的真实意图丢失。
+        // 新方案：Director 必须调用工具提交结构化对象，工具参数 schema 强制校验。
+        // draft 通过闭包传递，Director 结束后 orchestrator 直接读取 draft.task。
+        // 每次循环重置 draft：保留对外部 narrativeDraft 引用，避免重试时旧 task 残留
+        narrativeDraft = {}
+        const submitNarrativeTaskTool = createNovelSubmitNarrativeTaskTool(narrativeDraft)
         directorResult = await this.runAgent('director', projectId, chapterNumber,
           `请依据章节上下文中的章纲、故事状态和节奏约束，为第 ${chapterNumber} 章规划叙事任务。`,
           options,
+          { extraTools: [submitNarrativeTaskTool] },
         )
+        narrativeDraft.rawOutput = directorResult
 
         // 检查点 1
         this.emitProgress(options, 'checkpoint_narrative', 'phase_change', { message: '等待用户确认叙事任务...' })
+        // ⚠️ 工具化方案：checkpoint.data 优先携带 Director 通过工具提交的结构化 NarrativeTask 对象，
+        // 前端 CheckpointMessage 识别 kind 后用 formatDetailBubble 格式化为可读 markdown 展示。
+        // 若 Director 未调用工具（narrativeDraft.task 为 undefined），构造显式提示让用户选择重写：
+        // 不再 fallback 到 directorResult（LLM 可能输出"叙事任务已通过工具提交"等误导性文本，
+        // 让用户误以为调了工具但其实没有）。
+        const directorTaskSubmitted = Boolean(narrativeDraft.task)
+        const checkpointData: unknown = narrativeDraft.task
+          ? { kind: 'narrative_task', ...narrativeDraft.task }
+          : {
+              kind: 'narrative_task_missing',
+              directorRawOutput: directorResult.slice(0, 800),
+              message: 'Director 未通过工具提交叙事任务',
+            }
+        this.context.logger.warn(
+          {
+            projectId,
+            chapterNumber,
+            directorTaskSubmitted,
+            directorOutputLength: directorResult.length,
+            directorOutputPreview: directorResult.slice(0, 200),
+          },
+          'Director 检查点 1 状态：是否通过工具提交叙事任务',
+        )
         const narrativeDecision = await options.onCheckpoint({
           type: 'narrative_task',
           phase: 'checkpoint_narrative',
-          data: directorResult,
+          data: checkpointData,
         })
 
         if (narrativeDecision === 'reject') {
@@ -251,7 +286,39 @@ export class NovelOrchestrator {
           continue
         }
 
-        // approve → 跳出循环
+        // approve → 检查 Director 是否通过工具提交了任务
+        // ⚠️ 工具化方案：Director 必须调用 novel_submit_narrative_task 工具提交结构化对象。
+        // 未调用时给出明确错误而非降级默认值，避免 Director 真实意图丢失却静默继续。
+        if (!narrativeDraft.task) {
+          directorToolMissedCount++
+          this.context.logger.error(
+            { projectId, chapterNumber, directorOutputLength: directorResult.length, missedCount: directorToolMissedCount },
+            'Director 未调用 novel_submit_narrative_task 工具提交叙事任务',
+          )
+          if (directorToolMissedCount >= MAX_DIRECTOR_TOOL_MISS) {
+            // 达到上限：转为错误终止流程，避免无限重试
+            this.emitProgress(options, 'error', 'error', {
+              message: `Director 连续 ${directorToolMissedCount} 次未调用工具提交叙事任务，流程终止`,
+              detail: {
+                kind: 'narrative_tool_miss_limit',
+                directorRawOutput: directorResult.slice(0, 500),
+              },
+            })
+            return { status: 'error', error: 'Director 未通过工具提交叙事任务' }
+          }
+          this.emitProgress(options, 'directing', 'phase_change', {
+            message: `Director 未通过工具提交叙事任务（第 ${directorToolMissedCount}/${MAX_DIRECTOR_TOOL_MISS} 次），重试中...`,
+            detail: {
+              kind: 'narrative_task_not_submitted',
+              directorRawOutput: directorResult.slice(0, 500),
+            },
+          })
+          // 给 Director 一次重试机会
+          needRewrite = true
+          continue
+        }
+
+        // Director 已通过工具提交任务 → 跳出循环
         needRewrite = false
       }
 
@@ -261,23 +328,48 @@ export class NovelOrchestrator {
       // 注入前清洗破折号：Director 输出可能含破折号，注入 Writer 后会被模仿，
       // 在注入点清洗切断示范传播链。
       run.directorOutput = this.promptBuilder.stripEmDash(directorResult)
-      // 解析 Director 输出为结构化 NarrativeTask，让 14 种任务类型真正传递到 Writer。
-      // Director 提示词要求输出"任务类型"字段（如 create_suspense/escalate_conflict），
-      // parseDirectorTask 从输出文本中提取任务类型、优先级、高潮目标等执行参数。
-      run.directorTask = this.parseDirectorTask(directorResult, rhythmSuggestion)
+      // 此时 narrativeDraft.task 必然存在（while 内部已校验）
+      // 使用非空断言：TS 无法跨闭包收窄 narrativeDraft.task 的可选性
+      const directorTask = narrativeDraft.task!
+      // 注入高潮目标（来自节奏建议，parseDirectorTask 旧逻辑也在这里注入）
+      if (rhythmSuggestion.rhythm === 'climax' && rhythmSuggestion.climaxIntensity) {
+        directorTask.climaxTarget = {
+          type: rhythmSuggestion.climaxType ?? 'composite',
+          intensity: rhythmSuggestion.climaxIntensity,
+        }
+      }
+      // 悬念持续章数默认值（仅 create_suspense 任务且 Director 未指定时）
+      if (directorTask.type === 'create_suspense' && directorTask.suspenseDuration === undefined) {
+        directorTask.suspenseDuration = 3
+      }
+      // 冲突强度变化默认值（仅 escalate_conflict 任务且 Director 未指定时）
+      if (directorTask.type === 'escalate_conflict' && directorTask.expectedIntensityDelta === undefined) {
+        directorTask.expectedIntensityDelta = 1
+      }
+      run.directorTask = directorTask
 
-      // 推送叙事任务详情，让用户了解 Director 解析出的结构化任务（气泡展示）
+      // 推送叙事任务详情，让用户了解 Director 通过工具提交的完整结构化任务（气泡展示）
+      // 直接用 directorTask 局部变量（已断言非空），避免 run.directorTask 可能 undefined 的类型问题
+      // ⚠️ 工具化方案：Director 通过 novel_submit_narrative_task 工具提交了完整 NarrativeTask 对象，
+      // 这里把全部字段透传到前端气泡展示，避免"只看到一句话"的反模式。
       this.emitProgress(options, 'directing', 'phase_change', {
-        message: '叙事任务已解析',
+        message: '叙事任务已提交',
         detail: {
           kind: 'narrative_task',
-          taskType: run.directorTask.type,
-          priority: run.directorTask.priority,
-          targetEntity: run.directorTask.targetEntity,
-          climaxTarget: run.directorTask.climaxTarget,
-          suspenseDuration: run.directorTask.suspenseDuration,
-          expectedIntensityDelta: run.directorTask.expectedIntensityDelta,
-          positioning: run.directorTask.positioning,
+          description: directorTask.description,
+          taskType: directorTask.type,
+          secondaryTasks: directorTask.secondaryTasks,
+          targetEntity: directorTask.targetEntity,
+          priority: directorTask.priority,
+          expectedIntensityDelta: directorTask.expectedIntensityDelta,
+          climaxTarget: directorTask.climaxTarget,
+          suspenseDuration: directorTask.suspenseDuration,
+          chapterEndingHook: directorTask.chapterEndingHook,
+          chapterEndingHookDescription: directorTask.chapterEndingHookDescription,
+          povCharacters: directorTask.povCharacters,
+          sceneCount: directorTask.sceneCount,
+          positioning: directorTask.positioning,
+          timeOffset: directorTask.timeOffset,
         },
       })
 
@@ -352,22 +444,83 @@ export class NovelOrchestrator {
           const pushbackReason = writerResult.replace(/\[DIRECTOR_PUSHBACK\]/i, '').trim()
           directorPushbackCount++
           this.emitProgress(options, 'directing', 'phase_change', {
-            message: `写作 Agent 认为叙事任务存在问题，Director 正在重新规划...（推回原因：${pushbackReason.slice(0, 100)}）`,
+            message: `写作 Agent 认为叙事任务存在问题，等待用户确认是否推回 Director...（推回原因：${pushbackReason.slice(0, 100)}）`,
           })
           this.context.logger.info(
             { projectId, chapterNumber, pushbackCount: directorPushbackCount, pushbackReason: pushbackReason.slice(0, 200) },
-            'Writer 推回 Director，重新规划叙事任务',
+            'Writer 推回 Director，等待用户决策',
           )
 
+          // ⚠️ 检查点：Writer 推回 Director 让用户决策。
+          // 旧逻辑直接 continue 静默重跑 Director，用户失去控制：
+          // 用户看不到 pushbackReason 完整内容，也无法选择"强制让 Writer 继续"或"取消"。
+          // 现改为检查点：approve=同意推回重跑 Director，rewrite=让 Writer 强制继续当前任务，
+          // reject=取消整个流程。
+          const pushbackDecision = await options.onCheckpoint({
+            type: 'writer_pushback',
+            phase: 'directing',
+            data: {
+              pushbackReason,
+              currentWriterOutput: writerResult,
+              pushbackCount: directorPushbackCount,
+              maxPushback: MAX_PUSHBACK,
+              chapterNumber,
+            },
+          })
+
+          if (pushbackDecision === 'reject') {
+            this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户取消了创作流程' })
+            return { status: 'cancelled' }
+          }
+          if (pushbackDecision === 'rewrite') {
+            // 用户选择"让 Writer 强制继续"：不重跑 Director，让 Writer 重新写正文。
+            // ⚠️ 注意：不设置 writerGuardRewriteReason，因为那是 PostWriteGuard 专用字段，
+            // 设置后会让 Writer 误以为是 Guard 命中而看到"用户要求忽略推回"作为失败原因。
+            // 用户决策不应混入 Guard 流程的提示词，Writer 直接重新创作即可。
+            this.emitProgress(options, 'writing', 'phase_change', {
+              message: '用户要求 Writer 按原叙事任务强制继续创作...',
+            })
+            continue
+          }
+          // approve（默认行为）：同意推回，重跑 Director
           // 将 Writer 的推回原因注入 Director，重新规划
           // 注入前清洗破折号：Writer 输出的推回原因可能含破折号
           run.directorOutput = undefined
+          // ⚠️ 工具化方案：重跑 Director 时也要创建新的 draft 并注入工具
+          const pushbackNarrativeDraft: NarrativeTaskDraftHolder = {}
+          const pushbackSubmitTool = createNovelSubmitNarrativeTaskTool(pushbackNarrativeDraft)
           const rewriteDirectorResult = await this.runAgent('director', projectId, chapterNumber,
             `写作 Agent 对之前的叙事任务提出了异议，请依据既有章纲和节奏约束重新规划第 ${chapterNumber} 章。\n\n## 推回原因\n\n${this.promptBuilder.stripEmDash(pushbackReason)}`,
             options,
+            { extraTools: [pushbackSubmitTool] },
           )
+          pushbackNarrativeDraft.rawOutput = rewriteDirectorResult
+          if (!pushbackNarrativeDraft.task) {
+            // 推回后重跑 Director 也未调用工具：报错并取消
+            this.context.logger.error(
+              { projectId, chapterNumber, pushbackReason: pushbackReason.slice(0, 200) },
+              'Director 推回重跑后仍未调用 novel_submit_narrative_task 工具',
+            )
+            this.emitProgress(options, 'error', 'error', {
+              message: 'Director 推回重跑后未通过工具提交叙事任务，流程终止',
+            })
+            return { status: 'error', error: 'Director 推回重跑后未通过工具提交叙事任务' }
+          }
+          // 注入高潮目标（与首次调用一致）
+          if (rhythmSuggestion.rhythm === 'climax' && rhythmSuggestion.climaxIntensity) {
+            pushbackNarrativeDraft.task.climaxTarget = {
+              type: rhythmSuggestion.climaxType ?? 'composite',
+              intensity: rhythmSuggestion.climaxIntensity,
+            }
+          }
+          if (pushbackNarrativeDraft.task.type === 'create_suspense' && pushbackNarrativeDraft.task.suspenseDuration === undefined) {
+            pushbackNarrativeDraft.task.suspenseDuration = 3
+          }
+          if (pushbackNarrativeDraft.task.type === 'escalate_conflict' && pushbackNarrativeDraft.task.expectedIntensityDelta === undefined) {
+            pushbackNarrativeDraft.task.expectedIntensityDelta = 1
+          }
           run.directorOutput = this.promptBuilder.stripEmDash(rewriteDirectorResult)
-          run.directorTask = this.parseDirectorTask(rewriteDirectorResult, rhythmSuggestion)
+          run.directorTask = pushbackNarrativeDraft.task
           this.emitProgress(options, 'directing', 'phase_change', {
             message: '叙事任务已根据写作 Agent 的反馈调整',
             detail: {
@@ -391,6 +544,58 @@ export class NovelOrchestrator {
           bestWriterCandidate = { content: writerResult, score: candidateScore }
         }
         if (postWriteGuard.shouldRewrite && writerGuardRewriteCount < NovelOrchestrator.MAX_GUARD_REWRITE) {
+          // ⚠️ 检查点：PostWriteGuard 命中后让用户决策是否重写。
+          // 旧逻辑直接 continue 静默重写，用户看不到 details（如"实际 1200 字，目标 3000 字 40%"），
+          // 也无法选择"接受当前草稿跳过重写"或"转 Reviser 局部修订"。
+          // 现改为检查点：approve=接受当前草稿进 Reviewer，rewrite=按原因重写（默认），
+          // revise=跳过重写直接让 Reviser 局部修订，reject=取消。
+          // 注意：approve/revise 路径用 break 跳出 while 循环，下方触发点 4（达上限降级）
+          // 的 if 块在 while 内，break 后不会进入，无需担心连续弹框。
+          const guardDecision = await options.onCheckpoint({
+            type: 'post_write_guard',
+            phase: 'rewriting',
+            data: {
+              reason: postWriteGuard.reason,
+              details: postWriteGuard.details,
+              advisory: postWriteGuard.advisory,
+              currentWriterOutput: writerResult,
+              wordCount: writerResult.replace(/\s/g, '').length,
+              rewriteCount: writerGuardRewriteCount + 1,
+              maxRewrite: NovelOrchestrator.MAX_GUARD_REWRITE,
+              chapterNumber,
+            },
+          })
+
+          if (guardDecision === 'reject') {
+            this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户取消了创作流程' })
+            return { status: 'cancelled' }
+          }
+          if (guardDecision === 'approve') {
+            // 用户选择"接受当前草稿"：跳过重写，break 出 while 进入 Reviewer
+            this.emitProgress(options, 'reviewing', 'phase_change', {
+              message: `用户接受当前草稿（PostWriteGuard 命中：${postWriteGuard.reason}），进入审稿阶段`,
+            })
+            this.context.logger.info(
+              { projectId, chapterNumber, reason: postWriteGuard.reason },
+              '用户接受 PostWriteGuard 命中的草稿，跳过重写',
+            )
+            finalPostWriteGuard = postWriteGuard
+            break
+          }
+          if (guardDecision === 'revise') {
+            // 用户选择"转 Reviser 局部修订"：跳过 Writer 重写，break 出 while 进入 Reviewer，
+            // 让 Reviewer 把 Guard 问题作为审稿意见交 Reviser 局部修复
+            this.emitProgress(options, 'reviewing', 'phase_change', {
+              message: `用户选择转 Reviser 局部修订（PostWriteGuard 命中：${postWriteGuard.reason}），进入审稿阶段`,
+            })
+            this.context.logger.info(
+              { projectId, chapterNumber, reason: postWriteGuard.reason },
+              '用户选择转 Reviser 局部修订，跳过 Writer 重写',
+            )
+            finalPostWriteGuard = postWriteGuard
+            break
+          }
+          // rewrite（默认行为）：按原因重写 Writer
           writerGuardRewriteCount++
           writerGuardRewriteReason = postWriteGuard.reason
           writerGuardRewriteDetails = postWriteGuard.details ?? ''
@@ -437,8 +642,42 @@ export class NovelOrchestrator {
             'PostWriteGuard Writer 重写已达上限，降级交给 Reviewer',
           )
           this.emitProgress(options, 'reviewing', 'phase_change', {
-            message: `PostWriteGuard 已让 Writer 重写 ${writerGuardRewriteCount} 次仍未通过（${finalPostWriteGuard.reason}），交给审稿 Agent 判断`,
+            message: `PostWriteGuard 已让 Writer 重写 ${writerGuardRewriteCount} 次仍未通过（${finalPostWriteGuard.reason}），等待用户决策...`,
           })
+
+          // ⚠️ 检查点：Guard 达上限后让用户决策。
+          // 旧逻辑直接进入 Reviewer，用户无法选择"从头重写整个流程"或"取消"。
+          // 现改为检查点：approve=接受当前草稿进 Reviewer（默认），rewrite=从头重写整章，
+          // revise=让 Reviser 局部修复 Guard 命中的问题，reject=取消。
+          const degradedDecision = await options.onCheckpoint({
+            type: 'guard_degraded',
+            phase: 'rewriting',
+            data: {
+              reason: finalPostWriteGuard.reason,
+              details: finalPostWriteGuard.details,
+              currentWriterOutput: writerResult,
+              restoredFromBest: bestWriterCandidate && bestWriterCandidate.content === writerResult,
+              rewriteCount: writerGuardRewriteCount,
+              maxRewrite: NovelOrchestrator.MAX_GUARD_REWRITE,
+              chapterNumber,
+            },
+          })
+
+          if (degradedDecision === 'reject') {
+            this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户取消了创作流程' })
+            return { status: 'cancelled' }
+          }
+          if (degradedDecision === 'rewrite') {
+            // 用户选择"从头重写整章"：重置 guardRewriteCount，递归 createChapterWithFlow
+            this.emitProgress(options, 'rewriting', 'phase_change', { message: '用户选择从头重写整章...' })
+            return this.createChapterWithFlow(
+              projectId,
+              chapterNumber,
+              { ...options, arrangedEntities: run.arrangedEntities },
+            )
+          }
+          // approve / revise（默认行为）：接受当前草稿进入 Reviewer
+          // 若用户选 revise，Reviewer 会把 Guard 问题作为审稿意见交 Reviser 局部修复
         } else {
           finalPostWriteGuard = postWriteGuard
         }
@@ -487,16 +726,60 @@ export class NovelOrchestrator {
       // 导致 Writer 输出的正文被压缩在 JSON 的 content 字段中（换行变 \n、引号被转义），
       // LLM 需要解析 JSON 才能提取正文，不同模型解析能力不同，行为不稳定。
       // 改为结构化 Markdown 字符串：明确的标题分隔，让 LLM 直接看到正文。
+      // ⚠️ 工具化方案：通过 novel_submit_review 工具协议化输入。
+      // 旧方案让 Reviewer 输出 Markdown 报告（十维评分表 + Findings 表格 + 结论），
+      // 再由 parseChapterReviewReport 用正则提取 11 个评分 + verdict + issues + suggestions。
+      // LLM 不严格遵守格式时正则解析失败，评分/结论降级为 null，Reviewer 的真实判断丢失。
+      // 新方案：Reviewer 必须调用工具提交结构化对象，工具参数 schema 强制校验。
+      // draft 通过闭包传递，Reviewer 结束后 orchestrator 直接读取 draft.review。
+      const reviewDraft: ReviewDraftHolder = {}
+      const submitReviewTool = createNovelSubmitReviewTool(reviewDraft)
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber,
         `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${reviewContent}\n\n---\n\n${clicheReport}\n\n---\n\n${proseQualityReport}\n\n---\n\n## 盲审文字编辑意见\n\n${this.promptBuilder.stripEmDash(proseEditorResult)}${guardReviewReport ? `\n\n---\n\n${guardReviewReport}` : ''}`,
         options,
+        { extraTools: [submitReviewTool] },
       )
+      reviewDraft.rawOutput = reviewResult
+
+      // 检查 Reviewer 是否通过工具提交了验收报告
+      // 未调用工具时给出明确警告，不降级默认值，避免 Reviewer 真实判断丢失却静默继续
+      if (!reviewDraft.review) {
+        this.context.logger.warn(
+          { projectId, chapterNumber, reviewerOutputLength: reviewResult.length },
+          'Reviewer 未调用 novel_submit_review 工具提交验收报告',
+        )
+        this.emitProgress(options, 'reviewing', 'phase_change', {
+          message: 'Reviewer 未通过工具提交验收报告，结构化评分缺失，请结合文本报告人工判断',
+          detail: {
+            kind: 'review_tool_missed',
+            reviewerRawOutput: reviewResult.slice(0, 500),
+          },
+        })
+      }
+
       if (chapter?.id) {
         try {
           await this.engine.saveReview({
             projectId,
             chapterId: chapter.id,
-            ...parseChapterReviewReport(reviewResult),
+            // Reviewer 未调用工具时，draft.review 为 undefined，展开为空对象，
+            // saveReview 接受 null 字段，会存入一份"未评分"的占位记录
+            ...(reviewDraft.review ?? {
+              consistencyScore: null,
+              characterScore: null,
+              taskCompletionScore: null,
+              clueProgressScore: null,
+              foreshadowStatusScore: null,
+              conflictChangeScore: null,
+              pacingScore: null,
+              infoControlScore: null,
+              readerHookScore: null,
+              styleScore: null,
+              overallScore: null,
+              verdict: null,
+              issues: null,
+              suggestions: null,
+            }),
             reviewedBy: 'novel-reviewer',
           })
         } catch (error) {
@@ -538,58 +821,82 @@ export class NovelOrchestrator {
             ? `${autoReviseReason}，修订 Agent 正在自动优化正文...`
             : '修订 Agent 正在根据审稿意见修订章节...',
         })
-        // ⚠️ 同 Reviewer：不能传 JSON 对象，改为结构化 Markdown 字符串
-        // 使用独立的 'reviser' agent 类型，加载 role-reviser.md（最小改动原则），
-        // 而非复用 'writer'（会加载 role-writer.md + chapter-instruction.md 导致
-        // LLM 把任务误解为"重新创作"，只输出修订片段覆盖原正文）。
+        // ⚠️ 工具化修订方案：
+        // 旧方案让 Reviser 输出"原文/修改后"配对文本，再用正则解析。LLM 不严格遵守
+        // 格式时正则解析失败，会走 full 兜底把"修改意见"当作完整正文落库——这正是
+        // 用户反馈的"修改意见覆盖正文"问题的根因。
+        //
+        // 新方案：通过 novel_apply_revision 工具协议化输入。Reviser 必须调用工具才能
+        // 修改正文，工具参数 schema 强制结构化（pairs: [{from, to}]），工具内部用
+        // String.replace 做精确替换，完全绕开自然语言解析。draft 通过闭包传递，
+        // orchestrator 在 Reviser 结束后直接读取 draft.content 作为最终正文。
+        const draft: RevisionDraftHolder = {
+          content: reviewContent,
+          appliedPatches: [],
+        }
+        const applyRevisionTool = createNovelApplyRevisionTool(draft)
+        // ── 修复：把 Reviewer 工具化提交的结构化验收报告格式化为可读文本，注入 Reviser 上下文 ──
+        // 历史问题：Reviewer 工具化后 raw 文本输出（reviewResult）只剩推理过程/客套话，
+        // 真正的 issues/suggestions/verdict/scores 在 reviewDraft.review 里（结构化对象）。
+        // 旧代码只传 reviewResult 给 Reviser，导致 Reviser 看不到具体问题和建议，
+        // "修订"变成无的放矢。现在把 reviewDraft.review 格式化后作为"结构化审稿报告"注入。
+        const structuredReviewReport = this.formatReviewReportForReviser(reviewDraft.review)
         // 注入原始 writerResult（含破折号）：Reviser 需要看到破折号在哪才能清除它们，
         // 审稿意见中的破折号由 stripEmDash 清洗（审稿意见是 Reviewer 产出，非正文）。
         const reviseResult = await this.runAgent('reviser', projectId, chapterNumber,
-          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${reviewContent}\n\n---\n\n## 审稿意见\n\n${this.promptBuilder.stripEmDash(reviewResult)}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}`,
+          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${reviewContent}\n\n---\n\n${structuredReviewReport}\n\n---\n\n## Reviewer 分析过程（参考，结构化报告为准）\n\n${this.promptBuilder.stripEmDash(reviewResult)}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}`,
           options,
           {
             phase: 'revising',
+            extraTools: [applyRevisionTool],
+            // ── 修复：把修订后正文（draft.content）追加到 reviser 的 agent_log.result ──
+            // 工具化后 reviser 的 raw 文本输出只是"我已应用 N 处修订"，真正的修订后正文
+            // 在 draft.content 里（通过 novel_apply_revision 工具闭包更新）。
+            // 不追加的话 agent_log 看不到修订结果，用户无法在日志面板审查修订后的正文。
+            augmentLogResult: (raw) => this.augmentReviserLogResult(raw, draft),
           },
         )
-        // 代码层保护正文：优先应用“原文/修改后”局部补丁；兼容旧模型偶尔返回
-        // 完整正文，但只有保留足够原文段落时才允许整体替换。
-        const revisionDecision = applySafeRevision(reviewContent, reviseResult)
-        if (!revisionDecision.accepted) {
-          this.context.logger.warn(
-            {
-              projectId,
-              chapterNumber,
-              originalLength: writerResult.length,
-              revisedLength: reviseResult.length,
-              reason: revisionDecision.reason,
-            },
-            '修订输出不是可安全落库的完整正文，保留原正文',
-          )
-          // 告知用户修订被丢弃：避免静默回退让用户误以为修订已生效。
-          // 历史问题：applySafeRevision 判定不安全时只打 warn 日志，用户无感知，
-          // 导致用户看到审稿意见却不知道修订未被采用。这里通过气泡明确告知。
-          this.emitProgress(options, 'revising', 'phase_change', {
-            message: `修订输出未通过安全校验（${revisionDecision.reason}），已保留审稿后正文`,
-            detail: {
-              kind: 'revision_discarded',
-              reason: revisionDecision.reason,
-              originalLength: writerResult.length,
-              revisedLength: reviseResult.length,
-            },
-          })
-          finalContent = reviewContent
-        } else {
+        // 工具调用结果决定最终正文：
+        // - draft.appliedPatches 至少有一处成功应用 → 使用 draft.content 作为最终正文
+        // - draft.appliedPatches 为空或全部失败 → 保留原正文，告知用户修订未生效
+        const successfulPatches = draft.appliedPatches.filter(p => p.success)
+        if (successfulPatches.length > 0) {
           this.context.logger.info(
             {
               projectId,
               chapterNumber,
-              mode: revisionDecision.mode,
+              appliedCount: successfulPatches.length,
+              failedCount: draft.appliedPatches.length - successfulPatches.length,
               originalLength: writerResult.length,
-              revisedLength: revisionDecision.content.length,
+              revisedLength: draft.content.length,
             },
-            '修订结果已安全合并到章节正文',
+            '修订已通过 novel_apply_revision 工具应用到章节正文',
           )
-          finalContent = revisionDecision.content
+          finalContent = draft.content
+        } else {
+          // 修订未生效：Reviser 未调用工具，或所有 patch 都定位失败。
+          // 保留原正文，把 Reviser 输出附给用户决定是否手动采纳。
+          this.context.logger.warn(
+            {
+              projectId,
+              chapterNumber,
+              patchCount: draft.appliedPatches.length,
+              reviseResultLength: reviseResult.length,
+            },
+            'Reviser 未通过工具成功应用任何修订，保留原正文',
+          )
+          this.emitProgress(options, 'revising', 'phase_change', {
+            message: draft.appliedPatches.length === 0
+              ? '修订未生效：Reviser 未调用 novel_apply_revision 工具，已保留原正文，建议可在前端查看 Reviser 输出后手动决定'
+              : `修订未生效：${draft.appliedPatches.length} 处 patch 全部定位失败，已保留原正文`,
+            detail: {
+              kind: 'revision_not_applied',
+              reason: draft.appliedPatches.length === 0 ? 'tool_not_called' : 'all_patches_failed',
+              patchCount: draft.appliedPatches.length,
+              reviserRawOutput: reviseResult,
+            },
+          })
+          finalContent = reviewContent
         }
       } else if (reviewDecision === 'rewrite') {
         this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
@@ -630,6 +937,7 @@ export class NovelOrchestrator {
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      cancelDebug('orchestrator-catch', { projectId, chapterNumber, errMessage: message, errStack: err instanceof Error ? err.stack : undefined, signalAborted: options.signal?.aborted, errName: err instanceof Error ? err.name : typeof err })
       if (options.signal?.aborted) {
         this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户已停止创作流程' })
         return { status: 'cancelled' }
@@ -637,7 +945,7 @@ export class NovelOrchestrator {
       this.emitProgress(options, 'error', 'error', { message })
       return { status: 'error', error: message }
     } finally {
-      // AsyncLocalStorage 会在本次 create-flow Promise 结束后释放运行上下文。
+      cancelDebug('orchestrator-finally', { projectId, chapterNumber, signalAborted: options.signal?.aborted })
     }
   }
 
@@ -819,6 +1127,21 @@ export class NovelOrchestrator {
       identityPrompt?: string
       /** 是否消费流程中追加的用户指令；盲审应留给完整 Reviewer。 */
       consumeUserMessages?: boolean
+      /**
+       * 动态注入的额外工具（不进入 NOVEL_AGENT_CONFIGS 的 tools 过滤白名单）。
+       * 用于 Reviser 调用 novel_apply_revision 工具：工具通过闭包引用 draft 对象，
+       * orchestrator 在 Reviser 结束后从 draft 读取最终正文，完全绕开正则解析。
+       */
+      extraTools?: ToolDefinition[]
+      /**
+       * 增强 agent_log.result 字段（不影响 runAgent 的返回值）。
+       *
+       * 用于工具化 Agent：raw 文本输出只是"我已应用 N 处修订"之类客套话，
+       * 真正的结果（如修订后正文）在工具闭包里。回调在 runAgent 写 agent_log 前
+       * 被调用，把工具应用结果追加到 logResult，让用户能在日志面板审查真实结果。
+       * 返回值会覆盖 logResult；runAgent 仍返回 raw result 给调用方。
+       */
+      augmentLogResult?: (rawResult: string) => string
     },
   ): Promise<string> {
     const run = this.requireRunContext()
@@ -971,12 +1294,16 @@ export class NovelOrchestrator {
     const userMessage = inputText
 
     // 按 Agent 类型过滤工具权限
-    const allNovelTools = this.sessionFactory.getNovelTools()
+    const allNovelTools = this.novelTools
     const allowedToolNames = config.tools
     const filteredTools = identityOnly
       ? []
       : allNovelTools.filter(t => allowedToolNames.includes(t.name))
-    const toolNamesForLog = filteredTools.map(t => t.name)
+    // 合并动态注入的额外工具（如 Reviser 的 novel_apply_revision）。
+    // extraTools 不进 NOVEL_AGENT_CONFIGS.tools 白名单：白名单是静态配置，
+    // 而 apply_revision 工具通过闭包持有 draft，每次调用都要重新创建。
+    const finalTools = [...filteredTools, ...(overrides?.extraTools ?? [])]
+    const toolNamesForLog = finalTools.map(t => t.name)
 
     // 记录提示词日志（STATIC + SEMI + DYNAMIC 三层）
     this.context.logger.debug(
@@ -993,7 +1320,7 @@ export class NovelOrchestrator {
         suffixPreview: suffixContext.slice(0, 500),
         userMessageLength: userMessage.length,
         userMessagePreview: userMessage.slice(0, 500),
-        toolsCount: filteredTools.length,
+        toolsCount: finalTools.length,
         toolNames: toolNamesForLog,
       },
       'Agent 提示词构建完成',
@@ -1009,7 +1336,7 @@ export class NovelOrchestrator {
     // 创建独立 Session 并调用 LLM
     const startTime = Date.now()
     // 合并温度：持久化覆盖 > 角色默认值（NOVEL_AGENT_CONFIGS）
-    const temperature = this.agentConfigStore.getByType(agentType)
+    const temperature = getNovelAgentTemperature(agentType, this.context.subagentManager)
 
     // 读取该 Agent 在 AgentPage 配置的 model（未配置则 undefined，走默认 Provider）
     // 与群聊模式 buildMembers 行为对齐：让 4 大 Agent 的 LLM 调用按用户在
@@ -1028,11 +1355,14 @@ export class NovelOrchestrator {
     // 期间没有 TEXT_MESSAGE_CONTENT 事件。每 5s 推一个心跳 progress，让用户感知到进度。
     // 首段 text_delta 到达后由工厂的 onFirstText 回调设置 firstTextReceived=true，心跳停止推送。
     // 间隔从 15s 缩短为 5s：避免用户在 approve 后长时间无反馈而失去耐心。
+    // 心跳消息带 prompt 字符数：让用户在等待期间就能判断是否 prompt 过大导致延迟，
+    // 便于诊断 C3 prompt 增强（audit + 派生边）是否让 prompt 膨胀过多。
     let firstTextReceived = false
     const heartbeatTimer = setInterval(() => {
       if (firstTextReceived) return
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000)
       this.emitProgress(options, phase, 'phase_change', {
-        message: `${displayAgentName} 正在等待 LLM 响应...（已等待 ${Math.round((Date.now() - startTime) / 1000)}s）`,
+        message: `${displayAgentName} 正在等待 LLM 响应...（已等待 ${elapsedSec}s，输入约 ${totalInputChars} 字符）`,
       })
     }, 5_000)
 
@@ -1055,7 +1385,7 @@ export class NovelOrchestrator {
         // identity 在同 Agent 重试时继续命中；动态 suffix 放最后，避免其变化拖累身份缓存。
         prefixUserMessage: [sharedContext, agentIdentity, suffixContext].filter(Boolean),
         userMessage,
-        tools: filteredTools,
+        tools: finalTools,
         signal: options?.signal,
         temperature,
         // 透传 AgentPage 配置的 modelId（未配置则 undefined，走默认 Provider）
@@ -1124,7 +1454,7 @@ export class NovelOrchestrator {
       // 正则替换会破坏语义，应由 LLM 从源头学会不输出破折号。
       // 若仍有破折号，Reviewer 的 cliche-scanner 会检测到并触发 revise。
 
-      logResult = result
+      logResult = overrides?.augmentLogResult ? overrides.augmentLogResult(result) : result
       return result
     } catch (err) {
       logStatus = 'error'
@@ -1160,7 +1490,7 @@ export class NovelOrchestrator {
           userMessage,
           taskInput: taskInputForLog,
           userInstructions: userInstructionsForLog,
-          tools: filteredTools.map(t => ({ name: t.name, description: t.description })),
+          tools: finalTools.map(t => ({ name: t.name, description: t.description })),
           toolNames: toolNamesForLog,
           result: logResult,
           resultLength: logResult.length,
@@ -1194,7 +1524,7 @@ export class NovelOrchestrator {
             systemPrompt,
             userMessage,
             taskInput: taskInputForLog,
-            tools: JSON.stringify(filteredTools.map(t => ({ name: t.name, description: t.description }))),
+            tools: JSON.stringify(finalTools.map(t => ({ name: t.name, description: t.description }))),
             toolNames: JSON.stringify(toolNamesForLog),
             result: logResult,
             resultLength: logResult.length,
@@ -1302,157 +1632,130 @@ export class NovelOrchestrator {
   }
 
   /**
-   * 从 Director 输出文本中解析结构化 NarrativeTask
+   * 把 Reviewer 通过 novel_submit_review 工具提交的结构化验收报告格式化为可读文本，
+   * 作为 Reviser 的"审稿意见"注入。
    *
-   * Director 提示词（role-director.md）要求输出包含"任务类型"字段，
-   * 本方法从输出文本中提取任务类型、优先级、高潮目标、悬念持续章数等执行参数，
-   * 让 14 种 NarrativeTaskType（create_suspense/create_reversal/escalate_conflict 等）
-   * 真正传递到 Writer 和下游约束构建，而非被硬编码为 advance_mainline。
+   * 背景：Reviewer 工具化后，raw 文本输出（reviewResult）只剩推理过程/客套话，
+   * 真正的 issues/suggestions/verdict/scores 在 reviewDraft.review 里。旧代码只传
+   * reviewResult 给 Reviser，导致 Reviser 看不到具体问题清单，"修订"变成无的放矢。
    *
-   * 解析策略：正则匹配 Director 输出中的关键字段，失败时回退到 advance_mainline。
+   * 未调用工具（review 为 undefined）时回退为提示文本，让 Reviser 知道结构化报告缺失，
+   * 只能参考下方的"Reviewer 分析过程"段落。
    */
-  private parseDirectorTask(directorOutput: string, rhythmSuggestion: RhythmSuggestion): NarrativeTask {
-    const text = directorOutput
-
-    // 提取任务类型（支持中英文标识）
-    const validTypes: NarrativeTaskType[] = [
-      'advance_mainline', 'advance_subline', 'create_conflict', 'escalate_conflict',
-      'release_info', 'hide_info', 'reinforce_foreshadow', 'recover_foreshadow',
-      'change_relationship', 'change_cognition', 'create_reversal', 'create_suspense',
-      'phase_closure', 'introduce_problem',
+  private formatReviewReportForReviser(
+    review: ReviewDraftHolder['review'],
+  ): string {
+    if (!review) {
+      return '## 结构化审稿报告\n\n（Reviewer 未调用 novel_submit_review 工具提交结构化报告，请参考下方"Reviewer 分析过程"段落自行提取修订要点。）'
+    }
+    const lines: string[] = ['## 结构化审稿报告（Reviewer 通过工具提交，这是修订的主要依据）', '']
+    // 结论
+    const verdictLabel = review.verdict === 'accept' ? '通过'
+      : review.verdict === 'revise' ? '需修订'
+      : review.verdict === 'reject' ? '需重写'
+      : review.verdict ?? '（未提供）'
+    lines.push(`- 验收结论：${verdictLabel}`)
+    if (review.overallScore != null) lines.push(`- 总体评分：${review.overallScore}/10`)
+    // 十维评分（只输出有值的）
+    const scores: Array<[number | null | undefined, string]> = [
+      [review.consistencyScore, '一致性'],
+      [review.characterScore, '角色'],
+      [review.taskCompletionScore, '任务完成'],
+      [review.clueProgressScore, '线索推进'],
+      [review.foreshadowStatusScore, '伏笔状态'],
+      [review.conflictChangeScore, '冲突变化'],
+      [review.pacingScore, '节奏'],
+      [review.infoControlScore, '信息控制'],
+      [review.readerHookScore, '读者钩子'],
+      [review.styleScore, '文风'],
     ]
-    // 中文标签 → NarrativeTaskType 映射
-    const typeLabels: Record<string, NarrativeTaskType> = {
-      '推进主线': 'advance_mainline', '推进副线': 'advance_subline',
-      '创建冲突': 'create_conflict', '升级冲突': 'escalate_conflict',
-      '释放信息': 'release_info', '隐藏信息': 'hide_info',
-      '强化伏笔': 'reinforce_foreshadow', '回收伏笔': 'recover_foreshadow',
-      '改变关系': 'change_relationship', '改变认知': 'change_cognition',
-      '制造突转': 'create_reversal', '制造悬念': 'create_suspense',
-      '阶段收束': 'phase_closure', '引入问题': 'introduce_problem',
+    const scoreParts = scores
+      .filter(([v]) => v != null)
+      .map(([v, label]) => `${label}=${v}`)
+    if (scoreParts.length > 0) {
+      lines.push(`- 十维评分：${scoreParts.join(' / ')}`)
     }
-
-    let taskType: NarrativeTaskType = 'advance_mainline'
-
-    // 先匹配英文标识
-    const englishMatch = validTypes.find(t => new RegExp(`\\b${t}\\b`, 'i').test(text))
-    if (englishMatch) {
-      taskType = englishMatch
+    // 问题清单（核心：Reviser 据此定位修订点）
+    let issues: Array<{ severity?: string; category?: string; description?: string; location?: string }> = []
+    try {
+      const parsed = JSON.parse(review.issues ?? '[]')
+      if (Array.isArray(parsed)) issues = parsed
+    } catch { /* 旧数据可能不是 JSON */ }
+    if (issues.length > 0) {
+      lines.push('')
+      lines.push('### 问题清单（按严重度排序，S1 最致命，必须优先修复）')
+      // S1 > S2 > S3 > S4
+      const severityOrder: Record<string, number> = { S1: 0, S2: 1, S3: 2, S4: 3 }
+      const sorted = [...issues].sort((a, b) =>
+        (severityOrder[a.severity ?? ''] ?? 99) - (severityOrder[b.severity ?? ''] ?? 99))
+      for (const issue of sorted) {
+        const tags: string[] = []
+        if (issue.severity) tags.push(issue.severity)
+        if (issue.category) tags.push(issue.category)
+        const tagStr = tags.length > 0 ? `【${tags.join('|')}】` : ''
+        const loc = issue.location ? `（位置：${issue.location}）` : ''
+        lines.push(`- ${tagStr}${issue.description ?? '(无描述)'}${loc}`)
+      }
     } else {
-      // 再匹配中文标签
-      for (const [label, type] of Object.entries(typeLabels)) {
-        if (text.includes(label)) {
-          taskType = type
-          break
-        }
-      }
+      lines.push('')
+      lines.push('### 问题清单\n（空，Reviewer 未提交具体问题）')
     }
-
-    // 提取优先级
-    let priority: NarrativeTask['priority'] = 'medium'
-    if (/优先级[：:]\s*高|priority[：:]\s*high/i.test(text)) {
-      priority = 'high'
-    } else if (/优先级[：:]\s*低|priority[：:]\s*low/i.test(text)) {
-      priority = 'low'
+    // 修改建议
+    let suggestions: string[] = []
+    try {
+      const parsed = JSON.parse(review.suggestions ?? '[]')
+      if (Array.isArray(parsed)) suggestions = parsed.filter((s): s is string => typeof s === 'string')
+    } catch { /* 旧数据可能不是 JSON */ }
+    if (suggestions.length > 0) {
+      lines.push('')
+      lines.push('### 修改建议')
+      suggestions.forEach((s, i) => lines.push(`${i + 1}. ${s}`))
     }
-
-    // 构建任务对象
-    const task: NarrativeTask = {
-      description: directorOutput,
-      type: taskType,
-      targetEntity: null,
-      priority,
-    }
-
-    // 如果节奏建议是 climax，注入高潮目标
-    if (rhythmSuggestion.rhythm === 'climax' && rhythmSuggestion.climaxIntensity) {
-      task.climaxTarget = {
-        type: rhythmSuggestion.climaxType ?? 'composite',
-        intensity: rhythmSuggestion.climaxIntensity,
-      }
-    }
-
-    // 如果任务类型是 create_suspense，注入悬念持续章数（默认 3 章）
-    if (taskType === 'create_suspense') {
-      const durationMatch = text.match(/悬念持续[：:]\s*(\d+)\s*章/)
-      task.suspenseDuration = durationMatch ? parseInt(durationMatch[1], 10) : 3
-    }
-
-    // 如果任务类型是 escalate_conflict，提取预期强度变化
-    if (taskType === 'escalate_conflict') {
-      const deltaMatch = text.match(/强度变化[：:]\s*([+-]?\d+)/)
-      task.expectedIntensityDelta = deltaMatch ? parseInt(deltaMatch[1], 10) : 1
-    }
-
-    // 提取次要任务（最多 2 个）
-    const secondarySection = text.match(/##\s*次要任务[^\n]*\n([\s\S]*?)(?=\n##\s|$)/i)
-    if (secondarySection) {
-      const secondaryTypes: NarrativeTaskType[] = []
-      for (const validType of validTypes) {
-        if (validType === taskType) continue // 不重复主任务
-        if (new RegExp(`\\b${validType}\\b`, 'i').test(secondarySection[1])) {
-          secondaryTypes.push(validType)
-        }
-        if (secondaryTypes.length >= 2) break
-      }
-      if (secondaryTypes.length > 0) task.secondaryTasks = secondaryTypes
-    }
-
-    // 提取章尾钩子类型 + 描述（v0.2：钩子升级为实体，需要描述文本）
-    const hookSection = text.match(/##\s*章尾钩子设计[^\n]*\n([\s\S]*?)(?=\n##\s|$)/i)
-    if (hookSection) {
-      const hookText = hookSection[1].trim()
-      // 保留完整描述供创建钩子实体
-      task.chapterEndingHookDescription = hookText.slice(0, 200)
-      // 保留现有的类型解析逻辑（suspense/reversal/emotional/action）
-      if (/悬念钩子|suspense/i.test(hookText)) task.chapterEndingHook = 'suspense'
-      else if (/反转钩子|reversal/i.test(hookText)) task.chapterEndingHook = 'reversal'
-      else if (/情感钩子|emotional/i.test(hookText)) task.chapterEndingHook = 'emotional'
-      else if (/行动钩子|action/i.test(hookText)) task.chapterEndingHook = 'action'
-    }
-
-    // 解析 POV 角色
-    const povMatch = directorOutput.match(/##\s*POV[\s\S]*?本章\s*POV\s*角色[：:]\s*(.+)/i)
-    if (povMatch) {
-      const povNames = povMatch[1].split(/[、,，]/).map(s => s.trim()).filter(Boolean)
-      if (povNames.length > 0) task.povCharacters = povNames
-    }
-
-    // 解析场景数
-    const sceneMatch = directorOutput.match(/##\s*场景数[\s\S]*?场景数[：:]\s*(\d)/i)
-    if (sceneMatch) {
-      const n = parseInt(sceneMatch[1], 10)
-      if (n >= 1 && n <= 5) task.sceneCount = n
-    }
-
-    // 解析章节六型定位。Director 输出格式为：
-    // “- 章节定位：high_pressure/advancement/...”
-    const positioningMatch = text.match(/章节定位[：:]\s*(high_pressure|advancement|cultivation|relationship|low_pressure|information)\b/i)
-    if (positioningMatch) {
-      task.positioning = positioningMatch[1].toLowerCase() as NonNullable<NarrativeTask['positioning']>
-    }
-
-    // 解析时间线偏移（相对第1章的天数）
-    // 支持格式："+3天" / "-2天" / "第1天" / "同日" / "3天后"
-    const timeMatch = directorOutput.match(/##\s*时间线偏移[\s\S]*?时间线[：:]\s*(.+)/i)
-    if (timeMatch) {
-      const timeText = timeMatch[1].trim()
-      const plusMatch = timeText.match(/\+(\d+)\s*天/)
-      const minusMatch = timeText.match(/-(\d+)\s*天/)
-      const dayNMatch = timeText.match(/第\s*(\d+)\s*天/)
-      if (plusMatch) {
-        task.timeOffset = parseInt(plusMatch[1], 10)
-      } else if (minusMatch) {
-        task.timeOffset = -parseInt(minusMatch[1], 10)
-      } else if (dayNMatch) {
-        task.timeOffset = parseInt(dayNMatch[1], 10) - 1
-      } else if (/同日|当天|当日/.test(timeText)) {
-        task.timeOffset = 0
-      }
-    }
-
-    return task
+    return lines.join('\n')
   }
+
+  /**
+   * 把 Reviser 通过 novel_apply_revision 工具应用后的修订结果（draft.content）
+   * 追加到 reviser 的 agent_log.result 字段。
+   *
+   * 背景：工具化后 reviser 的 raw 文本输出（reviseResult）只是"我已应用 N 处修订"，
+   * 真正的修订后正文在 draft.content 里（通过工具闭包更新）。不追加的话 agent_log
+   * 看不到修订结果，用户无法在日志面板审查修订后的正文，"修订"过程不可审计。
+   *
+   * 返回值会覆盖 runAgent finally 块里写入 agent_log 的 logResult 字段，
+   * 但不影响 runAgent 的返回值（调用方拿到的仍是 raw result）。
+   */
+  private augmentReviserLogResult(raw: string, draft: RevisionDraftHolder): string {
+    const successful = draft.appliedPatches.filter(p => p.success)
+    const failed = draft.appliedPatches.filter(p => !p.success)
+    const parts: string[] = [raw, '', '---', '', '## 修订后正文（draft.content，由 novel_apply_revision 工具应用）', '', draft.content, '', '---', '', '## 修订统计', '']
+    parts.push(`- 成功应用：${successful.length} 处`)
+    parts.push(`- 定位失败：${failed.length} 处`)
+    if (failed.length > 0) {
+      parts.push('', '### 失败的 patch（原文片段未在章节中找到）')
+      failed.forEach((p, i) => {
+        const preview = p.from.length > 60 ? p.from.slice(0, 60) + '...' : p.from
+        parts.push(`${i + 1}. "${preview}"`)
+      })
+    }
+    return parts.join('\n')
+  }
+
+  /**
+   * parseDirectorTask 已被 novel_submit_narrative_task 工具化方案替代。
+   *
+   * 旧方案让 Director 输出 Markdown 自由文本，再用 18 处正则提取字段：
+   * - 任务类型（advance_mainline/create_suspense 等 14 种枚举）
+   * - 优先级、悬念持续章数、冲突强度变化
+   * - 次要任务段落、章尾钩子设计段落
+   * - POV 角色列表、场景数、章节六型定位、时间线偏移
+   *
+   * LLM 不严格遵守格式时正则解析失败，降级到默认值，Director 的真实意图丢失。
+   *
+   * 新方案：Director 必须调用 novel_submit_narrative_task 工具提交结构化对象，
+   * 工具参数 schema（SubmitNarrativeTaskParams）强制校验，orchestrator 直接读取
+   * draft.task 作为 NarrativeTask，完全绕开正则解析。
+   */
 
   private requireRunContext(): CreationRunContext {
     const run = this.runStorage.getStore()

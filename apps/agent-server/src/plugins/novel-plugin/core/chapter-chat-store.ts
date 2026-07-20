@@ -13,52 +13,21 @@
 
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
+import type {
+  ChapterChatMessage,
+  ChapterChatRole,
+  ChapterChatPhase,
+  ChapterChatMetadata,
+} from '@repo/shared/novel'
 
-/** 聊天消息角色 */
-export type ChapterChatRole = 'user' | 'agent' | 'system'
-
-/** 聊天消息阶段（标识消息产生于哪种场景） */
-export type ChapterChatPhase =
-  | 'pre_creation'
-  | 'checkpoint'
-  | 'discussion'
-  | 'free_chat'
-  | 'review'
-
-/** 章节聊天消息 */
-export interface ChapterChatMessage {
-  id: string
-  projectId: string
-  chapterNumber: number
-  role: ChapterChatRole
-  fromId: string
-  fromName: string
-  content: string
-  phase: ChapterChatPhase
-  metadata?: {
-    /** 检查点 ID（phase=checkpoint 时） */
-    checkpointId?: string
-    /** 检查点决策（phase=checkpoint 时） */
-    decision?: string
-    /** Agent 类型（role=agent 时，如 'director'/'writer'/'character'） */
-    agentType?: string
-    /** 用户 @ 指定的 Agent ID 列表（phase=free_chat 时） */
-    mentionedAgents?: string[]
-    /** 创作模式（'workflow' | 'discussion'） */
-    flowMode?: 'workflow' | 'discussion'
-    /** 群聊运行 ID，用于区分同一章节的多次创作尝试 */
-    discussionRunId?: string
-    /** 群聊消息类型（member/moderator/system/run_start/run_end） */
-    discussionMessageType?: string
-    /** 群聊运行终态 */
-    discussionRunStatus?: 'completed' | 'cancelled' | 'error'
-    /** 该终态是否可从持久化快照恢复 */
-    discussionCanResume?: boolean
-    /** 群聊场景 ID */
-    sceneId?: number
-  }
-  createdAt: number
-}
+// 章节聊天相关类型（ChapterChatMessage/ChapterChatRole/ChapterChatPhase/ChapterChatMetadata）
+// 已迁入 @repo/shared/novel 共享包，此处 re-export 供本插件内部模块沿用相对路径引入。
+export type {
+  ChapterChatMessage,
+  ChapterChatRole,
+  ChapterChatPhase,
+  ChapterChatMetadata,
+} from '@repo/shared/novel'
 
 interface ChatRow {
   id: string

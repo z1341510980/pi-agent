@@ -49,6 +49,13 @@ import { Type, type Static } from 'typebox'
 import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import type { NovelStore } from './novel-store.js'
 import { isAdmissibleNewForeshadow } from './foreshadow-policy.js'
+import type {
+  NarrativeTask,
+  NarrativeTaskType,
+  ChapterEndingHookType,
+  ChapterPositioning,
+  NovelChapterReview,
+} from '@repo/shared/novel'
 
 // ── 工具参数 Schema ──
 
@@ -465,6 +472,74 @@ const UpdateLocationParams = Type.Object({
     Type.Literal('changed'),
     Type.Literal('hidden'),
   ], { description: '地点状态' })),
+})
+
+// ── 物品工具参数 ──
+
+const QueryItemsParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+  /** 可选：按持有者过滤，传角色 ID 返回该角色拥有的所有物品 */
+  ownerId: Type.Optional(Type.String({ description: '按持有者角色 ID 过滤；不传则返回项目所有物品' })),
+})
+
+const CreateItemParams = Type.Object({
+  projectId: Type.String({ description: '项目 ID' }),
+  name: Type.String({ description: '物品名称' }),
+  description: Type.Optional(Type.String({ description: '物品简述' })),
+  type: Type.Optional(Type.Union([
+    Type.Literal('weapon'),
+    Type.Literal('armor'),
+    Type.Literal('artifact'),
+    Type.Literal('consumable'),
+    Type.Literal('key'),
+    Type.Literal('material'),
+    Type.Literal('info'),
+    Type.Literal('misc'),
+  ], { description: '物品类型：weapon(武器)/armor(防具)/artifact(法宝)/consumable(消耗品)/key(关键道具)/material(材料)/info(情报物品)/misc(杂物)' })),
+  ownerId: Type.Optional(Type.String({ description: '持有者角色 ID；不传或空字符串表示无主物品' })),
+  status: Type.Optional(Type.Union([
+    Type.Literal('active'),
+    Type.Literal('lost'),
+    Type.Literal('destroyed'),
+    Type.Literal('transformed'),
+    Type.Literal('sealed'),
+    Type.Literal('transferred'),
+  ], { description: '物品状态：active(可用)/lost(遗失)/destroyed(损毁)/transformed(已转化)/sealed(封印)/transferred(已易主)' })),
+  abilities: Type.Optional(Type.String({ description: '物品能力/效果描述' })),
+  origin: Type.Optional(Type.String({ description: '物品来源描述' })),
+  firstChapter: Type.Optional(Type.Number({ description: '首次出现章节号' })),
+})
+
+const UpdateItemParams = Type.Object({
+  itemId: Type.String({ description: '物品 ID' }),
+  name: Type.Optional(Type.String({ description: '物品名称' })),
+  description: Type.Optional(Type.String({ description: '物品简述' })),
+  type: Type.Optional(Type.Union([
+    Type.Literal('weapon'),
+    Type.Literal('armor'),
+    Type.Literal('artifact'),
+    Type.Literal('consumable'),
+    Type.Literal('key'),
+    Type.Literal('material'),
+    Type.Literal('info'),
+    Type.Literal('misc'),
+  ], { description: '物品类型' })),
+  ownerId: Type.Optional(Type.String({ description: '持有者角色 ID；传空字符串表示变更为无主' })),
+  status: Type.Optional(Type.Union([
+    Type.Literal('active'),
+    Type.Literal('lost'),
+    Type.Literal('destroyed'),
+    Type.Literal('transformed'),
+    Type.Literal('sealed'),
+    Type.Literal('transferred'),
+  ], { description: '物品状态' })),
+  abilities: Type.Optional(Type.String({ description: '物品能力/效果描述' })),
+  origin: Type.Optional(Type.String({ description: '物品来源描述' })),
+  firstChapter: Type.Optional(Type.Number({ description: '首次出现章节号' })),
+})
+
+const DeleteItemParams = Type.Object({
+  itemId: Type.String({ description: '物品 ID' }),
 })
 
 const AskStoryParams = Type.Object({
@@ -1452,6 +1527,121 @@ export function createNovelUpdateLocationTool(store: NovelStore): ToolDefinition
   })
 }
 
+// ── 物品工具 ──
+
+/** 查询项目下所有物品（或按持有者过滤） */
+export function createNovelQueryItemsTool(store: NovelStore): ToolDefinition<typeof QueryItemsParams> {
+  return defineTool({
+    name: 'novel_query_items',
+    label: '查询物品',
+    description:
+      '查询小说项目下的所有物品（武器/防具/法宝/消耗品/关键道具/材料/情报物品/杂物）。' +
+      '包含物品的类型、持有者、状态、能力、来源和首次出现章节。传 ownerId 可按持有者过滤。此工具只读不写。',
+    promptSnippet: '查询物品列表',
+    parameters: QueryItemsParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const items = params.ownerId
+        ? store.listItemsByOwner(params.ownerId)
+        : store.listItems(params.projectId)
+      return {
+        content: [{ type: 'text', text: JSON.stringify(items, null, 2) }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 创建物品 */
+export function createNovelCreateItemTool(store: NovelStore): ToolDefinition<typeof CreateItemParams> {
+  return defineTool({
+    name: 'novel_create_item',
+    label: '创建物品',
+    description:
+      '在小说项目中创建一个新物品，包含类型、持有者、状态、能力、来源。' +
+      '用于追踪角色拥有的关键道具（武器/法宝/钥匙/信物/线索物品等），后续可通过 novel_update_item 推进演变（转手/丢失/封印/损毁）。',
+    promptSnippet: '创建新物品',
+    parameters: CreateItemParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const item = store.createItem({
+        id: randomUUID(),
+        projectId: params.projectId,
+        name: params.name,
+        description: params.description ?? '',
+        type: params.type ?? 'misc',
+        ownerId: params.ownerId && params.ownerId.trim() ? params.ownerId : null,
+        status: params.status ?? 'active',
+        abilities: params.abilities ?? '',
+        origin: params.origin ?? '',
+        firstChapter: params.firstChapter ?? null,
+        chapterSpans: [],
+      })
+      return {
+        content: [{ type: 'text', text: `已创建物品「${params.name}」，ID: ${item.id}` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 更新物品 */
+export function createNovelUpdateItemTool(store: NovelStore): ToolDefinition<typeof UpdateItemParams> {
+  return defineTool({
+    name: 'novel_update_item',
+    label: '更新物品',
+    description:
+      '更新物品的属性，包括名称、类型、持有者、状态、能力、来源。' +
+      '用于推进物品的演变（如转手给新角色、丢失、封印、损毁、升级转化）。' +
+      '当物品转手时，必须同步更新 ownerId 和 status=transferred。',
+    promptSnippet: '更新物品属性',
+    parameters: UpdateItemParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const { itemId, ...updates } = params
+      const patch: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) {
+          // ownerId 传空字符串 → 视为变更为无主
+          if (key === 'ownerId' && value === '') {
+            patch[key] = null
+          } else {
+            patch[key] = value
+          }
+        }
+      }
+      const updated = store.updateItem(itemId, patch as Partial<import('./types.js').NovelItem>)
+      if (!updated) {
+        return {
+          content: [{ type: 'text', text: `物品不存在: ${itemId}` }],
+          details: undefined,
+        }
+      }
+      return {
+        content: [{ type: 'text', text: `物品「${updated.name}」已更新` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/** 删除物品 */
+export function createNovelDeleteItemTool(store: NovelStore): ToolDefinition<typeof DeleteItemParams> {
+  return defineTool({
+    name: 'novel_delete_item',
+    label: '删除物品',
+    description:
+      '删除小说项目中的物品。仅用于物品创建错误或剧情上彻底不再需要的物品；' +
+      '正常演变（丢失/封印/损毁）请使用 novel_update_item 更新 status 字段。',
+    promptSnippet: '删除物品',
+    parameters: DeleteItemParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const deleted = store.deleteItem(params.itemId)
+      return {
+        content: [{ type: 'text', text: deleted ? `物品已删除: ${params.itemId}` : `物品不存在: ${params.itemId}` }],
+        details: undefined,
+      }
+    },
+  })
+}
+
 // ── 世界观要素工具 ──
 
 /** 创建世界观要素 */
@@ -1514,6 +1704,431 @@ export function createNovelUpdateWorldElementTool(store: NovelStore): ToolDefini
 }
 
 /**
+ * 修订草稿持有者
+ *
+ * 由 orchestrator 在调用 Reviser 前创建，通过闭包传递给 novel_apply_revision 工具。
+ * 工具每次被调用时，对 draft.content 做精确字符串替换并记录结果。
+ * Reviser 结束后，orchestrator 读取 draft.content 作为最终正文。
+ *
+ * 设计动机：
+ * 旧方案让 Reviser 输出"原文/修改后"配对文本，再由 applySafeRevision 用正则解析。
+ * 当 LLM 不严格遵守格式时，正则解析失败会走 full 兜底，把"修改意见"当作完整正文落库。
+ * 新方案通过工具协议化输入：LLM 必须调用工具才能修改正文，工具参数 schema 强制结构化，
+ * 工具内部用 String.replace 做精确替换，完全绕开自然语言解析。
+ */
+export interface RevisionDraftHolder {
+  /** 当前正文状态。工具每次调用会更新此字段，多次调用累积修改。 */
+  content: string
+  /** 已应用的修订记录，供 orchestrator 判断是否真的修改过。 */
+  appliedPatches: Array<{ from: string; to: string; success: boolean; reason?: string }>
+}
+
+const ApplyRevisionParams = Type.Object({
+  pairs: Type.Array(Type.Object({
+    from: Type.String({
+      minLength: 1,
+      description: '需要替换的原文片段。必须从章节正文中逐字复制（含标点和换行），工具据此做精确匹配定位。',
+    }),
+    to: Type.String({
+      description: '替换后的文字。可为空字符串表示删除该片段。',
+    }),
+  }), { minItems: 1, description: '一组或多组"原文/修改后"配对，工具会按顺序依次应用' }),
+})
+
+/**
+ * 创建 novel_apply_revision 工具
+ *
+ * ⚠️ 此工具不进入全局 createNovelTools 列表，而是由 orchestrator 在调用 Reviser 时
+ * 通过 runAgent 的 extraTools 参数动态注入。理由：
+ * 1. 工具通过闭包引用 draft 对象，draft 在每次 Reviser 调用时重新创建
+ * 2. 其他 Agent（Director/Writer/Reviewer/Memory）不应看到此工具，避免误用
+ * 3. 工具不在 STATIC 层 schema 中出现，不影响跨 Agent 的 prompt cache 命中率
+ */
+export function createNovelApplyRevisionTool(draft: RevisionDraftHolder): ToolDefinition<typeof ApplyRevisionParams> {
+  return defineTool({
+    name: 'novel_apply_revision',
+    label: '应用修订',
+    description:
+      '对章节正文做精确字符串替换。通过 pairs 参数传入一组或多组"原文片段/修改后片段"配对，' +
+      '工具会按顺序在当前章节正文中查找 from 片段并替换为 to。' +
+      'from 片段必须从章节正文中逐字复制（含标点和换行），否则无法定位。' +
+      '可多次调用此工具，每次调用都在上一次的结果上继续修改。' +
+      '不要在对话文本中输出"原文/修改后"配对，那不会被系统识别，必须调用此工具。',
+    promptSnippet: '对章节正文应用精确修订（原文→修改后）',
+    parameters: ApplyRevisionParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const results: Array<{ success: boolean; reason?: string; preview: string }> = []
+      let appliedCount = 0
+
+      for (const pair of params.pairs) {
+        if (draft.content.includes(pair.from)) {
+          draft.content = draft.content.replace(pair.from, pair.to)
+          draft.appliedPatches.push({ ...pair, success: true })
+          appliedCount++
+          results.push({
+            success: true,
+            preview: pair.to.length > 30 ? pair.to.slice(0, 30) + '...' : pair.to,
+          })
+        } else {
+          draft.appliedPatches.push({ ...pair, success: false, reason: '原文片段未在章节中找到' })
+          results.push({
+            success: false,
+            reason: '原文片段未在章节中找到',
+            preview: pair.from.length > 30 ? pair.from.slice(0, 30) + '...' : pair.from,
+          })
+        }
+      }
+
+      const summary = `已应用 ${appliedCount}/${params.pairs.length} 个修订。\n` +
+        results.map((r, i) => {
+          const mark = r.success ? '✓' : '✗'
+          const detail = r.success ? `已替换为"${r.preview}"` : `${r.reason}："${r.preview}"`
+          return `${mark} ${i + 1}. ${detail}`
+        }).join('\n')
+
+      return {
+        content: [{ type: 'text', text: summary }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/**
+ * 叙事任务草稿持有者
+ *
+ * 由 orchestrator 在调用 Director 前创建，通过闭包传递给 novel_submit_narrative_task 工具。
+ * Director 调用工具提交结构化任务对象，工具内部把对象存入 draft.task。
+ * Director 结束后，orchestrator 读取 draft.task 作为 NarrativeTask，完全绕开正则解析。
+ *
+ * 设计动机：
+ * 旧方案让 Director 输出 Markdown 自由文本，再用 parseDirectorTask 用 18 处正则提取字段。
+ * LLM 不严格遵守格式时正则解析失败，降级到默认值，Director 的真实意图丢失。
+ * 新方案通过工具协议化输入：LLM 必须按 schema 提交结构化对象，工具参数 schema 强制校验。
+ */
+export interface NarrativeTaskDraftHolder {
+  /** Director 提交的叙事任务对象。undefined 表示 Director 未调用工具。 */
+  task?: NarrativeTask
+  /** Director 的原始自然语言输出（推理过程等），用于审计和回退展示。 */
+  rawOutput?: string
+}
+
+const NarrativeTaskTypeEnum = Type.Union([
+  Type.Literal('advance_mainline'),
+  Type.Literal('advance_subline'),
+  Type.Literal('create_conflict'),
+  Type.Literal('escalate_conflict'),
+  Type.Literal('release_info'),
+  Type.Literal('hide_info'),
+  Type.Literal('reinforce_foreshadow'),
+  Type.Literal('recover_foreshadow'),
+  Type.Literal('change_relationship'),
+  Type.Literal('change_cognition'),
+  Type.Literal('create_reversal'),
+  Type.Literal('create_suspense'),
+  Type.Literal('phase_closure'),
+  Type.Literal('introduce_problem'),
+])
+
+const ChapterEndingHookTypeEnum = Type.Union([
+  Type.Literal('suspense'),
+  Type.Literal('reversal'),
+  Type.Literal('emotional'),
+  Type.Literal('action'),
+  Type.Literal('none'),
+])
+
+const ChapterPositioningEnum = Type.Union([
+  Type.Literal('high_pressure'),
+  Type.Literal('advancement'),
+  Type.Literal('cultivation'),
+  Type.Literal('relationship'),
+  Type.Literal('low_pressure'),
+  Type.Literal('information'),
+])
+
+const SubmitNarrativeTaskParams = Type.Object({
+  taskType: NarrativeTaskTypeEnum,
+  priority: Type.Union([Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')]),
+  narrativeTask: Type.String({
+    minLength: 10,
+    description: '给 Writer 看的完整叙事任务文本。包含本章核心目标、情节点、约束说明等，Writer 会基于此创作正文。',
+  }),
+  secondaryTasks: Type.Array(NarrativeTaskTypeEnum, {
+    maxItems: 2,
+    description: '次要任务类型（最多 2 个，允许一章兼顾多个任务）。无次要任务时传空数组。',
+  }),
+  chapterEndingHook: Type.Object({
+    type: ChapterEndingHookTypeEnum,
+    description: Type.String({ description: '章尾钩子的完整描述文本（用于创建钩子实体）' }),
+  }),
+  povCharacters: Type.Array(Type.String(), {
+    minItems: 1,
+    description: '本章 POV 角色名列表（至少 1 个），Writer 必须严格使用这些角色的视角',
+  }),
+  sceneCount: Type.Integer({ minimum: 1, maximum: 5, description: '本章场景数（1=单场景写透，2-3=多场景快推）' }),
+  positioning: ChapterPositioningEnum,
+  timelineOffset: Type.Object({
+    days: Type.Integer({
+      description: '相对第 1 章的天数偏移。第 1 章 = 0，+3 表示 3 天后，-2 表示 2 天前',
+    }),
+    description: Type.String({ description: '原始时间线描述（如"3 天后"、"同日"）' }),
+  }),
+  suspenseDuration: Type.Optional(Type.Integer({
+    minimum: 1,
+    maximum: 10,
+    description: '悬念持续章数（仅 taskType=create_suspense 时必填，默认 3 章）',
+  })),
+  intensityDelta: Type.Optional(Type.Integer({
+    minimum: -10,
+    maximum: 10,
+    description: '预期冲突强度变化（仅 taskType=escalate_conflict 时必填，如 +5 表示强度提升 5）',
+  })),
+})
+
+/**
+ * 创建 novel_submit_narrative_task 工具
+ *
+ * ⚠️ 此工具不进入全局 createNovelTools 列表，而是由 orchestrator 在调用 Director 时
+ * 通过 runAgent 的 extraTools 参数动态注入。理由：
+ * 1. 工具通过闭包引用 draft 对象，draft 在每次 Director 调用时重新创建
+ * 2. 其他 Agent 不应看到此工具，避免误用
+ * 3. 工具不在 STATIC 层 schema 中出现，不影响跨 Agent 的 prompt cache 命中率
+ */
+export function createNovelSubmitNarrativeTaskTool(
+  draft: NarrativeTaskDraftHolder,
+): ToolDefinition<typeof SubmitNarrativeTaskParams> {
+  return defineTool({
+    name: 'novel_submit_narrative_task',
+    label: '提交叙事任务',
+    description:
+      '提交本章的结构化叙事任务。Director 必须调用此工具来提交叙事任务，不要在对话文本中输出 Markdown 格式的任务文档。' +
+      '工具参数 schema 强制结构化，所有字段必须按 schema 提交。' +
+      '可在对话文本中输出推理过程和规划思路，但结构化任务对象必须通过此工具提交。',
+    promptSnippet: '提交结构化叙事任务（任务类型/优先级/POV/钩子/时间线等）',
+    parameters: SubmitNarrativeTaskParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const task: NarrativeTask = {
+        description: params.narrativeTask,
+        type: params.taskType,
+        targetEntity: null,
+        priority: params.priority,
+      }
+
+      if (params.secondaryTasks && params.secondaryTasks.length > 0) {
+        // 过滤掉与主任务相同的次要任务
+        task.secondaryTasks = params.secondaryTasks.filter(t => t !== params.taskType)
+      }
+
+      if (params.chapterEndingHook) {
+        task.chapterEndingHook = params.chapterEndingHook.type
+        task.chapterEndingHookDescription = params.chapterEndingHook.description.slice(0, 200)
+      }
+
+      if (params.povCharacters && params.povCharacters.length > 0) {
+        task.povCharacters = params.povCharacters.filter(Boolean)
+      }
+
+      if (params.sceneCount) {
+        task.sceneCount = params.sceneCount
+      }
+
+      if (params.positioning) {
+        task.positioning = params.positioning as ChapterPositioning
+      }
+
+      if (params.timelineOffset) {
+        task.timeOffset = params.timelineOffset.days
+      }
+
+      // 悬念持续章数（仅 create_suspense 任务）
+      if (params.taskType === 'create_suspense' && params.suspenseDuration !== undefined) {
+        task.suspenseDuration = params.suspenseDuration
+      }
+
+      // 冲突强度变化（仅 escalate_conflict 任务）
+      if (params.taskType === 'escalate_conflict' && params.intensityDelta !== undefined) {
+        task.expectedIntensityDelta = params.intensityDelta
+      }
+
+      draft.task = task
+
+      const summary = `叙事任务已提交：\n` +
+        `- 任务类型：${task.type}\n` +
+        `- 优先级：${task.priority}\n` +
+        `- POV 角色：${task.povCharacters?.join('、') ?? '（未指定）'}\n` +
+        `- 场景数：${task.sceneCount ?? '（未指定）'}\n` +
+        `- 章节定位：${task.positioning ?? '（未指定）'}\n` +
+        `- 章尾钩子：${task.chapterEndingHook ?? '（未指定）'}\n` +
+        `- 时间线偏移：${task.timeOffset ?? 0} 天\n` +
+        (task.secondaryTasks?.length ? `- 次要任务：${task.secondaryTasks.join('、')}\n` : '')
+
+      return {
+        content: [{ type: 'text', text: summary }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/**
+ * 章节验收草稿持有者
+ *
+ * 由 orchestrator 在调用 Reviewer 前创建，通过闭包传递给 novel_submit_review 工具。
+ * Reviewer 调用工具提交结构化验收对象，工具内部把对象存入 draft.review。
+ * Reviewer 结束后，orchestrator 读取 draft.review 作为 NovelChapterReview 的核心字段，
+ * 完全绕开正则解析。
+ *
+ * 设计动机：
+ * 旧方案让 Reviewer 输出 Markdown 报告（十维评分表 + Findings 表格 + 结论），
+ * 再由 parseChapterReviewReport 用正则提取 11 个评分 + verdict + issues + suggestions。
+ * LLM 不严格遵守格式时正则解析失败，评分/结论降级为 null，Reviewer 的真实判断丢失。
+ * 新方案通过工具协议化输入：LLM 必须按 schema 提交结构化对象，工具参数 schema 强制校验。
+ */
+export interface ReviewDraftHolder {
+  /** Reviewer 提交的验收对象（不含 id/projectId/chapterId/reviewedBy/createdAt，这些由 saveReview 填充）。 */
+  review?: Omit<NovelChapterReview, 'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt'>
+  /** Reviewer 的原始自然语言输出（推理过程等），用于审计和回退展示。 */
+  rawOutput?: string
+}
+
+const SubmitReviewParams = Type.Object({
+  consistencyScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '一致性评分（0-10）：角色状态/世界规则/时间线是否与既有设定一致',
+  })),
+  characterScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '角色评分（0-10）：角色言行是否符合人设、弧光是否推进',
+  })),
+  taskCompletionScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '任务完成评分（0-10）：本章叙事任务是否完成',
+  })),
+  clueProgressScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '线索推进评分（0-10）：本章线索是否按计划推进',
+  })),
+  foreshadowStatusScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '伏笔状态评分（0-10）：本章伏笔的埋设/维持/回收是否合理',
+  })),
+  conflictChangeScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '冲突变化评分（0-10）：本章冲突推进是否符合节奏规划',
+  })),
+  pacingScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '节奏评分（0-10）：章节节奏是否符合本章节奏建议',
+  })),
+  infoControlScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '信息控制评分（0-10）：信息差/视角限制是否维持',
+  })),
+  readerHookScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '读者钩子评分（0-10）：章尾钩子是否有效',
+  })),
+  styleScore: Type.Optional(Type.Integer({
+    minimum: 0,
+    maximum: 10,
+    description: '文风评分（0-10）：是否符合项目文风档案',
+  })),
+  overallScore: Type.Optional(Type.Number({
+    minimum: 0,
+    maximum: 10,
+    description: '总体评分（0-10，允许小数）：综合评价',
+  })),
+  verdict: Type.Union([
+    Type.Literal('accept'),
+    Type.Literal('revise'),
+    Type.Literal('reject'),
+  ], { description: '验收结论：accept=通过 / revise=需修订 / reject=重写' }),
+  issues: Type.Array(Type.Object({
+    severity: Type.Union([
+      Type.Literal('S1'),
+      Type.Literal('S2'),
+      Type.Literal('S3'),
+      Type.Literal('S4'),
+    ], { description: '严重度：S1=致命 / S2=严重 / S3=一般 / S4=轻微' }),
+    category: Type.String({ description: '问题分类（如 continuity/character/pacing/style）' }),
+    description: Type.String({ description: '问题描述' }),
+    location: Type.Optional(Type.String({ description: '问题位置（如"第12段"或引用原文片段）' })),
+  }), { description: '发现的问题列表（空数组表示无问题）' }),
+  suggestions: Type.Array(Type.String(), {
+    description: '修改建议列表（与 issues 一一对应或整体建议，空数组表示无建议）',
+  }),
+})
+
+/**
+ * 创建 novel_submit_review 工具
+ *
+ * ⚠️ 此工具不进入全局 createNovelTools 列表，而是由 orchestrator / discussion runner
+ * 在调用 Reviewer 时通过 extraTools 参数动态注入。理由：
+ * 1. 工具通过闭包引用 draft 对象，draft 在每次 Reviewer 调用时重新创建
+ * 2. 其他 Agent（Director/Writer/Reviser/Memory）不应看到此工具，避免误用
+ * 3. 工具不在 STATIC 层 schema 中出现，不影响跨 Agent 的 prompt cache 命中率
+ */
+export function createNovelSubmitReviewTool(
+  draft: ReviewDraftHolder,
+): ToolDefinition<typeof SubmitReviewParams> {
+  return defineTool({
+    name: 'novel_submit_review',
+    label: '提交验收报告',
+    description:
+      '提交本章的结构化验收报告。Reviewer 必须调用此工具来提交十维评分、结论和问题列表，' +
+      '不要在对话文本中输出 Markdown 格式的评分表或 Findings 表格。' +
+      '工具参数 schema 强制结构化，所有字段必须按 schema 提交。' +
+      '可在对话文本中输出推理过程和分析思路，但结构化验收对象必须通过此工具提交。',
+    promptSnippet: '提交结构化验收报告（十维评分/结论/问题列表/建议）',
+    parameters: SubmitReviewParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const review: Omit<NovelChapterReview, 'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt'> = {
+        consistencyScore: params.consistencyScore ?? null,
+        characterScore: params.characterScore ?? null,
+        taskCompletionScore: params.taskCompletionScore ?? null,
+        clueProgressScore: params.clueProgressScore ?? null,
+        foreshadowStatusScore: params.foreshadowStatusScore ?? null,
+        conflictChangeScore: params.conflictChangeScore ?? null,
+        pacingScore: params.pacingScore ?? null,
+        infoControlScore: params.infoControlScore ?? null,
+        readerHookScore: params.readerHookScore ?? null,
+        styleScore: params.styleScore ?? null,
+        overallScore: params.overallScore ?? null,
+        verdict: params.verdict,
+        issues: JSON.stringify(params.issues ?? []),
+        suggestions: JSON.stringify(params.suggestions ?? []),
+      }
+
+      draft.review = review
+
+      const issuesCount = params.issues?.length ?? 0
+      const suggestionsCount = params.suggestions?.length ?? 0
+      const summary = `验收报告已提交：\n` +
+        `- 结论：${params.verdict}\n` +
+        `- 总体评分：${params.overallScore ?? '（未提供）'}\n` +
+        `- 十维评分：一致性=${params.consistencyScore ?? '-'}/角色=${params.characterScore ?? '-'}/任务=${params.taskCompletionScore ?? '-'}/线索=${params.clueProgressScore ?? '-'}/伏笔=${params.foreshadowStatusScore ?? '-'}/冲突=${params.conflictChangeScore ?? '-'}/节奏=${params.pacingScore ?? '-'}/信息=${params.infoControlScore ?? '-'}/钩子=${params.readerHookScore ?? '-'}/文风=${params.styleScore ?? '-'}\n` +
+        `- 问题数：${issuesCount}\n` +
+        `- 建议数：${suggestionsCount}`
+
+      return {
+        content: [{ type: 'text', text: summary }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/**
  * 获取所有小说工具
  *
  * 用于注入到 Pi SDK session 的 customTools 参数。
@@ -1543,6 +2158,11 @@ export function createNovelTools(store: NovelStore): ToolDefinition[] {
     createNovelQueryLocationsTool(store),
     createNovelCreateLocationTool(store),
     createNovelUpdateLocationTool(store),
+    // 物品工具
+    createNovelQueryItemsTool(store),
+    createNovelCreateItemTool(store),
+    createNovelUpdateItemTool(store),
+    createNovelDeleteItemTool(store),
     createNovelCreateWorldElementTool(store),
     createNovelUpdateWorldElementTool(store),
   ]

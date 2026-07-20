@@ -17,6 +17,7 @@ export type NovelNodeType =
   | 'location'
   | 'world_element'
   | 'info_layer'
+  | 'item'
 
 // ── Store 状态 ──
 
@@ -27,6 +28,11 @@ export interface NovelUiState {
 
   // ── 视图模式（矩阵/画布）──
   viewMode: 'matrix' | 'canvas'
+
+  // ── 画布布局模式 ──
+  // grouped：按实体类型分区（角色左、势力右、伏笔/地点/世界要素横向）
+  // force：d3-force 力导向布局，相关节点自然聚类（已保存位置的节点锁定不动）
+  canvasLayoutMode: 'grouped' | 'force'
 
   // ── 画布连线关系类型（工具栏选择，画布 onConnect 读取）──
   canvasEdgeType: NovelEdgeType
@@ -48,18 +54,33 @@ export interface NovelUiState {
   // ts 用于触发 effect 即使 chapter 相同；不持久化
   matrixScrollTarget: { chapter: number; ts: number } | null
 
+  // ── 画布高亮（用于"高亮邻居"和"查找路径"交互）──
+  // 高亮的节点 ID 集合（带样式前缀的 xyflow node id，如 "character:c-1"）
+  highlightedNodeIds: string[]
+  // 高亮的边 ID 集合（xyflow edge id）
+  highlightedEdgeIds: string[]
+  // 路径查找的起点节点 id（选中第一个节点后保存，选中第二个节点时触发查找）
+  pathFindSourceId: string | null
+
   // ── 加载状态 ──
   loading: boolean
   error: string | null
 
   // ── Actions ──
   setViewMode: (mode: 'matrix' | 'canvas') => void
+  setCanvasLayoutMode: (mode: 'grouped' | 'force') => void
   setCanvasEdgeType: (edgeType: NovelEdgeType) => void
   setPlayheadChapter: (chapter: number) => void
   setCreationMode: (mode: 'manual' | 'ai-arrange' | null) => void
   toggleCollapsedGroup: (kind: string) => void
   toggleExpandedVolume: (id: string) => void
   setMatrixScrollTarget: (target: { chapter: number; ts: number } | null) => void
+  /** 设置画布高亮（节点和边） */
+  setHighlight: (nodeIds: string[], edgeIds: string[]) => void
+  /** 清除画布高亮 */
+  clearHighlight: () => void
+  /** 设置路径查找起点（传 null 清除） */
+  setPathFindSource: (id: string | null) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
   selectNode: (id: string | null, type: NovelNodeType | null) => void
@@ -79,6 +100,8 @@ export const useNovelUiStore = create<NovelUiState>()(
 
       viewMode: 'matrix',
 
+      canvasLayoutMode: 'grouped',
+
       canvasEdgeType: 'rivalry',
 
       playheadChapter: 1,
@@ -91,11 +114,16 @@ export const useNovelUiStore = create<NovelUiState>()(
 
       matrixScrollTarget: null,
 
+      highlightedNodeIds: [],
+      highlightedEdgeIds: [],
+      pathFindSourceId: null,
+
       loading: false,
       error: null,
 
       // ── Actions ──
       setViewMode: (mode) => set({ viewMode: mode }),
+      setCanvasLayoutMode: (mode) => set({ canvasLayoutMode: mode }),
       setCanvasEdgeType: (edgeType) => set({ canvasEdgeType: edgeType }),
       setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
       setCreationMode: (mode) => set({ creationMode: mode }),
@@ -119,6 +147,11 @@ export const useNovelUiStore = create<NovelUiState>()(
           }
         }),
       setMatrixScrollTarget: (target) => set({ matrixScrollTarget: target }),
+      setHighlight: (nodeIds, edgeIds) =>
+        set({ highlightedNodeIds: nodeIds, highlightedEdgeIds: edgeIds }),
+      clearHighlight: () =>
+        set({ highlightedNodeIds: [], highlightedEdgeIds: [] }),
+      setPathFindSource: (id) => set({ pathFindSourceId: id }),
 
       setLoading: (loading) => set({ loading }),
       setError: (error) => set({ error }),
@@ -131,6 +164,9 @@ export const useNovelUiStore = create<NovelUiState>()(
           collapsedGroups: [],
           expandedVolumes: [],
           matrixScrollTarget: null,
+          highlightedNodeIds: [],
+          highlightedEdgeIds: [],
+          pathFindSourceId: null,
         })
         get().clearSelection()
         get().setPlayheadChapter(1)
@@ -142,10 +178,21 @@ export const useNovelUiStore = create<NovelUiState>()(
       // 只持久化需要跨会话保留的 UI 字段：视图模式、画布连线类型、折叠分组、卷展开状态
       partialize: (state) => ({
         viewMode: state.viewMode,
+        canvasLayoutMode: state.canvasLayoutMode,
         canvasEdgeType: state.canvasEdgeType,
         collapsedGroups: state.collapsedGroups,
         expandedVolumes: state.expandedVolumes,
       }),
+      // 自定义 merge：旧版本 localStorage 没有 canvasLayoutMode 字段时填回默认值 'grouped'
+      // 避免从旧数据反序列化出 undefined 导致按钮 variant 判断失效
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<NovelUiState>
+        return {
+          ...current,
+          ...p,
+          canvasLayoutMode: p.canvasLayoutMode ?? 'grouped',
+        }
+      },
     },
   ),
 )

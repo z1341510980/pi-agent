@@ -107,6 +107,7 @@ describe('NovelEntityGenerator batch generation', () => {
       foreshadows: [],
       factions: [],
       locations: [],
+      items: [],
     })
 
     expect(run.itemCount).toBe(5)
@@ -137,6 +138,7 @@ describe('NovelEntityGenerator batch generation', () => {
       foreshadows: [],
       factions: [],
       locations: [],
+      items: [],
     })
 
     expect(run.retryCount).toBe(1)
@@ -164,6 +166,7 @@ describe('NovelEntityGenerator batch generation', () => {
       foreshadows: [],
       factions: [],
       locations: [],
+      items: [],
     }, undefined, controller.signal)).rejects.toThrow('用户手动停止')
     expect(sessionOptions).toHaveLength(0)
   })

@@ -9,7 +9,7 @@
  * - setup 中不再调用 registerMigration（静态迁移已涵盖全部 013-026）
  *
  * setup 流程：
- * 1. 初始化服务（NovelStore / PromptManager / NovelPromptBuilder / NovelSessionFactory / NovelEngine / tools）
+ * 1. 初始化服务（NovelStore / PromptManager / NovelPromptBuilder / NovelEngine / tools）
  * 2. 装饰 Fastify 实例（供其他插件和路由使用）
  * 3. 注册 Pi Session 工具（注入到 customTools）
  * 4. 注册 REST API 路由（自动加 /api/plugins/novel 前缀）
@@ -22,7 +22,7 @@ import type { Plugin, PluginContext } from '../../core/plugin/plugin-types.js'
 import { novelMigrations } from './novel-migrations.js'
 import { createNovelServices } from './novel-services.js'
 import { createNovelRoutes } from './novel-routes.js'
-import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './core/novel-agents.js'
+import { NOVEL_AGENT_CONFIGS, type NovelAgentType, getNovelAgentTemperature } from './core/novel-agents.js'
 
 /** Novel Team ID（全局唯一，避免重复创建） */
 const NOVEL_TEAM_ID = 'novel-team'
@@ -61,7 +61,6 @@ export function createNovelPlugin(): Plugin {
       context.registerService('novelStore', services.store)
       context.registerService('promptManager', services.promptManager)
       context.registerService('novelPromptBuilder', services.promptBuilder)
-      context.registerService('novelSessionFactory', services.sessionFactory)
       context.registerService('novelEngine', services.engine)
       context.registerService('novelOrchestrator', services.orchestrator)
 
@@ -108,13 +107,13 @@ export function createNovelPlugin(): Plugin {
           if (agentManager.getAgent(config.id)) {
             // 已注册则同步最新的 temperature（用户在 /agent-config 调整后需立即生效）
             // 同时重新注入 systemPromptBuilder / toolFilter：从持久化加载的 Agent 不含函数字段
-            const temperature = services.agentConfigStore.getByType(agentType as NovelAgentType)
+            const temperature = getNovelAgentTemperature(agentType as NovelAgentType, services.agentManager)
             agentManager.updateAgent(config.id, { temperature, systemPromptBuilder, toolFilter })
             context.logger.debug({ agentId: config.id, agentType, temperature }, 'Novel Agent 已注册，同步温度与回调')
             continue
           }
           try {
-            const temperature = services.agentConfigStore.getByType(agentType as NovelAgentType)
+            const temperature = getNovelAgentTemperature(agentType as NovelAgentType, services.agentManager)
             agentManager.registerAgent({
               id: config.id,
               name: config.name,

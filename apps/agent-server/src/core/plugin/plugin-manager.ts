@@ -22,6 +22,7 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore } from '../agent/session-store.js'
 import { withAgentConfig } from '../agent/pi-session.js'
+import { cancelDebug } from '../../plugins/novel-plugin/utils/cancel-debug-log.js'
 import { StreamEmitter } from '../agent/stream-emitter.js'
 import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
@@ -790,15 +791,19 @@ export class PluginManager {
         // （参考 core/agent/pi-session.ts），不再拼接到 userMessage 头部，
         // 从而保持 userMessage 纯净，不破坏 prompt cache 前缀匹配。
         //
-        // ⚠️ tools 白名单透传：options.tools 是 PiToolDefinition[]（含 execute 实现），
-        // 但 AgentConfig.tools 是 string[]（工具名白名单）。
-        // pi-session.ts 会把全部 pluginSessionTools 注入 customTools，
-        // 然后按 AgentConfig.tools 做白名单过滤（pi-session.ts line 145）。
+        // ⚠️ tools 双轨透传：options.tools 是 PiToolDefinition[]（含 execute 实现）。
+        // - tools: string[] — 工具名白名单，用于过滤 pluginSessionTools
+        // - extraTools: ToolDefinition[] — 携带 execute 实现的工具实例，直接加入 customTools
+        //
+        // 双轨的原因：pluginSessionTools 是全局静态注册的工具（如 novel_save_chapter），
+        // 只需要名字白名单过滤即可复用；而 extraTools 是 per-call 闭包工具
+        // （如 novel_submit_narrative_task，绑定 draft 对象），其实例不在 pluginSessionTools 中，
+        // 必须通过 extraTools 携带 execute 实现注入到 customTools，否则 LLM 看不到工具。
         //
         // 三种语义：
         // - options.tools === undefined → 不透传 → AgentConfig.tools undefined → 不过滤（默认 Agent）
         // - options.tools === [] → 透传 tools: [] → 清空 customTools（Writer/Reviewer 无工具场景）
-        // - options.tools === [...] → 透传 tools: [...] → 白名单过滤
+        // - options.tools === [...] → 透传 tools: [...] + extraTools: [...] → 白名单过滤 + 闭包工具注入
         //
         // 之前用 `length > 0` 判断导致 tools=[] 被误解为"不过滤"，customTools 保留全部。
         // 现在 Array.isArray 区分 undefined 和 []：[] 也透传，pi-session 看到 [] 后清空。
@@ -808,7 +813,10 @@ export class PluginManager {
           systemPrompt: options.systemPrompt,
           ...(options.modelId ? { model: options.modelId } : {}),
           ...(Array.isArray(options.tools)
-            ? { tools: options.tools.map(t => t.name) }
+            ? {
+                tools: options.tools.map(t => t.name),
+                extraTools: options.tools,
+              }
             : {}),
         }
 
@@ -863,6 +871,7 @@ export class PluginManager {
           if (event.type === 'message_end') {
             const message = event.message as Record<string, unknown> | undefined
             const terminalError = getAssistantTerminalError(message)
+            cancelDebug('message_end-received', { threadId, stopReason: message?.stopReason, hasError: !!terminalError, errorMessage: terminalError || undefined })
             if (terminalError !== null) {
               lastErrorMessage = terminalError
             }
@@ -990,14 +999,17 @@ export class PluginManager {
             // Anthropic 限制最多 4 个 breakpoint（含 system 的 1 个），因此 prefix 最多打 3 个。
             // 兼容多种 provider payload 结构（Anthropic / OpenAI 兼容）：
             // - Anthropic: system 为 string 或 content blocks 数组；messages 是数组
-            // - OpenAI 兼容: system 通常在 messages[0]，无需显式标记（自动缓存）
+            // - OpenAI 兼容: system 在 messages[0].role === 'system'，无 payload.system 字段。
+            //   OpenAI 要求 system 消息 content 为 string，不能包装为 content blocks 数组，
+            //   因此不给 system 消息单独打 breakpoint。第一条 prefix user 消息的 breakpoint
+            //   会将 [system, prefix1] 一起缓存，与 Anthropic 格式等价。
             // 仅在检测到可识别结构时打标，未识别结构保持原样（不破坏现有逻辑）。
             const applyCacheBreakpoints = (rawPayload: unknown): unknown => {
               if (!options.prefixUserMessage) return rawPayload
               const payload = rawPayload as Record<string, unknown>
               const messages = Array.isArray(payload.messages) ? [...payload.messages] : null
 
-              // 1) 处理 system 字段（Anthropic 风格）：在 system 末尾打 breakpoint
+              // 1) 处理 system prompt（仅 Anthropic 格式：payload.system 为 string 或 content blocks）
               if (typeof payload.system === 'string' && payload.system.length > 0) {
                 payload.system = [{
                   type: 'text',
@@ -1010,26 +1022,34 @@ export class PluginManager {
                   payload.system = [...payload.system.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
                 }
               }
+              // OpenAI 兼容格式：system 在 messages[0].role === 'system'，content 为 string。
+              // 不给 system 消息单独打 breakpoint（包装为数组会破坏 OpenAI API 兼容性），
+              // 由下方 prefix user 消息的 breakpoint 覆盖 [system, prefix] 一起缓存。
 
               // 2) 处理 messages 数组：给每条 prefix user 消息的最后一个 content block 打 breakpoint
               //    prefixUserMessage 可能是 string（1条）或 string[]（多条）。
               //    prefix 消息在 createSession 中已作为首 N 条 user 消息注入到 messages 数组前部。
               //    每条 prefix 末尾打 breakpoint，使得：
               //    - shared 部分末尾 breakpoint → [system, shared] 跨 Agent 命中缓存
-              //    - suffix 部分末尾 breakpoint → [system, shared, suffix] 同 Agent 重试命中
+              //    - identity 部分末尾 breakpoint → [system, shared, identity] 同 Agent 重试命中
               //    Anthropic 限制最多 4 个 breakpoint（含 system 的 1 个），prefix 最多打 3 个。
+              //
+              //    ⚠️ 原代码用 break 跳过非 user 消息会导致 OpenAI 格式下 messages[0]
+              //    为 system 消息时直接退出循环，所有 prefix 消息都打不上 breakpoint。
+              //    改用 continue 跳过 + breakpointCount 计数，确保找到并标记前 3 条 user 消息。
               if (messages && messages.length > 0) {
                 const prefixes = Array.isArray(options.prefixUserMessage)
                   ? options.prefixUserMessage
                   : [options.prefixUserMessage]
                 // 最多给前 3 条 prefix 消息打 breakpoint（加上 system 共 4 个，不超 Anthropic 限制）
-                const maxPrefixBreakpoints = 3
-                const prefixCount = Math.min(prefixes.length, maxPrefixBreakpoints, messages.length)
+                const maxBreakpoints = Math.min(prefixes.length, 3)
                 let markedAny = false
+                let breakpointCount = 0
 
-                for (let i = 0; i < prefixCount; i++) {
+                for (let i = 0; i < messages.length && breakpointCount < maxBreakpoints; i++) {
                   const msg = messages[i] as Record<string, unknown>
-                  if (!msg || msg.role !== 'user') break
+                  // 跳过非 user 消息（如 OpenAI 格式的 system 消息），不 break
+                  if (!msg || msg.role !== 'user') continue
 
                   const content = msg.content
                   if (typeof content === 'string') {
@@ -1038,6 +1058,7 @@ export class PluginManager {
                       content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }],
                     }
                     markedAny = true
+                    breakpointCount++
                   } else if (Array.isArray(content) && content.length > 0) {
                     const lastBlock = content[content.length - 1] as Record<string, unknown>
                     if (lastBlock && typeof lastBlock === 'object' && !lastBlock.cache_control) {
@@ -1046,6 +1067,7 @@ export class PluginManager {
                         content: [...content.slice(0, -1), { ...lastBlock, cache_control: { type: 'ephemeral' } }],
                       }
                       markedAny = true
+                      breakpointCount++
                     }
                   }
                 }
@@ -1103,13 +1125,27 @@ export class PluginManager {
 
         // 中止信号转发
         if (options.signal) {
+          const signalAlreadyAborted = options.signal.aborted
+          cancelDebug('createSession-register-listener', { threadId, signalAlreadyAborted, hasAgent: !!(threadSession.session as any).agent })
+          if (signalAlreadyAborted) {
+            // signal 已 abort：立即调用 session.abort()。但此时 session 还没有 activeRun，
+            // session.abort() 内部 this.activeRun?.abortController.abort() 无操作。
+            // 后续 prompt() 入口会再次检查 signal.aborted 并抛错。
+            try {
+              threadSession.session.abort()
+              cancelDebug('createSession-already-aborted-call', { threadId, hasActiveRun: !!(threadSession.session as any).agent?.activeRun })
+            } catch (err) {
+              cancelDebug('createSession-already-aborted-fail', { threadId, errMessage: err instanceof Error ? err.message : String(err) })
+            }
+          }
           options.signal.addEventListener(
             'abort',
             () => {
+              cancelDebug('signal-abort-event', { threadId, hasActiveRun: !!(threadSession.session as any).agent?.activeRun })
               try {
                 threadSession.session.abort()
               } catch (err) {
-                logger.warn({ err }, '中止 Pi Session 失败')
+                cancelDebug('signal-abort-event-fail', { threadId, errMessage: err instanceof Error ? err.message : String(err) })
               }
             },
             { once: true },
@@ -1119,6 +1155,23 @@ export class PluginManager {
         return {
           sessionId: (threadSession.session as { sessionId?: string }).sessionId,
           prompt: async (): Promise<string> => {
+            // signal 已 abort 时立即抛错。
+            //
+            // 必须检查的原因：createSession 每次 runAgent 都用新 threadId 创建新 Pi Session，
+            // signal abort listener 中调用的 session.abort() 只对"当前 activeRun"生效。
+            // 当 abort 发生在两个 Agent 之间（Director 已结束，Writer 未开始）时：
+            //   - Director 的 session.abort() 无效（已结束，无 activeRun）
+            //   - Writer 的 session 还未创建，listener 在 createSession 时立即调用，
+            //     但此时新 session 还没有 activeRun，session.abort() 内部
+            //     `this.activeRun?.abortController.abort()` 无操作。
+            //   - 随后 session.prompt() 创建新的 abortController，永不会被 abort。
+            // 这会导致 orchestrator 继续执行到下一个 onCheckpoint，
+            // 创建的新 pending 永远不会被 reject，donePromise 永不 resolve，
+            // cancel-active-flow 路由卡死，整个取消流程崩溃。
+            if (options.signal?.aborted) {
+              cancelDebug('prompt-aborted-at-entry', { threadId })
+              throw new Error('LLM 调用已被中止')
+            }
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
             // message_end(stop/length) 已代表正文完成。Pi SDK 随后的自动压缩
@@ -1126,11 +1179,18 @@ export class PluginManager {
             await runPromptUntilFinalAssistant()
             // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
             if (lastErrorMessage) {
+              cancelDebug('prompt-error-detected', { threadId, lastErrorMessage, signalAborted: options.signal?.aborted })
               throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
             }
             return completeText
           },
           promptStream: async (onDelta: (delta: string) => void): Promise<string> => {
+            // 见 prompt() 中的注释：signal 已 abort 时必须立即抛错，
+            // 否则跨 Agent 之间的 abort 无法生效。
+            if (options.signal?.aborted) {
+              cancelDebug('promptStream-aborted-at-entry', { threadId })
+              throw new Error('LLM 调用已被中止')
+            }
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
             // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。

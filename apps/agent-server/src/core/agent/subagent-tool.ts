@@ -54,6 +54,23 @@ export interface AgentConfig {
    * 用于按 Agent 角色限制工具权限（覆盖静态 tools 字段）
    */
   toolFilter?: (context: { task: string; [key: string]: unknown }) => string[]
+  /**
+   * 动态注入的额外工具实例（可选，含 execute 实现）
+   *
+   * ⚠️ 工具化方案专用：用于 per-call 注入闭包工具。
+   * 与 tools 字段（白名单 string[]）的区别：
+   * - tools：只过滤已注册到 pluginSessionTools 的工具
+   * - extraTools：携带 execute 实现的工具实例，直接加入 customTools
+   *
+   * 使用场景：
+   * - novel_submit_narrative_task：Director 调用时通过闭包绑定 narrativeDraft
+   * - novel_apply_revision：Reviser 调用时通过闭包绑定 revisionDraft
+   * - novel_submit_review：Reviewer 调用时通过闭包绑定 reviewDraft
+   *
+   * 这些工具不进入全局 pluginSessionTools（避免闭包状态污染），
+   * 而是通过 withAgentConfig 在 session 创建期间临时注入。
+   */
+  extraTools?: ToolDefinition[]
 }
 
 /** subagent 执行结果 */

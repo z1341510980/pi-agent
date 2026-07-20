@@ -29,6 +29,22 @@ describe('getAssistantTerminalError', () => {
     })).toBe('Stream ended without finish_reason')
   })
 
+  it('recognizes PI SDK abort stopReason as a terminal error', () => {
+    // PI SDK 在 session.abort() 后由 handleRunFailure emit message_end
+    // with stopReason='aborted'。若不识别为错误，prompt() 会返回空内容，
+    // 导致 orchestrator 无法进入 catch 块清理锁，取消流程卡死。
+    expect(getAssistantTerminalError({
+      role: 'assistant',
+      stopReason: 'aborted',
+      errorMessage: 'The user aborted a request',
+    })).toBe('The user aborted a request')
+
+    expect(getAssistantTerminalError({
+      role: 'assistant',
+      stopReason: 'aborted',
+    })).toBe('LLM 调用已被中止')
+  })
+
   it('ignores non-assistant terminal messages', () => {
     expect(getAssistantTerminalError({ role: 'user' })).toBeNull()
   })

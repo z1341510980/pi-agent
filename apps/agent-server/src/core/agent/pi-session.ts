@@ -144,6 +144,31 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     customTools.push(...deps.pluginSessionTools)
   }
 
+  // ⚠️ 工具化方案：从当前 AgentConfig 上下文读取 per-call 注入的 extraTools。
+  // extraTools 携带 execute 实现（闭包绑定 draft），直接加入 customTools，
+  // 让 LLM 能看到并调用 novel_submit_narrative_task / novel_apply_revision / novel_submit_review。
+  // 这些工具不进入全局 pluginSessionTools（避免闭包状态污染跨 session），
+  // 而是通过 withAgentConfig 在本次 session 创建期间临时注入。
+  //
+  // 去重：extraTools 可能同时包含
+  //   - 闭包工具（如 novel_submit_narrative_task，不在 pluginSessionTools 中，需新增）
+  //   - 已注册工具的副本（如 novel_save_chapter，已存在于 pluginSessionTools 中）
+  // 后者是因为 NovelOrchestrator.runAgent 把 finalTools = [...filteredTools, ...闭包工具]
+  // 整体作为 options.tools 传入 createSession，plugin-manager.ts 把 options.tools 整体作为
+  // extraTools 透传，导致 filteredTools 的副本同时出现在 pluginSessionTools 和 extraTools 中。
+  // 保留 pluginSessionTools 中的原始实例（稳定注册、跨 session 复用），跳过 extraTools 中的同名副本。
+  // 注意：必须在白名单过滤之前加入，否则会被 tools 白名单过滤掉。
+  const agentConfigForExtra = agentConfigStorage.getStore()
+  if (agentConfigForExtra?.extraTools && agentConfigForExtra.extraTools.length > 0) {
+    const existingNames = new Set(customTools.map(t => t.name))
+    for (const tool of agentConfigForExtra.extraTools) {
+      if (!existingNames.has(tool.name)) {
+        customTools.push(tool)
+        existingNames.add(tool.name)
+      }
+    }
+  }
+
   // 5.1 工具权限过滤：若当前在 subagent 上下文中且 AgentConfig 声明了 tools，
   //     仅保留 allowed 列表中的工具。
   //     - dispatchFn 已将 systemPromptBuilder / toolFilter 的结果合并进 effectiveConfig.tools
@@ -154,11 +179,23 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   //     - 声明 tools=[...] 表示白名单，仅保留列出的工具
   //     ⚠️ 之前用 `length > 0` 判断导致 tools=[] 被误解为"不过滤"，customTools 保留全部，
   //     LLM 看到全部 18 个工具可能误调写工具导致 messages 不一致 → 网关报 400。
+  //
+  //     ⚠️ 工具化方案豁免：extraTools 中的工具不被白名单过滤。
+  //     extraTools 是 orchestrator 显式注入的 per-call 闭包工具（如 novel_submit_narrative_task
+  //     绑定 draft 对象），其实例不在 AgentConfig.tools 白名单中（白名单只覆盖静态注册的
+  //     pluginSessionTools）。若把 extraTools 也按白名单过滤，会移除闭包工具，导致
+  //     Director LLM 看不到 novel_submit_narrative_task，只能输出文本"已通过工具提交"
+  //     但实际没调用工具（fallback 到 narrative_task_missing 错误）。
+  //     做法：先记录 extraTools 的名字集合，过滤时跳过这些工具。
   const agentConfigForTools = agentConfigStorage.getStore()
   if (agentConfigForTools?.tools && Array.isArray(agentConfigForTools.tools)) {
     const allowedToolNames = new Set(agentConfigForTools.tools)
+    const extraToolNames = new Set((agentConfigForTools.extraTools ?? []).map(t => t.name))
     for (let i = customTools.length - 1; i >= 0; i--) {
-      if (!allowedToolNames.has(customTools[i].name)) {
+      const toolName = customTools[i].name
+      // extraTools 豁免：orchestrator 显式注入的闭包工具不被白名单过滤
+      if (extraToolNames.has(toolName)) continue
+      if (!allowedToolNames.has(toolName)) {
         customTools.splice(i, 1)
       }
     }

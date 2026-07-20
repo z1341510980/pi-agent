@@ -10,7 +10,21 @@
  *
  * 创作流程：Director → Writer → Reviewer → (Reviser 修订) → Memory
  * 检查点：narrative_task（叙事任务确认）、review（验收报告确认）
+ *
+ * 创作流程事件协议类型（CreationPhase/CheckpointType/CheckpointData/CheckpointDecision/
+ * CreationFlowEvent/AgentOutput）已迁入 @repo/shared/novel，此处仅 re-export
+ * 供本插件内部模块沿用 './novel-agents.js' 路径引入。
  */
+
+// 创作流程事件协议类型 re-export（定义在 @repo/shared/novel）
+export type {
+  CreationPhase,
+  CheckpointType,
+  CheckpointData,
+  CheckpointDecision,
+  CreationFlowEvent,
+  AgentOutput,
+} from './types.js'
 
 /** Agent 类型 */
 export type NovelAgentType = 'director' | 'writer' | 'reviser' | 'reviewer' | 'memory'
@@ -83,11 +97,11 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     id: 'novel-reviser',
     name: '修订 Agent',
     identity: '你是小说的修订者，负责根据审稿人反馈精确修订章节中的问题段落，遵循最小改动原则。',
-    // Reviser 复用 Writer 的工具集。原章节正文 + 审稿意见通过 user_message 注入，
-    // 无需 query 工具。role-reviser.md 明确要求"只输出原文/修改后局部补丁"，
-    // 禁止输出完整章节正文。代码层 applySafeRevision 优先解析补丁配对应用，
-    // 仅在补丁解析失败且通过保留率校验时才回退到整体替换。
-    // A+B：给 Reviser 开放语义化查询工具 novel_ask_story，用于修订时核对上下文和角色状态。
+    // 白名单只列全局工具（novel_ask_story 用于修订时核对上下文和角色状态）。
+    // novel_apply_revision 不在全局 createNovelTools 列表里（因为工具通过闭包持有
+    // draft 对象，每次 Reviser 调用都要重新创建），而是在 novel-orchestrator.ts
+    // 调用 Reviser 时通过 runAgent 的 extraTools 参数动态注入。
+    // 工具内部用 String.replace 做精确替换，完全绕开正则解析自然语言的歧义。
     tools: ['novel_ask_story'],
     roleTemplate: 'role-reviser',
     // 温度略低于 Writer：修订需要更精确地遵循审稿意见，减少发散
@@ -129,45 +143,79 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
   },
 }
 
-export type CreationPhase = 'idle' | 'directing' | 'checkpoint_narrative' | 'writing' | 'reviewing' | 'checkpoint_review' | 'revising' | 'rewriting' | 'memory' | 'completed' | 'cancelled' | 'error'
+/** 小说角色温度配置（合并后，含全部 5 角色） */
+export type NovelAgentTemperatures = Record<NovelAgentType, number>
 
-export type CheckpointType = 'narrative_task' | 'review'
-
-export interface CheckpointData {
-  type: CheckpointType
-  phase: CreationPhase
-  data: unknown
-  decision?: 'approve' | 'reject' | 'revise' | 'rewrite'
+/** AgentManager 类型（仅类型，避免运行时循环依赖） */
+type AgentManagerLike = {
+  getAgent(id: string): { temperature?: number } | undefined
+  updateAgent(id: string, patch: { temperature?: number }): unknown
 }
 
-export interface CreationFlowEvent {
-  /**
-   * 事件类型，与 data.type 保持一致（由调用方显式指定，不再靠 emitProgress 推断）。
-   * - phase_change：阶段切换 / 心跳 / 准备中
-   * - agent_start：Agent 开始调用（带 messageId，前端据此关联后续 TEXT_MESSAGE_*）
-   * - agent_output：Agent 输出（全量，用于非流式场景或最终结果）
-   * - data_changed：数据变更通知（Memory Agent 写入完成，前端刷新画布）
-   * - checkpoint：检查点（已废弃，改用 CUSTOM(novel:checkpoint) 独立通道）
-   * - error / completed / cancelled：流程终止
-   */
-  type: 'phase_change' | 'agent_start' | 'agent_output' | 'data_changed' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
-  phase: CreationPhase
-  data?: unknown
-  timestamp: number
+/**
+ * 获取单个角色温度（AgentManager 覆盖 > NOVEL_AGENT_CONFIGS 默认值）
+ *
+ * 替代原 NovelAgentConfigStore.getByType，避免薄封装空壳类。
+ * agentManager 不可用或 agent 未注册时回退到 NOVEL_AGENT_CONFIGS 默认值。
+ */
+export function getNovelAgentTemperature(
+  agentType: NovelAgentType,
+  agentManager?: AgentManagerLike,
+): number {
+  const config = NOVEL_AGENT_CONFIGS[agentType]
+  if (agentManager) {
+    const agent = agentManager.getAgent(config.id)
+    if (agent?.temperature !== undefined) return agent.temperature
+  }
+  return config.temperature
 }
 
-/** Agent 输出事件数据 */
-export interface AgentOutputData {
-  /** Agent 类型 */
-  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
-  /** Agent 名称（中文） */
-  agentName: string
-  /** Agent 的完整输出文本 */
-  content: string
-  /** 输出预览（前 500 字符，供 UI 折叠展示） */
-  preview: string
-  /** 标记为数据变更通知（Memory Agent 写入完成后推送，前端据此刷新画布，不展示在时间线） */
-  dataChanged?: boolean
-  /** 是否为流式增量推送（true 表示 Agent 仍在生成中，前端应更新最后一条同类型输出而非新增） */
-  streaming?: boolean
+/**
+ * 获取全部角色温度（AgentManager 覆盖 > NOVEL_AGENT_CONFIGS 默认值）
+ *
+ * 替代原 NovelAgentConfigStore.getAll。
+ */
+export function getAllNovelAgentTemperatures(agentManager?: AgentManagerLike): NovelAgentTemperatures {
+  return {
+    director: getNovelAgentTemperature('director', agentManager),
+    writer: getNovelAgentTemperature('writer', agentManager),
+    reviser: getNovelAgentTemperature('reviser', agentManager),
+    reviewer: getNovelAgentTemperature('reviewer', agentManager),
+    memory: getNovelAgentTemperature('memory', agentManager),
+  }
+}
+
+/**
+ * 覆盖单个角色温度（写入 AgentManager）
+ *
+ * 替代原 NovelAgentConfigStore.upsert。
+ * agentManager 不可用或 agent 未注册时为 no-op（保持与原实现一致的回退语义）。
+ * 注：updateAgent 为 async，但内存更新在首个 await 前同步完成，
+ * 后续 getAgent 立即可见新温度。持久化部分 fire-and-forget，保持同步签名。
+ */
+export function updateNovelAgentTemperature(
+  agentType: NovelAgentType,
+  temperature: number,
+  agentManager?: AgentManagerLike,
+): void {
+  if (!agentManager) return
+  const config = NOVEL_AGENT_CONFIGS[agentType]
+  // agent 未注册时跳过（updateAgent 在 agent 不存在时会抛错）
+  // 首次注册前调用不应报错，回退为 no-op
+  if (!agentManager.getAgent(config.id)) return
+  void agentManager.updateAgent(config.id, { temperature })
+}
+
+/**
+ * 批量覆盖温度
+ *
+ * 替代原 NovelAgentConfigStore.upsertMany。
+ */
+export function updateNovelAgentTemperatures(
+  items: Array<{ agentType: NovelAgentType; temperature: number }>,
+  agentManager?: AgentManagerLike,
+): void {
+  for (const item of items) {
+    updateNovelAgentTemperature(item.agentType, item.temperature, agentManager)
+  }
 }

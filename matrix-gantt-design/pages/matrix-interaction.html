@@ -1,0 +1,1775 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>矩阵交互设计</title>
+    <style id="theme-vars">
+/**
+ * TraeWork design library tokens
+ * Light-mode canonical tokens in parser-friendly standard structure.
+ *
+ * Source of truth:
+ * - /Users/bytedance/Desktop/样板间/TraeWork skill.md
+ *
+ * Notes:
+ * - Token values are preserved from the current TraeWork Light system.
+ * - Added numeric tokens use direct values, e.g. --radius-12: 12px.
+ * - Component HTML should reference these canonical token names.
+ */
+
+/* @light-only */
+/* @group-priority: radius, spacers, font, body, heading, code, bg, bg-brand, text, icon, border, accent, status, brand */
+
+:root {
+  /* radius */
+  --radius-0: 0px;
+  --radius-2: 2px;
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-10: 10px;
+  --radius-12: 12px;
+  --radius-16: 16px;
+  --radius-20: 20px;
+  --radius-24: 24px;
+  --radius-32: 32px;
+  --radius-full: 999px;
+  --radius-xs: var(--radius-2);
+  --radius-sm: var(--radius-4);
+  --radius-md: var(--radius-6);
+  --radius-lg: var(--radius-8);
+  --radius-xl: var(--radius-10);
+  --border-width-default: 1px;
+
+  /* spacers */
+  --spacer-0: 0px;
+  --spacer-2: 2px;
+  --spacer-3: 3px;
+  --spacer-4: 4px;
+  --spacer-6: 6px;
+  --spacer-8: 8px;
+  --spacer-10: 10px;
+  --spacer-12: 12px;
+  --spacer-16: 16px;
+  --spacer-20: 20px;
+  --spacer-24: 24px;
+  --spacer-32: 32px;
+  --spacer-40: 40px;
+  --spacer-48: 48px;
+  --spacer-64: 64px;
+
+  /* icon sizes */
+  --icon-size-12: 12px;
+  --icon-size-14: 14px;
+  --icon-size-16: 16px;
+  --icon-size-20: 20px;
+  --icon-size-24: 24px;
+
+  /* font */
+  --font-family-default: "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-family-heading: "SF Pro", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-family-metric: "Inter", "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-family-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-weight-default: 400;
+  --font-weight-code: 450;
+  --font-weight-medium: 500;
+  --font-weight-strong: 600;
+  --font-family-base: var(--font-family-default);
+  --font-family-heading-alias: var(--font-family-heading);
+  --font-family-mono-alias: var(--font-family-mono);
+
+  /* body */
+  --body-xs-font-family: var(--font-family-default);
+  --body-xs-font-size: 10px;
+  --body-xs-font-weight: 400;
+  --body-xs-line-height: 14px;
+  --body-xs-letter-spacing: 0;
+  --body-xs-strong-font-family: var(--font-family-default);
+  --body-xs-strong-font-size: 10px;
+  --body-xs-strong-font-weight: 500;
+  --body-xs-strong-line-height: 14px;
+  --body-xs-strong-letter-spacing: 0;
+  --body-sm-font-family: var(--font-family-default);
+  --body-sm-font-size: 11px;
+  --body-sm-font-weight: 400;
+  --body-sm-line-height: 16px;
+  --body-sm-letter-spacing: 0;
+  --body-sm-strong-font-family: var(--font-family-default);
+  --body-sm-strong-font-size: 11px;
+  --body-sm-strong-font-weight: 500;
+  --body-sm-strong-line-height: 16px;
+  --body-sm-strong-letter-spacing: 0;
+  --body-md-font-family: var(--font-family-default);
+  --body-md-font-size: 12px;
+  --body-md-font-weight: 400;
+  --body-md-line-height: 18px;
+  --body-md-letter-spacing: 0;
+  --body-md-strong-font-family: var(--font-family-default);
+  --body-md-strong-font-size: 12px;
+  --body-md-strong-font-weight: 500;
+  --body-md-strong-line-height: 18px;
+  --body-md-strong-letter-spacing: 0;
+  --body-base-font-family: var(--font-family-default);
+  --body-base-font-size: 14px;
+  --body-base-font-weight: 400;
+  --body-base-line-height: 20px;
+  --body-base-letter-spacing: -0.02em;
+  --body-base-strong-font-family: var(--font-family-default);
+  --body-base-strong-font-size: 14px;
+  --body-base-strong-font-weight: 500;
+  --body-base-strong-line-height: 20px;
+  --body-base-strong-letter-spacing: -0.02em;
+  --body-lg-font-family: var(--font-family-default);
+  --body-lg-font-size: 18px;
+  --body-lg-font-weight: 400;
+  --body-lg-line-height: 28px;
+  --body-lg-letter-spacing: -0.02em;
+
+  /* heading */
+  --heading-3xs-font-family: var(--font-family-default);
+  --heading-3xs-font-size: 11px;
+  --heading-3xs-font-weight: 600;
+  --heading-3xs-line-height: 16px;
+  --heading-3xs-letter-spacing: 0;
+  --heading-2xs-font-family: var(--font-family-default);
+  --heading-2xs-font-size: 12px;
+  --heading-2xs-font-weight: 600;
+  --heading-2xs-line-height: 18px;
+  --heading-2xs-letter-spacing: 0;
+  --heading-xs-font-family: var(--font-family-default);
+  --heading-xs-font-size: 13px;
+  --heading-xs-font-weight: 600;
+  --heading-xs-line-height: 20px;
+  --heading-xs-letter-spacing: 0;
+  --heading-sm-font-family: var(--font-family-default);
+  --heading-sm-font-size: 16px;
+  --heading-sm-font-weight: 600;
+  --heading-sm-line-height: 24px;
+  --heading-sm-letter-spacing: 0;
+  --heading-md-font-family: var(--font-family-heading);
+  --heading-md-font-size: 20px;
+  --heading-md-font-weight: 600;
+  --heading-md-line-height: 28px;
+  --heading-md-letter-spacing: 0;
+  --heading-lg-font-family: var(--font-family-heading);
+  --heading-lg-font-size: 22px;
+  --heading-lg-font-weight: 600;
+  --heading-lg-line-height: 30px;
+  --heading-lg-letter-spacing: 0;
+  --heading-xl-font-family: var(--font-family-heading);
+  --heading-xl-font-size: 24px;
+  --heading-xl-font-weight: 600;
+  --heading-xl-line-height: 32px;
+  --heading-xl-letter-spacing: 0;
+  --heading-2xl-font-family: var(--font-family-heading);
+  --heading-2xl-font-size: 28px;
+  --heading-2xl-font-weight: 600;
+  --heading-2xl-line-height: 36px;
+  --heading-2xl-letter-spacing: 0;
+  --heading-3xl-font-family: var(--font-family-heading);
+  --heading-3xl-font-size: 32px;
+  --heading-3xl-font-weight: 600;
+  --heading-3xl-line-height: 40px;
+  --heading-3xl-letter-spacing: 0;
+  --heading-display-font-family: var(--font-family-heading);
+  --heading-display-font-size: 52px;
+  --heading-display-font-weight: 600;
+  --heading-display-line-height: 60px;
+  --heading-display-letter-spacing: -0.03em;
+  --heading-display-sm-font-family: var(--font-family-heading);
+  --heading-display-sm-font-size: 40px;
+  --heading-display-sm-font-weight: 600;
+  --heading-display-sm-line-height: 48px;
+  --heading-display-sm-letter-spacing: -0.02em;
+
+  /* code */
+  --code-editor-font-family: var(--font-family-mono);
+  --code-editor-font-size: 13px;
+  --code-editor-font-weight: 450;
+  --code-editor-line-height: 20px;
+  --code-terminal-font-family: var(--font-family-mono);
+  --code-terminal-font-size: 12px;
+  --code-terminal-font-weight: 450;
+  --code-terminal-line-height: 18px;
+  --code-text: #17181A;
+  --code-doc: #8393A3;
+  --code-link: #2F74FF;
+  --code-number: #E54595;
+  --code-action: #5F36B2;
+  --code-instruction: #B15EF2;
+  --code-function: #FF5D4D;
+  --code-constant: #175CE6;
+  --code-parameter: #4DA621;
+  --code-attribute: #C99100;
+  --code-tag: #E24864;
+
+  /* bg */
+  --bg-base-default: #FFFFFF;
+  --bg-base-secondary: #F5F5F5;
+  --bg-base-tertiary: #E5E5E5;
+  --bg-overlay-l1: rgba(115, 115, 115, 0.08);
+  --bg-overlay-l2: rgba(115, 115, 115, 0.12);
+  --bg-overlay-l3: rgba(115, 115, 115, 0.16);
+  --bg-overlay-l4: rgba(115, 115, 115, 0.20);
+  --bg-white: #FFFFFF;
+  --bg-menu: #FFFFFF;
+  --bg-tooltip: #FFFFFF;
+  --bg-invert: #262626;
+  --bg-invert-hover: #404040;
+  --bg-invert-active: #171717;
+  --bg-invert-disabled: rgba(115, 115, 115, 0.20);
+  --color-background: var(--bg-base-default);
+  --color-surface: var(--bg-base-secondary);
+  --color-surface-variant: var(--bg-base-tertiary);
+  --color-overlay-1: var(--bg-overlay-l1);
+  --color-overlay-2: var(--bg-overlay-l2);
+  --color-overlay-3: var(--bg-overlay-l3);
+  --color-overlay-4: var(--bg-overlay-l4);
+  --color-card: var(--bg-base-secondary);
+  --color-tooltip: var(--bg-tooltip);
+  --color-menu: var(--bg-menu);
+
+  /* bg-brand */
+  --bg-brand: #4B3FE3;
+  --bg-brand-hover: #6A6FFF;
+  --bg-brand-active: #3F31C6;
+  --bg-brand-disabled: rgba(75, 63, 227, 0.22);
+  --bg-brand-popup: rgba(170, 183, 255, 0.36);
+  --color-primary: var(--bg-brand);
+  --color-primary-hover: var(--bg-brand-hover);
+  --color-primary-disabled: var(--bg-brand-disabled);
+  --color-primary-soft: var(--bg-brand-popup);
+  --color-accent: var(--bg-brand);
+
+  /* text */
+  --text-default: #171717;
+  --text-default-hover: #262626;
+  --text-default-active: #262626;
+  --text-secondary: #404040;
+  --text-secondary-hover: #171717;
+  --text-secondary-active: #171717;
+  --text-tertiary: #737373;
+  --text-disabled: #A1A1A1;
+  --text-onbrand: #FFFFFF;
+  --text-onaccent: #FFFFFF;
+  --text-white: #FFFFFF;
+  --color-foreground: var(--text-default);
+  --color-foreground-hover: var(--text-default-hover);
+  --color-on-surface: var(--text-default);
+  --color-on-surface-variant: var(--text-secondary);
+  --color-muted-foreground: var(--text-secondary);
+  --color-disabled-foreground: var(--text-disabled);
+  --color-on-primary: var(--text-onbrand);
+  --text-brand: #4B3FE3;
+  --text-brand-hover: #6A6FFF;
+
+  /* icon */
+  --icon-default: #262626;
+  --icon-default-hover: #171717;
+  --icon-default-active: #171717;
+  --icon-secondary: #404040;
+  --icon-secondary-hover: #262626;
+  --icon-secondary-active: #262626;
+  --icon-tertiary: #737373;
+  --icon-disabled: #A1A1A1;
+  --icon-onbrand: #FFFFFF;
+  --icon-onaccent: #FFFFFF;
+  --icon-white: #FFFFFF;
+  --icon-brand: #4B3FE3;
+  --icon-brand-hover: #6A6FFF;
+
+  /* border */
+  --border-neutral-l1: rgba(115, 115, 115, 0.12);
+  --border-neutral-l2: rgba(115, 115, 115, 0.18);
+  --border-neutral-l3: rgba(115, 115, 115, 0.36);
+  --border-contrast: #000000;
+  --border-brand: #4B3FE3;
+  --color-border: var(--border-neutral-l1);
+  --color-border-strong: var(--border-neutral-l2);
+  --color-border-stronger: var(--border-neutral-l3);
+  --color-border-contrast: var(--border-contrast);
+  --color-outline: var(--border-neutral-l1);
+
+  /* accent */
+  --accent-teal: #00B983;
+  --accent-coral: #FF6B45;
+  --accent-amber: #F2A90C;
+  --accent-lime: #5FC000;
+  --accent-cyan: #00B6F5;
+  --accent-blue: #3F85FF;
+  --accent-magenta: #F53CFF;
+  --accent-violet: #9570FF;
+  --accent-slate: #747E94;
+
+  /* status */
+  --status-primary-default: #2F74FF;
+  --status-primary-hover: #4C88FF;
+  --status-primary-active: #1759DD;
+  --status-primary-surface-l1: rgba(47, 116, 255, 0.12);
+  --status-primary-surface-l2: rgba(47, 116, 255, 0.18);
+  --status-primary-surface-l3: rgba(47, 116, 255, 0.36);
+  --status-success-default: #15A877;
+  --status-success-hover: #2FB287;
+  --status-success-active: #1E8B56;
+  --status-success-surface-l1: rgba(64, 176, 139, 0.12);
+  --status-success-surface-l2: rgba(64, 176, 139, 0.18);
+  --status-success-surface-l3: rgba(64, 176, 139, 0.36);
+  --status-alert-default: #FEA900;
+  --status-alert-hover: #FFB700;
+  --status-alert-active: #E59100;
+  --status-alert-surface-l1: rgba(254, 169, 0, 0.14);
+  --status-alert-surface-l2: rgba(254, 169, 0, 0.20);
+  --status-alert-surface-l3: rgba(254, 169, 0, 0.36);
+  --status-warning-default: #E27900;
+  --status-warning-hover: #F39A35;
+  --status-warning-active: #C46F11;
+  --status-warning-surface-l1: rgba(226, 121, 0, 0.12);
+  --status-warning-surface-l2: rgba(226, 121, 0, 0.16);
+  --status-warning-surface-l3: rgba(226, 121, 0, 0.36);
+  --status-error-default: #E8463A;
+  --status-error-hover: #EA574C;
+  --status-error-active: #C9382F;
+  --status-error-surface-l1: rgba(232, 70, 58, 0.12);
+  --status-error-surface-l2: rgba(232, 70, 58, 0.16);
+  --status-error-surface-l3: rgba(232, 70, 58, 0.36);
+  --color-info: var(--status-primary-default);
+  --color-success: var(--status-success-default);
+  --color-warning: var(--status-warning-default);
+  --color-error: var(--status-error-default);
+  --color-error-soft: var(--status-error-surface-l1);
+
+  /* brand */
+  --brand-50: #F2F7FF;
+  --brand-100: #E5EAFF;
+  --brand-200: #CFD8FF;
+  --brand-300: #AAB7FF;
+  --brand-400: #8894FF;
+  --brand-500: #6A6FFF;
+  --brand-600: #4B3FE3;
+  --brand-700: #3F31C6;
+  --brand-800: #2C2290;
+  --brand-900: #1A1759;
+  --brand-950: #010109;
+  --brand-grey-50: #FAFAFA;
+  --brand-grey-100: #F5F5F5;
+  --brand-grey-200: #E5E5E5;
+  --brand-grey-300: #D4D4D4;
+  --brand-grey-400: #A1A1A1;
+  --brand-grey-500: #737373;
+  --brand-grey-600: #525252;
+  --brand-grey-700: #404040;
+  --brand-grey-800: #262626;
+  --brand-grey-900: #171717;
+  --brand-grey-950: #0A0A0A;
+  --brand-green-100: var(--brand-50);
+  --brand-green-200: var(--brand-100);
+  --brand-green-300: var(--brand-200);
+  --brand-green-400: var(--brand-300);
+  --brand-green-500: var(--brand-600);
+  --brand-green-600: var(--brand-500);
+  --brand-green-700: var(--brand-700);
+  --brand-green-800: var(--brand-800);
+  --brand-green-900: var(--brand-900);
+  --brand-green-1000: var(--brand-950);
+  --brand-red-100: #FFE5E5;
+  --brand-red-200: #FFCCCC;
+  --brand-red-300: #FFB2B2;
+  --brand-red-400: #FF9999;
+  --brand-red-500: #FF8080;
+  --brand-red-600: #FF6464;
+  --brand-red-700: #E63737;
+  --brand-red-800: #CB1010;
+  --brand-red-900: #8F0505;
+  --brand-red-1000: #4D0000;
+  --brand-yellow-100: #FFF6E5;
+  --brand-yellow-200: #FFECCC;
+  --brand-yellow-300: #FFE3B2;
+  --brand-yellow-400: #FFDA99;
+  --brand-yellow-500: #FFD080;
+  --brand-yellow-600: #FFC864;
+  --brand-yellow-700: #E6A637;
+  --brand-yellow-800: #CB8710;
+  --brand-yellow-900: #8F5C05;
+  --brand-yellow-1000: #4D3000;
+  --brand-blue-100: #E5F3FF;
+  --brand-blue-200: #CCE6FF;
+  --brand-blue-300: #B2DAFF;
+  --brand-blue-400: #99CEFF;
+  --brand-blue-500: #80C1FF;
+  --brand-blue-600: #64B4FF;
+  --brand-blue-700: #3792E6;
+  --brand-blue-800: #1071CB;
+  --brand-blue-900: #054C8F;
+  --brand-blue-1000: #00284D;
+  --brand-purple-100: #E8E5FF;
+  --brand-purple-200: #D2CCFF;
+  --brand-purple-300: #BBB2FF;
+  --brand-purple-400: #A599FF;
+  --brand-purple-500: #8E80FF;
+  --brand-purple-600: #7864FF;
+  --brand-purple-700: #4C37E6;
+  --brand-purple-800: #2610CB;
+  --brand-purple-900: #15058F;
+  --brand-purple-1000: #09004D;
+  --brand-neutral-grey-100: #F2F2F2;
+  --brand-neutral-grey-200: #E3E3E3;
+  --brand-neutral-grey-300: #D6D6D6;
+  --brand-neutral-grey-400: #C7C7C7;
+  --brand-neutral-grey-500: #BABABA;
+  --brand-neutral-grey-600: #ABABAB;
+  --brand-neutral-grey-700: #8A8A8A;
+  --brand-neutral-grey-800: #686868;
+  --brand-neutral-grey-900: #474747;
+  --brand-neutral-grey-1000: #262626;
+  --brand-blue-grey-100: #F1EFF4;
+  --brand-blue-grey-200: #E0E1E6;
+  --brand-blue-grey-300: #CFD3D8;
+  --brand-blue-grey-400: #BFC5CA;
+  --brand-blue-grey-500: #B0B5BA;
+  --brand-blue-grey-600: #A0A6AB;
+  --brand-blue-grey-700: #80898E;
+  --brand-blue-grey-800: #5E696E;
+  --brand-blue-grey-900: #404A4F;
+  --brand-blue-grey-1000: #21262B;
+  --brand-green-grey-100: #F1F4F4;
+  --brand-green-grey-200: #E0E6E6;
+  --brand-green-grey-300: #CFD8D8;
+  --brand-green-grey-400: #BFCACA;
+  --brand-green-grey-500: #B0BABA;
+  --brand-green-grey-600: #A0ABAB;
+  --brand-green-grey-700: #808E8E;
+  --brand-green-grey-800: #5E6E6E;
+  --brand-green-grey-900: #404F4F;
+  --brand-green-grey-1000: #212B2B;
+
+  /* generic fallback */
+  --font-family: var(--font-family-default);
+  --font-size: var(--body-xs-font-size);
+  --font-weight: var(--body-xs-font-weight);
+  --line-height: var(--body-xs-line-height);
+
+  /* viz */
+  --viz-series-brand: var(--bg-brand);
+  --viz-series-brand-soft: var(--brand-300);
+  --viz-series-brand-mid: var(--brand-500);
+  --viz-series-brand-deep: var(--brand-700);
+  --viz-series-neutral: var(--brand-grey-500);
+  --viz-series-coral: #F87454;
+  --viz-series-amber: #EDAA45;
+  --viz-series-mint: #1DC981;
+  --viz-series-teal: #59E8E8;
+  --viz-series-sky: #22A5F7;
+  --viz-series-violet: #B655FC;
+  --viz-series-magenta: #FB9DD7;
+  --viz-series-indigo: #B6A3FF;
+  --viz-series-lime: #A6EA39;
+  --viz-series-slate: #859EAD;
+  --viz-ui-bg-chart: var(--bg-menu);
+  --viz-ui-bg-tooltip: var(--bg-tooltip);
+  --viz-ui-chart-title: var(--text-default);
+  --viz-ui-chart-subtitle: var(--text-secondary);
+  --viz-ui-chart-axis: var(--border-neutral-l2);
+  --viz-ui-chart-tick: var(--text-secondary);
+  --viz-ui-legend-label: var(--text-secondary);
+  --viz-ui-legend-value: var(--text-default);
+
+  /* special */
+  --special-white: #FFFFFF;
+  --special-black: #000000;
+  --special-bgtabsoverlay: rgba(255, 255, 255, 0.12);
+  --special-bggoldoverlay: rgba(210, 181, 19, 0.12);
+
+  /* layout aliases */
+  --brand-1: var(--brand-600);
+  --brand-2: var(--brand-500);
+  --brand-3: var(--brand-300);
+  --brand-4: var(--brand-100);
+  --site-canvas: var(--bg-base-default);
+  --bg-layout-1: var(--bg-base-secondary);
+  --bg-layout-2: var(--bg-overlay-l1);
+  --border-1: var(--border-neutral-l1);
+
+  /* Tailwind semantic aliases for fill-html-head.mjs prefixless detection */
+  --background: var(--bg-base-default);
+  --foreground: var(--text-default);
+  --card: var(--bg-base-secondary);
+  --card-foreground: var(--text-default);
+  --popover: var(--bg-menu);
+  --popover-foreground: var(--text-default);
+  --primary: var(--bg-brand);
+  --primary-foreground: var(--text-onbrand);
+  --secondary: var(--bg-overlay-l1);
+  --secondary-foreground: var(--text-default);
+  --accent: var(--bg-overlay-l2);
+  --accent-foreground: var(--text-default);
+  --muted: var(--bg-base-secondary);
+  --muted-foreground: var(--text-secondary);
+  --destructive: var(--status-error-default);
+  --destructive-foreground: var(--text-onaccent);
+  --border: var(--border-neutral-l1);
+  --input: var(--border-neutral-l2);
+  --ring: var(--border-brand);
+}
+
+    </style>
+    <style id="component-vars">
+/* ═══════════════════════════════════════════════════════════════
+   components.css — Design System Component and Atom Definitions
+   Component sections mirror preview/component-*.html marker blocks.
+   Stable atoms live here so downstream pages do not depend on preview shell CSS.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Shared Atoms ───────────────────────────────────────────── */
+.icon,
+.icon-img {
+  display: inline-block;
+  color: currentColor;
+  flex: 0 0 auto;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+.icon {
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+}
+
+.icon-img {
+  width: 16px;
+  height: 16px;
+  flex-basis: 16px;
+}
+
+.mono,
+.num,
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--code-editor-font-family);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.metric-value,
+.kpi-value,
+.scorecard-value {
+  font-family: var(--font-family-metric);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.ds-tooltip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacer-6);
+  padding: var(--spacer-6) var(--spacer-8);
+  background: var(--bg-tooltip);
+  color: var(--text-default);
+  border: 1px solid var(--border-neutral-l2);
+  border-radius: var(--radius-8);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--text-default) 16%, transparent);
+}
+
+.ds-popover {
+  background: var(--bg-base-default);
+  border: 1px solid var(--border-neutral-l2);
+  border-radius: var(--radius-12);
+  padding: var(--spacer-8);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--text-default) 16%, transparent);
+}
+
+.ds-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--spacer-40) var(--spacer-24);
+  color: var(--text-tertiary);
+  text-align: center;
+  border: 1px dashed var(--border-neutral-l1);
+  border-radius: var(--radius-12);
+}
+
+.ds-empty__icon {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-neutral-l1);
+  margin-bottom: var(--spacer-12);
+  color: var(--icon-secondary);
+  border-radius: var(--radius-8);
+}
+
+.ds-empty__title {
+  color: var(--text-default);
+  font-size: var(--body-base-font-size);
+  font-weight: var(--font-weight-medium, 500);
+  margin-bottom: var(--spacer-4);
+}
+
+.ds-empty__desc {
+  font-size: var(--body-sm-font-size);
+}
+
+.ds-code {
+  background: var(--bg-overlay-l1);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  padding: var(--spacer-12) var(--spacer-16);
+  color: var(--text-default);
+  font-family: var(--code-editor-font-family);
+  font-size: var(--code-editor-font-size);
+  line-height: var(--code-editor-line-height);
+  white-space: pre;
+  overflow: auto;
+}
+
+.ds-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--spacer-6);
+  height: 20px;
+  background: transparent;
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  box-shadow: none;
+  font-family: var(--body-md-font-family);
+  font-size: var(--body-md-font-size);
+  font-weight: var(--font-weight-default, 400);
+  font-variant-numeric: normal;
+  font-feature-settings: normal;
+  letter-spacing: var(--body-md-letter-spacing);
+  color: var(--text-secondary);
+}
+
+/* ── Alert ─────────────────────────────────────────────────── */
+/* ===== Notification / Toast ===== */
+    .ds-notif {
+      display: flex; align-items: flex-start;
+      gap: var(--spacer-8);
+      width: 100%; max-width: 560px;
+      padding: var(--spacer-8) var(--spacer-12);
+      border: 1px solid var(--border-neutral-l1);
+      background: var(--bg-base-secondary);
+      border-radius: var(--radius-8);
+      color: var(--text-default);
+      font-family: var(--body-md-font-family);
+      font-size: var(--body-md-font-size);
+      line-height: var(--body-md-line-height);
+      letter-spacing: var(--body-md-letter-spacing);
+      box-shadow: none;
+    }
+    .ds-notif__icon { flex: 0 0 16px; width: 16px; height: 16px; margin-top: var(--spacer-2); color: var(--icon-default); display: inline-flex; align-items: center; justify-content: center; }
+    .ds-notif__body { flex: 1; min-width: 0; }
+    .ds-notif__title { font-family: var(--body-md-strong-font-family); font-size: var(--body-md-strong-font-size); line-height: var(--body-md-strong-line-height); font-weight: var(--body-md-strong-font-weight); letter-spacing: var(--body-md-strong-letter-spacing); color: var(--text-default); }
+    .ds-notif__text { flex: 1; color: var(--text-default); }
+    .ds-notif__desc { margin-top: var(--spacer-2); color: var(--text-secondary); font-size: var(--body-md-font-size); line-height: var(--body-md-line-height); }
+    .ds-notif__actions { display: inline-flex; align-items: center; gap: var(--spacer-8); margin-top: var(--spacer-8); }
+    .ds-notif__close { flex-shrink: 0; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: none; cursor: pointer; color: var(--icon-secondary); border-radius: var(--radius-8); }
+    .ds-notif__close .icon { width: 14px; height: 14px; }
+    .ds-notif__close:hover { background: var(--bg-overlay-l2); color: var(--icon-default); }
+    .ds-notif--simple { align-items: center; }
+    .ds-notif--error { background: var(--status-error-surface-l1); border-color: var(--status-error-surface-l2); }
+    .ds-notif--error .ds-notif__icon { color: var(--status-error-default); }
+    .ds-notif--warning { background: var(--status-warning-surface-l1); border-color: var(--status-warning-surface-l2); }
+    .ds-notif--warning .ds-notif__icon { color: var(--status-warning-default); }
+    .ds-notif--alert { background: var(--status-alert-surface-l1); border-color: var(--status-alert-surface-l2); }
+    .ds-notif--alert .ds-notif__icon { color: var(--status-alert-default); }
+    .ds-notif--info { background: var(--status-primary-surface-l1); border-color: var(--status-primary-surface-l2); }
+    .ds-notif--info .ds-notif__icon { color: var(--status-primary-default); }
+    .ds-notif--success { background: var(--status-success-surface-l1); border-color: var(--status-success-surface-l2); }
+    .ds-notif--success .ds-notif__icon { color: var(--status-success-default); }
+
+    /* ===== Alert / Banner ===== */
+    .ds-alert {
+      display: flex; align-items: flex-start;
+      gap: var(--spacer-12);
+      padding: var(--spacer-12) var(--spacer-16);
+      background: var(--bg-base-secondary);
+      border: 1px solid var(--border-neutral-l1);
+      border-radius: var(--radius-8);
+      color: var(--text-default);
+      font-family: var(--body-md-font-family);
+      font-size: var(--body-md-font-size);
+      line-height: var(--body-md-line-height);
+      letter-spacing: var(--body-md-letter-spacing);
+    }
+    .ds-alert__icon { flex: 0 0 16px; width: 16px; height: 16px; margin-top: var(--spacer-2); color: var(--icon-default); display: inline-flex; align-items: center; justify-content: center; }
+    .ds-notif__icon .icon, .ds-alert__icon .icon { width: 16px; height: 16px; display: block; }
+    .ds-alert--success .ds-alert__icon { color: var(--status-success-default); }
+    .ds-alert--warning .ds-alert__icon { color: var(--status-warning-default); }
+    .ds-alert--danger .ds-alert__icon { color: var(--status-error-default); }
+    .ds-alert--info .ds-alert__icon { color: var(--status-primary-default); }
+    .ds-alert__title { font-family: var(--body-md-strong-font-family); font-size: var(--body-md-strong-font-size); line-height: var(--body-md-strong-line-height); font-weight: var(--body-md-strong-font-weight); letter-spacing: var(--body-md-strong-letter-spacing); margin-bottom: var(--spacer-4); }
+    .ds-alert__desc { color: var(--text-secondary); font-size: var(--body-md-font-size); line-height: var(--body-md-line-height); }
+
+/* ── Avatar ────────────────────────────────────────────────── */
+/* ===== Avatar ===== */
+    .ds-avatar {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border-radius: var(--radius-full);
+      background: var(--bg-overlay-l3);
+      color: var(--text-default);
+      font-family: var(--body-base-strong-font-family);
+      font-size: var(--body-base-strong-font-size);
+      font-weight: var(--body-base-strong-font-weight);
+      line-height: var(--body-base-strong-line-height);
+      flex-shrink: 0;
+    }
+    .ds-avatar--sm { width: 24px; height: 24px; font-size: var(--body-sm-font-size); }
+    .ds-avatar--lg { width: 40px; height: 40px; }
+
+/* ── Breadcrumb ────────────────────────────────────────────── */
+/* ===== Breadcrumb ===== */
+    .ds-breadcrumb { display: flex; align-items: center; gap: var(--spacer-8); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); color: var(--text-tertiary); }
+    .ds-breadcrumb a { display: inline-flex; align-items: center; color: var(--text-tertiary); }
+    .ds-breadcrumb a:hover { color: var(--text-default); }
+    .ds-breadcrumb__sep { color: var(--text-tertiary); }
+    .ds-breadcrumb__current { color: var(--text-default); }
+
+/* ── Buttons ───────────────────────────────────────────────── */
+/* ===== Buttons ===== */
+    .ds-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: var(--spacer-6);
+      height: 28px; padding: 0 var(--spacer-12);
+      border-radius: var(--radius-8);
+      border: 1px solid transparent;
+      cursor: pointer; user-select: none; white-space: nowrap;
+      font-family: var(--body-base-strong-font-family);
+      font-size: var(--body-base-strong-font-size);
+      line-height: var(--body-base-strong-line-height);
+      font-weight: var(--body-base-strong-font-weight);
+      letter-spacing: var(--body-base-strong-letter-spacing);
+      transition: background .12s ease, color .12s ease, border-color .12s ease, opacity .12s ease;
+    }
+    .ds-btn .icon {
+      display: inline-block;
+      width: var(--icon-size-16);
+      height: var(--icon-size-16);
+      flex: 0 0 auto;
+    }
+    .ds-btn .icon--12 { width: var(--icon-size-12); height: var(--icon-size-12); }
+    .ds-btn .icon--14 { width: var(--icon-size-14); height: var(--icon-size-14); }
+    .ds-btn .icon--16 { width: var(--icon-size-16); height: var(--icon-size-16); }
+    .ds-btn .icon--20 { width: var(--icon-size-20); height: var(--icon-size-20); }
+    .ds-btn .icon--24 { width: var(--icon-size-24); height: var(--icon-size-24); }
+    /* Button heights are fixed to 24 / 28 / 32px. */
+    .ds-btn--sm { height: 24px; padding: 0 var(--spacer-8); border-radius: var(--radius-8); font-size: var(--body-sm-font-size); }
+    .ds-btn--md { height: 28px; padding: 0 var(--spacer-12); border-radius: var(--radius-8); }
+    .ds-btn--lg { height: 32px; padding: 0 var(--spacer-16); border-radius: var(--radius-8); font-size: var(--body-base-font-size); }
+    .ds-btn--primary { background: var(--bg-invert); color: var(--text-white); border-color: var(--bg-invert); }
+    .ds-btn--primary:hover { background: var(--bg-invert-hover); border-color: var(--bg-invert-hover); }
+    .ds-btn--primary:active { background: var(--bg-invert-active); border-color: var(--bg-invert-active); }
+    .ds-btn--primary[disabled] { background: var(--bg-invert-disabled); color: var(--text-disabled); border-color: transparent; cursor: not-allowed; }
+    .ds-btn--secondary { background: var(--bg-overlay-l1); color: var(--text-default); border-color: var(--border-neutral-l1); }
+    .ds-btn--secondary:hover { background: var(--bg-overlay-l2); border-color: var(--border-neutral-l2); }
+    .ds-btn--secondary:active { background: var(--bg-overlay-l3); border-color: var(--border-neutral-l3); }
+    .ds-btn--secondary[disabled] { color: var(--text-disabled); cursor: not-allowed; opacity: .7; }
+    .ds-btn--tertiary,
+    .ds-btn--ghost { background: transparent; color: var(--text-default); border-color: transparent; }
+    .ds-btn--tertiary:hover,
+    .ds-btn--ghost:hover { background: var(--bg-overlay-l2); color: var(--text-default-hover); }
+    .ds-btn--tertiary:active,
+    .ds-btn--ghost:active { background: var(--bg-overlay-l3); }
+    .ds-btn--tertiary[disabled],
+    .ds-btn--ghost[disabled] { color: var(--text-disabled); cursor: not-allowed; }
+    .ds-btn--danger,
+    .ds-btn--danger-strong { background: var(--status-error-default); color: var(--text-onaccent); border-color: var(--status-error-default); }
+    .ds-btn--danger:hover,
+    .ds-btn--danger-strong:hover { background: var(--status-error-hover); border-color: var(--status-error-hover); }
+    .ds-btn--danger:active,
+    .ds-btn--danger-strong:active { background: var(--status-error-active); border-color: var(--status-error-active); }
+    .ds-btn--danger-subtle { background: var(--status-error-surface-l1); color: var(--status-error-default); border-color: var(--status-error-surface-l2); }
+    .ds-btn--danger-subtle:hover { background: var(--status-error-surface-l2); }
+    .ds-btn--danger-subtle:active { background: var(--status-error-surface-l3); }
+    .ds-btn--warning { background: var(--status-warning-default); color: var(--text-onaccent); border-color: var(--status-warning-default); }
+    .ds-btn--warning:hover { background: var(--status-warning-hover); border-color: var(--status-warning-hover); }
+    .ds-btn--warning:active { background: var(--status-warning-active); border-color: var(--status-warning-active); }
+    .ds-btn--brand { background: var(--bg-brand); color: var(--text-onbrand); border-color: var(--bg-brand); }
+    .ds-btn--brand:hover { background: var(--bg-brand-hover); border-color: var(--bg-brand-hover); }
+    .ds-btn--brand:active { background: var(--bg-brand-active); border-color: var(--bg-brand-active); }
+    .ds-btn--brand[disabled] { background: var(--bg-brand-disabled); border-color: transparent; color: var(--text-onbrand); cursor: not-allowed; }
+    .ds-btn--link { background: transparent; color: var(--text-default); border-color: transparent; padding: 0; height: auto; }
+    .ds-btn--link:hover { color: var(--text-default-hover); text-decoration: underline; }
+    .ds-btn--link[disabled] { color: var(--text-disabled); text-decoration: none; cursor: not-allowed; }
+    .ds-btn--icon { width: 28px; padding: 0; justify-content: center; }
+    .ds-btn--icon.ds-btn--sm { width: 24px; }
+    .ds-btn--icon.ds-btn--lg { width: 32px; }
+    .ds-btn-group { display: inline-flex; }
+    .ds-btn-group > .ds-btn { border-radius: var(--radius-0); margin-left: calc(-1 * var(--border-width-default)); }
+    .ds-btn-group > .ds-btn:first-child { border-top-left-radius: var(--radius-8); border-bottom-left-radius: var(--radius-8); margin-left: 0; }
+    .ds-btn-group > .ds-btn:last-child { border-top-right-radius: var(--radius-8); border-bottom-right-radius: var(--radius-8); }
+
+/* ── Cards ─────────────────────────────────────────────────── */
+/* ===== Card ===== */
+    .ds-card {
+      background: var(--bg-base-secondary);
+      border: 1px solid var(--border-neutral-l1);
+      border-radius: var(--radius-12);
+      padding: var(--spacer-20);
+      color: var(--text-default);
+    }
+    .ds-card__title { font-size: var(--heading-sm-font-size); line-height: var(--heading-sm-line-height); font-weight: var(--heading-sm-font-weight); margin-bottom: var(--spacer-8); }
+    .ds-card__desc { font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); color: var(--text-secondary); }
+
+/* ── Dialog ────────────────────────────────────────────────── */
+/* ===== Dialog / Modal ===== */
+    .ds-backdrop { position: relative; background: var(--bg-overlay-l4); border: 1px solid var(--border-neutral-l1); padding: var(--spacer-32) var(--spacer-24); display: flex; align-items: center; justify-content: center; }
+    .ds-dialog { background: var(--bg-base-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-12); width: 100%; max-width: 520px; overflow: hidden; color: var(--text-default); box-shadow: 0 24px 64px color-mix(in srgb, var(--text-default) 14%, transparent), 0 4px 16px color-mix(in srgb, var(--text-default) 8%, transparent); }
+    .ds-dialog--form { max-width: 560px; }
+    .ds-dialog__head { padding: var(--spacer-16) var(--spacer-20); display: flex; align-items: center; justify-content: space-between; border-bottom: 0; }
+    .ds-dialog__title { font-size: var(--heading-sm-font-size); line-height: var(--heading-sm-line-height); font-weight: var(--heading-sm-font-weight); color: var(--text-default); }
+    .ds-dialog__close { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: none; color: var(--icon-secondary); cursor: pointer; border-radius: var(--radius-8); }
+    .ds-dialog__close:hover { background: var(--bg-overlay-l2); color: var(--icon-default); }
+    .ds-dialog__body { padding: var(--spacer-16) var(--spacer-20); color: var(--text-secondary); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); }
+    .ds-dialog__foot { padding: var(--spacer-12) var(--spacer-20); display: flex; justify-content: flex-end; gap: var(--spacer-8); border-top: 0; }
+    .ds-drawer { background: var(--bg-base-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-12); width: 100%; max-width: 360px; display: flex; flex-direction: column; box-shadow: 0 24px 64px color-mix(in srgb, var(--text-default) 14%, transparent), 0 4px 16px color-mix(in srgb, var(--text-default) 8%, transparent); }
+    .ds-drawer__head { padding: var(--spacer-16) var(--spacer-20); display: flex; justify-content: space-between; align-items: center; border-bottom: 0; }
+    .ds-drawer__body { padding: var(--spacer-16) var(--spacer-20); flex: 1; }
+    .dialog-form { display: grid; gap: var(--spacer-16); }
+    .dialog-field { display: flex; flex-direction: column; gap: var(--spacer-6); }
+    .dialog-field__label { color: var(--text-default); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); font-weight: var(--font-weight-medium); }
+    .dialog-field__hint { color: var(--text-tertiary); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); }
+    .dialog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--spacer-12); }
+    .dialog-form .ds-input,
+    .dialog-form .ds-select,
+    .dialog-form .ds-textarea { background: var(--bg-base-default); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); letter-spacing: var(--body-base-letter-spacing); }
+    .dialog-form .ds-input:focus-within,
+    .dialog-form .ds-select:focus,
+    .dialog-form .ds-textarea:focus { background: var(--bg-base-default); }
+    .dialog-form .ds-textarea { min-height: 72px; resize: none; }
+    .dialog-calendar-icon { width: 16px; height: 16px; color: var(--icon-secondary); object-fit: contain; }
+    @media (max-width: 720px) { .dialog-grid { grid-template-columns: 1fr; } }
+
+/* ── Forms ─────────────────────────────────────────────────── */
+/* ===== Input / Search ===== */
+    .ds-input { display: flex; align-items: center; gap: var(--spacer-8); min-height: 32px; padding: 0 var(--spacer-12); background: var(--bg-base-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); color: var(--text-default); width: 100%; font-family: var(--body-base-font-family); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); }
+    .ds-input:focus-within { border-color: var(--border-contrast); background: var(--bg-base-default); }
+    .ds-input input { flex: 1; background: transparent; border: none; outline: none; color: var(--text-default); font: inherit; min-width: 0; }
+    .ds-input input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+    .ds-input input[type="number"]::-webkit-outer-spin-button,
+    .ds-input input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .ds-input input::placeholder { color: var(--text-tertiary); }
+    .ds-input input:disabled { color: var(--text-disabled); cursor: not-allowed; }
+    .ds-input.is-error { border-color: var(--status-error-default); }
+    .ds-input.is-disabled { background: var(--bg-base-secondary); color: var(--text-disabled); cursor: not-allowed; }
+    .ds-input__icon { color: var(--icon-secondary); display: inline-flex; align-items: center; }
+    .ds-search { position: relative; }
+    .ds-select { width: 100%; height: 32px; padding: 0 var(--spacer-32) 0 var(--spacer-12); background-color: var(--bg-base-default); color: var(--text-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); appearance: none; -webkit-appearance: none; font: inherit; font-size: var(--body-base-font-size); }
+    .ds-select:focus { border-color: var(--border-contrast); background-color: var(--bg-base-default); outline: none; }
+    .ds-select:disabled { background-color: var(--bg-base-secondary); color: var(--text-disabled); cursor: not-allowed; opacity: 1; }
+    .ds-select-wrap { position: relative; width: 100%; }
+    .ds-select-wrap .ds-select { padding-right: var(--spacer-32); }
+    .ds-select__icon { position: absolute; right: var(--spacer-12); top: 50%; width: 16px; height: 16px; color: var(--icon-secondary); pointer-events: none; transform: translateY(-50%); object-fit: contain; }
+    .ds-select-wrap > .icon-img { position: absolute; top: 50%; right: var(--spacer-10); transform: translateY(-50%); color: var(--icon-secondary); pointer-events: none; }
+    .icon-img { display: inline-block; width: 16px; height: 16px; flex: 0 0 16px; object-fit: contain; vertical-align: middle; }
+    .icon-img--12 { width: 12px; height: 12px; flex-basis: 12px; }
+    .icon-img--14 { width: 14px; height: 14px; flex-basis: 14px; }
+    .ds-textarea { width: 100%; min-height: 96px; padding: var(--spacer-8) var(--spacer-12); background: var(--bg-base-default); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); color: var(--text-default); font-family: var(--body-base-font-family); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); resize: none; }
+    .ds-textarea:focus { outline: none; border-color: var(--border-contrast); background: var(--bg-base-default); }
+    .ds-textarea.is-error { border-color: var(--status-error-default); }
+    .ds-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; background: var(--bg-overlay-l3); border-radius: var(--radius-full); outline: none; }
+    .ds-slider--progress { background: var(--bg-overlay-l3); }
+    .ds-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: var(--radius-full); background: var(--bg-base-default); border: 1px solid var(--border-neutral-l3); box-shadow: none; cursor: pointer; }
+    .ds-slider::-moz-range-track { height: 4px; background: var(--bg-overlay-l3); border-radius: var(--radius-full); }
+    .ds-slider--progress::-moz-range-progress { height: 4px; background: var(--bg-brand); border-radius: var(--radius-full); }
+    .ds-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: var(--radius-full); background: var(--bg-base-default); border: 1px solid var(--border-neutral-l3); box-shadow: none; cursor: pointer; }
+    .ds-check, .ds-radio { display: inline-flex; align-items: center; gap: var(--spacer-8); min-height: 40px; font-size: var(--body-base-font-size); color: var(--text-default); cursor: pointer; user-select: none; }
+    .ds-check__box { width: 16px; height: 16px; border: 1px solid var(--border-neutral-l2); background: var(--bg-base-default); border-radius: var(--radius-4); display: inline-flex; align-items: center; justify-content: center; color: var(--text-onbrand); transition: background .12s, border-color .12s; }
+    .ds-check input { display: none; }
+    .ds-check input:checked + .ds-check__box { background: var(--bg-brand); border-color: var(--bg-brand); }
+    .ds-check input:checked + .ds-check__box::after { content: ''; width: 8px; height: 4px; border-left: 2px solid var(--text-onbrand); border-bottom: 2px solid var(--text-onbrand); transform: rotate(-45deg) translate(1px, -1px); }
+    .ds-check input:disabled + .ds-check__box { opacity: .5; cursor: not-allowed; }
+    .ds-radio__dot { width: 16px; height: 16px; border: 1px solid var(--border-neutral-l2); background: var(--bg-base-default); border-radius: var(--radius-full); display: inline-flex; align-items: center; justify-content: center; }
+    .ds-radio input { display: none; }
+    .ds-radio input:checked + .ds-radio__dot { border-color: var(--bg-brand); }
+    .ds-radio input:checked + .ds-radio__dot::after { content: ''; width: 10px; height: 10px; border-radius: var(--radius-full); background: var(--bg-brand); }
+    .ds-switch { position: relative; display: inline-flex; width: 32px; height: 18px; background: var(--bg-overlay-l3); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-full); cursor: pointer; transition: background .15s, border-color .15s; }
+    .ds-switch input { display: none; }
+    .ds-switch__thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: var(--bg-base-default); border-radius: var(--radius-full); transition: left .15s, background .15s; }
+    .ds-switch input:checked ~ .ds-switch__thumb { left: 16px; background: var(--icon-onbrand); }
+    .ds-switch:has(input:checked) { background: var(--bg-brand); border-color: var(--bg-brand); }
+    .input-affix { color: var(--text-tertiary); font-family: var(--body-base-font-family); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); white-space: nowrap; }
+    .ds-date-input { position: relative; }
+    .ds-date-input input { padding-right: var(--spacer-32); }
+    .ds-date-input input::-webkit-calendar-picker-indicator { opacity: 0; cursor: pointer; }
+    .ds-date-input .icon-img { position: absolute; top: 50%; right: var(--spacer-12); transform: translateY(-50%); color: var(--icon-secondary); pointer-events: none; }
+    .tag-field { display: flex; align-items: center; flex-wrap: wrap; gap: var(--spacer-6); min-height: 32px; padding: var(--spacer-4) var(--spacer-8); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); background: var(--bg-base-default); }
+    .tag-field:focus-within { border-color: var(--border-contrast); }
+    .tag-remove { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; background: transparent; color: var(--icon-tertiary); cursor: pointer; border-radius: var(--radius-4); }
+    .tag-remove:hover { background: var(--bg-overlay-l2); color: var(--icon-default); }
+    .stepper { display: inline-flex; align-items: center; width: fit-content; border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); overflow: hidden; background: var(--bg-base-default); }
+    .stepper button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; background: transparent; color: var(--icon-secondary); cursor: pointer; }
+    .stepper button:hover { background: var(--bg-overlay-l2); color: var(--icon-default); }
+    .stepper input { width: 48px; height: 32px; padding: 0; border: 0; border-left: 1px solid var(--border-neutral-l1); border-right: 1px solid var(--border-neutral-l1); background: transparent; color: var(--text-default); text-align: center; font: inherit; line-height: var(--body-base-line-height); appearance: textfield; -moz-appearance: textfield; }
+    .stepper input::-webkit-outer-spin-button,
+    .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* ── Menu ──────────────────────────────────────────────────── */
+/* ===== Menu ===== */
+    .ds-menu { display: flex; flex-direction: column; gap: var(--spacer-2); background: var(--bg-menu); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-12); padding: var(--spacer-8); min-width: 180px; color: var(--text-default); box-shadow: 0 12px 32px color-mix(in srgb, var(--text-default) 12%, transparent), 0 2px 8px color-mix(in srgb, var(--text-default) 8%, transparent); }
+    .ds-menu__item { display: flex; align-items: center; gap: var(--spacer-8); min-height: 32px; padding: var(--spacer-6) var(--spacer-8); border-radius: var(--radius-8); color: var(--text-default); font-family: var(--body-base-font-family); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); font-weight: var(--body-base-font-weight); cursor: pointer; }
+    .ds-menu__item .icon { color: var(--icon-secondary); }
+    .ds-menu__icon { width: 16px; height: 16px; flex: 0 0 auto; object-fit: contain; }
+    .ds-menu__item:hover { background: var(--bg-overlay-l2); }
+    .ds-menu__item--danger { color: var(--status-error-default); }
+    .ds-menu__item--danger .icon,
+    .ds-menu__item--danger .ds-menu__icon { color: var(--status-error-default); }
+    .ds-menu__divider { height: 1px; background: var(--border-neutral-l1); margin: var(--spacer-4) 0; }
+    .ds-menu__shortcut { margin-left: auto; color: var(--text-tertiary); font-family: var(--body-md-font-family); font-size: var(--body-md-font-size); line-height: var(--body-md-line-height); font-weight: var(--body-md-font-weight); font-variant-numeric: normal; font-feature-settings: normal; }
+    .ds-menu__group-label { padding: var(--spacer-8); color: var(--text-tertiary); font-family: var(--body-md-font-family); font-size: var(--body-md-font-size); line-height: var(--body-md-line-height); font-weight: var(--body-md-font-weight); letter-spacing: var(--body-md-letter-spacing); text-transform: uppercase; }
+    .ds-popover .ds-menu { border: 0; padding: 0; box-shadow: none; }
+
+/* ── Pagination ────────────────────────────────────────────── */
+/* ===== Pagination ===== */
+    .ds-pagination { display: inline-flex; gap: var(--spacer-4); }
+    .ds-pagination__item { min-width: 32px; height: 32px; padding: 0 var(--spacer-8); display: inline-flex; align-items: center; justify-content: center; background: transparent; color: var(--text-secondary); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-8); font: inherit; font-size: var(--body-base-font-size); cursor: pointer; }
+    .ds-pagination__item:hover { background: var(--bg-overlay-l2); color: var(--text-default); }
+    .ds-pagination__item.is-active { background: var(--bg-overlay-l3); color: var(--text-default); border-color: var(--border-neutral-l2); }
+    .ds-pagination__item[disabled] { opacity: .4; cursor: not-allowed; }
+    .ds-pagination__range { color: var(--text-tertiary); font-family: var(--body-sm-font-family); font-size: var(--body-sm-font-size); line-height: var(--body-sm-line-height); font-weight: var(--body-sm-font-weight); letter-spacing: var(--body-sm-letter-spacing); }
+
+/* ── Progress ──────────────────────────────────────────────── */
+/* ===== Progress ===== */
+    .ds-progress { height: 6px; background: var(--bg-overlay-l2); border-radius: var(--radius-full); overflow: hidden; }
+    .ds-progress__bar { height: 100%; background: var(--text-default); border-radius: inherit; }
+    .ds-progress--brand .ds-progress__bar { background: var(--bg-brand); }
+
+/* ── Skeleton ──────────────────────────────────────────────── */
+/* ===== Skeleton ===== */
+    .ds-skeleton { display: block; background: var(--bg-overlay-l2); border-radius: var(--radius-8); position: relative; overflow: hidden; }
+    .ds-skeleton::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--bg-overlay-l3), transparent); animation: ds-skeleton-shine 1.6s ease-in-out infinite; }
+    @keyframes ds-skeleton-shine { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    .ds-skeleton--line { height: 12px; }
+    .ds-skeleton--title { height: 18px; width: 50%; }
+    .ds-skeleton--circle { width: 32px; height: 32px; border-radius: var(--radius-full); }
+
+/* ── Table ─────────────────────────────────────────────────── */
+/* ===== Table ===== */
+    .ds-table-card { overflow-x: auto; }
+    .ds-table { width: 100%; min-width: 720px; border-collapse: collapse; }
+    .ds-table--fixed { table-layout: fixed; }
+    .ds-table__col-member { width: 42%; }
+    .ds-table__col-role { width: 16%; }
+    .ds-table__col-active { width: 20%; }
+    .ds-table__col-status { width: 16%; }
+    .ds-table__col-actions { width: 6%; }
+    .ds-table th, .ds-table td { text-align: left; vertical-align: middle; padding: var(--spacer-16) var(--spacer-8); border-bottom: 1px solid var(--border-neutral-l1); font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); }
+    .ds-table th { padding-top: var(--spacer-8); padding-bottom: var(--spacer-12); color: var(--text-tertiary); font-weight: var(--font-weight-medium); font-size: var(--body-md-font-size); line-height: var(--body-md-line-height); text-transform: uppercase; letter-spacing: var(--body-md-letter-spacing); background: transparent; }
+    .ds-table td { color: var(--text-secondary); }
+    .ds-table td:first-child { color: var(--text-default); }
+    .ds-table tr:last-child td { border-bottom: none; }
+    .ds-table td.num,
+    .ds-table th.num { text-align: right; font-family: var(--code-editor-font-family); font-variant-numeric: tabular-nums; }
+    .ds-table__member { display: flex; align-items: center; gap: var(--spacer-16); min-width: 0; }
+    .ds-table__member-meta { display: flex; flex-direction: column; gap: var(--spacer-2); min-width: 0; }
+    .ds-table__member-name { color: var(--text-default); font-weight: var(--font-weight-medium); white-space: nowrap; }
+    .ds-table__member-email { color: var(--text-tertiary); font-size: var(--body-md-font-size); line-height: var(--body-md-line-height); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ds-table td.ds-table__actions { width: 1%; text-align: right; }
+
+/* ── Tabs ──────────────────────────────────────────────────── */
+/* ===== Tabs ===== */
+    .ds-tabs { display: flex; gap: var(--spacer-24); border-bottom: 1px solid var(--border-neutral-l1); }
+    .ds-tab { display: inline-flex; align-items: center; padding: var(--spacer-12) 0; background: transparent; border: none; color: var(--text-tertiary); cursor: pointer; font: inherit; font-size: var(--body-base-font-size); line-height: var(--body-base-line-height); font-weight: var(--font-weight-medium); position: relative; }
+    .ds-tab:hover { color: var(--text-default); }
+    .ds-tab.is-active { color: var(--text-default); }
+    .ds-tab.is-active::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--icon-default); }
+    .ds-tab__count,
+    .ds-tab .ds-tag.num { margin-left: var(--spacer-6); min-width: 18px; height: 18px; padding: 0 var(--spacer-6); display: inline-grid; place-items: center; vertical-align: middle; border: none; border-radius: var(--radius-full); background: var(--bg-overlay-l2); color: var(--text-tertiary); font-family: var(--font-family-metric); font-size: var(--body-xs-font-size); line-height: var(--body-xs-line-height); font-weight: var(--body-xs-font-weight); font-variant-numeric: tabular-nums; }
+
+/* ── Tag ───────────────────────────────────────────────────── */
+/* ===== Tag / Badge ===== */
+    .ds-tag { display: inline-flex; align-items: center; gap: var(--spacer-4); height: 22px; padding: 0 var(--spacer-8); border-radius: var(--radius-8); font-size: var(--body-sm-font-size); line-height: var(--body-sm-line-height); background: var(--bg-overlay-l2); color: var(--text-secondary); border: 1px solid var(--border-neutral-l1); }
+    .ds-tag .icon { width: 12px; height: 12px; }
+    .ds-tag--brand { background: var(--bg-brand-popup); color: var(--text-brand); }
+    .ds-tag--success { background: var(--status-success-surface-l1); color: var(--status-success-default); }
+    .ds-tag--warning { background: var(--status-warning-surface-l1); color: var(--status-warning-default); }
+    .ds-tag--danger { background: var(--status-error-surface-l1); color: var(--status-error-default); }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --radius-sm: var(--radius-sm);
+    --radius-md: var(--radius-md);
+    --radius-lg: var(--radius-lg);
+    --radius-xl: var(--radius-xl);
+  }
+  @layer base {
+    body { background: var(--color-background); color: var(--color-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--background); }
+      .text-background { color: var(--background); }
+      .border-background { border-color: var(--background); }
+      .ring-background { --tw-ring-color: var(--background); }
+      .bg-foreground { background-color: var(--foreground); }
+      .text-foreground { color: var(--foreground); }
+      .border-foreground { border-color: var(--foreground); }
+      .ring-foreground { --tw-ring-color: var(--foreground); }
+      .bg-card { background-color: var(--card); }
+      .text-card { color: var(--card); }
+      .border-card { border-color: var(--card); }
+      .ring-card { --tw-ring-color: var(--card); }
+      .bg-card-foreground { background-color: var(--card-foreground); }
+      .text-card-foreground { color: var(--card-foreground); }
+      .border-card-foreground { border-color: var(--card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--card-foreground); }
+      .bg-popover { background-color: var(--popover); }
+      .text-popover { color: var(--popover); }
+      .border-popover { border-color: var(--popover); }
+      .ring-popover { --tw-ring-color: var(--popover); }
+      .bg-popover-foreground { background-color: var(--popover-foreground); }
+      .text-popover-foreground { color: var(--popover-foreground); }
+      .border-popover-foreground { border-color: var(--popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--popover-foreground); }
+      .bg-primary { background-color: var(--primary); }
+      .text-primary { color: var(--primary); }
+      .border-primary { border-color: var(--primary); }
+      .ring-primary { --tw-ring-color: var(--primary); }
+      .bg-primary-foreground { background-color: var(--primary-foreground); }
+      .text-primary-foreground { color: var(--primary-foreground); }
+      .border-primary-foreground { border-color: var(--primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--primary-foreground); }
+      .bg-secondary { background-color: var(--secondary); }
+      .text-secondary { color: var(--secondary); }
+      .border-secondary { border-color: var(--secondary); }
+      .ring-secondary { --tw-ring-color: var(--secondary); }
+      .bg-secondary-foreground { background-color: var(--secondary-foreground); }
+      .text-secondary-foreground { color: var(--secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--secondary-foreground); }
+      .bg-muted { background-color: var(--muted); }
+      .text-muted { color: var(--muted); }
+      .border-muted { border-color: var(--muted); }
+      .ring-muted { --tw-ring-color: var(--muted); }
+      .bg-muted-foreground { background-color: var(--muted-foreground); }
+      .text-muted-foreground { color: var(--muted-foreground); }
+      .border-muted-foreground { border-color: var(--muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--muted-foreground); }
+      .bg-accent { background-color: var(--accent); }
+      .text-accent { color: var(--accent); }
+      .border-accent { border-color: var(--accent); }
+      .ring-accent { --tw-ring-color: var(--accent); }
+      .bg-accent-foreground { background-color: var(--accent-foreground); }
+      .text-accent-foreground { color: var(--accent-foreground); }
+      .border-accent-foreground { border-color: var(--accent-foreground); }
+      .ring-accent-foreground { --tw-ring-color: var(--accent-foreground); }
+      .bg-destructive { background-color: var(--destructive); }
+      .text-destructive { color: var(--destructive); }
+      .border-destructive { border-color: var(--destructive); }
+      .ring-destructive { --tw-ring-color: var(--destructive); }
+      .bg-destructive-foreground { background-color: var(--destructive-foreground); }
+      .text-destructive-foreground { color: var(--destructive-foreground); }
+      .border-destructive-foreground { border-color: var(--destructive-foreground); }
+      .ring-destructive-foreground { --tw-ring-color: var(--destructive-foreground); }
+      .bg-border { background-color: var(--border); }
+      .text-border { color: var(--border); }
+      .border-border { border-color: var(--border); }
+      .ring-border { --tw-ring-color: var(--border); }
+      .bg-input { background-color: var(--input); }
+      .text-input { color: var(--input); }
+      .border-input { border-color: var(--input); }
+      .ring-input { --tw-ring-color: var(--input); }
+      .bg-ring { background-color: var(--ring); }
+      .text-ring { color: var(--ring); }
+      .border-ring { border-color: var(--ring); }
+      .ring-ring { --tw-ring-color: var(--ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="h-screen w-screen overflow-hidden font-[family-name:var(--font-family-default)] antialiased" style="background:var(--bg-base-secondary);font-size:var(--body-base-font-size);line-height:var(--body-base-line-height);letter-spacing:var(--body-base-letter-spacing);color:var(--text-default);">
+    <main data-viewport-mode="app-shell" class="h-screen w-screen overflow-hidden flex min-h-0" style="font-family:var(--font-family-default);">
+      <!-- ========== Left Navigation Rail (48px) ========== -->
+      <nav class="w-12 shrink-0 flex flex-col items-center py-2 border-r relative" style="background:var(--bg-base-default);border-color:var(--border-neutral-l1);">
+        <!-- Annotation #1 on rail -->
+        <div class="ann-marker" style="top:72px;right:-10px;--ann-color:#2f74ff;">1</div>
+
+        <div class="size-9 flex items-center justify-center mb-2">
+          <div class="size-6 rounded-md flex items-center justify-center" style="background:var(--bg-brand);">
+            <i data-lucide="pen-tool" class="size-3.5" style="color:var(--text-onbrand);"></i>
+          </div>
+        </div>
+        <button class="size-9 flex items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="首页" title="首页">
+          <i data-lucide="home" class="size-[18px]"></i>
+        </button>
+        <button class="size-9 flex items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)] mt-1" style="color:var(--icon-tertiary);" aria-label="对话工作台" title="对话工作台">
+          <i data-lucide="message-square" class="size-[18px]"></i>
+        </button>
+        <button class="size-9 flex items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] relative mt-1" style="background:var(--bg-brand-popup);color:var(--bg-brand);" aria-label="小说创作" title="小说创作">
+          <i data-lucide="book-open" class="size-[18px]"></i>
+          <span class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r" style="background:var(--bg-brand);"></span>
+        </button>
+        <div class="mt-auto flex flex-col items-center gap-1">
+          <button class="size-9 flex items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="设置" title="设置">
+            <i data-lucide="settings" class="size-[18px]"></i>
+          </button>
+        </div>
+      </nav>
+
+      <!-- ========== Novel Sidebar (260px) ========== -->
+      <aside class="w-[260px] shrink-0 flex flex-col border-r relative" style="background:var(--bg-base-default);border-color:var(--border-neutral-l1);">
+        <!-- Annotation #2 on sidebar chapter area -->
+        <div class="ann-marker" style="top:140px;right:-10px;--ann-color:#2f74ff;">2</div>
+
+        <div class="h-11 px-3 flex items-center gap-2 shrink-0 border-b" style="border-color:var(--border-neutral-l1);">
+          <i data-lucide="library" class="size-4" style="color:var(--icon-tertiary);"></i>
+          <span style="font-size:var(--body-sm-font-size);font-weight:var(--font-weight-medium);color:var(--text-tertiary);">作品导航</span>
+        </div>
+        <div class="px-3 py-2.5 border-b" style="border-color:var(--border-neutral-l1);">
+          <div style="font-size:var(--body-base-font-size);font-weight:var(--font-weight-medium);color:var(--text-default);" class="truncate">星河彼岸</div>
+          <div class="flex items-center gap-1.5 mt-1">
+            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded" style="font-size:10px;background:var(--bg-brand-popup);color:var(--text-brand);">
+              <i data-lucide="sparkles" class="size-2.5"></i>
+              连载中
+            </span>
+            <span style="font-size:10px;color:var(--text-tertiary);">25 章</span>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto py-1" data-scroll-region="sidebar" style="font-size:var(--body-sm-font-size);">
+          <div class="px-3 py-1.5 flex items-center gap-1.5" style="color:var(--text-tertiary);font-weight:var(--font-weight-medium);text-transform:uppercase;letter-spacing:0.05em;font-size:10px;">
+            <i data-lucide="list" class="size-3"></i>
+            章节列表
+          </div>
+          <div id="sidebar-chapters"></div>
+        </div>
+        <div class="h-9 px-3 flex items-center gap-2 border-t shrink-0" style="border-color:var(--border-neutral-l1);color:var(--text-tertiary);">
+          <button class="inline-flex items-center gap-1.5 px-2 h-7 rounded-md transition-[background-color] duration-150 hover:bg-[var(--bg-overlay-l1)]" style="font-size:var(--body-sm-font-size);">
+            <i data-lucide="chevrons-left" class="size-3.5"></i>
+            收起侧栏
+          </button>
+        </div>
+      </aside>
+
+      <!-- ========== Main Matrix Workspace ========== -->
+      <section class="flex-1 min-w-0 flex flex-col overflow-hidden relative">
+        <!-- Matrix Toolbar -->
+        <div class="relative z-30 flex items-center gap-1.5 flex-wrap px-3 min-h-11 py-1.5 border-b shrink-0" style="background:var(--bg-base-default);border-color:var(--border-neutral-l1);font-size:var(--body-sm-font-size);">
+          <!-- Annotation #4 on back button -->
+          <div class="ann-marker" style="top:-2px;left:8px;--ann-color:#4b3fe3;">4</div>
+
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="返回" title="返回">
+            <i data-lucide="arrow-left" class="size-3.5"></i>
+          </button>
+
+          <!-- Annotation #3 on view switcher -->
+          <div class="ann-marker" style="top:-2px;left:62px;--ann-color:#2f74ff;">3</div>
+
+          <div class="inline-flex gap-0.5 p-0.5 rounded-lg" style="background:var(--bg-base-secondary);">
+            <button class="inline-flex items-center gap-1.5 h-7 px-3 rounded-[6px] transition-all duration-200 ease-out active:scale-[0.96]" style="background:var(--bg-base-default);color:var(--text-default);box-shadow:0 1px 2px rgba(0,0,0,0.05);font-size:11px;font-weight:var(--font-weight-medium);">
+              <i data-lucide="layout-grid" class="size-3"></i>
+              矩阵
+            </button>
+            <button class="inline-flex items-center gap-1.5 h-7 px-3 rounded-[6px] transition-all duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--text-tertiary);font-size:11px;font-weight:var(--font-weight-medium);">
+              <i data-lucide="kanban" class="size-3"></i>
+              画布
+            </button>
+          </div>
+
+          <div class="mx-1 h-5 w-px" style="background:var(--border-neutral-l1);"></div>
+          <span class="px-1 tabular-nums" style="font-family:var(--code-editor-font-family);font-size:11px;color:var(--text-tertiary);">8 / 25</span>
+
+          <!-- Annotation #5 on current chapter badge (amber) -->
+          <div class="ann-marker" style="top:-2px;left:145px;--ann-color:#f59e0b;">5</div>
+
+          <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border" style="background:rgba(245,158,11,0.10);border-color:rgba(245,158,11,0.30);color:#f59e0b;font-size:11px;font-weight:var(--font-weight-medium);">
+            <span class="w-1.5 h-1.5 rounded-full" style="background:#f59e0b;box-shadow:0 0 6px #f59e0b;"></span>
+            <span style="font-family:var(--code-editor-font-family);opacity:0.8;">CH.08</span>
+            <span class="truncate" style="max-width:140px;">初入江湖</span>
+          </div>
+
+          <div class="mx-1 h-5 w-px" style="background:var(--border-neutral-l1);"></div>
+
+          <!-- Annotation #6 on undo/redo -->
+          <div class="ann-marker" style="top:-2px;left:280px;--ann-color:#4b3fe3;">6</div>
+
+          <button disabled class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)] disabled:cursor-not-allowed disabled:opacity-40" style="color:var(--icon-tertiary);" aria-label="撤销" title="撤销">
+            <i data-lucide="undo-2" class="size-3.5"></i>
+          </button>
+          <button disabled class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)] disabled:cursor-not-allowed disabled:opacity-40" style="color:var(--icon-tertiary);" aria-label="重做" title="重做">
+            <i data-lucide="redo-2" class="size-3.5"></i>
+          </button>
+
+          <div class="mx-1 h-5 w-px" style="background:var(--border-neutral-l1);"></div>
+
+          <!-- Annotation #7 on zoom -->
+          <div class="ann-marker" style="top:-2px;left:360px;--ann-color:#4b3fe3;">7</div>
+
+          <div class="inline-flex items-center overflow-hidden rounded-md border" style="background:var(--bg-base-tertiary);border-color:var(--border-neutral-l1);">
+            <button class="inline-flex size-7 items-center justify-center transition-[background-color] duration-150 hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="缩小" title="缩小">
+              <i data-lucide="minus" class="size-3"></i>
+            </button>
+            <span class="tabular-nums text-center px-1 min-w-[42px]" style="font-family:var(--code-editor-font-family);font-size:11px;color:var(--text-tertiary);">100%</span>
+            <button class="inline-flex size-7 items-center justify-center transition-[background-color] duration-150 hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="放大" title="放大">
+              <i data-lucide="plus" class="size-3"></i>
+            </button>
+          </div>
+
+          <div class="mx-1 h-5 w-px" style="background:var(--border-neutral-l1);"></div>
+
+          <!-- Annotation #8 on history -->
+          <div class="ann-marker" style="top:-2px;left:470px;--ann-color:#4b3fe3;">8</div>
+
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)] relative" style="color:var(--icon-tertiary);" aria-label="补全历史" title="补全历史">
+            <i data-lucide="history" class="size-3.5"></i>
+            <span class="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 inline-flex items-center justify-center rounded-full text-[9px] font-semibold" style="background:var(--status-error-default);color:#fff;">2</span>
+          </button>
+
+          <!-- Annotation #9 on AI organize -->
+          <div class="ann-marker" style="top:-2px;left:502px;--ann-color:#4b3fe3;">9</div>
+
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="AI 整理" title="AI 整理">
+            <i data-lucide="wand" class="size-3.5"></i>
+          </button>
+
+          <div class="flex-1"></div>
+
+          <!-- Annotation #17 on top-right buttons -->
+          <div class="ann-marker" style="top:-2px;right:280px;--ann-color:#2f74ff;">17</div>
+
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="搜索" title="搜索">
+            <i data-lucide="search" class="size-3.5"></i>
+          </button>
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="筛选" title="筛选">
+            <i data-lucide="sliders-horizontal" class="size-3.5"></i>
+          </button>
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="刷新" title="刷新">
+            <i data-lucide="refresh-cw" class="size-3.5"></i>
+          </button>
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="展开折叠" title="展开折叠">
+            <i data-lucide="chevrons-down-up" class="size-3.5"></i>
+          </button>
+          <button class="inline-flex size-8 items-center justify-center rounded-md transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96] hover:bg-[var(--bg-overlay-l1)]" style="color:var(--icon-tertiary);" aria-label="更多" title="更多">
+            <i data-lucide="more-horizontal" class="size-3.5"></i>
+          </button>
+
+          <!-- Annotation #10 on filter chips -->
+          <div class="ann-marker" style="top:-2px;right:12px;--ann-color:#2f74ff;">10</div>
+
+          <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0" id="filter-chips"></div>
+        </div>
+
+        <!-- Matrix Gantt Body -->
+        <div class="flex-1 min-h-0 overflow-auto relative" data-scroll-region="primary" id="matrix-scroll">
+          <div class="relative" id="matrix-container" style="min-width:1640px;">
+            <!-- Chapter Ruler -->
+            <div class="sticky top-0 z-20 flex border-b h-11" style="background:var(--bg-base-default);border-color:var(--border-neutral-l1);">
+              <div class="sticky left-0 z-30 flex items-center px-3 border-r shrink-0" style="width:240px;background:var(--bg-base-default);border-color:var(--border-neutral-l1);">
+                <span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary);">实体 / 章节</span>
+              </div>
+              <div class="flex" id="chapter-ruler"></div>
+            </div>
+
+            <div id="current-ch-highlight" class="absolute z-10 pointer-events-none" style="top:44px;bottom:0;border-left:1px solid rgba(245,158,11,0.30);border-right:1px solid rgba(245,158,11,0.30);background:rgba(245,158,11,0.07);"></div>
+            <div id="current-ch-label" class="absolute z-30 pointer-events-none flex items-center gap-0.5 rounded-md px-1.5 h-4 whitespace-nowrap tabular-nums" style="top:44px;left:0;background:#f59e0b;color:#fff;font-size:10px;font-weight:600;box-shadow:0 4px 8px rgba(0,0,0,0.12);font-family:var(--code-editor-font-family);transform:translate(-50%,-50%);">CH.08</div>
+
+            <div id="matrix-rows" class="relative"></div>
+
+            <!-- Annotation #15 on resize handle -->
+            <div class="absolute z-[40]" style="left:233px;top:50px;">
+              <div class="ann-marker" style="position:static;--ann-color:#4b3fe3;">15</div>
+            </div>
+            <div class="absolute top-0 bottom-0 z-[35] w-1.5 cursor-col-resize hover:bg-[var(--bg-brand)]/30 active:bg-[var(--bg-brand)]/50" style="left:240px;background:transparent;"></div>
+
+            <!-- Annotation #16 on legend -->
+            <div class="absolute z-[45]" style="bottom:60px;right:40px;">
+              <div class="ann-marker" style="position:static;--ann-color:#15a877;">16</div>
+            </div>
+
+            <div class="absolute bottom-3 right-3 z-40 rounded-lg p-2.5 backdrop-blur-sm border" style="background:rgba(255,255,255,0.95);border-color:var(--border-neutral-l1);box-shadow:0 8px 24px rgba(0,0,0,0.08);">
+              <div class="flex items-center gap-1.5 mb-2" style="font-size:11px;font-weight:600;color:var(--text-default);">
+                <i data-lucide="legend" class="size-3" style="color:var(--icon-tertiary);"></i>
+                图例
+              </div>
+              <div class="grid grid-cols-2 gap-x-4 gap-y-1" id="legend-items"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ========== Annotation Overlay Layer ========== -->
+        <!-- #11 on a gantt band (林晚 at CH.08 area) -->
+        <div class="ann-marker" style="top:140px;left:720px;z-index:50;--ann-color:#4b3fe3;">11</div>
+        <!-- #12 on entity row (林晚 row) -->
+        <div class="ann-marker" style="top:108px;left:100px;z-index:50;--ann-color:#4b3fe3;">12</div>
+        <!-- #13 on chapter cell (CH.08 cell) -->
+        <div class="ann-marker" style="top:55px;left:700px;z-index:50;--ann-color:#f59e0b;">13</div>
+        <!-- #14 on group collapse arrow -->
+        <div class="ann-marker" style="top:75px;left:295px;z-index:50;--ann-color:#15a877;">14</div>
+
+        <!-- ========== Annotation Cards ========== -->
+        <!-- Card 1: rail nav -->
+        <div class="ann-card" style="top:55px;left:58px;--accent:#2f74ff;">
+          <div class="ann-card__num" style="background:#2f74ff;">1</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">导航栏切换</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">点击图标切换首页/对话/小说/设置模块，当前项左侧有紫色指示条。</div>
+          </div>
+        </div>
+
+        <!-- Card 2: sidebar chapters -->
+        <div class="ann-card" style="top:125px;left:278px;--accent:#2f74ff;">
+          <div class="ann-card__num" style="background:#2f74ff;">2</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">侧栏章节列表</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">单击跳转播放头至该章；双击章节名进入重命名。当前章琥珀色高亮。</div>
+          </div>
+        </div>
+
+        <!-- Card 3: view switcher -->
+        <div class="ann-card" style="top:0px;left:120px;--accent:#2f74ff;">
+          <div class="ann-card__num" style="background:#2f74ff;">3</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">视图切换</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">切换矩阵视图或画布视图，当前激活项白底高亮。</div>
+          </div>
+        </div>
+
+        <!-- Card 4: back button -->
+        <div class="ann-card" style="top:44px;left:8px;--accent:#4b3fe3;">
+          <div class="ann-card__num" style="background:#4b3fe3;">4</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">返回按钮</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">返回作品列表页面，未保存更改会弹确认。</div>
+          </div>
+        </div>
+
+        <!-- Card 5: chapter badge -->
+        <div class="ann-card" style="top:44px;left:210px;--accent:#f59e0b;">
+          <div class="ann-card__num" style="background:#f59e0b;">5</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">当前章节定位</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">琥珀色徽章标识播放头所在章；点击徽章使时间轴滚动至该章。</div>
+          </div>
+        </div>
+
+        <!-- Card 6: undo/redo -->
+        <div class="ann-card" style="top:44px;left:332px;--accent:#4b3fe3;">
+          <div class="ann-card__num" style="background:#4b3fe3;">6</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">撤销 / 重做</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">撤销或重做矩阵操作（色带拖动、实体增删、排序变更）。</div>
+          </div>
+        </div>
+
+        <!-- Card 7: zoom control -->
+        <div class="ann-card" style="top:44px;left:430px;--accent:#4b3fe3;">
+          <div class="ann-card__num" style="background:#4b3fe3;">7</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">缩放控件</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">+/− 调整时间轴单元格宽度；中间百分比可点击重置 100%，支持 Ctrl+滚轮。</div>
+          </div>
+        </div>
+
+        <!-- Card 8: history -->
+        <div class="ann-card" style="top:44px;left:530px;--accent:#4b3fe3;">
+          <div class="ann-card__num" style="background:#4b3fe3;">8</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">补全历史</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">查看 AI 补全/反推记录；红色角标显示未读条目数量。</div>
+          </div>
+        </div>
+
+        <!-- Card 9: AI organize -->
+        <div class="ann-card" style="top:44px;left:650px;--accent:#4b3fe3;">
+          <div class="ann-card__num" style="background:#4b3fe3;">9</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">AI 整理</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">一键 AI 整理当前章节实体排布，自动合并重叠色带、排序出场顺序。</div>
+          </div>
+        </div>
+
+        <!-- Card 10: filter chips -->
+        <div class="ann-card" style="top:0px;right:8px;--accent:#2f74ff;width:220px;">
+          <div class="ann-card__num" style="background:#2f74ff;">10</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">类型筛选 Chips</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">多选筛选显示的实体类型；选中项以分类色填充，未选中灰边。</div>
+          </div>
+        </div>
+
+        <!-- Card 17: top-right toolbar -->
+        <div class="ann-card" style="top:44px;right:295px;--accent:#2f74ff;width:220px;">
+          <div class="ann-card__num" style="background:#2f74ff;">17</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">工具栏功能组</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">搜索实体、高级筛选、刷新数据、全部展开/折叠、更多菜单。</div>
+          </div>
+        </div>
+
+        <!-- Card 11: gantt band -->
+        <div class="ann-card" style="top:200px;left:700px;--accent:#4b3fe3;width:240px;">
+          <div class="ann-card__num" style="background:#4b3fe3;">11</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">色带 Span</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">单击选中→右侧详情面板；双击编辑起止章；拖拽移动区间；右键唤出菜单（编辑/删除/拆分/合并）。</div>
+          </div>
+        </div>
+
+        <!-- Card 12: entity row -->
+        <div class="ann-card" style="top:140px;left:12px;--accent:#4b3fe3;width:220px;">
+          <div class="ann-card__num" style="background:#4b3fe3;">12</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">实体行</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">单击选中实体高亮全部色带；点击颜色圆点快速筛选该类型；拖拽行可调整顺序。</div>
+          </div>
+        </div>
+
+        <!-- Card 13: chapter cell -->
+        <div class="ann-card" style="top:50px;left:780px;--accent:#f59e0b;width:220px;">
+          <div class="ann-card__num" style="background:#f59e0b;">13</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">章节单元格</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">单击设置播放头到该章；双击打开正文编辑器；右键菜单添加/删除/插入章节。</div>
+          </div>
+        </div>
+
+        <!-- Card 14: group collapse -->
+        <div class="ann-card" style="top:95px;left:278px;--accent:#15a877;width:220px;">
+          <div class="ann-card__num" style="background:#15a877;">14</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">分组折叠箭头</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">点击箭头折叠/展开该类型下的实体列表，折叠后只显示组头行。</div>
+          </div>
+        </div>
+
+        <!-- Card 15: resize handle -->
+        <div class="ann-card" style="top:85px;left:260px;--accent:#4b3fe3;width:220px;">
+          <div class="ann-card__num" style="background:#4b3fe3;">15</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">分隔条拖拽</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">左右拖拽调整实体名称列宽度，hover 紫色提示，双击重置默认宽度。</div>
+          </div>
+        </div>
+
+        <!-- Card 16: legend -->
+        <div class="ann-card" style="bottom:55px;right:200px;--accent:#15a877;width:220px;">
+          <div class="ann-card__num" style="background:#15a877;">16</div>
+          <div class="flex-1 min-w-0">
+            <div style="font-size:12px;font-weight:600;color:var(--text-default);">图例</div>
+            <div style="font-size:11px;color:var(--text-tertiary);line-height:16px;margin-top:2px;">点击图例项快速高亮/筛选该类型实体；悬停显示类型实体数量。</div>
+          </div>
+        </div>
+
+        <!-- ========== Interaction Type Legend ========== -->
+        <div class="absolute bottom-3 left-3 z-50 rounded-lg p-3 border" style="background:rgba(255,255,255,0.97);border-color:var(--border-neutral-l1);box-shadow:0 8px 24px rgba(0,0,0,0.10);width:200px;backdrop-filter:blur(8px);">
+          <div style="font-size:11px;font-weight:600;color:var(--text-default);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">交互类型</div>
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:#2f74ff;"></span>
+              <span style="font-size:11px;color:var(--text-secondary);">导航 / 切换类</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:#4b3fe3;"></span>
+              <span style="font-size:11px;color:var(--text-secondary);">核心操作类</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:#f59e0b;"></span>
+              <span style="font-size:11px;color:var(--text-secondary);">播放头 / 定位类</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:#15a877;"></span>
+              <span style="font-size:11px;color:var(--text-secondary);">数据展示类</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:#e8463a;"></span>
+              <span style="font-size:11px;color:var(--text-secondary);">危险 / 删除类</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <style>
+      [data-scroll-region]::-webkit-scrollbar { width: 6px; height: 6px; }
+      [data-scroll-region]::-webkit-scrollbar-thumb { background: rgba(115,115,115,0.24); border-radius: 3px; }
+      [data-scroll-region]::-webkit-scrollbar-thumb:hover { background: rgba(115,115,115,0.36); }
+      [data-scroll-region]::-webkit-scrollbar-track { background: transparent; }
+
+      .ch-cell { flex-shrink:0; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:2px; border-right:1px solid rgba(115,115,115,0.08); }
+      .ch-cell--major { border-right-width:2px; border-right-color:rgba(115,115,115,0.18); }
+      .ch-cell--mid { border-right-color:rgba(115,115,115,0.12); }
+
+      .entity-cell { position:sticky; left:0; z-index:5; display:flex; align-items:center; gap:6px; padding:0 8px; flex-shrink:0; border-right:1px solid var(--border-neutral-l1); border-bottom:1px solid rgba(115,115,115,0.06); }
+      .matrix-row { display:flex; height:32px; position:relative; }
+      .matrix-row--zebra { background:rgba(115,115,115,0.04); }
+      .group-row { display:flex; align-items:center; height:28px; padding:0 8px; gap:6px; }
+
+      .gantt-band { position:absolute; top:50%; z-index:2; height:19px; transform:translateY(-50%); border-radius:6px; transition:filter .12s ease; cursor:pointer; }
+      .gantt-band:hover { filter:brightness(1.08); }
+
+      /* Annotation marker */
+      .ann-marker {
+        position:absolute;
+        width:22px;
+        height:22px;
+        border-radius:50%;
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        color:#fff;
+        font-size:11px;
+        font-weight:700;
+        font-family:var(--code-editor-font-family);
+        z-index:60;
+        background:var(--ann-color,#4b3fe3);
+        box-shadow:0 0 0 3px rgba(255,255,255,0.9),0 2px 8px rgba(0,0,0,0.18);
+        cursor:pointer;
+        flex-shrink:0;
+      }
+
+      /* Annotation card */
+      .ann-card {
+        position:absolute;
+        z-index:55;
+        display:flex;
+        align-items:flex-start;
+        gap:8px;
+        padding:10px;
+        background:#fff;
+        border:1px solid var(--border-neutral-l2);
+        border-radius:var(--radius-8);
+        box-shadow:0 8px 24px rgba(0,0,0,0.10),0 2px 6px rgba(0,0,0,0.06);
+        max-width:240px;
+      }
+      .ann-card__num {
+        width:22px;
+        height:22px;
+        border-radius:50%;
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        color:#fff;
+        font-size:11px;
+        font-weight:700;
+        font-family:var(--code-editor-font-family);
+        flex-shrink:0;
+      }
+
+      .chapter-dot { width:3px; height:3px; border-radius:50%; background:currentColor; opacity:0.5; }
+
+      button:focus-visible { outline:none; box-shadow:0 0 0 2px rgba(75,63,227,0.35); }
+
+      @media (prefers-reduced-motion:reduce) {
+        * { transition-duration:0.01ms !important; animation-duration:0.01ms !important; }
+      }
+    </style>
+
+    <script>
+      const CELL_W = 56;
+      const ENTITY_W = 240;
+      const CURRENT_CH = 8;
+      const TOTAL_CH = 25;
+
+      const CATEGORIES = [
+        { key:'all', label:'全部', color:null },
+        { key:'character', label:'角色', color:'#4b3fe3' },
+        { key:'conflict', label:'冲突', color:'#e8463a' },
+        { key:'clue', label:'线索', color:'#2f74ff' },
+        { key:'foreshadow', label:'伏笔', color:'#9570ff' },
+        { key:'faction', label:'势力', color:'#15a877' },
+        { key:'location', label:'地点', color:'#e27900' },
+        { key:'world_element', label:'世界要素', color:'#3f31c6' },
+        { key:'info_layer', label:'信息层', color:'#747e94' },
+      ];
+
+      const GROUPS = [
+        { key:'character', label:'角色', color:'#4b3fe3', collapsed:false, entities:[
+          { name:'林晚', desc:'成长主角', bands:[[1,25]] },
+          { name:'陆星辰', desc:'守护者', bands:[[3,22],[24,25]] },
+          { name:'苏云裳', desc:'堕落与救赎', bands:[[5,12],[18,24]] },
+          { name:'老周', desc:'引路人', bands:[[2,8],[15,20]] },
+        ]},
+        { key:'conflict', label:'冲突', color:'#e8463a', collapsed:false, entities:[
+          { name:'权力之争', desc:'朝堂博弈', bands:[[5,15],[20,25]] },
+          { name:'身世之谜', desc:'林晚身世', bands:[[8,22]] },
+          { name:'旧怨新仇', desc:'江湖恩怨', bands:[[12,18]] },
+        ]},
+        { key:'clue', label:'线索', color:'#2f74ff', collapsed:false, entities:[
+          { name:'玉佩纹样', desc:'身世信物', bands:[[3,10],[16,21]] },
+          { name:'密信残页', desc:'阴谋证据', bands:[[7,14],[22,25]] },
+          { name:'古籍记载', desc:'灵脉秘辛', bands:[[11,19]] },
+        ]},
+        { key:'foreshadow', label:'伏笔', color:'#9570ff', collapsed:false, entities:[
+          { name:'童年记忆', desc:'梦境碎片', bands:[[1,6],[23,25]] },
+          { name:'神秘预言', desc:'星象启示', bands:[[9,13],[24,25]] },
+        ]},
+        { key:'faction', label:'势力', color:'#15a877', collapsed:false, entities:[
+          { name:'朝云阁', desc:'正道领袖', bands:[[4,25]] },
+          { name:'暗影盟', desc:'暗中势力', bands:[[10,25]] },
+        ]},
+        { key:'location', label:'地点', color:'#e27900', collapsed:false, entities:[
+          { name:'京城', desc:'权力中心', bands:[[1,8],[20,25]] },
+          { name:'江南', desc:'游历之地', bands:[[9,19]] },
+          { name:'边关', desc:'战场所在', bands:[[15,22]] },
+        ]},
+        { key:'world_element', label:'世界要素', color:'#3f31c6', collapsed:false, entities:[
+          { name:'灵脉体系', desc:'力量根基', bands:[[2,25]] },
+          { name:'武学境界', desc:'修炼体系', bands:[[6,25]] },
+        ]},
+        { key:'info_layer', label:'信息层', color:'#747e94', collapsed:false, entities:[
+          { name:'读者已知', desc:'叙事视角', bands:[[1,25]] },
+          { name:'角色未知', desc:'信息差', bands:[[5,20]] },
+        ]},
+      ];
+
+      function $sel(s){ return document.querySelector(s); }
+      function chapterLabel(n){ return String(n).padStart(2,'0'); }
+      function isMajorCh(n){ return n%10===0; }
+      function isMidCh(n){ return n%5===0; }
+
+      function getChapterTitle(n){
+        const titles={1:'山村少年',2:'灵脉初觉',3:'玉佩之谜',4:'拜入宗门',5:'同门之谊',6:'秘境试炼',7:'暗流涌动',8:'初入江湖',9:'江南烟雨',10:'朝云大会',11:'古籍线索',12:'旧怨浮现',13:'预言应验',14:'密信真相',15:'边关烽火',16:'玉佩溯源',17:'灵脉异动',18:'苏云裳之变',19:'暗影现身',20:'京城风云',21:'身世揭晓',22:'终极对决',23:'童年真相',24:'最终之战',25:'星河彼岸'};
+        return titles[n]||('第'+n+'章');
+      }
+
+      function renderSidebarChapters(){
+        const el=$sel('#sidebar-chapters'); let html='';
+        for(let i=1;i<=TOTAL_CH;i++){
+          const isCur=i===CURRENT_CH;
+          html+=`<div class="flex items-center gap-2 px-3 h-7 cursor-pointer transition-[background-color] duration-120 ${isCur?'':'hover:bg-[var(--bg-overlay-l1)]'}" style="${isCur?'background:rgba(245,158,11,0.08);':''}font-size:var(--body-sm-font-size);">
+            <span class="w-5 text-right tabular-nums shrink-0" style="font-family:var(--code-editor-font-family);font-size:10px;color:${isCur?'#f59e0b':'var(--text-tertiary)'};${isCur?'font-weight:600;':''}">${chapterLabel(i)}</span>
+            <span class="truncate flex-1" style="color:${isCur?'var(--text-default)':'var(--text-secondary)'};${isCur?'font-weight:500;':''}">${getChapterTitle(i)}</span>
+            ${isCur?'<span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:#f59e0b;box-shadow:0 0 4px #f59e0b;"></span>':''}
+          </div>`;
+        }
+        el.innerHTML=html;
+      }
+
+      function renderChips(){
+        const el=$sel('#filter-chips'); let html='';
+        CATEGORIES.forEach(c=>{
+          const active=c.key==='all';
+          const dotStyle=c.color?`background:${active?'#fff':c.color};`:`background:${active?'#fff':'var(--text-tertiary)'};`;
+          html+=`<button class="inline-flex h-8 items-center gap-1 px-2.5 rounded-[6px] border transition-all duration-200 ease-out active:scale-[0.96] shrink-0" style="font-size:11px;${active?`background:${c.color||'var(--bg-brand)'};border-color:${c.color||'var(--bg-brand)'};color:#fff;`:`background:var(--bg-base-default);border-color:var(--border-neutral-l1);color:var(--text-tertiary);`}">
+            <span class="w-1.5 h-1.5 rounded-full shrink-0" style="${dotStyle}"></span>${c.label}
+          </button>`;
+        });
+        el.innerHTML=html;
+      }
+
+      function renderRuler(){
+        const el=$sel('#chapter-ruler'); let html='';
+        for(let i=1;i<=TOTAL_CH;i++){
+          let cls='ch-cell'; let color='var(--text-disabled)'; let weight='400';
+          if(i===CURRENT_CH){color='#f59e0b';weight='600';}
+          else if(isMajorCh(i)){cls+=' ch-cell--major';color='var(--text-default)';weight='600';}
+          else if(isMidCh(i)){cls+=' ch-cell--mid';color='var(--text-tertiary)';}
+          html+=`<div class="${cls}" style="width:${CELL_W}px;"><span class="tracking-wide tabular-nums" style="font-family:var(--code-editor-font-family);font-size:11px;color:${color};font-weight:${weight};">${chapterLabel(i)}</span></div>`;
+        }
+        el.innerHTML=html;
+      }
+
+      function renderRows(){
+        const el=$sel('#matrix-rows'); let html=''; let totalEntities=0;
+        GROUPS.forEach(g=>{
+          html+=`<div class="group-row" style="background:rgba(115,115,115,0.04);width:${ENTITY_W+CELL_W*TOTAL_CH}px;">
+            <div class="sticky left-0 z-[6] flex items-center gap-1.5 px-2" style="width:${ENTITY_W}px;background:rgba(115,115,115,0.04);">
+              <i data-lucide="chevron-down" class="size-3.5 shrink-0 transition-transform" style="color:var(--icon-tertiary);"></i>
+              <span class="w-3 h-3 rounded-sm shrink-0" style="background:${g.color};"></span>
+              <span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-default);">${g.label}</span>
+              <span class="tabular-nums" style="font-size:10px;color:var(--text-tertiary);font-family:var(--code-editor-font-family);">${g.entities.length}</span>
+            </div>
+          </div>`;
+          g.entities.forEach(ent=>{
+            totalEntities++;
+            const isZebra=totalEntities%2===0;
+            const zebraCls=isZebra?'matrix-row--zebra':'';
+            const cellBg=isZebra?'rgba(115,115,115,0.04)':'var(--bg-base-default)';
+            html+=`<div class="matrix-row ${zebraCls}" style="width:${ENTITY_W+CELL_W*TOTAL_CH}px;">
+              <div class="entity-cell" style="width:${ENTITY_W}px;background:${cellBg};">
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${g.color};"></span>
+                <span style="font-size:12px;color:var(--text-default);font-weight:500;" class="truncate">${ent.name}</span>
+                <span class="truncate flex-1 text-right" style="font-size:10px;color:var(--text-disabled);">${ent.desc}</span>
+              </div>
+              <div class="relative flex-1" style="width:${CELL_W*TOTAL_CH}px;">
+                ${ent.bands.map(([s,e])=>{
+                  const left=(s-1)*CELL_W+2; const width=(e-s+1)*CELL_W-4;
+                  return `<div class="gantt-band" style="left:${left}px;width:${width}px;background:${hexToRgba(g.color,0.16)};border:1px solid ${hexToRgba(g.color,0.30)};"></div>`;
+                }).join('')}
+              </div>
+            </div>`;
+          });
+        });
+        el.innerHTML=html;
+      }
+
+      function positionCurrentHighlight(){
+        const highlightEl=$sel('#current-ch-highlight');
+        const labelEl=$sel('#current-ch-label');
+        const chCenterX=ENTITY_W+(CURRENT_CH-0.5)*CELL_W;
+        highlightEl.style.left=(ENTITY_W+(CURRENT_CH-1)*CELL_W)+'px';
+        highlightEl.style.width=CELL_W+'px';
+        labelEl.style.left=chCenterX+'px';
+      }
+
+      function renderLegend(){
+        const el=$sel('#legend-items'); let html='';
+        CATEGORIES.filter(c=>c.key!=='all').forEach(c=>{
+          html+=`<div class="flex items-center gap-1.5" style="font-size:10px;color:var(--text-secondary);">
+            <span class="w-3 h-1.5 rounded-sm shrink-0" style="background:${hexToRgba(c.color,0.28)};border:1px solid ${hexToRgba(c.color,0.40)};"></span>${c.label}
+          </div>`;
+        });
+        html+=`<div class="flex items-center gap-1.5 col-span-2 mt-1 pt-1" style="font-size:10px;color:var(--text-secondary);border-top:1px solid var(--border-neutral-l1);">
+          <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:#f59e0b;box-shadow:0 0 4px #f59e0b;"></span>当前章节 (CH.08)
+        </div>`;
+        el.innerHTML=html;
+      }
+
+      function hexToRgba(hex,a){
+        const h=hex.replace('#',''); const r=parseInt(h.substring(0,2),16); const g=parseInt(h.substring(2,4),16); const b=parseInt(h.substring(4,6),16);
+        return `rgba(${r},${g},${b},${a})`;
+      }
+
+      renderSidebarChapters();
+      renderChips();
+      renderRuler();
+      renderRows();
+      positionCurrentHighlight();
+      renderLegend();
+      if(window.lucide) lucide.createIcons();
+    </script>
+</body>
+</html>

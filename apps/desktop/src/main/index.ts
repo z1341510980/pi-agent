@@ -163,13 +163,20 @@ app.whenReady().then(async () => {
   })
 
   // 启动嵌入式后端服务
-  // 开发模式：spawn 系统 Node + tsx 运行源码
+  // 开发模式：默认跳过，由开发者手动启动 `pnpm dev:server`（端口 3900）
+  //   若需 Electron 内联启动，设置环境变量 PI_EMBED_SERVER_IN_DEV=1
   // 生产模式：ELECTRON_RUN_AS_NODE 复用 Electron 内置 Node，运行 bytenode 字节码
-  try {
-    serverPort = await startEmbeddedServer()
-    console.log(`嵌入式 Agent Server 运行于 http://127.0.0.1:${serverPort}`)
-  } catch (err) {
-    console.error('嵌入式 Agent Server 启动失败:', err)
+  const isDev = !app.isPackaged
+  const embedInDev = process.env.PI_EMBED_SERVER_IN_DEV === '1'
+  if (isDev && !embedInDev) {
+    console.log('[embedded-server] 开发模式跳过嵌入式启动，请手动运行 `pnpm dev:server`（默认端口 3900）')
+  } else {
+    try {
+      serverPort = await startEmbeddedServer()
+      console.log(`嵌入式 Agent Server 运行于 http://127.0.0.1:${serverPort}`)
+    } catch (err) {
+      console.error('嵌入式 Agent Server 启动失败:', err)
+    }
   }
 
   // IPC test

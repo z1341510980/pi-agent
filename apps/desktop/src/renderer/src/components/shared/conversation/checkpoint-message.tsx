@@ -13,8 +13,11 @@ export interface CheckpointMessageProps {
 
 /** checkpointType → 标题 */
 const CHECKPOINT_TITLES: Record<NonNullable<ConversationMessage['checkpointType']>, string> = {
-  narrative: '叙事确认',
+  narrative_task: '叙事确认',
   review: '验收确认',
+  post_write_guard: '守护触发',
+  writer_pushback: '写作推回',
+  guard_degraded: '守护降级',
 }
 
 /**

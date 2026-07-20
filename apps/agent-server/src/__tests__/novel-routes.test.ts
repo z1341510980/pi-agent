@@ -5,6 +5,8 @@ import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { PromptManager } from '../plugins/novel-plugin/core/prompt-manager.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
+import { ConsistencyAuditor } from '../plugins/novel-plugin/core/consistency-auditor.js'
+import { RelationshipGraph } from '../plugins/novel-plugin/core/novel-relationship-graph.js'
 import { createNovelRoutes } from '../plugins/novel-plugin/novel-routes.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import type { NovelServices } from '../plugins/novel-plugin/novel-services.js'
@@ -28,16 +30,8 @@ function makeMockServices(): NovelServices {
     memoryStore,
     promptManager,
     promptBuilder,
-    sessionFactory: {
-      buildSystemPrompt: () => 'mock-system-prompt',
-      buildChapterContext: () => 'mock-chapter-context',
-      getNovelTools: () => [],
-      logSystemPromptHash: () => 'mock-hash',
-      logChapterContextHash: () => 'mock-hash',
-      store,
-      promptManager,
-      promptBuilder,
-    } as any,
+    relationshipGraph: new RelationshipGraph(store, memoryStore),
+    consistencyAuditor: new ConsistencyAuditor(store),
     engine: {
       createChapter: vi.fn(),
       completeChapter: vi.fn(),
@@ -69,12 +63,6 @@ function makeMockServices(): NovelServices {
     } as any,
     similarityScanner: {
       scan: vi.fn(),
-    } as any,
-    agentConfigStore: {
-      getAll: vi.fn(() => []),
-      getByType: vi.fn(() => ({ agentType: 'writer', temperature: 0.7 })),
-      upsert: vi.fn(),
-      upsertMany: vi.fn(),
     } as any,
     confirmationManager: {
       requestDecision: vi.fn(),
@@ -725,5 +713,114 @@ describe('Novel API 路由 - 大流程统一取消', () => {
       payload: {},
     })
     expect(afterFinished.json().data.cancelled).toBe(false)
+  })
+})
+
+describe('Novel API 路由 - Agent 角色温度配置', () => {
+  it('GET /agent-config 返回 5 角色默认温度（mock 未注入 agentManager，回退默认值）', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: `${PLUGIN_PREFIX}/agent-config`,
+    })
+    expect(response.statusCode).toBe(200)
+    const body = response.json()
+    expect(body.ok).toBe(true)
+    expect(body.data).toBeInstanceOf(Array)
+    expect(body.data).toHaveLength(5)
+
+    // 验证 5 个角色全部出现
+    const types = body.data.map((x: { agentType: string }) => x.agentType)
+    expect(types).toEqual(expect.arrayContaining(['director', 'writer', 'reviser', 'reviewer', 'memory']))
+
+    // 验证每条记录有 agentType 和 temperature 两个字段，且为默认值
+    for (const item of body.data) {
+      expect(typeof item.agentType).toBe('string')
+      expect(typeof item.temperature).toBe('number')
+    }
+
+    // 抽查 writer 默认温度
+    const writer = body.data.find((x: { agentType: string }) => x.agentType === 'writer')
+    expect(writer.temperature).toBe(0.9)
+  })
+
+  it('PUT /agent-config 更新温度后 GET 立即返回新值（mock 无 agentManager 时为 no-op，仍返回默认值）', async () => {
+    // mock 中 services.agentManager = undefined
+    //   updateNovelAgentTemperatures(items, undefined) → no-op
+    //   getAllNovelAgentTemperatures(undefined) → 返回默认值
+    // 因此 PUT 不会改变状态，但仍返回 200 + 默认温度列表
+    const putResponse = await app.inject({
+      method: 'PUT',
+      url: `${PLUGIN_PREFIX}/agent-config`,
+      payload: {
+        items: [
+          { agentType: 'writer', temperature: 1.2 },
+          { agentType: 'reviewer', temperature: 0.5 },
+        ],
+      },
+    })
+    expect(putResponse.statusCode).toBe(200)
+    const putBody = putResponse.json()
+    expect(putBody.ok).toBe(true)
+    expect(putBody.data).toBeInstanceOf(Array)
+    expect(putBody.data).toHaveLength(5)
+
+    // mock 无 agentManager，update 为 no-op，返回值仍为默认
+    const writer = putBody.data.find((x: { agentType: string }) => x.agentType === 'writer')
+    expect(writer.temperature).toBe(0.9)
+    const reviewer = putBody.data.find((x: { agentType: string }) => x.agentType === 'reviewer')
+    expect(reviewer.temperature).toBe(0.3)
+  })
+
+  it('PUT /agent-config 温度超出 [0, 2] 范围返回 400', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `${PLUGIN_PREFIX}/agent-config`,
+      payload: {
+        items: [
+          { agentType: 'writer', temperature: 3.5 },  // 超过 max(2)
+        ],
+      },
+    })
+    expect(response.statusCode).toBe(400)
+    const body = response.json()
+    expect(body.ok).toBe(false)
+  })
+
+  it('PUT /agent-config 温度为负数返回 400', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `${PLUGIN_PREFIX}/agent-config`,
+      payload: {
+        items: [
+          { agentType: 'writer', temperature: -0.1 },  // 低于 min(0)
+        ],
+      },
+    })
+    expect(response.statusCode).toBe(400)
+  })
+
+  it('PUT /agent-config agentType 非法返回 400', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `${PLUGIN_PREFIX}/agent-config`,
+      payload: {
+        items: [
+          { agentType: 'unknown-agent', temperature: 0.5 },
+        ],
+      },
+    })
+    expect(response.statusCode).toBe(400)
+  })
+
+  it('PUT /agent-config 空数组返回 200 + 默认温度列表', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `${PLUGIN_PREFIX}/agent-config`,
+      payload: { items: [] },
+    })
+    expect(response.statusCode).toBe(200)
+    const body = response.json()
+    expect(body.ok).toBe(true)
+    expect(body.data).toHaveLength(5)
   })
 })

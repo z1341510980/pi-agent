@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   addLlmUsage,
-  applySafeRevision,
   extractLlmUsageFromMessage,
   sanitizeNovelProse,
 } from '../plugins/novel-plugin/core/agent-run-utils.js'
+import {
+  createNovelApplyRevisionTool,
+  type RevisionDraftHolder,
+} from '../plugins/novel-plugin/core/novel-tools.js'
 
 const originalChapter = [
   '叶明远在黑暗里睁着眼，听见木板外的脚步声一点点靠近。工棚里的鼾声此起彼伏，只有他掌心的玉佩还残着一点温热。',
@@ -13,37 +16,74 @@ const originalChapter = [
   '等脚步声走远，他才敢把手松开。玉佩贴在掌心，沉得像一块刚从井里捞出来的石头。',
 ].join('\n\n')
 
-describe('agent-run-utils - safe revision', () => {
-  it('拒绝把短修订说明覆盖为章节正文', () => {
-    const decision = applySafeRevision(originalChapter, '修订结果：已把工头探查段落改得更紧张，并弱化了解释。')
+describe('agent-run-utils - novel_apply_revision tool', () => {
+  it('通过工具应用精确字符串替换', async () => {
+    // 工具化方案：Reviser 调用 novel_apply_revision 工具，传入 from/to 配对。
+    // 工具内部用 String.replace 做精确替换，完全绕开正则解析自然语言。
+    const draft: RevisionDraftHolder = { content: originalChapter, appliedPatches: [] }
+    const tool = createNovelApplyRevisionTool(draft)
 
-    expect(decision.accepted).toBe(false)
-    expect(decision.mode).toBe('rejected')
-    expect(decision.content).toBe(originalChapter)
+    const result = await tool.execute('test-call-id', {
+      pairs: [
+        {
+          from: '门闩被人轻轻拨了一下，他屏住呼吸，把电钻和线缆往怀里一揽。',
+          to: '门闩被人轻轻拨了一下，他屏住呼吸，把电钻和线缆往怀里一压。',
+        },
+      ],
+    }, undefined, undefined, undefined as never)
+
+    expect(draft.content).toContain('往怀里一压')
+    expect(draft.content).not.toContain('往怀里一揽')
+    expect(draft.appliedPatches).toHaveLength(1)
+    expect(draft.appliedPatches[0]!.success).toBe(true)
+    expect(result.content[0]!.type).toBe('text')
+    expect((result.content[0] as { text: string }).text).toContain('已应用 1/1')
   })
 
-  it('将原文/修改后格式应用回原章节正文', () => {
-    const decision = applySafeRevision(originalChapter, [
-      '原文：',
-      '门闩被人轻轻拨了一下，他屏住呼吸，把电钻和线缆往怀里一揽。那点灵力像针一样刺进玉佩，怀里的东西忽然没了重量。',
-      '',
-      '修改后：',
-      '门闩被人轻轻拨了一下，他屏住呼吸，把电钻和线缆往怀里一压。那点灵力像针一样刺进玉佩，铁壳和胶皮线在掌心里骤然消失。',
-    ].join('\n'))
+  it('工具返回未定位的 patch 失败信息', async () => {
+    // 当 Reviser 复制的原文片段不精确（标点/换行不符）时，工具会返回失败，
+    // 不会修改 draft，orchestrator 据此告知用户"修订未生效"。
+    const draft: RevisionDraftHolder = { content: originalChapter, appliedPatches: [] }
+    const tool = createNovelApplyRevisionTool(draft)
 
-    expect(decision.accepted).toBe(true)
-    expect(decision.mode).toBe('patch')
-    expect(decision.content).toContain('铁壳和胶皮线在掌心里骤然消失')
-    expect(decision.content).toContain('工头提着油灯往里照')
+    const result = await tool.execute('test-call-id', {
+      pairs: [
+        {
+          from: '这段文字不在原章节中',
+          to: '替换文字',
+        },
+      ],
+    }, undefined, undefined, undefined as never)
+
+    expect(draft.content).toBe(originalChapter)
+    expect(draft.appliedPatches).toHaveLength(1)
+    expect(draft.appliedPatches[0]!.success).toBe(false)
+    const text = (result.content[0] as { text: string }).text
+    expect(text).toContain('已应用 0/1')
+    expect(text).toContain('原文片段未在章节中找到')
   })
 
-  it('接受保留大部分原文段落的完整正文', () => {
-    const revised = originalChapter.replace('没有发现异样', '只看见一个被吵醒的杂役')
-    const decision = applySafeRevision(originalChapter, revised)
+  it('支持多次调用累积修改', async () => {
+    // Reviser 可多次调用工具，每次调用在上一次的结果上继续修改。
+    // 工具通过闭包持有 draft，状态在多次调用间保持。
+    const draft: RevisionDraftHolder = { content: originalChapter, appliedPatches: [] }
+    const tool = createNovelApplyRevisionTool(draft)
 
-    expect(decision.accepted).toBe(true)
-    expect(decision.mode).toBe('full')
-    expect(decision.content).toContain('只看见一个被吵醒的杂役')
+    await tool.execute('call-1', {
+      pairs: [
+        { from: '没有发现异样', to: '只看见一个被吵醒的杂役' },
+      ],
+    }, undefined, undefined, undefined as never)
+    await tool.execute('call-2', {
+      pairs: [
+        { from: '工头盯了他片刻', to: '工头盯着他看了半晌' },
+      ],
+    }, undefined, undefined, undefined as never)
+
+    expect(draft.content).toContain('只看见一个被吵醒的杂役')
+    expect(draft.content).toContain('工头盯着他看了半晌')
+    expect(draft.appliedPatches).toHaveLength(2)
+    expect(draft.appliedPatches.every(p => p.success)).toBe(true)
   })
 })
 

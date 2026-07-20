@@ -2,6 +2,45 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { describe, expect, it, vi } from 'vitest'
 import { NovelOrchestrator } from '../plugins/novel-plugin/core/novel-orchestrator.js'
 
+// 模拟 Director / Reviewer 通过工具提交结构化对象。
+// 工具在 orchestrator 内部通过闭包绑定 draft，mock runAgent 时从 overrides.extraTools
+// 拿到工具实例并调用 execute，使 draft.task / draft.review 被正确填充，
+// 让流程编排测试能验证 director/writer/reviewer 的调用次数而无需真实 LLM。
+async function invokeExtraTool(overrides: unknown, params: Record<string, unknown>): Promise<void> {
+  const tools = (overrides as { extraTools?: Array<{ execute: (id: string, p: Record<string, unknown>) => Promise<unknown> }> } | undefined)?.extraTools
+  if (!tools || tools.length === 0) return
+  await tools[0]!.execute('test-call', params)
+}
+
+const DIRECTOR_TOOL_PARAMS = {
+  taskType: 'advance_mainline',
+  priority: 'high',
+  narrativeTask: '本章核心目标：推进主线，让主角通过行动解决当前困境。',
+  secondaryTasks: [],
+  chapterEndingHook: { type: 'suspense', description: '章尾钩子' },
+  povCharacters: ['主角'],
+  sceneCount: 1,
+  positioning: 'high_pressure',
+  timelineOffset: { days: 0, description: '同日' },
+}
+
+const REVIEWER_TOOL_PARAMS = {
+  consistencyScore: 8,
+  characterScore: 7,
+  taskCompletionScore: 9,
+  clueProgressScore: 6,
+  foreshadowStatusScore: 8,
+  conflictChangeScore: 7,
+  pacingScore: 6,
+  infoControlScore: 9,
+  readerHookScore: 8,
+  styleScore: 7,
+  overallScore: 7.5,
+  verdict: 'accept' as const,
+  issues: [],
+  suggestions: [],
+}
+
 describe('NovelOrchestrator request context', () => {
   it('并发 create-flow 使用独立的编排实体上下文', async () => {
     const orchestrator = Object.create(NovelOrchestrator.prototype) as any
@@ -41,16 +80,6 @@ describe('NovelOrchestrator request context', () => {
 
     expect(orchestrator.pendingUserMessages.get('project|1')).toEqual(['第一章意见'])
     expect(orchestrator.pendingUserMessages.get('project|2')).toEqual(['第二章意见'])
-  })
-
-  it('从 Director 方案解析章节定位并传给下游', () => {
-    const orchestrator = Object.create(NovelOrchestrator.prototype) as any
-    const task = orchestrator.parseDirectorTask(
-      '## 预期节奏和氛围\n- 章节定位：high_pressure\n- 节奏类型：climax',
-      { rhythm: 'climax', reason: '冲突爆发' },
-    )
-
-    expect(task.positioning).toBe('high_pressure')
   })
 
   it('PostWriteGuard 拦截未在正文出现的矩阵角色', () => {
@@ -170,12 +199,27 @@ describe('NovelOrchestrator request context', () => {
     }
     const agentCalls: string[] = []
     const writerInputs: string[] = []
-    orchestrator.runAgent = vi.fn(async (agentType: string, _projectId: string, _chapterNumber: number, input: string) => {
+    orchestrator.runAgent = vi.fn(async (
+      agentType: string,
+      _projectId: string,
+      _chapterNumber: number,
+      input: string,
+      _options: unknown,
+      overrides?: unknown,
+    ) => {
       agentCalls.push(agentType)
-      if (agentType === 'director') return '任务类型：advance_plot\n优先级：high'
+      if (agentType === 'director') {
+        await invokeExtraTool(overrides, DIRECTOR_TOOL_PARAMS)
+        return 'Director 已通过工具提交叙事任务'
+      }
       if (agentType === 'writer') {
         writerInputs.push(input)
         return agentCalls.filter((item) => item === 'writer').length === 1 ? '过短初稿' : '通过的完整正文'
+      }
+      // reviewer（含盲审文字编辑 + 最终验收）
+      if (agentType === 'reviewer') {
+        // 仅在最终验收调用（含 extraTools）时模拟工具提交，盲审不传 extraTools
+        await invokeExtraTool(overrides, REVIEWER_TOOL_PARAMS).catch(() => {})
       }
       return '验收通过'
     })
@@ -188,7 +232,9 @@ describe('NovelOrchestrator request context', () => {
 
     const result = await orchestrator.createChapterWithFlow('project', 1, {
       arrangedEntities: { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
-      onCheckpoint: vi.fn(async () => 'approve'),
+      onCheckpoint: vi.fn(async (req: { type: string }) =>
+        req.type === 'post_write_guard' ? 'rewrite' : 'approve',
+      ),
       onProgress: vi.fn(),
     })
 
@@ -221,10 +267,16 @@ describe('NovelOrchestrator request context', () => {
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     }
     const agentCalls: string[] = []
-    orchestrator.runAgent = vi.fn(async (agentType: string) => {
+    orchestrator.runAgent = vi.fn(async (agentType: string, _p: string, _c: number, _input: string, _opts: unknown, overrides?: unknown) => {
       agentCalls.push(agentType)
-      if (agentType === 'director') return '任务类型：advance_plot\n优先级：high'
+      if (agentType === 'director') {
+        await invokeExtraTool(overrides, DIRECTOR_TOOL_PARAMS)
+        return 'Director 已通过工具提交叙事任务'
+      }
       if (agentType === 'writer') return '通过的完整正文'
+      if (agentType === 'reviewer') {
+        await invokeExtraTool(overrides, REVIEWER_TOOL_PARAMS).catch(() => {})
+      }
       return '验收通过'
     })
     orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: false, reason: '', details: '' }))
@@ -270,10 +322,16 @@ describe('NovelOrchestrator request context', () => {
     const degradedDraft = '先核对章纲，再按已批准方案重写第1章正文。'
     const writerResults = ['过短初稿', betterDraft, degradedDraft]
     let reviewedInput = ''
-    orchestrator.runAgent = vi.fn(async (agentType: string, _projectId: string, _chapterNumber: number, input: string) => {
-      if (agentType === 'director') return '任务类型：advance_plot\n优先级：high'
+    orchestrator.runAgent = vi.fn(async (agentType: string, _p: string, _c: number, input: string, _opts: unknown, overrides?: unknown) => {
+      if (agentType === 'director') {
+        await invokeExtraTool(overrides, DIRECTOR_TOOL_PARAMS)
+        return 'Director 已通过工具提交叙事任务'
+      }
       if (agentType === 'writer') return writerResults.shift()
-      if (agentType === 'reviewer') reviewedInput = input
+      if (agentType === 'reviewer') {
+        reviewedInput = input
+        await invokeExtraTool(overrides, REVIEWER_TOOL_PARAMS).catch(() => {})
+      }
       return '验收通过'
     })
     orchestrator.runPostWriteGuard = vi.fn()
@@ -287,7 +345,9 @@ describe('NovelOrchestrator request context', () => {
 
     const result = await orchestrator.createChapterWithFlow('project', 1, {
       arrangedEntities: { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
-      onCheckpoint: vi.fn(async () => 'approve'),
+      onCheckpoint: vi.fn(async (req: { type: string }) =>
+        req.type === 'post_write_guard' ? 'rewrite' : 'approve',
+      ),
       onProgress: vi.fn(),
     })
 

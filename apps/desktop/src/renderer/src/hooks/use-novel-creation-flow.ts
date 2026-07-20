@@ -28,66 +28,33 @@ import { submitCheckpointDecision, persistChapterChat } from '@/api/novel-client
 import { parseSseStream } from '@/api/agui-client'
 import type { BaseEvent, CustomEvent } from '@repo/protocol/events'
 
-// ── 镜像后端类型（apps/agent-server/.../novel-agents.ts） ──
+// 创作流程事件协议类型（CreationPhase/CheckpointType/CheckpointData/CheckpointDecision/
+// CreationFlowEvent/AgentOutput/CreationResult）已迁入 @repo/shared/novel 共享包，
+// 此处 re-export 供组件层沿用 hook 路径引入。
+export type {
+  CreationPhase,
+  CheckpointType,
+  CheckpointDecision,
+  CheckpointData,
+  CreationFlowEvent,
+  AgentOutput,
+  CreationResult,
+} from '@repo/shared/novel'
 
-export type CreationPhase =
-  | 'idle' | 'directing' | 'checkpoint_narrative' | 'writing'
-  | 'reviewing' | 'checkpoint_review' | 'revising' | 'rewriting'
-  | 'memory' | 'arranging' | 'completed' | 'cancelled' | 'error'
+import type {
+  CreationPhase,
+  CheckpointData,
+  CheckpointDecision,
+  CreationFlowEvent,
+  AgentOutput,
+  CreationResult,
+} from '@repo/shared/novel'
 
-export type CheckpointType = 'narrative_task' | 'review'
-
-export type CheckpointDecision = 'approve' | 'reject' | 'revise' | 'rewrite'
-
-export interface CreationFlowEvent {
-  type: 'phase_change' | 'agent_event' | 'agent_output' | 'checkpoint' | 'error' | 'completed' | 'cancelled'
-  phase: CreationPhase
-  data?: unknown
-  timestamp: number
-}
-
-/** 单个 Agent 的输出内容（用于时间线展示） */
-export interface AgentOutput {
-  agentType: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory' | 'arranger' | 'context' | 'character' | 'moderator'
-  agentName: string
-  content: string
-  preview: string
-  timestamp: number
-  /** 数据变更通知（Memory Agent 写入完成，前端据此刷新画布） */
-  dataChanged?: boolean
-  /** 是否仍在流式生成中（true 时 UI 显示"正在生成"动画） */
-  streaming?: boolean
-  /** 关联的 AG-UI TEXT_MESSAGE_* 事件 messageId（用于 delta 累积） */
-  messageId?: string
-}
-
-/** 用户在创作过程中发送的消息（参与创作的指令） */
+/** 用户在创作过程中发送的消息（参与创作的指令，前端 UI 独有类型） */
 export interface UserMessage {
   id: string
   content: string
   timestamp: number
-}
-
-export interface CheckpointData {
-  type: CheckpointType
-  phase: CreationPhase
-  data: unknown
-  decision?: CheckpointDecision
-  /** 后端 ConfirmationManager 生成的决策请求 ID（UUID），用于决策端点路由 */
-  checkpointId?: string
-}
-
-export interface CreationResult {
-  status: 'completed' | 'cancelled' | 'error'
-  chapterId?: string
-  content?: string
-  stateChanges?: Array<{ type: string; description: string }>
-  error?: string
-  /** 群聊运行快照 ID（用于断点续跑） */
-  discussionRunId?: string
-  /** 本次是否可直接从 Writer 阶段继续 */
-  canResume?: boolean
-  failedPhase?: string
 }
 
 // ── Hook 返回值 ──
@@ -163,8 +130,8 @@ export interface UseNovelCreationFlowReturn {
   submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
   sendMessage: (content: string) => void
-  /** 取消流程 */
-  cancel: () => void
+  /** 取消流程（async：等待后端真实断开后再取消 SSE） */
+  cancel: () => Promise<void>
   /** 重置到 idle 状态（用于创作完成后切回节点详情面板） */
   reset: () => void
 }
@@ -198,9 +165,23 @@ const CONFLICT_STAGE_LABELS: Record<string, string> = {
 const SUSPENSE_STATUS_LABELS: Record<string, string> = {
   planting: '埋设', sustaining: '维持', releasing: '释放',
 }
+const POSITIONING_LABELS: Record<string, string> = {
+  high_pressure: '高压章', advancement: '推进章', cultivation: '修炼试错章',
+  relationship: '关系回收章', low_pressure: '低压生活章', information: '信息整理章',
+}
+const CHAPTER_ENDING_HOOK_LABELS: Record<string, string> = {
+  suspense: '悬念', reversal: '突转', emotional: '情感', action: '动作', none: '无',
+}
 
-/** 将后端 detail 事件 payload 格式化为 markdown 气泡内容 */
-function formatDetailBubble(detail: Record<string, unknown>): {
+/** 将后端 detail 事件 payload 格式化为 markdown 气泡内容
+ *
+ * ⚠️ 工具化方案：此函数同时被两处复用：
+ * 1. useNovelCreationFlow 内部：处理 emitProgress 推送的 detail 事件（实时进度气泡）
+ * 2. novel-conversation-panel 的 renderCheckpointContent：处理 checkpoint.data（检查点卡片）
+ *
+ * 因此本函数需要 export，避免在 CheckpointMessage 中重复格式化逻辑。
+ */
+export function formatDetailBubble(detail: Record<string, unknown>): {
   agentType: 'director' | 'context' | 'memory' | 'arranger'
   agentName: string
   content: string
@@ -217,15 +198,61 @@ function formatDetailBubble(detail: Record<string, unknown>): {
     return { agentType: 'context', agentName: '节奏', content: md }
   }
   if (kind === 'narrative_task') {
+    // ⚠️ 工具化方案：Director 通过 novel_submit_narrative_task 工具提交完整 NarrativeTask 对象，
+    // 这里把全部字段都展示出来，让用户看到提交的完整内容而不是一句话。
+    const description = detail.description as string | undefined
     const taskType = detail.taskType as string
     const priority = detail.priority as string
+    const secondaryTasks = (detail.secondaryTasks as string[] | undefined) ?? []
+    const targetEntity = detail.targetEntity as string | null | undefined
     const climaxTarget = detail.climaxTarget as { type: string; intensity: string } | undefined
     const suspenseDuration = detail.suspenseDuration as number | undefined
     const expectedIntensityDelta = detail.expectedIntensityDelta as number | undefined
-    let md = `## 叙事任务已解析\n\n**任务类型**：${TASK_TYPE_LABELS[taskType] ?? taskType}\n**优先级**：${PRIORITY_LABELS[priority] ?? priority}`
+    const chapterEndingHook = detail.chapterEndingHook as string | undefined
+    const chapterEndingHookDescription = detail.chapterEndingHookDescription as string | undefined
+    const povCharacters = (detail.povCharacters as string[] | undefined) ?? []
+    const sceneCount = detail.sceneCount as number | undefined
+    const positioning = detail.positioning as string | undefined
+    const timeOffset = detail.timeOffset as number | undefined
+
+    // 标题：体现工具化方案语义（已提交，不再是"已解析"）
+    let md = `## 叙事任务已提交\n`
+    // 任务描述（Director 用一句话描述本章任务，是最重要的字段）
+    if (description) md += `\n> ${description}\n`
+    // 核心字段
+    md += `\n**任务类型**：${TASK_TYPE_LABELS[taskType] ?? taskType}`
+    if (secondaryTasks.length > 0) {
+      md += `\n**次要任务**：${secondaryTasks.map(t => TASK_TYPE_LABELS[t] ?? t).join('、')}`
+    }
+    md += `\n**优先级**：${PRIORITY_LABELS[priority] ?? priority}`
+    if (targetEntity) md += `\n**目标实体**：${targetEntity}`
+    if (positioning) md += `\n**章节定位**：${POSITIONING_LABELS[positioning] ?? positioning}`
+    if (povCharacters.length > 0) md += `\n**POV 角色**：${povCharacters.join('、')}`
+    if (sceneCount != null) md += `\n**场景数**：${sceneCount}`
+    if (chapterEndingHook) {
+      md += `\n**章尾钩子**：${CHAPTER_ENDING_HOOK_LABELS[chapterEndingHook] ?? chapterEndingHook}`
+      if (chapterEndingHookDescription) md += `\n> ${chapterEndingHookDescription}`
+    }
     if (climaxTarget) md += `\n**高潮目标**：${CLIMAX_TYPE_LABELS[climaxTarget.type] ?? climaxTarget.type}（${CLIMAX_INTENSITY_LABELS[climaxTarget.intensity] ?? climaxTarget.intensity}）`
     if (suspenseDuration != null) md += `\n**悬念持续**：${suspenseDuration} 章`
     if (expectedIntensityDelta != null) md += `\n**预期强度变化**：${expectedIntensityDelta > 0 ? '+' : ''}${expectedIntensityDelta}`
+    if (timeOffset != null) md += `\n**时间线偏移**：${timeOffset} 天`
+    return { agentType: 'director', agentName: '导演', content: md }
+  }
+  if (kind === 'narrative_task_missing') {
+    // ⚠️ 工具化方案：Director 未调用 novel_submit_narrative_task 工具，没有结构化任务可展示。
+    // 提示用户选择"按意见重写"重新触发 Director，或"取消创作"中止流程。
+    // 显示 Director 的原始输出（截断 800 字）作为参考，让用户判断是否值得重试。
+    const directorRawOutput = (detail.directorRawOutput as string | undefined) ?? ''
+    let md = `## ⚠️ Director 未通过工具提交叙事任务\n\n`
+    md += `Director 在本轮对话中没有调用 \`novel_submit_narrative_task\` 工具，`
+    md += `无法获取结构化的叙事任务（任务类型/POV/钩子/场景数等）。\n\n`
+    md += `**建议操作**：\n`
+    md += `- 点击 **按意见重写** 重新触发 Director（可在输入框补充修改意见）\n`
+    md += `- 或点击 **取消创作** 中止本次创作\n\n`
+    if (directorRawOutput) {
+      md += `### Director 的原始输出（供参考）\n\n<details>\n\n\`\`\`\n${directorRawOutput}\n\`\`\`\n\n</details>\n`
+    }
     return { agentType: 'director', agentName: '导演', content: md }
   }
   if (kind === 'chapter_context') {
@@ -362,6 +389,14 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const [userMessages, setUserMessages] = useState<UserMessage[]>([])
 
   const abortControllerRef = useRef<AbortController | null>(null)
+  /**
+   * 当前 runFlow 的 Promise（用于 cancel 时等待 SSE 自然结束）。
+   *
+   * 关键：cancel() 不应立即本地 abort SSE，而是先通知后端 abort，
+   * 等待后端 orchestrator 抛出 AbortError → SSE 发送 RUN_ERROR → 连接关闭。
+   * 这样后端 finally 块才能正确清理 chapterCreationLocks，避免 409 错误。
+   */
+  const runFlowPromiseRef = useRef<Promise<void> | null>(null)
   const projectIdRef = useRef<string | null>(null)
   /** 当前章节号（供 sendMessage 持久化聊天记录用） */
   const chapterNumberRef = useRef<number | null>(null)
@@ -934,10 +969,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-flow`
       const body = options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}
 
+      const runPromise = runFlow(url, body, controller)
+      runFlowPromiseRef.current = runPromise
       try {
-        await runFlow(url, body, controller)
+        await runPromise
       } finally {
         abortControllerRef.current = null
+        runFlowPromiseRef.current = null
       }
     },
     [runFlow],
@@ -991,10 +1029,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-discussion`
       const body = options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}
 
+      const runPromise = runFlow(url, body, controller)
+      runFlowPromiseRef.current = runPromise
       try {
-        await runFlow(url, body, controller)
+        await runPromise
       } finally {
         abortControllerRef.current = null
+        runFlowPromiseRef.current = null
       }
     },
     [runFlow],
@@ -1028,10 +1069,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const controller = new AbortController()
       abortControllerRef.current = controller
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-discussion/${runId}/resume`
+      const runPromise = runFlow(url, {}, controller)
+      runFlowPromiseRef.current = runPromise
       try {
-        await runFlow(url, {}, controller)
+        await runPromise
       } finally {
         abortControllerRef.current = null
+        runFlowPromiseRef.current = null
       }
     },
     [runFlow],
@@ -1077,10 +1121,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/ai-arrange`
 
+      const runPromise = runFlow(url, {}, controller)
+      runFlowPromiseRef.current = runPromise
       try {
-        await runFlow(url, {}, controller)
+        await runPromise
       } finally {
         abortControllerRef.current = null
+        runFlowPromiseRef.current = null
       }
     },
     [runFlow],
@@ -1124,10 +1171,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/reverse-arrange`
 
+      const runPromise = runFlow(url, {}, controller)
+      runFlowPromiseRef.current = runPromise
       try {
-        await runFlow(url, {}, controller)
+        await runPromise
       } finally {
         abortControllerRef.current = null
+        runFlowPromiseRef.current = null
       }
     },
     [runFlow],
@@ -1183,34 +1233,64 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     }
   }, [currentCheckpoint])
 
-  const cancel = useCallback((): void => {
+  const cancel = useCallback(async (): Promise<void> => {
     const controller = abortControllerRef.current
     const projectId = projectIdRef.current
     const chapterNumber = chapterNumberRef.current
     if (!controller) return
 
-    // 显式通知后端中止任务；keepalive 确保紧接着关闭 SSE/面板时请求仍能送达。
+    // 立即清空检查点，避免取消过程中还在等待用户决策
+    setCurrentCheckpoint(null)
+    // 进入 cancelling 状态：UI 显示"正在取消中"，保持 isRunning=true 避免用户重启流程
+    setPhase('cancelling')
+    setProgressMessage('正在停止创作流程，等待 LLM 关闭...')
+
+    // ── 通知后端 abort 并等待 orchestrator 真正完成 ──
+    // 后端 cancel-active-flow 路由会：
+    //   1. reject 检查点 + abort controller（触发 signal abort 事件）
+    //   2. signal abort 事件中调用 session.abort()（PI SDK 内部 await agent.waitForIdle）
+    //   3. orchestrator catch 到 AbortError → finally 块清理锁 + reply.raw.end() 关闭 SSE
+    //   4. resolve donePromise，后端路由返回响应
+    // 这样 fetch 返回时后端已真正停止，锁已清理，可立即重新启动。
     if (projectId && chapterNumber != null) {
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/cancel-active-flow`
-      void fetch(url, {
-        method: 'POST',
-        keepalive: true,
-      }).catch(() => {
-        // SSE 断开也会触发后端取消，显式取消请求失败时无需覆盖 UI。
+      try {
+        await fetch(url, {
+          method: 'POST',
+          keepalive: true,
+        })
+      } catch {
+        // 后端取消请求失败（如网络断开），fallback 到本地 abort
+      }
+    }
+
+    // ── 本地 abort SSE（后端已关闭，但前端 SSE 可能还在等待） ──
+    // 注意：后端 reply.raw.end() 会让前端 SSE 自然结束，
+    // 但如果后端 cancel 请求失败，需要本地 abort 兜底。
+    const runPromise = runFlowPromiseRef.current
+    if (abortControllerRef.current === controller) {
+      abortControllerRef.current = null
+      runFlowPromiseRef.current = null
+      controller.abort()
+    }
+
+    // ── 等待 runPromise 结束（确保 SSE 已关闭，避免内存泄漏） ──
+    if (runPromise) {
+      await runPromise.catch(() => {
+        // SSE 已结束（正常或异常），忽略错误
       })
     }
-    abortControllerRef.current = null
-    controller?.abort()
-    // 清理可能挂起的 rAF，避免 abort 后还触发 setState
+
+    // ── 清理 UI 状态 ──
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current)
       rafIdRef.current = null
     }
     deltaBufferRef.current.clear()
-    // 立即重置运行状态，避免 SSE 异步 catch 覆盖 reset() 的 idle
     setIsRunning(false)
     setProgressMessage(null)
-    setCurrentCheckpoint(null)
+    // 使用函数式更新避免覆盖已由 result 事件设置的 phase
+    setPhase((prev) => (prev === 'cancelling' ? 'cancelled' : prev))
   }, [])
 
   /**

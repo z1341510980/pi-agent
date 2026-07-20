@@ -14,28 +14,39 @@ describe('小说 Agent 身份预算与契约', () => {
     const writer = readPrompt('role-writer')
     const reviewer = readPrompt('role-reviewer')
 
-    expect(director.length).toBeLessThan(3500)
+    // 工具化方案后，Director/Reviewer 提示词需包含工具调用说明、字段说明和禁止事项，
+    // 预算上限相应放宽。Writer 保持紧凑（不涉及工具化）。
+    expect(director.length).toBeLessThan(6000)
     expect(writer.length).toBeLessThan(2500)
-    expect(reviewer.length).toBeLessThan(3500)
-    expect(director.length + writer.length + reviewer.length).toBeLessThan(9000)
+    expect(reviewer.length).toBeLessThan(4000)
+    expect(director.length + writer.length + reviewer.length).toBeLessThan(11000)
   })
 
-  it('Director 保留解析器依赖的全部结构化字段', () => {
+  it('Director 保留工具化方案所需的全部结构化字段', () => {
     const prompt = readPrompt('role-director')
-    const requiredHeadings = [
-      '## 本章核心叙事目标', '## 任务类型', '## 次要任务',
-      '## 上一章钩子处理', '## 出场角色', '## 冲突推进计划',
-      '## 情绪曲线', '## 伏笔处理计划', '## 悬念设计',
-      '## 预期节奏和氛围', '## 篇幅密度', '## 创作要点',
-      '## 章尾钩子设计', '## POV', '## 场景数与节奏速率',
-      '## 时间线偏移', '## 验收标准',
+    // 工具化方案：Director 必须调用 novel_submit_narrative_task 工具提交结构化对象
+    expect(prompt).toContain('novel_submit_narrative_task')
+    // 工具参数 schema 中的关键字段
+    const requiredFields = [
+      'taskType', 'priority', 'narrativeTask', 'secondaryTasks',
+      'chapterEndingHook', 'povCharacters', 'sceneCount', 'positioning',
+      'timelineOffset', 'suspenseDuration', 'intensityDelta',
     ]
-    for (const heading of requiredHeadings) expect(prompt).toContain(heading)
+    for (const field of requiredFields) expect(prompt).toContain(field)
 
-    expect(prompt).toContain('high_pressure')
+    // 14 种任务类型枚举
     expect(prompt).toContain('advance_mainline')
     expect(prompt).toContain('planting/sustaining/releasing')
     expect(prompt).toContain('emotional/fate/character/combat/theme/composite')
+    // 6 种章节定位
+    expect(prompt).toContain('high_pressure')
+    expect(prompt).toContain('advancement')
+    expect(prompt).toContain('cultivation')
+    expect(prompt).toContain('relationship')
+    expect(prompt).toContain('low_pressure')
+    expect(prompt).toContain('information')
+    // 禁止输出 Markdown 任务文档（工具化核心约束）
+    expect(prompt).toContain('禁止输出 Markdown 格式的任务文档')
   })
 
   it('Writer 保留正文边界、矩阵、连续性和推回契约', () => {
@@ -50,17 +61,27 @@ describe('小说 Agent 身份预算与契约', () => {
     expect(prompt).toContain('不使用长横线破折号')
   })
 
-  it('Reviewer 保留矩阵验收、Findings 和机器可解析结论', () => {
+  it('Reviewer 保留矩阵验收、Findings 和工具化结论', () => {
     const prompt = readPrompt('role-reviewer')
-
+    // 工具化方案：Reviewer 必须调用 novel_submit_review 工具提交结构化验收对象
+    expect(prompt).toContain('novel_submit_review')
+    // 矩阵与任务兑现审查项
     expect(prompt).toContain('矩阵与任务兑现')
     expect(prompt).toContain('角色功能位')
     expect(prompt).toContain('【防 AI 腔扫描】')
+    // 分类枚举（issues[].category）
     expect(prompt).toContain('`ai_tone`')
-    expect(prompt).toContain('## Findings 汇总')
-    expect(prompt).toContain('## 十维评分')
-    expect(prompt).toContain('## 结论：accept / revise / reject')
-    expect(prompt).toContain('存在 S1 必须 reject')
-    expect(prompt).toContain('存在未解决 S2 必须 revise')
+    expect(prompt).toContain('`continuity`')
+    expect(prompt).toContain('`model_degradation`')
+    // 工具 schema 中的关键字段
+    expect(prompt).toContain('verdict')
+    expect(prompt).toContain('issues')
+    expect(prompt).toContain('suggestions')
+    expect(prompt).toContain('overallScore')
+    // 严重度与 verdict 对应规则
+    expect(prompt).toContain('存在 S1 必须 `reject`')
+    expect(prompt).toContain('存在未解决 S2 必须 `revise`')
+    // 禁止输出 Markdown 评分表（工具化核心约束）
+    expect(prompt).toContain('禁止输出 Markdown 格式的评分表')
   })
 })

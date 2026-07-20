@@ -20,6 +20,7 @@ import type {
   NovelFaction,
   NovelLocation,
   NovelWorldElement,
+  NovelItem,
   NovelCharacterHistory,
   ConflictTier,
   ForeshadowBeatType,
@@ -36,6 +37,7 @@ export type MatrixEntityKind =
   | 'location'
   | 'world_element'
   | 'info_layer'
+  | 'item'
 
 /** 联动右侧详情面板时使用的实体类型 */
 export type SelectableEntityType = MatrixEntityKind
@@ -64,10 +66,10 @@ export interface EndpointDragData {
   spanIndex: number
 }
 
-/** 拖动整段跨度（conflict/faction 保持时长平移） */
+/** 拖动整段跨度（conflict/faction/item 保持时长平移） */
 export interface SpanDragData {
   source: 'span'
-  entityType: 'conflict' | 'faction'
+  entityType: 'conflict' | 'faction' | 'item'
   entityId: string
   spanIndex: number
   startChapter: number
@@ -99,19 +101,32 @@ export interface GroupMeta {
 
 export const GROUP_META: Record<MatrixEntityKind, GroupMeta> = {
   character: { id: 'character', name: '角色', color: '#3b82f6', colorRgb: '59,130,246', icon: '●' },
-  conflict: { id: 'conflict', name: '冲突', color: '#ef4444', colorRgb: '239,68,68', icon: '▲' },
+  conflict: { id: 'conflict', name: '冲突', color: '#e8463a', colorRgb: '232,70,58', icon: '▲' },
   clue: { id: 'clue', name: '线索', color: '#22c55e', colorRgb: '34,197,94', icon: '◇' },
   foreshadow: { id: 'foreshadow', name: '伏笔', color: '#f59e0b', colorRgb: '245,158,11', icon: '◐' },
   faction: { id: 'faction', name: '势力', color: '#a855f7', colorRgb: '168,85,247', icon: '◆' },
   location: { id: 'location', name: '地点', color: '#06b6d4', colorRgb: '6,182,212', icon: '◇' },
-  world_element: { id: 'world_element', name: '世界要素', color: '#6366f1', colorRgb: '99,102,241', icon: '■' },
+  world_element: { id: 'world_element', name: '世界要素', color: '#4b3fe3', colorRgb: '75,63,227', icon: '■' },
   info_layer: { id: 'info_layer', name: '信息差', color: '#14b8a6', colorRgb: '20,184,166', icon: '◈' },
+  item: { id: 'item', name: '物品', color: '#d97706', colorRgb: '217,119,6', icon: '✦' },
 }
 
-/** 分组顺序（角色→冲突→线索→伏笔→势力→地点→世界要素→信息差） */
+/** 分组顺序（角色→冲突→线索→伏笔→势力→地点→世界要素→信息差→物品） */
 export const GROUP_ORDER: MatrixEntityKind[] = [
-  'character', 'conflict', 'clue', 'foreshadow', 'faction', 'location', 'world_element', 'info_layer',
+  'character', 'conflict', 'clue', 'foreshadow', 'faction', 'location', 'world_element', 'info_layer', 'item',
 ]
+
+// ── 甘特图网格层级 ──
+
+/** 判断章节列是否为主分隔线位置（每 10 章） */
+export function isMajorGridline(ch: number): boolean {
+  return ch % 10 === 0
+}
+
+/** 判断章节列是否为次分隔线位置（每 5 章，排除主分隔线） */
+export function isMinorGridline(ch: number): boolean {
+  return ch % 5 === 0 && !isMajorGridline(ch)
+}
 
 // ── 实体（矩阵行）──
 
@@ -360,13 +375,14 @@ export function buildGroups(params: {
   factions: NovelFaction[]
   locations: NovelLocation[]
   worldElements: NovelWorldElement[]
+  items: NovelItem[]
   characterHistory: NovelCharacterHistory[]
   /** 标记列表（用于填充 entity.note） */
   markers?: Array<{ type: string; entityId: string | null; note: string }>
 }): MatrixData {
   const {
     chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-    characterHistory, markers,
+    items, characterHistory, markers,
   } = params
 
   const maxChapter = computeMaxChapter(chapters)
@@ -559,6 +575,38 @@ export function buildGroups(params: {
     entities: [],
   })
 
+  // ── 物品分组（按 chapterSpans 渲染跨度，类似势力）──
+  const itemGroup: MatrixGroup = {
+    ...GROUP_META.item,
+    entities: [],
+  }
+  const itemStatusLabels: Record<string, string> = {
+    active: '持有',
+    lost: '丢失',
+    destroyed: '损毁',
+    transformed: '变化',
+    sealed: '封印',
+    transferred: '转手',
+  }
+  for (const it of items) {
+    const spans = it.chapterSpans ?? []
+    const range = computeSpanRange(spans)
+    if (range == null) continue // 未放置 → 元素池
+    itemGroup.entities.push({
+      id: it.id,
+      kind: 'item',
+      name: it.name,
+      entityId: it.id,
+      entityType: 'item',
+      subLabel: itemStatusLabels[it.status] ?? it.status,
+      chapterSpans: spans,
+      spanStart: range.start,
+      spanEnd: range.end,
+      note: noteMap.get(it.id),
+    })
+  }
+  groups.push(itemGroup)
+
   return { groups, maxChapter }
 }
 
@@ -583,6 +631,7 @@ export function buildPool(params: {
   foreshadows: NovelForeshadow[]
   factions: NovelFaction[]
   locations: NovelLocation[]
+  items: NovelItem[]
   characterHistory: NovelCharacterHistory[]
 }): {
   poolCharacters: NovelCharacter[]
@@ -591,8 +640,9 @@ export function buildPool(params: {
   poolForeshadows: NovelForeshadow[]
   poolFactions: NovelFaction[]
   poolLocations: NovelLocation[]
+  poolItems: NovelItem[]
 } {
-  const { characters, conflicts, clues, foreshadows, factions, locations, characterHistory } = params
+  const { characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory } = params
   const poolCharacters: NovelCharacter[] = []
   for (const c of characters) {
     const history = characterHistory.filter((h) => h.characterId === c.id)
@@ -610,6 +660,7 @@ export function buildPool(params: {
     poolForeshadows: foreshadows.filter((f) => f.firstChapter == null),
     poolFactions: factions.filter((f) => f.chapterSpans.length === 0),
     poolLocations: locations.filter((l) => !l.appearChapters || l.appearChapters.length === 0),
+    poolItems: items.filter((it) => !it.chapterSpans || it.chapterSpans.length === 0),
   }
 }
 
@@ -645,7 +696,8 @@ export function computeCellSymbol(
       return { type: 'empty' }
     }
     case 'conflict':
-    case 'faction': {
+    case 'faction':
+    case 'item': {
       // 冲突高潮章节优先于跨度符号（火焰标记更醒目）
       if (entity.kind === 'conflict' && entity.climaxChapter != null && entity.climaxChapter === chapterNumber) {
         return { type: 'conflict-climax' }

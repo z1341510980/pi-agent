@@ -40,6 +40,7 @@ import type {
   NovelForeshadow,
   NovelFaction,
   NovelLocation,
+  NovelItem,
   NovelWorldElement,
 } from './types.js'
 
@@ -49,6 +50,7 @@ type EntityPlan = {
   foreshadows: Array<{ coreStyle: string; chapterAction?: unknown } & ForeshadowAdmissionFields>
   factions: { coreStyle: string }[]
   locations: { coreStyle: string }[]
+  items: { coreStyle: string }[]
 }
 
 type EntityPlanLogContext = {
@@ -122,6 +124,11 @@ export type GeneratedLocation = Pick<
   'name' | 'description' | 'type' | 'significance' | 'status'
 >
 
+export type GeneratedItem = Pick<
+  NovelItem,
+  'name' | 'description' | 'type' | 'ownerId' | 'status' | 'abilities' | 'origin'
+>
+
 export type GeneratedWorldElement = Pick<
   NovelWorldElement,
   'category' | 'name' | 'description' | 'attributes'
@@ -134,9 +141,43 @@ export type GeneratedEntity =
   | { type: 'foreshadow'; data: GeneratedForeshadow }
   | { type: 'faction'; data: GeneratedFaction }
   | { type: 'location'; data: GeneratedLocation }
+  | { type: 'item'; data: GeneratedItem }
   | { type: 'world_element'; data: GeneratedWorldElement }
 
-export type EntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
+export type EntityKind = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'item' | 'world_element'
+
+/** 各实体类型在批量生成时的字段说明（提示词用） */
+const BATCH_FIELD_RULES: Record<EntityKind, string> = {
+  character: [
+    'name、description、identity、personality、appearance、currentState、currentGoal、currentPressure、secret、arcStage、speechStyle、longTermDesire、plotRole、removalImpact。',
+    'plotRole: protagonist/main_opponent/supporting/function/background。arcStage: setup/rising/climax/falling/resolution。longTermDesire 是跨章节稳定欲望，currentGoal 是短期目标。',
+  ].join('\n'),
+  conflict: [
+    'description、type、intensity、stage、tier、participants、climaxChapter、climaxType、stakes、twistPotential、plotFunction、progressionMode。',
+    'type: inner/relationship/faction/interest/moral/identity/emotional/world_rule/survival。stage: latent/emerging/escalating/erupting/reversing/resolved/transformed。tier: main/secondary/goal。',
+    'climaxType: emotional/fate/character/combat/theme/composite。plotFunction: provide_resource/create_obstacle/amplify_conflict/open_phase/change_judgment/advance_relationship/reveal_world_rule。progressionMode: linear/mutation/stagnation/regression/reversal。',
+    'intensity 为 1-10 整数，twistPotential 为 0-10 整数，participants 为角色姓名数组；无高潮时 climaxChapter 和 climaxType 为 null。',
+  ].join('\n'),
+  foreshadow: [
+    'description、category、status、linkedCharacters、linkedClues、plantMethod、recoverMethod。',
+    'category: item/spoken/event/identity/secret/prophecy/promise/quote。status: planned/planted/reinforced/partially_revealed/recovering/recovered/abandoned。plantMethod: explicit/implicit/indirect。recoverMethod: explicit/implicit/reverse/progressive。',
+  ].join('\n'),
+  faction: 'name、description、type、ideology、strength、resources、allies、enemies、status。type: organization/sect/kingdom/family/guild/cult。strength: weak/medium/strong/overwhelming。status: active/declined/destroyed/hidden。resources、allies、enemies 为字符串数组。',
+  location: 'name、description、type、significance、status。type: continent/country/city/building/dungeon/region/wilderness。significance: minor/moderate/major/critical。status: normal/destroyed/changed/hidden。',
+  item: 'name、description、type、ownerId、status、abilities、origin。type: weapon/armor/artifact/consumable/key/material/info/misc。status: active/lost/destroyed/transformed/sealed/transferred。ownerId 为持有者角色名（生成阶段后端按名解析为 ID，无主填空字符串）。abilities 为物品能力/效果一句话描述。origin 为物品来源一句话描述。',
+  world_element: 'category、name、description、attributes。category: power_system/history/culture/religion/technology/economy/geography。attributes 为 JSON 对象。',
+}
+
+/** 各实体类型的中文标签（用于进度提示和错误消息） */
+const ENTITY_KIND_LABELS: Record<EntityKind, string> = {
+  character: '角色',
+  conflict: '冲突',
+  foreshadow: '伏笔',
+  faction: '势力',
+  location: '地点',
+  item: '物品',
+  world_element: '世界要素',
+}
 
 /** 进度事件（与 CharacterGenerationProgressEvent 对齐） */
 export interface EntityGenerationProgressEvent {
@@ -422,7 +463,7 @@ export class NovelEntityGenerator {
 
     onProgress?.({
       phase: 'planned',
-      message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点`,
+      message: `规划：${plan.characters.length} 角色 / ${plan.conflicts.length} 冲突 / ${plan.foreshadows.length} 伏笔 / ${plan.factions.length} 势力 / ${plan.locations.length} 地点 / ${plan.items.length} 物品`,
       data: plan,
       // 携带 detail 用于前端展示规划清单气泡
       detail: {
@@ -432,6 +473,7 @@ export class NovelEntityGenerator {
         foreshadows: plan.foreshadows.map((s) => s.coreStyle),
         factions: plan.factions.map((s) => s.coreStyle),
         locations: plan.locations.map((s) => s.coreStyle),
+        items: plan.items.map((s) => s.coreStyle),
       },
     })
 
@@ -440,11 +482,13 @@ export class NovelEntityGenerator {
     const foreshadowIds: string[] = []
     const factionIds: string[] = []
     const locationIds: string[] = []
+    const itemIds: string[] = []
     const createdCharacterIds: string[] = []
     const createdConflictIds: string[] = []
     const createdForeshadowIds: string[] = []
     const createdFactionIds: string[] = []
     const createdLocationIds: string[] = []
+    const createdItemIds: string[] = []
     const rollbackActions: Array<() => void> = []
     /** 本章角色功能位编排（与新角色一一对应） */
     const characterFunctions: CharacterFunctionEntry[] = []
@@ -454,6 +498,7 @@ export class NovelEntityGenerator {
     const generatedForeshadows: Array<{ description: string; category: string }> = []
     const generatedFactions: Array<{ name: string; type: string }> = []
     const generatedLocations: Array<{ name: string; type: string }> = []
+    const generatedItems: Array<{ name: string; type: string; ownerId: string | null }> = []
     let batchGeneration: BatchGenerationRun = {
       generated: new Map(),
       itemCount: 0,
@@ -894,6 +939,91 @@ export class NovelEntityGenerator {
         createdLocationIds.push(created.id)
         generatedLocations.push({ name: created.name, type: created.type })
       }
+
+      // ── 物品：按名匹配已有实体 ──
+      // 物品核心约束是 ownerId（持有者），生成阶段 LLM 输出角色名后端解析为 ID。
+      // 已有物品按 name 查重；复用时如本章首次出场，更新 chapterSpans 追加本章。
+      const existingItemByName = new Map<string, NovelItem>()
+      for (const it of this.store.listItems(projectId)) {
+        existingItemByName.set(it.name, it)
+      }
+
+      for (const spec of plan.items) {
+        signal?.throwIfAborted()
+        const hint = this.parseExistingHint(spec.coreStyle)
+        if (hint.mode === 'existing') {
+          const existing = existingItemByName.get(hint.name)
+          if (existing) {
+            onProgress?.({ phase: 'generating', message: `复用已有物品：${existing.name}` })
+            // 扩展 chapterSpans 包含本章
+            const spans = existing.chapterSpans ?? []
+            const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
+            if (!alreadyCovers) {
+              const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+              rollbackActions.push(() => { this.store.updateItem(existing.id, { chapterSpans: existing.chapterSpans }) })
+              this.store.updateItem(existing.id, { chapterSpans: mergedSpans })
+            }
+            itemIds.push(existing.id)
+            generatedItems.push({ name: existing.name, type: existing.type, ownerId: existing.ownerId })
+            continue
+          }
+        }
+
+        onProgress?.({ phase: 'generating', message: `生成物品：${spec.coreStyle}` })
+        const gen = await resolveGenerated(spec, 'item')
+        if (gen.type !== 'item') continue
+        const dup = existingItemByName.get(gen.data.name)
+        if (dup) {
+          onProgress?.({ phase: 'generating', message: `检测到同名物品「${gen.data.name}」，合并为已有实体` })
+          const spans = dup.chapterSpans ?? []
+          const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
+          // 同名物品合并：用新生成的 ownerId/status 覆盖（LLM 可能识别出转手/状态变化）
+          const patch: Partial<NovelItem> = {}
+          if (!alreadyCovers) {
+            patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+          }
+          if (gen.data.ownerId && gen.data.ownerId !== dup.ownerId) {
+            patch.ownerId = gen.data.ownerId
+            patch.status = gen.data.status === 'active' ? 'transferred' : gen.data.status
+          } else if (gen.data.status !== dup.status) {
+            patch.status = gen.data.status
+          }
+          if (gen.data.abilities && gen.data.abilities !== dup.abilities) {
+            patch.abilities = gen.data.abilities
+          }
+          if (Object.keys(patch).length > 0) {
+            rollbackActions.push(() => {
+              this.store.updateItem(dup.id, {
+                chapterSpans: dup.chapterSpans,
+                ownerId: dup.ownerId,
+                status: dup.status,
+                abilities: dup.abilities,
+              })
+            })
+            this.store.updateItem(dup.id, patch)
+          }
+          itemIds.push(dup.id)
+          generatedItems.push({ name: dup.name, type: dup.type, ownerId: dup.ownerId })
+          continue
+        }
+        const created = this.store.createItem({
+          id: randomUUID(),
+          projectId,
+          name: gen.data.name,
+          description: gen.data.description,
+          type: gen.data.type,
+          ownerId: gen.data.ownerId,
+          status: gen.data.status,
+          abilities: gen.data.abilities,
+          origin: gen.data.origin,
+          firstChapter: chapterNumber,
+          chapterSpans: [[chapterNumber, chapterNumber]],
+        })
+        existingItemByName.set(created.name, created)
+        itemIds.push(created.id)
+        createdItemIds.push(created.id)
+        generatedItems.push({ name: created.name, type: created.type, ownerId: created.ownerId })
+      }
     } catch (err) {
       // 标记日志状态为失败，供 finally 块写入日志使用
       logStatus = 'error'
@@ -908,6 +1038,11 @@ export class NovelEntityGenerator {
       for (const id of createdLocationIds) {
         try {
           this.store.deleteLocation(id)
+        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+      }
+      for (const id of createdItemIds) {
+        try {
+          this.store.deleteItem(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
       for (const id of createdFactionIds) {
@@ -931,7 +1066,7 @@ export class NovelEntityGenerator {
           this.store.deleteCharacter(id)
         } catch { /* best-effort 清理，忽略单个删除失败 */ }
       }
-      const rolledBack = createdCharacterIds.length + createdConflictIds.length + createdForeshadowIds.length + createdFactionIds.length + createdLocationIds.length
+      const rolledBack = createdCharacterIds.length + createdConflictIds.length + createdForeshadowIds.length + createdFactionIds.length + createdLocationIds.length + createdItemIds.length
       this.context.logger.error(
         {
           err,
@@ -941,6 +1076,7 @@ export class NovelEntityGenerator {
             foreshadows: createdForeshadowIds.length,
             factions: createdFactionIds.length,
             locations: createdLocationIds.length,
+            items: createdItemIds.length,
           },
         },
         `generateAndArrange 失败，已回滚 ${rolledBack} 个新建实体并撤销复用实体变更`,
@@ -968,6 +1104,7 @@ export class NovelEntityGenerator {
             foreshadows: generatedForeshadows,
             factions: generatedFactions,
             locations: generatedLocations,
+            items: generatedItems,
           },
           batchGeneration: {
             itemCount: batchGeneration.itemCount,
@@ -984,6 +1121,7 @@ export class NovelEntityGenerator {
             foreshadowCount: foreshadowIds.length,
             factionCount: factionIds.length,
             locationCount: locationIds.length,
+            itemCount: itemIds.length,
             characterFunctionCount: characterFunctions.length,
           },
         }, null, 2)
@@ -1045,10 +1183,11 @@ export class NovelEntityGenerator {
         foreshadows: generatedForeshadows,
         factions: generatedFactions,
         locations: generatedLocations,
+        items: generatedItems,
       },
     })
     this.context.logger.info(
-      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, characterFunctions: characterFunctions.length },
+      { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, items: itemIds.length, characterFunctions: characterFunctions.length },
       'generateAndArrange 完成：实体已落库',
     )
     return {
@@ -1058,6 +1197,7 @@ export class NovelEntityGenerator {
       clueIds,
       factionIds,
       locationIds,
+      itemIds,
       characterFunctions: characterFunctions.length > 0 ? characterFunctions : undefined,
     }
   }
@@ -1152,6 +1292,7 @@ export class NovelEntityGenerator {
       .filter((foreshadow) => foreshadow.status !== 'recovered' && foreshadow.status !== 'abandoned')
     const existingFactions = this.store.listFactions(projectId)
     const existingLocations = this.store.listLocations(projectId)
+    const existingItems = this.store.listItems(projectId)
 
     // ── 收集三层大纲：项目大纲 + 卷纲 + 章纲 ──
     // ⚠️ 历史问题：之前只传 chapter.outline，LLM 看不到项目整体大纲和当前卷的卷纲，
@@ -1197,7 +1338,7 @@ export class NovelEntityGenerator {
     // source='content': 从已写好的正文反推实体（新功能）
     const isReverse = source === 'content'
     const sourceInstruction = isReverse
-      ? '你是小说实体反推助手。根据以下已写好的章节正文，反推本章涉及哪些实体（角色/冲突/伏笔/势力/地点），包括已有实体和新出现的实体。'
+      ? '你是小说实体反推助手。根据以下已写好的章节正文，反推本章涉及哪些实体（角色/冲突/伏笔/势力/地点/物品），包括已有实体和新出现的实体。'
       : '你是小说实体规划助手。根据以下三层大纲（项目大纲 + 卷纲 + 章纲），规划本章需要哪些实体（包括已有 + 新增）。'
 
     const userPrompt = [
@@ -1224,7 +1365,7 @@ export class NovelEntityGenerator {
       '以下是项目里已经存在的实体。**本章需要的实体如果已在清单中，必须复用，不要新建同名/同描述的实体**。',
       '',
       '复用写法（coreStyle 字段）：',
-      '- 角色/势力/地点（有独立 name 字段）：写 "已有：<name>"，如 "已有：林墨"、"已有：国安总局"',
+      '- 角色/势力/地点/物品（有独立 name 字段）：写 "已有：<name>"，如 "已有：林墨"、"已有：国安总局"、"已有：镇魂印"',
       '- 冲突/伏笔（无 name 字段，只有 description）：写 "已有：<描述前 40 字>"，',
       '  必须原样复制下方清单中的描述前 40 字（后端按前 40 字匹配）',
       '- 新增实体：写一句话描述其核心特征（不要加"已有："前缀）',
@@ -1248,10 +1389,21 @@ export class NovelEntityGenerator {
       `### 已有地点（${existingLocations.length}）`,
       formatExistingList(existingLocations.map((l) => ({ name: l.name, description: l.description })), '地点'),
       '',
+      `### 已有物品（${existingItems.length}）`,
+      formatExistingList(existingItems.map((it) => ({ name: it.name, description: it.description })), '物品'),
+      '',
       '【返回格式】',
       '返回严格 JSON：',
-      '{"characters":[{"coreStyle":"已有：林墨","plotFunction":"open_phase","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：主角今日必须凑齐定额镇魔石料，否则将被逐出大阵庇护范围，暴露于"}],"foreshadows":[{"coreStyle":"已有：父亲遗物上的编号","importance":"critical","narrativeRole":"dark_line","hiddenQuestion":"父亲真正因何死亡","plannedPayoff":"在查到旧案主谋时揭示编号来源并回收","chapterAction":"reinforce"}],"factions":[{"coreStyle":"已有：国安总局"}],"locations":[{"coreStyle":"已有：国安总局指挥大厅"}]}',
+      '{"characters":[{"coreStyle":"已有：林墨","plotFunction":"open_phase","functionNote":"功能位具体描述"}],"conflicts":[{"coreStyle":"已有：主角今日必须凑齐定额镇魔石料，否则将被逐出大阵庇护范围，暴露于"}],"foreshadows":[{"coreStyle":"已有：父亲遗物上的编号","importance":"critical","narrativeRole":"dark_line","hiddenQuestion":"父亲真正因何死亡","plannedPayoff":"在查到旧案主谋时揭示编号来源并回收","chapterAction":"reinforce"}],"factions":[{"coreStyle":"已有：国安总局"}],"locations":[{"coreStyle":"已有：国安总局指挥大厅"}],"items":[{"coreStyle":"已有：镇魂印"}]}',
       '所有伏笔都必须返回 importance、narrativeRole、hiddenQuestion、plannedPayoff。复用已有伏笔还必须返回本章实际动作 chapterAction=plant|reinforce|reveal|payoff；缺少任一项都会被过滤。',
+      '',
+      '【物品编排说明（重要）】',
+      '物品追踪角色拥有的关键道具（武器/法宝/钥匙/信物/线索物品等），用于跨章节一致性。',
+      '- 本章角色"使用、获得、丢失、转手"的关键物品必须返回，让 Writer 知道物品归属与状态约束',
+      '- 已有物品若本章再次出场，必须返回（写"已有：<物品名>"），后端会自动追加本章到 chapterSpans',
+      '- 同名物品如果本章发生转手或状态变化（如"丢失"、"封印"、"易主"），仍写"已有：<物品名>"，',
+      '  生成阶段后端会用 LLM 输出的新 ownerId/status 覆盖旧值',
+      '- 不要把"普通生活用品"也返回，只追踪对剧情/角色有约束力的关键物品',
       '',
       '【角色功能位编排（重要，避免工具人化）】',
       '每个返回的角色（无论已有/新增）必须指定 plotFunction（从以下 7 个枚举选一）：',
@@ -1279,6 +1431,7 @@ export class NovelEntityGenerator {
         foreshadows: existingForeshadows.length,
         factions: existingFactions.length,
         locations: existingLocations.length,
+        items: existingItems.length,
       } },
       'planEntitiesFromOutline 开始：调用 LLM 规划实体（已传入已有实体清单）',
     )
@@ -1334,7 +1487,7 @@ export class NovelEntityGenerator {
           { projectId, err: llmErr, resultLength: result.length },
           'planEntitiesFromOutline LLM 调用失败',
         )
-        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] }
+        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] as { coreStyle: string }[], items: [] as { coreStyle: string }[] }
         return {
           plan: emptyPlan,
           logContext: {
@@ -1358,7 +1511,7 @@ export class NovelEntityGenerator {
           { rawTextPreview: text.slice(0, 200) },
           'planEntitiesFromOutline JSON 解析失败（可能被截断），使用空 plan 兜底',
         )
-        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] }
+        const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] as { coreStyle: string }[], items: [] as { coreStyle: string }[] }
         return {
           plan: emptyPlan,
           logContext: {
@@ -1404,9 +1557,13 @@ export class NovelEntityGenerator {
           ? json.locations
               .map((l: unknown) => ({ coreStyle: ensureString((l as { coreStyle?: unknown })?.coreStyle, '新地点') }))
           : [],
+        items: Array.isArray(json.items)
+          ? json.items
+              .map((it: unknown) => ({ coreStyle: ensureString((it as { coreStyle?: unknown })?.coreStyle, '新物品') }))
+          : [],
       }
       this.context.logger.info(
-        { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length, factions: plan.factions.length, locations: plan.locations.length },
+        { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length, factions: plan.factions.length, locations: plan.locations.length, items: plan.items.length },
         'planEntitiesFromOutline 解析完成',
       )
       return {
@@ -1450,6 +1607,7 @@ export class NovelEntityGenerator {
       { kind: 'foreshadow', specs: plan.foreshadows },
       { kind: 'faction', specs: plan.factions },
       { kind: 'location', specs: plan.locations },
+      { kind: 'item', specs: plan.items },
     ]
     const batchSize = 4
 
@@ -1661,31 +1819,7 @@ export class NovelEntityGenerator {
   }
 
   private batchFieldRules(kind: EntityKind): string {
-    switch (kind) {
-      case 'character':
-        return [
-          'name、description、identity、personality、appearance、currentState、currentGoal、currentPressure、secret、arcStage、speechStyle、longTermDesire、plotRole、removalImpact。',
-          'plotRole: protagonist/main_opponent/supporting/function/background。arcStage: setup/rising/climax/falling/resolution。longTermDesire 是跨章节稳定欲望，currentGoal 是短期目标。',
-        ].join('\n')
-      case 'conflict':
-        return [
-          'description、type、intensity、stage、tier、participants、climaxChapter、climaxType、stakes、twistPotential、plotFunction、progressionMode。',
-          'type: inner/relationship/faction/interest/moral/identity/emotional/world_rule/survival。stage: latent/emerging/escalating/erupting/reversing/resolved/transformed。tier: main/secondary/goal。',
-          'climaxType: emotional/fate/character/combat/theme/composite。plotFunction: provide_resource/create_obstacle/amplify_conflict/open_phase/change_judgment/advance_relationship/reveal_world_rule。progressionMode: linear/mutation/stagnation/regression/reversal。',
-          'intensity 为 1-10 整数，twistPotential 为 0-10 整数，participants 为角色姓名数组；无高潮时 climaxChapter 和 climaxType 为 null。',
-        ].join('\n')
-      case 'foreshadow':
-        return [
-          'description、category、status、linkedCharacters、linkedClues、plantMethod、recoverMethod。',
-          'category: item/spoken/event/identity/secret/prophecy/promise/quote。status: planned/planted/reinforced/partially_revealed/recovering/recovered/abandoned。plantMethod: explicit/implicit/indirect。recoverMethod: explicit/implicit/reverse/progressive。',
-        ].join('\n')
-      case 'faction':
-        return 'name、description、type、ideology、strength、resources、allies、enemies、status。type: organization/sect/kingdom/family/guild/cult。strength: weak/medium/strong/overwhelming。status: active/declined/destroyed/hidden。resources、allies、enemies 为字符串数组。'
-      case 'location':
-        return 'name、description、type、significance、status。type: continent/country/city/building/dungeon/region/wilderness。significance: minor/moderate/major/critical。status: normal/destroyed/changed/hidden。'
-      case 'world_element':
-        return 'category、name、description、attributes。category: power_system/history/culture/religion/technology/economy/geography。attributes 为 JSON 对象。'
-    }
+    return BATCH_FIELD_RULES[kind]
   }
 
   private isValidBatchItem(kind: EntityKind, value: unknown): value is Record<string, unknown> {
@@ -1697,6 +1831,7 @@ export class NovelEntityGenerator {
       foreshadow: ['description', 'category', 'status', 'linkedCharacters', 'linkedClues', 'plantMethod', 'recoverMethod'],
       faction: ['name', 'description', 'type', 'ideology', 'strength', 'resources', 'allies', 'enemies', 'status'],
       location: ['name', 'description', 'type', 'significance', 'status'],
+      item: ['name', 'description', 'type', 'ownerId', 'status', 'abilities', 'origin'],
       world_element: ['category', 'name', 'description', 'attributes'],
     }
     if (!requiredFields[kind].every((field) => Object.prototype.hasOwnProperty.call(item, field))) return false
@@ -1806,14 +1941,7 @@ export class NovelEntityGenerator {
   // ── 私有方法 ──
 
   private kindLabel(kind: EntityKind): string {
-    return {
-      character: '角色',
-      conflict: '冲突',
-      foreshadow: '伏笔',
-      faction: '势力',
-      location: '地点',
-      world_element: '世界要素',
-    }[kind]
+    return ENTITY_KIND_LABELS[kind]
   }
 
   private buildUserPrompt(kind: EntityKind, coreStyle: string): string {
@@ -1929,6 +2057,25 @@ export class NovelEntityGenerator {
         '【输出约束（必须遵守）】',
         '所有输出的文本字段绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
       ].join('\n'),
+      item: () => [
+        '请根据以下核心描述，生成一个完整的物品设定。',
+        '',
+        '【核心描述】',
+        coreStyle,
+        '',
+        '【输出要求】',
+        '请返回 JSON 格式，包含以下字段：',
+        '- name: 物品名称',
+        '- description: 物品一句话描述',
+        '- type: 物品类型，从以下枚举中选择一个：weapon(武器)/armor(防具)/artifact(法宝)/consumable(消耗品)/key(关键道具)/material(材料)/info(情报物品)/misc(杂物)',
+        '- ownerId: 持有者角色名（必须是本项目已有角色的完整姓名，无主物品填空字符串）',
+        '- status: 物品状态，从以下枚举中选择一个：active(可用)/lost(遗失)/destroyed(损毁)/transformed(已转化)/sealed(封印)/transferred(已易主)',
+        '- abilities: 物品能力/效果一句话描述（如"可存储三道法术"、"对妖兽有破甲效果"）',
+        '- origin: 物品来源一句话描述（如"师门所赐"、"古墓出土"、"敌人遗落"）',
+        '',
+        '【输出约束（必须遵守）】',
+        '所有输出的文本字段绝不使用破折号"——"。转折用句号分割独立句，补充说明用逗号，列举用顿号，悬念收尾用省略号。',
+      ].join('\n'),
       world_element: () => [
         '请根据以下核心描述，生成一个完整的世界要素设定。',
         '',
@@ -1962,6 +2109,8 @@ export class NovelEntityGenerator {
             return this.parseFaction(parsed)
           case 'location':
             return this.parseLocation(parsed)
+          case 'item':
+            return this.parseItem(parsed, projectId)
           case 'world_element':
             return this.parseWorldElement(parsed)
           default:
@@ -2142,6 +2291,44 @@ export class NovelEntityGenerator {
     }
   }
 
+  /**
+   * 解析物品字段
+   *
+   * @param projectId 用于把 ownerId（角色名）解析为 characterId（如有 projectId）
+   *
+   * ownerId 处理：
+   * - LLM 输出的是角色名（更易理解），后端按名解析为 characterId 落库
+   * - 解析失败的物品保留 ownerId=null（无主物品，仍可被编排）
+   */
+  private parseItem(p: Record<string, unknown>, projectId?: string): GeneratedItem {
+    const validTypes: NovelItem['type'][] = ['weapon', 'armor', 'artifact', 'consumable', 'key', 'material', 'info', 'misc']
+    const validStatus: NovelItem['status'][] = ['active', 'lost', 'destroyed', 'transformed', 'sealed', 'transferred']
+    // ownerId：LLM 输出角色名或空字符串，按名解析为 characterId
+    const ownerNameRaw = ensureString(p.ownerId, '').trim()
+    let ownerId: string | null = null
+    if (ownerNameRaw && projectId) {
+      const characters = this.store.listCharacters(projectId)
+      const matched = characters.find((c) => c.name === ownerNameRaw)
+      if (matched) {
+        ownerId = matched.id
+      } else {
+        this.context.logger.warn(
+          { projectId, ownerName: ownerNameRaw, itemName: ensureString(p.name, '') },
+          '物品 ownerId 名字未匹配到角色 ID（保留为无主，可在前端编辑时手动绑定）',
+        )
+      }
+    }
+    return {
+      name: ensureString(p.name, '未命名物品'),
+      description: ensureString(p.description, ''),
+      type: (validTypes.includes(p.type as NovelItem['type']) ? p.type : 'misc') as NovelItem['type'],
+      ownerId,
+      status: (validStatus.includes(p.status as NovelItem['status']) ? p.status : 'active') as NovelItem['status'],
+      abilities: ensureString(p.abilities, ''),
+      origin: ensureString(p.origin, ''),
+    }
+  }
+
   private parseWorldElement(p: Record<string, unknown>): GeneratedWorldElement {
     const validCategories = ['power_system', 'history', 'culture', 'religion', 'technology', 'economy', 'geography']
     const attributes = ((): Record<string, unknown> => {
@@ -2213,6 +2400,18 @@ export class NovelEntityGenerator {
           type: 'region',
           significance: 'moderate',
           status: 'normal',
+        }
+      }
+      case 'item': {
+        const seed = trimmed.slice(0, 4).replace(/[^\u4e00-\u9fa5a-zA-Z]/g, '')
+        return {
+          name: seed.length >= 2 ? `${seed}（待定）` : '未命名物品',
+          description: `基于"${trimmed.slice(0, 30)}"生成的占位物品`,
+          type: 'misc' as NovelItem['type'],
+          ownerId: null,
+          status: 'active' as NovelItem['status'],
+          abilities: '',
+          origin: '',
         }
       }
       case 'world_element':

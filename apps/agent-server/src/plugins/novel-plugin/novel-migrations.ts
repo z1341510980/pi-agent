@@ -850,4 +850,40 @@ export const novelMigrations: MigrationDefinition[] = [
     id: '069_add_writing_style_negative_examples',
     sql: `ALTER TABLE novel_writing_style_profiles ADD COLUMN negative_examples TEXT NOT NULL DEFAULT '[]';`,
   },
+  {
+    // 物品表：追踪角色拥有的关键物品（玉佩/法器/武器/钥匙等），
+    // 用于跨章节一致性（物品在哪章获得/使用/转手）和提示词注入。
+    id: '070_create_novel_items',
+    sql: `CREATE TABLE IF NOT EXISTS novel_items (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      type            TEXT NOT NULL DEFAULT 'misc',
+      owner_id        TEXT,
+      status          TEXT NOT NULL DEFAULT 'active',
+      abilities       TEXT NOT NULL DEFAULT '',
+      origin          TEXT NOT NULL DEFAULT '',
+      first_chapter   INTEGER,
+      chapter_spans   TEXT NOT NULL DEFAULT '[]',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_items_project ON novel_items(project_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_items_owner ON novel_items(owner_id);`,
+  },
+  {
+    // 071: 冲突推进粒度字段
+    // stage 只有 7 个粗粒度值（latent/emerging/.../transformed），无法承载
+    // "已出现图案"vs"已验证图案"这类细粒度推进点。每次 memory-generator 即使
+    // 推进了剧情，updateConflict 也只能写 stage（粗状态不变），下一章上下文仍
+    // 输出同一个粗状态，导致 Writer/Director 反复"验证穴位是否存在"。
+    // current_step / next_step 类比 novel_clues.current_step/next_step：
+    // - current_step: 当前进展（一句话描述本章推进到哪一步）
+    // - next_step: 下一步（一句话描述下章应推进的方向）
+    id: '071_add_conflict_current_next_step',
+    sql: `ALTER TABLE novel_conflicts ADD COLUMN current_step TEXT NOT NULL DEFAULT '';
+          ALTER TABLE novel_conflicts ADD COLUMN next_step TEXT NOT NULL DEFAULT '';`,
+  },
 ]

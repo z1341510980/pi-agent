@@ -35,6 +35,7 @@ import type {
   SceneDefinition,
   DiscussionPhase,
   DiscussionResumeState,
+  ReviewerOutcome,
 } from './discussion-types.js'
 import { DISCUSSION_LIMITS } from './discussion-types.js'
 
@@ -192,7 +193,7 @@ export class TeamDiscussionEngine {
       activePhase = 'reviewing'
       const qualityResult = await this.reviewFinalChapter(finalContent, members, history, options, goal.targetWords)
       if (qualityResult.status === 'cancelled') {
-        return { status: 'cancelled', transcript: history, scenes }
+        return { status: 'cancelled', transcript: history, scenes, review: qualityResult.review }
       }
       finalContent = qualityResult.content
 
@@ -201,6 +202,7 @@ export class TeamDiscussionEngine {
         content: finalContent,
         transcript: history,
         scenes,
+        review: qualityResult.review,
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -264,10 +266,10 @@ export class TeamDiscussionEngine {
         goal.targetWords,
       )
       if (qualityResult.status === 'cancelled') {
-        return { status: 'cancelled', content: finalContent, transcript: history, scenes }
+        return { status: 'cancelled', content: finalContent, transcript: history, scenes, review: qualityResult.review }
       }
       finalContent = qualityResult.content
-      return { status: 'completed', content: finalContent, transcript: history, scenes }
+      return { status: 'completed', content: finalContent, transcript: history, scenes, review: qualityResult.review }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       this.context.logger.error({ err }, '群聊断点续跑异常')
@@ -455,7 +457,7 @@ ${reviewResult.rewrite_suggestion}
     prompt: string,
     history: DiscussionMessage[],
     options: DiscussionOptions,
-    ctx: { phase: DiscussionPhase; sceneId?: number },
+    ctx: { phase: DiscussionPhase; sceneId?: number; extraTools?: unknown[] },
     visibility: 'public' | 'internal' = 'public',
   ): Promise<string> {
     const systemPrompt = member.buildSystemPrompt()
@@ -476,7 +478,9 @@ ${reviewResult.rewrite_suggestion}
       // 只含本人已知信息的私有上下文，避免角色看到全知状态和他人秘密。
       prefixUserMessage: prefixMessages.length === 1 ? prefixMessages[0] : prefixMessages,
       userMessage,
-      tools: [],
+      // 注入业务层提供的工具（如 Reviser 的 novel_apply_revision）。
+      // 工具不在 STATIC/SEMI 层 prompt 中出现，不影响跨 Agent 的 prompt cache 命中率。
+      tools: ctx.extraTools ?? [],
       signal: options.signal,
       // 温度优先级：member.temperature（工种成员从 AgentPage 角色温度配置读取）
       // > 角色成员回退到 characterTemperature > 默认 0.7
@@ -922,7 +926,7 @@ ${combined}
     history: DiscussionMessage[],
     options: DiscussionOptions,
     targetWords?: number,
-  ): Promise<{ status: 'completed'; content: string } | { status: 'cancelled' }> {
+  ): Promise<{ status: 'completed'; content: string; review?: ReviewerOutcome } | { status: 'cancelled'; review?: ReviewerOutcome }> {
     const reviewer = members.find(member => member.id === 'novel-reviewer')
     if (!reviewer) return { status: 'completed', content }
 
@@ -958,17 +962,32 @@ ${combined}
       options,
       { phase: 'reviewing' },
     )
+    // ⚠️ 工具化方案：业务层通过 buildReviewerToolset 提供 draft + 工具。
+    // 引擎把工具注入 Reviewer 的 LLM 调用。Reviewer 必须调用 novel_submit_review
+    // 工具才能提交结构化验收对象（十维评分 + verdict + issues + suggestions），
+    // 工具参数 schema 强制校验，完全绕开正则解析。
+    // 旧路径让 Reviewer 输出 Markdown 报告，再用 parseChapterReviewReport 正则解析，
+    // LLM 不严格遵守格式时评分/结论降级为 null，Reviewer 的真实判断丢失。
+    const reviewToolset = options.buildReviewerToolset?.()
     const report = await this.invokeMember(
       finalReviewer,
-      `请验收以下群聊编织完成的章节正文，并按审稿格式给出 accept/revise/reject 结论。${targetHint}
+      `请验收以下群聊编织完成的章节正文，并必须通过调用 novel_submit_review 工具提交结构化验收报告（十维评分、verdict、issues、suggestions），不要在对话文本中输出 Markdown 评分表或 Findings 表格。${targetHint}
 
 ## 待审稿章节正文
 
 ${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}\n\n---\n\n## 盲审文字编辑意见\n\n${proseEditorReport}`,
       [],
       options,
-      { phase: 'reviewing' },
+      { phase: 'reviewing', extraTools: reviewToolset?.tools },
     )
+    // Reviewer 结束后立即取得 outcome，无论后续决策如何都透传给上层
+    const reviewOutcome: ReviewerOutcome | null = reviewToolset?.extractResult() ?? null
+    if (reviewOutcome && !reviewOutcome.toolCalled) {
+      this.context.logger.warn(
+        { reviewLength: report.length },
+        '群聊 Reviewer 未调用 novel_submit_review 工具提交验收报告',
+      )
+    }
     history.push({
       id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       fromId: reviewer.id,
@@ -985,21 +1004,27 @@ ${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}\n\n---
       options: ['approve', 'revise', 'reject'],
       context: report,
     })
-    if (decision === 'reject') return { status: 'cancelled' }
+    if (decision === 'reject') return { status: 'cancelled', review: reviewOutcome ?? undefined }
     const wordCount = content.replace(/\s/g, '').length
     // 仅严重偏离触发自动 Reviser；轻微偏离由 Reviewer/用户决定。
     const lengthOutOfRange = targetWords != null && (
       wordCount < targetWords * 0.75 || wordCount > targetWords * 1.30
     )
     if (decision !== 'revise' && decision !== 'rewrite' && !lengthOutOfRange) {
-      return { status: 'completed', content }
+      return { status: 'completed', content, review: reviewOutcome ?? undefined }
     }
 
     const reviser = members.find(member => member.id === 'novel-reviser')
-    if (!reviser) return { status: 'completed', content }
+    if (!reviser) return { status: 'completed', content, review: reviewOutcome ?? undefined }
+    // ⚠️ 工具化方案：业务层通过 buildReviserToolset 提供 draft + 工具，
+    // 引擎把工具注入 Reviser 的 LLM 调用。Reviser 必须调用 novel_apply_revision
+    // 工具才能修改正文，工具内部用 String.replace 做精确替换，完全绕开正则解析。
+    // 旧 applyRevision 回调让 Reviser 输出"原文/修改后"配对文本再正则解析，
+    // LLM 不严格遵守格式时会走 full 兜底把"修改意见"当作完整正文落库。
+    const toolset = options.buildReviserToolset?.(content)
     const rawRevision = await this.invokeMember(
       reviser,
-      `请根据审稿意见修订章节，只输出需要替换的“原文/修改后”配对。${targetWords ? `修订后正文目标约 ${targetWords} 字。` : ''}
+      `请根据审稿意见修订章节，必须通过调用 novel_apply_revision 工具应用修改，不要在对话文本中输出"原文/修改后"配对。${targetWords ? `修订后正文目标约 ${targetWords} 字。` : ''}
 
 ## 原章节正文
 
@@ -1010,16 +1035,40 @@ ${content}
 ${report}`,
       [],
       options,
-      { phase: 'reviewing' },
+      { phase: 'reviewing', extraTools: toolset?.tools },
     )
-    const revision = options.applyRevision?.(content, rawRevision)
-      ?? { content: rawRevision, accepted: true, mode: 'full' as const }
-    const revisedContent = revision.content
-    if (!revision.accepted) {
+    let revisedContent: string
+    if (toolset) {
+      const outcome = toolset.extractResult()
+      if (outcome.mode === 'rejected' || outcome.successCount === 0) {
+        this.context.logger.warn(
+          {
+            reason: outcome.reason,
+            mode: outcome.mode,
+            appliedPatchCount: outcome.appliedPatchCount,
+            successCount: outcome.successCount,
+          },
+          '群聊 Reviser 未通过工具成功应用任何修订，保留原正文',
+        )
+      } else {
+        this.context.logger.info(
+          {
+            appliedPatchCount: outcome.appliedPatchCount,
+            successCount: outcome.successCount,
+            originalLength: content.length,
+            revisedLength: outcome.content.length,
+          },
+          '群聊 Reviser 已通过工具应用修订',
+        )
+      }
+      revisedContent = outcome.content
+    } else {
+      // 业务层未提供 buildReviserToolset：保留原正文（避免误把 Reviser 文本输出当作完整正文落库）
       this.context.logger.warn(
-        { reason: revision.reason, mode: revision.mode },
-        '群聊 Reviser 输出未通过安全修订，保留原正文',
+        { rawRevisionLength: rawRevision.length },
+        '业务层未提供 buildReviserToolset，群聊 Reviser 修订未应用，保留原正文',
       )
+      revisedContent = content
     }
     history.push({
       id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1029,7 +1078,7 @@ ${report}`,
       timestamp: Date.now(),
       type: 'member',
     })
-    return { status: 'completed', content: revisedContent }
+    return { status: 'completed', content: revisedContent, review: reviewOutcome ?? undefined }
   }
 
   /** 解析 Director 输出为场景列表 */
