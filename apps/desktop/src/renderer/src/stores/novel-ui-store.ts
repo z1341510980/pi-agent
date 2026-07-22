@@ -70,6 +70,9 @@ export interface NovelUiState {
   // 可同时展开多个，各自独立 toggle；不持久化
   expandedEntityIds: string[]
 
+  // ── 矩阵视图：左侧 sticky 列收缩状态（持久化，收缩时仅留窄条展开按钮）──
+  matrixSidebarCollapsed: boolean
+
   // ── 加载状态 ──
   loading: boolean
   error: string | null
@@ -104,6 +107,8 @@ export interface NovelUiState {
   toggleEntityExpand: (entityId: string) => void
   /** 收起所有已展开的实体子轨道 */
   collapseAllExpanded: () => void
+  /** 切换矩阵左侧 sticky 列的收缩状态 */
+  toggleMatrixSidebar: () => void
   /** 项目切换/删除时统一清理项目相关的 UI 状态 */
   resetForProjectSwitch: () => void
 }
@@ -122,6 +127,9 @@ export const useNovelUiStore = create<NovelUiState>()(
 
       // ── 子甘特图展开的实体（不持久化）──
       expandedEntityIds: [],
+
+      // ── 矩阵左侧 sticky 列收缩状态（持久化）──
+      matrixSidebarCollapsed: false,
 
       viewMode: 'matrix',
 
@@ -216,6 +224,8 @@ export const useNovelUiStore = create<NovelUiState>()(
         set({ expandedEntityIds: next })
       },
       collapseAllExpanded: () => set({ expandedEntityIds: [] }),
+      toggleMatrixSidebar: () =>
+        set((state) => ({ matrixSidebarCollapsed: !state.matrixSidebarCollapsed })),
       /** 项目切换/删除时统一清理项目相关的 UI 状态 */
       resetForProjectSwitch: () => {
         set({
@@ -240,6 +250,7 @@ export const useNovelUiStore = create<NovelUiState>()(
         canvasEdgeType: state.canvasEdgeType,
         collapsedGroups: state.collapsedGroups,
         expandedVolumes: state.expandedVolumes,
+        matrixSidebarCollapsed: state.matrixSidebarCollapsed,
       }),
       // 自定义 merge：旧版本 localStorage 没有 canvasLayoutMode 字段时填回默认值 'grouped'
       // 避免从旧数据反序列化出 undefined 导致按钮 variant 判断失效
@@ -249,6 +260,7 @@ export const useNovelUiStore = create<NovelUiState>()(
           ...current,
           ...p,
           canvasLayoutMode: p.canvasLayoutMode ?? 'grouped',
+          matrixSidebarCollapsed: p.matrixSidebarCollapsed ?? false,
         }
       },
     },

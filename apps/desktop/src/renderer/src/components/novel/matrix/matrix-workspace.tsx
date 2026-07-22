@@ -37,7 +37,6 @@ import {
   type NovelForeshadow,
 } from '@/api/novel-client'
 import {
-  buildGroups,
   buildPool,
   findSpanAt,
   GROUP_ORDER,
@@ -48,7 +47,7 @@ import {
   type MatrixEntity,
   type MatrixEntityKind,
 } from './matrix-logic'
-import { MATRIX_LAYOUT } from './matrix-model'
+import { buildGroups, MATRIX_LAYOUT } from './matrix-model'
 import { MatrixToolbar } from './matrix-toolbar'
 import { MatrixView } from './matrix-view'
 import { MatrixLegend } from './matrix-legend'
@@ -173,7 +172,7 @@ export function MatrixWorkspace({
   const redo = useNovelDataStore((s) => s.redo)
 
   // ── 本地 UI 状态 ──
-  const [cellWidth, setCellWidth] = useState(DEFAULT_CELL_WIDTH)
+  const [cellWidth, setCellWidth] = useState<number>(DEFAULT_CELL_WIDTH)
   const collapsedGroups = useMemo(() => new Set(collapsedGroupsArr as MatrixEntityKind[]), [collapsedGroupsArr])
   const [activeFilter, setActiveFilter] = useState<MatrixEntityKind | null>(null)
   const [isCompleting, setIsCompleting] = useState(false)
@@ -193,6 +192,8 @@ export function MatrixWorkspace({
   } | null>(null)
   // ── 关系叠加层开关（统一渲染引擎第 5 步子任务 B）──
   const [showRelationshipOverlay, setShowRelationshipOverlay] = useState(false)
+  // ── 实体名称搜索（图例展开态输入，下传 MatrixView 过滤行）──
+  const [searchQuery, setSearchQuery] = useState('')
 
   // ── 从后端加载标记 ──
   useEffect(() => {
@@ -241,17 +242,19 @@ export function MatrixWorkspace({
   }, [queryClient, currentProjectId])
 
   // ── 扁平实体列表（键盘导航用，dhtmlx 风格方向键在实体间移动）──
-  // 过滤掉折叠的分组内的实体，保证方向键只落在可见实体上
+  // 过滤掉折叠的分组内的实体 + 搜索关键字过滤，保证方向键只落在可见实体上
   const flatEntities = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
     const out: Array<{ entityId: string; entityType: MatrixEntityKind; name: string }> = []
     for (const g of matrixData.groups) {
       if (collapsedGroups.has(g.id)) continue
       for (const e of g.entities) {
+        if (q && !e.name.toLowerCase().includes(q)) continue
         out.push({ entityId: e.entityId, entityType: g.id, name: e.name })
       }
     }
     return out
-  }, [matrixData, collapsedGroups])
+  }, [matrixData, collapsedGroups, searchQuery])
 
   // ── 元素池（补全历史用）──
   const pool = useMemo(
@@ -1458,7 +1461,7 @@ export function MatrixWorkspace({
         onToggleRelationshipOverlay={() => setShowRelationshipOverlay((v) => !v)}
       />
 
-      <MatrixLegend />
+      <MatrixLegend searchQuery={searchQuery} onSearchChange={setSearchQuery} />
 
       <div className="flex-1 min-h-0 overflow-hidden">
         <MatrixView
@@ -1490,6 +1493,7 @@ export function MatrixWorkspace({
           onTogglePresent={handleTogglePresent}
           expandedEntityIds={expandedEntityIds}
           showRelationshipOverlay={showRelationshipOverlay}
+          searchQuery={searchQuery}
         />
       </div>
 

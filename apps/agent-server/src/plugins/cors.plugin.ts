@@ -4,10 +4,10 @@ import type { FastifyPluginAsync } from "fastify";
 
 /** CORS 白名单：仅允许本地来源 */
 const ALLOWED_ORIGINS = [
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:5174",
+  "http://localhost:5273",
+  "http://localhost:5274",
+  "http://127.0.0.1:5273",
+  "http://127.0.0.1:5274",
   "http://localhost:3900",
   "http://127.0.0.1:3900",
 ];

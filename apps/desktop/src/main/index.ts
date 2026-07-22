@@ -109,10 +109,10 @@ function createWindow(): void {
   const csp = [
     "default-src 'self'",
     // 开发模式允许 Vite HMR 和 @vitejs/plugin-react 的内联脚本
-    isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173" : "script-src 'self'",
+    isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5273" : "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
-    `connect-src 'self' http://127.0.0.1:${port} http://localhost:${port} ws://127.0.0.1:${port} ws://localhost:${port}${isDev ? ' http://localhost:5173 ws://localhost:5173' : ''}`,
+    `connect-src 'self' http://127.0.0.1:${port} http://localhost:${port} ws://127.0.0.1:${port} ws://localhost:${port}${isDev ? ' http://localhost:5273 ws://localhost:5273' : ''}`,
   ].join('; ')
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {

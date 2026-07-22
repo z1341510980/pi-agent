@@ -10,7 +10,6 @@ import {
   setForeshadowBeatNote,
   upsertForeshadowBeat,
   computeMaxChapter,
-  buildGroups,
   buildPool,
   computeCellSymbol,
   GROUP_META,
@@ -18,6 +17,7 @@ import {
   tensionToBgClass,
   tensionToLabel,
 } from '../matrix-logic'
+import { buildGroups } from '../matrix-model'
 import type { NovelChapter, NovelCharacter, NovelConflict, NovelClue, NovelCharacterHistory, NovelForeshadow, NovelFaction, NovelLocation, NovelWorldElement } from '@/api/novel-client'
 
 // ── 测试夹具 ──

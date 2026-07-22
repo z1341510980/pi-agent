@@ -1,9 +1,11 @@
 /**
- * MatrixToolbar：矩阵视图工具栏
+ * MatrixToolbar：矩阵视图工具栏（分层）
  *
- * 分两层：
- * - 标题栏（Header）：返回 + 矩阵/画布视图切换 + 章节号 + 当前章节 badge + 撤销/重做 + 缩放 + 补全 + 扫描
- * - 筛选栏（Filters）：实体类型过滤 chips
+ * 三层结构：
+ * - 标题栏（Header）：返回 + 视图切换 + 关系叠加层 + 章节信息 + 撤销/重做 + 补全 + 扫描
+ * - 工具行（Tools）：缩放组 + 实体类型筛选 chips，flex-wrap 宽度不够时换行
+ *
+ * 图例（MatrixLegend）在本组件之外、由 MatrixWorkspace 插入到 toolbar 与 view 之间。
  */
 
 import { type ReactElement } from 'react'
@@ -78,7 +80,7 @@ export function MatrixToolbar({
 
   return (
     <div className="relative z-20 shrink-0 border-b border-border bg-surface-1">
-      {/* ── 标题栏：返回 + 视图切换 + 章节信息 + 撤销/重做 + 缩放 + 补全 + 扫描 ── */}
+      {/* ── 标题栏：返回 + 视图切换 + 关系叠加层 + 章节信息 + 撤销/重做 + 补全 + 扫描 ── */}
       <div className="flex items-center gap-1.5 px-3 min-h-11 py-1.5 text-xs overflow-hidden">
         <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-text" onClick={() => window.history.back()} title="返回" aria-label="返回">
           <ArrowLeft className="size-3.5" />
@@ -131,7 +133,7 @@ export function MatrixToolbar({
         <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
         {/* 编辑组：撤销/重做 */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           <button
             type="button"
             className="inline-flex size-8 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted rounded-md transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
@@ -154,13 +156,49 @@ export function MatrixToolbar({
           </button>
         </div>
 
-        <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+        <div className="flex-1" aria-hidden="true" />
 
-        {/* 缩放：按钮 + 连续滑杆 */}
-        <div className="inline-flex items-center bg-surface-3 border border-border rounded-md overflow-hidden" aria-label="矩阵缩放">
+        {/* 补全角色历史 */}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onCompleteHistory}
+          disabled={completableCount === 0 || isCompleting}
+          aria-busy={isCompleting}
+          title={
+            completableCount === 0
+              ? '没有需要补全的角色'
+              : `为 ${completableCount} 个无历史角色补全起始章节记录`
+          }
+          className="relative size-8 p-0 shrink-0 active:scale-[0.96] transition-transform"
+        >
+          <History className="size-3.5" />
+          {completableCount > 0 && <span className="absolute -right-0.5 -top-0.5 min-w-3.5 rounded-full bg-red-500 px-1 text-[9px] leading-3.5 text-white">{completableCount}</span>}
+        </Button>
+
+        {/* LLM 相似度扫描（AI 整理）：语义相似智能合并 */}
+        {onSimilarityScan && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onSimilarityScan}
+            disabled={similarityScanning}
+            aria-busy={similarityScanning}
+            title="LLM 分析语义相似的实体并智能合并"
+            className="size-8 p-0 shrink-0 active:scale-[0.96] transition-transform"
+          >
+            <Wand2 className="size-3.5" />
+          </Button>
+        )}
+      </div>
+
+      {/* ── 工具行：缩放组 + 筛选 chips（flex-wrap，宽度不够时换行）── */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 min-h-8 py-1.5 bg-surface-2/40 border-t border-border/60 text-xs">
+        {/* 缩放组 */}
+        <div className="inline-flex items-center bg-surface-3 border border-border rounded-md overflow-hidden shrink-0" aria-label="矩阵缩放">
           <button
             type="button"
-            className="inline-flex size-8 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
+            className="inline-flex size-7 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
             onClick={onZoomOut}
             title="缩小单元格（Ctrl+滚轮亦可）"
             aria-label="缩小矩阵单元格"
@@ -176,17 +214,17 @@ export function MatrixToolbar({
               step={1}
               value={cellWidth}
               onChange={(e) => onCellWidthChange(Number(e.target.value))}
-              className="w-20 h-4 accent-[var(--color-primary)] cursor-pointer mx-1"
+              className="w-16 h-4 accent-[var(--color-primary)] cursor-pointer mx-1"
               aria-label="单元格宽度滑杆"
               title={`单元格宽度 ${cellWidth}px`}
             />
           )}
-          <span className="font-mono text-[11px] text-muted-foreground min-w-[42px] text-center px-1 tabular-nums">
+          <span className="font-mono text-[11px] text-muted-foreground min-w-[38px] text-center px-1 tabular-nums">
             {zoomPct}%
           </span>
           <button
             type="button"
-            className="inline-flex size-8 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
+            className="inline-flex size-7 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
             onClick={onZoomIn}
             title="放大单元格（Ctrl+滚轮亦可）"
             aria-label="放大矩阵单元格"
@@ -196,75 +234,43 @@ export function MatrixToolbar({
           </button>
         </div>
 
-        <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+        {/* 分隔符 */}
+        <div className="h-5 w-px bg-border/60 shrink-0" aria-hidden="true" />
 
-        {/* 补全角色历史 */}
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={onCompleteHistory}
-          disabled={completableCount === 0 || isCompleting}
-          aria-busy={isCompleting}
-          title={
-            completableCount === 0
-              ? '没有需要补全的角色'
-              : `为 ${completableCount} 个无历史角色补全起始章节记录`
-          }
-          className="relative size-8 p-0 active:scale-[0.96] transition-transform"
-        >
-          <History className="size-3.5" />
-          {completableCount > 0 && <span className="absolute -right-0.5 -top-0.5 min-w-3.5 rounded-full bg-red-500 px-1 text-[9px] leading-3.5 text-white">{completableCount}</span>}
-        </Button>
-
-        {/* LLM 相似度扫描（AI 整理）：语义相似智能合并 */}
-        {onSimilarityScan && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onSimilarityScan}
-            disabled={similarityScanning}
-            aria-busy={similarityScanning}
-            title="LLM 分析语义相似的实体并智能合并"
-            className="size-8 p-0 active:scale-[0.96] transition-transform"
-          >
-            <Wand2 className="size-3.5" />
-          </Button>
-        )}
-      </div>
-
-      {/* ── 筛选栏：实体类型过滤 chips ── */}
-      <div className="flex items-center gap-1 px-3 min-h-8 py-1 bg-surface-2/40 border-t border-border/60 text-xs overflow-x-auto whitespace-nowrap" role="group" aria-label="实体类型筛选">
-        {FILTER_OPTIONS.map((opt) => {
-          const active = activeFilter === opt.key
-          const color = opt.key ? GROUP_META[opt.key].color : undefined
-          return (
-            <button
-              key={opt.key ?? 'all'}
-              type="button"
-              onClick={() => onFilterChange(opt.key)}
-              aria-pressed={active}
-              className={cn(
-                'inline-flex h-7 items-center gap-1 px-2.5 rounded-[6px] text-[11px] bg-surface-1 border transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
-                active
-                  ? color
-                    ? 'text-white border-transparent'
-                    : 'text-text bg-surface-3 border-border-strong'
-                  : 'text-muted-foreground border-border hover:text-text hover:border-border-strong'
-              )}
-              style={active && color ? { background: color, borderColor: color } : undefined}
-              title={opt.key ? `只显示${opt.label}` : '显示全部分组'}
-            >
-              {/* 分类颜色圆点（active 时变白） */}
-              {color && (
-                <span
-                  className={cn('w-1.5 h-1.5 rounded-full shrink-0 transition-colors', active && 'bg-white')}
-                  style={!active ? { background: color } : undefined}
-                />
-              )}
-              {opt.label}
-            </button>
-          )
-        })}
+        {/* 筛选 chips */}
+        <div className="flex items-center gap-1 flex-wrap" role="group" aria-label="实体类型筛选">
+          {FILTER_OPTIONS.map((opt) => {
+            const active = activeFilter === opt.key
+            const color = opt.key ? GROUP_META[opt.key].color : undefined
+            return (
+              <button
+                key={opt.key ?? 'all'}
+                type="button"
+                onClick={() => onFilterChange(opt.key)}
+                aria-pressed={active}
+                className={cn(
+                  'inline-flex h-7 items-center gap-1 px-2.5 rounded-[6px] text-[11px] bg-surface-1 border transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
+                  active
+                    ? color
+                      ? 'text-white border-transparent'
+                      : 'text-text bg-surface-3 border-border-strong'
+                    : 'text-muted-foreground border-border hover:text-text hover:border-border-strong'
+                )}
+                style={active && color ? { background: color, borderColor: color } : undefined}
+                title={opt.key ? `只显示${opt.label}` : '显示全部分组'}
+              >
+                {/* 分类颜色圆点（active 时变白） */}
+                {color && (
+                  <span
+                    className={cn('w-1.5 h-1.5 rounded-full shrink-0 transition-colors', active && 'bg-white')}
+                    style={!active ? { background: color } : undefined}
+                  />
+                )}
+                {opt.label}
+              </button>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

@@ -246,7 +246,7 @@ export function EntityCellMenu({
               className={`${menuItemClass} disabled:opacity-40 disabled:cursor-not-allowed`}
               onClick={handleMark}
               disabled={markDisabled}
-              data-tip={markTooltip(entityType, present)}
+              title={markTooltip(entityType, present)}
             >
               <Plus className="size-3.5" />
               <span>{markLabel(entityType)}</span>
@@ -262,7 +262,7 @@ export function EntityCellMenu({
               className={destructiveMenuItemClass}
               onClick={handleRemove}
               disabled={!removable}
-              data-tip={removeTooltip(entityType)}
+              title={removeTooltip(entityType)}
             >
               <Trash2 className="size-3.5" />
               <span>{removeLabel(entityType)}</span>
@@ -276,7 +276,7 @@ export function EntityCellMenu({
           type="button"
           className={menuItemClass}
           onClick={handleEditSpan}
-          data-tip="打开范围编辑对话框，直接指定起止章节"
+          title="打开范围编辑对话框，直接指定起止章节"
         >
           <ArrowLeftRight className="size-3.5" />
           <span>编辑范围</span>
@@ -304,7 +304,7 @@ export function EntityCellMenu({
             type="button"
             className={destructiveMenuItemClass}
             onClick={handleRemoveSpan}
-            data-tip="删除本章所在的整段跨度（含段内所有章节出场）"
+            title="删除本章所在的整段跨度（含段内所有章节出场）"
           >
             <Trash2 className="size-3.5" />
             <span>删除该段范围</span>

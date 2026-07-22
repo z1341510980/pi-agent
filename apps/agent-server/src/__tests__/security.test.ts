@@ -31,11 +31,11 @@ describe('安全基线', () => {
       method: 'GET',
       url: '/api/health',
       headers: {
-        origin: 'http://localhost:5173',
+        origin: 'http://localhost:5273',
       },
     })
     const allowOrigin = response.headers['access-control-allow-origin']
-    expect(allowOrigin).toBe('http://localhost:5173')
+    expect(allowOrigin).toBe('http://localhost:5273')
   })
 
   it('请求正常处理（无需认证）', async () => {
