@@ -179,14 +179,10 @@ export class NovelEngine {
 
       const selectedInfoLayerIds = new Set<string>()
       for (const foreshadow of relevantForeshadows) {
-        try {
-          const parsed = JSON.parse(foreshadow.linkedInfoLayers ?? '[]')
-          if (Array.isArray(parsed)) {
-            for (const id of parsed) if (typeof id === 'string') selectedInfoLayerIds.add(id)
-          }
-        } catch {
-          // 兼容旧数据。
-        }
+        const parsed = this.store.listEdgesByEntity(foreshadow.id, { edgeType: 'related' })
+          .filter(e => e.sourceType === 'foreshadow' && e.targetType === 'info_layer' && e.sourceId === foreshadow.id)
+          .map(e => e.targetId)
+        for (const id of parsed) selectedInfoLayerIds.add(id)
       }
       const infoLayers = this.store.listInformationLayers(projectId)
       const relevantInfoLayers = infoLayers
@@ -194,14 +190,10 @@ export class NovelEngine {
         .filter((layer) => {
           if (!arrangedEntities) return true
           if (selectedInfoLayerIds.has(layer.id)) return true
-          try {
-            const linked = JSON.parse(layer.linkedForeshadows ?? '[]')
-            if (Array.isArray(linked) && linked.some(
-              (id) => typeof id === 'string' && selectedForeshadowIds?.has(id),
-            )) return true
-          } catch {
-            // 兼容旧数据。
-          }
+          const linked = this.store.listEdgesByEntity(layer.id, { edgeType: 'related' })
+            .filter(e => e.sourceType === 'foreshadow' && e.targetType === 'info_layer' && e.targetId === layer.id)
+            .map(e => e.sourceId)
+          if (linked.some((id) => selectedForeshadowIds?.has(id))) return true
           try {
             const knowledge = JSON.parse(layer.characterKnowledge ?? '{}') as Record<string, unknown>
             return [...(selectedCharacterIds ?? [])].some((id) => Object.hasOwn(knowledge, id))

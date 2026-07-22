@@ -11,9 +11,6 @@ function foreshadow(overrides: Record<string, unknown>) {
     firstChapter: 1,
     lastChapter: 1,
     recoverByChapter: null,
-    linkedCharacters: '[]',
-    linkedClues: '[]',
-    linkedInfoLayers: '[]',
     chapterSpans: [],
     beats: [{ chapter: 1, type: 'plant' }],
     createdAt: 1,
@@ -29,6 +26,7 @@ describe('NovelEngine chapter constraint relevance', () => {
       listCharacters: () => [],
       listConflicts: () => [],
       listInformationLayers: () => [],
+      listEdgesByEntity: () => [],
       listForeshadowing: () => [
         foreshadow({ id: 'old', description: '多年后才处理', firstChapter: 1 }),
         foreshadow({
@@ -78,6 +76,7 @@ describe('NovelEngine chapter constraint relevance', () => {
       listConstraints: () => [],
       listCharacters: () => [],
       listInformationLayers: () => [],
+      listEdgesByEntity: () => [],
       listForeshadowing: () => [
         foreshadow({ id: 'selected-foreshadow', description: '选中伏笔', beats: [{ chapter: 10, type: 'reinforce' }] }),
         foreshadow({ id: 'ignored-foreshadow', description: '未选伏笔', beats: [{ chapter: 10, type: 'payoff' }] }),

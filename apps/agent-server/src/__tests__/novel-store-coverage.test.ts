@@ -414,7 +414,7 @@ describe('NovelStore - InfoLayer CRUD', () => {
       infoDescription: '主角知道自己的身世',
       authorKnows: true, readerKnows: false,
       characterKnowledge: '{}', revealStage: 'mid', revealChapter: null,
-      isRevealed: false, linkedForeshadows: '[]',
+      isRevealed: false,
     })
     const list = store.listInformationLayers('p-1')
     expect(list).toHaveLength(1)
@@ -426,7 +426,7 @@ describe('NovelStore - InfoLayer CRUD', () => {
       id: 'il-1', projectId: 'p-1',
       infoDescription: 'X', authorKnows: true, readerKnows: false,
       characterKnowledge: '{}', revealStage: null, revealChapter: null,
-      isRevealed: false, linkedForeshadows: '[]',
+      isRevealed: false,
     })
     expect(store.getInformationLayer('il-1')?.infoDescription).toBe('X')
     expect(store.getInformationLayer('nonexistent')).toBeUndefined()
@@ -437,7 +437,7 @@ describe('NovelStore - InfoLayer CRUD', () => {
       id: 'il-1', projectId: 'p-1',
       infoDescription: 'A', authorKnows: false, readerKnows: false,
       characterKnowledge: '{}', revealStage: null, revealChapter: null,
-      isRevealed: false, linkedForeshadows: '[]',
+      isRevealed: false,
     })
     const updated = store.updateInfoLayer('il-1', { authorKnows: true, isRevealed: true })
     expect(updated?.authorKnows).toBe(true)

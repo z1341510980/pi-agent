@@ -40,16 +40,16 @@ export class CharacterStore {
     return row ? this.rowToCharacter(row) : undefined
   }
 
-  createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt' | 'participatingConflicts'> & { participatingConflicts?: string }): NovelCharacter {
+  createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt'>): NovelCharacter {
     const ts = now()
-    const full: NovelCharacter = { participatingConflicts: '[]', ...character, createdAt: ts, updatedAt: ts }
+    const full: NovelCharacter = { ...character, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_characters (id, project_id, name, description, identity, personality, appearance,
       current_state, current_goal, current_pressure, secret, arc_stage, arc_history, speech_style, is_protagonist,
-      long_term_desire, plot_role, removal_impact, participating_conflicts, created_at, updated_at)
+      long_term_desire, plot_role, removal_impact, created_at, updated_at)
       VALUES (@id, @project_id, @name, @description, @identity, @personality, @appearance,
       @current_state, @current_goal, @current_pressure, @secret, @arc_stage, @arc_history, @speech_style, @is_protagonist,
-      @long_term_desire, @plot_role, @removal_impact, @participating_conflicts, @created_at, @updated_at)
+      @long_term_desire, @plot_role, @removal_impact, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId,
       name: bindString(full.name, '未命名'), description: bindString(full.description),
@@ -60,7 +60,6 @@ export class CharacterStore {
       long_term_desire: bindString(full.longTermDesire),
       plot_role: bindString(full.plotRole, 'supporting'),
       removal_impact: bindString(full.removalImpact),
-      participating_conflicts: bindString(full.participatingConflicts ?? '[]', '[]'),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -76,7 +75,6 @@ export class CharacterStore {
       appearance=@appearance, current_state=@current_state, current_goal=@current_goal, current_pressure=@current_pressure,
       secret=@secret, arc_stage=@arc_stage, arc_history=@arc_history, speech_style=@speech_style, is_protagonist=@is_protagonist,
       long_term_desire=@long_term_desire, plot_role=@plot_role, removal_impact=@removal_impact,
-      participating_conflicts=@participating_conflicts,
       updated_at=@updated_at
       WHERE id=@id
     `).run({
@@ -89,7 +87,6 @@ export class CharacterStore {
       long_term_desire: bindString(updated.longTermDesire),
       plot_role: bindString(updated.plotRole, 'supporting'),
       removal_impact: bindString(updated.removalImpact),
-      participating_conflicts: bindString(updated.participatingConflicts ?? '[]', '[]'),
       updated_at: updated.updatedAt,
     })
     return updated
@@ -243,7 +240,6 @@ export class CharacterStore {
       longTermDesire: row.long_term_desire,
       plotRole: (validPlotRoles.includes(row.plot_role) ? row.plot_role : 'supporting') as NovelCharacter['plotRole'],
       removalImpact: row.removal_impact,
-      participatingConflicts: row.participating_conflicts ?? '[]',
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

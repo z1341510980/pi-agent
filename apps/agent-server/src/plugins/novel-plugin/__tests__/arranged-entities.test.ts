@@ -30,6 +30,7 @@ function createStoresMock(store: NovelStore) {
     listRecentChapters: (id: string, n: number) => store.listRecentChapters(id, n),
     getChapter: (pid: string, n: number) => store.getChapter(pid, n),
     listEdges: (id: string) => store.listEdges(id),
+    listEdgesByEntity: (id: string, opts?: { direction?: 'source' | 'target' | 'both'; edgeType?: string }) => store.listEdgesByEntity(id, opts),
     listFactions: (id: string) => store.listFactions(id),
     listLocations: (id: string) => store.listLocations(id),
     listItems: (id: string) => store.listItems(id),
@@ -145,9 +146,6 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       firstChapter: null,
       lastChapter: null,
       recoverByChapter: null,
-      linkedCharacters: '[]',
-      linkedClues: '[]',
-      linkedInfoLayers: '[]',
       chapterSpans: [],
       beats: [
         { chapter: 1, type: 'plant', note: '擦拭镜面时看见背后的细小划痕' },
@@ -210,7 +208,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       store.createClue({
         id, projectId, description, pointsTo: '父亲死亡真相', progress: 20,
         currentStep: '发现物证', nextStep: '核查来源', isMisleading: false,
-        linkedForeshadow: null, chapterSpans: [[1, 1]],
+        chapterSpans: [[1, 1]],
       })
     }
     const builder = new NovelPromptBuilder(
@@ -236,8 +234,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     const selectedForeshadowId = randomUUID()
     store.createForeshadow({
       id: selectedForeshadowId, projectId, description: '父亲遗物', category: 'item',
-      status: 'planted', firstChapter: 1, lastChapter: 1, recoverByChapter: 5,
-      linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [[1, 1]],
+      status: 'planted', firstChapter: 1, lastChapter: 1, recoverByChapter: 5, chapterSpans: [[1, 1]],
       beats: [{ chapter: 1, type: 'plant' }],
     })
     store.createInformationLayer({
@@ -247,12 +244,11 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
         [charId]: { knows: false, suspects: true, misunderstands: '以为是山匪所杀' },
       }),
       revealStage: 'development', revealChapter: 5, isRevealed: false,
-      linkedForeshadows: JSON.stringify([selectedForeshadowId]),
     })
     store.createInformationLayer({
       id: randomUUID(), projectId, infoDescription: '无关支线秘密', authorKnows: true,
       readerKnows: false, characterKnowledge: '{}', revealStage: 'development',
-      revealChapter: 8, isRevealed: false, linkedForeshadows: '[]',
+      revealChapter: 8, isRevealed: false,
     })
     const builder = new NovelPromptBuilder(
       { render: () => 'instruction', getTemplate: () => '' } as any,

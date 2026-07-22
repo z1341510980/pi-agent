@@ -44,6 +44,9 @@ import type {
   GraphNode, GraphEdge, GraphPath, EntityChapterPresence,
   ConsistencyReport,
   ChapterChatRole, ChapterChatPhase, ChapterChatMessage,
+  ChapterStoryContext, ChangeValueType, NovelAnnotation, NovelAnnotationKind, NovelAnnotationScope,
+  NovelChangeRecord, NovelStoryEntityType, NovelStoryEvent, StoryEventEntityRef,
+  StoryEventSource, StoryEventStatus,
 } from '@repo/shared/novel'
 
 // re-export 共享类型供外部消费者使用
@@ -85,6 +88,47 @@ export type UpdateProjectInput = Omit<Partial<CreateProjectInput>, 'targetPlatfo
   outline?: string
   rhythmModelId?: string
   targetPlatform?: TargetPlatform | null
+}
+
+export type CreateStoryEventInput = Omit<NovelStoryEvent, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>
+export type CreateStoryEventEntityRefInput = Omit<StoryEventEntityRef, 'id' | 'eventId'>
+export type CreateStoryEventChangeInput = Omit<
+  NovelChangeRecord,
+  'id' | 'projectId' | 'storyEventId' | 'chapterNumber' | 'sceneOrder' | 'cause' | 'effectIds' | 'createdAt'
+> & { cause?: string | null; effectIds?: string[] }
+
+export interface CreateStoryEventPayload {
+  event: CreateStoryEventInput
+  entityRefs?: CreateStoryEventEntityRefInput[]
+  changes?: CreateStoryEventChangeInput[]
+}
+
+export interface StoryEventDetails {
+  event: NovelStoryEvent
+  entityRefs: StoryEventEntityRef[]
+  changes: NovelChangeRecord[]
+}
+
+export type CreateAnnotationInput = Omit<NovelAnnotation, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>
+export type UpdateAnnotationInput = Partial<CreateAnnotationInput>
+
+export interface CreateChangeRecordInput {
+  storyEventId?: string | null
+  chapterNumber: number
+  sceneOrder?: number
+  subjectType: NovelStoryEntityType
+  subjectId: string
+  dimension: string
+  targetType?: NovelStoryEntityType | null
+  targetId?: string | null
+  valueType: ChangeValueType
+  beforeValue?: unknown
+  afterValue?: unknown
+  reason?: string
+  significance?: number
+  source?: StoryEventSource
+  cause?: string | null
+  effectIds?: string[]
 }
 
 export interface CreateChapterInput {
@@ -151,6 +195,8 @@ export interface CreateForeshadowInput {
   chapterSpans?: Array<[number, number]>
   /** 离散伏笔事件链（埋设/强化/揭示/回收） */
   beats?: NonNullable<NovelForeshadow['beats']>
+  // ── 子甘特图轨道数据（复合片段展开用）──
+  resolutionPoints?: Array<{ chapter: number; label: string }>
 }
 
 export interface CreateConflictInput {
@@ -173,6 +219,11 @@ export interface CreateConflictInput {
   // ── 071：推进粒度（类比 clue.currentStep/nextStep，让 Writer 看到冲突真实推进点）──
   currentStep?: string
   nextStep?: string
+  // ── 子甘特图轨道数据（复合片段展开用）──
+  intensityPoints?: Array<{ chapter: number; value: number }>
+  participantSpans?: Array<{ characterId: string; startCh: number; endCh: number }>
+  turningPoints?: Array<{ chapter: number; label: string }>
+  resolutionProgress?: Array<{ chapter: number; percent: number }>
 }
 
 export interface CreateClueInput {
@@ -182,7 +233,6 @@ export interface CreateClueInput {
   currentStep?: string
   nextStep?: string
   isMisleading?: boolean
-  linkedForeshadow?: string | null
   chapterSpans?: Array<[number, number]>
 }
 
@@ -255,7 +305,6 @@ export interface CreateInfoLayerInput {
 
 export type UpdateInfoLayerInput = Partial<CreateInfoLayerInput> & {
   isRevealed?: boolean
-  linkedForeshadows?: string
 }
 
 export interface CreateFactionInput {
@@ -765,6 +814,155 @@ export function deleteItem(id: string): Promise<{ id: string; deleted: boolean }
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/items/${id}`)
 }
 
+// ── Story ledger（事件 + 变化 + 批注 + 章节时间切片）──
+
+function buildStoryLedgerQuery<T extends object>(params?: T): string {
+  if (!params) return ''
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
+    if (value != null) search.set(key, String(value))
+  }
+  const query = search.toString()
+  return query ? `?${query}` : ''
+}
+
+export interface ListStoryEventsParams {
+  chapterNumber?: number
+  chapterStart?: number
+  chapterEnd?: number
+  status?: StoryEventStatus
+  entityType?: NovelStoryEntityType
+  entityId?: string
+}
+
+export function listStoryEvents(projectId: string, params?: ListStoryEventsParams): Promise<NovelStoryEvent[]> {
+  return getApi<NovelStoryEvent[]>(`${BASE}/projects/${projectId}/story-events${buildStoryLedgerQuery(params)}`)
+}
+
+export function getStoryEvent(projectId: string, eventId: string): Promise<StoryEventDetails> {
+  return getApi<StoryEventDetails>(`${BASE}/projects/${projectId}/story-events/${eventId}`)
+}
+
+export function createStoryEvent(projectId: string, payload: CreateStoryEventPayload): Promise<StoryEventDetails> {
+  return postApi<StoryEventDetails>(`${BASE}/projects/${projectId}/story-events`, payload)
+}
+
+export function updateStoryEvent(eventId: string, patch: Partial<CreateStoryEventInput>): Promise<NovelStoryEvent> {
+  return patchApi<NovelStoryEvent>(`${BASE}/story-events/${eventId}`, patch)
+}
+
+export function deleteStoryEvent(eventId: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/story-events/${eventId}`)
+}
+
+export interface ListChangeRecordsParams {
+  storyEventId?: string
+  chapterNumber?: number
+  beforeChapter?: number
+  afterChapter?: number
+  subjectType?: NovelStoryEntityType
+  subjectId?: string
+  dimension?: string
+}
+
+export function listChangeRecords(projectId: string, params?: ListChangeRecordsParams): Promise<NovelChangeRecord[]> {
+  return getApi<NovelChangeRecord[]>(`${BASE}/projects/${projectId}/change-records${buildStoryLedgerQuery(params)}`)
+}
+
+export function createChangeRecord(projectId: string, input: CreateChangeRecordInput): Promise<NovelChangeRecord> {
+  return postApi<NovelChangeRecord>(`${BASE}/projects/${projectId}/change-records`, input)
+}
+
+export function updateChangeRecord(changeId: string, patch: Partial<CreateChangeRecordInput>): Promise<NovelChangeRecord> {
+  return patchApi<NovelChangeRecord>(`${BASE}/change-records/${changeId}`, patch)
+}
+
+export function deleteChangeRecord(changeId: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/change-records/${changeId}`)
+}
+
+export interface EntityStoryTimeline {
+  entityType: NovelStoryEntityType
+  entityId: string
+  changes: NovelChangeRecord[]
+  events: NovelStoryEvent[]
+  annotations: NovelAnnotation[]
+}
+
+export function getEntityStoryTimeline(
+  projectId: string,
+  entityType: NovelStoryEntityType,
+  entityId: string,
+): Promise<EntityStoryTimeline> {
+  return getApi<EntityStoryTimeline>(`${BASE}/projects/${projectId}/entities/${entityType}/${entityId}/timeline`)
+}
+
+/**
+ * 矩阵级聚合：一次返回全实体 × 全章节的账本投影。
+ *
+ * 设计文档第 6 节"统一数据源"：折叠态总览废弃实体快照字段，改用账本投影。
+ * 前端按 (entityType, entityId, dimension) 分组组装行，每个 dimension 一条子轨道。
+ *
+ * - `chapterRange`：从 chapters 表推导的章节范围（min/max chapter_number）
+ * - `changes`：带 dimension 的全量 ChangeRecord（已按章节排序，已过滤 dimension IS NULL）
+ *
+ * 支持 `chapterStart` / `chapterEnd` 裁剪，防止百章 × 数十实体聚合爆炸。
+ */
+export interface MatrixAggregation {
+  projectId: string
+  chapterRange: { start: number; end: number }
+  changes: NovelChangeRecord[]
+}
+
+export interface MatrixAggregationParams {
+  /** 闭区间起始章节（含） */
+  chapterStart?: number
+  /** 闭区间结束章节（含） */
+  chapterEnd?: number
+}
+
+export function getMatrixAggregation(
+  projectId: string,
+  params?: MatrixAggregationParams,
+): Promise<MatrixAggregation> {
+  const query = new URLSearchParams()
+  if (params?.chapterStart !== undefined) query.set('chapterStart', String(params.chapterStart))
+  if (params?.chapterEnd !== undefined) query.set('chapterEnd', String(params.chapterEnd))
+  const qs = query.toString()
+  return getApi<MatrixAggregation>(`${BASE}/projects/${projectId}/matrix-aggregation${qs ? `?${qs}` : ''}`)
+}
+
+export function getChapterStoryContext(projectId: string, chapterNumber: number): Promise<ChapterStoryContext> {
+  return getApi<ChapterStoryContext>(`${BASE}/projects/${projectId}/chapters/${chapterNumber}/story-context`)
+}
+
+export interface ListAnnotationsParams {
+  chapterNumber?: number
+  scopeType?: NovelAnnotationScope
+  scopeId?: string
+  entityType?: NovelStoryEntityType
+  entityId?: string
+  kind?: NovelAnnotationKind
+  resolved?: boolean
+  includeInPrompt?: boolean
+}
+
+export function listAnnotations(projectId: string, params?: ListAnnotationsParams): Promise<NovelAnnotation[]> {
+  return getApi<NovelAnnotation[]>(`${BASE}/projects/${projectId}/annotations${buildStoryLedgerQuery(params)}`)
+}
+
+export function createAnnotation(projectId: string, input: CreateAnnotationInput): Promise<NovelAnnotation> {
+  return postApi<NovelAnnotation>(`${BASE}/projects/${projectId}/annotations`, input)
+}
+
+export function updateAnnotation(annotationId: string, patch: UpdateAnnotationInput): Promise<NovelAnnotation> {
+  return patchApi<NovelAnnotation>(`${BASE}/annotations/${annotationId}`, patch)
+}
+
+export function deleteAnnotation(annotationId: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/annotations/${annotationId}`)
+}
+
 // ── World Elements ──
 
 export function listWorldElements(projectId: string): Promise<NovelWorldElement[]> {
@@ -816,6 +1014,11 @@ export function createEdge(projectId: string, input: CreateEdgeInput): Promise<N
 
 export function deleteEdge(id: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/edges/${id}`)
+}
+
+/** 更新画布连线标签 */
+export function updateEdgeLabel(edgeId: string, label: string): Promise<void> {
+  return patchApi(`${BASE}/edges/${edgeId}`, { label })
 }
 
 // ── Graph（统一关系查询层：聚合 edges + 派生边 + relationships）──
@@ -929,7 +1132,7 @@ export async function aiGenerateCharacter(
 
 // ── AI 通用实体生成 ──
 
-export type EntityGenerationType = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'world_element'
+export type EntityGenerationType = 'character' | 'conflict' | 'foreshadow' | 'faction' | 'location' | 'item' | 'world_element'
 
 export interface AiGenerateEntityInput {
   entityType: EntityGenerationType
@@ -981,8 +1184,6 @@ export interface GeneratedForeshadowFields {
   description: string
   category: NovelForeshadowCategory
   status: ForeshadowStatus
-  linkedCharacters: string
-  linkedClues: string
   // ── P2-2：埋设/回收方式 ──
   plantMethod?: ForeshadowPlantMethod
   recoverMethod?: ForeshadowRecoverMethod
@@ -1015,6 +1216,16 @@ export interface GeneratedWorldElementFields {
   attributes: Record<string, unknown>
 }
 
+export interface GeneratedItemFields {
+  name: string
+  description: string
+  type: NovelItemType
+  ownerId: string | null
+  status: NovelItemStatus
+  abilities: string
+  origin: string
+}
+
 /** 后端返回的生成结果联合（按 type 区分） */
 export type GeneratedEntityResult =
   | { type: 'character'; data: GeneratedCharacterFields }
@@ -1022,6 +1233,7 @@ export type GeneratedEntityResult =
   | { type: 'foreshadow'; data: GeneratedForeshadowFields }
   | { type: 'faction'; data: GeneratedFactionFields }
   | { type: 'location'; data: GeneratedLocationFields }
+  | { type: 'item'; data: GeneratedItemFields }
   | { type: 'world_element'; data: GeneratedWorldElementFields }
 
 /**

@@ -35,7 +35,7 @@ function makeCharacter(id: string, name: string, isProtagonist = false): NovelCh
     id, projectId: 'p', name, description: '', identity: '', personality: '', appearance: '',
     currentState: '', currentGoal: '', currentPressure: '', secret: '', arcStage: '', arcHistory: '',
     speechStyle: '', isProtagonist,
-    longTermDesire: '', plotRole: 'supporting', removalImpact: '', participatingConflicts: '[]',
+    longTermDesire: '', plotRole: 'supporting', removalImpact: '',
     createdAt: 0, updatedAt: 0,
   }
 }
@@ -44,7 +44,7 @@ function makeClue(id: string, chapterSpans: Array<[number, number]>): NovelClue 
   return {
     id, projectId: 'p', description: '铜扣', pointsTo: '真凶', progress: 25,
     currentStep: '已发现', nextStep: '查来源', isMisleading: false,
-    linkedForeshadow: null, chapterSpans, createdAt: 0, updatedAt: 0,
+    chapterSpans, createdAt: 0, updatedAt: 0,
   }
 }
 
@@ -74,8 +74,8 @@ function makeForeshadow(id: string, first: number | null, recover: number | null
     : [[first, recover ?? first]]
   return {
     id, projectId: 'p', description: id, category: 'item', status: 'planted' as never,
-    firstChapter: first, lastChapter: null, recoverByChapter: recover, linkedCharacters: '',
-    linkedClues: '', linkedInfoLayers: '[]', chapterSpans, createdAt: 0, updatedAt: 0,
+    firstChapter: first, lastChapter: null, recoverByChapter: recover,
+    chapterSpans, createdAt: 0, updatedAt: 0,
   }
 }
 

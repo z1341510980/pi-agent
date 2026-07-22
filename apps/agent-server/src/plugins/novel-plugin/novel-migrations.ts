@@ -886,4 +886,149 @@ export const novelMigrations: MigrationDefinition[] = [
     sql: `ALTER TABLE novel_conflicts ADD COLUMN current_step TEXT NOT NULL DEFAULT '';
           ALTER TABLE novel_conflicts ADD COLUMN next_step TEXT NOT NULL DEFAULT '';`,
   },
+  {
+    // 072: 故事事件账本、变化记录扩展和统一批注。
+    // 现有实体表继续保存当前快照；memory_events 增加结构化维度，
+    // 新事件表负责把同一场景中的多条变化聚合起来。
+    id: '072_create_story_ledger',
+    sql: `CREATE TABLE IF NOT EXISTS novel_story_events (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      chapter_number  INTEGER NOT NULL,
+      scene_id        TEXT,
+      scene_order     INTEGER NOT NULL DEFAULT 0,
+      type            TEXT NOT NULL,
+      title           TEXT NOT NULL DEFAULT '',
+      summary         TEXT NOT NULL DEFAULT '',
+      outcome         TEXT NOT NULL DEFAULT '',
+      status          TEXT NOT NULL DEFAULT 'planned',
+      parent_event_id TEXT,
+      source          TEXT NOT NULL DEFAULT 'manual',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_event_id) REFERENCES novel_story_events(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_story_events_project_chapter
+      ON novel_story_events(project_id, chapter_number, scene_order);
+    CREATE INDEX IF NOT EXISTS idx_story_events_parent
+      ON novel_story_events(parent_event_id);
+
+    CREATE TABLE IF NOT EXISTS novel_story_event_entities (
+      id              TEXT PRIMARY KEY,
+      event_id        TEXT NOT NULL,
+      entity_type     TEXT NOT NULL,
+      entity_id       TEXT NOT NULL,
+      role            TEXT NOT NULL,
+      note            TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (event_id) REFERENCES novel_story_events(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_story_event_entities_event
+      ON novel_story_event_entities(event_id);
+    CREATE INDEX IF NOT EXISTS idx_story_event_entities_entity
+      ON novel_story_event_entities(entity_type, entity_id);
+
+    ALTER TABLE novel_memory_events ADD COLUMN story_event_id TEXT;
+    ALTER TABLE novel_memory_events ADD COLUMN scene_order INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE novel_memory_events ADD COLUMN dimension TEXT;
+    ALTER TABLE novel_memory_events ADD COLUMN target_entity_type TEXT;
+    ALTER TABLE novel_memory_events ADD COLUMN target_entity_id TEXT;
+    ALTER TABLE novel_memory_events ADD COLUMN value_type TEXT;
+    ALTER TABLE novel_memory_events ADD COLUMN source TEXT NOT NULL DEFAULT 'migration';
+    CREATE INDEX IF NOT EXISTS idx_memory_events_story_event
+      ON novel_memory_events(story_event_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_events_dimension
+      ON novel_memory_events(project_id, entity_id, dimension, chapter_number, scene_order);
+
+    CREATE TABLE IF NOT EXISTS novel_annotations (
+      id              TEXT PRIMARY KEY,
+      project_id      TEXT NOT NULL,
+      scope_type      TEXT NOT NULL,
+      scope_id        TEXT,
+      entity_type     TEXT,
+      entity_id       TEXT,
+      chapter_start   INTEGER,
+      chapter_end     INTEGER,
+      kind            TEXT NOT NULL DEFAULT 'note',
+      content         TEXT NOT NULL,
+      color           TEXT NOT NULL DEFAULT 'blue',
+      include_in_prompt INTEGER NOT NULL DEFAULT 0,
+      resolved        INTEGER NOT NULL DEFAULT 0,
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_annotations_project_chapter
+      ON novel_annotations(project_id, chapter_start, chapter_end);
+    CREATE INDEX IF NOT EXISTS idx_novel_annotations_scope
+      ON novel_annotations(scope_type, scope_id);
+    CREATE INDEX IF NOT EXISTS idx_novel_annotations_entity
+      ON novel_annotations(entity_type, entity_id);`,
+  },
+  {
+    id: '073_add_style_note_to_memory_events',
+    sql: `ALTER TABLE novel_memory_events ADD COLUMN style_note TEXT;`,
+  },
+  {
+    // 074: 数据搬运——把 7 类旧关联字段（JSON 数组 / 单 ID）拆解为 novel_edges 行
+    // 用 json_each 展开 JSON 数组，单 ID 直接 SELECT，INSERT OR IGNORE 保证幂等
+    id: '074_migrate_relations_to_edges',
+    sql: `-- 1. foreshadow → character（linked_characters JSON 数组）
+INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
+SELECT lower(hex(randomblob(16))), f.project_id, f.id, 'foreshadow', je.value, 'character', 'related', '关联角色', 1
+FROM novel_foreshadowing f, json_each(f.linked_characters) je
+WHERE f.linked_characters IS NOT NULL AND f.linked_characters != '[]';
+
+-- 2. foreshadow → clue（linked_clues JSON 数组）
+INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
+SELECT lower(hex(randomblob(16))), f.project_id, f.id, 'foreshadow', je.value, 'clue', 'related', '关联线索', 1
+FROM novel_foreshadowing f, json_each(f.linked_clues) je
+WHERE f.linked_clues IS NOT NULL AND f.linked_clues != '[]';
+
+-- 3. foreshadow → info_layer（linked_info_layers JSON 数组）
+INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
+SELECT lower(hex(randomblob(16))), f.project_id, f.id, 'foreshadow', je.value, 'info_layer', 'related', '承载信息差', 1
+FROM novel_foreshadowing f, json_each(f.linked_info_layers) je
+WHERE f.linked_info_layers IS NOT NULL AND f.linked_info_layers != '[]';
+
+-- 4. character → conflict（participating_conflicts JSON 数组）
+INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
+SELECT lower(hex(randomblob(16))), c.project_id, c.id, 'character', je.value, 'conflict', 'related', '参与冲突', 1
+FROM novel_characters c, json_each(c.participating_conflicts) je
+WHERE c.participating_conflicts IS NOT NULL AND c.participating_conflicts != '[]';
+
+-- 5. clue → foreshadow（linked_foreshadow 单 ID）
+INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
+SELECT lower(hex(randomblob(16))), cl.project_id, cl.id, 'clue', cl.linked_foreshadow, 'foreshadow', 'related', '关联伏笔', 1
+FROM novel_clues cl
+WHERE cl.linked_foreshadow IS NOT NULL AND cl.linked_foreshadow != '';
+
+-- 6. hook → foreshadow（linked_foreshadow_id 单 ID）
+INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
+SELECT lower(hex(randomblob(16))), h.project_id, h.id, 'hook', h.linked_foreshadow_id, 'foreshadow', 'related', '关联伏笔', 1
+FROM novel_hooks h
+WHERE h.linked_foreshadow_id IS NOT NULL AND h.linked_foreshadow_id != '';
+
+-- 7. hook → conflict（linked_conflict_id 单 ID）
+INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
+SELECT lower(hex(randomblob(16))), h.project_id, h.id, 'hook', h.linked_conflict_id, 'conflict', 'related', '关联冲突', 1
+FROM novel_hooks h
+WHERE h.linked_conflict_id IS NOT NULL AND h.linked_conflict_id != '';`,
+  },
+  {
+    // 075: 删除已迁移到 novel_edges 的关联字段，并加 UNIQUE 索引防止重复边
+    // 必须在 074 搬运完成后执行，否则旧字段数据会丢失
+    id: '075_drop_relation_fields_add_unique',
+    sql: `ALTER TABLE novel_foreshadowing DROP COLUMN linked_characters;
+ALTER TABLE novel_foreshadowing DROP COLUMN linked_clues;
+ALTER TABLE novel_foreshadowing DROP COLUMN linked_info_layers;
+ALTER TABLE novel_information_layers DROP COLUMN linked_foreshadows;
+ALTER TABLE novel_characters DROP COLUMN participating_conflicts;
+ALTER TABLE novel_clues DROP COLUMN linked_foreshadow;
+ALTER TABLE novel_hooks DROP COLUMN linked_foreshadow_id;
+ALTER TABLE novel_hooks DROP COLUMN linked_conflict_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_edges_unique
+  ON novel_edges(project_id, source_id, target_id, edge_type);`,
+  },
 ]

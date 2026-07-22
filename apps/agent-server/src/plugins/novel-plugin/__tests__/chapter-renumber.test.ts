@@ -238,8 +238,7 @@ describe('NovelStore.deleteChapter 集成 - 章节重排', () => {
     const ch3 = store.listChapters(projectId).find((c) => c.chapterNumber === 3)!
     store.createForeshadow({
       id: randomUUID(), projectId, description: '旧钥匙', category: 'item', status: 'planned',
-      firstChapter: null, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      firstChapter: null, lastChapter: null, recoverByChapter: null, chapterSpans: [],
       beats: [
         { chapter: 1, type: 'plant' },
         { chapter: 3, type: 'reinforce' },
@@ -262,8 +261,7 @@ describe('NovelStore.deleteChapter 集成 - 章节重排', () => {
     const ch1 = store.listChapters(projectId).find((c) => c.chapterNumber === 1)!
     store.createForeshadow({
       id: randomUUID(), projectId, description: '旧钥匙', category: 'item', status: 'planned',
-      firstChapter: null, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      firstChapter: null, lastChapter: null, recoverByChapter: null, chapterSpans: [],
       beats: [
         { chapter: 1, type: 'plant' },
         { chapter: 3, type: 'reinforce' },
@@ -284,8 +282,7 @@ describe('NovelStore.deleteChapter 集成 - 章节重排', () => {
     const ch5 = store.listChapters(projectId).find((c) => c.chapterNumber === 5)!
     store.createForeshadow({
       id: randomUUID(), projectId, description: '旧钥匙', category: 'item', status: 'planned',
-      firstChapter: null, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      firstChapter: null, lastChapter: null, recoverByChapter: null, chapterSpans: [],
       beats: [
         { chapter: 1, type: 'plant' },
         { chapter: 3, type: 'reinforce' },

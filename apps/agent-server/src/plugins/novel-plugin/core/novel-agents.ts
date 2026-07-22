@@ -38,6 +38,8 @@ export interface NovelAgentConfig {
   tools: string[]
   roleTemplate: string
   temperature: number
+  /** 最大工具调用次数（可选，用于限制 LLM 的工具调用轮次，防止 token 翻倍） */
+  maxToolCalls?: number
 }
 
 export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
@@ -91,6 +93,7 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     tools: ['novel_ask_story'],
     roleTemplate: 'role-writer',
     temperature: 0.9,
+    maxToolCalls: 2, // 限制工具调用次数，防止 token 翻倍
   },
   reviser: {
     type: 'reviser',

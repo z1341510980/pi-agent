@@ -48,8 +48,10 @@ import { randomUUID } from 'node:crypto'
 import { Type, type Static } from 'typebox'
 import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import type { NovelStore } from './novel-store.js'
+import type { NovelMemoryStore } from './novel-memory-store.js'
 import { isAdmissibleNewForeshadow } from './foreshadow-policy.js'
 import type {
+  ChapterStoryContext,
   NarrativeTask,
   NarrativeTaskType,
   ChapterEndingHookType,
@@ -588,13 +590,14 @@ const UpdateWorldElementParams = Type.Object({
  * 让 Director / Writer / Reviewer / Reviser 用自然语言按需查询故事信息，
  * 避免一次性 dump 全表导致上下文膨胀，也避免完全关闭工具导致创作中无法核对细节。
  */
-export function createNovelAskStoryTool(store: NovelStore): ToolDefinition<typeof AskStoryParams> {
+export function createNovelAskStoryTool(store: NovelStore, memoryStore?: NovelMemoryStore): ToolDefinition<typeof AskStoryParams> {
   return defineTool({
     name: 'novel_ask_story',
     label: '小说信息问答',
     description:
       '用自然语言向小说创作系统提问，获取当前项目的故事状态、角色、冲突、伏笔、上一章内容等信息。' +
-      '适用于创作过程中按需查询，不必记忆全部设定。只读工具，不修改任何状态。',
+      '适用于创作过程中按需查询，不必记忆全部设定。只读工具，不修改任何状态。' +
+      '当携带 chapterNumber 时，会基于事件账本反推该章前的状态，避免重写中间章节时读到未来章节的状态倒灌。',
     promptSnippet: '小说信息问答',
     parameters: AskStoryParams,
     async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
@@ -606,20 +609,31 @@ export function createNovelAskStoryTool(store: NovelStore): ToolDefinition<typeo
         return m?.[1].trim()
       }
 
+      // 当携带 chapterNumber 且注入了 memoryStore 时，走事件账本反推章前状态，
+      // 避免重写中间章节时读到 store 中已经被未来章节覆盖的最新状态。
+      let chapterContext: ChapterStoryContext | undefined
+      if (chapterNumber !== undefined && memoryStore) {
+        try {
+          chapterContext = memoryStore.getChapterStoryContext(projectId, chapterNumber)
+        } catch {
+          chapterContext = undefined
+        }
+      }
+
       if (q.includes('上一章') || q.includes('最近章节') || q.includes('结尾') || q.includes('前情') || q.includes('recap')) {
-        return answerRecentChapter(store, projectId)
+        return answerRecentChapter(store, projectId, chapterNumber)
       }
       if (q.includes('角色') || q.includes('人物') || q.includes('谁') || q.includes('主角') || quotedName(question)) {
-        return answerCharacter(store, projectId, quotedName(question))
+        return answerCharacter(store, projectId, quotedName(question), chapterContext)
       }
       if (q.includes('冲突') || q.includes('矛盾') || q.includes('危机') || q.includes('张力')) {
-        return answerConflicts(store, projectId)
+        return answerConflicts(store, projectId, chapterContext)
       }
       if (q.includes('伏笔') || q.includes('铺垫') || q.includes('回收')) {
-        return answerForeshadows(store, projectId, chapterNumber)
+        return answerForeshadows(store, projectId, chapterNumber, chapterContext)
       }
       if (q.includes('线索') || q.includes('真相') || q.includes('谜题')) {
-        return answerClues(store, projectId)
+        return answerClues(store, projectId, chapterContext)
       }
       if (q.includes('风格') || q.includes('文风') || q.includes('写法') || q.includes('语言')) {
         return answerStyle(store, projectId)
@@ -636,8 +650,12 @@ export function createNovelAskStoryTool(store: NovelStore): ToolDefinition<typeo
   })
 }
 
-function answerRecentChapter(store: NovelStore, projectId: string): AgentToolResult<undefined> {
-  const chapters = store.listRecentChapters(projectId, 3)
+function answerRecentChapter(store: NovelStore, projectId: string, chapterNumber?: number): AgentToolResult<undefined> {
+  // 重写中间章节时，chapterNumber 之前的章节才算"最近章节"，避免读到未来章节内容
+  const allChapters = store.listRecentChapters(projectId, 3)
+  const chapters = chapterNumber !== undefined
+    ? allChapters.filter((c) => c.chapterNumber < chapterNumber)
+    : allChapters
   if (chapters.length === 0) {
     return { content: [{ type: 'text', text: '尚未生成任何章节。' }], details: undefined }
   }
@@ -655,16 +673,41 @@ function answerRecentChapter(store: NovelStore, projectId: string): AgentToolRes
   return { content: [{ type: 'text', text }], details: undefined }
 }
 
-function answerCharacter(store: NovelStore, projectId: string, nameHint?: string): AgentToolResult<undefined> {
+function answerCharacter(
+  store: NovelStore,
+  projectId: string,
+  nameHint?: string,
+  chapterContext?: ChapterStoryContext,
+): AgentToolResult<undefined> {
   const characters = store.listCharacters(projectId)
   if (characters.length === 0) {
     return { content: [{ type: 'text', text: '项目中暂无角色。' }], details: undefined }
   }
 
-  let target = characters.find((c) => c.isProtagonist)
+  // 章前状态切片：用账本反推的角色动态字段覆盖 store 中的最新值，
+  // 避免重写中间章节时读到未来章节已经写入的 currentState/currentGoal 等。
+  const stateById = chapterContext
+    ? collectChapterStateBySubject(chapterContext, 'character')
+    : new Map<string, Record<string, unknown>>()
+  const view = characters.map((c) => {
+    const state = stateById.get(c.id)
+    if (!state) return c
+    return {
+      ...c,
+      currentState: pickString(state.currentState, c.currentState),
+      currentGoal: pickString(state.currentGoal, c.currentGoal),
+      currentPressure: pickString(state.currentPressure, c.currentPressure),
+      secret: pickString(state.secret, c.secret),
+      arcStage: pickString(state.arcStage, c.arcStage),
+      longTermDesire: pickString(state.longTermDesire, c.longTermDesire),
+      plotRole: pickString(state.plotRole, c.plotRole),
+    }
+  })
+
+  let target = view.find((c) => c.isProtagonist)
   if (nameHint) {
-    const exact = characters.find((c) => c.name === nameHint)
-    const fuzzy = characters.find((c) => c.name.includes(nameHint) || nameHint.includes(c.name))
+    const exact = view.find((c) => c.name === nameHint)
+    const fuzzy = view.find((c) => c.name.includes(nameHint) || nameHint.includes(c.name))
     target = exact ?? fuzzy ?? target
   }
 
@@ -682,18 +725,37 @@ function answerCharacter(store: NovelStore, projectId: string, nameHint?: string
       `角色层级：${target.plotRole || '未设定'}`,
       `弧光阶段：${target.arcStage || '未设定'}`,
       `秘密：${target.secret || '无'}`,
+      chapterContext ? `\n（以上动态字段基于第 ${chapterContext.chapterNumber} 章前事件账本反推）` : '',
     ].join('\n')
     return { content: [{ type: 'text', text }], details: undefined }
   }
 
-  const list = characters
+  const list = view
     .map((c) => `- ${c.name}${c.isProtagonist ? '（主角）' : ''}：${c.identity || c.description || '暂无简介'}`)
     .join('\n')
   return { content: [{ type: 'text', text: `## 角色列表\n${list}` }], details: undefined }
 }
 
-function answerConflicts(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+function answerConflicts(
+  store: NovelStore,
+  projectId: string,
+  chapterContext?: ChapterStoryContext,
+): AgentToolResult<undefined> {
+  // 章前状态切片：用账本反推的 stage/intensity 覆盖 store 中的最新值，
+  // 避免重写中间章节时读到未来章节已经解决的冲突。
+  const stateById = chapterContext
+    ? collectChapterStateBySubject(chapterContext, 'conflict')
+    : new Map<string, Record<string, unknown>>()
   const conflicts = store.listConflicts(projectId)
+    .map((c) => {
+      const state = stateById.get(c.id)
+      if (!state) return c
+      return {
+        ...c,
+        stage: pickString(state.stage, c.stage) as typeof c.stage,
+        intensity: pickNumber(state.intensity, c.intensity),
+      }
+    })
     .filter((c) => c.stage !== 'resolved' && c.stage !== 'transformed')
     .sort((a, b) => b.intensity - a.intensity)
     .slice(0, 5)
@@ -703,11 +765,30 @@ function answerConflicts(store: NovelStore, projectId: string): AgentToolResult<
   const list = conflicts
     .map((c) => `- ${c.description}（强度 ${c.intensity}/10，阶段 ${c.stage}）`)
     .join('\n')
-  return { content: [{ type: 'text', text: `## 活跃冲突（Top 5）\n${list}` }], details: undefined }
+  const suffix = chapterContext ? `\n（以上状态基于第 ${chapterContext.chapterNumber} 章前事件账本反推）` : ''
+  return { content: [{ type: 'text', text: `## 活跃冲突（Top 5）\n${list}${suffix}` }], details: undefined }
 }
 
-function answerForeshadows(store: NovelStore, projectId: string, chapterNumber?: number): AgentToolResult<undefined> {
+function answerForeshadows(
+  store: NovelStore,
+  projectId: string,
+  chapterNumber?: number,
+  chapterContext?: ChapterStoryContext,
+): AgentToolResult<undefined> {
+  // 章前状态切片：用账本反推的 status 覆盖 store 中的最新值，
+  // 避免重写中间章节时读到未来章节已经回收的伏笔。
+  const stateById = chapterContext
+    ? collectChapterStateBySubject(chapterContext, 'foreshadow')
+    : new Map<string, Record<string, unknown>>()
   let foreshadows = store.listForeshadowing(projectId)
+    .map((f) => {
+      const state = stateById.get(f.id)
+      if (!state) return f
+      return {
+        ...f,
+        status: pickString(state.status, f.status) as typeof f.status,
+      }
+    })
     .filter((f) => f.status === 'planned' || f.status === 'planted' || f.status === 'reinforced')
 
   if (chapterNumber !== undefined) {
@@ -721,11 +802,29 @@ function answerForeshadows(store: NovelStore, projectId: string, chapterNumber?:
   const list = foreshadows
     .map((f) => `- ${f.description}（类别 ${f.category}，状态 ${f.status}${f.recoverByChapter ? `，预计第 ${f.recoverByChapter} 章前回收` : ''}）`)
     .join('\n')
-  return { content: [{ type: 'text', text: `## 未回收伏笔（Top 10）\n${list}` }], details: undefined }
+  const suffix = chapterContext ? `\n（以上状态基于第 ${chapterContext.chapterNumber} 章前事件账本反推）` : ''
+  return { content: [{ type: 'text', text: `## 未回收伏笔（Top 10）\n${list}${suffix}` }], details: undefined }
 }
 
-function answerClues(store: NovelStore, projectId: string): AgentToolResult<undefined> {
+function answerClues(
+  store: NovelStore,
+  projectId: string,
+  chapterContext?: ChapterStoryContext,
+): AgentToolResult<undefined> {
+  // 章前状态切片：用账本反推的 progress 覆盖 store 中的最新值，
+  // 避免重写中间章节时读到未来章节已经推进或验证的线索。
+  const stateById = chapterContext
+    ? collectChapterStateBySubject(chapterContext, 'clue')
+    : new Map<string, Record<string, unknown>>()
   const clues = store.listClues(projectId)
+    .map((c) => {
+      const state = stateById.get(c.id)
+      if (!state) return c
+      return {
+        ...c,
+        progress: pickNumber(state.progress, c.progress),
+      }
+    })
     .filter((c) => c.progress < 100)
     .sort((a, b) => b.progress - a.progress)
     .slice(0, 8)
@@ -735,7 +834,8 @@ function answerClues(store: NovelStore, projectId: string): AgentToolResult<unde
   const list = clues
     .map((c) => `- ${c.description}（进度 ${c.progress}%${c.isMisleading ? '，误导线索' : ''}）`)
     .join('\n')
-  return { content: [{ type: 'text', text: `## 进行中线索（Top 8）\n${list}` }], details: undefined }
+  const suffix = chapterContext ? `\n（以上状态基于第 ${chapterContext.chapterNumber} 章前事件账本反推）` : ''
+  return { content: [{ type: 'text', text: `## 进行中线索（Top 8）\n${list}${suffix}` }], details: undefined }
 }
 
 function answerStyle(store: NovelStore, projectId: string): AgentToolResult<undefined> {
@@ -800,6 +900,40 @@ function answerGuide(): AgentToolResult<undefined> {
     '- 世界设定/势力/地点有哪些？',
   ].join('\n')
   return { content: [{ type: 'text', text }], details: undefined }
+}
+
+// ── 章前状态反推辅助函数 ──
+
+/**
+ * 从 ChapterStoryContext.stateBeforeChapter 中按 subjectType 聚合，
+ * 返回 subjectId → { dimension: value } 的映射。
+ *
+ * stateBeforeChapter 已经按 (subjectType, subjectId, dimension, targetType, targetId)
+ * 去重并保留最近一次变化（见 novel-memory-store.getChapterStoryContext），
+ * 因此这里只需按 subjectType 过滤后按 subjectId 分组即可。
+ */
+function collectChapterStateBySubject(
+  context: ChapterStoryContext,
+  subjectType: 'character' | 'conflict' | 'foreshadow' | 'clue',
+): Map<string, Record<string, unknown>> {
+  const map = new Map<string, Record<string, unknown>>()
+  for (const state of context.stateBeforeChapter) {
+    if (state.subjectType !== subjectType) continue
+    const entry = map.get(state.subjectId) ?? {}
+    entry[state.dimension] = state.value
+    map.set(state.subjectId, entry)
+  }
+  return map
+}
+
+/** 账本值若为非空字符串则采用，否则回退到 store 中的当前值 */
+function pickString(ledgerValue: unknown, fallback: string): string {
+  return typeof ledgerValue === 'string' && ledgerValue.length > 0 ? ledgerValue : fallback
+}
+
+/** 账本值若为有效数字则采用，否则回退到 store 中的当前值 */
+function pickNumber(ledgerValue: unknown, fallback: number): number {
+  return typeof ledgerValue === 'number' && Number.isFinite(ledgerValue) ? ledgerValue : fallback
 }
 
 // ── 工具创建函数 ──
@@ -1268,11 +1402,8 @@ export function createNovelCreateForeshadowTool(store: NovelStore): ToolDefiniti
         firstChapter: null,
         lastChapter: null,
         recoverByChapter: params.recoverByChapter ?? null,
-        linkedCharacters: JSON.stringify(params.linkedCharacters ?? []),
-        linkedClues: JSON.stringify(params.linkedClues ?? []),
         plantMethod: params.plantMethod,
         recoverMethod: params.recoverMethod,
-        linkedInfoLayers: '[]',
         // 迁移 055：未指定 firstChapter 时 chapterSpans 为 []（进元素池，矩阵不渲染行）
         chapterSpans: [],
       })
@@ -1344,7 +1475,6 @@ export function createNovelCreateClueTool(store: NovelStore): ToolDefinition<typ
         currentStep: params.currentStep ?? '',
         nextStep: params.nextStep ?? '',
         isMisleading: params.isMisleading ?? false,
-        linkedForeshadow: params.linkedForeshadow ?? null,
         chapterSpans: [],
       })
       return {
@@ -2132,11 +2262,16 @@ export function createNovelSubmitReviewTool(
  * 获取所有小说工具
  *
  * 用于注入到 Pi SDK session 的 customTools 参数。
+ *
+ * @param store 小说状态存储
+ * @param memoryStore 可选的事件账本存储。注入后，novel_ask_story 工具在携带 chapterNumber
+ *                    时会走账本反推章前状态，避免重写中间章节时读到未来章节的状态倒灌。
+ *                    未注入时降级到原有读取 store 最新状态的逻辑。
  */
-export function createNovelTools(store: NovelStore): ToolDefinition[] {
+export function createNovelTools(store: NovelStore, memoryStore?: NovelMemoryStore): ToolDefinition[] {
   const tools: ToolDefinition[] = [
     // A+B：语义化查询工具，优先放在列表前面便于 prompt cache 稳定
-    createNovelAskStoryTool(store),
+    createNovelAskStoryTool(store, memoryStore),
     createNovelQueryStateTool(store),
     createNovelUpdateCharacterTool(store),
     createNovelUpdateForeshadowTool(store),

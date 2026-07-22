@@ -328,18 +328,16 @@ export class ChapterStore {
     const full: NovelHook = { ...hook, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_hooks (id, project_id, chapter_number, hook_type, description, status,
-      fulfilled_at_chapter, fulfilled_description, linked_foreshadow_id, linked_conflict_id,
+      fulfilled_at_chapter, fulfilled_description,
       created_at, updated_at)
       VALUES (@id, @project_id, @chapter_number, @hook_type, @description, @status,
-      @fulfilled_at_chapter, @fulfilled_description, @linked_foreshadow_id, @linked_conflict_id,
+      @fulfilled_at_chapter, @fulfilled_description,
       @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, chapter_number: full.chapterNumber,
       hook_type: full.hookType, description: full.description, status: full.status,
       fulfilled_at_chapter: full.fulfilledAtChapter,
       fulfilled_description: full.fulfilledDescription,
-      linked_foreshadow_id: full.linkedForeshadowId,
-      linked_conflict_id: full.linkedConflictId,
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -353,14 +351,11 @@ export class ChapterStore {
     this.db.prepare(`
       UPDATE novel_hooks SET hook_type=@hook_type, description=@description, status=@status,
       fulfilled_at_chapter=@fulfilled_at_chapter, fulfilled_description=@fulfilled_description,
-      linked_foreshadow_id=@linked_foreshadow_id, linked_conflict_id=@linked_conflict_id,
       updated_at=@updated_at WHERE id=@id
     `).run({
       id, hook_type: updated.hookType, description: updated.description, status: updated.status,
       fulfilled_at_chapter: updated.fulfilledAtChapter,
       fulfilled_description: updated.fulfilledDescription,
-      linked_foreshadow_id: updated.linkedForeshadowId,
-      linked_conflict_id: updated.linkedConflictId,
       updated_at: updated.updatedAt,
     })
     return updated
@@ -381,8 +376,6 @@ export class ChapterStore {
       status: row.status as NovelHook['status'],
       fulfilledAtChapter: row.fulfilled_at_chapter,
       fulfilledDescription: row.fulfilled_description,
-      linkedForeshadowId: row.linked_foreshadow_id,
-      linkedConflictId: row.linked_conflict_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }

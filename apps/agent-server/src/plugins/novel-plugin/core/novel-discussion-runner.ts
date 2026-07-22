@@ -498,7 +498,9 @@ export class NovelDiscussionRunner {
         currentGoal: char.currentGoal,
         secret: char.secret,
         arcStage: char.arcStage,
-        participatingConflicts: this.parseIdList(char.participatingConflicts),
+        participatingConflicts: this.store.listEdgesByEntity(char.id, { edgeType: 'related' })
+          .filter(e => e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === char.id)
+          .map(e => e.targetId),
       },
       // 角色共用一个极小且稳定的 system；角色卡和演出职责放在 identity 前缀。
       // 角色不再读取工种的全知 shared context，而是只读取本人可见上下文。

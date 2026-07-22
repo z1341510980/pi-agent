@@ -80,8 +80,6 @@ export interface HookRow {
   status: string
   fulfilled_at_chapter: number | null
   fulfilled_description: string | null
-  linked_foreshadow_id: string | null
-  linked_conflict_id: string | null
   created_at: number
   updated_at: number
 }
@@ -119,7 +117,6 @@ export interface CharacterRow {
   long_term_desire: string
   plot_role: string
   removal_impact: string
-  participating_conflicts: string
   created_at: number
   updated_at: number
 }
@@ -186,11 +183,8 @@ export interface ForeshadowRow {
   first_chapter: number | null
   last_chapter: number | null
   recover_by_chapter: number | null
-  linked_characters: string
-  linked_clues: string
   plant_method: string | null
   recover_method: string | null
-  linked_info_layers: string
   chapter_spans: string | null
   beats: string | null
   created_at: number
@@ -206,7 +200,6 @@ export interface ClueRow {
   current_step: string
   next_step: string
   is_misleading: number
-  linked_foreshadow: string | null
   chapter_spans: string | null
   created_at: number
   updated_at: number
@@ -222,7 +215,6 @@ export interface InfoLayerRow {
   reveal_stage: string | null
   reveal_chapter: number | null
   is_revealed: number
-  linked_foreshadows: string
   created_at: number
   updated_at: number
 }

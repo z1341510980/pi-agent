@@ -96,6 +96,7 @@ import type {
   ArrangedEntity,
   ChapterRhythm,
   NovelAgentLog,
+  ChapterStoryContext,
 } from './types.js'
 import type { MemoryEvent, MemoryEventType, MemorySnapshot } from './novel-memory-store.js'
 
@@ -123,6 +124,8 @@ export interface NovelPromptStores {
   listUnfulfilledHooksBefore(projectId: string, beforeChapter: number): NovelHook[]
   getChapter(projectId: string, chapterNumber: number): NovelChapter | undefined
   listEdges(projectId: string): NovelEdge[]
+  /** 按实体 ID 查询关联边（双向，供关联关系迁移后反向查询） */
+  listEdgesByEntity(entityId: string, opts?: { direction?: 'source' | 'target' | 'both'; edgeType?: string }): NovelEdge[]
   listFactions(projectId: string): NovelFaction[]
   listLocations(projectId: string): NovelLocation[]
   /** 列出项目内所有物品（供 StoryState 和 arrangedEntities 注入） */
@@ -174,6 +177,7 @@ export class NovelPromptBuilder {
       listEvents(projectId: string, options?: { minSignificance?: number; limit?: number }): MemoryEvent[]
       getCausalChain(eventId: string): { causes: MemoryEvent[]; effects: MemoryEvent[] }
       getSnapshot?(projectId: string, chapterNumber: number, options?: { snapshotType?: 'full' }): MemorySnapshot | undefined
+      getChapterStoryContext?(projectId: string, chapterNumber: number): ChapterStoryContext
     },
     /**
      * 统一关系图查询层（可选，C3 prompt 增强）。
@@ -476,6 +480,15 @@ export class NovelPromptBuilder {
     // formatArrangedEntities 冗余；且这部分 token 走 cache read（廉价）。
     const state = this.getStoryState(projectId, chapterNumber)
     parts.push(this.formatStoryState(state, arrangedEntities))
+
+    // ── 事件账本时间切片 ──
+    // 生成中间章节时不能读取未来章节已经写入实体快照的结果。事件账本按当前章
+    // 之前的最后一条原子变化重建章前状态，同时显式提供本章计划和未来承诺。
+    if (this.memoryStore?.getChapterStoryContext) {
+      const ledgerContext = this.memoryStore.getChapterStoryContext(projectId, chapterNumber)
+      const ledgerSection = this.formatStoryLedgerContext(ledgerContext)
+      if (ledgerSection) parts.push(ledgerSection)
+    }
 
     // ── 实体关联（画布手动 + 派生自动边，作为故事状态的补充）──
     // C3 增强：通过 RelationshipGraph 拿到派生边（冲突参与/势力敌对/盟友/地点归属等 7 类），
@@ -1269,7 +1282,10 @@ export class NovelPromptBuilder {
           }
           // ── P3-2：反向展示 linkedInfoLayers（本伏笔承载了哪些信息差）──
           // 让 Writer 在回收伏笔时同步翻转读者认知（避免伏笔回收了但信息差没揭露）
-          const linkedInfoLayerIds = this.parseIdListSafe(f.linkedInfoLayers)
+          // 关联关系已迁移至 novel_edges 表（foreshadow ↔ info_layer）
+          const linkedInfoLayerIds = this.stores.listEdgesByEntity(f.id, { edgeType: 'related' })
+            .filter(e => (e.sourceId === f.id && e.targetType === 'info_layer') || (e.targetId === f.id && e.sourceType === 'info_layer'))
+            .map(e => e.sourceId === f.id ? e.targetId : e.sourceId)
           if (linkedInfoLayerIds.length > 0) {
             const linkedInfoDescs: string[] = []
             for (const ilId of linkedInfoLayerIds) {
@@ -1470,14 +1486,22 @@ export class NovelPromptBuilder {
     const relevantInfoLayerIds = new Set<string>()
     for (const foreshadowId of relevantForeshadowIds) {
       const foreshadow = this.stores.getForeshadow(foreshadowId)
-      for (const infoLayerId of this.parseIdListSafe(foreshadow?.linkedInfoLayers)) {
+      if (!foreshadow) continue
+      // 关联关系已迁移至 novel_edges 表
+      const infoLayerIds = this.stores.listEdgesByEntity(foreshadow.id, { edgeType: 'related' })
+        .filter(e => (e.sourceId === foreshadow.id && e.targetType === 'info_layer') || (e.targetId === foreshadow.id && e.sourceType === 'info_layer'))
+        .map(e => e.sourceId === foreshadow.id ? e.targetId : e.sourceId)
+      for (const infoLayerId of infoLayerIds) {
         relevantInfoLayerIds.add(infoLayerId)
       }
     }
 
     const relevant = layers.filter((layer) => {
       if (relevantInfoLayerIds.has(layer.id)) return true
-      const linked = this.parseIdListSafe(layer.linkedForeshadows)
+      // 关联关系已迁移至 novel_edges 表
+      const linked = this.stores.listEdgesByEntity(layer.id, { edgeType: 'related' })
+        .filter(e => (e.sourceId === layer.id && e.targetType === 'foreshadow') || (e.targetId === layer.id && e.sourceType === 'foreshadow'))
+        .map(e => e.sourceId === layer.id ? e.targetId : e.sourceId)
       if (linked.some((id) => relevantForeshadowIds.has(id))) return true
       if (relevantCharacterIds.size === 0 || !layer.characterKnowledge) return false
       try {
@@ -1751,7 +1775,10 @@ export class NovelPromptBuilder {
       }
       // ── P3-2：解析 linkedForeshadows 反向展示关联伏笔 ──
       // 让 Agent 知道本信息差由哪些伏笔承载，写作时协同回收时机
-      const linkedIds = this.parseIdListSafe(layer.linkedForeshadows)
+      // 关联关系已迁移至 novel_edges 表（info_layer ↔ foreshadow）
+      const linkedIds = this.stores.listEdgesByEntity(layer.id, { edgeType: 'related' })
+        .filter(e => (e.sourceId === layer.id && e.targetType === 'foreshadow') || (e.targetId === layer.id && e.sourceType === 'foreshadow'))
+        .map(e => e.sourceId === layer.id ? e.targetId : e.sourceId)
         .filter((id) => !allowedForeshadowIds || allowedForeshadowIds.has(id))
       if (linkedIds.length > 0) {
         const linkedDescs: string[] = []
@@ -2131,6 +2158,94 @@ export class NovelPromptBuilder {
   }
 
   /**
+   * 把事件账本的时间切片转换成 Writer/Director 可执行的约束。
+   * 数值维度同时输出行为语义，避免模型只看到没有文学含义的裸分数。
+   */
+  private formatStoryLedgerContext(context: ChapterStoryContext): string {
+    const displayValue = (value: unknown): string => {
+      if (typeof value === 'string') return value || '（空）'
+      try {
+        return JSON.stringify(value)
+      } catch {
+        return String(value)
+      }
+    }
+
+    const sections: string[] = [`## 第${context.chapterNumber}章事件账本（章前时间切片）`]
+
+    if (context.stateBeforeChapter.length > 0) {
+      const stateLines = context.stateBeforeChapter.slice(0, 80).map((state) => {
+        const target = state.targetId ? ` → ${state.targetType}:${state.targetId}` : ''
+        return `- 第${state.effectiveChapter}章生效 · ${state.subjectType}:${state.subjectId}${target} · ${state.dimension} = ${displayValue(state.value)}（${state.reason || '无原因说明'}）`
+      })
+      sections.push(`### 章前已成立状态\n${stateLines.join('\n')}`)
+    }
+
+    if (context.activeThreads.length > 0) {
+      sections.push(`### 跨章节复合事件\n${context.activeThreads
+        .slice(0, 20)
+        .map((event) => `- ${event.title}：${event.summary || '持续推进中'}`)
+        .join('\n')}`)
+    }
+
+    if (context.plannedEvents.length > 0 || context.plannedChanges.length > 0) {
+      const eventLines = context.plannedEvents.map((event) => `- ${event.title}：${event.summary || event.outcome || '待完成'}`)
+      const changeLines = context.plannedChanges.slice(0, 50).map((change) => {
+        const base = `- 计划变化 · ${change.subjectType}:${change.subjectId} · ${change.dimension}：${displayValue(change.beforeValue)} → ${displayValue(change.afterValue)}（${change.reason || '待补充原因'}）`
+        // 文风挂接（设计文档第 8 节）：变化级 styleNote 优先，无则 fallback 到维度模板（behaviorGuide）
+        return change.styleNote ? `${base} ｜ 文风：${change.styleNote}` : base
+      })
+      sections.push(`### 本章计划\n${[...eventLines, ...changeLines].join('\n')}`)
+    }
+
+    if (context.futureCommitments.length > 0) {
+      sections.push(`### 后续承诺与禁止提前发生的结果\n${context.futureCommitments
+        .slice(0, 20)
+        .map(({ event, changes }) => {
+          const changeText = changes.length > 0
+            ? `；变化：${changes.slice(0, 3).map((change) => `${change.dimension} → ${displayValue(change.afterValue)}`).join('、')}`
+            : ''
+          return `- 第${event.chapterNumber}章计划：${event.title}${changeText}`
+        })
+        .join('\n')}`)
+    }
+
+    if (context.promptDimensions.length > 0) {
+      sections.push(`### 数值状态的行为语义\n${context.promptDimensions
+        .map((dimension) => {
+          const allowed = dimension.allowedThisChapter.length > 0 ? `；允许：${dimension.allowedThisChapter.join('、')}` : ''
+          const forbidden = dimension.forbiddenThisChapter.length > 0 ? `；禁止：${dimension.forbiddenThisChapter.join('、')}` : ''
+          return `- ${dimension.dimension}：${dimension.numericValue}/100（${dimension.levelLabel}，${dimension.trend}）${dimension.behaviorGuide} 原因：${dimension.changeReason || '未说明'}${allowed}${forbidden}`
+        })
+        .join('\n')}`)
+    }
+
+    const promptAnnotations = context.annotations.filter((annotation) => annotation.includeInPrompt)
+    if (promptAnnotations.length > 0) {
+      sections.push(`### 作者明确提供给本章的批注\n${promptAnnotations
+        .slice(0, 30)
+        .map((annotation) => `- [${annotation.kind}] ${annotation.content}`)
+        .join('\n')}`)
+    }
+
+    if (context.unresolvedDebts.length > 0) {
+      sections.push(`### 未解决的变化债务\n${context.unresolvedDebts
+        .slice(0, 30)
+        .map((change) => {
+          const base = `- ${change.subjectType}:${change.subjectId} · ${change.dimension}：${displayValue(change.afterValue)}`
+          return change.styleNote ? `${base} ｜ 文风：${change.styleNote}` : base
+        })
+        .join('\n')}`)
+    }
+
+    if (context.continuityWarnings.length > 0) {
+      sections.push(`### 连续性警告\n${context.continuityWarnings.map((warning) => `- ${warning}`).join('\n')}`)
+    }
+
+    return sections.join('\n\n')
+  }
+
+  /**
    * 格式化近期因果链：最近 2 章的高重要性事件及其因果联系。
    *
    * 设计意图：
@@ -2197,6 +2312,7 @@ export class NovelPromptBuilder {
       location_change: '地点变更',
       relationship_change: '关系变更',
       info_layer_change: '信息差变更',
+      item_change: '物品变更',
       plot_event: '剧情事件',
       world_change: '世界变更',
     }

@@ -184,6 +184,43 @@ export class GraphStore {
     return result.changes
   }
 
+  listEdgesByEntity(entityId: string, opts?: { direction?: 'source' | 'target' | 'both'; edgeType?: string }): NovelEdge[] {
+    const direction = opts?.direction ?? 'both'
+    const edgeType = opts?.edgeType
+    const rows: EdgeRow[] = []
+
+    if (direction === 'source' || direction === 'both') {
+      let sql = 'SELECT * FROM novel_edges WHERE source_id = ?'
+      const params: (string)[] = [entityId]
+      if (edgeType) { sql += ' AND edge_type = ?'; params.push(edgeType) }
+      sql += ' ORDER BY created_at ASC'
+      rows.push(...(this.db.prepare(sql).all(...params) as EdgeRow[]))
+    }
+    if (direction === 'target' || direction === 'both') {
+      let sql = 'SELECT * FROM novel_edges WHERE target_id = ?'
+      const params: (string)[] = [entityId]
+      if (edgeType) { sql += ' AND edge_type = ?'; params.push(edgeType) }
+      sql += ' ORDER BY created_at ASC'
+      rows.push(...(this.db.prepare(sql).all(...params) as EdgeRow[]))
+    }
+
+    // 去重（both 模式下同一边可能被 source 和 target 各查一次）
+    const seen = new Set<string>()
+    const deduped: EdgeRow[] = []
+    for (const r of rows) {
+      if (!seen.has(r.id)) { seen.add(r.id); deduped.push(r) }
+    }
+    return deduped.map((r) => this.rowToEdge(r))
+  }
+
+  updateEdgeLabel(edgeId: string, label: string): NovelEdge | undefined {
+    const existing = this.db.prepare('SELECT * FROM novel_edges WHERE id = ?').get(edgeId) as EdgeRow | undefined
+    if (!existing) return undefined
+    const ts = now()
+    this.db.prepare('UPDATE novel_edges SET label = ?, updated_at = ? WHERE id = ?').run(label, ts, edgeId)
+    return { ...this.rowToEdge(existing), label, updatedAt: ts }
+  }
+
   listNodePositions(projectId: string): NovelNodePosition[] {
     return (this.stmtListNodePositions.all(projectId) as NodePositionRow[]).map((r) => this.rowToNodePosition(r))
   }

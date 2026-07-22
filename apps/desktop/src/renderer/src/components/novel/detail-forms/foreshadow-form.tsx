@@ -52,30 +52,14 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
     payoff: '回收',
   } as const
 
-  let linkedCharacters: string[] = []
-  try {
-    const p = JSON.parse(entity.linkedCharacters)
-    if (Array.isArray(p)) linkedCharacters = p.filter((x): x is string => typeof x === 'string')
-  } catch {
-    // ignore
-  }
+  // linkedCharacters 已迁移至 edges，暂用空数组占位
+  const linkedCharacters: string[] = []
 
-  let linkedClues: string[] = []
-  try {
-    const c = JSON.parse(entity.linkedClues)
-    if (Array.isArray(c)) linkedClues = c.filter((x): x is string => typeof x === 'string')
-  } catch {
-    // ignore
-  }
+  // linkedClues 已迁移至 edges，暂用空数组占位
+  const linkedClues: string[] = []
 
-  // ── P3-2：解析 linkedInfoLayers，展示伏笔承载的信息差 ──
-  let linkedInfoLayerIds: string[] = []
-  try {
-    const l = JSON.parse(entity.linkedInfoLayers)
-    if (Array.isArray(l)) linkedInfoLayerIds = l.filter((x): x is string => typeof x === 'string')
-  } catch {
-    // ignore
-  }
+  // ── P3-2：linkedInfoLayers 已迁移至 edges，暂用空数组占位 ──
+  const linkedInfoLayerIds: string[] = []
   // 将信息差 ID 解析为描述，用于展示
   const linkedInfoLayerItems = linkedInfoLayerIds.map((id) => {
     const layer = infoLayers.find((l) => l.id === id)

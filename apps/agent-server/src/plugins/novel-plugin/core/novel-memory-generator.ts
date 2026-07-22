@@ -231,9 +231,6 @@ interface HookUpdateItem {
   status?: 'thrown' | 'fulfilled' | 'abandoned'
   fulfilledAtChapter?: number
   fulfilledDescription?: string
-  /** 建立关联：若本章创建了伏笔/冲突，回填其 ID */
-  linkedForeshadowId?: string
-  linkedConflictId?: string
 }
 
 // ── v0.2：角色弧光阶段转换 ──
@@ -722,7 +719,8 @@ export class NovelMemoryGenerator {
       || arrangedClueIds.has(clue.id)
       || includesText(clue.description.slice(0, 12))
       || includesText(clue.pointsTo.slice(0, 12))
-      || (clue.linkedForeshadow ? arrangedForeshadowIds.has(clue.linkedForeshadow) : false),
+      || this.store.listEdgesByEntity(clue.id, { edgeType: 'related' })
+        .some((e) => e.sourceType === 'clue' && e.targetType === 'foreshadow' && arrangedForeshadowIds.has(e.targetId)),
     )
     if (clues.length > 0) {
       parts.push('\n### 线索')
@@ -997,7 +995,7 @@ export class NovelMemoryGenerator {
       const linkedCharacterIds = (item.linkedCharacters ?? [])
         .map((name) => this.findCharacterByName(projectId, name)?.id)
         .filter((id): id is string => !!id)
-      this.store.createForeshadow({
+      const foreshadow = this.store.createForeshadow({
         id: randomUUID(),
         projectId,
         description: ensureString(item.description, ''),
@@ -1006,11 +1004,8 @@ export class NovelMemoryGenerator {
         firstChapter: null,
         lastChapter: null,
         recoverByChapter: null,
-        linkedCharacters: JSON.stringify(linkedCharacterIds),
-        linkedClues: '[]',
         plantMethod: item.plantMethod as NovelForeshadow['plantMethod'],
         recoverMethod: item.recoverMethod as NovelForeshadow['recoverMethod'],
-        linkedInfoLayers: '[]',
         chapterSpans: [],
         beats: chapterNumber !== undefined
           ? [{
@@ -1020,6 +1015,10 @@ export class NovelMemoryGenerator {
             }]
           : undefined,
       })
+      // 关联角色通过 edges 维护，不再写入 linkedCharacters 字段
+      for (const charId of linkedCharacterIds) {
+        this.store.createEdge(projectId, { sourceId: foreshadow.id, sourceType: 'foreshadow', targetId: charId, targetType: 'character', edgeType: 'related', label: '关联角色' })
+      }
       stats.foreshadowCreatesApplied++
     }
 
@@ -1042,13 +1041,18 @@ export class NovelMemoryGenerator {
       if (item.currentStep !== undefined) patch.currentStep = ensureString(item.currentStep, clue.currentStep)
       if (item.nextStep !== undefined) patch.nextStep = ensureString(item.nextStep, clue.nextStep)
       if (item.isMisleading !== undefined) patch.isMisleading = item.isMisleading === true
-      if (linkedForeshadow) patch.linkedForeshadow = linkedForeshadow.id
       if (chapterNumber !== undefined && !clue.chapterSpans.some(([start, end]) => chapterNumber >= start && chapterNumber <= end)) {
         patch.chapterSpans = [...clue.chapterSpans, [chapterNumber, chapterNumber] as [number, number]]
           .sort((a, b) => a[0] - b[0])
       }
-      if (Object.keys(patch).length === 0) continue
-      this.store.updateClue(clue.id, patch)
+      if (Object.keys(patch).length === 0 && !linkedForeshadow) continue
+      if (Object.keys(patch).length > 0) {
+        this.store.updateClue(clue.id, patch)
+      }
+      // 关联伏笔通过 edges 维护，不再写入 linkedForeshadow 字段
+      if (linkedForeshadow) {
+        this.store.createEdge(projectId, { sourceId: clue.id, sourceType: 'clue', targetId: linkedForeshadow.id, targetType: 'foreshadow', edgeType: 'related', label: '关联伏笔' })
+      }
       stats.clueUpdatesApplied++
     }
 
@@ -1060,7 +1064,7 @@ export class NovelMemoryGenerator {
       const linkedForeshadow = item.linkedForeshadowDescription
         ? this.findForeshadowByDescription(projectId, item.linkedForeshadowDescription)
         : undefined
-      this.store.createClue({
+      const clue = this.store.createClue({
         id: randomUUID(),
         projectId,
         description: item.description.trim(),
@@ -1069,9 +1073,12 @@ export class NovelMemoryGenerator {
         currentStep: ensureString(item.currentStep, '本章首次发现'),
         nextStep: ensureString(item.nextStep, ''),
         isMisleading: item.isMisleading === true,
-        linkedForeshadow: linkedForeshadow?.id ?? null,
         chapterSpans: chapterNumber !== undefined ? [[chapterNumber, chapterNumber]] : [],
       })
+      // 关联伏笔通过 edges 维护，不再写入 linkedForeshadow 字段
+      if (linkedForeshadow) {
+        this.store.createEdge(projectId, { sourceId: clue.id, sourceType: 'clue', targetId: linkedForeshadow.id, targetType: 'foreshadow', edgeType: 'related', label: '关联伏笔' })
+      }
       stats.clueCreatesApplied++
     }
 
@@ -1409,8 +1416,6 @@ export class NovelMemoryGenerator {
           status: item.status ?? 'fulfilled',
           fulfilledAtChapter: item.fulfilledAtChapter ?? chapterNumber ?? null,
           fulfilledDescription: item.fulfilledDescription ?? null,
-          linkedForeshadowId: item.linkedForeshadowId ?? hook.linkedForeshadowId,
-          linkedConflictId: item.linkedConflictId ?? hook.linkedConflictId,
         })
         hookUpdatesApplied++
       }

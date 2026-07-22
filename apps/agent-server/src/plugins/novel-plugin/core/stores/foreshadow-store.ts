@@ -2,8 +2,6 @@
  * ForeshadowStore - PR-5b 重构
  *
  * 从原 novel-store.ts 抽取 Foreshadow + Clue + InfoLayer 相关的 CRUD。
- * 含 P3-2 双向关联维护：linkForeshadowToInfoLayer / unlinkForeshadowFromInfoLayer
- * 以及删除时的 pruneForeshadowFromInfoLayers / pruneInfoLayerFromForeshadows 清理。
  */
 
 import type Database from 'better-sqlite3'
@@ -63,19 +61,17 @@ export class ForeshadowStore {
     }
     this.db.prepare(`
       INSERT INTO novel_foreshadowing (id, project_id, description, category, status, first_chapter, last_chapter,
-      recover_by_chapter, linked_characters, linked_clues, plant_method, recover_method, linked_info_layers,
+      recover_by_chapter, plant_method, recover_method,
       chapter_spans, beats, created_at, updated_at)
       VALUES (@id, @project_id, @description, @category, @status, @first_chapter, @last_chapter,
-      @recover_by_chapter, @linked_characters, @linked_clues, @plant_method, @recover_method, @linked_info_layers,
+      @recover_by_chapter, @plant_method, @recover_method,
       @chapter_spans, @beats, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       category: full.category, status: full.status, first_chapter: full.firstChapter,
       last_chapter: full.lastChapter, recover_by_chapter: full.recoverByChapter,
-      linked_characters: full.linkedCharacters, linked_clues: full.linkedClues,
       plant_method: full.plantMethod ?? null,
       recover_method: full.recoverMethod ?? null,
-      linked_info_layers: full.linkedInfoLayers ?? '[]',
       chapter_spans: JSON.stringify(full.chapterSpans ?? []),
       beats: JSON.stringify(full.beats ?? []),
       created_at: full.createdAt, updated_at: full.updatedAt,
@@ -110,19 +106,15 @@ export class ForeshadowStore {
     this.db.prepare(`
       UPDATE novel_foreshadowing SET description=@description, category=@category, status=@status,
       first_chapter=@first_chapter, last_chapter=@last_chapter, recover_by_chapter=@recover_by_chapter,
-      linked_characters=@linked_characters, linked_clues=@linked_clues,
       plant_method=@plant_method, recover_method=@recover_method,
-      linked_info_layers=@linked_info_layers,
       chapter_spans=@chapter_spans, beats=@beats,
       updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, category: updated.category, status: updated.status,
       first_chapter: updated.firstChapter, last_chapter: updated.lastChapter,
-      recover_by_chapter: updated.recoverByChapter, linked_characters: updated.linkedCharacters,
-      linked_clues: updated.linkedClues,
+      recover_by_chapter: updated.recoverByChapter,
       plant_method: updated.plantMethod ?? null,
       recover_method: updated.recoverMethod ?? null,
-      linked_info_layers: updated.linkedInfoLayers ?? '[]',
       chapter_spans: JSON.stringify(updated.chapterSpans ?? []),
       beats: JSON.stringify(updated.beats ?? []),
       updated_at: updated.updatedAt,
@@ -132,7 +124,6 @@ export class ForeshadowStore {
 
   deleteForeshadow(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    this.pruneForeshadowFromInfoLayers(id)
     const result = this.db.prepare('DELETE FROM novel_foreshadowing WHERE id = ?').run(id)
     return result.changes > 0
   }
@@ -141,13 +132,13 @@ export class ForeshadowStore {
     const ts = now()
     const full: NovelClue = { ...clue, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_clues (id, project_id, description, points_to, progress, current_step, next_step, is_misleading, linked_foreshadow, chapter_spans, created_at, updated_at)
-      VALUES (@id, @project_id, @description, @points_to, @progress, @current_step, @next_step, @is_misleading, @linked_foreshadow, @chapter_spans, @created_at, @updated_at)
+      INSERT INTO novel_clues (id, project_id, description, points_to, progress, current_step, next_step, is_misleading, chapter_spans, created_at, updated_at)
+      VALUES (@id, @project_id, @description, @points_to, @progress, @current_step, @next_step, @is_misleading, @chapter_spans, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, description: full.description,
       points_to: full.pointsTo, progress: full.progress, current_step: full.currentStep,
       next_step: full.nextStep, is_misleading: full.isMisleading ? 1 : 0,
-      linked_foreshadow: full.linkedForeshadow, chapter_spans: JSON.stringify(full.chapterSpans ?? []),
+      chapter_spans: JSON.stringify(full.chapterSpans ?? []),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -161,11 +152,11 @@ export class ForeshadowStore {
     this.db.prepare(`
       UPDATE novel_clues SET description=@description, points_to=@points_to, progress=@progress,
       current_step=@current_step, next_step=@next_step, is_misleading=@is_misleading,
-      linked_foreshadow=@linked_foreshadow, chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
+      chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
     `).run({
       id, description: updated.description, points_to: updated.pointsTo, progress: updated.progress,
       current_step: updated.currentStep, next_step: updated.nextStep,
-      is_misleading: updated.isMisleading ? 1 : 0, linked_foreshadow: updated.linkedForeshadow,
+      is_misleading: updated.isMisleading ? 1 : 0,
       chapter_spans: JSON.stringify(updated.chapterSpans ?? []),
       updated_at: updated.updatedAt,
     })
@@ -181,14 +172,13 @@ export class ForeshadowStore {
     const ts = now()
     const full: NovelInformationLayer = { ...layer, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_information_layers (id, project_id, info_description, author_knows, reader_knows, character_knowledge, reveal_stage, reveal_chapter, is_revealed, linked_foreshadows, created_at, updated_at)
-      VALUES (@id, @project_id, @info_description, @author_knows, @reader_knows, @character_knowledge, @reveal_stage, @reveal_chapter, @is_revealed, @linked_foreshadows, @created_at, @updated_at)
+      INSERT INTO novel_information_layers (id, project_id, info_description, author_knows, reader_knows, character_knowledge, reveal_stage, reveal_chapter, is_revealed, created_at, updated_at)
+      VALUES (@id, @project_id, @info_description, @author_knows, @reader_knows, @character_knowledge, @reveal_stage, @reveal_chapter, @is_revealed, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, info_description: full.infoDescription,
       author_knows: full.authorKnows ? 1 : 0, reader_knows: full.readerKnows ? 1 : 0,
       character_knowledge: full.characterKnowledge, reveal_stage: full.revealStage,
       reveal_chapter: full.revealChapter, is_revealed: full.isRevealed ? 1 : 0,
-      linked_foreshadows: full.linkedForeshadows ?? '[]',
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
     return full
@@ -215,57 +205,8 @@ export class ForeshadowStore {
 
   deleteInfoLayer(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    this.pruneInfoLayerFromForeshadows(id)
     const result = this.db.prepare('DELETE FROM novel_information_layers WHERE id = ?').run(id)
     return result.changes > 0
-  }
-
-  linkForeshadowToInfoLayer(foreshadowId: string, infoLayerId: string): void {
-    const fRow = this.db.prepare('SELECT linked_info_layers FROM novel_foreshadowing WHERE id = ?').get(foreshadowId) as { linked_info_layers: string } | undefined
-    if (fRow) {
-      const ids = parseIdListSafe(fRow.linked_info_layers)
-      if (!ids.includes(infoLayerId)) {
-        ids.push(infoLayerId)
-        this.db.prepare('UPDATE novel_foreshadowing SET linked_info_layers = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), foreshadowId)
-      }
-    }
-    const iRow = this.db.prepare('SELECT linked_foreshadows FROM novel_information_layers WHERE id = ?').get(infoLayerId) as { linked_foreshadows: string } | undefined
-    if (iRow) {
-      const ids = parseIdListSafe(iRow.linked_foreshadows)
-      if (!ids.includes(foreshadowId)) {
-        ids.push(foreshadowId)
-        this.db.prepare('UPDATE novel_information_layers SET linked_foreshadows = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), infoLayerId)
-      }
-    }
-  }
-
-  unlinkForeshadowFromInfoLayer(foreshadowId: string, infoLayerId: string): void {
-    const fRow = this.db.prepare('SELECT linked_info_layers FROM novel_foreshadowing WHERE id = ?').get(foreshadowId) as { linked_info_layers: string } | undefined
-    if (fRow) {
-      const ids = parseIdListSafe(fRow.linked_info_layers).filter(id => id !== infoLayerId)
-      this.db.prepare('UPDATE novel_foreshadowing SET linked_info_layers = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), foreshadowId)
-    }
-    const iRow = this.db.prepare('SELECT linked_foreshadows FROM novel_information_layers WHERE id = ?').get(infoLayerId) as { linked_foreshadows: string } | undefined
-    if (iRow) {
-      const ids = parseIdListSafe(iRow.linked_foreshadows).filter(id => id !== foreshadowId)
-      this.db.prepare('UPDATE novel_information_layers SET linked_foreshadows = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), infoLayerId)
-    }
-  }
-
-  private pruneForeshadowFromInfoLayers(foreshadowId: string): void {
-    const rows = this.db.prepare("SELECT id, linked_foreshadows FROM novel_information_layers WHERE linked_foreshadows LIKE ?").all(`%${foreshadowId}%`) as Array<{ id: string; linked_foreshadows: string }>
-    for (const row of rows) {
-      const ids = parseIdListSafe(row.linked_foreshadows).filter(id => id !== foreshadowId)
-      this.db.prepare('UPDATE novel_information_layers SET linked_foreshadows = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), row.id)
-    }
-  }
-
-  private pruneInfoLayerFromForeshadows(infoLayerId: string): void {
-    const rows = this.db.prepare("SELECT id, linked_info_layers FROM novel_foreshadowing WHERE linked_info_layers LIKE ?").all(`%${infoLayerId}%`) as Array<{ id: string; linked_info_layers: string }>
-    for (const row of rows) {
-      const ids = parseIdListSafe(row.linked_info_layers).filter(id => id !== infoLayerId)
-      this.db.prepare('UPDATE novel_foreshadowing SET linked_info_layers = ?, updated_at = unixepoch() WHERE id = ?').run(JSON.stringify(ids), row.id)
-    }
   }
 
   listClues(projectId: string): NovelClue[] {
@@ -296,11 +237,9 @@ export class ForeshadowStore {
       category: normalizeForeshadowCategory(row.category),
       status: row.status as NovelForeshadow['status'],
       firstChapter: row.first_chapter, lastChapter: row.last_chapter,
-      recoverByChapter: row.recover_by_chapter, linkedCharacters: row.linked_characters,
-      linkedClues: row.linked_clues,
+      recoverByChapter: row.recover_by_chapter,
       plantMethod: normalizeForeshadowPlantMethod(row.plant_method),
       recoverMethod: normalizeForeshadowRecoverMethod(row.recover_method),
-      linkedInfoLayers: row.linked_info_layers ?? '[]',
       chapterSpans: parseChapterSpans(row.chapter_spans),
       beats: normalizeForeshadowBeats(parseJSON<unknown[]>(row.beats ?? '[]', []), row.first_chapter, row.recover_by_chapter),
       createdAt: row.created_at, updatedAt: row.updated_at,
@@ -312,7 +251,7 @@ export class ForeshadowStore {
       id: row.id, projectId: row.project_id, description: row.description,
       pointsTo: row.points_to, progress: row.progress, currentStep: row.current_step,
       nextStep: row.next_step, isMisleading: row.is_misleading === 1,
-      linkedForeshadow: row.linked_foreshadow, chapterSpans: parseChapterSpans(row.chapter_spans),
+      chapterSpans: parseChapterSpans(row.chapter_spans),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
@@ -323,7 +262,6 @@ export class ForeshadowStore {
       authorKnows: row.author_knows === 1, readerKnows: row.reader_knows === 1,
       characterKnowledge: row.character_knowledge, revealStage: row.reveal_stage,
       revealChapter: row.reveal_chapter, isRevealed: row.is_revealed === 1,
-      linkedForeshadows: row.linked_foreshadows ?? '[]',
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

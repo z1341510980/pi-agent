@@ -62,6 +62,14 @@ export interface NovelUiState {
   // 路径查找的起点节点 id（选中第一个节点后保存，选中第二个节点时触发查找）
   pathFindSourceId: string | null
 
+  // ── 矩阵视图：多选实体（dhtmlx-gantt 风格，支持 Ctrl/Cmd 多选）──
+  // 不持久化，每次进项目默认清空。单选时也同步更新 selectedNodeId 以联动右面板
+  selectedMatrixEntityIds: string[]
+
+  // ── 矩阵视图：展开的实体 ID 列表（子甘特图"复合片段"展开）──
+  // 可同时展开多个，各自独立 toggle；不持久化
+  expandedEntityIds: string[]
+
   // ── 加载状态 ──
   loading: boolean
   error: string | null
@@ -85,6 +93,17 @@ export interface NovelUiState {
   setError: (error: string | null) => void
   selectNode: (id: string | null, type: NovelNodeType | null) => void
   clearSelection: () => void
+  /** 矩阵多选实体（dhtmlx-gantt 风格）
+   *  - 默认：单选，清空其他，同时同步 selectedNodeId 联动右面板
+   *  - multi=true（Ctrl/Cmd）：toggle 当前 id，保留其他选中
+   *  - type 用于同步推导 NovelNodeType，便于右面板和键盘操作复用 */
+  selectMatrixEntity: (id: string, type: NovelNodeType, opts?: { multi?: boolean }) => void
+  /** 清空矩阵多选 */
+  clearMatrixSelection: () => void
+  /** 子甘特图展开：toggle 某实体的展开状态（各自独立，可同时展开多个） */
+  toggleEntityExpand: (entityId: string) => void
+  /** 收起所有已展开的实体子轨道 */
+  collapseAllExpanded: () => void
   /** 项目切换/删除时统一清理项目相关的 UI 状态 */
   resetForProjectSwitch: () => void
 }
@@ -97,6 +116,12 @@ export const useNovelUiStore = create<NovelUiState>()(
       // ── 初始状态 ──
       selectedNodeId: null,
       selectedNodeType: null,
+
+      // ── 矩阵多选实体（不持久化）──
+      selectedMatrixEntityIds: [],
+
+      // ── 子甘特图展开的实体（不持久化）──
+      expandedEntityIds: [],
 
       viewMode: 'matrix',
 
@@ -157,7 +182,40 @@ export const useNovelUiStore = create<NovelUiState>()(
       setError: (error) => set({ error }),
 
       selectNode: (id, type) => set({ selectedNodeId: id, selectedNodeType: type }),
-      clearSelection: () => set({ selectedNodeId: null, selectedNodeType: null }),
+      clearSelection: () =>
+        set({ selectedNodeId: null, selectedNodeType: null, selectedMatrixEntityIds: [] }),
+
+      // ── 矩阵多选：dhtmlx-gantt 风格 ──
+      // 单选时同步 selectedNodeId/Type，联动右面板和画布；多选时仅更新 selectedMatrixEntityIds
+      selectMatrixEntity: (id, type, opts) => {
+        const multi = opts?.multi ?? false
+        const current = get().selectedMatrixEntityIds
+        if (multi) {
+          // Ctrl/Cmd 多选：toggle 当前 id
+          const next = current.includes(id)
+            ? current.filter((x) => x !== id)
+            : [...current, id]
+          set({ selectedMatrixEntityIds: next })
+        } else {
+          // 单选：清空其他，同步 selectedNodeId
+          set({
+            selectedMatrixEntityIds: [id],
+            selectedNodeId: id,
+            selectedNodeType: type,
+          })
+        }
+      },
+      clearMatrixSelection: () => set({ selectedMatrixEntityIds: [] }),
+
+      // ── 子甘特图展开：各自独立 toggle ──
+      toggleEntityExpand: (entityId) => {
+        const current = get().expandedEntityIds
+        const next = current.includes(entityId)
+          ? current.filter((x) => x !== entityId)
+          : [...current, entityId]
+        set({ expandedEntityIds: next })
+      },
+      collapseAllExpanded: () => set({ expandedEntityIds: [] }),
       /** 项目切换/删除时统一清理项目相关的 UI 状态 */
       resetForProjectSwitch: () => {
         set({

@@ -28,6 +28,7 @@ import { createNovelAgUiEmitter, createSseEmitterSink } from './utils/sse-emitte
 import { createChapterRoutes } from './routes/chapter-routes.js'
 import { createCharacterRoutes } from './routes/character-routes.js'
 import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
+import { createStoryLedgerRoutes } from './routes/story-ledger-routes.js'
 
 /**
  * 创建小说系统 REST API 路由
@@ -47,7 +48,7 @@ import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
  */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   const { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor } = services
-  const routes: RouteDefinition[] = []
+  const routes: RouteDefinition[] = [...createStoryLedgerRoutes(services)]
 
   // C3：统一关系图查询层 + 跨章节一致性审计器已提升到 services 层
   // 与 NovelPromptBuilder 共享同一实例，避免重复实例化和缓存浪费
@@ -313,7 +314,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       if (!store.listInformationLayers(request.params.projectId).some(l => l.id === input.infoLayerId)) {
         throw new AppError(ErrorCode.NOT_FOUND, `信息差不存在: ${input.infoLayerId}`, 404)
       }
-      store.linkForeshadowToInfoLayer(input.foreshadowId, input.infoLayerId)
+      store.createEdge(request.params.projectId, { sourceId: input.foreshadowId, sourceType: 'foreshadow', targetId: input.infoLayerId, targetType: 'info_layer', edgeType: 'related', label: '关联信息差' } as any)
       return success({ foreshadowId: input.foreshadowId, infoLayerId: input.infoLayerId, linked: true }, request.traceId)
     },
   })
@@ -328,7 +329,13 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       if (!foreshadowId || !infoLayerId) {
         throw new AppError(ErrorCode.BAD_REQUEST, '需要提供 foreshadowId 和 infoLayerId 查询参数', 400)
       }
-      store.unlinkForeshadowFromInfoLayer(foreshadowId, infoLayerId)
+      // 关联关系已迁移至 novel_edges 表：查找并删除匹配的边
+      const edges = store.listEdgesByEntity(foreshadowId, { edgeType: 'related' })
+        .filter(e => (e.sourceId === foreshadowId && e.targetId === infoLayerId)
+                   || (e.sourceId === infoLayerId && e.targetId === foreshadowId))
+      for (const edge of edges) {
+        store.deleteEdge(edge.id)
+      }
       return success({ foreshadowId, infoLayerId, linked: false }, request.traceId)
     },
   })
@@ -570,7 +577,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // ── AI 通用实体生成（不落库，前端 review 后调 createXxx） ──
 
   const aiGenerateEntitySchema = z.object({
-    entityType: z.enum(['character', 'conflict', 'foreshadow', 'faction', 'location', 'world_element']),
+    entityType: z.enum(['character', 'conflict', 'foreshadow', 'faction', 'location', 'item', 'world_element']),
     coreStyle: z.string().min(1).max(500),
   })
 
@@ -647,6 +654,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       type: z.enum(['plant', 'reinforce', 'reveal', 'payoff']),
       note: z.string().optional(),
     })).optional(),
+    // ── 关联字段（不再写入 DB，创建后生成 edges）──
+    linkedCharacters: z.array(z.string()).optional(),
+    linkedClues: z.array(z.string()).optional(),
+    linkedInfoLayers: z.array(z.string()).optional(),
   })
 
   routes.push({
@@ -656,12 +667,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(createForeshadowSchema, request, reply)
       if (!input) return reply
 
+      const { linkedCharacters, linkedClues, linkedInfoLayers, ...rest } = input
       const foreshadow = store.createForeshadow({
         id: randomUUID(),
         projectId: request.params.projectId,
-        linkedCharacters: '[]',
-        linkedClues: '[]',
-        linkedInfoLayers: '[]',
         // category 未传时兜底 'event'（与原 .default('event') 行为一致）
         category: 'event',
         status: 'planned',
@@ -670,8 +679,24 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         recoverByChapter: null,
         // chapterSpans 未传时兜底 []（进元素池，矩阵不渲染行）
         chapterSpans: [],
-        ...input,
-      })
+        ...rest,
+      } as any)
+      // ── 关联字段改为创建 edges（不再写入 DB）──
+      if (linkedCharacters) {
+        for (const charId of linkedCharacters) {
+          store.createEdge(request.params.projectId, { sourceId: foreshadow.id, sourceType: 'foreshadow', targetId: charId, targetType: 'character', edgeType: 'related', label: '关联角色' } as any)
+        }
+      }
+      if (linkedClues) {
+        for (const clueId of linkedClues) {
+          store.createEdge(request.params.projectId, { sourceId: foreshadow.id, sourceType: 'foreshadow', targetId: clueId, targetType: 'clue', edgeType: 'related', label: '关联线索' } as any)
+        }
+      }
+      if (linkedInfoLayers) {
+        for (const layerId of linkedInfoLayers) {
+          store.createEdge(request.params.projectId, { sourceId: foreshadow.id, sourceType: 'foreshadow', targetId: layerId, targetType: 'info_layer', edgeType: 'related', label: '承载信息差' } as any)
+        }
+      }
       return success(foreshadow, request.traceId)
     },
   })
@@ -691,7 +716,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(createForeshadowSchema.partial(), request, reply)
       if (!input) return reply
 
-      const updated = store.updateForeshadow(request.params.id, input)
+      // 关联字段不再写入 DB，PATCH 时剥离（如需更新关联请使用 edges 接口）
+      const { linkedCharacters: _lc, linkedClues: _lcl, linkedInfoLayers: _lil, ...patch } = input
+      const updated = store.updateForeshadow(request.params.id, patch)
       if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `伏笔不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
     },
@@ -804,11 +831,19 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(createHookSchema, request, reply)
       if (!input) return reply
 
+      const { linkedForeshadowId, linkedConflictId, ...rest } = input
       const hook = store.createHook({
         id: randomUUID(),
         projectId: request.params.projectId,
-        ...input,
-      })
+        ...rest,
+      } as any)
+      // ── 关联字段改为创建 edges（不再写入 DB）──
+      if (linkedForeshadowId) {
+        store.createEdge(request.params.projectId, { sourceId: hook.id, sourceType: 'hook', targetId: linkedForeshadowId, targetType: 'foreshadow', edgeType: 'related', label: '关联伏笔' } as any)
+      }
+      if (linkedConflictId) {
+        store.createEdge(request.params.projectId, { sourceId: hook.id, sourceType: 'hook', targetId: linkedConflictId, targetType: 'conflict', edgeType: 'related', label: '关联冲突' } as any)
+      }
       return success(hook, request.traceId)
     },
   })
@@ -822,6 +857,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   // PUT 钩子：所有字段 .optional() 无 .default()，避免覆盖未传字段（与 updateMarkerSchema 同原则）
+  // linkedForeshadowId/linkedConflictId 已迁移至 novel_edges，通过专门的关联路由管理
   const updateHookSchema = z.object({
     chapterNumber: z.number().int().min(1).optional(),
     hookType: z.enum(['suspense', 'reversal', 'emotional', 'action']).optional(),
@@ -829,8 +865,6 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     status: z.enum(['thrown', 'fulfilled', 'abandoned']).optional(),
     fulfilledAtChapter: z.number().int().nullable().optional(),
     fulfilledDescription: z.string().nullable().optional(),
-    linkedForeshadowId: z.string().nullable().optional(),
-    linkedConflictId: z.string().nullable().optional(),
   })
 
   routes.push({
@@ -878,11 +912,16 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(createClueSchema, request, reply)
       if (!input) return reply
 
+      const { linkedForeshadow, ...rest } = input
       const clue = store.createClue({
         id: randomUUID(),
         projectId: request.params.projectId,
-        ...input,
-      })
+        ...rest,
+      } as any)
+      // ── 关联字段改为创建 edges（不再写入 DB）──
+      if (linkedForeshadow) {
+        store.createEdge(request.params.projectId, { sourceId: clue.id, sourceType: 'clue', targetId: linkedForeshadow, targetType: 'foreshadow', edgeType: 'related', label: '关联伏笔' } as any)
+      }
       return success(clue, request.traceId)
     },
   })
@@ -1157,6 +1196,8 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     readerKnows: z.boolean().default(false),
     revealStage: z.string().nullable().default(null),
     revealChapter: z.number().int().nullable().default(null),
+    // ── 关联字段（不再写入 DB，创建后生成 edges）──
+    linkedForeshadows: z.array(z.string()).optional(),
   })
 
   // P3-2：信息差 PATCH schema（与 updateMarkerSchema 同原则：所有字段 .optional() 无 .default()，避免覆盖未传字段）
@@ -1184,14 +1225,20 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(createInfoLayerSchema, request, reply)
       if (!input) return reply
 
+      const { linkedForeshadows, ...rest } = input
       const layer = store.createInformationLayer({
         id: randomUUID(),
         projectId: request.params.projectId,
         characterKnowledge: '{}',
         isRevealed: false,
-        linkedForeshadows: '[]',
-        ...input,
-      })
+        ...rest,
+      } as any)
+      // ── 关联字段改为创建 edges（不再写入 DB）──
+      if (linkedForeshadows) {
+        for (const fsId of linkedForeshadows) {
+          store.createEdge(request.params.projectId, { sourceId: fsId, sourceType: 'foreshadow', targetId: layer.id, targetType: 'info_layer', edgeType: 'related', label: '承载信息差' } as any)
+        }
+      }
       return success(layer, request.traceId)
     },
   })
@@ -1494,16 +1541,21 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     method: 'GET',
     path: '/projects/:projectId/edges',
     handler: async (request: any) => {
-      return success(store.listEdges(request.params.projectId), request.traceId)
+      const projectId = request.params.projectId
+      const query = (request.query ?? {}) as { entityId?: string }
+      if (query.entityId) {
+        return success(store.listEdgesByEntity(query.entityId), request.traceId)
+      }
+      return success(store.listEdges(projectId), request.traceId)
     },
   })
 
   const createEdgeSchema = z.object({
     sourceId: z.string().min(1),
-    sourceType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group', 'faction', 'location', 'world_element']),
+    sourceType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group', 'faction', 'location', 'world_element', 'clue', 'item', 'info_layer', 'hook']),
     targetId: z.string().min(1),
-    targetType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group', 'faction', 'location', 'world_element']),
-    edgeType: z.enum(['appearance', 'relationship', 'involvement', 'foreshadow', 'base', 'member', 'hierarchy', 'association']),
+    targetType: z.enum(['project', 'character', 'chapter', 'conflict', 'foreshadow', 'group', 'faction', 'location', 'world_element', 'clue', 'item', 'info_layer', 'hook']),
+    edgeType: z.enum(['appearance', 'relationship', 'involvement', 'foreshadow', 'base', 'member', 'hierarchy', 'association', 'related', 'mentor', 'kinship', 'rivalry', 'alliance', 'subordinate', 'trigger', 'causality']),
     label: z.string().default(''),
     auto: z.boolean().default(false),
   })
@@ -1527,6 +1579,18 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const deleted = store.deleteEdge(request.params.id)
       if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `连线不存在: ${request.params.id}`, 404)
       return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/edges/:id',
+    handler: async (request: any, reply: any) => {
+      const body = validateBody(z.object({ label: z.string() }), request, reply)
+      if (!body) return reply
+      const updated = store.updateEdgeLabel(request.params.id, body.label)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `连线不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
     },
   })
 

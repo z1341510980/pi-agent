@@ -6,7 +6,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useHotkeys } from 'react-hotkeys-hook'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
@@ -23,6 +24,7 @@ import {
   deleteCharacterHistory,
   deleteChapter,
   deleteMarker,
+  getMatrixAggregation,
   listMarkers,
   updateConflict,
   updateClue,
@@ -46,9 +48,11 @@ import {
   type MatrixEntity,
   type MatrixEntityKind,
 } from './matrix-logic'
+import { MATRIX_LAYOUT } from './matrix-model'
 import { MatrixToolbar } from './matrix-toolbar'
 import { MatrixView } from './matrix-view'
 import { MatrixLegend } from './matrix-legend'
+import { MatrixHoverCard } from './matrix-hover-card'
 import { ChapterContextMenu, type ChapterContextMenuPosition } from './chapter-context-menu'
 import { EntityCellMenu, type EntityCellMenuPosition } from './entity-cell-menu'
 import { EntityCreateDialog } from './entity-create-dialog'
@@ -111,9 +115,9 @@ export interface MatrixWorkspaceProps {
   similarityScanning?: boolean
 }
 
-const DEFAULT_CELL_WIDTH = 36
-const MIN_CELL_WIDTH = 24
-const MAX_CELL_WIDTH = 56
+const DEFAULT_CELL_WIDTH = MATRIX_LAYOUT.defaultCellWidth
+const MIN_CELL_WIDTH = MATRIX_LAYOUT.minCellWidth
+const MAX_CELL_WIDTH = MATRIX_LAYOUT.maxCellWidth
 const ZOOM_STEP = 4
 
 export function MatrixWorkspace({
@@ -144,6 +148,16 @@ export function MatrixWorkspace({
   const removeMarker = useNovelDataStore((s) => s.removeMarker)
   const selectNode = useNovelUiStore((s) => s.selectNode)
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
+  const viewMode = useNovelUiStore((s) => s.viewMode)
+  const setViewMode = useNovelUiStore((s) => s.setViewMode)
+  // dhtmlx-gantt 风格多选
+  const selectMatrixEntity = useNovelUiStore((s) => s.selectMatrixEntity)
+  const selectedMatrixEntityIds = useNovelUiStore((s) => s.selectedMatrixEntityIds)
+  const clearMatrixSelection = useNovelUiStore((s) => s.clearMatrixSelection)
+  // 子甘特图"复合片段"展开状态（不持久化）
+  const expandedEntityIds = useNovelUiStore((s) => s.expandedEntityIds)
+  const toggleEntityExpand = useNovelUiStore((s) => s.toggleEntityExpand)
+  // 矩阵空白点击清空多选（dhtmlx 风格），阶段3 键盘 Esc 也会复用
   const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
   const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
   const removeChapter = useNovelDataStore((s) => s.removeChapter)
@@ -177,6 +191,8 @@ export function MatrixWorkspace({
     initialNote: string
     existingMarkerId: string | null
   } | null>(null)
+  // ── 关系叠加层开关（统一渲染引擎第 5 步子任务 B）──
+  const [showRelationshipOverlay, setShowRelationshipOverlay] = useState(false)
 
   // ── 从后端加载标记 ──
   useEffect(() => {
@@ -197,7 +213,7 @@ export function MatrixWorkspace({
     }
   }, [currentProjectId, setMarkers])
 
-  // ── 矩阵数据 ──
+  // ── 矩阵数据（单次计算，下传给 MatrixView 纯渲染）──
   const matrixData = useMemo(
     () => buildGroups({
       chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
@@ -205,6 +221,37 @@ export function MatrixWorkspace({
     }),
     [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, items, characterHistory, markers],
   )
+
+  // ── 共享账本投影：matrix-aggregation 单请求，全部展开实体的子轨道共用 ──
+  const { data: aggregationData } = useQuery({
+    queryKey: ['novel', 'matrix-aggregation', currentProjectId],
+    queryFn: () => getMatrixAggregation(currentProjectId!, {
+      chapterStart: 1,
+      chapterEnd: matrixData.maxChapter,
+    }),
+    enabled: !!currentProjectId,
+    staleTime: 30_000,
+  })
+  const aggregationChanges = useMemo(() => aggregationData?.changes ?? [], [aggregationData])
+
+  // ── 失效统一入口：项目数据 + 矩阵聚合（子轨道缓存同步刷新）──
+  const invalidateNovelData = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+    void queryClient.invalidateQueries({ queryKey: ['novel', 'matrix-aggregation', currentProjectId] })
+  }, [queryClient, currentProjectId])
+
+  // ── 扁平实体列表（键盘导航用，dhtmlx 风格方向键在实体间移动）──
+  // 过滤掉折叠的分组内的实体，保证方向键只落在可见实体上
+  const flatEntities = useMemo(() => {
+    const out: Array<{ entityId: string; entityType: MatrixEntityKind; name: string }> = []
+    for (const g of matrixData.groups) {
+      if (collapsedGroups.has(g.id)) continue
+      for (const e of g.entities) {
+        out.push({ entityId: e.entityId, entityType: g.id, name: e.name })
+      }
+    }
+    return out
+  }, [matrixData, collapsedGroups])
 
   // ── 元素池（补全历史用）──
   const pool = useMemo(
@@ -231,20 +278,88 @@ export function MatrixWorkspace({
     setCellWidth((w) => Math.max(MIN_CELL_WIDTH, w - ZOOM_STEP))
   }, [])
 
+  // Ctrl+滚轮 / 工具栏滑杆：连续缩放
+  const handleCellWidthChange = useCallback((next: number) => {
+    setCellWidth(Math.max(MIN_CELL_WIDTH, Math.min(MAX_CELL_WIDTH, next)))
+  }, [])
+
   const handleToggleCollapse = useCallback((kind: MatrixEntityKind) => {
     toggleCollapsedGroup(kind)
   }, [toggleCollapsedGroup])
+
+  // 统一渲染引擎第 4 步：直接 toggleEntityExpand，支持多实体同时 inline 展开
+  // 不再 collapseAllExpanded（避免切换到 EntityGanttFocus 全屏替换）
+  const handleToggleEntityFocus = useCallback((entityId: string) => {
+    toggleEntityExpand(entityId)
+  }, [toggleEntityExpand])
 
   const handleFilterChange = useCallback((filter: MatrixEntityKind | null) => {
     setActiveFilter((prev) => (prev === filter ? null : filter))
   }, [])
 
+  // dhtmlx-gantt 风格：单击选中（同步 selectedNodeId 联动右面板），Ctrl/Cmd 多选
   const handleSelectEntity = useCallback(
-    (entityType: MatrixEntityKind, entityId: string): void => {
-      selectNode(entityId, entityType)
+    (entityType: MatrixEntityKind, entityId: string, opts?: { multi?: boolean }): void => {
+      selectMatrixEntity(entityId, entityType, opts)
     },
-    [selectNode],
+    [selectMatrixEntity],
   )
+
+  // 双击色带：编辑实体本身（dhtmlx 风格）
+  // 复用现有的实体详情对话框：触发选中 + 打开右面板详情 tab
+  const handleEditEntity = useCallback(
+    (entity: MatrixEntity): void => {
+      selectMatrixEntity(entity.entityId, entity.entityType)
+      // 右面板详情 tab 由 selectedNodeId 联动自动切换
+    },
+    [selectMatrixEntity],
+  )
+
+  // ── dhtmlx-gantt 风格键盘导航 ──
+  // ↑↓ 在可见实体间移动选中；Enter 编辑当前选中；Esc 清空多选；Ctrl+A 全选可见实体
+  const moveSelection = useCallback(
+    (dir: 'up' | 'down') => {
+      if (flatEntities.length === 0) return
+      const curIdx = flatEntities.findIndex((e) => e.entityId === selectedMatrixEntityIds[0])
+      const nextIdx =
+        curIdx < 0
+          ? dir === 'down'
+            ? 0
+            : flatEntities.length - 1
+          : (curIdx + (dir === 'down' ? 1 : -1) + flatEntities.length) % flatEntities.length
+      const next = flatEntities[nextIdx]
+      if (next) selectMatrixEntity(next.entityId, next.entityType)
+    },
+    [flatEntities, selectedMatrixEntityIds, selectMatrixEntity],
+  )
+
+  const selectAllVisible = useCallback(() => {
+    // Ctrl+A：全选当前可见实体（dhtmlx 风格批量操作）
+    if (flatEntities.length === 0) return
+    // 逐个 toggle 会很慢，直接构造数组：用 store 的 set 不便，这里走多次调用
+    // 注意：第一个用单选（同步 selectedNodeId），其余用 multi 追加
+    flatEntities.forEach((e, i) => selectMatrixEntity(e.entityId, e.entityType, { multi: i > 0 }))
+  }, [flatEntities, selectMatrixEntity])
+
+  // 仅在矩阵视图且焦点不在输入框/富文本时响应（避免与正文编辑冲突）
+  // enableOnTags 排除 INPUT/TEXTAREA/SELECT；ProseMirror 的 contenteditable 通过检查 activeElement
+  const hotkeyOpts = {
+    enabled: true,
+    enableOnTags: ['BODY', 'DIV', 'BUTTON', 'SPAN'] as const,
+    filter: () => {
+      const ae = document.activeElement
+      if (!ae) return true
+      // 焦点在输入框/富文本/可编辑元素时禁用方向键导航
+      const tag = ae.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false
+      if ((ae as HTMLElement).isContentEditable) return false
+      return true
+    },
+  }
+  useHotkeys('arrowdown', (e) => { e.preventDefault(); moveSelection('down') }, hotkeyOpts, [moveSelection])
+  useHotkeys('arrowup', (e) => { e.preventDefault(); moveSelection('up') }, hotkeyOpts, [moveSelection])
+  useHotkeys('escape', () => clearMatrixSelection(), { enabled: true }, [clearMatrixSelection])
+  useHotkeys('mod+a', (e) => { e.preventDefault(); selectAllVisible() }, hotkeyOpts, [selectAllVisible])
 
   const handleContextMenuChapter = useCallback(
     (chapterNumber: number, x: number, y: number): void => {
@@ -272,7 +387,7 @@ export function MatrixWorkspace({
       }))
       const created = await batchCreateCharacterHistory(currentProjectId, records)
       setCharacterHistory([...characterHistory, ...created])
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelData()
     } catch (err) {
       console.error('[MatrixWorkspace] 补全历史失败:', err)
       toastError('补全历史失败', err instanceof Error ? err.message : String(err))
@@ -300,7 +415,7 @@ export function MatrixWorkspace({
     try {
       await deleteChapter(chapterId)
       removeChapter(chapterId)
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelData()
     } catch (err) {
       console.error('[MatrixWorkspace] 删除章节失败:', err)
     }
@@ -333,7 +448,7 @@ export function MatrixWorkspace({
         const updated = await updateFaction(entityId, { chapterSpans: newSpans })
         useNovelDataStore.getState().upsertFaction(updated)
       }
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelData()
     } catch (err) {
       console.error('[MatrixWorkspace] 删除该段范围失败:', err)
     }
@@ -459,7 +574,7 @@ export function MatrixWorkspace({
           const created = await batchCreateCharacterHistory(currentProjectId, [{ characterId: entityId, chapterNumber: chapter }])
           const fresh = useNovelDataStore.getState().characterHistory
           setCharacterHistory([...fresh, ...created])
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'conflict': {
@@ -493,7 +608,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateConflict(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertConflict(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'clue': {
@@ -502,7 +617,7 @@ export function MatrixWorkspace({
           const chapterSpans = mergeSpanIntoList(clue.chapterSpans, [chapter, chapter])
           const updated = await updateClue(entityId, { chapterSpans })
           useNovelDataStore.getState().upsertClue(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'faction': {
@@ -531,7 +646,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertFaction(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'item': {
@@ -559,7 +674,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateItem(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertItem(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'foreshadow': {
@@ -574,7 +689,7 @@ export function MatrixWorkspace({
             const updated = await updateForeshadow(entityId, { beats: [{ chapter, type: 'plant' }] })
             useNovelDataStore.getState().upsertForeshadow(updated)
           }
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'location': {
@@ -583,7 +698,7 @@ export function MatrixWorkspace({
           const next = Array.from(new Set([...(loc.appearChapters ?? []), chapter])).sort((a, b) => a - b)
           const updated = await updateLocation(entityId, { appearChapters: next })
           useNovelDataStore.getState().upsertLocation(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'world_element':
@@ -609,7 +724,7 @@ export function MatrixWorkspace({
           if (records.length > 0) {
             const after = useNovelDataStore.getState().characterHistory
             setCharacterHistory(after.filter((h) => !records.some((r) => r.id === h.id)))
-            void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+            invalidateNovelData()
           }
           break
         }
@@ -634,7 +749,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateConflict(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertConflict(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'clue': {
@@ -658,7 +773,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateClue(entityId, { chapterSpans })
           useNovelDataStore.getState().upsertClue(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'faction': {
@@ -679,7 +794,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertFaction(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'item': {
@@ -700,7 +815,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateItem(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertItem(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'foreshadow': {
@@ -714,7 +829,7 @@ export function MatrixWorkspace({
             : existing.filter((beat) => beat.chapter !== chapter)
           const updated = await updateForeshadow(entityId, { beats })
           useNovelDataStore.getState().upsertForeshadow(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'location': {
@@ -723,7 +838,7 @@ export function MatrixWorkspace({
           const next = (loc.appearChapters ?? []).filter((c) => c !== chapter)
           const updated = await updateLocation(entityId, { appearChapters: next })
           useNovelDataStore.getState().upsertLocation(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'world_element':
@@ -767,7 +882,7 @@ export function MatrixWorkspace({
           })
         }
       }
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelData()
     } catch (err) {
       console.error('[MatrixWorkspace] 标记伏笔节点失败:', err)
       toastError('标记伏笔节点失败', err instanceof Error ? err.message : String(err))
@@ -810,7 +925,7 @@ export function MatrixWorkspace({
           const newSpans = c.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
           const updated = await updateConflict(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertConflict(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'faction': {
@@ -823,7 +938,7 @@ export function MatrixWorkspace({
           const newSpans = f.chapterSpans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertFaction(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'item': {
@@ -837,7 +952,7 @@ export function MatrixWorkspace({
           const newSpans = spans.map((sp, i) => i === spanIndex ? [nextStart, nextEnd] as [number, number] : sp)
           const updated = await updateItem(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertItem(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'foreshadow': {
@@ -859,7 +974,7 @@ export function MatrixWorkspace({
           }
           const updated = await updateForeshadow(entityId, { beats })
           useNovelDataStore.getState().upsertForeshadow(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
       }
@@ -900,7 +1015,7 @@ export function MatrixWorkspace({
         const updated = await updateItem(entityId, { chapterSpans })
         useNovelDataStore.getState().upsertItem(updated)
       }
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelData()
     } catch (err) {
       console.error('[MatrixWorkspace] 移动跨度失败:', err)
       toastError('移动范围失败', err instanceof Error ? err.message : String(err))
@@ -929,7 +1044,7 @@ export function MatrixWorkspace({
             .filter((h) => !(h.characterId === entityId && h.chapterNumber === fromChapter))
             .concat(created)
           setCharacterHistory(next)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
         case 'location': {
@@ -941,7 +1056,7 @@ export function MatrixWorkspace({
           const next = Array.from(set).sort((a, b) => a - b)
           const updated = await updateLocation(entityId, { appearChapters: next })
           useNovelDataStore.getState().upsertLocation(updated)
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+          invalidateNovelData()
           break
         }
       }
@@ -1024,7 +1139,7 @@ export function MatrixWorkspace({
         })
         upsertMarker(created)
       }
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelData()
     } catch (err) {
       console.error('[MatrixWorkspace] 保存批注失败:', err)
       throw err
@@ -1133,7 +1248,7 @@ export function MatrixWorkspace({
         case 'world_element':
           break
       }
-      void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+      invalidateNovelData()
     } catch (err) {
       console.error('[MatrixWorkspace] 保存跨度失败:', err)
       toastError('保存跨度失败', err instanceof Error ? err.message : String(err))
@@ -1169,7 +1284,7 @@ export function MatrixWorkspace({
           : { name: data.name ?? '' }
         const created = await createCharacter(currentProjectId, input)
         useNovelDataStore.getState().upsertCharacter(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
       case 'conflict': {
@@ -1193,7 +1308,7 @@ export function MatrixWorkspace({
             }
         const created = await createConflict(currentProjectId, input)
         useNovelDataStore.getState().upsertConflict(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
       case 'clue': {
@@ -1203,7 +1318,7 @@ export function MatrixWorkspace({
           chapterSpans: firstChapter != null ? [[firstChapter, firstChapter]] : [],
         })
         useNovelDataStore.getState().upsertClue(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
       case 'foreshadow': {
@@ -1212,8 +1327,6 @@ export function MatrixWorkspace({
               description: ai.data.description,
               category: ai.data.category,
               status: ai.data.status,
-              linkedCharacters: ai.data.linkedCharacters,
-              linkedClues: ai.data.linkedClues,
               firstChapter,
             }
           : {
@@ -1222,7 +1335,7 @@ export function MatrixWorkspace({
             }
         const created = await createForeshadow(currentProjectId, input)
         useNovelDataStore.getState().upsertForeshadow(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
       case 'faction': {
@@ -1245,7 +1358,7 @@ export function MatrixWorkspace({
             }
         const created = await createFaction(currentProjectId, input)
         useNovelDataStore.getState().upsertFaction(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
       case 'location': {
@@ -1266,18 +1379,30 @@ export function MatrixWorkspace({
             }
         const created = await createLocation(currentProjectId, input)
         useNovelDataStore.getState().upsertLocation(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
       case 'item': {
-        const input = {
-          name: data.name ?? '',
-          firstChapter,
-          chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
-        }
+        const input = ai?.type === 'item'
+          ? {
+              name: ai.data.name,
+              description: ai.data.description,
+              type: ai.data.type,
+              ownerId: ai.data.ownerId,
+              status: ai.data.status,
+              abilities: ai.data.abilities,
+              origin: ai.data.origin,
+              firstChapter,
+              chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
+            }
+          : {
+              name: data.name ?? '',
+              firstChapter,
+              chapterSpans: firstChapter != null ? [[firstChapter, firstChapter] as [number, number]] : [],
+            }
         const created = await createItem(currentProjectId, input)
         useNovelDataStore.getState().upsertItem(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
       case 'world_element': {
@@ -1294,7 +1419,7 @@ export function MatrixWorkspace({
             }
         const created = await createWorldElement(currentProjectId, input)
         useNovelDataStore.getState().upsertWorldElement(created)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
+        invalidateNovelData()
         break
       }
     }
@@ -1315,6 +1440,7 @@ export function MatrixWorkspace({
         cellWidth={cellWidth}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
+        onCellWidthChange={handleCellWidthChange}
         completableCount={completableCount}
         isCompleting={isCompleting}
         onCompleteHistory={handleCompleteHistory}
@@ -1326,43 +1452,49 @@ export function MatrixWorkspace({
         onFilterChange={handleFilterChange}
         onSimilarityScan={onSimilarityScan}
         similarityScanning={similarityScanning}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        showRelationshipOverlay={showRelationshipOverlay}
+        onToggleRelationshipOverlay={() => setShowRelationshipOverlay((v) => !v)}
       />
 
       <MatrixLegend />
 
       <div className="flex-1 min-h-0 overflow-hidden">
         <MatrixView
+          matrixData={matrixData}
           chapters={chapters}
-          characters={characters}
-          conflicts={conflicts}
-          clues={clues}
-          foreshadows={foreshadows}
-          factions={factions}
-          locations={locations}
-          worldElements={worldElements}
-          items={items}
-          characterHistory={characterHistory}
-          relationships={relationships}
           markers={markers}
+          relationships={relationships}
+          aggregationChanges={aggregationChanges}
           playheadChapter={effectivePlayheadChapter}
           cellWidth={cellWidth}
           collapsedGroups={collapsedGroups}
           activeFilter={activeFilter}
           selectedNodeId={selectedNodeId}
+          selectedMatrixEntityIds={selectedMatrixEntityIds}
           onSelectEntity={handleSelectEntity}
           onToggleCollapse={handleToggleCollapse}
           onPlayheadChange={handlePlayheadChange}
+          onToggleEntityExpand={handleToggleEntityFocus}
+          onCellWidthChange={handleCellWidthChange}
           onContextMenuChapter={handleContextMenuChapter}
           onContextMenuCell={handleContextMenuCell}
           onContextMenuGroupEmpty={handleContextMenuGroupEmpty}
+          onEditEntity={handleEditEntity}
           onEditSpan={openSpanDialog}
           onDropEntity={handleMarkPresent}
           onMoveEndpoint={handleMoveEndpoint}
           onMoveSpan={handleMoveSpan}
           onMoveCell={handleMoveCell}
           onTogglePresent={handleTogglePresent}
+          expandedEntityIds={expandedEntityIds}
+          showRelationshipOverlay={showRelationshipOverlay}
         />
       </div>
+
+      {/* 悬浮卡单例：全矩阵 data-hc-* 元素统一生效 */}
+      <MatrixHoverCard />
 
       <ChapterContextMenu
         position={contextMenu}

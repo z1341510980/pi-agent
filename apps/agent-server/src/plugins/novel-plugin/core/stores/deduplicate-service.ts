@@ -141,12 +141,6 @@ export class DeduplicateService {
       case 'character':
         this.mergeCharacterAssociations(keptId, removedIds)
         break
-      case 'conflict':
-        this.mergeConflictAssociations(keptId, removedIds)
-        break
-      case 'foreshadow':
-        this.mergeForeshadowAssociations(keptId, removedIds)
-        break
       case 'faction':
         this.mergeFactionAssociations(keptId, removedIds)
         break
@@ -155,6 +149,8 @@ export class DeduplicateService {
         break
       case 'world_element':
         break
+      // conflict 与 foreshadow 的关联已迁移至 novel_edges 表，
+      // 由上方 retargetEdges 统一 retarget，无需额外处理。
     }
 
     for (const id of removedIds) {
@@ -300,18 +296,14 @@ export class DeduplicateService {
       case 'character':
         this.mergeCharacterAssociations(keptId, removedIds)
         break
-      case 'conflict':
-        this.mergeConflictAssociations(keptId, removedIds)
-        break
-      case 'foreshadow':
-        this.mergeForeshadowAssociations(keptId, removedIds)
-        break
       case 'faction':
         this.mergeFactionAssociations(keptId, removedIds)
         break
       case 'location':
         this.mergeLocationAssociations(keptId, removedIds)
         break
+      // conflict 与 foreshadow 的关联已迁移至 novel_edges 表，
+      // 由上方 retargetEdges 统一 retarget，无需额外处理。
     }
 
     for (const id of removedIds) {
@@ -386,29 +378,6 @@ export class DeduplicateService {
     db.prepare(
       `UPDATE novel_factions SET leader_id = ? WHERE leader_id IN (${placeholders})`,
     ).run(keptId, ...removedIds)
-  }
-
-  private mergeConflictAssociations(keptId: string, removedIds: string[]): void {
-    if (removedIds.length === 0) return
-    this.retargetJsonArrayField(
-      'novel_characters', 'participating_conflicts',
-      keptId, removedIds,
-    )
-  }
-
-  private mergeForeshadowAssociations(keptId: string, removedIds: string[]): void {
-    if (removedIds.length === 0) return
-    const db = this.bundle.db
-    const placeholders = removedIds.map(() => '?').join(',')
-
-    db.prepare(
-      `UPDATE novel_clues SET linked_foreshadow = ? WHERE linked_foreshadow IN (${placeholders})`,
-    ).run(keptId, ...removedIds)
-
-    this.retargetJsonArrayField(
-      'novel_information_layers', 'linked_foreshadows',
-      keptId, removedIds,
-    )
   }
 
   private mergeFactionAssociations(keptId: string, removedIds: string[]): void {

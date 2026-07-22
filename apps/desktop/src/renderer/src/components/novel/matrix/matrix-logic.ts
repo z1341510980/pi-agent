@@ -181,6 +181,23 @@ export interface MatrixEntity {
   alwaysStart?: number
   /** 世界要素结束章节（默认 maxChapter） */
   alwaysEnd?: number
+
+  // ── 子甘特图轨道数据（复合片段展开用，从原实体透传）──
+  /** 冲突：强度曲线点 */
+  intensityPoints?: Array<{ chapter: number; value: number }>
+  /** 冲突：参与方按章节范围关联 */
+  participantSpans?: Array<{ characterId: string; startCh: number; endCh: number }>
+  /** 冲突：关键转折点 */
+  turningPoints?: Array<{ chapter: number; label: string }>
+  /** 冲突：解决进度曲线 */
+  resolutionProgress?: Array<{ chapter: number; percent: number }>
+  /** 冲突：关联线索 ID 列表 */
+  linkedClues?: string[]
+  /** 伏笔：回收进度点 */
+  resolutionPoints?: Array<{ chapter: number; label: string }>
+  /** 伏笔埋设/回收手法（沿用后端字段） */
+  plantMethod?: string
+  recoverMethod?: string
 }
 
 // ── 分组 ──
@@ -447,6 +464,12 @@ export function buildGroups(params: {
       spanEnd: range.end,
       climaxChapter: conflict.climaxChapter ?? null,
       note: noteMap.get(conflict.id),
+      // 子甘特图轨道数据透传
+      intensityPoints: conflict.intensityPoints,
+      participantSpans: conflict.participantSpans,
+      turningPoints: conflict.turningPoints,
+      resolutionProgress: conflict.resolutionProgress,
+      linkedClues: conflict.linkedClues,
     })
   }
   groups.push(conflictGroup)
@@ -504,6 +527,10 @@ export function buildGroups(params: {
       spanStart: f.firstChapter,
       spanEnd: f.recoverByChapter ?? null,
       note: noteMap.get(f.id),
+      // 子甘特图轨道数据透传
+      resolutionPoints: f.resolutionPoints,
+      plantMethod: f.plantMethod,
+      recoverMethod: f.recoverMethod,
     })
   }
   groups.push(foreshadowGroup)

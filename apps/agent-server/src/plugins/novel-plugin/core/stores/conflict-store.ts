@@ -1,13 +1,12 @@
 /**
  * ConflictStore：冲突 CRUD 子 Store
  *
- * 从原 novel-store.ts 抽取（PR-5b 重构），负责 novel_conflicts 表的增删改查，
- * 并维护 NovelCharacter.participatingConflicts 反向索引。
+ * 从原 novel-store.ts 抽取（PR-5b 重构），负责 novel_conflicts 表的增删改查。
+ * 关联关系（character↔conflict）已统一走 novel_edges 表，删除时通过 deleteEdgesByEntity 级联清理。
  *
  * 设计要点：
  * - 构造时预编译 stmtListConflicts
- * - create/update/delete 均通过 syncConflictParticipantsToCharacters 同步反向索引
- * - parseConflictParticipants 复用 store-utils.parseIdListSafe（行为一致）
+ * - delete 通过上层注入的 deleteEdgesByEntity 级联清理 edges
  */
 
 import type Database from 'better-sqlite3'
@@ -79,8 +78,6 @@ export class ConflictStore {
         created_at: full.createdAt,
         updated_at: full.updatedAt,
       })
-    // 同步反向索引到角色（participating_conflicts）
-    this.syncConflictParticipantsToCharacters(full.id, parseIdListSafe(full.participants), [])
     return full
   }
 
@@ -118,69 +115,13 @@ export class ConflictStore {
         next_step: updated.nextStep ?? '',
         updated_at: updated.updatedAt,
       })
-    // 同步反向索引：旧参与者中不在新列表的移除，新参与者中不在旧列表的追加
-    if (patch.participants !== undefined) {
-      const oldIds = parseIdListSafe(current.participants)
-      const newIds = parseIdListSafe(updated.participants)
-      this.syncConflictParticipantsToCharacters(id, newIds, oldIds)
-    }
     return updated
   }
 
   deleteConflict(id: string): boolean {
-    // 先取出旧参与者，删除后从他们的反向索引里移除该冲突 ID
-    const existing = this.db.prepare('SELECT * FROM novel_conflicts WHERE id = ?').get(id) as
-      | ConflictRow
-      | undefined
-    const oldParticipantIds = existing ? parseIdListSafe(existing.participants) : []
     this.deleteEdgesByEntity(id)
     const result = this.db.prepare('DELETE FROM novel_conflicts WHERE id = ?').run(id)
-    if (result.changes > 0) {
-      this.syncConflictParticipantsToCharacters(id, [], oldParticipantIds)
-    }
     return result.changes > 0
-  }
-
-  /**
-   * 同步冲突反向索引到角色的 participating_conflicts 字段。
-   *
-   * - 对新增的 participantIds（newIds 中有，oldIds 中无）：把 conflictId 追加到他们的 participating_conflicts
-   * - 对移除的 participantIds（oldIds 中有，newIds 中无）：把 conflictId 从他们的 participating_conflicts 移除
-   * - 对不变的 participantIds：不动
-   *
-   * 该方法被 createConflict / updateConflict / deleteConflict 调用，
-   * 让 NovelCharacter.participatingConflicts 始终是 conflict.participants 的反向镜像，
-   * 回答四层逻辑第四句"删掉这个角色哪段冲突线会断"。
-   */
-  private syncConflictParticipantsToCharacters(
-    conflictId: string,
-    newParticipantIds: string[],
-    oldParticipantIds: string[],
-  ): void {
-    const added = newParticipantIds.filter((id) => !oldParticipantIds.includes(id))
-    const removed = oldParticipantIds.filter((id) => !newParticipantIds.includes(id))
-    if (added.length === 0 && removed.length === 0) return
-
-    const updateOne = (characterId: string, mode: 'add' | 'remove') => {
-      const row = this.db
-        .prepare('SELECT participating_conflicts FROM novel_characters WHERE id = ?')
-        .get(characterId) as { participating_conflicts?: string } | undefined
-      if (!row) return
-      const current = parseIdListSafe(row.participating_conflicts)
-      let next: string[]
-      if (mode === 'add') {
-        if (current.includes(conflictId)) return
-        next = [...current, conflictId]
-      } else {
-        next = current.filter((id) => id !== conflictId)
-      }
-      this.db
-        .prepare('UPDATE novel_characters SET participating_conflicts = ? WHERE id = ?')
-        .run(JSON.stringify(next), characterId)
-    }
-
-    for (const id of added) updateOne(id, 'add')
-    for (const id of removed) updateOne(id, 'remove')
   }
 
   private rowToConflict(row: ConflictRow): NovelConflict {

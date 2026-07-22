@@ -41,4 +41,5 @@ export const EDGE_TYPE_LABELS: Record<NovelEdgeType, string> = {
   subordinate: '隶属',
   trigger: '触发',
   causality: '因果',
+  related: '关联',
 }

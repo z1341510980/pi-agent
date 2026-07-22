@@ -36,14 +36,8 @@ export function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): Re
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // 解析 linkedForeshadows JSON，映射为带描述的展示项
-  let linkedForeshadowIds: string[] = []
-  try {
-    const arr = JSON.parse(entity.linkedForeshadows)
-    if (Array.isArray(arr)) linkedForeshadowIds = arr.filter((x): x is string => typeof x === 'string')
-  } catch {
-    // ignore
-  }
+  // linkedForeshadows 已迁移至 edges，暂用空数组占位
+  const linkedForeshadowIds: string[] = []
   const linkedForeshadowItems = linkedForeshadowIds.map((id) => {
     const f = foreshadows.find((x) => x.id === id)
     return {

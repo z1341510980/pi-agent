@@ -12,7 +12,7 @@
  * 不同类型实体的字段：
  * - character：name + 11 字段（identity/personality/appearance/...）
  * - conflict：description + type + intensity + stage + tier + participants + climaxChapter + climaxType + stakes + twistPotential
- * - foreshadow：description + category + status + linkedCharacters + linkedClues
+ * - foreshadow：description + category + status
  * - faction：name + description + type + ideology + strength + resources + allies + enemies + status
  * - location：name + description + type + significance + status
  * - world_element：category + name + description + attributes
@@ -70,6 +70,7 @@ const CORE_LABEL: Record<MatrixEntityKind, string> = {
   location: '地点核心描述',
   world_element: '要素核心描述',
   info_layer: '信息差核心描述',
+  item: '物品核心描述',
 }
 
 const CORE_PLACEHOLDER: Record<MatrixEntityKind, string> = {
@@ -81,6 +82,7 @@ const CORE_PLACEHOLDER: Record<MatrixEntityKind, string> = {
   location: '如：青衫会总舵，藏于云雾山中',
   world_element: '如：玉佩之力，可镇压邪灵',
   info_layer: '如：林墨真实身世，读者暂不知',
+  item: '如：母亲留下的玉佩，能感应被封印的记忆',
 }
 
 export function EntityCreateDialog({
@@ -114,7 +116,7 @@ export function EntityCreateDialog({
   if (!entityType) return null
 
   const meta = GROUP_META[entityType]
-  const isNameField = entityType === 'character' || entityType === 'faction' || entityType === 'location' || entityType === 'world_element'
+  const isNameField = entityType === 'character' || entityType === 'faction' || entityType === 'location' || entityType === 'world_element' || entityType === 'item'
 
   // ── 简单创建（跳过 AI）──
   const handleSimpleCreate = async (): Promise<void> => {
@@ -302,6 +304,9 @@ function ReviewFields({
       {entityType === 'location' && aiFields.type === 'location' && (
         <LocationReview data={aiFields.data} />
       )}
+      {entityType === 'item' && aiFields.type === 'item' && (
+        <ItemReview data={aiFields.data} />
+      )}
       {entityType === 'world_element' && aiFields.type === 'world_element' && (
         <WorldElementReview data={aiFields.data} />
       )}
@@ -363,8 +368,6 @@ function ForeshadowReview({ data }: { data: import('@/api/novel-client').Generat
       <FieldRow label="描述" value={data.description} />
       <FieldRow label="类别" value={data.category} />
       <FieldRow label="状态" value={data.status} />
-      <FieldRow label="关联角色" value={data.linkedCharacters} />
-      <FieldRow label="关联线索" value={data.linkedClues} />
     </>
   )
 }
@@ -393,6 +396,20 @@ function LocationReview({ data }: { data: import('@/api/novel-client').Generated
       <FieldRow label="类型" value={data.type} />
       <FieldRow label="重要性" value={data.significance} />
       <FieldRow label="状态" value={data.status} />
+    </>
+  )
+}
+
+function ItemReview({ data }: { data: import('@/api/novel-client').GeneratedItemFields }): ReactElement {
+  return (
+    <>
+      <FieldRow label="名称" value={data.name} />
+      <FieldRow label="描述" value={data.description} />
+      <FieldRow label="类型" value={data.type} />
+      <FieldRow label="持有者" value={data.ownerId ?? ''} />
+      <FieldRow label="状态" value={data.status} />
+      <FieldRow label="能力" value={data.abilities} />
+      <FieldRow label="来源" value={data.origin} />
     </>
   )
 }

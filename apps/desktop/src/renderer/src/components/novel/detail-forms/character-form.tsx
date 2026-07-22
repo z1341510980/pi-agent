@@ -165,7 +165,7 @@ export function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElem
 
       {/* 三层模型④：影响层反向索引（只读，由冲突 CRUD 自动同步） */}
       <SectionHeader title="参与冲突" hint="反向索引：由冲突编辑时的 participants 自动同步" />
-      <ParticipatingConflictsBadges raw={entity.participatingConflicts} />
+      <ParticipatingConflictsBadges raw="" />
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />

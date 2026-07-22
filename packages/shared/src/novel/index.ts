@@ -307,9 +307,6 @@ export interface NovelCharacter {
   plotRole: NovelCharacterPlotRole
   /** 删掉影响：一句话描述"删掉这个角色哪段剧情会受影响" */
   removalImpact: string
-  // ── 四层逻辑④：影响层反向索引（迁移 050）──
-  /** 参与的冲突 ID 列表（JSON: string[]，由冲突 CRUD 时自动同步，回答"删掉他会断几条冲突线"） */
-  participatingConflicts: string
   createdAt: number
   updatedAt: number
 }
@@ -394,16 +391,11 @@ export interface NovelForeshadow {
   firstChapter: number | null
   lastChapter: number | null
   recoverByChapter: number | null
-  linkedCharacters: string // JSON: string[]
-  linkedClues: string // JSON: string[]
   // ── 四层逻辑③：埋设/回收方式（结构化）──
   /** 埋设方式（明写/暗写/侧写），指导 LLM 写埋设时的手法 */
   plantMethod?: ForeshadowPlantMethod
   /** 回收方式（点破/暗示/反向/递进），指导 LLM 写回收时的手法 */
   recoverMethod?: ForeshadowRecoverMethod
-  /** ── P3-2：关联信息差 ID 数组（JSON: string[]）
-   * 一个伏笔可以承载多个信息差（如同一物品伏笔同时承载"身份未明"+"读者不知来源"两条信息差） */
-  linkedInfoLayers: string
   /** 旧版伏笔活跃区间，仅保留用于历史数据兼容；新逻辑不得据此推断中间章节与伏笔关联。 */
   chapterSpans: ChapterSpan[]
   /**
@@ -411,6 +403,9 @@ export interface NovelForeshadow {
    * 旧数据可缺省，读取时由 firstChapter/recoverByChapter 兼容生成端点事件。
    */
   beats?: ForeshadowBeat[]
+  // ── 子甘特图轨道数据（复合片段展开用，可选+默认空数组，向后兼容）──
+  /** 回收进度点（多点，区别于单值 recoverByChapter；用于子轨道"回收进度"） */
+  resolutionPoints?: Array<{ chapter: number; label: string }>
   createdAt: number
   updatedAt: number
 }
@@ -470,7 +465,6 @@ export interface NovelClue {
   currentStep: string
   nextStep: string
   isMisleading: boolean
-  linkedForeshadow: string | null
   /** 线索被发现、验证或推进的章节；空数组表示尚未编排 */
   chapterSpans: ChapterSpan[]
   createdAt: number
@@ -524,6 +518,17 @@ export interface NovelConflict {
   currentStep?: string
   /** 下一步（一句话描述下章应推进的方向，如"验证图案含义"） */
   nextStep?: string
+  // ── 子甘特图轨道数据（复合片段展开用，可选+默认空数组，向后兼容）──
+  /** 强度曲线点（多点，区别于单值 intensity；用于子轨道"强度曲线"） */
+  intensityPoints?: Array<{ chapter: number; value: number }>
+  /** 参与方按章节范围关联（用于子轨道"参与方"） */
+  participantSpans?: Array<{ characterId: string; startCh: number; endCh: number }>
+  /** 关键转折点（多点，区别于单值 climaxChapter；用于子轨道"关键转折"） */
+  turningPoints?: Array<{ chapter: number; label: string }>
+  /** 解决进度曲线（用于子轨道"解决进度"） */
+  resolutionProgress?: Array<{ chapter: number; percent: number }>
+  /** 关联线索 ID 列表（用于子轨道"关联线索"） */
+  linkedClues?: string[]
   createdAt: number
   updatedAt: number
 }
@@ -571,10 +576,7 @@ export interface NovelHook {
   fulfilledAtChapter: number | null
   /** 兑现方式描述（Writer 兑现后填） */
   fulfilledDescription: string | null
-  /** 可选关联伏笔（钩子是伏笔的埋设） */
-  linkedForeshadowId: string | null
-  /** 可选关联冲突（钩子是冲突升级） */
-  linkedConflictId: string | null
+  /** 关联伏笔/冲突已迁移至 novel_edges 表（hook → foreshadow / hook → conflict） */
   createdAt: number
   updatedAt: number
 }
@@ -785,9 +787,6 @@ export interface NovelInformationLayer {
   revealStage: string | null
   revealChapter: number | null
   isRevealed: boolean
-  /** ── P3-2：关联伏笔 ID 数组（JSON: string[]）
-   * 一条信息差可被多个伏笔承载（如"主角真实身份"可由吊坠伏笔+预言伏笔共同暗示） */
-  linkedForeshadows: string
   createdAt: number
   updatedAt: number
 }
@@ -902,6 +901,7 @@ export interface NovelCharacterHistory {
 export type NovelNodeType =
   | 'project' | 'character' | 'chapter' | 'conflict' | 'foreshadow' | 'group'
   | 'faction' | 'location' | 'world_element' | 'info_layer' | 'item'
+  | 'clue' | 'hook'
 
 export interface NovelNodePosition {
   id: string
@@ -937,6 +937,7 @@ export type NovelEdgeType =
   | 'appearance' | 'relationship' | 'involvement' | 'foreshadow'
   | 'base' | 'member' | 'hierarchy' | 'association'
   | 'mentor' | 'kinship' | 'rivalry' | 'alliance' | 'subordinate' | 'trigger' | 'causality'
+  | 'related'
 
 export interface NovelEdge {
   id: string
@@ -1721,4 +1722,141 @@ export interface EntityChapterPresence {
   name: string
   /** 出现的章节号列表（已排序） */
   chapters: number[]
+}
+
+// ── 故事事件账本（矩阵/复合轨道/章节上下文共享）──
+
+/** 可参与剧情事件或变化记录的实体类型。 */
+export type NovelStoryEntityType =
+  | 'character' | 'relationship' | 'conflict' | 'foreshadow' | 'clue'
+  | 'faction' | 'location' | 'world_element' | 'world_rule' | 'info_layer'
+  | 'item' | 'chapter'
+
+export type StoryEventType =
+  | 'encounter' | 'conflict' | 'discovery' | 'transfer' | 'reveal'
+  | 'decision' | 'transition' | 'resolution' | 'custom'
+
+export type StoryEventStatus = 'planned' | 'confirmed' | 'generated' | 'superseded'
+export type StoryEventSource = 'manual' | 'ai-extracted' | 'ai-planned' | 'migration'
+export type ChangeValueType = 'enum' | 'level' | 'number' | 'set' | 'reference' | 'text'
+
+export type StoryEventEntityRole =
+  | 'actor' | 'target' | 'participant' | 'trigger' | 'evidence'
+  | 'resource' | 'location' | 'affected' | 'outcome'
+
+export interface NovelStoryEvent {
+  id: string
+  projectId: string
+  chapterNumber: number
+  sceneId: string | null
+  sceneOrder: number
+  type: StoryEventType
+  title: string
+  summary: string
+  outcome: string
+  status: StoryEventStatus
+  parentEventId: string | null
+  source: StoryEventSource
+  createdAt: number
+  updatedAt: number
+}
+
+export interface StoryEventEntityRef {
+  id: string
+  eventId: string
+  entityType: NovelStoryEntityType
+  entityId: string
+  role: StoryEventEntityRole
+  note: string
+}
+
+export interface NovelChangeRecord {
+  id: string
+  projectId: string
+  storyEventId: string | null
+  chapterNumber: number
+  sceneOrder: number
+  subjectType: NovelStoryEntityType
+  subjectId: string
+  dimension: string
+  targetType: NovelStoryEntityType | null
+  targetId: string | null
+  valueType: ChangeValueType
+  beforeValue: unknown
+  afterValue: unknown
+  reason: string
+  significance: number
+  source: StoryEventSource
+  cause: string | null
+  effectIds: string[]
+  /** 文风提示：该变化的写作风格建议（如"用对话暗示而非直叙"）。prompt-builder 读取后附加到写作提示。 */
+  styleNote?: string | null
+  createdAt: number
+}
+
+export type NovelAnnotationScope = 'entity' | 'event' | 'change' | 'relation' | 'matrix-cell' | 'span'
+export type NovelAnnotationKind = 'note' | 'intent' | 'todo' | 'warning' | 'question'
+
+export interface NovelAnnotation {
+  id: string
+  projectId: string
+  scopeType: NovelAnnotationScope
+  scopeId: string | null
+  entityType: NovelStoryEntityType | null
+  entityId: string | null
+  chapterStart: number | null
+  chapterEnd: number | null
+  kind: NovelAnnotationKind
+  content: string
+  color: NovelMarkerColor | string
+  includeInPrompt: boolean
+  resolved: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+export interface StoryDimensionState {
+  subjectType: NovelStoryEntityType
+  subjectId: string
+  dimension: string
+  targetType: NovelStoryEntityType | null
+  targetId: string | null
+  value: unknown
+  valueType: ChangeValueType
+  effectiveChapter: number
+  effectiveSceneOrder: number
+  sourceChangeId: string
+  reason: string
+}
+
+export interface FutureCommitment {
+  event: NovelStoryEvent
+  changes: NovelChangeRecord[]
+}
+
+export interface PromptDimensionContext {
+  dimension: string
+  numericValue: number | null
+  levelLabel: string
+  behaviorGuide: string
+  trend: 'rising' | 'stable' | 'falling'
+  previousValue: unknown
+  changeReason: string
+  allowedThisChapter: string[]
+  forbiddenThisChapter: string[]
+}
+
+export interface ChapterStoryContext {
+  projectId: string
+  chapterNumber: number
+  snapshotVersion: number
+  stateBeforeChapter: StoryDimensionState[]
+  activeThreads: NovelStoryEvent[]
+  plannedEvents: NovelStoryEvent[]
+  plannedChanges: NovelChangeRecord[]
+  unresolvedDebts: NovelChangeRecord[]
+  futureCommitments: FutureCommitment[]
+  promptDimensions: PromptDimensionContext[]
+  annotations: NovelAnnotation[]
+  continuityWarnings: string[]
 }

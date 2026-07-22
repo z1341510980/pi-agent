@@ -142,7 +142,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
 
   // 6. 创建 Pi Session 工具集（依赖 NovelStore）
   //    提前到 orchestrator 之前：orchestrator 需要它替代原 sessionFactory.getNovelTools()
-  const tools = createNovelTools(store)
+  const tools = createNovelTools(store, memoryStore)
 
   // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + novelTools + NovelPromptBuilder + NovelEngine + PluginContext + NovelMemoryGenerator）
   //    PluginContext.createSession 用于 runAgent 调用 LLM

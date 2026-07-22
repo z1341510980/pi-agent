@@ -813,7 +813,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
           {/* 中：视图切换（仅有项目时显示） */}
           <div className="flex items-center justify-center">
-            {currentProject && <ViewSwitcher value={viewMode} onChange={setViewMode} />}
+            {currentProject && viewMode === 'canvas' && <ViewSwitcher value={viewMode} onChange={setViewMode} />}
           </div>
 
           {/* 右：操作按钮组 */}

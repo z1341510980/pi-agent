@@ -57,6 +57,22 @@ export function createNovelPlugin(): Plugin {
       //    context.teamManager 由 plugin-loader 注入（teamPlugin 已在 pluginLoaderPlugin 之前注册）
       const services = createNovelServices(context)
 
+      // 1.5 一次性回填：为历史 dimension IS NULL 的记忆事件补 dimension + value_type
+      //     幂等——已回填的项目返回 scanned=0，每次启动安全调用。
+      //     设计文档第 5 节：打通 recordEvent → listChangeRecords 的过滤陷阱，
+      //     让 AI 自动写入的历史事件也能被矩阵账本视图查到。
+      try {
+        const stats = services.memoryStore.backfillMissingDimensions()
+        if (stats.scanned > 0) {
+          context.logger.info(
+            { scanned: stats.scanned, updated: stats.updated, uninferable: stats.uninferable, backupTable: stats.backupTable },
+            '记忆事件 dimension 回填完成',
+          )
+        }
+      } catch (err) {
+        context.logger.error({ err }, '记忆事件 dimension 回填失败，不影响主流程')
+      }
+
       // 2. 装饰 Fastify 实例（与原 novel.plugin.ts 保持一致的装饰器名）
       context.registerService('novelStore', services.store)
       context.registerService('promptManager', services.promptManager)

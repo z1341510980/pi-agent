@@ -365,7 +365,7 @@ describe('NovelStore - 线索 CRUD', () => {
     const created = store.createClue({
       id: 'clue-1', projectId: 'p-1', description: '铜扣', pointsTo: '真凶', progress: 20,
       currentStep: '发现', nextStep: '查来源', isMisleading: false,
-      linkedForeshadow: null, chapterSpans: [[2, 2]],
+      chapterSpans: [[2, 2]],
     })
     expect(created.chapterSpans).toEqual([[2, 2]])
     expect(store.listClues('p-1')[0].chapterSpans).toEqual([[2, 2]])
@@ -388,7 +388,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     const f = store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: '神秘物品',
       category: 'item', status: 'planned', firstChapter: 1, lastChapter: null,
-      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [[1, 10]],
+      recoverByChapter: 10, chapterSpans: [[1, 10]],
     })
     expect(f.id).toBe('f-1')
     expect(f.firstChapter).toBe(1)
@@ -398,7 +398,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
     })
     expect(store.getForeshadow('f-1')?.description).toBe('x')
   })
@@ -407,7 +407,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
     })
     const updated = store.updateForeshadow('f-1', { status: 'planted', firstChapter: 3 })
     expect(updated).toBeDefined()
@@ -419,7 +419,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     const created = store.createForeshadow({
       id: 'f-chain', projectId: 'p-1', description: '旧钥匙',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
       beats: [
         { chapter: 2, type: 'plant' },
         { chapter: 5, type: 'reinforce', note: '再次出现' },
@@ -444,7 +444,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-remove-beat', projectId: 'p-1', description: '将被修改的事件链',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
       beats: [
         { chapter: 2, type: 'plant' },
         { chapter: 5, type: 'reinforce' },
@@ -472,7 +472,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     const created = store.createForeshadow({
       id: 'f-invalid', projectId: 'p-1', description: '异常链',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
       beats: [
         { chapter: 1, type: 'reinforce' },
         { chapter: 3, type: 'plant' },
@@ -490,7 +490,7 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'x',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
     })
     expect(store.deleteForeshadow('f-1')).toBe(true)
     expect(store.getForeshadow('f-1')).toBeUndefined()
@@ -500,12 +500,12 @@ describe('NovelStore - 伏笔 CRUD', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: 'A',
       category: 'item', status: 'planned', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
     })
     store.createForeshadow({
       id: 'f-2', projectId: 'p-1', description: 'B',
       category: 'item', status: 'planted', firstChapter: null, lastChapter: null,
-      recoverByChapter: null, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [],
+      recoverByChapter: null, chapterSpans: [],
     })
     expect(store.listForeshadowing('p-1')).toHaveLength(2)
   })
@@ -523,54 +523,15 @@ describe('NovelStore - P3-2 伏笔↔信息差双向联动', () => {
     store.createForeshadow({
       id: 'f-1', projectId: 'p-1', description: '神秘戒指',
       category: 'item', status: 'planned', firstChapter: 1, lastChapter: null,
-      recoverByChapter: 10, linkedCharacters: '[]', linkedClues: '[]', linkedInfoLayers: '[]', chapterSpans: [[1, 10]],
+      recoverByChapter: 10, chapterSpans: [[1, 10]],
       plantMethod: 'implicit', recoverMethod: 'explicit',
     })
     store.createInformationLayer({
       id: 'il-1', projectId: 'p-1', infoDescription: '读者不知道戒指是神器',
       authorKnows: true, readerKnows: false, characterKnowledge: '{}',
-      revealStage: null, revealChapter: null, isRevealed: false, linkedForeshadows: '[]',
+      revealStage: null, revealChapter: null, isRevealed: false,
     })
   }
-
-  it('linkForeshadowToInfoLayer 双向写入（伏笔端 + 信息差端）', () => {
-    seedForeshadowAndInfoLayer()
-    store.linkForeshadowToInfoLayer('f-1', 'il-1')
-    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe(JSON.stringify(['il-1']))
-    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe(JSON.stringify(['f-1']))
-  })
-
-  it('linkForeshadowToInfoLayer 幂等：重复调用不重复写入', () => {
-    seedForeshadowAndInfoLayer()
-    store.linkForeshadowToInfoLayer('f-1', 'il-1')
-    store.linkForeshadowToInfoLayer('f-1', 'il-1')
-    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe(JSON.stringify(['il-1']))
-    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe(JSON.stringify(['f-1']))
-  })
-
-  it('unlinkForeshadowFromInfoLayer 双向移除', () => {
-    seedForeshadowAndInfoLayer()
-    store.linkForeshadowToInfoLayer('f-1', 'il-1')
-    store.unlinkForeshadowFromInfoLayer('f-1', 'il-1')
-    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe('[]')
-    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe('[]')
-  })
-
-  it('deleteForeshadow 自动清理信息差的 linkedForeshadows', () => {
-    seedForeshadowAndInfoLayer()
-    store.linkForeshadowToInfoLayer('f-1', 'il-1')
-    store.deleteForeshadow('f-1')
-    // 伏笔被删，信息差的 linkedForeshadows 应自动清空
-    expect(store.getInformationLayer('il-1')!.linkedForeshadows).toBe('[]')
-  })
-
-  it('deleteInfoLayer 自动清理伏笔的 linkedInfoLayers', () => {
-    seedForeshadowAndInfoLayer()
-    store.linkForeshadowToInfoLayer('f-1', 'il-1')
-    store.deleteInfoLayer('il-1')
-    // 信息差被删，伏笔的 linkedInfoLayers 应自动清空
-    expect(store.getForeshadow('f-1')!.linkedInfoLayers).toBe('[]')
-  })
 
   it('getInformationLayer 按 ID 查询单个信息差', () => {
     seedForeshadowAndInfoLayer()
@@ -698,7 +659,6 @@ describe('NovelStore v0.2 — Hook CRUD', () => {
       id, projectId: testProjectId, chapterNumber: 5,
       hookType: 'suspense', description: '尸体被发现的风险',
       status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null,
-      linkedForeshadowId: null, linkedConflictId: null,
     })
     expect(hook.status).toBe('thrown')
     const got = store.getHook(id)
@@ -706,9 +666,9 @@ describe('NovelStore v0.2 — Hook CRUD', () => {
   })
 
   it('listUnfulfilledHooksBefore returns only thrown hooks before given chapter', () => {
-    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 4, hookType: 'suspense', description: 'h4', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
-    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'action', description: 'h5', status: 'fulfilled', fulfilledAtChapter: 6, fulfilledDescription: 'done', linkedForeshadowId: null, linkedConflictId: null })
-    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 3, hookType: 'emotional', description: 'h3', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 4, hookType: 'suspense', description: 'h4', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'action', description: 'h5', status: 'fulfilled', fulfilledAtChapter: 6, fulfilledDescription: 'done' })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 3, hookType: 'emotional', description: 'h3', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
     // 第7章创作时查询未兑现钩子：应返回 h3（ch3, thrown）和 h4（ch4, thrown），不含 h5（fulfilled）
     const result = store.listUnfulfilledHooksBefore(testProjectId, 7)
     expect(result).toHaveLength(2)
@@ -716,8 +676,8 @@ describe('NovelStore v0.2 — Hook CRUD', () => {
   })
 
   it('listHooksByChapter returns hooks of given chapter', () => {
-    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 4, hookType: 'suspense', description: 'h4', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
-    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'action', description: 'h5', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 4, hookType: 'suspense', description: 'h4', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'action', description: 'h5', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
     const result = store.listHooksByChapter(testProjectId, 5)
     expect(result).toHaveLength(1)
     expect(result[0].description).toBe('h5')
@@ -725,7 +685,7 @@ describe('NovelStore v0.2 — Hook CRUD', () => {
 
   it('updateHook marks fulfilled', () => {
     const id = randomUUID()
-    store.createHook({ id, projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id, projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
     const updated = store.updateHook(id, { status: 'fulfilled', fulfilledAtChapter: 6, fulfilledDescription: '承接了' })
     expect(updated?.status).toBe('fulfilled')
     expect(updated?.fulfilledAtChapter).toBe(6)
@@ -737,7 +697,7 @@ describe('NovelStore v0.2 — Hook CRUD', () => {
 
   it('deleteHook', () => {
     const id = randomUUID()
-    store.createHook({ id, projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id, projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
     expect(store.deleteHook(id)).toBe(true)
     expect(store.getHook(id)).toBeUndefined()
   })
@@ -747,8 +707,8 @@ describe('NovelStore v0.2 — Hook CRUD', () => {
   })
 
   it('listHooks 按章节号升序', () => {
-    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h5', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
-    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 3, hookType: 'emotional', description: 'h3', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null, linkedForeshadowId: null, linkedConflictId: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 5, hookType: 'suspense', description: 'h5', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
+    store.createHook({ id: randomUUID(), projectId: testProjectId, chapterNumber: 3, hookType: 'emotional', description: 'h3', status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null })
     const list = store.listHooks(testProjectId)
     expect(list.map(h => h.chapterNumber)).toEqual([3, 5])
   })

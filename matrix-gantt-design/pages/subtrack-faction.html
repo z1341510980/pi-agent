@@ -1405,7 +1405,7 @@ pre {
     </style>
 
     <script>
-      const CELL_W=56,ENTITY_W=240,CURRENT_CH=14,TOTAL_CH=25,SUB_H=28;
+      const CELL_W=56,ENTITY_W=240,CURRENT_CH=14,TOTAL_CH=25,SUB_H=36;
       const ENTITY_COLOR='#15a877';
       const ENTITY_NAME='朝云阁';
       const ENTITY_KEY='faction';
@@ -1514,8 +1514,8 @@ pre {
 
       function subTrackLabel(label,color,extra){
         return`<div class="flex items-center gap-2 flex-1 min-w-0">
-          <span class="w-[3px] h-2.5 rounded-sm shrink-0" style="background:${color};"></span>
-          <span class="truncate" style="font-size:11px;color:var(--text-secondary);">${label}</span>
+          <span class="w-[3px] h-3.5 rounded-sm shrink-0" style="background:${color};box-shadow:0 1px 3px ${color}40;"></span>
+          <span class="truncate" style="font-size:12px;font-weight:500;color:var(--text-secondary);">${label}</span>
           ${extra||''}
         </div>
         <button class="size-5 flex items-center justify-center rounded transition-colors duration-150 hover:bg-[var(--bg-overlay-l1)] shrink-0" style="color:var(--text-disabled);" title="折叠子轨道"><i data-lucide="chevron-up" class="size-2.5"></i></button>`;
@@ -1528,9 +1528,9 @@ pre {
       function txt(x,y,t,c,s,w,a){return '<text x="'+x+'" y="'+y+'" fill="'+c+'" font-size="'+s+'" font-weight="'+w+'" text-anchor="'+(a||'start')+'" font-family="var(--font-family-default)" style="pointer-events:none;">'+t+'</text>';}
       function circ(x,y,r,f,st,sw){return '<circle cx="'+x+'" cy="'+y+'" r="'+r+'" fill="'+f+'" stroke="'+st+'" stroke-width="'+(sw||1)+'"/>';}
       function line(x1,y1,x2,y2,st,sw,d){return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+st+'" stroke-width="'+(sw||1)+'"'+(d?' stroke-dasharray="'+d+'"':'')+'/>';}
-      function bd(s,e,bg,b2,tc,l){const lf=(s-1)*CELL_W,w=(e-s+1)*CELL_W;return '<div style="position:absolute;left:'+lf+'px;width:'+w+'px;height:20px;top:50%;transform:translateY(-50%);background:'+bg+';border:1px solid '+b2+';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;color:'+tc+';white-space:nowrap;overflow:hidden;">'+l+'</div>';}
-      function dbd(s,e,l,c){const lf=(s-1)*CELL_W,w=(e-s+1)*CELL_W;return '<div style="position:absolute;left:'+lf+'px;width:'+w+'px;height:20px;top:50%;transform:translateY(-50%);border:1px dashed '+c+';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;color:'+c+';white-space:nowrap;overflow:hidden;">'+l+'</div>';}
-      function sc(name,color,bg,content){return '<div style="display:flex;height:'+SUB_H+'px;border-bottom:1px solid rgba(115,115,115,0.20);"><div style="width:'+(ENTITY_W-6)+'px;flex-shrink:0;display:flex;align-items:center;gap:6px;padding-left:24px;padding-right:8px;"><span style="width:3px;height:10px;border-radius:2px;background:'+color+';flex-shrink:0;"></span><span style="font-size:11px;color:var(--text-tertiary);white-space:nowrap;">'+name+'</span></div><div style="flex:1;position:relative;'+bg+'">'+content+'</div></div>';}
+      function bd(s,e,bg,b2,tc,l){const lf=(s-1)*CELL_W,w=(e-s+1)*CELL_W;return '<div style="position:absolute;left:'+lf+'px;width:'+w+'px;height:24px;top:50%;transform:translateY(-50%);background:'+bg+';border:1px solid '+b2+';border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;color:'+tc+';white-space:nowrap;overflow:hidden;letter-spacing:0.02em;box-shadow:0 1px 2px rgba(0,0,0,0.04);">'+l+'</div>';}
+      function dbd(s,e,l,c){const lf=(s-1)*CELL_W,w=(e-s+1)*CELL_W;return '<div style="position:absolute;left:'+lf+'px;width:'+w+'px;height:24px;top:50%;transform:translateY(-50%);border:1px dashed '+c+';border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;color:'+c+';white-space:nowrap;overflow:hidden;letter-spacing:0.02em;">'+l+'</div>';}
+      function sc(name,color,bg,content){return '<div style="display:flex;height:'+SUB_H+'px;border-bottom:1px solid rgba(115,115,115,0.10);"><div style="width:'+(ENTITY_W-6)+'px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding-left:24px;padding-right:12px;"><span style="width:3px;height:14px;border-radius:2px;background:'+color+';flex-shrink:0;box-shadow:0 1px 3px '+color+'40;"></span><span style="font-size:12px;font-weight:500;color:var(--text-secondary);white-space:nowrap;">'+name+'</span></div><div style="flex:1;position:relative;'+bg+'">'+content+'</div></div>';}
       function buildSubtracks(){
         const TW=CELL_W * TOTAL_CH;
         let html='';

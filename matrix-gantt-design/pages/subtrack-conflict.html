@@ -1446,7 +1446,7 @@ pre {
     </style>
 
     <script>
-      const CELL_W=56,ENTITY_W=240,CURRENT_CH=14,TOTAL_CH=25,SUB_H=28;
+      const CELL_W=56,ENTITY_W=240,CURRENT_CH=14,TOTAL_CH=25,SUB_H=36;
       const ENTITY_COLOR='#e8463a';
       const ENTITY_NAME='权力之争';
       const ENTITY_KEY='conflict';
@@ -1553,8 +1553,8 @@ pre {
 
       function subTrackLabel(label,color,extra){
         return`<div class="flex items-center gap-2 flex-1 min-w-0">
-          <span class="w-[3px] h-2.5 rounded-sm shrink-0" style="background:${color};"></span>
-          <span class="truncate" style="font-size:11px;color:var(--text-secondary);">${label}</span>
+          <span class="w-[3px] h-3.5 rounded-sm shrink-0" style="background:${color};box-shadow:0 1px 3px ${color}40;"></span>
+          <span class="truncate" style="font-size:12px;font-weight:500;color:var(--text-secondary);">${label}</span>
           ${extra||''}
         </div>
         <button class="size-5 flex items-center justify-center rounded transition-colors duration-150 hover:bg-[var(--bg-overlay-l1)] shrink-0" style="color:var(--text-disabled);" title="折叠子轨道"><i data-lucide="chevron-up" class="size-2.5"></i></button>`;
@@ -1578,8 +1578,8 @@ pre {
           const pattern=seg.pattern?'background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,0.20) 3px,rgba(255,255,255,0.20) 6px);':'';
           const dashed=seg.dashed?'border-style:dashed;':'';
           const climax=seg.climax?'<span style="position:absolute;right:3px;top:50%;transform:translateY(-50%);font-size:9px;line-height:1;">⚡</span>':'';
-          bands+=`<div style="position:absolute;top:50%;transform:translateY(-50%);left:${l}px;width:${w}px;height:16px;border-radius:4px;background:${seg.fill};border:1px solid ${seg.border};${pattern}${dashed}display:flex;align-items:center;justify-content:center;">
-            <span style="font-size:9px;font-weight:600;color:${textColor};letter-spacing:0.03em;white-space:nowrap;">${seg.label}</span>
+          bands+=`<div style="position:absolute;top:50%;transform:translateY(-50%);left:${l}px;width:${w}px;height:20px;border-radius:5px;background:${seg.fill};border:1px solid ${seg.border};${pattern}${dashed}display:flex;align-items:center;justify-content:center;box-shadow:0 1px 2px rgba(0,0,0,0.04);">
+            <span style="font-size:10px;font-weight:500;color:${textColor};letter-spacing:0.02em;white-space:nowrap;">${seg.label}</span>
             ${climax}
           </div>`;
         });

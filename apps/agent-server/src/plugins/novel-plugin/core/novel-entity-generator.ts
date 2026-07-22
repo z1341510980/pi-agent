@@ -110,7 +110,7 @@ export type GeneratedConflict = Pick<
 
 export type GeneratedForeshadow = Pick<
   NovelForeshadow,
-  'description' | 'category' | 'status' | 'linkedCharacters' | 'linkedClues'
+  'description' | 'category' | 'status'
   | 'plantMethod' | 'recoverMethod'
 >
 
@@ -159,7 +159,7 @@ const BATCH_FIELD_RULES: Record<EntityKind, string> = {
     'intensity 为 1-10 整数，twistPotential 为 0-10 整数，participants 为角色姓名数组；无高潮时 climaxChapter 和 climaxType 为 null。',
   ].join('\n'),
   foreshadow: [
-    'description、category、status、linkedCharacters、linkedClues、plantMethod、recoverMethod。',
+    'description、category、status、plantMethod、recoverMethod。',
     'category: item/spoken/event/identity/secret/prophecy/promise/quote。status: planned/planted/reinforced/partially_revealed/recovering/recovered/abandoned。plantMethod: explicit/implicit/indirect。recoverMethod: explicit/implicit/reverse/progressive。',
   ].join('\n'),
   faction: 'name、description、type、ideology、strength、resources、allies、enemies、status。type: organization/sect/kingdom/family/guild/cult。strength: weak/medium/strong/overwhelming。status: active/declined/destroyed/hidden。resources、allies、enemies 为字符串数组。',
@@ -778,11 +778,8 @@ export class NovelEntityGenerator {
           firstChapter: chapterNumber,
           lastChapter: null,
           recoverByChapter: null,
-          linkedCharacters: gen.data.linkedCharacters,
-          linkedClues: gen.data.linkedClues,
           plantMethod: gen.data.plantMethod,
           recoverMethod: gen.data.recoverMethod,
-          linkedInfoLayers: '[]',
           chapterSpans: [],
           beats: [{ chapter: chapterNumber, type: 'plant' }],
         })
@@ -1828,7 +1825,7 @@ export class NovelEntityGenerator {
     const requiredFields: Record<EntityKind, string[]> = {
       character: ['name', 'description', 'identity', 'personality', 'appearance', 'currentState', 'currentGoal', 'currentPressure', 'secret', 'arcStage', 'speechStyle', 'longTermDesire', 'plotRole', 'removalImpact'],
       conflict: ['description', 'type', 'intensity', 'stage', 'tier', 'participants', 'climaxChapter', 'climaxType', 'stakes', 'twistPotential', 'plotFunction', 'progressionMode'],
-      foreshadow: ['description', 'category', 'status', 'linkedCharacters', 'linkedClues', 'plantMethod', 'recoverMethod'],
+      foreshadow: ['description', 'category', 'status', 'plantMethod', 'recoverMethod'],
       faction: ['name', 'description', 'type', 'ideology', 'strength', 'resources', 'allies', 'enemies', 'status'],
       location: ['name', 'description', 'type', 'significance', 'status'],
       item: ['name', 'description', 'type', 'ownerId', 'status', 'abilities', 'origin'],
@@ -2004,8 +2001,6 @@ export class NovelEntityGenerator {
         '    - promise: 承诺（在承诺人面前兑现时回收）',
         '    - quote: 台词（台词应验时回收）',
         '- status: 伏笔当前状态，从以下枚举中选择一个：planned/planted/reinforced/partially_revealed/recovering/recovered/abandoned',
-        '- linkedCharacters: 关联角色描述（字符串，可多个，逗号分隔）',
-        '- linkedClues: 关联线索描述（字符串，可多个，逗号分隔）',
         '- plantMethod: 埋设方式，从以下枚举中选择一个（指导埋设时的手法）：',
         '    - explicit: 明写（直接点破，读者立刻知道是伏笔）',
         '    - implicit: 暗写（藏在对话或动作里，读者需要细品）',
@@ -2254,8 +2249,6 @@ export class NovelEntityGenerator {
       description: ensureString(p.description, ''),
       category,
       status: (validStatus.includes(p.status as string) ? p.status : 'planted') as NovelForeshadow['status'],
-      linkedCharacters: ensureString(p.linkedCharacters, ''),
-      linkedClues: ensureString(p.linkedClues, ''),
       plantMethod,
       recoverMethod,
     }
@@ -2373,8 +2366,6 @@ export class NovelEntityGenerator {
           // 与 parseForeshadow 一致：新枚举值（默认 item 物品）
           category: 'item',
           status: 'planned',
-          linkedCharacters: '',
-          linkedClues: '',
           plantMethod: undefined,
           recoverMethod: undefined,
         }

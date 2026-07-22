@@ -371,7 +371,9 @@ export class ChapterChatRunner {
         currentGoal: char.currentGoal,
         secret: char.secret,
         arcStage: char.arcStage,
-        participatingConflicts: this.parseIdList(char.participatingConflicts),
+        participatingConflicts: this.store.listEdgesByEntity(char.id, { edgeType: 'related' })
+          .filter(e => e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === char.id)
+          .map(e => e.targetId),
       },
       buildSystemPrompt: () => this.buildCharacterPrompt(char),
     }

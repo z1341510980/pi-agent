@@ -87,8 +87,7 @@ describe('ConsistencyAuditor - 伏笔回收率', () => {
         id: `fs-${i}`, projectId, description: `伏笔${i}`,
         category: 'item', status: 'recovered',
         firstChapter: 1, lastChapter: 5, recoverByChapter: 5,
-        linkedCharacters: '[]', linkedClues: '[]',
-        linkedInfoLayers: '[]', chapterSpans: [],
+        chapterSpans: [],
       })
     }
     for (let i = 4; i <= 5; i++) {
@@ -96,16 +95,14 @@ describe('ConsistencyAuditor - 伏笔回收率', () => {
         id: `fs-${i}`, projectId, description: `伏笔${i}`,
         category: 'item', status: 'planted',
         firstChapter: 2, lastChapter: null, recoverByChapter: null,
-        linkedCharacters: '[]', linkedClues: '[]',
-        linkedInfoLayers: '[]', chapterSpans: [],
+        chapterSpans: [],
       })
     }
     store.createForeshadow({
       id: 'fs-6', projectId, description: '伏笔6',
       category: 'item', status: 'abandoned',
       firstChapter: 1, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]',
-      linkedInfoLayers: '[]', chapterSpans: [],
+      chapterSpans: [],
     })
 
     const report = auditor.audit(projectId)
@@ -127,8 +124,7 @@ describe('ConsistencyAuditor - 伏笔回收率', () => {
       id: 'fs-1', projectId, description: '神秘吊坠',
       category: 'item', status: 'planted',
       firstChapter: 1, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]',
-      linkedInfoLayers: '[]', chapterSpans: [],
+      chapterSpans: [],
     })
     const report = auditor.audit(projectId)
     expect(report.foreshadow.urgent).toHaveLength(1)
@@ -145,8 +141,7 @@ describe('ConsistencyAuditor - 伏笔回收率', () => {
       id: 'fs-1', projectId, description: '神秘吊坠',
       category: 'item', status: 'planted',
       firstChapter: 1, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]',
-      linkedInfoLayers: '[]', chapterSpans: [],
+      chapterSpans: [],
     })
     const report = auditor.audit(projectId)
     expect(report.foreshadow.expired).toHaveLength(1)
@@ -163,15 +158,13 @@ describe('ConsistencyAuditor - 伏笔回收率', () => {
       id: 'fs-1', projectId, description: '已回收',
       category: 'item', status: 'recovered',
       firstChapter: 1, lastChapter: 10, recoverByChapter: 10,
-      linkedCharacters: '[]', linkedClues: '[]',
-      linkedInfoLayers: '[]', chapterSpans: [],
+      chapterSpans: [],
     })
     store.createForeshadow({
       id: 'fs-2', projectId, description: '已废弃',
       category: 'item', status: 'abandoned',
       firstChapter: 1, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]',
-      linkedInfoLayers: '[]', chapterSpans: [],
+      chapterSpans: [],
     })
     const report = auditor.audit(projectId)
     expect(report.foreshadow.urgent).toHaveLength(0)
@@ -187,8 +180,7 @@ describe('ConsistencyAuditor - 伏笔回收率', () => {
       id: 'fs-1', projectId, description: '神秘吊坠',
       category: 'item', status: 'planted',
       firstChapter: null, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]',
-      linkedInfoLayers: '[]', chapterSpans: [],
+      chapterSpans: [],
       beats: [{ chapter: 1, type: 'plant' }],
     })
     const report = auditor.audit(projectId)
@@ -206,25 +198,21 @@ describe('ConsistencyAuditor - 钩子悬挂', () => {
       id: 'h-1', projectId, chapterNumber: 1,
       hookType: 'suspense', description: '钩子1',
       status: 'fulfilled', fulfilledAtChapter: 2, fulfilledDescription: '',
-      linkedForeshadowId: null, linkedConflictId: null,
     })
     store.createHook({
       id: 'h-2', projectId, chapterNumber: 1,
       hookType: 'reversal', description: '钩子2',
       status: 'fulfilled', fulfilledAtChapter: 3, fulfilledDescription: '',
-      linkedForeshadowId: null, linkedConflictId: null,
     })
     store.createHook({
       id: 'h-3', projectId, chapterNumber: 1,
       hookType: 'emotional', description: '钩子3',
       status: 'abandoned', fulfilledAtChapter: null, fulfilledDescription: null,
-      linkedForeshadowId: null, linkedConflictId: null,
     })
     store.createHook({
       id: 'h-4', projectId, chapterNumber: 1,
       hookType: 'suspense', description: '悬挂钩子',
       status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null,
-      linkedForeshadowId: null, linkedConflictId: null,
     })
     const report = auditor.audit(projectId)
     expect(report.hooks.total).toBe(4)
@@ -241,7 +229,6 @@ describe('ConsistencyAuditor - 钩子悬挂', () => {
       id: 'h-1', projectId, chapterNumber: 1,
       hookType: 'suspense', description: '悬挂钩子',
       status: 'thrown', fulfilledAtChapter: null, fulfilledDescription: null,
-      linkedForeshadowId: null, linkedConflictId: null,
     })
     const report = auditor.audit(projectId)
     expect(report.hooks.hanging).toHaveLength(1)
@@ -258,7 +245,6 @@ describe('ConsistencyAuditor - 钩子悬挂', () => {
       id: 'h-1', projectId, chapterNumber: 1,
       hookType: 'suspense', description: '已兑现',
       status: 'fulfilled', fulfilledAtChapter: 2, fulfilledDescription: '',
-      linkedForeshadowId: null, linkedConflictId: null,
     })
     const report = auditor.audit(projectId)
     expect(report.hooks.hanging).toHaveLength(0)
@@ -385,8 +371,7 @@ describe('ConsistencyAuditor - 健康度评分', () => {
         id: `fs-${i}`, projectId, description: `伏笔${i}`,
         category: 'item', status: 'recovered',
         firstChapter: 1, lastChapter: 5, recoverByChapter: 5,
-        linkedCharacters: '[]', linkedClues: '[]',
-        linkedInfoLayers: '[]', chapterSpans: [],
+        chapterSpans: [],
       })
     }
     const report = auditor.audit(projectId)

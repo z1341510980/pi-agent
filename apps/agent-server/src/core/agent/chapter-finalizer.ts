@@ -481,8 +481,10 @@ export class ChapterFinalizer {
           arcStage: c.arcStage,
           longTermDesire: c.longTermDesire,
           removalImpact: c.removalImpact,
-          // 反向索引同步由 store 维护，这里只读快照用于差异比较
-          participatingConflicts: this.parseIdList(c.participatingConflicts),
+          // 关联关系走 novel_edges 表：character 作为 source 指向 conflict
+          participatingConflicts: this.store.listEdgesByEntity(c.id, { edgeType: 'related' })
+            .filter(e => e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === c.id)
+            .map(e => e.targetId),
         },
       ]),
     )
@@ -509,7 +511,10 @@ export class ChapterFinalizer {
           plantMethod: f.plantMethod,
           recoverMethod: f.recoverMethod,
           // P3-2：跟踪 linkedInfoLayers 变化（用于 Rule 4 关联 info_layer_change）
-          linkedInfoLayers: this.parseIdList(f.linkedInfoLayers),
+          // 关联关系走 novel_edges 表：foreshadow 作为 source 指向 info_layer
+          linkedInfoLayers: this.store.listEdgesByEntity(f.id, { edgeType: 'related' })
+            .filter(e => e.sourceType === 'foreshadow' && e.targetType === 'info_layer' && e.sourceId === f.id)
+            .map(e => e.targetId),
         },
       ]),
     )
@@ -564,7 +569,10 @@ export class ChapterFinalizer {
           readerKnows: l.readerKnows,
           isRevealed: l.isRevealed,
           revealChapter: l.revealChapter,
-          linkedForeshadows: this.parseIdList(l.linkedForeshadows),
+          // 关联关系走 novel_edges 表：info_layer 作为 target，foreshadow 作为 source
+          linkedForeshadows: this.store.listEdgesByEntity(l.id, { edgeType: 'related' })
+            .filter(e => e.sourceType === 'foreshadow' && e.targetType === 'info_layer' && e.targetId === l.id)
+            .map(e => e.sourceId),
         },
       ]),
     )
@@ -1064,10 +1072,10 @@ export class ChapterFinalizer {
       try { parsed = JSON.parse(e.newValue) } catch { continue }
       if (parsed.status !== 'recovered') continue
 
-      // 查询伏笔的 linkedCharacters（captureEntityState 快照未含此字段，需查 store）
-      const foreshadow = this.store.getForeshadow(e.entityId)
-      if (!foreshadow) continue
-      const linkedCharIds = this.parseIdList(foreshadow.linkedCharacters)
+      // 关联关系走 novel_edges 表：foreshadow 作为 source 指向 character
+      const linkedCharIds = this.store.listEdgesByEntity(e.entityId, { edgeType: 'related' })
+        .filter(ed => ed.sourceType === 'foreshadow' && ed.targetType === 'character' && ed.sourceId === e.entityId)
+        .map(ed => ed.targetId)
       if (linkedCharIds.length === 0) continue
 
       for (const charId of linkedCharIds) {
@@ -1090,10 +1098,10 @@ export class ChapterFinalizer {
       try { parsed = JSON.parse(e.newValue) } catch { continue }
       if (parsed.status !== 'recovered') continue
 
-      // 查询伏笔的 linkedInfoLayers（P3-2 双向关联字段）
-      const foreshadow = this.store.getForeshadow(e.entityId)
-      if (!foreshadow) continue
-      const linkedInfoLayerIds = this.parseIdList(foreshadow.linkedInfoLayers)
+      // 关联关系走 novel_edges 表：foreshadow 作为 source 指向 info_layer
+      const linkedInfoLayerIds = this.store.listEdgesByEntity(e.entityId, { edgeType: 'related' })
+        .filter(ed => ed.sourceType === 'foreshadow' && ed.targetType === 'info_layer' && ed.sourceId === e.entityId)
+        .map(ed => ed.targetId)
       if (linkedInfoLayerIds.length === 0) continue
 
       for (const infoLayerId of linkedInfoLayerIds) {

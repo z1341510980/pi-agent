@@ -345,8 +345,7 @@ describe('RelationshipGraph - findEntityChapters', () => {
       id: 'fs-1', projectId, description: '神秘吊坠',
       category: 'item', status: 'planted',
       firstChapter: 2, lastChapter: null, recoverByChapter: null,
-      linkedCharacters: '[]', linkedClues: '[]',
-      linkedInfoLayers: '[]', chapterSpans: [],
+      chapterSpans: [],
       beats: [
         { chapter: 2, type: 'plant' },
         { chapter: 8, type: 'reinforce' },

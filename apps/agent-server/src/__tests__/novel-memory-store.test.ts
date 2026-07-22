@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
-import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
+import { NovelMemoryStore, inferDimension } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 
 let db: Database.Database
@@ -389,3 +389,565 @@ describe('NovelMemoryStore - 快照', () => {
     expect(list[0].snapshotType).toBe('full')
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// dimension 集中推断落库（纯函数测试见 infer-dimension.test.ts）
+// ═══════════════════════════════════════════════════════════════
+
+describe('recordEvent - dimension 自动推断落库', () => {
+  it('recordEvent 写入后 dimension 和 valueType 字段被持久化', () => {
+    const event = store.recordEvent({
+      projectId: 'p-1', chapterId: 'ch-1', chapterNumber: 1,
+      eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      description: '冲突阶段变更',
+      oldValue: JSON.stringify({ stage: '潜伏', intensity: 5 }),
+      newValue: JSON.stringify({ stage: '高潮', intensity: 8 }),
+      cause: null, effectIds: [], significance: 7,
+    })
+    expect(event.dimension).toBe('conflict.stage')
+    expect(event.valueType).toBe('enum')
+
+    // 通过 listEvents 读回验证
+    const list = store.listEvents('p-1')
+    expect(list).toHaveLength(1)
+    expect(list[0].dimension).toBe('conflict.stage')
+    expect(list[0].valueType).toBe('enum')
+    expect(list[0].source).toBe('ai-extracted')
+  })
+
+  it('调用方显式传入 dimension 时不被推断覆盖', () => {
+    const event = store.recordEvent({
+      projectId: 'p-1', chapterId: null, chapterNumber: 1,
+      eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      description: '自定义维度',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+      dimension: 'custom.dimension',
+      valueType: 'text',
+      cause: null, effectIds: [], significance: 5,
+    })
+    expect(event.dimension).toBe('custom.dimension')
+    expect(event.valueType).toBe('text')
+  })
+
+  it('无法推断时 dimension 保持 null（旧行为）', () => {
+    const event = store.recordEvent({
+      projectId: 'p-1', chapterId: null, chapterNumber: 1,
+      eventType: 'plot_event',
+      entityId: 'ch-1', entityType: 'chapter',
+      description: '剧情事件',
+      oldValue: null,
+      newValue: JSON.stringify({ title: '高潮' }),
+      cause: null, effectIds: [], significance: 5,
+    })
+    expect(event.dimension).toBeNull()
+    expect(event.valueType).toBeNull()
+  })
+})
+
+describe('recordEvent → listChangeRecords 端到端（验证 dimension 过滤穿透）', () => {
+  it('recordEvent 写入的 conflict 事件能被 listChangeRecords 查到', () => {
+    // 模拟 chapter-finalizer 写入冲突阶段变更
+    store.recordEvent({
+      projectId: 'p-1', chapterId: 'ch-1', chapterNumber: 5,
+      eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      description: '冲突阶段变更: 主线冲突（潜伏 → 高潮）',
+      oldValue: JSON.stringify({ stage: '潜伏', intensity: 5 }),
+      newValue: JSON.stringify({ stage: '高潮', intensity: 8 }),
+      cause: null, effectIds: [], significance: 7,
+    })
+
+    // 之前会被 `dimension IS NOT NULL` 过滤掉，现在应该能查到
+    const records = store.listChangeRecords('p-1', { subjectId: 'cf-1' })
+    expect(records).toHaveLength(1)
+    expect(records[0].dimension).toBe('conflict.stage')
+    expect(records[0].valueType).toBe('enum')
+    expect(records[0].subjectId).toBe('cf-1')
+    expect(records[0].subjectType).toBe('conflict')
+  })
+
+  it('recordEvent 写入的冲突创建事件 → conflict.created', () => {
+    store.recordEvent({
+      projectId: 'p-1', chapterId: 'ch-1', chapterNumber: 1,
+      eventType: 'conflict_change',
+      entityId: 'cf-new', entityType: 'conflict',
+      description: '冲突创建: 主线冲突',
+      oldValue: null,
+      newValue: JSON.stringify({
+        stage: '潜伏', intensity: 5,
+        plotFunction: '主线', progressionMode: 'linear',
+      }),
+      cause: null, effectIds: [], significance: 7,
+    })
+
+    const records = store.listChangeRecords('p-1', { subjectId: 'cf-new' })
+    expect(records).toHaveLength(1)
+    expect(records[0].dimension).toBe('conflict.created')
+    expect(records[0].valueType).toBe('reference')
+  })
+
+  it('recordEvent 写入的角色弧光变更 → character.arc_stage', () => {
+    store.recordEvent({
+      projectId: 'p-1', chapterId: 'ch-1', chapterNumber: 3,
+      eventType: 'character_change',
+      entityId: 'c-1', entityType: 'character',
+      description: '角色 李雷 的 arcStage 变更',
+      oldValue: JSON.stringify({ arcStage: '起点' }),
+      newValue: JSON.stringify({ arcStage: '成长' }),
+      cause: null, effectIds: [], significance: 6,
+    })
+
+    const records = store.listChangeRecords('p-1', { subjectId: 'c-1' })
+    expect(records).toHaveLength(1)
+    expect(records[0].dimension).toBe('character.arc_stage')
+  })
+
+  it('dimension 仍为 null 的事件（如 plot_event）被 listChangeRecords 过滤掉', () => {
+    store.recordEvent({
+      projectId: 'p-1', chapterId: null, chapterNumber: 1,
+      eventType: 'plot_event',
+      entityId: 'ch-1', entityType: 'chapter',
+      description: '剧情事件',
+      oldValue: null,
+      newValue: JSON.stringify({ title: '高潮' }),
+      cause: null, effectIds: [], significance: 5,
+    })
+
+    const records = store.listChangeRecords('p-1')
+    expect(records).toHaveLength(0)
+  })
+
+  it('listChangeRecords 按 dimension 过滤生效', () => {
+    store.recordEvent({
+      projectId: 'p-1', chapterId: null, chapterNumber: 1,
+      eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      description: '冲突阶段变更',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+      cause: null, effectIds: [], significance: 7,
+    })
+    store.recordEvent({
+      projectId: 'p-1', chapterId: null, chapterNumber: 2,
+      eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      description: '冲突强度变更',
+      oldValue: JSON.stringify({ intensity: 5 }),
+      newValue: JSON.stringify({ intensity: 8 }),
+      cause: null, effectIds: [], significance: 5,
+    })
+
+    const stageRecords = store.listChangeRecords('p-1', { dimension: 'conflict.stage' })
+    expect(stageRecords).toHaveLength(1)
+    expect(stageRecords[0].dimension).toBe('conflict.stage')
+
+    const intensityRecords = store.listChangeRecords('p-1', { dimension: 'conflict.intensity' })
+    expect(intensityRecords).toHaveLength(1)
+    expect(intensityRecords[0].dimension).toBe('conflict.intensity')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// backfillMissingDimensions - 历史数据回填迁移
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * 直接用 SQL 插入 dimension IS NULL 的行，模拟 recordEvent 推断功能上线前的历史数据。
+ * 修改后的 recordEvent 会自动推断 dimension，所以正常路径不会再产生 NULL 行。
+ */
+function insertLegacyEvent(opts: {
+  id: string
+  eventType: string
+  entityId: string
+  entityType: string
+  newValue: string | null
+  oldValue?: string | null
+}): void {
+  db.prepare(`
+    INSERT INTO novel_memory_events
+      (id, project_id, chapter_id, chapter_number, event_type, entity_id, entity_type,
+       description, old_value, new_value, cause, effect_ids, significance,
+       dimension, value_type, source, created_at)
+    VALUES
+      (?, 'p-1', NULL, 1, ?, ?, ?,
+       'legacy event', ?, ?, NULL, '[]', 5,
+       NULL, NULL, 'migration', ?)
+  `).run(
+    opts.id, opts.eventType, opts.entityId, opts.entityType,
+    opts.oldValue ?? null, opts.newValue, Math.floor(Date.now() / 1000),
+  )
+}
+
+describe('backfillMissingDimensions - dry-run', () => {
+  it('空库时返回 scanned=0', () => {
+    const stats = store.backfillMissingDimensions({ dryRun: true })
+    expect(stats).toEqual({ scanned: 0, updated: 0, skipped: 0, uninferable: 0 })
+  })
+
+  it('dry-run 只统计不写入', () => {
+    insertLegacyEvent({
+      id: 'legacy-1', eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+    })
+
+    const stats = store.backfillMissingDimensions({ dryRun: true })
+    expect(stats.scanned).toBe(1)
+    expect(stats.updated).toBe(0)  // dry-run 不写入
+    expect(stats.uninferable).toBe(0)
+
+    // 验证数据库中 dimension 仍为 NULL
+    const records = store.listChangeRecords('p-1')
+    expect(records).toHaveLength(0)  // 仍被 dimension IS NOT NULL 过滤
+  })
+
+  it('dry-run 统计 uninferable 数量', () => {
+    insertLegacyEvent({
+      id: 'legacy-plot', eventType: 'plot_event',
+      entityId: 'ch-1', entityType: 'chapter',
+      newValue: JSON.stringify({ title: '高潮' }),
+    })
+
+    const stats = store.backfillMissingDimensions({ dryRun: true })
+    expect(stats.scanned).toBe(1)
+    expect(stats.uninferable).toBe(1)
+  })
+})
+
+describe('backfillMissingDimensions - 实际回填', () => {
+  it('回填后 dimension 被填入且能被 listChangeRecords 查到', () => {
+    insertLegacyEvent({
+      id: 'legacy-conflict', eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      oldValue: JSON.stringify({ stage: '潜伏', intensity: 5 }),
+      newValue: JSON.stringify({ stage: '高潮', intensity: 8 }),
+    })
+
+    // 回填前：被 dimension IS NOT NULL 过滤
+    expect(store.listChangeRecords('p-1')).toHaveLength(0)
+
+    const stats = store.backfillMissingDimensions({ backup: false })
+    expect(stats.scanned).toBe(1)
+    expect(stats.updated).toBe(1)
+    expect(stats.uninferable).toBe(0)
+
+    // 回填后：能查到
+    const records = store.listChangeRecords('p-1')
+    expect(records).toHaveLength(1)
+    expect(records[0].dimension).toBe('conflict.stage')
+    expect(records[0].valueType).toBe('enum')
+    expect(records[0].subjectId).toBe('cf-1')
+  })
+
+  it('多种 eventType 混合回填', () => {
+    insertLegacyEvent({
+      id: 'legacy-char', eventType: 'character_change',
+      entityId: 'c-1', entityType: 'character',
+      oldValue: JSON.stringify({ arcStage: '起点' }),
+      newValue: JSON.stringify({ arcStage: '成长' }),
+    })
+    insertLegacyEvent({
+      id: 'legacy-foreshadow', eventType: 'foreshadow_change',
+      entityId: 'f-1', entityType: 'foreshadow',
+      oldValue: JSON.stringify({ status: 'planted' }),
+      newValue: JSON.stringify({ status: 'payoff' }),
+    })
+    insertLegacyEvent({
+      id: 'legacy-relationship', eventType: 'relationship_change',
+      entityId: 'r-1', entityType: 'relationship',
+      oldValue: JSON.stringify({ currentStage: '盟友' }),
+      newValue: JSON.stringify({ currentStage: '决裂' }),
+    })
+
+    const stats = store.backfillMissingDimensions({ backup: false })
+    expect(stats.scanned).toBe(3)
+    expect(stats.updated).toBe(3)
+    expect(stats.uninferable).toBe(0)
+
+    const records = store.listChangeRecords('p-1')
+    expect(records).toHaveLength(3)
+    const dims = records.map((r) => r.dimension).sort()
+    expect(dims).toEqual(['character.arc_stage', 'foreshadow.beat', 'relationship.stage'])
+  })
+
+  it('无法推断的事件 dimension 保持 NULL（不被回填）', () => {
+    insertLegacyEvent({
+      id: 'legacy-plot', eventType: 'plot_event',
+      entityId: 'ch-1', entityType: 'chapter',
+      newValue: JSON.stringify({ title: '高潮' }),
+    })
+
+    const stats = store.backfillMissingDimensions({ backup: false })
+    expect(stats.scanned).toBe(1)
+    expect(stats.updated).toBe(0)
+    expect(stats.uninferable).toBe(1)
+
+    // dimension 仍为 NULL，listChangeRecords 仍查不到
+    expect(store.listChangeRecords('p-1')).toHaveLength(0)
+
+    // 但 listEvents 仍能查到（不过滤 dimension）
+    const events = store.listEvents('p-1')
+    expect(events).toHaveLength(1)
+    expect(events[0].dimension).toBeNull()
+  })
+
+  it('混合可推断 + 不可推断事件', () => {
+    insertLegacyEvent({
+      id: 'legacy-conflict', eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+    })
+    insertLegacyEvent({
+      id: 'legacy-plot', eventType: 'plot_event',
+      entityId: 'ch-1', entityType: 'chapter',
+      newValue: JSON.stringify({ title: '高潮' }),
+    })
+
+    const stats = store.backfillMissingDimensions({ backup: false })
+    expect(stats.scanned).toBe(2)
+    expect(stats.updated).toBe(1)
+    expect(stats.uninferable).toBe(1)
+
+    expect(store.listChangeRecords('p-1')).toHaveLength(1)
+  })
+})
+
+describe('backfillMissingDimensions - 幂等性', () => {
+  it('重复调用安全：第二次 scanned=0', () => {
+    insertLegacyEvent({
+      id: 'legacy-1', eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+    })
+
+    const first = store.backfillMissingDimensions({ backup: false })
+    expect(first.scanned).toBe(1)
+    expect(first.updated).toBe(1)
+
+    const second = store.backfillMissingDimensions({ backup: false })
+    expect(second.scanned).toBe(0)
+    expect(second.updated).toBe(0)
+  })
+
+  it('已显式填入 dimension 的行不被回填覆盖', () => {
+    // 用 createChangeRecord 写入一个已有 dimension 的记录
+    store.createChangeRecord({
+      projectId: 'p-1',
+      storyEventId: null,
+      chapterNumber: 1,
+      sceneOrder: 0,
+      subjectType: 'conflict',
+      subjectId: 'cf-manual',
+      dimension: 'manual.dimension',
+      targetType: null,
+      targetId: null,
+      valueType: 'text',
+      beforeValue: null,
+      afterValue: { foo: 'bar' },
+      reason: 'manual record',
+      significance: 5,
+      source: 'manual',
+      cause: null,
+      effectIds: [],
+    })
+
+    const stats = store.backfillMissingDimensions({ backup: false })
+    expect(stats.scanned).toBe(0)  // 已有 dimension，不在扫描范围
+  })
+})
+
+describe('backfillMissingDimensions - 备份', () => {
+  it('非 dry-run 且有更新时创建备份表', () => {
+    insertLegacyEvent({
+      id: 'legacy-1', eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+    })
+
+    const stats = store.backfillMissingDimensions({ backup: true })
+    expect(stats.scanned).toBe(1)
+    expect(stats.updated).toBe(1)
+    expect(stats.backupTable).toMatch(/^novel_memory_events_backup_\d+$/)
+
+    // 验证备份表存在且数据完整
+    const backupCount = db.prepare(`SELECT COUNT(*) as c FROM ${stats.backupTable}`).get() as { c: number }
+    expect(backupCount.c).toBe(1)  // 备份时表里有 1 行（回填前的原始数据）
+  })
+
+  it('backup: false 时不创建备份表', () => {
+    insertLegacyEvent({
+      id: 'legacy-1', eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+    })
+
+    const stats = store.backfillMissingDimensions({ backup: false })
+    expect(stats.backupTable).toBeUndefined()
+  })
+
+  it('无待回填数据时不创建备份表', () => {
+    const stats = store.backfillMissingDimensions({ backup: true })
+    expect(stats.scanned).toBe(0)
+    expect(stats.backupTable).toBeUndefined()
+  })
+})
+
+describe('backfillMissingDimensions - 端到端验证（打通过滤陷阱）', () => {
+  it('历史 conflict 事件回填后可被矩阵账本视图消费', () => {
+    // 模拟：推断功能上线前写入的历史 conflict 事件
+    insertLegacyEvent({
+      id: 'history-conflict-1', eventType: 'conflict_change',
+      entityId: 'cf-matrix', entityType: 'conflict',
+      oldValue: JSON.stringify({ stage: '潜伏', intensity: 5 }),
+      newValue: JSON.stringify({ stage: '高潮', intensity: 8 }),
+    })
+    insertLegacyEvent({
+      id: 'history-conflict-2', eventType: 'conflict_change',
+      entityId: 'cf-matrix', entityType: 'conflict',
+      oldValue: JSON.stringify({ intensity: 8 }),
+      newValue: JSON.stringify({ intensity: 9 }),
+    })
+
+    // 回填前：矩阵账本视图查不到任何 conflict 变化
+    expect(store.listChangeRecords('p-1', { subjectId: 'cf-matrix' })).toHaveLength(0)
+
+    // 执行回填
+    const stats = store.backfillMissingDimensions({ backup: false })
+    expect(stats.updated).toBe(2)
+
+    // 回填后：矩阵账本视图能查到 2 条变化（stage + intensity）
+    const records = store.listChangeRecords('p-1', { subjectId: 'cf-matrix' })
+    expect(records).toHaveLength(2)
+    expect(records.map((r) => r.dimension).sort()).toEqual(['conflict.intensity', 'conflict.stage'])
+
+    // 按 dimension 精确过滤也能用
+    const stageOnly = store.listChangeRecords('p-1', {
+      subjectId: 'cf-matrix',
+      dimension: 'conflict.stage',
+    })
+    expect(stageOnly).toHaveLength(1)
+    expect(stageOnly[0].dimension).toBe('conflict.stage')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// styleNote 字段：文风挂接（设计文档第 8 节）
+// ═══════════════════════════════════════════════════════════════
+
+describe('styleNote 字段 - recordEvent 写入', () => {
+  it('recordEvent 支持 styleNote 字段写入', () => {
+    const event = store.recordEvent({
+      projectId: 'p-1', chapterId: 'ch-1', chapterNumber: 1,
+      eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      description: '冲突阶段变更',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+      cause: null, effectIds: [], significance: 7,
+      styleNote: '用对话暗示而非直叙冲突升级',
+    })
+    expect(event.styleNote).toBe('用对话暗示而非直叙冲突升级')
+
+    // 通过 listEvents 读回验证
+    const list = store.listEvents('p-1')
+    expect(list[0].styleNote).toBe('用对话暗示而非直叙冲突升级')
+  })
+
+  it('recordEvent 不传 styleNote 时默认 null', () => {
+    store.recordEvent({
+      projectId: 'p-1', chapterId: null, chapterNumber: 1,
+      eventType: 'conflict_change',
+      entityId: 'cf-1', entityType: 'conflict',
+      description: '冲突变更',
+      oldValue: JSON.stringify({ stage: '潜伏' }),
+      newValue: JSON.stringify({ stage: '高潮' }),
+      cause: null, effectIds: [], significance: 5,
+    })
+    const list = store.listEvents('p-1')
+    expect(list[0].styleNote).toBeNull()
+  })
+})
+
+describe('styleNote 字段 - createChangeRecord 写入', () => {
+  it('createChangeRecord 支持 styleNote 字段', () => {
+    const record = store.createChangeRecord({
+      projectId: 'p-1',
+      storyEventId: null,
+      chapterNumber: 1,
+      sceneOrder: 0,
+      subjectType: 'conflict',
+      subjectId: 'cf-1',
+      dimension: 'conflict.stage',
+      targetType: null,
+      targetId: null,
+      valueType: 'enum',
+      beforeValue: '潜伏',
+      afterValue: '高潮',
+      reason: '剧情推进',
+      significance: 7,
+      source: 'manual',
+      cause: null,
+      effectIds: [],
+      styleNote: '用环境描写烘托冲突张力',
+    })
+    expect(record.styleNote).toBe('用环境描写烘托冲突张力')
+
+    // 通过 listChangeRecords 读回验证
+    const records = store.listChangeRecords('p-1', { subjectId: 'cf-1' })
+    expect(records[0].styleNote).toBe('用环境描写烘托冲突张力')
+  })
+
+  it('createChangeRecord 不传 styleNote 时默认 null', () => {
+    store.createChangeRecord({
+      projectId: 'p-1',
+      storyEventId: null,
+      chapterNumber: 1,
+      sceneOrder: 0,
+      subjectType: 'conflict',
+      subjectId: 'cf-1',
+      dimension: 'conflict.stage',
+      targetType: null,
+      targetId: null,
+      valueType: 'enum',
+      beforeValue: '潜伏',
+      afterValue: '高潮',
+      reason: '剧情推进',
+      significance: 5,
+      source: 'manual',
+      cause: null,
+      effectIds: [],
+    })
+    const records = store.listChangeRecords('p-1', { subjectId: 'cf-1' })
+    expect(records[0].styleNote).toBeNull()
+  })
+})
+
+describe('styleNote 字段 - 矩阵聚合接口返回', () => {
+  it('getMatrixAggregation 返回的 changes 携带 styleNote', async () => {
+    // 这里只验证 store 层，路由层测试在 matrix-aggregation-routes.test.ts
+    store.recordEvent({
+      projectId: 'p-1', chapterId: null, chapterNumber: 1,
+      eventType: 'character_change',
+      entityId: 'c-1', entityType: 'character',
+      description: '角色弧光变更',
+      oldValue: JSON.stringify({ arcStage: '起点' }),
+      newValue: JSON.stringify({ arcStage: '成长' }),
+      cause: null, effectIds: [], significance: 6,
+      styleNote: '通过内心独白展现成长转折',
+    })
+
+    const records = store.listChangeRecords('p-1', { subjectId: 'c-1' })
+    expect(records).toHaveLength(1)
+    expect(records[0].styleNote).toBe('通过内心独白展现成长转折')
+    expect(records[0].dimension).toBe('character.arc_stage')
+  })
+})
+

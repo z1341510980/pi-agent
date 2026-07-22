@@ -202,7 +202,7 @@ export class NovelStore implements NovelPromptStores {
 
   // ── Character / Relationship / History ──
 
-  createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt' | 'participatingConflicts'> & { participatingConflicts?: string }): NovelCharacter { return this.character.createCharacter(character) }
+  createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt'>): NovelCharacter { return this.character.createCharacter(character) }
   updateCharacter(id: string, patch: Partial<NovelCharacter>): NovelCharacter | undefined { return this.character.updateCharacter(id, patch) }
   deleteCharacter(id: string): boolean { return this.character.deleteCharacter(id) }
   deleteCharacterHistoryByCharacter(characterId: string): number { return this.character.deleteCharacterHistoryByCharacter(characterId) }
@@ -232,8 +232,6 @@ export class NovelStore implements NovelPromptStores {
   createInformationLayer(layer: Omit<NovelInformationLayer, 'createdAt' | 'updatedAt'>): NovelInformationLayer { return this.foreshadow.createInformationLayer(layer) }
   updateInfoLayer(id: string, updates: Partial<Omit<NovelInformationLayer, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelInformationLayer | undefined { return this.foreshadow.updateInfoLayer(id, updates) }
   deleteInfoLayer(id: string): boolean { return this.foreshadow.deleteInfoLayer(id) }
-  linkForeshadowToInfoLayer(foreshadowId: string, infoLayerId: string): void { return this.foreshadow.linkForeshadowToInfoLayer(foreshadowId, infoLayerId) }
-  unlinkForeshadowFromInfoLayer(foreshadowId: string, infoLayerId: string): void { return this.foreshadow.unlinkForeshadowFromInfoLayer(foreshadowId, infoLayerId) }
 
   // ── WorldRule / StyleGuide / WritingStyleProfile / Constraint / WorldElement ──
 
@@ -291,6 +289,8 @@ export class NovelStore implements NovelPromptStores {
   ): NovelEdge { return this.graph.createEdge(projectId, edge) }
   deleteEdge(id: string): boolean { return this.graph.deleteEdge(id) }
   deleteEdgesByEntity(entityId: string): number { return this.graph.deleteEdgesByEntity(entityId) }
+  listEdgesByEntity(entityId: string, opts?: { direction?: 'source' | 'target' | 'both'; edgeType?: string }): NovelEdge[] { return this.graph.listEdgesByEntity(entityId, opts) }
+  updateEdgeLabel(edgeId: string, label: string): NovelEdge | undefined { return this.graph.updateEdgeLabel(edgeId, label) }
 
   insertAgentLog(input: Omit<NovelAgentLog, 'id' | 'createdAt'>): NovelAgentLog { return this.graph.insertAgentLog(input) }
   getAgentLog(id: string): NovelAgentLog | undefined { return this.graph.getAgentLog(id) }

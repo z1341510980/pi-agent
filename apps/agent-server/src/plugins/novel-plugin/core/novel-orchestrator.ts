@@ -399,8 +399,6 @@ export class NovelOrchestrator {
               status: 'thrown',
               fulfilledAtChapter: null,
               fulfilledDescription: null,
-              linkedForeshadowId: null,
-              linkedConflictId: null,
             })
           }
           this.context.logger.info(
