@@ -86,6 +86,31 @@
   /* User avatar */
   --color-user-avatar-bg: #262626;
   --color-user-avatar-text: #ffffff;
+
+  /* ── 阴影层级（Phase 3：边框/阴影分层规则）── */
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-overlay: 0 4px 12px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.06);
+
+  /* ── 语义色补充 ── */
+  --color-warning: #F59E0B;
+  --color-warning-foreground: #ffffff;
+
+  /* ── 主色 tint 梯度（背景着色用）── */
+  --color-primary-5: rgba(75, 63, 227, 0.05);
+  --color-primary-10: rgba(75, 63, 227, 0.10);
+  --color-primary-20: rgba(75, 63, 227, 0.20);
+
+  /* ── Type Scale（Phase 3）── */
+  --font-size-display: 20px;
+  --line-height-display: 24px;
+  --font-size-heading: 15px;
+  --line-height-heading: 20px;
+  --font-size-body: 14px;
+  --line-height-body: 22px;
+  --font-size-caption: 12px;
+  --line-height-caption: 16px;
+  --font-size-micro: 11px;
+  --line-height-micro: 14px;
 }
 
 /* ── Dark 主题：通过 .dark class 切换 ── */
@@ -136,6 +161,15 @@
   --color-input-bg: #262626;
 
   --color-card-bg: #1a1a1a;
+
+  /* ── Phase 3 补充：深色模式阴影/语义色/tint ── */
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.16);
+  --shadow-overlay: 0 4px 12px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.24);
+  --color-warning: #FBBF24;
+  --color-warning-foreground: #171717;
+  --color-primary-5: rgba(106, 111, 255, 0.05);
+  --color-primary-10: rgba(106, 111, 255, 0.10);
+  --color-primary-20: rgba(106, 111, 255, 0.20);
 }
 
 /* ── Base resets ── */
@@ -226,7 +260,7 @@ button:disabled {
   }
 }
 
-/* ── 自定义滚动条（TRAE Work 风格：中性灰色） ── */
+/* ── 自定义滚动条（TRAE Work 风格：中性灰色，静止时淡化） ── */
 
 *::-webkit-scrollbar {
   width: 6px;
@@ -238,13 +272,21 @@ button:disabled {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: rgba(115, 115, 115, 0.24);
+  background: rgba(115, 115, 115, 0.12);
   border-radius: 3px;
-  transition: background 150ms ease;
+  transition: background 200ms ease;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: rgba(115, 115, 115, 0.24);
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(115, 115, 115, 0.36);
+  background: rgba(115, 115, 115, 0.4);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(115, 115, 115, 0.5);
 }
 
 *::-webkit-scrollbar-corner {
@@ -254,7 +296,7 @@ button:disabled {
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(115, 115, 115, 0.24) transparent;
+  scrollbar-color: rgba(115, 115, 115, 0.16) transparent;
 }
 
 /* SVAR Gantt 聚焦复合轨道：保持矩阵的中性表面，并让数据色带覆盖任务条。 */
@@ -394,5 +436,17 @@ button:disabled {
   }
   51%, 100% {
     opacity: 0;
+  }
+}
+
+/* subtrack-enter：子轨道展开时的淡入 + 微下滑 */
+@keyframes subtrack-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

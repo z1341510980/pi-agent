@@ -43,6 +43,38 @@ export type MatrixEntityKind =
 /** 联动右侧详情面板时使用的实体类型 */
 export type SelectableEntityType = MatrixEntityKind
 
+/**
+ * 实体快照投影到子轨道的最小数据单元。
+ *
+ * ChangeRecord 是子轨道的权威历史来源；存量项目中的实体往往还没有完整账本，
+ * 因此矩阵保留一份当前快照作为可见的保底数据。账本中出现同 key 的记录后会在
+ * matrix-model 中优先使用账本轨道，避免把快照误当成逐章历史。
+ */
+export type MatrixSubtrackSnapshotValueType =
+  | 'enum'
+  | 'level'
+  | 'number'
+  | 'set'
+  | 'reference'
+  | 'text'
+
+export interface MatrixSubtrackSnapshot {
+  /** 与 ChangeRecord.dimension 对齐的稳定维度 key */
+  key: string
+  /** 左侧轨道显示名 */
+  label: string
+  valueType: MatrixSubtrackSnapshotValueType
+  value: unknown
+  /** hover 卡展示值；保留 value 的原始类型供 number / set 编码计算 */
+  displayValue?: string
+  /** 当前快照在矩阵中的锚点章节 */
+  chapter: number
+  /** enum / level 快照可覆盖实体已知的有效片段（保留非连续跨度） */
+  spans?: Array<[number, number]>
+  /** hover 卡说明，标识该值是静态快照而非账本历史 */
+  desc?: string
+}
+
 // ── 拖拽数据载荷（@dnd-kit useDraggable.data）──
 // 四种拖源统一用 source 字段区分，放置时由 MatrixView 根据 source 分发到不同业务回调。
 
@@ -183,6 +215,14 @@ export interface MatrixEntity {
   /** 世界要素结束章节（默认 maxChapter） */
   alwaysEnd?: number
 
+  // ── 信息差隐藏期 / 揭示点 ──
+  /** 信息差在矩阵中可见的隐藏期起点（当前模型无创建章节时为第 1 章） */
+  infoStart?: number
+  /** 信息差隐藏期终点（未揭示时延续到最后一章） */
+  infoEnd?: number
+  /** 信息差揭示章节（null 表示尚未揭示） */
+  revealChapter?: number | null
+
   // ── 子甘特图轨道数据（复合片段展开用，从原实体透传）──
   /** 冲突：强度曲线点 */
   intensityPoints?: Array<{ chapter: number; value: number }>
@@ -199,6 +239,12 @@ export interface MatrixEntity {
   /** 伏笔埋设/回收手法（沿用后端字段） */
   plantMethod?: string
   recoverMethod?: string
+
+  /**
+   * 非账本实体字段的子轨道保底投影。
+   * 与账本同 key 的轨道由 matrix-model 合并时自动让位给 ChangeRecord。
+   */
+  subtrackSnapshots?: MatrixSubtrackSnapshot[]
 }
 
 // ── 分组 ──
@@ -449,6 +495,7 @@ export type CellSymbol =
   | { type: 'foreshadow-payoff' }
   | { type: 'location' }
   | { type: 'world-element' }
+  | { type: 'info-layer' }
 
 /**
  * 计算实体在某章的单元格符号
@@ -504,9 +551,13 @@ export function computeCellSymbol(
       if (chapterNumber >= start && chapterNumber <= end) return { type: 'world-element' }
       return { type: 'empty' }
     }
-    case 'info_layer':
-      // 信息差暂不在矩阵视图中渲染单元格符号（侧边栏管理）
-      return { type: 'empty' }
+    case 'info_layer': {
+      const start = entity.infoStart ?? 1
+      const end = entity.infoEnd ?? start
+      return chapterNumber >= start && chapterNumber <= end
+        ? { type: 'info-layer' }
+        : { type: 'empty' }
+    }
   }
 }
 

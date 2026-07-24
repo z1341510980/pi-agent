@@ -466,6 +466,8 @@ export class ChapterFinalizer {
     clues: Map<string, { description: string; pointsTo: string; progress: number; currentStep: string; nextStep: string; isMisleading: boolean; chapterSpans: ChapterSpan[] }>
     factions: Map<string, { name: string; status: string; strength: string }>
     locations: Map<string, { name: string; status: string; appearChapters: number[] }>
+    items: Map<string, { name: string; holder: string | null; status: string }>
+    worldElements: Map<string, { name: string; category: string }>
     relationships: Map<string, { characterA: string; characterB: string; relationType: string; currentStage: string; dynamicRole: string; alignment: string; trend: string; chapterHint: string; lastUpdatedChapter: number | null }>
     infoLayers: Map<string, { infoDescription: string; readerKnows: boolean; isRevealed: boolean; revealChapter: number | null; linkedForeshadows: string[] }>
   } {
@@ -544,6 +546,18 @@ export class ChapterFinalizer {
         { name: l.name, status: l.status, appearChapters: l.appearChapters ? [...l.appearChapters] : [] },
       ]),
     )
+    const items = new Map(
+      this.store.listItems(projectId).map((item) => [
+        item.id,
+        { name: item.name, holder: item.ownerId, status: item.status },
+      ]),
+    )
+    const worldElements = new Map(
+      this.store.listWorldElements(projectId).map((element) => [
+        element.id,
+        { name: element.name, category: element.category },
+      ]),
+    )
     const relationships = new Map(
       this.store.listRelationships(projectId).map((r) => [
         r.id,
@@ -576,7 +590,7 @@ export class ChapterFinalizer {
         },
       ]),
     )
-    return { characters, conflicts, foreshadowing, clues, factions, locations, relationships, infoLayers }
+    return { characters, conflicts, foreshadowing, clues, factions, locations, items, worldElements, relationships, infoLayers }
   }
 
   /** 容错解析 JSON: string[]，避免非 JSON / 旧数据格式导致 captureEntityState 抛错 */
@@ -831,6 +845,17 @@ export class ChapterFinalizer {
           cause: null, effectIds: [], significance: 6,
         }))
       }
+      if (beforeFac.strength !== afterFac.strength) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'faction_change',
+          entityId: id, entityType: 'faction',
+          description: `势力实力变更: ${afterFac.name}（${beforeFac.strength} → ${afterFac.strength}）`,
+          oldValue: JSON.stringify({ strength: beforeFac.strength }),
+          newValue: JSON.stringify({ strength: afterFac.strength }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
     }
 
     // ── 地点变更 ──
@@ -872,6 +897,57 @@ export class ChapterFinalizer {
           cause: null, effectIds: [], significance: 5,
         }))
       }
+    }
+
+    for (const [id, afterItem] of after.items) {
+      const beforeItem = before.items.get(id)
+      if (!beforeItem) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'item_change',
+          entityId: id, entityType: 'item',
+          description: `物品创建: ${afterItem.name}`,
+          oldValue: null,
+          newValue: JSON.stringify({ name: afterItem.name, holder: afterItem.holder, status: afterItem.status }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+        continue
+      }
+      if (beforeItem.holder !== afterItem.holder) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'item_change',
+          entityId: id, entityType: 'item',
+          description: `物品持有者变更: ${afterItem.name}`,
+          oldValue: JSON.stringify({ holder: beforeItem.holder }),
+          newValue: JSON.stringify({ holder: afterItem.holder }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
+      if (beforeItem.status !== afterItem.status) {
+        events.push(this.memoryStore.recordEvent({
+          projectId, chapterId, chapterNumber,
+          eventType: 'item_change',
+          entityId: id, entityType: 'item',
+          description: `物品状态变更: ${afterItem.name}（${beforeItem.status} → ${afterItem.status}）`,
+          oldValue: JSON.stringify({ status: beforeItem.status }),
+          newValue: JSON.stringify({ status: afterItem.status }),
+          cause: null, effectIds: [], significance: 6,
+        }))
+      }
+    }
+
+    for (const [id, afterElement] of after.worldElements) {
+      if (before.worldElements.has(id)) continue
+      events.push(this.memoryStore.recordEvent({
+        projectId, chapterId, chapterNumber,
+        eventType: 'world_change',
+        entityId: id, entityType: 'world_element',
+        description: `世界要素创建: ${afterElement.name}`,
+        oldValue: null,
+        newValue: JSON.stringify({ name: afterElement.name, category: afterElement.category }),
+        cause: null, effectIds: [], significance: 6,
+      }))
     }
 
     // ── 关系变更（四层逻辑②关系层）──
@@ -926,7 +1002,7 @@ export class ChapterFinalizer {
         events.push(this.memoryStore.recordEvent({
           projectId, chapterId, chapterNumber,
           eventType: 'info_layer_change',
-          entityId: id, entityType: 'relationship',
+          entityId: id, entityType: 'info_layer',
           description: `信息差创建: ${afterLayer.infoDescription}`,
           oldValue: null,
           newValue: JSON.stringify({ readerKnows: afterLayer.readerKnows, isRevealed: afterLayer.isRevealed }),
@@ -939,7 +1015,7 @@ export class ChapterFinalizer {
         events.push(this.memoryStore.recordEvent({
           projectId, chapterId, chapterNumber,
           eventType: 'info_layer_change',
-          entityId: id, entityType: 'relationship',
+          entityId: id, entityType: 'info_layer',
           description: `信息差读者认知翻转: ${afterLayer.infoDescription}（读者未知 → 读者已知）`,
           oldValue: JSON.stringify({ readerKnows: beforeLayer.readerKnows }),
           newValue: JSON.stringify({ readerKnows: afterLayer.readerKnows }),
@@ -950,7 +1026,7 @@ export class ChapterFinalizer {
         events.push(this.memoryStore.recordEvent({
           projectId, chapterId, chapterNumber,
           eventType: 'info_layer_change',
-          entityId: id, entityType: 'relationship',
+          entityId: id, entityType: 'info_layer',
           description: `信息差揭露状态变更: ${afterLayer.infoDescription}（${beforeLayer.isRevealed ? '已揭露' : '未揭露'} → ${afterLayer.isRevealed ? '已揭露' : '未揭露'}）`,
           oldValue: JSON.stringify({ isRevealed: beforeLayer.isRevealed }),
           newValue: JSON.stringify({ isRevealed: afterLayer.isRevealed }),
@@ -963,7 +1039,7 @@ export class ChapterFinalizer {
         events.push(this.memoryStore.recordEvent({
           projectId, chapterId, chapterNumber,
           eventType: 'info_layer_change',
-          entityId: id, entityType: 'relationship',
+          entityId: id, entityType: 'info_layer',
           description: `信息差关联伏笔变更: ${afterLayer.infoDescription}（新增 ${afterLinks.filter(x => !beforeLinks.includes(x)).length} 条，解除 ${beforeLinks.filter(x => !afterLinks.includes(x)).length} 条）`,
           oldValue: JSON.stringify({ linkedForeshadows: beforeLinks }),
           newValue: JSON.stringify({ linkedForeshadows: afterLinks }),
@@ -1289,7 +1365,11 @@ export class ChapterFinalizer {
       clues: this.store.listClues(projectId),
       factions: this.store.listFactions(projectId),
       locations: this.store.listLocations(projectId),
+      items: this.store.listItems(projectId),
+      worldElements: this.store.listWorldElements(projectId),
+      informationLayers: this.store.listInformationLayers(projectId),
       relationships: this.store.listRelationships(projectId),
+      edges: this.store.listEdges(projectId),
     }
     this.memoryStore.saveSnapshot({
       projectId,

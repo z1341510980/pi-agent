@@ -13,17 +13,19 @@
  * - 流程完成 → system 消息 + 操作按钮
  */
 
-import { useMemo, useCallback, type ReactElement } from 'react'
-import { Loader2, Workflow, MessagesSquare, RotateCcw, LayoutGrid, Sparkles, MessageCircle, type LucideIcon } from 'lucide-react'
+import { useMemo, useCallback, useState, useRef, useEffect, type ReactElement } from 'react'
+import { Loader2, Workflow, MessagesSquare, RotateCcw, LayoutGrid, MessageCircle, MoreHorizontal, type LucideIcon } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { ErrorCard } from '@/components/chat/error-card'
 import { cn } from '@/lib/utils'
 import {
   ConversationStream,
   ConversationInput,
+  ConversationEmptyState,
   type ConversationMessage,
   type ConversationAgentType,
   type MentionOption,
+  type EmptyStateVariant,
 } from '@/components/shared/conversation'
 import type {
   CreationPhase,
@@ -61,6 +63,11 @@ const FLOW_TABS: FlowTab[] = [
   { type: 'chat', label: '聊天', icon: MessageCircle },
 ]
 
+/** 高频模式：始终显示为 Segmented Control */
+const PRIMARY_FLOW_TABS = FLOW_TABS.filter((t) => t.type === 'workflow' || t.type === 'chat')
+/** 低频模式：收进 ··· Popover */
+const SECONDARY_FLOW_TABS = FLOW_TABS.filter((t) => t.type !== 'workflow' && t.type !== 'chat')
+
 // ── 阶段标签 ──
 
 const PHASE_LABELS: Partial<Record<CreationPhase, string>> = {
@@ -82,38 +89,38 @@ const PHASE_LABELS: Partial<Record<CreationPhase, string>> = {
 // ── 检查点决策选项 ──
 
 const NARRATIVE_OPTIONS = [
-  { label: '确认', action: 'approve', variant: 'default' as const },
-  { label: '按意见重写', action: 'rewrite', variant: 'outline' as const },
-  { label: '取消创作', action: 'reject', variant: 'destructive' as const },
+  { label: '确认', action: 'approve', variant: 'default' as const, description: '按此叙事任务继续写作' },
+  { label: '按意见重写', action: 'rewrite', variant: 'outline' as const, description: '提供修改意见后重新规划' },
+  { label: '取消创作', action: 'reject', variant: 'destructive' as const, description: '中止本次创作流程' },
 ]
 
 const REVIEW_OPTIONS = [
-  { label: '通过', action: 'approve', variant: 'default' as const },
-  { label: '修订', action: 'revise', variant: 'outline' as const },
-  { label: '重写', action: 'rewrite', variant: 'ghost' as const },
+  { label: '通过', action: 'approve', variant: 'default' as const, description: '验收通过，进入下一阶段' },
+  { label: '修订', action: 'revise', variant: 'outline' as const, description: '交由 Reviser 局部修订' },
+  { label: '重写', action: 'rewrite', variant: 'ghost' as const, description: '退回 Writer 重新创作' },
 ]
 
 // PostWriteGuard 命中后让用户选择是否重写 Writer
 const POST_WRITE_GUARD_OPTIONS = [
-  { label: '重写', action: 'rewrite', variant: 'default' as const },
-  { label: '接受草稿', action: 'approve', variant: 'outline' as const },
-  { label: '转 Reviser', action: 'revise', variant: 'ghost' as const },
-  { label: '取消', action: 'reject', variant: 'destructive' as const },
+  { label: '重写', action: 'rewrite', variant: 'default' as const, description: '退回 Writer 按守护意见重写' },
+  { label: '接受草稿', action: 'approve', variant: 'outline' as const, description: '忽略守护警告，保留当前草稿' },
+  { label: '转 Reviser', action: 'revise', variant: 'ghost' as const, description: '交由 Reviser 局部修正' },
+  { label: '取消', action: 'reject', variant: 'destructive' as const, description: '中止本次创作流程' },
 ]
 
 // Writer 推回 Director 时让用户选择是否同意推回
 const WRITER_PUSHBACK_OPTIONS = [
-  { label: '同意推回', action: 'approve', variant: 'default' as const },
-  { label: '强制继续', action: 'rewrite', variant: 'outline' as const },
-  { label: '取消创作', action: 'reject', variant: 'destructive' as const },
+  { label: '同意推回', action: 'approve', variant: 'default' as const, description: '接受 Writer 的推回建议' },
+  { label: '强制继续', action: 'rewrite', variant: 'outline' as const, description: '忽略推回，按原任务继续' },
+  { label: '取消创作', action: 'reject', variant: 'destructive' as const, description: '中止本次创作流程' },
 ]
 
 // Guard 达上限后让用户选择是否接受当前草稿
 const GUARD_DEGRADED_OPTIONS = [
-  { label: '接受草稿', action: 'approve', variant: 'default' as const },
-  { label: '从头重写', action: 'rewrite', variant: 'outline' as const },
-  { label: '转 Reviser', action: 'revise', variant: 'ghost' as const },
-  { label: '取消', action: 'reject', variant: 'destructive' as const },
+  { label: '接受草稿', action: 'approve', variant: 'default' as const, description: '守护已达重试上限，接受当前版本' },
+  { label: '从头重写', action: 'rewrite', variant: 'outline' as const, description: '不计重试次数，重新创作' },
+  { label: '转 Reviser', action: 'revise', variant: 'ghost' as const, description: '交由 Reviser 尝试局部修正' },
+  { label: '取消', action: 'reject', variant: 'destructive' as const, description: '中止本次创作流程' },
 ]
 
 // ── 检查点内容渲染 ──
@@ -223,6 +230,75 @@ export interface NovelConversationPanelProps {
   onAbortChapterChat?: () => void
   /** 自由聊天可 @ 提及的 Agent 列表 */
   chatMentionOptions?: MentionOption[]
+}
+
+/** 低频创作模式 Popover：点击 ··· 展开完整列表 */
+function SecondaryFlowPopover({
+  flowType,
+  onFlowTypeChange,
+}: {
+  flowType: NovelFlowType
+  onFlowTypeChange: (type: NovelFlowType) => void
+}): ReactElement {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const isSecondaryActive = SECONDARY_FLOW_TABS.some((t) => t.type === flowType)
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="更多创作方式"
+        className={cn(
+          'inline-flex items-center justify-center size-6 rounded-[6px]',
+          'transition-all duration-200 ease-out active:scale-[0.96]',
+          isSecondaryActive
+            ? 'bg-surface-1 text-primary shadow-sm'
+            : 'text-subtle hover:text-text hover:bg-surface-1/50',
+        )}
+      >
+        <MoreHorizontal className="size-3.5" />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-50 min-w-[180px] py-1 rounded-lg bg-surface-1 border border-border/60 shadow-lg">
+          {SECONDARY_FLOW_TABS.map((tab) => {
+            const Icon = tab.icon
+            const isActive = flowType === tab.type
+            return (
+              <button
+                key={tab.type}
+                onClick={() => { onFlowTypeChange(tab.type); setOpen(false) }}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] font-medium transition-colors',
+                  isActive ? 'text-primary bg-primary/8' : 'text-text hover:bg-surface-2',
+                )}
+              >
+                <Icon className="size-3.5 shrink-0" />
+                <span className="flex-1">{tab.label}</span>
+              </button>
+            )
+          })}
+          {/* 描述区：当前 hover 或 active 的 description */}
+          {SECONDARY_FLOW_TABS.find((t) => t.type === flowType)?.description && (
+            <div className="px-3 pt-1.5 pb-1 text-[10px] text-subtle leading-relaxed border-t border-border/40 mt-1">
+              {SECONDARY_FLOW_TABS.find((t) => t.type === flowType)!.description}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function NovelConversationPanel({
@@ -523,43 +599,68 @@ export function NovelConversationPanel({
         : flowType === 'discussion'
           ? '高级群聊共创'
           : '开始创作'
+
+  // 空状态插图变体
+  const emptyVariant: EmptyStateVariant = isChatMode
+    ? 'chat'
+    : isReverseMode
+      ? 'reverse'
+      : isArrangeMode
+        ? 'arrange'
+        : flowType === 'discussion'
+          ? 'discussion'
+          : 'workflow'
+
   const isEmpty = messages.length === 0
   const activeError = isChatMode ? chapterChatError : error
   const activeIsRunning = isChatMode ? !!chapterChatRunning : isRunning
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* ── 流程 Tab：底部主色下划线 active 样式 + 图标（对齐 HTML 原型 flow-tabs）── */}
+      {/* ── 流程模式分级入口：高频 Segmented + 低频 Popover ── */}
       <header className="shrink-0 border-b border-border/60 bg-surface-1">
-        <div className="flex items-center gap-0 px-2">
-          {FLOW_TABS.map((tab) => {
-            const Icon = tab.icon
-            // "聊天" Tab 始终可切换；其他 Tab 在创作流程运行时禁用
-            const tabDisabled = isRunning && tab.type !== 'chat'
-            return (
-              <button
-                key={tab.type}
-                onClick={() => {
-                  if (tab.type === 'chat' || !isRunning) {
-                    onFlowTypeChange(tab.type)
-                  }
-                }}
-                disabled={tabDisabled}
-                title={tab.description}
-                className={cn(
-                  'relative inline-flex items-center gap-1 px-2.5 h-[30px] text-[11px] font-medium transition-colors',
-                  'disabled:cursor-not-allowed disabled:opacity-50',
-                  'active:scale-[0.96]',
-                  flowType === tab.type
-                    ? 'text-primary border-b-2 border-primary -mb-px'
-                    : 'text-muted-foreground border-b-2 border-transparent hover:text-text',
-                )}
-              >
-                <Icon className="size-3" />
-                {tab.label}
-              </button>
-            )
-          })}
+        <div className="flex items-center gap-1.5 px-2 pt-2 pb-0">
+          {isRunning ? (
+            /* 运行中：锁定当前模式，显示名称 + 阶段 */
+            <div className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-primary/8 text-primary">
+              {(() => { const tab = FLOW_TABS.find((t) => t.type === flowType); const Icon = tab?.icon ?? Workflow; return <Icon className="size-3.5" /> })()}
+              <span className="text-[11px] font-medium whitespace-nowrap">
+                {FLOW_TABS.find((t) => t.type === flowType)?.label ?? flowType}
+              </span>
+            </div>
+          ) : (
+            <>
+              {/* 高频模式 Segmented Control */}
+              <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg">
+                {PRIMARY_FLOW_TABS.map((tab) => {
+                  const Icon = tab.icon
+                  const isActive = flowType === tab.type
+                  return (
+                    <button
+                      key={tab.type}
+                      onClick={() => onFlowTypeChange(tab.type)}
+                      title={tab.description ?? tab.label}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                        'transition-all duration-200 ease-out active:scale-[0.96]',
+                        isActive
+                          ? 'bg-surface-1 text-text shadow-sm'
+                          : 'text-subtle hover:text-text hover:bg-surface-1/50',
+                      )}
+                    >
+                      <Icon className="size-3" />
+                      <span className="leading-none">{tab.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              {/* 低频模式 ··· Popover */}
+              <SecondaryFlowPopover
+                flowType={flowType}
+                onFlowTypeChange={onFlowTypeChange}
+              />
+            </>
+          )}
         </div>
         {/* 状态栏：独立圆角卡片样式（对齐原型 status-bar + status-badge 胶囊 + 语义状态色） */}
         <div className="mx-2 mt-2 mb-3 flex items-center gap-2 px-3 py-1.5 bg-surface-2 rounded-lg">
@@ -617,22 +718,20 @@ export function NovelConversationPanel({
           </div>
         )}
         {isEmpty ? (
-          /* 空状态：精致卡片（图标 + 标题 + 描述），对齐整体视觉风格 */
-          <div className="flex flex-1 items-center justify-center p-6">
-            <div className="text-center max-w-[240px]">
-              <div className="mx-auto mb-3 size-12 rounded-xl bg-primary/8 flex items-center justify-center shadow-sm">
-                <Sparkles className="size-6 text-primary" />
-              </div>
-              <h4 className="text-sm font-semibold text-text mb-1.5">{emptyTitle}</h4>
-              <p className="text-xs text-subtle leading-relaxed">{emptyHint}</p>
-            </div>
-          </div>
+          /* 空状态：SVG 插图 + 标题 + 引导文案 */
+          <ConversationEmptyState
+            variant={emptyVariant}
+            title={emptyTitle}
+            hint={emptyHint}
+          />
         ) : (
           <ConversationStream
             messages={messages}
             onCheckpointResolve={handleCheckpointResolve}
             onSystemAction={handleSystemAction}
             emptyHint={emptyHint}
+            emptyTitle={emptyTitle}
+            emptyVariant={emptyVariant}
           />
         )}
       </div>

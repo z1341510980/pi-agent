@@ -1827,6 +1827,10 @@ export interface StoryDimensionState {
   effectiveSceneOrder: number
   sourceChangeId: string
   reason: string
+  /** 实体显示名（由调用方反查注入，如"叶明远"/"修炼合法性冲突"，避免在提示词里暴露 UUID） */
+  subjectName?: string
+  /** 关联目标实体显示名（当 targetId 非空时由调用方反查注入） */
+  targetName?: string
 }
 
 export interface FutureCommitment {

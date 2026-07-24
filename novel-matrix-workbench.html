@@ -1,0 +1,726 @@
+
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>故事矩阵工作台</title>
+  <style>
+    :root {
+      --bg: oklch(18% 0.018 250);
+      --surface: oklch(22% 0.018 250);
+      --surface-2: oklch(25% 0.018 250);
+      --surface-3: oklch(29% 0.018 250);
+      --fg: oklch(94% 0.008 250);
+      --muted: oklch(69% 0.018 250);
+      --dim: oklch(53% 0.018 250);
+      --border: oklch(36% 0.018 250);
+      --accent: oklch(73% 0.15 198);
+      --accent-soft: oklch(73% 0.15 198 / 0.14);
+      --warning: oklch(78% 0.15 80);
+      --danger: oklch(67% 0.18 28);
+      --success: oklch(73% 0.14 155);
+      --character: oklch(72% 0.15 245);
+      --conflict: oklch(68% 0.19 25);
+      --clue: oklch(76% 0.15 145);
+      --foreshadow: oklch(78% 0.15 80);
+      --font-body: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --cell: 58px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 1120px;
+      min-height: 760px;
+      overflow: hidden;
+      color: var(--fg);
+      background: var(--bg);
+      font: 13px/1.45 var(--font-body);
+      letter-spacing: 0;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+
+    .app {
+      display: grid;
+      grid-template-rows: 42px 1fr 28px;
+      height: 100vh;
+    }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 14px;
+      background: color-mix(in oklch, var(--surface) 92%, black);
+      border-bottom: 1px solid var(--border);
+      user-select: none;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 220px;
+      font-weight: 650;
+    }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font: 700 11px/1 var(--font-mono);
+    }
+    .crumb { color: var(--muted); font-size: 12px; }
+    .crumb strong { color: var(--fg); font-weight: 600; }
+    .title-actions { display: flex; gap: 5px; margin-left: auto; }
+    .win-btn, .icon-btn {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 5px;
+    }
+    .win-btn:hover, .icon-btn:hover {
+      color: var(--fg);
+      border-color: var(--border);
+      background: var(--surface-3);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 236px minmax(610px, 1fr) 298px;
+      min-height: 0;
+    }
+    .sidebar, .inspector {
+      min-height: 0;
+      overflow: auto;
+      background: var(--surface);
+    }
+    .sidebar { border-right: 1px solid var(--border); }
+    .inspector { border-left: 1px solid var(--border); }
+    .panel-title {
+      display: flex;
+      align-items: center;
+      height: 42px;
+      padding: 0 13px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font: 600 10px/1 var(--font-mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .panel-title button { margin-left: auto; }
+
+    .project-switcher {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 12px;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface-2);
+    }
+    .project-avatar {
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-radius: 4px;
+      font-weight: 700;
+    }
+    .project-switcher strong { display: block; font-size: 12px; }
+    .project-switcher span { color: var(--muted); font-size: 11px; }
+
+    .nav-section { margin: 18px 8px 6px; }
+    .nav-label {
+      padding: 0 7px 7px;
+      color: var(--dim);
+      font: 600 10px/1 var(--font-mono);
+      letter-spacing: .08em;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      min-height: 32px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 5px;
+      color: var(--muted);
+      background: transparent;
+      text-align: left;
+    }
+    .nav-item:hover { color: var(--fg); background: var(--surface-2); }
+    .nav-item.active { color: var(--fg); background: var(--accent-soft); }
+    .nav-item.active .nav-glyph { color: var(--accent); }
+    .nav-glyph {
+      width: 15px;
+      color: var(--dim);
+      font: 12px/1 var(--font-mono);
+      text-align: center;
+    }
+    .nav-count {
+      margin-left: auto;
+      color: var(--dim);
+      font: 11px/1 var(--font-mono);
+    }
+    .chapter-list { padding: 2px 8px; }
+    .chapter {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 29px;
+      padding: 0 8px;
+      border-radius: 4px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .chapter:hover { background: var(--surface-2); color: var(--fg); }
+    .chapter.current { color: var(--fg); background: var(--surface-3); }
+    .chapter-num { color: var(--dim); font: 11px/1 var(--font-mono); }
+    .chapter.current .chapter-num { color: var(--accent); }
+    .chapter-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+    .main {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      min-width: 0;
+      min-height: 0;
+      background: var(--bg);
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 54px;
+      padding: 0 15px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .view-title h1 { margin: 0; font-size: 15px; font-weight: 650; }
+    .view-title p { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
+    .toolbar-spacer { flex: 1; }
+    .control, .seg button, .filter {
+      height: 30px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--muted);
+      background: var(--surface-2);
+    }
+    .control { padding: 0 10px; }
+    .control:hover { color: var(--fg); border-color: color-mix(in oklch, var(--border) 60%, var(--accent)); }
+    .primary {
+      border-color: color-mix(in oklch, var(--accent) 60%, transparent);
+      color: oklch(19% 0.02 250);
+      background: var(--accent);
+      font-weight: 650;
+    }
+    .seg { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; }
+    .seg button { height: 25px; padding: 0 9px; border: 0; background: transparent; }
+    .seg button.active { color: var(--fg); background: var(--surface-3); }
+    .search {
+      width: 180px;
+      height: 30px;
+      padding: 0 9px;
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      outline: 0;
+      background: var(--surface-2);
+    }
+    .search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .filters {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 42px;
+      padding: 0 15px;
+      overflow: auto;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 88%, var(--bg));
+    }
+    .filter { display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; white-space: nowrap; }
+    .filter:hover { color: var(--fg); }
+    .filter.active { color: var(--fg); border-color: color-mix(in oklch, var(--accent) 55%, transparent); background: var(--accent-soft); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .filter .count { color: var(--dim); font: 10px/1 var(--font-mono); }
+
+    .matrix-shell { position: relative; min-height: 0; overflow: auto; }
+    .matrix { min-width: calc(260px + 16 * var(--cell)); padding-bottom: 12px; }
+    .ruler, .group, .entity {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+    }
+    .ruler {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      height: 58px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .sticky-label {
+      position: sticky;
+      left: 0;
+      z-index: 6;
+      display: flex;
+      align-items: center;
+      padding: 0 15px;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--dim);
+      font: 600 10px/1 var(--font-mono);
+      letter-spacing: .07em;
+    }
+    .chapter-ruler, .track {
+      display: grid;
+      grid-template-columns: repeat(16, var(--cell));
+      position: relative;
+      background-image: repeating-linear-gradient(90deg, transparent 0 calc(var(--cell) - 1px), color-mix(in oklch, var(--border) 76%, transparent) calc(var(--cell) - 1px) var(--cell));
+    }
+    .chapter-tick {
+      display: flex;
+      flex-direction: column;
+      justify-content: end;
+      align-items: center;
+      gap: 5px;
+      padding-bottom: 7px;
+      color: var(--muted);
+      font: 11px/1 var(--font-mono);
+      cursor: pointer;
+    }
+    .chapter-tick:hover { color: var(--accent); background: var(--accent-soft); }
+    .chapter-tick.current { color: var(--warning); box-shadow: inset 0 -2px var(--warning); }
+    .tension { width: 34px; height: 3px; border-radius: 2px; background: var(--dim); }
+    .g-character { background: var(--character); } .g-conflict { background: var(--conflict); }
+    .g-clue { background: var(--clue); } .g-foreshadow { background: var(--foreshadow); }
+
+    .group {
+      height: 29px;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 78%, var(--bg));
+    }
+    .group-label {
+      position: sticky;
+      left: 0;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 15px;
+      border-right: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 78%, var(--bg));
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .group-label:hover { color: var(--fg); }
+    .collapse { width: 11px; color: var(--dim); font: 12px/1 var(--font-mono); }
+    .group-num { color: var(--dim); font: 10px/1 var(--font-mono); }
+    .entity {
+      min-height: 39px;
+      border-bottom: 1px solid color-mix(in oklch, var(--border) 75%, transparent);
+      background: color-mix(in oklch, var(--surface) 90%, var(--bg));
+    }
+    .entity.selected { background: color-mix(in oklch, var(--accent-soft) 46%, var(--surface)); }
+    .entity-label {
+      position: sticky;
+      left: 0;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 0 15px;
+      border-right: 1px solid var(--border);
+      background: inherit;
+      cursor: pointer;
+    }
+    .entity-label:hover { background: var(--surface-3); }
+    .entity-color { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+    .entity-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+    .entity-tag {
+      margin-left: auto;
+      color: var(--dim);
+      font: 10px/1 var(--font-mono);
+    }
+    .track { min-height: 39px; }
+    .active-column {
+      position: absolute;
+      inset: 0 auto 0 calc(8 * var(--cell));
+      width: var(--cell);
+      pointer-events: none;
+      background: oklch(78% 0.15 80 / .07);
+      border-left: 1px solid oklch(78% 0.15 80 / .55);
+      border-right: 1px solid oklch(78% 0.15 80 / .25);
+    }
+    .span {
+      z-index: 1;
+      align-self: center;
+      height: 19px;
+      margin: 0 5px;
+      border: 1px solid color-mix(in oklch, currentColor 68%, transparent);
+      border-radius: 4px;
+      background: color-mix(in oklch, currentColor 20%, transparent);
+      color: inherit;
+      cursor: pointer;
+    }
+    .span:hover { filter: brightness(1.18); outline: 1px solid currentColor; }
+    .span .span-label {
+      display: block;
+      padding: 1px 6px;
+      overflow: hidden;
+      color: color-mix(in oklch, currentColor 85%, white);
+      font-size: 10px;
+      line-height: 16px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .event {
+      z-index: 2;
+      align-self: center;
+      justify-self: center;
+      width: 9px;
+      height: 9px;
+      border: 2px solid currentColor;
+      border-radius: 50%;
+      background: var(--surface);
+      cursor: pointer;
+    }
+    .event.payoff { background: currentColor; }
+    .event.reinforce { box-shadow: 0 0 0 3px color-mix(in oklch, currentColor 25%, transparent); }
+    .line {
+      grid-row: 1;
+      align-self: center;
+      z-index: 1;
+      height: 2px;
+      margin: 0 -1px;
+      background: currentColor;
+      opacity: .6;
+    }
+    .subtrack {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      min-height: 26px;
+      border-bottom: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+      background: color-mix(in oklch, var(--surface) 83%, var(--bg));
+    }
+    .subtrack-label {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-left: 38px;
+      border-right: 1px solid var(--border);
+      background: inherit;
+      color: var(--muted);
+      font-size: 10px;
+    }
+    .subtrack-label::before { content: "└"; color: var(--dim); font-family: var(--font-mono); }
+    .mini-track {
+      display: grid;
+      grid-template-columns: repeat(16, var(--cell));
+      position: relative;
+      background-image: repeating-linear-gradient(90deg, transparent 0 calc(var(--cell) - 1px), color-mix(in oklch, var(--border) 55%, transparent) calc(var(--cell) - 1px) var(--cell));
+    }
+    .mini-fill {
+      align-self: center;
+      height: 10px;
+      margin: 0 4px;
+      border-radius: 2px;
+      background: color-mix(in oklch, var(--character) 62%, transparent);
+    }
+
+    .inspector-empty { padding: 18px 15px; color: var(--muted); font-size: 12px; }
+    .selection-head { padding: 16px 15px 14px; border-bottom: 1px solid var(--border); }
+    .selection-kicker { color: var(--character); font: 600 10px/1 var(--font-mono); letter-spacing: .08em; }
+    .selection-head h2 { margin: 7px 0 4px; font-size: 19px; line-height: 1.2; }
+    .selection-head p { margin: 0; color: var(--muted); font-size: 12px; }
+    .inspect-section { padding: 14px 15px; border-bottom: 1px solid var(--border); }
+    .inspect-section h3 { margin: 0 0 10px; color: var(--muted); font: 600 10px/1 var(--font-mono); letter-spacing: .07em; }
+    .status-row, .info-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 27px;
+      font-size: 12px;
+    }
+    .info-row span { color: var(--muted); }
+    .state {
+      padding: 3px 6px;
+      border: 1px solid;
+      border-radius: 4px;
+      font: 10px/1 var(--font-mono);
+    }
+    .state.good { color: var(--success); background: oklch(73% 0.14 155 / .1); border-color: oklch(73% 0.14 155 / .25); }
+    .state.warn { color: var(--warning); background: oklch(78% 0.15 80 / .1); border-color: oklch(78% 0.15 80 / .25); }
+    .note {
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--muted);
+      background: var(--surface-2);
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .action-row button { height: 31px; border: 1px solid var(--border); border-radius: 5px; color: var(--fg); background: var(--surface-2); }
+    .action-row button:hover { border-color: var(--accent); color: var(--accent); }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 13px;
+      color: var(--dim);
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      font: 10px/1 var(--font-mono);
+    }
+    .statusbar span:first-child { color: var(--success); }
+    .statusbar .right { margin-left: auto; }
+
+    @media (max-width: 1240px) {
+      .workspace { grid-template-columns: 210px minmax(610px, 1fr); }
+      .inspector { display: none; }
+      .search { width: 140px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar">
+      <div class="brand"><span class="brand-mark">N</span> 墨痕创作台</div>
+      <div class="crumb">苍穹剑录 <span>/</span> <strong>故事矩阵</strong></div>
+      <div class="title-actions">
+        <button class="win-btn" title="命令面板">⌘</button>
+        <button class="win-btn" title="通知">●</button>
+        <button class="win-btn" title="更多">•••</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="panel-title">项目导航</div>
+        <div class="project-switcher">
+          <div class="project-avatar">苍</div>
+          <div><strong>苍穹剑录</strong><span>修真 · 16 章</span></div>
+          <span style="margin-left:auto;color:var(--dim)">⌄</span>
+        </div>
+
+        <nav class="nav-section">
+          <div class="nav-label">创作空间</div>
+          <button class="nav-item"><span class="nav-glyph">□</span>概览</button>
+          <button class="nav-item"><span class="nav-glyph">≡</span>章节编辑 <span class="nav-count">16</span></button>
+          <button class="nav-item active"><span class="nav-glyph">▦</span>故事矩阵</button>
+          <button class="nav-item"><span class="nav-glyph">⌘</span>关系画布</button>
+          <button class="nav-item"><span class="nav-glyph">!</span>一致性审计 <span class="nav-count">3</span></button>
+        </nav>
+
+        <div class="nav-section">
+          <div class="nav-label">最近章节</div>
+          <div class="chapter-list">
+            <div class="chapter"><span class="chapter-num">07</span><span class="chapter-name">月下密谈</span></div>
+            <div class="chapter"><span class="chapter-num">08</span><span class="chapter-name">剑冢异动</span></div>
+            <div class="chapter current"><span class="chapter-num">09</span><span class="chapter-name">山门夜雨</span></div>
+            <div class="chapter"><span class="chapter-num">10</span><span class="chapter-name">旧信重现</span></div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section class="toolbar">
+          <div class="view-title">
+            <h1>故事矩阵</h1>
+            <p>沿章节轴检查实体出场、叙事推进与回收节奏</p>
+          </div>
+          <div class="toolbar-spacer"></div>
+          <input id="search" class="search" type="search" placeholder="搜索实体">
+          <div class="seg" aria-label="视图切换">
+            <button class="active">矩阵</button>
+            <button>时间线</button>
+          </div>
+          <button id="zoom-out" class="control" title="缩小章节列">−</button>
+          <button id="zoom-in" class="control" title="放大章节列">+</button>
+          <button class="control">筛选</button>
+          <button class="control primary">新增实体</button>
+        </section>
+
+        <section class="filters" aria-label="实体类型筛选">
+          <button class="filter active" data-filter="all"><span class="dot" style="color:var(--fg)"></span>全部 <span class="count">14</span></button>
+          <button class="filter" data-filter="character"><span class="dot" style="color:var(--character)"></span>角色 <span class="count">4</span></button>
+          <button class="filter" data-filter="conflict"><span class="dot" style="color:var(--conflict)"></span>冲突 <span class="count">2</span></button>
+          <button class="filter" data-filter="clue"><span class="dot" style="color:var(--clue)"></span>线索 <span class="count">2</span></button>
+          <button class="filter" data-filter="foreshadow"><span class="dot" style="color:var(--foreshadow)"></span>伏笔 <span class="count">2</span></button>
+          <span style="margin-left:auto;color:var(--dim);font:10px var(--font-mono)">点击章节定位当前创作上下文</span>
+        </section>
+
+        <section class="matrix-shell">
+          <div class="matrix">
+            <div class="ruler">
+              <div class="sticky-label">实体 / 章节</div>
+              <div class="chapter-ruler" id="ruler"></div>
+            </div>
+
+            <div class="group" data-kind="character">
+              <div class="group-label"><span class="collapse">⌄</span><span class="dot" style="color:var(--character)"></span>角色 <span class="group-num">04</span></div><div></div>
+            </div>
+            <div class="entity" data-kind="character" data-name="沈砚">
+              <div class="entity-label" data-entity="沈砚"><span class="entity-color" style="background:var(--character)"></span><span class="entity-name">沈砚</span><span class="entity-tag">主角</span></div>
+              <div class="track"><div class="active-column"></div><button class="span" style="grid-column:1 / 17;color:var(--character)"><span class="span-label">主线视角</span></button></div>
+            </div>
+            <div class="subtrack" data-kind="character"><div class="subtrack-label">目标变化</div><div class="mini-track"><span class="mini-fill" style="grid-column:1 / 5"></span><span class="mini-fill" style="grid-column:5 / 10;opacity:.7"></span><span class="mini-fill" style="grid-column:10 / 14;opacity:.45"></span><span class="mini-fill" style="grid-column:14 / 17;opacity:.9"></span></div></div>
+            <div class="entity" data-kind="character" data-name="顾清商">
+              <div class="entity-label" data-entity="顾清商"><span class="entity-color" style="background:var(--character)"></span><span class="entity-name">顾清商</span><span class="entity-tag">同盟</span></div>
+              <div class="track"><div class="active-column"></div><button class="span" style="grid-column:3 / 17;color:var(--character)"><span class="span-label">追查父亲死因</span></button></div>
+            </div>
+            <div class="entity" data-kind="character" data-name="谢无咎">
+              <div class="entity-label" data-entity="谢无咎"><span class="entity-color" style="background:var(--character)"></span><span class="entity-name">谢无咎</span><span class="entity-tag">未知</span></div>
+              <div class="track"><div class="active-column"></div><button class="span" style="grid-column:5 / 13;color:var(--character)"></button><button class="span" style="grid-column:14 / 17;color:var(--character)"></button></div>
+            </div>
+
+            <div class="group" data-kind="conflict">
+              <div class="group-label"><span class="collapse">⌄</span><span class="dot" style="color:var(--conflict)"></span>冲突 <span class="group-num">02</span></div><div></div>
+            </div>
+            <div class="entity" data-kind="conflict" data-name="宗门覆灭危机">
+              <div class="entity-label" data-entity="宗门覆灭危机"><span class="entity-color" style="background:var(--conflict)"></span><span class="entity-name">宗门覆灭危机</span><span class="entity-tag">主线</span></div>
+              <div class="track"><div class="active-column"></div><button class="span" style="grid-column:1 / 9;color:var(--conflict)"><span class="span-label">潜伏 → 激化</span></button><button class="span" style="grid-column:12 / 17;color:var(--conflict)"><span class="span-label">爆发</span></button></div>
+            </div>
+            <div class="subtrack" data-kind="conflict"><div class="subtrack-label">张力强度</div><div class="mini-track"><span class="mini-fill" style="grid-column:1 / 5;background:color-mix(in oklch,var(--conflict) 35%,transparent)"></span><span class="mini-fill" style="grid-column:5 / 9;background:color-mix(in oklch,var(--conflict) 65%,transparent)"></span><span class="mini-fill" style="grid-column:12 / 16;background:var(--conflict)"></span></div></div>
+            <div class="entity" data-kind="conflict" data-name="身世之谜">
+              <div class="entity-label" data-entity="身世之谜"><span class="entity-color" style="background:var(--conflict)"></span><span class="entity-name">身世之谜</span><span class="entity-tag">支线</span></div>
+              <div class="track"><div class="active-column"></div><button class="span" style="grid-column:5 / 13;color:var(--conflict)"><span class="span-label">线索交叉</span></button></div>
+            </div>
+
+            <div class="group" data-kind="clue">
+              <div class="group-label"><span class="collapse">⌄</span><span class="dot" style="color:var(--clue)"></span>线索与伏笔 <span class="group-num">04</span></div><div></div>
+            </div>
+            <div class="entity" data-kind="clue" data-name="血色玉佩">
+              <div class="entity-label" data-entity="血色玉佩"><span class="entity-color" style="background:var(--clue)"></span><span class="entity-name">血色玉佩</span><span class="entity-tag">线索</span></div>
+              <div class="track"><div class="active-column"></div><button class="span" style="grid-column:2 / 15;color:var(--clue)"><span class="span-label">推进中</span></button></div>
+            </div>
+            <div class="entity" data-kind="foreshadow" data-name="剑冢下的封印">
+              <div class="entity-label" data-entity="剑冢下的封印"><span class="entity-color" style="background:var(--foreshadow)"></span><span class="entity-name">剑冢下的封印</span><span class="entity-tag">伏笔</span></div>
+              <div class="track"><div class="active-column"></div><span class="line" style="grid-column:2 / 15;color:var(--foreshadow)"></span><button class="event" style="grid-column:2;color:var(--foreshadow)" title="埋设"></button><button class="event reinforce" style="grid-column:8;color:var(--foreshadow)" title="强化"></button><button class="event payoff" style="grid-column:14;color:var(--foreshadow)" title="回收"></button></div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector" id="inspector">
+        <div class="panel-title">实体检查器 <button id="close-inspector" class="icon-btn" title="关闭检查器">×</button></div>
+        <div class="selection-head">
+          <div class="selection-kicker">角色 · 当前选择</div>
+          <h2 id="inspect-name">沈砚</h2>
+          <p id="inspect-subtitle">主视角角色 · 第 1 至 16 章</p>
+        </div>
+        <section class="inspect-section">
+          <h3>当前章节 · 第 9 章</h3>
+          <div class="status-row"><span>叙事状态</span><b class="state good">已落位</b></div>
+          <div class="status-row"><span>当下目标</span><strong>查明剑冢异动</strong></div>
+          <div class="status-row"><span>关联冲突</span><strong>2 项</strong></div>
+        </section>
+        <section class="inspect-section">
+          <h3>一致性提示</h3>
+          <div class="note">第 9 章的行动动机已承接“掌门之死”线索。下一次信息揭示位于第 11 章，建议维持当前的延迟回收节奏。</div>
+        </section>
+        <section class="inspect-section">
+          <h3>快速操作</h3>
+          <div class="action-row"><button>编辑实体</button><button>添加批注</button></div>
+        </section>
+        <section class="inspect-section">
+          <h3>覆盖范围</h3>
+          <div class="info-row"><span>首次出场</span><strong>第 1 章</strong></div>
+          <div class="info-row"><span>最后活跃</span><strong>第 16 章</strong></div>
+          <div class="info-row"><span>展开子轨道</span><strong>1 条</strong></div>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <span>● 已同步</span>
+      <span>第 9 章 · 山门夜雨</span>
+      <span>选中实体后可在右侧检查上下文</span>
+      <span class="right">Ctrl + 滚轮缩放 · Shift + 滚轮横移</span>
+    </footer>
+  </div>
+
+  <script>
+    const chapters = [0.25, 0.3, 0.38, 0.33, 0.46, 0.54, 0.61, 0.77, 0.58, 0.48, 0.64, 0.76, 0.83, 0.9, 1, 0.65];
+    const ruler = document.getElementById('ruler');
+    let currentChapter = 9;
+    let cell = 58;
+
+    function renderRuler() {
+      ruler.innerHTML = '';
+      chapters.forEach((value, index) => {
+        const button = document.createElement('button');
+        button.className = 'chapter-tick' + (index + 1 === currentChapter ? ' current' : '');
+        button.innerHTML = '<span>' + (index + 1) + '</span><i class="tension" style="opacity:' + (0.3 + value * 0.7) + ';background:' + (value > .75 ? 'var(--danger)' : value > .5 ? 'var(--warning)' : 'var(--success)') + '"></i>';
+        button.addEventListener('click', () => {
+          currentChapter = index + 1;
+          renderRuler();
+          document.querySelector('.statusbar span:nth-child(2)').textContent = '第 ' + currentChapter + ' 章 · 山门夜雨';
+        });
+        ruler.appendChild(button);
+      });
+    }
+
+    document.querySelectorAll('.filter').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.filter').forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+        const filter = button.dataset.filter;
+        document.querySelectorAll('[data-kind]').forEach((element) => {
+          element.style.display = filter === 'all' || element.dataset.kind === filter ? '' : 'none';
+        });
+      });
+    });
+
+    document.querySelectorAll('.entity-label').forEach((label) => {
+      label.addEventListener('click', () => {
+        document.querySelectorAll('.entity').forEach((row) => row.classList.remove('selected'));
+        label.closest('.entity').classList.add('selected');
+        const name = label.dataset.entity;
+        document.getElementById('inspect-name').textContent = name;
+        document.getElementById('inspect-subtitle').textContent = name === '沈砚' ? '主视角角色 · 第 1 至 16 章' : '故事实体 · 在章节轴中的活动范围';
+      });
+    });
+
+    document.getElementById('search').addEventListener('input', (event) => {
+      const query = event.target.value.trim().toLowerCase();
+      document.querySelectorAll('.entity').forEach((row) => {
+        const name = row.dataset.name.toLowerCase();
+        row.style.display = !query || name.includes(query) ? '' : 'none';
+      });
+    });
+
+    function setCell(next) {
+      cell = Math.max(42, Math.min(82, next));
+      document.documentElement.style.setProperty('--cell', cell + 'px');
+    }
+    document.getElementById('zoom-in').addEventListener('click', () => setCell(cell + 4));
+    document.getElementById('zoom-out').addEventListener('click', () => setCell(cell - 4));
+
+    document.getElementById('close-inspector').addEventListener('click', () => {
+      document.getElementById('inspector').style.display = 'none';
+      document.querySelector('.workspace').style.gridTemplateColumns = '236px minmax(610px, 1fr)';
+    });
+
+    renderRuler();
+  </script>
+</body>
+</html>

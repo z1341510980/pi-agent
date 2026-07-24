@@ -17,6 +17,7 @@ import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacterGenerator } from './novel-character-generator.js'
 import type { NovelStore } from './novel-store.js'
+import type { NovelMemoryStore, CreateEventChangeInput } from './novel-memory-store.js'
 import {
   FORESHADOW_ADMISSION_PROMPT,
   isAdmissibleNewForeshadow,
@@ -326,6 +327,8 @@ export class NovelEntityGenerator {
     private context: PluginContext,
     private characterGenerator: NovelCharacterGenerator,
     private store: NovelStore,
+    /** 正文反推时写入事件账本，让矩阵获得可追溯的首次出现投影。 */
+    private memoryStore?: NovelMemoryStore,
   ) {}
 
   /**
@@ -1187,6 +1190,21 @@ export class NovelEntityGenerator {
       { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, items: itemIds.length, characterFunctions: characterFunctions.length },
       'generateAndArrange 完成：实体已落库',
     )
+    if (isReverse) {
+      try {
+        this.recordReverseArrangeProjection(projectId, chapterNumber, {
+          characterIds: createdCharacterIds,
+          conflictIds: createdConflictIds,
+          foreshadowIds: createdForeshadowIds,
+          factionIds: createdFactionIds,
+          locationIds: createdLocationIds,
+          itemIds: createdItemIds,
+        })
+      } catch (err) {
+        // 投影落账失败不能撤销已经成功的实体反推，下一次反推或章节收尾仍可补齐。
+        this.context.logger.warn({ projectId, chapterNumber, err }, '正文反推实体已落库，但账本投影写入失败')
+      }
+    }
     return {
       characterIds,
       conflictIds,
@@ -1197,6 +1215,95 @@ export class NovelEntityGenerator {
       itemIds,
       characterFunctions: characterFunctions.length > 0 ? characterFunctions : undefined,
     }
+  }
+
+  /**
+   * 为正文反推中新建的实体写入“首次出现”账本记录。
+   *
+   * 仅处理本次实际新建的 ID。复用实体已经通过 chapterSpans、角色历史或伏笔 beats
+   * 表示本章出场，不能伪造成再次创建。
+   */
+  private recordReverseArrangeProjection(
+    projectId: string,
+    chapterNumber: number,
+    created: {
+      characterIds: string[]
+      conflictIds: string[]
+      foreshadowIds: string[]
+      factionIds: string[]
+      locationIds: string[]
+      itemIds: string[]
+    },
+  ): void {
+    if (!this.memoryStore) return
+    const changes: CreateEventChangeInput[] = []
+    const entityRefs: Array<{ entityType: CreateEventChangeInput['subjectType']; entityId: string; role: 'affected'; note: string }> = []
+    const add = (
+      subjectType: CreateEventChangeInput['subjectType'],
+      subjectId: string,
+      dimension: string,
+      label: string,
+      afterValue: unknown,
+    ) => {
+      entityRefs.push({ entityType: subjectType, entityId: subjectId, role: 'affected', note: '正文反推首次出现' })
+      changes.push({
+        subjectType,
+        subjectId,
+        dimension,
+        targetType: null,
+        targetId: null,
+        valueType: 'reference',
+        beforeValue: null,
+        afterValue,
+        reason: `正文反推：${label}首次出现`,
+        significance: 5,
+        source: 'ai-extracted',
+      })
+    }
+
+    for (const id of created.characterIds) {
+      const entity = this.store.getCharacter(id)
+      if (entity) add('character', id, 'character.created', entity.name, { name: entity.name, state: entity.currentState })
+    }
+    for (const id of created.conflictIds) {
+      const entity = this.store.getConflict(id)
+      if (entity) add('conflict', id, 'conflict.created', entity.description, { description: entity.description, stage: entity.stage, intensity: entity.intensity })
+    }
+    for (const id of created.foreshadowIds) {
+      const entity = this.store.getForeshadow(id)
+      if (entity) add('foreshadow', id, 'foreshadow.created', entity.description, { description: entity.description, status: entity.status })
+    }
+    for (const id of created.factionIds) {
+      const entity = this.store.getFaction(id)
+      if (entity) add('faction', id, 'faction.created', entity.name, { name: entity.name, status: entity.status, strength: entity.strength })
+    }
+    for (const id of created.locationIds) {
+      const entity = this.store.getLocation(id)
+      if (entity) add('location', id, 'location.created', entity.name, { name: entity.name, status: entity.status })
+    }
+    for (const id of created.itemIds) {
+      const entity = this.store.getItem(id)
+      if (entity) add('item', id, 'item.created', entity.name, { name: entity.name, holder: entity.ownerId, status: entity.status })
+    }
+    if (changes.length === 0) return
+
+    this.memoryStore.createStoryEventWithChanges({
+      event: {
+        projectId,
+        chapterNumber,
+        sceneId: null,
+        sceneOrder: 0,
+        type: 'discovery',
+        title: '正文反推实体投影',
+        summary: `从第 ${chapterNumber} 章正文反推出 ${changes.length} 个新实体`,
+        outcome: '',
+        status: 'confirmed',
+        parentEventId: null,
+        source: 'ai-extracted',
+      },
+      entityRefs,
+      changes,
+    })
   }
 
   /**

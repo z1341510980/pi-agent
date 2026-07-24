@@ -48,7 +48,7 @@ export function MatrixSubtracks({
   }
 
   return (
-    <div className="bg-primary/[0.03]">
+    <div className="bg-primary/[0.03] animate-[subtrack-enter_180ms_ease-out]">
       {tracks.map((track) => (
         <SubtrackRow
           key={track.key}

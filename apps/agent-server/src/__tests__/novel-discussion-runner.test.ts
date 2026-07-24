@@ -223,6 +223,72 @@ describe('NovelDiscussionRunner', () => {
     expect(charPrompt).toContain('机敏聪慧')
   })
 
+  it('角色演员读取 N-1 边界状态，不读取当前章之后的角色、冲突和认知', () => {
+    const project = store.createProject({
+      id: 'p-test-boundary', title: '边界测试', genre: '都市', synopsis: '', outline: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 2, currentStage: 'rising', status: 'active',
+    } as any)
+    store.createChapter({
+      id: 'ch-boundary-1', projectId: project.id, volume: 1, chapterNumber: 1, title: '第一章',
+      content: '第一章已经写完。', wordCount: 8, status: 'review', narrativeTask: '', outline: '',
+      volumeId: null, acceptanceResult: null,
+    } as any)
+    store.createChapter({
+      id: 'ch-boundary-2', projectId: project.id, volume: 1, chapterNumber: 2, title: '第二章',
+      content: '旧的第二章。', wordCount: 6, status: 'review', narrativeTask: '', outline: '',
+      volumeId: null, acceptanceResult: null,
+    } as any)
+    const character = store.createCharacter({
+      id: 'c-boundary', projectId: project.id, name: '沈舟', personality: '谨慎', identity: '调查员',
+      currentState: '未来章已经脱险', currentGoal: '追查幕后者', secret: '', arcStage: 'rising',
+    } as any)
+    const conflict = store.createConflict({
+      id: 'cf-boundary', projectId: project.id, description: '码头追捕', type: 'survival', intensity: 8,
+      stage: 'erupting', participants: JSON.stringify([character.id]), chapterSpans: [[1, 2]], tier: 'main',
+    } as any)
+    const layer = store.createInformationLayer({
+      id: 'il-boundary', projectId: project.id, infoDescription: '叛徒已经现身', authorKnows: true,
+      readerKnows: true, characterKnowledge: JSON.stringify({ [character.id]: { knows: true } }),
+      revealStage: 'reveal', revealChapter: 2, isRevealed: true,
+    })
+    memoryStore.saveSnapshot({
+      projectId: project.id, chapterNumber: 1, snapshotType: 'full', entityId: null,
+      snapshotData: JSON.stringify({
+        characters: [{ ...character, currentState: '第一章末仍被困在码头' }],
+        relationships: [],
+        conflicts: [{ ...conflict, stage: 'escalating', intensity: 5 }],
+        foreshadowing: [], clues: [], factions: [], locations: [], items: [], worldElements: [],
+        informationLayers: [{ ...layer, readerKnows: false, isRevealed: false, characterKnowledge: JSON.stringify({ [character.id]: { suspects: true } }) }],
+        edges: [],
+      }),
+    })
+
+    const promptManager = new PromptManager(db, process.cwd())
+    const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore)
+    const runner = new NovelDiscussionRunner(
+      store,
+      memoryStore,
+      promptBuilder,
+      new NovelEngine(store),
+      { createAgUiSession: vi.fn(), createSession: vi.fn(), logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+      {} as any,
+    )
+    const arranged = {
+      characterIds: [character.id], conflictIds: [conflict.id], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], itemIds: [],
+    }
+    const boundary = promptBuilder.getChapterBoundaryContext(project.id, 2)
+    const member = (runner as any).buildMembers(project.id, 2, arranged, boundary)
+      .find((candidate: any) => candidate.id === `char-${character.id}`)
+
+    expect(member.buildIdentityPrompt()).toContain('第一章末仍被困在码头')
+    expect(member.buildIdentityPrompt()).not.toContain('未来章已经脱险')
+    const context = member.buildContextPrompt()
+    expect(context).toContain('当前阶段：escalating')
+    expect(context).not.toContain('当前阶段：erupting')
+    expect(context).toContain('你有所怀疑：叛徒已经现身')
+    expect(context).not.toContain('你知道：叛徒已经现身')
+  })
+
   it('run 绑定真实章节并把群聊成员调用写入 Agent 日志', async () => {
     const project = store.createProject({
       id: 'p-test-5',

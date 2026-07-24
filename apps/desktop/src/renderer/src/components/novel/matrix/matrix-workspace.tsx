@@ -139,6 +139,7 @@ export function MatrixWorkspace({
   const factions = useNovelDataStore((s) => s.factions)
   const locations = useNovelDataStore((s) => s.locations)
   const worldElements = useNovelDataStore((s) => s.worldElements)
+  const infoLayers = useNovelDataStore((s) => s.infoLayers)
   const items = useNovelDataStore((s) => s.items)
   const characterHistory = useNovelDataStore((s) => s.characterHistory)
   const relationships = useNovelDataStore((s) => s.relationships)
@@ -218,9 +219,9 @@ export function MatrixWorkspace({
   const matrixData = useMemo(
     () => buildGroups({
       chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-      items, characterHistory, markers,
+      infoLayers, items, characterHistory, markers,
     }),
-    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, items, characterHistory, markers],
+    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, infoLayers, items, characterHistory, markers],
   )
 
   // ── 共享账本投影：matrix-aggregation 单请求，全部展开实体的子轨道共用 ──
@@ -462,9 +463,9 @@ export function MatrixWorkspace({
   // - conflict/faction：扩展或收缩 firstChapter/lastChapter 端点（中间格不可删）
   // - foreshadow：右键设 firstChapter（埋设点）或 recoverByChapter（回收点）
   // - location：操作 appearChapters 数组
-  // - world_element：恒全程出现，不可标记
+  // - world_element / info_layer：由实体属性驱动，不通过单元格直接标记
   const isCellEditable = useCallback((kind: MatrixEntityKind): boolean => {
-    return kind !== 'world_element'
+    return kind !== 'world_element' && kind !== 'info_layer'
   }, [])
 
   const isCellPresent = useCallback((entityId: string, kind: MatrixEntityKind, chapter: number): boolean => {
@@ -895,7 +896,7 @@ export function MatrixWorkspace({
   // ── 空单元格单击：构造性快速新增；删除/收缩统一走右键菜单 ──
   const handleTogglePresent = useCallback(async (entity: MatrixEntity, chapter: number): Promise<void> => {
     const kind = entity.kind
-    if (kind === 'world_element') return
+    if (kind === 'world_element' || kind === 'info_layer') return
 
     if (kind === 'foreshadow') {
       const foreshadow = useNovelDataStore.getState().foreshadows.find((item) => item.id === entity.entityId)

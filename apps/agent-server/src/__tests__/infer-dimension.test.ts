@@ -173,6 +173,11 @@ describe('inferDimension - faction_change', () => {
     expect(r).toEqual({ dimension: 'faction.status', valueType: 'enum' })
   })
 
+  it('strength → faction.strength', () => {
+    const r = inferDimension('faction_change', '{"strength":"衰落"}', '{"strength":"鼎盛"}')
+    expect(r).toEqual({ dimension: 'faction.strength', valueType: 'level' })
+  })
+
   it('无匹配字段 → fallback 到 faction.activity', () => {
     const r = inferDimension('faction_change', '{"leaderId":"f1"}', '{"leaderId":"f0"}')
     expect(r).toEqual({ dimension: 'faction.activity', valueType: 'text' })
@@ -261,6 +266,13 @@ describe('inferDimension - info_layer_change', () => {
   it('创建事件 → info_layer.created', () => {
     const r = inferDimension('info_layer_change', '{"readerKnows":false,"isRevealed":false}', null)
     expect(r).toEqual({ dimension: 'info_layer.created', valueType: 'reference' })
+  })
+})
+
+describe('inferDimension - world_change', () => {
+  it('创建世界要素 → world_element.created', () => {
+    const r = inferDimension('world_change', '{"name":"灵气体系","category":"power_system"}', null)
+    expect(r).toEqual({ dimension: 'world_element.created', valueType: 'reference' })
   })
 })
 

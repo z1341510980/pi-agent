@@ -178,7 +178,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
 
   // 9. 创建 NovelEntityGenerator（通用实体生成器，character 分支委托给 characterGenerator）
   //    依赖 NovelStore 用于 generateAndArrange 落库（角色/冲突/伏笔 + 角色历史）
-  const entityGenerator = new NovelEntityGenerator(promptBuilder, promptManager, context, characterGenerator, store)
+  const entityGenerator = new NovelEntityGenerator(promptBuilder, promptManager, context, characterGenerator, store, memoryStore)
 
   // 9.5 创建 NovelSimilarityScanner（LLM 驱动的相似实体扫描器）
   //     与 store.deduplicateEntities 互补：deduplicateEntities 处理"完全相同"的重复，

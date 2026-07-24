@@ -21,11 +21,18 @@ import type {
   NovelFaction,
   NovelLocation,
   NovelWorldElement,
+  NovelInformationLayer,
   NovelItem,
   NovelCharacterHistory,
   ConflictTier,
 } from '@/api/novel-client'
-import type { MatrixEntity, MatrixEntityKind, MatrixGroup, MatrixData } from './matrix-logic'
+import type {
+  MatrixEntity,
+  MatrixEntityKind,
+  MatrixGroup,
+  MatrixData,
+  MatrixSubtrackSnapshot,
+} from './matrix-logic'
 import {
   GROUP_META,
   computeMaxChapter,
@@ -101,9 +108,9 @@ export interface SubtrackDef {
   emptyHint?: string
 }
 
-/** 所有实际出现在矩阵中的实体都可展开子轨道（info_layer 走侧边栏管理） */
+/** 矩阵九类实体均使用同一套子轨道投影。 */
 export function isSubtrackSupported(kind: MatrixEntityKind): boolean {
-  return kind !== 'info_layer'
+  return GROUP_META[kind] != null
 }
 
 // ────────────────────────────────────────────────────────────
@@ -124,28 +131,48 @@ export const DIMENSION_LABELS: Record<string, string> = {
   'conflict.intensity': '张力强度',
   'conflict.plot_function': '剧情功能',
   'conflict.progression_mode': '推进模式',
+  'conflict.current_step': '当前进展',
+  'conflict.next_step': '下一步',
+  'conflict.participants': '参与角色',
+  'conflict.related_clues': '关联线索',
   'conflict.created': '建立',
   // foreshadow
   'foreshadow.beat': '事件链节点',
   'foreshadow.payoff_chapter': '回收章节',
   'foreshadow.plant_method': '埋设手法',
   'foreshadow.recover_method': '回收手法',
+  'foreshadow.status': '伏笔状态',
+  'foreshadow.category': '伏笔类别',
   'foreshadow.created': '埋设',
   // clue
   'clue.progress': '推进进度',
   'clue.step': '发现步骤',
   'clue.points_to': '指向',
   'clue.misleading': '误导性',
+  'clue.current_step': '当前步骤',
+  'clue.next_step': '下一步',
   'clue.created': '发现',
   // faction
   'faction.status': '势力状态',
   'faction.activity': '活动区间',
   'faction.strength': '实力消长',
+  'faction.leader': '首领',
+  'faction.resources': '资源',
+  'faction.allies': '盟友',
+  'faction.enemies': '敌对势力',
   'faction.created': '成立',
   // location
   'location.status': '场景状态',
   'location.appear': '场景出现',
+  'location.significance': '剧情权重',
+  'location.parent': '上级地点',
+  'location.faction': '归属势力',
   'location.created': '首次出现',
+  // world element
+  'world_element.presence': '常驻',
+  'world_element.category': '要素类别',
+  'world_element.attributes': '属性',
+  'world_element.created': '建立',
   // relationship
   'relationship.stage': '关系阶段',
   'relationship.role': '角色定位',
@@ -160,12 +187,15 @@ export const DIMENSION_LABELS: Record<string, string> = {
   'info_layer.links': '关联线索',
   'info_layer.reveal_chapter': '揭示章节',
   'info_layer.knowledge_spread': '知情角色',
+  'info_layer.reveal_stage': '揭示阶段',
   'info_layer.created': '建立',
   // item
   'item.holder': '持有者',
   'item.status': '物品状态',
   'item.function': '功能定位',
   'item.appear': '出现记录',
+  'item.abilities': '能力/效果',
+  'item.origin': '来源',
   'item.created': '首次出现',
 }
 
@@ -299,18 +329,358 @@ export function buildSubtracksFromChanges(
     })
   }
 
-  return tracks
+  return tracks.filter(hasSubtrackData)
 }
 
-/** 从全量聚合中按实体过滤并构建子轨道（视图层 useMemo 调用） */
+/** 从全量聚合中按实体过滤并构建子轨道（视图层 useMemo 调用）。
+ *  数据源 = aggregation changes（账本变化记录）+ 实体自身透传的按章节数据。
+ *  同 dimension key 优先用 changes（含 before/after 变化信息），实体字段补缺。 */
 export function buildSubtracksForEntity(
   allChanges: NovelChangeRecord[],
   entity: MatrixEntity,
 ): SubtrackDef[] {
   const filtered = allChanges.filter(
-    (c) => c.subjectType === entity.kind && c.subjectId === entity.entityId,
+    (c) => c.subjectId === entity.entityId
+      && (c.subjectType === entity.kind || c.dimension.startsWith(`${entity.kind}.`)),
   )
-  return buildSubtracksFromChanges(filtered, entity.kind)
+  const changeTracks = buildSubtracksFromChanges(filtered, entity.kind)
+  const entityTracks = buildSubtracksFromEntity(entity)
+  return mergeSubtrackDefs(changeTracks, entityTracks)
+}
+
+// ────────────────────────────────────────────────────────────
+// 实体自身字段 → 子轨道（fallback / 补充，不依赖 aggregation changes）
+// ────────────────────────────────────────────────────────────
+
+/** 伏笔 beat 类型 → 节点颜色 */
+const FORESHADOW_BEAT_COLORS: Record<string, string> = {
+  plant: '#f59e0b',
+  reinforce: '#f97316',
+  reveal: '#06b6d4',
+  payoff: '#22c55e',
+}
+const FORESHADOW_BEAT_LABELS: Record<string, string> = {
+  plant: '埋设',
+  reinforce: '强化',
+  reveal: '揭示',
+  payoff: '回收',
+}
+
+/** 从 MatrixEntity 自身透传字段构建子轨道（不依赖后端 aggregation） */
+function buildSubtracksFromEntity(entity: MatrixEntity): SubtrackDef[] {
+  const meta = GROUP_META[entity.kind]
+  const { color, colorRgb } = meta
+  const tracks: SubtrackDef[] = []
+
+  switch (entity.kind) {
+    case 'conflict': {
+      // 张力强度（number sparkline）
+      if (entity.intensityPoints && entity.intensityPoints.length > 0) {
+        const curve = entity.intensityPoints
+          .map((p) => ({ ch: p.chapter, value: normalizeNumber(p.value) }))
+          .filter((p): p is SubtrackCurvePoint => p.value != null)
+        const nodes = entity.intensityPoints.map((p) => ({
+          ch: p.chapter,
+          label: String(p.value),
+          color,
+        }))
+        tracks.push({
+          key: 'conflict.intensity',
+          label: resolveDimensionLabel('conflict.intensity'),
+          color, colorRgb,
+          bands: [],
+          curve: curve.length > 1 ? curve : undefined,
+          nodes: curve.length > 1 ? undefined : nodes,
+        })
+      }
+      // 关键转折点（reference 圆点）
+      if (entity.turningPoints && entity.turningPoints.length > 0) {
+        tracks.push({
+          key: 'conflict.turning_point',
+          label: '关键转折',
+          color, colorRgb,
+          bands: [],
+          nodes: entity.turningPoints.map((tp) => ({
+            ch: tp.chapter,
+            label: tp.label,
+            color: '#e8463a',
+            desc: tp.label,
+          })),
+        })
+      }
+      // 解决进度（number sparkline）
+      if (entity.resolutionProgress && entity.resolutionProgress.length > 0) {
+        const curve = entity.resolutionProgress
+          .map((p) => ({ ch: p.chapter, value: normalizeNumber(p.percent) }))
+          .filter((p): p is SubtrackCurvePoint => p.value != null)
+        tracks.push({
+          key: 'conflict.resolution',
+          label: '解决进度',
+          color, colorRgb,
+          bands: [],
+          curve: curve.length > 1 ? curve : undefined,
+          nodes: curve.length > 1 ? undefined : entity.resolutionProgress.map((p) => ({
+            ch: p.chapter, label: `${p.percent}%`, color,
+          })),
+        })
+      }
+      break
+    }
+    case 'foreshadow': {
+      // 事件链节点（plant/reinforce/reveal/payoff 四态着色）
+      if (entity.foreshadowBeats && entity.foreshadowBeats.length > 0) {
+        tracks.push({
+          key: 'foreshadow.beat',
+          label: resolveDimensionLabel('foreshadow.beat'),
+          color, colorRgb,
+          bands: [],
+          nodes: entity.foreshadowBeats.map((beat) => ({
+            ch: beat.chapter,
+            label: FORESHADOW_BEAT_LABELS[beat.type] ?? beat.type,
+            color: FORESHADOW_BEAT_COLORS[beat.type] ?? color,
+            desc: beat.note || undefined,
+          })),
+        })
+      }
+      // 回收进度点
+      if (entity.resolutionPoints && entity.resolutionPoints.length > 0) {
+        tracks.push({
+          key: 'foreshadow.resolution',
+          label: '回收进度',
+          color, colorRgb,
+          bands: [],
+          nodes: entity.resolutionPoints.map((rp) => ({
+            ch: rp.chapter, label: rp.label, color: '#22c55e', desc: rp.label,
+          })),
+        })
+      }
+      break
+    }
+    case 'clue': {
+      // 发现步骤（每段跨度 = 一个阶段色块）
+      if (entity.chapterSpans && entity.chapterSpans.length > 0) {
+        tracks.push(buildSpansTrack('clue.step', '发现步骤', entity.chapterSpans, color, colorRgb))
+      }
+      break
+    }
+    case 'faction': {
+      if (entity.chapterSpans && entity.chapterSpans.length > 0) {
+        tracks.push(buildSpansTrack('faction.activity', '活动区间', entity.chapterSpans, color, colorRgb))
+      }
+      break
+    }
+    case 'item': {
+      if (entity.chapterSpans && entity.chapterSpans.length > 0) {
+        tracks.push(buildSpansTrack('item.appear', '出现区间', entity.chapterSpans, color, colorRgb))
+      }
+      break
+    }
+    case 'location': {
+      // 出场记录（reference 圆点）
+      if (entity.appearChapters && entity.appearChapters.length > 0) {
+        tracks.push({
+          key: 'location.appear',
+          label: resolveDimensionLabel('location.appear'),
+          color, colorRgb,
+          bands: [],
+          nodes: entity.appearChapters.map((ch) => ({ ch, label: `第 ${ch} 章`, color })),
+        })
+      }
+      break
+    }
+    case 'world_element': {
+      // 全程常驻色带
+      const start = entity.alwaysStart ?? 1
+      const end = entity.alwaysEnd ?? 1
+      if (end >= start) {
+        tracks.push({
+          key: 'world_element.presence',
+          label: '常驻',
+          color, colorRgb,
+          bands: [{
+            startCh: start, endCh: end,
+            fill: `rgba(${colorRgb}, 0.22)`,
+            border: `rgba(${colorRgb}, 0.45)`,
+            label: '常驻',
+          }],
+        })
+      }
+      break
+    }
+    case 'info_layer': {
+      const start = entity.infoStart ?? 1
+      const end = entity.infoEnd ?? start
+      if (end >= start) {
+        tracks.push({
+          key: 'info_layer.hidden_period',
+          label: '隐藏期',
+          color,
+          colorRgb,
+          bands: [{
+            startCh: start,
+            endCh: end,
+            fill: `rgba(${colorRgb}, 0.22)`,
+            border: `rgba(${colorRgb}, 0.45)`,
+            label: '信息未完全揭示',
+            valueKey: '信息未完全揭示',
+          }],
+        })
+      }
+      break
+    }
+    case 'character': {
+      // 角色出场跨度色带（characterSpans 已在折叠态主编码使用，此处补充为子轨道）
+      if (entity.characterSpans && entity.characterSpans.length > 0) {
+        tracks.push({
+          key: 'character.presence',
+          label: '出场区间',
+          color, colorRgb,
+          bands: entity.characterSpans.map((s) => ({
+            startCh: s.start, endCh: s.end,
+            fill: `rgba(${colorRgb}, 0.22)`,
+            border: `rgba(${colorRgb}, 0.45)`,
+            label: `第 ${s.start}–${s.end} 章`,
+          })),
+        })
+      }
+      break
+    }
+  }
+
+  return mergeSubtrackDefs(tracks, buildSubtracksFromSnapshots(entity.subtrackSnapshots, color, colorRgb))
+}
+
+/** 把 chapterSpans（多段跨度）转为 enum 色块子轨道 */
+function buildSpansTrack(
+  key: string, label: string,
+  spans: Array<[number, number]>,
+  color: string, colorRgb: string,
+): SubtrackDef {
+  return {
+    key, label, color, colorRgb,
+    bands: spans.map(([s, e], i) => ({
+      startCh: s, endCh: e,
+      fill: `rgba(${colorRgb}, ${0.3 + (i % 3) * 0.3})`,
+      border: `rgba(${colorRgb}, 0.45)`,
+      label: `段 ${i + 1}`,
+      valueKey: `段 ${i + 1}`,
+    })),
+  }
+}
+
+/** 合并同一实体的轨道，前者优先（账本 > 专项字段 > 静态快照）。 */
+function mergeSubtrackDefs(
+  primary: SubtrackDef[],
+  fallback: SubtrackDef[],
+): SubtrackDef[] {
+  const merged = primary.filter(hasSubtrackData)
+  const seen = new Set(merged.map((track) => track.key))
+  for (const track of fallback) {
+    if (seen.has(track.key) || !hasSubtrackData(track)) continue
+    seen.add(track.key)
+    merged.push(track)
+  }
+  return merged
+}
+
+function hasSubtrackData(track: SubtrackDef): boolean {
+  return track.bands.length > 0
+    || (track.curve?.length ?? 0) > 0
+    || (track.nodes?.length ?? 0) > 0
+}
+
+/**
+ * 将实体当前字段转换为子轨道保底数据。
+ *
+ * 快照不伪造逐章变更：number / text / reference / set 仅在锚点章显示，
+ * enum / level 只在实体明确存在的章节片段内显示色带。真正的账本记录会按 key 覆盖它。
+ */
+function buildSubtracksFromSnapshots(
+  snapshots: MatrixSubtrackSnapshot[] | undefined,
+  color: string,
+  colorRgb: string,
+): SubtrackDef[] {
+  if (!snapshots || snapshots.length === 0) return []
+
+  const tracks: SubtrackDef[] = []
+  for (const snapshot of snapshots) {
+    if (!hasSnapshotValue(snapshot.value)) continue
+
+    const label = snapshot.label || resolveDimensionLabel(snapshot.key)
+    const displayValue = snapshot.displayValue ?? formatChangeValue(snapshot.value)
+    const desc = snapshot.desc ?? '当前实体快照；暂无逐章变化记录'
+    const base: Omit<SubtrackDef, 'bands'> = {
+      key: snapshot.key,
+      label,
+      color,
+      colorRgb,
+    }
+
+    switch (snapshot.valueType) {
+      case 'enum':
+      case 'level': {
+        const spans = (snapshot.spans ?? []).filter(([start, end]) => end >= start)
+        if (spans.length > 0) {
+          tracks.push({
+            ...base,
+            bands: spans.map(([start, end]) => ({
+              startCh: start,
+              endCh: end,
+              label: displayValue,
+              valueKey: displayValue,
+              fill: `rgba(${colorRgb}, 0.60)`,
+              border: `rgba(${colorRgb}, 0.45)`,
+            })),
+            legend: [{ label: displayValue, fill: `rgba(${colorRgb}, 0.60)` }],
+          })
+        } else {
+          tracks.push({
+            ...base,
+            bands: [],
+            nodes: [{ ch: snapshot.chapter, label: displayValue, color, desc }],
+          })
+        }
+        break
+      }
+      case 'number': {
+        if (normalizeNumber(snapshot.value) == null) break
+        tracks.push({
+          ...base,
+          bands: [],
+          nodes: [{ ch: snapshot.chapter, label: displayValue, color, desc }],
+        })
+        break
+      }
+      case 'set': {
+        const badge = countSetItems(snapshot.value)
+        if (badge === 0) break
+        tracks.push({
+          ...base,
+          bands: [],
+          nodes: [{ ch: snapshot.chapter, label: displayValue, color, badge, desc }],
+        })
+        break
+      }
+      case 'reference':
+      case 'text': {
+        tracks.push({
+          ...base,
+          bands: [],
+          nodes: [{ ch: snapshot.chapter, label: displayValue, color, desc }],
+        })
+        break
+      }
+    }
+  }
+  return tracks
+}
+
+function hasSnapshotValue(value: unknown): boolean {
+  if (value == null) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0
+  return true
 }
 
 // 同值连续段合并为色带
@@ -522,6 +892,58 @@ export function computeVisibleRowWindow(params: {
   return { start, end }
 }
 
+function snapshot(
+  key: string,
+  valueType: MatrixSubtrackSnapshot['valueType'],
+  value: unknown,
+  chapter: number,
+  options: Pick<MatrixSubtrackSnapshot, 'displayValue' | 'spans' | 'desc'> = {},
+): MatrixSubtrackSnapshot {
+  return {
+    key,
+    label: resolveDimensionLabel(key),
+    valueType,
+    value,
+    chapter,
+    ...options,
+  }
+}
+
+function parseStringList(value: string | string[] | null | undefined): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+  if (!value) return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string' && item.length > 0)
+      : []
+  } catch {
+    return [value]
+  }
+}
+
+function parseKnowledgeCharacterIds(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    if (!parsed || typeof parsed !== 'object') return []
+    return Object.entries(parsed as Record<string, unknown>)
+      .filter(([, state]) => {
+        if (state === true) return true
+        if (!state || typeof state !== 'object') return false
+        const entry = state as Record<string, unknown>
+        return entry.knows === true || entry.suspects === true || entry.misunderstands === true
+      })
+      .map(([characterId]) => characterId)
+  } catch {
+    return []
+  }
+}
+
+function lastChapterOf(spans: Array<[number, number]>, fallback = 1): number {
+  return computeSpanRange(spans)?.end ?? fallback
+}
+
 // ────────────────────────────────────────────────────────────
 // 矩阵分组构建（从 matrix-logic 迁移而来）
 // ────────────────────────────────────────────────────────────
@@ -540,6 +962,8 @@ export function buildGroups(params: {
   factions: NovelFaction[]
   locations: NovelLocation[]
   worldElements: NovelWorldElement[]
+  /** 信息差在矩阵中显示隐藏期与知情范围；省略时兼容旧调用方。 */
+  infoLayers?: NovelInformationLayer[]
   items: NovelItem[]
   characterHistory: NovelCharacterHistory[]
   /** 标记列表（用于填充 entity.note） */
@@ -547,10 +971,13 @@ export function buildGroups(params: {
 }): MatrixData {
   const {
     chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-    items, characterHistory, markers,
+    infoLayers = [], items, characterHistory, markers,
   } = params
 
   const maxChapter = computeMaxChapter(chapters)
+  const characterNameById = new Map(characters.map((character) => [character.id, character.name]))
+  const factionNameById = new Map(factions.map((faction) => [faction.id, faction.name]))
+  const locationNameById = new Map(locations.map((location) => [location.id, location.name]))
 
   // 批注映射：entityId -> note
   const noteMap = new Map<string, string>()
@@ -600,6 +1027,9 @@ export function buildGroups(params: {
   for (const conflict of conflicts) {
     const range = computeSpanRange(conflict.chapterSpans)
     if (range == null) continue // 未放置 → 元素池
+    const anchorChapter = lastChapterOf(conflict.chapterSpans, range.end)
+    const participants = parseStringList(conflict.participants)
+      .map((characterId) => characterNameById.get(characterId) ?? characterId)
     conflictGroup.entities.push({
       id: conflict.id,
       kind: 'conflict',
@@ -618,6 +1048,16 @@ export function buildGroups(params: {
       turningPoints: conflict.turningPoints,
       resolutionProgress: conflict.resolutionProgress,
       linkedClues: conflict.linkedClues,
+      subtrackSnapshots: [
+        snapshot('conflict.stage', 'enum', conflict.stage, range.start, { spans: conflict.chapterSpans }),
+        snapshot('conflict.intensity', 'number', conflict.intensity, anchorChapter),
+        snapshot('conflict.plot_function', 'enum', conflict.plotFunction, anchorChapter),
+        snapshot('conflict.progression_mode', 'enum', conflict.progressionMode, anchorChapter),
+        snapshot('conflict.current_step', 'text', conflict.currentStep, anchorChapter),
+        snapshot('conflict.next_step', 'text', conflict.nextStep, anchorChapter),
+        snapshot('conflict.participants', 'set', participants, anchorChapter),
+        snapshot('conflict.related_clues', 'set', conflict.linkedClues ?? [], anchorChapter),
+      ],
     })
   }
   groups.push(conflictGroup)
@@ -631,6 +1071,7 @@ export function buildGroups(params: {
     const spans = clue.chapterSpans ?? []
     const range = computeSpanRange(spans)
     if (range == null) continue
+    const anchorChapter = lastChapterOf(spans, range.end)
     clueGroup.entities.push({
       id: clue.id,
       kind: 'clue',
@@ -642,6 +1083,19 @@ export function buildGroups(params: {
       spanStart: range.start,
       spanEnd: range.end,
       note: noteMap.get(clue.id),
+      subtrackSnapshots: [
+        snapshot('clue.progress', 'number', clue.progress, anchorChapter, { displayValue: `${clue.progress}%` }),
+        snapshot('clue.current_step', 'text', clue.currentStep, anchorChapter),
+        snapshot('clue.next_step', 'text', clue.nextStep, anchorChapter),
+        snapshot('clue.points_to', 'reference', clue.pointsTo, anchorChapter),
+        snapshot(
+          'clue.misleading',
+          'enum',
+          clue.isMisleading ? '误导线索' : '真实线索',
+          range.start,
+          { spans },
+        ),
+      ],
     })
   }
   groups.push(clueGroup)
@@ -679,6 +1133,12 @@ export function buildGroups(params: {
       resolutionPoints: f.resolutionPoints,
       plantMethod: f.plantMethod,
       recoverMethod: f.recoverMethod,
+      subtrackSnapshots: [
+        snapshot('foreshadow.status', 'enum', f.status, f.firstChapter),
+        snapshot('foreshadow.category', 'enum', f.category, f.firstChapter),
+        snapshot('foreshadow.plant_method', 'text', f.plantMethod, f.firstChapter),
+        snapshot('foreshadow.recover_method', 'text', f.recoverMethod, f.recoverByChapter ?? f.firstChapter),
+      ],
     })
   }
   groups.push(foreshadowGroup)
@@ -691,6 +1151,7 @@ export function buildGroups(params: {
   for (const faction of factions) {
     const range = computeSpanRange(faction.chapterSpans)
     if (range == null) continue
+    const anchorChapter = lastChapterOf(faction.chapterSpans, range.end)
     factionGroup.entities.push({
       id: faction.id,
       kind: 'faction',
@@ -701,6 +1162,29 @@ export function buildGroups(params: {
       spanStart: range.start,
       spanEnd: range.end,
       note: noteMap.get(faction.id),
+      subtrackSnapshots: [
+        snapshot('faction.strength', 'level', faction.strength, range.start, { spans: faction.chapterSpans }),
+        snapshot('faction.status', 'enum', faction.status, range.start, { spans: faction.chapterSpans }),
+        snapshot(
+          'faction.leader',
+          'reference',
+          faction.leaderId ? characterNameById.get(faction.leaderId) ?? faction.leaderId : null,
+          anchorChapter,
+        ),
+        snapshot('faction.resources', 'set', faction.resources, anchorChapter),
+        snapshot(
+          'faction.allies',
+          'set',
+          faction.allies.map((factionId) => factionNameById.get(factionId) ?? factionId),
+          anchorChapter,
+        ),
+        snapshot(
+          'faction.enemies',
+          'set',
+          faction.enemies.map((factionId) => factionNameById.get(factionId) ?? factionId),
+          anchorChapter,
+        ),
+      ],
     })
   }
   groups.push(factionGroup)
@@ -713,6 +1197,7 @@ export function buildGroups(params: {
   for (const location of locations) {
     const appears = (location.appearChapters ?? []).slice().sort((a, b) => a - b)
     if (appears.length === 0) continue
+    const anchorChapter = appears[appears.length - 1]
     locationGroup.entities.push({
       id: location.id,
       kind: 'location',
@@ -721,6 +1206,24 @@ export function buildGroups(params: {
       entityType: 'location',
       appearChapters: appears,
       note: noteMap.get(location.id),
+      subtrackSnapshots: [
+        snapshot('location.status', 'enum', location.status, appears[0], {
+          spans: appears.map((chapter) => [chapter, chapter]),
+        }),
+        snapshot('location.significance', 'enum', location.significance, anchorChapter),
+        snapshot(
+          'location.parent',
+          'reference',
+          location.parentId ? locationNameById.get(location.parentId) ?? location.parentId : null,
+          anchorChapter,
+        ),
+        snapshot(
+          'location.faction',
+          'reference',
+          location.factionId ? factionNameById.get(location.factionId) ?? location.factionId : null,
+          anchorChapter,
+        ),
+      ],
     })
   }
   groups.push(locationGroup)
@@ -740,15 +1243,77 @@ export function buildGroups(params: {
       alwaysStart: 1,
       alwaysEnd: maxChapter,
       note: noteMap.get(w.id),
+      subtrackSnapshots: [
+        snapshot('world_element.category', 'enum', w.category, 1),
+        snapshot('world_element.attributes', 'set', Object.keys(w.attributes ?? {}), 1),
+      ],
     })
   }
   groups.push(worldGroup)
 
-  // 信息差暂时只在侧边栏管理，但保留空分组以使轨道顺序、筛选项和折叠状态一致。
-  groups.push({
+  // ── 信息差分组：隐藏期色带 + 揭示节点，子轨道呈现知情范围 ──
+  const infoLayerGroup: MatrixGroup = {
     ...GROUP_META.info_layer,
     entities: [],
-  })
+  }
+  for (const layer of infoLayers) {
+    const revealChapter = layer.revealChapter == null
+      ? null
+      : Math.min(maxChapter, Math.max(1, layer.revealChapter))
+    const infoEnd = revealChapter == null ? maxChapter : revealChapter - 1
+    const anchorChapter = revealChapter ?? maxChapter
+    const knownCharacters = parseKnowledgeCharacterIds(layer.characterKnowledge)
+      .map((characterId) => characterNameById.get(characterId) ?? characterId)
+
+    infoLayerGroup.entities.push({
+      id: layer.id,
+      kind: 'info_layer',
+      name: layer.infoDescription,
+      entityId: layer.id,
+      entityType: 'info_layer',
+      subLabel: layer.isRevealed ? '已揭示' : '未揭示',
+      infoStart: 1,
+      infoEnd,
+      revealChapter,
+      note: noteMap.get(layer.id),
+      subtrackSnapshots: [
+        snapshot(
+          'info_layer.reader_knows',
+          'enum',
+          layer.readerKnows ? '已知' : '未知',
+          anchorChapter,
+          {
+            spans: layer.readerKnows && revealChapter != null ? [[revealChapter, maxChapter]] : undefined,
+          },
+        ),
+        snapshot(
+          'info_layer.revealed',
+          'enum',
+          layer.isRevealed ? '已揭示' : '未揭示',
+          anchorChapter,
+          {
+            spans: layer.isRevealed && revealChapter != null ? [[revealChapter, maxChapter]] : undefined,
+          },
+        ),
+        snapshot(
+          'info_layer.knowledge_spread',
+          'set',
+          knownCharacters,
+          anchorChapter,
+          { displayValue: knownCharacters.join('、') },
+        ),
+        snapshot('info_layer.reveal_stage', 'text', layer.revealStage, anchorChapter),
+        snapshot(
+          'info_layer.reveal_chapter',
+          'number',
+          revealChapter,
+          anchorChapter,
+          { displayValue: revealChapter == null ? '' : `第 ${revealChapter} 章` },
+        ),
+      ],
+    })
+  }
+  groups.push(infoLayerGroup)
 
   // ── 物品分组（按 chapterSpans 渲染跨度，类似势力）──
   const itemGroup: MatrixGroup = {
@@ -767,6 +1332,7 @@ export function buildGroups(params: {
     const spans = it.chapterSpans ?? []
     const range = computeSpanRange(spans)
     if (range == null) continue // 未放置 → 元素池
+    const anchorChapter = lastChapterOf(spans, range.end)
     itemGroup.entities.push({
       id: it.id,
       kind: 'item',
@@ -778,6 +1344,17 @@ export function buildGroups(params: {
       spanStart: range.start,
       spanEnd: range.end,
       note: noteMap.get(it.id),
+      subtrackSnapshots: [
+        snapshot('item.status', 'enum', it.status, range.start, { spans }),
+        snapshot(
+          'item.holder',
+          'reference',
+          it.ownerId ? characterNameById.get(it.ownerId) ?? it.ownerId : null,
+          anchorChapter,
+        ),
+        snapshot('item.abilities', 'text', it.abilities, anchorChapter),
+        snapshot('item.origin', 'text', it.origin, anchorChapter),
+      ],
     })
   }
   groups.push(itemGroup)

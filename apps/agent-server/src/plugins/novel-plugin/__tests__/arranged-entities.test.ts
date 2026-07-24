@@ -129,7 +129,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     )
     expect(ctx).toContain('李四')
     expect(ctx).toContain('受伤')
-    expect(ctx).toContain('本章必须出现的实体')
+    expect(ctx).toContain('本章出场要素')
     // 矩阵执行验收已移至 Reviewer 专属 suffix（2026-07-18），不再注入共享 chapterContext
     expect(ctx).toContain('提供资源（交出地图）')
     expect(ctx).toContain('改变主角判断（揭示误判）')
@@ -195,7 +195,8 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
     )
     expect(ctx).not.toContain('本章必须出现的实体')
-    expect(ctx).not.toContain('角色当前状态')
+    // 故事状态始终注入（跨 Agent 缓存一致性），即使编排数组为空
+    expect(ctx).toContain('当前故事状态')
   })
 
   it('只注入矩阵选中的线索，并给出本章推进要求', () => {
@@ -442,5 +443,58 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
 
     expect(suffix).toContain('已批准的本章叙事任务')
     expect(suffix).toContain('验收必须对照的 Director 方案')
+  })
+
+  it('重写最后一章时，编排实体和信息差仍读取 N-1 快照', () => {
+    store.updateProject(projectId, { currentChapter: 2 })
+    const chapter2 = store.createChapter({
+      id: randomUUID(), projectId, volume: 1, chapterNumber: 2, title: '',
+      content: '旧的第二章正文', wordCount: 7, status: 'review', narrativeTask: '', outline: '',
+      volumeId: null, acceptanceResult: null,
+    })
+    void chapter2
+    const currentLayer = store.createInformationLayer({
+      id: randomUUID(), projectId, infoDescription: '将军其实未死', authorKnows: true,
+      readerKnows: true, characterKnowledge: JSON.stringify({ [charId]: { knows: true } }),
+      revealStage: 'reveal', revealChapter: 2, isRevealed: true,
+    })
+    const snapshotCharacter = { ...store.getCharacter(charId)!, currentState: '第一章结束时负伤撤离' }
+    const snapshotLayer = {
+      ...currentLayer,
+      readerKnows: false,
+      characterKnowledge: JSON.stringify({ [charId]: { suspects: true } }),
+      isRevealed: false,
+    }
+    const memoryStore = {
+      listEvents: () => [],
+      getCausalChain: () => ({ causes: [], effects: [] }),
+      getSnapshot: () => ({
+        id: randomUUID(), projectId, chapterNumber: 1, snapshotType: 'full' as const,
+        entityId: null, createdAt: Date.now(),
+        snapshotData: JSON.stringify({
+          characters: [snapshotCharacter], conflicts: [], foreshadowing: [], clues: [], factions: [],
+          locations: [], items: [], worldElements: [], relationships: [],
+          informationLayers: [snapshotLayer], edges: [],
+        }),
+      }),
+    }
+    const builder = new NovelPromptBuilder(
+      { render: () => '', getTemplate: () => '' } as any,
+      createStoresMock(store) as any,
+      memoryStore,
+    )
+
+    const context = builder.buildChapterContextShared(
+      projectId,
+      2,
+      { description: '重写第二章', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
+      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
+      { characterIds: [charId], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], itemIds: [] },
+    )
+
+    expect(context).toContain('第一章结束时负伤撤离')
+    expect(context).not.toContain('状态：受伤')
+    expect(context).toContain('将军其实未死（读者未知')
+    expect(context).not.toContain('将军其实未死（读者已知')
   })
 })

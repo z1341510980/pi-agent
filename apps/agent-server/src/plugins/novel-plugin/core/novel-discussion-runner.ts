@@ -28,7 +28,7 @@ import type {
 import type { DiscussionSettingsStore } from '../../../core/agent/discussion-settings-store.js'
 import { NovelStore } from './novel-store.js'
 import { NovelMemoryStore } from './novel-memory-store.js'
-import { NovelPromptBuilder } from './prompt-builder.js'
+import { NovelPromptBuilder, type ChapterBoundaryContext } from './prompt-builder.js'
 import { NovelEngine } from './novel-engine.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
@@ -111,6 +111,7 @@ export class NovelDiscussionRunner {
         constraints,
         arrangedEntities,
       )
+      const boundary = this.promptBuilder.getChapterBoundaryContext(projectId, chapterNumber)
 
       // 3. 构建目标
       const goal: DiscussionGoal = {
@@ -130,7 +131,7 @@ export class NovelDiscussionRunner {
       }
 
       // 4. 构建成员列表
-      const members = this.buildMembers(projectId, chapterNumber, arrangedEntities)
+      const members = this.buildMembers(projectId, chapterNumber, arrangedEntities, boundary)
 
       // 5. 构建引擎并运行
       const channel = new AgentChannel()
@@ -190,7 +191,7 @@ export class NovelDiscussionRunner {
       const engineOptions: DiscussionOptions = {
         ...options,
         resolveCharacterMembers: (characterNames) =>
-          this.resolveCharacterMembers(projectId, chapterNumber, arrangedEntities, characterNames),
+          this.resolveCharacterMembers(projectId, chapterNumber, arrangedEntities, boundary, characterNames),
         onProgress: (event) => {
           const mappedPhase = phaseMap[event.phase] ?? 'writing'
           options.onProgress({
@@ -428,8 +429,9 @@ export class NovelDiscussionRunner {
    */
   private buildMembers(
     projectId: string,
-    _chapterNumber: number,
+    chapterNumber: number,
     arrangedEntities?: ArrangedEntity,
+    boundary?: ChapterBoundaryContext,
   ): DiscussionMember[] {
     const members: DiscussionMember[] = []
 
@@ -467,13 +469,15 @@ export class NovelDiscussionRunner {
 
     // 有矩阵编排时只预加载本章角色，避免全部角色进入 Moderator 成员清单。
     // Director 临时引入的其他角色会在 resolveSceneCharacters 中按名动态补入。
-    const arrangedCharacterIds = arrangedEntities?.characterIds?.length
-      ? new Set(arrangedEntities.characterIds)
-      : undefined
-    const characters = this.store.listCharacters(projectId)
-      .filter(character => !arrangedCharacterIds || arrangedCharacterIds.has(character.id))
+    const boundaryCharacters = new Map((boundary?.entities.characters ?? this.store.listCharacters(projectId)).map((character) => [character.id, character]))
+    const characterIds = arrangedEntities?.characterIds?.length
+      ? arrangedEntities.characterIds
+      : [...boundaryCharacters.keys()]
+    const characters = characterIds
+      .map((id) => boundaryCharacters.get(id) ?? this.store.getCharacter(id))
+      .filter((character): character is NovelCharacter => character != null)
     for (const char of characters) {
-      members.push(this.buildCharacterMember(projectId, _chapterNumber, char, arrangedEntities))
+      members.push(this.buildCharacterMember(projectId, chapterNumber, char, arrangedEntities, boundary))
     }
 
     return members
@@ -485,6 +489,7 @@ export class NovelDiscussionRunner {
     chapterNumber: number,
     char: NovelCharacter,
     arrangedEntities?: ArrangedEntity,
+    boundary?: ChapterBoundaryContext,
   ): DiscussionMember {
     return {
       id: `char-${char.id}`,
@@ -498,8 +503,8 @@ export class NovelDiscussionRunner {
         currentGoal: char.currentGoal,
         secret: char.secret,
         arcStage: char.arcStage,
-        participatingConflicts: this.store.listEdgesByEntity(char.id, { edgeType: 'related' })
-          .filter(e => e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === char.id)
+        participatingConflicts: (boundary?.entities.edges ?? this.store.listEdgesByEntity(char.id, { edgeType: 'related' }))
+          .filter(e => e.edgeType === 'related' && e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === char.id)
           .map(e => e.targetId),
       },
       // 角色共用一个极小且稳定的 system；角色卡和演出职责放在 identity 前缀。
@@ -510,6 +515,7 @@ export class NovelDiscussionRunner {
         chapterNumber,
         char,
         arrangedEntities,
+        boundary,
       ),
       buildIdentityPrompt: () => this.buildCharacterPrompt(projectId, char),
     }
@@ -560,16 +566,17 @@ export class NovelDiscussionRunner {
     projectId: string,
     chapterNumber: number,
     arrangedEntities: ArrangedEntity | undefined,
+    boundary: ChapterBoundaryContext,
     characterNames: string[],
   ): DiscussionMember[] {
-    const existingCharacters = this.store.listCharacters(projectId)
+    const existingCharacters = boundary.entities.characters
     const byName = new Map(
       existingCharacters.map(character => [this.normalizeCharacterName(character.name), character]),
     )
 
     return characterNames.map((name) => {
       const existing = byName.get(this.normalizeCharacterName(name))
-      if (existing) return this.buildCharacterMember(projectId, chapterNumber, existing, arrangedEntities)
+      if (existing) return this.buildCharacterMember(projectId, chapterNumber, existing, arrangedEntities, boundary)
 
       const stableSuffix = Array.from(name)
         .map(char => char.codePointAt(0)?.toString(16) ?? '')
@@ -594,6 +601,7 @@ export class NovelDiscussionRunner {
           chapterNumber,
           undefined,
           arrangedEntities,
+          boundary,
         ),
         buildIdentityPrompt: () => [
           `你是小说中的临时角色「${name.trim()}」。当前角色库没有你的完整角色卡。`,
@@ -620,6 +628,7 @@ export class NovelDiscussionRunner {
     chapterNumber: number,
     char: NovelCharacter | undefined,
     arrangedEntities?: ArrangedEntity,
+    boundary?: ChapterBoundaryContext,
   ): string {
     const chapter = this.store.getChapter(projectId, chapterNumber)
     const previous = chapterNumber > 1 ? this.store.getChapter(projectId, chapterNumber - 1) : undefined
@@ -632,15 +641,17 @@ export class NovelDiscussionRunner {
     if (chapter?.positioning) lines.push(`- 章节定位：${chapter.positioning}`)
     if (previousTail) lines.push(`\n### 上一章结尾（角色只能按自身经历理解）\n${previousTail}`)
 
+    const conflicts = new Map((boundary?.entities.conflicts ?? []).map((conflict) => [conflict.id, conflict]))
+    const locations = new Map((boundary?.entities.locations ?? []).map((location) => [location.id, location]))
     const conflictLines = (arrangedEntities?.conflictIds ?? [])
-      .map(id => this.store.getConflict(id))
+      .map(id => conflicts.get(id) ?? this.store.getConflict(id))
       .filter(conflict => conflict && (!char || this.parseIdList(conflict.participants).includes(char.id)))
       .slice(0, 3)
       .map(conflict => `- ${conflict!.description}；当前阶段：${conflict!.stage}；代价：${conflict!.stakes || '未明'}`)
     if (conflictLines.length > 0) lines.push(`\n### 你正身处的冲突\n${conflictLines.join('\n')}`)
 
     const locationLines = (arrangedEntities?.locationIds ?? [])
-      .map(id => this.store.getLocation(id))
+      .map(id => locations.get(id) ?? this.store.getLocation(id))
       .filter((location): location is NonNullable<typeof location> => !!location)
       .slice(0, 3)
       .map(location => `- ${location.name}：${location.description.slice(0, 180)}`)
@@ -648,7 +659,7 @@ export class NovelDiscussionRunner {
 
     if (char) {
       const knowledge: string[] = []
-      for (const layer of this.store.listInformationLayers(projectId)) {
+      for (const layer of boundary?.entities.informationLayers ?? this.store.listInformationLayers(projectId)) {
         try {
           const map = JSON.parse(layer.characterKnowledge) as Record<string, {
             knows?: boolean

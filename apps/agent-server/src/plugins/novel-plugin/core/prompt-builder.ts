@@ -100,6 +100,203 @@ import type {
 } from './types.js'
 import type { MemoryEvent, MemoryEventType, MemorySnapshot } from './novel-memory-store.js'
 
+/** 将持久化枚举翻译成创作语境中的自然语言，避免把实现细节交给模型理解。 */
+const PROMPT_VALUE_LABELS: Record<string, string> = {
+  high: '高',
+  medium: '中',
+  low: '低',
+  rising: '上升期',
+  latent: '潜伏',
+  emerging: '初现',
+  escalating: '升级中',
+  erupting: '爆发',
+  reversing: '反转中',
+  resolved: '已解决',
+  transformed: '已转化',
+  denial: '否认',
+  resistance: '抗拒',
+  acceptance: '接纳',
+  transformation: '蜕变',
+  temptation: '诱惑',
+  rationalization: '自我合理化',
+  corruption: '堕落',
+  point_of_no_return: '无法回头',
+  guilt: '愧疚',
+  atonement: '赎罪',
+  sacrifice: '牺牲',
+  redemption: '救赎',
+  old_framework: '旧认知',
+  disruption: '认知受冲击',
+  exploration: '探索中',
+  new_framework: '新认知',
+  planted: '已埋下',
+  reinforced: '已强化',
+  partially_revealed: '部分揭示',
+  recovered: '已回收',
+  abandoned: '已弃用',
+  planting: '埋下',
+  sustaining: '维持',
+  releasing: '释放',
+  twist: '转折',
+  climax: '高潮',
+  rising_rhythm: '推进',
+  breather: '缓冲',
+  setup: '铺垫',
+  relationship: '关系',
+  world_rule: '世界规则',
+  survival: '生存',
+  inner: '内心',
+  faction: '势力',
+  interest: '利益',
+  moral: '道德',
+  identity: '身份',
+  emotional: '情感',
+  main: '主线',
+  secondary: '支线',
+  goal: '目标线',
+  active: '活跃',
+  declined: '衰落',
+  destroyed: '毁灭',
+  hidden: '隐匿',
+  normal: '正常',
+  changed: '已变化',
+  organization: '组织',
+  sect: '宗门',
+  kingdom: '王国',
+  family: '家族',
+  guild: '行会',
+  cult: '教派',
+  weak: '弱',
+  strong: '强',
+  overwhelming: '碾压性',
+  minor: '次要',
+  moderate: '重要',
+  major: '主要',
+  critical: '关键',
+  city: '城镇',
+  building: '建筑',
+  dungeon: '险地',
+  region: '区域',
+  wilderness: '野外',
+  continent: '大陆',
+  country: '国家',
+  advance_mainline: '推进主线',
+  advance_subline: '推进支线',
+  create_conflict: '建立冲突',
+  escalate_conflict: '升级冲突',
+  release_info: '揭示信息',
+  hide_info: '隐藏信息',
+  reinforce_foreshadow: '强化伏笔',
+  recover_foreshadow: '回收伏笔',
+  change_relationship: '改变关系',
+  change_cognition: '改变认知',
+  create_reversal: '制造转折',
+  create_suspense: '制造悬念',
+  phase_closure: '阶段收束',
+  introduce_problem: '引入问题',
+  fate: '命运',
+  character: '人物',
+  combat: '战斗',
+  theme: '主题',
+  composite: '复合',
+  // ── 节奏补充 ──
+  falling: '回落',
+  suspense: '悬念',
+  // ── 冲突阶段补充 ──
+  confrontation: '对峙',
+  // ── 关系类型 ──
+  allied: '同盟',
+  hostile: '敌对',
+  romantic: '恋爱',
+  mentor: '师徒',
+  rival: '对手',
+  friendship: '友情',
+  kinship: '亲情',
+  // ── 角色弧阶段补充 ──
+  crisis: '危机',
+  // ── 边类型 ──
+  related: '关联',
+  involvement: '参与',
+  belongs_to: '归属',
+  hostility: '敌对关系',
+  alliance: '同盟关系',
+  hierarchy: '上下级',
+  location_of: '所在地',
+  // ── 实体类型（边格式化用）──
+  conflict: '冲突',
+  foreshadow: '伏笔',
+  item: '物品',
+  clue: '线索',
+  info_layer: '信息差',
+  world_element: '世界要素',
+  // ── 钩子类型 ──
+  cliffhanger: '断章悬念',
+  mystery: '谜团',
+  // ── 动态角色功能位 ──
+  protagonist: '主角',
+  antagonist: '对手',
+  catalyst: '催化者',
+  observer: '旁观者',
+  mediator: '调停者',
+  // ── 物品类型 ──
+  weapon: '武器',
+  armor: '防具',
+  consumable: '消耗品',
+  artifact: '神器',
+  material: '材料',
+  key_item: '关键道具',
+  // ── 物品状态 ──
+  owned: '持有中',
+  lost: '遗失',
+  sealed: '封印',
+  upgraded: '已升级',
+}
+
+function promptLabel(value: string): string {
+  return PROMPT_VALUE_LABELS[value] ?? value
+}
+
+function compactPromptText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
+}
+
+/**
+ * 角色档案有些字段由生成器存为 JSON。提示词只需保留可直接落到正文里的核心，
+ * 不能把整份数据库对象塞给模型。
+ */
+function compactCharacterDetail(value: string, maxLength: number): string {
+  const raw = value.trim()
+  if (!raw) return ''
+
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (Array.isArray(parsed)) {
+      return compactPromptText(parsed.filter((item): item is string => typeof item === 'string').slice(0, 3).join('；'), maxLength)
+    }
+    if (typeof parsed === 'object' && parsed !== null) {
+      const record = parsed as Record<string, unknown>
+      const preferredKeys = ['核心', '基调', '特点', '典型句式示例', '优点', '缺点']
+      const fragments: string[] = []
+      for (const key of preferredKeys) {
+        const item = record[key]
+        if (typeof item === 'string' && item.trim()) fragments.push(item.trim())
+        if (Array.isArray(item)) {
+          const texts = item.filter((entry): entry is string => typeof entry === 'string').slice(0, 3)
+          if (texts.length > 0) fragments.push(texts.join('；'))
+        }
+        if (fragments.length >= 2) break
+      }
+      if (fragments.length > 0) return compactPromptText(fragments.join('；'), maxLength)
+    }
+  } catch {
+    // 普通文本直接压缩。
+  }
+
+  return compactPromptText(raw, maxLength)
+}
+
 /**
  * Store 接口：NovelPromptBuilder 只需要读取数据，不关心存储实现
  */
@@ -149,6 +346,34 @@ export interface NovelPromptStores {
   listVolumes(projectId: string): NovelVolume[]
   /** 查询项目级 Agent 调用日志（供 Reviewer 反馈回流 Director） */
   listAgentLogsByProject?(projectId: string, limit: number): NovelAgentLog[]
+}
+
+/**
+ * 某章开篇时可用的全量实体快照。
+ *
+ * `state` 供通用故事状态格式化，`entities` 保留未经过“活跃”筛选的原始实体，
+ * 因此本章编排的已解决冲突、已回收伏笔等也能准确读取 N-1 状态。
+ */
+export interface ChapterBoundaryEntities {
+  characters: NovelCharacter[]
+  relationships: NovelRelationship[]
+  conflicts: NovelConflict[]
+  foreshadowing: NovelForeshadow[]
+  clues: NovelClue[]
+  factions: NovelFaction[]
+  locations: NovelLocation[]
+  items: NovelItem[]
+  worldElements: NovelWorldElement[]
+  informationLayers: NovelInformationLayer[]
+  edges: NovelEdge[]
+}
+
+export interface ChapterBoundaryContext {
+  chapterNumber: number
+  state: StoryState
+  entities: ChapterBoundaryEntities
+  /** true 表示严格读取第 N-1 章持久化快照，而非当前库的顺序生成回退。 */
+  fromSnapshot: boolean
 }
 
 export class NovelPromptBuilder {
@@ -460,6 +685,7 @@ export class NovelPromptBuilder {
     void constraints // constraints 已在 formatConstraints 中使用，此处 void 避免未使用警告
     const parts: string[] = []
     const relevantEntityIds = this.collectRelevantEntityIds(arrangedEntities)
+    const boundary = this.getChapterBoundaryContext(projectId, chapterNumber)
 
     // ── 章节信息 ──
     parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask))
@@ -470,23 +696,26 @@ export class NovelPromptBuilder {
     // ── 本章已编排实体约束（手动编排 / AI 编排产出，注入 SEMI 层）──
     const hasArranged = this.hasArrangedEntities(arrangedEntities)
     if (hasArranged && arrangedEntities) {
-      parts.push(this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities))
+      parts.push(this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities, boundary))
     }
 
-    // ── 当前故事状态（所有 Agent 共享，含编排实体去重）──
-    // 历史问题：Writer+arranged 曾跳过 formatStoryState 以"节省 token"，但这破坏了
-    // 跨 Agent 缓存一致性（Writer 的 shared 与其他 Agent 不同 → 全部 miss）。
-    // 现在统一注入：formatStoryState 内部已对 arranged 实体去重，不与
-    // formatArrangedEntities 冗余；且这部分 token 走 cache read（廉价）。
-    const state = this.getStoryState(projectId, chapterNumber)
-    parts.push(this.formatStoryState(state, arrangedEntities))
+    // 已编排时，角色短卡和实体要素已经给出本章所需的状态。
+    // 不再重复注入全量故事状态；它会把无关角色和旧线索挤进上下文中心。
+    if (!hasArranged) {
+      parts.push(this.formatStoryState(boundary.state))
+    }
 
     // ── 事件账本时间切片 ──
     // 生成中间章节时不能读取未来章节已经写入实体快照的结果。事件账本按当前章
     // 之前的最后一条原子变化重建章前状态，同时显式提供本章计划和未来承诺。
     if (this.memoryStore?.getChapterStoryContext) {
       const ledgerContext = this.memoryStore.getChapterStoryContext(projectId, chapterNumber)
-      const ledgerSection = this.formatStoryLedgerContext(ledgerContext)
+      // 反查实体显示名，避免在提示词里暴露 UUID（AI 不需要 ID 来理解故事）
+      const nameMap = boundary.fromSnapshot
+        ? this.buildBoundaryEntityNameMap(projectId, boundary.entities)
+        : this.buildSubjectNameMap(projectId, ledgerContext)
+      this.injectSubjectNames(ledgerContext, nameMap)
+      const ledgerSection = this.formatStoryLedgerContext(ledgerContext, arrangedEntities, nameMap)
       if (ledgerSection) parts.push(ledgerSection)
     }
 
@@ -496,28 +725,28 @@ export class NovelPromptBuilder {
     // 未注入 relationshipGraph 时降级到 stores.listEdges（仅手动边），保持向后兼容。
     const edges = arrangedEntities && relevantEntityIds.size === 0
       ? []
-      : this.collectRelevantEdges(projectId, relevantEntityIds)
+      : this.collectRelevantEdges(projectId, relevantEntityIds, boundary)
     if (edges.length > 0) {
-      const edgeSection = this.formatEdges(projectId, edges)
+      const edgeSection = this.formatEdges(projectId, edges, boundary)
       if (edgeSection) parts.push(edgeSection)
     }
 
     // ── 信息差 ──
-    const infoLayers = this.filterRelevantInfoLayers(this.stores.listInformationLayers(projectId), arrangedEntities)
+    const infoLayers = this.filterRelevantInfoLayers(boundary.entities.informationLayers, arrangedEntities, boundary)
     if (infoLayers.length > 0) {
-      parts.push(this.formatInfoLayers(projectId, infoLayers, arrangedEntities))
+      parts.push(this.formatInfoLayers(projectId, infoLayers, arrangedEntities, boundary))
     }
 
-    // ── 最近章节摘要（覆盖当前章前 3 章，让 Writer/Reviewer 理解前后文因果）──
+    // ── 上一章摘要：只保留最直接的承接，避免把连续正文当背景资料堆叠。 ──
     // ⚠️ 必须按当前章 chapterNumber 为基准向前取，不能用 listRecentChapters：
     // listRecentChapters 的 SQL 是 ORDER BY chapter_number DESC LIMIT 3，返回的是
     // 全局章节号最大的 3 章，与"当前生成第几章"无关。当重新生成中间章节（如第7章）
     // 而后续章节（第8、9章）已有内容时，listRecentChapters 会返回 [9,8,7]，过滤当前章
     // 后变成 [8,9]——formatPreviousChapterEnding 会把第9章结尾当"上一章结尾"，
     // formatSoundAnchor 会把第8、9章开头当"叙事声音锚点"，剧情全面错乱。
-    // 正确做法：按 chapterNumber 精确取前 3 章，排除当前章及之后所有章节。
+    // 正确做法：按 chapterNumber 精确取上一章，排除当前章及之后所有章节。
     const prevChapters: NovelChapter[] = []
-    for (let n = chapterNumber - 1; n >= 1 && prevChapters.length < 3; n--) {
+    for (let n = chapterNumber - 1; n >= 1 && prevChapters.length < 1; n--) {
       const ch = this.stores.getChapter(projectId, n)
       if (ch && ch.content && ch.content.trim().length > 0) {
         prevChapters.push(ch)
@@ -526,14 +755,6 @@ export class NovelPromptBuilder {
     prevChapters.reverse() // 升序（旧→新），供 formatRecentSummaries/formatPreviousChapterEnding/formatSoundAnchor 使用
     if (prevChapters.length > 0) {
       parts.push(this.formatRecentSummaries(prevChapters))
-    }
-
-    // ── 近期因果链（最近章节的关键事件及其因果联系）──
-    // 注入历史因果可让 Director/Writer/Reviewer 理解"为什么会变成现在这样"，
-    // 避免脱离前因后果地规划/创作。当前章事件尚未生成，所以查询的是历史章节。
-    if (this.memoryStore) {
-      const causalSummary = this.formatRecentCausalChain(projectId, chapterNumber)
-      if (causalSummary) parts.push(causalSummary)
     }
 
     // ── 上一章结尾 + 叙事声音锚点（向后看：本章开头承接此处钩子）──
@@ -590,23 +811,6 @@ export class NovelPromptBuilder {
     if (prevChapters.length > 0 && !this.stores.getWritingStyleProfile?.(projectId)) {
       const fingerprint = this.formatStyleFingerprint(prevChapters)
       if (fingerprint) parts.push(fingerprint)
-    }
-
-    // ── 待回收伏笔预警（超过 N 章未回收的伏笔标记为急需回收）──
-    // C3 增强：若注入了 consistencyAuditor，formatUrgentForeshadows 会复用 audit 报告
-    // 的 urgent/expired 字段，避免与 consistency-auditor.ts 的 auditForeshadow 重复计算
-    const urgentForeshadows = this.formatUrgentForeshadows(projectId, chapterNumber, arrangedEntities)
-    if (urgentForeshadows) parts.push(urgentForeshadows)
-
-    // ── 跨章一致性审计摘要（C3 增强）──
-    // 让 Writer/Reviewer 看到孤儿实体、悬挂钩子、时间线矛盾，引导在本章修复或回避。
-    // 审计报告走 60s TTL 缓存（与 formatUrgentForeshadows 共享同一份 audit 结果）
-    if (this.consistencyAuditor) {
-      const report = this.getCachedAudit(projectId)
-      if (report) {
-        const auditSection = this.formatConsistencyAudit(report, arrangedEntities, chapterNumber)
-        if (auditSection) parts.push(auditSection)
-      }
     }
 
     return this.stripEmDash(parts.join('\n\n---\n\n'))
@@ -685,7 +889,7 @@ export class NovelPromptBuilder {
       const instruction = this.promptManager.render('chapter-instruction', {
         chapter_number: String(chapterNumber),
         narrative_task: narrativeTask.description,
-        task_type: narrativeTask.type,
+        task_type: promptLabel(narrativeTask.type),
         target_words: String(targetWords),
         positioning_guidance: constraints.positioning
           ? positioningGuidance[constraints.positioning]
@@ -788,10 +992,10 @@ export class NovelPromptBuilder {
       const sorted = [...factions].sort((a, b) => a.name.localeCompare(b.name))
       const lines = sorted.map((f) => {
         const parts = [`- **${f.name}**`]
-        if (f.type) parts.push(`类型：${f.type}`)
+        if (f.type) parts.push(`类型：${promptLabel(f.type)}`)
         if (f.description) parts.push(f.description)
         if (f.ideology) parts.push(`理念：${f.ideology}`)
-        if (f.strength) parts.push(`实力：${f.strength}`)
+        if (f.strength) parts.push(`实力：${promptLabel(f.strength)}`)
         return parts.join('；')
       })
       sections.push(`### 势力档案\n${lines.join('\n')}`)
@@ -803,9 +1007,9 @@ export class NovelPromptBuilder {
       const sorted = [...locations].sort((a, b) => a.name.localeCompare(b.name))
       const lines = sorted.map((l) => {
         const parts = [`- **${l.name}**`]
-        if (l.type) parts.push(`类型：${l.type}`)
+        if (l.type) parts.push(`类型：${promptLabel(l.type)}`)
         if (l.description) parts.push(l.description)
-        if (l.significance) parts.push(`重要性：${l.significance}`)
+        if (l.significance) parts.push(`重要性：${promptLabel(l.significance)}`)
         return parts.join('；')
       })
       sections.push(`### 地点档案\n${lines.join('\n')}`)
@@ -860,21 +1064,22 @@ export class NovelPromptBuilder {
     const isPlaceholderTask = (desc: string | undefined): boolean =>
       !desc || desc.trim() === '' || desc.trim() === '待补充' || desc.trim() === '待定'
     const taskTypeLine = isPlaceholderTask(task.description)
-      ? '- 任务类型：待 Director 规划（见下方叙事任务）'
-      : `- 任务类型：${task.description}`
+      ? '当前任务尚待规划：先围绕用户章纲确定本章事件。'
+      : task.description.trim()
     const lines = [
-      `## 当前章节`,
+      `## 本章写作核心`,
       ``,
-      `- 卷：第${volume}卷`,
-      `- 章：第${chapterNumber}章`,
+      `第${volume}卷·第${chapterNumber}章`,
+      ``,
+      `### 本章要完成的事`,
+      ``,
       taskTypeLine,
-      `- 优先级：${task.priority}`,
     ]
     // 注入用户编写的章纲（outline）作为创作统一起点
     // 如果 outline 为空，回退使用 narrativeTask（保持向后兼容）
     const outline = chapter?.outline?.trim()
     if (outline) {
-      lines.push(``, `### 章纲（用户编写 - 创作统一起点，必须严格遵循）`, ``, outline)
+      lines.push(``, `### 用户章纲（必须落实为本章事件）`, ``, outline)
     } else if (!isPlaceholderTask(task.description)) {
       lines.push(``, `### 章纲`, ``, task.description!)
     }
@@ -953,11 +1158,11 @@ export class NovelPromptBuilder {
         const stage = arc.character.arcStage
         const isFinalStage = ARC_FINAL_STAGES.has(stage)
         const next = arc.allowedNextStage
-          ? `→ 下一步可达：${arc.allowedNextStage}`
+          ? `下一步可达：${promptLabel(arc.allowedNextStage)}`
           : isFinalStage
-            ? '→ 已完成弧光'
-            : '→ 阶段推进待定（无明确下一步，Director 可按剧情需要规划）'
-        parts.push(`- ${arc.character.name}：当前阶段「${stage}」${next}`)
+            ? '已完成成长线'
+            : '下一步由本章剧情决定'
+        parts.push(`- ${arc.character.name}：当前处于「${promptLabel(stage)}」；${next}`)
       }
     }
 
@@ -966,8 +1171,8 @@ export class NovelPromptBuilder {
       parts.push('\n### 冲突推进目标（本章必须推进）')
       for (const target of constraints.conflictTargets) {
         const c = target.conflict
-        const segs = [`- [${c.type}] ${c.description}`]
-        segs.push(`目标阶段：${target.targetStage}`)
+        const segs = [`- [${promptLabel(c.type)}] ${c.description}`]
+        segs.push(`本章后应达到：${promptLabel(target.targetStage)}`)
         segs.push(`强度变化：${target.intensityDelta > 0 ? '+' : ''}${target.intensityDelta}`)
         // ── 071：推进粒度（让 Writer 知道冲突已推进到哪一步，本章应承接而非重头验证）──
         if (c.currentStep?.trim()) {
@@ -978,7 +1183,7 @@ export class NovelPromptBuilder {
         }
         if (target.isClimax) {
           segs.push('【本章推向高潮】')
-          if (c.climaxType) segs.push(`高潮类型：${c.climaxType}`)
+          if (c.climaxType) segs.push(`高潮类型：${promptLabel(c.climaxType)}`)
         }
         parts.push(segs.join('；'))
       }
@@ -988,9 +1193,9 @@ export class NovelPromptBuilder {
     if (constraints.rhythmConstraint) {
       const rc = constraints.rhythmConstraint
       parts.push('\n### 节奏约束')
-      const segs = [`- 节奏类型：${rc.rhythm}`]
+      const segs = [`- 节奏：${promptLabel(rc.rhythm)}`]
       if (rc.climaxIntensity) segs.push(`高潮强度：${rc.climaxIntensity}`)
-      if (rc.climaxType) segs.push(`高潮类型：${rc.climaxType}`)
+      if (rc.climaxType) segs.push(`高潮类型：${promptLabel(rc.climaxType)}`)
       segs.push(`说明：${rc.description}`)
       parts.push(segs.join('；'))
     }
@@ -1000,7 +1205,7 @@ export class NovelPromptBuilder {
       parts.push('\n### 悬念钩子（本章需维持或释放的悬念）')
       for (const hook of constraints.suspenseHooks) {
         const segs = [`- ${hook.description}`]
-        segs.push(`状态：${hook.status}`)
+        segs.push(`本章动作：${promptLabel(hook.status)}`)
         if (hook.sustainedChapters > 0) segs.push(`已持续：${hook.sustainedChapters} 章`)
         if (hook.releaseByChapter) segs.push(`计划释放：第 ${hook.releaseByChapter} 章`)
         parts.push(segs.join('；'))
@@ -1056,8 +1261,29 @@ export class NovelPromptBuilder {
    * - 章节上下文含本章角色完整定义 → 单章内缓存命中
    * - 其他角色 LLM 通过 formatStoryState 知道存在（name+动态状态），需要详情时调 query_state 工具
    */
-  private formatArrangedEntities(projectId: string, chapterNumber: number, arranged: ArrangedEntity): string {
-    const lines: string[] = ['【本章必须出现的实体（已编排约束，Writer 必须遵守）】']
+  private formatArrangedEntities(
+    projectId: string,
+    chapterNumber: number,
+    arranged: ArrangedEntity,
+    boundary: ChapterBoundaryContext,
+  ): string {
+    void projectId
+    const lines: string[] = ['## 本章出场要素（必须真正参与事件）']
+    const characterById = new Map(boundary.entities.characters.map((entity) => [entity.id, entity]))
+    const conflictById = new Map(boundary.entities.conflicts.map((entity) => [entity.id, entity]))
+    const foreshadowById = new Map(boundary.entities.foreshadowing.map((entity) => [entity.id, entity]))
+    const clueById = new Map(boundary.entities.clues.map((entity) => [entity.id, entity]))
+    const factionById = new Map(boundary.entities.factions.map((entity) => [entity.id, entity]))
+    const locationById = new Map(boundary.entities.locations.map((entity) => [entity.id, entity]))
+    const itemById = new Map(boundary.entities.items.map((entity) => [entity.id, entity]))
+    const infoLayerById = new Map(boundary.entities.informationLayers.map((entity) => [entity.id, entity]))
+    const resolveCharacter = (id: string) => characterById.get(id) ?? this.stores.getCharacter(id)
+    const resolveConflict = (id: string) => conflictById.get(id) ?? this.stores.getConflict(id)
+    const resolveForeshadow = (id: string) => foreshadowById.get(id) ?? this.stores.getForeshadow(id)
+    const resolveClue = (id: string) => clueById.get(id) ?? this.stores.getClue(id)
+    const resolveFaction = (id: string) => factionById.get(id) ?? this.stores.getFaction(id)
+    const resolveLocation = (id: string) => locationById.get(id) ?? this.stores.getLocation(id)
+    const resolveItem = (id: string) => itemById.get(id) ?? this.stores.getItem(id)
     // 功能位中文映射（让 Writer 直观理解每个角色的本章推动作用）
     const plotFunctionLabel: Record<string, string> = {
       provide_resource: '提供资源',
@@ -1111,7 +1337,7 @@ export class NovelPromptBuilder {
       const isPlaceholderName = (name: string): boolean =>
         /（待定）|待补充|待定$/.test(name)
       const chars = arranged.characterIds
-        .map((id) => this.stores.getCharacter(id))
+        .map(resolveCharacter)
         .filter((c): c is NonNullable<typeof c> => c != null)
         .filter((c) => !isPlaceholderName(c.name))
       if (chars.length > 0) {
@@ -1122,34 +1348,22 @@ export class NovelPromptBuilder {
           entries.push({ function: entry.function, note: entry.note })
           functionMap.set(entry.characterId, entries)
         }
-        lines.push('出场角色（完整定义）：')
+        lines.push('### 角色短卡')
         for (const c of chars) {
-          // 输出完整静态设定 + 动态状态 + 四层逻辑字段，让 Writer 无需工具查询即可创作
-          const charLines = [`  ### ${c.name}`]
-          if (c.identity) charLines.push(`  - 身份：${c.identity}`)
-          if (c.personality) charLines.push(`  - 性格：${c.personality}`)
-          if (c.appearance) charLines.push(`  - 外貌：${c.appearance}`)
-          if (c.speechStyle) charLines.push(`  - 说话风格（写作时对话必须符合此风格）：${c.speechStyle}`)
-          if (c.currentState) charLines.push(`  - 当前状态：${c.currentState}`)
-          if (c.currentGoal) charLines.push(`  - 当前目标（短期）：${c.currentGoal}`)
-          // 四层逻辑①：长期欲望（跨章节稳定的发动机）
-          if (c.longTermDesire) charLines.push(`  - 长期欲望：${c.longTermDesire}`)
-          if (c.currentPressure) charLines.push(`  - 当前压力：${c.currentPressure}`)
-          // 四层逻辑②：角色层级（决定笔墨分配）
+          const charLines = [`- **${c.name}**`]
           const roleLabel = plotRoleLabel[c.plotRole] ?? c.plotRole
-          charLines.push(`  - 角色层级：${roleLabel}`)
-          // 四层逻辑③：本章功能位（关键，避免工具人化）
+          if (roleLabel) charLines.push(`  笔墨：${roleLabel}`)
+          if (c.identity) charLines.push(`  身份：${compactPromptText(c.identity, 96)}`)
           const functions = functionMap.get(c.id) ?? []
           for (const fn of functions) {
             const fnLabel = plotFunctionLabel[fn.function] ?? fn.function
-            charLines.push(`  - ⚡ 本章功能位：${fnLabel}${fn.note ? `（${fn.note}）` : ''}`)
+            charLines.push(`  本章作用：${fnLabel}${fn.note ? `（${compactPromptText(fn.note, 80)}）` : ''}`)
           }
-          if (c.secret) charLines.push(`  - 隐藏秘密：${c.secret}`)
-          if (c.description && !c.currentState) charLines.push(`  - 简介：${c.description}`)
-          // 四层逻辑④：删掉影响（让 Writer 知道这个角色不可替代什么）
-          if (c.removalImpact && c.removalImpact !== '暂无关键影响') {
-            charLines.push(`  - 删掉影响：${c.removalImpact}`)
-          }
+          if (c.currentState) charLines.push(`  此刻：${compactPromptText(c.currentState, 160)}`)
+          if (c.currentGoal) charLines.push(`  想要：${compactPromptText(c.currentGoal, 100)}`)
+          if (c.currentPressure) charLines.push(`  压力：${compactPromptText(c.currentPressure, 120)}`)
+          if (c.personality) charLines.push(`  性格：${compactCharacterDetail(c.personality, 120)}`)
+          if (c.speechStyle) charLines.push(`  对话：${compactCharacterDetail(c.speechStyle, 120)}`)
           lines.push(charLines.join('\n'))
         }
       }
@@ -1158,13 +1372,13 @@ export class NovelPromptBuilder {
     // 让 Writer 知道本章角色之间的当前关系状态 + 阵营 + 走向 + 本章约束提示
     if (arranged.characterIds.length > 1) {
       const charIdSet = new Set(arranged.characterIds)
-      const relations = this.stores.listRelationships(projectId)
+      const relations = boundary.entities.relationships
         .filter((r) => charIdSet.has(r.characterA) && charIdSet.has(r.characterB))
       if (relations.length > 0) {
         lines.push('')
-        lines.push('本章出场角色之间的关系（动态状态 + 阵营 + 走向，影响互动方式）：')
+        lines.push('### 角色关系')
         const charNameMap = new Map(arranged.characterIds
-          .map((id) => this.stores.getCharacter(id))
+          .map(resolveCharacter)
           .filter((c): c is NonNullable<typeof c> => c != null)
           .map((c) => [c.id, c.name]))
         const alignmentLabel: Record<string, string> = {
@@ -1186,10 +1400,10 @@ export class NovelPromptBuilder {
           const nameA = charNameMap.get(r.characterA) ?? r.characterA
           const nameB = charNameMap.get(r.characterB) ?? r.characterB
           const parts = [`  - ${nameA} ↔ ${nameB}`]
-          if (r.relationType) parts.push(`关系：${r.relationType}`)
-          if (r.currentStage) parts.push(`当前阶段：${r.currentStage}`)
+          if (r.relationType) parts.push(`关系：${promptLabel(r.relationType)}`)
+          if (r.currentStage) parts.push(`现状：${promptLabel(r.currentStage)}`)
           // ── 四层逻辑②：动态字段 ──
-          if (r.dynamicRole) parts.push(`功能位：${r.dynamicRole}`)
+          if (r.dynamicRole) parts.push(`功能位：${promptLabel(r.dynamicRole)}`)
           parts.push(`阵营：${alignmentLabel[r.alignment] ?? r.alignment}`)
           parts.push(`走向：${trendLabel[r.trend] ?? r.trend}`)
           if (r.chapterHint) parts.push(`⚡ 本章约束：${r.chapterHint}`)
@@ -1199,24 +1413,24 @@ export class NovelPromptBuilder {
     }
     if (arranged.conflictIds.length > 0) {
       const confl = arranged.conflictIds
-        .map((id) => this.stores.getConflict(id))
+        .map(resolveConflict)
         .filter((c): c is NonNullable<typeof c> => c != null)
       if (confl.length > 0) {
-        lines.push('本章冲突：')
+        lines.push('### 本章冲突')
         // 用于把 participants（JSON: string[]）解析为角色名
-        const allChars = this.stores.listCharacters(projectId)
+        const allChars = [...characterById.values()]
         const charNameMap = new Map(allChars.map((c) => [c.id, c.name]))
         for (const c of confl) {
-          const parts = [`  - [${c.type}] ${c.description}`]
-          parts.push(`阶段：${c.stage}`)
+          const parts = [`- [${promptLabel(c.type)}] ${c.description}`]
+          parts.push(`现状：${promptLabel(c.stage)}`)
           parts.push(`强度：${c.intensity}/10`)
-          parts.push(`层级：${c.tier}`)
+          parts.push(`线索层级：${promptLabel(c.tier)}`)
           // ── P2-1：冲突功能位 + 推进模式（让 Writer 知道这个冲突在本章的推动作用与演变规律）──
           if (c.plotFunction) {
             parts.push(`⚡ 功能位：${plotFunctionLabel[c.plotFunction] ?? c.plotFunction}`)
           }
           if (c.progressionMode) {
-            parts.push(`推进模式：${progressionModeLabel[c.progressionMode] ?? c.progressionMode}`)
+            parts.push(`推进方式：${progressionModeLabel[c.progressionMode] ?? c.progressionMode}`)
           }
           // ── 071：推进粒度（让 Writer 知道冲突已经推进到哪一步，避免反复验证同一个粗状态）──
           // 关键修复：原本只输出 stage（emerging/escalating/...），Writer 看不到"已出现图案"
@@ -1251,15 +1465,15 @@ export class NovelPromptBuilder {
     }
     if (arranged.foreshadowIds.length > 0) {
       const fores = arranged.foreshadowIds
-        .map((id) => this.stores.getForeshadow(id))
+        .map(resolveForeshadow)
         .filter((f): f is NonNullable<typeof f> => f != null)
       if (fores.length > 0) {
-        lines.push('本章伏笔：')
+        lines.push('### 本章伏笔')
         for (const f of fores) {
           const parts = [`  - ${f.description}`]
           // ── P2-2：category + plantMethod + recoverMethod 让 Writer 知道如何埋设/回收 ──
           parts.push(`类别：${foreshadowCategoryLabel[f.category] ?? f.category}`)
-          parts.push(`状态：${f.status}`)
+          parts.push(`现状：${promptLabel(f.status)}`)
           if (f.plantMethod) {
             parts.push(`埋设方式：${plantMethodLabel[f.plantMethod] ?? f.plantMethod}`)
           }
@@ -1283,13 +1497,14 @@ export class NovelPromptBuilder {
           // ── P3-2：反向展示 linkedInfoLayers（本伏笔承载了哪些信息差）──
           // 让 Writer 在回收伏笔时同步翻转读者认知（避免伏笔回收了但信息差没揭露）
           // 关联关系已迁移至 novel_edges 表（foreshadow ↔ info_layer）
-          const linkedInfoLayerIds = this.stores.listEdgesByEntity(f.id, { edgeType: 'related' })
+          const linkedInfoLayerIds = boundary.entities.edges
+            .filter((edge) => edge.edgeType === 'related')
             .filter(e => (e.sourceId === f.id && e.targetType === 'info_layer') || (e.targetId === f.id && e.sourceType === 'info_layer'))
             .map(e => e.sourceId === f.id ? e.targetId : e.sourceId)
           if (linkedInfoLayerIds.length > 0) {
             const linkedInfoDescs: string[] = []
             for (const ilId of linkedInfoLayerIds) {
-              const il = this.stores.getInformationLayer(ilId)
+              const il = infoLayerById.get(ilId)
               if (il) {
                 const ilReader = il.readerKnows ? '读者已知' : '读者未知'
                 linkedInfoDescs.push(`${il.infoDescription}（${ilReader}）`)
@@ -1305,17 +1520,17 @@ export class NovelPromptBuilder {
     }
     if (arranged.factionIds.length > 0) {
       const facs = arranged.factionIds
-        .map((id) => this.stores.getFaction(id))
+        .map(resolveFaction)
         .filter((f): f is NonNullable<typeof f> => f != null)
       if (facs.length > 0) {
-        lines.push('本章登场势力：')
+        lines.push('### 登场势力')
         for (const f of facs) {
           const parts = [`  - ${f.name}`]
           if (f.description) parts.push(f.description)
-          if (f.type) parts.push(`类型：${f.type}`)
+          if (f.type) parts.push(`类型：${promptLabel(f.type)}`)
           if (f.ideology) parts.push(`理念：${f.ideology}`)
-          if (f.strength) parts.push(`实力：${f.strength}`)
-          if (f.status) parts.push(`状态：${f.status}`)
+          if (f.strength) parts.push(`实力：${promptLabel(f.strength)}`)
+          if (f.status) parts.push(`状态：${promptLabel(f.status)}`)
           if (f.allies && f.allies.length > 0) parts.push(`盟友：${f.allies.join('、')}`)
           if (f.enemies && f.enemies.length > 0) parts.push(`敌对：${f.enemies.join('、')}`)
           lines.push(parts.join('；'))
@@ -1324,16 +1539,16 @@ export class NovelPromptBuilder {
     }
     if (arranged.locationIds.length > 0) {
       const locs = arranged.locationIds
-        .map((id) => this.stores.getLocation(id))
+        .map(resolveLocation)
         .filter((l): l is NonNullable<typeof l> => l != null)
       if (locs.length > 0) {
-        lines.push('本章场景地点：')
+        lines.push('### 场景地点')
         for (const l of locs) {
           const parts = [`  - ${l.name}`]
           if (l.description) parts.push(l.description)
-          if (l.type) parts.push(`类型：${l.type}`)
-          if (l.significance) parts.push(`重要性：${l.significance}`)
-          if (l.status && l.status !== 'normal') parts.push(`状态：${l.status}`)
+          if (l.type) parts.push(`类型：${promptLabel(l.type)}`)
+          if (l.significance) parts.push(`重要性：${promptLabel(l.significance)}`)
+          if (l.status && l.status !== 'normal') parts.push(`状态：${promptLabel(l.status)}`)
           lines.push(parts.join('；'))
         }
       }
@@ -1359,11 +1574,11 @@ export class NovelPromptBuilder {
         transferred: '已易主',
       }
       const items = (arranged.itemIds ?? [])
-        .map((id) => this.stores.getItem(id))
+        .map(resolveItem)
         .filter((it): it is NonNullable<typeof it> => it != null)
       if (items.length > 0) {
         // 用于把 ownerId 解析为角色名
-        const allChars = this.stores.listCharacters(projectId)
+        const allChars = [...characterById.values()]
         const charNameMap = new Map(allChars.map((c) => [c.id, c.name]))
         lines.push('本章登场物品（写作时必须遵守物品归属与状态约束）：')
         for (const it of items) {
@@ -1386,7 +1601,7 @@ export class NovelPromptBuilder {
     }
     if ((arranged.clueIds ?? []).length > 0) {
       const clues = (arranged.clueIds ?? [])
-        .map((id) => this.stores.getClue(id))
+        .map(resolveClue)
         .filter((clue): clue is NonNullable<typeof clue> => clue != null)
       if (clues.length > 0) {
         lines.push('本章线索：')
@@ -1441,21 +1656,28 @@ export class NovelPromptBuilder {
    *
    * 过滤策略：按 relevantEntityIds 筛选与本章编排实体相关的边，避免上下文爆炸
    */
-  private collectRelevantEdges(projectId: string, relevantEntityIds: Set<string>): GraphEdge[] {
-    const allEdges: GraphEdge[] = this.relationshipGraph
-      ? this.relationshipGraph.getAllGraphEdges(projectId)
-      : this.stores.listEdges(projectId).map((e) => ({
-          id: e.id,
-          sourceId: e.sourceId,
-          sourceType: e.sourceType,
-          targetId: e.targetId,
-          targetType: e.targetType,
-          edgeType: e.edgeType,
-          label: e.label,
-          auto: e.auto,
-          createdAt: e.createdAt,
-          updatedAt: e.updatedAt,
-        }))
+  private collectRelevantEdges(
+    projectId: string,
+    relevantEntityIds: Set<string>,
+    boundary: ChapterBoundaryContext,
+  ): GraphEdge[] {
+    const snapshotEdges = boundary.entities.edges.map((e) => ({
+      id: e.id,
+      sourceId: e.sourceId,
+      sourceType: e.sourceType,
+      targetId: e.targetId,
+      targetType: e.targetType,
+      edgeType: e.edgeType,
+      label: e.label,
+      auto: e.auto,
+      createdAt: e.createdAt,
+      updatedAt: e.updatedAt,
+    }))
+    const allEdges: GraphEdge[] = boundary.fromSnapshot
+      ? snapshotEdges
+      : this.relationshipGraph
+        ? this.relationshipGraph.getAllGraphEdges(projectId)
+        : snapshotEdges
     return this.filterRelevantEdges(allEdges, relevantEntityIds)
   }
 
@@ -1473,6 +1695,7 @@ export class NovelPromptBuilder {
   private filterRelevantInfoLayers(
     layers: NovelInformationLayer[],
     arranged?: ArrangedEntity,
+    boundary?: ChapterBoundaryContext,
   ): NovelInformationLayer[] {
     if (layers.length === 0) return []
     if (!arranged) {
@@ -1484,23 +1707,21 @@ export class NovelPromptBuilder {
     const relevantForeshadowIds = new Set(arranged.foreshadowIds)
     const relevantCharacterIds = new Set(arranged.characterIds)
     const relevantInfoLayerIds = new Set<string>()
-    for (const foreshadowId of relevantForeshadowIds) {
-      const foreshadow = this.stores.getForeshadow(foreshadowId)
-      if (!foreshadow) continue
-      // 关联关系已迁移至 novel_edges 表
-      const infoLayerIds = this.stores.listEdgesByEntity(foreshadow.id, { edgeType: 'related' })
-        .filter(e => (e.sourceId === foreshadow.id && e.targetType === 'info_layer') || (e.targetId === foreshadow.id && e.sourceType === 'info_layer'))
-        .map(e => e.sourceId === foreshadow.id ? e.targetId : e.sourceId)
-      for (const infoLayerId of infoLayerIds) {
-        relevantInfoLayerIds.add(infoLayerId)
+    const edges = boundary?.entities.edges ?? []
+    for (const edge of edges) {
+      if (edge.edgeType !== 'related') continue
+      if (edge.sourceType === 'foreshadow' && edge.targetType === 'info_layer' && relevantForeshadowIds.has(edge.sourceId)) {
+        relevantInfoLayerIds.add(edge.targetId)
+      }
+      if (edge.targetType === 'foreshadow' && edge.sourceType === 'info_layer' && relevantForeshadowIds.has(edge.targetId)) {
+        relevantInfoLayerIds.add(edge.sourceId)
       }
     }
 
     const relevant = layers.filter((layer) => {
       if (relevantInfoLayerIds.has(layer.id)) return true
-      // 关联关系已迁移至 novel_edges 表
-      const linked = this.stores.listEdgesByEntity(layer.id, { edgeType: 'related' })
-        .filter(e => (e.sourceId === layer.id && e.targetType === 'foreshadow') || (e.targetId === layer.id && e.sourceType === 'foreshadow'))
+      const linked = edges
+        .filter(e => e.edgeType === 'related' && ((e.sourceId === layer.id && e.targetType === 'foreshadow') || (e.targetId === layer.id && e.sourceType === 'foreshadow')))
         .map(e => e.sourceId === layer.id ? e.targetId : e.sourceId)
       if (linked.some((id) => relevantForeshadowIds.has(id))) return true
       if (relevantCharacterIds.size === 0 || !layer.characterKnowledge) return false
@@ -1637,7 +1858,7 @@ export class NovelPromptBuilder {
     if (relationships.length > 0) {
       parts.push('\n### 关系当前状态')
       for (const r of relationships) {
-        parts.push(`- ${r.characterA} ↔ ${r.characterB}：${r.relationType}（${r.currentStage}）`)
+        parts.push(`- ${r.characterA} ↔ ${r.characterB}：${promptLabel(r.relationType)}（${promptLabel(r.currentStage)}）`)
       }
     }
 
@@ -1648,7 +1869,7 @@ export class NovelPromptBuilder {
     if (otherConflicts.length > 0) {
       parts.push('\n### 活跃冲突')
       for (const c of otherConflicts) {
-        parts.push(`- [${c.type}] ${c.description}（${c.stage}，强度 ${c.intensity}/10）`)
+        parts.push(`- [${promptLabel(c.type)}] ${c.description}（${promptLabel(c.stage)}，强度 ${c.intensity}/10）`)
       }
     }
 
@@ -1659,7 +1880,7 @@ export class NovelPromptBuilder {
     if (otherForeshadows.length > 0) {
       parts.push('\n### 伏笔状态')
       for (const f of otherForeshadows) {
-        parts.push(`- [${f.status}] ${f.description}`)
+        parts.push(`- [${promptLabel(f.status)}] ${f.description}`)
       }
     }
 
@@ -1678,8 +1899,8 @@ export class NovelPromptBuilder {
       parts.push('\n### 活跃势力')
       for (const f of realFactions) {
         const segs = [`- **${f.name}**`]
-        if (f.type) segs.push(`类型：${f.type}`)
-        if (f.status) segs.push(`状态：${f.status}`)
+        if (f.type) segs.push(`类型：${promptLabel(f.type)}`)
+        if (f.status) segs.push(`状态：${promptLabel(f.status)}`)
         parts.push(segs.join('；'))
       }
     }
@@ -1690,7 +1911,7 @@ export class NovelPromptBuilder {
       parts.push('\n### 已登场地点')
       for (const l of realLocations) {
         const segs = [`- **${l.name}**`]
-        if (l.type) segs.push(`类型：${l.type}`)
+        if (l.type) segs.push(`类型：${promptLabel(l.type)}`)
         parts.push(segs.join('；'))
       }
     }
@@ -1745,10 +1966,15 @@ export class NovelPromptBuilder {
     projectId: string,
     layers: NovelInformationLayer[],
     arranged?: ArrangedEntity,
+    boundary?: ChapterBoundaryContext,
   ): string {
+    void projectId
     const parts: string[] = ['## 信息差']
     const allowedCharacterIds = arranged ? new Set(arranged.characterIds) : null
     const allowedForeshadowIds = arranged ? new Set(arranged.foreshadowIds) : null
+    const characters = new Map((boundary?.entities.characters ?? []).map((character) => [character.id, character]))
+    const foreshadows = new Map((boundary?.entities.foreshadowing ?? []).map((foreshadow) => [foreshadow.id, foreshadow]))
+    const edges = boundary?.entities.edges ?? []
     for (const layer of layers) {
       const readerStatus = layer.readerKnows ? '读者已知' : '读者未知'
       const revealStatus = layer.isRevealed ? '已揭露' : `计划揭露：${layer.revealStage ?? '未定'}`
@@ -1759,7 +1985,7 @@ export class NovelPromptBuilder {
           const knowledge = JSON.parse(layer.characterKnowledge) as Record<string, unknown>
           for (const [characterId, raw] of Object.entries(knowledge)) {
             if (allowedCharacterIds && !allowedCharacterIds.has(characterId)) continue
-            const character = this.stores.getCharacter(characterId)
+            const character = characters.get(characterId)
             if (!character || typeof raw !== 'object' || raw === null) continue
             const item = raw as { knows?: boolean; suspects?: boolean; misunderstands?: string }
             const states: string[] = []
@@ -1776,16 +2002,16 @@ export class NovelPromptBuilder {
       // ── P3-2：解析 linkedForeshadows 反向展示关联伏笔 ──
       // 让 Agent 知道本信息差由哪些伏笔承载，写作时协同回收时机
       // 关联关系已迁移至 novel_edges 表（info_layer ↔ foreshadow）
-      const linkedIds = this.stores.listEdgesByEntity(layer.id, { edgeType: 'related' })
-        .filter(e => (e.sourceId === layer.id && e.targetType === 'foreshadow') || (e.targetId === layer.id && e.sourceType === 'foreshadow'))
+      const linkedIds = edges
+        .filter(e => e.edgeType === 'related' && ((e.sourceId === layer.id && e.targetType === 'foreshadow') || (e.targetId === layer.id && e.sourceType === 'foreshadow')))
         .map(e => e.sourceId === layer.id ? e.targetId : e.sourceId)
         .filter((id) => !allowedForeshadowIds || allowedForeshadowIds.has(id))
       if (linkedIds.length > 0) {
         const linkedDescs: string[] = []
         for (const fid of linkedIds) {
-          const f = this.stores.getForeshadow(fid)
+          const f = foreshadows.get(fid)
           if (f) {
-            linkedDescs.push(`${f.description}（${f.status}）`)
+            linkedDescs.push(`${f.description}（${promptLabel(f.status)}）`)
           }
         }
         if (linkedDescs.length > 0) {
@@ -1822,8 +2048,10 @@ export class NovelPromptBuilder {
    * C3 增强：edges 类型从 NovelEdge 改为 GraphEdge，以兼容派生边
    * （派生边的 fromRelationship/relationship 字段在 formatEdges 中不访问）
    */
-  private formatEdges(projectId: string, edges: GraphEdge[]): string {
-    const nameMap = this.buildEntityNameMap(projectId)
+  private formatEdges(projectId: string, edges: GraphEdge[], boundary?: ChapterBoundaryContext): string {
+    const nameMap = boundary?.fromSnapshot
+      ? this.buildBoundaryEntityNameMap(projectId, boundary.entities)
+      : this.buildEntityNameMap(projectId)
     // 过滤 involvement 派生边：冲突参与方信息已在 formatArrangedEntities 的"本章冲突"
     // "参与方"字段中体现，重复注入会浪费 token 且无新信息。
     // 仅过滤自动派生边（auto=true），保留手动边（用户明确标注的 involvement）。
@@ -1837,7 +2065,7 @@ export class NovelPromptBuilder {
       const targetName = nameMap.get(e.targetId) ?? e.targetId
       const label = e.label ? `：${e.label}` : ''
       const origin = e.auto ? '（自动）' : '（手动）'
-      return `- ${sourceName}(${e.sourceType}) --[${e.edgeType}]--> ${targetName}(${e.targetType})${label}${origin}`
+      return `- ${sourceName}（${promptLabel(e.sourceType)}）—[${promptLabel(e.edgeType)}]→ ${targetName}（${promptLabel(e.targetType)}）${label}${origin}`
     })
     return `## 实体关联\n\n${lines.join('\n')}`
   }
@@ -1967,7 +2195,7 @@ export class NovelPromptBuilder {
    */
   private formatUnfulfilledHooks(hooks: NovelHook[]): string {
     const lines = hooks.map(h =>
-      `- 第${h.chapterNumber}章 ${h.hookType}钩子：${h.description}`
+      `- 第${h.chapterNumber}章 ${promptLabel(h.hookType)}钩子：${h.description}`
     )
     return `## 未兑现钩子（本章开头必须自然承接以下悬念，否则读者会感到断裂）\n\n${lines.join('\n')}`
   }
@@ -1998,15 +2226,15 @@ export class NovelPromptBuilder {
     }
 
     const lines = ['## 最近章节节奏分布（宏观节奏管理参考）', '']
-    lines.push(`最近 ${recent.length} 章节奏序列：${rhythms.join(' → ')}`)
+    lines.push(`最近 ${recent.length} 章节奏序列：${rhythms.map(r => promptLabel(r)).join(' → ')}`)
     lines.push('')
     lines.push('节奏统计：')
     for (const [rhythm, count] of rhythmCounts) {
-      lines.push(`- ${rhythm}：${count} 章`)
+      lines.push(`- ${promptLabel(rhythm)}：${count} 章`)
     }
     if (consecutiveClimax >= 2) {
       lines.push('')
-      lines.push(`⚠️ 已连续 ${consecutiveClimax} 章高潮/转折，本章建议安排 breather 或 setup 缓冲`)
+      lines.push(`⚠️ 已连续 ${consecutiveClimax} 章高潮/转折，本章建议安排缓冲或铺垫节奏`)
     }
     return lines.join('\n')
   }
@@ -2119,8 +2347,8 @@ export class NovelPromptBuilder {
       sections.push(`### 高潮写法
 
 - **蓄势释放**：高潮前先写压抑（主角被压制、陷入困境），释放点干脆利落。蓄势占高潮段落 60% 以上
-- **大小区别**：minor 单章解决（强度 5-6），medium 跨 2-3 章铺垫（7-8），major 跨卷铺垫（9-10）
-- **类型写法**：emotional 聚焦情感爆发（对话+心理），fate 聚焦命运揭晓（信息递进），character 突出性格魅力，combat 聚焦新奇场面，theme 承载思想重量，composite 多线共振`)
+- **大小区别**：次要冲突单章解决（强度 5-6），重要冲突跨 2-3 章铺垫（7-8），主要冲突跨卷铺垫（9-10）
+- **类型写法**：情感型聚焦情感爆发（对话+心理），命运型聚焦命运揭晓（信息递进），人物型突出性格魅力，战斗型聚焦新奇场面，主题型承载思想重量，复合型多线共振`)
     }
 
     // 突转写法
@@ -2137,9 +2365,9 @@ export class NovelPromptBuilder {
     if (taskType === 'create_suspense' || rhythm === 'suspense') {
       sections.push(`### 悬念写法
 
-- **埋设（planting）**：通过角色不知道的信息制造紧张感
-- **维持（sustaining）**：每章释放一点信息但不说破
-- **释放（releasing）**：真相揭晓，情感与信息同时爆发
+- **埋设**：通过角色不知道的信息制造紧张感
+- **维持**：每章释放一点信息但不说破
+- **释放**：真相揭晓，情感与信息同时爆发
 - **技巧**：信息不对称、倒计时压力、部分揭露、误导与红鲱鱼`)
     }
 
@@ -2147,10 +2375,10 @@ export class NovelPromptBuilder {
     if (taskType === 'create_conflict' || taskType === 'escalate_conflict') {
       sections.push(`### 冲突推进写法
 
-- **latent → emerging**：暗示冲突存在，角色尚未察觉
-- **emerging → escalating**：冲突显性化，角色开始交锋
-- **escalating → erupting**：冲突爆发，强度拉满
-- 按类型调整：inner/moral 慢节奏心理描写，relationship/emotional 中节奏对话，faction/world_rule 快节奏群像，survival 快节奏动作`)
+- **潜伏 → 初现**：暗示冲突存在，角色尚未察觉
+- **初现 → 升级**：冲突显性化，角色开始交锋
+- **升级 → 爆发**：冲突爆发，强度拉满
+- 按类型调整：内心/道德冲突慢节奏心理描写，关系/情感冲突中节奏对话，势力/世界规则冲突快节奏群像，生存冲突快节奏动作`)
     }
 
     if (sections.length === 0) return '（本章无特殊写法理论需要参考，按创作核心原则自由发挥即可）'
@@ -2158,91 +2386,179 @@ export class NovelPromptBuilder {
   }
 
   /**
-   * 把事件账本的时间切片转换成 Writer/Director 可执行的约束。
-   * 数值维度同时输出行为语义，避免模型只看到没有文学含义的裸分数。
+   * 收集账本上下文里出现的所有 subjectId/targetId，反查实体显示名。
+   * 返回 id → name 映射。反查失败的 id 不放入映射（格式化时回退到 type:id）。
    */
-  private formatStoryLedgerContext(context: ChapterStoryContext): string {
-    const displayValue = (value: unknown): string => {
-      if (typeof value === 'string') return value || '（空）'
-      try {
-        return JSON.stringify(value)
-      } catch {
-        return String(value)
+  private buildSubjectNameMap(projectId: string, context: ChapterStoryContext): Map<string, string> {
+    const ids = new Set<string>()
+    for (const s of context.stateBeforeChapter) {
+      ids.add(s.subjectId)
+      if (s.targetId) ids.add(s.targetId)
+    }
+    for (const c of context.plannedChanges) {
+      ids.add(c.subjectId)
+      if (c.targetId) ids.add(c.targetId)
+    }
+    for (const c of context.unresolvedDebts) {
+      ids.add(c.subjectId)
+      if (c.targetId) ids.add(c.targetId)
+    }
+    for (const fc of context.futureCommitments) {
+      for (const c of fc.changes) {
+        ids.add(c.subjectId)
+        if (c.targetId) ids.add(c.targetId)
       }
     }
+    if (ids.size === 0) return new Map()
 
-    const sections: string[] = [`## 第${context.chapterNumber}章事件账本（章前时间切片）`]
+    const nameMap = new Map<string, string>()
+    for (const id of ids) {
+      // 按 subjectType 顺序尝试反查；NovelPromptStores 的 getXxx 方法按 ID 查询
+      // 字段名差异：character/faction/location/item 用 name；conflict/foreshadow/clue 用 description
+      const character = this.stores.getCharacter(id)
+      if (character) { nameMap.set(id, character.name); continue }
+      const conflict = this.stores.getConflict(id)
+      if (conflict) { nameMap.set(id, conflict.description); continue }
+      const foreshadow = this.stores.getForeshadow(id)
+      if (foreshadow) { nameMap.set(id, foreshadow.description); continue }
+      const clue = this.stores.getClue(id)
+      if (clue) { nameMap.set(id, clue.description); continue }
+      const faction = this.stores.getFaction(id)
+      if (faction) { nameMap.set(id, faction.name); continue }
+      const location = this.stores.getLocation(id)
+      if (location) { nameMap.set(id, location.name); continue }
+      const item = this.stores.getItem(id)
+      if (item) { nameMap.set(id, item.name); continue }
+      // info_layer / world_element / relationship 暂无 getXxx，跳过
+    }
+    return nameMap
+  }
 
-    if (context.stateBeforeChapter.length > 0) {
-      const stateLines = context.stateBeforeChapter.slice(0, 80).map((state) => {
-        const target = state.targetId ? ` → ${state.targetType}:${state.targetId}` : ''
-        return `- 第${state.effectiveChapter}章生效 · ${state.subjectType}:${state.subjectId}${target} · ${state.dimension} = ${displayValue(state.value)}（${state.reason || '无原因说明'}）`
+  /** 把反查到的实体名注入到 ChapterStoryContext 的状态项里，供 formatStoryLedgerContext 使用 */
+  private injectSubjectNames(context: ChapterStoryContext, nameMap: Map<string, string>): void {
+    for (const s of context.stateBeforeChapter) {
+      s.subjectName = nameMap.get(s.subjectId)
+      if (s.targetId) s.targetName = nameMap.get(s.targetId)
+    }
+    // plannedChanges / unresolvedDebts / futureCommitments.changes 是 NovelChangeRecord，
+    // 没有独立的 subjectName 字段；formatStoryLedgerContext 通过同一个 nameMap 反查。
+  }
+
+  private formatStoryLedgerContext(
+    context: ChapterStoryContext,
+    arrangedEntities?: ArrangedEntity,
+    names = new Map<string, string>(),
+  ): string {
+    const arrangedIds = this.collectRelevantEntityIds(arrangedEntities)
+    const hasArrangedFilter = arrangedIds.size > 0
+    const recentChapterFloor = Math.max(1, context.chapterNumber - 2)
+    const dimensionLabels: Record<string, string> = {
+      'character.state': '状态',
+      'character.goal': '目标',
+      'character.pressure': '压力',
+      'character.cognition': '认知',
+      'character.arc_stage': '成长状态',
+      'conflict.stage': '冲突进展',
+      'conflict.intensity': '冲突强度',
+      'foreshadow.beat': '伏笔动作',
+      'foreshadow.payoff_chapter': '伏笔回收时点',
+      'clue.progress': '线索进展',
+      'faction.status': '势力状态',
+      'faction.activity': '势力动态',
+      'item.holder': '物品归属',
+      'item.status': '物品状态',
+      'relationship.stage': '关系进展',
+      'relationship.alignment': '关系立场',
+    }
+
+    const labelFor = (subjectType: string, subjectId: string, suppliedName?: string): string =>
+      suppliedName || names.get(subjectId) || `${promptLabel(subjectType)}相关事项`
+
+    const valueFor = (value: unknown): string => {
+      if (value == null || value === '') return '暂无明确结果'
+      if (typeof value === 'string') return compactPromptText(promptLabel(value), 160)
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+      if (typeof value !== 'object') return String(value)
+
+      const record = value as Record<string, unknown>
+      const fields: Array<[string, string]> = [
+        ['currentState', '状态'], ['currentGoal', '目标'], ['currentPressure', '压力'],
+        ['stage', '进展'], ['status', '状态'], ['currentStep', '当前进展'],
+        ['nextStep', '下一步'], ['progress', '进度'], ['pointsTo', '指向'],
+      ]
+      const parts = fields.flatMap(([key, label]) => {
+        const fieldValue = record[key]
+        if (fieldValue == null || fieldValue === '') return []
+        return [`${label}：${compactPromptText(promptLabel(String(fieldValue)), 96)}`]
       })
-      sections.push(`### 章前已成立状态\n${stateLines.join('\n')}`)
+      return parts.length > 0 ? parts.join('；') : '已有记录'
     }
 
-    if (context.activeThreads.length > 0) {
-      sections.push(`### 跨章节复合事件\n${context.activeThreads
-        .slice(0, 20)
-        .map((event) => `- ${event.title}：${event.summary || '持续推进中'}`)
-        .join('\n')}`)
+    const isRelevant = (subjectType: string, subjectId: string, dimension: string, value: unknown): boolean => {
+      if (dimension === 'character.conflict_link' || dimension.endsWith('.created')) return false
+      if (hasArrangedFilter && !arrangedIds.has(subjectId)) return false
+      if (subjectType === 'conflict' && valueFor(value) === '已解决') return false
+      return true
     }
 
-    if (context.plannedEvents.length > 0 || context.plannedChanges.length > 0) {
-      const eventLines = context.plannedEvents.map((event) => `- ${event.title}：${event.summary || event.outcome || '待完成'}`)
-      const changeLines = context.plannedChanges.slice(0, 50).map((change) => {
-        const base = `- 计划变化 · ${change.subjectType}:${change.subjectId} · ${change.dimension}：${displayValue(change.beforeValue)} → ${displayValue(change.afterValue)}（${change.reason || '待补充原因'}）`
-        // 文风挂接（设计文档第 8 节）：变化级 styleNote 优先，无则 fallback 到维度模板（behaviorGuide）
-        return change.styleNote ? `${base} ｜ 文风：${change.styleNote}` : base
-      })
-      sections.push(`### 本章计划\n${[...eventLines, ...changeLines].join('\n')}`)
+    const changeLine = (change: {
+      subjectType: string
+      subjectId: string
+      targetType: string | null
+      targetId: string | null
+      dimension: string
+      afterValue: unknown
+      reason: string
+    }, suppliedName?: string): string => {
+      const subject = labelFor(change.subjectType, change.subjectId, suppliedName)
+      const target = change.targetId
+        ? `与${labelFor(change.targetType ?? '', change.targetId)}`
+        : ''
+      const label = dimensionLabels[change.dimension] ?? '状态变化'
+      const reason = change.reason ? `；缘由：${compactPromptText(change.reason, 96)}` : ''
+      return `- ${subject}${target}：${label}变为「${valueFor(change.afterValue)}」${reason}`
     }
 
-    if (context.futureCommitments.length > 0) {
-      sections.push(`### 后续承诺与禁止提前发生的结果\n${context.futureCommitments
-        .slice(0, 20)
-        .map(({ event, changes }) => {
-          const changeText = changes.length > 0
-            ? `；变化：${changes.slice(0, 3).map((change) => `${change.dimension} → ${displayValue(change.afterValue)}`).join('、')}`
-            : ''
-          return `- 第${event.chapterNumber}章计划：${event.title}${changeText}`
-        })
-        .join('\n')}`)
+    const sections: string[] = []
+    const recentStateLines = context.stateBeforeChapter
+      .filter((state) => state.effectiveChapter >= recentChapterFloor)
+      .filter((state) => isRelevant(state.subjectType, state.subjectId, state.dimension, state.value))
+      .sort((a, b) => b.effectiveChapter - a.effectiveChapter || b.effectiveSceneOrder - a.effectiveSceneOrder)
+      .slice(0, 6)
+      .map((state) => changeLine({ ...state, afterValue: state.value }, state.subjectName))
+    if (recentStateLines.length > 0) {
+      sections.push(`### 最近承接（第${recentChapterFloor}-${context.chapterNumber - 1}章）\n${recentStateLines.join('\n')}`)
     }
 
-    if (context.promptDimensions.length > 0) {
-      sections.push(`### 数值状态的行为语义\n${context.promptDimensions
-        .map((dimension) => {
-          const allowed = dimension.allowedThisChapter.length > 0 ? `；允许：${dimension.allowedThisChapter.join('、')}` : ''
-          const forbidden = dimension.forbiddenThisChapter.length > 0 ? `；禁止：${dimension.forbiddenThisChapter.join('、')}` : ''
-          return `- ${dimension.dimension}：${dimension.numericValue}/100（${dimension.levelLabel}，${dimension.trend}）${dimension.behaviorGuide} 原因：${dimension.changeReason || '未说明'}${allowed}${forbidden}`
-        })
-        .join('\n')}`)
+    const planLines = context.plannedChanges
+      .filter((change) => isRelevant(change.subjectType, change.subjectId, change.dimension, change.afterValue))
+      .slice(0, 4)
+      .map((change) => changeLine(change))
+    if (planLines.length > 0) {
+      sections.push(`### 本章账本计划（应服务于本章写作核心）\n${planLines.join('\n')}`)
     }
 
-    const promptAnnotations = context.annotations.filter((annotation) => annotation.includeInPrompt)
-    if (promptAnnotations.length > 0) {
-      sections.push(`### 作者明确提供给本章的批注\n${promptAnnotations
-        .slice(0, 30)
-        .map((annotation) => `- [${annotation.kind}] ${annotation.content}`)
-        .join('\n')}`)
+    const futureLines = context.futureCommitments
+      .filter(({ changes }) => changes.some((change) =>
+        isRelevant(change.subjectType, change.subjectId, change.dimension, change.afterValue),
+      ))
+      .sort((a, b) => a.event.chapterNumber - b.event.chapterNumber)
+      .slice(0, 2)
+      .map(({ event }) => `- 第${event.chapterNumber}章将继续：${compactPromptText(event.title, 100)}`)
+    if (futureLines.length > 0) {
+      sections.push(`### 后文边界（仅用于避免提前写完）\n${futureLines.join('\n')}`)
     }
 
-    if (context.unresolvedDebts.length > 0) {
-      sections.push(`### 未解决的变化债务\n${context.unresolvedDebts
-        .slice(0, 30)
-        .map((change) => {
-          const base = `- ${change.subjectType}:${change.subjectId} · ${change.dimension}：${displayValue(change.afterValue)}`
-          return change.styleNote ? `${base} ｜ 文风：${change.styleNote}` : base
-        })
-        .join('\n')}`)
+    const annotationLabels: Record<string, string> = { intent: '作者意图', warning: '注意', note: '批注', constraint: '约束' }
+    const annotationLines = context.annotations
+      .filter((annotation) => annotation.includeInPrompt)
+      .slice(0, 4)
+      .map((annotation) => `- ${annotationLabels[annotation.kind] ?? '作者批注'}：${compactPromptText(annotation.content, 160)}`)
+    if (annotationLines.length > 0) {
+      sections.push(`### 作者批注\n${annotationLines.join('\n')}`)
     }
 
-    if (context.continuityWarnings.length > 0) {
-      sections.push(`### 连续性警告\n${context.continuityWarnings.map((warning) => `- ${warning}`).join('\n')}`)
-    }
-
-    return sections.join('\n\n')
+    return sections.length > 0 ? `## 账本承接\n\n${sections.join('\n\n')}` : ''
   }
 
   /**
@@ -2324,77 +2640,97 @@ export class NovelPromptBuilder {
   // ═══════════════════════════════════════════════════════════════
 
   /**
-   * 获取故事状态快照。
+   * 读取第 N 章开篇边界。底层保留全量实体，调用方必须再按本章编排筛选。
    *
-   * 重写中间章节时，必须读取第 N-1 章保存的全量快照，不能把全局最新状态
-   * 当成本章开篇状态，否则未来章节的人物/冲突结果会倒灌进历史章节。
+   * 只要第 N 章已经成为当前章或历史章，就优先读取 N-1 快照；这同时覆盖
+   * “重写最后一章”的场景，避免旧实现仅在存在未来章节时才回退快照。
    */
-  private getStoryState(projectId: string, chapterNumber: number): StoryState {
+  getChapterBoundaryContext(projectId: string, chapterNumber: number): ChapterBoundaryContext {
     const project = this.stores.getProject(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
 
-    // 兼容旧项目 currentChapter 未随正文推进的情况：只要数据库里存在更后面的
-    // 已写章节，就应把当前请求视为历史章节重写并读取 N-1 快照。
-    const latestWrittenChapter = this.stores.listRecentChapters(projectId, 1).at(-1)?.chapterNumber ?? 0
+    const recentChapters = this.stores.listRecentChapters(projectId, 50)
+    const latestWrittenChapter = Math.max(
+      0,
+      ...recentChapters
+        .filter((chapter) => chapter.content?.trim().length > 0)
+        .map((chapter) => chapter.chapterNumber),
+    )
     const latestKnownChapter = Math.max(project.currentChapter, latestWrittenChapter)
-    if (chapterNumber > 1 && latestKnownChapter > chapterNumber) {
+    if (chapterNumber > 1 && latestKnownChapter >= chapterNumber) {
       const snapshot = this.memoryStore?.getSnapshot?.(projectId, chapterNumber - 1, { snapshotType: 'full' })
       if (snapshot) {
         try {
-          const data = JSON.parse(snapshot.snapshotData) as {
-            characters?: NovelCharacter[]
-            conflicts?: NovelConflict[]
-            foreshadowing?: NovelForeshadow[]
-            clues?: NovelClue[]
-            factions?: NovelFaction[]
-            locations?: NovelLocation[]
-            relationships?: NovelRelationship[]
-            items?: NovelItem[]
-          }
-          const conflicts = data.conflicts ?? []
-          const foreshadowing = data.foreshadowing ?? []
-          const factions = data.factions ?? []
-          const locations = data.locations ?? []
-          const items = data.items ?? []
+          const entities = this.parseBoundaryEntities(snapshot.snapshotData)
           return {
-            project: { ...project, currentChapter: chapterNumber - 1 },
-            characters: data.characters ?? [],
-            relationships: data.relationships ?? [],
-            activeConflicts: conflicts.filter(c => c.stage !== 'resolved' && c.stage !== 'transformed'),
-            pendingForeshadowing: foreshadowing.filter(f => f.status !== 'recovered' && f.status !== 'abandoned'),
-            // 新快照读取当时的线索；旧快照缺少 clues 时保持空数组，绝不倒灌未来线索。
-            activeClues: data.clues ?? [],
-            activeFactions: factions.filter(f => f.status !== 'destroyed'),
-            activeLocations: locations.filter(l => l.appearChapters?.some(ch => ch < chapterNumber)),
-            // 物品：旧快照缺少 items 时保持空数组，绝不倒灌未来物品。
-            items: items.filter(i => i.status !== 'destroyed'),
-            currentStage: project.currentStage,
-            currentChapter: chapterNumber - 1,
+            chapterNumber,
+            entities,
+            state: this.toStoryState({ ...project, currentChapter: chapterNumber - 1 }, entities, chapterNumber),
+            fromSnapshot: true,
           }
         } catch {
-          // 损坏/旧格式快照降级为当前状态，保持创作流程可用。
+          // 损坏快照不可用时只能回退到顺序生成状态；不混用部分当前实体。
         }
       }
     }
 
+    const entities = this.getCurrentBoundaryEntities(projectId)
     return {
-      project,
+      chapterNumber,
+      entities,
+      state: this.toStoryState(project, entities, chapterNumber),
+      fromSnapshot: false,
+    }
+  }
+
+  private getCurrentBoundaryEntities(projectId: string): ChapterBoundaryEntities {
+    return {
       characters: this.stores.listCharacters(projectId),
       relationships: this.stores.listRelationships(projectId),
-      activeConflicts: this.stores.listConflicts(projectId).filter(
-        (c) => c.stage !== 'resolved' && c.stage !== 'transformed',
-      ),
-      pendingForeshadowing: this.stores.listForeshadowing(projectId).filter(
-        (f) => f.status !== 'recovered' && f.status !== 'abandoned',
-      ),
-      activeClues: this.stores.listClues(projectId).filter((c) => c.progress < 100),
-      activeFactions: this.stores.listFactions(projectId).filter(
-        (f) => f.status !== 'destroyed',
-      ),
-      activeLocations: this.stores.listLocations(projectId).filter(
-        (l) => l.appearChapters && l.appearChapters.length > 0,
-      ),
-      items: this.stores.listItems(projectId).filter((i) => i.status !== 'destroyed'),
+      conflicts: this.stores.listConflicts(projectId),
+      foreshadowing: this.stores.listForeshadowing(projectId),
+      clues: this.stores.listClues(projectId),
+      factions: this.stores.listFactions(projectId),
+      locations: this.stores.listLocations(projectId),
+      items: this.stores.listItems(projectId),
+      worldElements: this.stores.listWorldElements(projectId),
+      informationLayers: this.stores.listInformationLayers(projectId),
+      edges: this.stores.listEdges(projectId),
+    }
+  }
+
+  private parseBoundaryEntities(snapshotData: string): ChapterBoundaryEntities {
+    const data = JSON.parse(snapshotData) as Partial<ChapterBoundaryEntities>
+    return {
+      characters: Array.isArray(data.characters) ? data.characters : [],
+      relationships: Array.isArray(data.relationships) ? data.relationships : [],
+      conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
+      foreshadowing: Array.isArray(data.foreshadowing) ? data.foreshadowing : [],
+      clues: Array.isArray(data.clues) ? data.clues : [],
+      factions: Array.isArray(data.factions) ? data.factions : [],
+      locations: Array.isArray(data.locations) ? data.locations : [],
+      items: Array.isArray(data.items) ? data.items : [],
+      worldElements: Array.isArray(data.worldElements) ? data.worldElements : [],
+      informationLayers: Array.isArray(data.informationLayers) ? data.informationLayers : [],
+      edges: Array.isArray(data.edges) ? data.edges : [],
+    }
+  }
+
+  private toStoryState(
+    project: NovelProject,
+    entities: ChapterBoundaryEntities,
+    chapterNumber: number,
+  ): StoryState {
+    return {
+      project,
+      characters: entities.characters,
+      relationships: entities.relationships,
+      activeConflicts: entities.conflicts.filter((conflict) => conflict.stage !== 'resolved' && conflict.stage !== 'transformed'),
+      pendingForeshadowing: entities.foreshadowing.filter((foreshadow) => foreshadow.status !== 'recovered' && foreshadow.status !== 'abandoned'),
+      activeClues: entities.clues.filter((clue) => clue.progress < 100),
+      activeFactions: entities.factions.filter((faction) => faction.status !== 'destroyed'),
+      activeLocations: entities.locations.filter((location) => location.appearChapters?.some((chapter) => chapter < chapterNumber)),
+      items: entities.items.filter((item) => item.status !== 'destroyed'),
       currentStage: project.currentStage,
       currentChapter: project.currentChapter,
     }
@@ -2777,6 +3113,23 @@ export class NovelPromptBuilder {
     for (const f of this.stores.listFactions(projectId)) map.set(f.id, f.name)
     for (const l of this.stores.listLocations(projectId)) map.set(l.id, l.name)
     for (const w of this.stores.listWorldElements(projectId)) map.set(w.id, w.name)
+    return map
+  }
+
+  /** 使用章节边界快照构建名称表，历史重写时不得回读未来实体名称。 */
+  private buildBoundaryEntityNameMap(projectId: string, entities: ChapterBoundaryEntities): Map<string, string> {
+    const map = new Map<string, string>()
+    const project = this.stores.getProject(projectId)
+    if (project) map.set(project.id, project.title)
+    for (const c of entities.characters) map.set(c.id, c.name)
+    for (const c of entities.conflicts) map.set(c.id, c.description)
+    for (const f of entities.foreshadowing) map.set(f.id, f.description)
+    for (const c of entities.clues) map.set(c.id, c.description)
+    for (const f of entities.factions) map.set(f.id, f.name)
+    for (const l of entities.locations) map.set(l.id, l.name)
+    for (const i of entities.items) map.set(i.id, i.name)
+    for (const w of entities.worldElements) map.set(w.id, w.name)
+    for (const layer of entities.informationLayers) map.set(layer.id, layer.infoDescription)
     return map
   }
 

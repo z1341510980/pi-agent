@@ -60,6 +60,7 @@ export type MemoryEntityType =
   | 'faction'
   | 'location'
   | 'relationship'
+  | 'info_layer'
   | 'item'
   | 'chapter'
   | 'world_element'
@@ -378,6 +379,7 @@ const DIMENSION_RULES: Record<MemoryEventType, DimensionRule[]> = {
   ],
   faction_change: [
     { dimension: 'faction.status', valueType: 'enum', matchFields: ['status'] },
+    { dimension: 'faction.strength', valueType: 'level', matchFields: ['strength'] },
     { dimension: 'faction.activity', valueType: 'text', matchFields: [] },
     { dimension: 'faction.created', valueType: 'reference', matchFields: ['name', 'status', 'strength'], isCreate: true },
   ],
@@ -419,9 +421,10 @@ const DIMENSION_RULES: Record<MemoryEventType, DimensionRule[]> = {
     { dimension: 'item.appear', valueType: 'set', matchFields: ['appearChapters'] },
     { dimension: 'item.created', valueType: 'reference', matchFields: ['name', 'holder', 'status'], isCreate: true },
   ],
-  // 以下 eventType 在 chapter-finalizer 中未使用，规则为空 → 推断返回 null
   plot_event: [],
-  world_change: [],
+  world_change: [
+    { dimension: 'world_element.created', valueType: 'reference', matchFields: ['name', 'category'], isCreate: true },
+  ],
 }
 
 /**

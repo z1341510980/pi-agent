@@ -12,6 +12,8 @@ import {
 
 export interface MessageBubbleProps {
   message: ConversationMessage
+  /** 紧凑模式：隐藏头像和名称（用于同 Agent 连续消息分组内的后续消息） */
+  compact?: boolean
 }
 
 /**
@@ -22,7 +24,7 @@ export interface MessageBubbleProps {
  * - 流式时：名称旁 animate-pulse 圆点 + "正在生成..."
  * - 错误状态：红色边框
  */
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, compact = false }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
   // 显示内容：流式时用 streamingBuffer，完成时用 content
@@ -64,41 +66,47 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: 'easeOut' }}
-      className="flex max-w-[85%] min-w-0 items-start gap-2 justify-start"
+      className={cn(
+        'flex max-w-[85%] min-w-0 items-start gap-2 justify-start',
+        compact && 'pl-7', // 对齐头像宽度(20px) + gap(8px)
+      )}
     >
-      {/* 头像 */}
-      <div
-        className={cn(
-          'flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white',
-          color?.avatarClass ?? 'bg-gray-500',
-        )}
-        aria-label="Agent 头像"
-      >
-        {avatarChar}
-      </div>
+      {/* 头像（紧凑模式隐藏） */}
+      {!compact && (
+        <div
+          className={cn(
+            'flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white',
+            color?.avatarClass ?? 'bg-gray-500',
+          )}
+          aria-label="Agent 头像"
+        >
+          {avatarChar}
+        </div>
+      )}
 
       <div className="flex min-w-0 flex-col gap-1">
-        {/* 名称 + Badge + 流式指示 */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium text-text">
-            {message.agentName ?? agentLabel ?? '助手'}
-          </span>
-          {agentLabel && color && (
-            <Badge variant="outline" className={cn('border text-[10px] px-1 py-0', color.badgeClass)}>
-              {agentLabel}
-            </Badge>
-          )}
-          {isStreaming && (
-            <span className="flex items-center gap-1 text-[10px] text-hint">
-              {/* streaming-dot：6px 双重脉动（opacity + scale） */}
-              <span
-                className="size-1.5 rounded-full bg-primary animate-[streaming-pulse_1.2s_ease-in-out_infinite]"
-                aria-hidden="true"
-              />
-              正在生成...
+        {/* 名称 + Badge + 流式指示（紧凑模式隐藏） */}
+        {!compact && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium text-text">
+              {message.agentName ?? agentLabel ?? '助手'}
             </span>
-          )}
-        </div>
+            {agentLabel && color && (
+              <Badge variant="outline" className={cn('border text-[10px] px-1 py-0', color.badgeClass)}>
+                {agentLabel}
+              </Badge>
+            )}
+            {isStreaming && (
+              <span className="flex items-center gap-1 text-[10px] text-hint">
+                <span
+                  className="size-1.5 rounded-full bg-primary animate-[streaming-pulse_1.2s_ease-in-out_infinite]"
+                  aria-hidden="true"
+                />
+                正在生成...
+              </span>
+            )}
+          </div>
+        )}
 
         {/* 文本气泡（浅灰背景 + agent 边框色；错误时红色边框） */}
         {displayContent ? (

@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, ShieldCheck } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Maximize2, Minimize2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { cn } from '@/lib/utils'
@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dialog'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
+import { useNovelWorkspaceLayoutStore } from '@/stores/novel-workspace-layout-store'
 import {
   listCharacters,
   listChapters,
@@ -42,6 +43,7 @@ import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
 import { useChapterChat } from '@/hooks/use-chapter-chat'
 import { useNovelSimilarityScan } from '@/hooks/use-novel-similarity-scan'
 import { useShortcut } from '@/hooks/use-shortcut'
+import { useNovelWorkspaceShortcuts } from '@/hooks/use-novel-workspace-shortcuts'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { NovelSidebar } from './novel-sidebar'
 import { NovelToolbar } from './novel-toolbar'
@@ -112,6 +114,60 @@ function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
       >
         <LayoutGrid className="size-3.5" />
         <span className="leading-none">画布</span>
+      </button>
+    </div>
+  )
+}
+
+interface MainModeSwitcherProps {
+  value: 'writing' | 'matrix' | 'split'
+  onChange: (mode: 'writing' | 'matrix' | 'split') => void
+}
+
+function MainModeSwitcher({ value, onChange }: MainModeSwitcherProps): ReactElement {
+  const base =
+    'inline-flex items-center gap-1.5 h-7 px-3 text-[11px] font-medium rounded-[6px] ' +
+    'transition-all duration-200 ease-out active:scale-[0.96]'
+  const active = 'bg-surface-1 text-text shadow-sm'
+  const inactive = 'text-subtle hover:text-text hover:bg-surface-1/50'
+  return (
+    <div
+      className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg"
+      role="tablist"
+      aria-label="工作区模式"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={value === 'writing'}
+        className={`${base} ${value === 'writing' ? active : inactive}`}
+        onClick={() => onChange('writing')}
+        title="写作模式：编辑器全宽"
+      >
+        <PenLine className="size-3.5" />
+        <span className="leading-none">写作</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={value === 'split'}
+        className={`${base} ${value === 'split' ? active : inactive}`}
+        onClick={() => onChange('split')}
+        title="分屏模式：编辑器 + 矩阵"
+      >
+        <Rows2 className="size-3.5" />
+        <span className="leading-none">分屏</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={value === 'matrix'}
+        className={`${base} ${value === 'matrix' ? active : inactive}`}
+        onClick={() => onChange('matrix')}
+        title="矩阵模式：矩阵全宽"
+      >
+        <Grid3x3 className="size-3.5" />
+        <span className="leading-none">矩阵</span>
       </button>
     </div>
   )
@@ -200,6 +256,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
   const viewMode = useNovelUiStore((s) => s.viewMode)
   const setViewMode = useNovelUiStore((s) => s.setViewMode)
+  const mainMode = useNovelWorkspaceLayoutStore((s) => s.mainMode)
+  const setMainMode = useNovelWorkspaceLayoutStore((s) => s.setMainMode)
   const characterHistory = useNovelDataStore((s) => s.characterHistory)
   const setCharacterHistory = useNovelDataStore((s) => s.setCharacterHistory)
   const setCreationMode = useNovelUiStore((s) => s.setCreationMode)
@@ -211,6 +269,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     onUndo: () => useNovelDataStore.getState().undo(),
     onRedo: () => useNovelDataStore.getState().redo(),
   })
+
+  // ── 工作台快捷键：Ctrl+B/J/1/2/3、Ctrl+Shift+F 专注模式 ──
+  useNovelWorkspaceShortcuts()
 
   const queryClient = useQueryClient()
 
@@ -224,14 +285,24 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [activeChapterTask, setActiveChapterTask] = useState<ChapterTaskSnapshot | null>(null)
   // 右栏视图切换：对话面板（选流程+开始+消息流）/ 详情面板（节点详情）/ 审计面板（一致性报告）
   // 创作运行中自动锁定到对话面板，结束后用户可手动切回详情
-  const [rightPanelView, setRightPanelView] = useState<'conversation' | 'detail' | 'audit'>('conversation')
+  const rightPanelView = useNovelWorkspaceLayoutStore((s) => s.rightPanelView)
+  const setRightPanelView = useNovelWorkspaceLayoutStore((s) => s.setRightPanelView)
   // 互斥锁：防止 header 按钮快速双击导致 creationMode 标记与流程实际启动状态错位
   // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
   const startCreationLockRef = useRef(false)
 
   const [relayoutSignal, setRelayoutSignal] = useState(0)
-  const [sidebarWidth, setSidebarWidth] = useState(240)
-  const [detailWidth, setDetailWidth] = useState(420)
+  const sidebarVisible = useNovelWorkspaceLayoutStore((s) => s.sidebarVisible)
+  const toggleSidebar = useNovelWorkspaceLayoutStore((s) => s.toggleSidebar)
+  const sidebarWidth = useNovelWorkspaceLayoutStore((s) => s.sidebarWidth)
+  const setSidebarWidth = useNovelWorkspaceLayoutStore((s) => s.setSidebarWidth)
+  const detailWidth = useNovelWorkspaceLayoutStore((s) => s.rightPanelWidth)
+  const setDetailWidth = useNovelWorkspaceLayoutStore((s) => s.setRightPanelWidth)
+  const rightPanelVisible = useNovelWorkspaceLayoutStore((s) => s.rightPanelVisible)
+  const toggleRightPanel = useNovelWorkspaceLayoutStore((s) => s.toggleRightPanel)
+  const setRightPanelVisible = useNovelWorkspaceLayoutStore((s) => s.setRightPanelVisible)
+  const focusMode = useNovelWorkspaceLayoutStore((s) => s.focusMode)
+  const toggleFocusMode = useNovelWorkspaceLayoutStore((s) => s.toggleFocusMode)
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
@@ -259,18 +330,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   )
   const [activeDrag, setActiveDrag] = useState<Active | null>(null)
 
-  // 正文编辑器高度（垂直分割持久化到 localStorage）
-  const [contentEditorHeight, setContentEditorHeight] = useState<number>(() => {
-    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('wenlang-agent-content-split') : null
-    return saved ? Number(saved) : 300
-  })
-
-  const handleContentEditorHeightChange = useCallback((size: number) => {
-    setContentEditorHeight(size)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('wenlang-agent-content-split', String(size))
-    }
-  }, [])
+  // 正文编辑器高度（垂直分割，持久化到 workspace layout store）
+  const contentEditorHeight = useNovelWorkspaceLayoutStore((s) => s.contentEditorHeight)
+  const handleContentEditorHeightChange = useNovelWorkspaceLayoutStore((s) => s.setContentEditorHeight)
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
 
@@ -779,20 +841,53 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 编辑器只读：仅在真正运行中（含 checkpoint 等待）时锁定，终态（completed/cancelled/error）恢复可编辑
   const isCreationRunning = creationFlow.isRunning
 
-  // 创作激活时自动锁定右栏到对话面板，创作结束（reset 回 idle）后用户可手动切回详情
+  // 创作激活时自动锁定右栏到对话面板并打开右栏（自动停靠），创作结束后用户可手动切回详情或关闭
   useEffect(() => {
-    if (isCreationActive) setRightPanelView('conversation')
+    if (isCreationActive) {
+      setRightPanelView('conversation')
+      setRightPanelVisible('open')
+    }
   }, [isCreationActive])
 
   return (
     <ReactFlowProvider>
       <div className="flex h-screen flex-col bg-app-bg text-text overflow-hidden">
+        {/* 专注模式：仅显示编辑器 + 浮动退出按钮 */}
+        {focusMode ? (
+          <div className="relative flex-1 min-h-0">
+            <ChapterContentEditor
+              isCreationActive={isCreationRunning}
+              creationChapterNumber={creationChapterNumber}
+              creationChapterContent={creationFlow.chapterContent}
+            />
+            <button
+              type="button"
+              onClick={toggleFocusMode}
+              title="退出专注模式 (Esc)"
+              className="absolute top-3 right-3 z-50 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-surface-1/90 border border-border/60 shadow-[var(--shadow-raised)] text-[11px] font-medium text-subtle hover:text-text transition-colors active:scale-[0.96]"
+            >
+              <Minimize2 className="size-3.5" />
+              <span>退出专注</span>
+            </button>
+          </div>
+        ) : (
+          <>
         {/* 顶部标题栏：三栏 grid（左项目信息 / 中视图切换 / 右操作按钮） */}
         <header className="grid grid-cols-[1fr_auto_1fr] items-center h-12 px-4 bg-surface-1 border-b border-border/60 shrink-0">
           {/* 左：项目信息 */}
           <div className="flex items-center gap-2.5 min-w-0">
             <Button size="icon-sm" variant="ghost" onClick={onClose} aria-label="返回项目列表" className="text-subtle hover:text-text">
               <ArrowLeft className="size-4" />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={toggleSidebar}
+              aria-label={sidebarVisible ? '收起侧栏' : '展开侧栏'}
+              title={sidebarVisible ? '收起侧栏 (Ctrl+B)' : '展开侧栏 (Ctrl+B)'}
+              className={cn('text-subtle hover:text-text', !sidebarVisible && 'text-primary')}
+            >
+              <PanelLeft className="size-4" />
             </Button>
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-sm font-semibold text-text truncate">
@@ -811,13 +906,25 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </div>
           </div>
 
-          {/* 中：视图切换（仅有项目时显示） */}
-          <div className="flex items-center justify-center">
-            {currentProject && viewMode === 'canvas' && <ViewSwitcher value={viewMode} onChange={setViewMode} />}
+          {/* 中：工作区模式切换 + 视图切换 */}
+          <div className="flex items-center justify-center gap-2">
+            {currentProject && <MainModeSwitcher value={mainMode} onChange={setMainMode} />}
+            {currentProject && viewMode === 'canvas' && mainMode !== 'writing' && <ViewSwitcher value={viewMode} onChange={setViewMode} />}
           </div>
 
           {/* 右：操作按钮组 */}
           <div className="flex items-center justify-end gap-0.5">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={toggleRightPanel}
+              disabled={!currentProject}
+              aria-label={rightPanelVisible === 'open' ? '收起右栏' : '展开右栏'}
+              title={rightPanelVisible === 'open' ? '收起右栏 (Ctrl+J)' : '展开右栏 (Ctrl+J)'}
+              className={cn('text-subtle hover:text-text', rightPanelVisible === 'closed' && 'text-primary')}
+            >
+              <PanelRight className="size-3.5" />
+            </Button>
             <Button
               size="icon-sm"
               variant="ghost"
@@ -869,27 +976,94 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           onDragCancel={() => setActiveDrag(null)}
         >
         <div className="flex min-h-0 flex-1">
-          {/* 左侧栏 */}
-          <div style={{ width: sidebarWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
-            <NovelSidebar onStartCreation={handleStartCreation} />
+          {/* 左侧栏（可折叠，200ms 宽度过渡动画） */}
+          <div
+            style={{ width: sidebarVisible ? sidebarWidth : 0 }}
+            className="shrink-0 h-full min-h-0 overflow-hidden bg-surface-1 border-r border-border/60 shadow-[var(--shadow-raised)] transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+          >
+            <div style={{ width: sidebarWidth }} className="h-full min-h-0 overflow-hidden">
+              <NovelSidebar onStartCreation={handleStartCreation} />
+            </div>
           </div>
-          <ResizableSplitter
-            direction="horizontal"
-            size={sidebarWidth}
-            minSize={180}
-            maxSize={360}
-            onSizeChange={setSidebarWidth}
-            side="left"
-          />
+          {sidebarVisible && (
+            <ResizableSplitter
+              direction="horizontal"
+              size={sidebarWidth}
+              minSize={180}
+              maxSize={360}
+              onSizeChange={setSidebarWidth}
+              side="left"
+            />
+          )}
 
-          {/* 主内容区：矩阵 / 画布可切换（视图切换已整合到 Header） */}
+          {/* 主内容区：根据 mainMode 切换布局（写作/矩阵/分屏） */}
           <main className="flex-1 min-w-0 h-full overflow-hidden flex flex-col">
             {currentProject ? (
               <>
                 <div className="flex-1 min-h-0 flex flex-col">
-                  {viewMode === 'matrix' ? (
+                  {viewMode === 'canvas' && mainMode !== 'writing' ? (
+                    <ErrorBoundary
+                      fallback={(err, reset) => (
+                        <CanvasErrorFallback
+                          error={err}
+                          reset={reset}
+                          onSwitchToMatrix={() => setViewMode('matrix')}
+                        />
+                      )}
+                    >
+                      <NovelCanvas
+                        relayoutSignal={relayoutSignal}
+                        creationPhase={creationFlow.phase}
+                        creationRunning={creationFlow.isRunning}
+                        creationError={creationFlow.error}
+                        onCancelCreation={handleDiscardCreation}
+                        onNodeCountChange={setNodeCount}
+                      />
+                    </ErrorBoundary>
+                  ) : mainMode === 'writing' ? (
+                    /* 写作模式：编辑器全宽 */
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      <ErrorBoundary
+                        fallback={(err, reset) => (
+                          <MatrixErrorFallback
+                            error={err}
+                            reset={reset}
+                            onSwitchToCanvas={() => setViewMode('canvas')}
+                          />
+                        )}
+                      >
+                        <ChapterContentEditor
+                          isCreationActive={isCreationRunning}
+                          creationChapterNumber={creationChapterNumber}
+                          creationChapterContent={creationFlow.chapterContent}
+                        />
+                      </ErrorBoundary>
+                    </div>
+                  ) : mainMode === 'matrix' ? (
+                    /* 矩阵模式：矩阵全宽 */
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      <ErrorBoundary
+                        fallback={(err, reset) => (
+                          <MatrixErrorFallback
+                            error={err}
+                            reset={reset}
+                            onSwitchToCanvas={() => setViewMode('canvas')}
+                          />
+                        )}
+                      >
+                        <MatrixWorkspace
+                          creationRunning={creationFlow.isRunning}
+                          creationChapterNumber={creationChapterNumber}
+                          onRegenerateChapter={handleRegenerateChapter}
+                          onStartCreationAt={handleStartCreationAt}
+                          onSimilarityScan={handleStartSimilarityScan}
+                          similarityScanning={similarityScan.isScanning}
+                        />
+                      </ErrorBoundary>
+                    </div>
+                  ) : (
+                    /* 分屏模式：编辑器 + 矩阵上下分割 */
                     <>
-                      {/* 上：章节正文编辑器 */}
                       <div style={{ height: contentEditorHeight }} className="shrink-0 min-h-[120px] overflow-hidden">
                         <ErrorBoundary
                           fallback={(err, reset) => (
@@ -915,7 +1089,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onSizeChange={handleContentEditorHeightChange}
                         side="top"
                       />
-                      {/* 下：矩阵视图 */}
                       <div className="flex-1 min-h-[200px] overflow-hidden">
                         <ErrorBoundary
                           fallback={(err, reset) => (
@@ -937,25 +1110,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         </ErrorBoundary>
                       </div>
                     </>
-                  ) : (
-                    <ErrorBoundary
-                      fallback={(err, reset) => (
-                        <CanvasErrorFallback
-                          error={err}
-                          reset={reset}
-                          onSwitchToMatrix={() => setViewMode('matrix')}
-                        />
-                      )}
-                    >
-                      <NovelCanvas
-                        relayoutSignal={relayoutSignal}
-                        creationPhase={creationFlow.phase}
-                        creationRunning={creationFlow.isRunning}
-                        creationError={creationFlow.error}
-                        onCancelCreation={handleDiscardCreation}
-                        onNodeCountChange={setNodeCount}
-                      />
-                    </ErrorBoundary>
                   )}
                 </div>
               </>
@@ -975,16 +1129,22 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             )}
           </main>
 
-          {/* 右侧详情栏：创作中显示实时预览面板，否则显示详情面板 */}
-          <ResizableSplitter
-            direction="horizontal"
-            size={detailWidth}
-            minSize={280}
-            maxSize={600}
-            onSizeChange={setDetailWidth}
-            side="right"
-          />
-          <aside style={{ width: detailWidth }} className="shrink-0 h-full min-h-0 overflow-hidden flex flex-col">
+          {/* 右侧详情栏：非模态侧滑/停靠，200ms 宽度过渡动画 */}
+          {rightPanelVisible === 'open' && (
+            <ResizableSplitter
+              direction="horizontal"
+              size={detailWidth}
+              minSize={280}
+              maxSize={600}
+              onSizeChange={setDetailWidth}
+              side="right"
+            />
+          )}
+          <aside
+            style={{ width: rightPanelVisible === 'open' ? detailWidth : 0 }}
+            className="shrink-0 h-full min-h-0 overflow-hidden flex flex-col bg-surface-1 border-l border-border/60 shadow-[var(--shadow-raised)] transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+          >
+            <div style={{ width: detailWidth }} className="h-full min-h-0 overflow-hidden flex flex-col">
             {/* 右栏视图切换：对话 / 详情（与 Header 的 ViewSwitcher 风格统一）
                 扫描进行时显示"相似度扫描"标签，保持 tab 栏位置稳定避免布局抖动 */}
             <div className="shrink-0 flex items-center gap-0.5 p-1 mx-2 my-1.5 bg-surface-2 rounded-lg">
@@ -996,7 +1156,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     aria-selected={rightPanelView === 'conversation' || isCreationActive}
                     onClick={() => setRightPanelView('conversation')}
                     className={cn(
-                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
                       'transition-all duration-200 ease-out active:scale-[0.96]',
                       rightPanelView === 'conversation' || isCreationActive
                         ? 'bg-surface-1 text-text shadow-sm'
@@ -1013,7 +1173,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     onClick={() => !isCreationActive && setRightPanelView('detail')}
                     disabled={isCreationActive}
                     className={cn(
-                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
                       'transition-all duration-200 ease-out active:scale-[0.96]',
                       rightPanelView === 'detail' && !isCreationActive
                         ? 'bg-surface-1 text-text shadow-sm'
@@ -1032,7 +1192,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     onClick={() => !isCreationActive && setRightPanelView('audit')}
                     disabled={isCreationActive}
                     className={cn(
-                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
                       'transition-all duration-200 ease-out active:scale-[0.96]',
                       rightPanelView === 'audit' && !isCreationActive
                         ? 'bg-surface-1 text-text shadow-sm'
@@ -1160,6 +1320,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                   </motion.div>
                 )}
               </AnimatePresence>
+            </div>
             </div>
           </aside>
         </div>
@@ -1352,6 +1513,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </div>
           </DialogContent>
         </Dialog>
+          </>
+        )}
       </div>
     </ReactFlowProvider>
   )

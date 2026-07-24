@@ -147,15 +147,18 @@ function RailButton({
       variant="ghost"
       size="icon"
       onClick={onClick}
-      className={`size-9 ${className ?? ''} active:scale-[0.96] transition-[background-color,color,transform] ${
+      className={`relative size-9 ${className ?? ''} active:scale-[0.96] transition-[background-color,color,transform] ${
         active
-          ? 'bg-surface-3 text-text'
+          ? 'text-primary'
           : 'text-subtle hover:text-text hover:bg-surface-3'
       }`}
       aria-label={label}
       aria-current={active ? 'page' : undefined}
       title={label}
     >
+      {active && (
+        <span className="absolute left-0.5 top-1/2 -translate-y-1/2 size-1 rounded-full bg-primary" />
+      )}
       <Icon className="size-4" aria-hidden="true" />
     </Button>
   )

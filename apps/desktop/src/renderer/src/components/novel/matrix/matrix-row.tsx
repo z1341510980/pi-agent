@@ -88,7 +88,7 @@ export function HookTrackRow({
       <div
         className={cn(
           'sticky left-0 z-30 flex items-center border-r border-border/40 shrink-0 bg-surface-1 overflow-hidden',
-          sidebarWidth <= 32 ? 'justify-center px-0' : 'justify-end pr-2',
+          sidebarWidth <= 32 ? 'justify-center px-0' : 'justify-start pl-2',
         )}
         style={{ width: sidebarWidth }}
       >
@@ -200,7 +200,7 @@ export function GroupRow({ group, collapsed, cellWidth, sidebarWidth, onToggleCo
       <div
         className={cn(
           'sticky left-0 z-30 flex items-center border-r border-border/40 shrink-0 bg-surface-2 cursor-pointer select-none hover:bg-surface-3 transition-colors overflow-hidden',
-          sidebarCollapsed ? 'justify-center px-0' : 'gap-1.5 px-2 pl-2.5',
+          sidebarCollapsed ? 'justify-center px-0' : 'gap-1.5 px-2',
         )}
         style={{ width: sidebarWidth }}
         onClick={onToggleCollapse}
@@ -334,10 +334,10 @@ export function EntityRow(props: EntityRowProps): ReactElement {
               {entity.name}
             </span>
             {entity.isProtagonist && (
-              <span className="text-[9px] text-amber-600 font-bold shrink-0 border border-amber-500/40 rounded px-0.5 leading-3">主</span>
+              <span className="text-[9px] text-amber-600 dark:text-amber-400 font-semibold shrink-0 bg-amber-500/10 rounded px-1 leading-4">主</span>
             )}
             {entity.subLabel && (
-              <span className="text-[9px] text-subtle border border-border-strong rounded px-1 leading-3.5 shrink-0 max-w-[72px] truncate">
+              <span className="text-[9px] text-subtle bg-muted/60 rounded px-1 leading-4 shrink-0 max-w-[64px] truncate">
                 {entity.subLabel}
               </span>
             )}
@@ -423,6 +423,7 @@ interface HitCellProps {
 function HitCell({ entity, chapter, cellWidth, onTogglePresent, onSelectEntity, onContextMenu, onPlayheadChange }: HitCellProps): ReactElement {
   const symbol = computeCellSymbol(entity, chapter)
   const meta = GROUP_META[entity.kind]
+  const canTogglePresence = entity.kind !== 'world_element' && entity.kind !== 'info_layer'
 
   // 单击：设置播放头；双击空格：切换出场
   const handleActivate = useCallback((e: React.SyntheticEvent) => {
@@ -448,11 +449,13 @@ function HitCell({ entity, chapter, cellWidth, onTogglePresent, onSelectEntity, 
         style={{ left, width: cellWidth }}
         {...hc(entity.name, chapter, { after: emptyCellHint(entity.kind), color: meta.color })}
         onClick={handleActivate}
-        onDoubleClick={handleToggle}
+        onDoubleClick={canTogglePresence ? handleToggle : undefined}
         onContextMenu={onContextMenu}
         aria-label={`第 ${chapter} 章 ${entity.name} 空单元格`}
       >
-        <span className="text-primary/60 text-sm font-light opacity-0 group-hover/cell:opacity-70 transition-opacity pointer-events-none select-none leading-none">+</span>
+        {canTogglePresence && (
+          <span className="text-primary/60 text-sm font-light opacity-0 group-hover/cell:opacity-70 transition-opacity pointer-events-none select-none leading-none">+</span>
+        )}
       </button>
     )
   }
@@ -518,6 +521,8 @@ function presentCellHint(kind: MatrixEntityKind, symbolType: string): string {
       return '伏笔节点'
     case 'world_element':
       return '常驻世界要素'
+    case 'info_layer':
+      return '信息隐藏期'
     default:
       return ''
   }
@@ -721,6 +726,46 @@ function EntityMainEncoding({
             border: `1px solid rgba(${meta.colorRgb}, 0.18)`,
           }}
         />
+      )
+    }
+
+    case 'info_layer': {
+      const start = entity.infoStart ?? 1
+      const end = entity.infoEnd ?? 0
+      const revealChapter = entity.revealChapter
+      return (
+        <>
+          {end >= start && (
+            <div
+              aria-hidden="true"
+              className="absolute pointer-events-none rounded"
+              style={{
+                top: ROW_H / 2 - 6,
+                height: 12,
+                left: (start - 1) * cellWidth,
+                width: (end - start + 1) * cellWidth,
+                background: `repeating-linear-gradient(-45deg, rgba(${meta.colorRgb}, 0.22) 0 4px, rgba(${meta.colorRgb}, 0.06) 4px 8px)`,
+                border: `1px solid rgba(${meta.colorRgb}, 0.38)`,
+              }}
+            />
+          )}
+          {revealChapter != null && revealChapter >= 1 && revealChapter <= maxChapter && (
+            <span
+              aria-hidden="true"
+              className="absolute z-[9] pointer-events-none"
+              style={{
+                left: (revealChapter - 0.5) * cellWidth,
+                top: ROW_H / 2,
+                width: 9,
+                height: 9,
+                transform: 'translate(-50%, -50%) rotate(45deg)',
+                background: meta.color,
+                borderRadius: 2,
+                boxShadow: `0 0 0 2px rgba(${meta.colorRgb}, 0.22)`,
+              }}
+            />
+          )}
+        </>
       )
     }
 

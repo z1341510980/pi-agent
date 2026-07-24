@@ -25,7 +25,7 @@ export interface ConversationMessage {
   // ── checkpoint 专用 ──
   // 与共享包 CheckpointType 第一值 'narrative_task' 对齐（不再用旧值 'narrative'）
   checkpointType?: 'narrative_task' | 'review' | 'post_write_guard' | 'writer_pushback' | 'guard_degraded'
-  checkpointOptions?: Array<{ label: string; action: string; variant: 'default' | 'outline' | 'destructive' | 'ghost' }>
+  checkpointOptions?: Array<{ label: string; action: string; variant: 'default' | 'outline' | 'destructive' | 'ghost'; description?: string }>
   checkpointResolved?: string
 
   // ── system 专用 ──

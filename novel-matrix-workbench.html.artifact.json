@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "小说创作 · 故事矩阵工作台",
+  "entry": "novel-matrix-workbench.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "primary": true,
+  "createdAt": "2026-07-22T14:54:41.015Z",
+  "updatedAt": "2026-07-22T14:54:41.026Z",
+  "sourceSkillId": "agent-browser",
+  "metadata": {
+    "identifier": "novel-matrix-workbench",
+    "artifactType": "text/html",
+    "inferred": false
+  }
+}
