@@ -737,16 +737,23 @@ export class NovelPromptBuilder {
       parts.push(this.formatInfoLayers(projectId, infoLayers, arrangedEntities, boundary))
     }
 
-    // ── 上一章摘要：只保留最直接的承接，避免把连续正文当背景资料堆叠。 ──
+    // ── 最近 N 章摘要：让 LLM 看到前 N 章的剧情梗概，避免重复造轮子。 ──
     // ⚠️ 必须按当前章 chapterNumber 为基准向前取，不能用 listRecentChapters：
     // listRecentChapters 的 SQL 是 ORDER BY chapter_number DESC LIMIT 3，返回的是
     // 全局章节号最大的 3 章，与"当前生成第几章"无关。当重新生成中间章节（如第7章）
     // 而后续章节（第8、9章）已有内容时，listRecentChapters 会返回 [9,8,7]，过滤当前章
     // 后变成 [8,9]——formatPreviousChapterEnding 会把第9章结尾当"上一章结尾"，
     // formatSoundAnchor 会把第8、9章开头当"叙事声音锚点"，剧情全面错乱。
-    // 正确做法：按 chapterNumber 精确取上一章，排除当前章及之后所有章节。
+    // 正确做法：按 chapterNumber 倒序精确向前取 N 章，排除当前章及之后所有章节。
+    //
+    // 历史问题（2026-07 修复）：
+    // 旧实现 prevChapters.length < 1 只取最近 1 章，导致写第 30 章时 LLM 看不到
+    // 第 1-28 章发生了什么，会重写"主角决定变强""发现师父阴谋"等已发生剧情。
+    // 现在取最近 5 章：每章 recap 50-100 字，共约 250-500 字，可控且足够建立
+    // "过去几章的剧情脉络"，让 LLM 知道哪些剧情已经发生过、本章应向前推进。
+    const RECENT_CHAPTERS_LIMIT = 5
     const prevChapters: NovelChapter[] = []
-    for (let n = chapterNumber - 1; n >= 1 && prevChapters.length < 1; n--) {
+    for (let n = chapterNumber - 1; n >= 1 && prevChapters.length < RECENT_CHAPTERS_LIMIT; n--) {
       const ch = this.stores.getChapter(projectId, n)
       if (ch && ch.content && ch.content.trim().length > 0) {
         prevChapters.push(ch)
