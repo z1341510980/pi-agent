@@ -212,6 +212,135 @@ export function resolveDimensionLabel(dimension: string): string {
 }
 
 // ────────────────────────────────────────────────────────────
+// 枚举值 → 中文友好标签（解决英文 enum 不可读问题）
+// ────────────────────────────────────────────────────────────
+
+const ENUM_VALUE_LABELS: Record<string, string> = {
+  // character.arc_stage（角色弧光阶段）
+  'ordinary_world': '平凡世界',
+  'call_to_adventure': '冒险召唤',
+  'refusal_of_call': '拒绝召唤',
+  'meeting_mentor': '遇见导师',
+  'crossing_threshold': '跨越门槛',
+  'tests_allies_enemies': '考验与盟友',
+  'approach_inmost_cave': '逼近核心',
+  'ordeal': '严峻考验',
+  'reward': '获得奖赏',
+  'the_road_back': '回归之路',
+  'resurrection': '复活/蜕变',
+  'return_with_elixir': '携万灵药归来',
+  'rising_action': '上升期',
+  'climax': '高潮',
+  'falling_action': '下降期',
+  'resolution': '解决',
+  'denouement': '结局',
+  'setup': '铺垫',
+  'confrontation': '对抗',
+  'crisis': '危机',
+  'transformation': '蜕变',
+  'epiphany': '顿悟',
+  'descent': '沉沦',
+  'rock_bottom': '谷底',
+  'redemption': '救赎',
+  'awakening': '觉醒',
+  'trial': '试炼',
+  'revelation': '启示',
+  'sacrifice': '牺牲',
+  'atonement': '赎罪',
+  'apotheosis': '神化',
+  'freedom': '自由',
+  // character.pressure（压力等级）
+  'low': '低',
+  'medium': '中',
+  'high': '高',
+  'extreme': '极高',
+  'overwhelming': '崩溃边缘',
+  'manageable': '可控',
+  'intense': '强烈',
+  'moderate': '中等',
+  'minimal': '极低',
+  'critical': '临界',
+  // conflict.stage（冲突阶段）
+  'introduction': '引入',
+  'escalation': '升级',
+  'peak': '顶峰',
+  'de_escalation': '缓和',
+  'aftermath': '余波',
+  'dormant': '潜伏',
+  'active': '活跃',
+  'resolved': '已解决',
+  'stalemate': '僵持',
+  // foreshadow.status（伏笔状态）
+  'planted': '已埋设',
+  'reinforced': '已强化',
+  'revealed': '已揭示',
+  'recovered': '已回收',
+  'abandoned': '已放弃',
+  'pending': '待处理',
+  'forgotten': '被遗忘',
+  // faction.strength（势力强度）
+  'weak': '弱小',
+  'growing': '成长中',
+  'stable': '稳定',
+  'declining': '衰退中',
+  'dominant': '主导',
+  'emerging': '新兴',
+  'powerful': '强大',
+  'crumbling': '瓦解中',
+  // relationship.stage（关系阶段）
+  'strangers': '陌生',
+  'acquaintance': '相识',
+  'alliance': '结盟',
+  'friendship': '友谊',
+  'rivalry': '竞争',
+  'hostility': '敌对',
+  'betrayal': '背叛',
+  'reconciliation': '和解',
+  'partnership': '伙伴',
+  'mentorship': '师徒',
+  // location.significance（剧情权重）
+  'minor': '次要',
+  'major': '重要',
+  'pivotal': '关键',
+  'background': '背景',
+  // item.status（物品状态）
+  'lost': '丢失',
+  'destroyed': '损毁',
+  'transformed': '变化',
+  'sealed': '封印',
+  'transferred': '转手',
+  // info_layer 相关
+  'known': '已知',
+  'unknown': '未知',
+  'hidden': '隐藏',
+  'partial': '部分揭示',
+  'full': '完全揭示',
+  // 通用
+  'none': '无',
+  'other': '其他',
+  'unknown_value': '未知',
+  'true': '是',
+  'false': '否',
+}
+
+/** 将英文枚举值翻译为中文（无匹配则原样返回） */
+export function translateEnumValue(value: string): string {
+  if (!value) return value
+  // 先尝试精确匹配（小写）
+  const lower = value.toLowerCase().replace(/[\s-]+/g, '_')
+  if (ENUM_VALUE_LABELS[lower]) return ENUM_VALUE_LABELS[lower]
+  // 尝试原值
+  if (ENUM_VALUE_LABELS[value]) return ENUM_VALUE_LABELS[value]
+  // 如果已经是中文或含中文，直接返回
+  if (/[\u4e00-\u9fff]/.test(value)) return value
+  // 将 snake_case / kebab-case 转为可读形式（首字母大写）
+  if (/^[a-z_]+$/.test(value)) {
+    return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  }
+  return value
+}
+
+// ────────────────────────────────────────────────────────────
 // 账本投影：NovelChangeRecord[] → SubtrackDef[]
 // ────────────────────────────────────────────────────────────
 
@@ -258,7 +387,7 @@ export function buildSubtracksFromChanges(
         // 值 → 透明度档位（首现顺序，3 档循环）
         const valueOrder = new Map<string, number>()
         for (const c of sorted) {
-          const key = formatChangeValue(c.afterValue)
+          const key = translateEnumValue(formatChangeValue(c.afterValue))
           if (!valueOrder.has(key)) valueOrder.set(key, valueOrder.size)
         }
         const OPACITY_LEVELS = [0.3, 0.6, 0.9]
@@ -271,9 +400,9 @@ export function buildSubtracksFromChanges(
         }))
         nodes = sorted.map((c) => ({
           ch: c.chapterNumber,
-          label: formatChangeValue(c.afterValue),
+          label: translateEnumValue(formatChangeValue(c.afterValue)),
           color,
-          before: formatChangeValue(c.beforeValue),
+          before: translateEnumValue(formatChangeValue(c.beforeValue)),
           desc: c.reason || undefined,
         }))
         break
@@ -708,7 +837,7 @@ function toBand(
   colorRgb: string,
   valueToFill?: (key: string) => string,
 ): SubtrackBand {
-  const key = formatChangeValue(seg.value)
+  const key = translateEnumValue(formatChangeValue(seg.value))
   return {
     startCh: seg.start,
     endCh: seg.end,
@@ -735,11 +864,15 @@ export function formatChangeValue(value: unknown): string {
   if (typeof value === 'number') return String(value)
   if (typeof value === 'boolean') return value ? '是' : '否'
   if (Array.isArray(value)) {
+    if (value.length === 0) return ''
     // UUID 数组（关联 ID）：显示数量而非原始 ID，避免 UUID 污染
-    if (value.length > 0 && value.every((v) => typeof v === 'string' && isUuidLike(v))) {
+    if (value.every((v) => typeof v === 'string' && isUuidLike(v))) {
       return `${value.length} 项关联`
     }
-    return value.map((v) => formatChangeValue(v)).join(', ')
+    // 名称数组：用顿号连接，超过 5 项截断
+    const names = value.map((v) => formatChangeValue(v)).filter(Boolean)
+    if (names.length <= 5) return names.join('、')
+    return `${names.slice(0, 5).join('、')} 等 ${names.length} 项`
   }
   if (typeof value === 'object') {
     const vals = Object.values(value as Record<string, unknown>).filter((v) => v != null && v !== '')

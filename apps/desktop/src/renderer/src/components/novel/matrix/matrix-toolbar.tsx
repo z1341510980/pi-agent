@@ -1,16 +1,13 @@
 /**
- * MatrixToolbar：矩阵视图工具栏（分层）
+ * MatrixToolbar：矩阵视图工具栏（单行紧凑）
  *
- * 三层结构：
- * - 标题栏（Header）：返回 + 视图切换 + 关系叠加层 + 章节信息 + 撤销/重做 + 补全 + 扫描
- * - 工具行（Tools）：缩放组 + 实体类型筛选 chips，flex-wrap 宽度不够时换行
+ * 单行结构：返回 + 视图切换 + 关系叠加层 | 章节 badge | 撤销/重做 + 补全 + 扫描 | 缩放 + 筛选 chips
  *
  * 图例（MatrixLegend）在本组件之外、由 MatrixWorkspace 插入到 toolbar 与 view 之间。
  */
 
 import { type ReactElement } from 'react'
 import { ArrowLeft, Undo2, Redo2, History, Minus, Plus, Wand2, Grid3x3, LayoutGrid, Network } from 'lucide-react'
-import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { GROUP_META, GROUP_ORDER, type MatrixEntityKind } from './matrix-logic'
 
@@ -23,13 +20,13 @@ export interface MatrixToolbarProps {
   cellWidth: number
   onZoomIn: () => void
   onZoomOut: () => void
-  /** 连续缩放（滑杆 / Ctrl+滚轮） */
+  /** 连续缩放（Ctrl+滚轮） */
   onCellWidthChange?: (next: number) => void
   /** 补全历史 */
   completableCount: number
   isCompleting: boolean
   onCompleteHistory: () => void
-  /** 撤销/重做（MVP 暂禁用） */
+  /** 撤销/重做 */
   canUndo?: boolean
   canRedo?: boolean
   onUndo?: () => void
@@ -37,7 +34,7 @@ export interface MatrixToolbarProps {
   /** 过滤 */
   activeFilter: MatrixEntityKind | null
   onFilterChange: (filter: MatrixEntityKind | null) => void
-  /** LLM 相似度扫描（语义相似智能合并） */
+  /** LLM 相似度扫描 */
   onSimilarityScan?: () => void
   similarityScanning?: boolean
   viewMode: 'matrix' | 'canvas'
@@ -52,6 +49,9 @@ const FILTER_OPTIONS: Array<{ key: MatrixEntityKind | null; label: string }> = [
   ...GROUP_ORDER.map((k) => ({ key: k as MatrixEntityKind | null, label: GROUP_META[k].name }))
 ]
 
+/** 通用图标按钮样式 */
+const iconBtn = 'inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50'
+
 export function MatrixToolbar({
   playheadChapter,
   totalChapters,
@@ -59,7 +59,6 @@ export function MatrixToolbar({
   cellWidth,
   onZoomIn,
   onZoomOut,
-  onCellWidthChange,
   completableCount,
   isCompleting,
   onCompleteHistory,
@@ -80,19 +79,33 @@ export function MatrixToolbar({
 
   return (
     <div className="relative z-20 shrink-0 border-b border-border bg-surface-1">
-      {/* ── 标题栏：返回 + 视图切换 + 关系叠加层 + 章节信息 + 撤销/重做 + 补全 + 扫描 ── */}
-      <div className="flex items-center gap-1.5 px-3 min-h-11 py-1.5 text-xs overflow-hidden">
-        <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-text" onClick={() => window.history.back()} title="返回" aria-label="返回">
+      {/* ── 单行工具栏 ── */}
+      <div className="flex items-center gap-1 px-2 h-10 text-xs overflow-hidden">
+        {/* 返回 */}
+        <button type="button" className={iconBtn} onClick={() => window.history.back()} title="返回" aria-label="返回">
           <ArrowLeft className="size-3.5" />
         </button>
+
+        {/* 视图切换 */}
         <div className="inline-flex shrink-0 items-center gap-0.5 rounded-lg bg-surface-2 p-0.5" role="tablist" aria-label="视图切换">
-          {([['matrix', '矩阵', Grid3x3], ['canvas', '画布', LayoutGrid] ] as const).map(([mode, label, Icon]) => (
-            <button key={mode} type="button" role="tab" aria-selected={viewMode === mode} onClick={() => onViewModeChange(mode)} className={cn('inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium', viewMode === mode ? 'bg-surface-1 text-text shadow-sm' : 'text-muted-foreground hover:bg-surface-1/60 hover:text-text')}>
-              <Icon className="size-3.5" />{label}
+          {([['matrix', '矩阵', Grid3x3], ['canvas', '画布', LayoutGrid]] as const).map(([mode, label, Icon]) => (
+            <button
+              key={mode}
+              type="button"
+              role="tab"
+              aria-selected={viewMode === mode}
+              onClick={() => onViewModeChange(mode)}
+              className={cn(
+                'inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-colors',
+                viewMode === mode ? 'bg-surface-1 text-text shadow-sm' : 'text-muted-foreground hover:text-text',
+              )}
+            >
+              <Icon className="size-3" />{label}
             </button>
           ))}
         </div>
-        {/* 关系叠加层切换 */}
+
+        {/* 关系叠加层 */}
         {onToggleRelationshipOverlay && (
           <button
             type="button"
@@ -101,144 +114,85 @@ export function MatrixToolbar({
             title="关系叠加层"
             aria-label="关系叠加层"
             className={cn(
-              'inline-flex size-8 shrink-0 items-center justify-center rounded-md transition-[color,background-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
-              showRelationshipOverlay
-                ? 'bg-primary/20 text-primary'
-                : 'text-muted-foreground hover:bg-muted hover:text-text',
+              iconBtn,
+              showRelationshipOverlay && 'bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary',
             )}
           >
             <Network className="size-3.5" />
           </button>
         )}
-        {/* 章节号显示 + 当前章节 badge */}
-        <span className="font-mono text-[11px] text-muted-foreground px-1 tabular-nums whitespace-nowrap">
-          第 {playheadChapter} 章 / 共 {totalChapters} 章
+
+        {/* 章节 badge */}
+        <span
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 text-[10px] font-medium shrink-0"
+          title={`第 ${playheadChapter} 章 / 共 ${totalChapters} 章${currentChapterTitle ? ` · ${currentChapterTitle}` : ''}`}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" style={{ boxShadow: '0 0 4px #f59e0b' }} />
+          <span className="font-mono tabular-nums">{String(playheadChapter).padStart(2, '0')}</span>
+          {currentChapterTitle && <span className="truncate max-w-[100px]">{currentChapterTitle}</span>}
         </span>
-        {currentChapterTitle && (
-          <span
-            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-500 text-[11px] font-medium"
-            title={`当前章节：第 ${playheadChapter} 章 · ${currentChapterTitle}`}
-          >
-            <span
-              className="w-1.5 h-1.5 rounded-full bg-amber-500"
-              style={{ boxShadow: '0 0 6px #f59e0b' }}
-            />
-            <span className="font-mono opacity-80">
-              CH.{String(playheadChapter).padStart(2, '0')}
-            </span>
-            <span className="truncate max-w-[140px]">{currentChapterTitle}</span>
-          </span>
-        )}
 
-        <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+        {/* 分隔 */}
+        <div className="mx-0.5 h-4 w-px bg-border/60 shrink-0" aria-hidden="true" />
 
-        {/* 编辑组：撤销/重做 */}
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            className="inline-flex size-8 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted rounded-md transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            onClick={onUndo}
-            title="撤销 (Cmd/Ctrl+Z)"
-            aria-label="撤销"
-            disabled={!canUndo}
-          >
-            <Undo2 className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            className="inline-flex size-8 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted rounded-md transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            onClick={onRedo}
-            title="重做 (Cmd/Ctrl+Shift+Z)"
-            aria-label="重做"
-            disabled={!canRedo}
-          >
-            <Redo2 className="size-3.5" />
-          </button>
-        </div>
+        {/* 撤销/重做 */}
+        <button type="button" className={iconBtn} onClick={onUndo} title="撤销 (Ctrl+Z)" aria-label="撤销" disabled={!canUndo}>
+          <Undo2 className="size-3.5" />
+        </button>
+        <button type="button" className={iconBtn} onClick={onRedo} title="重做 (Ctrl+Shift+Z)" aria-label="重做" disabled={!canRedo}>
+          <Redo2 className="size-3.5" />
+        </button>
 
-        <div className="flex-1" aria-hidden="true" />
-
-        {/* 补全角色历史 */}
-        <Button
-          size="sm"
-          variant="ghost"
+        {/* 补全历史 */}
+        <button
+          type="button"
+          className={cn(iconBtn, 'relative')}
           onClick={onCompleteHistory}
           disabled={completableCount === 0 || isCompleting}
-          aria-busy={isCompleting}
-          title={
-            completableCount === 0
-              ? '没有需要补全的角色'
-              : `为 ${completableCount} 个无历史角色补全起始章节记录`
-          }
-          className="relative size-8 p-0 shrink-0 active:scale-[0.96] transition-transform"
+          title={completableCount === 0 ? '没有需要补全的角色' : `为 ${completableCount} 个角色补全起始章节`}
+          aria-label="补全角色历史"
         >
           <History className="size-3.5" />
-          {completableCount > 0 && <span className="absolute -right-0.5 -top-0.5 min-w-3.5 rounded-full bg-red-500 px-1 text-[9px] leading-3.5 text-white">{completableCount}</span>}
-        </Button>
+          {completableCount > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 min-w-3.5 rounded-full bg-red-500 px-0.5 text-[8px] leading-3.5 text-white">{completableCount}</span>
+          )}
+        </button>
 
-        {/* LLM 相似度扫描（AI 整理）：语义相似智能合并 */}
+        {/* LLM 相似度扫描 */}
         {onSimilarityScan && (
-          <Button
-            size="sm"
-            variant="ghost"
+          <button
+            type="button"
+            className={iconBtn}
             onClick={onSimilarityScan}
             disabled={similarityScanning}
-            aria-busy={similarityScanning}
-            title="LLM 分析语义相似的实体并智能合并"
-            className="size-8 p-0 shrink-0 active:scale-[0.96] transition-transform"
+            title="LLM 语义相似智能合并"
+            aria-label="相似度扫描"
           >
-            <Wand2 className="size-3.5" />
-          </Button>
-        )}
-      </div>
-
-      {/* ── 工具行：缩放组 + 筛选 chips（flex-wrap，宽度不够时换行）── */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 min-h-8 py-1.5 bg-surface-2/40 border-t border-border/60 text-xs">
-        {/* 缩放组 */}
-        <div className="inline-flex items-center bg-surface-3 border border-border rounded-md overflow-hidden shrink-0" aria-label="矩阵缩放">
-          <button
-            type="button"
-            className="inline-flex size-7 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
-            onClick={onZoomOut}
-            title="缩小单元格（Ctrl+滚轮亦可）"
-            aria-label="缩小矩阵单元格"
-            disabled={cellWidth <= 24}
-          >
-            <Minus className="size-3.5" />
+            <Wand2 className={cn('size-3.5', similarityScanning && 'animate-spin')} />
           </button>
-          {onCellWidthChange && (
-            <input
-              type="range"
-              min={24}
-              max={80}
-              step={1}
-              value={cellWidth}
-              onChange={(e) => onCellWidthChange(Number(e.target.value))}
-              className="w-16 h-4 accent-[var(--color-primary)] cursor-pointer mx-1"
-              aria-label="单元格宽度滑杆"
-              title={`单元格宽度 ${cellWidth}px`}
-            />
-          )}
-          <span className="font-mono text-[11px] text-muted-foreground min-w-[38px] text-center px-1 tabular-nums">
+        )}
+
+        {/* 弹性间距 */}
+        <div className="flex-1" aria-hidden="true" />
+
+        {/* 缩放组（紧凑：- 百分比 +） */}
+        <div className="inline-flex items-center gap-0.5 shrink-0" aria-label="矩阵缩放">
+          <button type="button" className={iconBtn} onClick={onZoomOut} title="缩小 (Ctrl+滚轮)" aria-label="缩小" disabled={cellWidth <= 24}>
+            <Minus className="size-3" />
+          </button>
+          <span className="font-mono text-[10px] text-muted-foreground min-w-[32px] text-center tabular-nums">
             {zoomPct}%
           </span>
-          <button
-            type="button"
-            className="inline-flex size-7 items-center justify-center text-muted-foreground hover:text-text hover:bg-muted transition-[color,background-color,transform] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
-            onClick={onZoomIn}
-            title="放大单元格（Ctrl+滚轮亦可）"
-            aria-label="放大矩阵单元格"
-            disabled={cellWidth >= 80}
-          >
-            <Plus className="size-3.5" />
+          <button type="button" className={iconBtn} onClick={onZoomIn} title="放大 (Ctrl+滚轮)" aria-label="放大" disabled={cellWidth >= 80}>
+            <Plus className="size-3" />
           </button>
         </div>
 
-        {/* 分隔符 */}
-        <div className="h-5 w-px bg-border/60 shrink-0" aria-hidden="true" />
+        {/* 分隔 */}
+        <div className="mx-0.5 h-4 w-px bg-border/60 shrink-0" aria-hidden="true" />
 
-        {/* 筛选 chips */}
-        <div className="flex items-center gap-1 flex-wrap" role="group" aria-label="实体类型筛选">
+        {/* 筛选 chips（紧凑胶囊） */}
+        <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-none shrink-0" role="group" aria-label="实体类型筛选">
           {FILTER_OPTIONS.map((opt) => {
             const active = activeFilter === opt.key
             const color = opt.key ? GROUP_META[opt.key].color : undefined
@@ -249,20 +203,19 @@ export function MatrixToolbar({
                 onClick={() => onFilterChange(opt.key)}
                 aria-pressed={active}
                 className={cn(
-                  'inline-flex h-7 items-center gap-1 px-2.5 rounded-[6px] text-[11px] bg-surface-1 border transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
+                  'inline-flex h-6 items-center gap-1 px-2 rounded-full text-[10px] whitespace-nowrap transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
                   active
                     ? color
-                      ? 'text-white border-transparent'
-                      : 'text-text bg-surface-3 border-border-strong'
-                    : 'text-muted-foreground border-border hover:text-text hover:border-border-strong'
+                      ? 'text-white border border-transparent'
+                      : 'text-text bg-surface-3 border border-border'
+                    : 'text-muted-foreground border border-transparent hover:text-text hover:bg-muted',
                 )}
-                style={active && color ? { background: color, borderColor: color } : undefined}
-                title={opt.key ? `只显示${opt.label}` : '显示全部分组'}
+                style={active && color ? { background: color } : undefined}
+                title={opt.key ? `只显示${opt.label}` : '显示全部'}
               >
-                {/* 分类颜色圆点（active 时变白） */}
                 {color && (
                   <span
-                    className={cn('w-1.5 h-1.5 rounded-full shrink-0 transition-colors', active && 'bg-white')}
+                    className={cn('w-1.5 h-1.5 rounded-full shrink-0', active && 'bg-white/90')}
                     style={!active ? { background: color } : undefined}
                   />
                 )}

@@ -33,7 +33,7 @@ interface HoverCardData {
 
 const SHOW_DELAY = 120
 const HIDE_DELAY = 80
-const CARD_MAX_W = 280
+const CARD_MAX_W = 320
 
 export function MatrixHoverCard(): ReactElement | null {
   const [data, setData] = useState<HoverCardData | null>(null)
@@ -106,7 +106,7 @@ export function MatrixHoverCard(): ReactElement | null {
     zIndex: 9999,
     minWidth: 180,
     maxWidth: CARD_MAX_W,
-    padding: '8px 10px',
+    padding: '8px 12px',
     borderRadius: 8,
     background: 'var(--color-surface-1)',
     border: '1px solid var(--color-border-strong)',
@@ -117,7 +117,7 @@ export function MatrixHoverCard(): ReactElement | null {
 
   return createPortal(
     <>
-      <style>{`@keyframes matrix-hc-in { from { opacity: 0; } to { opacity: 1; } }`}</style>
+      <style>{`@keyframes matrix-hc-in { from { opacity: 0; transform: translate(-50%, ${above ? 'calc(-100% - 6px)' : '6px'}) scale(0.97); } to { opacity: 1; transform: translate(-50%, ${above ? 'calc(-100% - 10px)' : '10px'}) scale(1); } }`}</style>
       <div role="tooltip" style={cardStyle}>
         {/* 箭头 */}
         <span

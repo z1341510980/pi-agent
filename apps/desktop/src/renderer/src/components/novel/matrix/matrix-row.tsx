@@ -330,14 +330,17 @@ export function EntityRow(props: EntityRowProps): ReactElement {
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta.color }} />
         {!sidebarCollapsed && (
           <>
-            <span className={cn('truncate flex-1 text-xs', selected ? 'text-text font-semibold' : 'text-text-secondary')}>
+            <span
+              className={cn('truncate flex-1 min-w-0 text-xs', selected ? 'text-text font-semibold' : 'text-text-secondary')}
+              title={entity.name}
+            >
               {entity.name}
             </span>
             {entity.isProtagonist && (
               <span className="text-[9px] text-amber-600 dark:text-amber-400 font-semibold shrink-0 bg-amber-500/10 rounded px-1 leading-4">主</span>
             )}
-            {entity.subLabel && (
-              <span className="text-[9px] text-subtle bg-muted/60 rounded px-1 leading-4 shrink-0 max-w-[64px] truncate">
+            {entity.subLabel && sidebarWidth >= 160 && (
+              <span className="text-[9px] text-subtle bg-muted/60 rounded px-1 leading-4 shrink-0 max-w-[56px] truncate" title={entity.subLabel}>
                 {entity.subLabel}
               </span>
             )}

@@ -300,6 +300,28 @@ export function ProjectTree({
 
   return (
     <div className="space-y-0.5 px-0.5">
+      {/* 大纲树（全书大纲 / 卷 / 章）── 结构骨架，置顶 */}
+      <CollapsibleGroup
+        kind="outline"
+        icon={BookOpen}
+        label="大纲树"
+        count={chapters.length}
+        accent="text-emerald-500"
+        collapsed={collapsedGroups.includes('outline')}
+        onToggle={toggleCollapsedGroup}
+        onAdd={() => {}}
+        addLabel=""
+        hideAdd
+      >
+        <OutlineTree
+          project={project}
+          volumes={volumes}
+          chapters={chapters}
+          onManualArrange={onManualArrange}
+          onAiArrange={onAiArrange}
+        />
+      </CollapsibleGroup>
+
       {/* 角色集合 */}
       <CollapsibleGroup
         kind="character"
@@ -330,25 +352,35 @@ export function ProjectTree({
         )}
       </CollapsibleGroup>
 
-      {/* 大纲树（全书大纲 / 卷 / 章）── 替换原"章节集合"分组 */}
-      <div className="rounded-md">
-        <div className="flex items-center gap-1.5 px-1.5 py-1">
-          <BookOpen className="size-3.5 text-emerald-500 shrink-0" />
-          <span className="text-xs font-medium text-text">大纲树</span>
-          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px] tabular-nums">
-            {chapters.length}
-          </Badge>
-        </div>
-        <div className="ml-1 pl-1 border-l border-border/60 mt-0.5 space-y-0.5">
-          <OutlineTree
-            project={project}
-            volumes={volumes}
-            chapters={chapters}
-            onManualArrange={onManualArrange}
-            onAiArrange={onAiArrange}
-          />
-        </div>
-      </div>
+      {/* 冲突集合 */}
+      <CollapsibleGroup
+        kind="conflict"
+        icon={Swords}
+        label="冲突集合"
+        count={conflicts.length}
+        accent="text-rose-500"
+        collapsed={collapsedGroups.includes('conflict')}
+        onToggle={toggleCollapsedGroup}
+        onAdd={handleAddConflict}
+        addLabel="新建冲突"
+      >
+        {conflicts.length === 0 ? (
+          <EmptyHint text="暂无冲突" />
+        ) : (
+          conflicts.map((c) => (
+            <EntityItem
+              key={c.id}
+              label={c.description.length > 18 ? `${c.description.slice(0, 18)}...` : c.description}
+              sublabel={c.type}
+              selected={selectedNodeId === c.id}
+              onClick={() => onSelectEntity(c.id, 'conflict')}
+              entityType="conflict"
+              entityId={c.id}
+              onDelete={() => handleDelete('conflict', c.id, '冲突')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
 
       {/* 伏笔集合 */}
       <CollapsibleGroup
@@ -380,7 +412,7 @@ export function ProjectTree({
         )}
       </CollapsibleGroup>
 
-      {/* 线索集合：普通证据/调查进展，与需要回收的伏笔分开 */}
+      {/* 线索集合 */}
       <CollapsibleGroup
         kind="clue"
         icon={Search}
@@ -405,36 +437,6 @@ export function ProjectTree({
               entityType="clue"
               entityId={clue.id}
               onDelete={() => handleDelete('clue', clue.id, '线索')}
-            />
-          ))
-        )}
-      </CollapsibleGroup>
-
-      {/* 冲突集合 */}
-      <CollapsibleGroup
-        kind="conflict"
-        icon={Swords}
-        label="冲突集合"
-        count={conflicts.length}
-        accent="text-rose-500"
-        collapsed={collapsedGroups.includes('conflict')}
-        onToggle={toggleCollapsedGroup}
-        onAdd={handleAddConflict}
-        addLabel="新建冲突"
-      >
-        {conflicts.length === 0 ? (
-          <EmptyHint text="暂无冲突" />
-        ) : (
-          conflicts.map((c) => (
-            <EntityItem
-              key={c.id}
-              label={c.description.length > 18 ? `${c.description.slice(0, 18)}...` : c.description}
-              sublabel={c.type}
-              selected={selectedNodeId === c.id}
-              onClick={() => onSelectEntity(c.id, 'conflict')}
-              entityType="conflict"
-              entityId={c.id}
-              onDelete={() => handleDelete('conflict', c.id, '冲突')}
             />
           ))
         )}
@@ -500,6 +502,36 @@ export function ProjectTree({
         )}
       </CollapsibleGroup>
 
+      {/* 物品集合 */}
+      <CollapsibleGroup
+        kind="item"
+        icon={Gem}
+        label="物品集合"
+        count={items.length}
+        accent="text-amber-600"
+        collapsed={collapsedGroups.includes('item')}
+        onToggle={toggleCollapsedGroup}
+        onAdd={handleAddItem}
+        addLabel="新建物品"
+      >
+        {items.length === 0 ? (
+          <EmptyHint text="暂无物品" />
+        ) : (
+          items.map((it) => (
+            <EntityItem
+              key={it.id}
+              label={it.name || '未命名'}
+              sublabel={it.type}
+              selected={selectedNodeId === it.id}
+              onClick={() => onSelectEntity(it.id, 'item')}
+              entityType="item"
+              entityId={it.id}
+              onDelete={() => handleDelete('item', it.id, it.name || '物品')}
+            />
+          ))
+        )}
+      </CollapsibleGroup>
+
       {/* 世界观要素集合 */}
       <CollapsibleGroup
         kind="world_element"
@@ -530,7 +562,7 @@ export function ProjectTree({
         )}
       </CollapsibleGroup>
 
-      {/* 信息差集合（P3-2：伏笔↔信息差双向联动） */}
+      {/* 信息差集合 */}
       <CollapsibleGroup
         kind="info_layer"
         icon={Layers}
@@ -559,36 +591,6 @@ export function ProjectTree({
           ))
         )}
       </CollapsibleGroup>
-
-      {/* 物品集合 */}
-      <CollapsibleGroup
-        kind="item"
-        icon={Gem}
-        label="物品集合"
-        count={items.length}
-        accent="text-amber-600"
-        collapsed={collapsedGroups.includes('item')}
-        onToggle={toggleCollapsedGroup}
-        onAdd={handleAddItem}
-        addLabel="新建物品"
-      >
-        {items.length === 0 ? (
-          <EmptyHint text="暂无物品" />
-        ) : (
-          items.map((it) => (
-            <EntityItem
-              key={it.id}
-              label={it.name || '未命名'}
-              sublabel={it.type}
-              selected={selectedNodeId === it.id}
-              onClick={() => onSelectEntity(it.id, 'item')}
-              entityType="item"
-              entityId={it.id}
-              onDelete={() => handleDelete('item', it.id, it.name || '物品')}
-            />
-          ))
-        )}
-      </CollapsibleGroup>
     </div>
   )
 }
@@ -606,6 +608,8 @@ interface CollapsibleGroupProps {
   onToggle: (kind: string) => void
   onAdd: () => void
   addLabel: string
+  /** 隐藏底部"新建"按钮（如大纲树无需手动添加） */
+  hideAdd?: boolean
   children: ReactElement | ReactElement[]
 }
 
@@ -619,6 +623,7 @@ export function CollapsibleGroup({
   onToggle,
   onAdd,
   addLabel,
+  hideAdd = false,
   children,
 }: CollapsibleGroupProps): ReactElement {
   return (
@@ -629,7 +634,6 @@ export function CollapsibleGroup({
           onClick={() => onToggle(kind)}
           className="flex items-center gap-1.5 flex-1 min-w-0 px-1.5 py-1 rounded-lg text-left hover:bg-muted transition-colors duration-150 ease-out"
         >
-          {/* chevron 旋转动画：始终用 ChevronDown，折叠时 rotate(-90deg)，200ms ease-out */}
           <ChevronDown
             className={cn(
               'size-3.5 text-muted-foreground shrink-0 transition-transform duration-200 ease-out',
@@ -646,15 +650,17 @@ export function CollapsibleGroup({
       {!collapsed && (
         <div className="ml-3 pl-2 border-l border-border/60 mt-0.5 space-y-0.5">
           {Children.toArray(children)}
-          <button
-            key="add-button"
-            type="button"
-            onClick={onAdd}
-            className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded-lg text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96]"
-          >
-            <Plus className="size-3" />
-            <span>{addLabel}</span>
-          </button>
+          {!hideAdd && (
+            <button
+              key="add-button"
+              type="button"
+              onClick={onAdd}
+              className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded-lg text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96]"
+            >
+              <Plus className="size-3" />
+              <span>{addLabel}</span>
+            </button>
+          )}
         </div>
       )}
     </div>

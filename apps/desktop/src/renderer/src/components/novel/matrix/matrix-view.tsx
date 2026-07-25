@@ -562,11 +562,11 @@ export function MatrixView({
         )}
 
         {/* ── 标尺行（sticky）── */}
-        <div className="sticky top-0 z-40 flex border-b border-border-strong bg-surface-1" style={{ height: RULER_H }}>
+        <div className="sticky top-0 z-40 flex border-b border-border/60 bg-surface-1" style={{ height: RULER_H }}>
           {/* 左侧 sticky 角 */}
           <div
             className={cn(
-              'sticky left-0 z-30 bg-surface-1 flex items-center border-r border-border-strong shrink-0',
+              'sticky left-0 z-30 bg-surface-1 flex items-center border-r border-border/60 shrink-0',
               matrixSidebarCollapsed ? 'justify-center px-0' : 'justify-between gap-2 px-2',
             )}
             style={{ width: sidebarWidth }}
@@ -583,13 +583,13 @@ export function MatrixView({
               </button>
             ) : (
               <>
-                <span className="text-[10px] text-hint tracking-wider whitespace-nowrap pl-1">实体 ＼ 章节</span>
-                <div className="flex items-center gap-1">
+                <span className="text-[10px] text-hint tracking-wider whitespace-nowrap truncate">实体 ＼ 章节</span>
+                <div className="flex items-center gap-0.5 shrink-0">
                   <button
                     type="button"
                     onClick={handleLocatePlayhead}
                     className={cn(
-                      'inline-flex h-7 items-center gap-1 rounded-md px-2 font-mono text-[10px] tabular-nums transition-colors active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50',
+                      'inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-mono text-[10px] tabular-nums transition-colors active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50',
                       isPlayheadVisible
                         ? 'text-muted-foreground hover:bg-muted hover:text-text'
                         : 'bg-amber-500/12 text-amber-500 hover:bg-amber-500/18',
@@ -597,7 +597,7 @@ export function MatrixView({
                     {...hc('定位播放头', playheadChapter, { after: `滚动到第 ${playheadChapter} 章` })}
                     aria-label={`定位到当前第 ${playheadChapter} 章`}
                   >
-                    <LocateFixed className="size-3.5" aria-hidden="true" />
+                    <LocateFixed className="size-3" aria-hidden="true" />
                     {String(playheadChapter).padStart(2, '0')}
                   </button>
                   <button
@@ -640,7 +640,7 @@ export function MatrixView({
                   type="button"
                   className={cn(
                     'relative h-full shrink-0 flex flex-col items-center justify-end pb-1 cursor-pointer transition-colors hover:bg-muted/40 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60',
-                    major ? 'border-r border-border-strong' : 'border-r border-border/30',
+                    major ? 'border-r border-border/50' : 'border-r border-border/30',
                     isCurrent && 'bg-amber-500/[0.07]',
                   )}
                   style={{ width: cellWidth }}

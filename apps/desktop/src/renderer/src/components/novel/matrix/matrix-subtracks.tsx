@@ -81,24 +81,33 @@ function SubtrackRow({
 
   return (
     <div
-      className="relative flex border-b border-border/10 last:border-b-0"
+      className="relative flex border-b border-border/10 last:border-b-0 transition-colors hover:bg-primary/[0.04]"
       style={{ height: SUB_H }}
     >
-      {/* 左侧 sticky 列：轨道标签 + enum 图例 */}
+      {/* 左侧 sticky 列：轨道标签 + enum 图例（纯色点，hover 显示文字） */}
       <div
-        className="sticky left-0 z-30 flex items-center gap-1.5 pr-2 pl-9 border-r border-border/40 shrink-0 bg-surface-1"
+        className="sticky left-0 z-30 flex items-center gap-1.5 pr-2 pl-9 border-r border-border/40 shrink-0 bg-surface-1 overflow-hidden"
         style={{ width: sidebarWidth }}
       >
         <span className="w-1 h-1 rounded-full shrink-0 opacity-70" style={{ background: track.color }} />
-        <span className="text-[10px] text-subtle truncate">{track.label}</span>
+        <span className="text-[10px] text-subtle truncate min-w-0" title={track.label}>
+          {track.label}
+        </span>
         {track.legend && track.legend.length > 0 && (
-          <span className="flex items-center gap-1 ml-auto shrink-0">
-            {track.legend.map((item, i) => (
-              <span key={i} className="flex items-center gap-0.5">
-                <span className="w-2 h-2 rounded-sm" style={{ background: item.fill }} />
-                <span className="text-[9px] text-hint/70 truncate max-w-[40px]">{item.label}</span>
-              </span>
+          <span
+            className="flex items-center gap-[3px] ml-auto shrink-0"
+            title={track.legend.map((item) => item.label).join(' · ')}
+          >
+            {track.legend.slice(0, 5).map((item, i) => (
+              <span
+                key={i}
+                className="w-2 h-2 rounded-[2px] shrink-0"
+                style={{ background: item.fill }}
+              />
             ))}
+            {track.legend.length > 5 && (
+              <span className="text-[8px] text-hint/60 leading-none">+{track.legend.length - 5}</span>
+            )}
           </span>
         )}
       </div>
@@ -208,28 +217,32 @@ function SubtrackOverlay({ track, cellWidth, trackHeight }: SubtrackOverlayProps
         return (
           <div
             key={`hot-band-${idx}`}
-            className="absolute top-0 bottom-0 cursor-pointer"
+            className="group/hotband absolute top-0 bottom-0 cursor-pointer"
             style={{ left: xLeft(band.startCh), width: (band.endCh - band.startCh + 1) * cellWidth }}
             data-hc-dim={track.label}
             data-hc-ch={`${band.startCh} – ${band.endCh}`}
             data-hc-before={prev?.valueKey ?? ''}
             data-hc-after={band.valueKey ?? band.label ?? ''}
             data-hc-color={track.color}
-          />
+          >
+            <span className="absolute inset-0 rounded-sm bg-white/0 group-hover/hotband:bg-white/[0.08] transition-colors pointer-events-none" />
+          </div>
         )
       })}
       {track.nodes?.map((node, idx) => (
         <div
           key={`hot-node-${idx}`}
-          className="absolute top-0 bottom-0 cursor-pointer"
+          className="group/hotnode absolute top-0 bottom-0 cursor-pointer"
           style={{ left: xLeft(node.ch), width: cellWidth }}
           data-hc-dim={track.label}
           data-hc-ch={String(node.ch)}
           data-hc-before={node.before ?? ''}
-          data-hc-after={node.badge != null ? `${node.badge} 项` : node.label}
-          data-hc-desc={node.desc ?? ''}
+          data-hc-after={node.badge != null ? node.label : node.label}
+          data-hc-desc={node.badge != null ? `共 ${node.badge} 项${node.desc ? ` · ${node.desc}` : ''}` : (node.desc ?? '')}
           data-hc-color={track.color}
-        />
+        >
+          <span className="absolute inset-x-1 inset-y-0.5 rounded-sm bg-white/0 group-hover/hotnode:bg-white/[0.10] transition-colors pointer-events-none" />
+        </div>
       ))}
     </div>
   )
