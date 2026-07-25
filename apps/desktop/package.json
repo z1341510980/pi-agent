@@ -85,6 +85,7 @@
   "dependencies": {
     "@svar-ui/react-gantt": "2.7.1",
     "@use-gesture/react": "^10.3.1",
-    "d3-force": "^3.0.0"
+    "d3-force": "^3.0.0",
+    "driver.js": "^1.8.0"
   }
 }
