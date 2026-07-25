@@ -110,7 +110,7 @@ function migrateLegacyContentSplit(): number | undefined {
 
 export const useNovelWorkspaceLayoutStore = create<NovelWorkspaceLayoutState>()(
   persist(
-    (set, get): NovelWorkspaceLayoutState => ({
+    (set): NovelWorkspaceLayoutState => ({
       // ── 初始状态 ──
       mainMode: 'split',
 
