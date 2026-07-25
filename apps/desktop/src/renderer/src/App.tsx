@@ -14,6 +14,7 @@ import { HomePage } from './components/home/home-page'
 import { ErrorBoundary } from './components/overlays/error-boundary'
 import { UpdateDialog, useUpdateStatus } from './components/overlays/update-dialog'
 import { Toaster } from '@/components/ui/toaster'
+import { OnboardingProvider, useOnboardingStore } from './onboarding'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +46,13 @@ export default function App(): ReactElement {
     }
   }, [status.state])
 
+  // 首次启动：自动触发 home-tour（已跳过/已完成则不触发）
+  useEffect(() => {
+    if (!ready || !useOnboardingStore.getState().shouldAutoStart()) return
+    const timer = setTimeout(() => useOnboardingStore.getState().startTour('home-tour'), 500)
+    return () => clearTimeout(timer)
+  }, [ready])
+
   if (!ready) {
     return <div className="h-screen w-screen bg-app-bg" />
   }
@@ -55,6 +63,7 @@ export default function App(): ReactElement {
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <ThemeProvider>
+              <OnboardingProvider setView={setView}>
               <div className="flex h-screen w-screen overflow-hidden bg-app-bg">
                 {/* ── 底座左边栏（导航 rail） ── */}
                 <nav
@@ -109,6 +118,7 @@ export default function App(): ReactElement {
                   )}
                 </div>
               </div>
+              </OnboardingProvider>
             {/* 自动更新对话框：发现新版本时自动展示 */}
             <UpdateDialog
               status={status}
