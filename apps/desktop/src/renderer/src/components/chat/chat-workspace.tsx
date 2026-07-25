@@ -657,7 +657,10 @@ export function ChatWorkspace({
       </div>
 
       {/* ── Status bar（Craft 风格：白色背景 + 顶部边框 + 左侧状态/延迟/模型 + 右侧版本号） ── */}
-      <footer className="flex items-center gap-4 min-w-0 overflow-hidden px-5 bg-statusbar-bg border-t border-statusbar-border">
+      <footer
+        data-tour="status-bar"
+        className="flex items-center gap-4 min-w-0 overflow-hidden px-5 bg-statusbar-bg border-t border-statusbar-border"
+      >
         {/* 左侧：在线状态 + 延迟 + 模型 · 权限模式 */}
         <span
           className={`shrink-0 size-2 rounded-full ${isOnline ? 'bg-success' : 'bg-danger'}`}

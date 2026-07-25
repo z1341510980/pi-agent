@@ -82,6 +82,7 @@ export function ModelSelector({
     >
       <SelectTrigger
         size="sm"
+        data-tour="model-selector"
         className="min-w-[120px] max-w-[200px] h-7 rounded-md border-0 bg-surface-4 text-xs! text-subtle hover:bg-surface-3 focus:ring-0 focus:ring-offset-0"
       >
         <SelectValue placeholder={placeholder}>

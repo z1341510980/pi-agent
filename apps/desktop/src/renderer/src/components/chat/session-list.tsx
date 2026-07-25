@@ -138,6 +138,7 @@ export function SessionList({
     <nav
       className="bg-surface-1 border-r border-border flex flex-col min-w-0 overflow-hidden px-4 py-5 h-full"
       aria-label="会话"
+      data-tour="session-list"
     >
       {/* 新建会话按钮 */}
       <Button

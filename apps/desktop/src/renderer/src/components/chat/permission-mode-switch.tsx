@@ -148,7 +148,7 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
   if (compact) {
     return (
       <>
-        <div ref={dropdownRef} className="relative">
+        <div ref={dropdownRef} className="relative" data-tour="permission-switch">
           <button
             type="button"
             onClick={() => setDropdownOpen((v) => !v)}
@@ -226,7 +226,7 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
   }
 
   return (
-    <div className="grid gap-2">
+    <div className="grid gap-2" data-tour="permission-switch-full">
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground">权限模式</span>
         <Badge variant={meta.badge}>{meta.label}</Badge>

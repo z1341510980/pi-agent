@@ -314,6 +314,7 @@ export function InputArea({
 
       {/* 输入卡片：白色圆角大输入框，聚焦态 2px 紫色边框 */}
       <div
+        data-tour="input-card"
         className={cn(
           'relative rounded-[12px] border-2 bg-input-bg transition-colors',
           'border-border focus-within:border-primary',
