@@ -80,10 +80,10 @@ export function HomePage({
     .slice(0, 5)
 
   return (
-    <div className="h-full overflow-y-auto bg-app-bg">
+    <div className="h-full overflow-y-auto bg-app-bg" data-tour="home-page">
       <div className="mx-auto max-w-4xl px-6 py-10">
         {/* ── Hero ── */}
-        <section className="mb-10 flex items-center gap-4">
+        <section className="mb-10 flex items-center gap-4" data-tour="home-hero">
           <img
             src={logoImage}
             alt="PI Agent"
@@ -107,7 +107,7 @@ export function HomePage({
         </section>
 
         {/* ── 快捷入口 ── */}
-        <section className="mb-10">
+        <section className="mb-10" data-tour="home-entries">
           <h2 className="text-xs font-[760] text-subtle uppercase tracking-wider m-0 mb-3">
             快捷入口
           </h2>
@@ -118,6 +118,7 @@ export function HomePage({
               description="与 Agent 进行多轮对话，处理编码、分析等任务"
               accent="text-blue-500"
               onClick={onOpenChat}
+              data-tour="entry-chat"
             />
             <EntryCard
               icon={BookOpen}
@@ -125,6 +126,7 @@ export function HomePage({
               description="多 Agent 协作的长篇小说创作工作台"
               accent="text-amber-500"
               onClick={onOpenNovel}
+              data-tour="entry-novel"
             />
             <EntryCard
               icon={Settings}
@@ -132,6 +134,7 @@ export function HomePage({
               description="配置模型供应商、Agent 人格和应用选项"
               accent="text-muted-foreground"
               onClick={onOpenSettings}
+              data-tour="entry-settings"
             />
           </div>
         </section>
@@ -267,17 +270,20 @@ function EntryCard({
   description,
   accent,
   onClick,
+  'data-tour': dataTour,
 }: {
   icon: React.ComponentType<{ className?: string }>
   title: string
   description: string
   accent: string
   onClick: () => void
+  'data-tour'?: string
 }): ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
+      data-tour={dataTour}
       className="group text-left rounded-lg border border-border bg-surface-2 p-4 hover:border-primary/40 hover:bg-surface-3 active:scale-[0.96] transition-[border-color,background-color,transform]"
     >
       <div className="flex items-start gap-3">

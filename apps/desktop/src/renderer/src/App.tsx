@@ -14,7 +14,7 @@ import { HomePage } from './components/home/home-page'
 import { ErrorBoundary } from './components/overlays/error-boundary'
 import { UpdateDialog, useUpdateStatus } from './components/overlays/update-dialog'
 import { Toaster } from '@/components/ui/toaster'
-import { OnboardingProvider, useOnboardingStore } from './onboarding'
+import { OnboardingProvider, OnboardingRailButton, useOnboardingStore } from './onboarding'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -88,12 +88,16 @@ export default function App(): ReactElement {
                     active={view === 'novel'}
                     onClick={() => setView('novel')}
                   />
+                  <OnboardingRailButton
+                    setView={setView}
+                    currentView={view}
+                    className="mt-auto"
+                  />
                   <RailButton
                     icon={SettingsIcon}
                     label="设置"
                     active={view === 'settings'}
                     onClick={() => setView('settings')}
-                    className="mt-auto"
                   />
                 </nav>
 
