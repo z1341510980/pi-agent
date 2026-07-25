@@ -385,6 +385,13 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
   const handleSave = useCallback(async () => {
     setSaving(true)
     try {
+      // 统计被静默过滤的短样本（< 20 字符），保存后提示用户
+      const droppedPositive = form.positiveExamples.filter(
+        (e) => e.trim().length > 0 && e.trim().length < 20,
+      ).length
+      const droppedNegative = form.negativeExamples.filter(
+        (e) => e.trim().length > 0 && e.trim().length < 20,
+      ).length
       const input: NovelWritingStyleProfileInput = {
         ...form,
         hardRules: markdownToRules(hardRulesDraft),
@@ -404,6 +411,13 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
       setSoftRulesDraft(rulesToMarkdown(normalized.softRules))
       setVersion(saved.version)
       toastSuccess('文风档案已保存', `当前版本 v${saved.version}`)
+      const droppedTotal = droppedPositive + droppedNegative
+      if (droppedTotal > 0) {
+        toastError(
+          `${droppedTotal} 条样本被过滤`,
+          `正反样本少于 20 字符会被丢弃（正向 ${droppedPositive} 条，反向 ${droppedNegative} 条），请补充更长的高质量样本以让 LLM 学到文风`,
+        )
+      }
       if (activeSection === 'preview') void loadPreview(previewTarget)
     } catch (error) {
       toastError('保存失败', error instanceof Error ? error.message : '未知错误')

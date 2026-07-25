@@ -771,12 +771,14 @@ export class NovelPromptBuilder {
     if (prevChapters.length > 0) {
       const prevEnding = this.formatPreviousChapterEnding(prevChapters)
       if (prevEnding) parts.push(prevEnding)
-      // 有人工文风档案时不再从既有 AI 正文递归学习声音；旧项目未配置档案时
-      // 才保留最近正文锚点作为兼容回退。
-      if (!this.stores.getWritingStyleProfile?.(projectId)) {
-        const soundAnchor = this.formatSoundAnchor(prevChapters.slice(-1))
-        if (soundAnchor) parts.push(soundAnchor)
-      }
+      // 叙事声音锚点：从最近章节开头提取实际腔调示范。
+      // 与 writingStyleProfile 叠加注入（而非互斥）：profile 是用户手动填写的规则和样本，
+      // soundAnchor 是系统从既有正文自动提取的实际声音。两者互补：
+      // - profile 告诉 LLM "应该怎么写"（规则 + 正反样本）
+      // - soundAnchor 告诉 LLM "前文实际怎么写的"（原文示范）
+      // 互斥会导致：用户配置了 profile 但 profile 质量差时，LLM 既看不到规则也看不到前文声音。
+      const soundAnchor = this.formatSoundAnchor(prevChapters.slice(-1))
+      if (soundAnchor) parts.push(soundAnchor)
     }
 
     // ── 下一章开头 + 前情提要（向前看：本章结尾必须过渡到此处场景）──
@@ -814,8 +816,11 @@ export class NovelPromptBuilder {
     }
 
     // ── 文风指纹（从前几章提取的文风基准，抗 compaction）──
-    // 注入文风特征快照，让 Writer/Reviewer 在 context compaction 后仍能保持文风一致
-    if (prevChapters.length > 0 && !this.stores.getWritingStyleProfile?.(projectId)) {
+    // 注入文风特征快照，让 Writer/Reviewer 在 context compaction 后仍能保持文风一致。
+    // 与 writingStyleProfile 叠加注入（而非互斥）：profile 是用户填写的期望文风，
+    // fingerprint 是系统从既有正文自动提取的量化指标（句长/对话占比/情感温度等）。
+    // 两者互补：profile 给方向，fingerprint 给实际基准，LLM 据此对齐。
+    if (prevChapters.length > 0) {
       const fingerprint = this.formatStyleFingerprint(prevChapters)
       if (fingerprint) parts.push(fingerprint)
     }

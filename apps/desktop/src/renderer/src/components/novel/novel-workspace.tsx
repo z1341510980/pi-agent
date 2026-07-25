@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2 } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { cn } from '@/lib/utils'
@@ -65,6 +65,7 @@ import {
   type ChapterTaskSnapshot,
 } from './chapter-task'
 import { ChapterContentEditor } from './chapter-content-editor'
+import { WritingStyleProfileEditor } from './writing-style-profile-editor'
 import { ErrorBoundary } from '@/components/overlays/error-boundary'
 import { MatrixErrorFallback } from './matrix-error-fallback'
 import { CanvasErrorFallback } from './canvas-error-fallback'
@@ -308,6 +309,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
+  const [stylePanelOpen, setStylePanelOpen] = useState(false)
 
   // ── 章节自由聊天（"聊天" Tab）──
   const chapterChat = useChapterChat()
@@ -948,6 +950,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               <ScrollText className="size-3.5" />
             </Button>
             <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => setStylePanelOpen(true)}
+              disabled={!currentProject}
+              title="文风设置"
+              className="text-subtle hover:text-text"
+            >
+              <Feather className="size-3.5" />
+            </Button>
+            <Button
               size="sm"
               variant="ghost"
               onClick={handleExport}
@@ -1368,6 +1380,24 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </DialogHeader>
             <div className="h-[70vh]">
               <AgentLogPanel chapterNumber={creationChapterNumber} />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* 文风设置弹窗：从 header 入口打开，避免深藏在详情面板的 ProjectForm 末尾 */}
+        <Dialog open={stylePanelOpen} onOpenChange={setStylePanelOpen}>
+          <DialogContent className="sm:max-w-2xl max-h-[85vh] p-0 gap-0">
+            <DialogHeader className="px-4 py-3 border-b border-border">
+              <DialogTitle className="flex items-center gap-2 text-sm">
+                <Feather className="size-4 text-primary" />
+                文风设置
+              </DialogTitle>
+              <DialogDescription className="text-xs text-pretty">
+                配置项目文风档案：叙事声音、规则约束、正反样本。系统会自动叠加从既有章节提取的文风指纹和声音锚点。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[70vh] overflow-y-auto p-4">
+              {currentProjectId && <WritingStyleProfileEditor projectId={currentProjectId} />}
             </div>
           </DialogContent>
         </Dialog>

@@ -8,7 +8,6 @@ import {
 } from '@/components/ui/select'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { toastError, toastSuccess } from '@/hooks/use-toast'
-import { WritingStyleProfileEditor } from '../writing-style-profile-editor'
 import {
   updateProject,
   listRhythmModels,
@@ -178,9 +177,6 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
-
-      <SectionHeader title="文风工厂" />
-      <WritingStyleProfileEditor projectId={entity.id} />
     </div>
   )
 }
