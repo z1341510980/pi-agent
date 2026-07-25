@@ -197,7 +197,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
         ) : (
           <div className="p-1.5 space-y-1">
             {/* 项目选择列表（紧凑） */}
-            <ul className="space-y-0.5">
+            <ul className="space-y-0.5" data-tour="project-list">
               {projects.map((p) => {
                 const isActive = p.id === currentProjectId
                 return (
@@ -249,7 +249,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
 
             {/* 当前项目分组树 */}
             {currentProject && (
-              <div className="mt-2 pt-2 border-t border-border">
+              <div className="mt-2 pt-2 border-t border-border" data-tour="project-tree">
                 <ProjectTree
                   projectId={currentProject.id}
                   project={currentProject}
@@ -282,6 +282,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
           size="sm"
           className="w-full justify-start text-muted-foreground hover:text-text"
           onClick={() => setTrashDialogOpen(true)}
+          data-tour="trash-button"
         >
           <Trash2 className="size-3.5 mr-1.5" />
           回收站

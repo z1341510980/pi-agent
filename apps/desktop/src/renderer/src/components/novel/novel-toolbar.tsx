@@ -274,7 +274,7 @@ export function NovelToolbar({
   }, [currentProjectId, selectedNodeId, selectedNodeType, removeCharacter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeNodePosition, clearSelection])
 
   return (
-    <div className="flex items-center gap-1 px-3 h-11 border-b border-border bg-surface-1 shrink-0">
+    <div className="flex items-center gap-1 px-3 h-11 border-b border-border bg-surface-1 shrink-0" data-tour="canvas-toolbar">
       {/* 布局模式切换：分组（按类型分区）/ 图谱（力导向聚类） */}
       <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg" role="group" aria-label="画布布局模式">
         <Button

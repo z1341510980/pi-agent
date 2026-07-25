@@ -1437,34 +1437,38 @@ export function MatrixWorkspace({
 
   return (
     <div className="flex h-full flex-col bg-surface-1">
-      <MatrixToolbar
-        playheadChapter={effectivePlayheadChapter}
-        totalChapters={Math.max(chapters.length, matrixData.maxChapter)}
-        currentChapterTitle={currentChapterTitle}
-        cellWidth={cellWidth}
-        onZoomIn={handleZoomIn}
-        onZoomOut={handleZoomOut}
-        onCellWidthChange={handleCellWidthChange}
-        completableCount={completableCount}
-        isCompleting={isCompleting}
-        onCompleteHistory={handleCompleteHistory}
-        canUndo={undoCount > 0}
-        canRedo={redoCount > 0}
-        onUndo={undo}
-        onRedo={redo}
-        activeFilter={activeFilter}
-        onFilterChange={handleFilterChange}
-        onSimilarityScan={onSimilarityScan}
-        similarityScanning={similarityScanning}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        showRelationshipOverlay={showRelationshipOverlay}
-        onToggleRelationshipOverlay={() => setShowRelationshipOverlay((v) => !v)}
-      />
+      <div data-tour="matrix-toolbar">
+        <MatrixToolbar
+          playheadChapter={effectivePlayheadChapter}
+          totalChapters={Math.max(chapters.length, matrixData.maxChapter)}
+          currentChapterTitle={currentChapterTitle}
+          cellWidth={cellWidth}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onCellWidthChange={handleCellWidthChange}
+          completableCount={completableCount}
+          isCompleting={isCompleting}
+          onCompleteHistory={handleCompleteHistory}
+          canUndo={undoCount > 0}
+          canRedo={redoCount > 0}
+          onUndo={undo}
+          onRedo={redo}
+          activeFilter={activeFilter}
+          onFilterChange={handleFilterChange}
+          onSimilarityScan={onSimilarityScan}
+          similarityScanning={similarityScanning}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          showRelationshipOverlay={showRelationshipOverlay}
+          onToggleRelationshipOverlay={() => setShowRelationshipOverlay((v) => !v)}
+        />
+      </div>
 
-      <MatrixLegend searchQuery={searchQuery} onSearchChange={setSearchQuery} />
+      <div data-tour="matrix-legend">
+        <MatrixLegend searchQuery={searchQuery} onSearchChange={setSearchQuery} />
+      </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden" data-tour="matrix-view">
         <MatrixView
           matrixData={matrixData}
           chapters={chapters}

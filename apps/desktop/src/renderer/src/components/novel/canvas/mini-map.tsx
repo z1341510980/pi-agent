@@ -41,7 +41,7 @@ export function miniMapNodeColor(n: Node): string {
   return '#6b7280'
 }
 
-export const MemoizedMiniMap = memo(function MemoizedMiniMap({ visible }: { visible: boolean }) {
+export const MemoizedMiniMap = memo(function MemoizedMiniMap({ visible, 'data-tour': dataTour }: { visible: boolean; 'data-tour'?: string }) {
   if (!visible) return null
   return (
     <MiniMap
@@ -50,6 +50,7 @@ export const MemoizedMiniMap = memo(function MemoizedMiniMap({ visible }: { visi
       className="!bg-card !border !border-border"
       maskColor="rgba(0,0,0,0.05)"
       nodeColor={miniMapNodeColor}
+      data-tour={dataTour}
     />
   )
 })

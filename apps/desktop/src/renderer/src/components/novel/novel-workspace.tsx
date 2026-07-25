@@ -92,6 +92,7 @@ function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
       className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg"
       role="tablist"
       aria-label="视图切换"
+      data-tour="view-switcher"
     >
       <button
         type="button"
@@ -135,6 +136,7 @@ function MainModeSwitcher({ value, onChange }: MainModeSwitcherProps): ReactElem
       className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg"
       role="tablist"
       aria-label="工作区模式"
+      data-tour="mode-switcher"
     >
       <button
         type="button"
@@ -873,7 +875,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         ) : (
           <>
         {/* 顶部标题栏：三栏 grid（左项目信息 / 中视图切换 / 右操作按钮） */}
-        <header className="grid grid-cols-[1fr_auto_1fr] items-center h-12 px-4 bg-surface-1 border-b border-border/60 shrink-0">
+        <header data-tour="novel-header" className="grid grid-cols-[1fr_auto_1fr] items-center h-12 px-4 bg-surface-1 border-b border-border/60 shrink-0">
           {/* 左：项目信息 */}
           <div className="flex items-center gap-2.5 min-w-0">
             <Button size="icon-sm" variant="ghost" onClick={onClose} aria-label="返回项目列表" className="text-subtle hover:text-text">
@@ -1155,6 +1157,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     role="tab"
                     aria-selected={rightPanelView === 'conversation' || isCreationActive}
                     onClick={() => setRightPanelView('conversation')}
+                    data-tour="right-tab-conversation"
                     className={cn(
                       'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
                       'transition-all duration-200 ease-out active:scale-[0.96]',
@@ -1172,6 +1175,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     aria-selected={rightPanelView === 'detail' && !isCreationActive}
                     onClick={() => !isCreationActive && setRightPanelView('detail')}
                     disabled={isCreationActive}
+                    data-tour="right-tab-detail"
                     className={cn(
                       'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
                       'transition-all duration-200 ease-out active:scale-[0.96]',
@@ -1191,6 +1195,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     aria-selected={rightPanelView === 'audit' && !isCreationActive}
                     onClick={() => !isCreationActive && setRightPanelView('audit')}
                     disabled={isCreationActive}
+                    data-tour="right-tab-audit"
                     className={cn(
                       'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
                       'transition-all duration-200 ease-out active:scale-[0.96]',

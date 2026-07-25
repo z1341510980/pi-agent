@@ -247,7 +247,7 @@ export function ChapterContentEditor({
   const wordCount = countWords(draftContent)
 
   return (
-    <div className="chapter-content-editor">
+    <div className="chapter-content-editor" data-tour="editor">
       <header className="cce-header">
         {/* 左：editor-title */}
         <div className="cce-title">
@@ -255,7 +255,7 @@ export function ChapterContentEditor({
           <span>章节正文</span>
         </div>
         {/* 右：导航 + chapter-badge */}
-        <div className="cce-nav">
+        <div className="cce-nav" data-tour="chapter-nav">
           <button
             type="button"
             onClick={() => canPrev && setPlayheadChapter(playheadChapter - 1)}
@@ -341,6 +341,7 @@ export function ChapterContentEditor({
             disabled={isCreationActive || reverseArranging || !currentChapter || wordCount === 0}
             title="从当前正文提取角色/冲突/伏笔等实体到矩阵"
             className="cce-reverse-btn"
+            data-tour="reverse-arrange"
           >
             <Sparkles className="size-3" />
             <span>{reverseArranging ? '反推中...' : '反推实体'}</span>

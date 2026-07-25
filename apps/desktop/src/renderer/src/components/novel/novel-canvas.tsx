@@ -702,9 +702,10 @@ export function NovelCanvas({
         proOptions={{ hideAttribution: true }}
         onlyRenderVisibleElements
         className="novel-canvas"
+        data-tour="canvas"
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} className="!text-muted-foreground/40" />
-        <MemoizedMiniMap visible={nodeCount > COMPACT_THRESHOLD} />
+        <MemoizedMiniMap visible={nodeCount > COMPACT_THRESHOLD} data-tour="canvas-minimap" />
         <Controls className="!bg-card !border !border-border !shadow-md" showInteractive={false} />
       </ReactFlow>
 
