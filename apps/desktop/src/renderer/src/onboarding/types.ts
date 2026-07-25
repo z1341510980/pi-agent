@@ -3,6 +3,8 @@ export interface TourStep {
   element?: string
   title?: string
   description: string
+  /** 可选快捷键展示（用于 shortcuts-tour），传入会以 <kbd> 渲染 */
+  shortcut?: string
   side?: 'top' | 'bottom' | 'left' | 'right' | 'over' | 'auto'
   view?: 'home' | 'chat' | 'novel' | 'settings'
   onNext?: () => void

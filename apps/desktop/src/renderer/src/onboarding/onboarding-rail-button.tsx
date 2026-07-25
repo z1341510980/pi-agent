@@ -71,7 +71,7 @@ export interface OnboardingRailButtonProps {
  *
  * 视觉：
  * - 与 RailButton 一致的尺寸/active 风格
- * - 菜单浮在 rail 右侧（top-aligned 与按钮齐平），不挤压 rail 布局
+ * - 菜单浮在 rail 右侧（bottom-aligned 与按钮底部对齐，向上展开，避开窗口底部）
  * - 已完成的 tour 在菜单里以 ✓ 标识
  */
 export function OnboardingRailButton({
@@ -141,7 +141,11 @@ export function OnboardingRailButton({
         <div
           role="menu"
           aria-label="选择引导内容"
-          className="absolute left-full top-0 ml-2 z-[60] w-64 rounded-lg border border-border bg-surface-1 p-1.5 shadow-overlay"
+          // bottom-0：菜单底部对齐按钮底部，向上展开。
+          // 因为 OnboardingRailButton 带 mt-auto 被推到导航栏底部，
+          // top-0 会向下展开导致超出窗口；bottom-0 让用户能看到完整菜单。
+          // max-h + overflow-y-auto 作为窗口极矮时的兜底。
+          className="absolute bottom-0 left-full ml-2 z-[60] w-64 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg border border-border bg-surface-1 p-1.5 shadow-overlay"
         >
           <div className="px-2.5 py-1.5 mb-1 flex items-center justify-between">
             <span className="text-[11px] font-[760] text-subtle uppercase tracking-wider">
