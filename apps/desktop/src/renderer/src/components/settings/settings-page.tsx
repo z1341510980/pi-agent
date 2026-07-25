@@ -83,6 +83,7 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
                 type="button"
                 onClick={() => setSection(item.id)}
                 aria-current={active ? 'page' : undefined}
+                data-tour={`nav-${item.id}`}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-left active:scale-[0.96] transition-[background-color,color,transform] ${
                   active
                     ? 'bg-primary/10 text-primary font-semibold'
