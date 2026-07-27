@@ -26,6 +26,9 @@ import { CommandPalette, createDefaultCommands } from '../overlays/command-palet
 import { CompactionBanner, type CompactionEvent } from './compaction-banner'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { ContextPanel, type AssociatedFile, type MemorySummaryData, type ActivityEntry } from './context-panel'
+import { useResizableSplit } from '@/hooks/ui/use-resizable-split'
+import { useWorkspaceCollapse } from '@/hooks/ui/use-workspace-collapse'
+import { Titlebar } from '@/components/layout/titlebar'
 import { UsagePanel } from './usage-panel'
 import {
   Dialog,
@@ -116,8 +119,9 @@ export function ChatWorkspace({
   // ── 本地 UI 状态（无需持久化） ──
   const [compactionEvent, setCompactionEvent] = useState<CompactionEvent | null>(null)
   const [usageDetailOpen, setUsageDetailOpen] = useState(false)
-  const [sidebarWidth, setSidebarWidth] = useState(260)
-  const [rightPanelWidth, setRightPanelWidth] = useState(320)
+  const siderSplit = useResizableSplit({ defaultWidth: 260, storageKey: 'pi-chat-sider-width', unit: 'px', minWidth: 200, maxWidth: 480 })
+  const contextSplit = useResizableSplit({ defaultWidth: 320, storageKey: 'pi-chat-context-width', unit: 'px', minWidth: 240, maxWidth: 600 })
+  const { collapsed: workspaceCollapsed, toggle: toggleWorkspace } = useWorkspaceCollapse({ preferenceKey: activeThreadId, defaultCollapsed: false })
 
   const messageState: MessageStreamState =
     sessionMessages[activeThreadId] ?? createEmptyMessageState()
@@ -477,7 +481,12 @@ export function ChatWorkspace({
   const displayError = messageState.streamError ?? (runError ? runError.message : null)
 
   return (
-    <div className="grid grid-rows-[minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
+    <div className="grid grid-rows-[40px_minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
+      <Titlebar
+        title={activeSession?.title ?? 'Agent 工作台'}
+        onWorkspaceToggle={toggleWorkspace}
+        workspaceCollapsed={workspaceCollapsed}
+      />
       {/* ── Workspace grid（workspace-grid 启用面板折叠过渡 250ms） ── */}
       <div
         className="flex min-h-0 workspace-grid"
@@ -485,7 +494,7 @@ export function ChatWorkspace({
         {/* ── Sidebar ── */}
         {leftPanelOpen && (
           <>
-            <div style={{ width: sidebarWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
+            <div style={{ width: siderSplit.splitRatio }} className="shrink-0 h-full min-h-0 overflow-hidden">
               <SessionList
                 sessions={sessions}
                 activeSessionId={activeThreadId}
@@ -497,11 +506,10 @@ export function ChatWorkspace({
             </div>
             <ResizableSplitter
               direction="horizontal"
-              size={sidebarWidth}
-              minSize={180}
-              maxSize={400}
-              onSizeChange={setSidebarWidth}
-              side="left"
+              size={siderSplit.splitRatio}
+              onSizeChange={siderSplit.setSplitRatio}
+              side="right"
+              collapsed={false}
             />
           </>
         )}
@@ -609,18 +617,17 @@ export function ChatWorkspace({
         </main>
 
         {/* ── 右侧栏 Splitter + Context panel ── */}
-        {rightPanelOpen && (
+        {rightPanelOpen && !workspaceCollapsed && (
           <>
             <ResizableSplitter
               direction="horizontal"
-              size={rightPanelWidth}
-              minSize={240}
-              maxSize={600}
-              onSizeChange={setRightPanelWidth}
-              side="right"
+              size={contextSplit.splitRatio}
+              onSizeChange={contextSplit.setSplitRatio}
+              side="left"
+              collapsed={workspaceCollapsed}
             />
             <aside
-              style={{ width: rightPanelWidth }}
+              style={{ width: contextSplit.splitRatio }}
               className="bg-surface-1 border-l border-border shrink-0 overflow-hidden flex flex-col"
               aria-label={filePreview ? '文件预览' : '上下文'}
             >
