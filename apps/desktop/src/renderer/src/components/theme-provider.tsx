@@ -1,89 +1,71 @@
-import type { ReactElement, ReactNode } from 'react'
-import { createContext, useContext, useEffect, useState } from 'react'
-
-// ── 类型定义 ──
-
-type Theme = 'dark' | 'light' | 'system'
-
-interface ThemeProviderState {
-  theme: Theme
-  setTheme: (theme: Theme) => void
-}
-
-// ── Context ──
-
-const ThemeProviderContext = createContext<ThemeProviderState>({
-  theme: 'system',
-  setTheme: () => {},
-})
-
-const STORAGE_KEY = 'wenlang-agent.theme'
-
-// ── Provider ──
+import { useEffect } from 'react'
+import type { ReactNode } from 'react'
+import { useThemeStore } from '@/stores/theme-store'
+import { BUILTIN_THEMES } from '@/utils/theme/builtin-themes'
 
 interface ThemeProviderProps {
   children: ReactNode
-  defaultTheme?: Theme
+  defaultTheme?: 'dark' | 'light' | 'system'
 }
 
-export function ThemeProvider({
-  children,
-  defaultTheme = 'system',
-}: ThemeProviderProps): ReactElement {
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === 'undefined') return defaultTheme
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored
-    return defaultTheme
-  })
+/**
+ * 兼容旧 API：把 'dark' | 'light' | 'system' 映射到 theme store
+ * - 'dark' → activeThemeId = 'pro-dark'
+ * - 'light' → activeThemeId = 'pro-light'
+ * - 'system' → activeThemeId = undefined
+ */
+const LEGACY_THEME_MAP: Record<'dark' | 'light' | 'system', string | undefined> = {
+  dark: 'pro-dark',
+  light: 'pro-light',
+  system: undefined,
+}
 
+export function ThemeProvider({ children, defaultTheme = 'system' }: ThemeProviderProps) {
+  const setActiveTheme = useThemeStore((s) => s.setActiveTheme)
+  const applyCurrentTheme = useThemeStore((s) => s.applyCurrentTheme)
+  const startWatchingSystem = useThemeStore((s) => s.startWatchingSystem)
+  const stopWatchingSystem = useThemeStore((s) => s.stopWatchingSystem)
+  const activeThemeId = useThemeStore((s) => s.activeThemeId)
+
+  // 首次挂载：迁移旧主题 + 应用 + 启动系统监听
   useEffect(() => {
-    const root = document.documentElement
-
-    root.classList.remove('light', 'dark')
-
-    if (theme === 'system') {
-      // jsdom 等测试环境可能不支持 matchMedia，回退为浅色
-      const mediaQuery = typeof window.matchMedia === 'function'
-        ? window.matchMedia('(prefers-color-scheme: dark)')
-        : null
-      const systemDark = mediaQuery?.matches ?? false
-      root.classList.add(systemDark ? 'dark' : 'light')
-
-      if (mediaQuery) {
-        const handler = (e: MediaQueryListEvent): void => {
-          root.classList.remove('light', 'dark')
-          root.classList.add(e.matches ? 'dark' : 'light')
-        }
-        mediaQuery.addEventListener('change', handler)
-        return () => mediaQuery.removeEventListener('change', handler)
-      }
-
-      return undefined
+    const stored = localStorage.getItem('wenlang-agent.theme') // 旧 key
+    if (stored && !localStorage.getItem('wenlang-agent.theme-v2')) {
+      const legacy = stored.replace(/^"|"$/g, '') as 'dark' | 'light' | 'system'
+      setActiveTheme(
+        LEGACY_THEME_MAP[legacy] ??
+          (defaultTheme === 'system' ? undefined : LEGACY_THEME_MAP[defaultTheme]),
+      )
+    } else if (activeThemeId === undefined && !localStorage.getItem('wenlang-agent.theme-v2')) {
+      setActiveTheme(LEGACY_THEME_MAP[defaultTheme])
     }
+    applyCurrentTheme()
+    startWatchingSystem()
+    return () => stopWatchingSystem()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-    root.classList.add(theme)
-    return undefined
-  }, [theme])
-
-  // 持久化到 localStorage
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, theme)
-  }, [theme])
-
-  return (
-    <ThemeProviderContext value={{ theme, setTheme }}>
-      {children}
-    </ThemeProviderContext>
-  )
+  return <>{children}</>
 }
 
-// ── Hook ──
+export function useTheme() {
+  const activeThemeId = useThemeStore((s) => s.activeThemeId)
+  const setActiveTheme = useThemeStore((s) => s.setActiveTheme)
+  const customThemes = useThemeStore((s) => s.customThemes)
+  const allThemes = [...BUILTIN_THEMES, ...customThemes]
+  const active = allThemes.find((t) => t.id === activeThemeId)
 
-export function useTheme(): ThemeProviderState {
-  const context = useContext(ThemeProviderContext)
-  if (!context) {
-    throw new Error('useTheme 必须在 ThemeProvider 内使用')
+  // 兼容旧 API
+  const theme: 'dark' | 'light' | 'system' =
+    activeThemeId === undefined ? 'system' : active?.appearance ?? 'dark'
+
+  return {
+    theme,
+    setTheme: (t: 'dark' | 'light' | 'system') => setActiveTheme(LEGACY_THEME_MAP[t]),
+    // 新 API
+    activeThemeId,
+    activeTheme: active,
+    allThemes,
+    setActiveThemeId: setActiveTheme,
   }
-  return context
 }
