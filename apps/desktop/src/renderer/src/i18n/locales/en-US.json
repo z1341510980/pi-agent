@@ -13,6 +13,9 @@
     "noData": "No data",
     "confirm": "Confirm",
     "close": "Close",
+    "decrease": "Decrease",
+    "increase": "Increase",
+    "reset": "Reset",
     "refresh": "Refresh",
     "export": "Export",
     "import": "Import",
@@ -61,6 +64,22 @@
     "themeSystem": "System",
     "themeLight": "Light",
     "themeDark": "Dark",
+    "fontSize": {
+      "current": "Current size {value}px",
+      "display": "Display size",
+      "heading": "Heading size",
+      "body": "Body size",
+      "caption": "Caption size",
+      "micro": "Micro size"
+    },
+    "appearance": {
+      "title": "Appearance",
+      "theme": "Theme",
+      "customCss": "Custom CSS",
+      "validateCss": "Validate",
+      "customTheme": "Custom theme",
+      "presetThemes": "Preset themes"
+    },
     "language": "Language",
     "dataDir": "Data Directory",
     "workDir": "Working Directory",

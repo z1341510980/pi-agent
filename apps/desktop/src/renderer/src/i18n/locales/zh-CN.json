@@ -13,6 +13,9 @@
     "noData": "暂无数据",
     "confirm": "确认",
     "close": "关闭",
+    "decrease": "减小",
+    "increase": "增大",
+    "reset": "重置",
     "refresh": "刷新",
     "export": "导出",
     "import": "导入",
@@ -61,6 +64,22 @@
     "themeSystem": "跟随系统",
     "themeLight": "浅色",
     "themeDark": "深色",
+    "fontSize": {
+      "current": "当前字号 {value}px",
+      "display": "标题字号",
+      "heading": "标题字号",
+      "body": "正文字号",
+      "caption": "说明字号",
+      "micro": "微字号"
+    },
+    "appearance": {
+      "title": "外观",
+      "theme": "主题",
+      "customCss": "自定义 CSS",
+      "validateCss": "校验",
+      "customTheme": "自定义主题",
+      "presetThemes": "预设主题"
+    },
     "language": "语言",
     "dataDir": "数据目录",
     "workDir": "工作目录",
