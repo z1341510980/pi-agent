@@ -1,4 +1,12 @@
-import { useState, useRef, useCallback, type KeyboardEvent, type ReactElement, type DragEvent, type ClipboardEvent } from 'react'
+import {
+  useState,
+  useRef,
+  useCallback,
+  type KeyboardEvent,
+  type ReactElement,
+  type DragEvent,
+  type ClipboardEvent
+} from 'react'
 import { Send, Square, Paperclip } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -6,9 +14,12 @@ import { type ModelOption, ModelSelector } from './model-selector'
 import { FileAttachmentList, type FileAttachment } from './file-attachment'
 import { PermissionModeSwitch } from './permission-mode-switch'
 import { SlashCommandPanel } from './slash-command-panel'
-import { MentionPanel } from './mention-panel'
+import { AtFileMenu, type AtFileMenuItem } from './at-file-menu'
 import type { SessionSummary } from './session-list'
 import type { FilePreviewState } from '@/stores/ui-store'
+
+/** Overlay 类型：互斥管理 slash 指令面板与 @ 引用面板（AionUi 风格） */
+type ActiveOverlay = 'slash' | 'mention' | null
 
 export interface InputAreaProps {
   /** 发送消息（非运行状态） */
@@ -50,7 +61,7 @@ function inferMimeType(name: string): string {
     svg: 'image/svg+xml',
     webp: 'image/webp',
     bmp: 'image/bmp',
-    ico: 'image/x-icon',
+    ico: 'image/x-icon'
   }
   return map[ext] ?? 'application/octet-stream'
 }
@@ -85,13 +96,13 @@ export function InputArea({
   onModelChange,
   sessions = [],
   activeSessionId = '',
-  onFilePreview,
+  onFilePreview
 }: InputAreaProps): ReactElement {
   const [internalText, setInternalText] = useState('')
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
-  const [slashPanelOpen, setSlashPanelOpen] = useState(false)
-  const [mentionPanelOpen, setMentionPanelOpen] = useState(false)
+  // 统一 overlay 状态：slash / mention 互斥（替代原 slashPanelOpen + mentionPanelOpen）
+  const [activeOverlay, setActiveOverlay] = useState<ActiveOverlay>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const text = value ?? internalText
 
@@ -115,7 +126,7 @@ export function InputArea({
         path: f.path,
         size: 0, // 将在读取时更新
         type: isImageMime(mimeType) ? 'image' : 'file',
-        mimeType,
+        mimeType
       }
     })
     setAttachments((prev) => [...prev, ...newAttachments])
@@ -136,10 +147,10 @@ export function InputArea({
                       // 图片类型生成缩略图
                       ...(a.type === 'image' && result.encoding === 'base64'
                         ? { thumbnail: `data:${a.mimeType};base64,${result.content}` }
-                        : {}),
+                        : {})
                     }
-                  : a,
-              ),
+                  : a
+              )
             )
           }
         })
@@ -204,7 +215,7 @@ export function InputArea({
         addAttachments(fileEntries)
       }
     },
-    [addAttachments],
+    [addAttachments]
   )
 
   /** 粘贴事件处理（支持粘贴图片） */
@@ -223,7 +234,10 @@ export function InputArea({
             // Electron 扩展的 path 属性
             const filePath = (file as File & { path?: string }).path
             if (filePath) {
-              imageFiles.push({ path: filePath, name: file.name || `pasted-image-${Date.now()}.png` })
+              imageFiles.push({
+                path: filePath,
+                name: file.name || `pasted-image-${Date.now()}.png`
+              })
             }
           }
         }
@@ -233,7 +247,7 @@ export function InputArea({
         addAttachments(imageFiles)
       }
     },
-    [addAttachments],
+    [addAttachments]
   )
 
   const handleSend = useCallback(() => {
@@ -250,9 +264,14 @@ export function InputArea({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // 斜杠面板或 @ 面板打开时，拦截导航键，让面板处理
-      if (slashPanelOpen || mentionPanelOpen) {
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Escape') {
+      // 任一 overlay 打开时，拦截导航键，让面板处理
+      if (activeOverlay !== null) {
+        if (
+          e.key === 'ArrowDown' ||
+          e.key === 'ArrowUp' ||
+          e.key === 'Enter' ||
+          e.key === 'Escape'
+        ) {
           e.preventDefault()
           return
         }
@@ -267,7 +286,7 @@ export function InputArea({
         }
       }
     },
-    [isRunning, onAbort, handleSend, slashPanelOpen, mentionPanelOpen]
+    [isRunning, onAbort, handleSend, activeOverlay]
   )
 
   // 自适应高度
@@ -299,15 +318,20 @@ export function InputArea({
             attachments={attachments}
             removable
             onRemove={handleRemoveAttachment}
-            onPreview={onFilePreview ? (att) => onFilePreview({
-              name: att.name,
-              content: att.content,
-              encoding: att.encoding,
-              mimeType: att.mimeType,
-              thumbnail: att.thumbnail,
-              size: att.size,
-              type: att.type,
-            }) : undefined}
+            onPreview={
+              onFilePreview
+                ? (att) =>
+                    onFilePreview({
+                      name: att.name,
+                      content: att.content,
+                      encoding: att.encoding,
+                      mimeType: att.mimeType,
+                      thumbnail: att.thumbnail,
+                      size: att.size,
+                      type: att.type
+                    })
+                : undefined
+            }
           />
         </div>
       )}
@@ -318,11 +342,11 @@ export function InputArea({
         className={cn(
           'relative rounded-[12px] border-2 bg-input-bg transition-colors',
           'border-border focus-within:border-primary',
-          isDragOver && 'border-primary/50',
+          isDragOver && 'border-primary/50'
         )}
       >
         {/* 斜杠指令面板 */}
-        {slashPanelOpen && (
+        {activeOverlay === 'slash' && (
           <SlashCommandPanel
             query={(() => {
               const slashIdx = text.lastIndexOf('/')
@@ -343,18 +367,18 @@ export function InputArea({
                 const after = spaceIdx === -1 ? '' : afterSlash.slice(spaceIdx)
                 updateText(`${before}${insertText}${after}`)
               }
-              setSlashPanelOpen(false)
+              setActiveOverlay(null)
               textareaRef.current?.focus()
             }}
             onClose={() => {
-              setSlashPanelOpen(false)
+              setActiveOverlay(null)
             }}
           />
         )}
 
-        {/* @ 会话引用面板 */}
-        {mentionPanelOpen && (
-          <MentionPanel
+        {/* @ 文件/会话引用面板（AionUi 风格，替代 MentionPanel） */}
+        {activeOverlay === 'mention' && (
+          <AtFileMenu
             query={(() => {
               const atIdx = text.lastIndexOf('@')
               if (atIdx === -1) return ''
@@ -364,20 +388,21 @@ export function InputArea({
             })()}
             sessions={sessions}
             activeSessionId={activeSessionId}
-            onSelect={(session) => {
-              // 将 @搜索词 替换为 @[会话标题]
+            onSelect={(item: AtFileMenuItem) => {
+              // 将 @搜索词 替换为 @[label]
               const atIdx = text.lastIndexOf('@')
               if (atIdx === -1) return
               const before = text.slice(0, atIdx)
               const afterAt = text.slice(atIdx + 1)
               const spaceIdx = afterAt.search(/[\s\n]/)
               const after = spaceIdx === -1 ? '' : afterAt.slice(spaceIdx)
-              updateText(`${before}@[${session.title}] ${after}`)
-              setMentionPanelOpen(false)
+              // 统一格式：@[label]（未来可根据 item.type 区分 file/session/agent）
+              updateText(`${before}@[${item.label}] ${after}`)
+              setActiveOverlay(null)
               textareaRef.current?.focus()
             }}
             onClose={() => {
-              setMentionPanelOpen(false)
+              setActiveOverlay(null)
             }}
           />
         )}
@@ -394,7 +419,7 @@ export function InputArea({
             'w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm leading-relaxed',
             'text-text placeholder:text-hint',
             'focus-visible:outline-none',
-            'disabled:cursor-not-allowed disabled:opacity-50',
+            'disabled:cursor-not-allowed disabled:opacity-50'
           )}
           aria-label="消息输入"
           onChange={(e) => {
@@ -407,43 +432,45 @@ export function InputArea({
             // 检测 / 唤起指令面板（仅在行首或空白后输入 /）
             if (lastChar === '/') {
               const beforeSlash = newValue.slice(0, -1)
-              if (beforeSlash.trim() === '' || beforeSlash.endsWith(' ') || beforeSlash.endsWith('\n')) {
-                setSlashPanelOpen(true)
-                setMentionPanelOpen(false)
+              if (
+                beforeSlash.trim() === '' ||
+                beforeSlash.endsWith(' ') ||
+                beforeSlash.endsWith('\n')
+              ) {
+                setActiveOverlay('slash')
               }
             }
             // 检测 @ 唤起会话引用面板（输入 @ 即可，但不在邮箱等场景）
             if (lastChar === '@') {
               const beforeAt = newValue.slice(0, -1)
               if (!beforeAt.endsWith('.') && !beforeAt.match(/[a-zA-Z]$/)) {
-                setMentionPanelOpen(true)
-                setSlashPanelOpen(false)
+                setActiveOverlay('mention')
               }
             }
 
             // 斜杠面板状态更新
-            if (slashPanelOpen) {
+            if (activeOverlay === 'slash') {
               const slashIdx = newValue.lastIndexOf('/')
               if (slashIdx === -1) {
-                setSlashPanelOpen(false)
+                setActiveOverlay(null)
               } else {
                 // 斜杠后如果输入了空格，认为命令完成，关闭面板
                 const afterSlash = newValue.slice(slashIdx + 1)
                 if (afterSlash.includes(' ') || afterSlash.includes('\n')) {
-                  setSlashPanelOpen(false)
+                  setActiveOverlay(null)
                 }
               }
             }
             // @ 面板状态更新
-            if (mentionPanelOpen) {
+            if (activeOverlay === 'mention') {
               const atIdx = newValue.lastIndexOf('@')
               if (atIdx === -1) {
-                setMentionPanelOpen(false)
+                setActiveOverlay(null)
               } else {
                 // @ 后如果输入了空格，认为引用完成，关闭面板
                 const afterAt = newValue.slice(atIdx + 1)
                 if (afterAt.includes(' ') || afterAt.includes('\n')) {
-                  setMentionPanelOpen(false)
+                  setActiveOverlay(null)
                 }
               }
             }
@@ -459,7 +486,7 @@ export function InputArea({
               className={cn(
                 'inline-flex size-7 shrink-0 items-center justify-center rounded-md',
                 'text-subtle hover:bg-surface-3 hover:text-text',
-                'transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                'transition-colors disabled:cursor-not-allowed disabled:opacity-50'
               )}
               onClick={() => void handleAttachClick()}
               disabled={disabled}
@@ -467,15 +494,11 @@ export function InputArea({
             >
               <Paperclip className="size-4" aria-hidden="true" />
             </button>
-            <span className="hidden text-xs text-hint sm:inline">
-              / 唤起指令面板
-            </span>
+            <span className="hidden text-xs text-hint sm:inline">/ 唤起指令面板</span>
           </div>
 
           {/* 中间：发送快捷键提示 */}
-          <span className="hidden text-xs text-hint md:inline">
-            Enter 发送 · Shift+Enter 换行
-          </span>
+          <span className="hidden text-xs text-hint md:inline">Enter 发送 · Shift+Enter 换行</span>
 
           {/* 右侧：权限 + 模型选择 + 发送/中断 */}
           <div className="flex items-center gap-2">
