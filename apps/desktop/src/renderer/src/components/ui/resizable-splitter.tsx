@@ -1,112 +1,56 @@
-import { useRef, useCallback, type ReactElement } from 'react'
+import { useResizableSplit } from '@/hooks/ui/use-resizable-split'
 import { cn } from '@/lib/utils'
 
-// ── 类型定义 ──
-
 interface ResizableSplitterProps {
-  /** 分隔方向 */
   direction: 'horizontal' | 'vertical'
-  /** 当前面板尺寸（px） */
   size: number
-  /** 最小尺寸（px） */
   minSize?: number
-  /** 最大尺寸（px） */
   maxSize?: number
-  /** 尺寸变化回调 */
   onSizeChange: (size: number) => void
-  /** 是否折叠（折叠时不显示拖拽条） */
   collapsed?: boolean
-  /**
-   * 被调整面板在分隔条的哪一侧
-   * - horizontal: 'left' = 拖拽向右增大（左侧面板），'right' = 拖拽向左增大（右侧面板）
-   * - vertical: 'top' = 拖拽向下增大，'bottom' = 拖拽向上增大
-   */
   side?: 'left' | 'right' | 'top' | 'bottom'
-  /** 额外类名 */
   className?: string
+  storageKey?: string
+  unit?: 'ratio' | 'px'
 }
 
-// ── 主组件 ──
+export function ResizableSplitter(props: ResizableSplitterProps) {
+  const {
+    direction,
+    size,
+    minSize = 200,
+    maxSize = 600,
+    onSizeChange,
+    collapsed = false,
+    side = 'right',
+    className,
+    storageKey,
+    unit = 'px',
+  } = props
 
-/**
- * ResizableSplitter：可拖拽分隔条
- *
- * 拖拽时实时更新面板尺寸
- */
-export function ResizableSplitter({
-  direction,
-  size,
-  minSize = 200,
-  maxSize = 600,
-  onSizeChange,
-  collapsed = false,
-  side,
-  className,
-}: ResizableSplitterProps): ReactElement {
-  const isDragging = useRef(false)
-  const startPos = useRef(0)
-  const startSize = useRef(0)
-
-  // 推断默认 side：horizontal 默认 right，vertical 默认 bottom
-  const effectiveSide = side ?? (direction === 'horizontal' ? 'right' : 'bottom')
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault()
-      isDragging.current = true
-      startPos.current = direction === 'horizontal' ? e.clientX : e.clientY
-      startSize.current = size
-
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        if (!isDragging.current) return
-        const currentPos = direction === 'horizontal' ? moveEvent.clientX : moveEvent.clientY
-        // left/top 侧：拖拽正方向（右/下）增大；right/bottom 侧：拖拽反方向（左/上）增大
-        const delta = (effectiveSide === 'left' || effectiveSide === 'top')
-          ? currentPos - startPos.current
-          : startPos.current - currentPos
-        const newSize = Math.min(maxSize, Math.max(minSize, startSize.current + delta))
-        onSizeChange(newSize)
-      }
-
-      const handleMouseUp = () => {
-        isDragging.current = false
-        document.removeEventListener('mousemove', handleMouseMove)
-        document.removeEventListener('mouseup', handleMouseUp)
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-      }
-
-      document.addEventListener('mousemove', handleMouseMove)
-      document.addEventListener('mouseup', handleMouseUp)
-      document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize'
-      document.body.style.userSelect = 'none'
-    },
-    [direction, size, minSize, maxSize, onSizeChange, effectiveSide],
-  )
-
-  if (collapsed) return <></>
+  const split = useResizableSplit({
+    defaultWidth: size,
+    minWidth: minSize,
+    maxWidth: maxSize,
+    storageKey,
+    unit,
+    onResize: onSizeChange,
+  })
 
   return (
     <div
       className={cn(
-        'shrink-0 group relative z-10',
-        direction === 'horizontal'
-          ? 'w-[6px] cursor-col-resize before:absolute before:inset-x-[-3px] before:inset-y-0 before:content-[""]'
-          : 'h-[6px] cursor-row-resize before:absolute before:inset-y-[-3px] before:inset-x-0 before:content-[""]',
-        'bg-surface-2 hover:bg-surface-3 active:bg-primary/10',
-        'transition-colors duration-150 ease-out',
+        'group relative flex items-center justify-center',
+        direction === 'horizontal' ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize',
+        collapsed && 'pointer-events-none opacity-0',
         className,
       )}
-      onMouseDown={handleMouseDown}
+      aria-orientation={direction === 'horizontal' ? 'vertical' : 'horizontal'}
+      data-slot="resizable-splitter"
+      data-collapsed={collapsed}
+      data-side={side}
     >
-      {/* 中心手柄装饰：32px 长细条 */}
-      <div
-        className={cn(
-          'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none',
-          'bg-border group-hover:bg-subtle group-active:bg-primary/50 transition-colors duration-150 ease-out',
-          direction === 'horizontal' ? 'w-[2px] h-[32px]' : 'w-[32px] h-[2px]',
-        )}
-      />
+      {split.dragHandle}
     </div>
   )
 }
