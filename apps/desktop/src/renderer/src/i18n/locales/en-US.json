@@ -32,7 +32,8 @@
     "type": "Type",
     "details": "Details",
     "yes": "Yes",
-    "no": "No"
+    "no": "No",
+    "saved": "Saved"
   },
   "errors": {
     "internal": "Internal server error",

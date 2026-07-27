@@ -32,7 +32,8 @@
     "type": "类型",
     "details": "详情",
     "yes": "是",
-    "no": "否"
+    "no": "否",
+    "saved": "已保存"
   },
   "errors": {
     "internal": "服务器内部错误",

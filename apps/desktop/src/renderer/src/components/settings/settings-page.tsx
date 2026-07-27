@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { XIcon, SettingsIcon, PlugIcon, LayersIcon, BotIcon, ShieldIcon, SlidersHorizontalIcon, InfoIcon, ClockIcon } from 'lucide-react'
+import { XIcon, SettingsIcon, PlugIcon, LayersIcon, BotIcon, ShieldIcon, SlidersHorizontalIcon, InfoIcon, ClockIcon, PaletteIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ProviderManager } from './provider-manager'
 import { GeneralSettings } from './general-settings'
@@ -9,6 +9,7 @@ import { SecurityPage } from './security-page'
 import { AgentPage } from './agent-page'
 import { ModelsPage } from './models-page'
 import { CronPage } from './cron-page'
+import { AppearancePage } from './appearance-page'
 
 export type SettingsSection =
   | 'providers'
@@ -18,6 +19,7 @@ export type SettingsSection =
   | 'general'
   | 'cron'
   | 'about'
+  | 'appearance'
 
 interface SettingsPageProps {
   onClose: () => void
@@ -36,6 +38,7 @@ const navItems: NavItem[] = [
   { id: 'security', label: '权限与安全', icon: ShieldIcon },
   { id: 'cron', label: '定时任务', icon: ClockIcon },
   { id: 'general', label: '通用设置', icon: SlidersHorizontalIcon },
+  { id: 'appearance', label: '外观', icon: PaletteIcon },
   { id: 'about', label: '关于', icon: InfoIcon }
 ]
 
@@ -105,6 +108,7 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
           {section === 'security' && <SecurityPage />}
           {section === 'cron' && <CronPage />}
           {section === 'general' && <GeneralSettings />}
+          {section === 'appearance' && <AppearancePage />}
           {section === 'about' && <AboutPage />}
         </main>
       </div>
