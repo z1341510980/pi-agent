@@ -1,10 +1,10 @@
-# P0 Agent 平台 UI 改造实现计划
+# P0 Agent 平台 Chat 翔实改造实现计划
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 按 `AionUi-借鉴分析报告.md` 中 P0 优先级矩阵，让 pi-agent 作为通用 Agent 平台的 UI/交互能力对齐 AionUi，让任何 Agent 任务都受益。
+**目标：** 参考 AionUi 的 UI 风格（用户确认很喜欢），把 pi-agent 的 chat 部分做翔实——消息流视觉层级、工具调用卡片、输入区交互、流式状态、设置页范式全部对齐 AionUi 设计模式；同时保留已设计的 Runtime 选择器、工具聚合+inline 确认、Team SSE 流式三个子系统。**主题切换 UI 暂缓**（用户指示需大量考核后再做），但先引入语义 token 体系打底。
 
-**架构：** 在 pi-agent 现有 `useState<AppView>` 视图切换 + Zustand + TanStack Query + Tailwind v4 CSS-first + radix-ui shadcn 体系上，新增 Team/Runtime/Theme 三个独立子系统，重构 ChatLayout 为三栏可持久化布局，把 ConfirmationDialog 改为消息流内联。后端 Fastify + bytenode 不动，仅在前端补可视化层。
+**架构：** 在 pi-agent 现有 `useState<AppView>` 视图切换 + Zustand + TanStack Query + Tailwind v4 CSS-first + radix-ui shadcn 体系上，分 6 个 Stage 推进：Stage 1 引入 AionUi 风格语义 token 到 main.css（不做切换 UI）；Stage 2 翔实增强 chat 组件（message-bubble/tool-call-card/input-area/streaming-indicator）+ chat-workspace 改 flex-basis 共存（不动 resizable-splitter 组件）；Stage 3-5 保留原 Runtime/工具聚合/Team SSE 设计；Stage 6 设置页引入 SettingsPageHeader/PreferenceRow 范式 + 重写 Appearance tab。后端仅动已确认的 3 项（Team SSE/Confirmation 扩展/Team discussion 路由）。
 
 **技术栈：** React 19 / Tailwind v4 / radix-ui (统一包) / Zustand v5 curried / TanStack Query / @xyflow/react / TipTap / lucide-react / framer-motion。**禁用** react-router、UnoCSS、Arco、@radix-ui/* 分包。
 
@@ -16,10 +16,17 @@
 
 - `apps/agent-server/src/plugins/novel-plugin/**`
 - `apps/desktop/src/renderer/src/components/novel/**`
+- `apps/desktop/src/renderer/src/components/shared/conversation/**`（novel 前端独立消息流）
 - `apps/desktop/src/renderer/src/stores/novel-*.ts`
 - `apps/desktop/src/renderer/src/hooks/use-novel-*.ts` / `use-chapter-chat.ts`
 - `apps/desktop/src/renderer/src/api/novel-*.ts`
 - `apps/desktop/src/renderer/src/lib/novel-utils.ts` / `matrix-viewport.ts`
+- **唯一耦合点**：`novel-conversation-panel.tsx` 第 19 行 `import { ErrorCard } from '@/components/chat/error-card'`——改造 chat 时**不得破坏 ErrorCard 导出签名**
+
+### 严格禁止修改的组件（用户已确认）
+
+- `apps/desktop/src/renderer/src/components/ui/resizable-splitter.tsx`——小说部分的分栏拖动组件已完善合理，**不动组件本身**；chat-workspace 如需分栏改用 flex-basis 共存模式（切换 Preview 不卸载 chat DOM），不依赖 resizable-splitter 改造
+- `apps/desktop/src/renderer/src/hooks/ui/use-resizable-split.ts`——同上，不动
 
 ### 共享层只增不删不改签名
 
@@ -28,7 +35,7 @@
 - `apps/desktop/src/renderer/src/hooks/use-websocket.ts` / `use-realtime-events.ts` 的现有导出签名（只允许新增事件类型）
 - `apps/desktop/src/renderer/src/components/ui/*` 的现有 variant 签名
 - `apps/desktop/src/renderer/src/i18n/index.tsx` 的 `useTranslation` 返回值签名
-- `apps/desktop/src/renderer/src/assets/main.css` 的现有 `--color-*` / `--radius-*` / `--shadow-*` 变量
+- `apps/desktop/src/renderer/src/assets/main.css` 的现有 `--color-*` / `--radius-*` / `--shadow-*` / `--surface-*` / `--text-*` 变量——**Stage 1 只新增 `--bg-1..10` / `--t-primary` 等 AionUi 风格 token，不删不改现有变量**，新组件优先用新 token，旧组件保持原引用
 
 ### 后端改动范围（用户已确认 A/B/C 全选）
 
@@ -78,24 +85,17 @@ P0 允许动 `apps/agent-server/**`，但**仅限以下 3 项**，其他后端�
 apps/desktop/src/renderer/src/
 ├── components/
 │   ├── chat/
+│   │   ├── code-block.tsx                       # Stage 2（带复制按钮的代码块，markdown 渲染复用）
+│   │   ├── message-hover-toolbar.tsx           # Stage 2（消息 hover 工具栏：复制/重发/引用）
+│   │   ├── tool-call-field.tsx                 # Stage 2（工具调用结构化字段渲染，替代裸 <pre>）
+│   │   ├── at-file-menu.tsx                    # Stage 2（@文件 mention 菜单，扩展现有 mention-panel）
 │   │   ├── message-tool-group.tsx              # Stage 4
 │   │   ├── message-tool-group-summary.tsx      # Stage 4
 │   │   ├── message-permission-inline.tsx        # Stage 4（替代 confirmation-dialog 的内联版）
 │   │   ├── collapsible-content.tsx             # Stage 4
-│   │   ├── runtime-selector-pill.tsx           # Stage 3
-│   │   ├── runtime-selector-menu.tsx            # Stage 3
 │   │   ├── command-queue-panel.tsx             # Stage 4
-│   │   └── preview-panel/
-│   │       ├── preview-panel.tsx               # Stage 2
-│   │       ├── preview-tabs.tsx                 # Stage 2
-│   │       └── viewers/
-│   │           ├── markdown-viewer.tsx          # Stage 2
-│   │           ├── code-viewer.tsx              # Stage 2
-│   │           ├── image-viewer.tsx             # Stage 2
-│   │           └── url-viewer.tsx               # Stage 2
-│   ├── layout/
-│   │   └── titlebar/
-│   │       └── index.tsx                        # Stage 2
+│   │   ├── runtime-selector-pill.tsx           # Stage 3
+│   │   └── runtime-selector-menu.tsx            # Stage 3
 │   ├── team/                                    # Stage 5
 │   │   ├── team-page.tsx
 │   │   ├── team-chat-view.tsx
@@ -110,32 +110,20 @@ apps/desktop/src/renderer/src/
 │   │       ├── use-team-member-colors.ts        # Stage 5
 │   │       └── team-identity-context.tsx
 │   ├── settings/
-│   │   ├── appearance-page.tsx                  # Stage 1
-│   │   ├── theme-preset-modal.tsx              # Stage 1
-│   │   └── font-size-stepper.tsx                # Stage 1
+│   │   ├── settings-page-header.tsx             # Stage 6（title/desc/actions 范式，借鉴 AionUi）
+│   │   ├── preference-row.tsx                  # Stage 6（标签左控件右 + divide-y 标准行）
+│   │   ├── appearance-page.tsx                  # Stage 6（重写：字号 stepper / 缩放 control / 主题预览画廊但不做切换逻辑）
+│   │   ├── font-size-stepper.tsx               # Stage 6（- [值] + 重置，tabular-nums）
+│   │   └── scale-control.tsx                   # Stage 6（滑块 + ± + 百分比，拖动/落盘分离）
 │   └── ui/
 │       └── dropdown-menu.tsx                    # Stage 3 (shadcn add)
 ├── hooks/
-│   ├── ui/
-│   │   ├── use-resizable-split.ts               # Stage 2（核心 hook）
-│   │   ├── use-workspace-collapse.ts            # Stage 2
-│   │   ├── use-layout-constraints.ts            # Stage 2
-│   │   └── use-font-sizes.ts                     # Stage 1
+│   └── ui/
+│       └── use-font-sizes.ts                    # Stage 6（字号阶梯 + localStorage 持久化）
 ├── stores/
 │   ├── team-store.ts                            # Stage 5
-│   ├── runtime-store.ts                         # Stage 3
-│   └── theme-store.ts                           # Stage 1
+│   └── runtime-store.ts                         # Stage 3
 ├── utils/
-│   ├── theme/
-│   │   ├── apply-theme.ts                       # Stage 1
-│   │   ├── system-appearance.ts                 # Stage 1
-│   │   ├── custom-css-processor.ts              # Stage 1
-│   │   ├── builtin-themes.ts                   # Stage 1
-│   │   └── presets/
-│   │       ├── pro-dark.css                     # Stage 1（CSS ?raw 导入）
-│   │       ├── pro-light.css                   # Stage 1
-│   │       ├── focus-sepia.css                 # Stage 1
-│   │       └── cyber-neon.css                  # Stage 1
 │   ├── agent/
 │   │   ├── runtime-types.ts                    # Stage 3
 │   │   └── runtime-registry.ts                 # Stage 3
@@ -144,7 +132,6 @@ apps/desktop/src/renderer/src/
 ├── api/
 │   └── team-client.ts                          # Stage 5
 └── types/
-    ├── theme.ts                                 # Stage 1
     ├── runtime.ts                              # Stage 3
     └── team.ts                                 # Stage 5
 ```
@@ -163,20 +150,20 @@ apps/agent-server/src/
 
 | 文件 | Stage | 改动概要 |
 |---|---|---|
+| `apps/desktop/src/renderer/src/assets/main.css` | 1 | 新增 `--bg-1..10` / `--t-primary/secondary/tertiary` / `--fill-0..3` 语义 token（AionUi 风格），不删现有 `--surface-*` / `--text-*` / `--color-*` |
 | `apps/desktop/src/renderer/src/App.tsx` | 2/3/5 | 新增 `AppView = 'team'`，加 RailButton，加 Team 视图分支 |
-| `apps/desktop/src/renderer/src/components/chat/chat-workspace.tsx` | 2 | 重构为三栏：Sider \| Chat \| Preview；header 改用新 Titlebar |
-| `apps/desktop/src/renderer/src/components/ui/resizable-splitter.tsx` | 2 | 升级为基于 `useResizableSplit` hook 的薄包装（保留旧 API 向后兼容） |
+| `apps/desktop/src/renderer/src/components/chat/chat-workspace.tsx` | 2 | 改为 flex-basis 共存（切换 Preview 不卸载 chat DOM，保留滚动位置），header 整合 runtime pill |
+| `apps/desktop/src/renderer/src/components/chat/message-bubble.tsx` | 2 | 新增 hover 工具栏（复制/重发/引用）+ 代码块复制按钮；user 气泡圆角缺角对齐 AionUi |
+| `apps/desktop/src/renderer/src/components/chat/tool-call-card.tsx` | 2/4 | Stage 2：结构化字段渲染（tool-call-field）+ `badge-breathing` 呼吸动画；Stage 4：添加 `groupId` prop |
+| `apps/desktop/src/renderer/src/components/chat/input-area.tsx` | 2 | @mention 扩展支持文件（at-file-menu），slash command overlay 互斥管理 |
+| `apps/desktop/src/renderer/src/components/chat/streaming-indicator.tsx` | 2 | 接入真实 step/tool 状态（替代硬编码"正在分析你的需求…"） |
 | `apps/desktop/src/renderer/src/components/chat/model-selector.tsx` | 3 | 改为二级菜单：第一级 runtime，第二级 model/agent |
-| `apps/desktop/src/renderer/src/components/chat/tool-call-card.tsx` | 4 | 添加 `groupId` prop 支持聚合内嵌渲染 |
-| `apps/desktop/src/renderer/src/components/chat/confirmation-dialog.tsx` | 4 | 标记为 deprecated，仍保留向后兼容；实际渲染迁移到 `message-permission-inline.tsx` |
+| `apps/desktop/src/renderer/src/components/chat/confirmation-dialog.tsx` | 4 | 标记 deprecated，保留向后兼容；实际渲染迁移到 `message-permission-inline.tsx` |
 | `apps/desktop/src/renderer/src/components/chat/message-stream.tsx` | 4 | 在 ToolCall 序列化前调用 `normalizeToolGroups` 聚合 |
-| `apps/desktop/src/renderer/src/components/theme-provider.tsx` | 1 | 升级为多主题引擎，保留 `dark/light/system` 兼容入口 |
-| `apps/desktop/src/renderer/src/components/settings/settings-page.tsx` | 1 | 新增 Appearance 入口 |
-| `apps/desktop/src/renderer/src/components/shared/conversation/message-bubble.tsx` | 5 | 支持 `teamMemberColor` prop |
-| `apps/desktop/src/renderer/src/assets/main.css` | 1 | 仅新增 `--font-size-*` CSS 变量，不动现有 |
-| `apps/desktop/src/renderer/src/stores/index.ts` | 1/3/5 | 新增 `theme-store` / `runtime-store` / `team-store` 导出 |
-| `apps/desktop/src/renderer/src/i18n/locales/zh-CN.json` | 1-5 | 新增 key（不删现有） |
-| `apps/desktop/src/renderer/src/i18n/locales/en-US.json` | 1-5 | 同步新增 key |
+| `apps/desktop/src/renderer/src/components/settings/settings-page.tsx` | 6 | 引入 SettingsPageHeader + PreferenceRow 范式，重写 Appearance tab |
+| `apps/desktop/src/renderer/src/stores/index.ts` | 3/5/6 | 新增 `runtime-store` / `team-store` 导出 |
+| `apps/desktop/src/renderer/src/i18n/locales/zh-CN.json` | 1-6 | 新增 key（不删现有） |
+| `apps/desktop/src/renderer/src/i18n/locales/en-US.json` | 1-6 | 同步新增 key |
 | `apps/desktop/src/renderer/src/hooks/use-websocket.ts` | 5 | 新增 `team_progress` / `team_member_status` 事件类型（向后兼容） |
 | `apps/agent-server/src/core/agent/team-manager.ts` | 5 | 新增 `executeAsync`（不阻塞，返回 executionId + eventBus 推进度）+ `discussAsync`（薄封装 discussion-engine）；`execute()` 旧同步 API 保留兼容 |
 | `apps/agent-server/src/routes/teams.route.ts` | 5 | `POST /:id/execute` 改为立即返回 `{ executionId, teamId }`；新增 `GET /api/teams/executions/:eid/stream`（SSE）端点 |
@@ -188,22 +175,11 @@ apps/agent-server/src/
 
 ## 共享类型定义
 
-### `types/theme.ts`（Stage 1）
+### `types/font-sizes.ts`（Stage 6）
+
+> 注：原 `types/theme.ts` 已随主题引擎一起砍掉（用户指示主题切换暂缓）。仅保留字号控制所需类型，移至 `types/font-sizes.ts`。
 
 ```typescript
-export type ThemeAppearance = 'light' | 'dark' | 'system'
-
-export interface Theme {
-  id: string
-  name: string
-  appearance: ThemeAppearance
-  tokens?: Record<string, string>   // 结构化 token（前向兼容）
-  css?: string                       // escape hatch（含 :root { --xxx } 块）
-  builtin: boolean
-  created_at: number
-  updated_at: number
-}
-
 export type FontSizeKey = 'display' | 'heading' | 'body' | 'caption' | 'micro'
 
 export interface FontSizes {
@@ -279,7 +255,533 @@ export type {
 
 ---
 
-## Stage 1：主题引擎 + 字号控制（P0-5）
+## Stage 1：语义 token 体系引入（P0-6）
+
+**目标：** 在 `main.css` 引入 AionUi 风格的语义 token（`--bg-1..10` / `--t-primary/secondary/tertiary` / `--fill-0..3`），为后续 Stage 2-6 的新组件提供统一视觉语言。**不做主题切换 UI**（用户指示暂缓，需大量考核后再做），不动 `ThemeProvider`。
+
+**约束：** 只新增 CSS 变量，不删不改现有 `--surface-*` / `--text-*` / `--color-*`。新组件优先用新 token，旧组件保持原引用。
+
+### 任务 1.1：main.css 新增 AionUi 风格语义 token
+
+**文件：**
+- 修改：`apps/desktop/src/renderer/src/assets/main.css`
+
+- [ ] **步骤 1：在 `@theme inline` 块末尾新增语义 token**
+
+在 `@theme inline { ... }` 块内，现有 `--surface-*` / `--text-*` 之后，新增以下 token（值映射到现有变量，保证视觉一致）：
+
+```css
+/* === AionUi 风格语义 token（Stage 1 引入，主题切换 UI 暂缓） === */
+/* 背景层级：bg-1 最浅（基础底色）→ bg-10 最深，数字越大分隔越强 */
+--bg-1: var(--surface-1);
+--bg-2: var(--surface-2);
+--bg-3: var(--surface-3);
+--bg-4: var(--surface-4);
+--bg-5: color-mix(in srgb, var(--surface-3) 80%, var(--color-border));
+--bg-6: color-mix(in srgb, var(--surface-3) 60%, var(--color-border));
+--bg-7: color-mix(in srgb, var(--surface-2) 70%, var(--color-border));
+--bg-8: color-mix(in srgb, var(--surface-2) 50%, var(--color-border));
+--bg-9: color-mix(in srgb, var(--surface-1) 70%, var(--color-border));
+--bg-10: var(--color-border);
+/* border 映射到 bg-3，与 AionUi 一致 */
+--border-1: var(--bg-3);
+
+/* 文字层级：t-primary 最强 → t-disabled 最弱 */
+--t-primary: var(--text);
+--t-secondary: var(--text-secondary);
+--t-tertiary: var(--text-tertiary, var(--text-secondary));
+--t-disabled: color-mix(in srgb, var(--text) 40%, transparent);
+--t-quaternary: color-mix(in srgb, var(--text) 25%, transparent);
+
+/* 填充层级：fill-0 透明 → fill-3 最强（hover/active 态） */
+--fill-0: transparent;
+--fill-1: color-mix(in srgb, var(--color-primary) 8%, transparent);
+--fill-2: color-mix(in srgb, var(--color-primary) 16%, transparent);
+--fill-3: color-mix(in srgb, var(--color-primary) 24%, transparent);
+
+/* 消息专用 */
+--message-user-bg: var(--bg-2);
+--message-tips-bg: color-mix(in srgb, var(--bg-1) 50%, transparent);
+```
+
+- [ ] **步骤 2：在 `:root` / `.dark` 中也补上对应映射**
+
+如果 `@theme inline` 之外的 `:root { }` 或 `.dark { }` 也定义了变量，在对应块末尾补上相同的 `--bg-*` / `--t-*` / `--fill-*` 映射，确保暗色模式下 token 也生效。
+
+- [ ] **步骤 3：验证 token 生效**
+
+启动 dev server，打开浏览器 DevTools → Elements → 在 `<html>` 上检查 `--bg-1` 等 CSS 变量是否定义。在 Console 执行：
+```js
+getComputedStyle(document.documentElement).getPropertyValue('--bg-3')
+```
+预期返回一个颜色值（非空字符串）。
+
+- [ ] **步骤 4：Commit**
+
+```bash
+git add apps/desktop/src/renderer/src/assets/main.css
+git commit -m "feat(stage1): add AionUi-style semantic tokens to main.css"
+```
+
+---
+
+## Stage 2：Chat 翔实增强（P0-2）
+
+**目标：** 参考 AionUi 的 chat UI 风格，翔实增强 pi-agent 的 chat 部分——消息流视觉层级、工具调用卡片、输入区交互、流式状态、chat-workspace 布局。**不动 `resizable-splitter` 组件**（小说分栏已完善），chat 与 Preview 共存用 flex-basis 实现（切换 Preview 不卸载 chat DOM）。
+
+**关键参考（AionUi，已用 codebase-memory-mcp 索引）：**
+- 消息渲染：`packages/desktop/src/renderer/pages/conversation/Messages/components/MessageText.tsx`（hover-reveal copy + 时间戳行）
+- 工具调用：`MessageToolCall.tsx` / `MessageToolGroupSummary.tsx`（`badge-breathing` 呼吸动画 + 结构化字段）
+- 输入区：`components/chat/SendBox/index.tsx`（三套 overlay 互斥：slash / @file / btw）
+- 代码块：`packages/desktop/src/renderer/components/Markdown/CodeBlock.tsx`（复制按钮 + 语言标签）
+
+### 任务 2.1：code-block.tsx（带复制按钮的代码块）
+
+**文件：**
+- 创建：`apps/desktop/src/renderer/src/components/chat/code-block.tsx`
+- 修改：`apps/desktop/src/renderer/src/components/chat/message-bubble.tsx`（markdown `code` 渲染复用 CodeBlock）
+
+- [ ] **步骤 1：编写 `code-block.tsx`**
+
+```typescript
+import { useState } from 'react'
+import { Check, Copy } from 'lucide-react'
+import { toast } from '@/hooks/use-toast'
+
+interface CodeBlockProps {
+  language: string
+  code: string
+  /** 标题栏显示的文件名（可选） */
+  filename?: string
+}
+
+export function CodeBlock({ language, code, filename }: CodeBlockProps) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      toast({ title: '复制失败', variant: 'destructive' })
+    }
+  }
+
+  return (
+    <div className="group relative my-2 overflow-hidden rounded-lg border border-[var(--border-1)] bg-[var(--bg-2)]">
+      <div className="flex items-center justify-between border-b border-[var(--border-1)] bg-[var(--bg-3)] px-3 py-1.5">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-medium text-[var(--t-secondary)]">{language}</span>
+          {filename && <span className="text-[11px] text-[var(--t-tertiary)]">{filename}</span>}
+        </div>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-[var(--t-tertiary)] opacity-0 transition-opacity hover:bg-[var(--fill-2)] hover:text-[var(--t-primary)] group-hover:opacity-100"
+          title="复制代码"
+        >
+          {copied ? <><Check className="h-3 w-3" /><span>已复制</span></> : <><Copy className="h-3 w-3" /><span>复制</span></>}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
+        <code className={`language-${language}`}>{code}</code>
+      </pre>
+    </div>
+  )
+}
+```
+
+- [ ] **步骤 2：在 `message-bubble.tsx` 的 markdown 渲染中复用 CodeBlock**
+
+找到 `react-markdown` 的 `components` prop，替换 `code` 渲染：
+
+```typescript
+components={{
+  code({ inline, className, children, ...props }) {
+    const match = /language-(\w+)/.exec(className || '')
+    const code = String(children).replace(/\n$/, '')
+    if (!inline && match) {
+      return <CodeBlock language={match[1]} code={code} />
+    }
+    return <code className={className} {...props}>{children}</code>
+  }
+}}
+```
+
+- [ ] **步骤 3：Commit**
+
+```bash
+git add apps/desktop/src/renderer/src/components/chat/code-block.tsx apps/desktop/src/renderer/src/components/chat/message-bubble.tsx
+git commit -m "feat(stage2): add CodeBlock with copy button, reuse in message-bubble"
+```
+
+### 任务 2.2：message-hover-toolbar.tsx + 改 message-bubble.tsx（hover 工具栏 + 圆角缺角）
+
+**文件：**
+- 创建：`apps/desktop/src/renderer/src/components/chat/message-hover-toolbar.tsx`
+- 修改：`apps/desktop/src/renderer/src/components/chat/message-bubble.tsx`
+
+**参考 AionUi：** `MessageText` 静态时干净，悬停给操作（copy / 时间戳行）。user 气泡圆角 `8px 0 8px 8px`（右上缺角）。
+
+- [ ] **步骤 1：编写 `message-hover-toolbar.tsx`**
+
+```typescript
+import { Copy, RefreshCw, Reply } from 'lucide-react'
+import { toast } from '@/hooks/use-toast'
+
+interface MessageHoverToolbarProps {
+  messageId: string
+  content: string
+  onRetry?: (id: string) => void
+  onQuote?: (id: string) => void
+}
+
+export function MessageHoverToolbar({ messageId, content, onRetry, onQuote }: MessageHoverToolbarProps) {
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content)
+      toast({ title: '已复制' })
+    } catch {
+      toast({ title: '复制失败', variant: 'destructive' })
+    }
+  }
+
+  return (
+    <div className="absolute -top-3 right-2 flex items-center gap-0.5 rounded-md border border-[var(--border-1)] bg-[var(--bg-1)] p-0.5 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
+      <button onClick={handleCopy} className="rounded p-1 hover:bg-[var(--fill-2)]" title="复制">
+        <Copy className="h-3 w-3 text-[var(--t-secondary)]" />
+      </button>
+      {onRetry && (
+        <button onClick={() => onRetry(messageId)} className="rounded p-1 hover:bg-[var(--fill-2)]" title="重发">
+          <RefreshCw className="h-3 w-3 text-[var(--t-secondary)]" />
+        </button>
+      )}
+      {onQuote && (
+        <button onClick={() => onQuote(messageId)} className="rounded p-1 hover:bg-[var(--fill-2)]" title="引用">
+          <Reply className="h-3 w-3 text-[var(--t-secondary)]" />
+        </button>
+      )}
+    </div>
+  )
+}
+```
+
+- [ ] **步骤 2：在 `message-bubble.tsx` 中接入 hover 工具栏 + user 圆角缺角**
+
+找到 user 消息的渲染分支，包裹一层 `group` 并接入工具栏：
+
+```typescript
+// user 消息：圆角缺角对齐 AionUi（右上缺角）
+<div className="group relative flex justify-end">
+  <div className="max-w-[80%] rounded-lg bg-[var(--message-user-bg)] px-3 py-2 text-sm" style={{ borderRadius: '8px 0 8px 8px' }}>
+    {/* ...existing content... */}
+  </div>
+  <MessageHoverToolbar messageId={msg.id} content={msg.content} onRetry={handleRetry} onQuote={handleQuote} />
+</div>
+
+// assistant 消息：无气泡背景，hover 出工具栏
+<div className="group relative w-full">
+  {/* ...existing markdown content... */}
+  <MessageHoverToolbar messageId={msg.id} content={msg.content} />
+</div>
+```
+
+- [ ] **步骤 3：Commit**
+
+```bash
+git add apps/desktop/src/renderer/src/components/chat/message-hover-toolbar.tsx apps/desktop/src/renderer/src/components/chat/message-bubble.tsx
+git commit -m "feat(stage2): add message hover toolbar + user bubble rounded corner"
+```
+
+### 任务 2.3：tool-call-field.tsx + 改 tool-call-card.tsx（结构化字段 + breathing 动画）
+
+**文件：**
+- 创建：`apps/desktop/src/renderer/src/components/chat/tool-call-field.tsx`
+- 修改：`apps/desktop/src/renderer/src/components/chat/tool-call-card.tsx`
+- 修改：`apps/desktop/src/renderer/src/assets/main.css`（新增 `badge-breathing` 动画）
+
+**参考 AionUi：** `MessageToolCall` 对 `replace/Edit` 工具走 diff 直渲；其他用 `Input/Output` 两段。`badge-breathing` 呼吸动画比 spinner 更轻量。
+
+- [ ] **步骤 1：在 main.css 新增 `badge-breathing` 动画**
+
+```css
+/* === Stage 2: badge-breathing 呼吸动画（工具调用 running 态） === */
+@keyframes badge-breathing {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.badge-breathing {
+  animation: badge-breathing 1.6s ease-in-out infinite;
+}
+```
+
+- [ ] **步骤 2：编写 `tool-call-field.tsx`（结构化字段渲染，替代裸 `<pre>`）**
+
+```typescript
+interface ToolCallFieldProps {
+  label: 'Input' | 'Output'
+  value: unknown
+  /** 是否截断长文本 */
+  maxLength?: number
+}
+
+export function ToolCallField({ label, value, maxLength = 500 }: ToolCallFieldProps) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  const displayText = text.length > maxLength ? text.slice(0, maxLength) + '\n... (截断)' : text
+
+  return (
+    <div className="mt-1.5">
+      <div className="mb-0.5 text-[10px] font-medium uppercase text-[var(--t-tertiary)]">{label}</div>
+      <pre className="overflow-x-auto rounded bg-[var(--bg-2)] p-2 text-[11px] leading-relaxed text-[var(--t-secondary)]">
+        <code>{displayText}</code>
+      </pre>
+    </div>
+  )
+}
+```
+
+- [ ] **步骤 3：改造 `tool-call-card.tsx`——用 ToolCallField 替代裸 `<pre>` + running 态加 breathing**
+
+找到 `tool-call-card.tsx` 中参数和结果的渲染部分，替换为：
+
+```typescript
+// 状态 Badge：running 时加 badge-breathing
+<Badge className={status === 'running' ? 'badge-breathing bg-[var(--fill-3)]' : ''}>
+  {statusLabel}
+</Badge>
+
+// 参数 + 结果：用 ToolCallField 结构化渲染
+<ToolCallField label="Input" value={args} />
+{partialResult !== undefined && <ToolCallField label="Output" value={partialResult} />}
+```
+
+- [ ] **步骤 4：Commit**
+
+```bash
+git add apps/desktop/src/renderer/src/components/chat/tool-call-field.tsx apps/desktop/src/renderer/src/components/chat/tool-call-card.tsx apps/desktop/src/renderer/src/assets/main.css
+git commit -m "feat(stage2): structured tool-call fields + breathing animation"
+```
+
+### 任务 2.4：at-file-menu.tsx + 改 input-area.tsx（@文件 mention + overlay 互斥）
+
+**文件：**
+- 创建：`apps/desktop/src/renderer/src/components/chat/at-file-menu.tsx`
+- 修改：`apps/desktop/src/renderer/src/components/chat/input-area.tsx`
+
+**参考 AionUi：** `AtFileMenu` + `SendBox` 三套 overlay 互斥（slash / @file / btw），`isOverlayOpen` 统一管理。
+
+- [ ] **步骤 1：编写 `at-file-menu.tsx`（@文件 mention 菜单）**
+
+```typescript
+import { useEffect, useState } from 'react'
+import { FileText, Folder } from 'lucide-react'
+import { getApi } from '@/api/http-client'
+
+interface AtFileMenuProps {
+  query: string
+  onSelect: (item: { type: 'file' | 'session' | 'agent'; id: string; label: string }) => void
+  onClose: () => void
+}
+
+export function AtFileMenu({ query, onSelect, onClose }: AtFileMenuProps) {
+  const [items, setItems] = useState<Array<{ type: 'file' | 'session' | 'agent'; id: string; label: string }>>([])
+
+  useEffect(() => {
+    // 调用 /api/files/search 或复用现有 session/agent 查询
+    const fetchItems = async () => {
+      const [files, sessions] = await Promise.all([
+        getApi<Array<{ id: string; name: string }>>('/files/search?q=' + encodeURIComponent(query)).catch(() => []),
+        getApi<Array<{ id: string; title: string }>>('/sessions?q=' + encodeURIComponent(query)).catch(() => []),
+      ])
+      setItems([
+        ...files.map(f => ({ type: 'file' as const, id: f.id, label: f.name })),
+        ...sessions.map(s => ({ type: 'session' as const, id: s.id, label: s.title })),
+      ])
+    }
+    if (query) fetchItems()
+  }, [query])
+
+  if (items.length === 0) return null
+
+  return (
+    <div className="absolute bottom-full left-0 mb-1 max-h-60 w-64 overflow-auto rounded-md border border-[var(--border-1)] bg-[var(--bg-1)] shadow-lg">
+      {items.map((item) => (
+        <button
+          key={`${item.type}-${item.id}`}
+          onClick={() => { onSelect(item); onClose() }}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-[var(--fill-1)]"
+        >
+          {item.type === 'file' ? <FileText className="h-3 w-3 text-[var(--t-tertiary)]" /> : <Folder className="h-3 w-3 text-[var(--t-tertiary)]" />}
+          <span className="truncate text-[var(--t-primary)]">{item.label}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+```
+
+- [ ] **步骤 2：改造 `input-area.tsx`——overlay 互斥管理**
+
+找到 `input-area.tsx` 中 slash command 和 mention 的触发逻辑，引入 `activeOverlay` 统一管理：
+
+```typescript
+type ActiveOverlay = 'slash' | 'at-file' | null
+const [activeOverlay, setActiveOverlay] = useState<ActiveOverlay>(null)
+
+// 输入 / 时开 slash，输入 @ 时开 at-file，互斥
+const handleInputChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+  const value = e.target.value
+  // ...existing logic...
+  if (value.endsWith('/') && activeOverlay !== 'slash') setActiveOverlay('slash')
+  else if (value.endsWith('@') && activeOverlay !== 'at-file') setActiveOverlay('at-file')
+  // 其他情况关闭 overlay
+}
+
+// 渲染时根据 activeOverlay 决定显示哪个面板
+{activeOverlay === 'slash' && <SlashCommandPanel ... />}
+{activeOverlay === 'at-file' && <AtFileMenu query={atQuery} onSelect={handleAtSelect} onClose={() => setActiveOverlay(null)} />}
+```
+
+- [ ] **步骤 3：Commit**
+
+```bash
+git add apps/desktop/src/renderer/src/components/chat/at-file-menu.tsx apps/desktop/src/renderer/src/components/chat/input-area.tsx
+git commit -m "feat(stage2): add @file mention menu + overlay mutual exclusion"
+```
+
+### 任务 2.5：改 streaming-indicator.tsx（接入真实 step 状态）
+
+**文件：**
+- 修改：`apps/desktop/src/renderer/src/components/chat/streaming-indicator.tsx`
+
+**现状：** 硬编码"正在分析你的需求…"文案，未接入真实状态。**改造：** 从消息流的 tool call / thinking 事件提取真实 step，动态显示。
+
+- [ ] **步骤 1：改造 streaming-indicator 接收 step prop**
+
+```typescript
+interface StreamingIndicatorProps {
+  /** 当前执行的真实步骤（从 message-stream 的 applyEvent 提取） */
+  step?: {
+    type: 'thinking' | 'tool_call' | 'tool_result' | 'text'
+    label: string
+  }
+}
+
+export function StreamingIndicator({ step }: StreamingIndicatorProps) {
+  const label = step?.label ?? '准备中...'
+  const iconClass = step?.type === 'tool_call' ? 'badge-breathing' : 'animate-pulse'
+
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 text-xs text-[var(--t-tertiary)]">
+      <span className={`h-1.5 w-1.5 rounded-full bg-[var(--color-primary)] ${iconClass}`} />
+      <span>{label}</span>
+    </div>
+  )
+}
+```
+
+- [ ] **步骤 2：在 `message-stream.tsx` 中提取当前 step 传给 StreamingIndicator**
+
+找到 `message-stream.tsx` 中渲染 `StreamingIndicator` 的位置，从最新消息的 `toolCalls` / `thinking` 状态提取 step：
+
+```typescript
+const currentStep = useMemo(() => {
+  const lastMsg = messages[messages.length - 1]
+  if (!lastMsg) return undefined
+  if (lastMsg.toolCalls?.some(tc => tc.status === 'running')) {
+    const running = lastMsg.toolCalls.find(tc => tc.status === 'running')
+    return { type: 'tool_call' as const, label: `调用工具: ${running?.name ?? ''}` }
+  }
+  if (lastMsg.thinking && !lastMsg.thinking.done) {
+    return { type: 'thinking' as const, label: '思考中...' }
+  }
+  return { type: 'text' as const, label: '生成回复...' }
+}, [messages])
+
+<StreamingIndicator step={currentStep} />
+```
+
+- [ ] **步骤 3：Commit**
+
+```bash
+git add apps/desktop/src/renderer/src/components/chat/streaming-indicator.tsx apps/desktop/src/renderer/src/components/chat/message-stream.tsx
+git commit -m "feat(stage2): streaming indicator with real step status"
+```
+
+### 任务 2.6：改 chat-workspace.tsx（flex-basis 共存，不动 resizable-splitter）
+
+**文件：**
+- 修改：`apps/desktop/src/renderer/src/components/chat/chat-workspace.tsx`
+
+**约束：** 不动 `resizable-splitter.tsx` 组件和 `use-resizable-split.ts` hook（小说分栏已完善）。chat 与 Preview 的共存用 CSS `flex-basis` 实现——切换 Preview 时调 flex-basis 不卸载 chat DOM，保留滚动位置与输入态。
+
+**参考 AionUi：** `ChatLayout` 切换 Preview 时 chat 区只调 flex-basis 不卸载 DOM，避免子组件 remount 丢状态。
+
+- [ ] **步骤 1：改造 chat-workspace 的 chat ↔ Preview 共存逻辑**
+
+找到 `chat-workspace.tsx` 中 Preview 面板的渲染逻辑，从条件渲染改为 flex-basis 控制：
+
+```typescript
+// 旧：条件渲染（卸载 chat DOM）
+// {showPreview ? <PreviewPanel /> : null}
+
+// 新：flex-basis 共存（不卸载 chat DOM）
+const [previewVisible, setPreviewVisible] = useState(false)
+
+<div className="flex h-full overflow-hidden">
+  {/* chat 主区：previewVisible 时 flex-basis 60%，否则 100% */}
+  <div
+    className="flex flex-col overflow-hidden transition-[flex-basis] duration-200"
+    style={{ flexBasis: previewVisible ? '60%' : '100%' }}
+  >
+    {/* chat 内容保持挂载，不卸载 */}
+    <MessageStream ... />
+    <InputArea ... />
+  </div>
+  {/* Preview 面板：previewVisible 时 flex-basis 40%，否则 flex-basis 0 + overflow hidden（DOM 保留但不占空间） */}
+  <div
+    className="flex flex-col overflow-hidden border-l border-[var(--border-1)] transition-[flex-basis] duration-200"
+    style={{ flexBasis: previewVisible ? '40%' : '0%' }}
+  >
+    {previewVisible && <FilePreviewPanel ... />}
+  </div>
+</div>
+```
+
+- [ ] **步骤 2：在 header 加 Preview 切换按钮**
+
+```typescript
+<Button variant="ghost" size="sm" onClick={() => setPreviewVisible(v => !v)} title="切换预览面板">
+  <PanelRight className={`h-4 w-4 ${previewVisible ? 'text-[var(--color-primary)]' : 'text-[var(--t-tertiary)]'}`} />
+</Button>
+```
+
+- [ ] **步骤 3：Commit**
+
+```bash
+git add apps/desktop/src/renderer/src/components/chat/chat-workspace.tsx
+git commit -m "feat(stage2): chat-workspace flex-basis coexistence (no resizable-splitter change)"
+```
+
+### 任务 2.7：Stage 2 验收清单
+
+- [ ] markdown 代码块显示语言标签 + 复制按钮（hover 出现，点击后变"已复制"1.5s）
+- [ ] user 消息气泡右上圆角缺角（`8px 0 8px 8px`），assistant 消息无气泡背景
+- [ ] 消息 hover 时顶部出现工具栏（复制/重发/引用），离开后消失
+- [ ] 工具调用卡片：running 态 Badge 有呼吸动画（`badge-breathing`），参数/结果用结构化 ToolCallField 渲染
+- [ ] 输入 `@` 弹出文件/会话 mention 菜单，输入 `/` 弹出 slash 命令，二者互斥
+- [ ] 流式时 StreamingIndicator 显示真实步骤（"调用工具: xxx" / "思考中..." / "生成回复..."）
+- [ ] 切换 Preview 面板时 chat 区不卸载（滚动位置、输入内容保留）
+- [ ] 新组件全部用 `--bg-*` / `--t-*` / `--fill-*` 语义 token，无硬编码颜色
+- [ ] 不修改 `resizable-splitter.tsx` / `use-resizable-split.ts`
+- [ ] 不修改 `components/novel/**` / `components/shared/conversation/**`
+- [ ] `chat/error-card.tsx` 导出签名不变（novel 唯一耦合点）
+
+---
+
+## ~~Stage 1（已废弃）：主题引擎 + 字号控制~~
+
+> **本 Stage 已废弃**（用户指示：主题切换功能不重要，需大量考核后再做）。字号控制移至 Stage 6。以下内容仅作存档参考，**不要执行**。
 
 **目标：** 在已有语义 token 基础上，新增主题预设系统、CSS 自定义样式处理、字号控制。保留 `dark/light/system` 兼容入口。
 

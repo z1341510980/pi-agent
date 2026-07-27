@@ -8,9 +8,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { RuntimeSelectorPill } from './runtime-selector-pill'
-import { RuntimeSelectorMenu } from './runtime-selector-menu'
-import { useRuntimeStore } from '@/stores/runtime-store'
 
 export interface ModelOption {
   provider: string
@@ -44,13 +41,13 @@ function parseKey(key: string): { provider: string; modelId: string } {
 }
 
 /**
- * OriginalModelSelector：模型选择器（Craft 风格）
+ * ModelSelector：模型选择器（Craft 风格）
  *
  * - 圆角无边框，背景 #F1F5F9
  * - 左侧紫色小圆点 + 模型名称
  * - 按 Provider 分组展示
  */
-function OriginalModelSelector({
+export function ModelSelector({
   models,
   value,
   onChange,
@@ -118,33 +115,5 @@ function OriginalModelSelector({
         )}
       </SelectContent>
     </Select>
-  )
-}
-
-/**
- * ModelSelector：模型选择器（集成 Runtime 切换）
- *
- * - runtime === 'chat-api'：渲染 RuntimeSelectorPill + 原始模型选择器（向后兼容）
- * - 其他 runtime：渲染 RuntimeSelectorPill + RuntimeSelectorMenu（Team / 插件 Agent）
- *
- * props 签名保持不变，chat-workspace / input-area 调用方无需修改。
- */
-export function ModelSelector(props: ModelSelectorProps): ReactElement {
-  const runtime = useRuntimeStore((s) => s.runtime)
-
-  if (runtime === 'chat-api') {
-    return (
-      <div className="flex items-center gap-1">
-        <RuntimeSelectorPill compact />
-        <OriginalModelSelector {...props} />
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex items-center gap-1">
-      <RuntimeSelectorPill compact />
-      <RuntimeSelectorMenu />
-    </div>
   )
 }
