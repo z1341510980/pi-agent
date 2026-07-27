@@ -92,13 +92,13 @@
   --shadow-overlay: 0 4px 12px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.06);
 
   /* ── 语义色补充 ── */
-  --color-warning: #F59E0B;
+  --color-warning: #f59e0b;
   --color-warning-foreground: #ffffff;
 
   /* ── 主色 tint 梯度（背景着色用）── */
   --color-primary-5: rgba(75, 63, 227, 0.05);
-  --color-primary-10: rgba(75, 63, 227, 0.10);
-  --color-primary-20: rgba(75, 63, 227, 0.20);
+  --color-primary-10: rgba(75, 63, 227, 0.1);
+  --color-primary-20: rgba(75, 63, 227, 0.2);
 
   /* ── Type Scale（Phase 3）── */
   --font-size-display: 20px;
@@ -111,6 +111,38 @@
   --line-height-caption: 16px;
   --font-size-micro: 11px;
   --line-height-micro: 14px;
+
+  /* === AionUi 风格语义 token（Stage 1 引入，主题切换 UI 暂缓） === */
+  /* 背景层级：bg-1 最浅（基础底色）→ bg-10 最深，数字越大分隔越强 */
+  --bg-1: var(--color-surface-1);
+  --bg-2: var(--color-surface-2);
+  --bg-3: var(--color-surface-3);
+  --bg-4: var(--color-surface-4);
+  --bg-5: color-mix(in srgb, var(--color-surface-3) 80%, var(--color-border));
+  --bg-6: color-mix(in srgb, var(--color-surface-3) 60%, var(--color-border));
+  --bg-7: color-mix(in srgb, var(--color-surface-2) 70%, var(--color-border));
+  --bg-8: color-mix(in srgb, var(--color-surface-2) 50%, var(--color-border));
+  --bg-9: color-mix(in srgb, var(--color-surface-1) 70%, var(--color-border));
+  --bg-10: var(--color-border);
+  /* border 映射到 bg-3，与 AionUi 一致 */
+  --border-1: var(--bg-3);
+
+  /* 文字层级：t-primary 最强 → t-disabled 最弱 */
+  --t-primary: var(--color-text);
+  --t-secondary: var(--color-text-secondary);
+  --t-tertiary: var(--color-subtle, var(--color-text-secondary));
+  --t-disabled: color-mix(in srgb, var(--color-text) 40%, transparent);
+  --t-quaternary: color-mix(in srgb, var(--color-text) 25%, transparent);
+
+  /* 填充层级：fill-0 透明 → fill-3 最强（hover/active 态） */
+  --fill-0: transparent;
+  --fill-1: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  --fill-2: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  --fill-3: color-mix(in srgb, var(--color-primary) 24%, transparent);
+
+  /* 消息专用 */
+  --message-user-bg: var(--bg-2);
+  --message-tips-bg: color-mix(in srgb, var(--bg-1) 50%, transparent);
 }
 
 /* ── Dark 主题：通过 .dark class 切换 ── */
@@ -165,11 +197,41 @@
   /* ── Phase 3 补充：深色模式阴影/语义色/tint ── */
   --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.16);
   --shadow-overlay: 0 4px 12px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.24);
-  --color-warning: #FBBF24;
+  --color-warning: #fbbf24;
   --color-warning-foreground: #171717;
   --color-primary-5: rgba(106, 111, 255, 0.05);
-  --color-primary-10: rgba(106, 111, 255, 0.10);
-  --color-primary-20: rgba(106, 111, 255, 0.20);
+  --color-primary-10: rgba(106, 111, 255, 0.1);
+  --color-primary-20: rgba(106, 111, 255, 0.2);
+
+  /* === Stage 1：AionUi 语义 token 显式映射（确保暗色模式生效） === */
+  /* @theme inline 中的 --bg-* / --t-* / --fill-* 引用 var(--color-surface-*) 等
+     动态变量，本就会随 .dark 重定义切换；此处显式重申一遍，避免 Tailwind v4
+     编译期 inline 优化导致暗色失效，并方便后续主题切换 UI 直接覆写。 */
+  --bg-1: var(--color-surface-1);
+  --bg-2: var(--color-surface-2);
+  --bg-3: var(--color-surface-3);
+  --bg-4: var(--color-surface-4);
+  --bg-5: color-mix(in srgb, var(--color-surface-3) 80%, var(--color-border));
+  --bg-6: color-mix(in srgb, var(--color-surface-3) 60%, var(--color-border));
+  --bg-7: color-mix(in srgb, var(--color-surface-2) 70%, var(--color-border));
+  --bg-8: color-mix(in srgb, var(--color-surface-2) 50%, var(--color-border));
+  --bg-9: color-mix(in srgb, var(--color-surface-1) 70%, var(--color-border));
+  --bg-10: var(--color-border);
+  --border-1: var(--bg-3);
+
+  --t-primary: var(--color-text);
+  --t-secondary: var(--color-text-secondary);
+  --t-tertiary: var(--color-subtle, var(--color-text-secondary));
+  --t-disabled: color-mix(in srgb, var(--color-text) 40%, transparent);
+  --t-quaternary: color-mix(in srgb, var(--color-text) 25%, transparent);
+
+  --fill-0: transparent;
+  --fill-1: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  --fill-2: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  --fill-3: color-mix(in srgb, var(--color-primary) 24%, transparent);
+
+  --message-user-bg: var(--bg-2);
+  --message-tips-bg: color-mix(in srgb, var(--bg-1) 50%, transparent);
 }
 
 /* ── Base resets ── */
@@ -363,7 +425,9 @@ button:disabled {
 
 .story-gantt-focus .story-gantt-playhead {
   background-color: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
-  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--color-primary) 55%, transparent), inset -1px 0 0 color-mix(in srgb, var(--color-primary) 55%, transparent);
+  box-shadow:
+    inset 1px 0 0 color-mix(in srgb, var(--color-primary) 55%, transparent),
+    inset -1px 0 0 color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 
 .story-gantt-focus .wx-grid .wx-cell,
@@ -419,7 +483,8 @@ button:disabled {
 
 /* streaming-dot：双重脉动（opacity 0.4↔1 + scale 0.8↔1.2） */
 @keyframes streaming-pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 0.4;
     transform: scale(0.8);
   }
@@ -431,10 +496,12 @@ button:disabled {
 
 /* cursor-blink：光标闪烁（0-50% 可见，51-100% 隐藏） */
 @keyframes cursor-blink {
-  0%, 50% {
+  0%,
+  50% {
     opacity: 1;
   }
-  51%, 100% {
+  51%,
+  100% {
     opacity: 0;
   }
 }
