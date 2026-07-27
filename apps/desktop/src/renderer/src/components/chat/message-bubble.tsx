@@ -4,6 +4,7 @@ import type { ChatMessage, FileAttachment } from './types'
 import { ThinkingBlock } from './thinking-block'
 import { ToolCallCard } from './tool-call-card'
 import { FileAttachmentList } from './file-attachment'
+import { MarkdownCode } from './code-block'
 import { cn } from '@/lib/utils'
 import type { FilePreviewState } from '@/stores/ui-store'
 
@@ -53,15 +54,20 @@ export function MessageBubble({ message, onFilePreview }: MessageBubbleProps) {
             <div className="mb-2">
               <FileAttachmentList
                 attachments={message.attachments}
-                onPreview={onFilePreview ? (att: FileAttachment) => onFilePreview({
-                  name: att.name,
-                  content: att.content,
-                  encoding: att.encoding,
-                  mimeType: att.mimeType,
-                  thumbnail: att.thumbnail,
-                  size: att.size,
-                  type: att.type,
-                }) : undefined}
+                onPreview={
+                  onFilePreview
+                    ? (att: FileAttachment) =>
+                        onFilePreview({
+                          name: att.name,
+                          content: att.content,
+                          encoding: att.encoding,
+                          mimeType: att.mimeType,
+                          thumbnail: att.thumbnail,
+                          size: att.size,
+                          type: att.type
+                        })
+                    : undefined
+                }
               />
             </div>
           )}
@@ -110,21 +116,24 @@ export function MessageBubble({ message, onFilePreview }: MessageBubbleProps) {
             {/* 文本内容 */}
             {displayContent ? (
               <div className="text-sm text-text-secondary leading-relaxed min-w-0 break-words">
-                <div className="prose prose-sm max-w-none
+                <div
+                  className="prose prose-sm max-w-none
                   prose-p:my-2 prose-p:leading-relaxed
                   prose-headings:my-3 prose-headings:leading-tight
                   prose-h1:text-base prose-h2:text-sm prose-h3:text-sm
                   prose-ul:my-2 prose-ol:my-2
                   prose-li:my-0.5
-                  prose-pre:my-3 prose-pre:rounded-md prose-pre:bg-muted/60 prose-pre:border prose-pre:border-border prose-pre:overflow-x-auto prose-pre:max-w-full
-                  prose-code:before:content-none prose-code:after:content-none prose-code:text-primary prose-code:bg-muted/60 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em]
+                  prose-pre:my-0 prose-pre:bg-transparent prose-pre:border-0 prose-pre:p-0
                   prose-blockquote:my-2 prose-blockquote:border-l-primary prose-blockquote:text-muted-foreground
                   prose-hr:my-3 prose-hr:border-border
                   prose-a:text-primary prose-a:no-underline hover:prose-a:underline
                   prose-strong:text-text prose-em:text-text-secondary
                   prose-table:text-xs
-                ">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
+                "
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCode }}>
+                    {displayContent}
+                  </ReactMarkdown>
                 </div>
               </div>
             ) : null}
