@@ -3,7 +3,11 @@ import { Plus, Save, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
+import {
+  AUTOSAVE_DEBOUNCE_MS,
+  describeSaveState,
+  type SaveState,
+} from '../save-contract'
 import {
   Select,
   SelectContent,
@@ -116,7 +120,7 @@ export function JsonObjectEditor({
         <Button
           size="sm"
           variant="ghost"
-          className="h-6 text-[11px] text-muted-foreground"
+          className="h-6 text-micro text-muted-foreground"
           onClick={() => onChange('{}')}
         >
           转为结构化编辑
@@ -156,7 +160,7 @@ export function JsonObjectEditor({
   return (
     <div className="space-y-2">
       {entries.length === 0 && (
-        <p className="text-[11px] text-muted-foreground py-2 text-center">
+        <p className="text-micro text-muted-foreground py-2 text-center">
           暂无内容，点击下方按钮添加字段
         </p>
       )}
@@ -173,7 +177,7 @@ export function JsonObjectEditor({
       <Button
         size="sm"
         variant="ghost"
-        className="h-6 text-[11px] text-muted-foreground"
+        className="h-6 text-micro text-muted-foreground"
         onClick={addEntry}
       >
         <Plus className="size-3" /> 添加字段
@@ -301,7 +305,7 @@ export function StringListEditor({
     <div className="space-y-1">
       {items.map((item, i) => (
         <div key={i} className="flex items-start gap-1">
-          <span className="text-[10px] text-muted-foreground pt-1.5 w-4 shrink-0 tabular-nums text-right">
+          <span className="text-nano text-muted-foreground pt-1.5 w-4 shrink-0 tabular-nums text-right">
             {i + 1}.
           </span>
           <TextArea
@@ -324,7 +328,7 @@ export function StringListEditor({
       <Button
         size="sm"
         variant="ghost"
-        className="h-6 text-[11px] text-muted-foreground"
+        className="h-6 text-micro text-muted-foreground"
         onClick={addItem}
       >
         <Plus className="size-3" /> 添加项
@@ -345,33 +349,15 @@ export function safeParseParticipants(raw: string): string[] {
   return []
 }
 
-// ── 三层模型：角色参与的冲突反向索引只读 Badge 列表 ──
-
-export function ParticipatingConflictsBadges({ raw }: { raw: string }): ReactElement {
-  const ids = safeParseParticipants(raw)
-  if (ids.length === 0) {
-    return <span className="text-[11px] text-muted-foreground">暂无参与冲突</span>
-  }
-  return (
-    <div className="flex flex-wrap gap-1">
-      {ids.map((id) => (
-        <Badge key={id} variant="secondary" className="h-5 px-1.5 text-[10px] font-mono">
-          {id.slice(0, 8)}
-        </Badge>
-      ))}
-    </div>
-  )
-}
-
 // ── 分组标题（iOS Settings 风格） ──
 
 export function SectionHeader({ title, hint }: { title: string; hint?: string }): ReactElement {
   return (
     <div className="pt-4 pb-1.5 first:pt-0">
-      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+      <div className="text-micro font-medium uppercase tracking-wider text-muted-foreground">
         {title}
       </div>
-      {hint && <div className="text-[10px] text-muted-foreground/70 mt-0.5">{hint}</div>}
+      {hint && <div className="text-nano text-muted-foreground/70 mt-0.5">{hint}</div>}
     </div>
   )
 }
@@ -393,6 +379,15 @@ export function DebouncedOutlineField({
   onSave,
 }: DebouncedOutlineFieldProps): ReactElement {
   const [draft, setDraft] = useState(value)
+  /**
+   * 保存状态。
+   *
+   * 原实现完全没有反馈：失败只 `console.error`，用户以为存上了。
+   * 这是四种保存契约里最危险的一处 —— 自动保存 + 静默失败 = 用户没有任何
+   * 察觉丢失的机会。现在按 autosave 契约给出可见状态。
+   */
+  const [saveState, setSaveState] = useState<SaveState>('saved')
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isSavingRef = useRef(false)
   // 用 ref 存最新的 value 和 onSave，避免闭包陷阱
@@ -415,12 +410,20 @@ export function DebouncedOutlineField({
 
   // doSave 直接从 ref 读取，不依赖闭包变量，无需 useCallback
   const doSave = async (text: string) => {
-    if (text.trim() === valueRef.current.trim()) return
+    if (text.trim() === valueRef.current.trim()) {
+      setSaveState('saved')
+      return
+    }
     isSavingRef.current = true
+    setSaveState('saving')
+    setErrorMessage(null)
     try {
       await onSaveRef.current(text)
+      setSaveState('saved')
     } catch (err) {
-      console.error('[DebouncedOutlineField] 保存失败:', err)
+      // 不再只写 console：失败必须让用户看见，否则等于静默丢数据
+      setSaveState('error')
+      setErrorMessage(err instanceof Error ? err.message : '保存失败')
     } finally {
       isSavingRef.current = false
     }
@@ -430,8 +433,10 @@ export function DebouncedOutlineField({
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
       void doSave(text)
-    }, 1500)
+    }, AUTOSAVE_DEBOUNCE_MS)
   }
+
+  const status = describeSaveState('autosave', saveState, errorMessage ?? undefined)
 
   return (
     <FieldRow label={label}>
@@ -441,6 +446,7 @@ export function DebouncedOutlineField({
         placeholder={placeholder}
         onChange={(e) => {
           setDraft(e.target.value)
+          setSaveState('dirty')
           scheduleSave(e.target.value)
         }}
         onBlur={() => {
@@ -448,6 +454,19 @@ export function DebouncedOutlineField({
           void doSave(draft)
         }}
       />
+      {/* 已保存时不占视觉空间：稳态无需反复告知 */}
+      {saveState !== 'saved' && (
+        <div
+          className={
+            status.tone === 'danger'
+              ? 'mt-1 text-nano text-destructive'
+              : 'mt-1 text-nano text-muted-foreground'
+          }
+        >
+          {status.label}
+          {status.hint && <span className="text-muted-foreground/70">（{status.hint}）</span>}
+        </div>
+      )}
     </FieldRow>
   )
 }
@@ -739,12 +758,19 @@ export function SaveButton({
   disabled: boolean
   saving: boolean
 }): ReactElement {
+  // explicit 契约：dirty 时必须说清"不点就会丢"，否则用户以为像正文一样自动存。
+  // 这是四种保存契约里最容易误解的一处 —— 同屏的正文和大纲都自动保存。
+  const dirty = !disabled && !saving
+  const status = describeSaveState('explicit', dirty ? 'dirty' : saving ? 'saving' : 'saved')
   return (
-    <div className="pt-2">
+    <div className="pt-2 space-y-1">
       <Button onClick={onSave} disabled={disabled || saving} className="w-full">
         <Save className="size-3.5" />
         {saving ? '保存中...' : '保存修改'}
       </Button>
+      {dirty && status.hint && (
+        <p className="text-nano text-amber-600 dark:text-amber-400">{status.hint}</p>
+      )}
     </div>
   )
 }

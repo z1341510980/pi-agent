@@ -38,6 +38,13 @@ import type {
   ReviewerOutcome,
 } from './discussion-types.js'
 import { DISCUSSION_LIMITS } from './discussion-types.js'
+import {
+  groupSymmetricActors,
+  splitIntoBatches,
+  buildMergedActorPrompt,
+  parseMergedActorResponse,
+  MIN_MERGE_GROUP_SIZE,
+} from './discussion-actor-batching.js'
 
 /** 引擎上下文：提供 createAgUiSession 工厂 + 日志 */
 export interface EngineContext {
@@ -339,6 +346,20 @@ export class TeamDiscussionEngine {
           ))
           return
         }
+        // 多角色点名：把信息对称的角色合并为一次调用。
+        //
+        // 逐角色轮询每次都要重发完整 system + 场景上下文 + 对话历史，
+        // ch10 实测 20 次调用 × 15.9s ≈ 318 秒只换回 3.7k token。
+        // 合并的前提是信息对称 —— 认知不同的角色可见上下文不同，合并会把秘密
+        // 泄露给不该知道的角色（见 groupSymmetricActors）。
+        if (decision.agentIds && decision.agentIds.length > 1 && ctx.phase === 'acting') {
+          const handled = await this.handleMergedInvite(
+            decision, decision.agentIds, members, history, options, channelName, ctx,
+          )
+          // 合并路径不适用（分组后无 ≥2 人的组）时回落到单角色，不能静默跳过发言
+          if (handled) break
+        }
+
         // 主持人点名消息先入 history + emit 给前端（在成员发言之前），
         // 让前端能看到"谁被点名做什么"，而不是等到成员首 token 才显示"XX 开始发言"。
         const moderatorMsg: DiscussionMessage = {
@@ -448,6 +469,164 @@ ${reviewResult.rewrite_suggestion}
       case 'observe':
         // 由调用方循环处理
         break
+    }
+  }
+
+  /**
+   * 合并调用同场信息对称的角色。
+   *
+   * @returns true 表示已处理（至少发生了一次合并调用）；false 表示不适用，
+   *   调用方应回落到单角色路径 —— 分组后若全是单人组，合并只会增加提示词开销。
+   */
+  private async handleMergedInvite(
+    decision: Extract<ModeratorDecision, { type: 'invite' }>,
+    agentIds: string[],
+    members: DiscussionMember[],
+    history: DiscussionMessage[],
+    options: DiscussionOptions,
+    channelName: string,
+    ctx: { phase: DiscussionPhase; sceneId?: number },
+  ): Promise<boolean> {
+    const picked = agentIds
+      .map((id) => members.find((m) => m.id === id))
+      .filter((m): m is DiscussionMember => !!m && m.type === 'character')
+    if (picked.length < MIN_MERGE_GROUP_SIZE) return false
+
+    // 按认知指纹分组，再按规模上限切批
+    const groups = groupSymmetricActors(
+      picked.map((m) => ({
+        id: m.id,
+        name: m.name,
+        knowledge: m.knowledge ?? {},
+      })),
+    )
+    const batches = groups.flatMap(splitIntoBatches).filter((b) => b.length >= MIN_MERGE_GROUP_SIZE)
+    if (batches.length === 0) return false
+
+    this.context.logger.info(
+      {
+        phase: ctx.phase,
+        sceneId: ctx.sceneId,
+        requested: picked.length,
+        groups: groups.length,
+        mergedBatches: batches.length,
+      },
+      '群聊演出：同场信息对称角色合并调用',
+    )
+
+    // 已被合并覆盖的成员，避免与后续单人回落重复发言
+    const covered = new Set<string>()
+
+    for (const batch of batches) {
+      const group = { actors: batch, fingerprint: '' }
+      const names = batch.map((a) => a.name)
+      const moderatorMsg: DiscussionMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        fromId: 'moderator',
+        fromName: '主持人',
+        content: `@${names.join(' @')} ${decision.prompt}${decision.reason ? `（${decision.reason}）` : ''}`,
+        timestamp: Date.now(),
+        sceneId: ctx.sceneId,
+        type: 'moderator',
+      }
+      history.push(moderatorMsg)
+      this.emitProgress(options, ctx.phase, {
+        type: 'phase_change',
+        data: { message: moderatorMsg.content },
+      })
+
+      const leader = members.find((m) => m.id === batch[0].id)
+      if (!leader) continue
+
+      try {
+        const merged = await this.invokeMember(
+          leader,
+          buildMergedActorPrompt(group, `${decision.prompt}\n\n主持人的任务只说明本回合关注点，不代表预设结果。各角色可以拒绝不符合人设、已知信息或当前目标的结论。`),
+          history,
+          options,
+          ctx,
+        )
+        const parsed = parseMergedActorResponse(merged, names)
+
+        for (const actor of batch) {
+          const member = members.find((m) => m.id === actor.id)
+          if (!member) continue
+          const segment = parsed.get(actor.name)
+          if (!segment) {
+            // 缺段：回落到单独调用该角色，而不是丢掉他的这一回合。
+            // 合并输出的解析失败不应让角色在本回合"消失"。
+            this.context.logger.warn(
+              { memberId: member.id, memberName: member.name },
+              '合并输出缺少该角色分段，回落为单独调用',
+            )
+            await this.speakSingleCharacter(member, decision.prompt, history, options, channelName, ctx)
+            covered.add(member.id)
+            continue
+          }
+          const content = this.isValidCharacterSpeech(segment)
+            ? segment
+            : this.normalizeCharacterSpeech(segment, member.name)
+          const msg: DiscussionMessage = {
+            id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            fromId: member.id,
+            fromName: member.name,
+            content,
+            timestamp: Date.now(),
+            sceneId: ctx.sceneId,
+            type: 'member',
+          }
+          history.push(msg)
+          this.channel.broadcast(channelName, member.id, msg)
+          covered.add(member.id)
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        history.push(this.errorMessage(`${names.join('、')} 合并发言失败：${errMsg}`))
+      }
+    }
+
+    // 未被任何批次覆盖的角色（单人组）仍需发言，否则主持人点了名却没人说话
+    for (const actor of picked) {
+      if (covered.has(actor.id)) continue
+      await this.speakSingleCharacter(actor, decision.prompt, history, options, channelName, ctx)
+    }
+    return true
+  }
+
+  /** 单角色发言：合并路径的回落分支，与 invite 单人路径保持同一套校验 */
+  private async speakSingleCharacter(
+    member: DiscussionMember,
+    prompt: string,
+    history: DiscussionMessage[],
+    options: DiscussionOptions,
+    channelName: string,
+    ctx: { phase: DiscussionPhase; sceneId?: number },
+  ): Promise<void> {
+    try {
+      const content = await this.invokeMember(
+        member,
+        `${prompt}\n\n主持人的任务只说明本回合关注点，不代表预设结果。你可以拒绝不符合人设、已知信息或当前目标的结论。只演此刻一个动作单元。`,
+        history,
+        options,
+        ctx,
+      )
+      const normalized = this.isValidCharacterSpeech(content)
+        ? content
+        : this.normalizeCharacterSpeech(content, member.name)
+      const msg: DiscussionMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        fromId: member.id,
+        fromName: member.name,
+        content: normalized,
+        timestamp: Date.now(),
+        sceneId: ctx.sceneId,
+        type: 'member',
+      }
+      history.push(msg)
+      this.channel.broadcast(channelName, member.id, msg)
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      history.push(this.errorMessage(`${member.name} 发言失败：${errMsg}`))
     }
   }
 

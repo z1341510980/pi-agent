@@ -435,9 +435,11 @@ describe('NovelStore - 伏笔 CRUD', () => {
     const recovered = store.updateForeshadow('f-chain', {
       beats: [...created.beats!, { chapter: 14, type: 'payoff' }],
     })!
-    expect(recovered.recoverByChapter).toBe(14)
     expect(recovered.lastChapter).toBe(14)
     expect(recovered.status).toBe('recovered')
+    // recoverByChapter 是"计划回收章"（意图），不由 payoff beat（事实）派生。
+    // 这里没设过计划，追加真实回收后它仍为空。
+    expect(recovered.recoverByChapter).toBeNull()
   })
 
   it('事件链 PATCH 删除节点时不被旧兼容端点重新补回', () => {

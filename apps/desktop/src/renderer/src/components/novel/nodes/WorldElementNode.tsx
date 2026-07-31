@@ -57,7 +57,7 @@ function WorldElementNodeImpl({ data, selected }: NodeProps<WorldElementNodeType
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-indigo-500/10 rounded-t-lg">
         <Globe className="size-3.5 text-indigo-500 dark:text-indigo-400 shrink-0" />
         <span className="text-xs font-medium text-indigo-600 dark:text-indigo-300">世界观</span>
-        <span className="ml-auto rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] text-indigo-600 dark:text-indigo-300">
+        <span className="ml-auto rounded bg-indigo-500/10 px-1.5 py-0.5 text-nano text-indigo-600 dark:text-indigo-300">
           {CATEGORY_LABELS[entity.category] ?? entity.category}
         </span>
       </div>
@@ -72,11 +72,11 @@ function WorldElementNodeImpl({ data, selected }: NodeProps<WorldElementNodeType
         )}
         <div className="flex items-center gap-1.5">
           <span className={cn('size-1.5 rounded-full', CATEGORY_COLOR[entity.category] ?? 'bg-indigo-500')} />
-          <span className="text-[10px] text-subtle">
+          <span className="text-nano text-subtle">
             {CATEGORY_LABELS[entity.category] ?? entity.category}
           </span>
           {attrCount > 0 && (
-            <span className="ml-auto tabular-nums text-[10px] text-muted-foreground" title="附加属性数量">
+            <span className="ml-auto tabular-nums text-nano text-muted-foreground" title="附加属性数量">
               {attrCount} 属性
             </span>
           )}

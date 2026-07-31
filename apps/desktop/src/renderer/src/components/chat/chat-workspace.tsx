@@ -11,7 +11,10 @@ import { useWebSocket } from '@/hooks/use-websocket'
 import { useToolExecutions } from '@/hooks/use-tool-executions'
 import { useStreamingRun } from '@/hooks/use-streaming-run'
 import { useRealtimeEvents } from '@/hooks/use-realtime-events'
-import { useShortcut } from '@/hooks/use-shortcut'
+import { useChatShortcuts } from '@/hooks/use-chat-shortcuts'
+import { usePaginatedMessages } from '@/hooks/use-paginated-messages'
+import { usePinnedSessions } from '@/hooks/use-pinned-sessions'
+import { toast } from '@/hooks/use-toast'
 import { useTheme } from '@/components/theme-provider'
 import { ConfirmationDialog } from './confirmation-dialog'
 import { type PermissionMode } from './permission-mode-switch'
@@ -25,22 +28,26 @@ import { DevLogPanel } from '../overlays/devlog-panel'
 import { CommandPalette, createDefaultCommands } from '../overlays/command-palette'
 import { CompactionBanner, type CompactionEvent } from './compaction-banner'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
-import { ContextPanel, type AssociatedFile, type MemorySummaryData, type ActivityEntry } from './context-panel'
-import { UsagePanel } from './usage-panel'
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+  ContextPanel,
+  type AssociatedFile,
+  type MemorySummaryData,
+  type ActivityEntry
+} from './context-panel'
+import { UsagePanel } from './usage-panel'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { type ModelOption } from './model-selector'
 import { createUserMessage, type ChatMessage, type FileAttachment } from './types'
 import {
   useSessionStore,
   createEmptyMessageState,
-  upsertSessionAfterSend,
+  upsertSessionAfterSend
 } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui-store'
+import { ChatTitleEditor } from './chat-title-editor'
+import { AgentSwitcher } from './agent-switcher'
+import { AgentDetailCard } from './agent-detail-card'
+import { useActiveAgent } from '@/hooks/use-active-agent'
 
 type HealthData = {
   service: string
@@ -71,13 +78,13 @@ const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   auto: '自动',
   plan: '计划',
   readonly: '只读',
-  full: '完全控制',
+  full: '完全控制'
 }
 
 export function ChatWorkspace({
   appName: _appName,
   config: _config,
-  onOpenSettings,
+  onOpenSettings
 }: ChatWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
@@ -90,6 +97,8 @@ export function ChatWorkspace({
   const compactionCount = useSessionStore((s) => s.compactionCount)
   const activeAgentId = useSessionStore((s) => s.activeAgentId)
   const setSessions = useSessionStore((s) => s.setSessions)
+  const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId)
+  const { assistant: activeAssistant, allAssistants } = useActiveAgent()
   const setActiveThreadId = useSessionStore((s) => s.setActiveThreadId)
   const updateSessionMessages = useSessionStore((s) => s.updateSessionMessages)
   const setDraft = useSessionStore((s) => s.setDraft)
@@ -113,6 +122,16 @@ export function ChatWorkspace({
   const openFilePreview = useUIStore((s) => s.openFilePreview)
   const closeFilePreview = useUIStore((s) => s.closeFilePreview)
 
+  // ── 置顶会话（用于命令面板快捷切换）──
+  const { pinnedOrder } = usePinnedSessions()
+  const pinnedSessions = useMemo(
+    () =>
+      pinnedOrder
+        .map((id) => sessions.find((s) => s.id === id))
+        .filter((s): s is SessionSummary => Boolean(s)),
+    [pinnedOrder, sessions]
+  )
+
   // ── 本地 UI 状态（无需持久化） ──
   const [compactionEvent, setCompactionEvent] = useState<CompactionEvent | null>(null)
   const [usageDetailOpen, setUsageDetailOpen] = useState(false)
@@ -128,27 +147,30 @@ export function ChatWorkspace({
   const gateQuery = useQuery({
     queryKey: ['gate'],
     queryFn: () => getApi<GateData>('/api/gate'),
-    refetchInterval: 10_000,
+    refetchInterval: 10_000
   })
 
   const healthQuery = useQuery({
     queryKey: ['agent-server-health'],
     queryFn: () => getApi<HealthData>('/api/health'),
-    refetchInterval: 10_000,
+    refetchInterval: 10_000
   })
 
   // 当前工作区信息
   const workspaceQuery = useQuery({
     queryKey: ['workspace'],
-    queryFn: () => getApi<{ path: string; name: string; gitBranch?: string; gitDirty?: boolean }>('/api/workspace'),
-    refetchInterval: 30_000,
+    queryFn: () =>
+      getApi<{ path: string; name: string; gitBranch?: string; gitDirty?: boolean }>(
+        '/api/workspace'
+      ),
+    refetchInterval: 30_000
   })
 
   // 当前会话的记忆摘要
   const memorySummaryQuery = useQuery({
     queryKey: ['memory-summary', activeThreadId],
     queryFn: () => getApi<MemorySummaryData | null>(`/api/memory/summaries/${activeThreadId}`),
-    refetchInterval: 30_000,
+    refetchInterval: 30_000
   })
 
   // 已注册模型列表（供模型选择器使用）
@@ -156,11 +178,11 @@ export function ChatWorkspace({
     queryKey: ['agui-models'],
     queryFn: async () => {
       const res = await getAgui<{ threadId: string; models: ModelOption[] }>(
-        '/ag-ui/agent/default/models?threadId=main',
+        '/ag-ui/agent/default/models?threadId=main'
       )
       return res.models ?? []
     },
-    refetchInterval: 60_000,
+    refetchInterval: 60_000
   })
 
   const { executions, onMessage: onToolMessage } = useToolExecutions()
@@ -177,7 +199,7 @@ export function ChatWorkspace({
     addUsageUpdate,
     contextState,
     addContextUpdate,
-    resetContextState,
+    resetContextState
   } = useRealtimeEvents()
 
   // 切换线程时重置上下文状态
@@ -185,16 +207,13 @@ export function ChatWorkspace({
     resetContextState()
   }, [activeThreadId, resetContextState])
 
-  const {
-    pendingConfirmations,
-    respondConfirmation,
-  } = useWebSocket({
+  const { pendingConfirmations, respondConfirmation } = useWebSocket({
     threadId: activeThreadId,
     onMessage: onToolMessage,
     onNotification: addNotification,
     onDevLog: addDevLog,
     onUsageUpdate: addUsageUpdate,
-    onContextUpdate: addContextUpdate,
+    onContextUpdate: addContextUpdate
   })
 
   // AG-UI 事件 → 消息流状态
@@ -202,7 +221,7 @@ export function ChatWorkspace({
     (event: BaseEvent) => {
       updateSessionMessages(activeThreadId, (prev) => applyEvent(prev, event))
     },
-    [activeThreadId, updateSessionMessages],
+    [activeThreadId, updateSessionMessages]
   )
 
   // 读取全局默认温度（从 localStorage，由设置页 agent-config 配置）
@@ -213,7 +232,9 @@ export function ChatWorkspace({
         const parsed = JSON.parse(saved) as { temperature?: number }
         if (typeof parsed.temperature === 'number') return parsed.temperature
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return undefined
   }, [])
 
@@ -221,14 +242,35 @@ export function ChatWorkspace({
     run,
     abort,
     isRunning,
-    error: runError,
+    error: runError
   } = useStreamingRun({
     threadId: activeThreadId,
     onEvent: handleAguiEvent,
     model: selectedModel ?? undefined,
     agentId: activeAgentId,
-    temperature: globalTemperature,
+    temperature: globalTemperature
   })
+
+  // ── 分页加载历史消息（流式运行时禁用，避免冲突） ──
+  const {
+    messages: historicalMessages,
+    hasMore: historicalHasMore,
+    isLoadingMore: historicalIsLoadingMore,
+    isLoadingInitial: historicalIsLoadingInitial,
+    loadMore: loadMoreHistory
+  } = usePaginatedMessages(activeThreadId, { enabled: !isRunning })
+
+  // ── 合并历史消息与本地流式消息 ──
+  // - 历史消息从服务器拉取（按时间正序）
+  // - 本地消息包含正在流式的助手消息（更优先，内容最新）
+  // - 按 ID 去重：若历史消息与本地消息 ID 相同，丢弃历史版本
+  const mergedMessages = useMemo(() => {
+    if (historicalMessages.length === 0) return messageState.messages
+    if (messageState.messages.length === 0) return historicalMessages
+    const localIds = new Set(messageState.messages.map((m) => m.id))
+    const dedupedHistorical = historicalMessages.filter((m) => !localIds.has(m.id))
+    return [...dedupedHistorical, ...messageState.messages]
+  }, [historicalMessages, messageState.messages])
 
   // ── 从上下文状态获取 contextWindow（由 context:update 实时事件推送，来自 modelRegistry）──
   // 当 contextState.contextWindow > 0 时使用实时值，否则回退到模型列表查询
@@ -236,7 +278,7 @@ export function ChatWorkspace({
     if (contextState.contextWindow > 0) return contextState.contextWindow
     if (!selectedModel) return 32768
     const model = modelsQuery.data?.find(
-      (m) => m.provider === selectedModel.provider && m.id === selectedModel.modelId,
+      (m) => m.provider === selectedModel.provider && m.id === selectedModel.modelId
     )
     return model?.contextWindow ?? 32768
   }, [contextState.contextWindow, selectedModel, modelsQuery.data])
@@ -256,7 +298,7 @@ export function ChatWorkspace({
             files.push({
               path: val,
               toolName: tc.toolName,
-              timestamp: tc.startedAt ?? msg.createdAt ?? Date.now(),
+              timestamp: tc.startedAt ?? msg.createdAt ?? Date.now()
             })
             break
           }
@@ -270,7 +312,7 @@ export function ChatWorkspace({
   const activities = useMemo<ActivityEntry[]>(() => {
     return devLogs.map((log) => ({
       label: log.message,
-      timestamp: log.timestamp,
+      timestamp: log.timestamp
     }))
   }, [devLogs])
 
@@ -279,7 +321,7 @@ export function ChatWorkspace({
       const userMsg = createUserMessage(text, attachments)
       updateSessionMessages(activeThreadId, (prev) => ({
         ...prev,
-        messages: [...prev.messages, userMsg],
+        messages: [...prev.messages, userMsg]
       }))
       setSessions(upsertSessionAfterSend(sessions, activeThreadId, text))
 
@@ -297,12 +339,21 @@ export function ChatWorkspace({
 
       void run([enrichedMsg])
     },
-    [activeThreadId, run, updateSessionMessages, sessions, setSessions],
+    [activeThreadId, run, updateSessionMessages, sessions, setSessions]
   )
 
   const handleAbort = useCallback(() => {
+    // 优先关闭已打开的浮层（命令面板 / DevLog），再考虑中断流式
+    if (commandPaletteOpen) {
+      setCommandPaletteOpen(false)
+      return
+    }
+    if (devLogOpen) {
+      setDevLogOpen(false)
+      return
+    }
     abort()
-  }, [abort])
+  }, [abort, commandPaletteOpen, setCommandPaletteOpen, devLogOpen, setDevLogOpen])
 
   const handleCompact = useCallback(async () => {
     const eventId = crypto.randomUUID()
@@ -310,22 +361,23 @@ export function ChatWorkspace({
       id: eventId,
       timestamp: Date.now(),
       reason: 'manual',
-      state: 'running',
+      state: 'running'
     })
     try {
       await postAgui<CompactThreadResponse>('/ag-ui/agent/default/compact', {
-        threadId: activeThreadId,
+        threadId: activeThreadId
       })
       setCompactionEvent((prev) =>
         prev
           ? {
               ...prev,
               state: 'success',
-              timestamp: Date.now(),
+              timestamp: Date.now()
             }
-          : null,
+          : null
       )
       incrementCompactionCount()
+      toast.success('上下文已压缩', '当前会话的上下文已成功压缩')
     } catch (error) {
       const message = error instanceof Error ? error.message : '上下文压缩失败。'
       setCompactionEvent((prev) =>
@@ -334,17 +386,16 @@ export function ChatWorkspace({
               ...prev,
               state: 'error',
               errorMessage: message,
-              timestamp: Date.now(),
+              timestamp: Date.now()
             }
-          : null,
+          : null
       )
+      toast.error('压缩失败', message)
     }
   }, [activeThreadId, incrementCompactionCount])
 
   const handleRetry = useCallback(() => {
-    const lastUserMsg = [...messageState.messages]
-      .reverse()
-      .find((m) => m.role === 'user')
+    const lastUserMsg = [...messageState.messages].reverse().find((m) => m.role === 'user')
     if (lastUserMsg) {
       void run([lastUserMsg as ChatMessage])
     }
@@ -352,9 +403,7 @@ export function ChatWorkspace({
       ...prev,
       streamError: null,
       // 移除最后一条错误的助手消息
-      messages: prev.messages.filter(
-        (m) => !(m.role === 'assistant' && m.status === 'error'),
-      ),
+      messages: prev.messages.filter((m) => !(m.role === 'assistant' && m.status === 'error'))
     }))
   }, [messageState.messages, run, updateSessionMessages, activeThreadId])
 
@@ -371,21 +420,20 @@ export function ChatWorkspace({
       preview: '准备开始对话',
       createdAt: ts,
       updatedAt: ts,
+      agentId: activeAgentId
     }
     upsertSession(session)
     updateSessionMessages(id, () => createEmptyMessageState())
     setActiveThreadId(id)
-  }, [upsertSession, updateSessionMessages, setActiveThreadId])
+  }, [upsertSession, updateSessionMessages, setActiveThreadId, activeAgentId])
 
   const handleRenameSession = useCallback(
     (id: string, newTitle: string) => {
       setSessions(
-        sessions.map((s) =>
-          s.id === id ? { ...s, title: newTitle, updatedAt: Date.now() } : s,
-        ),
+        sessions.map((s) => (s.id === id ? { ...s, title: newTitle, updatedAt: Date.now() } : s))
       )
     },
-    [sessions, setSessions],
+    [sessions, setSessions]
   )
 
   const handleDeleteSession = useCallback(
@@ -396,8 +444,9 @@ export function ChatWorkspace({
         setActiveThreadId(remaining[0].id)
       }
       removeSession(id)
+      toast.success('会话已删除')
     },
-    [sessions, activeThreadId, setActiveThreadId, removeSession],
+    [sessions, activeThreadId, setActiveThreadId, removeSession]
   )
 
   // 上/下一会话（按 sessions 数组顺序循环）
@@ -435,28 +484,123 @@ export function ChatWorkspace({
     }
   }, [queryClient])
 
+  // 删除当前会话（带确认）
+  const handleDeleteCurrentSession = useCallback(() => {
+    if (sessions.length === 0) {
+      toast.warning('没有可删除的会话')
+      return
+    }
+    const active = sessions.find((s) => s.id === activeThreadId)
+    const title = active?.title ?? '当前会话'
+    const confirmed = window.confirm(`确定要删除「${title}」吗？此操作无法恢复。`)
+    if (confirmed) {
+      handleDeleteSession(activeThreadId)
+    }
+  }, [sessions, activeThreadId, handleDeleteSession])
+
+  // 清空当前会话消息（带确认）
+  const handleClearMessages = useCallback(() => {
+    const confirmed = window.confirm('确定要清空当前会话的所有消息吗？此操作无法恢复。')
+    if (confirmed) {
+      updateSessionMessages(activeThreadId, () => createEmptyMessageState())
+      toast.success('已清空当前会话消息')
+    }
+  }, [activeThreadId, updateSessionMessages])
+
+  // 切换 Agent（带 toast 反馈）
+  const handleSwitchAgent = useCallback(
+    (agentId: string) => {
+      if (agentId === activeAgentId) {
+        toast.info('已是当前 Agent')
+        return
+      }
+      const target = allAssistants.find((a) => a.agentId === agentId)
+      setActiveAgentId(agentId)
+      toast.success('已切换 Agent', target?.name ?? agentId)
+    },
+    [activeAgentId, allAssistants, setActiveAgentId]
+  )
+
+  // 显示快捷键帮助（通过 toast 展示常用快捷键）
+  const handleShowShortcutHelp = useCallback(() => {
+    const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+    const mod = isMac ? '⌘' : 'Ctrl'
+    toast.info(
+      '快捷键帮助',
+      [
+        `${mod}+K 命令面板`,
+        `${mod}+N 新建会话`,
+        `${mod}+B / ${mod}+\\ 切换左栏`,
+        `${mod}+Shift+B / ${mod}+Shift+\\ 切换右栏`,
+        `${mod}+D DevLog`,
+        `${mod}+L 聚焦输入`,
+        `${mod}+[ / ${mod}+] 上/下一会话`,
+        `${mod}+M 切换权限模式`,
+        `${mod}+/ 显示此帮助`,
+        `Esc 关闭浮层 / 中断`
+      ].join('  ·  ')
+    )
+  }, [])
+
   const { setTheme } = useTheme()
 
   // 命令面板命令列表
   const commands = useMemo(
     () =>
-      createDefaultCommands({
-        onNewSession: handleNewSession,
-        onOpenSettings: () => onOpenSettings?.(),
-        onCompact: () => void handleCompact(),
-        onToggleTheme: () => {
-          const current = document.documentElement.classList.contains('dark') ? 'light' : 'dark'
-          setTheme(current)
+      createDefaultCommands(
+        {
+          onNewSession: handleNewSession,
+          onDeleteCurrentSession: handleDeleteCurrentSession,
+          onSwitchToSession: setActiveThreadId,
+          onSwitchAgent: handleSwitchAgent,
+          onToggleLeftPanel: toggleLeftPanel,
+          onToggleRightPanel: toggleRightPanel,
+          onToggleDevLog: toggleDevLog,
+          onOpenThemePanel: () => {
+            const current = document.documentElement.classList.contains('dark') ? 'light' : 'dark'
+            setTheme(current)
+          },
+          onToggleTheme: () => {
+            const current = document.documentElement.classList.contains('dark') ? 'light' : 'dark'
+            setTheme(current)
+          },
+          onSwitchMode: () => setRightPanel('context'),
+          onSwitchModel: () => setRightPanel('context'),
+          onViewUsage: () => setRightPanel('context'),
+          onOpenSettings: () => onOpenSettings?.(),
+          onOpenGeneralSettings: () => onOpenSettings?.(),
+          onOpenAssistantSettings: () => onOpenSettings?.(),
+          onOpenProviderSettings: () => onOpenSettings?.(),
+          onOpenSkillSettings: () => onOpenSettings?.(),
+          onOpenAbout: () => onOpenSettings?.(),
+          onCompact: () => void handleCompact(),
+          onClearMessages: handleClearMessages
         },
-        onSwitchMode: () => setRightPanel('context'),
-        onSwitchModel: () => setRightPanel('context'),
-        onViewUsage: () => setRightPanel('context'),
-      }),
-    [handleNewSession, handleCompact, onOpenSettings, setRightPanel, setTheme],
+        {
+          allAssistants,
+          pinnedSessions
+        }
+      ),
+    [
+      handleNewSession,
+      handleDeleteCurrentSession,
+      setActiveThreadId,
+      handleSwitchAgent,
+      toggleLeftPanel,
+      toggleRightPanel,
+      toggleDevLog,
+      setTheme,
+      setRightPanel,
+      onOpenSettings,
+      handleCompact,
+      handleClearMessages,
+      allAssistants,
+      pinnedSessions
+    ]
   )
 
-  // 全局快捷键（实现 §9.3 快捷键全表）
-  useShortcut({
+  // 全局快捷键（实现 §9.3 快捷键全表 + 聊天专属绑定）
+  useChatShortcuts({
     onCommandPalette: toggleCommandPalette,
     onNewSession: handleNewSession,
     onOpenSettings: () => onOpenSettings?.(),
@@ -468,6 +612,7 @@ export function ChatWorkspace({
     onAbort: handleAbort,
     onFocusInput: handleFocusInput,
     onTogglePermissionMode: () => void handleTogglePermissionMode(),
+    onShowShortcutHelp: handleShowShortcutHelp
   })
 
   const health = healthQuery.data
@@ -479,13 +624,14 @@ export function ChatWorkspace({
   return (
     <div className="grid grid-rows-[minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
       {/* ── Workspace grid（workspace-grid 启用面板折叠过渡 250ms） ── */}
-      <div
-        className="flex min-h-0 workspace-grid"
-      >
+      <div className="flex min-h-0 workspace-grid">
         {/* ── Sidebar ── */}
         {leftPanelOpen && (
           <>
-            <div style={{ width: sidebarWidth }} className="shrink-0 h-full min-h-0 overflow-hidden">
+            <div
+              style={{ width: sidebarWidth }}
+              className="shrink-0 h-full min-h-0 overflow-hidden"
+            >
               <SessionList
                 sessions={sessions}
                 activeSessionId={activeThreadId}
@@ -508,21 +654,37 @@ export function ChatWorkspace({
 
         {/* ── Chat main（工作区背景 #F7F8FA） ── */}
         <main
-          className="bg-workspace-bg grid min-w-0 flex-1 overflow-hidden"
-          style={{ gridTemplateRows: `var(--chat-header-height) minmax(0,1fr) auto${messageState.messages.length === 0 ? ' auto' : ''}` }}
+          className="pi-workspace-main grid min-w-0 flex-1 overflow-hidden"
+          style={{ gridTemplateRows: `var(--chat-header-height) minmax(0,1fr) auto` }}
           aria-label="PI Agent 工作台"
         >
-          {/* ── 会话标题栏（60px，工作区顶部） ── */}
-          <header className="flex items-center justify-between h-[var(--chat-header-height)] bg-chat-header-bg [webkit-app-region:drag]">
-            <div className="flex flex-col justify-center gap-0.5 [webkit-app-region:drag] px-2">
-              <h1 className="text-base font-semibold text-text truncate">
-                {activeSession?.title ?? 'Agent 工作台'}
-              </h1>
-              <div className="flex items-center gap-1.5 text-xs text-subtle">
-                <span>{selectedModel?.modelId ?? '未知模型'}</span>
-                <span aria-hidden="true">·</span>
-                <span>同步于 {formatRelativeTime(activeSession?.updatedAt ?? Date.now())}</span>
-              </div>
+          {/* ── 会话标题栏（玻璃态：bg + backdrop-blur + 底部边框） ── */}
+          <header className="pi-glass-header flex items-center justify-between h-[var(--chat-header-height)] px-4 [webkit-app-region:drag]">
+            <div className="flex items-center min-w-0 flex-1 [webkit-app-region:drag]">
+              {/* ChatTitleEditor：leading 为 AgentSwitcher（紧凑模式仅渲染 logo），subtitle 展示模型 · 同步时间 */}
+              <ChatTitleEditor
+                title={activeSession?.title ?? activeAssistant.name}
+                onRename={(newTitle) => handleRenameSession(activeThreadId, newTitle)}
+                canRename={Boolean(activeSession)}
+                placeholder="输入会话标题"
+                leading={
+                  <AgentDetailCard assistant={activeAssistant}>
+                    <AgentSwitcher onManageAgents={onOpenSettings} compact />
+                  </AgentDetailCard>
+                }
+                subtitle={
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <span className="truncate">{selectedModel?.modelId ?? '未选择模型'}</span>
+                    <span aria-hidden="true" className="shrink-0">
+                      ·
+                    </span>
+                    <span className="shrink-0">
+                      同步于 {formatRelativeTime(activeSession?.updatedAt ?? Date.now())}
+                    </span>
+                  </span>
+                }
+                className="min-w-0 flex-1"
+              />
             </div>
 
             <div className="flex items-center gap-1 [webkit-app-region:no-drag]">
@@ -562,7 +724,7 @@ export function ChatWorkspace({
           </header>
 
           <MessageStream
-            messages={messageState.messages}
+            messages={mergedMessages}
             isStreaming={isRunning}
             streamError={displayError}
             onRetry={handleRetry}
@@ -570,6 +732,11 @@ export function ChatWorkspace({
             onExampleClick={handleSend}
             sessionKey={activeThreadId}
             onFilePreview={openFilePreview}
+            onCancelStream={handleAbort}
+            onLoadMore={loadMoreHistory}
+            hasMore={historicalHasMore}
+            isLoadingMore={historicalIsLoadingMore}
+            isLoadingInitial={historicalIsLoadingInitial}
             banner={
               <CompactionBanner
                 event={compactionEvent}
@@ -578,6 +745,13 @@ export function ChatWorkspace({
               />
             }
           />
+
+          {/* 工作区选择（仅空态显示）：无消息时才占位，避免挤压对话区 */}
+          {mergedMessages.length === 0 && (
+            <div className="px-6 pb-2">
+              <WorkspaceIndicator />
+            </div>
+          )}
 
           <InputArea
             onSend={handleSend}
@@ -588,24 +762,13 @@ export function ChatWorkspace({
             onChange={(text) => setDraft(activeThreadId, text)}
             models={modelsQuery.data ?? []}
             selectedModel={
-              selectedModel
-                ? `${selectedModel.provider}:${selectedModel.modelId}`
-                : null
+              selectedModel ? `${selectedModel.provider}:${selectedModel.modelId}` : null
             }
-            onModelChange={(provider, modelId) =>
-              setSelectedModel({ provider, modelId })
-            }
+            onModelChange={(provider, modelId) => setSelectedModel({ provider, modelId })}
             sessions={sessions}
             activeSessionId={activeThreadId}
             onFilePreview={openFilePreview}
           />
-
-          {/* 工作区选择（仅空态显示） */}
-          {messageState.messages.length === 0 && (
-            <div className="px-6 pb-2">
-              <WorkspaceIndicator />
-            </div>
-          )}
         </main>
 
         {/* ── 右侧栏 Splitter + Context panel ── */}
@@ -621,7 +784,7 @@ export function ChatWorkspace({
             />
             <aside
               style={{ width: rightPanelWidth }}
-              className="bg-surface-1 border-l border-border shrink-0 overflow-hidden flex flex-col"
+              className="pi-side-panel bg-surface-1 shrink-0 overflow-hidden flex flex-col"
               aria-label={filePreview ? '文件预览' : '上下文'}
             >
               {filePreview ? (
@@ -638,7 +801,7 @@ export function ChatWorkspace({
                     totalInputTokens: contextState.totalInputTokens,
                     totalOutputTokens: contextState.totalOutputTokens,
                     model: contextState.model,
-                    provider: contextState.provider,
+                    provider: contextState.provider
                   }}
                   isOnline={isOnline}
                   isCompacting={compactionEvent?.state === 'running'}
@@ -669,11 +832,16 @@ export function ChatWorkspace({
         <span className="text-xs text-subtle whitespace-nowrap">
           {isOnline ? '已连接' : '未连接'}
         </span>
-        <span className="text-xs text-hint" aria-hidden="true">·</span>
+        <span className="text-xs text-hint" aria-hidden="true">
+          ·
+        </span>
         <span className="text-xs text-subtle whitespace-nowrap">延迟 38ms</span>
-        <span className="text-xs text-hint" aria-hidden="true">·</span>
+        <span className="text-xs text-hint" aria-hidden="true">
+          ·
+        </span>
         <span className="text-xs text-subtle whitespace-nowrap">
-          {selectedModel?.modelId ?? 'GPT 5'} · {gateQuery.data ? PERMISSION_MODE_LABELS[gateQuery.data.mode] : '自动'}
+          {selectedModel?.modelId ?? 'GPT 5'} ·{' '}
+          {gateQuery.data ? PERMISSION_MODE_LABELS[gateQuery.data.mode] : '自动'}
         </span>
 
         {/* 右侧：通知中心 + 自动保存 + 版本号 */}
@@ -683,9 +851,7 @@ export function ChatWorkspace({
             onDismiss={dismissNotification}
             onDismissAll={dismissAllNotifications}
           />
-          <span className="text-xs text-subtle whitespace-nowrap">
-            已自动保存 v1.0.0
-          </span>
+          <span className="text-xs text-subtle whitespace-nowrap">已自动保存 v1.0.0</span>
         </div>
       </footer>
 
@@ -735,4 +901,3 @@ function formatRelativeTime(timestamp: number): string {
   if (days < 7) return `${days} 天前`
   return '很久以前'
 }
-

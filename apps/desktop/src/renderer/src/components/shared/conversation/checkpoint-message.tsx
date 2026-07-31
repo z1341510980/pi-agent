@@ -17,6 +17,7 @@ const CHECKPOINT_TITLES: Record<NonNullable<ConversationMessage['checkpointType'
   post_write_guard: '守护触发',
   writer_pushback: '写作推回',
   guard_degraded: '守护降级',
+  chapter_budget: '成本闸门',
 }
 
 /** action → 图标映射 */

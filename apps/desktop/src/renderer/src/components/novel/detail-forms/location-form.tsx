@@ -200,7 +200,7 @@ export function LocationForm({ entity }: { entity: NovelLocation }): ReactElemen
             {form.appearChapters.length > 0 ? (
               <div className="flex flex-wrap gap-1">
                 {form.appearChapters.map((n) => (
-                  <Badge key={n} variant="outline" className="text-[10px] gap-1">
+                  <Badge key={n} variant="outline" className="text-nano gap-1">
                     第 {n} 章
                     <button
                       type="button"
@@ -214,7 +214,7 @@ export function LocationForm({ entity }: { entity: NovelLocation }): ReactElemen
                 ))}
               </div>
             ) : (
-              <span className="text-[11px] text-muted-foreground">暂无出场章节</span>
+              <span className="text-micro text-muted-foreground">暂无出场章节</span>
             )}
           </FieldRow>
 

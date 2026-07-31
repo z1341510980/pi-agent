@@ -26,12 +26,10 @@ export function EmptyState(_props: EmptyStateProps): ReactElement {
       <img
         src={logoImage}
         alt="PI Agent"
-        className="size-16 rounded-2xl object-cover mb-2"
+        className="mb-2 size-16 rounded-[20px] object-cover shadow-[var(--shadow-floating)]"
       />
-      <h1 className="text-4xl font-bold text-text leading-tight text-balance">
-        PI Agent
-      </h1>
-      <p className="text-2xl font-semibold text-text text-pretty">
+      <h1 className="text-4xl font-bold text-text leading-tight text-balance">PI Agent</h1>
+      <p className="max-w-lg text-2xl font-semibold text-text-secondary text-pretty">
         你的职场超能力
       </p>
     </div>

@@ -163,7 +163,9 @@ describe('NovelEntityGenerator reverse-arrangement projections', () => {
         expect.objectContaining({
           subjectType: 'foreshadow', subjectId: arranged.foreshadowIds[0],
           dimension: 'foreshadow.created', valueType: 'reference', source: 'ai-extracted',
-          afterValue: { description: 'An old token bears the royal seal', status: 'planted' },
+          // beats 是矩阵与 arrangedEntities 判定"本章是否涉及该伏笔"的依据，
+          // 账本记录一并带上，便于回放时还原伏笔事件链。
+          afterValue: { description: 'An old token bears the royal seal', status: 'planted', beats: [{ chapter: 7, type: 'plant' }] },
         }),
         expect.objectContaining({
           subjectType: 'faction', subjectId: arranged.factionIds[0],

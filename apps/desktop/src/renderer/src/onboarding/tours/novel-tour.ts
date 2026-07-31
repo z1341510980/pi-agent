@@ -16,16 +16,11 @@ export const novelTour: Tour = {
       view: 'novel',
     },
     {
-      element: '[data-tour="mode-switcher"]',
-      title: '工作区模式',
-      description: '切换写作 / 分屏 / 矩阵三种模式。',
-      side: 'bottom',
-      view: 'novel',
-    },
-    {
-      element: '[data-tour="view-switcher"]',
-      title: '视图切换',
-      description: '画布看关系图，矩阵看时间线。',
+      // 原先这里是两步（工作区模式 + 视图切换）。两个控件已合并为单一布局切换器，
+      // 引导也随之收成一步。
+      element: '[data-tour="layout-mode-switcher"]',
+      title: '主工作区布局',
+      description: '四个互斥选项：正文、正文+时间线、时间线（章节 × 实体矩阵）、关系图。也可用 Ctrl+1~4 切换。',
       side: 'bottom',
       view: 'novel',
     },

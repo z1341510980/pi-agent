@@ -67,8 +67,16 @@
 
 import { createHash } from 'node:crypto'
 import type { PromptManager } from './prompt-manager.js'
+import {
+  SYSTEM_BUDGET,
+  CHARACTER_CARD_BUDGET,
+  STORY_STATE_LIMIT,
+  RELATION_BUDGET,
+  LEDGER_BUDGET,
+  CHAPTER_ANCHOR_BUDGET,
+  FINGERPRINT_TRUST,
+} from './prompt-budget.js'
 import { compileWritingStylePrompt, type WritingStylePromptTarget } from './writing-style-prompt-factory.js'
-import type { ConsistencyAuditor, ConsistencyReport } from './consistency-auditor.js'
 import type { RelationshipGraph, GraphEdge } from './novel-relationship-graph.js'
 import type {
   NovelProject,
@@ -263,10 +271,54 @@ function compactPromptText(value: string, maxLength: number): string {
 }
 
 /**
- * 角色档案有些字段由生成器存为 JSON。提示词只需保留可直接落到正文里的核心，
- * 不能把整份数据库对象塞给模型。
+ * 中文正文的对话引号集合。
+ *
+ * 必须用 \u 转义书写：直接写弯引号时，格式化/编码转换会把 “ ” 变成 ASCII "，
+ * 导致对话检测在真实正文上永远为 0（历史 bug）。
  */
-function compactCharacterDetail(value: string, maxLength: number): string {
+const DIALOGUE_QUOTE_PATTERN = /["'\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f\uff02]/
+
+/** 占位文本（生成器兜底写入的"待补充（占位）"之类）不应进 prompt，白占预算还会误导模型 */
+const PLACEHOLDER_DETAIL = /待补充|待定|占位|未设定|^\(空\)$|^（空）$/
+
+function usableDetail(value: string | undefined | null): value is string {
+  const raw = (value ?? '').trim()
+  if (!raw) return false
+  return !PLACEHOLDER_DETAIL.test(raw)
+}
+
+/**
+ * 角色档案的 personality / speechStyle 由生成器存为结构化 JSON。
+ *
+ * 早期实现只取"命中的前 2 个键"再截 120 字，结果是：
+ * - personality 只剩「核心 + 优点」，全部缺点和座右铭被丢弃；
+ * - speechStyle 只剩「基调 + 特点」，"典型句式示例"整块丢弃。
+ * 缺点与句式示例恰好是让角色不趋同的部分，丢掉它们直接导致"人物性格单一"。
+ *
+ * 现在按 detailShape 指定的键序抽取，每个键各留一份配额，
+ * 保证「优点 / 缺点」「基调 / 典型句式示例」成对出现。
+ */
+type CharacterDetailShape = 'personality' | 'speechStyle' | 'generic'
+
+/** 各形态下必须成对保留的键，顺序即输出顺序 */
+const CHARACTER_DETAIL_KEYS: Record<CharacterDetailShape, string[]> = {
+  personality: ['核心', '优点', '缺点', '座右铭（内心独白）', '座右铭', '矛盾点', '禁忌'],
+  speechStyle: ['基调', '典型句式示例', '特点', '口头禅'],
+  generic: ['核心', '基调', '特点', '典型句式示例', '优点', '缺点'],
+}
+
+/** 每个键最多取几个数组项（数组型值） */
+const CHARACTER_DETAIL_ITEMS_PER_KEY: Record<CharacterDetailShape, number> = {
+  personality: 2,
+  speechStyle: 2,
+  generic: 3,
+}
+
+function compactCharacterDetail(
+  value: string,
+  maxLength: number,
+  shape: CharacterDetailShape = 'generic',
+): string {
   const raw = value.trim()
   if (!raw) return ''
 
@@ -277,18 +329,29 @@ function compactCharacterDetail(value: string, maxLength: number): string {
     }
     if (typeof parsed === 'object' && parsed !== null) {
       const record = parsed as Record<string, unknown>
-      const preferredKeys = ['核心', '基调', '特点', '典型句式示例', '优点', '缺点']
+      const itemsPerKey = CHARACTER_DETAIL_ITEMS_PER_KEY[shape]
+      // 键序优先，但每个键都有独立配额；不再因为前 2 个键命中就提前退出。
+      const orderedKeys = [
+        ...CHARACTER_DETAIL_KEYS[shape],
+        ...Object.keys(record).filter((key) => !CHARACTER_DETAIL_KEYS[shape].includes(key)),
+      ]
       const fragments: string[] = []
-      for (const key of preferredKeys) {
+      for (const key of orderedKeys) {
         const item = record[key]
-        if (typeof item === 'string' && item.trim()) fragments.push(item.trim())
-        if (Array.isArray(item)) {
-          const texts = item.filter((entry): entry is string => typeof entry === 'string').slice(0, 3)
-          if (texts.length > 0) fragments.push(texts.join('；'))
+        if (typeof item === 'string' && item.trim()) {
+          fragments.push(`${key}：${item.trim()}`)
+        } else if (Array.isArray(item)) {
+          const texts = item
+            .filter((entry): entry is string => typeof entry === 'string')
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+            .slice(0, itemsPerKey)
+          if (texts.length > 0) fragments.push(`${key}：${texts.join('；')}`)
         }
-        if (fragments.length >= 2) break
+        // 预算用尽即停，但至少已按键序覆盖了成对的关键项。
+        if (fragments.join('｜').length >= maxLength) break
       }
-      if (fragments.length > 0) return compactPromptText(fragments.join('；'), maxLength)
+      if (fragments.length > 0) return compactPromptText(fragments.join('｜'), maxLength)
     }
   } catch {
     // 普通文本直接压缩。
@@ -376,33 +439,70 @@ export interface ChapterBoundaryContext {
   fromSnapshot: boolean
 }
 
-export class NovelPromptBuilder {
-  /**
-   * 审计报告缓存（per-project，60s TTL）
-   *
-   * 同一章 4 个 Agent（Director/Writer/Reviewer/Memory）会分别调用 buildChapterContextShared，
-   * 每次都跑 ConsistencyAuditor.audit 会浪费几十 ms（要遍历所有章节和角色历史）。
-   * 缓存让同章内复用结果，60s TTL 覆盖单章生成周期，重生成场景自然失效。
-   */
-  private auditCache: Map<string, { timestamp: number; report: ConsistencyReport }> = new Map()
-  private static readonly AUDIT_CACHE_TTL_MS = 60_000
+/**
+ * 上下文预览的单个 section 元数据（P1 可观测性）。
+ *
+ * 让开发者无需实际触发创作流即可审计 prompt-builder 注入了哪些内容、
+ * 各 section 字符占比、以及 semi-shared 是否命中 N-1 快照。
+ */
+export interface ContextPreviewSection {
+  /** section 标识，如 'system' / 'shared' / 'suffix' / 'agentIdentity' */
+  key: string
+  /** 中文标题，供前端展示 */
+  title: string
+  /** 来源类型：static=系统提示词，semi-shared=章前共享层，semi-suffix=Agent 专属后缀，agent-identity=Agent 身份 */
+  source: 'static' | 'semi-shared' | 'semi-suffix' | 'agent-identity'
+  /** 该 section 字符数 */
+  charCount: number
+  /** 仅 semi-shared 标注：是否来自 N-1 持久化快照（true）而非顺序生成回退（false） */
+  fromSnapshot?: boolean
+  /** 上下文模式：full=全量故事状态，diff=全局关键事实摘要 + 上一章变化 delta */
+  mode?: 'full' | 'diff'
+  /** 内容预览（前 200 字） */
+  preview: string
+}
 
+/**
+ * 上下文预览结果（P1 可观测性）。
+ *
+ * 聚合各 section 的字符数与预览，供 context-preview 端点返回结构化诊断数据。
+ */
+export interface ContextPreviewResult {
+  projectId: string
+  chapterNumber: number
+  agentType?: string
+  totalChars: number
+  sections: ContextPreviewSection[]
+}
+
+export class NovelPromptBuilder {
   constructor(
     private promptManager: PromptManager,
     private stores: NovelPromptStores,
     /**
      * 长期记忆存储（可选）。
      *
-     * 提供时：buildChapterContext 会注入"近期因果链"摘要到 SEMI 层，
-     * 让 Director/Writer/Reviewer 理解最近章节关键事件的因果联系。
+     * 提供时：buildChapterContextShared 会注入"账本承接"section（章前状态 / 最近承接 /
+     * 本章计划 / 后文边界 / 批注），让 Director/Writer/Reviewer 感知实体的真实推进进度。
      *
-     * 不提供时（如 novel-session 的手动对话流）：跳过该部分，不影响其他 section。
+     * 不提供时（如 novel-session 的手动对话流）：跳过该 section，不影响其他部分。
      */
     private memoryStore?: {
       listEvents(projectId: string, options?: { minSignificance?: number; limit?: number }): MemoryEvent[]
       getCausalChain(eventId: string): { causes: MemoryEvent[]; effects: MemoryEvent[] }
       getSnapshot?(projectId: string, chapterNumber: number, options?: { snapshotType?: 'full' }): MemorySnapshot | undefined
       getChapterStoryContext?(projectId: string, chapterNumber: number): ChapterStoryContext
+      // diff 模式读取第 N-1 章的原子变化记录，用 ChapterStoryContext['plannedChanges']
+      // （即 NovelChangeRecord[]）作为返回类型，避免新增 import。
+      listChangeRecords?(projectId: string, options?: {
+        storyEventId?: string
+        chapterNumber?: number
+        beforeChapter?: number
+        afterChapter?: number
+        subjectType?: string
+        subjectId?: string
+        dimension?: string
+      }): ChapterStoryContext['plannedChanges']
     },
     /**
      * 统一关系图查询层（可选，C3 prompt 增强）。
@@ -414,16 +514,6 @@ export class NovelPromptBuilder {
      * 只看用户手动连线，无派生边。
      */
     private relationshipGraph?: RelationshipGraph,
-    /**
-     * 跨章节一致性审计器（可选，C3 prompt 增强）。
-     *
-     * 提供时：buildChapterContextShared 会注入"跨章一致性"section（孤儿实体/悬挂钩子
-     * /时间线矛盾/伏笔状态），并复用 audit.foreshadow 替代 formatUrgentForeshadows 的本地
-     * 重复计算。让 Writer/Reviewer 看到具体审计结果，引导在本章修复或回避。
-     *
-     * 不提供时（如测试代码）：走原 formatUrgentForeshadows 本地逻辑，无审计 section。
-     */
-    private consistencyAuditor?: ConsistencyAuditor,
   ) {}
 
   /**
@@ -537,10 +627,10 @@ export class NovelPromptBuilder {
     const project = this.stores.getProject(projectId)
     if (project) {
       if (project.synopsis?.trim()) {
-        parts.push(`## 故事简介\n\n${compact(project.synopsis, 2400)}`)
+        parts.push(`## 故事简介\n\n${compact(project.synopsis, SYSTEM_BUDGET.synopsis)}`)
       }
       if (project.outline?.trim()) {
-        parts.push(`## 全书大纲\n\n${compact(project.outline, 4000)}`)
+        parts.push(`## 全书大纲\n\n${compact(project.outline, SYSTEM_BUDGET.outline)}`)
       }
       // 注入当前卷纲 + 相邻卷纲摘要
       const volumes = this.stores.listVolumes(projectId)
@@ -551,15 +641,15 @@ export class NovelPromptBuilder {
 
       // 前卷纲要回顾：让 Director/Writer 知道上一卷的收束情况，避免断裂
       if (prevVol?.outline?.trim()) {
-        parts.push(`## 前卷回顾（第${prevVol.volumeNumber}卷《${prevVol.title}》）\n\n${compact(prevVol.outline, 1200)}`)
+        parts.push(`## 前卷回顾（第${prevVol.volumeNumber}卷《${prevVol.title}》）\n\n${compact(prevVol.outline, SYSTEM_BUDGET.previousVolumeOutline)}`)
       }
       // 当前卷纲：Director 规划必须服务于此
       if (currentVol?.outline?.trim()) {
-        parts.push(`## 当前卷纲（第${currentVol.volumeNumber}卷《${currentVol.title}》）\n\n${compact(currentVol.outline, 2400)}`)
+        parts.push(`## 当前卷纲（第${currentVol.volumeNumber}卷《${currentVol.title}》）\n\n${compact(currentVol.outline, SYSTEM_BUDGET.currentVolumeOutline)}`)
       }
       // 下卷预告：让 Director 在卷末规划时能提前衔接下一卷方向
       if (nextVol?.outline?.trim()) {
-        parts.push(`## 下卷方向（第${nextVol.volumeNumber}卷《${nextVol.title}》）\n\n${compact(nextVol.outline, 800)}`)
+        parts.push(`## 下卷方向（第${nextVol.volumeNumber}卷《${nextVol.title}》）\n\n${compact(nextVol.outline, SYSTEM_BUDGET.nextVolumeOutline)}`)
       }
     }
 
@@ -571,7 +661,7 @@ export class NovelPromptBuilder {
     if (worldRules.length > 0) {
       const sorted = [...worldRules].sort((a, b) =>
         a.category.localeCompare(b.category) || a.id.localeCompare(b.id),
-      ).slice(0, 40)
+      ).slice(0, SYSTEM_BUDGET.worldRuleCount)
       parts.push(this.formatWorldRules(sorted))
     }
 
@@ -581,7 +671,7 @@ export class NovelPromptBuilder {
     if (styleGuide.length > 0) {
       const sorted = [...styleGuide].sort((a, b) =>
         a.category.localeCompare(b.category) || a.id.localeCompare(b.id),
-      ).slice(0, 20)
+      ).slice(0, SYSTEM_BUDGET.styleGuideCount)
       parts.push(this.formatStyleGuide(sorted))
     }
 
@@ -665,15 +755,20 @@ export class NovelPromptBuilder {
    * ⚠️ 缓存关键：此方法的输出必须对所有 Agent 完全一致（不依赖 agentType）。
    * 任何 Agent 专属内容都应放入 buildChapterContextSuffix。
    *
-   * 包含：
-   * 1. 章节信息（卷/章号/叙事任务/约束）
-   * 2. 创作约束
-   * 3. 本章已编排实体约束
-   * 4. 当前故事状态（角色/冲突/伏笔/线索/势力/地点，含编排实体去重）
-   * 5. 实体关联（画布连线）
-   * 6. 信息差
-   * 7. 最近章节摘要（覆盖最近 3 章）
-   * 8. 近期因果链
+   * 包含（顺序即 prompt 中的出现顺序）：
+   *  1. 本章写作核心（卷/章号 + 本章要完成的事 + 用户章纲）
+   *  2. 创作约束（事实/认知/阶段/叙事债务/角色弧光/冲突推进/节奏/悬念/POV/场景数/时间线）
+   *  3. 本章出场要素（仅在有 arrangedEntities 时）
+   *  4. 当前故事状态（仅在**无** arrangedEntities 时兜底）
+   *  5. 账本承接（需 memoryStore 提供 getChapterStoryContext）
+   *  6. 实体关联（画布手动连线 + 派生边）
+   *  7. 信息差
+   *  8. 最近章节摘要（最近 5 章）
+   *  9. 上一章结尾
+   * 10. 叙事声音锚点
+   * 11. 下一章开头（重写中间章时的兼容锚点）
+   * 12. 未兑现钩子
+   * 13. 文风指纹（指标可信时才升级为硬约束）
    */
   buildChapterContextShared(
     projectId: string,
@@ -681,7 +776,14 @@ export class NovelPromptBuilder {
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
+    options?: { mode?: 'full' | 'diff' },
   ): string {
+    // mode='diff' 时委托给增量 diff 模式：用全局关键事实摘要 + 上一章变化 delta
+    // 替代全量故事状态（formatStoryState）和事件账本承接（formatStoryLedgerContext），
+    // 大幅减少字符数。默认（不传或 'full'）走原有逻辑，保持向后兼容。
+    if (options?.mode === 'diff') {
+      return this.buildChapterContextDiff(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities)
+    }
     void constraints // constraints 已在 formatConstraints 中使用，此处 void 避免未使用警告
     const parts: string[] = []
     const relevantEntityIds = this.collectRelevantEntityIds(arrangedEntities)
@@ -737,70 +839,85 @@ export class NovelPromptBuilder {
       parts.push(this.formatInfoLayers(projectId, infoLayers, arrangedEntities, boundary))
     }
 
-    // ── 最近 N 章摘要：让 LLM 看到前 N 章的剧情梗概，避免重复造轮子。 ──
+    // ── 前后章锚点（摘要 / 上一章结尾 / 声音锚点 / 下一章开头 / 未兑现钩子 / 文风指纹）──
+    parts.push(...this.collectChapterAnchorSections(projectId, chapterNumber))
+
+    return this.stripEmDash(parts.join('\n\n---\n\n'))
+  }
+
+  /**
+   * 前后章锚点 section（full 与 diff 两种模式共用）。
+   *
+   * 产出顺序即 prompt 中的出现顺序：
+   *   1. 最近章节摘要
+   *   2. 上一章结尾（本章开头必须承接此处钩子）
+   *   3. 叙事声音锚点（前文实际腔调示范）
+   *   4. 下一章开头（重写中间章时的兼容锚点）
+   *   5. 未兑现钩子
+   *   6. 文风指纹
+   *
+   * 这一整段此前在 buildChapterContextShared 与 buildChapterContextDiff 里各有一份
+   * 逐字相同的实现（含"必须按 chapterNumber 向前取"这条关键注释）。
+   * 抽出来的目的不是省行数，而是让两种模式**不可能**在锚点逻辑上漂移。
+   */
+  private collectChapterAnchorSections(projectId: string, chapterNumber: number): string[] {
+    const sections: string[] = []
+
     // ⚠️ 必须按当前章 chapterNumber 为基准向前取，不能用 listRecentChapters：
-    // listRecentChapters 的 SQL 是 ORDER BY chapter_number DESC LIMIT 3，返回的是
-    // 全局章节号最大的 3 章，与"当前生成第几章"无关。当重新生成中间章节（如第7章）
-    // 而后续章节（第8、9章）已有内容时，listRecentChapters 会返回 [9,8,7]，过滤当前章
-    // 后变成 [8,9]——formatPreviousChapterEnding 会把第9章结尾当"上一章结尾"，
-    // formatSoundAnchor 会把第8、9章开头当"叙事声音锚点"，剧情全面错乱。
-    // 正确做法：按 chapterNumber 倒序精确向前取 N 章，排除当前章及之后所有章节。
+    // listRecentChapters 的 SQL 是 ORDER BY chapter_number DESC LIMIT N，返回的是
+    // 全局章节号最大的 N 章，与"当前生成第几章"无关。当重新生成中间章节（如第 7 章）
+    // 而后续章节（第 8、9 章）已有内容时，listRecentChapters 会返回 [9,8,7]，过滤当前章
+    // 后变成 [8,9]——formatPreviousChapterEnding 会把第 9 章结尾当"上一章结尾"，
+    // formatSoundAnchor 会把第 8、9 章开头当"叙事声音锚点"，剧情全面错乱。
     //
-    // 历史问题（2026-07 修复）：
-    // 旧实现 prevChapters.length < 1 只取最近 1 章，导致写第 30 章时 LLM 看不到
+    // 历史问题（2026-07 修复）：旧实现只取最近 1 章，导致写第 30 章时 LLM 看不到
     // 第 1-28 章发生了什么，会重写"主角决定变强""发现师父阴谋"等已发生剧情。
-    // 现在取最近 5 章：每章 recap 50-100 字，共约 250-500 字，可控且足够建立
-    // "过去几章的剧情脉络"，让 LLM 知道哪些剧情已经发生过、本章应向前推进。
-    const RECENT_CHAPTERS_LIMIT = 5
+    // 现在取最近 CHAPTER_ANCHOR_BUDGET.recentChapterCount 章：每章 recap 50-100 字，
+    // 可控且足够建立"过去几章的剧情脉络"。
     const prevChapters: NovelChapter[] = []
-    for (let n = chapterNumber - 1; n >= 1 && prevChapters.length < RECENT_CHAPTERS_LIMIT; n--) {
+    for (
+      let n = chapterNumber - 1;
+      n >= 1 && prevChapters.length < CHAPTER_ANCHOR_BUDGET.recentChapterCount;
+      n--
+    ) {
       const ch = this.stores.getChapter(projectId, n)
       if (ch && ch.content && ch.content.trim().length > 0) {
         prevChapters.push(ch)
       }
     }
-    prevChapters.reverse() // 升序（旧→新），供 formatRecentSummaries/formatPreviousChapterEnding/formatSoundAnchor 使用
-    if (prevChapters.length > 0) {
-      parts.push(this.formatRecentSummaries(prevChapters))
-    }
+    prevChapters.reverse() // 升序（旧→新）
 
-    // ── 上一章结尾 + 叙事声音锚点（向后看：本章开头承接此处钩子）──
-    // 从 suffix 移到 shared：Writer/Reviser/Reviewer 都需要这两段，跨 Agent 完全一致，
-    // 放 shared 层能让 director→writer→reviewer→reviser 之间多命中这部分缓存。
-    // Director 不需要，但多注入走 cache read 廉价（且 Director 是首个调用者会写入缓存）。
     if (prevChapters.length > 0) {
+      sections.push(this.formatRecentSummaries(prevChapters))
+
+      // 上一章结尾 + 叙事声音锚点（向后看：本章开头承接此处钩子）。
+      // 放 shared 层而非 suffix：Writer/Reviser/Reviewer 都需要且跨 Agent 完全一致，
+      // 能让 director→writer→reviewer→reviser 之间多命中这部分缓存。
       const prevEnding = this.formatPreviousChapterEnding(prevChapters)
-      if (prevEnding) parts.push(prevEnding)
-      // 叙事声音锚点：从最近章节开头提取实际腔调示范。
+      if (prevEnding) sections.push(prevEnding)
       // 与 writingStyleProfile 叠加注入（而非互斥）：profile 是用户手动填写的规则和样本，
       // soundAnchor 是系统从既有正文自动提取的实际声音。两者互补：
       // - profile 告诉 LLM "应该怎么写"（规则 + 正反样本）
       // - soundAnchor 告诉 LLM "前文实际怎么写的"（原文示范）
-      // 互斥会导致：用户配置了 profile 但 profile 质量差时，LLM 既看不到规则也看不到前文声音。
       const soundAnchor = this.formatSoundAnchor(prevChapters.slice(-1))
-      if (soundAnchor) parts.push(soundAnchor)
+      if (soundAnchor) sections.push(soundAnchor)
     }
 
-    // ── 下一章开头 + 前情提要（向前看：本章结尾必须过渡到此处场景）──
-    // 重新生成中间章节时，后续章节可能已有内容。若不注入下一章信息，Writer 生成的
-    // 本章结尾可能与已存在的下一章开头对不上，导致剧情断裂。注入下一章开头 + recap
-    // 让 Writer 知道本章结尾钩子要自然过渡到什么场景。
-    // 仅当下一章有实际内容时注入（正常顺序生成时下一章不存在，跳过此段）。
-    const nextChapter = this.stores.getChapter(projectId, chapterNumber + 1)
-    const nextAnchor = this.formatNextChapterAnchor(nextChapter)
-    if (nextAnchor) parts.push(nextAnchor)
+    // 下一章开头（向前看：本章结尾必须过渡到此处场景）。
+    // 重新生成中间章节时后续章节可能已有内容；不注入会让本章结尾与已存在的下一章开头
+    // 对不上，导致剧情断裂。正常顺序生成时下一章不存在，自然跳过。
+    const nextAnchor = this.formatNextChapterAnchor(this.stores.getChapter(projectId, chapterNumber + 1))
+    if (nextAnchor) sections.push(nextAnchor)
 
-    // ── 未兑现钩子（Writer 必须承接上一章抛出的悬念）──
-    // v0.2 核心改动：Writer 现在能看到上一章抛出但尚未兑现的钩子，
-    // 必须在本章正文中承接。这是解决"前后章衔接对不上"的数据基础。
+    // 未兑现钩子：Writer 必须承接上一章抛出的悬念，这是"前后章衔接对不上"的数据基础。
     const unfulfilledHooks = this.stores.listUnfulfilledHooksBefore(projectId, chapterNumber)
     if (unfulfilledHooks.length > 0) {
-      // 上一章钩子必须完整承接；更早的遗留项只保留最近 2 条作为债务提醒，
+      // 上一章钩子必须完整承接；更早的遗留项只保留少量作为债务提醒，
       // 避免每一章都重复累积整本书的钩子历史。
       const previousChapterHooks = unfulfilledHooks
         .filter((hook) => hook.chapterNumber === chapterNumber - 1)
         // 同一章重跑 Director 可能留下多条 thrown 记录。优先保留最新结果，
-        // 同类型同描述去重，并限制为最多 3 个主钩子。
+        // 同类型同描述去重。
         .sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))
         .filter((hook, index, hooks) =>
           hooks.findIndex((candidate) =>
@@ -808,22 +925,96 @@ export class NovelPromptBuilder {
             && candidate.description.trim() === hook.description.trim(),
           ) === index,
         )
-        .slice(0, 3)
+        .slice(0, CHAPTER_ANCHOR_BUDGET.previousChapterHookCount)
       const olderBacklog = unfulfilledHooks
         .filter((hook) => hook.chapterNumber < chapterNumber - 1)
-        .slice(0, 2)
-      parts.push(this.formatUnfulfilledHooks([...previousChapterHooks, ...olderBacklog]))
+        .slice(0, CHAPTER_ANCHOR_BUDGET.olderHookBacklogCount)
+      sections.push(this.formatUnfulfilledHooks([...previousChapterHooks, ...olderBacklog]))
     }
 
-    // ── 文风指纹（从前几章提取的文风基准，抗 compaction）──
-    // 注入文风特征快照，让 Writer/Reviewer 在 context compaction 后仍能保持文风一致。
-    // 与 writingStyleProfile 叠加注入（而非互斥）：profile 是用户填写的期望文风，
-    // fingerprint 是系统从既有正文自动提取的量化指标（句长/对话占比/情感温度等）。
-    // 两者互补：profile 给方向，fingerprint 给实际基准，LLM 据此对齐。
+    // 文风指纹：与 writingStyleProfile 叠加（profile 给方向，指纹给实际基准）。
+    // 指标不可信时 formatStyleFingerprint 会自行降级为参考值，不作硬约束。
     if (prevChapters.length > 0) {
       const fingerprint = this.formatStyleFingerprint(prevChapters)
-      if (fingerprint) parts.push(fingerprint)
+      if (fingerprint) sections.push(fingerprint)
     }
+
+    return sections
+  }
+
+  /**
+   * 增量 diff 上下文模式（SEMI 层）。
+   *
+   * 与 buildChapterContextShared 保持相同的 section 顺序，但用"全局关键事实摘要 +
+   * 上一章变化 delta"替代全量故事状态（formatStoryState）和事件账本承接
+   * （formatStoryLedgerContext），大幅减少字符数同时保留 AI 创作所需的关键信息。
+   *
+   * 触发场景：options.mode='diff' 时由 buildChapterContextShared 委托调用。
+   * 设计意图：长篇小说中段（第 50+ 章）formatStoryState 会注入数百个角色/冲突/线索，
+   * 把无关历史挤进上下文中心。diff 模式只注入全局 Top-N 关键事实和上一章 delta，
+   * 让 LLM 聚焦"当前全局态势骨架 + 上一章发生了什么变化"。
+   *
+   * section 顺序（与 shared 一致，仅第 4、5 项替换）：
+   * 1. 章节信息  2. 创作约束  3. 编排实体约束
+   * 4. 全局关键事实摘要（formatGlobalKeyFacts，≤500 字）—— 替代 formatStoryState
+   * 5. 上一章变化 delta（formatChapterDelta）—— 替代 formatStoryLedgerContext
+   * 6. 实体关联  7. 信息差  8. 最近章节摘要  9. 上一章结尾 + 声音锚点
+   * 10. 下一章锚点  11. 未兑现钩子  12. 文风指纹
+   */
+  buildChapterContextDiff(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
+  ): string {
+    void constraints // constraints 已在 formatConstraints 中使用，此处 void 避免未使用警告
+    const parts: string[] = []
+    const relevantEntityIds = this.collectRelevantEntityIds(arrangedEntities)
+    const boundary = this.getChapterBoundaryContext(projectId, chapterNumber)
+
+    // ── 章节信息 ──
+    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask))
+
+    // ── 创作约束 ──
+    parts.push(this.formatConstraints(constraints))
+
+    // ── 本章已编排实体约束（手动编排 / AI 编排产出，注入 SEMI 层）──
+    const hasArranged = this.hasArrangedEntities(arrangedEntities)
+    if (hasArranged && arrangedEntities) {
+      parts.push(this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities, boundary))
+    }
+
+    // ── 全局关键事实摘要（替代 formatStoryState，≤500 字紧凑摘要）──
+    // 已编排时角色短卡和实体要素已经给出本章所需的状态，不再注入全局摘要；
+    // 与 buildChapterContextShared 的 formatStoryState 注入条件保持一致。
+    if (!hasArranged) {
+      const keyFacts = this.formatGlobalKeyFacts(projectId, boundary, arrangedEntities)
+      if (keyFacts) parts.push(keyFacts)
+    }
+
+    // ── 上一章变化 delta（替代 formatStoryLedgerContext 的"最近承接"段）──
+    // 仅注入第 N-1 章的原子变化，让 LLM 知道上一章哪些状态发生了改变。
+    const delta = this.formatChapterDelta(projectId, chapterNumber, arrangedEntities, boundary)
+    if (delta) parts.push(delta)
+
+    // ── 实体关联（画布手动 + 派生自动边，作为故事状态的补充）──
+    const edges = arrangedEntities && relevantEntityIds.size === 0
+      ? []
+      : this.collectRelevantEdges(projectId, relevantEntityIds, boundary)
+    if (edges.length > 0) {
+      const edgeSection = this.formatEdges(projectId, edges, boundary)
+      if (edgeSection) parts.push(edgeSection)
+    }
+
+    // ── 信息差 ──
+    const infoLayers = this.filterRelevantInfoLayers(boundary.entities.informationLayers, arrangedEntities, boundary)
+    if (infoLayers.length > 0) {
+      parts.push(this.formatInfoLayers(projectId, infoLayers, arrangedEntities, boundary))
+    }
+
+    // ── 前后章锚点（摘要 / 上一章结尾 / 声音锚点 / 下一章开头 / 未兑现钩子 / 文风指纹）──
+    parts.push(...this.collectChapterAnchorSections(projectId, chapterNumber))
 
     return this.stripEmDash(parts.join('\n\n---\n\n'))
   }
@@ -979,70 +1170,6 @@ export class NovelPromptBuilder {
     }
 
     return rubrics[platform] ?? ''
-  }
-
-  /**
-   * 格式化势力/地点/世界要素的静态档案（STATIC 层）
-   *
-   * 与 formatStoryState 的区别：
-   * - formatStoryState 输出动态字段（status / appearChapters 等），随章节变化 → SEMI 层
-   * - formatEntityArchive 只输出静态字段（name / description / type / ideology 等）→ STATIC 层
-   *
-   * 上提到 STATIC 层的好处：
-   * 1. 增加 system prompt 长度，突破 LLM provider 缓存阈值（如 1024 token）
-   * 2. 跨章节稳定，缓存命中率高
-   * 3. 跨 Agent 共享（4 个 Agent 都能感知势力/地点/世界要素的基础信息）
-   *
-   * 排序：按 name 排序，确保顺序稳定（最大化缓存命中）。
-   */
-  private formatEntityArchive(projectId: string): string {
-    const sections: string[] = []
-
-    // 势力静态档案（不含 status / firstChapter / lastChapter / allies / enemies 等动态字段）
-    const factions = this.stores.listFactions(projectId)
-    if (factions.length > 0) {
-      const sorted = [...factions].sort((a, b) => a.name.localeCompare(b.name))
-      const lines = sorted.map((f) => {
-        const parts = [`- **${f.name}**`]
-        if (f.type) parts.push(`类型：${promptLabel(f.type)}`)
-        if (f.description) parts.push(f.description)
-        if (f.ideology) parts.push(`理念：${f.ideology}`)
-        if (f.strength) parts.push(`实力：${promptLabel(f.strength)}`)
-        return parts.join('；')
-      })
-      sections.push(`### 势力档案\n${lines.join('\n')}`)
-    }
-
-    // 地点静态档案（不含 status / firstChapter / appearChapters 等动态字段）
-    const locations = this.stores.listLocations(projectId)
-    if (locations.length > 0) {
-      const sorted = [...locations].sort((a, b) => a.name.localeCompare(b.name))
-      const lines = sorted.map((l) => {
-        const parts = [`- **${l.name}**`]
-        if (l.type) parts.push(`类型：${promptLabel(l.type)}`)
-        if (l.description) parts.push(l.description)
-        if (l.significance) parts.push(`重要性：${promptLabel(l.significance)}`)
-        return parts.join('；')
-      })
-      sections.push(`### 地点档案\n${lines.join('\n')}`)
-    }
-
-    // 世界要素静态档案
-    const worldElements = this.stores.listWorldElements(projectId)
-    if (worldElements.length > 0) {
-      const sorted = [...worldElements].sort((a, b) =>
-        a.category.localeCompare(b.category) || a.name.localeCompare(b.name),
-      )
-      const lines = sorted.map((w) => {
-        const parts = [`- [${w.category}] **${w.name}**`]
-        if (w.description) parts.push(w.description)
-        return parts.join('；')
-      })
-      sections.push(`### 世界要素档案\n${lines.join('\n')}`)
-    }
-
-    if (sections.length === 0) return ''
-    return `## 项目实体档案（静态）\n\n${sections.join('\n\n')}`
   }
 
   /**
@@ -1365,17 +1492,22 @@ export class NovelPromptBuilder {
           const charLines = [`- **${c.name}**`]
           const roleLabel = plotRoleLabel[c.plotRole] ?? c.plotRole
           if (roleLabel) charLines.push(`  笔墨：${roleLabel}`)
-          if (c.identity) charLines.push(`  身份：${compactPromptText(c.identity, 96)}`)
+          if (usableDetail(c.identity)) charLines.push(`  身份：${compactPromptText(c.identity, CHARACTER_CARD_BUDGET.identity)}`)
           const functions = functionMap.get(c.id) ?? []
           for (const fn of functions) {
             const fnLabel = plotFunctionLabel[fn.function] ?? fn.function
-            charLines.push(`  本章作用：${fnLabel}${fn.note ? `（${compactPromptText(fn.note, 80)}）` : ''}`)
+            charLines.push(`  本章作用：${fnLabel}${fn.note ? `（${compactPromptText(fn.note, CHARACTER_CARD_BUDGET.functionNote)}）` : ''}`)
           }
-          if (c.currentState) charLines.push(`  此刻：${compactPromptText(c.currentState, 160)}`)
-          if (c.currentGoal) charLines.push(`  想要：${compactPromptText(c.currentGoal, 100)}`)
-          if (c.currentPressure) charLines.push(`  压力：${compactPromptText(c.currentPressure, 120)}`)
-          if (c.personality) charLines.push(`  性格：${compactCharacterDetail(c.personality, 120)}`)
-          if (c.speechStyle) charLines.push(`  对话：${compactCharacterDetail(c.speechStyle, 120)}`)
+          if (usableDetail(c.currentState)) charLines.push(`  此刻：${compactPromptText(c.currentState, CHARACTER_CARD_BUDGET.currentState)}`)
+          if (usableDetail(c.currentGoal)) charLines.push(`  想要：${compactPromptText(c.currentGoal, CHARACTER_CARD_BUDGET.currentGoal)}`)
+          if (usableDetail(c.currentPressure)) charLines.push(`  压力：${compactPromptText(c.currentPressure, CHARACTER_CARD_BUDGET.currentPressure)}`)
+          // 长期欲望是跨章稳定的人格发动机（区别于 currentGoal 的短期目标）。
+          // 缺了它，Writer 只知道角色这一章想干什么，不知道他这个人一直想要什么。
+          if (usableDetail(c.longTermDesire)) charLines.push(`  一直想要：${compactPromptText(c.longTermDesire, CHARACTER_CARD_BUDGET.longTermDesire)}`)
+          // 性格/对话是角色差异化的唯一来源，预算必须高于 identity/currentState，
+          // 否则多角色同场时会全部退化成同一个声音。
+          if (usableDetail(c.personality)) charLines.push(`  性格：${compactCharacterDetail(c.personality, CHARACTER_CARD_BUDGET.personality, 'personality')}`)
+          if (usableDetail(c.speechStyle)) charLines.push(`  对话：${compactCharacterDetail(c.speechStyle, CHARACTER_CARD_BUDGET.speechStyle, 'speechStyle')}`)
           lines.push(charLines.join('\n'))
         }
       }
@@ -1698,10 +1830,10 @@ export class NovelPromptBuilder {
     relevantEntityIds: Set<string>,
   ): T[] {
     if (edges.length === 0) return []
-    if (relevantEntityIds.size === 0) return edges.slice(0, 20)
+    if (relevantEntityIds.size === 0) return edges.slice(0, RELATION_BUDGET.edgeCount)
     return edges
       .filter((e) => relevantEntityIds.has(e.sourceId) && relevantEntityIds.has(e.targetId))
-      .slice(0, 20)
+      .slice(0, RELATION_BUDGET.edgeCount)
   }
 
   private filterRelevantInfoLayers(
@@ -1713,7 +1845,7 @@ export class NovelPromptBuilder {
     if (!arranged) {
       return layers
         .filter((layer) => !layer.isRevealed)
-        .slice(0, 8)
+        .slice(0, RELATION_BUDGET.infoLayerCount)
     }
 
     const relevantForeshadowIds = new Set(arranged.foreshadowIds)
@@ -1744,192 +1876,139 @@ export class NovelPromptBuilder {
         return false
       }
     })
-    return relevant.slice(0, 8)
+    return relevant.slice(0, RELATION_BUDGET.infoLayerCount)
   }
 
   /**
-   * 格式化故事状态（SEMI 层注入，严格按编排筛选）
+   * 格式化故事状态（SEMI 层注入）：全量精简的角色/关系/冲突/伏笔/线索/势力/地点/物品。
    *
-   * 设计变更（2026-07-16）：原实现注入全量实体的精简状态"让 LLM 知道存在"，
-   * 但这会让 Writer 看到用户未编排的冲突/伏笔，可能主动写入本章、绕过编排控制。
-   * 现改为严格按 arrangedEntities 筛选：
-   * - 有编排时：只注入编排角色之间的关系（编排实体本身的完整定义已在
-   *   formatArrangedEntities 中给出，此处不重复）；非编排实体严格隔离
-   * - 无编排时（兜底）：保持原全量精简注入，避免空上下文
+   * 只在**没有编排实体**时注入。有编排时由 formatArrangedEntities 给出本章实体的完整定义，
+   * 非编排实体严格隔离，避免 Writer 主动写入未编排的冲突或伏笔、绕过编排控制。
    *
-   * @param state 故事状态
-   * @param arrangedEntities 本章已编排实体（严格筛选依据）
+   * 触发场景：旧项目无编排、AI 编排失败降级、纯 Reviewer 评估无 arrangedEntities。
+   *
+   * 历史说明：本方法曾有一条"有编排则按 arrangedEntities 筛选"的分支，但唯一调用点
+   * （buildChapterContextShared）只在 !hasArranged 时调用且从不传第二个参数，
+   * 该分支自始不可达，已随死代码清理一并删除。
    */
-  private formatStoryState(state: StoryState, arrangedEntities?: ArrangedEntity): string {
-    // 占位实体过滤：名字含"（待定）"/"待补充"/"新的"的是 AI 编排未命名的占位实体，
+  private formatStoryState(state: StoryState): string {
+    // 占位实体过滤：名字含“（待定）”/“待补充”/“新的”的是 AI 编排未命名的占位实体，
     // 对 Writer 无意义且污染上下文，跳过输出
     const isPlaceholder = (name: string): boolean =>
       /（待定）|待补充|待定$|^新的$|^测试角色/.test(name)
 
-    // 无编排时兜底：保持原全量精简注入，避免空上下文
-    // 触发场景：旧项目无编排、AI 编排失败降级、纯 Reviewer 评估无 arrangedEntities
-    const hasArranged = arrangedEntities !== undefined
-    if (!hasArranged) {
-      return this.formatStoryStateFullFallback(state, isPlaceholder)
-    }
-
-    // ── 有编排：严格按 arrangedEntities 筛选 ──
     const parts: string[] = ['## 当前故事状态']
 
-    // 编排角色 ID → name 集合（关系字段存的是角色名而非 ID，需按 name 匹配）
-    const arrangedCharIds = new Set(arrangedEntities!.characterIds)
-    const arrangedCharNameSet = new Set(
-      state.characters.filter((c) => arrangedCharIds.has(c.id)).map((c) => c.name),
-    )
-
-    // 关系：只注入编排角色之间的关系
-    // 设计意图：编排了林寒和沈烬，则注入他俩的关系阶段，让 Writer 知道当前关系状态
-    // 非编排角色之间的关系不注入，避免干扰
-    const relevantRelationships = state.relationships.filter((r) => {
-      const aInArranged = arrangedCharNameSet.has(r.characterA)
-      const bInArranged = arrangedCharNameSet.has(r.characterB)
-      return aInArranged && bInArranged
-    }).slice(0, 12)
-    if (relevantRelationships.length > 0) {
-      parts.push('\n### 编排角色关系')
-      for (const r of relevantRelationships) {
-        parts.push(`- ${r.characterA} ↔ ${r.characterB}：${r.relationType}（${r.currentStage}）`)
-      }
-    }
-
-    // 编排角色拥有的物品（含丢失/封印，让 Writer 知道这角色"曾经有什么、现在能用什么"）
-    // 设计意图：用户特别强调"主角 配角拥有的物品"是写作的核心约束。
-    // 物品完整定义已在 formatArrangedEntities 的"本章登场物品"段输出（仅编排的 itemIds），
-    // 这里补充输出"编排角色拥有、但本章未被编排出场"的物品状态，避免 Writer 让角色使用
-    // 已丢失/已封印的物品，或凭空变出未交代的物品。
-    const arrangedCharIdSet = arrangedEntities!.characterIds
-    if (arrangedCharIdSet.length > 0 && state.items.length > 0) {
-      const charIdToName = new Map(
-        state.characters.filter((c) => arrangedCharIdSet.includes(c.id)).map((c) => [c.id, c.name]),
-      )
-      const ownerToItems = new Map<string, typeof state.items>()
-      for (const it of state.items) {
-        if (!it.ownerId || !charIdToName.has(it.ownerId)) continue
-        const list = ownerToItems.get(it.ownerId) ?? []
-        list.push(it)
-        ownerToItems.set(it.ownerId, list)
-      }
-      if (ownerToItems.size > 0) {
-        const itemStatusLabel: Record<string, string> = {
-          active: '可用',
-          lost: '遗失',
-          destroyed: '损毁',
-          transformed: '已转化',
-          sealed: '封印',
-          transferred: '已易主',
-        }
-        parts.push('\n### 编排角色拥有物品')
-        for (const [ownerId, items] of ownerToItems) {
-          const ownerName = charIdToName.get(ownerId) ?? ownerId
-          const itemDescs = items
-            .slice(0, 8)
-            .map((it) => `${it.name}（${itemStatusLabel[it.status] ?? it.status}${it.type ? `·${it.type}` : ''}）`)
-          parts.push(`- **${ownerName}**：${itemDescs.join('、')}`)
-        }
-      }
-    }
-
-    // 角色当前状态、活跃冲突、待回收伏笔、活跃线索、活跃势力、已登场地点
-    // 均不注入：这些实体的完整定义已在 formatArrangedEntities 中给出，
-    // 非编排实体严格隔离，避免 Writer 被未选实体干扰。
-
-    return parts.length > 1 ? parts.join('\n') : ''
-  }
-
-  /**
-   * 无编排时的兜底：全量精简注入故事状态
-   *
-   * 触发场景：旧项目无编排、AI 编排失败降级、纯 Reviewer 评估无 arrangedEntities。
-   * 保持原 formatStoryState 的全量精简行为，避免空上下文导致 Writer 失去全局感知。
-   */
-  private formatStoryStateFullFallback(
-    state: StoryState,
-    isPlaceholder: (name: string) => boolean,
-  ): string {
-    const parts: string[] = ['## 当前故事状态']
+    // 分段上限：每类实体保留精简数量，超过部分仅列名称，避免上下文膨胀
+    // 完整字段请通过工具按需回查（见末尾"按需查询提示"）
+    const LIMIT = STORY_STATE_LIMIT
 
     // 角色动态状态（过滤占位）
-    const otherChars = state.characters.filter((c) => !isPlaceholder(c.name)).slice(0, 12)
+    const otherChars = state.characters.filter((c) => !isPlaceholder(c.name))
     if (otherChars.length > 0) {
       parts.push('\n### 角色当前状态')
-      for (const c of otherChars) {
+      for (const c of otherChars.slice(0, LIMIT.characters)) {
         const lines = [`- **${c.name}**`]
         if (c.currentState) lines.push(`  状态：${c.currentState}`)
         if (c.currentGoal) lines.push(`  目标：${c.currentGoal}`)
         parts.push(lines.join('\n'))
       }
+      if (otherChars.length > LIMIT.characters) {
+        const rest = otherChars.slice(LIMIT.characters).map((c) => c.name).join('、')
+        parts.push(`- 其余角色（仅列名，共 ${otherChars.length - LIMIT.characters} 个）：${rest}`)
+      }
     }
 
     // 关系状态（精简：单行输出）
-    const relationships = state.relationships.slice(0, 12)
+    const relationships = state.relationships
     if (relationships.length > 0) {
       parts.push('\n### 关系当前状态')
-      for (const r of relationships) {
+      for (const r of relationships.slice(0, LIMIT.relationships)) {
         parts.push(`- ${r.characterA} ↔ ${r.characterB}：${promptLabel(r.relationType)}（${promptLabel(r.currentStage)}）`)
+      }
+      if (relationships.length > LIMIT.relationships) {
+        const rest = relationships.slice(LIMIT.relationships)
+          .map((r) => `${r.characterA}↔${r.characterB}`).join('、')
+        parts.push(`- 其余关系（仅列名，共 ${relationships.length - LIMIT.relationships} 条）：${rest}`)
       }
     }
 
     // 活跃冲突（过滤占位）
     const otherConflicts = state.activeConflicts.filter(
       (c) => !isPlaceholder(c.description),
-    ).slice(0, 10)
+    )
     if (otherConflicts.length > 0) {
       parts.push('\n### 活跃冲突')
-      for (const c of otherConflicts) {
+      for (const c of otherConflicts.slice(0, LIMIT.conflicts)) {
         parts.push(`- [${promptLabel(c.type)}] ${c.description}（${promptLabel(c.stage)}，强度 ${c.intensity}/10）`)
+      }
+      if (otherConflicts.length > LIMIT.conflicts) {
+        const rest = otherConflicts.slice(LIMIT.conflicts).map((c) => c.description).join('、')
+        parts.push(`- 其余冲突（仅列名，共 ${otherConflicts.length - LIMIT.conflicts} 条）：${rest}`)
       }
     }
 
     // 待回收伏笔（过滤占位）
     const otherForeshadows = state.pendingForeshadowing.filter(
       (f) => !isPlaceholder(f.description),
-    ).slice(0, 12)
+    )
     if (otherForeshadows.length > 0) {
       parts.push('\n### 伏笔状态')
-      for (const f of otherForeshadows) {
+      for (const f of otherForeshadows.slice(0, LIMIT.foreshadows)) {
         parts.push(`- [${promptLabel(f.status)}] ${f.description}`)
+      }
+      if (otherForeshadows.length > LIMIT.foreshadows) {
+        const rest = otherForeshadows.slice(LIMIT.foreshadows).map((f) => f.description).join('、')
+        parts.push(`- 其余伏笔（仅列名，共 ${otherForeshadows.length - LIMIT.foreshadows} 条）：${rest}`)
       }
     }
 
     // 活跃线索
-    const activeClues = state.activeClues.slice(0, 8)
+    const activeClues = state.activeClues
     if (activeClues.length > 0) {
       parts.push('\n### 线索进度')
-      for (const c of activeClues) {
+      for (const c of activeClues.slice(0, LIMIT.clues)) {
         parts.push(`- ${c.description}（${c.progress}%，下一步：${c.nextStep}）`)
+      }
+      if (activeClues.length > LIMIT.clues) {
+        const rest = activeClues.slice(LIMIT.clues).map((c) => c.description).join('、')
+        parts.push(`- 其余线索（仅列名，共 ${activeClues.length - LIMIT.clues} 条）：${rest}`)
       }
     }
 
     // 活跃势力（过滤占位）
-    const realFactions = state.activeFactions.filter((f) => !isPlaceholder(f.name)).slice(0, 8)
+    const realFactions = state.activeFactions.filter((f) => !isPlaceholder(f.name))
     if (realFactions.length > 0) {
       parts.push('\n### 活跃势力')
-      for (const f of realFactions) {
+      for (const f of realFactions.slice(0, LIMIT.factions)) {
         const segs = [`- **${f.name}**`]
         if (f.type) segs.push(`类型：${promptLabel(f.type)}`)
         if (f.status) segs.push(`状态：${promptLabel(f.status)}`)
         parts.push(segs.join('；'))
       }
+      if (realFactions.length > LIMIT.factions) {
+        const rest = realFactions.slice(LIMIT.factions).map((f) => f.name).join('、')
+        parts.push(`- 其余势力（仅列名，共 ${realFactions.length - LIMIT.factions} 个）：${rest}`)
+      }
     }
 
     // 已登场地点（过滤占位）
-    const realLocations = state.activeLocations.filter((l) => !isPlaceholder(l.name)).slice(0, 8)
+    const realLocations = state.activeLocations.filter((l) => !isPlaceholder(l.name))
     if (realLocations.length > 0) {
       parts.push('\n### 已登场地点')
-      for (const l of realLocations) {
+      for (const l of realLocations.slice(0, LIMIT.locations)) {
         const segs = [`- **${l.name}**`]
         if (l.type) segs.push(`类型：${promptLabel(l.type)}`)
         parts.push(segs.join('；'))
       }
+      if (realLocations.length > LIMIT.locations) {
+        const rest = realLocations.slice(LIMIT.locations).map((l) => l.name).join('、')
+        parts.push(`- 其余地点（仅列名，共 ${realLocations.length - LIMIT.locations} 个）：${rest}`)
+      }
     }
 
     // 物品归属（按持有者分组，让 Writer 知道每个角色拥有什么）
-    const realItems = state.items.filter((i) => !isPlaceholder(i.name)).slice(0, 16)
+    const realItems = state.items.filter((i) => !isPlaceholder(i.name))
     if (realItems.length > 0) {
       const charNameMap = new Map(state.characters.map((c) => [c.id, c.name]))
       const itemStatusLabel: Record<string, string> = {
@@ -1940,9 +2019,10 @@ export class NovelPromptBuilder {
         sealed: '封印',
         transferred: '已易主',
       }
+      const shownItems = realItems.slice(0, LIMIT.items)
       const ownerToItems = new Map<string, typeof realItems>()
       const orphanItems: typeof realItems = []
-      for (const it of realItems) {
+      for (const it of shownItems) {
         if (it.ownerId) {
           const list = ownerToItems.get(it.ownerId) ?? []
           list.push(it)
@@ -1963,7 +2043,17 @@ export class NovelPromptBuilder {
           .map((it) => `${it.name}（${itemStatusLabel[it.status] ?? it.status}）`)
         parts.push(`- **无主**：${orphanDescs.join('、')}`)
       }
+      if (realItems.length > LIMIT.items) {
+        const rest = realItems.slice(LIMIT.items).map((it) => it.name).join('、')
+        parts.push(`- 其余物品（仅列名，共 ${realItems.length - LIMIT.items} 件）：${rest}`)
+      }
     }
+
+    // 工具回查引导：告知 AI 可按需查询完整详情，避免一次性 dump 全表
+    parts.push('\n## 按需查询提示')
+    parts.push('以上为精简快照。如需完整字段，请调用工具：')
+    parts.push('- novel_query_state（传 asOfChapter=N 获取章前状态）')
+    parts.push('- novel_ask_story（自然语言提问，如"角色林深的当前目标是什么？"）')
 
     return parts.join('\n')
   }
@@ -2106,7 +2196,7 @@ export class NovelPromptBuilder {
       } else if (ch.content && ch.content.trim().length > 50) {
         // recap 缺失（章节刚生成、Memory Agent 尚未生成 recap，或生成失败）：
         // 回退到正文开头 300 字兜底，保证有内容可用
-        summary = ch.content.trim().slice(0, 300)
+        summary = ch.content.trim().slice(0, CHAPTER_ANCHOR_BUDGET.recapFallback)
         if (ch.content.length > 300) summary += '...'
       } else if (ch.narrativeTask) {
         summary = ch.narrativeTask
@@ -2135,7 +2225,9 @@ export class NovelPromptBuilder {
       if (ch.content && ch.content.trim().length > 100) {
         const content = ch.content.trim()
         // 取结尾 400 字（覆盖一个完整的场景收尾 + 钩子）
-        const ending = content.length > 400 ? content.slice(-400) : content
+        const ending = content.length > CHAPTER_ANCHOR_BUDGET.previousEnding
+      ? content.slice(-CHAPTER_ANCHOR_BUDGET.previousEnding)
+      : content
         const prefix = content.length > 400 ? '...' : ''
         return `## 上一章结尾（本章开头必须自然承接此处的悬念钩子）\n\n第${ch.chapterNumber}章《${ch.title}》结尾：\n\n${prefix}${ending}`
       }
@@ -2158,7 +2250,7 @@ export class NovelPromptBuilder {
     for (let i = recentChapters.length - 1; i >= 0; i--) {
       const ch = recentChapters[i]
       if (ch.content && ch.content.trim().length > 50) {
-        const opening = ch.content.trim().slice(0, 200)
+        const opening = ch.content.trim().slice(0, CHAPTER_ANCHOR_BUDGET.soundAnchorOpening)
         anchors.push(`- 第${ch.chapterNumber}章开头：${opening}${ch.content.length > 200 ? '...' : ''}`)
       }
       if (anchors.length >= 2) break
@@ -2186,7 +2278,7 @@ export class NovelPromptBuilder {
     // 下一章内容过短（如刚创建的 planned 状态空章节）不注入，避免误导 Writer
     if (content.length < 50) return ''
     // 取开头 400 字（覆盖一个完整的场景切入，让 Writer 知道过渡目标）
-    const opening = content.slice(0, 400)
+    const opening = content.slice(0, CHAPTER_ANCHOR_BUDGET.nextChapterOpening)
     const suffix = content.length > 400 ? '...' : ''
     // recap 是 Memory Agent 为下一章生成的前情提要（50-100 字），比正文开头更能
     // 概括下一章核心事件。若存在则一并注入，让 Writer 双重锚定过渡目标。
@@ -2340,64 +2432,6 @@ export class NovelPromptBuilder {
   }
 
   /**
-   * 构建条件写法理论：根据本章任务类型/节奏只注入相关理论片段。
-   *
-   * 设计意图：
-   * - 原来 Writer 的 role-writer.md 包含 80 行理论，每次全量注入浪费 token 且干扰创作
-   * - 现在根据任务类型条件触发，只注入相关理论，省 token + 减少约束
-   * - 理论片段从 role-writer.md 原有内容中提取精简版
-   */
-  private buildWritingTheory(
-    taskType: string,
-    rhythm?: ChapterRhythm,
-    isClimax?: boolean,
-  ): string {
-    const sections: string[] = []
-
-    // 高潮写法（climax 节奏或冲突标记高潮）
-    if (rhythm === 'climax' || isClimax) {
-      sections.push(`### 高潮写法
-
-- **蓄势释放**：高潮前先写压抑（主角被压制、陷入困境），释放点干脆利落。蓄势占高潮段落 60% 以上
-- **大小区别**：次要冲突单章解决（强度 5-6），重要冲突跨 2-3 章铺垫（7-8），主要冲突跨卷铺垫（9-10）
-- **类型写法**：情感型聚焦情感爆发（对话+心理），命运型聚焦命运揭晓（信息递进），人物型突出性格魅力，战斗型聚焦新奇场面，主题型承载思想重量，复合型多线共振`)
-    }
-
-    // 突转写法
-    if (taskType === 'create_reversal' || rhythm === 'twist') {
-      sections.push(`### 突转写法
-
-- **前置呼应**：突转必须呼应前 1-2 章的误导线索和更早的伏笔
-- **角色动机一致**：突转后角色行为符合性格逻辑，不为突转而突转
-- **信息差利用**：通过角色不知道的信息制造突转，非凭空降神
-- **突转节奏**：铺垫要慢（让读者相信 A 方向），突转要快（一个事件改变一切）`)
-    }
-
-    // 悬念写法
-    if (taskType === 'create_suspense' || rhythm === 'suspense') {
-      sections.push(`### 悬念写法
-
-- **埋设**：通过角色不知道的信息制造紧张感
-- **维持**：每章释放一点信息但不说破
-- **释放**：真相揭晓，情感与信息同时爆发
-- **技巧**：信息不对称、倒计时压力、部分揭露、误导与红鲱鱼`)
-    }
-
-    // 冲突推进写法（当有冲突推进目标时）
-    if (taskType === 'create_conflict' || taskType === 'escalate_conflict') {
-      sections.push(`### 冲突推进写法
-
-- **潜伏 → 初现**：暗示冲突存在，角色尚未察觉
-- **初现 → 升级**：冲突显性化，角色开始交锋
-- **升级 → 爆发**：冲突爆发，强度拉满
-- 按类型调整：内心/道德冲突慢节奏心理描写，关系/情感冲突中节奏对话，势力/世界规则冲突快节奏群像，生存冲突快节奏动作`)
-    }
-
-    if (sections.length === 0) return '（本章无特殊写法理论需要参考，按创作核心原则自由发挥即可）'
-    return sections.join('\n\n')
-  }
-
-  /**
    * 收集账本上下文里出现的所有 subjectId/targetId，反查实体显示名。
    * 返回 id → name 映射。反查失败的 id 不放入映射（格式化时回退到 type:id）。
    */
@@ -2463,7 +2497,7 @@ export class NovelPromptBuilder {
   ): string {
     const arrangedIds = this.collectRelevantEntityIds(arrangedEntities)
     const hasArrangedFilter = arrangedIds.size > 0
-    const recentChapterFloor = Math.max(1, context.chapterNumber - 2)
+    const recentChapterFloor = Math.max(1, context.chapterNumber - LEDGER_BUDGET.recentChangeLookback)
     const dimensionLabels: Record<string, string> = {
       'character.state': '状态',
       'character.goal': '目标',
@@ -2527,7 +2561,7 @@ export class NovelPromptBuilder {
         ? `与${labelFor(change.targetType ?? '', change.targetId)}`
         : ''
       const label = dimensionLabels[change.dimension] ?? '状态变化'
-      const reason = change.reason ? `；缘由：${compactPromptText(change.reason, 96)}` : ''
+      const reason = change.reason ? `；缘由：${compactPromptText(change.reason, LEDGER_BUDGET.changeReason)}` : ''
       return `- ${subject}${target}：${label}变为「${valueFor(change.afterValue)}」${reason}`
     }
 
@@ -2536,7 +2570,7 @@ export class NovelPromptBuilder {
       .filter((state) => state.effectiveChapter >= recentChapterFloor)
       .filter((state) => isRelevant(state.subjectType, state.subjectId, state.dimension, state.value))
       .sort((a, b) => b.effectiveChapter - a.effectiveChapter || b.effectiveSceneOrder - a.effectiveSceneOrder)
-      .slice(0, 6)
+      .slice(0, LEDGER_BUDGET.recentChangeCount)
       .map((state) => changeLine({ ...state, afterValue: state.value }, state.subjectName))
     if (recentStateLines.length > 0) {
       sections.push(`### 最近承接（第${recentChapterFloor}-${context.chapterNumber - 1}章）\n${recentStateLines.join('\n')}`)
@@ -2544,7 +2578,7 @@ export class NovelPromptBuilder {
 
     const planLines = context.plannedChanges
       .filter((change) => isRelevant(change.subjectType, change.subjectId, change.dimension, change.afterValue))
-      .slice(0, 4)
+      .slice(0, LEDGER_BUDGET.plannedChangeCount)
       .map((change) => changeLine(change))
     if (planLines.length > 0) {
       sections.push(`### 本章账本计划（应服务于本章写作核心）\n${planLines.join('\n')}`)
@@ -2555,8 +2589,8 @@ export class NovelPromptBuilder {
         isRelevant(change.subjectType, change.subjectId, change.dimension, change.afterValue),
       ))
       .sort((a, b) => a.event.chapterNumber - b.event.chapterNumber)
-      .slice(0, 2)
-      .map(({ event }) => `- 第${event.chapterNumber}章将继续：${compactPromptText(event.title, 100)}`)
+      .slice(0, LEDGER_BUDGET.futureCommitmentCount)
+      .map(({ event }) => `- 第${event.chapterNumber}章将继续：${compactPromptText(event.title, LEDGER_BUDGET.commitmentTitle)}`)
     if (futureLines.length > 0) {
       sections.push(`### 后文边界（仅用于避免提前写完）\n${futureLines.join('\n')}`)
     }
@@ -2564,8 +2598,8 @@ export class NovelPromptBuilder {
     const annotationLabels: Record<string, string> = { intent: '作者意图', warning: '注意', note: '批注', constraint: '约束' }
     const annotationLines = context.annotations
       .filter((annotation) => annotation.includeInPrompt)
-      .slice(0, 4)
-      .map((annotation) => `- ${annotationLabels[annotation.kind] ?? '作者批注'}：${compactPromptText(annotation.content, 160)}`)
+      .slice(0, LEDGER_BUDGET.annotationCount)
+      .map((annotation) => `- ${annotationLabels[annotation.kind] ?? '作者批注'}：${compactPromptText(annotation.content, LEDGER_BUDGET.annotationContent)}`)
     if (annotationLines.length > 0) {
       sections.push(`### 作者批注\n${annotationLines.join('\n')}`)
     }
@@ -2574,59 +2608,247 @@ export class NovelPromptBuilder {
   }
 
   /**
-   * 格式化近期因果链：最近 2 章的高重要性事件及其因果联系。
+   * 全局关键事实摘要（diff 模式专用，替代 formatStoryState）。
    *
-   * 设计意图：
-   * - "最近章节摘要"展示剧情梗概；本节展示"为什么会这样"的因果脉络
-   * - 让 Director 在规划本章时承接前因；让 Writer 在创作时保持动机连贯
-   * - 仅取 significance >= 6 的事件，避免噪音；按章节分组，最近 2 章优先
-   * - 因果展示策略：每个事件若有 cause，展示"直接原因"一行（不递归根因）
+   * 从 boundary.entities 提取 Top-N 关键标识，紧凑输出 ≤500 字摘要：
+   * 主角当前态势、核心冲突 Top 3、关键未回收伏笔 Top 3、进行中线索 Top 2。
+   * 不展开全部字段，让 LLM 拿到"全局态势骨架"即可，详情由 query_state 工具按需查询。
    *
-   * @param projectId 项目 ID
-   * @param currentChapterNumber 当前正在创作的章节号（仅展示此章之前的事件）
+   * 过滤规则：
+   * - 主角：characters.find(isProtagonist)，无主角则取前 2 个角色（仅名字 + 身份）
+   * - 核心冲突：排除 resolved/transformed，按 intensity 降序取 Top 3
+   * - 关键伏笔：仅 planted/reinforced，取 Top 3
+   * - 进行中线索：progress < 100，按 progress 降序取 Top 2
+   * 字段缺失时跳过，不显示"未设定"；枚举值复用 promptLabel 翻译。
    */
-  private formatRecentCausalChain(projectId: string, currentChapterNumber: number): string {
-    if (!this.memoryStore) return ''
-    // 拉取最近的高重要性事件（significance >= 6，最多 30 条）
-    const allEvents = this.memoryStore.listEvents(projectId, { minSignificance: 6, limit: 30 })
-    // 仅展示当前章之前的事件（当前章事件尚未生成；未来章不存在）
-    const pastEvents = allEvents
-      .filter((e) => e.chapterNumber < currentChapterNumber)
-      .sort((a, b) => b.chapterNumber - a.chapterNumber || a.createdAt - b.createdAt)
-    if (pastEvents.length === 0) return ''
+  private formatGlobalKeyFacts(
+    projectId: string,
+    boundary: ChapterBoundaryContext,
+    arrangedEntities?: ArrangedEntity,
+  ): string {
+    void projectId
+    void arrangedEntities
+    const { characters, conflicts, foreshadowing, clues } = boundary.entities
+    const sections: string[] = []
 
-    // 按章节分组，取最近 2 章
-    const byChapter = new Map<number, MemoryEvent[]>()
-    for (const e of pastEvents) {
-      const list = byChapter.get(e.chapterNumber)
-      if (list) list.push(e)
-      else byChapter.set(e.chapterNumber, [e])
+    // ── 主角 ──
+    const protagonist = characters.find((c) => c.isProtagonist)
+    const charLines: string[] = []
+    if (protagonist) {
+      const segs: string[] = [`${protagonist.name}：${compactPromptText(protagonist.identity, 40)}`]
+      const goal = protagonist.currentGoal?.trim()
+      if (goal) segs.push(`当前目标：${compactPromptText(goal, 40)}`)
+      const pressure = protagonist.currentPressure?.trim()
+      if (pressure) segs.push(`当前压力：${compactPromptText(pressure, 40)}`)
+      charLines.push(`- ${segs.join('。')}。`)
+    } else {
+      // 无主角则取前 2 个角色，仅保留名字与身份
+      for (const c of characters.slice(0, 2)) {
+        if (!c.name) continue
+        charLines.push(`- ${c.name}：${compactPromptText(c.identity, 40)}`)
+      }
     }
-    const chaptersToShow = [...byChapter.keys()].sort((a, b) => b - a).slice(0, 2)
-    if (chaptersToShow.length === 0) return ''
+    if (charLines.length > 0) {
+      sections.push(`### 主角\n${charLines.join('\n')}`)
+    }
+
+    // ── 核心冲突 Top 3（排除已解决/已转化，按强度降序）──
+    const topConflicts = conflicts
+      .filter((c) => c.stage !== 'resolved' && c.stage !== 'transformed')
+      .sort((a, b) => b.intensity - a.intensity)
+      .slice(0, 3)
+    if (topConflicts.length > 0) {
+      const lines = topConflicts.map((c) =>
+        `- ${compactPromptText(c.description, 60)}（强度 ${c.intensity}/10，阶段 ${promptLabel(c.stage)}）`,
+      )
+      sections.push(`### 核心冲突（Top 3）\n${lines.join('\n')}`)
+    }
+
+    // ── 关键未回收伏笔 Top 3（仅 planted / reinforced）──
+    const topForeshadows = foreshadowing
+      .filter((f) => f.status === 'planted' || f.status === 'reinforced')
+      .slice(0, 3)
+    if (topForeshadows.length > 0) {
+      const lines = topForeshadows.map((f) =>
+        `- ${compactPromptText(f.description, 60)}（状态 ${promptLabel(f.status)}）`,
+      )
+      sections.push(`### 关键未回收伏笔（Top 3）\n${lines.join('\n')}`)
+    }
+
+    // ── 进行中线索 Top 2（progress < 100，按进度降序）──
+    const topClues = clues
+      .filter((c) => c.progress < 100)
+      .sort((a, b) => b.progress - a.progress)
+      .slice(0, 2)
+    if (topClues.length > 0) {
+      const lines = topClues.map((c) =>
+        `- ${compactPromptText(c.description, 60)}（进度 ${c.progress}%）`,
+      )
+      sections.push(`### 进行中线索（Top 2）\n${lines.join('\n')}`)
+    }
+
+    return sections.length > 0 ? `## 全局关键事实\n\n${sections.join('\n\n')}` : ''
+  }
+
+  /**
+   * 上一章变化 delta（diff 模式专用，替代 formatStoryLedgerContext 的"最近承接"段）。
+   *
+   * 从 memoryStore.listChangeRecords 读取第 N-1 章的原子变化记录，按 subjectType 分组
+   * 紧凑输出：角色状态变化（before→after）/ 冲突伏笔推进 / 新增实体。
+   *
+   * 行为约定：
+   * - chapterNumber === 1 时返回空串（无上一章）
+   * - memoryStore 未注入或未提供 listChangeRecords 时返回空串
+   * - 无变化记录时返回空串
+   * - dimension 以 .created 结尾归入"新增实体"组；character.conflict_link 跳过
+   * - 每组最多 5 条，按 significance 降序
+   * - beforeValue/afterValue 用 compactPromptText 精简，枚举值复用 promptLabel 翻译
+   * - 实体名通过 buildBoundaryEntityNameMap 反查，避免暴露 UUID
+   */
+  private formatChapterDelta(
+    projectId: string,
+    chapterNumber: number,
+    arrangedEntities?: ArrangedEntity,
+    boundary?: ChapterBoundaryContext,
+  ): string {
+    // 第 1 章无上一章，无变化 delta
+    if (chapterNumber <= 1) return ''
+    // memoryStore 未注入或未提供 listChangeRecords 时无法获取变化记录
+    if (!this.memoryStore?.listChangeRecords) return ''
+
+    const changes = this.memoryStore.listChangeRecords(projectId, { chapterNumber: chapterNumber - 1 })
+    if (changes.length === 0) return ''
+
+    // 反查实体显示名，避免在提示词里暴露 UUID
+    const nameMap = boundary
+      ? this.buildBoundaryEntityNameMap(projectId, boundary.entities)
+      : new Map<string, string>()
+    const arrangedIds = this.collectRelevantEntityIds(arrangedEntities)
+    const hasArrangedFilter = arrangedIds.size > 0
+
+    // dimension 中文标签（复用 formatStoryLedgerContext 的映射风格）
+    const dimensionLabels: Record<string, string> = {
+      'character.state': '状态',
+      'character.goal': '目标',
+      'character.pressure': '压力',
+      'character.cognition': '认知',
+      'character.arc_stage': '成长状态',
+      'conflict.stage': '冲突进展',
+      'conflict.intensity': '冲突强度',
+      'foreshadow.beat': '伏笔动作',
+      'foreshadow.payoff_chapter': '伏笔回收时点',
+      'clue.progress': '线索进展',
+      'faction.status': '势力状态',
+      'faction.activity': '势力动态',
+      'item.holder': '物品归属',
+      'item.status': '物品状态',
+      'relationship.stage': '关系进展',
+      'relationship.alignment': '关系立场',
+    }
+
+    const nameOf = (subjectType: string, subjectId: string): string =>
+      nameMap.get(subjectId) ?? `${promptLabel(subjectType)}相关事项`
+
+    const valueOf = (value: unknown): string => {
+      if (value == null || value === '') return ''
+      if (typeof value === 'string') return compactPromptText(promptLabel(value), 80)
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+      if (typeof value === 'object') {
+        const record = value as Record<string, unknown>
+        const fields: Array<[string, string]> = [
+          ['currentState', '状态'], ['currentGoal', '目标'], ['currentPressure', '压力'],
+          ['stage', '进展'], ['status', '状态'], ['progress', '进度'],
+        ]
+        const segs = fields.flatMap(([key, label]) => {
+          const v = record[key]
+          if (v == null || v === '') return []
+          return [`${label}：${compactPromptText(promptLabel(String(v)), 48)}`]
+        })
+        return segs.length > 0 ? segs.join('；') : ''
+      }
+      return String(value)
+    }
+
+    // 按 subjectType + 是否新增 分组：character 单列；conflict/foreshadow/clue/其他归"推进"；.created 归"新增"
+    const characterChanges: typeof changes = []
+    const plotChanges: typeof changes = []
+    const newEntities: typeof changes = []
+
+    for (const change of changes) {
+      if (change.dimension.endsWith('.created')) {
+        newEntities.push(change)
+        continue
+      }
+      if (change.dimension === 'character.conflict_link') continue
+      if (hasArrangedFilter && !arrangedIds.has(change.subjectId)) continue
+      if (change.subjectType === 'character') {
+        characterChanges.push(change)
+      } else {
+        plotChanges.push(change)
+      }
+    }
+
+    const sortBySignificance = (a: typeof changes[number], b: typeof changes[number]) =>
+      b.significance - a.significance
 
     const sections: string[] = []
-    for (const ch of chaptersToShow) {
-      const events = byChapter.get(ch) ?? []
-      const lines: string[] = []
-      for (const e of events) {
-        const typeLabel = this.translateMemoryEventType(e.eventType)
-        let line = `- [${typeLabel}] ${e.description}`
-        // 若有 cause，查询并展示"直接原因"（chain.causes 数组最后一个元素）
-        // chain.causes 已 reverse，[0]=root cause，[last]=direct cause
-        if (e.cause) {
-          const chain = this.memoryStore!.getCausalChain(e.id)
-          const directCause = chain.causes[chain.causes.length - 1]
-          if (directCause) {
-            line += `\n  ← 由"${directCause.description}"引发`
-          }
+
+    // 角色状态变化（before → after）
+    const charLines = characterChanges
+      .sort(sortBySignificance)
+      .slice(0, 5)
+      .map((change) => {
+        const name = nameOf(change.subjectType, change.subjectId)
+        const label = dimensionLabels[change.dimension] ?? '状态变化'
+        const before = valueOf(change.beforeValue)
+        const after = valueOf(change.afterValue)
+        const reason = change.reason?.trim() ? `（缘由：${compactPromptText(change.reason, 60)}）` : ''
+        if (before && after) {
+          return `- ${name}：${label}从「${before}」变为「${after}」${reason}`
         }
-        lines.push(line)
-      }
-      sections.push(`### 第${ch}章\n${lines.join('\n')}`)
+        return `- ${name}：${label}变为「${after || '暂无明确结果'}」${reason}`
+      })
+    if (charLines.length > 0) {
+      sections.push(`### 角色状态变化\n${charLines.join('\n')}`)
     }
 
-    return `## 近期因果链（最近章节关键事件的因果联系）\n\n${sections.join('\n\n')}`
+    // 冲突/伏笔推进（after only）
+    const plotLines = plotChanges
+      .sort(sortBySignificance)
+      .slice(0, 5)
+      .map((change) => {
+        const name = nameOf(change.subjectType, change.subjectId)
+        const label = dimensionLabels[change.dimension] ?? '状态变化'
+        const after = valueOf(change.afterValue)
+        const reason = change.reason?.trim() ? `（缘由：${compactPromptText(change.reason, 60)}）` : ''
+        return `- ${name}：${label}变为「${after || '暂无明确结果'}」${reason}`
+      })
+    if (plotLines.length > 0) {
+      sections.push(`### 冲突/伏笔推进\n${plotLines.join('\n')}`)
+    }
+
+    // 新增实体（.created 维度）：角色附带 identity，其余仅名字
+    const newLines = newEntities
+      .sort(sortBySignificance)
+      .slice(0, 5)
+      .map((change) => {
+        const name = nameMap.get(change.subjectId) ?? `${promptLabel(change.subjectType)}相关`
+        if (change.subjectType === 'character') {
+          const char = this.stores.getCharacter(change.subjectId)
+          const identity = char?.identity?.trim()
+          return identity
+            ? `- 新增角色：${name}（${compactPromptText(identity, 40)}）`
+            : `- 新增角色：${name}`
+        }
+        return `- 新增${promptLabel(change.subjectType)}：${name}`
+      })
+    if (newLines.length > 0) {
+      sections.push(`### 新增实体\n${newLines.join('\n')}`)
+    }
+
+    return sections.length > 0
+      ? `## 上一章变化（第 ${chapterNumber - 1} 章 → 第 ${chapterNumber} 章前）\n\n${sections.join('\n\n')}`
+      : ''
   }
 
   /** 事件类型 → 中文标签 */
@@ -2778,16 +3000,19 @@ export class NovelPromptBuilder {
     const longSentenceRatio = Math.round((longSentences / sentences.length) * 100)
 
     // 对话占比（含引号的段落字数 / 总字数）
+    // ⚠️ 引号字符类必须用转义码点书写：之前直接写弯引号，被格式化/编码转换吃成 ASCII "，
+    // 导致中文正文里的 “…” 一个都匹配不到，对话占比恒为 0%。
     const paragraphs = sampleText.split(/\n+/).filter(p => p.trim().length > 0)
     const totalParaChars = paragraphs.reduce((sum, p) => sum + p.replace(/\s/g, '').length, 0)
     const dialogueChars = paragraphs
-      .filter(p => /["「『""']/.test(p))
+      .filter(p => DIALOGUE_QUOTE_PATTERN.test(p))
       .reduce((sum, p) => sum + p.replace(/\s/g, '').length, 0)
     const dialogueRatio = totalParaChars > 0 ? Math.round((dialogueChars / totalParaChars) * 100) : 0
 
-    // 比喻密度（每千字比喻词出现次数）
-    const metaphorWords = (sampleText.match(/犹如|宛若|仿佛|恍若|好似|有如/g) || []).length
-    const metaphorDensity = totalChars > 0 ? Math.round((metaphorWords / totalChars) * 1000) : 0
+    // 比喻密度（每千字比喻词出现次数）；整数取整会把真实密度（通常 <1/千字）全部抹成 0，
+    // 所以保留一位小数。
+    const metaphorWords = (sampleText.match(/犹如|宛若|仿佛|恍若|好似|有如|好像|像是/g) || []).length
+    const metaphorDensity = totalChars > 0 ? Math.round((metaphorWords / totalChars) * 10000) / 10 : 0
 
     // 段落平均长度
     const avgParagraphLength = paragraphs.length > 0 ? Math.round(totalParaChars / paragraphs.length) : 0
@@ -2799,10 +3024,14 @@ export class NovelPromptBuilder {
       firstPersonCount > thirdPersonCount * 2 ? 'first' :
       thirdPersonCount > firstPersonCount * 2 ? 'third' : 'mixed'
 
-    // 情感温度（通过情感词密度估算，0=冷峻，10=热烈）
+    // 情感温度（0=冷峻，10=热烈）
+    // 原实现用 5 + (hot - cold) * 0.5 的绝对词频差，样本一长必然被 clamp 到 0，
+    // 任何克制型长文都会得到"情感温度 0"这种错误基准。改为按每千字归一后再映射。
     const hotWords = (sampleText.match(/怒|吼|咆哮|狂|爆|燃|热血|激昂|疯狂/g) || []).length
     const coldWords = (sampleText.match(/冷|静|默|沉|淡|克制|漠然/g) || []).length
-    const emotionalTemperature = Math.min(10, Math.max(0, Math.round(5 + (hotWords - coldWords) * 0.5)))
+    const per1k = (count: number): number => (totalChars > 0 ? (count / totalChars) * 1000 : 0)
+    const emotionalTemperature = Math.min(10, Math.max(0,
+      Math.round(5 + (per1k(hotWords) - per1k(coldWords)) * 0.6)))
 
     const sampleRange: [number, number] = [prevChapters[0].chapterNumber, prevChapters[prevChapters.length - 1].chapterNumber]
 
@@ -2817,248 +3046,25 @@ export class NovelPromptBuilder {
       `- 段落平均长度：${avgParagraphLength} 字`,
       `- 叙事人称：${narrativePerson === 'first' ? '第一人称' : narrativePerson === 'third' ? '第三人称' : '混合人称'}`,
       `- 情感温度：${emotionalTemperature}/10（0=冷峻克制，10=热烈奔放）`,
-      '',
-      '⚠️ 本章文风必须与此指纹保持一致。如指纹显示短句占比高+情感温度低，本章不可突然变成长句+煽情。',
     ]
 
-    return lines.join('\n')
-  }
-
-  /**
-   * 待回收伏笔预警：标注超过 N 章未回收的伏笔为"急需回收"
-   *
-   * 超过 20 章未回收 → 标记"急需回收"
-   * 超过 50 章未回收 → 标记"即将过期"
-   *
-   * C3 增强：若注入了 consistencyAuditor，优先复用 audit 报告的 urgent/expired 字段，
-   * 避免与 consistency-auditor.ts 的 auditForeshadow 重复计算（相同阈值在两处独立维护）。
-   * 未注入时走原本地计算逻辑，保持向后兼容（测试代码不注入 auditor）。
-   */
-  private formatUrgentForeshadows(
-    projectId: string,
-    chapterNumber: number,
-    arranged?: ArrangedEntity,
-  ): string {
-    const selectedIds = arranged ? new Set(arranged.foreshadowIds) : null
-
-    // ── C3 优先路径：复用 ConsistencyAuditor.audit() 的 urgent/expired ──
-    if (this.consistencyAuditor) {
-      const report = this.getCachedAudit(projectId)
-      if (report) {
-        const toRender = (u: { id: string; description: string; gap: number; firstChapter: number | null }, level: string) => ({
-          id: u.id,
-          desc: u.description,
-          plantedAt: u.firstChapter ?? 0,
-          gap: u.gap,
-          level,
-        })
-        const expired = report.foreshadow.expired
-          .filter((u) => !selectedIds || selectedIds.has(u.id))
-          .slice(0, 10)
-          .map((u) => toRender(u, '即将过期'))
-        const urgent = report.foreshadow.urgent
-          .filter((u) => !selectedIds || selectedIds.has(u.id))
-          .slice(0, 10)
-          .map((u) => toRender(u, '急需回收'))
-        if (expired.length === 0 && urgent.length === 0) return ''
-        return this.renderUrgentForeshadows(urgent, expired)
-      }
+    // 降级门：指纹只是"从既有正文自动量化"的观测值，指标失真时如果还带 ⚠️ 强制一致，
+    // 会把 Writer 直接锁死在错误基准上（例如"对话占比 0%"→ 全章不写对话）。
+    // 因此只有在样本量足够且指标落在可信区间时才升级为硬约束。
+    const trustworthy =
+      totalParaChars >= FINGERPRINT_TRUST.minParagraphChars
+      && paragraphs.length >= FINGERPRINT_TRUST.minParagraphCount
+      && dialogueRatio > 0
+      && emotionalTemperature > 0
+    if (trustworthy) {
+      lines.push('')
+      lines.push('⚠️ 本章文风必须与此指纹保持一致。如指纹显示短句占比高+情感温度低，本章不可突然变成长句+煽情。')
+    } else {
+      lines.push('')
+      lines.push('说明：以上仅为前文自动量化的观测值，样本量或指标可信度不足，仅作参考，不作为硬约束；本章文风以「项目文风档案」为准。')
     }
-
-    // ── 降级路径：未注入 auditor 时走原本地计算（保持测试兼容）──
-    const foreshadows = this.stores.listForeshadowing(projectId)
-      .filter((foreshadow) => !selectedIds || selectedIds.has(foreshadow.id))
-    const pending = foreshadows.filter(f => f.status !== 'recovered' && f.status !== 'abandoned')
-
-    if (pending.length === 0) return ''
-
-    const urgent: Array<{ id: string; desc: string; plantedAt: number; gap: number; level: string }> = []
-    const expired: Array<{ id: string; desc: string; plantedAt: number; gap: number; level: string }> = []
-    for (const f of pending) {
-      // 获取伏笔埋设章号
-      const plantedAt = f.firstChapter || 0
-      if (plantedAt <= 0) continue
-      const gap = chapterNumber - plantedAt
-      if (gap >= 50) {
-        expired.push({ id: f.id, desc: f.description, plantedAt, gap, level: '即将过期' })
-      } else if (gap >= 20) {
-        urgent.push({ id: f.id, desc: f.description, plantedAt, gap, level: '急需回收' })
-      }
-    }
-
-    if (urgent.length === 0 && expired.length === 0) return ''
-    return this.renderUrgentForeshadows(urgent, expired)
-  }
-
-  /**
-   * 渲染伏笔预警文本（被 formatUrgentForeshadows 的两个分支复用）
-   *
-   * expired 排在 urgent 之前，更严重的问题优先呈现给 LLM
-   */
-  private renderUrgentForeshadows(
-    urgent: Array<{ id: string; desc: string; plantedAt: number; gap: number; level: string }>,
-    expired: Array<{ id: string; desc: string; plantedAt: number; gap: number; level: string }>,
-  ): string {
-    const lines: string[] = [
-      '## 待回收伏笔预警',
-      '',
-      '以下伏笔已埋设较久，需考虑在本章或近几章回收：',
-      '',
-    ]
-    for (const u of expired) {
-      lines.push(`- **[${u.level}]** ${u.desc}（第${u.plantedAt}章埋设，已隔 ${u.gap} 章）`)
-    }
-    for (const u of urgent) {
-      lines.push(`- **[${u.level}]** ${u.desc}（第${u.plantedAt}章埋设，已隔 ${u.gap} 章）`)
-    }
-    lines.push('')
-    lines.push('⚠️ 超过 50 章未回收的伏笔读者可能已遗忘，需评估是否废弃或重新强化提醒。')
 
     return lines.join('\n')
-  }
-
-  /**
-   * 获取审计报告（带 60s TTL 缓存，C3 增强）
-   *
-   * 同一章 4 个 Agent（Director/Writer/Reviewer/Memory）会分别调用 buildChapterContextShared，
-   * 每次都跑 ConsistencyAuditor.audit 会浪费几十 ms（要遍历所有章节和角色历史）。
-   * 缓存让同章内复用结果，60s TTL 覆盖单章生成周期，重生成场景自然失效。
-   *
-   * 失效条件：
-   * - 60s TTL 过期（覆盖单章 4 agent 调用周期）
-   * - 项目切换（不同 projectId 自然走不同缓存项）
-   */
-  private getCachedAudit(projectId: string): ConsistencyReport | null {
-    if (!this.consistencyAuditor) return null
-    const cached = this.auditCache.get(projectId)
-    const now = Date.now()
-    if (cached && now - cached.timestamp < NovelPromptBuilder.AUDIT_CACHE_TTL_MS) {
-      return cached.report
-    }
-    const report = this.consistencyAuditor.audit(projectId)
-    this.auditCache.set(projectId, { timestamp: now, report })
-    return report
-  }
-
-  /**
-   * 格式化跨章一致性审计摘要（C3 增强）
-   *
-   * 让 Writer/Reviewer 看到孤儿实体、悬挂钩子、时间线矛盾，引导在本章修复或回避。
-   * 输出刻意精简（每类最多 5 条），避免上下文膨胀；详细审计报告走前端审计面板查看。
-   *
-   * 修复（2026-07-18）：孤儿实体按本章 arrangedEntities 交叉过滤。
-   * - 原实现输出全部历史孤儿，对"本章已编排"的实体也提示"必须在正文中显式出现其名字"，
-   *   这是多余的（本章已编排，Writer 自然会用到）。
-   * - 修复：若 arrangedEntities 存在且本章编排了该实体（如角色 ID 在 characterIds 中），
-   *   仍保留展示（提醒 Writer 在正文显式点名），但不再追加"若本章编排了上述实体..."的全局警告；
-   *   对未在本章编排的历史孤儿才追加"若本章编排了..."的提醒。
-   * - 同时按 chapterNumber 过滤：只展示缺失章节号 < 当前章号的孤儿（当前章及之后的
-   *   缺失对未来章节才有意义）。
-   */
-  private formatConsistencyAudit(
-    report: ConsistencyReport,
-    arrangedEntities?: ArrangedEntity,
-    currentChapterNumber?: number,
-  ): string {
-    const parts: string[] = [`## 跨章一致性审计（健康度 ${report.healthScore}/100）`]
-
-    // 构建本章编排实体的名称集合（用于过滤"本章已编排"的孤儿）
-    const arrangedCharIds = new Set(arrangedEntities?.characterIds ?? [])
-    const arrangedFactionIds = new Set(arrangedEntities?.factionIds ?? [])
-    const arrangedLocationIds = new Set(arrangedEntities?.locationIds ?? [])
-
-    // 孤儿实体：编排了但正文未出现名字
-    // 过滤逻辑：只展示历史孤儿（missingChapters 全部 < currentChapterNumber），
-    // 对"本章已编排"的实体单独标记"本章已编排，须在正文点名"
-    const filterMissingChapters = (missing: number[]): number[] => {
-      if (currentChapterNumber === undefined) return missing
-      return missing.filter((ch) => ch < currentChapterNumber)
-    }
-
-    const orphanChars = report.orphanEntities.characters
-      .map((c) => ({ ...c, missingChapters: filterMissingChapters(c.missingChapters) }))
-      .filter((c) => c.missingChapters.length > 0)
-    const orphanFactions = report.orphanEntities.factions
-      .map((f) => ({ ...f, missingChapters: filterMissingChapters(f.missingChapters) }))
-      .filter((f) => f.missingChapters.length > 0)
-    const orphanLocations = report.orphanEntities.locations
-      .map((l) => ({ ...l, missingChapters: filterMissingChapters(l.missingChapters) }))
-      .filter((l) => l.missingChapters.length > 0)
-    const orphanCount = orphanChars.length + orphanFactions.length + orphanLocations.length
-
-    if (orphanCount > 0) {
-      parts.push('')
-      parts.push(`### 孤儿实体（编排了但正文未出现名字，共 ${orphanCount} 个）`)
-      const charList = orphanChars.slice(0, 5)
-      if (charList.length > 0) {
-        for (const c of charList) {
-          const missing = c.missingChapters.slice(0, 3).join(', ')
-          const more = c.missingChapters.length > 3 ? `等 ${c.missingChapters.length} 章` : ''
-          const arrangedHere = arrangedCharIds.has(c.id) ? '【本章已编排，须在正文点名】' : ''
-          parts.push(`- 角色 ${c.name}：缺章 ${missing}${more}${arrangedHere}`)
-        }
-      }
-      const factionList = orphanFactions.slice(0, 3)
-      if (factionList.length > 0) {
-        const labels = factionList.map((f) => {
-          const arrangedHere = arrangedFactionIds.has(f.id) ? '【本章已编排，须在正文点名】' : ''
-          return `${f.name}${arrangedHere}`
-        })
-        parts.push('- 势力：' + labels.join('、'))
-      }
-      const locList = orphanLocations.slice(0, 3)
-      if (locList.length > 0) {
-        const labels = locList.map((l) => {
-          const arrangedHere = arrangedLocationIds.has(l.id) ? '【本章已编排，须在正文点名】' : ''
-          return `${l.name}${arrangedHere}`
-        })
-        parts.push('- 地点：' + labels.join('、'))
-      }
-      // 仅对"本章未编排但历史缺失"的孤儿追加全局提醒（本章已编排的已单独标记）
-      const hasUnarrangedOrphans = orphanChars.some((c) => !arrangedCharIds.has(c.id))
-        || orphanFactions.some((f) => !arrangedFactionIds.has(f.id))
-        || orphanLocations.some((l) => !arrangedLocationIds.has(l.id))
-      if (hasUnarrangedOrphans) {
-        parts.push('⚠️ 若本章编排了上述未标记的实体，必须在正文中显式出现其名字。')
-      }
-    }
-
-    // 悬挂钩子
-    if (report.hooks.hanging.length > 0) {
-      parts.push('')
-      parts.push(`### 悬挂钩子（已抛出但跨章未兑现，共 ${report.hooks.hanging.length} 个）`)
-      for (const h of report.hooks.hanging.slice(0, 5)) {
-        parts.push(`- [${h.hookType}] ${h.description}（第${h.thrownAt}章抛出，已隔 ${h.gap} 章）`)
-      }
-      if (report.hooks.hanging.length > 5) {
-        parts.push(`- ... 另有 ${report.hooks.hanging.length - 5} 个悬挂钩子`)
-      }
-    }
-
-    // 时间线矛盾
-    if (!report.timeline.monotonic) {
-      parts.push('')
-      parts.push(`### 时间线矛盾（共 ${report.timeline.violations.length} 处非单调递增）`)
-      for (const v of report.timeline.violations.slice(0, 3)) {
-        parts.push(`- 第${v.previousChapter}章 offset=${v.previousOffset} → 第${v.chapter}章 offset=${v.timeOffset}（应递增）`)
-      }
-      // 引导 Director 修正本章 timelineOffset
-      if (currentChapterNumber !== undefined) {
-        const relevantViolation = report.timeline.violations.find((v) => v.chapter === currentChapterNumber)
-        if (relevantViolation) {
-          parts.push(`⚠️ 当前第 ${currentChapterNumber} 章时间线与第 ${relevantViolation.previousChapter} 章矛盾。`)
-          parts.push(`   Director 应将本章 timelineOffset.days 设为 ≥ ${relevantViolation.previousOffset + 1}，修复非单调递增。`)
-        }
-      }
-    }
-
-    // 健康度低时给出总体提示
-    if (report.healthScore < 60) {
-      parts.push('')
-      parts.push(`⚠️ 项目一致性健康度偏低（${report.healthScore}/100），本章创作时优先考虑修复上述问题。`)
-    }
-
-    return parts.length > 1 ? parts.join('\n') : ''
   }
 
   /**
@@ -3207,5 +3213,122 @@ export class NovelPromptBuilder {
     const shared = this.buildChapterContextShared(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities)
     const suffix = this.buildChapterContextSuffix(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities, agentType)
     return this.hashContent(shared + '\n\n---\n\n' + suffix + arrangedKey)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 上下文预览（P1 可观测性）
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * 构建结构化上下文预览，供 context-preview 端点返回。
+   *
+   * 复用 buildSystemPrompt / buildChapterContextShared / buildChapterContextSuffix /
+   * buildAgentIdentity，不重复实现构建逻辑，仅汇总各 section 的字符数、来源标记与
+   * 前 200 字预览，让开发者无需触发完整创作流即可审计 prompt-builder 注入的内容。
+   *
+   * 注意：narrativeTask / constraints 使用最小默认值（章纲从 store 读取，约束留空），
+   * 因为预览目的是展示 prompt 结构与 section 占比，而非还原运行时精确约束。
+   * semi-shared section 的 fromSnapshot 标记来自 getChapterBoundaryContext，
+   * 与实际创作流使用同一判定逻辑，保证诊断结果与生产一致。
+   */
+  buildContextPreview(
+    projectId: string,
+    chapterNumber: number,
+    agentType?: string,
+    mode?: 'full' | 'diff',
+  ): ContextPreviewResult {
+    // 默认 narrativeTask：从 store 读取章纲，缺失时退化为占位描述（与 orchestrator 一致）
+    const chapter = this.stores.getChapter(projectId, chapterNumber)
+    const narrativeTask: NarrativeTask = {
+      description: chapter?.narrativeTask ?? `第 ${chapterNumber} 章创作`,
+      type: 'advance_mainline',
+      targetEntity: null,
+      priority: 'medium',
+    }
+    // 预览用空约束：避免引入对 NovelEngine 的依赖，约束留空不影响 section 结构诊断
+    const constraints: ChapterConstraints = {
+      facts: [],
+      cognitive: [],
+      stage: [],
+      narrativeDebts: [],
+      characterArcs: [],
+      conflictTargets: [],
+      suspenseHooks: [],
+    }
+
+    const sections: ContextPreviewSection[] = []
+    // 截取前 200 字作为内容预览
+    const previewOf = (text: string): string => text.slice(0, 200)
+
+    // ── static：系统提示词（跨章、跨 Agent 静态层）──
+    const systemPrompt = this.buildSystemPrompt(projectId, agentType ?? 'writer')
+    sections.push({
+      key: 'system',
+      title: '系统提示词',
+      source: 'static',
+      charCount: systemPrompt.length,
+      preview: previewOf(systemPrompt),
+    })
+
+    // ── semi-shared：章前共享层（单章内跨 Agent 共享，含故事状态/事件账本）──
+    // fromSnapshot 标注是否命中 N-1 持久化快照，与生产路径判定逻辑一致
+    // mode='diff' 时改走 buildChapterContextDiff：用全局关键事实摘要 + 上一章变化 delta
+    // 替代全量故事状态，便于对比两种模式的字符数差异与内容收敛效果。
+    const boundary = this.getChapterBoundaryContext(projectId, chapterNumber)
+    const effectiveMode: 'full' | 'diff' = mode === 'diff' ? 'diff' : 'full'
+    const shared = effectiveMode === 'diff'
+      ? this.buildChapterContextDiff(projectId, chapterNumber, narrativeTask, constraints)
+      : this.buildChapterContextShared(projectId, chapterNumber, narrativeTask, constraints)
+    sections.push({
+      key: 'shared',
+      title: '章前共享层',
+      source: 'semi-shared',
+      charCount: shared.length,
+      fromSnapshot: boundary.fromSnapshot,
+      mode: effectiveMode,
+      preview: previewOf(shared),
+    })
+
+    // ── semi-suffix：Agent 专属后缀（Director 方案 / Reviewer Rubric / Writer 指令）──
+    // 仅当传入 agentType 时构建，未指定则跳过（suffix 内部对无 agentType 直接返回空串）
+    const suffix = this.buildChapterContextSuffix(
+      projectId,
+      chapterNumber,
+      narrativeTask,
+      constraints,
+      undefined,
+      agentType,
+    )
+    if (suffix.length > 0) {
+      sections.push({
+        key: 'suffix',
+        title: 'Agent 专属后缀',
+        source: 'semi-suffix',
+        charCount: suffix.length,
+        preview: previewOf(suffix),
+      })
+    }
+
+    // ── agent-identity：Agent 身份（独立缓存断点）──
+    // 未指定 agentType 时仍构建 writer 默认身份，让预览展示身份 section 的结构
+    const identity = this.buildAgentIdentity(projectId, agentType ?? 'writer')
+    if (identity.length > 0) {
+      sections.push({
+        key: 'agentIdentity',
+        title: 'Agent 身份',
+        source: 'agent-identity',
+        charCount: identity.length,
+        preview: previewOf(identity),
+      })
+    }
+
+    const totalChars = sections.reduce((sum, s) => sum + s.charCount, 0)
+    return {
+      projectId,
+      chapterNumber,
+      agentType,
+      totalChars,
+      sections,
+    }
   }
 }

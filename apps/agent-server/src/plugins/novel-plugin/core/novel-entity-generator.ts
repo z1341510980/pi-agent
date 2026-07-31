@@ -34,16 +34,21 @@ import type {
   ArrangedEntity,
   CharacterFunctionEntry,
   PlotFunction,
-  ChapterSpan,
   NovelAgentLogStatus,
   NovelCharacter,
   NovelConflict,
   NovelForeshadow,
+  ForeshadowBeatType,
   NovelFaction,
   NovelLocation,
   NovelItem,
   NovelWorldElement,
 } from './types.js'
+import {
+  nextChapterSpans,
+  nextAppearChapters,
+  appendChapterSpanWithRollback,
+} from './entity-arrange-utils.js'
 
 type EntityPlan = {
   characters: Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>
@@ -198,6 +203,12 @@ function ensureString(value: unknown, defaultValue: string): string {
   return String(value)
 }
 
+/** 与 parseExistingHint 保持同一口径：兼容全/半角冒号与"复用"/"existing" */
+const EXISTING_HINT_PATTERN = /^(?:已有|复用|existing)\s*[:：]\s*(.+)$/i
+
+/** 伏笔本章动作，直接映射为 ForeshadowBeat.type */
+export const VALID_FORESHADOW_CHAPTER_ACTIONS = new Set(['plant', 'reinforce', 'reveal', 'payoff'])
+
 /** 解析并执行新伏笔准入门槛；已有伏笔复用不受“新增一条”上限影响。 */
 export function normalizePlannedForeshadows(
   value: unknown,
@@ -214,14 +225,16 @@ export function normalizePlannedForeshadows(
       chapterAction: obj?.chapterAction,
     }
   })
-  const validChapterActions = new Set(['plant', 'reinforce', 'reveal', 'payoff'])
+  // 旧实现只认全角冒号「已有：」，与 parseExistingHint 的口径不一致：
+  // LLM 写成半角「已有:」时，复用项会被当成新增项走准入门槛，进而被静默丢弃。
+  const isExistingHint = (coreStyle: string): boolean => EXISTING_HINT_PATTERN.test(coreStyle.trim())
   const existing = rawForeshadows.filter((f) =>
-    f.coreStyle.trim().startsWith('已有：')
+    isExistingHint(f.coreStyle)
     && isAdmissibleNewForeshadow(f)
-    && validChapterActions.has(String(f.chapterAction)),
+    && VALID_FORESHADOW_CHAPTER_ACTIONS.has(String(f.chapterAction)),
   )
   const created = selectAdmissibleNewForeshadows(
-    rawForeshadows.filter((f) => !f.coreStyle.trim().startsWith('已有：')),
+    rawForeshadows.filter((f) => !isExistingHint(f.coreStyle)),
   )
   return [...existing, ...created]
 }
@@ -319,6 +332,119 @@ function repairAndParseJson(text: string): Record<string, unknown> | null {
 }
 
 // ── 主类 ──
+
+/**
+ * 实体复用匹配的归一化键。
+ *
+ * 旧实现只做字符串精确相等：LLM 一旦把"林墨"写成"林墨（觉醒后）"、
+ * 或把冲突描述里的破折号按输出约束改写掉，前 40 字就对不上，
+ * 于是已推进的实体被当成新实体从零重造（arcHistory 清空、状态回到初始）。
+ * 归一化后去掉括注和标点差异，让复用判定对这类噪声免疫。
+ */
+function normalizeMatchKey(value: string): string {
+  return value
+    // 去括注（含中英文括号）
+    .replace(/[（(【[][^）)】\]]*[）)】\]]/g, '')
+    // 去空白与常见标点/装饰符
+    .replace(/[\s\u3000·・~!@#$%^&*_+=|\\/？?。，,、；;：:'"\u201c\u201d\u2018\u2019\u300c\u300d\u300e\u300f()（）【】\-—]/g, '')
+    .toLowerCase()
+}
+
+/** 按名匹配已有实体：精确 → 归一化相等 → 单向包含 */
+function findExistingByName<T>(index: Map<string, T>, query: string): T | undefined {
+  const raw = query.trim()
+  if (!raw) return undefined
+  const direct = index.get(raw)
+  if (direct) return direct
+
+  const nq = normalizeMatchKey(raw)
+  if (!nq) return undefined
+  for (const [key, value] of index) {
+    if (normalizeMatchKey(key) === nq) return value
+  }
+  // "林墨（觉醒后）" ⊃ "林墨"、"国安总局指挥部" ⊃ "国安总局"
+  for (const [key, value] of index) {
+    const nk = normalizeMatchKey(key)
+    if (nk.length >= 2 && (nq.includes(nk) || nk.includes(nq))) return value
+  }
+  return undefined
+}
+
+/**
+ * 按描述前缀匹配已有冲突/伏笔（它们没有 name 字段）。
+ * 精确前 40 字 → 归一化前缀 → 归一化包含。
+ */
+function findExistingByDescription<T extends { description: string }>(
+  index: Map<string, T>,
+  query: string,
+): T | undefined {
+  const raw = query.trim()
+  if (!raw) return undefined
+  const direct = index.get(raw.slice(0, 40))
+  if (direct) return direct
+
+  const nq = normalizeMatchKey(raw)
+  if (nq.length < 6) return undefined
+  const probe = nq.slice(0, Math.min(20, nq.length))
+  for (const value of index.values()) {
+    const nd = normalizeMatchKey(value.description)
+    if (!nd) continue
+    if (nd.startsWith(probe) || nq.startsWith(nd.slice(0, probe.length))) return value
+    if (nd.includes(nq) || nq.includes(nd.slice(0, 20))) return value
+  }
+  return undefined
+}
+
+/** processNewCharacter 需要的编排上下文（原先是 9 个位置参数） */
+interface NewCharacterContext {
+  projectId: string
+  chapterNumber: number
+  outline: string
+  /** 按名查重索引；新建后写回，避免同一次编排里重复创建同名角色 */
+  existingByName: Map<string, NovelCharacter>
+  createdCharacterIds: string[]
+  /** 收集 ID / 功能位 / SSE 摘要，与复用分支共用同一实现 */
+  collect: (created: NovelCharacter, spec: EntityPlan['characters'][number]) => void
+}
+
+/** 伏笔规划项（带 chapterAction 与准入字段） */
+type PlannedForeshadowSpec = EntityPlan['foreshadows'][number]
+
+/**
+ * 单类实体编排的声明式描述。
+ *
+ * 冲突 / 伏笔 / 势力 / 地点 / 物品共用同一套循环骨架，只在下面这几个钩子上不同。
+ * 角色不适用（章节投影落在 character_history，且失配时跳过二次查重），见 generateAndArrange。
+ */
+interface ArrangeKindPlan<TEntity extends { id: string }, TSpec extends { coreStyle: string }, TData> {
+  kind: EntityKind
+  /** 中文类别名，用于进度消息与失配上报 */
+  label: string
+  specs: TSpec[]
+  /** 查重索引；新建后由驱动写回，applyChapterProjection 返回实体时也会刷新 */
+  index: Map<string, TEntity>
+  indexKey: (entity: TEntity) => string
+  /** 按 LLM 的"已有：X"提示查已有实体 */
+  findByHint: (hintName: string) => TEntity | undefined
+  /** 按生成结果做二次查重 */
+  findByGenerated: (data: TData) => TEntity | undefined
+  /** 失配上报时用的名字（冲突/伏笔只取前 24 字，避免日志被整段描述撑爆） */
+  reportName?: (hintName: string) => string
+  reuseMessage: (entity: TEntity) => string
+  dupMessage: (dup: TEntity, data: TData) => string
+  /**
+   * 把本章写入实体的章节维度字段并登记回滚。
+   *
+   * @param data 二次查重分支传生成结果，复用分支传 null。只有物品会用到它（合并时改归属/状态）。
+   * @returns 返回实体则驱动刷新索引；返回 void 则索引保持原样（沿用各类型原有行为）
+   */
+  applyChapterProjection: (entity: TEntity, data: TData | null, spec: TSpec) => TEntity | void
+  create: (data: TData, spec: TSpec) => TEntity
+  ids: string[]
+  createdIds: string[]
+  /** 收集给 SSE 详情事件用的摘要 */
+  collect: (entity: TEntity, spec: TSpec) => void
+}
 
 export class NovelEntityGenerator {
   constructor(
@@ -425,7 +551,7 @@ export class NovelEntityGenerator {
    */
   private parseExistingHint(coreStyle: string): { mode: 'existing'; name: string } | { mode: 'new'; coreStyle: string } {
     // 兼容中英文冒号与"已有"/"复用"等多种写法
-    const match = coreStyle.match(/^(?:已有|复用|existing)\s*[:：]\s*(.+)$/i)
+    const match = coreStyle.match(EXISTING_HINT_PATTERN)
     if (match) {
       const name = match[1].trim()
       if (name) return { mode: 'existing', name }
@@ -493,6 +619,22 @@ export class NovelEntityGenerator {
     const createdLocationIds: string[] = []
     const createdItemIds: string[] = []
     const rollbackActions: Array<() => void> = []
+    /** LLM 标注"已有：X"但后端匹配失败的项，用于日志与前端提示（这类项会被当新实体重造） */
+    const unresolvedExistingHints: string[] = []
+    /**
+     * 统一上报"标注为已有但没匹配上"。
+     *
+     * 命中这条分支意味着该实体会被当成新实体从零重造（状态回到初始设定），
+     * 是"已推进实体重复初始态"的唯一入口，必须留痕而不是静默降级。
+     * 六类实体此前各自复制了一份 warn + push，措辞还不一致。
+     */
+    const reportUnresolvedHint = (kind: EntityKind, label: string, hintName: string): void => {
+      this.context.logger.warn(
+        { projectId, chapterNumber, hintName, kind },
+        'generateAndArrange：标注为已有但未匹配到实体，降级为新建（可能造成重复实体/状态回退）',
+      )
+      unresolvedExistingHints.push(`${label}「${hintName}」`)
+    }
     /** 本章角色功能位编排（与新角色一一对应） */
     const characterFunctions: CharacterFunctionEntry[] = []
     // 收集已生成实体的描述，供 arranged 阶段详情事件使用
@@ -530,11 +672,116 @@ export class NovelEntityGenerator {
         return this.generate(projectId, kind, coreStyle, onProgress, signal)
       }
 
+      /**
+       * 单类实体的编排驱动：复用 → 失配上报 → 生成 → 二次查重 → 新建。
+       *
+       * 这段骨架此前在 5 类实体里各复制一份，差异全部收进 ArrangeKindPlan 的钩子。
+       */
+      const runArrangeKind = async <TEntity extends { id: string }, TSpec extends { coreStyle: string }, TData>(
+        kindPlan: ArrangeKindPlan<TEntity, TSpec, TData>,
+      ): Promise<void> => {
+        const refreshIndex = (entity: TEntity | void): void => {
+          if (entity) kindPlan.index.set(kindPlan.indexKey(entity), entity)
+        }
+
+        for (const spec of kindPlan.specs) {
+          signal?.throwIfAborted()
+          const hint = this.parseExistingHint(spec.coreStyle)
+
+          if (hint.mode === 'existing') {
+            const existing = kindPlan.findByHint(hint.name)
+            if (existing) {
+              onProgress?.({ phase: 'generating', message: kindPlan.reuseMessage(existing) })
+              refreshIndex(kindPlan.applyChapterProjection(existing, null, spec))
+              kindPlan.ids.push(existing.id)
+              kindPlan.collect(existing, spec)
+              continue
+            }
+            reportUnresolvedHint(
+              kindPlan.kind,
+              kindPlan.label,
+              kindPlan.reportName ? kindPlan.reportName(hint.name) : hint.name,
+            )
+          }
+
+          onProgress?.({ phase: 'generating', message: `生成${kindPlan.label}：${spec.coreStyle}` })
+          const gen = await resolveGenerated(spec, kindPlan.kind)
+          if (gen.type !== kindPlan.kind) continue
+          const data = gen.data as TData
+
+          const dup = kindPlan.findByGenerated(data)
+          if (dup) {
+            onProgress?.({ phase: 'generating', message: kindPlan.dupMessage(dup, data) })
+            refreshIndex(kindPlan.applyChapterProjection(dup, data, spec))
+            kindPlan.ids.push(dup.id)
+            kindPlan.collect(dup, spec)
+            continue
+          }
+
+          const created = kindPlan.create(data, spec)
+          kindPlan.index.set(kindPlan.indexKey(created), created)
+          kindPlan.ids.push(created.id)
+          kindPlan.createdIds.push(created.id)
+          kindPlan.collect(created, spec)
+        }
+      }
+
+      // ── 角色：单独一条循环 ──
+      // 角色不走 runArrangeKind，原因是流程本身不同，不是重复代码：
+      //   ① 章节投影落在 character_history（一条出场记录），而非 chapterSpans；
+      //   ② "标注已有但未匹配"时直接按新建处理，跳过二次查重；
+      //   ③ 额外收集本章功能位（characterFunctions）。
+      // 但两处 history 写入与两处摘要收集是逐字重复的，抽成下面两个助手。
+
+      /** 追加一条本章出场记录并登记回滚（复用与同名合并共用） */
+      const recordCharacterAppearance = (
+        target: NovelCharacter,
+        newValue: string,
+        reason: string,
+      ): void => {
+        const history = this.store.createCharacterHistory({
+          projectId,
+          characterId: target.id,
+          chapterId: null,
+          chapterNumber,
+          fieldName: 'currentState',
+          oldValue: target.currentState ?? null,
+          newValue,
+          reason,
+        })
+        rollbackActions.push(() => { this.store.deleteCharacterHistory(history.id, projectId) })
+      }
+
+      /** 收集角色编排结果：ID、功能位、SSE 摘要 */
+      const collectArrangedCharacter = (
+        target: NovelCharacter,
+        spec: EntityPlan['characters'][number],
+      ): void => {
+        characterIds.push(target.id)
+        if (spec.plotFunction) {
+          characterFunctions.push({ characterId: target.id, function: spec.plotFunction, note: spec.functionNote })
+        }
+        generatedCharacters.push({
+          name: target.name,
+          description: target.description,
+          plotFunction: spec.plotFunction,
+          functionNote: spec.functionNote,
+        })
+      }
+
       // 预拉一次已有角色清单（按名查重），避免循环内重复查询
       // 注意：循环内 createCharacter 后需要把新角色也加入此 map，避免后续重复创建同名角色
       const existingCharacterByName = new Map<string, NovelCharacter>()
       for (const c of this.store.listCharacters(projectId)) {
         existingCharacterByName.set(c.name, c)
+      }
+      const newCharacterContext: NewCharacterContext = {
+        projectId,
+        chapterNumber,
+        outline,
+        existingByName: existingCharacterByName,
+        createdCharacterIds,
+        collect: collectArrangedCharacter,
       }
 
       for (const spec of plan.characters) {
@@ -544,41 +791,29 @@ export class NovelEntityGenerator {
         // 命中"已有：X"标记 → 优先按名查重，找到则不创建，仅追加 history 标记本章出场
         // 状态字段（currentState 等）由 create-flow 阶段的 Memory Agent 推进，编排阶段不覆盖
         if (hint.mode === 'existing') {
-          const existing = existingCharacterByName.get(hint.name)
+          const existing = findExistingByName(existingCharacterByName, hint.name)
           if (existing) {
             onProgress?.({ phase: 'generating', message: `复用已有角色：${existing.name}` })
-            const history = this.store.createCharacterHistory({
-              projectId,
-              characterId: existing.id,
-              chapterId: null,
-              chapterNumber,
-              fieldName: 'currentState',
-              oldValue: existing.currentState ?? null,
-              newValue: `AI再编排：本章出场（状态保留）`,
-              reason: `AI再编排：复用已有角色「${existing.name}」，${outline.slice(0, 50)}`,
-            })
-            rollbackActions.push(() => { this.store.deleteCharacterHistory(history.id, projectId) })
+            recordCharacterAppearance(
+              existing,
+              'AI再编排：本章出场（状态保留）',
+              `AI再编排：复用已有角色「${existing.name}」，${outline.slice(0, 50)}`,
+            )
             this.context.logger.info(
               { projectId, chapterNumber, characterId: existing.id, name: existing.name },
               'generateAndArrange：复用已有角色，追加 history',
             )
-            characterIds.push(existing.id)
-            if (spec.plotFunction) {
-              characterFunctions.push({ characterId: existing.id, function: spec.plotFunction, note: spec.functionNote })
-            }
-            generatedCharacters.push({
-              name: existing.name,
-              description: existing.description,
-              plotFunction: spec.plotFunction,
-              functionNote: spec.functionNote,
-            })
+            collectArrangedCharacter(existing, spec)
             continue
           }
           // LLM 标注"已有：X"但项目里没找到 → 降级为新建，用 hint.name 作为 coreStyle
+          // ⚠️ 这条分支是"已推进实体被重造成初始状态"的入口，必须留痕：
+          // 命中它说明清单被预算截断、或 LLM 写了清单里不存在的名字。
+          reportUnresolvedHint('character', '角色', hint.name)
           onProgress?.({ phase: 'generating', message: `未找到已有角色「${hint.name}」，按新建处理...` })
           const gen = await resolveGenerated(spec, 'character', hint.name)
           if (gen.type !== 'character') continue
-          await this.processNewCharacter(gen.data, projectId, chapterNumber, outline, existingCharacterByName, characterIds, createdCharacterIds, characterFunctions, generatedCharacters, spec)
+          await this.processNewCharacter(gen.data, newCharacterContext, spec)
           continue
         }
 
@@ -588,442 +823,308 @@ export class NovelEntityGenerator {
         if (gen.type !== 'character') continue
 
         // 二次查重：LLM 可能仍生成与已有角色同名的"新角色"（即使提示词要求标注"已有"）
-        const dup = existingCharacterByName.get(gen.data.name)
+        const dup = findExistingByName(existingCharacterByName, gen.data.name)
         if (dup) {
           onProgress?.({ phase: 'generating', message: `检测到同名角色「${gen.data.name}」，合并为已有实体` })
-          const history = this.store.createCharacterHistory({
-            projectId,
-            characterId: dup.id,
-            chapterId: null,
-            chapterNumber,
-            fieldName: 'currentState',
-            oldValue: dup.currentState ?? null,
-            newValue: gen.data.currentState ?? '本章再次出场',
-            reason: `AI再编排：LLM 生成同名角色，按更新处理，${outline.slice(0, 50)}`,
-          })
-          rollbackActions.push(() => { this.store.deleteCharacterHistory(history.id, projectId) })
-          characterIds.push(dup.id)
-          if (spec.plotFunction) {
-            characterFunctions.push({ characterId: dup.id, function: spec.plotFunction, note: spec.functionNote })
-          }
-          generatedCharacters.push({
-            name: dup.name,
-            description: dup.description,
-            plotFunction: spec.plotFunction,
-            functionNote: spec.functionNote,
-          })
+          recordCharacterAppearance(
+            dup,
+            gen.data.currentState ?? '本章再次出场',
+            `AI再编排：LLM 生成同名角色，按更新处理，${outline.slice(0, 50)}`,
+          )
+          collectArrangedCharacter(dup, spec)
           continue
         }
 
-        await this.processNewCharacter(gen.data, projectId, chapterNumber, outline, existingCharacterByName, characterIds, createdCharacterIds, characterFunctions, generatedCharacters, spec)
+        await this.processNewCharacter(gen.data, newCharacterContext, spec)
       }
 
-      // ── 冲突：按描述模糊匹配已有实体 ──
-      // 冲突没有独立 name 字段，用 description 前 40 字做模糊匹配
+      // ── 冲突 / 伏笔 / 势力 / 地点 / 物品：声明式编排 ──
+      // 这 5 类此前各有一份逐字相同的循环骨架（复用 → 二次查重 → 新建 → 回滚登记），
+      // 差异只在"章节维度字段怎么写"和"新建时填哪些列"。复制是漏改的直接来源：
+      // 伏笔那一份就漏了 beat，导致编排结果在 Writer 侧凭空消失。
+      // 现在骨架由 runArrangeKind 统一驱动，每类只声明自己真正不同的部分。
+      //
+      // 角色不走这条驱动：它的章节投影落在 character_history 而非 chapterSpans，
+      // 且"标注已有但未匹配"时会跳过二次查重直接新建，流程本身就不同（见下方独立循环）。
+
       const existingConflictByDesc = new Map<string, NovelConflict>()
       for (const c of this.store.listConflicts(projectId)) {
         existingConflictByDesc.set(c.description.slice(0, 40), c)
       }
-
-      for (const spec of plan.conflicts) {
-        signal?.throwIfAborted()
-        const hint = this.parseExistingHint(spec.coreStyle)
-        // "已有：xxx" → 尝试按描述前缀匹配
-        if (hint.mode === 'existing') {
-          const existing = existingConflictByDesc.get(hint.name.slice(0, 40))
-            ?? [...existingConflictByDesc.values()].find((c) => c.description.includes(hint.name))
-          if (existing) {
-            onProgress?.({ phase: 'generating', message: `复用已有冲突：${existing.description.slice(0, 30)}` })
-            // 扩展 chapterSpans 包含本章（如尚未包含）
-            const spans = existing.chapterSpans ?? []
-            const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-            if (!alreadyCovers) {
-              const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
-              rollbackActions.push(() => { this.store.updateConflict(existing.id, { chapterSpans: existing.chapterSpans }) })
-              this.store.updateConflict(existing.id, { chapterSpans: mergedSpans })
-            }
-            conflictIds.push(existing.id)
-            generatedConflicts.push({
-              description: existing.description,
-              intensity: existing.intensity,
-              tier: existing.tier,
-              climaxChapter: existing.climaxChapter,
-              climaxType: existing.climaxType,
-            })
-            continue
-          }
-        }
-
-        // 新冲突
-        onProgress?.({ phase: 'generating', message: `生成冲突：${spec.coreStyle}` })
-        const gen = await resolveGenerated(spec, 'conflict')
-        if (gen.type !== 'conflict') continue
-        // 二次查重
-        const dupKey = gen.data.description.slice(0, 40)
-        const dup = existingConflictByDesc.get(dupKey)
-        if (dup) {
-          onProgress?.({ phase: 'generating', message: `检测到相似冲突，合并为已有实体` })
-          const spans = dup.chapterSpans ?? []
-          const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-          if (!alreadyCovers) {
-            const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
-            rollbackActions.push(() => { this.store.updateConflict(dup.id, { chapterSpans: dup.chapterSpans }) })
-            this.store.updateConflict(dup.id, { chapterSpans: mergedSpans })
-          }
-          conflictIds.push(dup.id)
-          generatedConflicts.push({
-            description: dup.description,
-            intensity: dup.intensity,
-            tier: dup.tier,
-            climaxChapter: dup.climaxChapter,
-            climaxType: dup.climaxType,
-          })
-          continue
-        }
-        const created = this.store.createConflict({
+      await runArrangeKind<NovelConflict, { coreStyle: string }, GeneratedConflict>({
+        kind: 'conflict',
+        label: '冲突',
+        specs: plan.conflicts,
+        index: existingConflictByDesc,
+        indexKey: (c) => c.description.slice(0, 40),
+        // 冲突没有 name，按描述前缀匹配；再兜一层"整段包含"以容忍 LLM 改写标点
+        findByHint: (name) => findExistingByDescription(existingConflictByDesc, name)
+          ?? [...existingConflictByDesc.values()].find((c) => c.description.includes(name)),
+        findByGenerated: (data) => findExistingByDescription(existingConflictByDesc, data.description),
+        reportName: (name) => name.slice(0, 24),
+        reuseMessage: (c) => `复用已有冲突：${c.description.slice(0, 30)}`,
+        dupMessage: () => '检测到相似冲突，合并为已有实体',
+        applyChapterProjection: (entity) => {
+          appendChapterSpanWithRollback(entity, chapterNumber, (id, patch) => this.store.updateConflict(id, patch), rollbackActions)
+        },
+        create: (data) => this.store.createConflict({
           id: randomUUID(),
           projectId,
-          description: gen.data.description,
-          type: gen.data.type,
-          intensity: gen.data.intensity,
-          stage: gen.data.stage,
-          participants: gen.data.participants,
+          description: data.description,
+          type: data.type,
+          intensity: data.intensity,
+          stage: data.stage,
+          participants: data.participants,
           chapterSpans: [[chapterNumber, chapterNumber]],
-          tier: gen.data.tier,
-          climaxChapter: gen.data.climaxChapter,
-          climaxType: gen.data.climaxType,
-          stakes: gen.data.stakes,
-          twistPotential: gen.data.twistPotential,
-          plotFunction: gen.data.plotFunction,
-          progressionMode: gen.data.progressionMode,
-        })
-        existingConflictByDesc.set(created.description.slice(0, 40), created)
-        conflictIds.push(created.id)
-        createdConflictIds.push(created.id)
-        generatedConflicts.push({
-          description: created.description,
-          intensity: created.intensity,
-          tier: created.tier,
-          climaxChapter: created.climaxChapter,
-          climaxType: created.climaxType,
-        })
-      }
+          tier: data.tier,
+          climaxChapter: data.climaxChapter,
+          climaxType: data.climaxType,
+          stakes: data.stakes,
+          twistPotential: data.twistPotential,
+          plotFunction: data.plotFunction,
+          progressionMode: data.progressionMode,
+        }),
+        ids: conflictIds,
+        createdIds: createdConflictIds,
+        collect: (c) => {
+          generatedConflicts.push({
+            description: c.description,
+            intensity: c.intensity,
+            tier: c.tier,
+            climaxChapter: c.climaxChapter,
+            climaxType: c.climaxType,
+          })
+        },
+      })
 
-      // ── 伏笔：按描述模糊匹配已有实体 ──
       const existingForeshadowByDesc = new Map<string, NovelForeshadow>()
       for (const f of this.store.listForeshadowing(projectId)) {
         existingForeshadowByDesc.set(f.description.slice(0, 40), f)
       }
 
-      for (const spec of plan.foreshadows) {
-        signal?.throwIfAborted()
-        const hint = this.parseExistingHint(spec.coreStyle)
-        if (hint.mode === 'existing') {
-          const existing = existingForeshadowByDesc.get(hint.name.slice(0, 40))
-            ?? [...existingForeshadowByDesc.values()].find((f) => f.description.includes(hint.name))
-          if (existing) {
-            onProgress?.({ phase: 'generating', message: `复用已有伏笔：${existing.description.slice(0, 30)}` })
-            // 复用已有伏笔时只为尚未埋设的旧数据补 plant；后续节点由 Memory Agent
-            // 根据正文明确记录，不能把“本章复用”自动解释为连续活跃区间。
-            const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
-            if (!(existing.beats ?? []).some((beat) => beat.type === 'plant')) {
-              patch.beats = [...(existing.beats ?? []), { chapter: chapterNumber, type: 'plant' }]
-            }
-            rollbackActions.push(() => {
-              this.store.updateForeshadow(existing.id, {
-                firstChapter: existing.firstChapter,
-                lastChapter: existing.lastChapter,
-                chapterSpans: existing.chapterSpans,
-                beats: existing.beats,
-              })
-            })
-            const updated = this.store.updateForeshadow(existing.id, patch) ?? existing
-            // 同步内存 map，避免后续同名合并分支拿到旧数据
-            existingForeshadowByDesc.set(existing.description.slice(0, 40), updated)
-            foreshadowIds.push(existing.id)
-            generatedForeshadows.push({ description: existing.description, category: existing.category })
-            continue
-          }
+      /**
+       * 把规划阶段给出的 chapterAction 落成本章 beat。
+       *
+       * ⚠️ 这是"编排了但 Writer 看不到"的修复点：
+       * 前端 collectArrangedEntities 与矩阵都按 beats 判断"本章是否涉及该伏笔"
+       * （foreshadowHasBeatAtChapter / matrix-model），
+       * 旧实现复用伏笔时只更新 lastChapter、不加 beat，
+       * 于是已埋设过的伏笔在后续章节既不进 arrangedEntities，也不在矩阵格子里出现。
+       */
+      const buildForeshadowReusePatch = (
+        target: NovelForeshadow,
+        chapterAction: unknown,
+      ): Partial<NovelForeshadow> => {
+        const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
+        const beats = target.beats ?? []
+        const action = String(chapterAction ?? '')
+        const beatType: ForeshadowBeatType | null =
+          VALID_FORESHADOW_CHAPTER_ACTIONS.has(action) ? (action as ForeshadowBeatType) : null
+        const alreadyHasThisChapter = beats.some((beat) => beat.chapter === chapterNumber)
+
+        if (beatType && !alreadyHasThisChapter) {
+          patch.beats = [...beats, { chapter: chapterNumber, type: beatType }]
+        } else if (!beatType && !beats.some((beat) => beat.type === 'plant')) {
+          // 无有效 chapterAction 的历史数据：至少补首次 plant，保持旧行为
+          patch.beats = [...beats, { chapter: chapterNumber, type: 'plant' }]
         }
 
-        onProgress?.({ phase: 'generating', message: `生成伏笔：${spec.coreStyle}` })
-        const gen = await resolveGenerated(spec, 'foreshadow')
-        if (gen.type !== 'foreshadow') continue
-        const dupKey = gen.data.description.slice(0, 40)
-        const dup = existingForeshadowByDesc.get(dupKey)
-        if (dup) {
-          onProgress?.({ phase: 'generating', message: `检测到相似伏笔，合并为已有实体` })
-          // 同上：只补首次 plant，不构造连续 chapterSpans。
-          const patch: Partial<NovelForeshadow> = { lastChapter: chapterNumber }
-          if (!(dup.beats ?? []).some((beat) => beat.type === 'plant')) {
-            patch.beats = [...(dup.beats ?? []), { chapter: chapterNumber, type: 'plant' }]
-          }
+        // 注意：不要在这里写 status。
+        // status 由 store 的 deriveForeshadowStatus(beats) 单向派生（updateForeshadow 内），
+        // 在此重复赋值会形成同一事实的第二个写入方，且必被 store 覆盖。
+        return patch
+      }
+
+      await runArrangeKind<NovelForeshadow, PlannedForeshadowSpec, GeneratedForeshadow>({
+        kind: 'foreshadow',
+        label: '伏笔',
+        specs: plan.foreshadows,
+        index: existingForeshadowByDesc,
+        indexKey: (f) => f.description.slice(0, 40),
+        findByHint: (name) => findExistingByDescription(existingForeshadowByDesc, name)
+          ?? [...existingForeshadowByDesc.values()].find((f) => f.description.includes(name)),
+        findByGenerated: (data) => findExistingByDescription(existingForeshadowByDesc, data.description),
+        reportName: (name) => name.slice(0, 24),
+        reuseMessage: (f) => `复用已有伏笔：${f.description.slice(0, 30)}`,
+        dupMessage: () => '检测到相似伏笔，合并为已有实体',
+        // 返回更新后的实体：伏笔是唯一需要在循环内刷新索引的类型
+        // （同一章可能有多个 spec 命中同一条伏笔，必须让后一个看到已追加的 beat）
+        applyChapterProjection: (entity, _data, spec) => {
+          const patch = buildForeshadowReusePatch(entity, spec.chapterAction)
           rollbackActions.push(() => {
-            this.store.updateForeshadow(dup.id, {
-              firstChapter: dup.firstChapter,
-              lastChapter: dup.lastChapter,
-              chapterSpans: dup.chapterSpans,
-              beats: dup.beats,
+            this.store.updateForeshadow(entity.id, {
+              firstChapter: entity.firstChapter,
+              lastChapter: entity.lastChapter,
+              chapterSpans: entity.chapterSpans,
+              beats: entity.beats,
+              status: entity.status,
             })
           })
-          const updated = this.store.updateForeshadow(dup.id, patch) ?? dup
-          existingForeshadowByDesc.set(dupKey, updated)
-          foreshadowIds.push(dup.id)
-          generatedForeshadows.push({ description: dup.description, category: dup.category })
-          continue
-        }
-        const created = this.store.createForeshadow({
+          return this.store.updateForeshadow(entity.id, patch) ?? entity
+        },
+        create: (data) => this.store.createForeshadow({
           id: randomUUID(),
           projectId,
-          description: gen.data.description,
-          category: gen.data.category,
-          status: gen.data.status,
+          description: data.description,
+          category: data.category,
+          status: data.status,
           firstChapter: chapterNumber,
           lastChapter: null,
           recoverByChapter: null,
-          plantMethod: gen.data.plantMethod,
-          recoverMethod: gen.data.recoverMethod,
+          plantMethod: data.plantMethod,
+          recoverMethod: data.recoverMethod,
           chapterSpans: [],
           beats: [{ chapter: chapterNumber, type: 'plant' }],
-        })
-        existingForeshadowByDesc.set(created.description.slice(0, 40), created)
-        foreshadowIds.push(created.id)
-        createdForeshadowIds.push(created.id)
-        generatedForeshadows.push({ description: created.description, category: created.category })
-      }
+        }),
+        ids: foreshadowIds,
+        createdIds: createdForeshadowIds,
+        collect: (f) => { generatedForeshadows.push({ description: f.description, category: f.category }) },
+      })
 
-      // ── 势力：按名匹配已有实体 ──
       const existingFactionByName = new Map<string, NovelFaction>()
       for (const f of this.store.listFactions(projectId)) {
         existingFactionByName.set(f.name, f)
       }
-
-      for (const spec of plan.factions) {
-        signal?.throwIfAborted()
-        const hint = this.parseExistingHint(spec.coreStyle)
-        if (hint.mode === 'existing') {
-          const existing = existingFactionByName.get(hint.name)
-          if (existing) {
-            onProgress?.({ phase: 'generating', message: `复用已有势力：${existing.name}` })
-            // 扩展 chapterSpans 包含本章
-            const spans = existing.chapterSpans ?? []
-            const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-            if (!alreadyCovers) {
-              const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
-              rollbackActions.push(() => { this.store.updateFaction(existing.id, { chapterSpans: existing.chapterSpans }) })
-              this.store.updateFaction(existing.id, { chapterSpans: mergedSpans })
-            }
-            factionIds.push(existing.id)
-            generatedFactions.push({ name: existing.name, type: existing.type })
-            continue
-          }
-        }
-
-        onProgress?.({ phase: 'generating', message: `生成势力：${spec.coreStyle}` })
-        const gen = await resolveGenerated(spec, 'faction')
-        if (gen.type !== 'faction') continue
-        const dup = existingFactionByName.get(gen.data.name)
-        if (dup) {
-          onProgress?.({ phase: 'generating', message: `检测到同名势力「${gen.data.name}」，合并为已有实体` })
-          const spans = dup.chapterSpans ?? []
-          const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-          if (!alreadyCovers) {
-            const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
-            rollbackActions.push(() => { this.store.updateFaction(dup.id, { chapterSpans: dup.chapterSpans }) })
-            this.store.updateFaction(dup.id, { chapterSpans: mergedSpans })
-          }
-          factionIds.push(dup.id)
-          generatedFactions.push({ name: dup.name, type: dup.type })
-          continue
-        }
-        const created = this.store.createFaction({
+      await runArrangeKind<NovelFaction, { coreStyle: string }, GeneratedFaction>({
+        kind: 'faction',
+        label: '势力',
+        specs: plan.factions,
+        index: existingFactionByName,
+        indexKey: (f) => f.name,
+        findByHint: (name) => findExistingByName(existingFactionByName, name),
+        findByGenerated: (data) => findExistingByName(existingFactionByName, data.name),
+        reuseMessage: (f) => `复用已有势力：${f.name}`,
+        dupMessage: (_dup, data) => `检测到同名势力「${data.name}」，合并为已有实体`,
+        applyChapterProjection: (entity) => {
+          appendChapterSpanWithRollback(entity, chapterNumber, (id, patch) => this.store.updateFaction(id, patch), rollbackActions)
+        },
+        create: (data) => this.store.createFaction({
           id: randomUUID(),
           projectId,
-          name: gen.data.name,
-          description: gen.data.description,
-          type: gen.data.type,
+          name: data.name,
+          description: data.description,
+          type: data.type,
           leaderId: null,
-          ideology: gen.data.ideology,
-          strength: gen.data.strength,
-          resources: gen.data.resources,
-          allies: gen.data.allies,
-          enemies: gen.data.enemies,
-          status: gen.data.status,
+          ideology: data.ideology,
+          strength: data.strength,
+          resources: data.resources,
+          allies: data.allies,
+          enemies: data.enemies,
+          status: data.status,
           chapterSpans: [[chapterNumber, chapterNumber]],
-        })
-        existingFactionByName.set(created.name, created)
-        factionIds.push(created.id)
-        createdFactionIds.push(created.id)
-        generatedFactions.push({ name: created.name, type: created.type })
-      }
+        }),
+        ids: factionIds,
+        createdIds: createdFactionIds,
+        collect: (f) => { generatedFactions.push({ name: f.name, type: f.type }) },
+      })
 
-      // ── 地点：按名匹配已有实体 ──
       const existingLocationByName = new Map<string, NovelLocation>()
       for (const l of this.store.listLocations(projectId)) {
         existingLocationByName.set(l.name, l)
       }
-
-      for (const spec of plan.locations) {
-        signal?.throwIfAborted()
-        const hint = this.parseExistingHint(spec.coreStyle)
-        if (hint.mode === 'existing') {
-          const existing = existingLocationByName.get(hint.name)
-          if (existing) {
-            onProgress?.({ phase: 'generating', message: `复用已有地点：${existing.name}` })
-            // 追加本章到 appearChapters（如尚未包含）
-            const appears = existing.appearChapters ?? []
-            const patch: Partial<NovelLocation> = {}
-            if (!appears.includes(chapterNumber)) {
-              patch.appearChapters = [...appears, chapterNumber]
-            }
-            if (existing.firstChapter == null) {
-              patch.firstChapter = chapterNumber
-            }
-            if (Object.keys(patch).length > 0) {
-              rollbackActions.push(() => {
-                this.store.updateLocation(existing.id, {
-                  firstChapter: existing.firstChapter,
-                  appearChapters: existing.appearChapters,
-                })
-              })
-              this.store.updateLocation(existing.id, patch)
-            }
-            locationIds.push(existing.id)
-            generatedLocations.push({ name: existing.name, type: existing.type })
-            continue
-          }
-        }
-
-        onProgress?.({ phase: 'generating', message: `生成地点：${spec.coreStyle}` })
-        const gen = await resolveGenerated(spec, 'location')
-        if (gen.type !== 'location') continue
-        const dup = existingLocationByName.get(gen.data.name)
-        if (dup) {
-          onProgress?.({ phase: 'generating', message: `检测到同名地点「${gen.data.name}」，合并为已有实体` })
-          const appears = dup.appearChapters ?? []
+      await runArrangeKind<NovelLocation, { coreStyle: string }, GeneratedLocation>({
+        kind: 'location',
+        label: '地点',
+        specs: plan.locations,
+        index: existingLocationByName,
+        indexKey: (l) => l.name,
+        findByHint: (name) => findExistingByName(existingLocationByName, name),
+        findByGenerated: (data) => findExistingByName(existingLocationByName, data.name),
+        reuseMessage: (l) => `复用已有地点：${l.name}`,
+        dupMessage: (_dup, data) => `检测到同名地点「${data.name}」，合并为已有实体`,
+        // 地点用离散 appearChapters 而非跨度；首次出场时补 firstChapter
+        applyChapterProjection: (entity) => {
           const patch: Partial<NovelLocation> = {}
-          if (!appears.includes(chapterNumber)) {
-            patch.appearChapters = [...appears, chapterNumber]
-          }
-          if (dup.firstChapter == null) {
-            patch.firstChapter = chapterNumber
-          }
-          if (Object.keys(patch).length > 0) {
-            rollbackActions.push(() => {
-              this.store.updateLocation(dup.id, {
-                firstChapter: dup.firstChapter,
-                appearChapters: dup.appearChapters,
-              })
+          const mergedAppears = nextAppearChapters(entity.appearChapters, chapterNumber)
+          if (mergedAppears) patch.appearChapters = mergedAppears
+          if (entity.firstChapter == null) patch.firstChapter = chapterNumber
+          if (Object.keys(patch).length === 0) return
+          rollbackActions.push(() => {
+            this.store.updateLocation(entity.id, {
+              firstChapter: entity.firstChapter,
+              appearChapters: entity.appearChapters,
             })
-            this.store.updateLocation(dup.id, patch)
-          }
-          locationIds.push(dup.id)
-          generatedLocations.push({ name: dup.name, type: dup.type })
-          continue
-        }
-        const created = this.store.createLocation({
+          })
+          this.store.updateLocation(entity.id, patch)
+        },
+        create: (data) => this.store.createLocation({
           id: randomUUID(),
           projectId,
-          name: gen.data.name,
-          description: gen.data.description,
-          type: gen.data.type,
+          name: data.name,
+          description: data.description,
+          type: data.type,
           parentId: null,
           factionId: null,
-          significance: gen.data.significance,
-          status: gen.data.status,
+          significance: data.significance,
+          status: data.status,
           firstChapter: chapterNumber,
           appearChapters: [chapterNumber],
-        })
-        existingLocationByName.set(created.name, created)
-        locationIds.push(created.id)
-        createdLocationIds.push(created.id)
-        generatedLocations.push({ name: created.name, type: created.type })
-      }
+        }),
+        ids: locationIds,
+        createdIds: createdLocationIds,
+        collect: (l) => { generatedLocations.push({ name: l.name, type: l.type }) },
+      })
 
-      // ── 物品：按名匹配已有实体 ──
       // 物品核心约束是 ownerId（持有者），生成阶段 LLM 输出角色名后端解析为 ID。
-      // 已有物品按 name 查重；复用时如本章首次出场，更新 chapterSpans 追加本章。
       const existingItemByName = new Map<string, NovelItem>()
       for (const it of this.store.listItems(projectId)) {
         existingItemByName.set(it.name, it)
       }
-
-      for (const spec of plan.items) {
-        signal?.throwIfAborted()
-        const hint = this.parseExistingHint(spec.coreStyle)
-        if (hint.mode === 'existing') {
-          const existing = existingItemByName.get(hint.name)
-          if (existing) {
-            onProgress?.({ phase: 'generating', message: `复用已有物品：${existing.name}` })
-            // 扩展 chapterSpans 包含本章
-            const spans = existing.chapterSpans ?? []
-            const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-            if (!alreadyCovers) {
-              const mergedSpans: ChapterSpan[] = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
-              rollbackActions.push(() => { this.store.updateItem(existing.id, { chapterSpans: existing.chapterSpans }) })
-              this.store.updateItem(existing.id, { chapterSpans: mergedSpans })
-            }
-            itemIds.push(existing.id)
-            generatedItems.push({ name: existing.name, type: existing.type, ownerId: existing.ownerId })
-            continue
-          }
-        }
-
-        onProgress?.({ phase: 'generating', message: `生成物品：${spec.coreStyle}` })
-        const gen = await resolveGenerated(spec, 'item')
-        if (gen.type !== 'item') continue
-        const dup = existingItemByName.get(gen.data.name)
-        if (dup) {
-          onProgress?.({ phase: 'generating', message: `检测到同名物品「${gen.data.name}」，合并为已有实体` })
-          const spans = dup.chapterSpans ?? []
-          const alreadyCovers = spans.some(([s, e]) => chapterNumber >= s && chapterNumber <= e)
-          // 同名物品合并：用新生成的 ownerId/status 覆盖（LLM 可能识别出转手/状态变化）
+      await runArrangeKind<NovelItem, { coreStyle: string }, GeneratedItem>({
+        kind: 'item',
+        label: '物品',
+        specs: plan.items,
+        index: existingItemByName,
+        indexKey: (it) => it.name,
+        findByHint: (name) => findExistingByName(existingItemByName, name),
+        findByGenerated: (data) => findExistingByName(existingItemByName, data.name),
+        reuseMessage: (it) => `复用已有物品：${it.name}`,
+        dupMessage: (_dup, data) => `检测到同名物品「${data.name}」，合并为已有实体`,
+        // 物品是唯一会在合并时改状态的类型：data 非 null 表示走的是二次查重分支，
+        // 此时用 LLM 新生成的 ownerId/status 覆盖（可能识别出转手/封印）。
+        applyChapterProjection: (entity, data) => {
           const patch: Partial<NovelItem> = {}
-          if (!alreadyCovers) {
-            patch.chapterSpans = [...spans, [chapterNumber, chapterNumber] as ChapterSpan]
+          const mergedSpans = nextChapterSpans(entity.chapterSpans, chapterNumber)
+          if (mergedSpans) patch.chapterSpans = mergedSpans
+          if (data) {
+            if (data.ownerId && data.ownerId !== entity.ownerId) {
+              patch.ownerId = data.ownerId
+              patch.status = data.status === 'active' ? 'transferred' : data.status
+            } else if (data.status !== entity.status) {
+              patch.status = data.status
+            }
+            if (data.abilities && data.abilities !== entity.abilities) {
+              patch.abilities = data.abilities
+            }
           }
-          if (gen.data.ownerId && gen.data.ownerId !== dup.ownerId) {
-            patch.ownerId = gen.data.ownerId
-            patch.status = gen.data.status === 'active' ? 'transferred' : gen.data.status
-          } else if (gen.data.status !== dup.status) {
-            patch.status = gen.data.status
-          }
-          if (gen.data.abilities && gen.data.abilities !== dup.abilities) {
-            patch.abilities = gen.data.abilities
-          }
-          if (Object.keys(patch).length > 0) {
-            rollbackActions.push(() => {
-              this.store.updateItem(dup.id, {
-                chapterSpans: dup.chapterSpans,
-                ownerId: dup.ownerId,
-                status: dup.status,
-                abilities: dup.abilities,
-              })
+          if (Object.keys(patch).length === 0) return
+          rollbackActions.push(() => {
+            this.store.updateItem(entity.id, {
+              chapterSpans: entity.chapterSpans,
+              ownerId: entity.ownerId,
+              status: entity.status,
+              abilities: entity.abilities,
             })
-            this.store.updateItem(dup.id, patch)
-          }
-          itemIds.push(dup.id)
-          generatedItems.push({ name: dup.name, type: dup.type, ownerId: dup.ownerId })
-          continue
-        }
-        const created = this.store.createItem({
+          })
+          this.store.updateItem(entity.id, patch)
+        },
+        create: (data) => this.store.createItem({
           id: randomUUID(),
           projectId,
-          name: gen.data.name,
-          description: gen.data.description,
-          type: gen.data.type,
-          ownerId: gen.data.ownerId,
-          status: gen.data.status,
-          abilities: gen.data.abilities,
-          origin: gen.data.origin,
+          name: data.name,
+          description: data.description,
+          type: data.type,
+          ownerId: data.ownerId,
+          status: data.status,
+          abilities: data.abilities,
+          origin: data.origin,
           firstChapter: chapterNumber,
           chapterSpans: [[chapterNumber, chapterNumber]],
-        })
-        existingItemByName.set(created.name, created)
-        itemIds.push(created.id)
-        createdItemIds.push(created.id)
-        generatedItems.push({ name: created.name, type: created.type, ownerId: created.ownerId })
-      }
+        }),
+        ids: itemIds,
+        createdIds: createdItemIds,
+        collect: (it) => { generatedItems.push({ name: it.name, type: it.type, ownerId: it.ownerId }) },
+      })
     } catch (err) {
       // 标记日志状态为失败，供 finally 块写入日志使用
       logStatus = 'error'
@@ -1190,20 +1291,37 @@ export class NovelEntityGenerator {
       { projectId, chapterNumber, characters: characterIds.length, conflicts: conflictIds.length, foreshadows: foreshadowIds.length, clues: clueIds.length, factions: factionIds.length, locations: locationIds.length, items: itemIds.length, characterFunctions: characterFunctions.length },
       'generateAndArrange 完成：实体已落库',
     )
-    if (isReverse) {
-      try {
-        this.recordReverseArrangeProjection(projectId, chapterNumber, {
-          characterIds: createdCharacterIds,
-          conflictIds: createdConflictIds,
-          foreshadowIds: createdForeshadowIds,
-          factionIds: createdFactionIds,
-          locationIds: createdLocationIds,
-          itemIds: createdItemIds,
-        })
-      } catch (err) {
-        // 投影落账失败不能撤销已经成功的实体反推，下一次反推或章节收尾仍可补齐。
-        this.context.logger.warn({ projectId, chapterNumber, err }, '正文反推实体已落库，但账本投影写入失败')
-      }
+    // ── 账本投影 ──
+    // 旧实现只在 reverse-arrange 时写、且只写新建实体，导致：
+    // ① ai-arrange（按章纲编排）一条账本都不写，账本视图对编排完全无感；
+    // ② 复用实体的"本章出场"只落在实体快照字段上，与账本对不上账。
+    // 现在两条路径都写，且区分 created / reused 两类记录。
+    try {
+      this.recordArrangeProjection(projectId, chapterNumber, isReverse, {
+        characterIds: createdCharacterIds,
+        conflictIds: createdConflictIds,
+        foreshadowIds: createdForeshadowIds,
+        factionIds: createdFactionIds,
+        locationIds: createdLocationIds,
+        itemIds: createdItemIds,
+      }, {
+        // 复用 = 出现在结果里但不在本次新建列表里
+        characterIds: characterIds.filter((id) => !createdCharacterIds.includes(id)),
+        conflictIds: conflictIds.filter((id) => !createdConflictIds.includes(id)),
+        foreshadowIds: foreshadowIds.filter((id) => !createdForeshadowIds.includes(id)),
+        factionIds: factionIds.filter((id) => !createdFactionIds.includes(id)),
+        locationIds: locationIds.filter((id) => !createdLocationIds.includes(id)),
+        itemIds: itemIds.filter((id) => !createdItemIds.includes(id)),
+      })
+    } catch (err) {
+      // 投影落账失败不能撤销已经成功的实体编排，下一次编排或章节收尾仍可补齐。
+      this.context.logger.warn({ projectId, chapterNumber, isReverse, err }, '实体已落库，但账本投影写入失败')
+    }
+    if (unresolvedExistingHints.length > 0) {
+      onProgress?.({
+        phase: 'arranged',
+        message: `⚠️ ${unresolvedExistingHints.length} 个标注为"已有"的实体未匹配到现有数据，已按新建处理：${unresolvedExistingHints.join('、')}。请检查矩阵是否出现重复实体。`,
+      })
     }
     return {
       characterIds,
@@ -1218,15 +1336,29 @@ export class NovelEntityGenerator {
   }
 
   /**
-   * 为正文反推中新建的实体写入“首次出现”账本记录。
+   * 把本章编排结果投影到事件账本。
    *
-   * 仅处理本次实际新建的 ID。复用实体已经通过 chapterSpans、角色历史或伏笔 beats
-   * 表示本章出场，不能伪造成再次创建。
+   * 两类记录语义不同，必须区分：
+   * - created：`*.created`，实体在本章首次出现；
+   * - reused：`*.arranged`，已有实体被编排进本章（"本章出场"），
+   *   不能伪造成再次创建，否则账本会把老角色反复算成新角色。
+   *
+   * 覆盖 ai-arrange（章纲编排）与 reverse-arrange（正文反推）两条路径，
+   * 只有二者都写，矩阵总览与账本视图才能对上账。
    */
-  private recordReverseArrangeProjection(
+  private recordArrangeProjection(
     projectId: string,
     chapterNumber: number,
+    isReverse: boolean,
     created: {
+      characterIds: string[]
+      conflictIds: string[]
+      foreshadowIds: string[]
+      factionIds: string[]
+      locationIds: string[]
+      itemIds: string[]
+    },
+    reused: {
       characterIds: string[]
       conflictIds: string[]
       foreshadowIds: string[]
@@ -1236,16 +1368,26 @@ export class NovelEntityGenerator {
     },
   ): void {
     if (!this.memoryStore) return
+    const originLabel = isReverse ? '正文反推' : '章纲编排'
     const changes: CreateEventChangeInput[] = []
     const entityRefs: Array<{ entityType: CreateEventChangeInput['subjectType']; entityId: string; role: 'affected'; note: string }> = []
+
     const add = (
       subjectType: CreateEventChangeInput['subjectType'],
       subjectId: string,
       dimension: string,
       label: string,
       afterValue: unknown,
-    ) => {
-      entityRefs.push({ entityType: subjectType, entityId: subjectId, role: 'affected', note: '正文反推首次出现' })
+      kind: 'created' | 'arranged',
+    ): void => {
+      const note = kind === 'created' ? `${originLabel}首次出现` : `${originLabel}本章出场`
+      // 参与声明（entityRef）两类都写：编排事件应完整声明本章涉及了哪些实体。
+      entityRefs.push({ entityType: subjectType, entityId: subjectId, role: 'affected', note })
+      // 变化记录（changeRecord）只为**新建**实体写。
+      // 复用实体的 `<类型>.arranged` 由 NovelStore 的章节投影观察者统一写入
+      // （见 chapter-projection-recorder）：那条路径同时覆盖手工编辑、Memory 工具、
+      // 矩阵拖拽。两处都写会让同一事实产生重复记录，正是 S4 要消除的多写入方问题。
+      if (kind !== 'created') return
       changes.push({
         subjectType,
         subjectId,
@@ -1255,37 +1397,52 @@ export class NovelEntityGenerator {
         valueType: 'reference',
         beforeValue: null,
         afterValue,
-        reason: `正文反推：${label}首次出现`,
+        reason: `${originLabel}：${label}首次出现`,
         significance: 5,
-        source: 'ai-extracted',
+        // ai-arrange 是"按章纲规划"，reverse-arrange 是"从正文抽取"，来源语义不同
+        source: isReverse ? 'ai-extracted' : 'ai-planned',
       })
     }
 
-    for (const id of created.characterIds) {
-      const entity = this.store.getCharacter(id)
-      if (entity) add('character', id, 'character.created', entity.name, { name: entity.name, state: entity.currentState })
+    const project = (
+      ids: { characterIds: string[]; conflictIds: string[]; foreshadowIds: string[]; factionIds: string[]; locationIds: string[]; itemIds: string[] },
+      kind: 'created' | 'arranged',
+    ): void => {
+      for (const id of ids.characterIds) {
+        const entity = this.store.getCharacter(id)
+        if (entity) add('character', id, `character.${kind}`, entity.name, { name: entity.name, state: entity.currentState }, kind)
+      }
+      for (const id of ids.conflictIds) {
+        const entity = this.store.getConflict(id)
+        if (entity) add('conflict', id, `conflict.${kind}`, entity.description, { description: entity.description, stage: entity.stage, intensity: entity.intensity }, kind)
+      }
+      for (const id of ids.foreshadowIds) {
+        const entity = this.store.getForeshadow(id)
+        if (entity) add('foreshadow', id, `foreshadow.${kind}`, entity.description, { description: entity.description, status: entity.status, beats: entity.beats }, kind)
+      }
+      for (const id of ids.factionIds) {
+        const entity = this.store.getFaction(id)
+        if (entity) add('faction', id, `faction.${kind}`, entity.name, { name: entity.name, status: entity.status, strength: entity.strength }, kind)
+      }
+      for (const id of ids.locationIds) {
+        const entity = this.store.getLocation(id)
+        if (entity) add('location', id, `location.${kind}`, entity.name, { name: entity.name, status: entity.status }, kind)
+      }
+      for (const id of ids.itemIds) {
+        const entity = this.store.getItem(id)
+        if (entity) add('item', id, `item.${kind}`, entity.name, { name: entity.name, holder: entity.ownerId, status: entity.status }, kind)
+      }
     }
-    for (const id of created.conflictIds) {
-      const entity = this.store.getConflict(id)
-      if (entity) add('conflict', id, 'conflict.created', entity.description, { description: entity.description, stage: entity.stage, intensity: entity.intensity })
-    }
-    for (const id of created.foreshadowIds) {
-      const entity = this.store.getForeshadow(id)
-      if (entity) add('foreshadow', id, 'foreshadow.created', entity.description, { description: entity.description, status: entity.status })
-    }
-    for (const id of created.factionIds) {
-      const entity = this.store.getFaction(id)
-      if (entity) add('faction', id, 'faction.created', entity.name, { name: entity.name, status: entity.status, strength: entity.strength })
-    }
-    for (const id of created.locationIds) {
-      const entity = this.store.getLocation(id)
-      if (entity) add('location', id, 'location.created', entity.name, { name: entity.name, status: entity.status })
-    }
-    for (const id of created.itemIds) {
-      const entity = this.store.getItem(id)
-      if (entity) add('item', id, 'item.created', entity.name, { name: entity.name, holder: entity.ownerId, status: entity.status })
-    }
-    if (changes.length === 0) return
+
+    project(created, 'created')
+    project(reused, 'arranged')
+    // entityRefs 非空即值得记事件：即使本章全是复用实体（无 changes），
+    // 也要留下"本章编排涉及了这些实体"的声明，供账本视图与对账使用。
+    if (entityRefs.length === 0) return
+
+    const createdCount = created.characterIds.length + created.conflictIds.length + created.foreshadowIds.length
+      + created.factionIds.length + created.locationIds.length + created.itemIds.length
+    const reusedCount = entityRefs.length - createdCount
 
     this.memoryStore.createStoryEventWithChanges({
       event: {
@@ -1294,12 +1451,13 @@ export class NovelEntityGenerator {
         sceneId: null,
         sceneOrder: 0,
         type: 'discovery',
-        title: '正文反推实体投影',
-        summary: `从第 ${chapterNumber} 章正文反推出 ${changes.length} 个新实体`,
+        title: `${originLabel}实体投影`,
+        summary: `第 ${chapterNumber} 章${originLabel}：新增 ${createdCount} 个实体，复用 ${reusedCount} 个实体`,
         outcome: '',
-        status: 'confirmed',
+        // 章纲编排是"计划"，正文反推是"已发生"
+        status: isReverse ? 'confirmed' : 'planned',
         parentEventId: null,
-        source: 'ai-extracted',
+        source: isReverse ? 'ai-extracted' : 'ai-planned',
       },
       entityRefs,
       changes,
@@ -1314,16 +1472,10 @@ export class NovelEntityGenerator {
    */
   private async processNewCharacter(
     data: GeneratedCharacter,
-    projectId: string,
-    chapterNumber: number,
-    outline: string,
-    existingByName: Map<string, NovelCharacter>,
-    characterIds: string[],
-    createdCharacterIds: string[],
-    characterFunctions: CharacterFunctionEntry[],
-    generatedCharacters: Array<{ name: string; description: string; plotFunction?: PlotFunction; functionNote?: string }>,
-    spec: { coreStyle: string; plotFunction?: PlotFunction; functionNote?: string },
+    ctx: NewCharacterContext,
+    spec: EntityPlan['characters'][number],
   ): Promise<void> {
+    const { projectId, chapterNumber, outline, existingByName, createdCharacterIds, collect } = ctx
     const created = this.store.createCharacter({
       id: randomUUID(),
       projectId,
@@ -1345,17 +1497,9 @@ export class NovelEntityGenerator {
       removalImpact: data.removalImpact,
     })
     existingByName.set(created.name, created)  // 加入 map 避免后续重复创建同名角色
-    characterIds.push(created.id)
     createdCharacterIds.push(created.id)
-    if (spec.plotFunction) {
-      characterFunctions.push({ characterId: created.id, function: spec.plotFunction, note: spec.functionNote })
-    }
-    generatedCharacters.push({
-      name: created.name,
-      description: created.description,
-      plotFunction: spec.plotFunction,
-      functionNote: spec.functionNote,
-    })
+    // ID / 功能位 / SSE 摘要的收集与复用分支完全一致，交给同一个收集器
+    collect(created, spec)
     this.store.createCharacterHistory({
       projectId,
       characterId: created.id,
@@ -1412,21 +1556,30 @@ export class NovelEntityGenerator {
     })()
 
     const formatExistingList = (
-      items: Array<{ name?: string; description?: string }>,
+      items: Array<{ name?: string; description?: string; state?: string; recency?: number }>,
       fallbackLabel: string,
     ): string => {
       if (items.length === 0) return `（暂无${fallbackLabel}）`
       // 旧实现把项目内全部实体描述原样塞进规划 prompt，项目变大后会让
       // 每次 ai-arrange/reverse-arrange 的输入 token 随历史线性膨胀。
-      // 保留稳定排序后的前缀条目，超出预算的实体仍可在生成阶段按名查重。
-      const maxChars = 5000
+      // 保留排序后的前缀条目，超出预算的实体仍可在生成阶段按名查重。
+      const maxChars = 6000
       const lines: string[] = []
       let usedChars = 0
-      const stableItems = [...items].sort((a, b) =>
-        (a.name ?? a.description ?? '').localeCompare(b.name ?? b.description ?? ''),
-      )
+      // ⚠️ 排序必须是"最近出场优先"，不能用字典序：
+      // 字典序会把最近推进的主线实体排到后面，一旦被预算截断，LLM 就看不到它，
+      // 只能凭想象标"已有：X"或干脆新建重复实体。
+      const stableItems = [...items].sort((a, b) => {
+        const diff = (b.recency ?? 0) - (a.recency ?? 0)
+        if (diff !== 0) return diff
+        return (a.name ?? a.description ?? '').localeCompare(b.name ?? b.description ?? '')
+      })
       for (const [index, it] of stableItems.entries()) {
-        const line = `${index + 1}. ${it.name ?? fallbackLabel}${it.description ? `：${it.description.slice(0, 100)}` : ''}`
+        // 已有实体必须带当前状态：只给创建时写死的 description，
+        // LLM 会用"第 1 章的人物"来规划第 N 章，这是"已推进实体被当初始状态处理"的根因。
+        const desc = it.description ? `：${it.description.slice(0, 100)}` : ''
+        const state = it.state ? `\n   └ 当前：${it.state.slice(0, 160)}` : ''
+        const line = `${index + 1}. ${it.name ?? fallbackLabel}${desc}${state}`
         if (usedChars + line.length > maxChars) break
         lines.push(line)
         usedChars += line.length + 1
@@ -1436,6 +1589,25 @@ export class NovelEntityGenerator {
       }
       return lines.join('\n')
     }
+
+    /** 取实体最近活跃到第几章，用于"最近出场优先"排序 */
+    const lastSpanChapter = (spans: Array<[number, number]> | undefined): number =>
+      (spans ?? []).reduce((max, [, end]) => Math.max(max, end), 0)
+
+    // 角色没有 chapterSpans，出场章节存在 character_history 里。一次查全量再建索引，
+    // 避免按角色逐个查库。
+    const characterLastChapter = new Map<string, number>()
+    for (const entry of this.store.listCharacterHistory(projectId)) {
+      const chapter = entry.chapterNumber ?? 0
+      const prev = characterLastChapter.get(entry.characterId) ?? 0
+      if (chapter > prev) characterLastChapter.set(entry.characterId, chapter)
+    }
+
+    const joinState = (...parts: Array<string | number | false | undefined | null>): string =>
+      parts
+        .map((part) => (typeof part === 'number' ? String(part) : (part || '').trim()))
+        .filter((part) => part && !/^待补充|待定|占位$/.test(part))
+        .join('；')
 
     // ── 根据 source 构建不同的 userPrompt ──
     // source='outline': 从章纲编排实体（原有逻辑）
@@ -1467,9 +1639,11 @@ export class NovelEntityGenerator {
       '',
       '【已有实体清单（重要 - 复用优先）】',
       '以下是项目里已经存在的实体。**本章需要的实体如果已在清单中，必须复用，不要新建同名/同描述的实体**。',
+      '清单里每条的 `└ 当前：` 是该实体截至上一章的真实状态，**规划本章时必须以"当前"为起点，不要回到它最初的设定**。',
       '',
       '复用写法（coreStyle 字段）：',
       '- 角色/势力/地点/物品（有独立 name 字段）：写 "已有：<name>"，如 "已有：林墨"、"已有：国安总局"、"已有：镇魂印"',
+      '  名字必须与清单完全一致，不要加括注、后缀或状态说明（写 "已有：林墨"，不要写 "已有：林墨（觉醒后）"）',
       '- 冲突/伏笔（无 name 字段，只有 description）：写 "已有：<描述前 40 字>"，',
       '  必须原样复制下方清单中的描述前 40 字（后端按前 40 字匹配）',
       '- 新增实体：写一句话描述其核心特征（不要加"已有："前缀）',
@@ -1479,22 +1653,56 @@ export class NovelEntityGenerator {
       '如果本章不需要新增某类实体且已有实体都不延续到本章，返回空数组。',
       '',
       `### 已有角色（${existingCharacters.length}）`,
-      formatExistingList(existingCharacters.map((c) => ({ name: c.name, description: c.description })), '角色'),
+      formatExistingList(existingCharacters.map((c) => ({
+        name: c.name,
+        description: c.description,
+        state: joinState(c.currentState, c.currentGoal && `目标：${c.currentGoal}`, c.arcStage && `弧光：${c.arcStage}`),
+        recency: characterLastChapter.get(c.id) ?? 0,
+      })), '角色'),
       '',
       `### 已有冲突（${existingConflicts.length}）`,
-      formatExistingList(existingConflicts.map((c) => ({ name: undefined, description: c.description })), '冲突'),
+      formatExistingList(existingConflicts.map((c) => ({
+        name: undefined,
+        description: c.description,
+        state: joinState(`阶段：${c.stage}`, `强度：${c.intensity}/10`, c.currentStep && `已推进到：${c.currentStep}`, c.nextStep && `下一步：${c.nextStep}`),
+        recency: lastSpanChapter(c.chapterSpans),
+      })), '冲突'),
       '',
       `### 已有伏笔（${existingForeshadows.length}）`,
-      formatExistingList(existingForeshadows.map((f) => ({ name: undefined, description: f.description })), '伏笔'),
+      formatExistingList(existingForeshadows.map((f) => ({
+        name: undefined,
+        description: f.description,
+        state: joinState(
+          `状态：${f.status}`,
+          f.firstChapter != null && `首次：第${f.firstChapter}章`,
+          (f.beats ?? []).length > 0 && `已发生节点：${(f.beats ?? []).map((b) => `第${b.chapter}章${b.type}`).join('、')}`,
+        ),
+        recency: Math.max(f.lastChapter ?? 0, ...(f.beats ?? []).map((b) => b.chapter), 0),
+      })), '伏笔'),
       '',
       `### 已有势力（${existingFactions.length}）`,
-      formatExistingList(existingFactions.map((f) => ({ name: f.name, description: f.description })), '势力'),
+      formatExistingList(existingFactions.map((f) => ({
+        name: f.name,
+        description: f.description,
+        state: joinState(`状态：${f.status}`, `实力：${f.strength}`),
+        recency: lastSpanChapter(f.chapterSpans),
+      })), '势力'),
       '',
       `### 已有地点（${existingLocations.length}）`,
-      formatExistingList(existingLocations.map((l) => ({ name: l.name, description: l.description })), '地点'),
+      formatExistingList(existingLocations.map((l) => ({
+        name: l.name,
+        description: l.description,
+        state: joinState(`状态：${l.status}`),
+        recency: (l.appearChapters ?? []).reduce((max, ch) => Math.max(max, ch), 0),
+      })), '地点'),
       '',
       `### 已有物品（${existingItems.length}）`,
-      formatExistingList(existingItems.map((it) => ({ name: it.name, description: it.description })), '物品'),
+      formatExistingList(existingItems.map((it) => ({
+        name: it.name,
+        description: it.description,
+        state: joinState(`状态：${it.status}`, it.ownerId && `持有者ID：${it.ownerId}`),
+        recency: lastSpanChapter(it.chapterSpans),
+      })), '物品'),
       '',
       '【返回格式】',
       '返回严格 JSON：',
@@ -1714,6 +1922,28 @@ export class NovelEntityGenerator {
       { kind: 'item', specs: plan.items },
     ]
     const batchSize = 4
+
+    // 规划结果全是「已有：X」时无需任何生成调用。
+    // 这是当前的典型情况（项目实体齐备后，ai-arrange 几乎只做复用），
+    // 而此前 generatePlanInBatches 无条件执行，白跑一趟：批次循环本身不会
+    // 发起调用（candidates 为空），但外层的进度事件与日志会误报"正在生成"，
+    // 且 arrange 阶段仍要等这个 async 调用往返。提前短路并明确上报"全部复用"。
+    const totalNewCount = groups.reduce(
+      (sum, { specs }) => sum + specs.filter((s) => this.parseExistingHint(s.coreStyle).mode === 'new').length,
+      0,
+    )
+    if (totalNewCount === 0) {
+      onProgress?.({
+        phase: 'generating',
+        message: '本章编排全部复用已有实体，跳过实体生成',
+        data: { skippedGeneration: true },
+      })
+      this.context.logger.info(
+        { projectId, plannedCount: groups.reduce((s, g) => s + g.specs.length, 0) },
+        '实体规划全为复用，跳过生成阶段',
+      )
+      return run
+    }
 
     for (const { kind, specs } of groups) {
       signal?.throwIfAborted()

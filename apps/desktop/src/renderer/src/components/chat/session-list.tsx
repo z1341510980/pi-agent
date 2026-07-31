@@ -1,11 +1,20 @@
 import type { ReactElement } from 'react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { DropdownMenu } from 'radix-ui'
-import {
-  Pencil,
-  Trash2
-} from 'lucide-react'
+import { Pencil, Pin, PinOff, Trash2, GripVertical, MoreHorizontal, Plus } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragStartEvent,
+  type DragEndEvent
+} from '@dnd-kit/core'
+import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -16,6 +25,10 @@ import {
   DialogFooter,
   DialogDescription
 } from '@/components/ui/dialog'
+import { usePinnedSessions } from '@/hooks/use-pinned-sessions'
+import { BUILTIN_PRESETS } from '@/config/preset-assistants'
+import { AgentLogoIcon } from './agent-logo-icon'
+import { useSessionStore } from '@/stores/session-store'
 import { cn } from '@/lib/utils'
 
 /** 会话元数据 */
@@ -25,6 +38,8 @@ export interface SessionSummary {
   preview: string
   createdAt: number
   updatedAt: number
+  /** 会话关联的 Agent ID（用于显示 agent 身份标识） */
+  agentId?: string
 }
 
 export interface SessionListProps {
@@ -34,6 +49,8 @@ export interface SessionListProps {
   onNewSession: () => void
   onRenameSession: (id: string, newTitle: string) => void
   onDeleteSession: (id: string) => void
+  /** 打开设置页（footer 入口） */
+  onOpenSettings?: () => void
 }
 
 /** 按更新时间分组会话 */
@@ -64,7 +81,7 @@ function groupSessions(
 type VirtualItem = { type: 'header'; label: string } | { type: 'session'; session: SessionSummary }
 
 // 会话项固定高度（px）
-const SESSION_ITEM_HEIGHT = 36
+const SESSION_ITEM_HEIGHT = 34
 // 分组标题高度（px）
 const HEADER_HEIGHT = 28
 
@@ -93,17 +110,41 @@ export function SessionList({
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // 正在拖拽的会话 ID（用于 DragOverlay 渲染预览）
+  const [activeDragId, setActiveDragId] = useState<string | null>(null)
+  // 当前活跃 Agent ID（用于会话项回退显示 agent 标识）
+  const activeAgentId = useSessionStore((s) => s.activeAgentId)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const sortedSessions = useMemo(
-    () => [...sessions].sort((a, b) => b.updatedAt - a.updatedAt),
-    [sessions]
-  )
+  // ── 置顶会话管理（localStorage 持久化） ──
+  const { pinnedOrder, togglePin, reorderPinned } = usePinnedSessions()
 
-  const grouped = useMemo(() => groupSessions(sortedSessions), [sortedSessions])
+  // 按 pinnedOrder 顺序解析出实际存在的置顶会话
+  const sessionsById = useMemo(() => {
+    const map = new Map<string, SessionSummary>()
+    for (const s of sessions) map.set(s.id, s)
+    return map
+  }, [sessions])
 
-  // 展平为虚拟化列表
+  const pinnedSessions = useMemo(() => {
+    const result: SessionSummary[] = []
+    for (const id of pinnedOrder) {
+      const s = sessionsById.get(id)
+      if (s) result.push(s)
+    }
+    return result
+  }, [pinnedOrder, sessionsById])
+
+  // 未置顶会话：按 updatedAt 降序
+  const unpinnedSortedSessions = useMemo(() => {
+    const pinnedSet = new Set(pinnedOrder)
+    return sessions.filter((s) => !pinnedSet.has(s.id)).sort((a, b) => b.updatedAt - a.updatedAt)
+  }, [sessions, pinnedOrder])
+
+  const grouped = useMemo(() => groupSessions(unpinnedSortedSessions), [unpinnedSortedSessions])
+
+  // 展平为虚拟化列表（仅未置顶会话）
   const virtualItems = useMemo(() => flattenGroupedSessions(grouped), [grouped])
 
   const virtualizer = useVirtualizer({
@@ -113,6 +154,29 @@ export function SessionList({
       virtualItems[index].type === 'header' ? HEADER_HEIGHT : SESSION_ITEM_HEIGHT,
     overscan: 8
   })
+
+  // ── 拖拽传感器：distance:6 区分点击与拖拽 ──
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveDragId(String(event.active.id))
+  }, [])
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event
+      setActiveDragId(null)
+      if (!over) return
+      const activeId = String(active.id)
+      const overId = String(over.id)
+      if (activeId === overId) return
+      reorderPinned(activeId, overId)
+    },
+    [reorderPinned]
+  )
+
+  // DragOverlay 预览数据
+  const activeDragSession = activeDragId ? (sessionsById.get(activeDragId) ?? null) : null
 
   const handleContextMenuRename = useCallback((session: SessionSummary) => {
     setRenamingId(session.id)
@@ -136,36 +200,92 @@ export function SessionList({
 
   return (
     <nav
-      className="bg-surface-1 border-r border-border flex flex-col min-w-0 overflow-hidden px-4 py-5 h-full"
+      className="pi-nav-panel flex flex-col min-w-0 overflow-hidden px-4 py-5 h-full"
       aria-label="会话"
       data-tour="session-list"
     >
-      {/* 新建会话按钮 */}
-      <Button
-        className="w-full justify-center rounded-md h-10 text-sm font-medium bg-primary hover:bg-primary/95 text-primary-foreground shadow-sm active:scale-[0.96] transition-[background-color,transform]"
+      {/* 新建会话按钮（AionUi 风格：低调幽灵 + Plus 图标容器） */}
+      <button
+        type="button"
         onClick={onNewSession}
         aria-label="新建会话"
+        className="group flex w-full items-center gap-2 h-10 px-2.5 rounded-xl bg-transparent hover:bg-surface-3 dark:hover:bg-surface-2 text-text text-sm font-medium transition-[background-color,box-shadow,transform] active:scale-[0.96]"
       >
-        开启新对话
-      </Button>
+        <span className="flex size-7 items-center justify-center rounded-lg bg-surface-2 text-text-secondary shadow-[var(--shadow-border)] group-hover:text-text transition-[color,box-shadow]">
+          <Plus className="size-3.5" aria-hidden="true" />
+        </span>
+        <span>新对话</span>
+      </button>
 
-      {/* 会话列表 */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto mt-3">
+      {/* 分隔线（AionUi 风格：1px 浅色分隔） */}
+      <div className="h-px bg-border mx-1 my-2" aria-hidden="true" />
+
+      {/* 置顶会话分组（独立区域，不参与虚拟化，可拖拽排序） */}
+      {pinnedSessions.length > 0 && (
+        <div className="shrink-0 mt-3">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onDragCancel={() => setActiveDragId(null)}
+          >
+            <p className="text-xs font-medium text-subtle m-0 px-2.5 mb-1">置顶</p>
+            <SortableContext
+              items={pinnedSessions.map((s) => s.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              {pinnedSessions.map((session) => (
+                <SortableSessionItem
+                  key={session.id}
+                  session={session}
+                  isActive={session.id === activeSessionId}
+                  activeAgentId={activeAgentId}
+                  onSelect={() => onSelectSession(session.id)}
+                  onRename={() => handleContextMenuRename(session)}
+                  onDelete={() => setDeletingId(session.id)}
+                  onTogglePin={() => togglePin(session.id)}
+                />
+              ))}
+            </SortableContext>
+            <DragOverlay dropAnimation={null}>
+              {activeDragSession ? (
+                <div className="opacity-70 rounded-md shadow-lg ring-1 ring-primary/20 bg-surface-2">
+                  <SessionItem
+                    session={activeDragSession}
+                    isActive={activeDragSession.id === activeSessionId}
+                    isPinned
+                    activeAgentId={activeAgentId}
+                    onSelect={() => onSelectSession(activeDragSession.id)}
+                    onRename={() => handleContextMenuRename(activeDragSession)}
+                    onDelete={() => setDeletingId(activeDragSession.id)}
+                    onTogglePin={() => togglePin(activeDragSession.id)}
+                  />
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        </div>
+      )}
+
+      {/* 未置顶会话列表（虚拟化） */}
+      <div ref={scrollRef} className="sidebar-scroll flex-1 min-h-0 overflow-auto mt-3">
         {virtualItems.length === 0 ? null : virtualizer.getVirtualItems().length === 0 ? (
           // 降级渲染（jsdom 或容器高度为 0 时）
           grouped.map((group) => (
             <div key={group.label} className="grid gap-0.5 mb-3">
-              <p className="text-xs font-medium text-subtle m-0 px-2.5 mb-1">
-                {group.label}
-              </p>
+              <p className="text-xs font-medium text-subtle m-0 px-2.5 mb-1">{group.label}</p>
               {group.sessions.map((session) => (
                 <SessionItem
                   key={session.id}
                   session={session}
                   isActive={session.id === activeSessionId}
+                  isPinned={false}
+                  activeAgentId={activeAgentId}
                   onSelect={() => onSelectSession(session.id)}
                   onRename={() => handleContextMenuRename(session)}
                   onDelete={() => setDeletingId(session.id)}
+                  onTogglePin={() => togglePin(session.id)}
                 />
               ))}
             </div>
@@ -204,9 +324,12 @@ export function SessionList({
                     <SessionItem
                       session={item.session}
                       isActive={item.session.id === activeSessionId}
+                      isPinned={false}
+                      activeAgentId={activeAgentId}
                       onSelect={() => onSelectSession(item.session.id)}
                       onRename={() => handleContextMenuRename(item.session)}
                       onDelete={() => setDeletingId(item.session.id)}
+                      onTogglePin={() => togglePin(item.session.id)}
                     />
                   )}
                 </div>
@@ -288,26 +411,50 @@ export function SessionList({
 function SessionItem({
   session,
   isActive,
+  isPinned = false,
+  draggable = false,
+  activeAgentId,
   onSelect,
   onRename,
-  onDelete
+  onDelete,
+  onTogglePin,
+  dragHandleRef,
+  dragListeners
 }: {
   session: SessionSummary
   isActive: boolean
+  isPinned?: boolean
+  /** 是否启用拖拽（置顶项启用） */
+  draggable?: boolean
+  /** 当前活跃 Agent ID（用于会话项无 agentId 时回退显示） */
+  activeAgentId?: string
   onSelect: () => void
   onRename: () => void
   onDelete: () => void
+  onTogglePin?: () => void
+  /** 拖拽手柄 ref（由 useSortable 提供） */
+  dragHandleRef?: React.Ref<HTMLButtonElement>
+  /** 拖拽监听器（由 useSortable 提供） */
+  dragListeners?: React.HTMLAttributes<HTMLElement>
 }): ReactElement {
+  // 会话关联的 agent（优先用会话自身的 agentId，回退到当前活跃 agent）
+  const sessionAgentId = session.agentId ?? activeAgentId ?? 'default'
+  const builtinPreset = BUILTIN_PRESETS[sessionAgentId]
+  const agentIcon = builtinPreset?.icon
+  const agentName = builtinPreset?.name ?? sessionAgentId
+
   return (
     <DropdownMenu.Root>
       <div
         className={cn(
-          'group relative flex items-center gap-2.5 h-9 rounded-md px-2.5 text-left transition-colors cursor-pointer',
+          'group relative flex items-center gap-2.5 h-9 rounded-xl px-2.5 text-left transition-[background-color,color,box-shadow,transform] cursor-pointer active:scale-[0.98]',
           isActive
-            ? 'bg-[#EEF0FF] dark:bg-purple-950/20'
+            ? 'bg-[var(--color-active-bg)] shadow-[inset_3px_0_0_var(--color-primary)]'
             : 'hover:bg-surface-3 dark:hover:bg-surface-2'
         )}
         onClick={onSelect}
+        onDoubleClick={onRename}
+        title="单击切换 · 双击重命名"
         role="button"
         tabIndex={0}
         onKeyDown={(e) => {
@@ -317,31 +464,61 @@ function SessionItem({
           }
         }}
       >
-        {/* 左侧指示器：统一圆点，选中为紫色，未选中为灰色 */}
+        {/* 左侧 Agent 身份标识（AionUi 风格：22×22px 图标容器） */}
         <span
-          className={cn(
-            'size-1.5 shrink-0 rounded-full',
-            isActive ? 'bg-primary' : 'bg-hint'
-          )}
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-text-secondary shadow-[var(--shadow-border)]"
           aria-hidden="true"
-        />
+          title={agentName}
+        >
+          <AgentLogoIcon
+            agentId={sessionAgentId}
+            agentName={agentName}
+            icon={agentIcon}
+            size="sm"
+            className="!size-4 !rounded-sm"
+          />
+        </span>
 
         {/* 标题 */}
         <div className="flex-1 min-w-0 flex flex-col justify-center">
-          <span className={cn('block text-sm truncate', isActive ? 'font-medium text-text' : 'text-text-secondary')}>
+          <span
+            className={cn(
+              'block text-sm truncate',
+              isActive ? 'font-medium text-text' : 'text-text-secondary'
+            )}
+          >
             {session.title}
           </span>
         </div>
 
-        {/* hover 时显示的操作按钮 */}
+        {/* 置顶标识 */}
+        {isPinned && <Pin className="size-3 shrink-0 text-subtle rotate-45" aria-label="已置顶" />}
+
+        {/* 拖拽手柄（仅置顶项显示，hover 时显现） */}
+        {draggable && (
+          <button
+            ref={dragHandleRef}
+            type="button"
+            className="size-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-surface-2 active:scale-[0.96] transition-[opacity,background-color,transform] text-subtle cursor-grab active:cursor-grabbing"
+            aria-label="拖拽排序"
+            onClick={(e) => e.stopPropagation()}
+            tabIndex={-1}
+            {...(dragListeners ?? {})}
+          >
+            <GripVertical className="size-3.5" />
+          </button>
+        )}
+
+        {/* hover 时显示的操作按钮（AionUi 风格：MoreHorizontal 三点图标） */}
         <DropdownMenu.Trigger asChild>
           <button
             type="button"
-            className="size-8 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-surface-2 active:scale-[0.96] transition-[opacity,background-color,transform] text-subtle"
+            className="size-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-surface-3 dark:hover:bg-surface-2 active:scale-[0.96] transition-[opacity,background-color,transform] text-subtle hover:text-text"
             aria-label="会话操作"
             onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
           >
-            <span className="text-xs leading-none">...</span>
+            <MoreHorizontal className="size-4" />
           </button>
         </DropdownMenu.Trigger>
       </div>
@@ -359,6 +536,24 @@ function SessionItem({
             <Pencil className="size-3.5" />
             重命名
           </DropdownMenu.Item>
+          {onTogglePin && (
+            <DropdownMenu.Item
+              className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
+              onSelect={onTogglePin}
+            >
+              {isPinned ? (
+                <>
+                  <PinOff className="size-3.5" />
+                  取消置顶
+                </>
+              ) : (
+                <>
+                  <Pin className="size-3.5" />
+                  置顶
+                </>
+              )}
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Separator className="my-1 h-px bg-border" />
           <DropdownMenu.Item
             className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm outline-none select-none hover:bg-destructive/10 hover:text-destructive data-disabled:pointer-events-none data-disabled:opacity-50"
@@ -370,5 +565,58 @@ function SessionItem({
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  )
+}
+
+/** 可拖拽排序的置顶会话项 */
+function SortableSessionItem({
+  session,
+  isActive,
+  activeAgentId,
+  onSelect,
+  onRename,
+  onDelete,
+  onTogglePin
+}: {
+  session: SessionSummary
+  isActive: boolean
+  activeAgentId?: string
+  onSelect: () => void
+  onRename: () => void
+  onDelete: () => void
+  onTogglePin: () => void
+}): ReactElement {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: session.id })
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1
+  }
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      <SessionItem
+        session={session}
+        isActive={isActive}
+        isPinned
+        draggable
+        activeAgentId={activeAgentId}
+        onSelect={onSelect}
+        onRename={onRename}
+        onDelete={onDelete}
+        onTogglePin={onTogglePin}
+        dragHandleRef={setActivatorNodeRef}
+        dragListeners={listeners}
+      />
+    </div>
   )
 }

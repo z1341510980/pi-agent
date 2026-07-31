@@ -101,7 +101,7 @@ function GroupNodeImpl({ data, selected }: NodeProps<GroupNodeType>): ReactEleme
       >
         <Icon className={cn('size-3.5 shrink-0', style.text)} />
         <span className={cn('text-xs font-medium', style.text)}>{style.label}集合</span>
-        <span className="ml-auto tabular-nums rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        <span className="ml-auto tabular-nums rounded bg-muted px-1.5 py-0.5 text-nano text-muted-foreground">
           {entities.length}
         </span>
         {expanded ? (
@@ -131,12 +131,12 @@ function GroupNodeImpl({ data, selected }: NodeProps<GroupNodeType>): ReactEleme
             </div>
           ))}
           {overflow > 0 && (
-            <div className="text-[10px] text-subtle">
+            <div className="text-nano text-subtle">
               +{overflow} 更多
             </div>
           )}
           {entities.length === 0 && (
-            <div className="text-[10px] text-subtle">暂无实体</div>
+            <div className="text-nano text-subtle">暂无实体</div>
           )}
         </div>
       )}

@@ -26,6 +26,8 @@ import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelStore } from './novel-store.js'
 import type { NovelEngine } from './novel-engine.js'
+import type { NovelMemoryStore } from './novel-memory-store.js'
+import { buildMemoryLedgerHandoff } from './memory-ledger-handoff.js'
 import { selectAdmissibleNewForeshadows } from './foreshadow-policy.js'
 import type {
   NovelCharacter,
@@ -290,10 +292,14 @@ export interface MemoryApplyStats {
 }
 
 export interface MemoryGenerationResult {
+  /** 调用是否真正完成；失败不能再伪装成空变更成功 */
+  status: 'success' | 'error'
   /** LLM 生成的本章状态变更简述 */
   summary: string
   /** 应用统计 */
   stats: MemoryApplyStats
+  /** status=error 时的原始失败原因 */
+  error?: string
   /** 写 AgentLog 用的真实 LLM 输入上下文 */
   logContext?: {
     systemPrompt: string
@@ -328,6 +334,11 @@ export class NovelMemoryGenerator {
     private context: PluginContext,
     private store: NovelStore,
     private engine: NovelEngine,
+    /**
+     * 账本读取。可选是为了不破坏既有测试的构造调用；
+     * 缺失时 Memory 退回「只看当前值」的旧行为（见 buildLedgerHandoff 的注释）。
+     */
+    private memoryStore?: Pick<NovelMemoryStore, 'getChapterStoryContext'>,
   ) {}
 
   /**
@@ -419,8 +430,10 @@ export class NovelMemoryGenerator {
       )
       onProgress?.({ phase: 'fallback', message: '记忆 Agent 调用失败，跳过状态更新' })
       return {
+        status: 'error',
         summary: '记忆提取失败，未应用状态变更',
         stats: this.emptyStats(),
+        error: err instanceof Error ? err.message : String(err),
         logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId },
       }
     } finally {
@@ -438,7 +451,7 @@ export class NovelMemoryGenerator {
       data: { stats },
     })
 
-    return { summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId } }
+    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId } }
   }
 
   /**
@@ -474,7 +487,7 @@ export class NovelMemoryGenerator {
       .sort((a, b) => a.chapterNumber - b.chapterNumber)
 
     if (recentChapters.length === 0) {
-      return { summary: '全量校准跳过：无可用章节正文', stats: this.emptyStats() }
+      return { status: 'success', summary: '全量校准跳过：无可用章节正文', stats: this.emptyStats() }
     }
 
     // 构建校准专用 userPrompt
@@ -550,7 +563,12 @@ export class NovelMemoryGenerator {
         '全量校准 LLM 调用失败',
       )
       onProgress?.({ phase: 'fallback', message: '全量校准失败，跳过' })
-      return { summary: '全量校准失败', stats: this.emptyStats() }
+      return {
+        status: 'error',
+        summary: '全量校准失败',
+        stats: this.emptyStats(),
+        error: err instanceof Error ? err.message : String(err),
+      }
     } finally {
       session.dispose()
     }
@@ -566,7 +584,7 @@ export class NovelMemoryGenerator {
       data: { stats, calibration: true },
     })
 
-    return { summary, stats, logContext: { systemPrompt, userMessage: userPrompt } }
+    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: userPrompt } }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -599,6 +617,13 @@ export class NovelMemoryGenerator {
     parts.push('\n## 章节正文\n')
     parts.push(chapterContent)
 
+    // 账本承接：让 Memory 做「差分」而不是「重新判断」。
+    //
+    // 位置在正文之后、当前实体状态之前：先读正文形成印象，再对照账本找变化。
+    // 放在正文之前会让它带着既有状态去读，容易把「上文已有的状态」误报成本章变更。
+    const ledgerHandoff = this.buildLedgerHandoff(projectId, chapterNumber, arrangedEntities)
+    if (ledgerHandoff) parts.push(ledgerHandoff)
+
     // 当前实体状态默认只注入本章相关实体，降低 Memory 首轮 prompt 体积。
     // 正文中自然提到但未编排的实体，会通过名称匹配自动补入；周期性的
     // runFullCalibration 仍负责全量查漏补缺。
@@ -625,6 +650,90 @@ export class NovelMemoryGenerator {
     parts.push('⚠️ 必须返回合法的 JSON 对象，不要返回自然语言总结。JSON 格式见系统提示词。')
 
     return parts.join('\n')
+  }
+
+  /**
+   * 构建账本承接段。
+   *
+   * Memory 此前只拿到实体的**当前值**，看不到这个值是第几章、因为什么变成这样的，
+   * 于是每章都在从零重新判断「这个角色现在算什么状态」—— 这正是它
+   * 20.2k input 只换回 1.8k output 的由来。补上章前状态与本章计划变更后，
+   * 它的任务变成「确认计划中的变化发生了没有、还多发生了什么」，
+   * 输出可直接对应账本的变化记录。
+   *
+   * memoryStore 未注入时返回空串，退回旧行为（不破坏既有构造调用）。
+   * 读账本失败同样静默降级：这段是增强项，不该让整个 Memory 阶段失败。
+   */
+  private buildLedgerHandoff(
+    projectId: string,
+    chapterNumber: number,
+    arrangedEntities?: ArrangedEntity,
+  ): string {
+    if (!this.memoryStore?.getChapterStoryContext) return ''
+    try {
+      const context = this.memoryStore.getChapterStoryContext(projectId, chapterNumber)
+      const entityIds = new Set<string>([
+        ...(arrangedEntities?.characterIds ?? []),
+        ...(arrangedEntities?.conflictIds ?? []),
+        ...(arrangedEntities?.foreshadowIds ?? []),
+        ...(arrangedEntities?.clueIds ?? []),
+        ...(arrangedEntities?.factionIds ?? []),
+        ...(arrangedEntities?.locationIds ?? []),
+        ...(arrangedEntities?.itemIds ?? []),
+      ])
+      // 显示名必须由这里提供：plannedChanges 是裸 NovelChangeRecord，没有 name 字段，
+      // 缺名字会退化成「（未命名实体）」，那段承接对 LLM 就失去意义。
+      const names = this.buildLedgerNameMap(projectId, context)
+      return buildMemoryLedgerHandoff(context, { scope: { entityIds }, names })
+    } catch (err) {
+      this.context.logger.warn(
+        { projectId, chapterNumber, err },
+        'Memory 账本承接构建失败，退回仅当前状态模式',
+      )
+      return ''
+    }
+  }
+
+  /** 收集账本涉及实体的显示名（避免在提示词里暴露 UUID） */
+  private buildLedgerNameMap(
+    projectId: string,
+    context: { stateBeforeChapter: Array<{ subjectId: string; targetId: string | null }>; plannedChanges: Array<{ subjectId: string; targetId: string | null }> },
+  ): Map<string, string> {
+    const ids = new Set<string>()
+    for (const s of context.stateBeforeChapter) {
+      ids.add(s.subjectId)
+      if (s.targetId) ids.add(s.targetId)
+    }
+    for (const c of context.plannedChanges) {
+      ids.add(c.subjectId)
+      if (c.targetId) ids.add(c.targetId)
+    }
+    const names = new Map<string, string>()
+    if (ids.size === 0) return names
+
+    // 按实体类型逐表查名：character/faction/location/item 用 name，
+    // conflict/foreshadow/clue 用 description。
+    const register = (id: string, value: string | undefined): boolean => {
+      if (!value) return false
+      names.set(id, value.length > 40 ? `${value.slice(0, 40)}…` : value)
+      return true
+    }
+    const characters = new Map(this.store.listCharacters(projectId).map((c) => [c.id, c.name]))
+    const conflicts = new Map(this.store.listConflicts(projectId).map((c) => [c.id, c.description]))
+    const foreshadows = new Map(this.store.listForeshadowing(projectId).map((f) => [f.id, f.description]))
+    const clues = new Map(this.store.listClues(projectId).map((c) => [c.id, c.description]))
+    const factions = new Map(this.store.listFactions(projectId).map((f) => [f.id, f.name]))
+    const items = new Map(this.store.listItems(projectId).map((i) => [i.id, i.name]))
+
+    for (const id of ids) {
+      register(id, characters.get(id))
+        || register(id, conflicts.get(id))
+        || register(id, foreshadows.get(id))
+        || register(id, clues.get(id))
+        || register(id, factions.get(id))
+        || register(id, items.get(id))
+    }
+    return names
   }
 
   /** 获取当前实体状态的精简描述（仅含 name + 动态字段，避免 prompt 过大） */

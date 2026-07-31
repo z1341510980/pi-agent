@@ -185,12 +185,22 @@ ${memberList}
 - **不新增信息**：prompt 只能引用当前场景和群聊中已经出现的事实，不能把作者真相或其他角色秘密塞给被点名角色
 - **不要越权**：你不写正文，不替角色发言，只协调谁该说话
 
+## 一次点名多个角色（仅演出阶段）
+同一场景里，若多个角色**掌握的信息完全相同**（没有一方知道另一方不知道的事），
+可以在 \`agentIds\` 里一次点名 2-4 人，让他们连续对戏。这能显著减少调用开销。
+
+- 有信息差的角色**不要**放进同一个 \`agentIds\`：那会把秘密泄露给不该知道的角色
+- 不确定是否有信息差时，宁可分开点名
+- \`agentIds\` 的顺序就是出场顺序；\`agentId\` 填首个
+- 单人发言时不要给 \`agentIds\`
+
 ## 输出格式
 输出 JSON，不要其他内容：
 \`\`\`json
 {
   "type": "invite" | "pause" | "converge" | "next_scene" | "observe",
   "agentId": "成员ID（invite/converge 时必填）",
+  "agentIds": ["成员ID1", "成员ID2"]（invite 且需多角色同场对戏时可选）,
   "prompt": "给该成员的具体任务（invite 时必填，要具体）",
   "scope": "scene|chapter（converge 时必填）",
   "question": "问用户的问题（pause 时必填）",
@@ -276,7 +286,10 @@ ${memberList}
     signal?: AbortSignal,
   ): ModeratorDecision {
     if (decision.type === 'invite') {
-      const selected = members.find(member => member.id === decision.agentId)
+      // 用局部常量持有窄化后的 invite 决策：下方对 agentIds 的修正会产生新对象，
+      // 直接重新赋值 `decision` 会让 TS 丢掉这个分支的类型窄化。
+      const invite = decision
+      const selected = members.find(member => member.id === invite.agentId)
       if (state.phase === 'planning') {
         const director = members.find(member =>
           member.type === 'role' && (member.id === 'novel-director' || member.id.includes('director')),
@@ -298,6 +311,18 @@ ${memberList}
       if (state.phase === 'free_chat' && !selected) {
         return this.fallbackDecide(members, state)
       }
+      // 多角色点名：剔除不存在或非角色的 id。
+      // 规划/自由聊天阶段不允许多角色（那两个阶段本就只该有一个成员发言）。
+      if (invite.agentIds) {
+        if (state.phase !== 'acting') {
+          return { ...invite, agentIds: undefined }
+        }
+        const valid = invite.agentIds.filter((id) =>
+          members.some((m) => m.id === id && m.type === 'character'),
+        )
+        return { ...invite, agentIds: valid.length > 1 ? valid : undefined }
+      }
+      return invite
     }
 
     if (decision.type === 'converge') {
@@ -326,6 +351,18 @@ ${memberList}
         }
         if (typeof parsed.prompt !== 'string' || !parsed.prompt) {
           throw new Error('Moderator invite 决策缺少 prompt')
+        }
+        // 多角色点名（可选）：非法值直接丢弃而不抛错 —— 退回单角色仍是正确行为，
+        // 为一个可选的优化字段触发重试/降级不值得。
+        if (parsed.agentIds !== undefined) {
+          if (Array.isArray(parsed.agentIds)) {
+            const ids = parsed.agentIds.filter((id: unknown): id is string => typeof id === 'string' && !!id)
+            // 去重并保证 agentId 在首位：引擎按此顺序决定演出顺序
+            const unique = Array.from(new Set([parsed.agentId, ...ids]))
+            parsed.agentIds = unique.length > 1 ? unique : undefined
+          } else {
+            parsed.agentIds = undefined
+          }
         }
         break
       case 'pause':

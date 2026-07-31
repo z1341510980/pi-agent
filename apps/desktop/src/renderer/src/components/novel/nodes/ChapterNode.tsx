@@ -60,7 +60,7 @@ function ChapterNodeImpl({ data, selected }: NodeProps<ChapterNodeType>): ReactE
           <span className="tabular-nums text-muted-foreground">{entity.wordCount} 字</span>
         </div>
         {entity.volume > 0 && (
-          <div className="text-[10px] text-hint">卷 {entity.volume}</div>
+          <div className="text-nano text-hint">卷 {entity.volume}</div>
         )}
       </div>
       <Handle type="source" position={Position.Bottom} className="!bg-emerald-500" />

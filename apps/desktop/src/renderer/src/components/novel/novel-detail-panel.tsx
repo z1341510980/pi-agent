@@ -33,7 +33,18 @@ import { ItemForm } from './detail-forms/item-form'
 
 // ── 主组件 ──
 
-export function NovelDetailPanel(): ReactElement {
+export interface NovelDetailPanelProps {
+  /**
+   * 创作流程进行中。
+   *
+   * 用于提示：本章的上下文在流程开始时就已构建并跨 Agent 缓存复用，
+   * 此时在这里改实体不会影响正在生成的这一章。
+   * 详情面板本身仍可正常查看与编辑 —— 写作者最需要核对设定的时刻恰是 Agent 写作的时刻。
+   */
+  creationActive?: boolean
+}
+
+export function NovelDetailPanel({ creationActive = false }: NovelDetailPanelProps = {}): ReactElement {
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
   const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
   const clearSelection = useNovelUiStore((s) => s.clearSelection)
@@ -87,7 +98,7 @@ export function NovelDetailPanel(): ReactElement {
       <div className="flex h-full flex-col items-center justify-center bg-surface-1 border-l border-border p-6 text-center">
         <Info className="size-6 text-muted-foreground mb-2" />
         <p className="text-sm text-muted-foreground">
-          在画布上选择一个节点以查看详情
+          选择一个实体以查看详情
         </p>
       </div>
     )
@@ -109,6 +120,13 @@ export function NovelDetailPanel(): ReactElement {
           <X className="size-3.5" />
         </Button>
       </div>
+
+      {/* 创作进行中的时效提示：改动不影响当前正在生成的章节 */}
+      {creationActive && (
+        <div className="shrink-0 px-3 py-2 border-b border-border bg-surface-2 text-micro leading-relaxed text-muted-foreground">
+          创作进行中。本章上下文已在流程开始时构建，此处的修改要到下一次创作才会生效。
+        </div>
+      )}
 
       {/* 表单 */}
       <div className="flex-1 overflow-y-auto min-h-0 p-3">

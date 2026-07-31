@@ -1,4 +1,4 @@
-import { Children, useCallback, useMemo, useState, type ReactElement } from 'react'
+import { Children, useCallback, type ReactElement } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import {
@@ -44,7 +44,6 @@ import {
   type NovelConflict,
   type NovelClue,
   type NovelForeshadow,
-  type NovelCharacterHistory,
   type NovelFaction,
   type NovelLocation,
   type NovelWorldElement,
@@ -642,7 +641,7 @@ export function CollapsibleGroup({
           />
           <Icon className={cn('size-3.5 shrink-0', accent)} />
           <span className="text-xs font-medium text-text truncate">{label}</span>
-          <Badge variant="secondary" className="ml-auto h-4 px-1 text-[10px] tabular-nums">
+          <Badge variant="secondary" className="ml-auto h-4 px-1 text-nano tabular-nums">
             {count}
           </Badge>
         </button>
@@ -655,7 +654,7 @@ export function CollapsibleGroup({
               key="add-button"
               type="button"
               onClick={onAdd}
-              className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded-lg text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96]"
+              className="flex items-center gap-1.5 w-full px-1.5 py-1 rounded-lg text-micro text-muted-foreground hover:bg-muted hover:text-foreground transition-[color,background-color,transform] duration-200 ease-out active:scale-[0.96]"
             >
               <Plus className="size-3" />
               <span>{addLabel}</span>
@@ -721,7 +720,7 @@ export function EntityItem({
       <div className="min-w-0 flex-1">
         <div className={cn('text-xs truncate', selected ? 'text-primary font-medium' : 'text-text')}>{label}</div>
         {sublabel && (
-          <div className="text-[10px] text-muted-foreground truncate">{sublabel}</div>
+          <div className="text-nano text-muted-foreground truncate">{sublabel}</div>
         )}
       </div>
       <button
@@ -735,206 +734,6 @@ export function EntityItem({
       >
         <Trash2 className="size-3" />
       </button>
-    </div>
-  )
-}
-
-// ── 章节项（可继续展开显示该章关联实体） ──
-
-export interface ChapterItemProps {
-  chapter: NovelChapter
-  characters: NovelCharacter[]
-  conflicts: NovelConflict[]
-  foreshadows: NovelForeshadow[]
-  characterHistory: NovelCharacterHistory[]
-  selected?: boolean
-  onSelectEntity: (id: string, type: NovelNodeType) => void
-  onSelectChapter: (chapter: NovelChapter) => void
-  onDelete: () => void
-}
-
-export function ChapterItem({
-  chapter,
-  characters,
-  conflicts,
-  foreshadows,
-  characterHistory,
-  selected = false,
-  onSelectEntity,
-  onSelectChapter,
-  onDelete,
-}: ChapterItemProps): ReactElement {
-  const [expanded, setExpanded] = useState(false)
-  const title = chapter.title || `第 ${chapter.chapterNumber} 章`
-
-  // 该章关联的伏笔（按 firstChapter / recoverByChapter 匹配章节号）
-  const chapterForeshadows = useMemo(
-    () =>
-      foreshadows.filter(
-        (f) =>
-          (f.firstChapter != null && f.firstChapter === chapter.chapterNumber) ||
-          (f.recoverByChapter != null && f.recoverByChapter === chapter.chapterNumber),
-      ),
-    [foreshadows, chapter.chapterNumber],
-  )
-
-  // 该章出场角色：基于角色变更历史（chapterNumber 匹配）筛选；
-  // 若无历史记录则回退展示全部角色。
-  const hasHistory = characterHistory.length > 0
-  const chapterCharacters = useMemo(() => {
-    if (!hasHistory) return characters
-    const charIds = new Set(
-      characterHistory
-        .filter((h) => h.chapterNumber === chapter.chapterNumber)
-        .map((h) => h.characterId),
-    )
-    return characters.filter((c) => charIds.has(c.id))
-  }, [characters, characterHistory, chapter.chapterNumber, hasHistory])
-
-  // 该章关联冲突：按参与者与本章出场角色交集筛选；
-  // 若无历史记录则回退展示全部冲突。
-  const chapterConflicts = useMemo(() => {
-    if (!hasHistory) return conflicts
-    const charIds = new Set(chapterCharacters.map((c) => c.id))
-    return conflicts.filter((c) => {
-      try {
-        const p = JSON.parse(c.participants)
-        if (!Array.isArray(p)) return false
-        return p.some((id: unknown) => typeof id === 'string' && charIds.has(id))
-      } catch {
-        return false
-      }
-    })
-  }, [conflicts, chapterCharacters, hasHistory])
-
-  return (
-    <div>
-      <div
-        className={cn(
-          'group flex items-center gap-1.5 px-1.5 py-1 rounded text-left transition-colors cursor-pointer',
-          selected ? 'bg-primary/10' : 'hover:bg-muted',
-        )}
-      >
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            setExpanded((v) => !v)
-          }}
-          className="shrink-0 text-muted-foreground hover:text-foreground"
-          aria-label={expanded ? '收起' : '展开'}
-        >
-          <ChevronDown
-            className={cn(
-              'size-3.5 transition-transform duration-200 ease-out',
-              !expanded && '-rotate-90',
-            )}
-          />
-        </button>
-        <span className="size-1 rounded-full bg-emerald-500/60 shrink-0" aria-hidden="true" />
-        <div
-          className="min-w-0 flex-1 cursor-pointer"
-          onClick={() => onSelectChapter(chapter)}
-        >
-          <div className={cn('text-xs truncate', selected ? 'text-primary font-medium' : 'text-text')}>
-            <span className="text-muted-foreground tabular-nums">第 {chapter.chapterNumber} 章</span> · {title}
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-          title="删除"
-          className="opacity-0 group-hover:opacity-100 transition-[opacity,color,transform] active:scale-[0.96] text-muted-foreground hover:text-destructive shrink-0 p-1 -m-1"
-        >
-          <Trash2 className="size-3" />
-        </button>
-      </div>
-
-      {expanded && (
-        <div className="ml-3 pl-2 border-l border-border/60 mt-0.5 space-y-1">
-          {/* 出场角色 */}
-          <div>
-            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5 tabular-nums">
-              出场角色（{chapterCharacters.length}）
-            </div>
-            {chapterCharacters.length === 0 ? (
-              <div className="text-[10px] text-muted-foreground/70 px-1.5 py-0.5">
-                本章无出场角色
-              </div>
-            ) : (
-              <div className="space-y-0.5">
-                {chapterCharacters.map((c) => (
-                  <div
-                    key={c.id}
-                    onClick={() => onSelectEntity(c.id, 'character')}
-                    className="flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[11px] hover:bg-muted transition-colors cursor-pointer"
-                  >
-                    <Users className="size-2.5 text-blue-500/70 shrink-0" />
-                    <span className="text-text truncate">{c.name}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* 章节关联伏笔 */}
-          <div>
-            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5 tabular-nums">
-              伏笔（{chapterForeshadows.length}）
-            </div>
-            {chapterForeshadows.length === 0 ? (
-              <div className="text-[10px] text-muted-foreground/70 px-1.5 py-0.5">
-                本章无关联伏笔
-              </div>
-            ) : (
-              <div className="space-y-0.5">
-                {chapterForeshadows.map((f) => (
-                  <div
-                    key={f.id}
-                    onClick={() => onSelectEntity(f.id, 'foreshadow')}
-                    className="flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[11px] hover:bg-muted transition-colors cursor-pointer"
-                  >
-                    <Lightbulb className="size-2.5 text-amber-500/70 shrink-0" />
-                    <span className="text-text truncate">
-                      {f.description.length > 18 ? `${f.description.slice(0, 18)}...` : f.description}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* 章节关联冲突 */}
-          <div>
-            <div className="text-[10px] text-muted-foreground px-1.5 py-0.5 tabular-nums">
-              冲突（{chapterConflicts.length}）
-            </div>
-            {chapterConflicts.length === 0 ? (
-              <div className="text-[10px] text-muted-foreground/70 px-1.5 py-0.5">
-                本章无关联冲突
-              </div>
-            ) : (
-              <div className="space-y-0.5">
-                {chapterConflicts.map((c) => (
-                  <div
-                    key={c.id}
-                    onClick={() => onSelectEntity(c.id, 'conflict')}
-                    className="flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[11px] hover:bg-muted transition-colors cursor-pointer"
-                  >
-                    <Swords className="size-2.5 text-rose-500/70 shrink-0" />
-                    <span className="text-text truncate">
-                      {c.description.length > 18 ? `${c.description.slice(0, 18)}...` : c.description}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

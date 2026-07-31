@@ -240,6 +240,29 @@ export interface AgentInfo {
   temperature?: number
 }
 
+// ── 会话消息分页 API 类型 ──
+
+/** 单条会话消息条目（与后端 SessionEntry 对齐，字段可选） */
+export interface SessionMessageEntry {
+  id?: string
+  role?: string
+  content?: unknown
+  stopReason?: string
+  toolCallId?: string
+  toolCalls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: string } }>
+  [key: string]: unknown
+}
+
+/** 分页消息响应 */
+export interface PaginatedMessages {
+  /** 倒序的消息条目（最新在前） */
+  messages: SessionMessageEntry[]
+  /** 下一页游标（行号）；null 表示已到顶部 */
+  nextCursor: number | null
+  /** 是否还有更早的消息 */
+  hasMore: boolean
+}
+
 /** 频道信息 */
 export interface ChannelInfo {
   name: string
@@ -367,4 +390,26 @@ export async function subscribeAgentToChannel(
   channel: string,
 ): Promise<{ agentId: string; channel: string; subscribed: boolean }> {
   return postApi(`/api/agents/${agentId}/subscribe`, { channel })
+}
+
+// ── 会话消息分页 API 方法 ──
+
+/**
+ * 按行号游标分页读取会话消息（最新在前）
+ *
+ * @param threadId 会话 ID
+ * @param options.before 上一页返回的 nextCursor；首次加载省略
+ * @param options.limit  单次返回上限，默认 30，最大 100
+ */
+export async function getSessionMessages(
+  threadId: string,
+  options?: { before?: number; limit?: number },
+): Promise<PaginatedMessages> {
+  const params = new URLSearchParams()
+  if (options?.before != null) params.set('before', String(options.before))
+  if (options?.limit != null) params.set('limit', String(options.limit))
+  const qs = params.toString()
+  return getApi<PaginatedMessages>(
+    `/api/sessions/${encodeURIComponent(threadId)}/messages${qs ? `?${qs}` : ''}`,
+  )
 }

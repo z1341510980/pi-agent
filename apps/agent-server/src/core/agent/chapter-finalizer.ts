@@ -58,6 +58,15 @@ export interface CreationOptions {
   emit: AgUiEventSink
   onCheckpoint: (checkpoint: import('../../plugins/novel-plugin/core/novel-agents.js').CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
   onProgress: (event: CreationFlowEvent) => void
+  /** 持久化创作流程中的可见消息；由路由层绑定 ChapterChatStore */
+  onConversationMessage?: (message: {
+    role: 'agent' | 'system'
+    fromId: string
+    fromName: string
+    content: string
+    phase: 'pre_creation' | 'checkpoint' | 'discussion' | 'review'
+    metadata?: Record<string, unknown>
+  }) => void
   signal?: AbortSignal
   /** 本章已编排实体约束（模式1手动编排 / 模式2 AI编排产出），注入 SEMI 层 */
   arrangedEntities?: ArrangedEntity
@@ -346,7 +355,10 @@ export class ChapterFinalizer {
         logUserMessage = result.logContext?.userMessage ?? logUserMessage
         logSessionId = result.logContext?.sessionId ?? ''
         resultSummary = result.summary
-        return result.summary
+        if (result.status === 'error') {
+          status = 'error'
+          errorMsg = result.error ?? result.summary
+        }
       } catch (err) {
         status = 'error'
         errorMsg = err instanceof Error ? err.message : String(err)
@@ -354,9 +366,7 @@ export class ChapterFinalizer {
           { projectId, chapterNumber, err },
           'Memory Generator 调用失败，回退到空结果',
         )
-        // 不再回退到工具循环（容易 300s 超时），直接返回空结果让流程继续
         resultSummary = '记忆提取失败，未应用状态变更'
-        return resultSummary
       } finally {
         const durationMs = Date.now() - startTime
         const usageForLog = this.readUsageFromLedgerWindow(startTime, Date.now(), logSessionId)
@@ -427,6 +437,60 @@ export class ChapterFinalizer {
           }
         }
       }
+
+      if (status === 'success') {
+        options.onConversationMessage?.({
+          role: 'agent',
+          fromId: 'novel-memory',
+          fromName: '记忆',
+          content: resultSummary,
+          phase: 'review',
+          metadata: { agentType: 'memory', workflowMessageType: 'memory' },
+        })
+        return resultSummary
+      }
+
+      const structuredError = errorMsg ?? '未知错误'
+      this.emitProgress(options, 'memory', 'phase_change', {
+        message: `结构化记忆提取失败：${structuredError}。正在切换工具模式重试...`,
+        detail: { kind: 'memory_retry', reason: structuredError },
+      })
+      if (this.runAgentFallback) {
+        try {
+          const fallbackResult = await this.runAgentFallback('memory', projectId, chapterNumber, {
+            task: `结构化记忆提取失败（${structuredError}）。请从第 ${chapterNumber} 章中提取状态变更，并调用记忆工具写入。`,
+            content: chapterContent,
+          }, options)
+          options.onConversationMessage?.({
+            role: 'agent',
+            fromId: 'novel-memory',
+            fromName: '记忆',
+            content: fallbackResult,
+            phase: 'review',
+            metadata: { agentType: 'memory', workflowMessageType: 'memory', fallback: true },
+          })
+          return fallbackResult
+        } catch (fallbackError) {
+          if (options.signal?.aborted) throw fallbackError
+          const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          resultSummary = `记忆提取失败：结构化模式 ${structuredError}；工具模式 ${fallbackMessage}`
+          this.context.logger.error(
+            { projectId, chapterNumber, structuredError, fallbackError },
+            'Memory Generator 与工具模式均失败',
+          )
+        }
+      } else {
+        resultSummary = `记忆提取失败：${structuredError}`
+      }
+      options.onConversationMessage?.({
+        role: 'system',
+        fromId: 'system',
+        fromName: '系统',
+        content: resultSummary,
+        phase: 'review',
+        metadata: { agentType: 'memory', workflowMessageType: 'memory', failed: true },
+      })
+      return resultSummary
     }
 
     // 回退：原 LLM 工具循环模式（仅当 memoryGenerator 未注入时）

@@ -134,7 +134,7 @@ export function CreationProgressOverlay({
           </div>
 
           {/* 底部：百分比 + 已用时间 */}
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums">
+          <div className="flex items-center justify-between text-nano text-muted-foreground tabular-nums">
             <span>{progress}%</span>
             {isRunning && (
               <span className="flex items-center gap-1">
@@ -149,15 +149,15 @@ export function CreationProgressOverlay({
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="rounded-md bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-600 dark:text-amber-300"
+              className="rounded-md bg-amber-500/10 px-2 py-1.5 text-nano text-amber-600 dark:text-amber-300"
             >
-              请在章节实时预览面板中确认或修改
+              请在右侧对话面板中确认或修改
             </motion.div>
           )}
 
           {/* 错误信息 */}
           {phase === 'error' && error && (
-            <div className="rounded-md bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive line-clamp-2">
+            <div className="rounded-md bg-destructive/10 px-2 py-1.5 text-nano text-destructive line-clamp-2">
               {error}
             </div>
           )}

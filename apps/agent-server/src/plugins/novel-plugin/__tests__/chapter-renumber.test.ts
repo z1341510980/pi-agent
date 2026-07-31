@@ -254,7 +254,9 @@ describe('NovelStore.deleteChapter 集成 - 章节重排', () => {
       { chapter: 4, type: 'payoff' },
     ])
     expect(foreshadow.firstChapter).toBe(1)
-    expect(foreshadow.recoverByChapter).toBe(4)
+    // recoverByChapter 是"计划回收章"，不由 payoff beat 派生；本例从未设置计划，故为空。
+    // 真实回收点由 beats 里的 payoff@4 表示（上面已断言）。
+    expect(foreshadow.recoverByChapter).toBeNull()
   })
 
   it('删除伏笔埋设章时清空整条孤立事件链', () => {

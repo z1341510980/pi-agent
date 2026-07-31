@@ -7,6 +7,7 @@ import {
   repairOrphanToolResultEntriesInFile,
   type SessionHealthOptions,
 } from '../core/session/session-health.js'
+import { readSessionMessages } from '../core/session/session-reader.js'
 
 export const sessionRoute: FastifyPluginAsync = async (app) => {
   /**
@@ -33,6 +34,46 @@ export const sessionRoute: FastifyPluginAsync = async (app) => {
   app.get('/api/sessions/stats', async (req, reply) => {
     const stats = app.piSessionStore.getStats()
     return success(stats, req.traceId)
+  })
+
+  /**
+   * GET /api/sessions/:threadId/messages
+   * 按行号游标分页读取会话消息（最新在前）
+   *
+   * Query:
+   * - before: 行号游标，返回 lineIndex < before 的消息；缺省时从最新开始
+   * - limit:  单次返回上限，默认 30，最大 100
+   */
+  app.get<{
+    Params: { threadId: string }
+    Querystring: { before?: string; limit?: string }
+  }>('/api/sessions/:threadId/messages', async (req, reply) => {
+    const { threadId } = req.params
+    const { before, limit } = req.query ?? {}
+
+    const dataDir =
+      process.env.PI_DATA_DIR ??
+      `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
+    const sessionPath = join(dataDir, 'agent', 'sessions', `${threadId}.jsonl`)
+
+    const beforeNum = before != null && before !== '' ? Number(before) : undefined
+    if (beforeNum != null && (!Number.isFinite(beforeNum) || beforeNum < 0)) {
+      throw new AppError(
+        ErrorCode.VALIDATION_ERROR,
+        '参数 before 必须是非负数字',
+      )
+    }
+
+    const limitNum = limit != null && limit !== '' ? Number(limit) : undefined
+    if (limitNum != null && (!Number.isFinite(limitNum) || limitNum < 1)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, '参数 limit 必须是正整数')
+    }
+
+    const data = await readSessionMessages(sessionPath, {
+      before: beforeNum,
+      limit: limitNum,
+    })
+    return success(data, req.traceId)
   })
 
   /**

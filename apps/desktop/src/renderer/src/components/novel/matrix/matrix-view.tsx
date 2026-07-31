@@ -31,6 +31,7 @@ import type {
 import { listHooks, listCharacterArcs } from '@/api/novel-client'
 import { cn } from '@/lib/utils'
 import { computeVisibleChapters, getChapterNavigationTarget } from '@/lib/matrix-viewport'
+import { runtimePerformance } from '@/config/performance'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
@@ -191,7 +192,7 @@ export function MatrixView({
       sidebarWidth,
       cellWidth,
       maxChapter,
-      overscan: 3,
+      overscan: runtimePerformance.matrix.overscanColumns,
     })
     setVisibleRange((prev) => (prev.start === range.start && prev.end === range.end ? prev : range))
   }, [cellWidth, maxChapter, sidebarWidth])
@@ -251,7 +252,7 @@ export function MatrixView({
       rows,
       scrollTop: Math.max(0, el.scrollTop - rowsTop),
       viewportHeight: el.clientHeight,
-      overscan: 6,
+      overscan: runtimePerformance.matrix.overscanRows,
     })
     setVWindow((prev) => (prev.start === w.start && prev.end === w.end ? prev : w))
   }, [offsets, rows, rowsTop])
@@ -491,7 +492,7 @@ export function MatrixView({
           sidebarWidth,
           cellWidth,
           maxChapter,
-          overscan: 3,
+          overscan: runtimePerformance.matrix.overscanColumns,
         })
         setVisibleRange((prev) => (prev.start === range.start && prev.end === range.end ? prev : range))
         recomputeWindow()
@@ -520,7 +521,7 @@ export function MatrixView({
               aria-hidden="true"
             />
             <div
-              className="absolute z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-blue-600 px-2 py-1 text-[10px] font-medium text-white shadow-lg whitespace-nowrap"
+              className="absolute z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-blue-600 px-2 py-1 text-nano font-medium text-white shadow-lg whitespace-nowrap"
               style={{ top: RULER_H + 6, left: sidebarWidth + (dragOverChapter - 0.5) * cellWidth }}
               aria-hidden="true"
             >
@@ -536,7 +537,7 @@ export function MatrixView({
               aria-hidden="true"
             />
             <div
-              className="absolute z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-sky-600 px-2 py-1 text-[10px] font-medium text-white shadow-lg whitespace-nowrap tabular-nums"
+              className="absolute z-[9] pointer-events-none -translate-x-1/2 rounded-md bg-sky-600 px-2 py-1 text-nano font-medium text-white shadow-lg whitespace-nowrap tabular-nums"
               style={{ top: RULER_H + 6, left: sidebarWidth + ((dragOverRange.start + dragOverRange.end) / 2 - 0.5) * cellWidth }}
               aria-hidden="true"
             >
@@ -583,13 +584,13 @@ export function MatrixView({
               </button>
             ) : (
               <>
-                <span className="text-[10px] text-hint tracking-wider whitespace-nowrap truncate">实体 ＼ 章节</span>
+                <span className="text-nano text-hint tracking-wider whitespace-nowrap truncate">实体 ＼ 章节</span>
                 <div className="flex items-center gap-0.5 shrink-0">
                   <button
                     type="button"
                     onClick={handleLocatePlayhead}
                     className={cn(
-                      'inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-mono text-[10px] tabular-nums transition-colors active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50',
+                      'inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-mono text-nano tabular-nums transition-colors active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50',
                       isPlayheadVisible
                         ? 'text-muted-foreground hover:bg-muted hover:text-text'
                         : 'bg-amber-500/12 text-amber-500 hover:bg-amber-500/18',
@@ -671,7 +672,7 @@ export function MatrixView({
                   )}
                   <span
                     className={cn(
-                      'font-mono tracking-wide text-[11px] leading-none mb-1 tabular-nums',
+                      'font-mono tracking-wide text-micro leading-none mb-1 tabular-nums',
                       isCurrent ? 'text-amber-500 font-bold' : major ? 'text-text font-semibold' : minor ? 'text-subtle' : 'text-hint',
                     )}
                   >
@@ -702,7 +703,6 @@ export function MatrixView({
             visibleChapterColumns={visibleChapterColumns}
             cellWidth={cellWidth}
             sidebarWidth={sidebarWidth}
-            playheadChapter={playheadChapter}
           />
         )}
 
@@ -734,7 +734,7 @@ export function MatrixView({
                     tracks={tracks}
                     cellWidth={cellWidth}
                     sidebarWidth={sidebarWidth}
-                    playheadChapter={playheadChapter}
+                    visibleRange={visibleRange}
                   />
                 )
               }
@@ -747,7 +747,6 @@ export function MatrixView({
                   maxChapter={maxChapter}
                   cellWidth={cellWidth}
                   sidebarWidth={sidebarWidth}
-                  playheadChapter={playheadChapter}
                   isSelected={selectedNodeId === entity.entityId}
                   isMatrixSelected={selectedMatrixEntityIds.includes(entity.entityId)}
                   isExpanded={expandedEntityIds.includes(entity.entityId)}

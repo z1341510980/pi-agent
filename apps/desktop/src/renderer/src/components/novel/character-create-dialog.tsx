@@ -309,7 +309,7 @@ export function CharacterCreateDialog({
                 className="min-h-[100px]"
                 disabled={generating}
               />
-              <div className="flex justify-end text-[10px] text-muted-foreground tabular-nums">
+              <div className="flex justify-end text-nano text-muted-foreground tabular-nums">
                 {coreStyle.length}/{MAX_CORE_STYLE}
               </div>
             </div>
@@ -496,7 +496,7 @@ export function CharacterCreateDialog({
                         <SelectItem key={o.value} value={o.value}>
                           <div className="flex flex-col">
                             <span>{o.label}</span>
-                            <span className="text-[10px] text-muted-foreground">{o.hint}</span>
+                            <span className="text-nano text-muted-foreground">{o.hint}</span>
                           </div>
                         </SelectItem>
                       ))}

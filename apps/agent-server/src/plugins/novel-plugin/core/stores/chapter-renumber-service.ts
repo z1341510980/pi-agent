@@ -91,26 +91,28 @@ export class ChapterRenumberService {
     }
 
     const foreshadows = this.db.prepare(
-      `SELECT id, beats, first_chapter, recover_by_chapter
+      `SELECT id, beats, first_chapter
        FROM novel_foreshadowing WHERE project_id = ?`,
     ).all(projectId) as Array<{
       id: string
       beats: string | null
       first_chapter: number | null
-      recover_by_chapter: number | null
     }>
     for (const row of foreshadows) {
       const parsed = row.beats ? JSON.parse(row.beats) : []
-      const beats = normalizeForeshadowBeats(parsed, row.first_chapter, row.recover_by_chapter)
+      const beats = normalizeForeshadowBeats(parsed, row.first_chapter)
       const firstChapter = beats.find((beat) => beat.type === 'plant')?.chapter ?? null
-      const recoverByChapter = beats.find((beat) => beat.type === 'payoff')?.chapter ?? null
       const lastChapter = beats.at(-1)?.chapter ?? null
+      // recover_by_chapter 是"计划回收章"，不由 beats 派生。
+      // 它已经在上面的 scalar 字段循环里按重编号规则平移过（chapter-renumber.ts 的
+      // { table: 'novel_foreshadowing', column: 'recover_by_chapter', kind: 'scalar' }），
+      // 这里不能再用 payoff beat 覆盖它，否则"计划"会被"事实"抹掉。
       this.db.prepare(`
         UPDATE novel_foreshadowing
-        SET beats = ?, first_chapter = ?, recover_by_chapter = ?, last_chapter = ?, status = ?
+        SET beats = ?, first_chapter = ?, last_chapter = ?, status = ?
         WHERE id = ?
       `).run(
-        JSON.stringify(beats), firstChapter, recoverByChapter, lastChapter,
+        JSON.stringify(beats), firstChapter, lastChapter,
         deriveForeshadowStatus(beats), row.id,
       )
     }

@@ -2,9 +2,10 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import type { BaseEvent } from '@repo/protocol/events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { parseSseStreamMock, fetchMock } = vi.hoisted(() => ({
+const { parseSseStreamMock, fetchMock, submitCheckpointDecisionMock } = vi.hoisted(() => ({
   parseSseStreamMock: vi.fn(),
   fetchMock: vi.fn(),
+  submitCheckpointDecisionMock: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/api/agui-client', () => ({
@@ -12,7 +13,7 @@ vi.mock('@/api/agui-client', () => ({
 }))
 
 vi.mock('@/api/novel-client', () => ({
-  submitCheckpointDecision: vi.fn(),
+  submitCheckpointDecision: submitCheckpointDecisionMock,
   persistChapterChat: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -77,5 +78,46 @@ describe('useNovelCreationFlow progress', () => {
     expect(result.current.progressMessage).toBe('导演 Agent 正在等待 LLM 响应...（已等待 20s）')
     expect(result.current.agentOutputs).toHaveLength(0)
     expect(result.current.events).toHaveLength(2)
+  })
+
+  it('提交决策后保留已处理的检查点和选择', async () => {
+    parseSseStreamMock.mockImplementationOnce(async (
+      _body: unknown,
+      onEvent: (event: BaseEvent) => void,
+    ) => {
+      onEvent({
+        type: 'CUSTOM',
+        name: 'novel:checkpoint',
+        value: {
+          type: 'post_write_guard',
+          phase: 'rewriting',
+          checkpointId: 'checkpoint-1',
+          createdAt: 123,
+          data: { reason: '正文过短', details: '实际 1200 字' },
+        },
+      } as unknown as BaseEvent)
+    })
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.startCreation('project-1', 1)
+    })
+    await act(async () => {
+      await result.current.submitCheckpoint('revise')
+    })
+
+    expect(submitCheckpointDecisionMock).toHaveBeenCalledWith(
+      'project-1', 'checkpoint-1', 'revise', [],
+    )
+    expect(result.current.currentCheckpoint).toBeNull()
+    expect(result.current.checkpointHistory).toEqual([
+      expect.objectContaining({
+        checkpointId: 'checkpoint-1',
+        createdAt: 123,
+        decision: 'revise',
+        resolvedAt: expect.any(Number),
+      }),
+    ])
   })
 })

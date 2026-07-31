@@ -1,0 +1,316 @@
+/**
+ * 质量门统一仲裁（S5）。
+ *
+ * ## 问题
+ *
+ * 正文生成后有五套质量门，此前互不知晓、各自发号施令：
+ *
+ * | 门 | 性质 | 动作 | 位置 |
+ * | --- | --- | --- | --- |
+ * | 项目文风档案 | 用户声明的目标 | 注入 Writer identity | writing-style-prompt-factory |
+ * | 文风指纹 | 从前文自动量化的**观测值** | 注入 Writer/Reviewer | prompt-builder.formatStyleFingerprint |
+ * | PostWriteGuard | 确定性检测 | 整章重写 / advisory | novel-orchestrator.runPostWriteGuard |
+ * | prose-quality | 段落形态统计 | error → 强制 Reviser | prose-quality-evaluator |
+ * | cliche-scanner | 句式模式匹配 | 部分 → 自动 revise | cliche-scanner |
+ *
+ * 冲突时没有仲裁，只能由 LLM 自己猜哪条优先。实测出的真实冲突：
+ *
+ * 1. **字数**：创作指令说"宁可写得更短也不要用空转描写凑字数"，
+ *    Guard 却在 <75% 时整章重写 —— 同一件事一边鼓励一边惩罚。
+ * 2. **段落形态**：role-writer.md 禁止"连续三段以上单句成段"，
+ *    而 prose-quality 要到"连续 6 段"才报问题。prompt 比检查严一倍，
+ *    Writer 被多约束了一截，却没有任何一方校验这个更严的要求。
+ * 3. **点名 vs 反流水账**：Guard 要求矩阵角色姓名逐字出现否则整章重写，
+ *    prompt 同时要求"不能靠点名交差""叙事任务不是写作顺序"。
+ * 4. **档案 vs 指纹**：档案说对话占比 45%、情感温度 5/10，
+ *    指纹给出的观测值可能完全相反且带 ⚠️ 强制一致。
+ *
+ * ## 本模块做什么
+ *
+ * - 把五个门登记在一张表里，写清各自的性质与可采取的动作（GATE_REGISTRY）。
+ * - 定义唯一的动作优先级与仲裁函数（arbitrateQuality），替代散落的 early-return。
+ * - 把上面四条冲突登记为显式的仲裁规则（CONFLICT_RULES），并由单测守住阈值一致性
+ *   （QUALITY_POLICY_INVARIANTS），避免下次调阈值时又调出矛盾。
+ *
+ * 本模块只做仲裁，不做检测：检测仍在各自的模块里。
+ */
+
+/** 质量门可以采取的动作，按强度递增 */
+export const QUALITY_ACTIONS = ['none', 'reference', 'advisory', 'revise', 'rewrite'] as const
+export type QualityAction = typeof QUALITY_ACTIONS[number]
+
+/** 动作强度：仲裁时取最强者 */
+const ACTION_RANK: Record<QualityAction, number> = {
+  none: 0,
+  /** 仅作参考，不进硬约束（如样本量不足的文风指纹） */
+  reference: 1,
+  /** 交 Reviewer 结合语义判断 */
+  advisory: 2,
+  /** 交 Reviser 局部修订 */
+  revise: 3,
+  /** 整章重写 */
+  rewrite: 4,
+}
+
+export function strongerAction(a: QualityAction, b: QualityAction): QualityAction {
+  return ACTION_RANK[a] >= ACTION_RANK[b] ? a : b
+}
+
+/** 检测方式：决定这个门的判断有多可信 */
+export type GateKind =
+  /** 确定性检测：字符串/数值判定，结论可靠 */
+  | 'deterministic'
+  /** 统计观测：从既有文本量化，样本不足时会失真 */
+  | 'observational'
+  /** 用户声明的目标：不是检测，是意图 */
+  | 'declared-intent'
+  /** LLM 判断：语义层，可能误判 */
+  | 'llm-judgement'
+
+export interface QualityGate {
+  id: string
+  name: string
+  kind: GateKind
+  /** 该门最强可采取的动作 */
+  maxAction: QualityAction
+  /** 实现位置，便于从表定位代码 */
+  source: string
+  /** 该门对应的 prompt 侧指令（若有），用于检查两侧是否一致 */
+  promptCounterpart?: string
+}
+
+export const GATE_REGISTRY: QualityGate[] = [
+  {
+    id: 'model-degradation',
+    name: '模型退化（复读/截断/拒绝/工程词泄漏/未输出正文）',
+    kind: 'deterministic',
+    maxAction: 'rewrite',
+    source: 'novel-orchestrator.runPostWriteGuard + cliche-scanner',
+  },
+  {
+    id: 'word-count',
+    name: '字数偏离',
+    kind: 'deterministic',
+    maxAction: 'rewrite',
+    source: 'novel-orchestrator.runPostWriteGuard',
+    promptCounterpart: 'chapter-instruction.md 的「字数要求」',
+  },
+  {
+    id: 'matrix-characters',
+    name: '矩阵角色姓名缺失',
+    kind: 'deterministic',
+    maxAction: 'rewrite',
+    source: 'novel-orchestrator.runPostWriteGuard',
+    promptCounterpart: 'role-writer.md 的「矩阵实体必须真正参与事件」',
+  },
+  {
+    id: 'matrix-semantic-entities',
+    name: '矩阵势力/地点全名缺失',
+    kind: 'deterministic',
+    // 势力/地点常用简称或场景描述指代，字符串缺失不足以判定失败
+    maxAction: 'advisory',
+    source: 'novel-orchestrator.runPostWriteGuard',
+  },
+  {
+    id: 'prose-shape',
+    name: '段落形态（单句段占比 / 连续单句段 / 短段密度）',
+    kind: 'deterministic',
+    maxAction: 'revise',
+    source: 'prose-quality-evaluator',
+    promptCounterpart: 'role-writer.md 的「禁止连续 N 段以上单句成段」',
+  },
+  {
+    id: 'cliche-patterns',
+    name: 'AI 腔句式（总结收尾 / 解释腔 / 上帝视角安排 / 碎句 / 过度压缩）',
+    kind: 'deterministic',
+    maxAction: 'revise',
+    source: 'cliche-scanner',
+    promptCounterpart: 'role-writer.md 的「避免现成句壳」',
+  },
+  {
+    id: 'style-profile',
+    name: '项目文风档案',
+    kind: 'declared-intent',
+    // 档案是目标而非检测，永远不直接触发重写
+    maxAction: 'reference',
+    source: 'writing-style-prompt-factory',
+  },
+  {
+    id: 'style-fingerprint',
+    name: '文风指纹（从前文量化的观测值）',
+    kind: 'observational',
+    // 观测值最多作为参考基准：样本不足或指标失真时不能当硬约束
+    maxAction: 'reference',
+    source: 'prompt-builder.formatStyleFingerprint',
+  },
+  {
+    id: 'reviewer-verdict',
+    name: 'Reviewer 语义验收',
+    kind: 'llm-judgement',
+    maxAction: 'revise',
+    source: 'novel-orchestrator（novel_submit_review 工具）',
+  },
+]
+
+/**
+ * 显式登记的冲突及其仲裁规则。
+ *
+ * 登记的意义在于：这些冲突是**设计上的取舍**，不是待修的 bug；
+ * 写下来才不会在下次调阈值时被无意破坏。
+ */
+export const CONFLICT_RULES: Array<{
+  gates: [string, string]
+  conflict: string
+  resolution: string
+}> = [
+  {
+    gates: ['word-count', 'prose-shape'],
+    conflict: '创作指令鼓励"宁可更短"，字数门却在低于 75% 时整章重写',
+    resolution:
+      '字数门只拦"明显失控"（<75% / >130%）；75%-85% 与 115%-130% 降为 advisory 交 Reviewer。'
+      + 'prompt 侧必须同时说明硬下限，避免 Writer 以为"短即可"。',
+  },
+  {
+    gates: ['prose-shape', 'cliche-patterns'],
+    conflict: 'prompt 禁止连续 3 段以上单句成段，检查却要到连续 6 段才报问题',
+    resolution: 'prompt 的阈值必须与 prose-quality 的检查阈值一致，由 PROSE_SHAPE_LIMITS 单一来源提供。',
+  },
+  {
+    gates: ['matrix-characters', 'cliche-patterns'],
+    conflict: '角色姓名必须逐字出现（否则重写）会诱导点名式叙述，与反流水账要求相反',
+    resolution:
+      '姓名检查只保证"出现过"，不保证"参与事件"；后者交 Reviewer 语义验收。'
+      + 'prompt 侧必须明说"出现不等于交差"，把两条要求的边界讲清。',
+  },
+  {
+    gates: ['style-profile', 'style-fingerprint'],
+    conflict: '档案是用户声明的目标，指纹是前文观测值，两者可能直接矛盾',
+    resolution:
+      '档案优先：指纹的 maxAction 是 reference。指纹只有在样本量与指标均可信时才升级为硬约束，'
+      + '且措辞必须说明"以文风档案为准"。',
+  },
+]
+
+/**
+ * 段落形态的**单一阈值来源**。
+ *
+ * prompt 侧（role-writer.md）与检查侧（prose-quality-evaluator）必须用同一组数字。
+ * 历史上 prompt 写"连续三段以上"，检查却是"连续 6 段"，Writer 被多约束了一截
+ * 而没有任何一方校验那个更严的要求。
+ */
+export const PROSE_SHAPE_LIMITS = {
+  /** 允许的最长连续单句段数；超过即视为提纲式碎片节奏 */
+  maxConsecutiveSingleSentenceParagraphs: 5,
+  /** 单句段占比警告线 */
+  singleSentenceRatioWarning: 0.55,
+  /** 单句段占比错误线（触发强制修订） */
+  singleSentenceRatioError: 0.7,
+  /** 18 字以内短段占比警告线 */
+  shortParagraphRatioWarning: 0.3,
+  /** 短段占比错误线 */
+  shortParagraphRatioError: 0.45,
+  /** 低于此段落数不做形态判定（样本太少，比例没有意义） */
+  minParagraphsForShapeCheck: 20,
+} as const
+
+/** 字数门的分级阈值（相对目标字数的比例） */
+export const WORD_COUNT_LIMITS = {
+  /** 低于此比例整章重写 */
+  rewriteBelow: 0.75,
+  /** 高于此比例整章重写 */
+  rewriteAbove: 1.30,
+  /** 低于此比例交 Reviewer（advisory） */
+  advisoryBelow: 0.85,
+  /** 高于此比例交 Reviewer（advisory） */
+  advisoryAbove: 1.15,
+} as const
+
+export interface QualitySignal {
+  gateId: string
+  action: QualityAction
+  reason: string
+  details?: string
+}
+
+export interface QualityDecision {
+  action: QualityAction
+  /** 决定动作的那个信号 */
+  decidedBy: QualitySignal | null
+  /** 强度低于最终动作、但仍需转达给下游的信号 */
+  carried: QualitySignal[]
+}
+
+/**
+ * 仲裁：在一组信号里选出唯一动作。
+ *
+ * 规则：
+ * 1. 取最强动作；同强度时按 GATE_REGISTRY 的登记顺序（确定性门在前）决胜。
+ * 2. 超出该门 maxAction 的信号被降级 —— 门的权限写在注册表里，调用方不能越权。
+ * 3. 未被选中的信号不丢弃，作为 carried 传给下游（Reviewer / Reviser）。
+ */
+export function arbitrateQuality(signals: QualitySignal[]): QualityDecision {
+  const gateOrder = new Map(GATE_REGISTRY.map((gate, index) => [gate.id, index]))
+  const gateById = new Map(GATE_REGISTRY.map((gate) => [gate.id, gate]))
+
+  const clamped = signals.map((signal) => {
+    const gate = gateById.get(signal.gateId)
+    if (!gate) return signal
+    return ACTION_RANK[signal.action] > ACTION_RANK[gate.maxAction]
+      ? { ...signal, action: gate.maxAction }
+      : signal
+  }).filter((signal) => signal.action !== 'none')
+
+  if (clamped.length === 0) return { action: 'none', decidedBy: null, carried: [] }
+
+  const sorted = [...clamped].sort((a, b) =>
+    ACTION_RANK[b.action] - ACTION_RANK[a.action]
+    || (gateOrder.get(a.gateId) ?? 999) - (gateOrder.get(b.gateId) ?? 999))
+
+  const decidedBy = sorted[0]
+  return {
+    action: decidedBy.action,
+    decidedBy,
+    carried: sorted.slice(1),
+  }
+}
+
+/** 结构性约束：由单测强制，防止调阈值时调出上面登记过的矛盾 */
+export const QUALITY_POLICY_INVARIANTS: Array<{ name: string; check: () => boolean }> = [
+  {
+    name: '观测型与声明型门不得直接触发重写或修订',
+    check: () => GATE_REGISTRY
+      .filter((gate) => gate.kind === 'observational' || gate.kind === 'declared-intent')
+      .every((gate) => ACTION_RANK[gate.maxAction] <= ACTION_RANK.reference),
+  },
+  {
+    name: '只有确定性门可以整章重写（LLM 判断不足以推翻整章）',
+    check: () => GATE_REGISTRY
+      .filter((gate) => gate.maxAction === 'rewrite')
+      .every((gate) => gate.kind === 'deterministic'),
+  },
+  {
+    name: '字数的重写区间必须严格宽于 advisory 区间',
+    check: () =>
+      WORD_COUNT_LIMITS.rewriteBelow < WORD_COUNT_LIMITS.advisoryBelow
+      && WORD_COUNT_LIMITS.rewriteAbove > WORD_COUNT_LIMITS.advisoryAbove,
+  },
+  {
+    name: '段落形态的错误线必须高于警告线',
+    check: () =>
+      PROSE_SHAPE_LIMITS.singleSentenceRatioError > PROSE_SHAPE_LIMITS.singleSentenceRatioWarning
+      && PROSE_SHAPE_LIMITS.shortParagraphRatioError > PROSE_SHAPE_LIMITS.shortParagraphRatioWarning,
+  },
+  {
+    name: '每条登记的冲突都必须涉及两个已注册的门',
+    check: () => {
+      const ids = new Set(GATE_REGISTRY.map((gate) => gate.id))
+      return CONFLICT_RULES.every((rule) => rule.gates.every((id) => ids.has(id)))
+    },
+  },
+  {
+    name: '带 promptCounterpart 的门必须是确定性门（否则 prompt 无法与之对齐）',
+    check: () => GATE_REGISTRY
+      .filter((gate) => gate.promptCounterpart)
+      .every((gate) => gate.kind === 'deterministic'),
+  },
+]

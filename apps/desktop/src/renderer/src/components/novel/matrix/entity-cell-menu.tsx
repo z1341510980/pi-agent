@@ -11,12 +11,17 @@
  * - world_element：不可标记（恒全程）
  *
  * 普通实体可修改 clip-note marker；伏笔已有节点可编辑 beats[].note。
+ *
+ * 定位、外部点击关闭、Esc 关闭与碰撞规避统一由 CoordinateMenu（Popover）负责，
+ * 本组件只描述菜单内容。
  */
 
-import { useEffect, type ReactElement } from 'react'
+import { type ReactElement } from 'react'
 import { Plus, Trash2, StickyNote, ArrowLeftRight, Sparkles, Eye, CircleDot } from 'lucide-react'
 import type { ForeshadowBeatType } from '@/api/novel-client'
 import type { MatrixEntityKind } from './matrix-logic'
+import { getInteractionSpec, resolveMarkTooltip } from './entity-interaction-spec'
+import { CoordinateMenu } from './coordinate-menu'
 
 export interface EntityCellMenuPosition {
   x: number
@@ -56,112 +61,20 @@ export interface EntityCellMenuProps {
 const menuItemClass = 'w-full min-h-10 flex items-center gap-2 px-3 py-2 text-left text-text hover:bg-muted focus-visible:outline-none focus-visible:bg-muted transition-[background-color,scale] duration-150 ease-out active:scale-[0.96]'
 const destructiveMenuItemClass = 'w-full min-h-10 flex items-center gap-2 px-3 py-2 text-left text-red-500 hover:bg-red-500/10 focus-visible:outline-none focus-visible:bg-red-500/10 transition-[background-color,scale] duration-150 ease-out active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed'
 
-/** 按 entityType + foreshadowState 返回「标记出场」文案 */
-function markLabel(kind: MatrixEntityKind): string {
-  switch (kind) {
-    case 'character':
-      return '标记本章出场'
-    case 'conflict':
-    case 'faction':
-      return '扩展到本章'
-    case 'clue':
-      return '标记本章推进'
-    case 'foreshadow':
-      return '添加伏笔节点'
-    case 'location':
-      return '标记本章出场'
-    case 'world_element':
-      return ''
-    default:
-      return '标记出场'
-  }
-}
+// 文案与 tooltip 统一来自 ENTITY_INTERACTION_SPEC。
+// 此前这里有四个平行 switch（markLabel/removeLabel/markTooltip/removeTooltip），
+// 与 matrix-row 的两个提示 switch、matrix-logic 的两处共同构成五处分散的语义源，
+// 导致同一动作在菜单与提示里说法不一致，且新增实体类型必须记得改五处。
 
-/** 按 entityType 返回「删除出场」文案 */
-function removeLabel(kind: MatrixEntityKind): string {
-  switch (kind) {
-    case 'character':
-      return '删除本章出场'
-    case 'conflict':
-    case 'faction':
-      return '收缩端点'
-    case 'clue':
-      return '删除本章线索节点'
-    case 'foreshadow':
-      return '删除本章伏笔节点'
-    case 'location':
-      return '删除本章出场'
-    case 'world_element':
-      return ''
-    default:
-      return '删除出场'
-  }
-}
-
-/** 按 entityType 返回「标记」tooltip */
-function markTooltip(kind: MatrixEntityKind, present: boolean): string {
-  if (present) return '该章已标记'
-  switch (kind) {
-    case 'character':
-      return '写入一条 characterHistory 记录，标记该角色在本章出场'
-    case 'conflict':
-    case 'faction':
-      return '扩展 firstChapter/lastChapter 端点覆盖到本章'
-    case 'clue':
-      return '标记该线索在本章被发现、验证或推进'
-    case 'foreshadow':
-      return '为本章选择埋设、强化、揭示或回收语义'
-    case 'location':
-      return '将本章加入 appearChapters 数组'
-    default:
-      return '标记出场'
-  }
-}
-
-/** 按 entityType 返回「删除」tooltip */
-function removeTooltip(kind: MatrixEntityKind): string {
-  switch (kind) {
-    case 'character':
-      return '删除该角色在本章的所有 characterHistory 记录'
-    case 'conflict':
-    case 'faction':
-      return '收缩端点（仅首尾端点可删，中间格不可删）'
-    case 'clue':
-      return '删除该线索在本章的推进记录'
-    case 'foreshadow':
-      return '删除本章节点；若删除埋设点，将同时清空整条事件链'
-    case 'location':
-      return '从 appearChapters 数组中移除本章'
-    default:
-      return '删除出场'
-  }
-}
 
 export function EntityCellMenu({
   position, onClose, onMarkPresent, onRemovePresent, onEditNote, onEditSpan, onRemoveSpan, onMarkForeshadowBeat,
-}: EntityCellMenuProps): ReactElement | null {
-  useEffect(() => {
-    if (!position) return
-    const handleClickOutside = (): void => onClose()
-    const handleEscape = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('click', handleClickOutside)
-    window.addEventListener('keydown', handleEscape)
-    return () => {
-      window.removeEventListener('click', handleClickOutside)
-      window.removeEventListener('keydown', handleEscape)
-    }
-  }, [position, onClose])
-
-  if (!position) return null
-
+}: EntityCellMenuProps): ReactElement {
   const {
-    x, y, entityId, entityName, entityType, chapter, present, editable, removable,
+    entityId = '', entityName = '', entityType = 'character' as MatrixEntityKind, chapter = 0,
+    present = false, editable = false, removable = false,
     foreshadowState, foreshadowBeatType, foreshadowBeatNote,
-  } = position
-  const adjustedX = Math.max(8, Math.min(x, window.innerWidth - 264))
-  const adjustedY = Math.max(8, Math.min(y, window.innerHeight - 360))
+  } = position ?? {}
 
   const handleMark = (): void => {
     onMarkPresent(entityId, entityType, chapter)
@@ -192,16 +105,13 @@ export function EntityCellMenu({
   const markDisabled = present
 
   return (
-    <div
-      className="fixed z-50 min-w-[240px] max-w-[320px] bg-surface-1 border border-border rounded-lg shadow-lg py-1 text-xs"
-      style={{ left: adjustedX, top: adjustedY }}
-      onClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => {
-        e.preventDefault()
-        e.stopPropagation()
-      }}
+    <CoordinateMenu
+      position={position}
+      onClose={onClose}
+      ariaLabel="实体单元格操作"
+      className="min-w-[240px] max-w-[320px]"
     >
-      <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wide border-b border-border mb-1 truncate tabular-nums">
+      <div className="px-3 py-1 text-nano text-muted-foreground uppercase tracking-wide border-b border-border mb-1 truncate tabular-nums">
         {entityName} · 第 {chapter} 章
       </div>
       {editable && (
@@ -215,7 +125,7 @@ export function EntityCellMenu({
                   </div>
                   {foreshadowBeatNote && (
                     <div className="mx-2 mb-1 rounded-md bg-amber-500/8 px-2.5 py-2 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.12)]">
-                      <div className="mb-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">节点内容</div>
+                      <div className="mb-0.5 text-nano font-medium text-amber-600 dark:text-amber-400">节点内容</div>
                       <p className="max-w-[280px] text-pretty leading-relaxed text-text line-clamp-3">{foreshadowBeatNote}</p>
                     </div>
                   )}
@@ -246,10 +156,10 @@ export function EntityCellMenu({
               className={`${menuItemClass} disabled:opacity-40 disabled:cursor-not-allowed`}
               onClick={handleMark}
               disabled={markDisabled}
-              title={markTooltip(entityType, present)}
+              title={resolveMarkTooltip(entityType, present)}
             >
               <Plus className="size-3.5" />
-              <span>{markLabel(entityType)}</span>
+              <span>{getInteractionSpec(entityType).markLabel}</span>
             </button>
           )}
           {entityType === 'foreshadow' && foreshadowBeatType === 'plant' ? (
@@ -262,10 +172,10 @@ export function EntityCellMenu({
               className={destructiveMenuItemClass}
               onClick={handleRemove}
               disabled={!removable}
-              title={removeTooltip(entityType)}
+              title={getInteractionSpec(entityType).removeTooltip}
             >
               <Trash2 className="size-3.5" />
-              <span>{removeLabel(entityType)}</span>
+              <span>{getInteractionSpec(entityType).removeLabel}</span>
             </button>
           )}
           <div className="h-px bg-border my-1" />
@@ -311,6 +221,6 @@ export function EntityCellMenu({
           </button>
         </>
       )}
-    </div>
+    </CoordinateMenu>
   )
 }

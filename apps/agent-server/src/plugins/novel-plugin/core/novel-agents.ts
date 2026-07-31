@@ -50,14 +50,13 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     identity: '你是一个专业的小说导演，负责分析故事状态并规划章节叙事任务。',
     // ⚠️ Token 优化：Director 无需 query 工具。所有实体信息已通过 SEMI 层
     // chapterContext 一次性注入：
-    //   - formatStoryState 输出所有角色动态状态、活跃冲突、伏笔、势力、地点
-    //   - formatArrangedEntities 注入本章出场角色完整定义
-    //   - formatEntityArchive 注入势力/地点/世界要素静态档案
+    //   - formatArrangedEntities 注入本章出场实体（角色短卡/冲突/伏笔/线索/势力/地点/物品）
+    //   - formatStoryState 仅在无编排时兜底，输出全量精简状态
+    //   - formatStoryLedgerContext 注入账本承接（章前状态 + 本章计划）
     //   - formatInfoLayers 注入信息差
     //   - formatConstraints 注入创作约束
-    //   - formatEdges 注入实体关联（画布连线）
+    //   - formatEdges 注入实体关联（画布连线 + 派生边）
     //   - formatRecentSummaries 注入最近章节摘要
-    //   - formatRecentCausalChain 注入因果链
     // 给 Director 提供 query 工具反而会让 LLM 在规划前先调用工具重复查询已知
     // 状态，每次工具调用都会把完整对话历史重发，3 次工具调用 = 3 倍 system_prompt
     // + chapter_context 的 token 消耗。移除工具后 Director 单次调用完成，
@@ -74,11 +73,11 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     name: '写作 Agent',
     identity: '你是一个专业的小说作家，根据叙事任务和约束创作章节正文。',
     // ⚠️ Token 优化：Writer 无需工具：状态已通过 SEMI 层 chapterContext 注入：
-    //   - formatStoryState 输出所有角色动态状态、活跃冲突、伏笔、势力、地点
-    //   - formatArrangedEntities 注入本章出场角色完整定义
+    //   - formatArrangedEntities 注入本章出场实体（角色短卡/冲突/伏笔/线索/势力/地点/物品）
+    //   - formatStoryState 仅在无编排时兜底，输出全量精简状态
     //   - formatInfoLayers 注入信息差
     //   - formatConstraints 注入创作约束
-    //   - formatEdges 注入实体关联（画布连线）
+    //   - formatEdges 注入实体关联（画布连线 + 派生边）
     //
     // 给 Writer 提供 novel_query_state 反而会让 LLM 在生成正文前先调用工具
     // 重复查询已知状态，工具返回的 JSON（listCharacters 全表）会让上下文
@@ -118,7 +117,7 @@ export const NOVEL_AGENT_CONFIGS: Record<NovelAgentType, NovelAgentConfig> = {
     // ⚠️ Token 优化：Reviewer 无需 query 工具。验收所需信息已通过 SEMI 层
     // shared + suffix 注入：
     //   - shared: formatChapterInfo + formatConstraints + formatArrangedEntities
-    //             + formatStoryState + edges + infoLayers + summaries + causalChain
+    //             + arrangedEntities + 账本承接 + edges + infoLayers + summaries
     //   - suffix: formatPreviousChapterEnding + formatSoundAnchor（衔接检查）
     // Writer 全文通过 user_message 注入。
     // 移除工具后 Reviewer 单次调用完成，省 ~5K tokens。

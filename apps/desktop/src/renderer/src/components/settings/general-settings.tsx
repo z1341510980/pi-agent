@@ -1,10 +1,24 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { SunIcon, MoonIcon, MonitorIcon, LanguagesIcon, DatabaseIcon, FolderIcon, GlobeIcon, NetworkIcon, CheckCircleIcon, ClockIcon, ShieldAlertIcon } from 'lucide-react'
+import {
+  SunIcon,
+  MoonIcon,
+  MonitorIcon,
+  LanguagesIcon,
+  DatabaseIcon,
+  FolderIcon,
+  GlobeIcon,
+  NetworkIcon,
+  CheckCircleIcon,
+  ClockIcon,
+  ShieldAlertIcon,
+  TypeIcon
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -15,6 +29,7 @@ import {
 import { getApi, putApi, postApi } from '@/api'
 import { useTranslation, LOCALES, type Locale } from '@/i18n'
 import { useTheme } from '@/components/theme-provider'
+import { SettingRow, SettingsCard, SettingsPageHeader } from './setting-primitives'
 
 // ── 类型定义 ──
 
@@ -28,17 +43,50 @@ interface ProxyConfig {
   password: string
 }
 
+/** 显示与交互偏好（持久化到 pi-agent.general-config） */
+type FontSize = 'small' | 'medium' | 'large' | 'x-large'
+type SendShortcut = 'enter' | 'cmd-enter'
+
+interface DisplayPreferences {
+  fontSize: FontSize
+  sendShortcut: SendShortcut
+  autoScroll: boolean
+  showTimestamp: boolean
+  showTokenUsage: boolean
+}
+
 // ── 常量 ──
 
 const proxyStorageKey = 'wenlang-agent.proxy'
+const displayStorageKey = 'pi-agent.general-config'
 
 const defaultProxy: ProxyConfig = {
   mode: 'system',
   host: '',
   port: '',
   username: '',
-  password: '',
+  password: ''
 }
+
+const defaultDisplay: DisplayPreferences = {
+  fontSize: 'medium',
+  sendShortcut: 'enter',
+  autoScroll: true,
+  showTimestamp: true,
+  showTokenUsage: true
+}
+
+const FONT_SIZE_OPTIONS: Array<{ value: FontSize; label: string }> = [
+  { value: 'small', label: '小' },
+  { value: 'medium', label: '中' },
+  { value: 'large', label: '大' },
+  { value: 'x-large', label: '特大' }
+]
+
+const SEND_SHORTCUT_OPTIONS: Array<{ value: SendShortcut; label: string }> = [
+  { value: 'enter', label: 'Enter 发送 / Shift+Enter 换行' },
+  { value: 'cmd-enter', label: 'Cmd/Ctrl+Enter 发送 / Enter 换行' }
+]
 
 // ── 主组件 ──
 
@@ -47,13 +95,17 @@ export function GeneralSettings(): ReactElement {
   const { theme, setTheme } = useTheme()
   const [proxy, setProxy] = useState<ProxyConfig>(() => loadProxy())
   const [proxyTesting, setProxyTesting] = useState(false)
-  const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; message: string } | null>(
+    null
+  )
   const [llmTimeoutSeconds, setLlmTimeoutSeconds] = useState(300)
   const [llmTimeoutSaving, setLlmTimeoutSaving] = useState(false)
   const [llmTimeoutError, setLlmTimeoutError] = useState<string | null>(null)
   const [stripStreamOptions, setStripStreamOptions] = useState(false)
   const [stripStreamOptionsSaving, setStripStreamOptionsSaving] = useState(false)
   const [stripStreamOptionsError, setStripStreamOptionsError] = useState<string | null>(null)
+  // 显示与交互偏好（仅 localStorage 持久化，后续可对接后端）
+  const [display, setDisplay] = useState<DisplayPreferences>(() => loadDisplay())
 
   // 持久化代理配置到 localStorage + 同步到后端
   useEffect(() => {
@@ -61,6 +113,11 @@ export function GeneralSettings(): ReactElement {
     // 同步到后端（非阻塞，失败不影响前端）
     void syncProxyToBackend(proxy)
   }, [proxy])
+
+  // 持久化显示偏好
+  useEffect(() => {
+    saveDisplay(display)
+  }, [display])
 
   useEffect(() => {
     void getApi<{ timeoutMs: number }>('/api/settings/llm')
@@ -102,6 +159,13 @@ export function GeneralSettings(): ReactElement {
     setProxyTestResult(null)
   }
 
+  function updateDisplay<K extends keyof DisplayPreferences>(
+    key: K,
+    value: DisplayPreferences[K]
+  ): void {
+    setDisplay((prev) => ({ ...prev, [key]: value }))
+  }
+
   async function saveLlmTimeout(): Promise<void> {
     const seconds = Math.min(3_600, Math.max(1, Math.round(llmTimeoutSeconds)))
     setLlmTimeoutSeconds(seconds)
@@ -139,18 +203,22 @@ export function GeneralSettings(): ReactElement {
     setProxyTesting(true)
     setProxyTestResult(null)
     try {
-      const result = await postApi<{ ok: boolean; message: string }>('/api/settings/proxy/test', proxy)
+      const result = await postApi<{ ok: boolean; message: string }>(
+        '/api/settings/proxy/test',
+        proxy
+      )
       setProxyTestResult(result)
-    } catch (err) {
+    } catch {
       // 后端不可用时回退到本地模拟
       await new Promise((resolve) => window.setTimeout(resolve, 600))
       setProxyTestResult({
         ok: true,
-        message: proxy.mode === 'none'
-          ? '直连模式（无代理）'
-          : proxy.mode === 'system'
-            ? '已使用系统代理设置'
-            : `代理 ${proxy.host}:${proxy.port} 连通性正常`,
+        message:
+          proxy.mode === 'none'
+            ? '直连模式（无代理）'
+            : proxy.mode === 'system'
+              ? '已使用系统代理设置'
+              : `代理 ${proxy.host}:${proxy.port} 连通性正常`
       })
     } finally {
       setProxyTesting(false)
@@ -158,14 +226,15 @@ export function GeneralSettings(): ReactElement {
   }
 
   return (
-    <section className="p-6 grid gap-5" aria-label="通用设置">
-      <div>
-        <p className="text-subtle text-xs font-[760] m-0">General</p>
-        <h2 className="text-[22px] font-[780] leading-tight mt-0.5">通用设置</h2>
-      </div>
+    <section className="mx-auto grid w-full max-w-[920px] gap-5 p-6" aria-label="通用设置">
+      <SettingsPageHeader
+        eyebrow="General"
+        title="通用设置"
+        description="调整主题、语言、聊天交互、网络代理和运行目录。"
+      />
 
       {/* ── 主题切换 ── */}
-      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+      <div className="settings-field-card grid gap-2">
         <div className="flex items-center gap-2">
           <SunIcon className="size-4 text-muted-foreground" />
           <Label htmlFor="theme-select">主题</Label>
@@ -198,8 +267,73 @@ export function GeneralSettings(): ReactElement {
         <p className="text-xs text-muted-foreground m-0">选择应用主题，或跟随系统偏好自动切换。</p>
       </div>
 
+      {/* ── 显示与交互（AionUi 风格 SettingRow 列表） ── */}
+      <SettingsCard>
+        <div className="flex items-center gap-2 border-b border-border pb-3">
+          <TypeIcon className="size-4 text-muted-foreground" />
+          <h3 className="m-0 text-sm font-[760] text-text">显示与交互</h3>
+        </div>
+        <div className="divide-y divide-border">
+          <SettingRow label="字体大小" description="调整聊天界面正文字号">
+            <Select
+              value={display.fontSize}
+              onValueChange={(v) => updateDisplay('fontSize', v as FontSize)}
+            >
+              <SelectTrigger id="font-size-select" className="w-32" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FONT_SIZE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingRow>
+          <SettingRow label="发送快捷键" description="选择发送消息的快捷键组合">
+            <Select
+              value={display.sendShortcut}
+              onValueChange={(v) => updateDisplay('sendShortcut', v as SendShortcut)}
+            >
+              <SelectTrigger id="send-shortcut-select" className="w-64" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SEND_SHORTCUT_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingRow>
+          <SettingRow label="自动滚动到底部" description="新消息到达时自动滚动到对话底部">
+            <Switch
+              checked={display.autoScroll}
+              onCheckedChange={(checked) => updateDisplay('autoScroll', checked)}
+              aria-label="自动滚动"
+            />
+          </SettingRow>
+          <SettingRow label="显示时间戳" description="在每条消息上方显示发送时间">
+            <Switch
+              checked={display.showTimestamp}
+              onCheckedChange={(checked) => updateDisplay('showTimestamp', checked)}
+              aria-label="显示时间戳"
+            />
+          </SettingRow>
+          <SettingRow label="显示 Token 用量" description="在消息末尾展示本次生成的 token 消耗">
+            <Switch
+              checked={display.showTokenUsage}
+              onCheckedChange={(checked) => updateDisplay('showTokenUsage', checked)}
+              aria-label="显示 Token 用量"
+            />
+          </SettingRow>
+        </div>
+      </SettingsCard>
+
       {/* ── LLM 请求超时 ── */}
-      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+      <div className="settings-field-card grid gap-2">
         <div className="flex items-center gap-2">
           <ClockIcon className="size-4 text-muted-foreground" />
           <Label htmlFor="llm-timeout-seconds">LLM 请求超时</Label>
@@ -227,11 +361,13 @@ export function GeneralSettings(): ReactElement {
       </div>
 
       {/* ── stream_options 屏蔽开关 ── */}
-      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+      <div className="settings-field-card grid gap-2">
         <div className="flex items-center gap-2">
           <ShieldAlertIcon className="size-4 text-muted-foreground" />
           <Label htmlFor="strip-stream-options">屏蔽 stream_options（中转兼容）</Label>
-          {stripStreamOptionsSaving && <span className="text-xs text-muted-foreground">保存中...</span>}
+          {stripStreamOptionsSaving && (
+            <span className="text-xs text-muted-foreground">保存中...</span>
+          )}
         </div>
         <label className="flex items-center gap-2 cursor-pointer select-none">
           <input
@@ -244,15 +380,23 @@ export function GeneralSettings(): ReactElement {
           <span className="text-sm">开启屏蔽</span>
         </label>
         <p className="text-xs text-muted-foreground m-0">
-          某些 OpenAI 兼容中转（如 fastaitoken.com）不兼容 <code className="text-[10px] bg-muted px-1 py-0.5 rounded">stream_options.include_usage</code> 参数，
-          会导致流式响应被立即断开（报错 <code className="text-[10px] bg-muted px-1 py-0.5 rounded">Stream ended without finish_reason</code>）。
-          开启后会在请求发出前移除该字段，代价是失去 token 用量统计。
+          某些 OpenAI 兼容中转（如 fastaitoken.com）不兼容{' '}
+          <code className="text-[10px] bg-muted px-1 py-0.5 rounded">
+            stream_options.include_usage
+          </code>{' '}
+          参数， 会导致流式响应被立即断开（报错{' '}
+          <code className="text-[10px] bg-muted px-1 py-0.5 rounded">
+            Stream ended without finish_reason
+          </code>
+          ）。 开启后会在请求发出前移除该字段，代价是失去 token 用量统计。
         </p>
-        {stripStreamOptionsError && <p className="text-xs text-destructive m-0">{stripStreamOptionsError}</p>}
+        {stripStreamOptionsError && (
+          <p className="text-xs text-destructive m-0">{stripStreamOptionsError}</p>
+        )}
       </div>
 
       {/* ── 语言切换 ── */}
-      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+      <div className="settings-field-card grid gap-2">
         <div className="flex items-center gap-2">
           <LanguagesIcon className="size-4 text-muted-foreground" />
           <Label htmlFor="language-select">语言</Label>
@@ -273,7 +417,7 @@ export function GeneralSettings(): ReactElement {
       </div>
 
       {/* ── 数据目录 ── */}
-      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+      <div className="settings-field-card grid gap-2">
         <div className="flex items-center gap-2">
           <DatabaseIcon className="size-4 text-muted-foreground" />
           <Label>数据目录（PI_DATA_DIR）</Label>
@@ -281,11 +425,13 @@ export function GeneralSettings(): ReactElement {
         <code className="text-xs font-mono text-muted-foreground bg-surface-3 rounded-md px-2.5 py-2 break-all">
           {getDataDir()}
         </code>
-        <p className="text-xs text-muted-foreground m-0">Pi SDK 数据存储目录，包含凭证、模型注册表和会话记录。</p>
+        <p className="text-xs text-muted-foreground m-0">
+          Pi SDK 数据存储目录，包含凭证、模型注册表和会话记录。
+        </p>
       </div>
 
       {/* ── 工作目录 ── */}
-      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-2">
+      <div className="settings-field-card grid gap-2">
         <div className="flex items-center gap-2">
           <FolderIcon className="size-4 text-muted-foreground" />
           <Label>工作目录（PI_CWD）</Label>
@@ -297,7 +443,7 @@ export function GeneralSettings(): ReactElement {
       </div>
 
       {/* ── 出站代理 ── */}
-      <div className="bg-surface-2 border border-border rounded-lg p-4 grid gap-3">
+      <div className="settings-field-card grid gap-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <GlobeIcon className="size-4 text-muted-foreground" />
@@ -343,7 +489,9 @@ export function GeneralSettings(): ReactElement {
           <div className="grid gap-2">
             <div className="grid grid-cols-[1fr_120px] gap-2">
               <div className="grid gap-1">
-                <Label htmlFor="proxy-host" className="text-xs">主机</Label>
+                <Label htmlFor="proxy-host" className="text-xs">
+                  主机
+                </Label>
                 <Input
                   id="proxy-host"
                   value={proxy.host}
@@ -352,7 +500,9 @@ export function GeneralSettings(): ReactElement {
                 />
               </div>
               <div className="grid gap-1">
-                <Label htmlFor="proxy-port" className="text-xs">端口</Label>
+                <Label htmlFor="proxy-port" className="text-xs">
+                  端口
+                </Label>
                 <Input
                   id="proxy-port"
                   value={proxy.port}
@@ -363,7 +513,9 @@ export function GeneralSettings(): ReactElement {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="grid gap-1">
-                <Label htmlFor="proxy-user" className="text-xs">用户名（可选）</Label>
+                <Label htmlFor="proxy-user" className="text-xs">
+                  用户名（可选）
+                </Label>
                 <Input
                   id="proxy-user"
                   value={proxy.username}
@@ -372,7 +524,9 @@ export function GeneralSettings(): ReactElement {
                 />
               </div>
               <div className="grid gap-1">
-                <Label htmlFor="proxy-pass" className="text-xs">密码（可选）</Label>
+                <Label htmlFor="proxy-pass" className="text-xs">
+                  密码（可选）
+                </Label>
                 <Input
                   id="proxy-pass"
                   type="password"
@@ -387,7 +541,9 @@ export function GeneralSettings(): ReactElement {
 
         <div className="flex items-center justify-between gap-2">
           {proxyTestResult ? (
-            <p className={`text-xs flex items-center gap-1.5 m-0 ${proxyTestResult.ok ? 'text-success' : 'text-destructive'}`}>
+            <p
+              className={`text-xs flex items-center gap-1.5 m-0 ${proxyTestResult.ok ? 'text-success' : 'text-destructive'}`}
+            >
               <CheckCircleIcon className="size-3.5" />
               {proxyTestResult.message}
             </p>
@@ -427,11 +583,14 @@ function loadProxy(): ProxyConfig {
     if (!raw) return defaultProxy
     const data = JSON.parse(raw) as Partial<ProxyConfig>
     return {
-      mode: data.mode === 'none' || data.mode === 'system' || data.mode === 'manual' ? data.mode : defaultProxy.mode,
+      mode:
+        data.mode === 'none' || data.mode === 'system' || data.mode === 'manual'
+          ? data.mode
+          : defaultProxy.mode,
       host: typeof data.host === 'string' ? data.host : defaultProxy.host,
       port: typeof data.port === 'string' ? data.port : defaultProxy.port,
       username: typeof data.username === 'string' ? data.username : defaultProxy.username,
-      password: typeof data.password === 'string' ? data.password : defaultProxy.password,
+      password: typeof data.password === 'string' ? data.password : defaultProxy.password
     }
   } catch {
     return defaultProxy
@@ -441,6 +600,48 @@ function loadProxy(): ProxyConfig {
 function saveProxy(config: ProxyConfig): void {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(proxyStorageKey, JSON.stringify(config))
+}
+
+/** 加载显示与交互偏好（仅 localStorage，后续可对接后端） */
+function loadDisplay(): DisplayPreferences {
+  if (typeof window === 'undefined') return defaultDisplay
+  try {
+    const raw = window.localStorage.getItem(displayStorageKey)
+    if (!raw) return defaultDisplay
+    const data = JSON.parse(raw) as Partial<DisplayPreferences>
+    return {
+      fontSize:
+        data.fontSize === 'small' ||
+        data.fontSize === 'medium' ||
+        data.fontSize === 'large' ||
+        data.fontSize === 'x-large'
+          ? data.fontSize
+          : defaultDisplay.fontSize,
+      sendShortcut:
+        data.sendShortcut === 'enter' || data.sendShortcut === 'cmd-enter'
+          ? data.sendShortcut
+          : defaultDisplay.sendShortcut,
+      autoScroll:
+        typeof data.autoScroll === 'boolean' ? data.autoScroll : defaultDisplay.autoScroll,
+      showTimestamp:
+        typeof data.showTimestamp === 'boolean' ? data.showTimestamp : defaultDisplay.showTimestamp,
+      showTokenUsage:
+        typeof data.showTokenUsage === 'boolean'
+          ? data.showTokenUsage
+          : defaultDisplay.showTokenUsage
+    }
+  } catch {
+    return defaultDisplay
+  }
+}
+
+function saveDisplay(prefs: DisplayPreferences): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(displayStorageKey, JSON.stringify(prefs))
+  } catch {
+    // 忽略存储失败
+  }
 }
 
 /**

@@ -456,12 +456,12 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="truncate text-sm font-medium text-text">{form.name}</span>
-                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-nano tabular-nums text-muted-foreground">
                   {version ? `v${version}` : '未保存'}
                 </span>
                 <span
                   className={cn(
-                    'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                    'shrink-0 rounded px-1.5 py-0.5 text-nano',
                     styleBaselineReady
                       ? 'bg-emerald-500/10 text-emerald-600'
                       : 'bg-amber-500/10 text-amber-600'
@@ -485,25 +485,25 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
         <div className="grid grid-cols-4 divide-x divide-border/70 text-center">
           <div>
             <div className="text-xs font-medium tabular-nums text-text">{form.dialogueRatio}%</div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">对话占比</div>
+            <div className="mt-0.5 text-nano text-muted-foreground">对话占比</div>
           </div>
           <div>
             <div className="text-xs font-medium tabular-nums text-text">
               {form.hardRules.length + form.softRules.length}
             </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">文风规则</div>
+            <div className="mt-0.5 text-nano text-muted-foreground">文风规则</div>
           </div>
           <div>
             <div className="text-xs font-medium tabular-nums text-text">
               {form.positiveExamples.length}
             </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">正向样本</div>
+            <div className="mt-0.5 text-nano text-muted-foreground">正向样本</div>
           </div>
           <div>
             <div className="text-xs font-medium tabular-nums text-text">
               {form.negativeExamples.length}
             </div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">反向样本</div>
+            <div className="mt-0.5 text-nano text-muted-foreground">反向样本</div>
           </div>
         </div>
       </div>

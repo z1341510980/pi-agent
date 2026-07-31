@@ -278,6 +278,21 @@ export interface PluginSessionOptions {
    * userMessage 为 DYNAMIC 层（每次任务不同）。
    */
   prefixUserMessage?: string | string[]
+  /**
+   * prompt 缓存共享域。
+   *
+   * 用于让「共享同一段前缀的多次调用」命中同一份服务端前缀缓存。
+   *
+   * 背景：每次 createSession 都用随机 UUID 作 threadId → 新 Pi sessionId，
+   * 而 pi-ai 把 sessionId 直接当 OpenAI 的 `prompt_cache_key`（一个路由提示：
+   * 相同 key 尽量导到同一台机器，从而命中那台机器上的前缀缓存）。
+   * 于是同一章的 Director / Writer / Reviewer 各拿一个随机 key，
+   * 明明共享 system + shared 前缀，却被路由到不同机器，缓存全落空。
+   *
+   * 传入稳定值（如 `novel:${projectId}:${chapterNumber}`）即可让这一组调用共享缓存。
+   * 不传则沿用 sessionId（旧行为）。
+   */
+  promptCacheScope?: string
   /** 首条用户消息（章节上下文/生成指令） */
   userMessage: string
   /** 自定义工具（可选，默认注入插件工具） */

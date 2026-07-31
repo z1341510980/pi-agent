@@ -11,7 +11,7 @@
  * - hc()：hover 卡属性构造器（matrix-view 也复用）
  */
 
-import { useMemo, useCallback, type ReactElement } from 'react'
+import { useMemo, useCallback, memo, type ReactElement } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { ChevronRight, GripVertical, LayoutGrid } from 'lucide-react'
@@ -30,6 +30,7 @@ import {
   type SpanDragData,
   type CellDragData,
 } from './matrix-logic'
+import { resolveEmptyCellHint, resolvePresentCellHint } from './entity-interaction-spec'
 import {
   MATRIX_LAYOUT,
   gridlineBackgroundImage,
@@ -67,11 +68,10 @@ export interface HookTrackRowProps {
   visibleChapterColumns: number[]
   cellWidth: number
   sidebarWidth: number
-  playheadChapter: number
 }
 
 export function HookTrackRow({
-  hooks, visibleChapterColumns, cellWidth, sidebarWidth, playheadChapter,
+  hooks, visibleChapterColumns, cellWidth, sidebarWidth,
 }: HookTrackRowProps): ReactElement {
   const hooksByChapter = useMemo(() => {
     const m = new Map<number, NovelHook[]>()
@@ -92,7 +92,7 @@ export function HookTrackRow({
         )}
         style={{ width: sidebarWidth }}
       >
-        <span className="text-[10px] text-hint tracking-wider truncate">章尾钩子</span>
+        <span className="text-nano text-hint tracking-wider truncate">章尾钩子</span>
       </div>
       <div className="relative flex-1" style={{ backgroundImage: gridlineBackgroundImage(cellWidth) }}>
         {visibleChapterColumns.map((ch) => {
@@ -113,7 +113,7 @@ export function HookTrackRow({
             >
               {chapterHooks.length === 1 && primary && primary.hookType !== 'none' && meta && (
                 <span
-                  className="flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold leading-none"
+                  className="flex items-center justify-center w-4 h-4 rounded-full text-nano font-bold leading-none"
                   style={{
                     color: primary.status === 'fulfilled' ? '#fff' : meta.color,
                     background: primary.status === 'fulfilled' ? meta.color : undefined,
@@ -148,12 +148,9 @@ export function HookTrackRow({
             </div>
           )
         })}
-        {/* 播放头列高亮 */}
-        <div
-          aria-hidden="true"
-          className="absolute top-0 bottom-0 pointer-events-none bg-amber-500/[0.06]"
-          style={{ left: (playheadChapter - 1) * cellWidth, width: cellWidth }}
-        />
+        {/* 播放头列高亮由 matrix-view 的全局贯通条统一绘制（z-[4]，覆盖标尺以下全高）。
+            此前每个 GroupRow / EntityRow / 子轨道各画一份，同一列被重复绘制 4 次，
+            长篇下（数百行 × 每行一个 absolute div）是无谓的合成层开销。 */}
       </div>
     </div>
   )
@@ -173,7 +170,7 @@ export function MatrixEmptyState(): ReactElement {
         <p className="text-sm font-medium text-text mb-1.5">暂无实体出场记录</p>
         <p className="text-xs text-muted-foreground leading-relaxed">
           请点击上方「补全历史」让 AI 自动补全角色起始章节，
-          或从左侧 NovelSidebar 新建实体后，左键双击空单元格标记出场，右键单元格更多操作。
+          或从左侧边栏新建实体后，左键双击空单元格标记出场，右键单元格更多操作。
         </p>
       </div>
     </div>
@@ -193,7 +190,8 @@ export interface GroupRowProps {
   onContextMenuGroupEmpty?: (kind: MatrixEntityKind) => void
 }
 
-export function GroupRow({ group, collapsed, cellWidth, sidebarWidth, onToggleCollapse, onContextMenuGroupEmpty }: GroupRowProps): ReactElement {
+/** 分组头行。九个分组在每次滚动时都会重建，memo 后只在折叠态或实体数变化时更新。 */
+export const GroupRow = memo(function GroupRow({ group, collapsed, cellWidth, sidebarWidth, onToggleCollapse, onContextMenuGroupEmpty }: GroupRowProps): ReactElement {
   const sidebarCollapsed = sidebarWidth <= 32
   return (
     <div className="relative flex border-b border-border/10 bg-surface-2/70" style={{ height: GROUP_H }}>
@@ -212,8 +210,8 @@ export function GroupRow({ group, collapsed, cellWidth, sidebarWidth, onToggleCo
         <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ background: group.color }} />
         {!sidebarCollapsed && (
           <>
-            <span className="text-[11px] font-bold text-text-secondary tracking-wide truncate flex-1">{group.name}</span>
-            <span className="font-mono text-[10px] text-hint tabular-nums shrink-0">{group.entities.length}</span>
+            <span className="text-micro font-bold text-text-secondary tracking-wide truncate flex-1">{group.name}</span>
+            <span className="font-mono text-nano text-hint tabular-nums shrink-0">{group.entities.length}</span>
           </>
         )}
       </div>
@@ -228,7 +226,7 @@ export function GroupRow({ group, collapsed, cellWidth, sidebarWidth, onToggleCo
       />
     </div>
   )
-}
+})
 
 // ────────────────────────────────────────────────────────────
 // 实体行
@@ -240,7 +238,6 @@ export interface EntityRowProps {
   maxChapter: number
   cellWidth: number
   sidebarWidth: number
-  playheadChapter: number
   isSelected: boolean
   isMatrixSelected: boolean
   isExpanded: boolean
@@ -263,7 +260,7 @@ const ARC_TYPE_META: Record<string, { label: string; color: string; bg: string }
 
 export function EntityRow(props: EntityRowProps): ReactElement {
   const {
-    entity, visibleChapterColumns, maxChapter, cellWidth, sidebarWidth, playheadChapter,
+    entity, visibleChapterColumns, maxChapter, cellWidth, sidebarWidth,
     isSelected, isMatrixSelected, isExpanded, characterArcs, onClick,
     onContextMenuCell, onEditEntity, onEditSpan, onTogglePresent, onPlayheadChange, onToggleExpand,
   } = props
@@ -327,20 +324,40 @@ export function EntityRow(props: EntityRowProps): ReactElement {
             <ChevronRight className="size-3" />
           </button>
         )}
-        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: meta.color }} />
+        <span
+          className={cn('w-1.5 h-1.5 rounded-full shrink-0', entity.pending && 'opacity-40')}
+          style={
+            entity.pending
+              // 未上线：空心点，与「已放置」的实心点区分
+              ? { border: `1px solid ${meta.color}` }
+              : { background: meta.color }
+          }
+        />
         {!sidebarCollapsed && (
           <>
             <span
-              className={cn('truncate flex-1 min-w-0 text-xs', selected ? 'text-text font-semibold' : 'text-text-secondary')}
-              title={entity.name}
+              className={cn(
+                'truncate flex-1 min-w-0 text-xs',
+                selected ? 'text-text font-semibold' : 'text-text-secondary',
+                entity.pending && 'text-subtle italic',
+              )}
+              title={entity.pending ? `${entity.name}（未上线：双击任一章即放置）` : entity.name}
             >
               {entity.name}
             </span>
             {entity.isProtagonist && (
-              <span className="text-[9px] text-amber-600 dark:text-amber-400 font-semibold shrink-0 bg-amber-500/10 rounded px-1 leading-4">主</span>
+              <span className="text-nano text-amber-600 dark:text-amber-400 font-semibold shrink-0 bg-amber-500/10 rounded px-1 leading-4">主</span>
             )}
             {entity.subLabel && sidebarWidth >= 160 && (
-              <span className="text-[9px] text-subtle bg-muted/60 rounded px-1 leading-4 shrink-0 max-w-[56px] truncate" title={entity.subLabel}>
+              <span
+                className={cn(
+                  'text-nano rounded px-1 leading-4 shrink-0 max-w-[56px] truncate',
+                  entity.pending
+                    ? 'text-subtle bg-transparent ring-1 ring-border ring-inset'
+                    : 'text-subtle bg-muted/60',
+                )}
+                title={entity.subLabel}
+              >
                 {entity.subLabel}
               </span>
             )}
@@ -356,12 +373,7 @@ export function EntityRow(props: EntityRowProps): ReactElement {
 
       {/* 右侧单元格区 */}
       <div className="relative flex-1" style={{ backgroundImage: gridlineBackgroundImage(cellWidth) }}>
-        {/* 播放头列高亮 */}
-        <div
-          aria-hidden="true"
-          className="absolute top-0 bottom-0 pointer-events-none bg-amber-500/[0.06]"
-          style={{ left: (playheadChapter - 1) * cellWidth, width: cellWidth }}
-        />
+        {/* 播放头列高亮由 matrix-view 统一绘制，见 GroupRow 处注释 */}
 
         {/* 命中层（仅可见列） */}
         {visibleChapterColumns.map((ch) => (
@@ -423,7 +435,13 @@ interface HitCellProps {
   onPlayheadChange?: (chapter: number) => void
 }
 
-function HitCell({ entity, chapter, cellWidth, onTogglePresent, onSelectEntity, onContextMenu, onPlayheadChange }: HitCellProps): ReactElement {
+/**
+ * 单元格命中层。
+ *
+ * memo 的收益在这里最大：数量 = 可见列 × 可见行，长篇下每次滚动或播放头移动
+ * 都会重建上千个实例。props 全是原始值与稳定回调，浅比较足够。
+ */
+const HitCell = memo(function HitCell({ entity, chapter, cellWidth, onTogglePresent, onSelectEntity, onContextMenu, onPlayheadChange }: HitCellProps): ReactElement {
   const symbol = computeCellSymbol(entity, chapter)
   const meta = GROUP_META[entity.kind]
   const canTogglePresence = entity.kind !== 'world_element' && entity.kind !== 'info_layer'
@@ -450,7 +468,7 @@ function HitCell({ entity, chapter, cellWidth, onTogglePresent, onSelectEntity, 
         type="button"
         className="group/cell absolute top-0 bottom-0 flex items-center justify-center cursor-pointer hover:bg-primary/[0.06] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
         style={{ left, width: cellWidth }}
-        {...hc(entity.name, chapter, { after: emptyCellHint(entity.kind), color: meta.color })}
+          {...hc(entity.name, chapter, { after: resolveEmptyCellHint(entity.kind), color: meta.color })}
         onClick={handleActivate}
         onDoubleClick={canTogglePresence ? handleToggle : undefined}
         onContextMenu={onContextMenu}
@@ -484,7 +502,7 @@ function HitCell({ entity, chapter, cellWidth, onTogglePresent, onSelectEntity, 
       style={{ left, width: cellWidth }}
       role="button"
       tabIndex={0}
-      {...hc(entity.name, chapter, { after: presentCellHint(entity.kind, symbol.type), color: meta.color })}
+          {...hc(entity.name, chapter, { after: resolvePresentCellHint(entity.kind, symbol.type), color: meta.color })}
       onClick={handleSelect}
       onDoubleClick={handleActivate}
       onKeyDown={(e) => {
@@ -496,40 +514,12 @@ function HitCell({ entity, chapter, cellWidth, onTogglePresent, onSelectEntity, 
       aria-label={`第 ${chapter} 章 ${entity.name}`}
     />
   )
-}
+})
 
-function emptyCellHint(kind: MatrixEntityKind): string {
-  switch (kind) {
-    case 'character':
-    case 'location':
-      return '双击标记出场'
-    case 'conflict':
-    case 'faction':
-      return '双击扩展到本章'
-    case 'clue':
-      return '双击标记发现/推进'
-    case 'foreshadow':
-      return '双击快速添加伏笔节点'
-    default:
-      return ''
-  }
-}
-
-function presentCellHint(kind: MatrixEntityKind, symbolType: string): string {
-  if (symbolType === 'conflict-climax') return '冲突高潮'
-  switch (kind) {
-    case 'clue':
-      return '线索发现/推进'
-    case 'foreshadow':
-      return '伏笔节点'
-    case 'world_element':
-      return '常驻世界要素'
-    case 'info_layer':
-      return '信息隐藏期'
-    default:
-      return ''
-  }
-}
+// emptyCellHint / presentCellHint 已收口到 ENTITY_INTERACTION_SPEC。
+// 此前这两个 switch 与 entity-cell-menu 的四个 switch 各自维护同一套语义，
+// 已导致 location/faction/character 的已占格提示落到 default 返回空串、
+// item 九类里唯一全部落 default 等不一致。
 
 // ── 可拖拽的已出场单元格（character/location）──
 
@@ -792,7 +782,13 @@ interface SpanBandProps {
   onContextMenuCell?: (entityId: string, entityName: string, entityType: MatrixEntityKind, chapter: number, x: number, y: number) => void
 }
 
-function SpanBand({
+/**
+ * 跨度色带（conflict/faction/item）。
+ *
+ * 每个实体可能有多段跨度，且内部含两个可拖拽端点把手 —— 单个实例的 DOM 成本
+ * 高于 HitCell，长篇下重建开销明显。
+ */
+const SpanBand = memo(function SpanBand({
   entity, spanIndex, startChapter, endChapter, cellWidth, isSelected, onEntityClick, onEditEntity, onEditSpan, onContextMenuCell,
 }: SpanBandProps): ReactElement {
   const meta = GROUP_META[entity.kind]
@@ -884,7 +880,7 @@ function SpanBand({
       </div>
     </div>
   )
-}
+})
 
 // ── 跨度端点拖拽手柄（hover 色带时浮现）──
 
@@ -951,26 +947,71 @@ function ForeshadowEncoding({ entity, cellWidth, onEntityClick, onContextMenuCel
   const payoff = entity.payoffChapter
   if (plant == null) return null
   const beats = entity.foreshadowBeats ?? []
-  const lineEnd = beats.length > 1 ? beats[beats.length - 1].chapter : plant
   const recovered = payoff != null
-  const lineLeft = (plant - 0.5) * cellWidth
-  const lineWidth = Math.max(0, (lineEnd - plant) * cellWidth)
+
+  // 事实段：已发生的 beats 之间的连线（实线）
+  const factEnd = beats.length > 1 ? beats[beats.length - 1].chapter : plant
+  const factLeft = (plant - 0.5) * cellWidth
+  const factWidth = Math.max(0, (factEnd - plant) * cellWidth)
+
+  // 意图段：从最后一个已发生节点延伸到计划回收章（虚线 + 空心终点）。
+  //
+  // 此前事实与意图共用一根线、靠 recovered 决定实线/虚线，于是
+  // 「已回收到第 8 章」与「欠着到第 8 章」画出来完全一样。现在分成两段：
+  // 实线到最后一个真实节点，虚线延伸到计划终点，终点画空心箭头示意"未兑现"。
+  const plannedEnd = !recovered && entity.spanEndKind === 'planned' ? entity.spanEnd ?? null : null
+  const plannedLeft = (factEnd - 0.5) * cellWidth
+  const plannedWidth = plannedEnd != null ? Math.max(0, (plannedEnd - factEnd) * cellWidth) : 0
 
   const beatLabel = (t: string): string =>
     t === 'plant' ? '埋设' : t === 'reinforce' ? '强化' : t === 'reveal' ? '揭示' : '回收'
 
   return (
     <>
-      {lineWidth > 0 && (
+      {factWidth > 0 && (
         <div
           aria-hidden="true"
           className="absolute top-1/2 -translate-y-1/2 pointer-events-none z-[2]"
           style={{
-            left: lineLeft,
-            width: lineWidth,
-            borderTop: `2px ${recovered ? 'solid' : 'dashed'} rgba(${meta.colorRgb}, ${recovered ? 0.55 : 0.45})`,
+            left: factLeft,
+            width: factWidth,
+            // 事实段恒为实线：这些节点都真的发生了
+            borderTop: `2px solid rgba(${meta.colorRgb}, 0.55)`,
           }}
         />
+      )}
+      {plannedWidth > 0 && (
+        <>
+          <div
+            aria-hidden="true"
+            className="absolute top-1/2 -translate-y-1/2 pointer-events-none z-[2]"
+            style={{
+              left: plannedLeft,
+              width: plannedWidth,
+              // 意图段虚线且更淡：欠着的债，不是已完成的事
+              borderTop: `2px dashed rgba(${meta.colorRgb}, 0.35)`,
+            }}
+          />
+          {/* 计划终点：空心方框，与已回收的实心圆点明确区分 */}
+          <span
+            className="absolute z-[5] pointer-events-none"
+            style={{
+              left: (plannedEnd! - 0.5) * cellWidth,
+              top: ROW_H / 2,
+              width: 8,
+              height: 8,
+              transform: 'translate(-50%, -50%)',
+              border: `1.5px dashed rgba(${meta.colorRgb}, 0.7)`,
+              borderRadius: 2,
+              background: 'transparent',
+            }}
+            {...hc(entity.name, plannedEnd!, {
+              after: '计划回收（未兑现）',
+              desc: '这是计划而非事实；拖动此端点改的是计划回收章',
+              color: meta.color,
+            })}
+          />
+        </>
       )}
       {beats.map((beat) => {
         const x = (beat.chapter - 0.5) * cellWidth

@@ -1,8 +1,9 @@
-import { useState, useCallback, type ReactElement } from 'react'
+import { useState, useCallback, type ReactElement, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FolderOpen, GitBranch, CircleDot } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { getApi, putApi } from '../../api'
 
 /** 工作区信息（与后端 workspace.route.ts 对应） */
@@ -25,6 +26,22 @@ function shortenPath(fullPath: string): string {
     return '.../' + segments.slice(-2).join('/')
   }
   return fullPath
+}
+
+/**
+ * 悬浮显示完整路径。
+ *
+ * 显示的路径被 shortenPath 砍成最后两级、又被 `truncate` 再截一次，
+ * 完整路径此前无处可看（原生 title 也没挂）。未选择工作区时无需提示。
+ */
+function PathTooltip({ path, children }: { path?: string; children: ReactNode }): ReactElement {
+  if (!path) return <>{children}</>
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent className="max-w-none break-all">{path}</TooltipContent>
+    </Tooltip>
+  )
 }
 
 export interface WorkspaceIndicatorProps {
@@ -72,45 +89,49 @@ export function WorkspaceIndicator({ compact = false }: WorkspaceIndicatorProps)
 
   if (compact) {
     return (
-      <button
-        type="button"
-        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-        onClick={() => void handleSelectWorkspace()}
-        disabled={switching}
-        aria-label="切换工作区"
-      >
-        <FolderOpen className="size-3" aria-hidden="true" />
-        <span className="truncate max-w-[200px]">
-          {workspace ? shortenPath(workspace.path) : '未选择'}
-        </span>
-        {workspace?.gitBranch && (
-          <>
-            <GitBranch className="size-3 ml-1" aria-hidden="true" />
-            <span>{workspace.gitBranch}</span>
-            {workspace.gitDirty && (
-              <CircleDot className="size-2.5 text-accent" aria-hidden="true" />
-            )}
-          </>
-        )}
-      </button>
+      <PathTooltip path={workspace?.path}>
+        <button
+          type="button"
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          onClick={() => void handleSelectWorkspace()}
+          disabled={switching}
+          aria-label="切换工作区"
+        >
+          <FolderOpen className="size-3" aria-hidden="true" />
+          <span className="truncate max-w-[200px]">
+            {workspace ? shortenPath(workspace.path) : '未选择'}
+          </span>
+          {workspace?.gitBranch && (
+            <>
+              <GitBranch className="size-3 ml-1" aria-hidden="true" />
+              <span>{workspace.gitBranch}</span>
+              {workspace.gitDirty && (
+                <CircleDot className="size-2.5 text-accent" aria-hidden="true" />
+              )}
+            </>
+          )}
+        </button>
+      </PathTooltip>
     )
   }
 
   return (
     <div className="flex items-center gap-2 min-w-0">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="gap-1.5 h-7 px-2 text-xs"
-        onClick={() => void handleSelectWorkspace()}
-        disabled={switching}
-        aria-label="选择工作区"
-      >
-        <FolderOpen className="size-3.5" aria-hidden="true" />
-        <span className="truncate max-w-[240px]">
-          {workspace ? shortenPath(workspace.path) : '选择工作区'}
-        </span>
-      </Button>
+      <PathTooltip path={workspace?.path}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1.5 h-7 px-2 text-xs"
+          onClick={() => void handleSelectWorkspace()}
+          disabled={switching}
+          aria-label="选择工作区"
+        >
+          <FolderOpen className="size-3.5" aria-hidden="true" />
+          <span className="truncate max-w-[240px]">
+            {workspace ? shortenPath(workspace.path) : '选择工作区'}
+          </span>
+        </Button>
+      </PathTooltip>
       {workspace?.gitBranch && (
         <Badge variant="secondary" className="gap-1 text-[10px] h-5">
           <GitBranch className="size-3" aria-hidden="true" />

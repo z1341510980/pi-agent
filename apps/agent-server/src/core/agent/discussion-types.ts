@@ -24,6 +24,20 @@ export interface DiscussionMember {
   canConverge: boolean
   /** 角色 Agent：出现在哪些场景（sceneId 序号），工种 Agent 不填 */
   scenePresence?: number[]
+  /**
+   * 角色 Agent 在各信息层上的认知状态（key = 信息层 ID）。
+   *
+   * 仅用于判断哪些角色**信息对称**、可合并为一次 LLM 调用（演出阶段逐角色
+   * 轮询的固定开销远大于产出：ch10 实测 20 次调用只换回 3.7k token）。
+   *
+   * 必须逐层比对而不能凭"同场"就合并：认知不同的角色可见上下文不同，
+   * 合并会把秘密泄露给不该知道的角色，后续台词会出现
+   * "他明明不知道却提到了那件事"。
+   *
+   * 由业务层填充，口径需与 buildContextPrompt 的裁剪一致。缺失时该角色
+   * 不参与合并，退回逐个调用。
+   */
+  knowledge?: Record<string, { knows?: boolean; suspects?: boolean; misunderstands?: string }>
   /** 角色 Agent：人设快照 */
   characterProfile?: {
     personality: string
@@ -116,7 +130,17 @@ export interface DiscussionMessage {
 
 /** Moderator 决策类型 */
 export type ModeratorDecision =
-  | { type: 'invite'; agentId: string; prompt: string; reason: string }
+  /**
+   * 点名发言。
+   *
+   * `agentIds` 是可选的**多角色点名**：演出阶段主持人可以一次点名同场的多个角色，
+   * 引擎会把其中信息对称的合并为一次 LLM 调用（见 discussion-actor-batching）。
+   * 逐角色轮询的固定开销远大于产出 —— ch10 实测 20 次调用 × 15.9s 只换回 3.7k token。
+   *
+   * 兼容旧协议：`agentId` 始终存在（多角色时为首个），未提供 `agentIds` 的决策
+   * 按单角色处理，行为与合并前完全一致。
+   */
+  | { type: 'invite'; agentId: string; prompt: string; reason: string; agentIds?: string[] }
   | { type: 'pause'; question: string; options?: string[]; reason: string }
   | { type: 'converge'; agentId: string; scope: 'scene' | 'chapter'; reason: string }
   | { type: 'next_scene'; reason: string }

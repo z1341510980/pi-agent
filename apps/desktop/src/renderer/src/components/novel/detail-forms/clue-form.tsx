@@ -83,7 +83,7 @@ export function ClueForm({ entity }: { entity: NovelClue }): ReactElement {
         这是误导线索
       </label>
       {entity.chapterSpans.length > 0 && (
-        <p className="text-[11px] text-muted-foreground">关联章节：{entity.chapterSpans.map(([start, end]) => start === end ? `第 ${start} 章` : `第 ${start}-${end} 章`).join('、')}</p>
+        <p className="text-micro text-muted-foreground">关联章节：{entity.chapterSpans.map(([start, end]) => start === end ? `第 ${start} 章` : `第 ${start}-${end} 章`).join('、')}</p>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty || !form.description.trim()} saving={saving} />

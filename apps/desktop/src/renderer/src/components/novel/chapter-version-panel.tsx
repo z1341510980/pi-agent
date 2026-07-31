@@ -274,15 +274,15 @@ export function ChapterVersionPanel({
                       />
                       <Badge
                         variant="secondary"
-                        className={cn('text-[10px] px-1.5 py-0', v.phase ? PHASE_COLOR[v.phase] : '')}
+                        className={cn('text-nano px-1.5 py-0', v.phase ? PHASE_COLOR[v.phase] : '')}
                       >
                         {v.phase ? PHASE_LABEL[v.phase] : '未知'}
                       </Badge>
                       {v.isCurrent && (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">当前</Badge>
+                        <Badge variant="outline" className="text-nano px-1.5 py-0">当前</Badge>
                       )}
-                      {isDiffFrom && <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-rose-600">源</Badge>}
-                      {isDiffTo && <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-emerald-600">目标</Badge>}
+                      {isDiffFrom && <Badge variant="outline" className="text-nano px-1.5 py-0 text-rose-600">源</Badge>}
+                      {isDiffTo && <Badge variant="outline" className="text-nano px-1.5 py-0 text-emerald-600">目标</Badge>}
                     </div>
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span>第 {v.sequence} 版 · {v.wordCount} 字</span>
@@ -293,7 +293,7 @@ export function ChapterVersionPanel({
                         {formatDelta(v.wordCountDelta)}
                       </span>
                     </div>
-                    <div className="text-[10px] text-muted-foreground mt-0.5">
+                    <div className="text-nano text-muted-foreground mt-0.5">
                       {formatTime(v.createdAt)}
                       {v.trigger ? ` · ${v.trigger.slice(0, 30)}` : ''}
                     </div>
@@ -330,7 +330,7 @@ export function ChapterVersionPanel({
                         第 {selectedDetail.sequence} 版 · {selectedDetail.wordCount} 字 · {formatTime(selectedDetail.createdAt)}
                       </span>
                       {selectedDetail.agentType && (
-                        <Badge variant="outline" className="text-[10px]">agent: {selectedDetail.agentType}</Badge>
+                        <Badge variant="outline" className="text-nano">agent: {selectedDetail.agentType}</Badge>
                       )}
                     </div>
                     {selectedDetail.trigger && (

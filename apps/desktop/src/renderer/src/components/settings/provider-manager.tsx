@@ -229,17 +229,18 @@ export function ProviderManager(): ReactElement {
     try {
       const [data, defaultRes] = await Promise.all([
         getApi<BackendProvider[]>('/api/providers'),
-        getApi<{ id: string | null }>('/api/providers/default'),
+        // 默认 Provider 是附属信息，取不到时不应影响主列表渲染
+        getApi<{ id: string | null } | null>('/api/providers/default').catch(() => null),
       ])
       setBackendProviders(
-        data.map((p) => ({
+        (data ?? []).map((p) => ({
           ...p,
           apiKey: '',
           models: p.models ?? [],
           registered: true,
         }))
       )
-      setDefaultProviderId(defaultRes.id)
+      setDefaultProviderId(defaultRes?.id ?? null)
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '加载 Provider 列表失败')
     } finally {

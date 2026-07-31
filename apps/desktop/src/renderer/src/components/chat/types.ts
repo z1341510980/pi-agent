@@ -40,6 +40,10 @@ export interface ToolCallInfo {
 export interface ThinkingBlock {
   content: string
   isStreaming: boolean
+  /** 思考开始时间戳（ms） */
+  startedAt?: number
+  /** 思考结束时间戳（ms）；流式时为 undefined */
+  endedAt?: number
 }
 
 /** 聊天消息（扩展 AgentMessage，增加流式状态） */

@@ -286,7 +286,7 @@ function ReviewFields({
 
   return (
     <div className="py-2 space-y-2 max-h-[60vh] overflow-y-auto">
-      <div className="rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+      <div className="rounded-md bg-muted/40 px-2.5 py-1.5 text-micro text-muted-foreground">
         以下字段由 AI 生成，确认后将作为实体创建。详细字段可在创建后于详情面板编辑。
       </div>
       {entityType === 'character' && aiFields.type === 'character' && (

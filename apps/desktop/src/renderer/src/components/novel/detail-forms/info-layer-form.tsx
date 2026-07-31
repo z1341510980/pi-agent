@@ -146,8 +146,8 @@ export function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): Re
               const desc = item.description.length > 16 ? `${item.description.slice(0, 16)}...` : item.description
               return (
                 <div key={item.id} className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="text-[10px]">{desc}</Badge>
-                  <span className="text-[10px] text-muted-foreground">
+                  <Badge variant="outline" className="text-nano">{desc}</Badge>
+                  <span className="text-nano text-muted-foreground">
                     {item.status || '未设定'}
                   </span>
                 </div>
@@ -155,7 +155,7 @@ export function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): Re
             })}
           </div>
         ) : (
-          <span className="text-[11px] text-muted-foreground">暂无</span>
+          <span className="text-micro text-muted-foreground">暂无</span>
         )}
       </FieldRow>
 

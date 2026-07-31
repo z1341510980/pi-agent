@@ -159,7 +159,7 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
   return (
     <div className="border-t border-border bg-background/40 px-3 py-2 space-y-2">
       {/* 元信息 */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground tabular-nums">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-nano text-muted-foreground tabular-nums">
         <span className="flex items-center gap-1">
           <Clock className="size-2.5" />
           耗时 {formatDuration(log.durationMs)}
@@ -180,14 +180,14 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
       {(log.inputTokens > 0 || log.cacheReadTokens > 0 || log.cacheWriteTokens > 0) && (
         <div className="rounded-md bg-surface-2 border border-border p-2 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-medium text-text">LLM Usage 诊断</span>
+            <span className="text-nano font-medium text-text">LLM Usage 诊断</span>
             {log.llmProvider && (
-              <span className="text-[10px] text-muted-foreground tabular-nums">
+              <span className="text-nano text-muted-foreground tabular-nums">
                 {log.llmProvider}/{log.llmModel}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-3 flex-wrap text-[10px] tabular-nums">
+          <div className="flex items-center gap-3 flex-wrap text-nano tabular-nums">
             <span className="text-muted-foreground">
               input <span className="text-text font-medium">{formatTokens(log.inputTokens)}</span>
             </span>
@@ -223,7 +223,7 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
       {log.toolNames.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {log.toolNames.map((name) => (
-            <Badge key={name} variant="outline" className="text-[9px] h-4 px-1">
+            <Badge key={name} variant="outline" className="text-nano h-4 px-1">
               {name}
             </Badge>
           ))}
@@ -233,8 +233,8 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
       {/* 用户创作指令 */}
       {log.userInstructions.length > 0 && (
         <div className="rounded-md bg-primary/5 border border-primary/20 p-2">
-          <div className="text-[10px] font-medium text-primary mb-1">用户在检查点期间发送的指令</div>
-          <ol className="list-decimal list-inside text-[11px] text-text space-y-0.5">
+          <div className="text-nano font-medium text-primary mb-1">用户在检查点期间发送的指令</div>
+          <ol className="list-decimal list-inside text-micro text-text space-y-0.5">
             {log.userInstructions.map((msg, i) => (
               <li key={i}>{msg}</li>
             ))}
@@ -276,19 +276,19 @@ function PromptSection({ section }: PromptSectionProps): ReactElement {
       >
         {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         <Icon className={cn('size-3', section.color)} />
-        <span className="text-[11px] font-medium text-text">{section.label}</span>
-        <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">{section.length} 字符</span>
+        <span className="text-micro font-medium text-text">{section.label}</span>
+        <span className="ml-auto text-nano text-muted-foreground tabular-nums">{section.length} 字符</span>
       </button>
       {expanded && (
         <div className="px-2 py-1.5">
-          <pre className="text-[10px] leading-relaxed text-text-secondary whitespace-pre-wrap break-words font-mono max-h-80 overflow-y-auto">
+          <pre className="text-nano leading-relaxed text-text-secondary whitespace-pre-wrap break-words font-mono max-h-80 overflow-y-auto">
             {showFull ? section.content : preview}
           </pre>
           {hasMore && (
             <Button
               size="sm"
               variant="link"
-              className="h-5 px-0 text-[10px]"
+              className="h-5 px-0 text-nano"
               onClick={() => setShowFull((v) => !v)}
             >
               {showFull ? '收起' : `查看全部 ${section.length} 字符`}
@@ -392,9 +392,9 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
         <div className="flex items-center gap-2">
           <Brain className="size-4 text-primary" />
           <span className="text-sm font-semibold text-text">Agent 调用日志</span>
-          <Badge variant="secondary" className="text-[10px] h-4 px-1 tabular-nums">{stats.total}</Badge>
+          <Badge variant="secondary" className="text-nano h-4 px-1 tabular-nums">{stats.total}</Badge>
           {stats.errors > 0 && (
-            <Badge variant="destructive" className="text-[10px] h-4 px-1 tabular-nums">{stats.errors} 失败</Badge>
+            <Badge variant="destructive" className="text-nano h-4 px-1 tabular-nums">{stats.errors} 失败</Badge>
           )}
         </div>
         <div className="flex items-center gap-1">
@@ -427,7 +427,7 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
             type="button"
             onClick={() => setAgentFilter(type)}
             className={cn(
-              'shrink-0 px-2 py-0.5 rounded text-[10px] transition-colors',
+              'shrink-0 px-2 py-0.5 rounded text-nano transition-colors',
               agentFilter === type
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-muted/50 text-muted-foreground hover:bg-muted',
@@ -437,7 +437,7 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
           </button>
         ))}
         {chapterNumber != null && (
-          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground tabular-nums">
+          <span className="ml-auto shrink-0 text-nano text-muted-foreground tabular-nums">
             第 {chapterNumber} 章
           </span>
         )}
@@ -445,7 +445,7 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
 
       {/* 汇总信息 */}
       {logs.length > 0 && (
-        <div className="px-3 py-1.5 text-[10px] text-muted-foreground border-b border-border bg-background/30 tabular-nums space-y-1">
+        <div className="px-3 py-1.5 text-nano text-muted-foreground border-b border-border bg-background/30 tabular-nums space-y-1">
           <div className="flex items-center gap-3">
             <span>总耗时 {formatDuration(stats.totalDuration)}</span>
             <span>总输出 {stats.totalResult} 字符</span>
@@ -489,7 +489,7 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
           <div className="flex flex-col items-center justify-center py-8 px-4 text-center">
             <Brain className="size-6 text-muted-foreground/50 mb-2" />
             <p className="text-xs text-muted-foreground">暂无日志记录</p>
-            <p className="text-[10px] text-muted-foreground/70 mt-1">
+            <p className="text-nano text-muted-foreground/70 mt-1">
               启动多 Agent 创作流程后，每次 Agent 调用的完整上下文将自动记录
             </p>
           </div>
@@ -512,23 +512,23 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
                   <StatusIcon className={cn('size-3 shrink-0', statusStyle.color)} />
                   <Badge
                     variant="outline"
-                    className={cn('text-[10px] h-4 px-1 shrink-0', agentStyle?.badge)}
+                    className={cn('text-nano h-4 px-1 shrink-0', agentStyle?.badge)}
                   >
                     {log.displayAgentName || agentStyle?.label || log.agentType}
                   </Badge>
-                  <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                  <span className="text-nano text-muted-foreground shrink-0 tabular-nums">
                     第 {log.chapterNumber} 章
                   </span>
-                  <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                  <span className="text-nano text-muted-foreground shrink-0 tabular-nums">
                     {formatDuration(log.durationMs)}
                   </span>
-                  <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                  <span className="text-nano text-muted-foreground shrink-0 tabular-nums">
                     {log.resultLength} 字
                   </span>
                   {hitRate !== null && (
                     <span
                       className={cn(
-                        'text-[10px] shrink-0 tabular-nums font-medium px-1 rounded',
+                        'text-nano shrink-0 tabular-nums font-medium px-1 rounded',
                         hitRate >= 50
                           ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10'
                           : hitRate >= 20
@@ -541,11 +541,11 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
                     </span>
                   )}
                   {log.toolNames.length > 0 && (
-                    <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                    <span className="text-nano text-muted-foreground shrink-0 tabular-nums">
                       {log.toolNames.length} 工具
                     </span>
                   )}
-                  <span className="ml-auto text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                  <span className="ml-auto text-nano text-muted-foreground shrink-0 tabular-nums">
                     {formatTime(log.createdAt)}
                   </span>
                 </button>

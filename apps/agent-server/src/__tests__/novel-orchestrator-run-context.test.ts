@@ -41,6 +41,60 @@ const REVIEWER_TOOL_PARAMS = {
   suggestions: [],
 }
 
+function createDecisionPathOrchestrator(): {
+  orchestrator: any
+  agentCalls: string[]
+} {
+  const orchestrator = Object.create(NovelOrchestrator.prototype) as any
+  orchestrator.runStorage = new AsyncLocalStorage()
+  orchestrator.pendingUserMessages = new Map()
+  orchestrator.store = {
+    getProject: () => ({ currentStage: 'setup', rhythmModelId: 'default', currentChapter: 1 }),
+    getWritingStyleProfile: () => undefined,
+    listChapters: () => [],
+    listConflicts: () => [],
+    listForeshadowing: () => [],
+    getChapter: () => ({ id: 'chapter-1', positioning: null }),
+    listHooksByChapter: () => [],
+  }
+  orchestrator.promptBuilder = {
+    stripEmDash: (value: string) => value,
+    buildProseEditorIdentity: () => '文字编辑身份',
+  }
+  orchestrator.context = {
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  }
+  orchestrator.engine = {
+    buildChapterConstraints: () => ({ wordBudget: { target: 3000 } }),
+    saveReview: vi.fn(async () => ({})),
+  }
+  const agentCalls: string[] = []
+  orchestrator.runAgent = vi.fn(async (
+    agentType: string,
+    _projectId: string,
+    _chapterNumber: number,
+    _input: string,
+    _options: unknown,
+    overrides?: unknown,
+  ) => {
+    agentCalls.push(agentType)
+    if (agentType === 'director') {
+      await invokeExtraTool(overrides, DIRECTOR_TOOL_PARAMS)
+      return 'Director 已通过工具提交叙事任务'
+    }
+    if (agentType === 'writer') return '通过的完整正文'
+    if (agentType === 'reviewer') {
+      await invokeExtraTool(overrides, REVIEWER_TOOL_PARAMS).catch(() => {})
+      return '验收通过'
+    }
+    return 'Reviser 已检查正文'
+  })
+  orchestrator.finalizer = {
+    finalize: vi.fn(async ({ content }: { content: string }) => ({ status: 'completed', content })),
+  }
+  return { orchestrator, agentCalls }
+}
+
 describe('NovelOrchestrator request context', () => {
   it('并发 create-flow 使用独立的编排实体上下文', async () => {
     const orchestrator = Object.create(NovelOrchestrator.prototype) as any
@@ -246,6 +300,54 @@ describe('NovelOrchestrator request context', () => {
     expect(saveReview).toHaveBeenCalledWith(expect.objectContaining({
       projectId: 'project', chapterId: 'chapter-1', reviewedBy: 'novel-reviewer',
     }))
+  })
+
+  it.each([
+    {
+      decision: 'approve',
+      expectedWriterCalls: 1,
+      expectedReviserCalls: 0,
+      expectedCheckpointTypes: ['narrative_task', 'post_write_guard', 'review'],
+    },
+    {
+      decision: 'revise',
+      expectedWriterCalls: 1,
+      expectedReviserCalls: 1,
+      expectedCheckpointTypes: ['narrative_task', 'post_write_guard'],
+    },
+    {
+      decision: 'rewrite',
+      expectedWriterCalls: 2,
+      expectedReviserCalls: 0,
+      expectedCheckpointTypes: ['narrative_task', 'post_write_guard', 'review'],
+    },
+  ] as const)('守护检查点选择 $decision 时走独立路径', async ({
+    decision,
+    expectedWriterCalls,
+    expectedReviserCalls,
+    expectedCheckpointTypes,
+  }) => {
+    const { orchestrator, agentCalls } = createDecisionPathOrchestrator()
+    orchestrator.runPostWriteGuard = decision === 'rewrite'
+      ? vi.fn()
+          .mockReturnValueOnce({ shouldRewrite: true, reason: '正文过短', details: '实际 1200 字' })
+          .mockReturnValueOnce({ shouldRewrite: false, reason: '', details: '' })
+      : vi.fn(() => ({ shouldRewrite: true, reason: '正文过短', details: '实际 1200 字' }))
+    const checkpointTypes: string[] = []
+
+    const result = await orchestrator.createChapterWithFlow('project', 1, {
+      arrangedEntities: { characterIds: [], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [] },
+      onCheckpoint: vi.fn(async (checkpoint: { type: string }) => {
+        checkpointTypes.push(checkpoint.type)
+        return checkpoint.type === 'post_write_guard' ? decision : 'approve'
+      }),
+      onProgress: vi.fn(),
+    })
+
+    expect(result.status).toBe('completed')
+    expect(agentCalls.filter((agent) => agent === 'writer')).toHaveLength(expectedWriterCalls)
+    expect(agentCalls.filter((agent) => agent === 'reviser')).toHaveLength(expectedReviserCalls)
+    expect(checkpointTypes).toEqual(expectedCheckpointTypes)
   })
 
   it('叙事任务检查点选择 revise 时重新调用 Director', async () => {

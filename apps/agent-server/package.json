@@ -10,6 +10,9 @@
     "collect-deps": "node scripts/collect-server-deps.mjs",
     "start": "node dist/index.js",
     "start:bytenode": "node dist/loader.cjs",
+    "reconcile:matrix": "tsx scripts/reconcile-matrix-projection.ts",
+    "backfill:ledger": "tsx scripts/backfill-ledger-projection.ts",
+    "cleanup:dangling": "tsx scripts/cleanup-dangling-ledger-refs.ts",
     "test": "vitest run"
   },
   "keywords": [

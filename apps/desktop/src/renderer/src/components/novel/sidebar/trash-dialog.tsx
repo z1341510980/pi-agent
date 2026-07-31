@@ -109,7 +109,7 @@ export function TrashDialog({ open, onOpenChange, onRestored }: TrashDialogProps
                 >
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{p.title}</div>
-                    <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground">
+                    <div className="flex items-center gap-1.5 mt-0.5 text-nano text-muted-foreground">
                       <span>{p.genre}</span>
                       <span aria-hidden="true">·</span>
                       <span className="tabular-nums">第 {p.currentChapter} 章</span>

@@ -15,6 +15,8 @@ interface MatrixPerfConfig {
   readonly scrollThrottleMs: number
   /** 水平虚拟化 overscan（默认 3 列） */
   readonly overscanColumns: number
+  /** 垂直虚拟化 overscan（默认 6 行） */
+  readonly overscanRows: number
 }
 
 interface SsePerfConfig {
@@ -62,6 +64,13 @@ function buildConfig(): RuntimePerformanceConfig {
     matrix: {
       scrollThrottleMs: readEnvInt('VITE_MATRIX_SCROLL_THROTTLE_MS', 16),
       overscanColumns: readEnvInt('VITE_MATRIX_OVERSCAN_COLUMNS', 3),
+      /**
+       * 垂直方向的行 overscan。
+       *
+       * 与列分开配置：行高（28~40px）远小于列宽（56px 起），且长篇的行数
+       * 增长比列数快得多，两者的合适缓冲量不同。
+       */
+      overscanRows: readEnvInt('VITE_MATRIX_OVERSCAN_ROWS', 6),
     },
     sse: {
       useRafBatching: readEnvBool('VITE_SSE_USE_RAF_BATCHING', true),

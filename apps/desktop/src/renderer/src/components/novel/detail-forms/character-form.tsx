@@ -35,7 +35,6 @@ import {
   DYNAMIC_FIELDS,
   HISTORY_FIELD_LABELS,
   JsonObjectEditor,
-  ParticipatingConflictsBadges,
   relativeTime,
   SaveButton,
   SectionHeader,
@@ -163,9 +162,10 @@ export function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElem
         </Select>
       </FieldRow>
 
-      {/* 三层模型④：影响层反向索引（只读，由冲突 CRUD 自动同步） */}
-      <SectionHeader title="参与冲突" hint="反向索引：由冲突编辑时的 participants 自动同步" />
-      <ParticipatingConflictsBadges raw="" />
+      {/* 三层模型④：影响层反向索引「参与冲突」已移除。
+          该关联数据已迁移至 edges 表，角色实体上不再有 participatingConflicts 字段，
+          此处此前传入 raw="" 导致恒定渲染「暂无参与冲突」。需要时应通过 edges 查询
+          （按 characterId 反查 conflict 边）实现，而不是留一个空占位。 */}
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
@@ -214,7 +214,7 @@ export function CharacterHistorySection({ characterId }: { characterId: string }
         <div className="flex items-center gap-1.5">
           <History className="size-3.5 text-muted-foreground" />
           <span className="text-xs font-medium text-text">状态变更历史</span>
-          <Badge variant="secondary" className="h-4 px-1 text-[10px] tabular-nums">
+          <Badge variant="secondary" className="h-4 px-1 text-nano tabular-nums">
             {history.length}
           </Badge>
         </div>
@@ -225,13 +225,13 @@ export function CharacterHistorySection({ characterId }: { characterId: string }
       </div>
 
       {isLoading ? (
-        <p className="text-[11px] text-muted-foreground px-1 py-2">加载中...</p>
+        <p className="text-micro text-muted-foreground px-1 py-2">加载中...</p>
       ) : error ? (
-        <p className="text-[11px] text-destructive px-1 py-2">
+        <p className="text-micro text-destructive px-1 py-2">
           {error instanceof Error ? error.message : '加载历史失败'}
         </p>
       ) : history.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground px-1 py-2">暂无变更记录</p>
+        <p className="text-micro text-muted-foreground px-1 py-2">暂无变更记录</p>
       ) : (
         <CharacterHistoryTimeline history={history} />
       )}
@@ -278,14 +278,14 @@ export function CharacterHistoryTimeline({
             />
             <div className="rounded-md bg-muted/40 px-2 py-1.5">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-text">
+                <span className="text-micro font-medium text-text">
                   {chapterLabel} · {fieldLabel}
                 </span>
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-nano text-muted-foreground">
                   {relativeTime(entry.createdAt)}
                 </span>
               </div>
-              <div className="mt-1 space-y-0.5 text-[10px]">
+              <div className="mt-1 space-y-0.5 text-nano">
                 {entry.oldValue != null && (
                   <div className="text-muted-foreground">
                     旧值: <span className="text-text">{entry.oldValue || '（空）'}</span>

@@ -6,10 +6,18 @@
  * - 重新生成：覆盖已有章节内容
  * - 查看：选中并跳转到该章节详情
  * - 删除：删除该章节
+ *
+ * 定位、外部点击关闭、Esc 关闭与碰撞规避统一由 CoordinateMenu（Popover）负责，
+ * 本组件只描述菜单内容。
  */
 
-import { useEffect, type ReactElement } from 'react'
+import { type ReactElement } from 'react'
 import { Sparkles, RefreshCw, Eye, Trash2 } from 'lucide-react'
+import {
+  CoordinateMenu,
+  coordinateMenuDangerItemClass,
+  coordinateMenuItemClass,
+} from './coordinate-menu'
 
 export interface ChapterContextMenuPosition {
   x: number
@@ -38,29 +46,11 @@ export function ChapterContextMenu({
   onRegenerate,
   onView,
   onDelete,
-}: ChapterContextMenuProps): ReactElement | null {
-  useEffect(() => {
-    if (!position) return
-    const handleClickOutside = (): void => onClose()
-    const handleEscape = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('click', handleClickOutside)
-    window.addEventListener('keydown', handleEscape)
-    return () => {
-      window.removeEventListener('click', handleClickOutside)
-      window.removeEventListener('keydown', handleEscape)
-    }
-  }, [position, onClose])
-
-  if (!position) return null
-
-  const { x, y, chapterNumber, chapterId, chapterTitle } = position
+}: ChapterContextMenuProps): ReactElement {
+  const chapterNumber = position?.chapterNumber ?? 0
+  const chapterId = position?.chapterId ?? null
+  const chapterTitle = position?.chapterTitle ?? null
   const hasChapter = !!chapterId
-
-  // 防止菜单越出视口
-  const adjustedX = Math.min(x, window.innerWidth - 180)
-  const adjustedY = Math.min(y, window.innerHeight - 200)
 
   const handleGenerate = (): void => {
     onGenerate(chapterNumber)
@@ -82,52 +72,58 @@ export function ChapterContextMenu({
   }
 
   return (
-    <div
-      className="novel-chapter-context-menu"
-      style={{ left: adjustedX, top: adjustedY }}
-      onClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => {
-        e.preventDefault()
-        e.stopPropagation()
-      }}
+    <CoordinateMenu
+      position={position}
+      onClose={onClose}
+      ariaLabel="章节操作"
+      className="min-w-[176px]"
     >
-      <div className="px-2 py-1 text-[10px] text-muted-foreground uppercase tracking-wide border-b border-border mb-1 tabular-nums">
+      <div className="px-2 py-1 mb-1 border-b border-border text-nano tracking-wide text-muted-foreground uppercase tabular-nums">
         第 {chapterNumber} 章{chapterTitle ? ` · ${chapterTitle}` : ''}
       </div>
 
       {!hasChapter && (
-        <div
-          className={`novel-chapter-context-menu-item ${creationRunning ? 'opacity-50 pointer-events-none' : ''}`}
+        <button
+          type="button"
+          role="menuitem"
+          disabled={creationRunning}
+          className={coordinateMenuItemClass}
           onClick={handleGenerate}
         >
           <Sparkles className="size-3.5" />
           <span>从此章开始创作</span>
-        </div>
+        </button>
       )}
 
       {hasChapter && (
         <>
-          <div
-            className={`novel-chapter-context-menu-item ${creationRunning ? 'opacity-50 pointer-events-none' : ''}`}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={creationRunning}
+            className={coordinateMenuItemClass}
             onClick={handleRegenerate}
           >
             <RefreshCw className="size-3.5" />
             <span>重新生成</span>
-          </div>
-          <div className="novel-chapter-context-menu-item" onClick={handleView}>
+          </button>
+          <button type="button" role="menuitem" className={coordinateMenuItemClass} onClick={handleView}>
             <Eye className="size-3.5" />
             <span>查看详情</span>
-          </div>
-          <div className="novel-chapter-context-menu-divider" />
-          <div
-            className={`novel-chapter-context-menu-item is-danger ${creationRunning ? 'opacity-50 pointer-events-none' : ''}`}
+          </button>
+          <div className="-mx-1 my-1 h-px bg-border" />
+          <button
+            type="button"
+            role="menuitem"
+            disabled={creationRunning}
+            className={coordinateMenuDangerItemClass}
             onClick={handleDelete}
           >
             <Trash2 className="size-3.5" />
             <span>删除章节</span>
-          </div>
+          </button>
         </>
       )}
-    </div>
+    </CoordinateMenu>
   )
 }

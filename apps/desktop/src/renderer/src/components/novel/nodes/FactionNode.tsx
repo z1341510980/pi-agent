@@ -66,7 +66,7 @@ function FactionNodeImpl({ data, selected }: NodeProps<FactionNodeType>): ReactE
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-violet-500/10 rounded-t-lg">
         <Users className="size-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
         <span className="text-xs font-medium text-violet-600 dark:text-violet-300">势力</span>
-        <span className="ml-auto rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-600 dark:text-violet-300">
+        <span className="ml-auto rounded bg-violet-500/10 px-1.5 py-0.5 text-nano text-violet-600 dark:text-violet-300">
           {TYPE_LABELS[entity.type] ?? entity.type}
         </span>
       </div>
@@ -79,7 +79,7 @@ function FactionNodeImpl({ data, selected }: NodeProps<FactionNodeType>): ReactE
             {entity.description}
           </div>
         )}
-        <div className="flex items-center justify-between text-[10px]">
+        <div className="flex items-center justify-between text-nano">
           <span className="text-muted-foreground">实力</span>
           <span className="text-subtle">{STRENGTH_LABELS[entity.strength] ?? entity.strength}</span>
         </div>
@@ -96,7 +96,7 @@ function FactionNodeImpl({ data, selected }: NodeProps<FactionNodeType>): ReactE
             }}
           />
         </div>
-        <div className="flex items-center justify-between text-[10px] text-subtle">
+        <div className="flex items-center justify-between text-nano text-subtle">
           <span>状态: {STATUS_LABELS[entity.status] ?? entity.status}</span>
           {(entity.allies.length > 0 || entity.enemies.length > 0) && (
             <span className="tabular-nums" title={`盟友 ${entity.allies.length} / 敌对 ${entity.enemies.length}`}>

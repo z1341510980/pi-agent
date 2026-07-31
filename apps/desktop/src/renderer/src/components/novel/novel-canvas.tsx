@@ -711,7 +711,7 @@ export function NovelCanvas({
 
       {/* 关系类型过滤：按 edge_type 过滤边 */}
       <div className="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-md border border-border bg-card/90 px-2 py-1 text-xs backdrop-blur-sm">
-        <span className="text-[10px] text-muted-foreground">过滤</span>
+        <span className="text-nano text-muted-foreground">过滤</span>
         <select
           value={edgeTypeFilter}
           onChange={(e) => setEdgeTypeFilter(e.target.value as NovelEdgeType | 'all')}
@@ -728,19 +728,19 @@ export function NovelCanvas({
       {/* 边删除提示：选中边时显示，引导用户按 Delete 删除或双击/右键直删 */}
       {selectedEdgeId && (
         <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-md border border-border bg-surface-1 px-3 py-1.5 text-xs text-muted-foreground shadow-md backdrop-blur-sm">
-          按 <kbd className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground">Delete</kbd> 删除连线，或双击 / 右键连线直接删除
+          按 <kbd className="rounded bg-muted px-1 py-0.5 font-mono text-nano text-foreground">Delete</kbd> 删除连线，或双击 / 右键连线直接删除
         </div>
       )}
 
       {/* 节点计数 + 性能警告 */}
       <div className="absolute bottom-3 left-3 z-10 flex items-center gap-2">
-        <div className="flex items-center gap-1.5 rounded-md border border-border bg-card/90 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur-sm tabular-nums">
+        <div className="flex items-center gap-1.5 rounded-md border border-border bg-card/90 px-2 py-1 text-nano text-muted-foreground backdrop-blur-sm tabular-nums">
           <Layers className="size-3" />
           <span>{nodeCount} 节点</span>
           {isCompact && <span className="text-amber-500">· 紧凑模式</span>}
         </div>
         {showPerfWarning && (
-          <div className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-600 dark:text-amber-300">
+          <div className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-nano text-amber-600 dark:text-amber-300">
             <AlertTriangle className="size-3" />
             <span>节点过多，建议按类型筛选</span>
           </div>

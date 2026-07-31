@@ -64,7 +64,7 @@ export function SimilarityScanPanel({
           <Sparkle className="size-4 text-primary shrink-0" />
           <div className="min-w-0">
             <div className="text-sm font-medium text-text truncate">AI 相似度整理</div>
-            <div className={`text-[11px] ${meta.color} font-medium`}>{meta.label}</div>
+            <div className={`text-micro ${meta.color} font-medium`}>{meta.label}</div>
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -122,7 +122,7 @@ export function SimilarityScanPanel({
                 >
                   <ProgressEventIcon phase={evt.phase} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium mb-0.5">
+                    <div className="text-micro text-muted-foreground uppercase tracking-wide font-medium mb-0.5">
                       {evt.phase}
                     </div>
                     <div className="text-xs text-text leading-relaxed break-words">

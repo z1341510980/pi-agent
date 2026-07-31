@@ -286,7 +286,7 @@ export function NovelToolbar({
           className="h-6 px-2"
         >
           <LayoutGrid className="size-3" />
-          <span className="hidden sm:inline text-[11px]">分组</span>
+          <span className="hidden sm:inline text-micro">分组</span>
         </Button>
         <Button
           size="sm"
@@ -297,7 +297,7 @@ export function NovelToolbar({
           className="h-6 px-2"
         >
           <Network className="size-3" />
-          <span className="hidden sm:inline text-[11px]">图谱</span>
+          <span className="hidden sm:inline text-micro">图谱</span>
         </Button>
       </div>
 

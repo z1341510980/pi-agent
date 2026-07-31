@@ -142,8 +142,48 @@ export interface NovelDataState {
 
 // ── 通用 upsert 工具 ──
 
-function upsertInList<T extends { id: string }>(list: T[], item: T): T[] {
-  const idx = list.findIndex((x) => x.id === item.id)
+/**
+ * 剥掉章节正文，只留元信息。
+ *
+ * 用于 localStorage 持久化：`content` 是整章全文，300 章可达数 MB，
+ * 超过 localStorage 配额会抛 QuotaExceededError，导致**整个 store** 的
+ * 持久化静默失败（zustand persist 捕获异常但不上报）。
+ *
+ * 保留空串而不是删字段：`NovelChapter.content` 是必填类型，删掉会让
+ * hydrate 后的对象不符合类型，下游 `chapter.content.length` 直接抛错。
+ */
+export function stripChapterContent(chapter: NovelChapter): NovelChapter {
+  return chapter.content ? { ...chapter, content: '' } : chapter
+}
+
+/**
+ * 为 zundo 的相等性判定构造轻量指纹。
+ *
+ * 只取每个列表的长度与逐项的 `id` + `updatedAt`，避免全量 JSON 序列化
+ * （原实现每次 set 都要序列化整个 store 两遍，含全部章节正文）。
+ *
+ * 不含 updatedAt 的实体（如 nodePositions / edges / markers）退化为按 id 比对 ——
+ * 它们的变更总是伴随增删，长度会先变。
+ */
+export function fingerprintTemporalState(state: Record<string, unknown>): string {
+  const parts: string[] = []
+  // 按 key 排序保证顺序稳定：对象字面量的枚举顺序在不同构造路径下可能不同
+  for (const key of Object.keys(state).sort()) {
+    const value = state[key]
+    if (!Array.isArray(value)) {
+      parts.push(`${key}:${String(value)}`)
+      continue
+    }
+    parts.push(`${key}#${value.length}`)
+    for (const item of value) {
+      const record = item as { id?: unknown; updatedAt?: unknown }
+      parts.push(`${String(record?.id ?? '')}@${String(record?.updatedAt ?? '')}`)
+    }
+  }
+  return parts.join('|')
+}
+
+function upsertInList<T extends { id: string }>(list: T[], item: T): T[] {  const idx = list.findIndex((x) => x.id === item.id)
   if (idx >= 0) {
     const next = [...list]
     next[idx] = item
@@ -416,7 +456,16 @@ export const useNovelDataStore = create<NovelDataState>()(
           currentProjectId: state.currentProjectId,
           projects: state.projects,
           characters: state.characters,
-          chapters: state.chapters,
+          // ⚠️ 章节正文不进 localStorage。
+          //
+          // NovelChapter.content 是整章全文（数千字），300 章的项目序列化后可达
+          // 数 MB，而 localStorage 的配额通常是 5~10MB —— 写入会抛
+          // QuotaExceededError，zustand persist 捕获后静默失败，于是**整个 store
+          // 的持久化全部失效**（不只是章节），用户下次打开丢掉所有本地状态。
+          //
+          // 正文的权威来源是后端；本地只需要元信息（标题/字数/状态）来渲染列表与矩阵。
+          // 打开某章时由 chapter-content-editor 从 store 的内存态或后端取全文。
+          chapters: state.chapters.map(stripChapterContent),
           volumes: state.volumes,
           conflicts: state.conflicts,
           foreshadows: state.foreshadows,
@@ -465,8 +514,21 @@ export const useNovelDataStore = create<NovelDataState>()(
         markers: state.markers,
       }),
       limit: 50, // 历史栈最多 50 步
+      /**
+       * 相等性判定：只比较**结构标识**，不做全量 JSON 序列化。
+       *
+       * 原实现是 `JSON.stringify(pastState) === JSON.stringify(currentState)`，
+       * 每次 set 都要把整个 store（含全部章节正文）序列化两遍。300 章的项目
+       * 单次比较就是数 MB 字符串拼接，而 set 在打字、拖拽时每秒触发多次 ——
+       * 这是长篇下操作卡顿的直接来源。
+       *
+       * 改为按「各列表的长度 + 逐项 id/updatedAt」构造轻量指纹：
+       * 实体变更必然改动 updatedAt（后端统一维护），新增删除必然改动长度。
+       * 代价是"改了字段但 updatedAt 没变"的情况会被判为相等而不入历史栈 ——
+       * 那种情况只可能来自绕过后端的本地直改，不在正常路径上。
+       */
       equality: (pastState, currentState) =>
-        JSON.stringify(pastState) === JSON.stringify(currentState),
+        fingerprintTemporalState(pastState) === fingerprintTemporalState(currentState),
     },
   ),
 )

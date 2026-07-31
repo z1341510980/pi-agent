@@ -65,6 +65,56 @@ import { ItemStore } from './stores/item-store.js'
 import { GraphStore } from './stores/graph-store.js'
 import { ChapterRenumberService } from './stores/chapter-renumber-service.js'
 import { DeduplicateService } from './stores/deduplicate-service.js'
+import {
+  chaptersOfClue,
+  chaptersOfConflict,
+  chaptersOfFaction,
+  chaptersOfForeshadow,
+  chaptersOfItem,
+  chaptersOfLocation,
+  diffChapters,
+  type ProjectionEntityType,
+} from './chapter-projection-fields.js'
+
+/**
+ * 实体章节投影发生变化的通知。
+ *
+ * "某实体在哪些章出场"是矩阵与编排的核心事实，但它分散在 6 类实体的不同字段里
+ * （chapterSpans / appearChapters / beats / character_history）。任何路径改动这些字段
+ * 都应该在事件账本留痕，否则账本与矩阵会持续漂移（S4-1 对账实测一致率仅 38.6%）。
+ *
+ * 与逐个路由插桩相比，在 NovelStore 门面上挂一个观察者是唯一的收口点：
+ * 路由、Memory Agent 工具、编排器、前端拖拽全部经由这里。
+ */
+export interface ChapterProjectionChange {
+  entityType: ProjectionEntityType
+  entityId: string
+  /** 新增出场的章节（升序） */
+  addedChapters: number[]
+  /** 不再出场的章节（升序） */
+  removedChapters: number[]
+  /** 触发来源，用于账本 reason */
+  origin: string
+}
+
+export type ChapterProjectionObserver = (
+  projectId: string,
+  change: ChapterProjectionChange,
+) => void
+
+/**
+ * 实体被删除的通知。
+ *
+ * 账本对实体的引用（story_event_entities.entity_id / memory_events.subject_id）
+ * 是多态的，没有外键，删除实体不会级联清理。真实项目因此积累了 11 条悬空引用。
+ * 观察者让 novel-services 把删除动作接到账本清理上。
+ */
+export interface EntityDeletedEvent {
+  entityType: ProjectionEntityType
+  entityId: string
+}
+
+export type EntityDeletedObserver = (projectId: string, event: EntityDeletedEvent) => void
 
 export class NovelStore implements NovelPromptStores {
   private readonly project: ProjectStore
@@ -77,6 +127,9 @@ export class NovelStore implements NovelPromptStores {
   private readonly item: ItemStore
   private readonly graph: GraphStore
   private readonly deduplicator: DeduplicateService
+  private chapterProjectionObserver: ChapterProjectionObserver | null = null
+  private entityDeletedObserver: EntityDeletedObserver | null = null
+  private observerSuppressed = false
 
   constructor(private db: Database.Database) {
     // GraphStore 拥有 deleteEdgesByEntity，先实例化供其他 Store 注入
@@ -200,15 +253,120 @@ export class NovelStore implements NovelPromptStores {
   updateCharacterArc(id: string, patch: Partial<NovelCharacterArc>): NovelCharacterArc | undefined { return this.chapter.updateCharacterArc(id, patch) }
   deleteCharacterArc(id: string): boolean { return this.chapter.deleteCharacterArc(id) }
 
+  // ── 章节投影观察者 ──
+
+  /**
+   * 注册章节投影变更观察者（由 novel-services 接到事件账本记录器）。
+   *
+   * 只支持单个观察者：这是一个基础设施收口点，不是通用事件总线。
+   */
+  setChapterProjectionObserver(observer: ChapterProjectionObserver | null): void {
+    this.chapterProjectionObserver = observer
+  }
+
+  /** 注册实体删除观察者（由 novel-services 接到账本引用清理） */
+  setEntityDeletedObserver(observer: EntityDeletedObserver | null): void {
+    this.entityDeletedObserver = observer
+  }
+
+  /** 删除成功后通知观察者清理账本引用 */
+  private notifyEntityDeleted(
+    entityType: ProjectionEntityType,
+    entityId: string,
+    projectId: string | undefined,
+    deleted: boolean,
+  ): boolean {
+    if (deleted && projectId && this.entityDeletedObserver && !this.observerSuppressed) {
+      this.entityDeletedObserver(projectId, { entityType, entityId })
+    }
+    return deleted
+  }
+
+  /**
+   * 在回调期间临时关闭观察者。
+   *
+   * 用于 generateAndArrange 这类"自己已经写了一条完整账本事件"的批量流程：
+   * 让它们保留语义完整的 story event，而不是被逐字段变更拆成一堆碎片记录。
+   */
+  runWithoutChapterProjectionObserver<T>(fn: () => T): T {
+    const previous = this.observerSuppressed
+    this.observerSuppressed = true
+    try {
+      return fn()
+    } finally {
+      this.observerSuppressed = previous
+    }
+  }
+
+  /** 比对更新前后的章节集合，有变化则通知观察者 */
+  private notifyChapterProjection<T>(
+    entityType: ProjectionEntityType,
+    entityId: string,
+    projectId: string | undefined,
+    before: T | undefined,
+    after: T | undefined,
+    chaptersOf: (entity: T) => number[],
+    origin: string,
+  ): void {
+    const observer = this.chapterProjectionObserver
+    if (!observer || this.observerSuppressed || !projectId) return
+    const { added, removed } = diffChapters(
+      before ? chaptersOf(before) : [],
+      after ? chaptersOf(after) : [],
+    )
+    if (added.length === 0 && removed.length === 0) return
+    observer(projectId, {
+      entityType,
+      entityId,
+      addedChapters: added,
+      removedChapters: removed,
+      origin,
+    })
+  }
+
   // ── Character / Relationship / History ──
 
   createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt'>): NovelCharacter { return this.character.createCharacter(character) }
   updateCharacter(id: string, patch: Partial<NovelCharacter>): NovelCharacter | undefined { return this.character.updateCharacter(id, patch) }
-  deleteCharacter(id: string): boolean { return this.character.deleteCharacter(id) }
+  deleteCharacter(id: string): boolean {
+    const projectId = this.character.getCharacter(id)?.projectId
+    // character_history 没有外键级联，不清理会留下指向已删角色的悬空出场记录
+    // （S4-1 对账在真实库里发现了这样一行）。
+    this.character.deleteCharacterHistoryByCharacter(id)
+    return this.notifyEntityDeleted('character', id, projectId, this.character.deleteCharacter(id))
+  }
   deleteCharacterHistoryByCharacter(characterId: string): number { return this.character.deleteCharacterHistoryByCharacter(characterId) }
   deleteCharacterHistory(historyId: string, projectId?: string): boolean { return this.character.deleteCharacterHistory(historyId, projectId) }
-  createCharacterHistory(history: Omit<NovelCharacterHistory, 'id' | 'createdAt'>): NovelCharacterHistory { return this.character.createCharacterHistory(history) }
-  batchCreateCharacterHistory(entries: Array<Omit<NovelCharacterHistory, 'id' | 'createdAt'>>): NovelCharacterHistory[] { return this.character.batchCreateCharacterHistory(entries) }
+  createCharacterHistory(history: Omit<NovelCharacterHistory, 'id' | 'createdAt'>): NovelCharacterHistory {
+    const created = this.character.createCharacterHistory(history)
+    this.notifyCharacterAppearance(created.projectId, created.characterId, created.chapterNumber, 'createCharacterHistory')
+    return created
+  }
+  batchCreateCharacterHistory(entries: Array<Omit<NovelCharacterHistory, 'id' | 'createdAt'>>): NovelCharacterHistory[] {
+    const created = this.character.batchCreateCharacterHistory(entries)
+    for (const entry of created) {
+      this.notifyCharacterAppearance(entry.projectId, entry.characterId, entry.chapterNumber, 'batchCreateCharacterHistory')
+    }
+    return created
+  }
+
+  /** 角色没有 chapterSpans，出场由 character_history 的新增行表达 */
+  private notifyCharacterAppearance(
+    projectId: string,
+    characterId: string,
+    chapterNumber: number | null,
+    origin: string,
+  ): void {
+    const observer = this.chapterProjectionObserver
+    if (!observer || this.observerSuppressed || chapterNumber == null) return
+    observer(projectId, {
+      entityType: 'character',
+      entityId: characterId,
+      addedChapters: [chapterNumber],
+      removedChapters: [],
+      origin,
+    })
+  }
   listCharacterHistory(projectId: string, characterId?: string): NovelCharacterHistory[] { return this.character.listCharacterHistory(projectId, characterId) }
   getRelationship(relationshipId: string): NovelRelationship | undefined { return this.character.getRelationship(relationshipId) }
   createRelationship(rel: Omit<NovelRelationship, 'createdAt' | 'updatedAt'>): NovelRelationship { return this.character.createRelationship(rel) }
@@ -217,18 +375,54 @@ export class NovelStore implements NovelPromptStores {
 
   // ── Conflict ──
 
-  createConflict(conflict: Omit<NovelConflict, 'createdAt' | 'updatedAt'>): NovelConflict { return this.conflict.createConflict(conflict) }
-  updateConflict(id: string, patch: Partial<NovelConflict>): NovelConflict | undefined { return this.conflict.updateConflict(id, patch) }
-  deleteConflict(id: string): boolean { return this.conflict.deleteConflict(id) }
+  createConflict(conflict: Omit<NovelConflict, 'createdAt' | 'updatedAt'>): NovelConflict {
+    const created = this.conflict.createConflict(conflict)
+    this.notifyChapterProjection('conflict', created.id, created.projectId, undefined, created, chaptersOfConflict, 'createConflict')
+    return created
+  }
+  updateConflict(id: string, patch: Partial<NovelConflict>): NovelConflict | undefined {
+    const before = this.conflict.getConflict(id)
+    const after = this.conflict.updateConflict(id, patch)
+    this.notifyChapterProjection('conflict', id, after?.projectId ?? before?.projectId, before, after, chaptersOfConflict, 'updateConflict')
+    return after
+  }
+  deleteConflict(id: string): boolean {
+    const projectId = this.conflict.getConflict(id)?.projectId
+    return this.notifyEntityDeleted('conflict', id, projectId, this.conflict.deleteConflict(id))
+  }
 
   // ── Foreshadow / Clue / InfoLayer ──
 
-  createForeshadow(foreshadow: Omit<NovelForeshadow, 'createdAt' | 'updatedAt'>): NovelForeshadow { return this.foreshadow.createForeshadow(foreshadow) }
-  updateForeshadow(id: string, patch: Partial<NovelForeshadow>): NovelForeshadow | undefined { return this.foreshadow.updateForeshadow(id, patch) }
-  deleteForeshadow(id: string): boolean { return this.foreshadow.deleteForeshadow(id) }
-  createClue(clue: Omit<NovelClue, 'createdAt' | 'updatedAt'>): NovelClue { return this.foreshadow.createClue(clue) }
-  updateClue(id: string, patch: Partial<NovelClue>): NovelClue | undefined { return this.foreshadow.updateClue(id, patch) }
-  deleteClue(id: string): boolean { return this.foreshadow.deleteClue(id) }
+  createForeshadow(foreshadow: Omit<NovelForeshadow, 'createdAt' | 'updatedAt'>): NovelForeshadow {
+    const created = this.foreshadow.createForeshadow(foreshadow)
+    this.notifyChapterProjection('foreshadow', created.id, created.projectId, undefined, created, chaptersOfForeshadow, 'createForeshadow')
+    return created
+  }
+  updateForeshadow(id: string, patch: Partial<NovelForeshadow>): NovelForeshadow | undefined {
+    const before = this.foreshadow.getForeshadow(id)
+    const after = this.foreshadow.updateForeshadow(id, patch)
+    this.notifyChapterProjection('foreshadow', id, after?.projectId ?? before?.projectId, before, after, chaptersOfForeshadow, 'updateForeshadow')
+    return after
+  }
+  deleteForeshadow(id: string): boolean {
+    const projectId = this.foreshadow.getForeshadow(id)?.projectId
+    return this.notifyEntityDeleted('foreshadow', id, projectId, this.foreshadow.deleteForeshadow(id))
+  }
+  createClue(clue: Omit<NovelClue, 'createdAt' | 'updatedAt'>): NovelClue {
+    const created = this.foreshadow.createClue(clue)
+    this.notifyChapterProjection('clue', created.id, created.projectId, undefined, created, chaptersOfClue, 'createClue')
+    return created
+  }
+  updateClue(id: string, patch: Partial<NovelClue>): NovelClue | undefined {
+    const before = this.foreshadow.getClue(id)
+    const after = this.foreshadow.updateClue(id, patch)
+    this.notifyChapterProjection('clue', id, after?.projectId ?? before?.projectId, before, after, chaptersOfClue, 'updateClue')
+    return after
+  }
+  deleteClue(id: string): boolean {
+    const projectId = this.foreshadow.getClue(id)?.projectId
+    return this.notifyEntityDeleted('clue', id, projectId, this.foreshadow.deleteClue(id))
+  }
   createInformationLayer(layer: Omit<NovelInformationLayer, 'createdAt' | 'updatedAt'>): NovelInformationLayer { return this.foreshadow.createInformationLayer(layer) }
   updateInfoLayer(id: string, updates: Partial<Omit<NovelInformationLayer, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelInformationLayer | undefined { return this.foreshadow.updateInfoLayer(id, updates) }
   deleteInfoLayer(id: string): boolean { return this.foreshadow.deleteInfoLayer(id) }
@@ -252,18 +446,54 @@ export class NovelStore implements NovelPromptStores {
 
   // ── Faction / Location ──
 
-  createFaction(faction: Omit<NovelFaction, 'createdAt' | 'updatedAt'>): NovelFaction { return this.faction.createFaction(faction) }
-  updateFaction(id: string, patch: Partial<NovelFaction>): NovelFaction | undefined { return this.faction.updateFaction(id, patch) }
-  deleteFaction(id: string): boolean { return this.faction.deleteFaction(id) }
-  createLocation(location: Omit<NovelLocation, 'createdAt' | 'updatedAt'>): NovelLocation { return this.faction.createLocation(location) }
-  updateLocation(id: string, patch: Partial<NovelLocation>): NovelLocation | undefined { return this.faction.updateLocation(id, patch) }
-  deleteLocation(id: string): boolean { return this.faction.deleteLocation(id) }
+  createFaction(faction: Omit<NovelFaction, 'createdAt' | 'updatedAt'>): NovelFaction {
+    const created = this.faction.createFaction(faction)
+    this.notifyChapterProjection('faction', created.id, created.projectId, undefined, created, chaptersOfFaction, 'createFaction')
+    return created
+  }
+  updateFaction(id: string, patch: Partial<NovelFaction>): NovelFaction | undefined {
+    const before = this.faction.getFaction(id)
+    const after = this.faction.updateFaction(id, patch)
+    this.notifyChapterProjection('faction', id, after?.projectId ?? before?.projectId, before, after, chaptersOfFaction, 'updateFaction')
+    return after
+  }
+  deleteFaction(id: string): boolean {
+    const projectId = this.faction.getFaction(id)?.projectId
+    return this.notifyEntityDeleted('faction', id, projectId, this.faction.deleteFaction(id))
+  }
+  createLocation(location: Omit<NovelLocation, 'createdAt' | 'updatedAt'>): NovelLocation {
+    const created = this.faction.createLocation(location)
+    this.notifyChapterProjection('location', created.id, created.projectId, undefined, created, chaptersOfLocation, 'createLocation')
+    return created
+  }
+  updateLocation(id: string, patch: Partial<NovelLocation>): NovelLocation | undefined {
+    const before = this.faction.getLocation(id)
+    const after = this.faction.updateLocation(id, patch)
+    this.notifyChapterProjection('location', id, after?.projectId ?? before?.projectId, before, after, chaptersOfLocation, 'updateLocation')
+    return after
+  }
+  deleteLocation(id: string): boolean {
+    const projectId = this.faction.getLocation(id)?.projectId
+    return this.notifyEntityDeleted('location', id, projectId, this.faction.deleteLocation(id))
+  }
 
   // ── Item ──
 
-  createItem(item: Omit<NovelItem, 'createdAt' | 'updatedAt'>): NovelItem { return this.item.createItem(item) }
-  updateItem(id: string, patch: Partial<NovelItem>): NovelItem | undefined { return this.item.updateItem(id, patch) }
-  deleteItem(id: string): boolean { return this.item.deleteItem(id) }
+  createItem(item: Omit<NovelItem, 'createdAt' | 'updatedAt'>): NovelItem {
+    const created = this.item.createItem(item)
+    this.notifyChapterProjection('item', created.id, created.projectId, undefined, created, chaptersOfItem, 'createItem')
+    return created
+  }
+  updateItem(id: string, patch: Partial<NovelItem>): NovelItem | undefined {
+    const before = this.item.getItem(id)
+    const after = this.item.updateItem(id, patch)
+    this.notifyChapterProjection('item', id, after?.projectId ?? before?.projectId, before, after, chaptersOfItem, 'updateItem')
+    return after
+  }
+  deleteItem(id: string): boolean {
+    const projectId = this.item.getItem(id)?.projectId
+    return this.notifyEntityDeleted('item', id, projectId, this.item.deleteItem(id))
+  }
 
   // ── NodePosition / Marker / Edge / AgentLog（GraphStore）──
 

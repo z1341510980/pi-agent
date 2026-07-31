@@ -6,6 +6,7 @@ import { BookOpen, Home, MessageSquare, SettingsIcon } from 'lucide-react'
 import { browserConfig, initEmbeddedServerPort } from '@repo/config/browser'
 import { I18nProvider } from './i18n'
 import { ThemeProvider } from './components/theme-provider'
+import { TooltipProvider } from './components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { ChatWorkspace } from './components/chat/chat-workspace'
 import { SettingsPage } from './components/settings/settings-page'
@@ -63,6 +64,8 @@ export default function App(): ReactElement {
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <ThemeProvider>
+              {/* Tooltip 的延迟计时器由 Provider 共享：连续 hover 多个目标时不会每个都重新等一遍 */}
+              <TooltipProvider>
               <OnboardingProvider setView={setView}>
               <div className="flex h-screen w-screen overflow-hidden bg-app-bg">
                 {/* ── 底座左边栏（导航 rail） ── */}
@@ -133,6 +136,7 @@ export default function App(): ReactElement {
             />
             {/* 全局 Toast 通知：用于暴露事件处理器中的错误给用户 */}
             <Toaster />
+            </TooltipProvider>
             </ThemeProvider>
           </I18nProvider>
         </QueryClientProvider>

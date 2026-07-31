@@ -77,7 +77,7 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-rose-500/10 rounded-t-lg">
         <Swords className="size-3.5 text-rose-500 dark:text-rose-400 shrink-0" />
         <span className="text-xs font-medium text-rose-600 dark:text-rose-300">冲突</span>
-        <span className="ml-auto rounded bg-rose-500/10 px-1.5 py-0.5 text-[10px] text-rose-600 dark:text-rose-300">
+        <span className="ml-auto rounded bg-rose-500/10 px-1.5 py-0.5 text-nano text-rose-600 dark:text-rose-300">
           {TYPE_LABELS[entity.type] ?? entity.type}
         </span>
       </div>
@@ -86,7 +86,7 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
           {entity.description}
         </div>
         <div>
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-0.5">
+          <div className="flex items-center justify-between text-nano text-muted-foreground mb-0.5">
             <span>强度</span>
             <span className="tabular-nums">{entity.intensity}/10</span>
           </div>
@@ -94,13 +94,13 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
             <div className={cn('h-full transition-[width]', intensityColor)} style={{ width: `${intensityPct}%` }} />
           </div>
         </div>
-        <div className="text-[10px] text-subtle">
+        <div className="text-nano text-subtle">
           阶段: {STAGE_LABELS[entity.stage] ?? entity.stage}
         </div>
 
         {/* 高潮信息 */}
         {hasClimax && (
-          <div className="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-300">
+          <div className="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-nano text-amber-600 dark:text-amber-300">
             <Flame className="size-3 shrink-0" />
             {entity.climaxChapter != null && <span>第{entity.climaxChapter}章</span>}
             {entity.climaxType != null && (
@@ -111,7 +111,7 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
 
         {/* 突转潜力提示 */}
         {hasTwistPotential && (
-          <div className="flex items-center gap-1 rounded bg-purple-500/10 px-1.5 py-0.5 text-[10px] text-purple-600 dark:text-purple-300" title="突转潜力高，适合安排突转">
+          <div className="flex items-center gap-1 rounded bg-purple-500/10 px-1.5 py-0.5 text-nano text-purple-600 dark:text-purple-300" title="突转潜力高，适合安排突转">
             <Zap className="size-3 shrink-0" />
             <span>突转潜力 {entity.twistPotential}/10</span>
           </div>
@@ -119,7 +119,7 @@ function ConflictNodeImpl({ data, selected }: NodeProps<ConflictNodeType>): Reac
 
         {/* 赌注 */}
         {entity.stakes && (
-          <div className="flex items-start gap-1 text-[10px] text-muted-foreground" title={entity.stakes}>
+          <div className="flex items-start gap-1 text-nano text-muted-foreground" title={entity.stakes}>
             <AlertTriangle className="size-3 shrink-0 mt-0.5" />
             <span className="line-clamp-2">赌注：{entity.stakes}</span>
           </div>

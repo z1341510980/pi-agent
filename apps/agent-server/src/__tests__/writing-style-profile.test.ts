@@ -87,7 +87,10 @@ describe('writing style profile', () => {
       notes: '补充说明。'.repeat(500),
     }, 'writer')
 
-    expect(compiled.content.length).toBeLessThan(6000)
+    // 上限从 6000 提到 7200：正向样本预算由 700 提到 1200 字。
+    // 700 字的中文样本必然断在句中，模型学到的是"断句"而不是文风；
+    // 正向样本是文风一致性的主要抓手，这部分预算优先保留。
+    expect(compiled.content.length).toBeLessThan(7200)
     expect(compiled.content).toContain('硬规则8')
     expect(compiled.content).not.toContain('硬规则9')
     expect(compiled.content).toContain('【样本 2】')

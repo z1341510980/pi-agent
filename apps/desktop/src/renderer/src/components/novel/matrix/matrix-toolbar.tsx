@@ -1,13 +1,13 @@
 /**
  * MatrixToolbar：矩阵视图工具栏（单行紧凑）
  *
- * 单行结构：返回 + 视图切换 + 关系叠加层 | 章节 badge | 撤销/重做 + 补全 + 扫描 | 缩放 + 筛选 chips
+ * 单行结构：返回 + 关系叠加层 | 章节 badge | 撤销/重做 + 补全 + 扫描 | 缩放 + 筛选 chips
  *
  * 图例（MatrixLegend）在本组件之外、由 MatrixWorkspace 插入到 toolbar 与 view 之间。
  */
 
 import { type ReactElement } from 'react'
-import { ArrowLeft, Undo2, Redo2, History, Minus, Plus, Wand2, Grid3x3, LayoutGrid, Network } from 'lucide-react'
+import { ArrowLeft, Undo2, Redo2, History, Minus, Plus, Wand2, Network } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GROUP_META, GROUP_ORDER, type MatrixEntityKind } from './matrix-logic'
 
@@ -37,8 +37,6 @@ export interface MatrixToolbarProps {
   /** LLM 相似度扫描 */
   onSimilarityScan?: () => void
   similarityScanning?: boolean
-  viewMode: 'matrix' | 'canvas'
-  onViewModeChange: (mode: 'matrix' | 'canvas') => void
   /** 关系叠加层开关 */
   showRelationshipOverlay?: boolean
   onToggleRelationshipOverlay?: () => void
@@ -70,8 +68,6 @@ export function MatrixToolbar({
   onFilterChange,
   onSimilarityScan,
   similarityScanning = false,
-  viewMode,
-  onViewModeChange,
   showRelationshipOverlay = false,
   onToggleRelationshipOverlay,
 }: MatrixToolbarProps): ReactElement {
@@ -86,24 +82,9 @@ export function MatrixToolbar({
           <ArrowLeft className="size-3.5" />
         </button>
 
-        {/* 视图切换 */}
-        <div className="inline-flex shrink-0 items-center gap-0.5 rounded-lg bg-surface-2 p-0.5" role="tablist" aria-label="视图切换">
-          {([['matrix', '矩阵', Grid3x3], ['canvas', '画布', LayoutGrid]] as const).map(([mode, label, Icon]) => (
-            <button
-              key={mode}
-              type="button"
-              role="tab"
-              aria-selected={viewMode === mode}
-              onClick={() => onViewModeChange(mode)}
-              className={cn(
-                'inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-colors',
-                viewMode === mode ? 'bg-surface-1 text-text shadow-sm' : 'text-muted-foreground hover:text-text',
-              )}
-            >
-              <Icon className="size-3" />{label}
-            </button>
-          ))}
-        </div>
+        {/* 视图切换已上移到顶栏的布局切换器（正文 / 正文+时间线 / 时间线 / 关系图）。
+            这里原有一份 矩阵↔画布 的副本，在分屏布局下点"画布"会让正文编辑器一并消失，
+            正是两个模式维度互相覆盖的产物；合并为单一 layoutMode 后不再需要。 */}
 
         {/* 关系叠加层 */}
         {onToggleRelationshipOverlay && (
@@ -124,7 +105,7 @@ export function MatrixToolbar({
 
         {/* 章节 badge */}
         <span
-          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 text-[10px] font-medium shrink-0"
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 text-nano font-medium shrink-0"
           title={`第 ${playheadChapter} 章 / 共 ${totalChapters} 章${currentChapterTitle ? ` · ${currentChapterTitle}` : ''}`}
         >
           <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" style={{ boxShadow: '0 0 4px #f59e0b' }} />
@@ -180,7 +161,7 @@ export function MatrixToolbar({
           <button type="button" className={iconBtn} onClick={onZoomOut} title="缩小 (Ctrl+滚轮)" aria-label="缩小" disabled={cellWidth <= 24}>
             <Minus className="size-3" />
           </button>
-          <span className="font-mono text-[10px] text-muted-foreground min-w-[32px] text-center tabular-nums">
+          <span className="font-mono text-nano text-muted-foreground min-w-[32px] text-center tabular-nums">
             {zoomPct}%
           </span>
           <button type="button" className={iconBtn} onClick={onZoomIn} title="放大 (Ctrl+滚轮)" aria-label="放大" disabled={cellWidth >= 80}>
@@ -203,7 +184,7 @@ export function MatrixToolbar({
                 onClick={() => onFilterChange(opt.key)}
                 aria-pressed={active}
                 className={cn(
-                  'inline-flex h-6 items-center gap-1 px-2 rounded-full text-[10px] whitespace-nowrap transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
+                  'inline-flex h-6 items-center gap-1 px-2 rounded-full text-nano whitespace-nowrap transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
                   active
                     ? color
                       ? 'text-white border border-transparent'

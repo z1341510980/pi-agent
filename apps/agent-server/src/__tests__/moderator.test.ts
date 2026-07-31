@@ -206,4 +206,123 @@ describe('Moderator', () => {
       .rejects.toThrow('用户手动停止')
     expect(ctx.createSession).toHaveBeenCalledTimes(1)
   })
+
+  // ── 多角色点名（演出阶段合并调用的协议层）──
+  //
+  // agentIds 是可选优化字段：非法值应被丢弃而不是触发重试/降级 ——
+  // 退回单角色仍是完全正确的行为。
+
+  describe('多角色点名 agentIds', () => {
+    const actingState: ModeratorState = { phase: 'acting', round: 1, scenesDefined: true }
+    const actingMembers: DiscussionMember[] = [
+      makeMember({ id: 'char-a', name: '甲', type: 'character' }),
+      makeMember({ id: 'char-b', name: '乙', type: 'character' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+    ]
+
+    it('演出阶段保留合法的多角色点名', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'char-a',
+        agentIds: ['char-a', 'char-b'],
+        prompt: '对峙',
+        reason: '同场对戏',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, actingMembers, actingState)
+
+      expect(decision).toMatchObject({ type: 'invite', agentIds: ['char-a', 'char-b'] })
+    })
+
+    it('剔除不存在的成员 id', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'char-a',
+        agentIds: ['char-a', 'char-ghost'],
+        prompt: '对峙',
+        reason: 'x',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, actingMembers, actingState)
+
+      // 只剩 1 人 → 退回单角色
+      expect(decision).toMatchObject({ type: 'invite', agentIds: undefined })
+    })
+
+    it('剔除非角色成员 —— 工种 Agent 不参与角色演出', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'char-a',
+        agentIds: ['char-a', 'novel-writer'],
+        prompt: '对峙',
+        reason: 'x',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, actingMembers, actingState)
+
+      expect(decision).toMatchObject({ agentIds: undefined })
+    })
+
+    it('规划阶段不允许多角色（该阶段只该 Director 发言）', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'novel-director',
+        agentIds: ['novel-director', 'novel-writer'],
+        prompt: '规划',
+        reason: 'x',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, members, state)
+
+      expect(decision).toMatchObject({ type: 'invite', agentIds: undefined })
+    })
+
+    it('agentId 自动补进 agentIds 首位（决定演出顺序）', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'char-a',
+        agentIds: ['char-b'],
+        prompt: '对峙',
+        reason: 'x',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, actingMembers, actingState)
+
+      expect(decision).toMatchObject({ agentIds: ['char-a', 'char-b'] })
+    })
+
+    it('去重', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'char-a',
+        agentIds: ['char-a', 'char-a', 'char-b'],
+        prompt: '对峙',
+        reason: 'x',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, actingMembers, actingState)
+
+      expect(decision).toMatchObject({ agentIds: ['char-a', 'char-b'] })
+    })
+
+    it('agentIds 非数组时丢弃而不抛错', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'char-a',
+        agentIds: 'char-b',
+        prompt: '对峙',
+        reason: 'x',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, actingMembers, actingState)
+
+      expect(decision).toMatchObject({ type: 'invite', agentId: 'char-a', agentIds: undefined })
+    })
+
+    it('未提供 agentIds 时行为与合并前完全一致', async () => {
+      const ctx = makeMockContext(JSON.stringify({
+        type: 'invite',
+        agentId: 'char-a',
+        prompt: '对峙',
+        reason: 'x',
+      }))
+      const decision = await new Moderator(ctx as any).decide(goal, history, actingMembers, actingState)
+
+      expect(decision).toMatchObject({ type: 'invite', agentId: 'char-a' })
+      expect((decision as { agentIds?: string[] }).agentIds).toBeUndefined()
+    })
+  })
 })

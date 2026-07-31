@@ -37,18 +37,6 @@
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@google/genai",
-      "@scarf/scarf",
-      "better-sqlite3",
-      "electron",
-      "electron-winstaller",
-      "esbuild",
-      "phantomjs-prebuilt",
-      "protobufjs"
-    ]
-  },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "3.0.0",
     "@electron-toolkit/eslint-config-ts": "^3.1.0",

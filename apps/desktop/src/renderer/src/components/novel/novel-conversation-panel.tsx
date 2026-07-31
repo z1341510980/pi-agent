@@ -13,11 +13,17 @@
  * - 流程完成 → system 消息 + 操作按钮
  */
 
-import { useMemo, useCallback, useState, useRef, useEffect, type ReactElement } from 'react'
+import { useMemo, useCallback, useState, type ReactElement } from 'react'
 import { Loader2, Workflow, MessagesSquare, RotateCcw, LayoutGrid, MessageCircle, MoreHorizontal, type LucideIcon } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { ErrorCard } from '@/components/chat/error-card'
 import { cn } from '@/lib/utils'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   ConversationStream,
   ConversationInput,
@@ -123,7 +129,45 @@ const GUARD_DEGRADED_OPTIONS = [
   { label: '取消', action: 'reject', variant: 'destructive' as const, description: '中止本次创作流程' },
 ]
 
+// 单章成本超出预算：不硬停，让用户决定继续还是收尾
+const CHAPTER_BUDGET_OPTIONS = [
+  { label: '继续创作', action: 'approve', variant: 'default' as const, description: '知晓成本，继续完成本章（本章不再提示）' },
+  { label: '尽快收尾', action: 'revise', variant: 'outline' as const, description: '跳过可选环节，尽快产出本章' },
+  { label: '停止', action: 'reject', variant: 'destructive' as const, description: '中止本次创作（已生成内容保留）' },
+]
+
+function getCheckpointPresentation(type: CheckpointData['type']): {
+  checkpointType: NonNullable<ConversationMessage['checkpointType']>
+  checkpointOptions: NonNullable<ConversationMessage['checkpointOptions']>
+} {
+  switch (type) {
+    case 'narrative_task':
+      return { checkpointType: 'narrative_task', checkpointOptions: NARRATIVE_OPTIONS }
+    case 'post_write_guard':
+      return { checkpointType: 'post_write_guard', checkpointOptions: POST_WRITE_GUARD_OPTIONS }
+    case 'writer_pushback':
+      return { checkpointType: 'writer_pushback', checkpointOptions: WRITER_PUSHBACK_OPTIONS }
+    case 'guard_degraded':
+      return { checkpointType: 'guard_degraded', checkpointOptions: GUARD_DEGRADED_OPTIONS }
+    case 'chapter_budget':
+      return { checkpointType: 'chapter_budget', checkpointOptions: CHAPTER_BUDGET_OPTIONS }
+    case 'review':
+    default:
+      return { checkpointType: 'review', checkpointOptions: REVIEW_OPTIONS }
+  }
+}
+
 // ── 检查点内容渲染 ──
+
+function formatTokenCount(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  return value >= 10_000 ? `${Math.round(value / 10_000)} 万` : String(value)
+}
+
+function formatMinutes(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  return `${Math.round(value / 60_000)} 分钟`
+}
 
 /** 渲染 checkpoint.data 的实际内容 */
 function renderCheckpointContent(checkpoint: CheckpointData): string {
@@ -135,10 +179,60 @@ function renderCheckpointContent(checkpoint: CheckpointData): string {
   }
 
   if (typeof data === 'object') {
+    const record = data as Record<string, unknown>
+    if (checkpoint.type === 'post_write_guard' || checkpoint.type === 'guard_degraded') {
+      const lines = [
+        checkpoint.type === 'post_write_guard' ? '## 写作守护触发原因' : '## 写作守护降级原因',
+        '',
+        `**原因：** ${String(record.reason ?? '未提供')}`,
+      ]
+      if (record.details) lines.push('', `**具体问题：** ${String(record.details)}`)
+      if (typeof record.wordCount === 'number') lines.push('', `**当前字数：** ${record.wordCount}`)
+      if (typeof record.rewriteCount === 'number' && typeof record.maxRewrite === 'number') {
+        lines.push('', `**重写次数：** ${record.rewriteCount} / ${record.maxRewrite}`)
+      }
+      if (record.advisory) lines.push('', '该检查为建议项，可接受当前草稿继续。')
+      return lines.join('\n')
+    }
+
+    if (checkpoint.type === 'writer_pushback') {
+      return [
+        '## Writer 推回原因',
+        '',
+        String(record.pushbackReason ?? 'Writer 未提供具体原因'),
+        '',
+        `**推回次数：** ${String(record.pushbackCount ?? 0)} / ${String(record.maxPushback ?? 0)}`,
+      ].join('\n')
+    }
+
+    if (checkpoint.type === 'chapter_budget') {
+      const dimensionLabel: Record<string, string> = {
+        llmCalls: 'AI 调用次数',
+        inputTokens: '输入 token',
+        wallClock: '耗时',
+      }
+      const lines = [
+        '## 本章成本已达预算上限',
+        '',
+        String(record.message ?? ''),
+        '',
+        `**触发维度：** ${dimensionLabel[String(record.dimension)] ?? String(record.dimension)}`,
+        '',
+        '| 维度 | 当前 | 上限 |',
+        '| --- | --- | --- |',
+        `| AI 调用 | ${String(record.llmCalls ?? '-')} 次 | ${String(record.maxLlmCalls ?? '-')} 次 |`,
+        `| 输入 token | ${formatTokenCount(record.inputTokens)} | ${formatTokenCount(record.maxInputTokens)} |`,
+        `| 耗时 | ${formatMinutes(record.elapsedMs)} | ${formatMinutes(record.maxWallClockMs)} |`,
+        '',
+        '已生成的内容不会丢失。选择「继续创作」后本章不再提示。',
+      ]
+      return lines.join('\n')
+    }
+
     // ⚠️ 工具化方案：若 data 携带 kind 字段（如 narrative_task），
     // 复用 formatDetailBubble 格式化为可读 markdown，与 emitProgress 推送的 detail 气泡保持一致展示。
     // 避免 CheckpointMessage 直接展示 LLM 原始文本（如"叙事任务已通过工具提交"这种解释性回复）。
-    const detailRecord = data as Record<string, unknown>
+    const detailRecord = record
     if (typeof detailRecord.kind === 'string') {
       const formatted = formatDetailBubble(detailRecord)
       if (formatted.content) return formatted.content
@@ -184,6 +278,7 @@ export interface NovelConversationPanelProps {
   chapterNumber?: number
   /** 待处理的检查点 */
   currentCheckpoint: CheckpointData | null
+  checkpointHistory: CheckpointData[]
   /** 最终结果 */
   result: CreationResult | null
   /** 错误信息 */
@@ -232,7 +327,7 @@ export interface NovelConversationPanelProps {
   chatMentionOptions?: MentionOption[]
 }
 
-/** 低频创作模式 Popover：点击 ··· 展开完整列表 */
+/** 低频创作模式下拉：点击 ··· 展开完整列表 */
 function SecondaryFlowPopover({
   flowType,
   onFlowTypeChange,
@@ -241,63 +336,50 @@ function SecondaryFlowPopover({
   onFlowTypeChange: (type: NovelFlowType) => void
 }): ReactElement {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open])
 
   const isSecondaryActive = SECONDARY_FLOW_TABS.some((t) => t.type === flowType)
+  const activeDescription = SECONDARY_FLOW_TABS.find((t) => t.type === flowType)?.description
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        title="更多创作方式"
-        className={cn(
-          'inline-flex items-center justify-center size-6 rounded-[6px]',
-          'transition-all duration-200 ease-out active:scale-[0.96]',
-          isSecondaryActive
-            ? 'bg-surface-1 text-primary shadow-sm'
-            : 'text-subtle hover:text-text hover:bg-surface-1/50',
-        )}
-      >
-        <MoreHorizontal className="size-3.5" />
-      </button>
-      {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 min-w-[180px] py-1 rounded-lg bg-surface-1 border border-border/60 shadow-lg">
-          {SECONDARY_FLOW_TABS.map((tab) => {
-            const Icon = tab.icon
-            const isActive = flowType === tab.type
-            return (
-              <button
-                key={tab.type}
-                onClick={() => { onFlowTypeChange(tab.type); setOpen(false) }}
-                className={cn(
-                  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] font-medium transition-colors',
-                  isActive ? 'text-primary bg-primary/8' : 'text-text hover:bg-surface-2',
-                )}
-              >
-                <Icon className="size-3.5 shrink-0" />
-                <span className="flex-1">{tab.label}</span>
-              </button>
-            )
-          })}
-          {/* 描述区：当前 hover 或 active 的 description */}
-          {SECONDARY_FLOW_TABS.find((t) => t.type === flowType)?.description && (
-            <div className="px-3 pt-1.5 pb-1 text-[10px] text-subtle leading-relaxed border-t border-border/40 mt-1">
-              {SECONDARY_FLOW_TABS.find((t) => t.type === flowType)!.description}
-            </div>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          title="更多创作方式"
+          className={cn(
+            'inline-flex items-center justify-center size-6 rounded-[6px]',
+            'transition-all duration-200 ease-out active:scale-[0.96]',
+            isSecondaryActive
+              ? 'bg-surface-1 text-primary shadow-sm'
+              : 'text-subtle hover:text-text hover:bg-surface-1/50',
           )}
-        </div>
-      )}
-    </div>
+        >
+          <MoreHorizontal className="size-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="min-w-[180px]">
+        {SECONDARY_FLOW_TABS.map((tab) => {
+          const Icon = tab.icon
+          const isActive = flowType === tab.type
+          return (
+            <DropdownMenuItem
+              key={tab.type}
+              onSelect={() => onFlowTypeChange(tab.type)}
+              className={cn('text-micro font-medium', isActive && 'text-primary bg-primary/8')}
+            >
+              <Icon className="size-3.5 shrink-0" />
+              <span className="flex-1">{tab.label}</span>
+            </DropdownMenuItem>
+          )
+        })}
+        {/* 描述区：当前选中项的 description */}
+        {activeDescription && (
+          <div className="px-2 pt-1.5 pb-1 text-nano text-subtle leading-relaxed border-t border-border/40 mt-1">
+            {activeDescription}
+          </div>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -309,6 +391,7 @@ export function NovelConversationPanel({
   agentOutputs,
   chapterNumber,
   currentCheckpoint,
+  checkpointHistory,
   result,
   error,
   onRetry,
@@ -403,6 +486,86 @@ export function NovelConversationPanel({
     // 创作流程模式：agentOutputs + userMessages + checkpoint → ConversationMessage[]
     const msgs: ConversationMessage[] = []
 
+    // 没有实时状态时，从章节聊天存储恢复工作流对话。decision 消息不单独展示，
+    // 而是合并回对应 checkpoint，让历史卡片保留用户当时的选择。
+    const hasLiveWorkflowState = agentOutputs.length > 0
+      || (userMessages?.length ?? 0) > 0
+      || checkpointHistory.length > 0
+      || currentCheckpoint != null
+      || isRunning
+    if (flowType === 'workflow' && !hasLiveWorkflowState) {
+      const workflowMessages = (chapterChatMessages ?? []).filter(
+        (message) => message.metadata?.flowMode === 'workflow',
+      )
+      const decisionsByCheckpoint = new Map<string, string>()
+      for (const message of workflowMessages) {
+        if (
+          message.metadata?.workflowMessageType === 'decision'
+          && message.metadata.checkpointId
+          && message.metadata.decision
+        ) {
+          decisionsByCheckpoint.set(message.metadata.checkpointId, message.metadata.decision)
+        }
+      }
+
+      for (const message of workflowMessages) {
+        const messageType = message.metadata?.workflowMessageType
+        if (messageType === 'decision') continue
+
+        if (messageType === 'checkpoint' && message.metadata?.checkpointType) {
+          const checkpoint: CheckpointData = {
+            type: message.metadata.checkpointType,
+            phase: 'checkpoint_review',
+            data: message.metadata.checkpointData ?? message.content,
+            checkpointId: message.metadata.checkpointId,
+            createdAt: message.createdAt,
+            decision: message.metadata.checkpointId
+              ? decisionsByCheckpoint.get(message.metadata.checkpointId) as CheckpointDecision | undefined
+              : undefined,
+          }
+          const presentation = getCheckpointPresentation(checkpoint.type)
+          msgs.push({
+            id: `workflow-history-checkpoint-${message.id}`,
+            role: 'checkpoint',
+            content: renderCheckpointContent(checkpoint),
+            status: 'complete',
+            timestamp: message.createdAt,
+            ...presentation,
+            checkpointResolved: checkpoint.decision,
+          })
+          continue
+        }
+
+        if (message.role === 'user') {
+          msgs.push({
+            id: `workflow-history-${message.id}`,
+            role: 'user',
+            content: message.content,
+            status: 'complete',
+            timestamp: message.createdAt,
+          })
+        } else if (message.role === 'agent') {
+          msgs.push({
+            id: `workflow-history-${message.id}`,
+            role: 'assistant',
+            agentName: message.fromName,
+            agentType: mapAgentType(message.metadata?.agentType ?? 'unknown'),
+            content: message.content,
+            status: 'complete',
+            timestamp: message.createdAt,
+          })
+        } else {
+          msgs.push({
+            id: `workflow-history-${message.id}`,
+            role: 'system',
+            content: message.content,
+            status: 'complete',
+            timestamp: message.createdAt,
+          })
+        }
+      }
+    }
+
     // 群聊历史已按章节持久化。切换章节、重启应用或 reset 后，仍可在“群聊”Tab 复盘。
     if (flowType === 'discussion') {
       for (const msg of chapterChatMessages ?? []) {
@@ -475,44 +638,17 @@ export function NovelConversationPanel({
       })
     }
 
-    // 检查点 → checkpoint 消息
-    if (currentCheckpoint) {
-      // 按 checkpoint.type 选取选项和展示类型
-      // 旧逻辑只支持 narrative_task / review 两类，新增 3 类静默重写场景的检查点
-      let checkpointType: NonNullable<ConversationMessage['checkpointType']> = 'review'
-      let checkpointOptions: NonNullable<ConversationMessage['checkpointOptions']> = REVIEW_OPTIONS
-      switch (currentCheckpoint.type) {
-        case 'narrative_task':
-          checkpointType = 'narrative_task'
-          checkpointOptions = NARRATIVE_OPTIONS
-          break
-        case 'post_write_guard':
-          checkpointType = 'post_write_guard'
-          checkpointOptions = POST_WRITE_GUARD_OPTIONS
-          break
-        case 'writer_pushback':
-          checkpointType = 'writer_pushback'
-          checkpointOptions = WRITER_PUSHBACK_OPTIONS
-          break
-        case 'guard_degraded':
-          checkpointType = 'guard_degraded'
-          checkpointOptions = GUARD_DEGRADED_OPTIONS
-          break
-        case 'review':
-        default:
-          checkpointType = 'review'
-          checkpointOptions = REVIEW_OPTIONS
-          break
-      }
+    // 已处理检查点仍保留在时间线，当前检查点继续显示可操作按钮。
+    for (const checkpoint of [...checkpointHistory, ...(currentCheckpoint ? [currentCheckpoint] : [])]) {
+      const presentation = getCheckpointPresentation(checkpoint.type)
       msgs.push({
-        id: `checkpoint-${currentCheckpoint.checkpointId ?? currentCheckpoint.phase}`,
+        id: `checkpoint-${checkpoint.checkpointId ?? `${checkpoint.phase}-${checkpoint.createdAt ?? 0}`}`,
         role: 'checkpoint',
-        content: renderCheckpointContent(currentCheckpoint),
+        content: renderCheckpointContent(checkpoint),
         status: 'complete',
-        timestamp: Date.now(),
-        checkpointType,
-        checkpointOptions,
-        checkpointResolved: currentCheckpoint.decision,
+        timestamp: checkpoint.createdAt ?? checkpoint.resolvedAt ?? 0,
+        ...presentation,
+        checkpointResolved: checkpoint.decision,
       })
     }
 
@@ -535,7 +671,7 @@ export function NovelConversationPanel({
 
     // 按时间戳排序
     return msgs.sort((a, b) => a.timestamp - b.timestamp)
-  }, [isChatMode, flowType, chapterChatMessages, chapterChatAgentOutputs, agentOutputs, userMessages, currentCheckpoint, isCompleted, completedActionLabel, canSave, chapterNumber])
+  }, [isChatMode, flowType, chapterChatMessages, chapterChatAgentOutputs, agentOutputs, userMessages, checkpointHistory, currentCheckpoint, isRunning, isCompleted, completedActionLabel, canSave, chapterNumber])
 
   // ── 回调 ──
   const handleSend = useCallback((text: string) => {
@@ -624,7 +760,7 @@ export function NovelConversationPanel({
             /* 运行中：锁定当前模式，显示名称 + 阶段 */
             <div className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-primary/8 text-primary">
               {(() => { const tab = FLOW_TABS.find((t) => t.type === flowType); const Icon = tab?.icon ?? Workflow; return <Icon className="size-3.5" /> })()}
-              <span className="text-[11px] font-medium whitespace-nowrap">
+              <span className="text-micro font-medium whitespace-nowrap">
                 {FLOW_TABS.find((t) => t.type === flowType)?.label ?? flowType}
               </span>
             </div>
@@ -641,7 +777,7 @@ export function NovelConversationPanel({
                       onClick={() => onFlowTypeChange(tab.type)}
                       title={tab.description ?? tab.label}
                       className={cn(
-                        'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px]',
+                        'inline-flex items-center gap-1.5 h-6 px-2.5 text-micro font-medium rounded-[6px]',
                         'transition-all duration-200 ease-out active:scale-[0.96]',
                         isActive
                           ? 'bg-surface-1 text-text shadow-sm'
@@ -665,7 +801,7 @@ export function NovelConversationPanel({
         {/* 状态栏：独立圆角卡片样式（对齐原型 status-bar + status-badge 胶囊 + 语义状态色） */}
         <div className="mx-2 mt-2 mb-3 flex items-center gap-2 px-3 py-1.5 bg-surface-2 rounded-lg">
           {chapterNumber != null && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-surface-3 text-text-secondary text-[10px] font-medium tabular-nums shrink-0">
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-surface-3 text-text-secondary text-nano font-medium tabular-nums shrink-0">
               第 {chapterNumber} 章
             </span>
           )}
@@ -674,7 +810,7 @@ export function NovelConversationPanel({
               <motion.span
                 animate={{ opacity: [0.5, 1, 0.5] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
-                className="flex min-w-0 max-w-[240px] items-center gap-1 text-[11px] text-primary"
+                className="flex min-w-0 max-w-[240px] items-center gap-1 text-micro text-primary"
                 title={isChatMode ? 'Agent 回复中' : (progressMessage ?? PHASE_LABELS[phase] ?? phase)}
               >
                 <Loader2 className="size-3 shrink-0 animate-spin" />
@@ -684,18 +820,18 @@ export function NovelConversationPanel({
               </motion.span>
             )}
             {!activeIsRunning && isChatMode && (
-              <span className="text-[11px] text-muted-foreground">就绪</span>
+              <span className="text-micro text-muted-foreground">就绪</span>
             )}
             {!activeIsRunning && !isChatMode && isCompleted && (
-              <span className="text-[11px] text-success">
+              <span className="text-micro text-success">
                 {completedActionLabel}完成
               </span>
             )}
             {!activeIsRunning && !isChatMode && isError && (
-              <span className="text-[11px] text-destructive">出错</span>
+              <span className="text-micro text-destructive">出错</span>
             )}
             {!activeIsRunning && !isChatMode && phase === 'idle' && (
-              <span className="text-[11px] text-muted-foreground">等待开始</span>
+              <span className="text-micro text-muted-foreground">等待开始</span>
             )}
           </div>
         </div>

@@ -192,7 +192,7 @@ export function FactionForm({ entity }: { entity: NovelFaction }): ReactElement 
                   {form.alliesList.map((id) => {
                     const fa = factions.find((x) => x.id === id)
                     return (
-                      <Badge key={id} variant="outline" className="text-[10px] gap-1">
+                      <Badge key={id} variant="outline" className="text-nano gap-1">
                         {fa?.name ?? id.slice(0, 8)}
                         <button
                           type="button"
@@ -234,7 +234,7 @@ export function FactionForm({ entity }: { entity: NovelFaction }): ReactElement 
                   {form.enemiesList.map((id) => {
                     const fe = factions.find((x) => x.id === id)
                     return (
-                      <Badge key={id} variant="outline" className="text-[10px] gap-1">
+                      <Badge key={id} variant="outline" className="text-nano gap-1">
                         {fe?.name ?? id.slice(0, 8)}
                         <button
                           type="button"

@@ -482,7 +482,14 @@ export function buildSubtracksForEntity(
 // ────────────────────────────────────────────────────────────
 
 /** 伏笔 beat 类型 → 节点颜色 */
-const FORESHADOW_BEAT_COLORS: Record<string, string> = {
+/**
+ * 伏笔 beat 的类型配色。
+ *
+ * ⚠️ 只在**子轨道展开态**生效。折叠态（matrix-row.ForeshadowEncoding）统一用
+ * GROUP_META.foreshadow.color 描边、靠填充区分类型 —— 同一语义两套视觉。
+ * 图例（legend-spec.ts）显式标注了这一点，改动这里需同步那边的说明。
+ */
+export const FORESHADOW_BEAT_COLORS: Record<string, string> = {
   plant: '#f59e0b',
   reinforce: '#f97316',
   reveal: '#06b6d4',
@@ -1242,13 +1249,14 @@ export function buildGroups(params: {
     // 伏笔以 firstChapter（埋设点）作为入矩阵条件；无埋设点 → 元素池。
     // 仅实际事件节点占用章节格，虚线只表达节点之间的先后关系。
     if (f.firstChapter == null) continue
+    // ⚠️ beats 是"已发生节点"的事实源；recoverByChapter 是"计划回收章"（意图）。
+    // 旧实现在 beats 为空时用 recoverByChapter 合成一个 payoff 节点，等于把"计划"
+    // 画成"已回收"，还让 subLabel 显示"已回收"。矩阵只画事实，计划由跨度虚线表达。
     const beats = f.beats && f.beats.length > 0
       ? [...f.beats].sort((a, b) => a.chapter - b.chapter)
-      : [
-          { chapter: f.firstChapter, type: 'plant' as const },
-          ...(f.recoverByChapter != null ? [{ chapter: f.recoverByChapter, type: 'payoff' as const }] : []),
-        ]
-    const isRecovered = beats.some((beat) => beat.type === 'payoff')
+      : [{ chapter: f.firstChapter, type: 'plant' as const }]
+    const payoffChapter = beats.find((beat) => beat.type === 'payoff')?.chapter ?? null
+    const isRecovered = payoffChapter != null
     foreshadowGroup.entities.push({
       id: f.id,
       kind: 'foreshadow',
@@ -1257,10 +1265,18 @@ export function buildGroups(params: {
       entityType: 'foreshadow',
       subLabel: `${beats.length} 个节点 · ${isRecovered ? '已回收' : '待回收'}`,
       plantChapter: f.firstChapter,
-      payoffChapter: f.recoverByChapter,
+      payoffChapter,
       foreshadowBeats: beats,
       spanStart: f.firstChapter,
-      spanEnd: f.recoverByChapter ?? null,
+      // 跨度终点优先用真实回收点；没回收就用计划回收章，让矩阵能画出"还欠着到第几章"。
+      spanEnd: payoffChapter ?? f.recoverByChapter ?? null,
+      // ⚠️ 同时标出这个终点是事实还是意图：两者压成同一个数会让"已还"和"欠着"
+      // 长得一样，也让用户以为拖动终点改的是事实（实际改的是计划）。
+      spanEndKind: payoffChapter != null
+        ? 'payoff'
+        : f.recoverByChapter != null
+          ? 'planned'
+          : null,
       note: noteMap.get(f.id),
       // 子甘特图轨道数据透传
       resolutionPoints: f.resolutionPoints,
@@ -1270,7 +1286,7 @@ export function buildGroups(params: {
         snapshot('foreshadow.status', 'enum', f.status, f.firstChapter),
         snapshot('foreshadow.category', 'enum', f.category, f.firstChapter),
         snapshot('foreshadow.plant_method', 'text', f.plantMethod, f.firstChapter),
-        snapshot('foreshadow.recover_method', 'text', f.recoverMethod, f.recoverByChapter ?? f.firstChapter),
+        snapshot('foreshadow.recover_method', 'text', f.recoverMethod, payoffChapter ?? f.firstChapter),
       ],
     })
   }

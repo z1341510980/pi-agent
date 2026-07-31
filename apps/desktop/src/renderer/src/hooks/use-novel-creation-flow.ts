@@ -59,6 +59,23 @@ export interface UserMessage {
 
 // ── Hook 返回值 ──
 
+/**
+ * 传给 create-flow / create-discussion 的矩阵编排实体。
+ *
+ * itemIds 与 characterFunctions 早期缺失，导致后端已就绪的
+ * “本章登场物品”约束段与角色短卡的“本章作用”行永不渲染。
+ */
+export interface ArrangedEntitiesPayload {
+  characterIds: string[]
+  conflictIds: string[]
+  foreshadowIds: string[]
+  clueIds: string[]
+  factionIds: string[]
+  locationIds: string[]
+  itemIds?: string[]
+  characterFunctions?: Array<{ characterId: string; function: string; note?: string }>
+}
+
 export interface UseNovelCreationFlowReturn {
   /** 当前阶段 */
   phase: CreationPhase
@@ -70,6 +87,8 @@ export interface UseNovelCreationFlowReturn {
   events: CreationFlowEvent[]
   /** 待处理的检查点（用户需决策） */
   currentCheckpoint: CheckpointData | null
+  /** 本次运行中已处理的检查点，保留用户选择供时间线回看 */
+  checkpointHistory: CheckpointData[]
   /** 最终结果 */
   result: CreationResult | null
   /** 错误信息 */
@@ -82,14 +101,7 @@ export interface UseNovelCreationFlowReturn {
   userMessages: UserMessage[]
   /** 启动创作流程 */
   startCreation: (projectId: string, chapterNumber: number, options?: {
-    arrangedEntities?: {
-      characterIds: string[]
-      conflictIds: string[]
-      foreshadowIds: string[]
-      clueIds: string[]
-      factionIds: string[]
-      locationIds: string[]
-    }
+    arrangedEntities?: ArrangedEntitiesPayload
   }) => Promise<void>
   /**
    * 启动群聊模式创作流程。
@@ -98,14 +110,7 @@ export interface UseNovelCreationFlowReturn {
    * ag-ui 事件格式与状态机共用同一 handleEvent。
    */
   startDiscussion: (projectId: string, chapterNumber: number, options?: {
-    arrangedEntities?: {
-      characterIds: string[]
-      conflictIds: string[]
-      foreshadowIds: string[]
-      clueIds: string[]
-      factionIds: string[]
-      locationIds: string[]
-    }
+    arrangedEntities?: ArrangedEntitiesPayload
   }) => Promise<void>
   /** 从失败的群聊快照直接恢复 Writer 全章编织阶段 */
   resumeDiscussion: (projectId: string, chapterNumber: number, runId: string) => Promise<void>
@@ -126,6 +131,13 @@ export interface UseNovelCreationFlowReturn {
    * 需要章节已有正文，否则后端返回错误。
    */
   reverseArrange: (projectId: string, chapterNumber: number) => Promise<void>
+  /**
+   * 取出最近一次 AI 编排产出的角色功能位（本章作用）。
+   *
+   * characterFunctions 不落库，只在编排返回值里存在；触发 create-flow 时需要显式带上，
+   * 否则 Writer 拿不到"每个角色本章负责推动什么"。取出后即清空。
+   */
+  takeArrangedCharacterFunctions: (chapterNumber: number) => Array<{ characterId: string; function: string; note?: string }> | undefined
   /** 提交检查点决策 */
   submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
@@ -382,6 +394,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const [progressMessage, setProgressMessage] = useState<string | null>(null)
   const [events, setEvents] = useState<CreationFlowEvent[]>([])
   const [currentCheckpoint, setCurrentCheckpoint] = useState<CheckpointData | null>(null)
+  const [checkpointHistory, setCheckpointHistory] = useState<CheckpointData[]>([])
   const [result, setResult] = useState<CreationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [chapterContent, setChapterContent] = useState('')
@@ -402,6 +415,17 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const chapterNumberRef = useRef<number | null>(null)
   /** 当前创作模式（供持久化用户发言时区分工作流/群聊） */
   const flowModeRef = useRef<'workflow' | 'discussion'>('workflow')
+  /**
+   * 最近一次 AI 编排产出的角色功能位。
+   *
+   * characterFunctions 不落库（只存在于 generateAndArrange 的返回值里），
+   * 而 create-flow 的 arrangedEntities 是前端从矩阵实体字段反推的，无法还原功能位。
+   * 这里按章节缓存一次，编排后紧接着触发创作时把它带上，避免"本章作用"永远丢失。
+   */
+  const lastArrangeFunctionsRef = useRef<{
+    chapterNumber: number | null
+    entries: Array<{ characterId: string; function: string; note?: string }>
+  } | null>(null)
   /** messageId → { agentType, agentName } 映射：agent_start 时记录，TEXT_MESSAGE_* 时查询 */
   const messageAgentMapRef = useRef<Map<string, { agentType: AgentOutput['agentType']; agentName: string }>>(new Map())
   /** writer/reviser 累积文本（delta 累积，避免每次 setState 丢失增量） */
@@ -415,12 +439,54 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    */
   const deltaBufferRef = useRef<Map<string, string>>(new Map())
   const rafIdRef = useRef<number | null>(null)
+  /**
+   * rAF 的兜底定时器。
+   *
+   * ⚠️ 不能只依赖 rAF：窗口最小化、被其他窗口完全遮挡、或切到后台时，
+   * Chromium 会把 requestAnimationFrame 节流到极低频率甚至完全暂停。
+   * 那种情况下 delta 会一直积在缓冲里不 flush，正文直到流程结束、
+   * `novel:result` 带回全量内容时才一次性出现 —— 表现就是"流式失效、
+   * LLM 变成同步的"。
+   *
+   * 因此 rAF 与定时器同时挂：谁先到谁 flush，另一个被取消。
+   * 定时器间隔取 100ms：远低于人对"不流畅"的感知阈值，
+   * 又不会退化成每个 delta 一次 setState。
+   */
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  /** 调度一帧后的 flush：合并 deltaBuffer 到 agentOutputs / chapterContent */
-  const scheduleDeltaFlush = useCallback(() => {
-    if (rafIdRef.current !== null) return  // 已有调度
-    rafIdRef.current = requestAnimationFrame(() => {
+  /** 取消所有待执行的 flush 调度 */
+  const cancelDeltaFlush = useCallback(() => {
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current)
       rafIdRef.current = null
+    }
+    if (flushTimerRef.current !== null) {
+      clearTimeout(flushTimerRef.current)
+      flushTimerRef.current = null
+    }
+  }, [])
+
+  /**
+   * 调度 flush：合并 deltaBuffer 到 agentOutputs / chapterContent。
+   *
+   * rAF 与 100ms 定时器同时挂，谁先到谁执行 —— 见 flushTimerRef 的注释：
+   * 窗口不可见时 rAF 可能被完全暂停，只靠它会让流式输出看起来"卡死"。
+   */
+  const scheduleDeltaFlush = useCallback(() => {
+    // 已有调度：等它执行即可，避免重复排队
+    if (rafIdRef.current !== null || flushTimerRef.current !== null) return
+
+    const flush = (): void => {
+      // 两条路径谁先到都要清掉另一条，否则同一批 delta 会被 flush 两次
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+      if (flushTimerRef.current !== null) {
+        clearTimeout(flushTimerRef.current)
+        flushTimerRef.current = null
+      }
+
       const buffer = deltaBufferRef.current
       if (buffer.size === 0) return
       const entries = Array.from(buffer.entries())
@@ -455,7 +521,10 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         }
         return updated
       })
-    })
+    }
+
+    rafIdRef.current = requestAnimationFrame(flush)
+    flushTimerRef.current = setTimeout(flush, 100)
   }, [])
 
   /**
@@ -723,6 +792,22 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             // arrange_done + arrange_summary：编排完成，实体已落库
             // → 渲染汇总气泡 + dataChanged: true 触发画布/侧边栏刷新
             if (evtType === 'arrange_done' && detail && detailKind === 'arrange_summary') {
+              // characterFunctions（本章功能位）不落库，只在本次编排的返回值里存在。
+              // 缓存下来，随后触发 create-flow 时一并回传，否则 Writer 永远拿不到
+              // "这个角色本章负责推动什么"，多角色同场就会退化成点名式叙述。
+              // 后端 emitter.progress({ type:'arrange_done', data: arrangedEntities })
+              // → 前端 data = evt.data 即 progress 载荷，编排结果在 data.data
+              const payload = (data as { data?: unknown } | undefined)?.data
+                ?? (evtDetail as { data?: unknown } | undefined)?.data
+              if (payload && typeof payload === 'object') {
+                const arranged = payload as ArrangedEntitiesPayload
+                if (arranged.characterFunctions?.length) {
+                  lastArrangeFunctionsRef.current = {
+                    chapterNumber: chapterNumberRef.current,
+                    entries: arranged.characterFunctions,
+                  }
+                }
+              }
               const formatted = formatDetailBubble(detail)
               const content = formatted.content
               pushArrangerBubble(content, content.slice(0, 100), evt.timestamp, '编排', true)
@@ -805,20 +890,21 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         }
         case 'novel:checkpoint': {
           const checkpoint = custom.value as CheckpointData
+          const checkpointWithTimestamp = {
+            ...checkpoint,
+            createdAt: checkpoint.createdAt ?? Date.now(),
+          }
           setProgressMessage(null)
-          setCurrentCheckpoint(checkpoint)
-          setPhase(checkpoint.phase)
+          setCurrentCheckpoint(checkpointWithTimestamp)
+          setPhase(checkpointWithTimestamp.phase)
           return
         }
         case 'novel:result': {
           const resultData = custom.value as CreationResult
           setResult(resultData)
           setProgressMessage(null)
-          // 先取消可能挂起的 rAF，再清空缓冲（result.content 是权威全量）
-          if (rafIdRef.current !== null) {
-            cancelAnimationFrame(rafIdRef.current)
-            rafIdRef.current = null
-          }
+          // 先取消可能挂起的 flush（rAF + 定时器），再清空缓冲（result.content 是权威全量）
+          cancelDeltaFlush()
           deltaBufferRef.current.clear()
           // result 里的 content 是最终完整内容，覆盖累积值
           if (resultData.content) {
@@ -929,14 +1015,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
   const startCreation = useCallback(
     async (projectId: string, chapterNumber: number, options?: {
-      arrangedEntities?: {
-        characterIds: string[]
-        conflictIds: string[]
-        foreshadowIds: string[]
-        clueIds: string[]
-        factionIds: string[]
-        locationIds: string[]
-      }
+      arrangedEntities?: ArrangedEntitiesPayload
     }): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
@@ -946,6 +1025,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
+      setCheckpointHistory([])
       setResult(null)
       setError(null)
       setChapterContent('')
@@ -954,10 +1034,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messageAgentMapRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = null
-      }
+      cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
       chapterNumberRef.current = chapterNumber
@@ -989,14 +1066,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    */
   const startDiscussion = useCallback(
     async (projectId: string, chapterNumber: number, options?: {
-      arrangedEntities?: {
-        characterIds: string[]
-        conflictIds: string[]
-        foreshadowIds: string[]
-        clueIds: string[]
-        factionIds: string[]
-        locationIds: string[]
-      }
+      arrangedEntities?: ArrangedEntitiesPayload
     }): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
@@ -1006,6 +1076,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
+      setCheckpointHistory([])
       setResult(null)
       setError(null)
       setChapterContent('')
@@ -1014,10 +1085,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messageAgentMapRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = null
-      }
+      cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
       chapterNumberRef.current = chapterNumber
@@ -1049,6 +1117,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
+      setCheckpointHistory([])
       setResult(null)
       setError(null)
       setChapterContent('')
@@ -1057,10 +1126,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messageAgentMapRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = null
-      }
+      cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
       chapterNumberRef.current = chapterNumber
@@ -1100,6 +1166,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
+      setCheckpointHistory([])
       setResult(null)
       setError(null)
       setChapterContent('')
@@ -1108,10 +1175,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messageAgentMapRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = null
-      }
+      cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
       chapterNumberRef.current = chapterNumber
@@ -1150,6 +1214,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
+      setCheckpointHistory([])
       setResult(null)
       setError(null)
       setChapterContent('')
@@ -1158,10 +1223,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messageAgentMapRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = null
-      }
+      cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
       chapterNumberRef.current = chapterNumber
@@ -1197,7 +1259,11 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           throw new Error('检查点缺少 checkpointId，无法提交决策')
         }
         await submitCheckpointDecision(projectId, currentCheckpoint.checkpointId, decision, messagesToSend)
-        // 决策已提交，清空检查点与用户消息，等待后续 SSE 事件推进流程
+        setCheckpointHistory((previous) => [
+          ...previous.filter((item) => item.checkpointId !== currentCheckpoint.checkpointId),
+          { ...currentCheckpoint, decision, resolvedAt: Date.now() },
+        ])
+        // 决策已提交，清空当前检查点与用户消息，等待后续 SSE 事件推进流程
         setCurrentCheckpoint(null)
         setUserMessages([])
       } catch (err) {
@@ -1282,10 +1348,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     }
 
     // ── 清理 UI 状态 ──
-    if (rafIdRef.current !== null) {
-      cancelAnimationFrame(rafIdRef.current)
-      rafIdRef.current = null
-    }
+    cancelDeltaFlush()
     deltaBufferRef.current.clear()
     setIsRunning(false)
     setProgressMessage(null)
@@ -1309,6 +1372,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     setProgressMessage(null)
     setEvents([])
     setCurrentCheckpoint(null)
+    setCheckpointHistory([])
     setResult(null)
     setError(null)
     setChapterContent('')
@@ -1317,18 +1381,29 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     messageAgentMapRef.current.clear()
     writerContentRef.current = ''
     deltaBufferRef.current.clear()
-    if (rafIdRef.current !== null) {
-      cancelAnimationFrame(rafIdRef.current)
-      rafIdRef.current = null
-    }
+    cancelDeltaFlush()
   }, [])
 
+  /**
+   * 取出并清空最近一次编排缓存的角色功能位（仅当章节号匹配时返回）。
+   * 用完即清，避免把上一章的功能位带到下一章。
+   */
+  const takeArrangedCharacterFunctions = useCallback(
+    (chapterNumber: number): Array<{ characterId: string; function: string; note?: string }> | undefined => {
+      const cached = lastArrangeFunctionsRef.current
+      if (!cached || cached.chapterNumber !== chapterNumber || cached.entries.length === 0) return undefined
+      lastArrangeFunctionsRef.current = null
+      return cached.entries
+    },
+    [],
+  )
+
   return {
-    phase,
-    isRunning,
+    phase,    isRunning,
     progressMessage,
     events,
     currentCheckpoint,
+    checkpointHistory,
     result,
     error,
     chapterContent,
@@ -1339,6 +1414,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     resumeDiscussion,
     aiArrange,
     reverseArrange,
+    takeArrangedCharacterFunctions,
     submitCheckpoint,
     sendMessage,
     cancel,

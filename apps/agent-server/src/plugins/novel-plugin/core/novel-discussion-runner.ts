@@ -510,6 +510,9 @@ export class NovelDiscussionRunner {
       // 角色共用一个极小且稳定的 system；角色卡和演出职责放在 identity 前缀。
       // 角色不再读取工种的全知 shared context，而是只读取本人可见上下文。
       buildSystemPrompt: () => this.buildCharacterSystemPrompt(),
+      // 认知状态：供引擎判断哪些角色信息对称、可合并为一次调用。
+      // 必须与 buildCharacterVisibleContext 的裁剪口径一致（见 collectCharacterKnowledge）。
+      knowledge: this.collectCharacterKnowledge(projectId, char, boundary),
       buildContextPrompt: () => this.buildCharacterVisibleContext(
         projectId,
         chapterNumber,
@@ -519,6 +522,40 @@ export class NovelDiscussionRunner {
       ),
       buildIdentityPrompt: () => this.buildCharacterPrompt(projectId, char),
     }
+  }
+
+  /**
+   * 收集角色在各信息层上的认知状态。
+   *
+   * ⚠️ 必须与 buildCharacterVisibleContext 的注入口径一致：那里是
+   * `knows → suspects → misunderstands` 的 if-else 链（命中一个就停），
+   * 这里原样保留三个字段，由 discussion-actor-batching 按同一优先级归一化。
+   * 两处口径分叉会把可见内容不同的角色判成信息对称，导致秘密泄露。
+   *
+   * 解析失败的层直接跳过：宁可让该角色不参与合并（退回逐个调用），
+   * 也不能因为漏读一层而误判为对称。
+   */
+  private collectCharacterKnowledge(
+    projectId: string,
+    char: NovelCharacter,
+    boundary?: ChapterBoundaryContext,
+  ): Record<string, { knows?: boolean; suspects?: boolean; misunderstands?: string }> {
+    const knowledge: Record<string, { knows?: boolean; suspects?: boolean; misunderstands?: string }> = {}
+    const layers = boundary?.entities.informationLayers ?? this.store.listInformationLayers(projectId)
+    for (const layer of layers) {
+      try {
+        const map = JSON.parse(layer.characterKnowledge) as Record<string, {
+          knows?: boolean
+          suspects?: boolean
+          misunderstands?: string
+        }>
+        const state = map[char.id]
+        if (state) knowledge[layer.id] = state
+      } catch {
+        // 旧数据可能不是合法 JSON。与 buildCharacterVisibleContext 一致：跳过该层。
+      }
+    }
+    return knowledge
   }
 
   /**

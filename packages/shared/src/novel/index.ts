@@ -390,6 +390,17 @@ export interface NovelForeshadow {
   status: ForeshadowStatus
   firstChapter: number | null
   lastChapter: number | null
+  /**
+   * 计划回收章（**意图**，不是事实）。
+   *
+   * 与 beats 里的 payoff 节点严格区分：
+   * - recoverByChapter = "我打算在第 N 章之前回收它"
+   * - beats 里的 payoff = "它确实在第 N 章被回收了"
+   *
+   * status 与 lastChapter 只由 beats 派生，不受本字段影响。
+   * 历史上两者被混为一谈：store 会从本字段合成 payoff beat，于是"填了计划回收章"
+   * 等价于"标记为已回收"，该伏笔被 generateAndArrange 永久排除出后续编排。
+   */
   recoverByChapter: number | null
   // ── 四层逻辑③：埋设/回收方式（结构化）──
   /** 埋设方式（明写/暗写/侧写），指导 LLM 写埋设时的手法 */
@@ -400,11 +411,12 @@ export interface NovelForeshadow {
   chapterSpans: ChapterSpan[]
   /**
    * 伏笔事件链：只记录伏笔实际发生的章节，不把埋设到回收之间的章节视为连续关联。
-   * 旧数据可缺省，读取时由 firstChapter/recoverByChapter 兼容生成端点事件。
+   * 只记录**已经发生**的节点。旧数据可缺省，读取时由 firstChapter 兼容补出埋设点；
+   * 不会由 recoverByChapter 补出回收点（那是计划，不是事实）。
    */
   beats?: ForeshadowBeat[]
   // ── 子甘特图轨道数据（复合片段展开用，可选+默认空数组，向后兼容）──
-  /** 回收进度点（多点，区别于单值 recoverByChapter；用于子轨道"回收进度"） */
+  /** 回收进度点（多点，区别于单值计划回收章；用于子轨道"回收进度"） */
   resolutionPoints?: Array<{ chapter: number; label: string }>
   createdAt: number
   updatedAt: number
@@ -1447,6 +1459,9 @@ export type CheckpointType =
   | 'writer_pushback'
   // PostWriteGuard 重写达 MAX_GUARD_REWRITE 上限后的降级决策点
   | 'guard_degraded'
+  // 单章成本超出预算（调用次数 / 输入 token / 耗时任一维度触发）。
+  // 不硬停：已花掉的 token 作废比超支更糟，让用户决定继续还是收尾。
+  | 'chapter_budget'
 
 /** 检查点决策（4 值） */
 export type CheckpointDecision = 'approve' | 'reject' | 'revise' | 'rewrite'
@@ -1457,6 +1472,10 @@ export interface CheckpointData {
   phase: CreationPhase
   data: unknown
   decision?: CheckpointDecision
+  /** 检查点首次出现时间；前端用于稳定排序和历史回放 */
+  createdAt?: number
+  /** 用户完成决策的时间 */
+  resolvedAt?: number
   /** 后端 ConfirmationManager 生成的决策请求 ID（UUID），用于决策端点路由 */
   checkpointId?: string
 }
@@ -1541,6 +1560,14 @@ export interface ChapterChatMetadata {
   mentionedAgents?: string[]
   /** 创作模式（'workflow' | 'discussion'） */
   flowMode?: 'workflow' | 'discussion'
+  /** 工作流运行 ID，用于区分同一章节的多次创作尝试 */
+  workflowRunId?: string
+  /** 工作流消息类型 */
+  workflowMessageType?: 'run_start' | 'agent' | 'checkpoint' | 'decision' | 'memory' | 'run_end'
+  /** 检查点类型 */
+  checkpointType?: CheckpointType
+  /** 检查点原始数据，供前端恢复卡片内容 */
+  checkpointData?: unknown
   /** 群聊运行 ID，用于区分同一章节的多次创作尝试 */
   discussionRunId?: string
   /** 群聊消息类型（member/moderator/system/run_start/run_end） */

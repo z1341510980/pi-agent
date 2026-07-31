@@ -13,7 +13,7 @@
   --sidebar-width: 260px;
   --context-width: 320px;
   --titlebar-height: 40px;
-  --chat-header-height: 60px;
+  --chat-header-height: 44px;
   --statusbar-height: 32px;
 
   /* ── shadcn 语义色（TRAE Work 风格） ── */
@@ -67,7 +67,17 @@
   --color-chat-header-bg: #ffffff;
 
   /* Chat workspace */
-  --color-workspace-bg: #f5f5f5;
+  --color-workspace-bg: #f9fafb;
+
+  /* User bubble (AionUi 风格：浅紫灰，带色调温度) */
+  --color-user-bubble-bg: #e5e7f0;
+
+  /* Active session bg (主色 tint) */
+  --color-active-bg: rgba(75, 63, 227, 0.08);
+
+  /* Input focus ring */
+  --shadow-input-focus: 0 0 0 3px rgba(75, 63, 227, 0.12);
+  --color-primary-soft: rgba(75, 63, 227, 0.14);
 
   /* Status bar */
   --color-statusbar-bg: #ffffff;
@@ -90,17 +100,35 @@
   /* ── 阴影层级（Phase 3：边框/阴影分层规则）── */
   --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.04);
   --shadow-overlay: 0 4px 12px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.06);
+  --shadow-border:
+    0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-border-hover:
+    0 0 0 1px rgba(0, 0, 0, 0.08), 0 1px 2px -1px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-input-card: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 8px 28px rgba(15, 23, 42, 0.08);
+  --shadow-input-card-hover: 0 0 0 1px rgba(75, 63, 227, 0.16), 0 12px 34px rgba(15, 23, 42, 0.1);
+  --shadow-floating: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 12px 30px rgba(15, 23, 42, 0.12);
 
   /* ── 语义色补充 ── */
   --color-warning: #f59e0b;
   --color-warning-foreground: #ffffff;
+  --color-error: var(--color-danger);
 
   /* ── 主色 tint 梯度（背景着色用）── */
   --color-primary-5: rgba(75, 63, 227, 0.05);
   --color-primary-10: rgba(75, 63, 227, 0.1);
   --color-primary-20: rgba(75, 63, 227, 0.2);
 
-  /* ── Type Scale（Phase 3）── */
+  /* ── Type Scale（Phase 3）──
+   *
+   * ⚠️ Tailwind v4 的 `text-*` utility 读的是 `--text-*` 而不是 `--font-size-*`。
+   * 下方两组是同一批值的两种形态：
+   *   - `--font-size-* / --line-height-*`：供原生 CSS（chapter-content-editor.css 等）用
+   *   - `--text-* / --text-*--line-height`：供 Tailwind 生成 text-micro / text-caption 等 utility
+   *
+   * 收敛目标：组件里的 text-[10px] / text-[11px] 等裸字面量改用这套语义化类，
+   * 让"这段文字属于哪一层信息"可读，也让全局调整字号成为可能。
+   * 小说界面此前 ≤11px 有 224 处裸字面量，而这套 Scale 零使用。
+   */
   --font-size-display: 20px;
   --line-height-display: 24px;
   --font-size-heading: 15px;
@@ -112,37 +140,25 @@
   --font-size-micro: 11px;
   --line-height-micro: 14px;
 
-  /* === AionUi 风格语义 token（Stage 1 引入，主题切换 UI 暂缓） === */
-  /* 背景层级：bg-1 最浅（基础底色）→ bg-10 最深，数字越大分隔越强 */
-  --bg-1: var(--color-surface-1);
-  --bg-2: var(--color-surface-2);
-  --bg-3: var(--color-surface-3);
-  --bg-4: var(--color-surface-4);
-  --bg-5: color-mix(in srgb, var(--color-surface-3) 80%, var(--color-border));
-  --bg-6: color-mix(in srgb, var(--color-surface-3) 60%, var(--color-border));
-  --bg-7: color-mix(in srgb, var(--color-surface-2) 70%, var(--color-border));
-  --bg-8: color-mix(in srgb, var(--color-surface-2) 50%, var(--color-border));
-  --bg-9: color-mix(in srgb, var(--color-surface-1) 70%, var(--color-border));
-  --bg-10: var(--color-border);
-  /* border 映射到 bg-3，与 AionUi 一致 */
-  --border-1: var(--bg-3);
-
-  /* 文字层级：t-primary 最强 → t-disabled 最弱 */
-  --t-primary: var(--color-text);
-  --t-secondary: var(--color-text-secondary);
-  --t-tertiary: var(--color-subtle, var(--color-text-secondary));
-  --t-disabled: color-mix(in srgb, var(--color-text) 40%, transparent);
-  --t-quaternary: color-mix(in srgb, var(--color-text) 25%, transparent);
-
-  /* 填充层级：fill-0 透明 → fill-3 最强（hover/active 态） */
-  --fill-0: transparent;
-  --fill-1: color-mix(in srgb, var(--color-primary) 8%, transparent);
-  --fill-2: color-mix(in srgb, var(--color-primary) 16%, transparent);
-  --fill-3: color-mix(in srgb, var(--color-primary) 24%, transparent);
-
-  /* 消息专用 */
-  --message-user-bg: var(--bg-2);
-  --message-tips-bg: color-mix(in srgb, var(--bg-1) 50%, transparent);
+  /* Tailwind utility 形态：text-display / text-heading / text-body / text-caption / text-micro / text-nano */
+  --text-display: 20px;
+  --text-display--line-height: 24px;
+  --text-heading: 15px;
+  --text-heading--line-height: 20px;
+  --text-body: 14px;
+  --text-body--line-height: 22px;
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-micro: 11px;
+  --text-micro--line-height: 14px;
+  /*
+   * nano（10px）：Scale 原本没有这一档，但实测有 136 处 text-[10px]。
+   * 它们多用于矩阵格内标签、角标数字这类"必须极小"的位置。
+   * 与其把它们强行并入 micro（11px）改变视觉，不如承认这一档存在并命名。
+   * 新代码应优先用 micro；nano 仅限空间确实不足的场合。
+   */
+  --text-nano: 10px;
+  --text-nano--line-height: 13px;
 }
 
 /* ── Dark 主题：通过 .dark class 切换 ── */
@@ -185,7 +201,17 @@
 
   --color-chat-header-bg: #171717;
 
-  --color-workspace-bg: #0a0a0a;
+  --color-workspace-bg: #1a1a1a;
+
+  /* User bubble (AionUi 风格：深色模式下带紫调的深灰) */
+  --color-user-bubble-bg: #3d4150;
+
+  /* Active session bg (主色 tint) */
+  --color-active-bg: rgba(106, 111, 255, 0.16);
+
+  /* Input focus ring */
+  --shadow-input-focus: 0 0 0 3px rgba(106, 111, 255, 0.16);
+  --color-primary-soft: rgba(106, 111, 255, 0.2);
 
   --color-statusbar-bg: #171717;
   --color-statusbar-border: rgba(115, 115, 115, 0.36);
@@ -197,41 +223,17 @@
   /* ── Phase 3 补充：深色模式阴影/语义色/tint ── */
   --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.16);
   --shadow-overlay: 0 4px 12px rgba(0, 0, 0, 0.3), 0 12px 32px rgba(0, 0, 0, 0.24);
+  --shadow-border: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-border-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
+  --shadow-input-card: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 16px 36px rgba(0, 0, 0, 0.32);
+  --shadow-input-card-hover: 0 0 0 1px rgba(106, 111, 255, 0.26), 0 18px 40px rgba(0, 0, 0, 0.38);
+  --shadow-floating: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 16px 42px rgba(0, 0, 0, 0.42);
   --color-warning: #fbbf24;
   --color-warning-foreground: #171717;
+  --color-error: var(--color-danger);
   --color-primary-5: rgba(106, 111, 255, 0.05);
   --color-primary-10: rgba(106, 111, 255, 0.1);
   --color-primary-20: rgba(106, 111, 255, 0.2);
-
-  /* === Stage 1：AionUi 语义 token 显式映射（确保暗色模式生效） === */
-  /* @theme inline 中的 --bg-* / --t-* / --fill-* 引用 var(--color-surface-*) 等
-     动态变量，本就会随 .dark 重定义切换；此处显式重申一遍，避免 Tailwind v4
-     编译期 inline 优化导致暗色失效，并方便后续主题切换 UI 直接覆写。 */
-  --bg-1: var(--color-surface-1);
-  --bg-2: var(--color-surface-2);
-  --bg-3: var(--color-surface-3);
-  --bg-4: var(--color-surface-4);
-  --bg-5: color-mix(in srgb, var(--color-surface-3) 80%, var(--color-border));
-  --bg-6: color-mix(in srgb, var(--color-surface-3) 60%, var(--color-border));
-  --bg-7: color-mix(in srgb, var(--color-surface-2) 70%, var(--color-border));
-  --bg-8: color-mix(in srgb, var(--color-surface-2) 50%, var(--color-border));
-  --bg-9: color-mix(in srgb, var(--color-surface-1) 70%, var(--color-border));
-  --bg-10: var(--color-border);
-  --border-1: var(--bg-3);
-
-  --t-primary: var(--color-text);
-  --t-secondary: var(--color-text-secondary);
-  --t-tertiary: var(--color-subtle, var(--color-text-secondary));
-  --t-disabled: color-mix(in srgb, var(--color-text) 40%, transparent);
-  --t-quaternary: color-mix(in srgb, var(--color-text) 25%, transparent);
-
-  --fill-0: transparent;
-  --fill-1: color-mix(in srgb, var(--color-primary) 8%, transparent);
-  --fill-2: color-mix(in srgb, var(--color-primary) 16%, transparent);
-  --fill-3: color-mix(in srgb, var(--color-primary) 24%, transparent);
-
-  --message-user-bg: var(--bg-2);
-  --message-tips-bg: color-mix(in srgb, var(--bg-1) 50%, transparent);
 }
 
 /* ── Base resets ── */
@@ -254,7 +256,7 @@ body {
   background: var(--color-app-bg);
   font-size: 14px;
   line-height: 1.43;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
   font-family:
     'SF Pro Text',
     'PingFang SC',
@@ -267,6 +269,26 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+img {
+  outline: 1px solid rgba(0, 0, 0, 0.1);
+  outline-offset: -1px;
+}
+
+.dark img {
+  outline-color: rgba(255, 255, 255, 0.1);
 }
 
 button {
@@ -287,6 +309,245 @@ button:disabled {
 
 .workspace-grid {
   transition: grid-template-columns 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Shared polished surfaces ── */
+
+.pi-surface-card {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-1) 96%, white 4%),
+    var(--color-surface-1)
+  );
+  border: 0;
+  box-shadow: var(--shadow-border);
+  transition:
+    box-shadow 150ms ease-out,
+    background-color 150ms ease-out,
+    transform 150ms ease-out;
+}
+
+.pi-surface-card:hover {
+  box-shadow: var(--shadow-border-hover);
+}
+
+.pi-glass-header {
+  position: relative;
+  isolation: isolate;
+  contain: paint;
+  background-color: color-mix(in srgb, var(--color-chat-header-bg) 90%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+.pi-glass-header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -14px;
+  height: 14px;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-chat-header-bg) 58%, transparent) 0%,
+    transparent 100%
+  );
+  z-index: -1;
+}
+
+@supports ((-webkit-backdrop-filter: blur(8px)) or (backdrop-filter: blur(8px))) {
+  .pi-glass-header {
+    -webkit-backdrop-filter: saturate(112%) blur(8px);
+    backdrop-filter: saturate(112%) blur(8px);
+  }
+}
+
+.pi-workspace-main {
+  background:
+    radial-gradient(
+      circle at 22% 0%,
+      color-mix(in srgb, var(--color-primary) 7%, transparent) 0,
+      transparent 34%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-workspace-bg) 92%, white 8%),
+      var(--color-workspace-bg)
+    );
+}
+
+.dark .pi-workspace-main {
+  background:
+    radial-gradient(
+      circle at 18% 0%,
+      color-mix(in srgb, var(--color-primary) 12%, transparent) 0,
+      transparent 34%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-workspace-bg) 88%, black 12%),
+      var(--color-workspace-bg)
+    );
+}
+
+.pi-input-dock {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-workspace-bg) 86%, transparent) 40%,
+    var(--color-workspace-bg) 100%
+  );
+}
+
+.pi-input-card {
+  box-shadow: var(--shadow-input-card);
+}
+
+.pi-input-card:hover {
+  box-shadow: var(--shadow-input-card-hover);
+}
+
+.pi-input-card[data-focused='true'] {
+  box-shadow:
+    0 0 0 1px var(--color-primary),
+    0 0 0 4px var(--color-primary-soft),
+    0 12px 34px rgba(15, 23, 42, 0.1);
+}
+
+.dark .pi-input-card[data-focused='true'] {
+  box-shadow:
+    0 0 0 1px var(--color-primary),
+    0 0 0 4px var(--color-primary-soft),
+    0 18px 40px rgba(0, 0, 0, 0.38);
+}
+
+.pi-input-card[data-dragging='true'] {
+  box-shadow:
+    0 0 0 1px var(--color-primary),
+    0 0 0 4px color-mix(in srgb, var(--color-primary) 10%, transparent),
+    var(--shadow-input-card);
+}
+
+.pi-nav-panel {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-1) 92%, transparent),
+    var(--color-surface-1)
+  );
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--color-border) 78%, transparent);
+}
+
+.pi-side-panel {
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--color-border) 78%, transparent);
+}
+
+.pi-settings-main {
+  background:
+    radial-gradient(
+      circle at 12% 0%,
+      color-mix(in srgb, var(--color-primary) 6%, transparent) 0,
+      transparent 32%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-app-bg) 88%, white 12%),
+      var(--color-app-bg)
+    );
+}
+
+.dark .pi-settings-main {
+  background:
+    radial-gradient(
+      circle at 10% 0%,
+      color-mix(in srgb, var(--color-primary) 10%, transparent) 0,
+      transparent 32%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-app-bg) 88%, black 12%),
+      var(--color-app-bg)
+    );
+}
+
+.settings-field-card {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-1) 96%, white 4%),
+    var(--color-surface-1)
+  );
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--shadow-border);
+}
+
+.pi-settings-main .bg-surface-2.border.border-border.rounded-lg {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-1) 96%, white 4%),
+    var(--color-surface-1)
+  );
+  border-color: transparent;
+  border-radius: 16px;
+  box-shadow: var(--shadow-border);
+}
+
+.pi-settings-main .bg-surface-2.border.border-border.rounded-lg:hover {
+  box-shadow: var(--shadow-border-hover);
+}
+
+.dark .settings-field-card,
+.dark .pi-surface-card,
+.dark .pi-settings-main .bg-surface-2.border.border-border.rounded-lg {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-1) 94%, white 3%),
+    var(--color-surface-1)
+  );
+}
+
+.message-user-bubble {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-user-bubble-bg) 86%, white 14%),
+    var(--color-user-bubble-bg)
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 8%, transparent),
+    0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.dark .message-user-bubble {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-user-bubble-bg) 84%, white 5%),
+    var(--color-user-bubble-bg)
+  );
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.message-markdown {
+  text-wrap: pretty;
+}
+
+.message-markdown pre {
+  box-shadow: var(--shadow-border);
+}
+
+.pi-floating-button {
+  box-shadow: var(--shadow-floating);
+  transition:
+    color 150ms ease-out,
+    background-color 150ms ease-out,
+    box-shadow 150ms ease-out,
+    transform 150ms ease-out;
+}
+
+.pi-send-button {
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--color-primary) 24%, transparent);
+}
+
+.pi-send-button:disabled {
+  box-shadow: none;
 }
 
 @media (max-width: 1100px) {
@@ -334,13 +595,13 @@ button:disabled {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: rgba(115, 115, 115, 0.12);
+  background: transparent;
   border-radius: 3px;
   transition: background 200ms ease;
 }
 
 *:hover::-webkit-scrollbar-thumb {
-  background: rgba(115, 115, 115, 0.24);
+  background: rgba(115, 115, 115, 0.1);
 }
 
 *::-webkit-scrollbar-thumb:hover {
@@ -359,6 +620,29 @@ button:disabled {
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(115, 115, 115, 0.16) transparent;
+}
+
+/* ── 中断按钮呼吸动画（AionUi 风格：1.4s 红色脉冲 + 光晕） ── */
+@keyframes abort-breathe {
+  0% {
+    box-shadow: 0 0 0 0 rgba(232, 70, 58, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 6px rgba(232, 70, 58, 0.22);
+  }
+}
+
+.abort-breathe {
+  animation: abort-breathe 1.4s ease-in-out infinite alternate;
+}
+
+/* ── 侧边栏隐藏滚动条（macOS overlay 风格） ── */
+.sidebar-scroll {
+  scrollbar-width: none;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 /* SVAR Gantt 聚焦复合轨道：保持矩阵的中性表面，并让数据色带覆盖任务条。 */
@@ -516,20 +800,6 @@ button:disabled {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-/* === Stage 2: badge-breathing 呼吸动画（工具调用 running 态，比 spinner 更轻量） === */
-@keyframes badge-breathing {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-.badge-breathing {
-  animation: badge-breathing 1.6s ease-in-out infinite;
 }
 
 /* ── driver.js popover 主题覆写（对齐 TRAE Work 设计系统）── */

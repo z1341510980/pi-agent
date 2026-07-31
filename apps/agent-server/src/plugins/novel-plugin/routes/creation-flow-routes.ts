@@ -26,6 +26,7 @@ import type { NovelMarker } from '../core/types.js'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import type { CheckpointType } from '@repo/shared/novel'
 import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, type NovelAgentType } from '../core/novel-agents.js'
 import { persistDiscussionHistory } from '../core/discussion-history.js'
 import type { DiscussionResult } from '../../../core/agent/discussion-types.js'
@@ -38,20 +39,11 @@ import {
 } from '../utils/chapter-task-registry.js'
 import { createNovelAgUiEmitter, createSseEmitterSink } from '../utils/sse-emitter.js'
 import { cancelDebug } from '../utils/cancel-debug-log.js'
-
-/** 编排实体校验 schema（create-flow / create-discussion 共用） */
-const arrangedEntitiesSchema = z.object({
-  characterIds: z.array(z.string()).max(200).optional().default([]),
-  conflictIds: z.array(z.string()).max(200).optional().default([]),
-  foreshadowIds: z.array(z.string()).max(200).optional().default([]),
-  clueIds: z.array(z.string()).max(200).optional().default([]),
-  factionIds: z.array(z.string()).max(200).optional().default([]),
-  locationIds: z.array(z.string()).max(200).optional().default([]),
-})
-
-const createFlowBodySchema = z.object({
-  arrangedEntities: arrangedEntitiesSchema.optional(),
-}).optional().default({})
+import {
+  creationFlowBodySchema,
+  parseArrangedEntities,
+  findForeignArrangedEntities,
+} from './arranged-entities-contract.js'
 
 export function createCreationFlowRoutes(services: NovelServices): RouteDefinition[] {
   const { store } = services
@@ -113,39 +105,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     handler: async (request: any, reply: any) => {
       const { projectId, chapterNumber } = request.params
       const orchestrator = services.orchestrator
-      const input = validateBody(createFlowBodySchema, request, reply)
+      const input = validateBody(creationFlowBodySchema, request, reply)
       if (!input) return reply
-      const arrangedEntities = input.arrangedEntities
-        ? {
-            characterIds: input.arrangedEntities.characterIds,
-            conflictIds: input.arrangedEntities.conflictIds,
-            foreshadowIds: input.arrangedEntities.foreshadowIds,
-            clueIds: input.arrangedEntities.clueIds,
-            factionIds: input.arrangedEntities.factionIds,
-            locationIds: input.arrangedEntities.locationIds,
-          }
-        : undefined
+      const arrangedEntities = parseArrangedEntities(input)
 
       if (arrangedEntities) {
-        const invalid: string[] = []
-        for (const id of arrangedEntities.characterIds) {
-          if (store.getCharacter(id)?.projectId !== projectId) invalid.push(`character:${id}`)
-        }
-        for (const id of arrangedEntities.conflictIds) {
-          if (store.getConflict(id)?.projectId !== projectId) invalid.push(`conflict:${id}`)
-        }
-        for (const id of arrangedEntities.foreshadowIds) {
-          if (store.getForeshadow(id)?.projectId !== projectId) invalid.push(`foreshadow:${id}`)
-        }
-        for (const id of arrangedEntities.clueIds) {
-          if (store.getClue(id)?.projectId !== projectId) invalid.push(`clue:${id}`)
-        }
-        for (const id of arrangedEntities.factionIds) {
-          if (store.getFaction(id)?.projectId !== projectId) invalid.push(`faction:${id}`)
-        }
-        for (const id of arrangedEntities.locationIds) {
-          if (store.getLocation(id)?.projectId !== projectId) invalid.push(`location:${id}`)
-        }
+        const invalid = findForeignArrangedEntities(store, projectId, arrangedEntities)
         if (invalid.length > 0) {
           reply.code(400).send({ ok: false, error: `编排实体不属于当前项目或不存在: ${invalid.join(', ')}` })
           return
@@ -181,6 +146,27 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         `novel:chapter:${projectId}:${chapterNumber}`,
         randomUUID(),
       )
+      const chapterNumberValue = parseInt(chapterNumber, 10)
+      const workflowRunId = randomUUID()
+      const persistWorkflowMessage = (message: {
+        role: 'agent' | 'system'
+        fromId: string
+        fromName: string
+        content: string
+        phase: 'pre_creation' | 'checkpoint' | 'discussion' | 'review'
+        metadata?: Record<string, unknown>
+      }): void => {
+        services.chapterChatStore.add({
+          projectId,
+          chapterNumber: chapterNumberValue,
+          ...message,
+          metadata: {
+            ...message.metadata,
+            flowMode: 'workflow',
+            workflowRunId,
+          },
+        })
+      }
       const task = registerNovelChapterTask(creationLockKey, 'workflow')
       const abortOnDisconnect = () => {
         if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
@@ -191,9 +177,17 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
       try {
         chapterCreationLocks.add(creationLockKey)
+        persistWorkflowMessage({
+          role: 'system',
+          fromId: 'system',
+          fromName: '系统',
+          content: `开始第 ${chapterNumberValue} 章工作流创作`,
+          phase: 'pre_creation',
+          metadata: { workflowMessageType: 'run_start' },
+        })
         const result = await orchestrator.createChapterWithFlow(
           projectId,
-          parseInt(chapterNumber, 10),
+          chapterNumberValue,
           {
             emit: emitter.emit,
             onCheckpoint: async (checkpoint) => {
@@ -201,26 +195,68 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               // timeoutMs=0 表示无超时：用户可能需要长时间阅读/checkpoint 内容并思考，
               // 不应因超时自动 reject 导致弹框消失、创作被取消
               const toolCallId = randomUUID()
+              const checkpointCreatedAt = Date.now()
               const decisionPromise = services.confirmationManager.requestDecision({
                 threadId: `novel-checkpoint-${projectId}-${chapterNumber}`,
                 toolCallId,
                 toolName: `checkpoint_${checkpoint.type}`,
-                args: { checkpoint } as Record<string, unknown>,
+                args: { checkpoint, workflowRunId } as Record<string, unknown>,
                 reason: `等待用户确认 ${checkpoint.type} 检查点`,
               }, 0)
               // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
               // 通过 toolCallId 反查拿到 ConfirmationRequest.id，推给前端用于决策路由
               const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
-              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+              const persistedCheckpoint = {
+                ...checkpoint,
+                checkpointId: pending?.id,
+                createdAt: checkpointCreatedAt,
+              }
+              persistWorkflowMessage({
+                role: 'system',
+                fromId: 'system',
+                fromName: '检查点',
+                content: typeof checkpoint.data === 'string'
+                  ? checkpoint.data
+                  : JSON.stringify(checkpoint.data) ?? '',
+                phase: 'checkpoint',
+                metadata: {
+                  workflowMessageType: 'checkpoint',
+                  checkpointId: pending?.id,
+                  checkpointType: checkpoint.type,
+                  checkpointData: checkpoint.data,
+                },
+              })
+              emitter.checkpoint(persistedCheckpoint)
               return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
             },
             onProgress: (event) => emitter.progress(event),
+            onConversationMessage: persistWorkflowMessage,
             signal: task.controller.signal,
             arrangedEntities,
           },
         )
+        persistWorkflowMessage({
+          role: 'system',
+          fromId: 'system',
+          fromName: '系统',
+          content: result.status === 'completed'
+            ? '工作流创作完成'
+            : result.status === 'cancelled'
+              ? '工作流创作已取消'
+              : `工作流创作结束：${result.error ?? result.status}`,
+          phase: 'review',
+          metadata: { workflowMessageType: 'run_end' },
+        })
         emitter.result(result)
       } catch (err) {
+        persistWorkflowMessage({
+          role: 'system',
+          fromId: 'system',
+          fromName: '系统',
+          content: `工作流创作失败：${err instanceof Error ? err.message : String(err)}`,
+          phase: 'review',
+          metadata: { workflowMessageType: 'run_end', failed: true },
+        })
         cancelDebug('create-flow-catch', { projectId, chapterNumber, errMessage: err instanceof Error ? err.message : String(err), errStack: err instanceof Error ? err.stack : undefined, signalAborted: task.controller.signal.aborted })
         emitter.error(String(err))
       } finally {
@@ -265,6 +301,40 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         }
       }
 
+      if (isWorkflow) {
+        const chapterText = pending.threadId.slice(`novel-checkpoint-${projectId}-`.length)
+        const chapterNumber = Number(chapterText)
+        const checkpointArgs = pending.args as {
+          checkpoint?: { type?: CheckpointType }
+          workflowRunId?: string
+        }
+        if (Number.isInteger(chapterNumber) && chapterNumber > 0) {
+          const decisionLabels: Record<string, string> = {
+            approve: '同意',
+            revise: '修订',
+            rewrite: '重写',
+            reject: '取消',
+          }
+          services.chapterChatStore.add({
+            projectId,
+            chapterNumber,
+            role: 'system',
+            fromId: 'system',
+            fromName: '检查点决策',
+            content: `用户选择：${decisionLabels[decision] ?? decision}`,
+            phase: 'checkpoint',
+            metadata: {
+              flowMode: 'workflow',
+              workflowRunId: checkpointArgs.workflowRunId,
+              workflowMessageType: 'decision',
+              checkpointId,
+              checkpointType: checkpointArgs.checkpoint?.type,
+              decision,
+            },
+          })
+        }
+      }
+
       // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
       const accepted = services.confirmationManager.respondDecision(checkpointId, decision)
       if (!accepted) {
@@ -290,40 +360,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const discussionRunner = services.discussionRunner
 
       // 解析请求体中的 arrangedEntities（与 create-flow 端点一致，复用同一 schema）
-      const input = validateBody(createFlowBodySchema, request, reply)
+      const input = validateBody(creationFlowBodySchema, request, reply)
       if (!input) return reply
-      const arrangedEntities = input.arrangedEntities
-        ? {
-            characterIds: input.arrangedEntities.characterIds,
-            conflictIds: input.arrangedEntities.conflictIds,
-            foreshadowIds: input.arrangedEntities.foreshadowIds,
-            clueIds: input.arrangedEntities.clueIds,
-            factionIds: input.arrangedEntities.factionIds,
-            locationIds: input.arrangedEntities.locationIds,
-          }
-        : undefined
+      const arrangedEntities = parseArrangedEntities(input)
 
       // 校验编排实体属于当前项目（与 create-flow 一致）
       if (arrangedEntities) {
-        const invalid: string[] = []
-        for (const id of arrangedEntities.characterIds) {
-          if (store.getCharacter(id)?.projectId !== projectId) invalid.push(`character:${id}`)
-        }
-        for (const id of arrangedEntities.conflictIds) {
-          if (store.getConflict(id)?.projectId !== projectId) invalid.push(`conflict:${id}`)
-        }
-        for (const id of arrangedEntities.foreshadowIds) {
-          if (store.getForeshadow(id)?.projectId !== projectId) invalid.push(`foreshadow:${id}`)
-        }
-        for (const id of arrangedEntities.clueIds) {
-          if (store.getClue(id)?.projectId !== projectId) invalid.push(`clue:${id}`)
-        }
-        for (const id of arrangedEntities.factionIds) {
-          if (store.getFaction(id)?.projectId !== projectId) invalid.push(`faction:${id}`)
-        }
-        for (const id of arrangedEntities.locationIds) {
-          if (store.getLocation(id)?.projectId !== projectId) invalid.push(`location:${id}`)
-        }
+        const invalid = findForeignArrangedEntities(store, projectId, arrangedEntities)
         if (invalid.length > 0) {
           reply.code(400).send({ ok: false, error: `编排实体不属于当前项目或不存在: ${invalid.join(', ')}` })
           return
@@ -720,6 +763,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           + (arrangedEntities.clueIds ?? []).length
           + arrangedEntities.factionIds.length
           + arrangedEntities.locationIds.length
+          + (arrangedEntities.itemIds ?? []).length
         emitter.progress({
           type: 'arrange_done',
           phase: 'arranging',
@@ -735,6 +779,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             clues: (arrangedEntities.clueIds ?? []).length,
             factions: arrangedEntities.factionIds.length,
             locations: arrangedEntities.locationIds.length,
+            items: (arrangedEntities.itemIds ?? []).length,
           },
         })
         // 编排结束：发 result（status=completed，不带 content），前端据此显示"编排完成"并关闭面板

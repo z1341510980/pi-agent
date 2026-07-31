@@ -123,7 +123,7 @@ export function OutlineTree({
         <button
           type="button"
           onClick={handleCreateVolume}
-          className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
+          className="flex items-center gap-1 px-2 py-1 text-micro text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
         >
           <Plus className="size-3" /> 新建卷
         </button>
@@ -176,7 +176,7 @@ export function OutlineTree({
                 <button
                   type="button"
                   onClick={() => handleCreateChapter(vol.id)}
-                  className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
+                  className="flex items-center gap-1 px-2 py-1 text-micro text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-[color,background-color,transform] active:scale-[0.96]"
                 >
                   <Plus className="size-3" /> 新建章
                 </button>
@@ -231,7 +231,7 @@ function ChapterRow({
         type="button"
         onClick={onClick}
         className={cn(
-          'flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-md transition-colors text-left',
+          'flex items-center gap-1.5 px-2 py-1 text-micro rounded-md transition-colors text-left',
           selected || isPlayhead
             ? 'bg-primary/10 text-text'
             : 'text-text-secondary hover:bg-muted/50',
@@ -253,7 +253,7 @@ function ChapterRow({
           <Button
             size="sm"
             variant="ghost"
-            className="h-6 px-2 text-[10px]"
+            className="h-6 px-2 text-nano"
             onClick={onAiArrange}
             disabled={!chapter.outline?.trim()}
             title="AI编排"
@@ -290,7 +290,7 @@ function OutlinePreviewRow({
       type="button"
       onClick={onClick}
       className={cn(
-        'flex items-start gap-1.5 px-2 py-1 text-left rounded-md transition-colors w-full text-[11px]',
+        'flex items-start gap-1.5 px-2 py-1 text-left rounded-md transition-colors w-full text-micro',
         selected ? 'bg-primary/10' : 'hover:bg-muted/50',
       )}
     >

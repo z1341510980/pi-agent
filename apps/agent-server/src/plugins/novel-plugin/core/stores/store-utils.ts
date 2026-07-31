@@ -78,11 +78,25 @@ export function parseIdListSafe(raw: string | null | undefined): string[] {
 type ForeshadowBeat = NonNullable<NovelForeshadow['beats']>[number]
 const FORESHADOW_BEAT_TYPES = new Set(['plant', 'reinforce', 'reveal', 'payoff'])
 
-/** 规范化事件链，并为旧数据从 firstChapter/recoverByChapter 补出端点事件。 */
+/**
+ * 规范化伏笔事件链。
+ *
+ * ⚠️ 语义边界（2026-07 修正）：
+ * `beats` 只记录**已经发生**的伏笔节点；`recoverByChapter` 是**计划回收章**（一个意图，不是事实）。
+ *
+ * 旧实现在这里从 recoverByChapter 合成 payoff beat，等价于把"计划"当成"已回收"：
+ * 用户在 UI 里填一个"回收章节"，或 Memory Agent 传一个 `recoverByChapter`，
+ * 这条伏笔就立刻被 deriveForeshadowStatus 判成 `recovered`，
+ * 进而被 generateAndArrange 的 `status !== 'recovered'` 过滤器永久排除出后续所有编排 ——
+ * 即"我计划第 15 章回收它"导致"它再也不会出现在任何一章"。
+ *
+ * 现在只保留 firstChapter → plant 的兼容补点（埋设章本身就是已发生的事实）。
+ *
+ * @param firstChapter 埋设章（事实）。beats 里缺 plant 时用它补一个，兼容 beats 之前的旧数据。
+ */
 export function normalizeForeshadowBeats(
   input: unknown,
   firstChapter: number | null,
-  recoverByChapter: number | null,
 ): ForeshadowBeat[] {
   const source = Array.isArray(input) ? input : []
   const byChapter = new Map<number, ForeshadowBeat>()
@@ -100,9 +114,6 @@ export function normalizeForeshadowBeats(
   }
   if (![...byChapter.values()].some((beat) => beat.type === 'plant') && firstChapter != null) {
     byChapter.set(firstChapter, { chapter: firstChapter, type: 'plant' })
-  }
-  if (![...byChapter.values()].some((beat) => beat.type === 'payoff') && recoverByChapter != null) {
-    byChapter.set(recoverByChapter, { chapter: recoverByChapter, type: 'payoff' })
   }
   // 埋设与回收各自只能有一个；强化、部分揭示可以在不同章节重复出现。
   const sorted = [...byChapter.values()].sort((a, b) => a.chapter - b.chapter)

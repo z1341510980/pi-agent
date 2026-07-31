@@ -28,6 +28,7 @@ import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
+import { supportsAnthropicCacheControl, usesOpenAiPromptCacheKey, buildPromptCacheKey } from './cache-control-support.js'
 import {
   getAssistantTerminalError,
   isFinalAssistantSuccess,
@@ -922,6 +923,13 @@ export class PluginManager {
 
         // 模型切换（如指定）+ 读取模型 maxTokens 配置
         let modelMaxTokens: number | undefined
+        /**
+         * 目标模型的 provider / baseUrl，用于判断是否接受 Anthropic 风格 cache_control。
+         *
+         * 从 modelRegistry 解析：options.modelId 只有 provider + modelId，
+         * baseUrl 要查注册表才能拿到（用户可能给自定义 provider 配了 Anthropic 端点）。
+         */
+        let cacheControlTarget: { provider?: string; modelId?: string; baseUrl?: string } = {}
         if (options.modelId) {
           if (this.modelRegistry) {
             const targetModel = this.modelRegistry.find(
@@ -931,24 +939,60 @@ export class PluginManager {
             if (targetModel) {
               await threadSession.session.setModel(targetModel)
               modelMaxTokens = targetModel.maxTokens
+              cacheControlTarget = {
+                provider: options.modelId.provider,
+                modelId: options.modelId.modelId,
+                baseUrl: (targetModel as { baseUrl?: string }).baseUrl,
+              }
             } else {
               logger.warn(
                 { provider: options.modelId.provider, modelId: options.modelId.modelId },
                 'modelRegistry 未找到指定模型，使用默认模型',
               )
+              // 查不到 baseUrl 时仍按 provider/modelId 判断，避免直接退回到"全量打断点"
+              cacheControlTarget = {
+                provider: options.modelId.provider,
+                modelId: options.modelId.modelId,
+              }
             }
           } else {
             logger.warn(
               'ModelRegistry 未注入，无法切换模型，使用默认模型',
             )
+            cacheControlTarget = {
+              provider: options.modelId.provider,
+              modelId: options.modelId.modelId,
+            }
           }
         } else if (this.modelRegistry?.getAll) {
           // 未指定 modelId 时，尝试从注册表第一个模型读取 maxTokens
-          const allModels = this.modelRegistry.getAll() as Array<{ maxTokens?: number }>
+          const allModels = this.modelRegistry.getAll() as Array<{
+            maxTokens?: number
+            provider?: string
+            id?: string
+            baseUrl?: string
+          }>
           if (allModels.length > 0 && allModels[0].maxTokens) {
             modelMaxTokens = allModels[0].maxTokens
           }
+          // 走默认模型时同样要判定：默认 Provider 也可能不是 Anthropic
+          if (allModels.length > 0) {
+            cacheControlTarget = {
+              provider: allModels[0].provider,
+              modelId: allModels[0].id,
+              baseUrl: allModels[0].baseUrl,
+            }
+          }
         }
+
+        const cacheControlSupported = supportsAnthropicCacheControl(cacheControlTarget)
+        // OpenAI 的 prompt_cache_key 是路由提示：相同 key 尽量导到同一台机器，
+        // 才可能命中那台机器上的前缀缓存。pi-ai 默认用 sessionId，而我们每次
+        // runAgent 都新建 session → 随机 key → 同一章的多个 Agent 各走一台机器，
+        // 共享前缀白建。有 promptCacheScope 时改用稳定 key。
+        const promptCacheKey = options.promptCacheScope && usesOpenAiPromptCacheKey(cacheControlTarget)
+          ? buildPromptCacheKey(options.promptCacheScope)
+          : undefined
 
         // 注入生成参数到 provider payload（temperature / max_tokens / response_format / cache_control）
         // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
@@ -957,7 +1001,8 @@ export class PluginManager {
           options.temperature !== undefined ||
           effectiveMaxTokens !== undefined ||
           options.responseFormat !== undefined ||
-          options.prefixUserMessage !== undefined
+          options.prefixUserMessage !== undefined ||
+          promptCacheKey !== undefined
 
         // stream_options 屏蔽：某些 OpenAI 兼容中转（如 fastaitoken.com）不兼容
         // stream_options.include_usage 参数，收到后会断流导致
@@ -969,6 +1014,8 @@ export class PluginManager {
           const inject: Record<string, unknown> = {}
           if (options.temperature !== undefined) inject.temperature = options.temperature
           if (effectiveMaxTokens !== undefined) inject.max_tokens = effectiveMaxTokens
+          // 稳定的缓存路由键：覆盖 pi-ai 按 sessionId 生成的随机值
+          if (promptCacheKey !== undefined) inject.prompt_cache_key = promptCacheKey
           if (options.responseFormat === 'json') {
             inject.response_format = { type: 'json_object' }
             // 实体规划/生成阶段只需纯 JSON 输出，不需要工具调用。
@@ -1006,6 +1053,15 @@ export class PluginManager {
             // 仅在检测到可识别结构时打标，未识别结构保持原样（不破坏现有逻辑）。
             const applyCacheBreakpoints = (rawPayload: unknown): unknown => {
               if (!options.prefixUserMessage) return rawPayload
+              // ⚠️ 只对认 Anthropic 风格 cache_control 的 provider 打断点。
+              //
+              // 其余 OpenAI 兼容 provider（DeepSeek / OpenAI / 各类中转）用的是
+              // **自动前缀缓存**：服务端按 prompt 前缀自行命中，要求前缀逐字节稳定。
+              // 把 content 从字符串改写成 [{type:'text',...,cache_control}] 数组
+              // 会改变参与缓存键计算的序列化形态，反而把本来能命中的自动缓存打掉 ——
+              // 我们以为在提升命中率，实际是在破坏它。这与实测「cache_read 极低」
+              // 以及偶发的 400 missing field 'messages' 都吻合。
+              if (!cacheControlSupported) return rawPayload
               const payload = rawPayload as Record<string, unknown>
               const messages = Array.isArray(payload.messages) ? [...payload.messages] : null
 
@@ -1114,6 +1170,9 @@ export class PluginManager {
                 stripStreamOptions,
                 hasProviderConfigStore: !!this.providerConfigStore,
                 hasCacheBreakpoints: !!options.prefixUserMessage,
+                // 未支持时不打断点，交由 provider 的自动前缀缓存命中
+                cacheControlSupported,
+                cacheControlTarget,
                 injectKeys: Object.keys(inject),
               },
               '🔧 已注入 onPayload 钩子到 Pi Session',

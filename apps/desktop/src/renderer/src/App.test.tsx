@@ -60,7 +60,9 @@ describe('App shell', () => {
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
   })
 
-  it('renders the wenlang-agent workspace instead of the CopilotKit sidebar shell', { timeout: 10000 }, async () => {
+  // 首个用例需要动态 import('./App')，会一次性加载整个渲染层模块图，
+  // 冷启动开销远大于后续用例（后者命中模块缓存）。给足预算避免伪失败。
+  it('renders the wenlang-agent workspace instead of the CopilotKit sidebar shell', { timeout: 30000 }, async () => {
     vi.stubGlobal('fetch', createFetchMock())
 
     const { default: App } = await import('./App')
@@ -237,8 +239,8 @@ describe('App shell', () => {
     const compactButton = await screen.findByRole('button', { name: '手动压缩上下文' })
     fireEvent.click(compactButton)
 
-    // 压缩横幅显示成功状态
-    await screen.findByText('上下文已压缩')
+    // 压缩成功后横幅与 toast 会同时出现同一文案，故用 AllBy
+    expect((await screen.findAllByText('上下文已压缩')).length).toBeGreaterThan(0)
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:3900/ag-ui/agent/default/compact',
@@ -296,9 +298,10 @@ describe('App shell', () => {
     const { default: App } = await import('./App')
     render(<App />)
 
-    // 打开设置
+    // 打开设置（默认落在「通用设置」，需切到 Provider 分区）
     await enterChatWorkspace()
     await openSettings()
+    fireEvent.click(screen.getByRole('button', { name: '模型与 Provider' }))
 
     // 等待 Provider 列表渲染
     expect(await screen.findByText('openai')).toBeTruthy()
@@ -630,6 +633,18 @@ function createFetchMock(runEvents: SseEvent[] = [], options: FetchMockOptions =
             byModel: {},
             byAgent: {}
           },
+          meta: { traceId: 'test-trace' }
+        })
+      } as Response
+    }
+
+    // 默认 Provider：GET /api/providers/default（必须排在 /api/providers 之前判断）
+    if (url.endsWith('/api/providers/default')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: { id: null },
           meta: { traceId: 'test-trace' }
         })
       } as Response

@@ -1044,6 +1044,59 @@ export class NovelMemoryStore {
     return this.db.prepare('DELETE FROM novel_memory_events WHERE id = ? AND dimension IS NOT NULL').run(changeId).changes > 0
   }
 
+  /**
+   * 清理指向某个已删除实体的所有账本引用。
+   *
+   * `novel_story_event_entities.entity_id` 与 `novel_memory_events.entity_id/subject_id`
+   * 是多态引用，没有外键，删除实体不会级联清理 —— 真实项目里因此积累了 11 条悬空引用
+   * （S4-1 对账实测）。删实体时必须显式调用本方法。
+   *
+   * 只删引用，不删 story event 本身：事件可能还牵涉其他仍存在的实体。
+   * 清理后可能出现"没有任何 entityRef 的空事件"，由 pruneEmptyStoryEvents 单独收尾。
+   */
+  deleteLedgerReferencesByEntity(projectId: string, entityId: string): {
+    entityRefs: number
+    changeRecords: number
+    memoryEvents: number
+  } {
+    const entityRefs = this.db.prepare(`
+      DELETE FROM novel_story_event_entities
+      WHERE entity_id = ?
+        AND event_id IN (SELECT id FROM novel_story_events WHERE project_id = ?)
+    `).run(entityId, projectId).changes
+    // 注意：ChangeRecord 的 subjectType/subjectId 在表里是 entity_type/entity_id 列
+    // （dimension 非空的行才是变化记录，为空的是普通记忆事件）。
+    const countBefore = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN dimension IS NOT NULL THEN 1 ELSE 0 END) AS changes,
+        SUM(CASE WHEN dimension IS NULL THEN 1 ELSE 0 END) AS events
+      FROM novel_memory_events
+      WHERE project_id = ? AND (entity_id = ? OR target_entity_id = ?)
+    `).get(projectId, entityId, entityId) as { changes: number | null; events: number | null }
+    this.db.prepare(`
+      DELETE FROM novel_memory_events
+      WHERE project_id = ? AND (entity_id = ? OR target_entity_id = ?)
+    `).run(projectId, entityId, entityId)
+    return {
+      entityRefs,
+      changeRecords: countBefore.changes ?? 0,
+      memoryEvents: countBefore.events ?? 0,
+    }
+  }
+
+  /** 删除清理后残留的空 story event（既无 entityRef 也无 changeRecord） */
+  pruneEmptyStoryEvents(projectId: string): number {
+    return this.db.prepare(`
+      DELETE FROM novel_story_events
+      WHERE project_id = ?
+        AND id NOT IN (SELECT event_id FROM novel_story_event_entities)
+        AND id NOT IN (
+          SELECT story_event_id FROM novel_memory_events
+          WHERE story_event_id IS NOT NULL
+        )
+    `).run(projectId).changes
+  }
+
   createStoryEventWithChanges(input: CreateStoryEventWithChangesInput): {
     event: NovelStoryEvent
     entityRefs: StoryEventEntityRef[]

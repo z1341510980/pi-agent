@@ -48,7 +48,7 @@ function CharacterNodeImpl({ data, selected }: NodeProps<CharacterNodeType>): Re
         )}
         <div className="flex flex-wrap items-center gap-1">
           {entity.arcStage && (
-            <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-600 dark:text-blue-300">
+            <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-nano text-blue-600 dark:text-blue-300">
               弧光: {entity.arcStage}
             </span>
           )}

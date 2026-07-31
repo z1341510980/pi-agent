@@ -1,8 +1,14 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import type { ReactElement } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   Dialog,
   DialogContent,
@@ -123,19 +129,6 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
   }, [])
 
   const [dropdownOpen, setDropdownOpen] = useState(false)
-  const dropdownRef = useRef<HTMLDivElement>(null)
-
-  // 点击外部关闭下拉
-  useEffect(() => {
-    if (!dropdownOpen) return
-    const handleClickOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setDropdownOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [dropdownOpen])
 
   const handleSelect = useCallback((mode: PermissionMode) => {
     setDropdownOpen(false)
@@ -148,52 +141,47 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
   if (compact) {
     return (
       <>
-        <div ref={dropdownRef} className="relative" data-tour="permission-switch">
-          <button
-            type="button"
-            onClick={() => setDropdownOpen((v) => !v)}
-            disabled={updateMutation.isPending || gateQuery.isLoading}
-            className={cn(
-              'inline-flex items-center gap-1 rounded-md px-2 h-8',
-              'bg-transparent border border-border cursor-pointer',
-              'hover:bg-surface-3 disabled:opacity-50 disabled:cursor-not-allowed',
-              'transition-colors text-[12px]!',
-              className,
-            )}
-          >
-            <Icon className={cn('size-3', meta.color)} />
-            <span className="text-text">{meta.label}</span>
-            <ChevronDownIcon className="size-3 text-muted-foreground" />
-          </button>
-
-          {dropdownOpen && (
-            <div className="absolute bottom-full mb-1 right-0 z-50 min-w-[180px] rounded-md border border-border bg-popover p-1 shadow-md">
-              {MODE_ORDER.map((mode) => {
-                const m = MODE_META[mode]
-                const MIcon = m.icon
-                const active = mode === currentMode
-                return (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => handleSelect(mode)}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs transition-colors',
-                      'hover:bg-accent text-left',
-                      active && 'bg-accent/50',
-                    )}
-                  >
-                    <MIcon className={cn('size-3.5 shrink-0', m.color)} />
-                    <div className="flex flex-col min-w-0">
-                      <span className={cn('font-medium', active ? 'text-text' : 'text-text-secondary')}>{m.label}</span>
-                      <span className="text-[10px] text-muted-foreground truncate">{m.hint}</span>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </div>
+        <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              data-tour="permission-switch"
+              disabled={updateMutation.isPending || gateQuery.isLoading}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md px-2 h-8',
+                'bg-transparent border border-border cursor-pointer',
+                'hover:bg-surface-3 disabled:opacity-50 disabled:cursor-not-allowed',
+                'transition-colors text-[12px]!',
+                className,
+              )}
+            >
+              <Icon className={cn('size-3', meta.color)} />
+              <span className="text-text">{meta.label}</span>
+              <ChevronDownIcon className="size-3 text-muted-foreground" />
+            </button>
+          </DropdownMenuTrigger>
+          {/* 输入栏在底部，菜单向上展开；贴边时由 Radix 自动翻转 */}
+          <DropdownMenuContent side="top" align="end" className="min-w-[180px]">
+            {MODE_ORDER.map((mode) => {
+              const m = MODE_META[mode]
+              const MIcon = m.icon
+              const active = mode === currentMode
+              return (
+                <DropdownMenuItem
+                  key={mode}
+                  onSelect={() => handleSelect(mode)}
+                  className={cn('items-start', active && 'bg-accent/50')}
+                >
+                  <MIcon className={cn('size-3.5 shrink-0 mt-0.5', m.color)} />
+                  <div className="flex flex-col min-w-0">
+                    <span className={cn('font-medium', active ? 'text-text' : 'text-text-secondary')}>{m.label}</span>
+                    <span className="text-[10px] text-muted-foreground truncate">{m.hint}</span>
+                  </div>
+                </DropdownMenuItem>
+              )
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         {/* 完全控制风险确认弹窗 */}
         <Dialog open={fullControlConfirmOpen} onOpenChange={(open) => { if (!open) handleFullControlCancel() }}>

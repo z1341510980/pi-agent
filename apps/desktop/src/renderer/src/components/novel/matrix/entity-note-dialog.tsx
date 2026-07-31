@@ -129,7 +129,7 @@ export function EntityNoteDialog({
             }}
           />
           {error && <p className="text-xs text-destructive">{error}</p>}
-          <p className="text-[10px] text-muted-foreground text-pretty">
+          <p className="text-nano text-muted-foreground text-pretty">
             {isForeshadowBeat && '留空保存会清除本节点内容。'}⌘/Ctrl + Enter 保存
           </p>
         </div>

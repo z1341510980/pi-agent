@@ -43,15 +43,16 @@ export class ForeshadowStore {
 
   createForeshadow(foreshadow: Omit<NovelForeshadow, 'createdAt' | 'updatedAt'>): NovelForeshadow {
     const ts = now()
-    const beats = normalizeForeshadowBeats(foreshadow.beats, foreshadow.firstChapter, foreshadow.recoverByChapter)
+    const beats = normalizeForeshadowBeats(foreshadow.beats, foreshadow.firstChapter)
     const beatsAreAuthoritative = foreshadow.beats !== undefined
     const full: NovelForeshadow = {
       ...foreshadow,
       beats,
+      // beats 是"已发生节点"的唯一事实源，firstChapter/lastChapter/status 全部由它派生。
+      // recoverByChapter 不在派生列表里：它是**计划回收章**（意图），由调用方原样保留。
       ...(beatsAreAuthoritative
         ? {
             firstChapter: beats.find((beat) => beat.type === 'plant')?.chapter ?? null,
-            recoverByChapter: beats.find((beat) => beat.type === 'payoff')?.chapter ?? null,
             lastChapter: beats.at(-1)?.chapter ?? null,
             status: deriveForeshadowStatus(beats),
           }
@@ -85,20 +86,18 @@ export class ForeshadowStore {
     const current = this.rowToForeshadow(existing)
     const updated: NovelForeshadow = { ...current, ...patch, id, updatedAt: now() }
     let beats = patch.beats !== undefined
-      ? normalizeForeshadowBeats(patch.beats, null, null)
-      : normalizeForeshadowBeats(updated.beats, updated.firstChapter, updated.recoverByChapter)
+      ? normalizeForeshadowBeats(patch.beats, null)
+      : normalizeForeshadowBeats(updated.beats, updated.firstChapter)
     if (patch.firstChapter !== undefined) {
       beats = beats.filter((beat) => beat.type !== 'plant')
       if (patch.firstChapter != null) beats.push({ chapter: patch.firstChapter, type: 'plant' })
     }
-    if (patch.recoverByChapter !== undefined) {
-      beats = beats.filter((beat) => beat.type !== 'payoff')
-      if (patch.recoverByChapter != null) beats.push({ chapter: patch.recoverByChapter, type: 'payoff' })
-    }
-    beats = normalizeForeshadowBeats(beats, null, null)
-    if (patch.beats !== undefined || patch.firstChapter !== undefined || patch.recoverByChapter !== undefined) {
+    // 注意：patch.recoverByChapter 不再改动 beats。
+    // recoverByChapter 是"计划回收章"，写它只表达意图；真正的回收必须通过
+    // patch.beats 显式追加一个 payoff beat（由 Memory Agent 根据正文写入）。
+    beats = normalizeForeshadowBeats(beats, null)
+    if (patch.beats !== undefined || patch.firstChapter !== undefined) {
       updated.firstChapter = beats.find((beat) => beat.type === 'plant')?.chapter ?? null
-      updated.recoverByChapter = beats.find((beat) => beat.type === 'payoff')?.chapter ?? null
       updated.lastChapter = beats.length > 0 ? beats[beats.length - 1].chapter : null
       updated.status = deriveForeshadowStatus(beats)
     }
@@ -241,7 +240,7 @@ export class ForeshadowStore {
       plantMethod: normalizeForeshadowPlantMethod(row.plant_method),
       recoverMethod: normalizeForeshadowRecoverMethod(row.recover_method),
       chapterSpans: parseChapterSpans(row.chapter_spans),
-      beats: normalizeForeshadowBeats(parseJSON<unknown[]>(row.beats ?? '[]', []), row.first_chapter, row.recover_by_chapter),
+      beats: normalizeForeshadowBeats(parseJSON<unknown[]>(row.beats ?? '[]', []), row.first_chapter),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

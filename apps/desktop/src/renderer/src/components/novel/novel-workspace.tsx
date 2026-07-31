@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
+import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
 import { cn } from '@/lib/utils'
 import {
   Dialog,
@@ -16,7 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
-import { useNovelWorkspaceLayoutStore } from '@/stores/novel-workspace-layout-store'
+import { useNovelWorkspaceLayoutStore, type RightPanelView, type WorkspaceLayoutMode } from '@/stores/novel-workspace-layout-store'
 import {
   listCharacters,
   listChapters,
@@ -35,6 +36,7 @@ import {
   listEdges,
   listVolumes,
   listProjectCharacterHistory,
+  getChapterArrangedEntities,
   createChapter,
   completeChapter,
   type SimilarityEntityKind,
@@ -71,110 +73,27 @@ import { MatrixErrorFallback } from './matrix-error-fallback'
 import { CanvasErrorFallback } from './canvas-error-fallback'
 import { CreationErrorFallback } from './creation-error-fallback'
 
-// ── 视图切换组件（矩阵 / 画布）──
+// ── 主工作区布局切换（四个互斥选项）──
+//
+// 取代原先的 MainModeSwitcher（写作/分屏/矩阵）+ ViewSwitcher（矩阵/画布）两个控件。
+// 旧组合里「选了分屏却看不到编辑器」「选了画布却看到编辑器」都源于两个维度互相覆盖，
+// 现在一个控件就是全部可达状态，选中项与屏幕内容一一对应。
 
-interface ViewSwitcherProps {
-  value: 'matrix' | 'canvas'
-  onChange: (mode: 'matrix' | 'canvas') => void
-}
+const LAYOUT_MODE_OPTIONS: ReadonlyArray<SegmentedOption<WorkspaceLayoutMode>> = [
+  { value: 'text', label: '正文', icon: PenLine, title: '正文：编辑器全宽 (Ctrl+1)' },
+  { value: 'text-timeline', label: '正文+时间线', icon: Rows2, title: '正文 + 时间线：上下分屏 (Ctrl+2)' },
+  { value: 'timeline', label: '时间线', icon: Grid3x3, title: '时间线：章节 × 实体矩阵全宽 (Ctrl+3)' },
+  { value: 'graph', label: '关系图', icon: LayoutGrid, title: '关系图：实体关系画布全宽 (Ctrl+4)' },
+]
 
-function ViewSwitcher({ value, onChange }: ViewSwitcherProps): ReactElement {
-  // 现代极简 segmented control：低对比容器 + active 高亮 + 微动效
-  // - 容器用 surface-2 营造内陷感，无边框（极简）
-  // - active 用 surface-1（白底）+ 微妙阴影上浮，营造物理层级
-  // - hover 柔和过渡，active:scale 反馈点击
-  const base =
-    'inline-flex items-center gap-1.5 h-7 px-3 text-[11px] font-medium rounded-[6px] ' +
-    'transition-all duration-200 ease-out active:scale-[0.96]'
-  const active = 'bg-surface-1 text-text shadow-sm'
-  const inactive = 'text-subtle hover:text-text hover:bg-surface-1/50'
-  return (
-    <div
-      className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg"
-      role="tablist"
-      aria-label="视图切换"
-      data-tour="view-switcher"
-    >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={value === 'matrix'}
-        className={`${base} ${value === 'matrix' ? active : inactive}`}
-        onClick={() => onChange('matrix')}
-        title="矩阵视图"
-      >
-        <Grid3x3 className="size-3.5" />
-        <span className="leading-none">矩阵</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={value === 'canvas'}
-        className={`${base} ${value === 'canvas' ? active : inactive}`}
-        onClick={() => onChange('canvas')}
-        title="画布视图"
-      >
-        <LayoutGrid className="size-3.5" />
-        <span className="leading-none">画布</span>
-      </button>
-    </div>
-  )
-}
+// ── 右侧面板 Tab ──
 
-interface MainModeSwitcherProps {
-  value: 'writing' | 'matrix' | 'split'
-  onChange: (mode: 'writing' | 'matrix' | 'split') => void
-}
+const RIGHT_PANEL_OPTIONS: ReadonlyArray<SegmentedOption<RightPanelView>> = [
+  { value: 'conversation', label: '对话', icon: MessageSquare, dataTour: 'right-tab-conversation' },
+  { value: 'detail', label: '详情', icon: Info, title: '查看实体详情', dataTour: 'right-tab-detail' },
+  { value: 'audit', label: '审计', icon: ShieldCheck, title: '查看一致性审计报告', dataTour: 'right-tab-audit' },
+]
 
-function MainModeSwitcher({ value, onChange }: MainModeSwitcherProps): ReactElement {
-  const base =
-    'inline-flex items-center gap-1.5 h-7 px-3 text-[11px] font-medium rounded-[6px] ' +
-    'transition-all duration-200 ease-out active:scale-[0.96]'
-  const active = 'bg-surface-1 text-text shadow-sm'
-  const inactive = 'text-subtle hover:text-text hover:bg-surface-1/50'
-  return (
-    <div
-      className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg"
-      role="tablist"
-      aria-label="工作区模式"
-      data-tour="mode-switcher"
-    >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={value === 'writing'}
-        className={`${base} ${value === 'writing' ? active : inactive}`}
-        onClick={() => onChange('writing')}
-        title="写作模式：编辑器全宽"
-      >
-        <PenLine className="size-3.5" />
-        <span className="leading-none">写作</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={value === 'split'}
-        className={`${base} ${value === 'split' ? active : inactive}`}
-        onClick={() => onChange('split')}
-        title="分屏模式：编辑器 + 矩阵"
-      >
-        <Rows2 className="size-3.5" />
-        <span className="leading-none">分屏</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={value === 'matrix'}
-        className={`${base} ${value === 'matrix' ? active : inactive}`}
-        onClick={() => onChange('matrix')}
-        title="矩阵模式：矩阵全宽"
-      >
-        <Grid3x3 className="size-3.5" />
-        <span className="leading-none">矩阵</span>
-      </button>
-    </div>
-  )
-}
 
 export interface NovelWorkspaceProps {
   onClose: () => void
@@ -212,7 +131,7 @@ function MatrixDragPreview({ data }: { data: MatrixDragData | null }): ReactElem
   if (data.source === 'endpoint') {
     return (
       <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border bg-surface-1 shadow-lg text-xs" style={{ borderColor: meta.color }}>
-        <span className="text-[10px] font-bold leading-none" style={{ color: meta.color }}>
+        <span className="text-nano font-bold leading-none" style={{ color: meta.color }}>
           {data.entityType === 'foreshadow' ? (data.end === 'start' ? '●' : '○') : (data.end === 'start' ? '◀' : '▶')}
         </span>
         <span className="font-medium text-text">{data.end === 'start' ? '调整起点' : '调整终点'}</span>
@@ -257,10 +176,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const worldElements = useNovelDataStore((s) => s.worldElements)
   const items = useNovelDataStore((s) => s.items)
   const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
-  const viewMode = useNovelUiStore((s) => s.viewMode)
-  const setViewMode = useNovelUiStore((s) => s.setViewMode)
-  const mainMode = useNovelWorkspaceLayoutStore((s) => s.mainMode)
-  const setMainMode = useNovelWorkspaceLayoutStore((s) => s.setMainMode)
+  const layoutMode = useNovelWorkspaceLayoutStore((s) => s.layoutMode)
+  const setLayoutMode = useNovelWorkspaceLayoutStore((s) => s.setLayoutMode)
   const characterHistory = useNovelDataStore((s) => s.characterHistory)
   const setCharacterHistory = useNovelDataStore((s) => s.setCharacterHistory)
   const setCreationMode = useNovelUiStore((s) => s.setCreationMode)
@@ -273,7 +190,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     onRedo: () => useNovelDataStore.getState().redo(),
   })
 
-  // ── 工作台快捷键：Ctrl+B/J/1/2/3、Ctrl+Shift+F 专注模式 ──
+  // ── 工作台快捷键：Ctrl+B/J/1/2/3/4、Ctrl+Shift+F 专注模式 ──
   useNovelWorkspaceShortcuts()
 
   const queryClient = useQueryClient()
@@ -569,10 +486,17 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
   // ── 创作流程 ──
 
-  // 从矩阵本章列读取已编排实体（与矩阵 computeCellSymbol 判定保持一致）。
-  // 提取为独立函数供 handleStartCreation / handleRegenerateChapter / handleStartCreationAt 复用，
-  // 避免任一入口漏传 arrangedEntities 导致 Writer 看不到矩阵编排约束。
-  const collectArrangedEntities = useCallback((playhead: number) => {
+  /**
+   * 从本地实体字段派生本章编排实体。
+   *
+   * ⚠️ S4-2 之后这里是**降级路径**：正常情况下由后端
+   * `GET /chapters/:n/arranged-entities` 给出（唯一事实源），
+   * 只有请求失败时才退回本地计算，避免创作因为一次网络抖动中断。
+   *
+   * 保留它的代价是这份派生规则仍与后端并存；一旦后端接口稳定，
+   * 应连同 foreshadowHasBeatAtChapter / computeCharacterSpans 的调用一起删除。
+   */
+  const collectArrangedEntitiesLocally = useCallback((playhead: number) => {
     return {
       characterIds: characters.filter((c) => {
         const history = characterHistory.filter((h) => h.characterId === c.id)
@@ -596,8 +520,36 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       locationIds: locations.filter((l) => {
         return l.appearChapters.includes(playhead)
       }).map((l) => l.id),
+      // 物品同样是 Writer 的硬约束（归属与状态），早期漏传导致后端
+      // "本章登场物品"提示段永远不渲染，Writer 会写错谁拿着什么。
+      itemIds: items.filter((it) =>
+        (it.chapterSpans ?? []).some(([s, e]) => playhead >= s && playhead <= e)
+      ).map((it) => it.id),
     }
-  }, [characters, characterHistory, conflicts, foreshadows, clues, factions, locations])
+  }, [characters, characterHistory, conflicts, foreshadows, clues, factions, locations, items])
+
+  /**
+   * 取本章编排实体：优先服务端（唯一事实源），失败则退回本地派生。
+   *
+   * 服务端返回体里还带着另一种事实源的结果与差异；差异不为空时给出提示，
+   * 而不是静默采用某一边 —— S4-1 的对账实测两侧确实存在反向漂移。
+   */
+  const resolveArrangedEntities = useCallback(async (projectId: string, playhead: number) => {
+    try {
+      const response = await getChapterArrangedEntities(projectId, playhead)
+      const divergentFields = Object.keys(response.divergence)
+      if (divergentFields.length > 0) {
+        console.warn(
+          `[NovelWorkspace] 第 ${playhead} 章的两种投影事实源存在差异（当前采用 ${response.source}）：`,
+          response.divergence,
+        )
+      }
+      return response.arrangedEntities
+    } catch (err) {
+      console.warn('[NovelWorkspace] 获取章节编排实体失败，退回本地派生：', err)
+      return collectArrangedEntitiesLocally(playhead)
+    }
+  }, [collectArrangedEntitiesLocally])
 
   /** 所有章节任务的唯一分发入口；同时记录快照，保证失败重试执行同一种任务。 */
   const runChapterTask = useCallback(async (task: ChapterTaskSnapshot): Promise<void> => {
@@ -624,13 +576,19 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       return
     }
 
-    const arrangedEntities = collectArrangedEntities(task.chapterNumber)
+    // 功能位（本章作用）不落库，只能从紧邻的那次 AI 编排结果里取。
+    // 取不到就退化为原行为（Writer 只看到角色短卡，没有"本章作用"行）。
+    const characterFunctions = creationFlow.takeArrangedCharacterFunctions(task.chapterNumber)
+    const arrangedEntities = {
+      ...(await resolveArrangedEntities(task.projectId, task.chapterNumber)),
+      ...(characterFunctions ? { characterFunctions } : {}),
+    }
     if (task.kind === 'discussion') {
       await creationFlow.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities })
       return
     }
     await creationFlow.startCreation(task.projectId, task.chapterNumber, { arrangedEntities })
-  }, [chapters, creationFlow, collectArrangedEntities, setCreationMode])
+  }, [chapters, creationFlow, resolveArrangedEntities, setCreationMode])
 
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
     if (!currentProjectId || creationFlow.isRunning) return
@@ -845,7 +803,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 编辑器只读：仅在真正运行中（含 checkpoint 等待）时锁定，终态（completed/cancelled/error）恢复可编辑
   const isCreationRunning = creationFlow.isRunning
 
-  // 创作激活时自动锁定右栏到对话面板并打开右栏（自动停靠），创作结束后用户可手动切回详情或关闭
+  // 创作激活时自动打开右栏并切到对话面板。
+  //
+  // 这里只做"切一次"，不锁定：写作者最需要核对"这个角色的秘密是什么 / 这条伏笔埋在哪"的时刻，
+  // 恰恰就是 Agent 正在写这一章的时刻。旧实现把详情/审计 Tab 设为 disabled，
+  // 此时唯一的信息来源只剩右栏那条 max-w-[240px] truncate 的进度文字。
+  // effect 只依赖 isCreationActive，因此仅在创作开始的那一次触发，之后用户可自由切换。
   useEffect(() => {
     if (isCreationActive) {
       setRightPanelView('conversation')
@@ -868,7 +831,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               type="button"
               onClick={toggleFocusMode}
               title="退出专注模式 (Esc)"
-              className="absolute top-3 right-3 z-50 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-surface-1/90 border border-border/60 shadow-[var(--shadow-raised)] text-[11px] font-medium text-subtle hover:text-text transition-colors active:scale-[0.96]"
+              className="absolute top-3 right-3 z-50 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-surface-1/90 border border-border/60 shadow-[var(--shadow-raised)] text-micro font-medium text-subtle hover:text-text transition-colors active:scale-[0.96]"
             >
               <Minimize2 className="size-3.5" />
               <span>退出专注</span>
@@ -898,22 +861,29 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 {currentProject?.title ?? '小说工作台'}
               </span>
               {currentProject && (
-                <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium bg-primary/8 text-primary tabular-nums">
+                <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-md text-nano font-medium bg-primary/8 text-primary tabular-nums">
                   {currentProject.genre}
                 </span>
               )}
               {nodeCount > 0 && (
-                <span className="shrink-0 text-[10px] text-hint tabular-nums">
+                <span className="shrink-0 text-nano text-hint tabular-nums">
                   {nodeCount} 节点
                 </span>
               )}
             </div>
           </div>
 
-          {/* 中：工作区模式切换 + 视图切换 */}
+          {/* 中：主工作区布局切换（四个互斥选项，始终全部可达） */}
           <div className="flex items-center justify-center gap-2">
-            {currentProject && <MainModeSwitcher value={mainMode} onChange={setMainMode} />}
-            {currentProject && viewMode === 'canvas' && mainMode !== 'writing' && <ViewSwitcher value={viewMode} onChange={setViewMode} />}
+            {currentProject && (
+              <Segmented
+                options={LAYOUT_MODE_OPTIONS}
+                value={layoutMode}
+                onChange={setLayoutMode}
+                ariaLabel="主工作区布局"
+                dataTour="layout-mode-switcher"
+              />
+            )}
           </div>
 
           {/* 右：操作按钮组 */}
@@ -973,8 +943,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           </div>
         </header>
 
-        {/* 工具栏（仅画布视图显示；矩阵视图自带工具栏） */}
-        {currentProject && viewMode === 'canvas' && (
+        {/* 工具栏（仅关系图显示；时间线自带工具栏） */}
+        {currentProject && layoutMode === 'graph' && (
           <NovelToolbar
             onRelayout={handleRelayout}
             onExport={handleExport}
@@ -1010,18 +980,18 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             />
           )}
 
-          {/* 主内容区：根据 mainMode 切换布局（写作/矩阵/分屏） */}
+          {/* 主内容区：layoutMode 是唯一维度，四个分支互斥且穷尽 */}
           <main className="flex-1 min-w-0 h-full overflow-hidden flex flex-col">
             {currentProject ? (
               <>
                 <div className="flex-1 min-h-0 flex flex-col">
-                  {viewMode === 'canvas' && mainMode !== 'writing' ? (
+                  {layoutMode === 'graph' ? (
                     <ErrorBoundary
                       fallback={(err, reset) => (
                         <CanvasErrorFallback
                           error={err}
                           reset={reset}
-                          onSwitchToMatrix={() => setViewMode('matrix')}
+                          onSwitchToMatrix={() => setLayoutMode('timeline')}
                         />
                       )}
                     >
@@ -1034,15 +1004,15 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onNodeCountChange={setNodeCount}
                       />
                     </ErrorBoundary>
-                  ) : mainMode === 'writing' ? (
-                    /* 写作模式：编辑器全宽 */
+                  ) : layoutMode === 'text' ? (
+                    /* 正文：编辑器全宽 */
                     <div className="flex-1 min-h-0 overflow-hidden">
                       <ErrorBoundary
                         fallback={(err, reset) => (
                           <MatrixErrorFallback
                             error={err}
                             reset={reset}
-                            onSwitchToCanvas={() => setViewMode('canvas')}
+                            onSwitchToCanvas={() => setLayoutMode('graph')}
                           />
                         )}
                       >
@@ -1053,15 +1023,15 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         />
                       </ErrorBoundary>
                     </div>
-                  ) : mainMode === 'matrix' ? (
-                    /* 矩阵模式：矩阵全宽 */
+                  ) : layoutMode === 'timeline' ? (
+                    /* 时间线：矩阵全宽 */
                     <div className="flex-1 min-h-0 overflow-hidden">
                       <ErrorBoundary
                         fallback={(err, reset) => (
                           <MatrixErrorFallback
                             error={err}
                             reset={reset}
-                            onSwitchToCanvas={() => setViewMode('canvas')}
+                            onSwitchToCanvas={() => setLayoutMode('graph')}
                           />
                         )}
                       >
@@ -1076,7 +1046,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       </ErrorBoundary>
                     </div>
                   ) : (
-                    /* 分屏模式：编辑器 + 矩阵上下分割 */
+                    /* 正文 + 时间线：上下分屏 */
                     <>
                       <div style={{ height: contentEditorHeight }} className="shrink-0 min-h-[120px] overflow-hidden">
                         <ErrorBoundary
@@ -1084,7 +1054,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             <MatrixErrorFallback
                               error={err}
                               reset={reset}
-                              onSwitchToCanvas={() => setViewMode('canvas')}
+                              onSwitchToCanvas={() => setLayoutMode('graph')}
                             />
                           )}
                         >
@@ -1109,7 +1079,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             <MatrixErrorFallback
                               error={err}
                               reset={reset}
-                              onSwitchToCanvas={() => setViewMode('canvas')}
+                              onSwitchToCanvas={() => setLayoutMode('graph')}
                             />
                           )}
                         >
@@ -1159,73 +1129,24 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             className="shrink-0 h-full min-h-0 overflow-hidden flex flex-col bg-surface-1 border-l border-border/60 shadow-[var(--shadow-raised)] transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
           >
             <div style={{ width: detailWidth }} className="h-full min-h-0 overflow-hidden flex flex-col">
-            {/* 右栏视图切换：对话 / 详情（与 Header 的 ViewSwitcher 风格统一）
+            {/* 右栏视图切换：对话 / 详情 / 审计（与顶栏布局切换共用 Segmented）
                 扫描进行时显示"相似度扫描"标签，保持 tab 栏位置稳定避免布局抖动 */}
-            <div className="shrink-0 flex items-center gap-0.5 p-1 mx-2 my-1.5 bg-surface-2 rounded-lg">
+            <div className="shrink-0 mx-2 my-1.5">
               {scanPhase === 'idle' ? (
-                <>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={rightPanelView === 'conversation' || isCreationActive}
-                    onClick={() => setRightPanelView('conversation')}
-                    data-tour="right-tab-conversation"
-                    className={cn(
-                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
-                      'transition-all duration-200 ease-out active:scale-[0.96]',
-                      rightPanelView === 'conversation' || isCreationActive
-                        ? 'bg-surface-1 text-text shadow-sm'
-                        : 'text-subtle hover:text-text hover:bg-surface-1/50',
-                    )}
-                  >
-                    <MessageSquare className="size-3" />
-                    <span className="leading-none">对话</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={rightPanelView === 'detail' && !isCreationActive}
-                    onClick={() => !isCreationActive && setRightPanelView('detail')}
-                    disabled={isCreationActive}
-                    data-tour="right-tab-detail"
-                    className={cn(
-                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
-                      'transition-all duration-200 ease-out active:scale-[0.96]',
-                      rightPanelView === 'detail' && !isCreationActive
-                        ? 'bg-surface-1 text-text shadow-sm'
-                        : 'text-subtle hover:text-text hover:bg-surface-1/50',
-                      'disabled:cursor-not-allowed disabled:opacity-50',
-                    )}
-                    title={isCreationActive ? '创作进行中，无法切换到详情' : '查看节点详情'}
-                  >
-                    <Info className="size-3" />
-                    <span className="leading-none">详情</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={rightPanelView === 'audit' && !isCreationActive}
-                    onClick={() => !isCreationActive && setRightPanelView('audit')}
-                    disabled={isCreationActive}
-                    data-tour="right-tab-audit"
-                    className={cn(
-                      'inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] whitespace-nowrap',
-                      'transition-all duration-200 ease-out active:scale-[0.96]',
-                      rightPanelView === 'audit' && !isCreationActive
-                        ? 'bg-surface-1 text-text shadow-sm'
-                        : 'text-subtle hover:text-text hover:bg-surface-1/50',
-                      'disabled:cursor-not-allowed disabled:opacity-50',
-                    )}
-                    title={isCreationActive ? '创作进行中，无法切换到审计' : '查看一致性审计报告'}
-                  >
-                    <ShieldCheck className="size-3" />
-                    <span className="leading-none">审计</span>
-                  </button>
-                </>
+                <Segmented
+                  options={RIGHT_PANEL_OPTIONS}
+                  value={rightPanelView}
+                  onChange={setRightPanelView}
+                  ariaLabel="右侧面板视图"
+                  size="sm"
+                  className="w-full"
+                />
               ) : (
-                <div className="inline-flex items-center gap-1.5 h-6 px-2.5 text-[11px] font-medium rounded-[6px] bg-surface-1 text-text shadow-sm">
-                  <Sparkle className="size-3 text-primary" />
-                  <span className="leading-none">相似度扫描</span>
+                <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg">
+                  <div className="inline-flex items-center gap-1.5 h-6 px-2.5 text-micro font-medium rounded-[6px] bg-surface-1 text-text shadow-sm">
+                    <Sparkle className="size-3 text-primary" />
+                    <span className="leading-none">相似度扫描</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -1252,7 +1173,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       onReset={similarityScan.reset}
                     />
                   </motion.div>
-                ) : isCreationActive || rightPanelView === 'conversation' ? (
+                ) : rightPanelView === 'conversation' ? (
                   <motion.div
                     key="conversation"
                     className="h-full"
@@ -1278,6 +1199,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         agentOutputs={creationFlow.agentOutputs}
                         chapterNumber={creationChapterNumber}
                         currentCheckpoint={creationFlow.currentCheckpoint}
+                        checkpointHistory={creationFlow.checkpointHistory}
                         result={creationFlow.result}
                         error={creationFlow.error}
                         onRetry={handleRetryCreation}
@@ -1321,7 +1243,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         />
                       )}
                     >
-                      <ConsistencyAuditPanel />
+                      <ConsistencyAuditPanel creationActive={isCreationActive} />
                     </ErrorBoundary>
                   </motion.div>
                 ) : (
@@ -1333,7 +1255,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                     exit={{ opacity: 0, x: -20 }}
                     transition={{ duration: 0.2 }}
                   >
-                    <NovelDetailPanel />
+                    <NovelDetailPanel creationActive={isCreationActive} />
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -1467,10 +1389,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                           />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                              <span className="text-nano px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
                                 {similarityKindLabel(g.kind)}
                               </span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 font-medium tabular-nums">
+                              <span className="text-nano px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 font-medium tabular-nums">
                                 相似度 {Math.round(g.similarity * 100)}%
                               </span>
                             </div>
@@ -1479,28 +1401,28 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             </div>
                             <div className="text-xs space-y-1">
                               <div className="text-emerald-700">
-                                保留：<span className="font-mono text-[11px]">{g.keptId.slice(0, 8)}</span>
+                                保留：<span className="font-mono text-micro">{g.keptId.slice(0, 8)}</span>
                               </div>
                               <div className="text-amber-600">
                                 删除：{g.removed.map((r) => (
                                   <span key={r.id} className="inline-block mr-1">
                                     {r.name}
-                                    <span className="text-muted-foreground ml-0.5 text-[10px]">({r.id.slice(0, 8)})</span>
+                                    <span className="text-muted-foreground ml-0.5 text-nano">({r.id.slice(0, 8)})</span>
                                   </span>
                                 ))}
                                 <span className="text-muted-foreground ml-1">（共 {g.removed.length} 个）</span>
                               </div>
                               {g.fieldMerges && g.fieldMerges.length > 0 && (
                                 <div className="mt-2 pt-2 border-t border-border/60">
-                                  <div className="text-[11px] text-muted-foreground mb-1">字段级合并建议：</div>
+                                  <div className="text-micro text-muted-foreground mb-1">字段级合并建议：</div>
                                   <div className="space-y-1">
                                     {g.fieldMerges.map((fm, fidx) => (
-                                      <div key={fidx} className="text-[11px] text-muted-foreground leading-relaxed pl-2 border-l border-border">
+                                      <div key={fidx} className="text-micro text-muted-foreground leading-relaxed pl-2 border-l border-border">
                                         <span className="text-text font-medium">{fm.field}</span>
                                         <span className="mx-1">←</span>
                                         <span className="text-text">{fm.fromName}</span>
-                                        <span className="text-muted-foreground ml-1 text-[10px]">({fm.fromId.slice(0, 8)})</span>
-                                        <div className="text-[10px] italic">{fm.reason}</div>
+                                        <span className="text-muted-foreground ml-1 text-nano">({fm.fromId.slice(0, 8)})</span>
+                                        <div className="text-nano italic">{fm.reason}</div>
                                       </div>
                                     ))}
                                   </div>

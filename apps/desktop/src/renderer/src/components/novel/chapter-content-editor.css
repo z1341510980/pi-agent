@@ -152,7 +152,13 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 24px;
+  /* 16px 基准：让下方所有 em 单位（38em 行宽 / 2em 首行缩进）都以正文字号为准 */
+  font-size: 16px;
+  /* 水平方向用 padding 把文字栏收敛到 38em 并居中：
+     宽容器（专注模式）→ 左右留白自动均分，正文行宽恒为 38em ≈ 38 个中文字；
+     窄容器（分屏 / 侧栏）→ 退化为 20px 内边距，不会出现负 padding。
+     block 方向保持 16px，保证分屏模式下编辑器仅 120px 高时仍有可用行数。 */
+  padding: 16px max(20px, calc((100% - 38em) / 2));
 }
 
 .cce-empty {
@@ -167,50 +173,74 @@
 .cce-body .ProseMirror {
   outline: none;
   min-height: 100%;
-  font-size: 14px;
-  line-height: 1.7;
+  /* 兜底：即使 .cce-body 的 max()/calc padding 不生效，文字栏也不会超过 38em */
+  max-width: 38em;
+  margin-inline: auto;
+  font-size: 16px;
+  line-height: 1.85;
+  /* 覆盖 main.css 里 body 的 letter-spacing: -0.01em（负字距会让中文正文发挤）。
+     只在正文子树内覆盖，不动全局规则。 */
+  letter-spacing: normal;
   color: var(--color-text, #111);
 }
 
 .cce-body .ProseMirror h1 {
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 600;
-  margin: 16px 0 8px;
+  margin: 24px 0 10px;
 }
 
 .cce-body .ProseMirror h2 {
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 600;
-  margin: 14px 0 6px;
+  margin: 20px 0 8px;
 }
 
 .cce-body .ProseMirror h3 {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
-  margin: 12px 0 4px;
+  margin: 16px 0 6px;
 }
 
+/* 首个块元素不要顶部外边距，避免与 .cce-body 的 padding 叠加 */
+.cce-body .ProseMirror > :first-child {
+  margin-top: 0;
+}
+
+/* 中文小说排版：段落无上边距、段间 0.6em、首行缩进 2 字符 */
 .cce-body .ProseMirror p {
-  margin: 6px 0;
+  margin: 0;
+  margin-block-end: 0.6em;
+  text-indent: 2em;
+}
+
+/* 列表项 / 引用内的段落不缩进（缩进只属于叙事正文） */
+.cce-body .ProseMirror li > p,
+.cce-body .ProseMirror blockquote p {
+  text-indent: 0;
+}
+
+.cce-body .ProseMirror li > p {
+  margin-block-end: 0.2em;
 }
 
 .cce-body .ProseMirror blockquote {
   border-left: 3px solid var(--color-border, #d1d5db);
   padding-left: 12px;
   color: var(--color-muted-foreground, #6b7280);
-  margin: 8px 0;
+  margin: 0.8em 0;
 }
 
 .cce-body .ProseMirror ul,
 .cce-body .ProseMirror ol {
-  padding-left: 20px;
-  margin: 6px 0;
+  padding-left: 1.5em;
+  margin: 0.6em 0;
 }
 
 .cce-body .ProseMirror hr {
   border: none;
   border-top: 1px solid var(--color-border, #e5e7eb);
-  margin: 12px 0;
+  margin: 1.2em 0;
 }
 
 .cce-body .ProseMirror strong {
@@ -225,15 +255,17 @@
   background: var(--color-surface-3, #f3f4f6);
   border-radius: 3px;
   padding: 1px 4px;
-  font-size: 13px;
+  font-size: 0.875em;
 }
 
 .cce-body .ProseMirror pre {
   background: var(--color-surface-3, #f3f4f6);
   border-radius: 4px;
   padding: 10px 12px;
-  margin: 8px 0;
+  margin: 0.8em 0;
   overflow-x: auto;
+  /* 代码块不参与中文缩进 */
+  text-indent: 0;
 }
 
 .cce-body .ProseMirror pre code {

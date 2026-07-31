@@ -5,6 +5,11 @@ import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { NovelServices } from '../novel-services.js'
 import type { NovelStoryEntityType, StoryEventStatus } from '@repo/shared/novel'
+import {
+  buildArrangedEntitiesForChapter,
+  DEFAULT_PROJECTION_SOURCE,
+  type ProjectionSource,
+} from '../core/matrix-projection.js'
 
 const storyEntityTypes = [
   'character', 'relationship', 'conflict', 'foreshadow', 'clue', 'faction', 'location',
@@ -270,6 +275,61 @@ export function createStoryLedgerRoutes(services: NovelServices): RouteDefinitio
       const chapterNumber = Number.parseInt(request.params.chapterNumber, 10)
       if (!Number.isInteger(chapterNumber) || chapterNumber < 0) throw new AppError(ErrorCode.BAD_REQUEST, '章节号无效', 400)
       return success(memoryStore.getChapterStoryContext(request.params.projectId, chapterNumber), request.traceId)
+    },
+  })
+
+  // ── S4-2：章节投影的唯一服务端读接口 ──
+  //
+  // "本章有哪些实体出场"此前有三份实现（前端矩阵派生、前端 collectArrangedEntities、
+  // 后端对账），字段一旦增删就会漂移 —— itemIds / characterFunctions 长期丢失就是这么来的。
+  // 本接口把它收敬为一处，并用 source 参数支持在两种事实源之间切换：
+  //   - entity-fields（默认）：实体章节维度字段，历史行为
+  //   - ledger：事件账本，S4 目标
+  //
+  // 返回体同时带上另一种来源的结果与差异，便于切读前后对比、也便于前端在
+  // 差异不为空时给出提示，而不是静默采用某一边。
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/chapters/:chapterNumber/arranged-entities',
+    handler: async (request: any) => {
+      const projectId = request.params.projectId
+      const chapterNumber = Number.parseInt(request.params.chapterNumber, 10)
+      if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {
+        throw new AppError(ErrorCode.BAD_REQUEST, '章节号无效', 400)
+      }
+      const query = (request.query ?? {}) as Record<string, string | undefined>
+      const requested = query.source
+      if (requested !== undefined && requested !== 'ledger' && requested !== 'entity-fields') {
+        throw new AppError(ErrorCode.BAD_REQUEST, "source 只能是 'ledger' 或 'entity-fields'", 400)
+      }
+      const source: ProjectionSource = requested ?? DEFAULT_PROJECTION_SOURCE
+      const other: ProjectionSource = source === 'ledger' ? 'entity-fields' : 'ledger'
+
+      const arrangedEntities = buildArrangedEntitiesForChapter(store, memoryStore, projectId, chapterNumber, source)
+      const alternative = buildArrangedEntitiesForChapter(store, memoryStore, projectId, chapterNumber, other)
+
+      // 差异按实体类型给出，便于定位是哪一类在漂移
+      const divergence: Record<string, { onlyInSelected: string[]; onlyInAlternative: string[] }> = {}
+      for (const key of Object.keys(arrangedEntities) as Array<keyof typeof arrangedEntities>) {
+        const selected = new Set((arrangedEntities[key] ?? []) as string[])
+        const fallback = new Set((alternative[key] ?? []) as string[])
+        const onlyInSelected = [...selected].filter((id) => !fallback.has(id))
+        const onlyInAlternative = [...fallback].filter((id) => !selected.has(id))
+        if (onlyInSelected.length > 0 || onlyInAlternative.length > 0) {
+          divergence[key] = { onlyInSelected, onlyInAlternative }
+        }
+      }
+
+      return success({
+        projectId,
+        chapterNumber,
+        source,
+        arrangedEntities,
+        /** 另一种事实源的结果，仅用于对比展示，不参与创作 */
+        alternativeSource: other,
+        alternative,
+        divergence,
+      }, request.traceId)
     },
   })
 

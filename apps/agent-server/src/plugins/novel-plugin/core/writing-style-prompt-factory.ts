@@ -43,6 +43,60 @@ function cleanText(value: string, maxLength: number): string {
     .slice(0, maxLength)
 }
 
+/**
+ * 文风样本常见于用户从别处粘贴的正文，会夹带防爬虫水印乱码
+ * （例如 `*如.闻_枉_ ^冕￠废.越^读+`、`+丸′ ! \鰰?占+`）。
+ * 这类字符会被模型当成正文特征学习，必须在进 prompt 前清掉。
+ */
+const SAMPLE_NOISE_RUN = /[\\^~`_|+*/<>=@#$%&\u00a0\u00b4\u00a8\uffe5]{1,}/g
+const SAMPLE_RARE_CJK = /[\u3400-\u4dbf\uf900-\ufaff\u{20000}-\u{2ffff}]/gu
+
+function stripSampleNoise(value: string): string {
+  return value
+    .replace(SAMPLE_RARE_CJK, '')
+    .replace(SAMPLE_NOISE_RUN, '')
+    // 乱码清掉后常留下孤立的标点串
+    .replace(/[，、。；：]{2,}/g, (run) => run[0])
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
+ * 按段落/句子边界截断，避免样本停在半句话上（旧实现直接 slice，
+ * 结果样本末尾是孤零零一个左引号，模型学到的是"断句"而不是文风）。
+ */
+function truncateAtBoundary(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const paragraphs = value.split(/\n+/)
+  const kept: string[] = []
+  let used = 0
+  for (const paragraph of paragraphs) {
+    const next = used + paragraph.length + 1
+    if (next > maxLength) break
+    kept.push(paragraph)
+    used = next
+  }
+  if (kept.length > 0) return kept.join('\n\n').trim()
+  // 单段超长：退到句末边界
+  const head = value.slice(0, maxLength)
+  const lastStop = Math.max(head.lastIndexOf('。'), head.lastIndexOf('！'), head.lastIndexOf('？'))
+  return (lastStop > maxLength * 0.4 ? head.slice(0, lastStop + 1) : head).trim()
+}
+
+function cleanSample(value: string, maxLength: number): string {
+  const cleaned = stripSampleNoise(cleanText(value, maxLength * 3))
+  return truncateAtBoundary(cleaned, maxLength)
+}
+
+/**
+ * 正向样本给足体积才能承载"句式 + 观察距离 + 节奏"。
+ * 700 字太短：中文样本必然断在句中，模型学到的是断句而不是文风。
+ * 反向样本只需识别出要避开的句壳，维持较小预算。
+ */
+const POSITIVE_SAMPLE_MAX_LENGTH = 1200
+const NEGATIVE_SAMPLE_MAX_LENGTH = 500
+
 function listSection(title: string, values: string[], limit: number, itemMaxLength = 180): string {
   const lines = values
     .map(value => cleanText(value, itemMaxLength))
@@ -76,18 +130,19 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
   if (notes) sections.push(`### 补充说明\n${notes}`)
 
   const examples = profile.positiveExamples
-    .map(example => cleanText(example, 700))
+    .map(example => cleanSample(example, POSITIVE_SAMPLE_MAX_LENGTH))
     .filter(Boolean)
     .slice(0, 2)
   if (examples.length > 0) {
     sections.push([
       '### 正向文风样本',
       '只学习样本的句式、观察距离、用词和节奏，不复用人物、情节或专有名词。',
+      '样本仅示范"怎么写一句话"，不示范段落密度：不要因为样本里单句成段多，就把本章写成通篇单句段。',
       ...examples.map((example, index) => `\n【样本 ${index + 1}】\n${example}`),
     ].join('\n'))
   }
   const negativeExamples = profile.negativeExamples
-    .map(example => cleanText(example, 500))
+    .map(example => cleanSample(example, NEGATIVE_SAMPLE_MAX_LENGTH))
     .filter(Boolean)
     .slice(0, 2)
   if (negativeExamples.length > 0) {

@@ -24,11 +24,13 @@ import { validateBody } from '../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { NovelNodeType, NovelEdgeType } from '@repo/shared/novel'
 import { evaluateProseQuality } from './core/prose-quality-evaluator.js'
+import { buildCacheLayerReport, diagnoseChapterCache } from './core/cache-layer-diagnostics.js'
 import { createNovelAgUiEmitter, createSseEmitterSink } from './utils/sse-emitter.js'
 import { createChapterRoutes } from './routes/chapter-routes.js'
 import { createCharacterRoutes } from './routes/character-routes.js'
 import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
 import { createStoryLedgerRoutes } from './routes/story-ledger-routes.js'
+import { createContextPreviewRoutes } from './routes/context-preview-routes.js'
 
 /**
  * 创建小说系统 REST API 路由
@@ -49,6 +51,9 @@ import { createStoryLedgerRoutes } from './routes/story-ledger-routes.js'
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   const { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor } = services
   const routes: RouteDefinition[] = [...createStoryLedgerRoutes(services)]
+
+  // P1 可观测性：context-preview 端点，预览 prompt-builder 注入的上下文结构
+  routes.push(...createContextPreviewRoutes(promptBuilder))
 
   // C3：统一关系图查询层 + 跨章节一致性审计器已提升到 services 层
   // 与 NovelPromptBuilder 共享同一实例，避免重复实例化和缓存浪费
@@ -1837,6 +1842,47 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         },
         request.traceId,
       )
+    },
+  })
+
+  // 缓存分层命中诊断（实测 cache_read vs 可缓存前缀的期望值）
+  //
+  // 与上面的 cache-diagnostics 是两件事：那个比对提示词**哈希是否稳定**（前提条件），
+  // 这个量**缓存是否真的被命中**（实际效果）。哈希稳定但 cache_read 为 0
+  // 说明断点没生效 —— 只看哈希看不出来这一层。
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/cache-layer-report',
+    handler: async (request: any) => {
+      const projectId = request.params.projectId
+      const chapterNumber = request.query?.chapterNumber != null
+        ? parseInt(request.query.chapterNumber, 10)
+        : undefined
+      // 默认覆盖最近 200 条调用：足够涵盖数章，又不至于把整个项目历史读进内存
+      const limit = request.query?.limit != null
+        ? Math.min(Math.max(parseInt(request.query.limit, 10) || 200, 1), 500)
+        : 200
+
+      const logs = store.listAgentLogsByProject(projectId, limit)
+      const scoped = chapterNumber != null && !Number.isNaN(chapterNumber)
+        ? logs.filter((l: any) => l.chapterNumber === chapterNumber)
+        : logs
+
+      // 按章分组后逐章诊断：缓存复用发生在单章内部（shared 段按章构建），
+      // 跨章比对没有意义。
+      const byChapter = new Map<number, any[]>()
+      for (const log of scoped) {
+        const list = byChapter.get(log.chapterNumber) ?? []
+        list.push(log)
+        byChapter.set(log.chapterNumber, list)
+      }
+
+      const diagnoses = Array.from(byChapter.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([ch, chapterLogs]) => diagnoseChapterCache(ch, chapterLogs))
+
+      const report = buildCacheLayerReport(diagnoses)
+      return success({ ...report, sampledLogs: scoped.length, timestamp: Date.now() }, request.traceId)
     },
   })
 

@@ -193,6 +193,19 @@ export interface MatrixEntity {
   /** 整体跨度结束章节（含）= chapterSpans[last][1]，空数组时为 null */
   spanEnd?: number | null
 
+  /**
+   * 伏笔跨度终点的语义：这个终点是**事实**还是**意图**。
+   *
+   * `spanEnd = payoffChapter ?? recoverByChapter` 把两件事压成了同一个数：
+   *   - `payoff`：已经回收到第 N 章（事实，来自 beats）
+   *   - `planned`：计划在第 N 章前回收，目前还欠着（意图，来自 recoverByChapter）
+   *
+   * 此前同一根虚线同时表示这两种含义，看不出「已还」还是「欠着」；
+   * 而拖动跨度终点在后者情况下改的是**计划**，不是事实。
+   * 渲染层据此区分线型与端点，拖拽提示也据此说明改的是什么。
+   */
+  spanEndKind?: 'payoff' | 'planned' | null
+
   // ── 冲突高潮标记 ──
   /** 冲突预计爆发章节（高潮目标章节，矩阵中显示火焰标记） */
   climaxChapter?: number | null
@@ -245,6 +258,14 @@ export interface MatrixEntity {
    * 与账本同 key 的轨道由 matrix-model 合并时自动让位给 ChangeRecord。
    */
   subtrackSnapshots?: MatrixSubtrackSnapshot[]
+
+  /**
+   * 未上线：实体已创建但还没被放到任何章节。
+   *
+   * 这类实体此前会被 buildGroups 直接跳过，在矩阵里完全不可见。
+   * 现在照常占一行（跨度为空 → 整行空单元格），双击任一章即就地上线。
+   */
+  pending?: boolean
 }
 
 // ── 分组 ──
@@ -436,6 +457,17 @@ export function computeMaxChapter(chapters: NovelChapter[]): number {
   return Math.max(...valid, 20)
 }
 
+/** buildPool 的返回值：尚未放置到任何章节的实体 */
+export interface MatrixPool {
+  poolCharacters: NovelCharacter[]
+  poolConflicts: NovelConflict[]
+  poolClues: NovelClue[]
+  poolForeshadows: NovelForeshadow[]
+  poolFactions: NovelFaction[]
+  poolLocations: NovelLocation[]
+  poolItems: NovelItem[]
+}
+
 /**
  * 构建元素池：未在矩阵中出现的实体（拖入候选）
  */
@@ -448,15 +480,7 @@ export function buildPool(params: {
   locations: NovelLocation[]
   items: NovelItem[]
   characterHistory: NovelCharacterHistory[]
-}): {
-  poolCharacters: NovelCharacter[]
-  poolConflicts: NovelConflict[]
-  poolClues: NovelClue[]
-  poolForeshadows: NovelForeshadow[]
-  poolFactions: NovelFaction[]
-  poolLocations: NovelLocation[]
-  poolItems: NovelItem[]
-} {
+}): MatrixPool {
   const { characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory } = params
   const poolCharacters: NovelCharacter[] = []
   for (const c of characters) {
@@ -477,6 +501,56 @@ export function buildPool(params: {
     poolLocations: locations.filter((l) => !l.appearChapters || l.appearChapters.length === 0),
     poolItems: items.filter((it) => !it.chapterSpans || it.chapterSpans.length === 0),
   }
+}
+
+/**
+ * 把「未上线」实体补进各自的分组。
+ *
+ * 背景：新建的实体只要还没被放到任何章节，`buildGroups` 就会 `continue` 跳过它，
+ * 于是它在矩阵里完全不存在。此前 `buildPool` 的产物只有一个消费点 ——
+ * 工具栏「补全历史」按钮上的角标数字，点下去把所有无历史角色批量塞到第 1 章
+ * （`matrix-workspace.tsx` 硬编码 `chapterNumber: 1`）。写作者既看不到这些实体，
+ * 也没有「把它放到第 N 章」的入口，只有一个「全部塞进第 1 章」的粗暴操作。
+ *
+ * 这里不新开一个「未上线」分组，而是把它们挂到**自己那一类**的分组末尾，
+ * 标记 `pending: true`。原因是 `MatrixGroup.id` 的类型就是 `MatrixEntityKind`，
+ * 新增一个合成分组 id 需要拓宽这个联合类型，而它被五处平行 switch 消费
+ * （`GROUP_META` / `computeCellSymbol` / `emptyCellHint|presentCellHint` /
+ * `markLabel|removeLabel|markTooltip|removeTooltip`），改动面远超本项收益 ——
+ * 那是 `ENTITY_INTERACTION_SPEC` 统一交互语义时该一起做的事。
+ * 保持 kind 不变则五处 switch 全部照常工作，行也复用现有的 EntityRow：
+ * 跨度为空 → 整行空单元格 → 双击任一章即就地上线。
+ */
+export function appendPendingEntities(groups: MatrixGroup[], pool: MatrixPool): MatrixGroup[] {
+  const pendingByKind: Partial<Record<MatrixEntityKind, Array<{ id: string; name: string }>>> = {
+    character: pool.poolCharacters.map((c) => ({ id: c.id, name: c.name })),
+    conflict: pool.poolConflicts.map((c) => ({ id: c.id, name: c.description })),
+    clue: pool.poolClues.map((c) => ({ id: c.id, name: c.description })),
+    foreshadow: pool.poolForeshadows.map((f) => ({ id: f.id, name: f.description })),
+    faction: pool.poolFactions.map((f) => ({ id: f.id, name: f.name })),
+    location: pool.poolLocations.map((l) => ({ id: l.id, name: l.name })),
+    item: pool.poolItems.map((it) => ({ id: it.id, name: it.name })),
+  }
+
+  return groups.map((group) => {
+    const pending = pendingByKind[group.id]
+    if (!pending || pending.length === 0) return group
+    // 已在矩阵中的实体优先；未上线的沉到组末尾，避免打散既有阅读顺序
+    const existingIds = new Set(group.entities.map((e) => e.entityId))
+    const extra = pending
+      .filter((p) => !existingIds.has(p.id))
+      .map<MatrixEntity>((p) => ({
+        id: p.id,
+        kind: group.id,
+        name: p.name || '未命名',
+        entityId: p.id,
+        entityType: group.id,
+        subLabel: '未上线',
+        pending: true,
+      }))
+    if (extra.length === 0) return group
+    return { ...group, entities: [...group.entities, ...extra] }
+  })
 }
 
 // ── 单元格符号计算（渲染层使用）──

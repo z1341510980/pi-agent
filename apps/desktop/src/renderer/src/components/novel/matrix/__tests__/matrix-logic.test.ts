@@ -11,6 +11,7 @@ import {
   upsertForeshadowBeat,
   computeMaxChapter,
   buildPool,
+  appendPendingEntities,
   computeCellSymbol,
   GROUP_META,
   GROUP_ORDER,
@@ -318,8 +319,35 @@ describe('buildGroups', () => {
     })
     const group = data.groups.find((g) => g.id === 'foreshadow')!
     expect(group.entities).toHaveLength(2)
-    expect(group.entities[0]).toMatchObject({ id: 'f1', subLabel: '2 个节点 · 已回收' })
+    // f1 只有“计划第 11 章回收”，没有 payoff 节点 → 仍是待回收，只有 1 个已发生节点。
+    // 矩阵画事实：把计划画成“已回收”曾让用户以为伏笔已结清。
+    expect(group.entities[0]).toMatchObject({ id: 'f1', subLabel: '1 个节点 · 待回收' })
+    // 跳度终点仍用计划回收章，让色带能表达“还欠着到第 11 章”
+    expect(group.entities[0]).toMatchObject({ spanStart: 1, spanEnd: 11, payoffChapter: null })
     expect(group.entities[1]).toMatchObject({ id: 'f2', subLabel: '1 个节点 · 待回收' })
+  })
+
+  it('真实 payoff 节点才算已回收', () => {
+    const withPayoff = {
+      ...makeForeshadow('f-paid', 1, 11),
+      beats: [
+        { chapter: 1, type: 'plant' as const },
+        { chapter: 9, type: 'payoff' as const },
+      ],
+    }
+    const data = buildGroups({
+      chapters: [], characters: [], conflicts: [], clues: [],
+      foreshadows: [withPayoff],
+      factions: [], locations: [], worldElements: [], items: [], characterHistory: [],
+    })
+    const group = data.groups.find((g) => g.id === 'foreshadow')!
+    expect(group.entities[0]).toMatchObject({
+      id: 'f-paid',
+      subLabel: '2 个节点 · 已回收',
+      payoffChapter: 9,
+      // 实际回收点优先于计划回收章
+      spanEnd: 9,
+    })
   })
 
   it('places a scheduled clue into the clue track', () => {
@@ -411,6 +439,83 @@ describe('buildPool', () => {
       characterHistory: [],
     })
     expect(pool.poolLocations.map((l) => l.id)).toEqual(['l1'])
+  })
+})
+
+// ── appendPendingEntities ──
+//
+// 「未上线」实体（已创建但未放到任何章节）此前会被 buildGroups 直接跳过，
+// 在矩阵里完全不可见，唯一线索是工具栏「补全历史」的角标数字。
+// 这里覆盖它们被补回各自分组、且不破坏既有行的行为。
+
+describe('appendPendingEntities', () => {
+  function buildWith(characters: NovelCharacter[], characterHistory: NovelCharacterHistory[]) {
+    const built = buildGroups({
+      chapters: [], characters, conflicts: [], clues: [], foreshadows: [], factions: [],
+      locations: [], worldElements: [], items: [], characterHistory,
+    })
+    const pool = buildPool({
+      characters, conflicts: [], clues: [], foreshadows: [], factions: [], locations: [],
+      items: [], characterHistory,
+    })
+    return appendPendingEntities(built.groups, pool)
+  }
+
+  it('把无历史的角色补成 pending 行（此前整行不存在）', () => {
+    const groups = buildWith([makeCharacter('c1', 'A'), makeCharacter('c2', 'B')], [makeHistory('c1', 1)])
+    const characterGroup = groups.find((g) => g.id === 'character')!
+
+    expect(characterGroup.entities.map((e) => e.entityId)).toEqual(['c1', 'c2'])
+    expect(characterGroup.entities.find((e) => e.entityId === 'c2')?.pending).toBe(true)
+    expect(characterGroup.entities.find((e) => e.entityId === 'c2')?.subLabel).toBe('未上线')
+  })
+
+  it('已上线的实体不标 pending，且排在未上线之前', () => {
+    const groups = buildWith([makeCharacter('c2', 'B'), makeCharacter('c1', 'A')], [makeHistory('c1', 1)])
+    const entities = groups.find((g) => g.id === 'character')!.entities
+
+    expect(entities[0].entityId).toBe('c1')
+    expect(entities[0].pending).toBeUndefined()
+    expect(entities[entities.length - 1].pending).toBe(true)
+  })
+
+  it('pending 行没有任何跨度 —— 整行空单元格，双击即就地上线', () => {
+    const groups = buildWith([makeCharacter('c1', 'A')], [])
+    const pending = groups.find((g) => g.id === 'character')!.entities[0]
+
+    expect(pending.pending).toBe(true)
+    expect(pending.characterSpans).toBeUndefined()
+    expect(computeCellSymbol(pending, 1)).toEqual({ type: 'empty' })
+  })
+
+  it('kind 保持原样，五处平行 switch 无需改动', () => {
+    const groups = buildWith([makeCharacter('c1', 'A')], [])
+    const pending = groups.find((g) => g.id === 'character')!.entities[0]
+
+    expect(pending.kind).toBe('character')
+    expect(pending.entityType).toBe('character')
+  })
+
+  it('元素池为空时原样返回分组对象（不产生多余重渲染）', () => {
+    const characters = [makeCharacter('c1', 'A')]
+    const characterHistory = [makeHistory('c1', 1)]
+    const built = buildGroups({
+      chapters: [], characters, conflicts: [], clues: [], foreshadows: [], factions: [],
+      locations: [], worldElements: [], items: [], characterHistory,
+    })
+    const pool = buildPool({
+      characters, conflicts: [], clues: [], foreshadows: [], factions: [], locations: [],
+      items: [], characterHistory,
+    })
+
+    const groups = appendPendingEntities(built.groups, pool)
+    const before = built.groups.find((g) => g.id === 'character')!
+    expect(groups.find((g) => g.id === 'character')).toBe(before)
+  })
+
+  it('未命名实体回落到占位名，不渲染空标签', () => {
+    const groups = buildWith([makeCharacter('c1', '')], [])
+    expect(groups.find((g) => g.id === 'character')!.entities[0].name).toBe('未命名')
   })
 })
 

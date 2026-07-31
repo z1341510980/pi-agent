@@ -9,7 +9,7 @@ import {
   ZapIcon,
   ArrowDownIcon,
   ArrowUpIcon,
-  ActivityIcon,
+  ActivityIcon
 } from 'lucide-react'
 
 // ── 类型定义 ──
@@ -89,7 +89,7 @@ export function ContextPanel({
   workspacePath,
   associatedFiles = [],
   memorySummary = null,
-  activities = [],
+  activities = []
 }: ContextPanelProps): ReactElement {
   const tokenPct = useMemo(() => {
     if (stats.contextWindow <= 0) return 0
@@ -97,9 +97,7 @@ export function ContextPanel({
   }, [stats.tokensUsed, stats.contextWindow])
 
   const recentActivities = useMemo(() => {
-    return [...activities]
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, MAX_ACTIVITIES)
+    return [...activities].sort((a, b) => b.timestamp - a.timestamp).slice(0, MAX_ACTIVITIES)
   }, [activities])
 
   const recentFiles = useMemo(() => {
@@ -116,10 +114,13 @@ export function ContextPanel({
   }, [tokenPct])
 
   return (
-    <section className="grid gap-2.5 min-h-0 overflow-auto p-4 align-content-start" aria-label="上下文状态">
+    <section
+      className="grid gap-3 min-h-0 overflow-auto p-4 align-content-start"
+      aria-label="上下文状态"
+    >
       {/* ── 工作区路径 ── */}
       {workspacePath && (
-        <div className="bg-card-bg rounded-md p-2.5 grid gap-1">
+        <div className="pi-surface-card rounded-xl p-3 grid gap-1">
           <div className="flex items-center gap-1.5">
             <FolderOpenIcon className="size-3 text-subtle" />
             <span className="text-[11px] font-medium text-text">工作区</span>
@@ -131,7 +132,7 @@ export function ContextPanel({
       )}
 
       {/* ── 上下文 & 会话用量 & 压缩（整合卡片）── */}
-      <div className="bg-card-bg rounded-md p-2.5 grid gap-2.5">
+      <div className="pi-surface-card rounded-xl p-3 grid gap-2.5">
         {/* 标题行 */}
         <div className="flex items-center justify-between">
           <span className="text-[11px] font-medium text-text">上下文 & 用量</span>
@@ -140,7 +141,9 @@ export function ContextPanel({
               role="button"
               tabIndex={0}
               onClick={onViewDetails}
-              onKeyDown={(e) => { if (e.key === 'Enter') onViewDetails() }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onViewDetails()
+              }}
               className="text-[10px] text-primary hover:underline cursor-pointer"
             >
               查看明细
@@ -152,7 +155,9 @@ export function ContextPanel({
         <div className="grid gap-1">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] text-text-secondary">上下文占用</span>
-            <span className={`text-[10px] ${contextLevel === 'critical' ? 'text-error' : contextLevel === 'warning' ? 'text-warning' : 'text-subtle'}`}>
+            <span
+              className={`text-[10px] tabular-nums ${contextLevel === 'critical' ? 'text-danger' : contextLevel === 'warning' ? 'text-warning' : 'text-subtle'}`}
+            >
               {formatNumber(stats.tokensUsed)} / {formatNumber(stats.contextWindow)}
               <span className="text-[9px] ml-1">({tokenPct}%)</span>
             </span>
@@ -165,7 +170,7 @@ export function ContextPanel({
             aria-valuemax={100}
           >
             <div
-              className={`h-full transition-[width,background-color] duration-500 ${contextLevel === 'critical' ? 'bg-error' : contextLevel === 'warning' ? 'bg-warning' : 'bg-primary'}`}
+              className={`h-full transition-[width,background-color] duration-500 ${contextLevel === 'critical' ? 'bg-danger' : contextLevel === 'warning' ? 'bg-warning' : 'bg-primary'}`}
               style={{ width: `${tokenPct}%` }}
             />
           </div>
@@ -222,7 +227,9 @@ export function ContextPanel({
               role="button"
               tabIndex={0}
               onClick={onCompact}
-              onKeyDown={(e) => { if (e.key === 'Enter') onCompact() }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onCompact()
+              }}
               className="shrink-0 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-subtle border border-border hover:bg-surface-3 hover:text-text transition-colors cursor-pointer"
               aria-label="手动压缩上下文"
             >
@@ -238,7 +245,7 @@ export function ContextPanel({
       </div>
 
       {/* ── 关联文件 ── */}
-      <div className="bg-card-bg rounded-md p-2.5 grid gap-1.5">
+      <div className="pi-surface-card rounded-xl p-3 grid gap-1.5">
         <div className="flex items-center gap-1.5">
           <FileTextIcon className="size-3 text-subtle" />
           <span className="text-[11px] font-medium text-text">关联文件</span>
@@ -246,8 +253,13 @@ export function ContextPanel({
         {recentFiles.length > 0 ? (
           <ul className="grid gap-0.5">
             {recentFiles.map((file, index) => (
-              <li key={`${file.path}-${index}`} className="flex items-center justify-between gap-2 text-[10px] text-subtle">
-                <span className="truncate" title={file.path}>{shortenPath(file.path)}</span>
+              <li
+                key={`${file.path}-${index}`}
+                className="flex items-center justify-between gap-2 text-[10px] text-subtle"
+              >
+                <span className="truncate" title={file.path}>
+                  {shortenPath(file.path)}
+                </span>
                 <span className="shrink-0 text-[9px] text-subtle/70">{file.toolName}</span>
               </li>
             ))}
@@ -258,18 +270,23 @@ export function ContextPanel({
       </div>
 
       {/* ── 记忆摘要 ── */}
-      <div className="bg-card-bg rounded-md p-2.5 grid gap-1.5">
+      <div className="pi-surface-card rounded-xl p-3 grid gap-1.5">
         <div className="flex items-center gap-1.5">
           <BrainIcon className="size-3 text-subtle" />
           <span className="text-[11px] font-medium text-text">记忆摘要</span>
         </div>
         {memorySummary ? (
           <div className="grid gap-1">
-            <p className="text-[10px] text-text-secondary m-0 line-clamp-3">{memorySummary.summary}</p>
+            <p className="text-[10px] text-text-secondary m-0 line-clamp-3">
+              {memorySummary.summary}
+            </p>
             {(memorySummary.topics?.length ?? 0) > 0 && (
               <div className="flex flex-wrap gap-1">
                 {memorySummary.topics?.slice(0, 4).map((topic) => (
-                  <span key={topic} className="text-[9px] px-1 py-px rounded bg-surface-3 text-subtle">
+                  <span
+                    key={topic}
+                    className="text-[9px] px-1 py-px rounded bg-surface-3 text-subtle"
+                  >
                     {topic}
                   </span>
                 ))}
@@ -291,7 +308,7 @@ export function ContextPanel({
       </div>
 
       {/* ── 活动日志 ── */}
-      <div className="bg-card-bg rounded-md p-2.5 grid gap-1.5 min-w-0">
+      <div className="pi-surface-card rounded-xl p-3 grid gap-1.5 min-w-0">
         <div className="flex items-center gap-1.5">
           <ActivityIcon className="size-3 text-subtle" />
           <span className="text-[11px] font-medium text-text">活动日志</span>
@@ -299,9 +316,14 @@ export function ContextPanel({
         {recentActivities.length > 0 ? (
           <ul className="grid gap-0.5 min-w-0">
             {recentActivities.map((activity, index) => (
-              <li key={index} className="flex items-center justify-between gap-2 text-[10px] text-subtle min-w-0">
+              <li
+                key={index}
+                className="flex items-center justify-between gap-2 text-[10px] text-subtle min-w-0"
+              >
                 <span className="truncate min-w-0">{activity.label}</span>
-                <span className="shrink-0 text-[9px]">{activity.meta ?? formatRelativeTime(activity.timestamp)}</span>
+                <span className="shrink-0 text-[9px]">
+                  {activity.meta ?? formatRelativeTime(activity.timestamp)}
+                </span>
               </li>
             ))}
           </ul>

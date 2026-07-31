@@ -37,6 +37,7 @@ import {
   type NovelForeshadow,
 } from '@/api/novel-client'
 import {
+  appendPendingEntities,
   buildPool,
   findSpanAt,
   GROUP_ORDER,
@@ -91,15 +92,15 @@ function mergeSpanIntoList(
 }
 
 function getForeshadowBeats(foreshadow: NovelForeshadow): NonNullable<NovelForeshadow['beats']> {
-  // beats 为空时从 firstChapter/recoverByChapter fallback 补点；
-  // beats 非空但缺失 plant/payoff 时也要补——避免旧数据（迁移前用 firstChapter/recoverByChapter
-  // 的伏笔）的 beats=[] 状态在用户操作时被当作权威源送回后端，导致 normalize 清空整条链。
+  // beats 为空时从 firstChapter 补埋设点；
+  // 目的是避免旧数据（beats=[] 的伏笔）在用户拖拽时被当作权威源送回后端，
+  // 导致 normalize 清空整条链。
+  //
+  // ⚠️ 不从 recoverByChapter 补 payoff：recoverByChapter 是"计划回收章"（意图），
+  // 补成 payoff 会让后端把这条伏笔判成已回收，进而永久排除出后续编排。
   const beats = foreshadow.beats && foreshadow.beats.length > 0 ? [...foreshadow.beats] : []
   if (!beats.some((beat) => beat.type === 'plant') && foreshadow.firstChapter != null) {
     beats.push({ chapter: foreshadow.firstChapter, type: 'plant' as const })
-  }
-  if (!beats.some((beat) => beat.type === 'payoff') && foreshadow.recoverByChapter != null) {
-    beats.push({ chapter: foreshadow.recoverByChapter, type: 'payoff' as const })
   }
   return beats.sort((a, b) => a.chapter - b.chapter)
 }
@@ -148,8 +149,6 @@ export function MatrixWorkspace({
   const removeMarker = useNovelDataStore((s) => s.removeMarker)
   const selectNode = useNovelUiStore((s) => s.selectNode)
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
-  const viewMode = useNovelUiStore((s) => s.viewMode)
-  const setViewMode = useNovelUiStore((s) => s.setViewMode)
   // dhtmlx-gantt 风格多选
   const selectMatrixEntity = useNovelUiStore((s) => s.selectMatrixEntity)
   const selectedMatrixEntityIds = useNovelUiStore((s) => s.selectedMatrixEntityIds)
@@ -216,12 +215,23 @@ export function MatrixWorkspace({
   }, [currentProjectId, setMarkers])
 
   // ── 矩阵数据（单次计算，下传给 MatrixView 纯渲染）──
+  // ── 元素池：尚未放到任何章节的实体 ──
+  // 既供工具栏「补全历史」使用，也用于把这些实体作为「未上线」行补进矩阵，
+  // 否则它们在矩阵里完全不可见（buildGroups 会跳过无跨度的实体）。
+  const pool = useMemo(
+    () => buildPool({ characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory }),
+    [characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory],
+  )
+
   const matrixData = useMemo(
-    () => buildGroups({
-      chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-      infoLayers, items, characterHistory, markers,
-    }),
-    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, infoLayers, items, characterHistory, markers],
+    () => {
+      const built = buildGroups({
+        chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
+        infoLayers, items, characterHistory, markers,
+      })
+      return { ...built, groups: appendPendingEntities(built.groups, pool) }
+    },
+    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, infoLayers, items, characterHistory, markers, pool],
   )
 
   // ── 共享账本投影：matrix-aggregation 单请求，全部展开实体的子轨道共用 ──
@@ -256,12 +266,6 @@ export function MatrixWorkspace({
     }
     return out
   }, [matrixData, collapsedGroups, searchQuery])
-
-  // ── 元素池（补全历史用）──
-  const pool = useMemo(
-    () => buildPool({ characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory }),
-    [characters, conflicts, clues, foreshadows, factions, locations, items, characterHistory],
-  )
 
   // ── 播放头（创作流程联动）──
   const effectivePlayheadChapter = creationRunning && creationChapterNumber != null
@@ -1201,11 +1205,13 @@ export function MatrixWorkspace({
           break
         }
         case 'foreshadow': {
-          // first → firstChapter（埋设点）；last → recoverByChapter（回收点）
+          // first → firstChapter（埋设点，事实）；last → recoverByChapter（计划回收章，意图）
+          // 不再传 status：状态由后端从 beats 单向派生。
+          // 旧实现这里硬写 status:'recovered'，等于用户拖一下跨度就把伏笔标成已回收，
+          // 进而被 generateAndArrange 永久排除出后续编排。
           const updated = await updateForeshadow(entity.entityId, {
             firstChapter,
             recoverByChapter: lastChapter,
-            status: lastChapter >= firstChapter ? 'recovered' : undefined,
           })
           useNovelDataStore.getState().upsertForeshadow(updated)
           break
@@ -1457,15 +1463,17 @@ export function MatrixWorkspace({
           onFilterChange={handleFilterChange}
           onSimilarityScan={onSimilarityScan}
           similarityScanning={similarityScanning}
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
           showRelationshipOverlay={showRelationshipOverlay}
           onToggleRelationshipOverlay={() => setShowRelationshipOverlay((v) => !v)}
         />
       </div>
 
       <div data-tour="matrix-legend">
-        <MatrixLegend searchQuery={searchQuery} onSearchChange={setSearchQuery} />
+        <MatrixLegend
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          hasExpandedSubtracks={expandedEntityIds.length > 0}
+        />
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden" data-tour="matrix-view">

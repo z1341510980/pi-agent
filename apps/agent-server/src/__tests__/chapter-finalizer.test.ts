@@ -152,4 +152,51 @@ describe('ChapterFinalizer', () => {
       expect(updateClue).toHaveBeenCalledWith('clue-1', { chapterSpans: [[1, 1], [3, 3]] })
     })
   })
+
+  describe('runMemoryAgent', () => {
+    it('结构化提取失败时记录真实错误并切换工具模式重试', async () => {
+      const insertAgentLog = vi.fn()
+      const memoryGenerator = {
+        generate: vi.fn(async () => ({
+          status: 'error' as const,
+          summary: '记忆提取失败，未应用状态变更',
+          stats: {},
+          error: '502 status code (no body)',
+        })),
+      }
+      const fallback = vi.fn(async () => '工具模式提取成功')
+      const messages: Array<{ content: string; metadata?: Record<string, unknown> }> = []
+      const memoryFinalizer = new ChapterFinalizer(
+        { insertAgentLog } as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        mockContext,
+        memoryGenerator as any,
+        fallback,
+      )
+
+      const result = await memoryFinalizer.runMemoryAgent('p1', 1, '章节正文', {
+        emit: vi.fn(),
+        onCheckpoint: vi.fn(),
+        onProgress: vi.fn(),
+        onConversationMessage: (message) => messages.push(message),
+      })
+
+      expect(result).toBe('工具模式提取成功')
+      expect(fallback).toHaveBeenCalledWith(
+        'memory', 'p1', 1,
+        expect.objectContaining({ task: expect.stringContaining('502 status code') }),
+        expect.any(Object),
+      )
+      expect(insertAgentLog).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'error',
+        error: '502 status code (no body)',
+      }))
+      expect(messages).toContainEqual(expect.objectContaining({
+        content: '工具模式提取成功',
+        metadata: expect.objectContaining({ fallback: true }),
+      }))
+    })
+  })
 })

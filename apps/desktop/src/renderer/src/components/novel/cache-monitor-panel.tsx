@@ -11,12 +11,17 @@
 
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { RefreshCw, CheckCircle2, AlertCircle, Hash, Brain, Zap, Database } from 'lucide-react'
+import { RefreshCw, CheckCircle2, AlertCircle, Hash, Brain, Zap, Database, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
-import { getCacheDiagnostics, type CacheDiagnostics } from '@/api/novel-client'
+import {
+  getCacheDiagnostics,
+  getCacheLayerReport,
+  type CacheDiagnostics,
+  type CacheLayerReport,
+} from '@/api/novel-client'
 
 // ── Agent 类型中文标签 ──
 
@@ -62,6 +67,17 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
   })
 
   const data = diagnosticsQuery.data
+
+  // 分层命中报告：哈希稳定只是前提，这里看缓存有没有真的被读到
+  const layerQuery = useQuery({
+    queryKey: ['novel-cache-layer-report', currentProjectId, chapterNumber, refreshKey],
+    queryFn: async () => {
+      if (!currentProjectId) return null
+      return getCacheLayerReport(currentProjectId, { chapterNumber })
+    },
+    enabled: !!currentProjectId,
+    refetchInterval: 60_000,
+  })
 
   // 记录上一次哈希用于对比
   useEffect(() => {
@@ -163,7 +179,7 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
               <span className="text-xs font-medium text-text">缓存层级</span>
               {cacheLayers.map((layer) => (
                 <div key={layer.name} className="space-y-1">
-                  <div className="flex items-center justify-between text-[10px]">
+                  <div className="flex items-center justify-between text-nano">
                     <span className="flex items-center gap-1 text-muted-foreground">
                       <layer.icon className="size-2.5" />
                       {layer.name} · {layer.label}
@@ -178,7 +194,7 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
                       style={{ width: `${layer.name === 'DYNAMIC' ? 100 : layer.hitRate}%` }}
                     />
                   </div>
-                  <p className="text-[9px] text-hint leading-tight">{layer.description}</p>
+                  <p className="text-nano text-hint leading-tight">{layer.description}</p>
                 </div>
               ))}
             </div>
@@ -194,10 +210,10 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
                       key={agentType}
                       className="flex items-center gap-2 rounded-md border border-border/60 bg-background/50 px-2 py-1.5"
                     >
-                      <Badge variant="outline" className="text-[10px] shrink-0">
+                      <Badge variant="outline" className="text-nano shrink-0">
                         {AGENT_LABELS[agentType] ?? agentType}
                       </Badge>
-                      <code className="flex-1 text-[10px] font-mono text-muted-foreground truncate" title={hash}>
+                      <code className="flex-1 text-nano font-mono text-muted-foreground truncate" title={hash}>
                         {hash}
                       </code>
                       {stable ? (
@@ -216,10 +232,10 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
               <div className="space-y-2">
                 <span className="text-xs font-medium text-text">章节上下文哈希（SEMI）</span>
                 <div className="flex items-center gap-2 rounded-md border border-border/60 bg-background/50 px-2 py-1.5">
-                  <Badge variant="outline" className="text-[10px] shrink-0">
+                  <Badge variant="outline" className="text-nano shrink-0">
                     第 {chapterNumber ?? '?'} 章
                   </Badge>
-                  <code className="flex-1 text-[10px] font-mono text-muted-foreground truncate" title={data.chapterContextHash}>
+                  <code className="flex-1 text-nano font-mono text-muted-foreground truncate" title={data.chapterContextHash}>
                     {data.chapterContextHash}
                   </code>
                   {isHashStable('__chapter_context__', data.chapterContextHash) ? (
@@ -232,14 +248,142 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
             )}
 
             {/* 时间戳 */}
-            <div className="text-[9px] text-hint text-center pt-1">
+            <div className="text-nano text-hint text-center pt-1">
               更新于 {new Date(data.timestamp).toLocaleTimeString('zh-CN')}
             </div>
           </>
         )}
+
+        {/* 分层命中实测 */}
+        <CacheLayerSection report={layerQuery.data} loading={layerQuery.isLoading} />
       </div>
     </div>
   )
+}
+
+// ── 分层命中实测 ──
+
+const VERDICT_META: Record<
+  NonNullable<CacheLayerReport['verdict']>,
+  { label: string; className: string }
+> = {
+  healthy: { label: '分层复用正常', className: 'text-success' },
+  partial: { label: '仅部分命中', className: 'text-amber-600 dark:text-amber-400' },
+  miss: { label: '几乎未命中', className: 'text-destructive' },
+  no_data: { label: '数据不足', className: 'text-muted-foreground' },
+}
+
+const AGENT_SHORT: Record<string, string> = {
+  director: '导演',
+  writer: '写作',
+  reviewer: '审稿',
+  reviser: '修订',
+  memory: '记忆',
+}
+
+function CacheLayerSection({
+  report,
+  loading,
+}: {
+  report: CacheLayerReport | null | undefined
+  loading: boolean
+}): ReactElement | null {
+  if (loading) {
+    return <p className="text-xs text-muted-foreground text-center py-2">分层命中测算中...</p>
+  }
+  if (!report) return null
+
+  const meta = VERDICT_META[report.verdict]
+  const pct = report.overallCoverage != null ? Math.round(report.overallCoverage * 100) : null
+
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-text">分层命中实测</span>
+        <span className={cn('text-nano font-medium', meta.className)}>{meta.label}</span>
+      </div>
+
+      <p className="text-nano text-hint leading-relaxed">
+        上方哈希只说明前缀是否稳定；这里用同一条日志反解字符/token 比，
+        再比对实测 cache_read 与可缓存前缀（system + shared + identity）的期望值。
+      </p>
+
+      {pct != null && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-nano">
+            <span className="text-muted-foreground">后续 Agent 平均覆盖率</span>
+            <span className="tabular-nums text-muted-foreground">{pct}%</span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                'h-full transition-[width] duration-300',
+                report.verdict === 'healthy' ? 'bg-emerald-500'
+                  : report.verdict === 'partial' ? 'bg-amber-500' : 'bg-red-500',
+              )}
+              style={{ width: `${Math.min(100, pct)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {report.potentialSavedTokens > 0 && (
+        <div className="rounded-md bg-muted/50 px-2 py-1.5 text-nano text-muted-foreground">
+          若分层完整命中，本次采样（{report.sampledLogs} 条调用）可少送约{' '}
+          <span className="tabular-nums font-medium text-text">
+            {formatTokenAmount(report.potentialSavedTokens)}
+          </span>{' '}
+          input token（上界估算）
+        </div>
+      )}
+
+      {/* 逐章结论 */}
+      <div className="space-y-1">
+        {report.chapters.map((chapter) => (
+          <div
+            key={chapter.chapterNumber}
+            className="rounded-md border border-border/60 bg-background/50 px-2 py-1.5 space-y-1"
+          >
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-nano shrink-0">
+                第 {chapter.chapterNumber} 章
+              </Badge>
+              <span className={cn('text-nano flex-1', VERDICT_META[chapter.verdict].className)}>
+                {chapter.summary}
+              </span>
+            </div>
+            {chapter.calls.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {chapter.calls.map((call) => (
+                  <span
+                    key={`${call.agentType}-${call.order}`}
+                    className="text-nano tabular-nums text-hint rounded bg-muted/60 px-1"
+                    title={`可缓存前缀 ${call.cacheablePrefixChars} 字符，期望命中 ${call.expectedCacheReadTokens ?? '-'} token，实测 ${call.cacheReadTokens} token`}
+                  >
+                    {AGENT_SHORT[call.agentType] ?? call.agentType}
+                    {call.coverage != null ? ` ${Math.round(call.coverage * 100)}%` : ' -'}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* 需要人工判断的提示 */}
+      {report.notes.map((note) => (
+        <div key={note} className="flex gap-1.5 rounded-md bg-amber-500/8 px-2 py-1.5">
+          <Info className="size-3 shrink-0 mt-px text-amber-600 dark:text-amber-400" />
+          <p className="text-nano leading-relaxed text-muted-foreground">{note}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function formatTokenAmount(n: number): string {
+  if (n >= 10_000) return `${(n / 10_000).toFixed(1)} 万`
+  return String(n)
 }
 
 /** 计算 STATIC 层命中率：所有 Agent 哈希中稳定的比例 */

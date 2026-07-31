@@ -28,7 +28,6 @@ import {
 
 export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
   const upsertForeshadow = useNovelDataStore((s) => s.upsertForeshadow)
-  const infoLayers = useNovelDataStore((s) => s.infoLayers)
   const [form, setForm] = useState({
     description: entity.description,
     category: entity.category,
@@ -39,11 +38,12 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 事件链只展示已发生的节点。
+  // ⚠️ 不从 recoverByChapter 合成 payoff：它是"计划回收章"（意图），不是已回收的事实。
   const beats = entity.beats && entity.beats.length > 0
     ? [...entity.beats].sort((a, b) => a.chapter - b.chapter)
     : [
         ...(entity.firstChapter != null ? [{ chapter: entity.firstChapter, type: 'plant' as const }] : []),
-        ...(entity.recoverByChapter != null ? [{ chapter: entity.recoverByChapter, type: 'payoff' as const }] : []),
       ]
   const beatLabels = {
     plant: '埋设',
@@ -52,23 +52,13 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
     payoff: '回收',
   } as const
 
-  // linkedCharacters 已迁移至 edges，暂用空数组占位
-  const linkedCharacters: string[] = []
-
-  // linkedClues 已迁移至 edges，暂用空数组占位
-  const linkedClues: string[] = []
-
-  // ── P3-2：linkedInfoLayers 已迁移至 edges，暂用空数组占位 ──
-  const linkedInfoLayerIds: string[] = []
-  // 将信息差 ID 解析为描述，用于展示
-  const linkedInfoLayerItems = linkedInfoLayerIds.map((id) => {
-    const layer = infoLayers.find((l) => l.id === id)
-    return {
-      id,
-      description: layer?.infoDescription ?? id,
-      readerKnows: layer?.readerKnows ?? false,
-    }
-  })
+  /**
+   * 实际回收章：只认 beats 里真实存在的 payoff 节点。
+   *
+   * 不能用 `recoverByChapter` 兜底 —— 那是计划回收章（意图），
+   * 用它当"已回收"会让一条还欠着的伏笔显示成已完成。
+   */
+  const actualPayoffChapter = beats.find((b) => b.type === 'payoff')?.chapter ?? null
 
   const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
 
@@ -133,7 +123,7 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
         </Select>
       </FieldRow>
 
-      <SectionHeader title="章节" />
+      <SectionHeader title="章节" hint="「埋设 / 最后节点」是已发生的事实；「计划回收章」是意图" />
       <FieldRow label="埋设章节">
         <TextInput
           type="number"
@@ -148,12 +138,31 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
           onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
         />
       </FieldRow>
-      <FieldRow label="回收章节">
+
+      {/* 计划回收章单独分区：它与上面两个字段性质不同 ——
+          上面记录"已经发生了什么"，这里声明"打算什么时候还"。
+          三个裸数字输入框并排时用户分不清哪个是事实、哪个是计划，
+          矩阵里那根跨度线也因此含义模糊（已回收 vs 欠着）。 */}
+      <SectionHeader title="回收计划" hint="意图，非事实。矩阵中显示为虚线 + 空心终点" />
+      <FieldRow label="计划回收章">
         <TextInput
           type="number"
           value={form.recoverByChapter}
           onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
         />
+      </FieldRow>
+      <FieldRow label="当前状态">
+        {actualPayoffChapter != null ? (
+          <span className="text-micro text-success">
+            已在第 {actualPayoffChapter} 章回收（事实）
+          </span>
+        ) : form.recoverByChapter ? (
+          <span className="text-micro text-amber-600 dark:text-amber-400">
+            尚未回收，计划第 {form.recoverByChapter} 章前兑现
+          </span>
+        ) : (
+          <span className="text-micro text-muted-foreground">尚未回收，也未设定计划</span>
+        )}
       </FieldRow>
 
       <SectionHeader title="事件链" />
@@ -163,60 +172,23 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
             {beats.map((beat) => (
               <div key={`${beat.chapter}-${beat.type}`} className="rounded border border-border px-2 py-1.5">
                 <div className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="text-[10px] tabular-nums">第 {beat.chapter} 章</Badge>
-                  <span className="text-[11px] font-medium">{beatLabels[beat.type]}</span>
+                  <Badge variant="outline" className="text-nano tabular-nums">第 {beat.chapter} 章</Badge>
+                  <span className="text-micro font-medium">{beatLabels[beat.type]}</span>
                 </div>
-                {beat.note && <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{beat.note}</p>}
+                {beat.note && <p className="mt-1 text-nano leading-relaxed text-muted-foreground">{beat.note}</p>}
               </div>
             ))}
           </div>
         ) : (
-          <span className="text-[11px] text-muted-foreground">尚未埋设</span>
+          <span className="text-micro text-muted-foreground">尚未埋设</span>
         )}
       </FieldRow>
 
-      <SectionHeader title="关联" />
-      <FieldRow label="关联角色">
-        {linkedCharacters.length > 0 ? (
-          <div className="flex flex-wrap gap-1">
-            {linkedCharacters.map((id) => (
-              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-            ))}
-          </div>
-        ) : (
-          <span className="text-[11px] text-muted-foreground">暂无</span>
-        )}
-      </FieldRow>
-      <FieldRow label="关联线索">
-        {linkedClues.length > 0 ? (
-          <div className="flex flex-wrap gap-1">
-            {linkedClues.map((id) => (
-              <Badge key={id} variant="outline" className="text-[10px]">{id}</Badge>
-            ))}
-          </div>
-        ) : (
-          <span className="text-[11px] text-muted-foreground">暂无</span>
-        )}
-      </FieldRow>
-      <FieldRow label="⚡ 承载信息差">
-        {linkedInfoLayerItems.length > 0 ? (
-          <div className="space-y-1">
-            {linkedInfoLayerItems.map((item) => {
-              const desc = item.description.length > 16 ? `${item.description.slice(0, 16)}...` : item.description
-              return (
-                <div key={item.id} className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="text-[10px]">{desc}</Badge>
-                  <span className="text-[10px] text-muted-foreground">
-                    {item.readerKnows ? '读者已知' : '读者未知'}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <span className="text-[11px] text-muted-foreground">暂无</span>
-        )}
-      </FieldRow>
+      {/* 「关联」分区（关联角色 / 关联线索 / ⚡ 承载信息差）已整体移除：
+          这三项数据已迁移至 edges 表，伏笔实体上不再有 linkedCharacters /
+          linkedClues / linkedInfoLayerIds 字段，此前用空数组占位导致三行恒显示「暂无」。
+          需要时应通过 edges 查询（按 foreshadowId 反查关联边）实现，而不是留空占位。
+          分区内已无其它字段，故 SectionHeader 一并删除。 */}
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />

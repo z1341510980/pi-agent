@@ -101,7 +101,7 @@ function HealthRing({ score, color }: { score: number; color: string }): ReactEl
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-2xl font-bold tabular-nums text-text">{score}</span>
-        <span className="text-[10px] text-subtle">健康度</span>
+        <span className="text-nano text-subtle">健康度</span>
       </div>
     </div>
   )
@@ -144,7 +144,7 @@ function AuditCard({
           {icon}
         </span>
         <span className="text-xs font-medium text-text flex-1 truncate">{title}</span>
-        <span className="text-[11px] text-subtle tabular-nums">{summary}</span>
+        <span className="text-micro text-subtle tabular-nums">{summary}</span>
         <ChevronDown
           className={cn(
             'size-3.5 text-subtle transition-transform',
@@ -182,7 +182,7 @@ function ForeshadowSection({ foreshadow }: { foreshadow: ForeshadowAudit }): Rea
             .map(([status, count]) => (
               <span
                 key={status}
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-surface-2 text-text-secondary"
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-nano bg-surface-2 text-text-secondary"
               >
                 <span className="font-medium">{statusLabel(status)}</span>
                 <span className="tabular-nums text-subtle">{count}</span>
@@ -192,18 +192,18 @@ function ForeshadowSection({ foreshadow }: { foreshadow: ForeshadowAudit }): Rea
 
         {foreshadow.expired.length > 0 && (
           <div className="rounded bg-danger/10 p-2">
-            <div className="text-[11px] font-medium text-danger mb-1">
+            <div className="text-micro font-medium text-danger mb-1">
               即将过期（{foreshadow.expired.length}）
             </div>
             <ul className="space-y-0.5">
               {foreshadow.expired.slice(0, 5).map((f) => (
-                <li key={f.id} className="flex items-center gap-2 text-[11px]">
+                <li key={f.id} className="flex items-center gap-2 text-micro">
                   <span className="flex-1 truncate text-text-secondary">{f.description}</span>
                   <span className="tabular-nums text-danger">gap {f.gap}</span>
                 </li>
               ))}
               {foreshadow.expired.length > 5 && (
-                <li className="text-[10px] text-subtle">+{foreshadow.expired.length - 5} 条...</li>
+                <li className="text-nano text-subtle">+{foreshadow.expired.length - 5} 条...</li>
               )}
             </ul>
           </div>
@@ -211,31 +211,31 @@ function ForeshadowSection({ foreshadow }: { foreshadow: ForeshadowAudit }): Rea
 
         {foreshadow.urgent.length > 0 && (
           <div className="rounded bg-amber-500/10 p-2">
-            <div className="text-[11px] font-medium text-amber-600 mb-1">
+            <div className="text-micro font-medium text-amber-600 mb-1">
               急需回收（{foreshadow.urgent.length}）
             </div>
             <ul className="space-y-0.5">
               {foreshadow.urgent.slice(0, 5).map((f) => (
-                <li key={f.id} className="flex items-center gap-2 text-[11px]">
+                <li key={f.id} className="flex items-center gap-2 text-micro">
                   <span className="flex-1 truncate text-text-secondary">{f.description}</span>
                   <span className="tabular-nums text-amber-600">gap {f.gap}</span>
                 </li>
               ))}
               {foreshadow.urgent.length > 5 && (
-                <li className="text-[10px] text-subtle">+{foreshadow.urgent.length - 5} 条...</li>
+                <li className="text-nano text-subtle">+{foreshadow.urgent.length - 5} 条...</li>
               )}
             </ul>
           </div>
         )}
 
         {!hasIssue && foreshadow.total > 0 && (
-          <div className="text-[11px] text-success flex items-center gap-1">
+          <div className="text-micro text-success flex items-center gap-1">
             <CheckCircle2 className="size-3" />
             所有伏笔状态正常
           </div>
         )}
         {foreshadow.total === 0 && (
-          <div className="text-[11px] text-subtle">暂无伏笔记录</div>
+          <div className="text-micro text-subtle">暂无伏笔记录</div>
         )}
       </div>
     </AuditCard>
@@ -272,27 +272,27 @@ function HookSection({ hooks }: { hooks: HookAudit }): ReactElement {
         {hooks.hanging.length > 0 ? (
           <ul className="space-y-1">
             {hooks.hanging.slice(0, 8).map((h) => (
-              <li key={h.id} className="flex items-start gap-2 text-[11px]">
+              <li key={h.id} className="flex items-start gap-2 text-micro">
                 <AlertTriangle className="size-3 text-amber-500 mt-0.5 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="truncate text-text-secondary">{h.description}</div>
-                  <div className="text-[10px] text-subtle tabular-nums">
+                  <div className="text-nano text-subtle tabular-nums">
                     第 {h.thrownAt} 章抛出 · 悬挂 {h.gap} 章 · {h.hookType}
                   </div>
                 </div>
               </li>
             ))}
             {hooks.hanging.length > 8 && (
-              <li className="text-[10px] text-subtle">+{hooks.hanging.length - 8} 个...</li>
+              <li className="text-nano text-subtle">+{hooks.hanging.length - 8} 个...</li>
             )}
           </ul>
         ) : hooks.total > 0 ? (
-          <div className="text-[11px] text-success flex items-center gap-1">
+          <div className="text-micro text-success flex items-center gap-1">
             <CheckCircle2 className="size-3" />
             钩子兑现情况良好
           </div>
         ) : (
-          <div className="text-[11px] text-subtle">暂无钩子记录</div>
+          <div className="text-micro text-subtle">暂无钩子记录</div>
         )}
       </div>
     </AuditCard>
@@ -318,10 +318,10 @@ function OrphanSection({ orphans }: { orphans: OrphanEntityAudit }): ReactElemen
           <>
             {orphans.characters.length > 0 && (
               <div>
-                <div className="text-[11px] font-medium text-text-secondary mb-1">角色</div>
+                <div className="text-micro font-medium text-text-secondary mb-1">角色</div>
                 <ul className="space-y-0.5">
                   {orphans.characters.slice(0, 5).map((c) => (
-                    <li key={c.id} className="flex items-center gap-2 text-[11px]">
+                    <li key={c.id} className="flex items-center gap-2 text-micro">
                       <span className="flex-1 truncate text-text">{c.name}</span>
                       <span className="tabular-nums text-subtle">
                         缺第 {c.missingChapters.join(',')} 章
@@ -333,10 +333,10 @@ function OrphanSection({ orphans }: { orphans: OrphanEntityAudit }): ReactElemen
             )}
             {orphans.factions.length > 0 && (
               <div>
-                <div className="text-[11px] font-medium text-text-secondary mb-1">势力</div>
+                <div className="text-micro font-medium text-text-secondary mb-1">势力</div>
                 <ul className="space-y-0.5">
                   {orphans.factions.slice(0, 5).map((f) => (
-                    <li key={f.id} className="flex items-center gap-2 text-[11px]">
+                    <li key={f.id} className="flex items-center gap-2 text-micro">
                       <span className="flex-1 truncate text-text">{f.name}</span>
                       <span className="tabular-nums text-subtle">
                         缺第 {f.missingChapters.join(',')} 章
@@ -348,10 +348,10 @@ function OrphanSection({ orphans }: { orphans: OrphanEntityAudit }): ReactElemen
             )}
             {orphans.locations.length > 0 && (
               <div>
-                <div className="text-[11px] font-medium text-text-secondary mb-1">地点</div>
+                <div className="text-micro font-medium text-text-secondary mb-1">地点</div>
                 <ul className="space-y-0.5">
                   {orphans.locations.slice(0, 5).map((l) => (
-                    <li key={l.id} className="flex items-center gap-2 text-[11px]">
+                    <li key={l.id} className="flex items-center gap-2 text-micro">
                       <span className="flex-1 truncate text-text">{l.name}</span>
                       <span className="tabular-nums text-subtle">
                         缺第 {l.missingChapters.join(',')} 章
@@ -363,7 +363,7 @@ function OrphanSection({ orphans }: { orphans: OrphanEntityAudit }): ReactElemen
             )}
           </>
         ) : (
-          <div className="text-[11px] text-success flex items-center gap-1">
+          <div className="text-micro text-success flex items-center gap-1">
             <CheckCircle2 className="size-3" />
             编排实体均在正文出现
           </div>
@@ -389,7 +389,7 @@ function TimelineSection({ timeline }: { timeline: TimelineAudit }): ReactElemen
         {timeline.violations.length > 0 ? (
           <ul className="space-y-1">
             {timeline.violations.slice(0, 8).map((v, i) => (
-              <li key={i} className="flex items-start gap-2 text-[11px]">
+              <li key={i} className="flex items-start gap-2 text-micro">
                 <AlertTriangle className="size-3 text-danger mt-0.5 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <span className="text-text-secondary">
@@ -399,20 +399,20 @@ function TimelineSection({ timeline }: { timeline: TimelineAudit }): ReactElemen
                   <span className="text-text-secondary">
                     第 <span className="tabular-nums text-text">{v.previousChapter}</span> 章
                   </span>
-                  <div className="text-[10px] tabular-nums text-danger">
+                  <div className="text-nano tabular-nums text-danger">
                     {v.timeOffset} &lt; {v.previousOffset}
                   </div>
                 </div>
               </li>
             ))}
             {timeline.violations.length > 8 && (
-              <li className="text-[10px] text-subtle">
+              <li className="text-nano text-subtle">
                 +{timeline.violations.length - 8} 处...
               </li>
             )}
           </ul>
         ) : (
-          <div className="text-[11px] text-success flex items-center gap-1">
+          <div className="text-micro text-success flex items-center gap-1">
             <CheckCircle2 className="size-3" />
             时间线单调递增
           </div>
@@ -424,7 +424,19 @@ function TimelineSection({ timeline }: { timeline: TimelineAudit }): ReactElemen
 
 // ── 主面板 ──
 
-export function ConsistencyAuditPanel(): ReactElement {
+export interface ConsistencyAuditPanelProps {
+  /**
+   * 创作流程进行中。
+   *
+   * 审计报告基于已入库的章节计算，正在生成的这一章尚未落盘，
+   * 因此报告读起来会「少一章」。面板本身照常可用 —— 创作中恰是核对一致性的时刻。
+   */
+  creationActive?: boolean
+}
+
+export function ConsistencyAuditPanel({
+  creationActive = false,
+}: ConsistencyAuditPanelProps = {}): ReactElement {
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
 
   const query = useQuery({
@@ -471,6 +483,13 @@ export function ConsistencyAuditPanel(): ReactElement {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
+      {/* 创作进行中的时效提示：报告不含正在生成的这一章 */}
+      {creationActive && (
+        <div className="shrink-0 px-3 py-2 border-b border-border bg-surface-2 text-micro leading-relaxed text-muted-foreground">
+          创作进行中。报告基于已入库章节计算，尚未包含正在生成的这一章。
+        </div>
+      )}
+
       {/* 顶部：健康度评分 + 刷新按钮 */}
       <div className="shrink-0 p-3 border-b border-border">
         <div className="flex items-center gap-3">
@@ -484,10 +503,10 @@ export function ConsistencyAuditPanel(): ReactElement {
                 <RefreshCw className="size-3 text-subtle animate-spin" />
               )}
             </div>
-            <div className="text-[11px] text-subtle tabular-nums">
+            <div className="text-micro text-subtle tabular-nums">
               {report.writtenChapters} / {report.totalChapters} 章已写
             </div>
-            <div className="text-[10px] text-hint mt-1">
+            <div className="text-nano text-hint mt-1">
               每 60 秒自动刷新
             </div>
           </div>
@@ -513,10 +532,10 @@ export function ConsistencyAuditPanel(): ReactElement {
         {/* 底部：摘要 */}
         {report.summary.length > 0 && (
           <div className="rounded-md bg-surface-2 p-2 mt-2">
-            <div className="text-[10px] font-medium text-subtle mb-1">摘要</div>
+            <div className="text-nano font-medium text-subtle mb-1">摘要</div>
             <ul className="space-y-0.5">
               {report.summary.map((s, i) => (
-                <li key={i} className="text-[11px] text-text-secondary leading-relaxed">
+                <li key={i} className="text-micro text-text-secondary leading-relaxed">
                   {s}
                 </li>
               ))}

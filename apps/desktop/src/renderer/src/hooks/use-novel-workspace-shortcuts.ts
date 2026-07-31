@@ -6,7 +6,7 @@ import { useNovelWorkspaceLayoutStore } from '@/stores/novel-workspace-layout-st
  *
  * Ctrl+B       — 切换左侧栏
  * Ctrl+J       — 切换右侧面板
- * Ctrl+1/2/3   — 切换主工作区模式（写作/矩阵/分屏）
+ * Ctrl+1/2/3/4 — 切换主工作区布局（正文 / 正文+时间线 / 时间线 / 关系图）
  * Ctrl+Shift+F — 切换专注模式
  * Esc          — 退出专注模式（仅在专注模式下）
  *
@@ -41,25 +41,29 @@ export function useNovelWorkspaceShortcuts(): void {
     useNovelWorkspaceLayoutStore.getState().toggleRightPanel()
   }, { preventDefault: false }, [])
 
-  // Ctrl+1 — 写作模式
+  // Ctrl+1~4 — 主工作区布局，顺序与顶栏 Segmented 从左到右一致
   useHotkeys('mod+1', (e) => {
     if (isEditableTarget(e)) return
     e.preventDefault()
-    useNovelWorkspaceLayoutStore.getState().setMainMode('writing')
+    useNovelWorkspaceLayoutStore.getState().setLayoutMode('text')
   }, { preventDefault: false }, [])
 
-  // Ctrl+2 — 矩阵模式
   useHotkeys('mod+2', (e) => {
     if (isEditableTarget(e)) return
     e.preventDefault()
-    useNovelWorkspaceLayoutStore.getState().setMainMode('matrix')
+    useNovelWorkspaceLayoutStore.getState().setLayoutMode('text-timeline')
   }, { preventDefault: false }, [])
 
-  // Ctrl+3 — 分屏模式
   useHotkeys('mod+3', (e) => {
     if (isEditableTarget(e)) return
     e.preventDefault()
-    useNovelWorkspaceLayoutStore.getState().setMainMode('split')
+    useNovelWorkspaceLayoutStore.getState().setLayoutMode('timeline')
+  }, { preventDefault: false }, [])
+
+  useHotkeys('mod+4', (e) => {
+    if (isEditableTarget(e)) return
+    e.preventDefault()
+    useNovelWorkspaceLayoutStore.getState().setLayoutMode('graph')
   }, { preventDefault: false }, [])
 
   // Ctrl+Shift+F — 切换专注模式

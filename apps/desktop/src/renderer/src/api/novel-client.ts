@@ -936,6 +936,47 @@ export function getChapterStoryContext(projectId: string, chapterNumber: number)
   return getApi<ChapterStoryContext>(`${BASE}/projects/${projectId}/chapters/${chapterNumber}/story-context`)
 }
 
+/** 章节投影的事实源（S4-2） */
+export type ProjectionSource = 'entity-fields' | 'ledger'
+
+/**
+ * 章节投影读接口的返回体（S4-2）。
+ *
+ * "本章有哪些实体出场"以前在前端也算一份（collectArrangedEntities），
+ * 与后端派生规则、矩阵派生规则并列三份，字段增删就漂移 ——
+ * itemIds / characterFunctions 长期丢失即由此而来。现在统一由后端给出。
+ */
+export interface ChapterArrangedEntitiesResponse {
+  projectId: string
+  chapterNumber: number
+  source: ProjectionSource
+  arrangedEntities: {
+    characterIds: string[]
+    conflictIds: string[]
+    foreshadowIds: string[]
+    clueIds: string[]
+    factionIds: string[]
+    locationIds: string[]
+    itemIds: string[]
+  }
+  /** 另一种事实源的结果，仅用于对比展示 */
+  alternativeSource: ProjectionSource
+  alternative: ChapterArrangedEntitiesResponse['arrangedEntities']
+  /** 两种来源的差异（按字段），为空表示一致 */
+  divergence: Record<string, { onlyInSelected: string[]; onlyInAlternative: string[] }>
+}
+
+export function getChapterArrangedEntities(
+  projectId: string,
+  chapterNumber: number,
+  source?: ProjectionSource,
+): Promise<ChapterArrangedEntitiesResponse> {
+  const qs = source ? `?source=${source}` : ''
+  return getApi<ChapterArrangedEntitiesResponse>(
+    `${BASE}/projects/${projectId}/chapters/${chapterNumber}/arranged-entities${qs}`,
+  )
+}
+
 export interface ListAnnotationsParams {
   chapterNumber?: number
   scopeType?: NovelAnnotationScope
@@ -1491,6 +1532,60 @@ export function getCacheDiagnostics(
 ): Promise<CacheDiagnostics> {
   const query = chapterNumber != null ? `?chapterNumber=${chapterNumber}` : ''
   return getApi<CacheDiagnostics>(`${BASE}/projects/${projectId}/cache-diagnostics${query}`)
+}
+
+/**
+ * 缓存分层命中报告。
+ *
+ * 与 CacheDiagnostics 是两件事：那个比对提示词哈希是否稳定（前提条件），
+ * 这个量缓存是否真的被命中（实际效果）。哈希稳定但 cacheRead 为 0
+ * 说明分层断点没生效，只看哈希看不出来。
+ */
+export interface CacheLayerCall {
+  agentType: string
+  order: number
+  cacheablePrefixChars: number
+  totalPromptChars: number
+  inputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  charsPerToken: number | null
+  expectedCacheReadTokens: number | null
+  coverage: number | null
+}
+
+export interface CacheLayerChapter {
+  chapterNumber: number
+  calls: CacheLayerCall[]
+  verdict: 'healthy' | 'partial' | 'miss' | 'no_data'
+  summary: string
+  followUpCoverage: number | null
+  allCacheWriteZero: boolean
+}
+
+export interface CacheLayerReport {
+  chapters: CacheLayerChapter[]
+  overallCoverage: number | null
+  verdict: 'healthy' | 'partial' | 'miss' | 'no_data'
+  /** 分层完全命中时可省下的 input token（上界估算） */
+  potentialSavedTokens: number
+  /** 需要人工判断的提示 */
+  notes: string[]
+  sampledLogs: number
+  timestamp: number
+}
+
+export function getCacheLayerReport(
+  projectId: string,
+  params?: { chapterNumber?: number; limit?: number },
+): Promise<CacheLayerReport> {
+  const search = new URLSearchParams()
+  if (params?.chapterNumber != null) search.set('chapterNumber', String(params.chapterNumber))
+  if (params?.limit != null) search.set('limit', String(params.limit))
+  const query = search.toString()
+  return getApi<CacheLayerReport>(
+    `${BASE}/projects/${projectId}/cache-layer-report${query ? `?${query}` : ''}`,
+  )
 }
 
 // ── Agent 调用日志 ──

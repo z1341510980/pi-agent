@@ -22,11 +22,12 @@ export interface MatrixSubtracksProps {
   tracks: SubtrackDef[]
   cellWidth: number
   sidebarWidth: number
-  playheadChapter: number
+  /** 可见章节范围，用于裁剪子轨道 SVG 与 hover 热区（见 SubtrackOverlay） */
+  visibleRange?: { start: number; end: number }
 }
 
 export function MatrixSubtracks({
-  tracks, cellWidth, sidebarWidth, playheadChapter,
+  tracks, cellWidth, sidebarWidth, visibleRange,
 }: MatrixSubtracksProps): ReactElement {
   // 空数据：单行占位（保持横向滚动同步）
   if (tracks.length === 0) {
@@ -36,10 +37,10 @@ export function MatrixSubtracks({
           className="sticky left-0 z-30 flex items-center gap-1.5 px-2 border-r border-border/40 shrink-0 bg-surface-1"
           style={{ width: sidebarWidth }}
         >
-          <span className="text-[10px] text-hint/70 truncate pl-8">子轨道</span>
+          <span className="text-nano text-hint/70 truncate pl-8">子轨道</span>
         </div>
         <div className="relative flex-1" style={{ backgroundImage: gridlineBackgroundImage(cellWidth) }}>
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-hint/70 pointer-events-none">
+          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-nano text-hint/70 pointer-events-none">
             暂无变化记录
           </span>
         </div>
@@ -55,7 +56,7 @@ export function MatrixSubtracks({
           track={track}
           cellWidth={cellWidth}
           sidebarWidth={sidebarWidth}
-          playheadChapter={playheadChapter}
+          visibleRange={visibleRange}
         />
       ))}
     </div>
@@ -68,11 +69,11 @@ interface SubtrackRowProps {
   track: SubtrackDef
   cellWidth: number
   sidebarWidth: number
-  playheadChapter: number
+  visibleRange?: { start: number; end: number }
 }
 
 function SubtrackRow({
-  track, cellWidth, sidebarWidth, playheadChapter,
+  track, cellWidth, sidebarWidth, visibleRange,
 }: SubtrackRowProps): ReactElement | null {
   const hasData = track.bands.length > 0
     || (track.curve && track.curve.length >= 2)
@@ -90,7 +91,7 @@ function SubtrackRow({
         style={{ width: sidebarWidth }}
       >
         <span className="w-1 h-1 rounded-full shrink-0 opacity-70" style={{ background: track.color }} />
-        <span className="text-[10px] text-subtle truncate min-w-0" title={track.label}>
+        <span className="text-nano text-subtle truncate min-w-0" title={track.label}>
           {track.label}
         </span>
         {track.legend && track.legend.length > 0 && (
@@ -117,13 +118,9 @@ function SubtrackRow({
         className="relative flex-1"
         style={{ backgroundImage: gridlineBackgroundImage(cellWidth) }}
       >
-        {/* 播放头列高亮 */}
-        <div
-          aria-hidden="true"
-          className="absolute top-0 bottom-0 pointer-events-none bg-amber-500/[0.06]"
-          style={{ left: (playheadChapter - 1) * cellWidth, width: cellWidth }}
-        />
-        <SubtrackOverlay track={track} cellWidth={cellWidth} trackHeight={SUB_H} />
+        {/* 播放头列高亮由 matrix-view 统一绘制（覆盖标尺以下全高），
+            此处不再重复画一份 */}
+        <SubtrackOverlay track={track} cellWidth={cellWidth} trackHeight={SUB_H} visibleRange={visibleRange} />
       </div>
     </div>
   )
@@ -136,9 +133,19 @@ interface SubtrackOverlayProps {
   track: SubtrackDef
   cellWidth: number
   trackHeight: number
+  /**
+   * 可见章节范围 `[start, end]`。
+   *
+   * 不裁剪的代价：`svgWidth = maxCh × cellWidth`，长篇下一条轨道的 SVG 宽达
+   * 数万像素，且**每个节点还各配一个 hover 热区 div** —— 300 章 × 若干轨道
+   * 会生成上千个常驻 DOM 节点，滚动时全部参与布局与合成。
+   *
+   * 缺省时不裁剪（保持旧行为），供不做虚拟化的调用方使用。
+   */
+  visibleRange?: { start: number; end: number }
 }
 
-function SubtrackOverlay({ track, cellWidth, trackHeight }: SubtrackOverlayProps): ReactElement | null {
+function SubtrackOverlay({ track, cellWidth, trackHeight, visibleRange }: SubtrackOverlayProps): ReactElement | null {
   const hasBands = track.bands.length > 0
   const hasCurve = !!(track.curve && track.curve.length >= 2)
   const hasNodes = !!(track.nodes && track.nodes.length > 0)
@@ -147,7 +154,21 @@ function SubtrackOverlay({ track, cellWidth, trackHeight }: SubtrackOverlayProps
   const xCenter = (ch: number): number => (ch - 1) * cellWidth + cellWidth / 2
   const xLeft = (ch: number): number => (ch - 1) * cellWidth
   const midY = trackHeight / 2
-  const svgWidth = maxCh(track) * cellWidth
+
+  // 裁剪判定：色带只要与可见区间有交集就保留（跨屏色带的两端在屏外，
+  // 但中段可见，剔掉会让屏幕中间出现空洞）；点状元素按所在章判断。
+  const inRange = (ch: number): boolean =>
+    !visibleRange || (ch >= visibleRange.start && ch <= visibleRange.end)
+  const bandInRange = (startCh: number, endCh: number): boolean =>
+    !visibleRange || (endCh >= visibleRange.start && startCh <= visibleRange.end)
+
+  const visibleBands = track.bands.filter((b) => bandInRange(b.startCh, b.endCh))
+  const visibleNodes = track.nodes?.filter((n) => inRange(n.ch)) ?? []
+  // 曲线必须整段保留：只画可见段会让折线在屏幕边缘突然折断。
+  // 它是单个 <path>，成本与节点数无关，不裁剪代价可接受。
+  const svgWidth = visibleRange
+    ? Math.min(maxCh(track), visibleRange.end) * cellWidth
+    : maxCh(track) * cellWidth
 
   const svgStyle: CSSProperties = {
     position: 'absolute',
@@ -163,13 +184,16 @@ function SubtrackOverlay({ track, cellWidth, trackHeight }: SubtrackOverlayProps
     <div className="absolute inset-0">
       <svg width={svgWidth} height={trackHeight} style={svgStyle} aria-hidden="true">
         {/* enum/level：连续色块 + 变化交界竖线 */}
-        {track.bands.map((band, idx) => {
+        {visibleBands.map((band, idx) => {
           const x = xLeft(band.startCh)
           const width = (band.endCh - band.startCh + 1) * cellWidth
+          // 变更分隔线画在段起点，但首段（原数组第 0 段）左侧不是变更点。
+          // 用原索引判断：裁剪后 idx===0 的段在时间上可能并非首段。
+          const isFirstBand = track.bands.indexOf(band) === 0
           return (
             <g key={`band-${idx}`}>
               <rect x={x + 1} y={5} width={Math.max(0, width - 2)} height={trackHeight - 10} rx={3} fill={band.fill} />
-              {idx > 0 && (
+              {!isFirstBand && (
                 <line x1={x} y1={5} x2={x} y2={trackHeight - 5} stroke="rgba(115,115,115,0.35)" strokeWidth={2} />
               )}
             </g>
@@ -193,7 +217,7 @@ function SubtrackOverlay({ track, cellWidth, trackHeight }: SubtrackOverlayProps
         })()}
 
         {/* nodes：set 徽标 / text 圆点 / enum 变化点 */}
-        {track.nodes?.map((node, idx) => {
+        {visibleNodes.map((node, idx) => {
           const x = xCenter(node.ch)
           if (node.badge != null) {
             return (
@@ -212,8 +236,11 @@ function SubtrackOverlay({ track, cellWidth, trackHeight }: SubtrackOverlayProps
       </svg>
 
       {/* hover 热区（data-hc-* → MatrixHoverCard） */}
-      {track.bands.map((band, idx) => {
-        const prev = idx > 0 ? track.bands[idx - 1] : null
+      {visibleBands.map((band, idx) => {
+        // prev 必须在**原数组**里找：裁剪后的相邻项不等于时间上的前一段，
+        // 用 visibleBands[idx-1] 会显示错误的「变更前值」
+        const originalIdx = track.bands.indexOf(band)
+        const prev = originalIdx > 0 ? track.bands[originalIdx - 1] : null
         return (
           <div
             key={`hot-band-${idx}`}
@@ -229,7 +256,7 @@ function SubtrackOverlay({ track, cellWidth, trackHeight }: SubtrackOverlayProps
           </div>
         )
       })}
-      {track.nodes?.map((node, idx) => (
+      {visibleNodes.map((node, idx) => (
         <div
           key={`hot-node-${idx}`}
           className="group/hotnode absolute top-0 bottom-0 cursor-pointer"

@@ -72,7 +72,7 @@ function LocationNodeImpl({ data, selected }: NodeProps<LocationNodeType>): Reac
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 bg-cyan-500/10 rounded-t-lg">
         <MapPin className="size-3.5 text-cyan-500 dark:text-cyan-400 shrink-0" />
         <span className="text-xs font-medium text-cyan-600 dark:text-cyan-300">地点</span>
-        <span className="ml-auto rounded bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-600 dark:text-cyan-300">
+        <span className="ml-auto rounded bg-cyan-500/10 px-1.5 py-0.5 text-nano text-cyan-600 dark:text-cyan-300">
           {TYPE_LABELS[entity.type] ?? entity.type}
         </span>
       </div>
@@ -85,7 +85,7 @@ function LocationNodeImpl({ data, selected }: NodeProps<LocationNodeType>): Reac
             {entity.description}
           </div>
         )}
-        <div className="flex items-center justify-between text-[10px]">
+        <div className="flex items-center justify-between text-nano">
           <span className="text-muted-foreground">重要程度</span>
           <span className="text-subtle">{SIGNIFICANCE_LABELS[entity.significance] ?? entity.significance}</span>
         </div>
@@ -102,7 +102,7 @@ function LocationNodeImpl({ data, selected }: NodeProps<LocationNodeType>): Reac
             }}
           />
         </div>
-        <div className="flex items-center justify-between text-[10px] text-subtle">
+        <div className="flex items-center justify-between text-nano text-subtle">
           <span>状态: {STATUS_LABELS[entity.status] ?? entity.status}</span>
           {entity.firstChapter != null && <span className="tabular-nums">首现: 第 {entity.firstChapter} 章</span>}
         </div>

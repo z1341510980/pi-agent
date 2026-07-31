@@ -48,7 +48,7 @@ function ForeshadowNodeImpl({ data, selected }: NodeProps<ForeshadowNodeType>): 
         <Lightbulb className="size-3.5 text-amber-500 dark:text-amber-400 shrink-0" />
         <span className="text-xs font-medium text-amber-600 dark:text-amber-300">伏笔</span>
         {entity.category && (
-          <span className="ml-auto text-[10px] text-amber-700/80 dark:text-amber-200/80 truncate max-w-[80px]">
+          <span className="ml-auto text-nano text-amber-700/80 dark:text-amber-200/80 truncate max-w-[80px]">
             {entity.category}
           </span>
         )}
@@ -57,7 +57,7 @@ function ForeshadowNodeImpl({ data, selected }: NodeProps<ForeshadowNodeType>): 
         <div className="text-xs text-text line-clamp-2" title={entity.description}>
           {entity.description}
         </div>
-        <div className="flex items-center justify-between text-[10px]">
+        <div className="flex items-center justify-between text-nano">
           <span className={cn('rounded px-1.5 py-0.5', status.className)}>
             {status.label}
           </span>

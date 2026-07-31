@@ -66,6 +66,15 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
 import { cancelDebug } from '../utils/cancel-debug-log.js'
 import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
+import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './llm-error-policy.js'
+import { buildWriterRewritePlan } from './writer-rewrite-plan.js'
+import {
+  createChapterBudgetUsage,
+  evaluateChapterBudget,
+  recordLlmCall,
+  shouldPromptBudgetCheckpoint,
+  type ChapterBudgetUsage,
+} from './chapter-budget.js'
 export type { CreationOptions, CreationResult } from '../../../core/agent/chapter-finalizer.js'
 
 interface CreationRunContext {
@@ -74,6 +83,13 @@ interface CreationRunContext {
   directorTask?: NarrativeTask
   rhythmSuggestion?: RhythmSuggestion
   semiLayerSharedCache: { key: string; value: string } | null
+  /**
+   * 单章成本累计。
+   *
+   * 放在 run context 而非实例字段：并发创作多个章节时各自独立，
+   * 否则两章的调用数会互相污染。
+   */
+  budget: ChapterBudgetUsage
 }
 
 interface PostWriteGuardResult {
@@ -82,6 +98,42 @@ interface PostWriteGuardResult {
   details?: string
   /** 非致命偏差：不重写整章，交给 Reviewer 做语义和质量判断。 */
   advisory?: boolean
+}
+
+/**
+ * runAgent 的可选覆盖项。
+ *
+ * 提取为命名接口是因为它现在被 runAgent（重试外壳）与 runAgentOnce（单次尝试）
+ * 两处共用，内联字面量会写两遍。
+ */
+interface RunAgentOverrides {
+  /** 展示用的 agentType（如 writer 用于修订时展示为 reviser） */
+  displayAgentType?: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+  /** 展示用的 agentName */
+  displayAgentName?: string
+  /** 当前阶段（默认按 agentType 推断） */
+  phase?: CreationPhase
+  /** identity_only 用于盲审：不注入全局 system、章节 shared/suffix 和工具。 */
+  contextMode?: 'full' | 'identity_only'
+  /** 覆盖成员身份提示词，例如盲审文字编辑。 */
+  identityPrompt?: string
+  /** 是否消费流程中追加的用户指令；盲审应留给完整 Reviewer。 */
+  consumeUserMessages?: boolean
+  /**
+   * 动态注入的额外工具（不进入 NOVEL_AGENT_CONFIGS 的 tools 过滤白名单）。
+   * 用于 Reviser 调用 novel_apply_revision 工具：工具通过闭包引用 draft 对象，
+   * orchestrator 在 Reviser 结束后从 draft 读取最终正文，完全绕开正则解析。
+   */
+  extraTools?: ToolDefinition[]
+  /**
+   * 增强 agent_log.result 字段（不影响 runAgent 的返回值）。
+   *
+   * 用于工具化 Agent：raw 文本输出只是"我已应用 N 处修订"之类客套话，
+   * 真正的结果（如修订后正文）在工具闭包里。回调在 runAgent 写 agent_log 前
+   * 被调用，把工具应用结果追加到 logResult，让用户能在日志面板审查真实结果。
+   * 返回值会覆盖 logResult；runAgent 仍返回 raw result 给调用方。
+   */
+  augmentLogResult?: (rawResult: string) => string
 }
 
 export class NovelOrchestrator {
@@ -140,6 +192,7 @@ export class NovelOrchestrator {
       {
         arrangedEntities: options.arrangedEntities,
         semiLayerSharedCache: null,
+        budget: createChapterBudgetUsage(),
       },
       () => this.createChapterWithFlowInContext(projectId, chapterNumber, options, guardRewriteCount),
     )
@@ -417,22 +470,52 @@ export class NovelOrchestrator {
       let writerGuardRewriteReason = ''
       let writerGuardRewriteDetails = ''
       let finalPostWriteGuard: PostWriteGuardResult | undefined
+      // 用户在 Guard 检查点明确选择 Reviser 后，Reviewer 只负责生成修订依据，
+      // 不再弹出第二个会覆盖该选择的验收检查点。
+      let requestedRevisionReason = ''
       let bestWriterCandidate: { content: string; score: number } | undefined
       const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
 
       while (true) {
+        // 重写策略：上一稿可用时做定向修改，否则全量重写。
+        // 此前一律全量重写（只传 reason 字符串），每次都要重新吃掉 19k input，
+        // 而 ch9 重写 10 次 / ch10 重写 13 次 —— 那两章 token 爆炸的主要来源之一。
+        const rewritePlan = writerGuardRewriteReason
+          ? buildWriterRewritePlan({
+              chapterNumber,
+              reason: writerGuardRewriteReason,
+              details: writerGuardRewriteDetails,
+              previousDraft: writerResult,
+              attempt: writerGuardRewriteCount,
+              maxAttempts: NovelOrchestrator.MAX_GUARD_REWRITE,
+            })
+          : null
+
         this.emitProgress(options, 'writing', 'phase_change', {
-          message: writerGuardRewriteReason
-            ? `写作 Agent 正在沿用已批准的导演方案重写正文（${writerGuardRewriteCount}/${NovelOrchestrator.MAX_GUARD_REWRITE}）...`
+          message: rewritePlan
+            ? `写作 Agent 正在${rewritePlan.summary}...`
             : directorPushbackCount > 0
             ? '写作 Agent 正在根据调整后的叙事任务重新创作...'
             : '写作 Agent 正在创作章节正文...',
         })
+        if (rewritePlan) {
+          this.context.logger.info(
+            {
+              projectId,
+              chapterNumber,
+              strategy: rewritePlan.strategy,
+              reason: writerGuardRewriteReason,
+              previousDraftChars: writerResult.length,
+              attempt: writerGuardRewriteCount,
+            },
+            'Writer 重写策略已确定',
+          )
+        }
         // Director 的完整方案由 Writer 专属 suffix 注入，并带独立缓存断点；
         // 推回机制已在 role-writer 中定义，动态消息无需重复。
         writerResult = await this.runAgent('writer', projectId, chapterNumber,
-          writerGuardRewriteReason
-            ? `请沿用已批准的本章叙事任务，只重写第 ${chapterNumber} 章正文，不要重新规划或推回 Director。上一稿未通过确定性检查：${writerGuardRewriteReason}${writerGuardRewriteDetails ? `。具体问题：${writerGuardRewriteDetails}` : ''}。立即输出完整章节正文，不要输出核对过程、计划或重写说明。`
+          rewritePlan
+            ? rewritePlan.input
             : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
           options,
         )
@@ -591,6 +674,7 @@ export class NovelOrchestrator {
               '用户选择转 Reviser 局部修订，跳过 Writer 重写',
             )
             finalPostWriteGuard = postWriteGuard
+            requestedRevisionReason = `用户在写作守护检查点选择局部修订：${postWriteGuard.reason}${postWriteGuard.details ? `（${postWriteGuard.details}）` : ''}`
             break
           }
           // rewrite（默认行为）：按原因重写 Writer
@@ -674,8 +758,10 @@ export class NovelOrchestrator {
               { ...options, arrangedEntities: run.arrangedEntities },
             )
           }
-          // approve / revise（默认行为）：接受当前草稿进入 Reviewer
-          // 若用户选 revise，Reviewer 会把 Guard 问题作为审稿意见交 Reviser 局部修复
+          if (degradedDecision === 'revise') {
+            requestedRevisionReason = `用户在守护降级检查点选择局部修订：${finalPostWriteGuard.reason}${finalPostWriteGuard.details ? `（${finalPostWriteGuard.details}）` : ''}`
+          }
+          // approve 接受当前草稿；revise 已记录为必须执行的 Reviser 分支。
         } else {
           finalPostWriteGuard = postWriteGuard
         }
@@ -789,12 +875,29 @@ export class NovelOrchestrator {
       }
 
       // 检查点 2
-      this.emitProgress(options, 'checkpoint_review', 'phase_change', { message: '等待用户确认验收报告...' })
-      const reviewDecision = await options.onCheckpoint({
-        type: 'review',
-        phase: 'checkpoint_review',
-        data: reviewResult,
-      })
+      this.emitProgress(
+        options,
+        requestedRevisionReason ? 'revising' : 'checkpoint_review',
+        'phase_change',
+        {
+          message: requestedRevisionReason
+            ? 'Reviewer 已完成检查，按此前选择进入 Reviser...'
+            : '等待用户确认验收报告...',
+        },
+      )
+      const reviewDecision = requestedRevisionReason
+        ? 'revise'
+        : await options.onCheckpoint({
+            type: 'review',
+            phase: 'checkpoint_review',
+            data: reviewResult,
+          })
+
+      if (requestedRevisionReason) {
+        this.emitProgress(options, 'revising', 'phase_change', {
+          message: `${requestedRevisionReason}。Reviewer 已生成修订依据，直接进入 Reviser。`,
+        })
+      }
 
       let finalContent = reviewContent
 
@@ -803,17 +906,15 @@ export class NovelOrchestrator {
         return { status: 'cancelled' }
       }
 
-      if (
-        reviewDecision === 'revise'
-        || (reviewDecision === 'approve' && (autoReviseHits.length > 0 || severeProseIssues.length > 0))
-      ) {
+      if (reviewDecision === 'revise') {
         const autoReviseLabels = [
           ...autoReviseHits.map(hit => hit.name),
           ...severeProseIssues.map(issue => issue.message),
         ]
-        const autoReviseReason = autoReviseLabels.length > 0
-          ? `确定性质量门命中：${autoReviseLabels.join('、')}`
-          : ''
+        const autoReviseReason = [
+          requestedRevisionReason,
+          autoReviseLabels.length > 0 ? `确定性质量门命中：${autoReviseLabels.join('、')}` : '',
+        ].filter(Boolean).join('；')
         this.emitProgress(options, 'revising', 'phase_change', {
           message: autoReviseReason
             ? `${autoReviseReason}，修订 Agent 正在自动优化正文...`
@@ -1105,42 +1206,148 @@ export class NovelOrchestrator {
     return wordCount
   }
 
-  /** 运行单个 Agent（通过 Pi SDK Session，流式推送 delta） */
+  /**
+   * 运行单个 Agent，失败时按错误性质分类重试。
+   *
+   * 实测 Director 有 28% 的调用失败，且全部是可重试类（502/503/超时/流被掐断），
+   * 而此前外层没有任何重试 —— 一次网关抖动就废掉整个 create-flow。
+   *
+   * 三点设计约束：
+   * 1. **重试不占 `MAX_GUARD_REWRITE` 配额**。那个配额限制的是"正文质量不合格所以重写"，
+   *    与"网关 502"是两件事；混用会让几次网络抖动吃掉本该留给质量问题的重写次数。
+   *    这里的重试完全在 `runAgent` 内部完成，`createChapterWithFlow` 感知不到。
+   * 2. **账户类错误立即失败**并带明确文案。此前一律显示"LLM 调用失败"，
+   *    用户分不清是自己欠费还是服务挂了，只会反复重试烧掉更多时间。
+   * 3. **用户取消不重试**。`Request was aborted` 既来自 Provider 连接中断，
+   *    也来自用户点「停止创作」，仅凭 message 无法区分，所以显式传入 signal 状态。
+   */
   private async runAgent(
     agentType: NovelAgentType,
     projectId: string,
     chapterNumber: number,
     input: unknown,
     options: CreationOptions,
-    overrides?: {
-      /** 展示用的 agentType（如 writer 用于修订时展示为 reviser） */
-      displayAgentType?: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
-      /** 展示用的 agentName */
-      displayAgentName?: string
-      /** 当前阶段（默认按 agentType 推断） */
-      phase?: CreationPhase
-      /** identity_only 用于盲审：不注入全局 system、章节 shared/suffix 和工具。 */
-      contextMode?: 'full' | 'identity_only'
-      /** 覆盖成员身份提示词，例如盲审文字编辑。 */
-      identityPrompt?: string
-      /** 是否消费流程中追加的用户指令；盲审应留给完整 Reviewer。 */
-      consumeUserMessages?: boolean
-      /**
-       * 动态注入的额外工具（不进入 NOVEL_AGENT_CONFIGS 的 tools 过滤白名单）。
-       * 用于 Reviser 调用 novel_apply_revision 工具：工具通过闭包引用 draft 对象，
-       * orchestrator 在 Reviser 结束后从 draft 读取最终正文，完全绕开正则解析。
-       */
-      extraTools?: ToolDefinition[]
-      /**
-       * 增强 agent_log.result 字段（不影响 runAgent 的返回值）。
-       *
-       * 用于工具化 Agent：raw 文本输出只是"我已应用 N 处修订"之类客套话，
-       * 真正的结果（如修订后正文）在工具闭包里。回调在 runAgent 写 agent_log 前
-       * 被调用，把工具应用结果追加到 logResult，让用户能在日志面板审查真实结果。
-       * 返回值会覆盖 logResult；runAgent 仍返回 raw result 给调用方。
-       */
-      augmentLogResult?: (rawResult: string) => string
-    },
+    overrides?: RunAgentOverrides,
+  ): Promise<string> {
+    const displayName = overrides?.displayAgentName ?? NOVEL_AGENT_CONFIGS[agentType].name
+
+    // 单章成本闸门：在真正发起调用之前问，超限后不再白花一次
+    await this.enforceChapterBudget(projectId, chapterNumber, options)
+
+    let attempt = 0
+    for (;;) {
+      try {
+        return await this.runAgentOnce(agentType, projectId, chapterNumber, input, options, overrides)
+      } catch (err) {
+        const classification = classifyLlmFailure(err, options.signal?.aborted === true)
+
+        // 账户类 / 消息不成对：带上可操作的文案重新抛出，替代笼统的「LLM 调用失败」
+        if (classification.userMessage) {
+          this.context.logger.error(
+            { agentType, projectId, chapterNumber, kind: classification.kind },
+            'Agent 调用失败且不可重试',
+          )
+          throw new Error(classification.userMessage, { cause: err })
+        }
+
+        const delay = classification.retryable ? retryDelayMs(attempt + 1) : null
+        if (delay == null) throw err
+
+        attempt += 1
+        this.context.logger.warn(
+          {
+            agentType,
+            projectId,
+            chapterNumber,
+            attempt,
+            maxRetries: LLM_MAX_RETRIES,
+            delayMs: delay,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          'Agent 调用瞬时失败，退避后重试',
+        )
+        // 让用户看到"正在重试"而不是长时间静默，否则表现和卡死一样
+        this.emitProgress(options, 'error', 'phase_change', {
+          message: `${displayName} 调用失败（可重试），${Math.round(delay / 1000)} 秒后重试（${attempt}/${LLM_MAX_RETRIES}）...`,
+        })
+
+        await this.sleep(delay, options.signal)
+        // 等待期间用户点了停止：不再重试
+        if (options.signal?.aborted) throw err
+      }
+    }
+  }
+
+  /** 可被 signal 提前唤醒的等待 */
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }, ms)
+      const onAbort = (): void => {
+        clearTimeout(timer)
+        resolve()
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
+  /**
+   * 单章成本闸门：超出预算时弹检查点让用户决定，而不是硬停。
+   *
+   * 硬停会让已经花掉的 token 全部作废，比超支更糟 —— 实测第 10 章烧了 126 万
+   * 输入 token / 61 分钟，用户到那时候往往宁愿再花一点把这一章写完。
+   * 所以这里只做"告知 + 给出口"：
+   *   - approve / rewrite：继续，且本章不再重复提示
+   *   - revise：跳过后续可选环节尽快收尾（由调用方按 reason 处理）
+   *   - reject：抛出取消，走既有的 cancelled 路径
+   *
+   * 抛错而非返回值：runAgent 被十几处调用，返回一个"要不要继续"的标记
+   * 会让每个调用点都得处理一遍；用异常统一走 createChapterWithFlow 的 catch。
+   */
+  private async enforceChapterBudget(
+    projectId: string,
+    chapterNumber: number,
+    options: CreationOptions,
+  ): Promise<void> {
+    const run = this.runStorage.getStore()
+    // 没有 run context（如 finalizer 回退路径直接调 runAgent）时不设闸门
+    if (!run?.budget) return
+    if (!shouldPromptBudgetCheckpoint(run.budget)) return
+
+    const evaluation = evaluateChapterBudget(run.budget)
+    this.context.logger.warn(
+      { projectId, chapterNumber, dimension: evaluation.dimension, ...evaluation.snapshot },
+      '单章成本超出预算，弹检查点',
+    )
+
+    const decision = await options.onCheckpoint({
+      type: 'chapter_budget',
+      phase: 'directing',
+      data: {
+        chapterNumber,
+        dimension: evaluation.dimension,
+        message: evaluation.message,
+        ...evaluation.snapshot,
+      },
+    })
+
+    if (decision === 'reject') {
+      throw new Error('用户在成本闸门处停止了创作流程')
+    }
+    // 用户已知晓：本章后续调用不再提示，否则每次 Agent 调用前都弹同一个框
+    run.budget = { ...run.budget, acknowledged: true }
+  }
+
+  /** 运行单个 Agent（通过 Pi SDK Session，流式推送 delta）——单次尝试，不含重试 */
+  private async runAgentOnce(
+    agentType: NovelAgentType,
+    projectId: string,
+    chapterNumber: number,
+    input: unknown,
+    options: CreationOptions,
+    overrides?: RunAgentOverrides,
   ): Promise<string> {
     const run = this.requireRunContext()
     const config = NOVEL_AGENT_CONFIGS[agentType]
@@ -1382,6 +1589,9 @@ export class NovelOrchestrator {
         // 前缀顺序固定为 shared → identity → suffix：shared 跨 Agent 复用；
         // identity 在同 Agent 重试时继续命中；动态 suffix 放最后，避免其变化拖累身份缓存。
         prefixUserMessage: [sharedContext, agentIdentity, suffixContext].filter(Boolean),
+        // 同一章的 Director / Writer / Reviewer 共享 system + shared 前缀，
+        // 必须给同一个缓存路由键，否则各自被导到不同机器，前缀白建。
+        promptCacheScope: `novel:${projectId}:${chapterNumber}`,
         userMessage,
         tools: finalTools,
         signal: options?.signal,
@@ -1453,6 +1663,17 @@ export class NovelOrchestrator {
       // 若仍有破折号，Reviewer 的 cliche-scanner 会检测到并触发 revise。
 
       logResult = overrides?.augmentLogResult ? overrides.augmentLogResult(result) : result
+      options.onConversationMessage?.({
+        role: 'agent',
+        fromId: config.id,
+        fromName: displayAgentName,
+        content: result,
+        phase: phase === 'directing' ? 'pre_creation' : 'review',
+        metadata: {
+          agentType: displayAgentType,
+          workflowMessageType: 'agent',
+        },
+      })
       return result
     } catch (err) {
       logStatus = 'error'
@@ -1472,6 +1693,13 @@ export class NovelOrchestrator {
       const usageForLog = hasLlmUsage(capturedUsage)
         ? capturedUsage
         : this.readUsageFromLedgerWindow(startTime, Date.now(), agUiSession?.sessionId ?? agUiSession?.session.sessionId)
+
+      // 累计单章成本。放在 finally：失败的调用同样烧了 token 与时间，
+      // 只统计成功调用会让闸门低估实际开销（Director 实测 28% 失败率）。
+      const runForBudget = this.runStorage.getStore()
+      if (runForBudget?.budget) {
+        runForBudget.budget = recordLlmCall(runForBudget.budget, usageForLog?.inputTokens ?? 0)
+      }
 
       // 持久化 Agent 调用日志（fire-and-forget，失败不影响主流程）
       try {

@@ -1,3 +1,4 @@
+import { PROSE_SHAPE_LIMITS } from './quality-policy.js'
 export interface ProseQualityMetrics {
   characterCount: number
   paragraphCount: number
@@ -46,8 +47,21 @@ function splitParagraphs(content: string): string[] {
     .filter(Boolean)
 }
 
+/**
+ * 统计段落里的句子数。
+ *
+ * ⚠️ 旧实现是 `/[。！？!?]+(?=[”"」』）)]|\s|$)/g`：句末标点必须紧跟收尾引号、空白或段末
+ * 才算一句。中文段落里句子是连写的（"他推开门。门外站着一个人。"），第一个句号后面
+ * 直接是汉字，于是**段内所有非末尾的句子都数不到**，任何段落都只算 1 句。
+ *
+ * 后果：singleSentenceParagraphs ≈ paragraphCount，单句段占比恒在 80%-99%，
+ * `fragmented_paragraphs` 在真实项目的 11 章里 **11 章全部命中 error**，
+ * 每章都强制走一次 Reviser —— 一个永远为真的检查不携带任何信息。
+ *
+ * 现在改为匹配"句末标点 + 可选的收尾引号"，段内连写的句子也能数到。
+ */
 function countSentences(paragraph: string): number {
-  const count = countMatches(paragraph, /[。！？!?]+(?=[”"」』）)]|\s|$)/g)
+  const count = countMatches(paragraph, /[。！？!?]+["”』」）)]*/g)
   return Math.max(1, count)
 }
 
@@ -100,17 +114,30 @@ export function evaluateProseQuality(content: string): ProseQualityReport {
   const shortRatio = paragraphs.length > 0 ? shortParagraphs / paragraphs.length : 0
   const perThousand = Math.max(1, characterCount / 1000)
 
-  if (paragraphs.length >= 20 && (singleRatio >= 0.55 || maxConsecutiveSingleSentenceParagraphs >= 6)) {
+  // 阈值统一来自 quality-policy 的 PROSE_SHAPE_LIMITS：
+  // prompt 侧（role-writer.md）与这里的检查必须用同一组数字。
+  // 历史上 prompt 写"连续三段以上"、检查却是"连续 6 段"，Writer 被多约束了一截，
+  // 而那个更严的要求没有任何一方校验（S5 登记的冲突之一）。
+  if (
+    paragraphs.length >= PROSE_SHAPE_LIMITS.minParagraphsForShapeCheck
+    && (
+      singleRatio >= PROSE_SHAPE_LIMITS.singleSentenceRatioWarning
+      || maxConsecutiveSingleSentenceParagraphs > PROSE_SHAPE_LIMITS.maxConsecutiveSingleSentenceParagraphs
+    )
+  ) {
     issues.push({
       code: 'fragmented_paragraphs',
-      severity: singleRatio >= 0.7 ? 'error' : 'warning',
+      severity: singleRatio >= PROSE_SHAPE_LIMITS.singleSentenceRatioError ? 'error' : 'warning',
       message: `单句段 ${singleSentenceParagraphs}/${paragraphs.length}，最长连续 ${maxConsecutiveSingleSentenceParagraphs} 段，正文可能呈现提纲式碎片节奏`,
     })
   }
-  if (paragraphs.length >= 20 && shortRatio >= 0.3) {
+  if (
+    paragraphs.length >= PROSE_SHAPE_LIMITS.minParagraphsForShapeCheck
+    && shortRatio >= PROSE_SHAPE_LIMITS.shortParagraphRatioWarning
+  ) {
     issues.push({
       code: 'short_paragraph_density',
-      severity: shortRatio >= 0.45 ? 'error' : 'warning',
+      severity: shortRatio >= PROSE_SHAPE_LIMITS.shortParagraphRatioError ? 'error' : 'warning',
       message: `18 字以内短段 ${shortParagraphs}/${paragraphs.length}，需检查是否用空行制造虚假节奏`,
     })
   }

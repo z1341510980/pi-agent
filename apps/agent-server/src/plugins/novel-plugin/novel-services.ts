@@ -33,6 +33,7 @@ import { NovelEntityGenerator } from './core/novel-entity-generator.js'
 import { NovelMemoryGenerator } from './core/novel-memory-generator.js'
 import { NovelSimilarityScanner } from './core/novel-similarity-scanner.js'
 import { NovelMemoryStore } from './core/novel-memory-store.js'
+import { createChapterProjectionRecorder } from './core/chapter-projection-recorder.js'
 import { NovelDiscussionRunner } from './core/novel-discussion-runner.js'
 import { ChapterChatRunner } from './core/chapter-chat-runner.js'
 import { ChapterChatStore } from './core/chapter-chat-store.js'
@@ -115,6 +116,34 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 2. 创建 NovelMemoryStore（依赖 db，长期记忆分层存储）
   const memoryStore = new NovelMemoryStore(db)
 
+  // 2.5 把"实体章节投影变更"收口到事件账本。
+  //     S4-1 对账实测：账本原本完全没有势力/地点的记录，角色/线索/冲突/伏笔也各有缺失，
+  //     来源是手工编辑、Memory Agent 工具、矩阵拖拽这些不经过编排器的写入路径。
+  //     观察者挂在 NovelStore 门面上，是覆盖所有路径的唯一收口点；记录器本身幂等。
+  store.setChapterProjectionObserver(createChapterProjectionRecorder(memoryStore, {
+    onError: (err, projectId, change) => {
+      context.logger.warn(
+        { err, projectId, entityType: change.entityType, entityId: change.entityId },
+        '章节投影账本记录失败（实体写入已成功，可由对账脚本补齐）',
+      )
+    },
+  }))
+
+  // 2.6 删除实体时同步清理账本里的多态引用。
+  //     story_event_entities.entity_id / memory_events.subject_id 没有外键，
+  //     不清理会留下悬空引用（S4-1 在真实库里实测到 11 条）。
+  store.setEntityDeletedObserver((projectId, event) => {
+    try {
+      memoryStore.deleteLedgerReferencesByEntity(projectId, event.entityId)
+      memoryStore.pruneEmptyStoryEvents(projectId)
+    } catch (err) {
+      context.logger.warn(
+        { err, projectId, entityType: event.entityType, entityId: event.entityId },
+        '删除实体后清理账本引用失败（可由 cleanup 脚本补做）',
+      )
+    }
+  })
+
   // 3. 创建 PromptManager（依赖 db + cwd）
   const promptManager = new PromptManager(db, cwd)
 
@@ -127,12 +156,13 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const consistencyAuditor = new ConsistencyAuditor(store)
 
   // 4. 创建 NovelPromptBuilder（依赖 PromptManager + NovelStore + NovelMemoryStore）
-  //    注入 memoryStore 让 buildChapterContext 在 SEMI 层追加"近期因果链"摘要，
-  //    Director/Writer/Reviewer 因此能感知最近章节关键事件的因果联系。
-  //    注入 relationshipGraph + consistencyAuditor（C3 prompt 增强）：
-  //    - relationshipGraph 让 formatEdges 拿到派生边（冲突→角色、势力→盟友等 7 类）
-  //    - consistencyAuditor 让 formatUrgentForeshadows 去重本地计算，并新增"跨章一致性"section
-  const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore, relationshipGraph, consistencyAuditor)
+  //    注入 memoryStore 让 buildChapterContextShared 在 SEMI 层注入"账本承接"，
+  //    Director/Writer/Reviewer 因此能感知章前状态与本章计划。
+  //    注入 relationshipGraph 让 formatEdges 拿到派生边（冲突→角色、势力→盟友等 7 类）。
+  //    consistencyAuditor 不再注入 prompt 层：它唯一的两个消费者（formatUrgentForeshadows /
+  //    formatConsistencyAudit）从未被调用，已随死代码一并删除。审计结果仍由
+  //    GET /consistency-report 路由直接对外提供。
+  const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore, relationshipGraph)
 
   // 5. 创建 NovelEngine（依赖 NovelStore）
   //    原 NovelSessionFactory 已删除（薄封装空壳）：
@@ -140,9 +170,11 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //    - novelTools 通过 createNovelTools(store) 创建后直接注入 orchestrator
   const engine = new NovelEngine(store)
 
-  // 6. 创建 Pi Session 工具集（依赖 NovelStore）
+  // 6. 创建 Pi Session 工具集（依赖 NovelStore + NovelPromptBuilder）
   //    提前到 orchestrator 之前：orchestrator 需要它替代原 sessionFactory.getNovelTools()
-  const tools = createNovelTools(store, memoryStore)
+  //    注入 promptBuilder 作为 boundaryProvider：让 novel_query_state / novel_ask_story
+  //    工具与 prompt-builder 注入路径共用同一章前语义（P0 双事实源修复）
+  const tools = createNovelTools(store, memoryStore, promptBuilder)
 
   // 7. 创建 NovelOrchestrator（依赖 NovelStore + NovelMemoryStore + novelTools + NovelPromptBuilder + NovelEngine + PluginContext + NovelMemoryGenerator）
   //    PluginContext.createSession 用于 runAgent 调用 LLM
@@ -150,7 +182,9 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //    温度合并通过 NOVEL_AGENT_CONFIGS 工具函数 + context.subagentManager 直接完成（删除原 NovelAgentConfigStore 空壳）
   //    memoryGenerator 用于 Memory 阶段的结构化 LLM 调用（替代原工具循环模式）
   // 7.5 先创建 NovelMemoryGenerator（orchestrator 依赖它）
-  const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine)
+  //     memoryStore 注入用于账本承接：Memory 需要看到「章前状态 + 本章计划变更」
+  //     才能做差分，而不是每章从零重新判断实体现在算什么状态。
+  const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine, memoryStore)
   const orchestrator = new NovelOrchestrator(store, memoryStore, tools, promptBuilder, engine, context, memoryGenerator)
 
   // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/promptBuilder/engine/context + memoryGenerator）

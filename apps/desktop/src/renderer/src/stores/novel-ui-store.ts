@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { NovelEdgeType } from '@/api/novel-client'
+import { readLegacyViewMode } from './novel-legacy-view-mode'
 
 // ── 节点类型 ──
 
@@ -25,9 +26,6 @@ export interface NovelUiState {
   // ── 选中节点 ──
   selectedNodeId: string | null
   selectedNodeType: NovelNodeType | null
-
-  // ── 视图模式（矩阵/画布）──
-  viewMode: 'matrix' | 'canvas'
 
   // ── 画布布局模式 ──
   // grouped：按实体类型分区（角色左、势力右、伏笔/地点/世界要素横向）
@@ -78,7 +76,6 @@ export interface NovelUiState {
   error: string | null
 
   // ── Actions ──
-  setViewMode: (mode: 'matrix' | 'canvas') => void
   setCanvasLayoutMode: (mode: 'grouped' | 'force') => void
   setCanvasEdgeType: (edgeType: NovelEdgeType) => void
   setPlayheadChapter: (chapter: number) => void
@@ -131,8 +128,6 @@ export const useNovelUiStore = create<NovelUiState>()(
       // ── 矩阵左侧 sticky 列收缩状态（持久化）──
       matrixSidebarCollapsed: false,
 
-      viewMode: 'matrix',
-
       canvasLayoutMode: 'grouped',
 
       canvasEdgeType: 'rivalry',
@@ -155,7 +150,6 @@ export const useNovelUiStore = create<NovelUiState>()(
       error: null,
 
       // ── Actions ──
-      setViewMode: (mode) => set({ viewMode: mode }),
       setCanvasLayoutMode: (mode) => set({ canvasLayoutMode: mode }),
       setCanvasEdgeType: (edgeType) => set({ canvasEdgeType: edgeType }),
       setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
@@ -243,9 +237,22 @@ export const useNovelUiStore = create<NovelUiState>()(
     {
       name: 'wenlang-agent-novel-ui',
       storage: createJSONStorage(() => localStorage),
-      // 只持久化需要跨会话保留的 UI 字段：视图模式、画布连线类型、折叠分组、卷展开状态
+      // version 0 → 1：viewMode（矩阵/画布）已与 layout store 的 mainMode 合并为
+      // 单一 layoutMode，迁到 novel-workspace-layout-store。这里只负责把废弃 key
+      // 从 localStorage 里删掉 —— 否则 merge 的 `...p` 会把它重新灌回运行时 state。
+      // 真正的取值换算在 layout store 的 v3 migrate 里（它需要读这里的旧值）。
+      version: 1,
+      migrate: (persisted, version) => {
+        if (version >= 1 || persisted == null || typeof persisted !== 'object') return persisted
+        const next = { ...(persisted as Record<string, unknown>) }
+        // 必须在 delete 之前读一次：layout store 的 v3 migrate 要用这个旧值，
+        // 而两个 store 的 rehydrate 顺序由模块导入顺序决定，不可依赖。
+        readLegacyViewMode()
+        delete next.viewMode
+        return next
+      },
+      // 只持久化需要跨会话保留的 UI 字段：画布布局/连线类型、折叠分组、卷展开状态
       partialize: (state) => ({
-        viewMode: state.viewMode,
         canvasLayoutMode: state.canvasLayoutMode,
         canvasEdgeType: state.canvasEdgeType,
         collapsedGroups: state.collapsedGroups,
