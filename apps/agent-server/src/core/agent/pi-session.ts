@@ -32,6 +32,18 @@ import { createTeamExecuteTool } from './team-tool.js'
 const agentConfigStorage = new AsyncLocalStorage<AgentConfig>()
 
 /**
+ * pi-coding-agent 的 7 个内置工具。
+ *
+ * 插件会话（小说创作）不需要读写文件或跑 shell —— 它只需要把提示词变成文本。
+ * 这些工具的 schema 与使用说明会无条件进入每次请求，实测占 messages 的一半以上。
+ *
+ * 名单来自 `@earendil-works/pi-coding-agent/dist/core/tools/`：
+ * bash / edit / find / grep / ls / read / write。
+ * SDK 升级新增内置工具时这里需要同步 —— 漏掉只会少省一点，不会出错。
+ */
+const CODING_AGENT_BUILTIN_TOOLS = ['bash', 'edit', 'find', 'grep', 'ls', 'read', 'write']
+
+/**
  * 在指定 AgentConfig 上下文中执行函数。
  * 用于 subagent dispatchFn，使 createPiSession 能读取到 Agent 的身份/人格模板。
  */
@@ -82,16 +94,55 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     return deps.providerConfigStore.getApiKey(provider)
   })
 
+  /**
+   * 插件会话（小说创作等）与 chat 会话的能力需求完全不同。
+   *
+   * `plugin:*` 线程是「让 LLM 按提示词产出文本」的一次性调用，不需要编码 agent 的
+   * 那套底座：内置文件/shell 工具、skills 清单、项目上下文文件、扩展、提示词模板。
+   * 而 chat 线程恰恰要靠这些干活。
+   *
+   * 之前两者共用同一份 ResourceLoader 与工具集，代价实测出来了：小说的每一次
+   * LLM 往返都固定附带约 1.3–1.7 万字符与自身提示词无关的内容，占 messages 的
+   * 63%（第 3 章 11 次往返 ≈ 16 万字符白付）。这些内容对写小说不产生任何作用。
+   *
+   * 判断依据沿用文件下方已有的同一条：threadId 前缀。
+   */
+  const isPluginThread = deps.threadId.startsWith('plugin:')
+
   // 2. 资源加载器
   const resourceLoader = new DefaultResourceLoader({
     cwd: deps.config.cwd,
     agentDir: deps.config.dataDir,
     systemPromptOverride: () => buildSystemPrompt(deps),
+    // 插件会话不加载这些资源：它们只会进系统提示词，不会被用到
+    ...(isPluginThread
+      ? {
+          noSkills: true,
+          noContextFiles: true,
+          noExtensions: true,
+          noPromptTemplates: true,
+        }
+      : {}),
   })
   await resourceLoader.reload()
 
   // 3. Gate 集成：获取被禁止的工具列表
   const gateDeniedTools = deps.gate.getDeniedTools()
+
+  /**
+   * 插件会话额外排除 pi-coding-agent 的 7 个内置工具。
+   *
+   * 排除的不只是 schema，还有 SDK 为它们生成的使用说明 —— 后者是上面那 1.3–1.7 万
+   * 字符里的主要部分（实测：挂 4 个工具的 Agent 每往返 1.35 万字符，挂 6 个的 1.73 万，
+   * 正相关）。
+   *
+   * ⚠️ 前提：插件侧的 Agent 只用 `novel_*` 业务工具。这一点在 novel-agents.ts 的
+   * 工具白名单里成立（5 个 Agent 挂的全是 novel_*）。若将来有插件 Agent 需要读文件，
+   * 应该给它一个业务工具，而不是把整套编码工具放回来。
+   */
+  const excludeTools = isPluginThread
+    ? [...gateDeniedTools, ...CODING_AGENT_BUILTIN_TOOLS]
+    : gateDeniedTools
 
   // 4. 解析默认模型：完全从 ProviderConfigStore（前端用户配置）获取
   //    不再从环境变量读取 LLM_PROVIDER/LLM_MODEL
@@ -205,8 +256,8 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   //    - plugin:* 线程每次创建独立 SessionManager，避免不同 Agent 调用共享同一 Pi SDK 会话树，
   //      从而防止历史消息（含 tool 消息）跨 Agent 泄漏，导致网关报 400。
   //    - 其他线程（chat）复用共享 sessionManager，保持多轮对话状态。
-  const isPluginSession = deps.threadId.startsWith('plugin:')
-  const sessionManager = isPluginSession
+  //    复用函数开头算好的 isPluginThread，避免同一判断写两遍后被改歪。
+  const sessionManager = isPluginThread
     ? SessionManager.create(
         deps.config.cwd,
         typeof deps.sessionManager.getSessionDir === 'function'
@@ -226,7 +277,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     cwd: deps.config.cwd,
     model: defaultModel,
     ...(customTools.length > 0 ? { customTools } : {}),
-    ...(gateDeniedTools.length > 0 ? { excludeTools: gateDeniedTools } : {}),
+    ...(excludeTools.length > 0 ? { excludeTools } : {}),
   })
 
   // 7. 注入 beforeToolCall 钩子：Gate 权限检查 + 用户确认

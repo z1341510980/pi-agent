@@ -270,8 +270,11 @@ export class NovelDiscussionRunner {
             userMessage: invocation.userMessage,
             taskInput: invocation.userMessage,
             userInstructions: [],
-            tools: [],
-            toolNames: [],
+            // 群聊侧原来把这两个字段硬编码成空数组，导致日志里看不出
+            // Reviser 到底有没有拿到 novel_apply_revision。现在从引擎透传真实工具名。
+            // `?? []` 兜底：onMemberInvocation 是对外回调，旧调用方可能不带这个字段。
+            tools: (invocation.toolNames ?? []).map(name => ({ name, description: '' })),
+            toolNames: invocation.toolNames ?? [],
             result: invocation.result,
             resultLength: invocation.result.length,
             durationMs: invocation.durationMs,
@@ -284,6 +287,14 @@ export class NovelDiscussionRunner {
             cacheWriteTokens: invocation.cacheWriteTokens,
             llmProvider: invocation.llmProvider || invocation.member.modelId?.provider || '',
             llmModel: invocation.llmModel || invocation.member.modelId?.modelId || '',
+            payloadMessagesChars: invocation.payloadMessagesChars ?? 0,
+            payloadToolsChars: invocation.payloadToolsChars ?? 0,
+            payloadToolCount: invocation.payloadToolCount ?? 0,
+            payloadTotalChars: invocation.payloadTotalChars ?? 0,
+            llmRoundTrips: invocation.llmRoundTrips ?? 0,
+            // 群聊尚未接入 ask_story 灰度策略；按实际透传工具名记录兼容默认。
+            askStoryPolicy: 'legacy',
+            askStoryEnabled: (invocation.toolNames ?? []).includes('novel_ask_story'),
           })
         },
       }

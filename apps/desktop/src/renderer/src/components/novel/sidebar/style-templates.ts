@@ -21,8 +21,8 @@ export const STYLE_TEMPLATES: StyleTemplate[] = [
     emoji: '🔥',
     platform: 'fanqie',
     rhythmModelId: 'webnovel',
-    targetWords: '2000000',
-    genre: '玄幻',
+    targetWords: '3000',
+    genre: '玄幻'
   },
   {
     id: 'qidian',
@@ -31,8 +31,8 @@ export const STYLE_TEMPLATES: StyleTemplate[] = [
     emoji: '📚',
     platform: 'qidian',
     rhythmModelId: 'default',
-    targetWords: '1000000',
-    genre: '玄幻',
+    targetWords: '3500',
+    genre: '玄幻'
   },
   {
     id: 'zhihu',
@@ -41,8 +41,8 @@ export const STYLE_TEMPLATES: StyleTemplate[] = [
     emoji: '✍️',
     platform: 'zhihu_yanyan',
     rhythmModelId: 'default',
-    targetWords: '50000',
-    genre: '悬疑',
+    targetWords: '2500',
+    genre: '悬疑'
   },
   {
     id: 'custom',
@@ -51,7 +51,7 @@ export const STYLE_TEMPLATES: StyleTemplate[] = [
     emoji: '⚙️',
     platform: null,
     rhythmModelId: 'default',
-    targetWords: '300000',
-    genre: '',
-  },
+    targetWords: '3000',
+    genre: ''
+  }
 ]

@@ -26,7 +26,7 @@ import type { NovelMarker } from '../core/types.js'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
-import type { CheckpointType } from '@repo/shared/novel'
+import type { CheckpointDecision, CheckpointType } from '@repo/shared/novel'
 import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, type NovelAgentType } from '../core/novel-agents.js'
 import { persistDiscussionHistory } from '../core/discussion-history.js'
 import type { DiscussionResult } from '../../../core/agent/discussion-types.js'
@@ -224,6 +224,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
                   checkpointId: pending?.id,
                   checkpointType: checkpoint.type,
                   checkpointData: checkpoint.data,
+                  checkpointOptions: checkpoint.options,
                 },
               })
               emitter.checkpoint(persistedCheckpoint)
@@ -292,6 +293,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
         return
       }
+      const pendingCheckpoint = (pending.args as { checkpoint?: { options?: CheckpointDecision[] } }).checkpoint
+      if (!pendingCheckpoint?.options?.includes(decision as CheckpointDecision)) {
+        reply.code(400).send({ ok: false, error: '该检查点不支持此决策，可能已过期' })
+        return
+      }
       // 先写入用户消息，再唤醒等待中的 create-flow，避免恢复后的 Agent 抢先读取空消息。
       if (isWorkflow && userMessages && userMessages.length > 0) {
         const chapterText = pending.threadId.slice(`novel-checkpoint-${projectId}-`.length)
@@ -309,19 +315,14 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           workflowRunId?: string
         }
         if (Number.isInteger(chapterNumber) && chapterNumber > 0) {
-          const decisionLabels: Record<string, string> = {
-            approve: '同意',
-            revise: '修订',
-            rewrite: '重写',
-            reject: '取消',
-          }
+          const checkpointType = checkpointArgs.checkpoint?.type
           services.chapterChatStore.add({
             projectId,
             chapterNumber,
             role: 'system',
             fromId: 'system',
             fromName: '检查点决策',
-            content: `用户选择：${decisionLabels[decision] ?? decision}`,
+            content: `用户选择：${describeDecision(checkpointType, decision)}`,
             phase: 'checkpoint',
             metadata: {
               flowMode: 'workflow',
@@ -422,16 +423,20 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               // 通过 ConfirmationManager 发起决策请求（与 create-flow 的 onCheckpoint 一致）
               // timeoutMs=0 表示无超时：用户可能需要长时间阅读检查点内容并思考
               const toolCallId = randomUUID()
+              const checkpointWithOptions = {
+                ...checkpoint,
+                options: checkpoint.options ?? ['approve', 'revise', 'reject'],
+              }
               const decisionPromise = services.confirmationManager.requestDecision({
                 threadId: `novel-discussion-${projectId}-${chapterNumber}`,
                 toolCallId,
                 toolName: `discussion_${checkpoint.type}`,
-                args: { checkpoint } as Record<string, unknown>,
+                args: { checkpoint: checkpointWithOptions } as Record<string, unknown>,
                 reason: `等待用户确认群聊检查点：${checkpoint.question}`,
               }, 0)
               // requestDecision 内部已同步把 pending 加入 Map，listPending 立即可见
               const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
-              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+              emitter.checkpoint({ ...checkpointWithOptions, checkpointId: pending?.id })
               return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
             },
             onProgress: (event) => emitter.progress(event),
@@ -544,15 +549,19 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             emit: emitter.emit,
             onCheckpoint: async (checkpoint) => {
               const toolCallId = randomUUID()
+              const checkpointWithOptions = {
+                ...checkpoint,
+                options: checkpoint.options ?? ['approve', 'revise', 'reject'],
+              }
               const decisionPromise = services.confirmationManager.requestDecision({
                 threadId: `novel-discussion-${projectId}-${chapterNumber}`,
                 toolCallId,
                 toolName: `discussion_${checkpoint.type}`,
-                args: { checkpoint } as Record<string, unknown>,
+                args: { checkpoint: checkpointWithOptions } as Record<string, unknown>,
                 reason: `等待用户确认群聊断点续跑检查点：${checkpoint.question}`,
               }, 0)
               const pending = services.confirmationManager.listPending().find(request => request.toolCallId === toolCallId)
-              emitter.checkpoint({ ...checkpoint, checkpointId: pending?.id })
+              emitter.checkpoint({ ...checkpointWithOptions, checkpointId: pending?.id })
               return decisionPromise as Promise<'approve' | 'reject' | 'revise' | string>
             },
             onProgress: event => emitter.progress(event),
@@ -631,6 +640,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const pending = services.confirmationManager.listPending().find((r) => r.id === checkpointId)
       if (!pending || !pending.threadId.startsWith(`novel-discussion-${projectId}-`)) {
         reply.code(404).send({ ok: false, error: '群聊检查点不存在或已处理' })
+        return
+      }
+      const allowedDecisions = (pending.args as { checkpoint?: { options?: string[] } }).checkpoint?.options
+      if (!allowedDecisions?.includes(decision)) {
+        reply.code(400).send({ ok: false, error: '该群聊检查点不支持此决策，可能已过期' })
         return
       }
       // 委托 ConfirmationManager 响应决策（resolve 对应 pending Promise）
@@ -1264,4 +1278,62 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   })
 
   return routes
+}
+
+/**
+ * 决策记录的中文措辞。
+ *
+ * **必须按检查点类型分别映射。** 同一个 action 在不同检查点是不同的事：
+ * 在 `narrative_task` 上 `approve` 是"确认叙事任务"，在 `review` 上 `approve` 是
+ * "接受这一版正文、跳过修订"。用一张全局 action→文案表会把前者记成后者，
+ * 事后翻记录直接误判用户当时的意图。
+ *
+ * 措辞与前端按钮保持一致（见 novel-conversation-panel 的各 *_OPTIONS）：
+ * 按钮说的是后果，记录也必须说后果。
+ */
+function describeDecision(checkpointType: CheckpointType | undefined, decision: string): string {
+  const byType: Partial<Record<CheckpointType, Record<string, string>>> = {
+    narrative_task: {
+      approve: '确认叙事任务',
+      revise: '按意见重新规划',
+      rewrite: '按意见重新规划',
+      reject: '取消创作',
+    },
+    review: {
+      approve: '接受这一版（跳过修订）',
+      revise: '交给 Reviser 修订',
+      rewrite: '退回 Writer 重写',
+      reject: '取消',
+    },
+    post_write_guard: {
+      approve: '接受草稿（忽略守护警告）',
+      revise: '转 Reviser 局部修正',
+      rewrite: '退回 Writer 按守护意见重写',
+      reject: '取消',
+    },
+    writer_pushback: {
+      approve: '同意 Writer 推回，重跑 Director',
+      revise: '忽略推回，按原任务继续',
+      rewrite: '忽略推回，按原任务继续',
+      reject: '取消',
+    },
+    guard_degraded: {
+      approve: '接受当前草稿',
+      revise: '转 Reviser 尝试局部修正',
+      rewrite: '从头重写（计入本章上限）',
+      reject: '取消',
+    },
+    chapter_budget: {
+      approve: '知晓成本，继续创作',
+      reject: '停止创作',
+    },
+  }
+  const fallback: Record<string, string> = {
+    approve: '同意',
+    revise: '修订',
+    rewrite: '重写',
+    reject: '取消',
+  }
+  const table = (checkpointType && byType[checkpointType]) || fallback
+  return table[decision] ?? fallback[decision] ?? decision
 }

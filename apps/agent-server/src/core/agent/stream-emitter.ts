@@ -27,6 +27,38 @@ function safeSerializeForRawEvent(value: unknown): unknown {
   }
 }
 
+/** 单个字符串字段的转发上限：大改动的 patch 能有几百 KB，塞进 SSE 会拖垮渲染 */
+const MAX_DETAIL_STRING_CHARS = 64_000
+
+/**
+ * 裁剪工具结果 details 里的超长字符串。
+ *
+ * 返回 undefined 表示没有值得转发的内容（多数工具的 details 是 undefined）。
+ * 被裁剪的字段会同时带一个 `<field>Truncated: true` 标记，让前端能显式说明
+ * "这里被截断了"，而不是让用户以为 diff 就这么短。
+ */
+function truncateDetails(details: unknown): unknown {
+  if (details == null) return undefined
+  if (typeof details === 'string') {
+    return details.length > MAX_DETAIL_STRING_CHARS
+      ? details.slice(0, MAX_DETAIL_STRING_CHARS)
+      : details
+  }
+  if (typeof details !== 'object') return details
+
+  const source = details as Record<string, unknown>
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === 'string' && value.length > MAX_DETAIL_STRING_CHARS) {
+      result[key] = value.slice(0, MAX_DETAIL_STRING_CHARS)
+      result[`${key}Truncated`] = true
+    } else {
+      result[key] = value
+    }
+  }
+  return result
+}
+
 /**
  * StreamEmitter：Pi SDK 事件 → AG-UI 事件映射
  *
@@ -71,7 +103,16 @@ export class StreamEmitter {
   }
 
   finishTextMessage(): void {
-    if (!this.startedTextMessageId) return
+    // agent_start 可能先于任何文本到达（例如 Reviser 只调用工具）。
+    // 确保对应的占位气泡也能收到结束事件，不会永久停留在 streaming 状态。
+    if (!this.startedTextMessageId) {
+      this.startedTextMessageId = this.assistantResponseMessageId
+      this.emit({
+        type: EventType.TEXT_MESSAGE_START,
+        messageId: this.startedTextMessageId,
+        role: 'assistant',
+      } as TextMessageStartEvent)
+    }
     this.emit({
       type: EventType.TEXT_MESSAGE_END,
       messageId: this.startedTextMessageId,
@@ -108,6 +149,26 @@ export class StreamEmitter {
         stepName: `pi:${toolName}`,
       } as StepStartedEvent)
 
+      /**
+       * 真实 toolCallId 的下发。
+       *
+       * `STEP_STARTED` 的 AG-UI 形状里只有 `stepName`，装不下 id，于是前端只能
+       * 自造一个 uuid，再靠「同名 + running」把 STEP_FINISHED 回配上去 ——
+       * **同名工具并发调用时必然错配**（两个 read 同时跑，先结束的那个会被记到
+       * 后开始的那个身上）。这里额外发一条带真实 id 的 CUSTOM 事件，
+       * 前端优先用它建分段。
+       */
+      this.emit({
+        type: EventType.CUSTOM,
+        name: 'PI_TOOL_CALL_START',
+        value: {
+          toolCallId: event.toolCallId,
+          toolName,
+          args: safeSerializeForRawEvent(event.args),
+          startedAt,
+        },
+      } as CustomEvent)
+
       this.emit({
         type: EventType.ACTIVITY_SNAPSHOT,
         messageId: activityMessageId,
@@ -136,6 +197,18 @@ export class StreamEmitter {
         stepName: `pi:${toolName}`,
       } as StepFinishedEvent)
 
+      // 与 PI_TOOL_CALL_START 配对，让前端能按真实 id 精确收尾
+      this.emit({
+        type: EventType.CUSTOM,
+        name: 'PI_TOOL_CALL_END',
+        value: {
+          toolCallId: event.toolCallId,
+          toolName,
+          isError: event.isError === true,
+          endedAt,
+        },
+      } as CustomEvent)
+
       if (activityMessageId) {
         this.emit({
           type: EventType.ACTIVITY_DELTA,
@@ -159,6 +232,37 @@ export class StreamEmitter {
           toolName: event.toolName,
           args: safeSerializeForRawEvent(event.args),
           partialResult: safeSerializeForRawEvent(event.partialResult),
+        },
+      } as CustomEvent)
+      return
+    }
+
+    /**
+     * 工具结果的**结构化 details**。
+     *
+     * `tool_execution_update` 只带 `args` / `partialResult`（人可读文本），
+     * 而 edit/write 工具真正有价值的东西在 `details` 里：`{ diff, patch,
+     * firstChangedLine }`（见 pi-coding-agent 的 EditToolDetails）。
+     * 不转发的话前端永远拿不到 diff，只能显示一段纯文本结果 —— 对一个
+     * 会改代码的 Agent 来说，「改了什么」比「改成功了」重要得多。
+     *
+     * 只转发 details，不转发 content：content 的文本已经通过 partialResult
+     * 到过前端，重复发一遍纯属浪费带宽。
+     */
+    if (eventType === 'tool_result') {
+      // 先判空再序列化：safeSerializeForRawEvent(undefined) 会走进 catch 分支
+      // 返回 `{ type: 'undefined', fallback: 'undefined' }`，那就不是"空"了
+      if (event.details == null) return
+      const details = truncateDetails(safeSerializeForRawEvent(event.details))
+      if (details === undefined) return
+      this.emit({
+        type: EventType.CUSTOM,
+        name: 'PI_TOOL_RESULT',
+        value: {
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          isError: event.isError === true,
+          details,
         },
       } as CustomEvent)
       return

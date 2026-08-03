@@ -57,6 +57,11 @@ export interface UserMessage {
   timestamp: number
 }
 
+/** 只有 Writer 的原始输出是可直接展示的章节正文。 */
+export function streamsChapterContent(agentType: AgentOutput['agentType']): boolean {
+  return agentType === 'writer'
+}
+
 // ── Hook 返回值 ──
 
 /**
@@ -428,6 +433,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   } | null>(null)
   /** messageId → { agentType, agentName } 映射：agent_start 时记录，TEXT_MESSAGE_* 时查询 */
   const messageAgentMapRef = useRef<Map<string, { agentType: AgentOutput['agentType']; agentName: string }>>(new Map())
+  /** 已收到正文 delta 的消息；首个 delta 会替换 agent_start 的占位文案。 */
+  const messagesWithTextRef = useRef<Set<string>>(new Set())
   /** writer/reviser 累积文本（delta 累积，避免每次 setState 丢失增量） */
   const writerContentRef = useRef('')
   /**
@@ -492,11 +499,12 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const entries = Array.from(buffer.entries())
       buffer.clear()
 
-      // 找出 writer/reviser 的 delta，累积到 chapterContent
+      // Reviser 的流式文本通常只是"已应用 N 处修订"；真正的修订正文由
+      // apply_revision 工具生成，并在最终 result 中返回。不能让它覆盖 Writer 草稿。
       let writerDelta = ''
       for (const [messageId, delta] of entries) {
         const meta = messageAgentMapRef.current.get(messageId)
-        if (meta && (meta.agentType === 'writer' || meta.agentType === 'reviser')) {
+        if (meta && streamsChapterContent(meta.agentType)) {
           writerDelta += delta
         }
       }
@@ -546,8 +554,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     if (abortControllerRef.current?.signal.aborted) return
 
     // ── 标准 AG-UI 事件：LLM 流式文本（与 chat 共用同一协议） ──
-    // TEXT_MESSAGE_START：StreamEmitter 开始发射某 messageId 的文本
-    // 如果 agent_start 已创建初始气泡（含"已启动"提示），清空 content 准备接收流式 delta
+    // TEXT_MESSAGE_START：StreamEmitter 开始发射某 messageId 的文本。
+    // 不在这里清空 agent_start 文案：工具型 Agent 可能只有 START/END，没有文本 delta。
     if (event.type === 'TEXT_MESSAGE_START') {
       const { messageId } = event as { type: 'TEXT_MESSAGE_START'; messageId: string }
       // 首 token 已到达，等待类心跳文案已失效，回退显示当前阶段名称。
@@ -557,9 +565,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         setAgentOutputs((prev) => {
           const idx = prev.findIndex(o => o.messageId === messageId)
           if (idx >= 0) {
-            // 已有初始气泡（agent_start 创建）→ 清空 content，准备接收 delta
             const updated = [...prev]
-            updated[idx] = { ...updated[idx], content: '', preview: '' }
+            updated[idx] = { ...updated[idx], streaming: true }
             return updated
           }
           // 无初始气泡 → 新建 streaming 气泡
@@ -580,6 +587,16 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     // TEXT_MESSAGE_CONTENT：累积到缓冲，rAF 批量 flush（避免高频 setState）
     if (event.type === 'TEXT_MESSAGE_CONTENT') {
       const { messageId, delta } = event as { type: 'TEXT_MESSAGE_CONTENT'; messageId: string; delta: string }
+      if (!messagesWithTextRef.current.has(messageId)) {
+        messagesWithTextRef.current.add(messageId)
+        setAgentOutputs((prev) => {
+          const idx = prev.findIndex(o => o.messageId === messageId)
+          if (idx === -1) return prev
+          const updated = [...prev]
+          updated[idx] = { ...updated[idx], content: '', preview: '' }
+          return updated
+        })
+      }
       const existing = deltaBufferRef.current.get(messageId) ?? ''
       deltaBufferRef.current.set(messageId, existing + delta)
       scheduleDeltaFlush()
@@ -594,7 +611,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       if (pending) {
         deltaBufferRef.current.delete(messageId)
         const meta = messageAgentMapRef.current.get(messageId)
-        if (meta && (meta.agentType === 'writer' || meta.agentType === 'reviser')) {
+        if (meta && streamsChapterContent(meta.agentType)) {
           writerContentRef.current += pending
           setChapterContent(writerContentRef.current)
         }
@@ -616,7 +633,11 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           const idx = prev.findIndex(o => o.messageId === messageId)
           if (idx === -1) return prev
           const updated = [...prev]
-          updated[idx] = { ...updated[idx], streaming: false }
+          const meta = messageAgentMapRef.current.get(messageId)
+          const completion = meta?.agentType === 'reviser' && !messagesWithTextRef.current.has(messageId)
+            ? '修订已完成，正文已更新。'
+            : updated[idx].content
+          updated[idx] = { ...updated[idx], content: completion, preview: completion.slice(-200), streaming: false }
           return updated
         })
       }
@@ -675,7 +696,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               agentType: data.agentType as AgentOutput['agentType'],
               agentName: data.agentName,
             })
-            if (data.agentType === 'writer' || data.agentType === 'reviser') {
+            if (streamsChapterContent(data.agentType as AgentOutput['agentType'])) {
               writerContentRef.current = ''
               setChapterContent('')
             }
@@ -1032,6 +1053,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setAgentOutputs([])
       setUserMessages([])
       messageAgentMapRef.current.clear()
+      messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
       cancelDeltaFlush()
@@ -1083,6 +1105,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setAgentOutputs([])
       setUserMessages([])
       messageAgentMapRef.current.clear()
+      messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
       cancelDeltaFlush()
@@ -1124,6 +1147,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setAgentOutputs([])
       setUserMessages([])
       messageAgentMapRef.current.clear()
+      messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
       cancelDeltaFlush()
@@ -1173,6 +1197,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setAgentOutputs([])
       setUserMessages([])
       messageAgentMapRef.current.clear()
+      messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
       cancelDeltaFlush()
@@ -1221,6 +1246,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setAgentOutputs([])
       setUserMessages([])
       messageAgentMapRef.current.clear()
+      messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
       cancelDeltaFlush()
@@ -1379,6 +1405,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     setAgentOutputs([])
     setUserMessages([])
     messageAgentMapRef.current.clear()
+    messagesWithTextRef.current.clear()
     writerContentRef.current = ''
     deltaBufferRef.current.clear()
     cancelDeltaFlush()

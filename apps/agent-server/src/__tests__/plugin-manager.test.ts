@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { EventBus } from '@repo/shared/events'
-import { PluginManager } from '../core/plugin/plugin-manager.js'
+import { PluginManager, measurePayload } from '../core/plugin/plugin-manager.js'
 import { eventBusPlugin } from '../plugins/event-bus.plugin.js'
 import { pluginLoaderPlugin } from '../plugins/plugin-loader.plugin.js'
 import { createHelloPlugin } from '../plugins/examples/hello-plugin/index.js'
@@ -59,6 +59,12 @@ function createTestPlugin(options: {
 }
 
 describe('PluginManager', () => {
+  it('measurePayload counts a top-level provider system prompt', () => {
+    const payload = { system: 'system text', messages: [{ role: 'user', content: 'hello' }], tools: [] }
+    const stats = measurePayload(payload)
+    expect(stats.messagesChars).toBe(JSON.stringify(payload.system).length + JSON.stringify(payload.messages).length)
+    expect(stats.totalChars).toBe(JSON.stringify(payload).length)
+  })
   let eventBus: EventBus
   let manager: PluginManager
 

@@ -2154,6 +2154,10 @@ const SubmitNarrativeTaskParams = Type.Object({
     maxItems: 2,
     description: '次要任务类型（最多 2 个，允许一章兼顾多个任务）。无次要任务时传空数组。',
   }),
+  requiredReferences: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
+    maxItems: 8,
+    description: 'Writer 额外需要的现有故事实体 ID 或精确名称（最多 8 个）。无额外引用时传空数组。',
+  }),
   chapterEndingHook: Type.Object({
     type: ChapterEndingHookTypeEnum,
     description: Type.String({ description: '章尾钩子的完整描述文本（用于创建钩子实体）' }),
@@ -2215,6 +2219,11 @@ export function createNovelSubmitNarrativeTaskTool(
         // 过滤掉与主任务相同的次要任务
         task.secondaryTasks = params.secondaryTasks.filter(t => t !== params.taskType)
       }
+
+      const requiredReferences = [...new Set(params.requiredReferences.map((value) => value.trim()))]
+        .filter(Boolean)
+        .slice(0, 8)
+      if (requiredReferences.length > 0) task.requiredReferences = requiredReferences
 
       if (params.chapterEndingHook) {
         task.chapterEndingHook = params.chapterEndingHook.type

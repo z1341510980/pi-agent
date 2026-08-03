@@ -11,6 +11,14 @@ function createTestDb(): Database.Database {
   return db
 }
 
+function createLegacyTargetWordsDb(): Database.Database {
+  const db = new Database(':memory:')
+  for (const migration of novelMigrations) {
+    if (migration.id !== '076_project_target_words_to_chapter_words') db.exec(migration.sql)
+  }
+  return db
+}
+
 /**
  * 构造一个仅暴露 NovelPromptBuilder 所需方法的 stores mock，
  * 直接代理到真实的 NovelStore（避免触达 prompt 模板 / engine 等重依赖）。
@@ -30,12 +38,16 @@ function createStoresMock(store: NovelStore) {
     listRecentChapters: (id: string, n: number) => store.listRecentChapters(id, n),
     getChapter: (pid: string, n: number) => store.getChapter(pid, n),
     listEdges: (id: string) => store.listEdges(id),
-    listEdgesByEntity: (id: string, opts?: { direction?: 'source' | 'target' | 'both'; edgeType?: string }) => store.listEdgesByEntity(id, opts),
+    listEdgesByEntity: (
+      id: string,
+      opts?: { direction?: 'source' | 'target' | 'both'; edgeType?: string }
+    ) => store.listEdgesByEntity(id, opts),
     listFactions: (id: string) => store.listFactions(id),
     listLocations: (id: string) => store.listLocations(id),
     listItems: (id: string) => store.listItems(id),
     listWorldElements: (id: string) => store.listWorldElements(id),
-    listUnfulfilledHooksBefore: (id: string, before: number) => store.listUnfulfilledHooksBefore(id, before),
+    listUnfulfilledHooksBefore: (id: string, before: number) =>
+      store.listUnfulfilledHooksBefore(id, before),
     listHooksByChapter: (id: string, chapter: number) => store.listHooksByChapter(id, chapter),
     // 以下为 D-3 新增的实体按 ID 查询方法
     getCharacter: (id: string) => store.getCharacter(id),
@@ -44,7 +56,7 @@ function createStoresMock(store: NovelStore) {
     getClue: (id: string) => store.getClue(id),
     getFaction: (id: string) => store.getFaction(id),
     getLocation: (id: string) => store.getLocation(id),
-    getInformationLayer: (id: string) => store.getInformationLayer(id),
+    getInformationLayer: (id: string) => store.getInformationLayer(id)
   }
 }
 
@@ -68,7 +80,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       currentVolume: 1,
       currentChapter: 0,
       currentStage: 'setup',
-      status: 'active',
+      status: 'active'
     })
     charId = randomUUID()
     store.createCharacter({
@@ -87,7 +99,9 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       arcHistory: '[]',
       speechStyle: '',
       isProtagonist: false,
-      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
+      longTermDesire: '',
+      plotRole: 'supporting' as const,
+      removalImpact: ''
     })
     store.createChapter({
       id: randomUUID(),
@@ -101,7 +115,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       narrativeTask: '',
       outline: '',
       volumeId: null,
-      acceptanceResult: null,
+      acceptanceResult: null
     })
   })
 
@@ -110,7 +124,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     // PromptManager mock：render/getTemplate 返回占位字符串，避免触达真实模板加载
     const promptManager = {
       render: () => 'instruction',
-      getTemplate: () => '',
+      getTemplate: () => ''
     } as any
     // 构造函数签名：(promptManager, stores)
     const builder = new NovelPromptBuilder(promptManager, stores as any)
@@ -118,14 +132,26 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
       {
-        characterIds: [charId], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [],
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      },
+      {
+        characterIds: [charId],
+        conflictIds: [],
+        foreshadowIds: [],
+        factionIds: [],
+        locationIds: [],
         characterFunctions: [
           { characterId: charId, function: 'provide_resource', note: '交出地图' },
-          { characterId: charId, function: 'change_judgment', note: '揭示误判' },
-        ],
-      },
+          { characterId: charId, function: 'change_judgment', note: '揭示误判' }
+        ]
+      }
     )
     expect(ctx).toContain('李四')
     expect(ctx).toContain('受伤')
@@ -149,20 +175,34 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       chapterSpans: [],
       beats: [
         { chapter: 1, type: 'plant', note: '擦拭镜面时看见背后的细小划痕' },
-        { chapter: 3, type: 'reinforce', note: '划痕与家族徽记吻合' },
-      ],
+        { chapter: 3, type: 'reinforce', note: '划痕与家族徽记吻合' }
+      ]
     })
     const builder = new NovelPromptBuilder(
       { render: () => 'instruction', getTemplate: () => '' } as any,
-      createStoresMock(store) as any,
+      createStoresMock(store) as any
     )
 
     const ctx = builder.buildChapterContextShared(
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
-      { characterIds: [], conflictIds: [], foreshadowIds: [foreshadowId], factionIds: [], locationIds: [] },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      },
+      {
+        characterIds: [],
+        conflictIds: [],
+        foreshadowIds: [foreshadowId],
+        factionIds: [],
+        locationIds: []
+      }
     )
 
     expect(ctx).toContain('本章节点：埋设')
@@ -178,7 +218,15 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      }
     )
     expect(ctx).not.toContain('本章必须出现的实体')
   })
@@ -191,8 +239,16 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
-      { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      },
+      { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] }
     )
     expect(ctx).not.toContain('本章必须出现的实体')
     // 故事状态始终注入（跨 Agent 缓存一致性），即使编排数组为空
@@ -204,25 +260,46 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     const ignoredClueId = randomUUID()
     for (const [id, description] of [
       [selectedClueId, '铜扣来自禁军制式'],
-      [ignoredClueId, '窗外有一只乌鸦'],
+      [ignoredClueId, '窗外有一只乌鸦']
     ] as const) {
       store.createClue({
-        id, projectId, description, pointsTo: '父亲死亡真相', progress: 20,
-        currentStep: '发现物证', nextStep: '核查来源', isMisleading: false,
-        chapterSpans: [[1, 1]],
+        id,
+        projectId,
+        description,
+        pointsTo: '父亲死亡真相',
+        progress: 20,
+        currentStep: '发现物证',
+        nextStep: '核查来源',
+        isMisleading: false,
+        chapterSpans: [[1, 1]]
       })
     }
     const builder = new NovelPromptBuilder(
       { render: () => 'instruction', getTemplate: () => '' } as any,
-      createStoresMock(store) as any,
+      createStoresMock(store) as any
     )
 
     const ctx = builder.buildChapterContextShared(
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
-      { characterIds: [], conflictIds: [], foreshadowIds: [], clueIds: [selectedClueId], factionIds: [], locationIds: [] },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      },
+      {
+        characterIds: [],
+        conflictIds: [],
+        foreshadowIds: [],
+        clueIds: [selectedClueId],
+        factionIds: [],
+        locationIds: []
+      }
     )
 
     expect(ctx).toContain('本章线索')
@@ -234,34 +311,67 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
   it('信息差只注入矩阵相关项，并展开角色知道、怀疑和误解', () => {
     const selectedForeshadowId = randomUUID()
     store.createForeshadow({
-      id: selectedForeshadowId, projectId, description: '父亲遗物', category: 'item',
-      status: 'planted', firstChapter: 1, lastChapter: 1, recoverByChapter: 5, chapterSpans: [[1, 1]],
-      beats: [{ chapter: 1, type: 'plant' }],
+      id: selectedForeshadowId,
+      projectId,
+      description: '父亲遗物',
+      category: 'item',
+      status: 'planted',
+      firstChapter: 1,
+      lastChapter: 1,
+      recoverByChapter: 5,
+      chapterSpans: [[1, 1]],
+      beats: [{ chapter: 1, type: 'plant' }]
     })
     store.createInformationLayer({
-      id: randomUUID(), projectId, infoDescription: '父亲并非死于意外', authorKnows: true,
+      id: randomUUID(),
+      projectId,
+      infoDescription: '父亲并非死于意外',
+      authorKnows: true,
       readerKnows: false,
       characterKnowledge: JSON.stringify({
-        [charId]: { knows: false, suspects: true, misunderstands: '以为是山匪所杀' },
+        [charId]: { knows: false, suspects: true, misunderstands: '以为是山匪所杀' }
       }),
-      revealStage: 'development', revealChapter: 5, isRevealed: false,
+      revealStage: 'development',
+      revealChapter: 5,
+      isRevealed: false
     })
     store.createInformationLayer({
-      id: randomUUID(), projectId, infoDescription: '无关支线秘密', authorKnows: true,
-      readerKnows: false, characterKnowledge: '{}', revealStage: 'development',
-      revealChapter: 8, isRevealed: false,
+      id: randomUUID(),
+      projectId,
+      infoDescription: '无关支线秘密',
+      authorKnows: true,
+      readerKnows: false,
+      characterKnowledge: '{}',
+      revealStage: 'development',
+      revealChapter: 8,
+      isRevealed: false
     })
     const builder = new NovelPromptBuilder(
       { render: () => 'instruction', getTemplate: () => '' } as any,
-      createStoresMock(store) as any,
+      createStoresMock(store) as any
     )
 
     const ctx = builder.buildChapterContextShared(
       projectId,
       1,
       { description: '任务', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
-      { characterIds: [charId], conflictIds: [], foreshadowIds: [selectedForeshadowId], clueIds: [], factionIds: [], locationIds: [] },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      },
+      {
+        characterIds: [charId],
+        conflictIds: [],
+        foreshadowIds: [selectedForeshadowId],
+        clueIds: [],
+        factionIds: [],
+        locationIds: []
+      }
     )
 
     expect(ctx).toContain('父亲并非死于意外')
@@ -269,44 +379,68 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     expect(ctx).not.toContain('无关支线秘密')
   })
 
-  it('把 project.targetWords 始终解释为全书目标字数', () => {
+  it('把 project.targetWords 直接解释为默认每章目标字数', () => {
     const builder = new NovelPromptBuilder(
       { render: () => '', getTemplate: () => '' } as any,
-      createStoresMock(store) as any,
+      createStoresMock(store) as any
     )
     const project = store.getProject(projectId)!
 
-    expect(builder.computeChapterTargetWords({ ...project, targetWords: 8_000 })).toBe(2500)
-    expect(builder.computeChapterTargetWords({ ...project, targetWords: 3_000_000 })).toBe(3000)
-    expect(builder.computeChapterTargetWords({ ...project, targetWords: 5_000_000 })).toBe(5000)
+    expect(builder.computeChapterTargetWords({ ...project, targetWords: 2_500 })).toBe(2500)
+    expect(builder.computeChapterTargetWords({ ...project, targetWords: 3_000 })).toBe(3000)
+    expect(builder.computeChapterTargetWords({ ...project, targetWords: 5_000 })).toBe(5000)
   })
 
   it('中间章节重写时使用上一章快照，而不是全局最新角色状态', () => {
     store.updateProject(projectId, { currentChapter: 3 })
-    const snapshotCharacter = { ...store.getCharacter(charId)!, currentState: '第二章开篇前的快照状态' }
+    const snapshotCharacter = {
+      ...store.getCharacter(charId)!,
+      currentState: '第二章开篇前的快照状态'
+    }
     const memoryStore = {
       listEvents: () => [],
       getCausalChain: () => ({ causes: [], effects: [] }),
       getSnapshot: () => ({
-        id: randomUUID(), projectId, chapterNumber: 1, snapshotType: 'full' as const,
-        entityId: null, createdAt: Date.now(),
+        id: randomUUID(),
+        projectId,
+        chapterNumber: 1,
+        snapshotType: 'full' as const,
+        entityId: null,
+        createdAt: Date.now(),
         snapshotData: JSON.stringify({
-          characters: [snapshotCharacter], conflicts: [], foreshadowing: [],
-          factions: [], locations: [], relationships: [],
-        }),
-      }),
+          characters: [snapshotCharacter],
+          conflicts: [],
+          foreshadowing: [],
+          factions: [],
+          locations: [],
+          relationships: []
+        })
+      })
     }
     const builder = new NovelPromptBuilder(
       { render: () => '', getTemplate: () => '' } as any,
       createStoresMock(store) as any,
-      memoryStore,
+      memoryStore
     )
 
     const ctx = builder.buildChapterContextShared(
       projectId,
       2,
-      { description: '重写第二章', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
+      {
+        description: '重写第二章',
+        type: 'advance_mainline',
+        targetEntity: null,
+        priority: 'medium'
+      },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      }
     )
 
     expect(ctx).toContain('第二章开篇前的快照状态')
@@ -317,34 +451,65 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     const chapter1 = store.getChapter(projectId, 1)!
     store.updateChapter(chapter1.id, { content: '第一章正文', wordCount: 5, status: 'review' })
     store.createChapter({
-      id: randomUUID(), projectId, volume: 1, chapterNumber: 3, title: '',
-      content: '第三章正文', wordCount: 5, status: 'review', narrativeTask: '', outline: '',
-      volumeId: null, acceptanceResult: null,
+      id: randomUUID(),
+      projectId,
+      volume: 1,
+      chapterNumber: 3,
+      title: '',
+      content: '第三章正文',
+      wordCount: 5,
+      status: 'review',
+      narrativeTask: '',
+      outline: '',
+      volumeId: null,
+      acceptanceResult: null
     })
     const snapshotCharacter = { ...store.getCharacter(charId)!, currentState: '第一章结束时的状态' }
     const memoryStore = {
       listEvents: () => [],
       getCausalChain: () => ({ causes: [], effects: [] }),
       getSnapshot: () => ({
-        id: randomUUID(), projectId, chapterNumber: 1, snapshotType: 'full' as const,
-        entityId: null, createdAt: Date.now(),
+        id: randomUUID(),
+        projectId,
+        chapterNumber: 1,
+        snapshotType: 'full' as const,
+        entityId: null,
+        createdAt: Date.now(),
         snapshotData: JSON.stringify({
-          characters: [snapshotCharacter], conflicts: [], foreshadowing: [], clues: [],
-          factions: [], locations: [], relationships: [],
-        }),
-      }),
+          characters: [snapshotCharacter],
+          conflicts: [],
+          foreshadowing: [],
+          clues: [],
+          factions: [],
+          locations: [],
+          relationships: []
+        })
+      })
     }
     const builder = new NovelPromptBuilder(
       { render: () => '', getTemplate: () => '' } as any,
       createStoresMock(store) as any,
-      memoryStore,
+      memoryStore
     )
 
     const ctx = builder.buildChapterContextShared(
       projectId,
       2,
-      { description: '重写第二章', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
+      {
+        description: '重写第二章',
+        type: 'advance_mainline',
+        targetEntity: null,
+        priority: 'medium'
+      },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      }
     )
 
     expect(store.getProject(projectId)?.currentChapter).toBe(0)
@@ -367,7 +532,7 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
         renderedVariables = variables
         return `${variables.narrative_task}\n${variables.positioning_guidance}`
       },
-      getTemplate: () => '',
+      getTemplate: () => ''
     } as any
     const builder = new NovelPromptBuilder(promptManager, createStoresMock(store) as any)
     const approvedPlan = 'Director 检查点已批准的完整叙事方案'
@@ -377,11 +542,17 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
       1,
       { description: approvedPlan, type: 'create_suspense', targetEntity: null, priority: 'high' },
       {
-        facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [],
-        conflictTargets: [], suspenseHooks: [], positioning: 'high_pressure',
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: [],
+        positioning: 'high_pressure'
       },
       undefined,
-      'writer',
+      'writer'
     )
 
     expect(renderedVariables?.narrative_task).toBe(approvedPlan)
@@ -397,29 +568,40 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
           renderedVariables = variables
           return `目标字数：${variables.target_words}`
         },
-        getTemplate: () => '',
+        getTemplate: () => ''
       } as any,
-      createStoresMock(store) as any,
+      createStoresMock(store) as any
     )
     const constraints = {
-      facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [],
-      conflictTargets: [], suspenseHooks: [], positioning: 'low_pressure' as const,
-      wordBudget: { min: 1913, max: 2588, target: 2250 },
+      facts: [],
+      cognitive: [],
+      stage: [],
+      narrativeDebts: [],
+      characterArcs: [],
+      conflictTargets: [],
+      suspenseHooks: [],
+      positioning: 'low_pressure' as const,
+      wordBudget: { min: 1913, max: 2588, target: 2250 }
     }
 
     const shared = builder.buildChapterContextShared(
       projectId,
       1,
       { description: '推进章纲', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      constraints,
+      constraints
     )
     const suffix = builder.buildChapterContextSuffix(
       projectId,
       1,
-      { description: 'Director 已批准方案', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
+      {
+        description: 'Director 已批准方案',
+        type: 'advance_mainline',
+        targetEntity: null,
+        priority: 'medium'
+      },
       constraints,
       undefined,
-      'writer',
+      'writer'
     )
 
     expect(shared).not.toContain('目标字数：')
@@ -430,15 +612,28 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
   it('create-flow 的 Reviewer suffix 包含已批准的 Director 方案', () => {
     const builder = new NovelPromptBuilder(
       { render: () => '', getTemplate: () => '' } as any,
-      createStoresMock(store) as any,
+      createStoresMock(store) as any
     )
     const suffix = builder.buildChapterContextSuffix(
       projectId,
       1,
-      { description: '验收必须对照的 Director 方案', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
+      {
+        description: '验收必须对照的 Director 方案',
+        type: 'advance_mainline',
+        targetEntity: null,
+        priority: 'medium'
+      },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      },
       undefined,
-      'reviewer',
+      'reviewer'
     )
 
     expect(suffix).toContain('已批准的本章叙事任务')
@@ -448,53 +643,133 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
   it('重写最后一章时，编排实体和信息差仍读取 N-1 快照', () => {
     store.updateProject(projectId, { currentChapter: 2 })
     const chapter2 = store.createChapter({
-      id: randomUUID(), projectId, volume: 1, chapterNumber: 2, title: '',
-      content: '旧的第二章正文', wordCount: 7, status: 'review', narrativeTask: '', outline: '',
-      volumeId: null, acceptanceResult: null,
+      id: randomUUID(),
+      projectId,
+      volume: 1,
+      chapterNumber: 2,
+      title: '',
+      content: '旧的第二章正文',
+      wordCount: 7,
+      status: 'review',
+      narrativeTask: '',
+      outline: '',
+      volumeId: null,
+      acceptanceResult: null
     })
     void chapter2
     const currentLayer = store.createInformationLayer({
-      id: randomUUID(), projectId, infoDescription: '将军其实未死', authorKnows: true,
-      readerKnows: true, characterKnowledge: JSON.stringify({ [charId]: { knows: true } }),
-      revealStage: 'reveal', revealChapter: 2, isRevealed: true,
+      id: randomUUID(),
+      projectId,
+      infoDescription: '将军其实未死',
+      authorKnows: true,
+      readerKnows: true,
+      characterKnowledge: JSON.stringify({ [charId]: { knows: true } }),
+      revealStage: 'reveal',
+      revealChapter: 2,
+      isRevealed: true
     })
-    const snapshotCharacter = { ...store.getCharacter(charId)!, currentState: '第一章结束时负伤撤离' }
+    const snapshotCharacter = {
+      ...store.getCharacter(charId)!,
+      currentState: '第一章结束时负伤撤离'
+    }
     const snapshotLayer = {
       ...currentLayer,
       readerKnows: false,
       characterKnowledge: JSON.stringify({ [charId]: { suspects: true } }),
-      isRevealed: false,
+      isRevealed: false
     }
     const memoryStore = {
       listEvents: () => [],
       getCausalChain: () => ({ causes: [], effects: [] }),
       getSnapshot: () => ({
-        id: randomUUID(), projectId, chapterNumber: 1, snapshotType: 'full' as const,
-        entityId: null, createdAt: Date.now(),
+        id: randomUUID(),
+        projectId,
+        chapterNumber: 1,
+        snapshotType: 'full' as const,
+        entityId: null,
+        createdAt: Date.now(),
         snapshotData: JSON.stringify({
-          characters: [snapshotCharacter], conflicts: [], foreshadowing: [], clues: [], factions: [],
-          locations: [], items: [], worldElements: [], relationships: [],
-          informationLayers: [snapshotLayer], edges: [],
-        }),
-      }),
+          characters: [snapshotCharacter],
+          conflicts: [],
+          foreshadowing: [],
+          clues: [],
+          factions: [],
+          locations: [],
+          items: [],
+          worldElements: [],
+          relationships: [],
+          informationLayers: [snapshotLayer],
+          edges: []
+        })
+      })
     }
     const builder = new NovelPromptBuilder(
       { render: () => '', getTemplate: () => '' } as any,
       createStoresMock(store) as any,
-      memoryStore,
+      memoryStore
     )
 
     const context = builder.buildChapterContextShared(
       projectId,
       2,
-      { description: '重写第二章', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
-      { facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [], conflictTargets: [], suspenseHooks: [] },
-      { characterIds: [charId], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], itemIds: [] },
+      {
+        description: '重写第二章',
+        type: 'advance_mainline',
+        targetEntity: null,
+        priority: 'medium'
+      },
+      {
+        facts: [],
+        cognitive: [],
+        stage: [],
+        narrativeDebts: [],
+        characterArcs: [],
+        conflictTargets: [],
+        suspenseHooks: []
+      },
+      {
+        characterIds: [charId],
+        conflictIds: [],
+        foreshadowIds: [],
+        clueIds: [],
+        factionIds: [],
+        locationIds: [],
+        itemIds: []
+      }
     )
 
     expect(context).toContain('第一章结束时负伤撤离')
     expect(context).not.toContain('状态：受伤')
     expect(context).toContain('将军其实未死（读者未知')
     expect(context).not.toContain('将军其实未死（读者已知')
+  })
+})
+
+describe('目标章节字数迁移', () => {
+  it('将旧全书目标转换为旧逻辑实际生效的章节目标', () => {
+    const db = createLegacyTargetWordsDb()
+    const store = new NovelStore(db)
+    const projectId = randomUUID()
+    store.createProject({
+      id: projectId,
+      title: '旧项目',
+      genre: '玄幻',
+      synopsis: '',
+      outline: '',
+      targetWords: 3_000_000,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active'
+    })
+
+    const migration = novelMigrations.find(
+      (item) => item.id === '076_project_target_words_to_chapter_words'
+    )
+    expect(migration).toBeDefined()
+    db.exec(migration!.sql)
+
+    expect(store.getProject(projectId)?.targetWords).toBe(3000)
+    db.close()
   })
 })

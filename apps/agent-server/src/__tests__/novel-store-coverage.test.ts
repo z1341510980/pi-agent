@@ -563,6 +563,9 @@ describe('NovelStore - AgentLog CRUD', () => {
       error: '', sessionId: '',
       inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0,
       llmProvider: 'test', llmModel: 'test-model',
+      payloadMessagesChars: 0, payloadToolsChars: 0, payloadToolCount: 0,
+      payloadTotalChars: 0, llmRoundTrips: 1,
+      askStoryPolicy: 'directorReviewerOff', askStoryEnabled: agentType !== 'director',
     } as Parameters<NovelStore['insertAgentLog']>[0])
   }
 
@@ -571,6 +574,8 @@ describe('NovelStore - AgentLog CRUD', () => {
     expect(log.id).toBeDefined()
     expect(log.agentType).toBe('writer')
     expect(log.inputTokens).toBe(10)
+    expect(log.askStoryPolicy).toBe('directorReviewerOff')
+    expect(log.askStoryEnabled).toBe(true)
   })
 
   it('getAgentLog 按 id 查询完整日志', () => {
@@ -578,6 +583,8 @@ describe('NovelStore - AgentLog CRUD', () => {
     const got = store.getAgentLog(log.id)
     expect(got?.systemPrompt).toBe('sys')
     expect(got?.result).toBe('ok')
+    expect(got?.askStoryPolicy).toBe('directorReviewerOff')
+    expect(got?.askStoryEnabled).toBe(true)
   })
 
   it('listAgentLogs 默认返回全部', () => {
@@ -585,6 +592,38 @@ describe('NovelStore - AgentLog CRUD', () => {
     createLog('ignore', 'reviewer', 2)
     const list = store.listAgentLogs('p-1')
     expect(list).toHaveLength(2)
+    expect(list).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentType: 'writer', askStoryPolicy: 'directorReviewerOff', askStoryEnabled: true }),
+      expect.objectContaining({ agentType: 'reviewer', askStoryPolicy: 'directorReviewerOff', askStoryEnabled: true }),
+    ]))
+  })
+
+  it('旧 schema 行缺少审计列时读取兼容默认值', () => {
+    const legacyDb = new Database(':memory:')
+    legacyDb.exec(novelMigrations
+      .filter((migration) => migration.id !== '078_add_ask_story_audit_to_novel_agent_logs')
+      .map((migration) => migration.sql)
+      .join('\n'))
+    legacyDb.prepare(`INSERT INTO novel_projects (
+      id, title, genre, synopsis, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('legacy-project', '旧项目', '玄幻', '', 0, 1, 0, 'setup', 'active', 1, 1)
+    legacyDb.prepare(`INSERT INTO novel_agent_logs (
+      id, project_id, chapter_number, agent_type, agent_name, display_agent_type, display_agent_name,
+      phase, system_prompt, chapter_context, user_message, task_input, user_instructions, tools,
+      tool_names, result, result_length, duration_ms, status, error, session_id, created_at,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, llm_provider, llm_model,
+      payload_messages_chars, payload_tools_chars, payload_tool_count, payload_total_chars, llm_round_trips
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('legacy-log', 'legacy-project', 1, 'writer', '写作', 'writer', '写作', 'writing', '', '', '', '', '[]', '[]', '[]', '', 0, 0, 'success', '', '', 1, 0, 0, 0, 0, '', '', 0, 0, 0, 0, 0)
+
+    legacyDb.exec(novelMigrations.find((migration) => migration.id === '078_add_ask_story_audit_to_novel_agent_logs')!.sql)
+    const migratedStore = new NovelStore(legacyDb)
+    expect(migratedStore.getAgentLog('legacy-log')).toMatchObject({
+      askStoryPolicy: 'legacy',
+      askStoryEnabled: true,
+    })
+    legacyDb.close()
   })
 
   it('listAgentLogs 按 agentType 过滤', () => {

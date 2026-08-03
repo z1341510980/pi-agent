@@ -17,6 +17,7 @@ const DIRECTOR_TOOL_PARAMS = {
   priority: 'high',
   narrativeTask: '本章核心目标：推进主线，让主角通过行动解决当前困境。',
   secondaryTasks: [],
+  requiredReferences: [],
   chapterEndingHook: { type: 'suspense', description: '章尾钩子' },
   povCharacters: ['主角'],
   sceneCount: 1,
@@ -60,6 +61,7 @@ function createDecisionPathOrchestrator(): {
   orchestrator.promptBuilder = {
     stripEmDash: (value: string) => value,
     buildProseEditorIdentity: () => '文字编辑身份',
+    buildReviewFactPack: vi.fn(() => ''),
   }
   orchestrator.context = {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -100,6 +102,7 @@ describe('NovelOrchestrator request context', () => {
     const orchestrator = Object.create(NovelOrchestrator.prototype) as any
     orchestrator.runStorage = new AsyncLocalStorage()
     orchestrator.pendingUserMessages = new Map()
+    orchestrator.store = { getProject: () => ({ novelAskStoryPolicy: null }) }
     orchestrator.createChapterWithFlowInContext = vi.fn(async (
       _projectId: string,
       _chapterNumber: number,
@@ -134,6 +137,114 @@ describe('NovelOrchestrator request context', () => {
 
     expect(orchestrator.pendingUserMessages.get('project|1')).toEqual(['第一章意见'])
     expect(orchestrator.pendingUserMessages.get('project|2')).toEqual(['第二章意见'])
+  })
+
+  it('directorReviewerOff keeps the primary Reviewer on full shared chapter context', async () => {
+    const { orchestrator } = createDecisionPathOrchestrator()
+    orchestrator.store.getProject = () => ({
+      currentStage: 'setup', rhythmModelId: 'default', currentChapter: 1,
+      novelAskStoryPolicy: 'directorReviewerOff',
+    })
+    orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: false, reason: '' }))
+
+    await orchestrator.createChapterWithFlow('project', 1, {
+      onCheckpoint: vi.fn(async () => 'approve'),
+      onProgress: vi.fn(),
+    })
+
+    const primaryReviewerCall = orchestrator.runAgent.mock.calls.find(
+      (call: unknown[]) => call[0] === 'reviewer' && (call[5] as any)?.extraTools,
+    )
+    expect(primaryReviewerCall?.[5]).toMatchObject({ contextMode: 'full' })
+  })
+
+  it('injects a Reviser fact pack derived from structured review findings', async () => {
+    const { orchestrator } = createDecisionPathOrchestrator()
+    orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: false, reason: '' }))
+    orchestrator.promptBuilder.buildReviewFactPack = vi.fn(() => '## 必要事实引用\n\n- 林深：目标是找到真相')
+    const baseRunAgent = orchestrator.runAgent
+    orchestrator.runAgent = vi.fn(async (...args: unknown[]) => {
+      if (args[0] === 'reviewer' && (args[5] as any)?.extraTools) {
+        await invokeExtraTool(args[5], {
+          ...REVIEWER_TOOL_PARAMS,
+          verdict: 'revise',
+          issues: [{ severity: 'S2', category: 'continuity', description: '林深目标与设定冲突' }],
+        })
+        return '需要修订'
+      }
+      return baseRunAgent(...args)
+    })
+
+    await orchestrator.createChapterWithFlow('project', 1, {
+      onCheckpoint: vi.fn(async (checkpoint: { type: string }) => checkpoint.type === 'review' ? 'revise' : 'approve'),
+      onProgress: vi.fn(),
+    })
+
+    const reviserCall = orchestrator.runAgent.mock.calls.find((call: unknown[]) => call[0] === 'reviser')
+    expect(reviserCall?.[3]).toContain('必要事实引用')
+    expect(orchestrator.promptBuilder.buildReviewFactPack).toHaveBeenCalledWith(
+      'project',
+      expect.arrayContaining(['林深目标与设定冲突']),
+      undefined,
+    )
+  })
+
+  it('review 整章重写递归沿用分类预算，耗尽后不再提供 rewrite', async () => {
+    const { orchestrator, agentCalls } = createDecisionPathOrchestrator()
+    orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: false, reason: '' }))
+    const reviewCheckpoints: Array<{ data: any; options?: string[] }> = []
+
+    const result = await orchestrator.createChapterWithFlow('project', 1, {
+      arrangedEntities: { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
+      onCheckpoint: vi.fn(async (checkpoint: { type: string; data: any; options?: string[] }) => {
+        if (checkpoint.type !== 'review') return 'approve'
+        reviewCheckpoints.push(checkpoint)
+        return reviewCheckpoints.length === 1 ? 'rewrite' : 'approve'
+      }),
+      onProgress: vi.fn(),
+    })
+
+    expect(result.status).toBe('completed')
+    expect(agentCalls.filter(agent => agent === 'director')).toHaveLength(2)
+    expect(reviewCheckpoints[0]?.options).toContain('rewrite')
+    expect(reviewCheckpoints[0]?.data.budgetCategories).toMatchObject({
+      fullChapterRewrites: 0,
+      reviewerRuns: 2,
+    })
+    expect(reviewCheckpoints[1]?.options).not.toContain('rewrite')
+    expect(reviewCheckpoints[1]?.data.budgetCategories).toMatchObject({
+      fullChapterRewrites: 1,
+      fullChapterRewriteAvailable: false,
+      reviewerRuns: 4,
+    })
+  })
+
+  it('guard_degraded 整章重写耗尽后保留 Reviser 局部修订路径', async () => {
+    const { orchestrator, agentCalls } = createDecisionPathOrchestrator()
+    orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: true, reason: '正文过短', details: '需要修复' }))
+    const degradedCheckpoints: Array<{ data: any; options?: string[] }> = []
+
+    const result = await orchestrator.createChapterWithFlow('project', 1, {
+      arrangedEntities: { characterIds: [], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [] },
+      onCheckpoint: vi.fn(async (checkpoint: { type: string; data: any; options?: string[] }) => {
+        if (checkpoint.type === 'post_write_guard') return 'rewrite'
+        if (checkpoint.type !== 'guard_degraded') return 'approve'
+        degradedCheckpoints.push(checkpoint)
+        return degradedCheckpoints.length === 1 ? 'rewrite' : 'revise'
+      }),
+      onProgress: vi.fn(),
+    })
+
+    expect(result.status).toBe('completed')
+    expect(degradedCheckpoints[0]?.options).toContain('rewrite')
+    expect(degradedCheckpoints[1]?.options).not.toContain('rewrite')
+    expect(degradedCheckpoints[1]?.options).toContain('revise')
+    expect(degradedCheckpoints[1]?.data.budgetCategories).toMatchObject({
+      fullChapterRewrites: 1,
+      fullChapterRewriteAvailable: false,
+      guardWriterRewrites: 4,
+    })
+    expect(agentCalls.filter(agent => agent === 'reviser')).toHaveLength(1)
   })
 
   it('PostWriteGuard 拦截未在正文出现的矩阵角色', () => {

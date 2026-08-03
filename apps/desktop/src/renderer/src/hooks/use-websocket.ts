@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { browserConfig } from '@repo/config/browser'
+import { getPendingConfirmations } from '@/api/http-client'
 
 /** 服务端推送的消息类型 */
 export type ServerMessage =
@@ -165,6 +166,26 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
     setPendingConfirmations((prev) => prev.filter((r) => r.id !== id))
   }, [send])
 
+  /**
+   * 从后端补齐待审批列表。
+   *
+   * 在连接建立（含每次重连）时调用。按 id 合并而不是覆盖：本地可能已有
+   * 刚推送过来、后端列表还没来得及反映的项。
+   */
+  const hydratePendingConfirmations = useCallback(async () => {
+    try {
+      const pending = await getPendingConfirmations()
+      if (pending.length === 0) return
+      setPendingConfirmations((prev) => {
+        const known = new Set(prev.map((r) => r.id))
+        const additions = pending.filter((r) => !known.has(r.id))
+        return additions.length > 0 ? [...prev, ...additions] : prev
+      })
+    } catch {
+      // 后端未就绪时静默失败：下次重连的 onopen 会再试
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
 
@@ -191,6 +212,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
         if (cancelled) return
         setStatus('connected')
         reconnectAttemptsRef.current = 0 // 重置重连计数
+        // 连接建立（含重连）后补齐待审批：确认请求只走 WS 推送的话，
+        // 刷新或断线期间到达的审批会永久丢失，而后端 Agent 仍在阻塞等回答。
+        void hydratePendingConfirmations()
         // 启动心跳
         const heartbeat = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
@@ -207,7 +231,14 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
           // 分发到具体回调
           switch (msg.type) {
             case 'confirmation_request':
-              setPendingConfirmations((prev) => [...prev, msg.payload])
+              // 按 id 去重：重连时的 hydrate 与实时推送可能撞车
+              setPendingConfirmations((prev) =>
+                prev.some((r) => r.id === msg.payload.id) ? prev : [...prev, msg.payload]
+              )
+              break
+            case 'confirmation_resolved':
+              // 别处（另一个窗口 / CLI）已处理，本地要同步移除
+              setPendingConfirmations((prev) => prev.filter((r) => r.id !== msg.payload.id))
               break
             case 'notification':
               onNotificationRef.current?.(msg.payload)

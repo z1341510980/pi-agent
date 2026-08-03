@@ -51,10 +51,18 @@ export const sessionRoute: FastifyPluginAsync = async (app) => {
     const { threadId } = req.params
     const { before, limit } = req.query ?? {}
 
-    const dataDir =
-      process.env.PI_DATA_DIR ??
-      `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
-    const sessionPath = join(dataDir, 'agent', 'sessions', `${threadId}.jsonl`)
+    /**
+     * 会话文件路径必须问 session 要，不能靠 threadId 拼。
+     *
+     * JSONL 文件名由 pi-agent-core 生成（时间戳 + session uuid），与 threadId 无关。
+     * 原来这里写的是 `join(dataDir, 'agent', 'sessions', `${threadId}.jsonl`)`，
+     * 永远命中不到文件，所以历史消息分页一直静默返回空数组 —— 功能等于没有。
+     *
+     * 拿不到路径（会话已被 LRU 淘汰 / 进程重启后未复活）时回落到旧的拼接方式：
+     * 它几乎肯定也读不到，但至少行为与从前一致，不会因为找不到而报错。
+     */
+    const sessionPath =
+      (await app.piSessionStore.getSessionFilePath(threadId)) ?? legacySessionPath(threadId)
 
     const beforeNum = before != null && before !== '' ? Number(before) : undefined
     if (beforeNum != null && (!Number.isFinite(beforeNum) || beforeNum < 0)) {
@@ -125,4 +133,16 @@ export const sessionRoute: FastifyPluginAsync = async (app) => {
     const evicted = app.piSessionStore.sweepIdle()
     return success({ evicted }, req.traceId)
   })
+}
+
+/**
+ * 旧的路径拼接方式，仅作为拿不到 session metadata 时的回落。
+ *
+ * 它几乎肯定读不到文件（文件名由 pi-agent-core 生成，与 threadId 无关），
+ * 保留是为了让「拿不到路径」与从前的行为一致：返回空结果而不是抛错。
+ */
+function legacySessionPath(threadId: string): string {
+  const dataDir =
+    process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
+  return join(dataDir, 'agent', 'sessions', `${threadId}.jsonl`)
 }

@@ -100,10 +100,38 @@ const NARRATIVE_OPTIONS = [
   { label: '取消创作', action: 'reject', variant: 'destructive' as const, description: '中止本次创作流程' },
 ]
 
+/**
+ * 验收检查点的选项。
+ *
+ * ## 文案为什么写成这样
+ *
+ * 原来是「通过 / 修订 / 重写」。问题出在检查点卡片展示的是审稿 Agent 的结论原文，
+ * 而那句话经常是「验收已提交，**结论为需修订**」。用户看到"需修订"，把「通过」
+ * 读成"通过这个需修订的结论"，实际点下去的语义是"接受当前正文、跳过 Reviser
+ * 直接落库" —— 于是 Reviser 从不运行，用户以为选了修订却永远等不到新正文。
+ *
+ * 结论：**按钮要说清后果，不能只表达态度。**「通过」这类词在有结论的上下文里
+ * 一定会被读成"认可结论"。
+ */
 const REVIEW_OPTIONS = [
-  { label: '通过', action: 'approve', variant: 'default' as const, description: '验收通过，进入下一阶段' },
-  { label: '修订', action: 'revise', variant: 'outline' as const, description: '交由 Reviser 局部修订' },
-  { label: '重写', action: 'rewrite', variant: 'ghost' as const, description: '退回 Writer 重新创作' },
+  {
+    label: '接受这一版',
+    action: 'approve',
+    variant: 'default' as const,
+    description: '不再修订，直接落库进入记忆提取',
+  },
+  {
+    label: '交给 Reviser 修订',
+    action: 'revise',
+    variant: 'outline' as const,
+    description: '按审稿意见局部修改正文（正文会变）',
+  },
+  {
+    label: '退回重写',
+    action: 'rewrite',
+    variant: 'ghost' as const,
+    description: '整章退回 Writer 重新创作（成本最高）',
+  },
 ]
 
 // PostWriteGuard 命中后让用户选择是否重写 Writer
@@ -124,37 +152,46 @@ const WRITER_PUSHBACK_OPTIONS = [
 // Guard 达上限后让用户选择是否接受当前草稿
 const GUARD_DEGRADED_OPTIONS = [
   { label: '接受草稿', action: 'approve', variant: 'default' as const, description: '守护已达重试上限，接受当前版本' },
-  { label: '从头重写', action: 'rewrite', variant: 'outline' as const, description: '不计重试次数，重新创作' },
+  { label: '从头重写', action: 'rewrite', variant: 'outline' as const, description: '重新创作整章（计入本章重写上限）' },
   { label: '转 Reviser', action: 'revise', variant: 'ghost' as const, description: '交由 Reviser 尝试局部修正' },
   { label: '取消', action: 'reject', variant: 'destructive' as const, description: '中止本次创作流程' },
 ]
 
-// 单章成本超出预算：不硬停，让用户决定继续还是收尾
+// 单章成本超出预算：不硬停，让用户决定继续或停止
 const CHAPTER_BUDGET_OPTIONS = [
   { label: '继续创作', action: 'approve', variant: 'default' as const, description: '知晓成本，继续完成本章（本章不再提示）' },
-  { label: '尽快收尾', action: 'revise', variant: 'outline' as const, description: '跳过可选环节，尽快产出本章' },
   { label: '停止', action: 'reject', variant: 'destructive' as const, description: '中止本次创作（已生成内容保留）' },
 ]
 
-function getCheckpointPresentation(type: CheckpointData['type']): {
+function getCheckpointPresentation(checkpoint: Pick<CheckpointData, 'type' | 'options'>): {
   checkpointType: NonNullable<ConversationMessage['checkpointType']>
   checkpointOptions: NonNullable<ConversationMessage['checkpointOptions']>
 } {
-  switch (type) {
+  let presentation
+  switch (checkpoint.type) {
     case 'narrative_task':
-      return { checkpointType: 'narrative_task', checkpointOptions: NARRATIVE_OPTIONS }
+      presentation = { checkpointType: 'narrative_task' as const, checkpointOptions: NARRATIVE_OPTIONS }
+      break
     case 'post_write_guard':
-      return { checkpointType: 'post_write_guard', checkpointOptions: POST_WRITE_GUARD_OPTIONS }
+      presentation = { checkpointType: 'post_write_guard' as const, checkpointOptions: POST_WRITE_GUARD_OPTIONS }
+      break
     case 'writer_pushback':
-      return { checkpointType: 'writer_pushback', checkpointOptions: WRITER_PUSHBACK_OPTIONS }
+      presentation = { checkpointType: 'writer_pushback' as const, checkpointOptions: WRITER_PUSHBACK_OPTIONS }
+      break
     case 'guard_degraded':
-      return { checkpointType: 'guard_degraded', checkpointOptions: GUARD_DEGRADED_OPTIONS }
+      presentation = { checkpointType: 'guard_degraded' as const, checkpointOptions: GUARD_DEGRADED_OPTIONS }
+      break
     case 'chapter_budget':
-      return { checkpointType: 'chapter_budget', checkpointOptions: CHAPTER_BUDGET_OPTIONS }
+      presentation = { checkpointType: 'chapter_budget' as const, checkpointOptions: CHAPTER_BUDGET_OPTIONS }
+      break
     case 'review':
     default:
-      return { checkpointType: 'review', checkpointOptions: REVIEW_OPTIONS }
+      presentation = { checkpointType: 'review' as const, checkpointOptions: REVIEW_OPTIONS }
+      break
   }
+  return checkpoint.options
+    ? { ...presentation, checkpointOptions: presentation.checkpointOptions.filter(option => checkpoint.options!.includes(option.action as CheckpointDecision)) }
+    : presentation
 }
 
 // ── 检查点内容渲染 ──
@@ -203,6 +240,10 @@ function renderCheckpointContent(checkpoint: CheckpointData): string {
         '',
         `**推回次数：** ${String(record.pushbackCount ?? 0)} / ${String(record.maxPushback ?? 0)}`,
       ].join('\n')
+    }
+
+    if (checkpoint.type === 'review' && typeof record.review === 'string') {
+      return record.review
     }
 
     if (checkpoint.type === 'chapter_budget') {
@@ -517,13 +558,14 @@ export function NovelConversationPanel({
             type: message.metadata.checkpointType,
             phase: 'checkpoint_review',
             data: message.metadata.checkpointData ?? message.content,
+            options: message.metadata.checkpointOptions,
             checkpointId: message.metadata.checkpointId,
             createdAt: message.createdAt,
             decision: message.metadata.checkpointId
               ? decisionsByCheckpoint.get(message.metadata.checkpointId) as CheckpointDecision | undefined
               : undefined,
           }
-          const presentation = getCheckpointPresentation(checkpoint.type)
+          const presentation = getCheckpointPresentation(checkpoint)
           msgs.push({
             id: `workflow-history-checkpoint-${message.id}`,
             role: 'checkpoint',
@@ -640,7 +682,7 @@ export function NovelConversationPanel({
 
     // 已处理检查点仍保留在时间线，当前检查点继续显示可操作按钮。
     for (const checkpoint of [...checkpointHistory, ...(currentCheckpoint ? [currentCheckpoint] : [])]) {
-      const presentation = getCheckpointPresentation(checkpoint.type)
+      const presentation = getCheckpointPresentation(checkpoint)
       msgs.push({
         id: `checkpoint-${checkpoint.checkpointId ?? `${checkpoint.phase}-${checkpoint.createdAt ?? 0}`}`,
         role: 'checkpoint',

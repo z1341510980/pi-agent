@@ -27,7 +27,7 @@ export function MessageHoverActions({ message, onQuote, onRegenerate }: MessageH
   const [copied, setCopied] = useState(false)
   const isAssistant = message.role === 'assistant'
   const isComplete = message.status === 'complete'
-  const displayContent = message.streamingBuffer ?? message.content
+  const displayContent = message.content
   const text = typeof displayContent === 'string' ? displayContent : ''
 
   const handleCopy = async (_e: MouseEvent<HTMLButtonElement>) => {

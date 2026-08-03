@@ -10,14 +10,14 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
-  DialogDescription,
+  DialogDescription
 } from '@/components/ui/dialog'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
+  SelectValue
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
@@ -27,7 +27,7 @@ import {
   createProject,
   deleteProject,
   type NovelChapter,
-  type TargetPlatform,
+  type TargetPlatform
 } from '@/api/novel-client'
 import { CharacterCreateDialog } from './character-create-dialog'
 import { ProjectTree } from './sidebar/project-tree'
@@ -65,7 +65,13 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
   const [characterDialogOpen, setCharacterDialogOpen] = useState(false)
-  const [form, setForm] = useState({ title: '', genre: '', synopsis: '', targetWords: '300000', targetPlatform: '__none__' as TargetPlatform | '__none__' })
+  const [form, setForm] = useState({
+    title: '',
+    genre: '',
+    synopsis: '',
+    targetWords: '3000',
+    targetPlatform: '__none__' as TargetPlatform | '__none__'
+  })
   const [selectedTemplate, setSelectedTemplate] = useState<string>('custom')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -75,14 +81,20 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   // setPlayheadChapter 是 zustand set（同步生效），但 novel-workspace 的 handleStartCreation
   // 是 useCallback 闭包，捕获的 playheadChapter 是旧值，新值要等下一次 React render 才生效。
   // 同步连调 onStartCreation 时闭包仍读旧值，会传错章节号（默认 1）。
-  const handleManualArrange = useCallback((chapter: NovelChapter) => {
-    setPlayheadChapter(chapter.chapterNumber)
-    onStartCreation?.('manual', chapter.chapterNumber)
-  }, [setPlayheadChapter, onStartCreation])
-  const handleAiArrange = useCallback((chapter: NovelChapter) => {
-    setPlayheadChapter(chapter.chapterNumber)
-    onStartCreation?.('ai-arrange', chapter.chapterNumber)
-  }, [setPlayheadChapter, onStartCreation])
+  const handleManualArrange = useCallback(
+    (chapter: NovelChapter) => {
+      setPlayheadChapter(chapter.chapterNumber)
+      onStartCreation?.('manual', chapter.chapterNumber)
+    },
+    [setPlayheadChapter, onStartCreation]
+  )
+  const handleAiArrange = useCallback(
+    (chapter: NovelChapter) => {
+      setPlayheadChapter(chapter.chapterNumber)
+      onStartCreation?.('ai-arrange', chapter.chapterNumber)
+    },
+    [setPlayheadChapter, onStartCreation]
+  )
 
   // 拉取项目列表
   useQuery({
@@ -92,7 +104,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
       setProjects(list)
       return list
     },
-    refetchInterval: 30_000,
+    refetchInterval: 30_000
   })
 
   const handleSelectProject = useCallback(
@@ -100,7 +112,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
       setCurrentProject(id)
       selectNode(id, 'project')
     },
-    [selectNode, setCurrentProject],
+    [selectNode, setCurrentProject]
   )
 
   // ── 项目删除（移入回收站）──
@@ -108,12 +120,9 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
   const [trashDialogOpen, setTrashDialogOpen] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; title: string } | null>(null)
 
-  const handleDeleteProject = useCallback(
-    (id: string, title: string) => {
-      setDeleteConfirm({ id, title })
-    },
-    [],
-  )
+  const handleDeleteProject = useCallback((id: string, title: string) => {
+    setDeleteConfirm({ id, title })
+  }, [])
 
   const confirmDeleteProject = useCallback(async () => {
     if (!deleteConfirm) return
@@ -145,12 +154,18 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
         genre: form.genre.trim(),
         synopsis: form.synopsis.trim(),
         targetWords: Number(form.targetWords) || 0,
-        targetPlatform: form.targetPlatform === '__none__' ? undefined : form.targetPlatform,
+        targetPlatform: form.targetPlatform === '__none__' ? undefined : form.targetPlatform
       })
       upsertProject(project)
       setCurrentProject(project.id)
       setProjectDialogOpen(false)
-      setForm({ title: '', genre: '', synopsis: '', targetWords: '300000', targetPlatform: '__none__' as TargetPlatform | '__none__' })
+      setForm({
+        title: '',
+        genre: '',
+        synopsis: '',
+        targetWords: '3000',
+        targetPlatform: '__none__' as TargetPlatform | '__none__'
+      })
       setSelectedTemplate('custom')
       void queryClient.invalidateQueries({ queryKey: ['novel-projects'] })
     } catch (err) {
@@ -162,14 +177,14 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
 
   const currentProject = useMemo(
     () => projects.find((p) => p.id === currentProjectId) ?? null,
-    [projects, currentProjectId],
+    [projects, currentProjectId]
   )
 
   const handleSelectEntity = useCallback(
     (id: string, type: NovelNodeType) => {
       selectNode(id, type)
     },
-    [selectNode],
+    [selectNode]
   )
 
   return (
@@ -180,7 +195,12 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
           <BookOpen className="size-4 text-primary" />
           <span className="text-[13px] font-semibold text-text">小说项目</span>
         </div>
-        <Button size="icon-sm" variant="ghost" onClick={() => setProjectDialogOpen(true)} aria-label="新建项目">
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          onClick={() => setProjectDialogOpen(true)}
+          aria-label="新建项目"
+        >
           <Plus className="size-4" />
         </Button>
       </div>
@@ -209,7 +229,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                         'w-full text-left rounded-lg px-2.5 py-2 transition-colors duration-150 ease-out',
                         isActive
                           ? 'bg-primary/[0.08] text-text'
-                          : 'hover:bg-muted text-text-secondary',
+                          : 'hover:bg-muted text-text-secondary'
                       )}
                     >
                       <div className="flex items-center gap-2">
@@ -218,7 +238,7 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                             'size-1.5 rounded-full shrink-0',
                             p.status === 'active' && 'bg-success',
                             p.status === 'paused' && 'bg-amber-500',
-                            p.status === 'completed' && 'bg-primary',
+                            p.status === 'completed' && 'bg-primary'
                           )}
                           aria-hidden="true"
                         />
@@ -290,7 +310,12 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
       </div>
 
       {/* 删除确认对话框（移入回收站） */}
-      <Dialog open={deleteConfirm != null} onOpenChange={(open) => { if (!open) setDeleteConfirm(null) }}>
+      <Dialog
+        open={deleteConfirm != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteConfirm(null)
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>移入回收站</DialogTitle>
@@ -299,7 +324,9 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
+              取消
+            </Button>
             <Button variant="destructive" onClick={confirmDeleteProject}>
               <Trash2 className="size-3.5 mr-1.5" />
               移入回收站
@@ -320,7 +347,9 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>新建小说项目</DialogTitle>
-            <DialogDescription className="text-pretty">选择风格模板快速开始，或自定义配置</DialogDescription>
+            <DialogDescription className="text-pretty">
+              选择风格模板快速开始，或自定义配置
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             {/* 风格模板卡片选择 */}
@@ -338,21 +367,23 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
                         ...f,
                         genre: tpl.genre || f.genre,
                         targetWords: tpl.targetWords,
-                        targetPlatform: (tpl.platform ?? '__none__') as TargetPlatform | '__none__',
+                        targetPlatform: (tpl.platform ?? '__none__') as TargetPlatform | '__none__'
                       }))
                     }}
                     className={cn(
                       'flex flex-col items-start gap-0.5 rounded-lg border p-3 text-left transition-colors',
                       selectedTemplate === tpl.id
                         ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
-                        : 'border-border hover:border-primary/40 hover:bg-accent/50',
+                        : 'border-border hover:border-primary/40 hover:bg-accent/50'
                     )}
                   >
                     <span className="flex items-center gap-1.5 text-sm font-medium">
                       <span className="text-base">{tpl.emoji}</span>
                       {tpl.name}
                     </span>
-                    <span className="text-xs text-muted-foreground line-clamp-1">{tpl.description}</span>
+                    <span className="text-xs text-muted-foreground line-clamp-1">
+                      {tpl.description}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -387,10 +418,12 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="np-words">目标字数</Label>
+              <Label htmlFor="np-words">目标章节字数</Label>
               <Input
                 id="np-words"
                 type="number"
+                min={1}
+                step={100}
                 value={form.targetWords}
                 onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
               />
@@ -399,14 +432,18 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
               <Label>目标平台</Label>
               <Select
                 value={form.targetPlatform}
-                onValueChange={(v) => setForm((f) => ({ ...f, targetPlatform: v as TargetPlatform | '__none__' }))}
+                onValueChange={(v) =>
+                  setForm((f) => ({ ...f, targetPlatform: v as TargetPlatform | '__none__' }))
+                }
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="选择目标平台" />
                 </SelectTrigger>
                 <SelectContent>
                   {SIDEBAR_PLATFORM_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -414,7 +451,11 @@ export function NovelSidebar({ onStartCreation }: NovelSidebarProps): ReactEleme
             {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setProjectDialogOpen(false)} disabled={submitting}>
+            <Button
+              variant="outline"
+              onClick={() => setProjectDialogOpen(false)}
+              disabled={submitting}
+            >
               取消
             </Button>
             <Button onClick={handleCreateProject} disabled={submitting}>

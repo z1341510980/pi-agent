@@ -43,6 +43,24 @@ describe('StreamEmitter', () => {
     expect(endEvent).toBeDefined()
   })
 
+  it('没有文本但结束时仍关闭工具型 Agent 的占位消息', () => {
+    const events: BaseEvent[] = []
+    const emitter = new StreamEmitter(
+      (event) => events.push(event),
+      'msg-tool-only',
+      createReasoningPipelineStub(),
+    )
+
+    emitter.finishTextMessage()
+
+    expect(events.map((event) => event.type)).toEqual([
+      EventType.TEXT_MESSAGE_START,
+      EventType.TEXT_MESSAGE_END,
+    ])
+    expect((events[0] as any).messageId).toBe('msg-tool-only')
+    expect((events[1] as any).messageId).toBe('msg-tool-only')
+  })
+
   it('handleSessionEvent 处理 tool_execution_start', () => {
     const events: BaseEvent[] = []
     const emitter = new StreamEmitter(
@@ -122,5 +140,58 @@ describe('StreamEmitter', () => {
         (e as any).name === 'PI_TOOL_EXECUTION_UPDATE',
     )
     expect(customEvent).toBeDefined()
+  })
+
+  describe('tool_result 转发结构化 details', () => {
+    function emitToolResult(details: unknown, extra: Record<string, unknown> = {}) {
+      const events: BaseEvent[] = []
+      const emitter = new StreamEmitter(
+        (event) => events.push(event),
+        'msg-1',
+        createReasoningPipelineStub(),
+        { emitRaw: false },
+      )
+      emitter.handleSessionEvent({
+        type: 'tool_result',
+        toolCallId: 'call-1',
+        toolName: 'edit',
+        details,
+        ...extra,
+      })
+      return events.find((e) => (e as any).name === 'PI_TOOL_RESULT') as any
+    }
+
+    it('转发 diff / patch 等字段', () => {
+      const event = emitToolResult({ diff: '+a\n-b', patch: '@@ -1 +1 @@', firstChangedLine: 12 })
+
+      expect(event).toBeDefined()
+      expect(event.value.toolCallId).toBe('call-1')
+      expect(event.value.details.diff).toBe('+a\n-b')
+      expect(event.value.details.firstChangedLine).toBe(12)
+      expect(event.value.isError).toBe(false)
+    })
+
+    it('details 为空时不发事件（多数工具没有结构化结果）', () => {
+      expect(emitToolResult(undefined)).toBeUndefined()
+      expect(emitToolResult(null)).toBeUndefined()
+    })
+
+    it('isError 透传', () => {
+      const event = emitToolResult({ diff: '+a' }, { isError: true })
+      expect(event.value.isError).toBe(true)
+    })
+
+    it('超长字符串被截断并打标记', () => {
+      const huge = 'x'.repeat(70_000)
+      const event = emitToolResult({ diff: huge })
+
+      expect(event.value.details.diff.length).toBe(64_000)
+      expect(event.value.details.diffTruncated).toBe(true)
+    })
+
+    it('未超长的字段不打截断标记', () => {
+      const event = emitToolResult({ diff: 'short' })
+      expect(event.value.details.diffTruncated).toBeUndefined()
+    })
   })
 })

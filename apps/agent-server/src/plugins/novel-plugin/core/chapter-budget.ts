@@ -21,7 +21,7 @@
  *
  * ## 设计取舍：推检查点，不硬停
  *
- * 超限时**弹检查点让用户决定**（继续 / 收尾 / 取消），而不是直接中断。
+ * 超限时**弹检查点让用户决定**（继续 / 取消），而不是直接中断。
  * 硬停会把已经花掉的 100 万 token 全部作废，比超支更糟 ——
  * 用户往往宁愿再花一点把这一章写完。所以闸门的作用是"告知 + 给出口"，
  * 不是"熔断"。
@@ -43,6 +43,8 @@ export interface ChapterBudgetLimits {
   maxInputTokens: number
   /** 墙钟耗时（毫秒） */
   maxWallClockMs: number
+  /** 用户主动从检查点重新打开整章的次数 */
+  maxFullChapterRewrites?: number
 }
 
 /**
@@ -56,6 +58,7 @@ export const DEFAULT_CHAPTER_BUDGET: ChapterBudgetLimits = {
   maxLlmCalls: 30,
   maxInputTokens: 400_000,
   maxWallClockMs: 25 * 60_000,
+  maxFullChapterRewrites: 1,
 }
 
 /** 单章累计用量 */
@@ -66,10 +69,77 @@ export interface ChapterBudgetUsage {
   inputTokens: number
   /** 用户已在超限检查点选择继续；同一章不再重复提示 */
   acknowledged: boolean
+  fullChapterRewrites: number
+  guardWriterRewrites: number
+  reviserRuns: number
+  reviewerRuns: number
+}
+
+export type ChapterBudgetCategory =
+  | 'fullChapterRewrites'
+  | 'guardWriterRewrites'
+  | 'reviserRuns'
+  | 'reviewerRuns'
+
+export interface ChapterBudgetCategorySnapshot {
+  fullChapterRewrites: number
+  maxFullChapterRewrites: number
+  fullChapterRewriteAvailable: boolean
+  guardWriterRewrites: number
+  reviserRuns: number
+  reviewerRuns: number
 }
 
 export function createChapterBudgetUsage(now: number = Date.now()): ChapterBudgetUsage {
-  return { startedAt: now, llmCalls: 0, inputTokens: 0, acknowledged: false }
+  return {
+    startedAt: now,
+    llmCalls: 0,
+    inputTokens: 0,
+    acknowledged: false,
+    fullChapterRewrites: 0,
+    guardWriterRewrites: 0,
+    reviserRuns: 0,
+    reviewerRuns: 0,
+  }
+}
+
+/** 记录一次分类运行；失败重试不会经过调用点，因此不会误占质量重写额度。 */
+export function recordChapterBudgetCategory(
+  usage: ChapterBudgetUsage,
+  category: ChapterBudgetCategory,
+): ChapterBudgetUsage {
+  return { ...usage, [category]: usage[category] + 1 }
+}
+
+export function getChapterBudgetCategorySnapshot(
+  usage: ChapterBudgetUsage,
+  limits: ChapterBudgetLimits = DEFAULT_CHAPTER_BUDGET,
+): ChapterBudgetCategorySnapshot {
+  const maxFullChapterRewrites = limits.maxFullChapterRewrites
+    ?? DEFAULT_CHAPTER_BUDGET.maxFullChapterRewrites
+    ?? 1
+  return {
+    fullChapterRewrites: usage.fullChapterRewrites,
+    maxFullChapterRewrites,
+    fullChapterRewriteAvailable: usage.fullChapterRewrites < maxFullChapterRewrites,
+    guardWriterRewrites: usage.guardWriterRewrites,
+    reviserRuns: usage.reviserRuns,
+    reviewerRuns: usage.reviewerRuns,
+  }
+}
+
+/** 尝试开始一次整章重写；达到上限时保持状态不变并返回 false。 */
+export function tryRecordFullChapterRewrite(
+  usage: ChapterBudgetUsage,
+  limits: ChapterBudgetLimits = DEFAULT_CHAPTER_BUDGET,
+): { usage: ChapterBudgetUsage; allowed: boolean } {
+  if (!getChapterBudgetCategorySnapshot(usage, limits).fullChapterRewriteAvailable) {
+    return { usage, allowed: false }
+  }
+  return {
+    usage: { ...usage, fullChapterRewrites: usage.fullChapterRewrites + 1 },
+    allowed: true,
+  }
 }
 
 /** 记录一次 LLM 调用。返回新对象，便于在不可变上下文里替换。 */
@@ -102,6 +172,7 @@ export interface BudgetEvaluation {
     maxInputTokens: number
     elapsedMs: number
     maxWallClockMs: number
+    categories: ChapterBudgetCategorySnapshot
   }
 }
 
@@ -124,6 +195,7 @@ export function evaluateChapterBudget(
     maxInputTokens: limits.maxInputTokens,
     elapsedMs,
     maxWallClockMs: limits.maxWallClockMs,
+    categories: getChapterBudgetCategorySnapshot(usage, limits),
   }
 
   if (usage.llmCalls >= limits.maxLlmCalls) {

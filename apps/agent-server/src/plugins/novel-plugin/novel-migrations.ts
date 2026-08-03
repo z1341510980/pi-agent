@@ -26,7 +26,7 @@ export const novelMigrations: MigrationDefinition[] = [
       created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_projects_status ON novel_projects(status);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_projects_status ON novel_projects(status);`
   },
   {
     // 小说章节表
@@ -47,7 +47,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_novel_chapters_project ON novel_chapters(project_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_chapters_project_chapter ON novel_chapters(project_id, chapter_number);`,
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_chapters_project_chapter ON novel_chapters(project_id, chapter_number);`
   },
   {
     // 小说角色表
@@ -71,7 +71,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_characters_project ON novel_characters(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_characters_project ON novel_characters(project_id);`
   },
   {
     // 角色关系表
@@ -88,7 +88,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_relationships_project ON novel_relationships(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_relationships_project ON novel_relationships(project_id);`
   },
   {
     // 伏笔表
@@ -109,7 +109,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_novel_foreshadowing_project ON novel_foreshadowing(project_id);
-    CREATE INDEX IF NOT EXISTS idx_novel_foreshadowing_status ON novel_foreshadowing(status);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_foreshadowing_status ON novel_foreshadowing(status);`
   },
   {
     // 线索表
@@ -128,7 +128,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_clues_project ON novel_clues(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_clues_project ON novel_clues(project_id);`
   },
   {
     // 冲突表
@@ -145,7 +145,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_conflicts_project ON novel_conflicts(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_conflicts_project ON novel_conflicts(project_id);`
   },
   {
     // 世界规则表
@@ -161,7 +161,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_world_rules_project ON novel_world_rules(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_world_rules_project ON novel_world_rules(project_id);`
   },
   {
     // 创作约束表
@@ -178,7 +178,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_constraints_project ON novel_constraints(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_constraints_project ON novel_constraints(project_id);`
   },
   {
     // 信息差表
@@ -197,7 +197,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_info_layers_project ON novel_information_layers(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_info_layers_project ON novel_information_layers(project_id);`
   },
   {
     // 风格指南表
@@ -212,7 +212,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_style_guides_project ON novel_style_guides(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_style_guides_project ON novel_style_guides(project_id);`
   },
   {
     // 作者意图表
@@ -227,7 +227,7 @@ export const novelMigrations: MigrationDefinition[] = [
       created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_intents_project ON novel_author_intents(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_intents_project ON novel_author_intents(project_id);`
   },
   {
     // 章节验收表
@@ -255,7 +255,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
       FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_reviews_chapter ON novel_chapter_reviews(chapter_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_reviews_chapter ON novel_chapter_reviews(chapter_id);`
   },
   {
     // 提示词模板表（PromptManager 运行时覆盖）
@@ -270,7 +270,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS idx_novel_prompt_templates_name ON novel_prompt_templates(name);
-    CREATE INDEX IF NOT EXISTS idx_novel_prompt_templates_project ON novel_prompt_templates(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_prompt_templates_project ON novel_prompt_templates(project_id);`
   },
   {
     // 节点位置表（前端画布节点坐标持久化）
@@ -285,7 +285,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at  INTEGER NOT NULL DEFAULT (unixepoch()),
       UNIQUE(project_id, node_type, entity_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_node_positions_project ON novel_node_positions(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_node_positions_project ON novel_node_positions(project_id);`
   },
   {
     // 角色状态变更历史表
@@ -303,7 +303,7 @@ export const novelMigrations: MigrationDefinition[] = [
       created_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS idx_char_history_character ON novel_character_history(character_id);
-    CREATE INDEX IF NOT EXISTS idx_char_history_project ON novel_character_history(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_char_history_project ON novel_character_history(project_id);`
   },
   {
     // 长期记忆事件表（情景记忆：跨章节的事件/状态变更时间线 + 因果链）
@@ -339,7 +339,7 @@ export const novelMigrations: MigrationDefinition[] = [
       created_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS idx_memory_snapshots_project ON novel_memory_snapshots(project_id);
-    CREATE INDEX IF NOT EXISTS idx_memory_snapshots_chapter ON novel_memory_snapshots(chapter_number);`,
+    CREATE INDEX IF NOT EXISTS idx_memory_snapshots_chapter ON novel_memory_snapshots(chapter_number);`
   },
   {
     // 势力表（组织/门派/王国/家族/公会/邪教）
@@ -361,7 +361,7 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_factions_project ON novel_factions(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_factions_project ON novel_factions(project_id);`
   },
   {
     // 地点表（大陆/国家/城市/建筑/地下城/区域/荒野），自引用构建层级树
@@ -382,7 +382,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_novel_locations_project ON novel_locations(project_id);
-    CREATE INDEX IF NOT EXISTS idx_novel_locations_parent ON novel_locations(parent_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_locations_parent ON novel_locations(parent_id);`
   },
   {
     // 世界观结构化要素表（力量体系/历史/文化/宗教/科技/经济/地理）
@@ -400,7 +400,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_novel_world_elements_project ON novel_world_elements(project_id);
-    CREATE INDEX IF NOT EXISTS idx_novel_world_elements_category ON novel_world_elements(category);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_world_elements_category ON novel_world_elements(category);`
   },
   {
     // 画布连线表（手动连线的持久化 + 自动边存储）
@@ -424,7 +424,7 @@ export const novelMigrations: MigrationDefinition[] = [
     );
     CREATE INDEX IF NOT EXISTS idx_novel_edges_project ON novel_edges(project_id);
     CREATE INDEX IF NOT EXISTS idx_novel_edges_source ON novel_edges(source_id);
-    CREATE INDEX IF NOT EXISTS idx_novel_edges_target ON novel_edges(target_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_edges_target ON novel_edges(target_id);`
   },
   {
     // Agent 调用日志表（记录每次 Agent 调用的完整上下文：系统提示词/章节上下文/任务指令/工具/结果）
@@ -457,30 +457,30 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_project ON novel_agent_logs(project_id);
     CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_chapter ON novel_agent_logs(project_id, chapter_number);
     CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_agent ON novel_agent_logs(project_id, agent_type);
-    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_created ON novel_agent_logs(created_at DESC);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_created ON novel_agent_logs(created_at DESC);`
   },
   {
     // 035: 扩展冲突表，支持章节区间 + 层级分类
     id: '035_extend_novel_conflicts',
     sql: `ALTER TABLE novel_conflicts ADD COLUMN first_chapter INTEGER;
           ALTER TABLE novel_conflicts ADD COLUMN last_chapter INTEGER;
-          ALTER TABLE novel_conflicts ADD COLUMN tier TEXT NOT NULL DEFAULT 'secondary';`,
+          ALTER TABLE novel_conflicts ADD COLUMN tier TEXT NOT NULL DEFAULT 'secondary';`
   },
   {
     // 036: 扩展势力表，支持章节区间
     id: '036_extend_novel_factions',
     sql: `ALTER TABLE novel_factions ADD COLUMN first_chapter INTEGER;
-          ALTER TABLE novel_factions ADD COLUMN last_chapter INTEGER;`,
+          ALTER TABLE novel_factions ADD COLUMN last_chapter INTEGER;`
   },
   {
     // 037: 扩展地点表，支持多次出现
     id: '037_extend_novel_locations',
-    sql: `ALTER TABLE novel_locations ADD COLUMN appear_chapters TEXT NOT NULL DEFAULT '[]';`,
+    sql: `ALTER TABLE novel_locations ADD COLUMN appear_chapters TEXT NOT NULL DEFAULT '[]';`
   },
   {
     // 038: 扩展角色表，标记主角
     id: '038_extend_novel_characters',
-    sql: `ALTER TABLE novel_characters ADD COLUMN is_protagonist INTEGER NOT NULL DEFAULT 0;`,
+    sql: `ALTER TABLE novel_characters ADD COLUMN is_protagonist INTEGER NOT NULL DEFAULT 0;`
   },
   {
     // 时间轴标记表
@@ -497,13 +497,13 @@ export const novelMigrations: MigrationDefinition[] = [
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch()),
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_novel_markers_project ON novel_markers(project_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_markers_project ON novel_markers(project_id);`
   },
   {
     // 040: 扩展标记表，支持片段批注关联实体
     id: '040_extend_novel_markers_clip_note',
     sql: `ALTER TABLE novel_markers ADD COLUMN entity_type TEXT;
-          ALTER TABLE novel_markers ADD COLUMN entity_id TEXT;`,
+          ALTER TABLE novel_markers ADD COLUMN entity_id TEXT;`
   },
   {
     // 041: 全书大纲字段 + 卷表
@@ -521,13 +521,13 @@ export const novelMigrations: MigrationDefinition[] = [
             FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
           );
           CREATE INDEX IF NOT EXISTS idx_novel_volumes_project ON novel_volumes(project_id);
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_volumes_project_number ON novel_volumes(project_id, volume_number);`,
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_volumes_project_number ON novel_volumes(project_id, volume_number);`
   },
   {
     // 042: 章节加 outline + volume_id
     id: '042_extend_novel_chapters_outline',
     sql: `ALTER TABLE novel_chapters ADD COLUMN outline TEXT NOT NULL DEFAULT '';
-          ALTER TABLE novel_chapters ADD COLUMN volume_id TEXT;`,
+          ALTER TABLE novel_chapters ADD COLUMN volume_id TEXT;`
   },
   {
     // 043: 数据回填——按 project 的 distinct chapter.volume 建 volume 记录并回填 volume_id
@@ -540,7 +540,7 @@ export const novelMigrations: MigrationDefinition[] = [
           SET volume_id = (SELECT v.id FROM novel_volumes v
                            WHERE v.project_id = novel_chapters.project_id
                              AND v.volume_number = novel_chapters.volume)
-          WHERE volume_id IS NULL AND volume IS NOT NULL;`,
+          WHERE volume_id IS NULL AND volume IS NOT NULL;`
   },
   {
     // 小说 Agent 角色温度运行时覆盖表（全局配置，不按 project）
@@ -549,7 +549,7 @@ export const novelMigrations: MigrationDefinition[] = [
       agent_type    TEXT PRIMARY KEY,
       temperature   REAL,
       updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
-    );`,
+    );`
   },
   {
     // 045: conflicts/factions 新增 chapter_spans（JSON 数组 [[start,end],...]）支持非连续跨度
@@ -564,19 +564,19 @@ export const novelMigrations: MigrationDefinition[] = [
           UPDATE novel_factions SET chapter_spans =
             CASE WHEN first_chapter IS NULL THEN '[]'
                  ELSE json_array(json_array(first_chapter, COALESCE(last_chapter, first_chapter)))
-            END;`,
+            END;`
   },
   {
     // 046: 项目回收站——软删除字段
     // deleted_at 为 NULL 表示正常项目，非 NULL 表示已移入回收站（值为移入时间戳）
     id: '046_add_deleted_at_to_novel_projects',
-    sql: `ALTER TABLE novel_projects ADD COLUMN deleted_at INTEGER;`,
+    sql: `ALTER TABLE novel_projects ADD COLUMN deleted_at INTEGER;`
   },
   {
     // 047: 章节张力曲线（1-10，NULL 表示未设定）
     // 借鉴 PlotPilot TensionLevel：LOW=1 → EXTREME=10 非线性标度
     id: '047_add_tension_to_novel_chapters',
-    sql: `ALTER TABLE novel_chapters ADD COLUMN tension INTEGER;`,
+    sql: `ALTER TABLE novel_chapters ADD COLUMN tension INTEGER;`
   },
   {
     // 048: 角色四层逻辑补全（目标层 / 功能层 / 影响层）
@@ -586,7 +586,7 @@ export const novelMigrations: MigrationDefinition[] = [
     id: '048_add_character_plot_fields',
     sql: `ALTER TABLE novel_characters ADD COLUMN long_term_desire TEXT NOT NULL DEFAULT '';
           ALTER TABLE novel_characters ADD COLUMN plot_role TEXT NOT NULL DEFAULT 'supporting';
-          ALTER TABLE novel_characters ADD COLUMN removal_impact TEXT NOT NULL DEFAULT '';`,
+          ALTER TABLE novel_characters ADD COLUMN removal_impact TEXT NOT NULL DEFAULT '';`
   },
   {
     // 049: 关系四层逻辑②动态化（关系层补全）
@@ -600,14 +600,14 @@ export const novelMigrations: MigrationDefinition[] = [
           ALTER TABLE novel_relationships ADD COLUMN alignment TEXT NOT NULL DEFAULT 'neutral';
           ALTER TABLE novel_relationships ADD COLUMN trend TEXT NOT NULL DEFAULT 'stable';
           ALTER TABLE novel_relationships ADD COLUMN chapter_hint TEXT NOT NULL DEFAULT '';
-          ALTER TABLE novel_relationships ADD COLUMN last_updated_chapter INTEGER;`,
+          ALTER TABLE novel_relationships ADD COLUMN last_updated_chapter INTEGER;`
   },
   {
     // 050: 角色反向索引到冲突（四层逻辑④：影响层）
     // - participating_conflicts: JSON: string[]，由冲突 CRUD 时自动同步
     //   回答"删掉这个角色哪段冲突线会断"，与 removal_impact 互补
     id: '050_add_character_participating_conflicts',
-    sql: `ALTER TABLE novel_characters ADD COLUMN participating_conflicts TEXT NOT NULL DEFAULT '[]';`,
+    sql: `ALTER TABLE novel_characters ADD COLUMN participating_conflicts TEXT NOT NULL DEFAULT '[]';`
   },
   {
     // 051: 冲突四层逻辑③：功能层 + 推进模式
@@ -618,7 +618,7 @@ export const novelMigrations: MigrationDefinition[] = [
     //   默认 'linear'（向后兼容旧数据的线性推进），由 engine.computeConflictTargetStage 分支处理
     id: '051_add_conflict_plot_function_and_progression',
     sql: `ALTER TABLE novel_conflicts ADD COLUMN plot_function TEXT;
-          ALTER TABLE novel_conflicts ADD COLUMN progression_mode TEXT NOT NULL DEFAULT 'linear';`,
+          ALTER TABLE novel_conflicts ADD COLUMN progression_mode TEXT NOT NULL DEFAULT 'linear';`
   },
   {
     // 052: 伏笔四层逻辑③：埋设/回收方式结构化
@@ -628,13 +628,13 @@ export const novelMigrations: MigrationDefinition[] = [
     // 这样旧数据不会因迁移失败，未匹配的旧 category 在 rowToForeshadow 里回退到 'item'
     id: '052_add_foreshadow_plant_recover_methods',
     sql: `ALTER TABLE novel_foreshadowing ADD COLUMN plant_method TEXT;
-          ALTER TABLE novel_foreshadowing ADD COLUMN recover_method TEXT;`,
+          ALTER TABLE novel_foreshadowing ADD COLUMN recover_method TEXT;`
   },
   {
     // 053: 跨实体因果链 — 为 cause 字段建索引，加速 getCausalChain 向上追溯
     // cause 字段存储上游事件 ID，未建索引时反向查询需全表扫描
     id: '053_add_cause_index_to_memory_events',
-    sql: `CREATE INDEX IF NOT EXISTS idx_memory_events_cause ON novel_memory_events(cause) WHERE cause IS NOT NULL;`,
+    sql: `CREATE INDEX IF NOT EXISTS idx_memory_events_cause ON novel_memory_events(cause) WHERE cause IS NOT NULL;`
   },
   {
     // 054: P3-2 打通伏笔↔信息差 — 双向关联字段
@@ -645,7 +645,7 @@ export const novelMigrations: MigrationDefinition[] = [
     sql: `
       ALTER TABLE novel_foreshadowing ADD COLUMN linked_info_layers TEXT NOT NULL DEFAULT '[]';
       ALTER TABLE novel_information_layers ADD COLUMN linked_foreshadows TEXT NOT NULL DEFAULT '[]';
-    `,
+    `
   },
   {
     // 055: 伏笔支持多段章节跨度（与 conflicts/factions 迁移 045 同模式）
@@ -660,7 +660,7 @@ export const novelMigrations: MigrationDefinition[] = [
           UPDATE novel_foreshadowing SET chapter_spans =
             CASE WHEN first_chapter IS NULL THEN '[]'
                  ELSE json_array(json_array(first_chapter, COALESCE(recover_by_chapter, first_chapter)))
-            END;`,
+            END;`
   },
   {
     // 056: 章节增加时间线偏移、章尾钩子、前情提要字段
@@ -670,7 +670,7 @@ export const novelMigrations: MigrationDefinition[] = [
     id: '056_add_novel_chapters_timeline_hook_recap',
     sql: `ALTER TABLE novel_chapters ADD COLUMN time_offset INTEGER;
           ALTER TABLE novel_chapters ADD COLUMN chapter_ending_hook TEXT;
-          ALTER TABLE novel_chapters ADD COLUMN recap TEXT;`,
+          ALTER TABLE novel_chapters ADD COLUMN recap TEXT;`
   },
   {
     // 057: AgentLog 表增加 LLM usage 字段（cache token 诊断）
@@ -683,7 +683,7 @@ export const novelMigrations: MigrationDefinition[] = [
           ALTER TABLE novel_agent_logs ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
           ALTER TABLE novel_agent_logs ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
           ALTER TABLE novel_agent_logs ADD COLUMN llm_provider TEXT NOT NULL DEFAULT '';
-          ALTER TABLE novel_agent_logs ADD COLUMN llm_model TEXT NOT NULL DEFAULT '';`,
+          ALTER TABLE novel_agent_logs ADD COLUMN llm_model TEXT NOT NULL DEFAULT '';`
   },
   {
     // v0.2：钩子实体表（章末悬念驱动，追踪 thrown→fulfilled 闭环）
@@ -705,7 +705,7 @@ export const novelMigrations: MigrationDefinition[] = [
     );
     CREATE INDEX IF NOT EXISTS idx_novel_hooks_project ON novel_hooks(project_id);
     CREATE INDEX IF NOT EXISTS idx_novel_hooks_status ON novel_hooks(status);
-    CREATE INDEX IF NOT EXISTS idx_novel_hooks_chapter ON novel_hooks(chapter_number);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_hooks_chapter ON novel_hooks(chapter_number);`
   },
   {
     // v0.2：角色弧光表（角色内心阶段演进，1:1 关联角色）
@@ -724,7 +724,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (character_id) REFERENCES novel_characters(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_novel_arcs_project ON novel_character_arcs(project_id);
-    CREATE INDEX IF NOT EXISTS idx_novel_arcs_character ON novel_character_arcs(character_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_arcs_character ON novel_character_arcs(character_id);`
   },
   {
     // 群聊模式设置（单行表，key-value 式存储）
@@ -733,11 +733,11 @@ export const novelMigrations: MigrationDefinition[] = [
       key           TEXT PRIMARY KEY,
       value         TEXT NOT NULL,
       updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
-    );`,
+    );`
   },
   {
     id: '061_add_target_platform_to_novel_projects',
-    sql: `ALTER TABLE novel_projects ADD COLUMN target_platform TEXT;`,
+    sql: `ALTER TABLE novel_projects ADD COLUMN target_platform TEXT;`
   },
   {
     // 章节聊天消息表（按章节持久化用户输入与 Agent 回复）
@@ -755,7 +755,7 @@ export const novelMigrations: MigrationDefinition[] = [
       created_at      INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS idx_chapter_chat_project_chapter
-      ON novel_chapter_chat_messages(project_id, chapter_number, created_at);`,
+      ON novel_chapter_chat_messages(project_id, chapter_number, created_at);`
   },
   {
     // 项目级叙事文风档案（结构化配置 + 正向样本）
@@ -782,7 +782,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_novel_writing_style_profiles_project
-      ON novel_writing_style_profiles(project_id);`,
+      ON novel_writing_style_profiles(project_id);`
   },
   {
     // 群聊运行快照：支持 Writer 阶段失败后从 chapter_weaving 断点续跑
@@ -806,12 +806,12 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_novel_discussion_runs_chapter
       ON novel_discussion_runs(project_id, chapter_number, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_novel_discussion_runs_resumed_from
-      ON novel_discussion_runs(resumed_from_run_id);`,
+      ON novel_discussion_runs(resumed_from_run_id);`
   },
   {
     // 伏笔事件链：只保存实际发生的埋设/强化/揭示/回收节点，不再用连续跨度表达伏笔生命周期
     id: '065_add_foreshadow_beats',
-    sql: `ALTER TABLE novel_foreshadowing ADD COLUMN beats TEXT NOT NULL DEFAULT '[]';`,
+    sql: `ALTER TABLE novel_foreshadowing ADD COLUMN beats TEXT NOT NULL DEFAULT '[]';`
   },
   {
     // 章节正文版本历史：每次正文覆盖前自动存档，支持版本列表、diff、回滚。
@@ -831,24 +831,24 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_chapter_versions_chapter ON novel_chapter_versions(chapter_id, sequence);
-    CREATE INDEX IF NOT EXISTS idx_chapter_versions_project ON novel_chapter_versions(project_id, created_at);`,
+    CREATE INDEX IF NOT EXISTS idx_chapter_versions_project ON novel_chapter_versions(project_id, created_at);`
   },
   {
     // 章节六型定位。此前共享类型和 Director 提示词已有 positioning，
     // 但数据库未落列，导致矩阵/Director 规划无法传到 Writer 约束。
     id: '067_add_novel_chapter_positioning',
-    sql: `ALTER TABLE novel_chapters ADD COLUMN positioning TEXT;`,
+    sql: `ALTER TABLE novel_chapters ADD COLUMN positioning TEXT;`
   },
   {
     // 线索在矩阵中的章节节点。与冲突/势力保持同一数据形式，
     // 但语义是“本章发现或推进过该线索”，而非线索全生命周期。
     id: '068_add_clue_chapter_spans',
-    sql: `ALTER TABLE novel_clues ADD COLUMN chapter_spans TEXT NOT NULL DEFAULT '[]';`,
+    sql: `ALTER TABLE novel_clues ADD COLUMN chapter_spans TEXT NOT NULL DEFAULT '[]';`
   },
   {
     // 文风反例：与正向样本一起形成可回归的项目级质量基线。
     id: '069_add_writing_style_negative_examples',
-    sql: `ALTER TABLE novel_writing_style_profiles ADD COLUMN negative_examples TEXT NOT NULL DEFAULT '[]';`,
+    sql: `ALTER TABLE novel_writing_style_profiles ADD COLUMN negative_examples TEXT NOT NULL DEFAULT '[]';`
   },
   {
     // 物品表：追踪角色拥有的关键物品（玉佩/法器/武器/钥匙等），
@@ -871,7 +871,7 @@ export const novelMigrations: MigrationDefinition[] = [
       FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_novel_items_project ON novel_items(project_id);
-    CREATE INDEX IF NOT EXISTS idx_novel_items_owner ON novel_items(owner_id);`,
+    CREATE INDEX IF NOT EXISTS idx_novel_items_owner ON novel_items(owner_id);`
   },
   {
     // 071: 冲突推进粒度字段
@@ -884,7 +884,7 @@ export const novelMigrations: MigrationDefinition[] = [
     // - next_step: 下一步（一句话描述下章应推进的方向）
     id: '071_add_conflict_current_next_step',
     sql: `ALTER TABLE novel_conflicts ADD COLUMN current_step TEXT NOT NULL DEFAULT '';
-          ALTER TABLE novel_conflicts ADD COLUMN next_step TEXT NOT NULL DEFAULT '';`,
+          ALTER TABLE novel_conflicts ADD COLUMN next_step TEXT NOT NULL DEFAULT '';`
   },
   {
     // 072: 故事事件账本、变化记录扩展和统一批注。
@@ -963,11 +963,11 @@ export const novelMigrations: MigrationDefinition[] = [
     CREATE INDEX IF NOT EXISTS idx_novel_annotations_scope
       ON novel_annotations(scope_type, scope_id);
     CREATE INDEX IF NOT EXISTS idx_novel_annotations_entity
-      ON novel_annotations(entity_type, entity_id);`,
+      ON novel_annotations(entity_type, entity_id);`
   },
   {
     id: '073_add_style_note_to_memory_events',
-    sql: `ALTER TABLE novel_memory_events ADD COLUMN style_note TEXT;`,
+    sql: `ALTER TABLE novel_memory_events ADD COLUMN style_note TEXT;`
   },
   {
     // 074: 数据搬运——把 7 类旧关联字段（JSON 数组 / 单 ID）拆解为 novel_edges 行
@@ -1013,7 +1013,7 @@ WHERE h.linked_foreshadow_id IS NOT NULL AND h.linked_foreshadow_id != '';
 INSERT OR IGNORE INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type, edge_type, label, auto)
 SELECT lower(hex(randomblob(16))), h.project_id, h.id, 'hook', h.linked_conflict_id, 'conflict', 'related', '关联冲突', 1
 FROM novel_hooks h
-WHERE h.linked_conflict_id IS NOT NULL AND h.linked_conflict_id != '';`,
+WHERE h.linked_conflict_id IS NOT NULL AND h.linked_conflict_id != '';`
   },
   {
     // 075: 删除已迁移到 novel_edges 的关联字段，并加 UNIQUE 索引防止重复边
@@ -1029,6 +1029,49 @@ ALTER TABLE novel_hooks DROP COLUMN linked_foreshadow_id;
 ALTER TABLE novel_hooks DROP COLUMN linked_conflict_id;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_edges_unique
-  ON novel_edges(project_id, source_id, target_id, edge_type);`,
+  ON novel_edges(project_id, source_id, target_id, edge_type);`
   },
+  {
+    // 076: target_words 从全书目标改为默认每章字数。
+    // 迁移按旧逻辑计算实际生效的单章目标，避免已有项目的生成长度突变。
+    id: '076_project_target_words_to_chapter_words',
+    sql: `UPDATE novel_projects
+SET target_words = MIN(5000, MAX(2500, CAST(ROUND(target_words / 1000.0) AS INTEGER)))
+WHERE target_words > 0;`
+  },
+  {
+    // 077: agent 日志补 payload 体积计量。
+    //
+    // 动因：日志原来只记 systemPrompt / chapterContext / userMessage 的字符数，
+    // 三者相加约 1 万字符，而同次调用的 inputTokens 是 2~4 万。中文 1 字符通常
+    // ≤ 1 token，这个倍数说明有一份体量相当甚至更大的内容被送进去却没有记录。
+    // 这几列记录**真正发往 provider 的 payload**：messages / tools 分开计，
+    // 并数出一次「Agent 调用」内部实际发生了几次 LLM 往返（工具调用会导致多次，
+    // 每次都要重发完整历史）。
+    id: '077_agent_logs_payload_metrics',
+    sql: `ALTER TABLE novel_agent_logs ADD COLUMN payload_messages_chars INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE novel_agent_logs ADD COLUMN payload_tools_chars INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE novel_agent_logs ADD COLUMN payload_tool_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE novel_agent_logs ADD COLUMN payload_total_chars INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE novel_agent_logs ADD COLUMN llm_round_trips INTEGER NOT NULL DEFAULT 0;`
+  },
+  {
+    // 078: 将 novel_ask_story 的运行快照写入领域日志，支持历史灰度审计。
+    // 旧行以 legacy/true 回填，保持 077 payload 字段与既有读写语义不变。
+    id: '078_add_ask_story_audit_to_novel_agent_logs',
+    sql: `ALTER TABLE novel_agent_logs ADD COLUMN ask_story_policy TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE novel_agent_logs ADD COLUMN ask_story_enabled INTEGER NOT NULL DEFAULT 1;`
+  },
+  {
+    // 079: arranger/memory 聚合日志与单次 provider session 明细建立父子关联。
+    id: '079_add_agent_log_operation_parent',
+    sql: `ALTER TABLE novel_agent_logs ADD COLUMN parent_log_id TEXT;
+ALTER TABLE novel_agent_logs ADD COLUMN operation TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(parent_log_id);`
+  },
+  {
+    // 080: ask_story rollout is an explicit project setting, not process-global state.
+    id: '080_add_project_ask_story_policy',
+    sql: `ALTER TABLE novel_projects ADD COLUMN novel_ask_story_policy TEXT;`
+  }
 ]

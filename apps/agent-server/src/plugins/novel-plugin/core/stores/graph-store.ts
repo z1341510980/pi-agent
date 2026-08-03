@@ -59,18 +59,24 @@ export class GraphStore {
         system_prompt, chapter_context, user_message,
         task_input, user_instructions, tools, tool_names,
         result, result_length, duration_ms, status, error,
-        session_id, created_at,
+        session_id, parent_log_id, operation, created_at,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-        llm_provider, llm_model
+        llm_provider, llm_model,
+        payload_messages_chars, payload_tools_chars, payload_tool_count,
+        payload_total_chars, llm_round_trips,
+        ask_story_policy, ask_story_enabled
       ) VALUES (
         @id, @project_id, @chapter_number, @agent_type, @agent_name,
         @display_agent_type, @display_agent_name, @phase,
         @system_prompt, @chapter_context, @user_message,
         @task_input, @user_instructions, @tools, @tool_names,
         @result, @result_length, @duration_ms, @status, @error,
-        @session_id, @created_at,
+        @session_id, @parent_log_id, @operation, @created_at,
         @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
-        @llm_provider, @llm_model
+        @llm_provider, @llm_model,
+        @payload_messages_chars, @payload_tools_chars, @payload_tool_count,
+        @payload_total_chars, @llm_round_trips,
+        @ask_story_policy, @ask_story_enabled
       )
     `)
     this.stmtGetAgentLog = db.prepare('SELECT * FROM novel_agent_logs WHERE id = ?')
@@ -272,6 +278,8 @@ export class GraphStore {
       status: full.status,
       error: full.error,
       session_id: full.sessionId,
+      parent_log_id: full.parentLogId ?? null,
+      operation: full.operation ?? '',
       created_at: full.createdAt,
       input_tokens: full.inputTokens ?? 0,
       output_tokens: full.outputTokens ?? 0,
@@ -279,6 +287,13 @@ export class GraphStore {
       cache_write_tokens: full.cacheWriteTokens ?? 0,
       llm_provider: full.llmProvider ?? '',
       llm_model: full.llmModel ?? '',
+      payload_messages_chars: full.payloadMessagesChars ?? 0,
+      payload_tools_chars: full.payloadToolsChars ?? 0,
+      payload_tool_count: full.payloadToolCount ?? 0,
+      payload_total_chars: full.payloadTotalChars ?? 0,
+      llm_round_trips: full.llmRoundTrips ?? 0,
+      ask_story_policy: full.askStoryPolicy ?? 'legacy',
+      ask_story_enabled: (full.askStoryEnabled ?? true) ? 1 : 0,
     })
     return full
   }
@@ -432,12 +447,21 @@ export class GraphStore {
       status: row.status as NovelAgentLogStatus,
       error: row.error,
       sessionId: row.session_id,
+      parentLogId: row.parent_log_id ?? null,
+      operation: row.operation ?? '',
       inputTokens: row.input_tokens ?? 0,
       outputTokens: row.output_tokens ?? 0,
       cacheReadTokens: row.cache_read_tokens ?? 0,
       cacheWriteTokens: row.cache_write_tokens ?? 0,
       llmProvider: row.llm_provider ?? '',
       llmModel: row.llm_model ?? '',
+      payloadMessagesChars: row.payload_messages_chars ?? 0,
+      payloadToolsChars: row.payload_tools_chars ?? 0,
+      payloadToolCount: row.payload_tool_count ?? 0,
+      payloadTotalChars: row.payload_total_chars ?? 0,
+      llmRoundTrips: row.llm_round_trips ?? 0,
+      askStoryPolicy: (row.ask_story_policy ?? 'legacy') as NovelAgentLog['askStoryPolicy'],
+      askStoryEnabled: row.ask_story_enabled == null ? true : row.ask_story_enabled === 1,
       createdAt: row.created_at,
     }
   }
@@ -453,18 +477,28 @@ export class GraphStore {
       displayAgentName: row.display_agent_name,
       phase: row.phase,
       systemPromptLength: row.system_prompt.length,
+      chapterContextLength: row.chapter_context?.length ?? 0,
       userMessageLength: row.user_message.length,
       toolNames: parseJSON<string[]>(row.tool_names, []),
       resultLength: row.result_length,
       durationMs: row.duration_ms,
       status: row.status as NovelAgentLogStatus,
       error: row.error,
+      parentLogId: row.parent_log_id ?? null,
+      operation: row.operation ?? '',
       inputTokens: row.input_tokens ?? 0,
       outputTokens: row.output_tokens ?? 0,
       cacheReadTokens: row.cache_read_tokens ?? 0,
       cacheWriteTokens: row.cache_write_tokens ?? 0,
       llmProvider: row.llm_provider ?? '',
       llmModel: row.llm_model ?? '',
+      payloadMessagesChars: row.payload_messages_chars ?? 0,
+      payloadToolsChars: row.payload_tools_chars ?? 0,
+      payloadToolCount: row.payload_tool_count ?? 0,
+      payloadTotalChars: row.payload_total_chars ?? 0,
+      llmRoundTrips: row.llm_round_trips ?? 0,
+      askStoryPolicy: (row.ask_story_policy ?? 'legacy') as NovelAgentLogSummary['askStoryPolicy'],
+      askStoryEnabled: row.ask_story_enabled == null ? true : row.ask_story_enabled === 1,
       createdAt: row.created_at,
     }
   }

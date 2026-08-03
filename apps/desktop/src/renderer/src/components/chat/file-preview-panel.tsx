@@ -1,6 +1,7 @@
-import type { ReactElement } from 'react'
+import { useEffect, useMemo, useRef, type ReactElement } from 'react'
 import { X, FileText, Image, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import type { FilePreviewState } from '@/stores/ui-store'
 
 // ── 类型定义 ──
@@ -66,9 +67,11 @@ export function FilePreviewPanel({ file, onClose }: FilePreviewPanelProps): Reac
             />
           </div>
         ) : file.content && file.encoding === 'utf-8' ? (
-          <pre className="px-4 py-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-words text-text leading-relaxed">
-            <code>{file.content}</code>
-          </pre>
+          <TextPreview
+            content={file.content}
+            highlightLine={file.highlightLine}
+            highlightEndLine={file.highlightEndLine}
+          />
         ) : (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
             <FileText className="size-10" />
@@ -77,6 +80,58 @@ export function FilePreviewPanel({ file, onClose }: FilePreviewPanelProps): Reac
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * 文本预览：带行号，并能定位/高亮指定行。
+ *
+ * 定位是 `path:42` 引用能落地的关键 —— 打开文件却不告诉用户第 42 行在哪，
+ * 等于把找位置的活又推回给用户。
+ */
+function TextPreview({
+  content,
+  highlightLine,
+  highlightEndLine
+}: {
+  content: string
+  highlightLine?: number
+  highlightEndLine?: number
+}): ReactElement {
+  const lines = useMemo(() => content.split('\n'), [content])
+  const targetRef = useRef<HTMLDivElement | null>(null)
+
+  // 目标行滚到视口中间；换文件或换行号时重新定位
+  useEffect(() => {
+    if (highlightLine == null) return
+    targetRef.current?.scrollIntoView({ block: 'center' })
+  }, [highlightLine, content])
+
+  const from = highlightLine
+  const to = highlightEndLine ?? highlightLine
+
+  return (
+    <div className="py-3 font-mono text-xs leading-relaxed">
+      {lines.map((line, index) => {
+        const lineNumber = index + 1
+        const highlighted = from != null && to != null && lineNumber >= from && lineNumber <= to
+        return (
+          <div
+            key={lineNumber}
+            ref={lineNumber === from ? targetRef : undefined}
+            className={cn(
+              'flex gap-3 px-4',
+              highlighted && 'bg-primary/10 outline outline-1 -outline-offset-1 outline-primary/20'
+            )}
+          >
+            <span className="w-9 shrink-0 select-none text-right tabular-nums text-hint">
+              {lineNumber}
+            </span>
+            <span className="min-w-0 whitespace-pre-wrap break-words text-text">{line || ' '}</span>
+          </div>
+        )
+      })}
     </div>
   )
 }

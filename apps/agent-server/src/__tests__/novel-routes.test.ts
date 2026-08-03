@@ -141,6 +141,7 @@ afterAll(async () => {
 beforeEach(() => {
   // 清空所有表数据，确保测试独立
   db.exec(`
+    DELETE FROM novel_agent_logs;
     DELETE FROM novel_discussion_runs;
     DELETE FROM novel_chapter_chat_messages;
     DELETE FROM novel_node_positions;
@@ -161,6 +162,44 @@ beforeEach(() => {
     DELETE FROM novel_chapters;
     DELETE FROM novel_projects;
   `)
+})
+
+describe('Novel API 路由 - Agent 日志审计字段', () => {
+  it('列表和详情 API 都返回 askStoryPolicy 与 askStoryEnabled', async () => {
+    const projectRes = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects`,
+      payload: { title: '日志审计测试', genre: '玄幻', synopsis: '', targetWords: 0 },
+    })
+    const projectId = projectRes.json().data.id as string
+    const log = store.insertAgentLog({
+      projectId, chapterNumber: 1, agentType: 'director', agentName: '导演',
+      displayAgentType: 'director', displayAgentName: '导演', phase: 'directing',
+      systemPrompt: 'sys', chapterContext: 'ctx', userMessage: 'msg', taskInput: 'task',
+      userInstructions: [], tools: [], toolNames: [], result: 'result', resultLength: 6,
+      durationMs: 10, status: 'success', error: '', sessionId: 's',
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      llmProvider: '', llmModel: '', payloadMessagesChars: 0, payloadToolsChars: 0,
+      payloadToolCount: 0, payloadTotalChars: 0, llmRoundTrips: 1,
+      askStoryPolicy: 'directorReviewerOff', askStoryEnabled: false,
+    })
+
+    const listResponse = await app.inject({
+      method: 'GET', url: `${PLUGIN_PREFIX}/projects/${projectId}/agent-logs`,
+    })
+    expect(listResponse.statusCode).toBe(200)
+    expect(listResponse.json().data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: log.id, askStoryPolicy: 'directorReviewerOff', askStoryEnabled: false }),
+    ]))
+
+    const detailResponse = await app.inject({
+      method: 'GET', url: `${PLUGIN_PREFIX}/agent-logs/${log.id}`,
+    })
+    expect(detailResponse.statusCode).toBe(200)
+    expect(detailResponse.json().data).toMatchObject({
+      id: log.id, askStoryPolicy: 'directorReviewerOff', askStoryEnabled: false,
+    })
+  })
 })
 
 describe('Novel API 路由 - 项目', () => {

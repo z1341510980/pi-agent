@@ -88,6 +88,54 @@ function stubPlan(generator: NovelEntityGenerator, plan: unknown, generated: Map
 const EMPTY_PLAN = { characters: [], conflicts: [], foreshadows: [], factions: [], locations: [], items: [] }
 
 describe('ai-arrange 复用已有实体', () => {
+  it('writes aggregate payload sums/max and session-attributed child logs', async () => {
+    const h = createHarness()
+    try {
+      const usage = {
+        inputTokens: 10, outputTokens: 2, cacheReadTokens: 1, cacheWriteTokens: 0,
+        llmProvider: 'provider', llmModel: 'model',
+      }
+      const planCall = {
+        operation: 'plan', sessionId: 'plan-session', systemPrompt: 'plan-system', userMessage: 'plan-user',
+        result: '{}', durationMs: 5, status: 'success', error: '', usage,
+        payloadStats: { messagesChars: 100, toolsChars: 20, toolCount: 4, totalChars: 150, roundTrips: 1 },
+      }
+      const batchCall = {
+        operation: 'batch', sessionId: 'batch-session', systemPrompt: 'batch-system', userMessage: 'batch-user',
+        result: '{}', durationMs: 6, status: 'success', error: '', usage,
+        payloadStats: { messagesChars: 200, toolsChars: 10, toolCount: 2, totalChars: 240, roundTrips: 2 },
+      }
+      ;(h.generator as any).planEntitiesFromOutline = async () => ({
+        plan: EMPTY_PLAN,
+        logContext: {
+          systemPrompt: 'plan-system', userMessage: 'plan-user', rawResult: '{}',
+          status: 'success', error: '', usage, call: planCall,
+        },
+      })
+      ;(h.generator as any).generatePlanInBatches = async () => ({
+        generated: new Map(), itemCount: 0, batchCount: 1, retryCount: 0,
+        fallbackCount: 0, unbatchedGenerationCount: 0, usage, calls: [batchCall],
+      })
+
+      await h.generator.generateAndArrange(h.projectId, 1, 'outline')
+
+      const logs = h.store.listAgentLogsByProject(h.projectId, 10)
+      const parent = logs.find((log) => log.agentType === 'arranger')
+      const details = logs.filter((log) => log.agentType === 'arranger-detail')
+      expect(parent).toEqual(expect.objectContaining({
+        operation: 'aggregate', payloadMessagesChars: 300, payloadToolsChars: 30,
+        payloadToolCount: 4, payloadTotalChars: 390, llmRoundTrips: 3,
+      }))
+      expect(details.map((log) => ({ operation: log.operation, sessionId: log.sessionId, parentLogId: log.parentLogId })))
+        .toEqual(expect.arrayContaining([
+          { operation: 'plan', sessionId: 'plan-session', parentLogId: parent?.id },
+          { operation: 'batch', sessionId: 'batch-session', parentLogId: parent?.id },
+        ]))
+    } finally {
+      h.db.close()
+    }
+  })
+
   it('按 chapterAction 为已埋设伏笔补本章 beat，并同步 status', async () => {
     const h = createHarness()
     try {

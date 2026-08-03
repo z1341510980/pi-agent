@@ -46,6 +46,12 @@ import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { runtimePerformance } from '../../../config/performance.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CreationFlowEvent, getNovelAgentTemperature } from './novel-agents.js'
+import {
+  getNovelAskStoryPolicy,
+  isNovelAskStoryEnabled,
+  resolveNovelAgentToolNames,
+  type NovelAskStoryPolicy,
+} from './novel-ask-story-policy.js'
 import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, RhythmSuggestion, VersionSource } from './types.js'
 import { RhythmController } from './rhythm-controller.js'
 import { scanCliches, formatClicheReport } from './cliche-scanner.js'
@@ -71,13 +77,20 @@ import { buildWriterRewritePlan } from './writer-rewrite-plan.js'
 import {
   createChapterBudgetUsage,
   evaluateChapterBudget,
+  getChapterBudgetCategorySnapshot,
+  recordChapterBudgetCategory,
   recordLlmCall,
   shouldPromptBudgetCheckpoint,
+  tryRecordFullChapterRewrite,
   type ChapterBudgetUsage,
 } from './chapter-budget.js'
 export type { CreationOptions, CreationResult } from '../../../core/agent/chapter-finalizer.js'
 
 interface CreationRunContext {
+  /** 策略在流程启动时冻结，避免并发请求或运行中环境变更影响同一章。 */
+  askStoryPolicy: NovelAskStoryPolicy
+  /** Deterministic Writer/Reviser fact-pack injection is enabled for this run. */
+  factPackPathActive: boolean
   arrangedEntities?: ArrangedEntity
   directorOutput?: string
   directorTask?: NarrativeTask
@@ -113,8 +126,11 @@ interface RunAgentOverrides {
   displayAgentName?: string
   /** 当前阶段（默认按 agentType 推断） */
   phase?: CreationPhase
-  /** identity_only 用于盲审：不注入全局 system、章节 shared/suffix 和工具。 */
-  contextMode?: 'full' | 'identity_only'
+  /**
+   * identity_only 用于盲审：不注入全局 system、章节 shared/suffix 和工具。
+   * editor 保留身份和 agent 专属 suffix，但跳过全局与章节 shared 上下文。
+   */
+  contextMode?: 'full' | 'identity_only' | 'editor'
   /** 覆盖成员身份提示词，例如盲审文字编辑。 */
   identityPrompt?: string
   /** 是否消费流程中追加的用户指令；盲审应留给完整 Reviewer。 */
@@ -190,6 +206,8 @@ export class NovelOrchestrator {
     }
     return this.runStorage.run(
       {
+        askStoryPolicy: getNovelAskStoryPolicy(this.store.getProject(projectId)?.novelAskStoryPolicy),
+        factPackPathActive: true,
         arrangedEntities: options.arrangedEntities,
         semiLayerSharedCache: null,
         budget: createChapterBudgetUsage(),
@@ -325,6 +343,7 @@ export class NovelOrchestrator {
           type: 'narrative_task',
           phase: 'checkpoint_narrative',
           data: checkpointData,
+          options: ['approve', 'revise', 'rewrite', 'reject'],
         })
 
         if (narrativeDecision === 'reject') {
@@ -421,8 +440,9 @@ export class NovelOrchestrator {
           chapterEndingHookDescription: directorTask.chapterEndingHookDescription,
           povCharacters: directorTask.povCharacters,
           sceneCount: directorTask.sceneCount,
-          positioning: directorTask.positioning,
-          timeOffset: directorTask.timeOffset,
+           positioning: directorTask.positioning,
+           timeOffset: directorTask.timeOffset,
+           requiredReferences: directorTask.requiredReferences,
         },
       })
 
@@ -547,6 +567,7 @@ export class NovelOrchestrator {
               maxPushback: MAX_PUSHBACK,
               chapterNumber,
             },
+            options: ['approve', 'rewrite', 'reject'],
           })
 
           if (pushbackDecision === 'reject') {
@@ -645,6 +666,7 @@ export class NovelOrchestrator {
               maxRewrite: NovelOrchestrator.MAX_GUARD_REWRITE,
               chapterNumber,
             },
+            options: ['rewrite', 'approve', 'revise', 'reject'],
           })
 
           if (guardDecision === 'reject') {
@@ -679,6 +701,7 @@ export class NovelOrchestrator {
           }
           // rewrite（默认行为）：按原因重写 Writer
           writerGuardRewriteCount++
+          run.budget = recordChapterBudgetCategory(run.budget, 'guardWriterRewrites')
           writerGuardRewriteReason = postWriteGuard.reason
           writerGuardRewriteDetails = postWriteGuard.details ?? ''
           this.emitProgress(options, 'rewriting', 'phase_change', {
@@ -731,6 +754,7 @@ export class NovelOrchestrator {
           // 旧逻辑直接进入 Reviewer，用户无法选择"从头重写整个流程"或"取消"。
           // 现改为检查点：approve=接受当前草稿进 Reviewer（默认），rewrite=从头重写整章，
           // revise=让 Reviser 局部修复 Guard 命中的问题，reject=取消。
+          const budgetCategories = getChapterBudgetCategorySnapshot(run.budget)
           const degradedDecision = await options.onCheckpoint({
             type: 'guard_degraded',
             phase: 'rewriting',
@@ -742,7 +766,11 @@ export class NovelOrchestrator {
               rewriteCount: writerGuardRewriteCount,
               maxRewrite: NovelOrchestrator.MAX_GUARD_REWRITE,
               chapterNumber,
+              budgetCategories,
             },
+            options: budgetCategories.fullChapterRewriteAvailable
+              ? ['approve', 'rewrite', 'revise', 'reject']
+              : ['approve', 'revise', 'reject'],
           })
 
           if (degradedDecision === 'reject') {
@@ -750,13 +778,20 @@ export class NovelOrchestrator {
             return { status: 'cancelled' }
           }
           if (degradedDecision === 'rewrite') {
-            // 用户选择"从头重写整章"：重置 guardRewriteCount，递归 createChapterWithFlow
-            this.emitProgress(options, 'rewriting', 'phase_change', { message: '用户选择从头重写整章...' })
-            return this.createChapterWithFlow(
-              projectId,
-              chapterNumber,
-              { ...options, arrangedEntities: run.arrangedEntities },
-            )
+            const rewrite = tryRecordFullChapterRewrite(run.budget)
+            if (rewrite.allowed) {
+              run.budget = rewrite.usage
+              this.emitProgress(options, 'rewriting', 'phase_change', { message: '用户选择从头重写整章...' })
+              return this.createChapterWithFlow(
+                projectId,
+                chapterNumber,
+                { ...options, arrangedEntities: run.arrangedEntities },
+              )
+            }
+            requestedRevisionReason = '整章重写次数已达到本章上限，改为局部修订'
+            this.emitProgress(options, 'revising', 'phase_change', {
+              message: '整章重写次数已达到本章上限，将保留当前正文并进入局部修订。',
+            })
           }
           if (degradedDecision === 'revise') {
             requestedRevisionReason = `用户在守护降级检查点选择局部修订：${finalPostWriteGuard.reason}${finalPostWriteGuard.details ? `（${finalPostWriteGuard.details}）` : ''}`
@@ -806,6 +841,7 @@ export class NovelOrchestrator {
           consumeUserMessages: false,
         },
       )
+      run.budget = recordChapterBudgetCategory(run.budget, 'reviewerRuns')
       // ⚠️ 不能传 JSON 对象 { task, content }：runAgent 会 JSON.stringify 它，
       // 导致 Writer 输出的正文被压缩在 JSON 的 content 字段中（换行变 \n、引号被转义），
       // LLM 需要解析 JSON 才能提取正文，不同模型解析能力不同，行为不稳定。
@@ -821,8 +857,21 @@ export class NovelOrchestrator {
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber,
         `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${reviewContent}\n\n---\n\n${clicheReport}\n\n---\n\n${proseQualityReport}\n\n---\n\n## 盲审文字编辑意见\n\n${this.promptBuilder.stripEmDash(proseEditorResult)}${guardReviewReport ? `\n\n---\n\n${guardReviewReport}` : ''}`,
         options,
-        { extraTools: [submitReviewTool] },
+        {
+          extraTools: [submitReviewTool],
+          // Restricted Reviewer runs retain chapter facts through the shared context. Legacy
+          // runs keep the cheaper editor context because ask_story remains available there.
+          contextMode: isNovelAskStoryEnabled(
+            run.askStoryPolicy,
+            'reviewer',
+            run.factPackPathActive,
+          ) ? 'editor' : 'full',
+          // Guard 检查点选择 revise 时，附言必须留给后面的 Reviser；Reviewer
+          // 只生成修订依据，不应抢先消费这批针对修订的用户意见。
+          consumeUserMessages: !requestedRevisionReason,
+        },
       )
+      run.budget = recordChapterBudgetCategory(run.budget, 'reviewerRuns')
       reviewDraft.rawOutput = reviewResult
 
       // 检查 Reviewer 是否通过工具提交了验收报告
@@ -890,7 +939,13 @@ export class NovelOrchestrator {
         : await options.onCheckpoint({
             type: 'review',
             phase: 'checkpoint_review',
-            data: reviewResult,
+            data: {
+              review: reviewResult,
+              budgetCategories: getChapterBudgetCategorySnapshot(run.budget),
+            },
+            options: getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
+              ? ['approve', 'revise', 'rewrite', 'reject']
+              : ['approve', 'revise', 'reject'],
           })
 
       if (requestedRevisionReason) {
@@ -940,14 +995,39 @@ export class NovelOrchestrator {
         // 旧代码只传 reviewResult 给 Reviser，导致 Reviser 看不到具体问题和建议，
         // "修订"变成无的放矢。现在把 reviewDraft.review 格式化后作为"结构化审稿报告"注入。
         const structuredReviewReport = this.formatReviewReportForReviser(reviewDraft.review)
+        let reviewFindingTexts: string[] = []
+        try {
+          const findings = JSON.parse(reviewDraft.review?.issues ?? '[]') as Array<{
+            description?: string
+            location?: string
+            suggestion?: string
+          }>
+          if (Array.isArray(findings)) {
+            reviewFindingTexts = findings.flatMap((finding) => [
+              finding.description ?? '',
+              finding.location ?? '',
+              finding.suggestion ?? '',
+            ]).filter(Boolean)
+          }
+        } catch {
+          // Invalid review JSON yields no derived references; the structured report remains available.
+        }
+        const reviserFactPack = this.promptBuilder.buildReviewFactPack(
+          projectId,
+          reviewFindingTexts,
+          run.directorTask?.requiredReferences,
+        )
         // 注入原始 writerResult（含破折号）：Reviser 需要看到破折号在哪才能清除它们，
         // 审稿意见中的破折号由 stripEmDash 清洗（审稿意见是 Reviewer 产出，非正文）。
         const reviseResult = await this.runAgent('reviser', projectId, chapterNumber,
-          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${reviewContent}\n\n---\n\n${structuredReviewReport}\n\n---\n\n## Reviewer 分析过程（参考，结构化报告为准）\n\n${this.promptBuilder.stripEmDash(reviewResult)}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}`,
+          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${reviewContent}\n\n---\n\n${structuredReviewReport}${reviserFactPack ? `\n\n---\n\n${reviserFactPack}` : ''}\n\n---\n\n## Reviewer 分析过程（参考，结构化报告为准）\n\n${this.promptBuilder.stripEmDash(reviewResult)}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}`,
           options,
           {
             phase: 'revising',
             extraTools: [applyRevisionTool],
+            // Reviser 的输入已包含原文、结构化审稿意见和文风身份；不再重复
+            // 发送全书大纲、实体档案和章节 shared 上下文。
+            contextMode: 'editor',
             // ── 修复：把修订后正文（draft.content）追加到 reviser 的 agent_log.result ──
             // 工具化后 reviser 的 raw 文本输出只是"我已应用 N 处修订"，真正的修订后正文
             // 在 draft.content 里（通过 novel_apply_revision 工具闭包更新）。
@@ -955,6 +1035,7 @@ export class NovelOrchestrator {
             augmentLogResult: (raw) => this.augmentReviserLogResult(raw, draft),
           },
         )
+        run.budget = recordChapterBudgetCategory(run.budget, 'reviserRuns')
         // 工具调用结果决定最终正文：
         // - draft.appliedPatches 至少有一处成功应用 → 使用 draft.content 作为最终正文
         // - draft.appliedPatches 为空或全部失败 → 保留原正文，告知用户修订未生效
@@ -998,12 +1079,46 @@ export class NovelOrchestrator {
           finalContent = reviewContent
         }
       } else if (reviewDecision === 'rewrite') {
-        this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
-        return this.createChapterWithFlow(
-          projectId,
-          chapterNumber,
-          { ...options, arrangedEntities: run.arrangedEntities },
+        const rewrite = tryRecordFullChapterRewrite(run.budget)
+        if (rewrite.allowed) {
+          run.budget = rewrite.usage
+          this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
+          return this.createChapterWithFlow(
+            projectId,
+            chapterNumber,
+            { ...options, arrangedEntities: run.arrangedEntities },
+          )
+        }
+        this.emitProgress(options, 'revising', 'phase_change', {
+          message: '整章重写次数已达到本章上限，将接受当前正文并跳过整章重开。',
+        })
+      } else if (reviewDecision === 'approve') {
+        // 显式分支：用户接受当前正文，跳过 Reviser。写一条进度让这个选择在
+        // 对话流里可见 —— 否则界面上「审稿完成」后直接跳到「记忆提取」，
+        // 用户会以为修订环节被系统吞了。
+        this.emitProgress(options, 'reviewing', 'phase_change', {
+          message: '已按你的选择接受当前正文，跳过修订，直接进入落库与记忆提取。',
+        })
+      } else {
+        /**
+         * 兜底：收到不认识的决策值。
+         *
+         * 原来这里没有 else —— 任何非 reject/revise/rewrite 的值（undefined、
+         * 拼错、前后端协议漂移）都会静默沿用 `finalContent = reviewContent`
+         * 走完落库，表现和用户选了"接受"完全一样。在一个会花钱、会覆盖正文的
+         * 分支上"不认识就当同意"是危险的默认。
+         *
+         * 这里不抛错（抛错会让整章白跑），但必须**留痕**：日志 warn + 进度事件，
+         * 让异常可被发现，而不是伪装成正常路径。
+         */
+        this.context.logger.warn(
+          { projectId, chapterNumber, reviewDecision },
+          '验收检查点返回了未知决策值，按「接受当前正文」处理',
         )
+        this.emitProgress(options, 'reviewing', 'phase_change', {
+          message: `验收决策未能识别（${String(reviewDecision)}），已按「接受当前正文」继续。若你选择的是修订，请重试或反馈此问题。`,
+          detail: { kind: 'unknown_review_decision', reviewDecision: String(reviewDecision) },
+        })
       }
 
       // 最终正文边界做确定性清理。提示词和 Reviewer 是质量引导，不能替代落库约束。
@@ -1299,8 +1414,7 @@ export class NovelOrchestrator {
    * 硬停会让已经花掉的 token 全部作废，比超支更糟 —— 实测第 10 章烧了 126 万
    * 输入 token / 61 分钟，用户到那时候往往宁愿再花一点把这一章写完。
    * 所以这里只做"告知 + 给出口"：
-   *   - approve / rewrite：继续，且本章不再重复提示
-   *   - revise：跳过后续可选环节尽快收尾（由调用方按 reason 处理）
+   *   - approve：继续，且本章不再重复提示
    *   - reject：抛出取消，走既有的 cancelled 路径
    *
    * 抛错而非返回值：runAgent 被十几处调用，返回一个"要不要继续"的标记
@@ -1331,12 +1445,15 @@ export class NovelOrchestrator {
         message: evaluation.message,
         ...evaluation.snapshot,
       },
+      options: ['approve', 'reject'],
     })
 
     if (decision === 'reject') {
       throw new Error('用户在成本闸门处停止了创作流程')
     }
-    // 用户已知晓：本章后续调用不再提示，否则每次 Agent 调用前都弹同一个框
+    if (decision !== 'approve') {
+      throw new Error(`成本闸门不支持决策：${String(decision)}`)
+    }
     run.budget = { ...run.budget, acknowledged: true }
   }
 
@@ -1351,6 +1468,13 @@ export class NovelOrchestrator {
   ): Promise<string> {
     const run = this.requireRunContext()
     const config = NOVEL_AGENT_CONFIGS[agentType]
+    const identityOnly = overrides?.contextMode === 'identity_only'
+    // 审计字段描述本次调用的实际可用性，而非静态角色配置。
+    // identity_only 盲审会清空最终工具集，即使 Reviewer 的静态白名单含 ask_story，
+    // 也不能把它记成可用，否则灰度验收会把盲审误判为一条允许工具查询的调用。
+    const askStoryEnabled = !identityOnly
+      && isNovelAskStoryEnabled(run.askStoryPolicy, agentType, run.factPackPathActive)
+      && config.tools.includes('novel_ask_story')
     // agentType → 阶段映射（config 无 phase 字段，这里显式维护）
     const phaseMap: Record<NovelAgentType, CreationPhase> = {
       director: 'directing',
@@ -1367,7 +1491,8 @@ export class NovelOrchestrator {
 
     // Agent 身份保持在公共 system 之后，既不破坏跨 Agent 的 system/shared 缓存，
     // 又作为独立 prefix 获得缓存断点，供同 Agent 重试命中。
-    const identityOnly = overrides?.contextMode === 'identity_only'
+    const editorOnly = overrides?.contextMode === 'editor'
+    const needsChapterContext = !identityOnly && !editorOnly
     const agentIdentity = overrides?.identityPrompt
       ?? this.promptBuilder.buildAgentIdentity(projectId, agentType)
 
@@ -1391,9 +1516,9 @@ export class NovelOrchestrator {
     }
 
     // STATIC 层：系统提示词（Agent 身份 + 世界规则 + 风格 + 角色定义）
-    const systemPrompt = identityOnly
-      ? ''
-      : this.promptBuilder.buildSystemPrompt(projectId, agentType)
+    const systemPrompt = needsChapterContext
+      ? this.promptBuilder.buildSystemPrompt(projectId, agentType)
+      : ''
 
     // SEMI 层：章节上下文（"共享前缀 + Agent 专属后缀"分离）
     //
@@ -1450,9 +1575,10 @@ export class NovelOrchestrator {
     }
 
     // shared 部分：单章缓存（跨 Agent 复用，projectId|chapterNumber 为 key）
-    const sharedCacheKey = `${projectId}|${chapterNumber}`
+    // 工具可用性会改变无编排回退提示，必须进入缓存 key，避免不同角色复用错误引导。
+    const sharedCacheKey = `${projectId}|${chapterNumber}|ask-story:${askStoryEnabled}`
     let sharedContext: string
-    if (identityOnly) {
+    if (!needsChapterContext) {
       sharedContext = ''
     } else if (run.semiLayerSharedCache && run.semiLayerSharedCache.key === sharedCacheKey) {
       sharedContext = run.semiLayerSharedCache.value
@@ -1467,6 +1593,7 @@ export class NovelOrchestrator {
         narrativeTask,
         constraints,
         run.arrangedEntities,
+        { askStoryEnabled },
       )
       run.semiLayerSharedCache = { key: sharedCacheKey, value: sharedContext }
       this.context.logger.debug(
@@ -1482,7 +1609,7 @@ export class NovelOrchestrator {
     ) ? run.directorTask : narrativeTask
 
     // suffix 部分：每次实时构建（各 Agent 不同，可供同 Agent 重试缓存）
-    const suffixContext = identityOnly
+    let suffixContext = identityOnly
       ? ''
       : this.promptBuilder.buildChapterContextSuffix(
           projectId,
@@ -1491,7 +1618,14 @@ export class NovelOrchestrator {
           constraints,
           run.arrangedEntities,
           agentType,
-        )
+         )
+    if (agentType === 'writer' && run.directorTask?.requiredReferences?.length) {
+      const writerFactPack = this.promptBuilder.buildReferenceFactPack(
+        projectId,
+        run.directorTask.requiredReferences,
+      )
+      if (writerFactPack) suffixContext += `${suffixContext ? '\n\n---\n\n' : ''}${writerFactPack}`
+    }
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）
     // 章节上下文（SEMI 层）通过 prefixUserMessage 独立注入，不与任务拼接，
@@ -1500,7 +1634,13 @@ export class NovelOrchestrator {
 
     // 按 Agent 类型过滤工具权限
     const allNovelTools = this.novelTools
-    const allowedToolNames = config.tools
+    // 静态白名单是兼容基线；策略只派生本次运行的局部副本，绝不修改共享配置。
+    const allowedToolNames = resolveNovelAgentToolNames(
+      agentType,
+      config.tools,
+      run.askStoryPolicy,
+      run.factPackPathActive,
+    )
     const filteredTools = identityOnly
       ? []
       : allNovelTools.filter(t => allowedToolNames.includes(t.name))
@@ -1517,6 +1657,8 @@ export class NovelOrchestrator {
         agentName: config.name,
         projectId,
         chapterNumber,
+        askStoryPolicy: run.askStoryPolicy,
+        askStoryEnabled,
         systemPromptLength: systemPrompt.length,
         systemPromptPreview: systemPrompt.slice(0, 500),
         sharedLength: sharedContext.length,
@@ -1575,6 +1717,14 @@ export class NovelOrchestrator {
     let agUiSession: Awaited<ReturnType<PluginContext['createAgUiSession']>> | undefined
     let unsubscribeUsage: (() => void) | undefined
     let capturedUsage: LlmUsageSnapshot | undefined
+    /**
+     * 真实 payload 体积累加器。
+     *
+     * 每次 LLM 往返触发一次。**累加而不是取最后一次**：工具调用会让一次
+     * Agent 调用变成多次往返，每次都重发完整历史，累加值才是这次调用真正
+     * 送出去的总量 —— 也正是 inputTokens 的来源。
+     */
+    const payloadStats = { messagesChars: 0, toolsChars: 0, toolCount: 0, totalChars: 0, roundTrips: 0 }
 
     // 在 try/catch/finally 中捕获结果与错误，finally 持久化到日志表
     let logStatus: NovelAgentLogStatus = 'success'
@@ -1606,6 +1756,14 @@ export class NovelOrchestrator {
           this.emitProgress(options, phase, 'phase_change', {
             message: `${displayAgentName} 开始生成内容...`,
           })
+        },
+        onPayloadStats: (stats) => {
+          payloadStats.roundTrips += 1
+          payloadStats.messagesChars += stats.messagesChars
+          payloadStats.toolsChars += stats.toolsChars
+          payloadStats.totalChars += stats.totalChars
+          // 工具个数不累加：取最大值即可（每次往返带的是同一套工具）
+          payloadStats.toolCount = Math.max(payloadStats.toolCount, stats.toolCount)
         },
       })
       const { session, streamEmitter, messageId } = agUiSession
@@ -1730,6 +1888,13 @@ export class NovelOrchestrator {
           cacheWriteTokens: usageForLog?.cacheWriteTokens ?? 0,
           llmProvider: usageForLog?.llmProvider ?? '',
           llmModel: usageForLog?.llmModel ?? '',
+          payloadMessagesChars: payloadStats.messagesChars,
+          payloadToolsChars: payloadStats.toolsChars,
+          payloadToolCount: payloadStats.toolCount,
+          payloadTotalChars: payloadStats.totalChars,
+          llmRoundTrips: payloadStats.roundTrips,
+          askStoryPolicy: run.askStoryPolicy,
+          askStoryEnabled,
         })
       } catch (logErr) {
         // 日志写入失败不影响主流程
@@ -1764,6 +1929,8 @@ export class NovelOrchestrator {
               phase,
               displayAgentType,
               displayAgentName,
+              askStoryPolicy: run.askStoryPolicy,
+              askStoryEnabled,
               source: 'novel-orchestrator',
             }),
           })

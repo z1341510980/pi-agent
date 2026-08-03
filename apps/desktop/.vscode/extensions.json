@@ -3,6 +3,6 @@
     "dbaeumer.vscode-eslint",
     "esbenp.prettier-vscode",
     "ms-vscode.vscode-typescript-next",
-    "Vue.volar"
+    "bradlc.vscode-tailwindcss"
   ]
 }

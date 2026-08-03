@@ -1010,7 +1010,10 @@ export class PluginManager {
         // 开关由前端设置页控制，持久化到 app_settings.strip_stream_options。
         const stripStreamOptions = this.providerConfigStore?.getStripStreamOptions() ?? false
 
-        if (hasInjectables || stripStreamOptions) {
+        // 计量回调也要求安装 onPayload 钩子：没有它就永远看不到真实 payload 体积。
+        const needsPayloadHook = hasInjectables || stripStreamOptions || !!options.onPayloadStats
+
+        if (needsPayloadHook) {
           const inject: Record<string, unknown> = {}
           if (options.temperature !== undefined) inject.temperature = options.temperature
           if (effectiveMaxTokens !== undefined) inject.max_tokens = effectiveMaxTokens
@@ -1160,6 +1163,15 @@ export class PluginManager {
               next = applyCacheBreakpoints(next)
               if (stripStreamOptions) {
                 next = stripStreamOptionsFromPayload(next)
+              }
+              // 对**最终** payload 计量：这才是真正发出去的东西。
+              // 放在所有改写之后、return 之前，且只读不改。
+              if (options.onPayloadStats) {
+                try {
+                  options.onPayloadStats(measurePayload(next))
+                } catch {
+                  /* 计量失败不能影响请求 */
+                }
               }
               return next
             }
@@ -1375,3 +1387,32 @@ export type {
   PanelDefinition,
   EventHandler,
 } from './plugin-types.js'
+
+/**
+ * 计量单次 provider 请求的 payload 体积。
+ *
+ * 只用字符数而不换算 token：换算比随 tokenizer 与语言变化，会引入假精度。
+ * 目的是回答"体积从哪来"，把 messages 与 tools 分开就够了 —— 前者是提示词与历史，
+ * 后者是工具 schema，两者的优化手段完全不同。
+ *
+ * `JSON.stringify` 失败（循环引用等）时返回 0，不让计量影响请求。
+ */
+export function measurePayload(payload: unknown): import('./plugin-types.js').PluginPayloadStats {
+  const safeLength = (value: unknown): number => {
+    if (value === undefined || value === null) return 0
+    try {
+      return JSON.stringify(value)?.length ?? 0
+    } catch {
+      return 0
+    }
+  }
+  const record = (payload ?? {}) as Record<string, unknown>
+  const tools = Array.isArray(record.tools) ? record.tools : []
+  return {
+    // Some providers keep the system instruction outside `messages`.
+    messagesChars: safeLength(record.messages) + safeLength(record.system),
+    toolsChars: safeLength(record.tools),
+    toolCount: tools.length,
+    totalChars: safeLength(payload),
+  }
+}

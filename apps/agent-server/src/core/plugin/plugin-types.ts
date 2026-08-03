@@ -318,6 +318,35 @@ export interface PluginSessionOptions {
    * 回调在 StreamEmitter 处理事件的同一次订阅中同步触发，确保时序正确。
    */
   onFirstText?: () => void
+  /**
+   * 每次真实发往 provider 的 payload 体积回调。
+   *
+   * ## 为什么需要
+   *
+   * 小说侧的 agent 日志一直只记 systemPrompt / chapterContext / userMessage 的字符数，
+   * 三者相加约 1 万字符，而同一次调用的 `inputTokens` 是 2~4 万 —— 中文 1 字符通常
+   * ≤ 1 token，这个倍数说明**有一份和它们体量相当甚至更大的内容被送进去了，
+   * 却完全不在日志里**（最可能是 SDK 默认系统提示词与内置工具集）。
+   *
+   * 想优化 token 必须先能看见它。这个回调在 `onPayload` 里对**最终 payload**
+   * （注入参数、打完 cache 断点之后）做序列化计量，每次 LLM 往返触发一次 ——
+   * 所以工具调用导致的多次往返也能被数出来。
+   *
+   * 只做计量，不改 payload。
+   */
+  onPayloadStats?: (stats: PluginPayloadStats) => void
+}
+
+/** 单次 provider 请求的 payload 体积计量 */
+export interface PluginPayloadStats {
+  /** `payload.messages` 序列化后的字符数（含 system 与全部历史） */
+  messagesChars: number
+  /** `payload.tools` 序列化后的字符数（工具 schema 的真实开销） */
+  toolsChars: number
+  /** 工具个数 */
+  toolCount: number
+  /** 整个 payload 序列化后的字符数 */
+  totalChars: number
 }
 
 /**

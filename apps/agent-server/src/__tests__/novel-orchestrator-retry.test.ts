@@ -29,7 +29,7 @@ interface Harness {
   attempts: () => number
   progressMessages: () => string[]
   warnCount: () => number
-  checkpoints: () => Array<{ type: string; data: unknown }>
+  checkpoints: () => Array<{ type: string; data: unknown; options?: string[] }>
   budget: () => ChapterBudgetUsage | undefined
 }
 
@@ -77,12 +77,12 @@ function createRetryHarness(
     if (message) progressMessages.push(message)
   })
 
-  const checkpoints: Array<{ type: string; data: unknown }> = []
+  const checkpoints: Array<{ type: string; data: unknown; options?: string[] }> = []
   const runOptions = {
     signal: options.signal,
     onProgress: vi.fn(),
     emit: vi.fn(),
-    onCheckpoint: vi.fn(async (cp: { type: string; data: unknown }) => {
+    onCheckpoint: vi.fn(async (cp: { type: string; data: unknown; options?: string[] }) => {
       checkpoints.push(cp)
       return options.checkpointDecision ?? 'approve'
     }),
@@ -239,7 +239,24 @@ describe('成本闸门：超预算时弹检查点而非硬停', () => {
       maxLlmCalls: 30,
       inputTokens: 123_456,
       chapterNumber: 1,
+      categories: expect.objectContaining({
+        fullChapterRewrites: 0,
+        guardWriterRewrites: 0,
+        reviserRuns: 0,
+        reviewerRuns: 0,
+      }),
     })
+    expect(h.checkpoints()[0]).toMatchObject({ options: ['approve', 'reject'] })
+  })
+
+  it('成本闸门拒绝已移除的 revise 决策且不发起调用', async () => {
+    const h = createRetryHarness(['正文内容'], {
+      budget: { llmCalls: 30 },
+      checkpointDecision: 'revise',
+    })
+
+    await expect(h.orchestrator.runAgent('writer', 'p1', 1, 'task', {})).rejects.toThrow(/不支持决策/)
+    expect(h.attempts()).toBe(0)
   })
 
   it('用户选停止 → 抛错，走既有 cancelled 路径，且不发起调用', async () => {

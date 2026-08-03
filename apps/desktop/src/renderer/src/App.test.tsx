@@ -181,7 +181,7 @@ describe('App shell', () => {
               role: 'assistant',
               content: '历史回答',
               createdAt: 1,
-              toolCalls: [],
+              segments: [{ kind: 'text', id: 'seg-1', text: '历史回答' }],
               status: 'complete',
             },
           ],

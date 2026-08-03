@@ -24,8 +24,8 @@ export class ProjectStore {
     const ts = now()
     const full: NovelProject = { outline: '', ...project, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at, target_platform)
-      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at, @target_platform)
+      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at, target_platform, novel_ask_story_policy)
+      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at, @target_platform, @novel_ask_story_policy)
     `).run({
       id: full.id, title: full.title, genre: full.genre, synopsis: full.synopsis,
       outline: full.outline ?? '',
@@ -33,6 +33,7 @@ export class ProjectStore {
       current_chapter: full.currentChapter, current_stage: full.currentStage,
       status: full.status, created_at: full.createdAt, updated_at: full.updatedAt,
       target_platform: full.targetPlatform ?? null,
+      novel_ask_story_policy: full.novelAskStoryPolicy ?? null,
     })
     return full
   }
@@ -45,13 +46,14 @@ export class ProjectStore {
       UPDATE novel_projects SET title=@title, genre=@genre, synopsis=@synopsis, outline=@outline,
       target_words=@target_words, current_volume=@current_volume, current_chapter=@current_chapter,
       current_stage=@current_stage, status=@status, updated_at=@updated_at,
-      target_platform=@target_platform WHERE id=@id
+       target_platform=@target_platform, novel_ask_story_policy=@novel_ask_story_policy WHERE id=@id
     `).run({
       id, title: updated.title, genre: updated.genre, synopsis: updated.synopsis, outline: updated.outline ?? '',
       target_words: updated.targetWords, current_volume: updated.currentVolume,
       current_chapter: updated.currentChapter, current_stage: updated.currentStage,
       status: updated.status, updated_at: updated.updatedAt,
       target_platform: updated.targetPlatform ?? null,
+      novel_ask_story_policy: updated.novelAskStoryPolicy ?? null,
     })
     return updated
   }
@@ -126,6 +128,7 @@ export class ProjectStore {
       status: row.status as NovelProject['status'],
       deletedAt: row.deleted_at,
       targetPlatform: row.target_platform as NovelProject['targetPlatform'],
+      novelAskStoryPolicy: row.novel_ask_story_policy as NovelProject['novelAskStoryPolicy'],
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }

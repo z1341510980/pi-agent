@@ -18,7 +18,45 @@ import type { NovelPromptBuilder } from '../../plugins/novel-plugin/core/prompt-
 import type { NovelEngine } from '../../plugins/novel-plugin/core/novel-engine.js'
 import type { PluginContext } from '../plugin/plugin-types.js'
 import { NovelMemoryStore, type MemoryEvent } from '../../plugins/novel-plugin/core/novel-memory-store.js'
-import type { NovelMemoryGenerator } from '../../plugins/novel-plugin/core/novel-memory-generator.js'
+import type { NovelMemoryGenerator, MemoryGenerationResult } from '../../plugins/novel-plugin/core/novel-memory-generator.js'
+import {
+  classifyLlmFailure,
+  retryDelayMs,
+} from '../../plugins/novel-plugin/core/llm-error-policy.js'
+
+/**
+ * 结构化记忆提取的重试次数。
+ *
+ * **刻意只重试 1 次，不用 llm-error-policy 的 LLM_MAX_RETRIES(3)。**
+ * 因为回退路径（工具循环）本身走 orchestrator.runAgent，那里已经有一整套 3 次
+ * 退避重试。在这里再排一个 1s→4s→12s 的阶梯，等于把同一次瞬时故障的等待时间
+ * 翻倍（最坏 +17s）却没有新增成功概率。
+ *
+ * 一次 1 秒的重试足以吃掉常见的渠道抖动；真的持续不可用就交给回退路径，
+ * 它比结构化调用贵，但有工具兜底。
+ */
+const MEMORY_STRUCTURED_RETRIES = 1
+type MemoryMeasuredAttempt = {
+  operation: 'memory' | 'retry' | 'calibration' | 'fallback'
+  result: MemoryGenerationResult
+  durationMs: number
+}
+
+function failedMemoryResult(summary: string, error: string): MemoryGenerationResult {
+  return {
+    status: 'error', summary, error,
+    stats: {
+      characterUpdatesApplied: 0, characterCreatesApplied: 0,
+      foreshadowUpdatesApplied: 0, foreshadowCreatesApplied: 0,
+      clueUpdatesApplied: 0, clueCreatesApplied: 0,
+      conflictUpdatesApplied: 0, conflictCreatesApplied: 0,
+      factionUpdatesApplied: 0, locationUpdatesApplied: 0,
+      relationshipUpdatesApplied: 0, relationshipCreatesApplied: 0,
+      itemUpdatesApplied: 0, itemCreatesApplied: 0,
+      hookUpdatesApplied: 0, arcStageChangesApplied: 0, total: 0,
+    },
+  }
+}
 import type { NarrativeTask, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan, VersionSource } from '../../plugins/novel-plugin/core/types.js'
 import type { NovelAgentType, CreationPhase, CreationFlowEvent } from '../../plugins/novel-plugin/core/novel-agents.js'
 import type { CreationResult } from '@repo/shared/novel'
@@ -184,6 +222,7 @@ export class ChapterFinalizer {
     // 每 10 章做一次"查漏补缺"式全量扫描，拉取最近 5 章正文对比当前状态。
     if (!historicalRewrite && chapterNumber > 0 && chapterNumber % 10 === 0 && this.memoryGenerator) {
       this.emitProgress(options, 'memory', 'phase_change', { message: '触发全量状态校准（每 10 章一次）...' })
+      const calibrationStartedAt = Date.now()
       try {
         const calibrationResult = await this.memoryGenerator.runFullCalibration(
           projectId, chapterNumber,
@@ -196,6 +235,11 @@ export class ChapterFinalizer {
           },
           options.signal,
         )
+        this.persistMemoryLogs(projectId, chapterNumber, [{
+          operation: 'calibration',
+          result: calibrationResult,
+          durationMs: Date.now() - calibrationStartedAt,
+        }], 'calibration')
         if (calibrationResult.stats.total > 0) {
           this.emitProgress(options, 'memory', 'data_changed', {
             agentType: 'memory',
@@ -210,6 +254,12 @@ export class ChapterFinalizer {
           })
         }
       } catch (err) {
+        const error = err instanceof Error ? err.message : String(err)
+        this.persistMemoryLogs(projectId, chapterNumber, [{
+          operation: 'calibration',
+          result: failedMemoryResult('全量校准失败', error),
+          durationMs: Date.now() - calibrationStartedAt,
+        }], 'calibration')
         if (options.signal?.aborted) throw err
         this.context.logger.error(
           { projectId, chapterNumber, err },
@@ -332,12 +382,10 @@ export class ChapterFinalizer {
     // 优先使用结构化 LLM 调用模式
     if (this.memoryGenerator) {
       const startTime = Date.now()
+      const attempts: MemoryMeasuredAttempt[] = []
       let status: 'success' | 'error' = 'success'
       let errorMsg: string | undefined
       let resultSummary = ''
-      let logSessionId = ''
-      let logSystemPrompt = '(结构化 LLM 调用 - role-memory-generator)'
-      let logUserMessage = `请从第 ${chapterNumber} 章中提取状态变更。`
       try {
         const result = await this.memoryGenerator.generate(
           projectId, chapterNumber, chapterContent,
@@ -351,9 +399,7 @@ export class ChapterFinalizer {
           options.arrangedEntities,
           options.signal,
         )
-        logSystemPrompt = result.logContext?.systemPrompt ?? logSystemPrompt
-        logUserMessage = result.logContext?.userMessage ?? logUserMessage
-        logSessionId = result.logContext?.sessionId ?? ''
+        attempts.push({ operation: 'memory', result, durationMs: Date.now() - startTime })
         resultSummary = result.summary
         if (result.status === 'error') {
           status = 'error'
@@ -362,49 +408,17 @@ export class ChapterFinalizer {
       } catch (err) {
         status = 'error'
         errorMsg = err instanceof Error ? err.message : String(err)
+        attempts.push({
+          operation: 'memory',
+          result: failedMemoryResult('记忆提取失败，未应用状态变更', errorMsg),
+          durationMs: Date.now() - startTime,
+        })
         this.context.logger.error(
           { projectId, chapterNumber, err },
           'Memory Generator 调用失败，回退到空结果',
         )
         resultSummary = '记忆提取失败，未应用状态变更'
       } finally {
-        const durationMs = Date.now() - startTime
-        const usageForLog = this.readUsageFromLedgerWindow(startTime, Date.now(), logSessionId)
-
-        // 持久化领域层日志
-        try {
-          this.store.insertAgentLog({
-            projectId,
-            chapterNumber,
-            agentType: 'memory',
-            agentName: '记忆',
-            displayAgentType: 'memory',
-            displayAgentName: '记忆',
-            phase: 'memory',
-            systemPrompt: logSystemPrompt,
-            chapterContext: '',
-            userMessage: logUserMessage,
-            taskInput: chapterContent,
-            userInstructions: [],
-            tools: [],
-            toolNames: [],
-            result: resultSummary,
-            resultLength: resultSummary.length,
-            durationMs,
-            status,
-            error: errorMsg ?? '',
-            sessionId: logSessionId,
-            inputTokens: usageForLog?.inputTokens ?? 0,
-            outputTokens: usageForLog?.outputTokens ?? 0,
-            cacheReadTokens: usageForLog?.cacheReadTokens ?? 0,
-            cacheWriteTokens: usageForLog?.cacheWriteTokens ?? 0,
-            llmProvider: usageForLog?.llmProvider ?? '',
-            llmModel: usageForLog?.llmModel ?? '',
-          })
-        } catch {
-          // 日志写入失败不影响主流程
-        }
-
         // 同步写入通用 agent_call_logs
         if (this.context.agentCallLogger) {
           try {
@@ -419,7 +433,7 @@ export class ChapterFinalizer {
               toolNames: '[]',
               result: resultSummary,
               resultLength: resultSummary.length,
-              durationMs,
+              durationMs: Date.now() - startTime,
               status: status === 'success' ? 'success' : 'error',
               error: errorMsg ?? '',
               metadata: JSON.stringify({
@@ -439,6 +453,7 @@ export class ChapterFinalizer {
       }
 
       if (status === 'success') {
+        this.persistMemoryLogs(projectId, chapterNumber, attempts, 'memory', chapterContent)
         options.onConversationMessage?.({
           role: 'agent',
           fromId: 'novel-memory',
@@ -451,6 +466,33 @@ export class ChapterFinalizer {
       }
 
       const structuredError = errorMsg ?? '未知错误'
+
+      /**
+       * 瞬时故障先重试结构化提取，不要立刻换成工具循环。
+       *
+       * 实测过一次：generator 撞上 `503 No available channel`，立刻回退到 18 个
+       * 记忆工具的循环模式 —— 那条路一次要 4 轮往返、78k 字符的工具 schema，
+       * 比结构化调用贵一个量级，而 503 本身重试一次很可能就过了。
+       *
+       * 分类与退避沿用 llm-error-policy（不另写一套阈值，避免两处漂移）：
+       * 只有 transient 才重试，account / malformed_session / 用户取消都直接放弃。
+       */
+      const retried = await this.retryStructuredMemory(
+        projectId, chapterNumber, chapterContent, options, structuredError, attempts,
+      )
+      if (retried !== null) {
+        this.persistMemoryLogs(projectId, chapterNumber, attempts, 'memory', chapterContent)
+        options.onConversationMessage?.({
+          role: 'agent',
+          fromId: 'novel-memory',
+          fromName: '记忆',
+          content: retried.summary,
+          phase: 'review',
+          metadata: { agentType: 'memory', workflowMessageType: 'memory', retried: true },
+        })
+        return retried.summary
+      }
+
       this.emitProgress(options, 'memory', 'phase_change', {
         message: `结构化记忆提取失败：${structuredError}。正在切换工具模式重试...`,
         detail: { kind: 'memory_retry', reason: structuredError },
@@ -458,9 +500,30 @@ export class ChapterFinalizer {
       if (this.runAgentFallback) {
         try {
           const fallbackResult = await this.runAgentFallback('memory', projectId, chapterNumber, {
-            task: `结构化记忆提取失败（${structuredError}）。请从第 ${chapterNumber} 章中提取状态变更，并调用记忆工具写入。`,
+            // ⚠️ projectId 必须显式进入提示词。
+            //
+            // memory Agent 的 18 个写工具全部把 projectId 列为必填参数，而这条回退
+            // 路径原来只传 { task, content } —— Agent 看不到 projectId，只能罢工，
+            // 实测输出是「无法调用记忆工具：当前请求未提供 projectId」，白烧一次
+            // 17k token 且一条状态变更都没写入。
+            //
+            // 这个缺陷平时藏着：只有结构化提取失败（如 503）才会走到这里。
+            projectId,
+            chapterNumber,
+            task: `结构化记忆提取失败（${structuredError}）。请从第 ${chapterNumber} 章中提取状态变更，并调用记忆工具写入。所有工具的 projectId 参数请使用 "${projectId}"。`,
             content: chapterContent,
           }, options)
+          attempts.push({
+            operation: 'fallback',
+            result: {
+              ...failedMemoryResult(fallbackResult, ''),
+              status: 'success',
+              error: undefined,
+            },
+            // runAgentFallback already persists its measured tool-loop call.
+            durationMs: 0,
+          })
+          this.persistMemoryLogs(projectId, chapterNumber, attempts, 'memory', chapterContent)
           options.onConversationMessage?.({
             role: 'agent',
             fromId: 'novel-memory',
@@ -474,6 +537,12 @@ export class ChapterFinalizer {
           if (options.signal?.aborted) throw fallbackError
           const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
           resultSummary = `记忆提取失败：结构化模式 ${structuredError}；工具模式 ${fallbackMessage}`
+          attempts.push({
+            operation: 'fallback',
+            result: failedMemoryResult(resultSummary, fallbackMessage),
+            // runAgentFallback persists failed tool-loop measurements too.
+            durationMs: 0,
+          })
           this.context.logger.error(
             { projectId, chapterNumber, structuredError, fallbackError },
             'Memory Generator 与工具模式均失败',
@@ -482,6 +551,7 @@ export class ChapterFinalizer {
       } else {
         resultSummary = `记忆提取失败：${structuredError}`
       }
+      this.persistMemoryLogs(projectId, chapterNumber, attempts, 'memory', chapterContent)
       options.onConversationMessage?.({
         role: 'system',
         fromId: 'system',
@@ -506,9 +576,192 @@ export class ChapterFinalizer {
       'memoryGenerator 未注入，回退到 LLM 工具循环模式（可能 300s 超时）',
     )
     return this.runAgentFallback('memory', projectId, chapterNumber, {
-      task: `请从第 ${chapterNumber} 章中提取状态变更。`,
+      // 同上：18 个记忆工具都要求 projectId 必填，不给它就调不动任何工具
+      projectId,
+      chapterNumber,
+      task: `请从第 ${chapterNumber} 章中提取状态变更，并调用记忆工具写入。所有工具的 projectId 参数请使用 "${projectId}"。`,
       content: chapterContent,
     }, options)
+  }
+
+  /**
+   * 结构化记忆提取的瞬时故障重试。
+   *
+   * 只在首次结构化提取失败后调用，成功返回摘要，放弃时返回 null（由调用方决定
+   * 是否回退到工具循环）。
+   *
+   * 每次尝试保留完整 MemoryGenerationResult，由调用方统一写入父聚合日志和
+   * session 级明细，避免重试成本从日志面板消失。
+   */
+  private async retryStructuredMemory(
+    projectId: string,
+    chapterNumber: number,
+    chapterContent: string,
+    options: CreationOptions,
+    firstError: string,
+    attempts: MemoryMeasuredAttempt[],
+  ): Promise<MemoryGenerationResult | null> {
+    if (!this.memoryGenerator) return null
+
+    let lastError = firstError
+    for (let attempt = 1; attempt <= MEMORY_STRUCTURED_RETRIES; attempt++) {
+      if (options.signal?.aborted) return null
+
+      const classification = classifyLlmFailure(lastError, options.signal?.aborted)
+      if (classification.kind !== 'transient') {
+        this.context.logger.info(
+          { projectId, chapterNumber, kind: classification.kind, lastError },
+          '结构化记忆提取失败且不可重试，交由调用方决定后续',
+        )
+        return null
+      }
+
+      const delay = retryDelayMs(attempt)
+      if (delay === null) return null
+
+      this.emitProgress(options, 'memory', 'phase_change', {
+        message: `记忆提取遇到瞬时故障，${Math.round(delay / 1000)} 秒后重试（${attempt}/${MEMORY_STRUCTURED_RETRIES}）...`,
+        detail: { kind: 'memory_retry_transient', attempt, reason: lastError },
+      })
+      await this.sleep(delay, options.signal)
+      if (options.signal?.aborted) return null
+
+      const attemptStartedAt = Date.now()
+      try {
+        const result = await this.memoryGenerator.generate(
+          projectId, chapterNumber, chapterContent,
+          (event) => {
+            this.emitProgress(options, 'memory', 'phase_change', {
+              message: event.message,
+              phase: event.phase,
+              data: event.data,
+            })
+          },
+          options.arrangedEntities,
+          options.signal,
+        )
+        attempts.push({ operation: 'retry', result, durationMs: Date.now() - attemptStartedAt })
+        if (result.status !== 'error') {
+          this.context.logger.info(
+            { projectId, chapterNumber, attempt },
+            '结构化记忆提取重试成功',
+          )
+          return result
+        }
+        lastError = result.error ?? result.summary
+      } catch (err) {
+        if (options.signal?.aborted) return null
+        lastError = err instanceof Error ? err.message : String(err)
+        attempts.push({
+          operation: 'retry',
+          result: failedMemoryResult('记忆提取重试失败', lastError),
+          durationMs: Date.now() - attemptStartedAt,
+        })
+      }
+    }
+
+    this.context.logger.warn(
+      { projectId, chapterNumber, lastError },
+      `结构化记忆提取重试 ${MEMORY_STRUCTURED_RETRIES} 次仍失败，交回退路径处理`,
+    )
+    return null
+  }
+
+  private persistMemoryLogs(
+    projectId: string,
+    chapterNumber: number,
+    attempts: MemoryMeasuredAttempt[],
+    aggregateOperation: 'memory' | 'calibration',
+    taskInput = '',
+  ): void {
+    if (attempts.length === 0) return
+    try {
+      const measured = attempts.map((attempt) => {
+        const context = attempt.result.logContext
+        const usage = this.readUsageForSession(context?.sessionId)
+        return { attempt, context, usage }
+      })
+      const aggregatePayload = measured.reduce((sum, item) => {
+        const stats = item.context?.payloadStats
+        if (!stats) return sum
+        sum.messagesChars += stats.messagesChars
+        sum.toolsChars += stats.toolsChars
+        sum.toolCount = Math.max(sum.toolCount, stats.toolCount)
+        sum.totalChars += stats.totalChars
+        sum.roundTrips += stats.roundTrips
+        return sum
+      }, { messagesChars: 0, toolsChars: 0, toolCount: 0, totalChars: 0, roundTrips: 0 })
+      const aggregateUsage = measured.reduce((sum, item) => {
+        const usage = item.usage
+        if (!usage) return sum
+        sum.inputTokens += usage.inputTokens
+        sum.outputTokens += usage.outputTokens
+        sum.cacheReadTokens += usage.cacheReadTokens
+        sum.cacheWriteTokens += usage.cacheWriteTokens
+        sum.llmProvider = usage.llmProvider || sum.llmProvider
+        sum.llmModel = usage.llmModel || sum.llmModel
+        return sum
+      }, {
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+        llmProvider: '', llmModel: '',
+      })
+      const finalAttempt = attempts[attempts.length - 1]
+      const firstContext = attempts[0].result.logContext
+      const parent = this.store.insertAgentLog({
+        projectId, chapterNumber,
+        agentType: 'memory', agentName: '记忆', displayAgentType: 'memory', displayAgentName: '记忆',
+        phase: 'memory', systemPrompt: firstContext?.systemPrompt ?? '', chapterContext: '',
+        userMessage: firstContext?.userMessage ?? '', taskInput, userInstructions: [], tools: [], toolNames: [],
+        result: finalAttempt.result.summary, resultLength: finalAttempt.result.summary.length,
+        durationMs: attempts.reduce((sum, attempt) => sum + attempt.durationMs, 0),
+        status: finalAttempt.result.status, error: finalAttempt.result.error ?? '',
+        sessionId: firstContext?.sessionId ?? '', parentLogId: null, operation: aggregateOperation,
+        ...aggregateUsage,
+        payloadMessagesChars: aggregatePayload.messagesChars,
+        payloadToolsChars: aggregatePayload.toolsChars,
+        payloadToolCount: aggregatePayload.toolCount,
+        payloadTotalChars: aggregatePayload.totalChars,
+        llmRoundTrips: aggregatePayload.roundTrips,
+        askStoryPolicy: 'legacy', askStoryEnabled: false,
+      })
+      for (const { attempt, context, usage } of measured) {
+        const stats = context?.payloadStats
+        this.store.insertAgentLog({
+          projectId, chapterNumber,
+          agentType: 'memory-detail', agentName: '记忆明细',
+          displayAgentType: 'memory', displayAgentName: '记忆', phase: 'memory',
+          systemPrompt: context?.systemPrompt ?? '', chapterContext: '', userMessage: context?.userMessage ?? '',
+          taskInput, userInstructions: [], tools: [], toolNames: [], result: attempt.result.summary,
+          resultLength: attempt.result.summary.length, durationMs: attempt.durationMs,
+          status: attempt.result.status, error: attempt.result.error ?? '', sessionId: context?.sessionId ?? '',
+          parentLogId: parent.id, operation: attempt.operation,
+          inputTokens: usage?.inputTokens ?? 0, outputTokens: usage?.outputTokens ?? 0,
+          cacheReadTokens: usage?.cacheReadTokens ?? 0, cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
+          llmProvider: usage?.llmProvider ?? '', llmModel: usage?.llmModel ?? '',
+          payloadMessagesChars: stats?.messagesChars ?? 0, payloadToolsChars: stats?.toolsChars ?? 0,
+          payloadToolCount: stats?.toolCount ?? 0, payloadTotalChars: stats?.totalChars ?? 0,
+          llmRoundTrips: stats?.roundTrips ?? 0,
+          askStoryPolicy: 'legacy', askStoryEnabled: false,
+        })
+      }
+    } catch (err) {
+      this.context.logger.warn({ projectId, chapterNumber, err }, 'Memory AgentLog 写入失败')
+    }
+  }
+
+  /** 可被 abort 提前唤醒的等待（与 orchestrator 的实现保持一致） */
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }, ms)
+      const onAbort = (): void => {
+        clearTimeout(timer)
+        resolve()
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
   }
 
   /**
@@ -1626,15 +1879,15 @@ ${excerpt}`
    * 已经通过同一个 message_end 事件写入 usage_records。AgentLog 需要真实 cache read
    * 数据用于诊断命中率，因此在订阅未采集到 usage 时按 session 精确回填。
    */
-  private readUsageFromLedgerWindow(startTime: number, endTime: number, sessionId?: string): LlmUsageSnapshot | undefined {
+  private readUsageForSession(sessionId?: string): LlmUsageSnapshot | undefined {
     try {
       if (!sessionId) return undefined
       const rows = this.context.db.prepare(`
         SELECT provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, timestamp
         FROM usage_records
-        WHERE timestamp >= ? AND timestamp <= ? AND session_id = ?
+         WHERE session_id = ?
         ORDER BY timestamp ASC
-      `).all(startTime - 500, endTime + 500, sessionId) as Array<{
+      `).all(sessionId) as Array<{
         provider: string
         model: string
         input_tokens: number

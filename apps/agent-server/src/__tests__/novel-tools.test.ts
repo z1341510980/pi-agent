@@ -20,6 +20,7 @@ describe('novel-tools - novel_submit_narrative_task tool', () => {
       priority: 'high',
       narrativeTask: '本章核心目标：叶明远通过夜间潜入工棚获取关键证据，同时避免被工头发现。上一章钩子（被盯梢）通过成功脱身回收。情节点：潜入→被发现→藏证据→脱身。冲突推进：怀疑→确认。情绪曲线：紧张→恐惧→侥幸→疲惫。POV：叶明远。章尾钩子：工头在远处盯着他。',
       secondaryTasks: ['change_relationship'],
+      requiredReferences: ['character-1', '叶明远', 'character-1'],
       chapterEndingHook: {
         type: 'suspense',
         description: '工头提着油灯站在路口，盯着叶明远的背影',
@@ -44,6 +45,7 @@ describe('novel-tools - novel_submit_narrative_task tool', () => {
     expect(draft.task!.sceneCount).toBe(2)
     expect(draft.task!.positioning).toBe('high_pressure')
     expect(draft.task!.timeOffset).toBe(3)
+    expect(draft.task!.requiredReferences).toEqual(['character-1', '叶明远'])
     expect(result.content[0]!.type).toBe('text')
     expect((result.content[0] as { text: string }).text).toContain('叙事任务已提交')
   })
@@ -57,6 +59,7 @@ describe('novel-tools - novel_submit_narrative_task tool', () => {
       priority: 'medium',
       narrativeTask: '本章制造悬念：玉佩的来历成为读者疑问。',
       secondaryTasks: [],
+      requiredReferences: [],
       chapterEndingHook: {
         type: 'suspense',
         description: '玉佩在月光下泛起微光',
@@ -83,6 +86,7 @@ describe('novel-tools - novel_submit_narrative_task tool', () => {
       priority: 'high',
       narrativeTask: '本章升级冲突：叶明远与工头的对抗从暗转明。',
       secondaryTasks: [],
+      requiredReferences: [],
       chapterEndingHook: {
         type: 'action',
         description: '工头抓住叶明远的衣领',

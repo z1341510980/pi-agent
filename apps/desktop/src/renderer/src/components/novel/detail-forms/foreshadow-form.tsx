@@ -1,4 +1,5 @@
-import { useCallback, useState, type ReactElement } from 'react'
+import { useCallback, useMemo, useState, type ReactElement } from 'react'
+import { CalendarClock, Info, Link2, ListTree, Target } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   Select,
@@ -15,19 +16,23 @@ import {
   type NovelForeshadowCategory,
 } from '@/api/novel-client'
 import {
+  CHARACTER_PLOT_ROLE_OPTIONS,
   FieldRow,
   FORESHADOW_CATEGORY_OPTIONS,
   FORESHADOW_STATUS_OPTIONS,
+  FormSection,
   SaveButton,
-  SectionHeader,
   TextArea,
   TextInput,
 } from './shared'
+import { EdgeRelationField } from './edge-relation-field'
 
 // ── 伏笔编辑表单 ──
 
 export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactElement {
   const upsertForeshadow = useNovelDataStore((s) => s.upsertForeshadow)
+  const characters = useNovelDataStore((s) => s.characters)
+  const clues = useNovelDataStore((s) => s.clues)
   const [form, setForm] = useState({
     description: entity.description,
     category: entity.category,
@@ -60,6 +65,26 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
    */
   const actualPayoffChapter = beats.find((b) => b.type === 'payoff')?.chapter ?? null
 
+  // 关联候选：此前「关联」整个分区被删掉并留注释说需通过 edges 实现，现在补上
+  const characterOptions = useMemo(
+    () =>
+      characters.map((c) => ({
+        id: c.id,
+        label: c.name,
+        hint: CHARACTER_PLOT_ROLE_OPTIONS.find((o) => o.value === c.plotRole)?.label,
+      })),
+    [characters],
+  )
+  const clueOptions = useMemo(
+    () =>
+      clues.map((c) => ({
+        id: c.id,
+        label: c.description.length > 30 ? `${c.description.slice(0, 30)}…` : c.description,
+        hint: c.pointsTo ? `指向 ${c.pointsTo.slice(0, 12)}` : undefined,
+      })),
+    [clues],
+  )
+
   const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
 
   const dirty =
@@ -91,104 +116,184 @@ export function ForeshadowForm({ entity }: { entity: NovelForeshadow }): ReactEl
   }, [entity.id, form, upsertForeshadow])
 
   return (
-    <div className="space-y-2">
-      <SectionHeader title="基本信息" />
-      <FieldRow label="描述">
-        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="分类">
-        <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelForeshadowCategory }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {FORESHADOW_CATEGORY_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
+    <div className="space-y-2.5">
+      <FormSection title="基本信息" icon={<Info className="size-3.5" />} collapsible={false}>
+        <FieldRow label="描述">
+          <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+        </FieldRow>
+        <div className="grid grid-cols-2 gap-2.5">
+          <FieldRow label="分类">
+            <Select value={form.category} onValueChange={(v) => setForm((f) => ({ ...f, category: v as NovelForeshadowCategory }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FORESHADOW_CATEGORY_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="状态">
+            <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ForeshadowStatus }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FORESHADOW_STATUS_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </div>
+      </FormSection>
 
-      <SectionHeader title="状态" />
-      <FieldRow label="状态">
-        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ForeshadowStatus }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {FORESHADOW_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-
-      <SectionHeader title="章节" hint="「埋设 / 最后节点」是已发生的事实；「计划回收章」是意图" />
-      <FieldRow label="埋设章节">
-        <TextInput
-          type="number"
-          value={form.firstChapter}
-          onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
-        />
-      </FieldRow>
-      <FieldRow label="最后节点">
-        <TextInput
-          type="number"
-          value={form.lastChapter}
-          onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
-        />
-      </FieldRow>
-
-      {/* 计划回收章单独分区：它与上面两个字段性质不同 ——
-          上面记录"已经发生了什么"，这里声明"打算什么时候还"。
-          三个裸数字输入框并排时用户分不清哪个是事实、哪个是计划，
-          矩阵里那根跨度线也因此含义模糊（已回收 vs 欠着）。 */}
-      <SectionHeader title="回收计划" hint="意图，非事实。矩阵中显示为虚线 + 空心终点" />
-      <FieldRow label="计划回收章">
-        <TextInput
-          type="number"
-          value={form.recoverByChapter}
-          onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
-        />
-      </FieldRow>
-      <FieldRow label="当前状态">
-        {actualPayoffChapter != null ? (
-          <span className="text-micro text-success">
-            已在第 {actualPayoffChapter} 章回收（事实）
-          </span>
-        ) : form.recoverByChapter ? (
-          <span className="text-micro text-amber-600 dark:text-amber-400">
-            尚未回收，计划第 {form.recoverByChapter} 章前兑现
-          </span>
-        ) : (
-          <span className="text-micro text-muted-foreground">尚未回收，也未设定计划</span>
-        )}
-      </FieldRow>
-
-      <SectionHeader title="事件链" />
-      <FieldRow label="实际节点">
+      {/* 事实与意图分成两个分区：这是本表单最容易混淆的一处 ——
+          「埋设/最后节点」记录已经发生了什么，「计划回收章」声明打算什么时候还。
+          三个裸数字输入框并排时用户分不清哪个是事实、哪个是计划。 */}
+      <FormSection
+        title="已发生节点"
+        hint="事实"
+        icon={<ListTree className="size-3.5" />}
+        collapsible={false}
+      >
+        <div className="grid grid-cols-2 gap-2.5">
+          <FieldRow label="埋设章节">
+            <TextInput
+              type="number"
+              value={form.firstChapter}
+              onChange={(e) => setForm((f) => ({ ...f, firstChapter: e.target.value }))}
+            />
+          </FieldRow>
+          <FieldRow label="最后节点">
+            <TextInput
+              type="number"
+              value={form.lastChapter}
+              onChange={(e) => setForm((f) => ({ ...f, lastChapter: e.target.value }))}
+            />
+          </FieldRow>
+        </div>
+        {/* 事件链改为时间线样式：原本是一叠边框卡片，看不出节点间的先后关系 */}
         {beats.length > 0 ? (
-          <div className="space-y-1.5">
-            {beats.map((beat) => (
-              <div key={`${beat.chapter}-${beat.type}`} className="rounded border border-border px-2 py-1.5">
-                <div className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="text-nano tabular-nums">第 {beat.chapter} 章</Badge>
-                  <span className="text-micro font-medium">{beatLabels[beat.type]}</span>
+          <ol className="space-y-0">
+            {beats.map((beat, idx) => (
+              <li key={`${beat.chapter}-${beat.type}`} className="relative flex gap-2.5 pb-2 last:pb-0">
+                {/* 连线：最后一个节点不画，否则线会悬空 */}
+                {idx < beats.length - 1 && (
+                  <span
+                    aria-hidden
+                    className="absolute left-[3px] top-3 bottom-0 w-px bg-border"
+                  />
+                )}
+                <span
+                  aria-hidden
+                  className={
+                    beat.type === 'payoff'
+                      ? 'mt-1.5 size-[7px] shrink-0 rounded-full bg-success'
+                      : beat.type === 'plant'
+                        ? 'mt-1.5 size-[7px] shrink-0 rounded-full border-[1.5px] border-amber-500 bg-surface-1'
+                        : 'mt-1.5 size-[7px] shrink-0 rounded-full bg-amber-500/60'
+                  }
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium text-text">{beatLabels[beat.type]}</span>
+                    <Badge variant="outline" className="h-4 px-1 text-nano tabular-nums">
+                      第 {beat.chapter} 章
+                    </Badge>
+                  </div>
+                  {beat.note && (
+                    <p className="mt-0.5 text-nano leading-relaxed text-muted-foreground">{beat.note}</p>
+                  )}
                 </div>
-                {beat.note && <p className="mt-1 text-nano leading-relaxed text-muted-foreground">{beat.note}</p>}
-              </div>
+              </li>
             ))}
-          </div>
+          </ol>
         ) : (
-          <span className="text-micro text-muted-foreground">尚未埋设</span>
+          <p className="text-micro text-muted-foreground">尚未埋设</p>
         )}
-      </FieldRow>
+      </FormSection>
 
-      {/* 「关联」分区（关联角色 / 关联线索 / ⚡ 承载信息差）已整体移除：
-          这三项数据已迁移至 edges 表，伏笔实体上不再有 linkedCharacters /
-          linkedClues / linkedInfoLayerIds 字段，此前用空数组占位导致三行恒显示「暂无」。
-          需要时应通过 edges 查询（按 foreshadowId 反查关联边）实现，而不是留空占位。
-          分区内已无其它字段，故 SectionHeader 一并删除。 */}
+      <FormSection
+        title="回收计划"
+        hint="意图 · 矩阵中为虚线 + 空心终点"
+        icon={<CalendarClock className="size-3.5" />}
+        collapsible={false}
+      >
+        <FieldRow label="计划回收章">
+          <TextInput
+            type="number"
+            value={form.recoverByChapter}
+            onChange={(e) => setForm((f) => ({ ...f, recoverByChapter: e.target.value }))}
+            placeholder="未设定"
+          />
+        </FieldRow>
+        {/* 状态解读放在这里而不是「状态」下拉旁：那个下拉是可编辑字段，
+            这里是从 beats 推导的事实，两者性质不同 */}
+        <div
+          className={
+            actualPayoffChapter != null
+              ? 'rounded-md bg-success/8 px-2.5 py-1.5 text-nano leading-relaxed text-success'
+              : form.recoverByChapter
+                ? 'rounded-md bg-amber-500/8 px-2.5 py-1.5 text-nano leading-relaxed text-amber-600 dark:text-amber-400'
+                : 'rounded-md bg-surface-2/60 px-2.5 py-1.5 text-nano leading-relaxed text-muted-foreground'
+          }
+        >
+          {actualPayoffChapter != null
+            ? `已在第 ${actualPayoffChapter} 章回收（事实）`
+            : form.recoverByChapter
+              ? `尚未回收，计划第 ${form.recoverByChapter} 章前兑现`
+              : '尚未回收，也未设定计划'}
+        </div>
+      </FormSection>
+
+      {/* 「关联」分区曾被整体移除（数据迁到 edges 后表单侧没跟上，
+          留注释说"需要时应通过 edges 查询实现"）。现在通过 EdgeRelationField 真正实现。 */}
+      <FormSection title="关联" hint="即时生效" icon={<Link2 className="size-3.5" />}>
+        <FieldRow label="关联角色" hint="勾选即生效，无需保存">
+          <EdgeRelationField
+            entityId={entity.id}
+            entityType="foreshadow"
+            targetType="character"
+            edgeType="related"
+            options={characterOptions}
+            placeholder="关联与此伏笔相关的角色"
+            searchPlaceholder="搜索角色…"
+            emptyHint="本项目还没有角色"
+          />
+        </FieldRow>
+        <FieldRow label="关联线索" hint="线索是伏笔的可见证据">
+          <EdgeRelationField
+            entityId={entity.id}
+            entityType="foreshadow"
+            targetType="clue"
+            edgeType="related"
+            side="target"
+            options={clueOptions}
+            placeholder="关联指向此伏笔的线索"
+            searchPlaceholder="搜索线索…"
+            emptyHint="本项目还没有线索"
+          />
+        </FieldRow>
+      </FormSection>
+
+      <FormSection title="埋设与回收手法" icon={<Target className="size-3.5" />} defaultCollapsed>
+        <FieldRow label="埋设手法">
+          <p className="text-micro text-muted-foreground">
+            {entity.plantMethod === 'explicit' ? '显性（直接写出）'
+              : entity.plantMethod === 'implicit' ? '隐性（暗示）'
+              : '未指定'}
+          </p>
+        </FieldRow>
+        <FieldRow label="回收手法">
+          <p className="text-micro text-muted-foreground">
+            {entity.recoverMethod === 'explicit' ? '显性（明确揭示）'
+              : entity.recoverMethod === 'implicit' ? '隐性（留白）'
+              : '未指定'}
+          </p>
+        </FieldRow>
+      </FormSection>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />

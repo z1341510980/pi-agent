@@ -21,6 +21,7 @@ export interface ProjectRow {
   updated_at: number
   deleted_at: number | null
   target_platform: string | null
+  novel_ask_story_policy: string | null
 }
 
 // ── 章节 ──
@@ -438,6 +439,8 @@ export interface AgentLogRow {
   status: string
   error: string
   session_id: string
+  parent_log_id: string | null
+  operation: string | null
   created_at: number
   input_tokens: number
   output_tokens: number
@@ -445,4 +448,15 @@ export interface AgentLogRow {
   cache_write_tokens: number
   llm_provider: string
   llm_model: string
+  /** 真正发往 provider 的 payload 体积（迁移 077 新增，旧行为 0） */
+  payload_messages_chars: number | null
+  payload_tools_chars: number | null
+  payload_tool_count: number | null
+  payload_total_chars: number | null
+  /** 一次 Agent 调用内部的 LLM 往返次数（工具调用会导致多次） */
+  llm_round_trips: number | null
+  /** 078: per-run normalized novel_ask_story policy; legacy for pre-078 rows. */
+  ask_story_policy: string | null
+  /** 078: 1 when this invocation may use novel_ask_story; true for pre-078 rows. */
+  ask_story_enabled: number | null
 }

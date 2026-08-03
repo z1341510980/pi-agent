@@ -6,6 +6,7 @@
  */
 
 import type Database from 'better-sqlite3'
+import type { MigrationDefinition } from '../plugin/plugin-types.js'
 
 /** 所有迁移定义 */
 const MIGRATIONS: { id: string; sql: string }[] = [
@@ -246,9 +247,24 @@ export function runMigrations(db: Database.Database): void {
     db.prepare('SELECT id FROM schema_migrations').all().map((r: any) => r.id as string),
   )
 
-  for (const migration of MIGRATIONS) {
+  applyMigrations(db, MIGRATIONS, applied)
+}
+
+/** Apply each migration's schema changes and ledger entry as one SQLite transaction. */
+export function applyMigrations(
+  db: Database.Database,
+  migrations: readonly MigrationDefinition[],
+  knownApplied?: ReadonlySet<string>,
+): void {
+  const applied = knownApplied ?? new Set(
+    db.prepare('SELECT id FROM schema_migrations').all().map((r: any) => r.id as string),
+  )
+  for (const migration of migrations) {
     if (applied.has(migration.id)) continue
-    db.exec(migration.sql)
-    db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
+    db.transaction(() => {
+      db.exec(migration.sql)
+      db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
+    })()
+    if (applied instanceof Set) applied.add(migration.id)
   }
 }

@@ -293,6 +293,15 @@ export interface DiscussionMemberInvocation {
   chapterContext: string
   userMessage: string
   result: string
+  /**
+   * 本次调用实际挂载的工具名。
+   *
+   * 加这个字段是因为群聊侧的 agent 日志原来把 `tools`/`toolNames` 硬编码成空数组，
+   * 于是日志上看不出 Reviser 到底有没有拿到 `novel_apply_revision`。
+   * 排查"修订没生效"时，"工具没挂上"和"工具挂了但模型没调"是两种完全不同的问题，
+   * 必须能从日志区分。
+   */
+  toolNames: string[]
   durationMs: number
   status: 'success' | 'error' | 'cancelled'
   error: string
@@ -303,6 +312,12 @@ export interface DiscussionMemberInvocation {
   cacheWriteTokens: number
   llmProvider: string
   llmModel: string
+  /** 真实 payload 体积（各次 LLM 往返累加）与往返次数 */
+  payloadMessagesChars: number
+  payloadToolsChars: number
+  payloadToolCount: number
+  payloadTotalChars: number
+  llmRoundTrips: number
 }
 
 /** 群聊运行结果 */

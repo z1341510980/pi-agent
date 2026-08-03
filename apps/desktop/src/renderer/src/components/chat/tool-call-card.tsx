@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, Loader2, Wrench, FileText, Terminal, Search, FolderCog } from 'lucide-react'
 import type { ToolCallInfo } from './types'
+import { FileDiffView } from './file-diff-view'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
@@ -55,7 +56,7 @@ function getToolVisual(toolName: string): ToolVisual {
  *   - 失败状态用 destructive 色调
  */
 export function ToolCallCard({ toolCall }: ToolCallCardProps) {
-  const { toolName, status, args, partialResult, startedAt, endedAt } = toolCall
+  const { toolName, status, args, partialResult, startedAt, endedAt, details } = toolCall
   const [expanded, setExpanded] = useState(false)
 
   const meta = STATUS_META[status] ?? STATUS_META.pending
@@ -91,6 +92,25 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
 
   const hasDetails = args !== undefined || partialResult !== undefined
   const isError = status === 'error'
+
+  /**
+   * 改动 diff（edit/write 工具的 details）。
+   *
+   * 独立于「查看详情」折叠区，直接挂在卡片下方 —— 「改了什么」是这类工具
+   * 唯一真正重要的输出，不该埋在二级折叠里再折叠一层。
+   */
+  const diffText = typeof details?.diff === 'string' ? details.diff : undefined
+  const diffFilePath =
+    args && typeof args === 'object'
+      ? (() => {
+          const record = args as Record<string, unknown>
+          for (const key of ['path', 'filePath', 'file_path', 'file']) {
+            const value = record[key]
+            if (typeof value === 'string' && value.length > 0) return value
+          }
+          return undefined
+        })()
+      : undefined
 
   return (
     <motion.div
@@ -167,6 +187,17 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* 改动 diff：默认只给 +N −M 统计条，点开才展开全文 */}
+      {diffText && (
+        <div className="border-t border-border/60 pl-4 pr-3.5 pb-2">
+          <FileDiffView
+            diff={diffText}
+            filePath={diffFilePath}
+            truncated={details?.diffTruncated === true}
+          />
+        </div>
+      )}
 
       {/* 底部元信息 */}
       <div className={cn(

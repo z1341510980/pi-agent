@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { PluginContext } from '../../../core/plugin/plugin-types.js'
+import type { PluginContext, PluginPayloadStats } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelCharacterGenerator } from './novel-character-generator.js'
@@ -66,6 +66,7 @@ type EntityPlanLogContext = {
   status: 'success' | 'error'
   error: string
   usage?: LlmUsageSnapshot
+  call: ArrangerCallLog
 }
 
 type EntityPlanResult = {
@@ -83,6 +84,7 @@ type BatchGenerationRun = {
   fallbackCount: number
   unbatchedGenerationCount: number
   usage?: LlmUsageSnapshot
+  calls: ArrangerCallLog[]
 }
 
 type BatchRequestItem = {
@@ -94,6 +96,42 @@ type BatchRequestResult = {
   generated: Map<number, GeneratedEntity>
   failedIndexes: number[]
   usage?: LlmUsageSnapshot
+  call?: ArrangerCallLog
+}
+
+type PayloadStatsAggregate = PluginPayloadStats & { roundTrips: number }
+
+type ArrangerCallLog = {
+  operation: 'plan' | 'batch' | 'retry' | 'unbatched'
+  sessionId: string
+  systemPrompt: string
+  userMessage: string
+  result: string
+  durationMs: number
+  status: 'success' | 'error'
+  error: string
+  payloadStats: PayloadStatsAggregate
+  usage?: LlmUsageSnapshot
+}
+
+function emptyPayloadStats(): PayloadStatsAggregate {
+  return { messagesChars: 0, toolsChars: 0, toolCount: 0, totalChars: 0, roundTrips: 0 }
+}
+
+function addPayloadStats(target: PayloadStatsAggregate, stats: PluginPayloadStats): void {
+  target.messagesChars += stats.messagesChars
+  target.toolsChars += stats.toolsChars
+  target.toolCount = Math.max(target.toolCount, stats.toolCount)
+  target.totalChars += stats.totalChars
+  target.roundTrips += 1
+}
+
+function mergePayloadStats(target: PayloadStatsAggregate, source: PayloadStatsAggregate): void {
+  target.messagesChars += source.messagesChars
+  target.toolsChars += source.toolsChars
+  target.toolCount = Math.max(target.toolCount, source.toolCount)
+  target.totalChars += source.totalChars
+  target.roundTrips += source.roundTrips
 }
 
 // ── 生成结果类型 ──
@@ -651,6 +689,7 @@ export class NovelEntityGenerator {
       retryCount: 0,
       fallbackCount: 0,
       unbatchedGenerationCount: 0,
+      calls: [],
     }
 
     try {
@@ -669,7 +708,14 @@ export class NovelEntityGenerator {
 
         // 仅“已有：X”未命中项目数据时会走到这里。这类项无法提前判断，单独生成并在日志中标记。
         batchGeneration.unbatchedGenerationCount += 1
-        return this.generate(projectId, kind, coreStyle, onProgress, signal)
+        const request = await this.generateEntityBatch(
+          projectId, kind, [{ index: 0, coreStyle }], onProgress, false, signal, 'unbatched',
+        )
+        if (request.call) batchGeneration.calls.push(request.call)
+        if (request.usage) batchGeneration.usage = addLlmUsage(batchGeneration.usage, request.usage)
+        const generated = request.generated.get(0)
+        if (generated) return generated
+        return { type: kind, data: this.buildBatchTemplate(kind, coreStyle) } as GeneratedEntity
       }
 
       /**
@@ -1228,14 +1274,18 @@ export class NovelEntityGenerator {
         }, null, 2)
         let capturedUsage = planLogContext?.usage
         if (batchGeneration.usage) capturedUsage = addLlmUsage(capturedUsage, batchGeneration.usage)
-        // 正常批次路径使用 session 事件中的精确 usage。只有“已有实体未命中”触发旧单项生成时，
-        // 才回退到时间窗账本，避免漏记这部分 token。
-        const usageFromLedger = batchGeneration.unbatchedGenerationCount > 0 || !hasLlmUsage(capturedUsage)
-          ? this.readUsageFromLedgerWindow(startTime, Date.now())
-          : undefined
-        const usageForLog = usageFromLedger ?? (hasLlmUsage(capturedUsage) ? capturedUsage : undefined)
+        const calls = [planLogContext?.call, ...(batchGeneration.calls ?? [])].filter((call): call is ArrangerCallLog => !!call)
+        const aggregatePayload = emptyPayloadStats()
+        for (const call of calls) mergePayloadStats(aggregatePayload, call.payloadStats)
+        const callUsages = new Map<ArrangerCallLog, LlmUsageSnapshot | undefined>()
+        let usageForLog: LlmUsageSnapshot | undefined
+        for (const call of calls) {
+          const usage = hasLlmUsage(call.usage) ? call.usage : this.readUsageForSession(call.sessionId)
+          callUsages.set(call, usage)
+          if (usage) usageForLog = addLlmUsage(usageForLog, usage)
+        }
 
-        this.store.insertAgentLog({
+        const parentLog = this.store.insertAgentLog({
           projectId,
           chapterNumber,
           agentType: 'arranger',
@@ -1256,14 +1306,45 @@ export class NovelEntityGenerator {
           durationMs: Date.now() - startTime,
           status: logStatus,
           error: logError,
-          sessionId: '',
+          sessionId: planLogContext?.call?.sessionId ?? '',
+          parentLogId: null,
+          operation: 'aggregate',
           inputTokens: usageForLog?.inputTokens ?? 0,
           outputTokens: usageForLog?.outputTokens ?? 0,
           cacheReadTokens: usageForLog?.cacheReadTokens ?? 0,
           cacheWriteTokens: usageForLog?.cacheWriteTokens ?? 0,
           llmProvider: usageForLog?.llmProvider ?? '',
           llmModel: usageForLog?.llmModel ?? '',
+          payloadMessagesChars: aggregatePayload.messagesChars,
+          payloadToolsChars: aggregatePayload.toolsChars,
+          payloadToolCount: aggregatePayload.toolCount,
+          payloadTotalChars: aggregatePayload.totalChars,
+          llmRoundTrips: aggregatePayload.roundTrips,
+          askStoryPolicy: 'legacy',
+          askStoryEnabled: false,
         })
+        for (const call of calls) {
+          const usage = callUsages.get(call)
+          this.store.insertAgentLog({
+            projectId, chapterNumber,
+            agentType: 'arranger-detail', agentName: '编排明细',
+            displayAgentType: 'arranger', displayAgentName: '编排', phase: 'arranging',
+            systemPrompt: call.systemPrompt, chapterContext: '', userMessage: call.userMessage,
+            taskInput: outline, userInstructions: [], tools: [], toolNames: [],
+            result: call.result, resultLength: call.result.length, durationMs: call.durationMs,
+            status: call.status, error: call.error, sessionId: call.sessionId,
+            parentLogId: parentLog.id, operation: call.operation,
+            inputTokens: usage?.inputTokens ?? 0, outputTokens: usage?.outputTokens ?? 0,
+            cacheReadTokens: usage?.cacheReadTokens ?? 0, cacheWriteTokens: usage?.cacheWriteTokens ?? 0,
+            llmProvider: usage?.llmProvider ?? '', llmModel: usage?.llmModel ?? '',
+            payloadMessagesChars: call.payloadStats.messagesChars,
+            payloadToolsChars: call.payloadStats.toolsChars,
+            payloadToolCount: call.payloadStats.toolCount,
+            payloadTotalChars: call.payloadStats.totalChars,
+            llmRoundTrips: call.payloadStats.roundTrips,
+            askStoryPolicy: 'legacy', askStoryEnabled: false,
+          })
+        }
       } catch (logErr) {
         // 日志写入失败不影响主流程
         this.context.logger.warn(
@@ -1752,18 +1833,26 @@ export class NovelEntityGenerator {
     // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
     // 未配置则走默认 Provider。
     const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
+    const fullUserMessage = this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
+      + '\n\n---\n\n' + userPrompt
+    const payloadStats = emptyPayloadStats()
+    const callStartedAt = Date.now()
     const session = await this.context.createSession({
       systemPrompt,
       // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
-      userMessage: this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
-        + '\n\n---\n\n' + userPrompt,
+      userMessage: fullUserMessage,
       responseFormat: 'json',
       modelId: directorModel,
       // 规划阶段可能生成大量 JSON（多个实体），LLM 耗时较长；
       // 默认 120s 不足以完成复杂章纲的规划，提到 300s 与 Memory Agent 一致
       timeoutMs: 300_000,
       signal,
+      onPayloadStats: (stats) => addPayloadStats(payloadStats, stats),
     })
+    const call: ArrangerCallLog = {
+      operation: 'plan', sessionId: session.sessionId ?? '', systemPrompt, userMessage: fullUserMessage,
+      result: '', durationMs: 0, status: 'success', error: '', payloadStats,
+    }
     let capturedUsage: LlmUsageSnapshot | undefined
     const unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
       if (event.type !== 'message_end') return
@@ -1795,6 +1884,9 @@ export class NovelEntityGenerator {
         if (signal?.aborted) throw llmErr
         // LLM 调用失败：返回空 plan + 错误日志上下文，让 generateAndArrange 能写入失败日志
         const errMsg = llmErr instanceof Error ? llmErr.message : String(llmErr)
+        call.result = result
+        call.status = 'error'
+        call.error = errMsg
         this.context.logger.error(
           { projectId, err: llmErr, resultLength: result.length },
           'planEntitiesFromOutline LLM 调用失败',
@@ -1804,11 +1896,12 @@ export class NovelEntityGenerator {
           plan: emptyPlan,
           logContext: {
             systemPrompt,
-            userMessage: userPrompt,
+            userMessage: fullUserMessage,
             rawResult: result,
             status: 'error',
             error: `LLM 调用失败：${errMsg}`,
             usage: capturedUsage,
+            call,
           },
         }
       }
@@ -1824,15 +1917,19 @@ export class NovelEntityGenerator {
           'planEntitiesFromOutline JSON 解析失败（可能被截断），使用空 plan 兜底',
         )
         const emptyPlan = { characters: [] as Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>, conflicts: [], foreshadows: [], factions: [], locations: [] as { coreStyle: string }[], items: [] as { coreStyle: string }[] }
+        call.result = text
+        call.status = 'error'
+        call.error = 'JSON 解析失败（可能被截断）'
         return {
           plan: emptyPlan,
           logContext: {
             systemPrompt,
-            userMessage: userPrompt,
+            userMessage: fullUserMessage,
             rawResult: text,
             status: 'error',
             error: 'JSON 解析失败（可能被截断），使用空 plan 兜底',
             usage: capturedUsage,
+            call,
           },
         }
       }
@@ -1878,18 +1975,23 @@ export class NovelEntityGenerator {
         { projectId, characters: plan.characters.length, conflicts: plan.conflicts.length, foreshadows: plan.foreshadows.length, factions: plan.factions.length, locations: plan.locations.length, items: plan.items.length },
         'planEntitiesFromOutline 解析完成',
       )
+      call.result = text
+      call.usage = capturedUsage
       return {
         plan,
         logContext: {
           systemPrompt,
-          userMessage: userPrompt,
+          userMessage: fullUserMessage,
           rawResult: text,
           status: 'success',
           error: '',
           usage: capturedUsage,
+          call,
         },
       }
     } finally {
+      call.durationMs = Date.now() - callStartedAt
+      call.usage = capturedUsage
       unsubscribeUsage()
       session.dispose()
     }
@@ -1912,6 +2014,7 @@ export class NovelEntityGenerator {
       retryCount: 0,
       fallbackCount: 0,
       unbatchedGenerationCount: 0,
+      calls: [],
     }
     const groups: Array<{ kind: EntityKind; specs: BatchPlanSpec[] }> = [
       { kind: 'character', specs: plan.characters },
@@ -1961,6 +2064,7 @@ export class NovelEntityGenerator {
         })
 
         const batch = await this.generateEntityBatch(projectId, kind, requestItems, onProgress, false, signal)
+        if (batch.call) run.calls.push(batch.call)
         if (batch.usage) run.usage = addLlmUsage(run.usage, batch.usage)
 
         for (const [index, entity] of batch.generated) {
@@ -1986,6 +2090,7 @@ export class NovelEntityGenerator {
             true,
             signal,
           )
+          if (retry.call) run.calls.push(retry.call)
           if (retry.usage) run.usage = addLlmUsage(run.usage, retry.usage)
           const retriedEntity = retry.generated.get(0)
           if (retriedEntity) {
@@ -2027,12 +2132,15 @@ export class NovelEntityGenerator {
     onProgress: ((event: { phase: string; message: string; data?: unknown }) => void) | undefined,
     isRetry: boolean,
     signal?: AbortSignal,
+    operation: ArrangerCallLog['operation'] = isRetry ? 'retry' : 'batch',
   ): Promise<BatchRequestResult> {
     let capturedUsage: LlmUsageSnapshot | undefined
+    let call: ArrangerCallLog | undefined
     const failedResult = (): BatchRequestResult => ({
       generated: new Map(),
       failedIndexes: items.map((item) => item.index),
       usage: capturedUsage,
+      call,
     })
 
     try {
@@ -2042,6 +2150,8 @@ export class NovelEntityGenerator {
       // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
       // 未配置则走默认 Provider。
       const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
+      const payloadStats = emptyPayloadStats()
+      const callStartedAt = Date.now()
       const session = await this.context.createSession({
         systemPrompt,
         userMessage,
@@ -2049,7 +2159,13 @@ export class NovelEntityGenerator {
         modelId: directorModel,
         timeoutMs: 300_000,
         signal,
+        onPayloadStats: (stats) => addPayloadStats(payloadStats, stats),
       })
+      const measuredCall: ArrangerCallLog = {
+        operation, sessionId: session.sessionId ?? '', systemPrompt, userMessage,
+        result: '', durationMs: 0, status: 'success', error: '', payloadStats,
+      }
+      call = measuredCall
       const unsubscribeUsage = session.subscribe((event: Record<string, unknown>) => {
         if (event.type !== 'message_end') return
         const message = (event as { message?: Record<string, unknown> }).message
@@ -2073,6 +2189,7 @@ export class NovelEntityGenerator {
           })
         })
         const text = streamedText || full
+        measuredCall.result = text
         const parsed = repairAndParseJson(text)
         const resultItems = parsed && Array.isArray(parsed.items) ? parsed.items : []
         const generated = new Map<number, GeneratedEntity>()
@@ -2120,8 +2237,10 @@ export class NovelEntityGenerator {
             '实体批量生成请求完成',
           )
         }
-        return { generated, failedIndexes, usage: capturedUsage }
+        return { generated, failedIndexes, usage: capturedUsage, call: measuredCall }
       } finally {
+        measuredCall.durationMs = Date.now() - callStartedAt
+        measuredCall.usage = capturedUsage
         unsubscribeUsage()
         session.dispose()
       }
@@ -2131,6 +2250,10 @@ export class NovelEntityGenerator {
         { projectId, entityType: kind, isRetry, itemCount: items.length, err },
         '实体批量生成请求失败',
       )
+      if (call) {
+        call.status = 'error'
+        call.error = err instanceof Error ? err.message : String(err)
+      }
       return failedResult()
     }
   }
@@ -2230,14 +2353,15 @@ export class NovelEntityGenerator {
     }
   }
 
-  private readUsageFromLedgerWindow(startTime: number, endTime: number): LlmUsageSnapshot | undefined {
+  private readUsageForSession(sessionId: string): LlmUsageSnapshot | undefined {
     try {
+      if (!sessionId) return undefined
       const rows = this.context.db.prepare(`
         SELECT provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, timestamp
         FROM usage_records
-        WHERE timestamp >= ? AND timestamp <= ?
+        WHERE session_id = ?
         ORDER BY timestamp ASC
-      `).all(startTime - 500, endTime + 500) as Array<{
+      `).all(sessionId) as Array<{
         provider: string
         model: string
         input_tokens: number

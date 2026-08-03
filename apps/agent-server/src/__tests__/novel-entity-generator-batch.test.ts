@@ -13,6 +13,11 @@ type BatchRun = {
     cacheReadTokens: number
     cacheWriteTokens: number
   }
+  calls: Array<{
+    operation: string
+    sessionId: string
+    payloadStats: { messagesChars: number; toolsChars: number; toolCount: number; totalChars: number; roundTrips: number }
+  }>
 }
 
 type BatchRunner = {
@@ -44,16 +49,17 @@ function character(name: string): Record<string, unknown> {
 }
 
 function createGenerator(outputs: string[]) {
-  const sessionOptions: Array<{ userMessage: string }> = []
+  const sessionOptions: Array<{ userMessage: string; onPayloadStats?: (stats: any) => void }> = []
   const context = {
     logger: {
       info: () => undefined,
       warn: () => undefined,
       error: () => undefined,
     },
-    createSession: async (options: { userMessage: string }) => {
+    createSession: async (options: { userMessage: string; onPayloadStats?: (stats: any) => void }) => {
       sessionOptions.push(options)
       const output = outputs.shift() ?? '{"items":[]}'
+      const sessionId = `session-${sessionOptions.length}`
       let subscriber: ((event: Record<string, unknown>) => void) | undefined
       return {
         subscribe: (listener: (event: Record<string, unknown>) => void) => {
@@ -61,6 +67,7 @@ function createGenerator(outputs: string[]) {
           return () => { subscriber = undefined }
         },
         promptStream: async (onDelta: (delta: string) => void) => {
+          options.onPayloadStats?.({ messagesChars: 100, toolsChars: 20, toolCount: 3, totalChars: 150 })
           onDelta(output)
           subscriber?.({
             type: 'message_end',
@@ -74,6 +81,7 @@ function createGenerator(outputs: string[]) {
           return output
         },
         dispose: () => undefined,
+        sessionId,
       }
     },
   }
@@ -153,6 +161,12 @@ describe('NovelEntityGenerator batch generation', () => {
       cacheReadTokens: 4,
       cacheWriteTokens: 2,
     })
+    expect(run.calls.map((call) => call.operation)).toEqual(['batch', 'retry'])
+    expect(run.calls.map((call) => call.sessionId)).toEqual(['session-1', 'session-2'])
+    expect(run.calls.map((call) => call.payloadStats)).toEqual([
+      { messagesChars: 100, toolsChars: 20, toolCount: 3, totalChars: 150, roundTrips: 1 },
+      { messagesChars: 100, toolsChars: 20, toolCount: 3, totalChars: 150, roundTrips: 1 },
+    ])
   })
 
   it('编排收到中止信号后不再启动任何批次', async () => {

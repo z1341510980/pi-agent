@@ -11,8 +11,11 @@ import {
   createChapterBudgetUsage,
   recordLlmCall,
   evaluateChapterBudget,
+  getChapterBudgetCategorySnapshot,
+  recordChapterBudgetCategory,
   shouldPromptBudgetCheckpoint,
   DEFAULT_CHAPTER_BUDGET,
+  tryRecordFullChapterRewrite,
   type ChapterBudgetUsage,
 } from '../plugins/novel-plugin/core/chapter-budget.js'
 
@@ -144,16 +147,61 @@ describe('evaluateChapterBudget：单维度判定', () => {
       maxInputTokens: DEFAULT_CHAPTER_BUDGET.maxInputTokens,
       elapsedMs: 1000,
       maxWallClockMs: DEFAULT_CHAPTER_BUDGET.maxWallClockMs,
+      categories: {
+        fullChapterRewrites: 0,
+        maxFullChapterRewrites: 1,
+        fullChapterRewriteAvailable: true,
+        guardWriterRewrites: 0,
+        reviserRuns: 0,
+        reviewerRuns: 0,
+      },
     })
   })
 
   it('自定义上限生效', () => {
     const result = evaluateChapterBudget(
       usageWith({ llmCalls: 3 }),
-      { maxLlmCalls: 3, maxInputTokens: 1e9, maxWallClockMs: 1e9 },
+      { maxLlmCalls: 3, maxInputTokens: 1e9, maxWallClockMs: 1e9, maxFullChapterRewrites: 1 },
       T0,
     )
     expect(result.exceeded).toBe(true)
+  })
+})
+
+describe('分类预算', () => {
+  it('默认允许一次整章重写，第二次拒绝', () => {
+    const first = tryRecordFullChapterRewrite(createChapterBudgetUsage(T0))
+    expect(first.allowed).toBe(true)
+    expect(first.usage.fullChapterRewrites).toBe(1)
+
+    const second = tryRecordFullChapterRewrite(first.usage)
+    expect(second.allowed).toBe(false)
+    expect(second.usage).toBe(first.usage)
+  })
+
+  it('分别累加 Guard Writer 重写、Reviser 和 Reviewer 运行次数', () => {
+    let usage = createChapterBudgetUsage(T0)
+    usage = recordChapterBudgetCategory(usage, 'guardWriterRewrites')
+    usage = recordChapterBudgetCategory(usage, 'reviserRuns')
+    usage = recordChapterBudgetCategory(usage, 'reviewerRuns')
+    usage = recordChapterBudgetCategory(usage, 'reviewerRuns')
+
+    expect(getChapterBudgetCategorySnapshot(usage)).toMatchObject({
+      fullChapterRewrites: 0,
+      fullChapterRewriteAvailable: true,
+      guardWriterRewrites: 1,
+      reviserRuns: 1,
+      reviewerRuns: 2,
+    })
+  })
+
+  it('整章重写耗尽后快照明确标记不可用', () => {
+    const first = tryRecordFullChapterRewrite(createChapterBudgetUsage(T0))
+    expect(getChapterBudgetCategorySnapshot(first.usage)).toMatchObject({
+      fullChapterRewrites: 1,
+      maxFullChapterRewrites: 1,
+      fullChapterRewriteAvailable: false,
+    })
   })
 })
 

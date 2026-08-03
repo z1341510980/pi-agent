@@ -38,7 +38,7 @@ import type {
   ConflictStage,
   ChapterPositioning,
   WordBudget,
-  ArrangedEntity,
+  ArrangedEntity
 } from './types.js'
 
 export interface ChapterCreationResult {
@@ -48,9 +48,7 @@ export interface ChapterCreationResult {
 }
 
 export class NovelEngine {
-  constructor(
-    private store: NovelStore,
-  ) {}
+  constructor(private store: NovelStore) {}
 
   /**
    * 构建章节约束
@@ -68,55 +66,66 @@ export class NovelEngine {
     chapterNumber?: number,
     rhythmSuggestion?: RhythmSuggestion,
     positioning?: ChapterPositioning | null,
-    arrangedEntities?: ArrangedEntity,
+    arrangedEntities?: ArrangedEntity
   ): ChapterConstraints {
     const constraints = this.store.listConstraints(projectId)
     const foreshadowing = this.store.listForeshadowing(projectId)
     const selectedCharacterIds = arrangedEntities ? new Set(arrangedEntities.characterIds) : null
     const selectedConflictIds = arrangedEntities ? new Set(arrangedEntities.conflictIds) : null
     const selectedForeshadowIds = arrangedEntities ? new Set(arrangedEntities.foreshadowIds) : null
-    const characters = this.store.listCharacters(projectId)
+    const characters = this.store
+      .listCharacters(projectId)
       .filter((character) => !selectedCharacterIds || selectedCharacterIds.has(character.id))
     const pendingForeshadows = foreshadowing.filter(
-      (f) => f.status !== 'recovered' && f.status !== 'abandoned'
-        && (!selectedForeshadowIds || selectedForeshadowIds.has(f.id)),
+      (f) =>
+        f.status !== 'recovered' &&
+        f.status !== 'abandoned' &&
+        (!selectedForeshadowIds || selectedForeshadowIds.has(f.id))
     )
 
     // 只把本章需要动作的伏笔放进“硬约束”。长期未回收伏笔仍会以紧凑的
     // story-state 快照出现，但不能每章都被误写成“本章必须维持/释放”。
     // beats 是伏笔真正发生的离散章节；旧数据会由 NovelStore 用首章/回收章
     // 补出端点 beat，因此这里同时兼容新旧数据。
-    const relevantForeshadows = chapterNumber === undefined
-      ? pendingForeshadows.slice(0, 8)
-      : pendingForeshadows
-          .filter((f) =>
-            f.beats?.some((beat) => beat.chapter === chapterNumber)
-            || f.firstChapter === chapterNumber
-            || (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber),
-          )
-          .sort((a, b) => {
-            const aBeat = a.beats?.find((beat) => beat.chapter === chapterNumber)
-            const bBeat = b.beats?.find((beat) => beat.chapter === chapterNumber)
-            const priority = (type: string | undefined): number =>
-              type === 'payoff' ? 0 : type === 'reveal' ? 1 : type === 'reinforce' ? 2 : 3
-            return priority(aBeat?.type) - priority(bBeat?.type)
-              || (a.recoverByChapter ?? Number.MAX_SAFE_INTEGER)
-                - (b.recoverByChapter ?? Number.MAX_SAFE_INTEGER)
-              || a.id.localeCompare(b.id)
-          })
-          .slice(0, 8)
+    const relevantForeshadows =
+      chapterNumber === undefined
+        ? pendingForeshadows.slice(0, 8)
+        : pendingForeshadows
+            .filter(
+              (f) =>
+                f.beats?.some((beat) => beat.chapter === chapterNumber) ||
+                f.firstChapter === chapterNumber ||
+                (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber)
+            )
+            .sort((a, b) => {
+              const aBeat = a.beats?.find((beat) => beat.chapter === chapterNumber)
+              const bBeat = b.beats?.find((beat) => beat.chapter === chapterNumber)
+              const priority = (type: string | undefined): number =>
+                type === 'payoff' ? 0 : type === 'reveal' ? 1 : type === 'reinforce' ? 2 : 3
+              return (
+                priority(aBeat?.type) - priority(bBeat?.type) ||
+                (a.recoverByChapter ?? Number.MAX_SAFE_INTEGER) -
+                  (b.recoverByChapter ?? Number.MAX_SAFE_INTEGER) ||
+                a.id.localeCompare(b.id)
+              )
+            })
+            .slice(0, 8)
 
     // ── 冲突推进目标 ──
     // 筛选本章需推进的活跃冲突：章节在跨度内 / 空跨度（未放置）/ 本章为爆发章节
     const conflictTargets: ConflictTarget[] = []
     if (chapterNumber !== undefined) {
-      const activeConflicts = this.store.listConflicts(projectId).filter(
-        (c) => c.stage !== 'resolved' && c.stage !== 'transformed'
-          && (!selectedConflictIds || selectedConflictIds.has(c.id)),
-      )
+      const activeConflicts = this.store
+        .listConflicts(projectId)
+        .filter(
+          (c) =>
+            c.stage !== 'resolved' &&
+            c.stage !== 'transformed' &&
+            (!selectedConflictIds || selectedConflictIds.has(c.id))
+        )
       for (const conflict of activeConflicts) {
         const inSpan = conflict.chapterSpans.some(
-          (span) => chapterNumber >= span[0] && chapterNumber <= span[1],
+          (span) => chapterNumber >= span[0] && chapterNumber <= span[1]
         )
         const isClimaxChapter = conflict.climaxChapter === chapterNumber
         const noSpans = conflict.chapterSpans.length === 0
@@ -127,9 +136,12 @@ export class NovelEngine {
           conflict,
           targetStage,
           intensityDelta: this.computeIntensityDelta(
-            isClimaxChapter, rhythmSuggestion, conflict.stage, targetStage,
+            isClimaxChapter,
+            rhythmSuggestion,
+            conflict.stage,
+            targetStage
           ),
-          isClimax: isClimaxChapter,
+          isClimax: isClimaxChapter
         })
       }
       // 按强度降序，限制最多 5 个目标，避免 Writer 过载
@@ -145,7 +157,7 @@ export class NovelEngine {
         climaxIntensity: rhythmSuggestion.climaxIntensity,
         climaxType: rhythmSuggestion.climaxType,
         description: rhythmSuggestion.description,
-        reason: rhythmSuggestion.reason,
+        reason: rhythmSuggestion.reason
       }
     }
 
@@ -160,9 +172,9 @@ export class NovelEngine {
         if (currentBeat?.type === 'plant' || firstChapter === chapterNumber) {
           status = 'planting'
         } else if (
-          currentBeat?.type === 'payoff'
-          || currentBeat?.type === 'reveal'
-          || (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber)
+          currentBeat?.type === 'payoff' ||
+          currentBeat?.type === 'reveal' ||
+          (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber)
         ) {
           status = 'releasing'
         } else {
@@ -173,15 +185,21 @@ export class NovelEngine {
           description: f.description,
           status,
           sustainedChapters: Math.max(0, chapterNumber - firstChapter),
-          releaseByChapter: f.recoverByChapter,
+          releaseByChapter: f.recoverByChapter
         })
       }
 
       const selectedInfoLayerIds = new Set<string>()
       for (const foreshadow of relevantForeshadows) {
-        const parsed = this.store.listEdgesByEntity(foreshadow.id, { edgeType: 'related' })
-          .filter(e => e.sourceType === 'foreshadow' && e.targetType === 'info_layer' && e.sourceId === foreshadow.id)
-          .map(e => e.targetId)
+        const parsed = this.store
+          .listEdgesByEntity(foreshadow.id, { edgeType: 'related' })
+          .filter(
+            (e) =>
+              e.sourceType === 'foreshadow' &&
+              e.targetType === 'info_layer' &&
+              e.sourceId === foreshadow.id
+          )
+          .map((e) => e.targetId)
         for (const id of parsed) selectedInfoLayerIds.add(id)
       }
       const infoLayers = this.store.listInformationLayers(projectId)
@@ -190,49 +208,56 @@ export class NovelEngine {
         .filter((layer) => {
           if (!arrangedEntities) return true
           if (selectedInfoLayerIds.has(layer.id)) return true
-          const linked = this.store.listEdgesByEntity(layer.id, { edgeType: 'related' })
-            .filter(e => e.sourceType === 'foreshadow' && e.targetType === 'info_layer' && e.targetId === layer.id)
-            .map(e => e.sourceId)
+          const linked = this.store
+            .listEdgesByEntity(layer.id, { edgeType: 'related' })
+            .filter(
+              (e) =>
+                e.sourceType === 'foreshadow' &&
+                e.targetType === 'info_layer' &&
+                e.targetId === layer.id
+            )
+            .map((e) => e.sourceId)
           if (linked.some((id) => selectedForeshadowIds?.has(id))) return true
           try {
-            const knowledge = JSON.parse(layer.characterKnowledge ?? '{}') as Record<string, unknown>
+            const knowledge = JSON.parse(layer.characterKnowledge ?? '{}') as Record<
+              string,
+              unknown
+            >
             return [...(selectedCharacterIds ?? [])].some((id) => Object.hasOwn(knowledge, id))
           } catch {
             return false
           }
         })
         .filter((layer) => layer.revealChapter !== null && layer.revealChapter <= chapterNumber)
-        .sort((a, b) =>
-          (a.revealChapter ?? Number.MAX_SAFE_INTEGER)
-            - (b.revealChapter ?? Number.MAX_SAFE_INTEGER)
-          || a.id.localeCompare(b.id),
+        .sort(
+          (a, b) =>
+            (a.revealChapter ?? Number.MAX_SAFE_INTEGER) -
+              (b.revealChapter ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id)
         )
         .slice(0, Math.max(0, 8 - suspenseHooks.length))
       for (const layer of relevantInfoLayers) {
         const revealChapter = layer.revealChapter
         const status: SuspenseHook['status'] =
-          revealChapter !== null && revealChapter <= chapterNumber
-            ? 'releasing'
-            : 'sustaining'
+          revealChapter !== null && revealChapter <= chapterNumber ? 'releasing' : 'sustaining'
         suspenseHooks.push({
           infoLayerId: layer.id,
           description: layer.infoDescription,
           status,
           sustainedChapters: 0,
-          releaseByChapter: revealChapter,
+          releaseByChapter: revealChapter
         })
       }
     }
 
     // ── 字数预算（基于章节定位调整）──
     // 若传入了 positioning，按定位的 wordBudgetMultiplier 调整目标字数
-    // 否则使用系统默认目标字数（与 prompt-builder 的 computeChapterTargetWords 逻辑一致）
+    // 否则使用项目配置的默认每章目标字数（与 prompt-builder 的逻辑一致）
     let wordBudget: WordBudget | null = null
     if (positioning) {
       const project = this.store.getProject(projectId)
       let baseTarget: number
       if (!project || project.targetWords <= 0) baseTarget = 3000
-      else baseTarget = Math.min(5000, Math.max(2500, Math.round(project.targetWords / 1000)))
+      else baseTarget = Math.round(project.targetWords)
 
       // 节奏联动调整（与 prompt-builder 一致）
       if (rhythmSuggestion?.rhythm === 'climax') baseTarget = Math.round(baseTarget * 1.3)
@@ -247,14 +272,14 @@ export class NovelEngine {
         cultivation: 0.9,
         relationship: 0.95,
         low_pressure: 0.85,
-        information: 0.9,
+        information: 0.9
       }
       const multiplier = positioningMultipliers[positioning]
       const target = Math.round(baseTarget * multiplier)
       wordBudget = {
         min: Math.round(target * 0.85),
         max: Math.round(target * 1.15),
-        target,
+        target
       }
     }
 
@@ -265,13 +290,13 @@ export class NovelEngine {
       narrativeDebts: relevantForeshadows,
       characterArcs: characters.map((character) => ({
         character,
-        allowedNextStage: this.getNextArcStage(character.arcStage),
+        allowedNextStage: this.getNextArcStage(character.arcStage)
       })),
       conflictTargets,
       rhythmConstraint,
       suspenseHooks,
       wordBudget,
-      positioning: positioning ?? null,
+      positioning: positioning ?? null
     }
   }
 
@@ -315,13 +340,18 @@ export class NovelEngine {
    */
   private computeConflictTargetStage(
     conflict: NovelConflict,
-    chapterNumber: number,
+    chapterNumber: number
   ): ConflictStage {
     // 爆发章节硬约束：所有模式都必须达到 erupting（保证冲突网兑现伏笔）
     if (conflict.climaxChapter === chapterNumber) return 'erupting'
 
     const progression: ConflictStage[] = [
-      'latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved',
+      'latent',
+      'emerging',
+      'escalating',
+      'erupting',
+      'reversing',
+      'resolved'
     ]
     const idx = progression.indexOf(conflict.stage)
     if (idx === -1) {
@@ -345,7 +375,7 @@ export class NovelEngine {
           emerging: 'erupting',
           escalating: 'reversing',
           erupting: 'reversing',
-          reversing: 'resolved',
+          reversing: 'resolved'
         }
         return mutationMap[conflict.stage] ?? conflict.stage
       }
@@ -359,7 +389,7 @@ export class NovelEngine {
         const regressionMap: Partial<Record<ConflictStage, ConflictStage>> = {
           erupting: 'escalating',
           escalating: 'emerging',
-          emerging: 'latent',
+          emerging: 'latent'
         }
         return regressionMap[conflict.stage] ?? conflict.stage
       }
@@ -368,7 +398,7 @@ export class NovelEngine {
         // 反复：resolved/transformed 重新 emerging；其他走 linear 路径
         const reversalMap: Partial<Record<ConflictStage, ConflictStage>> = {
           resolved: 'emerging',
-          transformed: 'emerging',
+          transformed: 'emerging'
         }
         if (reversalMap[conflict.stage]) return reversalMap[conflict.stage]!
         // 非 resolved/transformed：走 linear 推进
@@ -395,14 +425,19 @@ export class NovelEngine {
     isClimax: boolean,
     rhythmSuggestion?: RhythmSuggestion,
     currentStage?: ConflictStage,
-    targetStage?: ConflictStage,
+    targetStage?: ConflictStage
   ): number {
     // 跨阶段推进必须有强度变化，否则 Director 会看到"目标阶段 erupting 但强度变化 0"的矛盾
     // 修复（2026-07-18）：原实现只按 rhythm 推断，忽略了 stage 跨阶需要强度变化。
     // 若 currentStage !== targetStage，至少 +2（跨阶段推进的最低强度增量）。
     if (currentStage && targetStage && currentStage !== targetStage) {
       const progression: ConflictStage[] = [
-        'latent', 'emerging', 'escalating', 'erupting', 'reversing', 'resolved',
+        'latent',
+        'emerging',
+        'escalating',
+        'erupting',
+        'reversing',
+        'resolved'
       ]
       const currentIdx = progression.indexOf(currentStage)
       const targetIdx = progression.indexOf(targetStage)
@@ -440,7 +475,7 @@ export class NovelEngine {
     projectId: string,
     chapterNumber: number,
     narrativeTask: NarrativeTask,
-    volumeId?: string | null,
+    volumeId?: string | null
   ): Promise<NovelChapter> {
     const project = this.store.getProject(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
@@ -464,7 +499,7 @@ export class NovelEngine {
       narrativeTask: narrativeTask.description,
       acceptanceResult: null,
       volumeId: volumeId ?? null,
-      positioning: narrativeTask.positioning ?? null,
+      positioning: narrativeTask.positioning ?? null
     })
 
     // 注：原此处调用 sessionFactory.buildSystemPrompt/buildChapterContext 以"触发约束构建副作用"，
@@ -478,11 +513,7 @@ export class NovelEngine {
    *
    * 在 LLM 生成章节内容后调用，保存内容并更新状态。
    */
-  async completeChapter(
-    chapterId: string,
-    content: string,
-    title?: string,
-  ): Promise<NovelChapter> {
+  async completeChapter(chapterId: string, content: string, title?: string): Promise<NovelChapter> {
     const existing = this.store.getChapterById(chapterId)
     if (!existing) throw new Error(`章节不存在: ${chapterId}`)
 
@@ -491,7 +522,7 @@ export class NovelEngine {
       content,
       title: title ?? `第${existing.chapterNumber}章`,
       wordCount,
-      status: 'review',
+      status: 'review'
     })
 
     if (!updated) throw new Error(`章节更新失败: ${chapterId}`)
@@ -511,7 +542,7 @@ export class NovelEngine {
     const project = this.store.getProject(updated.projectId)
     if (project) {
       this.store.updateProject(project.id, {
-        currentChapter: Math.max(project.currentChapter, updated.chapterNumber),
+        currentChapter: Math.max(project.currentChapter, updated.chapterNumber)
       })
     }
 
@@ -521,7 +552,9 @@ export class NovelEngine {
   /**
    * 保存章节验收
    */
-  async saveReview(review: Omit<NovelChapterReview, 'id' | 'createdAt'>): Promise<NovelChapterReview> {
+  async saveReview(
+    review: Omit<NovelChapterReview, 'id' | 'createdAt'>
+  ): Promise<NovelChapterReview> {
     const full = { ...review, id: randomUUID() }
     return this.store.createChapterReview(full)
   }

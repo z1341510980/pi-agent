@@ -66,6 +66,18 @@ describe('NovelStore - 项目 CRUD', () => {
     expect(updated!.updatedAt).toBeGreaterThanOrEqual(updated!.createdAt)
   })
 
+  it('persists the project-scoped ask_story policy', () => {
+    store.createProject({
+      id: 'p-policy', title: '策略项目', genre: '悬疑', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+      novelAskStoryPolicy: 'directorReviewerOff',
+    })
+    expect(store.getProject('p-policy')?.novelAskStoryPolicy).toBe('directorReviewerOff')
+
+    store.updateProject('p-policy', { novelAskStoryPolicy: 'allOffWithReferences' })
+    expect(store.getProject('p-policy')?.novelAskStoryPolicy).toBe('allOffWithReferences')
+  })
+
   it('updateProject 不存在时返回 undefined', () => {
     expect(store.updateProject('nonexistent', { title: 'x' })).toBeUndefined()
   })

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type ReactElement } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { History, Plus } from 'lucide-react'
+import { Activity, Compass, History, Link2, MessageSquare, Plus, Sparkles, User } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -32,22 +32,25 @@ import {
 } from '@/api/novel-client'
 import {
   CHARACTER_PLOT_ROLE_OPTIONS,
+  CONFLICT_STAGE_OPTIONS,
   DYNAMIC_FIELDS,
   HISTORY_FIELD_LABELS,
   JsonObjectEditor,
   relativeTime,
+  FormSection,
   SaveButton,
-  SectionHeader,
   STAGE_OPTIONS,
   TextArea,
   TextInput,
   FieldRow,
 } from './shared'
+import { EdgeRelationField } from './edge-relation-field'
 
 // ── 角色表单 ──
 
 export function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElement {
   const upsertCharacter = useNovelDataStore((s) => s.upsertCharacter)
+  const conflicts = useNovelDataStore((s) => s.conflicts)
   const [form, setForm] = useState({
     name: entity.name,
     identity: entity.identity,
@@ -68,6 +71,22 @@ export function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElem
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  /**
+   * 参与冲突的候选。
+   *
+   * 关联数据在 edges 表里（edgeType='involvement'），此前表单侧只留了一段注释说
+   * "需要时应通过 edges 查询实现"，于是这个关联只能在画布上连线建立。
+   */
+  const conflictOptions = useMemo(
+    () =>
+      conflicts.map((c) => ({
+        id: c.id,
+        label: c.description.length > 30 ? `…` : c.description,
+        hint: CONFLICT_STAGE_OPTIONS.find((o) => o.value === c.stage)?.label,
+      })),
+    [conflicts],
+  )
+
   const dirty = (Object.keys(form) as (keyof typeof form)[]).some(
     (k) => form[k] !== entity[k],
   )
@@ -86,86 +105,123 @@ export function CharacterForm({ entity }: { entity: NovelCharacter }): ReactElem
   }, [entity.id, form, upsertCharacter])
 
   return (
-    <div className="space-y-2">
-      <SectionHeader title="基础信息" />
-      <FieldRow label="姓名">
-        <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="身份">
-        <TextArea variant="short" value={form.identity} onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="外貌">
-        <TextArea variant="medium" value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
-      </FieldRow>
+    <div className="space-y-2.5">
+      <FormSection title="基础信息" icon={<User className="size-3.5" />} collapsible={false}>
+        <FieldRow label="姓名">
+          <TextInput value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="身份">
+          <TextArea variant="short" value={form.identity} onChange={(e) => setForm((f) => ({ ...f, identity: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="简述">
+          <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="外貌">
+          <TextArea variant="medium" value={form.appearance} onChange={(e) => setForm((f) => ({ ...f, appearance: e.target.value }))} />
+        </FieldRow>
+      </FormSection>
 
       {/* 三层模型：长期欲望 / 角色层级 / 删掉影响 */}
-      <SectionHeader title="角色定位" hint="跨章节稳定的发动机与功能位约束" />
-      <FieldRow label="长期欲望">
-        <TextArea variant="short" value={form.longTermDesire} onChange={(e) => setForm((f) => ({ ...f, longTermDesire: e.target.value }))} placeholder="区别于当前目标，跨章节稳定" />
-      </FieldRow>
-      <FieldRow label="角色层级">
-        <Select value={form.plotRole} onValueChange={(v) => setForm((f) => ({ ...f, plotRole: v as NovelCharacterPlotRole }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CHARACTER_PLOT_ROLE_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="删掉影响">
-        <TextArea variant="short" value={form.removalImpact} onChange={(e) => setForm((f) => ({ ...f, removalImpact: e.target.value }))} placeholder="删掉这个角色哪段剧情会受影响" />
-      </FieldRow>
+      <FormSection
+        title="角色定位"
+        hint="跨章节稳定"
+        icon={<Compass className="size-3.5" />}
+        collapsible={false}
+      >
+        <FieldRow label="角色层级">
+          <Select value={form.plotRole} onValueChange={(v) => setForm((f) => ({ ...f, plotRole: v as NovelCharacterPlotRole }))}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CHARACTER_PLOT_ROLE_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FieldRow>
+        <FieldRow label="长期欲望" hint="区别于当前目标">
+          <TextArea variant="short" value={form.longTermDesire} onChange={(e) => setForm((f) => ({ ...f, longTermDesire: e.target.value }))} placeholder="驱动这个角色跨章节行动的根本欲望" />
+        </FieldRow>
+        <FieldRow label="删掉影响">
+          <TextArea variant="short" value={form.removalImpact} onChange={(e) => setForm((f) => ({ ...f, removalImpact: e.target.value }))} placeholder="删掉这个角色哪段剧情会受影响" />
+        </FieldRow>
+      </FormSection>
 
-      <SectionHeader title="简述" />
-      <FieldRow label="简述">
-        <TextArea variant="medium" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </FieldRow>
+      <FormSection
+        title="当前状态"
+        hint="修改会记录到变更历史"
+        icon={<Activity className="size-3.5" />}
+        collapsible={false}
+      >
+        <FieldRow label="此刻状态">
+          <TextArea variant="short" value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="当前目标">
+          <TextArea variant="short" value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="当前压力">
+          <TextArea variant="short" value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
+        </FieldRow>
+        <FieldRow label="弧光阶段">
+          <Select
+            value={form.arcStage || '__none__'}
+            onValueChange={(v) => setForm((f) => ({ ...f, arcStage: v === '__none__' ? '' : v }))}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="未设置" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">未设置</SelectItem>
+              {STAGE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FieldRow>
+        <FieldRow label="秘密" hint="不对其他角色公开">
+          <TextArea variant="medium" value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
+        </FieldRow>
+      </FormSection>
 
-      <SectionHeader title="性格特征" hint="支持核心、优点、缺点、座右铭等结构化字段" />
-      <JsonObjectEditor value={form.personality} onChange={(v) => setForm((f) => ({ ...f, personality: v }))} />
+      {/* 「参与冲突」曾被整体移除（数据迁到 edges 后表单侧没跟上，
+          此前传 raw="" 恒显示「暂无参与冲突」）。现在通过 EdgeRelationField 真正实现。 */}
+      <FormSection title="关联" hint="即时生效" icon={<Link2 className="size-3.5" />}>
+        <FieldRow label="参与冲突" hint="勾选即生效，无需保存">
+          <EdgeRelationField
+            entityId={entity.id}
+            entityType="character"
+            targetType="conflict"
+            edgeType="involvement"
+            options={conflictOptions}
+            placeholder="关联此角色参与的冲突"
+            searchPlaceholder="搜索冲突…"
+            emptyHint="本项目还没有冲突"
+          />
+        </FieldRow>
+      </FormSection>
 
-      <SectionHeader title="说话风格" hint="支持基调、特点、典型句式等结构化字段" />
-      <JsonObjectEditor value={form.speechStyle} onChange={(v) => setForm((f) => ({ ...f, speechStyle: v }))} />
+      {/* 两个 JSON 编辑器默认折叠：它们是本表单里最占高度的部分
+          （每个字段一张卡片），而多数编辑动作发生在上方的状态字段 */}
+      <FormSection
+        title="性格特征"
+        hint="核心 / 优点 / 缺点 / 座右铭"
+        icon={<Sparkles className="size-3.5" />}
+        defaultCollapsed
+      >
+        <JsonObjectEditor value={form.personality} onChange={(v) => setForm((f) => ({ ...f, personality: v }))} />
+      </FormSection>
 
-      <SectionHeader title="当前状态" hint="修改动态状态会记录到变更历史" />
-      <FieldRow label="当前状态">
-        <TextArea variant="short" value={form.currentState} onChange={(e) => setForm((f) => ({ ...f, currentState: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="当前目标">
-        <TextArea variant="short" value={form.currentGoal} onChange={(e) => setForm((f) => ({ ...f, currentGoal: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="当前压力">
-        <TextArea variant="short" value={form.currentPressure} onChange={(e) => setForm((f) => ({ ...f, currentPressure: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="秘密">
-        <TextArea variant="medium" value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} />
-      </FieldRow>
-      <FieldRow label="弧光阶段">
-        <Select
-          value={form.arcStage || '__none__'}
-          onValueChange={(v) => setForm((f) => ({ ...f, arcStage: v === '__none__' ? '' : v }))}
-        >
-          <SelectTrigger className="h-9">
-            <SelectValue placeholder="未设置" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">未设置</SelectItem>
-            {STAGE_OPTIONS.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FieldRow>
-
-      {/* 三层模型④：影响层反向索引「参与冲突」已移除。
-          该关联数据已迁移至 edges 表，角色实体上不再有 participatingConflicts 字段，
-          此处此前传入 raw="" 导致恒定渲染「暂无参与冲突」。需要时应通过 edges 查询
-          （按 characterId 反查 conflict 边）实现，而不是留一个空占位。 */}
+      <FormSection
+        title="说话风格"
+        hint="决定多角色同场时能否分辨谁在说话"
+        icon={<MessageSquare className="size-3.5" />}
+        defaultCollapsed
+      >
+        <JsonObjectEditor value={form.speechStyle} onChange={(v) => setForm((f) => ({ ...f, speechStyle: v }))} />
+      </FormSection>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />

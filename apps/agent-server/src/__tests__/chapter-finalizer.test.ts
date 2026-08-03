@@ -154,8 +154,34 @@ describe('ChapterFinalizer', () => {
   })
 
   describe('runMemoryAgent', () => {
-    it('结构化提取失败时记录真实错误并切换工具模式重试', async () => {
-      const insertAgentLog = vi.fn()
+    it('logs calibration as a measured parent and session detail', () => {
+      const insertAgentLog = vi.fn((input) => ({ ...input, id: 'calibration-parent' }))
+      const calibrationFinalizer = new ChapterFinalizer(
+        { insertAgentLog } as any, {} as any, {} as any, {} as any, mockContext,
+      ) as any
+      calibrationFinalizer.persistMemoryLogs('p1', 10, [{
+        operation: 'calibration', durationMs: 25,
+        result: {
+          status: 'success', summary: '校准完成', stats: {},
+          logContext: {
+            systemPrompt: 'cal-system', userMessage: 'cal-user', sessionId: 'cal-session',
+            payloadStats: { messagesChars: 120, toolsChars: 0, toolCount: 0, totalChars: 140, roundTrips: 1 },
+          },
+        },
+      }], 'calibration')
+
+      expect(insertAgentLog).toHaveBeenCalledTimes(2)
+      expect(insertAgentLog.mock.calls[0][0]).toEqual(expect.objectContaining({
+        agentType: 'memory', operation: 'calibration', llmRoundTrips: 1,
+      }))
+      expect(insertAgentLog.mock.calls[1][0]).toEqual(expect.objectContaining({
+        agentType: 'memory-detail', operation: 'calibration', sessionId: 'cal-session',
+        parentLogId: 'calibration-parent',
+      }))
+    })
+
+    it('结构化提取失败时先重试一次，仍失败才切换工具模式（并把 projectId 带给工具）', async () => {
+      const insertAgentLog = vi.fn((input) => ({ ...input, id: 'memory-parent' }))
       const memoryGenerator = {
         generate: vi.fn(async () => ({
           status: 'error' as const,
@@ -184,18 +210,140 @@ describe('ChapterFinalizer', () => {
       })
 
       expect(result).toBe('工具模式提取成功')
+      // 502 属 transient：先重试结构化提取一次（首次 + 重试 = 2 次），再回退
+      expect(memoryGenerator.generate).toHaveBeenCalledTimes(2)
+      // 回退路径必须带 projectId —— 18 个记忆工具都把它列为必填，
+      // 缺了它 Agent 只会输出「未提供 projectId」而一条变更都写不进去
       expect(fallback).toHaveBeenCalledWith(
         'memory', 'p1', 1,
-        expect.objectContaining({ task: expect.stringContaining('502 status code') }),
+        expect.objectContaining({
+          projectId: 'p1',
+          task: expect.stringContaining('502 status code'),
+        }),
         expect.any(Object),
       )
       expect(insertAgentLog).toHaveBeenCalledWith(expect.objectContaining({
-        status: 'error',
-        error: '502 status code (no body)',
+        agentType: 'memory', operation: 'memory', status: 'success', result: '工具模式提取成功',
+      }))
+      expect(insertAgentLog).toHaveBeenCalledWith(expect.objectContaining({
+        agentType: 'memory-detail', status: 'error', error: '502 status code (no body)',
+      }))
+      expect(insertAgentLog).toHaveBeenCalledWith(expect.objectContaining({
+        agentType: 'memory-detail', operation: 'fallback', status: 'success',
       }))
       expect(messages).toContainEqual(expect.objectContaining({
         content: '工具模式提取成功',
         metadata: expect.objectContaining({ fallback: true }),
+      }))
+    })
+
+    it('结构化提取重试成功时不走工具模式', async () => {
+      let calls = 0
+      const insertAgentLog = vi.fn((input) => ({ ...input, id: `log-${insertAgentLog.mock.calls.length}` }))
+      const memoryGenerator = {
+        generate: vi.fn(async () => {
+          calls += 1
+          return calls === 1
+            ? {
+                status: 'error' as const, summary: '失败', stats: {}, error: '503 Service temporarily unavailable',
+                logContext: {
+                  systemPrompt: 'sys-1', userMessage: 'user-1', sessionId: 'memory-session-1',
+                  payloadStats: { messagesChars: 100, toolsChars: 20, toolCount: 4, totalChars: 150, roundTrips: 1 },
+                },
+              }
+            : {
+                status: 'success' as const, summary: '重试后提取成功', stats: {},
+                logContext: {
+                  systemPrompt: 'sys-2', userMessage: 'user-2', sessionId: 'memory-session-2',
+                  payloadStats: { messagesChars: 200, toolsChars: 10, toolCount: 2, totalChars: 240, roundTrips: 2 },
+                },
+              }
+        }),
+      }
+      const fallback = vi.fn(async () => '不该走到这里')
+      const messages: Array<{ content: string; metadata?: Record<string, unknown> }> = []
+      const finalizer2 = new ChapterFinalizer(
+        { insertAgentLog } as any,
+        {} as any, {} as any, {} as any, mockContext,
+        memoryGenerator as any,
+        fallback,
+      )
+
+      const result = await finalizer2.runMemoryAgent('p1', 1, '章节正文', {
+        emit: vi.fn(),
+        onCheckpoint: vi.fn(),
+        onProgress: vi.fn(),
+        onConversationMessage: (message) => messages.push(message),
+      })
+
+      expect(result).toBe('重试后提取成功')
+      // 关键：省掉了昂贵的工具循环（实测 4 轮往返 / 78k 字符工具 schema）
+      expect(fallback).not.toHaveBeenCalled()
+      expect(insertAgentLog).toHaveBeenCalledTimes(3)
+      expect(insertAgentLog.mock.calls[0][0]).toEqual(expect.objectContaining({
+        agentType: 'memory', operation: 'memory', parentLogId: null,
+        payloadMessagesChars: 300, payloadToolsChars: 30, payloadToolCount: 4,
+        payloadTotalChars: 390, llmRoundTrips: 3,
+      }))
+      expect(insertAgentLog.mock.calls[1][0]).toEqual(expect.objectContaining({
+        agentType: 'memory-detail', operation: 'memory', sessionId: 'memory-session-1', parentLogId: 'log-1',
+      }))
+      expect(insertAgentLog.mock.calls[2][0]).toEqual(expect.objectContaining({
+        agentType: 'memory-detail', operation: 'retry', sessionId: 'memory-session-2', parentLogId: 'log-1',
+      }))
+      expect(messages).toContainEqual(expect.objectContaining({
+        content: '重试后提取成功',
+        metadata: expect.objectContaining({ retried: true }),
+      }))
+    })
+
+    it('账户类错误不重试，直接走工具模式', async () => {
+      const memoryGenerator = {
+        generate: vi.fn(async () => ({
+          status: 'error' as const,
+          summary: '失败',
+          stats: {},
+          error: '401 "Invalid API key"',
+        })),
+      }
+      const fallback = vi.fn(async () => '工具模式提取成功')
+      const finalizer3 = new ChapterFinalizer(
+        { insertAgentLog: vi.fn() } as any,
+        {} as any, {} as any, {} as any, mockContext,
+        memoryGenerator as any,
+        fallback,
+      )
+
+      await finalizer3.runMemoryAgent('p1', 1, '章节正文', {
+        emit: vi.fn(),
+        onCheckpoint: vi.fn(),
+        onProgress: vi.fn(),
+        onConversationMessage: vi.fn(),
+      })
+
+      // 401 重试一万次也不会好，不该浪费一次调用
+      expect(memoryGenerator.generate).toHaveBeenCalledTimes(1)
+      expect(fallback).toHaveBeenCalled()
+    })
+
+    it('records thrown generate and retry attempts with empty measurements', async () => {
+      const insertAgentLog = vi.fn((input) => ({ ...input, id: 'parent' }))
+      const memoryGenerator = { generate: vi.fn(async () => { throw new Error('503 unavailable') }) }
+      const finalizer = new ChapterFinalizer(
+        { insertAgentLog } as any, {} as any, {} as any, {} as any, mockContext,
+        memoryGenerator as any,
+      )
+
+      await finalizer.runMemoryAgent('p1', 1, '正文', {
+        emit: vi.fn(), onCheckpoint: vi.fn(), onProgress: vi.fn(), onConversationMessage: vi.fn(),
+      })
+
+      expect(insertAgentLog).toHaveBeenCalledTimes(3)
+      expect(insertAgentLog).toHaveBeenCalledWith(expect.objectContaining({
+        agentType: 'memory-detail', operation: 'memory', status: 'error', payloadTotalChars: 0,
+      }))
+      expect(insertAgentLog).toHaveBeenCalledWith(expect.objectContaining({
+        agentType: 'memory-detail', operation: 'retry', status: 'error', payloadTotalChars: 0,
       }))
     })
   })

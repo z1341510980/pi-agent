@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Brain, Wrench, PenLine, CircleStop } from 'lucide-react'
 import type { ChatMessage } from './types'
+import { readSegments } from './types'
 import { cn } from '@/lib/utils'
 
 /** 流式当前阶段 */
@@ -108,26 +109,31 @@ function Dot({ delay }: { delay: number }) {
   )
 }
 
-/** 从活跃消息推断当前阶段 */
+/**
+ * 从活跃消息推断当前阶段。
+ *
+ * 判定改为看**最后一个分段**：分段模型下顺序就是时间线，最后一段是什么，
+ * Agent 此刻就在做什么。原来要分别看 thinking / toolCalls / streamingBuffer
+ * 三个通道，还要靠 reverse().find() 猜"最近那个"。
+ */
 function derivePhase(msg?: ChatMessage): StreamingPhase {
   if (!msg) return { kind: 'idle' }
 
-  if (msg.thinking?.isStreaming) {
-    return { kind: 'thinking' }
+  const segments = readSegments(msg)
+  const last = segments[segments.length - 1]
+  if (!last) return { kind: 'idle' }
+
+  if (last.kind === 'thinking') {
+    return last.isStreaming ? { kind: 'thinking' } : { kind: 'idle' }
   }
 
-  const runningTool = [...msg.toolCalls]
-    .reverse()
-    .find((tc) => tc.status === 'running')
-  if (runningTool) {
-    return { kind: 'tool', toolName: runningTool.toolName }
+  if (last.kind === 'tool') {
+    return last.call.status === 'running'
+      ? { kind: 'tool', toolName: last.call.toolName }
+      : { kind: 'idle' }
   }
 
-  if (msg.streamingBuffer && msg.streamingBuffer.length > 0) {
-    return { kind: 'generating' }
-  }
-
-  return { kind: 'idle' }
+  return last.text.length > 0 ? { kind: 'generating' } : { kind: 'idle' }
 }
 
 /** 阶段 → 显示配置 */

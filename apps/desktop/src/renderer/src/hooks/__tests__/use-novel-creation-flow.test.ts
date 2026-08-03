@@ -120,4 +120,92 @@ describe('useNovelCreationFlow progress', () => {
       }),
     ])
   })
+
+  it('Reviser 的工具回执不清空或覆盖 Writer 已流出的正文', async () => {
+    parseSseStreamMock.mockImplementationOnce(async (
+      _body: unknown,
+      onEvent: (event: BaseEvent) => void,
+    ) => {
+      const progress = (messageId: string, agentType: 'writer' | 'reviser', agentName: string) => {
+        onEvent({
+          type: 'CUSTOM',
+          name: 'novel:progress',
+          value: {
+            timestamp: Date.now(),
+            type: 'agent_start',
+            phase: agentType === 'writer' ? 'writing' : 'revising',
+            data: { type: 'agent_start', messageId, agentType, agentName },
+          },
+        } as unknown as BaseEvent)
+      }
+      const text = (messageId: string, delta: string) => {
+        onEvent({ type: 'TEXT_MESSAGE_START', messageId } as unknown as BaseEvent)
+        onEvent({ type: 'TEXT_MESSAGE_CONTENT', messageId, delta } as unknown as BaseEvent)
+        onEvent({ type: 'TEXT_MESSAGE_END', messageId } as unknown as BaseEvent)
+      }
+
+      progress('writer-message', 'writer', '写作')
+      text('writer-message', '这是原始正文。')
+      progress('reviser-message', 'reviser', '修订')
+      text('reviser-message', '已应用 2 处修订。')
+    })
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.startCreation('project-1', 1)
+    })
+
+    expect(result.current.chapterContent).toBe('这是原始正文。')
+    expect(result.current.agentOutputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentType: 'reviser',
+        content: '已应用 2 处修订。',
+        preview: '已应用 2 处修订。',
+        streaming: false,
+      }),
+    ]))
+  })
+
+  it('Reviser 只有工具调用时显示明确完成文案并结束 streaming', async () => {
+    parseSseStreamMock.mockImplementationOnce(async (
+      _body: unknown,
+      onEvent: (event: BaseEvent) => void,
+    ) => {
+      onEvent({
+        type: 'CUSTOM',
+        name: 'novel:progress',
+        value: {
+          timestamp: 123,
+          type: 'agent_start',
+          phase: 'revising',
+          data: {
+            type: 'agent_start',
+            messageId: 'reviser-tool-only',
+            agentType: 'reviser',
+            agentName: '修订',
+            message: '修订 Agent 已启动...',
+          },
+        },
+      } as unknown as BaseEvent)
+      onEvent({ type: 'TEXT_MESSAGE_START', messageId: 'reviser-tool-only' } as unknown as BaseEvent)
+      onEvent({ type: 'TEXT_MESSAGE_END', messageId: 'reviser-tool-only' } as unknown as BaseEvent)
+    })
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.startCreation('project-1', 1)
+    })
+
+    expect(result.current.agentOutputs).toEqual([
+      expect.objectContaining({
+        messageId: 'reviser-tool-only',
+        agentType: 'reviser',
+        content: '修订已完成，正文已更新。',
+        preview: '修订已完成，正文已更新。',
+        streaming: false,
+      }),
+    ])
+  })
 })

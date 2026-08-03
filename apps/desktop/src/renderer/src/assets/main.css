@@ -533,6 +533,91 @@ button:disabled {
   box-shadow: var(--shadow-border);
 }
 
+/* ── Markdown 表格（GFM）────────────────────────────────────────────
+   prose 默认表格在 14px 正文里过于松散，且宽表会把整条消息撑破布局。
+   这里给紧凑的行高、可读的表头底色，横向溢出交给 .message-table-scroll
+   容器（见 message-bubble 的 table 渲染器）。 */
+
+.message-markdown .message-table-scroll {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-1);
+}
+
+.message-markdown .message-table-scroll > table {
+  margin: 0;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+}
+
+.message-markdown .message-table-scroll th {
+  padding: 0.4rem 0.7rem;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.message-markdown .message-table-scroll td {
+  padding: 0.4rem 0.7rem;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  vertical-align: top;
+}
+
+.message-markdown .message-table-scroll tr:last-child td {
+  border-bottom: 0;
+}
+
+/* 数字列右对齐并用等宽数字，表格对比数值时才读得动 */
+.message-markdown .message-table-scroll td:has(> code:only-child) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── GFM 任务列表 ──
+   prose 会给 li 加 marker，任务列表里那个圆点和 checkbox 挤在一起很脏 */
+
+.message-markdown li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.1rem;
+}
+
+.message-markdown input[type='checkbox'] {
+  margin-right: 0.4rem;
+  vertical-align: -0.1em;
+  accent-color: var(--color-primary);
+}
+
+/* ── KaTeX ────────────────────────────────────────────────────────
+   katex.min.css 默认 font-size: 1.21em，在 14px 聊天正文里公式会比周围
+   文字大出一圈，且行内公式会顶开行高。这里压回正文尺度。 */
+
+.message-markdown .katex {
+  font-size: 1.05em;
+  color: inherit;
+}
+
+/* 块级公式：长公式必须能横向滚动，否则会把消息宽度撑破 */
+.message-markdown .katex-display {
+  margin: 0.75rem 0;
+  padding: 0.15rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* 公式解析失败时 KaTeX 输出 .katex-error，默认是刺眼的纯红 */
+.message-markdown .katex-error {
+  color: var(--color-destructive) !important;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+}
+
 .pi-floating-button {
   box-shadow: var(--shadow-floating);
   transition:

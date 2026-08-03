@@ -242,14 +242,50 @@ export interface AgentInfo {
 
 // ── 会话消息分页 API 类型 ──
 
-/** 单条会话消息条目（与后端 SessionEntry 对齐，字段可选） */
-export interface SessionMessageEntry {
-  id?: string
-  role?: string
-  content?: unknown
+/**
+ * 会话 JSONL 里的内容块。
+ *
+ * 来自 `@earendil-works/pi-ai`：user 消息是 `string | (text|image)[]`，
+ * assistant 是 `(text|thinking|toolCall)[]`，toolResult 是 `(text|image)[]`。
+ */
+export type SessionContentBlock =
+  | { type: 'text'; text?: string }
+  | { type: 'thinking'; thinking?: string; redacted?: boolean }
+  | { type: 'toolCall'; id?: string; name?: string; arguments?: Record<string, unknown> }
+  | { type: 'image'; data?: string; mimeType?: string }
+  | { type: string; [key: string]: unknown }
+
+/** JSONL 里 `type: 'message'` 条目携带的实际消息体 */
+export interface SessionMessagePayload {
+  role?: 'user' | 'assistant' | 'toolResult' | string
+  content?: string | SessionContentBlock[]
+  /** 毫秒时间戳 */
+  timestamp?: number
   stopReason?: string
+  /** role === 'toolResult' 时指向对应的 toolCall */
   toolCallId?: string
-  toolCalls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: string } }>
+  toolName?: string
+  isError?: boolean
+  errorMessage?: string
+  /** role === 'toolResult' 时的结构化细节（edit/write 的 diff / patch 就在这里） */
+  details?: unknown
+  [key: string]: unknown
+}
+
+/**
+ * 单条会话条目。
+ *
+ * 注意这是**会话事件日志**的条目，不是消息本身 —— 真正的消息在 `message` 字段里。
+ * 后端 `session-reader` 已经过滤掉了非 `type: 'message'` 的条目。
+ */
+export interface SessionMessageEntry {
+  /** 条目 ID（entry 级，不是消息级） */
+  id?: string
+  type?: string
+  parentId?: string | null
+  /** ISO 时间戳（entry 级） */
+  timestamp?: string
+  message?: SessionMessagePayload
   [key: string]: unknown
 }
 
@@ -412,4 +448,27 @@ export async function getSessionMessages(
   return getApi<PaginatedMessages>(
     `/api/sessions/${encodeURIComponent(threadId)}/messages${qs ? `?${qs}` : ''}`,
   )
+}
+
+/** 待处理的工具执行确认请求（与 use-websocket 的 ConfirmationRequestPayload 同构） */
+export interface PendingConfirmation {
+  id: string
+  threadId: string
+  toolCallId: string
+  toolName: string
+  args: Record<string, unknown>
+  reason: string
+  createdAt: number
+}
+
+/**
+ * 拉取尚未处理的确认请求。
+ *
+ * 确认请求原来只通过 WebSocket 的 `confirmation_request` 推送，一旦刷新页面或
+ * 断线重连，正在等待的审批就从界面上消失了 —— 而后端那边 Agent 还在阻塞等回答，
+ * 表现就是「卡住不动了」。这个接口用于挂载与重连时把它们捞回来。
+ */
+export async function getPendingConfirmations(): Promise<PendingConfirmation[]> {
+  const data = await getApi<{ pending: PendingConfirmation[] }>('/api/confirmations')
+  return data.pending ?? []
 }

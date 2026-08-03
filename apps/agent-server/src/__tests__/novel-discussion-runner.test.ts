@@ -361,6 +361,8 @@ describe('NovelDiscussionRunner', () => {
       chapterContext: 'context',
       userMessage: 'message',
       result: '正文',
+      // 实际挂载的工具名：日志必须能区分"工具没挂上"与"工具挂了但模型没调"
+      toolNames: ['novel_apply_revision'],
       durationMs: 12,
       status: 'success',
       error: '',

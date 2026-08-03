@@ -21,7 +21,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { PluginContext } from '../../../core/plugin/plugin-types.js'
+import type { PluginContext, PluginPayloadStats } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
 import type { NovelStore } from './novel-store.js'
@@ -305,7 +305,24 @@ export interface MemoryGenerationResult {
     systemPrompt: string
     userMessage: string
     sessionId?: string
+    payloadStats?: MemoryPayloadStats
   }
+}
+
+export interface MemoryPayloadStats {
+  messagesChars: number
+  toolsChars: number
+  toolCount: number
+  totalChars: number
+  roundTrips: number
+}
+
+function addPayloadStats(target: MemoryPayloadStats, stats: PluginPayloadStats): void {
+  target.messagesChars += stats.messagesChars
+  target.toolsChars += stats.toolsChars
+  target.toolCount = Math.max(target.toolCount, stats.toolCount)
+  target.totalChars += stats.totalChars
+  target.roundTrips++
 }
 
 /** 将任意 LLM 输出值安全转为 string，防止数组/对象传到 SQLite */
@@ -358,16 +375,17 @@ export class NovelMemoryGenerator {
     arrangedEntities?: ArrangedEntity,
     signal?: AbortSignal,
   ): Promise<MemoryGenerationResult> {
-    // ── 1. 构建系统提示词（与 character-generator 一致的技术栈）──
-    // agentType 使用 'memory-generator'，promptBuilder 通过 role-memory-generator 模板加载角色定义
+    // ── 1. 构建 Memory 专用系统提示词 ──
+    // Memory 已在 user prompt 中拿到完整正文与本章相关实体状态，不需要重发
+    // 全书大纲、卷纲和世界规则。保留身份模板，确保提取字段和工具契约不变。
     onProgress?.({ phase: 'preparing', message: '正在构建记忆提取提示词...' })
-    const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'memory-generator')
+    const systemPrompt = this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
 
     // ── 2. 构建用户消息：章节正文 + 当前实体状态 ──
     // ⚠️ Token 优化：Memory 的任务是"从章节正文中提取状态变更"，只需要：
     //   - 章节正文（已在 userPrompt 中）
     //   - 当前实体状态（已在 userPrompt 中通过 getCurrentEntityState 注入）
-    //   - system_prompt（system-base.md + role-memory-generator.md，含全局铁律）
+    //   - system_prompt（system-base.md + role-memory-generator.md）
     // 不需要注入 chapterContext（章节信息 + 约束 + 故事状态 + 摘要 + 因果链），
     // 这些对"状态变更提取"无用，且会让 Memory 的输入膨胀 10K+ 字符。
     // 预期节省 ~10K 字符 / 7K tokens。
@@ -379,14 +397,21 @@ export class NovelMemoryGenerator {
     onProgress?.({ phase: 'generating', message: '记忆 Agent 正在分析章节状态变更...' })
     // Memory 不复用创作阶段的 shared context。缓存命中不能抵消无关上下文
     // 对上下文窗口和 cache-read 计费的占用；Memory 只保留正文、相关实体状态和待兑现钩子。
-    const fullUserMessage = this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
-      + '\n\n---\n\n' + userPrompt
+    const fullUserMessage = userPrompt
+    const payloadStats: MemoryPayloadStats = {
+      messagesChars: 0,
+      toolsChars: 0,
+      toolCount: 0,
+      totalChars: 0,
+      roundTrips: 0,
+    }
     const sessionOptions: {
       systemPrompt: string
       userMessage: string
       responseFormat: 'json'
       timeoutMs: number
       signal?: AbortSignal
+      onPayloadStats?: (stats: PluginPayloadStats) => void
     } = {
       systemPrompt,
       userMessage: fullUserMessage,
@@ -395,6 +420,7 @@ export class NovelMemoryGenerator {
       // 但远低于工具循环模式的 300s（单次调用通常 30-60s）
       timeoutMs: 300_000,
       signal,
+      onPayloadStats: (stats: PluginPayloadStats) => addPayloadStats(payloadStats, stats),
     }
     const session = await this.context.createSession(sessionOptions)
 
@@ -434,7 +460,7 @@ export class NovelMemoryGenerator {
         summary: '记忆提取失败，未应用状态变更',
         stats: this.emptyStats(),
         error: err instanceof Error ? err.message : String(err),
-        logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId },
+        logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats },
       }
     } finally {
       session.dispose()
@@ -451,7 +477,7 @@ export class NovelMemoryGenerator {
       data: { stats },
     })
 
-    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId } }
+    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats } }
   }
 
   /**
@@ -524,17 +550,26 @@ export class NovelMemoryGenerator {
 
     const userPrompt = parts.join('\n')
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'memory-generator')
+    const payloadStats: MemoryPayloadStats = {
+      messagesChars: 0,
+      toolsChars: 0,
+      toolCount: 0,
+      totalChars: 0,
+      roundTrips: 0,
+    }
 
     // 创建 LLM Session
     onProgress?.({ phase: 'generating', message: '全量校准 Agent 正在分析最近章节状态...' })
+    const fullUserMessage = this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
+      + '\n\n---\n\n' + userPrompt
     const session = await this.context.createSession({
       systemPrompt,
       // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
-      userMessage: this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
-        + '\n\n---\n\n' + userPrompt,
+      userMessage: fullUserMessage,
       responseFormat: 'json',
       timeoutMs: 300_000,
       signal,
+      onPayloadStats: (stats: PluginPayloadStats) => addPayloadStats(payloadStats, stats),
     })
 
     let payload: MemoryUpdatePayload
@@ -568,6 +603,7 @@ export class NovelMemoryGenerator {
         summary: '全量校准失败',
         stats: this.emptyStats(),
         error: err instanceof Error ? err.message : String(err),
+        logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats },
       }
     } finally {
       session.dispose()
@@ -584,7 +620,7 @@ export class NovelMemoryGenerator {
       data: { stats, calibration: true },
     })
 
-    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: userPrompt } }
+    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats } }
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -22,6 +22,7 @@ import { PluginManager } from '../core/plugin/plugin-manager.js'
 import { createHelloPlugin } from './examples/hello-plugin/index.js'
 import { createNovelPlugin } from './novel-plugin/index.js'
 import { createWebSearchPlugin } from './web-search-plugin/index.js'
+import { applyMigrations } from '../core/db/migrations.js'
 
 export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'plugin-loader')
@@ -101,17 +102,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   if (staticMigrations.length > 0) {
     log.info({ count: staticMigrations.length }, '开始执行插件静态数据库迁移')
     for (const migration of staticMigrations) {
-      // 检查是否已执行
-      const applied = app.db
-        .prepare('SELECT id FROM schema_migrations WHERE id = ?')
-        .get(migration.id) as { id: string } | undefined
-      if (applied) {
-        log.debug({ id: migration.id }, '迁移已应用，跳过')
-        continue
-      }
       try {
-        app.db.exec(migration.sql)
-        app.db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
+        applyMigrations(app.db, [migration])
         log.info({ id: migration.id }, '迁移已执行')
       } catch (err) {
         log.error({ id: migration.id, err }, '迁移执行失败')
@@ -128,17 +120,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   if (dynamicMigrations.length > 0) {
     log.info({ count: dynamicMigrations.length }, '开始执行插件动态数据库迁移')
     for (const migration of dynamicMigrations) {
-      // 检查是否已执行
-      const applied = app.db
-        .prepare('SELECT id FROM schema_migrations WHERE id = ?')
-        .get(migration.id) as { id: string } | undefined
-      if (applied) {
-        log.debug({ id: migration.id }, '迁移已应用，跳过')
-        continue
-      }
       try {
-        app.db.exec(migration.sql)
-        app.db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
+        applyMigrations(app.db, [migration])
         log.info({ id: migration.id }, '迁移已执行')
       } catch (err) {
         log.error({ id: migration.id, err }, '迁移执行失败')

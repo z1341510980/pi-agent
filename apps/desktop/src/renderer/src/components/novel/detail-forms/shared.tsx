@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
-import { Plus, Save, Trash2, X } from 'lucide-react'
+import { ChevronDown, Plus, Save, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  AUTOSAVE_DEBOUNCE_MS,
-  describeSaveState,
-  type SaveState,
-} from '../save-contract'
+import { AUTOSAVE_DEBOUNCE_MS, describeSaveState, type SaveState } from '../save-contract'
+import { useDetailPanelEditDirty } from '../detail-panel-edit-context'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
+  SelectValue
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { type NovelNodeType } from '@/stores/novel-ui-store'
@@ -40,16 +37,162 @@ import {
   type NovelLocationType,
   type NovelWorldElementCategory,
   type StoryStage,
-  type TargetPlatform,
+  type TargetPlatform
 } from '@/api/novel-client'
 
 // ── 字段组件 ──
 
-export function FieldRow({ label, children }: { label: string; children: ReactNode }): ReactElement {
+/**
+ * 字段行。
+ *
+ * `hint` 用于承载「这个字段是什么意思」，此前只能塞进 placeholder ——
+ * 而 placeholder 一旦有值就看不见了，等于说明只在字段为空时可读。
+ */
+export function FieldRow({
+  label,
+  hint,
+  children
+}: {
+  label: string
+  hint?: string
+  children: ReactNode
+}): ReactElement {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <Label className="text-xs font-semibold text-text-secondary">{label}</Label>
+        {hint && <span className="text-nano text-muted-foreground/70 shrink-0">{hint}</span>}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * 分组卡片。
+ *
+ * 分区表面用细微阴影建立层级，而不是堆叠硬边框。
+ * 长表单仍然按分组浏览，但不会看起来像一排厚重卡片。
+ */
+export function FormSection({
+  title,
+  hint,
+  icon,
+  children,
+  /** 右上角操作区（如「添加」按钮） */
+  action,
+  /** 默认折叠。用于低频分组，减少首屏噪声 */
+  defaultCollapsed = false,
+  /** 不可折叠（基础信息这类必看分组） */
+  collapsible = true
+}: {
+  title: string
+  hint?: string
+  icon?: ReactNode
+  children: ReactNode
+  action?: ReactNode
+  defaultCollapsed?: boolean
+  collapsible?: boolean
+}): ReactElement {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  const isCollapsed = collapsible && collapsed
+
+  return (
+    <section className="overflow-hidden rounded-lg bg-surface-1 shadow-[var(--shadow-border)]">
+      <header
+        className={cn(
+          'flex min-h-10 items-center gap-2 bg-surface-2/60 px-3 py-1.5',
+          !isCollapsed &&
+            'shadow-[inset_0_-1px_0_color-mix(in_srgb,var(--color-border)_72%,transparent)]'
+        )}
+      >
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            aria-expanded={!collapsed}
+            className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-0.5 text-left outline-none transition-[background-color,transform] hover:bg-surface-3/45 focus-visible:bg-surface-3/55 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.96]"
+          >
+            <ChevronDown
+              className={cn(
+                'size-3.5 shrink-0 text-muted-foreground transition-transform duration-150',
+                collapsed && '-rotate-90'
+              )}
+              aria-hidden
+            />
+            {icon && (
+              <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-surface-1 text-muted-foreground shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_65%,transparent)]">
+                {icon}
+              </span>
+            )}
+            <span className="truncate text-xs font-semibold text-text">{title}</span>
+            {hint && !collapsed && (
+              <span className="truncate text-nano text-muted-foreground/70">{hint}</span>
+            )}
+          </button>
+        ) : (
+          <div className="flex min-h-9 min-w-0 flex-1 items-center gap-2 px-0.5">
+            {icon && (
+              <span className="flex size-5 shrink-0 items-center justify-center rounded-md bg-surface-1 text-muted-foreground shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_65%,transparent)]">
+                {icon}
+              </span>
+            )}
+            <span className="truncate text-xs font-semibold text-text">{title}</span>
+            {hint && <span className="truncate text-nano text-muted-foreground/70">{hint}</span>}
+          </div>
+        )}
+        {action && <div className="shrink-0">{action}</div>}
+      </header>
+      {!isCollapsed && <div className="space-y-3.5 p-3">{children}</div>}
+    </section>
+  )
+}
+
+/**
+ * 0-10 量表滑块。
+ *
+ * 取代「进度条 + 数字输入框 + `/10` 文本」的三件套 —— 那个组合里进度条只是
+ * 装饰（不可拖动），真正的输入是旁边的窄数字框，用户得先看懂才知道点哪里。
+ */
+export function ScaleSlider({
+  value,
+  onChange,
+  max = 10,
+  /** 刻度含义提示，如 ['平缓', '激烈'] */
+  endLabels
+}: {
+  value: string
+  onChange: (next: string) => void
+  max?: number
+  endLabels?: [string, string]
+}): ReactElement {
+  const num = Number(value)
+  const safe = Number.isFinite(num) ? Math.min(max, Math.max(0, num)) : 0
+
   return (
     <div className="space-y-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
-      {children}
+      <div className="flex items-center gap-2.5">
+        <input
+          type="range"
+          min={0}
+          max={max}
+          step={1}
+          value={safe}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm"
+          aria-label={`数值 ${safe} / ${max}`}
+        />
+        <span className="w-8 shrink-0 text-right text-xs font-medium tabular-nums text-text">
+          {safe}
+          <span className="text-nano text-muted-foreground">/{max}</span>
+        </span>
+      </div>
+      {endLabels && (
+        <div className="flex justify-between text-nano text-muted-foreground/60">
+          <span>{endLabels[0]}</span>
+          <span>{endLabels[1]}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -63,21 +206,23 @@ export type TextAreaVariant = 'short' | 'medium' | 'long'
 export const TEXTAREA_VARIANT_CLASS: Record<TextAreaVariant, string> = {
   short: 'min-h-[60px]',
   medium: 'min-h-[100px]',
-  long: 'min-h-[200px]',
+  long: 'min-h-[200px]'
 }
 
 export function TextArea({
   variant = 'short',
   className,
   ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { variant?: TextAreaVariant }): ReactElement {
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  variant?: TextAreaVariant
+}): ReactElement {
   return (
     <textarea
       {...props}
       className={cn(
-        'w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30',
+        'w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-[border-color,box-shadow,background-color] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30',
         TEXTAREA_VARIANT_CLASS[variant],
-        className,
+        className
       )}
     />
   )
@@ -105,7 +250,7 @@ export function isStringArray(v: unknown): v is string[] {
 
 export function JsonObjectEditor({
   value,
-  onChange,
+  onChange
 }: {
   value: string
   onChange: (v: string) => void
@@ -191,7 +336,7 @@ export function JsonObjectEntry({
   value,
   onRenameKey,
   onChangeValue,
-  onRemove,
+  onRemove
 }: {
   entryKey: string
   value: unknown
@@ -220,11 +365,7 @@ export function JsonObjectEntry({
     valueControl = isLong ? (
       <TextArea variant="short" value={value} onChange={(e) => onChangeValue(e.target.value)} />
     ) : (
-      <Input
-        className="h-8"
-        value={value}
-        onChange={(e) => onChangeValue(e.target.value)}
-      />
+      <Input className="h-8" value={value} onChange={(e) => onChangeValue(e.target.value)} />
     )
   } else if (isStringArray(value)) {
     valueControl = <StringListEditor items={value} onChange={(items) => onChangeValue(items)} />
@@ -267,7 +408,7 @@ export function JsonObjectEntry({
   }
 
   return (
-    <div className="space-y-1 rounded-md border border-border bg-surface-2/40 p-2">
+    <div className="space-y-1.5 rounded-md bg-surface-2/60 p-2 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_58%,transparent)]">
       <div className="flex items-center gap-1.5">
         <Input
           className="h-7 flex-1 text-xs font-medium"
@@ -286,7 +427,7 @@ export function JsonObjectEntry({
 
 export function StringListEditor({
   items,
-  onChange,
+  onChange
 }: {
   items: string[]
   onChange: (items: string[]) => void
@@ -349,15 +490,20 @@ export function safeParseParticipants(raw: string): string[] {
   return []
 }
 
-// ── 分组标题（iOS Settings 风格） ──
+// ── 分组标题 ──
 
+/**
+ * 轻量分组标题。
+ *
+ * 优先使用 `FormSection`（带卡片容器与折叠能力）。这个组件保留给尚未迁移的表单，
+ * 视觉上与 `FormSection` 的 header 对齐（同样的字号、字重、图标位），
+ * 以免同一面板内两种分组样式并存。
+ */
 export function SectionHeader({ title, hint }: { title: string; hint?: string }): ReactElement {
   return (
-    <div className="pt-4 pb-1.5 first:pt-0">
-      <div className="text-micro font-medium uppercase tracking-wider text-muted-foreground">
-        {title}
-      </div>
-      {hint && <div className="text-nano text-muted-foreground/70 mt-0.5">{hint}</div>}
+    <div className="flex items-baseline gap-1.5 border-b border-border/50 pb-1.5 pt-4 first:pt-0">
+      <span className="text-xs font-semibold text-text">{title}</span>
+      {hint && <span className="truncate text-nano text-muted-foreground/70">{hint}</span>}
     </div>
   )
 }
@@ -376,7 +522,7 @@ export function DebouncedOutlineField({
   label,
   value,
   placeholder,
-  onSave,
+  onSave
 }: DebouncedOutlineFieldProps): ReactElement {
   const [draft, setDraft] = useState(value)
   /**
@@ -478,21 +624,25 @@ export const STAGE_OPTIONS: { value: StoryStage; label: string }[] = [
   { value: 'rising', label: '上升' },
   { value: 'climax', label: '高潮' },
   { value: 'falling', label: '回落' },
-  { value: 'resolution', label: '结局' },
+  { value: 'resolution', label: '结局' }
 ]
 
 export const PROJECT_STATUS_OPTIONS = [
   { value: 'active', label: '进行中' },
   { value: 'paused', label: '已暂停' },
-  { value: 'completed', label: '已完成' },
+  { value: 'completed', label: '已完成' }
 ]
 
-export const TARGET_PLATFORM_OPTIONS: { value: TargetPlatform | '__none__'; label: string; hint: string }[] = [
+export const TARGET_PLATFORM_OPTIONS: {
+  value: TargetPlatform | '__none__'
+  label: string
+  hint: string
+}[] = [
   { value: '__none__', label: '未设定', hint: '不调整评分权重' },
   { value: 'fanqie', label: '番茄', hint: '重节奏和爽感' },
   { value: 'qidian', label: '起点', hint: '重世界观和伏笔' },
   { value: 'zhihu_yanyan', label: '知乎盐言', hint: '重开篇和反转' },
-  { value: 'general', label: '通用', hint: '不调整评分权重' },
+  { value: 'general', label: '通用', hint: '不调整评分权重' }
 ]
 
 export const CHAPTER_STATUS_OPTIONS: { value: ChapterStatus; label: string }[] = [
@@ -500,7 +650,7 @@ export const CHAPTER_STATUS_OPTIONS: { value: ChapterStatus; label: string }[] =
   { value: 'drafting', label: '草稿中' },
   { value: 'review', label: '审核中' },
   { value: 'published', label: '已发布' },
-  { value: 'rejected', label: '已驳回' },
+  { value: 'rejected', label: '已驳回' }
 ]
 
 export const CONFLICT_TYPE_OPTIONS: { value: ConflictType; label: string }[] = [
@@ -512,7 +662,7 @@ export const CONFLICT_TYPE_OPTIONS: { value: ConflictType; label: string }[] = [
   { value: 'identity', label: '身份' },
   { value: 'emotional', label: '情感' },
   { value: 'world_rule', label: '世界规则' },
-  { value: 'survival', label: '生存' },
+  { value: 'survival', label: '生存' }
 ]
 
 export const CONFLICT_STAGE_OPTIONS: { value: ConflictStage; label: string }[] = [
@@ -522,13 +672,13 @@ export const CONFLICT_STAGE_OPTIONS: { value: ConflictStage; label: string }[] =
   { value: 'erupting', label: '爆发' },
   { value: 'reversing', label: '逆转' },
   { value: 'resolved', label: '已解决' },
-  { value: 'transformed', label: '转化' },
+  { value: 'transformed', label: '转化' }
 ]
 
 export const CONFLICT_TIER_OPTIONS: { value: ConflictTier; label: string }[] = [
   { value: 'main', label: '主线' },
   { value: 'secondary', label: '支线' },
-  { value: 'goal', label: '目标' },
+  { value: 'goal', label: '目标' }
 ]
 
 export const CLIMAX_TYPE_OPTIONS: { value: ClimaxType; label: string }[] = [
@@ -537,7 +687,7 @@ export const CLIMAX_TYPE_OPTIONS: { value: ClimaxType; label: string }[] = [
   { value: 'character', label: '性格高潮' },
   { value: 'combat', label: '打斗高潮' },
   { value: 'theme', label: '主题高潮' },
-  { value: 'composite', label: '复合高潮' },
+  { value: 'composite', label: '复合高潮' }
 ]
 
 // ── P2-1：冲突功能位（7 值枚举）+ 非线性推进模式（5 值枚举）──
@@ -548,15 +698,18 @@ export const CONFLICT_PLOT_FUNCTION_OPTIONS: { value: ConflictPlotFunction; labe
   { value: 'open_phase', label: '开启阶段' },
   { value: 'change_judgment', label: '改变判断' },
   { value: 'advance_relationship', label: '推进关系' },
-  { value: 'reveal_world_rule', label: '揭示世界规则' },
+  { value: 'reveal_world_rule', label: '揭示世界规则' }
 ]
 
-export const CONFLICT_PROGRESSION_MODE_OPTIONS: { value: ConflictProgressionMode; label: string }[] = [
+export const CONFLICT_PROGRESSION_MODE_OPTIONS: {
+  value: ConflictProgressionMode
+  label: string
+}[] = [
   { value: 'linear', label: '线性升级' },
   { value: 'mutation', label: '突变' },
   { value: 'stagnation', label: '停滞' },
   { value: 'regression', label: '降级' },
-  { value: 'reversal', label: '反转' },
+  { value: 'reversal', label: '反转' }
 ]
 
 // ── 三层模型：角色层级（5 值枚举）──
@@ -565,7 +718,7 @@ export const CHARACTER_PLOT_ROLE_OPTIONS: { value: NovelCharacterPlotRole; label
   { value: 'main_opponent', label: '主对手' },
   { value: 'supporting', label: '配角' },
   { value: 'function', label: '功能性' },
-  { value: 'background', label: '背景' },
+  { value: 'background', label: '背景' }
 ]
 
 export const CHAPTER_RHYTHM_OPTIONS: { value: ChapterRhythm; label: string }[] = [
@@ -576,7 +729,7 @@ export const CHAPTER_RHYTHM_OPTIONS: { value: ChapterRhythm; label: string }[] =
   { value: 'resolution', label: '收束' },
   { value: 'twist', label: '转折' },
   { value: 'breather', label: '舒缓' },
-  { value: 'suspense', label: '悬念' },
+  { value: 'suspense', label: '悬念' }
 ]
 
 export const FORESHADOW_STATUS_OPTIONS: { value: ForeshadowStatus; label: string }[] = [
@@ -586,7 +739,7 @@ export const FORESHADOW_STATUS_OPTIONS: { value: ForeshadowStatus; label: string
   { value: 'partially_revealed', label: '部分揭示' },
   { value: 'recovering', label: '回收中' },
   { value: 'recovered', label: '已回收' },
-  { value: 'abandoned', label: '已废弃' },
+  { value: 'abandoned', label: '已废弃' }
 ]
 
 // ── P2-2：伏笔分类枚举（与后端 NovelForeshadowCategory 对齐）──
@@ -598,7 +751,7 @@ export const FORESHADOW_CATEGORY_OPTIONS: { value: NovelForeshadowCategory; labe
   { value: 'secret', label: '秘密' },
   { value: 'prophecy', label: '预言' },
   { value: 'promise', label: '承诺' },
-  { value: 'quote', label: '台词' },
+  { value: 'quote', label: '台词' }
 ]
 
 export const FACTION_TYPE_OPTIONS: { value: NovelFactionType; label: string }[] = [
@@ -607,21 +760,21 @@ export const FACTION_TYPE_OPTIONS: { value: NovelFactionType; label: string }[] 
   { value: 'kingdom', label: '王国' },
   { value: 'family', label: '家族' },
   { value: 'guild', label: '公会' },
-  { value: 'cult', label: '邪教' },
+  { value: 'cult', label: '邪教' }
 ]
 
 export const FACTION_STRENGTH_OPTIONS: { value: NovelFactionStrength; label: string }[] = [
   { value: 'weak', label: '弱小' },
   { value: 'medium', label: '中等' },
   { value: 'strong', label: '强盛' },
-  { value: 'overwhelming', label: '压倒性' },
+  { value: 'overwhelming', label: '压倒性' }
 ]
 
 export const FACTION_STATUS_OPTIONS: { value: NovelFactionStatus; label: string }[] = [
   { value: 'active', label: '活跃' },
   { value: 'declined', label: '衰落' },
   { value: 'destroyed', label: '覆灭' },
-  { value: 'hidden', label: '隐秘' },
+  { value: 'hidden', label: '隐秘' }
 ]
 
 export const LOCATION_TYPE_OPTIONS: { value: NovelLocationType; label: string }[] = [
@@ -631,32 +784,34 @@ export const LOCATION_TYPE_OPTIONS: { value: NovelLocationType; label: string }[
   { value: 'building', label: '建筑' },
   { value: 'dungeon', label: '地下城' },
   { value: 'region', label: '区域' },
-  { value: 'wilderness', label: '荒野' },
+  { value: 'wilderness', label: '荒野' }
 ]
 
-export const LOCATION_SIGNIFICANCE_OPTIONS: { value: NovelLocationSignificance; label: string }[] = [
-  { value: 'minor', label: '次要' },
-  { value: 'moderate', label: '中等' },
-  { value: 'major', label: '重要' },
-  { value: 'critical', label: '关键' },
-]
+export const LOCATION_SIGNIFICANCE_OPTIONS: { value: NovelLocationSignificance; label: string }[] =
+  [
+    { value: 'minor', label: '次要' },
+    { value: 'moderate', label: '中等' },
+    { value: 'major', label: '重要' },
+    { value: 'critical', label: '关键' }
+  ]
 
 export const LOCATION_STATUS_OPTIONS: { value: NovelLocationStatus; label: string }[] = [
   { value: 'normal', label: '正常' },
   { value: 'destroyed', label: '毁灭' },
   { value: 'changed', label: '变迁' },
-  { value: 'hidden', label: '隐秘' },
+  { value: 'hidden', label: '隐秘' }
 ]
 
-export const WORLD_ELEMENT_CATEGORY_OPTIONS: { value: NovelWorldElementCategory; label: string }[] = [
-  { value: 'power_system', label: '力量体系' },
-  { value: 'history', label: '历史' },
-  { value: 'culture', label: '文化' },
-  { value: 'religion', label: '宗教' },
-  { value: 'technology', label: '科技' },
-  { value: 'economy', label: '经济' },
-  { value: 'geography', label: '地理' },
-]
+export const WORLD_ELEMENT_CATEGORY_OPTIONS: { value: NovelWorldElementCategory; label: string }[] =
+  [
+    { value: 'power_system', label: '力量体系' },
+    { value: 'history', label: '历史' },
+    { value: 'culture', label: '文化' },
+    { value: 'religion', label: '宗教' },
+    { value: 'technology', label: '科技' },
+    { value: 'economy', label: '经济' },
+    { value: 'geography', label: '地理' }
+  ]
 
 export const ITEM_TYPE_OPTIONS: { value: NovelItemType; label: string }[] = [
   { value: 'weapon', label: '武器' },
@@ -666,7 +821,7 @@ export const ITEM_TYPE_OPTIONS: { value: NovelItemType; label: string }[] = [
   { value: 'key', label: '关键道具' },
   { value: 'material', label: '材料' },
   { value: 'info', label: '信息载体' },
-  { value: 'misc', label: '其他' },
+  { value: 'misc', label: '其他' }
 ]
 
 export const ITEM_STATUS_OPTIONS: { value: NovelItemStatus; label: string }[] = [
@@ -675,7 +830,7 @@ export const ITEM_STATUS_OPTIONS: { value: NovelItemStatus; label: string }[] = 
   { value: 'destroyed', label: '损毁' },
   { value: 'transformed', label: '升级/变化' },
   { value: 'sealed', label: '封印' },
-  { value: 'transferred', label: '转手' },
+  { value: 'transferred', label: '转手' }
 ]
 
 // 节点类型中文标签
@@ -692,7 +847,7 @@ export const NODE_TYPE_LABELS: Record<NovelNodeType, string> = {
   world_element: '世界要素',
   info_layer: '信息差',
   item: '物品',
-  group: '分组',
+  group: '分组'
 }
 
 // 动态状态字段（用于变更历史记录）
@@ -701,7 +856,7 @@ export const DYNAMIC_FIELDS: CharacterHistoryField[] = [
   'currentGoal',
   'currentPressure',
   'secret',
-  'arcStage',
+  'arcStage'
 ]
 
 export const HISTORY_FIELD_LABELS: Record<CharacterHistoryField, string> = {
@@ -709,7 +864,7 @@ export const HISTORY_FIELD_LABELS: Record<CharacterHistoryField, string> = {
   currentGoal: '当前目标',
   currentPressure: '当前压力',
   secret: '秘密',
-  arcStage: '弧光阶段',
+  arcStage: '弧光阶段'
 }
 
 // 简单的相对时间格式化
@@ -753,17 +908,27 @@ export function SaveButton({
   onSave,
   disabled,
   saving,
+  dirty: explicitDirty
 }: {
   onSave: () => void
   disabled: boolean
   saving: boolean
+  /** 保存按钮因字段校验禁用时，仍可上报实际草稿状态。 */
+  dirty?: boolean
 }): ReactElement {
   // explicit 契约：dirty 时必须说清"不点就会丢"，否则用户以为像正文一样自动存。
   // 这是四种保存契约里最容易误解的一处 —— 同屏的正文和大纲都自动保存。
-  const dirty = !disabled && !saving
+  const hasUnsavedChanges = explicitDirty ?? !disabled
+  const dirty = hasUnsavedChanges && !saving
+  useDetailPanelEditDirty(hasUnsavedChanges || saving)
   const status = describeSaveState('explicit', dirty ? 'dirty' : saving ? 'saving' : 'saved')
   return (
-    <div className="pt-2 space-y-1">
+    /**
+     * 吸底：长表单（角色有十几个字段 + 两个 JSON 编辑器 + 历史时间线）里，
+     * 保存按钮此前跟在最末尾，改完上方字段要一路滚到底才能提交。
+     * sticky 让它始终可达，同时保留在文档流中（不遮挡最后一个字段）。
+     */
+    <div className="sticky bottom-0 -mx-3 mt-1 space-y-1 bg-surface-1/95 px-3 py-2.5 shadow-[0_-1px_0_color-mix(in_srgb,var(--color-border)_72%,transparent)] backdrop-blur-sm">
       <Button onClick={onSave} disabled={disabled || saving} className="w-full">
         <Save className="size-3.5" />
         {saving ? '保存中...' : '保存修改'}

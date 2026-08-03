@@ -73,31 +73,31 @@ NovelStore ─► createNovelTools
 
 ### 2.1 实体清单
 
-| 实体 | 接口 | 关键字段 |
-|---|---|---|
-| 项目 | `NovelProject` | id, title, genre, synopsis, outline, targetWords, currentVolume, currentChapter, currentStage(`StoryStage`), status, rhythmModelId |
-| 卷 | `NovelVolume` | id, projectId, volumeNumber, title, outline, sortOrder |
-| 章节 | `NovelChapter` | id, projectId, volume, chapterNumber, title, content, wordCount, status(`ChapterStatus`), narrativeTask, outline, volumeId, acceptanceResult, rhythm |
-| 角色 | `NovelCharacter` | 见 2.2 节（重点） |
-| 关系 | `NovelRelationship` | characterA, characterB, relationType, currentStage, stageHistory(JSON) |
-| 伏笔 | `NovelForeshadow` | description, category, status(`ForeshadowStatus` 7 态), firstChapter, lastChapter, recoverByChapter, linkedCharacters(JSON), linkedClues(JSON) |
-| 线索 | `NovelClue` | description, pointsTo, progress(0-100), currentStep, nextStep, isMisleading, linkedForeshadow |
-| 冲突 | `NovelConflict` | description, type(`ConflictType` 9 种), intensity(1-10), stage(`ConflictStage` 7 阶), participants(JSON), firstChapter, lastChapter, tier(`ConflictTier`: main/secondary/goal) |
-| 世界规则 | `NovelWorldRule` | category, rule, cost, isFixed |
-| 势力 | `NovelFaction` | name, type(6 种), leaderId, ideology, strength(4 级), resources[], allies[], enemies[], status(4 态), firstChapter, lastChapter |
-| 地点 | `NovelLocation` | name, type(7 种), parentId, factionId, significance(4 级), firstChapter, status(4 态), appearChapters[] |
-| 世界观要素 | `NovelWorldElement` | category(7 类), name, description, parentId, attributes(Record) |
-| 创作约束 | `NovelConstraint` | type(`ConstraintType`: fact/cognitive/stage/debt/arc), scope(global/volume/chapter), rule, isActive, relatedEntityId |
-| 信息差 | `NovelInformationLayer` | infoDescription, authorKnows, readerKnows, characterKnowledge(JSON), revealStage, revealChapter, isRevealed |
-| 风格指南 | `NovelStyleGuide` | category, rule, example |
-| 作者意图 | `NovelAuthorIntent` | chapterId, intentType(plot/foreshadow/character/scene/dialogue), description, targetEntityId |
-| 章节验收 | `NovelChapterReview` | 10 项评分(consistency/character/taskCompletion/clueProgress/foreshadowStatus/conflictChange/pacing/infoControl/readerHook/style) + overallScore + verdict(accept/revise/reject) + issues + suggestions |
-| 角色历史 | `NovelCharacterHistory` | characterId, chapterId, chapterNumber, fieldName(`CharacterHistoryField`: currentState/currentGoal/currentPressure/secret/arcStage), oldValue, newValue, reason |
-| 节点位置 | `NovelNodePosition` | nodeType(`NovelNodeType`), entityId, posX, posY |
-| 画布连线 | `NovelEdge` | sourceId, sourceType, targetId, targetType, edgeType(`NovelEdgeType` 15 种), label, auto |
-| 提示词模板 | `NovelPromptTemplate` | projectId(null=全局), name, content, description |
-| 时间轴标记 | `NovelMarker` | chapter, title, note, type(6 种), color(5 色), entityType, entityId |
-| Agent 日志 | `NovelAgentLog` | 完整 prompt 三层 + 结果 + 耗时 + 状态 |
+| 实体       | 接口                    | 关键字段                                                                                                                                                                                               |
+| ---------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 项目       | `NovelProject`          | id, title, genre, synopsis, outline, targetWords, currentVolume, currentChapter, currentStage(`StoryStage`), status, rhythmModelId                                                                     |
+| 卷         | `NovelVolume`           | id, projectId, volumeNumber, title, outline, sortOrder                                                                                                                                                 |
+| 章节       | `NovelChapter`          | id, projectId, volume, chapterNumber, title, content, wordCount, status(`ChapterStatus`), narrativeTask, outline, volumeId, acceptanceResult, rhythm                                                   |
+| 角色       | `NovelCharacter`        | 见 2.2 节（重点）                                                                                                                                                                                      |
+| 关系       | `NovelRelationship`     | characterA, characterB, relationType, currentStage, stageHistory(JSON)                                                                                                                                 |
+| 伏笔       | `NovelForeshadow`       | description, category, status(`ForeshadowStatus` 7 态), firstChapter, lastChapter, recoverByChapter, linkedCharacters(JSON), linkedClues(JSON)                                                         |
+| 线索       | `NovelClue`             | description, pointsTo, progress(0-100), currentStep, nextStep, isMisleading, linkedForeshadow                                                                                                          |
+| 冲突       | `NovelConflict`         | description, type(`ConflictType` 9 种), intensity(1-10), stage(`ConflictStage` 7 阶), participants(JSON), firstChapter, lastChapter, tier(`ConflictTier`: main/secondary/goal)                         |
+| 世界规则   | `NovelWorldRule`        | category, rule, cost, isFixed                                                                                                                                                                          |
+| 势力       | `NovelFaction`          | name, type(6 种), leaderId, ideology, strength(4 级), resources[], allies[], enemies[], status(4 态), firstChapter, lastChapter                                                                        |
+| 地点       | `NovelLocation`         | name, type(7 种), parentId, factionId, significance(4 级), firstChapter, status(4 态), appearChapters[]                                                                                                |
+| 世界观要素 | `NovelWorldElement`     | category(7 类), name, description, parentId, attributes(Record)                                                                                                                                        |
+| 创作约束   | `NovelConstraint`       | type(`ConstraintType`: fact/cognitive/stage/debt/arc), scope(global/volume/chapter), rule, isActive, relatedEntityId                                                                                   |
+| 信息差     | `NovelInformationLayer` | infoDescription, authorKnows, readerKnows, characterKnowledge(JSON), revealStage, revealChapter, isRevealed                                                                                            |
+| 风格指南   | `NovelStyleGuide`       | category, rule, example                                                                                                                                                                                |
+| 作者意图   | `NovelAuthorIntent`     | chapterId, intentType(plot/foreshadow/character/scene/dialogue), description, targetEntityId                                                                                                           |
+| 章节验收   | `NovelChapterReview`    | 10 项评分(consistency/character/taskCompletion/clueProgress/foreshadowStatus/conflictChange/pacing/infoControl/readerHook/style) + overallScore + verdict(accept/revise/reject) + issues + suggestions |
+| 角色历史   | `NovelCharacterHistory` | characterId, chapterId, chapterNumber, fieldName(`CharacterHistoryField`: currentState/currentGoal/currentPressure/secret/arcStage), oldValue, newValue, reason                                        |
+| 节点位置   | `NovelNodePosition`     | nodeType(`NovelNodeType`), entityId, posX, posY                                                                                                                                                        |
+| 画布连线   | `NovelEdge`             | sourceId, sourceType, targetId, targetType, edgeType(`NovelEdgeType` 15 种), label, auto                                                                                                               |
+| 提示词模板 | `NovelPromptTemplate`   | projectId(null=全局), name, content, description                                                                                                                                                       |
+| 时间轴标记 | `NovelMarker`           | chapter, title, note, type(6 种), color(5 色), entityType, entityId                                                                                                                                    |
+| Agent 日志 | `NovelAgentLog`         | 完整 prompt 三层 + 结果 + 耗时 + 状态                                                                                                                                                                  |
 
 ### 2.2 辅助类型
 
@@ -126,24 +126,24 @@ export interface ArrangedEntity {
 
 ### 3.1 按 ID 查询方法
 
-| 方法 | 说明 |
-|---|---|
-| `getProject(projectId)` | 项目 |
-| `getChapter(projectId, chapterNumber)` | 按项目+章号查 |
-| `getChapterById(chapterId)` | 按 ID 查章节 |
-| `getCharacter(characterId)` | 按 ID 查角色（供 arrangedEntities 注入用） |
-| `getForeshadow(foreshadowId)` | 按 ID 查伏笔 |
-| `getClue(clueId)` | 按 ID 查线索 |
-| `getConflict(conflictId)` | 按 ID 查冲突 |
-| `getClue(clueId)` | 按 ID 查线索 |
-| `getRelationship(relationshipId)` | 按 ID 查关系 |
-| `getVolume(id)` | 按 ID 查卷 |
-| `getFaction(factionId)` | 按 ID 查势力 |
-| `getLocation(locationId)` | 按 ID 查地点 |
-| `getWorldElement(worldElementId)` | 按 ID 查世界观要素 |
-| `getMarker(markerId)` | 按 ID 查标记 |
-| `getChapterReview(chapterId)` | 按章节 ID 查最新验收 |
-| `getAgentLog(id)` | 按 ID 查完整日志 |
+| 方法                                   | 说明                                       |
+| -------------------------------------- | ------------------------------------------ |
+| `getProject(projectId)`                | 项目                                       |
+| `getChapter(projectId, chapterNumber)` | 按项目+章号查                              |
+| `getChapterById(chapterId)`            | 按 ID 查章节                               |
+| `getCharacter(characterId)`            | 按 ID 查角色（供 arrangedEntities 注入用） |
+| `getForeshadow(foreshadowId)`          | 按 ID 查伏笔                               |
+| `getClue(clueId)`                      | 按 ID 查线索                               |
+| `getConflict(conflictId)`              | 按 ID 查冲突                               |
+| `getClue(clueId)`                      | 按 ID 查线索                               |
+| `getRelationship(relationshipId)`      | 按 ID 查关系                               |
+| `getVolume(id)`                        | 按 ID 查卷                                 |
+| `getFaction(factionId)`                | 按 ID 查势力                               |
+| `getLocation(locationId)`              | 按 ID 查地点                               |
+| `getWorldElement(worldElementId)`      | 按 ID 查世界观要素                         |
+| `getMarker(markerId)`                  | 按 ID 查标记                               |
+| `getChapterReview(chapterId)`          | 按章节 ID 查最新验收                       |
+| `getAgentLog(id)`                      | 按 ID 查完整日志                           |
 
 ### 3.2 按项目列表查询方法
 
@@ -207,7 +207,7 @@ buildChapterContext(
 
 按顺序拼接（用 `\n\n---\n\n` 连接）：
 
-1. **章节信息** `formatChapterInfo` — 卷号、章号、叙事任务、优先级、目标字数（`computeChapterTargetWords`：`targetWords/1000`，限制 [2000, 5000]）
+1. **章节信息** `formatChapterInfo` — 卷号、章号、叙事任务、优先级、目标字数（`computeChapterTargetWords`：项目设置的默认每章字数，再按节奏调整）
 2. **创作约束** `formatConstraints` — 事实约束 / 认知约束 / 阶段约束 / 叙事债务（待回收伏笔）/ 角色弧光约束
 3. **本章已编排实体约束** `formatArrangedEntities`（**重点**）— 见 4.4 节
 4. **当前故事状态** `formatStoryState` — 角色动态状态（currentState/currentGoal/currentPressure）+ 关系 + 活跃冲突 + 待回收伏笔 + 活跃线索
@@ -236,6 +236,7 @@ buildChapterContext(
 - **foreshadowIds** → 调用 `stores.getForeshadow(id)`，输出 `描述（status）`
 
 **角色定义放在 SEMI 层（章节上下文）而非 STATIC 层（系统提示词）的原因**：
+
 - 角色数量可能很大（200+），全部塞系统提示词会导致上下文爆炸
 - 本章出场角色已通过 arrangedEntities 编排好，只需注入这些角色的完整定义
 - 系统提示词不含角色定义 → 跨章缓存命中最好
@@ -258,21 +259,21 @@ NovelPromptBuilder 只读取数据，定义了 18 个读方法。除了常规 li
 
 ### 5.1 查询类工具（只读，3 个）
 
-| 工具名 | 作用 |
-|---|---|
-| `novel_query_state` | 按 queryType 查询：characters/relationships/conflicts/foreshadowing/clues/world_rules/constraints/info_layers/style_guide/all |
-| `novel_query_factions` | 查询项目下所有势力 |
-| `novel_query_locations` | 查询项目下所有地点 |
+| 工具名                  | 作用                                                                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `novel_query_state`     | 按 queryType 查询：characters/relationships/conflicts/foreshadowing/clues/world_rules/constraints/info_layers/style_guide/all |
+| `novel_query_factions`  | 查询项目下所有势力                                                                                                            |
+| `novel_query_locations` | 查询项目下所有地点                                                                                                            |
 
 ### 5.2 更新类工具（5 个）
 
-| 工具名 | 可更新字段 |
-|---|---|
-| `novel_update_character` | currentState / currentGoal / currentPressure / secret / arcStage（**只更新动态，不动静态**） |
-| `novel_update_foreshadow` | status（自动更新 first/last chapter） |
-| `novel_update_conflict` | stage / intensity |
-| `novel_update_clue` | progress / currentStep / nextStep |
-| `novel_update_relationship` | currentStage |
+| 工具名                      | 可更新字段                                                                                   |
+| --------------------------- | -------------------------------------------------------------------------------------------- |
+| `novel_update_character`    | currentState / currentGoal / currentPressure / secret / arcStage（**只更新动态，不动静态**） |
+| `novel_update_foreshadow`   | status（自动更新 first/last chapter）                                                        |
+| `novel_update_conflict`     | stage / intensity                                                                            |
+| `novel_update_clue`         | progress / currentStep / nextStep                                                            |
+| `novel_update_relationship` | currentStage                                                                                 |
 
 ### 5.3 创建类工具（9 个）
 
@@ -284,12 +285,12 @@ NovelPromptBuilder 只读取数据，定义了 18 个读方法。除了常规 li
 
 ### 5.5 各 Agent 的工具权限（`novel-agents.ts`）
 
-| Agent | 允许的工具 |
-|---|---|
+| Agent    | 允许的工具                                                     |
+| -------- | -------------------------------------------------------------- |
 | director | novel_query_state, novel_query_factions, novel_query_locations |
-| writer | novel_query_state（只读，不能写状态） |
-| reviewer | novel_query_state |
-| memory | 全部 17 个工具（含所有 create/update） |
+| writer   | novel_query_state（只读，不能写状态）                          |
+| reviewer | novel_query_state                                              |
+| memory   | 全部 17 个工具（含所有 create/update）                         |
 
 ---
 
@@ -412,6 +413,7 @@ options.arrangedEntities
 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-flow
 body: { arrangedEntities?: { characterIds?, conflictIds?, foreshadowIds? } }
 ```
+
 - 直接调 `orchestrator.createChapterWithFlow`，可选手动编排约束
 - 检查点通过 `POST /api/plugins/novel/projects/:projectId/checkpoint/:type/decision` 推送决策，决策通过 EventEmitter 传递
 
@@ -420,7 +422,9 @@ body: { arrangedEntities?: { characterIds?, conflictIds?, foreshadowIds? } }
 ```
 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/ai-arrange
 ```
+
 阶段 1：AI 编排
+
 - 并发锁：`aiArrangeLocks` 按 `${projectId}:${chapterNumber}`
 - 校验：章节存在 + 章纲非空
 - 调用 `entityGenerator.generateAndArrange(projectId, chNum, chapter.outline, onProgress)`
@@ -433,6 +437,7 @@ POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/ai-arrange
 POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-team
 body: { narrativeTask, rhythm? }
 ```
+
 - 通过 TeamManager 触发 `novel-team` 团队（pipeline 策略），与 SSE 流程并存
 
 ### 7.2 `generateAndArrange` 详细流程（`novel-entity-generator.ts`）
@@ -466,13 +471,13 @@ body: { narrativeTask, rhythm? }
 
 ### 7.3 单 Agent 阶段总览
 
-| 阶段 | Agent | 输入 | 输出 | 工具权限 |
-|---|---|---|---|---|
-| directing | director | "分析状态，规划叙事任务" + rhythmSuggestion | 叙事任务规划 | 只读 3 个 query |
-| writing | writer | "根据叙事任务创作正文" + narrativeTask | 章节正文 | 只读 query_state |
-| reviewing | reviewer | "验收章节" + content | 审稿报告 + verdict | 只读 query_state |
-| revising | writer（displayAgentType='reviser'） | "根据审稿意见修订" + content + issues | 修订后正文 | 只读 query_state |
-| memory | memory | "提取状态变更" + content | 调用工具更新状态 | 全部 17 个工具 |
+| 阶段      | Agent                                | 输入                                        | 输出               | 工具权限         |
+| --------- | ------------------------------------ | ------------------------------------------- | ------------------ | ---------------- |
+| directing | director                             | "分析状态，规划叙事任务" + rhythmSuggestion | 叙事任务规划       | 只读 3 个 query  |
+| writing   | writer                               | "根据叙事任务创作正文" + narrativeTask      | 章节正文           | 只读 query_state |
+| reviewing | reviewer                             | "验收章节" + content                        | 审稿报告 + verdict | 只读 query_state |
+| revising  | writer（displayAgentType='reviser'） | "根据审稿意见修订" + content + issues       | 修订后正文         | 只读 query_state |
+| memory    | memory                               | "提取状态变更" + content                    | 调用工具更新状态   | 全部 17 个工具   |
 
 ---
 
@@ -482,21 +487,25 @@ body: { narrativeTask, rhythm? }
 
 ```ts
 interface NovelCharacter {
-  id, projectId, name, description
+  id
+  projectId
+  name
+  description
   // ── 静态设定（跨章不变，进 SEMI 层的 arrangedEntities）──
-  identity: string       // 身份
-  personality: string    // 性格
-  appearance: string     // 外貌
-  speechStyle: string    // 说话风格
+  identity: string // 身份
+  personality: string // 性格
+  appearance: string // 外貌
+  speechStyle: string // 说话风格
   isProtagonist: boolean
   // ── 动态状态（每章可能变，进 SEMI 层的 formatStoryState）──
-  currentState: string     // 当前状态（情绪/处境）
-  currentGoal: string      // 当前目标
-  currentPressure: string  // 当前压力
-  secret: string           // 秘密
-  arcStage: string         // 弧光阶段（introduction/development/struggle/transformation/resolution）
-  arcHistory: string       // JSON: ArcChange[]
-  createdAt, updatedAt
+  currentState: string // 当前状态（情绪/处境）
+  currentGoal: string // 当前目标
+  currentPressure: string // 当前压力
+  secret: string // 秘密
+  arcStage: string // 弧光阶段（introduction/development/struggle/transformation/resolution）
+  arcHistory: string // JSON: ArcChange[]
+  createdAt
+  updatedAt
 }
 ```
 
@@ -504,17 +513,17 @@ interface NovelCharacter {
 
 ### 8.2 静态 vs 动态的存储与使用（**核心**）
 
-| 维度 | 静态设定 | 动态状态 |
-|---|---|---|
-| **字段** | identity / personality / appearance / speechStyle / isProtagonist | currentState / currentGoal / currentPressure / secret / arcStage |
-| **存储位置** | `novel_characters` 表，跨章不变 | 同一张，但每章可能被 Memory Agent 通过 `novel_update_character` 更新 |
-| **历史追踪** | 不追踪 | `novel_character_history` 表逐章记录 oldValue/newValue/reason |
-| **提示词位置** | **SEMI 层**（章节上下文的 `formatArrangedEntities`，仅本章出场角色） | **SEMI 层**（章节上下文的 `formatStoryState`，所有角色） |
-| **格式化方法** | `formatArrangedEntities` | `formatStoryState` + `formatConstraints`（弧光段） |
-| **输出格式** | `### 角色名\n- 身份：...\n- 性格：...\n- 外貌：...\n- 说话风格：...\n- 当前状态：...` | `- **角色名**\n  状态：...\n  目标：...\n  压力：...` |
-| **是否含 secret** | 不含 | 不含（secret 字段不在任何提示词中输出，仅存储） |
-| **是否含 arcStage** | 不含 | 不直接输出，但通过 `formatConstraints` 的"角色弧光约束"段输出：`角色名：当前阶段「X」→ 下一步可达：Y` |
-| **更新工具** | 无（必须通过 REST API 或 createCharacter） | `novel_update_character`（仅更新动态 5 字段） |
+| 维度                | 静态设定                                                                              | 动态状态                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **字段**            | identity / personality / appearance / speechStyle / isProtagonist                     | currentState / currentGoal / currentPressure / secret / arcStage                                      |
+| **存储位置**        | `novel_characters` 表，跨章不变                                                       | 同一张，但每章可能被 Memory Agent 通过 `novel_update_character` 更新                                  |
+| **历史追踪**        | 不追踪                                                                                | `novel_character_history` 表逐章记录 oldValue/newValue/reason                                         |
+| **提示词位置**      | **SEMI 层**（章节上下文的 `formatArrangedEntities`，仅本章出场角色）                  | **SEMI 层**（章节上下文的 `formatStoryState`，所有角色）                                              |
+| **格式化方法**      | `formatArrangedEntities`                                                              | `formatStoryState` + `formatConstraints`（弧光段）                                                    |
+| **输出格式**        | `### 角色名\n- 身份：...\n- 性格：...\n- 外貌：...\n- 说话风格：...\n- 当前状态：...` | `- **角色名**\n  状态：...\n  目标：...\n  压力：...`                                                 |
+| **是否含 secret**   | 不含                                                                                  | 不含（secret 字段不在任何提示词中输出，仅存储）                                                       |
+| **是否含 arcStage** | 不含                                                                                  | 不直接输出，但通过 `formatConstraints` 的"角色弧光约束"段输出：`角色名：当前阶段「X」→ 下一步可达：Y` |
+| **更新工具**        | 无（必须通过 REST API 或 createCharacter）                                            | `novel_update_character`（仅更新动态 5 字段）                                                         |
 
 ### 8.3 arrangedEntities 中如何引用角色（**重点**）
 
@@ -551,15 +560,15 @@ interface NovelCharacter {
 
 ### 8.5 章节创作时 LLM 可见性（**重点**）
 
-| 信息 | 是否可见 | 在哪里 | 备注 |
-|---|---|---|---|
-| 本章出场角色的完整静态设定（identity/personality/appearance/speechStyle） | ✅ 可见 | SEMI 层（`formatArrangedEntities`） | 仅 arrangedEntities 中的角色 |
-| 本章出场角色的动态状态（currentState/currentGoal/currentPressure） | ✅ 可见 | SEMI 层（`formatArrangedEntities`） | 仅 arrangedEntities 中的角色 |
-| 所有角色的 name + 动态状态（currentState/currentGoal/currentPressure） | ✅ 可见 | SEMI 层（`formatStoryState`） | 所有角色，让 LLM 知道存在 |
-| 所有角色的 arcStage | ✅ 间接可见 | SEMI 层（"角色弧光约束"段，通过 `formatConstraints`） | 输出"当前阶段「X」→ 下一步可达：Y" |
-| 角色关系 | ✅ 可见 | SEMI 层（"关系当前状态"） | characterA ↔ characterB：relationType（currentStage） |
-| 所有角色的 secret | ❌ 不可见 | 不在任何提示词中 | 仅存储，信息差由 `novel_information_layers` 单独管理 |
-| 角色历史变更 | ❌ 不直接可见 | 仅存储于 `novel_character_history` | 需通过专门工具或 API 查询，Agent 工具中无此查询 |
+| 信息                                                                      | 是否可见      | 在哪里                                                | 备注                                                  |
+| ------------------------------------------------------------------------- | ------------- | ----------------------------------------------------- | ----------------------------------------------------- |
+| 本章出场角色的完整静态设定（identity/personality/appearance/speechStyle） | ✅ 可见       | SEMI 层（`formatArrangedEntities`）                   | 仅 arrangedEntities 中的角色                          |
+| 本章出场角色的动态状态（currentState/currentGoal/currentPressure）        | ✅ 可见       | SEMI 层（`formatArrangedEntities`）                   | 仅 arrangedEntities 中的角色                          |
+| 所有角色的 name + 动态状态（currentState/currentGoal/currentPressure）    | ✅ 可见       | SEMI 层（`formatStoryState`）                         | 所有角色，让 LLM 知道存在                             |
+| 所有角色的 arcStage                                                       | ✅ 间接可见   | SEMI 层（"角色弧光约束"段，通过 `formatConstraints`） | 输出"当前阶段「X」→ 下一步可达：Y"                    |
+| 角色关系                                                                  | ✅ 可见       | SEMI 层（"关系当前状态"）                             | characterA ↔ characterB：relationType（currentStage） |
+| 所有角色的 secret                                                         | ❌ 不可见     | 不在任何提示词中                                      | 仅存储，信息差由 `novel_information_layers` 单独管理  |
+| 角色历史变更                                                              | ❌ 不直接可见 | 仅存储于 `novel_character_history`                    | 需通过专门工具或 API 查询，Agent 工具中无此查询       |
 
 **Writer 额外看到**：chapter-instruction 模板（含字数要求、创作要求、输出格式）
 **Director/Reviewer/Memory 看不到**：chapter-instruction 模板（防止越权写作）
@@ -571,6 +580,7 @@ interface NovelCharacter {
 ### 9.1 模板管理器（`prompt-manager.ts`）
 
 三级覆盖优先级：**SQLite 运行时 > 项目文件 > 默认文件**
+
 - 默认模板：`apps/agent-server/src/plugins/novel-plugin/core/prompts/*.md`
 - 项目覆盖：`${cwd}/.pi/novel/prompts/*.md`
 - 运行时覆盖：`novel_prompt_templates` 表（projectId 为 null 表示全局）
@@ -578,18 +588,18 @@ interface NovelCharacter {
 
 ### 9.2 模板清单
 
-| 文件 | 作用 | 调用位置 |
-|---|---|---|
-| `system-base.md` | Agent 身份基础模板，定义工作原则、输出规范、职责边界、当前角色占位 `{{agent_type}}` `{{agent_role}}` | `buildSystemPrompt` |
-| `chapter-instruction.md` | 章节创作指令（Writer 专属），含 `{{chapter_number}}` `{{narrative_task}}` `{{task_type}}` `{{target_words}}`，**仅 writer agentType 时注入** | `buildChapterContext` |
-| `role-director.md` | 导演职责：分析故事状态、决定章节任务、协调子系统、绝不创作正文 | director 的 `agent_role` |
-| `role-writer.md` | 写作职责：根据任务创作正文、保持文风、推进弧光/伏笔/冲突；含写作风格要求（禁破折号转折、开头直接进场景、结尾止于画面、语言干净） | writer 的 `agent_role` |
-| `role-reviewer.md` | 审稿职责：检查一致性、评估任务完成度、检查信息差、评分 accept/revise/reject；绝不创作或改写 | reviewer 的 `agent_role` |
-| `role-memory.md` | 记忆职责：**必须通过工具更新状态**，含角色/伏笔/冲突/线索/关系工具使用指南，工作流程 | memory 的 `agent_role` |
-| `role-reviser.md` | 修订职责：必须通过 `novel_apply_revision` 工具应用修改，传入 `pairs: [{from, to}]`，工具内部用 `String.replace` 做精确替换 | reviser 的 `agent_role`，工具通过 `extraTools` 注入，draft 持有当前正文 |
-| `role-character.md` | 角色管家：管理静态设定、跟踪动态状态、维护弧光、管理关系 | （备用角色模板，未在 4 个核心 Agent 中直接使用） |
-| `role-clue.md` | 线索管家：管理伏笔生命周期、跟踪线索进度、确保叙事债务回收 | （备用） |
-| `role-settings.md` | 设定管家：管理力量体系/魔法/科技/政治经济、确保规则一致性、区分固定/阶段规则 | （备用） |
+| 文件                     | 作用                                                                                                                                         | 调用位置                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `system-base.md`         | Agent 身份基础模板，定义工作原则、输出规范、职责边界、当前角色占位 `{{agent_type}}` `{{agent_role}}`                                         | `buildSystemPrompt`                                                     |
+| `chapter-instruction.md` | 章节创作指令（Writer 专属），含 `{{chapter_number}}` `{{narrative_task}}` `{{task_type}}` `{{target_words}}`，**仅 writer agentType 时注入** | `buildChapterContext`                                                   |
+| `role-director.md`       | 导演职责：分析故事状态、决定章节任务、协调子系统、绝不创作正文                                                                               | director 的 `agent_role`                                                |
+| `role-writer.md`         | 写作职责：根据任务创作正文、保持文风、推进弧光/伏笔/冲突；含写作风格要求（禁破折号转折、开头直接进场景、结尾止于画面、语言干净）             | writer 的 `agent_role`                                                  |
+| `role-reviewer.md`       | 审稿职责：检查一致性、评估任务完成度、检查信息差、评分 accept/revise/reject；绝不创作或改写                                                  | reviewer 的 `agent_role`                                                |
+| `role-memory.md`         | 记忆职责：**必须通过工具更新状态**，含角色/伏笔/冲突/线索/关系工具使用指南，工作流程                                                         | memory 的 `agent_role`                                                  |
+| `role-reviser.md`        | 修订职责：必须通过 `novel_apply_revision` 工具应用修改，传入 `pairs: [{from, to}]`，工具内部用 `String.replace` 做精确替换                   | reviser 的 `agent_role`，工具通过 `extraTools` 注入，draft 持有当前正文 |
+| `role-character.md`      | 角色管家：管理静态设定、跟踪动态状态、维护弧光、管理关系                                                                                     | （备用角色模板，未在 4 个核心 Agent 中直接使用）                        |
+| `role-clue.md`           | 线索管家：管理伏笔生命周期、跟踪线索进度、确保叙事债务回收                                                                                   | （备用）                                                                |
+| `role-settings.md`       | 设定管家：管理力量体系/魔法/科技/政治经济、确保规则一致性、区分固定/阶段规则                                                                 | （备用）                                                                |
 
 注意：`role-character` / `role-clue` / `role-settings` 三个模板是为未来扩展的"管家 Agent"预留，当前 4 个核心 Agent 只用 director/writer/reviewer/memory。
 
@@ -607,12 +617,12 @@ interface NovelCharacter {
 
 ### 10.1 项目管理
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | /projects | 创建项目 |
-| GET | /projects | 列出项目 |
-| GET | /projects/:id | 获取项目 |
-| PATCH | /projects/:id | 更新项目 |
+| 方法   | 路径          | 说明     |
+| ------ | ------------- | -------- |
+| POST   | /projects     | 创建项目 |
+| GET    | /projects     | 列出项目 |
+| GET    | /projects/:id | 获取项目 |
+| PATCH  | /projects/:id | 更新项目 |
 | DELETE | /projects/:id | 删除项目 |
 
 ### 10.2 卷管理
@@ -621,14 +631,14 @@ interface NovelCharacter {
 
 ### 10.3 章节管理
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | /projects/:projectId/chapters | 创建章节（engine.createChapter） |
-| GET | /projects/:projectId/chapters | 列出章节 |
-| GET | /chapters/:id | 获取章节 |
-| PATCH | /chapters/:id | 更新章节（传 content 自动重算 wordCount） |
-| POST | /chapters/:id/complete | 完成章节（engine.completeChapter） |
-| POST | /chapters/:id/publish | 发布章节（engine.publishChapter，更新项目进度） |
+| 方法  | 路径                          | 说明                                            |
+| ----- | ----------------------------- | ----------------------------------------------- |
+| POST  | /projects/:projectId/chapters | 创建章节（engine.createChapter）                |
+| GET   | /projects/:projectId/chapters | 列出章节                                        |
+| GET   | /chapters/:id                 | 获取章节                                        |
+| PATCH | /chapters/:id                 | 更新章节（传 content 自动重算 wordCount）       |
+| POST  | /chapters/:id/complete        | 完成章节（engine.completeChapter）              |
+| POST  | /chapters/:id/publish         | 发布章节（engine.publishChapter，更新项目进度） |
 
 ### 10.4 节奏控制
 
@@ -641,10 +651,10 @@ interface NovelCharacter {
 
 ### 10.6 AI 生成端点（SSE）
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | /projects/:projectId/characters/ai-generate | AI 生成单个角色（落库） |
-| POST | /projects/:projectId/entities/ai-generate | AI 生成 6 类实体（**不落库**，前端 review 后调 createXxx） |
+| 方法 | 路径                                        | 说明                                                       |
+| ---- | ------------------------------------------- | ---------------------------------------------------------- |
+| POST | /projects/:projectId/characters/ai-generate | AI 生成单个角色（落库）                                    |
+| POST | /projects/:projectId/entities/ai-generate   | AI 生成 6 类实体（**不落库**，前端 review 后调 createXxx） |
 
 ### 10.7 角色历史
 
@@ -666,12 +676,12 @@ interface NovelCharacter {
 
 ### 10.10 多 Agent 创作流程（**重点**）
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
+| 方法 | 路径                                                     | 说明                                                                          |
+| ---- | -------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | POST | /projects/:projectId/chapters/:chapterNumber/create-flow | **SSE**，触发多 Agent 创作流程，body 可带 arrangedEntities（模式 1 手动编排） |
-| POST | /projects/:projectId/checkpoint/:type/decision | 推送检查点决策（approve/reject/revise/rewrite），可带 userMessages |
-| POST | /projects/:projectId/chapters/:chapterNumber/ai-arrange | **SSE**，模式 2：AI 编排（generateAndArrange）→ 同流衔接 create-flow |
-| POST | /projects/:projectId/chapters/:chapterNumber/create-team | 同步，通过 TeamManager 触发 novel-team（pipeline） |
+| POST | /projects/:projectId/checkpoint/:type/decision           | 推送检查点决策（approve/reject/revise/rewrite），可带 userMessages            |
+| POST | /projects/:projectId/chapters/:chapterNumber/ai-arrange  | **SSE**，模式 2：AI 编排（generateAndArrange）→ 同流衔接 create-flow          |
+| POST | /projects/:projectId/chapters/:chapterNumber/create-team | 同步，通过 TeamManager 触发 novel-team（pipeline）                            |
 
 ### 10.11 缓存诊断
 
@@ -705,6 +715,7 @@ interface NovelCharacter {
 **问题**：角色数量大时（200+），全部塞系统提示词会导致上下文爆炸（~2万字）。而本章出场角色已通过 arrangedEntities 编排好，无需注入所有角色的完整定义。
 
 **方案**：精准注入
+
 1. 系统提示词不含任何角色定义 → 跨章缓存命中最好
 2. 章节上下文注入 arrangedEntities 中角色的完整静态+动态定义 → 单章内缓存命中
 3. 其他角色通过 formatStoryState 输出 name+动态状态 → LLM 知道存在
@@ -715,6 +726,7 @@ interface NovelCharacter {
 **问题**：`chapter-instruction.md`（含"直接输出章节正文"）注入到所有 Agent，导致 Director 越权写作。
 
 **方案**：
+
 - `buildChapterContext` 增加 `agentType` 参数，`chapter-instruction` 仅对 writer 注入
 - `system-base.md` 增加"职责边界"段，明确各角色不能越权创作正文
 - `role-director.md` / `role-reviewer.md` / `role-writer.md` 强化边界约束
@@ -724,6 +736,7 @@ interface NovelCharacter {
 **问题**：原 `system-base.md` 标题为 `# 小说创作系统 - director`，不同 Agent 第一字符就不同，破坏跨 Agent 缓存命中。
 
 **方案**：
+
 - 标题改为 `# 小说创作系统`（不带 agent_type）
 - 共享部分（工作原则/输出规范/职责边界）作为前缀
 - `{{agent_type}}` 和 `{{agent_role}}` 移到末尾的"## 当前角色"段
@@ -734,6 +747,7 @@ interface NovelCharacter {
 **问题**：用户对写作风格有 4 条特殊要求。
 
 **方案**：写入 `role-writer.md` 的 `## 写作风格要求（严格遵守）` 段：
+
 1. 绝不使用破折号"——"进行情节转折或插说
 2. 开头必须直接进入场景、动作或对话，禁止纯风景/环境描写
 3. 结尾止于动作、对话或画面，绝不发表总结性、感悟性句子
@@ -744,6 +758,7 @@ interface NovelCharacter {
 **问题**：LLM 处理大 prompt 时 60-120s 首 token 延迟，前端以为卡死。
 
 **方案**：
+
 - 推 LLM 前发 progress 事件（含输入字符数）
 - 15s 心跳定时器（首 token 前持续推送"已等待 Ns"）
 - 首 delta 触发"开始生成内容..."事件

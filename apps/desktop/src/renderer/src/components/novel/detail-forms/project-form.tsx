@@ -4,7 +4,7 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
+  SelectValue
 } from '@/components/ui/select'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { toastError, toastSuccess } from '@/hooks/use-toast'
@@ -14,7 +14,7 @@ import {
   type NovelProject,
   type RhythmModel,
   type StoryStage,
-  type TargetPlatform,
+  type TargetPlatform
 } from '@/api/novel-client'
 import {
   DebouncedOutlineField,
@@ -25,7 +25,7 @@ import {
   SaveButton,
   SectionHeader,
   TextArea,
-  TextInput,
+  TextInput
 } from './shared'
 
 // ── 项目表单 ──
@@ -40,7 +40,7 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
     currentStage: entity.currentStage,
     status: entity.status,
     rhythmModelId: entity.rhythmModelId ?? '',
-    targetPlatform: (entity.targetPlatform ?? '__none__') as TargetPlatform | '__none__',
+    targetPlatform: (entity.targetPlatform ?? '__none__') as TargetPlatform | '__none__'
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -49,9 +49,15 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
   useEffect(() => {
     let cancelled = false
     listRhythmModels()
-      .then((models) => { if (!cancelled) setRhythmModels(models) })
-      .catch(() => { /* 节奏模型加载失败不阻塞表单 */ })
-    return () => { cancelled = true }
+      .then((models) => {
+        if (!cancelled) setRhythmModels(models)
+      })
+      .catch(() => {
+        /* 节奏模型加载失败不阻塞表单 */
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const dirty =
@@ -76,7 +82,7 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
         currentStage: form.currentStage,
         status: form.status,
         rhythmModelId: form.rhythmModelId === '' ? undefined : form.rhythmModelId,
-        targetPlatform: form.targetPlatform === '__none__' ? null : form.targetPlatform,
+        targetPlatform: form.targetPlatform === '__none__' ? null : form.targetPlatform
       })
       upsertProject(updated)
       toastSuccess('项目已保存', '修改已生效')
@@ -104,14 +110,22 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
 
       <SectionHeader title="基础信息" />
       <FieldRow label="标题">
-        <TextInput value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+        <TextInput
+          value={form.title}
+          onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+        />
       </FieldRow>
       <FieldRow label="题材">
-        <TextInput value={form.genre} onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))} />
+        <TextInput
+          value={form.genre}
+          onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))}
+        />
       </FieldRow>
-      <FieldRow label="目标字数">
+      <FieldRow label="目标章节字数" hint="默认每章">
         <TextInput
           type="number"
+          min={1}
+          step={100}
           value={form.targetWords}
           onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
         />
@@ -119,51 +133,74 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
 
       <SectionHeader title="状态" />
       <FieldRow label="当前阶段">
-        <Select value={form.currentStage} onValueChange={(v) => setForm((f) => ({ ...f, currentStage: v as StoryStage }))}>
+        <Select
+          value={form.currentStage}
+          onValueChange={(v) => setForm((f) => ({ ...f, currentStage: v as StoryStage }))}
+        >
           <SelectTrigger className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {STAGE_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </FieldRow>
       <FieldRow label="状态">
-        <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelProject['status'] }))}>
+        <Select
+          value={form.status}
+          onValueChange={(v) => setForm((f) => ({ ...f, status: v as NovelProject['status'] }))}
+        >
           <SelectTrigger className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {PROJECT_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </FieldRow>
       <FieldRow label="节奏模型">
-        <Select value={form.rhythmModelId} onValueChange={(v) => setForm((f) => ({ ...f, rhythmModelId: v === '__default__' ? '' : v }))}>
+        <Select
+          value={form.rhythmModelId}
+          onValueChange={(v) =>
+            setForm((f) => ({ ...f, rhythmModelId: v === '__default__' ? '' : v }))
+          }
+        >
           <SelectTrigger className="w-full">
             <SelectValue placeholder="默认模型" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__default__">默认模型</SelectItem>
             {rhythmModels.map((m) => (
-              <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+              <SelectItem key={m.id} value={m.id}>
+                {m.name}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </FieldRow>
       <FieldRow label="目标平台">
-        <Select value={form.targetPlatform} onValueChange={(v) => setForm((f) => ({ ...f, targetPlatform: v as TargetPlatform | '__none__' }))}>
+        <Select
+          value={form.targetPlatform}
+          onValueChange={(v) =>
+            setForm((f) => ({ ...f, targetPlatform: v as TargetPlatform | '__none__' }))
+          }
+        >
           <SelectTrigger className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {TARGET_PLATFORM_OPTIONS.map((o) => (
               <SelectItem key={o.value} value={o.value}>
-                {o.label}{o.hint ? `（${o.hint}）` : ''}
+                {o.label}
+                {o.hint ? `（${o.hint}）` : ''}
               </SelectItem>
             ))}
           </SelectContent>
@@ -172,7 +209,11 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
 
       <SectionHeader title="简介" />
       <FieldRow label="简介">
-        <TextArea variant="long" value={form.synopsis} onChange={(e) => setForm((f) => ({ ...f, synopsis: e.target.value }))} />
+        <TextArea
+          variant="long"
+          value={form.synopsis}
+          onChange={(e) => setForm((f) => ({ ...f, synopsis: e.target.value }))}
+        />
       </FieldRow>
 
       {error && <p className="text-xs text-destructive">{error}</p>}

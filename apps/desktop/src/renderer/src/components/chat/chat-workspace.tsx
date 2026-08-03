@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FolderOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
@@ -16,7 +16,6 @@ import { usePaginatedMessages } from '@/hooks/use-paginated-messages'
 import { usePinnedSessions } from '@/hooks/use-pinned-sessions'
 import { toast } from '@/hooks/use-toast'
 import { useTheme } from '@/components/theme-provider'
-import { ConfirmationDialog } from './confirmation-dialog'
 import { type PermissionMode } from './permission-mode-switch'
 import { MessageStream, applyEvent, type MessageStreamState } from './message-stream'
 import { InputArea } from './input-area'
@@ -37,16 +36,20 @@ import {
 import { UsagePanel } from './usage-panel'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { type ModelOption } from './model-selector'
-import { createUserMessage, type ChatMessage, type FileAttachment } from './types'
+import { createUserMessage, collectToolCalls, type ChatMessage, type FileAttachment } from './types'
 import {
   useSessionStore,
   createEmptyMessageState,
-  upsertSessionAfterSend
+  upsertSessionAfterSend,
+  MAX_QUEUE_LENGTH
 } from '@/stores/session-store'
 import { useUIStore } from '@/stores/ui-store'
 import { ChatTitleEditor } from './chat-title-editor'
 import { AgentSwitcher } from './agent-switcher'
 import { AgentDetailCard } from './agent-detail-card'
+import { CommandQueuePanel } from './command-queue-panel'
+import { FileReferenceProvider } from './file-reference-context'
+import type { FileReference } from '@/lib/file-reference'
 import { useActiveAgent } from '@/hooks/use-active-agent'
 
 type HealthData = {
@@ -106,6 +109,15 @@ export function ChatWorkspace({
   const incrementCompactionCount = useSessionStore((s) => s.incrementCompactionCount)
   const removeSession = useSessionStore((s) => s.removeSession)
   const upsertSession = useSessionStore((s) => s.upsertSession)
+
+  // ── 待发队列 ──
+  const commandQueues = useSessionStore((s) => s.commandQueues)
+  const enqueueCommand = useSessionStore((s) => s.enqueueCommand)
+  const shiftCommand = useSessionStore((s) => s.shiftCommand)
+  const removeCommand = useSessionStore((s) => s.removeCommand)
+  const updateCommandText = useSessionStore((s) => s.updateCommandText)
+  const reorderQueue = useSessionStore((s) => s.reorderQueue)
+  const clearQueue = useSessionStore((s) => s.clearQueue)
 
   const setRightPanel = useUIStore((s) => s.setRightPanel)
   const devLogOpen = useUIStore((s) => s.devLogOpen)
@@ -288,8 +300,7 @@ export function ChatWorkspace({
     const PATH_KEYS = ['path', 'filePath', 'file_path', 'filename', 'file']
     const files: AssociatedFile[] = []
     for (const msg of messageState.messages) {
-      if (!msg.toolCalls) continue
-      for (const tc of msg.toolCalls) {
+      for (const tc of collectToolCalls(msg)) {
         if (!tc.args || typeof tc.args !== 'object') continue
         const args = tc.args as Record<string, unknown>
         for (const key of PATH_KEYS) {
@@ -341,6 +352,44 @@ export function ChatWorkspace({
     },
     [activeThreadId, run, updateSessionMessages, sessions, setSessions]
   )
+
+  /**
+   * 输入区提交入口。
+   *
+   * 忙的时候转成入队而不是丢弃 —— 用户想到的后续指令不该因为"正在生成"而消失。
+   * 之前这里的行为是：`handleSend` 里 `if (isRunning) return` 直接吞掉，
+   * 而 Enter 键更糟，是 `if (isRunning) onAbort()` 把生成杀掉。
+   */
+  const handleSubmit = useCallback(
+    (text: string, attachments?: FileAttachment[]) => {
+      if (!isRunning) {
+        handleSend(text, attachments)
+        return
+      }
+      const result = enqueueCommand(activeThreadId, text, attachments)
+      if (result.ok) {
+        toast({ variant: 'info', title: '已加入待发队列', description: '当前轮结束后自动发送' })
+        return
+      }
+      if (result.reason === 'queue-full') {
+        toast({
+          variant: 'warning',
+          title: '待发队列已满',
+          description: `最多排 ${MAX_QUEUE_LENGTH} 条，先发出或清理几条再来`
+        })
+      } else if (result.reason === 'too-long') {
+        toast({ variant: 'warning', title: '这条太长了', description: '排队消息请控制在 2 万字以内' })
+      }
+    },
+    [isRunning, handleSend, enqueueCommand, activeThreadId]
+  )
+
+  /** 推进队列：取队首发出去 */
+  const drainQueue = useCallback(() => {
+    const next = shiftCommand(activeThreadId)
+    if (!next) return
+    handleSend(next.text, next.attachments)
+  }, [shiftCommand, activeThreadId, handleSend])
 
   const handleAbort = useCallback(() => {
     // 优先关闭已打开的浮层（命令面板 / DevLog），再考虑中断流式
@@ -410,6 +459,56 @@ export function ChatWorkspace({
   const handleDismissError = useCallback(() => {
     updateSessionMessages(activeThreadId, (prev) => ({ ...prev, streamError: null }))
   }, [activeThreadId, updateSessionMessages])
+
+  /**
+   * 引用消息到输入框。
+   *
+   * MessageHoverActions 已经把文本转成了 `> ` 前缀的引用块，这里只负责拼进草稿。
+   * 引用块后面留一个空行，让用户直接接着写而不必先自己换行。
+   */
+  const handleQuote = useCallback(
+    (quoted: string) => {
+      const current = drafts[activeThreadId] ?? ''
+      const prefix = current.trim().length > 0 ? `${current.replace(/\n+$/, '')}\n\n` : ''
+      setDraft(activeThreadId, `${prefix}${quoted}\n\n`)
+      // 与 mod+/ 走同一个聚焦入口
+      window.requestAnimationFrame(() => document.getElementById('message-input')?.focus())
+    },
+    [activeThreadId, drafts, setDraft]
+  )
+
+  /**
+   * 重新生成助手回答。
+   *
+   * MessageStream 只把这个回调传给最后一条助手消息，所以这里可以安全地
+   * 截断本地消息（丢掉这条回答及其之后的内容），不会在中间留下并排的两个回答。
+   */
+  const handleRegenerate = useCallback(
+    (message: ChatMessage) => {
+      if (isRunning) return
+      const idx = mergedMessages.findIndex((m) => m.id === message.id)
+      if (idx < 0) return
+
+      // 往前找最近的一条用户消息作为重跑的输入
+      let userMsg: ChatMessage | undefined
+      for (let i = idx - 1; i >= 0; i--) {
+        if (mergedMessages[i].role === 'user') {
+          userMsg = mergedMessages[i]
+          break
+        }
+      }
+      if (!userMsg) return
+
+      updateSessionMessages(activeThreadId, (prev) => {
+        const localIdx = prev.messages.findIndex((m) => m.id === message.id)
+        // 目标只存在于历史（服务端 JSONL）时删不掉，此时仅清错误后重跑
+        if (localIdx < 0) return { ...prev, streamError: null }
+        return { ...prev, streamError: null, messages: prev.messages.slice(0, localIdx) }
+      })
+      void run([userMsg])
+    },
+    [isRunning, mergedMessages, activeThreadId, updateSessionMessages, run]
+  )
 
   const handleNewSession = useCallback(() => {
     const id = crypto.randomUUID()
@@ -618,8 +717,69 @@ export function ChatWorkspace({
   const health = healthQuery.data
   const isOnline = health?.status === 'online'
 
+  /**
+   * 打开助手输出里的文件引用（`src/a.ts:42`）。
+   *
+   * 相对路径按工作区根解析；读不到就给一条 toast，而不是静默什么都不发生 ——
+   * 「点了没反应」比「告诉我打不开」糟得多。
+   */
+  const handleOpenFileReference = useCallback(
+    async (ref: FileReference) => {
+      const workspacePath = workspaceQuery.data?.path
+      const absolute = resolveWorkspacePath(ref.path, workspacePath)
+      if (!absolute) {
+        toast.warning('无法定位文件', '当前没有工作区，无法解析相对路径')
+        return
+      }
+      if (!window.api?.file) return
+
+      const result = await window.api.file.read(absolute)
+      if (!result.ok || result.content == null) {
+        toast.warning('打不开这个文件', ref.path)
+        return
+      }
+      openFilePreview({
+        name: ref.path,
+        content: result.content,
+        encoding: result.encoding,
+        size: result.size ?? 0,
+        type: 'file',
+        highlightLine: ref.line,
+        highlightEndLine: ref.endLine
+      })
+    },
+    [workspaceQuery.data?.path, openFilePreview]
+  )
+
+  const fileReferenceContext = useMemo(
+    () => ({ openFile: (ref: FileReference) => void handleOpenFileReference(ref) }),
+    [handleOpenFileReference]
+  )
+
   // 合并流式错误和 run 错误
   const displayError = messageState.streamError ?? (runError ? runError.message : null)
+
+  // ── 待发队列的自动推进 ──
+
+  const activeQueue = commandQueues[activeThreadId] ?? []
+  /** 失败结束时暂停自动出队：否则整队会以同样方式连续失败一遍，还白烧 token */
+  const queueErrorPaused = activeQueue.length > 0 && displayError !== null
+
+  /**
+   * 只在 isRunning 真正发生 true → false 的跳变时出队。
+   *
+   * 不能只判断 `!isRunning && queue.length > 0` —— 那样应用启动时如果队列里
+   * 还有上次残留的排队项，会在用户完全没准备的情况下自动发出去。
+   */
+  const prevRunningRef = useRef(isRunning)
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current
+    prevRunningRef.current = isRunning
+    if (!wasRunning || isRunning) return
+    if (displayError !== null) return
+    if ((commandQueues[activeThreadId] ?? []).length === 0) return
+    drainQueue()
+  }, [isRunning, displayError, commandQueues, activeThreadId, drainQueue])
 
   return (
     <div className="grid grid-rows-[minmax(0,1fr)_var(--statusbar-height)] h-screen min-h-[620px] overflow-hidden bg-app-bg text-text">
@@ -723,6 +883,7 @@ export function ChatWorkspace({
             </div>
           </header>
 
+          <FileReferenceProvider value={fileReferenceContext}>
           <MessageStream
             messages={mergedMessages}
             isStreaming={isRunning}
@@ -733,6 +894,12 @@ export function ChatWorkspace({
             sessionKey={activeThreadId}
             onFilePreview={openFilePreview}
             onCancelStream={handleAbort}
+            onQuote={handleQuote}
+            onRegenerate={handleRegenerate}
+            onOpenSettings={onOpenSettings}
+            onCompact={() => void handleCompact()}
+            pendingConfirmations={pendingConfirmations}
+            onRespondConfirmation={respondConfirmation}
             onLoadMore={loadMoreHistory}
             hasMore={historicalHasMore}
             isLoadingMore={historicalIsLoadingMore}
@@ -745,6 +912,7 @@ export function ChatWorkspace({
               />
             }
           />
+          </FileReferenceProvider>
 
           {/* 工作区选择（仅空态显示）：无消息时才占位，避免挤压对话区 */}
           {mergedMessages.length === 0 && (
@@ -754,10 +922,23 @@ export function ChatWorkspace({
           )}
 
           <InputArea
-            onSend={handleSend}
+            onSend={handleSubmit}
             onAbort={handleAbort}
             isRunning={isRunning}
             disabled={!isOnline}
+            queueFull={activeQueue.length >= MAX_QUEUE_LENGTH}
+            beforeInput={
+              <CommandQueuePanel
+                queue={activeQueue}
+                errorPaused={queueErrorPaused}
+                canResume={!isRunning && activeQueue.length > 0}
+                onRemove={(id) => removeCommand(activeThreadId, id)}
+                onEdit={(id, text) => updateCommandText(activeThreadId, id, text)}
+                onReorder={(ids) => reorderQueue(activeThreadId, ids)}
+                onClear={() => clearQueue(activeThreadId)}
+                onResume={drainQueue}
+              />
+            }
             value={drafts[activeThreadId] ?? ''}
             onChange={(text) => setDraft(activeThreadId, text)}
             models={modelsQuery.data ?? []}
@@ -882,8 +1063,7 @@ export function ChatWorkspace({
         </DialogContent>
       </Dialog>
 
-      {/* ── 确认对话框（由 WebSocket 事件驱动） ── */}
-      <ConfirmationDialog requests={pendingConfirmations} onRespond={respondConfirmation} />
+
     </div>
   )
 }
@@ -900,4 +1080,18 @@ function formatRelativeTime(timestamp: number): string {
   if (hours < 24) return `${hours} 小时前`
   if (days < 7) return `${days} 天前`
   return '很久以前'
+}
+
+/**
+ * 把引用里的路径解析成绝对路径。
+ *
+ * 渲染进程没有 node 的 path 模块，所以自己判：以 `/` 开头或带盘符（`D:\`）视为
+ * 绝对路径，其余按工作区根拼。没有工作区且路径是相对的就返回 null，由调用方提示。
+ */
+function resolveWorkspacePath(path: string, workspacePath?: string): string | null {
+  const isAbsolute = path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
+  if (isAbsolute) return path
+  if (!workspacePath) return null
+  const base = workspacePath.replace(/[\\/]+$/, '')
+  return `${base}/${path.replace(/^[\\/]+/, '')}`
 }

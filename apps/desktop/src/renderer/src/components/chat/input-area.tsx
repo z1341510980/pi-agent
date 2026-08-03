@@ -5,10 +5,11 @@ import {
   useEffect,
   type KeyboardEvent,
   type ReactElement,
+  type ReactNode,
   type DragEvent,
   type ClipboardEvent
 } from 'react'
-import { ArrowUp, Square, Paperclip } from 'lucide-react'
+import { ArrowUp, ListPlus, Square, Paperclip } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { type ModelOption, ModelSelector } from './model-selector'
@@ -20,7 +21,12 @@ import type { SessionSummary } from './session-list'
 import type { FilePreviewState } from '@/stores/ui-store'
 
 export interface InputAreaProps {
-  /** 发送消息（非运行状态） */
+  /**
+   * 提交消息。
+   *
+   * 运行中也会被调用 —— 此时由父组件转成入队。输入区不再自己判断"能不能发"，
+   * 它只负责把内容交出去。
+   */
   onSend: (text: string, attachments?: FileAttachment[]) => void
   /** 中断当前 run */
   onAbort: () => void
@@ -46,6 +52,10 @@ export interface InputAreaProps {
   activeSessionId?: string
   /** 附件预览回调 */
   onFilePreview?: (file: FilePreviewState) => void
+  /** 队列已满：禁用入队按钮并给出说明 */
+  queueFull?: boolean
+  /** 输入框上方的插槽（待发队列面板） */
+  beforeInput?: ReactNode
 }
 
 /** 单行模式最大字符数（超过则切换多行） */
@@ -104,7 +114,9 @@ export function InputArea({
   onModelChange,
   sessions = [],
   activeSessionId = '',
-  onFilePreview
+  onFilePreview,
+  queueFull = false,
+  beforeInput
 }: InputAreaProps): ReactElement {
   const [internalText, setInternalText] = useState('')
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
@@ -242,14 +254,16 @@ export function InputArea({
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim()
-    if ((!trimmed && attachments.length === 0) || isRunning || disabled) return
+    if ((!trimmed && attachments.length === 0) || disabled) return
+    // 注意：不再因 isRunning 而拒绝。忙的时候由父组件把这次提交转成入队，
+    // 输入区只负责"把内容交出去 + 清空自己"。
     onSend(trimmed, attachments.length > 0 ? attachments : undefined)
     updateText('')
     setAttachments([])
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [text, attachments, isRunning, disabled, onSend, updateText])
+  }, [text, attachments, disabled, onSend, updateText])
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -268,11 +282,12 @@ export function InputArea({
       // IME 合成中不触发 Enter 发送
       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault()
-        if (isRunning) onAbort()
-        else handleSend()
+        // 以前这里是 `if (isRunning) onAbort()` —— 想到一句后续、顺手回车，
+        // 结果把正在跑的生成杀掉了。现在忙时回车是入队，中断只走停止按钮。
+        handleSend()
       }
     },
-    [isRunning, onAbort, handleSend, slashPanelOpen, mentionPanelOpen]
+    [handleSend, slashPanelOpen, mentionPanelOpen]
   )
 
   // 自适应高度（多行模式）
@@ -297,6 +312,9 @@ export function InputArea({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* 待发队列面板：贴在输入卡片上方，属于同一个"输入区"语义 */}
+      {beforeInput}
+
       {/* 输入卡片容器：圆角 20px，紫色聚焦光环，拖拽态虚线边框 */}
       <div
         data-tour="input-card"
@@ -507,31 +525,15 @@ export function InputArea({
             }}
           />
 
-          {/* 单行模式：右侧发送/中断按钮 */}
+          {/* 单行模式：右侧发送/入队/中断按钮 */}
           {isSingleLine && (
             <div className="flex flex-shrink-0 items-center gap-1.5">
-              {isRunning ? (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="icon"
-                  onClick={onAbort}
-                  className="abort-breathe rounded-full size-8"
-                  aria-label="中断"
-                >
-                  <Square className="size-3.5" aria-hidden="true" />
-                </Button>
-              ) : (
-                <Button
-                  type="submit"
-                  size="icon"
-                  disabled={!canSend}
-                  className="pi-send-button rounded-full size-8 bg-primary text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-hint"
-                  aria-label="发送"
-                >
-                  <ArrowUp className="size-4" aria-hidden="true" />
-                </Button>
-              )}
+              <SendControls
+                isRunning={isRunning}
+                canSend={canSend}
+                queueFull={queueFull}
+                onAbort={onAbort}
+              />
             </div>
           )}
         </div>
@@ -567,28 +569,12 @@ export function InputArea({
                   disabled={disabled}
                 />
               )}
-              {isRunning ? (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="icon"
-                  onClick={onAbort}
-                  className="abort-breathe rounded-full size-8"
-                  aria-label="中断"
-                >
-                  <Square className="size-3.5" aria-hidden="true" />
-                </Button>
-              ) : (
-                <Button
-                  type="submit"
-                  size="icon"
-                  disabled={!canSend}
-                  className="pi-send-button rounded-full size-8 bg-primary text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-hint"
-                  aria-label="发送"
-                >
-                  <ArrowUp className="size-4" aria-hidden="true" />
-                </Button>
-              )}
+              <SendControls
+                isRunning={isRunning}
+                canSend={canSend}
+                queueFull={queueFull}
+                onAbort={onAbort}
+              />
             </div>
           </div>
         )}
@@ -609,5 +595,63 @@ export function InputArea({
         )}
       </div>
     </form>
+  )
+}
+
+/**
+ * 发送 / 入队 / 中断按钮组。
+ *
+ * 运行中**同时**给出「停止」和「排队」两个按钮 —— 原来运行中只有停止按钮，
+ * 用户想排队没有入口；如果把停止换成排队，又会丢掉中断能力。两个都要。
+ */
+function SendControls({
+  isRunning,
+  canSend,
+  queueFull,
+  onAbort
+}: {
+  isRunning: boolean
+  canSend: boolean
+  queueFull: boolean
+  onAbort: () => void
+}): ReactElement {
+  if (!isRunning) {
+    return (
+      <Button
+        type="submit"
+        size="icon"
+        disabled={!canSend}
+        className="pi-send-button rounded-full size-8 bg-primary text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-hint"
+        aria-label="发送"
+      >
+        <ArrowUp className="size-4" aria-hidden="true" />
+      </Button>
+    )
+  }
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="destructive"
+        size="icon"
+        onClick={onAbort}
+        className="abort-breathe rounded-full size-8"
+        aria-label="中断"
+      >
+        <Square className="size-3.5" aria-hidden="true" />
+      </Button>
+      <Button
+        type="submit"
+        size="icon"
+        variant="outline"
+        disabled={!canSend || queueFull}
+        className="rounded-full size-8 border-border text-text-secondary hover:bg-surface-3 hover:text-text disabled:text-hint"
+        aria-label={queueFull ? '队列已满' : '加入待发队列'}
+        title={queueFull ? '队列已满，先发出或清理几条' : '加入待发队列（当前轮结束后自动发送）'}
+      >
+        <ListPlus className="size-4" aria-hidden="true" />
+      </Button>
+    </>
   )
 }

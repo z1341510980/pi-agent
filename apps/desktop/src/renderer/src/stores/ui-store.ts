@@ -12,6 +12,10 @@ export interface FilePreviewState {
   thumbnail?: string
   size: number
   type: 'image' | 'file'
+  /** 打开后要定位并高亮的行号（来自助手输出里的 `path:42` 引用） */
+  highlightLine?: number
+  /** 高亮区间的结束行（`#L10-L20` 形式） */
+  highlightEndLine?: number
 }
 
 interface UIState {

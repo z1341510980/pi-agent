@@ -137,11 +137,38 @@ export class PiSessionStore {
   }
 
   /**
+   * 取 threadId 对应会话的 JSONL 文件路径。
+   *
+   * ## 为什么需要这个方法
+   *
+   * 会话文件名由 pi-agent-core 的 JsonlSessionRepo 生成，形如
+   * `2026-06-17T07-59-31-525Z_019ed497-….jsonl`（时间戳 + session uuid），
+   * **与 threadId 毫无关系**。`GET /api/sessions/:threadId/messages` 原来直接拼
+   * `${threadId}.jsonl` 去读，永远找不到文件 —— 历史消息分页因此一直返回空。
+   *
+   * 真实路径在 session 的 metadata 里（`JsonlSessionMetadata.path`），只能通过
+   * 活跃 session 对象拿到。代价是：会话被 LRU 淘汰或进程重启后拿不到路径。
+   * 这是当前架构下的上限 —— 要彻底解决得把 threadId → sessionPath 的映射持久化。
+   *
+   * @returns 文件路径；会话不在内存中、或底层不是 JSONL 存储时返回 null
+   */
+  async getSessionFilePath(threadId: string): Promise<string | null> {
+    const threadSession = this.sessions.get(threadId)
+    if (!threadSession?.session) return null
+    try {
+      const metadata = await threadSession.session.getMetadata()
+      const path = (metadata as { path?: unknown } | undefined)?.path
+      return typeof path === 'string' && path.length > 0 ? path : null
+    } catch {
+      // 存储实现没有 metadata / 读取失败：当作拿不到路径
+      return null
+    }
+  }
+  /**
    * 尝试占用 threadId 的活跃 run 槽位
    * @returns true 占用成功；false 已有活跃 run
    */
-  tryAcquireRun(threadId: string, runId: string): boolean {
-    let session = this.sessions.get(threadId)
+  tryAcquireRun(threadId: string, runId: string): boolean {    let session = this.sessions.get(threadId)
     if (!session) {
       // session 尚未创建，创建占位条目记录 activeRunId
       // 真正的 session 会在后续 getOrCreate 中填充

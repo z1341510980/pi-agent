@@ -71,6 +71,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     synopsis: z.string().max(5000).default(''),
     targetWords: z.number().int().min(0).default(0),
     targetPlatform: z.enum(['fanqie', 'qidian', 'zhihu_yanyan', 'general']).optional(),
+    novelAskStoryPolicy: z.enum(['legacy', 'directorReviewerOff', 'allOffWithReferences']).nullable().optional(),
   })
 
   routes.push({
@@ -117,6 +118,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     status: z.enum(['active', 'paused', 'completed']).optional(),
     outline: z.string().max(20000).optional(),
     targetPlatform: z.enum(['fanqie', 'qidian', 'zhihu_yanyan', 'general']).nullable().optional(),
+    novelAskStoryPolicy: z.enum(['legacy', 'directorReviewerOff', 'allOffWithReferences']).nullable().optional(),
   })
 
   routes.push({

@@ -61,6 +61,13 @@ export interface EngineContext {
     emit: AgUiEventSink
     emitRaw?: boolean
     onFirstText?: () => void
+    /** 每次 provider 请求的真实 payload 体积计量（只读，不改 payload） */
+    onPayloadStats?: (stats: {
+      messagesChars: number
+      toolsChars: number
+      toolCount: number
+      totalChars: number
+    }) => void
   }): Promise<AgUiSessionHandle>
   logger: FastifyBaseLogger
 }
@@ -651,6 +658,8 @@ ${reviewResult.rewrite_suggestion}
     let status: 'success' | 'error' | 'cancelled' = 'success'
     let error = ''
 
+    // 真实 payload 体积累加器：每次 LLM 往返一次回调，累加才是本次调用送出去的总量
+    const payloadStats = { messagesChars: 0, toolsChars: 0, toolCount: 0, totalChars: 0, roundTrips: 0 }
     const handle = await this.context.createAgUiSession({
       systemPrompt,
       // 工种成员使用共享章节上下文；角色成员可通过 buildContextPrompt 使用
@@ -660,6 +669,13 @@ ${reviewResult.rewrite_suggestion}
       // 注入业务层提供的工具（如 Reviser 的 novel_apply_revision）。
       // 工具不在 STATIC/SEMI 层 prompt 中出现，不影响跨 Agent 的 prompt cache 命中率。
       tools: ctx.extraTools ?? [],
+      onPayloadStats: (stats) => {
+        payloadStats.roundTrips += 1
+        payloadStats.messagesChars += stats.messagesChars
+        payloadStats.toolsChars += stats.toolsChars
+        payloadStats.totalChars += stats.totalChars
+        payloadStats.toolCount = Math.max(payloadStats.toolCount, stats.toolCount)
+      },
       signal: options.signal,
       // 温度优先级：member.temperature（工种成员从 AgentPage 角色温度配置读取）
       // > 角色成员回退到 characterTemperature > 默认 0.7
@@ -724,6 +740,9 @@ ${reviewResult.rewrite_suggestion}
           chapterContext: prefixMessages.join('\n\n---\n\n'),
           userMessage,
           result,
+          // 记录实际挂载的工具名：排查"修订没生效"时要能区分
+          // "工具没挂上"与"工具挂了但模型没调"
+          toolNames: (ctx.extraTools ?? []).map(tool => (tool as { name: string }).name),
           durationMs: Date.now() - startTime,
           status,
           error,
@@ -734,6 +753,11 @@ ${reviewResult.rewrite_suggestion}
           cacheWriteTokens: capturedUsage?.cacheWriteTokens ?? 0,
           llmProvider: capturedUsage?.llmProvider ?? member.modelId?.provider ?? '',
           llmModel: capturedUsage?.llmModel ?? member.modelId?.modelId ?? '',
+          payloadMessagesChars: payloadStats.messagesChars,
+          payloadToolsChars: payloadStats.toolsChars,
+          payloadToolCount: payloadStats.toolCount,
+          payloadTotalChars: payloadStats.totalChars,
+          llmRoundTrips: payloadStats.roundTrips,
         })
       } catch (logError) {
         this.context.logger.warn({ err: logError, memberId: member.id }, '群聊成员调用日志写入失败')

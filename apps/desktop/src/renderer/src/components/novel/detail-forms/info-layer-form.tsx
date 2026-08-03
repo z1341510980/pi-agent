@@ -1,5 +1,5 @@
-import { useCallback, useState, type ReactElement } from 'react'
-import { Badge } from '@/components/ui/badge'
+import { useCallback, useMemo, useState, type ReactElement } from 'react'
+import { Eye, Info, Link2, Sparkles } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -14,11 +14,13 @@ import {
 } from '@/api/novel-client'
 import {
   FieldRow,
+  FormSection,
+  FORESHADOW_STATUS_OPTIONS,
   SaveButton,
-  SectionHeader,
   TextArea,
   TextInput,
 } from './shared'
+import { EdgeRelationField } from './edge-relation-field'
 
 // ── 信息差编辑表单（P3-2） ──
 
@@ -36,16 +38,22 @@ export function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): Re
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // linkedForeshadows 已迁移至 edges，暂用空数组占位
-  const linkedForeshadowIds: string[] = []
-  const linkedForeshadowItems = linkedForeshadowIds.map((id) => {
-    const f = foreshadows.find((x) => x.id === id)
-    return {
-      id,
-      description: f?.description ?? id,
-      status: f?.status ?? '',
-    }
-  })
+  /**
+   * 承载伏笔的候选。
+   *
+   * 此前这里写死 `linkedForeshadowIds = []`（注释说"已迁移至 edges，暂用空数组占位"），
+   * 于是「⚡ 承载伏笔」永远显示「暂无」—— 一个从上线起就不可能有内容的只读字段。
+   * 现在改为通过 edges 真正读写。
+   */
+  const foreshadowOptions = useMemo(
+    () =>
+      foreshadows.map((f) => ({
+        id: f.id,
+        label: f.description.length > 30 ? `${f.description.slice(0, 30)}…` : f.description,
+        hint: FORESHADOW_STATUS_OPTIONS.find((o) => o.value === f.status)?.label,
+      })),
+    [foreshadows],
+  )
 
   const toStrOrNull = (v: string): string | null => (v === '' ? null : v)
   const toNumOrNull = (v: string): number | null => (v === '' ? null : Number(v))
@@ -79,85 +87,113 @@ export function InfoLayerForm({ entity }: { entity: NovelInformationLayer }): Re
   }, [entity.id, form, upsertInfoLayer])
 
   return (
-    <div className="space-y-2">
-      <SectionHeader title="基本信息" />
-      <FieldRow label="信息描述">
-        <TextArea variant="medium" value={form.infoDescription} onChange={(e) => setForm((f) => ({ ...f, infoDescription: e.target.value }))} placeholder="例如：林墨的真实身世是前朝皇族后裔" />
-      </FieldRow>
+    <div className="space-y-2.5">
+      <FormSection title="基本信息" icon={<Info className="size-3.5" />} collapsible={false}>
+        <FieldRow label="信息描述">
+          <TextArea
+            variant="medium"
+            value={form.infoDescription}
+            onChange={(e) => setForm((f) => ({ ...f, infoDescription: e.target.value }))}
+            placeholder="例如：林墨的真实身世是前朝皇族后裔"
+          />
+        </FieldRow>
+      </FormSection>
 
-      <SectionHeader title="认知状态" hint="作者与读者对这条信息的掌握程度" />
-      <FieldRow label="作者是否知晓">
-        <Select value={form.authorKnows} onValueChange={(v) => setForm((f) => ({ ...f, authorKnows: v }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="true">是</SelectItem>
-            <SelectItem value="false">否</SelectItem>
-          </SelectContent>
-        </Select>
-      </FieldRow>
-      <FieldRow label="读者是否知晓">
-        <Select value={form.readerKnows} onValueChange={(v) => setForm((f) => ({ ...f, readerKnows: v }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="true">是</SelectItem>
-            <SelectItem value="false">否</SelectItem>
-          </SelectContent>
-        </Select>
-      </FieldRow>
+      <FormSection
+        title="认知状态"
+        hint="谁掌握了这条信息"
+        icon={<Eye className="size-3.5" />}
+        collapsible={false}
+      >
+        {/* 两个布尔并排：它们成对使用（作者知道但读者不知道 = 悬念），
+            纵向排开会让这层对照关系变弱 */}
+        <div className="grid grid-cols-2 gap-2.5">
+          <FieldRow label="作者知晓">
+            <Select value={form.authorKnows} onValueChange={(v) => setForm((f) => ({ ...f, authorKnows: v }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="true">是</SelectItem>
+                <SelectItem value="false">否</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldRow>
+          <FieldRow label="读者知晓">
+            <Select value={form.readerKnows} onValueChange={(v) => setForm((f) => ({ ...f, readerKnows: v }))}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="true">是</SelectItem>
+                <SelectItem value="false">否</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </div>
+        {/* 认知组合的语义解读：这四种组合各自对应不同的叙事效果，
+            但从两个「是/否」下拉里读不出来 */}
+        <p className="rounded-md bg-surface-2/60 px-2.5 py-1.5 text-nano leading-relaxed text-muted-foreground">
+          {form.authorKnows === 'true' && form.readerKnows === 'false'
+            ? '作者知道、读者不知道 —— 悬念状态，可用于铺设伏笔'
+            : form.authorKnows === 'true' && form.readerKnows === 'true'
+              ? '双方都知道 —— 已公开信息，可用于制造角色间的信息差'
+              : form.authorKnows === 'false'
+                ? '作者尚未确定 —— 这条信息还是待设计状态'
+                : '读者知道但作者未定 —— 数据异常，请检查'}
+        </p>
+      </FormSection>
 
-      <SectionHeader title="揭示" hint="信息差何时、以何种方式向读者揭示" />
-      <FieldRow label="揭示阶段">
-        <TextInput
-          value={form.revealStage}
-          onChange={(e) => setForm((f) => ({ ...f, revealStage: e.target.value }))}
-          placeholder="如：setup / rising / climax，留空表示未指定"
-        />
-      </FieldRow>
-      <FieldRow label="揭示章节">
-        <TextInput
-          type="number"
-          min={1}
-          value={form.revealChapter}
-          onChange={(e) => setForm((f) => ({ ...f, revealChapter: e.target.value }))}
-          placeholder="留空表示未指定"
-        />
-      </FieldRow>
-      <FieldRow label="是否已揭示">
-        <Select value={form.isRevealed} onValueChange={(v) => setForm((f) => ({ ...f, isRevealed: v }))}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="true">是</SelectItem>
-            <SelectItem value="false">否</SelectItem>
-          </SelectContent>
-        </Select>
-      </FieldRow>
+      <FormSection title="揭示计划" hint="何时向读者交底" icon={<Sparkles className="size-3.5" />}>
+        <div className="grid grid-cols-2 gap-2.5">
+          <FieldRow label="揭示阶段">
+            <TextInput
+              value={form.revealStage}
+              onChange={(e) => setForm((f) => ({ ...f, revealStage: e.target.value }))}
+              placeholder="setup / rising / climax"
+            />
+          </FieldRow>
+          <FieldRow label="揭示章节">
+            <TextInput
+              type="number"
+              min={1}
+              value={form.revealChapter}
+              onChange={(e) => setForm((f) => ({ ...f, revealChapter: e.target.value }))}
+              placeholder="未指定"
+            />
+          </FieldRow>
+        </div>
+        <FieldRow label="是否已揭示" hint="事实，非计划">
+          <Select value={form.isRevealed} onValueChange={(v) => setForm((f) => ({ ...f, isRevealed: v }))}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="true">是</SelectItem>
+              <SelectItem value="false">否</SelectItem>
+            </SelectContent>
+          </Select>
+        </FieldRow>
+      </FormSection>
 
-      <SectionHeader title="关联伏笔" hint="此信息差承载的伏笔列表（双向关联，由伏笔侧或矩阵视图管理）" />
-      <FieldRow label="⚡ 承载伏笔">
-        {linkedForeshadowItems.length > 0 ? (
-          <div className="space-y-1">
-            {linkedForeshadowItems.map((item) => {
-              const desc = item.description.length > 16 ? `${item.description.slice(0, 16)}...` : item.description
-              return (
-                <div key={item.id} className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="text-nano">{desc}</Badge>
-                  <span className="text-nano text-muted-foreground">
-                    {item.status || '未设定'}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <span className="text-micro text-muted-foreground">暂无</span>
-        )}
-      </FieldRow>
+      <FormSection
+        title="承载伏笔"
+        hint="即时生效"
+        icon={<Link2 className="size-3.5" />}
+      >
+        <FieldRow label="关联伏笔" hint="勾选即建立关联，无需保存">
+          <EdgeRelationField
+            entityId={entity.id}
+            entityType="info_layer"
+            targetType="foreshadow"
+            edgeType="foreshadow"
+            options={foreshadowOptions}
+            placeholder="关联此信息差承载的伏笔"
+            searchPlaceholder="搜索伏笔…"
+            emptyHint="本项目还没有伏笔"
+          />
+        </FieldRow>
+      </FormSection>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />

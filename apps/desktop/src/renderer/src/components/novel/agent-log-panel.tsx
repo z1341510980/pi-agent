@@ -168,6 +168,13 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
           <Wrench className="size-2.5" />
           工具 {log.toolNames.length} 个
         </span>
+        {/* 提示词各层字符数：SEMI 层（章节上下文）通常是体积大头，
+            只看 system/user 会漏掉它，导致"看不出 token 从哪来" */}
+        <span title="STATIC 层（系统提示词）字符数">静态 {log.systemPrompt.length}</span>
+        <span title="SEMI 层（章节上下文 + 身份 + 专属后缀）字符数">
+          上下文 {log.chapterContext.length}
+        </span>
+        <span title="DYNAMIC 层（本次任务指令）字符数">指令 {log.userMessage.length}</span>
         {log.userInstructions.length > 0 && (
           <span className="text-primary">用户指令 {log.userInstructions.length} 条</span>
         )}
@@ -525,6 +532,35 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
                   <span className="text-nano text-muted-foreground shrink-0 tabular-nums">
                     {log.resultLength} 字
                   </span>
+                  {/* 提示词体积：static + SEMI + dynamic。
+                      SEMI 层（章节上下文）通常是大头，只看 static/dynamic 会以为
+                      提示词只有几百字符，而实际 input 是几万 token。 */}
+                  <span
+                    className="text-nano text-muted-foreground shrink-0 tabular-nums"
+                    title={`提示词三层：静态 ${log.systemPromptLength} + 上下文 ${log.chapterContextLength} + 指令 ${log.userMessageLength} 字符`}
+                  >
+                    ↑{formatTokens(
+                      log.systemPromptLength + log.chapterContextLength + log.userMessageLength,
+                    )}字
+                  </span>
+                  {/* 真正发出去的 payload。与上面的"三层字符"差多少，就是
+                      SDK 默认提示词 + 内置工具 schema + 多次往返累积的历史。 */}
+                  {log.payloadTotalChars > 0 && (
+                    <span
+                      className="text-nano shrink-0 tabular-nums text-amber-600 dark:text-amber-400"
+                      title={`实发 payload：messages ${log.payloadMessagesChars} 字符 / tools ${log.payloadToolsChars} 字符（${log.payloadToolCount} 个工具）/ 合计 ${log.payloadTotalChars} 字符`}
+                    >
+                      实发 {formatTokens(log.payloadTotalChars)}字
+                    </span>
+                  )}
+                  {log.llmRoundTrips > 1 && (
+                    <span
+                      className="text-nano shrink-0 tabular-nums text-destructive"
+                      title="一次 Agent 调用内部的 LLM 往返次数。工具调用会导致多次往返，每次都重发完整历史"
+                    >
+                      ×{log.llmRoundTrips} 往返
+                    </span>
+                  )}
                   {hitRate !== null && (
                     <span
                       className={cn(

@@ -9,7 +9,7 @@
  *
  * 这两条提示是该设计的可见契约，故单独覆盖。
  */
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { dataStore, uiStore, auditReport } = vi.hoisted(() => ({
@@ -112,6 +112,19 @@ afterEach(() => {
 const DETAIL_NOTICE = /创作进行中。本章上下文已在流程开始时构建/
 const AUDIT_NOTICE = /创作进行中。报告基于已入库章节计算/
 
+/**
+ * 详情面板现在是「概览 / 编辑」双模式，默认落在概览，表单只在编辑模式下渲染。
+ * 所以「面板照常可用」要通过切到编辑页来验证，而不是假定表单一进来就在。
+ *
+ * 用 `findByTestId` 而非 `getByTestId`：切模式会经过 Radix Button 的事件处理，
+ * 表单渲染不保证在 fireEvent 返回时已提交完成。同步断言在满负载并行跑测试时
+ * 会偶发失败（实测约十分之一），findBy* 自带重试，消掉这个竞态。
+ */
+async function switchToEditMode(): Promise<HTMLElement> {
+  fireEvent.click(screen.getByRole('tab', { name: /编辑/ }))
+  return screen.findByTestId('character-form')
+}
+
 describe('NovelDetailPanel 创作中时效提示', () => {
   it('创作进行中时提示改动要到下一次创作才生效，且表单仍可用', async () => {
     const { NovelDetailPanel } = await import('../novel-detail-panel')
@@ -119,8 +132,11 @@ describe('NovelDetailPanel 创作中时效提示', () => {
     render(<NovelDetailPanel creationActive />)
 
     expect(screen.getByText(DETAIL_NOTICE)).not.toBeNull()
-    // 关键：提示不等于禁用，面板照常渲染表单
-    expect(screen.getByTestId('character-form')).not.toBeNull()
+
+    // 关键：提示不等于禁用，切到编辑页照常渲染表单
+    expect(await switchToEditMode()).not.toBeNull()
+    // 提示在编辑模式下依然可见
+    expect(screen.getByText(DETAIL_NOTICE)).not.toBeNull()
   })
 
   it('未创作时不显示提示', async () => {
@@ -129,7 +145,8 @@ describe('NovelDetailPanel 创作中时效提示', () => {
     render(<NovelDetailPanel />)
 
     expect(screen.queryByText(DETAIL_NOTICE)).toBeNull()
-    expect(screen.getByTestId('character-form')).not.toBeNull()
+
+    expect(await switchToEditMode()).not.toBeNull()
   })
 })
 
