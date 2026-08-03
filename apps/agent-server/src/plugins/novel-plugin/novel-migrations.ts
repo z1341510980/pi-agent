@@ -1073,5 +1073,85 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
     // 080: ask_story rollout is an explicit project setting, not process-global state.
     id: '080_add_project_ask_story_policy',
     sql: `ALTER TABLE novel_projects ADD COLUMN novel_ask_story_policy TEXT;`
+  },
+  {
+    // 081: 参考小说阶段 1 本地分析。原文与创作实体完全隔离，不进入 Prompt/账本。
+    id: '081_create_reference_analysis_mvp',
+    sql: `CREATE TABLE IF NOT EXISTS novel_reference_sources (
+      id                    TEXT PRIMARY KEY,
+      project_id            TEXT NOT NULL,
+      input_kind            TEXT NOT NULL,
+      display_name          TEXT NOT NULL,
+      file_format           TEXT NOT NULL,
+      file_size             INTEGER NOT NULL,
+      original_bytes        BLOB NOT NULL,
+      normalized_text       TEXT NOT NULL DEFAULT '',
+      original_hash         TEXT NOT NULL,
+      normalized_hash       TEXT NOT NULL DEFAULT '',
+      encoding              TEXT NOT NULL,
+      encoding_confidence   REAL NOT NULL,
+      language              TEXT NOT NULL DEFAULT 'zh-CN',
+      rights_confirmed      INTEGER NOT NULL DEFAULT 0,
+      rights_statement      TEXT,
+      rights_confirmed_at   TEXT,
+      retention_policy      TEXT NOT NULL DEFAULT 'manual_delete',
+      source_text_state     TEXT NOT NULL DEFAULT 'draft',
+      parse_status          TEXT NOT NULL DEFAULT 'draft',
+      parser_version        TEXT NOT NULL DEFAULT 'reference-parser-v1',
+      character_count       INTEGER NOT NULL DEFAULT 0,
+      estimated_tokens      INTEGER NOT NULL DEFAULT 0,
+      chapter_count         INTEGER NOT NULL DEFAULT 0,
+      scene_count           INTEGER NOT NULL DEFAULT 0,
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL,
+      deleted_at            TEXT,
+      purged_at             TEXT,
+      version               INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_reference_sources_project_updated
+      ON novel_reference_sources(project_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS novel_reference_sections (
+      id                    TEXT PRIMARY KEY,
+      source_id             TEXT NOT NULL,
+      parent_id             TEXT,
+      type                  TEXT NOT NULL,
+      sort_order            INTEGER NOT NULL,
+      title                 TEXT,
+      start_offset          INTEGER NOT NULL,
+      end_offset            INTEGER NOT NULL,
+      character_count       INTEGER NOT NULL,
+      estimated_tokens      INTEGER NOT NULL,
+      boundary_confidence   REAL NOT NULL,
+      content_hash          TEXT NOT NULL,
+      included              INTEGER NOT NULL DEFAULT 1,
+      exclusion_reason      TEXT,
+      warnings_json         TEXT NOT NULL DEFAULT '[]',
+      version               INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (source_id) REFERENCES novel_reference_sources(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES novel_reference_sections(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_reference_sections_source_order
+      ON novel_reference_sections(source_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS novel_reference_quality_reports (
+      id                    TEXT PRIMARY KEY,
+      source_id             TEXT NOT NULL UNIQUE,
+      report_json           TEXT NOT NULL,
+      generated_at          TEXT NOT NULL,
+      FOREIGN KEY (source_id) REFERENCES novel_reference_sources(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS novel_reference_local_reports (
+      id                    TEXT PRIMARY KEY,
+      source_id             TEXT NOT NULL UNIQUE,
+      source_version        INTEGER NOT NULL,
+      normalized_hash       TEXT NOT NULL,
+      analyzer_version      TEXT NOT NULL,
+      report_json           TEXT NOT NULL,
+      generated_at          TEXT NOT NULL,
+      FOREIGN KEY (source_id) REFERENCES novel_reference_sources(id) ON DELETE CASCADE
+    );`
   }
 ]

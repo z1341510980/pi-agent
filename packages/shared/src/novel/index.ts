@@ -2130,3 +2130,198 @@ export interface ChapterStoryContext {
   annotations: NovelAnnotation[]
   continuityWarnings: string[]
 }
+
+// ── 参考小说分析（阶段 1：本地确定性分析）──
+
+export type ReferenceInputKind = 'file' | 'paste'
+export type ReferenceFileFormat = 'txt' | 'markdown'
+export type ReferenceTextEncoding = 'utf-8' | 'utf-8-bom' | 'gbk' | 'gb18030'
+export type ReferenceRetentionPolicy = 'delete_after_activation' | 'keep_local' | 'manual_delete'
+export type ReferenceSectionType =
+  | 'chapter'
+  | 'scene'
+  | 'chunk'
+  | 'directory'
+  | 'preface'
+  | 'afterword'
+  | 'appendix'
+  | 'excluded'
+
+export interface ReferenceSourceDetail {
+  id: string
+  projectId: string
+  inputKind: ReferenceInputKind
+  displayName: string
+  fileFormat: ReferenceFileFormat
+  fileSize: number
+  originalHash: string
+  normalizedHash: string
+  encoding: ReferenceTextEncoding
+  encodingConfidence: number
+  language: string
+  rights: {
+    confirmed: boolean
+    statement?: string
+    confirmedAt?: string
+  }
+  retentionPolicy: ReferenceRetentionPolicy
+  sourceTextState: 'draft' | 'available' | 'deleted'
+  parseStatus: 'draft' | 'parsed' | 'confirmed' | 'failed'
+  parserVersion: string
+  characterCount: number
+  estimatedTokens: number
+  chapterCount: number
+  sceneCount: number
+  createdAt: string
+  updatedAt: string
+  deletedAt?: string
+  purgedAt?: string
+  version: number
+}
+
+export interface ReferencePreflightResult extends ReferenceSourceDetail {
+  sourceDraftId: string
+  detectedEncoding: ReferenceTextEncoding
+  estimatedChapterCount: number
+  contentHash: string
+  warnings: string[]
+  supported: boolean
+}
+
+export interface ReferenceSection {
+  id: string
+  sourceId: string
+  parentId?: string
+  type: ReferenceSectionType
+  order: number
+  title?: string
+  start: number
+  end: number
+  characterCount: number
+  estimatedTokens: number
+  boundaryConfidence: number
+  contentHash: string
+  included: boolean
+  exclusionReason?: string
+  warnings: string[]
+  version: number
+}
+
+export interface ReferenceTextPreview {
+  sourceId: string
+  sectionId?: string
+  start: number
+  end: number
+  text: string
+  previousBoundary?: number
+  nextBoundary?: number
+  excluded: boolean
+  truncated: boolean
+}
+
+export interface ReferenceTextCandidate {
+  start: number
+  end: number
+  preview: string
+  reason: string
+}
+
+export interface ReferenceQualityReport {
+  id: string
+  sourceId: string
+  encoding: ReferenceTextEncoding
+  encodingConfidence: number
+  mojibakeWarnings: string[]
+  controlCharacterCount: number
+  duplicateHeaderFooterCount: number
+  watermarkCandidates: ReferenceTextCandidate[]
+  adCandidates: ReferenceTextCandidate[]
+  chapterBoundaryConfidence: number
+  sceneBoundaryConfidence: number
+  normalizationChanges: Array<{ type: string; count: number }>
+  lowConfidenceSectionIds: string[]
+  excludedCandidates: ReferenceTextCandidate[]
+  generatedAt: string
+}
+
+export interface ReferenceTokenBudgetEstimate {
+  providerId: string
+  modelId: string
+  contextWindow: number
+  maxOutputTokens: number
+  selectedCharacters: number
+  selectedTextTokens: number
+  systemPromptTokens: number
+  instructionTokens: number
+  outputReserveTokens: number
+  safetyMarginTokens: number
+  effectiveInputLimit: number
+  estimatedSceneCalls: number
+  estimatedChapterCalls: number
+  estimatedBookCalls: number
+  estimatedTotalCalls: number
+  estimatedInputTokens: { min: number; max: number }
+  estimatedOutputTokens: { min: number; max: number }
+  estimatedCost?: { currency: string; min: number; max: number }
+  pricingSource: 'provider_config' | 'fallback' | 'unknown'
+  tokenizerSource: 'provider' | 'model_family' | 'fallback'
+  withinLimit: boolean
+  excessTokens: number
+  excessCharacters: number
+  warnings: string[]
+  estimateHash: string
+}
+
+export interface ReferenceDistributionSummary {
+  count: number
+  min: number
+  max: number
+  average: number
+  median: number
+  p90: number
+}
+
+export interface ReferenceFrequencyItem {
+  value: string
+  count: number
+  ratio: number
+}
+
+export interface ReferenceChapterLengthMetric {
+  sectionId: string
+  title: string
+  characterCount: number
+  sentenceCount: number
+  paragraphCount: number
+  dialogueRatio: number
+}
+
+export interface ReferenceLocalAnalysisReport {
+  id: string
+  sourceId: string
+  sourceVersion: number
+  normalizedHash: string
+  analyzerVersion: string
+  sentenceLengths: ReferenceDistributionSummary & { buckets: Record<string, number> }
+  paragraphLengths: ReferenceDistributionSummary
+  dialogue: { characterCount: number; ratio: number; paragraphRatio: number }
+  punctuation: ReferenceFrequencyItem[]
+  vocabulary: ReferenceFrequencyItem[]
+  sensoryVocabulary: Record<
+    'visual' | 'auditory' | 'olfactory' | 'tactile' | 'taste' | 'bodily',
+    number
+  >
+  narrativePersonSignals: Record<'firstPerson' | 'thirdPerson', number>
+  highFrequencyExpressions: ReferenceFrequencyItem[]
+  chapterLengths: ReferenceChapterLengthMetric[]
+  openingShape: { sentenceLength: ReferenceDistributionSummary; dialogueRatio: number }
+  endingShape: { sentenceLength: ReferenceDistributionSummary; dialogueRatio: number }
+  languageToneObservations: string[]
+  dataQuality: {
+    includedCharacterRatio: number
+    lowConfidenceChapterCount: number
+    mojibakeWarningCount: number
+    warnings: string[]
+  }
+  generatedAt: string
+}

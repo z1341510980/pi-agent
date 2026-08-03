@@ -41,6 +41,8 @@ import { DiscussionRunStore } from './core/discussion-run-store.js'
 import { DiscussionSettingsStore } from '../../core/agent/discussion-settings-store.js'
 import { ConsistencyAuditor } from './core/consistency-auditor.js'
 import { RelationshipGraph } from './core/novel-relationship-graph.js'
+import { ReferenceAnalysisStore } from './core/reference-analysis-store.js'
+import { ReferenceAnalysisService } from './core/reference-analysis-service.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { AgentManager } from '../../core/agent/subagent-tool.js'
@@ -100,6 +102,8 @@ export interface NovelServices {
   chapterChatStore: ChapterChatStore
   /** 章节级自由聊天 Runner */
   chapterChatRunner: ChapterChatRunner
+  /** 参考小说阶段 1：与故事实体/Prompt 隔离的本地分析服务 */
+  referenceAnalysis?: ReferenceAnalysisService
 }
 
 /**
@@ -112,6 +116,8 @@ export function createNovelServices(context: PluginContext): NovelServices {
 
   // 1. 创建 NovelStore（依赖 db）
   const store = new NovelStore(db)
+  const referenceAnalysisStore = new ReferenceAnalysisStore(db)
+  const referenceAnalysis = new ReferenceAnalysisService(referenceAnalysisStore, store)
 
   // 2. 创建 NovelMemoryStore（依赖 db，长期记忆分层存储）
   const memoryStore = new NovelMemoryStore(db)
@@ -219,5 +225,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     similarityScanner 处理"语义相似但表述不同"的重复，支持字段级合并方案
   const similarityScanner = new NovelSimilarityScanner(promptBuilder, promptManager, context, store)
 
-  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner }
+  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner, referenceAnalysis }
 }

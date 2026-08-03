@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -68,6 +68,7 @@ import {
 } from './chapter-task'
 import { ChapterContentEditor } from './chapter-content-editor'
 import { WritingStyleProfileEditor } from './writing-style-profile-editor'
+import { ReferenceAnalysisWorkspace } from './reference-analysis/reference-analysis-workspace'
 import { ErrorBoundary } from '@/components/overlays/error-boundary'
 import { MatrixErrorFallback } from './matrix-error-fallback'
 import { CanvasErrorFallback } from './canvas-error-fallback'
@@ -227,6 +228,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
   const [stylePanelOpen, setStylePanelOpen] = useState(false)
+  const [referenceAnalysisOpen, setReferenceAnalysisOpen] = useState(false)
 
   // ── 章节自由聊天（"聊天" Tab）──
   const chapterChat = useChapterChat()
@@ -922,6 +924,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             <Button
               size="icon-sm"
               variant="ghost"
+              onClick={() => setReferenceAnalysisOpen(true)}
+              disabled={!currentProject}
+              title="参考小说分析"
+              className="text-subtle hover:text-text"
+            >
+              <BookSearch className="size-3.5" />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
               onClick={() => setStylePanelOpen(true)}
               disabled={!currentProject}
               title="文风设置"
@@ -1323,6 +1335,14 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </div>
           </DialogContent>
         </Dialog>
+
+        {currentProjectId && (
+          <ReferenceAnalysisWorkspace
+            projectId={currentProjectId}
+            open={referenceAnalysisOpen}
+            onOpenChange={setReferenceAnalysisOpen}
+          />
+        )}
 
         {/* LLM 相似度扫描多选对话框（勾选的组才合并） */}
         <Dialog open={similarityDialogOpen} onOpenChange={(open) => {

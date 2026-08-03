@@ -1781,3 +1781,159 @@ export async function sendChapterChat(
 
   await parseSseStream(response.body, options.onEvent)
 }
+
+// ── 参考小说分析（阶段 1：本地分析 MVP）──
+
+export interface ReferenceProviderSummary {
+  id: string
+  name: string
+  models: Array<{
+    id: string
+    name: string
+    contextWindow?: number
+    maxTokens?: number
+    cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }
+  }>
+}
+
+export function listReferenceSources(
+  projectId: string
+): Promise<import('@repo/shared/novel').ReferenceSourceDetail[]> {
+  return getApi(`${BASE}/projects/${projectId}/reference-sources`)
+}
+
+export function getReferenceSource(
+  sourceId: string
+): Promise<import('@repo/shared/novel').ReferenceSourceDetail> {
+  return getApi(`${BASE}/reference-sources/${sourceId}`)
+}
+
+export function listReferenceProviders(): Promise<ReferenceProviderSummary[]> {
+  return getApi('/api/providers')
+}
+
+export function preflightReferencePaste(
+  projectId: string,
+  input: { displayName: string; text: string; fileFormat?: 'txt' | 'markdown' }
+): Promise<import('@repo/shared/novel').ReferencePreflightResult> {
+  return postApi(`${BASE}/projects/${projectId}/reference-sources/preflight`, {
+    inputKind: 'paste',
+    ...input
+  })
+}
+
+export function preflightReferenceFile(
+  projectId: string,
+  input: {
+    displayName: string
+    fileName: string
+    bytes: Uint8Array
+    fileFormat?: 'txt' | 'markdown'
+  }
+): Promise<import('@repo/shared/novel').ReferencePreflightResult> {
+  return postApi(`${BASE}/projects/${projectId}/reference-sources/preflight`, {
+    inputKind: 'file',
+    displayName: input.displayName,
+    fileName: input.fileName,
+    fileFormat: input.fileFormat,
+    bytesBase64: bytesToBase64(input.bytes)
+  })
+}
+
+export function updateReferenceImportOptions(
+  sourceId: string,
+  input: {
+    encoding: import('@repo/shared/novel').ReferenceTextEncoding
+    retentionPolicy: import('@repo/shared/novel').ReferenceRetentionPolicy
+    rightsConfirmed: boolean
+    rightsStatement?: string
+    cloudAnalysisConfirmed?: boolean
+    version: number
+  }
+): Promise<{ source: import('@repo/shared/novel').ReferenceSourceDetail; warnings: string[] }> {
+  return patchApi(`${BASE}/reference-sources/${sourceId}/import-options`, input)
+}
+
+export function parseReferenceSource(
+  sourceId: string,
+  version: number
+): Promise<{
+  source: import('@repo/shared/novel').ReferenceSourceDetail
+  parseStatus: 'parsed'
+  qualityReportId: string
+  chapterCount: number
+  sceneCount: number
+  nextPage: 'quality'
+}> {
+  return postApi(`${BASE}/reference-sources/${sourceId}/parse`, { version })
+}
+
+export function getReferenceQualityReport(
+  sourceId: string
+): Promise<import('@repo/shared/novel').ReferenceQualityReport> {
+  return getApi(`${BASE}/reference-sources/${sourceId}/quality-report`)
+}
+
+export function getReferenceLocalReport(
+  sourceId: string
+): Promise<import('@repo/shared/novel').ReferenceLocalAnalysisReport> {
+  return getApi(`${BASE}/reference-sources/${sourceId}/local-analysis-report`)
+}
+
+export function listReferenceSections(
+  sourceId: string
+): Promise<import('@repo/shared/novel').ReferenceSection[]> {
+  return getApi(`${BASE}/reference-sources/${sourceId}/sections`)
+}
+
+export function getReferenceTextPreview(
+  sourceId: string,
+  input: { sectionId?: string; start?: number; end?: number; contextChars?: number }
+): Promise<import('@repo/shared/novel').ReferenceTextPreview> {
+  const query = new URLSearchParams()
+  if (input.sectionId) query.set('sectionId', input.sectionId)
+  if (input.start !== undefined) query.set('start', String(input.start))
+  if (input.end !== undefined) query.set('end', String(input.end))
+  if (input.contextChars !== undefined) query.set('contextChars', String(input.contextChars))
+  return getApi(`${BASE}/reference-sources/${sourceId}/text-preview?${query.toString()}`)
+}
+
+export function updateReferenceSection(
+  sectionId: string,
+  input: {
+    title?: string
+    start?: number
+    end?: number
+    included?: boolean
+    exclusionReason?: string
+    version: number
+  }
+): Promise<{
+  source: import('@repo/shared/novel').ReferenceSourceDetail
+  section: import('@repo/shared/novel').ReferenceSection
+  sections: import('@repo/shared/novel').ReferenceSection[]
+}> {
+  return patchApi(`${BASE}/reference-sections/${sectionId}`, input)
+}
+
+export function estimateReferenceAnalysis(
+  sourceId: string,
+  input: {
+    providerId: string
+    modelId: string
+    selectedSectionIds?: string[]
+    outputReserveTokens?: number
+    safetyMarginTokens?: number
+  }
+): Promise<import('@repo/shared/novel').ReferenceTokenBudgetEstimate> {
+  return postApi(`${BASE}/reference-sources/${sourceId}/analysis-estimate`, input)
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return btoa(binary)
+}

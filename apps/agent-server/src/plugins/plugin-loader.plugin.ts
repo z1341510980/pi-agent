@@ -147,7 +147,10 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
     const fullPath = `/api/plugins/${pluginName}${route.path}`
     try {
       // 根据方法调用对应的 Fastify 注册函数
-      const opts = { handler: route.handler }
+      const opts = {
+        handler: route.handler,
+        ...(route.bodyLimit ? { bodyLimit: route.bodyLimit } : {}),
+      }
       switch (route.method) {
         case 'GET':
           app.get(fullPath, opts)

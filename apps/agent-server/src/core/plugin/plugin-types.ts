@@ -83,6 +83,8 @@ export interface RouteDefinition {
    * 例如：'/status' 会变成 '/api/plugins/hello/status'
    */
   path: string
+  /** 单路由请求体上限（字节）；省略时沿用 Fastify 默认值。 */
+  bodyLimit?: number
   /** 路由处理器 */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (request: any, reply: any) => Promise<any> | any

@@ -30,6 +30,7 @@ import { createChapterRoutes } from './routes/chapter-routes.js'
 import { createCharacterRoutes } from './routes/character-routes.js'
 import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
 import { createStoryLedgerRoutes } from './routes/story-ledger-routes.js'
+import { createReferenceAnalysisRoutes } from './routes/reference-analysis-routes.js'
 import { createContextPreviewRoutes } from './routes/context-preview-routes.js'
 
 /**
@@ -50,7 +51,10 @@ import { createContextPreviewRoutes } from './routes/context-preview-routes.js'
  */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   const { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor } = services
-  const routes: RouteDefinition[] = [...createStoryLedgerRoutes(services)]
+  const routes: RouteDefinition[] = [
+    ...createStoryLedgerRoutes(services),
+    ...createReferenceAnalysisRoutes(services),
+  ]
 
   // P1 可观测性：context-preview 端点，预览 prompt-builder 注入的上下文结构
   routes.push(...createContextPreviewRoutes(promptBuilder))
