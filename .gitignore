@@ -65,3 +65,11 @@ apps/agent-server/scripts/e2e-test/output/
 .pi/
 graphify-out/*
 .gitnexus
+
+# 工具运行记忆与临时脚本
+.workbuddy/
+*.tmp.ts
+*.tmp.cjs
+
+# 小说迁移工具生成的报告
+apps/agent-server/scripts/novel-migration-tools/output/
