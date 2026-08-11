@@ -2,6 +2,9 @@ import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import { success } from '../../../lib/api-response.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { NovelPromptBuilder } from '../core/prompt-builder.js'
+import type { NovelStore } from '../core/novel-store.js'
+import type { NovelEngine } from '../core/novel-engine.js'
+import { buildP3ContextReport } from '../core/p3-context-report.js'
 
 /**
  * context-preview 路由（P1 可观测性）。
@@ -20,7 +23,11 @@ const parseIntQuery = (value: unknown): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-export function createContextPreviewRoutes(promptBuilder: NovelPromptBuilder): RouteDefinition[] {
+export function createContextPreviewRoutes(
+  promptBuilder: NovelPromptBuilder,
+  store: NovelStore,
+  engine: NovelEngine,
+): RouteDefinition[] {
   const routes: RouteDefinition[] = []
 
   routes.push({
@@ -40,6 +47,32 @@ export function createContextPreviewRoutes(promptBuilder: NovelPromptBuilder): R
         chapterNumber,
         agentType,
         mode,
+      )
+      return success(result, request.traceId)
+    },
+  })
+
+  // T03-8 P3 灰度看板：聚合 chunk 明细 / 角色策略 / 降级模拟 / 身份 token
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/p3/context-report',
+    handler: async (request: any) => {
+      const query = (request.query ?? {}) as Record<string, string | undefined>
+      const chapterNumber = parseIntQuery(query.chapterNumber)
+      if (chapterNumber === undefined || chapterNumber < 1) {
+        throw new AppError(ErrorCode.BAD_REQUEST, 'chapterNumber 必须为正整数', 400)
+      }
+      const budgetTokens = parseIntQuery(query.budgetTokens)
+      const result = buildP3ContextReport(
+        promptBuilder,
+        store,
+        engine,
+        request.params.projectId,
+        chapterNumber,
+        {
+          agentType: query.agentType,
+          budgetTokens,
+        },
       )
       return success(result, request.traceId)
     },

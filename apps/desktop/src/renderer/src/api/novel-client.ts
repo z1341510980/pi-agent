@@ -38,6 +38,8 @@ import type {
   CharacterHistoryField, NovelMarkerType, NovelMarkerColor,
   SimilarityGroup,
   ChapterVersion, ChapterVersionSummary, ChapterVersionDiff, RollbackResult,
+  ContentRevisionSummary, ContentRevisionStatus,
+  NovelEntityCandidate, EntityCandidateStatus,
   // 次级类型（PR-1 迁移）
   NovelNodeType, PlotFunction,
   CharacterGenerationProgressEvent,
@@ -60,6 +62,17 @@ const BASE = '/api/plugins/novel'
 
 /** 冲突剧情功能位（转发别名，等同于共享包 PlotFunction 七值枚举） */
 export type ConflictPlotFunction = PlotFunction
+
+/** V2 双写对账报告（与后端 core/v2-reconciliation.ts 的 ReconciliationReport 同构） */
+export interface ReconciliationReport {
+  projectId: string
+  projectTitle: string
+  chapterRange: [number, number] | null
+  wordBudget: { matched: number; mismatched: number; items: Array<{ chapterNumber: number; v1Target: number; v2Target: number | null; matched: boolean }> }
+  sceneCount: { matched: number; mismatched: number; items: Array<{ chapterNumber: number; v1Scenes: number | null; v2Scenes: number | null; matched: boolean }> }
+  eventSceneFields: { totalEvents: number; eventsWithSceneId: number }
+  overallMatched: boolean
+}
 
 // ── 创建/更新载荷类型 ──
 
@@ -87,6 +100,8 @@ export type UpdateProjectInput = Omit<Partial<CreateProjectInput>, 'targetPlatfo
   status?: 'active' | 'paused' | 'completed'
   outline?: string
   rhythmModelId?: string
+  /** 项目级创作主模型：null/undefined = 各 Agent 各自配置；非空 = 创作流程统一使用 */
+  novelModelId?: string | null
   targetPlatform?: TargetPlatform | null
 }
 
@@ -475,8 +490,8 @@ export function createChapter(projectId: string, input: CreateChapterInput): Pro
   return postApi<NovelChapter>(`${BASE}/projects/${projectId}/chapters`, input)
 }
 
-export function updateChapter(id: string, input: UpdateChapterInput): Promise<NovelChapter> {
-  return patchApi<NovelChapter>(`${BASE}/chapters/${id}`, input)
+export function updateChapter(id: string, input: UpdateChapterInput): Promise<ChapterSaveResult> {
+  return patchApi<ChapterSaveResult>(`${BASE}/chapters/${id}`, input)
 }
 
 export function completeChapter(id: string, input: CompleteChapterInput): Promise<NovelChapter> {
@@ -495,9 +510,7 @@ export function deleteChapter(id: string): Promise<{ id: string; deleted: boolea
 
 export function listChapterVersions(chapterId: string): Promise<ChapterVersionSummary[]> {
   return getApi<ChapterVersionSummary[]>(`${BASE}/chapters/${chapterId}/versions`)
-}
-
-export function getChapterVersion(chapterId: string, versionId: string): Promise<ChapterVersion> {
+}export function getChapterVersion(chapterId: string, versionId: string): Promise<ChapterVersion> {
   return getApi<ChapterVersion>(`${BASE}/chapters/${chapterId}/versions/${versionId}`)
 }
 
@@ -515,8 +528,128 @@ export function rollbackChapter(chapterId: string, versionId: string): Promise<R
   return postApi<RollbackResult>(`${BASE}/chapters/${chapterId}/versions/${versionId}/rollback`, {})
 }
 
+/**
+ * 将历史版本应用到当前正文。复用安全回滚接口，服务端会先保存当前正文快照。
+ */
+export function applyChapterVersion(
+  chapterId: string,
+  versionId: string
+): Promise<RollbackResult> {
+  return rollbackChapter(chapterId, versionId)
+}
+
 export function createChapterSnapshot(chapterId: string, trigger?: string): Promise<ChapterVersion> {
   return postApi<ChapterVersion>(`${BASE}/chapters/${chapterId}/versions`, { trigger })
+}
+
+// ── 不可变正文版本链（V2 content revision，T04）──
+
+export function listContentRevisions(chapterId: string): Promise<ContentRevisionSummary[]> {
+  return getApi<ContentRevisionSummary[]>(`${BASE}/chapters/${chapterId}/content-revisions`)
+}
+
+export function rollbackToContentRevision(
+  chapterId: string,
+  revisionId: string,
+): Promise<{ appliedRevisionId: string; content: string; wordCount: number }> {
+  return postApi(`${BASE}/chapters/${chapterId}/content-revisions/${revisionId}/rollback`, {})
+}
+
+// ── Memory 实体候选审核（V2 决策 3，T04）──
+
+export function listEntityCandidates(
+  projectId: string,
+  status?: EntityCandidateStatus,
+): Promise<{ candidates: NovelEntityCandidate[]; pendingCount: number }> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
+  return getApi(`${BASE}/projects/${projectId}/entity-candidates${qs}`)
+}
+
+export function confirmEntityCandidate(id: string): Promise<{ candidate: NovelEntityCandidate; entityId: string | null }> {
+  return postApi(`${BASE}/entity-candidates/${id}/confirm`, {})
+}
+
+export function rejectEntityCandidate(id: string, reason: string): Promise<NovelEntityCandidate> {
+  return postApi(`${BASE}/entity-candidates/${id}/reject`, { reason })
+}
+
+// ── V2 双写对账（T05）──
+
+export function getV2Reconciliation(projectId: string): Promise<ReconciliationReport> {
+  return getApi(`${BASE}/projects/${projectId}/v2-reconciliation`)
+}
+
+// ── 剧情推进轨道（第二轮）──
+
+export interface NarrativeMatrixProgressLink {
+  progressId: string
+  storylineId: string
+  sceneRevisionId: string
+  chapterNumber: number | null
+  type: 'setup' | 'advance' | 'turn' | 'reveal' | 'resolve' | 'pause'
+  primary: boolean
+  beforeState: string
+  afterState: string
+  summary: string
+  status: string
+  createdAt: number
+}
+
+export interface NarrativeMatrixRow {
+  storylineId: string
+  name: string
+  kind: string
+  lifecycle: 'active' | 'paused' | 'resolved' | 'abandoned'
+  maturity: 'candidate' | 'established'
+  progresses: NarrativeMatrixProgressLink[]
+}
+
+export interface NarrativeMatrixReport {
+  projectId: string
+  source: 'v2-ledger'
+  sourceRevision: string
+  projectionLag: number
+  stale: boolean
+  generatedAt: number
+  rows: NarrativeMatrixRow[]
+  sceneNodes: Array<{ sceneRevisionId: string; sceneId: string; sceneKey: string; chapterId: string; chapterNumber: number | null; order: number | null; title: string }>
+  staleCount: number
+}
+
+export function getNarrativeMatrix(projectId: string, asOfRevision?: string): Promise<NarrativeMatrixReport> {
+  const query = asOfRevision ? `?asOfRevision=${encodeURIComponent(asOfRevision)}` : ''
+  return getApi(`${BASE}/projects/${projectId}/narrative-matrix${query}`)
+}
+
+// ── 剧情（narrative）实体轨道 ──
+
+export function listNarratives(projectId: string): Promise<NovelNarrative[]> {
+  return getApi(`${BASE}/projects/${projectId}/narratives`)
+}
+
+export function createNarrative(projectId: string, input: { description: string; type?: string; status?: string; chapterSpans?: Array<[number, number]> }): Promise<NovelNarrative> {
+  return postApi(`${BASE}/projects/${projectId}/narratives`, input)
+}
+
+export function updateNarrative(id: string, input: Partial<{ description: string; type: string; status: string; chapterSpans: Array<[number, number]> }>): Promise<NovelNarrative> {
+  return patchApi(`${BASE}/narratives/${id}`, input)
+}
+
+export function deleteNarrative(id: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi(`${BASE}/narratives/${id}`)
+}
+
+// ── 中间章重写派生状态（决策 4，T04）──
+
+export interface ChapterDerivedState {
+  isMiddleRewrite: boolean
+  staleMarked?: number
+  affectedChapters?: number[]
+  message?: string
+}
+
+export interface ChapterSaveResult extends NovelChapter {
+  derivedState?: ChapterDerivedState
 }
 
 // ── Volumes ──
@@ -912,6 +1045,8 @@ export interface MatrixAggregation {
   projectId: string
   chapterRange: { start: number; end: number }
   changes: NovelChangeRecord[]
+  /** T02-6 事件参与派生边：同一 StoryEvent 内参与实体两两成对（按章节关系投影） */
+  eventEdges?: Array<{ eventId: string; chapterNumber: number; from: string; to: string }>
 }
 
 export interface MatrixAggregationParams {
@@ -1002,6 +1137,32 @@ export function updateAnnotation(annotationId: string, patch: UpdateAnnotationIn
 
 export function deleteAnnotation(annotationId: string): Promise<{ id: string; deleted: boolean }> {
   return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/annotations/${annotationId}`)
+}
+
+// ── T02-6 AI 提取确认队列 ──
+
+export interface PendingEventItem {
+  event: NovelStoryEvent
+  entityRefs: StoryEventEntityRef[]
+  changes: NovelChangeRecord[]
+}
+
+export function listPendingEvents(projectId: string): Promise<{ items: PendingEventItem[] }> {
+  return getApi<{ items: PendingEventItem[] }>(`${BASE}/projects/${projectId}/ledger/pending-queue`)
+}
+
+export function confirmStoryEvent(projectId: string, eventId: string): Promise<{ confirmed: boolean }> {
+  return postApi<{ confirmed: boolean }>(
+    `${BASE}/projects/${projectId}/ledger/events/${eventId}/confirm`,
+    {},
+  )
+}
+
+export function rejectStoryEvent(projectId: string, eventId: string): Promise<{ rejected: boolean }> {
+  return postApi<{ rejected: boolean }>(
+    `${BASE}/projects/${projectId}/ledger/events/${eventId}/reject`,
+    {},
+  )
 }
 
 // ── World Elements ──
@@ -1588,6 +1749,57 @@ export function getCacheLayerReport(
   )
 }
 
+// ── P3 灰度看板（T03-8）──
+
+export interface P3ChunkEntry {
+  chunkId: string
+  title: string
+  priority: string
+  defaultMode: string
+  layer: string
+  charCount: number
+  tokens: number
+}
+
+export interface P3ContextReport {
+  projectId: string
+  chapterNumber: number
+  agentType?: string
+  baseline: {
+    sharedChars: number
+    sharedTokens: number
+    chunkCount: number
+  }
+  chunks: P3ChunkEntry[]
+  rolePolicies: Array<{ agentType: string; policy: Array<{ chunkId: string; mode: string }> }>
+  degradation?: {
+    budgetTokens: number
+    tokensBefore: number
+    tokensAfter: number
+    savedTokens: number
+    savedPercent: number
+    appliedSteps: string[]
+    fits: boolean
+  }
+  identity?: { agentType: string; chars: number; tokens: number }
+  roleAssembly?: { agentType: string; chars: number; tokens: number; savedTokens: number; savedPercent: number }
+  catalog: Array<{ chunkId: string; title: string; priority: string; defaultMode: string }>
+}
+
+/** 拉取 P3 灰度看板报告（chunk 明细 / 角色策略 / 降级模拟 / 角色组装对照） */
+export function getP3ContextReport(
+  projectId: string,
+  params: { chapterNumber: number; agentType?: string; budgetTokens?: number },
+): Promise<P3ContextReport> {
+  const search = new URLSearchParams()
+  search.set('chapterNumber', String(params.chapterNumber))
+  if (params.agentType) search.set('agentType', params.agentType)
+  if (params.budgetTokens != null) search.set('budgetTokens', String(params.budgetTokens))
+  return getApi<P3ContextReport>(
+    `${BASE}/projects/${projectId}/p3/context-report?${search.toString()}`,
+  )
+}
+
 // ── Agent 调用日志 ──
 
 export interface ListAgentLogsParams {
@@ -1759,7 +1971,10 @@ export async function sendChapterChat(
   chapterNumber: number,
   message: string,
   mentionedAgents: string[] | undefined,
-  options: ChapterChatFlowOptions,
+  options: ChapterChatFlowOptions & {
+    /** per-call 模型覆盖（输入框旁选择器传入） */
+    modelId?: { provider: string; modelId: string }
+  },
 ): Promise<void> {
   const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/chapters/${chapterNumber}/chat`
   const response = await fetch(url, {
@@ -1768,7 +1983,7 @@ export async function sendChapterChat(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ message, mentionedAgents }),
+    body: JSON.stringify({ message, mentionedAgents, modelId: options.modelId }),
     signal: options.signal,
   })
 

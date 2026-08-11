@@ -50,12 +50,34 @@ import type {
   NovelCharacterArc,
   ChapterVersion,
   ChapterVersionSummary,
+  ContentRevision,
+  ContentRevisionSummary,
+  ChapterPlanRevision,
+  PlanRevisionStatus,
+  NovelScene,
+  NovelSceneRevision,
+  NovelStoryline,
+  NovelNarrative,
+  StorylineLifecycle,
+  StorylineMaturity,
+  NovelStorylineProgress,
+  ProgressStatus,
+  NovelEntityCandidate,
+  EntityCandidateStatus,
+  NovelEntityCandidateReview,
   VersionSource,
   DeduplicateReport,
   SimilarityGroup,
 } from './types.js'
 import { ProjectStore } from './stores/project-store.js'
 import { ChapterStore } from './stores/chapter-store.js'
+import { ScenePlanStore } from './stores/scene-plan-store.js'
+import { NarrativeLedgerStore } from './stores/narrative-ledger-store.js'
+import { EntityCandidateStore } from './stores/entity-candidate-store.js'
+import { EntityAppearanceStore, type AppearanceRole, type AppearanceSource } from './stores/entity-appearance-store.js'
+import { NarrativeStore } from './stores/narrative-store.js'
+import { reconcileV2 } from './v2-reconciliation.js'
+import { buildNarrativeMatrix } from './narrative-matrix-projection.js'
 import { CharacterStore } from './stores/character-store.js'
 import { ConflictStore } from './stores/conflict-store.js'
 import { ForeshadowStore } from './stores/foreshadow-store.js'
@@ -73,8 +95,10 @@ import {
   chaptersOfItem,
   chaptersOfLocation,
   diffChapters,
+  expandChapterSpans,
   type ProjectionEntityType,
 } from './chapter-projection-fields.js'
+import { isNovelFeatureEnabled } from './novel-feature-flags.js'
 
 /**
  * 实体章节投影发生变化的通知。
@@ -126,25 +150,37 @@ export class NovelStore implements NovelPromptStores {
   private readonly faction: FactionStore
   private readonly item: ItemStore
   private readonly graph: GraphStore
+  private readonly scenePlan: ScenePlanStore
+  private readonly ledger: NarrativeLedgerStore
+  private readonly candidates: EntityCandidateStore
+  private readonly narratives: NarrativeStore
   private readonly deduplicator: DeduplicateService
+  private readonly entityAppearances: EntityAppearanceStore
   private chapterProjectionObserver: ChapterProjectionObserver | null = null
   private entityDeletedObserver: EntityDeletedObserver | null = null
   private observerSuppressed = false
 
   constructor(private db: Database.Database) {
     // GraphStore 拥有 deleteEdgesByEntity，先实例化供其他 Store 注入
-    this.graph = new GraphStore(db)
+    // flags 源为 NovelStore 自身（实现 FeatureFlagProjectSource.getProject），
+    // 仅在运行时按 projectId 惰性读取，构造顺序不影响。
+    this.graph = new GraphStore(db, this)
     const deleteEdges = (id: string) => this.graph.deleteEdgesByEntity(id)
     const renumberService = new ChapterRenumberService(db)
 
     this.project = new ProjectStore(db)
-    this.chapter = new ChapterStore(db, deleteEdges, renumberService)
+    this.chapter = new ChapterStore(db, deleteEdges, renumberService, this)
     this.character = new CharacterStore(db, deleteEdges)
     this.conflict = new ConflictStore(db, deleteEdges)
     this.foreshadow = new ForeshadowStore(db, deleteEdges)
     this.world = new WorldStore(db, deleteEdges)
     this.faction = new FactionStore(db, deleteEdges)
     this.item = new ItemStore(db, deleteEdges)
+    this.scenePlan = new ScenePlanStore(db, this)
+    this.ledger = new NarrativeLedgerStore(db)
+    this.candidates = new EntityCandidateStore(db)
+    this.entityAppearances = new EntityAppearanceStore(db)
+    this.narratives = new NarrativeStore(db)
 
     this.deduplicator = new DeduplicateService({
       db,
@@ -213,6 +249,131 @@ export class NovelStore implements NovelPromptStores {
 
   createProject(project: Omit<NovelProject, 'createdAt' | 'updatedAt'>): NovelProject { return this.project.createProject(project) }
   updateProject(id: string, patch: Partial<NovelProject>): NovelProject | undefined { return this.project.updateProject(id, patch) }
+  /** 项目级「创作主模型」：设置后创作流程所有 Agent 统一使用该模型（见 NovelProject.novelModelId） */
+  getNovelModelId(projectId: string): string | undefined { return this.project.getNovelModelId(projectId) }
+  updateNovelModelId(projectId: string, modelId: string | null): boolean { return this.project.updateNovelModelId(projectId, modelId) }
+
+  // ── P2：实体出场关系统一（novel_entity_appearances）──
+  /** 记录一批实体在本章的出场（幂等；仅在 appearanceV2Write 开启时由双写入口调用） */
+  addChapterAppearances(input: {
+    projectId: string
+    chapterId: string
+    entityType: string
+    entityIds: string[]
+    role?: AppearanceRole
+    source?: AppearanceSource
+  }): number { return this.entityAppearances.addChapterAppearances(input) }
+  /** 某章的所有出场实体 */
+  listAppearancesByChapter(projectId: string, chapterId: string): ReturnType<EntityAppearanceStore['listByChapter']> {
+    return this.entityAppearances.listByChapter(projectId, chapterId)
+  }
+  /** 某实体的出场章节列表 */
+  listAppearancesByEntity(projectId: string, entityType: string, entityId: string): string[] {
+    return this.entityAppearances.listByEntity(projectId, entityType, entityId)
+  }
+  removeChapterAppearances(projectId: string, chapterId: string): number {
+    return this.entityAppearances.removeChapterAppearances(projectId, chapterId)
+  }
+  removeEntityAppearances(projectId: string, entityType: string, entityId: string): number {
+    return this.entityAppearances.removeEntityAppearances(projectId, entityType, entityId)
+  }
+  /**
+   * P2 读切统一函数：某章出场实体 ID（仅 appearanceV2Read 开启时走 appearance 表）。
+   * 关闭时返回 null —— 调用方回退到各自的 chapterSpans/appearChapters 过滤（零行为变化）。
+   * 开启时返回 appearance 记录中的 entityId 列表（用于替换"union 多表"的按章查询）。
+   */
+  listChapterAppearanceIds(input: {
+    projectId: string
+    chapterNumber: number
+    entityType: string
+  }): string[] | null {
+    if (!isNovelFeatureEnabled(this, input.projectId, 'appearanceV2Read')) return null
+    const chapterId = this.getChapter(input.projectId, input.chapterNumber)?.id
+    if (!chapterId) return []
+    return this.entityAppearances
+      .listByChapter(input.projectId, chapterId)
+      .filter((r) => r.entityType === input.entityType)
+      .map((r) => r.entityId)
+  }
+  /**
+   * 三入口双写便捷方法（ai-arrange 落库 / Memory applyChanges / syncChapterDimensions）：
+   * 仅 appearanceV2Write 开启且能解析到 chapterId 时写入 appearance 表；否则 no-op。
+   */
+  recordAppearancesIfEnabled(input: {
+    projectId: string
+    chapterNumber: number
+    /** 可选：调用方已解析出 chapterId 时直接传入，避免重复查询 */
+    chapterId?: string
+    entityType: string
+    entityIds: string[]
+    role?: AppearanceRole
+    source?: AppearanceSource
+  }): void {
+    if (!isNovelFeatureEnabled(this, input.projectId, 'appearanceV2Write')) return
+    if (input.entityIds.length === 0) return
+    const chapterId = input.chapterId
+      ?? this.getChapter(input.projectId, input.chapterNumber)?.id
+    if (!chapterId) return
+    this.addChapterAppearances({ ...input, chapterId })
+  }
+
+  /**
+   * P2 收官：chapter_spans / appear_chapters 旧列冻结（chapterSpansFrozen flag）。
+   *
+   * 实体 update patch 携带出场字段时：
+   * - flag 关（默认）：原样返回，现状不变（双写期间行为）。
+   * - flag 开：剥离旧列字段不落库，展开为章节号后**直接写 appearance**
+   *   （绕过 appearanceV2Write——冻结后 appearance 是唯一权威出场记录，
+   *   不依赖双写开关），source='frozen-redirect'。
+   *
+   * 覆盖全部写入路径（ai-arrange / Memory / sync / 工具编辑），一处收口。
+   */
+  private stripFrozenSpans<T extends Record<string, unknown>>(
+    entityType: ProjectionEntityType,
+    entityId: string,
+    patch: T,
+    spanKey: 'chapterSpans' | 'appearChapters',
+  ): T {
+    if (patch[spanKey] === undefined) return patch
+    const projectId = this.getEntityProjectId(entityType, entityId)
+    if (!projectId) return patch
+    if (!isNovelFeatureEnabled(this, projectId, 'chapterSpansFrozen')) return patch
+
+    const chapterNumbers =
+      spanKey === 'appearChapters'
+        ? (patch[spanKey] as unknown as number[]).filter((n) => typeof n === 'number')
+        : expandChapterSpans(patch[spanKey] as unknown as Array<[number, number]>)
+    if (chapterNumbers.length > 0) {
+      for (const ch of chapterNumbers) {
+        const chapterId = this.getChapter(projectId, ch)?.id
+        if (!chapterId) continue
+        this.addChapterAppearances({
+          projectId,
+          chapterId,
+          entityType,
+          entityIds: [entityId],
+          role: 'present',
+          source: 'frozen-redirect',
+        })
+      }
+    }
+    const next = { ...patch }
+    delete next[spanKey]
+    return next
+  }
+
+  /** 按实体类型反查 projectId（供 stripFrozenSpans 判断项目级 flag） */
+  private getEntityProjectId(entityType: ProjectionEntityType, entityId: string): string | undefined {
+    switch (entityType) {
+      case 'conflict': return this.conflict.getConflict(entityId)?.projectId
+      case 'foreshadow': return this.foreshadow.getForeshadow(entityId)?.projectId
+      case 'clue': return this.foreshadow.getClue(entityId)?.projectId
+      case 'faction': return this.faction.getFaction(entityId)?.projectId
+      case 'location': return this.faction.getLocation(entityId)?.projectId
+      case 'item': return this.item.getItem(entityId)?.projectId
+      default: return undefined
+    }
+  }
   deleteProject(id: string): boolean { return this.project.deleteProject(id) }
   listTrashedProjects(): NovelProject[] { return this.project.listTrashedProjects() }
   restoreProject(id: string): boolean { return this.project.restoreProject(id) }
@@ -232,7 +393,80 @@ export class NovelStore implements NovelPromptStores {
   createVersionSnapshot(chapterId: string, source: VersionSource): ChapterVersion | undefined { return this.chapter.createVersionSnapshot(chapterId, source) }
   getLatestVersion(chapterId: string): ChapterVersion | undefined { return this.chapter.getLatestVersion(chapterId) }
   rollbackToVersion(chapterId: string, targetVersionId: string): { savedVersionId: string; currentContent: string; currentWordCount: number } { return this.chapter.rollbackToVersion(chapterId, targetVersionId) }
+  appendContentRevision(chapter: NovelChapter, source: VersionSource | null): ContentRevision | undefined { return this.chapter.appendContentRevision(chapter, source) }
+  listContentRevisions(chapterId: string): ContentRevisionSummary[] { return this.chapter.listContentRevisions(chapterId) }
+  getContentRevision(revisionId: string): ContentRevision | undefined { return this.chapter.getContentRevision(revisionId) }
+  getCurrentContentRevision(chapterId: string): ContentRevision | undefined { return this.chapter.getCurrentContentRevision(chapterId) }
+  rollbackToContentRevision(chapterId: string, revisionId: string): { appliedRevisionId: string; content: string; wordCount: number } { return this.chapter.rollbackToContentRevision(chapterId, revisionId) }
+  reconcileVersionChains(projectId: string): import('./migration-acceptance.js').VersionChainReconcileReport { return this.chapter.reconcileVersionChains(projectId) }
   deleteChapter(id: string): boolean { return this.chapter.deleteChapter(id) }
+
+  // ── 场景计划（V2）──
+  createPlanRevision(input: Parameters<ScenePlanStore['createPlanRevision']>[0]): ChapterPlanRevision { return this.scenePlan.createPlanRevision(input) }
+  getPlanRevision(id: string): ChapterPlanRevision | undefined { return this.scenePlan.getPlanRevision(id) }
+  getCurrentPlan(chapterId: string): ChapterPlanRevision | undefined { return this.scenePlan.getCurrentPlan(chapterId) }
+  listPlanRevisions(chapterId: string): ChapterPlanRevision[] { return this.scenePlan.listPlanRevisions(chapterId) }
+  transitionPlan(id: string, to: PlanRevisionStatus, expectedStatus?: PlanRevisionStatus): ChapterPlanRevision { return this.scenePlan.transitionPlan(id, to, expectedStatus) }
+  supersedeActivePlans(chapterId: string): void { return this.scenePlan.supersedeActivePlans(chapterId) }
+  submitPlanWithScenes(input: Parameters<ScenePlanStore['submitPlanWithScenes']>[0]): { plan: ChapterPlanRevision; scenes: NovelSceneRevision[] } { return this.scenePlan.submitPlanWithScenes(input) }
+  createSceneRevisions(plan: ChapterPlanRevision, scenes: Parameters<ScenePlanStore['createSceneRevisions']>[1], contentRevisionId?: string | null): NovelSceneRevision[] { return this.scenePlan.createSceneRevisions(plan, scenes, contentRevisionId) }
+  listSceneRevisionsByPlan(planRevisionId: string): NovelSceneRevision[] { return this.scenePlan.listSceneRevisionsByPlan(planRevisionId) }
+  getSceneRevision(id: string): NovelSceneRevision | undefined { return this.scenePlan.getSceneRevision(id) }
+  getSceneById(sceneId: string): NovelScene | undefined { return this.scenePlan.getSceneById(sceneId) }
+  getSceneByRevision(sceneRevisionId: string): NovelScene | undefined { return this.scenePlan.getSceneByRevision(sceneRevisionId) }
+  getSceneRevisionCast(sceneRevisionId: string): ReturnType<ScenePlanStore['getSceneRevisionCast']> { return this.scenePlan.getSceneRevisionCast(sceneRevisionId) }
+  getSceneCast(sceneRevisionId: string): ReturnType<ScenePlanStore['getSceneCast']> { return this.scenePlan.getSceneCast(sceneRevisionId) }
+  reconcileSceneCast(projectId?: string): ReturnType<ScenePlanStore['reconcileSceneCast']> { return this.scenePlan.reconcileSceneCast(projectId) }
+  confirmSceneRevision(id: string, contentRevisionId?: string): NovelSceneRevision { return this.scenePlan.confirmSceneRevision(id, contentRevisionId) }
+
+  // ── 叙事账本（V2）──
+  ensureStoryline(projectId: string, name: string, kind?: string, description?: string): NovelStoryline { return this.ledger.ensureStoryline(projectId, name, kind, description) }
+  getStoryline(id: string): NovelStoryline | undefined { return this.ledger.getStoryline(id) }
+  listStorylines(projectId: string): NovelStoryline[] { return this.ledger.listStorylines(projectId) }
+  updateStoryline(id: string, patch: { lifecycle?: StorylineLifecycle; maturity?: StorylineMaturity; description?: string }): NovelStoryline | undefined { return this.ledger.updateStoryline(id, patch) }
+  maybePromoteMaturity(storylineId: string): NovelStoryline { return this.ledger.maybePromoteMaturity(storylineId) }
+  recordProgressForScene(projectId: string, sceneRevisionId: string, intents: Parameters<NarrativeLedgerStore['recordProgressForScene']>[2], status?: ProgressStatus): NovelStorylineProgress[] { return this.ledger.recordProgressForScene(projectId, sceneRevisionId, intents, status) }
+  listProgressByStoryline(storylineId: string, statuses?: ProgressStatus[]): NovelStorylineProgress[] { return this.ledger.listProgressByStoryline(storylineId, statuses) }
+  listProgressByScene(sceneRevisionId: string): NovelStorylineProgress[] { return this.ledger.listProgressByScene(sceneRevisionId) }
+  getProgress(id: string): NovelStorylineProgress | undefined { return this.ledger.getProgress(id) }
+  confirmProgress(id: string): NovelStorylineProgress { return this.ledger.confirmProgress(id) }
+  markStaleFromChapter(projectId: string, chapterId: string): number { return this.ledger.markStaleFromChapter(projectId, chapterId) }
+
+  // ── V2 双写对账（T05）──
+  reconcileV2(projectId: string): import('./v2-reconciliation.js').ReconciliationReport {
+    return reconcileV2(this.db, this, projectId)
+  }
+
+  // ── 剧情推进轨道投影（第二轮）──
+  narrativeMatrix(
+    projectId: string,
+    options?: import('./narrative-matrix-projection.js').NarrativeMatrixOptions,
+  ): import('./narrative-matrix-projection.js').NarrativeMatrixReport {
+    return buildNarrativeMatrix(this, projectId, options)
+  }
+
+  // ── 实体候选与审核（V2 决策 3）──
+  createEntityCandidate(input: Parameters<EntityCandidateStore['createCandidate']>[0]): NovelEntityCandidate { return this.candidates.createCandidate(input) }
+  getEntityCandidate(id: string): NovelEntityCandidate | undefined { return this.candidates.getCandidate(id) }
+  listEntityCandidates(projectId: string, status?: EntityCandidateStatus): NovelEntityCandidate[] { return this.candidates.listCandidates(projectId, status) }
+  countPendingEntityCandidates(projectId: string): number { return this.candidates.countPending(projectId) }
+  confirmEntityCandidate(id: string, actorId?: string): NovelEntityCandidate { return this.candidates.confirmCandidate(id, actorId) }
+  confirmEntityCandidateWithPromotion(
+    id: string,
+    actorId: string,
+    promote: (candidate: NovelEntityCandidate) => string | null,
+  ): { candidate: NovelEntityCandidate; entityId: string | null } {
+    return this.candidates.confirmCandidateWithPromotion(id, actorId, promote)
+  }
+  rejectEntityCandidate(id: string, reason: string, actorId?: string): NovelEntityCandidate { return this.candidates.rejectCandidate(id, reason, actorId) }
+  listEntityCandidateReviews(candidateId: string): NovelEntityCandidateReview[] { return this.candidates.listReviews(candidateId) }
+
+  // ── 剧情（narrative）实体轨道 ──
+  listNarratives(projectId: string): NovelNarrative[] { return this.narratives.listNarratives(projectId) }
+  getNarrative(id: string): NovelNarrative | undefined { return this.narratives.getNarrative(id) }
+  createNarrative(input: Omit<NovelNarrative, 'id' | 'createdAt' | 'updatedAt'>): NovelNarrative { return this.narratives.createNarrative(input) }
+  updateNarrative(id: string, patch: Partial<NovelNarrative>): NovelNarrative | undefined { return this.narratives.updateNarrative(id, patch) }
+  deleteNarrative(id: string): boolean { return this.narratives.deleteNarrative(id) }
 
   getVolume(id: string): NovelVolume | undefined { return this.chapter.getVolume(id) }
   createVolume(volume: Omit<NovelVolume, 'createdAt' | 'updatedAt'>): NovelVolume { return this.chapter.createVolume(volume) }
@@ -381,6 +615,7 @@ export class NovelStore implements NovelPromptStores {
     return created
   }
   updateConflict(id: string, patch: Partial<NovelConflict>): NovelConflict | undefined {
+    patch = this.stripFrozenSpans('conflict', id, patch, 'chapterSpans')
     const before = this.conflict.getConflict(id)
     const after = this.conflict.updateConflict(id, patch)
     this.notifyChapterProjection('conflict', id, after?.projectId ?? before?.projectId, before, after, chaptersOfConflict, 'updateConflict')
@@ -399,6 +634,7 @@ export class NovelStore implements NovelPromptStores {
     return created
   }
   updateForeshadow(id: string, patch: Partial<NovelForeshadow>): NovelForeshadow | undefined {
+    patch = this.stripFrozenSpans('foreshadow', id, patch, 'chapterSpans')
     const before = this.foreshadow.getForeshadow(id)
     const after = this.foreshadow.updateForeshadow(id, patch)
     this.notifyChapterProjection('foreshadow', id, after?.projectId ?? before?.projectId, before, after, chaptersOfForeshadow, 'updateForeshadow')
@@ -414,6 +650,7 @@ export class NovelStore implements NovelPromptStores {
     return created
   }
   updateClue(id: string, patch: Partial<NovelClue>): NovelClue | undefined {
+    patch = this.stripFrozenSpans('clue', id, patch, 'chapterSpans')
     const before = this.foreshadow.getClue(id)
     const after = this.foreshadow.updateClue(id, patch)
     this.notifyChapterProjection('clue', id, after?.projectId ?? before?.projectId, before, after, chaptersOfClue, 'updateClue')
@@ -452,6 +689,7 @@ export class NovelStore implements NovelPromptStores {
     return created
   }
   updateFaction(id: string, patch: Partial<NovelFaction>): NovelFaction | undefined {
+    patch = this.stripFrozenSpans('faction', id, patch, 'chapterSpans')
     const before = this.faction.getFaction(id)
     const after = this.faction.updateFaction(id, patch)
     this.notifyChapterProjection('faction', id, after?.projectId ?? before?.projectId, before, after, chaptersOfFaction, 'updateFaction')
@@ -467,6 +705,7 @@ export class NovelStore implements NovelPromptStores {
     return created
   }
   updateLocation(id: string, patch: Partial<NovelLocation>): NovelLocation | undefined {
+    patch = this.stripFrozenSpans('location', id, patch, 'appearChapters')
     const before = this.faction.getLocation(id)
     const after = this.faction.updateLocation(id, patch)
     this.notifyChapterProjection('location', id, after?.projectId ?? before?.projectId, before, after, chaptersOfLocation, 'updateLocation')
@@ -485,6 +724,7 @@ export class NovelStore implements NovelPromptStores {
     return created
   }
   updateItem(id: string, patch: Partial<NovelItem>): NovelItem | undefined {
+    patch = this.stripFrozenSpans('item', id, patch, 'chapterSpans')
     const before = this.item.getItem(id)
     const after = this.item.updateItem(id, patch)
     this.notifyChapterProjection('item', id, after?.projectId ?? before?.projectId, before, after, chaptersOfItem, 'updateItem')
@@ -523,9 +763,12 @@ export class NovelStore implements NovelPromptStores {
   updateEdgeLabel(edgeId: string, label: string): NovelEdge | undefined { return this.graph.updateEdgeLabel(edgeId, label) }
 
   insertAgentLog(input: Omit<NovelAgentLog, 'id' | 'createdAt'>): NovelAgentLog { return this.graph.insertAgentLog(input) }
-  getAgentLog(id: string): NovelAgentLog | undefined { return this.graph.getAgentLog(id) }
+  getAgentLog(id: string, opts?: { loadPayload?: boolean }): NovelAgentLog | undefined { return this.graph.getAgentLog(id, opts) }
   listAgentLogs(projectId: string, filter?: { chapterNumber?: number; agentType?: string }, limit?: number): NovelAgentLogSummary[] { return this.graph.listAgentLogs(projectId, filter, limit) }
   deleteAgentLogsByProject(projectId: string): number { return this.graph.deleteAgentLogsByProject(projectId) }
+  cleanupExpiredPayloads(nowMs?: number): { deleted: number; scanned: number } { return this.graph.cleanupExpiredPayloads(nowMs) }
+  insertContextSectionMetrics(rows: import('./context-section-metrics.js').ContextSectionMetricInput[]): void { return this.graph.insertContextSectionMetrics(rows) }
+  listContextSectionMetrics(projectId: string, chapterNumber?: number): import('./context-section-metrics.js').ContextSectionMetric[] { return this.graph.listContextSectionMetrics(projectId, chapterNumber) }
 
   // ── Review（AuthorIntent / ChapterReview）──
 

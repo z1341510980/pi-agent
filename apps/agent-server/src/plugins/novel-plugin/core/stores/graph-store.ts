@@ -17,6 +17,27 @@ import type {
   AuthorIntentRow, ChapterReviewRow,
 } from './row-types.js'
 import { now, bindString, parseJSON } from './store-utils.js'
+import {
+  isNovelFeatureEnabled,
+  type FeatureFlagProjectSource,
+} from '../novel-feature-flags.js'
+import {
+  gzipText,
+  gunzipBlob,
+  hashPayloadFields,
+  computeExpiresAt,
+  PAYLOAD_BLOB_COLUMNS,
+  type PayloadFields,
+} from '../log-payload-service.js'
+import type {
+  ContextSectionMetric,
+  ContextSectionMetricInput,
+} from '../context-section-metrics.js'
+
+/** insertAgentLog 选项：externalizePayload 未指定时由 flag logPayloadExternalized 驱动 */
+export interface InsertAgentLogOptions {
+  externalizePayload?: boolean
+}
 
 export class GraphStore {
   private readonly stmtListNodePositions: Database.Statement
@@ -32,8 +53,17 @@ export class GraphStore {
   private readonly stmtListAgentLogsByChapter: Database.Statement
   private readonly stmtListAgentLogsByAgent: Database.Statement
   private readonly stmtDeleteAgentLogsByProject: Database.Statement
+  private readonly stmtGetAgentLogPayload: Database.Statement
+  private readonly stmtInsertAgentLogPayload: Database.Statement
+  private readonly stmtDeleteExpiredPayloads: Database.Statement
+  private readonly stmtCountPayloads: Database.Statement
+  private readonly stmtCountExpiredPayloads: Database.Statement
+  private readonly stmtInsertContextSectionMetric: Database.Statement
 
-  constructor(private db: Database.Database) {
+  constructor(
+    private db: Database.Database,
+    private flags?: FeatureFlagProjectSource,
+  ) {
     this.stmtListNodePositions = db.prepare('SELECT * FROM novel_node_positions WHERE project_id = ? ORDER BY updated_at ASC')
     this.stmtUpsertNodePosition = db.prepare(`
       INSERT INTO novel_node_positions (id, project_id, node_type, entity_id, pos_x, pos_y, updated_at)
@@ -64,7 +94,7 @@ export class GraphStore {
         llm_provider, llm_model,
         payload_messages_chars, payload_tools_chars, payload_tool_count,
         payload_total_chars, llm_round_trips,
-        ask_story_policy, ask_story_enabled
+        ask_story_policy, ask_story_enabled, payload_id
       ) VALUES (
         @id, @project_id, @chapter_number, @agent_type, @agent_name,
         @display_agent_type, @display_agent_name, @phase,
@@ -76,10 +106,40 @@ export class GraphStore {
         @llm_provider, @llm_model,
         @payload_messages_chars, @payload_tools_chars, @payload_tool_count,
         @payload_total_chars, @llm_round_trips,
-        @ask_story_policy, @ask_story_enabled
+        @ask_story_policy, @ask_story_enabled, @payload_id
       )
     `)
     this.stmtGetAgentLog = db.prepare('SELECT * FROM novel_agent_logs WHERE id = ?')
+    this.stmtGetAgentLogPayload = db.prepare(
+      'SELECT * FROM novel_agent_log_payloads WHERE agent_log_id = ?',
+    )
+    this.stmtInsertAgentLogPayload = db.prepare(`
+      INSERT INTO novel_agent_log_payloads (
+        id, agent_log_id, compression, system_prompt_blob, chapter_context_blob,
+        user_message_blob, task_input_blob, user_instructions_blob, tools_blob,
+        result_blob, error_blob, content_hash, expires_at, created_at
+      ) VALUES (
+        @id, @agent_log_id, @compression, @system_prompt_blob, @chapter_context_blob,
+        @user_message_blob, @task_input_blob, @user_instructions_blob, @tools_blob,
+        @result_blob, @error_blob, @content_hash, @expires_at, @created_at
+      )
+    `)
+    this.stmtDeleteExpiredPayloads = db.prepare(
+      'DELETE FROM novel_agent_log_payloads WHERE expires_at IS NOT NULL AND expires_at <= ?',
+    )
+    this.stmtCountPayloads = db.prepare('SELECT COUNT(*) AS n FROM novel_agent_log_payloads')
+    this.stmtCountExpiredPayloads = db.prepare(
+      'SELECT COUNT(*) AS n FROM novel_agent_log_payloads WHERE expires_at IS NOT NULL AND expires_at <= ?',
+    )
+    this.stmtInsertContextSectionMetric = db.prepare(`
+      INSERT INTO novel_context_section_metrics (
+        id, agent_log_id, project_id, chapter_number, agent_type,
+        section_type, section_id, chars, estimated_tokens, source_hash, mode, created_at
+      ) VALUES (
+        @id, @agent_log_id, @project_id, @chapter_number, @agent_type,
+        @section_type, @section_id, @chars, @estimated_tokens, @source_hash, @mode, @created_at
+      )
+    `)
     this.stmtListAgentLogsByProject = db.prepare(
       'SELECT * FROM novel_agent_logs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?',
     )
@@ -252,11 +312,27 @@ export class GraphStore {
     return result.changes > 0
   }
 
-  insertAgentLog(input: Omit<NovelAgentLog, 'id' | 'createdAt'>): NovelAgentLog {
+  /**
+   * 写入 Agent 调用日志。
+   *
+   * `opts.externalizePayload` 未显式指定时，由项目级 flag `logPayloadExternalized`
+   * 驱动（默认关）：开启后主表只写元数据 + payload_id，大文本 gzip 写 payload 表；
+   * 关闭时保持现状（全量写主表）。
+   */
+  insertAgentLog(
+    input: Omit<NovelAgentLog, 'id' | 'createdAt'>,
+    opts?: InsertAgentLogOptions,
+  ): NovelAgentLog {
+    const externalize = opts?.externalizePayload
+      ?? (this.flags
+        ? isNovelFeatureEnabled(this.flags, input.projectId, 'logPayloadExternalized')
+        : false)
     const id = randomUUID()
     const createdAt = now()
     const full: NovelAgentLog = { ...input, id, createdAt }
-    this.stmtInsertAgentLog.run({
+
+    const payloadId = externalize ? id : null
+    const base = {
       id: full.id,
       project_id: full.projectId,
       chapter_number: full.chapterNumber,
@@ -265,18 +341,19 @@ export class GraphStore {
       display_agent_type: full.displayAgentType,
       display_agent_name: full.displayAgentName,
       phase: full.phase,
-      system_prompt: full.systemPrompt,
-      chapter_context: full.chapterContext,
-      user_message: full.userMessage,
-      task_input: full.taskInput,
-      user_instructions: JSON.stringify(full.userInstructions ?? []),
-      tools: JSON.stringify(full.tools ?? []),
+      // 外置时大文本列写空串，体积由 payload 表承担（主表行体积下降 ≥ 80% 指标）
+      system_prompt: externalize ? '' : full.systemPrompt,
+      chapter_context: externalize ? '' : full.chapterContext,
+      user_message: externalize ? '' : full.userMessage,
+      task_input: externalize ? '' : full.taskInput,
+      user_instructions: externalize ? '[]' : JSON.stringify(full.userInstructions ?? []),
+      tools: externalize ? '[]' : JSON.stringify(full.tools ?? []),
       tool_names: JSON.stringify(full.toolNames ?? []),
-      result: full.result,
+      result: externalize ? '' : full.result,
       result_length: full.resultLength,
       duration_ms: full.durationMs,
       status: full.status,
-      error: full.error,
+      error: externalize ? '' : full.error,
       session_id: full.sessionId,
       parent_log_id: full.parentLogId ?? null,
       operation: full.operation ?? '',
@@ -294,13 +371,89 @@ export class GraphStore {
       llm_round_trips: full.llmRoundTrips ?? 0,
       ask_story_policy: full.askStoryPolicy ?? 'legacy',
       ask_story_enabled: (full.askStoryEnabled ?? true) ? 1 : 0,
-    })
+      payload_id: payloadId,
+    }
+
+    this.db.transaction(() => {
+      this.stmtInsertAgentLog.run(base)
+      if (externalize && payloadId) {
+        const payloadFields: PayloadFields = {
+          systemPrompt: full.systemPrompt,
+          chapterContext: full.chapterContext,
+          userMessage: full.userMessage,
+          taskInput: full.taskInput,
+          userInstructions: full.userInstructions ?? [],
+          tools: full.tools ?? [],
+          result: full.result,
+          error: full.error,
+        }
+        const expiresAt = computeExpiresAt(createdAt, full.status)
+        this.stmtInsertAgentLogPayload.run({
+          id: payloadId,
+          agent_log_id: id,
+          compression: 'gzip',
+          system_prompt_blob: payloadFields.systemPrompt ? gzipText(payloadFields.systemPrompt) : null,
+          chapter_context_blob: payloadFields.chapterContext ? gzipText(payloadFields.chapterContext) : null,
+          user_message_blob: payloadFields.userMessage ? gzipText(payloadFields.userMessage) : null,
+          task_input_blob: payloadFields.taskInput ? gzipText(payloadFields.taskInput) : null,
+          user_instructions_blob: Array.isArray(payloadFields.userInstructions) && payloadFields.userInstructions.length > 0
+            ? gzipText(JSON.stringify(payloadFields.userInstructions))
+            : null,
+          tools_blob: Array.isArray(payloadFields.tools) && payloadFields.tools.length > 0
+            ? gzipText(JSON.stringify(payloadFields.tools))
+            : null,
+          result_blob: payloadFields.result ? gzipText(payloadFields.result) : null,
+          error_blob: payloadFields.error ? gzipText(payloadFields.error) : null,
+          content_hash: hashPayloadFields(payloadFields),
+          expires_at: expiresAt,
+          created_at: createdAt,
+        })
+      }
+    })()
     return full
   }
 
-  getAgentLog(id: string): NovelAgentLog | undefined {
+  /**
+   * 读取单条日志详情。
+   *
+   * `opts.loadPayload`（默认 true）：当主行存在 payload_id 时，解压 payload 表
+   * 补全大文本字段；`loadPayload=false` 时大文本字段以主表旧列兜底（外置行得到空串）。
+   * 旧行（无 payload_id）直接读主表，行为与迁移前一致。
+   */
+  getAgentLog(id: string, opts?: { loadPayload?: boolean }): NovelAgentLog | undefined {
     const row = this.stmtGetAgentLog.get(id) as AgentLogRow | undefined
-    return row ? this.rowToAgentLog(row) : undefined
+    if (!row) return undefined
+    const log = this.rowToAgentLog(row)
+    if (row.payload_id && opts?.loadPayload !== false) {
+      const payloadRow = this.stmtGetAgentLogPayload.get(id) as
+        | {
+            compression: string
+            system_prompt_blob: Buffer | null
+            chapter_context_blob: Buffer | null
+            user_message_blob: Buffer | null
+            task_input_blob: Buffer | null
+            user_instructions_blob: Buffer | null
+            tools_blob: Buffer | null
+            result_blob: Buffer | null
+            error_blob: Buffer | null
+            content_hash: string
+          }
+        | undefined
+      if (payloadRow) {
+        const decompress = (blob: Buffer | null): string => (blob ? gunzipBlob(blob) : '')
+        log.systemPrompt = decompress(payloadRow.system_prompt_blob) || log.systemPrompt
+        log.chapterContext = decompress(payloadRow.chapter_context_blob) || log.chapterContext
+        log.userMessage = decompress(payloadRow.user_message_blob) || log.userMessage
+        log.taskInput = decompress(payloadRow.task_input_blob) || log.taskInput
+        log.result = decompress(payloadRow.result_blob) || log.result
+        log.error = decompress(payloadRow.error_blob) || log.error
+        const instructions = decompress(payloadRow.user_instructions_blob)
+        if (instructions) log.userInstructions = parseJSON<string[]>(instructions, [])
+        const tools = decompress(payloadRow.tools_blob)
+        if (tools) log.tools = parseJSON<unknown[]>(tools, [])
+      }
+    }
+    return log
   }
 
   listAgentLogs(
@@ -329,6 +482,81 @@ export class GraphStore {
   deleteAgentLogsByProject(projectId: string): number {
     const result = this.stmtDeleteAgentLogsByProject.run(projectId)
     return result.changes
+  }
+
+  // ── Agent 日志 payload 清理（P1-2 保留策略）──
+
+  /**
+   * 按保留策略清理过期 payload（元数据不删）。
+   * @param nowMs 当前时间（毫秒），缺省取系统时间；测试可注入
+   * @returns deleted=删除行数，scanned=已到期候选行数
+   */
+  cleanupExpiredPayloads(nowMs?: number): { deleted: number; scanned: number } {
+    const ts = nowMs != null ? Math.floor(nowMs / 1000) : now()
+    const scanned = (this.stmtCountExpiredPayloads.get(ts) as { n: number }).n
+    const result = this.stmtDeleteExpiredPayloads.run(ts)
+    return { deleted: result.changes, scanned }
+  }
+
+  // ── Context section 度量（P0-1，独立表 087b）──
+
+  insertContextSectionMetrics(rows: ContextSectionMetricInput[]): void {
+    if (rows.length === 0) return
+    this.db.transaction(() => {
+      for (const row of rows) {
+        this.stmtInsertContextSectionMetric.run({
+          id: randomUUID(),
+          agent_log_id: row.agentLogId,
+          project_id: row.projectId,
+          chapter_number: row.chapterNumber,
+          agent_type: row.agentType,
+          section_type: row.sectionType,
+          section_id: row.sectionId,
+          chars: row.chars,
+          estimated_tokens: row.estimatedTokens,
+          source_hash: row.sourceHash,
+          mode: row.mode,
+          created_at: now(),
+        })
+      }
+    })()
+  }
+
+  listContextSectionMetrics(projectId: string, chapterNumber?: number): ContextSectionMetric[] {
+    const rows = (chapterNumber != null
+      ? this.db.prepare(
+        `SELECT * FROM novel_context_section_metrics WHERE project_id = ? AND chapter_number = ? ORDER BY created_at ASC`,
+      ).all(projectId, chapterNumber)
+      : this.db.prepare(
+        `SELECT * FROM novel_context_section_metrics WHERE project_id = ? ORDER BY created_at ASC`,
+      ).all(projectId)) as Array<{
+        id: string
+        agent_log_id: string
+        project_id: string
+        chapter_number: number
+        agent_type: string
+        section_type: string
+        section_id: string
+        chars: number
+        estimated_tokens: number
+        source_hash: string
+        mode: string
+        created_at: number
+      }>
+    return rows.map((r) => ({
+      id: r.id,
+      agentLogId: r.agent_log_id,
+      projectId: r.project_id,
+      chapterNumber: r.chapter_number,
+      agentType: r.agent_type,
+      sectionType: r.section_type as ContextSectionMetric['sectionType'],
+      sectionId: r.section_id,
+      chars: r.chars,
+      estimatedTokens: r.estimated_tokens,
+      sourceHash: r.source_hash,
+      mode: r.mode as ContextSectionMetric['mode'],
+      createdAt: r.created_at,
+    }))
   }
 
   // ── Review（AuthorIntent / ChapterReview）── 由 ReviewStore 合并而来

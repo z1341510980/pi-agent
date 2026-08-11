@@ -67,6 +67,8 @@ void _schemaHasNoExtras
 /** 请求体 schema（两条创作链路共用） */
 export const creationFlowBodySchema = z.object({
   arrangedEntities: arrangedEntitiesSchema.optional(),
+  /** per-call 模型覆盖（输入框旁选择器传入，本次创作临时切换模型） */
+  modelId: z.object({ provider: z.string(), modelId: z.string() }).optional(),
 }).optional().default({})
 
 /**

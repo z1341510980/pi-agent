@@ -24,10 +24,24 @@ export interface NovelProject {
   status: 'active' | 'paused' | 'completed'
   /** 节奏模型 ID（缺省时使用 RhythmController.DEFAULT_MODEL） */
   rhythmModelId?: string
+  /**
+   * 项目级「创作主模型」modelId（NULL 表示未设置）。
+   *
+   * 设置后，本项目创作流程（Director/Writer/Reviewer/Reviser）统一使用该模型：
+   * - 避免多模型混用导致 promptCacheScope 缓存反复失效（实测多模型混用时 cache/in 仅 31-46%）；
+   * - 消除"404 model not supported / 401"等配置类失败（实测 Director 失败中约 1/5 属此类）。
+   * 未设置时保持现状：各 Agent 使用 AgentPage 配置或默认 Provider。
+   */
+  novelModelId?: string | null
   /** 目标发布平台（影响 Reviewer 评分权重，NULL 表示未设定） */
   targetPlatform?: TargetPlatform | null
   /** Per-project novel_ask_story rollout. null/undefined uses the safe runtime fallback. */
   novelAskStoryPolicy?: NovelAskStoryPolicy | null
+  /**
+   * 项目级 feature flags（剧情推进模型 V2 灰度开关）。
+   * 由 novel_projects.feature_flags JSON 列解析而来；缺省/解析失败视为全部关闭。
+   */
+  flags?: Record<string, boolean>
   /** 移入回收站的时间戳（null 表示正常项目，非 null 表示已软删除） */
   deletedAt?: number | null
   createdAt: number
@@ -206,6 +220,211 @@ export interface ChapterVersionSummary {
   createdAt: number
   /** 是否对应当前正文（最新一版为 true） */
   isCurrent: boolean
+}
+
+/** 正文版本链状态（不可变 content revision，剧情推进模型 V2） */
+export type ContentRevisionStatus =
+  | 'committed' // 已确认的正文状态（当前指针通常指向最近一条 committed）
+  | 'superseded' // 被更新的 committed 替代，仅历史可读
+  | 'rollback_applied' // 回滚产生的 committed 变体（标记来源）
+
+/** 正文版本链条目（含全文；列表用轻量版本见 ContentRevisionSummary） */
+export interface ContentRevision {
+  id: string
+  chapterId: string
+  projectId: string
+  parentRevisionId: string | null
+  revision: number
+  content: string
+  wordCount: number
+  phase: ChapterVersionPhase | null
+  agentType: string | null
+  trigger: string | null
+  status: ContentRevisionStatus
+  createdAt: number
+}
+
+/** 正文版本链摘要（列表用，不含 content） */
+export interface ContentRevisionSummary {
+  id: string
+  revision: number
+  phase: ChapterVersionPhase | null
+  agentType: string | null
+  trigger: string | null
+  wordCount: number
+  status: ContentRevisionStatus
+  createdAt: number
+  /** 是否对应当前正文（novel_chapters.current_content_revision_id 指向） */
+  isCurrent: boolean
+}
+
+// ── 场景计划与叙事账本（剧情推进模型 V2）──
+
+/** 计划版本状态机：draft → approved → consumed → confirmed；任一步可 superseded；上游变化进 stale */
+export type PlanRevisionStatus =
+  | 'draft'
+  | 'approved'
+  | 'consumed'
+  | 'confirmed'
+  | 'superseded'
+  | 'stale'
+
+/** 场景版本状态：planned（随计划）/ confirmed（Memory 校验正文后）/ superseded / stale */
+export type SceneRevisionStatus = 'planned' | 'confirmed' | 'superseded' | 'stale'
+
+/** 故事线生命周期与成熟度 */
+export type StorylineLifecycle = 'active' | 'paused' | 'resolved' | 'abandoned'
+export type StorylineMaturity = 'candidate' | 'established'
+
+/** 推进记录状态：planned（计划阶段意图）/ confirmed（Memory 确认正文）/ superseded / stale */
+export type ProgressStatus = 'planned' | 'confirmed' | 'superseded' | 'stale'
+
+/** 章节计划版本（含预算解析结果；scenes 经 API 组装，落库拆行） */
+export interface ChapterPlanRevision {
+  id: string
+  chapterId: string
+  projectId: string
+  creationRunId?: string | null
+  supersedesId?: string | null
+  baseContentRevisionId?: string | null
+  positioning?: string | null
+  rhythm?: string | null
+  /** WordBudgetResolution 的 JSON（baseTarget/adjustmentPct/resolvedTarget/min/max） */
+  budget: { baseTarget: number; adjustmentPct: number; resolvedTarget: number; min: number; max: number }
+  status: PlanRevisionStatus
+  revision: number
+  idempotencyKey?: string | null
+  createdAt: number
+}
+
+/** 场景稳定身份（只存 identity，不存版本内容） */
+export interface NovelScene {
+  id: string
+  chapterId: string
+  projectId: string
+  stableKey: string
+  createdAt: number
+}
+
+/** 场景版本（某计划/正文版本下的场景内容） */
+export interface NovelSceneRevision {
+  id: string
+  sceneId: string
+  chapterId: string
+  projectId: string
+  planRevisionId: string
+  contentRevisionId?: string | null
+  supersedesId?: string | null
+  order: number
+  title: string
+  goal: string
+  summary: string
+  locationText: string
+  timeText: string
+  povMode: 'single' | 'omniscient' | 'none'
+  povCharacterId?: string | null
+  targetWords: number
+  status: SceneRevisionStatus
+  createdAt: number
+}
+
+/** 场景角色关系（focus/present/function 的通用表达） */
+export interface NovelSceneCast {
+  sceneRevisionId: string
+  characterId: string
+  function?: string
+  prominence?: 'lead' | 'support' | 'brief'
+  note?: string
+}
+
+/** 故事线（跨场景持续的叙事方向） */
+export interface NovelStoryline {
+  id: string
+  projectId: string
+  name: string
+  kind: string
+  lifecycle: StorylineLifecycle
+  maturity: StorylineMaturity
+  description: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** 某场景版本对一条故事线的推进 */
+export interface NovelStorylineProgress {
+  id: string
+  projectId: string
+  storylineId: string
+  sceneRevisionId: string
+  primary: boolean
+  type: 'setup' | 'advance' | 'turn' | 'reveal' | 'resolve' | 'pause'
+  beforeState: string
+  afterState: string
+  summary: string
+  status: ProgressStatus
+  createdAt: number
+}
+
+// ── Memory 新实体候选与审核（V2 决策 3）──
+
+/** 候选状态：needs_review（待用户确认）→ confirmed / rejected */
+export type EntityCandidateStatus = 'needs_review' | 'confirmed' | 'rejected'
+
+export type EntityCandidateType = 'conflict' | 'clue'
+
+/** Memory 提出的新 Conflict/Clue 候选（未确认前不得成为正式实体） */
+export interface NovelEntityCandidate {
+  id: string
+  projectId: string
+  chapterNumber: number | null
+  contentRevisionId: string | null
+  entityType: EntityCandidateType
+  /** 候选的完整 payload（ConflictCreateItem / ClueCreateItem 结构） */
+  payload: unknown
+  status: EntityCandidateStatus
+  reasonCode: string | null
+  createdAt: number
+}
+
+/** 候选审核记录（追加写，不可修改） */
+export interface NovelEntityCandidateReview {
+  id: string
+  candidateId: string
+  decision: 'confirmed' | 'rejected'
+  /** rejected 时必须非空 */
+  reason: string
+  actorId: string
+  /** { before, after, sourceRevision, chapterNumber } 审计上下文 */
+  auditContext: Record<string, unknown>
+  createdAt: number
+}
+
+// ── 剧情（narrative）实体轨道 ──
+// 承接冲突/线索/伏笔装不下的"剧情相关"内容（普通推进、转折、悬念、收束、铺垫等），
+// 避免 Memory 把剧情硬塞进冲突/线索/伏笔。矩阵中与冲突/线索/伏笔并排为独立轨道。
+
+/** 剧情条目的类型（区分于冲突/线索/伏笔的承载语义） */
+export type NarrativeType =
+  | 'advance'   // 剧情推进：局势变化、事件进展
+  | 'turn'      // 转折：意料之外的走向
+  | 'reversal'  // 反转：局势彻底改变
+  | 'suspense'  // 悬念：遗留未决的紧张点
+  | 'resolve'   // 收束：处理并解决
+  | 'setup'     // 铺垫：为后续蓄势
+  | 'reveal'    // 揭示：信息/真相曝光
+  | 'misc'      // 其他剧情事件
+
+export interface NovelNarrative {
+  id: string
+  projectId: string
+  /** 剧情内容描述（一段可读文本） */
+  description: string
+  type: NarrativeType
+  /** 该剧情跨越/出现的章节（连续跨度，与 conflict 同模式） */
+  chapterSpans: ChapterSpan[]
+  status: 'active' | 'resolved' | 'dropped'
+  createdAt: number
+  updatedAt: number
 }
 
 /**
@@ -1734,6 +1953,69 @@ export interface CreationResult {
   canResume?: boolean
   /** 失败阶段（status='error' 时标注） */
   failedPhase?: string
+  /**
+   * 结构化错误码（status='error' 时可选）。
+   * 前端据此做精确分类与定向操作，替代仅靠消息文本猜归属。
+   */
+  errorCode?: string
+  /**
+   * 质量门未通过项明细（status='error' 且 errorCode='quality_gate_revision_incomplete' 时携带）。
+   * 让用户看到「具体是哪些表达问题没过」，而不是只有一句笼统报错。
+   */
+  failedItems?: QualityGateFailureItem[]
+  /**
+   * 本次自动修订记录（每轮：应用/失败 patch 数、修订后剩余问题）。
+   * 失败后展示给用户，让「改了几轮、改了什么、还剩什么」可审计。
+   */
+  revisionRounds?: RevisionRoundRecord[]
+  /**
+   * 失败后是否允许基于当前已保留内容再次定向修订（不重跑 Director/Writer）。
+   * 为 false 时前端不应提供「再次修订」入口。
+   */
+  canReviseAgain?: boolean
+}
+
+/** 质量门未通过项（确定性检测产物，可安全 JSON 序列化） */
+export interface QualityGateFailureItem {
+  /** 质量门 ID（如 cliche-patterns / prose-shape / character-voice） */
+  gateId: string
+  /** 一句话原因（如「AI 腔句式未清除」） */
+  reason: string
+  /** 明细（命中的句式名(次数)、具体问题描述等） */
+  details?: string
+  /** cliche 命中的模式 ID 列表 */
+  patterns?: string[]
+  /** 命中处原文摘录（供再次修订定位，最多 3 条/项） */
+  excerpts?: string[]
+}
+
+/** 单轮自动修订记录 */
+export interface RevisionRoundRecord {
+  /** 第几轮修订（1 = 首次 Reviser，2 = 定向修补） */
+  round: number
+  /** 该轮成功应用的 patch 数 */
+  appliedPatches: number
+  /** 该轮定位失败的 patch 数 */
+  failedPatches: number
+  /** 该轮修订后仍存在的质量门问题 */
+  remainingFailures: QualityGateFailureItem[]
+  /** 该轮修订后正文长度（字符） */
+  contentLength: number
+}
+
+/**
+ * 修订操作与消耗预估（mandatory revision 检查点携带，供修订前告知用户）。
+ * 只做估算：精确值取决于模型与 Provider，重点是让用户在花 token 前知道大概量级。
+ */
+export interface RevisionEstimate {
+  /** 自动修订轮次上限 */
+  maxRounds: number
+  /** 每轮预计 LLM 调用次数 */
+  callsPerRound: number
+  /** 预计消耗 token 总量（输入+输出，估算值） */
+  estimatedTokens: number
+  /** 当前命中的质量门问题（修订将要处理的目标） */
+  failedItems: QualityGateFailureItem[]
 }
 
 // ── 章节聊天（ChapterChatStore 持久化的消息）──
@@ -2051,6 +2333,10 @@ export interface NovelChangeRecord {
   effectIds: string[]
   /** 文风提示：该变化的写作风格建议（如"用对话暗示而非直叙"）。prompt-builder 读取后附加到写作提示。 */
   styleNote?: string | null
+  /** T02-6 AI 确认队列状态：confirmed（默认）/ pending（AI 待确认）/ rejected（驳回，消费查询排除） */
+  status?: 'confirmed' | 'pending' | 'rejected'
+  /** 确认/驳回时间戳 */
+  confirmedAt?: number | null
   createdAt: number
 }
 
@@ -2324,4 +2610,72 @@ export interface ReferenceLocalAnalysisReport {
     warnings: string[]
   }
   generatedAt: string
+}
+
+// ── 章节场景计划契约（剧情推进模型 V2，§5） ──
+//
+// 以下类型是 ChapterScenePlan 的权威定义，供 apps/agent-server/.../novel-plugin/core/chapter-scene-plan.ts
+// 的校验纯函数与 T02+ 的 plan store / Director adapter 复用，避免字段漂移。
+
+/** 场景 POV 模式 */
+export type ScenePovMode = 'single' | 'omniscient' | 'none'
+
+/** 功能角色在场景中的出场权重（默认 brief） */
+export type SceneCastProminence = 'lead' | 'support' | 'brief'
+
+/** 场景功能角色条目：功能位必须带 function；默认 prominence='brief' */
+export interface SceneFunctionalCastEntry {
+  characterId: string
+  /** 剧情功能位（复用 PlotFunction 枚举） */
+  function: PlotFunction
+  prominence: SceneCastProminence
+}
+
+/** 故事线推进记录（type: setup/advance/turn/reveal/resolve/pause） */
+export interface SceneStorylineProgress {
+  storylineId: string
+  primary: boolean
+  type: 'setup' | 'advance' | 'turn' | 'reveal' | 'resolve' | 'pause'
+  expectedChange: string
+}
+
+/** 章节内的单个场景 */
+export interface ChapterScene {
+  sceneKey: string
+  order: number
+  title: string
+  goal: string
+  locationText: string
+  timeText: string
+  povMode: ScenePovMode
+  povCharacterId: string | null
+  focusCharacterIds: string[]
+  presentCharacterIds: string[]
+  functionalCast: SceneFunctionalCastEntry[]
+  targetWords: number
+  progresses: SceneStorylineProgress[]
+}
+
+/** 统一 ChapterScenePlan 契约（Director 工具提交；落库时拆为关系行） */
+export interface ChapterScenePlan {
+  planRevisionId: string
+  chapterId: string
+  baseContentRevisionId: string | null
+  positioning: ChapterPositioning
+  rhythm: ChapterRhythm
+  budget: {
+    baseTarget: number
+    adjustmentPct: number
+    resolvedTarget: number
+    min: number
+    max: number
+  }
+  scenes: ChapterScene[]
+}
+
+/** 场景计划校验问题（code 为稳定机器码，sceneKey 可空用于整表级问题） */
+export interface ScenePlanValidationIssue {
+  code: string
+  sceneKey?: string
+  message: string
 }

@@ -1,5 +1,6 @@
 import { createAgentSession, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent'
 import type { AuthStorage, ModelRegistry, AgentSession, SettingsManager, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -10,6 +11,7 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { CredentialBridge } from '../config/credential-bridge.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
+import type { ThreadSettingsStore } from './thread-settings-store.js'
 import { EvidenceLedger, summarizeArgs, summarizeResult } from '../tool/evidence-ledger.js'
 import { createBeforeToolCall } from '../tool/confirmation-tools.js'
 import { StormBreaker } from '../tool/storm-breaker.js'
@@ -74,6 +76,12 @@ export interface PiSessionDeps {
   teamManager?: TeamManager
   /** 插件注入的 Pi Session 工具（由 PluginManager 提供，用于注入 novel_* 等插件工具） */
   pluginSessionTools?: ToolDefinition[]
+  /**
+   * 每个 thread 独立的设置存储（用于读取当前 thread 的 thinkingLevel）。
+   * 若提供：createPiSession 会按 threadId 读取并透传给 createAgentSession。
+   * 若未提供：thinkingLevel 留空，由 SDK 走自身默认（SettingsManager.defaultThinkingLevel）。
+   */
+  threadSettingsStore?: ThreadSettingsStore
   config: {
     cwd: string
     dataDir: string
@@ -268,6 +276,10 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     : deps.sessionManager
 
   // 7. 创建 Agent Session
+  const thinkingLevel: ThinkingLevel | undefined = deps.threadSettingsStore
+    ? deps.threadSettingsStore.getThinkingLevel(deps.threadId)
+    : undefined
+
   const { session } = await createAgentSession({
     authStorage: deps.authStorage,
     modelRegistry: deps.modelRegistry,
@@ -276,6 +288,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     resourceLoader,
     cwd: deps.config.cwd,
     model: defaultModel,
+    ...(thinkingLevel ? { thinkingLevel } : {}),
     ...(customTools.length > 0 ? { customTools } : {}),
     ...(excludeTools.length > 0 ? { excludeTools } : {}),
   })

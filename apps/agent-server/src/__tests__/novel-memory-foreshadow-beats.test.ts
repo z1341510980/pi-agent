@@ -58,11 +58,13 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
   it('普通疑点进入线索系统，不满足准入条件的新伏笔会被拦截', () => {
     const createForeshadow = vi.fn()
     const createClue = vi.fn()
+    const createEntityCandidate = vi.fn()
     const store = {
       listForeshadowing: vi.fn(() => []),
       createForeshadow,
       listClues: vi.fn(() => []),
       createClue,
+      createEntityCandidate,
     }
     const context = {
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -76,7 +78,7 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
         beatNote: '赵岩保持沉默',
       }],
       clueCreates: [{
-        description: '赵岩对孙疤失踪只字未提',
+        description: '赵岩的笔记本上记录着孙疤失踪前夜的活动',
         pointsTo: '赵岩可能知道孙疤失踪的内情',
         progress: 10,
         currentStep: '叶明远注意到异常沉默',
@@ -85,14 +87,20 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
     }, 9)
 
     expect(createForeshadow).not.toHaveBeenCalled()
-    expect(createClue).toHaveBeenCalledWith(expect.objectContaining({
+    // V2 决策 3：全新线索不再直接创建正式实体，转为 needs_review 候选待用户确认
+    expect(createClue).not.toHaveBeenCalled()
+    expect(createEntityCandidate).toHaveBeenCalledWith(expect.objectContaining({
       projectId: 'p1',
-      description: '赵岩对孙疤失踪只字未提',
-      pointsTo: '赵岩可能知道孙疤失踪的内情',
-      progress: 10,
+      entityType: 'clue',
+      payload: expect.objectContaining({
+        description: '赵岩的笔记本上记录着孙疤失踪前夜的活动',
+        pointsTo: '赵岩可能知道孙疤失踪的内情',
+        progress: 10,
+      }),
     }))
     expect(stats.foreshadowCreatesApplied).toBe(0)
-    expect(stats.clueCreatesApplied).toBe(1)
+    expect(stats.clueCreatesApplied).toBe(0)
+    expect(stats.candidateCreatesApplied).toBe(1)
   })
 
   it('高价值暗线伏笔有隐藏问题和回收计划时才允许创建', () => {

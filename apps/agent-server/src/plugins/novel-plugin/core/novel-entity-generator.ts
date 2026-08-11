@@ -622,11 +622,18 @@ export class NovelEntityGenerator {
     const planningErrorMessage = logContext.status === 'error'
       ? (logContext.error || 'AI 实体规划失败')
       : ''
-    const clueIds = this.store.listClues(projectId)
-      .filter((clue) => clue.chapterSpans.some(
-        ([start, end]) => chapterNumber >= start && chapterNumber <= end,
-      ))
-      .map((clue) => clue.id)
+    // P2 读切：appearanceV2Read 开启时按 appearance 表判定"本章出场线索"，
+    // 关闭时走原 chapterSpans 过滤（零行为变化）。
+    const appearanceClueIds = this.store.listChapterAppearanceIds({
+      projectId, chapterNumber, entityType: 'clue',
+    })
+    const clueIds = appearanceClueIds
+      ? appearanceClueIds
+      : this.store.listClues(projectId)
+        .filter((clue) => clue.chapterSpans.some(
+          ([start, end]) => chapterNumber >= start && chapterNumber <= end,
+        ))
+        .map((clue) => clue.id)
 
     onProgress?.({
       phase: 'planned',
@@ -1404,6 +1411,15 @@ export class NovelEntityGenerator {
         message: `⚠️ ${unresolvedExistingHints.length} 个标注为"已有"的实体未匹配到现有数据，已按新建处理：${unresolvedExistingHints.join('、')}。请检查矩阵是否出现重复实体。`,
       })
     }
+    // ── P2：实体出场关系统一（appearanceV2Write 开启时双写，默认关 = 无副作用）──
+    // 把本章编排的出场关系同步写入 novel_entity_appearances，供按章/按实体统一查询。
+    // 角色出场仍走 character_history（历史事实），此处只覆盖有 chapter_spans 的实体类型。
+    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'conflict', entityIds: conflictIds, source: 'ai-arrange' })
+    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'foreshadow', entityIds: foreshadowIds, source: 'ai-arrange' })
+    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'faction', entityIds: factionIds, source: 'ai-arrange' })
+    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'location', entityIds: locationIds, source: 'ai-arrange' })
+    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'item', entityIds: itemIds, source: 'ai-arrange' })
+    this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, entityType: 'clue', entityIds: clueIds, source: 'ai-arrange' })
     return {
       characterIds,
       conflictIds,
@@ -1572,7 +1588,7 @@ export class NovelEntityGenerator {
       arcStage: data.arcStage,
       arcHistory: '[]',
       speechStyle: data.speechStyle,
-      isProtagonist: false,
+      isProtagonist: data.plotRole === 'protagonist',
       longTermDesire: data.longTermDesire,
       plotRole: data.plotRole,
       removalImpact: data.removalImpact,
@@ -1797,6 +1813,11 @@ export class NovelEntityGenerator {
       '- 同名物品如果本章发生转手或状态变化（如"丢失"、"封印"、"易主"），仍写"已有：<物品名>"，',
       '  生成阶段后端会用 LLM 输出的新 ownerId/status 覆盖旧值',
       '- 不要把"普通生活用品"也返回，只追踪对剧情/角色有约束力的关键物品',
+      '',
+      '【冲突编排准入（严格）】',
+      '- 冲突是会迫使角色作出选择、并持续改变后续行动的核心对抗，不是一次事故的复述、情绪、环境描写或章末悬念。',
+      '- 默认允许 0 条冲突；一章通常不超过 2 条。没有独立、不可替代的剧情推进时，conflicts 必须返回空数组。',
+      '- 同一事件只能对应一条冲突。已有冲突足以覆盖本章事件时，必须按“已有：<描述前40字>”复用，禁止换一种措辞新建。',
       '',
       '【角色功能位编排（重要，避免工具人化）】',
       '每个返回的角色（无论已有/新增）必须指定 plotFunction（从以下 7 个枚举选一）：',

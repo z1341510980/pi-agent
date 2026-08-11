@@ -136,8 +136,9 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
   if (examples.length > 0) {
     sections.push([
       '### 正向文风样本',
-      '只学习样本的句式、观察距离、用词和节奏，不复用人物、情节或专有名词。',
-      '样本仅示范"怎么写一句话"，不示范段落密度：不要因为样本里单句成段多，就把本章写成通篇单句段。',
+      '样本优先示范自然句法、观察距离、段落呼吸、信息留白和用词来源。只学习这些写法，不复用人物、情节或专有名词。',
+      '样本不是句式模板，也不是逐句改写对象。不要复制其显眼词组，不要为了模仿而堆修辞；先写本章正在发生的事，再让句子自然靠近样本的节奏。',
+      '样本里的单句段、对话比例和特殊句式只说明当时的场景压力，不是全书统一配方。',
       ...examples.map((example, index) => `\n【样本 ${index + 1}】\n${example}`),
     ].join('\n'))
   }
@@ -161,7 +162,7 @@ export function compileWritingStylePrompt(
 ): CompiledWritingStylePrompt {
   const sections = buildBaseSections(profile)
   if (target === 'writer') {
-    sections.push('### 执行方式\n文风档案是最终正文的声音基准。剧情事实和角色约束优先，风格通过具体句子实现，不要在正文中解释这些规则。')
+    sections.push('### 执行方式\n文风档案中的人工样本负责告诉你“读起来像什么”，不是一份需要逐项打勾的规则。剧情事实、POV 和角色约束优先；在不冲突时，优先保留样本体现出的自然观察、留白和节奏。风格只能通过正文中的具体选择实现，不要在正文中解释这些规则。')
   } else if (target === 'reviser') {
     sections.push('### 修订方式\n你输出的每一段"修改后"文字都必须符合本档案的叙事声音：人称、距离、句式节奏、语域、情感温度全部对齐。只修复审稿指出的问题，同时把替换后的句子拉回本档案的声音基准。不得把整章改成另一种文风，也不得在修订中偏离档案定义的叙事参数。')
   } else {

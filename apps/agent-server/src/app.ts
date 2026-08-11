@@ -105,6 +105,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       subagentManager: app.subagentManager,
       teamManager: app.teamManager,
       pluginSessionTools: app.pluginManager?.getAllSessionTools() ?? [],
+      threadSettingsStore: app.threadSettingsStore,
       db: app.db,
       config: {
         cwd,
@@ -122,7 +123,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // 注入 ProviderConfigStore（供 onPayload 读取 stream_options 屏蔽开关等应用级配置）
   app.pluginManager?.setProviderConfigStore(app.providerConfigStore)
 
-  const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.eventBus)
+  const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.threadSettingsStore, app.eventBus)
 
   // 挂载到 Fastify 实例（confirmationManager 已在 pluginLoaderPlugin 之前 decorate）
   app.decorate('piAgUiAgent', piAgUiAgent)

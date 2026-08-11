@@ -1,0 +1,75 @@
+sequenceDiagram
+    autonumber
+    participant UI as ChapterVersionPanel / AgentLogPanel
+    participant Routes as novel-routes / chapter-routes
+    participant Store as NovelStore
+    participant Chapter as ChapterStore
+    participant Graph as GraphStore
+    participant Scene as ScenePlanStore
+    participant Service as CostReportService / LogPayloadService
+    participant DB as SQLite
+
+    Note over UI,DB: P1-1 版本链切读（versionChainV2Read）
+    UI->>Routes: GET /chapters/:id/versions
+    Routes->>Store: listChapterVersions(chapterId)
+    Store->>Chapter: listChapterVersions(chapterId)
+    alt versionChainV2Read = true
+        Chapter->>Chapter: listContentRevisions(chapterId)
+        Chapter-->>DB: SELECT novel_chapter_content_revisions
+    else flag off（旧路径）
+        Chapter-->>DB: SELECT novel_chapter_versions
+    end
+    Chapter-->>UI: 版本摘要列表（顺序一致）
+
+    Note over Store,DB: P1-1 停旧写（versionChainV2Write）
+    Store->>Chapter: updateChapterContent(id, content, wc, source)
+    Chapter->>Chapter: saveChapterVersionInternal(chapter, source)
+    alt versionChainV2Write = true
+        Chapter->>Chapter: return（旧表不再 INSERT）
+    else 双写期
+        Chapter-->>DB: INSERT novel_chapter_versions
+    end
+    Chapter->>Chapter: appendContentRevision(chapter, source)
+    Chapter-->>DB: INSERT novel_chapter_content_revisions + 推进 current 指针
+
+    Note over Store,DB: P1-2 日志冷热分离（logPayloadExternalized）
+    Store->>Graph: insertAgentLog(input, { externalizePayload })
+    alt flag = true
+        Graph->>Service: gzip(system/context/user/result/error)
+        Graph-->>DB: INSERT novel_agent_logs（元数据 + payload_id）
+        Graph-->>DB: INSERT novel_agent_log_payloads（gzip BLOB + content_hash + expires_at）
+    else flag off（现状）
+        Graph-->>DB: INSERT novel_agent_logs（全量旧列）
+    end
+    UI->>Routes: GET agent-log detail
+    Routes->>Store: getAgentLog(id, { loadPayload: true })
+    Store->>Graph: getAgentLog(id, { loadPayload: true })
+    alt payload_id 存在
+        Graph-->>DB: SELECT novel_agent_log_payloads
+        Graph->>Service: gunzip(blob) → 字段兜底/回填
+    else 旧行
+        Graph-->>DB: SELECT novel_agent_logs（旧列直读）
+    end
+
+    Note over Store,DB: P0 埋点（旁路，不改输出）
+    Store->>Graph: insertAgentLog(...)（finally 中）
+    Store->>Graph: insertContextSectionMetrics(collector.snapshot())
+    Graph-->>DB: INSERT novel_context_section_metrics × 6 section
+    Routes->>Service: GET /projects/:id/cost-report
+    Service->>Graph: listAgentLogs + listContextSectionMetrics
+    Service-->>UI: 六项指标报表（可下钻）
+
+    Note over Store,DB: P1-3 Scene Cast 影子写（sceneCastV2Write）
+    Store->>Scene: createSceneRevisions(plan, scenes)
+    Scene->>Scene: replaceCast(sceneRevisionId, scene)
+    alt sceneCastV2Write = true（且 scenePlanV2DualWrite）
+        Scene-->>DB: INSERT 旧三表（focus/presence/functions）
+        Scene-->>DB: INSERT novel_scene_cast（focus/present/functional）
+    else flag off
+        Scene-->>DB: INSERT 旧三表（现状）
+    end
+    alt sceneCastV2Read = true
+        Scene-->>DB: SELECT novel_scene_cast（focus 优先去重）
+    else flag off
+        Scene-->>DB: SELECT 旧三表
+    end

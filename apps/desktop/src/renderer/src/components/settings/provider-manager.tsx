@@ -39,14 +39,59 @@ interface ModelsResponse {
   models: ModelInfo[]
 }
 
+/** Pi-ai SDK 原生思考强度档位 */
+export type ReasoningEffortLevel = 'low' | 'medium' | 'high' | 'xhigh'
+export const REASONING_EFFORT_LEVELS: ReasoningEffortLevel[] = ['low', 'medium', 'high', 'xhigh']
+export const REASONING_EFFORT_LABELS: Record<ReasoningEffortLevel, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+}
+
+/** Pi-ai SDK thinkingFormat 枚举 */
+export type ThinkingFormat =
+  | 'openai'
+  | 'openrouter'
+  | 'deepseek'
+  | 'together'
+  | 'zai'
+  | 'qwen'
+  | 'qwen-chat-template'
+  | 'string-thinking'
+  | 'ant-ling'
+
+/** 默认思考强度取值；'auto' 表示透传请求层默认值 */
+export type DefaultReasoningEffort = 'auto' | ReasoningEffortLevel
+
 export interface ModelConfig {
   id: string
   name: string
   reasoning?: boolean
+  /** 模型是否支持图片/视觉输入（对应 SDK input 数组含 image） */
+  vision?: boolean
+  /** 模型是否支持工具调用（业务层扩展） */
+  toolCalling?: boolean
+  /** 仅思考模式：UI 不显示"关闭"选项 */
+  onlyThinking?: boolean
+  /** 允许关闭思考：thinkingLevelMap 含 off */
+  allowDisableThinking?: boolean
+  /** 自定义协议：与 thinkingFormat 配合使用 */
+  customProtocol?: boolean
+  /** SDK compat.thinkingFormat */
+  thinkingFormat?: ThinkingFormat
+  /** 模型支持的思考强度档位 */
+  supportedReasoningEfforts?: ReasoningEffortLevel[]
+  /** 默认思考强度；auto = 透传 */
+  defaultReasoningEffort?: DefaultReasoningEffort
   cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }
   contextWindow?: number
   maxTokens?: number
 }
+
+/** 上下文/输出窗口快捷预设（用于快速填入输入框） */
+export const CONTEXT_PRESETS = [32_000, 64_000, 128_000, 256_000] as const
+export const MAX_TOKENS_PRESETS = [8_000, 16_000, 32_000, 64_000] as const
 
 export interface ProviderEntry {
   /** 添加时可能未生成 id，落库前由调用方用 `id || name` 推导 */
@@ -59,6 +104,11 @@ export interface ProviderEntry {
   models: ModelConfig[]
   /** 是否已注册到后端 */
   registered?: boolean
+  /**
+   * 本次会话内是否已通过"拉取模型/测试"以该 id 预注册过。
+   * 为 true 时保存按覆盖更新处理（不传 createOnly），避免新增模式误报 409。
+   */
+  alreadyRegistered?: boolean
 }
 
 /** 后端 GET /api/providers 返回项（不含 apiKey） */
@@ -108,6 +158,30 @@ const modelSchema = z.object({
   id: z.string().min(1, '模型 ID 不能为空'),
   name: z.string().min(1, '模型名称不能为空'),
   reasoning: z.boolean().optional(),
+  vision: z.boolean().optional(),
+  toolCalling: z.boolean().optional(),
+  onlyThinking: z.boolean().optional(),
+  allowDisableThinking: z.boolean().optional(),
+  customProtocol: z.boolean().optional(),
+  thinkingFormat: z
+    .enum([
+      'openai',
+      'openrouter',
+      'deepseek',
+      'together',
+      'zai',
+      'qwen',
+      'qwen-chat-template',
+      'string-thinking',
+      'ant-ling',
+    ])
+    .optional(),
+  supportedReasoningEfforts: z
+    .array(z.enum(['low', 'medium', 'high', 'xhigh']))
+    .optional(),
+  defaultReasoningEffort: z
+    .union([z.literal('auto'), z.enum(['low', 'medium', 'high', 'xhigh'])])
+    .optional(),
   cost: z
     .object({
       input: z.number(),
@@ -158,7 +232,20 @@ export const providerPresets: Record<string, { baseUrl: string; api: string; mod
     api: 'openai-completions',
     models: [
       { id: 'deepseek-chat', name: 'DeepSeek V3 Chat', cost: { input: 0.27, output: 1.1 }, contextWindow: 65536, maxTokens: 8192 },
-      { id: 'deepseek-reasoner', name: 'DeepSeek R1 Reasoner', reasoning: true, cost: { input: 0.55, output: 2.19 }, contextWindow: 65536, maxTokens: 8192 },
+      {
+        id: 'deepseek-reasoner',
+        name: 'DeepSeek R1 Reasoner',
+        reasoning: true,
+        // DeepSeek 推理模型支持 thinkingFormat='deepseek'（deepseek-provider 的 thinking 协议）
+        thinkingFormat: 'deepseek',
+        supportedReasoningEfforts: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'auto',
+        allowDisableThinking: true,
+        toolCalling: false,
+        cost: { input: 0.55, output: 2.19 },
+        contextWindow: 65536,
+        maxTokens: 8192,
+      },
     ],
   },
   openai: {
@@ -296,19 +383,22 @@ export function ProviderManager(): ReactElement {
   }
 
   async function handleSave(entry: ProviderEntry): Promise<void> {
-    // ID 优先使用已有值，否则从名称自动生成（小写+连字符）
-    const derivedId = entry.name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-    const id = entry.id || derivedId || `provider-${Math.random().toString(36).slice(2, 10)}`
-    if (!id) {
-      throw new Error('请填写 Provider 名称')
-    }
     if (entry.models.length === 0) {
       throw new Error('请至少添加一个模型')
     }
+    // 编辑模式：保持原 id（避免默认设置/会话绑定失效）；
+    // 新增模式：从名称派生 id，并确保不与已有 Provider 冲突（冲突自动追加 -2/-3 后缀）。
+    // 否则"新增"会因 id 与已有 Provider（如默认 Provider 的 openai/deepseek）相同，
+    // 触发后端 upsert 语义，意外覆盖其全部数据。
+    const existingIds = new Set(
+      [...backendProviders, ...localProviders]
+        .map((p) => p.id)
+        .filter((id): id is string => Boolean(id))
+    )
+    const id =
+      entry.id ||
+      ensureUniqueProviderId(deriveProviderId(entry.name), existingIds) ||
+      `provider-${Math.random().toString(36).slice(2, 10)}`
     const config: ProviderEntry = { ...entry, id }
 
     await postApi('/api/providers', {
@@ -319,6 +409,9 @@ export function ProviderManager(): ReactElement {
       api: config.api,
       authHeader: config.authHeader ?? true,
       models: config.models,
+      // 新增模式且本会话未预注册过该 id：后端兜底拒绝覆盖已存在 Provider（返回 409 而非静默覆盖）；
+      // 会话内已预注册（拉取/测试）或编辑模式则不传，按正常注册/更新处理
+      createOnly: !entry.id && !entry.alreadyRegistered,
     })
 
     // 更新 localStorage 缓存
@@ -399,6 +492,11 @@ export function ProviderManager(): ReactElement {
             if (!open) setEditing(null)
           }}
           onSave={handleSave}
+          existingProviderIds={new Set(
+            [...backendProviders, ...localProviders]
+              .map((p) => p.id)
+              .filter((id): id is string => Boolean(id))
+          )}
         />
       )}
     </section>
@@ -490,9 +588,11 @@ interface ProviderFormDialogProps {
   entry: ProviderEntry
   onOpenChange: (open: boolean) => void
   onSave: (entry: ProviderEntry) => Promise<void>
+  /** 后端已注册 + 本地缓存的全部 Provider id，用于新增时生成不冲突的唯一 id */
+  existingProviderIds: Set<string>
 }
 
-function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormDialogProps): ReactElement {
+function ProviderFormDialog({ open, entry, onOpenChange, onSave, existingProviderIds }: ProviderFormDialogProps): ReactElement {
   const {
     register,
     control,
@@ -518,6 +618,9 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
   const [newModelName, setNewModelName] = useState('')
   const [newModelCtx, setNewModelCtx] = useState('')
   const [newModelMaxTokens, setNewModelMaxTokens] = useState('')
+  // 本次会话内通过"拉取模型/测试"预注册过的 id 集合
+  // 保存时若命中集合，说明该 id 是本次会话自己创建的，按覆盖更新处理（不传 createOnly）
+  const [tempRegisteredIds, setTempRegisteredIds] = useState<Set<string>>(new Set())
 
   // 当 entry 变化时重置表单
   useEffect(() => {
@@ -531,6 +634,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
     setNewModelName('')
     setNewModelCtx('')
     setNewModelMaxTokens('')
+    setTempRegisteredIds(new Set())
   }, [entry, reset])
 
   const models = watch('models')
@@ -552,8 +656,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
 
   async function handleFetchModels(): Promise<void> {
     const form = getValues()
-    const id = form.id || form.name.toLowerCase().trim()
-    if (!id) {
+    if (!form.name.trim()) {
       setSaveError('请先填写 Provider 名称')
       return
     }
@@ -561,11 +664,16 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
       setSaveError('请先填写 Base URL 和 API Key')
       return
     }
+    // 与保存时保持一致的 ID 派生逻辑：新增模式派生唯一 id，
+    // 避免"拉取模型"这一步就以默认 Provider 同名 id 注册（覆盖其数据）
+    const id = computeDialogId(form, existingProviderIds)
 
     setFetchingModels(true)
     setSaveError(null)
     try {
-      // 先注册到后端（确保 ProviderConfigStore 有配置）
+      // 先注册到后端（确保 ProviderConfigStore 有配置）。
+      // 此处不带 createOnly：id 已由前端唯一化，不会覆盖已有 Provider；
+      // 且带 createOnly 会导致后续保存同 id 时误报 409。
       await postApi('/api/providers', {
         id,
         name: form.name || id,
@@ -575,6 +683,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
         authHeader: true,
         models: form.models.length > 0 ? form.models : [{ id: 'placeholder', name: 'placeholder' }],
       })
+      setTempRegisteredIds((prev) => new Set(prev).add(id))
 
       // 拉取远端模型列表
       const remoteModels = await getApi<Array<{ id: string; name?: string }>>(
@@ -653,14 +762,15 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
     setSaveError(null)
     try {
       const form = getValues()
-      const id = form.id || form.name.toLowerCase().trim()
-      if (!id) {
+      if (!form.name.trim()) {
         throw new Error('请先填写名称')
       }
       if (form.models.length === 0) {
         throw new Error('请先添加至少一个模型')
       }
-      // 先注册到后端
+      // 与保存/拉取一致的唯一 id 派生，避免测试注册时覆盖已有 Provider
+      const id = computeDialogId(form, existingProviderIds)
+      // 先注册到后端（不带 createOnly，理由同 handleFetchModels）
       await postApi('/api/providers', {
         id,
         name: form.name,
@@ -670,6 +780,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
         authHeader: form.authHeader ?? true,
         models: form.models,
       })
+      setTempRegisteredIds((prev) => new Set(prev).add(id))
       // 再调用 ag-ui 验证模型列表
       const data = await getAgui<ModelsResponse>('/ag-ui/agent/default/models?threadId=main')
       const providerModels = data.models.filter((m) => m.provider === id)
@@ -696,7 +807,13 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
     setSaving(true)
     setSaveError(null)
     try {
-      await onSave(values)
+      // 若本次会话已通过"拉取模型/测试"预注册过该 id，
+      // 保存属于对临时数据的覆盖更新（不传 createOnly，避免误报 409）
+      const actualId = computeDialogId(values, existingProviderIds)
+      await onSave({
+        ...values,
+        alreadyRegistered: tempRegisteredIds.has(actualId),
+      })
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : '保存失败')
     } finally {
@@ -915,69 +1032,18 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
             {models.length > 0 ? (
               <div className="grid gap-1.5 rounded-md border border-input bg-transparent p-3">
                 {models.map((m, idx) => (
-                  <div key={m.id} className="flex items-start gap-2 bg-surface-3 rounded-md px-2.5 py-2">
-                    <div className="flex-1 min-w-0 grid gap-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-mono font-[760] truncate">{m.id}</span>
-                        {m.name !== m.id && (
-                          <span className="text-xs text-muted-foreground truncate">{m.name}</span>
-                        )}
-                        {m.reasoning && (
-                          <Badge variant="outline" className="shrink-0 text-[9px] px-1 py-0">推理</Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="grid gap-0.5">
-                          <label className="text-[9px] text-muted-foreground">上下文窗口</label>
-                          <input
-                            type="number"
-                            min="0"
-                            placeholder="128000"
-                            value={m.contextWindow ?? ''}
-                            onChange={(e) => {
-                              const updated = [...models]
-                              updated[idx] = {
-                                ...updated[idx],
-                                contextWindow: e.target.value ? Number(e.target.value) : undefined,
-                              }
-                              setValue('models', updated, { shouldValidate: true })
-                            }}
-                            className="w-24 bg-surface-2 border border-border rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
-                          />
-                        </div>
-                        <div className="grid gap-0.5">
-                          <label className="text-[9px] text-muted-foreground">最大输出</label>
-                          <input
-                            type="number"
-                            min="0"
-                            placeholder="8192"
-                            value={m.maxTokens ?? ''}
-                            onChange={(e) => {
-                              const updated = [...models]
-                              updated[idx] = {
-                                ...updated[idx],
-                                maxTokens: e.target.value ? Number(e.target.value) : undefined,
-                              }
-                              setValue('models', updated, { shouldValidate: true })
-                            }}
-                            className="w-20 bg-surface-2 border border-border rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="relative mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground hover:text-danger transition-colors before:absolute before:-inset-3 before:content-[''] active:scale-[0.96]"
-                      aria-label={`移除 ${m.id}`}
-                      onClick={() => {
-                        const updated = [...models]
-                        updated.splice(idx, 1)
-                        setValue('models', updated, { shouldValidate: true })
-                      }}
-                    >
-                      <XCircleIcon className="size-3.5" />
-                    </button>
-                  </div>
+                  <ModelEditor
+                    key={m.id}
+                    model={m}
+                    index={idx}
+                    models={models}
+                    onChange={(next) => setValue('models', next, { shouldValidate: true })}
+                    onRemove={() => {
+                      const updated = [...models]
+                      updated.splice(idx, 1)
+                      setValue('models', updated, { shouldValidate: true })
+                    }}
+                  />
                 ))}
               </div>
             ) : (
@@ -1010,7 +1076,344 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormD
   )
 }
 
+// ── 单模型编辑器（卡片 + 高级配置折叠面板） ──
+
+interface ModelEditorProps {
+  model: ModelConfig
+  index: number
+  models: ModelConfig[]
+  onChange: (next: ModelConfig[]) => void
+  onRemove: () => void
+}
+
+/** 把数字格式化为 "32K / 128K / 1M" 等紧凑形式（用于快捷按钮文案） */
+function formatTokenPreset(n: number): string {
+  if (n >= 1_000_000) return `${n / 1_000_000}M`
+  if (n >= 1_000) return `${n / 1_000}K`
+  return String(n)
+}
+
+function ModelEditor({ model, index, models, onChange, onRemove }: ModelEditorProps): ReactElement {
+  const [expanded, setExpanded] = useState(false)
+
+  // 更新单个字段（不可变更新 models 数组）
+  const patch = (changes: Partial<ModelConfig>): void => {
+    const updated = [...models]
+    updated[index] = { ...updated[index], ...changes }
+    onChange(updated)
+  }
+
+  // 切换 supportedReasoningEfforts 数组中的某一档
+  const toggleEffort = (level: ReasoningEffortLevel): void => {
+    const current = model.supportedReasoningEfforts ?? []
+    const next = current.includes(level)
+      ? current.filter((l) => l !== level)
+      : [...current, level]
+    patch({ supportedReasoningEfforts: next.length > 0 ? next : undefined })
+  }
+
+  return (
+    <div className="flex items-start gap-2 bg-surface-3 rounded-md px-2.5 py-2">
+      <div className="flex-1 min-w-0 grid gap-1.5">
+        {/* 标题行：模型 ID + 名称 + 能力徽章 */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs font-mono font-[760] truncate">{model.id}</span>
+          {model.name !== model.id && (
+            <span className="text-xs text-muted-foreground truncate">{model.name}</span>
+          )}
+          {model.reasoning && (
+            <Badge variant="outline" className="shrink-0 text-[9px] px-1 py-0">推理</Badge>
+          )}
+          {model.vision && (
+            <Badge variant="outline" className="shrink-0 text-[9px] px-1 py-0">视觉</Badge>
+          )}
+          {model.toolCalling && (
+            <Badge variant="outline" className="shrink-0 text-[9px] px-1 py-0">工具</Badge>
+          )}
+        </div>
+
+        {/* 上下文窗口 + 最大输出（带快捷按钮） */}
+        <div className="flex items-end gap-3 flex-wrap">
+          <div className="grid gap-0.5">
+            <label className="text-[9px] text-muted-foreground">输入 · 上下文窗口</label>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min="0"
+                placeholder="128000"
+                value={model.contextWindow ?? ''}
+                onChange={(e) =>
+                  patch({ contextWindow: e.target.value ? Number(e.target.value) : undefined })
+                }
+                className="w-24 bg-surface-2 border border-border rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+              <div className="flex items-center gap-0.5">
+                {CONTEXT_PRESETS.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => patch({ contextWindow: n })}
+                    className="text-[10px] px-1 py-0.5 rounded text-muted-foreground hover:bg-surface-2 hover:text-foreground transition-colors"
+                    aria-label={`设为 ${formatTokenPreset(n)}`}
+                  >
+                    {formatTokenPreset(n)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-0.5">
+            <label className="text-[9px] text-muted-foreground">输出 · 最大 token</label>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min="0"
+                placeholder="8192"
+                value={model.maxTokens ?? ''}
+                onChange={(e) =>
+                  patch({ maxTokens: e.target.value ? Number(e.target.value) : undefined })
+                }
+                className="w-20 bg-surface-2 border border-border rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-accent/40"
+              />
+              <div className="flex items-center gap-0.5">
+                {MAX_TOKENS_PRESETS.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => patch({ maxTokens: n })}
+                    className="text-[10px] px-1 py-0.5 rounded text-muted-foreground hover:bg-surface-2 hover:text-foreground transition-colors"
+                    aria-label={`设为 ${formatTokenPreset(n)}`}
+                  >
+                    {formatTokenPreset(n)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* 高级配置折叠按钮 */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="ml-auto text-[10px] h-6 px-2"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            aria-label={expanded ? '收起高级配置' : '展开高级配置'}
+          >
+            {expanded ? '收起' : '高级配置'}
+          </Button>
+        </div>
+
+        {/* 高级配置面板 */}
+        {expanded && (
+          <div className="grid gap-2 mt-1 rounded border border-input bg-surface-2/40 p-2.5">
+            {/* 能力开关（6 个） */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-1.5">
+              <CapabilityCheckbox
+                label="工具调用"
+                checked={model.toolCalling ?? false}
+                onChange={(v) => patch({ toolCalling: v })}
+              />
+              <CapabilityCheckbox
+                label="图片输入"
+                checked={model.vision ?? false}
+                onChange={(v) => patch({ vision: v })}
+              />
+              <CapabilityCheckbox
+                label="思考模式"
+                checked={model.reasoning ?? false}
+                onChange={(v) => {
+                  // 关闭思考时清空相关字段
+                  patch({
+                    reasoning: v,
+                    ...(v
+                      ? {}
+                      : {
+                          supportedReasoningEfforts: undefined,
+                          defaultReasoningEffort: undefined,
+                          allowDisableThinking: undefined,
+                          onlyThinking: undefined,
+                        }),
+                  })
+                }}
+              />
+              <CapabilityCheckbox
+                label="仅思考模式"
+                checked={model.onlyThinking ?? false}
+                onChange={(v) => patch({ onlyThinking: v })}
+                disabled={!model.reasoning}
+              />
+              <CapabilityCheckbox
+                label="允许关闭思考"
+                checked={model.allowDisableThinking ?? false}
+                onChange={(v) => patch({ allowDisableThinking: v })}
+                disabled={!model.reasoning}
+              />
+              <CapabilityCheckbox
+                label="自定义协议"
+                checked={model.customProtocol ?? false}
+                onChange={(v) => {
+                  patch({
+                    customProtocol: v,
+                    // 关闭时清空 thinkingFormat
+                    ...(v ? {} : { thinkingFormat: undefined }),
+                  })
+                }}
+              />
+            </div>
+
+            {/* 思考强度配置（仅在 reasoning=true 时显示） */}
+            {model.reasoning && (
+              <div className="grid gap-1.5 pt-1.5 border-t border-border/60">
+                <div className="text-[9px] text-muted-foreground">
+                  支持的思考强度（4 档，对齐 pi-ai SDK 原生档位）
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  {REASONING_EFFORT_LEVELS.map((level) => (
+                    <label key={level} className="flex items-center gap-1 text-[11px]">
+                      <input
+                        type="checkbox"
+                        checked={(model.supportedReasoningEfforts ?? []).includes(level)}
+                        onChange={() => toggleEffort(level)}
+                        className="size-3 accent-accent"
+                      />
+                      <span>{REASONING_EFFORT_LABELS[level]}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <div className="grid gap-0.5">
+                  <label className="text-[9px] text-muted-foreground">默认思考强度</label>
+                  <select
+                    value={model.defaultReasoningEffort ?? 'auto'}
+                    onChange={(e) =>
+                      patch({
+                        defaultReasoningEffort: e.target.value as DefaultReasoningEffort,
+                      })
+                    }
+                    className="bg-surface-2 border border-border rounded px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/40 w-32"
+                  >
+                    <option value="auto">自动（透传请求层）</option>
+                    <option value="low">低</option>
+                    <option value="medium">中</option>
+                    <option value="high">高</option>
+                    <option value="xhigh">极高</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* thinkingFormat（仅在 customProtocol=true 时显示） */}
+            {model.customProtocol && (
+              <div className="grid gap-0.5 pt-1.5 border-t border-border/60">
+                <label className="text-[9px] text-muted-foreground">自定义协议（thinkingFormat）</label>
+                <select
+                  value={model.thinkingFormat ?? 'string-thinking'}
+                  onChange={(e) => patch({ thinkingFormat: e.target.value as ThinkingFormat })}
+                  className="bg-surface-2 border border-border rounded px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-accent/40 w-44"
+                >
+                  <option value="openai">openai（OpenAI reasoning_effort）</option>
+                  <option value="openrouter">openrouter</option>
+                  <option value="deepseek">deepseek（DeepSeek thinking）</option>
+                  <option value="together">together</option>
+                  <option value="zai">zai</option>
+                  <option value="qwen">qwen（顶层 enable_thinking）</option>
+                  <option value="qwen-chat-template">qwen-chat-template</option>
+                  <option value="string-thinking">string-thinking</option>
+                  <option value="ant-ling">ant-ling</option>
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <button
+        type="button"
+        className="relative mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground hover:text-danger transition-colors before:absolute before:-inset-3 before:content-[''] active:scale-[0.96]"
+        aria-label={`移除 ${model.id}`}
+        onClick={onRemove}
+      >
+        <XCircleIcon className="size-3.5" />
+      </button>
+    </div>
+  )
+}
+
+/** 复选框小组件（能力开关） */
+function CapabilityCheckbox({
+  label,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: string
+  checked: boolean
+  onChange: (v: boolean) => void
+  disabled?: boolean
+}): ReactElement {
+  return (
+    <label className={`flex items-center gap-1.5 text-[11px] ${disabled ? 'opacity-50' : ''}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        disabled={disabled}
+        className="size-3 accent-accent"
+      />
+      <span>{label}</span>
+    </label>
+  )
+}
+
 // ── 工具函数 ──
+
+/**
+ * 从名称派生 Provider ID（小写 + 非字母数字替换为连字符）
+ * 例如：'OpenAI Custom' → 'openai-custom'；'硅基流动' → ''（需调用方回退随机 id）
+ */
+export function deriveProviderId(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+/**
+ * 确保 Provider ID 唯一：与已有 id 冲突时追加 -2/-3... 后缀。
+ * 新增 Provider 必须经过此函数去重，否则同名派生 id（如 openai/deepseek）
+ * 会命中后端 upsert 语义，覆盖已有 Provider（尤其是默认 Provider）的数据。
+ * excludeId 用于编辑场景排除自身（当前调用方均为新增场景，可不传）。
+ */
+export function ensureUniqueProviderId(baseId: string, existingIds: Set<string>, excludeId?: string): string {
+  if (!baseId) return baseId
+  if (!existingIds.has(baseId) || baseId === excludeId) return baseId
+  let index = 2
+  while (existingIds.has(`${baseId}-${index}`)) index += 1
+  return `${baseId}-${index}`
+}
+
+/**
+ * 计算表单对应的 Provider ID：
+ * - 编辑模式（已有 id）：直接使用原 id
+ * - 新增模式：从名称派生并确保唯一；名称无法派生（如纯中文）时回退随机 id
+ *
+ * 拉取模型 / 测试连接 / 保存三处共用本函数，保证会话内计算出的 id 一致，
+ * 避免"拉取模型"预注册的 id 与"保存"时算出的 id 不一致导致残留或误判。
+ */
+function computeDialogId(
+  form: Pick<ProviderFormValues, 'id' | 'name'>,
+  existingProviderIds: Set<string>
+): string {
+  return (
+    form.id ||
+    ensureUniqueProviderId(deriveProviderId(form.name), existingProviderIds) ||
+    `provider-${Math.random().toString(36).slice(2, 10)}`
+  )
+}
 
 /**
  * 从模型 ID 生成可读名称

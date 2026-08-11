@@ -90,6 +90,8 @@ export interface MatrixViewProps {
   relationships: NovelRelationship[]
   /** 共享账本投影（matrix-aggregation 单请求），子轨道数据源 */
   aggregationChanges: NovelChangeRecord[]
+  /** T02-6 事件参与派生边（同事件实体两两成对，关系叠加层浅色边） */
+  aggregationEventEdges?: Array<{ eventId: string; chapterNumber: number; from: string; to: string }>
   playheadChapter: number
   cellWidth: number
   collapsedGroups: Set<MatrixEntityKind>
@@ -122,7 +124,7 @@ export interface MatrixViewProps {
 }
 
 export function MatrixView({
-  matrixData, chapters, markers, relationships, aggregationChanges,
+  matrixData, chapters, markers, relationships, aggregationChanges, aggregationEventEdges = [],
   playheadChapter, cellWidth, collapsedGroups, activeFilter,
   selectedNodeId, selectedMatrixEntityIds = [], showMarkers = true,
   onSelectEntity, onToggleCollapse, onPlayheadChange, onToggleEntityExpand, onCellWidthChange,
@@ -765,10 +767,11 @@ export function MatrixView({
           </>
         )}
 
-        {/* ── 关系叠加层 ── */}
-        {showRelationshipOverlay && relationships.length > 0 && (
+        {/* ── 关系叠加层（结构化关系 + 事件参与派生边）── */}
+        {showRelationshipOverlay && (relationships.length > 0 || aggregationEventEdges.length > 0) && (
           <RelationshipOverlay
             relationships={relationships}
+            eventEdges={aggregationEventEdges}
             entityRowY={entityRowY}
             chapterColumnX={chapterColumnX}
             visibleRange={visibleRange}

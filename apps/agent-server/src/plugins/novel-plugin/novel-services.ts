@@ -43,6 +43,8 @@ import { ConsistencyAuditor } from './core/consistency-auditor.js'
 import { RelationshipGraph } from './core/novel-relationship-graph.js'
 import { ReferenceAnalysisStore } from './core/reference-analysis-store.js'
 import { ReferenceAnalysisService } from './core/reference-analysis-service.js'
+import { CostReportService } from './core/cost-report-service.js'
+import { SharedOverlapAnalyzer } from './core/shared-overlap-analyzer.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { AgentManager } from '../../core/agent/subagent-tool.js'
@@ -104,6 +106,10 @@ export interface NovelServices {
   chapterChatRunner: ChapterChatRunner
   /** 参考小说阶段 1：与故事实体/Prompt 隔离的本地分析服务 */
   referenceAnalysis?: ReferenceAnalysisService
+  /** P0 成本报表服务（只读聚合 novel_agent_logs + 度量表） */
+  costReportService: CostReportService
+  /** P0 相邻章 shared 重复率分析（只读聚合） */
+  sharedOverlapAnalyzer: SharedOverlapAnalyzer
 }
 
 /**
@@ -225,5 +231,9 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     similarityScanner 处理"语义相似但表述不同"的重复，支持字段级合并方案
   const similarityScanner = new NovelSimilarityScanner(promptBuilder, promptManager, context, store)
 
-  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner, referenceAnalysis }
+  // 9.6 P0 成本测量只读服务（报表 + 相邻章重复率）
+  const costReportService = new CostReportService(db)
+  const sharedOverlapAnalyzer = new SharedOverlapAnalyzer(db)
+
+  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner, referenceAnalysis, costReportService, sharedOverlapAnalyzer }
 }

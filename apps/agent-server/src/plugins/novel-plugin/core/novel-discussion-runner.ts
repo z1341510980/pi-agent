@@ -24,6 +24,7 @@ import type {
   DiscussionPhase,
   DiscussionResult,
   DiscussionResumeState,
+  SceneDefinition,
 } from '../../../core/agent/discussion-types.js'
 import type { DiscussionSettingsStore } from '../../../core/agent/discussion-settings-store.js'
 import { NovelStore } from './novel-store.js'
@@ -33,10 +34,21 @@ import { NovelEngine } from './novel-engine.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
 import type { NovelCharacter, NarrativeTask, ArrangedEntity, VersionSource } from './types.js'
+import { isNovelFeatureEnabled } from './novel-feature-flags.js'
+import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
+import { buildScenePlanFromSceneDefinitions } from './chapter-scene-plan-adapter.js'
 import { sanitizeNovelProse } from './agent-run-utils.js'
 import { createNovelApplyRevisionTool, type RevisionDraftHolder } from './novel-tools.js'
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-tools.js'
 import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
+import {
+  buildVoiceProfiles,
+  SENTENCE_LENGTH_LABELS,
+  REGISTER_LABELS,
+  ANSWER_MODE_LABELS,
+  type CharacterVoiceProfile,
+} from './character-voice.js'
+
 
 /** 群聊参与工种（不含 memory，memory 由 ChapterFinalizer 收尾阶段调用） */
 const DISCUSSION_AGENT_TYPES: NovelAgentType[] = ['director', 'writer', 'reviewer', 'reviser']
@@ -336,6 +348,12 @@ export class NovelDiscussionRunner {
       // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
       if (result.status === 'completed' && result.content) {
         outerPhase = 'memory'
+
+        // T03 影子写（V2）：flag 开启时把群聊场景落成 V2 plan，不改行为（§10 第 1 步）
+        if (isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')) {
+          this.shadowWriteDiscussionPlan(projectId, chapterNumber, result.scenes ?? [])
+        }
+
         const sanitizedContent = sanitizeNovelProse(result.content)
         const finalizer = new ChapterFinalizer(
           this.store,
@@ -426,6 +444,46 @@ export class NovelDiscussionRunner {
   }
 
   /**
+   * T03 影子写（V2）：群聊 SceneDefinition[] → V2 plan + scenes（flag 开启时调用）。
+   * 只落库不改行为；失败仅告警。
+   */
+  private shadowWriteDiscussionPlan(
+    projectId: string,
+    chapterNumber: number,
+    sceneDefinitions: SceneDefinition[],
+  ): void {
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    if (!chapter || sceneDefinitions.length === 0) return
+    try {
+      const project = this.store.getProject(projectId)
+      const budget = resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) })
+      this.store.supersedeActivePlans(chapter.id)
+      const plan = this.store.createPlanRevision({
+        chapterId: chapter.id,
+        projectId,
+        positioning: chapter.positioning ?? null,
+        rhythm: null,
+        budget,
+      })
+      const scenePlan = buildScenePlanFromSceneDefinitions({
+        planRevisionId: plan.id,
+        chapterId: chapter.id,
+        projectId,
+        sceneDefinitions,
+        budget,
+      })
+      this.store.createSceneRevisions(plan, scenePlan.scenes)
+      this.store.transitionPlan(plan.id, 'approved', 'draft')
+      this.context.logger.info(
+        { projectId, chapterNumber, planId: plan.id, sceneCount: sceneDefinitions.length },
+        'T03: 群聊场景计划已影子写入 V2',
+      )
+    } catch (err) {
+      this.context.logger.warn({ projectId, chapterNumber, err }, 'T03: 影子写入群聊 V2 计划失败，不影响主流程')
+    }
+  }
+
+  /**
    * 构建群聊成员列表
    *
    * 4 个工种 Agent（director/writer/reviewer/reviser，不含 memory）
@@ -487,8 +545,15 @@ export class NovelDiscussionRunner {
     const characters = characterIds
       .map((id) => boundaryCharacters.get(id) ?? this.store.getCharacter(id))
       .filter((character): character is NovelCharacter => character != null)
+    // 声音坐标必须按**全体出场角色**一次算出：分配逻辑保证同场角色的轴互不相同，
+    // 逐个角色单独计算会让每个人都拿到"第一顺位"的那把嗓子，群聊里所有 NPC 同声。
+    const voiceProfiles = new Map(
+      buildVoiceProfiles(characters).map((profile) => [profile.characterId, profile]),
+    )
     for (const char of characters) {
-      members.push(this.buildCharacterMember(projectId, chapterNumber, char, arrangedEntities, boundary))
+      members.push(this.buildCharacterMember(
+        projectId, chapterNumber, char, arrangedEntities, boundary, voiceProfiles.get(char.id),
+      ))
     }
 
     return members
@@ -501,6 +566,7 @@ export class NovelDiscussionRunner {
     char: NovelCharacter,
     arrangedEntities?: ArrangedEntity,
     boundary?: ChapterBoundaryContext,
+    voiceProfile?: CharacterVoiceProfile,
   ): DiscussionMember {
     return {
       id: `char-${char.id}`,
@@ -531,7 +597,7 @@ export class NovelDiscussionRunner {
         arrangedEntities,
         boundary,
       ),
-      buildIdentityPrompt: () => this.buildCharacterPrompt(projectId, char),
+      buildIdentityPrompt: () => this.buildCharacterPrompt(projectId, char, voiceProfile),
     }
   }
 
@@ -578,7 +644,11 @@ export class NovelDiscussionRunner {
    * ⚠️ 必须加载 role-character-actor.md：否则角色成员不知道要用
    * `[动作] "台词"` 格式演出，会直接写小说叙述，导致群聊失去意义。
    */
-  private buildCharacterPrompt(projectId: string, char: NovelCharacter): string {
+  private buildCharacterPrompt(
+    projectId: string,
+    char: NovelCharacter,
+    voiceProfile?: CharacterVoiceProfile,
+  ): string {
     const lines: string[] = [
       `你是小说中的角色「${char.name}」，以第一人称视角参与群聊共创。`,
       '',
@@ -596,6 +666,23 @@ export class NovelDiscussionRunner {
     if (char.speechStyle?.trim()) {
       lines.push(`- 说话风格（你的台词必须严格符合此风格，包括长短句、用词、口头禅、语气词；不得与其他角色趋同）：${char.speechStyle}`)
     }
+    // 声音坐标是可执行参数（字数区间 / 语域标记词 / 被追问时的反应），
+    // 而 speechStyle 往往只是形容词。缺了它，群聊里三个"沉稳克制"的角色说出同一种话。
+    if (voiceProfile) {
+      lines.push(
+        '- 你的说话参数（同场其他角色拿到的是不同参数，必须听得出区别）：',
+        `  · 句长：${SENTENCE_LENGTH_LABELS[voiceProfile.sentenceLength]}`,
+        `  · 语域：${REGISTER_LABELS[voiceProfile.register]}`,
+        `  · 被追问时：${ANSWER_MODE_LABELS[voiceProfile.answerMode]}`,
+      )
+      if (voiceProfile.tics.length > 0) {
+        lines.push(`  · 口头禅：${voiceProfile.tics.join('、')}（自然出现，不要每句都挂）`)
+      }
+      if (voiceProfile.banned.length > 0) {
+        lines.push(`  · 你不会用这些词：${voiceProfile.banned.join('、')}`)
+      }
+    }
+
     lines.push('')
     // 拼接 role-character-actor.md（剧本演出格式约束）
     // discussion=true 让 getAgentRoleDescription 读 role-character-actor-discussion.md，

@@ -15,11 +15,12 @@ describe('小说 Agent 身份预算与契约', () => {
     const reviewer = readPrompt('role-reviewer')
 
     // 工具化方案后，Director/Reviewer 提示词需包含工具调用说明、字段说明和禁止事项，
-    // 预算上限相应放宽。Writer 保持紧凑（不涉及工具化）。
-    expect(director.length).toBeLessThan(6000)
-    expect(writer.length).toBeLessThan(2500)
-    expect(reviewer.length).toBeLessThan(4000)
-    expect(director.length + writer.length + reviewer.length).toBeLessThan(11000)
+    // 预算上限相应放宽。8 月 4-6 日去 AI 味优化后 Writer 增加写前四问/红线/声音对照，
+    // 预算同步上调；上限仍作为防膨胀护栏（当前长度见下，余量约 13%）。
+    expect(director.length).toBeLessThan(8000)
+    expect(writer.length).toBeLessThan(5500)
+    expect(reviewer.length).toBeLessThan(4500)
+    expect(director.length + writer.length + reviewer.length).toBeLessThan(18000)
   })
 
   it('Director 保留工具化方案所需的全部结构化字段', () => {

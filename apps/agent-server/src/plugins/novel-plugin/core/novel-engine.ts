@@ -24,6 +24,8 @@
 
 import { randomUUID } from 'node:crypto'
 import type { NovelStore } from './novel-store.js'
+import { isNovelFeatureEnabled } from './novel-feature-flags.js'
+import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
 import type {
   NovelProject,
   NovelChapter,
@@ -115,6 +117,11 @@ export class NovelEngine {
     // 筛选本章需推进的活跃冲突：章节在跨度内 / 空跨度（未放置）/ 本章为爆发章节
     const conflictTargets: ConflictTarget[] = []
     if (chapterNumber !== undefined) {
+      // P2 读切：appearanceV2Read 开启时按 appearance 表判定"本章出场冲突"，
+      // 关闭时走原 chapterSpans 过滤（零行为变化）。
+      const appearanceConflictIds = this.store.listChapterAppearanceIds({
+        projectId, chapterNumber, entityType: 'conflict',
+      })
       const activeConflicts = this.store
         .listConflicts(projectId)
         .filter(
@@ -124,9 +131,11 @@ export class NovelEngine {
             (!selectedConflictIds || selectedConflictIds.has(c.id))
         )
       for (const conflict of activeConflicts) {
-        const inSpan = conflict.chapterSpans.some(
-          (span) => chapterNumber >= span[0] && chapterNumber <= span[1]
-        )
+        const inSpan = appearanceConflictIds
+          ? appearanceConflictIds.includes(conflict.id)
+          : conflict.chapterSpans.some(
+              (span) => chapterNumber >= span[0] && chapterNumber <= span[1]
+            )
         const isClimaxChapter = conflict.climaxChapter === chapterNumber
         const noSpans = conflict.chapterSpans.length === 0
         if (!inSpan && !isClimaxChapter && !noSpans) continue
@@ -250,36 +259,38 @@ export class NovelEngine {
     }
 
     // ── 字数预算（基于章节定位调整）──
-    // 若传入了 positioning，按定位的 wordBudgetMultiplier 调整目标字数
-    // 否则使用项目配置的默认每章目标字数（与 prompt-builder 的逻辑一致）
+    // 若传入了 positioning，按定位调整目标字数；定位是 Director 对本章的最终选择。
+    // 节奏建议只在没有明确定位时由 prompt-builder 作为回退使用，不能与定位倍率叠加。
+    // V2（scenePlanV2Write）：统一走 WordBudgetResolver，定位默认不调整、上限 ±15%，
+    // Rhythm 不参与；V1 保持内联定位倍率不变。
     let wordBudget: WordBudget | null = null
+    const project = this.store.getProject(projectId)
     if (positioning) {
-      const project = this.store.getProject(projectId)
-      let baseTarget: number
-      if (!project || project.targetWords <= 0) baseTarget = 3000
-      else baseTarget = Math.round(project.targetWords)
-
-      // 节奏联动调整（与 prompt-builder 一致）
-      if (rhythmSuggestion?.rhythm === 'climax') baseTarget = Math.round(baseTarget * 1.3)
-      else if (rhythmSuggestion?.rhythm === 'breather' || rhythmSuggestion?.rhythm === 'setup') {
-        baseTarget = Math.round(baseTarget * 0.85)
-      }
-
-      // 定位倍率（与 rhythm-controller 的 POSITIONING_RULES 一致）
-      const positioningMultipliers: Record<ChapterPositioning, number> = {
-        high_pressure: 1.3,
-        advancement: 1.0,
-        cultivation: 0.9,
-        relationship: 0.95,
-        low_pressure: 0.85,
-        information: 0.9
-      }
-      const multiplier = positioningMultipliers[positioning]
-      const target = Math.round(baseTarget * multiplier)
-      wordBudget = {
-        min: Math.round(target * 0.85),
-        max: Math.round(target * 1.15),
-        target
+      const baseTarget = baseTargetOf(project?.targetWords)
+      if (isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')) {
+        const resolved = resolveWordBudget({ baseTarget })
+        wordBudget = {
+          min: resolved.min,
+          max: resolved.max,
+          target: resolved.resolvedTarget,
+        }
+      } else {
+        // 定位倍率（与 rhythm-controller 的 POSITIONING_RULES 一致）
+        const positioningMultipliers: Record<ChapterPositioning, number> = {
+          high_pressure: 1.3,
+          advancement: 1.0,
+          cultivation: 0.9,
+          relationship: 0.95,
+          low_pressure: 0.85,
+          information: 0.9
+        }
+        const multiplier = positioningMultipliers[positioning]
+        const target = Math.round(baseTarget * multiplier)
+        wordBudget = {
+          min: Math.round(target * 0.85),
+          max: Math.round(target * 1.15),
+          target
+        }
       }
     }
 

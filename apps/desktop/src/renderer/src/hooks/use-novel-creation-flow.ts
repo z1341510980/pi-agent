@@ -107,6 +107,8 @@ export interface UseNovelCreationFlowReturn {
   /** 启动创作流程 */
   startCreation: (projectId: string, chapterNumber: number, options?: {
     arrangedEntities?: ArrangedEntitiesPayload
+    /** per-call 模型（输入框旁选择器传入，本次创作统一使用） */
+    modelId?: { provider: string; modelId: string }
   }) => Promise<void>
   /**
    * 启动群聊模式创作流程。
@@ -116,6 +118,7 @@ export interface UseNovelCreationFlowReturn {
    */
   startDiscussion: (projectId: string, chapterNumber: number, options?: {
     arrangedEntities?: ArrangedEntitiesPayload
+    modelId?: { provider: string; modelId: string }
   }) => Promise<void>
   /** 从失败的群聊快照直接恢复 Writer 全章编织阶段 */
   resumeDiscussion: (projectId: string, chapterNumber: number, runId: string) => Promise<void>
@@ -147,6 +150,21 @@ export interface UseNovelCreationFlowReturn {
   submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
   sendMessage: (content: string) => void
+  /**
+   * 质量门修订失败后，对已保留修订稿的未通过项**再次定向修订**。
+   *
+   * 与 startCreation 的本质区别：不复跑 Director/Writer/Reviewer，只针对
+   * 后端返回的 failedItems 跑有界修订循环（最多 2 轮），避免失败后整条
+   * 重跑烧掉大量 token。通过后返回修订稿（**不自动落库**，由用户决定保存）。
+   */
+  reRevise: (projectId: string, chapterNumber: number, content: string, options?: {
+    arrangedEntities?: ArrangedEntitiesPayload
+  }) => Promise<void>
+  /**
+   * 保留当前修订稿为草稿：清空错误提示与结果，但**不丢内容**——
+   * 正文继续留在编辑器可手动编辑，也不触发落库。
+   */
+  keepDraft: () => void
   /** 取消流程（async：等待后端真实断开后再取消 SSE） */
   cancel: () => Promise<void>
   /** 重置到 idle 状态（用于创作完成后切回节点详情面板） */
@@ -199,7 +217,7 @@ const CHAPTER_ENDING_HOOK_LABELS: Record<string, string> = {
  * 因此本函数需要 export，避免在 CheckpointMessage 中重复格式化逻辑。
  */
 export function formatDetailBubble(detail: Record<string, unknown>): {
-  agentType: 'director' | 'context' | 'memory' | 'arranger'
+  agentType: 'director' | 'context' | 'memory' | 'arranger' | 'reviser'
   agentName: string
   content: string
 } {
@@ -381,6 +399,41 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
     const locations = detail.locations as number
     const md = `## 编排完成\n\n**共生成 ${total} 个实体已落入矩阵**\n\n- 角色：${characters}\n- 冲突：${conflicts}\n- 伏笔：${foreshadows}\n- 势力：${factions}\n- 地点：${locations}`
     return { agentType: 'arranger', agentName: '编排', content: md }
+  }
+  if (kind === 'revision_passed') {
+    // re-revise 定向修订通过：展示轮次与结果（不自动落库，由用户决定保存）
+    const rounds = (detail.revisionRounds as Array<{ round: number; appliedPatches: number }> | undefined) ?? []
+    const applied = rounds.reduce((sum, r) => sum + (r.appliedPatches ?? 0), 0)
+    const md = [
+      '## 定向修订完成',
+      '',
+      '正文已通过确定性质量门（未自动落库）。',
+      '',
+      `- 修订轮次：${rounds.length} 轮`,
+      `- 成功应用修改：${applied} 处`,
+      '',
+      '可在编辑器中继续修改，或点击「保存到章节」落库。',
+    ].join('\n')
+    return { agentType: 'reviser', agentName: '修订', content: md }
+  }
+  if (kind === 'quality_gate_revision_incomplete') {
+    // 质量门修订失败：结构化信息已由 NovelConversationPanel 的失败卡展示，
+    // 这里给时间线一条摘要气泡，方便回看。
+    const failedItems = (detail.failedItems as Array<{ gateId?: string; reason?: string }> | undefined) ?? []
+    const rounds = (detail.revisionRounds as Array<{ round: number; appliedPatches: number }> | undefined) ?? []
+    const md = [
+      '## 正文质量门未通过',
+      '',
+      '修订稿已保留（未落库），可对未通过项再次定向修订、手动编辑或保留草稿。',
+      '',
+      ...(failedItems.length > 0
+        ? ['**未通过项：**', ...failedItems.map(item => `- ${item.reason ?? item.gateId ?? '未知项'}`), '']
+        : []),
+      ...(rounds.length > 0
+        ? [`**已自动修订：** ${rounds.length} 轮（成功应用 ${rounds.reduce((sum, r) => sum + (r.appliedPatches ?? 0), 0)} 处修改）`]
+        : []),
+    ].join('\n')
+    return { agentType: 'reviser', agentName: '修订', content: md }
   }
   return { agentType: 'context', agentName: '详情', content: '未知详情类型' }
 }
@@ -1037,6 +1090,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const startCreation = useCallback(
     async (projectId: string, chapterNumber: number, options?: {
       arrangedEntities?: ArrangedEntitiesPayload
+      modelId?: { provider: string; modelId: string }
     }): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
@@ -1066,7 +1120,10 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       abortControllerRef.current = controller
 
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-flow`
-      const body = options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}
+      const body = {
+        ...(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}),
+        ...(options?.modelId ? { modelId: options.modelId } : {}),
+      }
 
       const runPromise = runFlow(url, body, controller)
       runFlowPromiseRef.current = runPromise
@@ -1325,12 +1382,74 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     }
   }, [currentCheckpoint])
 
+  /**
+   * 定向再修订：质量门修订失败后，仅对未通过项再次修订，不复跑生成流程。
+   *
+   * 状态处理与 startCreation 不同：
+   * - **保留** chapterContent / agentOutputs / events（失败修订稿不能丢）；
+   * - 仅清空 result / error，等待 re-revise 的 novel:result 覆盖内容；
+   * - 端点 POST /re-revise，返回的修订稿不自动落库，由用户决定保存。
+   */
+  const reRevise = useCallback(
+    async (projectId: string, chapterNumber: number, content: string, options?: {
+      arrangedEntities?: ArrangedEntitiesPayload
+    }): Promise<void> => {
+      // 并发保护
+      if (abortControllerRef.current) return
+
+      setResult(null)
+      setError(null)
+      setCurrentCheckpoint(null)
+      setCheckpointHistory([])
+      messageAgentMapRef.current.clear()
+      messagesWithTextRef.current.clear()
+      deltaBufferRef.current.clear()
+      cancelDeltaFlush()
+      setIsRunning(true)
+      setPhase('revising')
+      setProgressMessage('正在针对未通过项执行定向修订（不重跑生成流程）...')
+      projectIdRef.current = projectId
+      chapterNumberRef.current = chapterNumber
+      flowModeRef.current = 'workflow'
+
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/re-revise`
+      const body = { content, ...(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}) }
+
+      const runPromise = runFlow(url, body, controller)
+      runFlowPromiseRef.current = runPromise
+      try {
+        await runPromise
+      } finally {
+        abortControllerRef.current = null
+        runFlowPromiseRef.current = null
+      }
+    },
+    [runFlow],
+  )
+
+  /**
+   * 保留当前修订稿为草稿：清空错误提示与结果，但**不丢内容**。
+   *
+   * 正文继续留在编辑器（isRunning=false 后编辑器已恢复可编辑），
+   * 用户可手动修改后再保存到章节；也不触发落库。
+   */
+  const keepDraft = useCallback((): void => {
+    setError(null)
+    setResult(null)
+    setCurrentCheckpoint(null)
+    setPhase('idle')
+    setIsRunning(false)
+    setProgressMessage(null)
+  }, [])
+
   const cancel = useCallback(async (): Promise<void> => {
     const controller = abortControllerRef.current
     const projectId = projectIdRef.current
     const chapterNumber = chapterNumberRef.current
     if (!controller) return
-
     // 立即清空检查点，避免取消过程中还在等待用户决策
     setCurrentCheckpoint(null)
     // 进入 cancelling 状态：UI 显示"正在取消中"，保持 isRunning=true 避免用户重启流程
@@ -1444,6 +1563,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     takeArrangedCharacterFunctions,
     submitCheckpoint,
     sendMessage,
+    reRevise,
+    keepDraft,
     cancel,
     reset,
   }

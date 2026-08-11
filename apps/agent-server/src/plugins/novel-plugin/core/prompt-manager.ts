@@ -45,13 +45,17 @@ export class PromptManager {
 
   /**
    * 启动时加载所有默认模板到内存缓存
+   *
+   * 只加载 prompts/ 顶层 .md 文件；子目录（如 _legacy/）不注册为模板，
+   * 避免归档文件出现在模板列表中或被子目录名污染模板名。
    */
   private loadDefaultTemplates(): void {
     if (!existsSync(DEFAULT_PROMPTS_DIR)) return
-    const files = readdirSync(DEFAULT_PROMPTS_DIR).filter((f) => f.endsWith('.md'))
-    for (const file of files) {
-      const name = file.replace(/\.md$/, '')
-      const content = readFileSync(join(DEFAULT_PROMPTS_DIR, file), 'utf-8')
+    const files = readdirSync(DEFAULT_PROMPTS_DIR, { withFileTypes: true })
+      .filter((f) => f.isFile() && f.name.endsWith('.md'))
+    for (const f of files) {
+      const name = f.name.replace(/\.md$/, '')
+      const content = readFileSync(join(DEFAULT_PROMPTS_DIR, f.name), 'utf-8')
       this.cache.set(`default:${name}`, content)
     }
   }

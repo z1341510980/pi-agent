@@ -35,7 +35,7 @@ import {
 } from './context-panel'
 import { UsagePanel } from './usage-panel'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { type ModelOption } from './model-selector'
+import { type ModelOption, type ThinkingLevel } from './model-selector'
 import { createUserMessage, collectToolCalls, type ChatMessage, type FileAttachment } from './types'
 import {
   useSessionStore,
@@ -97,6 +97,9 @@ export function ChatWorkspace({
   const sessionMessages = useSessionStore((s) => s.sessionMessages)
   const drafts = useSessionStore((s) => s.drafts)
   const selectedModel = useSessionStore((s) => s.selectedModel)
+  const selectedThinkingLevels = useSessionStore((s) => s.selectedThinkingLevels)
+  const setSelectedThinkingLevel = useSessionStore((s) => s.setSelectedThinkingLevel)
+  const removeSessionThinkingLevel = useSessionStore((s) => s.removeSessionThinkingLevel)
   const compactionCount = useSessionStore((s) => s.compactionCount)
   const activeAgentId = useSessionStore((s) => s.activeAgentId)
   const setSessions = useSessionStore((s) => s.setSessions)
@@ -404,6 +407,35 @@ export function ChatWorkspace({
     abort()
   }, [abort, commandPaletteOpen, setCommandPaletteOpen, devLogOpen, setDevLogOpen])
 
+  /**
+ * 切换当前 thread 的思考强度
+ * - null 表示清除显式设置（透传请求层默认）
+ * - 切换成功后清掉该 thread 对应的 PiSession 缓存（后端负责），下次请求按新 level 重建 Session
+ * - 乐观更新：先写 store，再异步调后端；失败时回滚并 toast 报错
+ */
+  const handleThinkingLevelChange = useCallback(
+    async (threadId: string, level: ThinkingLevel | null) => {
+      const prev = selectedThinkingLevels[threadId] ?? null
+      setSelectedThinkingLevel(threadId, level)
+      try {
+        if (level === null) {
+          // 清除显式设置：当前设计不向后端发送（与 ProviderConfigStore
+          // defaultReasoningEffort='auto' 等价）；UI 仍然更新本地 store。
+          // TODO: 未来若需要"完全清除后端持久化"，再加 DELETE 端点。
+          return
+        }
+        await postAgui('/ag-ui/agent/default/threads/:threadId/thinking-level', {
+          threadId,
+          level,
+        }).catch(() => null) // best-effort：失败时已存 store，下次刷新会重新拉取
+      } catch (error) {
+        setSelectedThinkingLevel(threadId, prev)
+        toast.error('设置思考强度失败', error instanceof Error ? error.message : '未知错误')
+      }
+    },
+    [selectedThinkingLevels, setSelectedThinkingLevel],
+  )
+
   const handleCompact = useCallback(async () => {
     const eventId = crypto.randomUUID()
     setCompactionEvent({
@@ -543,9 +575,11 @@ export function ChatWorkspace({
         setActiveThreadId(remaining[0].id)
       }
       removeSession(id)
+      // 同步清理该 thread 在 store 中的思考强度（避免 localStorage 残留）
+      removeSessionThinkingLevel(id)
       toast.success('会话已删除')
     },
-    [sessions, activeThreadId, setActiveThreadId, removeSession]
+    [sessions, activeThreadId, setActiveThreadId, removeSession, removeSessionThinkingLevel]
   )
 
   // 上/下一会话（按 sessions 数组顺序循环）
@@ -946,6 +980,8 @@ export function ChatWorkspace({
               selectedModel ? `${selectedModel.provider}:${selectedModel.modelId}` : null
             }
             onModelChange={(provider, modelId) => setSelectedModel({ provider, modelId })}
+            thinkingLevel={selectedThinkingLevels[activeThreadId] ?? null}
+            onThinkingLevelChange={(level) => void handleThinkingLevelChange(activeThreadId, level)}
             sessions={sessions}
             activeSessionId={activeThreadId}
             onFilePreview={openFilePreview}

@@ -12,10 +12,42 @@
 
 import type Database from 'better-sqlite3'
 
+/** Pi-ai SDK 原生思考强度档位（不含 'off' 与 'minimal'） */
+export type ReasoningEffortLevel = 'low' | 'medium' | 'high' | 'xhigh'
+
+/** Pi-ai SDK thinkingFormat 枚举（控制 thinking 参数如何序列化） */
+export type ThinkingFormat =
+  | 'openai'
+  | 'openrouter'
+  | 'deepseek'
+  | 'together'
+  | 'zai'
+  | 'qwen'
+  | 'qwen-chat-template'
+  | 'string-thinking'
+  | 'ant-ling'
+
 export interface ProviderModelConfig {
   id: string
   name: string
+  /** 模型是否支持推理（thinking）。对应 pi-ai Model.reasoning */
   reasoning?: boolean
+  /** 模型是否支持图片/视觉输入。对应 pi-ai Model.input 数组中是否含 'image' */
+  vision?: boolean
+  /** 模型是否支持工具调用（业务层扩展；pi-ai SDK 不在 Model 上声明，由 Agent 层处理） */
+  toolCalling?: boolean
+  /** 仅思考模式：UI 上"默认思考强度"不允许选择关闭。业务概念，不直接传给 SDK */
+  onlyThinking?: boolean
+  /** 允许关闭思考：影响 pi-ai Model.thinkingLevelMap 是否含 'off' 键 */
+  allowDisableThinking?: boolean
+  /** 自定义协议标记：与 thinkingFormat 配合使用（透传到 compat） */
+  customProtocol?: boolean
+  /** Pi-ai compat.thinkingFormat：决定 thinking 参数的序列化方式 */
+  thinkingFormat?: ThinkingFormat
+  /** 模型支持的思考强度档位（4 档：low/medium/high/xhigh） */
+  supportedReasoningEfforts?: ReasoningEffortLevel[]
+  /** 默认思考强度。'auto' 表示透传请求层默认值（不主动覆盖） */
+  defaultReasoningEffort?: 'auto' | ReasoningEffortLevel
   cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }
   contextWindow?: number
   maxTokens?: number

@@ -110,6 +110,28 @@ describe('classifyStreamError', () => {
     })
   })
 
+  describe('正文质量门', () => {
+    // 质量门未通过不是基础设施故障：重新生成不会让确定性检测消失，
+    // 因此必须判为不可重试，避免用户点「重试」整条重跑白烧 token。
+    it.each([
+      '正文表达质量门修订后仍未通过，已阻止落库',
+      '自动修订 2 轮后仍有 1 项表达问题未通过，已阻止落库',
+      '修订未成功应用任何修改，已阻止原正文落库',
+    ])('%s 判为不可重试，且不给重试入口', (raw) => {
+      const result = classifyStreamError(raw)
+      expect(result.retryable).toBe(false)
+      expect(result.action).toBe('none')
+      expect(result.title).toBe('正文质量门未通过')
+      expect(result.aborted).toBe(false)
+    })
+
+    it('质量门规则优先于服务端 5xx（消息里带数字不应误判为服务故障）', () => {
+      const result = classifyStreamError('自动修订 2 轮后仍有 500 字未通过，已阻止落库')
+      expect(result.title).toBe('正文质量门未通过')
+      expect(result.retryable).toBe(false)
+    })
+  })
+
   describe('用户中断', () => {
     it.each(['AbortError: The operation was aborted', 'request cancelled', '用户取消'])(
       '%s 标记为 aborted，不当作错误',

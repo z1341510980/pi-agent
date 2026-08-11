@@ -1,5 +1,8 @@
-import { useCallback, type ChangeEvent, type ReactElement } from 'react'
+import { useCallback, useEffect, useState, type ChangeEvent, type ReactElement } from 'react'
 import { useReactFlow, type Edge as XYEdge } from '@xyflow/react'
+import { EntityCandidatePanel } from './entity-candidate-panel'
+import { NarrativeTrackPanel } from './narrative-track-panel'
+import { listEntityCandidates } from '@/api/novel-client'
 import {
   Maximize,
   ZoomIn,
@@ -11,6 +14,8 @@ import {
   Route,
   Eraser,
   LayoutGrid,
+  ShieldQuestion,
+  GitBranch,
   Network,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -60,6 +65,22 @@ export function NovelToolbar({
   onImport,
 }: NovelToolbarProps): ReactElement {
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
+  // T04：待审实体候选（Memory 新冲突/线索 needs_review）
+  const [candidatePanelOpen, setCandidatePanelOpen] = useState(false)
+  const [pendingCandidateCount, setPendingCandidateCount] = useState(0)
+  // 第二轮：剧情推进轨道（Storyline × 章节）
+  const [trackPanelOpen, setTrackPanelOpen] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    if (!currentProjectId) {
+      setPendingCandidateCount(0)
+      return
+    }
+    void listEntityCandidates(currentProjectId, 'needs_review')
+      .then((data) => { if (!cancelled) setPendingCandidateCount(data.pendingCount) })
+      .catch(() => { if (!cancelled) setPendingCandidateCount(0) })
+    return () => { cancelled = true }
+  }, [currentProjectId, candidatePanelOpen])
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
   const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
   const clearSelection = useNovelUiStore((s) => s.clearSelection)
@@ -392,6 +413,49 @@ export function NovelToolbar({
           <Eraser className="size-3.5" />
         </Button>
       </div>
+
+      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
+      {/* T04：待审实体候选（Memory 新冲突/线索 needs_review） */}
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => setCandidatePanelOpen(true)}
+        disabled={noProject}
+        title="查看 Memory 提出、待你确认的新冲突/线索候选"
+        className="relative"
+      >
+        <ShieldQuestion className="size-3.5" />
+        <span className="hidden sm:inline">待审实体</span>
+        {pendingCandidateCount > 0 && (
+          <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium text-white">
+            {pendingCandidateCount}
+          </span>
+        )}
+      </Button>
+
+      {/* 第二轮：剧情推进轨道 */}
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => setTrackPanelOpen(true)}
+        disabled={noProject}
+        title="查看故事线如何被逐章推进（剧情推进轨道）"
+      >
+        <GitBranch className="size-3.5" />
+        <span className="hidden sm:inline">剧情轨道</span>
+      </Button>
+
+      <EntityCandidatePanel
+        open={candidatePanelOpen}
+        onOpenChange={setCandidatePanelOpen}
+        projectId={currentProjectId}
+      />
+      <NarrativeTrackPanel
+        open={trackPanelOpen}
+        onOpenChange={setTrackPanelOpen}
+        projectId={currentProjectId}
+      />
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 

@@ -36,8 +36,13 @@ export type WorkspaceLayoutMode =
 /** 右侧面板显示状态 */
 export type RightPanelVisibility = 'closed' | 'open'
 
-/** 右侧面板当前视图 */
-export type RightPanelView = 'conversation' | 'detail' | 'audit'
+/** 右侧面板当前视图（按"做什么"划分，职责单一） */
+export type RightPanelView = 'conversation' | 'chat' | 'detail' | 'settings' | 'audit'
+// - conversation：创作流程（工作流/群聊/反推/编排 4 模式 + 进度/检查点）
+// - chat：章节自由对话（@ Agent/角色 问答）
+// - detail：矩阵实体查看/编辑（12 类）+ 实体时间线
+// - settings：项目级配置（标题/大纲/创作主模型/节奏模型/目标平台）
+// - audit：一致性诊断（伏笔回收/钩子悬挂/孤儿实体/时间线矛盾）
 
 // ── 尺寸约束常量 ──
 

@@ -29,6 +29,7 @@ import type { NovelEngine } from './novel-engine.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
 import { buildMemoryLedgerHandoff } from './memory-ledger-handoff.js'
 import { selectAdmissibleNewForeshadows } from './foreshadow-policy.js'
+import { findCoveredConflict, selectAdmissibleNewClues } from './entity-admission-policy.js'
 import type {
   NovelCharacter,
   NovelConflict,
@@ -38,8 +39,10 @@ import type {
   NovelLocation,
   NovelItem,
   NovelRelationship,
+  NovelNarrative,
   RelationChange,
   ArrangedEntity,
+  NarrativeType,
   NovelHook,
 } from './types.js'
 
@@ -266,6 +269,35 @@ interface MemoryUpdatePayload {
   // ── v0.2：钩子兑现 + 角色弧光 ──
   hookUpdates?: HookUpdateItem[]
   arcStageChanges?: ArcStageChangeItem[]
+  // ── 剧情轨道（narrative）：冲突/线索/伏笔装不下的剧情相关内容 ──
+  narrativeCreates?: NarrativeCreateItem[]
+  narrativeUpdates?: NarrativeUpdateItem[]
+  // ── 剧情推进轨道（storyline，V2）──
+  storylineProgresses?: StorylineProgressItem[]
+  summary?: string
+}
+
+/** 剧情条目创建（narrative：推进/转折/悬念/收束/铺垫/揭示等） */
+export interface NarrativeCreateItem {
+  description: string
+  type?: NarrativeType
+  status?: 'active' | 'resolved' | 'dropped'
+}
+
+/** 剧情条目更新（按 description 匹配） */
+export interface NarrativeUpdateItem {
+  description: string
+  type?: NarrativeType
+  status?: 'active' | 'resolved' | 'dropped'
+}
+
+/** 本章对一条故事线的推进（剧情推进轨道；storyline 不存在时按名字幂等创建） */
+export interface StorylineProgressItem {
+  storylineName: string
+  type?: 'setup' | 'advance' | 'turn' | 'reveal' | 'resolve' | 'pause'
+  primary?: boolean
+  beforeState?: string
+  afterState?: string
   summary?: string
 }
 
@@ -288,6 +320,13 @@ export interface MemoryApplyStats {
   itemCreatesApplied: number
   hookUpdatesApplied: number
   arcStageChangesApplied: number
+  /** 剧情轨道（narrative）：新增/更新的剧情条目数 */
+  narrativeCreatesApplied: number
+  narrativeUpdatesApplied: number
+  /** 剧情推进轨道：本章确认的故事线推进数（V2，scenePlanV2Write 开启且有 plan 时） */
+  storylineProgressesApplied: number
+  /** 无法匹配既有实体、转为 needs_review 候选的新 Conflict/Clue 数（V2 决策 3） */
+  candidateCreatesApplied: number
   total: number
 }
 
@@ -1202,29 +1241,32 @@ export class NovelMemoryGenerator {
     }
 
     // ── 线索创建 ──
-    for (const item of payload.clueCreates ?? []) {
+    // 线索必须是可复验的证据链；环境异常、身体不适和泛化怀疑只保留在正文/角色状态。
+    const admissibleClueCreates = selectAdmissibleNewClues(payload.clueCreates ?? [])
+    if (admissibleClueCreates.length < (payload.clueCreates?.length ?? 0)) {
+      this.context.logger.info(
+        { projectId, chapterNumber, rejected: (payload.clueCreates?.length ?? 0) - admissibleClueCreates.length },
+        '记忆 Agent：已跳过不具备证据与验证链的线索创建',
+      )
+    }
+    for (const item of admissibleClueCreates) {
       if (!item.description?.trim() || !item.pointsTo?.trim()) continue
       const existing = this.findClueByDescription(projectId, item.description)
       if (existing) continue
-      const linkedForeshadow = item.linkedForeshadowDescription
-        ? this.findForeshadowByDescription(projectId, item.linkedForeshadowDescription)
-        : undefined
-      const clue = this.store.createClue({
-        id: randomUUID(),
+      // V2 决策 3：全新线索不直接创建正式实体，落 needs_review 候选待用户确认
+      this.store.createEntityCandidate({
         projectId,
-        description: item.description.trim(),
-        pointsTo: item.pointsTo.trim(),
-        progress: Math.max(0, Math.min(100, ensureNumber(item.progress, 10))),
-        currentStep: ensureString(item.currentStep, '本章首次发现'),
-        nextStep: ensureString(item.nextStep, ''),
-        isMisleading: item.isMisleading === true,
-        chapterSpans: chapterNumber !== undefined ? [[chapterNumber, chapterNumber]] : [],
+        chapterNumber,
+        contentRevisionId: null,
+        entityType: 'clue',
+        payload: item,
+        reasonCode: 'new_clue',
       })
-      // 关联伏笔通过 edges 维护，不再写入 linkedForeshadow 字段
-      if (linkedForeshadow) {
-        this.store.createEdge(projectId, { sourceId: clue.id, sourceType: 'clue', targetId: linkedForeshadow.id, targetType: 'foreshadow', edgeType: 'related', label: '关联伏笔' })
-      }
-      stats.clueCreatesApplied++
+      this.context.logger.info(
+        { projectId, chapterNumber, description: item.description },
+        '记忆 Agent：新线索已转为 needs_review 候选（待用户确认）',
+      )
+      stats.candidateCreatesApplied++
     }
 
     // ── 冲突更新 ──
@@ -1281,27 +1323,73 @@ export class NovelMemoryGenerator {
     })
     for (const item of filteredConflictCreates) {
       if (!item.description) continue
-      // participants 通过名字查找 ID
-      const participantIds = (item.participants ?? [])
-        .map((name) => this.findCharacterByName(projectId, name)?.id)
-        .filter((id): id is string => !!id)
-      this.store.createConflict({
-        id: randomUUID(),
+      const coveredConflict = findCoveredConflict(
+        this.store.listConflicts(projectId),
+        item,
+        chapterNumber,
+      )
+      if (coveredConflict) {
+        const patch: Partial<NovelConflict> = {}
+        if (item.stage !== undefined) patch.stage = ensureString(item.stage, coveredConflict.stage) as NovelConflict['stage']
+        if (item.intensity !== undefined) {
+          patch.intensity = Math.max(1, Math.min(10, ensureNumber(item.intensity, coveredConflict.intensity)))
+        }
+        if (item.currentStep !== undefined) patch.currentStep = ensureString(item.currentStep, coveredConflict.currentStep ?? '')
+        if (item.nextStep !== undefined) patch.nextStep = ensureString(item.nextStep, coveredConflict.nextStep ?? '')
+        if (Object.keys(patch).length > 0) this.store.updateConflict(coveredConflict.id, patch)
+        this.context.logger.info(
+          { projectId, chapterNumber, conflictId: coveredConflict.id, description: item.description },
+          '记忆 Agent：同章相似冲突合并为已有实体',
+        )
+        continue
+      }
+      // V2 决策 3：全新冲突不直接创建正式实体，落 needs_review 候选待用户确认。
+      // （coveredConflict 命中的合并更新保留在分支上方自动执行）
+      this.store.createEntityCandidate({
         projectId,
-        description: ensureString(item.description, ''),
-        type: ensureString(item.type, 'interest') as NovelConflict['type'],
-        intensity: Math.max(1, Math.min(10, ensureNumber(item.intensity, 5))),
-        stage: ensureString(item.stage, 'emerging') as NovelConflict['stage'],
-        participants: JSON.stringify(participantIds),
-        chapterSpans: [],
-        tier: 'secondary',
-        plotFunction: item.plotFunction as NovelConflict['plotFunction'],
-        progressionMode: item.progressionMode as NovelConflict['progressionMode'],
-        // 071：新冲突初始化推进粒度（若有）
-        currentStep: item.currentStep ? ensureString(item.currentStep, '') : '',
-        nextStep: item.nextStep ? ensureString(item.nextStep, '') : '',
+        chapterNumber,
+        contentRevisionId: null,
+        entityType: 'conflict',
+        payload: item,
+        reasonCode: 'new_conflict',
       })
-      stats.conflictCreatesApplied++
+      this.context.logger.info(
+        { projectId, chapterNumber, description: item.description },
+        '记忆 Agent：新冲突已转为 needs_review 候选（待用户确认）',
+      )
+      stats.candidateCreatesApplied++
+    }
+
+    // ── 剧情轨道（narrative）──
+    // 承接冲突/线索/伏笔装不下的剧情相关内容（推进/转折/悬念/收束/铺垫/揭示）。
+    // 已有冲突/线索/伏笔的语义边界在提示词中约束；此处只做匹配与落库。
+    for (const item of payload.narrativeUpdates ?? []) {
+      const narrative = this.findNarrativeByDescription(projectId, item.description)
+      if (!narrative) {
+        this.context.logger.warn(
+          { description: item.description, projectId },
+          '记忆 Agent：未找到要更新的剧情条目，跳过',
+        )
+        continue
+      }
+      const patch: Partial<NovelNarrative> = {}
+      if (item.type !== undefined) patch.type = item.type
+      if (item.status !== undefined) patch.status = item.status
+      if (Object.keys(patch).length === 0) continue
+      this.store.updateNarrative(narrative.id, patch)
+      stats.narrativeUpdatesApplied++
+    }
+    for (const item of payload.narrativeCreates ?? []) {
+      if (!item.description?.trim()) continue
+      if (this.findNarrativeByDescription(projectId, item.description)) continue
+      this.store.createNarrative({
+        projectId,
+        description: item.description.trim(),
+        type: item.type ?? 'advance',
+        chapterSpans: chapterNumber !== undefined ? [[chapterNumber, chapterNumber]] : [],
+        status: item.status ?? 'active',
+      })
+      stats.narrativeCreatesApplied++
     }
 
     // ── 势力更新 ──
@@ -1543,6 +1631,9 @@ export class NovelMemoryGenerator {
       + stats.factionUpdatesApplied + stats.locationUpdatesApplied
       + stats.relationshipUpdatesApplied + stats.relationshipCreatesApplied
       + stats.itemUpdatesApplied + stats.itemCreatesApplied
+      + stats.narrativeCreatesApplied + stats.narrativeUpdatesApplied
+      + stats.storylineProgressesApplied
+      + stats.candidateCreatesApplied
 
     // ── v0.2：应用钩子兑现更新 ──
     let hookUpdatesApplied = 0
@@ -1617,7 +1708,45 @@ export class NovelMemoryGenerator {
     stats.arcStageChangesApplied = arcStageChangesApplied
     stats.total += hookUpdatesApplied + arcStageChangesApplied
 
+    // ── 剧情推进轨道（storyline，V2）──
+    // 仅 scenePlanV2Write 开启且存在生效 plan 时落库（需绑定 scene_revision_id）；
+    // V1 项目跳过。Memory 应用即确认（正文已确认，推进生效）。
+    const storylineApplied = this.applyStorylineProgresses(projectId, chapterNumber, payload.storylineProgresses ?? [])
+    stats.storylineProgressesApplied += storylineApplied
+    stats.total += storylineApplied
+
     return stats
+  }
+
+  /**
+   * 剧情推进落库：把 Memory 提取的 storylineProgresses 绑定到当前计划的首个场景，
+   * 以 confirmed 状态写入（Memory 确认正文即生效）。
+   * 返回实际应用条数；无 plan / V1 项目返回 0。
+   */
+  private applyStorylineProgresses(
+    projectId: string,
+    chapterNumber: number | undefined,
+    intents: StorylineProgressItem[],
+  ): number {
+    if (intents.length === 0) return 0
+    const chapter = chapterNumber != null ? this.store.getChapter(projectId, chapterNumber) : undefined
+    const plan = chapter ? this.store.getCurrentPlan(chapter.id) : undefined
+    const sceneRevisions = plan ? this.store.listSceneRevisionsByPlan(plan.id) : []
+    if (sceneRevisions.length === 0) {
+      this.context.logger.warn(
+        { projectId, chapterNumber },
+        '剧情推进提取跳过：无生效 plan 场景可绑定（V1 项目或计划未落库）',
+      )
+      return 0
+    }
+    // 绑定到当前计划的第一个场景（Memory 不区分逐场景归属，轨道按章推进粒度记录）
+    const sceneRevisionId = sceneRevisions[0].id
+    // 先落 planned，再逐条 confirm：确认会触发 maybePromoteMaturity（≥2 个不同场景 → established）
+    const recorded = this.store.recordProgressForScene(projectId, sceneRevisionId, intents, 'planned')
+    for (const progress of recorded) {
+      this.store.confirmProgress(progress.id)
+    }
+    return recorded.length
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1697,6 +1826,15 @@ export class NovelMemoryGenerator {
     return found
   }
 
+  private findNarrativeByDescription(projectId: string, description?: string): NovelNarrative | undefined {
+    if (!description) return undefined
+    const narratives = this.store.listNarratives(projectId)
+    let found = narratives.find((n) => n.description === description.trim())
+    if (found) return found
+    const compact = description.replace(/\s+/g, '')
+    return narratives.find((n) => n.description.replace(/\s+/g, '') === compact)
+  }
+
   private emptyStats(): MemoryApplyStats {
     return {
       characterUpdatesApplied: 0,
@@ -1715,6 +1853,10 @@ export class NovelMemoryGenerator {
       itemCreatesApplied: 0,
       hookUpdatesApplied: 0,
       arcStageChangesApplied: 0,
+      narrativeCreatesApplied: 0,
+      narrativeUpdatesApplied: 0,
+      storylineProgressesApplied: 0,
+      candidateCreatesApplied: 0,
       total: 0,
     }
   }

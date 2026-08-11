@@ -112,7 +112,7 @@ describe('novel_ask_story policy', () => {
     orchestrator.runStorage = new AsyncLocalStorage()
     orchestrator.pendingUserMessages = new Map()
     const project = { novelAskStoryPolicy: 'directorReviewerOff' as NovelAskStoryPolicy }
-    orchestrator.store = { getProject: () => project }
+    orchestrator.store = { getNovelModelId: () => undefined, getProject: () => project }
     let release: (() => void) | undefined
     const blocked = new Promise<void>((resolve) => { release = resolve })
     orchestrator.createChapterWithFlowInContext = async () => {
@@ -169,6 +169,7 @@ describe('novel_ask_story policy', () => {
       buildSystemPrompt: () => 'system',
       buildChapterContextShared: () => 'shared',
       buildChapterContextSuffix: () => 'suffix',
+      buildArrangedEntitiesSection: () => '',
       buildReferenceFactPack: () => '',
       buildReviewFactPack: () => '',
       stripEmDash: (value: string) => value,

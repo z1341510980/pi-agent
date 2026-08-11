@@ -9,6 +9,8 @@ import { ConsistencyAuditor } from '../plugins/novel-plugin/core/consistency-aud
 import { RelationshipGraph } from '../plugins/novel-plugin/core/novel-relationship-graph.js'
 import { createNovelRoutes } from '../plugins/novel-plugin/novel-routes.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
+import { CostReportService } from '../plugins/novel-plugin/core/cost-report-service.js'
+import { SharedOverlapAnalyzer } from '../plugins/novel-plugin/core/shared-overlap-analyzer.js'
 import type { NovelServices } from '../plugins/novel-plugin/novel-services.js'
 import { errorHandlerPlugin } from '../plugins/error-handler.plugin.js'
 import { requestContextPlugin } from '../plugins/request-context.plugin.js'
@@ -89,6 +91,8 @@ function makeMockServices(): NovelServices {
       run: vi.fn(),
     } as any,
     tools: [],
+    costReportService: new CostReportService(db),
+    sharedOverlapAnalyzer: new SharedOverlapAnalyzer(db),
   }
 }
 

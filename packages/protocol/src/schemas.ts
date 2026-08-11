@@ -88,6 +88,12 @@ export const thinkingSettingsInputSchema = z.object({
     .optional(),
 })
 
+/** 每个 thread 独立的思考强度设置输入 */
+export const threadThinkingLevelInputSchema = z.object({
+  threadId: z.string().min(1, 'threadId 不能为空'),
+  level: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']),
+})
+
 /** 自动压缩/自动重试开关输入 */
 export const booleanToggleInputSchema = z.object({
   threadId: z.string().min(1, 'threadId 不能为空'),
@@ -116,6 +122,7 @@ export type ToolsActiveInputSchema = z.infer<typeof toolsActiveInputSchema>
 export type ReloadInputSchema = z.infer<typeof reloadInputSchema>
 export type ModelSelectionInputSchema = z.infer<typeof modelSelectionInputSchema>
 export type ThinkingSettingsInputSchema = z.infer<typeof thinkingSettingsInputSchema>
+export type ThreadThinkingLevelInputSchema = z.infer<typeof threadThinkingLevelInputSchema>
 export type BooleanToggleInputSchema = z.infer<typeof booleanToggleInputSchema>
 export type QueueModeInputSchema = z.infer<typeof queueModeInputSchema>
 export type SessionNameInputSchema = z.infer<typeof sessionNameInputSchema>

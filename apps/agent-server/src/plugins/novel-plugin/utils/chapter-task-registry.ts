@@ -12,7 +12,7 @@ export const aiArrangeLocks = new Map<string, Promise<void>>()
 export const chapterCreationLocks = new Set<string>()
 
 /** 章节任务类型 */
-export type NovelChapterTaskKind = 'workflow' | 'discussion' | 'discussion-resume' | 'ai-arrange' | 'reverse-arrange'
+export type NovelChapterTaskKind = 'workflow' | 'discussion' | 'discussion-resume' | 'ai-arrange' | 'reverse-arrange' | 're-revise'
 
 /** 运行中的章节任务 */
 export interface ActiveNovelChapterTask {

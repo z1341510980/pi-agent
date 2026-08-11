@@ -1,0 +1,116 @@
+classDiagram
+    class FeatureFlagProjectSource {
+        <<interface>>
+        +getProject(id: string) Pick~NovelProject, 'flags'~ | undefined
+    }
+    class NovelFeatureFlags {
+        +isNovelFeatureEnabled(source, projectId, flag) boolean
+    }
+    class ContextSectionMetric {
+        +string id
+        +string agentLogId
+        +string projectId
+        +int chapterNumber
+        +string agentType
+        +string sectionType
+        +string sectionId
+        +int chars
+        +int estimatedTokens
+        +string sourceHash
+        +string mode
+    }
+    class ContextSectionCollector {
+        +add(sectionType, sectionId, content, mode) void
+        +snapshot() ContextSectionMetricInput[]
+        +reset() void
+    }
+    class CostReportService {
+        +chapterCostReport(projectId, chapterNumber?) ChapterCostReport
+        +agentCostShare(projectId, chapterNumber?) AgentCostShare[]
+        +sharedOverlapReport(projectId) SharedOverlapReport
+        +exportJson(projectId, opts) string
+        +exportCsv(projectId, opts) string
+    }
+    class SharedOverlapAnalyzer {
+        +analyze(projectId, opts) SharedOverlapReport
+    }
+    class GraphStore {
+        +insertAgentLog(input, opts?) NovelAgentLog
+        +getAgentLog(id, opts?) NovelAgentLog
+        +listAgentLogs(projectId, filter?, limit?) NovelAgentLogSummary[]
+        +insertContextSectionMetrics(rows) void
+        +listContextSectionMetrics(projectId, chapterNumber?) ContextSectionMetric[]
+        +cleanupExpiredPayloads(nowMs?) object
+    }
+    class LogPayloadService {
+        +gzip(text) Buffer
+        +gunzip(buf) string
+        +contentHash(fields) string
+        +retentionPolicy(status) int
+    }
+    class ChapterStore {
+        +listChapterVersions(chapterId) ChapterVersionSummary[]
+        +getChapterVersion(versionId) ChapterVersion | undefined
+        +getLatestVersion(chapterId) ChapterVersion | undefined
+        +rollbackToVersion(chapterId, versionId) RollbackResult
+        +listContentRevisions(chapterId) ContentRevisionSummary[]
+        +rollbackToContentRevision(chapterId, revisionId) object
+        +saveChapterVersionInternal(chapter, source) void
+        +appendContentRevision(chapter, source) ContentRevision | undefined
+        +reconcileVersionChains(projectId) VersionChainReconcileReport
+    }
+    class ScenePlanStore {
+        +createSceneRevisions(plan, scenes) NovelSceneRevision[]
+        +replaceCast(sceneRevisionId, scene) void
+        +getSceneRevisionCast(sceneRevisionId) object
+        +getSceneCast(sceneRevisionId) NovelSceneCast[]
+        +reconcileSceneCast(projectId?) SceneCastReconcileReport
+    }
+    class NovelStore {
+        +insertAgentLog(input, opts?) NovelAgentLog
+        +updateChapter(id, patch, versionSource?) NovelChapter | undefined
+        +reconcileVersionChains(projectId) VersionChainReconcileReport
+        +reconcileSceneCast(projectId?) SceneCastReconcileReport
+    }
+    class MigrationAcceptance {
+        <<interface>>
+        +int sourceRows
+        +int targetRows
+        +int mismatchRows
+        +int orphanRows
+        +int duplicateRows
+        +boolean rollbackVerified
+    }
+    class VersionChainReconcileReport {
+        <<interface>>
+        +checkedChapters int
+        +mismatchedChapters Array
+    }
+    class SceneCastReconcileReport {
+        <<interface>>
+        +checkedSceneRevisions int
+        +mismatchByRole Record
+    }
+    class ReconcileScripts {
+        +reconcile-version-chains.mjs
+        +reconcile-scene-cast.mjs
+        +verify-log-payloads.mjs
+        +scan-deprecated-columns.mjs
+        +cost-report.mjs
+    }
+
+    NovelFeatureFlags --> FeatureFlagProjectSource
+    ChapterStore --> FeatureFlagProjectSource : flags
+    ScenePlanStore --> FeatureFlagProjectSource : flags
+    GraphStore --> LogPayloadService : gzip/hash
+    NovelStore --> GraphStore
+    NovelStore --> ChapterStore
+    NovelStore --> ScenePlanStore
+    CostReportService --> GraphStore : reads logs/metrics
+    SharedOverlapAnalyzer --> GraphStore : reads logs
+    ContextSectionCollector ..> ContextSectionMetric : produces
+    GraphStore ..> ContextSectionMetric : persists
+    VersionChainReconcileReport ..|> MigrationAcceptance
+    SceneCastReconcileReport ..|> MigrationAcceptance
+    ReconcileScripts ..> ChapterStore : invokes reconcile
+    ReconcileScripts ..> ScenePlanStore : invokes reconcile

@@ -668,7 +668,9 @@ describe('NovelStore - ChapterVersion 快照与回滚', () => {
     const versions = store.listChapterVersions(ch.id)
     expect(versions).toHaveLength(2)
     // 倒序返回：最新（sequence 最大）在前
-    expect(versions[0].isCurrent).toBe(true)
+    // isCurrent 语义（T02a 修复）：只有 content 与当前正文一致才是当前版。
+    // 此处当前正文为 '第二版正文'，从未被存成版本，故两版都不是 current。
+    expect(versions[0].isCurrent).toBe(false)
     // 最新版存的是 '第一版正文'（被覆盖前的旧值），字数 5
     expect(versions[0].wordCount).toBe(5)
     expect(versions[1].isCurrent).toBe(false)

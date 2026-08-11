@@ -13,6 +13,7 @@ import type { SessionSummaryStore } from '../core/memory/session-summary.js'
 import type { ProviderConfigStore } from '../core/config/provider-config-store.js'
 import type { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import type { ProxyManager } from '../core/config/proxy-manager.js'
+import type { ThreadSettingsStore } from '../core/agent/thread-settings-store.js'
 import type { SettingsManager } from '@earendil-works/pi-coding-agent'
 import type { PluginManager } from '../core/plugin/plugin-manager.js'
 import type { CronScheduler } from '../core/cron/cron-scheduler.js'
@@ -48,6 +49,7 @@ declare module 'fastify' {
     providerConfigStore: ProviderConfigStore
     proxyConfigStore: ProxyConfigStore
     proxyManager: ProxyManager
+    threadSettingsStore: ThreadSettingsStore
     subagentManager: AgentManager
     teamManager: TeamManager
     agentCallLogger: AgentCallLogger

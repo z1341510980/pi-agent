@@ -59,6 +59,12 @@ import { EntityCreateDialog } from './entity-create-dialog'
 import { EntitySpanDialog } from './entity-span-dialog'
 import { EntityNoteDialog } from './entity-note-dialog'
 import { toastError } from '@/hooks/use-toast'
+import { NarrativeTrackPanel } from '../narrative-track-panel'
+import { EntityCandidatePanel } from '../entity-candidate-panel'
+import { PendingEventsDialog } from './pending-events-dialog'
+import { AnnotationPanelDialog } from './annotation-panel-dialog'
+import { Button } from '@/components/ui/button'
+import { GitBranch, Inbox, MessageSquareText, ShieldQuestion } from 'lucide-react'
 
 /**
  * 把新区间合并进现有跨度列表：
@@ -142,6 +148,7 @@ export function MatrixWorkspace({
   const worldElements = useNovelDataStore((s) => s.worldElements)
   const infoLayers = useNovelDataStore((s) => s.infoLayers)
   const items = useNovelDataStore((s) => s.items)
+  const narratives = useNovelDataStore((s) => s.narratives)
   const characterHistory = useNovelDataStore((s) => s.characterHistory)
   const relationships = useNovelDataStore((s) => s.relationships)
   const markers = useNovelDataStore((s) => s.markers)
@@ -173,6 +180,12 @@ export function MatrixWorkspace({
 
   // ── 本地 UI 状态 ──
   const [cellWidth, setCellWidth] = useState<number>(DEFAULT_CELL_WIDTH)
+  // 剧情轨道 / 待审实体入口（矩阵视图也能访问，不只在画布工具栏）
+  const [trackPanelOpen, setTrackPanelOpen] = useState(false)
+  const [candidatePanelOpen, setCandidatePanelOpen] = useState(false)
+  const [pendingEventsOpen, setPendingEventsOpen] = useState(false)
+  const [pendingCount, setPendingCount] = useState(0)
+  const [annotationsOpen, setAnnotationsOpen] = useState(false)
   const collapsedGroups = useMemo(() => new Set(collapsedGroupsArr as MatrixEntityKind[]), [collapsedGroupsArr])
   const [activeFilter, setActiveFilter] = useState<MatrixEntityKind | null>(null)
   const [isCompleting, setIsCompleting] = useState(false)
@@ -227,11 +240,11 @@ export function MatrixWorkspace({
     () => {
       const built = buildGroups({
         chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-        infoLayers, items, characterHistory, markers,
+        infoLayers, items, characterHistory, markers, narratives,
       })
       return { ...built, groups: appendPendingEntities(built.groups, pool) }
     },
-    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, infoLayers, items, characterHistory, markers, pool],
+    [chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements, infoLayers, items, characterHistory, markers, narratives, pool],
   )
 
   // ── 共享账本投影：matrix-aggregation 单请求，全部展开实体的子轨道共用 ──
@@ -245,6 +258,7 @@ export function MatrixWorkspace({
     staleTime: 30_000,
   })
   const aggregationChanges = useMemo(() => aggregationData?.changes ?? [], [aggregationData])
+  const aggregationEventEdges = useMemo(() => aggregationData?.eventEdges ?? [], [aggregationData])
 
   // ── 失效统一入口：项目数据 + 矩阵聚合（子轨道缓存同步刷新）──
   const invalidateNovelData = useCallback(() => {
@@ -1466,6 +1480,71 @@ export function MatrixWorkspace({
           showRelationshipOverlay={showRelationshipOverlay}
           onToggleRelationshipOverlay={() => setShowRelationshipOverlay((v) => !v)}
         />
+        {/* 剧情轨道 / 待审实体（矩阵视图入口，与画布工具栏并列） */}
+        <div className="flex items-center gap-1 px-2 pb-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 text-xs"
+            onClick={() => setTrackPanelOpen(true)}
+            disabled={!currentProjectId}
+            title="查看故事线如何被逐章推进（剧情推进轨道）"
+          >
+            <GitBranch className="size-3.5" />
+            剧情轨道
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 text-xs"
+            onClick={() => setCandidatePanelOpen(true)}
+            disabled={!currentProjectId}
+            title="查看 Memory 提出、待确认的新冲突/线索候选"
+          >
+            <ShieldQuestion className="size-3.5" />
+            待审实体
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 text-xs"
+            onClick={() => setPendingEventsOpen(true)}
+            disabled={!currentProjectId}
+            title="确认或驳回 AI 自动提取的故事事件"
+          >
+            <Inbox className="size-3.5" />
+            待确认事件
+            {pendingCount > 0 && (
+              <span className="ml-0.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold leading-4 text-white">
+                {pendingCount > 99 ? '99+' : pendingCount}
+              </span>
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 text-xs"
+            onClick={() => setAnnotationsOpen(true)}
+            disabled={!currentProjectId}
+            title="统一批注：说明、意图、待办、警告、疑问"
+          >
+            <MessageSquareText className="size-3.5" />
+            批注
+          </Button>
+        </div>
+        <NarrativeTrackPanel open={trackPanelOpen} onOpenChange={setTrackPanelOpen} projectId={currentProjectId} />
+        <EntityCandidatePanel open={candidatePanelOpen} onOpenChange={setCandidatePanelOpen} projectId={currentProjectId} />
+        <PendingEventsDialog
+          open={pendingEventsOpen}
+          onOpenChange={setPendingEventsOpen}
+          projectId={currentProjectId}
+          onPendingCountChange={setPendingCount}
+        />
+        <AnnotationPanelDialog
+          open={annotationsOpen}
+          onOpenChange={setAnnotationsOpen}
+          projectId={currentProjectId}
+        />
       </div>
 
       <div data-tour="matrix-legend">
@@ -1483,6 +1562,7 @@ export function MatrixWorkspace({
           markers={markers}
           relationships={relationships}
           aggregationChanges={aggregationChanges}
+          aggregationEventEdges={aggregationEventEdges}
           playheadChapter={effectivePlayheadChapter}
           cellWidth={cellWidth}
           collapsedGroups={collapsedGroups}

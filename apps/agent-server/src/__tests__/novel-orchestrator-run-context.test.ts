@@ -50,6 +50,7 @@ function createDecisionPathOrchestrator(): {
   orchestrator.runStorage = new AsyncLocalStorage()
   orchestrator.pendingUserMessages = new Map()
   orchestrator.store = {
+    getNovelModelId: () => undefined,
     getProject: () => ({ currentStage: 'setup', rhythmModelId: 'default', currentChapter: 1 }),
     getWritingStyleProfile: () => undefined,
     listChapters: () => [],
@@ -102,7 +103,7 @@ describe('NovelOrchestrator request context', () => {
     const orchestrator = Object.create(NovelOrchestrator.prototype) as any
     orchestrator.runStorage = new AsyncLocalStorage()
     orchestrator.pendingUserMessages = new Map()
-    orchestrator.store = { getProject: () => ({ novelAskStoryPolicy: null }) }
+    orchestrator.store = { getNovelModelId: () => undefined, getProject: () => ({ novelAskStoryPolicy: null }) }
     orchestrator.createChapterWithFlowInContext = vi.fn(async (
       _projectId: string,
       _chapterNumber: number,
@@ -255,6 +256,7 @@ describe('NovelOrchestrator request context', () => {
       rhythmSuggestion: { rhythm: 'rising', reason: '推进' },
     })
     orchestrator.store = {
+      getNovelModelId: () => undefined,
       getProject: () => ({ targetWords: 1_000_000 }),
       getChapter: () => ({ positioning: null }),
       getCharacter: () => ({ name: '李四' }),
@@ -286,6 +288,7 @@ describe('NovelOrchestrator request context', () => {
       rhythmSuggestion: { rhythm: 'rising', reason: '推进' },
     })
     orchestrator.store = {
+      getNovelModelId: () => undefined,
       getProject: () => ({ targetWords: 3_000_000 }),
       getChapter: () => ({ positioning: null }),
     }
@@ -313,6 +316,7 @@ describe('NovelOrchestrator request context', () => {
       rhythmSuggestion: { rhythm: 'rising', reason: '推进' },
     })
     orchestrator.store = {
+      getNovelModelId: () => undefined,
       getProject: () => undefined,
       getFaction: () => ({ name: '国安总局' }),
       getLocation: () => ({ name: '潼关杂役坑' }),
@@ -342,6 +346,7 @@ describe('NovelOrchestrator request context', () => {
     orchestrator.runStorage = new AsyncLocalStorage()
     orchestrator.pendingUserMessages = new Map()
     orchestrator.store = {
+      getNovelModelId: () => undefined,
       getProject: () => ({ currentStage: 'setup', rhythmModelId: 'default', currentChapter: 1 }),
       getWritingStyleProfile: () => undefined,
       listChapters: () => [],
@@ -466,6 +471,7 @@ describe('NovelOrchestrator request context', () => {
     orchestrator.runStorage = new AsyncLocalStorage()
     orchestrator.pendingUserMessages = new Map()
     orchestrator.store = {
+      getNovelModelId: () => undefined,
       getProject: () => ({ currentStage: 'setup', rhythmModelId: 'default', currentChapter: 1 }),
       getWritingStyleProfile: () => undefined,
       listChapters: () => [], listConflicts: () => [], listForeshadowing: () => [],
@@ -516,6 +522,7 @@ describe('NovelOrchestrator request context', () => {
     orchestrator.runStorage = new AsyncLocalStorage()
     orchestrator.pendingUserMessages = new Map()
     orchestrator.store = {
+      getNovelModelId: () => undefined,
       getProject: () => ({ currentStage: 'setup', rhythmModelId: 'default', currentChapter: 1 }),
       getWritingStyleProfile: () => undefined,
       listChapters: () => [],

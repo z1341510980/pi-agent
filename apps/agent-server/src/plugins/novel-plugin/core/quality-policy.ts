@@ -128,6 +128,16 @@ export const GATE_REGISTRY: QualityGate[] = [
     promptCounterpart: 'role-writer.md 的「避免现成句壳」',
   },
   {
+    id: 'character-voice',
+    name: '角色声音趋同（台词长度一致 / 全完整句 / 无反问回避）',
+    kind: 'deterministic',
+    // 正式汇报、审讯类场景本身对白工整，字符层判定不足以推翻整章
+    maxAction: 'revise',
+    source: 'character-voice.detectVoiceCollapse',
+    promptCounterpart: 'role-writer.md 的「角色声音（硬约束）」+ 声音对照表',
+  },
+
+  {
     id: 'style-profile',
     name: '项目文风档案',
     kind: 'declared-intent',
@@ -199,19 +209,29 @@ export const CONFLICT_RULES: Array<{
  * 而没有任何一方校验那个更严的要求。
  */
 export const PROSE_SHAPE_LIMITS = {
-  /** 允许的最长连续单句段数；超过即视为提纲式碎片节奏 */
-  maxConsecutiveSingleSentenceParagraphs: 5,
-  /** 单句段占比警告线 */
-  singleSentenceRatioWarning: 0.55,
+  /**
+   * 允许的最长连续单句段数；超过即视为提纲式碎片节奏。
+   *
+   * 从 5 收到 3：实测两章正文里"三秒。五秒。一把电钻……"这类连续短段是默认格式
+   * 而不是高潮处理，5 段的容忍度让它全程合法通过。
+   */
+  maxConsecutiveSingleSentenceParagraphs: 3,
+  /** 单句段占比警告线（按人工网文样本试运行门槛：40%） */
+  singleSentenceRatioWarning: 0.40,
   /** 单句段占比错误线（触发强制修订） */
-  singleSentenceRatioError: 0.7,
+  singleSentenceRatioError: 0.55,
   /** 18 字以内短段占比警告线 */
-  shortParagraphRatioWarning: 0.3,
+  shortParagraphRatioWarning: 0.25,
   /** 短段占比错误线 */
-  shortParagraphRatioError: 0.45,
+  shortParagraphRatioError: 0.35,
   /** 低于此段落数不做形态判定（样本太少，比例没有意义） */
   minParagraphsForShapeCheck: 20,
+  /** 泛化"像……"比喻的每千字警告密度 */
+  genericSimilePerThousandWarning: 2,
+  /** 泛化比喻每千字错误密度 */
+  genericSimilePerThousandError: 3.5,
 } as const
+
 
 /** 字数门的分级阈值（相对目标字数的比例） */
 export const WORD_COUNT_LIMITS = {
@@ -298,8 +318,10 @@ export const QUALITY_POLICY_INVARIANTS: Array<{ name: string; check: () => boole
     name: '段落形态的错误线必须高于警告线',
     check: () =>
       PROSE_SHAPE_LIMITS.singleSentenceRatioError > PROSE_SHAPE_LIMITS.singleSentenceRatioWarning
-      && PROSE_SHAPE_LIMITS.shortParagraphRatioError > PROSE_SHAPE_LIMITS.shortParagraphRatioWarning,
+      && PROSE_SHAPE_LIMITS.shortParagraphRatioError > PROSE_SHAPE_LIMITS.shortParagraphRatioWarning
+      && PROSE_SHAPE_LIMITS.genericSimilePerThousandError > PROSE_SHAPE_LIMITS.genericSimilePerThousandWarning,
   },
+
   {
     name: '每条登记的冲突都必须涉及两个已注册的门',
     check: () => {

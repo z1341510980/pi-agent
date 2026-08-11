@@ -9,12 +9,40 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
+/** Pi-ai SDK 原生思考强度档位（与 ThinkingLevel 对齐） */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export const THINKING_LEVELS: ThinkingLevel[] = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+]
+export const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
+  off: '关闭',
+  minimal: '极低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+}
+
 export interface ModelOption {
   provider: string
   id: string
   name?: string
   contextWindow?: number
   maxTokens?: number
+  /** 模型是否支持思考（reasoning）。无则按 false 处理 */
+  reasoning?: boolean
+  /** 模型支持的思考强度档位（来自 ProviderConfigStore supportedReasoningEfforts，
+   *  或由后端从 SDK thinkingLevelMap 反推）。仅在 reasoning=true 时相关 */
+  supportedReasoningEfforts?: ThinkingLevel[]
+  /** 是否允许"关闭思考"档位（allowDisableThinking） */
+  allowDisableThinking?: boolean
+  /** 默认思考强度（'auto' 表示透传 SDK 全局默认） */
+  defaultReasoningEffort?: ThinkingLevel | 'auto'
 }
 
 export interface ModelSelectorProps {

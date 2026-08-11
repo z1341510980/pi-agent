@@ -150,8 +150,13 @@
 
 .cce-body {
   flex: 1;
-  min-height: 0;
+  /* 空正文兜底：min-height:0 会让"无内容"的编辑区沿 flex 链塌陷到 0 高度，
+     空章节（content=''）时点击不到、无法输入。240px 保证空文档始终有可点击编辑区；
+     有内容时正文自然撑高，不受此下限影响。 */
+  min-height: 240px;
   overflow-y: auto;
+  /* 窄面板（分屏/侧栏）下垂直滚动条会挤占水平空间，禁止水平溢出避免出现双向滚动 */
+  overflow-x: hidden;
   /* 16px 基准：让下方所有 em 单位（38em 行宽 / 2em 首行缩进）都以正文字号为准 */
   font-size: 16px;
   /* 水平方向用 padding 把文字栏收敛到 38em 并居中：
@@ -172,7 +177,8 @@
 
 .cce-body .ProseMirror {
   outline: none;
-  min-height: 100%;
+  /* 空文档兜底 240px 可点击区域；有内容时自然撑高，不依赖父容器 100% 避免溢出计算异常 */
+  min-height: 240px;
   /* 兜底：即使 .cce-body 的 max()/calc padding 不生效，文字栏也不会超过 38em */
   max-width: 38em;
   margin-inline: auto;

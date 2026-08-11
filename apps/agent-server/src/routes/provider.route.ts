@@ -19,10 +19,37 @@ import { validateBody } from '../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { buildProviderModelsUrl, normalizeProviderBaseUrl } from '../core/config/provider-base-url.js'
 
+// Pi-ai SDK 原生思考强度档位（与 pi-ai 的 ThinkingLevel 对齐）
+const REASONING_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const
+// Pi-ai SDK thinkingFormat 枚举
+const THINKING_FORMATS = [
+  'openai',
+  'openrouter',
+  'deepseek',
+  'together',
+  'zai',
+  'qwen',
+  'qwen-chat-template',
+  'string-thinking',
+  'ant-ling',
+] as const
+
 const providerModelSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   reasoning: z.boolean().optional(),
+  // 能力开关
+  vision: z.boolean().optional(),
+  toolCalling: z.boolean().optional(),
+  onlyThinking: z.boolean().optional(),
+  allowDisableThinking: z.boolean().optional(),
+  customProtocol: z.boolean().optional(),
+  // 思考参数
+  thinkingFormat: z.enum(THINKING_FORMATS).optional(),
+  supportedReasoningEfforts: z.array(z.enum(REASONING_EFFORT_LEVELS)).optional(),
+  defaultReasoningEffort: z
+    .union([z.literal('auto'), z.enum(REASONING_EFFORT_LEVELS)])
+    .optional(),
   cost: z.object({
     input: z.number(),
     output: z.number(),
@@ -41,6 +68,12 @@ const providerConfigSchema = z.object({
   api: z.string().min(1),
   authHeader: z.boolean().optional(),
   models: z.array(providerModelSchema).min(1),
+  /**
+   * 新增模式标记：为 true 时若 id 已存在则拒绝写入（返回 409），
+   * 防止"新增 Provider"因 id 与已有 Provider（如默认 Provider）冲突而意外覆盖其数据。
+   * 编辑模式不传此字段。
+   */
+  createOnly: z.boolean().optional(),
 })
 
 export const providerRoute: FastifyPluginAsync = async (app) => {
@@ -60,8 +93,22 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     const config = validateBody(providerConfigSchema, request, reply)
     if (!config) return
 
+    // 新增模式（createOnly）下，若 id 已存在则拒绝写入。
+    // 这是后端兜底防线：即使前端 id 派生/去重逻辑有遗漏，
+    // 也不会让"新增 Provider"意外覆盖已有 Provider（如默认 Provider）的数据。
+    if (config.createOnly && store.get(config.id)) {
+      throw new AppError(
+        ErrorCode.CONFLICT,
+        `Provider "${config.id}" 已存在，新增被拒绝。请更换名称，或直接编辑该 Provider`,
+        409
+      )
+    }
+
+    // createOnly 仅用于请求语义，不持久化到 store
+    const { createOnly: _createOnly, ...persistConfig } = config
+
     // 1. 存入 ProviderConfigStore（供 fallback resolver 读取 API Key）
-    store.upsert(config)
+    store.upsert(persistConfig)
 
     // 2. 注册到 ModelRegistry（供 Agent Session 使用）
     modelRegistry.registerProvider(config.id, {
@@ -70,15 +117,7 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
       apiKey: config.apiKey,
       api: config.api,
       authHeader: config.authHeader ?? true,
-      models: config.models.map((m) => ({
-        id: m.id,
-        name: m.name,
-        reasoning: m.reasoning ?? false,
-        input: ['text'],
-        cost: m.cost ?? { input: 0, output: 0 },
-        contextWindow: m.contextWindow ?? 32768,
-        maxTokens: m.maxTokens ?? 8192,
-      })),
+      models: config.models.map(mapToSdkModel),
     })
 
     // 3. 注入 API Key 到 AuthStorage（runtime override）
@@ -262,4 +301,66 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
 
     return success(models, request.traceId)
   })
+}
+
+/**
+ * 把 ProviderModelConfig 映射为 pi-ai SDK 的 Model 形状。
+ *
+ * 字段映射规则：
+ * - vision: 是否在 input 数组中追加 'image'
+ * - supportedReasoningEfforts: 映射为 thinkingLevelMap，键值都设为同一档位（默认值）
+ * - allowDisableThinking: 是否在 thinkingLevelMap 中追加 'off' 键
+ * - thinkingFormat: 透传到 compat.thinkingFormat
+ * - toolCalling / onlyThinking / customProtocol / defaultReasoningEffort: 业务字段，暂不传给 SDK
+ *   （defaultReasoningEffort 由调用方在请求层读取使用；其他均为 UI 业务概念）
+ *
+ * 导出供单元测试验证映射正确性。
+ */
+export function mapToSdkModel(m: z.infer<typeof providerModelSchema>): {
+  id: string
+  name: string
+  reasoning: boolean
+  input: ('text' | 'image')[]
+  thinkingLevelMap?: Record<string, string | null>
+  compat?: { thinkingFormat?: (typeof THINKING_FORMATS)[number] }
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  contextWindow: number
+  maxTokens: number
+} {
+  const input: ('text' | 'image')[] = ['text']
+  if (m.vision) input.push('image')
+
+  let thinkingLevelMap: Record<string, string | null> | undefined
+  if (m.supportedReasoningEfforts && m.supportedReasoningEfforts.length > 0) {
+    thinkingLevelMap = {}
+    for (const level of m.supportedReasoningEfforts) {
+      thinkingLevelMap[level] = level
+    }
+  }
+  if (m.allowDisableThinking) {
+    thinkingLevelMap ??= {}
+    // pi-ai SDK 用 'off' 键表示"允许关闭思考"
+    thinkingLevelMap['off'] = 'off'
+  }
+
+  const compat: { thinkingFormat?: (typeof THINKING_FORMATS)[number] } = {}
+  if (m.thinkingFormat) compat.thinkingFormat = m.thinkingFormat
+
+  const cost = m.cost ?? { input: 0, output: 0 }
+  return {
+    id: m.id,
+    name: m.name,
+    reasoning: m.reasoning ?? false,
+    input,
+    ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+    ...(Object.keys(compat).length > 0 ? { compat } : {}),
+    cost: {
+      input: cost.input,
+      output: cost.output,
+      cacheRead: cost.cacheRead ?? 0,
+      cacheWrite: cost.cacheWrite ?? 0,
+    },
+    contextWindow: m.contextWindow ?? 32768,
+    maxTokens: m.maxTokens ?? 8192,
+  }
 }

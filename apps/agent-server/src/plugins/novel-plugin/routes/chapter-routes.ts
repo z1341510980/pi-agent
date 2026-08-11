@@ -106,7 +106,23 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
 
       const updated = store.updateChapter(request.params.id, patch, versionSource)
       if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
-      return success(updated, request.traceId)
+
+      // T04 决策 4：中间章重写 → 后续派生物标 stale，响应携带影响范围供前端提示重建
+      let derivedState: Record<string, unknown> = { isMiddleRewrite: false }
+      if (input.content != null) {
+        const laterChapters = store.listChapters(updated.projectId)
+          .filter((c) => c.chapterNumber > updated.chapterNumber && c.content?.trim().length)
+        if (laterChapters.length > 0) {
+          const staleMarked = store.markStaleFromChapter(updated.projectId, updated.id)
+          derivedState = {
+            isMiddleRewrite: true,
+            staleMarked,
+            affectedChapters: laterChapters.map((c) => c.chapterNumber),
+            message: `检测到中间章节重写，后续 ${laterChapters.length} 章的推进记录已标记待重建，请在前端确认后从本章开始重建。`,
+          }
+        }
+      }
+      return success({ ...updated, derivedState }, request.traceId)
     },
   })
 
@@ -302,6 +318,31 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
         model,
       )
       return success(suggestion, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // 不可变正文版本链（V2 content revision，T04）
+  // ═══════════════════════════════════════════════════════════════
+
+  routes.push({
+    method: 'GET',
+    path: '/chapters/:id/content-revisions',
+    handler: async (request: any) => {
+      const chapter = store.getChapterById(request.params.id)
+      if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      return success(store.listContentRevisions(request.params.id), request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/chapters/:id/content-revisions/:revisionId/rollback',
+    handler: async (request: any) => {
+      const chapter = store.getChapterById(request.params.id)
+      if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      const result = store.rollbackToContentRevision(request.params.id, request.params.revisionId)
+      return success(result, request.traceId)
     },
   })
 

@@ -41,7 +41,6 @@ import {
   type NovelInformationLayer,
   type NovelItem,
   type NovelLocation,
-  type NovelProject,
   type NovelStoryEntityType,
   type NovelVolume,
   type NovelWorldElement
@@ -53,7 +52,7 @@ import {
   getDetailEntityPresentation,
   type DetailEntityType
 } from './detail-overview'
-import { ProjectForm } from './detail-forms/project-form'
+// (ProjectForm moved to SettingsPanel; project type no longer rendered here)
 import { CharacterForm } from './detail-forms/character-form'
 import { ChapterForm, VolumeForm } from './detail-forms/chapter-form'
 import { ConflictForm } from './detail-forms/conflict-form'
@@ -500,9 +499,6 @@ export function NovelDetailPanel({
         ) : (
           <DetailPanelEditProvider onDirtyChange={setHasUnsavedChanges}>
             <div className="px-3 pb-3 pt-2.5">
-              {activeSelection.type === 'project' && (
-                <ProjectForm key={entity.id} entity={entity as NovelProject} />
-              )}
               {activeSelection.type === 'character' && (
                 <CharacterForm key={entity.id} entity={entity as NovelCharacter} />
               )}

@@ -63,19 +63,33 @@ export function ChapterContentEditor({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ── 强制落库 ──
-  const flushSave = useCallback(async () => {
-    if (saveStateRef.current !== 'dirty') return
+  const flushSave = useCallback(async (): Promise<boolean> => {
+    if (saveStateRef.current === 'saving') return false
+    if (saveStateRef.current !== 'dirty' && saveStateRef.current !== 'error') return true
     const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
-    if (!targetChapter) return
+    if (!targetChapter) return false
+    saveStateRef.current = 'saving'
     setSaveState('saving')
     setErrorMsg(null)
     try {
       const updated = await updateChapter(targetChapter.id, { content: draftContentRef.current })
       upsertChapter(updated)
+      // T04 决策 4：中间章重写 → 提示后续派生状态待重建
+      if (updated.derivedState?.isMiddleRewrite) {
+        const ds = updated.derivedState
+        toastError(
+          '中间章节已重写，后续内容待重建',
+          ds.message ?? `影响后续章节 ${ds.affectedChapters?.join('、') ?? ''}，请确认后从本章开始重建`,
+        )
+      }
+      saveStateRef.current = 'saved'
       setSaveState('saved')
+      return true
     } catch (err) {
+      saveStateRef.current = 'error'
       setSaveState('error')
       setErrorMsg(err instanceof Error ? err.message : '保存失败')
+      return false
     }
   }, [chapters, playheadChapter, upsertChapter])
 
@@ -141,12 +155,13 @@ export function ChapterContentEditor({
     },
   })
 
-  // ── 版本回滚成功回调 ──
-  // 用回滚后的正文覆盖编辑器显示和 draft，同步 store 中的 chapter 记录
+  // ── 历史版本应用成功回调 ──
+  // 用目标版本正文覆盖编辑器显示和 draft，同步 store 中的 chapter 记录
   // 注意：必须在 editor 初始化之后声明；useCallback 的依赖数组会在渲染时立即读取 editor
-  // 必须 setSaveState('saved') 避免防抖保存把回滚后的正文再次覆盖（虽然内容相同，但避免无谓请求）
-  const handleRollbackSuccess = useCallback((content: string, wordCount: number) => {
+  // 必须 setSaveState('saved') 避免防抖保存把应用后的正文再次覆盖。
+  const handleVersionApplied = useCallback((content: string, wordCount: number) => {
     setDraftContent(content)
+    saveStateRef.current = 'saved'
     setSaveState('saved')
     setErrorMsg(null)
     if (editor) editor.commands.setContent(content, { emitUpdate: false })
@@ -178,12 +193,20 @@ export function ChapterContentEditor({
     const previousChapterId = loadedChapterIdRef.current
     loadedChapterIdRef.current = targetChapter.id
 
-    const switchTo = () => {
+    const switchTo = (): void => {
       const content = targetChapter.content ?? ''
       setDraftContent(content)
       setSaveState('saved')
       setErrorMsg(null)
-      if (editor) editor.commands.setContent(content, { emitUpdate: false })
+      // 空正文（content=''）必须走正常编辑器路径：try/catch 防止空文档解析异常
+      // 把编辑器打挂（TipTap 空字符串 setContent 在个别版本会抛错导致无法编辑）。
+      try {
+        editor?.setEditable(!isCreationActive)
+        if (editor) editor.commands.setContent(content, { emitUpdate: false })
+      } catch {
+        // 兜底：即使 setContent 失败，也保持编辑器可编辑，用户可直接输入
+        editor?.setEditable(true)
+      }
     }
 
     // 章节切换前，若有未保存改动，先保存到旧章节（通过 previousChapterId 定位）
@@ -350,7 +373,7 @@ export function ChapterContentEditor({
             type="button"
             onClick={() => setVersionPanelOpen(true)}
             disabled={!currentChapter}
-            title="查看章节正文的历史版本并支持回滚"
+            title="查看、对比历史版本并应用到当前正文"
             className="cce-reverse-btn"
           >
             <History className="size-3" />
@@ -364,7 +387,8 @@ export function ChapterContentEditor({
         open={versionPanelOpen}
         onOpenChange={setVersionPanelOpen}
         chapterId={currentChapter?.id ?? null}
-        onRollbackSuccess={handleRollbackSuccess}
+        onBeforeApply={flushSave}
+        onApplySuccess={handleVersionApplied}
       />
     </div>
   )

@@ -24,6 +24,7 @@ import type {
   NovelInformationLayer,
   NovelItem,
   NovelCharacterHistory,
+  NovelNarrative,
   ConflictTier,
 } from '@/api/novel-client'
 import type {
@@ -75,6 +76,14 @@ export interface SubtrackBand {
   border: string
   /** enum/level 维度的值标识，用于颜色映射 */
   valueKey?: string
+}
+
+const CHARACTER_PLOT_ROLE_LABELS: Record<string, string> = {
+  protagonist: '主角',
+  main_opponent: '主要对手',
+  supporting: '配角',
+  function: '功能角色',
+  background: '背景角色',
 }
 
 export interface SubtrackCurvePoint {
@@ -1108,10 +1117,12 @@ export function buildGroups(params: {
   characterHistory: NovelCharacterHistory[]
   /** 标记列表（用于填充 entity.note） */
   markers?: Array<{ type: string; entityId: string | null; note: string }>
+  /** 剧情条目（narrative 轨道，与冲突同跨度模式；省略时兼容旧调用方） */
+  narratives?: NovelNarrative[]
 }): MatrixData {
   const {
     chapters, characters, conflicts, clues, foreshadows, factions, locations, worldElements,
-    infoLayers = [], items, characterHistory, markers,
+    infoLayers = [], items, characterHistory, markers, narratives = [],
   } = params
 
   const maxChapter = computeMaxChapter(chapters)
@@ -1140,19 +1151,56 @@ export function buildGroups(params: {
     const history = characterHistory.filter((h) => h.characterId === character.id)
     const spans = computeCharacterSpans(history)
     if (spans.length === 0) continue // 无历史 → 进元素池（调用方处理）
+    const isProtagonist = character.isProtagonist || character.plotRole === 'protagonist'
+    const plotRole = isProtagonist ? 'protagonist' : character.plotRole
     characterGroup.entities.push({
       id: character.id,
       kind: 'character',
       name: character.name,
       entityId: character.id,
       entityType: 'character',
-      isProtagonist: character.isProtagonist,
-      subLabel: character.isProtagonist ? '主角' : '配角',
+      isProtagonist,
+      subLabel: CHARACTER_PLOT_ROLE_LABELS[plotRole] ?? '配角',
       characterSpans: spans,
       note: noteMap.get(character.id),
     })
   }
   groups.push(characterGroup)
+
+  // ── 剧情分组（narrative 轨道：推进/转折/悬念/收束/铺垫/揭示，与冲突同跨度模式）──
+  // 顺序：角色 → 剧情 → 冲突 → ...（与 GROUP_ORDER 一致）
+  const narrativeGroup: MatrixGroup = {
+    ...GROUP_META.narrative,
+    entities: [],
+  }
+  const narrativeTypeLabels: Record<string, string> = {
+    advance: '剧情推进',
+    turn: '转折',
+    reversal: '反转',
+    suspense: '悬念',
+    resolve: '收束',
+    setup: '铺垫',
+    reveal: '揭示',
+    misc: '剧情事件',
+  }
+  for (const narrative of narratives) {
+    const spans = narrative.chapterSpans ?? []
+    const range = computeSpanRange(spans)
+    if (range == null) continue // 未放置 → 元素池
+    narrativeGroup.entities.push({
+      id: narrative.id,
+      kind: 'narrative',
+      name: narrative.description,
+      entityId: narrative.id,
+      entityType: 'narrative',
+      subLabel: narrativeTypeLabels[narrative.type] ?? narrative.type,
+      chapterSpans: spans,
+      spanStart: range.start,
+      spanEnd: range.end,
+      note: noteMap.get(narrative.id),
+    })
+  }
+  groups.push(narrativeGroup)
 
   // ── 冲突分组（按 tier 分组：主要/次要/主角目的）──
   const conflictGroup: MatrixGroup = {

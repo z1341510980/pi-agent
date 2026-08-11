@@ -53,7 +53,7 @@ function failedMemoryResult(summary: string, error: string): MemoryGenerationRes
       factionUpdatesApplied: 0, locationUpdatesApplied: 0,
       relationshipUpdatesApplied: 0, relationshipCreatesApplied: 0,
       itemUpdatesApplied: 0, itemCreatesApplied: 0,
-      hookUpdatesApplied: 0, arcStageChangesApplied: 0, total: 0,
+      hookUpdatesApplied: 0, arcStageChangesApplied: 0, narrativeCreatesApplied: 0, narrativeUpdatesApplied: 0, storylineProgressesApplied: 0, candidateCreatesApplied: 0, total: 0,
     },
   }
 }
@@ -108,6 +108,12 @@ export interface CreationOptions {
   signal?: AbortSignal
   /** 本章已编排实体约束（模式1手动编排 / 模式2 AI编排产出），注入 SEMI 层 */
   arrangedEntities?: ArrangedEntity
+  /**
+   * per-call 模型覆盖（输入框旁选择器传入）：优先级高于项目主模型与 AgentPage 配置。
+   * 传入后本流程所有 Agent 统一使用该 provider+model（保证缓存命中），
+   * 用于"本次创作临时切换模型"。
+   */
+  modelId?: { provider: string; modelId: string }
 }
 
 /** CreationResult 已迁入 @repo/shared/novel 共享包，此处通过顶部 import 引入 */
@@ -1667,6 +1673,17 @@ export class ChapterFinalizer {
         }
         this.store.updateLocation(locationId, patch)
       }
+    }
+
+    // ── P2：实体出场关系统一（appearanceV2Write 开启时双写，默认关 = 无副作用）──
+    // 维度回填是出场关系的主收口：编排涉及 + Memory 新建 + 正文确认全部汇聚于此，
+    // 在这里双写即可覆盖三入口。角色出场仍走 character_history，不重复记录。
+    if (chapterId) {
+      this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'conflict', entityIds: [...involvedConflictIds], source: 'sync' })
+      this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'foreshadow', entityIds: [...involvedForeshadowIds], source: 'sync' })
+      this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'clue', entityIds: [...involvedClueIds], source: 'sync' })
+      this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'faction', entityIds: [...involvedFactionIds], source: 'sync' })
+      this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'location', entityIds: [...involvedLocationIds], source: 'sync' })
     }
   }
 

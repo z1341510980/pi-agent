@@ -23,6 +23,7 @@ import type {
   NovelEdge,
   NovelMarker,
   NovelVolume,
+  NovelNarrative,
 } from '@/api/novel-client'
 import { useNovelUiStore } from './novel-ui-store'
 
@@ -47,6 +48,7 @@ export interface NovelDataState {
   locations: NovelLocation[]
   worldElements: NovelWorldElement[]
   items: NovelItem[]
+  narratives: NovelNarrative[]
   nodePositions: NovelNodePosition[]
   characterHistory: NovelCharacterHistory[]
   edges: NovelEdge[]
@@ -71,6 +73,7 @@ export interface NovelDataState {
     locations?: NovelLocation[]
     worldElements?: NovelWorldElement[]
     items?: NovelItem[]
+    narratives?: NovelNarrative[]
     edges?: NovelEdge[]
     markers?: NovelMarker[]
   }) => void
@@ -93,6 +96,7 @@ export interface NovelDataState {
   upsertLocation: (location: NovelLocation) => void
   upsertWorldElement: (element: NovelWorldElement) => void
   upsertItem: (item: NovelItem) => void
+  upsertNarrative: (narrative: NovelNarrative) => void
 
   // ── 实体删除 ──
   removeProject: (id: string) => void
@@ -106,6 +110,7 @@ export interface NovelDataState {
   removeLocation: (id: string) => void
   removeWorldElement: (id: string) => void
   removeItem: (id: string) => void
+  removeNarrative: (id: string) => void
   removeInfoLayer: (id: string) => void
 
   // ── 节点位置 ──
@@ -243,6 +248,7 @@ function emptyEntities() {
     locations: [],
     worldElements: [],
     items: [],
+    narratives: [],
     edges: [],
     characterHistory: [],
     nodePositions: [],
@@ -277,6 +283,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         locations: [],
         worldElements: [],
         items: [],
+        narratives: [],
         nodePositions: [],
         characterHistory: [],
         edges: [],
@@ -331,6 +338,7 @@ export const useNovelDataStore = create<NovelDataState>()(
               locations: mergeListById(state.locations, data.locations, pid),
               worldElements: mergeListById(state.worldElements, data.worldElements, pid),
               items: mergeListById(state.items, data.items, pid),
+              narratives: mergeListById(state.narratives, data.narratives, pid),
               edges: data.edges ?? state.edges,
               markers: data.markers ?? state.markers,
             }
@@ -362,6 +370,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         upsertLocation: (location) => set((state) => ({ locations: upsertInList(state.locations, location) })),
         upsertWorldElement: (element) => set((state) => ({ worldElements: upsertInList(state.worldElements, element) })),
         upsertItem: (item) => set((state) => ({ items: upsertInList(state.items, item) })),
+        upsertNarrative: (narrative) => set((state) => ({ narratives: upsertInList(state.narratives, narrative) })),
 
         // ── remove ──
         removeProject: (id) =>
@@ -387,6 +396,7 @@ export const useNovelDataStore = create<NovelDataState>()(
         removeLocation: (id) => set((state) => ({ locations: removeFromList(state.locations, id) })),
         removeWorldElement: (id) => set((state) => ({ worldElements: removeFromList(state.worldElements, id) })),
         removeItem: (id) => set((state) => ({ items: removeFromList(state.items, id) })),
+        removeNarrative: (id) => set((state) => ({ narratives: removeFromList(state.narratives, id) })),
         removeInfoLayer: (id) => set((state) => ({ infoLayers: removeFromList(state.infoLayers, id) })),
 
         // ── 节点位置 ──

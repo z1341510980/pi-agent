@@ -34,6 +34,9 @@ export type EnqueueResult =
   | { ok: true; id: string }
   | { ok: false; reason: 'empty' | 'queue-full' | 'too-long' }
 
+/** 当前选中模型对应的思考强度档位；null 表示未显式设置（透传请求层默认） */
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
 interface SessionState {
   // ── 会话数据 ──
   sessions: SessionSummary[]
@@ -46,6 +49,12 @@ interface SessionState {
   compactionCount: number
   /** 当前活跃 Agent ID */
   activeAgentId: string
+  /**
+   * 每个 thread 独立保存的思考强度（持久化到 localStorage）。
+   * 后端同步到 SQLite thread_thinking_levels 表，切换时由 chat-workspace
+   * 调用后端端点 + clear session 缓存。
+   */
+  selectedThinkingLevels: Record<string, ThinkingLevel | null>
 
   // ── Actions ──
   setSessions: (sessions: SessionSummary[]) => void
@@ -71,6 +80,10 @@ interface SessionState {
   reorderQueue: (threadId: string, ids: string[]) => void
   clearQueue: (threadId: string) => void
   setSelectedModel: (model: SelectedModel | null) => void
+  /** 设置指定 thread 的思考强度；level=null 表示清除（恢复透传） */
+  setSelectedThinkingLevel: (threadId: string, level: ThinkingLevel | null) => void
+  /** 删除 thread 时同步清理 thinkingLevel */
+  removeSessionThinkingLevel: (threadId: string) => void
   incrementCompactionCount: () => void
   setActiveAgentId: (id: string) => void
   clearAll: () => void
@@ -190,6 +203,7 @@ export const useSessionStore = create<SessionState>()(
       selectedModel: null,
       compactionCount: 0,
       activeAgentId: 'default',
+      selectedThinkingLevels: {},
 
       // ── Actions ──
       setSessions: (sessions) => set({ sessions }),
@@ -324,6 +338,20 @@ export const useSessionStore = create<SessionState>()(
         })),
 
       setSelectedModel: (model) => set({ selectedModel: model }),
+      setSelectedThinkingLevel: (threadId, level) =>
+        set((state) => ({
+          selectedThinkingLevels: {
+            ...state.selectedThinkingLevels,
+            [threadId]: level,
+          },
+        })),
+      removeSessionThinkingLevel: (threadId) =>
+        set((state) => {
+          if (!(threadId in state.selectedThinkingLevels)) return state
+          const next = { ...state.selectedThinkingLevels }
+          delete next[threadId]
+          return { selectedThinkingLevels: next }
+        }),
       setActiveAgentId: (id) => set({ activeAgentId: id }),
 
       incrementCompactionCount: () =>
@@ -377,6 +405,7 @@ export const useSessionStore = create<SessionState>()(
           ]),
         ),
         selectedModel: state.selectedModel,
+        selectedThinkingLevels: state.selectedThinkingLevels,
         compactionCount: state.compactionCount,
         activeAgentId: state.activeAgentId,
       }),

@@ -236,6 +236,16 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       value TEXT NOT NULL
     );`,
   },
+  {
+    // 每个 thread 的思考强度（thinking level）独立存储，
+    // 切换时只清掉对应 thread 的 PiSession 缓存（不影响其他线程）
+    id: '014_create_thread_thinking_levels',
+    sql: `CREATE TABLE IF NOT EXISTS thread_thinking_levels (
+      thread_id      TEXT PRIMARY KEY,
+      thinking_level TEXT NOT NULL,
+      updated_at     INTEGER NOT NULL DEFAULT (unixepoch())
+    );`,
+  },
 ]
 
 /** 执行所有待执行的迁移 */

@@ -41,6 +41,7 @@ import { createNovelAgUiEmitter, createSseEmitterSink } from '../utils/sse-emitt
 import { cancelDebug } from '../utils/cancel-debug-log.js'
 import {
   creationFlowBodySchema,
+  arrangedEntitiesSchema,
   parseArrangedEntities,
   findForeignArrangedEntities,
 } from './arranged-entities-contract.js'
@@ -190,6 +191,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           chapterNumberValue,
           {
             emit: emitter.emit,
+            // per-call 模型覆盖（输入框旁选择器传入）
+            modelId: input.modelId,
             onCheckpoint: async (checkpoint) => {
               // 通过 ConfirmationManager 发起决策请求
               // timeoutMs=0 表示无超时：用户可能需要长时间阅读/checkpoint 内容并思考，
@@ -267,6 +270,94 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         finishNovelChapterTask(creationLockKey, task)
         chapterCreationLocks.delete(creationLockKey)
         cancelDebug('create-flow-finally-post', { projectId, chapterNumber, lockExists: chapterCreationLocks.has(creationLockKey), taskExists: activeNovelChapterTasks.has(creationLockKey) })
+        reply.raw.end()
+      }
+    },
+  })
+
+  // 定向再修订：质量门修订失败后，仅针对已保留修订稿的未通过项再次定向修订。
+  // 不复跑 Director/Writer/Reviewer，避免失败后整条重跑烧掉大量 token；
+  // 通过后**不自动落库**，由前端把修订稿交还用户（可手动编辑或保存到章节）。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/re-revise',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber } = request.params
+      const reReviseBodySchema = z.object({
+        content: z.string().min(1, '缺少待修订正文'),
+        arrangedEntities: arrangedEntitiesSchema.optional(),
+      })
+      const input = validateBody(reReviseBodySchema, request, reply)
+      if (!input) return reply
+      const arrangedEntities = parseArrangedEntities(input)
+      if (arrangedEntities) {
+        const invalid = findForeignArrangedEntities(store, projectId, arrangedEntities)
+        if (invalid.length > 0) {
+          reply.code(400).send({ ok: false, error: `编排实体不属于当前项目或不存在: ${invalid.join(', ')}` })
+          return
+        }
+      }
+
+      const creationLockKey = `${projectId}:${chapterNumber}`
+      if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
+        reply.code(409).send({ ok: false, error: '该章节正在创作中，请勿重复启动修订流程' })
+        return
+      }
+
+      // SSE 设置与 create-flow 一致（绕过 Fastify CORS 中间件，需手动附加 CORS 头）
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      request.raw.socket?.setNoDelay?.(true)
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(': keepalive\n\n')
+      }, 15000)
+
+      const emitter = createNovelAgUiEmitter(
+        createSseEmitterSink((data) => reply.raw.write(data)),
+        `novel:chapter:${projectId}:${chapterNumber}:re-revise`,
+        randomUUID(),
+      )
+      const chapterNumberValue = parseInt(chapterNumber, 10)
+      const task = registerNovelChapterTask(creationLockKey, 're-revise')
+      const abortOnDisconnect = () => {
+        if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
+          task.controller.abort(new Error('客户端已断开修订流'))
+        }
+      }
+      reply.raw.once('close', abortOnDisconnect)
+
+      try {
+        chapterCreationLocks.add(creationLockKey)
+        const result = await services.orchestrator.reviseOnly({
+          projectId,
+          chapterNumber: chapterNumberValue,
+          content: input.content,
+          arrangedEntities,
+          options: {
+            emit: emitter.emit,
+            // re-revise 无用户检查点；成本闸门若意外触发（预算从零起，正常不会），
+            // 防御性继续，避免流程被未知决策打断。
+            onCheckpoint: async () => 'approve' as const,
+            onProgress: (event) => emitter.progress(event),
+            signal: task.controller.signal,
+          },
+        })
+        emitter.result(result)
+      } catch (err) {
+        cancelDebug('re-revise-catch', { projectId, chapterNumber, errMessage: err instanceof Error ? err.message : String(err), signalAborted: task.controller.signal.aborted })
+        emitter.error(err instanceof Error ? err.message : String(err))
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.off('close', abortOnDisconnect)
+        finishNovelChapterTask(creationLockKey, task)
+        chapterCreationLocks.delete(creationLockKey)
         reply.raw.end()
       }
     },
@@ -1181,6 +1272,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   const chatBodySchema = z.object({
     message: z.string().min(1).max(8000),
     mentionedAgents: z.array(z.string()).max(10).optional(),
+    /** per-call 模型覆盖（输入框旁选择器传入，本次回复临时切换模型） */
+    modelId: z.object({ provider: z.string(), modelId: z.string() }).optional(),
   })
 
   routes.push({
@@ -1224,6 +1317,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           {
             emit: emitter.emit,
             moderatorModel: settings.moderatorModel,
+            modelId: input.modelId,
           },
         )
         emitter.result({ status: 'completed', replies: result.replies })

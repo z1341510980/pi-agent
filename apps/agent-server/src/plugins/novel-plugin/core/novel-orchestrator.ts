@@ -39,6 +39,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { ContextSectionCollector } from './context-section-metrics.js'
 
 import type { NovelStore } from './novel-store.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
@@ -46,15 +47,17 @@ import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { runtimePerformance } from '../../../config/performance.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CreationFlowEvent, getNovelAgentTemperature } from './novel-agents.js'
+import type { QualityGateFailureItem, RevisionRoundRecord, RevisionEstimate } from '@repo/shared/novel'
 import {
   getNovelAskStoryPolicy,
   isNovelAskStoryEnabled,
   resolveNovelAgentToolNames,
   type NovelAskStoryPolicy,
 } from './novel-ask-story-policy.js'
-import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, RhythmSuggestion, VersionSource } from './types.js'
+import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, RhythmSuggestion, VersionSource, NovelChapter } from './types.js'
+import type { CheckpointDecision } from './novel-agents.js'
 import { RhythmController } from './rhythm-controller.js'
-import { scanCliches, formatClicheReport } from './cliche-scanner.js'
+import { scanCliches, formatClicheReport, type ClicheHit } from './cliche-scanner.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
 import type { NovelMemoryGenerator } from './novel-memory-generator.js'
 import type { NovelAgentLogStatus } from './types.js'
@@ -71,7 +74,18 @@ import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-too
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
 import { cancelDebug } from '../utils/cancel-debug-log.js'
-import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
+import {
+  evaluateProseQuality,
+  formatProseQualityReport,
+  buildProseRevisionPlan,
+  type ProseQualityReport,
+} from './prose-quality-evaluator.js'
+import { arbitrateQuality, type QualitySignal } from './quality-policy.js'
+import { isNovelFeatureEnabled } from './novel-feature-flags.js'
+import { ChunkCache, buildWithChunkCache, buildChunkVersionSource } from './chunk-cache.js'
+import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
+import { buildScenePlanFromNarrativeTask } from './chapter-scene-plan-adapter.js'
+
 import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './llm-error-policy.js'
 import { buildWriterRewritePlan } from './writer-rewrite-plan.js'
 import {
@@ -91,6 +105,12 @@ interface CreationRunContext {
   askStoryPolicy: NovelAskStoryPolicy
   /** Deterministic Writer/Reviser fact-pack injection is enabled for this run. */
   factPackPathActive: boolean
+  /**
+   * 项目级「创作主模型」modelId（启动时冻结）。设置后本流程所有 Agent 统一使用，
+   * 保证 promptCacheScope 内模型一致 → shared 前缀缓存全程可命中，并消除
+   * "404 model not supported / 401"类配置失败；未设置时为 undefined（各 Agent 用各自配置）。
+   */
+  projectModelId?: string
   arrangedEntities?: ArrangedEntity
   directorOutput?: string
   directorTask?: NarrativeTask
@@ -152,13 +172,48 @@ interface RunAgentOverrides {
   augmentLogResult?: (rawResult: string) => string
 }
 
+/**
+ * P0 埋点开关（PRD §4.1 P0-1 / 架构 §3 联动规则）：
+ * 纯旁路记录，不改变行为，默认开；不进 project feature_flags（flag 机制默认 false 不适合"默认开"）。
+ * 可通过环境变量 NOVEL_CONTEXT_METRIC_ENABLED=false 关闭。
+ */
+export const contextSectionMetricEnabled = process.env.NOVEL_CONTEXT_METRIC_ENABLED !== 'false'
+
 export class NovelOrchestrator {
   /** PostWriteGuard 自动重写上限：超过则降级交给 Reviewer 人工判断，避免无限递归 */
   private static readonly MAX_GUARD_REWRITE = 2
+  /**
+   * 质量门自动修订轮次上限：主 Reviser 1 轮 + 定向修补 1 轮。
+   * 每轮都要烧一次 Reviser 调用，绝不做无上限循环；两轮仍改不动多半是
+   * 章纲/风格本身要求，应回到人工判断而不是继续烧钱。
+   */
+  private static readonly MAX_AUTO_REVISION_ROUNDS = 2
+  /** 必须清理的 AI 腔句式（与 autoReviseHits 同源；残留即阻止落库） */
+  private static readonly MANDATORY_CLICHE_PATTERNS = [
+    'ending_summary',
+    'explanation_tone',
+    'god_view_arrangement',
+    'fragment_sentences',
+    'over_compression',
+  ] as const
+
+  /**
+   * 解析项目级「创作主模型」复合串 "provider:modelId"（如 "openai:gpt-5.6-luna"）。
+   * 返回 createAgUiSession 可接受的 { provider, modelId }；格式不合法（无冒号）返回 undefined，
+   * 表示不生效（各 Agent 保持 AgentPage 配置）。
+   */
+  private static resolveModelRef(projectModelId: string | undefined): { provider: string; modelId: string } | undefined {
+    if (!projectModelId) return undefined
+    const idx = projectModelId.indexOf(':')
+    if (idx <= 0 || idx === projectModelId.length - 1) return undefined
+    return { provider: projectModelId.slice(0, idx).trim(), modelId: projectModelId.slice(idx + 1).trim() }
+  }
   /** 每次 create-flow 独立的异步运行上下文，防止并发章节互相覆盖状态。 */
   private readonly runStorage = new AsyncLocalStorage<CreationRunContext>()
   /** 检查点请求来自另一条 HTTP 请求，按项目和章节暂存用户指令。 */
   private readonly pendingUserMessages = new Map<string, string[]>()
+  /** P4 接入 4：进程级 chunk 缓存（§5.6），惰性创建，chunksEnabled 时使用 */
+  readonly chunkCache = new ChunkCache()
   /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
   private readonly memoryGenerator?: NovelMemoryGenerator
   /** 章节收尾逻辑（Memory 阶段 + 实体同步 + 快照 + 持久化），workflow 和 discussion 共用 */
@@ -208,6 +263,7 @@ export class NovelOrchestrator {
       {
         askStoryPolicy: getNovelAskStoryPolicy(this.store.getProject(projectId)?.novelAskStoryPolicy),
         factPackPathActive: true,
+        projectModelId: this.store.getNovelModelId(projectId),
         arrangedEntities: options.arrangedEntities,
         semiLayerSharedCache: null,
         budget: createChapterBudgetUsage(),
@@ -419,6 +475,14 @@ export class NovelOrchestrator {
         directorTask.expectedIntensityDelta = 1
       }
       run.directorTask = directorTask
+
+      // T03 影子写（V2）：flag 开启时把 Director 计划落成 V2 plan + scenes，
+      // 不改变任何生成行为，仅作双写对账输入（§10 第 1 步）。
+      if (isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')) {
+        this.shadowWriteDirectorPlan(
+          projectId, chapter, chapterNumber, directorTask, run.arrangedEntities, rhythmSuggestion,
+        )
+      }
 
       // 推送叙事任务详情，让用户了解 Director 通过工具提交的完整结构化任务（气泡展示）
       // 直接用 directorTask 局部变量（已断言非空），避免 run.directorTask 可能 undefined 的类型问题
@@ -825,6 +889,78 @@ export class NovelOrchestrator {
         || hit.pattern === 'over_compression'
       ))
       const severeProseIssues = proseQuality.issues.filter(issue => issue.severity === 'error')
+      // ── 质量门统一仲裁（quality-policy.arbitrateQuality）──
+      //
+      // 此前每个门各自 early-return：prose-quality 报了 error 也只是写进 Reviewer 的
+      // 报告里，用户在验收检查点选 approve 就能让"单句段占比 66%"的正文直接落库。
+      // 检测存在但没有执行力，等于没检测。
+      //
+      // 现在把 cliche / prose-shape / character-voice / guard 的信号交给同一个仲裁函数：
+      // 严重形态与声音问题产出 revise，并在下面的检查点里**移除 approve 选项** ——
+      // 用户仍可 reject 或整章 rewrite，但不能静默通过。
+      const qualitySignals: QualitySignal[] = []
+      if (autoReviseHits.length > 0) {
+        qualitySignals.push({
+          gateId: 'cliche-patterns',
+          action: 'revise',
+          reason: 'AI 腔句式命中',
+          details: autoReviseHits.map(hit => `${hit.name}(${hit.count})`).join('、'),
+        })
+      }
+      const severeShapeIssues = severeProseIssues.filter(issue => !issue.code.startsWith('voice_'))
+      if (severeShapeIssues.length > 0) {
+        qualitySignals.push({
+          gateId: 'prose-shape',
+          action: 'revise',
+          reason: '正文形态严重偏离',
+          details: severeShapeIssues.map(issue => issue.message).join('；'),
+        })
+      }
+      const severeVoiceIssues = severeProseIssues.filter(issue => issue.code.startsWith('voice_'))
+      if (severeVoiceIssues.length > 0) {
+        qualitySignals.push({
+          gateId: 'character-voice',
+          action: 'revise',
+          reason: '角色声音趋同',
+          details: severeVoiceIssues.map(issue => issue.message).join('；'),
+        })
+      }
+      if (proseQuality.issues.some(issue => issue.severity === 'warning')) {
+        qualitySignals.push({
+          gateId: 'prose-shape',
+          action: 'advisory',
+          reason: '正文形态存在提示级偏差',
+          details: proseQuality.issues
+            .filter(issue => issue.severity === 'warning')
+            .map(issue => issue.message)
+            .join('；'),
+        })
+      }
+      if (finalPostWriteGuard?.reason) {
+        qualitySignals.push({
+          gateId: finalPostWriteGuard.advisory ? 'matrix-semantic-entities' : 'word-count',
+          action: 'advisory',
+          reason: finalPostWriteGuard.reason,
+          details: finalPostWriteGuard.details,
+        })
+      }
+      const qualityDecision = arbitrateQuality(qualitySignals)
+      // 仲裁给出 revise 时，本章不允许在验收检查点选择"接受"
+      const mandatoryRevision = qualityDecision.action === 'revise'
+      const revisionPlan = buildProseRevisionPlan(proseQuality)
+      if (mandatoryRevision) {
+        this.context.logger.info(
+          {
+            projectId,
+            chapterNumber,
+            decidedBy: qualityDecision.decidedBy?.gateId,
+            reason: qualityDecision.decidedBy?.reason,
+            structural: revisionPlan.needsStructuralRework,
+          },
+          '质量门仲裁判定本章必须修订，验收检查点将不提供「接受」选项',
+        )
+      }
+
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '文字编辑正在盲审正文读感...' })
       const proseEditorResult = await this.runAgent(
         'reviewer',
@@ -926,27 +1062,74 @@ export class NovelOrchestrator {
       // 检查点 2
       this.emitProgress(
         options,
-        requestedRevisionReason ? 'revising' : 'checkpoint_review',
+        requestedRevisionReason || mandatoryRevision ? 'revising' : 'checkpoint_review',
         'phase_change',
         {
           message: requestedRevisionReason
             ? 'Reviewer 已完成检查，按此前选择进入 Reviser...'
-            : '等待用户确认验收报告...',
+            : mandatoryRevision
+              ? `确定性质量门判定必须修订（${qualityDecision.decidedBy?.reason ?? ''}），等待用户确认修订方式...`
+              : '等待用户确认验收报告...',
         },
       )
+      // 质量门给出 revise 时移除 approve：让"检测到严重问题"真正具有执行力。
+      // 用户仍可 rewrite（整章重开）或 reject（取消），只是不能让它静默落库。
+      const reviewCheckpointOptions: CheckpointDecision[] = mandatoryRevision
+        ? (getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
+            ? ['revise', 'rewrite', 'reject']
+            : ['revise', 'reject'])
+        : (getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
+            ? ['approve', 'revise', 'rewrite', 'reject']
+            : ['approve', 'revise', 'reject'])
+      // ── 修订前告知：预计操作与消耗 ──
+      // 只要检查点提供「修订」，就带上 revisionEstimate：用户点「修订」前就能看到
+      // 要跑几轮、每轮几次调用、大概烧多少 token、会处理哪些问题，而不是点下去
+      // 之后才被动看进度。估算基于确定性报告的字符量，只承诺量级。
+      const estimateFailedItems: QualityGateFailureItem[] = []
+      if (autoReviseHits.length > 0) {
+        estimateFailedItems.push({
+          gateId: 'cliche-patterns',
+          reason: 'AI 腔句式命中',
+          details: autoReviseHits.map(hit => `${hit.name}(${hit.count})`).join('、'),
+          patterns: autoReviseHits.map(hit => hit.pattern),
+        })
+      }
+      const estimateShape = severeProseIssues.filter(issue => !issue.code.startsWith('voice_'))
+      if (estimateShape.length > 0) {
+        estimateFailedItems.push({
+          gateId: 'prose-shape',
+          reason: '正文形态严重偏离',
+          details: estimateShape.map(issue => issue.message).join('；'),
+          excerpts: estimateShape.flatMap(issue => issue.excerpts ?? []),
+        })
+      }
+      const estimateVoice = severeProseIssues.filter(issue => issue.code.startsWith('voice_'))
+      if (estimateVoice.length > 0) {
+        estimateFailedItems.push({
+          gateId: 'character-voice',
+          reason: '角色声音趋同',
+          details: estimateVoice.map(issue => issue.message).join('；'),
+        })
+      }
+      const reportChars = proseQualityReport.length + clicheReport.length + (reviewResult?.length ?? 0)
       const reviewDecision = requestedRevisionReason
         ? 'revise'
         : await options.onCheckpoint({
             type: 'review',
             phase: 'checkpoint_review',
             data: {
-              review: reviewResult,
+              review: mandatoryRevision
+                ? `${reviewResult}\n\n---\n\n## 确定性质量门判定：必须修订\n\n${qualityDecision.decidedBy?.reason ?? ''}${qualityDecision.decidedBy?.details ? `：${qualityDecision.decidedBy.details}` : ''}\n\n本章命中的形态或角色声音问题属于确定性检测，不提供"接受当前正文"选项。`
+                : reviewResult,
               budgetCategories: getChapterBudgetCategorySnapshot(run.budget),
+              // 修订操作与消耗预估（前端在「修订」按钮旁展示）
+              revisionEstimate: reviewCheckpointOptions.includes('revise')
+                ? this.buildRevisionEstimate(reviewContent, reportChars, estimateFailedItems)
+                : undefined,
             },
-            options: getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
-              ? ['approve', 'revise', 'rewrite', 'reject']
-              : ['approve', 'revise', 'reject'],
+            options: reviewCheckpointOptions,
           })
+
 
       if (requestedRevisionReason) {
         this.emitProgress(options, 'revising', 'phase_change', {
@@ -954,14 +1137,42 @@ export class NovelOrchestrator {
         })
       }
 
+      // 后端硬门：不能只依赖前端隐藏 approve 按钮。
+      // 旧前端、重放请求或协议漂移仍可能传入 approve；质量门命中时统一转为 revise。
+      // 未知决策不再按接受处理，直接取消，避免任何未识别值绕过质量门落库。
+      const fullRewriteAvailable = getChapterBudgetCategorySnapshot(run.budget).fullChapterRewriteAvailable
+      const effectiveReviewDecision = mandatoryRevision
+        && (
+          reviewDecision === 'approve'
+          || (reviewDecision === 'rewrite' && !fullRewriteAvailable)
+        )
+        ? 'revise'
+        : reviewDecision
+      const isKnownReviewDecision = effectiveReviewDecision === 'approve'
+        || effectiveReviewDecision === 'revise'
+        || effectiveReviewDecision === 'rewrite'
+        || effectiveReviewDecision === 'reject'
+
       let finalContent = reviewContent
 
-      if (reviewDecision === 'reject') {
+      if (!isKnownReviewDecision) {
+        this.context.logger.error(
+          { projectId, chapterNumber, reviewDecision },
+          '验收检查点返回未知决策，拒绝继续落库',
+        )
+        this.emitProgress(options, 'cancelled', 'cancelled', {
+          message: `验收决策无法识别（${String(reviewDecision)}），已停止落库，请重新发起创作。`,
+          detail: { kind: 'unknown_review_decision', reviewDecision: String(reviewDecision) },
+        })
+        return { status: 'cancelled' }
+      }
+
+      if (effectiveReviewDecision === 'reject') {
         this.emitProgress(options, 'cancelled', 'cancelled', { message: '用户拒绝了验收结果，创作流程已取消' })
         return { status: 'cancelled' }
       }
 
-      if (reviewDecision === 'revise') {
+      if (effectiveReviewDecision === 'revise') {
         const autoReviseLabels = [
           ...autoReviseHits.map(hit => hit.name),
           ...severeProseIssues.map(issue => issue.message),
@@ -975,20 +1186,23 @@ export class NovelOrchestrator {
             ? `${autoReviseReason}，修订 Agent 正在自动优化正文...`
             : '修订 Agent 正在根据审稿意见修订章节...',
         })
-        // ⚠️ 工具化修订方案：
-        // 旧方案让 Reviser 输出"原文/修改后"配对文本，再用正则解析。LLM 不严格遵守
-        // 格式时正则解析失败，会走 full 兜底把"修改意见"当作完整正文落库——这正是
-        // 用户反馈的"修改意见覆盖正文"问题的根因。
-        //
-        // 新方案：通过 novel_apply_revision 工具协议化输入。Reviser 必须调用工具才能
+        // ⚠️ 工具化修订方案（保留）：
+        // 通过 novel_apply_revision 工具协议化输入。Reviser 必须调用工具才能
         // 修改正文，工具参数 schema 强制结构化（pairs: [{from, to}]），工具内部用
         // String.replace 做精确替换，完全绕开自然语言解析。draft 通过闭包传递，
         // orchestrator 在 Reviser 结束后直接读取 draft.content 作为最终正文。
-        const draft: RevisionDraftHolder = {
-          content: reviewContent,
-          appliedPatches: [],
-        }
-        const applyRevisionTool = createNovelApplyRevisionTool(draft)
+        //
+        // ── 修订失败不再丢弃成果 ──
+        // 此前任何一条「修订后仍未通过」路径都直接 return { status:'error' }，
+        // 修订稿（draft.content）随服务端进程一起丢掉，前端只剩 Writer 初稿；
+        // 用户点「重试」会从 Director 整条重跑，token 全部白烧。
+        // 现在统一走 runTargetedRevisionLoop：
+        //   - 保留首次正文与质量检测结果，只针对未通过项做定向修订
+        //     （第 2 轮起不再注入语义审稿意见，避免 Reviser 又去改剧情）；
+        //   - 最多 MAX_AUTO_REVISION_ROUNDS 轮，轮次耗尽即停，不做无限重试；
+        //   - 失败返回结构化 error result（携带当前修订稿 content + failedItems +
+        //     revisionRounds），前端据此提供再次修订/手动编辑/保留草稿等出口。
+        //
         // ── 修复：把 Reviewer 工具化提交的结构化验收报告格式化为可读文本，注入 Reviser 上下文 ──
         // 历史问题：Reviewer 工具化后 raw 文本输出（reviewResult）只剩推理过程/客套话，
         // 真正的 issues/suggestions/verdict/scores 在 reviewDraft.review 里（结构化对象）。
@@ -1017,68 +1231,68 @@ export class NovelOrchestrator {
           reviewFindingTexts,
           run.directorTask?.requiredReferences,
         )
-        // 注入原始 writerResult（含破折号）：Reviser 需要看到破折号在哪才能清除它们，
-        // 审稿意见中的破折号由 stripEmDash 清洗（审稿意见是 Reviewer 产出，非正文）。
-        const reviseResult = await this.runAgent('reviser', projectId, chapterNumber,
-          `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${reviewContent}\n\n---\n\n${structuredReviewReport}${reviserFactPack ? `\n\n---\n\n${reviserFactPack}` : ''}\n\n---\n\n## Reviewer 分析过程（参考，结构化报告为准）\n\n${this.promptBuilder.stripEmDash(reviewResult)}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}`,
+        const revisionLoop = await this.runTargetedRevisionLoop({
+          projectId,
+          chapterNumber,
           options,
-          {
-            phase: 'revising',
-            extraTools: [applyRevisionTool],
-            // Reviser 的输入已包含原文、结构化审稿意见和文风身份；不再重复
-            // 发送全书大纲、实体档案和章节 shared 上下文。
-            contextMode: 'editor',
-            // ── 修复：把修订后正文（draft.content）追加到 reviser 的 agent_log.result ──
-            // 工具化后 reviser 的 raw 文本输出只是"我已应用 N 处修订"，真正的修订后正文
-            // 在 draft.content 里（通过 novel_apply_revision 工具闭包更新）。
-            // 不追加的话 agent_log 看不到修订结果，用户无法在日志面板审查修订后的正文。
-            augmentLogResult: (raw) => this.augmentReviserLogResult(raw, draft),
+          initialContent: reviewContent,
+          buildRoundPrompt: ({ round, content, failedItems, report, clicheHits }) => {
+            if (round === 1) {
+              // 首轮：完整上下文（原正文 + 结构化审稿意见 + 质量报告 + 修订计划）。
+              // 注入原始正文（含破折号）：Reviser 需要看到破折号在哪才能清除它们，
+              // 审稿意见中的破折号由 stripEmDash 清洗（审稿意见是 Reviewer 产出，非正文）。
+              return `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${content}\n\n---\n\n${structuredReviewReport}${reviserFactPack ? `\n\n---\n\n${reviserFactPack}` : ''}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}${revisionPlan.instruction ? `\n\n---\n\n${revisionPlan.instruction}` : ''}`
+            }
+            // 第 2 轮起：只针对未通过项定向修补，不重复语义审稿意见。
+            return this.buildTargetedRepairPrompt(chapterNumber, content, failedItems, report, clicheHits)
           },
-        )
-        run.budget = recordChapterBudgetCategory(run.budget, 'reviserRuns')
-        // 工具调用结果决定最终正文：
-        // - draft.appliedPatches 至少有一处成功应用 → 使用 draft.content 作为最终正文
-        // - draft.appliedPatches 为空或全部失败 → 保留原正文，告知用户修订未生效
-        const successfulPatches = draft.appliedPatches.filter(p => p.success)
-        if (successfulPatches.length > 0) {
-          this.context.logger.info(
+        })
+        if (revisionLoop.status === 'blocked') {
+          const lastRound = revisionLoop.rounds[revisionLoop.rounds.length - 1]
+          const noPatchApplied = (lastRound?.appliedPatches ?? 0) === 0
+          const reason = noPatchApplied
+            ? '修订未成功应用任何修改，已阻止原正文落库'
+            : `自动修订 ${revisionLoop.rounds.length} 轮后仍有 ${revisionLoop.failedItems.length} 项表达问题未通过，已阻止落库`
+          this.context.logger.error(
             {
               projectId,
               chapterNumber,
-              appliedCount: successfulPatches.length,
-              failedCount: draft.appliedPatches.length - successfulPatches.length,
-              originalLength: writerResult.length,
-              revisedLength: draft.content.length,
+              errorCode: 'quality_gate_revision_incomplete',
+              failedItems: revisionLoop.failedItems,
+              revisionRounds: revisionLoop.rounds,
             },
-            '修订已通过 novel_apply_revision 工具应用到章节正文',
+            reason,
           )
-          finalContent = draft.content
-        } else {
-          // 修订未生效：Reviser 未调用工具，或所有 patch 都定位失败。
-          // 保留原正文，把 Reviser 输出附给用户决定是否手动采纳。
-          this.context.logger.warn(
-            {
-              projectId,
-              chapterNumber,
-              patchCount: draft.appliedPatches.length,
-              reviseResultLength: reviseResult.length,
-            },
-            'Reviser 未通过工具成功应用任何修订，保留原正文',
-          )
-          this.emitProgress(options, 'revising', 'phase_change', {
-            message: draft.appliedPatches.length === 0
-              ? '修订未生效：Reviser 未调用 novel_apply_revision 工具，已保留原正文，建议可在前端查看 Reviser 输出后手动决定'
-              : `修订未生效：${draft.appliedPatches.length} 处 patch 全部定位失败，已保留原正文`,
+          this.emitProgress(options, 'error', 'error', {
+            message: reason,
             detail: {
-              kind: 'revision_not_applied',
-              reason: draft.appliedPatches.length === 0 ? 'tool_not_called' : 'all_patches_failed',
-              patchCount: draft.appliedPatches.length,
-              reviserRawOutput: reviseResult,
+              kind: 'quality_gate_revision_incomplete',
+              errorCode: 'quality_gate_revision_incomplete',
+              failedItems: revisionLoop.failedItems,
+              revisionRounds: revisionLoop.rounds,
             },
           })
-          finalContent = reviewContent
+          // ⚠️ 关键：error 结果必须携带当前修订稿 content 与结构化失败信息，
+          // 否则前端拿不到修订成果，只能整条重跑。
+          return this.buildQualityGateErrorResult(
+            revisionLoop.content,
+            revisionLoop.failedItems,
+            revisionLoop.rounds,
+            reason,
+          )
         }
-      } else if (reviewDecision === 'rewrite') {
+        finalContent = revisionLoop.content
+        this.context.logger.info(
+          {
+            projectId,
+            chapterNumber,
+            rounds: revisionLoop.rounds.length,
+            appliedPatches: revisionLoop.rounds.reduce((sum, r) => sum + r.appliedPatches, 0),
+            revisedLength: finalContent.length,
+          },
+          '修订循环完成，正文已通过确定性质量门',
+        )
+      } else if (effectiveReviewDecision === 'rewrite') {
         const rewrite = tryRecordFullChapterRewrite(run.budget)
         if (rewrite.allowed) {
           run.budget = rewrite.usage
@@ -1089,35 +1303,18 @@ export class NovelOrchestrator {
             { ...options, arrangedEntities: run.arrangedEntities },
           )
         }
+        // 非强制质量门下，预算耗尽可以接受当前正文；强制质量门下在上面已把
+        // rewrite 转成 revise，绝不能在这里继续走"接受当前正文"。
         this.emitProgress(options, 'revising', 'phase_change', {
-          message: '整章重写次数已达到本章上限，将接受当前正文并跳过整章重开。',
+          message: '整章重写次数已达到本章上限，将转为局部修订，不接受未达标正文。',
         })
-      } else if (reviewDecision === 'approve') {
-        // 显式分支：用户接受当前正文，跳过 Reviser。写一条进度让这个选择在
-        // 对话流里可见 —— 否则界面上「审稿完成」后直接跳到「记忆提取」，
-        // 用户会以为修订环节被系统吞了。
+        if (mandatoryRevision) {
+          return { status: 'error', error: '正文质量门要求修订，但整章重写预算已耗尽，请执行局部修订' }
+        }
+      } else if (effectiveReviewDecision === 'approve') {
+        // 只有没有命中强制质量门时才允许接受当前正文。
         this.emitProgress(options, 'reviewing', 'phase_change', {
           message: '已按你的选择接受当前正文，跳过修订，直接进入落库与记忆提取。',
-        })
-      } else {
-        /**
-         * 兜底：收到不认识的决策值。
-         *
-         * 原来这里没有 else —— 任何非 reject/revise/rewrite 的值（undefined、
-         * 拼错、前后端协议漂移）都会静默沿用 `finalContent = reviewContent`
-         * 走完落库，表现和用户选了"接受"完全一样。在一个会花钱、会覆盖正文的
-         * 分支上"不认识就当同意"是危险的默认。
-         *
-         * 这里不抛错（抛错会让整章白跑），但必须**留痕**：日志 warn + 进度事件，
-         * 让异常可被发现，而不是伪装成正常路径。
-         */
-        this.context.logger.warn(
-          { projectId, chapterNumber, reviewDecision },
-          '验收检查点返回了未知决策值，按「接受当前正文」处理',
-        )
-        this.emitProgress(options, 'reviewing', 'phase_change', {
-          message: `验收决策未能识别（${String(reviewDecision)}），已按「接受当前正文」继续。若你选择的是修订，请重试或反馈此问题。`,
-          detail: { kind: 'unknown_review_decision', reviewDecision: String(reviewDecision) },
         })
       }
 
@@ -1160,6 +1357,479 @@ export class NovelOrchestrator {
       return { status: 'error', error: message }
     } finally {
       cancelDebug('orchestrator-finally', { projectId, chapterNumber, signalAborted: options.signal?.aborted })
+    }
+  }
+
+  /**
+   * 定向再修订（re-revise 端点）：仅针对已保留的修订稿运行有界修订循环，
+   * 不复跑 Director/Writer/Reviewer，也不重复消耗全文生成 token。
+   *
+   * 语义：
+   * - 起点 = 前端回传的失败修订稿（content）；
+   * - 每轮只针对仍未通过的质量门项做定向修补（含摘录定位），最多
+   *   MAX_AUTO_REVISION_ROUNDS 轮；
+   * - 通过后返回 completed + content，**不自动落库** —— 与主流程
+   *   「创作完成后由用户手动保存」一致，由前端把修订稿交还用户决定
+   *   （可继续手动编辑或保存到章节）；
+   * - 仍失败返回结构化 error（errorCode/failedItems/revisionRounds/content），
+   *   用户可再次修订、手动编辑或保留草稿。
+   */
+  async reviseOnly(params: {
+    projectId: string
+    chapterNumber: number
+    content: string
+    arrangedEntities?: ArrangedEntity
+    options: CreationOptions
+  }): Promise<CreationResult> {
+    const { projectId, chapterNumber, content, arrangedEntities, options } = params
+    if (!content.trim()) {
+      return { status: 'error', errorCode: 'invalid_revision_content', error: '没有可修订的正文内容' }
+    }
+    if (this.runStorage.getStore()) {
+      return this.reviseOnlyInContext(projectId, chapterNumber, content, arrangedEntities, options)
+    }
+    return this.runStorage.run(
+      {
+        askStoryPolicy: getNovelAskStoryPolicy(this.store.getProject(projectId)?.novelAskStoryPolicy),
+        factPackPathActive: true,
+        projectModelId: this.store.getNovelModelId(projectId),
+        arrangedEntities,
+        directorOutput: undefined,
+        directorTask: undefined,
+        rhythmSuggestion: undefined,
+        semiLayerSharedCache: null,
+        budget: createChapterBudgetUsage(),
+      },
+      () => this.reviseOnlyInContext(projectId, chapterNumber, content, arrangedEntities, options),
+    )
+  }
+
+  private async reviseOnlyInContext(
+    projectId: string,
+    chapterNumber: number,
+    content: string,
+    arrangedEntities: ArrangedEntity | undefined,
+    options: CreationOptions,
+  ): Promise<CreationResult> {
+    const run = this.requireRunContext()
+    run.arrangedEntities = arrangedEntities
+    const sanitized = sanitizeNovelProse(content)
+    this.emitProgress(options, 'revising', 'phase_change', {
+      message: '正在针对未通过项执行定向修订（不重跑生成流程）...',
+    })
+    // 从最近一次持久化审稿报告重建修订依据（若存在）；缺失时退化为仅确定性门定向修补。
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    const storedReview = chapter?.id ? this.store.getChapterReview(chapter.id) : undefined
+    const structuredReviewReport = this.formatReviewReportForReviser(storedReview)
+    const loop = await this.runTargetedRevisionLoop({
+      projectId,
+      chapterNumber,
+      options,
+      initialContent: sanitized,
+      earlyPassIfClean: true,
+      buildRoundPrompt: ({ round, content: current, failedItems, report, clicheHits }) => {
+        const targeted = this.buildTargetedRepairPrompt(
+          chapterNumber, current, failedItems, report, clicheHits,
+        )
+        if (round === 1) {
+          return [
+            `请对第 ${chapterNumber} 章的正文进行定向修订。`,
+            '',
+            '## 修订依据（最近一次审稿意见，仅作参考）',
+            '',
+            structuredReviewReport,
+            '',
+            '---',
+            '',
+            targeted,
+          ].join('\n')
+        }
+        return targeted
+      },
+    })
+    if (loop.status === 'passed') {
+      this.context.logger.info(
+        { projectId, chapterNumber, rounds: loop.rounds.length, revisedLength: loop.content.length },
+        're-revise 定向修订完成，正文已通过确定性质量门（未自动落库）',
+      )
+      this.emitProgress(options, 'completed', 'completed', {
+        message: '定向修订完成，正文已通过确定性质量门。',
+        detail: { kind: 'revision_passed', revisionRounds: loop.rounds },
+      })
+      return {
+        status: 'completed',
+        content: loop.content,
+        revisionRounds: loop.rounds,
+        failedItems: [],
+        canReviseAgain: false,
+      }
+    }
+    const lastRound = loop.rounds[loop.rounds.length - 1]
+    const noPatchApplied = (lastRound?.appliedPatches ?? 0) === 0
+    const reason = noPatchApplied
+      ? '定向修订未成功应用任何修改，已保留当前修订稿'
+      : `定向修订 ${loop.rounds.length} 轮后仍有 ${loop.failedItems.length} 项表达问题未通过，已保留当前修订稿`
+    this.context.logger.error(
+      {
+        projectId,
+        chapterNumber,
+        errorCode: 'quality_gate_revision_incomplete',
+        failedItems: loop.failedItems,
+        revisionRounds: loop.rounds,
+      },
+      reason,
+    )
+    this.emitProgress(options, 'error', 'error', {
+      message: reason,
+      detail: {
+        kind: 'quality_gate_revision_incomplete',
+        errorCode: 'quality_gate_revision_incomplete',
+        failedItems: loop.failedItems,
+        revisionRounds: loop.rounds,
+      },
+    })
+    return this.buildQualityGateErrorResult(loop.content, loop.failedItems, loop.rounds, reason)
+  }
+
+  /**
+   * 有界定向修订循环（主流程 revise 分支与 re-revise 端点共用）。
+   *
+   * 设计约束：
+   * - **保留成果**：以 initialContent 为起点逐轮迭代，任何一轮失败都不丢正文，
+   *   最终通过 rounds + content 把修订稿带回调用方。
+   * - **限轮次**：最多 MAX_AUTO_REVISION_ROUNDS 轮（主修订 1 轮 + 定向修补 1 轮）。
+   *   每轮都要烧一次 Reviser 调用，绝不无上限循环。
+   * - **定向**：第 2 轮起只注入未通过项（含摘录与修法），不重复语义审稿意见，
+   *   避免 Reviser 又去改剧情。
+   * - **防停滞**：上一轮未成功应用任何 patch 时停止 —— 继续调用只是烧钱。
+   * - **起始即干净**：earlyPassIfClean=true 时（re-revise 复用已修正内容）扫描
+   *   无未通过项则直接通过，不白烧一轮。
+   *
+   * 每轮流程：确定性复检 → 若有未通过项则调用 Reviser（工具化 patch）→
+   * 应用成功后复检 → 记录 RevisionRoundRecord → 通过/到顶/停滞即结束。
+   */
+  private async runTargetedRevisionLoop(params: {
+    projectId: string
+    chapterNumber: number
+    options: CreationOptions
+    initialContent: string
+    /** 起点扫描已干净时是否直接通过（re-revise 传入 true，主流程不传） */
+    earlyPassIfClean?: boolean
+    buildRoundPrompt: (ctx: {
+      round: number
+      content: string
+      failedItems: QualityGateFailureItem[]
+      report: ProseQualityReport
+      clicheHits: ClicheHit[]
+    }) => string
+  }): Promise<{
+    content: string
+    status: 'passed' | 'blocked'
+    rounds: RevisionRoundRecord[]
+    failedItems: QualityGateFailureItem[]
+  }> {
+    const { projectId, chapterNumber, options, initialContent, earlyPassIfClean, buildRoundPrompt } = params
+    let content = initialContent
+    const rounds: RevisionRoundRecord[] = []
+    let lastAppliedPatches = 1 // 起点视为"已应用"，保证首轮必然执行
+    for (let round = 1; round <= NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS; round += 1) {
+      const sanitized = sanitizeNovelProse(content)
+      const report = evaluateProseQuality(sanitized)
+      const clicheHits = scanCliches(sanitized)
+      const failedItems = this.scanQualityGateFailures(sanitized, report, clicheHits)
+      if (failedItems.length === 0) {
+        // 起点干净（re-revise 已修正内容）或上一轮修订后已通过 → 直接通过
+        if (round > 1 || earlyPassIfClean) {
+          return { content, status: 'passed', rounds, failedItems: [] }
+        }
+        // 主流程首轮：用户明确选择"修订"，即使确定性门干净也要让 Reviser
+        // 基于审稿意见走一轮（语义问题不在确定性扫描范围内）。
+      }
+      // 上一轮未成功应用任何 patch：继续调用只是烧钱，停止
+      if (round > 1 && lastAppliedPatches === 0) break
+
+      const prompt = buildRoundPrompt({ round, content, failedItems, report, clicheHits })
+      if (round > 1) {
+        this.emitProgress(options, 'revising', 'phase_change', {
+          message: `第 ${round} 轮定向修补：仍有 ${failedItems.length} 项表达问题待处理...`,
+        })
+      }
+      const draft: RevisionDraftHolder = { content, appliedPatches: [] }
+      const applyRevisionTool = createNovelApplyRevisionTool(draft)
+      await this.runAgent('reviser', projectId, chapterNumber, prompt, options, {
+        phase: 'revising',
+        extraTools: [applyRevisionTool],
+        // Reviser 的输入已包含原文、结构化审稿意见和文风身份；不再重复
+        // 发送全书大纲、实体档案和章节 shared 上下文。
+        contextMode: 'editor',
+        // ── 修复：把修订后正文（draft.content）追加到 reviser 的 agent_log.result ──
+        // 工具化后 reviser 的 raw 文本输出只是"我已应用 N 处修订"，真正的修订后正文
+        // 在 draft.content 里（通过 novel_apply_revision 工具闭包更新）。
+        // 不追加的话 agent_log 看不到修订结果，用户无法在日志面板审查修订后的正文。
+        augmentLogResult: (raw) => this.augmentReviserLogResult(raw, draft),
+      })
+      this.budgetRecordReviserRun()
+      const successful = draft.appliedPatches.filter(p => p.success)
+      lastAppliedPatches = successful.length
+      if (successful.length > 0) content = draft.content
+      this.context.logger.info(
+        {
+          projectId,
+          chapterNumber,
+          round,
+          appliedCount: successful.length,
+          failedCount: draft.appliedPatches.length - successful.length,
+          originalLength: content.length,
+          revisedLength: successful.length > 0 ? draft.content.length : content.length,
+        },
+        `修订第 ${round} 轮完成（novel_apply_revision 工具应用结果）`,
+      )
+
+      // 修订后复检：记录本轮结果，通过即结束
+      const afterSanitized = sanitizeNovelProse(content)
+      const afterReport = evaluateProseQuality(afterSanitized)
+      const afterCliches = scanCliches(afterSanitized)
+      const afterFailures = this.scanQualityGateFailures(afterSanitized, afterReport, afterCliches)
+      rounds.push({
+        round,
+        appliedPatches: successful.length,
+        failedPatches: draft.appliedPatches.length - successful.length,
+        remainingFailures: afterFailures,
+        contentLength: content.replace(/\s/g, '').length,
+      })
+      if (afterFailures.length === 0) {
+        return { content, status: 'passed', rounds, failedItems: [] }
+      }
+      if (successful.length === 0) break
+    }
+    // 轮次耗尽或 patch 停滞 → blocked：返回当前修订稿与剩余问题，由调用方决定出口
+    const finalSanitized = sanitizeNovelProse(content)
+    const finalReport = evaluateProseQuality(finalSanitized)
+    const finalCliches = scanCliches(finalSanitized)
+    return {
+      content,
+      status: 'blocked',
+      rounds,
+      failedItems: this.scanQualityGateFailures(finalSanitized, finalReport, finalCliches),
+    }
+  }
+
+  /**
+   * 确定性质量门复检：返回修订后仍阻塞落库的问题。
+   *
+   * 三项（必须清理的 AI 腔句式 / 严重形态 / 严重角色声音）与修订前仲裁信号同源，
+   * 保证"判为必须修订的问题"有同一条判定线。warning/advisory 不在此列
+   * （可交 Reviewer 结合语义判断）。
+   */
+  private scanQualityGateFailures(
+    content: string,
+    report: ProseQualityReport,
+    clicheHits: ClicheHit[],
+  ): QualityGateFailureItem[] {
+    const items: QualityGateFailureItem[] = []
+    const mandatoryCliches = clicheHits.filter(hit =>
+      (NovelOrchestrator.MANDATORY_CLICHE_PATTERNS as readonly string[]).includes(hit.pattern),
+    )
+    if (mandatoryCliches.length > 0) {
+      items.push({
+        gateId: 'cliche-patterns',
+        reason: 'AI 腔句式未清除',
+        details: mandatoryCliches.map(hit => `${hit.name}(${hit.count})`).join('、'),
+        patterns: mandatoryCliches.map(hit => hit.pattern),
+        excerpts: mandatoryCliches.flatMap(hit => this.extractClicheExcerpts(content, hit)),
+      })
+    }
+    const severeShape = report.issues.filter(
+      issue => issue.severity === 'error' && !issue.code.startsWith('voice_'),
+    )
+    if (severeShape.length > 0) {
+      items.push({
+        gateId: 'prose-shape',
+        reason: '正文形态严重偏离',
+        details: severeShape.map(issue => issue.message).join('；'),
+        excerpts: severeShape.flatMap(issue => issue.excerpts ?? []),
+      })
+    }
+    const severeVoice = report.issues.filter(
+      issue => issue.severity === 'error' && issue.code.startsWith('voice_'),
+    )
+    if (severeVoice.length > 0) {
+      items.push({
+        gateId: 'character-voice',
+        reason: '角色声音趋同',
+        details: severeVoice.map(issue => issue.message).join('；'),
+      })
+    }
+    return items
+  }
+
+  /** 从 cliche 命中位置提取原文摘录（供再次修订精确定位） */
+  private extractClicheExcerpts(content: string, hit: ClicheHit): string[] {
+    return hit.positions
+      .slice(0, 3)
+      .map(pos => content.slice(Math.max(0, pos - 8), pos + 24).replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+  }
+
+  /** 质量门 ID → 中文标签（用于提示词与前端展示） */
+  private gateLabel(gateId: string): string {
+    const labels: Record<string, string> = {
+      'cliche-patterns': 'AI 腔句式',
+      'prose-shape': '正文形态',
+      'character-voice': '角色声音',
+    }
+    return labels[gateId] ?? gateId
+  }
+
+  /**
+   * 定向修补轮提示词：只列出仍未通过的质量门问题（含摘录与修法），
+   * 不重复注入语义审稿意见与文风身份，避免 Reviser 又去改剧情。
+   */
+  private buildTargetedRepairPrompt(
+    chapterNumber: number,
+    content: string,
+    failedItems: QualityGateFailureItem[],
+    report: ProseQualityReport,
+    clicheHits: ClicheHit[],
+  ): string {
+    const plan = buildProseRevisionPlan(report)
+    const lines: string[] = [
+      `上一轮修订后，第 ${chapterNumber} 章的正文仍命中确定性质量门。本轮只处理下列未通过项，不要改动剧情、人物判断、伏笔和信息边界，也不要处理其他审稿意见。`,
+      '',
+      '## 待修复问题',
+      '',
+    ]
+    for (const item of failedItems) {
+      const head = `- 【${this.gateLabel(item.gateId)}】${item.reason}${item.details ? `：${item.details}` : ''}`
+      lines.push(head)
+      for (const excerpt of (item.excerpts ?? []).slice(0, 3)) {
+        lines.push(`  - 原文示例："${excerpt}"`)
+      }
+    }
+    lines.push(
+      '',
+      '## 当前正文',
+      '',
+      content,
+      '',
+      '---',
+      '',
+      plan.instruction ?? '按上述问题逐项定位并修改正文。',
+      '',
+      '---',
+      '',
+      formatProseQualityReport(report),
+    )
+    const remainingClicheHits = clicheHits.filter(hit =>
+      (NovelOrchestrator.MANDATORY_CLICHE_PATTERNS as readonly string[]).includes(hit.pattern),
+    )
+    if (remainingClicheHits.length > 0) {
+      lines.push('', '---', '', '## 必须清除的 AI 腔句式', '', formatClicheReport(remainingClicheHits))
+    }
+    return lines.join('\n')
+  }
+
+  /**
+   * 质量门修订失败的结构化 error 结果。
+   *
+   * 关键字段：
+   * - content：当前修订稿（前端据此提供手动编辑/保留草稿，绝不丢弃成果）
+   * - errorCode + failedItems + revisionRounds：前端精确分类与展示，而非"未知来源"
+   * - canReviseAgain：允许基于当前内容再次定向修订（re-revise，不重跑生成）
+   */
+  private buildQualityGateErrorResult(
+    content: string,
+    failedItems: QualityGateFailureItem[],
+    rounds: RevisionRoundRecord[],
+    reason: string,
+  ): CreationResult {
+    return {
+      status: 'error',
+      errorCode: 'quality_gate_revision_incomplete',
+      error: reason,
+      content,
+      failedItems,
+      revisionRounds: rounds,
+      canReviseAgain: true,
+      failedPhase: 'revising',
+    }
+  }
+
+  /** 粗略估算一次修订轮次的 token 消耗（中文为主：1 字符 ≈ 0.8 token 输入） */
+  private estimateRevisionTokens(content: string, reportChars: number): number {
+    const inputChars = content.length + reportChars + 600
+    const inputTokens = Math.ceil(inputChars * 0.8)
+    const outputTokens = Math.ceil(content.length * 0.3)
+    return inputTokens + outputTokens
+  }
+
+  /** 构建修订操作与消耗预估（mandatory revision 检查点携带，修订前告知用户） */
+  private buildRevisionEstimate(
+    content: string,
+    reportChars: number,
+    failedItems: QualityGateFailureItem[],
+  ): RevisionEstimate {
+    return {
+      maxRounds: NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS,
+      callsPerRound: 1,
+      estimatedTokens: this.estimateRevisionTokens(content, reportChars),
+      failedItems,
+    }
+  }
+
+  /** 每轮修订也要计入 Reviser 预算，否则预算面板与实际调用次数不符 */
+  private budgetRecordReviserRun(): void {
+    const run = this.runStorage.getStore()
+    if (!run) return
+    run.budget = recordChapterBudgetCategory(run.budget, 'reviserRuns')
+  }
+
+  /**
+   * T03 影子写（V2）：Director 计划 → V2 plan + scenes（flag scenePlanV2Write 开启时调用）。
+   * 只落库、不改行为；失败仅告警不影响主流程。同一章重跑时旧 draft/approved 计划 superseded。
+   */
+  private shadowWriteDirectorPlan(
+    projectId: string,
+    chapter: NovelChapter | undefined,
+    chapterNumber: number,
+    task: NarrativeTask,
+    arrangedEntities: ArrangedEntity | undefined,
+    rhythmSuggestion: RhythmSuggestion | undefined,
+  ): void {
+    if (!chapter) return
+    try {
+      const characterIdByName = new Map<string, string>()
+      for (const id of arrangedEntities?.characterIds ?? []) {
+        const c = this.store.getCharacter(id)
+        if (c?.name) characterIdByName.set(c.name, id)
+      }
+      const project = this.store.getProject(projectId)
+      const budget = resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) })
+      this.store.supersedeActivePlans(chapter.id)
+      const plan = this.store.createPlanRevision({
+        chapterId: chapter.id,
+        projectId,
+        positioning: task.positioning ?? chapter.positioning ?? null,
+        rhythm: rhythmSuggestion?.rhythm ?? null,
+        budget,
+      })
+      const scenePlan = buildScenePlanFromNarrativeTask({
+        planRevisionId: plan.id,
+        chapterId: chapter.id,
+        projectId,
+        task,
+        budget,
+        characterIdByName,
+        arrangedEntities,
+      })
+      this.store.createSceneRevisions(plan, scenePlan.scenes)
+      this.store.transitionPlan(plan.id, 'approved', 'draft')
+      this.context.logger.info(
+        { projectId, chapterNumber, planId: plan.id, sceneCount: scenePlan.scenes.length },
+        'T03: Director 计划已影子写入 V2',
+      )
+    } catch (err) {
+      this.context.logger.warn({ projectId, chapterNumber, err }, 'T03: 影子写入 V2 计划失败，不影响主流程')
     }
   }
 
@@ -1217,21 +1887,27 @@ export class NovelOrchestrator {
     const project = this.store.getProject(projectId)
     const advisories: Array<{ reason: string; details: string }> = []
     if (project) {
-      // 复用 prompt-builder 的 computeChapterTargetWords（含节奏系数），
-      // 确保 Guard 的目标字数与 Writer 提示词注入的 target_words 一致。
+      // 目标字数与 Writer 提示词注入的 target_words 保持一致：
+      // - V2（scenePlanV2Write）：优先复用 buildChapterConstraints 的 resolver 结果；
+      //   无定位时 fallback 也用 resolver（Rhythm 不参与），杜绝节奏倍率回流。
+      // - V1：保持现状（含节奏系数的 computeChapterTargetWords 回退）。
       const run = this.requireRunContext()
       const positioning = run.directorTask?.positioning
         ?? this.store.getChapter(projectId, chapterNumber)?.positioning
-      const targetWords = this.engine.buildChapterConstraints(
+      const constraintsTarget = this.engine.buildChapterConstraints(
         projectId,
         chapterNumber,
         run.rhythmSuggestion,
         positioning,
         arrangedEntities,
-      ).wordBudget?.target ?? this.promptBuilder.computeChapterTargetWords(
-        project,
-        run.rhythmSuggestion?.rhythm,
-      )
+      ).wordBudget?.target
+      const targetWords = isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')
+        ? constraintsTarget
+          ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
+        : constraintsTarget ?? this.promptBuilder.computeChapterTargetWords(
+          project,
+          run.rhythmSuggestion?.rhythm,
+        )
 
       // 只有明显失控才整章重写。75%-85% 与 115%-130% 属于轻微偏差，
       // 交给 Reviewer 结合章节完整性判断，避免边界差几个字就浪费一次 Writer 调用。
@@ -1489,12 +2165,22 @@ export class NovelOrchestrator {
 
     let inputText = typeof input === 'string' ? input : JSON.stringify(input)
 
+    // P0 埋点：Context section 纯内存旁路采集（不改 prompt 内容、不改生成路径）
+    const metricCollector = new ContextSectionCollector(
+      { projectId, chapterNumber, agentType },
+      contextSectionMetricEnabled,
+    )
+
     // Agent 身份保持在公共 system 之后，既不破坏跨 Agent 的 system/shared 缓存，
     // 又作为独立 prefix 获得缓存断点，供同 Agent 重试命中。
     const editorOnly = overrides?.contextMode === 'editor'
     const needsChapterContext = !identityOnly && !editorOnly
+    // P4 接入 3：contextChunksEnabled 开时按角色组装 shared（T03-3 过滤 disabled chunk）
+    const chunksEnabled = needsChapterContext
+      && isNovelFeatureEnabled(this.store, projectId, 'contextChunksEnabled')
     const agentIdentity = overrides?.identityPrompt
       ?? this.promptBuilder.buildAgentIdentity(projectId, agentType)
+    metricCollector.add('identity', 'identity', agentIdentity, 'full')
 
     // 保存真正的原始任务输入（用于日志记录），再附加用户指令。
     // agentIdentity 是真实前缀，不再伪装成 taskInput 的一部分。
@@ -1519,6 +2205,7 @@ export class NovelOrchestrator {
     const systemPrompt = needsChapterContext
       ? this.promptBuilder.buildSystemPrompt(projectId, agentType)
       : ''
+    metricCollector.add('system', 'system-prompt', systemPrompt, 'full')
 
     // SEMI 层：章节上下文（"共享前缀 + Agent 专属后缀"分离）
     //
@@ -1576,7 +2263,11 @@ export class NovelOrchestrator {
 
     // shared 部分：单章缓存（跨 Agent 复用，projectId|chapterNumber 为 key）
     // 工具可用性会改变无编排回退提示，必须进入缓存 key，避免不同角色复用错误引导。
-    const sharedCacheKey = `${projectId}|${chapterNumber}|ask-story:${askStoryEnabled}`
+    // P4 接入 3：chunksEnabled 时内容按角色差异化（T03-3 过滤），缓存 key 必须含 agentType，
+    // 避免跨角色复用错误内容；未启用时保持原 key（跨 Agent 复用缓存命中）。
+    const sharedCacheKey = chunksEnabled
+      ? `${projectId}|${chapterNumber}|agent:${agentType}|ask-story:${askStoryEnabled}|chunks`
+      : `${projectId}|${chapterNumber}|ask-story:${askStoryEnabled}`
     let sharedContext: string
     if (!needsChapterContext) {
       sharedContext = ''
@@ -1587,19 +2278,53 @@ export class NovelOrchestrator {
         'SEMI 层 shared 前缀命中单章缓存',
       )
     } else {
-      sharedContext = this.promptBuilder.buildChapterContextShared(
-        projectId,
-        chapterNumber,
-        narrativeTask,
-        constraints,
-        run.arrangedEntities,
-        { askStoryEnabled },
-      )
+      if (chunksEnabled) {
+        // P4 接入 4：chunk 级缓存（§5.6）——构建 chunks 后逐 chunk 查缓存，
+        // 命中直接用缓存 content（省构建），未命中重建并 put（供后续角色/重试复用）。
+        const chunks = this.promptBuilder.buildChapterContextChunks(
+          projectId, chapterNumber, narrativeTask, constraints, run.arrangedEntities,
+          { askStoryEnabled, agentType },
+        )
+        const cached = buildWithChunkCache(this.chunkCache, {
+          projectId,
+          // 账本来源单独传 memoryStore：事件表不在 NovelStore 上，
+          // 少了它 Memory 写入账本后 chunk 不会失效。
+          versionSource: buildChunkVersionSource(this.store, projectId, this.memoryStore),
+          chunks,
+        })
+        sharedContext = this.promptBuilder.assembleSharedFromChunks(
+          cached.chunks.map((c) => ({ chunkId: c.chunkId, content: c.content })),
+        )
+        this.context.logger.debug(
+          { agentType, projectId, chapterNumber, hits: cached.hits, misses: cached.misses },
+          'SEMI 层 shared 前缀已按 chunk 缓存组装',
+        )
+      } else {
+        sharedContext = this.promptBuilder.buildChapterContextShared(
+          projectId,
+          chapterNumber,
+          narrativeTask,
+          constraints,
+          run.arrangedEntities,
+          { askStoryEnabled },
+        )
+      }
       run.semiLayerSharedCache = { key: sharedCacheKey, value: sharedContext }
       this.context.logger.debug(
-        { agentType, projectId, chapterNumber, sharedLength: sharedContext.length },
+        { agentType, projectId, chapterNumber, sharedLength: sharedContext.length, chunksEnabled },
         'SEMI 层 shared 前缀已写入单章缓存',
       )
+    }
+
+    // P0 埋点：shared 整段 + 实体档案子 section（与 buildChapterContextShared 同一输出）
+    metricCollector.add('shared', 'shared', sharedContext, 'full')
+    if (needsChapterContext) {
+      const arrangedSection = this.promptBuilder.buildArrangedEntitiesSection(
+        projectId,
+        chapterNumber,
+        run.arrangedEntities,
+      )
+      metricCollector.add('shared', 'arranged-entities', arrangedSection, 'full')
     }
 
     // Writer 和 Reviewer 必须看到检查点批准后的 Director 完整方案。
@@ -1626,11 +2351,13 @@ export class NovelOrchestrator {
       )
       if (writerFactPack) suffixContext += `${suffixContext ? '\n\n---\n\n' : ''}${writerFactPack}`
     }
+    metricCollector.add('suffix', 'suffix', suffixContext, 'full')
 
     // DYNAMIC 层：Agent 任务指令（每次调用不同）
     // 章节上下文（SEMI 层）通过 prefixUserMessage 独立注入，不与任务拼接，
     // 确保 SEMI 层前缀跨 Agent 稳定，可被 prompt cache 命中。
     const userMessage = inputText
+    metricCollector.add('dynamic', 'user-message', userMessage, 'full')
 
     // 按 Agent 类型过滤工具权限
     const allNovelTools = this.novelTools
@@ -1649,6 +2376,13 @@ export class NovelOrchestrator {
     // 而 apply_revision 工具通过闭包持有 draft，每次调用都要重新创建。
     const finalTools = [...filteredTools, ...(overrides?.extraTools ?? [])]
     const toolNamesForLog = finalTools.map(t => t.name)
+    // P0 埋点：tool schema 序列化（仅 name + description，与审计口径一致）
+    metricCollector.add(
+      'tool_schema',
+      'tools',
+      finalTools.map(t => JSON.stringify({ name: t.name, description: t.description })).join('\n'),
+      'full',
+    )
 
     // 记录提示词日志（STATIC + SEMI + DYNAMIC 三层）
     this.context.logger.debug(
@@ -1689,7 +2423,13 @@ export class NovelOrchestrator {
     // 与群聊模式 buildMembers 行为对齐：让 4 大 Agent 的 LLM 调用按用户在
     // AgentPage 配置的 provider+model 进行，而不是统一用默认 Provider。
     const agentConfig = this.context.subagentManager?.getAgent(config.id)
-    const modelId = agentConfig?.model
+    // ⚠️ 项目级「创作主模型」：项目设置了 novelModelId（provider:modelId）时，
+    // 本流程所有 Agent 统一使用该 provider+model，保证 promptCacheScope 内模型一致
+    // → shared 前缀缓存全程可命中，并消除"404 model not supported / 401"类配置失败。
+    const projectModelRef = NovelOrchestrator.resolveModelRef(run.projectModelId)
+    // ⚠️ 模型优先级：per-call 覆盖（输入框旁选择器）> 项目主模型 > AgentPage 配置。
+    // per-call 与项目主模型都保证 promptCacheScope 内模型一致 → shared 前缀缓存可命中。
+    const modelId = options.modelId ?? projectModelRef ?? agentConfig?.model
 
     // LLM 调用超时：统一走 runtimePerformance（默认 300s，可通过环境变量
     // PI_LLM_TIMEOUT_MS 调大）。国内 OpenAI 兼容网关首 token 偏慢、长输出耗时
@@ -1861,7 +2601,7 @@ export class NovelOrchestrator {
 
       // 持久化 Agent 调用日志（fire-and-forget，失败不影响主流程）
       try {
-        this.store.insertAgentLog({
+        const agentLog = this.store.insertAgentLog({
           projectId,
           chapterNumber,
           agentType,
@@ -1896,6 +2636,10 @@ export class NovelOrchestrator {
           askStoryPolicy: run.askStoryPolicy,
           askStoryEnabled,
         })
+        // P0 埋点持久化：随日志一并落度量表（独立表，不改日志结构）
+        if (contextSectionMetricEnabled && metricCollector.size > 0) {
+          this.store.insertContextSectionMetrics(metricCollector.buildInputs(agentLog.id))
+        }
       } catch (logErr) {
         // 日志写入失败不影响主流程
         this.context.logger.warn(

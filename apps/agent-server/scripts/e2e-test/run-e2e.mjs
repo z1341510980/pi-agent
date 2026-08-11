@@ -603,9 +603,9 @@ async function testChapterDimensionsGAP_C() {
   try {
     const result = verifyChapterDimensions(ctx.projectId)
     const status = result.ok ? 'PASS' : 'WARN'
-    record('GAP C first/last_chapter', status, result, Date.now() - t0)
+    record('GAP C chapter_spans', status, result, Date.now() - t0)
   } catch (err) {
-    record('GAP C first/last_chapter', 'FAIL', { error: err.message }, Date.now() - t0)
+    record('GAP C chapter_spans', 'FAIL', { error: err.message }, Date.now() - t0)
   }
 }
 

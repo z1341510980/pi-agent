@@ -1153,5 +1153,393 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       generated_at          TEXT NOT NULL,
       FOREIGN KEY (source_id) REFERENCES novel_reference_sources(id) ON DELETE CASCADE
     );`
+  },
+  {
+    // 082: 项目级 feature flags（剧情推进模型 V2 灰度开关，JSON 文本列）。
+    // 未配置时默认 '{}'；isNovelFeatureEnabled 读取失败安全返回 false，不抛错。
+    id: '082_add_novel_projects_feature_flags',
+    sql: `ALTER TABLE novel_projects ADD COLUMN feature_flags TEXT NOT NULL DEFAULT '{}';`
+  },
+  {
+    // 083: 不可变正文版本链（剧情推进模型 V2 的 content revision）。
+    // 与 novel_chapter_versions（覆盖前快照）语义不同：
+    // - 本表记录「每次落库后的完整正文状态」，每次变更追加一条 committed，
+    //   旧 committed 标 superseded，novel_chapters.current_content_revision_id 指向当前；
+    // - 回滚以目标版本为 parent 创建 rollback_applied 新 committed revision，
+    //   不把旧行设为 current，历史不可更新。
+    // 迁移期与旧表双写，T05 停旧写后再归档旧表。
+    id: '083_create_novel_chapter_content_revisions',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_chapter_content_revisions (
+        id                  TEXT PRIMARY KEY,
+        chapter_id          TEXT NOT NULL,
+        project_id          TEXT NOT NULL,
+        parent_revision_id  TEXT,
+        revision            INTEGER NOT NULL,
+        content             TEXT NOT NULL,
+        word_count          INTEGER NOT NULL,
+        phase               TEXT,
+        agent_type          TEXT,
+        trigger             TEXT,
+        status              TEXT NOT NULL DEFAULT 'committed',
+        created_at          INTEGER NOT NULL,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_content_revisions_chapter
+        ON novel_chapter_content_revisions(chapter_id, revision);
+      ALTER TABLE novel_chapters ADD COLUMN current_content_revision_id TEXT;
+    `
+  },
+  {
+    // 084: 场景计划与叙事账本（剧情推进模型 V2 的 plan/scene/storyline）。
+    // - novel_chapter_plan_revisions：计划的不可变版本链（draft→approved→consumed→confirmed，
+    //   任一步可 superseded；上游变化进 stale），带预算解析字段与幂等键。
+    // - novel_scenes：场景稳定身份（只存 identity），novel_scene_revisions 存每次版本。
+    // - scene focus/presence/functions：多对多关系表（禁止 JSON 数组）。
+    // - novel_storylines + novel_storyline_progress：跨场景叙事方向与推进记录。
+    // T02b 只建表 + store 层，工作流接入在 T03/T04。
+    id: '084_create_scene_plan_and_storyline',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_chapter_plan_revisions (
+        id                    TEXT PRIMARY KEY,
+        chapter_id            TEXT NOT NULL,
+        project_id            TEXT NOT NULL,
+        creation_run_id       TEXT,
+        supersedes_id         TEXT,
+        base_content_revision_id TEXT,
+        positioning           TEXT,
+        rhythm                TEXT,
+        budget                TEXT NOT NULL DEFAULT '{}',
+        status                TEXT NOT NULL DEFAULT 'draft',
+        revision              INTEGER NOT NULL,
+        idempotency_key       TEXT,
+        created_at            INTEGER NOT NULL,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_revisions_chapter_rev
+        ON novel_chapter_plan_revisions(chapter_id, revision);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_revisions_idempotency
+        ON novel_chapter_plan_revisions(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS novel_scenes (
+        id            TEXT PRIMARY KEY,
+        chapter_id    TEXT NOT NULL,
+        project_id    TEXT NOT NULL,
+        stable_key    TEXT NOT NULL,
+        created_at    INTEGER NOT NULL,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_scenes_chapter_key
+        ON novel_scenes(chapter_id, stable_key);
+
+      CREATE TABLE IF NOT EXISTS novel_scene_revisions (
+        id                    TEXT PRIMARY KEY,
+        scene_id              TEXT NOT NULL,
+        chapter_id            TEXT NOT NULL,
+        project_id            TEXT NOT NULL,
+        plan_revision_id      TEXT NOT NULL,
+        content_revision_id   TEXT,
+        supersedes_id         TEXT,
+        order_no              INTEGER NOT NULL,
+        title                 TEXT NOT NULL DEFAULT '',
+        goal                  TEXT NOT NULL DEFAULT '',
+        summary               TEXT NOT NULL DEFAULT '',
+        location_text         TEXT NOT NULL DEFAULT '',
+        time_text             TEXT NOT NULL DEFAULT '',
+        pov_mode              TEXT NOT NULL DEFAULT 'single',
+        pov_character_id      TEXT,
+        target_words          INTEGER NOT NULL DEFAULT 0,
+        status                TEXT NOT NULL DEFAULT 'planned',
+        created_at            INTEGER NOT NULL,
+        FOREIGN KEY (scene_id) REFERENCES novel_scenes(id) ON DELETE CASCADE,
+        FOREIGN KEY (plan_revision_id) REFERENCES novel_chapter_plan_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_revisions_plan_order
+        ON novel_scene_revisions(plan_revision_id, order_no);
+      CREATE INDEX IF NOT EXISTS idx_scene_revisions_scene
+        ON novel_scene_revisions(scene_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS novel_scene_focus (
+        scene_revision_id TEXT NOT NULL,
+        character_id      TEXT NOT NULL,
+        PRIMARY KEY (scene_revision_id, character_id),
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_scene_presence (
+        scene_revision_id TEXT NOT NULL,
+        character_id      TEXT NOT NULL,
+        PRIMARY KEY (scene_revision_id, character_id),
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_scene_functions (
+        scene_revision_id TEXT NOT NULL,
+        character_id      TEXT NOT NULL,
+        function          TEXT NOT NULL,
+        prominence        TEXT NOT NULL DEFAULT 'brief',
+        note              TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (scene_revision_id, character_id, function),
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_storylines (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        kind          TEXT NOT NULL DEFAULT 'main',
+        lifecycle     TEXT NOT NULL DEFAULT 'active',
+        maturity      TEXT NOT NULL DEFAULT 'candidate',
+        description   TEXT NOT NULL DEFAULT '',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_storylines_project_name
+        ON novel_storylines(project_id, name);
+
+      CREATE TABLE IF NOT EXISTS novel_storyline_progress (
+        id                  TEXT PRIMARY KEY,
+        project_id          TEXT NOT NULL,
+        storyline_id        TEXT NOT NULL,
+        scene_revision_id   TEXT NOT NULL,
+        primary_flag        INTEGER NOT NULL DEFAULT 0,
+        type                TEXT NOT NULL DEFAULT 'advance',
+        before_state        TEXT NOT NULL DEFAULT '',
+        after_state         TEXT NOT NULL DEFAULT '',
+        summary             TEXT NOT NULL DEFAULT '',
+        status              TEXT NOT NULL DEFAULT 'confirmed',
+        created_at          INTEGER NOT NULL,
+        FOREIGN KEY (storyline_id) REFERENCES novel_storylines(id) ON DELETE CASCADE,
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_scene_storyline
+        ON novel_storyline_progress(scene_revision_id, storyline_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_scene_primary
+        ON novel_storyline_progress(scene_revision_id) WHERE primary_flag = 1;
+    `
+  },
+  {
+    // 085: Memory 新实体候选与审核（用户已确认决策：新 Conflict/Clue 一律 needs_review，
+    // 前端提示确认后才晋升正式实体；拒绝必须记录非空 reason 与审计上下文）。
+    id: '085_create_entity_candidates',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_entity_candidates (
+        id                  TEXT PRIMARY KEY,
+        project_id          TEXT NOT NULL,
+        chapter_number      INTEGER,
+        content_revision_id TEXT,
+        entity_type         TEXT NOT NULL,
+        payload             TEXT NOT NULL,
+        status              TEXT NOT NULL DEFAULT 'needs_review',
+        reason_code         TEXT,
+        created_at          INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_entity_candidates_project_status
+        ON novel_entity_candidates(project_id, status);
+
+      CREATE TABLE IF NOT EXISTS novel_entity_candidate_reviews (
+        id             TEXT PRIMARY KEY,
+        candidate_id   TEXT NOT NULL,
+        decision       TEXT NOT NULL,
+        reason         TEXT NOT NULL DEFAULT '',
+        actor_id       TEXT NOT NULL DEFAULT 'user',
+        audit_context  TEXT NOT NULL DEFAULT '{}',
+        created_at     INTEGER NOT NULL,
+        FOREIGN KEY (candidate_id) REFERENCES novel_entity_candidates(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_candidate_reviews_candidate
+        ON novel_entity_candidate_reviews(candidate_id, created_at);
+    `
+  },
+  {
+    // 086: 剧情（narrative）实体轨道。承接冲突/线索/伏笔装不下的"剧情相关"内容
+    // （推进/转折/悬念/收束/铺垫/揭示等），Memory 分流后不再把剧情硬塞进冲突/线索/伏笔。
+    // 与 conflict 同模式的 chapter_spans 跨度，参与矩阵投影作为独立轨道。
+    id: '086_create_novel_narratives',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_narratives (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL,
+        description   TEXT NOT NULL DEFAULT '',
+        type          TEXT NOT NULL DEFAULT 'advance',
+        chapter_spans TEXT NOT NULL DEFAULT '[]',
+        status        TEXT NOT NULL DEFAULT 'active',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_novel_narratives_project
+        ON novel_narratives(project_id);
+    `
+  },
+  {
+    // 087a: Agent 日志冷热分离（P1-2，PRD §4.2 P1-2 / 统一方案 §4.5）。
+    // novel_agent_logs 只留元数据；大文本（system_prompt/chapter_context/user_message/
+    // task_input/result/error 等）gzip 外置到 payload 表。
+    // - payload_id 关联主表（主键即 payload.id，与 agent_log_id 一致，简化反查）
+    // - content_hash = 非空字段 JSON 规范化后 sha256，可去重/校验解压完整性
+    // - expires_at = created_at + 保留策略天数（成功 30d / 失败 90d / 审计锁定 365d，NULL=长期）
+    // Flag logPayloadExternalized 默认关：关闭时行为与现状完全一致（全量写主表）。
+    id: '087_create_agent_log_payloads',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_agent_log_payloads (
+        id                    TEXT PRIMARY KEY,
+        agent_log_id          TEXT NOT NULL UNIQUE,
+        compression           TEXT NOT NULL DEFAULT 'gzip',
+        system_prompt_blob    BLOB,
+        chapter_context_blob  BLOB,
+        user_message_blob     BLOB,
+        task_input_blob       BLOB,
+        user_instructions_blob BLOB,
+        tools_blob            BLOB,
+        result_blob           BLOB,
+        error_blob            BLOB,
+        content_hash          TEXT NOT NULL,
+        expires_at            INTEGER,
+        created_at            INTEGER NOT NULL,
+        FOREIGN KEY (agent_log_id) REFERENCES novel_agent_logs(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_log_payloads_expires ON novel_agent_log_payloads(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_log_payloads_log ON novel_agent_log_payloads(agent_log_id);
+      ALTER TABLE novel_agent_logs ADD COLUMN payload_id TEXT;
+    `
+  },
+  {
+    // 087b: P0 Context section 成本埋点（P0-1，PRD §4.1 P0-1 / 统一方案 §5.1）。
+    // 独立度量表：按 section_type 聚合报表，与 payload 表（专职大文本冷存储）职责分离（架构 Q-1）。
+    // 六类 section：system | shared | identity | suffix | dynamic | tool_schema。
+    // source_hash = sha256(规范化文本)，同文本稳定、异文本可区分。
+    id: '087_create_context_section_metrics',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_context_section_metrics (
+        id               TEXT PRIMARY KEY,
+        agent_log_id     TEXT NOT NULL,
+        project_id       TEXT NOT NULL,
+        chapter_number   INTEGER NOT NULL,
+        agent_type       TEXT NOT NULL,
+        section_type     TEXT NOT NULL,
+        section_id       TEXT NOT NULL,
+        chars            INTEGER NOT NULL,
+        estimated_tokens INTEGER NOT NULL,
+        source_hash      TEXT NOT NULL,
+        mode             TEXT NOT NULL DEFAULT 'full',
+        created_at       INTEGER NOT NULL,
+        FOREIGN KEY (agent_log_id) REFERENCES novel_agent_logs(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_context_section_metrics_log ON novel_context_section_metrics(agent_log_id);
+      CREATE INDEX IF NOT EXISTS idx_context_section_metrics_project ON novel_context_section_metrics(project_id, chapter_number);
+    `
+  },
+  {
+    // 088: Scene Cast 三表合并（P1-3，PRD §4.2 P1-3 / 统一方案 §4.3）。
+    // novel_scene_focus / novel_scene_presence / novel_scene_functions → novel_scene_cast
+    // （role 区分 focus/present/functional）。
+    // ⚠️ prominence 采用 TEXT（lead/support/brief），对齐现有 CastProminence，保证字段级对比差异 = 0。
+    // Flag sceneCastV2Write/Read 默认关：关闭时三表行为与现状完全一致。
+    id: '088_create_novel_scene_cast',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_scene_cast (
+        scene_revision_id TEXT NOT NULL,
+        character_id      TEXT NOT NULL,
+        role              TEXT NOT NULL,
+        function          TEXT,
+        prominence        TEXT,
+        note              TEXT,
+        PRIMARY KEY (scene_revision_id, character_id, role),
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE,
+        CHECK (role IN ('focus', 'present', 'functional')),
+        CHECK (role != 'functional' OR function IS NOT NULL)
+      );
+      CREATE INDEX IF NOT EXISTS idx_scene_cast_revision ON novel_scene_cast(scene_revision_id);
+    `
+  },
+  {
+    // 089: 废弃列清理（P1-4，PRD §4.2 P1-4）。
+    // 删除 novel_conflicts / novel_factions 的 first_chapter / last_chapter。
+    // 前置：045 已把旧值回填 chapter_spans；删除前由 scan-deprecated-columns.mjs 保证业务引用 = 0；
+    // 两列无索引/无约束依赖，SQLite 3.35+（better-sqlite3@^12）可安全 DROP COLUMN。
+    // foreshadowing / locations / items 的 first_chapter 不在本次范围。
+    id: '089_drop_conflicts_factions_deprecated_columns',
+    sql: `
+      ALTER TABLE novel_conflicts DROP COLUMN first_chapter;
+      ALTER TABLE novel_conflicts DROP COLUMN last_chapter;
+      ALTER TABLE novel_factions DROP COLUMN first_chapter;
+      ALTER TABLE novel_factions DROP COLUMN last_chapter;
+    `
+  },
+  {
+    // 项目级「创作主模型」：统一本项目 Director/Writer/Reviewer/Reviser 使用的 modelId。
+    // 目的：①避免多模型混用导致 promptCacheScope 缓存反复失效（实测 cache/in 仅 31-46%）；
+    // ②消除"404 model not supported / 401"这类配置类失败（实测 Director 失败中 5/27 属此类）。
+    // NULL = 未设置，各 Agent 使用 AgentPage 各自配置或默认 Provider。
+    id: '090_add_novel_projects_novel_model_id',
+    sql: `
+      ALTER TABLE novel_projects ADD COLUMN novel_model_id TEXT;
+    `
+  },
+  {
+    // P2：实体出场关系统一。把散落在各实体表 chapter_spans 的"章节出场"横切面
+    // 抽成独立关联表（可索引、可按章/实体查询、可独立追踪版本）。
+    // appearanceV2Write/Read 开启后：写入/读取走本表；chapter_spans 保留为兼容。
+    id: '091_create_novel_entity_appearances',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_entity_appearances (
+        id              TEXT PRIMARY KEY,
+        project_id      TEXT NOT NULL,
+        chapter_id      TEXT NOT NULL,
+        entity_type     TEXT NOT NULL,
+        entity_id       TEXT NOT NULL,
+        appearance_role TEXT NOT NULL DEFAULT 'present',
+        source          TEXT NOT NULL DEFAULT 'sync',
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE (chapter_id, entity_type, entity_id, appearance_role)
+      );
+      CREATE INDEX IF NOT EXISTS idx_entity_appearances_chapter
+        ON novel_entity_appearances(project_id, chapter_id, entity_type);
+      CREATE INDEX IF NOT EXISTS idx_entity_appearances_entity
+        ON novel_entity_appearances(project_id, entity_type, entity_id);
+    `
+  },
+  {
+    // T02-6 AI 确认队列：change record（memory_events）加确认状态。
+    // status: 'confirmed'（默认，存量已生效）/ 'pending' / 'rejected'（驳回，消费查询排除）
+    // confirmed_at: 确认/驳回时间戳
+    id: '092_add_memory_events_confirm_status',
+    sql: `
+      ALTER TABLE novel_memory_events ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed';
+      ALTER TABLE novel_memory_events ADD COLUMN confirmed_at INTEGER;
+    `
+  },
+  {
+    // T04：候选确认 TX3 的正式实体映射与同库 outbox。
+    // 候选审核、正式实体晋升、映射和 outbox 必须在同一事务内提交；
+    // (topic, aggregate_id) 唯一，重试不会重复投递同一候选确认事件。
+    id: '093_create_entity_candidate_promotion_outbox',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_entity_candidate_promotions (
+        candidate_id TEXT PRIMARY KEY,
+        entity_type  TEXT NOT NULL,
+        entity_id    TEXT NOT NULL,
+        created_at   INTEGER NOT NULL,
+        FOREIGN KEY (candidate_id) REFERENCES novel_entity_candidates(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_projection_outbox (
+        id           TEXT PRIMARY KEY,
+        project_id   TEXT NOT NULL,
+        topic        TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        payload      TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'pending',
+        attempts     INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        delivered_at INTEGER,
+        UNIQUE (topic, aggregate_id),
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+        CHECK (status IN ('pending', 'processing', 'delivered', 'failed'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_projection_outbox_pending
+        ON novel_projection_outbox(status, created_at);
+    `
   }
 ]

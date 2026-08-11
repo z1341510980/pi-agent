@@ -80,6 +80,12 @@ import {
   compileWritingStylePrompt,
   type WritingStylePromptTarget
 } from './writing-style-prompt-factory.js'
+import { buildVoiceProfiles, formatVoiceContrastTable } from './character-voice.js'
+import { evaluateProseQuality } from './prose-quality-evaluator.js'
+import { isNovelFeatureEnabled } from './novel-feature-flags.js'
+import { CHUNK_BY_ID, resolveChunkMode } from './context-chunk.js'
+import { buildStoryStateSummary } from './entity-summary.js'
+import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
 import type { RelationshipGraph, GraphEdge } from './novel-relationship-graph.js'
 import type {
   NovelProject,
@@ -472,6 +478,8 @@ export interface ContextPreviewSection {
   mode?: 'full' | 'diff'
   /** 内容预览（前 200 字） */
   preview: string
+  /** T03-2：semi-shared 层按 ContextChunk 下沉的明细（full 模式），供前端按 chunk 诊断 */
+  chunks?: Array<{ chunkId: string; title: string; charCount: number; preview: string }>
 }
 
 /**
@@ -916,7 +924,7 @@ export class NovelPromptBuilder {
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
-    options?: { mode?: 'full' | 'diff'; askStoryEnabled?: boolean }
+    options?: { mode?: 'full' | 'diff'; askStoryEnabled?: boolean; entitySummaryMode?: 'full' | 'summary'; agentType?: string }
   ): string {
     // mode='diff' 时委托给增量 diff 模式：用全局关键事实摘要 + 上一章变化 delta
     // 替代全量故事状态（formatStoryState）和事件账本承接（formatStoryLedgerContext），
@@ -931,27 +939,102 @@ export class NovelPromptBuilder {
         options.askStoryEnabled ?? true,
       )
     }
+    // T03-2 等价拆块：full 模式统一由 chunk 版构建，join 结果与旧字符串逐字节一致。
+    return this.stripEmDash(
+      this.buildChapterContextChunks(projectId, chapterNumber, narrativeTask, constraints, arrangedEntities, options)
+        .map((c) => c.content)
+        .join('\n\n---\n\n'),
+    )
+  }
+
+  /**
+   * P4 接入 4：把 chunk 数组组装为 shared 字符串（join + stripEmDash）。
+   * 与 buildChapterContextShared 的最终组装一致，供 orchestrator 在 chunk 缓存
+   * （§5.6 buildWithChunkCache）命中后直接组装，避免重复构建。
+   */
+  assembleSharedFromChunks(chunks: Array<{ chunkId: string; content: string }>): string {
+    return this.stripEmDash(chunks.map((c) => c.content).join('\n\n---\n\n'))
+  }
+
+  /**
+   * P4 接入 3：按角色组装 shared（flag contextChunksEnabled 开时由 orchestrator 调用）。
+   *
+   * 与 buildChapterContextShared 的差异：options.agentType 传入时按角色策略
+   * （resolveChunkMode）过滤 disabled chunk——角色差异化组装，未传时与现状逐字节等价。
+   */
+  buildChapterContextSharedForAgent(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
+    options?: { askStoryEnabled?: boolean; agentType?: string },
+  ): string {
+    const chunks = this.buildChapterContextChunks(
+      projectId, chapterNumber, narrativeTask, constraints, arrangedEntities,
+      { askStoryEnabled: options?.askStoryEnabled ?? true, agentType: options?.agentType },
+    )
+    return this.stripEmDash(chunks.map((c) => c.content).join('\n\n---\n\n'))
+  }
+
+  /**
+   * T03-2 等价拆块：按 ContextChunk 目录输出 shared 层的 chunk 化结构（full 模式）。
+   *
+   * 每个 chunk 复用现有 format 方法（与旧 parts.push 完全相同的构建逻辑与顺序），
+   * join 结果与 buildChapterContextShared 返回的字符串**逐字节一致**（由测试钉死）。
+   * contextChunksEnabled flag 开启后，T03-3/4/7 在此结构上按 chunk 降级。
+   */
+  buildChapterContextChunks(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
+    options?: { mode?: 'full' | 'diff'; askStoryEnabled?: boolean; entitySummaryMode?: 'full' | 'summary'; agentType?: string },
+  ): Array<{ chunkId: string; content: string }> {
+    if (options?.mode === 'diff') {
+      // diff 模式暂不拆 chunk（独立优化路径，后续单独 chunk 化）
+      return [{ chunkId: 'story-ledger', content: this.buildChapterContextDiff(
+        projectId, chapterNumber, narrativeTask, constraints, arrangedEntities,
+        options.askStoryEnabled ?? true,
+      ) }]
+    }
     void constraints // constraints 已在 formatConstraints 中使用，此处 void 避免未使用警告
-    const parts: string[] = []
+    const chunks: Array<{ chunkId: string; content: string }> = []
     const relevantEntityIds = this.collectRelevantEntityIds(arrangedEntities)
     const boundary = this.getChapterBoundaryContext(projectId, chapterNumber)
 
     // ── 章节信息 ──
-    parts.push(this.formatChapterInfo(projectId, chapterNumber, narrativeTask))
+    chunks.push({ chunkId: 'chapter-info', content: this.formatChapterInfo(projectId, chapterNumber, narrativeTask) })
 
     // ── 创作约束 ──
-    parts.push(this.formatConstraints(constraints))
+    chunks.push({ chunkId: 'chapter-constraints', content: this.formatConstraints(constraints) })
 
     // ── 本章已编排实体约束（手动编排 / AI 编排产出，注入 SEMI 层）──
     const hasArranged = this.hasArrangedEntities(arrangedEntities)
     if (hasArranged && arrangedEntities) {
-      parts.push(this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities, boundary))
+      chunks.push({ chunkId: 'arranged-entities', content: this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities, boundary) })
     }
 
     // 已编排时，角色短卡和实体要素已经给出本章所需的状态。
     // 不再重复注入全量故事状态；它会把无关角色和旧线索挤进上下文中心。
     if (!hasArranged) {
-      parts.push(this.formatStoryState(boundary.state, options?.askStoryEnabled ?? true))
+      // T03-4：story-state 支持 summary 模式（实体档案降级），由调用方按
+      // chooseEntityChunkMode 决策后传入；默认 full 保持逐字节等价。
+      chunks.push({
+        chunkId: 'story-state',
+        content: options?.entitySummaryMode === 'summary'
+          ? buildStoryStateSummary(boundary.state)
+          : this.formatStoryState(boundary.state, options?.askStoryEnabled ?? true),
+      })
+      // 无编排是旧项目/降级项目的常见路径，不能因为没有 arrangedEntities 就丢掉角色声音。
+      // formatStoryState 只给状态和目标；声音对照表仍需单独注入，否则 Writer 在这条路径
+      // 上会退回模型默认腔，造成"有编排时角色有差异、无编排时全部同声"的流程分叉。
+      const stateCharacters = boundary.state.characters.filter((character) => (
+        !/（待定）|待补充|待定$|^新的$|^测试角色/.test(character.name)
+      ))
+      const voiceTable = formatVoiceContrastTable(buildVoiceProfiles(stateCharacters))
+      if (voiceTable) chunks.push({ chunkId: 'voice-contrast', content: voiceTable })
     }
 
     // ── 事件账本时间切片 ──
@@ -965,7 +1048,7 @@ export class NovelPromptBuilder {
         : this.buildSubjectNameMap(projectId, ledgerContext)
       this.injectSubjectNames(ledgerContext, nameMap)
       const ledgerSection = this.formatStoryLedgerContext(ledgerContext, arrangedEntities, nameMap)
-      if (ledgerSection) parts.push(ledgerSection)
+      if (ledgerSection) chunks.push({ chunkId: 'story-ledger', content: ledgerSection })
     }
 
     // ── 实体关联（画布手动 + 派生自动边，作为故事状态的补充）──
@@ -978,7 +1061,7 @@ export class NovelPromptBuilder {
         : this.collectRelevantEdges(projectId, relevantEntityIds, boundary)
     if (edges.length > 0) {
       const edgeSection = this.formatEdges(projectId, edges, boundary)
-      if (edgeSection) parts.push(edgeSection)
+      if (edgeSection) chunks.push({ chunkId: 'entity-edges', content: edgeSection })
     }
 
     // ── 信息差 ──
@@ -988,13 +1071,20 @@ export class NovelPromptBuilder {
       boundary
     )
     if (infoLayers.length > 0) {
-      parts.push(this.formatInfoLayers(projectId, infoLayers, arrangedEntities, boundary))
+      chunks.push({ chunkId: 'info-layers', content: this.formatInfoLayers(projectId, infoLayers, arrangedEntities, boundary) })
     }
 
     // ── 前后章锚点（摘要 / 上一章结尾 / 声音锚点 / 下一章开头 / 未兑现钩子 / 文风指纹）──
-    parts.push(...this.collectChapterAnchorSections(projectId, chapterNumber))
+    chunks.push(...this.collectChapterAnchorChunks(projectId, chapterNumber))
 
-    return this.stripEmDash(parts.join('\n\n---\n\n'))
+    // P4 接入 2：角色策略过滤（T03-3 resolveChunkMode）——传 agentType 时移除
+    // 显式 disabled 的 chunk（如 director/reviewer/memory 不需要的声音对照）。
+    // 未传 agentType（默认/等价性路径）不做任何过滤，保持逐字节等价。
+    if (options?.agentType) {
+      return chunks.filter((c) => resolveChunkMode(options.agentType!, c.chunkId) !== 'disabled')
+    }
+
+    return chunks
   }
 
   /**
@@ -1013,7 +1103,19 @@ export class NovelPromptBuilder {
    * 抽出来的目的不是省行数，而是让两种模式**不可能**在锚点逻辑上漂移。
    */
   private collectChapterAnchorSections(projectId: string, chapterNumber: number): string[] {
-    const sections: string[] = []
+    return this.collectChapterAnchorChunks(projectId, chapterNumber).map((c) => c.content)
+  }
+
+  /**
+   * 前后章锚点 chunk 标注版（T03-2 等价拆块）。
+   * 与 collectChapterAnchorSections 同一实现（后者委托本方法），每段标注 chunkId：
+   * recent-recaps / prev-ending / sound-anchor / next-anchor / hooks / style-fingerprint。
+   */
+  private collectChapterAnchorChunks(
+    projectId: string,
+    chapterNumber: number,
+  ): Array<{ chunkId: string; content: string }> {
+    const sections: Array<{ chunkId: string; content: string }> = []
 
     // ⚠️ 必须按当前章 chapterNumber 为基准向前取，不能用 listRecentChapters：
     // listRecentChapters 的 SQL 是 ORDER BY chapter_number DESC LIMIT N，返回的是
@@ -1040,19 +1142,20 @@ export class NovelPromptBuilder {
     prevChapters.reverse() // 升序（旧→新）
 
     if (prevChapters.length > 0) {
-      sections.push(this.formatRecentSummaries(prevChapters))
+      sections.push({ chunkId: 'recent-recaps', content: this.formatRecentSummaries(prevChapters) })
 
       // 上一章结尾 + 叙事声音锚点（向后看：本章开头承接此处钩子）。
       // 放 shared 层而非 suffix：Writer/Reviser/Reviewer 都需要且跨 Agent 完全一致，
       // 能让 director→writer→reviewer→reviser 之间多命中这部分缓存。
       const prevEnding = this.formatPreviousChapterEnding(prevChapters)
-      if (prevEnding) sections.push(prevEnding)
-      // 与 writingStyleProfile 叠加注入（而非互斥）：profile 是用户手动填写的规则和样本，
-      // soundAnchor 是系统从既有正文自动提取的实际声音。两者互补：
-      // - profile 告诉 LLM "应该怎么写"（规则 + 正反样本）
-      // - soundAnchor 告诉 LLM "前文实际怎么写的"（原文示范）
-      const soundAnchor = this.formatSoundAnchor(prevChapters.slice(-1))
-      if (soundAnchor) sections.push(soundAnchor)
+      if (prevEnding) sections.push({ chunkId: 'prev-ending', content: prevEnding })
+      // 文风档案样本优先于自动声音锚点。直接复制上一章开头有一个隐蔽风险：
+      // 如果上一章本身短段、泛化比喻或解释腔严重，下一章会把这些 AI 痕迹当成
+      // “前文腔调”继续放大。formatSoundAnchor 内部先做确定性质量筛选，只有未命中
+      // 严重形态问题的章节才有资格成为示范；不合格章节仍通过 recap/结尾承接剧情，
+      // 但不再作为文风样本。
+      const soundAnchor = this.formatSoundAnchor(prevChapters.slice(-2))
+      if (soundAnchor) sections.push({ chunkId: 'sound-anchor', content: soundAnchor })
     }
 
     // 下一章开头（向前看：本章结尾必须过渡到此处场景）。
@@ -1061,7 +1164,7 @@ export class NovelPromptBuilder {
     const nextAnchor = this.formatNextChapterAnchor(
       this.stores.getChapter(projectId, chapterNumber + 1)
     )
-    if (nextAnchor) sections.push(nextAnchor)
+    if (nextAnchor) sections.push({ chunkId: 'next-anchor', content: nextAnchor })
 
     // 未兑现钩子：Writer 必须承接上一章抛出的悬念，这是"前后章衔接对不上"的数据基础。
     const unfulfilledHooks = this.stores.listUnfulfilledHooksBefore(projectId, chapterNumber)
@@ -1085,14 +1188,14 @@ export class NovelPromptBuilder {
       const olderBacklog = unfulfilledHooks
         .filter((hook) => hook.chapterNumber < chapterNumber - 1)
         .slice(0, CHAPTER_ANCHOR_BUDGET.olderHookBacklogCount)
-      sections.push(this.formatUnfulfilledHooks([...previousChapterHooks, ...olderBacklog]))
+      sections.push({ chunkId: 'hooks', content: this.formatUnfulfilledHooks([...previousChapterHooks, ...olderBacklog]) })
     }
 
     // 文风指纹：与 writingStyleProfile 叠加（profile 给方向，指纹给实际基准）。
     // 指标不可信时 formatStyleFingerprint 会自行降级为参考值，不作硬约束。
     if (prevChapters.length > 0) {
       const fingerprint = this.formatStyleFingerprint(prevChapters)
-      if (fingerprint) sections.push(fingerprint)
+      if (fingerprint) sections.push({ chunkId: 'style-fingerprint', content: fingerprint })
     }
 
     return sections
@@ -1148,6 +1251,13 @@ export class NovelPromptBuilder {
     if (!hasArranged) {
       const keyFacts = this.formatGlobalKeyFacts(projectId, boundary, arrangedEntities)
       if (keyFacts) parts.push(keyFacts)
+      // diff 模式也必须携带角色声音。否则 context-preview/长篇差分路径与 full
+      // 路径的 Writer 输入不一致，预览通过但实际生成退回默认腔。
+      const stateCharacters = boundary.state.characters.filter((character) => (
+        !/（待定）|待补充|待定$|^新的$|^测试角色/.test(character.name)
+      ))
+      const voiceTable = formatVoiceContrastTable(buildVoiceProfiles(stateCharacters))
+      if (voiceTable) parts.push(voiceTable)
     }
 
     // ── 上一章变化 delta（替代 formatStoryLedgerContext 的"最近承接"段）──
@@ -1202,21 +1312,45 @@ export class NovelPromptBuilder {
     arrangedEntities?: ArrangedEntity,
     agentType?: string
   ): string {
-    void arrangedEntities
-    if (!agentType) return ''
+    // T03-2 等价拆块：suffix 统一由 chunk 版构建（Agent 分支独立 chunk），
+    // join 结果与旧字符串逐字节一致（每分支合并为一个 chunk，分隔符位置不变）。
+    const chunks = this.buildChapterContextSuffixChunks(
+      projectId, chapterNumber, narrativeTask, constraints, arrangedEntities, agentType,
+    )
+    if (chunks.length === 0) return ''
+    return this.stripEmDash(chunks.map((c) => c.content).join('\n\n---\n\n'))
+  }
 
-    const parts: string[] = []
+  /**
+   * T03-2：suffix 层 chunk 化。按 Agent 分支输出独立 chunk（director-scheme /
+   * reviewer-rubric / writer-instruction），每个 chunk 内部分节保持原 join 顺序，
+   * 与 buildChapterContextSuffix 返回字符串逐字节等价（由测试钉死）。
+   */
+  buildChapterContextSuffixChunks(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
+    agentType?: string,
+  ): Array<{ chunkId: string; content: string }> {
+    if (!agentType) return []
+    const chunks: Array<{ chunkId: string; content: string }> = []
 
     // ── 宏观节奏分布 + Reviewer 反馈回流（Director 注入）──
     if (agentType === 'director') {
+      const parts: string[] = []
       const macroRhythm = this.formatMacroRhythm(projectId, chapterNumber)
       if (macroRhythm) parts.push(macroRhythm)
       const reviewerFeedback = this.formatReviewerFeedback(projectId, chapterNumber)
       if (reviewerFeedback) parts.push(reviewerFeedback)
+      if (parts.length > 0) chunks.push({ chunkId: 'director-scheme', content: parts.join('\n\n---\n\n') })
     }
+    void arrangedEntities
 
     // ── 平台 Rubric（仅 Reviewer 注入，按目标平台调整评分权重）──
     if (agentType === 'reviewer') {
+      const parts: string[] = []
       const platformRubric = this.formatPlatformRubric(projectId)
       if (platformRubric) parts.push(platformRubric)
       if (narrativeTask.description.trim()) {
@@ -1233,6 +1367,7 @@ export class NovelPromptBuilder {
             '你必须逐项核对矩阵实体是否全部兑现，未兑现项必须在审稿报告中明确指出。'
         )
       }
+      if (parts.length > 0) chunks.push({ chunkId: 'reviewer-rubric', content: parts.join('\n\n---\n\n') })
     }
 
     // ── 创作指令（仅 Writer 注入，其他 Agent 看到会越权写作）──
@@ -1241,8 +1376,12 @@ export class NovelPromptBuilder {
     if (agentType === 'writer') {
       const project = this.stores.getProject(projectId)
       const rhythm = constraints.rhythmConstraint?.rhythm
-      const targetWords =
-        constraints.wordBudget?.target ?? this.computeChapterTargetWords(project, rhythm)
+      // V2（scenePlanV2Write）：字数只读 WordBudgetResolver 结果（buildChapterConstraints
+      // 在 flag 开时已返回 resolver 值）；无定位时不再应用节奏倍率。V1 保持现状。
+      const targetWords = isNovelFeatureEnabled(this.stores, projectId, 'scenePlanV2Write')
+        ? constraints.wordBudget?.target
+          ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
+        : constraints.wordBudget?.target ?? this.computeChapterTargetWords(project, rhythm)
       const positioningGuidance: Record<string, string> = {
         high_pressure: '高压章：快节奏、高张力、动作密集，章尾留强钩。',
         advancement: '推进章：节奏适中，每个场景都要产生信息或局势增量。',
@@ -1265,11 +1404,10 @@ export class NovelPromptBuilder {
         },
         projectId
       )
-      parts.push(instruction)
+      chunks.push({ chunkId: 'writer-instruction', content: instruction })
     }
 
-    if (parts.length === 0) return ''
-    return this.stripEmDash(parts.join('\n\n---\n\n'))
+    return chunks
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1625,11 +1763,11 @@ export class NovelPromptBuilder {
       reveal_world_rule: '暴露世界规则'
     }
     const plotRoleLabel: Record<string, string> = {
-      protagonist: '主角',
-      main_opponent: '主要对手',
-      supporting: '重要配角',
-      function: '功能配角',
-      background: '背景人物'
+      protagonist: '主角：允许完整感知、判断、选择与内心层',
+      main_opponent: '主要对手：保留动机和策略，但不替他解释全部内心',
+      supporting: '重要配角：本章有关系、认知或长期状态变化时才展开',
+      function: '功能角色：完成一个具体动作、信息或阻碍即可；不分配独立内心、弧光展示或 POV',
+      background: '背景人物：只作为环境反应或群体的一部分，不单独展开'
     }
     // ── P2-1：冲突推进模式中文映射 ──
     const progressionModeLabel: Record<string, string> = {
@@ -1697,34 +1835,52 @@ export class NovelPromptBuilder {
             charLines.push(
               `  此刻：${compactPromptText(c.currentState, CHARACTER_CARD_BUDGET.currentState)}`
             )
-          if (usableDetail(c.currentGoal))
+          const isLightweightRole = c.plotRole === 'function' || c.plotRole === 'background'
+          if (!isLightweightRole && usableDetail(c.currentGoal))
             charLines.push(
               `  想要：${compactPromptText(c.currentGoal, CHARACTER_CARD_BUDGET.currentGoal)}`
             )
-          if (usableDetail(c.currentPressure))
+          if (!isLightweightRole && usableDetail(c.currentPressure))
             charLines.push(
               `  压力：${compactPromptText(c.currentPressure, CHARACTER_CARD_BUDGET.currentPressure)}`
             )
-          // 长期欲望是跨章稳定的人格发动机（区别于 currentGoal 的短期目标）。
-          // 缺了它，Writer 只知道角色这一章想干什么，不知道他这个人一直想要什么。
-          if (usableDetail(c.longTermDesire))
+          // 长期欲望、缺点与完整性格只属于主角/主要对手/重要配角的笔墨预算。
+          // 功能角色一旦看到这些字段，模型会本能地给他独立心理、背景解释和弧光展示，
+          // 把“肇事司机打电话”写成另一条人物线。
+          if (!isLightweightRole && usableDetail(c.longTermDesire))
             charLines.push(
               `  一直想要：${compactPromptText(c.longTermDesire, CHARACTER_CARD_BUDGET.longTermDesire)}`
             )
-          // 性格/对话是角色差异化的唯一来源，预算必须高于 identity/currentState，
-          // 否则多角色同场时会全部退化成同一个声音。
-          if (usableDetail(c.personality))
+          if (!isLightweightRole && usableDetail(c.personality))
             charLines.push(
               `  性格：${compactCharacterDetail(c.personality, CHARACTER_CARD_BUDGET.personality, 'personality')}`
             )
           if (usableDetail(c.speechStyle))
             charLines.push(
-              `  对话：${compactCharacterDetail(c.speechStyle, CHARACTER_CARD_BUDGET.speechStyle, 'speechStyle')}`
+              isLightweightRole
+                ? `  对话提示：${compactCharacterDetail(c.speechStyle, 100, 'speechStyle')}`
+                : `  对话：${compactCharacterDetail(c.speechStyle, CHARACTER_CARD_BUDGET.speechStyle, 'speechStyle')}`
             )
           lines.push(charLines.join('\n'))
         }
+        // 短卡是纵向的：模型逐张读完并不会自动去比较三个人的说话方式，
+        // 于是三份都写着"沉稳克制"的档案输出同一把嗓子。
+        // 声音对照表把差异横向摆开，并给出可判定的轴（句长字数区间 / 语域标记词 /
+        // 被追问时的反应），与 detectVoiceCollapse 的实测口径一一对应。
+        // 声音对照只为需要持续辨认的主角/对手/重要配角展开。
+        // function/background 只使用短卡中的一句对话提示，不加入全套声音坐标，
+        // 避免模型误以为每个过场人物都要获得同等台词量和辨识度展示。
+        const voiceCharacters = chars.filter((character) => (
+          character.plotRole !== 'function' && character.plotRole !== 'background'
+        ))
+        const voiceTable = formatVoiceContrastTable(buildVoiceProfiles(voiceCharacters))
+        if (voiceTable) {
+          lines.push('')
+          lines.push(voiceTable)
+        }
       }
     }
+
     // ── 本章角色之间的关系状态（四层逻辑②：动态关系）──
     // 让 Writer 知道本章角色之间的当前关系状态 + 阵营 + 走向 + 本章约束提示
     if (arranged.characterIds.length > 1) {
@@ -1996,6 +2152,23 @@ export class NovelPromptBuilder {
         arranged.locationIds.length > 0 ||
         (arranged.itemIds ?? []).length > 0)
     )
+  }
+
+  /**
+   * P0 埋点辅助：单独取一次「实体档案」section 文本（供 ContextSectionCollector 计量）。
+   *
+   * 与 buildChapterContextShared 内部 formatArrangedEntities 使用同一判定与同一构建路径，
+   * **不改变任何 prompt 输出**；无编排实体时返回空串（调用方跳过埋点）。
+   * 输出与 shared 内的实体档案 section 完全一致，保证"实体档案占 shared 比例"口径可算。
+   */
+  buildArrangedEntitiesSection(
+    projectId: string,
+    chapterNumber: number,
+    arrangedEntities?: ArrangedEntity,
+  ): string {
+    if (!this.hasArrangedEntities(arrangedEntities) || !arrangedEntities) return ''
+    const boundary = this.getChapterBoundaryContext(projectId, chapterNumber)
+    return this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities, boundary)
   }
 
   private collectRelevantEntityIds(arranged?: ArrangedEntity): Set<string> {
@@ -2523,21 +2696,31 @@ export class NovelPromptBuilder {
    * - Writer 据此保持声音一致；Reviewer 据此检查声音偏差
    */
   private formatSoundAnchor(recentChapters: NovelChapter[]): string {
-    // recentChapters 是升序（旧→新），取最后 2 章有内容的开头
-    // ⚠️ 顺序修正：listRecentChapters 返回升序，从末尾向前取最近 2 章。
+    // 只有没有严重形态问题的前文才能作为声音示范。
+    // 剧情承接与声音模仿必须分开：一个章节可以在事实层有效，但文笔层不值得复制。
     const anchors: string[] = []
     for (let i = recentChapters.length - 1; i >= 0; i--) {
       const ch = recentChapters[i]
       if (ch.content && ch.content.trim().length > 50) {
-        const opening = ch.content.trim().slice(0, CHAPTER_ANCHOR_BUDGET.soundAnchorOpening)
-        anchors.push(
-          `- 第${ch.chapterNumber}章开头：${opening}${ch.content.length > 200 ? '...' : ''}`
-        )
+        const report = evaluateProseQuality(ch.content)
+        const hasSevereShapeIssue = report.issues.some((issue) => issue.severity === 'error')
+        if (!hasSevereShapeIssue) {
+          const opening = ch.content.trim().slice(0, CHAPTER_ANCHOR_BUDGET.soundAnchorOpening)
+          anchors.push(
+            `- 第${ch.chapterNumber}章开头：${opening}${ch.content.length > CHAPTER_ANCHOR_BUDGET.soundAnchorOpening ? '...' : ''}`
+          )
+        }
       }
       if (anchors.length >= 2) break
     }
     if (anchors.length === 0) return ''
-    return `## 叙事声音锚点（参照前文腔调，保持一致）\n\n${anchors.join('\n')}`
+    return [
+      '## 叙事声音锚点（只参考自然观察和句子呼吸）',
+      '',
+      '以下前文已通过确定性形态筛选。只参考观察距离、句子呼吸和用词来源，不复用具体句式、比喻或开头结构。',
+      '',
+      anchors.join('\n'),
+    ].join('\n')
   }
 
   /**
@@ -3691,6 +3874,16 @@ export class NovelPromptBuilder {
       effectiveMode === 'diff'
         ? this.buildChapterContextDiff(projectId, chapterNumber, narrativeTask, constraints)
         : this.buildChapterContextShared(projectId, chapterNumber, narrativeTask, constraints)
+    // T03-2：full 模式下沉 chunk 明细（复用 chunk 版构建，与 shared 字符串同源）
+    const chunkBreakdown = effectiveMode === 'full'
+      ? this.buildChapterContextChunks(projectId, chapterNumber, narrativeTask, constraints)
+          .map((c) => ({
+            chunkId: c.chunkId,
+            title: CHUNK_BY_ID.get(c.chunkId)?.title ?? c.chunkId,
+            charCount: c.content.length,
+            preview: previewOf(c.content),
+          }))
+      : undefined
     sections.push({
       key: 'shared',
       title: '章前共享层',
@@ -3698,7 +3891,8 @@ export class NovelPromptBuilder {
       charCount: shared.length,
       fromSnapshot: boundary.fromSnapshot,
       mode: effectiveMode,
-      preview: previewOf(shared)
+      preview: previewOf(shared),
+      chunks: chunkBreakdown
     })
 
     // ── semi-suffix：Agent 专属后缀（Director 方案 / Reviewer Rubric / Writer 指令）──

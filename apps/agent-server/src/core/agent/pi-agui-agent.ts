@@ -11,6 +11,7 @@ import type { AgUiEventSink } from '@repo/protocol/events'
 import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore, PiThreadSession } from './session-store.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
+import type { ThreadSettingsStore } from './thread-settings-store.js'
 import { StreamEmitter, emitSingleAssistantMessage } from './stream-emitter.js'
 import { ReasoningPipeline } from './reasoning-pipeline.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
@@ -60,6 +61,7 @@ export class PiAgUiAgent {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private readonly modelRegistry: any,
     private readonly providerConfigStore: ProviderConfigStore,
+    private readonly threadSettingsStore: ThreadSettingsStore,
     private readonly eventBus?: EventBus,
     agentId = 'default'
   ) {
@@ -449,8 +451,96 @@ export class PiAgUiAgent {
       name?: string
       contextWindow?: number
       maxTokens?: number
+      reasoning?: boolean
+      // SDK Model 字段，mapToSdkModel 已设置
+      thinkingLevelMap?: Record<string, string | null>
+      compat?: { thinkingFormat?: string }
+      // ProviderConfigStore 上的业务字段（mapToSdkModel 未透传给 SDK），由 ProviderConfigStore 查表后合并
+      supportedReasoningEfforts?: Array<'low' | 'medium' | 'high' | 'xhigh'>
+      allowDisableThinking?: boolean
+      defaultReasoningEffort?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh'
     }>
-    return allModels.filter((m) => configuredProviderIds.has(m.provider))
+
+    // 构造 provider → models 映射以便补充 ProviderConfigStore 上的业务字段
+    const providerModelIndex = new Map<string, { supportedReasoningEfforts?: Array<'low'|'medium'|'high'|'xhigh'>; allowDisableThinking?: boolean; defaultReasoningEffort?: 'auto'|'low'|'medium'|'high'|'xhigh' }>()
+    for (const p of configuredProviders) {
+      for (const m of p.models) {
+        providerModelIndex.set(`${p.id}:${m.id}`, {
+          ...(m.supportedReasoningEfforts ? { supportedReasoningEfforts: m.supportedReasoningEfforts } : {}),
+          ...(m.allowDisableThinking !== undefined ? { allowDisableThinking: m.allowDisableThinking } : {}),
+          ...(m.defaultReasoningEffort !== undefined ? { defaultReasoningEffort: m.defaultReasoningEffort } : {}),
+        })
+      }
+    }
+
+    // 从 SDK thinkingLevelMap 反推"supportedReasoningEfforts"（如果 ProviderConfigStore 未显式声明）：
+    // - map 含 'off' 键 → allowDisableThinking=true
+    // - 其他键（minimal/low/medium/high/xhigh）→ supportedReasoningEfforts 按键过滤
+    const inferFromMap = (
+      map: Record<string, string | null> | undefined,
+    ): { supportedReasoningEfforts?: Array<'low'|'medium'|'high'|'xhigh'>; allowDisableThinking?: boolean } => {
+      if (!map) return {}
+      const levels: Array<'low'|'medium'|'high'|'xhigh'> = []
+      if (map.low != null) levels.push('low')
+      if (map.medium != null) levels.push('medium')
+      if (map.high != null) levels.push('high')
+      if (map.xhigh != null) levels.push('xhigh')
+      return {
+        ...(levels.length > 0 ? { supportedReasoningEfforts: levels } : {}),
+        ...(map.off != null ? { allowDisableThinking: true } : {}),
+      }
+    }
+
+    return allModels
+      .filter((m) => configuredProviderIds.has(m.provider))
+      .map((m) => {
+        const override = providerModelIndex.get(`${m.provider}:${m.id}`) ?? {}
+        const inferred = inferFromMap(m.thinkingLevelMap)
+        const reasoning = m.reasoning ?? false
+        // 已标记思考能力但未配置强度档位：给一组默认档位（低/中/高），
+        // 避免"支持思考但选择器不出现"的割裂体验。
+        // 用户在 Provider 设置里可随时覆盖为精确档位。
+        const supportedReasoningEfforts =
+          override.supportedReasoningEfforts ??
+          inferred.supportedReasoningEfforts ??
+          (reasoning ? (['low', 'medium', 'high'] as Array<'low'|'medium'|'high'|'xhigh'>) : undefined)
+        return {
+          provider: m.provider,
+          id: m.id,
+          name: m.name,
+          contextWindow: m.contextWindow,
+          maxTokens: m.maxTokens,
+          reasoning,
+          ...(supportedReasoningEfforts ? { supportedReasoningEfforts } : {}),
+          ...(override.allowDisableThinking ?? inferred.allowDisableThinking
+            ? { allowDisableThinking: override.allowDisableThinking ?? inferred.allowDisableThinking! }
+            : {}),
+          ...(override.defaultReasoningEffort ? { defaultReasoningEffort: override.defaultReasoningEffort } : {}),
+        }
+      })
+  }
+
+  /**
+   * 读取指定 thread 的 thinkingLevel。
+   * 返回 undefined 表示未设置（创建 PiSession 时走 SDK 全局默认）。
+   */
+  getThreadThinkingLevel(threadId: string): { level: string } | undefined {
+    const level = this.threadSettingsStore.getThinkingLevel(threadId)
+    return level ? { level } : undefined
+  }
+
+  /**
+   * 设置指定 thread 的 thinkingLevel 并清掉 session 缓存，使下次请求按新 level 重建 Session。
+   * 切换 thinkingLevel 不影响其他 thread 的 session。
+   */
+  setThreadThinkingLevel(threadId: string, level: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'): {
+    threadId: string
+    level: string
+  } {
+    this.threadSettingsStore.setThinkingLevel(threadId, level)
+    // 思考强度作为 AgentSession 的初始化参数：必须在下次创建 Session 时生效
+    this.sessionStore.clear()
+    return { threadId, level }
   }
 
   async getThreadTools(threadId: string): Promise<{ tools: unknown[]; activeToolNames: string[] }> {

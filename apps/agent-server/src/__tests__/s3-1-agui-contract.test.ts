@@ -52,10 +52,20 @@ function createMockSession(
 function createAgentWithMockSession(mockSessionReturn: any) {
   const store = new PiSessionStore()
   store.setSessionFactory(async () => mockSessionReturn)
-  const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, {
-    list: () => [],
-    getStripStreamOptions: () => false
-  } as any)
+  const agent = new PiAgUiAgent(
+    store,
+    { find: () => undefined, getAll: () => [] },
+    {
+      list: () => [],
+      getStripStreamOptions: () => false
+    } as any,
+    {
+      // Mock ThreadSettingsStore：thinkingLevel 始终未设置
+      getThinkingLevel: () => undefined,
+      setThinkingLevel: () => {},
+      clearThinkingLevel: () => false,
+    } as any,
+  )
   return { store, agent }
 }
 
@@ -511,10 +521,19 @@ describe('S3-1 并发契约', () => {
     const { session } = createMockSession()
     const store = new PiSessionStore()
     store.setSessionFactory(async (threadId) => ({ ...session, threadId }))
-    const agent = new PiAgUiAgent(store, { find: () => undefined, getAll: () => [] }, {
-      list: () => [],
-      getStripStreamOptions: () => false
-    } as any)
+    const agent = new PiAgUiAgent(
+      store,
+      { find: () => undefined, getAll: () => [] },
+      {
+        list: () => [],
+        getStripStreamOptions: () => false
+      } as any,
+      {
+        getThinkingLevel: () => undefined,
+        setThinkingLevel: () => {},
+        clearThinkingLevel: () => false,
+      } as any,
+    )
 
     const events1: BaseEvent[] = []
     const events2: BaseEvent[] = []

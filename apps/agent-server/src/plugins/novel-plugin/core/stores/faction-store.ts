@@ -36,17 +36,15 @@ export class FactionStore {
     const full: NovelFaction = { ...faction, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
       INSERT INTO novel_factions (id, project_id, name, description, type, leader_id, ideology,
-      strength, resources, allies, enemies, status, first_chapter, last_chapter, chapter_spans, created_at, updated_at)
+      strength, resources, allies, enemies, status, chapter_spans, created_at, updated_at)
       VALUES (@id, @project_id, @name, @description, @type, @leader_id, @ideology,
-      @strength, @resources, @allies, @enemies, @status, @first_chapter, @last_chapter, @chapter_spans, @created_at, @updated_at)
+      @strength, @resources, @allies, @enemies, @status, @chapter_spans, @created_at, @updated_at)
     `).run({
       id: full.id, project_id: full.projectId, name: full.name, description: full.description,
       type: full.type, leader_id: full.leaderId, ideology: full.ideology,
       strength: full.strength, resources: JSON.stringify(full.resources),
       allies: JSON.stringify(full.allies), enemies: JSON.stringify(full.enemies),
       status: full.status,
-      first_chapter: full.chapterSpans[0]?.[0] ?? null,
-      last_chapter: full.chapterSpans[0]?.[1] ?? null,
       chapter_spans: JSON.stringify(full.chapterSpans),
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
@@ -61,14 +59,12 @@ export class FactionStore {
     this.db.prepare(`
       UPDATE novel_factions SET name=@name, description=@description, type=@type, leader_id=@leader_id,
       ideology=@ideology, strength=@strength, resources=@resources, allies=@allies, enemies=@enemies,
-      status=@status, first_chapter=@first_chapter, last_chapter=@last_chapter, chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
+      status=@status, chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
     `).run({
       id, name: updated.name, description: updated.description, type: updated.type,
       leader_id: updated.leaderId, ideology: updated.ideology, strength: updated.strength,
       resources: JSON.stringify(updated.resources), allies: JSON.stringify(updated.allies),
       enemies: JSON.stringify(updated.enemies), status: updated.status,
-      first_chapter: updated.chapterSpans[0]?.[0] ?? null,
-      last_chapter: updated.chapterSpans[0]?.[1] ?? null,
       chapter_spans: JSON.stringify(updated.chapterSpans),
       updated_at: updated.updatedAt,
     })

@@ -597,11 +597,18 @@ interface NovelCharacter {
 | `role-reviewer.md`       | 审稿职责：检查一致性、评估任务完成度、检查信息差、评分 accept/revise/reject；绝不创作或改写                                                  | reviewer 的 `agent_role`                                                |
 | `role-memory.md`         | 记忆职责：**必须通过工具更新状态**，含角色/伏笔/冲突/线索/关系工具使用指南，工作流程                                                         | memory 的 `agent_role`                                                  |
 | `role-reviser.md`        | 修订职责：必须通过 `novel_apply_revision` 工具应用修改，传入 `pairs: [{from, to}]`，工具内部用 `String.replace` 做精确替换                   | reviser 的 `agent_role`，工具通过 `extraTools` 注入，draft 持有当前正文 |
-| `role-character.md`      | 角色管家：管理静态设定、跟踪动态状态、维护弧光、管理关系                                                                                     | （备用角色模板，未在 4 个核心 Agent 中直接使用）                        |
-| `role-clue.md`           | 线索管家：管理伏笔生命周期、跟踪线索进度、确保叙事债务回收                                                                                   | （备用）                                                                |
-| `role-settings.md`       | 设定管家：管理力量体系/魔法/科技/政治经济、确保规则一致性、区分固定/阶段规则                                                                 | （备用）                                                                |
+| `role-director-discussion.md` | 群聊模式导演：确定本章方向、拆分场景（固定 Markdown 契约格式）、单 POV、总输出 ≤1200 字                                    | 群聊 director 的 `agent_role` |
+| `role-writer-discussion.md`   | 群聊模式编织：把角色演出还原为场景动力链后编织正文，保留角色声音差异、指代消歧                                        | 群聊 writer 的 `agent_role` |
+| `role-reviewer-discussion.md` | 群聊实时审查：角色 Agent 发言后判断 pass/request_rewrite，JSON 输出，PUSHBACK 必须放行                                        | 群聊 reviewer 的 `agent_role` |
+| `role-character-actor.md`     | 群聊角色演员：剧本格式 `[动作/表情/心理外化] "台词"` 演出当前动作单元，被点名才发言                                        | 群聊角色成员的 `agent_role` |
+| `role-prose-editor.md`    | 盲审文字编辑：只审文字形态与角色声音，不审规划；输出 ≤600 字，含角色声音专项三问                                   | `buildProseEditorIdentity` |
+| `role-memory-generator.md`    | 记忆提取（JSON 版，主力）：从正文提取十类实体轨道变更，输出唯一 JSON 对象，系统解析后落库                              | `NovelMemoryGenerator`（memory-generator） |
+| `role-similarity-scanner.md`  | 实体相似度扫描：8 类实体找语义重复组，输出 JSON 报告（similarity > 0.6 才报告），不修改实体                            | `novel-similarity-scanner.ts` |
+| `role-character.md`      | 角色管家：管理静态设定、跟踪动态状态、维护弧光、管理关系                                                                                     | （已归档至 `_legacy/`，2026-08-06，代码零引用）                        |
+| `role-clue.md`           | 线索管家：管理伏笔生命周期、跟踪线索进度、确保叙事债务回收                                                                                   | （已归档至 `_legacy/`，2026-08-06）                                     |
+| `role-settings.md`       | 设定管家：管理力量体系/魔法/科技/政治经济、确保规则一致性、区分固定/阶段规则                                                                 | （已归档至 `_legacy/`，2026-08-06）                                     |
 
-注意：`role-character` / `role-clue` / `role-settings` 三个模板是为未来扩展的"管家 Agent"预留，当前 4 个核心 Agent 只用 director/writer/reviewer/memory。
+注意：`role-character` / `role-clue` / `role-settings` 三个模板曾为"管家 Agent"预留，代码零引用，已于 2026-08-06 归档至 `prompts/_legacy/`（`PromptManager` 只加载顶层 .md，归档目录不注册模板）。若未来启用"管家 Agent"，从 `_legacy/` 恢复即可。
 
 ### 9.3 REST API 模板管理
 

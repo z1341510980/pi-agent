@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather, Settings as SettingsIcon, Gauge } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -33,6 +33,7 @@ import {
   listLocations,
   listWorldElements,
   listItems,
+  listNarratives,
   listEdges,
   listVolumes,
   listProjectCharacterHistory,
@@ -52,10 +53,13 @@ import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
 import { NovelConversationPanel, type NovelFlowType } from './novel-conversation-panel'
+import { ChatPanel } from './chat-panel'
+import { SettingsPanel } from './settings-panel'
 import { ConsistencyAuditPanel } from './consistency-audit-panel'
 import type { MentionOption } from '@/components/shared/conversation'
 import { SimilarityScanPanel } from './similarity-scan-panel'
 import { CacheMonitorPanel } from './cache-monitor-panel'
+import { P3ContextReportPanel } from './p3-context-report-panel'
 import { AgentLogPanel } from './agent-log-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
 import { computeCharacterSpans, GROUP_META, type MatrixDragData } from './matrix/matrix-logic'
@@ -90,9 +94,11 @@ const LAYOUT_MODE_OPTIONS: ReadonlyArray<SegmentedOption<WorkspaceLayoutMode>> =
 // ── 右侧面板 Tab ──
 
 const RIGHT_PANEL_OPTIONS: ReadonlyArray<SegmentedOption<RightPanelView>> = [
-  { value: 'conversation', label: '对话', icon: MessageSquare, dataTour: 'right-tab-conversation' },
-  { value: 'detail', label: '详情', icon: Info, title: '查看实体详情', dataTour: 'right-tab-detail' },
-  { value: 'audit', label: '审计', icon: ShieldCheck, title: '查看一致性审计报告', dataTour: 'right-tab-audit' },
+  { value: 'conversation', label: '创作', icon: PenLine, title: '创作流程（工作流/群聊/反推/编排 + 进度/检查点）', dataTour: 'right-tab-conversation' },
+  { value: 'chat', label: '聊天', icon: MessageSquare, title: '章节自由对话（@ Agent/角色 问答）', dataTour: 'right-tab-chat' },
+  { value: 'detail', label: '详情', icon: Info, title: '实体查看/编辑（角色/冲突/伏笔/线索等）', dataTour: 'right-tab-detail' },
+  { value: 'settings', label: '设置', icon: SettingsIcon, title: '项目级配置（标题/大纲/创作主模型/节奏模型/目标平台）', dataTour: 'right-tab-settings' },
+  { value: 'audit', label: '审计', icon: ShieldCheck, title: '一致性诊断（伏笔回收/钩子/孤儿/时间线矛盾）', dataTour: 'right-tab-audit' },
 ]
 
 
@@ -211,6 +217,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 互斥锁：防止 header 按钮快速双击导致 creationMode 标记与流程实际启动状态错位
   // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
   const startCreationLockRef = useRef(false)
+  /** 本次创作 per-call 模型（输入框旁选择器传入；null = 默认） */
+  const creationModelIdRef = useRef<{ provider: string; modelId: string } | null>(null)
 
   const [relayoutSignal, setRelayoutSignal] = useState(0)
   const sidebarVisible = useNovelWorkspaceLayoutStore((s) => s.sidebarVisible)
@@ -226,6 +234,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const toggleFocusMode = useNovelWorkspaceLayoutStore((s) => s.toggleFocusMode)
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
+  const [p3PanelOpen, setP3PanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
   const [stylePanelOpen, setStylePanelOpen] = useState(false)
   const [referenceAnalysisOpen, setReferenceAnalysisOpen] = useState(false)
@@ -279,6 +288,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         locs,
         wel,
         its,
+        narrs,
         eds,
         vols,
       ] = await Promise.all([
@@ -296,6 +306,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         listLocations(currentProjectId),
         listWorldElements(currentProjectId),
         listItems(currentProjectId),
+        listNarratives(currentProjectId),
         listEdges(currentProjectId),
         listVolumes(currentProjectId),
       ])
@@ -314,6 +325,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         locations: locs,
         worldElements: wel,
         items: its,
+        narratives: narrs,
         edges: eds,
         volumes: vols,
       }
@@ -585,11 +597,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       ...(await resolveArrangedEntities(task.projectId, task.chapterNumber)),
       ...(characterFunctions ? { characterFunctions } : {}),
     }
+    const creationModelId = creationModelIdRef.current ?? undefined
     if (task.kind === 'discussion') {
-      await creationFlow.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities })
+      await creationFlow.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId })
       return
     }
-    await creationFlow.startCreation(task.projectId, task.chapterNumber, { arrangedEntities })
+    await creationFlow.startCreation(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId })
   }, [chapters, creationFlow, resolveArrangedEntities, setCreationMode])
 
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
@@ -730,6 +743,32 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
   }, [creationFlow, currentProjectId, creationChapterNumber, chapterChatLoadHistory])
 
+  /**
+   * 质量门修订失败后「再次修订」：仅对未通过项定向再修订，不复跑生成流程。
+   * 直接使用失败时保留的修订稿（creationFlow.chapterContent 已在 error 结果中更新）。
+   */
+  const handleReRevise = useCallback((): void => {
+    if (!currentProject || creationChapterNumber == null) return
+    const content = creationFlow.chapterContent
+    if (!content.trim()) {
+      toastError('没有可修订的正文内容', '请先手动编辑正文或重新创作。')
+      return
+    }
+    const projectId = currentProject.id
+    const chapterNumber = creationChapterNumber
+    setCreationMode('manual')
+    void creationFlow.reRevise(projectId, chapterNumber, content)
+  }, [currentProject, creationChapterNumber, creationFlow, setCreationMode])
+
+  /**
+   * 质量门修订失败后「手动编辑 / 保留草稿」：内容留在编辑器（不落库不丢弃），
+   * 清空错误提示与结果，用户可直接修改后保存到章节。
+   */
+  const handleKeepDraft = useCallback((): void => {
+    creationFlow.keepDraft()
+    toastSuccess('修订稿已保留', '未落库，可直接在编辑器中修改后保存。')
+  }, [creationFlow])
+
   const handleResumeDiscussion = useCallback((runId: string): void => {
     if (!currentProjectId) return
     const chapterNumber = creationChapterNumber ?? chatChapterNumber
@@ -747,7 +786,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   }, [creationFlow])
 
   // 右栏对话面板"开始"按钮：根据 flowType 分发到对应流程
-  const handleStartFlow = useCallback(() => {
+  const handleStartFlow = useCallback((modelId?: { provider: string; modelId: string } | null) => {
+    creationModelIdRef.current = modelId ?? null
     if (flowType === 'arrange') {
       void handleStartCreation('ai-arrange')
     } else {
@@ -761,9 +801,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const chapterChatSendMessage = chapterChat.sendMessage
   const chapterChatAbort = chapterChat.abort
   const handleSendChapterChat = useCallback(
-    (message: string, mentionedAgents?: string[]) => {
+    (message: string, mentionedAgents?: string[], modelId?: { provider: string; modelId: string } | null) => {
       if (!currentProjectId || chatChapterNumber == null) return
-      void chapterChatSendMessage(currentProjectId, chatChapterNumber, message, mentionedAgents)
+      void chapterChatSendMessage(currentProjectId, chatChapterNumber, message, mentionedAgents, modelId)
     },
     [currentProjectId, chatChapterNumber, chapterChatSendMessage],
   )
@@ -910,6 +950,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               className="text-subtle hover:text-text"
             >
               <Database className="size-3.5" />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => setP3PanelOpen(true)}
+              disabled={!currentProject}
+              title="P3 灰度看板"
+              className="text-subtle hover:text-text"
+            >
+              <Gauge className="size-3.5" />
             </Button>
             <Button
               size="icon-sm"
@@ -1216,6 +1266,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         error={creationFlow.error}
                         onRetry={handleRetryCreation}
                         onDismissError={handleDismissError}
+                        onReRevise={handleReRevise}
+                        onKeepDraft={handleKeepDraft}
                         onResumeDiscussion={handleResumeDiscussion}
                         creationMode={creationMode}
                         onSubmitCheckpoint={creationFlow.submitCheckpoint}
@@ -1228,14 +1280,38 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onStartFlow={handleStartFlow}
                         onCancelFlow={handleDiscardCreation}
                         chapterChatMessages={chapterChat.messages}
-                        chapterChatAgentOutputs={chapterChat.agentOutputs}
-                        chapterChatRunning={chapterChat.isRunning}
-                        chapterChatError={chapterChat.error}
-                        onSendChapterChat={handleSendChapterChat}
-                        onAbortChapterChat={handleAbortChapterChat}
-                        chatMentionOptions={chatMentionOptions}
                       />
                     </ErrorBoundary>
+                  </motion.div>
+                ) : rightPanelView === 'chat' ? (
+                  <motion.div
+                    key="chat"
+                    className="h-full"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <ChatPanel
+                      chapterChatMessages={chapterChat.messages}
+                      chapterChatAgentOutputs={chapterChat.agentOutputs}
+                      chapterChatRunning={chapterChat.isRunning}
+                      chapterChatError={chapterChat.error}
+                      onSendChapterChat={handleSendChapterChat}
+                      onAbortChapterChat={handleAbortChapterChat}
+                      chatMentionOptions={chatMentionOptions}
+                    />
+                  </motion.div>
+                ) : rightPanelView === 'settings' ? (
+                  <motion.div
+                    key="settings"
+                    className="h-full"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <SettingsPanel />
                   </motion.div>
                 ) : rightPanelView === 'audit' ? (
                   <motion.div
@@ -1296,6 +1372,24 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </DialogHeader>
             <div className="max-h-[60vh] overflow-y-auto">
               <CacheMonitorPanel chapterNumber={creationChapterNumber} />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* P3 灰度看板弹窗 */}
+        <Dialog open={p3PanelOpen} onOpenChange={setP3PanelOpen}>
+          <DialogContent className="sm:max-w-lg max-h-[80vh] p-0 gap-0">
+            <DialogHeader className="px-4 py-3 border-b border-border">
+              <DialogTitle className="flex items-center gap-2 text-sm">
+                <Gauge className="size-4 text-primary" />
+                P3 上下文灰度看板
+              </DialogTitle>
+              <DialogDescription className="text-xs text-pretty">
+                chunk 明细 / 角色策略 / 降级模拟 / 角色组装对照
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[60vh] overflow-y-auto p-4">
+              <P3ContextReportPanel chapterNumber={creationChapterNumber} />
             </div>
           </DialogContent>
         </Dialog>

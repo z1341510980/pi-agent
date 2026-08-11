@@ -1,34 +1,45 @@
-/**
- * 章节正文版本历史面板
- *
- * 功能：
- * - 左侧版本列表（sequence 倒序，显示 phase/trigger/字数差/时间）
- * - 右侧详情 / Diff 对比切换
- * - 回滚（二次确认）+ 手动快照
- *
- * 遵循用户偏好：
- * - 操作后 toast 通知
- * - 列表加载用骨架屏，不显示全屏 loading
- */
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
-} from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { toastSuccess, toastError } from '@/hooks/use-toast'
-import {
-  listChapterVersions, getChapterVersion, diffChapterVersions,
-  rollbackChapter, createChapterSnapshot,
-} from '@/api/novel-client'
+  AlertTriangle,
+  Camera,
+  CheckCircle2,
+  FileInput,
+  GitCompareArrows,
+  History,
+  LoaderCircle,
+  RefreshCw,
+  RotateCcw
+} from 'lucide-react'
 import type {
-  ChapterVersion, ChapterVersionSummary, ChapterVersionDiff,
-  ChapterVersionPhase, RollbackResult,
+  ChapterVersion,
+  ChapterVersionDiff,
+  ChapterVersionPhase,
+  ChapterVersionSummary,
+  RollbackResult
 } from '@repo/shared/novel'
+import {
+  applyChapterVersion,
+  createChapterSnapshot,
+  diffChapterVersions,
+  getChapterVersion,
+  listChapterVersions,
+  listContentRevisions,
+  rollbackToContentRevision,
+} from '@/api/novel-client'
+import type { ContentRevisionSummary } from '@repo/shared/novel'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { toastError, toastSuccess } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
-
-// ── phase 中文映射 ──
 
 const PHASE_LABEL: Record<ChapterVersionPhase, string> = {
   writer_initial: '初稿',
@@ -37,10 +48,10 @@ const PHASE_LABEL: Record<ChapterVersionPhase, string> = {
   postwrite_guard_pre: '守门重写前',
   discussion_weaver: '群聊编织',
   manual_patch: '手动编辑',
-  rollback_pre: '回滚前',
-  rollback_applied: '回滚应用',
+  rollback_pre: '应用前',
+  rollback_applied: '已应用',
   manual_snapshot: '手动快照',
-  import: '导入',
+  import: '导入'
 }
 
 const PHASE_COLOR: Record<ChapterVersionPhase, string> = {
@@ -49,99 +60,169 @@ const PHASE_COLOR: Record<ChapterVersionPhase, string> = {
   rewrite_pre: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
   postwrite_guard_pre: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
   discussion_weaver: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300',
-  manual_patch: 'bg-slate-500/15 text-slate-700 dark:text-slate-300',
+  manual_patch: 'bg-muted text-text',
   rollback_pre: 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
   rollback_applied: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
-  manual_snapshot: 'bg-slate-500/15 text-slate-700 dark:text-slate-300',
-  import: 'bg-slate-500/15 text-slate-700 dark:text-slate-300',
+  manual_snapshot: 'bg-muted text-text',
+  import: 'bg-muted text-text'
 }
 
-// ── 时间格式化 ──
-
-function formatTime(ts: number): string {
-  const now = Date.now()
-  const diff = now - ts
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  const d = new Date(ts)
-  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-function formatDelta(delta: number): string {
-  if (delta === 0) return ''
-  return delta > 0 ? `+${delta}` : `${delta}`
-}
-
-// ── Props ──
+type VersionTab = 'detail' | 'diff' | 'chain'
 
 interface ChapterVersionPanelProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   chapterId: string | null
-  /** 回滚成功后回调，通知编辑器刷新内容 */
-  onRollbackSuccess?: (content: string, wordCount: number) => void
+  onBeforeApply?: () => Promise<boolean>
+  onApplySuccess?: (content: string, wordCount: number) => void
+}
+
+function formatTime(timestamp: number): string {
+  const difference = Date.now() - timestamp
+  if (difference < 60_000) return '刚刚'
+  if (difference < 3_600_000) return `${Math.floor(difference / 60_000)} 分钟前`
+  if (difference < 86_400_000) return `${Math.floor(difference / 3_600_000)} 小时前`
+
+  const date = new Date(timestamp)
+  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function formatDelta(delta: number): string {
+  if (delta === 0) return ''
+  return delta > 0 ? `+${delta}` : String(delta)
+}
+
+function errorMessage(error: unknown): string | undefined {
+  return error instanceof Error ? error.message : undefined
 }
 
 export function ChapterVersionPanel({
-  open, onOpenChange, chapterId, onRollbackSuccess,
-}: ChapterVersionPanelProps) {
+  open,
+  onOpenChange,
+  chapterId,
+  onBeforeApply,
+  onApplySuccess
+}: ChapterVersionPanelProps): ReactElement {
   const [versions, setVersions] = useState<ChapterVersionSummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [snapshotting, setSnapshotting] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedDetail, setSelectedDetail] = useState<ChapterVersion | null>(null)
+  // P1-1 版本链收敛：主读源切 V2（content revision 链），默认展示 chain 页
+  const [activeTab, setActiveTab] = useState<VersionTab>('chain')
   const [diffFromId, setDiffFromId] = useState<string | null>(null)
   const [diffToId, setDiffToId] = useState<string | null>(null)
   const [diffResult, setDiffResult] = useState<ChapterVersionDiff | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
-  const [confirmRollbackId, setConfirmRollbackId] = useState<string | null>(null)
-  const [rolling, setRolling] = useState(false)
-  const selectedIsCurrent = versions.some(
-    (version) => version.id === selectedDetail?.id && version.isCurrent,
+  const [confirmApplyId, setConfirmApplyId] = useState<string | null>(null)
+  const [applying, setApplying] = useState(false)
+  // V2 不可变版本链（content revision）
+  const [chainRevisions, setChainRevisions] = useState<ContentRevisionSummary[]>([])
+  const [chainLoading, setChainLoading] = useState(false)
+  const [chainApplyingId, setChainApplyingId] = useState<string | null>(null)
+
+  const selectedSummary = useMemo(
+    () => versions.find((version) => version.id === selectedDetail?.id) ?? null,
+    [selectedDetail?.id, versions]
+  )
+  const pendingApplyVersion = useMemo(
+    () => versions.find((version) => version.id === confirmApplyId) ?? null,
+    [confirmApplyId, versions]
+  )
+  const selectedIsCurrent = Boolean(selectedSummary?.isCurrent)
+
+  const loadVersions = useCallback(
+    async (selectLatest = false): Promise<void> => {
+      if (!chapterId) return
+      setLoading(true)
+      try {
+        const list = await listChapterVersions(chapterId)
+        setVersions(list)
+        setSelectedId((current) => {
+          if (!selectLatest && current && list.some((version) => version.id === current)) {
+            return current
+          }
+          return list[0]?.id ?? null
+        })
+      } catch (error) {
+        toastError('加载版本列表失败', errorMessage(error))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [chapterId]
   )
 
-  // 加载版本列表
-  const loadVersions = useCallback(async () => {
+  // V2 版本链加载
+  const loadChain = useCallback(async (): Promise<void> => {
     if (!chapterId) return
-    setLoading(true)
+    setChainLoading(true)
     try {
-      const list = await listChapterVersions(chapterId)
-      setVersions(list)
-      // 默认选中最新版
-      if (list.length > 0 && !selectedId) {
-        setSelectedId(list[0].id)
-      }
-    } catch (err: any) {
-      toastError('加载版本列表失败', err?.message)
+      const list = await listContentRevisions(chapterId)
+      setChainRevisions(list)
+    } catch (error) {
+      toastError('加载版本链失败', errorMessage(error))
     } finally {
-      setLoading(false)
+      setChainLoading(false)
     }
-  }, [chapterId, selectedId])
+  }, [chapterId])
 
   useEffect(() => {
-    if (open && chapterId) {
-      setSelectedId(null)
-      setDiffFromId(null)
-      setDiffToId(null)
-      setDiffResult(null)
-      loadVersions()
-    }
-  }, [open, chapterId, loadVersions])
+    if (!open || !chapterId) return
+    setVersions([])
+    setSelectedId(null)
+    setSelectedDetail(null)
+    setActiveTab('chain')
+    setDiffFromId(null)
+    setDiffToId(null)
+    setDiffResult(null)
+    setConfirmApplyId(null)
+    void loadVersions(true)
+    // 默认展示 V2 版本链页，挂载即加载链数据（避免需手动刷新才显示）
+    void loadChain()
+  }, [chapterId, loadVersions, loadChain, open])
 
-  // 加载选中版本详情
+  // V2 版本链回滚（不可变语义：生成 rollback_applied 新版本）
+  const handleChainRollback = useCallback(async (revisionId: string): Promise<void> => {
+    if (!chapterId) return
+    setChainApplyingId(revisionId)
+    try {
+      // 与 handleApplyVersion 一致：回滚前先保存未落库的正文，避免覆盖用户刚编辑的内容
+      const ready = (await onBeforeApply?.()) ?? true
+      if (!ready) {
+        toastError('回滚已取消', '请先保存当前正文再回滚')
+        return
+      }
+      const result = await rollbackToContentRevision(chapterId, revisionId)
+      toastSuccess('已回滚', `已从版本链恢复到 ${result.wordCount} 字正文（生成新版本，历史保留）`)
+      onApplySuccess?.(result.content, result.wordCount)
+      await Promise.all([loadChain(), loadVersions(true)])
+    } catch (error) {
+      toastError('回滚失败', errorMessage(error))
+    } finally {
+      setChainApplyingId(null)
+    }
+  }, [chapterId, loadChain, loadVersions, onBeforeApply, onApplySuccess])
+
   useEffect(() => {
     if (!open || !chapterId || !selectedId) {
       setSelectedDetail(null)
       return
     }
+
     let cancelled = false
     getChapterVersion(chapterId, selectedId)
-      .then(v => { if (!cancelled) setSelectedDetail(v) })
-      .catch(err => { if (!cancelled) toastError('加载版本详情失败', err?.message) })
-    return () => { cancelled = true }
-  }, [open, chapterId, selectedId])
+      .then((version) => {
+        if (!cancelled) setSelectedDetail(version)
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) toastError('加载版本详情失败', errorMessage(error))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [chapterId, open, selectedId])
 
-  // 计算两个选中用于 diff 的版本
   const diffCandidates = useMemo(() => {
     if (diffFromId && diffToId && diffFromId !== diffToId) {
       return { from: diffFromId, to: diffToId }
@@ -149,270 +230,396 @@ export function ChapterVersionPanel({
     return null
   }, [diffFromId, diffToId])
 
-  // 加载 diff
+  useEffect(() => {
+    if (!diffCandidates && activeTab === 'diff') setActiveTab('chain')
+  }, [activeTab, diffCandidates])
+
   useEffect(() => {
     if (!open || !chapterId || !diffCandidates) {
       setDiffResult(null)
       return
     }
+
     let cancelled = false
     setDiffLoading(true)
     diffChapterVersions(chapterId, diffCandidates.from, diffCandidates.to)
-      .then(d => { if (!cancelled) setDiffResult(d) })
-      .catch(err => { if (!cancelled) toastError('加载 diff 失败', err?.message) })
-      .finally(() => { if (!cancelled) setDiffLoading(false) })
-    return () => { cancelled = true }
-  }, [open, chapterId, diffCandidates])
+      .then((result) => {
+        if (!cancelled) setDiffResult(result)
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) toastError('加载版本对比失败', errorMessage(error))
+      })
+      .finally(() => {
+        if (!cancelled) setDiffLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [chapterId, diffCandidates, open])
 
-  // 勾选版本用于 diff（点击 checkbox）
-  const toggleDiffSelect = (id: string) => {
-    if (diffFromId === id) { setDiffFromId(null); return }
-    if (diffToId === id) { setDiffToId(null); return }
-    if (!diffFromId) { setDiffFromId(id); return }
-    if (!diffToId) { setDiffToId(id); return }
-    // 两个都选了，替换 to
+  function toggleDiffSelect(id: string): void {
+    if (diffFromId === id) {
+      setDiffFromId(null)
+      return
+    }
+    if (diffToId === id) {
+      setDiffToId(null)
+      return
+    }
+    if (!diffFromId) {
+      setDiffFromId(id)
+      return
+    }
+    if (!diffToId) {
+      setDiffToId(id)
+      setActiveTab('diff')
+      return
+    }
     setDiffToId(id)
+    setActiveTab('diff')
   }
 
-  // 回滚
-  const handleRollback = async () => {
-    if (!chapterId || !confirmRollbackId) return
-    setRolling(true)
+  function selectVersion(id: string): void {
+    if (selectedId === id) return
+    setSelectedDetail(null)
+    setSelectedId(id)
+    setActiveTab('detail')
+  }
+
+  async function handleApplyVersion(): Promise<void> {
+    if (!chapterId || !confirmApplyId) return
+    setApplying(true)
     try {
-      const result: RollbackResult = await rollbackChapter(chapterId, confirmRollbackId)
-      toastSuccess('已回滚', `当前正文已更新（保留前一版为 rollback_pre）`)
-      onRollbackSuccess?.(result.currentContent, result.currentWordCount)
-      setConfirmRollbackId(null)
-      // 刷新版本列表
-      setSelectedId(null)
+      const ready = (await onBeforeApply?.()) ?? true
+      if (!ready) {
+        toastError('未应用版本', '当前正文尚未保存，请先处理保存状态后重试')
+        return
+      }
+
+      const result: RollbackResult = await applyChapterVersion(chapterId, confirmApplyId)
+      toastSuccess(
+        '版本已应用',
+        pendingApplyVersion ? `第 ${pendingApplyVersion.sequence} 版已写入当前正文` : undefined
+      )
+      onApplySuccess?.(result.currentContent, result.currentWordCount)
+      setConfirmApplyId(null)
       setDiffFromId(null)
       setDiffToId(null)
       setDiffResult(null)
-      setLoading(true)
-      const list = await listChapterVersions(chapterId)
-      setVersions(list)
-      if (list.length > 0) setSelectedId(list[0].id)
-    } catch (err: any) {
-      toastError('回滚失败', err?.message)
+      setActiveTab('detail')
+      await loadVersions(true)
+    } catch (error) {
+      toastError('应用版本失败', errorMessage(error))
     } finally {
-      setRolling(false)
+      setApplying(false)
     }
   }
 
-  // 手动快照
-  const handleSnapshot = async () => {
-    if (!chapterId) return
+  async function handleSnapshot(): Promise<void> {
+    if (!chapterId || snapshotting) return
+    setSnapshotting(true)
     try {
       await createChapterSnapshot(chapterId, '用户手动创建快照')
       toastSuccess('已创建快照', '当前正文已保存为新版本')
-      // 刷新列表
-      setLoading(true)
-      const list = await listChapterVersions(chapterId)
-      setVersions(list)
-    } catch (err: any) {
-      toastError('创建快照失败', err?.message)
+      await loadVersions()
+    } catch (error) {
+      toastError('创建快照失败', errorMessage(error))
     } finally {
-      setLoading(false)
+      setSnapshotting(false)
     }
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="!max-w-5xl !w-[90vw] max-h-[85vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle>章节正文版本历史</DialogTitle>
+      <DialogContent className="flex h-[min(780px,calc(100vh-32px))] w-[min(1120px,calc(100vw-32px))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
+        <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-12">
+          <DialogTitle className="flex items-center gap-2 text-balance">
+            <History className="size-4 text-primary" />
+            正文版本历史
+          </DialogTitle>
+          <DialogDescription className="text-pretty">
+            查看和对比章节版本，并将选定版本安全应用到当前正文。
+          </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 grid grid-cols-[280px_1fr] gap-4 overflow-hidden min-h-0">
-          {/* 左侧版本列表 */}
-          <div className="border rounded-md flex flex-col overflow-hidden">
-            <div className="px-3 py-2 text-xs text-muted-foreground border-b bg-muted/30 flex items-center justify-between">
-              <span>版本列表（{versions.length}）</span>
+        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(180px,0.8fr)_minmax(260px,1.2fr)] md:grid-cols-[300px_minmax(0,1fr)] md:grid-rows-1">
+          <section className="flex min-h-0 flex-col border-b border-border bg-surface-1/40 md:border-r md:border-b-0">
+            <div className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
+              <div>
+                <h3 className="text-xs font-semibold text-text">版本记录</h3>
+                <p className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">
+                  共 {versions.length} 个版本
+                </p>
+              </div>
               <Button
                 size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-xs"
-                onClick={handleSnapshot}
-                disabled={loading || versions.length === 0}
+                variant="outline"
+                className="h-10"
+                onClick={() => void handleSnapshot()}
+                disabled={loading || snapshotting}
               >
-                手动快照
+                {snapshotting ? (
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                ) : (
+                  <Camera className="size-3.5" />
+                )}
+                快照
               </Button>
             </div>
-            <div className="flex-1 overflow-y-auto">
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
               {loading && versions.length === 0 && (
-                <div className="p-3 space-y-2">
-                  {[1, 2, 3].map(i => (
-                    <div key={i} className="h-16 rounded bg-muted/40 animate-pulse" />
+                <div className="space-y-2 p-3" aria-label="正在加载版本列表">
+                  {[1, 2, 3].map((item) => (
+                    <div key={item} className="h-[76px] animate-pulse rounded-md bg-muted/50" />
                   ))}
                 </div>
               )}
               {!loading && versions.length === 0 && (
-                <div className="p-4 text-center text-sm text-muted-foreground">
-                  暂无历史版本
+                <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 px-5 text-center">
+                  <History className="size-5 text-muted-foreground" />
+                  <p className="text-sm font-medium text-text">暂无历史版本</p>
+                  <p className="text-xs text-muted-foreground">可为当前正文创建第一个快照。</p>
                 </div>
               )}
-              {versions.map(v => {
-                const isSelected = selectedId === v.id
-                const isDiffFrom = diffFromId === v.id
-                const isDiffTo = diffToId === v.id
+              {versions.map((version) => {
+                const isSelected = selectedId === version.id
+                const isDiffFrom = diffFromId === version.id
+                const isDiffTo = diffToId === version.id
                 return (
-                  <button
-                    key={v.id}
-                    onClick={() => setSelectedId(v.id)}
+                  <div
+                    key={version.id}
                     className={cn(
-                      'w-full text-left px-3 py-2 border-b hover:bg-accent/50 transition-colors',
-                      isSelected && 'bg-accent',
+                      'group grid grid-cols-[44px_minmax(0,1fr)] border-b border-l-2 border-border transition-[color,background-color,border-color]',
+                      isSelected
+                        ? 'border-l-primary bg-primary/[0.06]'
+                        : 'border-l-transparent hover:bg-muted/50'
                     )}
                   >
-                    <div className="flex items-center gap-2 mb-1">
+                    <label className="flex min-h-[76px] cursor-pointer items-start justify-center pt-3.5">
                       <input
                         type="checkbox"
-                        className="h-3 w-3 rounded"
+                        className="size-4 rounded accent-primary"
                         checked={isDiffFrom || isDiffTo}
-                        onChange={(e) => { e.stopPropagation(); toggleDiffSelect(v.id) }}
-                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => toggleDiffSelect(version.id)}
+                        aria-label={`选择第 ${version.sequence} 版用于对比`}
                       />
-                      <Badge
-                        variant="secondary"
-                        className={cn('text-nano px-1.5 py-0', v.phase ? PHASE_COLOR[v.phase] : '')}
-                      >
-                        {v.phase ? PHASE_LABEL[v.phase] : '未知'}
-                      </Badge>
-                      {v.isCurrent && (
-                        <Badge variant="outline" className="text-nano px-1.5 py-0">当前</Badge>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => selectVersion(version.id)}
+                      aria-pressed={isSelected}
+                      className="min-w-0 px-2 pr-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    >
+                      <div className="mb-1.5 flex min-w-0 items-center gap-1.5">
+                        <span className="shrink-0 text-xs font-semibold tabular-nums text-text">
+                          第 {version.sequence} 版
+                        </span>
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            'min-w-0 px-1.5 py-0 text-[10px]',
+                            version.phase ? PHASE_COLOR[version.phase] : ''
+                          )}
+                        >
+                          {version.phase ? PHASE_LABEL[version.phase] : '未知'}
+                        </Badge>
+                        {version.isCurrent && (
+                          <CheckCircle2 className="ml-auto size-3.5 shrink-0 text-success" />
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums text-muted-foreground">
+                        <span>{version.wordCount.toLocaleString()} 字</span>
+                        <span
+                          className={cn(
+                            version.wordCountDelta > 0 && 'text-success',
+                            version.wordCountDelta < 0 && 'text-destructive'
+                          )}
+                        >
+                          {formatDelta(version.wordCountDelta)}
+                        </span>
+                      </div>
+                      <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                        {formatTime(version.createdAt)}
+                        {version.trigger ? ` · ${version.trigger}` : ''}
+                      </p>
+                      {(isDiffFrom || isDiffTo) && (
+                        <span className="mt-1.5 inline-flex text-[10px] font-medium text-primary">
+                          {isDiffFrom ? '对比源' : '对比目标'}
+                        </span>
                       )}
-                      {isDiffFrom && <Badge variant="outline" className="text-nano px-1.5 py-0 text-rose-600">源</Badge>}
-                      {isDiffTo && <Badge variant="outline" className="text-nano px-1.5 py-0 text-emerald-600">目标</Badge>}
-                    </div>
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>第 {v.sequence} 版 · {v.wordCount} 字</span>
-                      <span className={cn(
-                        v.wordCountDelta > 0 && 'text-emerald-600',
-                        v.wordCountDelta < 0 && 'text-rose-600',
-                      )}>
-                        {formatDelta(v.wordCountDelta)}
-                      </span>
-                    </div>
-                    <div className="text-nano text-muted-foreground mt-0.5">
-                      {formatTime(v.createdAt)}
-                      {v.trigger ? ` · ${v.trigger.slice(0, 30)}` : ''}
-                    </div>
-                  </button>
+                    </button>
+                  </div>
                 )
               })}
             </div>
-          </div>
+          </section>
 
-          {/* 右侧详情/Diff */}
-          <div className="border rounded-md flex flex-col overflow-hidden min-h-0">
-            <Tabs defaultValue="detail" className="flex-1 flex flex-col overflow-hidden">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="detail">版本详情</TabsTrigger>
-                <TabsTrigger value="diff" disabled={!diffCandidates}>
-                  Diff 对比{diffCandidates ? '' : '（勾选两版）'}
-                </TabsTrigger>
-              </TabsList>
+          <section className="flex min-h-0 flex-col bg-popover">
+            <Tabs
+              value={activeTab}
+              onValueChange={(value) => setActiveTab(value as VersionTab)}
+              className="min-h-0 flex-1 gap-0"
+            >
+              <div className="flex min-h-14 shrink-0 items-end border-b border-border px-5">
+                <TabsList variant="line" className="h-11">
+                  <TabsTrigger value="detail" className="min-w-28 px-3">
+                    <FileInput className="size-3.5" />
+                    版本详情
+                  </TabsTrigger>
+                  <TabsTrigger value="diff" className="min-w-28 px-3" disabled={!diffCandidates}>
+                    <GitCompareArrows className="size-3.5" />
+                    版本对比
+                  </TabsTrigger>
+                  <TabsTrigger value="chain" className="min-w-28 px-3">
+                    <History className="size-3.5" />
+                    版本链
+                  </TabsTrigger>
+                </TabsList>
+              </div>
 
-              {/* 版本详情 */}
-              <TabsContent value="detail" className="flex-1 overflow-y-auto p-4 m-0">
+              <TabsContent value="detail" className="m-0 min-h-0 overflow-y-auto p-5">
                 {!selectedDetail && (
-                  <div className="text-center text-sm text-muted-foreground py-8">
-                    {selectedId ? '加载中...' : '请从左侧选择一个版本'}
+                  <div className="flex min-h-64 items-center justify-center text-sm text-muted-foreground">
+                    {selectedId ? (
+                      <span className="inline-flex items-center gap-2">
+                        <LoaderCircle className="size-4 animate-spin" /> 加载版本正文
+                      </span>
+                    ) : (
+                      '尚未选择版本'
+                    )}
                   </div>
                 )}
                 {selectedDetail && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 flex-wrap text-xs">
-                      <Badge className={selectedDetail.phase ? PHASE_COLOR[selectedDetail.phase] : ''}>
+                  <div className="min-h-full">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <Badge
+                        className={selectedDetail.phase ? PHASE_COLOR[selectedDetail.phase] : ''}
+                      >
                         {selectedDetail.phase ? PHASE_LABEL[selectedDetail.phase] : '未知'}
                       </Badge>
-                      <span className="text-muted-foreground">
-                        第 {selectedDetail.sequence} 版 · {selectedDetail.wordCount} 字 · {formatTime(selectedDetail.createdAt)}
+                      {selectedIsCurrent && (
+                        <span className="inline-flex items-center gap-1 text-success">
+                          <CheckCircle2 className="size-3.5" /> 当前正文
+                        </span>
+                      )}
+                      <span className="tabular-nums text-muted-foreground">
+                        第 {selectedDetail.sequence} 版 ·{' '}
+                        {selectedDetail.wordCount.toLocaleString()} 字 ·{' '}
+                        {formatTime(selectedDetail.createdAt)}
                       </span>
                       {selectedDetail.agentType && (
-                        <Badge variant="outline" className="text-nano">agent: {selectedDetail.agentType}</Badge>
+                        <Badge variant="outline" className="text-[10px]">
+                          {selectedDetail.agentType}
+                        </Badge>
                       )}
                     </div>
                     {selectedDetail.trigger && (
-                      <div className="text-xs text-muted-foreground">触发：{selectedDetail.trigger}</div>
+                      <p className="mt-2 text-xs text-muted-foreground">{selectedDetail.trigger}</p>
                     )}
-                    <pre className="whitespace-pre-wrap text-sm leading-relaxed font-sans bg-muted/30 p-3 rounded-md border">
+                    <pre className="mt-4 min-h-56 whitespace-pre-wrap break-words rounded-md bg-surface-1 p-4 font-sans text-sm leading-7 text-text shadow-[0_0_0_1px_rgba(0,0,0,0.06)] dark:shadow-[0_0_0_1px_rgba(255,255,255,0.08)]">
                       {selectedDetail.content || '（空正文）'}
                     </pre>
-                    {!selectedIsCurrent && (
-                      <div className="pt-2">
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => setConfirmRollbackId(selectedDetail.id)}
-                        >
-                          回滚到此版本
-                        </Button>
-                      </div>
-                    )}
+                    <div className="sticky bottom-0 -mx-5 mt-5 flex min-h-16 items-center justify-between gap-3 border-t border-border bg-popover/95 px-5 py-3 backdrop-blur">
+                      <p className="text-xs text-muted-foreground">
+                        {selectedIsCurrent ? '该版本已是当前正文' : '当前正文将在应用前自动保存'}
+                      </p>
+                      <Button
+                        className="h-10"
+                        variant={selectedIsCurrent ? 'outline' : 'default'}
+                        disabled={selectedIsCurrent}
+                        onClick={() => setConfirmApplyId(selectedDetail.id)}
+                      >
+                        {selectedIsCurrent ? (
+                          <CheckCircle2 className="size-4" />
+                        ) : (
+                          <FileInput className="size-4" />
+                        )}
+                        {selectedIsCurrent ? '当前正文版本' : '应用到正文'}
+                      </Button>
+                    </div>
                   </div>
                 )}
               </TabsContent>
 
-              {/* Diff 对比 */}
-              <TabsContent value="diff" className="flex-1 overflow-y-auto p-4 m-0">
+              <TabsContent value="diff" className="m-0 min-h-0 overflow-y-auto p-5">
                 {diffLoading && (
-                  <div className="text-center text-sm text-muted-foreground py-8">计算 diff 中...</div>
+                  <div className="flex min-h-64 items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <LoaderCircle className="size-4 animate-spin" /> 计算版本差异
+                  </div>
                 )}
                 {!diffLoading && !diffResult && (
-                  <div className="text-center text-sm text-muted-foreground py-8">
-                    在左侧列表勾选两个版本的 checkbox（源 + 目标）以查看对比
+                  <div className="flex min-h-64 items-center justify-center text-sm text-muted-foreground">
+                    尚未选择两个对比版本
                   </div>
                 )}
                 {diffResult && (
-                  <div className="space-y-2">
-                    <div className="text-xs text-muted-foreground flex gap-3 flex-wrap">
-                      <span>新增 {diffResult.stats.added}</span>
-                      <span>删除 {diffResult.stats.removed}</span>
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap gap-x-4 gap-y-2 border-b border-border pb-3 text-xs tabular-nums text-muted-foreground">
+                      <span className="text-success">新增 {diffResult.stats.added}</span>
+                      <span className="text-destructive">删除 {diffResult.stats.removed}</span>
                       <span>修改 {diffResult.stats.modified}</span>
                       <span>未变 {diffResult.stats.unchanged}</span>
-                      <span className={cn(
-                        diffResult.stats.wordCountDelta > 0 && 'text-emerald-600',
-                        diffResult.stats.wordCountDelta < 0 && 'text-rose-600',
-                      )}>
+                      <span
+                        className={cn(
+                          diffResult.stats.wordCountDelta > 0 && 'text-success',
+                          diffResult.stats.wordCountDelta < 0 && 'text-destructive'
+                        )}
+                      >
                         字数差 {formatDelta(diffResult.stats.wordCountDelta)}
                       </span>
                     </div>
                     <div className="space-y-1">
-                      {diffResult.segments.map((seg, idx) => {
-                        if (seg.type === 'unchanged') {
+                      {diffResult.segments.map((segment, index) => {
+                        if (segment.type === 'unchanged') {
                           return (
-                            <div key={idx} className="px-2 py-1 text-sm text-muted-foreground whitespace-pre-wrap border-l-2 border-transparent">
-                              {seg.content}
+                            <div
+                              key={index}
+                              className="border-l-2 border-transparent px-3 py-1.5 text-sm whitespace-pre-wrap text-muted-foreground"
+                            >
+                              {segment.content}
                             </div>
                           )
                         }
-                        if (seg.type === 'added') {
+                        if (segment.type === 'added') {
                           return (
-                            <div key={idx} className="px-2 py-1 text-sm bg-emerald-500/10 border-l-2 border-emerald-500 whitespace-pre-wrap">
-                              <span className="text-emerald-700 dark:text-emerald-300 text-xs mr-2">+</span>
-                              {seg.content}
+                            <div
+                              key={index}
+                              className="border-l-2 border-emerald-500 bg-emerald-500/10 px-3 py-1.5 text-sm whitespace-pre-wrap"
+                            >
+                              <span className="mr-2 text-xs text-emerald-700 dark:text-emerald-300">
+                                +
+                              </span>
+                              {segment.content}
                             </div>
                           )
                         }
-                        if (seg.type === 'removed') {
+                        if (segment.type === 'removed') {
                           return (
-                            <div key={idx} className="px-2 py-1 text-sm bg-rose-500/10 border-l-2 border-rose-500 whitespace-pre-wrap line-through decoration-rose-400/50">
-                              <span className="text-rose-700 dark:text-rose-300 text-xs mr-2">-</span>
-                              {seg.content}
+                            <div
+                              key={index}
+                              className="border-l-2 border-rose-500 bg-rose-500/10 px-3 py-1.5 text-sm whitespace-pre-wrap line-through decoration-rose-400/50"
+                            >
+                              <span className="mr-2 text-xs text-rose-700 dark:text-rose-300">
+                                -
+                              </span>
+                              {segment.content}
                             </div>
                           )
                         }
-                        // modified
                         return (
-                          <div key={idx} className="grid grid-cols-2 gap-1">
-                            <div className="px-2 py-1 text-sm bg-rose-500/10 border-l-2 border-rose-500 whitespace-pre-wrap">
-                              <span className="text-rose-700 dark:text-rose-300 text-xs mr-2">-旧</span>
-                              {seg.fromContent}
+                          <div key={index} className="grid gap-1 lg:grid-cols-2">
+                            <div className="border-l-2 border-rose-500 bg-rose-500/10 px-3 py-1.5 text-sm whitespace-pre-wrap">
+                              <span className="mr-2 text-xs text-rose-700 dark:text-rose-300">
+                                -旧
+                              </span>
+                              {segment.fromContent}
                             </div>
-                            <div className="px-2 py-1 text-sm bg-emerald-500/10 border-l-2 border-emerald-500 whitespace-pre-wrap">
-                              <span className="text-emerald-700 dark:text-emerald-300 text-xs mr-2">+新</span>
-                              {seg.toContent}
+                            <div className="border-l-2 border-emerald-500 bg-emerald-500/10 px-3 py-1.5 text-sm whitespace-pre-wrap">
+                              <span className="mr-2 text-xs text-emerald-700 dark:text-emerald-300">
+                                +新
+                              </span>
+                              {segment.toContent}
                             </div>
                           </div>
                         )
@@ -421,31 +628,123 @@ export function ChapterVersionPanel({
                   </div>
                 )}
               </TabsContent>
+
+              <TabsContent value="chain" className="m-0 min-h-0 overflow-y-auto p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <h4 className="text-sm font-medium">不可变版本链（V2）</h4>
+                  <Button size="sm" variant="outline" onClick={() => void loadChain()} disabled={chainLoading}>
+                    <RefreshCw className="size-3.5" /> 刷新
+                  </Button>
+                </div>
+                {chainLoading ? (
+                  <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
+                    <LoaderCircle className="size-4 animate-spin" /> 加载版本链
+                  </div>
+                ) : chainRevisions.length === 0 ? (
+                  <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
+                    暂无版本链记录（保存正文后自动生成）
+                  </div>
+                ) : (
+                  <ol className="space-y-2">
+                    {chainRevisions.map((revision) => (
+                      <li
+                        key={revision.id}
+                        className={cn(
+                          'flex items-center justify-between gap-3 rounded-md border p-3',
+                          revision.isCurrent && 'border-emerald-500/40 bg-emerald-500/5',
+                        )}
+                      >
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="tabular-nums font-medium">rev {revision.revision}</span>
+                            {revision.isCurrent && (
+                              <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                                <CheckCircle2 className="size-3.5" /> 当前正文
+                              </span>
+                            )}
+                            <Badge variant={revision.status === 'superseded' ? 'outline' : 'default'}>
+                              {revision.status === 'committed' ? '已确认' : revision.status === 'superseded' ? '已替代' : '回滚应用'}
+                            </Badge>
+                            <span className="text-muted-foreground">{revision.wordCount.toLocaleString()} 字</span>
+                            <span className="text-muted-foreground">{formatTime(revision.createdAt)}</span>
+                          </div>
+                          {revision.trigger && (
+                            <p className="truncate text-xs text-muted-foreground">{revision.trigger}</p>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={revision.isCurrent || chainApplyingId === revision.id}
+                          onClick={() => void handleChainRollback(revision.id)}
+                          className="shrink-0"
+                        >
+                          {chainApplyingId === revision.id
+                            ? <LoaderCircle className="size-3.5 animate-spin" />
+                            : <RotateCcw className="size-3.5" />}
+                          回滚到此版
+                        </Button>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </TabsContent>
             </Tabs>
-          </div>
+          </section>
         </div>
 
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>关闭</Button>
+        <DialogFooter className="min-h-14 shrink-0 flex-row items-center justify-between border-t border-border px-5 py-2.5 sm:justify-between">
+          <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <CheckCircle2 className="size-3.5 text-success" />
+            应用版本不会删除历史记录
+          </span>
+          <Button variant="ghost" className="h-10" onClick={() => onOpenChange(false)}>
+            关闭
+          </Button>
         </DialogFooter>
       </DialogContent>
 
-      {/* 回滚二次确认 */}
-      <Dialog open={!!confirmRollbackId} onOpenChange={(o) => !o && setConfirmRollbackId(null)}>
-        <DialogContent className="!max-w-md">
+      <Dialog
+        open={Boolean(confirmApplyId)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && !applying) setConfirmApplyId(null)
+        }}
+      >
+        <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md" showCloseButton={!applying}>
           <DialogHeader>
-            <DialogTitle>确认回滚</DialogTitle>
+            <DialogTitle className="flex items-center gap-2 text-balance">
+              <AlertTriangle className="size-4 text-amber-500" />
+              应用此版本到正文？
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              当前正文会先保存为历史版本，再由所选版本替换；之后仍可从版本历史恢复。
+            </DialogDescription>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground py-2">
-            回滚后当前正文会被目标版本替换。<br />
-            当前正文会先保存为 <code className="px-1 bg-muted rounded">rollback_pre</code> 版本，可随时再次回滚回来。
-          </p>
+          {pendingApplyVersion && (
+            <div className="rounded-md bg-surface-1 px-4 py-3 shadow-[0_0_0_1px_rgba(0,0,0,0.06)] dark:shadow-[0_0_0_1px_rgba(255,255,255,0.08)]">
+              <p className="text-sm font-medium text-text">第 {pendingApplyVersion.sequence} 版</p>
+              <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                {pendingApplyVersion.wordCount.toLocaleString()} 字 ·{' '}
+                {formatTime(pendingApplyVersion.createdAt)}
+              </p>
+            </div>
+          )}
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmRollbackId(null)} disabled={rolling}>
+            <Button
+              variant="outline"
+              className="h-10"
+              onClick={() => setConfirmApplyId(null)}
+              disabled={applying}
+            >
               取消
             </Button>
-            <Button variant="destructive" onClick={handleRollback} disabled={rolling}>
-              {rolling ? '回滚中...' : '确认回滚'}
+            <Button className="h-10" onClick={() => void handleApplyVersion()} disabled={applying}>
+              {applying ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <FileInput className="size-4" />
+              )}
+              {applying ? '应用中' : '确认应用'}
             </Button>
           </DialogFooter>
         </DialogContent>

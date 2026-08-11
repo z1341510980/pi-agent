@@ -14,23 +14,31 @@
  */
 
 import { useMemo, useCallback, useState, type ReactElement } from 'react'
-import { Loader2, Workflow, MessagesSquare, RotateCcw, LayoutGrid, MessageCircle, MoreHorizontal, type LucideIcon } from 'lucide-react'
+import {
+  Loader2,
+  Workflow,
+  MessagesSquare,
+  RotateCcw,
+  LayoutGrid,
+  AlertCircle,
+  ChevronDown,
+  RefreshCw,
+  Pencil,
+  Archive,
+  X,
+  type LucideIcon,
+} from 'lucide-react'
 import { motion } from 'framer-motion'
 import { ErrorCard } from '@/components/chat/error-card'
+import { ModelPicker, type ModelRef } from './model-picker'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import {
   ConversationStream,
   ConversationInput,
   ConversationEmptyState,
   type ConversationMessage,
   type ConversationAgentType,
-  type MentionOption,
   type EmptyStateVariant,
 } from '@/components/shared/conversation'
 import type {
@@ -43,7 +51,6 @@ import type {
 } from '@/hooks/use-novel-creation-flow'
 import { formatDetailBubble } from '@/hooks/use-novel-creation-flow'
 import type { ChapterChatMessage } from '@/api/novel-client'
-import type { ChatAgentOutput } from '@/hooks/use-chapter-chat'
 
 // ── 流程类型 ──
 
@@ -66,13 +73,10 @@ const FLOW_TABS: FlowTab[] = [
   },
   { type: 'reverse', label: '反推', icon: RotateCcw },
   { type: 'arrange', label: '矩阵编排', icon: LayoutGrid },
-  { type: 'chat', label: '聊天', icon: MessageCircle },
 ]
 
-/** 高频模式：始终显示为 Segmented Control */
-const PRIMARY_FLOW_TABS = FLOW_TABS.filter((t) => t.type === 'workflow' || t.type === 'chat')
-/** 低频模式：收进 ··· Popover */
-const SECONDARY_FLOW_TABS = FLOW_TABS.filter((t) => t.type !== 'workflow' && t.type !== 'chat')
+/** 创作模式：4 个全部平铺展示（工作流/群聊/反推/编排） */
+const PRIMARY_FLOW_TABS = FLOW_TABS
 
 // ── 阶段标签 ──
 
@@ -242,8 +246,40 @@ function renderCheckpointContent(checkpoint: CheckpointData): string {
       ].join('\n')
     }
 
-    if (checkpoint.type === 'review' && typeof record.review === 'string') {
-      return record.review
+    if (checkpoint.type === 'review') {
+      // 审稿报告 + （质量门强制修订时的）修订操作与消耗预估
+      const lines: string[] = []
+      if (typeof record.review === 'string') lines.push(record.review)
+      const estimate = record.revisionEstimate as
+        | {
+            maxRounds?: number
+            callsPerRound?: number
+            estimatedTokens?: number
+            failedItems?: Array<{ gateId?: string; reason?: string; details?: string }>
+          }
+        | undefined
+      if (estimate) {
+        lines.push(
+          '',
+          '## 修订预估（点击「修订」后）',
+          '',
+          `- 自动修订轮次：最多 ${estimate.maxRounds ?? 2} 轮（第 1 轮按审稿意见修订；仍有问题则第 2 轮只针对未通过项定向修补）`,
+          `- 每轮 AI 调用：${estimate.callsPerRound ?? 1} 次（修订 Agent）`,
+          `- 预计消耗：约 ${formatTokenCount(estimate.estimatedTokens)} token（估算，不含缓存命中）`,
+        )
+        const items = estimate.failedItems ?? []
+        if (items.length > 0) {
+          lines.push('', '**将处理的未通过项：**')
+          for (const item of items) {
+            lines.push(`- ${item.reason ?? item.gateId}${item.details ? `（${item.details}）` : ''}`)
+          }
+        }
+        lines.push(
+          '',
+          '修订后会自动复检；两轮仍未通过会停止并保留修订稿，届时可选择再次修订、手动编辑或保留草稿，不会丢失成果。',
+        )
+      }
+      return lines.join('\n')
     }
 
     if (checkpoint.type === 'chapter_budget') {
@@ -289,6 +325,149 @@ function renderCheckpointContent(checkpoint: CheckpointData): string {
   return ''
 }
 
+// ── 质量门修订失败卡片 ──
+// 与通用 ErrorCard 的区别：失败不是基础设施故障，而是确定性质量门未通过。
+// 展示具体未通过项 + 修订记录 + 原始报错，并提供「再次修订/手动编辑/保留草稿/取消」
+// 四个出口 —— 成果与已花 token 不再因一次失败被整条丢弃。
+
+const QUALITY_GATE_LABELS: Record<string, string> = {
+  'cliche-patterns': 'AI 腔句式',
+  'prose-shape': '正文形态',
+  'character-voice': '角色声音',
+}
+
+function QualityGateFailureCard({
+  result,
+  error,
+  onReRevise,
+  onKeepDraft,
+  onDiscard,
+}: {
+  result: CreationResult
+  error: string | null
+  onReRevise?: () => void
+  onKeepDraft?: () => void
+  onDiscard?: () => void
+}): ReactElement {
+  const [detailOpen, setDetailOpen] = useState(false)
+  const failedItems = result.failedItems ?? []
+  const rounds = result.revisionRounds ?? []
+
+  return (
+    <div className="rounded-xl border border-destructive/45 bg-destructive/8 px-3.5 py-3">
+      <div className="flex items-start gap-2.5">
+        <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className="text-sm font-medium text-destructive">正文质量门未通过</p>
+            <span className="rounded bg-surface-3 px-1.5 py-0.5 text-nano text-hint">内容未落库</span>
+          </div>
+          <p className="mt-1 text-caption leading-relaxed text-text-secondary">
+            修订稿已保留在编辑器中，可直接修改后再保存；也可对未通过项再次定向修订（不重跑生成流程，只消耗修订调用）。
+          </p>
+
+          {/* 未通过项明细 */}
+          {failedItems.length > 0 && (
+            <div className="mt-2 rounded-lg bg-surface-1/70 px-2.5 py-2">
+              <p className="text-nano font-medium text-text-secondary">未通过项（{failedItems.length}）</p>
+              <ul className="mt-1 space-y-1">
+                {failedItems.map((item, index) => (
+                  <li key={`${item.gateId}-${index}`} className="text-nano leading-relaxed text-text-secondary">
+                    <span className="font-medium text-destructive">
+                      【{QUALITY_GATE_LABELS[item.gateId] ?? item.gateId}】
+                    </span>
+                    {item.reason}
+                    {item.details ? <span className="text-hint">（{item.details}）</span> : null}
+                    {item.excerpts && item.excerpts.length > 0 && (
+                      <span className="mt-0.5 block text-hint">
+                        原文示例：{item.excerpts.slice(0, 2).map((e) => `"${e}"`).join('、')}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 修订记录 */}
+          {rounds.length > 0 && (
+            <div className="mt-2 overflow-hidden rounded-lg bg-surface-1/70 px-2.5 py-2">
+              <p className="text-nano font-medium text-text-secondary">修订记录（{rounds.length} 轮）</p>
+              <ul className="mt-1 space-y-1">
+                {rounds.map((round) => (
+                  <li key={round.round} className="text-nano leading-relaxed text-text-secondary">
+                    第 {round.round} 轮：应用 {round.appliedPatches} 处、定位失败 {round.failedPatches} 处
+                    {round.remainingFailures.length > 0
+                      ? `，剩余 ${round.remainingFailures.length} 项未通过`
+                      : '，已通过'}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 操作按钮 */}
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            {result.canReviseAgain && onReRevise && (
+              <Button variant="default" size="sm" onClick={onReRevise} className="h-7 gap-1 px-2 text-xs">
+                <RefreshCw className="size-3" />
+                再次修订
+              </Button>
+            )}
+            {onKeepDraft && (
+              <Button variant="outline" size="sm" onClick={onKeepDraft} className="h-7 gap-1 px-2 text-xs">
+                <Pencil className="size-3" />
+                手动编辑
+              </Button>
+            )}
+            {onKeepDraft && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onKeepDraft}
+                className="h-7 gap-1 px-2 text-xs text-text-secondary hover:bg-surface-3"
+              >
+                <Archive className="size-3" />
+                保留草稿
+              </Button>
+            )}
+            {error && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setDetailOpen((v) => !v)}
+                aria-expanded={detailOpen}
+                className="h-7 gap-1 px-2 text-xs text-hint hover:bg-surface-3 hover:text-text"
+              >
+                <ChevronDown className={cn('size-3 transition-transform', detailOpen && 'rotate-180')} />
+                技术细节
+              </Button>
+            )}
+            {onDiscard && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onDiscard}
+                title="丢弃本次创作成果（清空修订稿）"
+                className="ml-auto h-7 gap-1 px-2 text-xs text-destructive hover:bg-destructive/15"
+              >
+                <X className="size-3" />
+                取消
+              </Button>
+            )}
+          </div>
+
+          {detailOpen && error && (
+            <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-surface-1/70 px-2.5 py-2 font-mono text-nano leading-relaxed whitespace-pre-wrap break-words text-text-secondary">
+              {error}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Agent 类型映射 ──
 
 /** 将 creationFlow 的 agentType 映射到 ConversationAgentType */
@@ -328,6 +507,10 @@ export interface NovelConversationPanelProps {
   onRetry?: () => void
   /** 错误后丢弃回调 */
   onDismissError?: () => void
+  /** 质量门失败后：对未通过项再次定向修订（不重跑生成流程） */
+  onReRevise?: () => void
+  /** 质量门失败后：保留修订稿为草稿（内容留在编辑器，不落库不丢弃） */
+  onKeepDraft?: () => void
   /** 从持久化群聊快照继续 */
   onResumeDiscussion?: (runId: string) => void
   /** 创作模式 */
@@ -346,83 +529,17 @@ export interface NovelConversationPanelProps {
   flowType: NovelFlowType
   /** 切换流程类型 */
   onFlowTypeChange: (type: NovelFlowType) => void
-  /** 启动流程 */
-  onStartFlow: () => void
+  /** 启动流程（可带 per-call 模型，输入框旁选择器传入） */
+  onStartFlow: (modelId?: { provider: string; modelId: string } | null) => void
   /** 取消流程 */
   onCancelFlow: () => void
 
-  // ── 章节自由聊天（"聊天" Tab）──
-  /** 章节聊天历史消息（含创作流程持久化 + 自由聊天） */
+  // ── 创作流程历史恢复 ──
+  // 工作流/群聊的持久化消息存于章节聊天存储；无实时状态时据此恢复对话历史。
+  // 自由对话本身已拆到独立"聊天"视图（ChatPanel）。
   chapterChatMessages?: ChapterChatMessage[]
-  /** 自由聊天中正在流式生成的 Agent 输出 */
-  chapterChatAgentOutputs?: ChatAgentOutput[]
-  /** 自由聊天是否正在运行 */
-  chapterChatRunning?: boolean
-  /** 自由聊天错误信息 */
-  chapterChatError?: string | null
-  /** 发送自由聊天消息 */
-  onSendChapterChat?: (message: string, mentionedAgents?: string[]) => void
-  /** 中断自由聊天 */
-  onAbortChapterChat?: () => void
-  /** 自由聊天可 @ 提及的 Agent 列表 */
-  chatMentionOptions?: MentionOption[]
 }
 
-/** 低频创作模式下拉：点击 ··· 展开完整列表 */
-function SecondaryFlowPopover({
-  flowType,
-  onFlowTypeChange,
-}: {
-  flowType: NovelFlowType
-  onFlowTypeChange: (type: NovelFlowType) => void
-}): ReactElement {
-  const [open, setOpen] = useState(false)
-
-  const isSecondaryActive = SECONDARY_FLOW_TABS.some((t) => t.type === flowType)
-  const activeDescription = SECONDARY_FLOW_TABS.find((t) => t.type === flowType)?.description
-
-  return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          title="更多创作方式"
-          className={cn(
-            'inline-flex items-center justify-center size-6 rounded-[6px]',
-            'transition-all duration-200 ease-out active:scale-[0.96]',
-            isSecondaryActive
-              ? 'bg-surface-1 text-primary shadow-sm'
-              : 'text-subtle hover:text-text hover:bg-surface-1/50',
-          )}
-        >
-          <MoreHorizontal className="size-3.5" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="min-w-[180px]">
-        {SECONDARY_FLOW_TABS.map((tab) => {
-          const Icon = tab.icon
-          const isActive = flowType === tab.type
-          return (
-            <DropdownMenuItem
-              key={tab.type}
-              onSelect={() => onFlowTypeChange(tab.type)}
-              className={cn('text-micro font-medium', isActive && 'text-primary bg-primary/8')}
-            >
-              <Icon className="size-3.5 shrink-0" />
-              <span className="flex-1">{tab.label}</span>
-            </DropdownMenuItem>
-          )
-        })}
-        {/* 描述区：当前选中项的 description */}
-        {activeDescription && (
-          <div className="px-2 pt-1.5 pb-1 text-nano text-subtle leading-relaxed border-t border-border/40 mt-1">
-            {activeDescription}
-          </div>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
 
 export function NovelConversationPanel({
   phase,
@@ -437,6 +554,8 @@ export function NovelConversationPanel({
   error,
   onRetry,
   onDismissError,
+  onReRevise,
+  onKeepDraft,
   onResumeDiscussion,
   onSubmitCheckpoint,
   onSave,
@@ -448,16 +567,10 @@ export function NovelConversationPanel({
   onStartFlow,
   onCancelFlow,
   chapterChatMessages,
-  chapterChatAgentOutputs,
-  chapterChatRunning,
-  chapterChatError,
-  onSendChapterChat,
-  onAbortChapterChat,
-  chatMentionOptions,
 }: NovelConversationPanelProps): ReactElement {
+  const [creationModelRef, setCreationModelRef] = useState<ModelRef | null>(null)
   const isArrangeMode = flowType === 'arrange'
   const isReverseMode = flowType === 'reverse'
-  const isChatMode = flowType === 'chat'
   const isCompleted = phase === 'completed'
   const isError = phase === 'error'
   // 反推和AI编排不生成正文，不显示"保存到章节"
@@ -472,58 +585,6 @@ export function NovelConversationPanel({
 
   // ── 数据映射 ──
   const messages = useMemo<ConversationMessage[]>(() => {
-    // 聊天模式：映射 chapterChatMessages + chapterChatAgentOutputs
-    if (isChatMode) {
-      const msgs: ConversationMessage[] = []
-
-      // 持久化历史消息
-      for (const msg of chapterChatMessages ?? []) {
-        if (msg.role === 'user') {
-          msgs.push({
-            id: `chat-${msg.id}`,
-            role: 'user',
-            content: msg.content,
-            status: 'complete',
-            timestamp: msg.createdAt,
-          })
-        } else if (msg.role === 'agent') {
-          msgs.push({
-            id: `chat-${msg.id}`,
-            role: 'assistant',
-            agentName: msg.fromName,
-            agentType: mapAgentType(msg.metadata?.agentType ?? 'unknown'),
-            content: msg.content,
-            status: 'complete',
-            timestamp: msg.createdAt,
-          })
-        } else {
-          msgs.push({
-            id: `chat-${msg.id}`,
-            role: 'system',
-            content: msg.content,
-            status: 'complete',
-            timestamp: msg.createdAt,
-          })
-        }
-      }
-
-      // 流式 Agent 输出（正在生成中）
-      for (const output of chapterChatAgentOutputs ?? []) {
-        msgs.push({
-          id: `chat-stream-${output.messageId ?? output.timestamp}`,
-          role: 'assistant',
-          agentName: output.agentName,
-          agentType: mapAgentType(output.agentType),
-          content: output.streaming ? output.preview : output.content,
-          streamingBuffer: output.streaming ? output.content : undefined,
-          status: output.streaming ? 'streaming' : 'complete',
-          timestamp: output.timestamp,
-        })
-      }
-
-      return msgs.sort((a, b) => a.timestamp - b.timestamp)
-    }
-
     // 创作流程模式：agentOutputs + userMessages + checkpoint → ConversationMessage[]
     const msgs: ConversationMessage[] = []
 
@@ -713,32 +774,22 @@ export function NovelConversationPanel({
 
     // 按时间戳排序
     return msgs.sort((a, b) => a.timestamp - b.timestamp)
-  }, [isChatMode, flowType, chapterChatMessages, chapterChatAgentOutputs, agentOutputs, userMessages, checkpointHistory, currentCheckpoint, isRunning, isCompleted, completedActionLabel, canSave, chapterNumber])
+  }, [flowType, chapterChatMessages, agentOutputs, userMessages, checkpointHistory, currentCheckpoint, isRunning, isCompleted, completedActionLabel, canSave, chapterNumber])
 
   // ── 回调 ──
   const handleSend = useCallback((text: string) => {
-    if (isChatMode) {
-      onSendChapterChat?.(text)
-    } else if (isRunning) {
+    if (isRunning) {
       onSendMessage?.(text)
     }
-  }, [isChatMode, isRunning, onSendMessage, onSendChapterChat])
-
-  const handleSendWithMentions = useCallback((text: string, mentionedIds: string[]) => {
-    if (isChatMode) {
-      onSendChapterChat?.(text, mentionedIds.length > 0 ? mentionedIds : undefined)
-    }
-  }, [isChatMode, onSendChapterChat])
+  }, [isRunning, onSendMessage])
 
   const handleAbort = useCallback(() => {
-    if (isChatMode) {
-      onAbortChapterChat?.()
-    } else if (phase !== 'cancelling') {
+    if (phase !== 'cancelling') {
       // onCancelFlow 是 async（等待后端真实断开），void 明确忽略返回的 Promise
       // cancelling 状态下禁用重复取消
       void onCancelFlow()
     }
-  }, [isChatMode, onAbortChapterChat, onCancelFlow, phase])
+  }, [onCancelFlow, phase])
 
   const handleCheckpointResolve = useCallback((action: string) => {
     onSubmitCheckpoint(action as CheckpointDecision)
@@ -757,41 +808,35 @@ export function NovelConversationPanel({
   }, [chapterContent, onSave, onDiscard, onResumeDiscussion, phase])
 
   // 空状态提示
-  const emptyHint = isChatMode
-    ? '输入消息与 Agent 自由对话，或 @ 指定 Agent 回复'
-    : isReverseMode
-      ? '点击"开始"从章节正文反向提取实体到矩阵'
-      : isArrangeMode
-        ? '点击"开始"让 AI 自动编排本章矩阵实体'
-        : flowType === 'discussion'
-          ? '用于多角色谈判、博弈和高潮场景。普通章节优先使用工作流'
-          : '点击"开始"启动创作流程'
+  const emptyHint = isReverseMode
+    ? '点击"开始"从章节正文反向提取实体到矩阵'
+    : isArrangeMode
+      ? '点击"开始"让 AI 自动编排本章矩阵实体'
+      : flowType === 'discussion'
+        ? '用于多角色谈判、博弈和高潮场景。普通章节优先使用工作流'
+        : '点击"开始"启动创作流程'
 
   // 空状态标题
-  const emptyTitle = isChatMode
-    ? '章节聊天'
-    : isReverseMode
-      ? '反推实体'
-      : isArrangeMode
-        ? 'AI 矩阵编排'
-        : flowType === 'discussion'
-          ? '高级群聊共创'
-          : '开始创作'
+  const emptyTitle = isReverseMode
+    ? '反推实体'
+    : isArrangeMode
+      ? 'AI 矩阵编排'
+      : flowType === 'discussion'
+        ? '高级群聊共创'
+        : '开始创作'
 
   // 空状态插图变体
-  const emptyVariant: EmptyStateVariant = isChatMode
-    ? 'chat'
-    : isReverseMode
-      ? 'reverse'
-      : isArrangeMode
-        ? 'arrange'
-        : flowType === 'discussion'
-          ? 'discussion'
-          : 'workflow'
+  const emptyVariant: EmptyStateVariant = isReverseMode
+    ? 'reverse'
+    : isArrangeMode
+      ? 'arrange'
+      : flowType === 'discussion'
+        ? 'discussion'
+        : 'workflow'
 
   const isEmpty = messages.length === 0
-  const activeError = isChatMode ? chapterChatError : error
-  const activeIsRunning = isChatMode ? !!chapterChatRunning : isRunning
+  const activeError = error
+  const activeIsRunning = isRunning
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -808,7 +853,7 @@ export function NovelConversationPanel({
             </div>
           ) : (
             <>
-              {/* 高频模式 Segmented Control */}
+              {/* 创作模式平铺切换：工作流/群聊/反推/编排 */}
               <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg">
                 {PRIMARY_FLOW_TABS.map((tab) => {
                   const Icon = tab.icon
@@ -832,11 +877,6 @@ export function NovelConversationPanel({
                   )
                 })}
               </div>
-              {/* 低频模式 ··· Popover */}
-              <SecondaryFlowPopover
-                flowType={flowType}
-                onFlowTypeChange={onFlowTypeChange}
-              />
             </>
           )}
         </div>
@@ -853,26 +893,23 @@ export function NovelConversationPanel({
                 animate={{ opacity: [0.5, 1, 0.5] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
                 className="flex min-w-0 max-w-[240px] items-center gap-1 text-micro text-primary"
-                title={isChatMode ? 'Agent 回复中' : (progressMessage ?? PHASE_LABELS[phase] ?? phase)}
+                title={progressMessage ?? PHASE_LABELS[phase] ?? phase}
               >
                 <Loader2 className="size-3 shrink-0 animate-spin" />
                 <span className="truncate">
-                  {isChatMode ? 'Agent 回复中' : (progressMessage ?? PHASE_LABELS[phase] ?? phase)}
+                  {progressMessage ?? PHASE_LABELS[phase] ?? phase}
                 </span>
               </motion.span>
             )}
-            {!activeIsRunning && isChatMode && (
-              <span className="text-micro text-muted-foreground">就绪</span>
-            )}
-            {!activeIsRunning && !isChatMode && isCompleted && (
+            {!activeIsRunning && isCompleted && (
               <span className="text-micro text-success">
                 {completedActionLabel}完成
               </span>
             )}
-            {!activeIsRunning && !isChatMode && isError && (
+            {!activeIsRunning && isError && (
               <span className="text-micro text-destructive">出错</span>
             )}
-            {!activeIsRunning && !isChatMode && phase === 'idle' && (
+            {!activeIsRunning && phase === 'idle' && (
               <span className="text-micro text-muted-foreground">等待开始</span>
             )}
           </div>
@@ -883,16 +920,26 @@ export function NovelConversationPanel({
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {activeError && (
           <div className="p-3 shrink-0">
-            <ErrorCard
-              message={activeError}
-              onRetry={!isChatMode
-                ? result?.canResume && result.discussionRunId
+            {result?.errorCode === 'quality_gate_revision_incomplete' ? (
+              // 质量门修订失败：展示具体未通过项 + 修订记录 + 原始报错，
+              // 并提供再次修订/手动编辑/保留草稿/取消，避免整条重跑。
+              <QualityGateFailureCard
+                result={result}
+                error={error}
+                onReRevise={onReRevise}
+                onKeepDraft={onKeepDraft}
+                onDiscard={onDismissError}
+              />
+            ) : (
+              <ErrorCard
+                message={activeError}
+                onRetry={result?.canResume && result.discussionRunId
                   ? () => onResumeDiscussion?.(result.discussionRunId!)
-                  : onRetry
-                : undefined}
-              retryLabel={result?.canResume ? '从中断处继续' : '重试'}
-              onDismiss={!isChatMode ? onDismissError : undefined}
-            />
+                  : onRetry}
+                retryLabel={result?.canResume ? '从中断处继续' : '重试'}
+                onDismiss={onDismissError}
+              />
+            )}
           </div>
         )}
         {isEmpty ? (
@@ -916,29 +963,35 @@ export function NovelConversationPanel({
 
       {/* ── 输入区 ── */}
       <div className="shrink-0 border-t border-border">
+        {!isRunning && phase === 'idle' && (
+          <div className="flex items-center gap-2 px-2 pt-1.5">
+            <ModelPicker
+              value={creationModelRef}
+              onChange={setCreationModelRef}
+              label="本次创作"
+            />
+            <span className="ml-auto text-nano text-hint">工作流/群聊：启动时选定模型；未选用默认</span>
+          </div>
+        )}
         <ConversationInput
           onSend={handleSend}
           onAbort={handleAbort}
           isRunning={activeIsRunning}
-          allowSendWhileRunning={!isChatMode && !isReverseMode && !isArrangeMode}
-          // 反推和AI编排时用户不参与，输入框始终禁用；聊天模式始终可用
-          disabled={!isChatMode && (isReverseMode || isArrangeMode)}
+          allowSendWhileRunning={!isReverseMode && !isArrangeMode}
+          // 反推和AI编排时用户不参与，输入框始终禁用
+          disabled={isReverseMode || isArrangeMode}
           placeholder={
-            isChatMode
-              ? '输入消息与 Agent 对话，@ 指定 Agent...'
-              : isReverseMode
-                ? '反推流程进行中...'
-                : isArrangeMode
-                  ? 'AI编排进行中...'
-                  : isRunning
-                    ? '输入补充意见参与创作...'
-                    : '点击开始按钮启动流程'
+            isReverseMode
+              ? '反推流程进行中...'
+              : isArrangeMode
+                ? 'AI编排进行中...'
+                : isRunning
+                  ? '输入补充意见参与创作...'
+                  : '点击开始按钮启动流程'
           }
-          showStart={!isChatMode && !isRunning && phase === 'idle'}
+          showStart={!isRunning && phase === 'idle'}
           startLabel="开始"
-          onStart={onStartFlow}
-          mentionOptions={isChatMode ? chatMentionOptions : undefined}
-          onSendWithMentions={isChatMode ? handleSendWithMentions : undefined}
+          onStart={() => onStartFlow(creationModelRef)}
         />
       </div>
     </div>

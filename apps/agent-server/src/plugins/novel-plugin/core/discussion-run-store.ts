@@ -75,6 +75,10 @@ export class DiscussionRunStore {
     const existing = this.get(input.id)
     const now = Date.now()
     const createdAt = existing?.createdAt ?? now
+    // T05 停旧写（legacyNarrativeWriteDisabled）：V2 迁移后 scenes/arranged_entities
+    // 不再作为规范业务字段保存在运行快照（场景身份由 novel_scenes 承担）；
+    // transcript/错误快照保留用于审计与断点续跑。flag 按项目灰度，默认关闭。
+    const dropLegacyFields = this.isLegacyNarrativeWriteDisabled(input.projectId)
     this.stmtUpsert.run(
       input.id,
       input.projectId,
@@ -82,8 +86,8 @@ export class DiscussionRunStore {
       input.status,
       input.failedPhase ?? null,
       JSON.stringify(input.transcript),
-      JSON.stringify(input.scenes),
-      input.arrangedEntities ? JSON.stringify(input.arrangedEntities) : null,
+      dropLegacyFields ? '[]' : JSON.stringify(input.scenes),
+      dropLegacyFields ? null : (input.arrangedEntities ? JSON.stringify(input.arrangedEntities) : null),
       input.content ?? null,
       input.error ?? null,
       input.resumedFromRunId ?? null,
@@ -119,6 +123,20 @@ export class DiscussionRunStore {
       resumedFromRunId: row.resumed_from_run_id ?? undefined,
       createdAt: row.created_at * 1000,
       updatedAt: row.updated_at * 1000,
+    }
+  }
+
+  /** T05 停旧写：项目是否开启 legacyNarrativeWriteDisabled（scenes/arranged_entities 不再保存） */
+  private isLegacyNarrativeWriteDisabled(projectId: string): boolean {
+    try {
+      const row = this.db.prepare(
+        'SELECT feature_flags FROM novel_projects WHERE id = ?',
+      ).get(projectId) as { feature_flags: string } | undefined
+      if (!row?.feature_flags) return false
+      const flags = JSON.parse(row.feature_flags) as Record<string, boolean>
+      return flags.legacyNarrativeWriteDisabled === true
+    } catch {
+      return false
     }
   }
 }

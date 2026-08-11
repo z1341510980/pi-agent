@@ -264,7 +264,46 @@ export function createStoryLedgerRoutes(services: NovelServices): RouteDefinitio
         beforeChapter: chapterEnd !== undefined ? chapterEnd + 1 : undefined,
       })
 
-      return success({ projectId, chapterRange, changes }, request.traceId)
+      // T02-6 按章节关系投影：事件参与方自动派生关系边（同事件实体两两成对）
+      const eventEdges = memoryStore.listEventParticipationEdges(projectId, {
+        chapterStart,
+        chapterEnd,
+      })
+
+      return success({ projectId, chapterRange, changes, eventEdges }, request.traceId)
+    },
+  })
+
+  // ── T02-6：AI 提取确认队列 ──
+  // AI 自动写入的 StoryEvent（ai-extracted / ai-planned，status=planned）进入待确认队列；
+  // 确认 → confirmed；驳回 → superseded（事件）+ rejected（其 change record，消费查询排除）。
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/ledger/pending-queue',
+    handler: async (request: any) => {
+      const projectId = request.params.projectId
+      return success({ items: memoryStore.listPendingEvents(projectId) }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/ledger/events/:eventId/confirm',
+    handler: async (request: any) => {
+      const confirmed = memoryStore.confirmEvent(request.params.eventId)
+      if (!confirmed) throw new AppError(ErrorCode.NOT_FOUND, '事件不存在', 404)
+      return success({ confirmed: true }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/ledger/events/:eventId/reject',
+    handler: async (request: any) => {
+      const rejected = memoryStore.rejectEvent(request.params.eventId)
+      if (!rejected) throw new AppError(ErrorCode.NOT_FOUND, '事件不存在', 404)
+      return success({ rejected: true }, request.traceId)
     },
   })
 
@@ -383,6 +422,29 @@ export function createStoryLedgerRoutes(services: NovelServices): RouteDefinitio
       if (!memoryStore.getAnnotation(request.params.annotationId)) throw new AppError(ErrorCode.NOT_FOUND, '批注不存在', 404)
       memoryStore.deleteAnnotation(request.params.annotationId)
       return success({ id: request.params.annotationId, deleted: true }, request.traceId)
+    },
+  })
+
+  // T05：V2 双写对账（只读报告，供灰度判断"差异收敛可切读"）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/v2-reconciliation',
+    handler: async (request: any) => {
+      const report = store.reconcileV2(request.params.projectId)
+      return success(report, request.traceId)
+    },
+  })
+
+  // 第二轮：剧情推进轨道（Storyline rows + Scene nodes + Progress links，只读 V2 账本）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/narrative-matrix',
+    handler: async (request: any) => {
+      const asOfRevision = typeof request.query?.asOfRevision === 'string'
+        ? request.query.asOfRevision
+        : undefined
+      const report = store.narrativeMatrix(request.params.projectId, { asOfRevision })
+      return success(report, request.traceId)
     },
   })
 

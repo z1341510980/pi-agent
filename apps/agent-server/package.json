@@ -13,7 +13,8 @@
     "reconcile:matrix": "tsx scripts/reconcile-matrix-projection.ts",
     "backfill:ledger": "tsx scripts/backfill-ledger-projection.ts",
     "cleanup:dangling": "tsx scripts/cleanup-dangling-ledger-refs.ts",
-    "test": "vitest run"
+    "test": "node scripts/vitest-watchdog.mjs run",
+    "test:direct": "vitest run"
   },
   "keywords": [
     "fastify",

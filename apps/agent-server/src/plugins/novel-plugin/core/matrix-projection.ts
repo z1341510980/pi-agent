@@ -35,6 +35,7 @@ import {
   chaptersOfForeshadow,
   chaptersOfItem,
   chaptersOfLocation,
+  chaptersOfNarrative,
   type ProjectionEntityType,
 } from './chapter-projection-fields.js'
 
@@ -172,6 +173,12 @@ export function projectFromEntityFields(store: NovelStore, projectId: string): P
   for (const item of store.listItems(projectId)) {
     for (const n of chaptersOfItem(item)) {
       add(set, 'item', item.id, item.name, n, 'item.chapter_spans', S)
+    }
+  }
+
+  for (const narrative of store.listNarratives(projectId)) {
+    for (const n of chaptersOfNarrative(narrative)) {
+      add(set, 'narrative', narrative.id, narrative.description.slice(0, 30), n, 'narrative.chapter_spans', S)
     }
   }
 
@@ -391,7 +398,7 @@ export function buildArrangedEntitiesForChapter(
     : projectFromEntityFields(store, projectId)
 
   const buckets: Record<ProjectionEntityType, string[]> = {
-    character: [], conflict: [], foreshadow: [], clue: [], faction: [], location: [], item: [],
+    character: [], conflict: [], foreshadow: [], clue: [], faction: [], location: [], item: [], narrative: [],
   }
   for (const presence of set.byKey.values()) {
     if (presence.chapterNumber !== chapterNumber) continue

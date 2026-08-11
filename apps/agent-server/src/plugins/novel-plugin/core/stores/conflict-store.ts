@@ -50,10 +50,10 @@ export class ConflictStore {
       .prepare(
         `
       INSERT INTO novel_conflicts (id, project_id, description, type, intensity, stage, participants,
-      first_chapter, last_chapter, chapter_spans, tier, plot_function, progression_mode,
+      chapter_spans, tier, plot_function, progression_mode,
       current_step, next_step, created_at, updated_at)
       VALUES (@id, @project_id, @description, @type, @intensity, @stage, @participants,
-      @first_chapter, @last_chapter, @chapter_spans, @tier, @plot_function, @progression_mode,
+      @chapter_spans, @tier, @plot_function, @progression_mode,
       @current_step, @next_step, @created_at, @updated_at)
     `,
       )
@@ -65,8 +65,6 @@ export class ConflictStore {
         intensity: full.intensity,
         stage: full.stage,
         participants: full.participants,
-        first_chapter: full.chapterSpans[0]?.[0] ?? null,
-        last_chapter: full.chapterSpans[0]?.[1] ?? null,
         chapter_spans: JSON.stringify(full.chapterSpans),
         tier: full.tier,
         // plot_function 可选（旧数据 NULL）；progression_mode 默认 'linear'（向后兼容）
@@ -92,7 +90,7 @@ export class ConflictStore {
       .prepare(
         `
       UPDATE novel_conflicts SET description=@description, type=@type, intensity=@intensity,
-      stage=@stage, participants=@participants, first_chapter=@first_chapter, last_chapter=@last_chapter,
+      stage=@stage, participants=@participants,
       chapter_spans=@chapter_spans, tier=@tier, plot_function=@plot_function, progression_mode=@progression_mode,
       current_step=@current_step, next_step=@next_step,
       updated_at=@updated_at WHERE id=@id
@@ -105,8 +103,6 @@ export class ConflictStore {
         intensity: updated.intensity,
         stage: updated.stage,
         participants: updated.participants,
-        first_chapter: updated.chapterSpans[0]?.[0] ?? null,
-        last_chapter: updated.chapterSpans[0]?.[1] ?? null,
         chapter_spans: JSON.stringify(updated.chapterSpans),
         tier: updated.tier,
         plot_function: updated.plotFunction ?? null,

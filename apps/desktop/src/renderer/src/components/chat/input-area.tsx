@@ -3,6 +3,7 @@ import {
   useRef,
   useCallback,
   useEffect,
+  useMemo,
   type KeyboardEvent,
   type ReactElement,
   type ReactNode,
@@ -12,7 +13,8 @@ import {
 import { ArrowUp, ListPlus, Square, Paperclip } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { type ModelOption, ModelSelector } from './model-selector'
+import { type ModelOption, ModelSelector, type ThinkingLevel } from './model-selector'
+import { ThinkingLevelSelector } from './thinking-level-selector'
 import { FileAttachmentList, type FileAttachment } from './file-attachment'
 import { PermissionModeSwitch } from './permission-mode-switch'
 import { SlashCommandPanel } from './slash-command-panel'
@@ -46,6 +48,10 @@ export interface InputAreaProps {
   selectedModel?: string | null
   /** 模型变化回调 */
   onModelChange?: (provider: string, modelId: string) => void
+  /** 当前 thread 的思考强度（null 表示未设置） */
+  thinkingLevel?: ThinkingLevel | null
+  /** 思考强度变化回调（level=null 表示清除） */
+  onThinkingLevelChange?: (level: ThinkingLevel | null) => void
   /** 可引用的会话列表（@ 功能） */
   sessions?: SessionSummary[]
   /** 当前活跃会话 ID */
@@ -112,6 +118,8 @@ export function InputArea({
   models = [],
   selectedModel = null,
   onModelChange,
+  thinkingLevel = null,
+  onThinkingLevelChange,
   sessions = [],
   activeSessionId = '',
   onFilePreview,
@@ -129,6 +137,16 @@ export function InputArea({
 
   // ── 单行/多行模式判定（对齐 AionUi 逻辑） ──
   const isSingleLine = text.length <= MAX_SINGLE_LINE_CHARACTERS && !text.includes('\n')
+
+  // ── 当前选中模型对象（用于思考强度选择器读取 supportedReasoningEfforts 等元数据） ──
+  const currentModel = useMemo<ModelOption | undefined>(() => {
+    if (!selectedModel) return undefined
+    const idx = selectedModel.indexOf(':')
+    if (idx === -1) return undefined
+    const provider = selectedModel.slice(0, idx)
+    const id = selectedModel.slice(idx + 1)
+    return models.find((m) => m.provider === provider && m.id === id)
+  }, [selectedModel, models])
 
   const updateText = useCallback(
     (nextText: string) => {
@@ -558,7 +576,7 @@ export function InputArea({
               </button>
             </div>
 
-            {/* 右侧：权限模式 + 模型选择 + 发送/中断 */}
+            {/* 右侧：权限模式 + 模型选择 + 思考强度 + 发送/中断 */}
             <div className="flex items-center gap-2">
               <PermissionModeSwitch compact />
               {models.length > 0 && onModelChange && (
@@ -566,6 +584,17 @@ export function InputArea({
                   models={models}
                   value={selectedModel}
                   onChange={onModelChange}
+                  disabled={disabled}
+                />
+              )}
+              {onThinkingLevelChange && currentModel && (
+                <ThinkingLevelSelector
+                  value={thinkingLevel}
+                  supportedReasoningEfforts={currentModel.supportedReasoningEfforts}
+                  allowDisableThinking={currentModel.allowDisableThinking}
+                  defaultReasoningEffort={currentModel.defaultReasoningEffort}
+                  reasoning={currentModel.reasoning}
+                  onChange={onThinkingLevelChange}
                   disabled={disabled}
                 />
               )}
@@ -588,6 +617,17 @@ export function InputArea({
                 models={models}
                 value={selectedModel}
                 onChange={onModelChange}
+                disabled={disabled}
+              />
+            )}
+            {onThinkingLevelChange && currentModel && (
+              <ThinkingLevelSelector
+                value={thinkingLevel}
+                supportedReasoningEfforts={currentModel.supportedReasoningEfforts}
+                allowDisableThinking={currentModel.allowDisableThinking}
+                defaultReasoningEffort={currentModel.defaultReasoningEffort}
+                reasoning={currentModel.reasoning}
+                onChange={onThinkingLevelChange}
                 disabled={disabled}
               />
             )}

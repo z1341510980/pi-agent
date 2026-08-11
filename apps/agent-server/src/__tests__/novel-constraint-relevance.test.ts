@@ -22,7 +22,9 @@ function foreshadow(overrides: Record<string, unknown>) {
 describe('NovelEngine chapter constraint relevance', () => {
   it('只把本章有 beat 或已到回收期的伏笔注入硬约束', () => {
     const store = {
+      getProject: () => ({ targetWords: 3000, flags: {} }),
       listConstraints: () => [],
+      listChapterAppearanceIds: () => null,
       listCharacters: () => [],
       listConflicts: () => [],
       listInformationLayers: () => [],
@@ -73,7 +75,9 @@ describe('NovelEngine chapter constraint relevance', () => {
 
   it('传入矩阵时只构建选中冲突和伏笔的硬约束', () => {
     const store = {
+      getProject: () => ({ targetWords: 3000, flags: {} }),
       listConstraints: () => [],
+      listChapterAppearanceIds: () => null,
       listCharacters: () => [],
       listInformationLayers: () => [],
       listEdgesByEntity: () => [],

@@ -182,6 +182,17 @@ export const ENTITY_INTERACTION_SPEC: Record<MatrixEntityKind, EntityInteraction
     emptyCellHint: '双击标记出现',
     presentCellHint: '物品在场',
   },
+  narrative: {
+    kind: 'narrative',
+    markable: true,
+    removable: true,
+    markLabel: '标记本章出现',
+    removeLabel: '删除本章出现',
+    markTooltip: '扩展剧情条目的章节跨度覆盖到本章',
+    removeTooltip: '从剧情条目的章节跨度中移除本章',
+    emptyCellHint: '双击标记出现',
+    presentCellHint: '剧情推进',
+  },
 }
 
 /** 取某类实体的交互规格 */

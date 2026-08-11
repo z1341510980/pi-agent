@@ -268,6 +268,17 @@ export const LEGEND_ENTRIES: LegendEntry[] = [
     kind: 'item',
   },
 
+  // ── 剧情（narrative 轨道）──
+  {
+    // matrix-row.SpanBand：与冲突同模式的跨度色带
+    id: 'narrative-span',
+    shape: 'band',
+    color: GROUP_META.narrative.color,
+    label: '剧情跨度',
+    layer: 'collapsed',
+    kind: 'narrative',
+  },
+
   // ── 跨类型 ──
   {
     id: 'playhead',

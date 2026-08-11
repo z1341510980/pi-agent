@@ -289,6 +289,26 @@ describe('buildGroups', () => {
     expect(charGroup.entities[0].characterSpans).toEqual([{ start: 1, end: 2 }])
   })
 
+  it('uses plot role labels for characters, including legacy protagonists', () => {
+    const data = buildGroups({
+      chapters: [makeChapter(1)],
+      characters: [
+        { ...makeCharacter('hero', '叶明远'), plotRole: 'protagonist' },
+        { ...makeCharacter('function', '林小宇'), plotRole: 'function' },
+        { ...makeCharacter('opponent', '敌手'), plotRole: 'main_opponent' },
+      ],
+      conflicts: [], clues: [], foreshadows: [], factions: [], locations: [], worldElements: [], items: [],
+      characterHistory: [makeHistory('hero', 1), makeHistory('function', 1), makeHistory('opponent', 1)],
+    })
+    const characters = data.groups.find((group) => group.id === 'character')!.entities
+
+    expect(characters.map((character) => ({ name: character.name, subLabel: character.subLabel, isProtagonist: character.isProtagonist }))).toEqual([
+      { name: '叶明远', subLabel: '主角', isProtagonist: true },
+      { name: '林小宇', subLabel: '功能角色', isProtagonist: false },
+      { name: '敌手', subLabel: '主要对手', isProtagonist: false },
+    ])
+  })
+
   it('skips character without history (goes to pool)', () => {
     const data = buildGroups({
       chapters: [], characters: [makeCharacter('c1', '路人')],
@@ -666,7 +686,7 @@ describe('computeCellSymbol', () => {
 
 describe('GROUP_META', () => {
   it('has entries for all matrix kinds', () => {
-    expect(Object.keys(GROUP_META)).toHaveLength(9)
+    expect(Object.keys(GROUP_META)).toHaveLength(10)
     expect(GROUP_META.character.color).toBe('#3b82f6')
   })
 })

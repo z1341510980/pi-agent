@@ -22,6 +22,8 @@ export interface ProjectRow {
   deleted_at: number | null
   target_platform: string | null
   novel_ask_story_policy: string | null
+  feature_flags: string
+  novel_model_id: string | null
 }
 
 // ── 章节 ──
@@ -69,6 +71,22 @@ export interface ChapterVersionRow {
   agent_type: string | null
   trigger: string | null
   sequence: number
+  created_at: number
+}
+
+/** novel_chapter_content_revisions 行（不可变正文版本链） */
+export interface ContentRevisionRow {
+  id: string
+  chapter_id: string
+  project_id: string
+  parent_revision_id: string | null
+  revision: number
+  content: string
+  word_count: number
+  phase: string | null
+  agent_type: string | null
+  trigger: string | null
+  status: string
   created_at: number
 }
 
@@ -162,8 +180,6 @@ export interface ConflictRow {
   intensity: number
   stage: string
   participants: string
-  first_chapter: number | null
-  last_chapter: number | null
   tier: string
   chapter_spans: string | null
   plot_function: string | null
@@ -304,8 +320,6 @@ export interface FactionRow {
   allies: string
   enemies: string
   status: string
-  first_chapter: number | null
-  last_chapter: number | null
   chapter_spans: string | null
   created_at: number
   updated_at: number
@@ -459,4 +473,6 @@ export interface AgentLogRow {
   ask_story_policy: string | null
   /** 078: 1 when this invocation may use novel_ask_story; true for pre-078 rows. */
   ask_story_enabled: number | null
+  /** 087: 大文本外置时的 payload 主键（NULL = 全量存主表） */
+  payload_id: string | null
 }

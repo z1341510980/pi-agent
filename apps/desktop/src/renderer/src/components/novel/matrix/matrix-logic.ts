@@ -39,6 +39,7 @@ export type MatrixEntityKind =
   | 'world_element'
   | 'info_layer'
   | 'item'
+  | 'narrative'
 
 /** 联动右侧详情面板时使用的实体类型 */
 export type SelectableEntityType = MatrixEntityKind
@@ -142,11 +143,12 @@ export const GROUP_META: Record<MatrixEntityKind, GroupMeta> = {
   world_element: { id: 'world_element', name: '世界要素', color: '#4b3fe3', colorRgb: '75,63,227', icon: '■' },
   info_layer: { id: 'info_layer', name: '信息差', color: '#14b8a6', colorRgb: '20,184,166', icon: '◈' },
   item: { id: 'item', name: '物品', color: '#d97706', colorRgb: '217,119,6', icon: '✦' },
+  narrative: { id: 'narrative', name: '剧情', color: '#0f766e', colorRgb: '15,118,110', icon: '≋' },
 }
 
-/** 分组顺序（角色→冲突→线索→伏笔→势力→地点→世界要素→信息差→物品） */
+/** 分组顺序（角色→剧情→冲突→线索→伏笔→势力→地点→世界要素→信息差→物品） */
 export const GROUP_ORDER: MatrixEntityKind[] = [
-  'character', 'conflict', 'clue', 'foreshadow', 'faction', 'location', 'world_element', 'info_layer', 'item',
+  'character', 'narrative', 'conflict', 'clue', 'foreshadow', 'faction', 'location', 'world_element', 'info_layer', 'item',
 ]
 
 // ── 甘特图网格层级 ──

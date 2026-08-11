@@ -1,5 +1,5 @@
 /**
- * 九类实体交互语义 + 图例
+ * 十类实体交互语义 + 图例
  *
  * 这两项收口的动因相同：同一语义散在多处，说法已经不一致。
  *
@@ -8,7 +8,7 @@
  *   新增实体类型要改五处，漏一处就静默落到 default。
  * - 图例此前是手写常量，`★▲▼◆` 四个符号在实现里根本不存在。
  *
- * 用例重点覆盖「表必须穷尽九类」与「文案与实现一致」这两条 —— 前者是本次
+ * 用例重点覆盖「表必须穷尽十类」与「文案与实现一致」这两条 —— 前者是本次
  * 收口的核心收益（类型系统强制补全，不会像 switch 那样静默漏项）。
  */
 import { describe, it, expect } from 'vitest'
@@ -22,8 +22,8 @@ import {
 } from '../entity-interaction-spec'
 import { LEGEND_ENTRIES, selectLegendEntries } from '../legend-spec'
 
-describe('ENTITY_INTERACTION_SPEC：必须穷尽九类', () => {
-  it('九类实体全部有规格 —— 这是收口的核心收益，替代五处 switch 的 default 静默兜底', () => {
+describe('ENTITY_INTERACTION_SPEC：必须穷尽十类', () => {
+  it('十类实体全部有规格 —— 这是收口的核心收益，替代五处 switch 的 default 静默兜底', () => {
     for (const kind of GROUP_ORDER) {
       expect(ENTITY_INTERACTION_SPEC[kind], `缺少 ${kind} 的交互规格`).toBeDefined()
     }
@@ -61,7 +61,7 @@ describe('ENTITY_INTERACTION_SPEC：必须穷尽九类', () => {
     }
   })
 
-  it('九类都有 presentCellHint —— 原实现里 character/faction/location 落到 default 返回空串', () => {
+  it('十类都有 presentCellHint —— 原实现里 character/faction/location 落到 default 返回空串', () => {
     for (const kind of GROUP_ORDER) {
       expect(ENTITY_INTERACTION_SPEC[kind].presentCellHint, `${kind} 的已占格提示为空`).not.toBe('')
     }
@@ -180,7 +180,7 @@ describe('图例从实现派生', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
-  it('九类实体在折叠态图例里都有至少一项', () => {
+  it('十类实体在折叠态图例里都有至少一项', () => {
     const covered = new Set(
       selectLegendEntries('collapsed').map((e) => e.kind).filter(Boolean),
     )

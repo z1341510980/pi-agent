@@ -48,7 +48,7 @@ export interface UseChapterChatReturn {
   /** 加载历史消息 */
   loadHistory: (projectId: string, chapterNumber: number) => Promise<void>
   /** 发送自由聊天消息 */
-  sendMessage: (projectId: string, chapterNumber: number, message: string, mentionedAgents?: string[]) => Promise<void>
+  sendMessage: (projectId: string, chapterNumber: number, message: string, mentionedAgents?: string[], modelId?: { provider: string; modelId: string } | null) => Promise<void>
   /** 中断当前运行 */
   abort: () => void
   /** 清空章节聊天历史 */
@@ -217,7 +217,7 @@ export function useChapterChat(): UseChapterChatReturn {
 
   /** 发送自由聊天消息 */
   const sendMessage = useCallback(
-    async (projectId: string, chapterNumber: number, message: string, mentionedAgents?: string[]) => {
+    async (projectId: string, chapterNumber: number, message: string, mentionedAgents?: string[], modelId?: { provider: string; modelId: string } | null) => {
       if (abortControllerRef.current) return // 并发保护
 
       const trimmed = message.trim()
@@ -252,6 +252,7 @@ export function useChapterChat(): UseChapterChatReturn {
         await sendChapterChat(projectId, chapterNumber, trimmed, mentionedAgents, {
           onEvent: handleEvent,
           signal: controller.signal,
+          modelId: modelId ?? undefined,
         })
 
         // SSE 流结束后，重新加载历史以获取后端持久化的 Agent 回复

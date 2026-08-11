@@ -7,6 +7,7 @@ import { createModuleLogger } from '../lib/logger.js'
 import { ProviderConfigStore } from '../core/config/provider-config-store.js'
 import { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import { ProxyManager } from '../core/config/proxy-manager.js'
+import { ThreadSettingsStore } from '../core/agent/thread-settings-store.js'
 import { setRuntimeLlmTimeoutMs } from '../config/performance.js'
 import { normalizeProviderBaseUrl } from '../core/config/provider-base-url.js'
 
@@ -85,6 +86,11 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   // ProxyManager：代理管理器，应用到全局 HTTP 客户端（undici）
   const proxyManager = new ProxyManager()
   app.decorate('proxyManager', proxyManager)
+
+  // ThreadSettingsStore：每个 thread 独立的轻量设置（当前仅 thinkingLevel）
+  // 持久化到 SQLite thread_thinking_levels 表（迁移 014 创建）
+  const threadSettingsStore = new ThreadSettingsStore(app.db)
+  app.decorate('threadSettingsStore', threadSettingsStore)
 
   // 启动时从持久化存储恢复 Provider 配置到 ModelRegistry 和 AuthStorage
   // 这样进程重启后无需用户重新配置 Provider

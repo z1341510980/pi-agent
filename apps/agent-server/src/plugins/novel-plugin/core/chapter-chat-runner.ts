@@ -39,6 +39,8 @@ export interface ChapterChatOptions {
   signal?: AbortSignal
   /** Moderator 模型配置 */
   moderatorModel?: { provider: string; modelId: string }
+  /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用该模型，跳过 Moderator 调度 */
+  modelId?: { provider: string; modelId: string }
 }
 
 /** 自由聊天请求输入 */
@@ -168,6 +170,17 @@ export class ChapterChatRunner {
     options: ChapterChatOptions,
     userMessage: string,
   ): Promise<DiscussionMember[]> {
+    // ⚠️ per-call 模型模式：用户明确指定了本次回复模型 → 跳过 Moderator 调度，
+    // 直接回复（@ 指定则回复指定方，否则用第一个可用成员），避免 Moderator
+    // 再消耗一次决策调用。
+    if (options.modelId) {
+      if (mentionedAgents && mentionedAgents.length > 0) {
+        const selected = members.filter((m) => mentionedAgents.includes(m.id))
+        if (selected.length > 0) return selected
+      }
+      return members.length > 0 ? [members[0]] : []
+    }
+
     // @ 指定模式
     if (mentionedAgents && mentionedAgents.length > 0) {
       const selected = members.filter((m) => mentionedAgents.includes(m.id))
@@ -263,6 +276,8 @@ export class ChapterChatRunner {
       userMessage: userMessageWithCtx,
       tools: [],
       signal: options.signal,
+      // per-call 模型覆盖（输入框旁选择器）；未指定走成员默认/系统默认
+      modelId: options.modelId,
       temperature: member.type === 'character' ? 0.8 : 0.5,
       timeoutMs: runtimePerformance.llm.timeoutMs,
       emit: options.emit,

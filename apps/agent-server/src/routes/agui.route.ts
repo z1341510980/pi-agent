@@ -8,6 +8,7 @@ import {
   navigateThreadInputSchema,
   compactThreadInputSchema,
   toolsActiveInputSchema,
+  threadThinkingLevelInputSchema,
   reloadInputSchema
 } from '@repo/protocol/schemas'
 import { AppError, ErrorCode } from '@repo/shared/errors'
@@ -241,5 +242,30 @@ export const aguiRoute: FastifyPluginAsync = async (app) => {
 
     const result = await getAgent().compactThread(input.threadId, input.customInstructions)
     return { status: 'compacted', threadId: input.threadId, result }
+  })
+
+  // 读取指定 thread 的 thinkingLevel
+  app.get('/ag-ui/agent/:agentId/threads/:threadId/thinking-level', async (request) => {
+    const { agentId, threadId } = request.params as { agentId: string; threadId: string }
+    validateAgentId(agentId)
+    if (!threadId.trim()) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, 'threadId 不能为空', 400)
+    }
+    const result = getAgent().getThreadThinkingLevel(threadId)
+    return { threadId, level: result?.level ?? null }
+  })
+
+  // 设置指定 thread 的 thinkingLevel，并清空 session 缓存
+  app.post('/ag-ui/agent/:agentId/threads/:threadId/thinking-level', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string }
+    validateAgentId(agentId)
+    const input = validateBody(threadThinkingLevelInputSchema, request, reply)
+    if (!input) return reply
+
+    const result = getAgent().setThreadThinkingLevel(input.threadId, input.level)
+    app.log.info(
+      `Thread "${input.threadId}" thinkingLevel 已设置为 "${input.level}"（Agent "${agentId}"）`
+    )
+    return result
   })
 }

@@ -236,7 +236,8 @@ export class CharacterStore {
       currentState: row.current_state, currentGoal: row.current_goal,
       currentPressure: row.current_pressure, secret: row.secret,
       arcStage: row.arc_stage, arcHistory: row.arc_history, speechStyle: row.speech_style,
-      isProtagonist: row.is_protagonist === 1,
+      // 早期 AI 编排只写了 plot_role，读取时以它兼容，避免主角在矩阵中被误标为配角。
+      isProtagonist: row.is_protagonist === 1 || row.plot_role === 'protagonist',
       longTermDesire: row.long_term_desire,
       plotRole: (validPlotRoles.includes(row.plot_role) ? row.plot_role : 'supporting') as NovelCharacter['plotRole'],
       removalImpact: row.removal_impact,

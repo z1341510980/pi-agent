@@ -24,8 +24,8 @@ export class ProjectStore {
     const ts = now()
     const full: NovelProject = { outline: '', ...project, createdAt: ts, updatedAt: ts }
     this.db.prepare(`
-      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at, target_platform, novel_ask_story_policy)
-      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at, @target_platform, @novel_ask_story_policy)
+      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at, target_platform, novel_ask_story_policy, feature_flags, novel_model_id)
+      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at, @target_platform, @novel_ask_story_policy, @feature_flags, @novel_model_id)
     `).run({
       id: full.id, title: full.title, genre: full.genre, synopsis: full.synopsis,
       outline: full.outline ?? '',
@@ -34,6 +34,8 @@ export class ProjectStore {
       status: full.status, created_at: full.createdAt, updated_at: full.updatedAt,
       target_platform: full.targetPlatform ?? null,
       novel_ask_story_policy: full.novelAskStoryPolicy ?? null,
+      feature_flags: full.flags ? JSON.stringify(full.flags) : '{}',
+      novel_model_id: full.novelModelId ?? null,
     })
     return full
   }
@@ -46,7 +48,8 @@ export class ProjectStore {
       UPDATE novel_projects SET title=@title, genre=@genre, synopsis=@synopsis, outline=@outline,
       target_words=@target_words, current_volume=@current_volume, current_chapter=@current_chapter,
       current_stage=@current_stage, status=@status, updated_at=@updated_at,
-       target_platform=@target_platform, novel_ask_story_policy=@novel_ask_story_policy WHERE id=@id
+       target_platform=@target_platform, novel_ask_story_policy=@novel_ask_story_policy,
+       feature_flags=@feature_flags, novel_model_id=@novel_model_id WHERE id=@id
     `).run({
       id, title: updated.title, genre: updated.genre, synopsis: updated.synopsis, outline: updated.outline ?? '',
       target_words: updated.targetWords, current_volume: updated.currentVolume,
@@ -54,6 +57,8 @@ export class ProjectStore {
       status: updated.status, updated_at: updated.updatedAt,
       target_platform: updated.targetPlatform ?? null,
       novel_ask_story_policy: updated.novelAskStoryPolicy ?? null,
+      feature_flags: updated.flags ? JSON.stringify(updated.flags) : '{}',
+      novel_model_id: updated.novelModelId ?? null,
     })
     return updated
   }
@@ -129,7 +134,37 @@ export class ProjectStore {
       deletedAt: row.deleted_at,
       targetPlatform: row.target_platform as NovelProject['targetPlatform'],
       novelAskStoryPolicy: row.novel_ask_story_policy as NovelProject['novelAskStoryPolicy'],
+      novelModelId: row.novel_model_id ?? null,
+      flags: parseFeatureFlags(row.feature_flags),
       createdAt: row.created_at, updatedAt: row.updated_at,
     }
+  }
+
+  /**
+   * 项目级「创作主模型」modelId（NULL/undefined = 未设置，各 Agent 用各自配置）。
+   * 设置后创作流程统一使用该模型，见 NovelProject.novelModelId 注释。
+   */
+  getNovelModelId(projectId: string): string | undefined {
+    const row = this.stmtGetProject.get(projectId) as ProjectRow | undefined
+    return row?.novel_model_id ?? undefined
+  }
+
+  updateNovelModelId(projectId: string, modelId: string | null): boolean {
+    const result = this.db.prepare(
+      'UPDATE novel_projects SET novel_model_id = @model_id, updated_at = @ts WHERE id = @id AND deleted_at IS NULL',
+    ).run({ id: projectId, model_id: modelId, ts: now() })
+    return result.changes > 0
+  }
+}
+
+/** 解析 feature_flags JSON 列；缺省/空/非法 JSON 一律返回 undefined（视为全部关闭） */
+function parseFeatureFlags(raw: string | undefined | null): Record<string, boolean> | undefined {
+  if (raw === undefined || raw === null || raw.trim() === '') return undefined
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return parsed as Record<string, boolean>
+  } catch {
+    return undefined
   }
 }

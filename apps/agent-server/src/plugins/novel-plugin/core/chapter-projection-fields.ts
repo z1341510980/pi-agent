@@ -11,11 +11,11 @@
  * 抽成纯函数放在这里，避免三处各写一遍然后漂移（这正是 S4 要治的病）。
  * 本模块不依赖 store，可被 store 与 matrix-projection 同时 import 而不产生循环。
  */
-import type { ChapterSpan, NovelClue, NovelConflict, NovelFaction, NovelForeshadow, NovelItem, NovelLocation } from './types.js'
+import type { ChapterSpan, NovelClue, NovelConflict, NovelFaction, NovelForeshadow, NovelItem, NovelLocation, NovelNarrative } from './types.js'
 
 /** 参与矩阵投影的实体类型（关系/世界要素等不占章节格） */
 export const PROJECTION_ENTITY_TYPES = [
-  'character', 'conflict', 'foreshadow', 'clue', 'faction', 'location', 'item',
+  'character', 'conflict', 'foreshadow', 'clue', 'faction', 'location', 'item', 'narrative',
 ] as const
 export type ProjectionEntityType = typeof PROJECTION_ENTITY_TYPES[number]
 
@@ -57,6 +57,10 @@ export function chaptersOfItem(entity: Pick<NovelItem, 'chapterSpans'>): number[
 
 export function chaptersOfLocation(entity: Pick<NovelLocation, 'appearChapters'>): number[] {
   return normalizeChapters(entity.appearChapters ?? [])
+}
+
+export function chaptersOfNarrative(entity: Pick<NovelNarrative, 'chapterSpans'>): number[] {
+  return expandChapterSpans(entity.chapterSpans)
 }
 
 /**

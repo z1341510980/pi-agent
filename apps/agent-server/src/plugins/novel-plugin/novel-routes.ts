@@ -28,6 +28,7 @@ import { buildCacheLayerReport, diagnoseChapterCache } from './core/cache-layer-
 import { createNovelAgUiEmitter, createSseEmitterSink } from './utils/sse-emitter.js'
 import { createChapterRoutes } from './routes/chapter-routes.js'
 import { createCharacterRoutes } from './routes/character-routes.js'
+import { createEntityCandidateRoutes } from './routes/entity-candidate-routes.js'
 import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
 import { createStoryLedgerRoutes } from './routes/story-ledger-routes.js'
 import { createReferenceAnalysisRoutes } from './routes/reference-analysis-routes.js'
@@ -50,14 +51,15 @@ import { createContextPreviewRoutes } from './routes/context-preview-routes.js'
  * 由各子路由文件共享同一实例。
  */
 export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
-  const { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor } = services
+  const { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, orchestrator } = services
   const routes: RouteDefinition[] = [
     ...createStoryLedgerRoutes(services),
     ...createReferenceAnalysisRoutes(services),
   ]
 
   // P1 可观测性：context-preview 端点，预览 prompt-builder 注入的上下文结构
-  routes.push(...createContextPreviewRoutes(promptBuilder))
+  // T03-8：p3/context-report 端点（灰度看板聚合，engine 用于真实构建 constraints）
+  routes.push(...createContextPreviewRoutes(promptBuilder, store, services.engine))
 
   // C3：统一关系图查询层 + 跨章节一致性审计器已提升到 services 层
   // 与 NovelPromptBuilder 共享同一实例，避免重复实例化和缓存浪费
@@ -146,6 +148,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     handler: async (request: any) => {
       const deleted = store.deleteProject(request.params.id)
       if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `项目不存在或已在回收站: ${request.params.id}`, 404)
+      // P4 §5.6：项目进回收站后其 chunk 缓存不再有效，立刻清掉（否则恢复项目
+      // 时可能命中删除前的 chunk，且长跑进程白占内存）。
+      orchestrator.chunkCache.clearProject(request.params.id)
       return success({ id: request.params.id, trashed: true }, request.traceId)
     },
   })
@@ -584,6 +589,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // 已迁移至 ./routes/character-routes.ts（PR-6）
   // ═══════════════════════════════════════════════════════════════
   routes.push(...createCharacterRoutes(services))
+  routes.push(...createEntityCandidateRoutes(services))
 
   // ── AI 通用实体生成（不落库，前端 review 后调 createXxx） ──
 
@@ -1938,5 +1944,118 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // 已迁移至 ./routes/creation-flow-routes.ts（PR-6）
   // ═══════════════════════════════════════════════════════════════
   routes.push(...createCreationFlowRoutes(services))
+
+  // ═══════════════════════════════════════════════════════════════
+  // 剧情（narrative）实体轨道 CRUD
+  // 承接冲突/线索/伏笔装不下的剧情相关内容，矩阵独立轨道
+  // ═══════════════════════════════════════════════════════════════
+
+  const narrativeTypes = ['advance', 'turn', 'reversal', 'suspense', 'resolve', 'setup', 'reveal', 'misc'] as const
+  const createNarrativeSchema = z.object({
+    description: z.string().min(1),
+    type: z.enum(narrativeTypes).default('advance'),
+    status: z.enum(['active', 'resolved', 'dropped']).default('active'),
+    chapterSpans: z.array(z.tuple([z.number().int().positive(), z.number().int().positive()])).default([]),
+  })
+  const updateNarrativeSchema = createNarrativeSchema.partial()
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/narratives',
+    handler: async (request: any) => {
+      return success(store.listNarratives(request.params.projectId), request.traceId)
+    },
+  })
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/narratives',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(createNarrativeSchema, request, reply)
+      if (!input) return reply
+      const narrative = store.createNarrative({ projectId: request.params.projectId, ...input })
+      return success(narrative, request.traceId)
+    },
+  })
+  routes.push({
+    method: 'PATCH',
+    path: '/narratives/:id',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(updateNarrativeSchema, request, reply)
+      if (!input) return reply
+      const updated = store.updateNarrative(request.params.id, input as any)
+      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `剧情不存在: ${request.params.id}`, 404)
+      return success(updated, request.traceId)
+    },
+  })
+  routes.push({
+    method: 'DELETE',
+    path: '/narratives/:id',
+    handler: async (request: any) => {
+      const deleted = store.deleteNarrative(request.params.id)
+      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `剧情不存在: ${request.params.id}`, 404)
+      return success({ id: request.params.id, deleted: true }, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // P0 成本测量报表（只读聚合 novel_agent_logs + novel_context_section_metrics）
+  // ═══════════════════════════════════════════════════════════════
+
+  // GET /projects/:projectId/cost-report?chapterNumber=N — 章成本报表（六项指标）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/cost-report',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const project = store.getProject(projectId)
+      if (!project) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+      const chapterNumber = request.query?.chapterNumber != null
+        ? parseInt(String(request.query.chapterNumber), 10)
+        : undefined
+      const reports = services.costReportService.chapterReport(projectId, chapterNumber)
+      return success({ projectId, reports }, request.traceId)
+    },
+  })
+
+  // GET /projects/:projectId/agent-cost-share — 每个 Agent 成本占比（input + cache-read 口径）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/agent-cost-share',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const project = store.getProject(projectId)
+      if (!project) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+      const shares = services.costReportService.agentCostShare(projectId)
+      return success({ projectId, shares }, request.traceId)
+    },
+  })
+
+  // GET /projects/:projectId/shared-overlap — 相邻章 shared 重复率（p50/p75/max + top section）
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/shared-overlap',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      const project = store.getProject(projectId)
+      if (!project) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+      const report = services.sharedOverlapAnalyzer.analyze(projectId)
+      return success(report, request.traceId)
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // P1-2 日志 payload 清理（手动触发；定时调度由部署侧 cron/env 决定）
+  // ═══════════════════════════════════════════════════════════════
+
+  // POST /admin/agent-log-payloads/cleanup — 按保留策略清理过期 payload（元数据不删）
+  routes.push({
+    method: 'POST',
+    path: '/admin/agent-log-payloads/cleanup',
+    handler: async (request: any) => {
+      const result = store.cleanupExpiredPayloads()
+      return success(result, request.traceId)
+    },
+  })
+
   return routes
 }

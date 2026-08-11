@@ -87,4 +87,39 @@ describe('ChapterContentEditor', () => {
     expect(screen.getByTestId('tiptap-editor')).not.toBeNull()
     expect(editor.commands.setContent).toHaveBeenCalledWith('章节正文', { emitUpdate: false })
   })
+
+  it('空正文章节（content=""）渲染可编辑编辑器，而不是"无章节"提示', async () => {
+    const { ChapterContentEditor } = await import('../chapter-content-editor')
+    dataStore.chapters[0] = { ...dataStore.chapters[0], content: '' }
+
+    render(<ChapterContentEditor isCreationActive={false} />)
+
+    // 章节存在但正文为空 → 必须走 EditorContent 路径（可输入），不显示 cce-empty
+    expect(screen.getByTestId('tiptap-editor')).not.toBeNull()
+    expect(screen.queryByText('无章节，请先创建章节')).toBeNull()
+    // 空内容也正常 setContent('') 并保持可编辑
+    expect(editor.commands.setContent).toHaveBeenCalledWith('', { emitUpdate: false })
+    expect(editor.setEditable).toHaveBeenCalledWith(true)
+  })
+
+  it('创作流程激活时（isCreationActive=true）编辑器进入只读模式', async () => {
+    const { ChapterContentEditor } = await import('../chapter-content-editor')
+
+    render(<ChapterContentEditor isCreationActive={true} />)
+
+    // isCreationActive=true → useEffect 调用 editor.setEditable(false)
+    expect(editor.setEditable).toHaveBeenCalledWith(false)
+  })
+
+  it('编辑器初始化失败（useEditor 返回 null）时组件不崩溃', async () => {
+    // 临时让 useEditor 返回 null，模拟初始化失败
+    const { useEditor } = await import('@tiptap/react')
+    vi.mocked(useEditor).mockReturnValueOnce(null)
+
+    const { ChapterContentEditor } = await import('../chapter-content-editor')
+
+    // 不应抛出异常，仍能正常渲染
+    expect(() => render(<ChapterContentEditor isCreationActive={false} />)).not.toThrow()
+  })
+
 })

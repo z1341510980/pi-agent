@@ -93,6 +93,10 @@ export interface MemoryEvent {
   source?: StoryEventSource
   /** 文风提示：该变化的写作风格建议。prompt-builder 读取后附加到写作提示。 */
   styleNote?: string | null
+  /** T02-6 AI 确认队列状态：confirmed（默认）/ pending / rejected（驳回，消费查询排除） */
+  status?: 'confirmed' | 'pending' | 'rejected'
+  /** 确认/驳回时间戳 */
+  confirmedAt?: number | null
   createdAt: number
 }
 
@@ -149,6 +153,7 @@ export interface ListStoryEventsOptions {
   chapterStart?: number
   chapterEnd?: number
   status?: StoryEventStatus
+  source?: StoryEventSource
   entityType?: NovelStoryEntityType
   entityId?: string
 }
@@ -161,6 +166,8 @@ export interface ListChangeRecordsOptions {
   subjectType?: NovelStoryEntityType
   subjectId?: string
   dimension?: string
+  /** T02-6 确认队列：pending = 待确认（未确认/未驳回）；confirmed = 已确认 */
+  status?: 'pending' | 'confirmed' | 'rejected'
 }
 
 export interface ListAnnotationsOptions {
@@ -198,6 +205,8 @@ interface MemoryEventRow {
   value_type: string | null
   source: string
   style_note: string | null
+  status: string
+  confirmed_at: number | null
   created_at: number
 }
 
@@ -496,6 +505,20 @@ export function inferDimension(
 export class NovelMemoryStore {
   constructor(private db: Database.Database) {}
 
+  /** T05 停旧写：项目是否开启 legacyNarrativeWriteDisabled（sceneId/sceneOrder 不再重复写入） */
+  private isLegacyNarrativeWriteDisabled(projectId: string): boolean {
+    try {
+      const row = this.db.prepare(
+        'SELECT feature_flags FROM novel_projects WHERE id = ?',
+      ).get(projectId) as { feature_flags: string } | undefined
+      if (!row?.feature_flags) return false
+      const flags = JSON.parse(row.feature_flags) as Record<string, boolean>
+      return flags.legacyNarrativeWriteDisabled === true
+    } catch {
+      return false
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 事件记录（情景记忆 + 因果链）
   // ═══════════════════════════════════════════════════════════════
@@ -519,10 +542,10 @@ export class NovelMemoryStore {
       INSERT INTO novel_memory_events
       (id, project_id, chapter_id, chapter_number, event_type, entity_id, entity_type,
        description, old_value, new_value, cause, effect_ids, significance,
-       dimension, value_type, source, style_note, created_at)
+       dimension, value_type, source, style_note, status, created_at)
       VALUES (@id, @project_id, @chapter_id, @chapter_number, @event_type, @entity_id, @entity_type,
               @description, @old_value, @new_value, @cause, @effect_ids, @significance,
-              @dimension, @value_type, @source, @style_note, @created_at)
+              @dimension, @value_type, @source, @style_note, @status, @created_at)
     `).run({
       id: full.id,
       project_id: full.projectId,
@@ -542,6 +565,8 @@ export class NovelMemoryStore {
       // AI 自动写入的事件标记为 ai-extracted（schema 默认 'migration' 不符合实时写入语义）
       source: full.source ?? 'ai-extracted',
       style_note: full.styleNote ?? null,
+      // T02-6：AI 自动写入的 change record 标记 pending（随事件待确认）；手动写入 confirmed
+      status: (full.source === 'ai-extracted' || full.source === 'ai-planned') ? 'pending' : 'confirmed',
       created_at: full.createdAt,
     })
     return full
@@ -794,6 +819,13 @@ export class NovelMemoryStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     }
+    // T05 停旧写（legacyNarrativeWriteDisabled）：V2 迁移后 sceneId/sceneOrder 由
+    // scene_revision 派生，不再重复写入事件表。flag 按项目灰度，默认关闭。
+    // 直接修改 event 本体，保证返回值与落库一致（调用方不会看到"已写但读不到"）。
+    if (this.isLegacyNarrativeWriteDisabled(event.projectId)) {
+      event.sceneId = null
+      event.sceneOrder = 0
+    }
     this.db.prepare(`
       INSERT INTO novel_story_events
         (id, project_id, chapter_number, scene_id, scene_order, type, title, summary,
@@ -825,6 +857,24 @@ export class NovelMemoryStore {
     return row ? this.rowToStoryEvent(row) : undefined
   }
 
+  /**
+   * 最新事件 id（P4 §5.6 chunk versionKey 输入）。
+   *
+   * 单条 SQL，不构建实体对象——listStoryEvents 会全量映射 rowToStoryEvent，
+   * 用来仅取一个 id 在每次 runAgent 都跑一遍代价过高。
+   * 排序与 listStoryEvents 一致（chapter → scene_order → created_at），
+   * 保证"最新"的口径不分叉。
+   */
+  getLatestStoryEventId(projectId: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT id FROM novel_story_events
+      WHERE project_id = ?
+      ORDER BY chapter_number DESC, scene_order DESC, created_at DESC
+      LIMIT 1
+    `).get(projectId) as { id: string } | undefined
+    return row?.id
+  }
+
   listStoryEvents(projectId: string, options?: ListStoryEventsOptions): NovelStoryEvent[] {
     const conditions = ['e.project_id = ?']
     const params: unknown[] = [projectId]
@@ -843,6 +893,10 @@ export class NovelMemoryStore {
     if (options?.status) {
       conditions.push('e.status = ?')
       params.push(options.status)
+    }
+    if (options?.source) {
+      conditions.push('e.source = ?')
+      params.push(options.source)
     }
     if (options?.entityType) {
       conditions.push(`EXISTS (
@@ -929,17 +983,128 @@ export class NovelMemoryStore {
     return executeDelete(eventId)
   }
 
+  // ── T02-6 AI 提取确认队列 ──
+
+  /**
+   * 事件参与关系边（按章节关系投影的数据源）：
+   * 同一 StoryEvent 内的参与实体两两成边（如角色 A 与角色 B 同场出现），
+   * 用于矩阵关系叠加层自动生成"事件派生边"（无需手动画线）。
+   *
+   * 为避免同事件多实体时 O(n²) 爆炸，每事件最多取 EDGE_MAX_REFS 个实体参与对。
+   */
+  listEventParticipationEdges(
+    projectId: string,
+    opts?: { chapterStart?: number; chapterEnd?: number; maxRefsPerEvent?: number },
+  ): Array<{ eventId: string; chapterNumber: number; from: string; to: string }> {
+    const maxRefs = opts?.maxRefsPerEvent ?? 8
+    const chapterFilter: string[] = []
+    const params: unknown[] = [projectId]
+    if (opts?.chapterStart !== undefined) {
+      chapterFilter.push('e.chapter_number >= ?')
+      params.push(opts.chapterStart)
+    }
+    if (opts?.chapterEnd !== undefined) {
+      chapterFilter.push('e.chapter_number <= ?')
+      params.push(opts.chapterEnd)
+    }
+    const rows = this.db.prepare(`
+      SELECT e.id AS event_id, e.chapter_number, r1.entity_id AS from_id, r2.entity_id AS to_id
+      FROM novel_story_events e
+      JOIN novel_story_event_entities r1 ON r1.event_id = e.id
+      JOIN novel_story_event_entities r2 ON r2.event_id = e.id AND r2.entity_id > r1.entity_id
+      WHERE e.project_id = ? ${chapterFilter.length > 0 ? `AND ${chapterFilter.join(' AND ')}` : ''}
+      ORDER BY e.chapter_number ASC
+    `).all(...params) as Array<{ event_id: string; chapter_number: number; from_id: string; to_id: string }>
+
+    // 每事件去重 + 限制数量（按实体 ID 排序保证确定性）
+    const byEvent = new Map<string, Array<{ event_id: string; chapter_number: number; from_id: string; to_id: string }>>()
+    for (const row of rows) {
+      const list = byEvent.get(row.event_id) ?? []
+      list.push(row)
+      byEvent.set(row.event_id, list)
+    }
+    const out: Array<{ eventId: string; chapterNumber: number; from: string; to: string }> = []
+    for (const list of byEvent.values()) {
+      // 按 from_id/to_id 排序取前 maxRefs（确定性 + 防超量）
+      const sorted = list
+        .sort((a, b) => (a.from_id + a.to_id).localeCompare(b.from_id + b.to_id))
+        .slice(0, maxRefs)
+      for (const r of sorted) {
+        out.push({ eventId: r.event_id, chapterNumber: r.chapter_number, from: r.from_id, to: r.to_id })
+      }
+    }
+    return out
+  }
+
+  /**
+   * 待确认事件队列：AI 自动写入（ai-extracted / ai-planned）且尚未确认（planned）的
+   * StoryEvent，连同其实体引用与关联 change record。驳回（superseded/rejected）项
+   * 不进入队列，且 change record 已从消费查询（listChangeRecords）排除。
+   */
+  listPendingEvents(projectId: string): Array<{
+    event: NovelStoryEvent
+    entityRefs: StoryEventEntityRef[]
+    changes: NovelChangeRecord[]
+  }> {
+    const events = this.listStoryEvents(projectId, {
+      status: 'planned',
+      source: 'ai-extracted',
+    })
+    // ai-planned 单独查一次，合并（listStoryEvents 的 source 过滤是单值）
+    const planned = this.listStoryEvents(projectId, {
+      status: 'planned',
+      source: 'ai-planned',
+    })
+    const all = [...events, ...planned].filter(
+      (e, i, arr) => arr.findIndex((x) => x.id === e.id) === i,
+    )
+    return all.map((event) => ({
+      event,
+      entityRefs: this.listStoryEventEntityRefs(event.id),
+      changes: this.listChangeRecords(projectId, {
+        storyEventId: event.id,
+        status: 'pending',
+      }),
+    }))
+  }
+
+  /** 确认事件：事件 → confirmed；其 pending change record → confirmed */
+  confirmEvent(eventId: string): boolean {
+    const run = this.db.transaction((id: string) => {
+      const ev = this.db.prepare('UPDATE novel_story_events SET status = ?, updated_at = ? WHERE id = ?')
+        .run('confirmed', now(), id)
+      this.db.prepare(
+        "UPDATE novel_memory_events SET status = 'confirmed', confirmed_at = ? WHERE story_event_id = ? AND status = 'pending'",
+      ).run(now(), id)
+      return ev.changes > 0
+    })
+    return run(eventId)
+  }
+
+  /** 驳回事件：事件 → superseded（不参与承接）；其 change record → rejected（消费查询排除） */
+  rejectEvent(eventId: string): boolean {
+    const run = this.db.transaction((id: string) => {
+      const ev = this.db.prepare('UPDATE novel_story_events SET status = ?, updated_at = ? WHERE id = ?')
+        .run('superseded', now(), id)
+      this.db.prepare(
+        "UPDATE novel_memory_events SET status = 'rejected', confirmed_at = ? WHERE story_event_id = ?",
+      ).run(now(), id)
+      return ev.changes > 0
+    })
+    return run(eventId)
+  }
+
   createChangeRecord(input: CreateChangeRecordInput): NovelChangeRecord {
     const record: NovelChangeRecord = { ...input, id: randomUUID(), createdAt: now() }
     this.db.prepare(`
       INSERT INTO novel_memory_events
         (id, project_id, chapter_id, chapter_number, event_type, entity_id, entity_type,
          description, old_value, new_value, cause, effect_ids, significance, story_event_id,
-         scene_order, dimension, target_entity_type, target_entity_id, value_type, source, style_note, created_at)
+         scene_order, dimension, target_entity_type, target_entity_id, value_type, source, style_note, status, created_at)
       VALUES
         (@id, @project_id, NULL, @chapter_number, @event_type, @entity_id, @entity_type,
          @description, @old_value, @new_value, @cause, @effect_ids, @significance, @story_event_id,
-         @scene_order, @dimension, @target_entity_type, @target_entity_id, @value_type, @source, @style_note, @created_at)
+         @scene_order, @dimension, @target_entity_type, @target_entity_id, @value_type, @source, @style_note, @status, @created_at)
     `).run({
       id: record.id,
       project_id: record.projectId,
@@ -961,13 +1126,17 @@ export class NovelMemoryStore {
       value_type: record.valueType,
       source: record.source,
       style_note: record.styleNote ?? null,
+      // T02-6：AI 自动写入的 change record 标记 pending（随事件待确认）；手动写入 confirmed
+      status: (record.source === 'ai-extracted' || record.source === 'ai-planned') ? 'pending' : 'confirmed',
       created_at: record.createdAt,
     })
     return record
   }
 
   listChangeRecords(projectId: string, options?: ListChangeRecordsOptions): NovelChangeRecord[] {
+    // 默认排除驳回项（rejected）；显式指定 status 查询时（审计/确认队列）不过滤
     const conditions = ['project_id = ?', 'dimension IS NOT NULL']
+    if (!options?.status) conditions.push("status != 'rejected'")
     const params: unknown[] = [projectId]
     if (options?.storyEventId) {
       conditions.push('story_event_id = ?')
@@ -996,6 +1165,10 @@ export class NovelMemoryStore {
     if (options?.dimension) {
       conditions.push('dimension = ?')
       params.push(options.dimension)
+    }
+    if (options?.status) {
+      conditions.push('status = ?')
+      params.push(options.status)
     }
     const rows = this.db.prepare(`
       SELECT * FROM novel_memory_events
@@ -1423,6 +1596,8 @@ export class NovelMemoryStore {
       valueType: row.value_type as ChangeValueType | null,
       source: row.source as StoryEventSource,
       styleNote: row.style_note,
+      status: row.status as MemoryEvent['status'],
+      confirmedAt: row.confirmed_at,
       createdAt: row.created_at,
     }
   }
@@ -1478,6 +1653,8 @@ export class NovelMemoryStore {
       cause: row.cause,
       effectIds: parseEffectIds(row.effect_ids),
       styleNote: row.style_note,
+      status: row.status as NovelChangeRecord['status'],
+      confirmedAt: row.confirmed_at,
       createdAt: row.created_at,
     }
   }
