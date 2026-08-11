@@ -114,7 +114,7 @@ describe('ChapterContentEditor', () => {
   it('编辑器初始化失败（useEditor 返回 null）时组件不崩溃', async () => {
     // 临时让 useEditor 返回 null，模拟初始化失败
     const { useEditor } = await import('@tiptap/react')
-    vi.mocked(useEditor).mockReturnValueOnce(null)
+    vi.mocked(useEditor).mockReturnValueOnce(null as unknown as ReturnType<typeof useEditor>)
 
     const { ChapterContentEditor } = await import('../chapter-content-editor')
 

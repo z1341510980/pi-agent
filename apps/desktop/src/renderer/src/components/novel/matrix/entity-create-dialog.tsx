@@ -71,6 +71,7 @@ const CORE_LABEL: Record<MatrixEntityKind, string> = {
   world_element: '要素核心描述',
   info_layer: '信息差核心描述',
   item: '物品核心描述',
+  narrative: '剧情核心描述',
 }
 
 const CORE_PLACEHOLDER: Record<MatrixEntityKind, string> = {
@@ -83,6 +84,7 @@ const CORE_PLACEHOLDER: Record<MatrixEntityKind, string> = {
   world_element: '如：玉佩之力，可镇压邪灵',
   info_layer: '如：林墨真实身世，读者暂不知',
   item: '如：母亲留下的玉佩，能感应被封印的记忆',
+  narrative: '如：主角在发布会上被当众质疑，旧事重提',
 }
 
 export function EntityCreateDialog({
@@ -155,7 +157,7 @@ export function EntityCreateDialog({
       if (!currentProjectId) {
         throw new Error('未找到当前项目 ID')
       }
-      if (!entityType || entityType === 'info_layer' || entityType === 'clue') {
+      if (!entityType || entityType === 'info_layer' || entityType === 'clue' || entityType === 'narrative') {
         throw new Error('当前实体类型暂不支持 AI 补全')
       }
       const result = await aiGenerateEntity(

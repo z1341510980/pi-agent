@@ -55,7 +55,7 @@ describe('Context Chunk 契约（T03-1）', () => {
   it('contextChunksEnabled 默认关闭（回滚安全）', () => {
     expect(NOVEL_FEATURE_FLAGS).toContain('contextChunksEnabled')
     // 默认关 = 未配置项目 isNovelFeatureEnabled 返回 false（由 flag 测试覆盖，这里只确认注册）
-    expect(NOVEL_FEATURE_FLAGS).toHaveLength(14)
+    expect(NOVEL_FEATURE_FLAGS).toHaveLength(16)
   })
 })
 

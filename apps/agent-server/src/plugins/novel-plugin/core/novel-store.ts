@@ -75,6 +75,7 @@ import { ScenePlanStore } from './stores/scene-plan-store.js'
 import { NarrativeLedgerStore } from './stores/narrative-ledger-store.js'
 import { EntityCandidateStore } from './stores/entity-candidate-store.js'
 import { EntityAppearanceStore, type AppearanceRole, type AppearanceSource } from './stores/entity-appearance-store.js'
+import type { AppearanceReconcileReport } from './migration-acceptance.js'
 import { NarrativeStore } from './stores/narrative-store.js'
 import { reconcileV2 } from './v2-reconciliation.js'
 import { buildNarrativeMatrix } from './narrative-matrix-projection.js'
@@ -277,6 +278,13 @@ export class NovelStore implements NovelPromptStores {
   removeEntityAppearances(projectId: string, entityType: string, entityId: string): number {
     return this.entityAppearances.removeEntityAppearances(projectId, entityType, entityId)
   }
+  removeChapterEntityAppearances(projectId: string, chapterId: string, entityType: string, entityId: string): number {
+    return this.entityAppearances.removeChapterEntityAppearances(projectId, chapterId, entityType, entityId)
+  }
+  /** P2 对账（store 层，MigrationAcceptance 形态）：spans 展开 vs appearance 记录 */
+  reconcileEntityAppearances(projectId: string): AppearanceReconcileReport {
+    return this.entityAppearances.reconcileAppearances(projectId)
+  }
   /**
    * P2 读切统一函数：某章出场实体 ID（仅 appearanceV2Read 开启时走 appearance 表）。
    * 关闭时返回 null —— 调用方回退到各自的 chapterSpans/appearChapters 过滤（零行为变化）。
@@ -362,7 +370,69 @@ export class NovelStore implements NovelPromptStores {
     return next
   }
 
-  /** 按实体类型反查 projectId（供 stripFrozenSpans 判断项目级 flag） */
+  /**
+   * P2 双写：手工编辑实体出场字段的 appearance 同步。
+   *
+   * 双写期（appearanceV2Write 开、chapterSpansFrozen 关）内，旧列仍是读取权威，
+   * 但 appearance 表必须与旧列保持一致才能通过对账。三入口（ai-arrange /
+   * Memory / sync）只追加出场，用户在表单里手工增删 spans 是唯一会产生
+   * "出场减少"的路径——这里按新旧章节集合做差：新增章写入（source='manual'），
+   * 移除章删除该实体对应 appearance 行。
+   *
+   * 时序上必须紧跟 stripFrozenSpans 之后调用：冻结开启时 span 字段已被剥离，
+   * patch[spanKey] === undefined 自然短路，两条路径不会重复写。
+   * 全部 flag 关闭（默认）时零副作用。
+   */
+  private syncManualSpanAppearances<T extends Record<string, unknown>>(
+    entityType: ProjectionEntityType,
+    entityId: string,
+    patch: T,
+    spanKey: 'chapterSpans' | 'appearChapters',
+  ): void {
+    if (patch[spanKey] === undefined) return
+    const projectId = this.getEntityProjectId(entityType, entityId)
+    if (!projectId) return
+    if (isNovelFeatureEnabled(this, projectId, 'chapterSpansFrozen')) return
+    if (!isNovelFeatureEnabled(this, projectId, 'appearanceV2Write')) return
+
+    const nextChapters = new Set(
+      spanKey === 'appearChapters'
+        ? (patch[spanKey] as unknown as number[]).filter((n) => Number.isInteger(n) && n >= 1)
+        : expandChapterSpans(patch[spanKey] as unknown as Array<[number, number]>),
+    )
+
+    const chapters = this.listChapters(projectId)
+    const numberById = new Map(chapters.map((c) => [c.id, c.chapterNumber] as const))
+    const idByNumber = new Map(chapters.map((c) => [c.chapterNumber, c.id] as const))
+
+    const currentChapters = new Set<number>()
+    for (const cid of this.entityAppearances.listByEntity(projectId, entityType, entityId)) {
+      const num = numberById.get(cid)
+      if (num !== undefined) currentChapters.add(num)
+    }
+
+    for (const ch of nextChapters) {
+      if (currentChapters.has(ch)) continue
+      const chapterId = idByNumber.get(ch)
+      if (!chapterId) continue // 章节未落库（规划超前）不写 appearance
+      this.addChapterAppearances({
+        projectId,
+        chapterId,
+        entityType,
+        entityIds: [entityId],
+        role: 'present',
+        source: 'manual',
+      })
+    }
+    for (const ch of currentChapters) {
+      if (nextChapters.has(ch)) continue
+      const chapterId = idByNumber.get(ch)
+      if (!chapterId) continue
+      this.entityAppearances.removeChapterEntityAppearances(projectId, chapterId, entityType, entityId)
+    }
+  }
+
+  /** 按实体类型反查 projectId（供 stripFrozenSpans / syncManualSpanAppearances 判断项目级 flag） */
   private getEntityProjectId(entityType: ProjectionEntityType, entityId: string): string | undefined {
     switch (entityType) {
       case 'conflict': return this.conflict.getConflict(entityId)?.projectId
@@ -371,6 +441,7 @@ export class NovelStore implements NovelPromptStores {
       case 'faction': return this.faction.getFaction(entityId)?.projectId
       case 'location': return this.faction.getLocation(entityId)?.projectId
       case 'item': return this.item.getItem(entityId)?.projectId
+      case 'narrative': return this.narratives.getNarrative(entityId)?.projectId
       default: return undefined
     }
   }
@@ -465,8 +536,17 @@ export class NovelStore implements NovelPromptStores {
   listNarratives(projectId: string): NovelNarrative[] { return this.narratives.listNarratives(projectId) }
   getNarrative(id: string): NovelNarrative | undefined { return this.narratives.getNarrative(id) }
   createNarrative(input: Omit<NovelNarrative, 'id' | 'createdAt' | 'updatedAt'>): NovelNarrative { return this.narratives.createNarrative(input) }
-  updateNarrative(id: string, patch: Partial<NovelNarrative>): NovelNarrative | undefined { return this.narratives.updateNarrative(id, patch) }
-  deleteNarrative(id: string): boolean { return this.narratives.deleteNarrative(id) }
+  updateNarrative(id: string, patch: Partial<NovelNarrative>): NovelNarrative | undefined {
+    patch = this.stripFrozenSpans('narrative', id, patch, 'chapterSpans')
+    this.syncManualSpanAppearances('narrative', id, patch, 'chapterSpans')
+    return this.narratives.updateNarrative(id, patch)
+  }
+  deleteNarrative(id: string): boolean {
+    const projectId = this.narratives.getNarrative(id)?.projectId
+    const deleted = this.narratives.deleteNarrative(id)
+    if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'narrative', id)
+    return deleted
+  }
 
   getVolume(id: string): NovelVolume | undefined { return this.chapter.getVolume(id) }
   createVolume(volume: Omit<NovelVolume, 'createdAt' | 'updatedAt'>): NovelVolume { return this.chapter.createVolume(volume) }
@@ -616,6 +696,7 @@ export class NovelStore implements NovelPromptStores {
   }
   updateConflict(id: string, patch: Partial<NovelConflict>): NovelConflict | undefined {
     patch = this.stripFrozenSpans('conflict', id, patch, 'chapterSpans')
+    this.syncManualSpanAppearances('conflict', id, patch, 'chapterSpans')
     const before = this.conflict.getConflict(id)
     const after = this.conflict.updateConflict(id, patch)
     this.notifyChapterProjection('conflict', id, after?.projectId ?? before?.projectId, before, after, chaptersOfConflict, 'updateConflict')
@@ -623,7 +704,9 @@ export class NovelStore implements NovelPromptStores {
   }
   deleteConflict(id: string): boolean {
     const projectId = this.conflict.getConflict(id)?.projectId
-    return this.notifyEntityDeleted('conflict', id, projectId, this.conflict.deleteConflict(id))
+    const deleted = this.notifyEntityDeleted('conflict', id, projectId, this.conflict.deleteConflict(id))
+    if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'conflict', id)
+    return deleted
   }
 
   // ── Foreshadow / Clue / InfoLayer ──
@@ -635,6 +718,7 @@ export class NovelStore implements NovelPromptStores {
   }
   updateForeshadow(id: string, patch: Partial<NovelForeshadow>): NovelForeshadow | undefined {
     patch = this.stripFrozenSpans('foreshadow', id, patch, 'chapterSpans')
+    this.syncManualSpanAppearances('foreshadow', id, patch, 'chapterSpans')
     const before = this.foreshadow.getForeshadow(id)
     const after = this.foreshadow.updateForeshadow(id, patch)
     this.notifyChapterProjection('foreshadow', id, after?.projectId ?? before?.projectId, before, after, chaptersOfForeshadow, 'updateForeshadow')
@@ -642,7 +726,9 @@ export class NovelStore implements NovelPromptStores {
   }
   deleteForeshadow(id: string): boolean {
     const projectId = this.foreshadow.getForeshadow(id)?.projectId
-    return this.notifyEntityDeleted('foreshadow', id, projectId, this.foreshadow.deleteForeshadow(id))
+    const deleted = this.notifyEntityDeleted('foreshadow', id, projectId, this.foreshadow.deleteForeshadow(id))
+    if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'foreshadow', id)
+    return deleted
   }
   createClue(clue: Omit<NovelClue, 'createdAt' | 'updatedAt'>): NovelClue {
     const created = this.foreshadow.createClue(clue)
@@ -651,6 +737,7 @@ export class NovelStore implements NovelPromptStores {
   }
   updateClue(id: string, patch: Partial<NovelClue>): NovelClue | undefined {
     patch = this.stripFrozenSpans('clue', id, patch, 'chapterSpans')
+    this.syncManualSpanAppearances('clue', id, patch, 'chapterSpans')
     const before = this.foreshadow.getClue(id)
     const after = this.foreshadow.updateClue(id, patch)
     this.notifyChapterProjection('clue', id, after?.projectId ?? before?.projectId, before, after, chaptersOfClue, 'updateClue')
@@ -658,7 +745,9 @@ export class NovelStore implements NovelPromptStores {
   }
   deleteClue(id: string): boolean {
     const projectId = this.foreshadow.getClue(id)?.projectId
-    return this.notifyEntityDeleted('clue', id, projectId, this.foreshadow.deleteClue(id))
+    const deleted = this.notifyEntityDeleted('clue', id, projectId, this.foreshadow.deleteClue(id))
+    if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'clue', id)
+    return deleted
   }
   createInformationLayer(layer: Omit<NovelInformationLayer, 'createdAt' | 'updatedAt'>): NovelInformationLayer { return this.foreshadow.createInformationLayer(layer) }
   updateInfoLayer(id: string, updates: Partial<Omit<NovelInformationLayer, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelInformationLayer | undefined { return this.foreshadow.updateInfoLayer(id, updates) }
@@ -690,6 +779,7 @@ export class NovelStore implements NovelPromptStores {
   }
   updateFaction(id: string, patch: Partial<NovelFaction>): NovelFaction | undefined {
     patch = this.stripFrozenSpans('faction', id, patch, 'chapterSpans')
+    this.syncManualSpanAppearances('faction', id, patch, 'chapterSpans')
     const before = this.faction.getFaction(id)
     const after = this.faction.updateFaction(id, patch)
     this.notifyChapterProjection('faction', id, after?.projectId ?? before?.projectId, before, after, chaptersOfFaction, 'updateFaction')
@@ -697,7 +787,9 @@ export class NovelStore implements NovelPromptStores {
   }
   deleteFaction(id: string): boolean {
     const projectId = this.faction.getFaction(id)?.projectId
-    return this.notifyEntityDeleted('faction', id, projectId, this.faction.deleteFaction(id))
+    const deleted = this.notifyEntityDeleted('faction', id, projectId, this.faction.deleteFaction(id))
+    if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'faction', id)
+    return deleted
   }
   createLocation(location: Omit<NovelLocation, 'createdAt' | 'updatedAt'>): NovelLocation {
     const created = this.faction.createLocation(location)
@@ -706,6 +798,7 @@ export class NovelStore implements NovelPromptStores {
   }
   updateLocation(id: string, patch: Partial<NovelLocation>): NovelLocation | undefined {
     patch = this.stripFrozenSpans('location', id, patch, 'appearChapters')
+    this.syncManualSpanAppearances('location', id, patch, 'appearChapters')
     const before = this.faction.getLocation(id)
     const after = this.faction.updateLocation(id, patch)
     this.notifyChapterProjection('location', id, after?.projectId ?? before?.projectId, before, after, chaptersOfLocation, 'updateLocation')
@@ -713,7 +806,9 @@ export class NovelStore implements NovelPromptStores {
   }
   deleteLocation(id: string): boolean {
     const projectId = this.faction.getLocation(id)?.projectId
-    return this.notifyEntityDeleted('location', id, projectId, this.faction.deleteLocation(id))
+    const deleted = this.notifyEntityDeleted('location', id, projectId, this.faction.deleteLocation(id))
+    if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'location', id)
+    return deleted
   }
 
   // ── Item ──
@@ -725,6 +820,7 @@ export class NovelStore implements NovelPromptStores {
   }
   updateItem(id: string, patch: Partial<NovelItem>): NovelItem | undefined {
     patch = this.stripFrozenSpans('item', id, patch, 'chapterSpans')
+    this.syncManualSpanAppearances('item', id, patch, 'chapterSpans')
     const before = this.item.getItem(id)
     const after = this.item.updateItem(id, patch)
     this.notifyChapterProjection('item', id, after?.projectId ?? before?.projectId, before, after, chaptersOfItem, 'updateItem')
@@ -732,7 +828,9 @@ export class NovelStore implements NovelPromptStores {
   }
   deleteItem(id: string): boolean {
     const projectId = this.item.getItem(id)?.projectId
-    return this.notifyEntityDeleted('item', id, projectId, this.item.deleteItem(id))
+    const deleted = this.notifyEntityDeleted('item', id, projectId, this.item.deleteItem(id))
+    if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'item', id)
+    return deleted
   }
 
   // ── NodePosition / Marker / Edge / AgentLog（GraphStore）──

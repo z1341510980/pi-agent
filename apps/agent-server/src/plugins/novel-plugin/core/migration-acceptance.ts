@@ -36,6 +36,29 @@ export interface SceneCastReconcileReport extends MigrationAcceptance {
 }
 
 /**
+ * 实体出场关系对账报告（P2 novel_entity_appearances）。
+ *
+ * 口径与 scripts/novel-migration-tools/reconcile-entity-appearances.mjs 一致：
+ * 源 = 7 类实体表 chapter_spans / appear_chapters 展开且章节已落库的 (实体,章节) 对；
+ * 目标 = appearance 表记录。只读对账 rollbackVerified 恒为 false（回滚需另行演练）。
+ */
+export interface AppearanceReconcileReport extends MigrationAcceptance {
+  /** 参与对账的实体行数（spans 展开非空的实体） */
+  checkedEntities: number
+  /** spans 引用了尚未落库章节的条数（规划超前，不算 mismatch） */
+  unpersistedRefs: number
+  /** 实体级差异明细（最多 100 条） */
+  details: Array<{
+    entityType: string
+    entityId: string
+    /** 源有目标无（缺写）的章节号 */
+    missingChapters: number[]
+    /** 目标有源无（多余）的章节号 */
+    extraChapters: number[]
+  }>
+}
+
+/**
  * 判定验收是否通过：三项计数 = 0 且回滚已验证。
  */
 export function isMigrationAccepted(report: MigrationAcceptance): boolean {

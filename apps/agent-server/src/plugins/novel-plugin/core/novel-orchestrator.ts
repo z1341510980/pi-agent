@@ -2281,23 +2281,33 @@ export class NovelOrchestrator {
       if (chunksEnabled) {
         // P4 接入 4：chunk 级缓存（§5.6）——构建 chunks 后逐 chunk 查缓存，
         // 命中直接用缓存 content（省构建），未命中重建并 put（供后续角色/重试复用）。
+        // 缓存由独立 flag crossChapterChunkCache 门控（§13.1）：关 = chunk 路径仍可用但不走缓存。
         const chunks = this.promptBuilder.buildChapterContextChunks(
           projectId, chapterNumber, narrativeTask, constraints, run.arrangedEntities,
           { askStoryEnabled, agentType },
         )
-        const cached = buildWithChunkCache(this.chunkCache, {
-          projectId,
-          // 账本来源单独传 memoryStore：事件表不在 NovelStore 上，
-          // 少了它 Memory 写入账本后 chunk 不会失效。
-          versionSource: buildChunkVersionSource(this.store, projectId, this.memoryStore),
-          chunks,
-        })
+        const chunkCacheEnabled = isNovelFeatureEnabled(this.store, projectId, 'crossChapterChunkCache')
+        let assembledChunks: Array<{ chunkId: string; content: string }> = chunks
+        let hits = 0
+        let misses = chunks.length
+        if (chunkCacheEnabled) {
+          const cached = buildWithChunkCache(this.chunkCache, {
+            projectId,
+            // 账本来源单独传 memoryStore：事件表不在 NovelStore 上，
+            // 少了它 Memory 写入账本后 chunk 不会失效。
+            versionSource: buildChunkVersionSource(this.store, projectId, this.memoryStore),
+            chunks,
+          })
+          assembledChunks = cached.chunks
+          hits = cached.hits
+          misses = cached.misses
+        }
         sharedContext = this.promptBuilder.assembleSharedFromChunks(
-          cached.chunks.map((c) => ({ chunkId: c.chunkId, content: c.content })),
+          assembledChunks.map((c) => ({ chunkId: c.chunkId, content: c.content })),
         )
         this.context.logger.debug(
-          { agentType, projectId, chapterNumber, hits: cached.hits, misses: cached.misses },
-          'SEMI 层 shared 前缀已按 chunk 缓存组装',
+          { agentType, projectId, chapterNumber, hits, misses, chunkCacheEnabled },
+          'SEMI 层 shared 前缀已按 chunk 组装',
         )
       } else {
         sharedContext = this.promptBuilder.buildChapterContextShared(

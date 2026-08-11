@@ -40,7 +40,8 @@ const ENTITY_PRESENTATIONS: Record<DetailEntityType, EntityPresentation> = {
   location: { icon: CircleDot, tone: 'bg-teal-500/10 text-teal-700 dark:text-teal-300' },
   world_element: { icon: BookOpen, tone: 'bg-lime-500/10 text-lime-700 dark:text-lime-300' },
   info_layer: { icon: ListTree, tone: 'bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300' },
-  item: { icon: CircleDot, tone: 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-300' }
+  item: { icon: CircleDot, tone: 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-300' },
+  narrative: { icon: History, tone: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300' }
 }
 
 export function getDetailEntityPresentation(entityType: DetailEntityType): EntityPresentation {

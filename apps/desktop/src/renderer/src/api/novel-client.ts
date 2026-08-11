@@ -18,7 +18,7 @@ import type {
   NovelProject, NovelChapter, NovelVolume, NovelCharacter,
   NovelRelationship, NovelForeshadow, NovelConflict, NovelClue,
   NovelWorldRule, NovelStyleGuide, NovelWritingStyleProfile, NovelWritingStyleProfileInput, NovelConstraint, NovelInformationLayer,
-  NovelFaction, NovelLocation, NovelWorldElement, NovelItem,
+  NovelFaction, NovelLocation, NovelWorldElement, NovelItem, NovelNarrative,
   NovelNodePosition, NovelEdge,
   NovelCharacterHistory, NovelMarker,
   NovelHook, NovelCharacterArc,
@@ -38,7 +38,7 @@ import type {
   CharacterHistoryField, NovelMarkerType, NovelMarkerColor,
   SimilarityGroup,
   ChapterVersion, ChapterVersionSummary, ChapterVersionDiff, RollbackResult,
-  ContentRevisionSummary, ContentRevisionStatus,
+  ContentRevisionSummary,
   NovelEntityCandidate, EntityCandidateStatus,
   // 次级类型（PR-1 迁移）
   NovelNodeType, PlotFunction,

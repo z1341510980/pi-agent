@@ -589,7 +589,8 @@ export function computeCellSymbol(
     }
     case 'conflict':
     case 'faction':
-    case 'item': {
+    case 'item':
+    case 'narrative': {
       // 冲突高潮章节优先于跨度符号（火焰标记更醒目）
       if (entity.kind === 'conflict' && entity.climaxChapter != null && entity.climaxChapter === chapterNumber) {
         return { type: 'conflict-climax' }

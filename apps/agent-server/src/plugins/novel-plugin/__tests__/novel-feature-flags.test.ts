@@ -22,12 +22,10 @@ function setupProject(store: NovelStore, flags?: Record<string, boolean>): strin
 }
 
 describe('NOVEL_FEATURE_FLAGS 清单', () => {
-  it('包含方案 §10 五个 + P0/P1 五个 + P2 三个 + P3 一个（共 14 个，全部默认关）', () => {
+  it('包含剧情 V2 三个 + P0/P1 五个 + P2 四个 + P3 三个 + P4 预留一个（共 16 个，全部默认关）', () => {
     expect(NOVEL_FEATURE_FLAGS).toEqual([
       'scenePlanV2Write',
       'scenePlanV2DualWrite',
-      'memoryProposalV2',
-      'matrixProjectionV2Read',
       'legacyNarrativeWriteDisabled',
       'versionChainV2Read',
       'versionChainV2Write',
@@ -37,9 +35,13 @@ describe('NOVEL_FEATURE_FLAGS 清单', () => {
       'appearanceV2Write',
       'appearanceV2Read',
       'chapterSpansFrozen',
+      'memoryOperationLedger',
       'contextChunksEnabled',
+      'contextSummaryMode',
+      'crossChapterChunkCache',
+      'sceneLevelWriter',
     ])
-    expect(NOVEL_FEATURE_FLAGS).toHaveLength(14)
+    expect(NOVEL_FEATURE_FLAGS).toHaveLength(16)
   })
 })
 
@@ -55,7 +57,7 @@ describe('isNovelFeatureEnabled 项目灰度读取', () => {
     const enabledProject = setupProject(store, { scenePlanV2Write: true })
     const otherProject = setupProject(store)
     expect(isNovelFeatureEnabled(store, enabledProject, 'scenePlanV2Write')).toBe(true)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'memoryProposalV2')).toBe(false)
+    expect(isNovelFeatureEnabled(store, enabledProject, 'contextSummaryMode')).toBe(false)
     expect(isNovelFeatureEnabled(store, otherProject, 'scenePlanV2Write')).toBe(false)
   })
 

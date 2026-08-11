@@ -847,7 +847,8 @@ export const NODE_TYPE_LABELS: Record<NovelNodeType, string> = {
   world_element: '世界要素',
   info_layer: '信息差',
   item: '物品',
-  group: '分组'
+  group: '分组',
+  narrative: '剧情',
 }
 
 // 动态状态字段（用于变更历史记录）
@@ -895,7 +896,7 @@ export function entityTitle(entity: unknown, type: string): string {
   if (type === 'faction' || type === 'location' || type === 'world_element' || type === 'item') {
     return String(e.name ?? '')
   }
-  if (type === 'conflict' || type === 'clue' || type === 'foreshadow' || type === 'info_layer') {
+  if (type === 'conflict' || type === 'clue' || type === 'foreshadow' || type === 'info_layer' || type === 'narrative') {
     const d = String(e.description ?? e.infoDescription ?? '')
     return d.length > 20 ? `${d.slice(0, 20)}...` : d
   }

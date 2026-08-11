@@ -28,6 +28,7 @@ import {
   deleteInfoLayer,
   deleteItem,
   deleteLocation,
+  deleteNarrative,
   deleteProject,
   deleteVolume,
   deleteWorldElement,
@@ -128,6 +129,7 @@ export function NovelDetailPanel({
   const worldElements = useNovelDataStore((s) => s.worldElements)
   const infoLayers = useNovelDataStore((s) => s.infoLayers)
   const items = useNovelDataStore((s) => s.items)
+  const narratives = useNovelDataStore((s) => s.narratives)
 
   const removeProject = useNovelDataStore((s) => s.removeProject)
   const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
@@ -141,6 +143,7 @@ export function NovelDetailPanel({
   const removeWorldElement = useNovelDataStore((s) => s.removeWorldElement)
   const removeInfoLayer = useNovelDataStore((s) => s.removeInfoLayer)
   const removeItem = useNovelDataStore((s) => s.removeItem)
+  const removeNarrative = useNovelDataStore((s) => s.removeNarrative)
   const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
 
   const selected = useMemo<Selection | null>(() => {
@@ -198,6 +201,8 @@ export function NovelDetailPanel({
         return infoLayers.find((layer) => layer.id === id) ?? null
       case 'item':
         return items.find((item) => item.id === id) ?? null
+      case 'narrative':
+        return narratives.find((narrative) => narrative.id === id) ?? null
     }
   }, [
     activeSelection,
@@ -210,6 +215,7 @@ export function NovelDetailPanel({
     infoLayers,
     items,
     locations,
+    narratives,
     projects,
     volumes,
     worldElements
@@ -321,6 +327,10 @@ export function NovelDetailPanel({
           await deleteItem(activeSelection.id)
           removeItem(activeSelection.id)
           break
+        case 'narrative':
+          await deleteNarrative(activeSelection.id)
+          removeNarrative(activeSelection.id)
+          break
       }
 
       clearSelection()
@@ -345,6 +355,7 @@ export function NovelDetailPanel({
     removeInfoLayer,
     removeItem,
     removeLocation,
+    removeNarrative,
     removeProject,
     removeVolume,
     removeWorldElement,

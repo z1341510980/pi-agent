@@ -19,6 +19,7 @@ export type NovelNodeType =
   | 'world_element'
   | 'info_layer'
   | 'item'
+  | 'narrative'
 
 // ── Store 状态 ──
 
