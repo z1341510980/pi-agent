@@ -17,7 +17,6 @@ import { type NovelNodeType } from '@/stores/novel-ui-store'
 import {
   type CharacterHistoryField,
   type ChapterRhythm,
-  type ChapterStatus,
   type ClimaxType,
   type ConflictPlotFunction,
   type ConflictProgressionMode,
@@ -643,14 +642,6 @@ export const TARGET_PLATFORM_OPTIONS: {
   { value: 'qidian', label: '起点', hint: '重世界观和伏笔' },
   { value: 'zhihu_yanyan', label: '知乎盐言', hint: '重开篇和反转' },
   { value: 'general', label: '通用', hint: '不调整评分权重' }
-]
-
-export const CHAPTER_STATUS_OPTIONS: { value: ChapterStatus; label: string }[] = [
-  { value: 'planned', label: '已规划' },
-  { value: 'drafting', label: '草稿中' },
-  { value: 'review', label: '审核中' },
-  { value: 'published', label: '已发布' },
-  { value: 'rejected', label: '已驳回' }
 ]
 
 export const CONFLICT_TYPE_OPTIONS: { value: ConflictType; label: string }[] = [

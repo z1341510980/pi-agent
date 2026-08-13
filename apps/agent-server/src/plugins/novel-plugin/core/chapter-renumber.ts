@@ -160,6 +160,29 @@ export const CHAPTER_RENUMBER_FIELDS: ChapterRenumberField[] = [
   { table: 'novel_foreshadowing', column: 'recover_by_chapter', kind: 'scalar', nullable: true },
   { table: 'novel_foreshadowing', column: 'beats', kind: 'events' },
   { table: 'novel_locations', column: 'appear_chapters', kind: 'list' },
+  // novel_locations.first_chapter 是首次出场章（与 appear_chapters 并存），同样需要重排
+  { table: 'novel_locations', column: 'first_chapter', kind: 'scalar', nullable: true },
+  // ── 2026-08-11 生成链路专项审查补漏 ──
+  // 线索 / 道具 / 剧情轨道：chapter_spans 跨度（与 conflict 同模式）
+  { table: 'novel_clues', column: 'chapter_spans', kind: 'spans' },
+  { table: 'novel_items', column: 'chapter_spans', kind: 'spans' },
+  { table: 'novel_items', column: 'first_chapter', kind: 'scalar', nullable: true },
+  { table: 'novel_narratives', column: 'chapter_spans', kind: 'spans' },
+  // 故事事件账本：NOT NULL chapter_number → 被删章的行随之删除（事件隶属该章）
+  { table: 'novel_story_events', column: 'chapter_number', kind: 'scalar', nullable: false },
+  // 钩子：埋设章 NOT NULL（被删章的行删除）；兑现章可空（置 NULL 保留钩子）
+  { table: 'novel_hooks', column: 'chapter_number', kind: 'scalar', nullable: false },
+  { table: 'novel_hooks', column: 'fulfilled_at_chapter', kind: 'scalar', nullable: true },
+  // 章节聊天 / 讨论运行：隶属章节的对话记录，被删章的行删除，其余前移
+  { table: 'novel_chapter_chat_messages', column: 'chapter_number', kind: 'scalar', nullable: false },
+  { table: 'novel_discussion_runs', column: 'chapter_number', kind: 'scalar', nullable: false },
+  // 批注范围端点：可空，命中被删章置 NULL（保留批注本体）
+  { table: 'novel_annotations', column: 'chapter_start', kind: 'scalar', nullable: true },
+  { table: 'novel_annotations', column: 'chapter_end', kind: 'scalar', nullable: true },
+  // 关系最近推进章：可空标记，命中被删章置 NULL
+  { table: 'novel_relationships', column: 'last_updated_chapter', kind: 'scalar', nullable: true },
+  // 上下文成本埋点：与 agent_logs 同口径（被删章的行删除，其余前移）
+  { table: 'novel_context_section_metrics', column: 'chapter_number', kind: 'scalar', nullable: false },
 ]
 
 // 启动时校验 CHAPTER_RENUMBER_FIELDS 的标识符合法性（防御性，防止未来误传用户输入）

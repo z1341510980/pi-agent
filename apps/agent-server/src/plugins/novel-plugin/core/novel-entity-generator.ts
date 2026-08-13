@@ -622,18 +622,11 @@ export class NovelEntityGenerator {
     const planningErrorMessage = logContext.status === 'error'
       ? (logContext.error || 'AI 实体规划失败')
       : ''
-    // P2 读切：appearanceV2Read 开启时按 appearance 表判定"本章出场线索"，
-    // 关闭时走原 chapterSpans 过滤（零行为变化）。
+    // 本章出场线索：统一走 appearance 表（2026-08-12 逻辑统一：appearanceV2Read 转正）
     const appearanceClueIds = this.store.listChapterAppearanceIds({
       projectId, chapterNumber, entityType: 'clue',
     })
     const clueIds = appearanceClueIds
-      ? appearanceClueIds
-      : this.store.listClues(projectId)
-        .filter((clue) => clue.chapterSpans.some(
-          ([start, end]) => chapterNumber >= start && chapterNumber <= end,
-        ))
-        .map((clue) => clue.id)
 
     onProgress?.({
       phase: 'planned',

@@ -125,7 +125,7 @@ describe('T03 影子写集成（flag 开启的 store 链路）', () => {
     store.createProject({
       id: projectId, title: 'test', genre: 'g', synopsis: '', outline: '',
       targetWords: 3000, currentVolume: 1, currentChapter: 1,
-      currentStage: 'rising', status: 'active', flags: { scenePlanV2Write: true },
+      currentStage: 'rising', status: 'active',
     })
     const chapter = store.createChapter({
       id: randomUUID(), projectId, volume: 1, chapterNumber: 1,

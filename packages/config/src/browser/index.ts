@@ -24,9 +24,15 @@ export const browserConfig: BrowserConfig = {
  * 调用时机：App 初始化时（早于任何 API 请求）
  */
 export async function initEmbeddedServerPort(): Promise<void> {
-  if (typeof window !== 'undefined' && window.api?.server?.getPort) {
+  const embeddedApi = typeof window === 'undefined'
+    ? undefined
+    : (window as Window & {
+        api?: { server?: { getPort?: () => Promise<number | null> } }
+      }).api
+
+  if (embeddedApi?.server?.getPort) {
     try {
-      const port = await window.api.server.getPort()
+      const port = await embeddedApi.server.getPort()
       if (port && typeof port === 'number') {
         const base = `http://127.0.0.1:${port}`
         ;(browserConfig as { apiBaseUrl: string }).apiBaseUrl = base

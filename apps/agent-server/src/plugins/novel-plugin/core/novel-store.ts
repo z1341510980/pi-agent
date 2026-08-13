@@ -18,6 +18,7 @@
 
 import type Database from 'better-sqlite3'
 import type { NovelPromptStores } from './prompt-builder.js'
+import { canTransitionChapterStatus } from '@repo/shared/novel'
 import type {
   NovelProject,
   NovelChapter,
@@ -70,7 +71,7 @@ import type {
   SimilarityGroup,
 } from './types.js'
 import { ProjectStore } from './stores/project-store.js'
-import { ChapterStore } from './stores/chapter-store.js'
+import { ChapterStore, hashChapterContent } from './stores/chapter-store.js'
 import { ScenePlanStore } from './stores/scene-plan-store.js'
 import { NarrativeLedgerStore } from './stores/narrative-ledger-store.js'
 import { EntityCandidateStore } from './stores/entity-candidate-store.js'
@@ -99,7 +100,6 @@ import {
   expandChapterSpans,
   type ProjectionEntityType,
 } from './chapter-projection-fields.js'
-import { isNovelFeatureEnabled } from './novel-feature-flags.js'
 
 /**
  * 实体章节投影发生变化的通知。
@@ -165,19 +165,24 @@ export class NovelStore implements NovelPromptStores {
     // GraphStore 拥有 deleteEdgesByEntity，先实例化供其他 Store 注入
     // flags 源为 NovelStore 自身（实现 FeatureFlagProjectSource.getProject），
     // 仅在运行时按 projectId 惰性读取，构造顺序不影响。
-    this.graph = new GraphStore(db, this)
-    const deleteEdges = (id: string) => this.graph.deleteEdgesByEntity(id)
+    this.graph = new GraphStore(db)
+    const deleteEdges = (id: string): number => this.graph.deleteEdgesByEntity(id)
     const renumberService = new ChapterRenumberService(db)
+    // novel_entity_appearances 对 chapter_id 无外键，删章必须在事务内手动清理，
+    // 否则留下孤儿出场行（reconcile orphanRows 来源）。闭包惰性求值，
+    // 与 deleteEdges 相同模式，构造顺序不影响。
+    const removeChapterAppearances = (projectId: string, chapterId: string): number =>
+      this.entityAppearances.removeChapterAppearances(projectId, chapterId)
 
     this.project = new ProjectStore(db)
-    this.chapter = new ChapterStore(db, deleteEdges, renumberService, this)
+    this.chapter = new ChapterStore(db, deleteEdges, renumberService, removeChapterAppearances)
     this.character = new CharacterStore(db, deleteEdges)
     this.conflict = new ConflictStore(db, deleteEdges)
     this.foreshadow = new ForeshadowStore(db, deleteEdges)
     this.world = new WorldStore(db, deleteEdges)
     this.faction = new FactionStore(db, deleteEdges)
     this.item = new ItemStore(db, deleteEdges)
-    this.scenePlan = new ScenePlanStore(db, this)
+    this.scenePlan = new ScenePlanStore(db)
     this.ledger = new NarrativeLedgerStore(db)
     this.candidates = new EntityCandidateStore(db)
     this.entityAppearances = new EntityAppearanceStore(db)
@@ -211,6 +216,21 @@ export class NovelStore implements NovelPromptStores {
       deleteWorldElement: (id) => this.world.deleteWorldElement(id),
       deleteCharacterHistoryByCharacter: (cid) => this.character.deleteCharacterHistoryByCharacter(cid),
     })
+  }
+
+  /**
+   * 在单个事务中执行一组写操作（better-sqlite3 嵌套事务走 SAVEPOINT，
+   * 内部各 Store 自开的 db.transaction 不受影响）。
+   * 用于跨实体批量写入（如 Memory applyChanges）：任一写入失败整体回滚，
+   * 避免半成品记忆变更留在库里。
+   */
+  withTransaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)()
+  }
+
+  /** 底层数据库连接（审计/迁移等基础能力需要；只读引用，禁止外部 close） */
+  get database(): Database.Database {
+    return this.db
   }
 
   // ── NovelPromptStores 接口（27 个读方法，供 NovelPromptBuilder 使用）──
@@ -254,8 +274,8 @@ export class NovelStore implements NovelPromptStores {
   getNovelModelId(projectId: string): string | undefined { return this.project.getNovelModelId(projectId) }
   updateNovelModelId(projectId: string, modelId: string | null): boolean { return this.project.updateNovelModelId(projectId, modelId) }
 
-  // ── P2：实体出场关系统一（novel_entity_appearances）──
-  /** 记录一批实体在本章的出场（幂等；仅在 appearanceV2Write 开启时由双写入口调用） */
+  // ── P2：实体出场关系统一（novel_entity_appearances，唯一出场写面）──
+  /** 记录一批实体在本章的出场（幂等：UNIQUE 约束防重） */
   addChapterAppearances(input: {
     projectId: string
     chapterId: string
@@ -286,16 +306,13 @@ export class NovelStore implements NovelPromptStores {
     return this.entityAppearances.reconcileAppearances(projectId)
   }
   /**
-   * P2 读切统一函数：某章出场实体 ID（仅 appearanceV2Read 开启时走 appearance 表）。
-   * 关闭时返回 null —— 调用方回退到各自的 chapterSpans/appearChapters 过滤（零行为变化）。
-   * 开启时返回 appearance 记录中的 entityId 列表（用于替换"union 多表"的按章查询）。
+   * 某章出场实体 ID（appearance 表为唯一来源，2026-08-12 逻辑统一）。
    */
   listChapterAppearanceIds(input: {
     projectId: string
     chapterNumber: number
     entityType: string
-  }): string[] | null {
-    if (!isNovelFeatureEnabled(this, input.projectId, 'appearanceV2Read')) return null
+  }): string[] {
     const chapterId = this.getChapter(input.projectId, input.chapterNumber)?.id
     if (!chapterId) return []
     return this.entityAppearances
@@ -304,8 +321,9 @@ export class NovelStore implements NovelPromptStores {
       .map((r) => r.entityId)
   }
   /**
-   * 三入口双写便捷方法（ai-arrange 落库 / Memory applyChanges / syncChapterDimensions）：
-   * 仅 appearanceV2Write 开启且能解析到 chapterId 时写入 appearance 表；否则 no-op。
+   * 三入口统一写点（ai-arrange 落库 / Memory applyChanges / syncChapterDimensions）：
+   * appearance 表为唯一出场写面（2026-08-12 逻辑统一，原 appearanceV2Write 门控移除）。
+   * 写入后把新增出场通知投影观察者（账本记录器依赖该触发写 `<类型>.arranged`）。
    */
   recordAppearancesIfEnabled(input: {
     projectId: string
@@ -317,22 +335,51 @@ export class NovelStore implements NovelPromptStores {
     role?: AppearanceRole
     source?: AppearanceSource
   }): void {
-    if (!isNovelFeatureEnabled(this, input.projectId, 'appearanceV2Write')) return
     if (input.entityIds.length === 0) return
     const chapterId = input.chapterId
       ?? this.getChapter(input.projectId, input.chapterNumber)?.id
     if (!chapterId) return
+    const observer = this.chapterProjectionObserver
+    const numberByChapterId = new Map(
+      this.listChapters(input.projectId).map((c) => [c.id, c.chapterNumber] as const),
+    )
+    // 逐实体记录前快照（差集判定）
+    const beforeByEntity = new Map<string, Set<string>>()
+    for (const entityId of input.entityIds) {
+      beforeByEntity.set(entityId, new Set(
+        this.entityAppearances.listByEntity(input.projectId, input.entityType, entityId),
+      ))
+    }
     this.addChapterAppearances({ ...input, chapterId })
+    if (!observer || this.observerSuppressed) return
+    // 差集：本次新增的章节（同章已记录过的实体不再重复通知）
+    for (const entityId of input.entityIds) {
+      const after = new Set(
+        this.entityAppearances.listByEntity(input.projectId, input.entityType, entityId),
+      )
+      const before = beforeByEntity.get(entityId) ?? new Set<string>()
+      const added: number[] = []
+      for (const cid of after) {
+        if (before.has(cid)) continue
+        const num = numberByChapterId.get(cid)
+        if (num != null && !added.includes(num)) added.push(num)
+      }
+      if (added.length === 0) continue
+      observer(input.projectId, {
+        entityType: input.entityType as ProjectionEntityType,
+        entityId,
+        addedChapters: added.sort((a, b) => a - b),
+        removedChapters: [],
+        origin: input.source ?? 'arranged-appearance',
+      })
+    }
   }
 
   /**
-   * P2 收官：chapter_spans / appear_chapters 旧列冻结（chapterSpansFrozen flag）。
-   *
-   * 实体 update patch 携带出场字段时：
-   * - flag 关（默认）：原样返回，现状不变（双写期间行为）。
-   * - flag 开：剥离旧列字段不落库，展开为章节号后**直接写 appearance**
-   *   （绕过 appearanceV2Write——冻结后 appearance 是唯一权威出场记录，
-   *   不依赖双写开关），source='frozen-redirect'。
+   * 实体 update patch 携带出场字段时：剥离旧列不落库，按新旧章节集合做差同步 appearance
+   * （2026-08-12 逻辑统一：chapterSpansFrozen 转正，旧列冻结、appearance 唯一权威）。
+   * 新增章写入（source='frozen-redirect'）；移除章删除该实体对应 appearance 行；
+   * 同时把差集通知投影观察者（账本记录器从 appearance 差集触发）。
    *
    * 覆盖全部写入路径（ai-arrange / Memory / sync / 工具编辑），一处收口。
    */
@@ -345,55 +392,6 @@ export class NovelStore implements NovelPromptStores {
     if (patch[spanKey] === undefined) return patch
     const projectId = this.getEntityProjectId(entityType, entityId)
     if (!projectId) return patch
-    if (!isNovelFeatureEnabled(this, projectId, 'chapterSpansFrozen')) return patch
-
-    const chapterNumbers =
-      spanKey === 'appearChapters'
-        ? (patch[spanKey] as unknown as number[]).filter((n) => typeof n === 'number')
-        : expandChapterSpans(patch[spanKey] as unknown as Array<[number, number]>)
-    if (chapterNumbers.length > 0) {
-      for (const ch of chapterNumbers) {
-        const chapterId = this.getChapter(projectId, ch)?.id
-        if (!chapterId) continue
-        this.addChapterAppearances({
-          projectId,
-          chapterId,
-          entityType,
-          entityIds: [entityId],
-          role: 'present',
-          source: 'frozen-redirect',
-        })
-      }
-    }
-    const next = { ...patch }
-    delete next[spanKey]
-    return next
-  }
-
-  /**
-   * P2 双写：手工编辑实体出场字段的 appearance 同步。
-   *
-   * 双写期（appearanceV2Write 开、chapterSpansFrozen 关）内，旧列仍是读取权威，
-   * 但 appearance 表必须与旧列保持一致才能通过对账。三入口（ai-arrange /
-   * Memory / sync）只追加出场，用户在表单里手工增删 spans 是唯一会产生
-   * "出场减少"的路径——这里按新旧章节集合做差：新增章写入（source='manual'），
-   * 移除章删除该实体对应 appearance 行。
-   *
-   * 时序上必须紧跟 stripFrozenSpans 之后调用：冻结开启时 span 字段已被剥离，
-   * patch[spanKey] === undefined 自然短路，两条路径不会重复写。
-   * 全部 flag 关闭（默认）时零副作用。
-   */
-  private syncManualSpanAppearances<T extends Record<string, unknown>>(
-    entityType: ProjectionEntityType,
-    entityId: string,
-    patch: T,
-    spanKey: 'chapterSpans' | 'appearChapters',
-  ): void {
-    if (patch[spanKey] === undefined) return
-    const projectId = this.getEntityProjectId(entityType, entityId)
-    if (!projectId) return
-    if (isNovelFeatureEnabled(this, projectId, 'chapterSpansFrozen')) return
-    if (!isNovelFeatureEnabled(this, projectId, 'appearanceV2Write')) return
 
     const nextChapters = new Set(
       spanKey === 'appearChapters'
@@ -411,6 +409,7 @@ export class NovelStore implements NovelPromptStores {
       if (num !== undefined) currentChapters.add(num)
     }
 
+    const added: number[] = []
     for (const ch of nextChapters) {
       if (currentChapters.has(ch)) continue
       const chapterId = idByNumber.get(ch)
@@ -421,14 +420,65 @@ export class NovelStore implements NovelPromptStores {
         entityType,
         entityIds: [entityId],
         role: 'present',
-        source: 'manual',
+        source: 'frozen-redirect',
       })
+      added.push(ch)
     }
+    const removed: number[] = []
     for (const ch of currentChapters) {
       if (nextChapters.has(ch)) continue
       const chapterId = idByNumber.get(ch)
       if (!chapterId) continue
       this.entityAppearances.removeChapterEntityAppearances(projectId, chapterId, entityType, entityId)
+      removed.push(ch)
+    }
+    // 投影观察者：账本记录器依赖"新增出场"触发（spans 已剥离，实体字段不再变化，
+    // 必须在这里直接通知，否则 chapter-projection-recorder 收不到）。
+    if ((added.length > 0 || removed.length > 0) && this.chapterProjectionObserver && !this.observerSuppressed) {
+      this.chapterProjectionObserver(projectId, {
+        entityType,
+        entityId,
+        addedChapters: added.sort((a, b) => a - b),
+        removedChapters: removed.sort((a, b) => a - b),
+        origin: 'frozen-redirect',
+      })
+    }
+
+    const next = { ...patch }
+    delete next[spanKey]
+    return next
+  }
+
+  /**
+   * 实体 create 时携带出场字段 → 写 appearance（2026-08-12 逻辑统一：
+   * appearance 表为唯一出场写面，create 路径一并收口）。
+   */
+  private recordCreateAppearances<T extends { projectId: string; id: string; chapterSpans?: Array<[number, number]>; appearChapters?: number[] }>(
+    entityType: ProjectionEntityType,
+    entity: T,
+  ): void {
+    const spans = entity.chapterSpans ?? []
+    const flat = entity.appearChapters ?? []
+    const chapterNumbers = new Set<number>([
+      ...spans.flatMap(([s, e]) => {
+        const out: number[] = []
+        for (let ch = s; ch <= e; ch += 1) out.push(ch)
+        return out
+      }),
+      ...flat.filter((n) => Number.isInteger(n) && n >= 1),
+    ])
+    if (chapterNumbers.size === 0) return
+    for (const ch of chapterNumbers) {
+      const chapterId = this.getChapter(entity.projectId, ch)?.id
+      if (!chapterId) continue
+      this.addChapterAppearances({
+        projectId: entity.projectId,
+        chapterId,
+        entityType,
+        entityIds: [entity.id],
+        role: 'present',
+        source: 'create',
+      })
     }
   }
 
@@ -457,18 +507,107 @@ export class NovelStore implements NovelPromptStores {
   listChapters(projectId: string): NovelChapter[] { return this.chapter.listChapters(projectId) }
   getChapterById(chapterId: string): NovelChapter | undefined { return this.chapter.getChapterById(chapterId) }
   createChapter(chapter: Omit<NovelChapter, 'createdAt' | 'updatedAt'>): NovelChapter { return this.chapter.createChapter(chapter) }
-  updateChapter(id: string, patch: Partial<NovelChapter>, versionSource?: VersionSource): NovelChapter | undefined { return this.chapter.updateChapter(id, patch, versionSource) }
-  updateChapterContent(id: string, content: string, wordCount: number, versionSource?: VersionSource): NovelChapter | undefined { return this.chapter.updateChapterContent(id, content, wordCount, versionSource) }
+  updateChapter(id: string, patch: Partial<NovelChapter>, versionSource?: VersionSource): NovelChapter | undefined {
+    return this.withTransaction(() => {
+      const before = this.chapter.getChapterById(id)
+      if (before) {
+        const contentChanges = patch.content !== undefined && patch.content !== before.content
+        if (before.status === 'published' && contentChanges) {
+          throw new Error('已发布章节不能修改正文，请先进入修订流程')
+        }
+        if (patch.status !== undefined && !canTransitionChapterStatus(before.status, patch.status)) {
+          throw new Error(`章节状态不能从 ${before.status} 变更为 ${patch.status}`)
+        }
+      }
+      const updated = this.chapter.updateChapter(id, patch, versionSource)
+      if (before && updated && patch.content !== undefined && patch.content !== before.content) {
+        this.markDerivedStateStaleForRewrite(updated)
+        this.bindReviewsToCurrentRevision(updated)
+      }
+      return updated
+    })
+  }
+  updateChapterContent(id: string, content: string, wordCount: number, versionSource?: VersionSource): NovelChapter | undefined {
+    return this.withTransaction(() => {
+      const before = this.chapter.getChapterById(id)
+      if (before?.status === 'published' && content !== before.content) {
+        throw new Error('已发布章节不能修改正文，请先进入修订流程')
+      }
+      const updated = this.chapter.updateChapterContent(id, content, wordCount, versionSource)
+      if (before && updated && content !== before.content) {
+        this.markDerivedStateStaleForRewrite(updated)
+        this.bindReviewsToCurrentRevision(updated)
+      }
+      return updated
+    })
+  }
+  /** 正式创作/群聊/完成命令的统一落库入口：正文变化后进入待审。 */
+  completeChapterForReview(
+    id: string,
+    patch: Omit<Partial<NovelChapter>, 'id' | 'status'>,
+    versionSource?: VersionSource,
+  ): NovelChapter | undefined {
+    return this.withTransaction(() => {
+      const before = this.chapter.getChapterById(id)
+      if (!before) return undefined
+      if (before.status === 'published') {
+        throw new Error('已发布章节不能修改正文，请先进入修订流程')
+      }
+      const updated = this.chapter.updateChapter(id, { ...patch, status: 'review' }, versionSource)
+      if (updated && patch.content !== undefined && patch.content !== before.content) {
+        this.markDerivedStateStaleForRewrite(updated)
+        this.bindReviewsToCurrentRevision(updated)
+      }
+      return updated
+    })
+  }
+  /** 仅供 NovelEngine 在完成审稿、版本和前序章节校验后执行发布。 */
+  publishReviewedChapter(id: string): NovelChapter | undefined {
+    return this.withTransaction(() => {
+      const chapter = this.chapter.getChapterById(id)
+      if (!chapter) return undefined
+      if (chapter.status !== 'review') {
+        throw new Error(`只有待审章节可以发布，当前状态为 ${chapter.status}`)
+      }
+      return this.chapter.updateChapter(id, { status: 'published' })
+    })
+  }
   listChapterVersions(chapterId: string): ChapterVersionSummary[] { return this.chapter.listChapterVersions(chapterId) }
   getChapterVersion(versionId: string): ChapterVersion | undefined { return this.chapter.getChapterVersion(versionId) }
   createVersionSnapshot(chapterId: string, source: VersionSource): ChapterVersion | undefined { return this.chapter.createVersionSnapshot(chapterId, source) }
   getLatestVersion(chapterId: string): ChapterVersion | undefined { return this.chapter.getLatestVersion(chapterId) }
-  rollbackToVersion(chapterId: string, targetVersionId: string): { savedVersionId: string; currentContent: string; currentWordCount: number } { return this.chapter.rollbackToVersion(chapterId, targetVersionId) }
+  rollbackToVersion(chapterId: string, targetVersionId: string): { savedVersionId: string; currentContent: string; currentWordCount: number } {
+    return this.withTransaction(() => {
+      const before = this.chapter.getChapterById(chapterId)
+      if (before?.status === 'published') throw new Error('已发布章节不能回滚正文，请先进入修订流程')
+      const result = this.chapter.rollbackToVersion(chapterId, targetVersionId)
+      let chapter = this.chapter.getChapterById(chapterId)
+      if (chapter) {
+        chapter = this.chapter.updateChapter(chapterId, { status: 'drafting' }) ?? chapter
+        this.markDerivedStateStaleForRewrite(chapter)
+        this.bindReviewsToCurrentRevision(chapter)
+      }
+      return result
+    })
+  }
   appendContentRevision(chapter: NovelChapter, source: VersionSource | null): ContentRevision | undefined { return this.chapter.appendContentRevision(chapter, source) }
   listContentRevisions(chapterId: string): ContentRevisionSummary[] { return this.chapter.listContentRevisions(chapterId) }
   getContentRevision(revisionId: string): ContentRevision | undefined { return this.chapter.getContentRevision(revisionId) }
   getCurrentContentRevision(chapterId: string): ContentRevision | undefined { return this.chapter.getCurrentContentRevision(chapterId) }
-  rollbackToContentRevision(chapterId: string, revisionId: string): { appliedRevisionId: string; content: string; wordCount: number } { return this.chapter.rollbackToContentRevision(chapterId, revisionId) }
+  rollbackToContentRevision(chapterId: string, revisionId: string): { appliedRevisionId: string; content: string; wordCount: number } {
+    return this.withTransaction(() => {
+      const before = this.chapter.getChapterById(chapterId)
+      if (before?.status === 'published') throw new Error('已发布章节不能回滚正文，请先进入修订流程')
+      const result = this.chapter.rollbackToContentRevision(chapterId, revisionId)
+      let chapter = this.chapter.getChapterById(chapterId)
+      if (chapter) {
+        chapter = this.chapter.updateChapter(chapterId, { status: 'drafting' }) ?? chapter
+        this.markDerivedStateStaleForRewrite(chapter)
+        this.bindReviewsToCurrentRevision(chapter)
+      }
+      return result
+    })
+  }
   reconcileVersionChains(projectId: string): import('./migration-acceptance.js').VersionChainReconcileReport { return this.chapter.reconcileVersionChains(projectId) }
   deleteChapter(id: string): boolean { return this.chapter.deleteChapter(id) }
 
@@ -503,6 +642,20 @@ export class NovelStore implements NovelPromptStores {
   confirmProgress(id: string): NovelStorylineProgress { return this.ledger.confirmProgress(id) }
   markStaleFromChapter(projectId: string, chapterId: string): number { return this.ledger.markStaleFromChapter(projectId, chapterId) }
 
+  private markDerivedStateStaleForRewrite(chapter: NovelChapter): number {
+    const hasLaterContent = this.chapter.listChapters(chapter.projectId)
+      .some(candidate => candidate.chapterNumber > chapter.chapterNumber && candidate.content?.trim().length > 0)
+    return hasLaterContent
+      ? this.ledger.markStaleFromChapter(chapter.projectId, chapter.id)
+      : 0
+  }
+
+  private bindReviewsToCurrentRevision(chapter: NovelChapter): void {
+    const revision = this.chapter.getCurrentContentRevision(chapter.id)
+    if (!revision || revision.content !== chapter.content) return
+    this.graph.bindChapterReviewsToRevision(chapter.id, hashChapterContent(chapter.content), revision.id)
+  }
+
   // ── V2 双写对账（T05）──
   reconcileV2(projectId: string): import('./v2-reconciliation.js').ReconciliationReport {
     return reconcileV2(this.db, this, projectId)
@@ -535,10 +688,13 @@ export class NovelStore implements NovelPromptStores {
   // ── 剧情（narrative）实体轨道 ──
   listNarratives(projectId: string): NovelNarrative[] { return this.narratives.listNarratives(projectId) }
   getNarrative(id: string): NovelNarrative | undefined { return this.narratives.getNarrative(id) }
-  createNarrative(input: Omit<NovelNarrative, 'id' | 'createdAt' | 'updatedAt'>): NovelNarrative { return this.narratives.createNarrative(input) }
+  createNarrative(input: Omit<NovelNarrative, 'id' | 'createdAt' | 'updatedAt'>): NovelNarrative {
+    const created = this.narratives.createNarrative(input)
+    this.recordCreateAppearances('narrative', created)
+    return created
+  }
   updateNarrative(id: string, patch: Partial<NovelNarrative>): NovelNarrative | undefined {
     patch = this.stripFrozenSpans('narrative', id, patch, 'chapterSpans')
-    this.syncManualSpanAppearances('narrative', id, patch, 'chapterSpans')
     return this.narratives.updateNarrative(id, patch)
   }
   deleteNarrative(id: string): boolean {
@@ -556,6 +712,15 @@ export class NovelStore implements NovelPromptStores {
   listHooks(projectId: string): NovelHook[] { return this.chapter.listHooks(projectId) }
   listHooksByChapter(projectId: string, chapterNumber: number): NovelHook[] { return this.chapter.listHooksByChapter(projectId, chapterNumber) }
   getHook(id: string): NovelHook | undefined { return this.chapter.getHook(id) }
+
+  /** P4 chunk versionKey：前后章锚点与信息差的统一更新时间指纹。 */
+  getContextAnchorVersion(projectId: string): number | null {
+    const timestamps = [
+      ...this.listHooks(projectId).map((h) => h.updatedAt),
+      ...this.listInformationLayers(projectId).map((l) => l.updatedAt),
+    ]
+    return timestamps.length > 0 ? Math.max(...timestamps) : null
+  }
   createHook(hook: Omit<NovelHook, 'createdAt' | 'updatedAt'>): NovelHook { return this.chapter.createHook(hook) }
   updateHook(id: string, patch: Partial<NovelHook>): NovelHook | undefined { return this.chapter.updateHook(id, patch) }
   deleteHook(id: string): boolean { return this.chapter.deleteHook(id) }
@@ -563,8 +728,52 @@ export class NovelStore implements NovelPromptStores {
   listCharacterArcs(projectId: string): NovelCharacterArc[] { return this.chapter.listCharacterArcs(projectId) }
   getCharacterArc(id: string): NovelCharacterArc | undefined { return this.chapter.getCharacterArc(id) }
   getCharacterArcByCharacter(projectId: string, characterId: string): NovelCharacterArc | undefined { return this.chapter.getCharacterArcByCharacter(projectId, characterId) }
-  createCharacterArc(arc: Omit<NovelCharacterArc, 'createdAt' | 'updatedAt'>): NovelCharacterArc { return this.chapter.createCharacterArc(arc) }
-  updateCharacterArc(id: string, patch: Partial<NovelCharacterArc>): NovelCharacterArc | undefined { return this.chapter.updateCharacterArc(id, patch) }
+  createCharacterArc(arc: Omit<NovelCharacterArc, 'createdAt' | 'updatedAt'>): NovelCharacterArc {
+    const character = this.character.getCharacter(arc.characterId)
+    if (!character || character.projectId !== arc.projectId) {
+      throw new Error(`Character ${arc.characterId} does not belong to project ${arc.projectId}`)
+    }
+    if (this.chapter.getCharacterArcByCharacter(arc.projectId, arc.characterId)) {
+      throw new Error(`Character ${arc.characterId} already has an arc in project ${arc.projectId}`)
+    }
+
+    return this.withTransaction(() => {
+      const created = this.chapter.createCharacterArc(arc)
+      if (character.arcStage !== created.currentStage) {
+        this.character.updateCharacter(character.id, { arcStage: created.currentStage })
+      }
+      return created
+    })
+  }
+  updateCharacterArc(id: string, patch: Partial<NovelCharacterArc>): NovelCharacterArc | undefined {
+    const existing = this.chapter.getCharacterArc(id)
+    if (!existing) return undefined
+    if (patch.projectId !== undefined && patch.projectId !== existing.projectId) {
+      throw new Error(`Character arc ${id} cannot change project`)
+    }
+    if (patch.characterId !== undefined && patch.characterId !== existing.characterId) {
+      throw new Error(`Character arc ${id} cannot change character`)
+    }
+
+    const character = this.character.getCharacter(existing.characterId)
+    if (!character || character.projectId !== existing.projectId) {
+      throw new Error(
+        `Character ${existing.characterId} does not belong to project ${existing.projectId}`
+      )
+    }
+
+    return this.withTransaction(() => {
+      const updated = this.chapter.updateCharacterArc(id, {
+        ...patch,
+        projectId: existing.projectId,
+        characterId: existing.characterId
+      })
+      if (updated && character.arcStage !== updated.currentStage) {
+        this.character.updateCharacter(character.id, { arcStage: updated.currentStage })
+      }
+      return updated
+    })
+  }
   deleteCharacterArc(id: string): boolean { return this.chapter.deleteCharacterArc(id) }
 
   // ── 章节投影观察者 ──
@@ -643,20 +852,30 @@ export class NovelStore implements NovelPromptStores {
   createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt'>): NovelCharacter { return this.character.createCharacter(character) }
   updateCharacter(id: string, patch: Partial<NovelCharacter>): NovelCharacter | undefined { return this.character.updateCharacter(id, patch) }
   deleteCharacter(id: string): boolean {
-    const projectId = this.character.getCharacter(id)?.projectId
-    // character_history 没有外键级联，不清理会留下指向已删角色的悬空出场记录
-    // （S4-1 对账在真实库里发现了这样一行）。
-    this.character.deleteCharacterHistoryByCharacter(id)
-    return this.notifyEntityDeleted('character', id, projectId, this.character.deleteCharacter(id))
+    return this.withTransaction(() => {
+      const projectId = this.character.getCharacter(id)?.projectId
+      // character_history 没有外键级联，不清理会留下指向已删角色的悬空出场记录
+      // （S4-1 对账在真实库里发现了这样一行）。
+      this.character.deleteCharacterHistoryByCharacter(id)
+      this.character.deleteRelationshipsByCharacter(id)
+      const deleted = this.notifyEntityDeleted('character', id, projectId, this.character.deleteCharacter(id))
+      // P2 级联：character 是出场高频实体，删除后不清理 appearance 会留孤儿行
+      if (deleted && projectId) this.entityAppearances.removeEntityAppearances(projectId, 'character', id)
+      return deleted
+    })
   }
   deleteCharacterHistoryByCharacter(characterId: string): number { return this.character.deleteCharacterHistoryByCharacter(characterId) }
   deleteCharacterHistory(historyId: string, projectId?: string): boolean { return this.character.deleteCharacterHistory(historyId, projectId) }
   createCharacterHistory(history: Omit<NovelCharacterHistory, 'id' | 'createdAt'>): NovelCharacterHistory {
+    this.assertCharacterBelongsToProject(history.characterId, history.projectId)
     const created = this.character.createCharacterHistory(history)
     this.notifyCharacterAppearance(created.projectId, created.characterId, created.chapterNumber, 'createCharacterHistory')
     return created
   }
   batchCreateCharacterHistory(entries: Array<Omit<NovelCharacterHistory, 'id' | 'createdAt'>>): NovelCharacterHistory[] {
+    for (const entry of entries) {
+      this.assertCharacterBelongsToProject(entry.characterId, entry.projectId)
+    }
     const created = this.character.batchCreateCharacterHistory(entries)
     for (const entry of created) {
       this.notifyCharacterAppearance(entry.projectId, entry.characterId, entry.chapterNumber, 'batchCreateCharacterHistory')
@@ -683,20 +902,41 @@ export class NovelStore implements NovelPromptStores {
   }
   listCharacterHistory(projectId: string, characterId?: string): NovelCharacterHistory[] { return this.character.listCharacterHistory(projectId, characterId) }
   getRelationship(relationshipId: string): NovelRelationship | undefined { return this.character.getRelationship(relationshipId) }
-  createRelationship(rel: Omit<NovelRelationship, 'createdAt' | 'updatedAt'>): NovelRelationship { return this.character.createRelationship(rel) }
-  updateRelationship(id: string, patch: Partial<NovelRelationship>): NovelRelationship | undefined { return this.character.updateRelationship(id, patch) }
+  createRelationship(rel: Omit<NovelRelationship, 'createdAt' | 'updatedAt'>): NovelRelationship {
+    this.assertCharacterBelongsToProject(rel.characterA, rel.projectId)
+    this.assertCharacterBelongsToProject(rel.characterB, rel.projectId)
+    return this.character.createRelationship(rel)
+  }
+  updateRelationship(id: string, patch: Partial<NovelRelationship>): NovelRelationship | undefined {
+    const existing = this.character.getRelationship(id)
+    if (!existing) return undefined
+    if (patch.projectId !== undefined && patch.projectId !== existing.projectId) {
+      throw new Error(`Relationship ${id} cannot change project`)
+    }
+    this.assertCharacterBelongsToProject(patch.characterA ?? existing.characterA, existing.projectId)
+    this.assertCharacterBelongsToProject(patch.characterB ?? existing.characterB, existing.projectId)
+    return this.character.updateRelationship(id, { ...patch, projectId: existing.projectId })
+  }
   deleteRelationship(id: string): boolean { return this.character.deleteRelationship(id) }
+
+  private assertCharacterBelongsToProject(characterId: string, projectId: string): NovelCharacter {
+    const character = this.character.getCharacter(characterId)
+    if (!character || character.projectId !== projectId) {
+      throw new Error(`Character ${characterId} does not belong to project ${projectId}`)
+    }
+    return character
+  }
 
   // ── Conflict ──
 
   createConflict(conflict: Omit<NovelConflict, 'createdAt' | 'updatedAt'>): NovelConflict {
     const created = this.conflict.createConflict(conflict)
+    this.recordCreateAppearances('conflict', created)
     this.notifyChapterProjection('conflict', created.id, created.projectId, undefined, created, chaptersOfConflict, 'createConflict')
     return created
   }
   updateConflict(id: string, patch: Partial<NovelConflict>): NovelConflict | undefined {
     patch = this.stripFrozenSpans('conflict', id, patch, 'chapterSpans')
-    this.syncManualSpanAppearances('conflict', id, patch, 'chapterSpans')
     const before = this.conflict.getConflict(id)
     const after = this.conflict.updateConflict(id, patch)
     this.notifyChapterProjection('conflict', id, after?.projectId ?? before?.projectId, before, after, chaptersOfConflict, 'updateConflict')
@@ -713,12 +953,12 @@ export class NovelStore implements NovelPromptStores {
 
   createForeshadow(foreshadow: Omit<NovelForeshadow, 'createdAt' | 'updatedAt'>): NovelForeshadow {
     const created = this.foreshadow.createForeshadow(foreshadow)
+    this.recordCreateAppearances('foreshadow', created)
     this.notifyChapterProjection('foreshadow', created.id, created.projectId, undefined, created, chaptersOfForeshadow, 'createForeshadow')
     return created
   }
   updateForeshadow(id: string, patch: Partial<NovelForeshadow>): NovelForeshadow | undefined {
     patch = this.stripFrozenSpans('foreshadow', id, patch, 'chapterSpans')
-    this.syncManualSpanAppearances('foreshadow', id, patch, 'chapterSpans')
     const before = this.foreshadow.getForeshadow(id)
     const after = this.foreshadow.updateForeshadow(id, patch)
     this.notifyChapterProjection('foreshadow', id, after?.projectId ?? before?.projectId, before, after, chaptersOfForeshadow, 'updateForeshadow')
@@ -732,12 +972,12 @@ export class NovelStore implements NovelPromptStores {
   }
   createClue(clue: Omit<NovelClue, 'createdAt' | 'updatedAt'>): NovelClue {
     const created = this.foreshadow.createClue(clue)
+    this.recordCreateAppearances('clue', created)
     this.notifyChapterProjection('clue', created.id, created.projectId, undefined, created, chaptersOfClue, 'createClue')
     return created
   }
   updateClue(id: string, patch: Partial<NovelClue>): NovelClue | undefined {
     patch = this.stripFrozenSpans('clue', id, patch, 'chapterSpans')
-    this.syncManualSpanAppearances('clue', id, patch, 'chapterSpans')
     const before = this.foreshadow.getClue(id)
     const after = this.foreshadow.updateClue(id, patch)
     this.notifyChapterProjection('clue', id, after?.projectId ?? before?.projectId, before, after, chaptersOfClue, 'updateClue')
@@ -774,12 +1014,12 @@ export class NovelStore implements NovelPromptStores {
 
   createFaction(faction: Omit<NovelFaction, 'createdAt' | 'updatedAt'>): NovelFaction {
     const created = this.faction.createFaction(faction)
+    this.recordCreateAppearances('faction', created)
     this.notifyChapterProjection('faction', created.id, created.projectId, undefined, created, chaptersOfFaction, 'createFaction')
     return created
   }
   updateFaction(id: string, patch: Partial<NovelFaction>): NovelFaction | undefined {
     patch = this.stripFrozenSpans('faction', id, patch, 'chapterSpans')
-    this.syncManualSpanAppearances('faction', id, patch, 'chapterSpans')
     const before = this.faction.getFaction(id)
     const after = this.faction.updateFaction(id, patch)
     this.notifyChapterProjection('faction', id, after?.projectId ?? before?.projectId, before, after, chaptersOfFaction, 'updateFaction')
@@ -793,12 +1033,12 @@ export class NovelStore implements NovelPromptStores {
   }
   createLocation(location: Omit<NovelLocation, 'createdAt' | 'updatedAt'>): NovelLocation {
     const created = this.faction.createLocation(location)
+    this.recordCreateAppearances('location', created)
     this.notifyChapterProjection('location', created.id, created.projectId, undefined, created, chaptersOfLocation, 'createLocation')
     return created
   }
   updateLocation(id: string, patch: Partial<NovelLocation>): NovelLocation | undefined {
     patch = this.stripFrozenSpans('location', id, patch, 'appearChapters')
-    this.syncManualSpanAppearances('location', id, patch, 'appearChapters')
     const before = this.faction.getLocation(id)
     const after = this.faction.updateLocation(id, patch)
     this.notifyChapterProjection('location', id, after?.projectId ?? before?.projectId, before, after, chaptersOfLocation, 'updateLocation')
@@ -815,12 +1055,12 @@ export class NovelStore implements NovelPromptStores {
 
   createItem(item: Omit<NovelItem, 'createdAt' | 'updatedAt'>): NovelItem {
     const created = this.item.createItem(item)
+    this.recordCreateAppearances('item', created)
     this.notifyChapterProjection('item', created.id, created.projectId, undefined, created, chaptersOfItem, 'createItem')
     return created
   }
   updateItem(id: string, patch: Partial<NovelItem>): NovelItem | undefined {
     patch = this.stripFrozenSpans('item', id, patch, 'chapterSpans')
-    this.syncManualSpanAppearances('item', id, patch, 'chapterSpans')
     const before = this.item.getItem(id)
     const after = this.item.updateItem(id, patch)
     this.notifyChapterProjection('item', id, after?.projectId ?? before?.projectId, before, after, chaptersOfItem, 'updateItem')
@@ -873,6 +1113,7 @@ export class NovelStore implements NovelPromptStores {
   createAuthorIntent(intent: Omit<NovelAuthorIntent, 'createdAt'>): NovelAuthorIntent { return this.graph.createAuthorIntent(intent) }
   createChapterReview(review: Omit<NovelChapterReview, 'createdAt'>): NovelChapterReview { return this.graph.createChapterReview(review) }
   getChapterReview(chapterId: string): NovelChapterReview | undefined { return this.graph.getChapterReview(chapterId) }
+  getAcceptedChapterReviewForContent(chapterId: string, contentHash: string): NovelChapterReview | undefined { return this.graph.getAcceptedChapterReviewForContent(chapterId, contentHash) }
 
   // ── DeduplicateService ──
 

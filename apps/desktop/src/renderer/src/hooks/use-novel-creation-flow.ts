@@ -1146,6 +1146,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const startDiscussion = useCallback(
     async (projectId: string, chapterNumber: number, options?: {
       arrangedEntities?: ArrangedEntitiesPayload
+      modelId?: { provider: string; modelId: string }
     }): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
@@ -1175,7 +1176,10 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       abortControllerRef.current = controller
 
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-discussion`
-      const body = options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}
+      const body = {
+        ...(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}),
+        ...(options?.modelId ? { modelId: options.modelId } : {}),
+      }
 
       const runPromise = runFlow(url, body, controller)
       runFlowPromiseRef.current = runPromise

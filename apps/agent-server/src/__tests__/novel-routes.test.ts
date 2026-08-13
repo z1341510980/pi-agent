@@ -493,6 +493,29 @@ describe('Novel API 路由 - 角色删除', () => {
   })
 })
 
+describe('Novel API 路由 - 章节删除', () => {
+  it('DELETE /chapters/:id 拒绝删除已发布章节', async () => {
+    const project = store.createProject({
+      id: 'published-delete-project', title: '已发布删除保护', genre: 'x', synopsis: '',
+      targetWords: 0, currentVolume: 1, currentChapter: 1, currentStage: 'setup', status: 'active',
+    })
+    const chapter = store.createChapter({
+      id: 'published-delete-chapter', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '已发布正文', wordCount: 5, status: 'published',
+      narrativeTask: '{}', acceptanceResult: null,
+    })
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `${PLUGIN_PREFIX}/chapters/${chapter.id}`,
+    })
+
+    expect(response.statusCode).toBe(409)
+    expect(response.json().error.message).toMatch(/已发布章节不能删除/)
+    expect(store.getChapterById(chapter.id)).toBeDefined()
+  })
+})
+
 describe('Novel API 路由 - AI 角色生成', () => {
   it('POST /projects/:projectId/characters/ai-generate 调用 mock LLM 生成角色', async () => {
     const createProject = await app.inject({
@@ -519,6 +542,31 @@ describe('Novel API 路由 - AI 角色生成', () => {
     expect(character.id).toBeTruthy()
     expect(character.projectId).toBe(projectId)
     expect(character.arcHistory).toBe('[]')
+  })
+
+  it('POST /projects/:projectId/characters/ai-generate 透传本次指定模型', async () => {
+    const createProject = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects`,
+      payload: { title: '指定模型', genre: '玄幻', synopsis: '', targetWords: 0 },
+    })
+    const projectId = createProject.json().data.id
+    const modelId = { provider: 'provider-a', modelId: 'model-a' }
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/characters/ai-generate`,
+      payload: { coreStyle: '冷静的谋士', modelId },
+    })
+
+    expect(response.statusCode, response.body).toBe(200)
+    expect(services.characterGenerator.generate).toHaveBeenLastCalledWith(
+      projectId,
+      '冷静的谋士',
+      expect.any(Function),
+      undefined,
+      modelId,
+    )
   })
 
   it('POST /projects/:projectId/characters/ai-generate 缺少 coreStyle 返回 400', async () => {

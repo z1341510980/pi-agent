@@ -5,7 +5,8 @@
  * - plan revision 状态机：draft → approved → consumed → confirmed；
  *   任一步可 superseded；上游正文变化进 stale。
  * - novel_scenes 只存稳定身份（stable_key），场景内容每次变更走 novel_scene_revisions。
- * - focus/presence/functions 为关系表（禁止 JSON 数组），批量写入。
+ * - 角色关系（focus/presence/functional）落 novel_scene_cast 单表（2026-08-12 逻辑统一，
+ *   旧三表 novel_scene_focus/presence/functions 已停写，仅 reconcileSceneCast 只读对账保留）。
  *
  * 写入必须事务化；progress intent（planned）由 narrative-ledger-store 承接确认。
  */
@@ -21,10 +22,6 @@ import type {
 } from '../types.js'
 import type { ChapterScenePlan, ChapterScenePlanScene } from '../chapter-scene-plan.js'
 import { now } from './store-utils.js'
-import {
-  isNovelFeatureEnabled,
-  type FeatureFlagProjectSource,
-} from '../novel-feature-flags.js'
 import type { SceneCastReconcileReport } from '../migration-acceptance.js'
 
 export type SceneCastRole = 'focus' | 'present' | 'functional'
@@ -104,21 +101,7 @@ export interface SubmitPlanWithScenesInput extends CreatePlanInput {
 export class ScenePlanStore {
   constructor(
     private db: Database.Database,
-    private flags?: FeatureFlagProjectSource,
   ) {}
-
-  private isV2WriteEnabled(projectId: string): boolean {
-    return this.flags != null && isNovelFeatureEnabled(this.flags, projectId, 'sceneCastV2Write')
-  }
-
-  private isV2ReadEnabled(projectId: string): boolean {
-    return this.flags != null && isNovelFeatureEnabled(this.flags, projectId, 'sceneCastV2Read')
-  }
-
-  /** 影子写前提：scenePlanV2DualWrite 开启（联动规则，不互相替代） */
-  private isDualWriteEnabled(projectId: string): boolean {
-    return this.flags != null && isNovelFeatureEnabled(this.flags, projectId, 'scenePlanV2DualWrite')
-  }
 
   // ═══════════════════════════════════════════════════════════════
   // Plan 版本链
@@ -261,48 +244,12 @@ export class ScenePlanStore {
   }
 
   /**
-   * 覆盖写入某场景版本的角色关系（focus/present/functions + cast 影子写）。
-   *
-   * Flag 语义（PRD §5）：
-   * - sceneCastV2Write 关（默认）：只写旧三表，行为与现状完全一致；
-   * - sceneCastV2Write 开 + scenePlanV2DualWrite 开：三表写 + cast 影子写（双写对账期）；
-   * - sceneCastV2Write 开 + scenePlanV2DualWrite 关：只写 cast 表（停旧写，影子写升为主写）。
+   * 覆盖写入某场景版本的角色关系（focus/present/functions → novel_scene_cast 单表）。
+   * 2026-08-12 逻辑统一：旧三表（focus/presence/functions）已停写，cast 表为唯一写面。
    * 与事务调用方（createSceneRevisions）同事务。
    */
   private replaceCast(sceneRevisionId: string, scene: ChapterScenePlanScene): void {
-    const projectId = this.getSceneRevision(sceneRevisionId)?.projectId
-    const v2Write = projectId != null && this.isV2WriteEnabled(projectId)
-    const dualWrite = projectId != null && this.isDualWriteEnabled(projectId)
-
-    if (!v2Write || dualWrite) {
-      // 旧三表写（默认路径；双写期也写）
-      this.db.prepare('DELETE FROM novel_scene_focus WHERE scene_revision_id = ?').run(sceneRevisionId)
-      this.db.prepare('DELETE FROM novel_scene_presence WHERE scene_revision_id = ?').run(sceneRevisionId)
-      this.db.prepare('DELETE FROM novel_scene_functions WHERE scene_revision_id = ?').run(sceneRevisionId)
-
-      const focusInsert = this.db.prepare(
-        'INSERT INTO novel_scene_focus (scene_revision_id, character_id) VALUES (?, ?)',
-      )
-      for (const cid of scene.focusCharacterIds) focusInsert.run(sceneRevisionId, cid)
-
-      const presentInsert = this.db.prepare(
-        'INSERT INTO novel_scene_presence (scene_revision_id, character_id) VALUES (?, ?)',
-      )
-      for (const cid of scene.presentCharacterIds) presentInsert.run(sceneRevisionId, cid)
-
-      const fnInsert = this.db.prepare(`
-        INSERT INTO novel_scene_functions (scene_revision_id, character_id, function, prominence, note)
-        VALUES (?, ?, ?, ?, '')
-      `)
-      for (const entry of scene.functionalCast) {
-        fnInsert.run(sceneRevisionId, entry.characterId, entry.function, entry.prominence)
-      }
-    }
-
-    if (v2Write) {
-      // cast 影子写 / 主写
-      this.writeSceneCast(sceneRevisionId, scene)
-    }
+    this.writeSceneCast(sceneRevisionId, scene)
   }
 
   /** 将 ChapterScenePlanScene 转换为 cast 行并覆盖写入 novel_scene_cast */
@@ -376,41 +323,27 @@ export class ScenePlanStore {
     return this.getSceneById(revision.sceneId)
   }
 
-  /** 读取某场景版本的角色关系（focus/present/functions 三表，或 sceneCastV2Read 开启时读 cast 表） */
+  /** 读取某场景版本的角色关系（novel_scene_cast 单表，focus 优先去重） */
   getSceneRevisionCast(sceneRevisionId: string): {
     focus: string[]
     present: string[]
     functions: Array<{ characterId: string; function: string; prominence: string; note: string }>
   } {
-    const revision = this.getSceneRevision(sceneRevisionId)
-    if (revision && this.isV2ReadEnabled(revision.projectId)) {
-      const rows = this.getSceneCast(sceneRevisionId)
-      const focus = rows.filter((r) => r.role === 'focus').map((r) => r.characterId)
-      // focus + present 并存去重规则：present 排除同时是 focus 的角色（focus 优先）
-      const focusSet = new Set(focus)
-      const present = rows
-        .filter((r) => r.role === 'present' && !focusSet.has(r.characterId))
-        .map((r) => r.characterId)
-      const functions = rows
-        .filter((r) => r.role === 'functional' && r.function != null)
-        .map((r) => ({
-          characterId: r.characterId,
-          function: r.function as string,
-          prominence: r.prominence ?? 'brief',
-          note: r.note ?? '',
-        }))
-      return { focus, present, functions }
-    }
-    const focus = (this.db.prepare(
-      'SELECT character_id FROM novel_scene_focus WHERE scene_revision_id = ?',
-    ).all(sceneRevisionId) as Array<{ character_id: string }>).map((r) => r.character_id)
-    const present = (this.db.prepare(
-      'SELECT character_id FROM novel_scene_presence WHERE scene_revision_id = ?',
-    ).all(sceneRevisionId) as Array<{ character_id: string }>).map((r) => r.character_id)
-    const functions = (this.db.prepare(
-      'SELECT character_id, function, prominence, note FROM novel_scene_functions WHERE scene_revision_id = ?',
-    ).all(sceneRevisionId) as Array<{ character_id: string; function: string; prominence: string; note: string }>)
-      .map((r) => ({ characterId: r.character_id, function: r.function, prominence: r.prominence, note: r.note }))
+    const rows = this.getSceneCast(sceneRevisionId)
+    const focus = rows.filter((r) => r.role === 'focus').map((r) => r.characterId)
+    // focus + present 并存去重规则：present 排除同时是 focus 的角色（focus 优先）
+    const focusSet = new Set(focus)
+    const present = rows
+      .filter((r) => r.role === 'present' && !focusSet.has(r.characterId))
+      .map((r) => r.characterId)
+    const functions = rows
+      .filter((r) => r.role === 'functional' && r.function != null)
+      .map((r) => ({
+        characterId: r.characterId,
+        function: r.function as string,
+        prominence: r.prominence ?? 'brief',
+        note: r.note ?? '',
+      }))
     return { focus, present, functions }
   }
 

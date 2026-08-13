@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { NovelPromptBuilder } from '../core/prompt-builder.js'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
+import { baseTargetOf, resolveWordBudget } from '../core/word-budget-resolver.js'
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:')
@@ -379,16 +380,15 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     expect(ctx).not.toContain('无关支线秘密')
   })
 
-  it('把 project.targetWords 直接解释为默认每章目标字数', () => {
-    const builder = new NovelPromptBuilder(
-      { render: () => '', getTemplate: () => '' } as any,
-      createStoresMock(store) as any
-    )
-    const project = store.getProject(projectId)!
-
-    expect(builder.computeChapterTargetWords({ ...project, targetWords: 2_500 })).toBe(2500)
-    expect(builder.computeChapterTargetWords({ ...project, targetWords: 3_000 })).toBe(3000)
-    expect(builder.computeChapterTargetWords({ ...project, targetWords: 5_000 })).toBe(5000)
+  it('把 project.targetWords 直接解释为默认每章目标字数（WordBudgetResolver 语义）', () => {
+    // 2026-08-12 逻辑统一：computeChapterTargetWords 已删除，字数统一走 resolveWordBudget
+    expect(resolveWordBudget({ baseTarget: 2_500 }).resolvedTarget).toBe(2500)
+    expect(resolveWordBudget({ baseTarget: 3_000 }).resolvedTarget).toBe(3000)
+    expect(resolveWordBudget({ baseTarget: 5_000 }).resolvedTarget).toBe(5000)
+    // 项目 targetWords=0（本 fixture）→ baseTargetOf 回退 3000
+    expect(baseTargetOf(0)).toBe(3000)
+    expect(baseTargetOf(3_000)).toBe(3000)
+    expect(baseTargetOf(undefined)).toBe(3000)
   })
 
   it('中间章节重写时使用上一章快照，而不是全局最新角色状态', () => {
@@ -447,9 +447,85 @@ describe('buildChapterContextShared 注入 arrangedEntities', () => {
     expect(ctx).not.toContain('状态：受伤')
   })
 
+  it('历史章节的新编排实体只补静态档案，不读取当前表的未来动态状态', () => {
+    store.updateProject(projectId, { currentChapter: 2 })
+    store.updateCharacter(charId, {
+      identity: '码头调查员',
+      personality: '谨慎寡言',
+      speechStyle: '短句，直答',
+      currentState: '未来章已经脱险',
+      currentGoal: '未来章追查幕后者',
+      currentPressure: '未来章身份即将暴露',
+      arcStage: '未来章觉醒',
+    })
+    const conflict = store.createConflict({
+      id: randomUUID(),
+      projectId,
+      description: '码头追捕',
+      type: 'external',
+      intensity: 9,
+      stage: 'erupting',
+      participants: JSON.stringify([charId]),
+      chapterSpans: [[2, 2]],
+      tier: 'main',
+      currentStep: '未来章已经锁定幕后者',
+      nextStep: '未来章准备收网',
+    } as any)
+    store.createChapter({
+      id: randomUUID(), projectId, volume: 1, chapterNumber: 2, title: '', content: '',
+      wordCount: 0, status: 'planned', narrativeTask: '', outline: '', volumeId: null,
+      acceptanceResult: null,
+    })
+    const memoryStore = {
+      listEvents: () => [],
+      getCausalChain: () => ({ causes: [], effects: [] }),
+      getSnapshot: () => ({
+        id: randomUUID(), projectId, chapterNumber: 1, snapshotType: 'full' as const,
+        entityId: null, createdAt: Date.now(),
+        snapshotData: JSON.stringify({
+          characters: [], relationships: [], conflicts: [], foreshadowing: [], clues: [],
+          factions: [], locations: [], items: [], worldElements: [], informationLayers: [], edges: [],
+        }),
+      }),
+    }
+    const builder = new NovelPromptBuilder(
+      { render: () => '', getTemplate: () => '' } as any,
+      createStoresMock(store) as any,
+      memoryStore,
+    )
+
+    const ctx = builder.buildChapterContextShared(
+      projectId,
+      2,
+      { description: '重写第二章', type: 'advance_mainline', targetEntity: null, priority: 'medium' },
+      {
+        facts: [], cognitive: [], stage: [], narrativeDebts: [], characterArcs: [],
+        conflictTargets: [], suspenseHooks: [],
+      },
+      {
+        characterIds: [charId], conflictIds: [conflict.id], foreshadowIds: [], clueIds: [],
+        factionIds: [], locationIds: [], itemIds: [],
+      },
+    )
+
+    expect(ctx).toContain('李四')
+    expect(ctx).toContain('码头调查员')
+    expect(ctx).toContain('谨慎寡言')
+    expect(ctx).toContain('短句，直答')
+    expect(ctx).toContain('码头追捕')
+    expect(ctx).not.toContain('未来章已经脱险')
+    expect(ctx).not.toContain('未来章追查幕后者')
+    expect(ctx).not.toContain('未来章身份即将暴露')
+    expect(ctx).not.toContain('未来章觉醒')
+    expect(ctx).not.toContain('未来章已经锁定幕后者')
+    expect(ctx).not.toContain('未来章准备收网')
+    expect(ctx).not.toContain('现状：爆发')
+    expect(ctx).not.toContain('强度：9/10')
+  })
+
   it('项目 currentChapter 未更新时，仍按实际已写章节识别中间章重写', () => {
     const chapter1 = store.getChapter(projectId, 1)!
-    store.updateChapter(chapter1.id, { content: '第一章正文', wordCount: 5, status: 'review' })
+    store.completeChapterForReview(chapter1.id, { content: '第一章正文', wordCount: 5 })
     store.createChapter({
       id: randomUUID(),
       projectId,

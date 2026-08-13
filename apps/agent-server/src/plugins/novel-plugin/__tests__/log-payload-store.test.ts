@@ -62,24 +62,10 @@ function makeInput(projectId: string, chapterNumber = 1, overrides: Partial<Omit
 }
 
 describe('Agent 日志冷热分离（P1-2）', () => {
-  it('Flag 关闭：全量写主表，无 payload 行（行为与现状一致）', () => {
+  it('默认外置：主表写元数据 + payload_id，大文本 gzip 外置，详情可回读', () => {
     const db = createDb()
     const store = new NovelStore(db)
     const projectId = setupProject(store)
-    store.insertAgentLog(makeInput(projectId))
-
-    const dbRaw = (store as unknown as { db: Database.Database }).db
-    const payloadCount = (dbRaw.prepare('SELECT COUNT(*) AS n FROM novel_agent_log_payloads').get() as { n: number }).n
-    expect(payloadCount).toBe(0)
-    const mainRow = dbRaw.prepare('SELECT system_prompt, payload_id FROM novel_agent_logs').get() as any
-    expect(mainRow.system_prompt.length).toBeGreaterThan(0)
-    expect(mainRow.payload_id).toBeNull()
-  })
-
-  it('Flag 开启：主表写元数据 + payload_id，大文本 gzip 外置，详情可回读', () => {
-    const db = createDb()
-    const store = new NovelStore(db)
-    const projectId = setupProject(store, { logPayloadExternalized: true })
     const log = store.insertAgentLog(makeInput(projectId, 1, { status: 'error', error: '失败原因' }))
 
     const dbRaw = (store as unknown as { db: Database.Database }).db
@@ -116,7 +102,7 @@ describe('Agent 日志冷热分离（P1-2）', () => {
   it('列表查询不加载 payload（P1-2-2）', () => {
     const db = createDb()
     const store = new NovelStore(db)
-    const projectId = setupProject(store, { logPayloadExternalized: true })
+    const projectId = setupProject(store)
     store.insertAgentLog(makeInput(projectId))
 
     const summaries = store.listAgentLogs(projectId)
@@ -136,7 +122,7 @@ describe('Agent 日志冷热分离（P1-2）', () => {
   it('cleanupExpiredPayloads：过期 payload 可清理，元数据不删（P1-2-4）', () => {
     const db = createDb()
     const store = new NovelStore(db)
-    const projectId = setupProject(store, { logPayloadExternalized: true })
+    const projectId = setupProject(store)
 
     // 插入一条"未来才过期"的日志（默认保留期内）
     const fresh = store.insertAgentLog(makeInput(projectId, 1))

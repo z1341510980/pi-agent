@@ -544,6 +544,31 @@ describe('NovelStore - Relationship CRUD', () => {
     expect(store.deleteRelationship('r-1')).toBe(true)
     expect(store.deleteRelationship('r-1')).toBe(false)
   })
+
+  it('拒绝跨项目角色，并在删除角色时清理关系', () => {
+    const c1 = setupCharacter('p-1', 'c-1', 'A')
+    const c2 = setupCharacter('p-1', 'c-2', 'B')
+    setupProject('p-2')
+    const other = setupCharacter('p-2', 'c-3', 'C')
+
+    expect(() => store.createRelationship({
+      id: 'r-invalid', projectId: 'p-1',
+      characterA: c1.id, characterB: other.id,
+      relationType: 'invalid', currentStage: '', stageHistory: '[]',
+      dynamicRole: '', alignment: 'neutral', trend: 'stable',
+      chapterHint: '', lastUpdatedChapter: null,
+    })).toThrow('Character c-3 does not belong to project p-1')
+
+    store.createRelationship({
+      id: 'r-1', projectId: 'p-1',
+      characterA: c1.id, characterB: c2.id,
+      relationType: '朋友', currentStage: '', stageHistory: '[]',
+      dynamicRole: '', alignment: 'neutral', trend: 'stable',
+      chapterHint: '', lastUpdatedChapter: null,
+    })
+    expect(store.deleteCharacter(c1.id)).toBe(true)
+    expect(store.listRelationships('p-1')).toEqual([])
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -658,23 +683,23 @@ describe('NovelStore - AgentLog CRUD', () => {
 describe('NovelStore - ChapterVersion 快照与回滚', () => {
   beforeEach(() => setupProject())
 
-  it('updateChapter 改 content 时自动存版本（存档旧值）', () => {
+  it('updateChapter 改 content 时自动追加 V2 版本（current 指针指向最新）', () => {
     const ch = setupChapter('p-1', 'ch-1', 1)
-    // 初始 content 为 ''，第一次更新前先把 '' 存为版本，再更新为 '第一版'
+    // 初始 content 为 ''，第一次更新追加 rev1（'第一版'）
     store.updateChapterContent(ch.id, '第一版正文', 5, { phase: 'writer_initial', agentType: 'writer' })
-    // 第二次更新前先把 '第一版正文' 存为版本，再更新为 '第二版'
+    // 第二次更新追加 rev2（'第二版'）
     store.updateChapterContent(ch.id, '第二版正文', 10, { phase: 'reviser_final', agentType: 'reviser' })
 
     const versions = store.listChapterVersions(ch.id)
     expect(versions).toHaveLength(2)
-    // 倒序返回：最新（sequence 最大）在前
-    // isCurrent 语义（T02a 修复）：只有 content 与当前正文一致才是当前版。
-    // 此处当前正文为 '第二版正文'，从未被存成版本，故两版都不是 current。
-    expect(versions[0].isCurrent).toBe(false)
-    // 最新版存的是 '第一版正文'（被覆盖前的旧值），字数 5
-    expect(versions[0].wordCount).toBe(5)
+    // 倒序返回：最新（revision 最大）在前，V2 current 指针指向它
+    expect(versions[0].isCurrent).toBe(true)
+    expect(versions[0].wordCount).toBe(10)
     expect(versions[1].isCurrent).toBe(false)
     expect(versions[1].wordCountDelta).toBe(0) // 最旧版 delta 为 0
+    // 详情含全文：最新版是 '第二版正文'
+    const latest = store.getChapterVersion(versions[0].id)
+    expect(latest?.content).toBe('第二版正文')
   })
 
   it('createVersionSnapshot 显式快照（存当前正文）', () => {
@@ -700,13 +725,13 @@ describe('NovelStore - ChapterVersion 快照与回滚', () => {
     expect(detail?.content).toBe('正文')
   })
 
-  it('rollbackToVersion 三步原子回滚', () => {
+  it('rollbackToVersion 三步原子回滚（V2 单链）', () => {
     const ch = setupChapter('p-1', 'ch-1', 1)
-    // 用 'skip' 设置初始正文 '原版'，不自动存档
+    // 用 'skip' 设置初始正文 '原版'，不自动追加版本
     store.updateChapterContent(ch.id, '原版正文', 5, 'skip')
-    // 显式快照 '原版正文'
+    // 显式快照 '原版正文'（V2 追加 manual_snapshot revision）
     const originalSnap = store.createVersionSnapshot(ch.id, { phase: 'manual_snapshot', trigger: '原版' })
-    // 用 'skip' 更新为 '修改版'，不自动存档
+    // 用 'skip' 更新为 '修改版'，不自动追加版本
     store.updateChapterContent(ch.id, '修改后正文', 10, 'skip')
 
     // 回滚到原版快照
@@ -715,9 +740,10 @@ describe('NovelStore - ChapterVersion 快照与回滚', () => {
     expect(result.currentContent).toBe('原版正文')
     expect(result.currentWordCount).toBe(5)
 
-    // 回滚后：manual_snapshot / rollback_pre（存'修改后正文'）/ rollback_applied（存'原版正文'）= 3 个版本
+    // 回滚后 V2 链：manual_snapshot / rollback_applied = 2 个 revision
+    // （旧表 rollback_pre 快照已随停旧写移除）
     const finalVersions = store.listChapterVersions(ch.id)
-    expect(finalVersions).toHaveLength(3)
+    expect(finalVersions).toHaveLength(2)
     // 当前正文已恢复为原版
     const current = store.getChapterById(ch.id)
     expect(current?.content).toBe('原版正文')

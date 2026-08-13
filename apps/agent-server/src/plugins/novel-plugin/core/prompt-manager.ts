@@ -73,12 +73,10 @@ export class PromptManager {
     if (cached !== undefined) return cached
 
     // 2. 检查 SQLite 运行时覆盖
-    if (projectId) {
-      const row = this.stmtGetTemplate.get(name, projectId) as { content: string } | undefined
-      if (row) {
-        this.cache.set(cacheKey, row.content)
-        return row.content
-      }
+    const row = this.stmtGetTemplate.get(name, projectId ?? null) as { content: string } | undefined
+    if (row) {
+      this.cache.set(cacheKey, row.content)
+      return row.content
     }
 
     // 3. 检查项目级文件覆盖
@@ -126,8 +124,12 @@ export class PromptManager {
       ON CONFLICT(id) DO UPDATE SET content = ?, description = ?, updated_at = ?
     `).run(id, projectId, name, content, description ?? null, now, now, content, description ?? null, now)
 
-    // 清除缓存
-    this.cache.delete(`resolved:${name}:${projectId ?? '*'}`)
+    // 全局模板也是所有项目级查询的回退值。更新任一覆盖后统一清除该模板的
+    // 解析结果，避免项目缓存继续持有旧的全局内容。
+    const prefix = `resolved:${name}:`
+    for (const key of this.cache.keys()) {
+      if (key.startsWith(prefix)) this.cache.delete(key)
+    }
   }
 
   /**

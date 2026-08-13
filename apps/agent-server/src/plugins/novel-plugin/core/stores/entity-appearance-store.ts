@@ -4,16 +4,17 @@
  * 把散落在各实体表 chapter_spans 的"章节出场"横切面抽成独立关联表
  * novel_entity_appearances：可索引、可按章/实体查询、可独立追踪。
  *
- * 写入仅在 appearanceV2Write 开启时由三入口双写（ai-arrange 落库 /
- * Memory applyChanges / syncChapterDimensions）；读取由 appearanceV2Read
- * 控制。默认全部关闭 = 完全保持旧 chapter_spans 行为。
+ * 写入仅在 appearanceV2Write 开启时由各双写入口写入（ai-arrange 落库 /
+ * Memory applyChanges / syncChapterDimensions / 实体 create 时的初始 spans）；
+ * 读取由 appearanceV2Read 控制。默认全部关闭 = 完全保持旧 chapter_spans 行为。
+ * chapterSpansFrozen 开启后出场以本表为唯一权威（frozen-redirect 绕过双写开关）。
  */
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { AppearanceReconcileReport } from '../migration-acceptance.js'
 
 export type AppearanceRole = 'present' | 'advance' | 'mention' | 'plant' | 'reinforce' | 'recover'
-export type AppearanceSource = 'ai-arrange' | 'memory' | 'sync' | 'manual' | 'frozen-redirect'
+export type AppearanceSource = 'ai-arrange' | 'memory' | 'sync' | 'manual' | 'create' | 'frozen-redirect'
 
 export interface EntityAppearanceRow {
   id: string

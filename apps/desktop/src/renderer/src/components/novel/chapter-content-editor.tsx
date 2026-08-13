@@ -79,7 +79,7 @@ export function ChapterContentEditor({
         const ds = updated.derivedState
         toastError(
           '中间章节已重写，后续内容待重建',
-          ds.message ?? `影响后续章节 ${ds.affectedChapters?.join('、') ?? ''}，请确认后从本章开始重建`,
+          `影响后续章节 ${ds.affectedChapters?.join('、') || '未知'}；相关推进记录已暂停进入当前剧情轨道。顺序重建功能尚未提供，请暂勿继续生成后续章节。`,
         )
       }
       saveStateRef.current = 'saved'

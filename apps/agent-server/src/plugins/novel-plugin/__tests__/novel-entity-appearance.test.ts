@@ -1,18 +1,22 @@
 /**
  * P2 实体出场关系统一（novel_entity_appearances）测试。
  *
+ * 2026-08-12 逻辑统一：appearance 表为唯一出场写面/读面（appearanceV2Write /
+ * appearanceV2Read / chapterSpansFrozen 已转正移除，旧列冻结）。
+ *
  * 守护：
  * 1. appearance 表的基础读写与幂等；
- * 2. recordAppearancesIfEnabled：appearanceV2Write 关闭时零副作用（默认行为不变）、
- *    开启时按章写入（resolve chapterId）；
- * 3. 对账口径可跑（CLI 由人工在真实库执行，这里只测 store 层）。
+ * 2. recordAppearancesIfEnabled：恒写（resolve chapterId）、幂等、无法解析时不写；
+ * 3. 出场字段 patch 恒剥离旧列并转写 appearance（frozen-redirect）；
+ * 4. 手工编辑增删 spans 恒同步 appearance（manual 来源）；
+ * 5. 对账口径可跑（CLI 由人工在真实库执行，这里只测 store 层）。
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 
-describe('P2 实体出场关系统一', () => {
+describe('P2 实体出场关系统一（appearance 单链）', () => {
   let db: Database.Database
   let store: NovelStore
   let projectId: string
@@ -47,21 +51,7 @@ describe('P2 实体出场关系统一', () => {
     db.close()
   })
 
-  it('appearanceV2Write 默认关闭：recordAppearancesIfEnabled 零副作用', () => {
-    store.recordAppearancesIfEnabled({
-      projectId,
-      chapterNumber: 1,
-      entityType: 'conflict',
-      entityIds: ['c1', 'c2'],
-      source: 'sync',
-    })
-    expect(store.listAppearancesByChapter(projectId, chapterId)).toHaveLength(0)
-    expect(store.listAppearancesByEntity(projectId, 'conflict', 'c1')).toHaveLength(0)
-  })
-
-  it('开启 appearanceV2Write 后按章写入（resolve chapterId），且幂等', () => {
-    store.updateProject(projectId, { flags: { appearanceV2Write: true } })
-
+  it('recordAppearancesIfEnabled 恒写（默认即写，无 flag 门控）', () => {
     store.recordAppearancesIfEnabled({
       projectId,
       chapterNumber: 1,
@@ -114,15 +104,8 @@ describe('P2 实体出场关系统一', () => {
     expect(store.listAppearancesByChapter(projectId, chapterId)).toHaveLength(0)
   })
 
-  describe('appearanceV2Read 读切', () => {
-    it('读切关闭时返回 null（调用方回退原 chapterSpans 逻辑，零行为变化）', () => {
-      store.updateProject(projectId, { flags: { appearanceV2Write: false, appearanceV2Read: false } })
-      expect(store.listChapterAppearanceIds({ projectId, chapterNumber: 1, entityType: 'conflict' }))
-        .toBeNull()
-    })
-
-    it('读切开启时返回 appearance 中的本章实体（替换 union 多表）', () => {
-      store.updateProject(projectId, { flags: { appearanceV2Write: true, appearanceV2Read: true } })
+  describe('appearance 读切（恒走 appearance 表）', () => {
+    it('恒返回 appearance 中的本章实体（不再返回 null）', () => {
       store.recordAppearancesIfEnabled({
         projectId,
         chapterNumber: 1,
@@ -131,19 +114,18 @@ describe('P2 实体出场关系统一', () => {
         source: 'sync',
       })
       const ids = store.listChapterAppearanceIds({ projectId, chapterNumber: 1, entityType: 'conflict' })
-      expect(ids).not.toBeNull()
+      expect(Array.isArray(ids)).toBe(true)
       expect(ids?.sort()).toEqual(['c-read-1', 'c-read-2'])
     })
 
-    it('读切按 entityType 过滤，且未记录的章节返回空数组', () => {
+    it('按 entityType 过滤，未记录的章节返回空数组', () => {
       const foreshadowIds = store.listChapterAppearanceIds({ projectId, chapterNumber: 1, entityType: 'foreshadow' })
       expect(foreshadowIds).toEqual([])
     })
   })
 
-  describe('chapterSpansFrozen 旧列冻结（P2 收官）', () => {
-    it('flag 默认关闭：chapterSpans 正常写入旧列，appearance 不新增（现状不变）', () => {
-      store.updateProject(projectId, { flags: { chapterSpansFrozen: false } })
+  describe('旧列冻结（chapterSpansFrozen 转正：恒剥离转写）', () => {
+    it('chapterSpans patch 恒剥离不落旧列，转写 appearance（source=frozen-redirect）', () => {
       store.createConflict({
         id: 'fz-c-1',
         projectId,
@@ -155,20 +137,10 @@ describe('P2 实体出场关系统一', () => {
         chapterSpans: [],
         tier: 'main',
       })
-      store.updateConflict('fz-c-1', { chapterSpans: [[1, 1]] })
-      const after = store.getConflict('fz-c-1')
-      expect(after?.chapterSpans).toEqual([[1, 1]])
-      expect(store.listAppearancesByEntity(projectId, 'conflict', 'fz-c-1')).toHaveLength(0)
-    })
-
-    it('flag 开启：chapterSpans 剥离不落库，转写 appearance（source=frozen-redirect）', () => {
-      store.updateProject(projectId, { flags: { chapterSpansFrozen: true } })
-      // 清掉上一个 case 的出场记录，聚焦本 case
-      store.removeEntityAppearances(projectId, 'conflict', 'fz-c-1')
       store.updateConflict('fz-c-1', { chapterSpans: [[1, 1], [2, 2]] })
       const after = store.getConflict('fz-c-1')
-      // 旧列保持原值（未被更新）
-      expect(after?.chapterSpans).toEqual([[1, 1]])
+      // 旧列保持原值（未被更新，冻结）
+      expect(after?.chapterSpans).toEqual([])
       // appearance 写入：第 1 章可解析 chapterId；第 2 章未落库则跳过
       const rows = store.listAppearancesByEntity(projectId, 'conflict', 'fz-c-1')
       expect(rows).toEqual([chapterId])
@@ -195,29 +167,27 @@ describe('P2 实体出场关系统一', () => {
     })
 
     it('patch 不含出场字段时不受影响（其他字段正常更新）', () => {
-      store.updateProject(projectId, { flags: { chapterSpansFrozen: true } })
       store.updateConflict('fz-c-1', { description: '改名后的描述' })
       const after = store.getConflict('fz-c-1')
       expect(after?.description).toBe('改名后的描述')
-      expect(after?.chapterSpans).toEqual([[1, 1]])
+      expect(after?.chapterSpans).toEqual([])
     })
   })
 
-  describe('手工编辑双写（syncManualSpanAppearances）', () => {
+  describe('手工编辑 spans 恒同步 appearance（syncManualSpanAppearances）', () => {
     beforeAll(() => {
-      // 补第 2 章（双写增删需要两个已落库章节）
+      // 补第 2 章（增删需要两个已落库章节）
       db.prepare(`
         INSERT INTO novel_chapters (id, project_id, chapter_number, volume, title, narrative_task, status)
         VALUES (?, ?, 2, 1, '测试章2', '{"description":"测试","type":"advance_mainline","priority":"medium"}', 'draft')
       `).run('p2-chapter-2', projectId)
     })
 
-    it('appearanceV2Write 关闭（默认）：手工改 spans 只落旧列，不产生 appearance', () => {
-      store.updateProject(projectId, { flags: { appearanceV2Write: false } })
+    it('手工增章写入 appearance（source=manual），旧列冻结不更新', () => {
       store.createConflict({
         id: 'manual-c-1',
         projectId,
-        description: '双写测试冲突',
+        description: '手工编辑测试冲突',
         type: 'interest',
         intensity: 5,
         stage: 'escalating',
@@ -225,21 +195,16 @@ describe('P2 实体出场关系统一', () => {
         chapterSpans: [],
         tier: 'main',
       })
-      store.updateConflict('manual-c-1', { chapterSpans: [[1, 1]] })
-      expect(store.getConflict('manual-c-1')?.chapterSpans).toEqual([[1, 1]])
-      expect(store.listAppearancesByEntity(projectId, 'conflict', 'manual-c-1')).toHaveLength(0)
-    })
-
-    it('双写开启：手工增章写入 appearance（source=manual），旧列同步更新', () => {
-      store.updateProject(projectId, { flags: { appearanceV2Write: true, chapterSpansFrozen: false } })
       store.updateConflict('manual-c-1', { chapterSpans: [[1, 2]] })
-      expect(store.getConflict('manual-c-1')?.chapterSpans).toEqual([[1, 2]])
+      // 旧列冻结（不落库）
+      expect(store.getConflict('manual-c-1')?.chapterSpans).toEqual([])
       expect(store.listAppearancesByEntity(projectId, 'conflict', 'manual-c-1').sort())
         .toEqual(['p2-chapter-1', 'p2-chapter-2'])
       const sources = db.prepare(
         "SELECT DISTINCT source FROM novel_entity_appearances WHERE project_id = ? AND entity_id = 'manual-c-1'",
       ).all(projectId) as Array<{ source: string }>
-      expect(sources.map((r) => r.source)).toEqual(['manual'])
+      // 首次写入来源为 frozen-redirect（stripFrozenSpans 剥离转写）
+      expect(sources.map((r) => r.source)).toEqual(['frozen-redirect'])
     })
 
     it('手工收窄 spans：移除章的 appearance 被删除（保留章不动）', () => {
@@ -248,11 +213,11 @@ describe('P2 实体出场关系统一', () => {
         .toEqual(['p2-chapter-1'])
     })
 
-    it('location 的 appearChapters（扁平章节号数组）同样双写', () => {
+    it('location 的 appearChapters（扁平章节号数组）同样同步', () => {
       store.createLocation({
         id: 'manual-loc-1',
         projectId,
-        name: '双写测试地点',
+        name: '手工测试地点',
         description: '',
         type: 'city',
         parentId: null,
@@ -263,44 +228,23 @@ describe('P2 实体出场关系统一', () => {
         appearChapters: [],
       })
       store.updateLocation('manual-loc-1', { appearChapters: [1, 2] })
-      expect(store.getLocation('manual-loc-1')?.appearChapters).toEqual([1, 2])
+      expect(store.getLocation('manual-loc-1')?.appearChapters).toEqual([])
       expect(store.listAppearancesByEntity(projectId, 'location', 'manual-loc-1').sort())
         .toEqual(['p2-chapter-1', 'p2-chapter-2'])
     })
 
-    it('narrative 的 chapterSpans 同样双写', () => {
+    it('narrative 的 chapterSpans 同样同步', () => {
       const created = store.createNarrative({
         projectId,
-        description: '双写测试剧情',
+        description: '手工测试剧情',
         type: 'advance',
         chapterSpans: [],
         status: 'active',
       })
       store.updateNarrative(created.id, { chapterSpans: [[1, 2]] })
-      expect(store.getNarrative(created.id)?.chapterSpans).toEqual([[1, 2]])
+      expect(store.getNarrative(created.id)?.chapterSpans).toEqual([])
       expect(store.listAppearancesByEntity(projectId, 'narrative', created.id).sort())
         .toEqual(['p2-chapter-1', 'p2-chapter-2'])
-    })
-
-    it('chapterSpansFrozen 开启时不产生 manual 来源（短路，走 frozen-redirect）', () => {
-      store.updateProject(projectId, { flags: { appearanceV2Write: true, chapterSpansFrozen: true } })
-      store.createConflict({
-        id: 'manual-c-frozen',
-        projectId,
-        description: '冻结短路测试',
-        type: 'interest',
-        intensity: 5,
-        stage: 'escalating',
-        participants: '[]',
-        chapterSpans: [],
-        tier: 'main',
-      })
-      store.updateConflict('manual-c-frozen', { chapterSpans: [[1, 1]] })
-      const sources = db.prepare(
-        "SELECT DISTINCT source FROM novel_entity_appearances WHERE project_id = ? AND entity_id = 'manual-c-frozen'",
-      ).all(projectId) as Array<{ source: string }>
-      expect(sources.map((r) => r.source)).toEqual(['frozen-redirect'])
-      store.updateProject(projectId, { flags: { appearanceV2Write: true, chapterSpansFrozen: false } })
     })
 
     it('实体删除级联清理 appearance（不产生孤儿行）', () => {
@@ -319,6 +263,29 @@ describe('P2 实体出场关系统一', () => {
       expect(store.listAppearancesByEntity(projectId, 'conflict', 'del-c-1')).toHaveLength(1)
       store.deleteConflict('del-c-1')
       expect(store.listAppearancesByEntity(projectId, 'conflict', 'del-c-1')).toHaveLength(0)
+    })
+
+    it('角色删除级联清理 appearance（character 是出场高频实体，必须防孤儿）', () => {
+      store.createCharacter({
+        id: 'del-chr-1',
+        projectId,
+        name: '待删除角色',
+        description: '', identity: '', personality: '', appearance: '',
+        currentState: '', currentGoal: '', currentPressure: '', secret: '',
+        arcStage: '', arcHistory: '', speechStyle: '',
+        isProtagonist: false, longTermDesire: '', plotRole: 'supporting', removalImpact: '',
+      })
+      // 直接写一条 appearance（AI 编排/同步入口的正常产物）
+      store.recordAppearancesIfEnabled({
+        projectId,
+        chapterNumber: 1,
+        entityType: 'character',
+        entityIds: ['del-chr-1'],
+        source: 'sync',
+      })
+      expect(store.listAppearancesByEntity(projectId, 'character', 'del-chr-1')).toHaveLength(1)
+      store.deleteCharacter('del-chr-1')
+      expect(store.listAppearancesByEntity(projectId, 'character', 'del-chr-1')).toHaveLength(0)
     })
   })
 
@@ -343,10 +310,9 @@ describe('P2 实体出场关系统一', () => {
       `)
       insertChapter.run('rc-chapter-1', rp, 1)
       insertChapter.run('rc-chapter-2', rp, 2)
-      store.updateProject(rp, { flags: { appearanceV2Write: true, chapterSpansFrozen: false } })
     })
 
-    it('双写一致时：mismatch/orphan/duplicate = 0，源目标行数相等', () => {
+    it('旧列冻结后：spans 空 → sourceRows=0，appearance 行在 targetRows（单链语义）', () => {
       store.createConflict({
         id: 'rc-c-1',
         projectId: rp,
@@ -360,39 +326,14 @@ describe('P2 实体出场关系统一', () => {
       })
       store.updateConflict('rc-c-1', { chapterSpans: [[1, 2]] })
       const report = store.reconcileEntityAppearances(rp)
-      expect(report.mismatchRows).toBe(0)
+      // 单链：旧列冻结（sourceRows=0），出场全在 appearance（targetRows=2）
+      expect(report.sourceRows).toBe(0)
+      expect(report.targetRows).toBe(2)
       expect(report.orphanRows).toBe(0)
       expect(report.duplicateRows).toBe(0)
       expect(report.rollbackVerified).toBe(false)
-      expect(report.checkedEntities).toBe(1)
-      expect(report.sourceRows).toBe(2)
-      expect(report.targetRows).toBe(2)
+      expect(report.checkedEntities).toBe(0)
       expect(report.details).toEqual([])
-    })
-
-    it('未落库章节引用单独统计（unpersistedRefs），不算 mismatch', () => {
-      store.updateConflict('rc-c-1', { chapterSpans: [[1, 3]] })
-      const report = store.reconcileEntityAppearances(rp)
-      expect(report.unpersistedRefs).toBe(1)
-      expect(report.mismatchRows).toBe(0)
-      store.updateConflict('rc-c-1', { chapterSpans: [[1, 2]] })
-    })
-
-    it('缺写检出：appearance 缺失一条即 mismatch=1，明细给出缺章；修复后归零', () => {
-      db.prepare(
-        "DELETE FROM novel_entity_appearances WHERE project_id = ? AND entity_id = 'rc-c-1' AND chapter_id = 'rc-chapter-2'",
-      ).run(rp)
-      const report = store.reconcileEntityAppearances(rp)
-      expect(report.mismatchRows).toBe(1)
-      expect(report.details[0]).toEqual({
-        entityType: 'conflict',
-        entityId: 'rc-c-1',
-        missingChapters: [2],
-        extraChapters: [],
-      })
-      // 手工双写即修复手段：重写同样的 spans 会补齐缺章
-      store.updateConflict('rc-c-1', { chapterSpans: [[1, 2]] })
-      expect(store.reconcileEntityAppearances(rp).mismatchRows).toBe(0)
     })
 
     it('孤儿检出：指向不存在实体的 appearance 计入 orphanRows', () => {
@@ -404,26 +345,6 @@ describe('P2 实体出场关系统一', () => {
       expect(store.reconcileEntityAppearances(rp).orphanRows).toBe(1)
       db.prepare("DELETE FROM novel_entity_appearances WHERE id = 'rc-orphan-1'").run()
       expect(store.reconcileEntityAppearances(rp).orphanRows).toBe(0)
-    })
-
-    it('location 扁平章节数组参与对账且一致', () => {
-      store.createLocation({
-        id: 'rc-loc-1',
-        projectId: rp,
-        name: '对账测试地点',
-        description: '',
-        type: 'city',
-        parentId: null,
-        factionId: null,
-        significance: 'minor',
-        firstChapter: null,
-        status: 'normal',
-        appearChapters: [],
-      })
-      store.updateLocation('rc-loc-1', { appearChapters: [1] })
-      const report = store.reconcileEntityAppearances(rp)
-      expect(report.mismatchRows).toBe(0)
-      expect(report.checkedEntities).toBe(2)
     })
   })
 })

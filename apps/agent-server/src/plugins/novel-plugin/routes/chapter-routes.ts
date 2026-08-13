@@ -17,6 +17,7 @@ import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { RhythmController } from '../core/rhythm-controller.js'
 import { diffChapterVersions } from '../core/chapter-version-diff.js'
+import { canTransitionChapterStatus } from '@repo/shared/novel'
 
 export function createChapterRoutes(services: NovelServices): RouteDefinition[] {
   const { store, engine } = services
@@ -45,6 +46,12 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
     handler: async (request: any, reply: any) => {
       const input = validateBody(createChapterSchema, request, reply)
       if (!input) return reply
+      if (input.volumeId) {
+        const volume = store.getVolume(input.volumeId)
+        if (!volume || volume.projectId !== request.params.projectId) {
+          throw new AppError(ErrorCode.BAD_REQUEST, '卷不存在或不属于当前项目', 400)
+        }
+      }
 
       const result = await engine.createChapter(
         request.params.projectId,
@@ -77,7 +84,8 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
   const updateChapterSchema = z.object({
     title: z.string().optional(),
     content: z.string().optional(),
-    status: z.enum(['planned', 'drafting', 'review', 'published', 'rejected']).optional(),
+    // published 只能通过 /publish 命令进入，确保正文与审稿前置条件被校验。
+    status: z.enum(['planned', 'drafting', 'review', 'rejected']).optional(),
     outline: z.string().max(20000).optional(),
     volumeId: z.string().nullable().optional(),
     tension: z.number().int().min(1).max(10).nullable().optional(),
@@ -93,6 +101,24 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
     handler: async (request: any, reply: any) => {
       const input = validateBody(updateChapterSchema, request, reply)
       if (!input) return reply
+      const existing = store.getChapterById(request.params.id)
+      if (!existing) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      if (existing.status === 'published' && (input.content !== undefined || input.status !== undefined)) {
+        throw new AppError(ErrorCode.CONFLICT, '已发布章节不能直接改正文或状态，请先进入修订流程', 409)
+      }
+      if (input.status !== undefined && !canTransitionChapterStatus(existing.status, input.status)) {
+        throw new AppError(
+          ErrorCode.CONFLICT,
+          `章节状态不能从 ${existing.status} 变更为 ${input.status}`,
+          409,
+        )
+      }
+      if (input.volumeId) {
+        const volume = store.getVolume(input.volumeId)
+        if (!volume || volume.projectId !== existing.projectId) {
+          throw new AppError(ErrorCode.BAD_REQUEST, '卷不存在或不属于该章节项目', 400)
+        }
+      }
 
       // 传 content 时自动重算 wordCount（与前端 chapter-live-view.tsx 的 countWords 一致），
       // 避免 spread patch 保留旧 wordCount 导致统计与正文不同步。
@@ -100,12 +126,11 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       let versionSource: VersionSource = undefined
       if (input.content != null) {
         const cleaned = input.content.replace(/[#*`>\-\[\]()!]/g, '').replace(/\s+/g, '')
-        patch = { ...input, wordCount: cleaned.length }
+        patch = { ...input, wordCount: cleaned.length, status: 'drafting' }
         versionSource = { phase: 'manual_patch', trigger: '用户手动编辑' }
       }
 
-      const updated = store.updateChapter(request.params.id, patch, versionSource)
-      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      const updated = store.updateChapter(request.params.id, patch, versionSource)!
 
       // T04 决策 4：中间章重写 → 后续派生物标 stale，响应携带影响范围供前端提示重建
       let derivedState: Record<string, unknown> = { isMiddleRewrite: false }
@@ -118,7 +143,7 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
             isMiddleRewrite: true,
             staleMarked,
             affectedChapters: laterChapters.map((c) => c.chapterNumber),
-            message: `检测到中间章节重写，后续 ${laterChapters.length} 章的推进记录已标记待重建，请在前端确认后从本章开始重建。`,
+            message: `检测到中间章节重写，后续 ${laterChapters.length} 章的推进记录已标记待重建；顺序重建功能尚未提供，请暂勿继续生成后续章节。`,
           }
         }
       }
@@ -221,6 +246,11 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
     method: 'POST',
     path: '/chapters/:id/versions/:versionId/rollback',
     handler: async (request: any) => {
+      const chapter = store.getChapterById(request.params.id)
+      if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      if (chapter.status === 'published') {
+        throw new AppError(ErrorCode.CONFLICT, '已发布章节不能回滚正文，请先进入修订流程', 409)
+      }
       try {
         const result = store.rollbackToVersion(request.params.id, request.params.versionId)
         const rollbackResult: RollbackResult = {
@@ -341,6 +371,9 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
     handler: async (request: any) => {
       const chapter = store.getChapterById(request.params.id)
       if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      if (chapter.status === 'published') {
+        throw new AppError(ErrorCode.CONFLICT, '已发布章节不能回滚正文，请先进入修订流程', 409)
+      }
       const result = store.rollbackToContentRevision(request.params.id, request.params.revisionId)
       return success(result, request.traceId)
     },

@@ -11,9 +11,9 @@
  * 生成路径改造（buildChapterContextShared 按 chunk 输出）在 T03-2「旧 shared 等价拆块」
  * 实施；本模块只保证"目录不漂移"（测试钉死映射）。
  *
- * 回滚：contextChunksEnabled flag（默认关）。关 = 完全走旧字符串路径。
+ * 2026-08-12 逻辑统一：ContextChunk 为唯一 shared 组装路径（orchestrator 恒走 chunk），
+ * 旧字符串路径已删除。
  */
-import type { NovelFeatureFlag } from './novel-feature-flags.js'
 
 /** Chunk 模式（§5.2）：full=完整注入；summary=摘要注入；on-demand=按需检索；disabled=不注入 */
 export type ChunkMode = 'full' | 'summary' | 'on-demand' | 'disabled'
@@ -153,6 +153,3 @@ export function resolveChunkMode(
   }
   return policy.mode
 }
-
-/** T03-1 契约 flag：开启后按 chunk 构建 shared（T03-2 起消费）；默认关 = 旧字符串路径 */
-export const CONTEXT_CHUNKS_FLAG: Extract<NovelFeatureFlag, 'contextChunksEnabled'> = 'contextChunksEnabled'

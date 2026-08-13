@@ -84,7 +84,10 @@ import { buildVoiceProfiles, formatVoiceContrastTable } from './character-voice.
 import { evaluateProseQuality } from './prose-quality-evaluator.js'
 import { isNovelFeatureEnabled } from './novel-feature-flags.js'
 import { CHUNK_BY_ID, resolveChunkMode } from './context-chunk.js'
-import { buildStoryStateSummary } from './entity-summary.js'
+import { buildStoryStateSummary, chooseEntityChunkMode } from './entity-summary.js'
+import { estimateChunkTokens } from './context-budget.js'
+import { validateAgentIdentity } from './identity-contract.js'
+import type { LazyChunkBuilder } from './chunk-cache.js'
 import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
 import type { RelationshipGraph, GraphEdge } from './novel-relationship-graph.js'
 import type {
@@ -111,11 +114,11 @@ import type {
   NarrativeTask,
   ChapterConstraints,
   ArrangedEntity,
-  ChapterRhythm,
   NovelAgentLog,
   ChapterStoryContext
 } from './types.js'
 import type { MemoryEvent, MemoryEventType, MemorySnapshot } from './novel-memory-store.js'
+import { resolveChapterBoundaryEntity } from './chapter-boundary-resolution.js'
 
 /** 将持久化枚举翻译成创作语境中的自然语言，避免把实现细节交给模型理解。 */
 const PROMPT_VALUE_LABELS: Record<string, string> = {
@@ -546,60 +549,110 @@ export class NovelPromptBuilder {
     private relationshipGraph?: RelationshipGraph
   ) {}
 
+  /** P3 T03-6：identity-contract 守卫日志（可选，services 装配时注入） */
+  private identityLogger?: { warn: (msg: string, ctx?: unknown) => void }
+
+  /** 注入 identity-contract 守卫日志（services 装配时调用一次） */
+  setIdentityLogger(logger: { warn: (msg: string, ctx?: unknown) => void }): void {
+    this.identityLogger = logger
+  }
+
   /** Resolve a bounded set of project-owned entity IDs or exact names into compact facts. */
-  buildReferenceFactPack(projectId: string, references?: readonly string[]): string {
+  buildReferenceFactPack(
+    projectId: string,
+    references?: readonly string[],
+    boundary?: ChapterBoundaryContext,
+  ): string {
     const requested = [...new Set((references ?? []).map((value) => value.trim()).filter(Boolean))]
       .slice(0, 8)
     if (requested.length === 0) return ''
 
     type Fact = { id: string; name: string; projectId: string; detail: string; aliases?: string[] }
-    const characters = this.stores.listCharacters(projectId)
-    const characterNames = new Map(characters.map((character) => [character.id, character.name]))
+    type Resolved<T> = { entity: T; hasBoundaryState: boolean }
+    const resolveCandidates = <T extends { id: string }>(
+      boundaryEntities: readonly T[] | undefined,
+      currentEntities: readonly T[],
+    ): Resolved<T>[] => {
+      if (!boundary) return currentEntities.map((entity) => ({ entity, hasBoundaryState: true }))
+      const resolved: Resolved<T>[] = (boundaryEntities ?? [])
+        .map((entity) => ({ entity, hasBoundaryState: true }))
+      if (!boundary.fromSnapshot) return resolved
+      const knownIds = new Set(resolved.map(({ entity }) => entity.id))
+      for (const entity of currentEntities) {
+        if (!knownIds.has(entity.id)) resolved.push({ entity, hasBoundaryState: false })
+      }
+      return resolved
+    }
+    const characters = resolveCandidates(
+      boundary?.entities.characters,
+      this.stores.listCharacters(projectId),
+    )
+    const characterNames = new Map(
+      characters.map(({ entity }) => [entity.id, entity.name]),
+    )
     const facts: Fact[] = [
-      ...characters.map((entity) => ({
+      ...characters.map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.name, projectId: entity.projectId,
-        detail: `角色；身份：${entity.identity}；状态：${entity.currentState}；目标：${entity.currentGoal}；压力：${entity.currentPressure}；弧光：${entity.arcStage}`,
+        detail: hasBoundaryState
+          ? `角色；身份：${entity.identity}；状态：${entity.currentState}；目标：${entity.currentGoal}；压力：${entity.currentPressure}；弧光：${entity.arcStage}`
+          : `角色；身份：${entity.identity}；性格：${entity.personality}；说话风格：${entity.speechStyle}；章前动态状态未知`,
       })),
-      ...this.stores.listConflicts(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.conflicts, this.stores.listConflicts(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.description, projectId: entity.projectId,
-        detail: `冲突；阶段：${entity.stage}；强度：${entity.intensity}/10；当前：${entity.currentStep ?? ''}；下一步：${entity.nextStep ?? ''}`,
+        detail: hasBoundaryState
+          ? `冲突；阶段：${entity.stage}；强度：${entity.intensity}/10；当前：${entity.currentStep ?? ''}；下一步：${entity.nextStep ?? ''}`
+          : `冲突；类型：${entity.type}；章前动态状态未知`,
       })),
-      ...this.stores.listForeshadowing(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.foreshadowing, this.stores.listForeshadowing(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.description, projectId: entity.projectId,
-        detail: `伏笔；状态：${entity.status}；计划回收章：${entity.recoverByChapter ?? '未定'}`,
+        detail: hasBoundaryState
+          ? `伏笔；状态：${entity.status}；计划回收章：${entity.recoverByChapter ?? '未定'}`
+          : `伏笔；类别：${entity.category}；章前动态状态未知`,
       })),
-      ...this.stores.listClues(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.clues, this.stores.listClues(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.description, projectId: entity.projectId,
-        detail: `线索；指向：${entity.pointsTo}；进度：${entity.progress}%；当前：${entity.currentStep}；下一步：${entity.nextStep}`,
+        detail: hasBoundaryState
+          ? `线索；指向：${entity.pointsTo}；进度：${entity.progress}%；当前：${entity.currentStep}；下一步：${entity.nextStep}`
+          : `线索；指向：${entity.pointsTo}；章前动态状态未知`,
       })),
-      ...this.stores.listFactions(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.factions, this.stores.listFactions(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.name, projectId: entity.projectId,
-        detail: `势力；状态：${entity.status}；理念：${entity.ideology}；实力：${entity.strength}`,
+        detail: hasBoundaryState
+          ? `势力；状态：${entity.status}；理念：${entity.ideology}；实力：${entity.strength}`
+          : `势力；理念：${entity.ideology}；章前动态状态未知`,
       })),
-      ...this.stores.listLocations(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.locations, this.stores.listLocations(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.name, projectId: entity.projectId,
-        detail: `地点；状态：${entity.status}；${entity.description}`,
+        detail: hasBoundaryState
+          ? `地点；状态：${entity.status}；${entity.description}`
+          : `地点；${entity.description}；章前动态状态未知`,
       })),
-      ...this.stores.listItems(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.items, this.stores.listItems(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.name, projectId: entity.projectId,
-        detail: `物品；状态：${entity.status}；能力：${entity.abilities}；来源：${entity.origin}`,
+        detail: hasBoundaryState
+          ? `物品；状态：${entity.status}；能力：${entity.abilities}；来源：${entity.origin}`
+          : `物品；能力：${entity.abilities}；章前动态状态未知`,
       })),
-      ...this.stores.listWorldElements(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.worldElements, this.stores.listWorldElements(projectId)).map(({ entity }) => ({
         id: entity.id, name: entity.name, projectId: entity.projectId,
         detail: `世界设定；类别：${entity.category}；${entity.description}`,
       })),
-      ...this.stores.listInformationLayers(projectId).map((entity) => ({
+      ...resolveCandidates(boundary?.entities.informationLayers, this.stores.listInformationLayers(projectId)).map(({ entity, hasBoundaryState }) => ({
         id: entity.id, name: entity.infoDescription, projectId: entity.projectId,
-        detail: `信息差；读者${entity.readerKnows ? '已知' : '未知'}；${entity.isRevealed ? '已揭示' : '未揭示'}`,
+        detail: hasBoundaryState
+          ? `信息差；读者${entity.readerKnows ? '已知' : '未知'}；${entity.isRevealed ? '已揭示' : '未揭示'}`
+          : '信息差；章前认知状态未知',
       })),
-      ...this.stores.listRelationships(projectId).map((entity) => {
+      ...resolveCandidates(boundary?.entities.relationships, this.stores.listRelationships(projectId)).map(({ entity, hasBoundaryState }) => {
         const characterA = characterNames.get(entity.characterA) ?? entity.characterA
         const characterB = characterNames.get(entity.characterB) ?? entity.characterB
         const reference = `${characterA}/${characterB}/${entity.relationType}`
         return {
           id: entity.id, name: reference, projectId: entity.projectId,
           aliases: [`${characterB}/${characterA}/${entity.relationType}`],
-          detail: `角色关系；${characterA} ↔ ${characterB}；类型：${entity.relationType}；阶段：${entity.currentStage}；走向：${entity.trend}`,
+          detail: hasBoundaryState
+            ? `角色关系；${characterA} ↔ ${characterB}；类型：${entity.relationType}；阶段：${entity.currentStage}；走向：${entity.trend}`
+            : `角色关系；${characterA} ↔ ${characterB}；类型：${entity.relationType}；章前动态状态未知`,
         }
       }),
       ...this.stores.listWorldRules(projectId).map((entity) => ({
@@ -629,6 +682,7 @@ export class NovelPromptBuilder {
     projectId: string,
     findingTexts: readonly string[],
     explicitReferences?: readonly string[],
+    boundary?: ChapterBoundaryContext,
   ): string {
     const reviewText = findingTexts.join('\n')
     const mentioned = [
@@ -656,7 +710,11 @@ export class NovelPromptBuilder {
         mentioned.push(relationship.id)
       }
     }
-    return this.buildReferenceFactPack(projectId, [...(explicitReferences ?? []), ...mentioned])
+    return this.buildReferenceFactPack(
+      projectId,
+      [...(explicitReferences ?? []), ...mentioned],
+      boundary,
+    )
   }
 
   /**
@@ -689,29 +747,6 @@ export class NovelPromptBuilder {
       )
     }
     return compileWritingStylePrompt(profile, target)
-  }
-
-  /**
-   * 计算单章目标字数
-   *
-   * `project.targetWords` 是项目设置中的默认每章目标字数，直接作为基准使用。
-   * 未设置时回退至 3000 字；节奏模型仍可在此基准上做短章/高潮章调整。
-   *
-   * 节奏联动：breather/setup 偏短（×0.8），climax 偏长（×1.3），其余不变
-   */
-  /**
-   * 计算章节目标字数（应用节奏系数）
-   *
-   * public 暴露：PostWriteGuard 字数检测需复用同一逻辑，避免与 Writer 提示词目标不一致。
-   */
-  computeChapterTargetWords(project: NovelProject | undefined, rhythm?: ChapterRhythm): number {
-    let base: number
-    if (!project || project.targetWords <= 0) base = 3000
-    else base = Math.round(project.targetWords)
-    // 节奏联动调整
-    if (rhythm === 'climax') base = Math.round(base * 1.3)
-    else if (rhythm === 'breather' || rhythm === 'setup') base = Math.round(base * 0.85)
-    return Math.max(1, base)
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -866,10 +901,29 @@ export class NovelPromptBuilder {
       if (rules) result = `${result}\n\n---\n\n${rules}`
     }
     if (agentType !== 'writer' && agentType !== 'reviser' && agentType !== 'reviewer') {
+      this.guardAgentIdentity(agentType, result)
       return result
     }
     const compiledStyle = this.buildWritingStylePrompt(projectId, agentType)
-    return compiledStyle ? `${result}\n\n---\n\n${compiledStyle.content}` : result
+    const final = compiledStyle ? `${result}\n\n---\n\n${compiledStyle.content}` : result
+    this.guardAgentIdentity(agentType, final)
+    return final
+  }
+
+  /**
+   * P3 T03-6：identity-contract 守卫——所有 buildAgentIdentity 消费方统一覆盖。
+   *
+   * 校验身份文本是否包含 AGENT_IDENTITY_MARKERS（职责协议锚点），缺失时 warn
+   * （不 throw：模板可能合法演进，但必须留痕让测试与运维发现漂移）。
+   * 五角色之外的 agentType（character-generator / similarity-scanner 等）
+   * markers 为空，validateAgentIdentity.ok 仅校验字符上界。
+   */
+  private guardAgentIdentity(agentType: string, identityText: string): void {
+    const report = validateAgentIdentity(agentType, identityText)
+    if (!report.ok) {
+      const msg = `[identity-contract] Agent ${agentType} 身份契约漂移：missing=${report.missingMarkers.join(',')} totalChars=${report.totalChars}`
+      this.identityLogger?.warn(msg, { agentType, missingMarkers: report.missingMarkers, totalChars: report.totalChars })
+    }
   }
 
   /** 盲审文字编辑身份：不携带章节规划，只保留文字职责和项目文风档案。 */
@@ -968,13 +1022,46 @@ export class NovelPromptBuilder {
     narrativeTask: NarrativeTask,
     constraints: ChapterConstraints,
     arrangedEntities?: ArrangedEntity,
-    options?: { askStoryEnabled?: boolean; agentType?: string },
+    options?: { askStoryEnabled?: boolean; agentType?: string; entitySummaryMode?: 'full' | 'summary' },
   ): string {
     const chunks = this.buildChapterContextChunks(
       projectId, chapterNumber, narrativeTask, constraints, arrangedEntities,
-      { askStoryEnabled: options?.askStoryEnabled ?? true, agentType: options?.agentType },
+      {
+        askStoryEnabled: options?.askStoryEnabled ?? true,
+        agentType: options?.agentType,
+        entitySummaryMode: options?.entitySummaryMode,
+      },
     )
     return this.stripEmDash(chunks.map((c) => c.content).join('\n\n---\n\n'))
+  }
+
+  /**
+   * T03-4 生产决策：根据章前故事状态选择 story-state full/summary。
+   *
+   * 当前生成层没有统一暴露模型 contextWindow，因此只在实体数超过阈值时
+   * 安全降级；预算未知不压缩小项目，满足"必要事实不丢失"。
+   */
+  chooseChapterEntitySummaryMode(
+    projectId: string,
+    chapterNumber: number,
+    arrangedEntities?: ArrangedEntity,
+  ): 'full' | 'summary' {
+    if (this.hasArrangedEntities(arrangedEntities)) return 'full'
+    const state = this.getChapterBoundaryContext(projectId, chapterNumber).state
+    const entityCount = state.characters.length
+      + state.relationships.length
+      + state.activeConflicts.length
+      + state.pendingForeshadowing.length
+      + state.activeClues.length
+      + state.activeFactions.length
+      + state.activeLocations.length
+      + state.items.length
+    return chooseEntityChunkMode({
+      entityCount,
+      fullTokens: estimateChunkTokens(this.formatStoryState(state, true).length),
+      // 未接入 modelRegistry.contextWindow 时给足预算，实体数阈值仍能保护大档案。
+      remainingBudget: Number.POSITIVE_INFINITY,
+    })
   }
 
   /**
@@ -1085,6 +1172,135 @@ export class NovelPromptBuilder {
     }
 
     return chunks
+  }
+
+  /**
+   * §5.6 先查后建：返回 shared chunk 的惰性构建器。
+   *
+   * 与 buildChapterContextChunks 保持相同的目录、顺序和过滤规则，但不提前读取
+   * boundary / ledger / edges / anchors。缓存命中时对应 build() 完全不会执行。
+   * optional chunk 用 null 表示不产出，由 lazy cache 以空哨兵记住。
+   */
+  buildChapterContextChunkBuilders(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTask: NarrativeTask,
+    constraints: ChapterConstraints,
+    arrangedEntities?: ArrangedEntity,
+    options?: { mode?: 'full' | 'diff'; askStoryEnabled?: boolean; entitySummaryMode?: 'full' | 'summary'; agentType?: string },
+  ): LazyChunkBuilder[] {
+    const scopeSource = JSON.stringify({
+      chapterNumber,
+      narrativeTask,
+      constraints,
+      arrangedEntities: arrangedEntities ?? null,
+      mode: options?.mode ?? 'full',
+      askStoryEnabled: options?.askStoryEnabled ?? true,
+      entitySummaryMode: options?.entitySummaryMode ?? 'full',
+      agentType: options?.agentType ?? '',
+    })
+    const scope = createHash('sha256').update(scopeSource).digest('hex').slice(0, 16)
+    const enabled = (chunkId: string): boolean =>
+      !options?.agentType || resolveChunkMode(options.agentType, chunkId) !== 'disabled'
+    const builder = (chunkId: string, build: () => string | null): LazyChunkBuilder => ({
+      chunkId,
+      scope,
+      build,
+    })
+
+    if (options?.mode === 'diff') {
+      return enabled('story-ledger')
+        ? [builder('story-ledger', () => this.buildChapterContextDiff(
+            projectId,
+            chapterNumber,
+            narrativeTask,
+            constraints,
+            arrangedEntities,
+            options.askStoryEnabled ?? true,
+          ))]
+        : []
+    }
+
+    const hasArranged = this.hasArrangedEntities(arrangedEntities)
+    const relevantEntityIds = this.collectRelevantEntityIds(arrangedEntities)
+    let boundaryMemo: ReturnType<NovelPromptBuilder['getChapterBoundaryContext']> | undefined
+    const boundary = (): ReturnType<NovelPromptBuilder['getChapterBoundaryContext']> =>
+      boundaryMemo ??= this.getChapterBoundaryContext(projectId, chapterNumber)
+    let anchorsMemo: Map<string, string> | undefined
+    const anchor = (chunkId: string): string | null => {
+      if (!anchorsMemo) {
+        anchorsMemo = new Map(
+          this.collectChapterAnchorChunks(projectId, chapterNumber).map((c) => [c.chunkId, c.content]),
+        )
+      }
+      return anchorsMemo.get(chunkId) ?? null
+    }
+
+    const builders: LazyChunkBuilder[] = []
+    if (enabled('chapter-info')) {
+      builders.push(builder('chapter-info', () => this.formatChapterInfo(projectId, chapterNumber, narrativeTask)))
+    }
+    if (enabled('chapter-constraints')) {
+      builders.push(builder('chapter-constraints', () => this.formatConstraints(constraints)))
+    }
+    if (hasArranged && arrangedEntities && enabled('arranged-entities')) {
+      builders.push(builder('arranged-entities', () =>
+        this.formatArrangedEntities(projectId, chapterNumber, arrangedEntities, boundary())))
+    }
+    if (!hasArranged) {
+      if (enabled('story-state')) {
+        builders.push(builder('story-state', () =>
+          options?.entitySummaryMode === 'summary'
+            ? buildStoryStateSummary(boundary().state)
+            : this.formatStoryState(boundary().state, options?.askStoryEnabled ?? true)))
+      }
+      if (enabled('voice-contrast')) {
+        builders.push(builder('voice-contrast', () => {
+          const stateCharacters = boundary().state.characters.filter((character) => (
+            !/（待定）|待补充|待定$|^新的$|^测试角色/.test(character.name)
+          ))
+          return formatVoiceContrastTable(buildVoiceProfiles(stateCharacters)) || null
+        }))
+      }
+    }
+    if (this.memoryStore?.getChapterStoryContext && enabled('story-ledger')) {
+      builders.push(builder('story-ledger', () => {
+        const ledgerContext = this.memoryStore!.getChapterStoryContext!(projectId, chapterNumber)
+        const b = boundary()
+        const nameMap = b.fromSnapshot
+          ? this.buildBoundaryEntityNameMap(projectId, b.entities)
+          : this.buildSubjectNameMap(projectId, ledgerContext)
+        this.injectSubjectNames(ledgerContext, nameMap)
+        return this.formatStoryLedgerContext(ledgerContext, arrangedEntities, nameMap) || null
+      }))
+    }
+    if (enabled('entity-edges')) {
+      builders.push(builder('entity-edges', () => {
+        const b = boundary()
+        const edges = arrangedEntities && relevantEntityIds.size === 0
+          ? []
+          : this.collectRelevantEdges(projectId, relevantEntityIds, b)
+        return edges.length > 0 ? this.formatEdges(projectId, edges, b) || null : null
+      }))
+    }
+    if (enabled('info-layers')) {
+      builders.push(builder('info-layers', () => {
+        const b = boundary()
+        const infoLayers = this.filterRelevantInfoLayers(
+          b.entities.informationLayers,
+          arrangedEntities,
+          b,
+        )
+        return infoLayers.length > 0
+          ? this.formatInfoLayers(projectId, infoLayers, arrangedEntities, b)
+          : null
+      }))
+    }
+
+    for (const chunkId of ['recent-recaps', 'prev-ending', 'sound-anchor', 'next-anchor', 'hooks', 'style-fingerprint']) {
+      if (enabled(chunkId)) builders.push(builder(chunkId, () => anchor(chunkId)))
+    }
+    return builders
   }
 
   /**
@@ -1375,13 +1591,10 @@ export class NovelPromptBuilder {
     // 对 Director/Reviewer/Memory 注入会导致它们越权创作正文。
     if (agentType === 'writer') {
       const project = this.stores.getProject(projectId)
-      const rhythm = constraints.rhythmConstraint?.rhythm
-      // V2（scenePlanV2Write）：字数只读 WordBudgetResolver 结果（buildChapterConstraints
-      // 在 flag 开时已返回 resolver 值）；无定位时不再应用节奏倍率。V1 保持现状。
-      const targetWords = isNovelFeatureEnabled(this.stores, projectId, 'scenePlanV2Write')
-        ? constraints.wordBudget?.target
-          ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
-        : constraints.wordBudget?.target ?? this.computeChapterTargetWords(project, rhythm)
+      // 字数统一走 WordBudgetResolver（buildChapterConstraints 已返回 resolver 值）；
+      // 无定位时不再应用节奏倍率（2026-08-12 逻辑统一：删除 computeChapterTargetWords）。
+      const targetWords = constraints.wordBudget?.target
+        ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
       const positioningGuidance: Record<string, string> = {
         high_pressure: '高压章：快节奏、高张力、动作密集，章尾留强钩。',
         advancement: '推进章：节奏适中，每个场景都要产生信息或局势增量。',
@@ -1744,14 +1957,27 @@ export class NovelPromptBuilder {
     const infoLayerById = new Map(
       boundary.entities.informationLayers.map((entity) => [entity.id, entity])
     )
-    const resolveCharacter = (id: string) => characterById.get(id) ?? this.stores.getCharacter(id)
-    const resolveConflict = (id: string) => conflictById.get(id) ?? this.stores.getConflict(id)
-    const resolveForeshadow = (id: string) =>
-      foreshadowById.get(id) ?? this.stores.getForeshadow(id)
-    const resolveClue = (id: string) => clueById.get(id) ?? this.stores.getClue(id)
-    const resolveFaction = (id: string) => factionById.get(id) ?? this.stores.getFaction(id)
-    const resolveLocation = (id: string) => locationById.get(id) ?? this.stores.getLocation(id)
-    const resolveItem = (id: string) => itemById.get(id) ?? this.stores.getItem(id)
+    const resolveCharacter = (id: string) => resolveChapterBoundaryEntity(
+      id, characterById, (entityId) => this.stores.getCharacter(entityId), boundary.fromSnapshot,
+    )
+    const resolveConflict = (id: string) => resolveChapterBoundaryEntity(
+      id, conflictById, (entityId) => this.stores.getConflict(entityId), boundary.fromSnapshot,
+    )
+    const resolveForeshadow = (id: string) => resolveChapterBoundaryEntity(
+      id, foreshadowById, (entityId) => this.stores.getForeshadow(entityId), boundary.fromSnapshot,
+    )
+    const resolveClue = (id: string) => resolveChapterBoundaryEntity(
+      id, clueById, (entityId) => this.stores.getClue(entityId), boundary.fromSnapshot,
+    )
+    const resolveFaction = (id: string) => resolveChapterBoundaryEntity(
+      id, factionById, (entityId) => this.stores.getFaction(entityId), boundary.fromSnapshot,
+    )
+    const resolveLocation = (id: string) => resolveChapterBoundaryEntity(
+      id, locationById, (entityId) => this.stores.getLocation(entityId), boundary.fromSnapshot,
+    )
+    const resolveItem = (id: string) => resolveChapterBoundaryEntity(
+      id, itemById, (entityId) => this.stores.getItem(entityId), boundary.fromSnapshot,
+    )
     // 功能位中文映射（让 Writer 直观理解每个角色的本章推动作用）
     const plotFunctionLabel: Record<string, string> = {
       provide_resource: '提供资源',
@@ -1805,8 +2031,8 @@ export class NovelPromptBuilder {
       const isPlaceholderName = (name: string): boolean => /（待定）|待补充|待定$/.test(name)
       const chars = arranged.characterIds
         .map(resolveCharacter)
-        .filter((c): c is NonNullable<typeof c> => c != null)
-        .filter((c) => !isPlaceholderName(c.name))
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
+        .filter(({ entity }) => !isPlaceholderName(entity.name))
       if (chars.length > 0) {
         // 按功能位索引，便于角色查到对应功能
         const functionMap = new Map<string, Array<{ function: string; note?: string }>>()
@@ -1816,7 +2042,7 @@ export class NovelPromptBuilder {
           functionMap.set(entry.characterId, entries)
         }
         lines.push('### 角色短卡')
-        for (const c of chars) {
+        for (const { entity: c, hasBoundaryState } of chars) {
           const charLines = [`- **${c.name}**`]
           const roleLabel = plotRoleLabel[c.plotRole] ?? c.plotRole
           if (roleLabel) charLines.push(`  笔墨：${roleLabel}`)
@@ -1831,23 +2057,23 @@ export class NovelPromptBuilder {
               `  本章作用：${fnLabel}${fn.note ? `（${compactPromptText(fn.note, CHARACTER_CARD_BUDGET.functionNote)}）` : ''}`
             )
           }
-          if (usableDetail(c.currentState))
+          if (hasBoundaryState && usableDetail(c.currentState))
             charLines.push(
               `  此刻：${compactPromptText(c.currentState, CHARACTER_CARD_BUDGET.currentState)}`
             )
           const isLightweightRole = c.plotRole === 'function' || c.plotRole === 'background'
-          if (!isLightweightRole && usableDetail(c.currentGoal))
+          if (hasBoundaryState && !isLightweightRole && usableDetail(c.currentGoal))
             charLines.push(
               `  想要：${compactPromptText(c.currentGoal, CHARACTER_CARD_BUDGET.currentGoal)}`
             )
-          if (!isLightweightRole && usableDetail(c.currentPressure))
+          if (hasBoundaryState && !isLightweightRole && usableDetail(c.currentPressure))
             charLines.push(
               `  压力：${compactPromptText(c.currentPressure, CHARACTER_CARD_BUDGET.currentPressure)}`
             )
           // 长期欲望、缺点与完整性格只属于主角/主要对手/重要配角的笔墨预算。
           // 功能角色一旦看到这些字段，模型会本能地给他独立心理、背景解释和弧光展示，
           // 把“肇事司机打电话”写成另一条人物线。
-          if (!isLightweightRole && usableDetail(c.longTermDesire))
+          if (hasBoundaryState && !isLightweightRole && usableDetail(c.longTermDesire))
             charLines.push(
               `  一直想要：${compactPromptText(c.longTermDesire, CHARACTER_CARD_BUDGET.longTermDesire)}`
             )
@@ -1870,9 +2096,11 @@ export class NovelPromptBuilder {
         // 声音对照只为需要持续辨认的主角/对手/重要配角展开。
         // function/background 只使用短卡中的一句对话提示，不加入全套声音坐标，
         // 避免模型误以为每个过场人物都要获得同等台词量和辨识度展示。
-        const voiceCharacters = chars.filter((character) => (
-          character.plotRole !== 'function' && character.plotRole !== 'background'
-        ))
+        const voiceCharacters = chars
+          .map(({ entity }) => entity)
+          .filter((character) => (
+            character.plotRole !== 'function' && character.plotRole !== 'background'
+          ))
         const voiceTable = formatVoiceContrastTable(buildVoiceProfiles(voiceCharacters))
         if (voiceTable) {
           lines.push('')
@@ -1894,8 +2122,8 @@ export class NovelPromptBuilder {
         const charNameMap = new Map(
           arranged.characterIds
             .map(resolveCharacter)
-            .filter((c): c is NonNullable<typeof c> => c != null)
-            .map((c) => [c.id, c.name])
+            .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
+            .map(({ entity }) => [entity.id, entity.name])
         )
         const alignmentLabel: Record<string, string> = {
           ally: '同一边',
@@ -1930,16 +2158,18 @@ export class NovelPromptBuilder {
     if (arranged.conflictIds.length > 0) {
       const confl = arranged.conflictIds
         .map(resolveConflict)
-        .filter((c): c is NonNullable<typeof c> => c != null)
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
       if (confl.length > 0) {
         lines.push('### 本章冲突')
         // 用于把 participants（JSON: string[]）解析为角色名
         const allChars = [...characterById.values()]
         const charNameMap = new Map(allChars.map((c) => [c.id, c.name]))
-        for (const c of confl) {
+        for (const { entity: c, hasBoundaryState } of confl) {
           const parts = [`- [${promptLabel(c.type)}] ${c.description}`]
-          parts.push(`现状：${promptLabel(c.stage)}`)
-          parts.push(`强度：${c.intensity}/10`)
+          if (hasBoundaryState) {
+            parts.push(`现状：${promptLabel(c.stage)}`)
+            parts.push(`强度：${c.intensity}/10`)
+          }
           parts.push(`线索层级：${promptLabel(c.tier)}`)
           // ── P2-1：冲突功能位 + 推进模式（让 Writer 知道这个冲突在本章的推动作用与演变规律）──
           if (c.plotFunction) {
@@ -1951,24 +2181,26 @@ export class NovelPromptBuilder {
           // ── 071：推进粒度（让 Writer 知道冲突已经推进到哪一步，避免反复验证同一个粗状态）──
           // 关键修复：原本只输出 stage（emerging/escalating/...），Writer 看不到"已出现图案"
           // 这类细粒度进展，导致每章都从头验证穴位是否存在。
-          if (c.currentStep?.trim()) {
+          if (hasBoundaryState && c.currentStep?.trim()) {
             parts.push(`当前进展：${c.currentStep.trim()}`)
           }
-          if (c.nextStep?.trim()) {
+          if (hasBoundaryState && c.nextStep?.trim()) {
             parts.push(`⚡ 本章下一步：${c.nextStep.trim()}`)
           }
           // ── 四层逻辑④：participants 双向关联 ──
           // 输出参与方角色名，让 Writer 知道这个冲突涉及谁
           let participantNames: string[] = []
-          try {
-            const parsed = JSON.parse(c.participants)
-            if (Array.isArray(parsed)) {
-              participantNames = parsed
-                .map((id: unknown) => (typeof id === 'string' ? charNameMap.get(id) : undefined))
-                .filter((n: unknown): n is string => typeof n === 'string')
+          if (hasBoundaryState) {
+            try {
+              const parsed = JSON.parse(c.participants)
+              if (Array.isArray(parsed)) {
+                participantNames = parsed
+                  .map((id: unknown) => (typeof id === 'string' ? charNameMap.get(id) : undefined))
+                  .filter((n: unknown): n is string => typeof n === 'string')
+              }
+            } catch {
+              // 旧数据可能不是 JSON，忽略
             }
-          } catch {
-            // 旧数据可能不是 JSON，忽略
           }
           if (participantNames.length > 0) {
             parts.push(`参与方：${participantNames.join('、')}`)
@@ -1982,24 +2214,26 @@ export class NovelPromptBuilder {
     if (arranged.foreshadowIds.length > 0) {
       const fores = arranged.foreshadowIds
         .map(resolveForeshadow)
-        .filter((f): f is NonNullable<typeof f> => f != null)
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
       if (fores.length > 0) {
         lines.push('### 本章伏笔')
-        for (const f of fores) {
+        for (const { entity: f, hasBoundaryState } of fores) {
           const parts = [`  - ${f.description}`]
           // ── P2-2：category + plantMethod + recoverMethod 让 Writer 知道如何埋设/回收 ──
           parts.push(`类别：${foreshadowCategoryLabel[f.category] ?? f.category}`)
-          parts.push(`现状：${promptLabel(f.status)}`)
+          if (hasBoundaryState) parts.push(`现状：${promptLabel(f.status)}`)
           if (f.plantMethod) {
             parts.push(`埋设方式：${plantMethodLabel[f.plantMethod] ?? f.plantMethod}`)
           }
           if (f.recoverMethod) {
             parts.push(`回收方式：${recoverMethodLabel[f.recoverMethod] ?? f.recoverMethod}`)
           }
-          if (f.recoverByChapter != null) {
+          if (hasBoundaryState && f.recoverByChapter != null) {
             parts.push(`应在第 ${f.recoverByChapter} 章前回收`)
           }
-          const currentBeat = f.beats?.find((beat) => beat.chapter === chapterNumber)
+          const currentBeat = hasBoundaryState
+            ? f.beats?.find((beat) => beat.chapter === chapterNumber)
+            : undefined
           if (currentBeat) {
             const beatLabel = {
               plant: '埋设',
@@ -2041,18 +2275,18 @@ export class NovelPromptBuilder {
     if (arranged.factionIds.length > 0) {
       const facs = arranged.factionIds
         .map(resolveFaction)
-        .filter((f): f is NonNullable<typeof f> => f != null)
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
       if (facs.length > 0) {
         lines.push('### 登场势力')
-        for (const f of facs) {
+        for (const { entity: f, hasBoundaryState } of facs) {
           const parts = [`  - ${f.name}`]
           if (f.description) parts.push(f.description)
           if (f.type) parts.push(`类型：${promptLabel(f.type)}`)
           if (f.ideology) parts.push(`理念：${f.ideology}`)
-          if (f.strength) parts.push(`实力：${promptLabel(f.strength)}`)
-          if (f.status) parts.push(`状态：${promptLabel(f.status)}`)
-          if (f.allies && f.allies.length > 0) parts.push(`盟友：${f.allies.join('、')}`)
-          if (f.enemies && f.enemies.length > 0) parts.push(`敌对：${f.enemies.join('、')}`)
+          if (hasBoundaryState && f.strength) parts.push(`实力：${promptLabel(f.strength)}`)
+          if (hasBoundaryState && f.status) parts.push(`状态：${promptLabel(f.status)}`)
+          if (hasBoundaryState && f.allies.length > 0) parts.push(`盟友：${f.allies.join('、')}`)
+          if (hasBoundaryState && f.enemies.length > 0) parts.push(`敌对：${f.enemies.join('、')}`)
           lines.push(parts.join('；'))
         }
       }
@@ -2060,15 +2294,15 @@ export class NovelPromptBuilder {
     if (arranged.locationIds.length > 0) {
       const locs = arranged.locationIds
         .map(resolveLocation)
-        .filter((l): l is NonNullable<typeof l> => l != null)
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
       if (locs.length > 0) {
         lines.push('### 场景地点')
-        for (const l of locs) {
+        for (const { entity: l, hasBoundaryState } of locs) {
           const parts = [`  - ${l.name}`]
           if (l.description) parts.push(l.description)
           if (l.type) parts.push(`类型：${promptLabel(l.type)}`)
           if (l.significance) parts.push(`重要性：${promptLabel(l.significance)}`)
-          if (l.status && l.status !== 'normal') parts.push(`状态：${promptLabel(l.status)}`)
+          if (hasBoundaryState && l.status !== 'normal') parts.push(`状态：${promptLabel(l.status)}`)
           lines.push(parts.join('；'))
         }
       }
@@ -2095,26 +2329,28 @@ export class NovelPromptBuilder {
       }
       const items = (arranged.itemIds ?? [])
         .map(resolveItem)
-        .filter((it): it is NonNullable<typeof it> => it != null)
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
       if (items.length > 0) {
         // 用于把 ownerId 解析为角色名
         const allChars = [...characterById.values()]
         const charNameMap = new Map(allChars.map((c) => [c.id, c.name]))
         lines.push('本章登场物品（写作时必须遵守物品归属与状态约束）：')
-        for (const it of items) {
+        for (const { entity: it, hasBoundaryState } of items) {
           const parts = [`  - ${it.name}`]
           parts.push(`类型：${itemTypeLabel[it.type] ?? it.type}`)
           if (it.description) parts.push(it.description)
-          if (it.ownerId) {
-            const ownerName = charNameMap.get(it.ownerId) ?? it.ownerId
-            parts.push(`持有者：${ownerName}`)
-          } else {
-            parts.push('持有者：无主')
+          if (hasBoundaryState) {
+            if (it.ownerId) {
+              const ownerName = charNameMap.get(it.ownerId) ?? it.ownerId
+              parts.push(`持有者：${ownerName}`)
+            } else {
+              parts.push('持有者：无主')
+            }
+            parts.push(`状态：${itemStatusLabel[it.status] ?? it.status}`)
           }
-          parts.push(`状态：${itemStatusLabel[it.status] ?? it.status}`)
           if (it.abilities) parts.push(`能力/效果：${it.abilities}`)
-          if (it.origin) parts.push(`来历：${it.origin}`)
-          if (it.firstChapter != null) parts.push(`首次出现：第 ${it.firstChapter} 章`)
+          if (hasBoundaryState && it.origin) parts.push(`来历：${it.origin}`)
+          if (hasBoundaryState && it.firstChapter != null) parts.push(`首次出现：第 ${it.firstChapter} 章`)
           lines.push(parts.join('；'))
         }
       }
@@ -2122,15 +2358,15 @@ export class NovelPromptBuilder {
     if ((arranged.clueIds ?? []).length > 0) {
       const clues = (arranged.clueIds ?? [])
         .map(resolveClue)
-        .filter((clue): clue is NonNullable<typeof clue> => clue != null)
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
       if (clues.length > 0) {
         lines.push('本章线索：')
-        for (const clue of clues) {
+        for (const { entity: clue, hasBoundaryState } of clues) {
           const parts = [`  - ${clue.description}`]
           if (clue.pointsTo) parts.push(`指向：${clue.pointsTo}`)
-          parts.push(`进度：${clue.progress}%`)
-          if (clue.currentStep) parts.push(`当前步骤：${clue.currentStep}`)
-          if (clue.nextStep) parts.push(`⚡ 本章推进：${clue.nextStep}`)
+          if (hasBoundaryState) parts.push(`进度：${clue.progress}%`)
+          if (hasBoundaryState && clue.currentStep) parts.push(`当前步骤：${clue.currentStep}`)
+          if (hasBoundaryState && clue.nextStep) parts.push(`⚡ 本章推进：${clue.nextStep}`)
           if (clue.isMisleading) parts.push('性质：误导线索，不得写成已证实事实')
           lines.push(parts.join('；'))
         }

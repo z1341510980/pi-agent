@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildChunkVersionSource,
   buildWithChunkCache,
+  buildWithChunkCacheLazy,
   ChunkCache,
   computeChunkVersionKey,
   type ChunkVersionSource,
@@ -23,6 +24,8 @@ const baseSource: ChunkVersionSource = {
   entityRevisionIds: [['c1', 500], ['c2', 400]],
   latestMemoryEventId: 'evt-1',
   styleProfileVersion: 'v3',
+  chapterVersion: 1000,
+  contextAnchorVersion: 1000,
 }
 
 describe('computeChunkVersionKey（§5.6）', () => {
@@ -129,6 +132,75 @@ describe('buildWithChunkCache（§5.6 复用循环）', () => {
   })
 })
 
+describe('buildWithChunkCacheLazy（§5.6 先查后建）', () => {
+  it('二次命中时不调用 build()，真正省构建', () => {
+    const cache = new ChunkCache()
+    let buildCount = 0
+    const request = {
+      projectId: 'p1',
+      versionSource: baseSource,
+      builders: [{
+        chunkId: 'chapter-info',
+        scope: 'ch1-writer',
+        build: () => { buildCount++; return '章节信息' },
+      }],
+    }
+    const first = buildWithChunkCacheLazy(cache, request)
+    expect(first.misses).toBe(1)
+    expect(buildCount).toBe(1)
+    const second = buildWithChunkCacheLazy(cache, request)
+    expect(second.hits).toBe(1)
+    expect(buildCount).toBe(1) // 核心守门：命中未再次 build
+    expect(second.chunks[0]).toMatchObject({ content: '章节信息', fromCache: true })
+  })
+
+  it('scope 变化即 miss，防章节/角色/任务变体串用', () => {
+    const cache = new ChunkCache()
+    let buildCount = 0
+    const make = (scope: string, content: string) => ({
+      projectId: 'p1', versionSource: baseSource,
+      builders: [{ chunkId: 'chapter-info', scope, build: () => { buildCount++; return content } }],
+    })
+    buildWithChunkCacheLazy(cache, make('ch1-writer', '第一章'))
+    const changed = buildWithChunkCacheLazy(cache, make('ch2-writer', '第二章'))
+    expect(changed.misses).toBe(1)
+    expect(changed.chunks[0].content).toBe('第二章')
+    expect(buildCount).toBe(2)
+  })
+
+  it('可选 chunk 返回 null 时缓存空哨兵，二次不 build 且不参与组装', () => {
+    const cache = new ChunkCache()
+    let buildCount = 0
+    const request = {
+      projectId: 'p1', versionSource: baseSource,
+      builders: [{
+        chunkId: 'hooks', scope: 'ch1',
+        build: () => { buildCount++; return null },
+      }],
+    }
+    const first = buildWithChunkCacheLazy(cache, request)
+    expect(first.chunks).toHaveLength(0)
+    expect(first.misses).toBe(1)
+    const second = buildWithChunkCacheLazy(cache, request)
+    expect(second.chunks).toHaveLength(0)
+    expect(second.hits).toBe(1)
+    expect(buildCount).toBe(1)
+  })
+
+  it('缓存条目保留真实 contentHash，scopeKey 单独存储', () => {
+    const cache = new ChunkCache()
+    buildWithChunkCacheLazy(cache, {
+      projectId: 'p1', versionSource: baseSource,
+      builders: [{ chunkId: 'story-state', scope: 'summary', build: () => '摘要内容' }],
+    })
+    const versionKey = computeChunkVersionKey(baseSource)
+    const entry = cache.get('p1', 'story-state', versionKey, 'summary')
+    expect(entry?.scopeKey).toBe('summary')
+    expect(entry?.contentHash).not.toBe('summary')
+    expect(entry?.contentHash).toHaveLength(16)
+  })
+})
+
 describe('buildChunkVersionSource（P4 接入第 1 步）', () => {
   function makeProvider(overrides: Partial<ChunkVersionSourceProvider> = {}): ChunkVersionSourceProvider {
     return {
@@ -187,6 +259,30 @@ describe('buildChunkVersionSource（P4 接入第 1 步）', () => {
       'p1',
     ))
     expect(key3).not.toBe(key1)
+  })
+
+  it('章节与锚点版本变化 → versionKey 变化', () => {
+    const provider = makeProvider({
+      listChapters: () => [{ updatedAt: 100 }, { updatedAt: 200 }],
+      getContextAnchorVersion: () => 300,
+    })
+    const key1 = computeChunkVersionKey(buildChunkVersionSource(provider, 'p1'))
+    const chapterChanged = makeProvider({
+      listChapters: () => [{ updatedAt: 100 }, { updatedAt: 201 }],
+      getContextAnchorVersion: () => 300,
+    })
+    const anchorChanged = makeProvider({
+      listChapters: () => [{ updatedAt: 100 }, { updatedAt: 200 }],
+      getContextAnchorVersion: () => 301,
+    })
+    expect(computeChunkVersionKey(buildChunkVersionSource(chapterChanged, 'p1'))).not.toBe(key1)
+    expect(computeChunkVersionKey(buildChunkVersionSource(anchorChanged, 'p1'))).not.toBe(key1)
+  })
+
+  it('缺少新增可选版本源时保持兼容（新维度按 0 处理）', () => {
+    const source = buildChunkVersionSource(makeProvider(), 'p1')
+    expect(source.chapterVersion).toBeNull()
+    expect(source.contextAnchorVersion).toBeNull()
   })
 
   it('eventSource 参数（memoryStore）单独提供账本 id 且优先于 provider', () => {

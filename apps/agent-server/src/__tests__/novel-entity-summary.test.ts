@@ -195,4 +195,25 @@ describe('summary 生效路径', () => {
     // summary 不影响其他 chunk（chapter-info 保持一致）
     expect(fullChunks[0].content).toBe(summaryChunks[0].content)
   })
+
+  it('chooseChapterEntitySummaryMode：单实体保持 full（阈值保护小项目不丢信息）', () => {
+    expect(builder.chooseChapterEntitySummaryMode('p1', 3, undefined)).toBe('full')
+  })
+
+  it('chooseChapterEntitySummaryMode：无编排且实体超阈值 → summary', () => {
+    // 给项目补足 9+ 实体触发阈值
+    for (let i = 0; i < 9; i++) {
+      store.createCharacter({
+        id: `c-bulk-${i}`, projectId: 'p1', name: `角色${i}`, description: '', identity: '',
+        personality: '', appearance: '', currentState: '在', currentGoal: '', currentPressure: '',
+        secret: '', arcStage: '', arcHistory: '', speechStyle: '',
+        isProtagonist: false, longTermDesire: '', plotRole: 'supporting', removalImpact: '',
+      })
+    }
+    expect(builder.chooseChapterEntitySummaryMode('p1', 3, undefined)).toBe('summary')
+    // 有编排时强制 full（编排已替代 story-state，summary 无意义）
+    expect(builder.chooseChapterEntitySummaryMode('p1', 3, {
+      characterIds: ['c1'], conflictIds: [], foreshadowIds: [], factionIds: [], locationIds: [],
+    } as never)).toBe('full')
+  })
 })

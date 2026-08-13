@@ -205,8 +205,13 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     method: 'DELETE',
     path: '/chapters/:id',
     handler: async (request: any) => {
+      const chapter = store.getChapterById(request.params.id)
+      if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      if (chapter.status === 'published') {
+        throw new AppError(ErrorCode.CONFLICT, '已发布章节不能删除，请先进入修订或撤回流程', 409)
+      }
       const deleted = store.deleteChapter(request.params.id)
-      if (!deleted) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
+      if (!deleted) throw new AppError(ErrorCode.INTERNAL_SERVER_ERROR, '删除章节失败', 500)
       return success({ id: request.params.id, deleted: true }, request.traceId)
     },
   })
@@ -986,9 +991,17 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(createRelationshipSchema, request, reply)
       if (!input) return reply
 
+      const projectId = request.params.projectId
+      for (const characterId of [input.characterA, input.characterB]) {
+        const character = store.getCharacter(characterId)
+        if (!character || character.projectId !== projectId) {
+          throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${characterId}`, 404)
+        }
+      }
+
       const rel = store.createRelationship({
         id: randomUUID(),
-        projectId: request.params.projectId,
+        projectId,
         stageHistory: '[]',
         lastUpdatedChapter: null,
         ...input,
@@ -1019,8 +1032,17 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const input = validateBody(updateRelationshipSchema, request, reply)
       if (!input) return reply
 
+      const relationship = store.getRelationship(request.params.id)
+      if (!relationship) throw new AppError(ErrorCode.NOT_FOUND, `关系不存在: ${request.params.id}`, 404)
+      for (const characterId of [input.characterA, input.characterB]) {
+        if (characterId === undefined) continue
+        const character = store.getCharacter(characterId)
+        if (!character || character.projectId !== relationship.projectId) {
+          throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${characterId}`, 404)
+        }
+      }
+
       const updated = store.updateRelationship(request.params.id, input)
-      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `关系不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
     },
   })

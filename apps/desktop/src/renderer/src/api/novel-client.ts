@@ -428,7 +428,7 @@ export type UpdateMarkerInput = Partial<CreateMarkerInput>
 
 export interface AiGenerateCharacterInput {
   coreStyle: string
-  modelId?: string
+  modelId?: { provider: string; modelId: string }
 }
 
 // CharacterGenerationProgressEvent 已迁入 @repo/shared/novel 共享包（顶部 import）

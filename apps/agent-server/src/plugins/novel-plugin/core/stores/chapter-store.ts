@@ -20,19 +20,24 @@ import type {
   ArcStageHistoryEntry,
 } from '../types.js'
 import type {
-  ChapterRow, VolumeRow, HookRow, CharacterArcRow, ChapterVersionRow, ContentRevisionRow,
+  ChapterRow, VolumeRow, HookRow, CharacterArcRow, ContentRevisionRow,
 } from './row-types.js'
 import { now } from './store-utils.js'
-import {
-  isNovelFeatureEnabled,
-  type FeatureFlagProjectSource,
-} from '../novel-feature-flags.js'
 import type { VersionChainReconcileReport } from '../migration-acceptance.js'
 
 /** 旧表 → V2 内容版本的规范化内容哈希（对账口径，与脚本一致） */
 export function hashChapterContent(content: string): string {
   return createHash('sha256').update(content.replace(/\s+/g, ' ').trim()).digest('hex')
 }
+
+/**
+ * 「当前生效」的内容版本状态集合。
+ * rollback_applied 语义上是"回滚产生的 committed 变体"（见 ContentRevisionStatus 注释），
+ * 它代表一次已确认的正文状态；凡查找 current/最新 committed 的地方都必须把它算进去，
+ * 否则回滚之后再 append 会找不到 parent（断链）、getCurrent 兜底找不到行、
+ * 二次回滚无法把上一条 rollback 行置为 superseded。
+ */
+const COMMITTED_LIKE_STATUSES = `('committed', 'rollback_applied')`
 
 export class ChapterStore {
   private readonly stmtListChapters!: Database.Statement
@@ -43,7 +48,7 @@ export class ChapterStore {
     private db: Database.Database,
     private deleteEdgesByEntity: (entityId: string) => number,
     private renumberService: ChapterRenumberService,
-    private flags?: FeatureFlagProjectSource,
+    private removeChapterAppearances?: (projectId: string, chapterId: string) => number,
   ) {
     this.stmtListChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? ORDER BY chapter_number ASC')
     this.stmtGetChapter = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND chapter_number = ?')
@@ -67,120 +72,75 @@ export class ChapterStore {
   createChapter(chapter: Omit<NovelChapter, 'createdAt' | 'updatedAt'>): NovelChapter {
     const ts = now()
     const full: NovelChapter = { outline: '', volumeId: null, ...chapter, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, tension, positioning, time_offset, chapter_ending_hook, recap, created_at, updated_at)
-      VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @tension, @positioning, @time_offset, @chapter_ending_hook, @recap, @created_at, @updated_at)
-    `).run({
-      id: full.id, project_id: full.projectId, volume: full.volume,
-      chapter_number: full.chapterNumber, title: full.title, content: full.content,
-      word_count: full.wordCount, status: full.status, narrative_task: full.narrativeTask,
-      outline: full.outline ?? '', volume_id: full.volumeId ?? null,
-      acceptance_result: full.acceptanceResult, tension: full.tension ?? null,
-      positioning: full.positioning ?? null,
-      time_offset: full.timeOffset ?? null,
-      chapter_ending_hook: full.chapterEndingHook ?? null,
-      recap: full.recap ?? null,
-      created_at: full.createdAt, updated_at: full.updatedAt,
-    })
-    // V2 不可变正文链：初始内容非空时建立 rev1 锚点，
-    // 保证初始状态也有版本记录、回滚可达；空内容（planned 占位）不建。
-    if (full.content && full.content.trim().length > 0) {
-      this.appendContentRevision(full, null)
-    }
-    return full
+    return this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, tension, positioning, time_offset, chapter_ending_hook, recap, created_at, updated_at)
+        VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @tension, @positioning, @time_offset, @chapter_ending_hook, @recap, @created_at, @updated_at)
+      `).run({
+        id: full.id, project_id: full.projectId, volume: full.volume,
+        chapter_number: full.chapterNumber, title: full.title, content: full.content,
+        word_count: full.wordCount, status: full.status, narrative_task: full.narrativeTask,
+        outline: full.outline ?? '', volume_id: full.volumeId ?? null,
+        acceptance_result: full.acceptanceResult, tension: full.tension ?? null,
+        positioning: full.positioning ?? null,
+        time_offset: full.timeOffset ?? null,
+        chapter_ending_hook: full.chapterEndingHook ?? null,
+        recap: full.recap ?? null,
+        created_at: full.createdAt, updated_at: full.updatedAt,
+      })
+      // 初始正文与 rev1 必须原子提交，避免章节存在但版本指针缺失。
+      if (full.content && full.content.trim().length > 0) {
+        this.appendContentRevision(full, null)
+      }
+      return full
+    })()
   }
 
   updateChapter(id: string, patch: Partial<NovelChapter>, versionSource?: VersionSource): NovelChapter | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_chapters WHERE id = ?').get(id) as ChapterRow | undefined
-    if (!existing) return undefined
-    const current = this.rowToChapter(existing)
-    if (versionSource !== 'skip' && patch.content !== undefined && patch.content !== current.content) {
-      this.saveChapterVersionInternal(current, versionSource ?? null)
-    }
-    const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_chapters SET title=@title, content=@content, word_count=@word_count,
-      status=@status, narrative_task=@narrative_task, outline=@outline, volume_id=@volume_id,
-      acceptance_result=@acceptance_result, tension=@tension,
-      positioning=@positioning, time_offset=@time_offset, chapter_ending_hook=@chapter_ending_hook, recap=@recap,
-      updated_at=@updated_at
-      WHERE id=@id
-    `).run({
-      id, title: updated.title, content: updated.content, word_count: updated.wordCount,
-      status: updated.status, narrative_task: updated.narrativeTask,
-      outline: updated.outline ?? '', volume_id: updated.volumeId ?? null,
-      acceptance_result: updated.acceptanceResult, tension: updated.tension ?? null,
-      positioning: updated.positioning ?? null,
-      time_offset: updated.timeOffset ?? null,
-      chapter_ending_hook: updated.chapterEndingHook ?? null,
-      recap: updated.recap ?? null,
-      updated_at: updated.updatedAt,
-    })
-    // V2 不可变正文链：正文变更后追加一条 committed revision 并推进 current 指针
-    if (versionSource !== 'skip' && patch.content !== undefined && patch.content !== current.content) {
-      this.appendContentRevision(updated, versionSource ?? null)
-    }
-    return updated
+    return this.db.transaction(() => {
+      const existing = this.db.prepare('SELECT * FROM novel_chapters WHERE id = ?').get(id) as ChapterRow | undefined
+      if (!existing) return undefined
+      const current = this.rowToChapter(existing)
+      const updated = { ...current, ...patch, id, updatedAt: now() }
+      this.db.prepare(`
+        UPDATE novel_chapters SET title=@title, content=@content, word_count=@word_count,
+        status=@status, narrative_task=@narrative_task, outline=@outline, volume_id=@volume_id,
+        acceptance_result=@acceptance_result, tension=@tension,
+        positioning=@positioning, time_offset=@time_offset, chapter_ending_hook=@chapter_ending_hook, recap=@recap,
+        updated_at=@updated_at
+        WHERE id=@id
+      `).run({
+        id, title: updated.title, content: updated.content, word_count: updated.wordCount,
+        status: updated.status, narrative_task: updated.narrativeTask,
+        outline: updated.outline ?? '', volume_id: updated.volumeId ?? null,
+        acceptance_result: updated.acceptanceResult, tension: updated.tension ?? null,
+        positioning: updated.positioning ?? null,
+        time_offset: updated.timeOffset ?? null,
+        chapter_ending_hook: updated.chapterEndingHook ?? null,
+        recap: updated.recap ?? null,
+        updated_at: updated.updatedAt,
+      })
+      if (versionSource !== 'skip' && patch.content !== undefined && patch.content !== current.content) {
+        this.appendContentRevision(updated, versionSource ?? null)
+      }
+      return updated
+    })()
   }
 
   updateChapterContent(id: string, content: string, wordCount: number, versionSource?: VersionSource): NovelChapter | undefined {
-    const current = this.getChapterById(id)
-    if (current && versionSource !== 'skip' && content !== current.content) {
-      this.saveChapterVersionInternal(current, versionSource ?? null)
-    }
-    this.db.prepare('UPDATE novel_chapters SET content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?').run(content, wordCount, id)
-    const updated = this.getChapterById(id) ?? undefined
-    // V2 不可变正文链：正文变更后追加一条 committed revision 并推进 current 指针
-    if (updated && versionSource !== 'skip' && content !== (current?.content ?? '')) {
-      this.appendContentRevision(updated, versionSource ?? null)
-    }
-    return updated
+    return this.db.transaction(() => {
+      const current = this.getChapterById(id)
+      if (!current) return undefined
+      this.db.prepare('UPDATE novel_chapters SET content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?').run(content, wordCount, id)
+      const updated = this.getChapterById(id)
+      if (updated && versionSource !== 'skip' && content !== current.content) {
+        this.appendContentRevision(updated, versionSource ?? null)
+      }
+      return updated
+    })()
   }
 
-  /**
-   * 旧版本表写入点（P1-1 停旧写）。
-   *
-   * `versionChainV2Write` 开启时直接 return（旧表停止 INSERT，观察期内只读保留）；
-   * 关闭时保持现状（双写兼容路径）。
-   */
-  private saveChapterVersionInternal(chapter: NovelChapter, source: VersionSource | null): void {
-    if (this.isV2WriteEnabled(chapter.projectId)) return
-    const maxSeq = (this.db.prepare(
-      'SELECT MAX(sequence) as maxSeq FROM novel_chapter_versions WHERE chapter_id = ?'
-    ).get(chapter.id) as { maxSeq: number | null } | undefined)?.maxSeq ?? 0
-
-    const phase = source && source !== 'skip' ? source.phase : null
-    const agentType = source && source !== 'skip' ? (source.agentType ?? null) : null
-    const trigger = source && source !== 'skip' ? (source.trigger ?? null) : null
-
-    this.db.prepare(`
-      INSERT INTO novel_chapter_versions
-        (id, chapter_id, project_id, content, word_count, phase, agent_type, trigger, sequence, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      randomUUID(),
-      chapter.id,
-      chapter.projectId,
-      chapter.content,
-      chapter.wordCount,
-      phase,
-      agentType,
-      trigger,
-      maxSeq + 1,
-      now(),
-    )
-  }
-
-  private isV2ReadEnabled(projectId: string): boolean {
-    return this.flags != null && isNovelFeatureEnabled(this.flags, projectId, 'versionChainV2Read')
-  }
-
-  private isV2WriteEnabled(projectId: string): boolean {
-    return this.flags != null && isNovelFeatureEnabled(this.flags, projectId, 'versionChainV2Write')
-  }
-
-  /** ContentRevisionSummary → ChapterVersionSummary 包装（V2 读源对外保持旧接口形状） */
-  private revisionSummaryToVersionSummary(rows: ContentRevisionSummary[]): ChapterVersionSummary[] {
+  /** ContentRevisionSummary → ChapterVersionSummary 包装（V2 读源对外保持旧接口形状） */  private revisionSummaryToVersionSummary(rows: ContentRevisionSummary[]): ChapterVersionSummary[] {
     // rows 已是 revision 降序（最新在前），与旧 listChapterVersions 的返回顺序一致
     const byId = new Map(rows.map((r) => [r.id, r]))
     return rows.map((row, idx) => {
@@ -217,91 +177,27 @@ export class ChapterStore {
   }
 
   listChapterVersions(chapterId: string): ChapterVersionSummary[] {
-    const chapter = this.getChapterById(chapterId)
-    if (chapter && this.isV2ReadEnabled(chapter.projectId)) {
-      return this.revisionSummaryToVersionSummary(this.listContentRevisions(chapterId))
-    }
-    const rows = this.db.prepare(
-      `SELECT id, chapter_id, project_id, content, word_count, phase, agent_type, trigger,
-              sequence, created_at
-       FROM novel_chapter_versions WHERE chapter_id = ? ORDER BY sequence ASC`
-    ).all(chapterId) as Omit<ChapterVersionRow, never>[]
-
-    if (rows.length === 0) return []
-
-    // ⚠️ isCurrent 修复：旧实现把版本表最后一行（覆盖前快照）标为当前，
-    // 但版本表只存"覆盖前快照"，真正的当前正文在 novel_chapters.content。
-    // 正确语义：只有 content 与当前正文完全一致的版本才是当前版；
-    // 若当前正文尚未被存成版本（如用户刚 PATCH），则没有任何版本是 current。
-    const currentChapter = this.getChapterById(chapterId)
-
-    const summaries: ChapterVersionSummary[] = rows.map((row, idx) => {
-      const prevWordCount = idx > 0 ? rows[idx - 1].word_count : row.word_count
-      return {
-        id: row.id,
-        sequence: row.sequence,
-        phase: (row.phase as ChapterVersionPhase | null) ?? null,
-        agentType: row.agent_type,
-        trigger: row.trigger,
-        wordCount: row.word_count,
-        wordCountDelta: idx > 0 ? row.word_count - prevWordCount : 0,
-        createdAt: row.created_at,
-        isCurrent: currentChapter != null && row.content === currentChapter.content,
-      }
-    })
-
-    return summaries.reverse()
+    return this.revisionSummaryToVersionSummary(this.listContentRevisions(chapterId))
   }
 
   getChapterVersion(versionId: string): ChapterVersion | undefined {
     const v2 = this.getContentRevision(versionId)
-    if (v2 && this.isV2ReadEnabled(v2.projectId)) {
-      return this.revisionToVersion(v2)
-    }
-    const row = this.db.prepare(
-      'SELECT * FROM novel_chapter_versions WHERE id = ?'
-    ).get(versionId) as ChapterVersionRow | undefined
-    return row ? this.rowToChapterVersion(row) : undefined
+    if (v2) return this.revisionToVersion(v2)
+    return undefined
   }
 
   createVersionSnapshot(chapterId: string, source: VersionSource): ChapterVersion | undefined {
     if (source === 'skip' || source === undefined) return undefined
     const chapter = this.getChapterById(chapterId)
     if (!chapter) return undefined
-    if (this.isV2WriteEnabled(chapter.projectId)) {
-      // 停旧写：手工快照改走 V2 链，保证"手工保存产生正确 VersionSource"（P1-1-3）
-      this.appendContentRevision(chapter, source)
-      return this.getLatestVersion(chapterId)
-    }
-    this.saveChapterVersionInternal(chapter, source)
+    // 手工快照走 V2 不可变链（P1-1-3）
+    this.appendContentRevision(chapter, source)
     return this.getLatestVersion(chapterId)
   }
 
   getLatestVersion(chapterId: string): ChapterVersion | undefined {
-    const chapter = this.getChapterById(chapterId)
-    if (chapter && this.isV2ReadEnabled(chapter.projectId)) {
-      const current = this.getCurrentContentRevision(chapterId)
-      return current ? this.revisionToVersion(current) : undefined
-    }
-    const row = this.db.prepare(
-      'SELECT * FROM novel_chapter_versions WHERE chapter_id = ? ORDER BY sequence DESC LIMIT 1'
-    ).get(chapterId) as ChapterVersionRow | undefined
-    return row ? this.rowToChapterVersion(row) : undefined
-  }
-
-  private rowToChapterVersion(row: ChapterVersionRow): ChapterVersion {
-    return {
-      id: row.id,
-      chapterId: row.chapter_id,
-      projectId: row.project_id,
-      content: row.content,
-      wordCount: row.word_count,
-      phase: (row.phase as ChapterVersionPhase | null) ?? null,
-      agentType: row.agent_type,
-      trigger: row.trigger,
-      sequence: row.sequence,
-      createdAt: row.created_at,
-    }
+    const current = this.getCurrentContentRevision(chapterId)
+    return current ? this.revisionToVersion(current) : undefined
   }
 
   rollbackToVersion(chapterId: string, targetVersionId: string): {
@@ -309,41 +205,13 @@ export class ChapterStore {
     currentContent: string
     currentWordCount: number
   } {
-    const current = this.getChapterById(chapterId)
-    if (current && this.isV2ReadEnabled(current.projectId)) {
-      // V2 读源：回滚委托不可变版本链（rollback_applied 新版本）
-      const result = this.rollbackToContentRevision(chapterId, targetVersionId)
-      return {
-        savedVersionId: result.appliedRevisionId,
-        currentContent: result.content,
-        currentWordCount: result.wordCount,
-      }
+    // V2 读源：回滚委托不可变版本链（rollback_applied 新版本）
+    const result = this.rollbackToContentRevision(chapterId, targetVersionId)
+    return {
+      savedVersionId: result.appliedRevisionId,
+      currentContent: result.content,
+      currentWordCount: result.wordCount,
     }
-    const target = this.getChapterVersion(targetVersionId)
-    if (!target) throw new Error(`版本不存在: ${targetVersionId}`)
-    if (target.chapterId !== chapterId) throw new Error('版本不属于该章节')
-
-    const chapter = this.getChapterById(chapterId)
-    if (!chapter) throw new Error(`章节不存在: ${chapterId}`)
-    if (chapter.content === target.content) throw new Error('当前正文已是该版本内容，无需回滚')
-
-    return this.db.transaction(() => {
-      const saved = this.createVersionSnapshot(chapterId, {
-        phase: 'rollback_pre',
-        trigger: `回滚到版本 ${targetVersionId}（seq ${target.sequence}）`,
-      })
-      this.updateChapterContent(chapterId, target.content, target.wordCount, 'skip')
-      this.createVersionSnapshot(chapterId, {
-        phase: 'rollback_applied',
-        trigger: `回滚自版本 ${targetVersionId}`,
-      })
-      const updated = this.getChapterById(chapterId)
-      return {
-        savedVersionId: saved?.id ?? '',
-        currentContent: updated?.content ?? target.content,
-        currentWordCount: updated?.wordCount ?? target.wordCount,
-      }
-    })()
   }
 
   /**
@@ -461,10 +329,11 @@ export class ChapterStore {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // 不可变正文版本链（V2 content revision）
+  // 不可变正文版本链（V2 content revision，唯一版本链）
   // 语义：每次正文落库追加一条 committed；旧 committed → superseded；
   // novel_chapters.current_content_revision_id 为当前指针；回滚创建新 revision，
-  // 不把旧行设为 current。迁移期与 novel_chapter_versions 双写，T05 停旧写。
+  // 不把旧行设为 current。2026-08-12 逻辑统一：旧表 novel_chapter_versions 停写，
+  // 仅保留 reconcileVersionChains 只读对账工具。
   // ═══════════════════════════════════════════════════════════════
 
   /**
@@ -476,7 +345,7 @@ export class ChapterStore {
     return this.db.transaction(() => {
       const currentRow = this.db.prepare(
         `SELECT id FROM novel_chapter_content_revisions
-         WHERE chapter_id = ? AND status = 'committed' ORDER BY revision DESC LIMIT 1`,
+         WHERE chapter_id = ? AND status IN ${COMMITTED_LIKE_STATUSES} ORDER BY revision DESC LIMIT 1`,
       ).get(chapter.id) as { id: string } | undefined
       if (currentRow) {
         this.db.prepare(
@@ -543,10 +412,10 @@ export class ChapterStore {
       const byPointer = this.getContentRevision(pointer)
       if (byPointer) return byPointer
     }
-    // 指针缺失（旧数据/损坏）时回退到最新 committed
+    // 指针缺失（旧数据/损坏）时回退到最新 committed（rollback_applied 同为生效变体）
     const row = this.db.prepare(
       `SELECT * FROM novel_chapter_content_revisions
-       WHERE chapter_id = ? AND status = 'committed' ORDER BY revision DESC LIMIT 1`,
+       WHERE chapter_id = ? AND status IN ${COMMITTED_LIKE_STATUSES} ORDER BY revision DESC LIMIT 1`,
     ).get(chapterId) as ContentRevisionRow | undefined
     return row ? this.rowToContentRevision(row) : undefined
   }
@@ -554,7 +423,6 @@ export class ChapterStore {
   /**
    * 按不可变链回滚：以目标 revision 为 parent 创建 rollback_applied 新 committed，
    * 原 current → superseded，推进指针并落正文。不把旧行设为 current。
-   * 旧表（novel_chapter_versions）同步 rollback_pre / rollback_applied 快照保持兼容。
    */
   rollbackToContentRevision(chapterId: string, revisionId: string): {
     appliedRevisionId: string
@@ -569,15 +437,10 @@ export class ChapterStore {
     if (current.content === target.content) throw new Error('当前正文已是该版本内容，无需回滚')
 
     return this.db.transaction(() => {
-      // 旧表兼容：回滚前快照
-      this.createVersionSnapshot(chapterId, {
-        phase: 'rollback_pre',
-        trigger: `回滚到内容版本 ${revisionId}（rev ${target.revision}）`,
-      })
-      // 新链：原 current → superseded
+      // 新链：原 current → superseded（rollback_applied 同为生效变体，二次回滚也要收编）
       const currentRow = this.db.prepare(
         `SELECT id FROM novel_chapter_content_revisions
-         WHERE chapter_id = ? AND status = 'committed' ORDER BY revision DESC LIMIT 1`,
+         WHERE chapter_id = ? AND status IN ${COMMITTED_LIKE_STATUSES} ORDER BY revision DESC LIMIT 1`,
       ).get(chapterId) as { id: string } | undefined
       if (currentRow) {
         this.db.prepare(
@@ -598,14 +461,6 @@ export class ChapterStore {
       this.db.prepare(
         `UPDATE novel_chapters SET current_content_revision_id = ?, content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?`,
       ).run(appliedId, target.content, target.wordCount, chapterId)
-      // 旧表兼容：回滚落库快照（存回滚后的正文）
-      const applied = this.getChapterById(chapterId)
-      if (applied) {
-        this.saveChapterVersionInternal(applied, {
-          phase: 'rollback_applied',
-          trigger: `回滚自内容版本 ${revisionId}`,
-        })
-      }
       return { appliedRevisionId: appliedId, content: target.content, wordCount: target.wordCount }
     })()
   }
@@ -632,10 +487,20 @@ export class ChapterStore {
       const chapter = this.getChapterById(id)
       if (!chapter) return false
       this.deleteEdgesByEntity(id)
+      // novel_entity_appearances 对 chapter_id 无外键，删章必须手动清出场行，
+      // 否则出现指向已删章节的 appearance（对账 orphan 行）。
+      this.removeChapterAppearances?.(chapter.projectId, id)
       const result = this.db.prepare('DELETE FROM novel_chapters WHERE id = ?').run(id)
       if (result.changes === 0) return false
       const spec = createChapterRenumberSpec(chapter.chapterNumber)
       this.renumberService.renumberChapterReferences(chapter.projectId, spec)
+      const progress = this.db.prepare(`
+        SELECT COALESCE(MAX(chapter_number), 0) AS currentChapter
+        FROM novel_chapters WHERE project_id = ? AND status = 'published'
+      `).get(chapter.projectId) as { currentChapter: number }
+      this.db.prepare(`
+        UPDATE novel_projects SET current_chapter = ?, updated_at = unixepoch() WHERE id = ?
+      `).run(progress.currentChapter, chapter.projectId)
       return true
     })()
   }

@@ -13,6 +13,16 @@
  * 输出分布 p50 / p75 / max 与 top 高频重复 section（P3 跨章缓存决策输入）。
  */
 import type Database from 'better-sqlite3'
+import { gunzipSync } from 'node:zlib'
+
+/** 解压 payload BLOB（日志冷热分离后大文本以 gzip 存 payload 表） */
+function gunzipText(blob: Buffer): string {
+  try {
+    return gunzipSync(blob).toString('utf8')
+  } catch {
+    return ''
+  }
+}
 
 export interface OverlapPair {
   fromChapter: number
@@ -82,18 +92,31 @@ export class SharedOverlapAnalyzer {
    */
   analyze(projectId: string, opts?: { chapterNumbers?: number[] }): SharedOverlapReport {
     // 1) 每章取第一条 Agent 日志的 chapter_context 作为 shared 代理文本
+    // 2026-08-12 逻辑统一：日志冷热分离后大文本在 payload 表（gzip），主表列恒空。
     const contextRows = this.db.prepare(
-      `SELECT chapter_number, chapter_context, created_at
-       FROM novel_agent_logs
-       WHERE project_id = ? AND length(chapter_context) > 0
-       ORDER BY created_at ASC`,
-    ).all(projectId) as Array<{ chapter_number: number; chapter_context: string; created_at: number }>
+      `SELECT l.chapter_number, l.created_at,
+              COALESCE(
+                NULLIF(l.chapter_context, ''),
+                (SELECT chapter_context_blob FROM novel_agent_log_payloads p WHERE p.agent_log_id = l.id)
+              ) AS chapter_context_blob
+       FROM novel_agent_logs l
+       WHERE l.project_id = ?
+         AND (
+           length(l.chapter_context) > 0
+           OR EXISTS (SELECT 1 FROM novel_agent_log_payloads p WHERE p.agent_log_id = l.id)
+         )
+       ORDER BY l.created_at ASC`,
+    ).all(projectId) as Array<{ chapter_number: number; chapter_context_blob: string | Buffer | null; created_at: number }>
 
     const chapterContext = new Map<number, string>()
     for (const row of contextRows) {
-      if (!chapterContext.has(row.chapter_number)) {
-        chapterContext.set(row.chapter_number, row.chapter_context)
-      }
+      if (chapterContext.has(row.chapter_number)) continue
+      const raw = row.chapter_context_blob
+      if (raw == null) continue
+      const text = typeof raw === 'string'
+        ? raw
+        : gunzipText(raw)
+      if (text.length > 0) chapterContext.set(row.chapter_number, text)
     }
 
     // 2) 度量表：top 高频重复 section + arranged-entities hash 粗判

@@ -22,26 +22,13 @@ function setupProject(store: NovelStore, flags?: Record<string, boolean>): strin
 }
 
 describe('NOVEL_FEATURE_FLAGS 清单', () => {
-  it('包含剧情 V2 三个 + P0/P1 五个 + P2 四个 + P3 三个 + P4 预留一个（共 16 个，全部默认关）', () => {
+  it('包含 P3 两个 + P4 预留一个（共 3 个，全部默认关）', () => {
     expect(NOVEL_FEATURE_FLAGS).toEqual([
-      'scenePlanV2Write',
-      'scenePlanV2DualWrite',
-      'legacyNarrativeWriteDisabled',
-      'versionChainV2Read',
-      'versionChainV2Write',
-      'logPayloadExternalized',
-      'sceneCastV2Write',
-      'sceneCastV2Read',
-      'appearanceV2Write',
-      'appearanceV2Read',
-      'chapterSpansFrozen',
-      'memoryOperationLedger',
-      'contextChunksEnabled',
       'contextSummaryMode',
       'crossChapterChunkCache',
       'sceneLevelWriter',
     ])
-    expect(NOVEL_FEATURE_FLAGS).toHaveLength(16)
+    expect(NOVEL_FEATURE_FLAGS).toHaveLength(3)
   })
 })
 
@@ -49,16 +36,16 @@ describe('isNovelFeatureEnabled 项目灰度读取', () => {
   it('未配置 → false', () => {
     const store = new NovelStore(createDb())
     const projectId = setupProject(store)
-    expect(isNovelFeatureEnabled(store, projectId, 'scenePlanV2Write')).toBe(false)
+    expect(isNovelFeatureEnabled(store, projectId, 'contextSummaryMode')).toBe(false)
   })
 
-  it('配置 {scenePlanV2Write:true} → 该项目 true、其他项目 false、其他 flag false', () => {
+  it('配置 {contextSummaryMode:true} → 该项目 true、其他项目 false、其他 flag false', () => {
     const store = new NovelStore(createDb())
-    const enabledProject = setupProject(store, { scenePlanV2Write: true })
+    const enabledProject = setupProject(store, { contextSummaryMode: true })
     const otherProject = setupProject(store)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'scenePlanV2Write')).toBe(true)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'contextSummaryMode')).toBe(false)
-    expect(isNovelFeatureEnabled(store, otherProject, 'scenePlanV2Write')).toBe(false)
+    expect(isNovelFeatureEnabled(store, enabledProject, 'contextSummaryMode')).toBe(true)
+    expect(isNovelFeatureEnabled(store, enabledProject, 'crossChapterChunkCache')).toBe(false)
+    expect(isNovelFeatureEnabled(store, otherProject, 'contextSummaryMode')).toBe(false)
   })
 
   it('新增 flag 默认关闭：未配置 → false', () => {
@@ -72,25 +59,21 @@ describe('isNovelFeatureEnabled 项目灰度读取', () => {
   it('配置新增 flag true → 该项目 true、其他项目 false', () => {
     const store = new NovelStore(createDb())
     const enabledProject = setupProject(store, {
-      versionChainV2Read: true,
-      versionChainV2Write: true,
-      logPayloadExternalized: true,
-      sceneCastV2Write: true,
-      sceneCastV2Read: true,
+      contextSummaryMode: true,
+      crossChapterChunkCache: true,
+      sceneLevelWriter: true,
     })
     const otherProject = setupProject(store)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'versionChainV2Read')).toBe(true)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'versionChainV2Write')).toBe(true)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'logPayloadExternalized')).toBe(true)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'sceneCastV2Write')).toBe(true)
-    expect(isNovelFeatureEnabled(store, enabledProject, 'sceneCastV2Read')).toBe(true)
-    expect(isNovelFeatureEnabled(store, otherProject, 'versionChainV2Read')).toBe(false)
+    expect(isNovelFeatureEnabled(store, enabledProject, 'contextSummaryMode')).toBe(true)
+    expect(isNovelFeatureEnabled(store, enabledProject, 'crossChapterChunkCache')).toBe(true)
+    expect(isNovelFeatureEnabled(store, enabledProject, 'sceneLevelWriter')).toBe(true)
+    expect(isNovelFeatureEnabled(store, otherProject, 'contextSummaryMode')).toBe(false)
   })
 
   it('项目不存在 → false 不抛错', () => {
     const store = new NovelStore(createDb())
-    expect(isNovelFeatureEnabled(store, 'not-exist', 'scenePlanV2Write')).toBe(false)
-    expect(isNovelFeatureEnabled(store, 'not-exist', 'versionChainV2Read')).toBe(false)
+    expect(isNovelFeatureEnabled(store, 'not-exist', 'contextSummaryMode')).toBe(false)
+    expect(isNovelFeatureEnabled(store, 'not-exist', 'crossChapterChunkCache')).toBe(false)
   })
 
   it('flags 为非法 JSON 的旧数据 → false 不抛错（rowToProject 安全解析）', () => {
@@ -104,6 +87,6 @@ describe('isNovelFeatureEnabled 项目灰度读取', () => {
     // 模拟库里已存在损坏 JSON：直接改写行
     const db = (store as unknown as { db: Database.Database }).db
     db.prepare('UPDATE novel_projects SET feature_flags = ? WHERE id = ?').run('{bad json', projectId)
-    expect(isNovelFeatureEnabled(store, projectId, 'scenePlanV2Write')).toBe(false)
+    expect(isNovelFeatureEnabled(store, projectId, 'contextSummaryMode')).toBe(false)
   })
 })

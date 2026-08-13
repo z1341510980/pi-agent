@@ -1379,7 +1379,7 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
     // - payload_id 关联主表（主键即 payload.id，与 agent_log_id 一致，简化反查）
     // - content_hash = 非空字段 JSON 规范化后 sha256，可去重/校验解压完整性
     // - expires_at = created_at + 保留策略天数（成功 30d / 失败 90d / 审计锁定 365d，NULL=长期）
-    // Flag logPayloadExternalized 默认关：关闭时行为与现状完全一致（全量写主表）。
+    // 2026-08-12 逻辑统一：冷热分离成为唯一路径（不再有 flag，全量外置）。
     id: '087_create_agent_log_payloads',
     sql: `
       CREATE TABLE IF NOT EXISTS novel_agent_log_payloads (
@@ -1540,6 +1540,219 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       );
       CREATE INDEX IF NOT EXISTS idx_projection_outbox_pending
         ON novel_projection_outbox(status, created_at);
+    `
+  },
+  {
+    // T02-6：Memory 操作审计（2026-08-12 逻辑统一：恒开启）。
+    //
+    // 与旧 novel_memory_events（StoryEvent 语义账本）并存：旧表记录"故事发生了什么"，
+    // 本表记录"系统执行了什么"（create/update/link/unlink + before/after JSON）。
+    // 消费者全部迁走后，旧表才可停写——审计恒开启，每次 Memory applyChanges 都留痕。
+    id: '094_create_memory_operation_ledger',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_memory_operation_runs (
+        id           TEXT PRIMARY KEY,
+        project_id   TEXT NOT NULL,
+        chapter_id   TEXT,
+        source       TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'applying',
+        error        TEXT,
+        created_at   INTEGER NOT NULL,
+        committed_at INTEGER,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_op_runs_project
+        ON novel_memory_operation_runs(project_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS novel_memory_operations (
+        id            TEXT PRIMARY KEY,
+        run_id        TEXT NOT NULL,
+        seq           INTEGER NOT NULL,
+        operation     TEXT NOT NULL,
+        target_type   TEXT NOT NULL,
+        target_id     TEXT NOT NULL,
+        related_type  TEXT,
+        related_id    TEXT,
+        before_json   TEXT,
+        after_json    TEXT,
+        reason        TEXT,
+        created_at    INTEGER NOT NULL,
+        UNIQUE (run_id, seq),
+        FOREIGN KEY (run_id) REFERENCES novel_memory_operation_runs(id) ON DELETE CASCADE,
+        CHECK (operation IN ('create', 'update', 'link', 'unlink'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_operations_target
+        ON novel_memory_operations(target_type, target_id);
+    `
+  },
+  {
+    // 角色弧光在领域模型中是 1:1。历史库可能存在重复行：保留最近更新的一条，
+    // 再以该条同步 character.arc_stage 投影，最后建立唯一索引防止后续漂移。
+    id: '095_enforce_novel_character_arc_uniqueness',
+    sql: `
+      DELETE FROM novel_character_arcs
+      WHERE id IN (
+        SELECT id FROM (
+          SELECT id,
+            ROW_NUMBER() OVER (
+              PARTITION BY project_id, character_id
+              ORDER BY updated_at DESC, created_at DESC, id DESC
+            ) AS row_number
+          FROM novel_character_arcs
+        ) WHERE row_number > 1
+      );
+      UPDATE novel_characters
+      SET arc_stage = (
+        SELECT current_stage
+        FROM novel_character_arcs
+        WHERE character_id = novel_characters.id
+          AND project_id = novel_characters.project_id
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM novel_character_arcs
+        WHERE character_id = novel_characters.id
+          AND project_id = novel_characters.project_id
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_arcs_project_character_unique
+        ON novel_character_arcs(project_id, character_id);
+    `
+  },
+  {
+    // Review 必须绑定被审正文；volume_id 必须属于章节所在项目。
+    id: '096_bind_reviews_and_enforce_chapter_volume',
+    sql: `
+      ALTER TABLE novel_chapter_reviews ADD COLUMN content_revision_id TEXT;
+      ALTER TABLE novel_chapter_reviews ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_novel_reviews_content_revision
+        ON novel_chapter_reviews(content_revision_id);
+      CREATE INDEX IF NOT EXISTS idx_novel_reviews_chapter_hash
+        ON novel_chapter_reviews(chapter_id, content_hash, created_at DESC);
+
+      UPDATE novel_chapters
+      SET volume_id = NULL
+      WHERE volume_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM novel_volumes v
+          WHERE v.id = novel_chapters.volume_id
+            AND v.project_id = novel_chapters.project_id
+        );
+
+      CREATE TRIGGER IF NOT EXISTS trg_novel_chapter_volume_insert
+      BEFORE INSERT ON novel_chapters
+      WHEN NEW.volume_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM novel_volumes v
+          WHERE v.id = NEW.volume_id AND v.project_id = NEW.project_id
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'chapter volume must belong to the same project');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_novel_chapter_volume_update
+      BEFORE UPDATE OF volume_id, project_id ON novel_chapters
+      WHEN NEW.volume_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM novel_volumes v
+          WHERE v.id = NEW.volume_id AND v.project_id = NEW.project_id
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'chapter volume must belong to the same project');
+      END;
+    `
+  },
+  {
+    // 群聊断点恢复必须沿用首次运行的成员模型，防止同一次创作在恢复后切换模型。
+    id: '097_add_discussion_run_member_model',
+    sql: `
+      ALTER TABLE novel_discussion_runs ADD COLUMN member_model TEXT;
+    `
+  },
+  {
+    // 群聊断点恢复必须沿用首次运行时解析出的项目主模型，防止项目设置变更后换模型。
+    id: '098_add_discussion_run_project_model',
+    sql: `
+      ALTER TABLE novel_discussion_runs ADD COLUMN project_model TEXT;
+    `
+  },
+  {
+    // 章节正文被改写后，所有基于旧正文推导出的当前态必须显式失效。
+    // invalidation 是项目级时间线闸门；rebuild job/step 为后续顺序重放提供可恢复状态。
+    id: '099_create_timeline_rebuild',
+    sql: `
+      ALTER TABLE novel_memory_snapshots ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+      ALTER TABLE novel_entity_appearances ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+      ALTER TABLE novel_character_history ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+
+      CREATE INDEX IF NOT EXISTS idx_memory_snapshots_project_status
+        ON novel_memory_snapshots(project_id, status, chapter_number);
+      CREATE INDEX IF NOT EXISTS idx_entity_appearances_project_status
+        ON novel_entity_appearances(project_id, status, chapter_id);
+      CREATE INDEX IF NOT EXISTS idx_character_history_project_status
+        ON novel_character_history(project_id, status, chapter_number);
+
+      CREATE TABLE IF NOT EXISTS novel_timeline_invalidations (
+        id                         TEXT PRIMARY KEY,
+        project_id                 TEXT NOT NULL,
+        start_chapter_id           TEXT NOT NULL,
+        start_chapter_number       INTEGER NOT NULL,
+        source_content_revision_id TEXT,
+        status                     TEXT NOT NULL DEFAULT 'pending',
+        reason                     TEXT NOT NULL DEFAULT 'chapter_rewrite',
+        affected_chapters          TEXT NOT NULL DEFAULT '[]',
+        stale_counts               TEXT NOT NULL DEFAULT '{}',
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+        resolved_at                INTEGER,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (start_chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY (source_content_revision_id) REFERENCES novel_chapter_content_revisions(id) ON DELETE SET NULL,
+        CHECK (status IN ('pending', 'rebuilding', 'resolved'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_invalidations_project_active
+        ON novel_timeline_invalidations(project_id)
+        WHERE status IN ('pending', 'rebuilding');
+
+      CREATE TABLE IF NOT EXISTS novel_timeline_rebuild_jobs (
+        id                       TEXT PRIMARY KEY,
+        invalidation_id          TEXT NOT NULL,
+        project_id               TEXT NOT NULL,
+        start_chapter_number     INTEGER NOT NULL,
+        end_chapter_number       INTEGER NOT NULL,
+        status                   TEXT NOT NULL DEFAULT 'running',
+        model_id                 TEXT,
+        estimated_llm_calls      INTEGER NOT NULL DEFAULT 0,
+        processed_chapter_number INTEGER,
+        error                    TEXT,
+        created_at               INTEGER NOT NULL,
+        started_at               INTEGER,
+        updated_at               INTEGER NOT NULL,
+        completed_at             INTEGER,
+        FOREIGN KEY (invalidation_id) REFERENCES novel_timeline_invalidations(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+        CHECK (status IN ('running', 'paused', 'failed', 'completed', 'cancelled'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_timeline_rebuild_jobs_project
+        ON novel_timeline_rebuild_jobs(project_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_timeline_rebuild_steps (
+        job_id              TEXT NOT NULL,
+        chapter_id          TEXT NOT NULL,
+        chapter_number      INTEGER NOT NULL,
+        content_revision_id TEXT NOT NULL,
+        status              TEXT NOT NULL DEFAULT 'pending',
+        analysis_json       TEXT,
+        error               TEXT,
+        updated_at          INTEGER NOT NULL,
+        PRIMARY KEY (job_id, chapter_id),
+        FOREIGN KEY (job_id) REFERENCES novel_timeline_rebuild_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY (content_revision_id) REFERENCES novel_chapter_content_revisions(id) ON DELETE RESTRICT,
+        CHECK (status IN ('pending', 'analyzed', 'applied', 'failed'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_timeline_rebuild_steps_order
+        ON novel_timeline_rebuild_steps(job_id, chapter_number);
     `
   }
 ]

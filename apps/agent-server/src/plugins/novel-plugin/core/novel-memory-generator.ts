@@ -20,7 +20,8 @@
  *   （不依赖 generator 内部如何应用变更，只要 store 状态变化即可被对比逻辑捕获）
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import type { Database } from 'better-sqlite3'
 import type { PluginContext, PluginPayloadStats } from '../../../core/plugin/plugin-types.js'
 import type { NovelPromptBuilder } from './prompt-builder.js'
 import type { PromptManager } from './prompt-manager.js'
@@ -28,6 +29,31 @@ import type { NovelStore } from './novel-store.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
 import { buildMemoryLedgerHandoff } from './memory-ledger-handoff.js'
+import { MemoryOperationLedger } from './memory-operation-ledger.js'
+import {
+  auditOp,
+  ensureNumber,
+  ensureString,
+  fieldsAfter,
+  fieldsBefore,
+  type MemoryOperationCollector,
+} from './memory-change-support.js'
+import {
+  applyCharacterArcChanges,
+  applyCharacterMemoryChanges,
+  type CharacterArcChangeInput,
+  type CharacterCreateInput,
+  type CharacterUpdateInput,
+} from './character-memory-applicator.js'
+import {
+  applyWorldRelationMemoryChanges,
+  type FactionUpdateInput,
+  type ItemCreateInput,
+  type ItemUpdateInput,
+  type LocationUpdateInput,
+  type RelationshipCreateInput,
+  type RelationshipUpdateInput,
+} from './world-relation-memory-applicator.js'
 import { selectAdmissibleNewForeshadows } from './foreshadow-policy.js'
 import { findCoveredConflict, selectAdmissibleNewClues } from './entity-admission-policy.js'
 import type {
@@ -35,12 +61,7 @@ import type {
   NovelConflict,
   NovelForeshadow,
   NovelClue,
-  NovelFaction,
-  NovelLocation,
-  NovelItem,
-  NovelRelationship,
   NovelNarrative,
-  RelationChange,
   ArrangedEntity,
   NarrativeType,
   NovelHook,
@@ -55,39 +76,6 @@ export interface MemoryGenerationProgressEvent {
 }
 
 // ── LLM 输出类型（宽松解析，字段全部可选）──
-
-interface CharacterUpdateItem {
-  name?: string
-  currentState?: string
-  currentGoal?: string
-  currentPressure?: string
-  secret?: string
-  arcStage?: string
-  /** 长期欲望（四层逻辑①，跨章节稳定的发动机） */
-  longTermDesire?: string
-  /** 删掉影响（四层逻辑④，描述该角色对剧情的不可替代性） */
-  removalImpact?: string
-}
-
-interface CharacterCreateItem {
-  name?: string
-  description?: string
-  identity?: string
-  personality?: string
-  appearance?: string
-  currentState?: string
-  currentGoal?: string
-  currentPressure?: string
-  secret?: string
-  arcStage?: string
-  speechStyle?: string
-  /** 长期欲望（四层逻辑①） */
-  longTermDesire?: string
-  /** 角色层级（四层逻辑②：protagonist/main_opponent/supporting/function/background） */
-  plotRole?: string
-  /** 删掉影响（四层逻辑④） */
-  removalImpact?: string
-}
 
 interface ForeshadowUpdateItem {
   description?: string
@@ -163,71 +151,6 @@ interface ConflictCreateItem {
   nextStep?: string
 }
 
-interface RelationshipUpdateItem {
-  /** 角色名匹配（与 conflictCreates.participants 同模式） */
-  characterA?: string
-  characterB?: string
-  /** 当前阶段 */
-  currentStage?: string
-  /** 动态功能位 */
-  dynamicRole?: string
-  /** 阵营关系 */
-  alignment?: string
-  /** 走向 */
-  trend?: string
-  /** 本章关系约束提示 */
-  chapterHint?: string
-  /** 阶段变更原因（写入 stageHistory 的 reason） */
-  changeReason?: string
-}
-
-interface RelationshipCreateItem {
-  characterA?: string
-  characterB?: string
-  relationType?: string
-  currentStage?: string
-  dynamicRole?: string
-  alignment?: string
-  trend?: string
-  chapterHint?: string
-}
-
-interface FactionUpdateItem {
-  name?: string
-  status?: string
-  strength?: string
-}
-
-interface LocationUpdateItem {
-  name?: string
-  status?: string
-}
-
-// ── 物品：归属层状态变更 ──
-interface ItemUpdateItem {
-  /** 物品名（用于匹配已有物品） */
-  name?: string
-  /** 新持有者角色名（空字符串表示变为无主；undefined 表示不变更） */
-  ownerName?: string
-  /** 物品状态 */
-  status?: string
-  /** 物品能力/效果新描述 */
-  abilities?: string
-  /** 物品描述新内容 */
-  description?: string
-}
-
-interface ItemCreateItem {
-  name?: string
-  description?: string
-  type?: string
-  /** 持有者角色名（无主填空字符串） */
-  ownerName?: string
-  status?: string
-  abilities?: string
-  origin?: string
-}
-
 // ── v0.2：钩子兑现更新（标记上一章钩子 thrown→fulfilled）──
 interface HookUpdateItem {
   /** 钩子 ID 或描述关键词（用于匹配） */
@@ -238,37 +161,26 @@ interface HookUpdateItem {
   fulfilledDescription?: string
 }
 
-// ── v0.2：角色弧光阶段转换 ──
-interface ArcStageChangeItem {
-  /** 角色名匹配 */
-  characterName?: string
-  characterId?: string
-  arcType?: 'growth' | 'fall' | 'redemption' | 'shift'
-  newStage?: string
-  triggerEvent?: string
-  description?: string
-}
-
-interface MemoryUpdatePayload {
-  characterUpdates?: CharacterUpdateItem[]
-  characterCreates?: CharacterCreateItem[]
+export interface MemoryUpdatePayload {
+  characterUpdates?: CharacterUpdateInput[]
+  characterCreates?: CharacterCreateInput[]
   foreshadowUpdates?: ForeshadowUpdateItem[]
   foreshadowCreates?: ForeshadowCreateItem[]
   clueUpdates?: ClueUpdateItem[]
   clueCreates?: ClueCreateItem[]
   conflictUpdates?: ConflictUpdateItem[]
   conflictCreates?: ConflictCreateItem[]
-  factionUpdates?: FactionUpdateItem[]
-  locationUpdates?: LocationUpdateItem[]
+  factionUpdates?: FactionUpdateInput[]
+  locationUpdates?: LocationUpdateInput[]
   // ── 四层逻辑②：关系层 Memory Agent 支持 ──
-  relationshipUpdates?: RelationshipUpdateItem[]
-  relationshipCreates?: RelationshipCreateItem[]
+  relationshipUpdates?: RelationshipUpdateInput[]
+  relationshipCreates?: RelationshipCreateInput[]
   // ── 物品归属层 ──
-  itemUpdates?: ItemUpdateItem[]
-  itemCreates?: ItemCreateItem[]
+  itemUpdates?: ItemUpdateInput[]
+  itemCreates?: ItemCreateInput[]
   // ── v0.2：钩子兑现 + 角色弧光 ──
   hookUpdates?: HookUpdateItem[]
-  arcStageChanges?: ArcStageChangeItem[]
+  arcStageChanges?: CharacterArcChangeInput[]
   // ── 剧情轨道（narrative）：冲突/线索/伏笔装不下的剧情相关内容 ──
   narrativeCreates?: NarrativeCreateItem[]
   narrativeUpdates?: NarrativeUpdateItem[]
@@ -306,6 +218,8 @@ export interface StorylineProgressItem {
 export interface MemoryApplyStats {
   characterUpdatesApplied: number
   characterCreatesApplied: number
+  /** characterCreates 命中同名既有角色、转为合并更新的条数（防重复角色） */
+  characterCreatesDeduped: number
   foreshadowUpdatesApplied: number
   foreshadowCreatesApplied: number
   clueUpdatesApplied: number
@@ -323,7 +237,7 @@ export interface MemoryApplyStats {
   /** 剧情轨道（narrative）：新增/更新的剧情条目数 */
   narrativeCreatesApplied: number
   narrativeUpdatesApplied: number
-  /** 剧情推进轨道：本章确认的故事线推进数（V2，scenePlanV2Write 开启且有 plan 时） */
+  /** 剧情推进轨道：本章确认的故事线推进数（V2，存在生效 plan 时） */
   storylineProgressesApplied: number
   /** 无法匹配既有实体、转为 needs_review 候选的新 Conflict/Clue 数（V2 决策 3） */
   candidateCreatesApplied: number
@@ -346,6 +260,8 @@ export interface MemoryGenerationResult {
     sessionId?: string
     payloadStats?: MemoryPayloadStats
   }
+  /** analyze() 的暂存结果；只有显式 applyAnalysis() 后才会写入业务表。 */
+  analysis?: MemoryUpdatePayload
 }
 
 export interface MemoryPayloadStats {
@@ -362,25 +278,6 @@ function addPayloadStats(target: MemoryPayloadStats, stats: PluginPayloadStats):
   target.toolCount = Math.max(target.toolCount, stats.toolCount)
   target.totalChars += stats.totalChars
   target.roundTrips++
-}
-
-/** 将任意 LLM 输出值安全转为 string，防止数组/对象传到 SQLite */
-function ensureString(value: unknown, defaultValue: string): string {
-  if (typeof value === 'string') return value
-  if (value == null) return defaultValue
-  if (Array.isArray(value)) return value.join(', ')
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
-}
-
-/** 安全转 number */
-function ensureNumber(value: unknown, defaultValue: number): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const n = Number(value)
-    if (Number.isFinite(n)) return n
-  }
-  return defaultValue
 }
 
 export class NovelMemoryGenerator {
@@ -413,6 +310,41 @@ export class NovelMemoryGenerator {
     onProgress?: (event: MemoryGenerationProgressEvent) => void,
     arrangedEntities?: ArrangedEntity,
     signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
+  ): Promise<MemoryGenerationResult> {
+    const analysis = await this.analyze(
+      projectId,
+      chapterNumber,
+      chapterContent,
+      onProgress,
+      arrangedEntities,
+      signal,
+      modelId,
+    )
+    if (analysis.status === 'error') return analysis
+
+    onProgress?.({ phase: 'applying', message: '正在应用状态变更到故事系统...' })
+    const result = this.applyAnalysis(projectId, chapterNumber, analysis)
+    onProgress?.({
+      phase: 'completed',
+      message: `记忆提取完成：${result.summary}（应用 ${result.stats.total} 项变更）`,
+      data: { stats: result.stats },
+    })
+    return result
+  }
+
+  /**
+   * 只执行 LLM 分析与 JSON 解析，不写数据库。
+   * Finalizer 用它把耗时调用放在事务外，再以 applyAnalysis() 做短事务提交。
+   */
+  async analyze(
+    projectId: string,
+    chapterNumber: number,
+    chapterContent: string,
+    onProgress?: (event: MemoryGenerationProgressEvent) => void,
+    arrangedEntities?: ArrangedEntity,
+    signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
   ): Promise<MemoryGenerationResult> {
     // ── 1. 构建 Memory 专用系统提示词 ──
     // Memory 已在 user prompt 中拿到完整正文与本章相关实体状态，不需要重发
@@ -450,6 +382,7 @@ export class NovelMemoryGenerator {
       responseFormat: 'json'
       timeoutMs: number
       signal?: AbortSignal
+      modelId?: { provider: string; modelId: string }
       onPayloadStats?: (stats: PluginPayloadStats) => void
     } = {
       systemPrompt,
@@ -459,6 +392,7 @@ export class NovelMemoryGenerator {
       // 但远低于工具循环模式的 300s（单次调用通常 30-60s）
       timeoutMs: 300_000,
       signal,
+      modelId,
       onPayloadStats: (stats: PluginPayloadStats) => addPayloadStats(payloadStats, stats),
     }
     const session = await this.context.createSession(sessionOptions)
@@ -505,18 +439,26 @@ export class NovelMemoryGenerator {
       session.dispose()
     }
 
-    // ── 5. 应用变更到 store ──
-    onProgress?.({ phase: 'applying', message: '正在应用状态变更到故事系统...' })
-    const stats = this.applyChanges(projectId, payload, chapterNumber)
+    const summary = payload.summary?.trim() || '记忆变更分析完成'
+    return {
+      status: 'success',
+      summary,
+      stats: this.emptyStats(),
+      analysis: payload,
+      logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats },
+    }
+  }
 
-    const summary = payload.summary?.trim() || `已应用 ${stats.total} 项状态变更`
-    onProgress?.({
-      phase: 'completed',
-      message: `记忆提取完成：${summary}（应用 ${stats.total} 项变更）`,
-      data: { stats },
-    })
-
-    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats } }
+  /** 将 analyze() 的结果应用到业务表；调用方可把它纳入更大的短事务。 */
+  applyAnalysis(
+    projectId: string,
+    chapterNumber: number,
+    analyzed: MemoryGenerationResult,
+  ): MemoryGenerationResult {
+    if (analyzed.status === 'error' || !analyzed.analysis) return analyzed
+    const stats = this.applyChanges(projectId, analyzed.analysis, chapterNumber)
+    const summary = analyzed.analysis.summary?.trim() || `已应用 ${stats.total} 项状态变更`
+    return { ...analyzed, summary, stats, analysis: undefined }
   }
 
   /**
@@ -539,6 +481,34 @@ export class NovelMemoryGenerator {
     currentChapterNumber: number,
     onProgress?: (event: MemoryGenerationProgressEvent) => void,
     signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
+  ): Promise<MemoryGenerationResult> {
+    const analyzed = await this.analyzeFullCalibration(
+      projectId,
+      currentChapterNumber,
+      onProgress,
+      signal,
+      modelId,
+    )
+    if (analyzed.status === 'error') return analyzed
+
+    onProgress?.({ phase: 'applying', message: '正在应用校准变更到故事系统...' })
+    const result = this.applyAnalysis(projectId, currentChapterNumber, analyzed)
+    onProgress?.({
+      phase: 'completed',
+      message: `全量校准完成：${result.summary}（应用 ${result.stats.total} 项变更）`,
+      data: { stats: result.stats, calibration: true },
+    })
+    return result
+  }
+
+  /** 只分析全量校准变更；Finalizer 在独立短事务中应用并刷新章节快照。 */
+  async analyzeFullCalibration(
+    projectId: string,
+    currentChapterNumber: number,
+    onProgress?: (event: MemoryGenerationProgressEvent) => void,
+    signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
   ): Promise<MemoryGenerationResult> {
     const calibrationRange = 5 // 校准最近 5 章
     const startChapter = Math.max(1, currentChapterNumber - calibrationRange + 1)
@@ -608,6 +578,7 @@ export class NovelMemoryGenerator {
       responseFormat: 'json',
       timeoutMs: 300_000,
       signal,
+      modelId,
       onPayloadStats: (stats: PluginPayloadStats) => addPayloadStats(payloadStats, stats),
     })
 
@@ -648,18 +619,14 @@ export class NovelMemoryGenerator {
       session.dispose()
     }
 
-    // 应用校准变更
-    onProgress?.({ phase: 'applying', message: '正在应用校准变更到故事系统...' })
-    const stats = this.applyChanges(projectId, payload, currentChapterNumber)
-
-    const summary = payload.summary?.trim() || `全量校准完成：应用 ${stats.total} 项遗漏变更`
-    onProgress?.({
-      phase: 'completed',
-      message: `全量校准完成：${summary}（应用 ${stats.total} 项变更）`,
-      data: { stats, calibration: true },
-    })
-
-    return { status: 'success', summary, stats, logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats } }
+    const summary = payload.summary?.trim() || '全量校准分析完成'
+    return {
+      status: 'success',
+      summary,
+      stats: this.emptyStats(),
+      analysis: payload,
+      logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats },
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1022,8 +989,8 @@ export class NovelMemoryGenerator {
         if (lastValid <= 0) break
         truncated = truncated.slice(0, lastValid + 1)
         truncated = truncated.replace(/,\s*$/, '')
-        const opens = (truncated.match(/[{\[]/g) ?? []).length
-        const closes = (truncated.match(/[}\]]/g) ?? []).length
+        const opens = [...truncated].filter((char) => char === '{' || char === '[').length
+        const closes = [...truncated].filter((char) => char === '}' || char === ']').length
         const needClose = opens - closes
         if (needClose <= 0) continue
         let repaired = truncated
@@ -1063,59 +1030,65 @@ export class NovelMemoryGenerator {
   // ═══════════════════════════════════════════════════════════════
 
   private applyChanges(projectId: string, payload: MemoryUpdatePayload, chapterNumber?: number): MemoryApplyStats {
+    return this.applyChangesWithAudit(projectId, payload, chapterNumber)
+  }
+
+  /** 收集 Memory 操作审计（2026-08-12 逻辑统一：memoryOperationLedger 转正，恒开启） */
+  private applyChangesWithAudit(projectId: string, payload: MemoryUpdatePayload, chapterNumber?: number): MemoryApplyStats {
+    // 事务化：applyChangesInner 里任一 store 写入失败则整体回滚，
+    // 避免半成品记忆变更（如只更新了角色、没落伏笔）留在库里。
+    // run、operations 与实体写在同事务内提交；失败后在新事务写 failed run。
+    const database = (this.store as { database?: Database }).database
+    if (!database) {
+      // 容错：部分测试 mock 的 store 无 database/getChapter，跳过审计仍走事务化主体
+      return this.store.withTransaction(() => this.applyChangesInner(projectId, payload, chapterNumber))
+    }
+    const ledger = new MemoryOperationLedger(database, {
+      projectId,
+      // 容错：部分测试 mock 的 store 无 getChapter，此时 chapterId 缺省（审计仍工作）
+      chapterId: chapterNumber !== undefined && typeof this.store.getChapter === 'function'
+        ? this.store.getChapter(projectId, chapterNumber)?.id
+        : undefined,
+      source: 'memory-generator',
+      payloadHash: createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16),
+    })
+    const audit: MemoryOperationCollector = {
+      push: (op) => ledger.push(op),
+    }
+    try {
+      const stats = this.store.withTransaction(() => {
+        const applied = this.applyChangesInner(projectId, payload, chapterNumber, audit)
+        ledger.commit()
+        return applied
+      })
+      return stats
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // 实体写回滚后，单独为 run 标记 failed（新事务：原事务已回滚）
+      try {
+        this.store.withTransaction(() => ledger.markFailed(message))
+      } catch (ledgerError) {
+        this.context.logger.error(
+          { projectId, chapterNumber, ledgerError },
+          '记忆 Agent：写入失败审计时发生错误',
+        )
+      }
+      throw error
+    }
+  }
+
+  private applyChangesInner(
+    projectId: string,
+    payload: MemoryUpdatePayload,
+    chapterNumber?: number,
+    audit?: MemoryOperationCollector,
+  ): MemoryApplyStats {
     const stats = this.emptyStats()
 
-    // ── 角色更新 ──
-    for (const item of payload.characterUpdates ?? []) {
-      const character = this.findCharacterByName(projectId, item.name)
-      if (!character) {
-        this.context.logger.warn(
-          { name: item.name, projectId },
-          '记忆 Agent：未找到要更新的角色，跳过',
-        )
-        continue
-      }
-      const patch: Partial<NovelCharacter> = {}
-      if (item.currentState !== undefined) patch.currentState = ensureString(item.currentState, character.currentState)
-      if (item.currentGoal !== undefined) patch.currentGoal = ensureString(item.currentGoal, character.currentGoal)
-      if (item.currentPressure !== undefined) patch.currentPressure = ensureString(item.currentPressure, character.currentPressure)
-      if (item.secret !== undefined) patch.secret = ensureString(item.secret, character.secret)
-      if (item.arcStage !== undefined) patch.arcStage = ensureString(item.arcStage, character.arcStage)
-      // 四层逻辑①④：长期欲望和删掉影响也可被 Memory Agent 更新
-      if (item.longTermDesire !== undefined) patch.longTermDesire = ensureString(item.longTermDesire, character.longTermDesire)
-      if (item.removalImpact !== undefined) patch.removalImpact = ensureString(item.removalImpact, character.removalImpact)
-      if (Object.keys(patch).length === 0) continue
-      this.store.updateCharacter(character.id, patch)
-      stats.characterUpdatesApplied++
-    }
-
-    // ── 角色创建 ──
-    for (const item of payload.characterCreates ?? []) {
-      if (!item.name) continue
-      const validPlotRoles = ['protagonist', 'main_opponent', 'supporting', 'function', 'background']
-      this.store.createCharacter({
-        id: randomUUID(),
-        projectId,
-        name: ensureString(item.name, ''),
-        description: ensureString(item.description, ''),
-        identity: ensureString(item.identity, ''),
-        personality: ensureString(item.personality, ''),
-        appearance: ensureString(item.appearance, ''),
-        currentState: ensureString(item.currentState, ''),
-        currentGoal: ensureString(item.currentGoal, ''),
-        currentPressure: ensureString(item.currentPressure, ''),
-        secret: ensureString(item.secret, ''),
-        arcStage: ensureString(item.arcStage, 'introduction'),
-        arcHistory: '[]',
-        speechStyle: ensureString(item.speechStyle, ''),
-        isProtagonist: false,
-        // 四层逻辑补全字段（新建角色时也要带上）
-        longTermDesire: ensureString(item.longTermDesire, ''),
-        plotRole: (validPlotRoles.includes(item.plotRole ?? '') ? item.plotRole : 'supporting') as NovelCharacter['plotRole'],
-        removalImpact: ensureString(item.removalImpact, '暂无关键影响'),
-      })
-      stats.characterCreatesApplied++
-    }
+    Object.assign(stats, applyCharacterMemoryChanges(
+      { projectId, chapterNumber, store: this.store, logger: this.context.logger, audit },
+      payload,
+    ))
 
     // ── 伏笔更新 ──
     for (const item of payload.foreshadowUpdates ?? []) {
@@ -1159,8 +1132,15 @@ export class NovelMemoryGenerator {
         patch.recoverMethod = ensureString(item.recoverMethod, '') as NovelForeshadow['recoverMethod']
       }
       if (Object.keys(patch).length === 0) continue
-      this.store.updateForeshadow(foreshadow.id, patch)
+      const updated = this.store.updateForeshadow(foreshadow.id, patch)
       stats.foreshadowUpdatesApplied++
+      audit?.push(auditOp().update(
+        'foreshadow',
+        foreshadow.id,
+        fieldsBefore(foreshadow, patch),
+        fieldsAfter(updated, patch),
+        'memory-generator.applyChanges',
+      ))
     }
 
     // ── 伏笔创建 ──
@@ -1199,9 +1179,11 @@ export class NovelMemoryGenerator {
             }]
           : undefined,
       })
+      audit?.push(auditOp().create('foreshadow', foreshadow.id, foreshadow, 'memory-generator.applyChanges'))
       // 关联角色通过 edges 维护，不再写入 linkedCharacters 字段
       for (const charId of linkedCharacterIds) {
         this.store.createEdge(projectId, { sourceId: foreshadow.id, sourceType: 'foreshadow', targetId: charId, targetType: 'character', edgeType: 'related', label: '关联角色' })
+        audit?.push(auditOp().link('foreshadow', foreshadow.id, 'character', charId, 'memory-generator.applyChanges'))
       }
       stats.foreshadowCreatesApplied++
     }
@@ -1231,11 +1213,19 @@ export class NovelMemoryGenerator {
       }
       if (Object.keys(patch).length === 0 && !linkedForeshadow) continue
       if (Object.keys(patch).length > 0) {
-        this.store.updateClue(clue.id, patch)
+        const updated = this.store.updateClue(clue.id, patch)
+        audit?.push(auditOp().update(
+          'clue',
+          clue.id,
+          fieldsBefore(clue, patch),
+          fieldsAfter(updated, patch),
+          'memory-generator.applyChanges',
+        ))
       }
       // 关联伏笔通过 edges 维护，不再写入 linkedForeshadow 字段
       if (linkedForeshadow) {
         this.store.createEdge(projectId, { sourceId: clue.id, sourceType: 'clue', targetId: linkedForeshadow.id, targetType: 'foreshadow', edgeType: 'related', label: '关联伏笔' })
+        audit?.push(auditOp().link('clue', clue.id, 'foreshadow', linkedForeshadow.id, 'memory-generator.applyChanges'))
       }
       stats.clueUpdatesApplied++
     }
@@ -1254,7 +1244,7 @@ export class NovelMemoryGenerator {
       const existing = this.findClueByDescription(projectId, item.description)
       if (existing) continue
       // V2 决策 3：全新线索不直接创建正式实体，落 needs_review 候选待用户确认
-      this.store.createEntityCandidate({
+      const candidate = this.store.createEntityCandidate({
         projectId,
         chapterNumber,
         contentRevisionId: null,
@@ -1262,6 +1252,12 @@ export class NovelMemoryGenerator {
         payload: item,
         reasonCode: 'new_clue',
       })
+      audit?.push(auditOp().create(
+        'entity_candidate',
+        candidate.id,
+        { entityType: candidate.entityType, reasonCode: candidate.reasonCode },
+        'memory-generator.applyChanges',
+      ))
       this.context.logger.info(
         { projectId, chapterNumber, description: item.description },
         '记忆 Agent：新线索已转为 needs_review 候选（待用户确认）',
@@ -1303,8 +1299,15 @@ export class NovelMemoryGenerator {
         patch.nextStep = ensureString(item.nextStep, '')
       }
       if (Object.keys(patch).length === 0) continue
-      this.store.updateConflict(conflict.id, patch)
+      const updated = this.store.updateConflict(conflict.id, patch)
       stats.conflictUpdatesApplied++
+      audit?.push(auditOp().update(
+        'conflict',
+        conflict.id,
+        fieldsBefore(conflict, patch),
+        fieldsAfter(updated, patch),
+        'memory-generator.applyChanges',
+      ))
     }
 
     // ── 冲突创建 ──
@@ -1336,7 +1339,17 @@ export class NovelMemoryGenerator {
         }
         if (item.currentStep !== undefined) patch.currentStep = ensureString(item.currentStep, coveredConflict.currentStep ?? '')
         if (item.nextStep !== undefined) patch.nextStep = ensureString(item.nextStep, coveredConflict.nextStep ?? '')
-        if (Object.keys(patch).length > 0) this.store.updateConflict(coveredConflict.id, patch)
+        if (Object.keys(patch).length > 0) {
+          const updated = this.store.updateConflict(coveredConflict.id, patch)
+          stats.conflictUpdatesApplied++
+          audit?.push(auditOp().update(
+            'conflict',
+            coveredConflict.id,
+            fieldsBefore(coveredConflict, patch),
+            fieldsAfter(updated, patch),
+            'memory-generator.applyChanges.conflictCreateDedup',
+          ))
+        }
         this.context.logger.info(
           { projectId, chapterNumber, conflictId: coveredConflict.id, description: item.description },
           '记忆 Agent：同章相似冲突合并为已有实体',
@@ -1345,7 +1358,7 @@ export class NovelMemoryGenerator {
       }
       // V2 决策 3：全新冲突不直接创建正式实体，落 needs_review 候选待用户确认。
       // （coveredConflict 命中的合并更新保留在分支上方自动执行）
-      this.store.createEntityCandidate({
+      const candidate = this.store.createEntityCandidate({
         projectId,
         chapterNumber,
         contentRevisionId: null,
@@ -1353,6 +1366,12 @@ export class NovelMemoryGenerator {
         payload: item,
         reasonCode: 'new_conflict',
       })
+      audit?.push(auditOp().create(
+        'entity_candidate',
+        candidate.id,
+        { entityType: candidate.entityType, reasonCode: candidate.reasonCode },
+        'memory-generator.applyChanges',
+      ))
       this.context.logger.info(
         { projectId, chapterNumber, description: item.description },
         '记忆 Agent：新冲突已转为 needs_review 候选（待用户确认）',
@@ -1376,13 +1395,20 @@ export class NovelMemoryGenerator {
       if (item.type !== undefined) patch.type = item.type
       if (item.status !== undefined) patch.status = item.status
       if (Object.keys(patch).length === 0) continue
-      this.store.updateNarrative(narrative.id, patch)
+      const updated = this.store.updateNarrative(narrative.id, patch)
       stats.narrativeUpdatesApplied++
+      audit?.push(auditOp().update(
+        'narrative',
+        narrative.id,
+        fieldsBefore(narrative, patch),
+        fieldsAfter(updated, patch),
+        'memory-generator.applyChanges',
+      ))
     }
     for (const item of payload.narrativeCreates ?? []) {
       if (!item.description?.trim()) continue
       if (this.findNarrativeByDescription(projectId, item.description)) continue
-      this.store.createNarrative({
+      const narrative = this.store.createNarrative({
         projectId,
         description: item.description.trim(),
         type: item.type ?? 'advance',
@@ -1390,241 +1416,21 @@ export class NovelMemoryGenerator {
         status: item.status ?? 'active',
       })
       stats.narrativeCreatesApplied++
+      audit?.push(auditOp().create(
+        'narrative',
+        narrative.id,
+        { description: narrative.description, type: narrative.type },
+        'memory-generator.applyChanges',
+      ))
     }
 
-    // ── 势力更新 ──
-    for (const item of payload.factionUpdates ?? []) {
-      const faction = this.findFactionByName(projectId, item.name)
-      if (!faction) {
-        this.context.logger.warn(
-          { name: item.name, projectId },
-          '记忆 Agent：未找到要更新的势力，跳过',
-        )
-        continue
-      }
-      const patch: Partial<NovelFaction> = {}
-      if (item.status !== undefined) patch.status = ensureString(item.status, faction.status) as NovelFaction['status']
-      if (item.strength !== undefined) patch.strength = ensureString(item.strength, faction.strength) as NovelFaction['strength']
-      if (Object.keys(patch).length === 0) continue
-      this.store.updateFaction(faction.id, patch)
-      stats.factionUpdatesApplied++
-    }
-
-    // ── 地点更新 ──
-    for (const item of payload.locationUpdates ?? []) {
-      const location = this.findLocationByName(projectId, item.name)
-      if (!location) {
-        this.context.logger.warn(
-          { name: item.name, projectId },
-          '记忆 Agent：未找到要更新的地点，跳过',
-        )
-        continue
-      }
-      const patch: Partial<NovelLocation> = {}
-      if (item.status !== undefined) patch.status = ensureString(item.status, location.status) as NovelLocation['status']
-      if (Object.keys(patch).length === 0) continue
-      this.store.updateLocation(location.id, patch)
-      stats.locationUpdatesApplied++
-    }
-
-    // ── 物品更新（转手/状态变化/能力变化）──
-    const validItemStatuses = ['active', 'lost', 'destroyed', 'transformed', 'sealed', 'transferred']
-    for (const item of payload.itemUpdates ?? []) {
-      const existing = this.findItemByName(projectId, item.name)
-      if (!existing) {
-        this.context.logger.warn(
-          { name: item.name, projectId },
-          '记忆 Agent：未找到要更新的物品，跳过',
-        )
-        continue
-      }
-      const patch: Partial<NovelItem> = {}
-      // ownerName：空字符串表示变为无主；非空字符串按角色名解析为 ID
-      if (item.ownerName !== undefined) {
-        const ownerName = item.ownerName.trim()
-        if (ownerName === '') {
-          patch.ownerId = null
-        } else {
-          const owner = this.findCharacterByName(projectId, ownerName)
-          if (owner) {
-            patch.ownerId = owner.id
-          } else {
-            this.context.logger.warn(
-              { name: item.name, ownerName, projectId },
-              '记忆 Agent：物品转手但未找到新持有者角色，跳过 owner 变更',
-            )
-          }
-        }
-      }
-      if (item.status !== undefined) {
-        const s = ensureString(item.status, existing.status)
-        patch.status = (validItemStatuses.includes(s) ? s : existing.status) as NovelItem['status']
-      }
-      if (item.abilities !== undefined) patch.abilities = ensureString(item.abilities, existing.abilities)
-      if (item.description !== undefined) patch.description = ensureString(item.description, existing.description)
-      // 章节号 + chapterSpans 追加（与 locationStore 等保持一致的"自动追加本章"模式）
-      if (chapterNumber !== undefined && !existing.chapterSpans.some(([start, end]) => chapterNumber >= start && chapterNumber <= end)) {
-        patch.chapterSpans = [...existing.chapterSpans, [chapterNumber, chapterNumber] as [number, number]]
-          .sort((a, b) => a[0] - b[0])
-      }
-      if (Object.keys(patch).length === 0) continue
-      this.store.updateItem(existing.id, patch)
-      stats.itemUpdatesApplied++
-    }
-
-    // ── 物品创建 ──
-    const validItemTypes = ['weapon', 'armor', 'artifact', 'consumable', 'key', 'material', 'info', 'misc']
-    for (const item of payload.itemCreates ?? []) {
-      if (!item.name?.trim()) continue
-      // 防重复：按名匹配已有物品则跳过
-      if (this.findItemByName(projectId, item.name)) {
-        this.context.logger.warn(
-          { name: item.name, projectId },
-          '记忆 Agent：物品已存在，跳过创建（如需更新请用 itemUpdates）',
-        )
-        continue
-      }
-      // ownerId 解析：空字符串/无 ownerName → null；否则按角色名查找
-      let ownerId: string | null = null
-      const ownerName = (item.ownerName ?? '').trim()
-      if (ownerName !== '') {
-        const owner = this.findCharacterByName(projectId, ownerName)
-        if (owner) {
-          ownerId = owner.id
-        } else {
-          this.context.logger.warn(
-            { name: item.name, ownerName, projectId },
-            '记忆 Agent：新建物品但未找到持有者角色，物品按无主入库',
-          )
-        }
-      }
-      const typeRaw = ensureString(item.type, 'misc')
-      const statusRaw = ensureString(item.status, 'active')
-      this.store.createItem({
-        id: randomUUID(),
-        projectId,
-        name: item.name.trim(),
-        description: ensureString(item.description, ''),
-        type: (validItemTypes.includes(typeRaw) ? typeRaw : 'misc') as NovelItem['type'],
-        ownerId,
-        status: (validItemStatuses.includes(statusRaw) ? statusRaw : 'active') as NovelItem['status'],
-        abilities: ensureString(item.abilities, ''),
-        origin: ensureString(item.origin, ''),
-        firstChapter: chapterNumber ?? null,
-        chapterSpans: chapterNumber !== undefined ? [[chapterNumber, chapterNumber]] : [],
-      })
-      stats.itemCreatesApplied++
-    }
-
-    // ── 关系更新（四层逻辑②：让 Memory Agent 感知关系演变）──
-    // LLM 通过 characterA / characterB 名字匹配关系，匹配两端的角色 ID 找到关系记录
-    const validAlignments = ['ally', 'temporary_ally', 'opponent', 'temporary_opponent', 'neutral', 'pending_shift']
-    const validTrends = ['stable', 'warming', 'cooling', 'breaking', 'reconciling']
-    for (const item of payload.relationshipUpdates ?? []) {
-      const charA = this.findCharacterByName(projectId, item.characterA)
-      const charB = this.findCharacterByName(projectId, item.characterB)
-      if (!charA || !charB) {
-        this.context.logger.warn(
-          { a: item.characterA, b: item.characterB, projectId },
-          '记忆 Agent：未找到关系两端角色，跳过关系更新',
-        )
-        continue
-      }
-      // 关系是无向对：尝试两种方向匹配
-      const rel = this.store.listRelationships(projectId).find(
-        (r) =>
-          (r.characterA === charA.id && r.characterB === charB.id)
-          || (r.characterA === charB.id && r.characterB === charA.id),
-      )
-      if (!rel) {
-        this.context.logger.warn(
-          { a: charA.name, b: charB.name, projectId },
-          '记忆 Agent：未找到匹配的关系记录，跳过（如需新建请用 relationshipCreates）',
-        )
-        continue
-      }
-      const patch: Partial<NovelRelationship> = {}
-      if (item.currentStage !== undefined) patch.currentStage = ensureString(item.currentStage, rel.currentStage)
-      if (item.dynamicRole !== undefined) patch.dynamicRole = ensureString(item.dynamicRole, rel.dynamicRole)
-      if (item.alignment !== undefined) {
-        const a = ensureString(item.alignment, rel.alignment)
-        patch.alignment = (validAlignments.includes(a) ? a : 'neutral') as NovelRelationship['alignment']
-      }
-      if (item.trend !== undefined) {
-        const t = ensureString(item.trend, rel.trend)
-        patch.trend = (validTrends.includes(t) ? t : 'stable') as NovelRelationship['trend']
-      }
-      if (item.chapterHint !== undefined) patch.chapterHint = ensureString(item.chapterHint, rel.chapterHint)
-      // 章节号 + 阶段变化 → 追加 stageHistory 条目
-      if (chapterNumber !== undefined && item.currentStage !== undefined && item.currentStage !== rel.currentStage) {
-        const history: RelationChange[] = (() => {
-          try {
-            const parsed = JSON.parse(rel.stageHistory)
-            return Array.isArray(parsed) ? parsed : []
-          } catch {
-            return []
-          }
-        })()
-        history.push({
-          chapter: chapterNumber,
-          fromStage: rel.currentStage,
-          toStage: item.currentStage,
-          reason: ensureString(item.changeReason, ''),
-          timestamp: Date.now(),
-        })
-        patch.stageHistory = JSON.stringify(history)
-        patch.lastUpdatedChapter = chapterNumber
-      }
-      if (Object.keys(patch).length === 0) continue
-      this.store.updateRelationship(rel.id, patch)
-      stats.relationshipUpdatesApplied++
-    }
-
-    // ── 关系创建 ──
-    for (const item of payload.relationshipCreates ?? []) {
-      const charA = this.findCharacterByName(projectId, item.characterA)
-      const charB = this.findCharacterByName(projectId, item.characterB)
-      if (!charA || !charB) {
-        this.context.logger.warn(
-          { a: item.characterA, b: item.characterB, projectId },
-          '记忆 Agent：未找到关系两端角色，跳过关系创建',
-        )
-        continue
-      }
-      // 防重复：若已有同对关系则跳过
-      const existing = this.store.listRelationships(projectId).find(
-        (r) =>
-          (r.characterA === charA.id && r.characterB === charB.id)
-          || (r.characterA === charB.id && r.characterB === charA.id),
-      )
-      if (existing) {
-        this.context.logger.warn(
-          { a: charA.name, b: charB.name, projectId },
-          '记忆 Agent：关系已存在，跳过创建（如需更新请用 relationshipUpdates）',
-        )
-        continue
-      }
-      this.store.createRelationship({
-        id: randomUUID(),
-        projectId,
-        characterA: charA.id,
-        characterB: charB.id,
-        relationType: ensureString(item.relationType, '其他'),
-        currentStage: ensureString(item.currentStage, ''),
-        stageHistory: '[]',
-        dynamicRole: ensureString(item.dynamicRole, ''),
-        alignment: (validAlignments.includes(ensureString(item.alignment, 'neutral'))
-          ? ensureString(item.alignment, 'neutral') : 'neutral') as NovelRelationship['alignment'],
-        trend: (validTrends.includes(ensureString(item.trend, 'stable'))
-          ? ensureString(item.trend, 'stable') : 'stable') as NovelRelationship['trend'],
-        chapterHint: ensureString(item.chapterHint, ''),
-        lastUpdatedChapter: chapterNumber ?? null,
-      })
-      stats.relationshipCreatesApplied++
-    }
+    Object.assign(stats, applyWorldRelationMemoryChanges(
+      { projectId, chapterNumber, store: this.store, logger: this.context.logger, audit },
+      payload,
+    ))
 
     stats.total =
-      stats.characterUpdatesApplied + stats.characterCreatesApplied
+      stats.characterUpdatesApplied + stats.characterCreatesApplied + stats.characterCreatesDeduped
       + stats.foreshadowUpdatesApplied + stats.foreshadowCreatesApplied
       + stats.clueUpdatesApplied + stats.clueCreatesApplied
       + stats.conflictUpdatesApplied + stats.conflictCreatesApplied
@@ -1648,70 +1454,41 @@ export class NovelMemoryGenerator {
         )
       }
       if (hook) {
-        this.store.updateHook(hook.id, {
+        const patch: Partial<NovelHook> = {
           status: item.status ?? 'fulfilled',
           fulfilledAtChapter: item.fulfilledAtChapter ?? chapterNumber ?? null,
           fulfilledDescription: item.fulfilledDescription ?? null,
-        })
+        }
+        const updated = this.store.updateHook(hook.id, patch)
+        audit?.push(auditOp().update(
+          'hook',
+          hook.id,
+          fieldsBefore(hook, patch),
+          fieldsAfter(updated, patch),
+          'memory-generator.applyChanges',
+        ))
         hookUpdatesApplied++
       }
     }
 
-    // ── v0.2：应用角色弧光阶段转换 ──
-    let arcStageChangesApplied = 0
-    for (const item of payload.arcStageChanges ?? []) {
-      // 通过 characterName 或 characterId 定位角色
-      let characterId = item.characterId
-      if (!characterId && item.characterName) {
-        const chars = this.store.listCharacters(projectId)
-        const ch = chars.find(c => c.name === item.characterName)
-        characterId = ch?.id
-      }
-      if (!characterId) continue
-
-      // 获取或创建弧光
-      let arc = this.store.getCharacterArcByCharacter(projectId, characterId)
-      if (!arc && item.arcType && item.newStage) {
-        arc = this.store.createCharacterArc({
-          id: randomUUID(), projectId, characterId,
-          arcType: item.arcType,
-          currentStage: item.newStage,
-          stageHistory: [{
-            stage: item.newStage,
-            triggerEvent: item.triggerEvent ?? '',
-            description: item.description ?? '',
-            chapterNumber: chapterNumber ?? 0,
-            changedAt: Date.now(),
-          }],
-          description: null,
-        })
-        arcStageChangesApplied++
-      } else if (arc && item.newStage && arc.currentStage !== item.newStage) {
-        const newHistory = [...arc.stageHistory, {
-          stage: item.newStage,
-          triggerEvent: item.triggerEvent ?? '',
-          description: item.description ?? '',
-          chapterNumber: chapterNumber ?? 0,
-          changedAt: Date.now(),
-        }]
-        this.store.updateCharacterArc(arc.id, {
-          currentStage: item.newStage,
-          stageHistory: newHistory,
-        })
-        // 同步镜像到 character.arcStage
-        this.store.updateCharacter(characterId, { arcStage: item.newStage })
-        arcStageChangesApplied++
-      }
-    }
+    const { arcStageChangesApplied } = applyCharacterArcChanges(
+      { projectId, chapterNumber, store: this.store, logger: this.context.logger, audit },
+      payload,
+    )
 
     stats.hookUpdatesApplied = hookUpdatesApplied
     stats.arcStageChangesApplied = arcStageChangesApplied
     stats.total += hookUpdatesApplied + arcStageChangesApplied
 
     // ── 剧情推进轨道（storyline，V2）──
-    // 仅 scenePlanV2Write 开启且存在生效 plan 时落库（需绑定 scene_revision_id）；
-    // V1 项目跳过。Memory 应用即确认（正文已确认，推进生效）。
-    const storylineApplied = this.applyStorylineProgresses(projectId, chapterNumber, payload.storylineProgresses ?? [])
+    // 存在生效 plan 时落库（需绑定 scene_revision_id；2026-08-12 逻辑统一：
+    // V2 plan 恒写，无 plan 仅发生在历史章节）。Memory 应用即确认（正文已确认，推进生效）。
+    const storylineApplied = this.applyStorylineProgresses(
+      projectId,
+      chapterNumber,
+      payload.storylineProgresses ?? [],
+      audit,
+    )
     stats.storylineProgressesApplied += storylineApplied
     stats.total += storylineApplied
 
@@ -1721,12 +1498,13 @@ export class NovelMemoryGenerator {
   /**
    * 剧情推进落库：把 Memory 提取的 storylineProgresses 绑定到当前计划的首个场景，
    * 以 confirmed 状态写入（Memory 确认正文即生效）。
-   * 返回实际应用条数；无 plan / V1 项目返回 0。
+   * 返回实际应用条数；无 plan（历史章节）返回 0。
    */
   private applyStorylineProgresses(
     projectId: string,
     chapterNumber: number | undefined,
     intents: StorylineProgressItem[],
+    audit?: MemoryOperationCollector,
   ): number {
     if (intents.length === 0) return 0
     const chapter = chapterNumber != null ? this.store.getChapter(projectId, chapterNumber) : undefined
@@ -1741,12 +1519,34 @@ export class NovelMemoryGenerator {
     }
     // 绑定到当前计划的第一个场景（Memory 不区分逐场景归属，轨道按章推进粒度记录）
     const sceneRevisionId = sceneRevisions[0].id
+    const existingProgressIds = new Set(
+      this.store.listProgressByScene(sceneRevisionId).map((progress) => progress.id),
+    )
     // 先落 planned，再逐条 confirm：确认会触发 maybePromoteMaturity（≥2 个不同场景 → established）
     const recorded = this.store.recordProgressForScene(projectId, sceneRevisionId, intents, 'planned')
+    let applied = 0
     for (const progress of recorded) {
+      const before = this.store.getProgress(progress.id)
+      if (!existingProgressIds.has(progress.id)) {
+        audit?.push(auditOp().create(
+          'storyline_progress',
+          progress.id,
+          progress,
+          'memory-generator.applyChanges',
+        ))
+      }
+      if (before?.status !== 'planned') continue
       this.store.confirmProgress(progress.id)
+      audit?.push(auditOp().update(
+        'storyline_progress',
+        progress.id,
+        { status: before.status },
+        { status: 'confirmed' },
+        'memory-generator.applyChanges',
+      ))
+      applied++
     }
-    return recorded.length
+    return applied
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1799,37 +1599,10 @@ export class NovelMemoryGenerator {
     return found
   }
 
-  private findFactionByName(projectId: string, name?: string): NovelFaction | undefined {
-    if (!name) return undefined
-    const factions = this.store.listFactions(projectId)
-    let found = factions.find((f) => f.name === name)
-    if (found) return found
-    found = factions.find((f) => f.name.includes(name) || name.includes(f.name))
-    return found
-  }
-
-  private findLocationByName(projectId: string, name?: string): NovelLocation | undefined {
-    if (!name) return undefined
-    const locations = this.store.listLocations(projectId)
-    let found = locations.find((l) => l.name === name)
-    if (found) return found
-    found = locations.find((l) => l.name.includes(name) || name.includes(l.name))
-    return found
-  }
-
-  private findItemByName(projectId: string, name?: string): NovelItem | undefined {
-    if (!name) return undefined
-    const items = this.store.listItems(projectId)
-    let found = items.find((it) => it.name === name)
-    if (found) return found
-    found = items.find((it) => it.name.includes(name) || name.includes(it.name))
-    return found
-  }
-
   private findNarrativeByDescription(projectId: string, description?: string): NovelNarrative | undefined {
     if (!description) return undefined
     const narratives = this.store.listNarratives(projectId)
-    let found = narratives.find((n) => n.description === description.trim())
+    const found = narratives.find((n) => n.description === description.trim())
     if (found) return found
     const compact = description.replace(/\s+/g, '')
     return narratives.find((n) => n.description.replace(/\s+/g, '') === compact)
@@ -1839,6 +1612,7 @@ export class NovelMemoryGenerator {
     return {
       characterUpdatesApplied: 0,
       characterCreatesApplied: 0,
+      characterCreatesDeduped: 0,
       foreshadowUpdatesApplied: 0,
       foreshadowCreatesApplied: 0,
       clueUpdatesApplied: 0,

@@ -19,7 +19,7 @@
  */
 import type { NovelStore } from './novel-store.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
-import { reconcileMatrixProjection, type ChapterPresence } from './matrix-projection.js'
+import { projectFromEntityFields, reconcileMatrixProjection, type ChapterPresence } from './matrix-projection.js'
 
 export interface DanglingCleanupPlan {
   projectId: string
@@ -72,11 +72,19 @@ export function planDanglingCleanup(
   projectId: string,
 ): DanglingCleanupPlan {
   const report = reconcileMatrixProjection(store, memoryStore, projectId)
+  const dangling = [...report.danglingRefs]
+  // 2026-08-12 逻辑统一：对账基准切 appearance 表（不含 character_history），
+  // character_history 的悬空出场仍需单独纳入清理清单（实体字段侧防御性清理）。
+  for (const presence of projectFromEntityFields(store, projectId).byKey.values()) {
+    if (!presence.entityExists && presence.entityType === 'character') {
+      dangling.push(presence)
+    }
+  }
   return {
     projectId,
     projectTitle: report.projectTitle,
-    entities: groupByEntity(report.danglingRefs),
-    itemCount: report.danglingRefs.length,
+    entities: groupByEntity(dangling),
+    itemCount: dangling.length,
   }
 }
 

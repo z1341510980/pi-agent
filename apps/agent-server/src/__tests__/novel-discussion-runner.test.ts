@@ -82,7 +82,111 @@ describe('NovelDiscussionRunner', () => {
     expect(members.find((m: any) => m.type === 'character').name).toBe('赵岩')
   })
 
-  it('buildCharacterPrompt 注入角色人设字段', () => {
+  it('本次成员模型覆盖工种、已建档角色和 Director 临时角色', () => {
+    const project = store.createProject({
+      id: 'p-member-model', title: '模型覆盖', genre: '都市', synopsis: '', outline: '',
+      targetWords: 3000, currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    } as any)
+    const character = store.createCharacter({
+      id: 'c-member-model', projectId: project.id, name: '林晚', personality: '谨慎',
+      currentState: '', currentGoal: '', secret: '', arcStage: 'introduction',
+    } as any)
+    const configuredModel = { provider: 'configured', modelId: 'role-default' }
+    const override = { provider: 'selected', modelId: 'run-model' }
+    const promptBuilder = new NovelPromptBuilder(new PromptManager(db, process.cwd()), store, memoryStore)
+    const runner = new NovelDiscussionRunner(
+      store,
+      memoryStore,
+      promptBuilder,
+      new NovelEngine(store),
+      {
+        createAgUiSession: vi.fn(), createSession: vi.fn(),
+        subagentManager: { getAgent: vi.fn(() => ({ model: configuredModel })) },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      } as any,
+      { provider: 'moderator', modelId: 'moderator-only' },
+    )
+    const boundary = promptBuilder.getChapterBoundaryContext(project.id, 1)
+
+    const members = (runner as any).buildMembers(project.id, 1, undefined, boundary, override)
+    expect(members.find((member: any) => member.id === 'novel-director').modelId).toEqual(override)
+    expect(members.find((member: any) => member.id === `char-${character.id}`).modelId).toEqual(override)
+
+    const dynamic = (runner as any).resolveCharacterMembers(
+      project.id, 1, undefined, boundary, ['临时访客'], override,
+    )[0]
+    expect(dynamic.modelId).toEqual(override)
+  })
+
+  it('未选本次模型时群聊工种和角色统一使用项目创作主模型', () => {
+    const project = store.createProject({
+      id: 'p-project-model', title: '项目模型', genre: '都市', synopsis: '', outline: '',
+      targetWords: 3000, currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+      novelModelId: 'project-provider:project-model',
+    } as any)
+    const character = store.createCharacter({
+      id: 'c-project-model', projectId: project.id, name: '周宁', personality: '敏锐',
+      currentState: '', currentGoal: '', secret: '', arcStage: 'introduction',
+    } as any)
+    const promptBuilder = new NovelPromptBuilder(new PromptManager(db, process.cwd()), store, memoryStore)
+    const runner = new NovelDiscussionRunner(
+      store,
+      memoryStore,
+      promptBuilder,
+      new NovelEngine(store),
+      {
+        createAgUiSession: vi.fn(), createSession: vi.fn(),
+        subagentManager: { getAgent: vi.fn(() => ({ model: { provider: 'agent', modelId: 'configured' } })) },
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      } as any,
+    )
+
+    const members = (runner as any).buildMembers(project.id, 1)
+    expect(members.find((member: any) => member.id === 'novel-writer').modelId).toEqual({
+      provider: 'project-provider', modelId: 'project-model',
+    })
+    expect(members.find((member: any) => member.id === `char-${character.id}`).modelId).toEqual({
+      provider: 'project-provider', modelId: 'project-model',
+    })
+  })
+
+  it('未选本次模型时 Finalizer 使用冻结的项目主模型', async () => {
+    const project = store.createProject({
+      id: 'p-finalizer-project-model', title: '收尾模型', genre: '都市', synopsis: '', outline: '',
+      targetWords: 3000, currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+      novelModelId: 'project-provider:project-model',
+    } as any)
+    const chapter = store.createChapter({
+      id: 'ch-finalizer-project-model', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '', wordCount: 0, status: 'planned', narrativeTask: '',
+      acceptanceResult: null,
+    } as any)
+    vi.spyOn(TeamDiscussionEngine.prototype, 'run').mockResolvedValue({
+      status: 'completed', content: '正文内容', transcript: [], scenes: [],
+    })
+    const finalizeSpy = vi.spyOn(ChapterFinalizer.prototype, 'finalize').mockResolvedValue({
+      status: 'completed', content: '正文内容', stateChanges: [],
+    })
+    const promptBuilder = new NovelPromptBuilder(new PromptManager(db, process.cwd()), store, memoryStore)
+    const runner = new NovelDiscussionRunner(
+      store, memoryStore, promptBuilder, new NovelEngine(store),
+      {
+        createAgUiSession: vi.fn(), createSession: vi.fn(),
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      } as any,
+    )
+
+    await runner.run(project.id, 1, makeOptionsForRun())
+
+    expect(finalizeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      chapterId: chapter.id,
+      options: expect.objectContaining({
+        modelId: { provider: 'project-provider', modelId: 'project-model' },
+      }),
+    }))
+  })
+
+  it('角色成员身份提示注入角色人设字段', () => {
     const project = store.createProject({
       id: 'p-test-2',
       title: '测试',
@@ -118,7 +222,9 @@ describe('NovelDiscussionRunner', () => {
     const runner = new NovelDiscussionRunner(
       store, memoryStore, promptBuilder, engine, mockContext, {} as any,
     )
-    const prompt = (runner as any).buildCharacterPrompt(project.id, char)
+    const prompt = (runner as any).buildMembers(project.id, 1)
+      .find((member: any) => member.id === `char-${char.id}`)
+      .buildIdentityPrompt()
     expect(prompt).toContain('李明')
     expect(prompt).toContain('沉稳冷静')
     expect(prompt).toContain('焦虑')
@@ -289,6 +395,139 @@ describe('NovelDiscussionRunner', () => {
     expect(context).not.toContain('你知道：叛徒已经现身')
   })
 
+  it('群聊可加载 Snapshot 外的新编排角色，但不把当前表动态状态带回历史章节', () => {
+    const project = store.createProject({
+      id: 'p-test-new-arranged-character', title: '新角色边界', genre: '都市', synopsis: '',
+      outline: '', targetWords: 0, currentVolume: 1, currentChapter: 2,
+      currentStage: 'rising', status: 'active',
+    } as any)
+    store.createChapter({
+      id: 'ch-new-arranged-1', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '第一章正文。', wordCount: 6, status: 'review',
+      narrativeTask: '', outline: '', volumeId: null, acceptanceResult: null,
+    } as any)
+    store.createChapter({
+      id: 'ch-new-arranged-2', projectId: project.id, volume: 1, chapterNumber: 2,
+      title: '第二章', content: '旧第二章。', wordCount: 5, status: 'review',
+      narrativeTask: '', outline: '', volumeId: null, acceptanceResult: null,
+    } as any)
+    const character = store.createCharacter({
+      id: 'c-new-arranged', projectId: project.id, name: '顾遥', identity: '法医',
+      personality: '冷静严谨', speechStyle: '术语少，句子简短',
+      currentState: '未来章已经负伤', currentGoal: '未来章追捕凶手',
+      currentPressure: '未来章证据被毁', secret: '未来章才揭露的秘密', arcStage: '未来章转变',
+    } as any)
+    const conflict = store.createConflict({
+      id: 'cf-new-arranged', projectId: project.id, description: '旧仓库对峙', type: 'external',
+      intensity: 9, stage: 'erupting', participants: JSON.stringify([character.id]),
+      chapterSpans: [[2, 2]], tier: 'main', currentStep: '未来章已经抓到嫌疑人',
+    } as any)
+    memoryStore.saveSnapshot({
+      projectId: project.id, chapterNumber: 1, snapshotType: 'full', entityId: null,
+      snapshotData: JSON.stringify({
+        characters: [], relationships: [], conflicts: [], foreshadowing: [], clues: [],
+        factions: [], locations: [], items: [], worldElements: [], informationLayers: [], edges: [],
+      }),
+    })
+
+    const promptBuilder = new NovelPromptBuilder(new PromptManager(db, process.cwd()), store, memoryStore)
+    const runner = new NovelDiscussionRunner(
+      store,
+      memoryStore,
+      promptBuilder,
+      new NovelEngine(store),
+      { createAgUiSession: vi.fn(), createSession: vi.fn(), logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+      {} as any,
+    )
+    const boundary = promptBuilder.getChapterBoundaryContext(project.id, 2)
+    const arranged = {
+      characterIds: [character.id], conflictIds: [conflict.id], foreshadowIds: [], clueIds: [],
+      factionIds: [], locationIds: [], itemIds: [],
+    }
+    const member = (runner as any).buildMembers(project.id, 2, arranged, boundary)
+      .find((candidate: any) => candidate.id === `char-${character.id}`)
+
+    expect(member).toBeDefined()
+    expect(member.characterProfile).toMatchObject({
+      personality: '冷静严谨', currentState: '', currentGoal: '', secret: '', arcStage: '',
+    })
+    const identity = member.buildIdentityPrompt()
+    expect(identity).toContain('顾遥')
+    expect(identity).toContain('法医')
+    expect(identity).toContain('冷静严谨')
+    expect(identity).toContain('术语少，句子简短')
+    expect(identity).not.toContain('未来章已经负伤')
+    expect(identity).not.toContain('未来章追捕凶手')
+    expect(identity).not.toContain('未来章才揭露的秘密')
+    expect(identity).not.toContain('未来章转变')
+    const context = member.buildContextPrompt()
+    expect(context).toContain('旧仓库对峙')
+    expect(context).toContain('章前动态状态未知')
+    expect(context).not.toContain('当前阶段：erupting')
+    expect(context).not.toContain('未来章已经抓到嫌疑人')
+  })
+
+  it('Director 动态点名 Snapshot 外的已建档角色时保留档案并裁掉未来状态', () => {
+    const project = store.createProject({
+      id: 'p-test-dynamic-character', title: '动态补员', genre: '都市', synopsis: '', outline: '',
+      targetWords: 0, currentVolume: 1, currentChapter: 2, currentStage: 'rising', status: 'active',
+    } as any)
+    store.createChapter({
+      id: 'ch-dynamic-1', projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '第一章正文。', wordCount: 6, status: 'review',
+      narrativeTask: '', outline: '', volumeId: null, acceptanceResult: null,
+    } as any)
+    store.createChapter({
+      id: 'ch-dynamic-2', projectId: project.id, volume: 1, chapterNumber: 2,
+      title: '第二章', content: '旧第二章。', wordCount: 5, status: 'review',
+      narrativeTask: '', outline: '', volumeId: null, acceptanceResult: null,
+    } as any)
+    const character = store.createCharacter({
+      id: 'c-dynamic-character', projectId: project.id, name: '赵父', identity: '退休教师',
+      personality: '固执但克制', speechStyle: '慢句，少说结论',
+      currentState: '未来章已经住院', currentGoal: '未来章寻找儿子',
+      secret: '未来章才公开', arcStage: '未来章和解',
+    } as any)
+    memoryStore.saveSnapshot({
+      projectId: project.id, chapterNumber: 1, snapshotType: 'full', entityId: null,
+      snapshotData: JSON.stringify({
+        characters: [], relationships: [], conflicts: [], foreshadowing: [], clues: [],
+        factions: [], locations: [], items: [], worldElements: [], informationLayers: [], edges: [],
+      }),
+    })
+    const promptBuilder = new NovelPromptBuilder(new PromptManager(db, process.cwd()), store, memoryStore)
+    const runner = new NovelDiscussionRunner(
+      store,
+      memoryStore,
+      promptBuilder,
+      new NovelEngine(store),
+      { createAgUiSession: vi.fn(), createSession: vi.fn(), logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+      {} as any,
+    )
+    const boundary = promptBuilder.getChapterBoundaryContext(project.id, 2)
+
+    const member = (runner as any).resolveCharacterMembers(
+      project.id,
+      2,
+      undefined,
+      boundary,
+      ['赵父'],
+    )[0]
+
+    expect(member.id).toBe(`char-${character.id}`)
+    expect(member.expertise).toContain('固执但克制')
+    expect(member.characterProfile).toMatchObject({
+      currentState: '', currentGoal: '', secret: '', arcStage: '',
+    })
+    const identity = member.buildIdentityPrompt()
+    expect(identity).toContain('退休教师')
+    expect(identity).toContain('固执但克制')
+    expect(identity).not.toContain('未来章已经住院')
+    expect(identity).not.toContain('未来章寻找儿子')
+    expect(identity).not.toContain('未来章才公开')
+    expect(identity).not.toContain('未来章和解')
+  })
+
   it('run 绑定真实章节并把群聊成员调用写入 Agent 日志', async () => {
     const project = store.createProject({
       id: 'p-test-5',
@@ -343,7 +582,8 @@ describe('NovelDiscussionRunner', () => {
     )
 
     const result = await runner.run(project.id, 1, makeOptionsForRun())
-    expect(result.content).toBe(`${'正文'.repeat(2000)}。`)
+    // Finalizer 的清洗后正文是群聊结果的权威返回值，必须与数据库一致。
+    expect(result.content).toBe('修订后的正文')
     expect(finalizeSpy).toHaveBeenCalledWith(expect.objectContaining({ chapterId: chapter.id }))
 
     capturedOptions.onMemberInvocation({
@@ -374,7 +614,9 @@ describe('NovelDiscussionRunner', () => {
       expect.objectContaining({
         agentType: 'writer',
         phase: 'chapter_weaving',
-        result: '正文',
+        // 2026-08-12 逻辑统一：日志大文本外置到 payload 表，列表查询不含全文，
+        // 以 resultLength 校验结果确实落库
+        resultLength: '正文'.length,
         llmProvider: 'xai',
         llmModel: 'grok-4',
       }),

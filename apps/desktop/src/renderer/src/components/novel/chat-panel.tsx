@@ -5,8 +5,7 @@
  * 创作流程（工作流/群聊/反推/编排）走 ConversationPanel；
  * 本面板不再承担"创作模式选择/进度/检查点/质量门"。
  *
- * per-call 模型选择（按 Provider+Model）作为下一轮工作：当前后端
- * POST /chat 暂未透传 modelId 字段，UI 暂不提供 per-call 切换。
+ * 自由对话支持按 Provider+Model 选择本次模型，并随 POST /chat 透传。
  */
 import { useMemo, useState, type ReactElement } from 'react'
 import { AlertCircle } from 'lucide-react'

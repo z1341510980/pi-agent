@@ -112,6 +112,23 @@ describe('T03-2 等价拆块', () => {
     expect(joined).toBe(shared)
   })
 
+  it('lazy builders 执行后与 eager chunks 逐字节等价', () => {
+    const eager = builder.buildChapterContextChunks('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never)
+    const lazy = builder.buildChapterContextChunkBuilders('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never)
+      .map((b) => ({ chunkId: b.chunkId, content: b.build() }))
+      .filter((c): c is { chunkId: string; content: string } => c.content !== null)
+    expect(lazy).toEqual(eager)
+  })
+
+  it('lazy builders 的 agent 过滤与 eager 一致', () => {
+    const options = { agentType: 'memory', askStoryEnabled: true }
+    const eager = builder.buildChapterContextChunks('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never, undefined, options)
+    const lazy = builder.buildChapterContextChunkBuilders('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never, undefined, options)
+      .map((b) => ({ chunkId: b.chunkId, content: b.build() }))
+      .filter((c): c is { chunkId: string; content: string } => c.content !== null)
+    expect(lazy).toEqual(eager)
+  })
+
   it('chunk 结构：首个为 chapter-info，锚点子段已标注，无空 content', () => {
     const chunks = builder.buildChapterContextChunks('p1', 3, NARRATIVE_TASK as never, CONSTRAINTS as never)
     expect(chunks.length).toBeGreaterThanOrEqual(3)

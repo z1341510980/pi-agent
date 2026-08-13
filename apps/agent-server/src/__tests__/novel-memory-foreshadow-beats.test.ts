@@ -13,6 +13,7 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
     const store = {
       listForeshadowing: vi.fn(() => [foreshadow]),
       updateForeshadow,
+      withTransaction: (fn: () => unknown) => fn(),
     }
     const context = {
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -44,7 +45,7 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
       beats: [{ chapter: 1, type: 'plant' }, { chapter: 5, type: 'reinforce' }],
     }
     const updateForeshadow = vi.fn()
-    const store = { listForeshadowing: vi.fn(() => [foreshadow]), updateForeshadow }
+    const store = { listForeshadowing: vi.fn(() => [foreshadow]), updateForeshadow, withTransaction: (fn: () => unknown) => fn() }
     const context = { logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }
     const generator = new NovelMemoryGenerator({} as any, {} as any, context as any, store as any, {} as any)
 
@@ -65,6 +66,7 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
       listClues: vi.fn(() => []),
       createClue,
       createEntityCandidate,
+      withTransaction: (fn: () => unknown) => fn(),
     }
     const context = {
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -108,6 +110,7 @@ describe('NovelMemoryGenerator - 伏笔事件链', () => {
     const store = {
       listForeshadowing: vi.fn(() => []),
       createForeshadow,
+      withTransaction: (fn: () => unknown) => fn(),
     }
     const context = {
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },

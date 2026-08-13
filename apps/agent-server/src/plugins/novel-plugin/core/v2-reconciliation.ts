@@ -6,7 +6,7 @@
  *
  * 维度（§10 第 2 步）：
  * - 章节目标字数：V1（定位倍率公式）vs V2（plan budget.resolvedTarget）
- * - 场景数：V1（该章最近群聊 run 的 scenes JSON）vs V2（最新 plan 的场景版本数）
+ * - 场景数：旧规范来源已停用；V2（最新 plan 的场景版本数）为唯一主数据
  * - 事件 scene 字段残留：story_events.scene_id 非空计数（停旧写后应趋近 0）
  *
  * 只读、不修数据、不做裁决；差异由人判断（补 V2 或接受旧数据）。
@@ -36,7 +36,7 @@ export interface WordBudgetReconcileItem {
 
 export interface SceneCountReconcileItem {
   chapterNumber: number
-  /** V1：该章最近一条群聊 run 的 scenes 数量；无 run 时为 null */
+  /** 旧规范场景来源已停用，恒为 null；DiscussionRun.scenes 仅用于断点恢复 */
   v1Scenes: number | null
   /** V2：最新生效 plan 的场景版本数；无 plan 时为 null */
   v2Scenes: number | null
@@ -69,21 +69,9 @@ export function reconcileV2(
   const chapterRange: [number, number] | null =
     chapters.length > 0 ? [chapters[0].chapterNumber, chapters[chapters.length - 1].chapterNumber] : null
 
-  // 该章最近群聊 run 的场景数（V1 场景来源）
+  // DiscussionRun.scenes 是失败运行的恢复输入，不是规范场景主数据。
+  // 保留空映射，使报告结构兼容，但不再把运行快照当作 V1 来源。
   const v1SceneCountByChapter = new Map<number, number>()
-  const runs = db.prepare(
-    `SELECT chapter_number, scenes FROM novel_discussion_runs
-     WHERE project_id = ? ORDER BY chapter_number ASC, created_at DESC`,
-  ).all(projectId) as Array<{ chapter_number: number; scenes: string }>
-  for (const run of runs) {
-    if (v1SceneCountByChapter.has(run.chapter_number)) continue
-    try {
-      const scenes = JSON.parse(run.scenes) as unknown[]
-      v1SceneCountByChapter.set(run.chapter_number, scenes.length)
-    } catch {
-      v1SceneCountByChapter.set(run.chapter_number, 0)
-    }
-  }
 
   const wordBudgetItems: WordBudgetReconcileItem[] = []
   const sceneCountItems: SceneCountReconcileItem[] = []

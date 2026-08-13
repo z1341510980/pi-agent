@@ -105,6 +105,13 @@ export class CharacterStore {
     return result.changes
   }
 
+  deleteRelationshipsByCharacter(characterId: string): number {
+    const result = this.db
+      .prepare('DELETE FROM novel_relationships WHERE character_a = ? OR character_b = ?')
+      .run(characterId, characterId)
+    return result.changes
+  }
+
   deleteCharacterHistory(historyId: string, projectId?: string): boolean {
     const result = projectId != null
       ? this.db.prepare('DELETE FROM novel_character_history WHERE id = ? AND project_id = ?').run(historyId, projectId)

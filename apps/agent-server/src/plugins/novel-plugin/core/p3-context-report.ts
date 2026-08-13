@@ -90,7 +90,15 @@ export function buildP3ContextReport(
     targetEntity: null,
     priority: 'medium',
   }
-  const constraints = engine.buildChapterConstraints(projectId, chapterNumber)
+  const boundary = promptBuilder.getChapterBoundaryContext(projectId, chapterNumber)
+  const constraints = engine.buildChapterConstraints(
+    projectId,
+    chapterNumber,
+    undefined,
+    chapter?.positioning,
+    undefined,
+    boundary.entities,
+  )
 
   const chunks = promptBuilder.buildChapterContextChunks(
     projectId,

@@ -38,6 +38,14 @@ export interface DiscussionMember {
    * 不参与合并，退回逐个调用。
    */
   knowledge?: Record<string, { knows?: boolean; suspects?: boolean; misunderstands?: string }>
+  /**
+   * 是否允许把该角色与其他角色放进同一次 LLM 调用。
+   *
+   * 设为 false 表示身份提示中含不可暴露给其他角色的私密信息。即使角色的
+   * knowledge 指纹和可见上下文相同，也必须逐个调用，不能依赖提示词做软隔离。
+   * 未设置时保持通用引擎的向后兼容行为。
+   */
+  allowMergedInvocation?: boolean
   /** 角色 Agent：人设快照 */
   characterProfile?: {
     personality: string
@@ -70,8 +78,8 @@ export interface DiscussionMember {
   /**
    * 该成员使用的 LLM 模型（可选，未配置则走默认 Provider）
    *
-   * 工种成员（director/writer/reviewer/reviser）从 AgentManager 中该 Agent 的
-   * model 配置读取，角色成员不填（走默认 Provider）。
+   * 工种成员默认从 AgentManager 中读取；业务适配层也可以为本次运行统一覆盖
+   * 工种和角色成员的模型。
    */
   modelId?: { provider: string; modelId: string }
   /**
@@ -194,6 +202,16 @@ export interface DiscussionOptions {
   signal?: AbortSignal
   /** Moderator 使用的模型配置（未配置时用最便宜模型） */
   moderatorModel?: { provider: string; modelId: string }
+  /**
+   * 本次运行的成员模型覆盖。优先级高于工种 Agent 配置；角色成员也使用该模型。
+   * Moderator 保持使用 moderatorModel，避免协调模型被正文创作模型意外替换。
+   */
+  memberModel?: { provider: string; modelId: string }
+  /**
+   * 本次运行启动时冻结的项目主模型；null 表示启动时明确未配置。
+   * 断点续跑必须沿用该状态，不能因项目设置后来改变而换模型。
+   */
+  projectModel?: { provider: string; modelId: string } | null
   /** 根据 Director 输出的未知角色名动态创建本次运行使用的角色 Agent */
   resolveCharacterMembers?: (
     characterNames: string[],
@@ -288,6 +306,9 @@ export interface ReviewerOutcome {
 /** 单次群聊成员 LLM 调用的审计信息。 */
 export interface DiscussionMemberInvocation {
   member: DiscussionMember
+  /** 合并角色调用的全部参与者；普通调用不填，继续以 member 为准。 */
+  participantIds?: string[]
+  participantNames?: string[]
   phase: DiscussionPhase
   systemPrompt: string
   chapterContext: string

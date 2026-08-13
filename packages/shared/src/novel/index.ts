@@ -178,6 +178,22 @@ export interface NovelChapter {
 
 export type ChapterStatus = 'planned' | 'drafting' | 'review' | 'published' | 'rejected'
 
+/**
+ * 章节状态的普通编辑迁移。
+ * `published` 只能由发布命令进入；已发布章节在产品定义撤回命令前保持终态。
+ */
+export const CHAPTER_STATUS_TRANSITIONS: Readonly<Record<ChapterStatus, readonly ChapterStatus[]>> = {
+  planned: ['planned', 'drafting'],
+  drafting: ['drafting', 'review'],
+  review: ['review', 'drafting', 'rejected'],
+  rejected: ['rejected', 'drafting'],
+  published: ['published'],
+}
+
+export function canTransitionChapterStatus(from: ChapterStatus, to: ChapterStatus): boolean {
+  return CHAPTER_STATUS_TRANSITIONS[from].includes(to)
+}
+
 // ── 章节正文版本历史 ──
 
 /** 章节版本来源阶段，标识这版正文是怎么产生的 */
@@ -1138,6 +1154,10 @@ export interface NovelChapterReview {
   id: string
   projectId: string
   chapterId: string
+  /** 被审正文对应的不可变 revision；正文尚未落库时暂为空，落库后按 hash 自动绑定。 */
+  contentRevisionId: string | null
+  /** 被审正文的规范化 SHA-256，用于阻止旧稿审稿结论发布新正文。 */
+  contentHash: string
   consistencyScore: number | null
   characterScore: number | null
   taskCompletionScore: number | null
@@ -2271,7 +2291,7 @@ export type StoryEventType =
   | 'resolution'
   | 'custom'
 
-export type StoryEventStatus = 'planned' | 'confirmed' | 'generated' | 'superseded'
+export type StoryEventStatus = 'planned' | 'confirmed' | 'generated' | 'superseded' | 'stale'
 export type StoryEventSource = 'manual' | 'ai-extracted' | 'ai-planned' | 'migration'
 export type ChangeValueType = 'enum' | 'level' | 'number' | 'set' | 'reference' | 'text'
 
@@ -2334,7 +2354,7 @@ export interface NovelChangeRecord {
   /** 文风提示：该变化的写作风格建议（如"用对话暗示而非直叙"）。prompt-builder 读取后附加到写作提示。 */
   styleNote?: string | null
   /** T02-6 AI 确认队列状态：confirmed（默认）/ pending（AI 待确认）/ rejected（驳回，消费查询排除） */
-  status?: 'confirmed' | 'pending' | 'rejected'
+  status?: 'confirmed' | 'pending' | 'rejected' | 'stale'
   /** 确认/驳回时间戳 */
   confirmedAt?: number | null
   createdAt: number

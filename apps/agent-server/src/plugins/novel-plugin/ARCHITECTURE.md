@@ -429,7 +429,7 @@ POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/ai-arrange
 - 校验：章节存在 + 章纲非空
 - 调用 `entityGenerator.generateAndArrange(projectId, chNum, chapter.outline, onProgress)`
 
-阶段 2：同一 SSE 流内衔接 create-flow，注入 `arrangedEntities`
+阶段 2：前端接收编排结果并展示矩阵；用户确认后另行调用 create-flow，注入 `arrangedEntities`
 
 #### 路径 C：`create-team`（同步）
 
@@ -438,7 +438,7 @@ POST /api/plugins/novel/projects/:projectId/chapters/:chapterNumber/create-team
 body: { narrativeTask, rhythm? }
 ```
 
-- 通过 TeamManager 触发 `novel-team` 团队（pipeline 策略），与 SSE 流程并存
+- 兼容同步入口，内部复用 `orchestrator.createChapterWithFlow`，自动批准检查点；不再维护独立 TeamManager 创作旁路
 
 ### 7.2 `generateAndArrange` 详细流程（`novel-entity-generator.ts`）
 
@@ -643,9 +643,9 @@ interface NovelCharacter {
 | POST  | /projects/:projectId/chapters | 创建章节（engine.createChapter）                |
 | GET   | /projects/:projectId/chapters | 列出章节                                        |
 | GET   | /chapters/:id                 | 获取章节                                        |
-| PATCH | /chapters/:id                 | 更新章节（传 content 自动重算 wordCount）       |
+| PATCH | /chapters/:id                 | 更新章节（传 content 自动重算 wordCount；不能直接发布或改已发布正文） |
 | POST  | /chapters/:id/complete        | 完成章节（engine.completeChapter）              |
-| POST  | /chapters/:id/publish         | 发布章节（engine.publishChapter，更新项目进度） |
+| POST  | /chapters/:id/publish         | 发布章节（要求 review 状态、非空正文、当前 revision 审稿通过、前序章已发布） |
 
 ### 10.4 节奏控制
 
@@ -687,8 +687,8 @@ interface NovelCharacter {
 | ---- | -------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | POST | /projects/:projectId/chapters/:chapterNumber/create-flow | **SSE**，触发多 Agent 创作流程，body 可带 arrangedEntities（模式 1 手动编排） |
 | POST | /projects/:projectId/checkpoint/:type/decision           | 推送检查点决策（approve/reject/revise/rewrite），可带 userMessages            |
-| POST | /projects/:projectId/chapters/:chapterNumber/ai-arrange  | **SSE**，模式 2：AI 编排（generateAndArrange）→ 同流衔接 create-flow          |
-| POST | /projects/:projectId/chapters/:chapterNumber/create-team | 同步，通过 TeamManager 触发 novel-team（pipeline）                            |
+| POST | /projects/:projectId/chapters/:chapterNumber/ai-arrange  | **SSE**，模式 2：只执行 AI 编排；用户确认后另行触发 create-flow               |
+| POST | /projects/:projectId/chapters/:chapterNumber/create-team | 同步兼容入口，复用正式 Orchestrator 并自动批准检查点                           |
 
 ### 10.11 缓存诊断
 

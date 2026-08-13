@@ -50,6 +50,17 @@ function createHarness(): Harness {
     currentStage: 'setup',
     status: 'active',
   })
+  // 2026-08-12 逻辑统一：出场事实在 appearance 表，需目标章节已落库才能写入
+  // （recordAppearancesIfEnabled 依赖 chapterId 解析；缺章时 appearance 不写、observer 不触发）。
+  for (let n = 1; n <= 20; n += 1) {
+    store.createChapter({
+      id: randomUUID(), projectId, volume: 1, chapterNumber: n,
+      title: `第${n}章`, content: '', wordCount: 0, status: 'planned',
+      narrativeTask: '', outline: '', volumeId: null, acceptanceResult: null,
+      tension: null, positioning: null, timeOffset: null,
+      chapterEndingHook: null, recap: null,
+    })
+  }
 
   const warnings: Array<{ payload: unknown; message: string }> = []
   const generator = new NovelEntityGenerator(

@@ -46,6 +46,113 @@ function countWords(text: string): number {
   return cleaned.length
 }
 
+function createCharacter(store: NovelStore, projectId: string, id: string) {
+  return store.createCharacter({
+    id,
+    projectId,
+    name: id,
+    description: '',
+    identity: '',
+    personality: '',
+    appearance: '',
+    currentState: '',
+    currentGoal: '',
+    currentPressure: '',
+    secret: '',
+    arcStage: '',
+    arcHistory: '[]',
+    speechStyle: '',
+    isProtagonist: false,
+    longTermDesire: '',
+    plotRole: 'supporting',
+    removalImpact: '',
+  })
+}
+
+describe('关系接口项目归属校验', () => {
+  let db: Database.Database
+  let store: NovelStore
+  let app: FastifyInstance
+  let projectA: string
+  let projectB: string
+  let characterA: string
+  let characterB: string
+  let otherCharacter: string
+
+  beforeEach(async () => {
+    db = createTestDb()
+    store = new NovelStore(db)
+    projectA = randomUUID()
+    projectB = randomUUID()
+    for (const id of [projectA, projectB]) {
+      store.createProject({
+        id,
+        title: id,
+        genre: 'test',
+        synopsis: '',
+        targetWords: 0,
+        currentVolume: 1,
+        currentChapter: 0,
+        currentStage: 'setup',
+        status: 'active',
+      })
+    }
+    characterA = randomUUID()
+    characterB = randomUUID()
+    otherCharacter = randomUUID()
+    createCharacter(store, projectA, characterA)
+    createCharacter(store, projectA, characterB)
+    createCharacter(store, projectB, otherCharacter)
+    app = await buildApp(store)
+  })
+
+  afterEach(async () => {
+    await app.close()
+    db.close()
+  })
+
+  it('创建关系时拒绝另一个项目的角色', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/projects/${projectA}/relationships`,
+      payload: {
+        characterA,
+        characterB: otherCharacter,
+        relationType: 'ally',
+      },
+    })
+
+    expect(response.statusCode).toBe(404)
+    expect(store.listRelationships(projectA)).toEqual([])
+  })
+
+  it('更新关系时拒绝另一个项目的角色', async () => {
+    const relationship = store.createRelationship({
+      id: randomUUID(),
+      projectId: projectA,
+      characterA,
+      characterB,
+      relationType: 'ally',
+      currentStage: '',
+      stageHistory: '[]',
+      dynamicRole: '',
+      alignment: 'neutral',
+      trend: 'stable',
+      chapterHint: '',
+      lastUpdatedChapter: null,
+    })
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/relationships/${relationship.id}`,
+      payload: { characterB: otherCharacter },
+    })
+
+    expect(response.statusCode).toBe(404)
+    expect(store.getRelationship(relationship.id)?.characterB).toBe(characterB)
+  })
+})
+
 describe('PATCH /chapters/:id wordCount 重算', () => {
   let db: Database.Database
   let store: NovelStore
@@ -102,6 +209,7 @@ describe('PATCH /chapters/:id wordCount 重算', () => {
     // 前端 countWords: 去除 # 与空白后为 '一二三四五' = 5
     expect(body.data.wordCount).toBe(countWords(content))
     expect(body.data.wordCount).toBe(5)
+    expect(body.data.status).toBe('drafting')
   })
 
   it('不传 content 时 wordCount 保持不变', async () => {
@@ -121,6 +229,61 @@ describe('PATCH /chapters/:id wordCount 重算', () => {
     expect(body.ok).toBe(true)
     expect(body.data.title).toBe('新标题')
     expect(body.data.wordCount).toBe(6)
+  })
+
+  it('不能通过 PATCH 直接发布章节', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { status: 'published' },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(store.getChapterById(chapterId)?.status).toBe('planned')
+  })
+
+  it('拒绝跳过草稿阶段直接进入审核', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/chapters/${chapterId}`,
+      payload: { status: 'review' },
+    })
+    expect(res.statusCode).toBe(409)
+    expect(store.getChapterById(chapterId)?.status).toBe('planned')
+  })
+})
+
+describe('章节卷归属校验', () => {
+  it('PATCH 拒绝绑定另一个项目的卷', async () => {
+    const db = createTestDb()
+    const store = new NovelStore(db)
+    const projectA = store.createProject({
+      id: randomUUID(), title: 'A', genre: 'test', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    })
+    const projectB = store.createProject({
+      id: randomUUID(), title: 'B', genre: 'test', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    })
+    const volume = store.createVolume({
+      id: randomUUID(), projectId: projectB.id, volumeNumber: 1,
+      title: 'B 卷', outline: '', sortOrder: 1,
+    })
+    const chapter = store.createChapter({
+      id: randomUUID(), projectId: projectA.id, volume: 1, chapterNumber: 1,
+      title: '', content: '', wordCount: 0, status: 'planned', narrativeTask: '',
+      outline: '', volumeId: null, acceptanceResult: null,
+    })
+    const app = await buildApp(store)
+    try {
+      const response = await app.inject({
+        method: 'PATCH', url: `/chapters/${chapter.id}`, payload: { volumeId: volume.id },
+      })
+      expect(response.statusCode).toBe(400)
+      expect(store.getChapterById(chapter.id)?.volumeId).toBeNull()
+    } finally {
+      await app.close()
+      db.close()
+    }
   })
 })
 

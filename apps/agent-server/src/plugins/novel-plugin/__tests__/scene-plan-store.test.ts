@@ -118,10 +118,10 @@ describe('场景计划存储（ScenePlanStore）', () => {
     expect(first.plan.status).toBe('draft')
     expect(first.scenes).toHaveLength(2)
 
-    // cast 落库
+    // cast 落库（单链读取：focus 优先，present 排除 focus 角色）
     const cast = store.getSceneRevisionCast(first.scenes[0].id)
     expect(cast.focus).toEqual(['c1'])
-    expect(cast.present).toEqual(['c1', 'c2'])
+    expect(cast.present).toEqual(['c2']) // c1 已在 focus，从 present 排除
     expect(cast.functions).toEqual([
       { characterId: 'c3', function: '传递情报', prominence: 'brief', note: '' },
     ])

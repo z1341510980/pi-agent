@@ -52,10 +52,13 @@ describe('Context Chunk 契约（T03-1）', () => {
     }
   })
 
-  it('contextChunksEnabled 默认关闭（回滚安全）', () => {
-    expect(NOVEL_FEATURE_FLAGS).toContain('contextChunksEnabled')
-    // 默认关 = 未配置项目 isNovelFeatureEnabled 返回 false（由 flag 测试覆盖，这里只确认注册）
-    expect(NOVEL_FEATURE_FLAGS).toHaveLength(16)
+  it('ContextChunk 为唯一 shared 组装路径（2026-08-12 逻辑统一）', () => {
+    // contextChunksEnabled flag 已转正移除（chunk 恒走，无旧字符串路径回退）
+    expect(NOVEL_FEATURE_FLAGS).not.toContain('contextChunksEnabled')
+    // 剩余 flag 中 contextSummaryMode / crossChapterChunkCache 是 V2 内功能/性能开关
+    expect(NOVEL_FEATURE_FLAGS).toContain('contextSummaryMode')
+    expect(NOVEL_FEATURE_FLAGS).toContain('crossChapterChunkCache')
+    expect(NOVEL_FEATURE_FLAGS).toHaveLength(3)
   })
 })
 

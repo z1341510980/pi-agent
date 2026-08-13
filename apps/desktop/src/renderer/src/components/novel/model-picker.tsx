@@ -71,7 +71,7 @@ export function ModelPicker({ value, onChange, label }: ModelPickerProps): React
     const next = v === '__default__' ? '' : v
     setProviderId(next)
     setModelId('')
-    onChange(next && modelId ? { provider: next, modelId } : null)
+    onChange(null)
   }
 
   const handleModelChange = (v: string): void => {

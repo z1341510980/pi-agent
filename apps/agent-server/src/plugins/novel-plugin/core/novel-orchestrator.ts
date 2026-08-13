@@ -73,6 +73,7 @@ import { createNovelSubmitNarrativeTaskTool, type NarrativeTaskDraftHolder } fro
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-tools.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
+import { parseNovelModelRef } from './novel-model-ref.js'
 import { cancelDebug } from '../utils/cancel-debug-log.js'
 import {
   evaluateProseQuality,
@@ -82,8 +83,10 @@ import {
 } from './prose-quality-evaluator.js'
 import { arbitrateQuality, type QualitySignal } from './quality-policy.js'
 import { isNovelFeatureEnabled } from './novel-feature-flags.js'
-import { ChunkCache, buildWithChunkCache, buildChunkVersionSource } from './chunk-cache.js'
+import { ChunkCache, buildWithChunkCacheLazy, buildChunkVersionSource } from './chunk-cache.js'
 import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
+import { ON_DEMAND_LIMITS } from './entity-summary.js'
+import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './context-budget.js'
 import { buildScenePlanFromNarrativeTask } from './chapter-scene-plan-adapter.js'
 
 import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './llm-error-policy.js'
@@ -123,6 +126,11 @@ interface CreationRunContext {
    * 否则两章的调用数会互相污染。
    */
   budget: ChapterBudgetUsage
+  /**
+   * novel_ask_story 每 Agent 运行时计数。放在单章 run context：Agent 重试共享，
+   * 并发章节隔离，流程结束随 context 释放；discussion/manual 不受本流程限额误伤。
+   */
+  askStoryCounts: Partial<Record<NovelAgentType, number>>
 }
 
 interface PostWriteGuardResult {
@@ -197,17 +205,6 @@ export class NovelOrchestrator {
     'over_compression',
   ] as const
 
-  /**
-   * 解析项目级「创作主模型」复合串 "provider:modelId"（如 "openai:gpt-5.6-luna"）。
-   * 返回 createAgUiSession 可接受的 { provider, modelId }；格式不合法（无冒号）返回 undefined，
-   * 表示不生效（各 Agent 保持 AgentPage 配置）。
-   */
-  private static resolveModelRef(projectModelId: string | undefined): { provider: string; modelId: string } | undefined {
-    if (!projectModelId) return undefined
-    const idx = projectModelId.indexOf(':')
-    if (idx <= 0 || idx === projectModelId.length - 1) return undefined
-    return { provider: projectModelId.slice(0, idx).trim(), modelId: projectModelId.slice(idx + 1).trim() }
-  }
   /** 每次 create-flow 独立的异步运行上下文，防止并发章节互相覆盖状态。 */
   private readonly runStorage = new AsyncLocalStorage<CreationRunContext>()
   /** 检查点请求来自另一条 HTTP 请求，按项目和章节暂存用户指令。 */
@@ -267,6 +264,7 @@ export class NovelOrchestrator {
         arrangedEntities: options.arrangedEntities,
         semiLayerSharedCache: null,
         budget: createChapterBudgetUsage(),
+        askStoryCounts: {},
       },
       () => this.createChapterWithFlowInContext(projectId, chapterNumber, options, guardRewriteCount),
     )
@@ -476,13 +474,10 @@ export class NovelOrchestrator {
       }
       run.directorTask = directorTask
 
-      // T03 影子写（V2）：flag 开启时把 Director 计划落成 V2 plan + scenes，
-      // 不改变任何生成行为，仅作双写对账输入（§10 第 1 步）。
-      if (isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')) {
-        this.shadowWriteDirectorPlan(
-          projectId, chapter, chapterNumber, directorTask, run.arrangedEntities, rhythmSuggestion,
-        )
-      }
+      // T03 V2 计划写（2026-08-12 逻辑统一：scenePlanV2Write 转正，恒写 V2 plan + scenes）
+      this.shadowWriteDirectorPlan(
+        projectId, chapter, chapterNumber, directorTask, run.arrangedEntities, rhythmSuggestion,
+      )
 
       // 推送叙事任务详情，让用户了解 Director 通过工具提交的完整结构化任务（气泡展示）
       // 直接用 directorTask 局部变量（已断言非空），避免 run.directorTask 可能 undefined 的类型问题
@@ -687,6 +682,11 @@ export class NovelOrchestrator {
           }
           run.directorOutput = this.promptBuilder.stripEmDash(rewriteDirectorResult)
           run.directorTask = pushbackNarrativeDraft.task
+          // 推回重跑 Director 也必须补 V2 计划写，否则首次规划有 ScenePlan、
+          // 修订后的最终规划没有，双写对账会把重写误报为缺失。
+          this.shadowWriteDirectorPlan(
+            projectId, chapter, chapterNumber, run.directorTask, run.arrangedEntities, rhythmSuggestion,
+          )
           this.emitProgress(options, 'directing', 'phase_change', {
             message: '叙事任务已根据写作 Agent 的反馈调整',
             detail: {
@@ -1031,6 +1031,7 @@ export class NovelOrchestrator {
           await this.engine.saveReview({
             projectId,
             chapterId: chapter.id,
+            reviewedContent: reviewContent,
             // Reviewer 未调用工具时，draft.review 为 undefined，展开为空对象，
             // saveReview 接受 null 字段，会存入一份"未评分"的占位记录
             ...(reviewDraft.review ?? {
@@ -1230,6 +1231,7 @@ export class NovelOrchestrator {
           projectId,
           reviewFindingTexts,
           run.directorTask?.requiredReferences,
+          this.promptBuilder.getChapterBoundaryContext(projectId, chapterNumber),
         )
         const revisionLoop = await this.runTargetedRevisionLoop({
           projectId,
@@ -1340,7 +1342,12 @@ export class NovelOrchestrator {
         projectId,
         chapterNumber,
         content: sanitizedFinalContent,
-        options,
+        // Finalizer 的 Memory、标题和提要也必须遵守本次运行冻结的模型，
+        // 否则正文使用项目主模型而收尾悄悄回到默认模型。
+        options: {
+          ...options,
+          modelId: options.modelId ?? parseNovelModelRef(run.projectModelId),
+        },
         arrangedEntities: options.arrangedEntities,
         directorTask: run.directorTask,
         chapterId: chapter?.id ?? null,
@@ -1399,6 +1406,7 @@ export class NovelOrchestrator {
         rhythmSuggestion: undefined,
         semiLayerSharedCache: null,
         budget: createChapterBudgetUsage(),
+        askStoryCounts: {},
       },
       () => this.reviseOnlyInContext(projectId, chapterNumber, content, arrangedEntities, options),
     )
@@ -1888,9 +1896,8 @@ export class NovelOrchestrator {
     const advisories: Array<{ reason: string; details: string }> = []
     if (project) {
       // 目标字数与 Writer 提示词注入的 target_words 保持一致：
-      // - V2（scenePlanV2Write）：优先复用 buildChapterConstraints 的 resolver 结果；
-      //   无定位时 fallback 也用 resolver（Rhythm 不参与），杜绝节奏倍率回流。
-      // - V1：保持现状（含节奏系数的 computeChapterTargetWords 回退）。
+      // 统一复用 buildChapterConstraints 的 resolver 结果；无定位时 fallback 也用 resolver
+      // （Rhythm 不参与），杜绝节奏倍率回流（2026-08-12 逻辑统一：删除 V1 分支）。
       const run = this.requireRunContext()
       const positioning = run.directorTask?.positioning
         ?? this.store.getChapter(projectId, chapterNumber)?.positioning
@@ -1901,13 +1908,8 @@ export class NovelOrchestrator {
         positioning,
         arrangedEntities,
       ).wordBudget?.target
-      const targetWords = isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')
-        ? constraintsTarget
-          ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
-        : constraintsTarget ?? this.promptBuilder.computeChapterTargetWords(
-          project,
-          run.rhythmSuggestion?.rhythm,
-        )
+      const targetWords = constraintsTarget
+        ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
 
       // 只有明显失控才整章重写。75%-85% 与 115%-130% 属于轻微偏差，
       // 交给 Reviewer 结合章节完整性判断，避免边界差几个字就浪费一次 Writer 调用。
@@ -2133,6 +2135,48 @@ export class NovelOrchestrator {
     run.budget = { ...run.budget, acknowledged: true }
   }
 
+  /**
+   * 为本次章节运行包装 novel_ask_story 限额。
+   *
+   * 共享工具对象不能存计数（并发章节会污染）；包装对象仅用于本次 session，计数
+   * 写入 CreationRunContext，因而同 Agent LLM 重试共享额度、章节之间隔离。
+   */
+  private wrapAskStoryWithLimit(
+    tool: ToolDefinition,
+    run: CreationRunContext,
+    agentType: NovelAgentType,
+    projectId: string,
+    chapterNumber: number,
+  ): ToolDefinition {
+    const limit = ON_DEMAND_LIMITS[agentType] ?? 0
+    const execute: ToolDefinition['execute'] = async (...args) => {
+      const used = run.askStoryCounts[agentType] ?? 0
+      if (used >= limit) {
+        this.context.logger.warn(
+          { projectId, chapterNumber, agentType, used, limit },
+          'novel_ask_story 本章调用次数已达上限',
+        )
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `本章 ${agentType} 的 novel_ask_story 查询额度已用完（${used}/${limit}）。请依据已注入上下文继续，不要重复查询。`,
+          }],
+          details: undefined,
+        }
+      }
+      run.askStoryCounts[agentType] = used + 1
+      const scopedArgs = [...args] as unknown[]
+      const supplied = scopedArgs[1]
+      scopedArgs[1] = {
+        ...(typeof supplied === 'object' && supplied !== null ? supplied : {}),
+        projectId,
+        chapterNumber,
+      }
+      return tool.execute(...(scopedArgs as Parameters<ToolDefinition['execute']>))
+    }
+    return { ...tool, execute }
+  }
+
   /** 运行单个 Agent（通过 Pi SDK Session，流式推送 delta）——单次尝试，不含重试 */
   private async runAgentOnce(
     agentType: NovelAgentType,
@@ -2175,9 +2219,11 @@ export class NovelOrchestrator {
     // 又作为独立 prefix 获得缓存断点，供同 Agent 重试命中。
     const editorOnly = overrides?.contextMode === 'editor'
     const needsChapterContext = !identityOnly && !editorOnly
-    // P4 接入 3：contextChunksEnabled 开时按角色组装 shared（T03-3 过滤 disabled chunk）
+    // 2026-08-12 逻辑统一：ContextChunk 为唯一 shared 组装路径（旧字符串路径已删除）；
+    // contextSummaryMode 是 V2 内实体档案降级开关（T03-4），crossChapterChunkCache 是性能开关。
     const chunksEnabled = needsChapterContext
-      && isNovelFeatureEnabled(this.store, projectId, 'contextChunksEnabled')
+    const summaryEnabled = chunksEnabled
+      && isNovelFeatureEnabled(this.store, projectId, 'contextSummaryMode')
     const agentIdentity = overrides?.identityPrompt
       ?? this.promptBuilder.buildAgentIdentity(projectId, agentType)
     metricCollector.add('identity', 'identity', agentIdentity, 'full')
@@ -2226,12 +2272,14 @@ export class NovelOrchestrator {
       targetEntity: null,
       priority: 'medium',
     }
+    const boundary = this.promptBuilder.getChapterBoundaryContext(projectId, chapterNumber)
     const constraints: ChapterConstraints = this.engine.buildChapterConstraints(
       projectId,
       chapterNumber,
       run.rhythmSuggestion,
       run.directorTask?.positioning ?? chapter?.positioning,
       run.arrangedEntities,
+      boundary.entities,
     )
 
     // 推送章节约束详情（仅 Director 首次构建时发射，避免重复）
@@ -2263,11 +2311,9 @@ export class NovelOrchestrator {
 
     // shared 部分：单章缓存（跨 Agent 复用，projectId|chapterNumber 为 key）
     // 工具可用性会改变无编排回退提示，必须进入缓存 key，避免不同角色复用错误引导。
-    // P4 接入 3：chunksEnabled 时内容按角色差异化（T03-3 过滤），缓存 key 必须含 agentType，
-    // 避免跨角色复用错误内容；未启用时保持原 key（跨 Agent 复用缓存命中）。
-    const sharedCacheKey = chunksEnabled
-      ? `${projectId}|${chapterNumber}|agent:${agentType}|ask-story:${askStoryEnabled}|chunks`
-      : `${projectId}|${chapterNumber}|ask-story:${askStoryEnabled}`
+    // 内容按角色差异化（T03-3 过滤），缓存 key 必须含 agentType，避免跨角色复用错误内容。
+    const budgetKey = options.contextBudgetTokens ?? 'none'
+    const sharedCacheKey = `${projectId}|${chapterNumber}|agent:${agentType}|ask-story:${askStoryEnabled}|summary:${summaryEnabled ? 'auto' : 'full'}|budget:${budgetKey}|chunks`
     let sharedContext: string
     if (!needsChapterContext) {
       sharedContext = ''
@@ -2278,47 +2324,69 @@ export class NovelOrchestrator {
         'SEMI 层 shared 前缀命中单章缓存',
       )
     } else {
-      if (chunksEnabled) {
-        // P4 接入 4：chunk 级缓存（§5.6）——构建 chunks 后逐 chunk 查缓存，
-        // 命中直接用缓存 content（省构建），未命中重建并 put（供后续角色/重试复用）。
-        // 缓存由独立 flag crossChapterChunkCache 门控（§13.1）：关 = chunk 路径仍可用但不走缓存。
-        const chunks = this.promptBuilder.buildChapterContextChunks(
-          projectId, chapterNumber, narrativeTask, constraints, run.arrangedEntities,
-          { askStoryEnabled, agentType },
-        )
-        const chunkCacheEnabled = isNovelFeatureEnabled(this.store, projectId, 'crossChapterChunkCache')
-        let assembledChunks: Array<{ chunkId: string; content: string }> = chunks
-        let hits = 0
-        let misses = chunks.length
-        if (chunkCacheEnabled) {
-          const cached = buildWithChunkCache(this.chunkCache, {
+      // chunk 级缓存（§5.6）——缓存开时走惰性 builder：
+      // 先按 versionKey+scope 查缓存，命中后不执行对应 build()，真正省构建。
+      // 缓存由独立 flag crossChapterChunkCache 门控（§13.1）：关 = eager chunk 路径。
+      // T03-4：contextSummaryMode 开时按实体规模决策 story-state full/summary。
+      const entitySummaryMode = summaryEnabled
+        ? this.promptBuilder.chooseChapterEntitySummaryMode(projectId, chapterNumber, run.arrangedEntities)
+        : undefined
+      const chunkOptions = { askStoryEnabled, agentType, entitySummaryMode }
+      const chunkCacheEnabled = isNovelFeatureEnabled(this.store, projectId, 'crossChapterChunkCache')
+      let assembledChunks: Array<{ chunkId: string; content: string }>
+      let hits = 0
+      let misses = 0
+      if (chunkCacheEnabled) {
+        const cached = buildWithChunkCacheLazy(this.chunkCache, {
+          projectId,
+          versionSource: buildChunkVersionSource(this.store, projectId, this.memoryStore),
+          builders: this.promptBuilder.buildChapterContextChunkBuilders(
             projectId,
-            // 账本来源单独传 memoryStore：事件表不在 NovelStore 上，
-            // 少了它 Memory 写入账本后 chunk 不会失效。
-            versionSource: buildChunkVersionSource(this.store, projectId, this.memoryStore),
-            chunks,
-          })
-          assembledChunks = cached.chunks
-          hits = cached.hits
-          misses = cached.misses
-        }
-        sharedContext = this.promptBuilder.assembleSharedFromChunks(
-          assembledChunks.map((c) => ({ chunkId: c.chunkId, content: c.content })),
-        )
-        this.context.logger.debug(
-          { agentType, projectId, chapterNumber, hits, misses, chunkCacheEnabled },
-          'SEMI 层 shared 前缀已按 chunk 组装',
-        )
+            chapterNumber,
+            narrativeTask,
+            constraints,
+            run.arrangedEntities,
+            chunkOptions,
+          ),
+        })
+        assembledChunks = cached.chunks
+        hits = cached.hits
+        misses = cached.misses
       } else {
-        sharedContext = this.promptBuilder.buildChapterContextShared(
+        assembledChunks = this.promptBuilder.buildChapterContextChunks(
           projectId,
           chapterNumber,
           narrativeTask,
           constraints,
           run.arrangedEntities,
-          { askStoryEnabled },
+          chunkOptions,
+        )
+        misses = assembledChunks.length
+      }
+      if (options.contextBudgetTokens !== undefined) {
+        const degradable: DegradableChunk[] = assembledChunks.map((chunk) => ({
+          chunkId: chunk.chunkId,
+          content: chunk.content,
+        }))
+        const degraded = degradeChunks(degradable, options.contextBudgetTokens)
+        if (!degraded.fits) {
+          const error = `章节上下文超过预算：${degraded.tokensAfter}/${options.contextBudgetTokens} token；已执行降级：${degraded.appliedSteps.join(', ') || '无'}`
+          this.emitProgress(options, phase, 'error', { message: error })
+          throw new Error(error)
+        }
+        assembledChunks = materializeDegradedChunks(degraded.chunks)
+        this.context.logger.info(
+          { projectId, chapterNumber, agentType, budgetTokens: options.contextBudgetTokens, ...degraded },
+          '章节上下文已按预算降级',
         )
       }
+      sharedContext = this.promptBuilder.assembleSharedFromChunks(
+        assembledChunks.map((c) => ({ chunkId: c.chunkId, content: c.content })),
+      )
+      this.context.logger.debug(
+        { agentType, projectId, chapterNumber, hits, misses, chunkCacheEnabled },
+        'SEMI 层 shared 前缀已按 chunk 组装',
+      )
       run.semiLayerSharedCache = { key: sharedCacheKey, value: sharedContext }
       this.context.logger.debug(
         { agentType, projectId, chapterNumber, sharedLength: sharedContext.length, chunksEnabled },
@@ -2358,6 +2426,7 @@ export class NovelOrchestrator {
       const writerFactPack = this.promptBuilder.buildReferenceFactPack(
         projectId,
         run.directorTask.requiredReferences,
+        boundary,
       )
       if (writerFactPack) suffixContext += `${suffixContext ? '\n\n---\n\n' : ''}${writerFactPack}`
     }
@@ -2380,7 +2449,11 @@ export class NovelOrchestrator {
     )
     const filteredTools = identityOnly
       ? []
-      : allNovelTools.filter(t => allowedToolNames.includes(t.name))
+      : allNovelTools
+          .filter(t => allowedToolNames.includes(t.name))
+          .map(t => t.name === 'novel_ask_story'
+            ? this.wrapAskStoryWithLimit(t, run, agentType, projectId, chapterNumber)
+            : t)
     // 合并动态注入的额外工具（如 Reviser 的 novel_apply_revision）。
     // extraTools 不进 NOVEL_AGENT_CONFIGS.tools 白名单：白名单是静态配置，
     // 而 apply_revision 工具通过闭包持有 draft，每次调用都要重新创建。
@@ -2436,7 +2509,7 @@ export class NovelOrchestrator {
     // ⚠️ 项目级「创作主模型」：项目设置了 novelModelId（provider:modelId）时，
     // 本流程所有 Agent 统一使用该 provider+model，保证 promptCacheScope 内模型一致
     // → shared 前缀缓存全程可命中，并消除"404 model not supported / 401"类配置失败。
-    const projectModelRef = NovelOrchestrator.resolveModelRef(run.projectModelId)
+    const projectModelRef = parseNovelModelRef(run.projectModelId)
     // ⚠️ 模型优先级：per-call 覆盖（输入框旁选择器）> 项目主模型 > AgentPage 配置。
     // per-call 与项目主模型都保证 promptCacheScope 内模型一致 → shared 前缀缓存可命中。
     const modelId = options.modelId ?? projectModelRef ?? agentConfig?.model

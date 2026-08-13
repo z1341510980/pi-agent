@@ -39,11 +39,11 @@ import type {
 } from './discussion-types.js'
 import { DISCUSSION_LIMITS } from './discussion-types.js'
 import {
-  groupSymmetricActors,
-  splitIntoBatches,
   buildMergedActorPrompt,
+  computeKnowledgeFingerprint,
   parseMergedActorResponse,
   MIN_MERGE_GROUP_SIZE,
+  MAX_MERGE_GROUP_SIZE,
 } from './discussion-actor-batching.js'
 
 /** 引擎上下文：提供 createAgUiSession 工厂 + 日志 */
@@ -363,7 +363,7 @@ export class TeamDiscussionEngine {
           const handled = await this.handleMergedInvite(
             decision, decision.agentIds, members, history, options, channelName, ctx,
           )
-          // 合并路径不适用（分组后无 ≥2 人的组）时回落到单角色，不能静默跳过发言
+          // 多角色分支一旦接受决策，就负责处理全部有效角色；不可合并者也逐个调用。
           if (handled) break
         }
 
@@ -388,51 +388,10 @@ export class TeamDiscussionEngine {
             ? `${decision.prompt}\n\n主持人的任务只说明本回合关注点，不代表预设结果。你可以拒绝不符合人设、已知信息或当前目标的结论。只演此刻一个动作单元。`
             : decision.prompt
           let content = await this.invokeMember(member, memberPrompt, history, options, ctx)
-
-          // 剧本协议是角色推演能否被 Writer 当作现场素材的边界。格式错误时先重试，
-          // 仍失败则做保守归一化，禁止“意图/心理/应对”提纲直接进入全章编织。
-          if (member.type === 'character' && !this.isValidCharacterSpeech(content)) {
-            this.emitProgress(options, ctx.phase, {
-              type: 'phase_change',
-              data: { message: `${member.name} 未按剧本格式发言，正在纠正当前发言` },
-            })
-            const retry = await this.invokeMember(
-              member,
-              `上一条输出不是角色演出。重新演出当前回合，只输出 2-6 行，每行严格使用：[可见动作] “角色台词”。\n不得输出“意图、心理、应对、分析、说明”等标签，不得替其他角色说话。\n\n当前回合：${memberPrompt}`,
-              history,
-              options,
-              ctx,
+          if (member.type === 'character') {
+            content = await this.prepareCharacterSpeech(
+              member, content, memberPrompt, history, members, options, ctx,
             )
-            content = this.isValidCharacterSpeech(retry)
-              ? retry
-              : this.normalizeCharacterSpeech(retry || content, member.name)
-          }
-
-          // 角色成员发言后触发 Reviewer 实时审查（最多重发 1 次）
-          if (member.type === 'character' && options.reviewCharacterSpeech !== false) {
-            const reviewResult = await this.reviewCharacterSpeech(
-              member, content, history, members, options, ctx,
-            )
-            if (reviewResult.verdict === 'request_rewrite' && reviewResult.rewrite_suggestion) {
-              // 审查不通过，要求角色重发
-              this.emitProgress(options, ctx.phase, {
-                type: 'phase_change',
-                data: { message: `审查员要求 ${member.name} 重发：${reviewResult.issues.join('；')}` },
-              })
-              const rewritePrompt = `审查员认为你的上一条发言需要修改。
-
-## 原始发言
-${content}
-
-## 存在的问题
-${reviewResult.issues.join('\n')}
-
-## 修改建议
-${reviewResult.rewrite_suggestion}
-
-请保留原发言的有效信息，按建议重新发言。`
-              content = await this.invokeMember(member, rewritePrompt, history, options, ctx)
-            }
           }
 
           const msg: DiscussionMessage = {
@@ -482,8 +441,8 @@ ${reviewResult.rewrite_suggestion}
   /**
    * 合并调用同场信息对称的角色。
    *
-   * @returns true 表示已处理（至少发生了一次合并调用）；false 表示不适用，
-   *   调用方应回落到单角色路径 —— 分组后若全是单人组，合并只会增加提示词开销。
+   * @returns true 表示已处理全部有效的多角色点名；false 表示有效角色不足两个，
+   *   调用方继续使用兼容的单角色路径。
    */
   private async handleMergedInvite(
     decision: Extract<ModeratorDecision, { type: 'invite' }>,
@@ -499,80 +458,158 @@ ${reviewResult.rewrite_suggestion}
       .filter((m): m is DiscussionMember => !!m && m.type === 'character')
     if (picked.length < MIN_MERGE_GROUP_SIZE) return false
 
-    // 按认知指纹分组，再按规模上限切批
-    const groups = groupSymmetricActors(
-      picked.map((m) => ({
-        id: m.id,
-        name: m.name,
-        knowledge: m.knowledge ?? {},
-      })),
+    const allLayerIds = Array.from(new Set(
+      picked.flatMap(member => member.knowledge ? Object.keys(member.knowledge) : []),
+    )).sort()
+    const resolved = picked.map((member) => {
+      try {
+        const systemPrompt = member.buildSystemPrompt()
+        const contextPrompt = member.buildContextPrompt?.() ?? this.currentGoal?.context ?? ''
+        const identityPrompt = member.buildIdentityPrompt?.() ?? ''
+        const temperature = member.temperature
+          ?? (options.limits?.characterTemperature ?? 0.8)
+        const modelId = member.modelId
+        return {
+          member,
+          systemPrompt,
+          contextPrompt,
+          identityPrompt,
+          temperature,
+          modelId,
+          fingerprint: member.knowledge === undefined
+            ? undefined
+            : computeKnowledgeFingerprint({
+                id: member.id,
+                name: member.name,
+                knowledge: member.knowledge,
+              }, allLayerIds),
+        }
+      } catch (err) {
+        this.context.logger.warn({ err, memberId: member.id }, '预解析角色合并资格失败，回落为单独调用')
+        return { member }
+      }
+    })
+    type ResolvedActor = typeof resolved[number]
+    const canMerge = (left: ResolvedActor, right: ResolvedActor): boolean => (
+      left.member.allowMergedInvocation !== false
+      && right.member.allowMergedInvocation !== false
+      && left.fingerprint !== undefined
+      && left.fingerprint === right.fingerprint
+      && left.member.name !== right.member.name
+      && left.systemPrompt === right.systemPrompt
+      && left.contextPrompt === right.contextPrompt
+      && left.identityPrompt?.trim().length > 0
+      && right.identityPrompt?.trim().length > 0
+      && left.temperature === right.temperature
+      && left.modelId?.provider === right.modelId?.provider
+      && left.modelId?.modelId === right.modelId?.modelId
     )
-    const batches = groups.flatMap(splitIntoBatches).filter((b) => b.length >= MIN_MERGE_GROUP_SIZE)
-    if (batches.length === 0) return false
+    const batches: ResolvedActor[][] = []
+    for (const actor of resolved) {
+      const current = batches[batches.length - 1]
+      if (current && current.length < MAX_MERGE_GROUP_SIZE && canMerge(current[0], actor)) {
+        current.push(actor)
+      } else {
+        batches.push([actor])
+      }
+    }
+    const mergedBatches = batches.filter(batch => batch.length >= MIN_MERGE_GROUP_SIZE)
 
     this.context.logger.info(
       {
         phase: ctx.phase,
         sceneId: ctx.sceneId,
         requested: picked.length,
-        groups: groups.length,
-        mergedBatches: batches.length,
+        groups: batches.length,
+        mergedBatches: mergedBatches.length,
       },
       '群聊演出：同场信息对称角色合并调用',
     )
 
-    // 已被合并覆盖的成员，避免与后续单人回落重复发言
-    const covered = new Set<string>()
+    const moderatorMsg: DiscussionMessage = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      fromId: 'moderator',
+      fromName: '主持人',
+      content: `@${picked.map(member => member.name).join(' @')} ${decision.prompt}${decision.reason ? `（${decision.reason}）` : ''}`,
+      timestamp: Date.now(),
+      sceneId: ctx.sceneId,
+      type: 'moderator',
+    }
+    history.push(moderatorMsg)
+    this.emitProgress(options, ctx.phase, {
+      type: 'phase_change',
+      data: { message: moderatorMsg.content },
+    })
 
     for (const batch of batches) {
-      const group = { actors: batch, fingerprint: '' }
-      const names = batch.map((a) => a.name)
-      const moderatorMsg: DiscussionMessage = {
-        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        fromId: 'moderator',
-        fromName: '主持人',
-        content: `@${names.join(' @')} ${decision.prompt}${decision.reason ? `（${decision.reason}）` : ''}`,
-        timestamp: Date.now(),
-        sceneId: ctx.sceneId,
-        type: 'moderator',
+      if (batch.length < MIN_MERGE_GROUP_SIZE) {
+        await this.speakSingleCharacter(
+          batch[0].member, decision.prompt, history, members, options, channelName, ctx,
+        )
+        continue
       }
-      history.push(moderatorMsg)
-      this.emitProgress(options, ctx.phase, {
-        type: 'phase_change',
-        data: { message: moderatorMsg.content },
-      })
 
-      const leader = members.find((m) => m.id === batch[0].id)
-      if (!leader) continue
+      const leader = batch[0]
+      const batchMembers = batch.map(actor => actor.member)
+      const names = batchMembers.map(member => member.name)
+      const identities = batch.map(actor => (
+        `## 角色「${actor.member.name}」的私有身份\n${actor.identityPrompt}`
+      )).join('\n\n---\n\n')
+      const group = {
+        actors: batchMembers.map(member => ({
+          id: member.id,
+          name: member.name,
+          knowledge: member.knowledge!,
+        })),
+        fingerprint: leader.fingerprint!,
+      }
 
+      let merged: string
       try {
-        const merged = await this.invokeMember(
-          leader,
+        merged = await this.invokeMember(
+          leader.member,
           buildMergedActorPrompt(group, `${decision.prompt}\n\n主持人的任务只说明本回合关注点，不代表预设结果。各角色可以拒绝不符合人设、已知信息或当前目标的结论。`),
           history,
           options,
           ctx,
+          'public',
+          {
+            systemPrompt: leader.systemPrompt!,
+            prefixMessages: [leader.contextPrompt!, identities],
+            temperature: leader.temperature!,
+            modelId: leader.modelId,
+            participantIds: batchMembers.map(member => member.id),
+            participantNames: names,
+          },
         )
-        const parsed = parseMergedActorResponse(merged, names)
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        history.push(this.errorMessage(`${names.join('、')} 合并发言失败：${errMsg}`))
+        for (const member of batchMembers) {
+          await this.speakSingleCharacter(
+            member, decision.prompt, history, members, options, channelName, ctx,
+          )
+        }
+        continue
+      }
 
-        for (const actor of batch) {
-          const member = members.find((m) => m.id === actor.id)
-          if (!member) continue
-          const segment = parsed.get(actor.name)
-          if (!segment) {
-            // 缺段：回落到单独调用该角色，而不是丢掉他的这一回合。
-            // 合并输出的解析失败不应让角色在本回合"消失"。
-            this.context.logger.warn(
-              { memberId: member.id, memberName: member.name },
-              '合并输出缺少该角色分段，回落为单独调用',
-            )
-            await this.speakSingleCharacter(member, decision.prompt, history, options, channelName, ctx)
-            covered.add(member.id)
-            continue
-          }
-          const content = this.isValidCharacterSpeech(segment)
-            ? segment
-            : this.normalizeCharacterSpeech(segment, member.name)
+      const parsed = parseMergedActorResponse(merged, names)
+      for (const member of batchMembers) {
+        const segment = parsed.get(member.name)
+        if (!segment) {
+          this.context.logger.warn(
+            { memberId: member.id, memberName: member.name },
+            '合并输出缺少该角色分段，回落为单独调用',
+          )
+          await this.speakSingleCharacter(
+            member, decision.prompt, history, members, options, channelName, ctx,
+          )
+          continue
+        }
+        try {
+          const content = await this.prepareCharacterSpeech(
+            member, segment, decision.prompt, history, members, options, ctx,
+          )
           const msg: DiscussionMessage = {
             id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             fromId: member.id,
@@ -584,18 +621,16 @@ ${reviewResult.rewrite_suggestion}
           }
           history.push(msg)
           this.channel.broadcast(channelName, member.id, msg)
-          covered.add(member.id)
+        } catch (err) {
+          this.context.logger.warn(
+            { err, memberId: member.id, memberName: member.name },
+            '合并输出的角色分段处理失败，回落为单独调用',
+          )
+          await this.speakSingleCharacter(
+            member, decision.prompt, history, members, options, channelName, ctx,
+          )
         }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err)
-        history.push(this.errorMessage(`${names.join('、')} 合并发言失败：${errMsg}`))
       }
-    }
-
-    // 未被任何批次覆盖的角色（单人组）仍需发言，否则主持人点了名却没人说话
-    for (const actor of picked) {
-      if (covered.has(actor.id)) continue
-      await this.speakSingleCharacter(actor, decision.prompt, history, options, channelName, ctx)
     }
     return true
   }
@@ -605,26 +640,27 @@ ${reviewResult.rewrite_suggestion}
     member: DiscussionMember,
     prompt: string,
     history: DiscussionMessage[],
+    members: DiscussionMember[],
     options: DiscussionOptions,
     channelName: string,
     ctx: { phase: DiscussionPhase; sceneId?: number },
   ): Promise<void> {
     try {
-      const content = await this.invokeMember(
+      const raw = await this.invokeMember(
         member,
         `${prompt}\n\n主持人的任务只说明本回合关注点，不代表预设结果。你可以拒绝不符合人设、已知信息或当前目标的结论。只演此刻一个动作单元。`,
         history,
         options,
         ctx,
       )
-      const normalized = this.isValidCharacterSpeech(content)
-        ? content
-        : this.normalizeCharacterSpeech(content, member.name)
+      const content = await this.prepareCharacterSpeech(
+        member, raw, prompt, history, members, options, ctx,
+      )
       const msg: DiscussionMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         fromId: member.id,
         fromName: member.name,
-        content: normalized,
+        content,
         timestamp: Date.now(),
         sceneId: ctx.sceneId,
         type: 'member',
@@ -637,6 +673,69 @@ ${reviewResult.rewrite_suggestion}
     }
   }
 
+  /** 统一角色发言协议：格式纠正、实时 Reviewer、必要时重写。 */
+  private async prepareCharacterSpeech(
+    member: DiscussionMember,
+    initialContent: string,
+    memberPrompt: string,
+    history: DiscussionMessage[],
+    members: DiscussionMember[],
+    options: DiscussionOptions,
+    ctx: { phase: DiscussionPhase; sceneId?: number },
+  ): Promise<string> {
+    let content = initialContent
+    if (!this.isValidCharacterSpeech(content)) {
+      this.emitProgress(options, ctx.phase, {
+        type: 'phase_change',
+        data: { message: `${member.name} 未按剧本格式发言，正在纠正当前发言` },
+      })
+      const retry = await this.invokeMember(
+        member,
+        `上一条输出不是角色演出。重新演出当前回合，只输出 2-6 行，每行严格使用：[可见动作] “角色台词”。\n不得输出“意图、心理、应对、分析、说明”等标签，不得替其他角色说话。\n\n当前回合：${memberPrompt}`,
+        history,
+        options,
+        ctx,
+      )
+      content = this.isValidCharacterSpeech(retry)
+        ? retry
+        : this.normalizeCharacterSpeech(retry || content, member.name)
+    }
+
+    if (options.reviewCharacterSpeech !== false) {
+      const reviewResult = await this.reviewCharacterSpeech(
+        member, content, history, members, options, ctx,
+      )
+      if (reviewResult.verdict === 'request_rewrite' && reviewResult.rewrite_suggestion) {
+        this.emitProgress(options, ctx.phase, {
+          type: 'phase_change',
+          data: { message: `审查员要求 ${member.name} 重发：${reviewResult.issues.join('；')}` },
+        })
+        const rewritten = await this.invokeMember(
+          member,
+          `审查员认为你的上一条发言需要修改。
+
+## 原始发言
+${content}
+
+## 存在的问题
+${reviewResult.issues.join('\n')}
+
+## 修改建议
+${reviewResult.rewrite_suggestion}
+
+请保留原发言的有效信息，按建议重新发言。`,
+          history,
+          options,
+          ctx,
+        )
+        content = this.isValidCharacterSpeech(rewritten)
+          ? rewritten
+          : this.normalizeCharacterSpeech(rewritten || content, member.name)
+      }
+    }
+    return content
+  }
+
   /** 调用成员发言（通过 createAgUiSession 工厂） */
   private async invokeMember(
     member: DiscussionMember,
@@ -645,11 +744,21 @@ ${reviewResult.rewrite_suggestion}
     options: DiscussionOptions,
     ctx: { phase: DiscussionPhase; sceneId?: number; extraTools?: unknown[] },
     visibility: 'public' | 'internal' = 'public',
+    invocationOverrides?: {
+      systemPrompt: string
+      prefixMessages: string[]
+      temperature: number
+      modelId?: { provider: string; modelId: string }
+      participantIds?: string[]
+      participantNames?: string[]
+    },
   ): Promise<string> {
-    const systemPrompt = member.buildSystemPrompt()
-    const identityPrompt = member.buildIdentityPrompt?.() ?? ''
-    const visibleChapterContext = member.buildContextPrompt?.() ?? this.currentGoal?.context ?? ''
-    const prefixMessages = [visibleChapterContext, identityPrompt]
+    const systemPrompt = invocationOverrides?.systemPrompt ?? member.buildSystemPrompt()
+    const identityPrompt = invocationOverrides ? '' : member.buildIdentityPrompt?.() ?? ''
+    const visibleChapterContext = invocationOverrides
+      ? ''
+      : member.buildContextPrompt?.() ?? this.currentGoal?.context ?? ''
+    const prefixMessages = (invocationOverrides?.prefixMessages ?? [visibleChapterContext, identityPrompt])
       .filter(message => message.trim().length > 0)
     const transcriptSummary = this.formatTranscriptForMember(history, member.id)
     const userMessage = `${prompt}\n\n---\n\n## 群聊记录\n\n${transcriptSummary}`
@@ -679,12 +788,12 @@ ${reviewResult.rewrite_suggestion}
       signal: options.signal,
       // 温度优先级：member.temperature（工种成员从 AgentPage 角色温度配置读取）
       // > 角色成员回退到 characterTemperature > 默认 0.7
-      temperature: member.temperature
+      temperature: invocationOverrides?.temperature ?? member.temperature
         ?? (member.type === 'character' ? (options.limits?.characterTemperature ?? 0.8) : 0.7),
       timeoutMs: 300_000,
       // 透传成员配置的 modelId：工种成员从 AgentManager 读取该 Agent 的 model 配置，
       // 角色成员不填（走默认 Provider）。
-      modelId: member.modelId,
+      modelId: invocationOverrides?.modelId ?? member.modelId,
       emit: options.emit,
       emitRaw: false,
       onFirstText: () => {
@@ -715,9 +824,11 @@ ${reviewResult.rewrite_suggestion}
         data: {
           agentId: member.id,
           agentType: member.type === 'character' ? 'character' : member.id.replace('novel-', ''),
-          agentName: member.name,
+          agentName: invocationOverrides?.participantNames?.join('、') ?? member.name,
+          participantIds: invocationOverrides?.participantIds,
+          participantNames: invocationOverrides?.participantNames,
           messageId,
-          message: `${member.name} 已启动，正在向 AI 发送请求...`,
+          message: `${invocationOverrides?.participantNames?.join('、') ?? member.name} 已启动，正在向 AI 发送请求...`,
         },
       })
     }
@@ -735,6 +846,8 @@ ${reviewResult.rewrite_suggestion}
       try {
         options.onMemberInvocation?.({
           member,
+          participantIds: invocationOverrides?.participantIds,
+          participantNames: invocationOverrides?.participantNames,
           phase: ctx.phase,
           systemPrompt,
           chapterContext: prefixMessages.join('\n\n---\n\n'),
@@ -751,8 +864,8 @@ ${reviewResult.rewrite_suggestion}
           outputTokens: capturedUsage?.outputTokens ?? 0,
           cacheReadTokens: capturedUsage?.cacheReadTokens ?? 0,
           cacheWriteTokens: capturedUsage?.cacheWriteTokens ?? 0,
-          llmProvider: capturedUsage?.llmProvider ?? member.modelId?.provider ?? '',
-          llmModel: capturedUsage?.llmModel ?? member.modelId?.modelId ?? '',
+          llmProvider: capturedUsage?.llmProvider ?? invocationOverrides?.modelId?.provider ?? member.modelId?.provider ?? '',
+          llmModel: capturedUsage?.llmModel ?? invocationOverrides?.modelId?.modelId ?? member.modelId?.modelId ?? '',
           payloadMessagesChars: payloadStats.messagesChars,
           payloadToolsChars: payloadStats.toolsChars,
           payloadToolCount: payloadStats.toolCount,

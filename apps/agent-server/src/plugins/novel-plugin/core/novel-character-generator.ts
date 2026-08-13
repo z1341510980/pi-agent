@@ -58,6 +58,8 @@ export class NovelCharacterGenerator {
    * @param projectId 项目 ID（用于读取项目上下文：类型、世界规则、风格指南）
    * @param coreStyle 用户输入的核心风格描述（如"沉默寡言的剑客，背负血海深仇"）
    * @param onProgress 进度回调（用于 SSE 流式推送生成阶段到前端）
+   * @param signal 取消信号
+   * @param modelId 本次生成指定的 Provider/模型；未传时使用默认模型
    * @returns 角色设定（不含 id / projectId / arcHistory / 时间戳，由调用方补全）
    */
   async generate(
@@ -65,6 +67,7 @@ export class NovelCharacterGenerator {
     coreStyle: string,
     onProgress?: (event: CharacterGenerationProgressEvent) => void,
     signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
   ): Promise<GeneratedCharacter> {
     // ── 1. 构建系统提示词（包含项目级世界规则、风格指南、角色定义等上下文）──
     // agentType 使用 'character-generator'，promptBuilder 会回退到通用角色描述
@@ -86,6 +89,7 @@ export class NovelCharacterGenerator {
       // 默认 120s 不足，提到 300s 与 Memory Agent 一致
       timeoutMs: 300_000,
       signal,
+      modelId,
     })
 
     try {

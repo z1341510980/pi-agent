@@ -6,14 +6,13 @@
  * 两条主线做端到端验证，并核验迁移编号顺序在全新库上的列状态。
  *
  * 重点覆盖（对齐 PRD §4 验收口径）：
- * 1. Flag 全关：版本双写仍在、日志仍全量写主表、scene 仍写三表（现状不被破坏）
- * 2. versionChainV2Write 开启：真实 updateChapter 流程后旧表新增行 = 0，
- *    current_content_revision_id 指向版本与正文一致
- * 3. logPayloadExternalized 开启：主表大文本列空串、payload 表 gzip、详情可回读、
+ * 1. 日志默认外置：主表大文本列空串、payload 表 gzip、详情可回读、
  *    cleanup 只删 payload 不删元数据
- * 4. sceneCastV2Write/Read 开启：focus/present/functional 往返一致、功能位不丢、
+ * 2. 版本链 V2 单链：真实 updateChapter 流程后旧表新增行 = 0，
+ *    current_content_revision_id 指向版本与正文一致
+ * 3. sceneCastV2Write/Read 开启：focus/present/functional 往返一致、功能位不丢、
  *    三表停止新增、focus+present 去重规则
- * 5. 迁移顺序：新库 087a(087b)→088→089 后列状态正确（payload_id 存在、废弃列不存在、
+ * 4. 迁移顺序：新库 087a(087b)→088→089 后列状态正确（payload_id 存在、废弃列不存在、
  *    cast 表 CHECK 约束生效）
  */
 import { describe, it, expect, beforeAll } from 'vitest'
@@ -75,39 +74,40 @@ function makeLogInput(projectId: string, chapterNumber = 1) {
   }
 }
 
-describe('QA-1 Flag 全关 = 现状一致（回归不破坏旧行为）', () => {
-  it('版本双写仍在：updateChapter 后 novel_chapter_versions 新增行', () => {
+describe('QA-1 版本链单链 = 旧表停写、V2 唯一', () => {
+  it('版本单链：updateChapter 后旧表不再新增、V2 链新增', () => {
     const store = new NovelStore(createDb())
     const projectId = setupProject(store)
     const chapter = setupChapter(store, projectId)
 
     store.updateChapter(chapter.id, { content: 'v1 正文改版', wordCount: 6 })
     const db = dbOf(store)
+    // 旧表（novel_chapter_versions）已停写，不再新增行
     const oldRows = db.prepare(
       'SELECT COUNT(*) AS n FROM novel_chapter_versions WHERE chapter_id = ?',
     ).get(chapter.id) as { n: number }
-    expect(oldRows.n).toBeGreaterThanOrEqual(1)
-    // V2 链也在写（双写并存）
+    expect(oldRows.n).toBe(0)
+    // V2 链是唯一版本链
     const v2Rows = db.prepare(
       'SELECT COUNT(*) AS n FROM novel_chapter_content_revisions WHERE chapter_id = ?',
     ).get(chapter.id) as { n: number }
-    expect(v2Rows.n).toBeGreaterThanOrEqual(1)
+    expect(v2Rows.n).toBeGreaterThanOrEqual(2)
   })
 
-  it('日志仍全量写主表：大文本列有值、payload 表无行', () => {
+  it('日志默认外置：主表大文本空、payload 表有行', () => {
     const store = new NovelStore(createDb())
     const projectId = setupProject(store)
     store.insertAgentLog(makeLogInput(projectId))
     const db = dbOf(store)
     const main = db.prepare('SELECT system_prompt, chapter_context, payload_id FROM novel_agent_logs').get() as any
-    expect(main.system_prompt.length).toBeGreaterThan(0)
-    expect(main.chapter_context.length).toBeGreaterThan(0)
-    expect(main.payload_id).toBeNull()
+    expect(main.system_prompt).toBe('')
+    expect(main.chapter_context).toBe('')
+    expect(main.payload_id).not.toBeNull()
     const payloadCount = db.prepare('SELECT COUNT(*) AS n FROM novel_agent_log_payloads').get() as { n: number }
-    expect(payloadCount.n).toBe(0)
+    expect(payloadCount.n).toBe(1)
   })
 
-  it('scene 仍写三表：cast 表无行、三表有行', () => {
+  it('scene 单链：cast 表有行、旧三表停写', () => {
     const store = new NovelStore(createDb())
     const projectId = setupProject(store)
     const chapter = setupChapter(store, projectId)
@@ -127,17 +127,17 @@ describe('QA-1 Flag 全关 = 现状一致（回归不破坏旧行为）', () => 
     const focus = db.prepare('SELECT COUNT(*) AS n FROM novel_scene_focus').get() as { n: number }
     const present = db.prepare('SELECT COUNT(*) AS n FROM novel_scene_presence').get() as { n: number }
     const fn = db.prepare('SELECT COUNT(*) AS n FROM novel_scene_functions').get() as { n: number }
-    expect(cast.n).toBe(0)
-    expect(focus.n).toBe(1)
-    expect(present.n).toBe(2)
-    expect(fn.n).toBe(1)
+    expect(cast.n).toBe(4) // c1(focus) + c1/c2(present) + c3(functional)
+    expect(focus.n).toBe(0)
+    expect(present.n).toBe(0)
+    expect(fn.n).toBe(0)
   })
 })
 
-describe('QA-2 versionChainV2Write/Read 开启 = 新行为正确', () => {
+describe('QA-2 版本链 V2 单链 = 旧表停写、指针一致', () => {
   it('真实 updateChapter 流程：旧表新增行 = 0，current 指针正文与 novel_chapters.content 一致', () => {
     const store = new NovelStore(createDb())
-    const projectId = setupProject(store, { versionChainV2Write: true, versionChainV2Read: true })
+    const projectId = setupProject(store)
     const chapter = setupChapter(store, projectId)
 
     store.updateChapter(chapter.id, { content: 'v2 正文第二次修改', wordCount: 9 })
@@ -166,32 +166,29 @@ describe('QA-2 versionChainV2Write/Read 开启 = 新行为正确', () => {
     expect(latest?.content).toBe(current.content)
   })
 
-  it('reconcileVersionChains：纯双写期数据一致 → mismatch/orphan/duplicate 全 0', () => {
+  it('reconcileVersionChains：单链下旧表停写、V2 唯一（mismatch/duplicate 全 0）', () => {
     const store = new NovelStore(createDb())
     const projectId = setupProject(store)
     const chapter = setupChapter(store, projectId)
-    // 双写期（flag 关）：旧表快照 + V2 链同路径写入
+    // 单链：旧表不再写入，只有 V2 链
     store.updateChapter(chapter.id, { content: '版本A', wordCount: 5 })
     store.updateChapter(chapter.id, { content: '版本B', wordCount: 5 })
 
     const report = store.reconcileVersionChains(projectId)
-    expect(report.mismatchRows).toBe(0)
+    expect(report.mismatchRows).toBe(0) // 旧表没有任何 V2 缺失的行
     expect(report.duplicateRows).toBe(0)
-    expect(report.orphanRows).toBe(0)
     expect(report.rollbackVerified).toBe(false)
     expect(report.mismatchedChapters).toHaveLength(0)
+    // 旧表已停写（行数为 0），V2 链是唯一版本源
+    expect(report.sourceRows).toBe(0)
+    expect(report.targetRows).toBeGreaterThanOrEqual(3)
 
-    // 灰度开启 V2 写后：旧表行数冻结（不再新增）
-    dbOf(store).prepare('UPDATE novel_projects SET feature_flags = ? WHERE id = ?')
-      .run(JSON.stringify({ versionChainV2Write: true, versionChainV2Read: true }), projectId)
-    const oldBefore = (dbOf(store).prepare(
-      'SELECT COUNT(*) AS n FROM novel_chapter_versions WHERE chapter_id = ?',
-    ).get(chapter.id) as { n: number }).n
+    // 继续落库：旧表行数仍冻结为 0
     store.updateChapter(chapter.id, { content: '版本C', wordCount: 5 })
-    const oldAfter = (dbOf(store).prepare(
+    const oldCount = (dbOf(store).prepare(
       'SELECT COUNT(*) AS n FROM novel_chapter_versions WHERE chapter_id = ?',
     ).get(chapter.id) as { n: number }).n
-    expect(oldAfter).toBe(oldBefore) // P1-1-1：停旧写后旧表冻结
+    expect(oldCount).toBe(0) // 停旧写：旧表冻结
     // 当前指针仍一致
     const current = dbOf(store).prepare(
       'SELECT content, current_content_revision_id FROM novel_chapters WHERE id = ?',
@@ -203,11 +200,11 @@ describe('QA-2 versionChainV2Write/Read 开启 = 新行为正确', () => {
   })
 })
 
-describe('QA-3 logPayloadExternalized 开启 = 冷热分离正确', () => {
+describe('QA-3 日志冷热分离 = 默认外置正确', () => {
   it('主表瘦身 + payload gzip + 详情兼容 + cleanup 保留策略', () => {
     const db = createDb()
     const store = new NovelStore(db)
-    const projectId = setupProject(store, { logPayloadExternalized: true })
+    const projectId = setupProject(store)
     const log = store.insertAgentLog(makeLogInput(projectId))
 
     const main = db.prepare(
@@ -242,10 +239,10 @@ describe('QA-3 logPayloadExternalized 开启 = 冷热分离正确', () => {
   })
 })
 
-describe('QA-4 sceneCastV2Write/Read 开启 = 三表合并正确', () => {
+describe('QA-4 Scene Cast 单链 = cast 唯一写面、三表停写', () => {
   it('停旧写 + cast 主写：三表停止新增，往返一致、功能位不丢、focus 优先去重', () => {
     const store = new NovelStore(createDb())
-    const projectId = setupProject(store, { sceneCastV2Write: true, sceneCastV2Read: true })
+    const projectId = setupProject(store)
     const chapter = setupChapter(store, projectId)
     const { scenes } = store.submitPlanWithScenes({
       chapterId: chapter.id, projectId,
@@ -280,12 +277,9 @@ describe('QA-4 sceneCastV2Write/Read 开启 = 三表合并正确', () => {
     expect(c1Roles).toContain('present')
   })
 
-  it('sceneCastV2Write + scenePlanV2DualWrite：影子写对账 mismatch=0（P1-3-3）', () => {
+  it('reconcileSceneCast：单链下三表停写、cast 承载全部角色', () => {
     const store = new NovelStore(createDb())
-    const projectId = setupProject(store, {
-      sceneCastV2Write: true,
-      scenePlanV2DualWrite: true,
-    })
+    const projectId = setupProject(store)
     const chapter = setupChapter(store, projectId)
     store.submitPlanWithScenes({
       chapterId: chapter.id, projectId,
@@ -298,13 +292,14 @@ describe('QA-4 sceneCastV2Write/Read 开启 = 三表合并正确', () => {
         targetWords: 3000, progresses: [],
       }],
     })
-    // 双写期：三表与 cast 同时有数据，往返一致
+    // 单链：三表停写（source=0），cast 表承载全部角色关系
     const db = dbOf(store)
-    expect((db.prepare('SELECT COUNT(*) AS n FROM novel_scene_focus').get() as { n: number }).n).toBe(1)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM novel_scene_focus').get() as { n: number }).n).toBe(0)
     expect((db.prepare('SELECT COUNT(*) AS n FROM novel_scene_cast').get() as { n: number }).n).toBeGreaterThan(0)
     const report = store.reconcileSceneCast(projectId)
-    expect(report.mismatchRows).toBe(0)
-    expect(report.mismatchByRole).toEqual({ focus: 0, present: 0, functional: 0 })
+    expect(report.sourceRows).toBe(0)
+    expect(report.targetRows).toBeGreaterThan(0)
+    expect(report.duplicateRows).toBe(0)
     expect(report.checkedSceneRevisions).toBeGreaterThanOrEqual(1)
   })
 })
@@ -349,7 +344,7 @@ describe('QA-5 迁移编号顺序：新库 087a/087b→088→089 列状态正确
       scenes: [{
         sceneKey: 's1', order: 1, title: '场景', goal: '目标', locationText: '地点',
         timeText: '当日', povMode: 'single', povCharacterId: 'c1',
-        focusCharacterIds: ['c1'], presentCharacterIds: [],
+        focusCharacterIds: [], presentCharacterIds: [],
         functionalCast: [], targetWords: 3000, progresses: [],
       }],
     })

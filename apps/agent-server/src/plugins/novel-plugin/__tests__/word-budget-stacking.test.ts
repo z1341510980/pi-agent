@@ -51,10 +51,6 @@ const TASK = {
   targetEntity: null,
   priority: 'medium' as const,
 }
-const CONSTRAINTS_EMPTY = {
-  facts: [], cognitive: [], stage: [], narrativeDebts: [],
-  characterArcs: [], conflictTargets: [], suspenseHooks: [],
-}
 
 function setupProject(store: NovelStore, targetWords: number): string {
   const projectId = randomUUID()
@@ -75,8 +71,8 @@ const CLIMAX_RHYTHM: RhythmSuggestion = {
   climaxType: 'composite',
 }
 
-describe('字数预算不叠加节奏和定位倍率', () => {
-  it('定位为 high_pressure 且节奏为 climax 时，目标字数不叠加两个 1.3', () => {
+describe('字数预算单链（WordBudgetResolver 唯一解析，2026-08-12 逻辑统一）', () => {
+  it('定位 high_pressure + 节奏 climax：3000（定位默认 0%、节奏不参与，绝不叠加）', () => {
     const store = new NovelStore(createDb())
     const engine = new NovelEngine(store)
     const projectId = setupProject(store, 3000)
@@ -88,116 +84,19 @@ describe('字数预算不叠加节奏和定位倍率', () => {
       'high_pressure' as ChapterPositioning,
     )
 
-    // 旧 bug：3000 * 1.3(节奏) * 1.3(定位) = 5070
-    // 修复后：只应用定位倍率 = 3000 * 1.3 = 3900
-    expect(constraints.wordBudget).not.toBeNull()
-    expect(constraints.wordBudget!.target).toBe(3900)
-    expect(constraints.wordBudget!.target).not.toBe(5070)
-  })
-
-  it('无定位时，节奏倍率仍通过 computeChapterTargetWords 生效', () => {
-    const store = new NovelStore(createDb())
-    const engine = new NovelEngine(store)
-    const projectId = setupProject(store, 3000)
-
-    const constraints = engine.buildChapterConstraints(
-      projectId,
-      1,
-      CLIMAX_RHYTHM,
-      null,
-    )
-
-    // 无定位 → wordBudget 为 null → Writer 使用 computeChapterTargetWords 回退
-    expect(constraints.wordBudget).toBeNull()
-
-    const builder = new NovelPromptBuilder(
-      { render: () => '', getTemplate: () => '' } as any,
-      createStoresMock(store) as any,
-    )
-    const fallback = builder.computeChapterTargetWords(
-      store.getProject(projectId),
-      constraints.rhythmConstraint?.rhythm,
-    )
-    // 节奏 climax → 3000 * 1.3 = 3900，不再叠加定位
-    expect(fallback).toBe(3900)
-  })
-
-  it('定位为 low_pressure 且节奏为 climax 时，不因节奏抬高字数', () => {
-    const store = new NovelStore(createDb())
-    const engine = new NovelEngine(store)
-    const projectId = setupProject(store, 3000)
-
-    const constraints = engine.buildChapterConstraints(
-      projectId,
-      1,
-      CLIMAX_RHYTHM,
-      'low_pressure' as ChapterPositioning,
-    )
-
-    // 修复后：只应用 low_pressure 倍率 = 3000 * 0.85 = 2550
-    // 旧 bug 会先应用 climax 1.3 再应用 low_pressure 0.85 = 3000 * 1.3 * 0.85 = 3315
-    expect(constraints.wordBudget!.target).toBe(2550)
-  })
-
-  it('Writer suffix 注入的目标字数与 wordBudget.target 一致', () => {
-    const store = new NovelStore(createDb())
-    const engine = new NovelEngine(store)
-    const projectId = setupProject(store, 3000)
-
-    const constraints = engine.buildChapterConstraints(
-      projectId,
-      1,
-      CLIMAX_RHYTHM,
-      'high_pressure' as ChapterPositioning,
-    )
-
-    // 用真实模板渲染：render 返回包含 {{target_words}} 的模板内容
-    const promptManager = {
-      render: (_name: string, variables: Record<string, string>) => {
-        return `目标字数：${variables.target_words} 字。`
-      },
-      getTemplate: () => '',
-    } as any
-
-    const builder = new NovelPromptBuilder(
-      promptManager,
-      createStoresMock(store) as any,
-    )
-
-    const suffix = builder.buildChapterContextSuffix(
-      projectId, 1, TASK, constraints, undefined, 'writer',
-    )
-
-    // suffix 中应该包含 3900，不应该包含 5070
-    expect(suffix).toContain('3900')
-    expect(suffix).not.toContain('5070')
-  })
-
-  it('V2 flag 开启：3000 + climax + high_pressure → 3000（不叠加、定位默认不调整、节奏不参与）', () => {
-    const store = new NovelStore(createDb())
-    const engine = new NovelEngine(store)
-    const projectId = setupProject(store, 3000)
-    store.updateProject(projectId, { flags: { scenePlanV2Write: true } })
-
-    const constraints = engine.buildChapterConstraints(
-      projectId,
-      1,
-      CLIMAX_RHYTHM,
-      'high_pressure' as ChapterPositioning,
-    )
-
-    // V2 语义：targetWords 硬目标，定位默认 0%，Rhythm 永不调整 → 3000
+    // 旧 bug：3000 * 1.3 * 1.3 = 5070；V1 修复：3900；V2 单链：3000
     expect(constraints.wordBudget).not.toBeNull()
     expect(constraints.wordBudget!.target).toBe(3000)
     expect(constraints.wordBudget!.min).toBe(2550)
     expect(constraints.wordBudget!.max).toBe(3450)
+    expect(constraints.wordBudget!.target).not.toBe(5070)
+    expect(constraints.wordBudget!.target).not.toBe(3900)
   })
 
-  it('V2 flag 开启：无定位时回退也走 resolver，节奏不再抬字数', () => {
+  it('无定位时 wordBudget 为 null，Writer 回退也走 resolver（3000）', () => {
     const store = new NovelStore(createDb())
     const engine = new NovelEngine(store)
     const projectId = setupProject(store, 3000)
-    store.updateProject(projectId, { flags: { scenePlanV2Write: true } })
 
     const constraints = engine.buildChapterConstraints(
       projectId,
@@ -217,8 +116,58 @@ describe('字数预算不叠加节奏和定位倍率', () => {
     const suffix = builder.buildChapterContextSuffix(
       projectId, 1, TASK, constraints, undefined, 'writer',
     )
-    // V1 回退会注入 3900（climax ×1.3）；V2 必须注入 3000
+    // 无定位：回退走 resolver → 3000（节奏 climax 不再 ×1.3 → 3900）
     expect(suffix).toContain('3000')
+    expect(suffix).not.toContain('3900')
+  })
+
+  it('定位 low_pressure：3000（定位默认 0%，不因定位压低）', () => {
+    const store = new NovelStore(createDb())
+    const engine = new NovelEngine(store)
+    const projectId = setupProject(store, 3000)
+
+    const constraints = engine.buildChapterConstraints(
+      projectId,
+      1,
+      CLIMAX_RHYTHM,
+      'low_pressure' as ChapterPositioning,
+    )
+
+    // V1：3000 * 0.85 = 2550；V2 单链：定位默认 0% → 3000
+    expect(constraints.wordBudget!.target).toBe(3000)
+  })
+
+  it('Writer suffix 注入的目标字数与 wordBudget.target 一致（3000）', () => {
+    const store = new NovelStore(createDb())
+    const engine = new NovelEngine(store)
+    const projectId = setupProject(store, 3000)
+
+    const constraints = engine.buildChapterConstraints(
+      projectId,
+      1,
+      CLIMAX_RHYTHM,
+      'high_pressure' as ChapterPositioning,
+    )
+
+    const promptManager = {
+      render: (_name: string, variables: Record<string, string>) => {
+        return `目标字数：${variables.target_words} 字。`
+      },
+      getTemplate: () => '',
+    } as any
+
+    const builder = new NovelPromptBuilder(
+      promptManager,
+      createStoresMock(store) as any,
+    )
+
+    const suffix = builder.buildChapterContextSuffix(
+      projectId, 1, TASK, constraints, undefined, 'writer',
+    )
+
+    // suffix 应包含 3000，不应包含 5070 / 3900
+    expect(suffix).toContain('3000')
+    expect(suffix).not.toContain('5070')
     expect(suffix).not.toContain('3900')
   })
 })

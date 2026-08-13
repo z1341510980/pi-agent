@@ -43,6 +43,49 @@ describe('NovelMemoryStore - 事件记录', () => {
     expect(event.createdAt).toBeGreaterThan(0)
   })
 
+  it('recordEvent 未传 source 时回落 ai-extracted 且 status=pending（H3 回归）', () => {
+    // 章节 diff 等自动事件不传 source：source 回落 'ai-extracted'，
+    // status 判定必须基于回落后的值 → 'pending'，不能绕过待确认队列。
+    store.recordEvent({
+      projectId: 'p-1',
+      chapterId: 'ch-1',
+      chapterNumber: 1,
+      eventType: 'character_change',
+      entityId: 'c-1',
+      entityType: 'character',
+      description: '无 source 的自动事件',
+      oldValue: null,
+      newValue: '{"state":"x"}',
+      cause: null,
+      effectIds: [],
+      significance: 5,
+    })
+    // 显式 manual 写入保持 confirmed
+    store.recordEvent({
+      projectId: 'p-1',
+      chapterId: 'ch-1',
+      chapterNumber: 1,
+      eventType: 'character_change',
+      entityId: 'c-1',
+      entityType: 'character',
+      description: '手动事件',
+      oldValue: null,
+      newValue: '{"state":"y"}',
+      cause: null,
+      effectIds: [],
+      significance: 5,
+      source: 'manual',
+    })
+    const events = store.listEvents('p-1')
+    expect(events).toHaveLength(2)
+    const auto = events.find((e) => e.description === '无 source 的自动事件')!
+    expect(auto.source).toBe('ai-extracted')
+    expect(auto.status).toBe('pending')
+    const manual = events.find((e) => e.description === '手动事件')!
+    expect(manual.source).toBe('manual')
+    expect(manual.status).toBe('confirmed')
+  })
+
   it('listEvents 返回项目所有事件（按章节顺序）', () => {
     store.recordEvent({
       projectId: 'p-1', chapterId: null, chapterNumber: 2,
@@ -325,6 +368,20 @@ describe('NovelMemoryStore - 快照', () => {
     const snap = store.getSnapshot('p-1', 1, { snapshotType: 'character', entityId: 'c-1' })
     expect(snap).toBeDefined()
     expect(snap!.snapshotData).toBe('{"v":2}')
+  })
+
+  it('replaceSnapshot 原子替换同维度快照', () => {
+    store.saveSnapshot({
+      projectId: 'p-1', chapterNumber: 1, snapshotType: 'full',
+      entityId: null, snapshotData: '{"v":1}',
+    })
+    store.replaceSnapshot({
+      projectId: 'p-1', chapterNumber: 1, snapshotType: 'full',
+      entityId: null, snapshotData: '{"v":2}',
+    })
+
+    expect(store.listSnapshots('p-1', { chapterNumber: 1, snapshotType: 'full' })).toHaveLength(1)
+    expect(store.getSnapshot('p-1', 1, { snapshotType: 'full' })?.snapshotData).toBe('{"v":2}')
   })
 
   it('getSnapshot 不存在返回 undefined', () => {
@@ -950,4 +1007,3 @@ describe('styleNote 字段 - 矩阵聚合接口返回', () => {
     expect(records[0].dimension).toBe('character.arc_stage')
   })
 })
-

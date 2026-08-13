@@ -96,7 +96,7 @@ describe('文风指纹指标可信度', () => {
       store.createChapter({
         id: randomUUID(), projectId, volume: 1, chapterNumber: n,
         title: '', content: n < 4 ? chapterText(n) : '', wordCount: 0,
-        status: n < 4 ? 'published' : 'planned',
+        status: n < 4 ? 'review' : 'planned',
         narrativeTask: '', outline: '', volumeId: null, acceptanceResult: null,
       })
     }

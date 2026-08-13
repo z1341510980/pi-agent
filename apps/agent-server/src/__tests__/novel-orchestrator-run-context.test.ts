@@ -63,6 +63,15 @@ function createDecisionPathOrchestrator(): {
     stripEmDash: (value: string) => value,
     buildProseEditorIdentity: () => '文字编辑身份',
     buildReviewFactPack: vi.fn(() => ''),
+    getChapterBoundaryContext: () => ({
+      chapterNumber: 1,
+      fromSnapshot: false,
+      state: {},
+      entities: {
+        characters: [], relationships: [], conflicts: [], foreshadowing: [], clues: [],
+        factions: [], locations: [], items: [], worldElements: [], informationLayers: [], edges: [],
+      },
+    }),
   }
   orchestrator.context = {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -159,6 +168,23 @@ describe('NovelOrchestrator request context', () => {
     expect(primaryReviewerCall?.[5]).toMatchObject({ contextMode: 'full' })
   })
 
+  it('Finalizer uses the project model frozen when the workflow starts', async () => {
+    const { orchestrator } = createDecisionPathOrchestrator()
+    orchestrator.store.getNovelModelId = () => 'project-provider:project-model'
+    orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: false, reason: '' }))
+
+    await orchestrator.createChapterWithFlow('project', 1, {
+      onCheckpoint: vi.fn(async () => 'approve'),
+      onProgress: vi.fn(),
+    })
+
+    expect(orchestrator.finalizer.finalize).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        modelId: { provider: 'project-provider', modelId: 'project-model' },
+      }),
+    }))
+  })
+
   it('injects a Reviser fact pack derived from structured review findings', async () => {
     const { orchestrator } = createDecisionPathOrchestrator()
     orchestrator.runPostWriteGuard = vi.fn(() => ({ shouldRewrite: false, reason: '' }))
@@ -187,6 +213,7 @@ describe('NovelOrchestrator request context', () => {
       'project',
       expect.arrayContaining(['林深目标与设定冲突']),
       undefined,
+      expect.objectContaining({ chapterNumber: 1 }),
     )
   })
 
@@ -266,7 +293,6 @@ describe('NovelOrchestrator request context', () => {
     orchestrator.engine = {
       buildChapterConstraints: () => ({ wordBudget: { target: 3000 } }),
     }
-    orchestrator.promptBuilder = { computeChapterTargetWords: () => 3000 }
 
     const result = orchestrator.runPostWriteGuard(
       Array.from({ length: 180 }, (_, i) => `第${i + 1}段写的是不同的山路风景与人物行动。`).join('\n'),
@@ -295,7 +321,6 @@ describe('NovelOrchestrator request context', () => {
     orchestrator.engine = {
       buildChapterConstraints: () => ({ wordBudget: { target: 3000 } }),
     }
-    orchestrator.promptBuilder = { computeChapterTargetWords: () => 3000 }
     const prose = Array.from({ length: 2540 }, (_, index) =>
       String.fromCodePoint(0x4e00 + (index % 1800)),
     ).join('')
@@ -322,7 +347,6 @@ describe('NovelOrchestrator request context', () => {
       getLocation: () => ({ name: '潼关杂役坑' }),
       getCharacter: () => undefined,
     }
-    orchestrator.promptBuilder = { computeChapterTargetWords: () => 3000 }
     const prose = Array.from({ length: 2600 }, (_, index) =>
       String.fromCodePoint(0x4e00 + (index % 1800)),
     ).join('')

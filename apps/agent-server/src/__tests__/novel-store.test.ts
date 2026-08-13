@@ -253,10 +253,10 @@ describe('NovelStore - 章节 CRUD', () => {
       title: '旧标题', content: '', wordCount: 0, status: 'planned',
       narrativeTask: '', acceptanceResult: null,
     })
-    const updated = store.updateChapter('ch-1', { title: '新标题', status: 'published' })
+    const updated = store.updateChapter('ch-1', { title: '新标题', status: 'drafting' })
     expect(updated).toBeDefined()
     expect(updated!.title).toBe('新标题')
-    expect(updated!.status).toBe('published')
+    expect(updated!.status).toBe('drafting')
   })
 
   it('updateChapterContent 仅更新内容与字数', () => {
@@ -383,7 +383,8 @@ describe('NovelStore - 线索 CRUD', () => {
     expect(store.listClues('p-1')[0].chapterSpans).toEqual([[2, 2]])
 
     const updated = store.updateClue('clue-1', { chapterSpans: [[2, 2], [5, 5]], progress: 40 })
-    expect(updated?.chapterSpans).toEqual([[2, 2], [5, 5]])
+    // 2026-08-12 逻辑统一：出场字段旧列冻结（剥离不落库），appearance 表承载出场事实
+    expect(updated?.chapterSpans).toEqual([[2, 2]])
     expect(updated?.progress).toBe(40)
   })
 })
@@ -616,6 +617,14 @@ describe('NovelStore - 角色历史 CRUD', () => {
       isProtagonist: false,
       longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
     })
+    store.createCharacter({
+      id: 'c-other', projectId: 'p-1', name: '配角', description: '',
+      identity: '', personality: '', appearance: '',
+      currentState: '初始', currentGoal: '', currentPressure: '',
+      secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
+    })
   })
 
   it('createCharacterHistory 创建历史记录', () => {
@@ -653,6 +662,26 @@ describe('NovelStore - 角色历史 CRUD', () => {
     const list = store.listCharacterHistory('p-1', 'c-1')
     expect(list).toHaveLength(1)
     expect(list[0].characterId).toBe('c-1')
+  })
+
+  it('createCharacterHistory 拒绝跨项目角色', () => {
+    store.createProject({
+      id: 'p-2', title: 'other', genre: 'x', synopsis: '', targetWords: 0,
+      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    })
+    store.createCharacter({
+      id: 'c-2', projectId: 'p-2', name: '其他角色', description: '',
+      identity: '', personality: '', appearance: '',
+      currentState: '', currentGoal: '', currentPressure: '',
+      secret: '', arcStage: '', arcHistory: '[]', speechStyle: '',
+      isProtagonist: false,
+      longTermDesire: '', plotRole: 'supporting' as const, removalImpact: '',
+    })
+
+    expect(() => store.createCharacterHistory({
+      projectId: 'p-1', characterId: 'c-2', chapterId: null, chapterNumber: 1,
+      fieldName: 'currentState', oldValue: null, newValue: 'invalid', reason: null,
+    })).toThrow('Character c-2 does not belong to project p-1')
   })
 })
 
@@ -803,6 +832,18 @@ describe('NovelStore v0.2 — CharacterArc CRUD', () => {
     })
     expect(store.deleteCharacterArc(id)).toBe(true)
     expect(store.getCharacterArc(id)).toBeUndefined()
+  })
+
+  it('createCharacterArc 拒绝同一角色的第二条弧光', () => {
+    store.createCharacterArc({
+      id: randomUUID(), projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'growth', currentStage: 'denial', stageHistory: [], description: '',
+    })
+
+    expect(() => store.createCharacterArc({
+      id: randomUUID(), projectId: testProjectId, characterId: testCharacterId,
+      arcType: 'fall', currentStage: 'temptation', stageHistory: [], description: '',
+    })).toThrow(`Character ${testCharacterId} already has an arc in project ${testProjectId}`)
   })
 
   it('deleteCharacterArc 不存在返回 false', () => {

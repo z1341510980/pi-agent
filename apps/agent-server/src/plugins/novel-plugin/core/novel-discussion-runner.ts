@@ -43,11 +43,16 @@ import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-too
 import { evaluateProseQuality, formatProseQualityReport } from './prose-quality-evaluator.js'
 import {
   buildVoiceProfiles,
-  SENTENCE_LENGTH_LABELS,
-  REGISTER_LABELS,
-  ANSWER_MODE_LABELS,
   type CharacterVoiceProfile,
 } from './character-voice.js'
+import {
+  buildCharacterIdentityPrompt,
+  buildCharacterSystemPrompt,
+  buildCharacterVisibleContext,
+  collectCharacterKnowledge,
+} from './novel-character-discussion-context.js'
+import { resolveChapterBoundaryEntity } from './chapter-boundary-resolution.js'
+import { parseNovelModelRef } from './novel-model-ref.js'
 
 
 /** 群聊参与工种（不含 memory，memory 由 ChapterFinalizer 收尾阶段调用） */
@@ -85,6 +90,11 @@ export class NovelDiscussionRunner {
     let discussionResult: DiscussionResult | undefined
     let outerPhase: DiscussionPhase | undefined
     try {
+      // 首次运行解析并冻结项目主模型；恢复旧快照没有该字段时才回读当前设置。
+      // 新快照会持久化解析结果，避免失败后项目设置变更导致同一章换模型。
+      const projectModel = options.projectModel === null
+        ? undefined
+        : options.projectModel ?? parseNovelModelRef(this.store.getNovelModelId(projectId))
       const styleProfile = this.store.getWritingStyleProfile(projectId)
       if (!styleProfile || styleProfile.positiveExamples.length === 0 || styleProfile.negativeExamples.length === 0) {
         options.onProgress({
@@ -104,12 +114,14 @@ export class NovelDiscussionRunner {
       }
       // 1. 构建约束 + 默认叙事任务
       const chapter = this.store.getChapter(projectId, chapterNumber)
+      const boundary = this.promptBuilder.getChapterBoundaryContext(projectId, chapterNumber)
       const constraints = this.engine.buildChapterConstraints(
         projectId,
         chapterNumber,
         undefined,
         chapter?.positioning,
         arrangedEntities,
+        boundary.entities,
       )
       const narrativeTask = this.buildDefaultNarrativeTask(projectId, chapterNumber)
 
@@ -123,14 +135,12 @@ export class NovelDiscussionRunner {
         constraints,
         arrangedEntities,
       )
-      const boundary = this.promptBuilder.getChapterBoundaryContext(projectId, chapterNumber)
-
       // 3. 构建目标
       const goal: DiscussionGoal = {
         task: `创作第 ${chapterNumber} 章正文`,
         context: sharedContext,
         targetWords: constraints.wordBudget?.target
-          ?? this.promptBuilder.computeChapterTargetWords(this.store.getProject(projectId)),
+          ?? resolveWordBudget({ baseTarget: baseTargetOf(this.store.getProject(projectId)?.targetWords) }).resolvedTarget,
         requiredMentions: arrangedEntities
           ? arrangedEntities.characterIds
               .map(id => this.store.getCharacter(id)?.name)
@@ -143,7 +153,14 @@ export class NovelDiscussionRunner {
       }
 
       // 4. 构建成员列表
-      const members = this.buildMembers(projectId, chapterNumber, arrangedEntities, boundary)
+      const members = this.buildMembers(
+        projectId,
+        chapterNumber,
+        arrangedEntities,
+        boundary,
+        options.memberModel,
+        projectModel,
+      )
 
       // 5. 构建引擎并运行
       const channel = new AgentChannel()
@@ -202,8 +219,17 @@ export class NovelDiscussionRunner {
       const settings = this.discussionSettingsStore?.get() ?? {}
       const engineOptions: DiscussionOptions = {
         ...options,
+        projectModel,
         resolveCharacterMembers: (characterNames) =>
-          this.resolveCharacterMembers(projectId, chapterNumber, arrangedEntities, boundary, characterNames),
+          this.resolveCharacterMembers(
+            projectId,
+            chapterNumber,
+            arrangedEntities,
+            boundary,
+            characterNames,
+            options.memberModel,
+            projectModel,
+          ),
         onProgress: (event) => {
           const mappedPhase = phaseMap[event.phase] ?? 'writing'
           options.onProgress({
@@ -269,13 +295,14 @@ export class NovelDiscussionRunner {
           const agentType = invocation.member.type === 'character'
             ? 'character'
             : invocation.member.id.replace(/^novel-/, '')
+          const participantName = invocation.participantNames?.join('、') || invocation.member.name
           this.store.insertAgentLog({
             projectId,
             chapterNumber,
             agentType,
-            agentName: invocation.member.name,
+            agentName: participantName,
             displayAgentType: agentType,
-            displayAgentName: invocation.member.name,
+            displayAgentName: participantName,
             phase: invocation.phase,
             systemPrompt: invocation.systemPrompt,
             chapterContext: invocation.chapterContext,
@@ -317,42 +344,16 @@ export class NovelDiscussionRunner {
 
       // ⚠️ 工具化方案：Reviewer 通过 novel_submit_review 工具提交结构化验收对象，
       // 引擎在 result.review 中透传 ReviewerOutcome（含 review 字段，未知类型）。
-      // 业务层在此做类型断言为 NovelChapterReview 的核心字段，直接交给 saveReview，
-      // 完全绕开正则解析。未调用工具时 review 为 null，跳过结构化存档。
+      // Review 必须等 Finalizer 创建 current content revision 后再保存，否则
+      // saveReview 无法绑定 revision，发布前置条件会把它视为旧稿审查。
       const reviewOutcome = result.review
-      const reviewedChapter = this.store.getChapter(projectId, chapterNumber)
-      if (reviewOutcome?.review && reviewedChapter) {
-        try {
-          await this.engine.saveReview({
-            projectId,
-            chapterId: reviewedChapter.id,
-            ...(reviewOutcome.review as Omit<
-              import('@repo/shared/novel').NovelChapterReview,
-              'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt'
-            >),
-            reviewedBy: 'novel-reviewer',
-          })
-        } catch (error) {
-          this.context.logger.warn(
-            { error, projectId, chapterNumber },
-            '群聊章节审稿报告持久化失败，不阻断创作流程',
-          )
-        }
-      } else if (reviewedChapter && reviewOutcome && !reviewOutcome.toolCalled) {
-        this.context.logger.warn(
-          { projectId, chapterNumber },
-          '群聊 Reviewer 未调用 novel_submit_review 工具，验收报告未持久化',
-        )
-      }
 
       // 7. 收尾（成功时调用 ChapterFinalizer.finalize）
       if (result.status === 'completed' && result.content) {
         outerPhase = 'memory'
 
-        // T03 影子写（V2）：flag 开启时把群聊场景落成 V2 plan，不改行为（§10 第 1 步）
-        if (isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')) {
-          this.shadowWriteDiscussionPlan(projectId, chapterNumber, result.scenes ?? [])
-        }
+        // T03 V2 计划写（2026-08-12 逻辑统一：scenePlanV2Write 转正，恒写群聊 V2 plan）
+        this.shadowWriteDiscussionPlan(projectId, chapterNumber, result.scenes ?? [])
 
         const sanitizedContent = sanitizeNovelProse(result.content)
         const finalizer = new ChapterFinalizer(
@@ -399,12 +400,42 @@ export class NovelDiscussionRunner {
               })
             },
             signal: options.signal,
+            modelId: options.memberModel ?? projectModel,
           },
           chapterId: this.store.getChapter(projectId, chapterNumber)?.id ?? null,
         })
+        if (typeof finalizeResult.content !== 'string') {
+          throw new Error('章节收尾未返回可持久化正文')
+        }
+        const reviewedChapter = this.store.getChapter(projectId, chapterNumber)
+        if (reviewOutcome?.review && reviewedChapter) {
+          try {
+            await this.engine.saveReview({
+              projectId,
+              chapterId: reviewedChapter.id,
+              // Finalizer 已完成正文清洗、revision 创建和 current revision 更新。
+              reviewedContent: finalizeResult.content,
+              ...(reviewOutcome.review as Omit<
+                import('@repo/shared/novel').NovelChapterReview,
+                'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt' | 'contentRevisionId' | 'contentHash'
+              >),
+              reviewedBy: 'novel-reviewer',
+            })
+          } catch (error) {
+            this.context.logger.warn(
+              { error, projectId, chapterNumber },
+              '群聊章节审稿报告持久化失败，不阻断创作流程',
+            )
+          }
+        } else if (reviewedChapter && reviewOutcome && !reviewOutcome.toolCalled) {
+          this.context.logger.warn(
+            { projectId, chapterNumber },
+            '群聊 Reviewer 未调用 novel_submit_review 工具，验收报告未持久化',
+          )
+        }
         return {
           ...result,
-          content: sanitizedContent,
+          content: finalizeResult.content,
           stateChanges: finalizeResult.stateChanges,
         }
       }
@@ -501,6 +532,8 @@ export class NovelDiscussionRunner {
     chapterNumber: number,
     arrangedEntities?: ArrangedEntity,
     boundary?: ChapterBoundaryContext,
+    memberModel?: { provider: string; modelId: string },
+    projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
   ): DiscussionMember[] {
     const members: DiscussionMember[] = []
 
@@ -530,8 +563,8 @@ export class NovelDiscussionRunner {
         buildProseEditorIdentityPrompt: agentType === 'reviewer'
           ? () => this.promptBuilder.buildProseEditorIdentity(projectId)
           : undefined,
-        // 透传 AgentPage 配置的 modelId / temperature，让 4 大 Agent 的群聊调用按用户配置走
-        modelId: agentConfig?.model,
+        // 工作流与群聊共用优先级：本次模型 > 项目创作主模型 > AgentPage 配置。
+        modelId: memberModel ?? projectModel ?? agentConfig?.model,
         temperature: agentConfig?.temperature,
       })
     }
@@ -543,16 +576,30 @@ export class NovelDiscussionRunner {
       ? arrangedEntities.characterIds
       : [...boundaryCharacters.keys()]
     const characters = characterIds
-      .map((id) => boundaryCharacters.get(id) ?? this.store.getCharacter(id))
-      .filter((character): character is NovelCharacter => character != null)
+      .map((id) => resolveChapterBoundaryEntity(
+        id,
+        boundaryCharacters,
+        entityId => this.store.getCharacter(entityId),
+        boundary?.fromSnapshot ?? false,
+      ))
+      .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
     // 声音坐标必须按**全体出场角色**一次算出：分配逻辑保证同场角色的轴互不相同，
     // 逐个角色单独计算会让每个人都拿到"第一顺位"的那把嗓子，群聊里所有 NPC 同声。
     const voiceProfiles = new Map(
-      buildVoiceProfiles(characters).map((profile) => [profile.characterId, profile]),
+      buildVoiceProfiles(characters.map(({ entity }) => entity))
+        .map((profile) => [profile.characterId, profile]),
     )
-    for (const char of characters) {
+    for (const { entity: char, hasBoundaryState } of characters) {
       members.push(this.buildCharacterMember(
-        projectId, chapterNumber, char, arrangedEntities, boundary, voiceProfiles.get(char.id),
+        projectId,
+        chapterNumber,
+        char,
+        arrangedEntities,
+        boundary,
+        voiceProfiles.get(char.id),
+        hasBoundaryState,
+        memberModel,
+        projectModel,
       ))
     }
 
@@ -567,6 +614,9 @@ export class NovelDiscussionRunner {
     arrangedEntities?: ArrangedEntity,
     boundary?: ChapterBoundaryContext,
     voiceProfile?: CharacterVoiceProfile,
+    hasBoundaryState = true,
+    memberModel?: { provider: string; modelId: string },
+    projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
   ): DiscussionMember {
     return {
       id: `char-${char.id}`,
@@ -574,126 +624,43 @@ export class NovelDiscussionRunner {
       name: char.name,
       expertise: char.personality || char.identity || char.description,
       canConverge: false,
+      modelId: memberModel ?? projectModel,
       characterProfile: {
         personality: char.personality,
-        currentState: char.currentState,
-        currentGoal: char.currentGoal,
-        secret: char.secret,
-        arcStage: char.arcStage,
+        currentState: hasBoundaryState ? char.currentState : '',
+        currentGoal: hasBoundaryState ? char.currentGoal : '',
+        secret: hasBoundaryState ? char.secret : '',
+        arcStage: hasBoundaryState ? char.arcStage : '',
         participatingConflicts: (boundary?.entities.edges ?? this.store.listEdgesByEntity(char.id, { edgeType: 'related' }))
           .filter(e => e.edgeType === 'related' && e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === char.id)
           .map(e => e.targetId),
       },
       // 角色共用一个极小且稳定的 system；角色卡和演出职责放在 identity 前缀。
       // 角色不再读取工种的全知 shared context，而是只读取本人可见上下文。
-      buildSystemPrompt: () => this.buildCharacterSystemPrompt(),
+      buildSystemPrompt: buildCharacterSystemPrompt,
       // 认知状态：供引擎判断哪些角色信息对称、可合并为一次调用。
       // 必须与 buildCharacterVisibleContext 的裁剪口径一致（见 collectCharacterKnowledge）。
-      knowledge: this.collectCharacterKnowledge(projectId, char, boundary),
-      buildContextPrompt: () => this.buildCharacterVisibleContext(
+      knowledge: collectCharacterKnowledge(this.store, projectId, char, boundary),
+      // 合并调用会同时携带组内所有角色身份。身份里有显式隐藏秘密时，提示词
+      // 约束不足以形成信息隔离，必须逐角色调用。
+      allowMergedInvocation: !(hasBoundaryState && char.secret.trim().length > 0),
+      buildContextPrompt: () => buildCharacterVisibleContext({
+        store: this.store,
         projectId,
         chapterNumber,
-        char,
+        character: char,
         arrangedEntities,
         boundary,
-      ),
-      buildIdentityPrompt: () => this.buildCharacterPrompt(projectId, char, voiceProfile),
+      }),
+      buildIdentityPrompt: () => buildCharacterIdentityPrompt({
+        projectId,
+        character: char,
+        promptBuilder: this.promptBuilder,
+        mode: 'discussion',
+        voiceProfile,
+        hasBoundaryState,
+      }),
     }
-  }
-
-  /**
-   * 收集角色在各信息层上的认知状态。
-   *
-   * ⚠️ 必须与 buildCharacterVisibleContext 的注入口径一致：那里是
-   * `knows → suspects → misunderstands` 的 if-else 链（命中一个就停），
-   * 这里原样保留三个字段，由 discussion-actor-batching 按同一优先级归一化。
-   * 两处口径分叉会把可见内容不同的角色判成信息对称，导致秘密泄露。
-   *
-   * 解析失败的层直接跳过：宁可让该角色不参与合并（退回逐个调用），
-   * 也不能因为漏读一层而误判为对称。
-   */
-  private collectCharacterKnowledge(
-    projectId: string,
-    char: NovelCharacter,
-    boundary?: ChapterBoundaryContext,
-  ): Record<string, { knows?: boolean; suspects?: boolean; misunderstands?: string }> {
-    const knowledge: Record<string, { knows?: boolean; suspects?: boolean; misunderstands?: string }> = {}
-    const layers = boundary?.entities.informationLayers ?? this.store.listInformationLayers(projectId)
-    for (const layer of layers) {
-      try {
-        const map = JSON.parse(layer.characterKnowledge) as Record<string, {
-          knows?: boolean
-          suspects?: boolean
-          misunderstands?: string
-        }>
-        const state = map[char.id]
-        if (state) knowledge[layer.id] = state
-      } catch {
-        // 旧数据可能不是合法 JSON。与 buildCharacterVisibleContext 一致：跳过该层。
-      }
-    }
-    return knowledge
-  }
-
-  /**
-   * 构建角色人设 prompt
-   *
-   * 注入角色人设字段 + role-character-actor.md（剧本格式约束），
-   * 让角色 Agent 以第一人称视角、剧本格式参与群聊演出。
-   *
-   * ⚠️ 必须加载 role-character-actor.md：否则角色成员不知道要用
-   * `[动作] "台词"` 格式演出，会直接写小说叙述，导致群聊失去意义。
-   */
-  private buildCharacterPrompt(
-    projectId: string,
-    char: NovelCharacter,
-    voiceProfile?: CharacterVoiceProfile,
-  ): string {
-    const lines: string[] = [
-      `你是小说中的角色「${char.name}」，以第一人称视角参与群聊共创。`,
-      '',
-      '## 你的设定',
-    ]
-    if (char.identity) lines.push(`- 身份：${char.identity}`)
-    if (char.personality) lines.push(`- 性格：${char.personality}`)
-    if (char.currentState) lines.push(`- 当前状态：${char.currentState}`)
-    if (char.currentGoal) lines.push(`- 当前目标：${char.currentGoal}`)
-    if (char.secret) lines.push(`- 隐藏秘密：${char.secret}`)
-    if (char.arcStage) lines.push(`- 角色弧光阶段：${char.arcStage}`)
-    // 说话风格必须注入：否则角色演员看不到自己的 speechStyle，
-    // 群聊里所有人会按 LLM 默认腔调说话，角色台词趋同。
-    // role-character-actor.md 的"台词必须符合角色说话风格"规则形同虚设。
-    if (char.speechStyle?.trim()) {
-      lines.push(`- 说话风格（你的台词必须严格符合此风格，包括长短句、用词、口头禅、语气词；不得与其他角色趋同）：${char.speechStyle}`)
-    }
-    // 声音坐标是可执行参数（字数区间 / 语域标记词 / 被追问时的反应），
-    // 而 speechStyle 往往只是形容词。缺了它，群聊里三个"沉稳克制"的角色说出同一种话。
-    if (voiceProfile) {
-      lines.push(
-        '- 你的说话参数（同场其他角色拿到的是不同参数，必须听得出区别）：',
-        `  · 句长：${SENTENCE_LENGTH_LABELS[voiceProfile.sentenceLength]}`,
-        `  · 语域：${REGISTER_LABELS[voiceProfile.register]}`,
-        `  · 被追问时：${ANSWER_MODE_LABELS[voiceProfile.answerMode]}`,
-      )
-      if (voiceProfile.tics.length > 0) {
-        lines.push(`  · 口头禅：${voiceProfile.tics.join('、')}（自然出现，不要每句都挂）`)
-      }
-      if (voiceProfile.banned.length > 0) {
-        lines.push(`  · 你不会用这些词：${voiceProfile.banned.join('、')}`)
-      }
-    }
-
-    lines.push('')
-    // 拼接 role-character-actor.md（剧本演出格式约束）
-    // discussion=true 让 getAgentRoleDescription 读 role-character-actor-discussion.md，
-    // 不存在则回退到 role-character-actor.md
-    lines.push(this.promptBuilder.buildAgentIdentity(projectId, 'character-actor', true))
-    return lines.join('\n')
-  }
-
-  /** 所有角色成员共享的稳定 system prompt。 */
-  private buildCharacterSystemPrompt(): string {
-    return '你参与小说章节的角色推演。严格依据后续章节上下文和角色身份行动，不得自行改写世界设定。'
   }
 
   /** 为 Director 临时引入、但角色库尚未建档的人物创建本次运行使用的 Agent。 */
@@ -703,15 +670,41 @@ export class NovelDiscussionRunner {
     arrangedEntities: ArrangedEntity | undefined,
     boundary: ChapterBoundaryContext,
     characterNames: string[],
+    memberModel?: { provider: string; modelId: string },
+    projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
   ): DiscussionMember[] {
     const existingCharacters = boundary.entities.characters
     const byName = new Map(
-      existingCharacters.map(character => [this.normalizeCharacterName(character.name), character]),
+      existingCharacters.map(character => [this.normalizeCharacterName(character.name), {
+        character,
+        hasBoundaryState: true,
+      }]),
     )
+    for (const character of this.store.listCharacters(projectId)) {
+      const normalizedName = this.normalizeCharacterName(character.name)
+      if (!byName.has(normalizedName)) {
+        byName.set(normalizedName, {
+          character,
+          hasBoundaryState: !boundary.fromSnapshot,
+        })
+      }
+    }
 
     return characterNames.map((name) => {
       const existing = byName.get(this.normalizeCharacterName(name))
-      if (existing) return this.buildCharacterMember(projectId, chapterNumber, existing, arrangedEntities, boundary)
+      if (existing) {
+        return this.buildCharacterMember(
+          projectId,
+          chapterNumber,
+          existing.character,
+          arrangedEntities,
+          boundary,
+          undefined,
+          existing.hasBoundaryState,
+          memberModel,
+          projectModel,
+        )
+      }
 
       const stableSuffix = Array.from(name)
         .map(char => char.codePointAt(0)?.toString(16) ?? '')
@@ -722,6 +715,7 @@ export class NovelDiscussionRunner {
         name: name.trim(),
         expertise: 'Director 在本章场景中临时引入的角色，尚无持久化角色卡',
         canConverge: false,
+        modelId: memberModel ?? projectModel,
         characterProfile: {
           personality: '未指定',
           currentState: '按当前场景行动',
@@ -730,14 +724,14 @@ export class NovelDiscussionRunner {
           arcStage: '未指定',
           participatingConflicts: [],
         },
-        buildSystemPrompt: () => this.buildCharacterSystemPrompt(),
-        buildContextPrompt: () => this.buildCharacterVisibleContext(
+        buildSystemPrompt: buildCharacterSystemPrompt,
+        buildContextPrompt: () => buildCharacterVisibleContext({
+          store: this.store,
           projectId,
           chapterNumber,
-          undefined,
           arrangedEntities,
           boundary,
-        ),
+        }),
         buildIdentityPrompt: () => [
           `你是小说中的临时角色「${name.trim()}」。当前角色库没有你的完整角色卡。`,
           '只依据 Director 给出的场景信息行动，不得自行虚构重大背景、秘密或世界设定。',
@@ -752,68 +746,6 @@ export class NovelDiscussionRunner {
       )
       return member
     })
-  }
-
-  /**
-   * 角色可见上下文：只给场景锚点、上一章结尾和角色本人确实知道/怀疑/误解的信息。
-   * 作者真相、其他角色秘密、全局信息差状态继续留在 Director/Writer/Reviewer 上下文。
-   */
-  private buildCharacterVisibleContext(
-    projectId: string,
-    chapterNumber: number,
-    char: NovelCharacter | undefined,
-    arrangedEntities?: ArrangedEntity,
-    boundary?: ChapterBoundaryContext,
-  ): string {
-    const chapter = this.store.getChapter(projectId, chapterNumber)
-    const previous = chapterNumber > 1 ? this.store.getChapter(projectId, chapterNumber - 1) : undefined
-    const previousTail = previous?.content?.trim().slice(-900) ?? ''
-    const lines = [
-      `## 本回合可见背景`,
-      `- 当前章节：第 ${chapterNumber} 章`,
-      `- 本章任务：${chapter?.outline?.trim() || chapter?.narrativeTask?.trim() || '由当前场景推动'}`,
-    ]
-    if (chapter?.positioning) lines.push(`- 章节定位：${chapter.positioning}`)
-    if (previousTail) lines.push(`\n### 上一章结尾（角色只能按自身经历理解）\n${previousTail}`)
-
-    const conflicts = new Map((boundary?.entities.conflicts ?? []).map((conflict) => [conflict.id, conflict]))
-    const locations = new Map((boundary?.entities.locations ?? []).map((location) => [location.id, location]))
-    const conflictLines = (arrangedEntities?.conflictIds ?? [])
-      .map(id => conflicts.get(id) ?? this.store.getConflict(id))
-      .filter(conflict => conflict && (!char || this.parseIdList(conflict.participants).includes(char.id)))
-      .slice(0, 3)
-      .map(conflict => `- ${conflict!.description}；当前阶段：${conflict!.stage}；代价：${conflict!.stakes || '未明'}`)
-    if (conflictLines.length > 0) lines.push(`\n### 你正身处的冲突\n${conflictLines.join('\n')}`)
-
-    const locationLines = (arrangedEntities?.locationIds ?? [])
-      .map(id => locations.get(id) ?? this.store.getLocation(id))
-      .filter((location): location is NonNullable<typeof location> => !!location)
-      .slice(0, 3)
-      .map(location => `- ${location.name}：${location.description.slice(0, 180)}`)
-    if (locationLines.length > 0) lines.push(`\n### 当前可能出现的地点\n${locationLines.join('\n')}`)
-
-    if (char) {
-      const knowledge: string[] = []
-      for (const layer of boundary?.entities.informationLayers ?? this.store.listInformationLayers(projectId)) {
-        try {
-          const map = JSON.parse(layer.characterKnowledge) as Record<string, {
-            knows?: boolean
-            suspects?: boolean
-            misunderstands?: string
-          }>
-          const state = map[char.id]
-          if (!state) continue
-          if (state.knows) knowledge.push(`- 你知道：${layer.infoDescription}`)
-          else if (state.suspects) knowledge.push(`- 你有所怀疑：${layer.infoDescription}`)
-          else if (state.misunderstands) knowledge.push(`- 你目前相信：${state.misunderstands}`)
-        } catch {
-          // 旧数据可能不是合法 JSON；宁可不注入，也不把作者真相暴露给角色。
-        }
-      }
-      if (knowledge.length > 0) lines.push(`\n### 你的认知边界\n${knowledge.slice(0, 8).join('\n')}`)
-    }
-    lines.push('\n只依据以上内容、角色卡、当前场景和已经听到的台词行动。未出现的信息视为不知道。')
-    return lines.join('\n')
   }
 
   private normalizeCharacterName(name: string): string {
@@ -838,16 +770,4 @@ export class NovelDiscussionRunner {
     }
   }
 
-  /** 容错解析 JSON 字符串数组 */
-  private parseIdList(raw: string): string[] {
-    if (!raw) return []
-    try {
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed)
-        ? parsed.filter((x): x is string => typeof x === 'string')
-        : []
-    } catch {
-      return []
-    }
-  }
 }

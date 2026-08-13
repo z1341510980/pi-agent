@@ -39,6 +39,30 @@ function setupSceneRevision(store: NovelStore): {
   return { projectId, chapterId: chapter.id, sceneRevisionIds: scenes.map((s) => s.id) }
 }
 
+function addChapterScene(store: NovelStore, projectId: string, chapterNumber: number): {
+  chapterId: string
+  sceneRevisionId: string
+} {
+  const chapter = store.createChapter({
+    id: randomUUID(), projectId, volume: 1, chapterNumber,
+    title: `第${chapterNumber}章`, content: `正文${chapterNumber}`, wordCount: 3,
+    status: 'review', narrativeTask: '', outline: '', volumeId: null,
+    acceptanceResult: null, tension: null, positioning: null,
+    timeOffset: null, chapterEndingHook: null, recap: null,
+  })
+  const budget = { baseTarget: 3000, adjustmentPct: 0, resolvedTarget: 3000, min: 2550, max: 3450 }
+  const { scenes } = store.submitPlanWithScenes({
+    chapterId: chapter.id, projectId, budget,
+    scenes: [{
+      sceneKey: `s${chapterNumber}`, order: 1, title: `场景${chapterNumber}`,
+      goal: 'g', locationText: 'l', timeText: 't', povMode: 'single',
+      povCharacterId: 'c1', focusCharacterIds: ['c1'], presentCharacterIds: ['c1'],
+      functionalCast: [], targetWords: 3000, progresses: [],
+    }],
+  })
+  return { chapterId: chapter.id, sceneRevisionId: scenes[0].id }
+}
+
 describe('叙事账本（NarrativeLedgerStore）', () => {
   it('ensureStoryline 幂等创建', () => {
     const store = new NovelStore(createDb())
@@ -105,6 +129,49 @@ describe('叙事账本（NarrativeLedgerStore）', () => {
     const changed = store.markStaleFromChapter(projectId, chapterId)
     expect(changed).toBeGreaterThan(0)
     expect(store.getProgress(p.id)!.status).toBe('stale')
+  })
+
+  it('markStaleFromChapter：起始章及所有后续章的 confirmed 推进都变为 stale', () => {
+    const store = new NovelStore(createDb())
+    const { projectId } = setupSceneRevision(store)
+    const second = addChapterScene(store, projectId, 2)
+    const third = addChapterScene(store, projectId, 3)
+    const secondProgress = store.recordProgressForScene(projectId, second.sceneRevisionId, [
+      { storylineName: '主线对抗', primary: true, type: 'advance' },
+    ])[0]
+    const thirdProgress = store.recordProgressForScene(projectId, third.sceneRevisionId, [
+      { storylineName: '主线对抗', primary: true, type: 'advance' },
+    ])[0]
+    store.confirmProgress(secondProgress.id)
+    store.confirmProgress(thirdProgress.id)
+
+    expect(store.markStaleFromChapter(projectId, second.chapterId)).toBe(2)
+    expect(store.getProgress(secondProgress.id)!.status).toBe('stale')
+    expect(store.getProgress(thirdProgress.id)!.status).toBe('stale')
+  })
+
+  it('通过 NovelStore 改写或回滚中间章时自动标记后续推进 stale', () => {
+    const store = new NovelStore(createDb())
+    const { projectId } = setupSceneRevision(store)
+    const second = addChapterScene(store, projectId, 2)
+    const third = addChapterScene(store, projectId, 3)
+    const progress = store.recordProgressForScene(projectId, third.sceneRevisionId, [
+      { storylineName: '主线对抗', primary: true, type: 'advance' },
+    ])[0]
+    store.confirmProgress(progress.id)
+
+    const originalRevision = store.getCurrentContentRevision(second.chapterId)!
+    store.updateChapterContent(second.chapterId, '改写正文', 4, {
+      phase: 'writer_initial', agentType: 'writer', trigger: '自动创作',
+    })
+    expect(store.getProgress(progress.id)!.status).toBe('stale')
+
+    const nextProgress = store.recordProgressForScene(projectId, third.sceneRevisionId, [
+      { storylineName: '回滚验证线', primary: false, type: 'advance' },
+    ])[0]
+    store.confirmProgress(nextProgress.id)
+    store.rollbackToContentRevision(second.chapterId, originalRevision.id)
+    expect(store.getProgress(nextProgress.id)!.status).toBe('stale')
   })
 
   it('listProgressByStoryline 按状态过滤', () => {

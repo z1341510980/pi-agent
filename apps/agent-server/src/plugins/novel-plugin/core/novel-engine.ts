@@ -24,7 +24,6 @@
 
 import { randomUUID } from 'node:crypto'
 import type { NovelStore } from './novel-store.js'
-import { isNovelFeatureEnabled } from './novel-feature-flags.js'
 import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
 import type {
   NovelProject,
@@ -37,16 +36,34 @@ import type {
   SuspenseHook,
   RhythmSuggestion,
   NovelConflict,
+  NovelCharacter,
+  NovelForeshadow,
+  NovelInformationLayer,
+  NovelEdge,
   ConflictStage,
   ChapterPositioning,
   WordBudget,
   ArrangedEntity
 } from './types.js'
+import { hashChapterContent } from './stores/chapter-store.js'
 
 export interface ChapterCreationResult {
   chapter: NovelChapter
   review: NovelChapterReview | null
   status: 'published' | 'rejected' | 'needs_revision'
+}
+
+/**
+ * 章节约束计算所需的章前状态。
+ *
+ * 历史章节应传入 N-1 Snapshot；不传时按顺序创作语义读取当前活库。
+ */
+export interface ChapterConstraintState {
+  characters: NovelCharacter[]
+  conflicts: NovelConflict[]
+  foreshadowing: NovelForeshadow[]
+  informationLayers: NovelInformationLayer[]
+  edges: NovelEdge[]
 }
 
 export class NovelEngine {
@@ -68,16 +85,19 @@ export class NovelEngine {
     chapterNumber?: number,
     rhythmSuggestion?: RhythmSuggestion,
     positioning?: ChapterPositioning | null,
-    arrangedEntities?: ArrangedEntity
+    arrangedEntities?: ArrangedEntity,
+    chapterState?: ChapterConstraintState,
   ): ChapterConstraints {
     const constraints = this.store.listConstraints(projectId)
-    const foreshadowing = this.store.listForeshadowing(projectId)
+    const foreshadowing = chapterState?.foreshadowing ?? this.store.listForeshadowing(projectId)
     const selectedCharacterIds = arrangedEntities ? new Set(arrangedEntities.characterIds) : null
     const selectedConflictIds = arrangedEntities ? new Set(arrangedEntities.conflictIds) : null
     const selectedForeshadowIds = arrangedEntities ? new Set(arrangedEntities.foreshadowIds) : null
-    const characters = this.store
-      .listCharacters(projectId)
+    const characters = (chapterState?.characters ?? this.store.listCharacters(projectId))
       .filter((character) => !selectedCharacterIds || selectedCharacterIds.has(character.id))
+    const listRelatedEdges = (entityId: string): NovelEdge[] => chapterState
+      ? chapterState.edges.filter((edge) => edge.sourceId === entityId || edge.targetId === entityId)
+      : this.store.listEdgesByEntity(entityId, { edgeType: 'related' })
     const pendingForeshadows = foreshadowing.filter(
       (f) =>
         f.status !== 'recovered' &&
@@ -89,12 +109,21 @@ export class NovelEngine {
     // story-state 快照出现，但不能每章都被误写成“本章必须维持/释放”。
     // beats 是伏笔真正发生的离散章节；旧数据会由 NovelStore 用首章/回收章
     // 补出端点 beat，因此这里同时兼容新旧数据。
+    // 出场判定统一走 appearance 表（2026-08-12 逻辑统一：appearanceV2Read 转正），
+    // 与 beats/firstChapter/recoverByChapter 判定并集（appearance 只记录 present 出场，
+    // 不覆盖"回收截止"语义，故保留 recoverByChapter 条件）。
+    const appearanceForeshadowIds = chapterNumber === undefined
+      ? []
+      : this.store.listChapterAppearanceIds({
+          projectId, chapterNumber, entityType: 'foreshadow',
+        })
     const relevantForeshadows =
       chapterNumber === undefined
         ? pendingForeshadows.slice(0, 8)
         : pendingForeshadows
             .filter(
               (f) =>
+                appearanceForeshadowIds.includes(f.id) ||
                 f.beats?.some((beat) => beat.chapter === chapterNumber) ||
                 f.firstChapter === chapterNumber ||
                 (f.recoverByChapter !== null && f.recoverByChapter <= chapterNumber)
@@ -114,16 +143,14 @@ export class NovelEngine {
             .slice(0, 8)
 
     // ── 冲突推进目标 ──
-    // 筛选本章需推进的活跃冲突：章节在跨度内 / 空跨度（未放置）/ 本章为爆发章节
+    // 筛选本章需推进的活跃冲突：appearance 表判定出场 / 空跨度（未放置）/ 本章为爆发章节
     const conflictTargets: ConflictTarget[] = []
     if (chapterNumber !== undefined) {
-      // P2 读切：appearanceV2Read 开启时按 appearance 表判定"本章出场冲突"，
-      // 关闭时走原 chapterSpans 过滤（零行为变化）。
+      // 出场判定统一走 appearance 表（2026-08-12 逻辑统一：appearanceV2Read 转正）
       const appearanceConflictIds = this.store.listChapterAppearanceIds({
         projectId, chapterNumber, entityType: 'conflict',
       })
-      const activeConflicts = this.store
-        .listConflicts(projectId)
+      const activeConflicts = (chapterState?.conflicts ?? this.store.listConflicts(projectId))
         .filter(
           (c) =>
             c.stage !== 'resolved' &&
@@ -131,11 +158,7 @@ export class NovelEngine {
             (!selectedConflictIds || selectedConflictIds.has(c.id))
         )
       for (const conflict of activeConflicts) {
-        const inSpan = appearanceConflictIds
-          ? appearanceConflictIds.includes(conflict.id)
-          : conflict.chapterSpans.some(
-              (span) => chapterNumber >= span[0] && chapterNumber <= span[1]
-            )
+        const inSpan = appearanceConflictIds.includes(conflict.id)
         const isClimaxChapter = conflict.climaxChapter === chapterNumber
         const noSpans = conflict.chapterSpans.length === 0
         if (!inSpan && !isClimaxChapter && !noSpans) continue
@@ -200,8 +223,7 @@ export class NovelEngine {
 
       const selectedInfoLayerIds = new Set<string>()
       for (const foreshadow of relevantForeshadows) {
-        const parsed = this.store
-          .listEdgesByEntity(foreshadow.id, { edgeType: 'related' })
+        const parsed = listRelatedEdges(foreshadow.id)
           .filter(
             (e) =>
               e.sourceType === 'foreshadow' &&
@@ -211,14 +233,13 @@ export class NovelEngine {
           .map((e) => e.targetId)
         for (const id of parsed) selectedInfoLayerIds.add(id)
       }
-      const infoLayers = this.store.listInformationLayers(projectId)
+      const infoLayers = chapterState?.informationLayers ?? this.store.listInformationLayers(projectId)
       const relevantInfoLayers = infoLayers
         .filter((layer) => !layer.isRevealed)
         .filter((layer) => {
           if (!arrangedEntities) return true
           if (selectedInfoLayerIds.has(layer.id)) return true
-          const linked = this.store
-            .listEdgesByEntity(layer.id, { edgeType: 'related' })
+          const linked = listRelatedEdges(layer.id)
             .filter(
               (e) =>
                 e.sourceType === 'foreshadow' &&
@@ -258,39 +279,18 @@ export class NovelEngine {
       }
     }
 
-    // ── 字数预算（基于章节定位调整）──
+    // ── 字数预算（统一走 WordBudgetResolver）──
     // 若传入了 positioning，按定位调整目标字数；定位是 Director 对本章的最终选择。
-    // 节奏建议只在没有明确定位时由 prompt-builder 作为回退使用，不能与定位倍率叠加。
-    // V2（scenePlanV2Write）：统一走 WordBudgetResolver，定位默认不调整、上限 ±15%，
-    // Rhythm 不参与；V1 保持内联定位倍率不变。
+    // 定位默认不调整、上限 ±15%；Rhythm 不参与（2026-08-12 逻辑统一：删除 V1 内联倍率）。
     let wordBudget: WordBudget | null = null
     const project = this.store.getProject(projectId)
     if (positioning) {
       const baseTarget = baseTargetOf(project?.targetWords)
-      if (isNovelFeatureEnabled(this.store, projectId, 'scenePlanV2Write')) {
-        const resolved = resolveWordBudget({ baseTarget })
-        wordBudget = {
-          min: resolved.min,
-          max: resolved.max,
-          target: resolved.resolvedTarget,
-        }
-      } else {
-        // 定位倍率（与 rhythm-controller 的 POSITIONING_RULES 一致）
-        const positioningMultipliers: Record<ChapterPositioning, number> = {
-          high_pressure: 1.3,
-          advancement: 1.0,
-          cultivation: 0.9,
-          relationship: 0.95,
-          low_pressure: 0.85,
-          information: 0.9
-        }
-        const multiplier = positioningMultipliers[positioning]
-        const target = Math.round(baseTarget * multiplier)
-        wordBudget = {
-          min: Math.round(target * 0.85),
-          max: Math.round(target * 1.15),
-          target
-        }
+      const resolved = resolveWordBudget({ baseTarget })
+      wordBudget = {
+        min: resolved.min,
+        max: resolved.max,
+        target: resolved.resolvedTarget,
       }
     }
 
@@ -490,6 +490,10 @@ export class NovelEngine {
   ): Promise<NovelChapter> {
     const project = this.store.getProject(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
+    if (volumeId) {
+      const volume = this.store.getVolume(volumeId)
+      if (!volume || volume.projectId !== projectId) throw new Error('卷不存在或不属于当前项目')
+    }
 
     // 1. 构建约束（用于后续写作流程；此处仅创建章节记录，不直接使用）
     const constraints = this.buildChapterConstraints(projectId, chapterNumber)
@@ -527,13 +531,14 @@ export class NovelEngine {
   async completeChapter(chapterId: string, content: string, title?: string): Promise<NovelChapter> {
     const existing = this.store.getChapterById(chapterId)
     if (!existing) throw new Error(`章节不存在: ${chapterId}`)
+    if (existing.status === 'published') throw new Error('已发布章节不能重新完成，请先进入修订流程')
+    if (!content.trim()) throw new Error('章节正文为空，不能完成')
 
     const wordCount = content.length // 简单按字符数计算
-    const updated = this.store.updateChapter(chapterId, {
+    const updated = this.store.completeChapterForReview(chapterId, {
       content,
       title: title ?? `第${existing.chapterNumber}章`,
       wordCount,
-      status: 'review'
     })
 
     if (!updated) throw new Error(`章节更新失败: ${chapterId}`)
@@ -546,7 +551,23 @@ export class NovelEngine {
    * 审稿通过后调用，更新章节状态和项目进度。
    */
   async publishChapter(chapterId: string): Promise<NovelChapter> {
-    const updated = this.store.updateChapter(chapterId, { status: 'published' })
+    const existing = this.store.getChapterById(chapterId)
+    if (!existing) throw new Error(`章节不存在: ${chapterId}`)
+    if (existing.status !== 'review') throw new Error('只有待审章节可以发布')
+    if (!existing.content.trim()) throw new Error('章节正文为空，不能发布')
+    const contentHash = hashChapterContent(existing.content)
+    const review = this.store.getAcceptedChapterReviewForContent(chapterId, contentHash)
+    if (!review) throw new Error('当前正文没有对应的通过审稿，不能发布')
+    const currentRevision = this.store.getCurrentContentRevision(chapterId)
+    if (!currentRevision || review.contentRevisionId !== currentRevision.id) {
+      throw new Error('当前正文的通过审稿未绑定当前版本，不能发布')
+    }
+    const unpublishedEarlier = this.store.listChapters(existing.projectId)
+      .some(chapter => chapter.chapterNumber < existing.chapterNumber && chapter.status !== 'published')
+    if (unpublishedEarlier) throw new Error('存在未发布的前序章节，不能跳章发布')
+
+    // 发布是受前置条件保护的专用命令，绕过普通编辑迁移表中的 published 禁入规则。
+    const updated = this.store.publishReviewedChapter(chapterId)
     if (!updated) throw new Error(`章节不存在: ${chapterId}`)
 
     // 更新项目进度
@@ -564,9 +585,19 @@ export class NovelEngine {
    * 保存章节验收
    */
   async saveReview(
-    review: Omit<NovelChapterReview, 'id' | 'createdAt'>
+    review: Omit<NovelChapterReview, 'id' | 'createdAt' | 'contentRevisionId' | 'contentHash'> & {
+      reviewedContent: string
+    }
   ): Promise<NovelChapterReview> {
-    const full = { ...review, id: randomUUID() }
+    const { reviewedContent, ...reviewFields } = review
+    const contentHash = hashChapterContent(reviewedContent)
+    const currentRevision = this.store.getCurrentContentRevision(review.chapterId)
+    const full = {
+      ...reviewFields,
+      id: randomUUID(),
+      contentHash,
+      contentRevisionId: currentRevision?.content === reviewedContent ? currentRevision.id : null,
+    }
     return this.store.createChapterReview(full)
   }
 

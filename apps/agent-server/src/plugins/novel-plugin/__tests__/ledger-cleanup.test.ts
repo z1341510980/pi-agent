@@ -143,7 +143,9 @@ describe('悬空账本引用清理', () => {
     })
     // 绕过 store 直接删角色，模拟旧版本留下的孤立 history
     db.prepare('DELETE FROM novel_characters WHERE id = ?').run('ch1')
-    expect(reconcileMatrixProjection(store, memoryStore, PROJECT_ID).danglingRefs).toHaveLength(1)
+    // 2026-08-12 逻辑统一：对账基准切 appearance 表（不再含 character_history），
+    // 但清理工具仍处理 character_history 悬空（防御性清理）。
+    expect(reconcileMatrixProjection(store, memoryStore, PROJECT_ID).danglingRefs).toHaveLength(0)
 
     const result = applyDanglingCleanup(store, memoryStore, PROJECT_ID)
     expect(result.deletedCharacterHistory).toBe(1)

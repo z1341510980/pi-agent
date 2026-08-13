@@ -108,7 +108,7 @@ export function NarrativeTrackPanel({ open, onOpenChange, projectId }: Narrative
               {report.staleCount > 0 && (
                 <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
-                  检测到中间章节重写，{report.staleCount} 条推进记录已标记待重建，请确认后从受影响章节开始重建。
+                  检测到中间章节重写，{report.staleCount} 条推进记录已标记待重建，当前不会进入剧情轨道。顺序重建功能尚未提供。
                 </div>
               )}
 
@@ -116,7 +116,7 @@ export function NarrativeTrackPanel({ open, onOpenChange, projectId }: Narrative
                 <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                   <Route className="h-8 w-8 mb-2" />
                   <p>暂无剧情推进记录（章节生成后由 Memory 提取）</p>
-                  <p className="text-xs mt-1">需开启项目级 scenePlanV2Write 并生成章节</p>
+                  <p className="text-xs mt-1">V2 场景计划落库后由 Memory 自动提取（2026-08-12 起恒开启）</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto">

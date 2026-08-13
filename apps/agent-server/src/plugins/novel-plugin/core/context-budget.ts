@@ -39,8 +39,36 @@ export function estimateChunkTokens(chars: number): number {
 export interface DegradableChunk {
   chunkId: string
   content: string
+  /** 已由调用方提前构建的真实摘要；缺失时使用确定性文本降级兜底。 */
+  summaryContent?: string
+  /** 已由调用方提前裁剪的最近一章 recap；缺失时按分隔符保留最后一段。 */
+  keepOneContent?: string
   summaryMode?: boolean
   keepOne?: boolean
+}
+
+/**
+ * 将 degradeChunks 的决策物化为实际 prompt 内容。
+ * 决策函数只负责顺序和 required 保护，生产接线必须调用此函数，不能把
+ * summaryMode/keepOne 标记原样送给模型。
+ */
+export function materializeDegradedChunks(chunks: DegradableChunk[]): Array<{ chunkId: string; content: string }> {
+  return chunks
+    .filter((chunk) => chunk.content.length > 0)
+    .map((chunk) => {
+      if (chunk.summaryMode) {
+        const content = chunk.summaryContent
+          ?? `${chunk.content.slice(0, Math.max(1, Math.ceil(chunk.content.length * 0.3)))}\n（以上为摘要，完整详情可通过 novel_ask_story 按需查询）`
+        return { chunkId: chunk.chunkId, content }
+      }
+      if (chunk.keepOne) {
+        const content = chunk.keepOneContent
+          ?? chunk.content.split(/\n\n---\n\n|\n(?=### )/).filter(Boolean).slice(-1)[0]
+          ?? chunk.content
+        return { chunkId: chunk.chunkId, content }
+      }
+      return { chunkId: chunk.chunkId, content: chunk.content }
+    })
 }
 
 /** 五级降级顺序的代码化定义（§5.5），逐级执行直到 fit */

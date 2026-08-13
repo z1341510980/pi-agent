@@ -200,20 +200,29 @@ export class NarrativeLedgerStore {
     return this.getProgress(id)!
   }
 
-  /** 中间章重写后：把受影响章节之后的推进标 stale（T04 的时序服务调用） */
+  /** 中间章重写后：把起始章及其后所有已确认推进标 stale。 */
   markStaleFromChapter(projectId: string, chapterId: string): number {
-    // scene_revision 通过 scene → chapter 反查；重写起点所在场景及其后全部置 stale
-    const result = this.db.prepare(`
+    const affectedSceneRevisions = `
+      SELECT sr.id FROM novel_scene_revisions sr
+      JOIN novel_scenes s ON s.id = sr.scene_id
+      JOIN novel_chapters c ON c.id = s.chapter_id
+      WHERE c.project_id = ?
+        AND c.chapter_number >= (
+          SELECT start.chapter_number FROM novel_chapters start
+          WHERE start.id = ? AND start.project_id = ?
+        )
+    `
+    this.db.prepare(`
       UPDATE novel_storyline_progress SET status = 'stale'
       WHERE project_id = ? AND status = 'confirmed'
-        AND scene_revision_id IN (
-          SELECT sr.id FROM novel_scene_revisions sr
-          JOIN novel_scenes s ON s.id = sr.scene_id
-          JOIN novel_chapters c ON c.id = s.chapter_id
-          WHERE c.project_id = ? AND c.id = ?
-        )
-    `).run(projectId, projectId, chapterId)
-    return result.changes
+        AND scene_revision_id IN (${affectedSceneRevisions})
+    `).run(projectId, projectId, chapterId, projectId)
+    // 返回整个受影响范围，重复调用仍可向路由准确报告待重建数量。
+    return (this.db.prepare(`
+      SELECT COUNT(*) AS count FROM novel_storyline_progress
+      WHERE project_id = ? AND status = 'stale'
+        AND scene_revision_id IN (${affectedSceneRevisions})
+    `).get(projectId, projectId, chapterId, projectId) as { count: number }).count
   }
 
   private rowToStoryline(row: StorylineRow): NovelStoryline {

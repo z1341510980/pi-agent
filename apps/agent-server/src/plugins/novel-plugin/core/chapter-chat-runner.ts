@@ -27,6 +27,14 @@ import { NovelEngine } from './novel-engine.js'
 import { runtimePerformance } from '../../../config/performance.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from './novel-agents.js'
 import type { NovelCharacter } from './types.js'
+import type { ChapterBoundaryContext } from './prompt-builder.js'
+import { buildVoiceProfiles, type CharacterVoiceProfile } from './character-voice.js'
+import {
+  buildCharacterIdentityPrompt,
+  buildCharacterSystemPrompt,
+  buildCharacterVisibleContext,
+  collectCharacterKnowledge,
+} from './novel-character-discussion-context.js'
 
 /** 自由聊天工种 Agent（与 DiscussionRunner 一致，不含 memory） */
 const CHAT_AGENT_TYPES: NovelAgentType[] = ['director', 'writer', 'reviewer', 'reviser']
@@ -39,7 +47,7 @@ export interface ChapterChatOptions {
   signal?: AbortSignal
   /** Moderator 模型配置 */
   moderatorModel?: { provider: string; modelId: string }
-  /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用该模型，跳过 Moderator 调度 */
+  /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用，Moderator 仍独立调度 */
   modelId?: { provider: string; modelId: string }
 }
 
@@ -88,6 +96,11 @@ export class ChapterChatRunner {
   ): Promise<{ replies: ChapterChatReply[] }> {
     const replies: ChapterChatReply[] = []
 
+    // Runner 可能被路由以外的调用方直接使用。必须在任何聊天记录落库前
+    // 验证项目与章节，避免形成无法从小说项目访问的孤立消息。
+    const chapter = this.assertChapterExists(projectId, chapterNumber)
+    const boundary = this.promptBuilder.getChapterBoundaryContext(projectId, chapterNumber)
+
     // 1. 持久化用户消息
     this.chatStore.add({
       projectId,
@@ -103,7 +116,12 @@ export class ChapterChatRunner {
     })
 
     // 2. 构建 members
-    const members = this.buildMembers(projectId)
+    const members = this.buildMembers(
+      projectId,
+      chapterNumber,
+      boundary,
+      this.buildRoleChapterContext(chapterNumber, chapter),
+    )
     if (members.length === 0) {
       throw new Error('无可用的聊天成员')
     }
@@ -170,17 +188,6 @@ export class ChapterChatRunner {
     options: ChapterChatOptions,
     userMessage: string,
   ): Promise<DiscussionMember[]> {
-    // ⚠️ per-call 模型模式：用户明确指定了本次回复模型 → 跳过 Moderator 调度，
-    // 直接回复（@ 指定则回复指定方，否则用第一个可用成员），避免 Moderator
-    // 再消耗一次决策调用。
-    if (options.modelId) {
-      if (mentionedAgents && mentionedAgents.length > 0) {
-        const selected = members.filter((m) => mentionedAgents.includes(m.id))
-        if (selected.length > 0) return selected
-      }
-      return members.length > 0 ? [members[0]] : []
-    }
-
     // @ 指定模式
     if (mentionedAgents && mentionedAgents.length > 0) {
       const selected = members.filter((m) => mentionedAgents.includes(m.id))
@@ -263,6 +270,8 @@ export class ChapterChatRunner {
     options: ChapterChatOptions,
   ): Promise<string> {
     const systemPrompt = member.buildSystemPrompt()
+    const prefixMessages = [member.buildContextPrompt?.() ?? '', member.buildIdentityPrompt?.() ?? '']
+      .filter((message) => message.trim().length > 0)
     // 构建上下文：最近 10 条聊天记录 + 当前章节信息提示
     const recentHistory = history.slice(-10)
     const transcript = recentHistory
@@ -273,11 +282,12 @@ export class ChapterChatRunner {
 
     const handle = await this.context.createAgUiSession({
       systemPrompt,
+      prefixUserMessage: prefixMessages.length === 1 ? prefixMessages[0] : prefixMessages,
       userMessage: userMessageWithCtx,
       tools: [],
       signal: options.signal,
-      // per-call 模型覆盖（输入框旁选择器）；未指定走成员默认/系统默认
-      modelId: options.modelId,
+      // 本次选择覆盖成员配置；未选择时工种按 AgentPage 配置，角色走系统默认。
+      modelId: options.modelId ?? member.modelId,
       temperature: member.type === 'character' ? 0.8 : 0.5,
       timeoutMs: runtimePerformance.llm.timeoutMs,
       emit: options.emit,
@@ -331,27 +341,45 @@ export class ChapterChatRunner {
    * 与 NovelDiscussionRunner.buildMembers 逻辑一致：
    * 4 个工种 Agent + 项目活跃角色
    */
-  private buildMembers(projectId: string): DiscussionMember[] {
+  private buildMembers(
+    projectId: string,
+    chapterNumber: number,
+    boundary: ChapterBoundaryContext,
+    roleChapterContext: string,
+  ): DiscussionMember[] {
     const members: DiscussionMember[] = []
 
     // 4 个工种 Agent
     for (const agentType of CHAT_AGENT_TYPES) {
       const config = NOVEL_AGENT_CONFIGS[agentType]
+      const agentConfig = this.context.subagentManager?.getAgent(config.id)
       members.push({
         id: config.id,
         type: 'role',
         name: config.name,
         expertise: config.identity,
         canConverge: false, // 自由聊天不需要收敛
-        buildSystemPrompt: () => this.buildRolePrompt(agentType, projectId),
+        buildSystemPrompt: () => this.promptBuilder.buildSystemPrompt(projectId, agentType),
+        buildContextPrompt: () => roleChapterContext,
+        buildIdentityPrompt: () => this.buildRoleIdentityPrompt(agentType, projectId),
+        modelId: agentConfig?.model,
       })
     }
 
-    // 项目活跃角色
-    const characters = this.store.listCharacters(projectId)
+    // 使用章前边界中的角色状态。历史章节聊天不得读取未来章更新后的角色卡。
+    const characters = boundary.entities.characters
+      .filter((char) => !(char.arcStage === 'resolved' && !char.currentGoal))
+    const voiceProfiles = new Map(
+      buildVoiceProfiles(characters).map((profile) => [profile.characterId, profile]),
+    )
     for (const char of characters) {
-      if (char.arcStage === 'resolved' && !char.currentGoal) continue
-      members.push(this.buildCharacterMember(char))
+      members.push(this.buildCharacterMember(
+        projectId,
+        chapterNumber,
+        char,
+        boundary,
+        voiceProfiles.get(char.id),
+      ))
     }
 
     return members
@@ -365,15 +393,20 @@ export class ChapterChatRunner {
    * buildSystemPrompt 是 STATIC 层（跨 Agent 共享，不含文风），
    * buildAgentIdentity 才会把 compileWritingStylePrompt 的输出拼到 identity 后。
    */
-  private buildRolePrompt(agentType: NovelAgentType, projectId: string): string {
-    const basePrompt = this.promptBuilder.buildSystemPrompt(projectId, agentType)
+  private buildRoleIdentityPrompt(agentType: NovelAgentType, projectId: string): string {
     const identity = this.promptBuilder.buildAgentIdentity(projectId, agentType)
     const roleHint = `\n\n## 当前模式：章节自由聊天\n你正在与用户就当前章节进行自由对话。回答要简洁、聚焦，不要写小说正文，不要使用破折号"——"。`
-    return basePrompt + '\n\n---\n\n' + identity + roleHint
+    return identity + roleHint
   }
 
   /** 构建角色成员 */
-  private buildCharacterMember(char: NovelCharacter): DiscussionMember {
+  private buildCharacterMember(
+    projectId: string,
+    chapterNumber: number,
+    char: NovelCharacter,
+    boundary: ChapterBoundaryContext,
+    voiceProfile?: CharacterVoiceProfile,
+  ): DiscussionMember {
     return {
       id: `char-${char.id}`,
       type: 'character',
@@ -386,46 +419,60 @@ export class ChapterChatRunner {
         currentGoal: char.currentGoal,
         secret: char.secret,
         arcStage: char.arcStage,
-        participatingConflicts: this.store.listEdgesByEntity(char.id, { edgeType: 'related' })
-          .filter(e => e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === char.id)
+        participatingConflicts: boundary.entities.edges
+          .filter(e => e.edgeType === 'related' && e.sourceType === 'character' && e.targetType === 'conflict' && e.sourceId === char.id)
           .map(e => e.targetId),
       },
-      buildSystemPrompt: () => this.buildCharacterPrompt(char),
+      buildSystemPrompt: buildCharacterSystemPrompt,
+      knowledge: collectCharacterKnowledge(this.store, projectId, char, boundary),
+      allowMergedInvocation: char.secret.trim().length === 0,
+      buildContextPrompt: () => buildCharacterVisibleContext({
+        store: this.store,
+        projectId,
+        chapterNumber,
+        character: char,
+        boundary,
+        includeCharacterConflictsWhenUnarranged: true,
+      }),
+      buildIdentityPrompt: () => buildCharacterIdentityPrompt({
+        projectId,
+        character: char,
+        promptBuilder: this.promptBuilder,
+        mode: 'free_chat',
+        voiceProfile,
+      }),
     }
   }
 
-  /** 构建角色人设 prompt */
-  private buildCharacterPrompt(char: NovelCharacter): string {
-    const lines: string[] = [
-      `你是小说中的角色「${char.name}」，以第一人称视角与用户对话。`,
-      '',
-      '## 你的设定',
+  private assertChapterExists(projectId: string, chapterNumber: number) {
+    if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {
+      throw new Error(`无效的章节号: ${chapterNumber}`)
+    }
+    if (!this.store.getProject(projectId)) {
+      throw new Error(`项目不存在: ${projectId}`)
+    }
+    const chapter = this.store.getChapter(projectId, chapterNumber)
+    if (!chapter) {
+      throw new Error(`章节不存在或不属于该项目: ${chapterNumber}`)
+    }
+    return chapter
+  }
+
+  private buildRoleChapterContext(
+    chapterNumber: number,
+    chapter: NonNullable<ReturnType<NovelStore['getChapter']>>,
+  ): string {
+    const lines = [
+      '## 当前章节',
+      `- 章节：第 ${chapterNumber} 章`,
+      `- 章节任务：${chapter.outline?.trim() || chapter.narrativeTask?.trim() || '尚未填写'}`,
     ]
-    if (char.identity) lines.push(`- 身份：${char.identity}`)
-    if (char.personality) lines.push(`- 性格：${char.personality}`)
-    if (char.currentState) lines.push(`- 当前状态：${char.currentState}`)
-    if (char.currentGoal) lines.push(`- 当前目标：${char.currentGoal}`)
-    if (char.secret) lines.push(`- 隐藏秘密：${char.secret}`)
-    if (char.arcStage) lines.push(`- 角色弧光阶段：${char.arcStage}`)
-    lines.push('')
-    lines.push('## 发言要求')
-    lines.push('- 以角色口吻发言，保持性格一致')
-    lines.push('- 基于当前状态和目标表达观点')
-    lines.push('- 回答要简洁、聚焦，不要写小说正文')
-    lines.push('- 绝不使用破折号"——"，转折用句号，补充用逗号，列举用顿号')
-    return lines.join('\n')
-  }
-
-  /** 容错解析 JSON 字符串数组 */
-  private parseIdList(raw: string): string[] {
-    if (!raw) return []
-    try {
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed)
-        ? parsed.filter((x): x is string => typeof x === 'string')
-        : []
-    } catch {
-      return []
+    if (chapter.positioning?.trim()) lines.push(`- 章节定位：${chapter.positioning.trim()}`)
+    if (chapter.content?.trim()) {
+      lines.push('', '### 当前章节正文', chapter.content.trim())
+    } else {
+      lines.push('', '当前章节尚未生成正文。')
     }
+    return lines.join('\n')
   }
 }

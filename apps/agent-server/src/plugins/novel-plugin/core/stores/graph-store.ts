@@ -18,10 +18,6 @@ import type {
 } from './row-types.js'
 import { now, bindString, parseJSON } from './store-utils.js'
 import {
-  isNovelFeatureEnabled,
-  type FeatureFlagProjectSource,
-} from '../novel-feature-flags.js'
-import {
   gzipText,
   gunzipBlob,
   hashPayloadFields,
@@ -34,10 +30,6 @@ import type {
   ContextSectionMetricInput,
 } from '../context-section-metrics.js'
 
-/** insertAgentLog 选项：externalizePayload 未指定时由 flag logPayloadExternalized 驱动 */
-export interface InsertAgentLogOptions {
-  externalizePayload?: boolean
-}
 
 export class GraphStore {
   private readonly stmtListNodePositions: Database.Statement
@@ -62,7 +54,6 @@ export class GraphStore {
 
   constructor(
     private db: Database.Database,
-    private flags?: FeatureFlagProjectSource,
   ) {
     this.stmtListNodePositions = db.prepare('SELECT * FROM novel_node_positions WHERE project_id = ? ORDER BY updated_at ASC')
     this.stmtUpsertNodePosition = db.prepare(`
@@ -315,23 +306,17 @@ export class GraphStore {
   /**
    * 写入 Agent 调用日志。
    *
-   * `opts.externalizePayload` 未显式指定时，由项目级 flag `logPayloadExternalized`
-   * 驱动（默认关）：开启后主表只写元数据 + payload_id，大文本 gzip 写 payload 表；
-   * 关闭时保持现状（全量写主表）。
+   * 日志大文本一律 gzip 外置到 payload 表（冷热分离）：主表只存元数据 + payload_id，
+   * 读取时按 payload_id 合并回读；旧行（无 payload_id）直接读主表，行为与迁移前一致。
    */
   insertAgentLog(
     input: Omit<NovelAgentLog, 'id' | 'createdAt'>,
-    opts?: InsertAgentLogOptions,
   ): NovelAgentLog {
-    const externalize = opts?.externalizePayload
-      ?? (this.flags
-        ? isNovelFeatureEnabled(this.flags, input.projectId, 'logPayloadExternalized')
-        : false)
     const id = randomUUID()
     const createdAt = now()
     const full: NovelAgentLog = { ...input, id, createdAt }
 
-    const payloadId = externalize ? id : null
+    const payloadId = id
     const base = {
       id: full.id,
       project_id: full.projectId,
@@ -341,19 +326,19 @@ export class GraphStore {
       display_agent_type: full.displayAgentType,
       display_agent_name: full.displayAgentName,
       phase: full.phase,
-      // 外置时大文本列写空串，体积由 payload 表承担（主表行体积下降 ≥ 80% 指标）
-      system_prompt: externalize ? '' : full.systemPrompt,
-      chapter_context: externalize ? '' : full.chapterContext,
-      user_message: externalize ? '' : full.userMessage,
-      task_input: externalize ? '' : full.taskInput,
-      user_instructions: externalize ? '[]' : JSON.stringify(full.userInstructions ?? []),
-      tools: externalize ? '[]' : JSON.stringify(full.tools ?? []),
+      // 外置：大文本列写空串，体积由 payload 表承担（主表行体积下降 ≥ 80% 指标）
+      system_prompt: '',
+      chapter_context: '',
+      user_message: '',
+      task_input: '',
+      user_instructions: '[]',
+      tools: '[]',
       tool_names: JSON.stringify(full.toolNames ?? []),
-      result: externalize ? '' : full.result,
+      result: '',
       result_length: full.resultLength,
       duration_ms: full.durationMs,
       status: full.status,
-      error: externalize ? '' : full.error,
+      error: '',
       session_id: full.sessionId,
       parent_log_id: full.parentLogId ?? null,
       operation: full.operation ?? '',
@@ -376,7 +361,7 @@ export class GraphStore {
 
     this.db.transaction(() => {
       this.stmtInsertAgentLog.run(base)
-      if (externalize && payloadId) {
+      {
         const payloadFields: PayloadFields = {
           systemPrompt: full.systemPrompt,
           chapterContext: full.chapterContext,
@@ -582,11 +567,11 @@ export class GraphStore {
       INSERT INTO novel_chapter_reviews (id, project_id, chapter_id, consistency_score, character_score,
       task_completion_score, clue_progress_score, foreshadow_status_score, conflict_change_score,
       pacing_score, info_control_score, reader_hook_score, style_score, overall_score, verdict,
-      issues, suggestions, reviewed_by, created_at)
+      issues, suggestions, reviewed_by, content_revision_id, content_hash, created_at)
       VALUES (@id, @project_id, @chapter_id, @consistency_score, @character_score,
       @task_completion_score, @clue_progress_score, @foreshadow_status_score, @conflict_change_score,
       @pacing_score, @info_control_score, @reader_hook_score, @style_score, @overall_score, @verdict,
-      @issues, @suggestions, @reviewed_by, @created_at)
+      @issues, @suggestions, @reviewed_by, @content_revision_id, @content_hash, @created_at)
     `).run({
       id: full.id, project_id: full.projectId, chapter_id: full.chapterId,
       consistency_score: full.consistencyScore, character_score: full.characterScore,
@@ -596,19 +581,37 @@ export class GraphStore {
       reader_hook_score: full.readerHookScore, style_score: full.styleScore,
       overall_score: full.overallScore, verdict: full.verdict,
       issues: full.issues, suggestions: full.suggestions, reviewed_by: full.reviewedBy,
+      content_revision_id: full.contentRevisionId, content_hash: full.contentHash,
       created_at: full.createdAt,
     })
     return full
   }
 
   getChapterReview(chapterId: string): NovelChapterReview | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_chapter_reviews WHERE chapter_id = ? ORDER BY created_at DESC LIMIT 1').get(chapterId) as ChapterReviewRow | undefined
+    const row = this.db.prepare('SELECT * FROM novel_chapter_reviews WHERE chapter_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(chapterId) as ChapterReviewRow | undefined
     return row ? this.rowToChapterReview(row) : undefined
+  }
+
+  getAcceptedChapterReviewForContent(chapterId: string, contentHash: string): NovelChapterReview | undefined {
+    const row = this.db.prepare(`
+      SELECT * FROM novel_chapter_reviews
+      WHERE chapter_id = ? AND content_hash = ? AND verdict = 'accept'
+      ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get(chapterId, contentHash) as ChapterReviewRow | undefined
+    return row ? this.rowToChapterReview(row) : undefined
+  }
+
+  bindChapterReviewsToRevision(chapterId: string, contentHash: string, revisionId: string): number {
+    return this.db.prepare(`
+      UPDATE novel_chapter_reviews SET content_revision_id = ?
+      WHERE chapter_id = ? AND content_hash = ? AND content_revision_id IS NULL
+    `).run(revisionId, chapterId, contentHash).changes
   }
 
   private rowToChapterReview(row: ChapterReviewRow): NovelChapterReview {
     return {
       id: row.id, projectId: row.project_id, chapterId: row.chapter_id,
+      contentRevisionId: row.content_revision_id, contentHash: row.content_hash,
       consistencyScore: row.consistency_score, characterScore: row.character_score,
       taskCompletionScore: row.task_completion_score, clueProgressScore: row.clue_progress_score,
       foreshadowStatusScore: row.foreshadow_status_score, conflictChangeScore: row.conflict_change_score,

@@ -24,7 +24,7 @@ describe('NovelEngine chapter constraint relevance', () => {
     const store = {
       getProject: () => ({ targetWords: 3000, flags: {} }),
       listConstraints: () => [],
-      listChapterAppearanceIds: () => null,
+      listChapterAppearanceIds: () => [],
       listCharacters: () => [],
       listConflicts: () => [],
       listInformationLayers: () => [],
@@ -77,7 +77,7 @@ describe('NovelEngine chapter constraint relevance', () => {
     const store = {
       getProject: () => ({ targetWords: 3000, flags: {} }),
       listConstraints: () => [],
-      listChapterAppearanceIds: () => null,
+      listChapterAppearanceIds: () => [],
       listCharacters: () => [],
       listInformationLayers: () => [],
       listEdgesByEntity: () => [],
@@ -100,5 +100,66 @@ describe('NovelEngine chapter constraint relevance', () => {
     expect(result.narrativeDebts.map((item) => item.id)).toEqual(['selected-foreshadow'])
     expect(result.conflictTargets.map((item) => item.conflict.id)).toEqual(['selected-conflict'])
     expect(result.suspenseHooks.map((item) => item.description)).toEqual(['选中伏笔'])
+  })
+
+  it('历史章节约束只使用传入的章前状态，不读取活库未来状态', () => {
+    const store = {
+      getProject: () => ({ targetWords: 3000, flags: {} }),
+      listConstraints: () => [],
+      listChapterAppearanceIds: ({ entityType }: { entityType: string }) => (
+        entityType === 'conflict' ? ['conflict-1'] : ['foreshadow-1']
+      ),
+      listCharacters: () => [{
+        id: 'character-1', name: '沈舟', arcStage: 'resolution',
+      }],
+      listConflicts: () => [{
+        id: 'conflict-1', description: '码头追捕', type: 'external', stage: 'erupting',
+        intensity: 9, chapterSpans: [], climaxChapter: null,
+      }],
+      listForeshadowing: () => [foreshadow({
+        id: 'foreshadow-1', description: '未来章已经回收', status: 'recovered',
+        beats: [{ chapter: 2, type: 'payoff' }],
+      })],
+      listInformationLayers: () => [{
+        id: 'info-1', isRevealed: true, revealChapter: 2, characterKnowledge: '{}',
+      }],
+      listEdgesByEntity: () => [],
+    }
+    const engine = new NovelEngine(store as never)
+    const chapterState = {
+      characters: [{
+        id: 'character-1', name: '沈舟', arcStage: 'resistance',
+      }],
+      conflicts: [{
+        id: 'conflict-1', description: '码头追捕', type: 'external', stage: 'emerging',
+        intensity: 4, chapterSpans: [], climaxChapter: null,
+      }],
+      foreshadowing: [foreshadow({
+        id: 'foreshadow-1', description: '章前尚未回收', status: 'planted',
+        beats: [{ chapter: 2, type: 'reinforce' }],
+      })],
+      informationLayers: [],
+      edges: [],
+    }
+
+    const result = engine.buildChapterConstraints(
+      'project-1',
+      2,
+      undefined,
+      null,
+      undefined,
+      chapterState as never,
+    )
+
+    expect(result.characterArcs[0].character.arcStage).toBe('resistance')
+    expect(result.conflictTargets[0]).toMatchObject({
+      conflict: { stage: 'emerging', intensity: 4 },
+      targetStage: 'escalating',
+    })
+    expect(result.narrativeDebts.map((item) => item.description)).toEqual(['章前尚未回收'])
+    expect(result.suspenseHooks).toEqual([
+      expect.objectContaining({ description: '章前尚未回收', status: 'sustaining' }),
+    ])
+    expect(JSON.stringify(result)).not.toContain('未来章已经回收')
   })
 })

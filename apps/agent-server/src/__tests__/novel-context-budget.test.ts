@@ -13,6 +13,7 @@ import {
   allocateContextBudget,
   degradeChunks,
   estimateChunkTokens,
+  materializeDegradedChunks,
 } from '../plugins/novel-plugin/core/context-budget.js'
 import type { DegradableChunk } from '../plugins/novel-plugin/core/context-budget.js'
 
@@ -94,5 +95,41 @@ describe('degradeChunks（§5.5 降级顺序）', () => {
     const r = degradeChunks(chunks, 30)
     expect(r.fits).toBe(false)
     expect(r.tokensAfter).toBeGreaterThan(30)
+  })
+})
+
+describe('materializeDegradedChunks（生产物化）', () => {
+  it('summaryMode 使用调用方提供的真实摘要', () => {
+    const out = materializeDegradedChunks([
+      { chunkId: 'recent-recaps', content: 'x'.repeat(300), summaryMode: true, summaryContent: '真实摘要' },
+    ])
+    expect(out).toEqual([{ chunkId: 'recent-recaps', content: '真实摘要' }])
+  })
+
+  it('summaryMode 无 summaryContent 时按前 30% 确定性兜底', () => {
+    const out = materializeDegradedChunks([
+      { chunkId: 'recent-recaps', content: 'a'.repeat(100), summaryMode: true },
+    ])
+    expect(out[0].content.length).toBeLessThan(100)
+    expect(out[0].content).toContain('novel_ask_story')
+  })
+
+  it('keepOne 保留最近一章 recap；无标记原样透传', () => {
+    const out = materializeDegradedChunks([
+      { chunkId: 'recent-recaps', content: '【第1章】…\n\n---\n\n【第2章】…', keepOne: true, keepOneContent: '【第2章】…' },
+      { chunkId: 'chapter-info', content: '章节信息' },
+    ])
+    expect(out).toEqual([
+      { chunkId: 'recent-recaps', content: '【第2章】…' },
+      { chunkId: 'chapter-info', content: '章节信息' },
+    ])
+  })
+
+  it('空 content 的 chunk 被过滤（避免输出空 section）', () => {
+    const out = materializeDegradedChunks([
+      { chunkId: 'story-ledger', content: '' },
+      { chunkId: 'chapter-info', content: 'x' },
+    ])
+    expect(out).toEqual([{ chunkId: 'chapter-info', content: 'x' }])
   })
 })

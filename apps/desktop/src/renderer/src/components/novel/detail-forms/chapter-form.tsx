@@ -1,4 +1,6 @@
-import { useCallback, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useState, type ReactElement } from 'react'
+import { Send } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
@@ -9,21 +11,31 @@ import {
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import {
   updateChapter,
+  publishChapter,
   updateVolume,
   type ChapterRhythm,
   type ChapterStatus,
   type NovelChapter,
   type NovelVolume,
 } from '@/api/novel-client'
+import { toastError, toastSuccess } from '@/hooks/use-toast'
 import {
   CHAPTER_RHYTHM_OPTIONS,
-  CHAPTER_STATUS_OPTIONS,
   DebouncedOutlineField,
   FieldRow,
   SaveButton,
   SectionHeader,
   TextInput,
 } from './shared'
+import { CHAPTER_STATUS_TRANSITIONS } from '@repo/shared/novel'
+
+const CHAPTER_STATUS_LABELS: Record<ChapterStatus, string> = {
+  planned: '已规划',
+  drafting: '草稿中',
+  review: '审核中',
+  published: '已发布',
+  rejected: '已驳回',
+}
 
 // ── 章节表单 ──
 
@@ -35,7 +47,17 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
     rhythm: entity.rhythm ?? '',
   })
   const [saving, setSaving] = useState(false)
+  const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const statusOptions = CHAPTER_STATUS_TRANSITIONS[entity.status]
+
+  useEffect(() => {
+    setForm({
+      title: entity.title,
+      status: entity.status,
+      rhythm: entity.rhythm ?? '',
+    })
+  }, [entity.id, entity.title, entity.status, entity.rhythm])
 
   const dirty =
     form.title !== entity.title ||
@@ -58,6 +80,24 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
       setSaving(false)
     }
   }, [entity.id, form, upsertChapter])
+
+  const handlePublish = useCallback(async () => {
+    if (publishing || entity.status !== 'review') return
+    if (!window.confirm('确认发布本章？发布后当前没有撤回或直接修订命令。')) return
+    setPublishing(true)
+    setError(null)
+    try {
+      const updated = await publishChapter(entity.id)
+      upsertChapter(updated)
+      toastSuccess('章节已发布', `第 ${updated.chapterNumber} 章已进入正式时间线`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '发布失败'
+      setError(message)
+      toastError('发布失败', message)
+    } finally {
+      setPublishing(false)
+    }
+  }, [entity.id, entity.status, publishing, upsertChapter])
 
   return (
     <div className="space-y-2">
@@ -88,8 +128,8 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {CHAPTER_STATUS_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            {statusOptions.map((status) => (
+              <SelectItem key={status} value={status}>{CHAPTER_STATUS_LABELS[status]}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -118,6 +158,19 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
       <SaveButton onSave={handleSave} disabled={!dirty} saving={saving} />
+      {entity.status === 'review' && (
+        <Button
+          type="button"
+          size="sm"
+          className="w-full"
+          onClick={() => void handlePublish()}
+          disabled={publishing || saving || dirty}
+          title={dirty ? '请先保存章节元信息' : '发布已通过当前版本审稿的章节'}
+        >
+          <Send className="size-3.5" />
+          {publishing ? '发布中...' : '发布章节'}
+        </Button>
+      )}
     </div>
   )
 }

@@ -175,6 +175,8 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //    formatConsistencyAudit）从未被调用，已随死代码一并删除。审计结果仍由
   //    GET /consistency-report 路由直接对外提供。
   const promptBuilder = new NovelPromptBuilder(promptManager, store, memoryStore, relationshipGraph)
+  // P3 T03-6：identity-contract 守卫——所有 buildAgentIdentity 消费方统一覆盖
+  promptBuilder.setIdentityLogger(context.logger)
 
   // 5. 创建 NovelEngine（依赖 NovelStore）
   //    原 NovelSessionFactory 已删除（薄封装空壳）：

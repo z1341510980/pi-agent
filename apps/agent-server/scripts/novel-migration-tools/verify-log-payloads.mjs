@@ -1,13 +1,13 @@
 /**
  * verify-log-payloads.mjs — P1-2 payload 解压回读校验（只读）。
  *
- * 对 logPayloadExternalized 外置行做完整性校验：
+ * 对日志冷热分离（默认外置）行做完整性校验：
  * - 解压 novel_agent_log_payloads 的 BLOB 字段；
  * - 用与写入端（graph-store / log-payload-service）相同的规范化
  *   （非空字段 JSON 排序 + sha256）**重算** content_hash，与存储值比对
  *   （P1-2-5：content_hash 可校验解压完整性）；
  * - 校验 payload 存在：主表 payload_id 无对应 payload 行、payload 行无主表（孤儿）均计入；
- * - ⚠️ 主表大文本列（system_prompt 等）在开启外置时按设计置空，
+ * - ⚠️ 主表大文本列（system_prompt 等）按设计置空，
  *   属预期行为，**不参与比对、不算 mismatch**（旧实现对目标数据永远无法 PASS）。
  *
  * 用法：

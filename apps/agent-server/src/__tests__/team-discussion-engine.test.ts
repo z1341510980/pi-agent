@@ -102,6 +102,236 @@ describe('TeamDiscussionEngine', () => {
     expect(engine.isValidCharacterSpeech('[赵岩看向对方] “我需要先确认门外是谁。”')).toBe(true)
   })
 
+  it('合并角色调用注入每个角色的身份，并记录全部参与者', async () => {
+    const members = [
+      makeMember({
+        id: 'char-a', type: 'character', name: '林晚', knowledge: {},
+        buildSystemPrompt: () => '角色 system',
+        buildContextPrompt: () => '共同可见背景',
+        buildIdentityPrompt: () => '林晚身份和短句说话风格',
+      }),
+      makeMember({
+        id: 'char-b', type: 'character', name: '陆川', knowledge: {},
+        buildSystemPrompt: () => '角色 system',
+        buildContextPrompt: () => '共同可见背景',
+        buildIdentityPrompt: () => '陆川身份和长句说话风格',
+      }),
+    ]
+    const createAgUiSession = vi.fn().mockResolvedValue({
+      session: { prompt: vi.fn().mockResolvedValue('### 林晚\n[抬眼] “我先说。”\n### 陆川\n[按住门] “让我补充。”') },
+      streamEmitter: { finishTextMessage: vi.fn() },
+      messageId: 'merged-actors',
+      dispose: vi.fn(),
+    })
+    const onMemberInvocation = vi.fn()
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]),
+      new AgentChannel(),
+      { createAgUiSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+    ) as any
+    engine.currentGoal = { task: '测试', context: '作者真相' }
+    const history: DiscussionMessage[] = []
+
+    const handled = await engine.handleMergedInvite(
+      { type: 'invite', agentId: 'char-a', agentIds: ['char-a', 'char-b'], prompt: '回应', reason: '同场' },
+      ['char-a', 'char-b'], members, history,
+      makeOptions({ reviewCharacterSpeech: false, onMemberInvocation }),
+      'test-channel', { phase: 'acting', sceneId: 1 },
+    )
+
+    expect(handled).toBe(true)
+    expect(createAgUiSession).toHaveBeenCalledTimes(1)
+    expect(createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: '角色 system',
+      prefixUserMessage: [
+        '共同可见背景',
+        expect.stringContaining('林晚身份和短句说话风格'),
+      ],
+    }))
+    expect(JSON.stringify(createAgUiSession.mock.calls[0][0].prefixUserMessage)).toContain('陆川身份和长句说话风格')
+    expect(JSON.stringify(createAgUiSession.mock.calls[0][0])).not.toContain('作者真相')
+    expect(history.filter(message => message.type === 'member').map(message => message.fromId)).toEqual(['char-a', 'char-b'])
+    expect(onMemberInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      participantIds: ['char-a', 'char-b'],
+      participantNames: ['林晚', '陆川'],
+    }))
+  })
+
+  it('角色上下文不同或缺少认知快照时逐个调用全部被点名角色', async () => {
+    const members = [
+      makeMember({
+        id: 'char-a', type: 'character', name: '林晚', knowledge: {},
+        buildContextPrompt: () => '林晚可见背景', buildIdentityPrompt: () => '林晚身份',
+      }),
+      makeMember({
+        id: 'char-b', type: 'character', name: '陆川', knowledge: {},
+        buildContextPrompt: () => '陆川可见背景', buildIdentityPrompt: () => '陆川身份',
+      }),
+      makeMember({
+        id: 'char-c', type: 'character', name: '苏遥', knowledge: undefined,
+        buildContextPrompt: () => '苏遥可见背景', buildIdentityPrompt: () => '苏遥身份',
+      }),
+    ]
+    const createAgUiSession = vi.fn().mockImplementation(async (opts: { prefixUserMessage?: string | string[] }) => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(
+          `[看向众人] “${Array.isArray(opts.prefixUserMessage) ? opts.prefixUserMessage[0] : opts.prefixUserMessage}。”`,
+        ),
+      },
+      streamEmitter: { finishTextMessage: vi.fn() },
+      messageId: 'single-actor',
+      dispose: vi.fn(),
+    }))
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(),
+      { createAgUiSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+    ) as any
+    const history: DiscussionMessage[] = []
+
+    await engine.handleMergedInvite(
+      { type: 'invite', agentId: 'char-a', agentIds: members.map(member => member.id), prompt: '回应', reason: '同场' },
+      members.map(member => member.id), members, history,
+      makeOptions({ reviewCharacterSpeech: false }),
+      'test-channel', { phase: 'acting', sceneId: 1 },
+    )
+
+    expect(createAgUiSession).toHaveBeenCalledTimes(3)
+    expect(createAgUiSession.mock.calls.map(([opts]) => opts.prefixUserMessage)).toEqual([
+      ['林晚可见背景', '林晚身份'],
+      ['陆川可见背景', '陆川身份'],
+      ['苏遥可见背景', '苏遥身份'],
+    ])
+    expect(history.filter(message => message.type === 'member').map(message => message.fromId)).toEqual([
+      'char-a', 'char-b', 'char-c',
+    ])
+  })
+
+  it('身份含私密信息的角色即使认知和上下文相同也逐个调用', async () => {
+    const members = [
+      makeMember({
+        id: 'char-a', type: 'character', name: '林晚', knowledge: {},
+        allowMergedInvocation: false,
+        buildContextPrompt: () => '共同可见背景', buildIdentityPrompt: () => '隐藏秘密：卧底',
+      }),
+      makeMember({
+        id: 'char-b', type: 'character', name: '陆川', knowledge: {},
+        buildContextPrompt: () => '共同可见背景', buildIdentityPrompt: () => '陆川身份',
+      }),
+    ]
+    const createAgUiSession = vi.fn().mockResolvedValue({
+      session: { prompt: vi.fn().mockResolvedValue('[看向对方] “我只说自己知道的事。”') },
+      streamEmitter: { finishTextMessage: vi.fn() },
+      messageId: 'private-identity',
+      dispose: vi.fn(),
+    })
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(),
+      { createAgUiSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+    ) as any
+    const history: DiscussionMessage[] = []
+
+    await engine.handleMergedInvite(
+      { type: 'invite', agentId: 'char-a', agentIds: ['char-a', 'char-b'], prompt: '回应' },
+      ['char-a', 'char-b'], members, history,
+      makeOptions({ reviewCharacterSpeech: false }),
+      'test-channel', { phase: 'acting', sceneId: 1 },
+    )
+
+    expect(createAgUiSession).toHaveBeenCalledTimes(2)
+    expect(createAgUiSession.mock.calls.map(([opts]) => opts.prefixUserMessage)).toEqual([
+      ['共同可见背景', '隐藏秘密：卧底'],
+      ['共同可见背景', '陆川身份'],
+    ])
+    expect(history.filter(message => message.type === 'member').map(message => message.fromId)).toEqual([
+      'char-a', 'char-b',
+    ])
+  })
+
+  it('合并调用失败或缺少角色分段时逐角色回退', async () => {
+    const members = [
+      makeMember({
+        id: 'char-a', type: 'character', name: '林晚', knowledge: {},
+        buildContextPrompt: () => '共同背景', buildIdentityPrompt: () => '林晚身份',
+      }),
+      makeMember({
+        id: 'char-b', type: 'character', name: '陆川', knowledge: {},
+        buildContextPrompt: () => '共同背景', buildIdentityPrompt: () => '陆川身份',
+      }),
+    ]
+    let callCount = 0
+    const createAgUiSession = vi.fn().mockImplementation(async () => {
+      callCount++
+      return {
+        session: {
+          prompt: vi.fn().mockImplementation(async () => {
+            if (callCount === 1) throw new Error('合并调用超时')
+            return '[看向对方] “单独回应。”'
+          }),
+        },
+        streamEmitter: { finishTextMessage: vi.fn() },
+        messageId: `fallback-${callCount}`,
+        dispose: vi.fn(),
+      }
+    })
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(),
+      { createAgUiSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+    ) as any
+    const history: DiscussionMessage[] = []
+
+    await engine.handleMergedInvite(
+      { type: 'invite', agentId: 'char-a', agentIds: ['char-a', 'char-b'], prompt: '回应' },
+      ['char-a', 'char-b'], members, history,
+      makeOptions({ reviewCharacterSpeech: false }),
+      'test-channel', { phase: 'acting', sceneId: 1 },
+    )
+
+    expect(createAgUiSession).toHaveBeenCalledTimes(3)
+    expect(history.filter(message => message.type === 'member').map(message => message.fromId)).toEqual([
+      'char-a', 'char-b',
+    ])
+  })
+
+  it('合并输出的每个角色分段仍分别经过 Reviewer', async () => {
+    const reviewer = makeMember({ id: 'novel-reviewer', name: '审稿' })
+    const members = [
+      reviewer,
+      makeMember({
+        id: 'char-a', type: 'character', name: '林晚', knowledge: {},
+        buildContextPrompt: () => '共同背景', buildIdentityPrompt: () => '林晚身份',
+      }),
+      makeMember({
+        id: 'char-b', type: 'character', name: '陆川', knowledge: {},
+        buildContextPrompt: () => '共同背景', buildIdentityPrompt: () => '陆川身份',
+      }),
+    ]
+    const createAgUiSession = vi.fn().mockResolvedValue({
+      session: { prompt: vi.fn().mockResolvedValue('### 林晚\n[抬眼] “我先说。”\n### 陆川\n[按住门] “我回应。”') },
+      streamEmitter: { finishTextMessage: vi.fn() },
+      messageId: 'merged-review',
+      dispose: vi.fn(),
+    })
+    const engine = new TeamDiscussionEngine(
+      makeMockModerator([]), new AgentChannel(),
+      { createAgUiSession, logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } } as any,
+    ) as any
+    engine.reviewCharacterSpeech = vi.fn().mockResolvedValue({
+      verdict: 'pass', issues: [], rewrite_suggestion: '', reason: '',
+    })
+
+    await engine.handleMergedInvite(
+      { type: 'invite', agentId: 'char-a', agentIds: ['char-a', 'char-b'], prompt: '回应' },
+      ['char-a', 'char-b'], members, [], makeOptions(),
+      'test-channel', { phase: 'acting', sceneId: 1 },
+    )
+
+    expect(createAgUiSession).toHaveBeenCalledTimes(1)
+    expect(engine.reviewCharacterSpeech).toHaveBeenCalledTimes(2)
+    expect(engine.reviewCharacterSpeech.mock.calls.map(([member]: [DiscussionMember]) => member.id)).toEqual([
+      'char-a', 'char-b',
+    ])
+  })
+
   it('群聊 Reviser 通过业务层工具化修订（buildReviserToolset）应用修改', async () => {
     const engine = new TeamDiscussionEngine(
       makeMockModerator([]), new AgentChannel(), makeMockEngineContext() as any,

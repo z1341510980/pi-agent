@@ -94,7 +94,7 @@ export interface MemoryEvent {
   /** 文风提示：该变化的写作风格建议。prompt-builder 读取后附加到写作提示。 */
   styleNote?: string | null
   /** T02-6 AI 确认队列状态：confirmed（默认）/ pending / rejected（驳回，消费查询排除） */
-  status?: 'confirmed' | 'pending' | 'rejected'
+  status?: 'confirmed' | 'pending' | 'rejected' | 'stale'
   /** 确认/驳回时间戳 */
   confirmedAt?: number | null
   createdAt: number
@@ -119,6 +119,8 @@ export interface ListEventsOptions {
   eventType?: MemoryEventType
   minSignificance?: number
   limit?: number
+  /** 默认排除已失效事件；审计页可显式读取。 */
+  includeStale?: boolean
 }
 
 /** listSnapshots 查询选项 */
@@ -156,6 +158,8 @@ export interface ListStoryEventsOptions {
   source?: StoryEventSource
   entityType?: NovelStoryEntityType
   entityId?: string
+  /** 默认排除已失效事件；审计页可显式读取。 */
+  includeStale?: boolean
 }
 
 export interface ListChangeRecordsOptions {
@@ -167,7 +171,9 @@ export interface ListChangeRecordsOptions {
   subjectId?: string
   dimension?: string
   /** T02-6 确认队列：pending = 待确认（未确认/未驳回）；confirmed = 已确认 */
-  status?: 'pending' | 'confirmed' | 'rejected'
+  status?: 'pending' | 'confirmed' | 'rejected' | 'stale'
+  /** 默认排除已失效变化；审计页可显式读取。 */
+  includeStale?: boolean
 }
 
 export interface ListAnnotationsOptions {
@@ -261,6 +267,7 @@ interface MemorySnapshotRow {
   snapshot_type: string
   entity_id: string | null
   snapshot_data: string
+  status: string
   created_at: number
 }
 
@@ -505,20 +512,6 @@ export function inferDimension(
 export class NovelMemoryStore {
   constructor(private db: Database.Database) {}
 
-  /** T05 停旧写：项目是否开启 legacyNarrativeWriteDisabled（sceneId/sceneOrder 不再重复写入） */
-  private isLegacyNarrativeWriteDisabled(projectId: string): boolean {
-    try {
-      const row = this.db.prepare(
-        'SELECT feature_flags FROM novel_projects WHERE id = ?',
-      ).get(projectId) as { feature_flags: string } | undefined
-      if (!row?.feature_flags) return false
-      const flags = JSON.parse(row.feature_flags) as Record<string, boolean>
-      return flags.legacyNarrativeWriteDisabled === true
-    } catch {
-      return false
-    }
-  }
-
   // ═══════════════════════════════════════════════════════════════
   // 事件记录（情景记忆 + 因果链）
   // ═══════════════════════════════════════════════════════════════
@@ -538,6 +531,10 @@ export class NovelMemoryStore {
       id: randomUUID(),
       createdAt: now(),
     }
+    // AI 自动写入的事件标记为 ai-extracted（schema 默认 'migration' 不符合实时写入语义）。
+    // 注意：status 判定必须基于回落后的 source，否则未显式传 source 的事件
+    // 会落 source='ai-extracted' 但 status='confirmed'，绕过 pending 队列。
+    const resolvedSource = full.source ?? 'ai-extracted'
     this.db.prepare(`
       INSERT INTO novel_memory_events
       (id, project_id, chapter_id, chapter_number, event_type, entity_id, entity_type,
@@ -562,11 +559,10 @@ export class NovelMemoryStore {
       significance: full.significance,
       dimension: full.dimension ?? null,
       value_type: full.valueType ?? null,
-      // AI 自动写入的事件标记为 ai-extracted（schema 默认 'migration' 不符合实时写入语义）
-      source: full.source ?? 'ai-extracted',
+      source: resolvedSource,
       style_note: full.styleNote ?? null,
       // T02-6：AI 自动写入的 change record 标记 pending（随事件待确认）；手动写入 confirmed
-      status: (full.source === 'ai-extracted' || full.source === 'ai-planned') ? 'pending' : 'confirmed',
+      status: (resolvedSource === 'ai-extracted' || resolvedSource === 'ai-planned') ? 'pending' : 'confirmed',
       created_at: full.createdAt,
     })
     return full
@@ -677,6 +673,7 @@ export class NovelMemoryStore {
     // 构建 WHERE 子句
     const conditions = ['project_id = ?']
     const params: unknown[] = [projectId]
+    if (!options?.includeStale) conditions.push("status <> 'stale'")
     if (options?.chapterNumber !== undefined) {
       conditions.push('chapter_number = ?')
       params.push(options.chapterNumber)
@@ -819,13 +816,11 @@ export class NovelMemoryStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     }
-    // T05 停旧写（legacyNarrativeWriteDisabled）：V2 迁移后 sceneId/sceneOrder 由
-    // scene_revision 派生，不再重复写入事件表。flag 按项目灰度，默认关闭。
+    // T05 停旧写（2026-08-12 逻辑统一：legacyNarrativeWriteDisabled 转正）：
+    // sceneId/sceneOrder 由 scene_revision 派生，不再重复写入事件表。
     // 直接修改 event 本体，保证返回值与落库一致（调用方不会看到"已写但读不到"）。
-    if (this.isLegacyNarrativeWriteDisabled(event.projectId)) {
-      event.sceneId = null
-      event.sceneOrder = 0
-    }
+    event.sceneId = null
+    event.sceneOrder = 0
     this.db.prepare(`
       INSERT INTO novel_story_events
         (id, project_id, chapter_number, scene_id, scene_order, type, title, summary,
@@ -878,6 +873,7 @@ export class NovelMemoryStore {
   listStoryEvents(projectId: string, options?: ListStoryEventsOptions): NovelStoryEvent[] {
     const conditions = ['e.project_id = ?']
     const params: unknown[] = [projectId]
+    if (!options?.includeStale) conditions.push("e.status <> 'stale'")
     if (options?.chapterNumber !== undefined) {
       conditions.push('e.chapter_number = ?')
       params.push(options.chapterNumber)
@@ -1529,6 +1525,21 @@ export class NovelMemoryStore {
       created_at: full.createdAt,
     })
     return full
+  }
+
+  /**
+   * 替换同一章节、类型和实体的快照。
+   *
+   * Finalizer 在校准后会刷新本章 full 快照；先删后写可避免秒级时间戳相同时
+   * `getSnapshot()` 无法稳定判断哪一条才是最终状态。调用方应把本方法纳入业务事务。
+   */
+  replaceSnapshot(snapshot: Omit<MemorySnapshot, 'id' | 'createdAt'>): MemorySnapshot {
+    this.db.prepare(`
+      DELETE FROM novel_memory_snapshots
+      WHERE project_id = ? AND chapter_number = ? AND snapshot_type = ?
+        AND entity_id IS ?
+    `).run(snapshot.projectId, snapshot.chapterNumber, snapshot.snapshotType, snapshot.entityId)
+    return this.saveSnapshot(snapshot)
   }
 
   /** 获取某章的状态快照（按类型/实体过滤，返回最新一条） */

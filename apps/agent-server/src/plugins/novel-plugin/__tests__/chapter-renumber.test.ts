@@ -172,6 +172,19 @@ describe('NovelStore.deleteChapter 集成 - 章节重排', () => {
     expect(after.map((c) => c.chapterNumber)).toEqual([1, 2, 3, 4])
   })
 
+  it('删除并重排章节后按最高已发布章节重算 project.currentChapter', () => {
+    const chapters = store.listChapters(projectId)
+    store.completeChapterForReview(chapters[0].id, { content: '第一章正文', wordCount: 5 })
+    store.publishReviewedChapter(chapters[0].id)
+    store.completeChapterForReview(chapters[2].id, { content: '第三章正文', wordCount: 5 })
+    store.publishReviewedChapter(chapters[2].id)
+    store.updateProject(projectId, { currentChapter: 5 })
+
+    store.deleteChapter(chapters[1].id)
+
+    expect(store.getProject(projectId)?.currentChapter).toBe(2)
+  })
+
   it('删除章节时同步重排 markers.chapter', () => {
     const chapters = store.listChapters(projectId)
     const ch3 = chapters.find((c) => c.chapterNumber === 3)!
@@ -349,6 +362,129 @@ describe('NovelStore.deleteChapter 集成 - 章节重排', () => {
     expect(remaining).toHaveLength(2)
     expect(remaining[0].chapter_number).toBeNull()
     expect(remaining[1].chapter_number).toBe(4)
+  })
+
+  it('删除章节时同步重排 clues/items/narratives 的 chapter_spans（审查补漏）', () => {
+    const ch3 = store.listChapters(projectId).find((c) => c.chapterNumber === 3)!
+    db.prepare(
+      `INSERT INTO novel_clues (id, project_id, description, chapter_spans) VALUES (?, ?, ?, ?)`,
+    ).run(randomUUID(), projectId, '线索', JSON.stringify([[4, 5]]))
+    db.prepare(
+      `INSERT INTO novel_items (id, project_id, name, chapter_spans) VALUES (?, ?, ?, ?)`,
+    ).run(randomUUID(), projectId, '道具', JSON.stringify([[3, 3], [5, 5]]))
+    db.prepare(
+      `INSERT INTO novel_narratives (id, project_id, description, type, chapter_spans, created_at, updated_at)
+       VALUES (?, ?, ?, 'advance', ?, 1, 1)`,
+    ).run(randomUUID(), projectId, '剧情', JSON.stringify([[1, 5]]))
+
+    store.deleteChapter(ch3.id)
+
+    const clue = db.prepare('SELECT chapter_spans FROM novel_clues WHERE project_id = ?').get(projectId) as { chapter_spans: string }
+    expect(JSON.parse(clue.chapter_spans)).toEqual([[3, 4]]) // [4,5] → [3,4]
+    const item = db.prepare('SELECT chapter_spans FROM novel_items WHERE project_id = ?').get(projectId) as { chapter_spans: string }
+    expect(JSON.parse(item.chapter_spans)).toEqual([[4, 4]]) // [3,3] 整段被删，[5,5] → [4,4]
+    const narrative = db.prepare('SELECT chapter_spans FROM novel_narratives WHERE project_id = ?').get(projectId) as { chapter_spans: string }
+    expect(JSON.parse(narrative.chapter_spans)).toEqual([[1, 4]]) // [1,5] → [1,4]
+  })
+
+  it('删除章节时同步重排 story_events/hooks/chat_messages/discussion_runs/metrics（NOT NULL 列，审查补漏）', () => {
+    const ch3 = store.listChapters(projectId).find((c) => c.chapterNumber === 3)!
+    // story_events：ch3 的行被删，ch5 → 4
+    db.prepare(`INSERT INTO novel_story_events (id, project_id, chapter_number, type, title) VALUES (?, ?, ?, 'discovery', '事件A')`)
+      .run(randomUUID(), projectId, 3)
+    db.prepare(`INSERT INTO novel_story_events (id, project_id, chapter_number, type, title) VALUES (?, ?, ?, 'discovery', '事件B')`)
+      .run(randomUUID(), projectId, 5)
+    // hooks：ch3 埋设的钩子被删；ch4 埋设、ch5 兑现的钩子 → 3/4
+    db.prepare(`INSERT INTO novel_hooks (id, project_id, chapter_number, hook_type, description, fulfilled_at_chapter) VALUES (?, ?, ?, 'suspense', '钩子A', NULL)`)
+      .run(randomUUID(), projectId, 3)
+    db.prepare(`INSERT INTO novel_hooks (id, project_id, chapter_number, hook_type, description, fulfilled_at_chapter) VALUES (?, ?, ?, 'suspense', '钩子B', ?)`)
+      .run(randomUUID(), projectId, 4, 5)
+    // chapter_chat_messages：ch3 的消息被删，ch4 → 3
+    db.prepare(`INSERT INTO novel_chapter_chat_messages (id, project_id, chapter_number, role, from_id, from_name, content) VALUES (?, ?, ?, 'user', 'u1', '用户', '消息A')`)
+      .run(randomUUID(), projectId, 3)
+    db.prepare(`INSERT INTO novel_chapter_chat_messages (id, project_id, chapter_number, role, from_id, from_name, content) VALUES (?, ?, ?, 'user', 'u1', '用户', '消息B')`)
+      .run(randomUUID(), projectId, 4)
+    // discussion_runs：ch3 被删，ch5 → 4
+    db.prepare(`INSERT INTO novel_discussion_runs (id, project_id, chapter_number, status) VALUES (?, ?, ?, 'completed')`)
+      .run(randomUUID(), projectId, 3)
+    db.prepare(`INSERT INTO novel_discussion_runs (id, project_id, chapter_number, status) VALUES (?, ?, ?, 'completed')`)
+      .run(randomUUID(), projectId, 5)
+    // context_section_metrics：ch3 被删，ch5 → 4（agent_log_id 有 FK，先造 agent_logs 行）
+    const logId3 = randomUUID()
+    const logId5 = randomUUID()
+    db.prepare(`INSERT INTO novel_agent_logs (id, project_id, chapter_number, agent_type) VALUES (?, ?, ?, 'writer')`)
+      .run(logId3, projectId, 3)
+    db.prepare(`INSERT INTO novel_agent_logs (id, project_id, chapter_number, agent_type) VALUES (?, ?, ?, 'writer')`)
+      .run(logId5, projectId, 5)
+    db.prepare(`INSERT INTO novel_context_section_metrics
+      (id, agent_log_id, project_id, chapter_number, agent_type, section_type, section_id, chars, estimated_tokens, source_hash, created_at)
+      VALUES (?, ?, ?, ?, 'writer', 'dynamic', 's1', 10, 5, 'h1', 1)`)
+      .run(randomUUID(), logId3, projectId, 3)
+    db.prepare(`INSERT INTO novel_context_section_metrics
+      (id, agent_log_id, project_id, chapter_number, agent_type, section_type, section_id, chars, estimated_tokens, source_hash, created_at)
+      VALUES (?, ?, ?, ?, 'writer', 'dynamic', 's1', 10, 5, 'h1', 1)`)
+      .run(randomUUID(), logId5, projectId, 5)
+
+    store.deleteChapter(ch3.id)
+
+    const events = db.prepare('SELECT chapter_number FROM novel_story_events WHERE project_id = ?').all(projectId) as Array<{ chapter_number: number }>
+    expect(events).toHaveLength(1)
+    expect(events[0].chapter_number).toBe(4)
+    const hooks = db.prepare('SELECT chapter_number, fulfilled_at_chapter FROM novel_hooks WHERE project_id = ?').all(projectId) as Array<{ chapter_number: number; fulfilled_at_chapter: number | null }>
+    expect(hooks).toHaveLength(1)
+    expect(hooks[0].chapter_number).toBe(3) // 4 → 3
+    expect(hooks[0].fulfilled_at_chapter).toBe(4) // 5 → 4
+    const messages = db.prepare('SELECT chapter_number, content FROM novel_chapter_chat_messages WHERE project_id = ?').all(projectId) as Array<{ chapter_number: number; content: string }>
+    expect(messages).toHaveLength(1)
+    expect(messages[0].chapter_number).toBe(3)
+    expect(messages[0].content).toBe('消息B')
+    const runs = db.prepare('SELECT chapter_number FROM novel_discussion_runs WHERE project_id = ?').all(projectId) as Array<{ chapter_number: number }>
+    expect(runs).toHaveLength(1)
+    expect(runs[0].chapter_number).toBe(4)
+    const metrics = db.prepare('SELECT chapter_number FROM novel_context_section_metrics WHERE project_id = ?').all(projectId) as Array<{ chapter_number: number }>
+    expect(metrics).toHaveLength(1)
+    expect(metrics[0].chapter_number).toBe(4)
+  })
+
+  it('删除章节时同步重排可空章节引用：items/locations first_chapter、annotations 范围、relationships 标记（审查补漏）', () => {
+    const ch3 = store.listChapters(projectId).find((c) => c.chapterNumber === 3)!
+    // items.first_chapter：命中被删章 → NULL；另一条 5 → 4
+    db.prepare(`INSERT INTO novel_items (id, project_id, name, first_chapter) VALUES (?, ?, ?, ?)`)
+      .run(randomUUID(), projectId, '道具A', 3)
+    db.prepare(`INSERT INTO novel_items (id, project_id, name, first_chapter) VALUES (?, ?, ?, ?)`)
+      .run(randomUUID(), projectId, '道具B', 5)
+    // locations.first_chapter：5 → 4
+    db.prepare(`INSERT INTO novel_locations (id, project_id, name, first_chapter) VALUES (?, ?, ?, ?)`)
+      .run(randomUUID(), projectId, '地点', 5)
+    // annotations：范围 [3,5] → start NULL / end 4；范围 [1,2] 不变
+    db.prepare(`INSERT INTO novel_annotations (id, project_id, scope_type, content, chapter_start, chapter_end) VALUES (?, ?, 'project', '批注A', ?, ?)`)
+      .run(randomUUID(), projectId, 3, 5)
+    db.prepare(`INSERT INTO novel_annotations (id, project_id, scope_type, content, chapter_start, chapter_end) VALUES (?, ?, 'project', '批注B', ?, ?)`)
+      .run(randomUUID(), projectId, 1, 2)
+    // relationships.last_updated_chapter：3 → NULL；5 → 4
+    db.prepare(`INSERT INTO novel_relationships (id, project_id, character_a, character_b, relation_type, last_updated_chapter) VALUES (?, ?, 'a', 'b', 'friend', ?)`)
+      .run(randomUUID(), projectId, 3)
+    db.prepare(`INSERT INTO novel_relationships (id, project_id, character_a, character_b, relation_type, last_updated_chapter) VALUES (?, ?, 'c', 'd', 'friend', ?)`)
+      .run(randomUUID(), projectId, 5)
+
+    store.deleteChapter(ch3.id)
+
+    const items = db.prepare('SELECT name, first_chapter FROM novel_items WHERE project_id = ? ORDER BY name').all(projectId) as Array<{ name: string; first_chapter: number | null }>
+    expect(items).toHaveLength(2)
+    expect(items.find((i) => i.name === '道具A')!.first_chapter).toBeNull()
+    expect(items.find((i) => i.name === '道具B')!.first_chapter).toBe(4)
+    const location = db.prepare('SELECT first_chapter FROM novel_locations WHERE project_id = ?').get(projectId) as { first_chapter: number | null }
+    expect(location.first_chapter).toBe(4)
+    const annotations = db.prepare('SELECT content, chapter_start, chapter_end FROM novel_annotations WHERE project_id = ? ORDER BY content').all(projectId) as Array<{ content: string; chapter_start: number | null; chapter_end: number | null }>
+    const annoA = annotations.find((a) => a.content === '批注A')!
+    expect(annoA.chapter_start).toBeNull() // 3 → NULL（保留批注本体）
+    expect(annoA.chapter_end).toBe(4) // 5 → 4
+    const annoB = annotations.find((a) => a.content === '批注B')!
+    expect(annoB.chapter_start).toBe(1)
+    expect(annoB.chapter_end).toBe(2)
+    const rels = db.prepare('SELECT character_a, last_updated_chapter FROM novel_relationships WHERE project_id = ? ORDER BY character_a').all(projectId) as Array<{ character_a: string; last_updated_chapter: number | null }>
+    expect(rels.find((r) => r.character_a === 'a')!.last_updated_chapter).toBeNull()
+    expect(rels.find((r) => r.character_a === 'c')!.last_updated_chapter).toBe(4)
   })
 })
 

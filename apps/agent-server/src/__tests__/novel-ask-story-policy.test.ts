@@ -151,6 +151,28 @@ describe('novel_ask_story policy', () => {
     expect(disabled).toContain('请仅依据已注入的章节上下文完成当前职责。')
   })
 
+  it('运行时限额：同一 run 超限后不再调用底层 novel_ask_story，不同 Agent 隔离', async () => {
+    const orchestrator = Object.create(NovelOrchestrator.prototype) as any
+    orchestrator.context = { logger: { warn: vi.fn() } }
+    const execute = vi.fn(async () => ({ content: [{ type: 'text', text: 'story' }], details: undefined }))
+    const tool = { name: 'novel_ask_story', description: 'ask story', execute }
+    const run: { askStoryCounts: Partial<Record<NovelAgentType, number>> } = { askStoryCounts: {} }
+    const writerTool = orchestrator.wrapAskStoryWithLimit(tool, run, 'writer', 'p1', 3)
+    for (let i = 0; i < 6; i++) await writerTool.execute(`call-${i}`, { projectId: 'foreign', question: '状态' })
+    const blocked = await writerTool.execute('call-6', { projectId: 'p1', question: '状态' })
+    expect(execute).toHaveBeenCalledTimes(6)
+    expect(execute).toHaveBeenNthCalledWith(1, 'call-0', {
+      projectId: 'p1', question: '状态', chapterNumber: 3,
+    })
+    expect(blocked.content[0].text).toContain('额度已用完')
+    expect(run.askStoryCounts.writer).toBe(6)
+
+    const reviewerTool = orchestrator.wrapAskStoryWithLimit(tool, run, 'reviewer', 'p1', 3)
+    await reviewerTool.execute('reviewer-call', { projectId: 'p1', question: '状态' })
+    expect(execute).toHaveBeenCalledTimes(7)
+    expect(run.askStoryCounts.reviewer).toBe(1)
+  })
+
   it('persists the normalized policy and per-agent enabled value in both audit logs', async () => {
     const orchestrator = Object.create(NovelOrchestrator.prototype) as any
     const insertedLogs: Array<Record<string, unknown>> = []
@@ -167,7 +189,20 @@ describe('novel_ask_story policy', () => {
     orchestrator.promptBuilder = {
       buildAgentIdentity: () => 'identity',
       buildSystemPrompt: () => 'system',
-      buildChapterContextShared: () => 'shared',
+      getChapterBoundaryContext: () => ({
+        chapterNumber: 3,
+        fromSnapshot: false,
+        state: {},
+        entities: {
+          characters: [], relationships: [], conflicts: [], foreshadowing: [], clues: [],
+          factions: [], locations: [], items: [], worldElements: [], informationLayers: [], edges: [],
+        },
+      }),
+      // 2026-08-12 逻辑统一：orchestrator 恒走 chunk 组装，mock 需提供 chunk 路径方法
+      buildChapterContextChunks: () => [{ chunkId: 'chapter-info', content: 'shared' }],
+      assembleSharedFromChunks: (chunks: Array<{ chunkId: string; content: string }>) =>
+        chunks.map((c) => c.content).join('\n\n---\n\n'),
+      chooseChapterEntitySummaryMode: () => 'full',
       buildChapterContextSuffix: () => 'suffix',
       buildArrangedEntitiesSection: () => '',
       buildReferenceFactPack: () => '',

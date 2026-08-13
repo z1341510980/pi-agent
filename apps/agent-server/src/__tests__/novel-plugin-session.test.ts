@@ -216,6 +216,13 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
     expect(mockState.createSessionCalls).toBe(1)
   })
 
+  it('characterGenerator.generate 将本次指定模型传给 createSession', async () => {
+    characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
+    const modelId = { provider: 'provider-a', modelId: 'model-a' }
+    await characterGenerator.generate('p-1', '沉默寡言的剑客', undefined, undefined, modelId)
+    expect(mockState.lastOptions?.modelId).toEqual(modelId)
+  })
+
   it('characterGenerator.generate 调用 handle.promptStream() 并获取结果', async () => {
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
     await characterGenerator.generate('p-1', '勇敢的少年')

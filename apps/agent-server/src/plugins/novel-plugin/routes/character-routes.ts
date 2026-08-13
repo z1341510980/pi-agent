@@ -90,6 +90,10 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
 
   const aiGenerateCharacterSchema = z.object({
     coreStyle: z.string().min(1).max(500),
+    modelId: z.object({
+      provider: z.string().min(1),
+      modelId: z.string().min(1),
+    }).optional(),
   })
 
   routes.push({
@@ -127,6 +131,8 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
           request.params.projectId,
           input.coreStyle,
           (event) => emitter.progress(event),
+          undefined,
+          input.modelId,
         )
 
         const character = store.createCharacter({
@@ -187,6 +193,11 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
       const input = validateBody(createCharacterHistorySchema, request, reply)
       if (!input) return reply
 
+      const character = store.getCharacter(request.params.characterId)
+      if (!character || character.projectId !== request.params.projectId) {
+        throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${request.params.characterId}`, 404)
+      }
+
       const entry = store.createCharacterHistory({
         projectId: request.params.projectId,
         characterId: request.params.characterId,
@@ -215,6 +226,14 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
     handler: async (request: any, reply: any) => {
       const input = validateBody(batchCharacterHistorySchema, request, reply)
       if (!input) return reply
+
+      const invalidCharacter = input.records.find((record: { characterId: string }) => {
+        const character = store.getCharacter(record.characterId)
+        return !character || character.projectId !== request.params.projectId
+      })
+      if (invalidCharacter) {
+        throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${invalidCharacter.characterId}`, 404)
+      }
 
       const entries = input.records.map((r: { characterId: string; chapterNumber: number }) => ({
         projectId: request.params.projectId,
@@ -267,9 +286,18 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
       const input = validateBody(createCharacterArcSchema, request, reply)
       if (!input) return reply
 
+      const projectId = request.params.projectId
+      const character = store.getCharacter(input.characterId)
+      if (!character || character.projectId !== projectId) {
+        throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${input.characterId}`, 404)
+      }
+      if (store.getCharacterArcByCharacter(projectId, input.characterId)) {
+        throw new AppError(ErrorCode.CONFLICT, `角色已有弧光: ${input.characterId}`, 409)
+      }
+
       const arc = store.createCharacterArc({
         id: randomUUID(),
-        projectId: request.params.projectId,
+        projectId,
         ...input,
       })
       return success(arc, request.traceId)
@@ -306,8 +334,19 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
       const input = validateBody(updateCharacterArcSchema, request, reply)
       if (!input) return reply
 
+      const arc = store.getCharacterArc(request.params.id)
+      if (!arc) {
+        throw new AppError(ErrorCode.NOT_FOUND, `角色弧光不存在: ${request.params.id}`, 404)
+      }
+      if (input.characterId !== undefined && input.characterId !== arc.characterId) {
+        const character = store.getCharacter(input.characterId)
+        if (!character || character.projectId !== arc.projectId) {
+          throw new AppError(ErrorCode.NOT_FOUND, `角色不存在: ${input.characterId}`, 404)
+        }
+        throw new AppError(ErrorCode.BAD_REQUEST, '角色弧光不支持更换所属角色', 400)
+      }
+
       const updated = store.updateCharacterArc(request.params.id, input)
-      if (!updated) throw new AppError(ErrorCode.NOT_FOUND, `角色弧光不存在: ${request.params.id}`, 404)
       return success(updated, request.traceId)
     },
   })

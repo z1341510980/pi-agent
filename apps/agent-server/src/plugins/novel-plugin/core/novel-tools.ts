@@ -2292,7 +2292,7 @@ export function createNovelSubmitNarrativeTaskTool(
  */
 export interface ReviewDraftHolder {
   /** Reviewer 提交的验收对象（不含 id/projectId/chapterId/reviewedBy/createdAt，这些由 saveReview 填充）。 */
-  review?: Omit<NovelChapterReview, 'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt'>
+  review?: Omit<NovelChapterReview, 'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt' | 'contentRevisionId' | 'contentHash'>
   /** Reviewer 的原始自然语言输出（推理过程等），用于审计和回退展示。 */
   rawOutput?: string
 }
@@ -2397,7 +2397,7 @@ export function createNovelSubmitReviewTool(
     promptSnippet: '提交结构化验收报告（十维评分/结论/问题列表/建议）',
     parameters: SubmitReviewParams,
     async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
-      const review: Omit<NovelChapterReview, 'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt'> = {
+      const review: Omit<NovelChapterReview, 'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt' | 'contentRevisionId' | 'contentHash'> = {
         consistencyScore: params.consistencyScore ?? null,
         characterScore: params.characterScore ?? null,
         taskCompletionScore: params.taskCompletionScore ?? null,

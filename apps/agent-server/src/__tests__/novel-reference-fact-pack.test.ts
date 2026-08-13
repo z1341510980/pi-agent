@@ -81,4 +81,36 @@ describe('minimal reference fact packs', () => {
     expect(builder.buildReviewFactPack('project-a', ['这里违反了每次预言都会失去一段记忆']))
       .toContain('原文：每次预言都会失去一段记忆')
   })
+
+  it('历史章节事实包使用快照状态，Snapshot 外实体只补静态档案', () => {
+    const builder = createBuilder()
+    const boundaryCharacter = {
+      ...entity('char-local', 'project-a', '林深'),
+      currentState: '章前仍被困在码头',
+      currentGoal: '设法离开码头',
+    }
+    const boundary = {
+      chapterNumber: 2,
+      fromSnapshot: true,
+      state: {},
+      entities: {
+        characters: [boundaryCharacter],
+        relationships: [], conflicts: [], foreshadowing: [], clues: [], factions: [],
+        locations: [], items: [], worldElements: [], informationLayers: [], edges: [],
+      },
+    } as any
+
+    const snapshotFact = builder.buildReferenceFactPack('project-a', ['char-local'], boundary)
+    expect(snapshotFact).toContain('章前仍被困在码头')
+    expect(snapshotFact).toContain('设法离开码头')
+    expect(snapshotFact).not.toContain('状态：受伤')
+    expect(snapshotFact).not.toContain('目标：找到真相')
+
+    const newEntityFact = builder.buildReferenceFactPack('project-a', ['char-partner'], boundary)
+    expect(newEntityFact).toContain('周岚')
+    expect(newEntityFact).toContain('身份：调查员')
+    expect(newEntityFact).toContain('章前动态状态未知')
+    expect(newEntityFact).not.toContain('状态：受伤')
+    expect(newEntityFact).not.toContain('目标：找到真相')
+  })
 })

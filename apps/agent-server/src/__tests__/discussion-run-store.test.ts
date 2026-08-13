@@ -50,6 +50,8 @@ describe('DiscussionRunStore', () => {
         factionIds: [],
         locationIds: [],
       },
+      memberModel: { provider: 'openai', modelId: 'gpt-test' },
+      projectModel: { provider: 'anthropic', modelId: 'claude-project' },
       error: '502',
     })
 
@@ -59,7 +61,10 @@ describe('DiscussionRunStore', () => {
       status: 'error',
       failedPhase: 'chapter_weaving',
       transcript: [{ content: '角色推演' }],
-      scenes: [{ title: '突破' }],
+      scenes: [{ sceneId: 1, title: '突破' }],
+      arrangedEntities: { characterIds: ['1'] },
+      memberModel: { provider: 'openai', modelId: 'gpt-test' },
+      projectModel: { provider: 'anthropic', modelId: 'claude-project' },
       error: '502',
     })
   })

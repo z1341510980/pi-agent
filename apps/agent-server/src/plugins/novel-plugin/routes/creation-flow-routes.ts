@@ -45,10 +45,33 @@ import {
   parseArrangedEntities,
   findForeignArrangedEntities,
 } from './arranged-entities-contract.js'
+import { parseNovelModelRef } from '../core/novel-model-ref.js'
 
 export function createCreationFlowRoutes(services: NovelServices): RouteDefinition[] {
   const { store } = services
   const routes: RouteDefinition[] = []
+
+  const requireChapter = (projectId: string, chapterNumber: string): number => {
+    const parsed = Number(chapterNumber)
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new AppError(ErrorCode.BAD_REQUEST, `无效的 chapterNumber: ${chapterNumber}`, 400)
+    }
+    if (!store.getProject(projectId)) {
+      throw new AppError(ErrorCode.NOT_FOUND, `项目不存在: ${projectId}`, 404)
+    }
+    if (!store.getChapter(projectId, parsed)) {
+      throw new AppError(ErrorCode.NOT_FOUND, `章节不存在或不属于该项目: ${chapterNumber}`, 404)
+    }
+    return parsed
+  }
+
+  const requireWritableChapter = (projectId: string, chapterNumber: string): number => {
+    const parsed = requireChapter(projectId, chapterNumber)
+    if (store.getChapter(projectId, parsed)?.status === 'published') {
+      throw new AppError(ErrorCode.CONFLICT, '已发布章节不能重新创作，请先进入修订流程', 409)
+    }
+    return parsed
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // 多 Agent 创作流程（SSE + 检查点）
@@ -108,6 +131,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const orchestrator = services.orchestrator
       const input = validateBody(creationFlowBodySchema, request, reply)
       if (!input) return reply
+      const chapterNumberValue = requireWritableChapter(projectId, chapterNumber)
       const arrangedEntities = parseArrangedEntities(input)
 
       if (arrangedEntities) {
@@ -147,7 +171,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         `novel:chapter:${projectId}:${chapterNumber}`,
         randomUUID(),
       )
-      const chapterNumberValue = parseInt(chapterNumber, 10)
       const workflowRunId = randomUUID()
       const persistWorkflowMessage = (message: {
         role: 'agent' | 'system'
@@ -289,6 +312,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       })
       const input = validateBody(reReviseBodySchema, request, reply)
       if (!input) return reply
+      const chapterNumberValue = requireWritableChapter(projectId, chapterNumber)
       const arrangedEntities = parseArrangedEntities(input)
       if (arrangedEntities) {
         const invalid = findForeignArrangedEntities(store, projectId, arrangedEntities)
@@ -324,7 +348,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         `novel:chapter:${projectId}:${chapterNumber}:re-revise`,
         randomUUID(),
       )
-      const chapterNumberValue = parseInt(chapterNumber, 10)
       const task = registerNovelChapterTask(creationLockKey, 're-revise')
       const abortOnDisconnect = () => {
         if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
@@ -454,6 +477,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       // 解析请求体中的 arrangedEntities（与 create-flow 端点一致，复用同一 schema）
       const input = validateBody(creationFlowBodySchema, request, reply)
       if (!input) return reply
+      const chapterNumberValue = requireWritableChapter(projectId, chapterNumber)
       const arrangedEntities = parseArrangedEntities(input)
 
       // 校验编排实体属于当前项目（与 create-flow 一致）
@@ -505,9 +529,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         chapterCreationLocks.add(creationLockKey)
         // 运行时读取最新设置，让 moderatorModel / 其他参数的修改即时生效
         const settings = services.discussionSettingsStore.get()
+        const projectModel = parseNovelModelRef(
+          typeof store.getNovelModelId === 'function' ? store.getNovelModelId(projectId) : undefined,
+        ) ?? null
         const result = await discussionRunner.run(
           projectId,
-          parseInt(chapterNumber, 10),
+          chapterNumberValue,
           {
             emit: emitter.emit,
             onCheckpoint: async (checkpoint) => {
@@ -532,6 +559,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             },
             onProgress: (event) => emitter.progress(event),
             moderatorModel: settings.moderatorModel,
+            memberModel: input.modelId,
+            projectModel,
             signal: task.controller.signal,
           },
           arrangedEntities,
@@ -539,12 +568,14 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         services.discussionRunStore.save({
           id: discussionRunId,
           projectId,
-          chapterNumber: parseInt(chapterNumber, 10),
+          chapterNumber: chapterNumberValue,
           status: result.status,
           failedPhase: result.failedPhase,
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities,
+          memberModel: input.modelId,
+          projectModel,
           content: result.content,
           error: result.error,
         })
@@ -552,7 +583,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           persistDiscussionHistory(
             services.chapterChatStore,
             projectId,
-            parseInt(chapterNumber, 10),
+            chapterNumberValue,
             result,
             discussionRunId,
           )
@@ -589,7 +620,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         chapterNumber: string
         runId: string
       }
-      const chapter = parseInt(chapterNumber, 10)
+      const chapter = requireWritableChapter(projectId, chapterNumber)
       const snapshot = services.discussionRunStore.get(runId)
       if (!snapshot || snapshot.projectId !== projectId || snapshot.chapterNumber !== chapter) {
         reply.code(404).send({ ok: false, error: '未找到该章节的群聊中断记录' })
@@ -633,6 +664,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       try {
         chapterCreationLocks.add(creationLockKey)
         const settings = services.discussionSettingsStore.get()
+        const projectModel = snapshot.projectModel === undefined
+          ? parseNovelModelRef(
+              typeof store.getNovelModelId === 'function' ? store.getNovelModelId(projectId) : undefined,
+            ) ?? null
+          : snapshot.projectModel
         const result = await services.discussionRunner.run(
           projectId,
           chapter,
@@ -657,6 +693,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             },
             onProgress: event => emitter.progress(event),
             moderatorModel: settings.moderatorModel,
+            memberModel: snapshot.memberModel,
+            projectModel,
             signal: task.controller.signal,
           },
           snapshot.arrangedEntities,
@@ -676,6 +714,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities: snapshot.arrangedEntities,
+          memberModel: snapshot.memberModel,
+          projectModel,
           content: result.content,
           error: result.error,
           resumedFromRunId: runId,
@@ -791,6 +831,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     handler: async (request: any, reply: any) => {
       const { projectId, chapterNumber } = request.params
       const entityGenerator = services.entityGenerator
+      const chNum = requireChapter(projectId, chapterNumber)
 
       // 并发锁：同一章节不允许并发 ai-arrange，避免重复生成实体
       const lockKey = `${projectId}:${chapterNumber}`
@@ -843,9 +884,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       // 锁置入 try 块开头：确保 finally 必定执行 delete，避免 SSE 设置抛错导致锁残留
       try {
         aiArrangeLocks.set(lockKey, Promise.resolve())
-        const chNum = parseInt(chapterNumber, 10)
         const chapter = store.getChapter(projectId, chNum)
-        if (!chapter) throw new Error(`章节不存在: ${chNum}`)
+        if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${chNum}`, 404)
         if (!chapter.outline?.trim()) throw new Error('章纲为空，无法 AI 编排')
 
         // 阶段1：AI 编排（生成实体并落库到本章列）
@@ -918,6 +958,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     handler: async (request: any, reply: any) => {
       const { projectId, chapterNumber } = request.params
       const entityGenerator = services.entityGenerator
+      const chNum = requireChapter(projectId, chapterNumber)
 
       // 并发锁：与 ai-arrange 共用锁池，同一章节不允许并发编排
       const lockKey = `${projectId}:${chapterNumber}`
@@ -961,9 +1002,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
 
       try {
         aiArrangeLocks.set(lockKey, Promise.resolve())
-        const chNum = parseInt(chapterNumber, 10)
         const chapter = store.getChapter(projectId, chNum)
-        if (!chapter) throw new Error(`章节不存在: ${chNum}`)
+        if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${chNum}`, 404)
         if (!chapter.content?.trim()) throw new Error('章节正文为空，无法反推实体')
 
         emitter.progress({ type: 'arrange_start', phase: 'arranging', message: '开始从正文反推实体...' })
@@ -1033,46 +1073,32 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const input = validateBody(createTeamSchema, request, reply)
       if (!input) return reply
 
-      const teamManager = services.teamManager
-      if (!teamManager) {
-        throw new AppError(
-          ErrorCode.CONFIG_ERROR,
-          'TeamManager 不可用（teamPlugin 未注册或 plugin-loader 未注入），无法触发团队创作',
-          503,
-        )
+      const chapterNum = requireWritableChapter(projectId, chapterNumber)
+      const chapter = store.getChapter(projectId, chapterNum)!
+      const creationLockKey = `${projectId}:${chapterNumber}`
+      if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
+        throw new AppError(ErrorCode.CONFLICT, '该章节正在创作中，请勿重复启动团队创作', 409)
       }
 
-      const team = teamManager.getTeam('novel-team')
-      if (!team) {
-        throw new AppError(
-          ErrorCode.CONFIG_ERROR,
-          'Novel Team 未注册，请检查 novel-plugin 初始化日志',
-          503,
-        )
+      services.orchestrator.setUserMessages(projectId, chapterNum, [
+        input.narrativeTask,
+        ...(input.rhythm ? [`节奏建议：${input.rhythm}`] : []),
+      ])
+      store.updateChapter(chapter.id, { narrativeTask: input.narrativeTask })
+      const task = registerNovelChapterTask(creationLockKey, 'workflow')
+      chapterCreationLocks.add(creationLockKey)
+      try {
+        const result = await services.orchestrator.createChapterWithFlow(projectId, chapterNum, {
+          emit: (() => {}) as any,
+          onCheckpoint: async () => 'approve',
+          onProgress: () => {},
+          signal: task.controller.signal,
+        })
+        return success(result, request.traceId)
+      } finally {
+        finishNovelChapterTask(creationLockKey, task)
+        chapterCreationLocks.delete(creationLockKey)
       }
-
-      const project = store.getProject(projectId)
-      if (!project) {
-        throw new AppError(ErrorCode.NOT_FOUND, `项目不存在: ${projectId}`, 404)
-      }
-
-      const chapterNum = parseInt(chapterNumber, 10)
-      if (Number.isNaN(chapterNum) || chapterNum < 1) {
-        throw new AppError(ErrorCode.BAD_REQUEST, `无效的 chapterNumber: ${chapterNumber}`, 400)
-      }
-
-      // 构建团队任务描述（pipeline 下作为首个 Agent 的输入，后续 Agent 接收前一阶段输出）
-      const task = [
-        `为项目《${project.title}》创作第 ${chapterNum} 章。`,
-        `叙事任务：${input.narrativeTask}`,
-        input.rhythm ? `节奏建议：${input.rhythm}` : '',
-      ].filter(Boolean).join('\n')
-
-      const result = await teamManager.execute('novel-team', task, {
-        strategy: 'pipeline',
-      })
-
-      return success(result, request.traceId)
     },
   })
 
@@ -1248,7 +1274,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     path: '/projects/:projectId/chapters/:chapterNumber/chat',
     handler: async (request: any) => {
       const { projectId, chapterNumber } = request.params
-      const messages = services.chapterChatStore.list(projectId, parseInt(chapterNumber, 10))
+      const chapterNum = requireChapter(projectId, chapterNumber)
+      const messages = services.chapterChatStore.list(projectId, chapterNum)
       return success(messages, request.traceId)
     },
   })
@@ -1259,7 +1286,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     path: '/projects/:projectId/chapters/:chapterNumber/chat',
     handler: async (request: any) => {
       const { projectId, chapterNumber } = request.params
-      services.chapterChatStore.clear(projectId, parseInt(chapterNumber, 10))
+      const chapterNum = requireChapter(projectId, chapterNumber)
+      services.chapterChatStore.clear(projectId, chapterNum)
       return success({ cleared: true }, request.traceId)
     },
   })
@@ -1284,7 +1312,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const input = validateBody(chatBodySchema, request, reply)
       if (!input) return reply
 
-      const chapterNum = parseInt(chapterNumber, 10)
+      // 必须在 SSE 响应头写出前校验，否则 404/400 会被伪装成 200 事件流。
+      const chapterNum = requireChapter(projectId, chapterNumber)
       const settings = services.discussionSettingsStore.get()
 
       // SSE 设置（与 create-flow / create-discussion 一致）
@@ -1357,9 +1386,10 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const { projectId, chapterNumber } = request.params
       const input = validateBody(persistChatSchema, request, reply)
       if (!input) return reply
+      const chapterNum = requireChapter(projectId, chapterNumber)
       const message = services.chapterChatStore.add({
         projectId,
-        chapterNumber: parseInt(chapterNumber, 10),
+        chapterNumber: chapterNum,
         role: input.role,
         fromId: input.fromId,
         fromName: input.fromName,

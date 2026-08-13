@@ -42,11 +42,16 @@ type MemoryMeasuredAttempt = {
   durationMs: number
 }
 
+type DeferredMemoryCommit = {
+  summary: string
+  apply: (() => MemoryGenerationResult) | null
+}
+
 function failedMemoryResult(summary: string, error: string): MemoryGenerationResult {
   return {
     status: 'error', summary, error,
     stats: {
-      characterUpdatesApplied: 0, characterCreatesApplied: 0,
+      characterUpdatesApplied: 0, characterCreatesApplied: 0, characterCreatesDeduped: 0,
       foreshadowUpdatesApplied: 0, foreshadowCreatesApplied: 0,
       clueUpdatesApplied: 0, clueCreatesApplied: 0,
       conflictUpdatesApplied: 0, conflictCreatesApplied: 0,
@@ -57,7 +62,7 @@ function failedMemoryResult(summary: string, error: string): MemoryGenerationRes
     },
   }
 }
-import type { NarrativeTask, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, ChapterSpan, VersionSource } from '../../plugins/novel-plugin/core/types.js'
+import type { NarrativeTask, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, NovelItem, ChapterSpan, VersionSource } from '../../plugins/novel-plugin/core/types.js'
 import type { NovelAgentType, CreationPhase, CreationFlowEvent } from '../../plugins/novel-plugin/core/novel-agents.js'
 import type { CreationResult } from '@repo/shared/novel'
 import type { AgUiEventSink } from '@repo/protocol/events'
@@ -114,6 +119,11 @@ export interface CreationOptions {
    * 用于"本次创作临时切换模型"。
    */
   modelId?: { provider: string; modelId: string }
+  /**
+   * 本次 Agent 可使用的章节上下文 token 预算（不含动态任务、工具 schema 与输出预留）。
+   * 未提供时保持既有行为；由调用方在已知模型窗口时显式传入。
+   */
+  contextBudgetTokens?: number
 }
 
 /** CreationResult 已迁入 @repo/shared/novel 共享包，此处通过顶部 import 引入 */
@@ -182,6 +192,17 @@ export class ChapterFinalizer {
   async finalize(params: FinalizeParams): Promise<CreationResult> {
     const { projectId, chapterNumber, content, options, arrangedEntities, directorTask, chapterId } = params
     options.signal?.throwIfAborted()
+    if (!chapterId) {
+      throw new Error(`章节不存在或未绑定持久化记录: ${projectId}#${chapterNumber}`)
+    }
+
+    const cleanedContent = this.stripThinkingPrelude(content)
+    if (cleanedContent !== content) {
+      this.context.logger.info(
+        { projectId, chapterNumber, originalLen: content.length, cleanedLen: cleanedContent.length },
+        '已清洗 Writer 输出开头的思考前缀',
+      )
+    }
 
     // Phase 5: Memory
     // 重写中间章节时，全局实体状态已经包含后续章节结果。直接让 Memory 写入会把
@@ -194,43 +215,50 @@ export class ChapterFinalizer {
         : '记忆 Agent 正在提取状态变更...',
     })
     const beforeState = this.captureEntityState(projectId)
-    const memoryResult = historicalRewrite
-      ? '中间章节正文已更新；为避免污染后续章节，全局实体状态未自动改写'
-      : await this.runMemoryAgent(projectId, chapterNumber, content, options)
-    const memoryEvents = historicalRewrite
-      ? []
-      : this.recordMemoryEvents(
+    const deferredMemory = historicalRewrite
+      ? {
+          summary: '中间章节正文已更新；为避免污染后续章节，全局实体状态未自动改写',
+          apply: null,
+        }
+      : await this.analyzeMemoryForFinalization(projectId, chapterNumber, cleanedContent, options)
+    let memoryResult = deferredMemory.summary
+    let memoryEvents: MemoryEvent[] = []
+
+    // 正文、不可变 revision、Memory 实体、事件、章节维度和快照共享一个短事务。
+    // LLM 分析已在事务外完成，避免网络调用长时间占用 SQLite 写锁。
+    this.store.withTransaction(() => {
+      this.store.completeChapterForReview(chapterId, {
+        content: cleanedContent,
+        wordCount: cleanedContent.length,
+        positioning: directorTask?.positioning
+          ?? this.store.getChapter(projectId, chapterNumber)?.positioning
+          ?? null,
+        timeOffset: directorTask?.timeOffset ?? null,
+        chapterEndingHook: directorTask?.chapterEndingHook ?? null,
+      }, params.versionSource)
+
+      if (!historicalRewrite) {
+        const applied = deferredMemory.apply?.()
+        if (applied) memoryResult = applied.summary
+        memoryEvents = this.recordMemoryEvents(projectId, chapterNumber, chapterId, beforeState)
+        this.syncChapterDimensions(
           projectId,
           chapterNumber,
           chapterId,
+          arrangedEntities,
           beforeState,
         )
+        this.saveChapterSnapshot(projectId, chapterNumber)
+      }
+    })
 
-    // 同步本章涉及实体的章节维度字段（firstChapter/lastChapter/characterHistory）
-    // 解决 Memory Agent 只改动态状态、不写章节维度导致的矩阵视图滞后问题
-    if (!historicalRewrite) {
-      this.syncChapterDimensions(
-        projectId,
-        chapterNumber,
-        chapterId,
-        arrangedEntities,
-        beforeState,
-      )
-    }
-
-    // 章节完成时保存全量状态快照（情景记忆）
-    if (!historicalRewrite) {
-      this.saveChapterSnapshot(projectId, chapterNumber)
-    }
-
-    // 定期全量校准：每 10 章触发一次，修复 Memory Agent 逐章提取可能遗漏的状态变更
-    // 设计意图：LLM 逐章提取状态变更时可能漏掉微妙的转变，累积下来状态系统会与正文脱节。
-    // 每 10 章做一次"查漏补缺"式全量扫描，拉取最近 5 章正文对比当前状态。
+    // 定期全量校准：LLM 分析在事务外，状态变更、审计事件、章节维度和最终快照
+    // 在独立补偿事务中提交。章节正文已经完成核心提交，校准失败不会回滚正文。
     if (!historicalRewrite && chapterNumber > 0 && chapterNumber % 10 === 0 && this.memoryGenerator) {
       this.emitProgress(options, 'memory', 'phase_change', { message: '触发全量状态校准（每 10 章一次）...' })
       const calibrationStartedAt = Date.now()
       try {
-        const calibrationResult = await this.memoryGenerator.runFullCalibration(
+        const calibrationAnalysis = await this.memoryGenerator.analyzeFullCalibration(
           projectId, chapterNumber,
           (event) => {
             this.emitProgress(options, 'memory', 'phase_change', {
@@ -240,7 +268,28 @@ export class ChapterFinalizer {
             })
           },
           options.signal,
+          options.modelId,
         )
+        let calibrationResult = calibrationAnalysis
+        if (calibrationAnalysis.status === 'success') {
+          const beforeCalibration = this.captureEntityState(projectId)
+          this.store.withTransaction(() => {
+            calibrationResult = this.memoryGenerator!.applyAnalysis(
+              projectId,
+              chapterNumber,
+              calibrationAnalysis,
+            )
+            this.recordMemoryEvents(projectId, chapterNumber, chapterId, beforeCalibration)
+            this.syncChapterDimensions(
+              projectId,
+              chapterNumber,
+              chapterId,
+              arrangedEntities,
+              beforeCalibration,
+            )
+            this.saveChapterSnapshot(projectId, chapterNumber)
+          })
+        }
         this.persistMemoryLogs(projectId, chapterNumber, [{
           operation: 'calibration',
           result: calibrationResult,
@@ -288,63 +337,38 @@ export class ChapterFinalizer {
       },
     })
 
-    // 自动保存章节内容到数据库（创作完成后立即持久化，无需用户手动点击"保存到章节"）
-    if (chapterId) {
-      // ⚠️ 清洗 LLM 输出开头的"思考前缀"（如 "看完了全部约束...开始写作。\n---\n正文"）
-      // 避免思考旁白被原样存入 novel_chapters.content 污染最终正文
-      const cleanedContent = this.stripThinkingPrelude(content)
-      if (cleanedContent !== content) {
-        this.context.logger.info(
-          { projectId, chapterNumber, originalLen: content.length, cleanedLen: cleanedContent.length },
-          '已清洗 Writer 输出开头的思考前缀',
-        )
+    // 生成候选章节标题（3 个，供用户选择）+ 前情提要
+    try {
+      const [titleCandidates, recap] = await Promise.all([
+        this.generateChapterTitles(projectId, chapterNumber, cleanedContent, options.signal, options.modelId),
+        this.generateChapterRecap(projectId, chapterNumber, cleanedContent, options.signal, options.modelId),
+      ])
+      if (titleCandidates.length > 0 || recap) {
+        this.emitProgress(options, 'completed', 'data_changed', {
+          agentType: 'writer',
+          agentName: '写作',
+          message: '已生成候选标题' + (recap ? '和前情提要' : ''),
+          dataChanged: false,
+          detail: {
+            kind: 'title_candidates',
+            titles: titleCandidates,
+            recap: recap || undefined,
+          },
+        })
       }
-      this.store.updateChapter(chapterId, {
-        content: cleanedContent,
-        status: 'review',
-        wordCount: cleanedContent.length,
-        // 持久化 Director 规划的结构化字段（章节定位、时间线偏移、章尾钩子）
-        positioning: directorTask?.positioning
-          ?? this.store.getChapter(projectId, chapterNumber)?.positioning
-          ?? null,
-        timeOffset: directorTask?.timeOffset ?? null,
-        chapterEndingHook: directorTask?.chapterEndingHook ?? null,
-      }, params.versionSource)
-
-      // 生成候选章节标题（3 个，供用户选择）+ 前情提要
-      try {
-        const [titleCandidates, recap] = await Promise.all([
-          this.generateChapterTitles(projectId, chapterNumber, cleanedContent, options.signal),
-          this.generateChapterRecap(projectId, chapterNumber, cleanedContent, options.signal),
-        ])
-        if (titleCandidates.length > 0 || recap) {
-          this.emitProgress(options, 'completed', 'data_changed', {
-            agentType: 'writer',
-            agentName: '写作',
-            message: '已生成候选标题' + (recap ? '和前情提要' : ''),
-            dataChanged: false,
-            detail: {
-              kind: 'title_candidates',
-              titles: titleCandidates,
-              recap: recap || undefined,
-            },
-          })
-        }
-        // 持久化前情提要到章节记录
-        if (recap) {
-          this.store.updateChapter(chapterId, { recap })
-        }
-      } catch (err) {
-        if (options.signal?.aborted) throw err
-        this.context.logger.warn({ projectId, chapterNumber, err }, '标题/提要生成失败，不影响主流程')
-      }
+      if (recap) this.store.updateChapter(chapterId, { recap })
+    } catch (err) {
+      if (options.signal?.aborted) throw err
+      this.context.logger.warn({ projectId, chapterNumber, err }, '标题/提要生成失败，不影响主流程')
     }
 
     this.emitProgress(options, 'completed', 'completed', { message: '章节创作完成' })
 
     return {
       status: 'completed',
-      content,
+      // 前端把 CreationResult.content 当作权威全文；必须与事务中实际提交的
+      // 清洗后正文一致，避免 SSE 完成后编辑器与数据库内容跳变。
+      content: cleanedContent,
       stateChanges: [
         { type: historicalRewrite ? 'historical_rewrite' : 'memory', description: memoryResult.slice(0, 200) },
         ...memoryEvents.map((e) => ({
@@ -361,13 +385,119 @@ export class ChapterFinalizer {
 
   /** 当前章之后是否已有正文；用于识别会影响既有时间线的中间章节重写。 */
   private hasLaterCompletedChapter(projectId: string, chapterNumber: number): boolean {
-    const project = this.store.getProject(projectId)
-    if (!project || project.currentChapter <= chapterNumber) return false
-    for (let n = chapterNumber + 1; n <= project.currentChapter; n++) {
-      const chapter = this.store.getChapter(projectId, n)
-      if (chapter?.content?.trim()) return true
+    return this.store.listChapters(projectId)
+      .some(chapter => chapter.chapterNumber > chapterNumber && chapter.content?.trim().length > 0)
+  }
+
+  /** 分析 Memory 变更但延迟到 Finalizer 的短事务内应用。 */
+  private async analyzeMemoryForFinalization(
+    projectId: string,
+    chapterNumber: number,
+    chapterContent: string,
+    options: CreationOptions,
+  ): Promise<DeferredMemoryCommit> {
+    const generator = this.memoryGenerator
+    if (!generator?.analyze || !generator.applyAnalysis) {
+      this.context.logger.warn(
+        { projectId, chapterNumber },
+        'Memory Generator 不支持两阶段提交，本章跳过状态写入以保证正文原子性',
+      )
+      return { summary: '记忆提取跳过：当前 Memory Generator 不支持原子提交', apply: null }
     }
-    return false
+
+    const startedAt = Date.now()
+    const attempts: MemoryMeasuredAttempt[] = []
+    const analyzeOnce = async (operation: 'memory' | 'retry'): Promise<MemoryGenerationResult> => {
+      const attemptStartedAt = Date.now()
+      try {
+        const result = await generator.analyze(
+          projectId,
+          chapterNumber,
+          chapterContent,
+          event => this.emitProgress(options, 'memory', 'phase_change', {
+            message: event.message,
+            phase: event.phase,
+            data: event.data,
+          }),
+          options.arrangedEntities,
+          options.signal,
+          options.modelId,
+        )
+        attempts.push({ operation, result, durationMs: Date.now() - attemptStartedAt })
+        return result
+      } catch (error) {
+        if (options.signal?.aborted) throw error
+        const message = error instanceof Error ? error.message : String(error)
+        const result = failedMemoryResult('记忆提取失败，未应用状态变更', message)
+        attempts.push({ operation, result, durationMs: Date.now() - attemptStartedAt })
+        return result
+      }
+    }
+
+    let result = await analyzeOnce('memory')
+    if (result.status === 'error') {
+      const classification = classifyLlmFailure(result.error ?? result.summary, options.signal?.aborted)
+      const delay = classification.kind === 'transient' ? retryDelayMs(1) : null
+      if (delay !== null) {
+        await this.sleep(delay, options.signal)
+        options.signal?.throwIfAborted()
+        result = await analyzeOnce('retry')
+      }
+    }
+    this.persistMemoryLogs(projectId, chapterNumber, attempts, 'memory', chapterContent)
+    try {
+      this.context.agentCallLogger?.record({
+        agentId: 'novel-memory',
+        agentName: '记忆',
+        threadId: '',
+        systemPrompt: result.logContext?.systemPrompt ?? '(结构化 LLM 调用 - role-memory-generator)',
+        userMessage: result.logContext?.userMessage ?? `请从第 ${chapterNumber} 章中提取状态变更。`,
+        taskInput: chapterContent.slice(0, 500),
+        tools: '[]',
+        toolNames: '[]',
+        result: result.summary,
+        resultLength: result.summary.length,
+        durationMs: Date.now() - startedAt,
+        status: result.status,
+        error: result.error ?? '',
+        metadata: JSON.stringify({
+          projectId,
+          chapterNumber,
+          agentType: 'memory',
+          phase: 'memory',
+          displayAgentType: 'memory',
+          displayAgentName: '记忆',
+          source: 'novel-memory-generator-analyze',
+        }),
+      })
+    } catch {
+      // 通用日志失败不影响章节提交。
+    }
+    if (result.status === 'error') {
+      const error = result.error ?? result.summary
+      this.context.logger.error({ projectId, chapterNumber, error }, 'Memory 分析失败，正文将不带状态变更提交')
+      options.onConversationMessage?.({
+        role: 'system',
+        fromId: 'system',
+        fromName: '系统',
+        content: `记忆提取失败：${error}`,
+        phase: 'review',
+        metadata: { agentType: 'memory', workflowMessageType: 'memory', failed: true },
+      })
+      return { summary: `记忆提取失败：${error}`, apply: null }
+    }
+    options.onConversationMessage?.({
+      role: 'agent',
+      fromId: 'novel-memory',
+      fromName: '记忆',
+      content: result.summary,
+      phase: 'review',
+      metadata: { agentType: 'memory', workflowMessageType: 'memory' },
+    })
+    return {
+      summary: result.summary,
+      apply: () => generator.applyAnalysis(projectId, chapterNumber, result),
+    }
   }
 
   /**
@@ -404,6 +534,7 @@ export class ChapterFinalizer {
           },
           options.arrangedEntities,
           options.signal,
+          options.modelId,
         )
         attempts.push({ operation: 'memory', result, durationMs: Date.now() - startTime })
         resultSummary = result.summary
@@ -645,6 +776,7 @@ export class ChapterFinalizer {
           },
           options.arrangedEntities,
           options.signal,
+          options.modelId,
         )
         attempts.push({ operation: 'retry', result, durationMs: Date.now() - attemptStartedAt })
         if (result.status !== 'error') {
@@ -790,6 +922,7 @@ export class ChapterFinalizer {
     factions: Map<string, { name: string; status: string; strength: string }>
     locations: Map<string, { name: string; status: string; appearChapters: number[] }>
     items: Map<string, { name: string; holder: string | null; status: string }>
+    narratives: Map<string, { description: string; status: string; type: string }>
     worldElements: Map<string, { name: string; category: string }>
     relationships: Map<string, { characterA: string; characterB: string; relationType: string; currentStage: string; dynamicRole: string; alignment: string; trend: string; chapterHint: string; lastUpdatedChapter: number | null }>
     infoLayers: Map<string, { infoDescription: string; readerKnows: boolean; isRevealed: boolean; revealChapter: number | null; linkedForeshadows: string[] }>
@@ -913,7 +1046,18 @@ export class ChapterFinalizer {
         },
       ]),
     )
-    return { characters, conflicts, foreshadowing, clues, factions, locations, items, worldElements, relationships, infoLayers }
+    // P3-2 续：narrative 是独立剧情线，Memory 创建后同样进 appearance 双写。
+    const narratives = new Map(
+      this.store.listNarratives(projectId).map((n) => [
+        n.id,
+        {
+          description: n.description,
+          status: n.status,
+          type: n.type,
+        },
+      ]),
+    )
+    return { characters, conflicts, foreshadowing, clues, factions, locations, items, narratives, worldElements, relationships, infoLayers }
   }
 
   /** 容错解析 JSON: string[]，避免非 JSON / 旧数据格式导致 captureEntityState 抛错 */
@@ -1675,6 +1819,41 @@ export class ChapterFinalizer {
       }
     }
 
+    // ── 物品：补全 chapterSpans（同势力逻辑）──
+    // 涉及物品 = arrangedEntities.itemIds + Memory 新建物品
+    // 此前 sync 漏 item，导致 AI 编排之外的 item 创建不写 appearance（对账 orphan）。
+    const afterItems = this.store.listItems(projectId)
+    const newItemIds = afterItems
+      .filter((it) => !before.items.has(it.id))
+      .map((it) => it.id)
+    const involvedItemIds = new Set<string>([
+      ...(arrangedEntities?.itemIds ?? []),
+      ...newItemIds,
+    ])
+    for (const itemId of involvedItemIds) {
+      const item = afterItems.find((it) => it.id === itemId)
+      if (!item) continue
+      const nextSpans = appendChapterToSpans(item.chapterSpans, chapterNumber)
+      const patch: Partial<NovelItem> = { chapterSpans: nextSpans }
+      this.store.updateItem(itemId, patch)
+    }
+
+    // ── 剧情线：补全 chapterSpans（同冲突逻辑）──
+    // narrative 不在 AI 编排产出范围，但 Memory 创建/推进后会触发本章涉及。
+    // 涉及 = before/after 差集（Memory 新建或 status/chapterSpans 变化的剧情线）。
+    // 无 arrangedEntities.narrativeIds 字段——narrative 是宏观剧情轴，不由章节编排直接驱动。
+    const afterNarratives = this.store.listNarratives(projectId)
+    const newNarrativeIds = afterNarratives
+      .filter((n) => !before.narratives.has(n.id))
+      .map((n) => n.id)
+    const involvedNarrativeIds = new Set<string>(newNarrativeIds)
+    for (const narrativeId of involvedNarrativeIds) {
+      const narrative = afterNarratives.find((n) => n.id === narrativeId)
+      if (!narrative) continue
+      const nextSpans = appendChapterToSpans(narrative.chapterSpans, chapterNumber)
+      this.store.updateNarrative(narrativeId, { chapterSpans: nextSpans })
+    }
+
     // ── P2：实体出场关系统一（appearanceV2Write 开启时双写，默认关 = 无副作用）──
     // 维度回填是出场关系的主收口：编排涉及 + Memory 新建 + 正文确认全部汇聚于此，
     // 在这里双写即可覆盖三入口。角色出场仍走 character_history，不重复记录。
@@ -1684,6 +1863,8 @@ export class ChapterFinalizer {
       this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'clue', entityIds: [...involvedClueIds], source: 'sync' })
       this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'faction', entityIds: [...involvedFactionIds], source: 'sync' })
       this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'location', entityIds: [...involvedLocationIds], source: 'sync' })
+      this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'item', entityIds: [...involvedItemIds], source: 'sync' })
+      this.store.recordAppearancesIfEnabled({ projectId, chapterNumber, chapterId, entityType: 'narrative', entityIds: [...involvedNarrativeIds], source: 'sync' })
     }
   }
 
@@ -1705,7 +1886,7 @@ export class ChapterFinalizer {
       relationships: this.store.listRelationships(projectId),
       edges: this.store.listEdges(projectId),
     }
-    this.memoryStore.saveSnapshot({
+    this.memoryStore.replaceSnapshot({
       projectId,
       chapterNumber,
       snapshotType: 'full',
@@ -1774,6 +1955,7 @@ export class ChapterFinalizer {
     chapterNumber: number,
     content: string,
     signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
   ): Promise<string[]> {
     // 截取正文前 800 字 + 后 200 字（开头结尾最能代表章节特征）
     const excerpt = content.length > 1000
@@ -1798,6 +1980,7 @@ ${excerpt}`
       userMessage,
       timeoutMs: 15_000,
       signal,
+      modelId,
     })
 
     try {
@@ -1827,6 +2010,7 @@ ${excerpt}`
     chapterNumber: number,
     content: string,
     signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
   ): Promise<string | null> {
     // 截取正文前 600 字 + 后 200 字（开头结尾最能代表章节特征）
     const excerpt = content.length > 800
@@ -1851,6 +2035,7 @@ ${excerpt}`
       userMessage,
       timeoutMs: 15_000,
       signal,
+      modelId,
     })
 
     try {

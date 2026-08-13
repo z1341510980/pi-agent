@@ -75,13 +75,13 @@ describe('V2 双写对账', () => {
     expect(report.overallMatched).toBe(false)
   })
 
-  it('场景数对账：V1（群聊 run scenes）与 V2（plan 场景版本数）', () => {
+  it('场景数对账：群聊恢复快照不作为 V1 主数据，V2 plan 是唯一规范来源', () => {
     const db = createDb()
     const store = new NovelStore(db)
     const projectId = setupProject(store)
     const ch1 = setupChapter(store, projectId, 1, null)
 
-    // V1：群聊 run 存 2 个场景
+    // V1：群聊 run 的 scenes 已停旧写（存 '[]'）
     const runStore = new DiscussionRunStore(db)
     runStore.save({
       id: randomUUID(), projectId, chapterNumber: 1, status: 'completed',
@@ -103,11 +103,10 @@ describe('V2 双写对账', () => {
     store.transitionPlan(plan.id, 'approved', 'draft')
 
     const report = store.reconcileV2(projectId)
-    expect(report.sceneCount.matched).toBe(1)
-    expect(report.sceneCount.items[0]).toMatchObject({ v1Scenes: 2, v2Scenes: 2, matched: true })
+    expect(report.sceneCount.items[0]).toMatchObject({ v1Scenes: null, v2Scenes: 2, matched: false })
   })
 
-  it('事件 scene 字段残留统计', () => {
+  it('事件 scene 字段残留统计（停旧写后残留恒为 0）', () => {
     const db = createDb()
     const store = new NovelStore(db)
     const memoryStore = new NovelMemoryStore(db)
@@ -124,16 +123,17 @@ describe('V2 双写对账', () => {
 
     const report = store.reconcileV2(projectId)
     expect(report.eventSceneFields.totalEvents).toBe(2)
-    expect(report.eventSceneFields.eventsWithSceneId).toBe(1)
+    // 停旧写后：sceneId 恒 null → 无残留
+    expect(report.eventSceneFields.eventsWithSceneId).toBe(0)
   })
 })
 
-describe('T05 停旧写（legacyNarrativeWriteDisabled）', () => {
-  it('story events：flag 开时 sceneId/sceneOrder 不再写入', () => {
+describe('T05 规范主数据收敛（2026-08-12 逻辑统一：恒生效）', () => {
+  it('story events：sceneId/sceneOrder 不再写入（默认即停旧写）', () => {
     const db = createDb()
     const store = new NovelStore(db)
     const memoryStore = new NovelMemoryStore(db)
-    const projectId = setupProject(store, { legacyNarrativeWriteDisabled: true })
+    const projectId = setupProject(store)
 
     const event = memoryStore.createStoryEvent({
       projectId, chapterNumber: 1, sceneId: 's-1', sceneOrder: 2,
@@ -148,24 +148,10 @@ describe('T05 停旧写（legacyNarrativeWriteDisabled）', () => {
     expect(reread?.sceneOrder).toBe(0)
   })
 
-  it('story events：flag 关时保持原样写入', () => {
+  it('discussion runs：保留续跑所需 scenes/arranged_entities，但不作为规范场景主数据', () => {
     const db = createDb()
     const store = new NovelStore(db)
-    const memoryStore = new NovelMemoryStore(db)
     const projectId = setupProject(store)
-
-    const event = memoryStore.createStoryEvent({
-      projectId, chapterNumber: 1, sceneId: 's-1', sceneOrder: 2,
-      type: 'conflict', title: '事件', summary: '', outcome: "", status: 'confirmed', source: 'manual',
-    } as any)
-    expect(event.sceneId).toBe('s-1')
-    expect(event.sceneOrder).toBe(2)
-  })
-
-  it('discussion runs：flag 开时 scenes/arranged_entities 不再保存（transcript 保留）', () => {
-    const db = createDb()
-    const store = new NovelStore(db)
-    const projectId = setupProject(store, { legacyNarrativeWriteDisabled: true })
     const runStore = new DiscussionRunStore(db)
 
     runStore.save({
@@ -176,8 +162,8 @@ describe('T05 停旧写（legacyNarrativeWriteDisabled）', () => {
     })
 
     const saved = runStore.get('run-1')!
-    expect(saved.scenes).toEqual([])
-    expect(saved.arrangedEntities).toBeUndefined()
+    expect(saved.scenes).toHaveLength(1)
+    expect(saved.arrangedEntities?.characterIds).toEqual(['c1'])
     expect(saved.transcript).toHaveLength(1) // 审计/续跑数据保留
   })
 })

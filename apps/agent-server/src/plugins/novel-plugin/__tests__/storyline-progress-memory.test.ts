@@ -53,7 +53,7 @@ function planForChapter(store: NovelStore, chapterId: string, projectId: string)
 describe('剧情推进轨道：Memory 提取落库（第一轮）', () => {
   it('flag 开 + 有生效 plan → storyline 与 progress 落库（confirmed）', () => {
     const store = new NovelStore(createDb())
-    const { projectId, chapterId } = setup(store, { scenePlanV2Write: true })
+    const { projectId, chapterId } = setup(store)
     planForChapter(store, chapterId, projectId)
     const generator = makeGenerator(store)
 
@@ -81,7 +81,7 @@ describe('剧情推进轨道：Memory 提取落库（第一轮）', () => {
 
   it('两个不同场景各推进同一条线 → maturity 晋升 established', () => {
     const store = new NovelStore(createDb())
-    const { projectId, chapterId } = setup(store, { scenePlanV2Write: true })
+    const { projectId, chapterId } = setup(store)
     planForChapter(store, chapterId, projectId)
     const generator = makeGenerator(store)
 
@@ -123,7 +123,7 @@ describe('剧情推进轨道：Memory 提取落库（第一轮）', () => {
 
   it('flag 开但无 plan → 跳过并告警，不抛错', () => {
     const store = new NovelStore(createDb())
-    const { projectId } = setup(store, { scenePlanV2Write: true })
+    const { projectId } = setup(store)
     const generator = makeGenerator(store)
 
     const applied = (generator as any).applyStorylineProgresses(projectId, 1, [
@@ -135,13 +135,13 @@ describe('剧情推进轨道：Memory 提取落库（第一轮）', () => {
 
   it('同 scene + 同 storyline 幂等：重复提取不重复插入', () => {
     const store = new NovelStore(createDb())
-    const { projectId, chapterId } = setup(store, { scenePlanV2Write: true })
+    const { projectId, chapterId } = setup(store)
     planForChapter(store, chapterId, projectId)
     const generator = makeGenerator(store)
 
     const intent: StorylineProgressItem[] = [{ storylineName: '主线', type: 'advance' }]
-    ;(generator as any).applyStorylineProgresses(projectId, 1, intent)
-    ;(generator as any).applyStorylineProgresses(projectId, 1, intent)
+    expect((generator as any).applyStorylineProgresses(projectId, 1, intent)).toBe(1)
+    expect((generator as any).applyStorylineProgresses(projectId, 1, intent)).toBe(0)
 
     const sceneRev = store.listSceneRevisionsByPlan(store.getCurrentPlan(chapterId)!.id)[0]
     expect(store.listProgressByScene(sceneRev.id)).toHaveLength(1)

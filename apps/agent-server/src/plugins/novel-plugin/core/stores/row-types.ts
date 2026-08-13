@@ -413,6 +413,8 @@ export interface ChapterReviewRow {
   id: string
   project_id: string
   chapter_id: string
+  content_revision_id: string | null
+  content_hash: string
   consistency_score: number | null
   character_score: number | null
   task_completion_score: number | null

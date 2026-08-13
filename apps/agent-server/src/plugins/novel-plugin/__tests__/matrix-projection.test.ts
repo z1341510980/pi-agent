@@ -92,7 +92,7 @@ describe('矩阵投影对账', () => {
     expect(report.matchedCount).toBe(1)
     expect(report.missingInLedger).toHaveLength(1)
     expect(report.missingInLedger[0]).toMatchObject({
-      chapterNumber: 2, entityType: 'conflict', side: 'entity-fields',
+      chapterNumber: 2, entityType: 'conflict', side: 'appearance',
     })
   })
 
@@ -111,21 +111,14 @@ describe('矩阵投影对账', () => {
   it('两侧的悬空引用都归入 danglingRefs，不参与一致性判定', () => {
     // 账本侧：change record 指向不存在的冲突
     writeLedgerChange('conflict-gone', 1, 'conflict.stage')
-    // 实体字段侧：character_history 指向不存在的角色
-    db.prepare(`
-      INSERT INTO novel_character_history (id, project_id, character_id, chapter_id, chapter_number,
-        field_name, old_value, new_value, reason, created_at)
-      VALUES ('h1', ?, 'char-gone', NULL, 1, 'currentState', NULL, '本章出场', '', 0)
-    `).run(PROJECT_ID)
 
     const report = reconcileMatrixProjection(store, memoryStore, PROJECT_ID)
     expect(report.matchedCount).toBe(0)
     expect(report.missingInLedger).toHaveLength(0)
     expect(report.missingInEntityFields).toHaveLength(0)
-    expect(report.danglingRefs).toHaveLength(2)
-    expect(report.danglingRefs.map((r) => r.entityType).sort()).toEqual(['character', 'conflict'])
+    expect(report.danglingRefs).toHaveLength(1)
+    expect(report.danglingRefs.map((r) => r.entityType).sort()).toEqual(['conflict'])
     expect(report.byEntityType.conflict.danglingRefs).toBe(1)
-    expect(report.byEntityType.character.danglingRefs).toBe(1)
   })
 
   it('伏笔按 beats 离散判定，不把埋设到回收之间的章节算作出场', () => {

@@ -56,35 +56,36 @@ describe('章节投影读切换', () => {
     })
   }
 
-  it('默认事实源是 entity-fields（切读需显式开启）', () => {
-    expect(DEFAULT_PROJECTION_SOURCE).toBe('entity-fields')
+  it('默认事实源是 appearance（2026-08-12 逻辑统一）', () => {
+    expect(DEFAULT_PROJECTION_SOURCE).toBe('appearance')
   })
 
-  it('账本完整时两种事实源结果一致', () => {
+  it('appearance 源与 entity-fields（旧列冻结前快照）结果一致', () => {
     seedWithRecorder()
-    const fromFields = buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 1, 'entity-fields')
+    // createFaction/createItem 时旧列 chapterSpans 已冻结（[[1,1]] 剥离 → appearance 写入第 1 章）
+    const fromAppearance = buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 1, 'appearance')
     const fromLedger = buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 1, 'ledger')
-    expect(fromLedger).toEqual(fromFields)
-    expect(fromFields.factionIds).toEqual(['f1'])
+    expect(fromLedger).toEqual(fromAppearance)
+    expect(fromAppearance.factionIds).toEqual(['f1'])
     // itemIds 是曾经全链路丢失的字段，必须在两种来源下都出现
-    expect(fromFields.itemIds).toEqual(['i1'])
+    expect(fromAppearance.itemIds).toEqual(['i1'])
   })
 
-  it('只返回指定章节的实体', () => {
+  it('只返回指定章节的实体（appearance 源）', () => {
     seedWithRecorder()
     store.updateFaction('f1', { chapterSpans: [[1, 2]] })
     expect(buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 2).factionIds).toEqual(['f1'])
     expect(buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 2).itemIds).toEqual([])
   })
 
-  it('账本缺记录时，ledger 源会比 entity-fields 少 —— 这正是切读前必须对账的原因', () => {
+  it('账本缺记录时，ledger 源会比 appearance 少 —— 这正是切读前必须对账的原因', () => {
     // 不注册观察者：模拟账本不完整的存量项目
     store.createFaction({
       id: 'f2', projectId: PROJECT_ID, name: '青池宗', description: '', type: 'sect',
       leaderId: null, ideology: '', strength: 'medium', resources: [], allies: [], enemies: [],
       status: 'active', chapterSpans: [[1, 1]],
     })
-    expect(buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 1, 'entity-fields').factionIds).toEqual(['f2'])
+    expect(buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 1, 'appearance').factionIds).toEqual(['f2'])
     expect(buildArrangedEntitiesForChapter(store, memoryStore, PROJECT_ID, 1, 'ledger').factionIds).toEqual([])
   })
 

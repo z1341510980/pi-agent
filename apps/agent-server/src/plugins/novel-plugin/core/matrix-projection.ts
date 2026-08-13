@@ -53,7 +53,7 @@ export interface ChapterPresence {
   /** 实体是否仍存在于实体表（两侧都可能指向已删除实体） */
   entityExists: boolean
   /** 这条记录来自哪一侧 */
-  side: 'entity-fields' | 'ledger'
+  side: 'entity-fields' | 'ledger' | 'appearance'
 }
 
 export interface ProjectionSet {
@@ -113,6 +113,68 @@ function add(
   if (set.keys.has(key)) return
   set.keys.add(key)
   set.byKey.set(key, { chapterNumber, entityType, entityId, entityName, source, entityExists, side })
+}
+
+/**
+ * 从 appearance 表派生投影（2026-08-12 逻辑统一：唯一出场事实源）。
+ *
+ * appearance 表记录"某实体在某章出场"（角色/冲突/伏笔/线索/势力/地点/物品/剧情），
+ * 由三入口（ai-arrange / Memory / sync）+ 手工编辑统一写入，旧列已冻结。
+ * 实体存在性仍需要反查实体表过滤悬空引用。
+ */
+export function projectFromAppearances(store: NovelStore, projectId: string): ProjectionSet {
+  const set = emptySet()
+  const S = 'appearance' as const
+
+  const chapters = store.listChapters(projectId)
+  const idByNumber = new Map(chapters.map((c) => [c.chapterNumber, c.id] as const))
+  const numberById = new Map(chapters.map((c) => [c.id, c.chapterNumber] as const))
+
+  // 实体存在性判定（悬空引用过滤）
+  const existing = new Set<string>()
+  for (const c of store.listConflicts(projectId)) existing.add(`conflict:${c.id}`)
+  for (const f of store.listForeshadowing(projectId)) existing.add(`foreshadow:${f.id}`)
+  for (const c of store.listClues(projectId)) existing.add(`clue:${c.id}`)
+  for (const f of store.listFactions(projectId)) existing.add(`faction:${f.id}`)
+  for (const l of store.listLocations(projectId)) existing.add(`location:${l.id}`)
+  for (const i of store.listItems(projectId)) existing.add(`item:${i.id}`)
+  for (const n of store.listNarratives(projectId)) existing.add(`narrative:${n.id}`)
+
+  // character 出场在 appearance 表也有记录（AI 编排/同步入口写入）
+  for (const ch of store.listCharacters(projectId)) existing.add(`character:${ch.id}`)
+
+  for (const chapter of chapters) {
+    const rows = store.listAppearancesByChapter(projectId, chapter.id)
+    for (const row of rows) {
+      const key = `${row.entityType}:${row.entityId}`
+      const name = nameOf(store, row.entityType, row.entityId, row.entityType)
+      add(set, row.entityType as ProjectionEntityType, row.entityId,
+        name, chapter.chapterNumber, 'appearance', S, existing.has(key))
+    }
+  }
+
+  void idByNumber
+  void numberById
+  return set
+}
+
+function nameOf(
+  store: NovelStore,
+  entityType: string,
+  entityId: string,
+  fallback: string,
+): string {
+  switch (entityType) {
+    case 'conflict': return store.getConflict(entityId)?.description.slice(0, 30) ?? fallback
+    case 'foreshadow': return store.getForeshadow(entityId)?.description.slice(0, 30) ?? fallback
+    case 'clue': return store.getClue(entityId)?.description.slice(0, 30) ?? fallback
+    case 'faction': return store.getFaction(entityId)?.name ?? fallback
+    case 'location': return store.getLocation(entityId)?.name ?? fallback
+    case 'item': return store.getItem(entityId)?.name ?? fallback
+    case 'narrative': return store.getNarrative(entityId)?.description.slice(0, 30) ?? fallback
+    case 'character': return store.getCharacter(entityId)?.name ?? fallback
+    default: return fallback
+  }
 }
 
 /**
@@ -251,7 +313,8 @@ export function reconcileMatrixProjection(
     ? [Math.min(...chapters), Math.max(...chapters)]
     : null
 
-  const fromFields = projectFromEntityFields(store, projectId)
+  // 2026-08-12 逻辑统一：appearance 表是唯一出场事实源，对账基准从 entity-fields 切到 appearance
+  const fromFields = projectFromAppearances(store, projectId)
   const fromLedger = projectFromLedger(store, memoryStore, projectId)
 
   const byEntityType = Object.fromEntries(
@@ -371,10 +434,13 @@ export function formatReconcileReport(report: ReconcileReport, options?: { maxRo
  * 用 flag 而不是直接切换：S4-1 的对账把一致率从 38.6% 提到 91%，
  * 但"账本有、实体字段无"仍有 12 条反向漂移需要人工判断。
  * flag 让切读可以随时回退，也便于在同一次请求里对比两种来源。
+ *
+ * 2026-08-12 逻辑统一：appearance 表成为唯一出场写面/读面（旧列冻结），
+ * 默认源切到 appearance；entity-fields 仅保留作对账/兼容。
  */
-export type ProjectionSource = 'entity-fields' | 'ledger'
+export type ProjectionSource = 'entity-fields' | 'ledger' | 'appearance'
 
-export const DEFAULT_PROJECTION_SOURCE: ProjectionSource = 'entity-fields'
+export const DEFAULT_PROJECTION_SOURCE: ProjectionSource = 'appearance'
 
 /**
  * 按指定事实源，构建某一章的 ArrangedEntity。
@@ -395,7 +461,9 @@ export function buildArrangedEntitiesForChapter(
 ): ArrangedEntity {
   const set = source === 'ledger'
     ? projectFromLedger(store, memoryStore, projectId)
-    : projectFromEntityFields(store, projectId)
+    : source === 'appearance'
+      ? projectFromAppearances(store, projectId)
+      : projectFromEntityFields(store, projectId)
 
   const buckets: Record<ProjectionEntityType, string[]> = {
     character: [], conflict: [], foreshadow: [], clue: [], faction: [], location: [], item: [], narrative: [],

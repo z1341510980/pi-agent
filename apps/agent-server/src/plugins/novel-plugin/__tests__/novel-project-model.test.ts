@@ -8,13 +8,13 @@
  *
  * 本测试守护：
  * 1. project-store 的 novelModelId 读写与持久化；
- * 2. NovelOrchestrator.resolveModelRef 的复合串解析（合法/非法/空）。
+ * 2. parseNovelModelRef 的复合串解析（合法/非法/空）。
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { NovelOrchestrator } from '../core/novel-orchestrator.js'
+import { parseNovelModelRef } from '../core/novel-model-ref.js'
 
 describe('项目级创作主模型（novelModelId）', () => {
   let db: Database.Database
@@ -65,8 +65,7 @@ describe('项目级创作主模型（novelModelId）', () => {
   })
 
   describe('resolveModelRef（复合串解析）', () => {
-    const resolve = (v: string | undefined) =>
-      (NovelOrchestrator as unknown as { resolveModelRef: (s: string | undefined) => unknown }).resolveModelRef(v)
+    const resolve = parseNovelModelRef
 
     it('合法 "provider:modelId" 解析为对象', () => {
       expect(resolve('openai:gpt-5.6-luna')).toEqual({ provider: 'openai', modelId: 'gpt-5.6-luna' })

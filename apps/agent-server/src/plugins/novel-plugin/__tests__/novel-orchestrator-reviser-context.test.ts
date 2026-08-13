@@ -71,7 +71,7 @@ describe('NovelOrchestrator Reviser 上下文模式', () => {
       fx.memoryStore,
     )
     buildSystemPromptSpy = vi.spyOn(promptBuilder, 'buildSystemPrompt')
-    buildChapterContextSharedSpy = vi.spyOn(promptBuilder, 'buildChapterContextShared')
+    buildChapterContextSharedSpy = vi.spyOn(promptBuilder, 'assembleSharedFromChunks')
     buildAgentIdentitySpy = vi.spyOn(promptBuilder, 'buildAgentIdentity')
 
     // engine 在 runAgentOnce 路径上只会用到 buildChapterConstraints，直接返回 fixture 的稳定值。

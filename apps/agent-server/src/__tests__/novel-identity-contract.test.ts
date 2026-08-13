@@ -85,4 +85,27 @@ describe('T03-6 薄身份契约', () => {
     expect(report.ok).toBe(false)
     expect(report.missingMarkers).toContain('novel_submit_narrative_task')
   })
+
+  it('buildAgentIdentity 守卫：缺失标记时通过 identityLogger 留痕（不阻塞生成）', () => {
+    const warnings: Array<{ msg: string; ctx?: unknown }> = []
+    builder.setIdentityLogger({ warn: (msg: string, ctx?: unknown) => warnings.push({ msg, ctx }) })
+    // 构造一个会缺失标记的 agentType（director 但模板被替换为空 role）
+    // 用真实模板的正常 director 不会触发，这里 mock promptManager 返回空 role
+    const originalGetTemplate = (builder as any).promptManager.getTemplate.bind((builder as any).promptManager)
+    ;(builder as any).promptManager.getTemplate = (name: string, pid: string) => {
+      if (name === 'role-director') return '你是导演。'  // 缺 'novel_submit_narrative_task' 与 '绝不创作章节正文'
+      return originalGetTemplate(name, pid)
+    }
+    const identity = builder.buildAgentIdentity('p1', 'director')
+    // 生成不阻塞
+    expect(identity).toBeDefined()
+    expect(identity.length).toBeGreaterThan(0)
+    // 守卫留痕
+    expect(warnings.length).toBe(1)
+    expect(warnings[0].ctx).toMatchObject({ agentType: 'director' })
+    const ctx = warnings[0].ctx as { missingMarkers: string[]; totalChars: number }
+    expect(ctx.missingMarkers).toContain('novel_submit_narrative_task')
+    // 恢复
+    ;(builder as any).promptManager.getTemplate = originalGetTemplate
+  })
 })

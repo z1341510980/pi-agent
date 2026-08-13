@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState, type ReactElement } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Sparkles, RotateCcw, Save, X, AlertCircle, Loader2, Brain } from 'lucide-react'
+import { Sparkles, RotateCcw, Save, X, AlertCircle, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -21,7 +20,6 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
-import { getApi } from '@/api'
 import {
   aiGenerateCharacter,
   updateCharacter,
@@ -30,6 +28,7 @@ import {
   type NovelCharacterPlotRole,
   type CreateCharacterInput,
 } from '@/api/novel-client'
+import { ModelPicker, type ModelRef } from './model-picker'
 
 export interface CharacterCreateDialogProps {
   open: boolean
@@ -41,23 +40,6 @@ const MAX_CORE_STYLE = 500
 
 /** 角色生成阶段顺序（用于进度指示器） */
 const PHASE_ORDER = ['preparing', 'generating', 'parsing', 'completed']
-
-interface ModelOption {
-  id: string
-  name: string
-  provider: string
-}
-
-async function fetchAvailableModels(): Promise<ModelOption[]> {
-  const providers = await getApi<Array<{ name: string; models: Array<{ id: string; name: string }> }>>('/api/providers')
-  const options: ModelOption[] = []
-  for (const p of providers) {
-    for (const m of p.models) {
-      options.push({ id: m.id, name: m.name, provider: p.name })
-    }
-  }
-  return options
-}
 
 const ARC_STAGE_OPTIONS = [
   { value: 'introduction', label: '出场' },
@@ -137,7 +119,7 @@ export function CharacterCreateDialog({
 
   const [step, setStep] = useState<Step>('input')
   const [coreStyle, setCoreStyle] = useState('')
-  const [selectedModelId, setSelectedModelId] = useState<string>('')
+  const [selectedModel, setSelectedModel] = useState<ModelRef | null>(null)
   const [generated, setGenerated] = useState<NovelCharacter | null>(null)
   const [form, setForm] = useState<EditableForm | null>(null)
   const [generating, setGenerating] = useState(false)
@@ -146,18 +128,12 @@ export function CharacterCreateDialog({
   // 进度状态：保留 data 字段以承载流式文本预览（data.partial）
   const [progress, setProgress] = useState<{ phase: string; message: string; data?: { partial?: string } } | null>(null)
 
-  // 获取可用模型列表
-  const { data: modelOptions = [] } = useQuery({
-    queryKey: ['available-models'],
-    queryFn: fetchAvailableModels,
-    staleTime: 5 * 60 * 1000,
-  })
-
   // 打开/关闭时重置状态
   useEffect(() => {
     if (open) {
       setStep('input')
       setCoreStyle('')
+      setSelectedModel(null)
       setGenerated(null)
       setForm(null)
       setError(null)
@@ -183,7 +159,10 @@ export function CharacterCreateDialog({
     try {
       const character = await aiGenerateCharacter(
         projectId,
-        { coreStyle: trimmed, modelId: selectedModelId || undefined },
+        {
+          coreStyle: trimmed,
+          modelId: selectedModel ?? undefined,
+        },
         (event) => {
           // 保留 data 字段以承载流式文本预览（data.partial）
           setProgress({
@@ -203,7 +182,7 @@ export function CharacterCreateDialog({
       setGenerating(false)
       setProgress(null)
     }
-  }, [projectId, coreStyle, upsertCharacter])
+  }, [projectId, coreStyle, selectedModel, upsertCharacter])
 
   const handleRegenerate = useCallback(() => {
     setStep('input')
@@ -313,31 +292,11 @@ export function CharacterCreateDialog({
                 {coreStyle.length}/{MAX_CORE_STYLE}
               </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="model-select" className="flex items-center gap-1">
-                <Brain className="size-3" />
-                生成模型
-              </Label>
-              <Select
-                value={selectedModelId}
-                onValueChange={setSelectedModelId}
-                disabled={generating}
-              >
-                <SelectTrigger id="model-select" className="w-full">
-                  <SelectValue placeholder="默认模型" />
-                </SelectTrigger>
-                <SelectContent>
-                  {modelOptions.map((m) => (
-                    <SelectItem key={`${m.provider}:${m.id}`} value={m.id}>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">{m.provider}</span>
-                        <span>{m.name}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <ModelPicker
+              value={selectedModel}
+              onChange={setSelectedModel}
+              label="生成模型"
+            />
             {generating && (
               <div className="flex flex-col items-center gap-3 py-6">
                 <Loader2 className="size-6 animate-spin text-primary" />
