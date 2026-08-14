@@ -24,7 +24,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { NovelStore } from './novel-store.js'
-import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
+import { baseTargetOf, resolveWordBudget } from './chapters/word-budget-resolver.js'
 import type {
   NovelProject,
   NovelChapter,
@@ -490,6 +490,7 @@ export class NovelEngine {
   ): Promise<NovelChapter> {
     const project = this.store.getProject(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
+    this.store.assertTimelineAllowsGeneration?.(projectId, chapterNumber)
     if (volumeId) {
       const volume = this.store.getVolume(volumeId)
       if (!volume || volume.projectId !== projectId) throw new Error('卷不存在或不属于当前项目')
@@ -533,6 +534,10 @@ export class NovelEngine {
     if (!existing) throw new Error(`章节不存在: ${chapterId}`)
     if (existing.status === 'published') throw new Error('已发布章节不能重新完成，请先进入修订流程')
     if (!content.trim()) throw new Error('章节正文为空，不能完成')
+    // 完成章节会触发派生状态写入（Memory、剧情进度及审核链）。
+    // 中间章改写后的时间线处于 pending/rebuilding 时，必须在此处拦截，
+    // 防止绕过创作流程路由直接把未重建的结果再次写入正式库。
+    this.store.assertTimelineAllowsGeneration?.(existing.projectId, existing.chapterNumber)
 
     const wordCount = content.length // 简单按字符数计算
     const updated = this.store.completeChapterForReview(chapterId, {

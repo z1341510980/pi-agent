@@ -4,11 +4,10 @@
  * 从原 novel-store.ts 抽取 Foreshadow + Clue + InfoLayer 相关的 CRUD。
  */
 
-import type Database from 'better-sqlite3'
 import type { NovelForeshadow, NovelClue, NovelInformationLayer } from '../types.js'
 import type { ForeshadowRow, ClueRow, InfoLayerRow } from './row-types.js'
 import {
-  now, parseIdListSafe,
+  now,
   normalizeForeshadowBeats, deriveForeshadowStatus,
   parseChapterSpans,
   normalizeForeshadowCategory,
@@ -16,28 +15,25 @@ import {
   normalizeForeshadowRecoverMethod,
   parseJSON,
 } from './store-utils.js'
+import { createNovelDrizzleDb } from '../../infrastructure/sqlite/client.js'
+import { ForeshadowRepository } from '../../infrastructure/sqlite/repositories/foreshadow-repository.js'
 
 export class ForeshadowStore {
-  // 字段
-  private readonly stmtListForeshadowing: Database.Statement
-  private readonly stmtListClues: Database.Statement
-  private readonly stmtListInfoLayers: Database.Statement
+  private readonly repository: ForeshadowRepository
 
   constructor(
-    private db: Database.Database,
+    db: import('better-sqlite3').Database,
     private deleteEdgesByEntity: (entityId: string) => number,
   ) {
-    this.stmtListForeshadowing = db.prepare('SELECT * FROM novel_foreshadowing WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListClues = db.prepare('SELECT * FROM novel_clues WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListInfoLayers = db.prepare('SELECT * FROM novel_information_layers WHERE project_id = ? ORDER BY created_at ASC')
+    this.repository = new ForeshadowRepository(createNovelDrizzleDb(db))
   }
 
   listForeshadowing(projectId: string): NovelForeshadow[] {
-    return (this.stmtListForeshadowing.all(projectId) as ForeshadowRow[]).map((r) => this.rowToForeshadow(r))
+    return this.repository.listForeshadowing(projectId).map((r) => this.rowToForeshadow(r))
   }
 
   getForeshadow(foreshadowId: string): NovelForeshadow | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_foreshadowing WHERE id = ?').get(foreshadowId) as ForeshadowRow | undefined
+    const row = this.repository.getForeshadowing(foreshadowId)
     return row ? this.rowToForeshadow(row) : undefined
   }
 
@@ -60,14 +56,7 @@ export class ForeshadowStore {
       createdAt: ts,
       updatedAt: ts,
     }
-    this.db.prepare(`
-      INSERT INTO novel_foreshadowing (id, project_id, description, category, status, first_chapter, last_chapter,
-      recover_by_chapter, plant_method, recover_method,
-      chapter_spans, beats, created_at, updated_at)
-      VALUES (@id, @project_id, @description, @category, @status, @first_chapter, @last_chapter,
-      @recover_by_chapter, @plant_method, @recover_method,
-      @chapter_spans, @beats, @created_at, @updated_at)
-    `).run({
+    this.repository.insertForeshadowing({
       id: full.id, project_id: full.projectId, description: full.description,
       category: full.category, status: full.status, first_chapter: full.firstChapter,
       last_chapter: full.lastChapter, recover_by_chapter: full.recoverByChapter,
@@ -81,7 +70,7 @@ export class ForeshadowStore {
   }
 
   updateForeshadow(id: string, patch: Partial<NovelForeshadow>): NovelForeshadow | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_foreshadowing WHERE id = ?').get(id) as ForeshadowRow | undefined
+    const existing = this.repository.getForeshadowing(id)
     if (!existing) return undefined
     const current = this.rowToForeshadow(existing)
     const updated: NovelForeshadow = { ...current, ...patch, id, updatedAt: now() }
@@ -102,13 +91,7 @@ export class ForeshadowStore {
       updated.status = deriveForeshadowStatus(beats)
     }
     updated.beats = beats
-    this.db.prepare(`
-      UPDATE novel_foreshadowing SET description=@description, category=@category, status=@status,
-      first_chapter=@first_chapter, last_chapter=@last_chapter, recover_by_chapter=@recover_by_chapter,
-      plant_method=@plant_method, recover_method=@recover_method,
-      chapter_spans=@chapter_spans, beats=@beats,
-      updated_at=@updated_at WHERE id=@id
-    `).run({
+    this.repository.updateForeshadowing(id, {
       id, description: updated.description, category: updated.category, status: updated.status,
       first_chapter: updated.firstChapter, last_chapter: updated.lastChapter,
       recover_by_chapter: updated.recoverByChapter,
@@ -116,6 +99,8 @@ export class ForeshadowStore {
       recover_method: updated.recoverMethod ?? null,
       chapter_spans: JSON.stringify(updated.chapterSpans ?? []),
       beats: JSON.stringify(updated.beats ?? []),
+      project_id: current.projectId,
+      created_at: current.createdAt,
       updated_at: updated.updatedAt,
     })
     return updated
@@ -123,17 +108,13 @@ export class ForeshadowStore {
 
   deleteForeshadow(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    const result = this.db.prepare('DELETE FROM novel_foreshadowing WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteForeshadowing(id)
   }
 
   createClue(clue: Omit<NovelClue, 'createdAt' | 'updatedAt'>): NovelClue {
     const ts = now()
     const full: NovelClue = { ...clue, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_clues (id, project_id, description, points_to, progress, current_step, next_step, is_misleading, chapter_spans, created_at, updated_at)
-      VALUES (@id, @project_id, @description, @points_to, @progress, @current_step, @next_step, @is_misleading, @chapter_spans, @created_at, @updated_at)
-    `).run({
+    this.repository.insertClue({
       id: full.id, project_id: full.projectId, description: full.description,
       points_to: full.pointsTo, progress: full.progress, current_step: full.currentStep,
       next_step: full.nextStep, is_misleading: full.isMisleading ? 1 : 0,
@@ -144,36 +125,30 @@ export class ForeshadowStore {
   }
 
   updateClue(id: string, patch: Partial<NovelClue>): NovelClue | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_clues WHERE id = ?').get(id) as ClueRow | undefined
+    const existing = this.repository.getClue(id)
     if (!existing) return undefined
     const current = this.rowToClue(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_clues SET description=@description, points_to=@points_to, progress=@progress,
-      current_step=@current_step, next_step=@next_step, is_misleading=@is_misleading,
-      chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
-    `).run({
+    this.repository.updateClue(id, {
       id, description: updated.description, points_to: updated.pointsTo, progress: updated.progress,
       current_step: updated.currentStep, next_step: updated.nextStep,
       is_misleading: updated.isMisleading ? 1 : 0,
       chapter_spans: JSON.stringify(updated.chapterSpans ?? []),
+      project_id: current.projectId,
+      created_at: current.createdAt,
       updated_at: updated.updatedAt,
     })
     return updated
   }
 
   deleteClue(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_clues WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteClue(id)
   }
 
   createInformationLayer(layer: Omit<NovelInformationLayer, 'createdAt' | 'updatedAt'>): NovelInformationLayer {
     const ts = now()
     const full: NovelInformationLayer = { ...layer, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_information_layers (id, project_id, info_description, author_knows, reader_knows, character_knowledge, reveal_stage, reveal_chapter, is_revealed, created_at, updated_at)
-      VALUES (@id, @project_id, @info_description, @author_knows, @reader_knows, @character_knowledge, @reveal_stage, @reveal_chapter, @is_revealed, @created_at, @updated_at)
-    `).run({
+    this.repository.insertInformationLayer({
       id: full.id, project_id: full.projectId, info_description: full.infoDescription,
       author_knows: full.authorKnows ? 1 : 0, reader_knows: full.readerKnows ? 1 : 0,
       character_knowledge: full.characterKnowledge, reveal_stage: full.revealStage,
@@ -184,50 +159,52 @@ export class ForeshadowStore {
   }
 
   updateInfoLayer(id: string, updates: Partial<Omit<NovelInformationLayer, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelInformationLayer | undefined {
-    const fields: string[] = []
-    const values: unknown[] = []
-    for (const [key, value] of Object.entries(updates)) {
-      const dbKey = this.camelToSnake(key)
-      fields.push(`${dbKey} = ?`)
-      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
-    }
-    if (fields.length === 0) {
-      const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
+    if (Object.keys(updates).length === 0) {
+      const row = this.repository.getInformationLayer(id)
       return row ? this.rowToInfoLayer(row) : undefined
     }
-    fields.push('updated_at = unixepoch()')
-    values.push(id)
-    this.db.prepare(`UPDATE novel_information_layers SET ${fields.join(', ')} WHERE id = ?`).run(...values)
-    const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
+    const current = this.repository.getInformationLayer(id)
+    if (!current) return undefined
+    const currentEntity = this.rowToInfoLayer(current)
+    const updated = { ...currentEntity, ...updates, id, updatedAt: now() }
+    this.repository.updateInformationLayer(id, {
+      id,
+      project_id: currentEntity.projectId,
+      info_description: updated.infoDescription,
+      author_knows: updated.authorKnows ? 1 : 0,
+      reader_knows: updated.readerKnows ? 1 : 0,
+      character_knowledge: updated.characterKnowledge,
+      reveal_stage: updated.revealStage,
+      reveal_chapter: updated.revealChapter,
+      is_revealed: updated.isRevealed ? 1 : 0,
+      created_at: currentEntity.createdAt,
+      updated_at: updated.updatedAt,
+    })
+    const row = this.repository.getInformationLayer(id)
     return row ? this.rowToInfoLayer(row) : undefined
   }
 
   deleteInfoLayer(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    const result = this.db.prepare('DELETE FROM novel_information_layers WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteInformationLayer(id)
   }
 
   listClues(projectId: string): NovelClue[] {
-    return (this.stmtListClues.all(projectId) as ClueRow[]).map((r) => this.rowToClue(r))
+    return this.repository.listClues(projectId).map((r) => this.rowToClue(r))
   }
 
   getClue(clueId: string): NovelClue | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_clues WHERE id = ?').get(clueId) as ClueRow | undefined
+    const row = this.repository.getClue(clueId)
     return row ? this.rowToClue(row) : undefined
   }
 
   listInformationLayers(projectId: string): NovelInformationLayer[] {
-    return (this.stmtListInfoLayers.all(projectId) as InfoLayerRow[]).map((r) => this.rowToInfoLayer(r))
+    return this.repository.listInformationLayers(projectId).map((r) => this.rowToInfoLayer(r))
   }
 
   getInformationLayer(id: string): NovelInformationLayer | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_information_layers WHERE id = ?').get(id) as InfoLayerRow | undefined
+    const row = this.repository.getInformationLayer(id)
     return row ? this.rowToInfoLayer(row) : undefined
-  }
-
-  private camelToSnake(str: string): string {
-    return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)
   }
 
   private rowToForeshadow(row: ForeshadowRow): NovelForeshadow {

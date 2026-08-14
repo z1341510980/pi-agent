@@ -643,13 +643,48 @@ export function deleteNarrative(id: string): Promise<{ id: string; deleted: bool
 
 export interface ChapterDerivedState {
   isMiddleRewrite: boolean
+  invalidationId?: string
+  startChapterNumber?: number
   staleMarked?: number
+  staleCounts?: Record<string, number>
   affectedChapters?: number[]
+  rebuildAvailable?: boolean
+  rebuildBlockedReasons?: string[]
   message?: string
 }
 
 export interface ChapterSaveResult extends NovelChapter {
   derivedState?: ChapterDerivedState
+}
+
+export interface TimelineRebuildPreview extends ChapterDerivedState {
+  id: string
+  projectId: string
+  startChapterId: string
+  startChapterNumber: number
+  sourceContentRevisionId: string | null
+  status: 'pending' | 'rebuilding' | 'resolved'
+  reason: 'chapter_rewrite'
+  affectedChapters: number[]
+  staleCounts: Record<string, number>
+  estimatedLlmCalls: number
+  automaticRebuildAvailable: boolean
+  blockedReasons: string[]
+  confirmationToken: string
+}
+
+export function getTimelineRebuildPreview(projectId: string): Promise<TimelineRebuildPreview> {
+  return getApi<TimelineRebuildPreview>(`${BASE}/projects/${projectId}/timeline-rebuild/preview`)
+}
+
+export function startTimelineRebuild(
+  projectId: string,
+  confirmationToken: string,
+): Promise<unknown> {
+  return postApi<unknown>(`${BASE}/projects/${projectId}/timeline-rebuild/start`, {
+    confirmationToken,
+    confirmed: true,
+  })
 }
 
 // ── Volumes ──

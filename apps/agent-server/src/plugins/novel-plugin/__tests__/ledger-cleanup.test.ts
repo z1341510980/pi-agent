@@ -10,8 +10,8 @@ import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
 import { NovelMemoryStore } from '../core/novel-memory-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { planDanglingCleanup, applyDanglingCleanup } from '../core/ledger-cleanup.js'
-import { reconcileMatrixProjection } from '../core/matrix-projection.js'
+import { planDanglingCleanup, applyDanglingCleanup } from '../core/memory/ledger-cleanup.js'
+import { reconcileMatrixProjection } from '../core/analysis/matrix-projection.js'
 
 const PROJECT_ID = 'proj-cleanup'
 

@@ -10,8 +10,8 @@ import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
 import { NovelMemoryStore } from '../core/novel-memory-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { createChapterProjectionRecorder } from '../core/chapter-projection-recorder.js'
-import { buildArrangedEntitiesForChapter, DEFAULT_PROJECTION_SOURCE } from '../core/matrix-projection.js'
+import { createChapterProjectionRecorder } from '../core/chapters/chapter-projection-recorder.js'
+import { buildArrangedEntitiesForChapter, DEFAULT_PROJECTION_SOURCE } from '../core/analysis/matrix-projection.js'
 
 const PROJECT_ID = 'proj-read-switch'
 

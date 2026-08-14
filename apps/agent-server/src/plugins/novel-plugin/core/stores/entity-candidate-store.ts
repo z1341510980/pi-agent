@@ -14,28 +14,8 @@ import type {
   EntityCandidateType,
   NovelEntityCandidateReview,
 } from '../types.js'
-
-interface CandidateRow {
-  id: string
-  project_id: string
-  chapter_number: number | null
-  content_revision_id: string | null
-  entity_type: string
-  payload: string
-  status: string
-  reason_code: string | null
-  created_at: number
-}
-
-interface ReviewRow {
-  id: string
-  candidate_id: string
-  decision: string
-  reason: string
-  actor_id: string
-  audit_context: string
-  created_at: number
-}
+import { createNovelDrizzleDb, WorkflowRepository } from '../../infrastructure/sqlite/index.js'
+import type { EntityCandidateReviewRow, EntityCandidateRow } from '../../infrastructure/sqlite/repositories/workflow-repository.js'
 
 export interface CreateCandidateInput {
   projectId: string
@@ -47,46 +27,37 @@ export interface CreateCandidateInput {
 }
 
 export class EntityCandidateStore {
-  constructor(private db: Database.Database) {}
+  private readonly repository: WorkflowRepository
+
+  constructor(private db: Database.Database) {
+    this.repository = new WorkflowRepository(createNovelDrizzleDb(db))
+  }
 
   createCandidate(input: CreateCandidateInput): NovelEntityCandidate {
     const id = randomUUID()
-    this.db.prepare(`
-      INSERT INTO novel_entity_candidates
-        (id, project_id, chapter_number, content_revision_id, entity_type, payload, status, reason_code, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'needs_review', ?, ?)
-    `).run(
-      id, input.projectId, input.chapterNumber ?? null, input.contentRevisionId ?? null,
-      input.entityType, JSON.stringify(input.payload), input.reasonCode ?? null,
-      Math.floor(Date.now() / 1000),
-    )
+    this.repository.insertCandidate({
+      id, project_id: input.projectId, chapter_number: input.chapterNumber ?? null,
+      content_revision_id: input.contentRevisionId ?? null, entity_type: input.entityType,
+      payload: JSON.stringify(input.payload), status: 'needs_review', reason_code: input.reasonCode ?? null,
+      created_at: Math.floor(Date.now() / 1000),
+    })
     return this.getCandidate(id)!
   }
 
   getCandidate(id: string): NovelEntityCandidate | undefined {
-    const row = this.db.prepare(
-      'SELECT * FROM novel_entity_candidates WHERE id = ?',
-    ).get(id) as CandidateRow | undefined
+    const row = this.repository.getCandidate(id)
     return row ? this.rowToCandidate(row) : undefined
   }
 
   /** 按项目 + 状态列出候选（降序，新的在前；同秒按 rowid 稳定） */
   listCandidates(projectId: string, status?: EntityCandidateStatus): NovelEntityCandidate[] {
-    const rows = status
-      ? this.db.prepare(
-        'SELECT * FROM novel_entity_candidates WHERE project_id = ? AND status = ? ORDER BY created_at DESC, rowid DESC',
-      ).all(projectId, status) as CandidateRow[]
-      : this.db.prepare(
-        'SELECT * FROM novel_entity_candidates WHERE project_id = ? ORDER BY created_at DESC, rowid DESC',
-      ).all(projectId) as CandidateRow[]
+    const rows = this.repository.listCandidates(projectId, status)
     return rows.map((r) => this.rowToCandidate(r))
   }
 
   /** 待审核候选数（供前端角标/提示） */
   countPending(projectId: string): number {
-    return (this.db.prepare(
-      "SELECT COUNT(*) as cnt FROM novel_entity_candidates WHERE project_id = ? AND status = 'needs_review'",
-    ).get(projectId) as { cnt: number }).cnt
+    return this.repository.countPending(projectId)
   }
 
   /**
@@ -113,9 +84,7 @@ export class EntityCandidateStore {
       if (!current) throw new Error(`实体候选不存在: ${id}`)
       if (current.status !== 'needs_review') throw new Error(`候选状态 ${current.status} 不可确认`)
       entityId = promote(current)
-      this.db.prepare(
-        "UPDATE novel_entity_candidates SET status = 'confirmed' WHERE id = ?",
-      ).run(id)
+      this.repository.updateCandidateStatus(id, 'confirmed')
       this.appendReview(id, 'confirmed', '', actorId, {
         before: 'needs_review',
         after: 'confirmed',
@@ -124,26 +93,12 @@ export class EntityCandidateStore {
       })
       if (entityId) {
         const createdAt = Math.floor(Date.now() / 1000)
-        this.db.prepare(`
-          INSERT INTO novel_entity_candidate_promotions (candidate_id, entity_type, entity_id, created_at)
-          VALUES (?, ?, ?, ?)
-        `).run(id, current.entityType, entityId, createdAt)
-        this.db.prepare(`
-          INSERT INTO novel_projection_outbox
-            (id, project_id, topic, aggregate_id, payload, status, attempts, created_at)
-          VALUES (?, ?, 'entity-candidate.confirmed', ?, ?, 'pending', 0, ?)
-        `).run(
-          randomUUID(),
-          current.projectId,
-          id,
-          JSON.stringify({
-            candidateId: id,
-            entityType: current.entityType,
-            entityId,
-            contentRevisionId: current.contentRevisionId,
-          }),
-          createdAt,
-        )
+        this.repository.insertPromotion(id, current.entityType, entityId, createdAt)
+        this.repository.insertOutbox({
+          id: randomUUID(), projectId: current.projectId, topic: 'entity-candidate.confirmed', aggregateId: id,
+          payload: JSON.stringify({ candidateId: id, entityType: current.entityType, entityId, contentRevisionId: current.contentRevisionId }),
+          status: 'pending', attempts: 0, createdAt,
+        })
       }
       confirmed = this.getCandidate(id)
     })()
@@ -157,9 +112,7 @@ export class EntityCandidateStore {
     if (!current) throw new Error(`实体候选不存在: ${id}`)
     if (current.status !== 'needs_review') throw new Error(`候选状态 ${current.status} 不可拒绝`)
     this.db.transaction(() => {
-      this.db.prepare(
-        "UPDATE novel_entity_candidates SET status = 'rejected' WHERE id = ?",
-      ).run(id)
+      this.repository.updateCandidateStatus(id, 'rejected')
       this.appendReview(id, 'rejected', reason.trim(), actorId, {
         before: 'needs_review',
         after: 'rejected',
@@ -171,9 +124,7 @@ export class EntityCandidateStore {
   }
 
   listReviews(candidateId: string): NovelEntityCandidateReview[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_entity_candidate_reviews WHERE candidate_id = ? ORDER BY created_at ASC',
-    ).all(candidateId) as ReviewRow[]
+    const rows = this.repository.listReviews(candidateId)
     return rows.map((r) => this.rowToReview(r))
   }
 
@@ -184,14 +135,13 @@ export class EntityCandidateStore {
     actorId: string,
     auditContext: Record<string, unknown>,
   ): void {
-    this.db.prepare(`
-      INSERT INTO novel_entity_candidate_reviews
-        (id, candidate_id, decision, reason, actor_id, audit_context, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), candidateId, decision, reason, actorId, JSON.stringify(auditContext), Math.floor(Date.now() / 1000))
+    this.repository.insertReview({
+      id: randomUUID(), candidate_id: candidateId, decision, reason, actor_id: actorId,
+      audit_context: JSON.stringify(auditContext), created_at: Math.floor(Date.now() / 1000),
+    })
   }
 
-  private rowToCandidate(row: CandidateRow): NovelEntityCandidate {
+  private rowToCandidate(row: EntityCandidateRow): NovelEntityCandidate {
     return {
       id: row.id,
       projectId: row.project_id,
@@ -205,7 +155,7 @@ export class EntityCandidateStore {
     }
   }
 
-  private rowToReview(row: ReviewRow): NovelEntityCandidateReview {
+  private rowToReview(row: EntityCandidateReviewRow): NovelEntityCandidateReview {
     return {
       id: row.id,
       candidateId: row.candidate_id,

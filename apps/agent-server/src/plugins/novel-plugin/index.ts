@@ -22,7 +22,7 @@ import type { Plugin, PluginContext } from '../../core/plugin/plugin-types.js'
 import { novelMigrations } from './novel-migrations.js'
 import { createNovelServices } from './novel-services.js'
 import { createNovelRoutes } from './novel-routes.js'
-import { NOVEL_AGENT_CONFIGS, type NovelAgentType, getNovelAgentTemperature } from './core/novel-agents.js'
+import { NOVEL_AGENT_CONFIGS, type NovelAgentType, getNovelAgentTemperature } from './core/domain/novel-agents.js'
 
 /** Novel Team ID（全局唯一，避免重复创建） */
 const NOVEL_TEAM_ID = 'novel-team'

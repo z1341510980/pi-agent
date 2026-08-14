@@ -35,7 +35,7 @@ import type {
   StoryEventStatus,
   StoryEventType,
 } from '@repo/shared/novel'
-import { buildPromptDimensionContext } from './story-dimension-semantics.js'
+import { buildPromptDimensionContext } from './domain/story-dimension-semantics.js'
 
 /** 记忆事件类型 */
 export type MemoryEventType =
@@ -108,6 +108,8 @@ export interface MemorySnapshot {
   snapshotType: MemorySnapshotType
   entityId: string | null
   snapshotData: string  // JSON
+  /** 审计状态；旧调用方构造的内存快照可省略，落库时统一为 active。 */
+  status?: 'active' | 'stale' | 'superseded'
   createdAt: number
 }
 
@@ -127,12 +129,16 @@ export interface ListEventsOptions {
 export interface ListSnapshotsOptions {
   chapterNumber?: number
   snapshotType?: MemorySnapshotType
+  /** 默认只返回 active；审计接口可显式读取全部历史。 */
+  includeInactive?: boolean
 }
 
 /** getSnapshot 查询选项 */
 export interface GetSnapshotOptions {
   snapshotType?: MemorySnapshotType
   entityId?: string
+  /** 默认只返回 active；审计接口可显式读取 stale/superseded。 */
+  includeInactive?: boolean
 }
 
 export type CreateStoryEventInput = Omit<NovelStoryEvent, 'id' | 'createdAt' | 'updatedAt'>
@@ -158,6 +164,8 @@ export interface ListStoryEventsOptions {
   source?: StoryEventSource
   entityType?: NovelStoryEntityType
   entityId?: string
+  /** 默认只返回 active；审计接口可显式读取 stale/superseded。 */
+  includeInactive?: boolean
   /** 默认排除已失效事件；审计页可显式读取。 */
   includeStale?: boolean
 }
@@ -701,17 +709,19 @@ export class NovelMemoryStore {
   }
 
   /** 获取实体的事件历史（时间线） */
-  getEntityTimeline(projectId: string, entityId: string): MemoryEvent[] {
+  getEntityTimeline(projectId: string, entityId: string, includeStale = false): MemoryEvent[] {
     const rows = this.db
-      .prepare('SELECT * FROM novel_memory_events WHERE project_id = ? AND entity_id = ? ORDER BY chapter_number ASC, created_at ASC')
+      .prepare(`SELECT * FROM novel_memory_events
+        WHERE project_id = ? AND entity_id = ? ${includeStale ? '' : "AND status <> 'stale'"}
+        ORDER BY chapter_number ASC, created_at ASC`)
       .all(projectId, entityId) as MemoryEventRow[]
     return rows.map((r) => this.rowToEvent(r))
   }
 
   /** 获取因果关系链（向上追溯原因 + 向下追溯影响） */
-  getCausalChain(eventId: string): { causes: MemoryEvent[]; effects: MemoryEvent[] } {
+  getCausalChain(eventId: string, includeStale = false): { causes: MemoryEvent[]; effects: MemoryEvent[] } {
     const event = this.db
-      .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
+      .prepare(`SELECT * FROM novel_memory_events WHERE id = ? ${includeStale ? '' : "AND status <> 'stale'"}`)
       .get(eventId) as MemoryEventRow | undefined
     if (!event) return { causes: [], effects: [] }
 
@@ -723,7 +733,7 @@ export class NovelMemoryStore {
       if (visited.has(currentCauseId)) break
       visited.add(currentCauseId)
       const causeRow = this.db
-        .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
+        .prepare(`SELECT * FROM novel_memory_events WHERE id = ? ${includeStale ? '' : "AND status <> 'stale'"}`)
         .get(currentCauseId) as MemoryEventRow | undefined
       if (!causeRow) break
       causes.push(this.rowToEvent(causeRow))
@@ -738,7 +748,7 @@ export class NovelMemoryStore {
       if (visited.has(effectId)) continue
       visited.add(effectId)
       const effectRow = this.db
-        .prepare('SELECT * FROM novel_memory_events WHERE id = ?')
+        .prepare(`SELECT * FROM novel_memory_events WHERE id = ? ${includeStale ? '' : "AND status <> 'stale'"}`)
         .get(effectId) as MemoryEventRow | undefined
       if (!effectRow) continue
       effects.push(this.rowToEvent(effectRow))
@@ -863,7 +873,7 @@ export class NovelMemoryStore {
   getLatestStoryEventId(projectId: string): string | undefined {
     const row = this.db.prepare(`
       SELECT id FROM novel_story_events
-      WHERE project_id = ?
+      WHERE project_id = ? AND status <> 'stale'
       ORDER BY chapter_number DESC, scene_order DESC, created_at DESC
       LIMIT 1
     `).get(projectId) as { id: string } | undefined
@@ -873,7 +883,7 @@ export class NovelMemoryStore {
   listStoryEvents(projectId: string, options?: ListStoryEventsOptions): NovelStoryEvent[] {
     const conditions = ['e.project_id = ?']
     const params: unknown[] = [projectId]
-    if (!options?.includeStale) conditions.push("e.status <> 'stale'")
+    if (!options?.includeStale && options?.status !== 'stale') conditions.push("e.status <> 'stale'")
     if (options?.chapterNumber !== undefined) {
       conditions.push('e.chapter_number = ?')
       params.push(options.chapterNumber)
@@ -1130,9 +1140,10 @@ export class NovelMemoryStore {
   }
 
   listChangeRecords(projectId: string, options?: ListChangeRecordsOptions): NovelChangeRecord[] {
-    // 默认排除驳回项（rejected）；显式指定 status 查询时（审计/确认队列）不过滤
+    // 默认排除驳回和失效项；显式 status 或审计查询可读取对应历史。
     const conditions = ['project_id = ?', 'dimension IS NOT NULL']
     if (!options?.status) conditions.push("status != 'rejected'")
+    if (!options?.includeStale && options?.status !== 'stale') conditions.push("status != 'stale'")
     const params: unknown[] = [projectId]
     if (options?.storyEventId) {
       conditions.push('story_event_id = ?')
@@ -1505,16 +1516,17 @@ export class NovelMemoryStore {
   // ═══════════════════════════════════════════════════════════════
 
   /** 保存章节快照 */
-  saveSnapshot(snapshot: Omit<MemorySnapshot, 'id' | 'createdAt'>): MemorySnapshot {
+  saveSnapshot(snapshot: Omit<MemorySnapshot, 'id' | 'createdAt' | 'status'>): MemorySnapshot {
     const full: MemorySnapshot = {
       ...snapshot,
+      status: 'active',
       id: randomUUID(),
       createdAt: now(),
     }
     this.db.prepare(`
       INSERT INTO novel_memory_snapshots
-      (id, project_id, chapter_number, snapshot_type, entity_id, snapshot_data, created_at)
-      VALUES (@id, @project_id, @chapter_number, @snapshot_type, @entity_id, @snapshot_data, @created_at)
+      (id, project_id, chapter_number, snapshot_type, entity_id, snapshot_data, status, created_at)
+      VALUES (@id, @project_id, @chapter_number, @snapshot_type, @entity_id, @snapshot_data, 'active', @created_at)
     `).run({
       id: full.id,
       project_id: full.projectId,
@@ -1533,11 +1545,11 @@ export class NovelMemoryStore {
    * Finalizer 在校准后会刷新本章 full 快照；先删后写可避免秒级时间戳相同时
    * `getSnapshot()` 无法稳定判断哪一条才是最终状态。调用方应把本方法纳入业务事务。
    */
-  replaceSnapshot(snapshot: Omit<MemorySnapshot, 'id' | 'createdAt'>): MemorySnapshot {
+  replaceSnapshot(snapshot: Omit<MemorySnapshot, 'id' | 'createdAt' | 'status'>): MemorySnapshot {
     this.db.prepare(`
-      DELETE FROM novel_memory_snapshots
+      UPDATE novel_memory_snapshots SET status = 'superseded'
       WHERE project_id = ? AND chapter_number = ? AND snapshot_type = ?
-        AND entity_id IS ?
+        AND entity_id IS ? AND status = 'active'
     `).run(snapshot.projectId, snapshot.chapterNumber, snapshot.snapshotType, snapshot.entityId)
     return this.saveSnapshot(snapshot)
   }
@@ -1550,6 +1562,7 @@ export class NovelMemoryStore {
   ): MemorySnapshot | undefined {
     const conditions = ['project_id = ?', 'chapter_number = ?']
     const params: unknown[] = [projectId, chapterNumber]
+    if (!options?.includeInactive) conditions.push("status = 'active'")
     if (options?.snapshotType) {
       conditions.push('snapshot_type = ?')
       params.push(options.snapshotType)
@@ -1567,6 +1580,7 @@ export class NovelMemoryStore {
   listSnapshots(projectId: string, options?: ListSnapshotsOptions): MemorySnapshot[] {
     const conditions = ['project_id = ?']
     const params: unknown[] = [projectId]
+    if (!options?.includeInactive) conditions.push("status = 'active'")
     if (options?.chapterNumber !== undefined) {
       conditions.push('chapter_number = ?')
       params.push(options.chapterNumber)
@@ -1698,6 +1712,7 @@ export class NovelMemoryStore {
       snapshotType: row.snapshot_type as MemorySnapshotType,
       entityId: row.entity_id,
       snapshotData: row.snapshot_data,
+      status: row.status as MemorySnapshot['status'],
       createdAt: row.created_at,
     }
   }

@@ -3,7 +3,7 @@ import {
   validateChapterScenePlan,
   type ChapterScenePlan,
   type ChapterScenePlanScene,
-} from '../core/chapter-scene-plan.js'
+} from '../core/chapters/chapter-scene-plan.js'
 
 function basePlan(scenes: ChapterScenePlanScene[]): ChapterScenePlan {
   return {

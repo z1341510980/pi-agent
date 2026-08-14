@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { NovelStore } from '../core/novel-store.js'
 import { NovelMemoryStore } from '../core/novel-memory-store.js'
-import { DiscussionRunStore } from '../core/discussion-run-store.js'
+import { DiscussionRunStore } from '../core/discussion/discussion-run-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 
 function createDb(): Database.Database {

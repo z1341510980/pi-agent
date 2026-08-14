@@ -19,7 +19,7 @@ import {
   buildCacheLayerReport,
   CACHE_COVERAGE_THRESHOLDS,
   type CacheDiagnosticLog,
-} from '../plugins/novel-plugin/core/cache-layer-diagnostics.js'
+} from '../plugins/novel-plugin/core/analysis/cache-layer-diagnostics.js'
 
 const SEP = '\n\n---\n\n'
 

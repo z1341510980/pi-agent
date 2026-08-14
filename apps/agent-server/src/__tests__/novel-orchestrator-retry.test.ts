@@ -14,7 +14,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { describe, expect, it, vi } from 'vitest'
 import { NovelOrchestrator } from '../plugins/novel-plugin/core/novel-orchestrator.js'
-import { createChapterBudgetUsage, type ChapterBudgetUsage } from '../plugins/novel-plugin/core/chapter-budget.js'
+import { createChapterBudgetUsage, type ChapterBudgetUsage } from '../plugins/novel-plugin/core/chapters/chapter-budget.js'
 
 interface Harness {
   orchestrator: {

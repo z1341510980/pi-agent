@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { gunzipBlob, hashPayloadFields, computeExpiresAt, PAYLOAD_RETENTION_DAYS, SECONDS_PER_DAY } from '../core/log-payload-service.js'
+import { gunzipBlob, hashPayloadFields, computeExpiresAt, PAYLOAD_RETENTION_DAYS, SECONDS_PER_DAY } from '../core/analysis/log-payload-service.js'
 import type { NovelAgentLog } from '../core/types.js'
 
 function createDb(): Database.Database {

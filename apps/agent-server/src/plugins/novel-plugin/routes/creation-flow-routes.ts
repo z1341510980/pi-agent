@@ -27,8 +27,8 @@ import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { CheckpointDecision, CheckpointType } from '@repo/shared/novel'
-import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, type NovelAgentType } from '../core/novel-agents.js'
-import { persistDiscussionHistory } from '../core/discussion-history.js'
+import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, type NovelAgentType } from '../core/domain/novel-agents.js'
+import { persistDiscussionHistory } from '../core/discussion/discussion-history.js'
 import type { DiscussionResult } from '../../../core/agent/discussion-types.js'
 import {
   aiArrangeLocks,
@@ -45,7 +45,7 @@ import {
   parseArrangedEntities,
   findForeignArrangedEntities,
 } from './arranged-entities-contract.js'
-import { parseNovelModelRef } from '../core/novel-model-ref.js'
+import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 
 export function createCreationFlowRoutes(services: NovelServices): RouteDefinition[] {
   const { store } = services
@@ -69,6 +69,30 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     const parsed = requireChapter(projectId, chapterNumber)
     if (store.getChapter(projectId, parsed)?.status === 'published') {
       throw new AppError(ErrorCode.CONFLICT, '已发布章节不能重新创作，请先进入修订流程', 409)
+    }
+    try {
+      store.assertTimelineAllowsGeneration?.(projectId, parsed)
+    } catch (error) {
+      throw new AppError(
+        ErrorCode.CONFLICT,
+        error instanceof Error ? error.message : String(error),
+        409,
+      )
+    }
+    return parsed
+  }
+
+  /** 会写实体/矩阵当前态的入口从失效起始章起即禁止，避免叠加到未来活库。 */
+  const requireDerivedStateWritableChapter = (projectId: string, chapterNumber: string): number => {
+    const parsed = requireWritableChapter(projectId, chapterNumber)
+    try {
+      store.assertTimelineAllowsPublish?.(projectId, parsed)
+    } catch (error) {
+      throw new AppError(
+        ErrorCode.CONFLICT,
+        error instanceof Error ? error.message : String(error),
+        409,
+      )
     }
     return parsed
   }
@@ -831,7 +855,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     handler: async (request: any, reply: any) => {
       const { projectId, chapterNumber } = request.params
       const entityGenerator = services.entityGenerator
-      const chNum = requireChapter(projectId, chapterNumber)
+      const chNum = requireDerivedStateWritableChapter(projectId, chapterNumber)
 
       // 并发锁：同一章节不允许并发 ai-arrange，避免重复生成实体
       const lockKey = `${projectId}:${chapterNumber}`
@@ -958,7 +982,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     handler: async (request: any, reply: any) => {
       const { projectId, chapterNumber } = request.params
       const entityGenerator = services.entityGenerator
-      const chNum = requireChapter(projectId, chapterNumber)
+      const chNum = requireDerivedStateWritableChapter(projectId, chapterNumber)
 
       // 并发锁：与 ai-arrange 共用锁池，同一章节不允许并发编排
       const lockKey = `${projectId}:${chapterNumber}`

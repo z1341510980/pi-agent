@@ -20,9 +20,11 @@ import type {
   SceneRevisionStatus,
   NovelSceneCast,
 } from '../types.js'
-import type { ChapterScenePlan, ChapterScenePlanScene } from '../chapter-scene-plan.js'
+import type { ChapterScenePlan, ChapterScenePlanScene } from '../chapters/chapter-scene-plan.js'
 import { now } from './store-utils.js'
-import type { SceneCastReconcileReport } from '../migration-acceptance.js'
+import type { SceneCastReconcileReport } from '../analysis/migration-acceptance.js'
+import { createNovelDrizzleDb, ScenePlanRepository } from '../../infrastructure/sqlite/index.js'
+import type { PlanRow, SceneCastRow as RepositorySceneCastRow, SceneRevisionRow, SceneRow } from '../../infrastructure/sqlite/repositories/scene-plan-repository.js'
 
 export type SceneCastRole = 'focus' | 'present' | 'functional'
 
@@ -34,51 +36,6 @@ export interface SceneCastRow {
   function: string | null
   prominence: string | null
   note: string | null
-}
-
-interface PlanRow {
-  id: string
-  chapter_id: string
-  project_id: string
-  creation_run_id: string | null
-  supersedes_id: string | null
-  base_content_revision_id: string | null
-  positioning: string | null
-  rhythm: string | null
-  budget: string
-  status: string
-  revision: number
-  idempotency_key: string | null
-  created_at: number
-}
-
-interface SceneRow {
-  id: string
-  chapter_id: string
-  project_id: string
-  stable_key: string
-  created_at: number
-}
-
-interface SceneRevisionRow {
-  id: string
-  scene_id: string
-  chapter_id: string
-  project_id: string
-  plan_revision_id: string
-  content_revision_id: string | null
-  supersedes_id: string | null
-  order_no: number
-  title: string
-  goal: string
-  summary: string
-  location_text: string
-  time_text: string
-  pov_mode: string
-  pov_character_id: string | null
-  target_words: number
-  status: string
-  created_at: number
 }
 
 export type PlanBudget = ChapterPlanRevision['budget']
@@ -99,9 +56,13 @@ export interface SubmitPlanWithScenesInput extends CreatePlanInput {
 }
 
 export class ScenePlanStore {
+  private readonly repository: ScenePlanRepository
+
   constructor(
     private db: Database.Database,
-  ) {}
+  ) {
+    this.repository = new ScenePlanRepository(createNovelDrizzleDb(db))
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // Plan 版本链
@@ -113,44 +74,25 @@ export class ScenePlanStore {
       const existing = this.findPlanByIdempotencyKey(input.idempotencyKey)
       if (existing) return existing
     }
-    const maxRev = (this.db.prepare(
-      'SELECT MAX(revision) as maxRev FROM novel_chapter_plan_revisions WHERE chapter_id = ?',
-    ).get(input.chapterId) as { maxRev: number | null } | undefined)?.maxRev ?? 0
+    const maxRev = this.repository.maxRevision(input.chapterId)
     const id = randomUUID()
-    this.db.prepare(`
-      INSERT INTO novel_chapter_plan_revisions
-        (id, chapter_id, project_id, creation_run_id, supersedes_id, base_content_revision_id,
-         positioning, rhythm, budget, status, revision, idempotency_key, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
-    `).run(
-      id, input.chapterId, input.projectId, input.creationRunId ?? null, null,
-      input.baseContentRevisionId ?? null, input.positioning ?? null, input.rhythm ?? null,
-      JSON.stringify(input.budget), maxRev + 1, input.idempotencyKey ?? null, now(),
-    )
+    this.repository.insertPlan({ id, chapter_id: input.chapterId, project_id: input.projectId, creation_run_id: input.creationRunId ?? null, supersedes_id: null, base_content_revision_id: input.baseContentRevisionId ?? null, positioning: input.positioning ?? null, rhythm: input.rhythm ?? null, budget: JSON.stringify(input.budget), status: 'draft', revision: maxRev + 1, idempotency_key: input.idempotencyKey ?? null, created_at: now() })
     return this.getPlanRevision(id)!
   }
 
   getPlanRevision(id: string): ChapterPlanRevision | undefined {
-    const row = this.db.prepare(
-      'SELECT * FROM novel_chapter_plan_revisions WHERE id = ?',
-    ).get(id) as PlanRow | undefined
+    const row = this.repository.getPlan(id)
     return row ? this.rowToPlan(row) : undefined
   }
 
   /** 当前生效计划：最高 revision 的 approved/consumed/confirmed（draft/superseded/stale 不算） */
   getCurrentPlan(chapterId: string): ChapterPlanRevision | undefined {
-    const row = this.db.prepare(
-      `SELECT * FROM novel_chapter_plan_revisions
-       WHERE chapter_id = ? AND status IN ('approved','consumed','confirmed')
-       ORDER BY revision DESC LIMIT 1`,
-    ).get(chapterId) as PlanRow | undefined
+    const row = this.repository.getCurrentPlan(chapterId)
     return row ? this.rowToPlan(row) : undefined
   }
 
   listPlanRevisions(chapterId: string): ChapterPlanRevision[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_chapter_plan_revisions WHERE chapter_id = ? ORDER BY revision DESC',
-    ).all(chapterId) as PlanRow[]
+    const rows = this.repository.listPlans(chapterId)
     return rows.map((r) => this.rowToPlan(r))
   }
 
@@ -165,22 +107,17 @@ export class ScenePlanStore {
     if (expectedStatus && current.status !== expectedStatus) {
       throw new Error(`计划版本状态冲突: 期望 ${expectedStatus}，实际 ${current.status}`)
     }
-    this.db.prepare('UPDATE novel_chapter_plan_revisions SET status = ? WHERE id = ?').run(to, id)
+    this.repository.updatePlanStatus(id, to)
     return this.getPlanRevision(id)!
   }
 
   /** Director 重跑时：将已存在且未消费的 draft/approved 计划 superseded，再建新计划 */
   supersedeActivePlans(chapterId: string): void {
-    this.db.prepare(
-      `UPDATE novel_chapter_plan_revisions SET status = 'superseded'
-       WHERE chapter_id = ? AND status IN ('draft','approved')`,
-    ).run(chapterId)
+    this.repository.supersedeActivePlans(chapterId)
   }
 
   private findPlanByIdempotencyKey(key: string): ChapterPlanRevision | undefined {
-    const row = this.db.prepare(
-      'SELECT * FROM novel_chapter_plan_revisions WHERE idempotency_key = ?',
-    ).get(key) as PlanRow | undefined
+    const row = this.repository.findPlanByIdempotencyKey(key)
     return row ? this.rowToPlan(row) : undefined
   }
 
@@ -190,15 +127,11 @@ export class ScenePlanStore {
 
   /** 按 (chapter_id, stable_key) 幂等取/建场景身份 */
   upsertScene(chapterId: string, projectId: string, stableKey: string): NovelScene {
-    const existing = this.db.prepare(
-      'SELECT * FROM novel_scenes WHERE chapter_id = ? AND stable_key = ?',
-    ).get(chapterId, stableKey) as SceneRow | undefined
+    const existing = this.repository.getSceneByKey(chapterId, stableKey)
     if (existing) return this.rowToScene(existing)
     const id = randomUUID()
-    this.db.prepare(
-      'INSERT INTO novel_scenes (id, chapter_id, project_id, stable_key, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(id, chapterId, projectId, stableKey, now())
-    return this.db.prepare('SELECT * FROM novel_scenes WHERE id = ?').get(id) as NovelScene
+    this.repository.insertScene({ id, chapter_id: chapterId, project_id: projectId, stable_key: stableKey, created_at: now() })
+    return this.rowToScene(this.repository.getScene(id)!)
   }
 
   /**
@@ -216,26 +149,20 @@ export class ScenePlanStore {
       // - 同一计划重复提交（幂等保护外的残留）
       // - Director 重跑产生的新计划（不同 plan_revision_id）
       // confirmed 版本不受影响（那是 Memory 已确认正文的版本）。
-      this.db.prepare(
-        `UPDATE novel_scene_revisions SET status = 'superseded'
-         WHERE chapter_id = ? AND status = 'planned'`,
-      ).run(plan.chapterId)
+      this.repository.supersedePlannedScenes(plan.chapterId)
 
       const revisions: NovelSceneRevision[] = []
       for (const scene of scenes) {
         const identity = this.upsertScene(plan.chapterId, plan.projectId, scene.sceneKey)
         const id = randomUUID()
-        this.db.prepare(`
-          INSERT INTO novel_scene_revisions
-            (id, scene_id, chapter_id, project_id, plan_revision_id, content_revision_id,
-             supersedes_id, order_no, title, goal, summary, location_text, time_text,
-             pov_mode, pov_character_id, target_words, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'planned', ?)
-        `).run(
-          id, identity.id, plan.chapterId, plan.projectId, plan.id, contentRevisionId ?? null,
-          null, scene.order, scene.title, scene.goal, scene.locationText, scene.timeText,
-          scene.povMode, scene.povCharacterId ?? null, scene.targetWords, now(),
-        )
+        this.repository.insertSceneRevision({
+          id, scene_id: identity.id, chapter_id: plan.chapterId, project_id: plan.projectId,
+          plan_revision_id: plan.id, content_revision_id: contentRevisionId ?? null, supersedes_id: null,
+          order_no: scene.order, title: scene.title, goal: scene.goal, summary: '',
+          location_text: scene.locationText, time_text: scene.timeText, pov_mode: scene.povMode,
+          pov_character_id: scene.povCharacterId ?? null, target_words: scene.targetWords,
+          status: 'planned', created_at: now(),
+        })
         this.replaceCast(id, scene)
         revisions.push(this.getSceneRevision(id)!)
       }
@@ -254,38 +181,24 @@ export class ScenePlanStore {
 
   /** 将 ChapterScenePlanScene 转换为 cast 行并覆盖写入 novel_scene_cast */
   private writeSceneCast(sceneRevisionId: string, scene: ChapterScenePlanScene): void {
-    this.db.prepare('DELETE FROM novel_scene_cast WHERE scene_revision_id = ?').run(sceneRevisionId)
-    const castInsert = this.db.prepare(`
-      INSERT INTO novel_scene_cast (scene_revision_id, character_id, role, function, prominence, note)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `)
+    const rows: RepositorySceneCastRow[] = []
     for (const cid of scene.focusCharacterIds) {
-      castInsert.run(sceneRevisionId, cid, 'focus', null, null, null)
+      rows.push({ scene_revision_id: sceneRevisionId, character_id: cid, role: 'focus', function: null, prominence: null, note: null })
     }
     for (const cid of scene.presentCharacterIds) {
-      castInsert.run(sceneRevisionId, cid, 'present', null, null, null)
+      rows.push({ scene_revision_id: sceneRevisionId, character_id: cid, role: 'present', function: null, prominence: null, note: null })
     }
     for (const entry of scene.functionalCast) {
       // SceneFunctionalCastEntry 无 note 字段（旧三表 note 默认 ''）；安全读取兼容扩展
       const note = (entry as { note?: string | null }).note ?? ''
-      castInsert.run(sceneRevisionId, entry.characterId, 'functional', entry.function, entry.prominence, note)
+      rows.push({ scene_revision_id: sceneRevisionId, character_id: entry.characterId, role: 'functional', function: entry.function, prominence: entry.prominence, note })
     }
+    this.repository.replaceSceneCast(sceneRevisionId, rows)
   }
 
   /** 原始读取 cast 表全部行（数据层保真，不做 focus/present 去重） */
   getSceneCast(sceneRevisionId: string): SceneCastRow[] {
-    const rows = this.db.prepare(
-      `SELECT scene_revision_id, character_id, role, function, prominence, note
-       FROM novel_scene_cast WHERE scene_revision_id = ?
-       ORDER BY role, character_id`,
-    ).all(sceneRevisionId) as Array<{
-      scene_revision_id: string
-      character_id: string
-      role: string
-      function: string | null
-      prominence: string | null
-      note: string | null
-    }>
+    const rows = this.repository.listSceneCast(sceneRevisionId)
     return rows.map((r) => ({
       sceneRevisionId: r.scene_revision_id,
       characterId: r.character_id,
@@ -297,22 +210,18 @@ export class ScenePlanStore {
   }
 
   listSceneRevisionsByPlan(planRevisionId: string): NovelSceneRevision[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_scene_revisions WHERE plan_revision_id = ? ORDER BY order_no ASC',
-    ).all(planRevisionId) as SceneRevisionRow[]
+    const rows = this.repository.listSceneRevisionsByPlan(planRevisionId)
     return rows.map((r) => this.rowToSceneRevision(r))
   }
 
   getSceneRevision(id: string): NovelSceneRevision | undefined {
-    const row = this.db.prepare(
-      'SELECT * FROM novel_scene_revisions WHERE id = ?',
-    ).get(id) as SceneRevisionRow | undefined
+    const row = this.repository.getSceneRevision(id)
     return row ? this.rowToSceneRevision(row) : undefined
   }
 
   /** 场景身份（稳定标识） */
   getSceneById(sceneId: string): NovelScene | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_scenes WHERE id = ?').get(sceneId) as SceneRow | undefined
+    const row = this.repository.getScene(sceneId)
     return row ? this.rowToScene(row) : undefined
   }
 
@@ -461,11 +370,9 @@ export class ScenePlanStore {
     const current = this.getSceneRevision(id)
     if (!current) throw new Error(`场景版本不存在: ${id}`)
     if (contentRevisionId !== undefined) {
-      this.db.prepare(
-        'UPDATE novel_scene_revisions SET status = ?, content_revision_id = ? WHERE id = ?',
-      ).run('confirmed', contentRevisionId, id)
+      this.repository.confirmSceneRevision(id, contentRevisionId)
     } else {
-      this.db.prepare('UPDATE novel_scene_revisions SET status = ? WHERE id = ?').run('confirmed', id)
+      this.repository.confirmSceneRevision(id)
     }
     return this.getSceneRevision(id)!
   }

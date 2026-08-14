@@ -8,7 +8,7 @@ import {
   shiftChapterEvents,
   type ChapterRenumberSpec,
   createChapterRenumberSpec,
-} from '../core/chapter-renumber.js'
+} from '../core/chapters/chapter-renumber.js'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 

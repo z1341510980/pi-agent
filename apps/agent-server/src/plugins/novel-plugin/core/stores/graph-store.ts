@@ -24,21 +24,16 @@ import {
   computeExpiresAt,
   PAYLOAD_BLOB_COLUMNS,
   type PayloadFields,
-} from '../log-payload-service.js'
+} from '../analysis/log-payload-service.js'
 import type {
   ContextSectionMetric,
   ContextSectionMetricInput,
-} from '../context-section-metrics.js'
+} from '../prompting/context-section-metrics.js'
+import { createNovelDrizzleDb, GraphRepository } from '../../infrastructure/sqlite/index.js'
 
 
 export class GraphStore {
-  private readonly stmtListNodePositions: Database.Statement
-  private readonly stmtUpsertNodePosition: Database.Statement
-  private readonly stmtDeleteNodePosition: Database.Statement
-  private readonly stmtListMarkers: Database.Statement
-  private readonly stmtListEdges: Database.Statement
-  private readonly stmtDeleteEdge: Database.Statement
-  private readonly stmtDeleteEdgesByEntity: Database.Statement
+  private readonly repository: GraphRepository
   private readonly stmtInsertAgentLog: Database.Statement
   private readonly stmtGetAgentLog: Database.Statement
   private readonly stmtListAgentLogsByProject: Database.Statement
@@ -50,28 +45,11 @@ export class GraphStore {
   private readonly stmtDeleteExpiredPayloads: Database.Statement
   private readonly stmtCountPayloads: Database.Statement
   private readonly stmtCountExpiredPayloads: Database.Statement
-  private readonly stmtInsertContextSectionMetric: Database.Statement
 
   constructor(
     private db: Database.Database,
   ) {
-    this.stmtListNodePositions = db.prepare('SELECT * FROM novel_node_positions WHERE project_id = ? ORDER BY updated_at ASC')
-    this.stmtUpsertNodePosition = db.prepare(`
-      INSERT INTO novel_node_positions (id, project_id, node_type, entity_id, pos_x, pos_y, updated_at)
-      VALUES (@id, @project_id, @node_type, @entity_id, @pos_x, @pos_y, @updated_at)
-      ON CONFLICT(project_id, node_type, entity_id) DO UPDATE SET
-        id = @id,
-        pos_x = @pos_x,
-        pos_y = @pos_y,
-        updated_at = @updated_at
-    `)
-    this.stmtDeleteNodePosition = db.prepare('DELETE FROM novel_node_positions WHERE project_id = ? AND node_type = ? AND entity_id = ?')
-    this.stmtListMarkers = db.prepare('SELECT * FROM novel_markers WHERE project_id = ? ORDER BY chapter ASC, created_at ASC')
-    this.stmtListEdges = db.prepare('SELECT * FROM novel_edges WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtDeleteEdge = db.prepare('DELETE FROM novel_edges WHERE id = ?')
-    this.stmtDeleteEdgesByEntity = db.prepare(
-      'DELETE FROM novel_edges WHERE source_id = ? OR target_id = ?',
-    )
+    this.repository = new GraphRepository(createNovelDrizzleDb(db))
 
     this.stmtInsertAgentLog = db.prepare(`
       INSERT INTO novel_agent_logs (
@@ -122,15 +100,6 @@ export class GraphStore {
     this.stmtCountExpiredPayloads = db.prepare(
       'SELECT COUNT(*) AS n FROM novel_agent_log_payloads WHERE expires_at IS NOT NULL AND expires_at <= ?',
     )
-    this.stmtInsertContextSectionMetric = db.prepare(`
-      INSERT INTO novel_context_section_metrics (
-        id, agent_log_id, project_id, chapter_number, agent_type,
-        section_type, section_id, chars, estimated_tokens, source_hash, mode, created_at
-      ) VALUES (
-        @id, @agent_log_id, @project_id, @chapter_number, @agent_type,
-        @section_type, @section_id, @chars, @estimated_tokens, @source_hash, @mode, @created_at
-      )
-    `)
     this.stmtListAgentLogsByProject = db.prepare(
       'SELECT * FROM novel_agent_logs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?',
     )
@@ -146,24 +115,20 @@ export class GraphStore {
   }
 
   listMarkers(projectId: string): NovelMarker[] {
-    return (this.stmtListMarkers.all(projectId) as MarkerRow[]).map((r) => this.rowToMarker(r))
+    return this.repository.listMarkers(projectId).map((r) => this.rowToMarker(r))
   }
 
   getMarker(markerId: string): NovelMarker | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_markers WHERE id = ?').get(markerId) as MarkerRow | undefined
+    const row = this.repository.getMarker(markerId)
     return row ? this.rowToMarker(row) : undefined
   }
 
   createMarker(marker: Omit<NovelMarker, 'createdAt' | 'updatedAt'>): NovelMarker {
     const ts = now()
     const full: NovelMarker = { ...marker, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_markers (id, project_id, chapter, title, note, type, color, entity_type, entity_id, created_at, updated_at)
-      VALUES (@id, @project_id, @chapter, @title, @note, @type, @color, @entity_type, @entity_id, @created_at, @updated_at)
-    `).run({
+    this.repository.insertMarker({
       id: full.id, project_id: full.projectId, chapter: full.chapter,
-      title: bindString(full.title), note: bindString(full.note),
-      type: full.type, color: full.color,
+      title: bindString(full.title), note: bindString(full.note), type: full.type, color: full.color,
       entity_type: full.entityType ?? null, entity_id: full.entityId ?? null,
       created_at: full.createdAt, updated_at: full.updatedAt,
     })
@@ -171,29 +136,25 @@ export class GraphStore {
   }
 
   updateMarker(id: string, patch: Partial<NovelMarker>): NovelMarker | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_markers WHERE id = ?').get(id) as MarkerRow | undefined
+    const existing = this.repository.getMarker(id)
     if (!existing) return undefined
     const current = this.rowToMarker(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_markers SET chapter=@chapter, title=@title, note=@note,
-      type=@type, color=@color, entity_type=@entity_type, entity_id=@entity_id, updated_at=@updated_at WHERE id=@id
-    `).run({
-      id, chapter: updated.chapter, title: bindString(updated.title), note: bindString(updated.note),
-      type: updated.type, color: updated.color,
+    this.repository.updateMarker(id, {
+      id, project_id: updated.projectId, chapter: updated.chapter,
+      title: bindString(updated.title), note: bindString(updated.note), type: updated.type, color: updated.color,
       entity_type: updated.entityType ?? null, entity_id: updated.entityId ?? null,
-      updated_at: updated.updatedAt,
+      created_at: updated.createdAt, updated_at: updated.updatedAt,
     })
     return updated
   }
 
   deleteMarker(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_markers WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteMarker(id)
   }
 
   listEdges(projectId: string): NovelEdge[] {
-    return (this.stmtListEdges.all(projectId) as EdgeRow[]).map((r) => this.rowToEdge(r))
+    return this.repository.listEdges(projectId).map((r) => this.rowToEdge(r))
   }
 
   createEdge(
@@ -216,12 +177,7 @@ export class GraphStore {
       createdAt: ts,
       updatedAt: ts,
     }
-    this.db.prepare(`
-      INSERT INTO novel_edges (id, project_id, source_id, source_type, target_id, target_type,
-      edge_type, label, auto, created_at, updated_at)
-      VALUES (@id, @project_id, @source_id, @source_type, @target_id, @target_type,
-      @edge_type, @label, @auto, @created_at, @updated_at)
-    `).run({
+    this.repository.insertEdge({
       id: full.id, project_id: full.projectId,
       source_id: full.sourceId, source_type: full.sourceType,
       target_id: full.targetId, target_type: full.targetType,
@@ -232,54 +188,25 @@ export class GraphStore {
   }
 
   deleteEdge(id: string): boolean {
-    const result = this.stmtDeleteEdge.run(id)
-    return result.changes > 0
+    return this.repository.deleteEdge(id)
   }
 
   deleteEdgesByEntity(entityId: string): number {
-    const result = this.stmtDeleteEdgesByEntity.run(entityId, entityId)
-    return result.changes
+    return this.repository.deleteEdgesByEntity(entityId)
   }
 
   listEdgesByEntity(entityId: string, opts?: { direction?: 'source' | 'target' | 'both'; edgeType?: string }): NovelEdge[] {
-    const direction = opts?.direction ?? 'both'
-    const edgeType = opts?.edgeType
-    const rows: EdgeRow[] = []
-
-    if (direction === 'source' || direction === 'both') {
-      let sql = 'SELECT * FROM novel_edges WHERE source_id = ?'
-      const params: (string)[] = [entityId]
-      if (edgeType) { sql += ' AND edge_type = ?'; params.push(edgeType) }
-      sql += ' ORDER BY created_at ASC'
-      rows.push(...(this.db.prepare(sql).all(...params) as EdgeRow[]))
-    }
-    if (direction === 'target' || direction === 'both') {
-      let sql = 'SELECT * FROM novel_edges WHERE target_id = ?'
-      const params: (string)[] = [entityId]
-      if (edgeType) { sql += ' AND edge_type = ?'; params.push(edgeType) }
-      sql += ' ORDER BY created_at ASC'
-      rows.push(...(this.db.prepare(sql).all(...params) as EdgeRow[]))
-    }
-
-    // 去重（both 模式下同一边可能被 source 和 target 各查一次）
-    const seen = new Set<string>()
-    const deduped: EdgeRow[] = []
-    for (const r of rows) {
-      if (!seen.has(r.id)) { seen.add(r.id); deduped.push(r) }
-    }
-    return deduped.map((r) => this.rowToEdge(r))
+    return this.repository.listEdgesByEntity(entityId, opts).map((r) => this.rowToEdge(r))
   }
 
   updateEdgeLabel(edgeId: string, label: string): NovelEdge | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_edges WHERE id = ?').get(edgeId) as EdgeRow | undefined
-    if (!existing) return undefined
     const ts = now()
-    this.db.prepare('UPDATE novel_edges SET label = ?, updated_at = ? WHERE id = ?').run(label, ts, edgeId)
-    return { ...this.rowToEdge(existing), label, updatedAt: ts }
+    const updated = this.repository.updateEdgeLabel(edgeId, label, ts)
+    return updated ? this.rowToEdge(updated) : undefined
   }
 
   listNodePositions(projectId: string): NovelNodePosition[] {
-    return (this.stmtListNodePositions.all(projectId) as NodePositionRow[]).map((r) => this.rowToNodePosition(r))
+    return this.repository.listNodePositions(projectId).map((r) => this.rowToNodePosition(r))
   }
 
   upsertNodePosition(
@@ -291,7 +218,7 @@ export class GraphStore {
   ): NovelNodePosition {
     const id = `${nodeType}:${entityId}`
     const updatedAt = now()
-    this.stmtUpsertNodePosition.run({
+    this.repository.upsertNodePosition({
       id, project_id: projectId, node_type: nodeType, entity_id: entityId,
       pos_x: posX, pos_y: posY, updated_at: updatedAt,
     })
@@ -299,8 +226,7 @@ export class GraphStore {
   }
 
   deleteNodePosition(projectId: string, nodeType: NovelNodeType, entityId: string): boolean {
-    const result = this.stmtDeleteNodePosition.run(projectId, nodeType, entityId)
-    return result.changes > 0
+    return this.repository.deleteNodePosition(projectId, nodeType, entityId)
   }
 
   /**
@@ -487,60 +413,24 @@ export class GraphStore {
 
   insertContextSectionMetrics(rows: ContextSectionMetricInput[]): void {
     if (rows.length === 0) return
-    this.db.transaction(() => {
-      for (const row of rows) {
-        this.stmtInsertContextSectionMetric.run({
-          id: randomUUID(),
-          agent_log_id: row.agentLogId,
-          project_id: row.projectId,
-          chapter_number: row.chapterNumber,
-          agent_type: row.agentType,
-          section_type: row.sectionType,
-          section_id: row.sectionId,
-          chars: row.chars,
-          estimated_tokens: row.estimatedTokens,
-          source_hash: row.sourceHash,
-          mode: row.mode,
-          created_at: now(),
-        })
-      }
-    })()
+    this.repository.insertContextMetrics(rows.map((row) => ({ id: randomUUID(), agentLogId: row.agentLogId, projectId: row.projectId, chapterNumber: row.chapterNumber, agentType: row.agentType, sectionType: row.sectionType, sectionId: row.sectionId, chars: row.chars, estimatedTokens: row.estimatedTokens, sourceHash: row.sourceHash, mode: row.mode, createdAt: now() })))
   }
 
   listContextSectionMetrics(projectId: string, chapterNumber?: number): ContextSectionMetric[] {
-    const rows = (chapterNumber != null
-      ? this.db.prepare(
-        `SELECT * FROM novel_context_section_metrics WHERE project_id = ? AND chapter_number = ? ORDER BY created_at ASC`,
-      ).all(projectId, chapterNumber)
-      : this.db.prepare(
-        `SELECT * FROM novel_context_section_metrics WHERE project_id = ? ORDER BY created_at ASC`,
-      ).all(projectId)) as Array<{
-        id: string
-        agent_log_id: string
-        project_id: string
-        chapter_number: number
-        agent_type: string
-        section_type: string
-        section_id: string
-        chars: number
-        estimated_tokens: number
-        source_hash: string
-        mode: string
-        created_at: number
-      }>
+    const rows = this.repository.listContextMetrics(projectId, chapterNumber)
     return rows.map((r) => ({
       id: r.id,
-      agentLogId: r.agent_log_id,
-      projectId: r.project_id,
-      chapterNumber: r.chapter_number,
-      agentType: r.agent_type,
-      sectionType: r.section_type as ContextSectionMetric['sectionType'],
-      sectionId: r.section_id,
+      agentLogId: r.agentLogId,
+      projectId: r.projectId,
+      chapterNumber: r.chapterNumber,
+      agentType: r.agentType,
+      sectionType: r.sectionType as ContextSectionMetric['sectionType'],
+      sectionId: r.sectionId,
       chars: r.chars,
-      estimatedTokens: r.estimated_tokens,
-      sourceHash: r.source_hash,
+      estimatedTokens: r.estimatedTokens,
+      sourceHash: r.sourceHash,
       mode: r.mode as ContextSectionMetric['mode'],
-      createdAt: r.created_at,
+      createdAt: r.createdAt,
     }))
   }
 
@@ -549,63 +439,29 @@ export class GraphStore {
   createAuthorIntent(intent: Omit<NovelAuthorIntent, 'createdAt'>): NovelAuthorIntent {
     const ts = now()
     const full: NovelAuthorIntent = { ...intent, createdAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_author_intents (id, project_id, chapter_id, intent_type, description, target_entity_id, created_at)
-      VALUES (@id, @project_id, @chapter_id, @intent_type, @description, @target_entity_id, @created_at)
-    `).run({
-      id: full.id, project_id: full.projectId, chapter_id: full.chapterId,
-      intent_type: full.intentType, description: full.description,
-      target_entity_id: full.targetEntityId, created_at: full.createdAt,
-    })
+    this.repository.insertAuthorIntent({ id: full.id, project_id: full.projectId, chapter_id: full.chapterId, intent_type: full.intentType, description: full.description, target_entity_id: full.targetEntityId, created_at: full.createdAt })
     return full
   }
 
   createChapterReview(review: Omit<NovelChapterReview, 'createdAt'>): NovelChapterReview {
     const ts = now()
     const full: NovelChapterReview = { ...review, createdAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_chapter_reviews (id, project_id, chapter_id, consistency_score, character_score,
-      task_completion_score, clue_progress_score, foreshadow_status_score, conflict_change_score,
-      pacing_score, info_control_score, reader_hook_score, style_score, overall_score, verdict,
-      issues, suggestions, reviewed_by, content_revision_id, content_hash, created_at)
-      VALUES (@id, @project_id, @chapter_id, @consistency_score, @character_score,
-      @task_completion_score, @clue_progress_score, @foreshadow_status_score, @conflict_change_score,
-      @pacing_score, @info_control_score, @reader_hook_score, @style_score, @overall_score, @verdict,
-      @issues, @suggestions, @reviewed_by, @content_revision_id, @content_hash, @created_at)
-    `).run({
-      id: full.id, project_id: full.projectId, chapter_id: full.chapterId,
-      consistency_score: full.consistencyScore, character_score: full.characterScore,
-      task_completion_score: full.taskCompletionScore, clue_progress_score: full.clueProgressScore,
-      foreshadow_status_score: full.foreshadowStatusScore, conflict_change_score: full.conflictChangeScore,
-      pacing_score: full.pacingScore, info_control_score: full.infoControlScore,
-      reader_hook_score: full.readerHookScore, style_score: full.styleScore,
-      overall_score: full.overallScore, verdict: full.verdict,
-      issues: full.issues, suggestions: full.suggestions, reviewed_by: full.reviewedBy,
-      content_revision_id: full.contentRevisionId, content_hash: full.contentHash,
-      created_at: full.createdAt,
-    })
+    this.repository.insertChapterReview({ id: full.id, project_id: full.projectId, chapter_id: full.chapterId, consistency_score: full.consistencyScore, character_score: full.characterScore, task_completion_score: full.taskCompletionScore, clue_progress_score: full.clueProgressScore, foreshadow_status_score: full.foreshadowStatusScore, conflict_change_score: full.conflictChangeScore, pacing_score: full.pacingScore, info_control_score: full.infoControlScore, reader_hook_score: full.readerHookScore, style_score: full.styleScore, overall_score: full.overallScore, verdict: full.verdict, issues: full.issues, suggestions: full.suggestions, reviewed_by: full.reviewedBy, content_revision_id: full.contentRevisionId, content_hash: full.contentHash, created_at: full.createdAt })
     return full
   }
 
   getChapterReview(chapterId: string): NovelChapterReview | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_chapter_reviews WHERE chapter_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(chapterId) as ChapterReviewRow | undefined
+    const row = this.repository.getLatestChapterReview(chapterId)
     return row ? this.rowToChapterReview(row) : undefined
   }
 
   getAcceptedChapterReviewForContent(chapterId: string, contentHash: string): NovelChapterReview | undefined {
-    const row = this.db.prepare(`
-      SELECT * FROM novel_chapter_reviews
-      WHERE chapter_id = ? AND content_hash = ? AND verdict = 'accept'
-      ORDER BY created_at DESC, rowid DESC LIMIT 1
-    `).get(chapterId, contentHash) as ChapterReviewRow | undefined
+    const row = this.repository.getAcceptedChapterReview(chapterId, contentHash)
     return row ? this.rowToChapterReview(row) : undefined
   }
 
   bindChapterReviewsToRevision(chapterId: string, contentHash: string, revisionId: string): number {
-    return this.db.prepare(`
-      UPDATE novel_chapter_reviews SET content_revision_id = ?
-      WHERE chapter_id = ? AND content_hash = ? AND content_revision_id IS NULL
-    `).run(revisionId, chapterId, contentHash).changes
+    return this.repository.bindChapterReviews(chapterId, contentHash, revisionId)
   }
 
   private rowToChapterReview(row: ChapterReviewRow): NovelChapterReview {

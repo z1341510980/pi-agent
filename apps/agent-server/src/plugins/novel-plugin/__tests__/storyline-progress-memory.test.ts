@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { NovelStore } from '../core/novel-store.js'
-import { NovelMemoryGenerator, type StorylineProgressItem } from '../core/novel-memory-generator.js'
+import { NovelMemoryGenerator, type StorylineProgressItem } from '../core/generation/novel-memory-generator.js'
 import { novelMigrations } from '../novel-migrations.js'
 
 function createDb(): Database.Database {

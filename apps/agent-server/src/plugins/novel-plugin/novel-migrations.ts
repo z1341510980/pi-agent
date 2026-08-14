@@ -1691,6 +1691,8 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
         ON novel_entity_appearances(project_id, status, chapter_id);
       CREATE INDEX IF NOT EXISTS idx_character_history_project_status
         ON novel_character_history(project_id, status, chapter_number);
+      CREATE INDEX IF NOT EXISTS idx_entity_candidates_project_chapter_status
+        ON novel_entity_candidates(project_id, chapter_number, status);
 
       CREATE TABLE IF NOT EXISTS novel_timeline_invalidations (
         id                         TEXT PRIMARY KEY,
@@ -1706,7 +1708,7 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
         updated_at                 INTEGER NOT NULL,
         resolved_at                INTEGER,
         FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
-        FOREIGN KEY (start_chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY (start_chapter_id) REFERENCES novel_chapters(id) ON DELETE RESTRICT,
         FOREIGN KEY (source_content_revision_id) REFERENCES novel_chapter_content_revisions(id) ON DELETE SET NULL,
         CHECK (status IN ('pending', 'rebuilding', 'resolved'))
       );

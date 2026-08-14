@@ -17,7 +17,7 @@
  */
 
 import type Database from 'better-sqlite3'
-import type { NovelPromptStores } from './prompt-builder.js'
+import type { NovelPromptStores } from './prompting/prompt-builder.js'
 import { canTransitionChapterStatus } from '@repo/shared/novel'
 import type {
   NovelProject,
@@ -74,18 +74,23 @@ import { ProjectStore } from './stores/project-store.js'
 import { ChapterStore, hashChapterContent } from './stores/chapter-store.js'
 import { ScenePlanStore } from './stores/scene-plan-store.js'
 import { NarrativeLedgerStore } from './stores/narrative-ledger-store.js'
+import {
+  TimelineConsistencyStore,
+  type TimelineInvalidation,
+  type TimelineRebuildPreview,
+} from './analysis/timeline-consistency-store.js'
 import { EntityCandidateStore } from './stores/entity-candidate-store.js'
 import { EntityAppearanceStore, type AppearanceRole, type AppearanceSource } from './stores/entity-appearance-store.js'
-import type { AppearanceReconcileReport } from './migration-acceptance.js'
-import { NarrativeStore } from './stores/narrative-store.js'
-import { reconcileV2 } from './v2-reconciliation.js'
-import { buildNarrativeMatrix } from './narrative-matrix-projection.js'
+import type { AppearanceReconcileReport } from './analysis/migration-acceptance.js'
+import { NarrativeStore } from './stores/entity-stores.js'
+import { reconcileV2 } from './analysis/v2-reconciliation.js'
+import { buildNarrativeMatrix } from './analysis/narrative-matrix-projection.js'
 import { CharacterStore } from './stores/character-store.js'
-import { ConflictStore } from './stores/conflict-store.js'
+import { ConflictStore } from './stores/entity-stores.js'
 import { ForeshadowStore } from './stores/foreshadow-store.js'
 import { WorldStore } from './stores/world-store.js'
 import { FactionStore } from './stores/faction-store.js'
-import { ItemStore } from './stores/item-store.js'
+import { ItemStore } from './stores/entity-stores.js'
 import { GraphStore } from './stores/graph-store.js'
 import { ChapterRenumberService } from './stores/chapter-renumber-service.js'
 import { DeduplicateService } from './stores/deduplicate-service.js'
@@ -99,7 +104,7 @@ import {
   diffChapters,
   expandChapterSpans,
   type ProjectionEntityType,
-} from './chapter-projection-fields.js'
+} from './chapters/chapter-projection-fields.js'
 
 /**
  * 实体章节投影发生变化的通知。
@@ -153,6 +158,7 @@ export class NovelStore implements NovelPromptStores {
   private readonly graph: GraphStore
   private readonly scenePlan: ScenePlanStore
   private readonly ledger: NarrativeLedgerStore
+  private readonly timeline: TimelineConsistencyStore
   private readonly candidates: EntityCandidateStore
   private readonly narratives: NarrativeStore
   private readonly deduplicator: DeduplicateService
@@ -184,6 +190,7 @@ export class NovelStore implements NovelPromptStores {
     this.item = new ItemStore(db, deleteEdges)
     this.scenePlan = new ScenePlanStore(db)
     this.ledger = new NarrativeLedgerStore(db)
+    this.timeline = new TimelineConsistencyStore(db)
     this.candidates = new EntityCandidateStore(db)
     this.entityAppearances = new EntityAppearanceStore(db)
     this.narratives = new NarrativeStore(db)
@@ -566,6 +573,8 @@ export class NovelStore implements NovelPromptStores {
     return this.withTransaction(() => {
       const chapter = this.chapter.getChapterById(id)
       if (!chapter) return undefined
+      const timelineBlock = this.timeline.getPublishBlock(chapter.projectId, chapter.chapterNumber)
+      if (timelineBlock) throw new Error(timelineBlock.message)
       if (chapter.status !== 'review') {
         throw new Error(`只有待审章节可以发布，当前状态为 ${chapter.status}`)
       }
@@ -608,18 +617,33 @@ export class NovelStore implements NovelPromptStores {
       return result
     })
   }
-  reconcileVersionChains(projectId: string): import('./migration-acceptance.js').VersionChainReconcileReport { return this.chapter.reconcileVersionChains(projectId) }
+  reconcileVersionChains(projectId: string): import('./analysis/migration-acceptance.js').VersionChainReconcileReport { return this.chapter.reconcileVersionChains(projectId) }
   deleteChapter(id: string): boolean { return this.chapter.deleteChapter(id) }
 
   // ── 场景计划（V2）──
-  createPlanRevision(input: Parameters<ScenePlanStore['createPlanRevision']>[0]): ChapterPlanRevision { return this.scenePlan.createPlanRevision(input) }
+  createPlanRevision(input: Parameters<ScenePlanStore['createPlanRevision']>[0]): ChapterPlanRevision {
+    this.assertTimelineAllowsChapterDerivedWrite(input.projectId, input.chapterId)
+    return this.scenePlan.createPlanRevision(input)
+  }
   getPlanRevision(id: string): ChapterPlanRevision | undefined { return this.scenePlan.getPlanRevision(id) }
   getCurrentPlan(chapterId: string): ChapterPlanRevision | undefined { return this.scenePlan.getCurrentPlan(chapterId) }
   listPlanRevisions(chapterId: string): ChapterPlanRevision[] { return this.scenePlan.listPlanRevisions(chapterId) }
-  transitionPlan(id: string, to: PlanRevisionStatus, expectedStatus?: PlanRevisionStatus): ChapterPlanRevision { return this.scenePlan.transitionPlan(id, to, expectedStatus) }
+  transitionPlan(id: string, to: PlanRevisionStatus, expectedStatus?: PlanRevisionStatus): ChapterPlanRevision {
+    const plan = this.scenePlan.getPlanRevision(id)
+    if (plan && to !== 'stale' && to !== 'superseded') {
+      this.assertTimelineAllowsChapterDerivedWrite(plan.projectId, plan.chapterId)
+    }
+    return this.scenePlan.transitionPlan(id, to, expectedStatus)
+  }
   supersedeActivePlans(chapterId: string): void { return this.scenePlan.supersedeActivePlans(chapterId) }
-  submitPlanWithScenes(input: Parameters<ScenePlanStore['submitPlanWithScenes']>[0]): { plan: ChapterPlanRevision; scenes: NovelSceneRevision[] } { return this.scenePlan.submitPlanWithScenes(input) }
-  createSceneRevisions(plan: ChapterPlanRevision, scenes: Parameters<ScenePlanStore['createSceneRevisions']>[1], contentRevisionId?: string | null): NovelSceneRevision[] { return this.scenePlan.createSceneRevisions(plan, scenes, contentRevisionId) }
+  submitPlanWithScenes(input: Parameters<ScenePlanStore['submitPlanWithScenes']>[0]): { plan: ChapterPlanRevision; scenes: NovelSceneRevision[] } {
+    this.assertTimelineAllowsChapterDerivedWrite(input.projectId, input.chapterId)
+    return this.scenePlan.submitPlanWithScenes(input)
+  }
+  createSceneRevisions(plan: ChapterPlanRevision, scenes: Parameters<ScenePlanStore['createSceneRevisions']>[1], contentRevisionId?: string | null): NovelSceneRevision[] {
+    this.assertTimelineAllowsChapterDerivedWrite(plan.projectId, plan.chapterId)
+    return this.scenePlan.createSceneRevisions(plan, scenes, contentRevisionId)
+  }
   listSceneRevisionsByPlan(planRevisionId: string): NovelSceneRevision[] { return this.scenePlan.listSceneRevisionsByPlan(planRevisionId) }
   getSceneRevision(id: string): NovelSceneRevision | undefined { return this.scenePlan.getSceneRevision(id) }
   getSceneById(sceneId: string): NovelScene | undefined { return this.scenePlan.getSceneById(sceneId) }
@@ -627,7 +651,11 @@ export class NovelStore implements NovelPromptStores {
   getSceneRevisionCast(sceneRevisionId: string): ReturnType<ScenePlanStore['getSceneRevisionCast']> { return this.scenePlan.getSceneRevisionCast(sceneRevisionId) }
   getSceneCast(sceneRevisionId: string): ReturnType<ScenePlanStore['getSceneCast']> { return this.scenePlan.getSceneCast(sceneRevisionId) }
   reconcileSceneCast(projectId?: string): ReturnType<ScenePlanStore['reconcileSceneCast']> { return this.scenePlan.reconcileSceneCast(projectId) }
-  confirmSceneRevision(id: string, contentRevisionId?: string): NovelSceneRevision { return this.scenePlan.confirmSceneRevision(id, contentRevisionId) }
+  confirmSceneRevision(id: string, contentRevisionId?: string): NovelSceneRevision {
+    const scene = this.scenePlan.getSceneRevision(id)
+    if (scene) this.assertTimelineAllowsChapterDerivedWrite(scene.projectId, scene.chapterId)
+    return this.scenePlan.confirmSceneRevision(id, contentRevisionId)
+  }
 
   // ── 叙事账本（V2）──
   ensureStoryline(projectId: string, name: string, kind?: string, description?: string): NovelStoryline { return this.ledger.ensureStoryline(projectId, name, kind, description) }
@@ -635,19 +663,52 @@ export class NovelStore implements NovelPromptStores {
   listStorylines(projectId: string): NovelStoryline[] { return this.ledger.listStorylines(projectId) }
   updateStoryline(id: string, patch: { lifecycle?: StorylineLifecycle; maturity?: StorylineMaturity; description?: string }): NovelStoryline | undefined { return this.ledger.updateStoryline(id, patch) }
   maybePromoteMaturity(storylineId: string): NovelStoryline { return this.ledger.maybePromoteMaturity(storylineId) }
-  recordProgressForScene(projectId: string, sceneRevisionId: string, intents: Parameters<NarrativeLedgerStore['recordProgressForScene']>[2], status?: ProgressStatus): NovelStorylineProgress[] { return this.ledger.recordProgressForScene(projectId, sceneRevisionId, intents, status) }
+  recordProgressForScene(projectId: string, sceneRevisionId: string, intents: Parameters<NarrativeLedgerStore['recordProgressForScene']>[2], status?: ProgressStatus): NovelStorylineProgress[] {
+    return this.ledger.recordProgressForScene(projectId, sceneRevisionId, intents, status)
+  }
   listProgressByStoryline(storylineId: string, statuses?: ProgressStatus[]): NovelStorylineProgress[] { return this.ledger.listProgressByStoryline(storylineId, statuses) }
-  listProgressByScene(sceneRevisionId: string): NovelStorylineProgress[] { return this.ledger.listProgressByScene(sceneRevisionId) }
+  listProgressByScene(sceneRevisionId: string, includeStale = false): NovelStorylineProgress[] { return this.ledger.listProgressByScene(sceneRevisionId, includeStale) }
   getProgress(id: string): NovelStorylineProgress | undefined { return this.ledger.getProgress(id) }
-  confirmProgress(id: string): NovelStorylineProgress { return this.ledger.confirmProgress(id) }
+  confirmProgress(id: string): NovelStorylineProgress {
+    return this.ledger.confirmProgress(id)
+  }
   markStaleFromChapter(projectId: string, chapterId: string): number { return this.ledger.markStaleFromChapter(projectId, chapterId) }
 
-  private markDerivedStateStaleForRewrite(chapter: NovelChapter): number {
-    const hasLaterContent = this.chapter.listChapters(chapter.projectId)
-      .some(candidate => candidate.chapterNumber > chapter.chapterNumber && candidate.content?.trim().length > 0)
-    return hasLaterContent
-      ? this.ledger.markStaleFromChapter(chapter.projectId, chapter.id)
-      : 0
+  getActiveTimelineInvalidation(projectId: string): TimelineInvalidation | undefined {
+    return this.timeline.getActiveInvalidation(projectId)
+  }
+
+  getTimelineRebuildPreview(projectId: string): TimelineRebuildPreview | null {
+    return this.timeline.getRebuildPreview(projectId)
+  }
+
+  verifyTimelineRebuildConfirmation(projectId: string, token: string): TimelineRebuildPreview | null {
+    return this.timeline.verifyConfirmationToken(projectId, token)
+  }
+
+  assertTimelineAllowsGeneration(projectId: string, chapterNumber: number): void {
+    const block = this.timeline.getGenerationBlock(projectId, chapterNumber)
+    if (block) throw new Error(block.message)
+  }
+
+  assertTimelineAllowsPublish(projectId: string, chapterNumber: number): void {
+    const block = this.timeline.getPublishBlock(projectId, chapterNumber)
+    if (block) throw new Error(block.message)
+  }
+
+  private assertTimelineAllowsChapterDerivedWrite(projectId: string, chapterId: string): void {
+    const chapter = this.chapter.getChapterById(chapterId)
+    if (!chapter || chapter.projectId !== projectId) return
+    this.assertTimelineAllowsPublish(projectId, chapter.chapterNumber)
+  }
+
+  private markDerivedStateStaleForRewrite(chapter: NovelChapter): TimelineInvalidation | null {
+    return this.timeline.invalidateFromRewrite({
+      projectId: chapter.projectId,
+      chapterId: chapter.id,
+      chapterNumber: chapter.chapterNumber,
+      sourceContentRevisionId: this.chapter.getCurrentContentRevision(chapter.id)?.id ?? null,
+    })
   }
 
   private bindReviewsToCurrentRevision(chapter: NovelChapter): void {
@@ -657,15 +718,15 @@ export class NovelStore implements NovelPromptStores {
   }
 
   // ── V2 双写对账（T05）──
-  reconcileV2(projectId: string): import('./v2-reconciliation.js').ReconciliationReport {
+  reconcileV2(projectId: string): import('./analysis/v2-reconciliation.js').ReconciliationReport {
     return reconcileV2(this.db, this, projectId)
   }
 
   // ── 剧情推进轨道投影（第二轮）──
   narrativeMatrix(
     projectId: string,
-    options?: import('./narrative-matrix-projection.js').NarrativeMatrixOptions,
-  ): import('./narrative-matrix-projection.js').NarrativeMatrixReport {
+    options?: import('./analysis/narrative-matrix-projection.js').NarrativeMatrixOptions,
+  ): import('./analysis/narrative-matrix-projection.js').NarrativeMatrixReport {
     return buildNarrativeMatrix(this, projectId, options)
   }
 
@@ -1105,8 +1166,8 @@ export class NovelStore implements NovelPromptStores {
   listAgentLogs(projectId: string, filter?: { chapterNumber?: number; agentType?: string }, limit?: number): NovelAgentLogSummary[] { return this.graph.listAgentLogs(projectId, filter, limit) }
   deleteAgentLogsByProject(projectId: string): number { return this.graph.deleteAgentLogsByProject(projectId) }
   cleanupExpiredPayloads(nowMs?: number): { deleted: number; scanned: number } { return this.graph.cleanupExpiredPayloads(nowMs) }
-  insertContextSectionMetrics(rows: import('./context-section-metrics.js').ContextSectionMetricInput[]): void { return this.graph.insertContextSectionMetrics(rows) }
-  listContextSectionMetrics(projectId: string, chapterNumber?: number): import('./context-section-metrics.js').ContextSectionMetric[] { return this.graph.listContextSectionMetrics(projectId, chapterNumber) }
+  insertContextSectionMetrics(rows: import('./prompting/context-section-metrics.js').ContextSectionMetricInput[]): void { return this.graph.insertContextSectionMetrics(rows) }
+  listContextSectionMetrics(projectId: string, chapterNumber?: number): import('./prompting/context-section-metrics.js').ContextSectionMetric[] { return this.graph.listContextSectionMetrics(projectId, chapterNumber) }
 
   // ── Review（AuthorIntent / ChapterReview）──
 

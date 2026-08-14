@@ -17,7 +17,7 @@ import {
   DEFAULT_CHAPTER_BUDGET,
   tryRecordFullChapterRewrite,
   type ChapterBudgetUsage,
-} from '../plugins/novel-plugin/core/chapter-budget.js'
+} from '../plugins/novel-plugin/core/chapters/chapter-budget.js'
 
 const T0 = 1_700_000_000_000
 

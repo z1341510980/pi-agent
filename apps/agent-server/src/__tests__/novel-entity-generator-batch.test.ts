@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NovelEntityGenerator, type GeneratedEntity } from '../plugins/novel-plugin/core/novel-entity-generator.js'
+import { NovelEntityGenerator, type GeneratedEntity } from '../plugins/novel-plugin/core/generation/novel-entity-generator.js'
 
 type BatchRun = {
   generated: Map<object, GeneratedEntity>

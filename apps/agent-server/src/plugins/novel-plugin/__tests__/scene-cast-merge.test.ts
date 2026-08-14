@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 import type { NovelChapter } from '../core/types.js'
-import type { ChapterScenePlanScene } from '../core/chapter-scene-plan.js'
+import type { ChapterScenePlanScene } from '../core/chapters/chapter-scene-plan.js'
 
 function createDb(): Database.Database {
   const db = new Database(':memory:')

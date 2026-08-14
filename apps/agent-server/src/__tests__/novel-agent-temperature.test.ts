@@ -6,7 +6,7 @@ import {
   updateNovelAgentTemperature,
   updateNovelAgentTemperatures,
   type NovelAgentType,
-} from '../plugins/novel-plugin/core/novel-agents.js'
+} from '../plugins/novel-plugin/core/domain/novel-agents.js'
 
 /** 构造可控的 mock AgentManager（结构类型兼容 AgentManagerLike） */
 function makeMockAgentManager(agents: Record<string, { temperature?: number } | undefined>) {

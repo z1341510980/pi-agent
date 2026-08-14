@@ -3,8 +3,8 @@ import {
   evaluateProseQuality,
   formatProseQualityReport,
   buildProseRevisionPlan,
-} from '../core/prose-quality-evaluator.js'
-import { PROSE_SHAPE_LIMITS } from '../core/quality-policy.js'
+} from '../core/quality/prose-quality-evaluator.js'
+import { PROSE_SHAPE_LIMITS } from '../core/quality/quality-policy.js'
 
 /**
  * 构造够长且**彼此不同**的正常段落。

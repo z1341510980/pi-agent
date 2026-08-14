@@ -383,8 +383,8 @@ export interface NovelStorylineProgress {
 
 // ── Memory 新实体候选与审核（V2 决策 3）──
 
-/** 候选状态：needs_review（待用户确认）→ confirmed / rejected */
-export type EntityCandidateStatus = 'needs_review' | 'confirmed' | 'rejected'
+/** 候选状态：needs_review（待用户确认）→ confirmed / rejected；上游正文变化进 stale */
+export type EntityCandidateStatus = 'needs_review' | 'confirmed' | 'rejected' | 'stale'
 
 export type EntityCandidateType = 'conflict' | 'clue'
 

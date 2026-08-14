@@ -49,8 +49,8 @@ import { Type, type Static } from 'typebox'
 import { defineTool, type ToolDefinition, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import type { NovelStore } from './novel-store.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
-import { isAdmissibleNewForeshadow } from './foreshadow-policy.js'
-import type { ChapterBoundaryContext } from './prompt-builder.js'
+import { isAdmissibleNewForeshadow } from './entities/foreshadow-policy.js'
+import type { ChapterBoundaryContext } from './prompting/prompt-builder.js'
 import type {
   ChapterStoryContext,
   NarrativeTask,

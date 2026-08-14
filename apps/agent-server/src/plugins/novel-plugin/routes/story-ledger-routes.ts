@@ -9,7 +9,7 @@ import {
   buildArrangedEntitiesForChapter,
   DEFAULT_PROJECTION_SOURCE,
   type ProjectionSource,
-} from '../core/matrix-projection.js'
+} from '../core/analysis/matrix-projection.js'
 
 const storyEntityTypes = [
   'character', 'relationship', 'conflict', 'foreshadow', 'clue', 'faction', 'location',

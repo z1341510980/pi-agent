@@ -4,7 +4,7 @@ import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
-import { MAX_REFERENCE_SOURCE_BYTES } from '../core/reference-analysis.js'
+import { MAX_REFERENCE_SOURCE_BYTES } from '../core/analysis/reference-analysis.js'
 
 const REFERENCE_PREFLIGHT_BODY_LIMIT = Math.ceil((MAX_REFERENCE_SOURCE_BYTES * 4) / 3) + 64 * 1024
 

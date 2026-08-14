@@ -13,8 +13,8 @@
  *   4. 正文反推（source='content'，账本语义与章纲编排不同）
  */
 import { describe, it, expect } from 'vitest'
-import { NovelEntityGenerator, type GeneratedEntity } from '../core/novel-entity-generator.js'
-import { createChapterProjectionRecorder } from '../core/chapter-projection-recorder.js'
+import { NovelEntityGenerator, type GeneratedEntity } from '../core/generation/novel-entity-generator.js'
+import { createChapterProjectionRecorder } from '../core/chapters/chapter-projection-recorder.js'
 import {
   createNovelFixture,
   FIXTURE_IDS,

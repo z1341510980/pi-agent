@@ -3,9 +3,9 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { CostReportService } from '../core/cost-report-service.js'
-import { SharedOverlapAnalyzer } from '../core/shared-overlap-analyzer.js'
-import { ContextSectionCollector } from '../core/context-section-metrics.js'
+import { CostReportService } from '../core/analysis/cost-report-service.js'
+import { SharedOverlapAnalyzer } from '../core/analysis/shared-overlap-analyzer.js'
+import { ContextSectionCollector } from '../core/prompting/context-section-metrics.js'
 
 function createDb(): Database.Database {
   const db = new Database(':memory:')

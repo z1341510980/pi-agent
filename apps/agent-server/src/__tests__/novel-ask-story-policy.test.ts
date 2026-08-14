@@ -1,12 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from '../plugins/novel-plugin/core/novel-agents.js'
+import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from '../plugins/novel-plugin/core/domain/novel-agents.js'
 import {
   getNovelAskStoryPolicy,
   isNovelAskStoryEnabled,
   resolveNovelAgentToolNames,
   type NovelAskStoryPolicy,
-} from '../plugins/novel-plugin/core/novel-ask-story-policy.js'
+} from '../plugins/novel-plugin/core/domain/novel-ask-story-policy.js'
 import { NovelOrchestrator } from '../plugins/novel-plugin/core/novel-orchestrator.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
 

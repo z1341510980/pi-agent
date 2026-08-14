@@ -3,30 +3,28 @@
  *
  * 从原 novel-store.ts 抽取。管理 novel_projects 表的所有操作。
  */
-import type Database from 'better-sqlite3'
 import type { NovelProject } from '../types.js'
 import type { ProjectRow } from './row-types.js'
 import { now } from './store-utils.js'
+import { createNovelDrizzleDb } from '../../infrastructure/sqlite/client.js'
+import { ProjectRepository } from '../../infrastructure/sqlite/repositories/project-repository.js'
 
 export class ProjectStore {
-  private readonly stmtGetProject: Database.Statement
+  private readonly repository: ProjectRepository
 
-  constructor(private db: Database.Database) {
-    this.stmtGetProject = db.prepare('SELECT * FROM novel_projects WHERE id = ? AND deleted_at IS NULL')
+  constructor(private db: import('better-sqlite3').Database) {
+    this.repository = new ProjectRepository(createNovelDrizzleDb(db))
   }
 
   getProject(projectId: string): NovelProject | undefined {
-    const row = this.stmtGetProject.get(projectId) as ProjectRow | undefined
+    const row = this.repository.getActive(projectId)
     return row ? this.rowToProject(row) : undefined
   }
 
   createProject(project: Omit<NovelProject, 'createdAt' | 'updatedAt'>): NovelProject {
     const ts = now()
     const full: NovelProject = { outline: '', ...project, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_projects (id, title, genre, synopsis, outline, target_words, current_volume, current_chapter, current_stage, status, created_at, updated_at, target_platform, novel_ask_story_policy, feature_flags, novel_model_id)
-      VALUES (@id, @title, @genre, @synopsis, @outline, @target_words, @current_volume, @current_chapter, @current_stage, @status, @created_at, @updated_at, @target_platform, @novel_ask_story_policy, @feature_flags, @novel_model_id)
-    `).run({
+    this.repository.insert({
       id: full.id, title: full.title, genre: full.genre, synopsis: full.synopsis,
       outline: full.outline ?? '',
       target_words: full.targetWords, current_volume: full.currentVolume,
@@ -36,6 +34,7 @@ export class ProjectStore {
       novel_ask_story_policy: full.novelAskStoryPolicy ?? null,
       feature_flags: full.flags ? JSON.stringify(full.flags) : '{}',
       novel_model_id: full.novelModelId ?? null,
+      deleted_at: null,
     })
     return full
   }
@@ -44,13 +43,7 @@ export class ProjectStore {
     const existing = this.getProject(id)
     if (!existing) return undefined
     const updated = { ...existing, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_projects SET title=@title, genre=@genre, synopsis=@synopsis, outline=@outline,
-      target_words=@target_words, current_volume=@current_volume, current_chapter=@current_chapter,
-      current_stage=@current_stage, status=@status, updated_at=@updated_at,
-       target_platform=@target_platform, novel_ask_story_policy=@novel_ask_story_policy,
-       feature_flags=@feature_flags, novel_model_id=@novel_model_id WHERE id=@id
-    `).run({
+    this.repository.update(id, {
       id, title: updated.title, genre: updated.genre, synopsis: updated.synopsis, outline: updated.outline ?? '',
       target_words: updated.targetWords, current_volume: updated.currentVolume,
       current_chapter: updated.currentChapter, current_stage: updated.currentStage,
@@ -59,32 +52,25 @@ export class ProjectStore {
       novel_ask_story_policy: updated.novelAskStoryPolicy ?? null,
       feature_flags: updated.flags ? JSON.stringify(updated.flags) : '{}',
       novel_model_id: updated.novelModelId ?? null,
+      created_at: existing.createdAt, deleted_at: null,
     })
     return updated
   }
 
   /** 软删除：将项目移入回收站（设置 deleted_at 时间戳） */
   deleteProject(id: string): boolean {
-    const result = this.db.prepare(
-      'UPDATE novel_projects SET deleted_at = @ts, updated_at = @ts WHERE id = @id AND deleted_at IS NULL',
-    ).run({ id, ts: now() })
-    return result.changes > 0
+    return this.repository.softDelete(id, now())
   }
 
   /** 列出回收站中的项目（deleted_at 非 NULL），按移入时间倒序 */
   listTrashedProjects(): NovelProject[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC',
-    ).all() as ProjectRow[]
+    const rows = this.repository.listTrashed()
     return rows.map((r) => this.rowToProject(r))
   }
 
   /** 恢复项目：清除 deleted_at */
   restoreProject(id: string): boolean {
-    const result = this.db.prepare(
-      'UPDATE novel_projects SET deleted_at = NULL, updated_at = @ts WHERE id = @id AND deleted_at IS NOT NULL',
-    ).run({ id, ts: now() })
-    return result.changes > 0
+    return this.repository.restore(id, now())
   }
 
   /**
@@ -118,9 +104,7 @@ export class ProjectStore {
   }
 
   listProjects(): NovelProject[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_projects WHERE deleted_at IS NULL ORDER BY updated_at DESC',
-    ).all() as ProjectRow[]
+    const rows = this.repository.listActive()
     return rows.map((r) => this.rowToProject(r))
   }
 
@@ -145,15 +129,11 @@ export class ProjectStore {
    * 设置后创作流程统一使用该模型，见 NovelProject.novelModelId 注释。
    */
   getNovelModelId(projectId: string): string | undefined {
-    const row = this.stmtGetProject.get(projectId) as ProjectRow | undefined
-    return row?.novel_model_id ?? undefined
+    return this.repository.getActive(projectId)?.novel_model_id ?? undefined
   }
 
   updateNovelModelId(projectId: string, modelId: string | null): boolean {
-    const result = this.db.prepare(
-      'UPDATE novel_projects SET novel_model_id = @model_id, updated_at = @ts WHERE id = @id AND deleted_at IS NULL',
-    ).run({ id: projectId, model_id: modelId, ts: now() })
-    return result.changes > 0
+    return this.repository.updateNovelModelId(projectId, modelId, now())
   }
 }
 

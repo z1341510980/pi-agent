@@ -3,7 +3,7 @@ import type { DiscussionResult } from '../core/agent/discussion-types.js'
 import {
   buildDiscussionHistoryMessages,
   persistDiscussionHistory,
-} from '../plugins/novel-plugin/core/discussion-history.js'
+} from '../plugins/novel-plugin/core/discussion/discussion-history.js'
 
 describe('discussion history persistence', () => {
   const result: DiscussionResult = {

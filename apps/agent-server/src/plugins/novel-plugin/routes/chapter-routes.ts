@@ -15,9 +15,27 @@ import type { NovelChapter, ChapterVersion, ChapterVersionSummary, ChapterVersio
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
-import { RhythmController } from '../core/rhythm-controller.js'
-import { diffChapterVersions } from '../core/chapter-version-diff.js'
+import { RhythmController } from '../core/chapters/rhythm-controller.js'
+import { diffChapterVersions } from '../core/chapters/chapter-version-diff.js'
 import { canTransitionChapterStatus } from '@repo/shared/novel'
+
+function buildDerivedState(store: NovelServices['store'], projectId: string, contentChanged: boolean) {
+  if (!contentChanged) return { isMiddleRewrite: false }
+  const invalidation = store.getActiveTimelineInvalidation(projectId)
+  if (!invalidation) return { isMiddleRewrite: false }
+  const preview = store.getTimelineRebuildPreview(projectId)
+  return {
+    isMiddleRewrite: true,
+    invalidationId: invalidation.id,
+    startChapterNumber: invalidation.startChapterNumber,
+    staleMarked: Object.values(invalidation.staleCounts).reduce((sum, count) => sum + count, 0),
+    staleCounts: invalidation.staleCounts,
+    affectedChapters: invalidation.affectedChapters,
+    rebuildAvailable: preview?.automaticRebuildAvailable ?? false,
+    rebuildBlockedReasons: preview?.blockedReasons ?? [],
+    message: `第 ${invalidation.startChapterNumber} 章起的派生状态已失效，请先查看影响范围再决定是否重建。`,
+  }
+}
 
 export function createChapterRoutes(services: NovelServices): RouteDefinition[] {
   const { store, engine } = services
@@ -132,21 +150,11 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
 
       const updated = store.updateChapter(request.params.id, patch, versionSource)!
 
-      // T04 决策 4：中间章重写 → 后续派生物标 stale，响应携带影响范围供前端提示重建
-      let derivedState: Record<string, unknown> = { isMiddleRewrite: false }
-      if (input.content != null) {
-        const laterChapters = store.listChapters(updated.projectId)
-          .filter((c) => c.chapterNumber > updated.chapterNumber && c.content?.trim().length)
-        if (laterChapters.length > 0) {
-          const staleMarked = store.markStaleFromChapter(updated.projectId, updated.id)
-          derivedState = {
-            isMiddleRewrite: true,
-            staleMarked,
-            affectedChapters: laterChapters.map((c) => c.chapterNumber),
-            message: `检测到中间章节重写，后续 ${laterChapters.length} 章的推进记录已标记待重建；顺序重建功能尚未提供，请暂勿继续生成后续章节。`,
-          }
-        }
-      }
+      const derivedState = buildDerivedState(
+        store,
+        updated.projectId,
+        input.content != null && input.content !== existing.content,
+      )
       return success({ ...updated, derivedState }, request.traceId)
     },
   })
@@ -253,11 +261,12 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       }
       try {
         const result = store.rollbackToVersion(request.params.id, request.params.versionId)
-        const rollbackResult: RollbackResult = {
+        const rollbackResult: RollbackResult & { derivedState?: ReturnType<typeof buildDerivedState> } = {
           success: true,
           savedVersionId: result.savedVersionId,
           currentContent: result.currentContent,
           currentWordCount: result.currentWordCount,
+          derivedState: buildDerivedState(store, chapter.projectId, true),
         }
         return success(rollbackResult, request.traceId)
       } catch (err: any) {
@@ -375,7 +384,51 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
         throw new AppError(ErrorCode.CONFLICT, '已发布章节不能回滚正文，请先进入修订流程', 409)
       }
       const result = store.rollbackToContentRevision(request.params.id, request.params.revisionId)
-      return success(result, request.traceId)
+      return success({
+        ...result,
+        derivedState: buildDerivedState(store, chapter.projectId, true),
+      }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/timeline-rebuild/preview',
+    handler: async (request: any) => {
+      const project = store.getProject(request.params.projectId)
+      if (!project) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+      const preview = store.getTimelineRebuildPreview(project.id)
+      if (!preview) throw new AppError(ErrorCode.NOT_FOUND, '项目当前没有待重建的时间线', 404)
+      return success(preview, request.traceId)
+    },
+  })
+
+  const startTimelineRebuildSchema = z.object({
+    confirmationToken: z.string().length(64),
+    confirmed: z.literal(true),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/timeline-rebuild/start',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(startTimelineRebuildSchema, request, reply)
+      if (!input) return reply
+      const project = store.getProject(request.params.projectId)
+      if (!project) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+      const preview = store.verifyTimelineRebuildConfirmation(project.id, input.confirmationToken)
+      if (!preview) {
+        throw new AppError(ErrorCode.CONFLICT, '影响范围已变化，请重新查看重建预览后确认', 409)
+      }
+      if (!preview.automaticRebuildAvailable) {
+        return reply.code(409).send({
+          ok: false,
+          error: '当前项目不满足安全自动重建条件',
+          data: preview,
+          traceId: request.traceId,
+        })
+      }
+      throw new AppError(ErrorCode.CONFLICT, '自动重建执行器尚未启用', 409)
     },
   })
 

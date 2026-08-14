@@ -18,7 +18,7 @@ import {
   BASE_RULES_NO_FIRST_LINE_TEMPLATE,
   BASE_RULES_HUMAN_SAMPLE_PRIORITY,
   WRITER_STYLE_PRIORITY,
-} from '../core/prompts-protocol-constants.js'
+} from '../core/prompting/prompts-protocol-constants.js'
 
 const promptsDir = join(process.cwd(), 'src/plugins/novel-plugin/core/prompts')
 

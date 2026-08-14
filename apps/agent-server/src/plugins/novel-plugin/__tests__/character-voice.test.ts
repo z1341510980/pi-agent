@@ -3,7 +3,7 @@ import {
   buildVoiceProfiles,
   formatVoiceContrastTable,
   detectVoiceCollapse,
-} from '../core/character-voice.js'
+} from '../core/entities/character-voice.js'
 import type { NovelCharacter } from '../core/types.js'
 
 function makeCharacter(patch: Partial<NovelCharacter> & { id: string; name: string }): NovelCharacter {

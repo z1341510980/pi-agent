@@ -1,0 +1,43 @@
+import { and, asc, desc, eq, inArray } from 'drizzle-orm'
+import type { NovelDrizzleDb } from '../client.js'
+import { novelChapterPlanRevisions, novelSceneCast, novelSceneRevisions, novelScenes, type NovelChapterPlanRevisionsInsert, type NovelChapterPlanRevisionsRow, type NovelSceneCastInsert, type NovelSceneCastRow, type NovelSceneRevisionsInsert, type NovelSceneRevisionsRow, type NovelScenesInsert, type NovelScenesRow } from '../schema/novel-scene-plan.js'
+
+export interface PlanRow { id: string; chapter_id: string; project_id: string; creation_run_id: string | null; supersedes_id: string | null; base_content_revision_id: string | null; positioning: string | null; rhythm: string | null; budget: string; status: string; revision: number; idempotency_key: string | null; created_at: number }
+export interface SceneRow { id: string; chapter_id: string; project_id: string; stable_key: string; created_at: number }
+export interface SceneRevisionRow { id: string; scene_id: string; chapter_id: string; project_id: string; plan_revision_id: string; content_revision_id: string | null; supersedes_id: string | null; order_no: number; title: string; goal: string; summary: string; location_text: string; time_text: string; pov_mode: string; pov_character_id: string | null; target_words: number; status: string; created_at: number }
+export interface SceneCastRow { scene_revision_id: string; character_id: string; role: string; function: string | null; prominence: string | null; note: string | null }
+
+/** 场景计划的基础行读写；计划状态机、提交事务和历史对账仍由 Store 负责。 */
+export class ScenePlanRepository {
+  constructor(private readonly db: NovelDrizzleDb) {}
+  findPlanByIdempotencyKey(key: string): PlanRow | undefined { const row = this.db.select().from(novelChapterPlanRevisions).where(eq(novelChapterPlanRevisions.idempotencyKey, key)).get(); return row ? toPlanRow(row) : undefined }
+  getPlan(id: string): PlanRow | undefined { const row = this.db.select().from(novelChapterPlanRevisions).where(eq(novelChapterPlanRevisions.id, id)).get(); return row ? toPlanRow(row) : undefined }
+  getCurrentPlan(chapterId: string): PlanRow | undefined { const row = this.db.select().from(novelChapterPlanRevisions).where(and(eq(novelChapterPlanRevisions.chapterId, chapterId), inArray(novelChapterPlanRevisions.status, ['approved', 'consumed', 'confirmed']))).orderBy(desc(novelChapterPlanRevisions.revision)).limit(1).get(); return row ? toPlanRow(row) : undefined }
+  listPlans(chapterId: string): PlanRow[] { return this.db.select().from(novelChapterPlanRevisions).where(eq(novelChapterPlanRevisions.chapterId, chapterId)).orderBy(desc(novelChapterPlanRevisions.revision)).all().map(toPlanRow) }
+  maxRevision(chapterId: string): number { const rows = this.db.select({ revision: novelChapterPlanRevisions.revision }).from(novelChapterPlanRevisions).where(eq(novelChapterPlanRevisions.chapterId, chapterId)).orderBy(desc(novelChapterPlanRevisions.revision)).limit(1).all(); return rows[0]?.revision ?? 0 }
+  insertPlan(row: PlanRow): void { this.db.insert(novelChapterPlanRevisions).values(toPlanInsert(row)).run() }
+  updatePlanStatus(id: string, status: string): boolean { return this.db.update(novelChapterPlanRevisions).set({ status }).where(eq(novelChapterPlanRevisions.id, id)).run().changes > 0 }
+  supersedeActivePlans(chapterId: string): number { return this.db.update(novelChapterPlanRevisions).set({ status: 'superseded' }).where(and(eq(novelChapterPlanRevisions.chapterId, chapterId), inArray(novelChapterPlanRevisions.status, ['draft', 'approved']))).run().changes }
+
+  getSceneByKey(chapterId: string, stableKey: string): SceneRow | undefined { const row = this.db.select().from(novelScenes).where(and(eq(novelScenes.chapterId, chapterId), eq(novelScenes.stableKey, stableKey))).get(); return row ? toSceneRow(row) : undefined }
+  getScene(id: string): SceneRow | undefined { const row = this.db.select().from(novelScenes).where(eq(novelScenes.id, id)).get(); return row ? toSceneRow(row) : undefined }
+  insertScene(row: SceneRow): void { this.db.insert(novelScenes).values(toSceneInsert(row)).run() }
+
+  listSceneRevisionsByPlan(planRevisionId: string): SceneRevisionRow[] { return this.db.select().from(novelSceneRevisions).where(eq(novelSceneRevisions.planRevisionId, planRevisionId)).orderBy(asc(novelSceneRevisions.orderNo)).all().map(toSceneRevisionRow) }
+  getSceneRevision(id: string): SceneRevisionRow | undefined { const row = this.db.select().from(novelSceneRevisions).where(eq(novelSceneRevisions.id, id)).get(); return row ? toSceneRevisionRow(row) : undefined }
+  insertSceneRevision(row: SceneRevisionRow): void { this.db.insert(novelSceneRevisions).values(toSceneRevisionInsert(row)).run() }
+  supersedePlannedScenes(chapterId: string): number { return this.db.update(novelSceneRevisions).set({ status: 'superseded' }).where(and(eq(novelSceneRevisions.chapterId, chapterId), eq(novelSceneRevisions.status, 'planned'))).run().changes }
+  confirmSceneRevision(id: string, contentRevisionId?: string): boolean { return this.db.update(novelSceneRevisions).set(contentRevisionId === undefined ? { status: 'confirmed' } : { status: 'confirmed', contentRevisionId }).where(eq(novelSceneRevisions.id, id)).run().changes > 0 }
+
+  listSceneCast(sceneRevisionId: string): SceneCastRow[] { return this.db.select().from(novelSceneCast).where(eq(novelSceneCast.sceneRevisionId, sceneRevisionId)).orderBy(asc(novelSceneCast.role), asc(novelSceneCast.characterId)).all().map(toSceneCastRow) }
+  replaceSceneCast(sceneRevisionId: string, rows: SceneCastRow[]): void { this.db.delete(novelSceneCast).where(eq(novelSceneCast.sceneRevisionId, sceneRevisionId)).run(); if (rows.length) this.db.insert(novelSceneCast).values(rows.map(toSceneCastInsert)).run() }
+}
+
+function toPlanInsert(row: PlanRow): NovelChapterPlanRevisionsInsert { return { id: row.id, chapterId: row.chapter_id, projectId: row.project_id, creationRunId: row.creation_run_id, supersedesId: row.supersedes_id, baseContentRevisionId: row.base_content_revision_id, positioning: row.positioning, rhythm: row.rhythm, budget: row.budget, status: row.status, revision: row.revision, idempotencyKey: row.idempotency_key, createdAt: row.created_at } }
+function toPlanRow(row: NovelChapterPlanRevisionsRow): PlanRow { return { id: row.id, chapter_id: row.chapterId, project_id: row.projectId, creation_run_id: row.creationRunId, supersedes_id: row.supersedesId, base_content_revision_id: row.baseContentRevisionId, positioning: row.positioning, rhythm: row.rhythm, budget: row.budget, status: row.status, revision: row.revision, idempotency_key: row.idempotencyKey, created_at: row.createdAt } }
+function toSceneInsert(row: SceneRow): NovelScenesInsert { return { id: row.id, chapterId: row.chapter_id, projectId: row.project_id, stableKey: row.stable_key, createdAt: row.created_at } }
+function toSceneRow(row: NovelScenesRow): SceneRow { return { id: row.id, chapter_id: row.chapterId, project_id: row.projectId, stable_key: row.stableKey, created_at: row.createdAt } }
+function toSceneRevisionInsert(row: SceneRevisionRow): NovelSceneRevisionsInsert { return { id: row.id, sceneId: row.scene_id, chapterId: row.chapter_id, projectId: row.project_id, planRevisionId: row.plan_revision_id, contentRevisionId: row.content_revision_id, supersedesId: row.supersedes_id, orderNo: row.order_no, title: row.title, goal: row.goal, summary: row.summary, locationText: row.location_text, timeText: row.time_text, povMode: row.pov_mode, povCharacterId: row.pov_character_id, targetWords: row.target_words, status: row.status, createdAt: row.created_at } }
+function toSceneRevisionRow(row: NovelSceneRevisionsRow): SceneRevisionRow { return { id: row.id, scene_id: row.sceneId, chapter_id: row.chapterId, project_id: row.projectId, plan_revision_id: row.planRevisionId, content_revision_id: row.contentRevisionId, supersedes_id: row.supersedesId, order_no: row.orderNo, title: row.title, goal: row.goal, summary: row.summary, location_text: row.locationText, time_text: row.timeText, pov_mode: row.povMode, pov_character_id: row.povCharacterId, target_words: row.targetWords, status: row.status, created_at: row.createdAt } }
+function toSceneCastInsert(row: SceneCastRow): NovelSceneCastInsert { return { sceneRevisionId: row.scene_revision_id, characterId: row.character_id, role: row.role, function: row.function, prominence: row.prominence, note: row.note } }
+function toSceneCastRow(row: NovelSceneCastRow): SceneCastRow { return { scene_revision_id: row.sceneRevisionId, character_id: row.characterId, role: row.role, function: row.function, prominence: row.prominence, note: row.note } }

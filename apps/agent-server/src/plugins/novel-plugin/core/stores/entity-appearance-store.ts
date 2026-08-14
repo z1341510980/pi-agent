@@ -11,7 +11,8 @@
  */
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import type { AppearanceReconcileReport } from '../migration-acceptance.js'
+import type { AppearanceReconcileReport } from '../analysis/migration-acceptance.js'
+import { createNovelDrizzleDb, WorkflowRepository } from '../../infrastructure/sqlite/index.js'
 
 export type AppearanceRole = 'present' | 'advance' | 'mention' | 'plant' | 'reinforce' | 'recover'
 export type AppearanceSource = 'ai-arrange' | 'memory' | 'sync' | 'manual' | 'create' | 'frozen-redirect'
@@ -25,10 +26,15 @@ export interface EntityAppearanceRow {
   appearance_role: string
   source: string
   created_at: number
+  status: string
 }
 
 export class EntityAppearanceStore {
-  constructor(private db: Database.Database) {}
+  private readonly repository: WorkflowRepository
+
+  constructor(private db: Database.Database) {
+    this.repository = new WorkflowRepository(createNovelDrizzleDb(db))
+  }
 
   /**
    * 记录一批实体在本章的出场（幂等：UNIQUE 约束防重）。
@@ -43,15 +49,10 @@ export class EntityAppearanceStore {
     source?: AppearanceSource
   }): number {
     const { projectId, chapterId, entityType, entityIds, role = 'present', source = 'sync' } = input
-    const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO novel_entity_appearances
-        (id, project_id, chapter_id, entity_type, entity_id, appearance_role, source, created_at)
-      VALUES (@id, @project_id, @chapter_id, @entity_type, @entity_id, @appearance_role, @source, @created_at)
-    `)
     const ts = Date.now()
     let count = 0
     for (const entityId of entityIds) {
-      const result = insert.run({
+      count += this.repository.addAppearance({
         id: randomUUID(),
         project_id: projectId,
         chapter_id: chapterId,
@@ -60,8 +61,8 @@ export class EntityAppearanceStore {
         appearance_role: role,
         source,
         created_at: ts,
+        status: 'active',
       })
-      count += result.changes
     }
     return count
   }
@@ -72,39 +73,27 @@ export class EntityAppearanceStore {
     entityId: string
     role: string
   }> {
-    const rows = this.db.prepare(
-      'SELECT entity_type, entity_id, appearance_role FROM novel_entity_appearances WHERE project_id = ? AND chapter_id = ?',
-    ).all(projectId, chapterId) as Array<{ entity_type: string; entity_id: string; appearance_role: string }>
-    return rows.map((r) => ({ entityType: r.entity_type, entityId: r.entity_id, role: r.appearance_role }))
+    return this.repository.listAppearancesByChapter(projectId, chapterId)
   }
 
   /** 某实体的出场章节列表 */
   listByEntity(projectId: string, entityType: string, entityId: string): string[] {
-    const rows = this.db.prepare(
-      'SELECT chapter_id FROM novel_entity_appearances WHERE project_id = ? AND entity_type = ? AND entity_id = ?',
-    ).all(projectId, entityType, entityId) as Array<{ chapter_id: string }>
-    return rows.map((r) => r.chapter_id)
+    return this.repository.listAppearancesByEntity(projectId, entityType, entityId)
   }
 
   /** 删除某章的全部出场（用于对账后清理或重写回滚） */
   removeChapterAppearances(projectId: string, chapterId: string): number {
-    return this.db.prepare(
-      'DELETE FROM novel_entity_appearances WHERE project_id = ? AND chapter_id = ?',
-    ).run(projectId, chapterId).changes
+    return this.repository.removeChapterAppearances(projectId, chapterId)
   }
 
   /** 删除某实体的全部出场（实体删除时级联清理） */
   removeEntityAppearances(projectId: string, entityType: string, entityId: string): number {
-    return this.db.prepare(
-      'DELETE FROM novel_entity_appearances WHERE project_id = ? AND entity_type = ? AND entity_id = ?',
-    ).run(projectId, entityType, entityId).changes
+    return this.repository.removeEntityAppearances(projectId, entityType, entityId)
   }
 
   /** 删除某实体在某章的出场（手工编辑 spans 收窄时的双写同步） */
   removeChapterEntityAppearances(projectId: string, chapterId: string, entityType: string, entityId: string): number {
-    return this.db.prepare(
-      'DELETE FROM novel_entity_appearances WHERE project_id = ? AND chapter_id = ? AND entity_type = ? AND entity_id = ?',
-    ).run(projectId, chapterId, entityType, entityId).changes
+    return this.repository.removeChapterEntityAppearances(projectId, chapterId, entityType, entityId)
   }
 
   /**
@@ -158,7 +147,7 @@ export class EntityAppearanceStore {
 
         // appearance 侧：该实体已记录的章节号
         const appRows = this.db.prepare(
-          'SELECT chapter_id FROM novel_entity_appearances WHERE project_id = ? AND entity_type = ? AND entity_id = ?',
+          "SELECT chapter_id FROM novel_entity_appearances WHERE project_id = ? AND entity_type = ? AND entity_id = ? AND status = 'active'",
         ).all(projectId, type, row.id) as Array<{ chapter_id: string }>
         const appChapters = new Set(
           appRows.map((a) => numberById.get(a.chapter_id)).filter((n): n is number => n !== undefined),
@@ -180,13 +169,13 @@ export class EntityAppearanceStore {
     // 目标侧行数（限定 7 类实体；character 出场走 character_history，不在此口径）
     const targetRows = (this.db.prepare(`
       SELECT COUNT(*) AS c FROM novel_entity_appearances
-      WHERE project_id = ? AND entity_type IN (${scopedTypes.map(() => '?').join(', ')})
+      WHERE project_id = ? AND status = 'active' AND entity_type IN (${scopedTypes.map(() => '?').join(', ')})
     `).get(projectId, ...scopedTypes) as { c: number }).c
 
     // 孤儿出场：指向已不存在的实体
     const orphanRows = (this.db.prepare(`
       SELECT COUNT(*) AS c FROM novel_entity_appearances a
-      WHERE a.project_id = ? AND NOT EXISTS (
+      WHERE a.project_id = ? AND a.status = 'active' AND NOT EXISTS (
         SELECT 1 FROM novel_conflicts x WHERE x.id = a.entity_id AND a.entity_type = 'conflict'
       ) AND NOT EXISTS (
         SELECT 1 FROM novel_foreshadowing x WHERE x.id = a.entity_id AND a.entity_type = 'foreshadow'
@@ -206,7 +195,7 @@ export class EntityAppearanceStore {
     // 重复出场（UNIQUE 约束下应为 0；冗余行数 = Σ(count-1)）
     const dupRows = this.db.prepare(`
       SELECT COUNT(*) - 1 AS redundant FROM novel_entity_appearances
-      WHERE project_id = ?
+      WHERE project_id = ? AND status = 'active'
       GROUP BY entity_type, entity_id, chapter_id
       HAVING COUNT(*) > 1
     `).all(projectId) as Array<{ redundant: number }>

@@ -4,8 +4,8 @@ import {
   shiftChapterList,
   shiftChapterEvents,
   CHAPTER_RENUMBER_FIELDS,
-} from '../chapter-renumber.js'
-import type { ChapterRenumberSpec } from '../chapter-renumber.js'
+} from '../chapters/chapter-renumber.js'
+import type { ChapterRenumberSpec } from '../chapters/chapter-renumber.js'
 import {
   normalizeForeshadowBeats,
   deriveForeshadowStatus,

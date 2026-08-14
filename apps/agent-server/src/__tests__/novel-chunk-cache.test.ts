@@ -17,7 +17,7 @@ import {
   computeChunkVersionKey,
   type ChunkVersionSource,
   type ChunkVersionSourceProvider,
-} from '../plugins/novel-plugin/core/chunk-cache.js'
+} from '../plugins/novel-plugin/core/prompting/chunk-cache.js'
 
 const baseSource: ChunkVersionSource = {
   projectUpdatedAt: 1000,

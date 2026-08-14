@@ -6,7 +6,6 @@
  * deleteWorldElement 调用上层传入的 deleteEdgesByEntity 完成边的级联清理。
  */
 
-import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type {
   NovelWorldRule, NovelStyleGuide, NovelWritingStyleProfile,
@@ -16,37 +15,30 @@ import type {
   WorldRuleRow, StyleGuideRow, WritingStyleProfileRow, ConstraintRow, WorldElementRow,
 } from './row-types.js'
 import {
-  now, camelToSnake, parseJSON,
+  now, parseJSON,
   normalizeWritingStyleProfileEnums, parseStringArray,
 } from './store-utils.js'
+import { createNovelDrizzleDb } from '../../infrastructure/sqlite/client.js'
+import { WorldRepository } from '../../infrastructure/sqlite/repositories/world-repository.js'
 
 export class WorldStore {
-  private readonly stmtListWorldRules: Database.Statement
-  private readonly stmtListStyleGuides: Database.Statement
-  private readonly stmtListConstraints: Database.Statement
-  private readonly stmtListWorldElements: Database.Statement
+  private readonly repository: WorldRepository
 
   constructor(
-    private db: Database.Database,
+    db: import('better-sqlite3').Database,
     private deleteEdgesByEntity: (entityId: string) => number,
   ) {
-    this.stmtListWorldRules = db.prepare('SELECT * FROM novel_world_rules WHERE project_id = ? ORDER BY category ASC, id ASC')
-    this.stmtListStyleGuides = db.prepare('SELECT * FROM novel_style_guides WHERE project_id = ? ORDER BY category ASC, id ASC')
-    this.stmtListConstraints = db.prepare('SELECT * FROM novel_constraints WHERE project_id = ? AND is_active = 1 ORDER BY created_at ASC')
-    this.stmtListWorldElements = db.prepare('SELECT * FROM novel_world_elements WHERE project_id = ? ORDER BY created_at ASC')
+    this.repository = new WorldRepository(createNovelDrizzleDb(db))
   }
 
   listWorldRules(projectId: string): NovelWorldRule[] {
-    return (this.stmtListWorldRules.all(projectId) as WorldRuleRow[]).map((r) => this.rowToWorldRule(r))
+    return this.repository.listWorldRules(projectId).map((r) => this.rowToWorldRule(r))
   }
 
   createWorldRule(rule: Omit<NovelWorldRule, 'createdAt' | 'updatedAt'>): NovelWorldRule {
     const ts = now()
     const full: NovelWorldRule = { ...rule, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_world_rules (id, project_id, category, rule, cost, is_fixed, created_at, updated_at)
-      VALUES (@id, @project_id, @category, @rule, @cost, @is_fixed, @created_at, @updated_at)
-    `).run({
+    this.repository.insertWorldRule({
       id: full.id, project_id: full.projectId, category: full.category, rule: full.rule,
       cost: full.cost, is_fixed: full.isFixed ? 1 : 0, created_at: full.createdAt, updated_at: full.updatedAt,
     })
@@ -54,40 +46,28 @@ export class WorldStore {
   }
 
   updateWorldRule(id: string, updates: Partial<Omit<NovelWorldRule, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelWorldRule | undefined {
-    const fields: string[] = []
-    const values: unknown[] = []
-    for (const [key, value] of Object.entries(updates)) {
-      const dbKey = camelToSnake(key)
-      fields.push(`${dbKey} = ?`)
-      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
-    }
-    if (fields.length === 0) {
-      const row = this.db.prepare('SELECT * FROM novel_world_rules WHERE id = ?').get(id) as WorldRuleRow | undefined
-      return row ? this.rowToWorldRule(row) : undefined
-    }
-    fields.push('updated_at = unixepoch()')
-    values.push(id)
-    this.db.prepare(`UPDATE novel_world_rules SET ${fields.join(', ')} WHERE id = ?`).run(...values)
-    const row = this.db.prepare('SELECT * FROM novel_world_rules WHERE id = ?').get(id) as WorldRuleRow | undefined
-    return row ? this.rowToWorldRule(row) : undefined
+    const row = this.repository.getWorldRule(id)
+    if (!row) return undefined
+    if (Object.keys(updates).length === 0) return this.rowToWorldRule(row)
+    const current = this.rowToWorldRule(row)
+    const updated = { ...current, ...updates, id, updatedAt: now() }
+    this.repository.updateWorldRule(id, { id, project_id: current.projectId, category: updated.category, rule: updated.rule, cost: updated.cost, is_fixed: updated.isFixed ? 1 : 0, created_at: current.createdAt, updated_at: updated.updatedAt })
+    const result = this.repository.getWorldRule(id)
+    return result ? this.rowToWorldRule(result) : undefined
   }
 
   deleteWorldRule(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_world_rules WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteWorldRule(id)
   }
 
   listStyleGuide(projectId: string): NovelStyleGuide[] {
-    return (this.stmtListStyleGuides.all(projectId) as StyleGuideRow[]).map((r) => this.rowToStyleGuide(r))
+    return this.repository.listStyleGuides(projectId).map((r) => this.rowToStyleGuide(r))
   }
 
   createStyleGuide(style: Omit<NovelStyleGuide, 'createdAt' | 'updatedAt'>): NovelStyleGuide {
     const ts = now()
     const full: NovelStyleGuide = { ...style, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_style_guides (id, project_id, category, rule, example, created_at, updated_at)
-      VALUES (@id, @project_id, @category, @rule, @example, @created_at, @updated_at)
-    `).run({
+    this.repository.insertStyleGuide({
       id: full.id, project_id: full.projectId, category: full.category, rule: full.rule,
       example: full.example, created_at: full.createdAt, updated_at: full.updatedAt,
     })
@@ -95,31 +75,22 @@ export class WorldStore {
   }
 
   updateStyleGuide(id: string, updates: Partial<Omit<NovelStyleGuide, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelStyleGuide | undefined {
-    const fields: string[] = []
-    const values: unknown[] = []
-    for (const [key, value] of Object.entries(updates)) {
-      const dbKey = camelToSnake(key)
-      fields.push(`${dbKey} = ?`)
-      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
-    }
-    if (fields.length === 0) {
-      const row = this.db.prepare('SELECT * FROM novel_style_guides WHERE id = ?').get(id) as StyleGuideRow | undefined
-      return row ? this.rowToStyleGuide(row) : undefined
-    }
-    fields.push('updated_at = unixepoch()')
-    values.push(id)
-    this.db.prepare(`UPDATE novel_style_guides SET ${fields.join(', ')} WHERE id = ?`).run(...values)
-    const row = this.db.prepare('SELECT * FROM novel_style_guides WHERE id = ?').get(id) as StyleGuideRow | undefined
-    return row ? this.rowToStyleGuide(row) : undefined
+    const row = this.repository.getStyleGuide(id)
+    if (!row) return undefined
+    if (Object.keys(updates).length === 0) return this.rowToStyleGuide(row)
+    const current = this.rowToStyleGuide(row)
+    const updated = { ...current, ...updates, id, updatedAt: now() }
+    this.repository.updateStyleGuide(id, { id, project_id: current.projectId, category: updated.category, rule: updated.rule, example: updated.example, created_at: current.createdAt, updated_at: updated.updatedAt })
+    const result = this.repository.getStyleGuide(id)
+    return result ? this.rowToStyleGuide(result) : undefined
   }
 
   deleteStyleGuide(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_style_guides WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteStyleGuide(id)
   }
 
   getWritingStyleProfile(projectId: string): NovelWritingStyleProfile | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_writing_style_profiles WHERE project_id = ?').get(projectId) as WritingStyleProfileRow | undefined
+    const row = this.repository.getWritingStyleProfile(projectId)
     return row ? this.rowToWritingStyleProfile(row) : undefined
   }
 
@@ -134,36 +105,7 @@ export class WorldStore {
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
     }
-    this.db.prepare(`
-      INSERT INTO novel_writing_style_profiles (
-        id, project_id, name, preset, narrative_person, narrative_distance,
-        sentence_rhythm, dialogue_ratio, emotional_temperature, imagery_density,
-        vocabulary_register, hard_rules, soft_rules, positive_examples, negative_examples, notes,
-        version, created_at, updated_at
-      ) VALUES (
-        @id, @project_id, @name, @preset, @narrative_person, @narrative_distance,
-        @sentence_rhythm, @dialogue_ratio, @emotional_temperature, @imagery_density,
-        @vocabulary_register, @hard_rules, @soft_rules, @positive_examples, @negative_examples, @notes,
-        @version, @created_at, @updated_at
-      )
-      ON CONFLICT(project_id) DO UPDATE SET
-        name = excluded.name,
-        preset = excluded.preset,
-        narrative_person = excluded.narrative_person,
-        narrative_distance = excluded.narrative_distance,
-        sentence_rhythm = excluded.sentence_rhythm,
-        dialogue_ratio = excluded.dialogue_ratio,
-        emotional_temperature = excluded.emotional_temperature,
-        imagery_density = excluded.imagery_density,
-        vocabulary_register = excluded.vocabulary_register,
-        hard_rules = excluded.hard_rules,
-        soft_rules = excluded.soft_rules,
-        positive_examples = excluded.positive_examples,
-        negative_examples = excluded.negative_examples,
-        notes = excluded.notes,
-        version = excluded.version,
-        updated_at = excluded.updated_at
-    `).run({
+    this.repository.upsertWritingStyleProfile({
       id: full.id,
       project_id: full.projectId,
       name: full.name,
@@ -188,16 +130,13 @@ export class WorldStore {
   }
 
   listConstraints(projectId: string): NovelConstraint[] {
-    return (this.stmtListConstraints.all(projectId) as ConstraintRow[]).map((r) => this.rowToConstraint(r))
+    return this.repository.listConstraints(projectId).map((r) => this.rowToConstraint(r))
   }
 
   createConstraint(constraint: Omit<NovelConstraint, 'createdAt' | 'updatedAt'>): NovelConstraint {
     const ts = now()
     const full: NovelConstraint = { ...constraint, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_constraints (id, project_id, type, scope, rule, is_active, related_entity_id, created_at, updated_at)
-      VALUES (@id, @project_id, @type, @scope, @rule, @is_active, @related_entity_id, @created_at, @updated_at)
-    `).run({
+    this.repository.insertConstraint({
       id: full.id, project_id: full.projectId, type: full.type, scope: full.scope,
       rule: full.rule, is_active: full.isActive ? 1 : 0, related_entity_id: full.relatedEntityId,
       created_at: full.createdAt, updated_at: full.updatedAt,
@@ -206,45 +145,33 @@ export class WorldStore {
   }
 
   updateConstraint(id: string, updates: Partial<Omit<NovelConstraint, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelConstraint | undefined {
-    const fields: string[] = []
-    const values: unknown[] = []
-    for (const [key, value] of Object.entries(updates)) {
-      const dbKey = camelToSnake(key)
-      fields.push(`${dbKey} = ?`)
-      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
-    }
-    if (fields.length === 0) {
-      const row = this.db.prepare('SELECT * FROM novel_constraints WHERE id = ?').get(id) as ConstraintRow | undefined
-      return row ? this.rowToConstraint(row) : undefined
-    }
-    fields.push('updated_at = unixepoch()')
-    values.push(id)
-    this.db.prepare(`UPDATE novel_constraints SET ${fields.join(', ')} WHERE id = ?`).run(...values)
-    const row = this.db.prepare('SELECT * FROM novel_constraints WHERE id = ?').get(id) as ConstraintRow | undefined
-    return row ? this.rowToConstraint(row) : undefined
+    const row = this.repository.getConstraint(id)
+    if (!row) return undefined
+    if (Object.keys(updates).length === 0) return this.rowToConstraint(row)
+    const current = this.rowToConstraint(row)
+    const updated = { ...current, ...updates, id, updatedAt: now() }
+    this.repository.updateConstraint(id, { id, project_id: current.projectId, type: updated.type, scope: updated.scope, rule: updated.rule, is_active: updated.isActive ? 1 : 0, related_entity_id: updated.relatedEntityId, created_at: current.createdAt, updated_at: updated.updatedAt })
+    const result = this.repository.getConstraint(id)
+    return result ? this.rowToConstraint(result) : undefined
   }
 
   deleteConstraint(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_constraints WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteConstraint(id)
   }
 
   listWorldElements(projectId: string): NovelWorldElement[] {
-    return (this.stmtListWorldElements.all(projectId) as WorldElementRow[]).map((r) => this.rowToWorldElement(r))
+    return this.repository.listWorldElements(projectId).map((r) => this.rowToWorldElement(r))
   }
 
   getWorldElement(worldElementId: string): NovelWorldElement | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_world_elements WHERE id = ?').get(worldElementId) as WorldElementRow | undefined
+    const row = this.repository.getWorldElement(worldElementId)
     return row ? this.rowToWorldElement(row) : undefined
   }
 
   createWorldElement(element: Omit<NovelWorldElement, 'createdAt' | 'updatedAt'>): NovelWorldElement {
     const ts = now()
     const full: NovelWorldElement = { ...element, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_world_elements (id, project_id, category, name, description, parent_id, attributes, created_at, updated_at)
-      VALUES (@id, @project_id, @category, @name, @description, @parent_id, @attributes, @created_at, @updated_at)
-    `).run({
+    this.repository.insertWorldElement({
       id: full.id, project_id: full.projectId, category: full.category, name: full.name,
       description: full.description, parent_id: full.parentId,
       attributes: JSON.stringify(full.attributes), created_at: full.createdAt, updated_at: full.updatedAt,
@@ -253,16 +180,14 @@ export class WorldStore {
   }
 
   updateWorldElement(id: string, patch: Partial<NovelWorldElement>): NovelWorldElement | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_world_elements WHERE id = ?').get(id) as WorldElementRow | undefined
+    const existing = this.repository.getWorldElement(id)
     if (!existing) return undefined
     const current = this.rowToWorldElement(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_world_elements SET category=@category, name=@name, description=@description,
-      parent_id=@parent_id, attributes=@attributes, updated_at=@updated_at WHERE id=@id
-    `).run({
+    this.repository.updateWorldElement(id, {
       id, category: updated.category, name: updated.name, description: updated.description,
       parent_id: updated.parentId, attributes: JSON.stringify(updated.attributes),
+      project_id: current.projectId, created_at: current.createdAt,
       updated_at: updated.updatedAt,
     })
     return updated
@@ -270,8 +195,7 @@ export class WorldStore {
 
   deleteWorldElement(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    const result = this.db.prepare('DELETE FROM novel_world_elements WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteWorldElement(id)
   }
 
   private rowToWorldRule(row: WorldRuleRow): NovelWorldRule {

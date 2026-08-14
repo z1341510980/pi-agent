@@ -8,7 +8,7 @@
  * 等这个 async 往返。这里覆盖短路条件与边界：只要有一项是新建就不能跳过。
  */
 import { describe, expect, it, vi } from 'vitest'
-import { NovelEntityGenerator } from '../plugins/novel-plugin/core/novel-entity-generator.js'
+import { NovelEntityGenerator } from '../plugins/novel-plugin/core/generation/novel-entity-generator.js'
 
 interface ProgressEvent {
   phase: string

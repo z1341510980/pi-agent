@@ -14,28 +14,48 @@
 novel-plugin/
 ├── index.ts                       # 插件入口（createNovelPlugin）
 ├── manifest.json                  # 插件清单（name=novel, builtin=true）
-├── novel-migrations.ts            # 静态数据库迁移（表 013-026）
+├── novel-migrations.ts            # 静态数据库迁移（唯一 schema 来源）
 ├── novel-services.ts              # 服务组装（createNovelServices）
-├── novel-routes.ts                # REST/SSE 路由（前缀 /api/plugins/novel）
+├── novel-routes.ts                # REST/SSE 路由聚合入口（前缀 /api/plugins/novel）
 ├── ARCHITECTURE.md                # 本文档
 ├── __tests__/                     # 测试
+├── infrastructure/                # 持久化适配器（当前为 SQLite + Drizzle）
+│   └── sqlite/
+│       ├── client.ts              # 复用现有 better-sqlite3 连接
+│       ├── schema/                # camelCase 属性 → snake_case 列映射
+│       └── repositories/          # Row 映射与基础 CRUD
 └── core/
     ├── index.ts                   # 公共导出
-    ├── types.ts                   # 全部数据模型
-    ├── novel-store.ts             # 统一存储层（SQLite CRUD）
-    ├── novel-memory-store.ts      # 长期记忆（事件 + 快照 + 因果链）
-    ├── novel-agent-config-store.ts # Agent 温度配置存储
-    ├── prompt-manager.ts          # 提示词模板管理（三级覆盖）
-    ├── prompt-builder.ts          # 缓存优化的提示词构建器
-    ├── novel-tools.ts             # Agent 工具定义
-    ├── novel-session.ts           # Session 工厂
-    ├── novel-engine.ts            # 核心引擎（约束构建 + 章节状态机）
-    ├── novel-orchestrator.ts      # 多 Agent 编排引擎
-    ├── novel-agents.ts            # 4 个 Agent 配置定义
-    ├── novel-character-generator.ts # AI 角色生成器
-    ├── novel-entity-generator.ts  # 通用 AI 实体生成器（含 generateAndArrange）
-    ├── rhythm-controller.ts       # 节奏控制器
-    └── prompts/                   # 提示词模板（10 个 .md）
+    ├── domain/                    # 共享类型、Agent 策略、feature flags、身份契约
+    ├── stores/                    # Store facade、实体 CRUD、版本链与跨表领域事务
+    ├── chapters/                  # 章节聊天、版本、节奏、场景计划、预算
+    ├── prompting/                 # PromptManager/Builder、Context Chunk、缓存与预算
+    ├── memory/                    # 长期记忆、账本、变更应用器
+    ├── entities/                  # 实体准入、编排、声音、相似度与关系策略
+    ├── quality/                   # 文风质量、陈词检测、LLM 重试策略
+    ├── analysis/                  # 引用分析、矩阵投影、关系图、一致性与迁移验收
+    ├── discussion/                # 群聊适配器、历史、运行快照与角色上下文
+    ├── generation/                # 角色、实体与记忆生成流程
+    ├── novel-store.ts             # 跨域 Store facade 与事务收口
+    ├── novel-engine.ts            # 核心引擎（跨章节状态机，暂保留顶层）
+    ├── novel-orchestrator.ts      # 多 Agent 编排（跨域事务，暂保留顶层）
+    ├── novel-memory-store.ts      # 长期记忆主 Store（跨表读写，暂保留顶层）
+    ├── novel-tools.ts             # Agent 工具定义（稳定工具接口，暂保留顶层）
+    └── prompts/                   # 提示词模板（保持资源路径稳定）
+└── routes/
+    ├── project-routes.ts          # 项目生命周期与回收站
+    ├── volume-routes.ts           # 卷管理
+    ├── prompt-routes.ts           # 提示词模板
+    ├── narrative-routes.ts        # 剧情轨道
+    ├── graph-routes.ts            # 画布节点、连线、关系图、一致性审计
+    ├── memory-routes.ts           # 记忆事件、时间线、因果链、快照查询
+    ├── observability-routes.ts   # 成本、重叠率、日志 payload 清理
+    ├── entity-delete-routes.ts   # 跨实体删除入口与发布章节保护
+    ├── entity-maintenance-routes.ts # 去重、相似度合并、AI 实体预生成
+    ├── cache-routes.ts            # 缓存诊断与分层报告
+    ├── chapter-routes.ts          # 章节与内容版本
+    ├── character-routes.ts        # 角色与角色弧
+    └── creation-flow-routes.ts    # SSE 创作流程、群聊和章节聊天
 ```
 
 ### 1.2 入口 `index.ts` 的 setup 流程（7 步）
@@ -120,9 +140,11 @@ export interface ArrangedEntity {
 
 ---
 
-## 3. 存储层（`core/novel-store.ts`）
+## 3. 存储层（`core/novel-store.ts` + `infrastructure/sqlite/`）
 
-类 `NovelStore` 实现 `NovelPromptStores` 接口。设计模式：构造时预编译 SQL + 同步写入 + 行→对象转换。
+类 `NovelStore` 实现 `NovelPromptStores` 接口，是领域层统一存储门面。事务、章节投影、边清理和账本引用仍由门面控制；单表 CRUD 由 SQLite Repository 承担。Repository 使用 Drizzle ORM 访问现有 `better-sqlite3` 连接，并将 camelCase ORM 属性映射回 `row-types.ts` 的 snake_case 行，Store 再执行领域规范化。
+
+当前 ORM 化 Store：`ProjectStore`、`core/stores/entity-stores.ts` 中的冲突/物品/剧情轨道门面、`FactionStore`、`CharacterStore`（含 Relationship CRUD）、`ForeshadowStore`（含 Clue/InfoLayer CRUD）、`WorldStore`，`GraphStore` 的节点位置/标记/边/上下文指标/作者意图/章节审查基础 CRUD，`ChapterStore` 的章节查询/卷/钩子/角色弧光/正文版本行 CRUD，`EntityAppearanceStore` 的基础出场 CRUD，`EntityCandidateStore` 的候选/审核/晋升基础写入，`NarrativeLedgerStore` 的 Storyline/Progress 基础 CRUD，以及 `ScenePlanStore` 的计划/场景/场景版本/Cast 基础 CRUD。`GraphStore` 的 AgentLog、压缩 payload，`EntityAppearanceStore` 的跨实体 spans 对账，`NarrativeLedgerStore` 的跨场景 stale 规则，以及 `ChapterStore` 的章节重排事务暂保留同步 SQL；其余 Store 按垂直切片逐步迁移。`novel-migrations.ts` 仍是唯一迁移来源，不引入第二套 Drizzle Kit migration ledger。
 
 ### 3.1 按 ID 查询方法
 
@@ -663,6 +685,12 @@ interface NovelCharacter {
 | POST | /projects/:projectId/characters/ai-generate | AI 生成单个角色（落库）                                    |
 | POST | /projects/:projectId/entities/ai-generate   | AI 生成 6 类实体（**不落库**，前端 review 后调 createXxx） |
 
+实体维护路由还包括：
+
+- `POST /projects/:projectId/entities/deduplicate` — 基于规则的同步去重
+- `POST /projects/:projectId/entities/similarity-scan` — LLM 相似度扫描 SSE
+- `POST /projects/:projectId/entities/merge-similarity` — 按前端选择执行字段级合并
+
 ### 10.7 角色历史
 
 - `GET /projects/:projectId/characters/:characterId/history`
@@ -693,6 +721,7 @@ interface NovelCharacter {
 ### 10.11 缓存诊断
 
 - `GET /projects/:projectId/cache-diagnostics?chapterNumber=N` — 返回 4 个 Agent 的系统提示词哈希 + 章节上下文哈希
+- `GET /projects/:projectId/cache-layer-report?chapterNumber=N&limit=200` — 汇总 Agent 日志的缓存命中分层
 
 ### 10.12 提示词模板
 

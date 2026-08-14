@@ -9,9 +9,9 @@ import Database from 'better-sqlite3'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
-import { PromptManager } from '../plugins/novel-plugin/core/prompt-manager.js'
+import { PromptManager } from '../plugins/novel-plugin/core/prompting/prompt-manager.js'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
-import { AGENT_IDENTITY_MARKERS, IDENTITY_CHAR_LIMIT, validateAgentIdentity } from '../plugins/novel-plugin/core/identity-contract.js'
+import { AGENT_IDENTITY_MARKERS, IDENTITY_CHAR_LIMIT, validateAgentIdentity } from '../plugins/novel-plugin/core/domain/identity-contract.js'
 
 function promptStores(store: NovelStore) {
   return {

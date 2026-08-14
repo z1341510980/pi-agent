@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { NovelPromptBuilder } from '../core/prompt-builder.js'
-import { PromptManager } from '../core/prompt-manager.js'
+import { PromptManager } from '../core/prompting/prompt-manager.js'
 import {
   arrangedEntitiesSchema,
   creationFlowBodySchema,

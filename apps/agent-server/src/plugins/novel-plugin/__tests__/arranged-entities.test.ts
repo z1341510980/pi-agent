@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { NovelPromptBuilder } from '../core/prompt-builder.js'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { baseTargetOf, resolveWordBudget } from '../core/word-budget-resolver.js'
+import { baseTargetOf, resolveWordBudget } from '../core/chapters/word-budget-resolver.js'
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:')

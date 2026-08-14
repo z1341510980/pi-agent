@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateProseQuality, formatProseQualityReport } from '../plugins/novel-plugin/core/prose-quality-evaluator.js'
+import { evaluateProseQuality, formatProseQualityReport } from '../plugins/novel-plugin/core/quality/prose-quality-evaluator.js'
 
 describe('prose quality evaluator', () => {
   it('识别连续单句碎段和短段密度', () => {

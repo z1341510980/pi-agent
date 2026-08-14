@@ -13,7 +13,7 @@ import {
   retryDelayMs,
   LLM_MAX_RETRIES,
   LLM_RETRY_DELAYS_MS,
-} from '../plugins/novel-plugin/core/llm-error-policy.js'
+} from '../plugins/novel-plugin/core/quality/llm-error-policy.js'
 
 describe('classifyLlmFailure：瞬时故障（实测占 Director 失败的 23/29）', () => {
   const transientMessages = [

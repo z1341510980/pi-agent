@@ -6,7 +6,7 @@ import {
   detectReferenceSections,
   normalizeReferenceText,
   sha256
-} from '../core/reference-analysis.js'
+} from '../core/analysis/reference-analysis.js'
 
 const SAMPLE = `第一章 雨夜
 

@@ -14,8 +14,8 @@ import {
   degradeChunks,
   estimateChunkTokens,
   materializeDegradedChunks,
-} from '../plugins/novel-plugin/core/context-budget.js'
-import type { DegradableChunk } from '../plugins/novel-plugin/core/context-budget.js'
+} from '../plugins/novel-plugin/core/prompting/context-budget.js'
+import type { DegradableChunk } from '../plugins/novel-plugin/core/prompting/context-budget.js'
 
 /** 构造 chunks：可选大小，覆盖 required/recommended/optional 三类 */
 function makeChunks(): DegradableChunk[] {

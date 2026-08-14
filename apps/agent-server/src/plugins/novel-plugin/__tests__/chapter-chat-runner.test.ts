@@ -3,11 +3,11 @@ import Database from 'better-sqlite3'
 import { novelMigrations } from '../novel-migrations.js'
 import { NovelStore } from '../core/novel-store.js'
 import { NovelMemoryStore } from '../core/novel-memory-store.js'
-import { PromptManager } from '../core/prompt-manager.js'
+import { PromptManager } from '../core/prompting/prompt-manager.js'
 import { NovelPromptBuilder } from '../core/prompt-builder.js'
 import { NovelEngine } from '../core/novel-engine.js'
-import { ChapterChatStore } from '../core/chapter-chat-store.js'
-import { ChapterChatRunner } from '../core/chapter-chat-runner.js'
+import { ChapterChatStore } from '../core/chapters/chapter-chat-store.js'
+import { ChapterChatRunner } from '../core/chapters/chapter-chat-runner.js'
 
 describe('ChapterChatRunner', () => {
   let db: Database.Database

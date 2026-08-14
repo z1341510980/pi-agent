@@ -14,7 +14,7 @@ import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
-import { CHUNK_BY_ID, ROLE_CONTEXT_POLICIES } from '../plugins/novel-plugin/core/context-chunk.js'
+import { CHUNK_BY_ID, ROLE_CONTEXT_POLICIES } from '../plugins/novel-plugin/core/prompting/context-chunk.js'
 
 function promptStores(store: NovelStore) {
   return {

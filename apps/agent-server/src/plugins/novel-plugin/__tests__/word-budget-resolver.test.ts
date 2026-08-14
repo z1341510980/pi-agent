@@ -3,7 +3,7 @@ import {
   resolveWordBudget,
   baseTargetOf,
   type WordBudgetResolution,
-} from '../core/word-budget-resolver.js'
+} from '../core/chapters/word-budget-resolver.js'
 
 describe('resolveWordBudget 字数唯一解析', () => {
   it('3000 + 无定位 → resolved 3000 / min 2550 / max 3450', () => {

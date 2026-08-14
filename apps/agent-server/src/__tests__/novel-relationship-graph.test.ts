@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
-import { RelationshipGraph } from '../plugins/novel-plugin/core/novel-relationship-graph.js'
+import { RelationshipGraph } from '../plugins/novel-plugin/core/analysis/novel-relationship-graph.js'
 
 let db: Database.Database
 let store: NovelStore

@@ -108,7 +108,7 @@ export function NarrativeTrackPanel({ open, onOpenChange, projectId }: Narrative
               {report.staleCount > 0 && (
                 <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
-                  检测到中间章节重写，{report.staleCount} 条推进记录已标记待重建，当前不会进入剧情轨道。顺序重建功能尚未提供。
+                  检测到中间章节重写，{report.staleCount} 条推进记录已标记待重建，当前不会进入剧情轨道。请先查看影响范围，再确认顺序重建。
                 </div>
               )}
 

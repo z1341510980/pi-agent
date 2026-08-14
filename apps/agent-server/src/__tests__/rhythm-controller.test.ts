@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RhythmController } from '../plugins/novel-plugin/core/rhythm-controller.js'
+import { RhythmController } from '../plugins/novel-plugin/core/chapters/rhythm-controller.js'
 import type { ChapterRhythm, RhythmHistoryEntry, RhythmModel } from '../plugins/novel-plugin/core/types.js'
 
 describe('RhythmController - 静态模型', () => {

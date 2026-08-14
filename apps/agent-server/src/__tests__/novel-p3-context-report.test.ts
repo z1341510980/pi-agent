@@ -13,9 +13,9 @@ import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { NovelEngine } from '../plugins/novel-plugin/core/novel-engine.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
-import { PromptManager } from '../plugins/novel-plugin/core/prompt-manager.js'
+import { PromptManager } from '../plugins/novel-plugin/core/prompting/prompt-manager.js'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
-import { buildP3ContextReport } from '../plugins/novel-plugin/core/p3-context-report.js'
+import { buildP3ContextReport } from '../plugins/novel-plugin/core/prompting/p3-context-report.js'
 
 function promptStores(store: NovelStore) {
   return {

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
-import { ConsistencyAuditor } from '../plugins/novel-plugin/core/consistency-auditor.js'
+import { ConsistencyAuditor } from '../plugins/novel-plugin/core/analysis/consistency-auditor.js'
 
 let db: Database.Database
 let store: NovelStore

@@ -14,7 +14,7 @@ import {
   buildWriterRewritePlan,
   isDraftUnusable,
   PREVIOUS_DRAFT_CHAR_LIMIT,
-} from '../plugins/novel-plugin/core/writer-rewrite-plan.js'
+} from '../plugins/novel-plugin/core/chapters/writer-rewrite-plan.js'
 
 const DRAFT = '第一段正文。\n\n第二段正文。'
 

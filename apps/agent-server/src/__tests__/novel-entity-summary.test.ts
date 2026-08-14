@@ -14,7 +14,7 @@ import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.js'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
-import { buildStoryStateSummary, chooseEntityChunkMode, ON_DEMAND_LIMITS } from '../plugins/novel-plugin/core/entity-summary.js'
+import { buildStoryStateSummary, chooseEntityChunkMode, ON_DEMAND_LIMITS } from '../plugins/novel-plugin/core/prompting/entity-summary.js'
 
 describe('chooseEntityChunkMode（§5.4）', () => {
   it('≤8 实体且全量 ≤ 预算 35% → full', () => {

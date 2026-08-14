@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCharacterVisibleContext } from '../plugins/novel-plugin/core/novel-character-discussion-context.js'
+import { buildCharacterVisibleContext } from '../plugins/novel-plugin/core/discussion/novel-character-discussion-context.js'
 
 function makeStore(lastSceneCharacterIds: string[] | null) {
   return {

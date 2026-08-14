@@ -5,41 +5,35 @@
  * 负责势力（Faction）与地点（Location）两类实体的持久化，
  * 并在删除时通过 deleteEdgesByEntity 清理关联的 edges。
  */
-import type Database from 'better-sqlite3'
 import type { NovelFaction, NovelLocation } from '../types.js'
 import type { FactionRow, LocationRow } from './row-types.js'
 import { now, parseJSON, parseChapterSpans } from './store-utils.js'
+import { createNovelDrizzleDb } from '../../infrastructure/sqlite/client.js'
+import { FactionRepository } from '../../infrastructure/sqlite/repositories/faction-repository.js'
 
 export class FactionStore {
-  private readonly stmtListFactions: Database.Statement
-  private readonly stmtListLocations: Database.Statement
+  private readonly repository: FactionRepository
 
   constructor(
-    private db: Database.Database,
+    db: import('better-sqlite3').Database,
     private deleteEdgesByEntity: (entityId: string) => number,
   ) {
-    this.stmtListFactions = db.prepare('SELECT * FROM novel_factions WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListLocations = db.prepare('SELECT * FROM novel_locations WHERE project_id = ? ORDER BY created_at ASC')
+    this.repository = new FactionRepository(createNovelDrizzleDb(db))
   }
 
   listFactions(projectId: string): NovelFaction[] {
-    return (this.stmtListFactions.all(projectId) as FactionRow[]).map((r) => this.rowToFaction(r))
+    return this.repository.listFactions(projectId).map((r) => this.rowToFaction(r))
   }
 
   getFaction(factionId: string): NovelFaction | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_factions WHERE id = ?').get(factionId) as FactionRow | undefined
+    const row = this.repository.getFaction(factionId)
     return row ? this.rowToFaction(row) : undefined
   }
 
   createFaction(faction: Omit<NovelFaction, 'createdAt' | 'updatedAt'>): NovelFaction {
     const ts = now()
     const full: NovelFaction = { ...faction, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_factions (id, project_id, name, description, type, leader_id, ideology,
-      strength, resources, allies, enemies, status, chapter_spans, created_at, updated_at)
-      VALUES (@id, @project_id, @name, @description, @type, @leader_id, @ideology,
-      @strength, @resources, @allies, @enemies, @status, @chapter_spans, @created_at, @updated_at)
-    `).run({
+    this.repository.insertFaction({
       id: full.id, project_id: full.projectId, name: full.name, description: full.description,
       type: full.type, leader_id: full.leaderId, ideology: full.ideology,
       strength: full.strength, resources: JSON.stringify(full.resources),
@@ -52,20 +46,18 @@ export class FactionStore {
   }
 
   updateFaction(id: string, patch: Partial<NovelFaction>): NovelFaction | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_factions WHERE id = ?').get(id) as FactionRow | undefined
+    const existing = this.repository.getFaction(id)
     if (!existing) return undefined
     const current = this.rowToFaction(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_factions SET name=@name, description=@description, type=@type, leader_id=@leader_id,
-      ideology=@ideology, strength=@strength, resources=@resources, allies=@allies, enemies=@enemies,
-      status=@status, chapter_spans=@chapter_spans, updated_at=@updated_at WHERE id=@id
-    `).run({
+    this.repository.updateFaction(id, {
       id, name: updated.name, description: updated.description, type: updated.type,
       leader_id: updated.leaderId, ideology: updated.ideology, strength: updated.strength,
       resources: JSON.stringify(updated.resources), allies: JSON.stringify(updated.allies),
       enemies: JSON.stringify(updated.enemies), status: updated.status,
       chapter_spans: JSON.stringify(updated.chapterSpans),
+      project_id: current.projectId,
+      created_at: current.createdAt,
       updated_at: updated.updatedAt,
     })
     return updated
@@ -73,28 +65,22 @@ export class FactionStore {
 
   deleteFaction(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    const result = this.db.prepare('DELETE FROM novel_factions WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteFaction(id)
   }
 
   listLocations(projectId: string): NovelLocation[] {
-    return (this.stmtListLocations.all(projectId) as LocationRow[]).map((r) => this.rowToLocation(r))
+    return this.repository.listLocations(projectId).map((r) => this.rowToLocation(r))
   }
 
   getLocation(locationId: string): NovelLocation | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_locations WHERE id = ?').get(locationId) as LocationRow | undefined
+    const row = this.repository.getLocation(locationId)
     return row ? this.rowToLocation(row) : undefined
   }
 
   createLocation(location: Omit<NovelLocation, 'createdAt' | 'updatedAt'>): NovelLocation {
     const ts = now()
     const full: NovelLocation = { ...location, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_locations (id, project_id, name, description, type, parent_id, faction_id,
-      significance, first_chapter, status, appear_chapters, created_at, updated_at)
-      VALUES (@id, @project_id, @name, @description, @type, @parent_id, @faction_id,
-      @significance, @first_chapter, @status, @appear_chapters, @created_at, @updated_at)
-    `).run({
+    this.repository.insertLocation({
       id: full.id, project_id: full.projectId, name: full.name, description: full.description,
       type: full.type, parent_id: full.parentId, faction_id: full.factionId,
       significance: full.significance, first_chapter: full.firstChapter, status: full.status,
@@ -105,27 +91,22 @@ export class FactionStore {
   }
 
   updateLocation(id: string, patch: Partial<NovelLocation>): NovelLocation | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_locations WHERE id = ?').get(id) as LocationRow | undefined
+    const existing = this.repository.getLocation(id)
     if (!existing) return undefined
     const current = this.rowToLocation(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_locations SET name=@name, description=@description, type=@type, parent_id=@parent_id,
-      faction_id=@faction_id, significance=@significance, first_chapter=@first_chapter, status=@status,
-      appear_chapters=@appear_chapters, updated_at=@updated_at WHERE id=@id
-    `).run({
-      id, name: updated.name, description: updated.description, type: updated.type,
+    this.repository.updateLocation(id, {
+      id, project_id: current.projectId, name: updated.name, description: updated.description, type: updated.type,
       parent_id: updated.parentId, faction_id: updated.factionId, significance: updated.significance,
       first_chapter: updated.firstChapter, status: updated.status,
-      appear_chapters: JSON.stringify(updated.appearChapters), updated_at: updated.updatedAt,
+      appear_chapters: JSON.stringify(updated.appearChapters), created_at: current.createdAt, updated_at: updated.updatedAt,
     })
     return updated
   }
 
   deleteLocation(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    const result = this.db.prepare('DELETE FROM novel_locations WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteLocation(id)
   }
 
   private rowToFaction(row: FactionRow): NovelFaction {

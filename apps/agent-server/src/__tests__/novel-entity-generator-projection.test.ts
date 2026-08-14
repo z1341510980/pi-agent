@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { NovelEntityGenerator, type GeneratedEntity } from '../plugins/novel-plugin/core/novel-entity-generator.js'
+import { NovelEntityGenerator, type GeneratedEntity } from '../plugins/novel-plugin/core/generation/novel-entity-generator.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'

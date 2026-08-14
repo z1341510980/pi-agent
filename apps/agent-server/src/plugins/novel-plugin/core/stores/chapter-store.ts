@@ -10,8 +10,8 @@ import type Database from 'better-sqlite3'
 import { randomUUID, createHash } from 'node:crypto'
 import {
   createChapterRenumberSpec,
-} from '../chapter-renumber.js'
-import type { ChapterRenumberSpec } from '../chapter-renumber.js'
+} from '../chapters/chapter-renumber.js'
+import type { ChapterRenumberSpec } from '../chapters/chapter-renumber.js'
 import type { ChapterRenumberService } from './chapter-renumber-service.js'
 import type {
   NovelChapter, NovelVolume, NovelHook, NovelCharacterArc,
@@ -23,7 +23,8 @@ import type {
   ChapterRow, VolumeRow, HookRow, CharacterArcRow, ContentRevisionRow,
 } from './row-types.js'
 import { now } from './store-utils.js'
-import type { VersionChainReconcileReport } from '../migration-acceptance.js'
+import type { VersionChainReconcileReport } from '../analysis/migration-acceptance.js'
+import { ChapterRepository, createNovelDrizzleDb } from '../../infrastructure/sqlite/index.js'
 
 /** 旧表 → V2 内容版本的规范化内容哈希（对账口径，与脚本一致） */
 export function hashChapterContent(content: string): string {
@@ -37,12 +38,8 @@ export function hashChapterContent(content: string): string {
  * 否则回滚之后再 append 会找不到 parent（断链）、getCurrent 兜底找不到行、
  * 二次回滚无法把上一条 rollback 行置为 superseded。
  */
-const COMMITTED_LIKE_STATUSES = `('committed', 'rollback_applied')`
-
 export class ChapterStore {
-  private readonly stmtListChapters!: Database.Statement
-  private readonly stmtGetChapter!: Database.Statement
-  private readonly stmtListRecentChapters!: Database.Statement
+  private readonly chapterRepository: ChapterRepository
 
   constructor(
     private db: Database.Database,
@@ -50,22 +47,20 @@ export class ChapterStore {
     private renumberService: ChapterRenumberService,
     private removeChapterAppearances?: (projectId: string, chapterId: string) => number,
   ) {
-    this.stmtListChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? ORDER BY chapter_number ASC')
-    this.stmtGetChapter = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND chapter_number = ?')
-    this.stmtListRecentChapters = db.prepare('SELECT * FROM novel_chapters WHERE project_id = ? AND content IS NOT NULL AND length(content) > 0 ORDER BY chapter_number DESC LIMIT ?')
+    this.chapterRepository = new ChapterRepository(createNovelDrizzleDb(db))
   }
 
   listChapters(projectId: string): NovelChapter[] {
-    return (this.stmtListChapters.all(projectId) as ChapterRow[]).map((r) => this.rowToChapter(r))
+    return this.chapterRepository.listByProject(projectId).map((r) => this.rowToChapter(r))
   }
 
   getChapter(projectId: string, chapterNumber: number): NovelChapter | undefined {
-    const row = this.stmtGetChapter.get(projectId, chapterNumber) as ChapterRow | undefined
+    const row = this.chapterRepository.getByProjectAndNumber(projectId, chapterNumber)
     return row ? this.rowToChapter(row) : undefined
   }
 
   getChapterById(chapterId: string): NovelChapter | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_chapters WHERE id = ?').get(chapterId) as ChapterRow | undefined
+    const row = this.chapterRepository.getById(chapterId)
     return row ? this.rowToChapter(row) : undefined
   }
 
@@ -73,19 +68,12 @@ export class ChapterStore {
     const ts = now()
     const full: NovelChapter = { outline: '', volumeId: null, ...chapter, createdAt: ts, updatedAt: ts }
     return this.db.transaction(() => {
-      this.db.prepare(`
-        INSERT INTO novel_chapters (id, project_id, volume, chapter_number, title, content, word_count, status, narrative_task, outline, volume_id, acceptance_result, tension, positioning, time_offset, chapter_ending_hook, recap, created_at, updated_at)
-        VALUES (@id, @project_id, @volume, @chapter_number, @title, @content, @word_count, @status, @narrative_task, @outline, @volume_id, @acceptance_result, @tension, @positioning, @time_offset, @chapter_ending_hook, @recap, @created_at, @updated_at)
-      `).run({
-        id: full.id, project_id: full.projectId, volume: full.volume,
-        chapter_number: full.chapterNumber, title: full.title, content: full.content,
-        word_count: full.wordCount, status: full.status, narrative_task: full.narrativeTask,
-        outline: full.outline ?? '', volume_id: full.volumeId ?? null,
-        acceptance_result: full.acceptanceResult, tension: full.tension ?? null,
-        positioning: full.positioning ?? null,
-        time_offset: full.timeOffset ?? null,
-        chapter_ending_hook: full.chapterEndingHook ?? null,
-        recap: full.recap ?? null,
+      this.chapterRepository.insert({
+        id: full.id, project_id: full.projectId, volume: full.volume, chapter_number: full.chapterNumber,
+        title: full.title, content: full.content, word_count: full.wordCount, status: full.status,
+        narrative_task: full.narrativeTask, outline: full.outline ?? '', volume_id: full.volumeId ?? null,
+        acceptance_result: full.acceptanceResult, tension: full.tension ?? null, positioning: full.positioning ?? null,
+        time_offset: full.timeOffset ?? null, chapter_ending_hook: full.chapterEndingHook ?? null, recap: full.recap ?? null,
         created_at: full.createdAt, updated_at: full.updatedAt,
       })
       // 初始正文与 rev1 必须原子提交，避免章节存在但版本指针缺失。
@@ -98,27 +86,17 @@ export class ChapterStore {
 
   updateChapter(id: string, patch: Partial<NovelChapter>, versionSource?: VersionSource): NovelChapter | undefined {
     return this.db.transaction(() => {
-      const existing = this.db.prepare('SELECT * FROM novel_chapters WHERE id = ?').get(id) as ChapterRow | undefined
+      const existing = this.chapterRepository.getById(id)
       if (!existing) return undefined
       const current = this.rowToChapter(existing)
       const updated = { ...current, ...patch, id, updatedAt: now() }
-      this.db.prepare(`
-        UPDATE novel_chapters SET title=@title, content=@content, word_count=@word_count,
-        status=@status, narrative_task=@narrative_task, outline=@outline, volume_id=@volume_id,
-        acceptance_result=@acceptance_result, tension=@tension,
-        positioning=@positioning, time_offset=@time_offset, chapter_ending_hook=@chapter_ending_hook, recap=@recap,
-        updated_at=@updated_at
-        WHERE id=@id
-      `).run({
-        id, title: updated.title, content: updated.content, word_count: updated.wordCount,
-        status: updated.status, narrative_task: updated.narrativeTask,
-        outline: updated.outline ?? '', volume_id: updated.volumeId ?? null,
-        acceptance_result: updated.acceptanceResult, tension: updated.tension ?? null,
-        positioning: updated.positioning ?? null,
-        time_offset: updated.timeOffset ?? null,
-        chapter_ending_hook: updated.chapterEndingHook ?? null,
-        recap: updated.recap ?? null,
-        updated_at: updated.updatedAt,
+      this.chapterRepository.updateFields(id, {
+        id: updated.id, project_id: updated.projectId, volume: updated.volume, chapter_number: updated.chapterNumber,
+        title: updated.title, content: updated.content, word_count: updated.wordCount, status: updated.status,
+        narrative_task: updated.narrativeTask, outline: updated.outline ?? '', volume_id: updated.volumeId ?? null,
+        acceptance_result: updated.acceptanceResult, tension: updated.tension ?? null, positioning: updated.positioning ?? null,
+        time_offset: updated.timeOffset ?? null, chapter_ending_hook: updated.chapterEndingHook ?? null, recap: updated.recap ?? null,
+        created_at: updated.createdAt, updated_at: updated.updatedAt,
       })
       if (versionSource !== 'skip' && patch.content !== undefined && patch.content !== current.content) {
         this.appendContentRevision(updated, versionSource ?? null)
@@ -131,7 +109,7 @@ export class ChapterStore {
     return this.db.transaction(() => {
       const current = this.getChapterById(id)
       if (!current) return undefined
-      this.db.prepare('UPDATE novel_chapters SET content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?').run(content, wordCount, id)
+      this.chapterRepository.updateContent(id, content, wordCount, now())
       const updated = this.getChapterById(id)
       if (updated && versionSource !== 'skip' && content !== current.content) {
         this.appendContentRevision(updated, versionSource ?? null)
@@ -343,45 +321,24 @@ export class ChapterStore {
    */
   appendContentRevision(chapter: NovelChapter, source: VersionSource | null): ContentRevision | undefined {
     return this.db.transaction(() => {
-      const currentRow = this.db.prepare(
-        `SELECT id FROM novel_chapter_content_revisions
-         WHERE chapter_id = ? AND status IN ${COMMITTED_LIKE_STATUSES} ORDER BY revision DESC LIMIT 1`,
-      ).get(chapter.id) as { id: string } | undefined
-      if (currentRow) {
-        this.db.prepare(
-          `UPDATE novel_chapter_content_revisions SET status = 'superseded' WHERE id = ?`,
-        ).run(currentRow.id)
+      const currentId = this.chapterRepository.getLatestCommittedId(chapter.id)
+      if (currentId) {
+        this.chapterRepository.markSuperseded(currentId)
       }
-      const maxRev = (this.db.prepare(
-        'SELECT MAX(revision) as maxRev FROM novel_chapter_content_revisions WHERE chapter_id = ?',
-      ).get(chapter.id) as { maxRev: number | null } | undefined)?.maxRev ?? 0
+      const maxRev = this.chapterRepository.getMaxRevision(chapter.id)
       const phase = source && source !== 'skip' ? source.phase : null
       const agentType = source && source !== 'skip' ? (source.agentType ?? null) : null
       const trigger = source && source !== 'skip' ? (source.trigger ?? null) : null
       const id = randomUUID()
-      this.db.prepare(`
-        INSERT INTO novel_chapter_content_revisions
-          (id, chapter_id, project_id, parent_revision_id, revision, content, word_count,
-           phase, agent_type, trigger, status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'committed', ?)
-      `).run(id, chapter.id, chapter.projectId, currentRow?.id ?? null, maxRev + 1,
-        chapter.content, chapter.wordCount, phase, agentType, trigger, now())
-      this.db.prepare(
-        'UPDATE novel_chapters SET current_content_revision_id = ? WHERE id = ?',
-      ).run(id, chapter.id)
+      this.chapterRepository.insertRevision({ id, chapter_id: chapter.id, project_id: chapter.projectId, parent_revision_id: currentId ?? null, revision: maxRev + 1, content: chapter.content, word_count: chapter.wordCount, phase, agent_type: agentType, trigger, status: 'committed', created_at: now() })
+      this.chapterRepository.updateCurrentRevision(chapter.id, id)
       return this.getContentRevision(id)
     })()
   }
 
   listContentRevisions(chapterId: string): ContentRevisionSummary[] {
-    const currentRev = (this.db.prepare(
-      'SELECT current_content_revision_id FROM novel_chapters WHERE id = ?',
-    ).get(chapterId) as { current_content_revision_id: string | null } | undefined)
-      ?.current_content_revision_id ?? null
-    const rows = this.db.prepare(
-      `SELECT id, revision, word_count, phase, agent_type, trigger, status, created_at
-       FROM novel_chapter_content_revisions WHERE chapter_id = ? ORDER BY revision ASC`,
-    ).all(chapterId) as Array<Pick<ContentRevisionRow, 'id' | 'revision' | 'word_count' | 'phase' | 'agent_type' | 'trigger' | 'status' | 'created_at'>>
+    const currentRev = this.chapterRepository.getCurrentRevisionId(chapterId)
+    const rows = this.chapterRepository.listRevisionSummaries(chapterId)
 
     return rows.map((row) => ({
       id: row.id,
@@ -397,26 +354,18 @@ export class ChapterStore {
   }
 
   getContentRevision(revisionId: string): ContentRevision | undefined {
-    const row = this.db.prepare(
-      'SELECT * FROM novel_chapter_content_revisions WHERE id = ?',
-    ).get(revisionId) as ContentRevisionRow | undefined
+    const row = this.chapterRepository.getRevision(revisionId)
     return row ? this.rowToContentRevision(row) : undefined
   }
 
   getCurrentContentRevision(chapterId: string): ContentRevision | undefined {
-    const pointer = (this.db.prepare(
-      'SELECT current_content_revision_id FROM novel_chapters WHERE id = ?',
-    ).get(chapterId) as { current_content_revision_id: string | null } | undefined)
-      ?.current_content_revision_id
+    const pointer = this.chapterRepository.getCurrentRevisionId(chapterId)
     if (pointer) {
       const byPointer = this.getContentRevision(pointer)
       if (byPointer) return byPointer
     }
     // 指针缺失（旧数据/损坏）时回退到最新 committed（rollback_applied 同为生效变体）
-    const row = this.db.prepare(
-      `SELECT * FROM novel_chapter_content_revisions
-       WHERE chapter_id = ? AND status IN ${COMMITTED_LIKE_STATUSES} ORDER BY revision DESC LIMIT 1`,
-    ).get(chapterId) as ContentRevisionRow | undefined
+    const row = this.chapterRepository.getCurrentRevision(chapterId)
     return row ? this.rowToContentRevision(row) : undefined
   }
 
@@ -438,29 +387,14 @@ export class ChapterStore {
 
     return this.db.transaction(() => {
       // 新链：原 current → superseded（rollback_applied 同为生效变体，二次回滚也要收编）
-      const currentRow = this.db.prepare(
-        `SELECT id FROM novel_chapter_content_revisions
-         WHERE chapter_id = ? AND status IN ${COMMITTED_LIKE_STATUSES} ORDER BY revision DESC LIMIT 1`,
-      ).get(chapterId) as { id: string } | undefined
-      if (currentRow) {
-        this.db.prepare(
-          `UPDATE novel_chapter_content_revisions SET status = 'superseded' WHERE id = ?`,
-        ).run(currentRow.id)
+      const currentId = this.chapterRepository.getLatestCommittedId(chapterId)
+      if (currentId) {
+        this.chapterRepository.markSuperseded(currentId)
       }
-      const maxRev = (this.db.prepare(
-        'SELECT MAX(revision) as maxRev FROM novel_chapter_content_revisions WHERE chapter_id = ?',
-      ).get(chapterId) as { maxRev: number | null } | undefined)?.maxRev ?? 0
+      const maxRev = this.chapterRepository.getMaxRevision(chapterId)
       const appliedId = randomUUID()
-      this.db.prepare(`
-        INSERT INTO novel_chapter_content_revisions
-          (id, chapter_id, project_id, parent_revision_id, revision, content, word_count,
-           phase, agent_type, trigger, status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'rollback_applied', NULL, ?, 'rollback_applied', ?)
-      `).run(appliedId, chapterId, current.projectId, target.id, maxRev + 1,
-        target.content, target.wordCount, `回滚自内容版本 ${revisionId}`, now())
-      this.db.prepare(
-        `UPDATE novel_chapters SET current_content_revision_id = ?, content = ?, word_count = ?, updated_at = unixepoch() WHERE id = ?`,
-      ).run(appliedId, target.content, target.wordCount, chapterId)
+      this.chapterRepository.insertRevision({ id: appliedId, chapter_id: chapterId, project_id: current.projectId, parent_revision_id: target.id, revision: maxRev + 1, content: target.content, word_count: target.wordCount, phase: 'rollback_applied', agent_type: null, trigger: `回滚自内容版本 ${revisionId}`, status: 'rollback_applied', created_at: now() })
+      this.chapterRepository.updateCurrentRevision(chapterId, appliedId, target.content, target.wordCount, now())
       return { appliedRevisionId: appliedId, content: target.content, wordCount: target.wordCount }
     })()
   }
@@ -506,22 +440,19 @@ export class ChapterStore {
   }
 
   listVolumes(projectId: string): NovelVolume[] {
-    const rows = this.db.prepare('SELECT * FROM novel_volumes WHERE project_id = ? ORDER BY sort_order ASC, volume_number ASC').all(projectId) as VolumeRow[]
+    const rows = this.chapterRepository.listVolumes(projectId)
     return rows.map((r) => this.rowToVolume(r))
   }
 
   getVolume(id: string): NovelVolume | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_volumes WHERE id = ?').get(id) as VolumeRow | undefined
+    const row = this.chapterRepository.getVolume(id)
     return row ? this.rowToVolume(row) : undefined
   }
 
   createVolume(volume: Omit<NovelVolume, 'createdAt' | 'updatedAt'>): NovelVolume {
     const ts = now()
     const full: NovelVolume = { ...volume, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_volumes (id, project_id, volume_number, title, outline, sort_order, created_at, updated_at)
-      VALUES (@id, @project_id, @volume_number, @title, @outline, @sort_order, @created_at, @updated_at)
-    `).run({
+    this.chapterRepository.insertVolume({
       id: full.id, project_id: full.projectId, volume_number: full.volumeNumber,
       title: full.title, outline: full.outline, sort_order: full.sortOrder,
       created_at: full.createdAt, updated_at: full.updatedAt,
@@ -533,12 +464,9 @@ export class ChapterStore {
     const existing = this.getVolume(id)
     if (!existing) return undefined
     const updated = { ...existing, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_volumes SET title=@title, outline=@outline, sort_order=@sort_order,
-      volume_number=@volume_number, updated_at=@updated_at WHERE id=@id
-    `).run({
-      id, title: updated.title, outline: updated.outline, sort_order: updated.sortOrder,
-      volume_number: updated.volumeNumber, updated_at: updated.updatedAt,
+    this.chapterRepository.updateVolume(id, {
+      id, project_id: updated.projectId, volume_number: updated.volumeNumber, title: updated.title,
+      outline: updated.outline, sort_order: updated.sortOrder, created_at: updated.createdAt, updated_at: updated.updatedAt,
     })
     return updated
   }
@@ -546,8 +474,7 @@ export class ChapterStore {
   deleteVolume(id: string): boolean {
     return this.db.transaction(() => {
       this.db.prepare('UPDATE novel_chapters SET volume_id = NULL WHERE volume_id = ?').run(id)
-      const result = this.db.prepare('DELETE FROM novel_volumes WHERE id = ?').run(id)
-      return result.changes > 0
+      return this.chapterRepository.deleteVolume(id)
     })()
   }
 
@@ -560,38 +487,29 @@ export class ChapterStore {
   }
 
   listHooks(projectId: string): NovelHook[] {
-    const rows = this.db.prepare('SELECT * FROM novel_hooks WHERE project_id = ? ORDER BY chapter_number ASC, created_at ASC').all(projectId) as HookRow[]
+    const rows = this.chapterRepository.listHooks(projectId)
     return rows.map(r => this.rowToHook(r))
   }
 
   listHooksByChapter(projectId: string, chapterNumber: number): NovelHook[] {
-    const rows = this.db.prepare('SELECT * FROM novel_hooks WHERE project_id = ? AND chapter_number = ? ORDER BY created_at ASC').all(projectId, chapterNumber) as HookRow[]
+    const rows = this.chapterRepository.listHooksByChapter(projectId, chapterNumber)
     return rows.map(r => this.rowToHook(r))
   }
 
   listUnfulfilledHooksBefore(projectId: string, beforeChapter: number): NovelHook[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_hooks WHERE project_id = ? AND chapter_number < ? AND status = ? ORDER BY chapter_number DESC, created_at ASC'
-    ).all(projectId, beforeChapter, 'thrown') as HookRow[]
+    const rows = this.chapterRepository.listUnfulfilledHooksBefore(projectId, beforeChapter)
     return rows.map(r => this.rowToHook(r))
   }
 
   getHook(id: string): NovelHook | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_hooks WHERE id = ?').get(id) as HookRow | undefined
+    const row = this.chapterRepository.getHook(id)
     return row ? this.rowToHook(row) : undefined
   }
 
   createHook(hook: Omit<NovelHook, 'createdAt' | 'updatedAt'>): NovelHook {
     const ts = now()
     const full: NovelHook = { ...hook, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_hooks (id, project_id, chapter_number, hook_type, description, status,
-      fulfilled_at_chapter, fulfilled_description,
-      created_at, updated_at)
-      VALUES (@id, @project_id, @chapter_number, @hook_type, @description, @status,
-      @fulfilled_at_chapter, @fulfilled_description,
-      @created_at, @updated_at)
-    `).run({
+    this.chapterRepository.insertHook({
       id: full.id, project_id: full.projectId, chapter_number: full.chapterNumber,
       hook_type: full.hookType, description: full.description, status: full.status,
       fulfilled_at_chapter: full.fulfilledAtChapter,
@@ -602,26 +520,20 @@ export class ChapterStore {
   }
 
   updateHook(id: string, patch: Partial<NovelHook>): NovelHook | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_hooks WHERE id = ?').get(id) as HookRow | undefined
+    const existing = this.chapterRepository.getHook(id)
     if (!existing) return undefined
     const current = this.rowToHook(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_hooks SET hook_type=@hook_type, description=@description, status=@status,
-      fulfilled_at_chapter=@fulfilled_at_chapter, fulfilled_description=@fulfilled_description,
-      updated_at=@updated_at WHERE id=@id
-    `).run({
-      id, hook_type: updated.hookType, description: updated.description, status: updated.status,
-      fulfilled_at_chapter: updated.fulfilledAtChapter,
-      fulfilled_description: updated.fulfilledDescription,
-      updated_at: updated.updatedAt,
+    this.chapterRepository.updateHook(id, {
+      id, project_id: updated.projectId, chapter_number: updated.chapterNumber, hook_type: updated.hookType,
+      description: updated.description, status: updated.status, fulfilled_at_chapter: updated.fulfilledAtChapter,
+      fulfilled_description: updated.fulfilledDescription, created_at: updated.createdAt, updated_at: updated.updatedAt,
     })
     return updated
   }
 
   deleteHook(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_hooks WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.chapterRepository.deleteHook(id)
   }
 
   private rowToHook(row: HookRow): NovelHook {
@@ -640,29 +552,24 @@ export class ChapterStore {
   }
 
   listCharacterArcs(projectId: string): NovelCharacterArc[] {
-    const rows = this.db.prepare('SELECT * FROM novel_character_arcs WHERE project_id = ? ORDER BY created_at ASC').all(projectId) as CharacterArcRow[]
+    const rows = this.chapterRepository.listCharacterArcs(projectId)
     return rows.map(r => this.rowToArc(r))
   }
 
   getCharacterArc(id: string): NovelCharacterArc | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_character_arcs WHERE id = ?').get(id) as CharacterArcRow | undefined
+    const row = this.chapterRepository.getCharacterArc(id)
     return row ? this.rowToArc(row) : undefined
   }
 
   getCharacterArcByCharacter(projectId: string, characterId: string): NovelCharacterArc | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_character_arcs WHERE project_id = ? AND character_id = ?').get(projectId, characterId) as CharacterArcRow | undefined
+    const row = this.chapterRepository.getCharacterArcByCharacter(projectId, characterId)
     return row ? this.rowToArc(row) : undefined
   }
 
   createCharacterArc(arc: Omit<NovelCharacterArc, 'createdAt' | 'updatedAt'>): NovelCharacterArc {
     const ts = now()
     const full: NovelCharacterArc = { ...arc, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_character_arcs (id, project_id, character_id, arc_type, current_stage,
-      stage_history, description, created_at, updated_at)
-      VALUES (@id, @project_id, @character_id, @arc_type, @current_stage,
-      @stage_history, @description, @created_at, @updated_at)
-    `).run({
+    this.chapterRepository.insertCharacterArc({
       id: full.id, project_id: full.projectId, character_id: full.characterId,
       arc_type: full.arcType, current_stage: full.currentStage,
       stage_history: JSON.stringify(full.stageHistory),
@@ -672,24 +579,20 @@ export class ChapterStore {
   }
 
   updateCharacterArc(id: string, patch: Partial<NovelCharacterArc>): NovelCharacterArc | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_character_arcs WHERE id = ?').get(id) as CharacterArcRow | undefined
+    const existing = this.chapterRepository.getCharacterArc(id)
     if (!existing) return undefined
     const current = this.rowToArc(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_character_arcs SET arc_type=@arc_type, current_stage=@current_stage,
-      stage_history=@stage_history, description=@description, updated_at=@updated_at WHERE id=@id
-    `).run({
-      id, arc_type: updated.arcType, current_stage: updated.currentStage,
-      stage_history: JSON.stringify(updated.stageHistory),
-      description: updated.description, updated_at: updated.updatedAt,
+    this.chapterRepository.updateCharacterArc(id, {
+      id, project_id: updated.projectId, character_id: updated.characterId, arc_type: updated.arcType,
+      current_stage: updated.currentStage, stage_history: JSON.stringify(updated.stageHistory),
+      description: updated.description, created_at: updated.createdAt, updated_at: updated.updatedAt,
     })
     return updated
   }
 
   deleteCharacterArc(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_character_arcs WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.chapterRepository.deleteCharacterArc(id)
   }
 
   private rowToArc(row: CharacterArcRow): NovelCharacterArc {
@@ -709,7 +612,7 @@ export class ChapterStore {
   }
 
   listRecentChapters(projectId: string, limit: number): NovelChapter[] {
-    const rows = this.stmtListRecentChapters.all(projectId, limit) as ChapterRow[]
+      const rows = this.chapterRepository.listRecent(projectId, limit)
     return rows.map((r) => this.rowToChapter(r)).reverse()
   }
 

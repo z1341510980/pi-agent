@@ -4,12 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   applyCharacterArcChanges,
   applyCharacterMemoryChanges
-} from '../core/character-memory-applicator.js'
-import type { MemoryOperationCollector } from '../core/memory-change-support.js'
-import type { MemoryOperationRecord } from '../core/memory-operation-ledger.js'
+} from '../core/memory/character-memory-applicator.js'
+import type { MemoryOperationCollector } from '../core/memory/memory-change-support.js'
+import type { MemoryOperationRecord } from '../core/memory/memory-operation-ledger.js'
 import { NovelStore } from '../core/novel-store.js'
 import type { NovelCharacter } from '../core/types.js'
-import { applyWorldRelationMemoryChanges } from '../core/world-relation-memory-applicator.js'
+import { applyWorldRelationMemoryChanges } from '../core/memory/world-relation-memory-applicator.js'
 import { novelMigrations } from '../novel-migrations.js'
 
 const PROJECT_ID = 'memory-applicators-project'

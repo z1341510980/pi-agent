@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   isAdmissibleNewForeshadow,
   selectAdmissibleNewForeshadows,
-} from '../plugins/novel-plugin/core/foreshadow-policy.js'
-import { normalizePlannedForeshadows } from '../plugins/novel-plugin/core/novel-entity-generator.js'
+} from '../plugins/novel-plugin/core/entities/foreshadow-policy.js'
+import { normalizePlannedForeshadows } from '../plugins/novel-plugin/core/generation/novel-entity-generator.js'
 
 describe('伏笔准入规则', () => {
   it('拒绝普通事实、即时风险和没有回收计划的未知点', () => {

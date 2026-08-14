@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import { novelMigrations } from '../novel-migrations.js'
-import { PromptManager } from '../core/prompt-manager.js'
+import { PromptManager } from '../core/prompting/prompt-manager.js'
 
 describe('PromptManager runtime overrides', () => {
   let db: Database.Database | undefined

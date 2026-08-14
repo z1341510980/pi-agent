@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { NovelMemoryGenerator } from '../plugins/novel-plugin/core/novel-memory-generator.js'
+import { NovelMemoryGenerator } from '../plugins/novel-plugin/core/generation/novel-memory-generator.js'
 
 describe('NovelMemoryGenerator - 伏笔事件链', () => {
   it('把本章明确的强化状态写成离散 reinforce 节点', () => {

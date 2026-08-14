@@ -15,7 +15,7 @@ import { Sparkles, FileText, ChevronLeft, ChevronRight, History } from 'lucide-r
 import { useQueryClient } from '@tanstack/react-query'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
-import { updateChapter, reverseArrangeFlow } from '@/api/novel-client'
+import { updateChapter, reverseArrangeFlow, getTimelineRebuildPreview, startTimelineRebuild } from '@/api/novel-client'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { countWords } from '@/lib/novel-utils'
 import { ChapterVersionPanel } from './chapter-version-panel'
@@ -52,6 +52,8 @@ export function ChapterContentEditor({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [reverseArranging, setReverseArranging] = useState(false)
   const [versionPanelOpen, setVersionPanelOpen] = useState(false)
+  const [rebuildBusy, setRebuildBusy] = useState(false)
+  const [timelinePending, setTimelinePending] = useState(false)
 
   // ── 避免闭包问题：setTimeout 捕获旧值 ──
   const saveStateRef = useRef<SaveState>('saved')
@@ -76,11 +78,14 @@ export function ChapterContentEditor({
       upsertChapter(updated)
       // T04 决策 4：中间章重写 → 提示后续派生状态待重建
       if (updated.derivedState?.isMiddleRewrite) {
+        setTimelinePending(true)
         const ds = updated.derivedState
         toastError(
           '中间章节已重写，后续内容待重建',
-          `影响后续章节 ${ds.affectedChapters?.join('、') || '未知'}；相关推进记录已暂停进入当前剧情轨道。顺序重建功能尚未提供，请暂勿继续生成后续章节。`,
+          `影响第 ${ds.startChapterNumber ?? playheadChapter} 章起的 ${ds.affectedChapters?.length ?? 0} 章；已暂停后续创作。请先查看影响范围。`,
         )
+      } else {
+        setTimelinePending(false)
       }
       saveStateRef.current = 'saved'
       setSaveState('saved')
@@ -92,6 +97,31 @@ export function ChapterContentEditor({
       return false
     }
   }, [chapters, playheadChapter, upsertChapter])
+
+  const handleTimelineRebuild = useCallback(async () => {
+    if (!currentProjectId || rebuildBusy) return
+    setRebuildBusy(true)
+    try {
+      const preview = await getTimelineRebuildPreview(currentProjectId)
+      const counts = Object.entries(preview.staleCounts)
+        .filter(([, count]) => count > 0)
+        .map(([key, count]) => `${key}: ${count}`)
+        .join('，')
+      const blocked = preview.blockedReasons.length > 0
+        ? `\n\n当前不能自动重建：\n${preview.blockedReasons.map(reason => `• ${reason}`).join('\n')}`
+        : ''
+      const confirmed = window.confirm(
+        `将从第 ${preview.startChapterNumber} 章起按顺序重建 ${preview.affectedChapters.length} 章，预计 ${preview.estimatedLlmCalls} 次模型调用。\n\n失效派生物：${counts || '无'}${blocked}\n\n确认继续？`,
+      )
+      if (!confirmed) return
+      await startTimelineRebuild(currentProjectId, preview.confirmationToken)
+      toastSuccess('已启动时间线重建', '重建任务将在后台按章节顺序推进。')
+    } catch (err) {
+      toastError('时间线重建未启动', err instanceof Error ? err.message : '未知错误')
+    } finally {
+      setRebuildBusy(false)
+    }
+  }, [currentProjectId, rebuildBusy])
 
   // ── 从正文反推实体到矩阵 ──
   // 先 flushSave 确保最新正文落库，再调用 reverse-arrange SSE 接口
@@ -288,6 +318,17 @@ export function ChapterContentEditor({
           >
             <ChevronLeft className="size-3.5" aria-hidden="true" />
           </button>
+          {timelinePending && currentChapter?.content?.trim() && (
+            <button
+              type="button"
+              onClick={() => void handleTimelineRebuild()}
+              disabled={rebuildBusy || isCreationActive}
+              title="查看中间章改写影响范围并确认顺序重建"
+              className="cce-reverse-btn"
+            >
+              <span>{rebuildBusy ? '检查重建…' : '查看重建影响'}</span>
+            </button>
+          )}
           <span className="chapter-badge">
             <span className="dot" aria-hidden="true" />
             <span className="ch-num">CH.{playheadChapter}</span>

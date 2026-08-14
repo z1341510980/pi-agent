@@ -4,7 +4,7 @@ import {
   ClicheScanner,
   formatClicheReport,
   type ClicheHit,
-} from '../core/cliche-scanner.js'
+} from '../core/quality/cliche-scanner.js'
 
 describe('ClicheScanner - 防 AI 腔扫描', () => {
   it('空文本返回空数组', () => {

@@ -39,27 +39,26 @@
 
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { ContextSectionCollector } from './context-section-metrics.js'
+import { ContextSectionCollector } from './prompting/context-section-metrics.js'
 
 import type { NovelStore } from './novel-store.js'
-import type { NovelPromptBuilder } from './prompt-builder.js'
+import type { NovelPromptBuilder } from './prompting/prompt-builder.js'
 import type { NovelEngine } from './novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
 import { runtimePerformance } from '../../../config/performance.js'
-import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CreationFlowEvent, getNovelAgentTemperature } from './novel-agents.js'
+import { NOVEL_AGENT_CONFIGS, type NovelAgentType, type CreationPhase, type CreationFlowEvent, getNovelAgentTemperature } from './domain/novel-agents.js'
 import type { QualityGateFailureItem, RevisionRoundRecord, RevisionEstimate } from '@repo/shared/novel'
 import {
   getNovelAskStoryPolicy,
   isNovelAskStoryEnabled,
   resolveNovelAgentToolNames,
   type NovelAskStoryPolicy,
-} from './novel-ask-story-policy.js'
+} from './domain/novel-ask-story-policy.js'
 import type { NarrativeTask, NarrativeTaskType, ChapterConstraints, ArrangedEntity, RhythmSuggestion, VersionSource, NovelChapter } from './types.js'
-import type { CheckpointDecision } from './novel-agents.js'
-import { RhythmController } from './rhythm-controller.js'
-import { scanCliches, formatClicheReport, type ClicheHit } from './cliche-scanner.js'
+import type { CheckpointDecision } from './domain/novel-agents.js'
+import { RhythmController } from './chapters/rhythm-controller.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
-import type { NovelMemoryGenerator } from './novel-memory-generator.js'
+import type { NovelMemoryGenerator } from './generation/novel-memory-generator.js'
 import type { NovelAgentLogStatus } from './types.js'
 import {
   addLlmUsage,
@@ -73,24 +72,25 @@ import { createNovelSubmitNarrativeTaskTool, type NarrativeTaskDraftHolder } fro
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-tools.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
-import { parseNovelModelRef } from './novel-model-ref.js'
+import { parseNovelModelRef } from './domain/novel-model-ref.js'
 import { cancelDebug } from '../utils/cancel-debug-log.js'
 import {
   evaluateProseQuality,
   formatProseQualityReport,
   buildProseRevisionPlan,
   type ProseQualityReport,
-} from './prose-quality-evaluator.js'
-import { arbitrateQuality, type QualitySignal } from './quality-policy.js'
-import { isNovelFeatureEnabled } from './novel-feature-flags.js'
-import { ChunkCache, buildWithChunkCacheLazy, buildChunkVersionSource } from './chunk-cache.js'
-import { baseTargetOf, resolveWordBudget } from './word-budget-resolver.js'
-import { ON_DEMAND_LIMITS } from './entity-summary.js'
-import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './context-budget.js'
-import { buildScenePlanFromNarrativeTask } from './chapter-scene-plan-adapter.js'
+} from './quality/prose-quality-evaluator.js'
+import { arbitrateQuality, type QualitySignal } from './quality/quality-policy.js'
+import { scanCliches, formatClicheReport, type ClicheHit } from './quality/cliche-scanner.js'
+import { isNovelFeatureEnabled } from './domain/novel-feature-flags.js'
+import { ChunkCache, buildWithChunkCacheLazy, buildChunkVersionSource } from './prompting/chunk-cache.js'
+import { baseTargetOf, resolveWordBudget } from './chapters/word-budget-resolver.js'
+import { ON_DEMAND_LIMITS } from './prompting/entity-summary.js'
+import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './prompting/context-budget.js'
+import { buildScenePlanFromNarrativeTask } from './chapters/chapter-scene-plan-adapter.js'
 
-import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './llm-error-policy.js'
-import { buildWriterRewritePlan } from './writer-rewrite-plan.js'
+import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
+import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './quality/llm-error-policy.js'
 import {
   createChapterBudgetUsage,
   evaluateChapterBudget,
@@ -100,7 +100,7 @@ import {
   shouldPromptBudgetCheckpoint,
   tryRecordFullChapterRewrite,
   type ChapterBudgetUsage,
-} from './chapter-budget.js'
+} from './chapters/chapter-budget.js'
 export type { CreationOptions, CreationResult } from '../../../core/agent/chapter-finalizer.js'
 
 interface CreationRunContext {
@@ -253,6 +253,7 @@ export class NovelOrchestrator {
     /** PostWriteGuard 自动重写计数（内部递归用，外部调用不传） */
     guardRewriteCount = 0,
   ): Promise<CreationResult> {
+    this.store.assertTimelineAllowsGeneration?.(projectId, chapterNumber)
     if (this.runStorage.getStore()) {
       return this.createChapterWithFlowInContext(projectId, chapterNumber, options, guardRewriteCount)
     }

@@ -4,7 +4,7 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { NovelPromptBuilder } from '../core/prompt-builder.js'
 import type { NovelStore } from '../core/novel-store.js'
 import type { NovelEngine } from '../core/novel-engine.js'
-import { buildP3ContextReport } from '../core/p3-context-report.js'
+import { buildP3ContextReport } from '../core/prompting/p3-context-report.js'
 
 /**
  * context-preview 路由（P1 可观测性）。

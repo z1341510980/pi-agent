@@ -10,8 +10,8 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CHUNK_CATALOG, CHUNK_BY_ID, ROLE_CONTEXT_POLICIES, resolveChunkMode } from '../core/context-chunk.js'
-import { NOVEL_FEATURE_FLAGS } from '../core/novel-feature-flags.js'
+import { CHUNK_CATALOG, CHUNK_BY_ID, ROLE_CONTEXT_POLICIES, resolveChunkMode } from '../core/prompting/context-chunk.js'
+import { NOVEL_FEATURE_FLAGS } from '../core/domain/novel-feature-flags.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const promptBuilderSource = fs.readFileSync(

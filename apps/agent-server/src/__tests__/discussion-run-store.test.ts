@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
-import { DiscussionRunStore } from '../plugins/novel-plugin/core/discussion-run-store.js'
+import { DiscussionRunStore } from '../plugins/novel-plugin/core/discussion/discussion-run-store.js'
 
 describe('DiscussionRunStore', () => {
   let db: Database.Database

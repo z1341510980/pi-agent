@@ -14,8 +14,8 @@ import {
   arbitrateQuality,
   strongerAction,
   type QualitySignal,
-} from '../core/quality-policy.js'
-import { evaluateProseQuality } from '../core/prose-quality-evaluator.js'
+} from '../core/quality/quality-policy.js'
+import { evaluateProseQuality } from '../core/quality/prose-quality-evaluator.js'
 
 describe('质量门策略表', () => {
   it.each(QUALITY_POLICY_INVARIANTS)('$name', ({ check }) => {

@@ -24,7 +24,7 @@ import { describe, it, expect } from 'vitest'
 import {
   buildMemoryLedgerHandoff,
   MEMORY_LEDGER_BUDGET,
-} from '../plugins/novel-plugin/core/memory-ledger-handoff.js'
+} from '../plugins/novel-plugin/core/memory/memory-ledger-handoff.js'
 import type { ChapterStoryContext } from '../plugins/novel-plugin/core/types.js'
 
 type PriorState = ChapterStoryContext['stateBeforeChapter'][number]

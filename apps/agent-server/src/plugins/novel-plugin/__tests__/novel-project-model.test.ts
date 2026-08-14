@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { parseNovelModelRef } from '../core/novel-model-ref.js'
+import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 
 describe('项目级创作主模型（novelModelId）', () => {
   let db: Database.Database

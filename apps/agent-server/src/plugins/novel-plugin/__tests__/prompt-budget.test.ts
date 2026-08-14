@@ -17,7 +17,7 @@ import {
   RELATION_BUDGET,
   STORY_STATE_LIMIT,
   SYSTEM_BUDGET,
-} from '../core/prompt-budget.js'
+} from '../core/prompting/prompt-budget.js'
 
 describe('提示词预算表', () => {
   it.each(PROMPT_BUDGET_INVARIANTS)('$name', ({ check }) => {

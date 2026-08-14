@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { isNovelFeatureEnabled, NOVEL_FEATURE_FLAGS } from '../core/novel-feature-flags.js'
+import { isNovelFeatureEnabled, NOVEL_FEATURE_FLAGS } from '../core/domain/novel-feature-flags.js'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 

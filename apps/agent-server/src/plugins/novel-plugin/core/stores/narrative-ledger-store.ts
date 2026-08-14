@@ -19,32 +19,8 @@ import type {
   NovelStorylineProgress,
   ProgressStatus,
 } from '../types.js'
-
-interface StorylineRow {
-  id: string
-  project_id: string
-  name: string
-  kind: string
-  lifecycle: string
-  maturity: string
-  description: string
-  created_at: number
-  updated_at: number
-}
-
-interface ProgressRow {
-  id: string
-  project_id: string
-  storyline_id: string
-  scene_revision_id: string
-  primary_flag: number
-  type: string
-  before_state: string
-  after_state: string
-  summary: string
-  status: string
-  created_at: number
-}
+import { createNovelDrizzleDb, LedgerRepository } from '../../infrastructure/sqlite/index.js'
+import type { ProgressRow, StorylineRow } from '../../infrastructure/sqlite/repositories/ledger-repository.js'
 
 export interface ProgressIntent {
   storylineName: string
@@ -56,7 +32,11 @@ export interface ProgressIntent {
 }
 
 export class NarrativeLedgerStore {
-  constructor(private db: Database.Database) {}
+  private readonly repository: LedgerRepository
+
+  constructor(private db: Database.Database) {
+    this.repository = new LedgerRepository(createNovelDrizzleDb(db))
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // Storyline
@@ -64,43 +44,32 @@ export class NarrativeLedgerStore {
 
   /** 按 (project_id, name) 幂等取/建故事线（kind 仅首次生效） */
   ensureStoryline(projectId: string, name: string, kind = 'main', description = ''): NovelStoryline {
-    const existing = this.db.prepare(
-      'SELECT * FROM novel_storylines WHERE project_id = ? AND name = ?',
-    ).get(projectId, name) as StorylineRow | undefined
+    const existing = this.repository.getStorylineByName(projectId, name)
     if (existing) return this.rowToStoryline(existing)
     const id = randomUUID()
     const ts = Math.floor(Date.now() / 1000)
-    this.db.prepare(`
-      INSERT INTO novel_storylines (id, project_id, name, kind, lifecycle, maturity, description, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'active', 'candidate', ?, ?, ?)
-    `).run(id, projectId, name, kind, description, ts, ts)
-    return this.db.prepare('SELECT * FROM novel_storylines WHERE id = ?').get(id) as NovelStoryline
+    this.repository.insertStoryline({ id, project_id: projectId, name, kind, lifecycle: 'active', maturity: 'candidate', description, created_at: ts, updated_at: ts })
+    return this.rowToStoryline(this.repository.getStoryline(id)!)
   }
 
   getStoryline(id: string): NovelStoryline | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_storylines WHERE id = ?').get(id) as StorylineRow | undefined
+    const row = this.repository.getStoryline(id)
     return row ? this.rowToStoryline(row) : undefined
   }
 
   listStorylines(projectId: string): NovelStoryline[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_storylines WHERE project_id = ? ORDER BY created_at ASC',
-    ).all(projectId) as StorylineRow[]
+    const rows = this.repository.listStorylines(projectId)
     return rows.map((r) => this.rowToStoryline(r))
   }
 
   updateStoryline(id: string, patch: { lifecycle?: StorylineLifecycle; maturity?: StorylineMaturity; description?: string }): NovelStoryline | undefined {
     const current = this.getStoryline(id)
     if (!current) return undefined
-    this.db.prepare(
-      'UPDATE novel_storylines SET lifecycle = ?, maturity = ?, description = ?, updated_at = ? WHERE id = ?',
-    ).run(
-      patch.lifecycle ?? current.lifecycle,
-      patch.maturity ?? current.maturity,
-      patch.description ?? current.description,
-      Math.floor(Date.now() / 1000),
-      id,
-    )
+    this.repository.updateStoryline(id, {
+      id: current.id, project_id: current.projectId, name: current.name, kind: current.kind,
+      lifecycle: patch.lifecycle ?? current.lifecycle, maturity: patch.maturity ?? current.maturity,
+      description: patch.description ?? current.description, created_at: current.createdAt, updated_at: Math.floor(Date.now() / 1000),
+    })
     return this.getStoryline(id)
   }
 
@@ -109,15 +78,14 @@ export class NarrativeLedgerStore {
    * 或人工确认后 established。
    */
   maybePromoteMaturity(storylineId: string): NovelStoryline {
-    const confirmed = this.db.prepare(
-      `SELECT COUNT(DISTINCT scene_revision_id) as cnt
-       FROM novel_storyline_progress
-       WHERE storyline_id = ? AND status = 'confirmed'`,
-    ).get(storylineId) as { cnt: number }
-    if (confirmed.cnt >= 2) {
-      this.db.prepare(
-        'UPDATE novel_storylines SET maturity = ?, updated_at = ? WHERE id = ?',
-      ).run('established', Math.floor(Date.now() / 1000), storylineId)
+    const confirmed = this.repository.countConfirmedScenes(storylineId)
+    if (confirmed >= 2) {
+      const current = this.getStoryline(storylineId)
+      if (current) this.repository.updateStoryline(storylineId, {
+        id: current.id, project_id: current.projectId, name: current.name, kind: current.kind,
+        lifecycle: current.lifecycle, maturity: 'established', description: current.description,
+        created_at: current.createdAt, updated_at: Math.floor(Date.now() / 1000),
+      })
     }
     return this.getStoryline(storylineId)!
   }
@@ -142,52 +110,31 @@ export class NarrativeLedgerStore {
       const results: NovelStorylineProgress[] = []
       for (const intent of intents) {
         const storyline = this.ensureStoryline(projectId, intent.storylineName)
-        const existing = this.db.prepare(
-          'SELECT * FROM novel_storyline_progress WHERE scene_revision_id = ? AND storyline_id = ?',
-        ).get(sceneRevisionId, storyline.id) as ProgressRow | undefined
+        const existing = this.repository.getProgressBySceneAndStoryline(sceneRevisionId, storyline.id)
         if (existing) {
           results.push(this.rowToProgress(existing))
           continue
         }
         const id = randomUUID()
-        this.db.prepare(`
-          INSERT INTO novel_storyline_progress
-            (id, project_id, storyline_id, scene_revision_id, primary_flag, type,
-             before_state, after_state, summary, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          id, projectId, storyline.id, sceneRevisionId, intent.primary ? 1 : 0,
-          intent.type ?? 'advance', intent.beforeState ?? '', intent.afterState ?? '',
-          intent.summary ?? '', status, Math.floor(Date.now() / 1000),
-        )
-        results.push(this.rowToProgress(
-          this.db.prepare('SELECT * FROM novel_storyline_progress WHERE id = ?').get(id) as ProgressRow,
-        ))
+        this.repository.insertProgress({ id, project_id: projectId, storyline_id: storyline.id, scene_revision_id: sceneRevisionId, primary_flag: intent.primary ? 1 : 0, type: intent.type ?? 'advance', before_state: intent.beforeState ?? '', after_state: intent.afterState ?? '', summary: intent.summary ?? '', status, created_at: Math.floor(Date.now() / 1000) })
+        results.push(this.rowToProgress(this.repository.getProgress(id)!))
       }
       return results
     })()
   }
 
   listProgressByStoryline(storylineId: string, statuses?: ProgressStatus[]): NovelStorylineProgress[] {
-    const rows = statuses && statuses.length > 0
-      ? this.db.prepare(
-        `SELECT * FROM novel_storyline_progress WHERE storyline_id = ? AND status IN (${statuses.map(() => '?').join(',')}) ORDER BY created_at ASC`,
-      ).all(storylineId, ...statuses) as ProgressRow[]
-      : this.db.prepare(
-        'SELECT * FROM novel_storyline_progress WHERE storyline_id = ? ORDER BY created_at ASC',
-      ).all(storylineId) as ProgressRow[]
+    const rows = this.repository.listProgressByStoryline(storylineId, statuses)
     return rows.map((r) => this.rowToProgress(r))
   }
 
-  listProgressByScene(sceneRevisionId: string): NovelStorylineProgress[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM novel_storyline_progress WHERE scene_revision_id = ? ORDER BY created_at ASC',
-    ).all(sceneRevisionId) as ProgressRow[]
+  listProgressByScene(sceneRevisionId: string, includeStale = false): NovelStorylineProgress[] {
+    const rows = this.repository.listProgressByScene(sceneRevisionId, includeStale)
     return rows.map((r) => this.rowToProgress(r))
   }
 
   getProgress(id: string): NovelStorylineProgress | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_storyline_progress WHERE id = ?').get(id) as ProgressRow | undefined
+    const row = this.repository.getProgress(id)
     return row ? this.rowToProgress(row) : undefined
   }
 
@@ -195,34 +142,14 @@ export class NarrativeLedgerStore {
   confirmProgress(id: string): NovelStorylineProgress {
     const current = this.getProgress(id)
     if (!current) throw new Error(`推进记录不存在: ${id}`)
-    this.db.prepare('UPDATE novel_storyline_progress SET status = ? WHERE id = ?').run('confirmed', id)
+    this.repository.updateProgressStatus(id, 'confirmed')
     this.maybePromoteMaturity(current.storylineId)
     return this.getProgress(id)!
   }
 
   /** 中间章重写后：把起始章及其后所有已确认推进标 stale。 */
   markStaleFromChapter(projectId: string, chapterId: string): number {
-    const affectedSceneRevisions = `
-      SELECT sr.id FROM novel_scene_revisions sr
-      JOIN novel_scenes s ON s.id = sr.scene_id
-      JOIN novel_chapters c ON c.id = s.chapter_id
-      WHERE c.project_id = ?
-        AND c.chapter_number >= (
-          SELECT start.chapter_number FROM novel_chapters start
-          WHERE start.id = ? AND start.project_id = ?
-        )
-    `
-    this.db.prepare(`
-      UPDATE novel_storyline_progress SET status = 'stale'
-      WHERE project_id = ? AND status = 'confirmed'
-        AND scene_revision_id IN (${affectedSceneRevisions})
-    `).run(projectId, projectId, chapterId, projectId)
-    // 返回整个受影响范围，重复调用仍可向路由准确报告待重建数量。
-    return (this.db.prepare(`
-      SELECT COUNT(*) AS count FROM novel_storyline_progress
-      WHERE project_id = ? AND status = 'stale'
-        AND scene_revision_id IN (${affectedSceneRevisions})
-    `).get(projectId, projectId, chapterId, projectId) as { count: number }).count
+    return this.repository.markStaleFromChapter(projectId, chapterId)
   }
 
   private rowToStoryline(row: StorylineRow): NovelStoryline {

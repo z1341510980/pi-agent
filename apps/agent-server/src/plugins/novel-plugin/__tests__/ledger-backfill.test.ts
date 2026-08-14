@@ -9,9 +9,9 @@ import Database from 'better-sqlite3'
 import { NovelStore } from '../core/novel-store.js'
 import { NovelMemoryStore } from '../core/novel-memory-store.js'
 import { novelMigrations } from '../novel-migrations.js'
-import { planLedgerBackfill, applyLedgerBackfill } from '../core/ledger-backfill.js'
-import { reconcileMatrixProjection } from '../core/matrix-projection.js'
-import { CHAPTER_PROJECTION_BACKFILL_EVENT_TITLE } from '../core/chapter-projection-recorder.js'
+import { planLedgerBackfill, applyLedgerBackfill } from '../core/memory/ledger-backfill.js'
+import { reconcileMatrixProjection } from '../core/analysis/matrix-projection.js'
+import { CHAPTER_PROJECTION_BACKFILL_EVENT_TITLE } from '../core/chapters/chapter-projection-recorder.js'
 
 const PROJECT_ID = 'proj-backfill'
 

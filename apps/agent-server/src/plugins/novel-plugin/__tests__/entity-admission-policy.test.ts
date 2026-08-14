@@ -3,7 +3,7 @@ import {
   findCoveredConflict,
   isAdmissibleNewClue,
   selectAdmissibleNewClues,
-} from '../core/entity-admission-policy.js'
+} from '../core/entities/entity-admission-policy.js'
 
 describe('entity admission policy', () => {
   it('accepts a clue only when it has evidence, a target, and a verification path', () => {

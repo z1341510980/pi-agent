@@ -14,7 +14,7 @@ import {
   projectFromLedger,
   reconcileMatrixProjection,
   formatReconcileReport,
-} from '../core/matrix-projection.js'
+} from '../core/analysis/matrix-projection.js'
 
 const PROJECT_ID = 'proj-reconcile'
 

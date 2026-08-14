@@ -9,7 +9,7 @@ import {
   isPureAscii,
   CJK_TOKEN_RATIO,
   ASCII_TOKEN_RATIO,
-} from '../core/context-section-metrics.js'
+} from '../core/prompting/context-section-metrics.js'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
 

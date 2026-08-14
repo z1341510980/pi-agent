@@ -14,10 +14,11 @@ import type {
   CharacterRow, RelationshipRow, CharacterHistoryRow,
 } from './row-types.js'
 import { now, bindString } from './store-utils.js'
+import { createNovelDrizzleDb } from '../../infrastructure/sqlite/client.js'
+import { CharacterRepository } from '../../infrastructure/sqlite/repositories/character-repository.js'
 
 export class CharacterStore {
-  private readonly stmtListCharacters: Database.Statement
-  private readonly stmtListRelationships: Database.Statement
+  private readonly repository: CharacterRepository
   private readonly stmtListCharacterHistoryByProject: Database.Statement
   private readonly stmtListCharacterHistoryByCharacter: Database.Statement
 
@@ -25,32 +26,24 @@ export class CharacterStore {
     private db: Database.Database,
     private deleteEdgesByEntity: (entityId: string) => number,
   ) {
-    this.stmtListCharacters = db.prepare('SELECT * FROM novel_characters WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListRelationships = db.prepare('SELECT * FROM novel_relationships WHERE project_id = ? ORDER BY created_at ASC')
-    this.stmtListCharacterHistoryByProject = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? ORDER BY created_at DESC')
-    this.stmtListCharacterHistoryByCharacter = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? AND character_id = ? ORDER BY created_at DESC')
+    this.repository = new CharacterRepository(createNovelDrizzleDb(db))
+    this.stmtListCharacterHistoryByProject = db.prepare("SELECT * FROM novel_character_history WHERE project_id = ? AND status = 'active' ORDER BY created_at DESC")
+    this.stmtListCharacterHistoryByCharacter = db.prepare("SELECT * FROM novel_character_history WHERE project_id = ? AND character_id = ? AND status = 'active' ORDER BY created_at DESC")
   }
 
   listCharacters(projectId: string): NovelCharacter[] {
-    return (this.stmtListCharacters.all(projectId) as CharacterRow[]).map((r) => this.rowToCharacter(r))
+    return this.repository.listCharacters(projectId).map((r) => this.rowToCharacter(r))
   }
 
   getCharacter(characterId: string): NovelCharacter | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_characters WHERE id = ?').get(characterId) as CharacterRow | undefined
+    const row = this.repository.getCharacter(characterId)
     return row ? this.rowToCharacter(row) : undefined
   }
 
   createCharacter(character: Omit<NovelCharacter, 'createdAt' | 'updatedAt'>): NovelCharacter {
     const ts = now()
     const full: NovelCharacter = { ...character, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_characters (id, project_id, name, description, identity, personality, appearance,
-      current_state, current_goal, current_pressure, secret, arc_stage, arc_history, speech_style, is_protagonist,
-      long_term_desire, plot_role, removal_impact, created_at, updated_at)
-      VALUES (@id, @project_id, @name, @description, @identity, @personality, @appearance,
-      @current_state, @current_goal, @current_pressure, @secret, @arc_stage, @arc_history, @speech_style, @is_protagonist,
-      @long_term_desire, @plot_role, @removal_impact, @created_at, @updated_at)
-    `).run({
+    this.repository.insertCharacter({
       id: full.id, project_id: full.projectId,
       name: bindString(full.name, '未命名'), description: bindString(full.description),
       identity: bindString(full.identity), personality: bindString(full.personality), appearance: bindString(full.appearance),
@@ -66,19 +59,12 @@ export class CharacterStore {
   }
 
   updateCharacter(id: string, patch: Partial<NovelCharacter>): NovelCharacter | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_characters WHERE id = ?').get(id) as CharacterRow | undefined
+    const existing = this.repository.getCharacter(id)
     if (!existing) return undefined
     const current = this.rowToCharacter(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_characters SET name=@name, description=@description, identity=@identity, personality=@personality,
-      appearance=@appearance, current_state=@current_state, current_goal=@current_goal, current_pressure=@current_pressure,
-      secret=@secret, arc_stage=@arc_stage, arc_history=@arc_history, speech_style=@speech_style, is_protagonist=@is_protagonist,
-      long_term_desire=@long_term_desire, plot_role=@plot_role, removal_impact=@removal_impact,
-      updated_at=@updated_at
-      WHERE id=@id
-    `).run({
-      id, name: bindString(updated.name, '未命名'), description: bindString(updated.description),
+    this.repository.updateCharacter(id, {
+      id, project_id: current.projectId, name: bindString(updated.name, '未命名'), description: bindString(updated.description),
       identity: bindString(updated.identity), personality: bindString(updated.personality), appearance: bindString(updated.appearance),
       current_state: bindString(updated.currentState), current_goal: bindString(updated.currentGoal),
       current_pressure: bindString(updated.currentPressure), secret: bindString(updated.secret),
@@ -87,6 +73,7 @@ export class CharacterStore {
       long_term_desire: bindString(updated.longTermDesire),
       plot_role: bindString(updated.plotRole, 'supporting'),
       removal_impact: bindString(updated.removalImpact),
+      created_at: current.createdAt,
       updated_at: updated.updatedAt,
     })
     return updated
@@ -94,8 +81,7 @@ export class CharacterStore {
 
   deleteCharacter(id: string): boolean {
     this.deleteEdgesByEntity(id)
-    const result = this.db.prepare('DELETE FROM novel_characters WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteCharacter(id)
   }
 
   deleteCharacterHistoryByCharacter(characterId: string): number {
@@ -175,18 +161,13 @@ export class CharacterStore {
   }
 
   listRelationships(projectId: string): NovelRelationship[] {
-    return (this.stmtListRelationships.all(projectId) as RelationshipRow[]).map((r) => this.rowToRelationship(r))
+    return this.repository.listRelationships(projectId).map((r) => this.rowToRelationship(r))
   }
 
   createRelationship(rel: Omit<NovelRelationship, 'createdAt' | 'updatedAt'>): NovelRelationship {
     const ts = now()
     const full: NovelRelationship = { ...rel, createdAt: ts, updatedAt: ts }
-    this.db.prepare(`
-      INSERT INTO novel_relationships (id, project_id, character_a, character_b, relation_type, current_stage, stage_history,
-      dynamic_role, alignment, trend, chapter_hint, last_updated_chapter, created_at, updated_at)
-      VALUES (@id, @project_id, @character_a, @character_b, @relation_type, @current_stage, @stage_history,
-      @dynamic_role, @alignment, @trend, @chapter_hint, @last_updated_chapter, @created_at, @updated_at)
-    `).run({
+    this.repository.insertRelationship({
       id: full.id, project_id: full.projectId, character_a: full.characterA,
       character_b: full.characterB, relation_type: full.relationType,
       current_stage: full.currentStage, stage_history: full.stageHistory,
@@ -201,18 +182,12 @@ export class CharacterStore {
   }
 
   updateRelationship(id: string, patch: Partial<NovelRelationship>): NovelRelationship | undefined {
-    const existing = this.db.prepare('SELECT * FROM novel_relationships WHERE id = ?').get(id) as RelationshipRow | undefined
+    const existing = this.repository.getRelationship(id)
     if (!existing) return undefined
     const current = this.rowToRelationship(existing)
     const updated = { ...current, ...patch, id, updatedAt: now() }
-    this.db.prepare(`
-      UPDATE novel_relationships SET character_a=@character_a, character_b=@character_b,
-      relation_type=@relation_type, current_stage=@current_stage, stage_history=@stage_history,
-      dynamic_role=@dynamic_role, alignment=@alignment, trend=@trend,
-      chapter_hint=@chapter_hint, last_updated_chapter=@last_updated_chapter,
-      updated_at=@updated_at WHERE id=@id
-    `).run({
-      id, character_a: updated.characterA, character_b: updated.characterB,
+    this.repository.updateRelationship(id, {
+      id, project_id: current.projectId, character_a: updated.characterA, character_b: updated.characterB,
       relation_type: updated.relationType, current_stage: updated.currentStage,
       stage_history: updated.stageHistory,
       dynamic_role: updated.dynamicRole ?? '',
@@ -220,18 +195,18 @@ export class CharacterStore {
       trend: updated.trend ?? 'stable',
       chapter_hint: updated.chapterHint ?? '',
       last_updated_chapter: updated.lastUpdatedChapter ?? null,
+      created_at: current.createdAt,
       updated_at: updated.updatedAt,
     })
     return updated
   }
 
   deleteRelationship(id: string): boolean {
-    const result = this.db.prepare('DELETE FROM novel_relationships WHERE id = ?').run(id)
-    return result.changes > 0
+    return this.repository.deleteRelationship(id)
   }
 
   getRelationship(relationshipId: string): NovelRelationship | undefined {
-    const row = this.db.prepare('SELECT * FROM novel_relationships WHERE id = ?').get(relationshipId) as RelationshipRow | undefined
+    const row = this.repository.getRelationship(relationshipId)
     return row ? this.rowToRelationship(row) : undefined
   }
 

@@ -18,11 +18,11 @@ import type { NovelPromptBuilder } from '../../plugins/novel-plugin/core/prompt-
 import type { NovelEngine } from '../../plugins/novel-plugin/core/novel-engine.js'
 import type { PluginContext } from '../plugin/plugin-types.js'
 import { NovelMemoryStore, type MemoryEvent } from '../../plugins/novel-plugin/core/novel-memory-store.js'
-import type { NovelMemoryGenerator, MemoryGenerationResult } from '../../plugins/novel-plugin/core/novel-memory-generator.js'
+import type { NovelMemoryGenerator, MemoryGenerationResult } from '../../plugins/novel-plugin/core/generation/novel-memory-generator.js'
 import {
   classifyLlmFailure,
   retryDelayMs,
-} from '../../plugins/novel-plugin/core/llm-error-policy.js'
+} from '../../plugins/novel-plugin/core/quality/llm-error-policy.js'
 
 /**
  * 结构化记忆提取的重试次数。
@@ -63,7 +63,7 @@ function failedMemoryResult(summary: string, error: string): MemoryGenerationRes
   }
 }
 import type { NarrativeTask, ArrangedEntity, NovelConflict, NovelForeshadow, NovelCharacterHistory, NovelFaction, NovelLocation, NovelItem, ChapterSpan, VersionSource } from '../../plugins/novel-plugin/core/types.js'
-import type { NovelAgentType, CreationPhase, CreationFlowEvent } from '../../plugins/novel-plugin/core/novel-agents.js'
+import type { NovelAgentType, CreationPhase, CreationFlowEvent } from '../../plugins/novel-plugin/core/domain/novel-agents.js'
 import type { CreationResult } from '@repo/shared/novel'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import {
@@ -99,7 +99,7 @@ function appendChapterToSpans(spans: ChapterSpan[], chapter: number): ChapterSpa
 export interface CreationOptions {
   /** AG-UI 事件发射器（与 chat 共用同一类型），供 StreamEmitter 发射标准 AG-UI 事件 */
   emit: AgUiEventSink
-  onCheckpoint: (checkpoint: import('../../plugins/novel-plugin/core/novel-agents.js').CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
+  onCheckpoint: (checkpoint: import('../../plugins/novel-plugin/core/domain/novel-agents.js').CheckpointData) => Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
   onProgress: (event: CreationFlowEvent) => void
   /** 持久化创作流程中的可见消息；由路由层绑定 ChapterChatStore */
   onConversationMessage?: (message: {

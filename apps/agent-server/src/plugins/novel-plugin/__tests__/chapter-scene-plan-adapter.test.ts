@@ -8,8 +8,8 @@ import {
   buildScenePlanFromNarrativeTask,
   buildScenePlanFromSceneDefinitions,
   type PlanBudget,
-} from '../core/chapter-scene-plan-adapter.js'
-import { validateChapterScenePlan } from '../core/chapter-scene-plan.js'
+} from '../core/chapters/chapter-scene-plan-adapter.js'
+import { validateChapterScenePlan } from '../core/chapters/chapter-scene-plan.js'
 import type { NarrativeTask } from '../core/types.js'
 import type { SceneDefinition } from '../../../core/agent/discussion-types.js'
 
