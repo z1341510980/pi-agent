@@ -116,7 +116,7 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
       `- 叙事距离：${DISTANCE_LABELS[profile.narrativeDistance]}`,
       `- 句式节奏：${RHYTHM_LABELS[profile.sentenceRhythm]}`,
       `- 语言语域：${REGISTER_LABELS[profile.vocabularyRegister]}`,
-      `- 对话目标占比：约 ${Math.round(profile.dialogueRatio)}%（随场景需要浮动，不为比例硬凑）`,
+      `- 对话参考中心：约 ${Math.round(profile.dialogueRatio)}%（这是跨场景倾向，不是逐章配额）`,
       `- 情感温度：${profile.emotionalTemperature}/10`,
       `- 意象与比喻密度：${profile.imageryDensity}/10`,
     ].join('\n'),
@@ -124,6 +124,12 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
     // 避免用户粘贴大量说明后让每次 Writer/Reviewer 调用膨胀数千字符。
     listSection('硬约束', profile.hardRules, 8),
     listSection('软偏好', profile.softRules, 6),
+    [
+      '### 变化预算',
+      '- 文风档案描述稳定声音，不规定固定句式、固定段落长度或固定开场方式。',
+      '- 场景任务、人物关系、信息压力和 POV 感知优先；对话比例、句长、情感温度与意象密度可以随场景自然波动。',
+      '- 相邻章节不得为了贴近档案而重复相同的开场、转折、动作节拍、比喻骨架或收束方式。',
+    ].join('\n'),
   ].filter(Boolean)
 
   const notes = cleanText(profile.notes, 400)
@@ -162,11 +168,11 @@ export function compileWritingStylePrompt(
 ): CompiledWritingStylePrompt {
   const sections = buildBaseSections(profile)
   if (target === 'writer') {
-    sections.push('### 执行方式\n文风档案中的人工样本负责告诉你“读起来像什么”，不是一份需要逐项打勾的规则。剧情事实、POV 和角色约束优先；在不冲突时，优先保留样本体现出的自然观察、留白和节奏。风格只能通过正文中的具体选择实现，不要在正文中解释这些规则。')
+    sections.push('### 执行方式\n文风档案中的人工样本负责告诉你“读起来像什么”，不是一份需要逐项打勾的规则。剧情事实、POV 和角色约束优先；在不冲突时，保留样本体现出的自然观察、留白和节奏，但不要复刻样本或前章的句式路径。先判断当前场景需要怎样的速度、距离和对话压力，再从档案允许的范围内选择写法。风格只能通过正文中的具体选择实现，不要在正文中解释这些规则。')
   } else if (target === 'reviser') {
-    sections.push('### 修订方式\n你输出的每一段"修改后"文字都必须符合本档案的叙事声音：人称、距离、句式节奏、语域、情感温度全部对齐。只修复审稿指出的问题，同时把替换后的句子拉回本档案的声音基准。不得把整章改成另一种文风，也不得在修订中偏离档案定义的叙事参数。')
+    sections.push('### 修订方式\n你输出的“修改后”文字必须保持本档案的稳定声音，其中人称、视角信息范围和明确硬约束必须遵守；句式节奏、对话密度、情感温度和意象密度只需落在当前场景合理范围。只修复审稿指出的问题，不要为了风格统一把整章改成同一种句长、语气或段落节拍，也不要抹平人物之间的声音差异。')
   } else {
-    sections.push('### 文风验收方式\n逐项检查叙事人称、距离、句式、语域、对话、情感温度和样本声音。必须引用具体段落说明偏差，不能只写“文风不一致”。')
+    sections.push('### 文风验收方式\n先检查叙事人称、视角信息范围和明确硬约束，再判断句式、语域、对话、情感温度是否符合当前场景的合理波动。不得仅因某一章偏离全书平均值就判定失败；只有偏离无法由场景任务、人物关系或节奏压力解释时才报告问题。必须引用具体段落说明偏差，不能只写“文风不一致”。')
   }
 
   const content = sections.join('\n\n')

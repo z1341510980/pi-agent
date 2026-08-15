@@ -34,10 +34,15 @@ import { skillsRoute } from './routes/skills.route.js'
 import { searchRoute } from './routes/search.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
+import { SqliteSessionIdentityRegistry } from './core/agent/session-identity-registry.js'
+import { RuntimeRunRegistry } from './core/agent/runtime-run-registry.js'
+import { PiActorsKernel } from './core/agent/pi-actors-kernel.js'
+import { PiSubagentsHost } from './core/agent/pi-subagents-host.js'
+import { createPiSubagentsBridge } from './core/agent/pi-subagents-bridge.js'
+import { activeNovelChapterTasks } from './plugins/novel-plugin/utils/chapter-task-registry.js'
 import { Gate } from './core/tool/gate.js'
 import { ConfirmationManager } from './core/tool/confirmation-manager.js'
 import { createPiSession } from './core/agent/pi-session.js'
-import { CredentialBridge } from './core/config/credential-bridge.js'
 
 export async function createApp(): Promise<Fastify.FastifyInstance> {
   const app = Fastify({
@@ -55,6 +60,15 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(databasePlugin)
   await app.register(websocketSupportPlugin)
   await app.register(piSdkPlugin)
+
+  // 运行时运行注册表（§9.3.3）：进程内观测记录，供 pi-subagents 可观测桥读取。
+  // 在 subagentPlugin 之前 decorate，使 dispatch 路径能记录起止状态。
+  const runtimeRuns = new RuntimeRunRegistry()
+  app.decorate('runtimeRuns', runtimeRuns)
+  // pi-actors 长任务 Run 内核（§9.3.4：能力级接入，非 CLI）：
+  // 本地命令/Recipe 的 spawn → 状态/trace/输出 → cancel/kill，观测写入 runtimeRuns。
+  const piActorsKernel = new PiActorsKernel({ runtimeRuns })
+  app.decorate('piActorsKernel', piActorsKernel)
 
   // Subagent 协作插件（在 session factory 之前注册，使 app.subagentManager 可用于 customTools 注入）
   // dispatchFn 闭包在运行时访问 app.piSessionStore / app.modelRegistry，初始化时不需要
@@ -76,26 +90,41 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // 必须在 sessionStore.setSessionFactory 之前注册，因为 setSessionFactory 的闭包在运行时访问 app.pluginManager
   await app.register(pluginLoaderPlugin)
 
-  // 创建 CredentialBridge、Gate、SessionStore
+  // 创建 Gate、SessionStore
   const cwd = process.env.PI_CWD ?? process.cwd()
   const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
-  const credentialBridge = new CredentialBridge()
   const gate = new Gate({
     mode: 'auto',
     workspace: cwd,
     agentDir: dataDir,
   })
   const sessionStore = new PiSessionStore()
+  // 会话身份索引 P0（方案 §9.4）：threadId → sessionPath 持久化，
+  // 支撑历史消息分页与聊天线程在重启/LRU 淘汰后的会话恢复。
+  sessionStore.setIdentityRegistry(new SqliteSessionIdentityRegistry(app.db))
+
+  // pi-subagents 无头扩展宿主（§9.3.5：能力级接入，非 CLI）：
+  // 承载扩展工厂，服务端闭环 /delegation 事件协议；绑定会话后委托派生子进程执行。
+  const piSubagentsHost = new PiSubagentsHost({
+    cwd,
+    eventBus: app.eventBus,
+    sessionProvider: (threadId) => ({
+      sessionId: threadId,
+      // 会话文件路径异步可得；宿主桩允许 null（扩展回退临时目录）
+      sessionFile: null,
+      entries: [],
+    }),
+  })
+  app.decorate('piSubagentsHost', piSubagentsHost)
+  await piSubagentsHost.start()
 
   // 注入 Session 工厂（注入 subagentManager 用于 customTools）
-  sessionStore.setSessionFactory(async (threadId) => {
+  sessionStore.setSessionFactory(async (threadId, factoryContext) => {
     return createPiSession({
       threadId,
-      authStorage: app.authStorage,
-      modelRegistry: app.modelRegistry,
+      modelRuntime: app.modelRuntime,
       sessionManager: app.sessionManager,
       settingsManager: app.settingsManager,
-      credentialBridge,
       providerConfigStore: app.providerConfigStore,
       gate,
       confirmationManager,
@@ -107,6 +136,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
       pluginSessionTools: app.pluginManager?.getAllSessionTools() ?? [],
       threadSettingsStore: app.threadSettingsStore,
       db: app.db,
+      ...(factoryContext?.resumePath ? { resumePath: factoryContext.resumePath } : {}),
       config: {
         cwd,
         dataDir,
@@ -125,13 +155,27 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
 
   const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.threadSettingsStore, app.eventBus)
 
+  // pi-subagents 可观测桥（§9.3.3）：把章节任务与运行时运行注册为
+  // pi-subagents 的 background-work / external-runs provider（供给侧，无调度语义）。
+  const piSubagentsBridge = createPiSubagentsBridge({
+    chapterTasks: {
+      listActive: () => Array.from(activeNovelChapterTasks.entries()).map(([lockKey]) => ({
+        id: lockKey,
+        chapterKey: lockKey,
+      })),
+    },
+    runtimeRuns,
+  })
+
   // 挂载到 Fastify 实例（confirmationManager 已在 pluginLoaderPlugin 之前 decorate）
   app.decorate('piAgUiAgent', piAgUiAgent)
   app.decorate('piSessionStore', sessionStore)
   app.decorate('gate', gate)
   app.addHook('onClose', () => {
+    piSubagentsBridge.dispose()
     confirmationManager.dispose()
     sessionStore.dispose()
+    void piSubagentsHost.dispose()
   })
 
   // Cron 调度器插件（依赖 eventBus）

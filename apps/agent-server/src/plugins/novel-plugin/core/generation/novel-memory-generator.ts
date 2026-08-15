@@ -350,7 +350,15 @@ export class NovelMemoryGenerator {
     // Memory 已在 user prompt 中拿到完整正文与本章相关实体状态，不需要重发
     // 全书大纲、卷纲和世界规则。保留身份模板，确保提取字段和工具契约不变。
     onProgress?.({ phase: 'preparing', message: '正在构建记忆提取提示词...' })
-    const systemPrompt = this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
+    // Skill 白名单接入：角色方法（实体轨道归类、纯 JSON 输出协议）由
+    // novel-memory-generator Skill 提供，system prompt 只保留 system-base 薄身份壳；
+    // 项目/SQLite 覆盖 role-memory-generator 模板时回退旧模板身份。
+    const memorySkillPath = typeof this.promptBuilder.getMemoryGeneratorSkillPath === 'function'
+      ? this.promptBuilder.getMemoryGeneratorSkillPath(projectId)
+      : undefined
+    const systemPrompt = memorySkillPath
+      ? this.promptBuilder.buildMemoryGeneratorSkillIdentity(projectId)
+      : this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
 
     // ── 2. 构建用户消息：章节正文 + 当前实体状态 ──
     // ⚠️ Token 优化：Memory 的任务是"从章节正文中提取状态变更"，只需要：
@@ -384,6 +392,7 @@ export class NovelMemoryGenerator {
       signal?: AbortSignal
       modelId?: { provider: string; modelId: string }
       onPayloadStats?: (stats: PluginPayloadStats) => void
+      skill?: { name: string; path: string }
     } = {
       systemPrompt,
       userMessage: fullUserMessage,
@@ -394,6 +403,11 @@ export class NovelMemoryGenerator {
       signal,
       modelId,
       onPayloadStats: (stats: PluginPayloadStats) => addPayloadStats(payloadStats, stats),
+      // Skill 展开与 responseFormat='json'（tool_choice=none）相互独立：
+      // /skill: 是发送前的提示词展开，不影响 JSON 输出约束。
+      ...(memorySkillPath
+        ? { skill: { name: 'novel-memory-generator', path: memorySkillPath } }
+        : {}),
     }
     const session = await this.context.createSession(sessionOptions)
 
@@ -559,6 +573,14 @@ export class NovelMemoryGenerator {
 
     const userPrompt = parts.join('\n')
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'memory-generator')
+    // Skill 白名单接入：与 analyze() 相同，角色方法由 novel-memory-generator Skill
+    // 提供；覆盖模板时回退旧身份。
+    const memorySkillPath = typeof this.promptBuilder.getMemoryGeneratorSkillPath === 'function'
+      ? this.promptBuilder.getMemoryGeneratorSkillPath(projectId)
+      : undefined
+    const identity = memorySkillPath
+      ? this.promptBuilder.buildMemoryGeneratorSkillIdentity(projectId)
+      : this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
     const payloadStats: MemoryPayloadStats = {
       messagesChars: 0,
       toolsChars: 0,
@@ -569,8 +591,7 @@ export class NovelMemoryGenerator {
 
     // 创建 LLM Session
     onProgress?.({ phase: 'generating', message: '全量校准 Agent 正在分析最近章节状态...' })
-    const fullUserMessage = this.promptBuilder.buildAgentIdentity(projectId, 'memory-generator')
-      + '\n\n---\n\n' + userPrompt
+    const fullUserMessage = identity + '\n\n---\n\n' + userPrompt
     const session = await this.context.createSession({
       systemPrompt,
       // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
@@ -580,6 +601,9 @@ export class NovelMemoryGenerator {
       signal,
       modelId,
       onPayloadStats: (stats: PluginPayloadStats) => addPayloadStats(payloadStats, stats),
+      ...(memorySkillPath
+        ? { skill: { name: 'novel-memory-generator', path: memorySkillPath } }
+        : {}),
     })
 
     let payload: MemoryUpdatePayload

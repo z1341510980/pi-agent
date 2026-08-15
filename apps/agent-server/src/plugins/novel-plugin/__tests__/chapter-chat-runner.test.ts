@@ -106,7 +106,17 @@ describe('ChapterChatRunner', () => {
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
       modelId: { provider: 'cheap', modelId: 'moderator' },
     }))
-    expect(createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({ modelId: selectedModel }))
+    expect(createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: selectedModel,
+      skill: {
+        name: 'novel-writer',
+        path: expect.stringMatching(/role-writer\.md$/),
+      },
+      extraSkills: [{
+        name: 'novel-creation',
+        path: expect.stringMatching(/novel-creation\.md$/),
+      }],
+    }))
   })
 
   it('未选择本次模型时工种回复使用 AgentPage 模型配置', async () => {
@@ -187,6 +197,10 @@ describe('ChapterChatRunner', () => {
     })])
     const invocation = createAgUiSession.mock.calls[0][0]
     expect(invocation.systemPrompt).toContain('角色推演')
+    expect(invocation.skill).toEqual({
+      name: 'novel-creation',
+      path: expect.stringMatching(/novel-creation\.md$/),
+    })
     expect(invocation.prefixUserMessage).toEqual([
       expect.stringContaining('林晚发现暗门'),
       expect.stringContaining('说话风格'),

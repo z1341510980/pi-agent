@@ -911,6 +911,253 @@ export class NovelPromptBuilder {
   }
 
   /**
+   * 构建由 Skill 提供角色方法时的 Reviewer 基础身份壳。
+   *
+   * 保留 system-base、写作铁律和项目文风，但不再嵌入 role-reviewer 正文，
+   * 避免同一套审稿规则同时从旧模板和 Skill 注入两次。
+   */
+  getReviewerSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-reviewer', projectId)
+  }
+
+  buildReviewerSkillIdentity(projectId: string): string {
+    const identity = this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'reviewer',
+        agent_role: '具体审稿方法由本次显式加载的 novel-reviewer Skill 提供。',
+      },
+      projectId,
+    )
+    const rules = this.promptManager.getTemplate('system-base-rules', projectId)
+    const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
+    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviewer')
+    return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
+  }
+
+  /**
+   * 构建由 Skill 提供角色方法时的 Director 基础身份壳。
+   *
+   * 与 buildAgentIdentity 的 director 分支保持一致：Director 只做规划不写正文，
+   * 不注入铁律（system-base-rules）与项目文风，避免示范破折号污染规划输出。
+   * 角色方法（决策顺序、场景动力契约、novel_submit_narrative_task 协议）由
+   * 本次显式加载的 novel-director Skill 提供，这里不再嵌入 role-director 正文。
+   */
+  getDirectorSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-director', projectId)
+  }
+
+  buildDirectorSkillIdentity(projectId: string): string {
+    return this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'director',
+        agent_role: '具体规划方法由本次显式加载的 novel-director Skill 提供。',
+      },
+      projectId,
+    )
+  }
+
+  /**
+   * 构建由 Skill 提供角色方法时的 Writer 基础身份壳。
+   *
+   * 与 buildAgentIdentity 的 writer 分支保持一致：保留 system-base、写作铁律
+   * （system-base-rules）与项目文风，不嵌入 role-writer 正文（由本次显式加载的
+   * novel-writer Skill 展开提供）。
+   */
+  getWriterSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-writer', projectId)
+  }
+
+  buildWriterSkillIdentity(projectId: string): string {
+    const identity = this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'writer',
+        agent_role: '具体创作方法由本次显式加载的 novel-writer Skill 提供。',
+      },
+      projectId,
+    )
+    const rules = this.promptManager.getTemplate('system-base-rules', projectId)
+    const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
+    const compiledStyle = this.buildWritingStylePrompt(projectId, 'writer')
+    return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
+  }
+
+  /**
+   * 构建由 Skill 提供角色方法时的 Reviser 基础身份壳。
+   *
+   * 与 buildAgentIdentity 的 reviser 分支保持一致：保留 system-base、写作铁律与
+   * 项目文风，不嵌入 role-reviser 正文；novel_apply_revision 工具协议由
+   * novel-reviser Skill 展开提供，与 extraTools 注入的工具实例叠加。
+   */
+  getReviserSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-reviser', projectId)
+  }
+
+  buildReviserSkillIdentity(projectId: string): string {
+    const identity = this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'reviser',
+        agent_role: '具体修订方法由本次显式加载的 novel-reviser Skill 提供。',
+      },
+      projectId,
+    )
+    const rules = this.promptManager.getTemplate('system-base-rules', projectId)
+    const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
+    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviser')
+    return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
+  }
+
+  /**
+   * 构建由 Skill 提供角色方法时的 Memory 基础身份壳（工具循环回退路径）。
+   *
+   * Memory 只提取状态变更：与 buildAgentIdentity 的 memory 分支一致，不注入铁律与
+   * 文风；角色方法（工具使用指南）由本次显式加载的 novel-memory Skill 提供。
+   */
+  getMemorySkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-memory', projectId)
+  }
+
+  buildMemorySkillIdentity(projectId: string): string {
+    return this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'memory',
+        agent_role: '具体提取方法由本次显式加载的 novel-memory Skill 提供。',
+      },
+      projectId,
+    )
+  }
+
+  /**
+   * 构建由 Skill 提供角色方法时的 Memory Generator 基础身份壳（纯 JSON 提取路径）。
+   *
+   * 用于 NovelMemoryGenerator 的 analyze / runFullCalibration：与旧
+   * buildAgentIdentity('memory-generator') 一致不注入铁律与文风；角色方法（实体轨道
+   * 归类、纯 JSON 输出协议）由本次显式加载的 novel-memory-generator Skill 提供。
+   */
+  getMemoryGeneratorSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-memory-generator', projectId)
+  }
+
+  buildMemoryGeneratorSkillIdentity(projectId: string): string {
+    return this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'memory-generator',
+        agent_role: '具体提取方法由本次显式加载的 novel-memory-generator Skill 提供。',
+      },
+      projectId,
+    )
+  }
+
+  /**
+   * 构建群聊模式下由 Skill 提供角色方法时的基础身份壳。
+   *
+   * 对应 buildAgentIdentity(projectId, agentType, discussion=true) 的旧路径：
+   * director 只保留 system-base（不注入铁律/文风）；writer/reviser/reviewer 额外
+   * 保留铁律与项目文风。群聊职责正文由 novel-{agentType}-discussion Skill 展开提供。
+   * role-{agentType}-discussion 模板不存在（如 reviser）或项目/SQLite 覆盖时，
+   * 调用方应通过 getDiscussionSkillPath 返回 undefined 并回退旧身份路径。
+   */
+  getDiscussionSkillPath(agentType: string, projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath(`role-${agentType}-discussion`, projectId)
+  }
+
+  buildDiscussionSkillIdentity(agentType: string, projectId: string): string {
+    const identity = this.promptManager.render(
+      'system-base',
+      {
+        agent_type: agentType,
+        agent_role: `具体群聊职责由本次显式加载的 novel-${agentType}-discussion Skill 提供。`,
+      },
+      projectId,
+    )
+    if (agentType !== 'writer' && agentType !== 'reviser' && agentType !== 'reviewer') {
+      return identity
+    }
+    const rules = this.promptManager.getTemplate('system-base-rules', projectId)
+    const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
+    const compiledStyle = this.buildWritingStylePrompt(projectId, agentType as WritingStylePromptTarget)
+    return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
+  }
+
+  /**
+   * 构建由 Skill 提供角色方法时的角色演员基础身份壳（群聊单角色调用）。
+   *
+   * 角色卡字段与声音参数由 buildCharacterIdentityPrompt 拼在薄壳之前；
+   * 演出方法（剧本格式、演出规则）由 novel-character-actor Skill 展开提供。
+   * 合并演出路径不展开 Skill，改用 buildMergedActorIdentityPrompt 的完整模板身份。
+   */
+  getCharacterActorSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-character-actor', projectId)
+  }
+
+  buildCharacterActorSkillIdentity(projectId: string): string {
+    return this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'character-actor',
+        agent_role: '具体演出方法由本次显式加载的 novel-character-actor Skill 提供。',
+      },
+      projectId,
+    )
+  }
+
+  /** 构建由 Skill 提供角色方法时的实体反推基础身份壳（正文反推路径）。 */
+  getEntityExtractorSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-entity-extractor', projectId)
+  }
+
+  buildEntityExtractorSkillIdentity(projectId: string): string {
+    return this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'entity-extractor',
+        agent_role: '具体反推方法由本次显式加载的 novel-entity-extractor Skill 提供。',
+      },
+      projectId,
+    )
+  }
+
+  /** 构建由 Skill 提供角色方法时的矩阵编排基础身份壳（章纲编排路径）。 */
+  getMatrixArrangerSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('role-matrix-arranger', projectId)
+  }
+
+  buildMatrixArrangerSkillIdentity(projectId: string): string {
+    return this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'matrix-arranger',
+        agent_role: '具体编排方法由本次显式加载的 novel-matrix-arranger Skill 提供。',
+      },
+      projectId,
+    )
+  }
+
+  /**
+   * 统一小说创作入口 Skill。它只负责模式识别和意图协议，不替代具体
+   * Director/Writer/Discussion/Entity 服务，也不直接持久化领域数据。
+   */
+  getNovelCreationSkillPath(projectId: string): string | undefined {
+    return this.promptManager.getDefaultTemplatePath('novel-creation', projectId)
+  }
+
+  buildNovelCreationSkillIdentity(projectId: string): string {
+    return this.promptManager.render(
+      'system-base',
+      {
+        agent_type: 'novel-creation',
+        agent_role: '模式识别和创作意图协议由本次显式加载的 novel-creation Skill 提供。',
+      },
+      projectId,
+    )
+  }
+
+  /**
    * P3 T03-6：identity-contract 守卫——所有 buildAgentIdentity 消费方统一覆盖。
    *
    * 校验身份文本是否包含 AGENT_IDENTITY_MARKERS（职责协议锚点），缺失时 warn
@@ -2924,11 +3171,12 @@ export class NovelPromptBuilder {
   }
 
   /**
-   * 格式化叙事声音锚点：最近 2-3 章的开头段落原文。
+   * 格式化叙事声音锚点：最近章节中按章节号稳定选取的代表片段。
    *
    * 设计意图：
    * - 风格指南是静态规则（"用短句""避免华丽修辞"），无法捕捉一部小说的整体声音质感
-   * - 注入最近章节的原文开头（约 200 字），让 LLM 直接感受叙事腔调
+   * - 注入最近章节不同位置的代表片段（约 200 字），让 LLM 感受叙事腔调
+   * - 不固定取开头，避免连续章节把同一种开场骨架互相复制
    * - Writer 据此保持声音一致；Reviewer 据此检查声音偏差
    */
   private formatSoundAnchor(recentChapters: NovelChapter[]): string {
@@ -2941,9 +3189,9 @@ export class NovelPromptBuilder {
         const report = evaluateProseQuality(ch.content)
         const hasSevereShapeIssue = report.issues.some((issue) => issue.severity === 'error')
         if (!hasSevereShapeIssue) {
-          const opening = ch.content.trim().slice(0, CHAPTER_ANCHOR_BUDGET.soundAnchorOpening)
+          const excerpt = this.selectSoundAnchorExcerpt(ch)
           anchors.push(
-            `- 第${ch.chapterNumber}章开头：${opening}${ch.content.length > CHAPTER_ANCHOR_BUDGET.soundAnchorOpening ? '...' : ''}`
+            `- 第${ch.chapterNumber}章代表片段：${excerpt}`
           )
         }
       }
@@ -2957,6 +3205,38 @@ export class NovelPromptBuilder {
       '',
       anchors.join('\n'),
     ].join('\n')
+  }
+
+  /**
+   * 在前段、中段、后段之间按章节号轮换取样。选择是确定性的，既不破坏缓存，
+   * 也避免所有声音锚点都示范相同的章节开场结构。
+   */
+  private selectSoundAnchorExcerpt(chapter: NovelChapter): string {
+    const content = chapter.content.trim()
+    const paragraphs = content
+      .split(/\n+/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => paragraph.length >= 20)
+    if (paragraphs.length === 0) {
+      return compactPromptText(content, CHAPTER_ANCHOR_BUDGET.soundAnchorExcerpt)
+    }
+
+    const sampleRatios = [0.2, 0.5, 0.75] as const
+    const ratio = sampleRatios[(Math.max(1, chapter.chapterNumber) - 1) % sampleRatios.length]
+    const start = Math.floor((paragraphs.length - 1) * ratio)
+    const selected: string[] = []
+    let selectedLength = 0
+    for (let index = start; index < paragraphs.length; index += 1) {
+      const paragraph = paragraphs[index]
+      if (!paragraph) continue
+      if (selected.length > 0 && selectedLength + paragraph.length > CHAPTER_ANCHOR_BUDGET.soundAnchorExcerpt) {
+        break
+      }
+      selected.push(paragraph)
+      selectedLength += paragraph.length
+      if (selectedLength >= CHAPTER_ANCHOR_BUDGET.soundAnchorExcerpt) break
+    }
+    return compactPromptText(selected.join(' '), CHAPTER_ANCHOR_BUDGET.soundAnchorExcerpt)
   }
 
   /**
@@ -3840,7 +4120,7 @@ export class NovelPromptBuilder {
     ]
 
     const lines: string[] = [
-      `## 文风指纹（第${sampleRange[0]}-${sampleRange[1]}章提取，文风基准）`,
+      `## 文风指纹（第${sampleRange[0]}-${sampleRange[1]}章提取，最近样本统计）`,
       '',
       `- 平均句长：${avgSentenceLength} 字`,
       `- 短句占比（<15字）：${shortSentenceRatio}%`,
@@ -3852,9 +4132,9 @@ export class NovelPromptBuilder {
       `- 情感温度：${emotionalTemperature}/10（0=冷峻克制，10=热烈奔放）`
     ]
 
-    // 降级门：指纹只是"从既有正文自动量化"的观测值，指标失真时如果还带 ⚠️ 强制一致，
-    // 会把 Writer 直接锁死在错误基准上（例如"对话占比 0%"→ 全章不写对话）。
-    // 因此只有在样本量足够且指标落在可信区间时才升级为硬约束。
+    // 指纹只是"从既有正文自动量化"的观测值，不能升级成逐章硬约束。
+    // 即使样本可信，它也只说明最近章节的稳定倾向；场景任务和人物关系必须允许
+    // 句长、对话与情感温度自然波动，否则生成会迅速收敛成同一种节拍。
     const trustworthy =
       totalParaChars >= FINGERPRINT_TRUST.minParagraphChars &&
       paragraphs.length >= FINGERPRINT_TRUST.minParagraphCount &&
@@ -3863,7 +4143,7 @@ export class NovelPromptBuilder {
     if (trustworthy) {
       lines.push('')
       lines.push(
-        '⚠️ 本章文风必须与此指纹保持一致。如指纹显示短句占比高+情感温度低，本章不可突然变成长句+煽情。'
+        '说明：样本量足够，以上可作为最近正文的稳定倾向，但不是本章配额。当前场景、人物关系和叙事压力优先，允许在合理范围内偏离；不得为了贴近均值复制前章的句式、开场或段落节拍。'
       )
     } else {
       lines.push('')

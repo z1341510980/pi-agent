@@ -11,7 +11,8 @@ describe('PiSessionStore', () => {
     const threadSession = await store.getOrCreate('thread-1')
     expect(threadSession.threadId).toBe('thread-1')
     expect(threadSession.session).toBe(mockSession)
-    expect(factory).toHaveBeenCalledWith('thread-1')
+    // 方案 §9.4：工厂第二参数为恢复上下文；未注入注册表时为 undefined
+    expect(factory).toHaveBeenCalledWith('thread-1', undefined)
   })
 
   it('getOrCreate 相同 threadId 返回同一会话', async () => {

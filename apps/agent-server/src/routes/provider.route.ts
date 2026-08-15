@@ -79,7 +79,7 @@ const providerConfigSchema = z.object({
 export const providerRoute: FastifyPluginAsync = async (app) => {
   const store = app.providerConfigStore
   const modelRegistry = app.modelRegistry
-  const authStorage = app.authStorage
+  const modelRuntime = app.modelRuntime
   const sessionStore = app.piSessionStore
 
   // GET /api/providers — 列出所有已注册 Provider
@@ -120,9 +120,9 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
       models: config.models.map(mapToSdkModel),
     })
 
-    // 3. 注入 API Key 到 AuthStorage（runtime override）
+    // 3. 注入 API Key 到 ModelRuntime（runtime override，异步）
     //    使 getAvailable() 能返回此 Provider 的模型，且 LLM 调用能直接使用此 Key
-    authStorage.setRuntimeApiKey(config.id, config.apiKey)
+    await modelRuntime.setRuntimeApiKey(config.id, config.apiKey)
 
     // 4. 清除 Session 缓存：使下次请求创建新 Session（使用新配置）
     //    正在执行的 run 不受影响，但新的请求会重建 Session
@@ -150,7 +150,7 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     }
 
     // 移除 runtime API Key 注入
-    authStorage.removeRuntimeApiKey(id)
+    await modelRuntime.removeRuntimeApiKey(id)
 
     // 清除 Session 缓存
     sessionStore.clear()

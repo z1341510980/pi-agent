@@ -1,5 +1,5 @@
 import { createAgentSession, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent'
-import type { AuthStorage, ModelRegistry, AgentSession, SettingsManager, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { ModelRuntime, AgentSession, SettingsManager, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
@@ -8,7 +8,6 @@ import type Database from 'better-sqlite3'
 import type { Gate } from '../tool/gate.js'
 import type { EventBus } from '@repo/shared/events'
 import { AppError, ErrorCode } from '@repo/shared/errors'
-import type { CredentialBridge } from '../config/credential-bridge.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
 import type { ThreadSettingsStore } from './thread-settings-store.js'
@@ -53,13 +52,43 @@ export function withAgentConfig<T>(config: AgentConfig, fn: () => Promise<T>): P
   return agentConfigStorage.run(config, fn)
 }
 
+/**
+ * 选择本次会话使用的 SessionManager（纯函数，便于单测）。
+ *
+ * - plugin:* 线程：每次新建独立 SessionManager（避免跨 Agent 历史泄漏）；
+ * - chat 线程 + resumePath：SessionManager.open 恢复既有 JSONL（方案 §9.4）；
+ * - 其余 chat 线程：复用共享 sessionManager。
+ */
+export function selectSessionManager(input: {
+  isPluginThread: boolean
+  resumePath?: string
+  cwd: string
+  sessionDir: string
+  sharedSessionManager: SessionManager
+  newId: () => string
+  createManager: (cwd: string, sessionDir: string, meta: { id: string }) => SessionManager
+  openManager: (path: string, sessionDir: string, cwdOverride: string) => SessionManager
+}): SessionManager {
+  if (input.isPluginThread) {
+    return input.createManager(input.cwd, input.sessionDir, { id: input.newId() })
+  }
+  if (input.resumePath) {
+    return input.openManager(input.resumePath, input.sessionDir, input.cwd)
+  }
+  return input.sharedSessionManager
+}
+
 export interface PiSessionDeps {
   threadId: string
-  authStorage: AuthStorage
-  modelRegistry: ModelRegistry
+  /**
+   * SDK 0.84 的模型/凭证运行时（取代 AuthStorage + ModelRegistry）。
+   *
+   * Provider 的 API Key 在 provider.route / pi-sdk.plugin 注册点通过
+   * modelRuntime.setRuntimeApiKey 注入；会话创建直接消费该运行时。
+   */
+  modelRuntime: ModelRuntime
   sessionManager: SessionManager
   settingsManager: SettingsManager
-  credentialBridge: CredentialBridge
   providerConfigStore: ProviderConfigStore
   gate: Gate
   confirmationManager: ConfirmationManager
@@ -82,6 +111,14 @@ export interface PiSessionDeps {
    * 若未提供：thinkingLevel 留空，由 SDK 走自身默认（SettingsManager.defaultThinkingLevel）。
    */
   threadSettingsStore?: ThreadSettingsStore
+  /**
+   * 恢复路径（方案 §9.4 会话身份索引 P0）。
+   *
+   * chat 线程在注册表命中历史会话路径时，由 PiSessionStore 传入；
+   * createPiSession 据此用 SessionManager.open 打开既有 JSONL，恢复原会话历史。
+   * plugin:* 线程永远不传（每次新建）。
+   */
+  resumePath?: string
   config: {
     cwd: string
     dataDir: string
@@ -91,16 +128,13 @@ export interface PiSessionDeps {
 /**
  * createPiSession：创建 Pi SDK Agent Session
  *
- * API Key 注入：通过 authStorage.setFallbackResolver 桥接 CredentialBridge
+ * API Key 注入：Provider 注册点在 modelRuntime.setRuntimeApiKey 注入（SDK 0.84）
  * Gate 集成：通过 excludeTools 参数排除被禁止的工具
  * EventBus 集成：通过 session.subscribe 监听工具执行事件
  */
 export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession> {
-  // 1. 注入 API Key 桥接：ProviderConfigStore → AuthStorage fallback resolver
-  //    LLM 配置完全由前端用户配置，不读取任何环境变量
-  deps.authStorage.setFallbackResolver((provider: string) => {
-    return deps.providerConfigStore.getApiKey(provider)
-  })
+  // SDK 0.84：API Key 由 modelRuntime 承载（provider.route / pi-sdk.plugin 在
+  // 注册点 setRuntimeApiKey），会话创建不再需要 fallback resolver。
 
   /**
    * 插件会话（小说创作等）与 chat 会话的能力需求完全不同。
@@ -122,13 +156,16 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     cwd: deps.config.cwd,
     agentDir: deps.config.dataDir,
     systemPromptOverride: () => buildSystemPrompt(deps),
-    // 插件会话不加载这些资源：它们只会进系统提示词，不会被用到
+    // 插件会话不扫描环境中的这些资源：它们只会进系统提示词，不会被用到。
+    // Skill 是例外：仍保持 noSkills=true，但允许通过 AgentConfig.skillPaths
+    // 定向加载本次调用显式授权的 SKILL.md，避免暴露用户/项目的全部 Skills。
     ...(isPluginThread
       ? {
           noSkills: true,
           noContextFiles: true,
           noExtensions: true,
           noPromptTemplates: true,
+          additionalSkillPaths: agentConfigStorage.getStore()?.skillPaths ?? [],
         }
       : {}),
   })
@@ -169,7 +206,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   for (const provider of providers) {
     const firstModel = provider.models[0]
     if (firstModel) {
-      const candidateModel = deps.modelRegistry.find(provider.id, firstModel.id)
+      const candidateModel = deps.modelRuntime.getModel(provider.id, firstModel.id)
       const candidateApiKey = await deps.getApiKey(provider.id)
       if (candidateModel && candidateApiKey) {
         defaultModel = candidateModel
@@ -263,17 +300,21 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   // 6. 选择 SessionManager：
   //    - plugin:* 线程每次创建独立 SessionManager，避免不同 Agent 调用共享同一 Pi SDK 会话树，
   //      从而防止历史消息（含 tool 消息）跨 Agent 泄漏，导致网关报 400。
-  //    - 其他线程（chat）复用共享 sessionManager，保持多轮对话状态。
-  //    复用函数开头算好的 isPluginThread，避免同一判断写两遍后被改歪。
-  const sessionManager = isPluginThread
-    ? SessionManager.create(
-        deps.config.cwd,
-        typeof deps.sessionManager.getSessionDir === 'function'
-          ? deps.sessionManager.getSessionDir()
-          : join(deps.config.dataDir, 'agent', 'sessions'),
-        { id: randomUUID() },
-      )
-    : deps.sessionManager
+  //    - chat 线程在提供 resumePath 时用 SessionManager.open 打开既有 JSONL
+  //      （方案 §9.4：重启/LRU 淘汰后恢复原会话）；否则复用共享 sessionManager。
+  const sessionManager = selectSessionManager({
+    isPluginThread,
+    resumePath: deps.resumePath,
+    cwd: deps.config.cwd,
+    sessionDir:
+      typeof deps.sessionManager.getSessionDir === 'function'
+        ? deps.sessionManager.getSessionDir()
+        : join(deps.config.dataDir, 'agent', 'sessions'),
+    sharedSessionManager: deps.sessionManager,
+    newId: () => randomUUID(),
+    createManager: (cwd, dir, meta) => SessionManager.create(cwd, dir, meta),
+    openManager: (path, dir, cwdOverride) => SessionManager.open(path, dir, cwdOverride),
+  })
 
   // 7. 创建 Agent Session
   const thinkingLevel: ThinkingLevel | undefined = deps.threadSettingsStore
@@ -281,8 +322,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     : undefined
 
   const { session } = await createAgentSession({
-    authStorage: deps.authStorage,
-    modelRegistry: deps.modelRegistry,
+    modelRuntime: deps.modelRuntime,
     sessionManager,
     settingsManager: deps.settingsManager,
     resourceLoader,
@@ -426,7 +466,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
 
         // 推送上下文占用更新：totalTokens 是当前上下文窗口的实际 token 占用
         // 同时从 modelRegistry 获取当前模型的 contextWindow
-        const modelInfo = deps.modelRegistry.find(msg.provider as string, msg.model as string)
+        const modelInfo = deps.modelRuntime.getModel(msg.provider as string, msg.model as string)
         const contextWindow = modelInfo?.contextWindow ?? 0
 
         deps.eventBus.emit('context:update', {

@@ -133,7 +133,7 @@ export class ChapterChatRunner {
     for (const member of respondents) {
       const history = this.chatStore.list(projectId, chapterNumber)
       try {
-        const content = await this.invokeMember(member, input.message, history, options)
+        const content = await this.invokeMember(member, projectId, input.message, history, options)
         const agentType = this.inferAgentType(member.id)
         const reply: ChapterChatReply = {
           agentId: member.id,
@@ -265,6 +265,7 @@ export class ChapterChatRunner {
   /** 调用 Agent 发言 */
   private async invokeMember(
     member: DiscussionMember,
+    projectId: string,
     userMessage: string,
     history: ChapterChatMessage[],
     options: ChapterChatOptions,
@@ -280,11 +281,21 @@ export class ChapterChatRunner {
 
     const userMessageWithCtx = `## 用户提问\n${userMessage}\n\n---\n\n## 章节聊天记录（最近 ${recentHistory.length} 条）\n${transcript}\n\n---\n\n请基于你的角色定位回应用户。回答要简洁、聚焦，不要写小说正文，不要使用破折号"——"。`
 
+    const creationSkillPath = this.promptBuilder.getNovelCreationSkillPath(projectId)
+    const creationSkill = creationSkillPath
+      ? { name: 'novel-creation', path: creationSkillPath }
+      : undefined
+    const extraSkills = creationSkill && member.skill ? [creationSkill] : undefined
+
     const handle = await this.context.createAgUiSession({
       systemPrompt,
       prefixUserMessage: prefixMessages.length === 1 ? prefixMessages[0] : prefixMessages,
       userMessage: userMessageWithCtx,
       tools: [],
+      // 角色 Skill 负责具体专业方法，novel-creation 负责统一模式边界。
+      // 角色成员没有专业 Skill 时，直接以 novel-creation 作为主 Skill。
+      skill: member.skill ?? creationSkill,
+      ...(extraSkills ? { extraSkills } : {}),
       signal: options.signal,
       // 本次选择覆盖成员配置；未选择时工种按 AgentPage 配置，角色走系统默认。
       modelId: options.modelId ?? member.modelId,
@@ -353,6 +364,9 @@ export class ChapterChatRunner {
     for (const agentType of CHAT_AGENT_TYPES) {
       const config = NOVEL_AGENT_CONFIGS[agentType]
       const agentConfig = this.context.subagentManager?.getAgent(config.id)
+      // Skill 白名单接入：自由聊天沿用标准工作流的角色方法（novel-{role}），
+      // 与 NovelOrchestrator.skillByAgent 口径一致；覆盖模板时回退旧身份。
+      const skill = this.resolveRoleSkill(agentType, projectId)
       members.push({
         id: config.id,
         type: 'role',
@@ -361,7 +375,10 @@ export class ChapterChatRunner {
         canConverge: false, // 自由聊天不需要收敛
         buildSystemPrompt: () => this.promptBuilder.buildSystemPrompt(projectId, agentType),
         buildContextPrompt: () => roleChapterContext,
-        buildIdentityPrompt: () => this.buildRoleIdentityPrompt(agentType, projectId),
+        buildIdentityPrompt: () => skill
+          ? this.buildRoleIdentityPrompt(agentType, projectId, skill.buildIdentity)
+          : this.buildRoleIdentityPrompt(agentType, projectId),
+        ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
         modelId: agentConfig?.model,
       })
     }
@@ -393,10 +410,58 @@ export class ChapterChatRunner {
    * buildSystemPrompt 是 STATIC 层（跨 Agent 共享，不含文风），
    * buildAgentIdentity 才会把 compileWritingStylePrompt 的输出拼到 identity 后。
    */
-  private buildRoleIdentityPrompt(agentType: NovelAgentType, projectId: string): string {
-    const identity = this.promptBuilder.buildAgentIdentity(projectId, agentType)
+  private buildRoleIdentityPrompt(
+    agentType: NovelAgentType,
+    projectId: string,
+    buildIdentity?: (pid: string) => string,
+  ): string {
+    const identity = buildIdentity
+      ? buildIdentity(projectId)
+      : this.promptBuilder.buildAgentIdentity(projectId, agentType)
     const roleHint = `\n\n## 当前模式：章节自由聊天\n你正在与用户就当前章节进行自由对话。回答要简洁、聚焦，不要写小说正文，不要使用破折号"——"。`
     return identity + roleHint
+  }
+
+  /**
+   * 解析工种 Agent 的标准角色 Skill（与 NovelOrchestrator.skillByAgent 口径一致）。
+   *
+   * 返回 undefined 时调用方回退旧模板身份路径（模板覆盖 / 方法缺失 / 文件缺失）。
+   */
+  private resolveRoleSkill(
+    agentType: NovelAgentType,
+    projectId: string,
+  ): { name: string; path: string; buildIdentity: (pid: string) => string } | undefined {
+    const entries: Partial<
+      Record<
+        NovelAgentType,
+        { name: string; getPath: (pid: string) => string | undefined; buildIdentity: (pid: string) => string }
+      >
+    > = {
+      director: {
+        name: 'novel-director',
+        getPath: pid => this.promptBuilder.getDirectorSkillPath(pid),
+        buildIdentity: pid => this.promptBuilder.buildDirectorSkillIdentity(pid),
+      },
+      writer: {
+        name: 'novel-writer',
+        getPath: pid => this.promptBuilder.getWriterSkillPath(pid),
+        buildIdentity: pid => this.promptBuilder.buildWriterSkillIdentity(pid),
+      },
+      reviewer: {
+        name: 'novel-reviewer',
+        getPath: pid => this.promptBuilder.getReviewerSkillPath(pid),
+        buildIdentity: pid => this.promptBuilder.buildReviewerSkillIdentity(pid),
+      },
+      reviser: {
+        name: 'novel-reviser',
+        getPath: pid => this.promptBuilder.getReviserSkillPath(pid),
+        buildIdentity: pid => this.promptBuilder.buildReviserSkillIdentity(pid),
+      },
+    }
+    const entry = entries[agentType]
+    if (!entry) return undefined
+    const path = entry.getPath(projectId)
+    return path ? { name: entry.name, path, buildIdentity: entry.buildIdentity } : undefined
   }
 
   /** 构建角色成员 */

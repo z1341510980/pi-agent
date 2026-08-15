@@ -20,6 +20,15 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 
+const FRONTMATTER_PATTERN = /^---\r?\n[\s\S]*?\r?\n---\r?\n/
+
+/** Skill 化的默认模板仍可作为旧 Prompt 回退；渲染时不把 YAML 元数据发给模型。 */
+export function stripPromptFrontmatter(content: string): string {
+  return FRONTMATTER_PATTERN.test(content)
+    ? content.replace(FRONTMATTER_PATTERN, '').trimStart()
+    : content
+}
+
 const DEFAULT_PROMPTS_DIR = resolve(
   typeof __dirname !== 'undefined'
     ? __dirname
@@ -55,9 +64,23 @@ export class PromptManager {
       .filter((f) => f.isFile() && f.name.endsWith('.md'))
     for (const f of files) {
       const name = f.name.replace(/\.md$/, '')
-      const content = readFileSync(join(DEFAULT_PROMPTS_DIR, f.name), 'utf-8')
+      const content = stripPromptFrontmatter(readFileSync(join(DEFAULT_PROMPTS_DIR, f.name), 'utf-8'))
       this.cache.set(`default:${name}`, content)
     }
+  }
+
+  /**
+   * 获取内置模板的文件路径，供同一资源作为显式 Pi Skill 加载。
+   *
+   * 项目文件或 SQLite 已覆盖该模板时返回 undefined，继续走旧模板渲染路径，
+   * 避免 Skill 试点绕过用户已经保存的 Reviewer 自定义配置。
+   */
+  getDefaultTemplatePath(name: string, projectId?: string): string | undefined {
+    const runtimeOverride = this.stmtGetTemplate.get(name, projectId ?? null) as { content: string } | undefined
+    if (runtimeOverride) return undefined
+    if (existsSync(join(this.projectPromptsDir, `${name}.md`))) return undefined
+    const path = join(DEFAULT_PROMPTS_DIR, `${name}.md`)
+    return existsSync(path) ? path : undefined
   }
 
   /**
@@ -82,7 +105,7 @@ export class PromptManager {
     // 3. 检查项目级文件覆盖
     const projectFile = join(this.projectPromptsDir, `${name}.md`)
     if (existsSync(projectFile)) {
-      const content = readFileSync(projectFile, 'utf-8')
+      const content = stripPromptFrontmatter(readFileSync(projectFile, 'utf-8'))
       this.cache.set(cacheKey, content)
       return content
     }

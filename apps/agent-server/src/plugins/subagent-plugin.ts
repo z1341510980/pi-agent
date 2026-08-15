@@ -93,6 +93,13 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
     return withAgentConfig(effectiveConfig, async () => {
       // 为 subagent 创建独立的 threadId
       const subagentThreadId = `subagent-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      // 运行状态观测（§9.3.3 pi-subagents 可观测桥）：记录本次派遣的起止与终态
+      app.runtimeRuns?.start({
+        id: subagentThreadId,
+        sessionId: subagentThreadId,
+        source: 'subagent-dispatch',
+      })
+      try {
       const threadSession = await app.piSessionStore.getOrCreate(subagentThreadId)
 
       // 如果目标 Agent 配置了模型，切换模型
@@ -179,7 +186,12 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
         result = String(rawResult ?? '')
       }
 
+      app.runtimeRuns?.finish(subagentThreadId, 'completed')
       return { result, threadId: subagentThreadId }
+      } catch (err) {
+        app.runtimeRuns?.finish(subagentThreadId, 'failed')
+        throw err
+      }
     })
   })
 

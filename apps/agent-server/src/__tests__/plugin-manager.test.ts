@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { EventBus } from '@repo/shared/events'
-import { PluginManager, measurePayload } from '../core/plugin/plugin-manager.js'
+import { buildPluginSessionPrompt, PluginManager, measurePayload } from '../core/plugin/plugin-manager.js'
 import { eventBusPlugin } from '../plugins/event-bus.plugin.js'
 import { pluginLoaderPlugin } from '../plugins/plugin-loader.plugin.js'
 import { createHelloPlugin } from '../plugins/examples/hello-plugin/index.js'
@@ -59,6 +59,21 @@ function createTestPlugin(options: {
 }
 
 describe('PluginManager', () => {
+  it('buildPluginSessionPrompt 显式展开授权 Skill 并保留原任务', () => {
+    const prompt = buildPluginSessionPrompt('请验收第 3 章', {
+      name: 'novel-reviewer',
+      path: 'D:/skills/novel-reviewer/SKILL.md',
+    })
+    expect(prompt).toBe('/skill:novel-reviewer 请验收第 3 章')
+    expect(
+      buildPluginSessionPrompt('请规划第 4 章叙事任务', {
+        name: 'novel-director',
+        path: 'D:/skills/novel-director/SKILL.md',
+      }),
+    ).toBe('/skill:novel-director 请规划第 4 章叙事任务')
+    expect(buildPluginSessionPrompt('普通任务')).toBe('普通任务')
+  })
+
   it('measurePayload counts a top-level provider system prompt', () => {
     const payload = { system: 'system text', messages: [{ role: 'user', content: 'hello' }], tools: [] }
     const stats = measurePayload(payload)

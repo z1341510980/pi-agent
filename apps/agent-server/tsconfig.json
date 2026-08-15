@@ -6,7 +6,11 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "pi-subagents": ["src/types/pi-subagents-shim.d.ts"]
+    }
   },
   "include": ["src"]
 }

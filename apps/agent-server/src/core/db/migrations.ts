@@ -246,6 +246,17 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       updated_at     INTEGER NOT NULL DEFAULT (unixepoch())
     );`,
   },
+  {
+    // 会话身份索引 P0（方案 §9.4）：threadId → Pi session JSONL 路径 的持久化映射。
+    // PiSessionStore 在会话创建成功后异步写入；getSessionFilePath 内存 miss 时回退查表，
+    // 聊天线程重启/LRU 淘汰后据此恢复原会话（SessionManager.open）。
+    id: '015_create_pi_session_identity',
+    sql: `CREATE TABLE IF NOT EXISTS pi_session_identity (
+      thread_id    TEXT PRIMARY KEY,
+      session_path TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );`,
+  },
 ]
 
 /** 执行所有待执行的迁移 */

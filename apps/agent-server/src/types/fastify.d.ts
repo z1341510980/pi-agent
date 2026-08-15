@@ -14,6 +14,9 @@ import type { ProviderConfigStore } from '../core/config/provider-config-store.j
 import type { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import type { ProxyManager } from '../core/config/proxy-manager.js'
 import type { ThreadSettingsStore } from '../core/agent/thread-settings-store.js'
+import type { RuntimeRunRegistry } from '../core/agent/runtime-run-registry.js'
+import type { PiActorsKernel } from '../core/agent/pi-actors-kernel.js'
+import type { PiSubagentsHost } from '../core/agent/pi-subagents-host.js'
 import type { SettingsManager } from '@earendil-works/pi-coding-agent'
 import type { PluginManager } from '../core/plugin/plugin-manager.js'
 import type { CronScheduler } from '../core/cron/cron-scheduler.js'
@@ -21,7 +24,7 @@ import type Database from 'better-sqlite3'
 
 // Pi SDK 类型通过 any 声明，避免编译时依赖具体 SDK 类型
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type PiAuthStorage = any
+type PiModelRuntime = any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PiModelRegistry = any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,8 +36,11 @@ declare module 'fastify' {
   }
 
   interface FastifyInstance {
-    authStorage: PiAuthStorage
+    modelRuntime: PiModelRuntime
     modelRegistry: PiModelRegistry
+    runtimeRuns: RuntimeRunRegistry
+    piActorsKernel: PiActorsKernel
+    piSubagentsHost: PiSubagentsHost
     sessionManager: PiSessionManager
     settingsManager: SettingsManager
     getApiKey: (provider: string) => Promise<string | undefined>

@@ -23,6 +23,14 @@ export function buildCharacterIdentityPrompt(input: {
   mode: 'discussion' | 'free_chat'
   voiceProfile?: CharacterVoiceProfile
   hasBoundaryState?: boolean
+  /**
+   * 角色演员方法身份的构建器（Skill 薄壳路径）。
+   *
+   * 提供时替代 buildAgentIdentity('character-actor', true)（完整模板）：
+   * 单角色调用由 novel-character-actor Skill 展开角色方法；合并演出不走
+   * Skill，调用方应通过不传本参数保留完整模板（见 buildMergedActorIdentityPrompt）。
+   */
+  actorIdentityBuilder?: (projectId: string) => string
 }): string {
   const {
     projectId,
@@ -31,6 +39,7 @@ export function buildCharacterIdentityPrompt(input: {
     mode,
     voiceProfile,
     hasBoundaryState = true,
+    actorIdentityBuilder,
   } = input
   const lines: string[] = [
     mode === 'discussion'
@@ -65,7 +74,11 @@ export function buildCharacterIdentityPrompt(input: {
 
   lines.push('')
   if (mode === 'discussion') {
-    lines.push(promptBuilder.buildAgentIdentity(projectId, 'character-actor', true))
+    lines.push(
+      actorIdentityBuilder
+        ? actorIdentityBuilder(projectId)
+        : promptBuilder.buildAgentIdentity(projectId, 'character-actor', true),
+    )
   } else {
     lines.push(
       '## 对话要求',

@@ -1,6 +1,7 @@
 import type { ForeshadowBeat, NovelForeshadow } from '@/api/novel-client'
+import type { NovelCreationMode } from '@repo/shared/novel'
 
-export type ChapterTaskKind = 'workflow' | 'discussion' | 'arrange' | 'reverse'
+export type ChapterTaskKind = NovelCreationMode
 export type ChapterFlowSelection = ChapterTaskKind | 'chat'
 export type ChapterStartMode = 'manual' | 'ai-arrange'
 

@@ -13,7 +13,8 @@
  *   当 needsChapterContext 为 false 时：
  *     - systemPrompt  为 ''（不调用 promptBuilder.buildSystemPrompt）
  *     - sharedContext 为 ''（不调用 promptBuilder.buildChapterContextShared）
- *   而 buildAgentIdentity 仍被调用——文风身份得以保留。
+ *   而 agent 身份仍被构建——Writer/Reviser 迁移后由 novel-reviser Skill 提供角色
+ *   方法，identity 前缀保留 system-base 薄身份壳与铁律（见下方测试）。
  *
  * 测试策略：
  *   完整跑一遍 runAgentOnce 会走到真实 LLM 调用（context.createAgUiSession），
@@ -182,12 +183,20 @@ describe('NovelOrchestrator Reviser 上下文模式', () => {
     expect(buildChapterContextSharedSpy).not.toHaveBeenCalled()
   })
 
-  it('Reviser 调用 contextMode=editor：仍保留 agent 身份提示词（文风身份）', async () => {
+  it('Reviser 调用 contextMode=editor：仍保留 agent 身份提示词（Skill 薄身份壳 + 铁律）', async () => {
     await expect(invokeRunAgentOnce('reviser', { contextMode: 'editor' })).rejects.toThrow(STOP_ERROR)
 
-    // editor 只跳过「全局 system + 章节 shared」，agent 身份（含文风指纹）必须保留，
-    // 否则 Reviser 修订后会丢失声音一致性。
-    expect(buildAgentIdentitySpy).toHaveBeenCalledWith(fx.projectId, 'reviser')
+    // editor 只跳过「全局 system + 章节 shared」，agent 身份必须保留。
+    // Writer/Reviser 迁移后身份由 novel-reviser Skill 提供角色方法，identity 前缀
+    // 保留 system-base 薄身份壳与铁律（文风在配置档案时同样保留），不再调旧模板组装。
+    expect(buildAgentIdentitySpy).not.toHaveBeenCalled()
+
+    const arg = createAgUiSessionSpy.mock.calls[0][0] as { prefixUserMessage: string[]; skill?: { name: string } }
+    expect(arg.skill?.name).toBe('novel-reviser')
+    // editor 模式 shared 为空，identity 是第一条 prefix
+    expect(arg.prefixUserMessage[0]).toContain('novel-reviser Skill')
+    expect(arg.prefixUserMessage[0]).toContain('正文底线')
+    expect(arg.prefixUserMessage[0]).not.toContain('负责局部修订')
   })
 
   it('Reviser 调用 contextMode=editor：确实推进到 LLM 调用前一刻（验证断点位置正确）', async () => {

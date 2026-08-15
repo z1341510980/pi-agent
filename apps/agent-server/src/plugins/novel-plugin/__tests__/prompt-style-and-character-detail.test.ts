@@ -117,9 +117,12 @@ describe('文风指纹指标可信度', () => {
     expect(Number(match![1])).toBeGreaterThan(0)
   })
 
-  it('指标可信时才升级为 ⚠️ 硬约束', () => {
+  it('指标可信时仍只作为分布倾向，不把最近章节复制成逐章模板', () => {
     const ctx = buildBuilder(store).buildChapterContextShared(projectId, 4, TASK, EMPTY_CONSTRAINTS)
-    expect(ctx).toContain('⚠️ 本章文风必须与此指纹保持一致')
+    expect(ctx).not.toContain('⚠️ 本章文风必须与此指纹保持一致')
+    expect(ctx).toContain('最近正文的稳定倾向')
+    expect(ctx).toContain('不是本章配额')
+    expect(ctx).toContain('允许在合理范围内偏离')
   })
 
   it('样本无对话时指纹降级为参考值，不再强制一致', () => {

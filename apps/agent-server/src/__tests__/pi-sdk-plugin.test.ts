@@ -31,8 +31,8 @@ describe('Pi SDK 插件', () => {
     expect(app.eventBus).toBeDefined()
   })
 
-  it('TC-02: 注册 authStorage 到 Fastify 实例', () => {
-    expect(app.authStorage).toBeDefined()
+  it('TC-02: 注册 modelRuntime 到 Fastify 实例', () => {
+    expect(app.modelRuntime).toBeDefined()
   })
 
   it('TC-03: 注册 modelRegistry 到 Fastify 实例', () => {

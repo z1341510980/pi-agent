@@ -1847,7 +1847,47 @@ export class NovelEntityGenerator {
     // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
     // 未配置则走默认 Provider。
     const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
-    const fullUserMessage = this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
+    // Skill 白名单接入：反推（content）与编排（outline）分别由
+    // novel-entity-extractor / novel-matrix-arranger Skill 提供方法；
+    // 项目/SQLite 覆盖模板时回退旧身份路径（buildAgentIdentity 兜底）。
+    const arrangeSkill = isReverse
+      ? {
+          name: 'novel-entity-extractor',
+          getPath: () =>
+            typeof this.promptBuilder.getEntityExtractorSkillPath === 'function'
+              ? this.promptBuilder.getEntityExtractorSkillPath(projectId)
+              : undefined,
+          buildIdentity: () => this.promptBuilder.buildEntityExtractorSkillIdentity(projectId),
+        }
+      : {
+          name: 'novel-matrix-arranger',
+          getPath: () =>
+            typeof this.promptBuilder.getMatrixArrangerSkillPath === 'function'
+              ? this.promptBuilder.getMatrixArrangerSkillPath(projectId)
+              : undefined,
+          buildIdentity: () => this.promptBuilder.buildMatrixArrangerSkillIdentity(projectId),
+        }
+    const arrangeSkillPath = arrangeSkill.getPath()
+    // 回退语义与其他角色一致：项目/SQLite 覆盖模板或文件缺失（skillPath undefined）时，
+    // 渲染模板本体（覆盖内容优先）；模板不可用时退回旧的通用生成器身份。
+    const fallbackIdentity = (): string => {
+      const templateName = isReverse ? 'role-entity-extractor' : 'role-matrix-arranger'
+      try {
+        return this.promptManager.render(
+          'system-base',
+          {
+            agent_type: isReverse ? 'entity-extractor' : 'matrix-arranger',
+            agent_role: this.promptManager.getTemplate(templateName, projectId),
+          },
+          projectId,
+        )
+      } catch {
+        return this.promptBuilder.buildAgentIdentity(projectId, 'character-generator')
+      }
+    }
+    const fullUserMessage = (arrangeSkillPath
+      ? arrangeSkill.buildIdentity()
+      : fallbackIdentity())
       + '\n\n---\n\n' + userPrompt
     const payloadStats = emptyPayloadStats()
     const callStartedAt = Date.now()
@@ -1862,6 +1902,9 @@ export class NovelEntityGenerator {
       timeoutMs: 300_000,
       signal,
       onPayloadStats: (stats) => addPayloadStats(payloadStats, stats),
+      ...(arrangeSkillPath
+        ? { skill: { name: arrangeSkill.name, path: arrangeSkillPath } }
+        : {}),
     })
     const call: ArrangerCallLog = {
       operation: 'plan', sessionId: session.sessionId ?? '', systemPrompt, userMessage: fullUserMessage,

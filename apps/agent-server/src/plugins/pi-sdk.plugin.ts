@@ -2,7 +2,7 @@ import fp from 'fastify-plugin'
 import type { FastifyPluginAsync } from 'fastify'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { AuthStorage, ModelRegistry, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent'
+import { ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent'
 import { createModuleLogger } from '../lib/logger.js'
 import { ProviderConfigStore } from '../core/config/provider-config-store.js'
 import { ProxyConfigStore } from '../core/config/proxy-config-store.js'
@@ -13,7 +13,7 @@ import { normalizeProviderBaseUrl } from '../core/config/provider-base-url.js'
 
 /**
  * Pi SDK 核心对象注册插件
- * 创建 AuthStorage、ModelRegistry、SessionManager 并挂载到 Fastify 实例
+ * 创建 ModelRuntime、ModelRegistry、SessionManager 并挂载到 Fastify 实例
  *
  * 数据目录解析顺序：
  * 1. PI_DATA_DIR 环境变量（wenlang-agent 自定义）
@@ -52,14 +52,17 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   log.info(`Pi SDK 数据目录：${dataDir}`)
   log.info(`Pi SDK 工作目录：${cwd}`)
 
-  // AuthStorage：凭证存储（API Key、OAuth Token）
-  // AuthStorage.create 会在目录不存在时自动创建，并初始化空 auth.json
-  const authStorage = AuthStorage.create(authPath)
-  app.decorate('authStorage', authStorage)
-
-  // ModelRegistry：模型注册表（内置模型 + models.json 自定义模型）
-  // 文件不存在时返回空自定义模型列表，仅加载内置模型
-  const modelRegistry = ModelRegistry.create(authStorage, modelsJsonPath)
+  // SDK 0.84：ModelRuntime 统一承载模型目录与凭证（取代 AuthStorage + ModelRegistry.create）。
+  // - 启动时不触发网络目录刷新（refreshOnCreate: false），模型完全由前端 Provider 配置驱动；
+  // - ModelRegistry 是 ModelRuntime 的同步兼容门面，供插件/路由继续用 find/getAll。
+  const modelRuntime = await ModelRuntime.create({
+    authPath,
+    modelsPath: modelsJsonPath,
+    allowModelNetwork: false,
+    refreshOnCreate: false,
+  })
+  app.decorate('modelRuntime', modelRuntime)
+  const modelRegistry = new ModelRegistry(modelRuntime)
   app.decorate('modelRegistry', modelRegistry)
 
   // SessionManager：会话管理（JSONL 持久化、树结构、分支、Compaction）
@@ -92,7 +95,7 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
   const threadSettingsStore = new ThreadSettingsStore(app.db)
   app.decorate('threadSettingsStore', threadSettingsStore)
 
-  // 启动时从持久化存储恢复 Provider 配置到 ModelRegistry 和 AuthStorage
+  // 启动时从持久化存储恢复 Provider 配置到 ModelRegistry（兼容门面）和 ModelRuntime
   // 这样进程重启后无需用户重新配置 Provider
   const restoredProviders = providerConfigStore.list()
   if (restoredProviders.length > 0) {
@@ -122,8 +125,8 @@ export const piSdkPlugin: FastifyPluginAsync = fp(async (app) => {
           }
         }),
       })
-      // 注入 API Key 到 AuthStorage
-      authStorage.setRuntimeApiKey(config.id, config.apiKey)
+      // 注入 API Key 到 ModelRuntime（runtime override，异步）
+      await modelRuntime.setRuntimeApiKey(config.id, config.apiKey)
     }
     log.info(`已从 SQLite 恢复 ${restoredProviders.length} 个 Provider 配置`)
   }

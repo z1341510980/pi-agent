@@ -113,5 +113,7 @@ describe('声音锚点质量门', () => {
     const context = builder(store).buildChapterContextShared(projectId, 2, TASK, CONSTRAINTS)
     expect(context).toContain('叙事声音锚点（只参考自然观察和句子呼吸）')
     expect(context).toContain('不复用具体句式、比喻或开头结构')
+    expect(context).toContain('第1章代表片段')
+    expect(context).not.toContain('第1章开头：')
   })
 })

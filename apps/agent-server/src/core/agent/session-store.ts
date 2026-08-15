@@ -1,6 +1,13 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type WenlangAgentSession = any
-type PiSessionFactory = (threadId: string) => Promise<WenlangAgentSession>
+/**
+ * 会话工厂上下文（方案 §9.4）：chat 线程在注册表命中历史路径时，
+ * 通过 resumePath 恢复原会话（pi-session 用 SessionManager.open 打开既有 JSONL）。
+ */
+export interface PiSessionFactoryContext {
+  resumePath?: string
+}
+type PiSessionFactory = (threadId: string, context?: PiSessionFactoryContext) => Promise<WenlangAgentSession>
 
 export interface PiThreadSession {
   threadId: string
@@ -51,6 +58,8 @@ export class PiSessionStore {
   private readonly sweepIntervalMs: number
   private sweepTimer: ReturnType<typeof setInterval> | null = null
   private evictedCount = 0
+  /** 会话身份注册表（可选）：threadId → sessionPath 持久化（方案 §9.4） */
+  private identityRegistry?: import('./session-identity-registry.js').SessionIdentityRegistry
 
   constructor(options: PiSessionStoreOptions = {}) {
     this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS
@@ -61,6 +70,18 @@ export class PiSessionStore {
 
   setSessionFactory(factory: PiSessionFactory): void {
     this.sessionFactory = factory
+  }
+
+  /**
+   * 注入会话身份注册表（app.ts 在 SessionStore 创建后调用）。
+   *
+   * 注入后：
+   * - 会话创建成功后异步持久化 threadId → sessionPath；
+   * - getSessionFilePath 内存 miss 时回退查表；
+   * - chat 线程（非 plugin:*）在内存 miss 时按表中路径恢复原会话。
+   */
+  setIdentityRegistry(registry: import('./session-identity-registry.js').SessionIdentityRegistry): void {
+    this.identityRegistry = registry
   }
 
   async getOrCreate(threadId: string): Promise<PiThreadSession> {
@@ -84,9 +105,10 @@ export class PiSessionStore {
             if (!factory) {
               throw new Error('SessionFactory 未设置，请先调用 setSessionFactory')
             }
-            const session = await factory(threadId)
+            const session = await factory(threadId, this.restoreContext(threadId))
             existing.session = session
             existing.lastAccessedAt = Date.now()
+            void this.persistSessionIdentity(existing)
             return existing
           } finally {
             this.pendingPromises.delete(threadId)
@@ -117,7 +139,7 @@ export class PiSessionStore {
         if (!factory) {
           throw new Error('SessionFactory 未设置，请先调用 setSessionFactory')
         }
-        const session = await factory(threadId)
+        const session = await factory(threadId, this.restoreContext(threadId))
         const threadSession: PiThreadSession = {
           threadId,
           session,
@@ -126,6 +148,7 @@ export class PiSessionStore {
           pendingToolCalls: new Map(),
         }
         this.sessions.set(threadId, threadSession)
+        void this.persistSessionIdentity(threadSession)
         return threadSession
       } finally {
         this.pendingPromises.delete(threadId)
@@ -134,6 +157,39 @@ export class PiSessionStore {
 
     this.pendingPromises.set(threadId, promise)
     return promise
+  }
+
+  /**
+   * 计算本次会话创建的恢复上下文（方案 §9.4）。
+   *
+   * 仅 chat 线程（非 plugin:*）在注册表命中历史路径时提供 resumePath：
+   * - plugin:* 是一次性调用，每次强制新建 SessionManager，不做恢复；
+   * - 未注入注册表 / 无历史路径时返回 undefined（新建会话，旧行为）。
+   */
+  private restoreContext(threadId: string): PiSessionFactoryContext | undefined {
+    if (threadId.startsWith('plugin:')) return undefined
+    const resumePath = this.identityRegistry?.get(threadId) ?? undefined
+    return resumePath ? { resumePath } : undefined
+  }
+
+  /**
+   * 持久化 threadId → sessionPath（fire-and-forget）。
+   *
+   * 会话创建成功即写注册表，使 getSessionFilePath 在 LRU 淘汰/重启后仍可查表；
+   * 失败只静默忽略（注册表是增强项，不影响会话本体）。
+   */
+  private async persistSessionIdentity(threadSession: PiThreadSession): Promise<void> {
+    if (!this.identityRegistry) return
+    if (threadSession.threadId.startsWith('plugin:')) return
+    try {
+      const metadata = await threadSession.session.getMetadata()
+      const path = (metadata as { path?: unknown } | undefined)?.path
+      if (typeof path === 'string' && path.length > 0) {
+        this.identityRegistry.put(threadSession.threadId, path)
+      }
+    } catch {
+      // 存储实现没有 metadata / 读取失败：跳过本次持久化
+    }
   }
 
   /**
@@ -146,23 +202,25 @@ export class PiSessionStore {
    * **与 threadId 毫无关系**。`GET /api/sessions/:threadId/messages` 原来直接拼
    * `${threadId}.jsonl` 去读，永远找不到文件 —— 历史消息分页因此一直返回空。
    *
-   * 真实路径在 session 的 metadata 里（`JsonlSessionMetadata.path`），只能通过
-   * 活跃 session 对象拿到。代价是：会话被 LRU 淘汰或进程重启后拿不到路径。
-   * 这是当前架构下的上限 —— 要彻底解决得把 threadId → sessionPath 的映射持久化。
+   * 真实路径在 session 的 metadata 里（`JsonlSessionMetadata.path`），优先从活跃
+   * session 对象拿；内存 miss（LRU 淘汰或进程重启）时回退到持久化的会话身份
+   * 注册表（方案 §9.4，见 SqliteSessionIdentityRegistry / 迁移 015）。
    *
-   * @returns 文件路径；会话不在内存中、或底层不是 JSONL 存储时返回 null
+   * @returns 文件路径；会话不在内存中且注册表无记录、或底层不是 JSONL 存储时返回 null
    */
   async getSessionFilePath(threadId: string): Promise<string | null> {
     const threadSession = this.sessions.get(threadId)
-    if (!threadSession?.session) return null
-    try {
-      const metadata = await threadSession.session.getMetadata()
-      const path = (metadata as { path?: unknown } | undefined)?.path
-      return typeof path === 'string' && path.length > 0 ? path : null
-    } catch {
-      // 存储实现没有 metadata / 读取失败：当作拿不到路径
-      return null
+    if (threadSession?.session) {
+      try {
+        const metadata = await threadSession.session.getMetadata()
+        const path = (metadata as { path?: unknown } | undefined)?.path
+        if (typeof path === 'string' && path.length > 0) return path
+      } catch {
+        // 存储实现没有 metadata / 读取失败：继续尝试注册表
+      }
     }
+    // 方案 §9.4：内存 miss（LRU 淘汰/重启）时回退持久化注册表
+    return this.identityRegistry?.get(threadId) ?? null
   }
   /**
    * 尝试占用 threadId 的活跃 run 槽位

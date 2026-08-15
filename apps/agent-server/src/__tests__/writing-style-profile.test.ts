@@ -71,8 +71,13 @@ describe('writing style profile', () => {
     expect(writer.content).toContain('项目文风档案：冷峻测试文风')
     expect(writer.content).toContain('正向文风样本')
     expect(writer.content).toContain('反向文风样本')
+    expect(writer.content).toContain('变化预算')
+    expect(writer.content).toContain('不是逐章配额')
+    expect(writer.content).toContain('不要复刻样本或前章的句式路径')
     expect(writer.content).not.toContain('——')
     expect(reviewer.content).toContain('文风验收方式')
+    expect(reviewer.content).toContain('当前场景的合理波动')
+    expect(reviewer.content).toContain('不得仅因某一章偏离全书平均值就判定失败')
     expect(reviewer.profileHash).not.toBe(writer.profileHash)
   })
 

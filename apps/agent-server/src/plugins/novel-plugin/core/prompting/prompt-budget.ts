@@ -110,8 +110,8 @@ export const CHAPTER_ANCHOR_BUDGET = {
   recapFallback: 300,
   /** 上一章结尾取尾部字数 */
   previousEnding: 400,
-  /** 叙事声音锚点：每章取开头字数 */
-  soundAnchorOpening: 200,
+  /** 叙事声音锚点：每章代表片段字数 */
+  soundAnchorExcerpt: 200,
   /** 下一章开头取字数（重写中间章时的兼容锚点） */
   nextChapterOpening: 400,
   /** 上一章未兑现钩子条数（必须完整承接） */

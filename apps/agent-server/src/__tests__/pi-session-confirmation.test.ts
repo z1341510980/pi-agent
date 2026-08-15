@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AuthStorage, ModelRegistry, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent'
+import type { ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent'
 import Database from 'better-sqlite3'
 import { EventBus } from '@repo/shared/events'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { runMigrations } from '../core/db/migrations.js'
 import { ConfirmationManager } from '../core/tool/confirmation-manager.js'
 import { Gate } from '../core/tool/gate.js'
-import type { CredentialBridge } from '../core/config/credential-bridge.js'
 import type { ProviderConfigStore } from '../core/config/provider-config-store.js'
 import { createPiSession, type PiSessionDeps } from '../core/agent/pi-session.js'
 
@@ -100,18 +99,13 @@ function createDeps(
   runMigrations(db)
   return {
     threadId: 'thread-1',
-    authStorage: {
-      setFallbackResolver: vi.fn(),
-    } as unknown as AuthStorage,
-    modelRegistry: {
-      getAll: () => models,
-      find: (provider: string, modelId: string) => (
+    modelRuntime: {
+      getModel: (provider: string, modelId: string) => (
         models.find((model) => model.provider === provider && model.id === modelId)
       ),
-    } as unknown as ModelRegistry,
+    } as unknown as ModelRuntime,
     sessionManager: {} as unknown as SessionManager,
     settingsManager: {} as SettingsManager,
-    credentialBridge: {} as CredentialBridge,
     providerConfigStore: {
       getApiKey: (provider: string) => provider === 'openai' ? 'test-key' : undefined,
       list: () => [{ id: 'openai', models: [{ id: 'gpt-4.1-mini' }] }],

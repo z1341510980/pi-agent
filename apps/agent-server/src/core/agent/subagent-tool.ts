@@ -43,6 +43,13 @@ export interface AgentConfig {
   /** LLM 温度（0-2，未配置则使用 SDK 默认） */
   temperature?: number
   /**
+   * 本次 Agent 调用显式授权的 Skill 文件路径。
+   *
+   * plugin:* 会话仍保持 noSkills=true，不扫描用户或项目的全部 Skills；
+   * 这里只通过 DefaultResourceLoader.additionalSkillPaths 定向加载白名单 Skill。
+   */
+  skillPaths?: string[]
+  /**
    * 动态系统提示词构造器（可选）
    * 若提供，dispatchFn 调用前会执行此构造器，覆盖 AgentConfig.systemPrompt
    * 用于需要 per-call 动态构造 prompt 的场景（如 novel 的三层缓存 prompt）
