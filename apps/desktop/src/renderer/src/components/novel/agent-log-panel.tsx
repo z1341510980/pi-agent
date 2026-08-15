@@ -55,6 +55,15 @@ const STATUS_STYLE: Record<string, { label: string; icon: typeof CheckCircle2; c
   cancelled: { label: '取消', icon: AlertCircle, color: 'text-muted-foreground' },
 }
 
+/** 缓存协议徽标文案 */
+const PROTOCOL_BADGE_LABEL: Record<string, string> = {
+  'anthropic-cache-control': '显式断点',
+  'openai-prompt-cache-key': '键路由',
+  'automatic-prefix': '自动前缀',
+  none: '无缓存',
+  unknown: '协议未知',
+}
+
 const AGENT_TYPE_FILTERS = ['', 'director', 'writer', 'reviewer', 'memory']
 
 // ── 工具函数 ──
@@ -183,8 +192,11 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
         )}
       </div>
 
-      {/* LLM usage 诊断：input/output/cache read/cache write tokens */}
-      {(log.inputTokens > 0 || log.cacheReadTokens > 0 || log.cacheWriteTokens > 0) && (
+      {/* LLM usage 诊断：input/output/cache read/cache write tokens。
+          no_data（Provider 未上报 token）也渲染本区块，命中率位置显示「数据不足」，
+          否则用户会误以为缓存诊断缺失是前端问题。 */}
+      {(log.inputTokens > 0 || log.cacheReadTokens > 0 || log.cacheWriteTokens > 0
+        || log.dataQuality === 'no_data') && (
         <div className="rounded-md bg-surface-2 border border-border p-2 space-y-1">
           <div className="flex items-center justify-between">
             <span className="text-nano font-medium text-text">LLM Usage 诊断</span>
@@ -208,6 +220,14 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
               cache write <span className="font-medium">{formatTokens(log.cacheWriteTokens)}</span>
             </span>
             {(() => {
+              // Provider 未上报 token：无法计算命中率，明示而非留白
+              if (log.dataQuality === 'no_data') {
+                return (
+                  <span className="text-muted-foreground" title="Provider 未上报 token，无法评估命中率">
+                    数据不足
+                  </span>
+                )
+              }
               const promptTokens = log.cacheReadTokens + log.inputTokens
               if (promptTokens === 0) return null
               const rate = (log.cacheReadTokens / promptTokens) * 100
@@ -223,6 +243,28 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
               )
             })()}
           </div>
+          {(log.requestFingerprint || log.cacheKey || log.cacheablePrefixChars != null
+            || log.cacheProtocol || log.errorCode) && (
+            <div className="flex items-center gap-3 flex-wrap text-nano text-muted-foreground tabular-nums">
+              {log.requestFingerprint && (
+                <span title="分层内容 sha256 摘要（前缀漂移诊断）">指纹 {log.requestFingerprint}</span>
+              )}
+              {log.cacheKey && <span title="稳定缓存域">缓存键 {log.cacheKey}</span>}
+              {log.cacheablePrefixChars != null && (
+                <span title="system+shared+identity 字符数">可缓存前缀 {log.cacheablePrefixChars} 字符</span>
+              )}
+              {log.cacheProtocol && (
+                <span title="该目标使用的缓存协议">
+                  协议 {PROTOCOL_BADGE_LABEL[log.cacheProtocol] ?? log.cacheProtocol}
+                </span>
+              )}
+              {log.errorCode && (
+                <span className="text-destructive" title="llm-error-policy 归一化错误码">
+                  错误码 {log.errorCode}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -523,6 +565,11 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
                   >
                     {log.displayAgentName || agentStyle?.label || log.agentType}
                   </Badge>
+                  {log.cacheProtocol && (
+                    <Badge variant="outline" className="text-nano h-4 px-1 shrink-0">
+                      {PROTOCOL_BADGE_LABEL[log.cacheProtocol] ?? log.cacheProtocol}
+                    </Badge>
+                  )}
                   <span className="text-nano text-muted-foreground shrink-0 tabular-nums">
                     第 {log.chapterNumber} 章
                   </span>

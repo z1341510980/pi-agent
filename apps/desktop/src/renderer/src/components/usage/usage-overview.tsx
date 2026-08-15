@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
-import { ArrowDownToLine, ArrowUpFromLine, DollarSign, Hash, Database, AlertTriangle } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, DollarSign, Hash, Database, AlertTriangle, Percent, Timer } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { ObservabilityOverview } from '@/api/novel-client'
 
 export interface UsageSummary {
   totalInputTokens: number
@@ -39,12 +40,23 @@ export interface UsageOverviewProps {
   isLoading: boolean
   /** 预算信息（可选，传入后显示预算告警卡片） */
   budget?: UsageBudgetInfo
+  /** 项目观测总览（可选，传入时以遥测口径覆盖本地估算的缓存命中率） */
+  overview?: ObservabilityOverview | null
 }
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return n.toString()
+}
+
+/** 格式化耗时：<1s 显示 ms，<1min 显示秒（一位小数），否则显示分秒 */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const m = Math.floor(ms / 60_000)
+  const s = Math.round((ms % 60_000) / 1000)
+  return `${m}m${s}s`
 }
 
 function formatCost(usd: number): string {
@@ -76,18 +88,28 @@ function StatCard({ icon, label, value, sublabel, accent }: StatCardProps): Reac
   )
 }
 
-export function UsageOverview({ summary, isLoading, budget }: UsageOverviewProps): ReactElement {
+/**
+ * 用量总览卡片组
+ *
+ * overview 传入时以遥测口径（观测日志实测）覆盖本地估算：
+ * 缓存命中率优先取 overview.cacheHitRate，无遥测数据时回退本地 token 比值估算。
+ */
+export function UsageOverview({ summary, isLoading, budget, overview }: UsageOverviewProps): ReactElement {
   const totalTokens = (summary?.totalInputTokens ?? 0) + (summary?.totalOutputTokens ?? 0)
   const cacheTotal = (summary?.totalCacheReadTokens ?? 0) + (summary?.totalCacheWriteTokens ?? 0)
+  /** 后端口径缓存读取率（百分比）；overview 未传或无数据时为 null */
+  const backendHitRate = overview?.cacheHitRate != null ? overview.cacheHitRate * 100 : null
   const cacheHitRate =
-    totalTokens + cacheTotal > 0
-      ? ((summary?.totalCacheReadTokens ?? 0) / (totalTokens + cacheTotal)) * 100
-      : 0
+    backendHitRate != null
+      ? backendHitRate
+      : totalTokens + cacheTotal > 0
+        ? ((summary?.totalCacheReadTokens ?? 0) / (totalTokens + cacheTotal)) * 100
+        : 0
 
   if (isLoading) {
     return (
       <div className="grid grid-cols-2 gap-2.5">
-        {Array.from({ length: 5 }).map((_, i) => (
+        {Array.from({ length: 7 }).map((_, i) => (
           <div key={i} className="bg-surface-2 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.06)] p-3 animate-pulse">
             <div className="h-3 bg-muted/30 rounded w-12 mb-2" />
             <div className="h-5 bg-muted/30 rounded w-16" />
@@ -154,6 +176,17 @@ export function UsageOverview({ summary, isLoading, budget }: UsageOverviewProps
           label="缓存命中率"
           value={`${cacheHitRate.toFixed(1)}%`}
           sublabel={`读 ${formatTokens(summary?.totalCacheReadTokens ?? 0)} / 写 ${formatTokens(summary?.totalCacheWriteTokens ?? 0)}`}
+        />
+        <StatCard
+          icon={<Percent className="size-3.5" />}
+          label="缓存读取率（后端口径）"
+          value={backendHitRate == null ? '数据不足' : `${backendHitRate.toFixed(1)}%`}
+          sublabel={overview ? `no_data ${overview.dataQuality.noDataCalls} 次` : undefined}
+        />
+        <StatCard
+          icon={<Timer className="size-3.5" />}
+          label="平均耗时"
+          value={overview?.avgDurationMs != null ? formatDuration(overview.avgDurationMs) : '—'}
         />
       </div>
     </div>

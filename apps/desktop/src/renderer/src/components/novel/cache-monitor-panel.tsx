@@ -6,7 +6,7 @@
  * - SEMI 层：章节上下文哈希（单章内缓存命中）
  * - DYNAMIC 层：对话消息（不缓存）
  *
- * 哈希稳定（绿色）= 缓存命中；哈希变化（红色）= 缓存失效。
+ * 哈希稳定（绿色）= 前提满足；哈希变化（红色）= 前缀失效。
  */
 
 import { useEffect, useRef, useState, type ReactElement } from 'react'
@@ -19,8 +19,10 @@ import { useNovelDataStore } from '@/stores/novel-data-store'
 import {
   getCacheDiagnostics,
   getCacheLayerReport,
+  getObservabilityCache,
   type CacheDiagnostics,
   type CacheLayerReport,
+  type ObservabilityCacheReport,
 } from '@/api/novel-client'
 
 // ── Agent 类型中文标签 ──
@@ -30,6 +32,16 @@ const AGENT_LABELS: Record<string, string> = {
   writer: '写作',
   reviewer: '审稿',
   memory: '记忆',
+}
+
+// ── 缓存协议中文标签 ──
+
+const PROTOCOL_LABELS: Record<string, string> = {
+  'anthropic-cache-control': 'Anthropic 显式断点',
+  'openai-prompt-cache-key': 'OpenAI 缓存键路由',
+  'automatic-prefix': '自动前缀缓存',
+  none: '无缓存',
+  unknown: '未知协议',
 }
 
 // ── 缓存层定义 ──
@@ -78,6 +90,16 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
     enabled: !!currentProjectId,
     refetchInterval: 60_000,
   })
+
+  // Provider 实测命中：来自观测日志 cache_read 统计；定时刷新保留旧数据避免闪烁
+  const obsQuery = useQuery({
+    queryKey: ['novel-observability-cache', currentProjectId, chapterNumber, refreshKey],
+    queryFn: () => getObservabilityCache(currentProjectId!, { chapterNumber, limit: 200 }),
+    enabled: !!currentProjectId,
+    refetchInterval: 60_000,
+    placeholderData: (prev: unknown) => prev,
+  })
+  const obs = obsQuery.data
 
   // 记录上一次哈希用于对比
   useEffect(() => {
@@ -199,9 +221,15 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
               ))}
             </div>
 
+            {/* 实际命中（Provider 实测） */}
+            <ObservabilityHitSection report={obs} />
+
             {/* 系统提示词哈希表 */}
             <div className="space-y-2">
               <span className="text-xs font-medium text-text">系统提示词哈希（STATIC）</span>
+              <p className="text-nano text-hint leading-tight">
+                哈希稳定只是命中前提，实际命中见上方「实际命中」区块
+              </p>
               <div className="space-y-1">
                 {Object.entries(data.systemPromptHashes).map(([agentType, hash]) => {
                   const stable = isHashStable(agentType, hash)
@@ -376,6 +404,57 @@ function CacheLayerSection({
           <Info className="size-3 shrink-0 mt-px text-amber-600 dark:text-amber-400" />
           <p className="text-nano leading-relaxed text-muted-foreground">{note}</p>
         </div>
+      ))}
+    </div>
+  )
+}
+
+// ── 实际命中（Provider 实测）──
+
+function ObservabilityHitSection({
+  report,
+}: {
+  report: ObservabilityCacheReport | null | undefined
+}): ReactElement | null {
+  if (!report) return null
+
+  const meta = VERDICT_META[report.verdict]
+  const pct = report.overallCoverage != null ? Math.round(report.overallCoverage * 100) : null
+
+  return (
+    <div className="space-y-2">
+      <span className="text-xs font-medium text-text">实际命中（Provider 实测）</span>
+
+      {/* 总体结论 + 指纹稳定性 */}
+      <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/50 px-2 py-1.5">
+        <span className={cn('text-nano font-medium', meta.className)}>
+          {meta.label}
+          {pct != null && ` · 覆盖 ${pct}%`}
+        </span>
+        <span
+          className="text-nano text-muted-foreground tabular-nums"
+          title="不同指纹数 / 统计调用数"
+        >
+          指纹 {report.fingerprintStability.distinctFingerprints}/{report.fingerprintStability.totalCalls}
+        </span>
+      </div>
+
+      {/* 协议分布 */}
+      <div className="space-y-1">
+        <span className="text-nano text-hint">协议分布</span>
+        {Object.entries(report.protocolDistribution).map(([protocol, count]) => (
+          <div
+            key={protocol}
+            className="flex items-center justify-between rounded-md border border-border/60 bg-background/50 px-2 py-1.5 text-nano"
+          >
+            <span className="text-muted-foreground">{PROTOCOL_LABELS[protocol] ?? protocol}</span>
+            <span className="tabular-nums text-muted-foreground">{count} 次</span>
+          </div>
+        ))}
+      </div>
+
+      {report.notes.map((note) => (
+        <p key={note} className="text-nano text-hint leading-relaxed">{note}</p>
       ))}
     </div>
   )

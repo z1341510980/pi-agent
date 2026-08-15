@@ -7,6 +7,7 @@ import {
   AGENT_COLORS,
   AGENT_LABELS,
   formatTimestamp,
+  type ConversationAgentType,
   type ConversationMessage,
 } from './types'
 
@@ -14,6 +15,36 @@ export interface MessageBubbleProps {
   message: ConversationMessage
   /** 紧凑模式：隐藏头像和名称（用于同 Agent 连续消息分组内的后续消息） */
   compact?: boolean
+}
+
+/** 插话状态徽标（对话化交互形态 §3.1）：queued 灰 / injected 绿 / dropped 红 */
+const INTERJECT_BADGES: Record<
+  NonNullable<ConversationMessage['interjectStatus']>,
+  { label: string; className: string }
+> = {
+  queued: {
+    label: '已排队',
+    className: 'border-border bg-surface-2 text-muted-foreground',
+  },
+  injected: {
+    label: '已注入',
+    className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  },
+  dropped: {
+    label: '已丢弃',
+    className: 'border-destructive/40 bg-destructive/10 text-destructive',
+  },
+}
+
+/** 组装插话徽标文案与样式；injected 且有 agentType 时展示「已注入·导演」 */
+function getInterjectBadge(message: ConversationMessage): { label: string; className: string } | null {
+  if (!message.interjectStatus) return null
+  const badge = INTERJECT_BADGES[message.interjectStatus]
+  if (message.interjectStatus === 'injected' && message.interjectAgentType) {
+    const agentLabel = AGENT_LABELS[message.interjectAgentType as ConversationAgentType] ?? message.interjectAgentType
+    return { ...badge, label: `已注入·${agentLabel}` }
+  }
+  return badge
 }
 
 /**
@@ -32,6 +63,7 @@ export function MessageBubble({ message, compact = false }: MessageBubbleProps) 
   const isStreaming = message.status === 'streaming'
 
   if (isUser) {
+    const interjectBadge = getInterjectBadge(message)
     return (
       <motion.article
         initial={{ opacity: 0, y: 8 }}
@@ -48,6 +80,20 @@ export function MessageBubble({ message, compact = false }: MessageBubbleProps) 
               </div>
             </div>
           ) : null}
+          {/* 插话状态徽标（已排队/已注入/已丢弃），气泡下方右对齐 */}
+          {interjectBadge && (
+            <div className="mt-1 flex justify-end">
+              <span
+                className={cn(
+                  'rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none',
+                  interjectBadge.className,
+                )}
+                data-interject-status={message.interjectStatus}
+              >
+                {interjectBadge.label}
+              </span>
+            </div>
+          )}
         </div>
       </motion.article>
     )

@@ -13,6 +13,14 @@
 
 import { EventType } from '@ag-ui/core'
 import type { AgUiEventSink } from '@repo/protocol/events'
+import type { NovelUserMessageEvent } from '@repo/shared/novel'
+
+/**
+ * 插话状态事件（对话化交互形态 §3.1 / §4）：
+ * 定义已移入 @repo/shared/novel（与 ChapterChatMetadata 等前后端共享契约同处），
+ * 此处 re-export 维持既有 './sse-emitter.js' 导入路径兼容。
+ */
+export type { NovelUserMessageEvent }
 
 /**
  * 创建 ag-ui 兼容的 SSE 事件发射器
@@ -61,6 +69,13 @@ export function createNovelAgUiEmitter(
       emit({ type: EventType.RUN_ERROR, message })
       emit({ type: EventType.RUN_FINISHED, threadId, runId })
     },
+    // 插话状态回显（§3.1/§4）：queued/injected/dropped 三态沿同一 flow 的 SSE 通道推送；
+    // timestamp 缺省注入 Date.now()（事件自带 timestamp 时以事件为准）
+    userMessage: (data: Omit<NovelUserMessageEvent, 'timestamp'> & { timestamp?: number }) => emit({
+      type: EventType.CUSTOM,
+      name: 'novel:user-message',
+      value: { timestamp: Date.now(), ...data },
+    }),
   }
 }
 

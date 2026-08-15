@@ -9,8 +9,12 @@
  * 数据映射：
  * - agentOutputs → assistant 消息气泡
  * - userMessages → user 消息气泡
- * - currentCheckpoint → checkpoint 消息卡片
+ * - interjectMessages → user 气泡 + 插话状态徽标（已排队/已注入/已丢弃）
+ * - currentCheckpoint → checkpoint 消息卡片（含修改意见输入，已决策灰化）
  * - 流程完成 → system 消息 + 操作按钮
+ *
+ * 输入框常开（对话化交互形态 §3.2）：flow 运行中（含检查点等待）保持可用，
+ * 发送分流到插话端点（§3.1），检查点等待期间可先插话再确认，二者互不竞态。
  */
 
 import { useMemo, useCallback, useState, type ReactElement } from 'react'
@@ -48,13 +52,17 @@ import type {
   CheckpointDecision,
   AgentOutput,
   UserMessage,
+  InterjectMessage,
 } from '@/hooks/use-novel-creation-flow'
 import { formatDetailBubble } from '@/hooks/use-novel-creation-flow'
 import type { ChapterChatMessage } from '@/api/novel-client'
+import type { NovelCreationMode } from '@repo/shared/novel'
+import { parseCommand } from './command-parser'
+import { toastError, toastInfo, toastWarning } from '@/hooks/use-toast'
 
 // ── 流程类型 ──
 
-export type NovelFlowType = 'workflow' | 'discussion' | 'reverse' | 'arrange' | 'chat'
+export type NovelFlowType = NovelCreationMode | 'chat'
 
 interface FlowTab {
   type: NovelFlowType
@@ -515,8 +523,8 @@ export interface NovelConversationPanelProps {
   onResumeDiscussion?: (runId: string) => void
   /** 创作模式 */
   creationMode?: 'manual' | 'ai-arrange' | null
-  /** 提交检查点决策 */
-  onSubmitCheckpoint: (decision: CheckpointDecision) => void
+  /** 提交检查点决策（comment 为卡片内修改意见，随既有 decision 端点一并提交）；async 时卡片跟踪提交完成做防抖 */
+  onSubmitCheckpoint: (decision: CheckpointDecision, comment?: string) => void | Promise<void>
   /** 保存章节 */
   onSave: (content: string) => Promise<void>
   /** 丢弃 */
@@ -525,12 +533,25 @@ export interface NovelConversationPanelProps {
   onSendMessage?: (message: string) => void
   /** 用户消息历史 */
   userMessages?: UserMessage[]
+  /** 插话消息（flow 运行中用户中途反馈，SSE novel:user-message 驱动状态流转） */
+  interjectMessages?: InterjectMessage[]
+  /** 发送插话（flow 运行中输入框发送分流到此；toast 由调用方负责） */
+  onSendInterject?: (content: string) => void
   /** 当前流程类型 */
   flowType: NovelFlowType
   /** 切换流程类型 */
   onFlowTypeChange: (type: NovelFlowType) => void
   /** 启动流程（可带 per-call 模型，输入框旁选择器传入） */
   onStartFlow: (modelId?: { provider: string; modelId: string } | null) => void
+  /**
+   * 输入框命令启动 flow（/写 N、/重写 N、/群聊 N）：按命令解析出的章节号
+   * 启动对应创作流程，与 onStartFlow（playhead 章节）互补；由 workspace 提供。
+   */
+  onStartFlowCommand?: (
+    command: 'write' | 'rewrite' | 'discuss',
+    chapterNumber: number,
+    modelId?: { provider: string; modelId: string } | null,
+  ) => void
   /** 取消流程 */
   onCancelFlow: () => void
 
@@ -562,9 +583,12 @@ export function NovelConversationPanel({
   onDiscard,
   onSendMessage,
   userMessages,
+  interjectMessages,
+  onSendInterject,
   flowType,
   onFlowTypeChange,
   onStartFlow,
+  onStartFlowCommand,
   onCancelFlow,
   chapterChatMessages,
 }: NovelConversationPanelProps): ReactElement {
@@ -646,6 +670,8 @@ export function NovelConversationPanel({
             content: message.content,
             status: 'complete',
             timestamp: message.createdAt,
+            // 历史插话：落库时未持久化状态，无后续 SSE 事件则维持受理时的 queued
+            ...(message.metadata?.interject === true ? { interjectStatus: 'queued' as const } : {}),
           })
         } else if (message.role === 'agent') {
           msgs.push({
@@ -670,16 +696,24 @@ export function NovelConversationPanel({
     }
 
     // 群聊历史已按章节持久化。切换章节、重启应用或 reset 后，仍可在“群聊”Tab 复盘。
+    // 与 workflow 分支的 hasLiveWorkflowState 守卫同义：运行中切换章节再切回时
+    // loadHistory 拉回已落库的插话，而本地实时插话状态（queued/injected/dropped
+    // 流转）仍在，同一条会渲染两条（历史 queued + 实时态）。有本地实时插话时
+    // 跳过历史插话条目，以实时态为准。
+    const hasLiveInterjectState = (interjectMessages?.length ?? 0) > 0
     if (flowType === 'discussion') {
       for (const msg of chapterChatMessages ?? []) {
         if (msg.phase !== 'discussion' || msg.metadata?.flowMode !== 'discussion') continue
         if (msg.role === 'user') {
+          if (hasLiveInterjectState && msg.metadata?.interject === true) continue
           msgs.push({
             id: `discussion-history-${msg.id}`,
             role: 'user',
             content: msg.content,
             status: 'complete',
             timestamp: msg.createdAt,
+            // 历史插话：落库时未持久化状态，无后续 SSE 事件则维持受理时的 queued
+            ...(msg.metadata?.interject === true ? { interjectStatus: 'queued' as const } : {}),
           })
         } else if (msg.role === 'agent') {
           msgs.push({
@@ -741,6 +775,19 @@ export function NovelConversationPanel({
       })
     }
 
+    // 插话消息 → user 气泡 + 状态徽标（SSE novel:user-message 驱动 queued/injected/dropped 流转）
+    for (const msg of interjectMessages ?? []) {
+      msgs.push({
+        id: `interject-${msg.messageId}`,
+        role: 'user',
+        content: msg.content,
+        status: 'complete',
+        timestamp: msg.timestamp,
+        interjectStatus: msg.status,
+        interjectAgentType: msg.agentType,
+      })
+    }
+
     // 已处理检查点仍保留在时间线，当前检查点继续显示可操作按钮。
     for (const checkpoint of [...checkpointHistory, ...(currentCheckpoint ? [currentCheckpoint] : [])]) {
       const presentation = getCheckpointPresentation(checkpoint)
@@ -774,14 +821,61 @@ export function NovelConversationPanel({
 
     // 按时间戳排序
     return msgs.sort((a, b) => a.timestamp - b.timestamp)
-  }, [flowType, chapterChatMessages, agentOutputs, userMessages, checkpointHistory, currentCheckpoint, isRunning, isCompleted, completedActionLabel, canSave, chapterNumber])
+  }, [flowType, chapterChatMessages, agentOutputs, userMessages, interjectMessages, checkpointHistory, currentCheckpoint, isRunning, isCompleted, completedActionLabel, canSave, chapterNumber])
 
   // ── 回调 ──
+  // 输入框常开（含检查点等待），发送分流（任务 5）：
+  // - 运行中：普通文本 → 插话端点（注入下一个 Agent）；以 / 开头的命令一律拦截
+  //   （运行中打命令属误操作，作为插话注入会误导 Agent，故不发送只 toast）。
+  //   未接插话通道的调用方回退旧的 onSendMessage（本地暂存、随检查点决策一并提交）。
+  // - 空闲：斜杠命令（/写 N、/继续、/重写 N、/群聊 N）直达 flow；章节号越界的命令
+  //   （/写 0）toast 提示范围；普通文本不发送不启动，toast 引导到「聊天」面板
+  //   （自由聊天在独立"聊天"视图，静默丢弃会让用户以为已发出）。
   const handleSend = useCallback((text: string) => {
     if (isRunning) {
+      if (text.trim().startsWith('/')) {
+        toastWarning('流程运行中命令不可用', '命令未发送；如需中途反馈请输入普通文本')
+        return
+      }
+      // TODO(targetAgent)：本期 UI 无定向入口（端点 targetAgent 可选，缺省注入
+      // 下一个被调用的 Agent）；后续可在输入区增加 @ 提及选择定向 Agent。
+      if (onSendInterject) {
+        onSendInterject(text)
+        return
+      }
       onSendMessage?.(text)
+      return
     }
-  }, [isRunning, onSendMessage])
+
+    const parsed = parseCommand(text)
+    if (!parsed) return
+    switch (parsed.kind) {
+      case 'write':
+      case 'rewrite':
+      case 'discuss':
+        onStartFlowCommand?.(parsed.kind, parsed.chapterNumber, creationModelRef)
+        return
+      case 'resume':
+        // 唯一恢复入口是群聊断点续跑（resumeDiscussion 需 runId）；
+        // 与 ErrorCard「从中断处继续」复用同一 onResumeDiscussion 通道
+        if (result?.canResume && result.discussionRunId && onResumeDiscussion) {
+          onResumeDiscussion(result.discussionRunId)
+        } else {
+          toastInfo('暂无可恢复的流程', '仅中断的群聊支持 /继续 恢复；可 /写 N 重新开始')
+        }
+        return
+      case 'unknown':
+        toastError(`未知命令：${parsed.raw}`, '支持 /写 N、/继续、/重写 N、/群聊 N')
+        return
+      case 'invalid-chapter':
+        toastWarning('章节号需在 1-9999 之间', parsed.raw)
+        return
+      case 'chat':
+        // 空闲态普通文本不发送（自由对话在独立「聊天」面板），toast 引导而非静默丢弃
+        toastInfo('自由对话请切换到「聊天」面板', '输入 /写 N 可启动创作')
+        return
+    }
+  }, [isRunning, onSendInterject, onSendMessage, onStartFlowCommand, creationModelRef, result, onResumeDiscussion])
 
   const handleAbort = useCallback(() => {
     if (phase !== 'cancelling') {
@@ -791,8 +885,9 @@ export function NovelConversationPanel({
     }
   }, [onCancelFlow, phase])
 
-  const handleCheckpointResolve = useCallback((action: string) => {
-    onSubmitCheckpoint(action as CheckpointDecision)
+  const handleCheckpointResolve = useCallback((action: string, comment?: string) => {
+    // 返回提交链的 promise，供 CheckpointMessage 跟踪 in-flight 状态（防重复提交）
+    return onSubmitCheckpoint(action as CheckpointDecision, comment)
   }, [onSubmitCheckpoint])
 
   const handleSystemAction = useCallback((action: string) => {
@@ -953,6 +1048,9 @@ export function NovelConversationPanel({
           <ConversationStream
             messages={messages}
             onCheckpointResolve={handleCheckpointResolve}
+            // 群聊检查点不提供修改意见输入：decision 端点 discussion 分支不消费
+            // userMessages（意见会被静默丢弃），反馈走底部常开插话输入
+            allowCheckpointComment={flowType !== 'discussion'}
             onSystemAction={handleSystemAction}
             emptyHint={emptyHint}
             emptyTitle={emptyTitle}
@@ -970,7 +1068,6 @@ export function NovelConversationPanel({
               onChange={setCreationModelRef}
               label="本次创作"
             />
-            <span className="ml-auto text-nano text-hint">工作流/群聊：启动时选定模型；未选用默认</span>
           </div>
         )}
         <ConversationInput
@@ -978,16 +1075,18 @@ export function NovelConversationPanel({
           onAbort={handleAbort}
           isRunning={activeIsRunning}
           allowSendWhileRunning={!isReverseMode && !isArrangeMode}
-          // 反推和AI编排时用户不参与，输入框始终禁用
+          // 反推和AI编排时用户不参与，输入框始终禁用；检查点等待期间输入框保持可用（可先插话再确认）
           disabled={isReverseMode || isArrangeMode}
           placeholder={
             isReverseMode
               ? '反推流程进行中...'
               : isArrangeMode
                 ? 'AI编排进行中...'
-                : isRunning
-                  ? '输入补充意见参与创作...'
-                  : '点击开始按钮启动流程'
+                : isRunning && currentCheckpoint
+                  ? '可先反馈再确认检查点'
+                  : isRunning
+                    ? '发送反馈将注入下一个 Agent…'
+                    : '/写 11 启动创作…'
           }
           showStart={!isRunning && phase === 'idle'}
           startLabel="开始"

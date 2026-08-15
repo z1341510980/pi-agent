@@ -63,7 +63,9 @@ export class GraphStore {
         llm_provider, llm_model,
         payload_messages_chars, payload_tools_chars, payload_tool_count,
         payload_total_chars, llm_round_trips,
-        ask_story_policy, ask_story_enabled, payload_id
+        ask_story_policy, ask_story_enabled, payload_id,
+        cache_key, cache_protocol, request_fingerprint,
+        cacheable_prefix_chars, data_quality, error_code
       ) VALUES (
         @id, @project_id, @chapter_number, @agent_type, @agent_name,
         @display_agent_type, @display_agent_name, @phase,
@@ -75,7 +77,9 @@ export class GraphStore {
         @llm_provider, @llm_model,
         @payload_messages_chars, @payload_tools_chars, @payload_tool_count,
         @payload_total_chars, @llm_round_trips,
-        @ask_story_policy, @ask_story_enabled, @payload_id
+        @ask_story_policy, @ask_story_enabled, @payload_id,
+        @cache_key, @cache_protocol, @request_fingerprint,
+        @cacheable_prefix_chars, @data_quality, @error_code
       )
     `)
     this.stmtGetAgentLog = db.prepare('SELECT * FROM novel_agent_logs WHERE id = ?')
@@ -283,6 +287,12 @@ export class GraphStore {
       ask_story_policy: full.askStoryPolicy ?? 'legacy',
       ask_story_enabled: (full.askStoryEnabled ?? true) ? 1 : 0,
       payload_id: payloadId,
+      cache_key: full.cacheKey ?? null,
+      cache_protocol: full.cacheProtocol ?? null,
+      request_fingerprint: full.requestFingerprint ?? null,
+      cacheable_prefix_chars: full.cacheablePrefixChars ?? null,
+      data_quality: full.dataQuality ?? null,
+      error_code: full.errorCode ?? null,
     }
 
     this.db.transaction(() => {
@@ -549,6 +559,12 @@ export class GraphStore {
       llmRoundTrips: row.llm_round_trips ?? 0,
       askStoryPolicy: (row.ask_story_policy ?? 'legacy') as NovelAgentLog['askStoryPolicy'],
       askStoryEnabled: row.ask_story_enabled == null ? true : row.ask_story_enabled === 1,
+      cacheKey: row.cache_key ?? null,
+      cacheProtocol: row.cache_protocol ?? null,
+      requestFingerprint: row.request_fingerprint ?? null,
+      cacheablePrefixChars: row.cacheable_prefix_chars ?? null,
+      dataQuality: row.data_quality ?? null,
+      errorCode: row.error_code ?? null,
       createdAt: row.created_at,
     }
   }
@@ -586,6 +602,12 @@ export class GraphStore {
       llmRoundTrips: row.llm_round_trips ?? 0,
       askStoryPolicy: (row.ask_story_policy ?? 'legacy') as NovelAgentLogSummary['askStoryPolicy'],
       askStoryEnabled: row.ask_story_enabled == null ? true : row.ask_story_enabled === 1,
+      cacheKey: row.cache_key ?? null,
+      cacheProtocol: row.cache_protocol ?? null,
+      requestFingerprint: row.request_fingerprint ?? null,
+      cacheablePrefixChars: row.cacheable_prefix_chars ?? null,
+      dataQuality: row.data_quality ?? null,
+      errorCode: row.error_code ?? null,
       createdAt: row.created_at,
     }
   }

@@ -1595,6 +1595,61 @@ export function submitCheckpointDecision(
   })
 }
 
+// ── 插话（对话化交互形态 §3.1：向运行中的创作流发送用户中途反馈） ──
+
+/** 插话端点 201 响应体 */
+export interface SendFlowMessageResult {
+  flowId: string
+  messageId: string
+  status: 'queued'
+}
+
+/** 插话失败（statusCode 区分 409 无运行中 flow 等） */
+export class FlowMessageError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+  ) {
+    super(message)
+    this.name = 'FlowMessageError'
+  }
+}
+
+/**
+ * 向运行中的创作流（工作流/群聊）发送插话。
+ *
+ * flowId 约定为章节号字符串；后端无运行中可插话 flow 时返回 409。
+ * 不走 postApi：需要读取 HTTP 状态码（409 → 无运行中流程）与裸 error 字符串，
+ * 而通用包装会把这些信息抹掉。
+ */
+export async function sendFlowMessage(
+  projectId: string,
+  flowId: string,
+  input: { content: string; targetAgent?: string; chapterNumber?: number },
+): Promise<SendFlowMessageResult> {
+  const response = await fetch(`${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/flows/${flowId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+
+  let payload: { ok?: boolean; data?: SendFlowMessageResult; error?: string | { message?: string } } | null = null
+  try {
+    payload = await response.json() as typeof payload
+  } catch {
+    // 非 JSON 响应保留 HTTP 状态兜底
+  }
+
+  if (!response.ok || !payload?.ok || !payload.data) {
+    const message = typeof payload?.error === 'string'
+      ? payload.error
+      : payload?.error?.message ?? `插话发送失败: HTTP ${response.status}`
+    throw new FlowMessageError(message, response.status)
+  }
+
+  return payload.data
+}
+
 // ── AI 编排（模式2：按章纲 AI 编排实体到矩阵，不生成正文） ──
 
 /**
@@ -1782,6 +1837,147 @@ export function getCacheLayerReport(
   return getApi<CacheLayerReport>(
     `${BASE}/projects/${projectId}/cache-layer-report${query ? `?${query}` : ''}`,
   )
+}
+
+// ── 观测 API（缓存与监控一体化）──
+
+/**
+ * 缓存分层判定结论（对应后端 cache-layer-diagnostics.ts 的 CacheVerdict）。
+ */
+export type ObservabilityCacheVerdict = 'healthy' | 'partial' | 'miss' | 'no_data'
+
+/** 观测过滤参数（对应后端 ObservabilityFilter；from/to 均为含端点过滤） */
+export interface ObservabilityFilterParams {
+  /** 起始时间（unixepoch 秒，含） */
+  from?: number
+  /** 结束时间（unixepoch 秒，含） */
+  to?: number
+  chapterNumber?: number
+  agentType?: string
+  /** 返回条数上限；默认 100，最大 500 */
+  limit?: number
+}
+
+/** 项目观测总览（GET /projects/:id/observability/overview） */
+export interface ObservabilityOverview {
+  /** 过滤范围内总调用数 */
+  totalCalls: number
+  /** 成功率 success/total；无调用时为 null（区分"全部失败"与"没数据"） */
+  successRate: number | null
+  /** 失败率 errors/total；无调用时为 0 */
+  errorRate: number
+  /** 超时率；本项目状态只有 success/error/cancelled，恒 0 */
+  timeoutRate: number
+  /** 输入 token 总量（不含 cacheRead） */
+  inputTokens: number
+  /** 输出 token 总量 */
+  outputTokens: number
+  /** 缓存读取 token 总量 */
+  cacheReadTokens: number
+  /** 缓存写入 token 总量 */
+  cacheWriteTokens: number
+  /** 总 cacheRead / (总 cacheRead + 总 input)；总 input+cacheRead 为 0 时为 null */
+  cacheHitRate: number | null
+  /** 平均耗时（ms），仅统计成功样本；无成功样本时为 null */
+  avgDurationMs: number | null
+  /** 总成本（USD）；未接入 cost-rates 单价前恒 0 */
+  totalCostUsd: number
+  /** 数据质量四桶；data_quality 列为 NULL（迁移前旧行）计入 unknownCalls */
+  dataQuality: { completeCalls: number; partialCalls: number; noDataCalls: number; unknownCalls: number }
+  /** 报告生成时间戳（ms） */
+  timestamp: number
+}
+
+/** 缓存分层报告（GET /projects/:id/observability/cache） */
+export interface ObservabilityCacheReport {
+  /** 所有章节 followUpCoverage 的平均值；无有效章节数据时为 null */
+  overallCoverage: number | null
+  /** 整体分层判定 */
+  verdict: ObservabilityCacheVerdict
+  /** 若分层完全命中，本次统计范围内可省下的 input token 上界估算 */
+  potentialSavedTokens: number
+  /** 需要人工判断的提示 */
+  notes: string[]
+  /** 每章分层诊断摘要（按章节号升序）；followUpCoverage 无数据时为 null */
+  chapters: Array<{ chapterNumber: number; verdict: ObservabilityCacheVerdict; followUpCoverage: number | null }>
+  /** 按 Agent 分组的命中率；hitRate 分母（cacheRead+input）为 0 时为 null */
+  byAgent: Array<{ agentType: string; hitRate: number | null; calls: number }>
+  /** cache_protocol 分组计数；NULL/空串计入 'unknown' */
+  protocolDistribution: Record<string, number>
+  /** 指纹稳定性（仅统计 fingerprint 非空的行） */
+  fingerprintStability: { totalCalls: number; distinctFingerprints: number }
+  /** 参与分层诊断采样的日志条数（上限 500） */
+  sampledLogs: number
+  /** 报告生成时间戳（ms） */
+  timestamp: number
+}
+
+/** 按 Agent 分组统计行（GET /projects/:id/observability/agents） */
+export interface ObservabilityAgentRow {
+  agentType: string
+  /** 该 Agent 调用次数 */
+  calls: number
+  /** 成功率 success/calls；分组结果必非空，无调用分母时为 0（不为 null） */
+  successRate: number
+  inputTokens: number
+  outputTokens: number
+  /** cacheRead / (cacheRead + input)；分母为 0 时为 null */
+  cacheHitRate: number | null
+  /** 平均耗时（ms），仅统计成功样本；无成功样本时为 null */
+  avgDurationMs: number | null
+  /** 成本（USD）；未接入 cost-rates 单价前恒 0 */
+  costUsd: number
+  /** 该 Agent 最近一条非成功调用的错误信息前 200 字符（主表 error 为空时兜底 error_code）；无失败记录时为 null */
+  lastError: string | null
+}
+
+/** 调用时间线行（GET /projects/:id/observability/timeline，created_at 倒序） */
+export interface ObservabilityTimelineRow {
+  id: string
+  chapterNumber: number
+  agentType: string
+  phase: string
+  status: string
+  durationMs: number
+  inputTokens: number
+  cacheReadTokens: number
+  /** 缓存协议（Provider 上报的 cache 类型）；未上报时为 null */
+  cacheProtocol: string | null
+  /** cacheRead / (cacheRead + input)；分母为 0 时为 null */
+  cacheHitRate: number | null
+  /** 调用时间（unixepoch 秒） */
+  createdAt: number
+}
+
+function obsQuery(params?: ObservabilityFilterParams): string {
+  const s = new URLSearchParams()
+  if (params?.from != null) s.set('from', String(params.from))
+  if (params?.to != null) s.set('to', String(params.to))
+  if (params?.chapterNumber != null) s.set('chapterNumber', String(params.chapterNumber))
+  if (params?.agentType) s.set('agentType', params.agentType)
+  if (params?.limit != null) s.set('limit', String(params.limit))
+  const q = s.toString()
+  return q ? `?${q}` : ''
+}
+
+/** 项目观测总览（调用量/成功率/token 汇总/命中率/数据质量四桶） */
+export function getObservabilityOverview(projectId: string, params?: ObservabilityFilterParams): Promise<ObservabilityOverview> {
+  return getApi<ObservabilityOverview>(`${BASE}/projects/${projectId}/observability/overview${obsQuery(params)}`)
+}
+
+/** 缓存分层报告（每章 verdict + 协议分布 + 指纹稳定性） */
+export function getObservabilityCache(projectId: string, params?: ObservabilityFilterParams): Promise<ObservabilityCacheReport> {
+  return getApi<ObservabilityCacheReport>(`${BASE}/projects/${projectId}/observability/cache${obsQuery(params)}`)
+}
+
+/** 按 Agent 分组统计（含最近一条失败原因） */
+export function getObservabilityAgents(projectId: string, params?: ObservabilityFilterParams): Promise<ObservabilityAgentRow[]> {
+  return getApi<ObservabilityAgentRow[]>(`${BASE}/projects/${projectId}/observability/agents${obsQuery(params)}`)
+}
+
+/** 调用时间线（created_at 倒序 + limit + 每行命中率） */
+export function getObservabilityTimeline(projectId: string, params?: ObservabilityFilterParams): Promise<ObservabilityTimelineRow[]> {
+  return getApi<ObservabilityTimelineRow[]>(`${BASE}/projects/${projectId}/observability/timeline${obsQuery(params)}`)
 }
 
 // ── P3 灰度看板（T03-8）──

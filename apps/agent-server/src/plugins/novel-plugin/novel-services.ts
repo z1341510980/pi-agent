@@ -44,12 +44,14 @@ import { RelationshipGraph } from './core/analysis/novel-relationship-graph.js'
 import { ReferenceAnalysisStore } from './core/analysis/reference-analysis-store.js'
 import { ReferenceAnalysisService } from './core/analysis/reference-analysis-service.js'
 import { CostReportService } from './core/analysis/cost-report-service.js'
+import { ObservabilityService } from './core/analysis/observability-service.js'
 import { SharedOverlapAnalyzer } from './core/analysis/shared-overlap-analyzer.js'
 import type { PluginContext } from '../../core/plugin/plugin-types.js'
 import type { TeamManager } from '../../core/agent/team-manager.js'
 import type { AgentManager } from '../../core/agent/subagent-tool.js'
 import type { ConfirmationManager } from '../../core/tool/confirmation-manager.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { createInterjectDispatchHooks } from './utils/chapter-task-registry.js'
 
 export interface NovelServices {
   store: NovelStore
@@ -108,6 +110,8 @@ export interface NovelServices {
   referenceAnalysis?: ReferenceAnalysisService
   /** P0 成本报表服务（只读聚合 novel_agent_logs + 度量表） */
   costReportService: CostReportService
+  /** 观测聚合服务（overview/cache/agents/timeline 四视图，只读聚合 novel_agent_logs） */
+  observabilityService: ObservabilityService
   /** P0 相邻章 shared 重复率分析（只读聚合） */
   sharedOverlapAnalyzer: SharedOverlapAnalyzer
 }
@@ -199,7 +203,9 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     memoryStore 注入用于账本承接：Memory 需要看到「章前状态 + 本章计划变更」
   //     才能做差分，而不是每章从零重新判断实体现在算什么状态。
   const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine, memoryStore)
-  const orchestrator = new NovelOrchestrator(store, memoryStore, tools, promptBuilder, engine, context, memoryGenerator)
+  // 第 8 参 hooks：插话 injected/dropped 生命周期回调，经注册表按 messageId/flowKey
+  // 路由到对应运行中 flow 的 SSE 通道（见 utils/chapter-task-registry.ts）。
+  const orchestrator = new NovelOrchestrator(store, memoryStore, tools, promptBuilder, engine, context, memoryGenerator, createInterjectDispatchHooks())
 
   // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/promptBuilder/engine/context + memoryGenerator）
   //     discussionSettingsStore 读取持久化的 moderatorModel 传入 runner 构造函数
@@ -233,9 +239,10 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     similarityScanner 处理"语义相似但表述不同"的重复，支持字段级合并方案
   const similarityScanner = new NovelSimilarityScanner(promptBuilder, promptManager, context, store)
 
-  // 9.6 P0 成本测量只读服务（报表 + 相邻章重复率）
+  // 9.6 P0 成本测量只读服务（报表 + 观测聚合 + 相邻章重复率）
   const costReportService = new CostReportService(db)
+  const observabilityService = new ObservabilityService(db)
   const sharedOverlapAnalyzer = new SharedOverlapAnalyzer(db)
 
-  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner, referenceAnalysis, costReportService, sharedOverlapAnalyzer }
+  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner, referenceAnalysis, costReportService, observabilityService, sharedOverlapAnalyzer }
 }

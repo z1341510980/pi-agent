@@ -69,12 +69,34 @@ export interface DiscussionMember {
    * 缓存前缀。未提供时表示 buildSystemPrompt 已包含完整身份（向后兼容）。
    */
   buildIdentityPrompt?: () => string
+  /**
+   * 合并演出（多角色同一次 LLM 调用）使用的身份提示词。
+   *
+   * 合并调用不走 Skill 展开（invocationOverrides 派生），因此若主身份走
+   * Skill 薄壳，本字段必须内联完整角色方法正文，避免合并推演丢失演出格式规则。
+   * 未提供时回退到 buildIdentityPrompt。
+   */
+  buildMergedActorIdentityPrompt?: () => string
   /** 最终章节审查时使用的完整审稿 prompt；未提供时复用 buildSystemPrompt */
   buildFinalReviewSystemPrompt?: () => string
   /** 最终章节审查时使用的成员专属身份提示词。 */
   buildFinalReviewIdentityPrompt?: () => string
   /** 最终审查前的盲审文字编辑身份提示词。 */
   buildProseEditorIdentityPrompt?: () => string
+  /**
+   * 显式授权给成员主身份路径的 Skill（/skill: 展开提供角色方法）。
+   *
+   * 仅在不走 invocationOverrides 的常规调用中生效；盲审/特殊覆盖派生成员应
+   * 显式置为 undefined，避免从原成员 spread 继承。未提供时沿用旧模板身份路径。
+   */
+  skill?: { name: string; path: string }
+  /**
+   * 最终章节验收（final review）时使用的 Skill。
+   *
+   * Reviewer 的最终验收走标准角色方法（而非群聊审查角色），因此与主身份
+   * 的 discussion Skill 不同。未提供时回退到 member.skill。
+   */
+  finalReviewSkill?: { name: string; path: string }
   /**
    * 该成员使用的 LLM 模型（可选，未配置则走默认 Provider）
    *
@@ -250,6 +272,21 @@ export interface DiscussionOptions {
    * Reviewer 返回后引擎调用 extractResult() 得到结构化验收对象。
    */
   buildReviewerToolset?: () => ReviewerToolset
+  /**
+   * 插话被 Moderator 消费（写入群聊 history）后回调（对话化交互形态 §3.1，
+   * 供端点沿 SSE 推 status='injected' 事件）。
+   */
+  onInterjectInjected?: (ids: string[]) => void
+  /** flow 收尾时仍未被消费的插话回调（供端点推 status='dropped' 事件）。 */
+  onInterjectDropped?: (ids: string[]) => void
+}
+
+/** 群聊运行中用户插话（对话化交互形态 §3.1）：由端点入队，Moderator 每轮 decide 前 drain。 */
+export interface DiscussionInterjectMessage {
+  /** 唯一 id（端点生成，供 SSE queued/injected/dropped 状态流转对齐） */
+  id: string
+  content: string
+  createdAt: number
 }
 
 /**

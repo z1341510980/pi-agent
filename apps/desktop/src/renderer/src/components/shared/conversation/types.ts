@@ -28,6 +28,12 @@ export interface ConversationMessage {
   checkpointOptions?: Array<{ label: string; action: string; variant: 'default' | 'outline' | 'destructive' | 'ghost'; description?: string }>
   checkpointResolved?: string
 
+  // ── user 专用：插话（对话化交互形态 §3.1）──
+  // flow 运行中用户中途反馈的状态徽标：queued=已排队 / injected=已注入 / dropped=已丢弃
+  interjectStatus?: 'queued' | 'injected' | 'dropped'
+  /** status='injected' 时实际消费该插话的 Agent 类型（徽标展示「已注入·导演」） */
+  interjectAgentType?: string
+
   // ── system 专用 ──
   systemActions?: Array<{ label: string; action: string; variant: 'default' | 'outline' | 'destructive' }>
 }

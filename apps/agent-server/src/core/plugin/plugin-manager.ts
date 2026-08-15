@@ -22,13 +22,19 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore } from '../agent/session-store.js'
 import { withAgentConfig } from '../agent/pi-session.js'
+import {
+  AgentRuntimeRegistry,
+  DEFAULT_AGENT_RUNTIME_KIND,
+} from '../agent/agent-runtime.js'
+import { composeSkillBlocks, fingerprintSkillContent } from './skill-compose.js'
+import { createSkillReadTool } from './skill-read-tool.js'
 import { cancelDebug } from '../../plugins/novel-plugin/utils/cancel-debug-log.js'
 import { StreamEmitter } from '../agent/stream-emitter.js'
 import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
-import { supportsAnthropicCacheControl, usesOpenAiPromptCacheKey, buildPromptCacheKey } from './cache-control-support.js'
+import { supportsAnthropicCacheControl, usesOpenAiPromptCacheKey, buildPromptCacheKey, type ModelRegistryLike } from './cache-control-support.js'
 import {
   getAssistantTerminalError,
   isFinalAssistantSuccess,
@@ -57,6 +63,19 @@ import type {
 
 /** npm 插件包名前缀 */
 const NPM_PLUGIN_PREFIX = 'wenlang-agent-plugin-'
+
+export function buildPluginSessionPrompt(
+  userMessage: string,
+  skill?: { name: string; path: string },
+  extraSkills: Array<{ name: string; path: string }> = [],
+): string {
+  if (!skill) return userMessage
+  // 单 Skill：Pi 原生 /skill: 展开（已验证路径）
+  if (extraSkills.length === 0) return `/skill:${skill.name} ${userMessage}`
+  // 多 Skill 组合（方案 §9.1）：Pi 原生一次只展开一个，编排层确定性编译
+  // [主 Skill → 附加 Skill] 的 <skill> 块，前置到任务消息。
+  return `${composeSkillBlocks([skill, ...extraSkills])}\n\n${userMessage}`
+}
 
 export class PluginManager {
   private readonly entries = new Map<string, PluginEntry>()
@@ -120,6 +139,14 @@ export class PluginManager {
    * 与 SessionStore / ModelRegistry 同时期注入。
    */
   private providerConfigStore?: ProviderConfigStore
+  /**
+   * AgentRuntime 注册表（方案 §9.3）。
+   *
+   * 承载第三方运行时适配器（pi-subagents / pi-actors 等）；默认 kind
+   * 'pi-session' 走 createSession 的内联实现，不占用注册表条目。
+   * createSession 按 PluginSessionOptions.runtime 路由，未注册的 kind 显式抛错。
+   */
+  private readonly runtimeRegistry: AgentRuntimeRegistry
 
   constructor(
     logger: FastifyBaseLogger,
@@ -135,6 +162,7 @@ export class PluginManager {
     this.cwd = cwd
     this.dataDir = dataDir
     this.options = options
+    this.runtimeRegistry = options.runtimeRegistry ?? new AgentRuntimeRegistry()
   }
 
   /**
@@ -735,6 +763,8 @@ export class PluginManager {
   private createPluginContext(entry: PluginEntry): PluginContext {
     const pluginName = entry.manifest.name
     const logger = this.logger.child({ plugin: pluginName })
+    // 供下方 getter 闭包引用（对象字面量 getter 内的 this 指向字面量自身）
+    const pluginManager = this
 
     return {
       pluginName,
@@ -746,6 +776,12 @@ export class PluginManager {
       teamManager: this.teamManager,
       confirmationManager: this.confirmationManager!,
       agentCallLogger: this.agentCallLogger,
+      // getter 而非直接取值：setModelRegistry 在 app.ts 启动后期才调用，
+      // 晚于插件 setup（createPluginContext 构建本 context 的时机），
+      // 直接传 this.modelRegistry 会把 undefined 固化进 context。
+      get modelRegistry(): ModelRegistryLike | undefined {
+        return pluginManager.modelRegistry as ModelRegistryLike | undefined
+      },
       registerTool: (tool: ToolDefinition) => {
         entry.tools.push(tool)
         logger.debug({ tool: tool.name }, '工具已注册')
@@ -780,11 +816,32 @@ export class PluginManager {
         logger.debug({ dir }, '已注册提示词模板目录')
       },
       createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
+        // AgentRuntime 路由（方案 §9.3）：默认 'pi-session' 走下方内联实现；
+        // 第三方运行时（pi-subagents / pi-actors 等）通过 PluginManagerOptions
+        // 注入的注册表承载，未注册的 kind 显式抛错。
+        const runtimeKind = options.runtime ?? DEFAULT_AGENT_RUNTIME_KIND
+        if (runtimeKind !== DEFAULT_AGENT_RUNTIME_KIND) {
+          const runtime = this.runtimeRegistry.get(runtimeKind)
+          if (!runtime) {
+            throw new Error(
+              `未注册的 AgentRuntime: ${runtimeKind}（可用: ${this.runtimeRegistry.listKinds().join(', ') || '无'}）`,
+            )
+          }
+          return runtime.createSession(options)
+        }
+
         if (!this.sessionStore) {
           throw new Error('SessionStore 未注入，无法创建 Pi Session')
         }
 
         const threadId = `plugin:${pluginName}:${randomUUID()}`
+
+        // 多 Skill 白名单（方案 §9.1）：主 skill + extraSkills 全部只经
+        // additionalSkillPaths 定向加载，不扫描环境中的其他 Skills。
+        const authorizedSkills = [
+          ...(options.skill ? [options.skill] : []),
+          ...(options.extraSkills ?? []),
+        ]
 
         // 构建 AgentConfig，通过 withAgentConfig 注入 systemPrompt 到 system role。
         // createPiSession 内的 buildSystemPrompt 会从 agentConfigStorage 读取
@@ -813,11 +870,19 @@ export class PluginManager {
           name: `${pluginName} session`,
           systemPrompt: options.systemPrompt,
           ...(options.modelId ? { model: options.modelId } : {}),
+          ...(authorizedSkills.length > 0
+            ? { skillPaths: authorizedSkills.map(s => s.path) }
+            : {}),
           ...(Array.isArray(options.tools)
             ? {
                 tools: options.tools.map(t => t.name),
                 extraTools: options.tools,
               }
+            : {}),
+          // 受限 skill_read（方案 §9.2）：仅当本次会话显式授权了 Skill 且调用方
+          // 声明 skillRead 时注入；授权范围绑定到本次会话的 skill 根目录。
+          ...(options.skillRead && authorizedSkills.length > 0
+            ? { extraTools: [...(Array.isArray(options.tools) ? options.tools : []), createSkillReadTool(options.skillRead)] }
             : {}),
         }
 
@@ -827,6 +892,30 @@ export class PluginManager {
         const threadSession = await withAgentConfig(agentConfig, async () => {
           return await this.sessionStore!.getOrCreate(threadId)
         })
+
+        if (authorizedSkills.length > 0) {
+          const loadedSkills = threadSession.session.resourceLoader.getSkills().skills as Array<{
+            name: string
+            filePath: string
+          }>
+          for (const authorized of authorizedSkills) {
+            const loaded = loadedSkills.find(skill => skill.name === authorized.name)
+            if (!loaded || resolve(loaded.filePath) !== resolve(authorized.path)) {
+              throw new Error(`插件 Session 未能加载授权 Skill: ${authorized.name}`)
+            }
+          }
+          // 增强：Skill 内容指纹审计（SHA-256 前 16 位），用于规则漂移检测与日志留痕。
+          const fingerprints = authorizedSkills.map(skill => {
+            let fingerprint = ''
+            try {
+              fingerprint = fingerprintSkillContent(readFileSync(skill.path, 'utf-8'))
+            } catch {
+              fingerprint = '(unreadable)'
+            }
+            return { name: skill.name, fingerprint }
+          })
+          logger.info({ threadId, skillFingerprints: fingerprints }, '插件 Session 已加载授权 Skill（指纹审计）')
+        }
 
         // 注入 SEMI 层前缀消息（章节上下文）：作为独立首条 user 消息加入对话历史，
         // 不触发 LLM 调用。这样 LLM 收到的对话为 system → prefixUserMessage → userMessage，
@@ -905,7 +994,9 @@ export class PluginManager {
             resolveFinalAssistant = resolve
           })
           const promptPromise = withAgentConfig(agentConfig, async () => {
-            await threadSession.session.prompt(options.userMessage)
+            await threadSession.session.prompt(
+              buildPluginSessionPrompt(options.userMessage, options.skill, options.extraSkills),
+            )
           })
 
           try {

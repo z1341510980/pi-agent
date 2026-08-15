@@ -10,6 +10,7 @@ import { RelationshipGraph } from '../plugins/novel-plugin/core/analysis/novel-r
 import { createNovelRoutes } from '../plugins/novel-plugin/novel-routes.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { CostReportService } from '../plugins/novel-plugin/core/analysis/cost-report-service.js'
+import { ObservabilityService } from '../plugins/novel-plugin/core/analysis/observability-service.js'
 import { SharedOverlapAnalyzer } from '../plugins/novel-plugin/core/analysis/shared-overlap-analyzer.js'
 import type { NovelServices } from '../plugins/novel-plugin/novel-services.js'
 import { errorHandlerPlugin } from '../plugins/error-handler.plugin.js'
@@ -77,6 +78,7 @@ function makeMockServices(): NovelServices {
     } as any,
     tools: [],
     costReportService: new CostReportService(db),
+    observabilityService: new ObservabilityService(db),
     sharedOverlapAnalyzer: new SharedOverlapAnalyzer(db),
   }
 }

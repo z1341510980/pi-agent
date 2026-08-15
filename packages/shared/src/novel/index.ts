@@ -1671,6 +1671,18 @@ export interface NovelAgentLog {
    * token 翻倍的直接原因。1 表示没有工具往返。
    */
   llmRoundTrips: number
+  /** 稳定缓存域（如 novel:proj-1:10）；未启用缓存路由时为 null */
+  cacheKey?: string | null
+  /** 该目标使用的缓存协议：anthropic-cache-control | openai-prompt-cache-key | automatic-prefix | none | unknown */
+  cacheProtocol?: string | null
+  /** 分层内容 sha256 摘要（16 位 hex，不存原文），诊断前缀是否变化 */
+  requestFingerprint?: string | null
+  /** system+shared+identity 字符数 */
+  cacheablePrefixChars?: number | null
+  /** complete | partial | no_data */
+  dataQuality?: string | null
+  /** llm-error-policy 归一化错误码 */
+  errorCode?: string | null
   createdAt: number
 }
 
@@ -1739,6 +1751,18 @@ export interface NovelAgentLogSummary {
    * token 翻倍的直接原因。1 表示没有工具往返。
    */
   llmRoundTrips: number
+  /** 稳定缓存域（如 novel:proj-1:10）；未启用缓存路由时为 null */
+  cacheKey?: string | null
+  /** 该目标使用的缓存协议：anthropic-cache-control | openai-prompt-cache-key | automatic-prefix | none | unknown */
+  cacheProtocol?: string | null
+  /** 分层内容 sha256 摘要（16 位 hex，不存原文），诊断前缀是否变化 */
+  requestFingerprint?: string | null
+  /** system+shared+identity 字符数 */
+  cacheablePrefixChars?: number | null
+  /** complete | partial | no_data */
+  dataQuality?: string | null
+  /** llm-error-policy 归一化错误码 */
+  errorCode?: string | null
   createdAt: number
 }
 
@@ -2038,6 +2062,26 @@ export interface RevisionEstimate {
   failedItems: QualityGateFailureItem[]
 }
 
+// ── 统一小说创作入口契约 ──
+
+/** 对话入口可选择的四种结构化创作模式。 */
+export type NovelCreationMode = 'workflow' | 'discussion' | 'arrange' | 'reverse'
+
+/** 触发矩阵编排或正文反推时，意图所依据的主要来源。 */
+export type NovelCreationSource = 'outline' | 'content'
+
+/** 统一创作 Skill 输出给服务端的最小意图。 */
+export interface NovelCreationIntent {
+  projectId: string
+  chapterNumber: number
+  mode: NovelCreationMode
+  source?: NovelCreationSource
+  userMessage: string
+  needsConfirmation: boolean
+  confirmationReason?: string
+  resumeRunId?: string
+}
+
 // ── 章节聊天（ChapterChatStore 持久化的消息）──
 
 /** 聊天消息角色 */
@@ -2078,6 +2122,12 @@ export interface ChapterChatMetadata {
   discussionCanResume?: boolean
   /** 群聊场景 ID */
   sceneId?: number
+  /** 插话标记：创作流程运行中用户的中途反馈（role='user'，经插话端点落库） */
+  interject?: boolean
+  /** 插话消息 ID（与 SSE novel:user-message 事件 / 插话端点响应的 messageId 对齐，供前端渲染状态徽标） */
+  messageId?: string
+  /** 插话定向 Agent（缺省注入下一个被调用的 Agent） */
+  targetAgent?: string
 }
 
 /** 章节聊天消息（前后端共享，由 ChapterChatStore 持久化） */
@@ -2092,6 +2142,27 @@ export interface ChapterChatMessage {
   phase: ChapterChatPhase
   metadata?: ChapterChatMetadata
   createdAt: number
+}
+
+/**
+ * 插话状态事件（对话化交互形态 §3.1 / §4）：
+ * queued（端点受理）→ injected（被 Agent 消费）| dropped（flow 终态未注入收尾）。
+ * 前端按 messageId 对齐同一条插话的状态流转，flowKey 区分并发创作流。
+ */
+export interface NovelUserMessageEvent {
+  /** 触发插话的端点路径参数（原样回传，供前端对齐请求） */
+  flowId: string
+  /** 与端点 201 响应一致的插话 id */
+  messageId: string
+  content: string
+  /** 定向 Agent（缺省注入下一个被调用的 Agent） */
+  targetAgent?: string
+  status: 'queued' | 'injected' | 'dropped'
+  /** 目标创作流标识（projectId|chapterNumber，缺省时前端可按 flowId 对齐） */
+  flowKey?: string
+  /** status='injected' 时实际消费该插话的 Agent 类型 */
+  agentType?: string
+  timestamp: number
 }
 
 // ── 角色生成进度事件 ──

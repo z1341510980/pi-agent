@@ -48,6 +48,25 @@ function makeMockModerator(decisions: ModeratorDecision[]): Moderator {
   return new Moderator(ctx)
 }
 
+/**
+ * mock Moderator + decide 快照：engine 传入的 history 是共享可变数组，
+ * 每轮 decide 时复制一份，供断言「Moderator 当时看到了什么」。
+ */
+function makeRecordingModerator(
+  decisions: ModeratorDecision[],
+  snapshots: DiscussionMessage[][],
+): Moderator {
+  const moderator = makeMockModerator(decisions)
+  const originalDecide = moderator.decide.bind(moderator)
+  vi.spyOn(moderator, 'decide').mockImplementation(
+    async (goal, history, members, state, signal) => {
+      snapshots.push(history.slice())
+      return originalDecide(goal, history, members, state, signal)
+    },
+  )
+  return moderator
+}
+
 /** mock 引擎上下文（createAgUiSession 工厂） */
 function makeMockEngineContext(): Record<string, unknown> {
   return {
@@ -979,5 +998,146 @@ describe('TeamDiscussionEngine', () => {
     expect(result.transcript).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'saved-before-cancel' }),
     ]))
+  })
+
+  // ───────────────────────── 插话队列（对话化交互形态 §3.1，批次 1 任务 3） ─────────────────────────
+
+  it('插话入队后下一轮 Moderator decide 的输入包含该消息（带前缀区块），不重排既有消息', async () => {
+    const snapshots: DiscussionMessage[][] = []
+    const moderator = makeRecordingModerator([
+      { type: 'invite', agentId: 'director', prompt: '规划', reason: '开始' },
+      { type: 'converge', agentId: 'writer', scope: 'chapter', reason: '完成' },
+    ], snapshots)
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), makeMockEngineContext() as any)
+    engine.enqueueUserMessage({ id: 'ij-1', content: '打斗戏改用棍', createdAt: 1723680000000 })
+
+    await engine.run(goal, [
+      makeMember({ id: 'director', name: '导演' }),
+      makeMember({ id: 'writer', name: '写作', canConverge: true }),
+    ], makeOptions())
+
+    expect(snapshots.length).toBeGreaterThanOrEqual(1)
+    const firstHistory = snapshots[0]
+    // 既有系统消息仍在最前（追加不重排）
+    expect(firstHistory[0]).toMatchObject({ fromId: 'system' })
+    expect(firstHistory[0].content).toContain('目标：')
+    // 插话以 user 角色出现在首轮 decide 输入中，文本带「用户中途反馈」前缀区块
+    const interjectMessage = firstHistory.find(m => m.id === 'interject-ij-1')
+    expect(interjectMessage).toMatchObject({
+      fromId: 'user',
+      fromName: '用户',
+      type: 'user',
+      timestamp: 1723680000000,
+    })
+    expect(interjectMessage!.content).toBe('【用户中途反馈】\n（讨论进行中用户提出，可影响讨论方向）\n打斗戏改用棍')
+  })
+
+  it('重复 drain 幂等：同一插话在后续轮次的 history 中只出现一次', async () => {
+    const snapshots: DiscussionMessage[][] = []
+    const moderator = makeRecordingModerator([
+      { type: 'invite', agentId: 'director', prompt: '规划', reason: '开始' },
+      { type: 'converge', agentId: 'writer', scope: 'chapter', reason: '完成' },
+    ], snapshots)
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), makeMockEngineContext() as any)
+    engine.enqueueUserMessage({ id: 'ij-2', content: '结尾留悬念', createdAt: 1723680000001 })
+
+    const result = await engine.run(goal, [
+      makeMember({ id: 'director', name: '导演' }),
+      makeMember({ id: 'writer', name: '写作', canConverge: true }),
+    ], makeOptions())
+
+    // 每轮 decide 输入里该消息恰好一条（首轮注入后随 history 保留，不重复注入）
+    expect(snapshots.map(h => h.filter(m => m.id === 'interject-ij-2').length)).toEqual([1, 1])
+    expect(result.transcript.filter(m => m.id === 'interject-ij-2')).toHaveLength(1)
+  })
+
+  it('onInterjectInjected 在 Moderator 消费插话时收到全部 ids', async () => {
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'director', prompt: '规划', reason: '开始' },
+      { type: 'converge', agentId: 'writer', scope: 'chapter', reason: '完成' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), makeMockEngineContext() as any)
+    engine.enqueueUserMessage({ id: 'ij-a', content: '多写点对话', createdAt: 1723680000002 })
+    engine.enqueueUserMessage({ id: 'ij-b', content: '压缩环境描写', createdAt: 1723680000003 })
+    const onInterjectInjected = vi.fn()
+
+    await engine.run(goal, [
+      makeMember({ id: 'director', name: '导演' }),
+      makeMember({ id: 'writer', name: '写作', canConverge: true }),
+    ], makeOptions({ onInterjectInjected }))
+
+    // 两条同批 drain，一次回调；第二轮 decide 时队列已空不再回调
+    expect(onInterjectInjected).toHaveBeenCalledTimes(1)
+    expect(onInterjectInjected).toHaveBeenCalledWith(['ij-a', 'ij-b'])
+  })
+
+  it('flow 收尾清空插话队列并回调 onInterjectDropped（未被消费的消息不进 transcript）', async () => {
+    const moderator = makeMockModerator([
+      { type: 'converge', agentId: 'writer', scope: 'chapter', reason: '直接收敛' },
+    ])
+    let engine!: TeamDiscussionEngine
+    let lateEnqueued = false
+    const ctx = {
+      // 第一次成员调用发生在全章编织阶段（所有 decide 已结束）：
+      // 此时入队的插话不会再被 drain，只能走收尾 dropped。
+      createAgUiSession: vi.fn().mockImplementation(async () => {
+        if (!lateEnqueued) {
+          lateEnqueued = true
+          engine.enqueueUserMessage({ id: 'late-1', content: '来不及注入的反馈', createdAt: 1723680000004 })
+        }
+        return {
+          session: { prompt: vi.fn().mockResolvedValue('完整章节正文'.repeat(30)) },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: 'msg-late',
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+    const onInterjectDropped = vi.fn()
+
+    const result = await engine.run(goal, [
+      makeMember({ id: 'writer', name: '写作', canConverge: true }),
+    ], makeOptions({ onInterjectDropped }))
+
+    expect(result.status).toBe('completed')
+    expect(onInterjectDropped).toHaveBeenCalledTimes(1)
+    expect(onInterjectDropped).toHaveBeenCalledWith(['late-1'])
+    expect(result.transcript.some(m => m.id === 'interject-late-1')).toBe(false)
+    expect((engine as any).interjectQueue).toHaveLength(0)
+  })
+
+  it('收尾后 enqueueUserMessage 返回 false（存活标记失效）：消息不入队，端点据此 409', async () => {
+    const moderator = makeMockModerator([
+      { type: 'converge', agentId: 'writer', scope: 'chapter', reason: '直接收敛' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), makeMockEngineContext() as any)
+
+    // run 启动前入队也受理（runner 在 engine.run 调用前就登记投递闭包）
+    expect(engine.enqueueUserMessage({ id: 'ij-live', content: '运行前的插话', createdAt: 1723680000005 })).toBe(true)
+
+    await engine.run(goal, [
+      makeMember({ id: 'writer', name: '写作', canConverge: true }),
+    ], makeOptions())
+
+    // 收尾后：闭包存活标记失效，拒绝受理且消息不进队列（TOCTOU 微窗口消除）
+    expect(engine.enqueueUserMessage({ id: 'ij-after', content: '收尾后的插话', createdAt: 1723680000006 })).toBe(false)
+    expect((engine as any).interjectQueue).toHaveLength(0)
+  })
+
+  it('断点续跑收尾后 enqueueUserMessage 同样返回 false', async () => {
+    const moderator = makeMockModerator([])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), makeMockEngineContext() as any)
+
+    await engine.resumeChapterWeaving(goal, [
+      makeMember({ id: 'writer', name: '写作', canConverge: true }),
+    ], makeOptions(), {
+      phase: 'chapter_weaving',
+      transcript: [],
+      scenes: [],
+    })
+
+    expect(engine.enqueueUserMessage({ id: 'ij-resume-after', content: '续跑后的插话', createdAt: 1723680000007 })).toBe(false)
   })
 })

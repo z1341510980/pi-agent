@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { motion } from 'framer-motion'
@@ -7,7 +8,14 @@ import type { ConversationMessage } from './types'
 
 export interface CheckpointMessageProps {
   message: ConversationMessage
-  onResolve: (action: string) => void
+  /** 决策回调；comment 为卡片内修改意见（可选，随决策一并提交）。返回 promise 时组件会跟踪提交完成 */
+  onResolve: (action: string, comment?: string) => void | Promise<void>
+  /**
+   * 是否显示修改意见输入框（默认 true）。
+   * discussion 检查点传 false：decision 端点只对 workflow 分支消费 userMessages，
+   * 群聊分支会静默丢弃意见，保留输入框只会误导用户（反馈走底部插话输入）。
+   */
+  allowComment?: boolean
 }
 
 /** checkpointType → 标题 */
@@ -44,6 +52,15 @@ const VARIANT_SELECTED_STYLES: Record<string, string> = {
   ghost: 'border-emerald-500/40 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300',
 }
 
+/** 判断 onResolve 调用链是否返回可跟踪的 promise（async 提交链在运行时返回 Promise） */
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && typeof (value as PromiseLike<unknown>).then === 'function'
+  )
+}
+
 /**
  * CheckpointMessage：检查点决策卡片
  *
@@ -51,13 +68,29 @@ const VARIANT_SELECTED_STYLES: Record<string, string> = {
  * - 显示 checkpointType 标题 + Markdown 内容
  * - 未解决：渲染卡片式决策选项组（每个选项带图标 + 标题 + 说明）
  * - 已解决：高亮已选卡片，其余淡化
+ * - 提交中（in-flight）：任一选项点击后禁用全部选项与修改意见输入，
+ *   防止重复提交（onResolve 返回 promise 时跟踪完成，失败自动解锁可重试）
  */
-export function CheckpointMessage({ message, onResolve }: CheckpointMessageProps) {
+export function CheckpointMessage({ message, onResolve, allowComment = true }: CheckpointMessageProps) {
   const resolved = !!message.checkpointResolved
+  const [comment, setComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const title = message.checkpointType
     ? CHECKPOINT_TITLES[message.checkpointType]
     : '检查点确认'
   const options = message.checkpointOptions ?? []
+
+  const handleResolve = (action: string) => {
+    if (submitting) return
+    const result = onResolve(action, comment.trim() || undefined)
+    // 一次性锁：点击即锁。onResolve 为 async 调用链时跟踪 promise（完成/失败后解锁）；
+    // 否则维持锁定，直到决策成功（checkpointResolved 更新）或组件卸载自然失效。
+    setSubmitting(true)
+    if (isPromiseLike(result)) {
+      // 提交链自身负责错误呈现（如 submitCheckpoint 内部 setError），这里只负责解锁
+      void result.finally(() => setSubmitting(false)).catch(() => {})
+    }
+  }
 
   return (
     <motion.article
@@ -115,6 +148,27 @@ export function CheckpointMessage({ message, onResolve }: CheckpointMessageProps
           </div>
         ) : null}
 
+        {/* 修改意见输入（对话化交互形态 §3.2）：可选，随决策一并提交给下一个 Agent；
+            已决策后隐藏；discussion 检查点（allowComment=false）不渲染——
+            decision 端点群聊分支不消费意见，反馈应走底部插话输入 */}
+        {!resolved && allowComment && (
+          <div className="px-3 pt-1.5">
+            <input
+              type="text"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              disabled={submitting}
+              placeholder="修改意见（可选）：随决策一并发给下一个 Agent"
+              aria-label="检查点修改意见"
+              className={cn(
+                'w-full rounded-md border border-border bg-input-bg px-2.5 py-1.5',
+                'text-xs leading-relaxed text-text placeholder:text-hint',
+                'focus-visible:outline-none focus-visible:border-primary',
+              )}
+            />
+          </div>
+        )}
+
         {/* 决策选项：卡片式按钮组 */}
         <div className="border-t border-border/60 px-3 py-2.5">
           <div className="grid gap-1.5" style={{ gridTemplateColumns: options.length <= 3 ? `repeat(${options.length}, 1fr)` : 'repeat(2, 1fr)' }}>
@@ -127,8 +181,8 @@ export function CheckpointMessage({ message, onResolve }: CheckpointMessageProps
                 <button
                   key={opt.action}
                   type="button"
-                  disabled={resolved}
-                  onClick={() => onResolve(opt.action)}
+                  disabled={resolved || submitting}
+                  onClick={() => handleResolve(opt.action)}
                   className={cn(
                     'group flex flex-col items-start gap-1 rounded-lg border px-2.5 py-2 text-left',
                     'transition-all duration-150 ease-out',

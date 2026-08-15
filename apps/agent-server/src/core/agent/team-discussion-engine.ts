@@ -25,6 +25,7 @@ import { AgentChannel } from './agent-channel.js'
 import { Moderator } from './moderator.js'
 import type {
   DiscussionGoal,
+  DiscussionInterjectMessage,
   DiscussionMember,
   DiscussionMessage,
   DiscussionOptions,
@@ -58,6 +59,8 @@ export interface EngineContext {
     timeoutMs?: number
     /** 成员配置的 modelId（透传给底层 createAgUiSession） */
     modelId?: { provider: string; modelId: string }
+    /** 显式授权给本次成员会话的 Skill（/skill: 展开提供角色方法） */
+    skill?: { name: string; path: string }
     emit: AgUiEventSink
     emitRaw?: boolean
     onFirstText?: () => void
@@ -76,11 +79,38 @@ export class TeamDiscussionEngine {
   /** 当前讨论目标，用于给每个成员注入共享上下文 */
   private currentGoal?: DiscussionGoal
 
+  /**
+   * 用户插话队列（对话化交互形态 §3.1，实例级）：
+   * 由端点经 enqueueUserMessage 入队，Moderator 每轮 decide 前 drain 写入 history。
+   */
+  private interjectQueue: DiscussionInterjectMessage[] = []
+
+  /**
+   * 插话存活标记：run/resumeChapterWeaving 的 finally 收尾（含 dropped flush）
+   * 前置 false，之后 enqueueUserMessage 拒绝受理并返回 false。插话端点在
+   * 取到投递闭包与实际调用之间引擎可能刚好收尾（TOCTOU 微窗口），若仍入队
+   * 只会进入无人 drain 的死队列，SSE 状态永远停在 queued。构造即置 true：
+   * runner 在 engine.run 调用前就登记投递闭包，run 启动前入队的插话会在
+   * 首轮 decide 被 drain。
+   */
+  private acceptingInterjects = true
+
   constructor(
     private moderator: Moderator,
     private channel: AgentChannel,
     private context: EngineContext,
   ) {}
+
+  /**
+   * 用户插话入队（append 语义）：flow 运行中随时可调用，
+   * 消息在下一轮 Moderator decide 前以 user 角色追加进群聊 history。
+   * 返回 false 表示引擎已收尾（队列已 flush），消息未入队，调用方应拒绝受理。
+   */
+  enqueueUserMessage(msg: DiscussionInterjectMessage): boolean {
+    if (!this.acceptingInterjects) return false
+    this.interjectQueue.push({ ...msg })
+    return true
+  }
 
   async run(
     goal: DiscussionGoal,
@@ -127,6 +157,9 @@ export class TeamDiscussionEngine {
           round: rounds,
           scenesDefined: scenes.length > 0,
         }
+        // 插话 drain（§3.1）：在 Moderator 看到本轮 history 前把用户中途反馈
+        // 以 user 角色追加进去（只追加不重排），Moderator 自主决定如何响应。
+        this.drainInterjectQueue(history, options)
         const decision = await this.moderator.decide(goal, history, members, state, options.signal)
         await this.handleDecision(decision, history, members, options, channelName, { phase: 'planning' })
         rounds++
@@ -174,6 +207,8 @@ export class TeamDiscussionEngine {
               scenesRemaining: scenes.length - i - 1,
               scenesDefined: true,
             }
+            // 插话 drain（§3.1）：与规划阶段同口径，场景轮次 decide 前注入。
+            this.drainInterjectQueue(history, options)
             const decision = await this.moderator.decide(goal, history, activeMembers, state, options.signal)
             await this.handleDecision(decision, history, activeMembers, options, channelName, { phase: 'acting', sceneId: scene.sceneId })
             rounds++
@@ -233,9 +268,15 @@ export class TeamDiscussionEngine {
         scenes,
       }
     } finally {
+      // 先关闭插话通道再收尾：收尾期间（dropped flush 等）新到插话直接拒绝，
+      // 不进入无人消费的死队列。
+      this.acceptingInterjects = false
       for (const member of members) {
         this.channel.unsubscribe(channelName, member.id)
       }
+      // 插话收尾（§3.1）：flow 终态（正常/异常/取消）时仍未被 Moderator 消费的
+      // 插话以 dropped 回调暴露，不静默丢失。
+      this.flushInterjectDropped(options)
     }
   }
 
@@ -299,8 +340,44 @@ export class TeamDiscussionEngine {
         scenes,
       }
     } finally {
+      // 与 run 同口径：先关闭插话通道再收尾，收尾后插话一律拒绝。
+      this.acceptingInterjects = false
       for (const member of members) this.channel.unsubscribe(channelName, member.id)
+      // 断点续跑不走 Moderator decide，期间入队的插话全部在收尾 dropped。
+      this.flushInterjectDropped(options)
     }
+  }
+
+  /**
+   * 插话 drain（§3.1）：把队列中全部插话以 user 角色追加进 history（只追加不重排），
+   * 文本带「用户中途反馈」显式区块（与 create-flow 插话注入格式同构），
+   * 随后一次性回调 onInterjectInjected。取走即出队，重复调用天然幂等。
+   */
+  private drainInterjectQueue(history: DiscussionMessage[], options: DiscussionOptions): void {
+    if (this.interjectQueue.length === 0) return
+    const batch = this.interjectQueue
+    this.interjectQueue = []
+    const ids: string[] = []
+    for (const msg of batch) {
+      history.push({
+        id: `interject-${msg.id}`,
+        fromId: 'user',
+        fromName: '用户',
+        content: `【用户中途反馈】\n（讨论进行中用户提出，可影响讨论方向）\n${msg.content}`,
+        timestamp: msg.createdAt || Date.now(),
+        type: 'user',
+      })
+      ids.push(msg.id)
+    }
+    options.onInterjectInjected?.(ids)
+  }
+
+  /** 插话收尾（§3.1）：flow 终态时清空队列，未被消费的插话以 dropped 回调暴露。 */
+  private flushInterjectDropped(options: DiscussionOptions): void {
+    if (this.interjectQueue.length === 0) return
+    const ids = this.interjectQueue.map(msg => msg.id)
+    this.interjectQueue = []
+    options.onInterjectDropped?.(ids)
   }
 
   private recordWriterOutput(
@@ -465,7 +542,7 @@ export class TeamDiscussionEngine {
       try {
         const systemPrompt = member.buildSystemPrompt()
         const contextPrompt = member.buildContextPrompt?.() ?? this.currentGoal?.context ?? ''
-        const identityPrompt = member.buildIdentityPrompt?.() ?? ''
+        const identityPrompt = member.buildMergedActorIdentityPrompt?.() ?? member.buildIdentityPrompt?.() ?? ''
         const temperature = member.temperature
           ?? (options.limits?.characterTemperature ?? 0.8)
         const modelId = member.modelId
@@ -794,6 +871,9 @@ ${reviewResult.rewrite_suggestion}
       // 透传成员配置的 modelId：工种成员从 AgentManager 读取该 Agent 的 model 配置，
       // 角色成员不填（走默认 Provider）。
       modelId: invocationOverrides?.modelId ?? member.modelId,
+      // Skill 白名单接入：常规成员调用透传业务层授权的 Skill；invocationOverrides
+      // 派生的特殊调用（如编织/合并演出）自带完整 prompt，不展开成员 Skill。
+      skill: invocationOverrides ? undefined : member.skill,
       emit: options.emit,
       emitRaw: false,
       onFirstText: () => {
@@ -1257,6 +1337,8 @@ ${combined}
           buildSystemPrompt: reviewer.buildFinalReviewSystemPrompt,
           buildIdentityPrompt: reviewer.buildFinalReviewIdentityPrompt
             ?? reviewer.buildIdentityPrompt,
+          // 最终验收走标准角色方法（novel-reviewer），与主身份的群聊审查 Skill 不同
+          skill: reviewer.finalReviewSkill ?? reviewer.skill,
         }
       : reviewer
     const targetHint = targetWords
@@ -1271,6 +1353,8 @@ ${combined}
       buildIdentityPrompt: reviewer.buildProseEditorIdentityPrompt
         ?? reviewer.buildFinalReviewIdentityPrompt
         ?? reviewer.buildIdentityPrompt,
+      // 盲审文字编辑不注入共享上下文，也不挂 Skill（与标准工作流盲审一致）
+      skill: undefined,
     }
     const proseEditorReport = await this.invokeMember(
       proseEditor,

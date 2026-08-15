@@ -10,6 +10,7 @@ import { RelationshipGraph } from '../plugins/novel-plugin/core/analysis/novel-r
 import { createNovelRoutes } from '../plugins/novel-plugin/novel-routes.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
 import { CostReportService } from '../plugins/novel-plugin/core/analysis/cost-report-service.js'
+import { ObservabilityService } from '../plugins/novel-plugin/core/analysis/observability-service.js'
 import { SharedOverlapAnalyzer } from '../plugins/novel-plugin/core/analysis/shared-overlap-analyzer.js'
 import type { NovelServices } from '../plugins/novel-plugin/novel-services.js'
 import { errorHandlerPlugin } from '../plugins/error-handler.plugin.js'
@@ -43,6 +44,7 @@ function makeMockServices(): NovelServices {
       createChapterWithFlow: vi.fn(),
       once: vi.fn(),
       emit: vi.fn(),
+      clearStaleInterjectMessages: vi.fn(() => []),
     } as any,
     characterGenerator: {
       generate: vi.fn(async (_projectId: string, _coreStyle: string, _onProgress?: (event: unknown) => void) => ({
@@ -92,6 +94,7 @@ function makeMockServices(): NovelServices {
     } as any,
     tools: [],
     costReportService: new CostReportService(db),
+    observabilityService: new ObservabilityService(db),
     sharedOverlapAnalyzer: new SharedOverlapAnalyzer(db),
   }
 }
@@ -913,5 +916,34 @@ describe('Novel API 路由 - Agent 角色温度配置', () => {
     const body = response.json()
     expect(body.ok).toBe(true)
     expect(body.data).toHaveLength(5)
+  })
+})
+
+describe('observability 路由', () => {
+  it('项目不存在返回 404', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: `${PLUGIN_PREFIX}/projects/nonexistent/observability/overview`,
+    })
+    expect(response.statusCode).toBe(404)
+    expect(response.json().ok).toBe(false)
+  })
+
+  it('非法 from 参数被忽略而非 500（NaN 守卫）', async () => {
+    // mock services 用真实 ObservabilityService（同 cost-report 的既有测法）
+    const createRes = await app.inject({
+      method: 'POST',
+      url: `${PLUGIN_PREFIX}/projects`,
+      payload: { title: '观测参数测试', genre: '玄幻', synopsis: '', targetWords: 0 },
+    })
+    const projectId = createRes.json().data.id
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `${PLUGIN_PREFIX}/projects/${projectId}/observability/overview?from=abc`,
+    })
+    expect(response.statusCode, response.body).toBe(200)
+    // from=abc 视为未传 → 不过滤时间 → 空库返回空态
+    expect(response.json().data.totalCalls).toBe(0)
   })
 })

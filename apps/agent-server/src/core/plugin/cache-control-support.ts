@@ -34,8 +34,37 @@
 /** 解析出的目标模型标识（provider + baseUrl + modelId 任一可缺） */
 export interface CacheControlTarget {
   provider?: string
-  modelId?: string
   baseUrl?: string
+  modelId?: string
+}
+
+/**
+ * ModelRegistry 的最小结构（按结构兼容，避免与 PluginManager 的 any 类型耦合）。
+ */
+export interface ModelRegistryLike {
+  find(provider: string, modelId: string): unknown
+  getAll?(): unknown[]
+}
+
+/**
+ * 从 modelRegistry 解析模型的 baseUrl。
+ *
+ * 这是 baseUrl 判定来源的唯一定义：`PluginManager.createSession` 解析
+ * cacheControlTarget 时读的就是 `modelRegistry.find(provider, modelId)`
+ * 返回模型的 `baseUrl` 字段（见 plugin-manager.ts 的 cacheControlTarget 段）。
+ * 遥测侧（novel-orchestrator 落库 cacheProtocol）必须经本函数取值，
+ * 保证"遥测判定"与"实际路由判定"从同一注册表、同一字段读数，口径不分叉。
+ *
+ * registry 未注入、find 不可用或模型未注册时返回 undefined，
+ * 与 plugin-manager「查不到 baseUrl 时仍按 provider/modelId 判断」的降级行为一致。
+ */
+export function findModelBaseUrl(
+  registry: ModelRegistryLike | undefined,
+  provider: string,
+  modelId: string,
+): string | undefined {
+  const model = registry?.find?.(provider, modelId) as { baseUrl?: string } | undefined
+  return model?.baseUrl
 }
 
 /** Anthropic 原生 provider 标识 */

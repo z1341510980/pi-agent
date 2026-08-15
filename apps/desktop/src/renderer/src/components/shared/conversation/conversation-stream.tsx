@@ -9,8 +9,13 @@ import { ConversationEmptyState, type EmptyStateVariant } from './empty-state'
 export interface ConversationStreamProps {
   /** 消息列表 */
   messages: ConversationMessage[]
-  /** 检查点决策回调 */
-  onCheckpointResolve?: (action: string) => void
+  /** 检查点决策回调（comment 为卡片内修改意见，可选） */
+  onCheckpointResolve?: (action: string, comment?: string) => void | Promise<void>
+  /**
+   * 检查点卡片是否显示修改意见输入（默认 true）。
+   * discussion 流传 false：decision 端点群聊分支不消费意见，输入框会被静默丢弃。
+   */
+  allowCheckpointComment?: boolean
   /** 系统消息操作回调 */
   onSystemAction?: (action: string) => void
   /** 空状态文案 */
@@ -69,6 +74,7 @@ function groupMessages(messages: ConversationMessage[]): RenderItem[] {
 export function ConversationStream({
   messages,
   onCheckpointResolve,
+  allowCheckpointComment = true,
   onSystemAction,
   emptyHint = '暂无消息',
   emptyTitle = '开始对话',
@@ -124,7 +130,8 @@ export function ConversationStream({
                 <CheckpointMessage
                   key={item.message.id}
                   message={item.message}
-                  onResolve={(action) => onCheckpointResolve?.(action)}
+                  onResolve={(action, comment) => onCheckpointResolve?.(action, comment)}
+                  allowComment={allowCheckpointComment}
                 />
               )
             }

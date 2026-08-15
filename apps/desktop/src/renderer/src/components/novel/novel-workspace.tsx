@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather, Settings as SettingsIcon, Gauge } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather, Settings as SettingsIcon, Gauge, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -41,6 +41,7 @@ import {
   createChapter,
   completeChapter,
   type SimilarityEntityKind,
+  type NovelChapter,
 } from '@/api/novel-client'
 import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
 import { useChapterChat } from '@/hooks/use-chapter-chat'
@@ -59,6 +60,7 @@ import { ConsistencyAuditPanel } from './consistency-audit-panel'
 import type { MentionOption } from '@/components/shared/conversation'
 import { SimilarityScanPanel } from './similarity-scan-panel'
 import { CacheMonitorPanel } from './cache-monitor-panel'
+import { ObservabilityTimeline } from './observability-timeline'
 import { P3ContextReportPanel } from './p3-context-report-panel'
 import { AgentLogPanel } from './agent-log-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
@@ -104,6 +106,44 @@ const RIGHT_PANEL_OPTIONS: ReadonlyArray<SegmentedOption<RightPanelView>> = [
 
 export interface NovelWorkspaceProps {
   onClose: () => void
+}
+
+// ── 建章辅助 ──
+
+/** ensureChapterExists 的可注入依赖（组件传入 store action 与 queryClient） */
+export interface EnsureChapterExistsDeps {
+  upsertChapter: (chapter: NovelChapter) => void
+  queryClient: QueryClient
+}
+
+/**
+ * 章节不存在时先建空章节（默认叙事任务：推进主线剧情）。
+ *
+ * 「从此章开始创作」与输入框 `/写 N` 命令共用：先 createChapter 落库，
+ * 再同步本地 store 与后台刷新项目数据，最后由调用方启动创作流程。
+ * 成功返回 true；建章失败（如网络错误/后端冲突）返回 false，后续处理由调用方决定
+ * （前者静默放弃，后者复位创作状态）。
+ */
+export async function ensureChapterExists(
+  projectId: string,
+  chapterNumber: number,
+  deps: EnsureChapterExistsDeps,
+): Promise<boolean> {
+  try {
+    const chapter = await createChapter(projectId, {
+      chapterNumber,
+      narrativeTask: {
+        description: '推进主线剧情',
+        type: 'advance_mainline',
+        priority: 'medium',
+      },
+    })
+    deps.upsertChapter(chapter)
+    void deps.queryClient.invalidateQueries({ queryKey: ['novel-project-data', projectId] })
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ── 相似度扫描实体类型中文标签（含 world_element）──
@@ -234,6 +274,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const toggleFocusMode = useNovelWorkspaceLayoutStore((s) => s.toggleFocusMode)
   const [nodeCount, setNodeCount] = useState(0)
   const [cachePanelOpen, setCachePanelOpen] = useState(false)
+  const [timelinePanelOpen, setTimelinePanelOpen] = useState(false)
   const [p3PanelOpen, setP3PanelOpen] = useState(false)
   const [logPanelOpen, setLogPanelOpen] = useState(false)
   const [stylePanelOpen, setStylePanelOpen] = useState(false)
@@ -653,20 +694,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     if (!currentProjectId || creationFlow.isRunning) return
     const existing = chapters.find((c) => c.chapterNumber === chapterNumber)
     if (!existing) {
-      try {
-        const chapter = await createChapter(currentProjectId, {
-          chapterNumber,
-          narrativeTask: {
-            description: '推进主线剧情',
-            type: 'advance_mainline',
-            priority: 'medium',
-          },
-        })
-        upsertChapter(chapter)
-        void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-      } catch {
-        return
-      }
+      // 建章失败静默放弃（维持原行为：右键入口不打断用户）
+      const created = await ensureChapterExists(currentProjectId, chapterNumber, { upsertChapter, queryClient })
+      if (!created) return
     }
     await runChapterTask({
       kind: resolveWritingTaskKind(flowType),
@@ -785,6 +815,21 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     creationFlow.sendMessage(message)
   }, [creationFlow])
 
+  /**
+   * 插话（对话化交互形态 §3.1）：flow 运行中输入框发送分流到此。
+   * 成功 toast「已排队」；409 表示当前无运行中可插话流程。
+   */
+  const handleSendInterject = useCallback(async (content: string) => {
+    const outcome = await creationFlow.sendInterject(content)
+    if (outcome.ok) {
+      toastSuccess('已排队', '反馈将注入下一个被调用的 Agent')
+    } else if (outcome.statusCode === 409) {
+      toastError('发送失败', '当前无运行中流程')
+    } else {
+      toastError('发送失败', outcome.error)
+    }
+  }, [creationFlow])
+
   // 右栏对话面板"开始"按钮：根据 flowType 分发到对应流程
   const handleStartFlow = useCallback((modelId?: { provider: string; modelId: string } | null) => {
     creationModelIdRef.current = modelId ?? null
@@ -794,6 +839,65 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       void handleStartCreation('manual')
     }
   }, [flowType, handleStartCreation])
+
+  /**
+   * 输入框斜杠命令（/写 N、/重写 N、/群聊 N）按章节号启动对应 flow：
+   * - write：章节不存在时先创建空章节（与「从此章开始创作」共用 ensureChapterExists）
+   * - rewrite / discuss：要求章节已存在
+   * 命令的 kind 固定（不随当前 Tab 的 flowType 漂移），并同步 Tab 供运行中头部展示。
+   */
+  const handleStartFlowCommand = useCallback((
+    command: 'write' | 'rewrite' | 'discuss',
+    chapterNumber: number,
+    modelId?: { provider: string; modelId: string } | null,
+  ) => {
+    if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
+    const chapterExists = chapters.some((c) => c.chapterNumber === chapterNumber)
+    if (!chapterExists && command !== 'write') {
+      toastError(
+        `第 ${chapterNumber} 章不存在`,
+        command === 'rewrite' ? '只能重写已有章节；新章节请用 /写 N' : '群聊需要已有章节；新章节请用 /写 N',
+      )
+      return
+    }
+
+    const kind = command === 'discuss' ? 'discussion' : 'workflow'
+    creationModelIdRef.current = modelId ?? null
+    setFlowType(kind)
+
+    startCreationLockRef.current = true
+    void (async () => {
+      try {
+        if (!chapterExists) {
+          // write 且章节不存在：先创建空章节（与 handleStartCreationAt 一致）
+          const created = await ensureChapterExists(currentProjectId, chapterNumber, { upsertChapter, queryClient })
+          if (!created) {
+            // 建章失败：复位创作状态，交由流程错误态展示
+            setCreationMode(null)
+            setCreationChapterNumber(undefined)
+            return
+          }
+        }
+        // 成功 toast 在建章成功后、启动前发出：建章失败不再先弹「已启动」。
+        // （不放到 await runChapterTask 之后——runFlow 会 await 整条 SSE 流并在
+        // 内部消化流程错误，resolve 已是流程结束时点，「已启动」提示会延迟数分钟。）
+        if (command === 'write') {
+          toastSuccess(`已启动第 ${chapterNumber} 章创作`, '使用输入框旁选择的模型')
+        } else if (command === 'rewrite') {
+          toastSuccess(`开始重写第 ${chapterNumber} 章`, '旧内容将被覆盖')
+        } else {
+          toastSuccess(`已启动第 ${chapterNumber} 章群聊`, '适合多角色谈判与高潮场景')
+        }
+        await runChapterTask({ kind, projectId: currentProjectId, chapterNumber })
+      } catch {
+        // 启动失败：与 handleStartCreation 一致，静默交由流程错误态展示
+        setCreationMode(null)
+        setCreationChapterNumber(undefined)
+      } finally {
+        startCreationLockRef.current = false
+      }
+    })()
+  }, [currentProjectId, chapters, creationFlow.isRunning, runChapterTask, upsertChapter, queryClient, setCreationMode])
 
   // ── 章节自由聊天回调 ──
   // ⚠️ 只依赖 hook 返回的稳定方法（useCallback 引用），不依赖整个 chapterChat 对象，
@@ -950,6 +1054,16 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               className="text-subtle hover:text-text"
             >
               <Database className="size-3.5" />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => setTimelinePanelOpen(true)}
+              disabled={!currentProject}
+              title="调用趋势"
+              className="text-subtle hover:text-text"
+            >
+              <Activity className="size-3.5" />
             </Button>
             <Button
               size="icon-sm"
@@ -1275,9 +1389,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onDiscard={handleDiscardCreation}
                         onSendMessage={handleSendMessage}
                         userMessages={creationFlow.userMessages}
+                        interjectMessages={creationFlow.interjectMessages}
+                        onSendInterject={(content) => { void handleSendInterject(content) }}
                         flowType={flowType}
                         onFlowTypeChange={setFlowType}
                         onStartFlow={handleStartFlow}
+                        onStartFlowCommand={handleStartFlowCommand}
                         onCancelFlow={handleDiscardCreation}
                         chapterChatMessages={chapterChat.messages}
                       />
@@ -1372,6 +1489,24 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </DialogHeader>
             <div className="max-h-[60vh] overflow-y-auto">
               <CacheMonitorPanel chapterNumber={creationChapterNumber} />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* 调用趋势弹窗 */}
+        <Dialog open={timelinePanelOpen} onOpenChange={setTimelinePanelOpen}>
+          <DialogContent className="sm:max-w-xl max-h-[80vh] p-0 gap-0">
+            <DialogHeader className="px-4 py-3 border-b border-border">
+              <DialogTitle className="flex items-center gap-2 text-sm">
+                <Activity className="size-4 text-primary" />
+                调用趋势
+              </DialogTitle>
+              <DialogDescription className="text-xs text-pretty">
+                最近 50 次模型调用的 token 量与缓存命中率（失败调用以红色条呈现）
+              </DialogDescription>
+            </DialogHeader>
+            <div className="h-[65vh]">
+              <ObservabilityTimeline />
             </div>
           </DialogContent>
         </Dialog>

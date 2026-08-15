@@ -4,6 +4,7 @@
  * 拆分自原 novel-routes.ts（PR-6），包含所有 SSE 流式创作流程：
  * - cancel-active-flow（统一取消：工作流/群聊/编排/反推共用同一任务控制器）
  * - create-flow（多 Agent 创作流程 SSE + 检查点）
+ * - flows/:flowId/messages（create-flow 运行中插话：REST 受理 + SSE 状态回显 + 落库）
  * - 检查点决策（workflow / discussion 共用）
  * - create-discussion（群聊共创 SSE）+ 断点续跑 + 群聊检查点
  * - discussion-settings（群聊模式设置 GET/PUT）
@@ -36,6 +37,11 @@ import {
   activeNovelChapterTasks,
   registerNovelChapterTask,
   finishNovelChapterTask,
+  registerInterjectFlow,
+  unregisterInterjectFlow,
+  announceInterjectQueued,
+  getInterjectEnqueuer,
+  dispatchInterjectStatus,
 } from '../utils/chapter-task-registry.js'
 import { createNovelAgUiEmitter, createSseEmitterSink } from '../utils/sse-emitter.js'
 import { cancelDebug } from '../utils/cancel-debug-log.js'
@@ -195,6 +201,22 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         `novel:chapter:${projectId}:${chapterNumber}`,
         randomUUID(),
       )
+      // 插话回显通道（§3.1/§4）：把本 flow 的 emitter 登记到插话注册表，
+      // 供 POST /projects/:projectId/flows/:flowId/messages 端点与 orchestrator
+      // 插话 hooks（injected/dropped）沿本 SSE 连接推 novel:user-message 事件。
+      // writableEnded 守卫：SSE 已结束（收尾竞态窗口）时丢弃推送。
+      const interjectFlowKey = `${projectId}|${chapterNumberValue}`
+      registerInterjectFlow(interjectFlowKey, (event) => {
+        if (!reply.raw.writableEnded) emitter.userMessage(event)
+      })
+      // 陈旧插话清理：上一 flow 的终态收尾（orchestrator finally）先于任务表删除
+      // （route finally）执行，窗口内入队的定向插话会残留在单例 orchestrator 队列，
+      // 被本次重启的同章 flow 误注入——启动前按 flowKey 清掉（经 dropped 回调暴露）。
+      // 存在性守卫：SSE 头已写出，此处抛错（老 orchestrator 实例/测试 mock 缺该方法）
+      // 会让响应进入不可恢复状态；cleared ids 的 dropped 推送由 hooks onInterjectDropped 覆盖。
+      if (typeof orchestrator.clearStaleInterjectMessages === 'function') {
+        orchestrator.clearStaleInterjectMessages(interjectFlowKey)
+      }
       const workflowRunId = randomUUID()
       const persistWorkflowMessage = (message: {
         role: 'agent' | 'system'
@@ -316,6 +338,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         cancelDebug('create-flow-finally-pre', { projectId, chapterNumber, signalAborted: task.controller.signal.aborted })
         finishNovelChapterTask(creationLockKey, task)
         chapterCreationLocks.delete(creationLockKey)
+        // 注销插话回显通道：orchestrator 终态 dropped 事件已在 createChapterWithFlow
+        // 的 finally 内推出，此处仅清理注册表，防止向已结束连接推送。
+        unregisterInterjectFlow(interjectFlowKey)
         cancelDebug('create-flow-finally-post', { projectId, chapterNumber, lockExists: chapterCreationLocks.has(creationLockKey), taskExists: activeNovelChapterTasks.has(creationLockKey) })
         reply.raw.end()
       }
@@ -485,6 +510,155 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   })
 
   // ═══════════════════════════════════════════════════════════════
+  // 插话（对话化交互形态 §3.1）：向运行中的 create-flow 注入用户中途反馈
+  // ═══════════════════════════════════════════════════════════════
+
+  // flowId 解析约定：create-flow 是 SSE 端点，启动时无独立 flowId 返回体
+  // （workflowRunId 只存在于消息 metadata；运行中 flow 注册表
+  // activeNovelChapterTasks 以 `${projectId}:${chapterNumber}` 为 key）。
+  // 因此 flowId 约定为章节号字符串；非数字 flowId 需 body/query 显式 chapterNumber。
+  const interjectMessageSchema = z.object({
+    content: z.string().min(1).max(4000),
+    targetAgent: z.enum(['director', 'writer', 'reviewer', 'reviser', 'memory']).optional(),
+    chapterNumber: z.number().int().min(1).optional(),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/flows/:flowId/messages',
+    handler: async (request: any, reply: any) => {
+      const { projectId, flowId } = request.params as { projectId: string; flowId: string }
+      const input = validateBody(interjectMessageSchema, request, reply)
+      if (!input) return reply
+
+      const queryChapter = Number((request.query as Record<string, string | undefined>)?.chapterNumber)
+      const chapterNumber = input.chapterNumber
+        ?? (/^\d+$/.test(flowId) ? Number(flowId) : undefined)
+        ?? (Number.isInteger(queryChapter) && queryChapter > 0 ? queryChapter : undefined)
+      if (!chapterNumber) {
+        reply.code(400).send({ ok: false, error: 'flowId 不是章节号且未提供 chapterNumber，无法定位目标创作流' })
+        return
+      }
+
+      // create-flow（kind='workflow'）经 orchestrator 消费（drain）并终态收尾（dropped）插话；
+      // create-discussion（kind='discussion'，批次 1 任务 3）经 runner 登记的 engine
+      // enqueue 闭包入队，Moderator 每轮 decide 前 drain、engine 收尾 dropped。
+      // 其余流程（编排/反推等）无此通道，入队只会石沉大海。
+      const lockKey = `${projectId}:${chapterNumber}`
+      const task = activeNovelChapterTasks.get(lockKey)
+      if (!task || (task.kind !== 'workflow' && task.kind !== 'discussion')) {
+        reply.code(409).send({ ok: false, error: '该章节当前没有运行中的可插话创作流程（工作流/群聊），无法接收插话' })
+        return
+      }
+
+      const flowKey = `${projectId}|${chapterNumber}`
+
+      // 群聊分支：无 targetAgent 语义（Moderator 自主决定响应方式），定向字段直接拒绝
+      if (task.kind === 'discussion') {
+        if (input.targetAgent) {
+          reply.code(400).send({
+            ok: false,
+            error: '群聊插话不支持 targetAgent：由主持人自主决定如何响应，请省略 targetAgent 后重试',
+          })
+          return
+        }
+        const enqueue = getInterjectEnqueuer(flowKey)
+        if (!enqueue) {
+          // 极小竞态窗口：任务已注册但 runner 尚未创建 engine（或刚好已收尾）
+          reply.code(409).send({ ok: false, error: '群聊引擎尚未就绪或已结束，请稍后重试' })
+          return
+        }
+        const discussionMessageId = randomUUID()
+        // 闭包存活标记（TOCTOU 防护）：取到闭包与实际投递之间引擎可能刚好收尾
+        // （engine finally 已 flush dropped），enqueue 返回 false 时按已收尾拒绝，
+        // 不推 queued 事件、不落库，让前端立即感知流程已结束。
+        if (!enqueue({
+          id: discussionMessageId,
+          content: input.content,
+          createdAt: Date.now(),
+        })) {
+          reply.code(409).send({ ok: false, error: '群聊引擎已收尾，不再接收插话' })
+          return
+        }
+        announceInterjectQueued({
+          flowKey,
+          flowId,
+          messageId: discussionMessageId,
+          content: input.content,
+        })
+        try {
+          services.chapterChatStore.add({
+            projectId,
+            chapterNumber,
+            role: 'user',
+            fromId: 'user',
+            fromName: '用户',
+            content: input.content,
+            phase: 'discussion',
+            metadata: {
+              interject: true,
+              messageId: discussionMessageId,
+              flowMode: 'discussion',
+            },
+          })
+        } catch (err) {
+          request.log.error({ err, projectId, chapterNumber, messageId: discussionMessageId }, '群聊插话消息落库失败')
+        }
+        reply.code(201).send(success({ flowId, messageId: discussionMessageId, status: 'queued' }, request.traceId))
+        return
+      }
+      const messageId = randomUUID()
+      const accepted = services.orchestrator.enqueueUserMessage({
+        id: messageId,
+        content: input.content,
+        targetAgent: input.targetAgent,
+        flowKey,
+      })
+      if (!accepted) {
+        // 目前仅 targetAgent='memory' 被拒绝：Memory 主路径是结构化 LLM 调用，不经插话通道
+        reply.code(400).send({
+          ok: false,
+          error: '插话未被受理：memory 阶段不经插话通道，请省略 targetAgent 后重试',
+        })
+        return
+      }
+
+      // 立即向该 flow 的 SSE 通道推 queued 事件（登记详情供 hooks 回查 injected/dropped）
+      announceInterjectQueued({
+        flowKey,
+        flowId,
+        messageId,
+        content: input.content,
+        targetAgent: input.targetAgent,
+      })
+
+      // 插话成功即写 chapterChatStore（前端按 metadata.interject 渲染状态徽标）；
+      // 写入失败只记日志，不影响 201 响应、flow 运行（端点本就在 flow 之外，无共享可变状态）。
+      try {
+        services.chapterChatStore.add({
+          projectId,
+          chapterNumber,
+          role: 'user',
+          fromId: 'user',
+          fromName: '用户',
+          content: input.content,
+          phase: 'checkpoint',
+          metadata: {
+            interject: true,
+            messageId,
+            targetAgent: input.targetAgent,
+            flowMode: 'workflow',
+          },
+        })
+      } catch (err) {
+        request.log.error({ err, projectId, chapterNumber, messageId }, '插话消息落库失败')
+      }
+
+      reply.code(201).send(success({ flowId, messageId, status: 'queued' }, request.traceId))
+    },
+  })
+
+  // ═══════════════════════════════════════════════════════════════
   // 群聊共创模式（SSE + 检查点）
   // ═══════════════════════════════════════════════════════════════
 
@@ -541,6 +715,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         `novel:discussion:${projectId}:${chapterNumber}`,
         discussionRunId,
       )
+      // 插话回显通道（批次 1 任务 3）：与 create-flow 同构，把本 flow 的 emitter
+      // 登记到插话注册表。群聊侧 runner 另行登记 engine 的 enqueue 闭包，
+      // engine 的 injected/dropped 回调经 dispatchInterjectStatus 路由回本 SSE。
+      const interjectFlowKey = `${projectId}|${chapterNumberValue}`
+      registerInterjectFlow(interjectFlowKey, (event) => {
+        if (!reply.raw.writableEnded) emitter.userMessage(event)
+      })
       const task = registerNovelChapterTask(creationLockKey, 'discussion')
       const abortOnDisconnect = () => {
         if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
@@ -585,6 +766,10 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             moderatorModel: settings.moderatorModel,
             memberModel: input.modelId,
             projectModel,
+            // 插话生命周期（批次 1 任务 3）：engine drain/收尾时回调，
+            // 经注册表按 messageId 反查本 flow 的 SSE 通道推 injected/dropped 事件。
+            onInterjectInjected: ids => dispatchInterjectStatus('injected', ids),
+            onInterjectDropped: ids => dispatchInterjectStatus('dropped', ids),
             signal: task.controller.signal,
           },
           arrangedEntities,
@@ -629,6 +814,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         reply.raw.off('close', abortOnDisconnect)
         finishNovelChapterTask(creationLockKey, task)
         chapterCreationLocks.delete(creationLockKey)
+        // 注销插话回显通道：engine 终态 dropped 事件已在 runner.run 内推出，
+        // 此处清理注册表（含 runner 登记的 enqueue 闭包兜底），防止向已结束连接推送。
+        unregisterInterjectFlow(interjectFlowKey)
         reply.raw.end()
       }
     },

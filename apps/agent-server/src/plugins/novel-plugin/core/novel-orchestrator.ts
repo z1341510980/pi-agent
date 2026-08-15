@@ -92,6 +92,12 @@ import { buildScenePlanFromNarrativeTask } from './chapters/chapter-scene-plan-a
 import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
 import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './quality/llm-error-policy.js'
 import {
+  buildRequestFingerprint,
+  classifyDataQuality,
+  resolveCacheProtocol,
+} from '../../../core/observability/model-call-telemetry.js'
+import { findModelBaseUrl } from '../../../core/plugin/cache-control-support.js'
+import {
   createChapterBudgetUsage,
   evaluateChapterBudget,
   getChapterBudgetCategorySnapshot,
@@ -181,6 +187,37 @@ interface RunAgentOverrides {
 }
 
 /**
+ * 用户插话（对话化交互形态 §3.1）：create-flow 运行中用户发送的中途反馈，
+ * 注入下一个被调用的 Agent 上下文。与检查点指令通道（setUserMessages，覆盖语义）并行。
+ */
+export interface InterjectMessage {
+  /** 唯一 id（调用方生成，供 SSE queued/injected/dropped 状态流转对齐） */
+  id: string
+  content: string
+  /**
+   * 定向 Agent；缺省注入「下一个将被调用的 Agent」。
+   * 注意 'memory' 不可达：Memory 主路径是 NovelMemoryGenerator 的结构化 LLM 调用，
+   * 不经插话注入通道，enqueueUserMessage 对其前置拒绝（返回 false）。
+   */
+  targetAgent?: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+  /**
+   * 定向创作流标识（projectId|chapterNumber，与 runKey 同构）；缺省为全局消息，
+   * 任意 flow 均可消费/收尾。orchestrator 是插件级单例，并发 flow 共享队列，
+   * flowKey 用于把插话隔离在目标 flow 内（其他 flow 不 drain、终态不误清）。
+   */
+  flowKey?: string
+  createdAt: number
+}
+
+/** orchestrator 可选创建参数：插话生命周期回调 */
+export interface NovelOrchestratorHooks {
+  /** 插话被实际注入 Agent 上下文后回调（供端点推 SSE injected 状态） */
+  onInterjectInjected?: (ids: string[], agentType: string) => void
+  /** flow 终态时未被注入即收尾的插话（本 flow 定向 + 全局）回调（供端点推 SSE dropped 状态） */
+  onInterjectDropped?: (ids: string[], flowKey: string) => void
+}
+
+/**
  * P0 埋点开关（PRD §4.1 P0-1 / 架构 §3 联动规则）：
  * 纯旁路记录，不改变行为，默认开；不进 project feature_flags（flag 机制默认 false 不适合"默认开"）。
  * 可通过环境变量 NOVEL_CONTEXT_METRIC_ENABLED=false 关闭。
@@ -209,6 +246,14 @@ export class NovelOrchestrator {
   private readonly runStorage = new AsyncLocalStorage<CreationRunContext>()
   /** 检查点请求来自另一条 HTTP 请求，按项目和章节暂存用户指令。 */
   private readonly pendingUserMessages = new Map<string, string[]>()
+  /**
+   * 插话队列（§3.1）：运行中用户中途反馈的并行第二通道，append 语义。
+   * 惰性初始化而非构造器字段：部分测试用 Object.create 绕过构造器构建实例
+   * （见 novel-orchestrator-run-context.test.ts），方法内经 interjectQueue() 取用即可兼容。
+   */
+  private interjectMessages?: InterjectMessage[]
+  /** 可选插话生命周期回调（不传不影响流程） */
+  private readonly hooks?: NovelOrchestratorHooks
   /** P4 接入 4：进程级 chunk 缓存（§5.6），惰性创建，chunksEnabled 时使用 */
   readonly chunkCache = new ChunkCache()
   /** 记忆 Agent 生成器（结构化 LLM 调用，替代原工具循环模式） */
@@ -223,8 +268,10 @@ export class NovelOrchestrator {
     private engine: NovelEngine,
     private context: PluginContext,
     memoryGenerator?: NovelMemoryGenerator,
+    hooks?: NovelOrchestratorHooks,
   ) {
     this.memoryGenerator = memoryGenerator
+    this.hooks = hooks
     // 创建 ChapterFinalizer，注入相同的依赖 + runAgent 回调（用于 memoryGenerator 未注入时的回退）
     this.finalizer = new ChapterFinalizer(
       store,
@@ -244,6 +291,98 @@ export class NovelOrchestrator {
    */
   setUserMessages(projectId: string, chapterNumber: number, messages: string[]): void {
     this.pendingUserMessages.set(this.runKey(projectId, chapterNumber), messages.slice())
+  }
+
+  /**
+   * 追加插话（§3.1）：不覆盖既有 userMessages / 既有插话，append 语义。
+   * flowKey 定向到具体创作流（缺省为全局消息）；返回是否入队成功。
+   * targetAgent='memory' 前置拒绝（返回 false）：Memory 主路径是结构化 LLM 调用，
+   * 不经插话注入通道，入队只会以 dropped 收场，不如在入口明确告知调用方省略 targetAgent。
+   */
+  enqueueUserMessage(msg: Omit<InterjectMessage, 'createdAt'>): boolean {
+    if (msg.targetAgent === 'memory') {
+      this.context.logger.warn(
+        { id: msg.id, flowKey: msg.flowKey },
+        '插话入队被拒绝：memory 阶段不经插话通道，请省略 targetAgent',
+      )
+      return false
+    }
+    this.interjectQueue().push({ ...msg, createdAt: Date.now() })
+    return true
+  }
+
+  /**
+   * 取走下一个 Agent 应注入的插话：无 targetAgent 的 + targetAgent 匹配当前 agentType 的；
+   * flow 维度取无 flowKey（全局）的 + flowKey 匹配当前 flow 的（drain 未传 flowKey 时不过滤，
+   * 兼容纯队列 API 调用）。取走即出队（不重复返回）；其余留在队列等其目标 Agent / flow。
+   */
+  drainPendingMessages(nextAgentType: string, flowKey?: string): InterjectMessage[] {
+    const queue = this.interjectQueue()
+    if (queue.length === 0) return []
+    const drained: InterjectMessage[] = []
+    const remaining: InterjectMessage[] = []
+    for (const msg of queue) {
+      const agentMatch = !msg.targetAgent || msg.targetAgent === nextAgentType
+      const flowMatch = !msg.flowKey || !flowKey || msg.flowKey === flowKey
+      if (agentMatch && flowMatch) drained.push(msg)
+      else remaining.push(msg)
+    }
+    this.interjectMessages = remaining
+    return drained
+  }
+
+  /** 剩余未注入的插话（flow 结束时调用，供端点标记 dropped）。 */
+  pendingMessages(): InterjectMessage[] {
+    return this.interjectQueue().slice()
+  }
+
+  /** 插话队列唯一取用入口（惰性创建，兼容绕过构造器的测试实例）。 */
+  private interjectQueue(): InterjectMessage[] {
+    return (this.interjectMessages ??= [])
+  }
+
+  /**
+   * create-flow 到达终态（completed/error/cancelled）时收尾插话队列：
+   * 只清本 flow 定向（flowKey 匹配）与全局（无 flowKey）的消息，不动其他并发 flow
+   * 的定向插话（orchestrator 是插件级单例，队列按 flow 隔离）；被清消息通过
+   * onInterjectDropped 回调暴露（§4 不静默丢失），避免残留到同实例的下一次创作流程。
+   */
+  private finalizeInterjectQueue(projectId: string, chapterNumber: number): void {
+    const flowKey = this.runKey(projectId, chapterNumber)
+    const queue = this.interjectQueue()
+    const dropped = queue.filter(m => !m.flowKey || m.flowKey === flowKey)
+    this.interjectMessages = queue.filter(m => m.flowKey && m.flowKey !== flowKey)
+    if (dropped.length > 0) {
+      this.context.logger.info(
+        { projectId, chapterNumber, dropped: dropped.map(m => m.id) },
+        'create-flow 终态收尾：未注入的用户插话随流程结束清空',
+      )
+      this.hooks?.onInterjectDropped?.(dropped.map(m => m.id), flowKey)
+    }
+  }
+
+  /**
+   * 清理定向到该 flowKey 的陈旧插话：create-flow 启动路径调用。
+   *
+   * 竞态窗口：orchestrator 终态收尾（finalizeInterjectQueue）先于 route finally
+   * 删除任务表执行——窗口内插话端点仍能通过 409 检查并入队，但 flow 已终态
+   * 无法再 drain，带 flowKey 的消息会永久残留在单例 orchestrator 队列，被同章
+   * 重启的 flow 误注入（陈旧注入）。启动新 flow 前按 flowKey 清掉并经
+   * onInterjectDropped 暴露（§4 不静默丢失）；不动全局消息与其他 flow 的定向消息。
+   * 返回被清的插话 ids。
+   */
+  clearStaleInterjectMessages(flowKey: string): string[] {
+    const queue = this.interjectQueue()
+    const stale = queue.filter(m => m.flowKey === flowKey)
+    if (stale.length === 0) return []
+    this.interjectMessages = queue.filter(m => m.flowKey !== flowKey)
+    const ids = stale.map(m => m.id)
+    this.context.logger.info(
+      { flowKey, stale: ids },
+      'create-flow 启动清理：上一流程竞态窗口残留的定向插话',
+    )
+    this.hooks?.onInterjectDropped?.(ids, flowKey)
+    return ids
   }
 
   async createChapterWithFlow(
@@ -1365,6 +1504,9 @@ export class NovelOrchestrator {
       return { status: 'error', error: message }
     } finally {
       cancelDebug('orchestrator-finally', { projectId, chapterNumber, signalAborted: options.signal?.aborted })
+      // 插话队列终态收尾（§3.1/§4）：finally 覆盖 completed/error/cancelled 全部出口，
+      // 记录未注入消息后清空（rewrite 递归时内层先清、外层幂等再清）。
+      this.finalizeInterjectQueue(projectId, chapterNumber)
     }
   }
 
@@ -2225,8 +2367,83 @@ export class NovelOrchestrator {
     const chunksEnabled = needsChapterContext
     const summaryEnabled = chunksEnabled
       && isNovelFeatureEnabled(this.store, projectId, 'contextSummaryMode')
+    // Skill 白名单接入：标准工作流的 reviewer / director / writer / reviser 通过显式
+    // 授权 SKILL.md 提供角色方法，identity 只保留 system-base 薄身份壳（writer/reviser/
+    // reviewer 另加铁律与文风），避免角色正文同时从旧模板和 Skill 注入两次。
+    // - reviewer：full 与 editor（ask_story 开启时的标准路径）都走 Skill；
+    // - director / writer：仅 full（标准工作流不传 contextMode，保持保守）；
+    // - reviser：editor 是其标准路径（原文+审稿意见已入输入），同样走 Skill；
+    // - identity_only 盲审（prose editor）一律不走 Skill；
+    // - 群聊（discussion 模板）与 chapter-chat 不走本函数，不受影响。
+    const skillByAgent: Partial<
+      Record<
+        NovelAgentType,
+        {
+          name: string
+          modes: ReadonlySet<'full' | 'editor'>
+          resolvePath: (pid: string) => string | undefined
+          buildIdentity: (pid: string) => string
+        }
+      >
+    > = {
+      reviewer: {
+        name: 'novel-reviewer',
+        modes: new Set(['full', 'editor']),
+        resolvePath: pid =>
+          typeof this.promptBuilder.getReviewerSkillPath === 'function'
+            ? this.promptBuilder.getReviewerSkillPath(pid)
+            : undefined,
+        buildIdentity: pid => this.promptBuilder.buildReviewerSkillIdentity(pid),
+      },
+      director: {
+        name: 'novel-director',
+        modes: new Set(['full']),
+        resolvePath: pid =>
+          typeof this.promptBuilder.getDirectorSkillPath === 'function'
+            ? this.promptBuilder.getDirectorSkillPath(pid)
+            : undefined,
+        buildIdentity: pid => this.promptBuilder.buildDirectorSkillIdentity(pid),
+      },
+      writer: {
+        name: 'novel-writer',
+        modes: new Set(['full']),
+        resolvePath: pid =>
+          typeof this.promptBuilder.getWriterSkillPath === 'function'
+            ? this.promptBuilder.getWriterSkillPath(pid)
+            : undefined,
+        buildIdentity: pid => this.promptBuilder.buildWriterSkillIdentity(pid),
+      },
+      reviser: {
+        name: 'novel-reviser',
+        modes: new Set(['full', 'editor']),
+        resolvePath: pid =>
+          typeof this.promptBuilder.getReviserSkillPath === 'function'
+            ? this.promptBuilder.getReviserSkillPath(pid)
+            : undefined,
+        buildIdentity: pid => this.promptBuilder.buildReviserSkillIdentity(pid),
+      },
+      // Memory 主路径是 NovelMemoryGenerator 的纯 JSON 提取（novel-memory-generator Skill，
+      // 见 novel-memory-generator.ts）；此条目覆盖 ChapterFinalizer 未注入 generator 时的
+      // 工具循环回退路径（novel-memory Skill）。
+      memory: {
+        name: 'novel-memory',
+        modes: new Set(['full']),
+        resolvePath: pid =>
+          typeof this.promptBuilder.getMemorySkillPath === 'function'
+            ? this.promptBuilder.getMemorySkillPath(pid)
+            : undefined,
+        buildIdentity: pid => this.promptBuilder.buildMemorySkillIdentity(pid),
+      },
+    }
+    const skillConfig = skillByAgent[agentType]
+    const contextMode = overrides?.contextMode ?? 'full'
+    const skillEnabled =
+      !!skillConfig && contextMode !== 'identity_only' && skillConfig.modes.has(contextMode)
+    const skillPath = skillEnabled && skillConfig ? skillConfig.resolvePath(projectId) : undefined
     const agentIdentity = overrides?.identityPrompt
-      ?? this.promptBuilder.buildAgentIdentity(projectId, agentType)
+      ?? (skillPath && skillConfig
+        ? skillConfig.buildIdentity(projectId)
+        : this.promptBuilder.buildAgentIdentity(projectId, agentType))
     metricCollector.add('identity', 'identity', agentIdentity, 'full')
 
     // 保存真正的原始任务输入（用于日志记录），再附加用户指令。
@@ -2246,6 +2463,21 @@ export class NovelOrchestrator {
       // 注入前清洗破折号：用户指令可能含破折号，防止成为 LLM 的示范
       const userInstructions = userMessages.map((m, i) => `${i + 1}. ${this.promptBuilder.stripEmDash(m)}`).join('\n')
       inputText += `\n\n## 用户创作指令\n用户在创作过程中提出以下指令，请在创作中予以考虑：\n${userInstructions}`
+    }
+
+    // 插话通道注入（对话化交互形态 §3.1）：与上方检查点指令通道并行，
+    // 在同一注入点以「用户中途反馈」显式区块呈现，让 Agent 感知这是流程进行中的
+    // 人工修改意见。盲审（consumeUserMessages: false）不消费，留给完整 Reviewer。
+    // drain 传入当前 flow 标识：并发 flow 共享队列，其他 flow 的定向插话不被本 flow 消费。
+    const interjected = consumeUserMessages
+      ? this.drainPendingMessages(agentType, pendingMessageKey)
+      : []
+    if (interjected.length > 0) {
+      const interjectBlocks = interjected
+        .map(m => `【用户中途反馈】\n（流程进行中用户提出，优先级高于任务指令）\n${this.promptBuilder.stripEmDash(m.content)}`)
+        .join('\n\n')
+      inputText += `\n\n${interjectBlocks}`
+      this.hooks?.onInterjectInjected?.(interjected.map(m => m.id), agentType)
     }
 
     // STATIC 层：系统提示词（Agent 身份 + 世界规则 + 风格 + 角色定义）
@@ -2500,6 +2732,9 @@ export class NovelOrchestrator {
 
     // 创建独立 Session 并调用 LLM
     const startTime = Date.now()
+    // 缓存路由域：单一来源，createAgUiSession 的 promptCacheScope 与遥测日志的
+    // cacheKey 共用同一常量，避免两处拼装口径漂移。
+    const promptCacheScope = `novel:${projectId}:${chapterNumber}`
     // 合并温度：持久化覆盖 > 角色默认值（NOVEL_AGENT_CONFIGS）
     const temperature = getNovelAgentTemperature(agentType, this.context.subagentManager)
 
@@ -2565,8 +2800,11 @@ export class NovelOrchestrator {
         prefixUserMessage: [sharedContext, agentIdentity, suffixContext].filter(Boolean),
         // 同一章的 Director / Writer / Reviewer 共享 system + shared 前缀，
         // 必须给同一个缓存路由键，否则各自被导到不同机器，前缀白建。
-        promptCacheScope: `novel:${projectId}:${chapterNumber}`,
+        promptCacheScope,
         userMessage,
+        ...(skillPath && skillConfig
+          ? { skill: { name: skillConfig.name, path: skillPath } }
+          : {}),
         tools: finalTools,
         signal: options?.signal,
         temperature,
@@ -2719,6 +2957,55 @@ export class NovelOrchestrator {
           llmRoundTrips: payloadStats.roundTrips,
           askStoryPolicy: run.askStoryPolicy,
           askStoryEnabled,
+          // —— 缓存遥测（缓存与监控一体化 §4.1）——
+          // 与 createAgUiSession 共用同一 promptCacheScope 常量，落库值与实际路由键严格一致
+          cacheKey: promptCacheScope,
+          // 协议判定三要素 { provider, baseUrl, modelId }：baseUrl 必须与实际路由判定
+          // 同源——PluginManager.createSession 解析 cacheControlTarget 时读的是
+          // modelRegistry.find(provider, modelId).baseUrl，这里经 findModelBaseUrl
+          // 走同一注册表同一字段（不传 baseUrl 会把 OpenAI 官方端点错标
+          // 'automatic-prefix'，实际却发了 prompt_cache_key；自定义 provider 名
+          // + Anthropic 端点同理错标）。
+          // 失败调用拿不到 usage（provider/model 为空串）→ 不查注册表 → 'unknown'，
+          // 即"无法判定协议"；模型未注册时 baseUrl 为 undefined，降级为按
+          // provider/modelId 判定（与 plugin-manager 的降级行为一致）。
+          cacheProtocol: resolveCacheProtocol({
+            provider: usageForLog?.llmProvider ?? '',
+            modelId: usageForLog?.llmModel ?? '',
+            baseUrl:
+              usageForLog?.llmProvider && usageForLog?.llmModel
+                ? findModelBaseUrl(
+                    this.context.modelRegistry,
+                    usageForLog.llmProvider,
+                    usageForLog.llmModel,
+                  )
+                : undefined,
+          }),
+          // 指纹只存摘要不存原文。直接用原始分段变量而非拆 chapterContext：
+          // 后者 filter(Boolean) 已过滤空段，split 后段序会错位（shared 为空时
+          // contextParts[0] 其实是 identity）。
+          requestFingerprint: buildRequestFingerprint({
+            system: systemPrompt,
+            shared: sharedContext,
+            identity: agentIdentity,
+            dynamic: userMessage,
+          }),
+          // 可缓存前缀 = system + shared + identity；suffix 与动态 userMessage 不计入
+          cacheablePrefixChars: systemPrompt.length + sharedContext.length + agentIdentity.length,
+          // 与日志落库的 token 值同口径（?? 0），保证 dataQuality 与表内数据自洽，
+          // 聚合层从表数据重算能得到同一结果
+          dataQuality: classifyDataQuality({
+            inputTokens: usageForLog?.inputTokens ?? 0,
+            outputTokens: usageForLog?.outputTokens ?? 0,
+            cacheReadTokens: usageForLog?.cacheReadTokens ?? 0,
+            cacheWriteTokens: usageForLog?.cacheWriteTokens ?? 0,
+          }),
+          // 稳定错误码：复用 llm-error-policy 的失败分类 kind，error 原文不可聚合。
+          // userAborted 必须显式传入（与外层 runAgent 的重试决策同口径）：
+          // 用户主动取消时记 aborted_by_user 而不是 transient，避免日志与重试行为矛盾
+          errorCode: logStatus !== 'success'
+            ? classifyLlmFailure(logError, options.signal?.aborted === true).kind
+            : null,
         })
         // P0 埋点持久化：随日志一并落度量表（独立表，不改日志结构）
         if (contextSectionMetricEnabled && metricCollector.size > 0) {
@@ -2759,6 +3046,8 @@ export class NovelOrchestrator {
               displayAgentName,
               askStoryPolicy: run.askStoryPolicy,
               askStoryEnabled,
+              skillName: skillPath && skillConfig ? skillConfig.name : null,
+              skillPath: skillPath ?? null,
               source: 'novel-orchestrator',
             }),
           })

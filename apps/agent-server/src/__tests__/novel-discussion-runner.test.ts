@@ -10,6 +10,10 @@ import { NovelDiscussionRunner } from '../plugins/novel-plugin/core/discussion/n
 import { TeamDiscussionEngine } from '../core/agent/team-discussion-engine.js'
 import { ChapterFinalizer } from '../core/agent/chapter-finalizer.js'
 import type { DiscussionOptions } from '../core/agent/discussion-types.js'
+import {
+  getInterjectEnqueuer,
+  unregisterInterjectEnqueuer,
+} from '../plugins/novel-plugin/utils/chapter-task-registry.js'
 
 function setupTestDb(): Database.Database {
   const db = new Database(':memory:')
@@ -222,16 +226,17 @@ describe('NovelDiscussionRunner', () => {
     const runner = new NovelDiscussionRunner(
       store, memoryStore, promptBuilder, engine, mockContext, {} as any,
     )
-    const prompt = (runner as any).buildMembers(project.id, 1)
-      .find((member: any) => member.id === `char-${char.id}`)
-      .buildIdentityPrompt()
+    const member = (runner as any).buildMembers(project.id, 1)
+      .find((m: any) => m.id === `char-${char.id}`)
+    const prompt = member.buildIdentityPrompt()
     expect(prompt).toContain('李明')
     expect(prompt).toContain('沉稳冷静')
     expect(prompt).toContain('焦虑')
     expect(prompt).toContain('保护家人')
     expect(prompt).toContain('欠债')
     expect(prompt).toContain('挣扎')
-    expect(prompt).toContain('绝不使用长横线破折号')
+    // 演出规则（破折号红线）由 novel-character-actor Skill / 合并身份提供
+    expect(member.buildMergedActorIdentityPrompt()).toContain('绝不使用长横线破折号')
   })
 
   it('buildMembers 工种 Agent 注入群聊 role 身份段（含场景拆分/剧本编织约束）', () => {
@@ -264,22 +269,47 @@ describe('NovelDiscussionRunner', () => {
     const members = (runner as any).buildMembers(project.id, 1)
     const director = members.find((m: any) => m.id === 'novel-director')
     expect(director).toBeDefined()
+    // Skill 白名单接入：群聊角色方法由 novel-director-discussion Skill 提供，
+    // 身份为薄壳（场景拆分/格式说明在 Skill 正文中，由 /skill: 展开）
+    expect(director.skill).toEqual({
+      name: 'novel-director-discussion',
+      path: expect.stringMatching(/role-director-discussion\.md$/),
+    })
     const directorPrompt = director.buildIdentityPrompt()
-    // role-director-discussion.md 应含"场景拆分"字段（群聊专属，普通 role-director.md 没有）
-    expect(directorPrompt).toContain('场景拆分')
-    // role-director-discussion.md 应含"### 场景N：标题"格式说明
-    expect(directorPrompt).toContain('### 场景1：标题')
+    expect(directorPrompt).toContain('novel-director-discussion Skill')
+    expect(directorPrompt).not.toContain('场景拆分')
+    expect(directorPrompt).not.toContain('### 场景1：标题')
 
     const writer = members.find((m: any) => m.id === 'novel-writer')
     expect(writer).toBeDefined()
+    expect(writer.skill).toEqual({
+      name: 'novel-writer-discussion',
+      path: expect.stringMatching(/role-writer-discussion\.md$/),
+    })
     const writerPrompt = writer.buildIdentityPrompt()
-    // role-writer-discussion.md 应含推演编织和代词消歧约束
-    expect(writerPrompt).toContain('编织')
-    expect(writerPrompt).toContain('意图、心理、应对')
-    expect(writerPrompt).toContain('指代消歧')
+    expect(writerPrompt).toContain('novel-writer-discussion Skill')
+    // 铁律保留在薄身份壳中
+    expect(writerPrompt).toContain('正文底线')
+    expect(writerPrompt).not.toContain('编织边界')
+    expect(writerPrompt).not.toContain('意图、心理、应对')
+
+    // Reviewer：主身份挂 discussion Skill，最终验收挂标准 novel-reviewer Skill
+    const reviewer = members.find((m: any) => m.id === 'novel-reviewer')
+    expect(reviewer).toBeDefined()
+    expect(reviewer.skill?.name).toBe('novel-reviewer-discussion')
+    expect(reviewer.finalReviewSkill).toEqual({
+      name: 'novel-reviewer',
+      path: expect.stringMatching(/role-reviewer\.md$/),
+    })
+
+    // Reviser：无 role-reviser-discussion 模板 → 回退旧身份路径，不挂 Skill
+    const reviser = members.find((m: any) => m.id === 'novel-reviser')
+    expect(reviser).toBeDefined()
+    expect(reviser.skill).toBeUndefined()
+    expect(reviser.buildIdentityPrompt()).toContain('负责局部修订')
   })
 
-  it('buildMembers 角色成员注入 role-character-actor.md（简短推演格式）', () => {
+  it('buildMembers 角色成员挂 novel-character-actor Skill，合并身份保留完整模板', () => {
     const project = store.createProject({
       id: 'p-test-4',
       title: '测试',
@@ -319,14 +349,23 @@ describe('NovelDiscussionRunner', () => {
     const members = (runner as any).buildMembers(project.id, 1)
     const character = members.find((m: any) => m.type === 'character')
     expect(character).toBeDefined()
+    // Skill 白名单接入：单角色调用由 novel-character-actor Skill 提供演出方法
+    expect(character.skill).toEqual({
+      name: 'novel-character-actor',
+      path: expect.stringMatching(/role-character-actor\.md$/),
+    })
     const charPrompt = character.buildIdentityPrompt()
-    // 角色只演出一个可继续衔接的动作单元，不展开完整场景
-    expect(charPrompt).toContain('[动作/表情/心理外化]')
-    expect(charPrompt).toContain('2-6 行剧本')
-    expect(charPrompt).toContain('PUSHBACK')
-    // 角色人设字段也保留
+    expect(charPrompt).toContain('novel-character-actor Skill')
+    expect(charPrompt).not.toContain('[动作/表情/心理外化]')
+    // 角色人设字段保留在薄壳之前
     expect(charPrompt).toContain('王芳')
     expect(charPrompt).toContain('机敏聪慧')
+
+    // 合并演出路径不走 Skill 展开，必须内联完整模板（剧本格式/演出规则）
+    const mergedPrompt = character.buildMergedActorIdentityPrompt()
+    expect(mergedPrompt).toContain('[动作/表情/心理外化]')
+    expect(mergedPrompt).toContain('2-6 行剧本')
+    expect(mergedPrompt).toContain('PUSHBACK')
   })
 
   it('角色演员读取 N-1 边界状态，不读取当前章之后的角色、冲突和认知', () => {
@@ -693,6 +732,98 @@ describe('NovelDiscussionRunner', () => {
       transcript: [{ id: 'saved-message' }],
       scenes: [{ title: '突破' }],
     })
+  })
+
+  // ───────────────────────── 插话登记契约（对话化交互形态 §3.1） ─────────────────────────
+  // engine 调用返回后、ChapterFinalizer 收尾（数十秒）之前必须注销投递闭包，
+  // 否则收尾窗口内的插话会 201+queued 进入无人消费的死队列，SSE 永停 queued。
+
+  function setupInterjectContractProject(projectId: string, chapterId: string) {
+    const project = store.createProject({
+      id: projectId, title: '插话登记契约', genre: '都市', synopsis: '', outline: '',
+      targetWords: 3000, currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+    } as any)
+    store.createChapter({
+      id: chapterId, projectId: project.id, volume: 1, chapterNumber: 1,
+      title: '第一章', content: '', wordCount: 0, status: 'planned',
+      narrativeTask: '', acceptanceResult: null,
+    } as any)
+    const promptBuilder = new NovelPromptBuilder(new PromptManager(db, process.cwd()), store, memoryStore)
+    const runner = new NovelDiscussionRunner(
+      store, memoryStore, promptBuilder, new NovelEngine(store),
+      {
+        createAgUiSession: vi.fn(), createSession: vi.fn(),
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+      } as any,
+      {} as any,
+    )
+    return { projectId: project.id, runner, flowKey: `${project.id}|1` }
+  }
+
+  it('插话登记契约：run 期间可取到 enqueuer，engine 返回后立即注销（finalizer 之前），finally 注销幂等', async () => {
+    const { projectId, runner, flowKey } = setupInterjectContractProject('p-interject-contract', 'ch-interject-contract')
+    const registryChecks: Array<{ phase: string; registered: boolean }> = []
+
+    vi.spyOn(TeamDiscussionEngine.prototype, 'run').mockImplementation(async () => {
+      const enqueuer = getInterjectEnqueuer(flowKey)
+      // run 期间注册表能取到 enqueuer，且投递成功（存活标记为 true）
+      registryChecks.push({
+        phase: 'engine-run',
+        registered: typeof enqueuer === 'function' && enqueuer({ id: 'probe-1', content: '运行中的插话', createdAt: 1 }),
+      })
+      return { status: 'completed', content: '正文内容', transcript: [], scenes: [] }
+    })
+    vi.spyOn(ChapterFinalizer.prototype, 'finalize').mockImplementation(async () => {
+      // engine 已返回、正在收尾（数十秒窗口）：注册表必须已注销 → 此窗口插话 409
+      registryChecks.push({ phase: 'finalizer', registered: getInterjectEnqueuer(flowKey) !== undefined })
+      return { status: 'completed', content: '正文内容', stateChanges: [] }
+    })
+
+    const result = await runner.run(projectId, 1, makeOptionsForRun())
+
+    expect(result.status).toBe('completed')
+    expect(registryChecks).toEqual([
+      { phase: 'engine-run', registered: true },
+      { phase: 'finalizer', registered: false },
+    ])
+    // runner finally 的幂等双保险：run 结束后注册表仍为空，重复注销不抛错
+    expect(getInterjectEnqueuer(flowKey)).toBeUndefined()
+    expect(() => unregisterInterjectEnqueuer(flowKey)).not.toThrow()
+  })
+
+  it('engine 抛错时同样在 engine 调用处注销 enqueuer（错误收尾窗口内插话 409）', async () => {
+    const { projectId, runner, flowKey } = setupInterjectContractProject('p-interject-contract-err', 'ch-interject-contract-err')
+    let registeredWhenEngineThrew = false
+    vi.spyOn(TeamDiscussionEngine.prototype, 'run').mockImplementation(async () => {
+      registeredWhenEngineThrew = getInterjectEnqueuer(flowKey) !== undefined
+      throw new Error('LLM 连接中断')
+    })
+
+    const result = await runner.run(projectId, 1, makeOptionsForRun())
+
+    expect(registeredWhenEngineThrew).toBe(true)
+    expect(result.status).toBe('error')
+    expect(result.error).toBe('LLM 连接中断')
+    // 引擎抛错路径：engine 调用的 finally 已注销，runner 外层 finally 再注销一次（幂等）
+    expect(getInterjectEnqueuer(flowKey)).toBeUndefined()
+  })
+
+  it('finalizer 抛错时 enqueuer 已在此前注销（engine 返回与收尾失败之间不受理插话）', async () => {
+    const { projectId, runner, flowKey } = setupInterjectContractProject('p-interject-contract-finalize', 'ch-interject-contract-finalize')
+    let registeredWhenFinalizeThrew = false
+    vi.spyOn(TeamDiscussionEngine.prototype, 'run').mockResolvedValue({
+      status: 'completed', content: '正文内容', transcript: [], scenes: [],
+    })
+    vi.spyOn(ChapterFinalizer.prototype, 'finalize').mockImplementation(async () => {
+      registeredWhenFinalizeThrew = getInterjectEnqueuer(flowKey) !== undefined
+      throw new Error('Memory 写入失败')
+    })
+
+    const result = await runner.run(projectId, 1, makeOptionsForRun())
+
+    expect(registeredWhenFinalizeThrew).toBe(false)
+    expect(result.status).toBe('error')
+    expect(getInterjectEnqueuer(flowKey)).toBeUndefined()
   })
 })
 

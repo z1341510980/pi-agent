@@ -165,7 +165,8 @@ export function ConversationInput({
         e.preventDefault()
         if (isRunning && !allowSendWhileRunning) {
           onAbort()
-        } else if (!isRunning && showStart) {
+        } else if (!isRunning && showStart && !text.trim()) {
+          // 空闲态无文本：直接开始；有文本则进入 handleSend 走命令解析（如 /写 N）
           onStart?.()
         } else {
           handleSend()
@@ -317,7 +318,7 @@ export function ConversationInput({
               <Button
                 type="button"
                 size="sm"
-                onClick={() => onStart?.()}
+                onClick={() => (text.trim() ? handleSend() : onStart?.())}
                 disabled={disabled}
                 aria-label={startLabel}
               >

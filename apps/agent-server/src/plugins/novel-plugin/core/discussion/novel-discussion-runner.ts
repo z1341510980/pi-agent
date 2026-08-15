@@ -53,6 +53,7 @@ import {
 import { resolveChapterBoundaryEntity } from '../chapters/chapter-boundary-resolution.js'
 import { parseNovelModelRef } from '../domain/novel-model-ref.js'
 import { evaluateProseQuality, formatProseQualityReport } from '../quality/prose-quality-evaluator.js'
+import { registerInterjectEnqueuer, unregisterInterjectEnqueuer } from '../../utils/chapter-task-registry.js'
 
 
 /** 群聊参与工种（不含 memory，memory 由 ChapterFinalizer 收尾阶段调用） */
@@ -89,6 +90,10 @@ export class NovelDiscussionRunner {
   ): Promise<DiscussionResult> {
     let discussionResult: DiscussionResult | undefined
     let outerPhase: DiscussionPhase | undefined
+    // 插话投递通道（对话化交互形态 §3.1，批次 1 任务 3）：engine 是本方法内的
+    // 局部实例、插话端点不可直达，因此把 enqueueUserMessage 闭包登记到共享注册表，
+    // 供 POST /projects/:projectId/flows/:flowId/messages 在 kind='discussion' 时路由。
+    const interjectFlowKey = `${projectId}|${chapterNumber}`
     try {
       this.store.assertTimelineAllowsGeneration?.(projectId, chapterNumber)
       // 首次运行解析并冻结项目主模型；恢复旧快照没有该字段时才回读当前设置。
@@ -191,6 +196,8 @@ export class NovelDiscussionRunner {
             temperature: opts.temperature,
             timeoutMs: opts.timeoutMs,
             modelId: opts.modelId,
+            // Skill 白名单接入：透传成员授权的群聊角色 Skill
+            skill: opts.skill,
             emit: opts.emit,
             emitRaw: opts.emitRaw,
             onFirstText: opts.onFirstText,
@@ -198,6 +205,12 @@ export class NovelDiscussionRunner {
         },
         logger: this.context.logger,
       })
+      // 登记插话投递闭包：engine 创建成功即对外可插话（闭包携带存活标记，
+      // engine 收尾后返回 false），engine 调用一返回即注销（见下方 finally）。
+      registerInterjectEnqueuer(
+        interjectFlowKey,
+        msg => discussionEngine.enqueueUserMessage(msg),
+      )
 
       // 6. 运行群聊
       // DiscussionPhase → CreationPhase 映射：前端 CreationPhase 不含群聊专属 phase
@@ -338,9 +351,18 @@ export class NovelDiscussionRunner {
           })
         },
       }
-      const result = resumeState
-        ? await discussionEngine.resumeChapterWeaving(goal, members, engineOptions, resumeState)
-        : await discussionEngine.run(goal, members, engineOptions)
+      // engine 调用返回（正常/异常/取消，其 finally 已 flush dropped 插话）后
+      // 必须立即注销投递闭包：其后还有数十秒的 ChapterFinalizer 收尾阶段，
+      // 若窗口内仍受理插话，消息只会进入已无人 drain 的死队列，SSE 状态
+      // 永远停在 queued。注销后收尾窗口内的插话由端点回 409。
+      let result: DiscussionResult
+      try {
+        result = resumeState
+          ? await discussionEngine.resumeChapterWeaving(goal, members, engineOptions, resumeState)
+          : await discussionEngine.run(goal, members, engineOptions)
+      } finally {
+        unregisterInterjectEnqueuer(interjectFlowKey)
+      }
       discussionResult = result
 
       // ⚠️ 工具化方案：Reviewer 通过 novel_submit_review 工具提交结构化验收对象，
@@ -472,6 +494,10 @@ export class NovelDiscussionRunner {
         transcript: discussionResult?.transcript ?? resumeState?.transcript ?? [],
         scenes: discussionResult?.scenes ?? resumeState?.scenes ?? [],
       }
+    } finally {
+      // 幂等双保险：engine 调用返回后已在其紧跟的 finally 内注销（见上），
+      // 此处兜底覆盖 engine 调用之前抛错（注册后未运行）等路径，重复注销无害。
+      unregisterInterjectEnqueuer(interjectFlowKey)
     }
   }
 
@@ -544,6 +570,16 @@ export class NovelDiscussionRunner {
       // 从 AgentManager 读取该 Agent 在 AgentPage 配置的 model/temperature
       // （未配置 model 则走默认 Provider；temperature 读取 AgentManager.temperature）
       const agentConfig = this.context.subagentManager?.getAgent(config.id)
+      // Skill 白名单接入：群聊角色方法由 novel-{role}-discussion Skill 提供；
+      // 模板缺失（如 reviser 无 discussion 模板）或项目/SQLite 覆盖时回退旧身份。
+      const discussionSkillPath = typeof this.promptBuilder.getDiscussionSkillPath === 'function'
+        ? this.promptBuilder.getDiscussionSkillPath(agentType, projectId)
+        : undefined
+      // Reviewer 的最终验收走标准角色方法（novel-reviewer），与群聊审查身份不同
+      const finalReviewSkillPath = agentType === 'reviewer'
+        && typeof this.promptBuilder.getReviewerSkillPath === 'function'
+        ? this.promptBuilder.getReviewerSkillPath(projectId)
+        : undefined
       members.push({
         id: config.id,
         type: 'role',
@@ -554,13 +590,23 @@ export class NovelDiscussionRunner {
         // prefix user message 注入。请求顺序为 system → shared → identity → task，
         // 因此 shared 末尾的 cache breakpoint 可跨工种命中。
         buildSystemPrompt: () => this.promptBuilder.buildSystemPrompt(projectId, agentType),
-        buildIdentityPrompt: () => this.promptBuilder.buildAgentIdentity(projectId, agentType, true),
+        buildIdentityPrompt: () => discussionSkillPath
+          ? this.promptBuilder.buildDiscussionSkillIdentity(agentType, projectId)
+          : this.promptBuilder.buildAgentIdentity(projectId, agentType, true),
+        ...(discussionSkillPath
+          ? { skill: { name: `novel-${agentType}-discussion`, path: discussionSkillPath } }
+          : {}),
         buildFinalReviewSystemPrompt: agentType === 'reviewer'
           ? () => this.promptBuilder.buildSystemPrompt(projectId, agentType)
           : undefined,
         buildFinalReviewIdentityPrompt: agentType === 'reviewer'
-          ? () => this.promptBuilder.buildAgentIdentity(projectId, agentType, false)
+          ? () => finalReviewSkillPath
+            ? this.promptBuilder.buildReviewerSkillIdentity(projectId)
+            : this.promptBuilder.buildAgentIdentity(projectId, agentType, false)
           : undefined,
+        ...(finalReviewSkillPath
+          ? { finalReviewSkill: { name: 'novel-reviewer', path: finalReviewSkillPath } }
+          : {}),
         buildProseEditorIdentityPrompt: agentType === 'reviewer'
           ? () => this.promptBuilder.buildProseEditorIdentity(projectId)
           : undefined,
@@ -619,6 +665,22 @@ export class NovelDiscussionRunner {
     memberModel?: { provider: string; modelId: string },
     projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
   ): DiscussionMember {
+    // Skill 白名单接入：单角色调用由 novel-character-actor Skill 提供演出方法；
+    // 合并演出（多角色同一次调用）不走 Skill，必须内联完整模板身份。
+    const actorSkillPath = typeof this.promptBuilder.getCharacterActorSkillPath === 'function'
+      ? this.promptBuilder.getCharacterActorSkillPath(projectId)
+      : undefined
+    const actorIdentityBuilder = actorSkillPath
+      ? (pid: string) => this.promptBuilder.buildCharacterActorSkillIdentity(pid)
+      : undefined
+    const baseIdentityInput = {
+      projectId,
+      character: char,
+      promptBuilder: this.promptBuilder,
+      mode: 'discussion' as const,
+      voiceProfile,
+      hasBoundaryState,
+    }
     return {
       id: `char-${char.id}`,
       type: 'character',
@@ -626,6 +688,9 @@ export class NovelDiscussionRunner {
       expertise: char.personality || char.identity || char.description,
       canConverge: false,
       modelId: memberModel ?? projectModel,
+      ...(actorSkillPath
+        ? { skill: { name: 'novel-character-actor', path: actorSkillPath } }
+        : {}),
       characterProfile: {
         personality: char.personality,
         currentState: hasBoundaryState ? char.currentState : '',
@@ -654,13 +719,10 @@ export class NovelDiscussionRunner {
         boundary,
       }),
       buildIdentityPrompt: () => buildCharacterIdentityPrompt({
-        projectId,
-        character: char,
-        promptBuilder: this.promptBuilder,
-        mode: 'discussion',
-        voiceProfile,
-        hasBoundaryState,
+        ...baseIdentityInput,
+        actorIdentityBuilder,
       }),
+      buildMergedActorIdentityPrompt: () => buildCharacterIdentityPrompt(baseIdentityInput),
     }
   }
 
@@ -710,6 +772,16 @@ export class NovelDiscussionRunner {
       const stableSuffix = Array.from(name)
         .map(char => char.codePointAt(0)?.toString(16) ?? '')
         .join('-')
+      // Skill 白名单接入：临时角色与建档角色同口径（Skill 薄壳 + 合并身份内联模板）
+      const actorSkillPath = typeof this.promptBuilder.getCharacterActorSkillPath === 'function'
+        ? this.promptBuilder.getCharacterActorSkillPath(projectId)
+        : undefined
+      const actorIdentityBuilder = actorSkillPath
+        ? (pid: string) => this.promptBuilder.buildCharacterActorSkillIdentity(pid)
+        : undefined
+      const actorRoleBody = (): string => actorIdentityBuilder
+        ? this.promptBuilder.buildCharacterActorSkillIdentity(projectId)
+        : this.promptBuilder.buildAgentIdentity(projectId, 'character-actor', true)
       const member: DiscussionMember = {
         id: `char-ephemeral-${stableSuffix}`,
         type: 'character',
@@ -717,6 +789,9 @@ export class NovelDiscussionRunner {
         expertise: 'Director 在本章场景中临时引入的角色，尚无持久化角色卡',
         canConverge: false,
         modelId: memberModel ?? projectModel,
+        ...(actorSkillPath
+          ? { skill: { name: 'novel-character-actor', path: actorSkillPath } }
+          : {}),
         characterProfile: {
           personality: '未指定',
           currentState: '按当前场景行动',
@@ -738,9 +813,18 @@ export class NovelDiscussionRunner {
           '只依据 Director 给出的场景信息行动，不得自行虚构重大背景、秘密或世界设定。',
           '如果缺少决定行为所必需的信息，用最保守的方式回应。',
           '',
-          this.promptBuilder.buildAgentIdentity(projectId, 'character-actor', true),
+          actorRoleBody(),
         ].join('\n'),
       }
+      // 合并演出身份：引擎优先取 buildMergedActorIdentityPrompt，回退 buildIdentityPrompt。
+      // 临时角色身份本身已内联 actorRoleBody（薄壳），合并路径必须换回完整模板。
+      member.buildMergedActorIdentityPrompt = () => [
+        `你是小说中的临时角色「${name.trim()}」。当前角色库没有你的完整角色卡。`,
+        '只依据 Director 给出的场景信息行动，不得自行虚构重大背景、秘密或世界设定。',
+        '如果缺少决定行为所必需的信息，用最保守的方式回应。',
+        '',
+        this.promptBuilder.buildAgentIdentity(projectId, 'character-actor', true),
+      ].join('\n')
       this.context.logger.warn(
         { projectId, characterName: name, memberId: member.id },
         'Director 引入了未建档角色，已创建本次群聊使用的临时角色 Agent',

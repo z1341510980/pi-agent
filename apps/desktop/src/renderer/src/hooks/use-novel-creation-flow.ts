@@ -24,7 +24,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { browserConfig } from '@repo/config/browser'
-import { submitCheckpointDecision, persistChapterChat } from '@/api/novel-client'
+import { submitCheckpointDecision, persistChapterChat, sendFlowMessage } from '@/api/novel-client'
 import { parseSseStream } from '@/api/agui-client'
 import type { BaseEvent, CustomEvent } from '@repo/protocol/events'
 
@@ -48,6 +48,7 @@ import type {
   CreationFlowEvent,
   AgentOutput,
   CreationResult,
+  NovelUserMessageEvent,
 } from '@repo/shared/novel'
 
 /** 用户在创作过程中发送的消息（参与创作的指令，前端 UI 独有类型） */
@@ -56,6 +57,68 @@ export interface UserMessage {
   content: string
   timestamp: number
 }
+
+/**
+ * 插话消息（对话化交互形态 §3.1/§4）：flow 运行中用户的中途反馈。
+ * 状态由 SSE novel:user-message 事件驱动：queued（端点受理）→ injected（被 Agent 消费）
+ * | dropped（flow 终态未注入收尾）。
+ */
+export interface InterjectMessage {
+  /** 与插话端点 201 响应 / SSE 事件的 messageId 对齐 */
+  messageId: string
+  content: string
+  status: 'queued' | 'injected' | 'dropped'
+  /** 定向 Agent（缺省注入下一个被调用的 Agent） */
+  targetAgent?: string
+  /** status='injected' 时实际消费该插话的 Agent 类型 */
+  agentType?: string
+  timestamp: number
+}
+
+/**
+ * 插话状态单调序：只能从 queued 前进到终态（injected/dropped），
+ * injected 与 dropped 同级互不回退。
+ */
+const INTERJECT_STATUS_ORDER: Record<InterjectMessage['status'], number> = {
+  queued: 0,
+  injected: 1,
+  dropped: 1,
+}
+
+/**
+ * 归并一条 novel:user-message SSE 事件到插话消息列表（按 messageId upsert）：
+ * - queued：本地乐观插入（端点 201 后）或 SSE 回显，同 id 幂等覆盖；
+ * - injected/dropped：更新既有消息状态（含 agentType）。
+ *
+ * 状态单调防护：已有记录的序 >= 新事件的序则跳过（迟到的 queued 回显
+ * 不得把 injected/dropped 回退成 queued）。
+ */
+export function applyUserMessageEvent(
+  prev: InterjectMessage[],
+  event: NovelUserMessageEvent,
+): InterjectMessage[] {
+  const next: InterjectMessage = {
+    messageId: event.messageId,
+    content: event.content,
+    status: event.status,
+    targetAgent: event.targetAgent,
+    agentType: event.agentType,
+    timestamp: event.timestamp,
+  }
+  const index = prev.findIndex((message) => message.messageId === event.messageId)
+  if (index === -1) return [...prev, next]
+  if (INTERJECT_STATUS_ORDER[prev[index].status] >= INTERJECT_STATUS_ORDER[event.status]) {
+    return prev
+  }
+  const updated = [...prev]
+  updated[index] = { ...updated[index], ...next }
+  return updated
+}
+
+/** sendInterject 结果：成功返回 messageId（已排队），失败附 HTTP 状态码（409=无运行中流程） */
+export type SendInterjectOutcome =
+  | { ok: true; messageId: string }
+  | { ok: false; error: string; statusCode?: number }
 
 /** 只有 Writer 的原始输出是可直接展示的章节正文。 */
 export function streamsChapterContent(agentType: AgentOutput['agentType']): boolean {
@@ -104,6 +167,8 @@ export interface UseNovelCreationFlowReturn {
   agentOutputs: AgentOutput[]
   /** 用户在创作过程中发送的消息（参与创作的指令） */
   userMessages: UserMessage[]
+  /** flow 运行中的插话消息（SSE novel:user-message 驱动状态流转） */
+  interjectMessages: InterjectMessage[]
   /** 启动创作流程 */
   startCreation: (projectId: string, chapterNumber: number, options?: {
     arrangedEntities?: ArrangedEntitiesPayload
@@ -146,10 +211,17 @@ export interface UseNovelCreationFlowReturn {
    * 否则 Writer 拿不到"每个角色本章负责推动什么"。取出后即清空。
    */
   takeArrangedCharacterFunctions: (chapterNumber: number) => Array<{ characterId: string; function: string; note?: string }> | undefined
-  /** 提交检查点决策 */
-  submitCheckpoint: (decision: CheckpointDecision) => Promise<void>
+  /** 提交检查点决策（comment 为检查点卡片内修改意见，随 userMessages 一并提交既有 decision 端点） */
+  submitCheckpoint: (decision: CheckpointDecision, comment?: string) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
   sendMessage: (content: string) => void
+  /**
+   * 发送插话（对话化交互形态 §3.1）：flow 运行中用户的中途反馈，
+   * 经插话端点入队，注入下一个被调用的 Agent（或 targetAgent 定向 Agent）。
+   * 状态流转由 SSE novel:user-message 事件推回 interjectMessages。
+   * 返回结果供调用方 toast：成功「已排队」；409 表示当前无运行中流程。
+   */
+  sendInterject: (content: string) => Promise<SendInterjectOutcome>
   /**
    * 质量门修订失败后，对已保留修订稿的未通过项**再次定向修订**。
    *
@@ -458,6 +530,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const [chapterContent, setChapterContent] = useState('')
   const [agentOutputs, setAgentOutputs] = useState<AgentOutput[]>([])
   const [userMessages, setUserMessages] = useState<UserMessage[]>([])
+  const [interjectMessages, setInterjectMessages] = useState<InterjectMessage[]>([])
 
   const abortControllerRef = useRef<AbortController | null>(null)
   /**
@@ -999,6 +1072,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           }
           return
         }
+        case 'novel:user-message': {
+          // 插话状态回显（§3.1/§4）：queued（受理）→ injected（被 Agent 消费）
+          // / dropped（flow 终态未注入）。按 messageId 对齐同一条插话的状态流转。
+          const userMessageEvent = custom.value as NovelUserMessageEvent
+          setInterjectMessages((prev) => applyUserMessageEvent(prev, userMessageEvent))
+          return
+        }
         default:
           return
       }
@@ -1106,6 +1186,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setChapterContent('')
       setAgentOutputs([])
       setUserMessages([])
+      setInterjectMessages([])
       messageAgentMapRef.current.clear()
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
@@ -1162,6 +1243,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setChapterContent('')
       setAgentOutputs([])
       setUserMessages([])
+      setInterjectMessages([])
       messageAgentMapRef.current.clear()
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
@@ -1207,6 +1289,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setChapterContent('')
       setAgentOutputs([])
       setUserMessages([])
+      setInterjectMessages([])
       messageAgentMapRef.current.clear()
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
@@ -1257,6 +1340,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setChapterContent('')
       setAgentOutputs([])
       setUserMessages([])
+      setInterjectMessages([])
       messageAgentMapRef.current.clear()
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
@@ -1306,6 +1390,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setChapterContent('')
       setAgentOutputs([])
       setUserMessages([])
+      setInterjectMessages([])
       messageAgentMapRef.current.clear()
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
@@ -1333,13 +1418,18 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   )
 
   const submitCheckpoint = useCallback(
-    async (decision: CheckpointDecision): Promise<void> => {
+    async (decision: CheckpointDecision, comment?: string): Promise<void> => {
       const projectId = projectIdRef.current
       if (!projectId || !currentCheckpoint) return
 
       try {
-        // 将检查点期间用户发送的消息一并提交给后端，供下一个 Agent 使用
-        const messagesToSend = userMessages.map((m) => m.content)
+        // 将检查点期间用户发送的消息 + 卡片内修改意见一并提交给后端，供下一个 Agent 使用
+        // （决策端点无独立 comment 字段，修改意见并入 userMessages，协议零改动）
+        const trimmedComment = comment?.trim()
+        const messagesToSend = [
+          ...userMessages.map((m) => m.content),
+          ...(trimmedComment ? [trimmedComment] : []),
+        ]
         // 决策端点路由参数使用后端推送的 checkpointId（UUID），
         // 而非 checkpoint.type（如 'narrative_task'），否则后端找不到对应请求返回 404
         if (!currentCheckpoint.checkpointId) {
@@ -1385,6 +1475,45 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       })
     }
   }, [currentCheckpoint])
+
+  /**
+   * 发送插话（对话化交互形态 §3.1）：flow 运行中用户的中途反馈。
+   *
+   * 与 sendMessage（本地暂存、随下一个检查点决策一并提交）不同，插话经
+   * `POST /flows/:flowId/messages` 端点即时入队（后端落库 chapterChatStore，
+   * metadata.interject 标记），状态流转由 SSE novel:user-message 事件推回。
+   * flowId 约定为章节号字符串（与后端 activeNovelChapterTasks 注册键对齐）。
+   */
+  const sendInterject = useCallback(async (content: string): Promise<SendInterjectOutcome> => {
+    const trimmed = content.trim()
+    if (!trimmed) return { ok: false, error: '插话内容为空' }
+    const projectId = projectIdRef.current
+    const chapterNumber = chapterNumberRef.current
+    if (!projectId || chapterNumber == null) {
+      return { ok: false, error: '当前没有可插话的创作流程' }
+    }
+    const flowId = String(chapterNumber)
+    try {
+      // TODO(targetAgent)：本期 UI 无定向入口（端点 targetAgent 可选，缺省注入
+      // 下一个被调用的 Agent）；后续可在输入区增加 @ 提及选择定向 Agent。
+      const res = await sendFlowMessage(projectId, flowId, { content: trimmed })
+      // 本地乐观插入 queued 气泡；随后的 SSE queued 事件按 messageId 幂等覆盖
+      setInterjectMessages((prev) => applyUserMessageEvent(prev, {
+        flowId,
+        messageId: res.messageId,
+        content: trimmed,
+        status: res.status,
+        timestamp: Date.now(),
+      }))
+      return { ok: true, messageId: res.messageId }
+    } catch (err) {
+      const statusCode = typeof (err as { statusCode?: number }).statusCode === 'number'
+        ? (err as { statusCode: number }).statusCode
+        : undefined
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: message, statusCode }
+    }
+  }, [])
 
   /**
    * 定向再修订：质量门修订失败后，仅对未通过项再次修订，不复跑生成流程。
@@ -1527,6 +1656,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     setChapterContent('')
     setAgentOutputs([])
     setUserMessages([])
+    setInterjectMessages([])
     messageAgentMapRef.current.clear()
     messagesWithTextRef.current.clear()
     writerContentRef.current = ''
@@ -1559,6 +1689,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     chapterContent,
     agentOutputs,
     userMessages,
+    interjectMessages,
     startCreation,
     startDiscussion,
     resumeDiscussion,
@@ -1567,6 +1698,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     takeArrangedCharacterFunctions,
     submitCheckpoint,
     sendMessage,
+    sendInterject,
     reRevise,
     keepDraft,
     cancel,

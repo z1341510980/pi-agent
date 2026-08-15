@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { browserConfig } from '@repo/config/browser'
 import { getApi, putApi, ApiClientError } from '@/api'
+import { getObservabilityOverview } from '@/api/novel-client'
+import { useNovelDataStore } from '@/stores/novel-data-store'
 import { Button } from '@/components/ui/button'
 import { UsageOverview, type UsageSummary, type UsageBudgetInfo } from '@/components/usage/usage-overview'
 import { UsageCharts } from '@/components/usage/usage-charts'
@@ -33,12 +35,24 @@ export function UsagePanel({ isOnline }: UsagePanelProps): ReactElement {
   const [budgetInput, setBudgetInput] = useState('')
   const [thresholdInput, setThresholdInput] = useState('')
   const [budgetSaved, setBudgetSaved] = useState(false)
+  const projectId = useNovelDataStore((s) => s.currentProjectId)
 
   const summaryQuery = useQuery({
     queryKey: ['usage-summary'],
     queryFn: () => getApi<UsageSummary>('/api/usage/summary'),
     refetchInterval: 30_000,
     enabled: isOnline
+  })
+
+  // 两种口径并存：本面板主数据来自全局 usage ledger（跨项目、含非项目调用），
+  // 而「缓存读取率（后端口径）/平均耗时」只有当前 novel 项目的观测日志能给出实测值。
+  // 因此仅在选中了项目时挂观测查询并传 overview；无项目时不传，组件回退本地 token 比值口径。
+  const overviewQuery = useQuery({
+    queryKey: ['novel-observability-overview', projectId],
+    queryFn: () => getObservabilityOverview(projectId!),
+    enabled: !!projectId && isOnline,
+    refetchInterval: 60_000,
+    placeholderData: (prev: unknown) => prev
   })
 
   // 预算信息
@@ -130,7 +144,12 @@ export function UsagePanel({ isOnline }: UsagePanelProps): ReactElement {
 
   return (
     <section className="grid gap-3.5 min-h-0 overflow-auto p-4 align-content-start">
-      <UsageOverview summary={summaryQuery.data} isLoading={summaryQuery.isLoading} budget={budgetInfo} />
+      <UsageOverview
+        summary={summaryQuery.data}
+        isLoading={summaryQuery.isLoading}
+        budget={budgetInfo}
+        overview={projectId ? overviewQuery.data : undefined}
+      />
 
       {/* 预算设置 + CSV 导出 */}
       <div className="bg-surface-2 border border-border rounded-lg grid gap-2 p-3">

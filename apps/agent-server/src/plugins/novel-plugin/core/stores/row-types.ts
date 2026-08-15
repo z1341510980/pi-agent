@@ -477,4 +477,16 @@ export interface AgentLogRow {
   ask_story_enabled: number | null
   /** 087: 大文本外置时的 payload 主键（NULL = 全量存主表） */
   payload_id: string | null
+  /** 100: 稳定缓存域（如 novel:proj-1:10），OpenAI 路由用作 prompt_cache_key */
+  cache_key: string | null
+  /** 100: anthropic-cache-control | openai-prompt-cache-key | automatic-prefix | unknown */
+  cache_protocol: string | null
+  /** 100: 分层内容 sha256 摘要（16 hex），诊断前缀漂移，不存原文 */
+  request_fingerprint: string | null
+  /** 100: system+shared+identity 字符数（覆盖率先行条件） */
+  cacheable_prefix_chars: number | null
+  /** 100: complete | partial | no_data（区分未命中与未上报） */
+  data_quality: string | null
+  /** 100: llm-error-policy 归一化错误码 */
+  error_code: string | null
 }

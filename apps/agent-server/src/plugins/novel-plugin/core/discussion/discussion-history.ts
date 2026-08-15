@@ -10,6 +10,17 @@ function isInitialSharedContext(message: DiscussionMessage, index: number): bool
     && message.content.includes('\n\n## 上下文\n')
 }
 
+/**
+ * 插话消息识别：引擎 drainInterjectQueue 把插话以 `interject-${messageId}` 为 id、
+ * type='user' 落入 transcript。这些消息在插话端点受理时已落库一次
+ * （POST /projects/:projectId/flows/:flowId/messages：role=user + metadata.interject/messageId，
+ * 前端按该记录渲染插话状态徽标），群聊历史持久化时必须跳过，否则同一条
+ * 插话会以不同文本（带【用户中途反馈】前缀）双重落库。
+ */
+function isInterjectMessage(message: DiscussionMessage): boolean {
+  return message.type === 'user' && message.id.startsWith('interject-')
+}
+
 function resolveAgentType(message: DiscussionMessage): string | undefined {
   if (message.type === 'moderator') return 'moderator'
   if (message.type !== 'member') return undefined
@@ -29,7 +40,9 @@ export function buildDiscussionHistoryMessages(
   result: DiscussionResult,
   runId: string,
 ): PersistedChapterChatMessage[] {
-  const transcript = result.transcript.filter((message, index) => !isInitialSharedContext(message, index))
+  const transcript = result.transcript.filter(
+    (message, index) => !isInitialSharedContext(message, index) && !isInterjectMessage(message),
+  )
   const firstTimestamp = transcript[0]?.timestamp ?? Date.now()
   const lastTimestamp = transcript[transcript.length - 1]?.timestamp ?? firstTimestamp
   const commonMetadata = {
@@ -58,7 +71,14 @@ export function buildDiscussionHistoryMessages(
     messages.push({
       projectId,
       chapterNumber,
-      role: message.type === 'member' || message.type === 'moderator' ? 'agent' : 'system',
+      // 用户发言映射 role=user（ChapterChatRole 合法值；插话端点落库同用 user，
+      // 前端 novel-conversation-panel 按 role=user 渲染用户气泡），
+      // 不再伪装成 system。
+      role: message.type === 'member' || message.type === 'moderator'
+        ? 'agent'
+        : message.type === 'user'
+          ? 'user'
+          : 'system',
       fromId: message.fromId,
       fromName: message.fromName,
       content: message.content,

@@ -26,6 +26,7 @@ import type { ConfirmationManager } from '../tool/confirmation-manager.js'
 // registerSessionTools 注入的工具会进入 Pi SDK 的 customTools，由 createAgentSession
 // 按 5 参数签名调用，因此必须使用 pi-coding-agent 的 ToolDefinition 类型。
 import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { ModelRegistryLike } from './cache-control-support.js'
 
 /** 插件状态 */
 export type PluginStatus = 'loaded' | 'enabled' | 'disabled' | 'error'
@@ -172,6 +173,16 @@ export interface PluginContext {
    */
   readonly agentCallLogger?: AgentCallLogger
   /**
+   * ModelRegistry（由 PluginManager 透传，app.ts 启动后期经 setModelRegistry 注入）
+   *
+   * 供插件按「与实际路由判定相同的来源」解析模型元信息（如 baseUrl）：
+   * PluginManager.createSession 判定 cache_control 适用性时读的就是
+   * modelRegistry.find(provider, modelId) 的 baseUrl（cache-control-support 的
+   * findModelBaseUrl 封装了同一读取），遥测等旁路判定必须同源取数。
+   * 实现上为 getter（注入晚于插件 setup，直接取值会拿到 undefined）。
+   */
+  readonly modelRegistry?: ModelRegistryLike
+  /**
    * ConfirmationManager（chat 底座共享，由 app.ts 注入到 PluginManager）
    *
    * 供插件复用 chat 的统一确认/决策流程：
@@ -297,6 +308,42 @@ export interface PluginSessionOptions {
   promptCacheScope?: string
   /** 首条用户消息（章节上下文/生成指令） */
   userMessage: string
+  /**
+   * 显式授权给本次插件 Session 的 Skill。
+   *
+   * 底座仅加载该路径，并在 prompt() 时使用 Pi 原生 `/skill:<name>` 语法展开正文；
+   * 不会扫描或暴露环境中的其他 Skills。Pi 原生一次只展开一个 Skill，因此这里保持单值契约。
+   */
+  skill?: { name: string; path: string }
+  /**
+   * 与主 skill 确定性组合的附加 Skill（方案 §9.1）。
+   *
+   * Pi 原生一次只展开一个 Skill；多个 Skill 时由编排层确定性编译：
+   * 剥离各 SKILL.md 的 frontmatter，按 [skill, ...extraSkills] 顺序包成
+   * `<skill name="...">` 块，前置到任务消息。仅显式授权的路径会被加载。
+   */
+  extraSkills?: Array<{ name: string; path: string }>
+  /**
+   * 受限 skill_read 工具授权（方案 §9.2）。
+   *
+   * 提供后为本次会话注入只读授权 Skill 目录的 skill_read 工具
+   * （路径穿越/扩展名/大小三重校验），不开放通用 read。
+   */
+  skillRead?: {
+    /** 授权可读的根目录列表 */
+    roots: string[]
+    /** 单文件大小上限（字节），默认 64KB */
+    maxBytes?: number
+    /** 允许的扩展名白名单，默认 ['.md', '.txt', '.json'] */
+    extensions?: string[]
+  }
+  /**
+   * 本次会话使用的 AgentRuntime 标识（方案 §9.3）。
+   *
+   * 默认 'pi-session'（直连 Pi SDK）；未注册的标识会在 createSession 时显式抛错。
+   * 未来接入 pi-subagents / pi-actors 等第三方运行时时通过 AgentRuntimeRegistry 注册适配器。
+   */
+  runtime?: string
   /** 自定义工具（可选，默认注入插件工具） */
   tools?: PiToolDefinition[]
   /** 模型 ID（可选，默认使用已配置的第一个 Provider 的第一个模型） */
@@ -472,4 +519,11 @@ export interface PluginManagerOptions {
   enableBuiltinExamples?: boolean
   /** 内置插件列表 */
   builtinPlugins?: Array<{ plugin: Plugin; source?: 'builtin' }>
+  /**
+   * AgentRuntime 注册表（方案 §9.3）。
+   *
+   * 未提供时内部创建并注册默认 'pi-session' 运行时；提供时可追加
+   * pi-subagents / pi-actors 等第三方运行时适配器。
+   */
+  runtimeRegistry?: import('../agent/agent-runtime.js').AgentRuntimeRegistry
 }

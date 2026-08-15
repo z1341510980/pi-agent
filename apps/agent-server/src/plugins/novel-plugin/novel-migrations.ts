@@ -1756,5 +1756,25 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       CREATE INDEX IF NOT EXISTS idx_timeline_rebuild_steps_order
         ON novel_timeline_rebuild_steps(job_id, chapter_number);
     `
+  },
+  {
+    // 100: 模型调用遥测（缓存与监控一体化）。
+    // cache_key: 稳定缓存域（如 novel:proj-1:10），OpenAI 路由用作 prompt_cache_key
+    // cache_protocol: anthropic-cache-control | openai-prompt-cache-key | automatic-prefix | unknown
+    // request_fingerprint: 分层内容 sha256 摘要（16 hex），诊断前缀漂移，不存原文
+    // cacheable_prefix_chars: system+shared+identity 字符数（覆盖率先行条件）
+    // data_quality: complete | partial | no_data（区分未命中与未上报）
+    // error_code: llm-error-policy 归一化错误码
+    id: '100_add_model_call_telemetry',
+    sql: `
+      ALTER TABLE novel_agent_logs ADD COLUMN cache_key TEXT;
+      ALTER TABLE novel_agent_logs ADD COLUMN cache_protocol TEXT;
+      ALTER TABLE novel_agent_logs ADD COLUMN request_fingerprint TEXT;
+      ALTER TABLE novel_agent_logs ADD COLUMN cacheable_prefix_chars INTEGER;
+      ALTER TABLE novel_agent_logs ADD COLUMN data_quality TEXT;
+      ALTER TABLE novel_agent_logs ADD COLUMN error_code TEXT;
+      CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_fingerprint
+        ON novel_agent_logs(project_id, request_fingerprint);
+    `
   }
 ]
