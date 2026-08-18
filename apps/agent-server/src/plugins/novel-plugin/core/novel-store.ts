@@ -78,8 +78,15 @@ import {
   TimelineConsistencyStore,
   type TimelineInvalidation,
   type TimelineRebuildPreview,
+  type TimelineRebuildJob,
+  type TimelineRebuildEvent,
+  type TimelineRebuildCheckpoint,
 } from './analysis/timeline-consistency-store.js'
+import type { NovelModelSelection } from './domain/novel-model-ref.js'
 import { EntityCandidateStore } from './stores/entity-candidate-store.js'
+import { StorylineRevisionStore } from './stores/storyline-revision-store.js'
+import { SceneRevisionReviewStore } from './stores/scene-revision-review-store.js'
+import { NarrativeMatrixRebuildStore } from './stores/narrative-matrix-rebuild-store.js'
 import { EntityAppearanceStore, type AppearanceRole, type AppearanceSource } from './stores/entity-appearance-store.js'
 import type { AppearanceReconcileReport } from './analysis/migration-acceptance.js'
 import { NarrativeStore } from './stores/entity-stores.js'
@@ -159,6 +166,9 @@ export class NovelStore implements NovelPromptStores {
   private readonly scenePlan: ScenePlanStore
   private readonly ledger: NarrativeLedgerStore
   private readonly timeline: TimelineConsistencyStore
+  private readonly storylineRevision: StorylineRevisionStore
+  private readonly sceneReview: SceneRevisionReviewStore
+  private readonly matrixRebuild: NarrativeMatrixRebuildStore
   private readonly candidates: EntityCandidateStore
   private readonly narratives: NarrativeStore
   private readonly deduplicator: DeduplicateService
@@ -191,6 +201,9 @@ export class NovelStore implements NovelPromptStores {
     this.scenePlan = new ScenePlanStore(db)
     this.ledger = new NarrativeLedgerStore(db)
     this.timeline = new TimelineConsistencyStore(db)
+    this.storylineRevision = new StorylineRevisionStore(db)
+    this.sceneReview = new SceneRevisionReviewStore(db)
+    this.matrixRebuild = new NarrativeMatrixRebuildStore(db)
     this.candidates = new EntityCandidateStore(db)
     this.entityAppearances = new EntityAppearanceStore(db)
     this.narratives = new NarrativeStore(db)
@@ -246,8 +259,8 @@ export class NovelStore implements NovelPromptStores {
   listWorldRules(projectId: string): NovelWorldRule[] { return this.world.listWorldRules(projectId) }
   listStyleGuide(projectId: string): NovelStyleGuide[] { return this.world.listStyleGuide(projectId) }
   getWritingStyleProfile(projectId: string): NovelWritingStyleProfile | undefined { return this.world.getWritingStyleProfile(projectId) }
-  listStyleExperts(projectId: string) { return this.world.listStyleExperts(projectId) }
-  createStyleExpert(input: any) { return this.world.createStyleExpert(input) }
+  listStyleExperts(projectId: string): ReturnType<WorldStore['listStyleExperts']> { return this.world.listStyleExperts(projectId) }
+  createStyleExpert(input: any): ReturnType<WorldStore['createStyleExpert']> { return this.world.createStyleExpert(input) }
   listCharacters(projectId: string): NovelCharacter[] { return this.character.listCharacters(projectId) }
   listRelationships(projectId: string): NovelRelationship[] { return this.character.listRelationships(projectId) }
   listConflicts(projectId: string): NovelConflict[] { return this.conflict.listConflicts(projectId) }
@@ -688,6 +701,72 @@ export class NovelStore implements NovelPromptStores {
     return this.timeline.verifyConfirmationToken(projectId, token)
   }
 
+  createTimelineRebuildJob(projectId: string, confirmationToken: string, modelId?: NovelModelSelection | null): TimelineRebuildJob {
+    return this.timeline.createRebuildJob(projectId, confirmationToken, modelId)
+  }
+
+  getTimelineRebuildJob(projectId: string, jobId: string): TimelineRebuildJob | undefined {
+    return this.timeline.getRebuildJob(projectId, jobId)
+  }
+
+  getLatestTimelineRebuildJob(projectId: string, invalidationId: string): TimelineRebuildJob | undefined {
+    return this.timeline.getLatestRebuildJob(projectId, invalidationId)
+  }
+
+  listTimelineRebuildEvents(projectId: string, jobId: string, afterSequence?: number): TimelineRebuildEvent[] {
+    return this.timeline.listRebuildEvents(projectId, jobId, afterSequence)
+  }
+
+  cancelTimelineRebuildJob(projectId: string, jobId: string): TimelineRebuildJob {
+    return this.timeline.cancelRebuildJob(projectId, jobId)
+  }
+
+  resumeTimelineRebuildJob(projectId: string, jobId: string): TimelineRebuildJob {
+    return this.timeline.resumeRebuildJob(projectId, jobId)
+  }
+
+  beginTimelineRebuildStep(projectId: string, jobId: string, chapterId: string, expectedContentRevisionId: string): void {
+    return this.timeline.beginRebuildStep(projectId, jobId, chapterId, expectedContentRevisionId)
+  }
+
+  recordTimelineRebuildStepAnalysis(
+    projectId: string,
+    jobId: string,
+    chapterId: string,
+    expectedContentRevisionId: string,
+    analysis: Record<string, unknown>,
+  ): void {
+    return this.timeline.recordRebuildStepAnalysis(projectId, jobId, chapterId, expectedContentRevisionId, analysis)
+  }
+
+  failTimelineRebuildStep(projectId: string, jobId: string, chapterId: string, error: string): void {
+    return this.timeline.failRebuildStep(projectId, jobId, chapterId, error)
+  }
+
+  completeTimelineRebuildAnalysisPhase(projectId: string, jobId: string): TimelineRebuildJob | undefined {
+    return this.timeline.completeReplayAnalysisPhase(projectId, jobId)
+  }
+
+  getTimelineRebuildCheckpoint(projectId: string, jobId: string): TimelineRebuildCheckpoint | null {
+    return this.timeline.getRebuildCheckpoint(projectId, jobId)
+  }
+
+  getChapterTimelineStaleSummary(projectId: string, chapterId: string, chapterNumber: number): string {
+    return this.timeline.getChapterStaleDerivedSummary(projectId, chapterId, chapterNumber)
+  }
+
+  markTimelineRebuildStepReady(projectId: string, jobId: string, chapterId: string, expectedContentRevisionId: string): TimelineRebuildJob {
+    return this.timeline.markRebuildStepReady(projectId, jobId, chapterId, expectedContentRevisionId)
+  }
+
+  applyTimelineRebuildStep(projectId: string, jobId: string, chapterId: string, expectedContentRevisionId: string): TimelineRebuildJob {
+    return this.timeline.applyRebuildStep(projectId, jobId, chapterId, expectedContentRevisionId)
+  }
+
+  completeTimelineRebuildJob(projectId: string, jobId: string): TimelineRebuildJob {
+    return this.timeline.completeRebuildJob(projectId, jobId)
+  }
+
   assertTimelineAllowsGeneration(projectId: string, chapterNumber: number): void {
     const block = this.timeline.getGenerationBlock(projectId, chapterNumber)
     if (block) throw new Error(block.message)
@@ -731,6 +810,34 @@ export class NovelStore implements NovelPromptStores {
   ): import('./analysis/narrative-matrix-projection.js').NarrativeMatrixReport {
     return buildNarrativeMatrix(this, projectId, options)
   }
+
+  // ── Storyline 人工 revision（M2，方案 §7）──
+  getStorylineCurrentRevision(storylineId: string): ReturnType<StorylineRevisionStore['getCurrentRevision']> { return this.storylineRevision.getCurrentRevision(storylineId) }
+  getStorylineRevision(id: string): ReturnType<StorylineRevisionStore['getRevision']> { return this.storylineRevision.getRevision(id) }
+  listStorylineRevisions(storylineId: string): ReturnType<StorylineRevisionStore['listRevisions']> { return this.storylineRevision.listRevisions(storylineId) }
+  createStorylineRevisionDraft(storylineId: string, projectId: string, input: Parameters<StorylineRevisionStore['createDraft']>[2]): ReturnType<StorylineRevisionStore['createDraft']> { return this.storylineRevision.createDraft(storylineId, projectId, input) }
+  submitStorylineRevision(revisionId: string): ReturnType<StorylineRevisionStore['submit']> { return this.storylineRevision.submit(revisionId) }
+  approveStorylineRevision(revisionId: string, decision: Parameters<StorylineRevisionStore['approve']>[1]): ReturnType<StorylineRevisionStore['approve']> { return this.storylineRevision.approve(revisionId, decision) }
+  rejectStorylineRevision(revisionId: string, decision: Parameters<StorylineRevisionStore['reject']>[1]): ReturnType<StorylineRevisionStore['reject']> { return this.storylineRevision.reject(revisionId, decision) }
+  rollbackStorylineRevision(storylineId: string, projectId: string, targetRevisionId: string, note: string): ReturnType<StorylineRevisionStore['rollback']> { return this.storylineRevision.rollback(storylineId, projectId, targetRevisionId, note) }
+  compareStorylineRevisions(storylineId: string, fromRevision: number, toRevision: number): ReturnType<StorylineRevisionStore['compare']> { return this.storylineRevision.compare(storylineId, fromRevision, toRevision) }
+
+  // ── Scene 人工 revision 审核（M2，方案 §7）──
+  listSceneRevisionReviews(projectId: string): ReturnType<SceneRevisionReviewStore['listScenes']> { return this.sceneReview.listScenes(projectId) }
+  getSceneReviewDetail(sceneId: string): ReturnType<SceneRevisionReviewStore['getSceneDetail']> { return this.sceneReview.getSceneDetail(sceneId) }
+  getSceneReviewRevision(revisionId: string): ReturnType<SceneRevisionReviewStore['getSceneRevision']> { return this.sceneReview.getSceneRevision(revisionId) }
+  createSceneReviewDraft(sceneId: string, input: Parameters<SceneRevisionReviewStore['createRevisionDraft']>[1]): ReturnType<SceneRevisionReviewStore['createRevisionDraft']> { return this.sceneReview.createRevisionDraft(sceneId, input) }
+  submitSceneReviewRevision(revisionId: string): ReturnType<SceneRevisionReviewStore['submit']> { return this.sceneReview.submit(revisionId) }
+  decideSceneReviewRevision(revisionId: string, decision: 'approve' | 'reject', note: string, reviewer?: string): ReturnType<SceneRevisionReviewStore['decide']> { return this.sceneReview.decide(revisionId, decision, note, reviewer) }
+  rollbackSceneReviewRevision(sceneId: string, targetRevisionId: string, note: string): ReturnType<SceneRevisionReviewStore['rollback']> { return this.sceneReview.rollback(sceneId, targetRevisionId, note) }
+  compareSceneReviewRevisions(sceneId: string, fromId: string, toId: string): ReturnType<SceneRevisionReviewStore['compare']> { return this.sceneReview.compare(sceneId, fromId, toId) }
+
+  // ── 剧情矩阵重投影 job（M2，方案 §7）──
+  createMatrixRebuild(projectId: string, revisionIds: string[], idempotencyKey?: string): ReturnType<NarrativeMatrixRebuildStore['createRebuild']> { return this.matrixRebuild.createRebuild(projectId, revisionIds, idempotencyKey) }
+  getMatrixRebuild(projectId: string, rebuildId: string): ReturnType<NarrativeMatrixRebuildStore['getRebuild']> { return this.matrixRebuild.getRebuild(projectId, rebuildId) }
+  listMatrixRebuildEvents(projectId: string, rebuildId: string, afterSequence?: number): ReturnType<NarrativeMatrixRebuildStore['listEvents']> { return this.matrixRebuild.listEvents(projectId, rebuildId, afterSequence) }
+  markMatrixRebuildCompleted(projectId: string, rebuildId: string, result: Parameters<NarrativeMatrixRebuildStore['markCompleted']>[2]): ReturnType<NarrativeMatrixRebuildStore['markCompleted']> { return this.matrixRebuild.markCompleted(projectId, rebuildId, result) }
+  markMatrixRebuildFailed(projectId: string, rebuildId: string, error: string): ReturnType<NarrativeMatrixRebuildStore['markFailed']> { return this.matrixRebuild.markFailed(projectId, rebuildId, error) }
 
   // ── 实体候选与审核（V2 决策 3）──
   createEntityCandidate(input: Parameters<EntityCandidateStore['createCandidate']>[0]): NovelEntityCandidate { return this.candidates.createCandidate(input) }
@@ -1065,10 +1172,10 @@ export class NovelStore implements NovelPromptStores {
   updateStyleGuide(id: string, updates: Partial<Omit<NovelStyleGuide, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelStyleGuide | undefined { return this.world.updateStyleGuide(id, updates) }
   deleteStyleGuide(id: string): boolean { return this.world.deleteStyleGuide(id) }
   upsertWritingStyleProfile(projectId: string, input: NovelWritingStyleProfileInput): NovelWritingStyleProfile { return this.world.upsertWritingStyleProfile(projectId, input) }
-  updateStyleExpert(projectId: string, id: string, patch: any) { return this.world.updateStyleExpert(projectId, id, patch) }
-  listStyleExpertVersions(projectId: string, id: string) { return this.world.listStyleExpertVersions(projectId, id) }
-  rollbackStyleExpert(projectId: string, id: string, version: number) { return this.world.rollbackStyleExpert(projectId, id, version) }
-  deleteStyleExpert(projectId: string, id: string) { return this.world.deleteStyleExpert(projectId, id) }
+  updateStyleExpert(projectId: string, id: string, patch: any): ReturnType<WorldStore['updateStyleExpert']> { return this.world.updateStyleExpert(projectId, id, patch) }
+  listStyleExpertVersions(projectId: string, id: string): ReturnType<WorldStore['listStyleExpertVersions']> { return this.world.listStyleExpertVersions(projectId, id) }
+  rollbackStyleExpert(projectId: string, id: string, version: number): ReturnType<WorldStore['rollbackStyleExpert']> { return this.world.rollbackStyleExpert(projectId, id, version) }
+  deleteStyleExpert(projectId: string, id: string): ReturnType<WorldStore['deleteStyleExpert']> { return this.world.deleteStyleExpert(projectId, id) }
   createConstraint(constraint: Omit<NovelConstraint, 'createdAt' | 'updatedAt'>): NovelConstraint { return this.world.createConstraint(constraint) }
   updateConstraint(id: string, updates: Partial<Omit<NovelConstraint, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelConstraint | undefined { return this.world.updateConstraint(id, updates) }
   deleteConstraint(id: string): boolean { return this.world.deleteConstraint(id) }

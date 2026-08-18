@@ -16,7 +16,7 @@
 import type { NovelStore } from '../../plugins/novel-plugin/core/novel-store.js'
 import type { NovelPromptBuilder } from '../../plugins/novel-plugin/core/prompt-builder.js'
 import type { NovelEngine } from '../../plugins/novel-plugin/core/novel-engine.js'
-import type { PluginContext } from '../plugin/plugin-types.js'
+import type { PluginContext, PluginSessionOptions } from '../plugin/plugin-types.js'
 import { NovelMemoryStore, type MemoryEvent } from '../../plugins/novel-plugin/core/novel-memory-store.js'
 import type { NovelMemoryGenerator, MemoryGenerationResult } from '../../plugins/novel-plugin/core/generation/novel-memory-generator.js'
 import {
@@ -118,7 +118,7 @@ export interface CreationOptions {
    * 传入后本流程所有 Agent 统一使用该 provider+model（保证缓存命中），
    * 用于"本次创作临时切换模型"。
    */
-  modelId?: { provider: string; modelId: string }
+  modelId?: PluginSessionOptions['modelId']
   /** 本次运行唯一插话隔离键；未传时兼容旧调用方按项目+章节隔离。 */
   flowKey?: string
   /** 当前会话本轮召集的文风专家；未传则使用项目默认启用专家。 */
@@ -1980,7 +1980,7 @@ export class ChapterFinalizer {
     chapterNumber: number,
     content: string,
     signal?: AbortSignal,
-    modelId?: { provider: string; modelId: string },
+    modelId?: PluginSessionOptions['modelId'],
   ): Promise<string[]> {
     // 截取正文前 800 字 + 后 200 字（开头结尾最能代表章节特征）
     const excerpt = content.length > 1000
@@ -2035,7 +2035,7 @@ ${excerpt}`
     chapterNumber: number,
     content: string,
     signal?: AbortSignal,
-    modelId?: { provider: string; modelId: string },
+    modelId?: PluginSessionOptions['modelId'],
   ): Promise<string | null> {
     // 截取正文前 600 字 + 后 200 字（开头结尾最能代表章节特征）
     const excerpt = content.length > 800

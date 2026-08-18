@@ -51,7 +51,7 @@ import {
   collectCharacterKnowledge,
 } from './novel-character-discussion-context.js'
 import { resolveChapterBoundaryEntity } from '../chapters/chapter-boundary-resolution.js'
-import { parseNovelModelRef } from '../domain/novel-model-ref.js'
+import { parseNovelModelRef, type NovelModelSelection } from '../domain/novel-model-ref.js'
 import { evaluateProseQuality, formatProseQualityReport } from '../quality/prose-quality-evaluator.js'
 import { registerInterjectEnqueuer, unregisterInterjectEnqueuer } from '../../utils/chapter-task-registry.js'
 
@@ -567,8 +567,8 @@ export class NovelDiscussionRunner {
     chapterNumber: number,
     arrangedEntities?: ArrangedEntity,
     boundary?: ChapterBoundaryContext,
-    memberModel?: { provider: string; modelId: string },
-    projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
+    memberModel?: NovelModelSelection,
+    projectModel: NovelModelSelection | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
     styleExpertIds?: string[],
   ): DiscussionMember[] {
     const members: DiscussionMember[] = []
@@ -671,8 +671,8 @@ export class NovelDiscussionRunner {
     boundary?: ChapterBoundaryContext,
     voiceProfile?: CharacterVoiceProfile,
     hasBoundaryState = true,
-    memberModel?: { provider: string; modelId: string },
-    projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
+    memberModel?: NovelModelSelection,
+    projectModel: NovelModelSelection | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
   ): DiscussionMember {
     // Skill 白名单接入：单角色调用由 novel-character-actor Skill 提供演出方法；
     // 合并演出（多角色同一次调用）不走 Skill，必须内联完整模板身份。
@@ -742,8 +742,8 @@ export class NovelDiscussionRunner {
     arrangedEntities: ArrangedEntity | undefined,
     boundary: ChapterBoundaryContext,
     characterNames: string[],
-    memberModel?: { provider: string; modelId: string },
-    projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
+    memberModel?: NovelModelSelection,
+    projectModel: NovelModelSelection | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
   ): DiscussionMember[] {
     const existingCharacters = boundary.entities.characters
     const byName = new Map(

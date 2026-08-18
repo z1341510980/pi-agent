@@ -32,10 +32,14 @@ const { editor, dataStore, uiStore, queryClient } = vi.hoisted(() => {
       }],
       upsertChapter: vi.fn(),
     },
-    uiStore: {
-      playheadChapter: 1,
-      setPlayheadChapter: vi.fn(),
-    },
+      uiStore: {
+        playheadChapter: 1,
+        setPlayheadChapter: vi.fn(),
+        selectedAgentModel: null,
+        unsavedChapterDraft: null,
+        setUnsavedChapterDraft: vi.fn(),
+        clearUnsavedChapterDraft: vi.fn(),
+      },
     queryClient: { invalidateQueries: vi.fn() },
   }
 })
@@ -63,6 +67,8 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/api/novel-client', () => ({
   updateChapter: vi.fn(),
   reverseArrangeFlow: vi.fn(),
+  getTimelineRebuildPreview: vi.fn(),
+  startTimelineRebuild: vi.fn(),
 }))
 
 vi.mock('@/hooks/use-toast', () => ({

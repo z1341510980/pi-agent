@@ -100,6 +100,8 @@ describe('writing style profile', () => {
     expect(compiled.content).not.toContain('硬规则9')
     expect(compiled.content).toContain('【样本 2】')
     expect(compiled.content).not.toContain('【样本 3】')
+    expect(compiled.content).toContain('### 执行方式')
+    expect(compiled.content).toContain(`文风档案标识：${compiled.profileHash}`)
   })
 
   it('保持共享 system prompt，并只在正文 Agent 身份层注入完整文风档案', () => {

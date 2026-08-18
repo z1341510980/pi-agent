@@ -45,6 +45,10 @@ import { ConsistencyAuditor } from './core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from './core/analysis/novel-relationship-graph.js'
 import { ReferenceAnalysisStore } from './core/analysis/reference-analysis-store.js'
 import { ReferenceAnalysisService } from './core/analysis/reference-analysis-service.js'
+import { ReferenceAnalysisRunStore } from './core/analysis/reference-analysis-run-store.js'
+import { ReferenceAnalysisRunWorker } from './core/analysis/reference-analysis-run-worker.js'
+import { ReferenceProfileStore } from './core/analysis/reference-profile-store.js'
+import { TimelineRebuildRunner } from './core/analysis/timeline-rebuild-runner.js'
 import { CostReportService } from './core/analysis/cost-report-service.js'
 import { ObservabilityService } from './core/analysis/observability-service.js'
 import { SharedOverlapAnalyzer } from './core/analysis/shared-overlap-analyzer.js'
@@ -115,6 +119,14 @@ export interface NovelServices {
   outlineGenerator: ChapterOutlineGenerator
   /** 参考小说阶段 1：与故事实体/Prompt 隔离的本地分析服务 */
   referenceAnalysis?: ReferenceAnalysisService
+  /** P4：远端分析 run 持久化（novel_reference_analysis_runs） */
+  referenceAnalysisRuns: ReferenceAnalysisRunStore
+  /** P4：远端分析执行器（阶段推进/checkpoint/取消恢复；事件只存摘要） */
+  referenceAnalysisWorker: ReferenceAnalysisRunWorker
+  /** P5：参考档案与 finding 审核存储（novel_reference_profiles） */
+  referenceProfiles: ReferenceProfileStore
+  /** 中间章隔离顺序重建执行器（start/resume 触发逐章隔离分析，不写主库派生事实） */
+  timelineRebuildRunner: TimelineRebuildRunner
   /** P0 成本报表服务（只读聚合 novel_agent_logs + 度量表） */
   costReportService: CostReportService
   /** 观测聚合服务（overview/cache/agents/timeline 四视图，只读聚合 novel_agent_logs） */
@@ -267,5 +279,17 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const observabilityService = new ObservabilityService(db)
   const sharedOverlapAnalyzer = new SharedOverlapAnalyzer(db)
 
-  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, referenceAnalysis, costReportService, observabilityService, sharedOverlapAnalyzer }
+  // 9.7 中间章隔离顺序重建执行器：依赖 context.createSession 做逐章隔离分析，
+  //     分析产物只落 rebuild steps/checkpoints，不写主库派生事实（方案 §6）。
+  const timelineRebuildRunner = new TimelineRebuildRunner(context, store, memoryStore)
+
+  // 9.8 P4/P5：远端分析 run 执行器与参考档案存储。
+  //     worker 依赖阶段 1 服务读取 sections/本地报告；事件表只存阶段与摘要。
+  const referenceAnalysisRuns = new ReferenceAnalysisRunStore(db)
+  const referenceProfiles = new ReferenceProfileStore(db)
+  const referenceAnalysisWorker = new ReferenceAnalysisRunWorker(
+    context, referenceAnalysisRuns, referenceProfiles, referenceAnalysis,
+  )
+
+  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, referenceAnalysis, referenceAnalysisRuns, referenceAnalysisWorker, referenceProfiles, timelineRebuildRunner, costReportService, observabilityService, sharedOverlapAnalyzer }
 }

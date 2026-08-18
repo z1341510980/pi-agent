@@ -3,7 +3,7 @@
  *
  * - 单向订阅 store.playheadChapter：播放头移动 → 加载对应章节正文
  * - Tiptap 富文本编辑器（StarterKit + Markdown 扩展），落库为 Markdown 字符串
- * - 1.5s 防抖自动保存；章节切换/卸载时强制落库
+ * - 正文只在用户明确点击保存或按 Ctrl/Cmd+S 时落库
  * - 创作流程激活时进入只读模式
  */
 
@@ -11,11 +11,14 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from 'tiptap-markdown'
-import { Sparkles, FileText, ChevronLeft, ChevronRight, History } from 'lucide-react'
+import { Sparkles, FileText, ChevronLeft, ChevronRight, History, Save } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
-import { updateChapter, reverseArrangeFlow, getTimelineRebuildPreview, startTimelineRebuild } from '@/api/novel-client'
+import {
+  updateChapter,
+  reverseArrangeFlow,
+} from '@/api/novel-client'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
 import { countWords } from '@/lib/novel-utils'
 import { ChapterVersionPanel } from './chapter-version-panel'
@@ -43,6 +46,9 @@ export function ChapterContentEditor({
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
   const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
+  const unsavedChapterDraft = useNovelUiStore((s) => s.unsavedChapterDraft)
+  const setUnsavedChapterDraft = useNovelUiStore((s) => s.setUnsavedChapterDraft)
+  const clearUnsavedChapterDraft = useNovelUiStore((s) => s.clearUnsavedChapterDraft)
   const chapters = useNovelDataStore((s) => s.chapters)
   const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
   const queryClient = useQueryClient()
@@ -52,40 +58,42 @@ export function ChapterContentEditor({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [reverseArranging, setReverseArranging] = useState(false)
   const [versionPanelOpen, setVersionPanelOpen] = useState(false)
-  const [rebuildBusy, setRebuildBusy] = useState(false)
-  const [timelinePending, setTimelinePending] = useState(false)
 
-  // ── 避免闭包问题：setTimeout 捕获旧值 ──
+  // ── 使用 ref 保存最新草稿，异步保存期间始终绑定已加载章节 ──
   const saveStateRef = useRef<SaveState>('saved')
   saveStateRef.current = saveState
   const draftContentRef = useRef('')
   draftContentRef.current = draftContent
   // ── 避免重载循环：仅 chapterId 变化才重载 draft ──
   const loadedChapterIdRef = useRef<string | null>(null)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ── 强制落库 ──
+  // ── 手动落库 ──
   const flushSave = useCallback(async (): Promise<boolean> => {
     if (saveStateRef.current === 'saving') return false
     if (saveStateRef.current !== 'dirty' && saveStateRef.current !== 'error') return true
-    const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
+    const targetChapterId = loadedChapterIdRef.current
+    const targetChapter = targetChapterId
+      ? chapters.find((c) => c.id === targetChapterId)
+      : undefined
     if (!targetChapter) return false
+    const content = draftContentRef.current
     saveStateRef.current = 'saving'
     setSaveState('saving')
     setErrorMsg(null)
     try {
-      const updated = await updateChapter(targetChapter.id, { content: draftContentRef.current })
+      const updated = await updateChapter(targetChapter.id, { content })
       upsertChapter(updated)
       // T04 决策 4：中间章重写 → 提示后续派生状态待重建
       if (updated.derivedState?.isMiddleRewrite) {
-        setTimelinePending(true)
         const ds = updated.derivedState
         toastError(
           '中间章节已重写，后续内容待重建',
-          `影响第 ${ds.startChapterNumber ?? playheadChapter} 章起的 ${ds.affectedChapters?.length ?? 0} 章；已暂停后续创作。请先查看影响范围。`,
+          `影响第 ${ds.startChapterNumber ?? targetChapter.chapterNumber} 章起的 ${ds.affectedChapters?.length ?? 0} 章；已暂停后续创作。请先查看影响范围。`,
         )
-      } else {
-        setTimelinePending(false)
+      }
+      const latestDraft = useNovelUiStore.getState().unsavedChapterDraft
+      if (latestDraft?.chapterId === targetChapter.id && latestDraft.content === content) {
+        clearUnsavedChapterDraft(targetChapter.id)
       }
       saveStateRef.current = 'saved'
       setSaveState('saved')
@@ -96,38 +104,13 @@ export function ChapterContentEditor({
       setErrorMsg(err instanceof Error ? err.message : '保存失败')
       return false
     }
-  }, [chapters, playheadChapter, upsertChapter])
-
-  const handleTimelineRebuild = useCallback(async () => {
-    if (!currentProjectId || rebuildBusy) return
-    setRebuildBusy(true)
-    try {
-      const preview = await getTimelineRebuildPreview(currentProjectId)
-      const counts = Object.entries(preview.staleCounts)
-        .filter(([, count]) => count > 0)
-        .map(([key, count]) => `${key}: ${count}`)
-        .join('，')
-      const blocked = preview.blockedReasons.length > 0
-        ? `\n\n当前不能自动重建：\n${preview.blockedReasons.map(reason => `• ${reason}`).join('\n')}`
-        : ''
-      const confirmed = window.confirm(
-        `将从第 ${preview.startChapterNumber} 章起按顺序重建 ${preview.affectedChapters.length} 章，预计 ${preview.estimatedLlmCalls} 次模型调用。\n\n失效派生物：${counts || '无'}${blocked}\n\n确认继续？`,
-      )
-      if (!confirmed) return
-      await startTimelineRebuild(currentProjectId, preview.confirmationToken)
-      toastSuccess('已启动时间线重建', '重建任务将在后台按章节顺序推进。')
-    } catch (err) {
-      toastError('时间线重建未启动', err instanceof Error ? err.message : '未知错误')
-    } finally {
-      setRebuildBusy(false)
-    }
-  }, [currentProjectId, rebuildBusy])
+  }, [chapters, upsertChapter, clearUnsavedChapterDraft])
 
   // ── 从正文反推实体到矩阵 ──
   // 先 flushSave 确保最新正文落库，再调用 reverse-arrange SSE 接口
   const handleReverseArrange = useCallback(async () => {
     if (!currentProjectId || reverseArranging || isCreationActive) return
-    const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
+    const targetChapter = chapters.find((c) => c.id === loadedChapterIdRef.current)
     if (!targetChapter) return
     const content = draftContentRef.current.trim()
     if (!content) {
@@ -135,13 +118,12 @@ export function ChapterContentEditor({
       return
     }
     setReverseArranging(true)
-    // 先强制保存正文，确保后端能读到最新内容
-    if (saveStateRef.current === 'dirty') {
-      await flushSave()
-    }
-    toastSuccess('开始反推实体', `正在从第 ${playheadChapter} 章正文提取实体到矩阵...`)
     try {
-      await reverseArrangeFlow(currentProjectId, playheadChapter, {
+      // 反推是显式依赖后端正文的操作，先要求用户保存当前草稿。
+      const saved = await flushSave()
+      if (!saved) return
+      toastSuccess('开始反推实体', `正在从第 ${targetChapter.chapterNumber} 章正文提取实体到矩阵...`)
+      await reverseArrangeFlow(currentProjectId, targetChapter.chapterNumber, {
         onProgress: (evt: unknown) => {
           const e = evt as { type?: string; message?: string }
           if (e?.type === 'arrange_done' && e.message) {
@@ -161,15 +143,7 @@ export function ChapterContentEditor({
     } finally {
       setReverseArranging(false)
     }
-  }, [currentProjectId, reverseArranging, isCreationActive, chapters, playheadChapter, flushSave, queryClient])
-
-  // ── 1.5s 防抖保存 ──
-  const scheduleDebouncedSave = useCallback(() => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => {
-      void flushSave()
-    }, 1500)
-  }, [flushSave])
+  }, [currentProjectId, reverseArranging, isCreationActive, chapters, flushSave, queryClient])
 
   // ── Tiptap 编辑器（v3：useEditor 返回 Editor | null，回调经 mostRecentOptions 保持最新）──
   const editor = useEditor({
@@ -180,22 +154,33 @@ export function ChapterContentEditor({
       const mdStorage = editor.storage as { markdown?: MarkdownStorage }
       const md = mdStorage.markdown?.getMarkdown() ?? ''
       setDraftContent(md)
+      if (loadedChapterIdRef.current) {
+        const chapterNumber = chapters.find((chapter) => chapter.id === loadedChapterIdRef.current)?.chapterNumber
+        if (chapterNumber != null) {
+          setUnsavedChapterDraft({
+            chapterId: loadedChapterIdRef.current,
+            chapterNumber,
+            content: md,
+          })
+        }
+      }
       setSaveState('dirty')
-      scheduleDebouncedSave()
     },
   })
 
   // ── 历史版本应用成功回调 ──
   // 用目标版本正文覆盖编辑器显示和 draft，同步 store 中的 chapter 记录
   // 注意：必须在 editor 初始化之后声明；useCallback 的依赖数组会在渲染时立即读取 editor
-  // 必须 setSaveState('saved') 避免防抖保存把应用后的正文再次覆盖。
+  // 应用历史版本后同步清除未保存标记，避免用户回到编辑器时看到旧草稿状态。
   const handleVersionApplied = useCallback((content: string, wordCount: number) => {
     setDraftContent(content)
+    draftContentRef.current = content
     saveStateRef.current = 'saved'
     setSaveState('saved')
     setErrorMsg(null)
+    if (loadedChapterIdRef.current) clearUnsavedChapterDraft(loadedChapterIdRef.current)
     if (editor) editor.commands.setContent(content, { emitUpdate: false })
-    const targetChapter = chapters.find((c) => c.chapterNumber === playheadChapter)
+    const targetChapter = chapters.find((c) => c.id === loadedChapterIdRef.current)
     if (targetChapter) {
       upsertChapter({
         ...targetChapter,
@@ -204,7 +189,7 @@ export function ChapterContentEditor({
         updatedAt: Date.now(),
       })
     }
-  }, [editor, chapters, playheadChapter, upsertChapter])
+  }, [editor, chapters, upsertChapter, clearUnsavedChapterDraft])
 
   // ── 章节切换联动（播放头驱动，单向）──
   useEffect(() => {
@@ -219,57 +204,49 @@ export function ChapterContentEditor({
     // 避免重载循环：content 变化（保存后 upsertChapter）不触发重载
     if (loadedChapterIdRef.current === targetChapter.id) return
 
-    // 记住旧章节 id，用于保存未保存的改动到旧章节（而非新章节）
-    const previousChapterId = loadedChapterIdRef.current
     loadedChapterIdRef.current = targetChapter.id
 
-    const switchTo = (): void => {
-      const content = targetChapter.content ?? ''
-      setDraftContent(content)
-      setSaveState('saved')
-      setErrorMsg(null)
-      // 空正文（content=''）必须走正常编辑器路径：try/catch 防止空文档解析异常
-      // 把编辑器打挂（TipTap 空字符串 setContent 在个别版本会抛错导致无法编辑）。
-      try {
-        editor?.setEditable(!isCreationActive)
-        if (editor) editor.commands.setContent(content, { emitUpdate: false })
-      } catch {
-        // 兜底：即使 setContent 失败，也保持编辑器可编辑，用户可直接输入
-        editor?.setEditable(true)
-      }
+    const draft = unsavedChapterDraft?.chapterId === targetChapter.id ? unsavedChapterDraft : null
+    const content = draft?.content ?? targetChapter.content ?? ''
+    setDraftContent(content)
+    draftContentRef.current = content
+    saveStateRef.current = draft ? 'dirty' : 'saved'
+    setSaveState(draft ? 'dirty' : 'saved')
+    setErrorMsg(null)
+    try {
+      editor?.setEditable(!isCreationActive)
+      if (editor) editor.commands.setContent(content, { emitUpdate: false })
+    } catch {
+      editor?.setEditable(true)
     }
+  }, [playheadChapter, isCreationActive, chapters, editor, unsavedChapterDraft])
 
-    // 章节切换前，若有未保存改动，先保存到旧章节（通过 previousChapterId 定位）
-    if (saveStateRef.current === 'dirty' && previousChapterId) {
-      const previousChapter = chapters.find((c) => c.id === previousChapterId)
-      if (previousChapter) {
-        setSaveState('saving')
-        setErrorMsg(null)
-        updateChapter(previousChapter.id, { content: draftContentRef.current })
-          .then((updated) => {
-            upsertChapter(updated)
-            setSaveState('saved')
-          })
-          .catch((err) => {
-            setSaveState('error')
-            setErrorMsg(err instanceof Error ? err.message : '保存失败')
-          })
-          .finally(switchTo)
-      } else {
-        switchTo()
-      }
-    } else {
-      switchTo()
-    }
-  }, [playheadChapter, isCreationActive, chapters, editor, upsertChapter])
-
-  // ── 卸载清理 + 强制落库 ──
+  // ── Ctrl/Cmd+S：唯一的快捷保存入口 ──
   useEffect(() => {
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (isCreationActive || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return
+      event.preventDefault()
       void flushSave()
     }
-  }, [flushSave])
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [flushSave, isCreationActive])
+
+  // ── 关闭窗口/页面时保护未保存正文；不在卸载时偷偷写入后端 ──
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent): void => {
+      if (!useNovelUiStore.getState().unsavedChapterDraft) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
+
+  /*
+   * 不在章节切换或组件卸载时自动保存：未保存草稿留在 UI store 中，
+   * 这样切换工作区布局后重新挂载编辑器仍能恢复，并且不会发生跨章节写入。
+   */
 
   // ── 只读模式切换 ──
   useEffect(() => {
@@ -318,17 +295,6 @@ export function ChapterContentEditor({
           >
             <ChevronLeft className="size-3.5" aria-hidden="true" />
           </button>
-          {timelinePending && currentChapter?.content?.trim() && (
-            <button
-              type="button"
-              onClick={() => void handleTimelineRebuild()}
-              disabled={rebuildBusy || isCreationActive}
-              title="查看中间章改写影响范围并确认顺序重建"
-              className="cce-reverse-btn"
-            >
-              <span>{rebuildBusy ? '检查重建…' : '查看重建影响'}</span>
-            </button>
-          )}
           <span className="chapter-badge">
             <span className="dot" aria-hidden="true" />
             <span className="ch-num">CH.{playheadChapter}</span>
@@ -399,6 +365,16 @@ export function ChapterContentEditor({
           )}
         </div>
         <div className="cce-footer-right">
+          <button
+            type="button"
+            onClick={() => void flushSave()}
+            disabled={isCreationActive || saveState === 'saved' || saveState === 'saving' || !currentChapter}
+            title="保存当前章节正文 (Ctrl/Cmd+S)"
+            className="cce-save-btn"
+          >
+            <Save className="size-3" />
+            <span>{saveState === 'saving' ? '保存中...' : '保存'}</span>
+          </button>
           <button
             type="button"
             onClick={handleReverseArrange}

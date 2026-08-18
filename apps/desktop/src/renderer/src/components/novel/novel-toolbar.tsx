@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ChangeEvent, type ReactElement }
 import { useReactFlow, type Edge as XYEdge } from '@xyflow/react'
 import { EntityCandidatePanel } from './entity-candidate-panel'
 import { NarrativeTrackPanel } from './narrative-track-panel'
+import { NarrativeRevisionPanel } from './narrative-revision-panel'
 import { listEntityCandidates } from '@/api/novel-client'
 import {
   Maximize,
@@ -17,6 +18,7 @@ import {
   ShieldQuestion,
   GitBranch,
   Network,
+  PenLine,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -70,6 +72,8 @@ export function NovelToolbar({
   const [pendingCandidateCount, setPendingCandidateCount] = useState(0)
   // 第二轮：剧情推进轨道（Storyline × 章节）
   const [trackPanelOpen, setTrackPanelOpen] = useState(false)
+  // M2：故事线/场景人工修订与矩阵重投影
+  const [revisionPanelOpen, setRevisionPanelOpen] = useState(false)
   useEffect(() => {
     let cancelled = false
     if (!currentProjectId) {
@@ -446,6 +450,18 @@ export function NovelToolbar({
         <span className="hidden sm:inline">剧情轨道</span>
       </Button>
 
+      {/* M2：故事线/场景人工修订 */}
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => setRevisionPanelOpen(true)}
+        disabled={noProject}
+        title="编辑故事线/场景规范事实（草稿→审核→批准→回滚）并重建矩阵"
+      >
+        <PenLine className="size-3.5" />
+        <span className="hidden sm:inline">修订</span>
+      </Button>
+
       <EntityCandidatePanel
         open={candidatePanelOpen}
         onOpenChange={setCandidatePanelOpen}
@@ -454,6 +470,11 @@ export function NovelToolbar({
       <NarrativeTrackPanel
         open={trackPanelOpen}
         onOpenChange={setTrackPanelOpen}
+        projectId={currentProjectId}
+      />
+      <NarrativeRevisionPanel
+        open={revisionPanelOpen}
+        onOpenChange={setRevisionPanelOpen}
         projectId={currentProjectId}
       />
 

@@ -641,6 +641,388 @@ export function getNarrativeMatrix(projectId: string, asOfRevision?: string): Pr
   return getApi(`${BASE}/projects/${projectId}/narrative-matrix${query}`)
 }
 
+// ── P4/P5：远端分析 run 与参考档案审核（M3）──
+
+export type ReferenceRunStage =
+  | 'validating_source' | 'parsing_text' | 'deterministic_analysis' | 'scene_analysis'
+  | 'chapter_aggregation' | 'book_aggregation' | 'safety_scan' | 'awaiting_review'
+  | 'completed' | 'failed' | 'cancelled'
+
+export interface ReferenceAnalysisRun {
+  id: string
+  sourceId: string
+  status: 'queued' | 'running' | 'awaiting_review' | 'completed' | 'failed' | 'cancelled'
+  currentStage: ReferenceRunStage | null
+  providerId: string | null
+  modelId: string | null
+  includedSectionIds: string[]
+  estimateSnapshot: Record<string, unknown>
+  actualUsage: Record<string, unknown>
+  highCostConfirmed: boolean
+  checkpoint: Record<string, unknown> | null
+  error: string | null
+  profileId: string | null
+  attempt: number
+  parentAttemptId: string | null
+  createdAt: number
+  updatedAt: number
+  workerRunning?: boolean
+  eventsUrl?: string
+}
+
+export interface ReferenceRunObservation {
+  id: string
+  analysisRunId: string
+  sectionId: string | null
+  level: 'measurement' | 'scene' | 'chapter' | 'book'
+  metric: string
+  value: unknown
+  measurementMethod: string | null
+  confidence: number | null
+  evidenceOffsets: unknown[]
+  counterexampleOffsets: unknown[]
+  safetyFlags: unknown[]
+  createdAt: number
+}
+
+export interface ReferenceRunEvent {
+  id: string
+  sequence: number
+  type: string
+  stage: string | null
+  summary: string
+  createdAt: number
+}
+
+export interface ReferenceFindingItem {
+  key: string
+  category: 'spirit' | 'technique' | 'power' | 'pacing'
+  observation: string
+  rule: string
+  strength: 'hard' | 'soft' | 'reference'
+  confidence: number | null
+  evidence: string[]
+  promptEnabled: boolean
+  agentTargets: string[]
+  chapterScope: string[]
+  review: {
+    decision: 'accepted' | 'rejected' | 'edited' | null
+    editedObservation: string | null
+    editedRule: string | null
+    strength: 'hard' | 'soft' | 'reference' | null
+    promptEnabled: boolean
+    agentTargets: string[]
+    chapterScope: string[]
+    note: string | null
+    reviewer: string | null
+    reviewedAt: number | null
+  } | null
+}
+
+export interface ReferenceProfileDetail {
+  id: string
+  analysisRunId: string
+  status: string
+  version: number
+  parentVersionId: string | null
+  profileHash: string
+  spirit: { summary: string; rules: string[] }
+  technique: { summary: string; rules: string[] }
+  power: { summary: string; rules: string[] }
+  pacing: { summary: string; rules: string[] }
+  findings: ReferenceFindingItem[]
+  safetyReport: {
+    directQuotes: Array<{ prefix: string; length: number }>
+    properNouns: string[]
+    plotSequences: string[]
+    uniqueScenes: string[]
+    blockers: string[]
+    degraded: boolean
+    generatedAt: number
+  }
+  coverage: Record<string, unknown>
+  changeSummary: string | null
+  createdAt: number
+  updatedAt: number
+  activatedAt: number | null
+}
+
+export function startReferenceAnalysisRun(sourceId: string, input: {
+  providerId: string; modelId: string; includedSectionIds?: string[]; estimateHash: string; highCostConfirmed: boolean
+}): Promise<ReferenceAnalysisRun> {
+  return postApi(`${BASE}/reference-sources/${sourceId}/analysis-runs`, input)
+}
+
+export function getReferenceAnalysisRun(runId: string): Promise<ReferenceAnalysisRun> {
+  return getApi(`${BASE}/reference-analysis-runs/${runId}`)
+}
+
+export function listReferenceRunObservations(runId: string, query: { level?: string; metric?: string; cursor?: number; limit?: number } = {}): Promise<{
+  observations: ReferenceRunObservation[]; nextCursor: number | null; total: number
+}> {
+  const params = new URLSearchParams()
+  if (query.level) params.set('level', query.level)
+  if (query.metric) params.set('metric', query.metric)
+  if (query.cursor) params.set('cursor', String(query.cursor))
+  if (query.limit) params.set('limit', String(query.limit))
+  const qs = params.toString()
+  return getApi(`${BASE}/reference-analysis-runs/${runId}/observations${qs ? `?${qs}` : ''}`)
+}
+
+export function cancelReferenceAnalysisRun(runId: string, reason = ''): Promise<ReferenceAnalysisRun> {
+  return postApi(`${BASE}/reference-analysis-runs/${runId}/cancel`, { reason })
+}
+
+export function retryReferenceAnalysisRun(runId: string, highCostConfirmed: boolean, fromCheckpoint = true): Promise<ReferenceAnalysisRun> {
+  return postApi(`${BASE}/reference-analysis-runs/${runId}/retry`, { fromCheckpoint, highCostConfirmed })
+}
+
+export function resumeReferenceAnalysisRun(runId: string, highCostConfirmed: boolean): Promise<ReferenceAnalysisRun> {
+  return postApi(`${BASE}/reference-analysis-runs/${runId}/resume`, { highCostConfirmed })
+}
+
+export function getReferenceProfile(profileId: string): Promise<ReferenceProfileDetail> {
+  return getApi(`${BASE}/reference-profiles/${profileId}`)
+}
+
+export function listReferenceFindings(profileId: string, query: { category?: string; decision?: string } = {}): Promise<{
+  findings: ReferenceFindingItem[]
+  counts: {
+    total: number; pending: number; accepted: number; rejected: number; edited: number
+    byCategory: { spirit: number; technique: number; power: number; pacing: number }
+  }
+  nextCursor: number | null
+}> {
+  const params = new URLSearchParams()
+  if (query.category) params.set('category', query.category)
+  if (query.decision) params.set('decision', query.decision)
+  const qs = params.toString()
+  return getApi(`${BASE}/reference-profiles/${profileId}/findings${qs ? `?${qs}` : ''}`)
+}
+
+export function getReferenceFindingEvidence(profileId: string, findingKey: string): Promise<{
+  findingKey: string
+  evidence: Array<{ quote: string; available: boolean; sectionId: string | null; sectionTitle: string | null; start: number | null; end: number | null; contentHash: string | null }>
+  counterexamples: unknown[]
+  degraded: boolean
+  note: string
+}> {
+  return getApi(`${BASE}/reference-profiles/${profileId}/findings/${findingKey}/evidence`)
+}
+
+export function reviewReferenceFinding(profileId: string, findingKey: string, input: {
+  decision: 'accepted' | 'rejected' | 'edited'
+  editedObservation?: string; editedRule?: string
+  strength?: 'hard' | 'soft' | 'reference'
+  promptEnabled?: boolean
+  agentTargets?: string[]
+  chapterScope?: string[]
+  note?: string
+}): Promise<ReferenceFindingItem> {
+  return patchApi(`${BASE}/reference-profiles/${profileId}/findings/${findingKey}/review`, input)
+}
+
+export function batchReviewReferenceFindings(profileId: string, version: number, reviews: Array<{
+  findingKey: string
+  decision: 'accepted' | 'rejected' | 'edited'
+  editedObservation?: string; editedRule?: string
+  strength?: 'hard' | 'soft' | 'reference'
+  promptEnabled?: boolean
+  agentTargets?: string[]
+  chapterScope?: string[]
+}>, note?: string): Promise<{ profile: ReferenceProfileDetail; reviewed: number; newVersion: number }> {
+  return postApi(`${BASE}/reference-profiles/${profileId}/finding-reviews/batch`, { version, reviews, note })
+}
+
+export function getReferenceSafetyReport(profileId: string): Promise<{
+  directQuotes: Array<{ prefix: string; length: number }>
+  properNouns: string[]
+  plotSequences: string[]
+  uniqueScenes: string[]
+  blockers: string[]
+  degraded: boolean
+  blocking: boolean
+  findingSafetyFlags: number
+}> {
+  return getApi(`${BASE}/reference-profiles/${profileId}/safety-report`)
+}
+
+export function listReferenceProfileVersions(profileId: string): Promise<Array<{
+  id: string; version: number; parentVersionId: string | null; profileHash: string
+  status: string; changeSummary: string | null; createdAt: number; activatedAt: number | null
+  findingCounts: { total: number; promptEnabled: number }
+}>> {
+  return getApi(`${BASE}/reference-profiles/${profileId}/versions`)
+}
+
+export function compareReferenceProfileVersions(profileId: string, fromVersionId: string, toVersionId: string): Promise<{
+  from: { id: string; version: number } | null
+  to: { id: string; version: number } | null
+  profileChanges: Array<{ category: string; fromSummary: string; toSummary: string; ruleCountDelta: number }>
+  findingChanges: Array<{ key: string; category: string; from: string; to: string }>
+  safetyChanges: { directQuoteCountDelta: number; blockersDelta: number }
+}> {
+  return getApi(`${BASE}/reference-profiles/${profileId}/compare?fromVersionId=${fromVersionId}&toVersionId=${toVersionId}`)
+}
+
+// ── Storyline/Scene 人工 revision 与剧情矩阵重投影（M2）──
+
+export interface StorylineRevisionItem {
+  id: string
+  storylineId: string
+  projectId: string
+  supersedesId: string | null
+  revision: number
+  status: 'draft' | 'submitted' | 'approved' | 'rejected' | 'superseded'
+  summary: string
+  goal: string
+  stakes: string
+  actor: string
+  note: string
+  decisionNote: string
+  reviewer: string
+  expectedVersion: number
+  createdAt: number
+  updatedAt: number
+  supersededAt: number | null
+}
+
+export interface StorylineDetail {
+  id: string
+  projectId: string
+  name: string
+  kind: string
+  lifecycle: string
+  maturity: string
+  description: string
+  createdAt: number
+  updatedAt: number
+  currentRevisionId: string | null
+  version: number
+  status: string
+  summary: string
+  goal: string
+  stakes: string
+  actor: string
+}
+
+export interface SceneReviewItem {
+  id: string
+  sceneId: string
+  chapterId: string
+  projectId: string
+  planRevisionId: string
+  order: number
+  title: string
+  summary: string
+  pov: string
+  positioning: string | null
+  rhythm: string | null
+  narrativeTaskTypes: string[]
+  status: string
+  reviewStatus: 'draft' | 'submitted' | 'approved' | 'rejected' | null
+  reviewNote: string
+  reviewer: string
+  createdAt: number
+  focus: string[]
+  present: string[]
+  cast: Array<{ characterId: string; function: string; prominence: string }>
+}
+
+export interface SceneReviewDetail {
+  sceneId: string
+  currentRevision: SceneReviewItem | null
+  revisions: SceneReviewItem[]
+}
+
+export interface NarrativeMatrixRebuild {
+  id: string
+  projectId: string
+  status: string
+  revisionIds: string[]
+  idempotencyKey: string | null
+  sourceRevision: string | null
+  projectionLag: number
+  stale: boolean
+  failedNodes: string[]
+  error: string | null
+  createdAt: number
+  startedAt: number | null
+  completedAt: number | null
+}
+
+export function listStorylines(projectId: string): Promise<StorylineDetail[]> {
+  return getApi(`${BASE}/projects/${projectId}/storylines`)
+}
+
+export function getStoryline(storylineId: string): Promise<StorylineDetail & { revisions: StorylineRevisionItem[] }> {
+  return getApi(`${BASE}/storylines/${storylineId}`)
+}
+
+export function createStorylineRevision(storylineId: string, input: { expectedRevision: number; summary: string; goal: string; stakes: string; actor: string; note?: string }): Promise<StorylineRevisionItem> {
+  return postApi(`${BASE}/storylines/${storylineId}/revisions`, input)
+}
+
+export function submitStorylineRevision(revisionId: string): Promise<StorylineRevisionItem> {
+  return postApi(`${BASE}/storyline-revisions/${revisionId}/submit`, {})
+}
+
+export function approveStorylineRevision(revisionId: string, note = ''): Promise<StorylineRevisionItem> {
+  return postApi(`${BASE}/storyline-revisions/${revisionId}/approve`, { decision: 'approve', note })
+}
+
+export function rejectStorylineRevision(revisionId: string, note = ''): Promise<StorylineRevisionItem> {
+  return postApi(`${BASE}/storyline-revisions/${revisionId}/reject`, { decision: 'reject', note })
+}
+
+export function compareStorylineRevisions(storylineId: string, fromRevision: number, toRevision: number): Promise<{ from: StorylineRevisionItem | null; to: StorylineRevisionItem | null; fields: Array<{ field: string; before: string; after: string }> }> {
+  return getApi(`${BASE}/storylines/${storylineId}/revisions/compare?fromRevision=${fromRevision}&toRevision=${toRevision}`)
+}
+
+export function rollbackStorylineRevision(storylineId: string, targetRevisionId: string, note = ''): Promise<StorylineRevisionItem> {
+  return postApi(`${BASE}/storylines/${storylineId}/revisions/rollback`, { targetRevisionId, note })
+}
+
+export function listScenes(projectId: string): Promise<SceneReviewItem[]> {
+  return getApi(`${BASE}/projects/${projectId}/scenes`)
+}
+
+export function getScene(sceneId: string): Promise<SceneReviewDetail> {
+  return getApi(`${BASE}/scenes/${sceneId}`)
+}
+
+export function createSceneRevision(sceneId: string, input: { expectedRevision: string; summary: string; pov: string; positioning?: string; rhythm?: string; narrativeTaskTypes?: string[]; focus?: string[]; present?: string[]; cast?: Array<{ characterId: string; function: string; prominence: string }> }): Promise<SceneReviewItem> {
+  return postApi(`${BASE}/scenes/${sceneId}/revisions`, input)
+}
+
+export function submitSceneRevision(revisionId: string): Promise<SceneReviewItem> {
+  return postApi(`${BASE}/scene-revisions/${revisionId}/submit`, {})
+}
+
+export function approveSceneRevision(revisionId: string, note = ''): Promise<SceneReviewItem> {
+  return postApi(`${BASE}/scene-revisions/${revisionId}/approve`, { decision: 'approve', note })
+}
+
+export function rejectSceneRevision(revisionId: string, note = ''): Promise<SceneReviewItem> {
+  return postApi(`${BASE}/scene-revisions/${revisionId}/reject`, { decision: 'reject', note })
+}
+
+export function compareSceneRevisions(sceneId: string, fromRevisionId: string, toRevisionId: string): Promise<{ from: SceneReviewItem | null; to: SceneReviewItem | null; fields: Array<{ field: string; before: string; after: string }> }> {
+  return getApi(`${BASE}/scenes/${sceneId}/revisions/compare?fromRevisionId=${fromRevisionId}&toRevisionId=${toRevisionId}`)
+}
+
+export function rollbackSceneRevision(sceneId: string, targetRevisionId: string, note = ''): Promise<SceneReviewItem> {
+  return postApi(`${BASE}/scenes/${sceneId}/revisions/rollback`, { targetRevisionId, note })
+}
+
+export function rebuildNarrativeMatrix(projectId: string, input: { revisionIds?: string[]; idempotencyKey?: string } = {}): Promise<NarrativeMatrixRebuild> {
+  return postApi(`${BASE}/projects/${projectId}/narrative-matrix/rebuild`, input)
+}
+
+export function getNarrativeMatrixRebuild(projectId: string, jobId: string): Promise<NarrativeMatrixRebuild> {
+  return getApi(`${BASE}/projects/${projectId}/narrative-matrix/rebuild/${jobId}`)
+}
+
 // ── 剧情（narrative）实体轨道 ──
 
 export function listNarratives(projectId: string): Promise<NovelNarrative[]> {
@@ -691,20 +1073,90 @@ export interface TimelineRebuildPreview extends ChapterDerivedState {
   automaticRebuildAvailable: boolean
   blockedReasons: string[]
   confirmationToken: string
+  latestJob?: TimelineRebuildJob | null
 }
 
 export function getTimelineRebuildPreview(projectId: string): Promise<TimelineRebuildPreview> {
   return getApi<TimelineRebuildPreview>(`${BASE}/projects/${projectId}/timeline-rebuild/preview`)
 }
 
+export interface TimelineRebuildStep {
+  jobId: string
+  chapterId: string
+  chapterNumber: number
+  contentRevisionId: string
+  status: 'pending' | 'replaying' | 'ready_to_apply' | 'applied' | 'failed' | 'blocked'
+  error: string | null
+  updatedAt: number
+}
+
+export interface TimelineRebuildJob {
+  id: string
+  invalidationId: string
+  projectId: string
+  startChapterNumber: number
+  endChapterNumber: number
+  status: 'queued' | 'running' | 'paused' | 'cancelling' | 'cancelled' | 'failed' | 'completed'
+  estimatedLlmCalls: number
+  processedChapterNumber: number | null
+  error: string | null
+  completed: number
+  failed: number
+  skipped: number
+  checkpoint: number | null
+  blockedReason: string | null
+  modelId: { provider: string; modelId: string; thinkingLevel?: import('../stores/session-store').ThinkingLevel | null } | null
+  steps: TimelineRebuildStep[]
+}
+
 export function startTimelineRebuild(
   projectId: string,
   confirmationToken: string,
-): Promise<unknown> {
-  return postApi<unknown>(`${BASE}/projects/${projectId}/timeline-rebuild/start`, {
+  modelId?: { provider: string; modelId: string; thinkingLevel?: import('../stores/session-store').ThinkingLevel | null } | null,
+): Promise<TimelineRebuildJob> {
+  return postApi<TimelineRebuildJob>(`${BASE}/projects/${projectId}/timeline-rebuild/start`, {
     confirmationToken,
     confirmed: true,
+    ...(modelId ? { modelId } : {}),
   })
+}
+
+export function getTimelineRebuildJob(projectId: string, jobId: string): Promise<TimelineRebuildJob> {
+  return getApi<TimelineRebuildJob>(`${BASE}/projects/${projectId}/timeline-rebuild/jobs/${jobId}`)
+}
+
+export function cancelTimelineRebuildJob(projectId: string, jobId: string): Promise<TimelineRebuildJob> {
+  return postApi<TimelineRebuildJob>(`${BASE}/projects/${projectId}/timeline-rebuild/jobs/${jobId}/cancel`, {})
+}
+
+export function resumeTimelineRebuildJob(projectId: string, jobId: string): Promise<TimelineRebuildJob> {
+  return postApi<TimelineRebuildJob>(`${BASE}/projects/${projectId}/timeline-rebuild/jobs/${jobId}/resume`, {})
+}
+
+export function markTimelineRebuildStepReady(
+  projectId: string,
+  jobId: string,
+  chapterId: string,
+  expectedContentRevision: string,
+): Promise<TimelineRebuildJob> {
+  return postApi<TimelineRebuildJob>(`${BASE}/projects/${projectId}/timeline-rebuild/jobs/${jobId}/chapters/${chapterId}/ready`, {
+    expectedContentRevision,
+  })
+}
+
+export function applyTimelineRebuildStep(
+  projectId: string,
+  jobId: string,
+  chapterId: string,
+  expectedContentRevision: string,
+): Promise<TimelineRebuildJob> {
+  return postApi<TimelineRebuildJob>(`${BASE}/projects/${projectId}/timeline-rebuild/jobs/${jobId}/chapters/${chapterId}/apply`, {
+    expectedContentRevision,
+  })
+}
+
+export function completeTimelineRebuildJob(projectId: string, jobId: string): Promise<TimelineRebuildJob> {
+  return postApi<TimelineRebuildJob>(`${BASE}/projects/${projectId}/timeline-rebuild/jobs/${jobId}/complete`, {})
 }
 
 // ── Volumes ──
@@ -1755,6 +2207,8 @@ export interface AiArrangeFlowOptions {
   onResult?: (result: unknown) => void
   onError?: (error: string) => void
   signal?: AbortSignal
+  /** 本次编排模型覆盖；未传时由后端按项目主模型/Agent 默认解析。 */
+  modelId?: { provider: string; modelId: string; thinkingLevel?: import('../stores/session-store').ThinkingLevel | null }
 }
 
 export async function aiArrangeFlow(
@@ -1769,7 +2223,7 @@ export async function aiArrangeFlow(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify(options.modelId ? { modelId: options.modelId } : {}),
     signal: options.signal,
   })
 

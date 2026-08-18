@@ -43,7 +43,7 @@ export function createTray(getMainWindow: () => BrowserWindow | null): Tray {
   }
 
   tray = new Tray(trayIcon)
-  tray.setToolTip('PI Agent')
+  tray.setToolTip('Wenlang Agent')
 
   // 双击托盘图标 → 显示并聚焦主窗口
   tray.on('double-click', () => {

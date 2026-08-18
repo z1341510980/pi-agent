@@ -122,6 +122,30 @@
   color: var(--color-muted-foreground, #6b7280);
 }
 
+.cce-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--color-primary, #2563eb);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 150ms ease-out;
+}
+
+.cce-save-btn:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.cce-save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .cce-dirty {
   color: var(--color-warning, #d97706);
 }

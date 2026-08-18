@@ -511,7 +511,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
 function buildSystemPrompt(deps: PiSessionDeps): string {
   const parts: string[] = []
 
-  parts.push('你是 Pi Agent，一个智能编程助手。')
+  parts.push('你是 Wenlang Agent，一个智能编程助手。')
 
   // 注入运行环境信息，避免 LLM 在 Windows 上生成 bash 不兼容的 PowerShell 命令
   const platform = process.platform

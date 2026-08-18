@@ -850,7 +850,7 @@ export function ChatWorkspace({
         <main
           className="pi-workspace-main grid min-w-0 flex-1 overflow-hidden"
           style={{ gridTemplateRows: `var(--chat-header-height) minmax(0,1fr) auto` }}
-          aria-label="PI Agent 工作台"
+          aria-label="Wenlang Agent 工作台"
         >
           {/* ── 会话标题栏（玻璃态：bg + backdrop-blur + 底部边框） ── */}
           <header className="pi-glass-header flex items-center justify-between h-[var(--chat-header-height)] px-4 [webkit-app-region:drag]">

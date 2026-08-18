@@ -41,6 +41,9 @@ const api = vi.hoisted(() => ({
   getChapterArrangedEntities: vi.fn(),
   createChapter: vi.fn(),
   completeChapter: vi.fn(),
+  getTimelineRebuildPreview: vi.fn(),
+  getTimelineRebuildJob: vi.fn(),
+  startTimelineRebuild: vi.fn(),
   getWritingStyleProfile: vi.fn().mockResolvedValue(null),
   listWritingStyleExperts: vi.fn().mockResolvedValue([]),
   saveWritingStyleProfile: vi.fn(),
@@ -236,6 +239,9 @@ function primeApi() {
     async (_projectId: string, input: { chapterNumber: number }) => makeChapter(input.chapterNumber),
   )
   api.completeChapter.mockResolvedValue(makeChapter(1))
+  api.getTimelineRebuildPreview.mockResolvedValue(null)
+  api.getTimelineRebuildJob.mockResolvedValue(null)
+  api.startTimelineRebuild.mockResolvedValue(null)
 }
 
 function resetStores() {

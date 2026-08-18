@@ -46,7 +46,7 @@ export interface PresetAssistant {
 /** 内置预设助手（与后端 AgentManager 默认 Agent 对齐） */
 export const BUILTIN_PRESETS: Record<string, Partial<PresetAssistant>> = {
   default: {
-    name: 'Pi Agent',
+    name: 'Wenlang Agent',
     icon: Bot,
     description: '通用 Agent，可调用所有注册工具',
     source: 'builtin',

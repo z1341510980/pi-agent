@@ -55,7 +55,7 @@ export const subagentPlugin = fp(async (app, rawOptions) => {
   if (!manager.getAgent('default')) {
     const defaultAgent: AgentConfig = {
       id: 'default',
-      name: 'Pi Agent',
+      name: 'Wenlang Agent',
       description: '默认主 Agent',
     }
     manager.registerAgent(defaultAgent)

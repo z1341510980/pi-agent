@@ -29,6 +29,7 @@ import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from '../domain/novel-agents
 import type { NovelCharacter } from '../types.js'
 import type { ChapterBoundaryContext } from '../prompting/prompt-builder.js'
 import { buildVoiceProfiles, type CharacterVoiceProfile } from '../entities/character-voice.js'
+import type { NovelModelSelection } from '../domain/novel-model-ref.js'
 import {
   buildCharacterIdentityPrompt,
   buildCharacterSystemPrompt,
@@ -48,7 +49,7 @@ export interface ChapterChatOptions {
   /** Moderator 模型配置 */
   moderatorModel?: { provider: string; modelId: string }
   /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用，Moderator 仍独立调度 */
-  modelId?: { provider: string; modelId: string; thinkingLevel?: import('@earendil-works/pi-agent-core').ThinkingLevel | null }
+  modelId?: NovelModelSelection
   styleExpertIds?: string[]
 }
 

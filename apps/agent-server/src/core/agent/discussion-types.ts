@@ -6,6 +6,7 @@
  */
 
 import type { AgUiEventSink } from '@repo/protocol/events'
+import type { PluginSessionOptions } from '../plugin/plugin-types.js'
 
 /** 群聊成员类型 */
 export type DiscussionMemberType = 'role' | 'character'
@@ -103,7 +104,7 @@ export interface DiscussionMember {
    * 工种成员默认从 AgentManager 中读取；业务适配层也可以为本次运行统一覆盖
    * 工种和角色成员的模型。
    */
-  modelId?: { provider: string; modelId: string; thinkingLevel?: import('@earendil-works/pi-agent-core').ThinkingLevel | null }
+  modelId?: PluginSessionOptions['modelId']
   /**
    * 该成员使用的 LLM 温度（可选，未配置时工种成员回退到 0.7，角色成员回退到 characterTemperature）
    *
@@ -228,7 +229,7 @@ export interface DiscussionOptions {
    * 本次运行的成员模型覆盖。优先级高于工种 Agent 配置；角色成员也使用该模型。
    * Moderator 保持使用 moderatorModel，避免协调模型被正文创作模型意外替换。
    */
-  memberModel?: { provider: string; modelId: string }
+  memberModel?: PluginSessionOptions['modelId']
   /** 本次群聊运行唯一插话隔离键。 */
   flowKey?: string
   /** 本轮召集的独立蒸馏文风专家 ID；只作用于正文工种成员。 */

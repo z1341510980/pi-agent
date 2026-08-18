@@ -12,7 +12,7 @@ import type {
 import type { NovelStore } from '../novel-store.js'
 import type { NovelMemoryStore } from '../novel-memory-store.js'
 import type { PromptManager } from '../prompting/prompt-manager.js'
-import { parseNovelModelRef } from '../domain/novel-model-ref.js'
+import { parseNovelModelRef, type NovelModelSelection } from '../domain/novel-model-ref.js'
 import {
   addLlmUsage,
   extractLlmUsageFromMessage,
@@ -34,6 +34,8 @@ export interface GenerateChapterOutlineParams {
   currentOutline: string
   expectedOutline: string
   instruction?: string
+  /** 本次请求模型，优先于项目主模型和 Agent 配置。 */
+  modelId?: NovelModelSelection
   signal?: AbortSignal
 }
 
@@ -169,7 +171,7 @@ export class ChapterOutlineGenerator {
 
     const projectModel = parseNovelModelRef(this.store.getNovelModelId(params.projectId))
     const directorAgent = this.context.subagentManager?.getAgent('novel-director')
-    const modelId = projectModel ?? directorAgent?.model
+    const modelId = params.modelId ?? projectModel ?? directorAgent?.model
     const payloadTotals: PayloadTotals = {
       messagesChars: 0,
       toolsChars: 0,
@@ -195,7 +197,6 @@ export class ChapterOutlineGenerator {
         responseFormat: 'json',
         modelId,
         temperature: directorAgent?.temperature ?? 0.4,
-        maxTokens: 5000,
         timeoutMs: 180_000,
         signal: params.signal,
         promptCacheScope: `novel:${params.projectId}:outline:${params.chapterNumber}`,

@@ -1,5 +1,5 @@
 appId: com.wenlang-agent.app
-productName: PI Agent
+productName: Wenlang Agent
 directories:
   buildResources: build
 # electron-vite 已将 main/preload/renderer 全部 bundle 到 out/，

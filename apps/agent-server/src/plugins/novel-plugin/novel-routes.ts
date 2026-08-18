@@ -28,7 +28,9 @@ import { createCharacterRoutes } from './routes/character-routes.js'
 import { createEntityCandidateRoutes } from './routes/entity-candidate-routes.js'
 import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
 import { createStoryLedgerRoutes } from './routes/story-ledger-routes.js'
+import { createNarrativeRevisionRoutes } from './routes/narrative-revision-routes.js'
 import { createReferenceAnalysisRoutes } from './routes/reference-analysis-routes.js'
+import { createReferenceRunRoutes } from './routes/reference-run-routes.js'
 import { createContextPreviewRoutes } from './routes/context-preview-routes.js'
 import { createProjectRoutes } from './routes/project-routes.js'
 import { createVolumeRoutes } from './routes/volume-routes.js'
@@ -66,7 +68,9 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     ...createProjectRoutes(services),
     ...createVolumeRoutes(services),
     ...createStoryLedgerRoutes(services),
+    ...createNarrativeRevisionRoutes(services),
     ...createReferenceAnalysisRoutes(services),
+    ...createReferenceRunRoutes(services),
     ...createPromptRoutes(services),
     ...createNarrativeRoutes(services),
     ...createObservabilityRoutes(services),

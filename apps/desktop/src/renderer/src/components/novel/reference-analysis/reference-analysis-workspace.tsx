@@ -6,6 +6,7 @@ import {
   Check,
   FileInput,
   Files,
+  FlaskConical,
   ListChecks,
   LoaderCircle,
   Plus,
@@ -34,17 +35,20 @@ import { ReferenceImportPanel } from './reference-import-panel'
 import { ReferenceSectionList } from './reference-section-list'
 import { ReferenceLocalReportPanel, ReferenceQualityPanel } from './reference-report-panels'
 import { StyleDistillReviewDialog } from './style-distill-review-dialog'
+import { ReferenceRunSection, ReferenceReviewSection } from './reference-run-panel'
 import { createWritingStyleExpert } from '@/api/novel-client'
 import { WritingStyleProfileEditor } from '../writing-style-profile-editor'
 
-type ReferencePage = 'sources' | 'import' | 'quality' | 'report'
+type ReferencePage = 'sources' | 'import' | 'quality' | 'report' | 'analysis' | 'review'
 type QualityView = 'overview' | 'sections'
 
 const PAGE_ITEMS = [
   { id: 'sources' as const, label: '参考源', icon: Files, step: 1 },
   { id: 'import' as const, label: '导入确认', icon: FileInput, step: 2 },
   { id: 'quality' as const, label: '质量与章节', icon: ScanText, step: 3 },
-  { id: 'report' as const, label: '本地报告', icon: BarChart3, step: 4 }
+  { id: 'report' as const, label: '本地报告', icon: BarChart3, step: 4 },
+  { id: 'analysis' as const, label: '远端分析', icon: FlaskConical, step: 5 },
+  { id: 'review' as const, label: '档案审核', icon: ListChecks, step: 6 }
 ]
 
 interface ReferenceAnalysisWorkspaceProps {
@@ -71,6 +75,8 @@ export function ReferenceAnalysisWorkspace({
   const [sectionsDirty, setSectionsDirty] = useState(false)
   const [styleDistillOpen, setStyleDistillOpen] = useState(false)
   const [workspaceTab, setWorkspaceTab] = useState<ReferenceStyleWorkspaceTab>('sources')
+  // P4/P5：远端分析产出的待审核档案 id
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
 
   const sourcesQuery = useQuery({
     queryKey: ['reference-analysis', projectId, 'sources'],
@@ -198,12 +204,15 @@ export function ReferenceAnalysisWorkspace({
                 <nav className="space-y-0.5" aria-label="参考小说分析页面">
                   {PAGE_ITEMS.map((item) => {
                     const Icon = item.icon
-                    const disabled = (item.id === 'quality' || item.id === 'report') && !parsed
+                    const disabled =
+                      ((item.id === 'quality' || item.id === 'report' || item.id === 'analysis') && !parsed) ||
+                      (item.id === 'review' && !activeProfileId)
                     const complete =
                       (item.id === 'sources' && Boolean(sourcesQuery.data?.length)) ||
                       (item.id === 'import' && parsed) ||
                       (item.id === 'quality' && Boolean(qualityQuery.data)) ||
-                      (item.id === 'report' && Boolean(reportQuery.data))
+                      (item.id === 'report' && Boolean(reportQuery.data)) ||
+                      (item.id === 'review' && Boolean(activeProfileId))
                     return (
                       <button
                         key={item.id}
@@ -366,6 +375,23 @@ export function ReferenceAnalysisWorkspace({
                   ) : (
                     <LoadingState label="读取本地分析报告" />
                   ))}
+                {page === 'analysis' && (
+                  <div className="h-full min-h-0 overflow-y-auto">
+                    <ReferenceRunSection
+                      sourceId={selectedSourceId}
+                      parsed={parsed}
+                      onProfileReady={(profileId) => {
+                        setActiveProfileId(profileId)
+                        setPage('review')
+                      }}
+                    />
+                  </div>
+                )}
+                {page === 'review' && (
+                  <div className="h-full min-h-0 overflow-y-auto">
+                    <ReferenceReviewSection profileId={activeProfileId} />
+                  </div>
+                )}
               </div>
             </div>
           ) : workspaceTab === 'baseline' ? (

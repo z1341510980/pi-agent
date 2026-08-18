@@ -19,7 +19,7 @@ export const homeTour: Tour = {
   steps: [
     {
       // 居中 popover：不绑定 DOM
-      title: '欢迎使用 PI Agent',
+      title: '欢迎使用 Wenlang Agent',
       description:
         '5 分钟带你熟悉四大模块：对话、小说创作、设置与快捷键。准备好就点「下一步」。',
       side: 'over',

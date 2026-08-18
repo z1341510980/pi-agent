@@ -105,6 +105,14 @@ function makeMockServices(): NovelServices {
     costReportService: new CostReportService(db),
     observabilityService: new ObservabilityService(db),
     sharedOverlapAnalyzer: new SharedOverlapAnalyzer(db),
+    timelineRebuildRunner: {
+      run: vi.fn().mockResolvedValue(undefined),
+      requestCancel: vi.fn(),
+      isRunning: vi.fn().mockReturnValue(false),
+    } as any,
+    referenceAnalysisRuns: { getRun: vi.fn(), listRuns: vi.fn().mockReturnValue([]), createRun: vi.fn(), listEvents: vi.fn().mockReturnValue([]) } as any,
+    referenceAnalysisWorker: { run: vi.fn().mockResolvedValue(undefined), requestCancel: vi.fn(), isRunning: vi.fn().mockReturnValue(false) } as any,
+    referenceProfiles: { getProfile: vi.fn(), listVersions: vi.fn().mockReturnValue([]) } as any,
   }
 }
 

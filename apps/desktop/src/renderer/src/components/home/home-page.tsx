@@ -86,7 +86,7 @@ export function HomePage({
         <section className="mb-10 flex items-center gap-4" data-tour="home-hero">
           <img
             src={logoImage}
-            alt="PI Agent"
+            alt="Wenlang Agent"
             className="size-14 rounded-2xl shrink-0 object-cover"
           />
           <div className="min-w-0">

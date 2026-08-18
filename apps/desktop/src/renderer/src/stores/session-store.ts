@@ -109,7 +109,7 @@ export function createDefaultSessions(): SessionSummary[] {
     {
       id: 'desktop-main',
       title: '新会话',
-      preview: '准备连接 Pi Agent',
+      preview: '准备连接 Wenlang Agent',
       createdAt: now,
       updatedAt: now,
     },

@@ -20,6 +20,7 @@ import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { createNovelAgUiEmitter, createSseEmitterSink } from '../utils/sse-emitter.js'
+import { modelSelectionSchema } from './model-selection-contract.js'
 
 export function createCharacterRoutes(services: NovelServices): RouteDefinition[] {
   const { store } = services
@@ -88,13 +89,9 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
 
   // ── AI 角色生成 ──
 
-  const aiGenerateCharacterSchema = z.object({
-    coreStyle: z.string().min(1).max(500),
-    modelId: z.object({
-      provider: z.string().min(1),
-      modelId: z.string().min(1),
-      thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).nullable().optional(),
-    }).optional(),
+const aiGenerateCharacterSchema = z.object({
+  coreStyle: z.string().min(1).max(500),
+  modelId: modelSelectionSchema.optional(),
   })
 
   routes.push({

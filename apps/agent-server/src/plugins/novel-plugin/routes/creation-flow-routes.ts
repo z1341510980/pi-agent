@@ -52,6 +52,8 @@ import {
   findForeignArrangedEntities,
 } from './arranged-entities-contract.js'
 import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
+import type { ArrangeDraftHandle } from '../core/generation/novel-entity-generator.js'
+import { modelSelectionSchema } from './model-selection-contract.js'
 
 /**
  * 群聊可续跑阶段：这些阶段失败时快照携带足够状态（transcript/scenes/content/
@@ -62,6 +64,14 @@ const DISCUSSION_RESUMABLE_PHASES = new Set(['chapter_weaving', 'reviewing', 'ac
 export function createCreationFlowRoutes(services: NovelServices): RouteDefinition[] {
   const { store } = services
   const routes: RouteDefinition[] = []
+
+  const aiArrangeBodySchema = z.object({
+    /** 本次编排的临时模型覆盖；未传时按项目主模型/novel-director/系统默认解析。 */
+    modelId: modelSelectionSchema.optional(),
+  }).optional().default({})
+  const reverseArrangeBodySchema = z.object({
+    modelId: modelSelectionSchema.optional(),
+  }).optional().default({})
 
   const requireChapter = (projectId: string, chapterNumber: string): number => {
     const parsed = Number(chapterNumber)
@@ -109,6 +119,16 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     return parsed
   }
 
+  /** 一个章节同一时间只允许存在一份待确认编排草稿。 */
+  const pendingArrangeDrafts = new Map<string, {
+    draftId: string
+    handle: ArrangeDraftHandle
+    modelId?: { provider: string; modelId: string; thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null }
+    feedback?: string
+  }>()
+  /** arrange_review 的意见在 ConfirmationManager 唤醒前暂存，供下一轮规划提示词使用。 */
+  const arrangeDecisionFeedback = new Map<string, string>()
+
   // ═══════════════════════════════════════════════════════════════
   // 多 Agent 创作流程（SSE + 检查点）
   // ═══════════════════════════════════════════════════════════════
@@ -135,12 +155,17 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       if (!alreadyAborted) {
         const workflowThreadId = `novel-checkpoint-${projectId}-${chapterNumber}`
         const discussionThreadId = `novel-discussion-${projectId}-${chapterNumber}`
+        const arrangeThreadId = `novel-arrange-${projectId}-${chapterNumber}`
         const pendingList = services.confirmationManager.listPending()
         const matchedPending = pendingList.filter(
-          (p) => p.threadId === workflowThreadId || p.threadId === discussionThreadId,
+          (p) => p.threadId === workflowThreadId || p.threadId === discussionThreadId || p.threadId === arrangeThreadId,
         )
         cancelDebug('cancel-pending', { projectId, chapterNumber, pendingCount: pendingList.length, matchedCount: matchedPending.length })
         for (const pending of matchedPending) {
+          if (pending.threadId === arrangeThreadId) {
+            pendingArrangeDrafts.get(lockKey)?.handle.rollback()
+            pendingArrangeDrafts.delete(lockKey)
+          }
           services.confirmationManager.respondDecision(pending.id, 'reject')
         }
         task.controller.abort(new Error('用户手动停止创作流程'))
@@ -757,7 +782,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const pending = services.confirmationManager.listPending().find((r) => r.id === checkpointId)
       const isWorkflow = pending?.threadId.startsWith(`novel-checkpoint-${projectId}-`)
       const isDiscussion = pending?.threadId.startsWith(`novel-discussion-${projectId}-`)
-      if (!pending || (!isWorkflow && !isDiscussion)) {
+      const isArrange = pending?.threadId.startsWith(`novel-arrange-${projectId}-`)
+      if (!pending || (!isWorkflow && !isDiscussion && !isArrange)) {
         reply.code(404).send({ ok: false, error: '检查点不存在或已处理' })
         return
       }
@@ -772,6 +798,29 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         const chapterNumber = Number(chapterText)
         if (Number.isInteger(chapterNumber) && chapterNumber > 0) {
           services.orchestrator.setUserMessages(projectId, chapterNumber, userMessages)
+        }
+      }
+
+      if (isArrange) {
+        const chapterText = pending.threadId.slice(`novel-arrange-${projectId}-`.length)
+        const chapterNumber = Number(chapterText)
+        const comment = userMessages?.filter((message) => message.trim()).join('\n').trim()
+        if (comment) arrangeDecisionFeedback.set(checkpointId, comment)
+        if (Number.isInteger(chapterNumber) && chapterNumber > 0 && comment) {
+          try {
+            services.chapterChatStore.add({
+              projectId,
+              chapterNumber,
+              role: 'user',
+              fromId: 'user',
+              fromName: '用户',
+              content: comment,
+              phase: 'checkpoint',
+              metadata: { flowMode: 'workflow', workflowMessageType: 'checkpoint', checkpointId, checkpointType: 'arrange_review' },
+            })
+          } catch (error) {
+            request.log.warn({ error, projectId, chapterNumber }, 'AI 编排修改意见落库失败')
+          }
         }
       }
 
@@ -1386,6 +1435,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const { projectId, chapterNumber } = request.params
       const entityGenerator = services.entityGenerator
       const chNum = requireDerivedStateWritableChapter(projectId, chapterNumber)
+      const arrangeInput = validateBody(aiArrangeBodySchema, request, reply)
+      if (!arrangeInput) return reply
 
       // 并发锁：同一章节不允许并发 ai-arrange，避免重复生成实体
       const lockKey = `${projectId}:${chapterNumber}`
@@ -1409,6 +1460,20 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         }
       }
       reply.raw.on('close', abortOnDisconnect)
+      // arrange_review 决策无超时（timeout=0）：客户端断开或任务中止时必须主动
+      // reject 唤醒等待中的路由，否则 finally 永不执行，锁残留导致该章 409 直到重启。
+      // 与 cancel-active-flow 的显式取消互补；rollback 幂等，重复调用安全。
+      const rejectArrangePendingOnAbort = () => {
+        const arrangeThreadId = `novel-arrange-${projectId}-${chNum}`
+        const pendingArrange = services.confirmationManager.listPending().find(
+          (p) => p.threadId === arrangeThreadId,
+        )
+        if (!pendingArrange) return
+        pendingArrangeDrafts.get(lockKey)?.handle.rollback()
+        pendingArrangeDrafts.delete(lockKey)
+        services.confirmationManager.respondDecision(pendingArrange.id, 'reject')
+      }
+      task.controller.signal.addEventListener('abort', rejectArrangePendingOnAbort, { once: true })
 
       // SSE 设置（与 create-flow 一致，绕过 Fastify CORS 中间件需手动附加 CORS 头）
       reply.raw.writeHead(200, {
@@ -1442,58 +1507,128 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         if (!chapter) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${chNum}`, 404)
         if (!chapter.outline?.trim()) throw new Error('章纲为空，无法 AI 编排')
 
-        // 阶段1：AI 编排（生成实体并落库到本章列）
+        // 阶段1：AI 编排（生成实体草稿，但暂不提交事务）
         // 注意：本接口仅做矩阵编排，不衔接 create-flow 创作流程。
         // arrange 进度事件统一带 phase='arranging'，前端据此在对话时间线展示处理步骤。
         emitter.progress({ type: 'arrange_start', phase: 'arranging', message: '开始 AI 编排实体...' })
-        const arrangedEntities = await entityGenerator.generateAndArrange(
-          projectId,
-          chNum,
-          chapter.outline,
-          // 注意：...evt 必须放在 phase 之前，否则 evt.phase 会覆盖 'arranging'，
-          // 导致前端无法识别为编排阶段（前端以 phase='arranging' 作为对话气泡判定条件）。
-          (evt) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
-          'outline',
-          task.controller.signal,
-        )
-        const totalCount = arrangedEntities.characterIds.length
-          + arrangedEntities.conflictIds.length
-          + arrangedEntities.foreshadowIds.length
-          + (arrangedEntities.clueIds ?? []).length
-          + arrangedEntities.factionIds.length
-          + arrangedEntities.locationIds.length
-          + (arrangedEntities.itemIds ?? []).length
-        emitter.progress({
-          type: 'arrange_done',
-          phase: 'arranging',
-          message: `编排完成：共生成 ${totalCount} 个实体已落入矩阵`,
-          data: arrangedEntities,
-          // 携带 detail 用于前端展示编排结果汇总气泡（与 arranged 阶段事件互补）
-          detail: {
-            kind: 'arrange_summary',
-            total: totalCount,
-            characters: arrangedEntities.characterIds.length,
-            conflicts: arrangedEntities.conflictIds.length,
-            foreshadows: arrangedEntities.foreshadowIds.length,
-            clues: (arrangedEntities.clueIds ?? []).length,
-            factions: arrangedEntities.factionIds.length,
-            locations: arrangedEntities.locationIds.length,
-            items: (arrangedEntities.itemIds ?? []).length,
-          },
-        })
-        // 编排结束：发 result（status=completed，不带 content），前端据此显示"编排完成"并关闭面板
-        emitter.result({
-          status: 'completed',
-          stateChanges: [{
-            type: 'arrange',
-            description: `AI 编排完成，已生成 ${totalCount} 个实体落入第 ${chNum} 章矩阵`,
-          }],
-        })
+        let draft: ArrangeDraftHandle
+        let feedback: string | undefined
+        while (true) {
+          const draftId = randomUUID()
+          if (typeof (entityGenerator as any).generateArrangeDraft === 'function') {
+            draft = await (entityGenerator as any).generateArrangeDraft(
+              projectId,
+              chNum,
+              chapter.outline,
+              // 注意：...evt 必须放在 phase 之前，否则 evt.phase 会覆盖 'arranging'。
+              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
+               arrangeInput.modelId,
+              feedback,
+              task.controller.signal,
+            )
+          } else {
+            // 仅兼容旧测试替身/第三方注入服务；正式 NovelEntityGenerator 始终走事务草稿。
+            const arrangedEntities = await entityGenerator.generateAndArrange(
+              projectId,
+              chNum,
+              chapter.outline,
+              (evt: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
+              'outline',
+              task.controller.signal,
+               arrangeInput.modelId,
+            )
+            draft = { result: arrangedEntities, commit: () => undefined, rollback: () => undefined }
+          }
+           pendingArrangeDrafts.set(lockKey, { draftId, handle: draft, modelId: arrangeInput.modelId, feedback })
+          const arrangedEntities = draft.result
+          const totalCount = arrangedEntities.characterIds.length
+            + arrangedEntities.conflictIds.length
+            + arrangedEntities.foreshadowIds.length
+            + (arrangedEntities.clueIds ?? []).length
+            + arrangedEntities.factionIds.length
+            + arrangedEntities.locationIds.length
+            + (arrangedEntities.itemIds ?? []).length
+          emitter.progress({
+            type: 'arrange_done',
+            phase: 'arranging',
+            message: `编排完成：共生成 ${totalCount} 个实体，等待你确认是否落库`,
+            data: arrangedEntities,
+            detail: {
+              kind: 'arrange_summary',
+              total: totalCount,
+              characters: arrangedEntities.characterIds.length,
+              conflicts: arrangedEntities.conflictIds.length,
+              foreshadows: arrangedEntities.foreshadowIds.length,
+              clues: (arrangedEntities.clueIds ?? []).length,
+              factions: arrangedEntities.factionIds.length,
+              locations: arrangedEntities.locationIds.length,
+              items: (arrangedEntities.itemIds ?? []).length,
+            },
+          })
+          const decisionPromise = services.confirmationManager.requestDecision({
+            threadId: `novel-arrange-${projectId}-${chNum}`,
+            toolCallId: draftId,
+            toolName: 'arrange_review',
+            args: {
+              checkpoint: {
+                type: 'arrange_review',
+                phase: 'checkpoint_review',
+                 data: { arrangedEntities, total: totalCount, model: entityGenerator.getArrangeModel(projectId, arrangeInput.modelId) },
+                options: ['approve', 'revise', 'reject'],
+              },
+              draftId,
+            },
+            reason: '等待用户确认 AI 编排结果是否落库',
+          }, 0)
+          const pending = services.confirmationManager.listPending().find((item) => item.toolCallId === draftId)
+          emitter.checkpoint({
+            type: 'arrange_review',
+            phase: 'checkpoint_review',
+            checkpointId: pending?.id,
+             data: { arrangedEntities, total: totalCount, model: entityGenerator.getArrangeModel(projectId, arrangeInput.modelId) },
+            options: ['approve', 'revise', 'reject'],
+          })
+          const decision = await decisionPromise
+          const decisionFeedback = pending?.id ? arrangeDecisionFeedback.get(pending.id) : undefined
+          if (pending?.id) arrangeDecisionFeedback.delete(pending.id)
+          if (decision === 'revise') {
+            draft.rollback()
+            pendingArrangeDrafts.delete(lockKey)
+            feedback = decisionFeedback?.trim() || '请根据上一版结果重新调整本章实体编排。'
+            emitter.progress({ type: 'arrange_revision', phase: 'arranging', message: '已收到意见，正在重新编排...' })
+            continue
+          }
+          if (decision === 'reject') {
+            draft.rollback()
+            pendingArrangeDrafts.delete(lockKey)
+            emitter.result({ status: 'cancelled' })
+            break
+          }
+          draft.commit()
+          pendingArrangeDrafts.delete(lockKey)
+          emitter.progress({
+            type: 'arrange_committed',
+            phase: 'arranging',
+            dataChanged: true,
+            message: `已确认落库：${totalCount} 个实体已写入矩阵`,
+          })
+          emitter.result({
+            status: 'completed',
+            stateChanges: [{
+              type: 'arrange',
+              description: `AI 编排已确认，${totalCount} 个实体已落入第 ${chNum} 章矩阵`,
+            }],
+          })
+          break
+        }
       } catch (err) {
+        pendingArrangeDrafts.get(lockKey)?.handle.rollback()
+        pendingArrangeDrafts.delete(lockKey)
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
         reply.raw.off('close', abortOnDisconnect)
+        task.controller.signal.removeEventListener('abort', rejectArrangePendingOnAbort)
         finishNovelChapterTask(lockKey, task)
         if (!reply.raw.writableEnded) reply.raw.end()
         aiArrangeLocks.delete(lockKey)
@@ -1513,6 +1648,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const { projectId, chapterNumber } = request.params
       const entityGenerator = services.entityGenerator
       const chNum = requireDerivedStateWritableChapter(projectId, chapterNumber)
+      const input = validateBody(reverseArrangeBodySchema, request, reply)
+      if (!input) return reply
 
       // 并发锁：与 ai-arrange 共用锁池，同一章节不允许并发编排
       const lockKey = `${projectId}:${chapterNumber}`
@@ -1568,6 +1705,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           (evt) => emitter.progress({ type: 'arrange_progress', ...evt, phase: 'arranging' }),
           'content', // source='content' 表示从正文反推
           task.controller.signal,
+          input.modelId,
         )
         const totalCount = arrangedEntities.characterIds.length
           + arrangedEntities.conflictIds.length
@@ -1617,6 +1755,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   const createTeamSchema = z.object({
     narrativeTask: z.string().min(1).describe('本章叙事任务描述'),
     rhythm: z.string().optional().describe('节奏建议（可选）'),
+    modelId: modelSelectionSchema.optional(),
   })
 
   routes.push({
@@ -1647,6 +1786,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           emit: (() => {}) as any,
           onCheckpoint: async () => 'approve',
           onProgress: () => {},
+          modelId: input.modelId,
           flowKey: `${projectId}|${chapterNum}|${teamRunId}`,
           signal: task.controller.signal,
         })

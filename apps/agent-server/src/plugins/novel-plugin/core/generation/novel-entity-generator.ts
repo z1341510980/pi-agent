@@ -13,6 +13,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { PluginContext, PluginPayloadStats } from '../../../../core/plugin/plugin-types.js'
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
 import type { NovelPromptBuilder } from '../prompting/prompt-builder.js'
 import type { PromptManager } from '../prompting/prompt-manager.js'
 import type { NovelCharacterGenerator } from './novel-character-generator.js'
@@ -49,6 +50,7 @@ import {
   nextAppearChapters,
   appendChapterSpanWithRollback,
 } from '../entities/entity-arrange-utils.js'
+import { parseNovelModelRef, type NovelModelSelection } from '../domain/novel-model-ref.js'
 
 type EntityPlan = {
   characters: Array<{ coreStyle: string; plotFunction?: PlotFunction; functionNote?: string }>
@@ -72,6 +74,47 @@ type EntityPlanLogContext = {
 type EntityPlanResult = {
   plan: EntityPlan
   logContext: EntityPlanLogContext
+}
+
+/**
+ * AI 编排待确认草稿的句柄。
+ *
+ * 生成阶段照常提交（避免把整库写事务横跨用户决策等待，那会吞掉等待期间
+ * 其他路径的写入），但把"如何撤销本轮全部矩阵写入"登记为补偿动作。
+ * 用户确认 → commit（no-op）；拒绝或按意见修改 → rollback 反向撤销。
+ */
+export interface ArrangeDraftHandle {
+  result: ArrangedEntity
+  /** 用户确认落库时调用；数据已在生成时提交，重复调用安全。 */
+  commit(): void
+  /** 拒绝或按意见修改时调用：撤销本轮新建实体与复用实体的章节投影，重复调用安全。 */
+  rollback(): void
+}
+
+/**
+ * generateAndArrange 执行期间登记的补偿上下文：
+ * rollbackActions 恢复复用实体被改写的字段；created*Ids 记录本轮新建实体（按序删除）。
+ */
+export interface ArrangeUndoCapture {
+  rollbackActions: Array<() => void>
+  createdCharacterIds: string[]
+  createdConflictIds: string[]
+  createdForeshadowIds: string[]
+  createdFactionIds: string[]
+  createdLocationIds: string[]
+  createdItemIds: string[]
+}
+
+export function createArrangeUndoCapture(): ArrangeUndoCapture {
+  return {
+    rollbackActions: [],
+    createdCharacterIds: [],
+    createdConflictIds: [],
+    createdForeshadowIds: [],
+    createdFactionIds: [],
+    createdLocationIds: [],
+    createdItemIds: [],
+  }
 }
 
 type BatchPlanSpec = { coreStyle: string }
@@ -495,6 +538,18 @@ export class NovelEntityGenerator {
     private memoryStore?: NovelMemoryStore,
   ) {}
 
+  /** AI 编排模型优先级：本次覆盖 > 项目创作主模型 > novel-director Agent > 系统默认。 */
+  getArrangeModel(
+    projectId: string,
+    requested?: NovelModelSelection,
+  ): NovelModelSelection | undefined {
+    return requested
+      ?? parseNovelModelRef(
+        typeof this.store.getNovelModelId === 'function' ? this.store.getNovelModelId(projectId) : undefined,
+      )
+      ?? this.context.subagentManager?.getAgent('novel-director')?.model
+  }
+
   /**
    * 生成实体字段（不落库）
    *
@@ -510,10 +565,17 @@ export class NovelEntityGenerator {
     coreStyle: string,
     onProgress?: (event: EntityGenerationProgressEvent) => void,
     signal?: AbortSignal,
+    modelId?: NovelModelSelection,
   ): Promise<GeneratedEntity> {
     // character 委托给现有 generator（保持 prompt 一致性）
     if (entityType === 'character') {
-      const data = await this.characterGenerator.generate(projectId, coreStyle, onProgress, signal)
+      const data = await this.characterGenerator.generate(
+        projectId,
+        coreStyle,
+        onProgress,
+        signal,
+        this.getArrangeModel(projectId, modelId),
+      )
       return { type: 'character', data }
     }
 
@@ -605,6 +667,9 @@ export class NovelEntityGenerator {
     onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
     source: 'outline' | 'content' = 'outline',
     signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string; thinkingLevel?: ThinkingLevel | null },
+    feedback?: string,
+    undoCapture?: ArrangeUndoCapture,
   ): Promise<ArrangedEntity> {
     signal?.throwIfAborted()
     // ── 编排日志采集变量 ──
@@ -618,7 +683,16 @@ export class NovelEntityGenerator {
     const isReverse = source === 'content'
     onProgress?.({ phase: 'analyzing', message: isReverse ? '分析正文，反推本章实体...' : '分析章纲，规划所需实体...' })
 
-    const { plan, logContext } = await this.planEntitiesFromOutline(projectId, chapterNumber, outline, onProgress, source, signal)
+    const { plan, logContext } = await this.planEntitiesFromOutline(
+      projectId,
+      chapterNumber,
+      outline,
+      onProgress,
+      source,
+      signal,
+      modelId,
+      feedback,
+    )
     planLogContext = logContext
     const planningErrorMessage = logContext.status === 'error'
       ? (logContext.error || 'AI 实体规划失败')
@@ -651,13 +725,17 @@ export class NovelEntityGenerator {
     const factionIds: string[] = []
     const locationIds: string[] = []
     const itemIds: string[] = []
-    const createdCharacterIds: string[] = []
-    const createdConflictIds: string[] = []
-    const createdForeshadowIds: string[] = []
-    const createdFactionIds: string[] = []
-    const createdLocationIds: string[] = []
-    const createdItemIds: string[] = []
-    const rollbackActions: Array<() => void> = []
+    // 撤销上下文：外部传入时（待确认草稿），补偿动作同步登记进去供用户拒绝时回滚。
+    const undo = undoCapture ?? createArrangeUndoCapture()
+    const {
+      rollbackActions,
+      createdCharacterIds,
+      createdConflictIds,
+      createdForeshadowIds,
+      createdFactionIds,
+      createdLocationIds,
+      createdItemIds,
+    } = undo
     /** LLM 标注"已有：X"但后端匹配失败的项，用于日志与前端提示（这类项会被当新实体重造） */
     const unresolvedExistingHints: string[] = []
     /**
@@ -698,7 +776,7 @@ export class NovelEntityGenerator {
         throw new Error(planningErrorMessage)
       }
 
-      batchGeneration = await this.generatePlanInBatches(projectId, plan, onProgress, signal)
+      batchGeneration = await this.generatePlanInBatches(projectId, plan, onProgress, signal, modelId)
       const resolveGenerated = async (
         spec: BatchPlanSpec,
         kind: EntityKind,
@@ -710,7 +788,7 @@ export class NovelEntityGenerator {
         // 仅“已有：X”未命中项目数据时会走到这里。这类项无法提前判断，单独生成并在日志中标记。
         batchGeneration.unbatchedGenerationCount += 1
         const request = await this.generateEntityBatch(
-          projectId, kind, [{ index: 0, coreStyle }], onProgress, false, signal, 'unbatched',
+          projectId, kind, [{ index: 0, coreStyle }], onProgress, false, signal, 'unbatched', modelId,
         )
         if (request.call) batchGeneration.calls.push(request.call)
         if (request.usage) batchGeneration.usage = addLlmUsage(batchGeneration.usage, request.usage)
@@ -1178,43 +1256,7 @@ export class NovelEntityGenerator {
       logError = err instanceof Error ? err.message : String(err)
       // 反向顺序 best-effort 清理本次写入，避免半编排脏数据污染矩阵。
       // 注意：只删除本次新建实体，复用实体只撤销本次追加的 history/span/appearChapters。
-      for (const rollback of rollbackActions.reverse()) {
-        try {
-          rollback()
-        } catch { /* best-effort 清理，忽略单个撤销失败 */ }
-      }
-      for (const id of createdLocationIds) {
-        try {
-          this.store.deleteLocation(id)
-        } catch { /* best-effort 清理，忽略单个删除失败 */ }
-      }
-      for (const id of createdItemIds) {
-        try {
-          this.store.deleteItem(id)
-        } catch { /* best-effort 清理，忽略单个删除失败 */ }
-      }
-      for (const id of createdFactionIds) {
-        try {
-          this.store.deleteFaction(id)
-        } catch { /* best-effort 清理，忽略单个删除失败 */ }
-      }
-      for (const id of createdForeshadowIds) {
-        try {
-          this.store.deleteForeshadow(id)
-        } catch { /* best-effort 清理，忽略单个删除失败 */ }
-      }
-      for (const id of createdConflictIds) {
-        try {
-          this.store.deleteConflict(id)
-        } catch { /* best-effort 清理，忽略单个删除失败 */ }
-      }
-      for (const id of createdCharacterIds) {
-        try {
-          this.store.deleteCharacterHistoryByCharacter(id)
-          this.store.deleteCharacter(id)
-        } catch { /* best-effort 清理，忽略单个删除失败 */ }
-      }
-      const rolledBack = createdCharacterIds.length + createdConflictIds.length + createdForeshadowIds.length + createdFactionIds.length + createdLocationIds.length + createdItemIds.length
+      const rolledBack = this.undoArrange(undo)
       this.context.logger.error(
         {
           err,
@@ -1394,7 +1436,7 @@ export class NovelEntityGenerator {
         factionIds: factionIds.filter((id) => !createdFactionIds.includes(id)),
         locationIds: locationIds.filter((id) => !createdLocationIds.includes(id)),
         itemIds: itemIds.filter((id) => !createdItemIds.includes(id)),
-      })
+      }, undo)
     } catch (err) {
       // 投影落账失败不能撤销已经成功的实体编排，下一次编排或章节收尾仍可补齐。
       this.context.logger.warn({ projectId, chapterNumber, isReverse, err }, '实体已落库，但账本投影写入失败')
@@ -1424,6 +1466,83 @@ export class NovelEntityGenerator {
       itemIds,
       characterFunctions: characterFunctions.length > 0 ? characterFunctions : undefined,
     }
+  }
+
+  /**
+   * 生成一份待确认的编排草稿。
+   *
+   * 生成阶段照常提交（单连接 SQLite 上不能把写事务横跨用户决策等待，否则
+   * 等待期间其他路径的写入会搭车被一起回滚），但把撤销动作登记进独立上下文：
+   * 用户拒绝或按意见修改时调用 rollback() 反向清理本轮全部矩阵写入。
+   */
+  async generateArrangeDraft(
+    projectId: string,
+    chapterNumber: number,
+    outline: string,
+    onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
+    modelId?: NovelModelSelection,
+    feedback?: string,
+    signal?: AbortSignal,
+  ): Promise<ArrangeDraftHandle> {
+    const undo = createArrangeUndoCapture()
+    const result = await this.generateAndArrange(
+      projectId,
+      chapterNumber,
+      outline,
+      onProgress,
+      'outline',
+      signal,
+      modelId,
+      feedback,
+      undo,
+    )
+    let undone = false
+    return {
+      result,
+      // 数据已在生成时提交；确认动作无需额外处理。
+      commit: () => undefined,
+      rollback: () => {
+        if (undone) return
+        undone = true
+        this.undoArrange(undo)
+      },
+    }
+  }
+
+  /**
+   * 反向撤销一轮编排的矩阵写入：先按逆序恢复复用实体被改写的字段
+   * （spans/beats/owner 等），再删除本轮新建实体（含 character_history）。
+   * 与 generateAndArrange 的失败回滚共用同一实现，全部 best-effort。
+   *
+   * @returns 撤销的新建实体总数（不含字段恢复条数）
+   */
+  private undoArrange(undo: ArrangeUndoCapture): number {
+    for (const rollback of [...undo.rollbackActions].reverse()) {
+      try {
+        rollback()
+      } catch { /* best-effort 清理，忽略单个撤销失败 */ }
+    }
+    const deletions: Array<[string[], (id: string) => unknown]> = [
+      [undo.createdLocationIds, (id) => this.store.deleteLocation(id)],
+      [undo.createdItemIds, (id) => this.store.deleteItem(id)],
+      [undo.createdFactionIds, (id) => this.store.deleteFaction(id)],
+      [undo.createdForeshadowIds, (id) => this.store.deleteForeshadow(id)],
+      [undo.createdConflictIds, (id) => this.store.deleteConflict(id)],
+      [undo.createdCharacterIds, (id) => {
+        this.store.deleteCharacterHistoryByCharacter(id)
+        this.store.deleteCharacter(id)
+      }],
+    ]
+    for (const [ids, remove] of deletions) {
+      for (const id of ids) {
+        try {
+          remove(id)
+        } catch { /* best-effort 清理，忽略单个删除失败 */ }
+      }
+    }
+    return undo.createdCharacterIds.length + undo.createdConflictIds.length
+      + undo.createdForeshadowIds.length + undo.createdFactionIds.length
+      + undo.createdLocationIds.length + undo.createdItemIds.length
   }
 
   /**
@@ -1457,6 +1576,7 @@ export class NovelEntityGenerator {
       locationIds: string[]
       itemIds: string[]
     },
+    undo?: ArrangeUndoCapture,
   ): void {
     if (!this.memoryStore) return
     const originLabel = isReverse ? '正文反推' : '章纲编排'
@@ -1535,7 +1655,7 @@ export class NovelEntityGenerator {
       + created.factionIds.length + created.locationIds.length + created.itemIds.length
     const reusedCount = entityRefs.length - createdCount
 
-    this.memoryStore.createStoryEventWithChanges({
+    const projection = this.memoryStore.createStoryEventWithChanges({
       event: {
         projectId,
         chapterNumber,
@@ -1552,6 +1672,16 @@ export class NovelEntityGenerator {
       },
       entityRefs,
       changes,
+    })
+    // 用户拒绝编排时随 undo 一并删除投影事件，避免账本留下引用已删实体的记录：
+    // story_event_entities 经 FK 级联清理；changes（memory_events）里新建实体的
+    // 记录由实体删除观察者按 entity_id 清理，无需在此重复处理。
+    undo?.rollbackActions.push(() => {
+      try {
+        this.context.db
+          .prepare('DELETE FROM novel_story_events WHERE id = ?')
+          .run(projection.event.id)
+      } catch { /* best-effort，与 undoArrange 同语义 */ }
     })
   }
 
@@ -1616,6 +1746,8 @@ export class NovelEntityGenerator {
     onProgress?: (event: { phase: string; message: string; data?: unknown; detail?: Record<string, unknown> }) => void,
     source: 'outline' | 'content' = 'outline',
     signal?: AbortSignal,
+    modelId?: NovelModelSelection,
+    feedback?: string,
   ): Promise<EntityPlanResult> {
     const systemPrompt = this.promptBuilder.buildSystemPrompt(projectId, 'character-generator')
 
@@ -1830,6 +1962,9 @@ export class NovelEntityGenerator {
       '2. 复用已有实体时，如原描述含破折号，规划时也不要在新字段中引入破折号。',
       '',
       '请基于上方' + (isReverse ? '正文反推实体' : '三层大纲规划实体') + '。',
+      ...(feedback?.trim()
+        ? ['', '【用户对上一版编排的修改意见】', feedback.trim(), '请严格按这条意见重新规划，不要沿用上一版中被用户否定的实体。']
+        : []),
     ].join('\n')
 
     this.context.logger.info(
@@ -1847,7 +1982,7 @@ export class NovelEntityGenerator {
 
     // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
     // 未配置则走默认 Provider。
-    const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
+    const directorModel = this.getArrangeModel(projectId, modelId)
     // Skill 白名单接入：反推（content）与编排（outline）分别由
     // novel-entity-extractor / novel-matrix-arranger Skill 提供方法；
     // 项目/SQLite 覆盖模板时回退旧身份路径（buildAgentIdentity 兜底）。
@@ -2065,6 +2200,7 @@ export class NovelEntityGenerator {
     plan: EntityPlan,
     onProgress?: (event: { phase: string; message: string; data?: unknown }) => void,
     signal?: AbortSignal,
+    modelId?: NovelModelSelection,
   ): Promise<BatchGenerationRun> {
     const run: BatchGenerationRun = {
       generated: new Map(),
@@ -2122,7 +2258,7 @@ export class NovelEntityGenerator {
           data: { entityType: kind, batchSize: chunk.length, maxBatchSize: batchSize },
         })
 
-        const batch = await this.generateEntityBatch(projectId, kind, requestItems, onProgress, false, signal)
+        const batch = await this.generateEntityBatch(projectId, kind, requestItems, onProgress, false, signal, 'batch', modelId)
         if (batch.call) run.calls.push(batch.call)
         if (batch.usage) run.usage = addLlmUsage(run.usage, batch.usage)
 
@@ -2148,6 +2284,8 @@ export class NovelEntityGenerator {
             onProgress,
             true,
             signal,
+            'retry',
+            modelId,
           )
           if (retry.call) run.calls.push(retry.call)
           if (retry.usage) run.usage = addLlmUsage(run.usage, retry.usage)
@@ -2192,6 +2330,7 @@ export class NovelEntityGenerator {
     isRetry: boolean,
     signal?: AbortSignal,
     operation: ArrangerCallLog['operation'] = isRetry ? 'retry' : 'batch',
+    modelId?: NovelModelSelection,
   ): Promise<BatchRequestResult> {
     let capturedUsage: LlmUsageSnapshot | undefined
     let call: ArrangerCallLog | undefined
@@ -2208,7 +2347,7 @@ export class NovelEntityGenerator {
         + '\n\n---\n\n' + this.buildBatchUserPrompt(kind, items)
       // 复用 novel-director 在 AgentPage 配置的 model（规划类任务角色定位最接近），
       // 未配置则走默认 Provider。
-      const directorModel = this.context.subagentManager?.getAgent('novel-director')?.model
+      const directorModel = this.getArrangeModel(projectId, modelId)
       const payloadStats = emptyPayloadStats()
       const callStartedAt = Date.now()
       const session = await this.context.createSession({

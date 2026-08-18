@@ -45,6 +45,17 @@ describe('getAssistantTerminalError', () => {
     })).toBe('LLM 调用已被中止')
   })
 
+  it('rejects token-truncated responses when complete structured output is required', () => {
+    expect(getAssistantTerminalError(
+      { role: 'assistant', stopReason: 'length' },
+      { requireComplete: true },
+    )).toBe('LLM 输出达到 token 上限，结构化响应未完整生成')
+
+    expect(getAssistantTerminalError(
+      { role: 'assistant', stopReason: 'length' },
+    )).toBe('')
+  })
+
   it('ignores non-assistant terminal messages', () => {
     expect(getAssistantTerminalError({ role: 'user' })).toBeNull()
   })

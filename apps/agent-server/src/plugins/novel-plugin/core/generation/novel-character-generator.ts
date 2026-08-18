@@ -16,6 +16,7 @@ import type { PromptManager } from '../prompting/prompt-manager.js'
 import type { NovelCharacter } from '../types.js'
 import type { CharacterGenerationProgressEvent } from '@repo/shared/novel'
 import { CircuitBreaker } from '../../../../core/agent/circuit-breaker.js'
+import type { NovelModelSelection } from '../domain/novel-model-ref.js'
 
 // CharacterGenerationProgressEvent 已迁入 @repo/shared/novel 共享包，
 // 此处 re-export 供本插件内部模块沿用相对路径引入。
@@ -67,7 +68,7 @@ export class NovelCharacterGenerator {
     coreStyle: string,
     onProgress?: (event: CharacterGenerationProgressEvent) => void,
     signal?: AbortSignal,
-    modelId?: { provider: string; modelId: string },
+    modelId?: NovelModelSelection,
   ): Promise<GeneratedCharacter> {
     // ── 1. 构建系统提示词（包含项目级世界规则、风格指南、角色定义等上下文）──
     // agentType 使用 'character-generator'，promptBuilder 会回退到通用角色描述

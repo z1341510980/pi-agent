@@ -5,6 +5,7 @@ import type {
   SceneDefinition,
 } from './../../../../core/agent/discussion-types.js'
 import type { ArrangedEntity } from '../types.js'
+import type { PluginSessionOptions } from '../../../../core/plugin/plugin-types.js'
 
 export interface DiscussionRunSnapshot {
   id: string
@@ -18,7 +19,7 @@ export interface DiscussionRunSnapshot {
   scenes: SceneDefinition[]
   arrangedEntities?: ArrangedEntity
   /** 首次运行显式选择的成员模型；有选择时断点续跑必须沿用，避免同一次创作换模型。 */
-  memberModel?: { provider: string; modelId: string }
+  memberModel?: PluginSessionOptions['modelId']
   /** 首次运行冻结的项目主模型；断点续跑不得读取后来变更的项目设置。 */
   projectModel?: { provider: string; modelId: string } | null
   styleExpertIds?: string[]
@@ -137,7 +138,7 @@ export class DiscussionRunStore {
         ? JSON.parse(row.arranged_entities) as ArrangedEntity
         : undefined,
       memberModel: row.member_model
-        ? JSON.parse(row.member_model) as { provider: string; modelId: string }
+         ? JSON.parse(row.member_model) as PluginSessionOptions['modelId']
         : undefined,
       projectModel: row.project_model
         ? JSON.parse(row.project_model) as { provider: string; modelId: string } | null

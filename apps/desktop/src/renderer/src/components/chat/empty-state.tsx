@@ -13,7 +13,7 @@ interface EmptyStateProps {
 /**
  * EmptyState：空状态
  *
- * 新会话时显示居左标题 "PI Agent / 你的职场超能力"
+ * 新会话时显示居左标题 "Wenlang Agent / 你的职场超能力"
  * 输入框和工作区选择由父组件渲染
  */
 export function EmptyState(_props: EmptyStateProps): ReactElement {
@@ -25,10 +25,10 @@ export function EmptyState(_props: EmptyStateProps): ReactElement {
     >
       <img
         src={logoImage}
-        alt="PI Agent"
+        alt="Wenlang Agent"
         className="mb-2 size-16 rounded-[20px] object-cover shadow-[var(--shadow-floating)]"
       />
-      <h1 className="text-4xl font-bold text-text leading-tight text-balance">PI Agent</h1>
+      <h1 className="text-4xl font-bold text-text leading-tight text-balance">Wenlang Agent</h1>
       <p className="max-w-lg text-2xl font-semibold text-text-secondary text-pretty">
         你的职场超能力
       </p>

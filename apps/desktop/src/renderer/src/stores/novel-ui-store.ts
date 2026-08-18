@@ -29,6 +29,13 @@ export interface NovelAgentModelRef {
   thinkingLevel?: ThinkingLevel | null
 }
 
+/** 编辑器中的未落库正文草稿，按章节绑定，避免切换播放头后写错章节。 */
+export interface NovelUnsavedChapterDraft {
+  chapterId: string
+  chapterNumber: number
+  content: string
+}
+
 // ── Store 状态 ──
 
 export interface NovelUiState {
@@ -46,6 +53,9 @@ export interface NovelUiState {
 
   // ── 播放头所在章节（跨组件同步，不持久化，每次进项目从 1 开始）──
   playheadChapter: number
+
+  /** 当前未保存草稿（不持久化；编辑器卸载后仍保留在本次工作台会话内）。 */
+  unsavedChapterDraft: NovelUnsavedChapterDraft | null
 
   // ── 当前创作模式（手动编排 / AI编排，不持久化）──
   creationMode: 'manual' | 'ai-arrange' | null
@@ -90,7 +100,10 @@ export interface NovelUiState {
   // ── Actions ──
   setCanvasLayoutMode: (mode: 'grouped' | 'force') => void
   setCanvasEdgeType: (edgeType: NovelEdgeType) => void
-  setPlayheadChapter: (chapter: number) => void
+  /** 切换播放头；存在其他章节的未保存草稿时会先提示并可取消切换。 */
+  setPlayheadChapter: (chapter: number, force?: boolean) => void
+  setUnsavedChapterDraft: (draft: NovelUnsavedChapterDraft) => void
+  clearUnsavedChapterDraft: (chapterId?: string) => void
   setCreationMode: (mode: 'manual' | 'ai-arrange' | null) => void
   setSelectedAgentModel: (model: NovelAgentModelRef | null) => void
   toggleCollapsedGroup: (kind: string) => void
@@ -147,6 +160,8 @@ export const useNovelUiStore = create<NovelUiState>()(
 
       playheadChapter: 1,
 
+      unsavedChapterDraft: null,
+
       creationMode: null,
 
       selectedAgentModel: null,
@@ -167,7 +182,29 @@ export const useNovelUiStore = create<NovelUiState>()(
       // ── Actions ──
       setCanvasLayoutMode: (mode) => set({ canvasLayoutMode: mode }),
       setCanvasEdgeType: (edgeType) => set({ canvasEdgeType: edgeType }),
-      setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
+      setPlayheadChapter: (chapter, force = false) => {
+        const current = get().playheadChapter
+        if (chapter === current) return
+
+        const draft = get().unsavedChapterDraft
+        if (!force && draft && draft.chapterNumber !== chapter) {
+          const discard = typeof window === 'undefined'
+            ? false
+            : window.confirm(
+              `第 ${draft.chapterNumber} 章有未保存的修改。\n\n确定丢弃这些修改并切换章节吗？\n如果要保留，请先点击编辑器中的“保存”。`,
+            )
+          if (!discard) return
+          set({ unsavedChapterDraft: null })
+        }
+
+        set({ playheadChapter: chapter })
+      },
+      setUnsavedChapterDraft: (draft) => set({ unsavedChapterDraft: draft }),
+      clearUnsavedChapterDraft: (chapterId) => {
+        const current = get().unsavedChapterDraft
+        if (!current || (chapterId && current.chapterId !== chapterId)) return
+        set({ unsavedChapterDraft: null })
+      },
       setCreationMode: (mode) => set({ creationMode: mode }),
       setSelectedAgentModel: (model) => set({ selectedAgentModel: model }),
 
@@ -245,9 +282,10 @@ export const useNovelUiStore = create<NovelUiState>()(
           highlightedNodeIds: [],
           highlightedEdgeIds: [],
           pathFindSourceId: null,
+          unsavedChapterDraft: null,
         })
         get().clearSelection()
-        get().setPlayheadChapter(1)
+        get().setPlayheadChapter(1, true)
       },
     }),
     {

@@ -5,12 +5,14 @@ import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { hashChapterOutline } from '../core/chapters/chapter-outline.js'
+import { modelSelectionSchema } from './model-selection-contract.js'
 
 const generateChapterOutlineSchema = z.object({
   mode: z.enum(['create', 'rewrite', 'expand']),
   currentOutline: z.string().max(20000),
   expectedOutline: z.string().max(20000),
-  instruction: z.string().trim().max(2000).optional()
+  instruction: z.string().trim().max(2000).optional(),
+  modelId: modelSelectionSchema.optional()
 })
 
 function mapGenerationError(err: unknown): AppError {
@@ -77,6 +79,7 @@ export function createChapterOutlineRoutes(services: NovelServices): RouteDefini
             currentOutline: input.currentOutline,
             expectedOutline: input.expectedOutline,
             instruction: input.instruction,
+            modelId: input.modelId,
             signal: controller.signal
           })
           return success(result, request.traceId)

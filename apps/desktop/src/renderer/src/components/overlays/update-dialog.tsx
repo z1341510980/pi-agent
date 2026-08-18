@@ -120,7 +120,7 @@ export function UpdateDialog({
             )}
           </div>
           <DialogDescription>
-            PI Agent 有新版本可用，建议立即更新以获取最新功能与修复。
+            Wenlang Agent 有新版本可用，建议立即更新以获取最新功能与修复。
           </DialogDescription>
         </DialogHeader>
 

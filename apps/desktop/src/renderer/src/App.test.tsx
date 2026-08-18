@@ -21,7 +21,7 @@ vi.mock('@copilotkit/react-core/v2', () => ({
 async function enterChatWorkspace(): Promise<void> {
   const chatButton = await screen.findByRole('button', { name: '对话工作台' })
   fireEvent.click(chatButton)
-  await screen.findByRole('main', { name: 'PI Agent 工作台' })
+  await screen.findByRole('main', { name: 'Wenlang Agent 工作台' })
 }
 
 async function openSettings(): Promise<void> {
@@ -264,7 +264,7 @@ describe('App shell', () => {
     expect(screen.getAllByRole('heading', { name: '设置' }).length).toBeGreaterThan(0)
     expect(screen.getByLabelText('设置中心')).toBeTruthy()
     // 聊天工作台应被隐藏
-    expect(screen.queryByRole('main', { name: 'PI Agent 工作台' })).toBeNull()
+    expect(screen.queryByRole('main', { name: 'Wenlang Agent 工作台' })).toBeNull()
   })
 
   it('TC-08: closes the settings page and returns to home', async () => {

@@ -187,6 +187,8 @@ describe('ChapterOutlineGenerator', () => {
       modelId: 'model-outline'
     })
     expect(capturedOptions?.tools).toEqual([])
+    expect(capturedOptions?.responseFormat).toBe('json')
+    expect(capturedOptions?.maxTokens).toBeUndefined()
     expect(capturedOptions?.userMessage).toContain('主角逐步发现失踪案与旧城改造有关')
     expect(capturedOptions?.userMessage).toContain('第一卷聚焦旧城区的三起失踪案')
     expect(capturedOptions?.userMessage).toContain('林默收到指向旧城区的匿名线索')

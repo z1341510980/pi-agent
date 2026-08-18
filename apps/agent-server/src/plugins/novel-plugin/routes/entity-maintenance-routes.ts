@@ -8,6 +8,7 @@ import { PassThrough } from 'node:stream'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { createNovelAgUiEmitter, createSseEmitterSink } from '../utils/sse-emitter.js'
+import { modelSelectionSchema } from './model-selection-contract.js'
 
 const deduplicateSchema = z.object({
   /** dryRun=true 只扫描返回报告，不实际合并；默认 false 实际执行 */
@@ -36,6 +37,7 @@ const mergeSimilaritySchema = z.object({
 const aiGenerateEntitySchema = z.object({
   entityType: z.enum(['character', 'conflict', 'foreshadow', 'faction', 'location', 'item', 'world_element']),
   coreStyle: z.string().min(1).max(500),
+  modelId: modelSelectionSchema.optional(),
 })
 
 export function createEntityMaintenanceRoutes(services: NovelServices): RouteDefinition[] {
@@ -122,6 +124,8 @@ export function createEntityMaintenanceRoutes(services: NovelServices): RouteDef
             input.entityType,
             input.coreStyle,
             (event) => emitter.progress(event),
+            undefined,
+            input.modelId,
           )
           emitter.result(generated)
         } catch (err) {

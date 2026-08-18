@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { CreationPhase } from '@repo/shared/novel'
 import type { NarrativeTask, RhythmSuggestion, ArrangedEntity } from './types.js'
+import type { PluginSessionOptions } from '../../../core/plugin/plugin-types.js'
 
 /**
  * 工作流断点续跑快照的"推进阶段"。
@@ -39,7 +40,7 @@ export interface WorkflowRunSnapshot {
   writerDraft?: string
   finalContent?: string
   /** 本次运行使用的 per-call 模型；续跑沿用，避免同一次创作换模型 */
-  modelId?: { provider: string; modelId: string }
+  modelId?: PluginSessionOptions['modelId']
   styleExpertIds?: string[]
   error?: string
   resumedFromRunId?: string
@@ -182,7 +183,7 @@ export class WorkflowRunStore {
         : undefined,
       writerDraft: row.writer_draft ?? undefined,
       finalContent: row.final_content ?? undefined,
-      modelId: row.model_id ? JSON.parse(row.model_id) as { provider: string; modelId: string } : undefined,
+       modelId: row.model_id ? JSON.parse(row.model_id) as PluginSessionOptions['modelId'] : undefined,
       styleExpertIds: row.style_expert_ids ? JSON.parse(row.style_expert_ids) as string[] : undefined,
       error: row.error ?? undefined,
       resumedFromRunId: row.resumed_from_run_id ?? undefined,

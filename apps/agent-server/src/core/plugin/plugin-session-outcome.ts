@@ -12,13 +12,19 @@
  *   导致后续 onCheckpoint 创建的 pending 永远不会被 reject，cancel-active-flow 路由
  *   await 的 donePromise 永不 resolve，整个取消流程卡死。
  */
-export function getAssistantTerminalError(message: Record<string, unknown> | undefined): string | null {
+export function getAssistantTerminalError(
+  message: Record<string, unknown> | undefined,
+  options: { requireComplete?: boolean } = {},
+): string | null {
   if (!message || message.role !== 'assistant') return null
   if (message.stopReason === 'error') {
     return (message.errorMessage as string) || 'Unknown LLM error'
   }
   if (message.stopReason === 'aborted') {
     return (message.errorMessage as string) || 'LLM 调用已被中止'
+  }
+  if (message.stopReason === 'length' && options.requireComplete) {
+    return 'LLM 输出达到 token 上限，结构化响应未完整生成'
   }
   return ''
 }

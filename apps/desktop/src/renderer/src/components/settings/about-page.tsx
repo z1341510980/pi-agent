@@ -53,7 +53,7 @@ export function AboutPage(): ReactElement {
       <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center gap-4">
         <img
           src={logoImage}
-          alt="PI Agent"
+          alt="Wenlang Agent"
           className="size-12 rounded-xl shrink-0 object-cover"
         />
         <div className="flex-1 min-w-0">

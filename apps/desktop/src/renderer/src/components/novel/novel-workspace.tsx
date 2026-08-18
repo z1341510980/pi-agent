@@ -74,6 +74,8 @@ import {
   type ChapterTaskSnapshot,
 } from './chapter-task'
 import { ChapterContentEditor } from './chapter-content-editor'
+import { TimelineRebuildControl } from './timeline-rebuild-control'
+import { ModelPicker } from './model-picker'
 import { ReferenceAnalysisWorkspace } from './reference-analysis/reference-analysis-workspace'
 import { ErrorBoundary } from '@/components/overlays/error-boundary'
 import { MatrixErrorFallback } from './matrix-error-fallback'
@@ -229,6 +231,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const setCreationMode = useNovelUiStore((s) => s.setCreationMode)
   const creationMode = useNovelUiStore((s) => s.creationMode)
   const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
+  // 全局创作模型：顶栏选择器唯一入口，所有 AI 调用（编排/章纲/正文/群聊等）统一遵守
+  const selectedAgentModel = useNovelUiStore((s) => s.selectedAgentModel)
+  const setSelectedAgentModel = useNovelUiStore((s) => s.setSelectedAgentModel)
 
   // ── 全局快捷键：撤销/重做（编辑器内由 Tiptap 自行处理）──
   useShortcut({
@@ -257,8 +262,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 互斥锁：防止 header 按钮快速双击导致 creationMode 标记与流程实际启动状态错位
   // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
   const startCreationLockRef = useRef(false)
-  /** 本次创作 per-call 模型（输入框旁选择器传入；null = 默认） */
-  const creationModelIdRef = useRef<{ provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null>(null)
 
   const [relayoutSignal, setRelayoutSignal] = useState(0)
   const sidebarVisible = useNovelWorkspaceLayoutStore((s) => s.sidebarVisible)
@@ -640,8 +643,11 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     setCreationMode(task.kind === 'arrange' ? 'ai-arrange' : 'manual')
     setCreationChapterNumber(task.chapterNumber)
 
+    // 任务启动即快照全局模型：运行期间用户切换顶栏选择器不影响本次任务
+    const creationModelId = useNovelUiStore.getState().selectedAgentModel ?? undefined
+
     if (task.kind === 'arrange') {
-      await creationFlow.aiArrange(task.projectId, task.chapterNumber)
+      await creationFlow.aiArrange(task.projectId, task.chapterNumber, { modelId: creationModelId })
       return
     }
     if (task.kind === 'reverse') {
@@ -656,7 +662,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       ...(await resolveArrangedEntities(task.projectId, task.chapterNumber)),
       ...(characterFunctions ? { characterFunctions } : {}),
     }
-    const creationModelId = creationModelIdRef.current ?? undefined
     if (task.kind === 'discussion') {
       await session.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId, styleExpertIds: selectedStyleExpertIds })
       return
@@ -871,8 +876,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   }, [session.sendInterject])
 
   // 右栏对话面板"开始"按钮：根据 flowType 分发到对应流程
-  const handleStartFlow = useCallback((modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null) => {
-    creationModelIdRef.current = modelId ?? null
+  // 模型统一取全局 store（runChapterTask 内快照），入参 modelId 仅保持签名兼容
+  const handleStartFlow = useCallback((_modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null) => {
     if (flowType === 'arrange') {
       void handleStartCreation('ai-arrange')
     } else {
@@ -889,7 +894,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const handleStartFlowCommand = useCallback((
     command: 'write' | 'rewrite' | 'discuss',
     chapterNumber: number,
-    modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null,
+    _modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null,
   ) => {
     if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
     const chapterExists = chapters.some((c) => c.chapterNumber === chapterNumber)
@@ -902,7 +907,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
 
     const kind = command === 'discuss' ? 'discussion' : 'workflow'
-    creationModelIdRef.current = modelId ?? null
     setFlowType(kind)
 
     startCreationLockRef.current = true
@@ -1013,6 +1017,14 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               creationChapterNumber={creationChapterNumber}
               creationChapterContent={creationFlow.chapterContent}
             />
+            {currentProject && (
+              <div className="absolute top-3 left-3 z-50">
+                <TimelineRebuildControl
+                  projectId={currentProject.id}
+                  selectedModel={selectedAgentModel}
+                />
+              </div>
+            )}
             <button
               type="button"
               onClick={toggleFocusMode}
@@ -1059,7 +1071,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </div>
           </div>
 
-          {/* 中：主工作区布局切换（四个互斥选项，始终全部可达） */}
+          {/* 中：主工作区布局切换（四个互斥选项，始终全部可达）+ 全局模型选择 */}
           <div className="flex items-center justify-center gap-2">
             {currentProject && (
               <Segmented
@@ -1068,6 +1080,19 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                 onChange={setLayoutMode}
                 ariaLabel="主工作区布局"
                 dataTour="layout-mode-switcher"
+              />
+            )}
+            {currentProject && (
+              <ModelPicker
+                compact
+                value={selectedAgentModel}
+                onChange={setSelectedAgentModel}
+              />
+            )}
+            {currentProject && (
+              <TimelineRebuildControl
+                projectId={currentProject.id}
+                selectedModel={selectedAgentModel}
               />
             )}
           </div>
@@ -1409,7 +1434,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onFlowTypeChange={setFlowType}
                         onStartFlow={handleStartFlow}
                         onStartFlowCommand={(command, chapterNumber, modelId) => {
-                          creationModelIdRef.current = modelId ?? null
                           handleStartFlowCommand(command, chapterNumber, modelId)
                         }}
                         onCancelFlow={handleDiscardCreation}

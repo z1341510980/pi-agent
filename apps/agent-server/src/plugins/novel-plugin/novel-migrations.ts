@@ -2112,5 +2112,428 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       ALTER TABLE novel_style_expert_versions ADD COLUMN source_author TEXT;
       ALTER TABLE novel_style_expert_versions ADD COLUMN sort_order INTEGER;
     `
+  },
+  {
+    // 111: 时间线重建任务事件流。事件只保存阶段与摘要，不保存正文、完整 Prompt 或模型原始结果。
+    id: '111_add_timeline_rebuild_events',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_timeline_rebuild_events (
+        id              TEXT PRIMARY KEY,
+        job_id          TEXT NOT NULL,
+        sequence_no     INTEGER NOT NULL,
+        event_type      TEXT NOT NULL,
+        chapter_id      TEXT,
+        chapter_number  INTEGER,
+        payload         TEXT NOT NULL DEFAULT '{}',
+        created_at      INTEGER NOT NULL,
+        FOREIGN KEY (job_id) REFERENCES novel_timeline_rebuild_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE SET NULL,
+        UNIQUE(job_id, sequence_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_timeline_rebuild_events_job_sequence
+        ON novel_timeline_rebuild_events(job_id, sequence_no);
+    `
+  },
+  {
+    // 112: 时间线重建 M0 收尾（2026-08-18 未交付功能实施方案 §5/§6）：
+    // 1) steps 表状态机补全为方案规定的 6 态：pending → replaying → ready_to_apply → applied|failed|blocked。
+    //    099 的 CHECK 只有 4 态，'ready_to_apply' 靠读取时把 'analyzed' 归一化的 hack 支持，
+    //    'replaying'/'blocked' 根本写不进去；此处重建表并把存量 'analyzed' 迁移为 'ready_to_apply'。
+    // 2) 派生表增加 stale_from 列：标记 stale 时记录原状态，apply 恢复当前态时精确还原，
+    //    不再靠猜默认值。历史无 stale_from 的行回退到各表规范状态。
+    // 3) 新增 checkpoints 表：每章成功应用后持久化分析产物与恢复摘要，
+    //    失败只允许从最近安全 checkpoint 恢复（方案 §6 数据与状态）。
+    id: '112_complete_timeline_rebuild_state_machine',
+    sql: `
+      ALTER TABLE novel_chapter_plan_revisions ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_scene_revisions ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_storyline_progress ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_story_events ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_memory_events ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_memory_snapshots ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_character_history ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_entity_appearances ADD COLUMN stale_from TEXT;
+      ALTER TABLE novel_entity_candidates ADD COLUMN stale_from TEXT;
+
+      CREATE TABLE novel_timeline_rebuild_steps_v2 (
+        job_id              TEXT NOT NULL,
+        chapter_id          TEXT NOT NULL,
+        chapter_number      INTEGER NOT NULL,
+        content_revision_id TEXT NOT NULL,
+        status              TEXT NOT NULL DEFAULT 'pending',
+        analysis_json       TEXT,
+        error               TEXT,
+        updated_at          INTEGER NOT NULL,
+        PRIMARY KEY (job_id, chapter_id),
+        FOREIGN KEY (job_id) REFERENCES novel_timeline_rebuild_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY (content_revision_id) REFERENCES novel_chapter_content_revisions(id) ON DELETE RESTRICT,
+        CHECK (status IN ('pending', 'replaying', 'ready_to_apply', 'applied', 'failed', 'blocked'))
+      );
+      INSERT INTO novel_timeline_rebuild_steps_v2
+        (job_id, chapter_id, chapter_number, content_revision_id, status, analysis_json, error, updated_at)
+      SELECT job_id, chapter_id, chapter_number, content_revision_id,
+        CASE status WHEN 'analyzed' THEN 'ready_to_apply' ELSE status END,
+        analysis_json, error, updated_at
+      FROM novel_timeline_rebuild_steps;
+      DROP TABLE novel_timeline_rebuild_steps;
+      ALTER TABLE novel_timeline_rebuild_steps_v2 RENAME TO novel_timeline_rebuild_steps;
+      CREATE INDEX IF NOT EXISTS idx_timeline_rebuild_steps_order
+        ON novel_timeline_rebuild_steps(job_id, chapter_number);
+
+      CREATE TABLE IF NOT EXISTS novel_timeline_rebuild_checkpoints (
+        id                  TEXT PRIMARY KEY,
+        job_id              TEXT NOT NULL,
+        chapter_id          TEXT NOT NULL,
+        chapter_number      INTEGER NOT NULL,
+        content_revision_id TEXT NOT NULL,
+        analysis_json       TEXT,
+        artifacts_json      TEXT NOT NULL DEFAULT '{}',
+        created_at          INTEGER NOT NULL,
+        UNIQUE (job_id, chapter_number),
+        FOREIGN KEY (job_id) REFERENCES novel_timeline_rebuild_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY (content_revision_id) REFERENCES novel_chapter_content_revisions(id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS idx_timeline_rebuild_checkpoints_job
+        ON novel_timeline_rebuild_checkpoints(job_id, chapter_number DESC);
+    `
+  },
+  {
+    // 113: 参考链路持久化表（方案 §8-§11，P4-P9 数据基线）。
+    // 表结构与 §11.1 一一对应；模板版本链拆为 templates（元数据）+ template_versions（不可变规则），
+    // 与 /reference-templates/:templateId 与 /reference-template-versions/:versionId 两组资源对齐。
+    // 事件表只存阶段、摘要与游标，不保存原文、完整 Prompt 或完整生成正文（§11.1 末行约束）。
+    id: '113_create_reference_chain_tables',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_reference_analysis_runs (
+        id                        TEXT PRIMARY KEY,
+        source_id                 TEXT NOT NULL,
+        status                    TEXT NOT NULL DEFAULT 'queued'
+                                  CHECK (status IN ('queued', 'running', 'awaiting_review', 'completed', 'failed', 'cancelled')),
+        current_stage             TEXT CHECK (current_stage IN (
+                                  'validating_source', 'parsing_text', 'deterministic_analysis', 'scene_analysis',
+                                  'chapter_aggregation', 'book_aggregation', 'safety_scan', 'awaiting_review',
+                                  'completed', 'failed', 'cancelled')),
+        coverage                  TEXT NOT NULL DEFAULT '{}',
+        provider_id               TEXT,
+        model_id                  TEXT,
+        extractor_version         TEXT,
+        prompt_version            TEXT,
+        included_section_ids      TEXT NOT NULL DEFAULT '[]',
+        semantic_coverage_policy  TEXT NOT NULL DEFAULT '{}',
+        estimate_snapshot         TEXT NOT NULL DEFAULT '{}',
+        estimated_usage           TEXT NOT NULL DEFAULT '{}',
+        actual_usage              TEXT NOT NULL DEFAULT '{}',
+        high_cost_confirmed       INTEGER NOT NULL DEFAULT 0,
+        checkpoint                TEXT,
+        error                     TEXT,
+        profile_id                TEXT,
+        attempt                   INTEGER NOT NULL DEFAULT 1,
+        parent_attempt_id         TEXT,
+        created_at                INTEGER NOT NULL,
+        updated_at                INTEGER NOT NULL,
+        started_at                INTEGER,
+        completed_at              INTEGER,
+        cancelled_at              INTEGER,
+        FOREIGN KEY (source_id) REFERENCES novel_reference_sources(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_analysis_runs_source
+        ON novel_reference_analysis_runs(source_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_reference_analysis_runs_status
+        ON novel_reference_analysis_runs(status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_observations (
+        id                      TEXT PRIMARY KEY,
+        analysis_run_id         TEXT NOT NULL,
+        section_id              TEXT,
+        level                   TEXT NOT NULL CHECK (level IN ('measurement', 'scene', 'chapter', 'book')),
+        metric                  TEXT NOT NULL,
+        value                   TEXT NOT NULL,
+        measurement_method      TEXT,
+        confidence              REAL,
+        evidence_offsets        TEXT NOT NULL DEFAULT '[]',
+        counterexample_offsets  TEXT NOT NULL DEFAULT '[]',
+        safety_flags            TEXT NOT NULL DEFAULT '[]',
+        created_at              INTEGER NOT NULL,
+        FOREIGN KEY (analysis_run_id) REFERENCES novel_reference_analysis_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY (section_id) REFERENCES novel_reference_sections(id) ON DELETE SET NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_observations_run
+        ON novel_reference_observations(analysis_run_id, level, metric);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_profiles (
+        id                TEXT PRIMARY KEY,
+        analysis_run_id   TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'draft'
+                          CHECK (status IN ('draft', 'in_review', 'active', 'superseded', 'archived')),
+        version           INTEGER NOT NULL DEFAULT 1,
+        parent_version_id TEXT,
+        profile_hash      TEXT NOT NULL,
+        spirit_profile    TEXT NOT NULL DEFAULT '{}',
+        technique_profile TEXT NOT NULL DEFAULT '{}',
+        power_profile     TEXT NOT NULL DEFAULT '{}',
+        pacing_profile    TEXT NOT NULL DEFAULT '{}',
+        story_elements    TEXT NOT NULL DEFAULT '{}',
+        chapter_patterns  TEXT NOT NULL DEFAULT '[]',
+        findings          TEXT NOT NULL DEFAULT '[]',
+        safety_report     TEXT NOT NULL DEFAULT '{}',
+        coverage          TEXT NOT NULL DEFAULT '{}',
+        change_summary    TEXT,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        activated_at      INTEGER,
+        FOREIGN KEY (analysis_run_id) REFERENCES novel_reference_analysis_runs(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_profiles_run
+        ON novel_reference_profiles(analysis_run_id, version DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_finding_reviews (
+        id                TEXT PRIMARY KEY,
+        profile_id        TEXT NOT NULL,
+        finding_key       TEXT NOT NULL,
+        decision          TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected', 'edited')),
+        edited_observation TEXT,
+        edited_rule       TEXT,
+        strength          TEXT CHECK (strength IN ('hard', 'soft', 'reference')),
+        prompt_enabled    INTEGER NOT NULL DEFAULT 1,
+        agent_targets     TEXT NOT NULL DEFAULT '[]',
+        chapter_scope     TEXT NOT NULL DEFAULT '[]',
+        review_note       TEXT,
+        reviewer          TEXT NOT NULL DEFAULT 'user',
+        batch_id          TEXT,
+        created_at        INTEGER NOT NULL,
+        FOREIGN KEY (profile_id) REFERENCES novel_reference_profiles(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_finding_reviews_profile
+        ON novel_reference_finding_reviews(profile_id, finding_key, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_templates (
+        id                 TEXT PRIMARY KEY,
+        owner_project_id   TEXT,
+        name               TEXT NOT NULL,
+        description        TEXT NOT NULL DEFAULT '',
+        visibility         TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'shared')),
+        status             TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+        current_version_id TEXT,
+        source_profile_id  TEXT,
+        source_text_state  TEXT NOT NULL DEFAULT 'available' CHECK (source_text_state IN ('available', 'deleted')),
+        binding_count      INTEGER NOT NULL DEFAULT 0,
+        version_count      INTEGER NOT NULL DEFAULT 0,
+        preview_hash       TEXT,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL,
+        archived_at        INTEGER,
+        deleted_at         INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_templates_status
+        ON novel_reference_templates(status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_template_versions (
+        id                 TEXT PRIMARY KEY,
+        template_id        TEXT NOT NULL,
+        version            INTEGER NOT NULL,
+        status             TEXT NOT NULL DEFAULT 'draft'
+                           CHECK (status IN ('draft', 'in_review', 'published', 'superseded', 'rolled_back')),
+        parent_version_id  TEXT,
+        template_hash      TEXT NOT NULL,
+        profile_hash       TEXT,
+        spirit_rules       TEXT NOT NULL DEFAULT '{}',
+        technique_rules    TEXT NOT NULL DEFAULT '{}',
+        power_rules        TEXT NOT NULL DEFAULT '{}',
+        pacing_rules       TEXT NOT NULL DEFAULT '{}',
+        chapter_rule_sets  TEXT NOT NULL DEFAULT '[]',
+        default_agent_scopes TEXT NOT NULL DEFAULT '[]',
+        project_overrides  TEXT NOT NULL DEFAULT '{}',
+        validation_run_id  TEXT,
+        safety_result      TEXT NOT NULL DEFAULT '{}',
+        change_summary     TEXT,
+        created_at         INTEGER NOT NULL,
+        published_at       INTEGER,
+        FOREIGN KEY (template_id) REFERENCES novel_reference_templates(id) ON DELETE CASCADE,
+        UNIQUE (template_id, version)
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_template_versions_template
+        ON novel_reference_template_versions(template_id, version DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_project_reference_templates (
+        id                   TEXT PRIMARY KEY,
+        project_id           TEXT NOT NULL,
+        template_id          TEXT NOT NULL,
+        template_version_id  TEXT NOT NULL,
+        bound                INTEGER NOT NULL DEFAULT 1,
+        default_enabled      INTEGER NOT NULL DEFAULT 0,
+        agent_scopes         TEXT NOT NULL DEFAULT '[]',
+        chapter_scopes       TEXT NOT NULL DEFAULT '[]',
+        project_overrides    TEXT NOT NULL DEFAULT '{}',
+        lock_version         INTEGER NOT NULL DEFAULT 1,
+        last_used_at         INTEGER,
+        created_at           INTEGER NOT NULL,
+        updated_at           INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (template_id) REFERENCES novel_reference_templates(id) ON DELETE CASCADE,
+        FOREIGN KEY (template_version_id) REFERENCES novel_reference_template_versions(id) ON DELETE RESTRICT,
+        UNIQUE (project_id, template_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_reference_templates_project
+        ON novel_project_reference_templates(project_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_validation_runs (
+        id                    TEXT PRIMARY KEY,
+        template_version_id   TEXT NOT NULL,
+        scenario_source       TEXT NOT NULL
+                              CHECK (scenario_source IN ('system_original', 'user_input', 'project_facts')),
+        scenario_type         TEXT,
+        fixed_scenario_version TEXT NOT NULL,
+        fixed_facts_hash      TEXT NOT NULL,
+        baseline_config       TEXT NOT NULL DEFAULT '{}',
+        template_config       TEXT NOT NULL DEFAULT '{}',
+        baseline_output       TEXT,
+        template_output       TEXT,
+        rule_hits             TEXT NOT NULL DEFAULT '{}',
+        feedback              TEXT,
+        decision              TEXT CHECK (decision IN ('accepted', 'rejected')),
+        decision_note         TEXT,
+        decision_hash         TEXT,
+        status                TEXT NOT NULL DEFAULT 'queued'
+                              CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+        provider_id           TEXT,
+        model_id              TEXT,
+        estimate              TEXT NOT NULL DEFAULT '{}',
+        usage                 TEXT NOT NULL DEFAULT '{}',
+        cost                  TEXT NOT NULL DEFAULT '{}',
+        safety_report         TEXT NOT NULL DEFAULT '{}',
+        error                 TEXT,
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL,
+        completed_at          INTEGER,
+        FOREIGN KEY (template_version_id) REFERENCES novel_reference_template_versions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_validation_runs_version
+        ON novel_reference_validation_runs(template_version_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_template_usages (
+        id                     TEXT PRIMARY KEY,
+        project_id             TEXT NOT NULL,
+        chapter_id             TEXT NOT NULL,
+        chapter_number         INTEGER NOT NULL,
+        template_version_id    TEXT NOT NULL,
+        enabled                INTEGER NOT NULL,
+        profile_hash           TEXT,
+        template_hash          TEXT,
+        chapter_classification  TEXT,
+        agent_scopes           TEXT NOT NULL DEFAULT '[]',
+        prompt_hashes          TEXT NOT NULL DEFAULT '{}',
+        similarity_summary     TEXT NOT NULL DEFAULT '{}',
+        created_at             INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY (template_version_id) REFERENCES novel_reference_template_versions(id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_template_usages_chapter
+        ON novel_reference_template_usages(project_id, chapter_number, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_reference_run_events (
+        id           TEXT PRIMARY KEY,
+        run_id       TEXT NOT NULL,
+        run_kind     TEXT NOT NULL CHECK (run_kind IN ('analysis', 'validation')),
+        sequence_no  INTEGER NOT NULL,
+        event_type   TEXT NOT NULL,
+        stage        TEXT,
+        summary      TEXT NOT NULL DEFAULT '',
+        cursor       TEXT,
+        payload      TEXT NOT NULL DEFAULT '{}',
+        created_at   INTEGER NOT NULL,
+        UNIQUE (run_id, sequence_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_reference_run_events_run
+        ON novel_reference_run_events(run_id, sequence_no);
+    `
+  },
+  {
+    // 114: Storyline/Scene 人工 revision 与矩阵重投影（方案 §7，M2）。
+    //
+    // 保守默认（§16 第 8 项待确认，此处采用文档 §7 已写明的状态机与字段）：
+    // - Storyline 原表（novel_storylines）只存身份 name/kind/lifecycle/maturity，不承载可变事实；
+    //   新增 novel_storyline_revisions 持有 summary/goal/stakes/actor 等规范事实，
+    //   状态机 draft → submitted → approved|rejected|superseded；仅 approved 成为当前规范事实。
+    // - Scene 人工审核不干扰现有 SceneRevisionStatus 自动流程（planned→confirmed），
+    //   新增独立的 review_status/review_note 等列承载人工审核状态；人工编辑复用 plan_revision_id。
+    // - 矩阵重投影当前是同步纯函数（无异步积压），rebuild 落一条 job 记录 + 完成事件，
+    //   满足「可追踪 projection job」契约；投影落后时 sourceRevision 校验仍可兜底。
+    id: '114_add_storyline_scene_revision_and_matrix_rebuild',
+    sql: `
+      ALTER TABLE novel_storylines ADD COLUMN current_revision_id TEXT;
+
+      CREATE TABLE IF NOT EXISTS novel_storyline_revisions (
+        id                TEXT PRIMARY KEY,
+        storyline_id      TEXT NOT NULL,
+        project_id        TEXT NOT NULL,
+        supersedes_id     TEXT,
+        revision          INTEGER NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'draft'
+                          CHECK (status IN ('draft', 'submitted', 'approved', 'rejected', 'superseded')),
+        summary           TEXT NOT NULL DEFAULT '',
+        goal              TEXT NOT NULL DEFAULT '',
+        stakes            TEXT NOT NULL DEFAULT '',
+        actor             TEXT NOT NULL DEFAULT '',
+        note              TEXT NOT NULL DEFAULT '',
+        decision_note     TEXT NOT NULL DEFAULT '',
+        reviewer          TEXT NOT NULL DEFAULT 'user',
+        expected_version  INTEGER NOT NULL DEFAULT 1,
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        superseeded_at    INTEGER,
+        FOREIGN KEY (storyline_id) REFERENCES novel_storylines(id) ON DELETE CASCADE,
+        FOREIGN KEY (supersedes_id) REFERENCES novel_storyline_revisions(id) ON DELETE SET NULL,
+        UNIQUE (storyline_id, revision)
+      );
+      CREATE INDEX IF NOT EXISTS idx_storyline_revisions_storyline
+        ON novel_storyline_revisions(storyline_id, revision DESC);
+
+      ALTER TABLE novel_scene_revisions ADD COLUMN positioning TEXT;
+      ALTER TABLE novel_scene_revisions ADD COLUMN rhythm TEXT;
+      ALTER TABLE novel_scene_revisions ADD COLUMN narrative_task_types TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE novel_scene_revisions ADD COLUMN review_status TEXT
+        CHECK (review_status IS NULL OR review_status IN ('draft', 'submitted', 'approved', 'rejected'));
+      ALTER TABLE novel_scene_revisions ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
+      ALTER TABLE novel_scene_revisions ADD COLUMN reviewed_at INTEGER;
+      ALTER TABLE novel_scene_revisions ADD COLUMN reviewer TEXT NOT NULL DEFAULT 'user';
+      CREATE INDEX IF NOT EXISTS idx_scene_revisions_review_status
+        ON novel_scene_revisions(review_status);
+
+      CREATE TABLE IF NOT EXISTS novel_narrative_matrix_rebuilds (
+        id                TEXT PRIMARY KEY,
+        project_id        TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'queued'
+                          CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+        revision_ids      TEXT NOT NULL DEFAULT '[]',
+        idempotency_key   TEXT,
+        source_revision   TEXT,
+        projection_lag    INTEGER NOT NULL DEFAULT 0,
+        stale             INTEGER NOT NULL DEFAULT 0,
+        failed_nodes      TEXT NOT NULL DEFAULT '[]',
+        error             TEXT,
+        created_at        INTEGER NOT NULL,
+        started_at        INTEGER,
+        completed_at      INTEGER,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_narrative_matrix_rebuilds_project
+        ON novel_narrative_matrix_rebuilds(project_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS novel_narrative_matrix_rebuild_events (
+        id            TEXT PRIMARY KEY,
+        rebuild_id    TEXT NOT NULL,
+        sequence_no   INTEGER NOT NULL,
+        event_type    TEXT NOT NULL,
+        payload       TEXT NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL,
+        FOREIGN KEY (rebuild_id) REFERENCES novel_narrative_matrix_rebuilds(id) ON DELETE CASCADE,
+        UNIQUE (rebuild_id, sequence_no)
+      );
+      CREATE INDEX IF NOT EXISTS idx_narrative_matrix_rebuild_events_rebuild
+        ON novel_narrative_matrix_rebuild_events(rebuild_id, sequence_no);
+    `
   }
 ]

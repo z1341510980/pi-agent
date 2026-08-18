@@ -763,8 +763,9 @@ export class PluginManager {
   private createPluginContext(entry: PluginEntry): PluginContext {
     const pluginName = entry.manifest.name
     const logger = this.logger.child({ plugin: pluginName })
-    // 供下方 getter 闭包引用（对象字面量 getter 内的 this 指向字面量自身）
-    const pluginManager = this
+    // 对象字面量 getter 内的 this 指向字面量自身，因此通过闭包延迟读取。
+    const getModelRegistry = (): ModelRegistryLike | undefined =>
+      this.modelRegistry as ModelRegistryLike | undefined
 
     return {
       pluginName,
@@ -780,7 +781,7 @@ export class PluginManager {
       // 晚于插件 setup（createPluginContext 构建本 context 的时机），
       // 直接传 this.modelRegistry 会把 undefined 固化进 context。
       get modelRegistry(): ModelRegistryLike | undefined {
-        return pluginManager.modelRegistry as ModelRegistryLike | undefined
+        return getModelRegistry()
       },
       registerTool: (tool: ToolDefinition) => {
         entry.tools.push(tool)
@@ -960,7 +961,9 @@ export class PluginManager {
         const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
           if (event.type === 'message_end') {
             const message = event.message as Record<string, unknown> | undefined
-            const terminalError = getAssistantTerminalError(message)
+            const terminalError = getAssistantTerminalError(message, {
+              requireComplete: options.responseFormat === 'json',
+            })
             cancelDebug('message_end-received', { threadId, stopReason: message?.stopReason, hasError: !!terminalError, errorMessage: terminalError || undefined })
             if (terminalError !== null) {
               lastErrorMessage = terminalError
@@ -1237,7 +1240,8 @@ export class PluginManager {
             const stripStreamOptionsFromPayload = (rawPayload: unknown): unknown => {
               const payload = rawPayload as Record<string, unknown>
               if (payload && typeof payload === 'object' && 'stream_options' in payload) {
-                const { stream_options: _removed, ...rest } = payload
+                const rest = { ...payload }
+                delete rest.stream_options
                 logger.info({ threadId }, '✅ 已移除 stream_options 字段（兼容中转网关）')
                 return rest
               }
@@ -1362,7 +1366,9 @@ export class PluginManager {
             const streamUnsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
               if (event.type === 'message_end') {
                 const message = event.message as Record<string, unknown> | undefined
-                const terminalError = getAssistantTerminalError(message)
+                const terminalError = getAssistantTerminalError(message, {
+                  requireComplete: options.responseFormat === 'json',
+                })
                 if (terminalError !== null) {
                   lastErrorMessage = terminalError
                 }

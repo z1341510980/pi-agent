@@ -34,7 +34,7 @@ import {
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { ErrorCard } from '@/components/chat/error-card'
-import { ModelPicker, type ModelRef } from './model-picker'
+import { type ModelRef } from './model-picker'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -192,6 +192,27 @@ const REVIEW_OPTIONS = [
   }
 ]
 
+const ARRANGE_REVIEW_OPTIONS = [
+  {
+    label: '确认落库',
+    action: 'approve',
+    variant: 'default' as const,
+    description: '将本次 AI 编排结果正式写入矩阵'
+  },
+  {
+    label: '按意见修改',
+    action: 'revise',
+    variant: 'outline' as const,
+    description: '发送修改意见，回滚当前草稿后重新编排'
+  },
+  {
+    label: '拒绝落库',
+    action: 'reject',
+    variant: 'destructive' as const,
+    description: '丢弃本次编排结果，不修改矩阵'
+  }
+]
+
 // PostWriteGuard 命中后让用户选择是否重写 Writer
 const POST_WRITE_GUARD_OPTIONS = [
   {
@@ -292,6 +313,12 @@ function getCheckpointPresentation(checkpoint: Pick<CheckpointData, 'type' | 'op
 } {
   let presentation
   switch (checkpoint.type) {
+    case 'arrange_review':
+      presentation = {
+        checkpointType: 'arrange_review' as const,
+        checkpointOptions: ARRANGE_REVIEW_OPTIONS
+      }
+      break
     case 'narrative_task':
       presentation = {
         checkpointType: 'narrative_task' as const,
@@ -421,6 +448,33 @@ function renderCheckpointContent(checkpoint: CheckpointData): string {
         )
       }
       return lines.join('\n')
+    }
+
+    if (checkpoint.type === 'arrange_review') {
+      const arranged = record.arrangedEntities as Record<string, unknown> | undefined
+      const model = record.model as { provider?: string; modelId?: string } | undefined
+      const counts = arranged
+        ? [
+            ['角色', arranged.characterIds],
+            ['冲突', arranged.conflictIds],
+            ['伏笔', arranged.foreshadowIds],
+            ['线索', arranged.clueIds],
+            ['势力', arranged.factionIds],
+            ['地点', arranged.locationIds],
+            ['物品', arranged.itemIds]
+          ]
+            .filter(([, ids]) => Array.isArray(ids))
+            .map(([label, ids]) => `- ${label}：${(ids as unknown[]).length}`)
+        : []
+      return [
+        '## AI 编排结果待确认',
+        '',
+        `本次共生成 **${String(record.total ?? 0)}** 个矩阵实体。确认前不会写入正式矩阵。`,
+        ...(model?.provider && model.modelId ? ['', `**本次模型：** ${model.provider}/${model.modelId}`] : []),
+        ...(counts.length > 0 ? ['', ...counts] : []),
+        '',
+        '如果不满意，请在下方填写意见并点击「按意见修改」。当前草稿会先回滚，再根据意见重新调用 AI。'
+      ].join('\n')
     }
 
     if (checkpoint.type === 'chapter_budget') {
@@ -797,13 +851,13 @@ export function NovelConversationPanel({
   // 右栏会话面板在切换到详情/设置时会卸载；模型偏好放在持久化 store，
   // 避免切页后回到会话又回到“默认模型”。
   const creationModelRef = useNovelUiStore((state) => state.selectedAgentModel)
-  const setCreationModelRef = useNovelUiStore((state) => state.setSelectedAgentModel)
   const [interjectTarget, setInterjectTarget] = useState<NovelInterjectTargetAgent | 'next'>('next')
   const isArrangeMode = flowType === 'arrange'
   const isReverseMode = flowType === 'reverse'
   const isCompleted = phase === 'completed'
   const isError = phase === 'error'
-  // 反推和AI编排不生成正文，不显示"保存到章节"
+  // 反推和 AI 编排不生成正文，不显示"保存到章节"。
+  // AI 编排的落库由 arrange_review 的确认按钮完成，不是流程结束后的额外保存。
   const canSave = isCompleted && !!chapterContent && !isArrangeMode && !isReverseMode
 
   // ── 完成时的动作标签 ──
@@ -1391,7 +1445,7 @@ export function NovelConversationPanel({
             onCheckpointResolve={handleCheckpointResolve}
             // 群聊检查点不提供修改意见输入：decision 端点 discussion 分支不消费
             // userMessages（意见会被静默丢弃），反馈走底部常开插话输入
-            allowCheckpointComment={flowType !== 'discussion'}
+             allowCheckpointComment={flowType !== 'discussion'}
             onSystemAction={handleSystemAction}
             emptyHint={emptyHint}
             emptyTitle={emptyTitle}
@@ -1402,11 +1456,6 @@ export function NovelConversationPanel({
 
       {/* ── 输入区 ── */}
       <div className="shrink-0 border-t border-border">
-        {!isRunning && phase === 'idle' && (
-          <div className="flex items-center gap-2 px-2 pt-1.5">
-            <ModelPicker value={creationModelRef} onChange={setCreationModelRef} label="本次创作" />
-          </div>
-        )}
         {isRunning && flowType === 'workflow' && (
           <div className="flex items-center gap-2 px-2 pt-1.5">
             <span className="text-xs text-muted-foreground">反馈给</span>
@@ -1429,14 +1478,14 @@ export function NovelConversationPanel({
         )}
         <ConversationInput
           onSend={handleSend}
-          onSendWithMentions={(text, mentionedIds) => {
+           onSendWithMentions={(text, mentionedIds) => {
             if (text.trim().startsWith('/')) {
               handleSend(text)
               return
             }
-            if (isRunning) {
-              handleSend(text)
-            } else if (onSendChapterChat) {
+             if (isRunning) {
+               handleSend(text)
+             } else if (onSendChapterChat) {
               onSendChapterChat(text, mentionedIds, creationModelRef, effectiveStyleExpertIds)
             }
           }}
@@ -1451,15 +1500,17 @@ export function NovelConversationPanel({
               else onAbortChapterChat?.()
             }}
           isRunning={activeIsRunning}
-          allowSendWhileRunning={!isReverseMode && !isArrangeMode}
-          // 反推和AI编排时用户不参与，输入框始终禁用；检查点等待期间输入框保持可用（可先插话再确认）
-          disabled={isReverseMode || isArrangeMode}
-          placeholder={
-            isReverseMode
-              ? '反推流程进行中...'
-              : isArrangeMode
-                ? 'AI编排进行中...'
-                : chapterChatRunning
+           allowSendWhileRunning={!isReverseMode && !isArrangeMode}
+           // AI 编排意见通过确认卡内输入框随「按意见修改」提交，避免误走工作流插话端点。
+           disabled={isReverseMode || (isArrangeMode && !currentCheckpoint)}
+           placeholder={
+             isReverseMode
+               ? '反推流程进行中...'
+               : isArrangeMode && !currentCheckpoint
+                 ? 'AI编排进行中...'
+                 : isArrangeMode
+                   ? '填写意见后点击「按意见修改」...'
+                 : chapterChatRunning
                   ? 'Agent 正在回复…'
                   : isRunning && currentCheckpoint
                   ? '可先反馈再确认检查点'

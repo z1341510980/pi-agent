@@ -97,6 +97,21 @@ describe('ChapterOutlineDraft 协议', () => {
     ).toThrow('不符合协议')
   })
 
+  it('兼容代码块、未闭合代码块和 JSON 前后的说明文字', () => {
+    const references = {
+      characters: new Map([['char-1', '林默']]),
+      storylines: new Map([['line-1', '失踪案主线']])
+    }
+    const json = JSON.stringify(validDraft())
+
+    expect(parseChapterOutlineDraft(`\`\`\`json\n${json}\n\`\`\``, references).chapterGoal)
+      .toBe('确认失踪案的真正目标')
+    expect(parseChapterOutlineDraft(`\`\`\`json\n${json}`, references).chapterGoal)
+      .toBe('确认失踪案的真正目标')
+    expect(parseChapterOutlineDraft(`结果如下：\n${json}\n请审阅。`, references).chapterGoal)
+      .toBe('确认失踪案的真正目标')
+  })
+
   it('章纲 hash 对相同内容稳定，并区分不同内容', () => {
     expect(hashChapterOutline('章纲 A')).toBe(hashChapterOutline('章纲 A'))
     expect(hashChapterOutline('章纲 A')).not.toBe(hashChapterOutline('章纲 B'))

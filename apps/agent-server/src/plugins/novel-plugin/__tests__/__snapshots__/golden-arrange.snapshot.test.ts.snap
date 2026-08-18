@@ -1,0 +1,1821 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Golden arrange 快照 > 场景 1：全部复用已有实体（章纲编排） > arranged-result 1`] = `
+{
+  "characterFunctions": [
+    {
+      "characterId": "«fx:protagonist»",
+      "function": "change_judgment",
+      "note": "把失控读成结构",
+    },
+    {
+      "characterId": "«fx:scientist»",
+      "function": "reveal_world_rule",
+      "note": "宣布旧模型错了",
+    },
+  ],
+  "characterIds": [
+    "«fx:protagonist»",
+    "«fx:scientist»",
+  ],
+  "clueIds": [],
+  "conflictIds": [
+    "«fx:conflictMain»",
+  ],
+  "factionIds": [
+    "«fx:faction»",
+  ],
+  "foreshadowIds": [
+    "«fx:foreshadowPlanted»",
+  ],
+  "itemIds": [
+    "«fx:item»",
+  ],
+  "locationIds": [
+    "«fx:location»",
+  ],
+}
+`;
+
+exports[`Golden arrange 快照 > 场景 1：全部复用已有实体（章纲编排） > db-state 1`] = `
+"{
+  "changeRecords": [
+    {
+      "afterValue": "已建立前六处节点的稳定顺序，并目击第七处主动牵引。",
+      "beforeValue": "仍在按计划做低输入节点测试。",
+      "chapterNumber": 3,
+      "dimension": "character.state",
+      "reason": "第七处节点自发联动",
+      "significance": 7,
+      "source": "manual",
+      "subjectId": "«fx:protagonist»",
+      "subjectType": "character",
+      "valueType": "text"
+    },
+    {
+      "afterValue": {
+        "chapter": 3
+      },
+      "beforeValue": null,
+      "chapterNumber": 3,
+      "dimension": "conflict.arranged",
+      "reason": "编排进第 3 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:conflictMain»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": "erupting",
+      "beforeValue": "escalating",
+      "chapterNumber": 3,
+      "dimension": "conflict.stage",
+      "reason": "节点结构的真实性被直接观测",
+      "significance": 8,
+      "source": "manual",
+      "subjectId": "«fx:conflictMain»",
+      "subjectType": "conflict",
+      "valueType": "enum"
+    },
+    {
+      "afterValue": {
+        "chapter": 3
+      },
+      "beforeValue": null,
+      "chapterNumber": 3,
+      "dimension": "faction.arranged",
+      "reason": "编排进第 3 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:faction»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 3
+      },
+      "beforeValue": null,
+      "chapterNumber": 3,
+      "dimension": "item.arranged",
+      "reason": "编排进第 3 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:item»",
+      "subjectType": "item",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 3
+      },
+      "beforeValue": null,
+      "chapterNumber": 3,
+      "dimension": "location.arranged",
+      "reason": "编排进第 3 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:location»",
+      "subjectType": "location",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.arranged",
+      "reason": "编排进第 4 章（createCharacterHistory）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:protagonist»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.arranged",
+      "reason": "编排进第 4 章（createCharacterHistory）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:scientist»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "conflict.arranged",
+      "reason": "编排进第 4 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:conflictMain»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "faction.arranged",
+      "reason": "编排进第 4 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:faction»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "foreshadow.arranged",
+      "reason": "编排进第 4 章（updateForeshadow）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:foreshadowPlanted»",
+      "subjectType": "foreshadow",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "item.arranged",
+      "reason": "编排进第 4 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:item»",
+      "subjectType": "item",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "location.arranged",
+      "reason": "编排进第 4 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:location»",
+      "subjectType": "location",
+      "valueType": "reference"
+    }
+  ],
+  "characterHistory": [
+    {
+      "chapterNumber": 4,
+      "characterId": "«fx:scientist»",
+      "fieldName": "currentState",
+      "newValue": "AI再编排：本章出场（状态保留）",
+      "oldValue": "已带领蓝星侧完成四十二轮分段记录测试，确认前六处节点顺序可复现。",
+      "reason": "AI再编排：复用已有角色「沈维章」，章纲"
+    },
+    {
+      "chapterNumber": 4,
+      "characterId": "«fx:protagonist»",
+      "fieldName": "currentState",
+      "newValue": "AI再编排：本章出场（状态保留）",
+      "oldValue": "连续六天白日采石，夜里配合蓝星做低输入节点测试，已建立前六处节点的稳定顺序。",
+      "reason": "AI再编排：复用已有角色「叶明远」，章纲"
+    }
+  ],
+  "characters": [
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在不诱发进一步失控的前提下确认第七处的真实结构与风险边界。",
+      "currentPressure": "异常联动已超出既有模型，且缺乏足够时间做更安全的验证。",
+      "currentState": "已带领蓝星侧完成四十二轮分段记录测试，确认前六处节点顺序可复现。",
+      "description": "中科院资深院士，专攻空间物理。",
+      "isProtagonist": false,
+      "longTermDesire": "在有生之年搞清楚这个宇宙到底有几层。",
+      "name": "沈维章",
+      "plotRole": "function"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "等待上级进一步指示，把事件按程序上报。",
+      "currentPressure": "事件完全超出职业经验，需要快速消化并维持专业判断。",
+      "currentState": "已确认对方身份信息真实无误，从\\"恶作剧\\"转为困惑与强烈不安。",
+      "description": "蓝星年轻民警，理性务实。",
+      "isProtagonist": false,
+      "longTermDesire": "平安做完本职工作，别摊上无法解释的大事。",
+      "name": "小张",
+      "plotRole": "supporting"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在外门考核前稳住异常节点联动，同时通过考核。",
+      "currentPressure": "第七处节点在最低刺激下失控牵引，而考核已在次日到来。",
+      "currentState": "连续六天白日采石，夜里配合蓝星做低输入节点测试，已建立前六处节点的稳定顺序。",
+      "description": "带着工程思维穿越的普通人，不靠血统不靠奇遇。",
+      "isProtagonist": true,
+      "longTermDesire": "把整个修炼体系拆解成可复现、可验证的工程问题。",
+      "name": "叶明远",
+      "plotRole": "protagonist"
+    }
+  ],
+  "clues": [
+    {
+      "chapterSpans": [
+        [
+          3,
+          6
+        ]
+      ],
+      "currentStep": "已记录节点顺序、位置与图案。",
+      "description": "主角体内七点在第七处主动内收时会形成固定顺序与连线结构。",
+      "nextStep": "只观察自发联动时的顺序与延迟，验证结构是否稳定复现。",
+      "progress": 45
+    }
+  ],
+  "conflicts": [
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "currentStep": "已确认七处节点无对应实体，但顺序可稳定复现。",
+      "description": "蓝星科学分析发现修炼功法的七处关键节点在蓝星人体解剖上不存在，对修炼体系的可移植性构成根本性质疑。",
+      "intensity": 8,
+      "nextStep": "验证节点结构是否独立于既有经络体系。",
+      "participants": "[\\"«fx:protagonist»\\",\\"«fx:scientist»\\"]",
+      "stage": "erupting",
+      "tier": "main"
+    },
+    {
+      "chapterSpans": [
+        [
+          3,
+          3
+        ]
+      ],
+      "currentStep": "风险已显现但尚未迫使决断。",
+      "description": "主角必须在异常失控风险与放弃外门考核所带来的现实后果之间做出选择。",
+      "intensity": 6,
+      "nextStep": "迫使主角在本章给出明确的风险边界。",
+      "participants": "[\\"«fx:protagonist»\\"]",
+      "stage": "escalating",
+      "tier": "secondary"
+    }
+  ],
+  "factions": [
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "name": "国安总局",
+      "status": "active",
+      "strength": "strong"
+    }
+  ],
+  "foreshadows": [
+    {
+      "beats": [
+        {
+          "chapter": 4,
+          "note": "古图与节点图对应",
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "旧藏残卷中的七枢内照图与主角体内节点结构高度一致，但性质既非行气图也非通道图。",
+      "firstChapter": 4,
+      "lastChapter": 4,
+      "recoverByChapter": null,
+      "status": "planted"
+    },
+    {
+      "beats": [
+        {
+          "chapter": 3,
+          "note": "首次出现自发联动",
+          "type": "plant"
+        },
+        {
+          "chapter": 4,
+          "type": "reinforce"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "主角体内第七处深层节点在最低刺激下自行牵动前六点，形成完整图形。",
+      "firstChapter": 3,
+      "lastChapter": 4,
+      "recoverByChapter": null,
+      "status": "reinforced"
+    }
+  ],
+  "items": [
+    {
+      "abilities": "在两界之间建立语音通讯。",
+      "chapterSpans": [
+        [
+          1,
+          3
+        ]
+      ],
+      "firstChapter": 1,
+      "name": "鱼环形玉佩",
+      "ownerId": "«fx:protagonist»",
+      "status": "active"
+    }
+  ],
+  "locations": [
+    {
+      "appearChapters": [
+        1,
+        2,
+        3
+      ],
+      "firstChapter": 1,
+      "name": "潼关杂役坑",
+      "status": "normal"
+    }
+  ],
+  "storyEvents": [
+    {
+      "chapterNumber": 3,
+      "outcome": "主角决定只观察不干预。",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "最低刺激下第七处主动牵引前六点，形成完整图形。",
+      "title": "第七处节点自发联动",
+      "type": "discovery"
+    },
+    {
+      "chapterNumber": 3,
+      "outcome": "",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "第 3 章的实体投影变更（矩阵编辑 / 工具写入 / 状态推进）",
+      "title": "章节投影变更",
+      "type": "transition"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "ai-planned",
+      "status": "planned",
+      "summary": "第 4 章章纲编排：新增 0 个实体，复用 7 个实体",
+      "title": "章纲编排实体投影",
+      "type": "discovery"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "第 4 章的实体投影变更（矩阵编辑 / 工具写入 / 状态推进）",
+      "title": "章节投影变更",
+      "type": "transition"
+    }
+  ]
+}"
+`;
+
+exports[`Golden arrange 快照 > 场景 2：全部新建（章纲编排） > arranged-result 1`] = `
+{
+  "characterFunctions": [
+    {
+      "characterId": "«new-1»",
+      "function": "create_obstacle",
+      "note": "按流程施压",
+    },
+  ],
+  "characterIds": [
+    "«new-1»",
+  ],
+  "clueIds": [],
+  "conflictIds": [
+    "«new-2»",
+  ],
+  "factionIds": [
+    "«new-3»",
+  ],
+  "foreshadowIds": [
+    "«new-4»",
+  ],
+  "itemIds": [
+    "«new-5»",
+  ],
+  "locationIds": [
+    "«new-6»",
+  ],
+}
+`;
+
+exports[`Golden arrange 快照 > 场景 2：全部新建（章纲编排） > db-state 1`] = `
+"{
+  "changeRecords": [
+    {
+      "afterValue": "已建立前六处节点的稳定顺序，并目击第七处主动牵引。",
+      "beforeValue": "仍在按计划做低输入节点测试。",
+      "chapterNumber": 3,
+      "dimension": "character.state",
+      "reason": "第七处节点自发联动",
+      "significance": 7,
+      "source": "manual",
+      "subjectId": "«fx:protagonist»",
+      "subjectType": "character",
+      "valueType": "text"
+    },
+    {
+      "afterValue": "erupting",
+      "beforeValue": "escalating",
+      "chapterNumber": 3,
+      "dimension": "conflict.stage",
+      "reason": "节点结构的真实性被直接观测",
+      "significance": 8,
+      "source": "manual",
+      "subjectId": "«fx:conflictMain»",
+      "subjectType": "conflict",
+      "valueType": "enum"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.arranged",
+      "reason": "编排进第 4 章（createCharacterHistory）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-1»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "name": "周执",
+        "state": "正在核对考核名册。"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.created",
+      "reason": "章纲编排：周执首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-1»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "conflict.arranged",
+      "reason": "编排进第 4 章（createConflict）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-2»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "description": "考核名额与主角的隐秘身份之间形成新的暴露风险。",
+        "intensity": 5,
+        "stage": "emerging"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "conflict.created",
+      "reason": "章纲编排：考核名额与主角的隐秘身份之间形成新的暴露风险。首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-2»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "faction.arranged",
+      "reason": "编排进第 4 章（createFaction）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-3»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "name": "青云宗外门",
+        "status": "active",
+        "strength": "medium"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "faction.created",
+      "reason": "章纲编排：青云宗外门首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-3»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "foreshadow.arranged",
+      "reason": "编排进第 4 章（createForeshadow）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-4»",
+      "subjectType": "foreshadow",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "beats": [
+          {
+            "chapter": 4,
+            "type": "plant"
+          }
+        ],
+        "description": "考核名册上有一栏被人事后涂改过。",
+        "status": "planted"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "foreshadow.created",
+      "reason": "章纲编排：考核名册上有一栏被人事后涂改过。首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-4»",
+      "subjectType": "foreshadow",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "item.arranged",
+      "reason": "编排进第 4 章（createItem）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-5»",
+      "subjectType": "item",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "holder": null,
+        "name": "考核名册",
+        "status": "active"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "item.created",
+      "reason": "章纲编排：考核名册首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-5»",
+      "subjectType": "item",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "location.arranged",
+      "reason": "编排进第 4 章（createLocation）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-6»",
+      "subjectType": "location",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "name": "外门考核场",
+        "status": "normal"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "location.created",
+      "reason": "章纲编排：外门考核场首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-6»",
+      "subjectType": "location",
+      "valueType": "reference"
+    }
+  ],
+  "characterHistory": [
+    {
+      "chapterNumber": 4,
+      "characterId": "«new-1»",
+      "fieldName": "currentState",
+      "newValue": "本章首次出场",
+      "oldValue": null,
+      "reason": "AI编排：章纲"
+    }
+  ],
+  "characters": [
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在不诱发进一步失控的前提下确认第七处的真实结构与风险边界。",
+      "currentPressure": "异常联动已超出既有模型，且缺乏足够时间做更安全的验证。",
+      "currentState": "已带领蓝星侧完成四十二轮分段记录测试，确认前六处节点顺序可复现。",
+      "description": "中科院资深院士，专攻空间物理。",
+      "isProtagonist": false,
+      "longTermDesire": "在有生之年搞清楚这个宇宙到底有几层。",
+      "name": "沈维章",
+      "plotRole": "function"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "等待上级进一步指示，把事件按程序上报。",
+      "currentPressure": "事件完全超出职业经验，需要快速消化并维持专业判断。",
+      "currentState": "已确认对方身份信息真实无误，从\\"恶作剧\\"转为困惑与强烈不安。",
+      "description": "蓝星年轻民警，理性务实。",
+      "isProtagonist": false,
+      "longTermDesire": "平安做完本职工作，别摊上无法解释的大事。",
+      "name": "小张",
+      "plotRole": "supporting"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在外门考核前稳住异常节点联动，同时通过考核。",
+      "currentPressure": "第七处节点在最低刺激下失控牵引，而考核已在次日到来。",
+      "currentState": "连续六天白日采石，夜里配合蓝星做低输入节点测试，已建立前六处节点的稳定顺序。",
+      "description": "带着工程思维穿越的普通人，不靠血统不靠奇遇。",
+      "isProtagonist": true,
+      "longTermDesire": "把整个修炼体系拆解成可复现、可验证的工程问题。",
+      "name": "叶明远",
+      "plotRole": "protagonist"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "setup",
+      "currentGoal": "按流程完成本次考核。",
+      "currentPressure": "名额有限而报名超额。",
+      "currentState": "正在核对考核名册。",
+      "description": "外门考核的监考执事。",
+      "isProtagonist": false,
+      "longTermDesire": "把执事做到退休。",
+      "name": "周执",
+      "plotRole": "function"
+    }
+  ],
+  "clues": [
+    {
+      "chapterSpans": [
+        [
+          3,
+          6
+        ]
+      ],
+      "currentStep": "已记录节点顺序、位置与图案。",
+      "description": "主角体内七点在第七处主动内收时会形成固定顺序与连线结构。",
+      "nextStep": "只观察自发联动时的顺序与延迟，验证结构是否稳定复现。",
+      "progress": 45
+    }
+  ],
+  "conflicts": [
+    {
+      "chapterSpans": [
+        [
+          4,
+          4
+        ]
+      ],
+      "currentStep": "",
+      "description": "考核名额与主角的隐秘身份之间形成新的暴露风险。",
+      "intensity": 5,
+      "nextStep": "",
+      "participants": "[]",
+      "stage": "emerging",
+      "tier": "secondary"
+    },
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "currentStep": "已确认七处节点无对应实体，但顺序可稳定复现。",
+      "description": "蓝星科学分析发现修炼功法的七处关键节点在蓝星人体解剖上不存在，对修炼体系的可移植性构成根本性质疑。",
+      "intensity": 8,
+      "nextStep": "验证节点结构是否独立于既有经络体系。",
+      "participants": "[\\"«fx:protagonist»\\",\\"«fx:scientist»\\"]",
+      "stage": "erupting",
+      "tier": "main"
+    },
+    {
+      "chapterSpans": [
+        [
+          3,
+          3
+        ]
+      ],
+      "currentStep": "风险已显现但尚未迫使决断。",
+      "description": "主角必须在异常失控风险与放弃外门考核所带来的现实后果之间做出选择。",
+      "intensity": 6,
+      "nextStep": "迫使主角在本章给出明确的风险边界。",
+      "participants": "[\\"«fx:protagonist»\\"]",
+      "stage": "escalating",
+      "tier": "secondary"
+    }
+  ],
+  "factions": [
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "name": "国安总局",
+      "status": "active",
+      "strength": "strong"
+    },
+    {
+      "chapterSpans": [
+        [
+          4,
+          4
+        ]
+      ],
+      "name": "青云宗外门",
+      "status": "active",
+      "strength": "medium"
+    }
+  ],
+  "foreshadows": [
+    {
+      "beats": [
+        {
+          "chapter": 4,
+          "note": "古图与节点图对应",
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "旧藏残卷中的七枢内照图与主角体内节点结构高度一致，但性质既非行气图也非通道图。",
+      "firstChapter": 4,
+      "lastChapter": 4,
+      "recoverByChapter": null,
+      "status": "planted"
+    },
+    {
+      "beats": [
+        {
+          "chapter": 4,
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "考核名册上有一栏被人事后涂改过。",
+      "firstChapter": 4,
+      "lastChapter": 4,
+      "recoverByChapter": null,
+      "status": "planted"
+    },
+    {
+      "beats": [
+        {
+          "chapter": 3,
+          "note": "首次出现自发联动",
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "主角体内第七处深层节点在最低刺激下自行牵动前六点，形成完整图形。",
+      "firstChapter": 3,
+      "lastChapter": 3,
+      "recoverByChapter": null,
+      "status": "planted"
+    }
+  ],
+  "items": [
+    {
+      "abilities": "记录考核结果。",
+      "chapterSpans": [
+        [
+          4,
+          4
+        ]
+      ],
+      "firstChapter": 4,
+      "name": "考核名册",
+      "ownerId": null,
+      "status": "active"
+    },
+    {
+      "abilities": "在两界之间建立语音通讯。",
+      "chapterSpans": [
+        [
+          1,
+          3
+        ]
+      ],
+      "firstChapter": 1,
+      "name": "鱼环形玉佩",
+      "ownerId": "«fx:protagonist»",
+      "status": "active"
+    }
+  ],
+  "locations": [
+    {
+      "appearChapters": [
+        1,
+        2,
+        3
+      ],
+      "firstChapter": 1,
+      "name": "潼关杂役坑",
+      "status": "normal"
+    },
+    {
+      "appearChapters": [
+        4
+      ],
+      "firstChapter": 4,
+      "name": "外门考核场",
+      "status": "normal"
+    }
+  ],
+  "storyEvents": [
+    {
+      "chapterNumber": 3,
+      "outcome": "主角决定只观察不干预。",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "最低刺激下第七处主动牵引前六点，形成完整图形。",
+      "title": "第七处节点自发联动",
+      "type": "discovery"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "ai-planned",
+      "status": "planned",
+      "summary": "第 4 章章纲编排：新增 6 个实体，复用 0 个实体",
+      "title": "章纲编排实体投影",
+      "type": "discovery"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "第 4 章的实体投影变更（矩阵编辑 / 工具写入 / 状态推进）",
+      "title": "章节投影变更",
+      "type": "transition"
+    }
+  ]
+}"
+`;
+
+exports[`Golden arrange 快照 > 场景 3：复用与新建混合（章纲编排） > arranged-result 1`] = `
+{
+  "characterFunctions": [
+    {
+      "characterId": "«fx:protagonist»",
+      "function": "change_judgment",
+      "note": undefined,
+    },
+    {
+      "characterId": "«new-1»",
+      "function": "create_obstacle",
+      "note": undefined,
+    },
+  ],
+  "characterIds": [
+    "«fx:protagonist»",
+    "«new-1»",
+  ],
+  "clueIds": [],
+  "conflictIds": [
+    "«fx:conflictSurvival»",
+  ],
+  "factionIds": [
+    "«new-2»",
+  ],
+  "foreshadowIds": [
+    "«fx:foreshadowFresh»",
+  ],
+  "itemIds": [
+    "«new-3»",
+  ],
+  "locationIds": [
+    "«fx:location»",
+  ],
+}
+`;
+
+exports[`Golden arrange 快照 > 场景 3：复用与新建混合（章纲编排） > db-state 1`] = `
+"{
+  "changeRecords": [
+    {
+      "afterValue": "已建立前六处节点的稳定顺序，并目击第七处主动牵引。",
+      "beforeValue": "仍在按计划做低输入节点测试。",
+      "chapterNumber": 3,
+      "dimension": "character.state",
+      "reason": "第七处节点自发联动",
+      "significance": 7,
+      "source": "manual",
+      "subjectId": "«fx:protagonist»",
+      "subjectType": "character",
+      "valueType": "text"
+    },
+    {
+      "afterValue": {
+        "chapter": 3
+      },
+      "beforeValue": null,
+      "chapterNumber": 3,
+      "dimension": "conflict.arranged",
+      "reason": "编排进第 3 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:conflictSurvival»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": "erupting",
+      "beforeValue": "escalating",
+      "chapterNumber": 3,
+      "dimension": "conflict.stage",
+      "reason": "节点结构的真实性被直接观测",
+      "significance": 8,
+      "source": "manual",
+      "subjectId": "«fx:conflictMain»",
+      "subjectType": "conflict",
+      "valueType": "enum"
+    },
+    {
+      "afterValue": {
+        "chapter": 3
+      },
+      "beforeValue": null,
+      "chapterNumber": 3,
+      "dimension": "location.arranged",
+      "reason": "编排进第 3 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:location»",
+      "subjectType": "location",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.arranged",
+      "reason": "编排进第 4 章（createCharacterHistory）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:protagonist»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.arranged",
+      "reason": "编排进第 4 章（createCharacterHistory）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-1»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "name": "周执",
+        "state": "正在核对考核名册。"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.created",
+      "reason": "章纲编排：周执首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-1»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "conflict.arranged",
+      "reason": "编排进第 4 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:conflictSurvival»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "faction.arranged",
+      "reason": "编排进第 4 章（createFaction）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-2»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "name": "青云宗外门",
+        "status": "active",
+        "strength": "medium"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "faction.created",
+      "reason": "章纲编排：青云宗外门首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-2»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "foreshadow.arranged",
+      "reason": "编排进第 4 章（ai-arrange）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:foreshadowFresh»",
+      "subjectType": "foreshadow",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "item.arranged",
+      "reason": "编排进第 4 章（createItem）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-3»",
+      "subjectType": "item",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "holder": null,
+        "name": "考核名册",
+        "status": "active"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "item.created",
+      "reason": "章纲编排：考核名册首次出现",
+      "significance": 5,
+      "source": "ai-planned",
+      "subjectId": "«new-3»",
+      "subjectType": "item",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "location.arranged",
+      "reason": "编排进第 4 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:location»",
+      "subjectType": "location",
+      "valueType": "reference"
+    }
+  ],
+  "characterHistory": [
+    {
+      "chapterNumber": 4,
+      "characterId": "«new-1»",
+      "fieldName": "currentState",
+      "newValue": "本章首次出场",
+      "oldValue": null,
+      "reason": "AI编排：章纲"
+    },
+    {
+      "chapterNumber": 4,
+      "characterId": "«fx:protagonist»",
+      "fieldName": "currentState",
+      "newValue": "AI再编排：本章出场（状态保留）",
+      "oldValue": "连续六天白日采石，夜里配合蓝星做低输入节点测试，已建立前六处节点的稳定顺序。",
+      "reason": "AI再编排：复用已有角色「叶明远」，章纲"
+    }
+  ],
+  "characters": [
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在不诱发进一步失控的前提下确认第七处的真实结构与风险边界。",
+      "currentPressure": "异常联动已超出既有模型，且缺乏足够时间做更安全的验证。",
+      "currentState": "已带领蓝星侧完成四十二轮分段记录测试，确认前六处节点顺序可复现。",
+      "description": "中科院资深院士，专攻空间物理。",
+      "isProtagonist": false,
+      "longTermDesire": "在有生之年搞清楚这个宇宙到底有几层。",
+      "name": "沈维章",
+      "plotRole": "function"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "等待上级进一步指示，把事件按程序上报。",
+      "currentPressure": "事件完全超出职业经验，需要快速消化并维持专业判断。",
+      "currentState": "已确认对方身份信息真实无误，从\\"恶作剧\\"转为困惑与强烈不安。",
+      "description": "蓝星年轻民警，理性务实。",
+      "isProtagonist": false,
+      "longTermDesire": "平安做完本职工作，别摊上无法解释的大事。",
+      "name": "小张",
+      "plotRole": "supporting"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在外门考核前稳住异常节点联动，同时通过考核。",
+      "currentPressure": "第七处节点在最低刺激下失控牵引，而考核已在次日到来。",
+      "currentState": "连续六天白日采石，夜里配合蓝星做低输入节点测试，已建立前六处节点的稳定顺序。",
+      "description": "带着工程思维穿越的普通人，不靠血统不靠奇遇。",
+      "isProtagonist": true,
+      "longTermDesire": "把整个修炼体系拆解成可复现、可验证的工程问题。",
+      "name": "叶明远",
+      "plotRole": "protagonist"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "setup",
+      "currentGoal": "按流程完成本次考核。",
+      "currentPressure": "名额有限而报名超额。",
+      "currentState": "正在核对考核名册。",
+      "description": "外门考核的监考执事。",
+      "isProtagonist": false,
+      "longTermDesire": "把执事做到退休。",
+      "name": "周执",
+      "plotRole": "function"
+    }
+  ],
+  "clues": [
+    {
+      "chapterSpans": [
+        [
+          3,
+          6
+        ]
+      ],
+      "currentStep": "已记录节点顺序、位置与图案。",
+      "description": "主角体内七点在第七处主动内收时会形成固定顺序与连线结构。",
+      "nextStep": "只观察自发联动时的顺序与延迟，验证结构是否稳定复现。",
+      "progress": 45
+    }
+  ],
+  "conflicts": [
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "currentStep": "已确认七处节点无对应实体，但顺序可稳定复现。",
+      "description": "蓝星科学分析发现修炼功法的七处关键节点在蓝星人体解剖上不存在，对修炼体系的可移植性构成根本性质疑。",
+      "intensity": 8,
+      "nextStep": "验证节点结构是否独立于既有经络体系。",
+      "participants": "[\\"«fx:protagonist»\\",\\"«fx:scientist»\\"]",
+      "stage": "erupting",
+      "tier": "main"
+    },
+    {
+      "chapterSpans": [
+        [
+          3,
+          3
+        ]
+      ],
+      "currentStep": "风险已显现但尚未迫使决断。",
+      "description": "主角必须在异常失控风险与放弃外门考核所带来的现实后果之间做出选择。",
+      "intensity": 6,
+      "nextStep": "迫使主角在本章给出明确的风险边界。",
+      "participants": "[\\"«fx:protagonist»\\"]",
+      "stage": "escalating",
+      "tier": "secondary"
+    }
+  ],
+  "factions": [
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "name": "国安总局",
+      "status": "active",
+      "strength": "strong"
+    },
+    {
+      "chapterSpans": [
+        [
+          4,
+          4
+        ]
+      ],
+      "name": "青云宗外门",
+      "status": "active",
+      "strength": "medium"
+    }
+  ],
+  "foreshadows": [
+    {
+      "beats": [
+        {
+          "chapter": 4,
+          "note": "古图与节点图对应",
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "旧藏残卷中的七枢内照图与主角体内节点结构高度一致，但性质既非行气图也非通道图。",
+      "firstChapter": 4,
+      "lastChapter": 4,
+      "recoverByChapter": null,
+      "status": "planted"
+    },
+    {
+      "beats": [
+        {
+          "chapter": 3,
+          "note": "首次出现自发联动",
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "主角体内第七处深层节点在最低刺激下自行牵动前六点，形成完整图形。",
+      "firstChapter": 3,
+      "lastChapter": 3,
+      "recoverByChapter": null,
+      "status": "planted"
+    }
+  ],
+  "items": [
+    {
+      "abilities": "记录考核结果。",
+      "chapterSpans": [
+        [
+          4,
+          4
+        ]
+      ],
+      "firstChapter": 4,
+      "name": "考核名册",
+      "ownerId": null,
+      "status": "active"
+    },
+    {
+      "abilities": "在两界之间建立语音通讯。",
+      "chapterSpans": [
+        [
+          1,
+          3
+        ]
+      ],
+      "firstChapter": 1,
+      "name": "鱼环形玉佩",
+      "ownerId": "«fx:protagonist»",
+      "status": "active"
+    }
+  ],
+  "locations": [
+    {
+      "appearChapters": [
+        1,
+        2,
+        3
+      ],
+      "firstChapter": 1,
+      "name": "潼关杂役坑",
+      "status": "normal"
+    }
+  ],
+  "storyEvents": [
+    {
+      "chapterNumber": 3,
+      "outcome": "主角决定只观察不干预。",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "最低刺激下第七处主动牵引前六点，形成完整图形。",
+      "title": "第七处节点自发联动",
+      "type": "discovery"
+    },
+    {
+      "chapterNumber": 3,
+      "outcome": "",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "第 3 章的实体投影变更（矩阵编辑 / 工具写入 / 状态推进）",
+      "title": "章节投影变更",
+      "type": "transition"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "ai-planned",
+      "status": "planned",
+      "summary": "第 4 章章纲编排：新增 3 个实体，复用 4 个实体",
+      "title": "章纲编排实体投影",
+      "type": "discovery"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "第 4 章的实体投影变更（矩阵编辑 / 工具写入 / 状态推进）",
+      "title": "章节投影变更",
+      "type": "transition"
+    }
+  ]
+}"
+`;
+
+exports[`Golden arrange 快照 > 场景 4：正文反推（source=content，账本语义不同） > arranged-result 1`] = `
+{
+  "characterFunctions": undefined,
+  "characterIds": [
+    "«fx:protagonist»",
+  ],
+  "clueIds": [],
+  "conflictIds": [
+    "«new-1»",
+  ],
+  "factionIds": [
+    "«fx:faction»",
+  ],
+  "foreshadowIds": [],
+  "itemIds": [],
+  "locationIds": [
+    "«new-2»",
+  ],
+}
+`;
+
+exports[`Golden arrange 快照 > 场景 4：正文反推（source=content，账本语义不同） > db-state 1`] = `
+"{
+  "changeRecords": [
+    {
+      "afterValue": "已建立前六处节点的稳定顺序，并目击第七处主动牵引。",
+      "beforeValue": "仍在按计划做低输入节点测试。",
+      "chapterNumber": 3,
+      "dimension": "character.state",
+      "reason": "第七处节点自发联动",
+      "significance": 7,
+      "source": "manual",
+      "subjectId": "«fx:protagonist»",
+      "subjectType": "character",
+      "valueType": "text"
+    },
+    {
+      "afterValue": "erupting",
+      "beforeValue": "escalating",
+      "chapterNumber": 3,
+      "dimension": "conflict.stage",
+      "reason": "节点结构的真实性被直接观测",
+      "significance": 8,
+      "source": "manual",
+      "subjectId": "«fx:conflictMain»",
+      "subjectType": "conflict",
+      "valueType": "enum"
+    },
+    {
+      "afterValue": {
+        "chapter": 3
+      },
+      "beforeValue": null,
+      "chapterNumber": 3,
+      "dimension": "faction.arranged",
+      "reason": "编排进第 3 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:faction»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "character.arranged",
+      "reason": "编排进第 4 章（createCharacterHistory）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:protagonist»",
+      "subjectType": "character",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "conflict.arranged",
+      "reason": "编排进第 4 章（createConflict）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-1»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "description": "考核名额与主角的隐秘身份之间形成新的暴露风险。",
+        "intensity": 5,
+        "stage": "emerging"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "conflict.created",
+      "reason": "正文反推：考核名额与主角的隐秘身份之间形成新的暴露风险。首次出现",
+      "significance": 5,
+      "source": "ai-extracted",
+      "subjectId": "«new-1»",
+      "subjectType": "conflict",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "faction.arranged",
+      "reason": "编排进第 4 章（frozen-redirect）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«fx:faction»",
+      "subjectType": "faction",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "chapter": 4
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "location.arranged",
+      "reason": "编排进第 4 章（createLocation）",
+      "significance": 3,
+      "source": "manual",
+      "subjectId": "«new-2»",
+      "subjectType": "location",
+      "valueType": "reference"
+    },
+    {
+      "afterValue": {
+        "name": "外门考核场",
+        "status": "normal"
+      },
+      "beforeValue": null,
+      "chapterNumber": 4,
+      "dimension": "location.created",
+      "reason": "正文反推：外门考核场首次出现",
+      "significance": 5,
+      "source": "ai-extracted",
+      "subjectId": "«new-2»",
+      "subjectType": "location",
+      "valueType": "reference"
+    }
+  ],
+  "characterHistory": [
+    {
+      "chapterNumber": 4,
+      "characterId": "«fx:protagonist»",
+      "fieldName": "currentState",
+      "newValue": "AI再编排：本章出场（状态保留）",
+      "oldValue": "连续六天白日采石，夜里配合蓝星做低输入节点测试，已建立前六处节点的稳定顺序。",
+      "reason": "AI再编排：复用已有角色「叶明远」，正文"
+    }
+  ],
+  "characters": [
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在不诱发进一步失控的前提下确认第七处的真实结构与风险边界。",
+      "currentPressure": "异常联动已超出既有模型，且缺乏足够时间做更安全的验证。",
+      "currentState": "已带领蓝星侧完成四十二轮分段记录测试，确认前六处节点顺序可复现。",
+      "description": "中科院资深院士，专攻空间物理。",
+      "isProtagonist": false,
+      "longTermDesire": "在有生之年搞清楚这个宇宙到底有几层。",
+      "name": "沈维章",
+      "plotRole": "function"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "等待上级进一步指示，把事件按程序上报。",
+      "currentPressure": "事件完全超出职业经验，需要快速消化并维持专业判断。",
+      "currentState": "已确认对方身份信息真实无误，从\\"恶作剧\\"转为困惑与强烈不安。",
+      "description": "蓝星年轻民警，理性务实。",
+      "isProtagonist": false,
+      "longTermDesire": "平安做完本职工作，别摊上无法解释的大事。",
+      "name": "小张",
+      "plotRole": "supporting"
+    },
+    {
+      "arcHistory": "[]",
+      "arcStage": "rising",
+      "currentGoal": "在外门考核前稳住异常节点联动，同时通过考核。",
+      "currentPressure": "第七处节点在最低刺激下失控牵引，而考核已在次日到来。",
+      "currentState": "连续六天白日采石，夜里配合蓝星做低输入节点测试，已建立前六处节点的稳定顺序。",
+      "description": "带着工程思维穿越的普通人，不靠血统不靠奇遇。",
+      "isProtagonist": true,
+      "longTermDesire": "把整个修炼体系拆解成可复现、可验证的工程问题。",
+      "name": "叶明远",
+      "plotRole": "protagonist"
+    }
+  ],
+  "clues": [
+    {
+      "chapterSpans": [
+        [
+          3,
+          6
+        ]
+      ],
+      "currentStep": "已记录节点顺序、位置与图案。",
+      "description": "主角体内七点在第七处主动内收时会形成固定顺序与连线结构。",
+      "nextStep": "只观察自发联动时的顺序与延迟，验证结构是否稳定复现。",
+      "progress": 45
+    }
+  ],
+  "conflicts": [
+    {
+      "chapterSpans": [
+        [
+          4,
+          4
+        ]
+      ],
+      "currentStep": "",
+      "description": "考核名额与主角的隐秘身份之间形成新的暴露风险。",
+      "intensity": 5,
+      "nextStep": "",
+      "participants": "[]",
+      "stage": "emerging",
+      "tier": "secondary"
+    },
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "currentStep": "已确认七处节点无对应实体，但顺序可稳定复现。",
+      "description": "蓝星科学分析发现修炼功法的七处关键节点在蓝星人体解剖上不存在，对修炼体系的可移植性构成根本性质疑。",
+      "intensity": 8,
+      "nextStep": "验证节点结构是否独立于既有经络体系。",
+      "participants": "[\\"«fx:protagonist»\\",\\"«fx:scientist»\\"]",
+      "stage": "erupting",
+      "tier": "main"
+    },
+    {
+      "chapterSpans": [
+        [
+          3,
+          3
+        ]
+      ],
+      "currentStep": "风险已显现但尚未迫使决断。",
+      "description": "主角必须在异常失控风险与放弃外门考核所带来的现实后果之间做出选择。",
+      "intensity": 6,
+      "nextStep": "迫使主角在本章给出明确的风险边界。",
+      "participants": "[\\"«fx:protagonist»\\"]",
+      "stage": "escalating",
+      "tier": "secondary"
+    }
+  ],
+  "factions": [
+    {
+      "chapterSpans": [
+        [
+          2,
+          3
+        ]
+      ],
+      "name": "国安总局",
+      "status": "active",
+      "strength": "strong"
+    }
+  ],
+  "foreshadows": [
+    {
+      "beats": [
+        {
+          "chapter": 4,
+          "note": "古图与节点图对应",
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "旧藏残卷中的七枢内照图与主角体内节点结构高度一致，但性质既非行气图也非通道图。",
+      "firstChapter": 4,
+      "lastChapter": 4,
+      "recoverByChapter": null,
+      "status": "planted"
+    },
+    {
+      "beats": [
+        {
+          "chapter": 3,
+          "note": "首次出现自发联动",
+          "type": "plant"
+        }
+      ],
+      "chapterSpans": [],
+      "description": "主角体内第七处深层节点在最低刺激下自行牵动前六点，形成完整图形。",
+      "firstChapter": 3,
+      "lastChapter": 3,
+      "recoverByChapter": null,
+      "status": "planted"
+    }
+  ],
+  "items": [
+    {
+      "abilities": "在两界之间建立语音通讯。",
+      "chapterSpans": [
+        [
+          1,
+          3
+        ]
+      ],
+      "firstChapter": 1,
+      "name": "鱼环形玉佩",
+      "ownerId": "«fx:protagonist»",
+      "status": "active"
+    }
+  ],
+  "locations": [
+    {
+      "appearChapters": [
+        1,
+        2,
+        3
+      ],
+      "firstChapter": 1,
+      "name": "潼关杂役坑",
+      "status": "normal"
+    },
+    {
+      "appearChapters": [
+        4
+      ],
+      "firstChapter": 4,
+      "name": "外门考核场",
+      "status": "normal"
+    }
+  ],
+  "storyEvents": [
+    {
+      "chapterNumber": 3,
+      "outcome": "主角决定只观察不干预。",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "最低刺激下第七处主动牵引前六点，形成完整图形。",
+      "title": "第七处节点自发联动",
+      "type": "discovery"
+    },
+    {
+      "chapterNumber": 3,
+      "outcome": "",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "第 3 章的实体投影变更（矩阵编辑 / 工具写入 / 状态推进）",
+      "title": "章节投影变更",
+      "type": "transition"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "manual",
+      "status": "confirmed",
+      "summary": "第 4 章的实体投影变更（矩阵编辑 / 工具写入 / 状态推进）",
+      "title": "章节投影变更",
+      "type": "transition"
+    },
+    {
+      "chapterNumber": 4,
+      "outcome": "",
+      "source": "ai-extracted",
+      "status": "confirmed",
+      "summary": "第 4 章正文反推：新增 2 个实体，复用 2 个实体",
+      "title": "正文反推实体投影",
+      "type": "discovery"
+    }
+  ]
+}"
+`;

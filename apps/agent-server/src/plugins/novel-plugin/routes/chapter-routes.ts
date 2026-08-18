@@ -19,8 +19,22 @@ import { RhythmController } from '../core/chapters/rhythm-controller.js'
 import { diffChapterVersions } from '../core/chapters/chapter-version-diff.js'
 import { canTransitionChapterStatus } from '@repo/shared/novel'
 import { hashChapterOutline } from '../core/chapters/chapter-outline.js'
+import { closeSse, sendSseComment, sendSseEvent, setupSse } from '../../../lib/sse.js'
+import { modelSelectionSchema } from './model-selection-contract.js'
+import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
+import type { TimelineStaleCounts } from '../core/analysis/timeline-consistency-store.js'
 
-function buildDerivedState(store: NovelServices['store'], projectId: string, contentChanged: boolean) {
+function buildDerivedState(store: NovelServices['store'], projectId: string, contentChanged: boolean): {
+  isMiddleRewrite: boolean
+  invalidationId?: string
+  startChapterNumber?: number
+  staleMarked?: number
+  staleCounts?: TimelineStaleCounts
+  affectedChapters?: number[]
+  rebuildAvailable?: boolean
+  rebuildBlockedReasons?: string[]
+  message?: string
+} {
   if (!contentChanged) return { isMiddleRewrite: false }
   const invalidation = store.getActiveTimelineInvalidation(projectId)
   if (!invalidation) return { isMiddleRewrite: false }
@@ -41,6 +55,16 @@ function buildDerivedState(store: NovelServices['store'], projectId: string, con
 export function createChapterRoutes(services: NovelServices): RouteDefinition[] {
   const { store, engine } = services
   const routes: RouteDefinition[] = []
+
+  /** 触发隔离重放执行器（fire-and-forget）；失败只记日志，job 状态由 store 落库。 */
+  const kickRebuildRunner = (projectId: string, jobId: string): void => {
+    void services.timelineRebuildRunner.run(projectId, jobId).catch(error => {
+      services.context.logger.error(
+        { err: error, projectId, jobId },
+        '时间线隔离重放执行器异常退出（可通过 resume 重新触发）',
+      )
+    })
+  }
 
   // ═══════════════════════════════════════════════════════════════
   // 章节管理
@@ -185,7 +209,7 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       let patch: Partial<NovelChapter> = chapterInput
       let versionSource: VersionSource = undefined
       if (chapterInput.content != null) {
-        const cleaned = chapterInput.content.replace(/[#*`>\-\[\]()!]/g, '').replace(/\s+/g, '')
+      const cleaned = chapterInput.content.replace(/[#*`>\-()[\]!]/g, '').replace(/\s+/g, '')
         patch = { ...chapterInput, wordCount: cleaned.length, status: 'drafting' }
         versionSource = { phase: 'manual_patch', trigger: '用户手动编辑' }
       }
@@ -448,13 +472,18 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       if (!project) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
       const preview = store.getTimelineRebuildPreview(project.id)
       if (!preview) throw new AppError(ErrorCode.NOT_FOUND, '项目当前没有待重建的时间线', 404)
-      return success(preview, request.traceId)
+      const latestJob = store.getLatestTimelineRebuildJob(project.id, preview.id)
+      return success({
+        ...preview,
+        latestJob: latestJob ?? null,
+      }, request.traceId)
     },
   })
 
   const startTimelineRebuildSchema = z.object({
     confirmationToken: z.string().length(64),
     confirmed: z.literal(true),
+    modelId: modelSelectionSchema.optional(),
   })
 
   routes.push({
@@ -470,14 +499,131 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
         throw new AppError(ErrorCode.CONFLICT, '影响范围已变化，请重新查看重建预览后确认', 409)
       }
       if (!preview.automaticRebuildAvailable) {
-        return reply.code(409).send({
-          ok: false,
-          error: '当前项目不满足安全自动重建条件',
-          data: preview,
-          traceId: request.traceId,
-        })
+        throw new AppError(
+          ErrorCode.CONFLICT,
+          preview.blockedReasons.join('；') || '当前项目不满足安全自动重建条件',
+          409,
+        )
       }
-      throw new AppError(ErrorCode.CONFLICT, '自动重建执行器尚未启用', 409)
+      // 任务创建时冻结模型：本次显式选择优先，其次使用项目级创作主模型。
+      // 不把模型留到 runner 运行时再解析，避免用户改配置后恢复任务换模型。
+      const modelId = input.modelId ?? parseNovelModelRef(project.novelModelId)
+      const job = store.createTimelineRebuildJob(project.id, input.confirmationToken, modelId)
+      kickRebuildRunner(project.id, job.id)
+      return success({ ...job, eventsUrl: `/projects/${project.id}/timeline-rebuild/jobs/${job.id}/events` }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/timeline-rebuild/jobs/:jobId',
+    handler: async (request: any) => {
+      const job = store.getTimelineRebuildJob(request.params.projectId, request.params.jobId)
+      if (!job) throw new AppError(ErrorCode.NOT_FOUND, '重建任务不存在', 404)
+      return success({
+        ...job,
+        replayRunning: services.timelineRebuildRunner.isRunning(job.id),
+        checkpoint: store.getTimelineRebuildCheckpoint(request.params.projectId, job.id),
+      }, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/timeline-rebuild/jobs/:jobId/events',
+    handler: async (request: any, reply: any) => {
+      const job = store.getTimelineRebuildJob(request.params.projectId, request.params.jobId)
+      if (!job) throw new AppError(ErrorCode.NOT_FOUND, '重建任务不存在', 404)
+      const header = request.headers['last-event-id']
+      const afterSequence = typeof header === 'string' && /^\d+$/.test(header) ? Number(header) : 0
+      const events = store.listTimelineRebuildEvents(request.params.projectId, request.params.jobId, afterSequence)
+      setupSse(reply)
+      for (const event of events) {
+        reply.raw.write(`id: ${event.sequence}\n`)
+        sendSseEvent(reply, { rebuildEvent: event })
+      }
+      sendSseComment(reply, 'end-of-buffer')
+      closeSse(reply)
+      return reply
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/timeline-rebuild/jobs/:jobId/cancel',
+    handler: async (request: any) => {
+      try {
+        services.timelineRebuildRunner.requestCancel(request.params.jobId)
+        return success(store.cancelTimelineRebuildJob(request.params.projectId, request.params.jobId), request.traceId)
+      } catch (error) {
+        throw new AppError(ErrorCode.CONFLICT, error instanceof Error ? error.message : '无法取消重建任务', 409)
+      }
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/timeline-rebuild/jobs/:jobId/resume',
+    handler: async (request: any) => {
+      try {
+        const job = store.resumeTimelineRebuildJob(request.params.projectId, request.params.jobId)
+        kickRebuildRunner(request.params.projectId, job.id)
+        return success({
+          ...job,
+          eventsUrl: `/projects/${request.params.projectId}/timeline-rebuild/jobs/${job.id}/events`,
+          checkpoint: store.getTimelineRebuildCheckpoint(request.params.projectId, job.id),
+        }, request.traceId)
+      } catch (error) {
+        throw new AppError(ErrorCode.CONFLICT, error instanceof Error ? error.message : '无法恢复重建任务', 409)
+      }
+    },
+  })
+
+  const applyTimelineStepSchema = z.object({
+    expectedContentRevision: z.string().uuid(),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/timeline-rebuild/jobs/:jobId/chapters/:chapterId/ready',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(applyTimelineStepSchema, request, reply)
+      if (!input) return reply
+      try {
+        return success(store.markTimelineRebuildStepReady(
+          request.params.projectId, request.params.jobId, request.params.chapterId, input.expectedContentRevision,
+        ), request.traceId)
+      } catch (error) {
+        throw new AppError(ErrorCode.CONFLICT, error instanceof Error ? error.message : '无法准备章节重建结果', 409)
+      }
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/timeline-rebuild/jobs/:jobId/chapters/:chapterId/apply',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(applyTimelineStepSchema, request, reply)
+      if (!input) return reply
+      try {
+        return success(store.applyTimelineRebuildStep(
+          request.params.projectId, request.params.jobId, request.params.chapterId, input.expectedContentRevision,
+        ), request.traceId)
+      } catch (error) {
+        throw new AppError(ErrorCode.CONFLICT, error instanceof Error ? error.message : '无法应用章节重建结果', 409)
+      }
+    },
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/timeline-rebuild/jobs/:jobId/complete',
+    handler: async (request: any) => {
+      try {
+        return success(store.completeTimelineRebuildJob(request.params.projectId, request.params.jobId), request.traceId)
+      } catch (error) {
+        throw new AppError(ErrorCode.CONFLICT, error instanceof Error ? error.message : '无法完成重建任务', 409)
+      }
     },
   })
 

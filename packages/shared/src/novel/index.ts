@@ -176,6 +176,91 @@ export interface NovelChapter {
   updatedAt: number
 }
 
+// ── AI 章纲草稿 ──
+
+/** 章纲生成方式。create 忽略当前草稿重新规划，rewrite/expand 基于当前编辑内容。 */
+export type ChapterOutlineGenerationMode = 'create' | 'rewrite' | 'expand'
+
+export type ChapterOutlineRiskSeverity = 'low' | 'medium' | 'high'
+
+export type ChapterOutlinePovSuggestion =
+  | {
+      mode: 'single'
+      characterId: string
+      characterName: string
+    }
+  | {
+      mode: 'omniscient' | 'none'
+      characterId: null
+      characterName: null
+    }
+
+export interface ChapterOutlineStorylineSuggestion {
+  storylineId: string
+  storylineName: string
+  intendedProgress: string
+}
+
+export interface ChapterOutlineContinuityRisk {
+  type: 'continuity' | 'unknown_entity' | 'timeline' | 'requires_confirmation'
+  severity: ChapterOutlineRiskSeverity
+  description: string
+}
+
+/**
+ * 用户可审阅的章纲草稿。它不是正文、NarrativeTask 或 ChapterScenePlan，
+ * 只有 outlineText 会在用户确认保存后写入 NovelChapter.outline。
+ */
+export interface ChapterOutlineDraft {
+  version: 1
+  outlineText: string
+  chapterGoal: string
+  openingState: string
+  progression: string[]
+  obstacles: string[]
+  turningPoint: string
+  endingState: string
+  hook: string
+  sceneCountEstimate: number
+  povSuggestions: ChapterOutlinePovSuggestion[]
+  storylines: ChapterOutlineStorylineSuggestion[]
+  continuityRisks: ChapterOutlineContinuityRisk[]
+}
+
+export interface GenerateChapterOutlineInput {
+  mode: ChapterOutlineGenerationMode
+  /** 用户编辑器中的当前内容，可包含尚未保存的修改。 */
+  currentOutline: string
+  /** 页面加载时的持久化章纲，用于生成前并发校验。 */
+  expectedOutline: string
+  instruction?: string
+}
+
+export interface ChapterOutlineGenerationBase {
+  chapterId: string
+  outlineHash: string
+  contentRevisionId: string | null
+  planRevisionId: string | null
+  contextFingerprint: string
+}
+
+export interface ChapterOutlineGenerationResult {
+  generationId: string
+  draft: ChapterOutlineDraft
+  base: ChapterOutlineGenerationBase
+  model: {
+    modelId: string | null
+    promptVersion: string
+  }
+  warnings: string[]
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+  }
+}
+
 export type ChapterStatus = 'planned' | 'drafting' | 'review' | 'published' | 'rejected'
 
 /**
@@ -1126,10 +1211,56 @@ export interface NovelWritingStyleProfile {
   /** 明确不希望正文模仿的反例，只用于识别句式和叙述习惯，不作为事实上下文。 */
   negativeExamples: string[]
   notes: string
+  /** 文风专家团配置：专家只负责整理与校准，最终仍编译进同一份文风提示词。 */
+  styleExperts?: NovelStyleExpert[]
   version: number
   createdAt: number
   updatedAt: number
 }
+
+export interface NovelStyleExpert {
+  /** 稳定 ID；专家不是岗位，而是一套可独立召集的蒸馏文风能力。 */
+  id: string
+  name: string
+  /** 该能力主要从哪本小说/哪组样本中蒸馏而来。 */
+  sourceTitle: string
+  sourceAuthor?: string
+  /** 给用户看的能力摘要。 */
+  description: string
+  /** 专家真正注入 Agent 的提示词，可由用户修改。 */
+  distilledPrompt: string
+  metrics?: Record<string, unknown>
+  techniques?: Array<{
+    id: string
+    dimension: string
+    name: string
+    mechanism: string
+    transfer: string
+    evidence: Array<{ sectionId: string; quote: string }>
+    metricAnchors: string[]
+    confidence: 'verified' | 'unverified' | 'rejected'
+    kept: boolean
+  }>
+  exclusions?: string[]
+  exemplarPassages?: Array<{ sectionId: string; text: string; reason: string }>
+  /** 旧 profile JSON 的兼容字段，稳定期迁移后移除。 */
+  prompt?: string
+  customPrompt?: string
+  sortOrder: number
+  distillMeta?: { sampleChars?: number; model?: string; distilledAt?: number }
+  projectId: string
+  version: number
+  createdAt: number
+  updatedAt: number
+  enabled: boolean
+}
+
+export const DEFAULT_NOVEL_STYLE_EXPERTS: NovelStyleExpert[] = [
+  { id: 'style-sample-01', projectId: '__default__', name: '冷峻留白', sourceTitle: '项目样本蒸馏 01', description: '克制叙述、低情绪显性表达、依靠动作和留白传递压力。', distilledPrompt: '从正向样本中提炼克制叙述、信息留白和动作承载情绪的写法。不要复制人物、情节、专名或显眼句子，只让当前正文在句法和观察距离上接近这套能力。', enabled: true, sortOrder: 0, version: 1, createdAt: 0, updatedAt: 0 },
+  { id: 'style-sample-02', projectId: '__default__', name: '旧城肌理', sourceTitle: '项目样本蒸馏 02', description: '具体环境细节、生活质感和人物关系中的含蓄张力。', distilledPrompt: '从正向样本中提炼环境细节、生活质感和含蓄对话的写法。只迁移观察方式、节奏和细节选择，不复制原作内容。', enabled: true, sortOrder: 1, version: 1, createdAt: 0, updatedAt: 0 },
+  { id: 'style-sample-03', projectId: '__default__', name: '悬压推进', sourceTitle: '项目样本蒸馏 03', description: '用句长变化、信息延迟和场景动作持续提高悬念压力。', distilledPrompt: '从正向样本中提炼悬念推进、信息延迟和句长变化。让压力服务当前章节任务，不套用固定开场、转折或收束句式。', enabled: true, sortOrder: 2, version: 1, createdAt: 0, updatedAt: 0 },
+  { id: 'style-sample-04', projectId: '__default__', name: '人物贴身', sourceTitle: '项目样本蒸馏 04', description: '贴近 POV 感知，用身体反应和有限信息呈现人物状态。', distilledPrompt: '从正向样本中提炼贴身 POV、身体感知和有限信息边界。不得替角色知道未知事实，也不得把样本中的人物表达直接搬入当前正文。', enabled: true, sortOrder: 3, version: 1, createdAt: 0, updatedAt: 0 },
+]
 
 export type NovelWritingStyleProfileInput = Omit<
   NovelWritingStyleProfile,
@@ -1901,6 +2032,8 @@ export type CreationPhase =
 export type CheckpointType =
   | 'narrative_task'
   | 'review'
+  // AI 编排结果的落库确认：生成阶段只保留临时变更，用户确认后才提交。
+  | 'arrange_review'
   // PostWriteGuard 命中（字数失控/模型退化/矩阵缺项等）且未达上限时的重写决策点
   | 'post_write_guard'
   // Writer 主动推回 Director 时的决策点（用户可选同意推回、强制继续、取消）
@@ -1982,6 +2115,13 @@ export interface AgentOutput {
   streaming?: boolean
   /** 关联的 AG-UI TEXT_MESSAGE_* 事件 messageId（用于 delta 累积） */
   messageId?: string
+  /**
+   * 流式思考（reasoning）累积文本：正文 delta 到达前展示思考过程，
+   * 避免"已启动"占位气泡在长思考期间看似卡死（SSE 有数据但会话无输出）。
+   */
+  thinking?: string
+  /** 是否已收到正文 delta（true 后前端展示 content 而非 thinking） */
+  hasStreamedText?: boolean
 }
 
 /** 创作流程最终结果（后端权威定义原在 chapter-finalizer.ts，迁入共享包） */
@@ -1993,6 +2133,8 @@ export interface CreationResult {
   error?: string
   /** 群聊运行快照 ID（用于断点续跑） */
   discussionRunId?: string
+  /** 工作流运行快照 ID（用于 create-flow 断点续跑） */
+  workflowRunId?: string
   /** 本次是否可直接从 Writer 阶段继续 */
   canResume?: boolean
   /** 失败阶段（status='error' 时标注） */
@@ -2017,6 +2159,16 @@ export interface CreationResult {
    * 为 false 时前端不应提供「再次修订」入口。
    */
   canReviseAgain?: boolean
+  styleTechniqueChecks?: Array<{
+    expertId: string
+    expertName: string
+    techniqueId: string
+    techniqueName: string
+    dimension: string
+    verdict: 'present' | 'absent' | 'not_applicable'
+    evidence?: string
+    note?: string
+  }>
 }
 
 /** 质量门未通过项（确定性检测产物，可安全 JSON 序列化） */
@@ -2090,6 +2242,9 @@ export type ChapterChatRole = 'user' | 'agent' | 'system'
 /** 聊天消息阶段（标识消息产生于哪种场景） */
 export type ChapterChatPhase = 'pre_creation' | 'checkpoint' | 'discussion' | 'free_chat' | 'review'
 
+/** 工作流插话可定向的 Agent；群聊插话由 Moderator 自主分发，不使用该字段。 */
+export type NovelInterjectTargetAgent = 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
+
 /** 章节聊天消息元数据（从 ChapterChatMessage.metadata 提取为命名类型） */
 export interface ChapterChatMetadata {
   /** 检查点 ID（phase=checkpoint 时） */
@@ -2100,12 +2255,14 @@ export interface ChapterChatMetadata {
   agentType?: string
   /** 用户 @ 指定的 Agent ID 列表（phase=free_chat 时） */
   mentionedAgents?: string[]
+  styleTechniqueChecks?: unknown[]
+  styleExpertIds?: string[]
   /** 创作模式（'workflow' | 'discussion'） */
   flowMode?: 'workflow' | 'discussion'
   /** 工作流运行 ID，用于区分同一章节的多次创作尝试 */
   workflowRunId?: string
   /** 工作流消息类型 */
-  workflowMessageType?: 'run_start' | 'agent' | 'checkpoint' | 'decision' | 'memory' | 'run_end'
+  workflowMessageType?: 'run_start' | 'agent' | 'checkpoint' | 'decision' | 'memory' | 'style_technique_checks' | 'run_end'
   /** 检查点类型 */
   checkpointType?: CheckpointType
   /** 检查点原始数据，供前端恢复卡片内容 */
@@ -2126,8 +2283,12 @@ export interface ChapterChatMetadata {
   interject?: boolean
   /** 插话消息 ID（与 SSE novel:user-message 事件 / 插话端点响应的 messageId 对齐，供前端渲染状态徽标） */
   messageId?: string
+  /** 插话所属运行 ID。 */
+  flowId?: string
+  /** 插话持久化状态；断线或重启后从历史恢复。 */
+  interjectStatus?: 'queued' | 'injected' | 'dropped'
   /** 插话定向 Agent（缺省注入下一个被调用的 Agent） */
-  targetAgent?: string
+  targetAgent?: NovelInterjectTargetAgent
 }
 
 /** 章节聊天消息（前后端共享，由 ChapterChatStore 持久化） */
@@ -2156,7 +2317,7 @@ export interface NovelUserMessageEvent {
   messageId: string
   content: string
   /** 定向 Agent（缺省注入下一个被调用的 Agent） */
-  targetAgent?: string
+  targetAgent?: NovelInterjectTargetAgent
   status: 'queued' | 'injected' | 'dropped'
   /** 目标创作流标识（projectId|chapterNumber，缺省时前端可按 flowId 对齐） */
   flowKey?: string

@@ -226,7 +226,11 @@ export interface UseNovelCreationFlowReturn {
    * ag-ui 事件格式与 startCreation 共用同一 handleEvent 状态机；额外增加 arrange_start/arrange_progress/arrange_done
    * 进度事件会以 CUSTOM(novel:progress) 流入 events 时间线（value.type 区分）。
    */
-  aiArrange: (projectId: string, chapterNumber: number) => Promise<void>
+  aiArrange: (
+    projectId: string,
+    chapterNumber: number,
+    options?: { modelId?: { provider: string; modelId: string; thinkingLevel?: import('./../stores/session-store').ThinkingLevel | null } },
+  ) => Promise<void>
   /**
    * 启动反推流程（模式3）
    *
@@ -576,7 +580,7 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
     const foreshadows = detail.foreshadows as number
     const factions = detail.factions as number
     const locations = detail.locations as number
-    const md = `## 编排完成\n\n**共生成 ${total} 个实体已落入矩阵**\n\n- 角色：${characters}\n- 冲突：${conflicts}\n- 伏笔：${foreshadows}\n- 势力：${factions}\n- 地点：${locations}`
+    const md = `## 编排草稿完成，等待确认\n\n**共生成 ${total} 个实体，尚未落库**\n\n- 角色：${characters}\n- 冲突：${conflicts}\n- 伏笔：${foreshadows}\n- 势力：${factions}\n- 地点：${locations}\n\n请在下方确认落库，或填写意见后按意见修改。`
     return { agentType: 'arranger', agentName: '编排', content: md }
   }
   if (kind === 'revision_passed') {
@@ -1213,8 +1217,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               (data as { partial?: string } | undefined)?.partial ??
               (evtDetail as { partial?: string } | undefined)?.partial
 
-            // arrange_done + arrange_summary：编排完成，实体已落库
-            // → 渲染汇总气泡 + dataChanged: true 触发画布/侧边栏刷新
+            // arrange_done + arrange_summary：编排草稿完成，但仍在等待用户确认。
+            // → 只渲染汇总气泡，不刷新画布；确认提交由 arrange_committed 触发。
             if (evtType === 'arrange_done' && detail && detailKind === 'arrange_summary') {
               // characterFunctions（本章功能位）不落库，只在本次编排的返回值里存在。
               // 缓存下来，随后触发 create-flow 时一并回传，否则 Writer 永远拿不到
@@ -1235,7 +1239,18 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               }
               const formatted = formatDetailBubble(detail)
               const content = formatted.content
-              pushArrangerBubble(content, content.slice(0, 100), evt.timestamp, '编排', true)
+              pushArrangerBubble(content, content.slice(0, 100), evt.timestamp, '编排', false)
+              return
+            }
+
+            if (evtType === 'arrange_committed') {
+              pushArrangerBubble(
+                evtMsg || 'AI 编排已确认落库，矩阵已更新。',
+                evtMsg || 'AI 编排已确认落库，矩阵已更新。',
+                evt.timestamp,
+                '编排',
+                true,
+              )
               return
             }
 
@@ -1358,6 +1373,11 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           )
           setIsRunning(false)
           setCurrentCheckpoint(null)
+          // AI 编排被拒绝/取消时，缓存的 characterFunctions 指向已被后端撤销的实体，
+          // 必须清掉，否则随后的 create-flow 会带着失效 ID 触发 400 编排实体校验。
+          if (resultData.status !== 'completed') {
+            lastArrangeFunctionsRef.current = null
+          }
           if (resultData.error) {
             setError(resultData.error)
           }
@@ -1688,7 +1708,11 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    * 会流入 events 时间线；正文生成需由 create-flow 单独触发。
    */
   const aiArrange = useCallback(
-    async (projectId: string, chapterNumber: number): Promise<void> => {
+    async (
+      projectId: string,
+      chapterNumber: number,
+      options?: { modelId?: { provider: string; modelId: string; thinkingLevel?: import('./../stores/session-store').ThinkingLevel | null } },
+    ): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
 
@@ -1719,7 +1743,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/ai-arrange`
 
-      const runPromise = runFlow(url, {}, controller)
+      const runPromise = runFlow(url, options?.modelId ? { modelId: options.modelId } : {}, controller)
       runFlowPromiseRef.current = runPromise
       try {
         await runPromise

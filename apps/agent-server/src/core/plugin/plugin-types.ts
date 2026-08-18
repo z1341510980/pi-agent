@@ -280,7 +280,7 @@ export interface AgUiSessionHandle {
  * 插件创建 Pi Session 的选项
  */
 export interface PluginSessionOptions {
-  /** 系统提示词（覆盖默认的 Pi Agent 提示词） */
+  /** 系统提示词（覆盖默认的 Wenlang Agent 提示词） */
   systemPrompt: string
   /**
    * 前缀用户消息（SEMI 层，跨 Agent 稳定的章节上下文）。

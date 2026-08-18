@@ -20,6 +20,7 @@
 
 import type { FastifyBaseLogger } from 'fastify'
 import type { AgUiSessionHandle } from '../plugin/plugin-types.js'
+import type { PluginSessionOptions } from '../plugin/plugin-types.js'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import { AgentChannel } from './agent-channel.js'
 import { Moderator } from './moderator.js'
@@ -58,7 +59,7 @@ export interface EngineContext {
     temperature?: number
     timeoutMs?: number
     /** 成员配置的 modelId（透传给底层 createAgUiSession） */
-    modelId?: { provider: string; modelId: string }
+    modelId?: PluginSessionOptions['modelId']
     /** 显式授权给本次成员会话的 Skill（/skill: 展开提供角色方法） */
     skill?: { name: string; path: string }
     emit: AgUiEventSink
@@ -975,7 +976,7 @@ ${reviewResult.rewrite_suggestion}
       systemPrompt: string
       prefixMessages: string[]
       temperature: number
-      modelId?: { provider: string; modelId: string }
+      modelId?: PluginSessionOptions['modelId']
       participantIds?: string[]
       participantNames?: string[]
     },

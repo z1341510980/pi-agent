@@ -69,9 +69,11 @@ export interface ModelPickerProps {
   onChange: (value: ModelRef | null) => void
   /** 可选：显示文字（如"本次创作使用"） */
   label?: string
+  /** 紧凑模式：顶栏 Tab 旁使用，隐藏图标与标签、收窄按钮 */
+  compact?: boolean
 }
 
-export function ModelPicker({ value, onChange, label }: ModelPickerProps): ReactElement {
+export function ModelPicker({ value, onChange, label, compact = false }: ModelPickerProps): ReactElement {
   const [providers, setProviders] = useState<ProviderBrief[]>([])
   const [open, setOpen] = useState(false)
   const [hoveredKey, setHoveredKey] = useState<string | null>(null)
@@ -123,13 +125,16 @@ export function ModelPicker({ value, onChange, label }: ModelPickerProps): React
 
   return (
     <div className="flex items-center gap-1.5 text-xs">
-      <Sparkles className="size-3.5 text-primary shrink-0" aria-hidden />
-      {label && <span className="text-nano text-subtle whitespace-nowrap">{label}</span>}
+      {!compact && <Sparkles className="size-3.5 text-primary shrink-0" aria-hidden />}
+      {!compact && label && <span className="text-nano text-subtle whitespace-nowrap">{label}</span>}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="inline-flex h-7 min-w-[180px] max-w-[260px] items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2 text-left text-nano text-text transition-[background-color,border-color,transform] hover:border-primary/50 hover:bg-surface-3 active:scale-[0.96]"
+            className={cn(
+              'inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2 text-left text-nano text-text transition-[background-color,border-color,transform] hover:border-primary/50 hover:bg-surface-3 active:scale-[0.96]',
+              compact ? 'min-w-[140px] max-w-[200px]' : 'min-w-[180px] max-w-[260px]',
+            )}
             aria-label="选择模型"
           >
             <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
@@ -140,7 +145,7 @@ export function ModelPicker({ value, onChange, label }: ModelPickerProps): React
         </PopoverTrigger>
         <PopoverContent
           align="start"
-          side="top"
+          side={compact ? 'bottom' : 'top'}
           collisionPadding={12}
           className="w-[min(680px,calc(100vw-1rem))] max-h-[calc(100vh-2rem)] !overflow-hidden p-2"
         >

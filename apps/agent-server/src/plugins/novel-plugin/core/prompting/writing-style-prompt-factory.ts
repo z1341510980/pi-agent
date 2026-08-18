@@ -100,6 +100,9 @@ function cleanSample(value: string, maxLength: number): string {
  */
 const POSITIVE_SAMPLE_MAX_LENGTH = 1200
 const NEGATIVE_SAMPLE_MAX_LENGTH = 500
+const WRITING_STYLE_PROMPT_MAX_LENGTH = 7199
+const PROFILE_HASH_LENGTH = 16
+const PROFILE_MARKER_PREFIX = '\n\n文风档案标识：'
 
 function listSection(title: string, values: string[], limit: number, itemMaxLength = 180): string {
   const lines = values
@@ -184,6 +187,37 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
     ].join('\n'))
   }
   return sections
+}
+
+function truncatePromptAtBoundary(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const head = value.slice(0, maxLength)
+  const boundary = Math.max(
+    head.lastIndexOf('\n\n'),
+    head.lastIndexOf('\n'),
+    head.lastIndexOf('。'),
+    head.lastIndexOf('！'),
+    head.lastIndexOf('？'),
+  )
+  return head.slice(0, boundary > maxLength * 0.75 ? boundary + 1 : maxLength).trimEnd()
+}
+
+/**
+ * 极端档案优先裁掉可选尾部，始终保留最后一段 Agent 职责说明。
+ * 哈希标识在预算之外单独预留，确保最终返回值也严格低于上限。
+ */
+function joinPromptSectionsWithinBudget(sections: string[]): string {
+  const maxContentLength = WRITING_STYLE_PROMPT_MAX_LENGTH
+    - PROFILE_MARKER_PREFIX.length
+    - PROFILE_HASH_LENGTH
+  const requiredSection = sections.at(-1) ?? ''
+  const optionalContent = sections.slice(0, -1).join('\n\n')
+  if (!optionalContent) return truncatePromptAtBoundary(requiredSection, maxContentLength)
+
+  const separator = '\n\n'
+  const optionalBudget = Math.max(0, maxContentLength - separator.length - requiredSection.length)
+  const boundedOptionalContent = truncatePromptAtBoundary(optionalContent, optionalBudget)
+  return `${boundedOptionalContent}${separator}${requiredSection}`
 }
 
 export function selectStyleExperts(
@@ -297,7 +331,7 @@ export function compileWritingStylePrompt(
     sections.push('### 文风验收方式\n先检查叙事人称、视角信息范围和明确硬约束，再检查本次召集的独立文风能力是否体现在具体手法上：场景、人物、对话、动作/打斗、感情引爆和叙事结构按专家提供的手法卡逐项核对。必须引用正文证据说明“已体现/未体现/与当前场景不适用”，不能只写“文风不一致”。当前场景的合理波动优先；不得仅因某一章偏离全书平均值就判定失败。数字指纹只作辅助，不能单独判定失败。')
   }
 
-  const content = sections.join('\n\n')
+  const content = joinPromptSectionsWithinBudget(sections)
   const profileHash = createHash('sha256').update(JSON.stringify({
     id: profile.id,
     version: profile.version,
@@ -310,6 +344,6 @@ export function compileWritingStylePrompt(
     profileVersion: profile.version,
     profileHash,
     target,
-    content: `${content}\n\n文风档案标识：${profileHash}`,
+    content: `${content}${PROFILE_MARKER_PREFIX}${profileHash}`,
   }
 }

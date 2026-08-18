@@ -38,6 +38,8 @@ pnpm-debug.log*
 *.deb
 *.rpm
 *.snap
+# Vitest golden fixtures are source-controlled test inputs, not Electron packages.
+!apps/agent-server/src/plugins/novel-plugin/__tests__/__snapshots__/*.snap
 
 # 临时文件
 *.tmp

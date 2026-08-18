@@ -33,7 +33,7 @@ export function useActiveAgent() {
     const builtin = BUILTIN_PRESETS[activeAgentId] ?? {}
 
     const name =
-      agentInfo?.name ?? builtin.name ?? activeAgentId ?? 'Pi Agent'
+      agentInfo?.name ?? builtin.name ?? activeAgentId ?? 'Wenlang Agent'
     const description = agentInfo?.description ?? builtin.description
     const icon = builtin.icon
 

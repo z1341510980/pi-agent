@@ -45,8 +45,63 @@ export interface ChapterOutlineReferenceNames {
 
 function stripJsonFence(text: string): string {
   const trimmed = text.trim()
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
-  return fenced ? fenced[1].trim() : trimmed
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
+  if (fenced) return fenced[1].trim()
+
+  const unclosedFence = trimmed.match(/```(?:json)?\s*([\s\S]*)/i)
+  return unclosedFence ? unclosedFence[1].trim() : trimmed
+}
+
+function extractJsonObjects(text: string): string[] {
+  const objects: string[] = []
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === '{') {
+      if (depth === 0) start = index
+      depth += 1
+      continue
+    }
+    if (char !== '}' || depth === 0) continue
+    depth -= 1
+    if (depth === 0 && start >= 0) {
+      objects.push(text.slice(start, index + 1))
+      start = -1
+    }
+  }
+
+  return objects
+}
+
+function parseJsonResponse(text: string): unknown {
+  const stripped = stripJsonFence(text)
+  const candidates = [stripped, ...extractJsonObjects(stripped)]
+  let cause: unknown
+
+  for (const candidate of new Set(candidates)) {
+    if (!candidate) continue
+    try {
+      return JSON.parse(candidate)
+    } catch (err) {
+      cause = err
+    }
+  }
+
+  throw new Error('章纲模型返回的 JSON 无法解析', { cause })
 }
 
 function appendUniqueRisk(
@@ -62,12 +117,7 @@ export function parseChapterOutlineDraft(
   text: string,
   references: ChapterOutlineReferenceNames
 ): ChapterOutlineDraft {
-  let json: unknown
-  try {
-    json = JSON.parse(stripJsonFence(text))
-  } catch (err) {
-    throw new Error('章纲模型返回的 JSON 无法解析', { cause: err })
-  }
+  const json = parseJsonResponse(text)
 
   const parsed = rawChapterOutlineDraftSchema.safeParse(json)
   if (!parsed.success) {
