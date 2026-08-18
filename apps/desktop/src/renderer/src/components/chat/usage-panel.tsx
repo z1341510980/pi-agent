@@ -1,5 +1,5 @@
 import { useState, type ReactElement } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { browserConfig } from '@repo/config/browser'
 import { getApi, putApi, ApiClientError } from '@/api'
@@ -52,7 +52,7 @@ export function UsagePanel({ isOnline }: UsagePanelProps): ReactElement {
     queryFn: () => getObservabilityOverview(projectId!),
     enabled: !!projectId && isOnline,
     refetchInterval: 60_000,
-    placeholderData: (prev: unknown) => prev
+    placeholderData: keepPreviousData
   })
 
   // 预算信息

@@ -7,12 +7,13 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { DEFAULT_NOVEL_STYLE_EXPERTS, type NovelStyleExpert } from '@repo/shared/novel'
 import type {
   NovelWorldRule, NovelStyleGuide, NovelWritingStyleProfile,
   NovelWritingStyleProfileInput, NovelConstraint, NovelWorldElement,
 } from '../types.js'
 import type {
-  WorldRuleRow, StyleGuideRow, WritingStyleProfileRow, ConstraintRow, WorldElementRow,
+  WorldRuleRow, StyleGuideRow, StyleExpertRow, WritingStyleProfileRow, ConstraintRow, WorldElementRow,
 } from './row-types.js'
 import {
   now, parseJSON,
@@ -25,7 +26,7 @@ export class WorldStore {
   private readonly repository: WorldRepository
 
   constructor(
-    db: import('better-sqlite3').Database,
+    private readonly db: import('better-sqlite3').Database,
     private deleteEdgesByEntity: (entityId: string) => number,
   ) {
     this.repository = new WorldRepository(createNovelDrizzleDb(db))
@@ -91,7 +92,14 @@ export class WorldStore {
 
   getWritingStyleProfile(projectId: string): NovelWritingStyleProfile | undefined {
     const row = this.repository.getWritingStyleProfile(projectId)
-    return row ? this.rowToWritingStyleProfile(row) : undefined
+    if (!row) return undefined
+    const profile = this.rowToWritingStyleProfile(row)
+    // 独立专家表是新的生效源；旧 JSON 只作为迁移前/空表兼容回退。
+    const experts = this.repository.listStyleExperts(projectId)
+    profile.styleExperts = experts.length > 0
+      ? experts.map((expert) => this.rowToStyleExpert(expert))
+      : this.listStyleExperts(projectId)
+    return profile
   }
 
   upsertWritingStyleProfile(projectId: string, input: NovelWritingStyleProfileInput): NovelWritingStyleProfile {
@@ -101,6 +109,9 @@ export class WorldStore {
       id: existing?.id ?? randomUUID(),
       projectId,
       ...input,
+      styleExperts: input.styleExperts !== undefined
+        ? input.styleExperts
+        : existing?.styleExperts ?? DEFAULT_NOVEL_STYLE_EXPERTS,
       version: (existing?.version ?? 0) + 1,
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
@@ -122,11 +133,106 @@ export class WorldStore {
       positive_examples: JSON.stringify(full.positiveExamples),
       negative_examples: JSON.stringify(full.negativeExamples),
       notes: full.notes,
+      style_experts: JSON.stringify(full.styleExperts),
       version: full.version,
       created_at: full.createdAt,
       updated_at: full.updatedAt,
     })
+    // Profile 编辑器可能会回传独立专家的可编辑字段。独立专家表仍是运行时生效源，
+    // 因此只同步已存在的真实行，不把虚拟默认专家写入数据库，也不覆盖蒸馏原文。
+    for (const requested of input.styleExperts ?? []) {
+      const row = this.repository.getStyleExpert(projectId, requested.id)
+      if (!row) continue
+      const current = this.rowToStyleExpert(row)
+      const patch: Partial<Pick<NovelStyleExpert, 'name' | 'sourceTitle' | 'sourceAuthor' | 'description' | 'customPrompt' | 'enabled' | 'sortOrder'>> = {}
+      if (requested.name !== current.name) patch.name = requested.name
+      if (requested.sourceTitle !== current.sourceTitle) patch.sourceTitle = requested.sourceTitle
+      if ((requested.sourceAuthor ?? undefined) !== (current.sourceAuthor ?? undefined)) patch.sourceAuthor = requested.sourceAuthor
+      if (requested.description !== current.description) patch.description = requested.description
+      if ((requested.customPrompt ?? undefined) !== (current.customPrompt ?? undefined)) patch.customPrompt = requested.customPrompt
+      if (requested.enabled !== current.enabled) patch.enabled = requested.enabled
+      if (requested.sortOrder !== current.sortOrder) patch.sortOrder = requested.sortOrder
+      if (Object.keys(patch).length > 0) this.updateStyleExpert(projectId, requested.id, patch)
+    }
     return full
+  }
+
+  listStyleExperts(projectId: string): NovelStyleExpert[] {
+    const rows = this.repository.listStyleExperts(projectId)
+    return (rows.length > 0 ? rows : DEFAULT_NOVEL_STYLE_EXPERTS.map((expert) => ({ ...expert, projectId } as NovelStyleExpert))).map((row) => this.rowToStyleExpert(row as StyleExpertRow))
+  }
+
+  createStyleExpert(input: Omit<NovelStyleExpert, 'createdAt' | 'updatedAt'>): NovelStyleExpert {
+    const ts = now()
+    const expert = { ...input, createdAt: ts, updatedAt: ts }
+    this.db.transaction(() => {
+      this.repository.insertStyleExpert(this.toStyleExpertRow(expert))
+      this.repository.insertStyleExpertVersion(this.toStyleExpertVersionRow(expert))
+    })()
+    return expert
+  }
+
+  updateStyleExpert(projectId: string, id: string, patch: Partial<Pick<NovelStyleExpert, 'name' | 'sourceTitle' | 'sourceAuthor' | 'description' | 'customPrompt' | 'enabled' | 'sortOrder'>>): NovelStyleExpert | undefined {
+    const row = this.repository.getStyleExpert(projectId, id)
+    if (!row) return undefined
+    const current = this.rowToStyleExpert(row)
+    if (Object.keys(patch).length === 0) return current
+    const expert = { ...current, ...patch, version: current.version + 1, updatedAt: now() }
+    this.db.transaction(() => {
+      this.repository.updateStyleExpert(projectId, id, this.toStyleExpertRow(expert))
+      this.repository.insertStyleExpertVersion(this.toStyleExpertVersionRow(expert))
+    })()
+    return expert
+  }
+
+  listStyleExpertVersions(projectId: string, id: string) { return this.repository.listStyleExpertVersions(projectId, id) }
+
+  rollbackStyleExpert(projectId: string, id: string, version: number): NovelStyleExpert | undefined {
+    const snapshot = this.listStyleExpertVersions(projectId, id).find((item) => item.version === version)
+    if (!snapshot) return undefined
+    const patch: Partial<Pick<NovelStyleExpert, 'name' | 'sourceTitle' | 'sourceAuthor' | 'description' | 'customPrompt' | 'enabled' | 'sortOrder'>> = {
+      name: snapshot.name,
+      description: snapshot.description,
+      customPrompt: snapshot.customPrompt ?? undefined,
+      enabled: snapshot.enabled === 1,
+    }
+    // 110 之前的历史版本没有来源和排序列；此时保留当前主表字段。
+    if (snapshot.sourceTitle != null) {
+      patch.sourceTitle = snapshot.sourceTitle
+      patch.sourceAuthor = snapshot.sourceAuthor ?? undefined
+    }
+    if (snapshot.sortOrder != null) patch.sortOrder = snapshot.sortOrder
+    return this.updateStyleExpert(projectId, id, patch)
+  }
+
+  deleteStyleExpert(projectId: string, id: string): boolean { return this.repository.deleteStyleExpert(projectId, id) }
+
+  private toStyleExpertRow(expert: NovelStyleExpert): StyleExpertRow {
+    return { id: expert.id, project_id: expert.projectId, name: expert.name, source_title: expert.sourceTitle, source_author: expert.sourceAuthor ?? null, description: expert.description, distilled_prompt: expert.distilledPrompt, custom_prompt: expert.customPrompt ?? null, metrics_json: expert.metrics ? JSON.stringify(expert.metrics) : null, techniques_json: expert.techniques ? JSON.stringify(expert.techniques) : null, exclusions_json: expert.exclusions ? JSON.stringify(expert.exclusions) : null, exemplars_json: expert.exemplarPassages ? JSON.stringify(expert.exemplarPassages) : null, enabled: expert.enabled ? 1 : 0, sort_order: expert.sortOrder, distill_meta: expert.distillMeta ? JSON.stringify(expert.distillMeta) : null, version: expert.version, created_at: expert.createdAt, updated_at: expert.updatedAt }
+  }
+
+  private toStyleExpertVersionRow(expert: NovelStyleExpert) {
+    return {
+      id: randomUUID(),
+      projectId: expert.projectId,
+      expertId: expert.id,
+      version: expert.version,
+      name: expert.name,
+      sourceTitle: expert.sourceTitle,
+      sourceAuthor: expert.sourceAuthor ?? null,
+      description: expert.description,
+      customPrompt: expert.customPrompt ?? null,
+      enabled: expert.enabled ? 1 : 0,
+      sortOrder: expert.sortOrder,
+      createdAt: expert.updatedAt,
+    }
+  }
+
+  private rowToStyleExpert(row: StyleExpertRow | NovelStyleExpert): NovelStyleExpert {
+    if ('project_id' in row) {
+    return { id: row.id, projectId: row.project_id, name: row.name, sourceTitle: row.source_title, sourceAuthor: row.source_author ?? undefined, description: row.description, distilledPrompt: row.distilled_prompt, metrics: row.metrics_json ? JSON.parse(row.metrics_json) : undefined, techniques: row.techniques_json ? JSON.parse(row.techniques_json) : undefined, exclusions: row.exclusions_json ? JSON.parse(row.exclusions_json) : undefined, exemplarPassages: row.exemplars_json ? JSON.parse(row.exemplars_json) : undefined, customPrompt: row.custom_prompt ?? undefined, enabled: row.enabled === 1, sortOrder: row.sort_order, distillMeta: row.distill_meta ? JSON.parse(row.distill_meta) : undefined, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at }
+    }
+    return row
   }
 
   listConstraints(projectId: string): NovelConstraint[] {
@@ -228,6 +334,7 @@ export class WorldStore {
       positiveExamples: parseStringArray(row.positive_examples),
       negativeExamples: parseStringArray(row.negative_examples),
       notes: row.notes ?? '',
+      styleExperts: parseJSON(row.style_experts, DEFAULT_NOVEL_STYLE_EXPERTS),
       version: Math.max(1, Number(row.version) || 1),
       createdAt: row.created_at,
       updatedAt: row.updated_at,

@@ -77,7 +77,13 @@ import {
   FINGERPRINT_TRUST
 } from './prompt-budget.js'
 import {
+  measureStyleMetrics,
+  formatStyleMetricsAsFingerprint,
+} from '../analysis/style-measurement.js'
+import {
+  buildStyleDecisionPack,
   compileWritingStylePrompt,
+  selectStyleExperts,
   type WritingStylePromptTarget
 } from './writing-style-prompt-factory.js'
 import { buildVoiceProfiles, formatVoiceContrastTable } from '../entities/character-voice.js'
@@ -726,7 +732,8 @@ export class NovelPromptBuilder {
    */
   buildWritingStylePrompt(
     projectId: string,
-    target: WritingStylePromptTarget
+    target: WritingStylePromptTarget,
+    styleExpertIds?: string[],
   ): ReturnType<typeof compileWritingStylePrompt> | undefined {
     const profile = this.stores.getWritingStyleProfile?.(projectId)
     if (!profile) {
@@ -746,7 +753,7 @@ export class NovelPromptBuilder {
           `档案已注入但缺乏正反样本引导，LLM 可能不严格遵循。`
       )
     }
-    return compileWritingStylePrompt(profile, target)
+    return compileWritingStylePrompt(selectStyleExperts(profile, styleExpertIds), target)
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -880,7 +887,7 @@ export class NovelPromptBuilder {
    *   含剧本编织约束、role-character-actor.md 含剧本演出格式）。
    *   群聊模式必须传 true，否则 Agent 不知道自己的群聊职责，会出现 Director 直接写正文等问题。
    */
-  buildAgentIdentity(projectId: string, agentType: string, discussion = false): string {
+  buildAgentIdentity(projectId: string, agentType: string, discussion = false, styleExpertIds?: string[]): string {
     const identity = this.promptManager.render(
       'system-base',
       {
@@ -904,7 +911,11 @@ export class NovelPromptBuilder {
       this.guardAgentIdentity(agentType, result)
       return result
     }
-    const compiledStyle = this.buildWritingStylePrompt(projectId, agentType)
+    const compiledStyle = this.buildWritingStylePrompt(
+      projectId,
+      agentType as WritingStylePromptTarget,
+      styleExpertIds,
+    )
     const final = compiledStyle ? `${result}\n\n---\n\n${compiledStyle.content}` : result
     this.guardAgentIdentity(agentType, final)
     return final
@@ -920,7 +931,7 @@ export class NovelPromptBuilder {
     return this.promptManager.getDefaultTemplatePath('role-reviewer', projectId)
   }
 
-  buildReviewerSkillIdentity(projectId: string): string {
+  buildReviewerSkillIdentity(projectId: string, styleExpertIds?: string[]): string {
     const identity = this.promptManager.render(
       'system-base',
       {
@@ -931,7 +942,7 @@ export class NovelPromptBuilder {
     )
     const rules = this.promptManager.getTemplate('system-base-rules', projectId)
     const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
-    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviewer')
+    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviewer', styleExpertIds)
     return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
   }
 
@@ -969,7 +980,7 @@ export class NovelPromptBuilder {
     return this.promptManager.getDefaultTemplatePath('role-writer', projectId)
   }
 
-  buildWriterSkillIdentity(projectId: string): string {
+  buildWriterSkillIdentity(projectId: string, styleExpertIds?: string[]): string {
     const identity = this.promptManager.render(
       'system-base',
       {
@@ -980,7 +991,7 @@ export class NovelPromptBuilder {
     )
     const rules = this.promptManager.getTemplate('system-base-rules', projectId)
     const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
-    const compiledStyle = this.buildWritingStylePrompt(projectId, 'writer')
+    const compiledStyle = this.buildWritingStylePrompt(projectId, 'writer', styleExpertIds)
     return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
   }
 
@@ -995,7 +1006,7 @@ export class NovelPromptBuilder {
     return this.promptManager.getDefaultTemplatePath('role-reviser', projectId)
   }
 
-  buildReviserSkillIdentity(projectId: string): string {
+  buildReviserSkillIdentity(projectId: string, styleExpertIds?: string[]): string {
     const identity = this.promptManager.render(
       'system-base',
       {
@@ -1006,7 +1017,7 @@ export class NovelPromptBuilder {
     )
     const rules = this.promptManager.getTemplate('system-base-rules', projectId)
     const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
-    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviser')
+    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviser', styleExpertIds)
     return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
   }
 
@@ -1066,7 +1077,7 @@ export class NovelPromptBuilder {
     return this.promptManager.getDefaultTemplatePath(`role-${agentType}-discussion`, projectId)
   }
 
-  buildDiscussionSkillIdentity(agentType: string, projectId: string): string {
+  buildDiscussionSkillIdentity(agentType: string, projectId: string, styleExpertIds?: string[]): string {
     const identity = this.promptManager.render(
       'system-base',
       {
@@ -1080,7 +1091,11 @@ export class NovelPromptBuilder {
     }
     const rules = this.promptManager.getTemplate('system-base-rules', projectId)
     const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
-    const compiledStyle = this.buildWritingStylePrompt(projectId, agentType as WritingStylePromptTarget)
+    const compiledStyle = this.buildWritingStylePrompt(
+      projectId,
+      agentType as WritingStylePromptTarget,
+      styleExpertIds,
+    )
     return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
   }
 
@@ -1146,6 +1161,11 @@ export class NovelPromptBuilder {
     return this.promptManager.getDefaultTemplatePath('novel-creation', projectId)
   }
 
+  /** 项目级 lengdu Skill：仅供 Writer 初稿显式授权，不参与默认 Skill 扫描。 */
+  getLengduSkillPath(): string | undefined {
+    return this.promptManager.getExternalSkillPath('lengdu', 'PI_LENGDU_SKILL_PATH')
+  }
+
   buildNovelCreationSkillIdentity(projectId: string): string {
     return this.promptManager.render(
       'system-base',
@@ -1174,7 +1194,7 @@ export class NovelPromptBuilder {
   }
 
   /** 盲审文字编辑身份：不携带章节规划，只保留文字职责和项目文风档案。 */
-  buildProseEditorIdentity(projectId: string): string {
+  buildProseEditorIdentity(projectId: string, styleExpertIds?: string[]): string {
     const identity = this.promptManager.render(
       'system-base',
       {
@@ -1186,7 +1206,7 @@ export class NovelPromptBuilder {
     // prose_editor 也需要铁律
     const rules = this.promptManager.getTemplate('system-base-rules', projectId)
     const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
-    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviewer')
+    const compiledStyle = this.buildWritingStylePrompt(projectId, 'reviewer', styleExpertIds)
     return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
   }
 
@@ -1842,15 +1862,11 @@ export class NovelPromptBuilder {
       // 无定位时不再应用节奏倍率（2026-08-12 逻辑统一：删除 computeChapterTargetWords）。
       const targetWords = constraints.wordBudget?.target
         ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
-      const positioningGuidance: Record<string, string> = {
-        high_pressure: '高压章：快节奏、高张力、动作密集，章尾留强钩。',
-        advancement: '推进章：节奏适中，每个场景都要产生信息或局势增量。',
-        cultivation: '修炼试错章：写清过程、代价和成长，结尾给出突破或新方向。',
-        relationship: '关系回收章：以互动和对话承载关系变化。',
-        low_pressure:
-          '低压生活章：允许放缓，但至少推进一项信息或关系；不得为了避免空转临时制造伏笔。',
-        information: '信息整理章：用场景和对话承载信息，避免写成清单。'
-      }
+      const styleDecisionPack = buildStyleDecisionPack({
+        positioning: constraints.positioning ?? narrativeTask.positioning,
+        narrativeTaskType: narrativeTask.type,
+        profile: this.stores.getWritingStyleProfile?.(projectId),
+      })
       const instruction = this.promptManager.render(
         'chapter-instruction',
         {
@@ -1858,9 +1874,7 @@ export class NovelPromptBuilder {
           narrative_task: narrativeTask.description,
           task_type: promptLabel(narrativeTask.type),
           target_words: String(targetWords),
-          positioning_guidance: constraints.positioning
-            ? positioningGuidance[constraints.positioning]
-            : '未单独指定定位，按已批准的叙事任务和节奏约束执行。'
+          positioning_guidance: styleDecisionPack,
         },
         projectId
       )
@@ -4046,7 +4060,8 @@ export class NovelPromptBuilder {
    * 文风指纹：从前几章正文中提取文风特征快照
    *
    * 注入 Writer/Reviewer 的 SEMI 层，让 LLM 在 context compaction 后仍能保持文风一致。
-   * 提取指标：平均句长、短句/长句占比、对话占比、比喻密度、段落长度、人称、情感温度
+   * 统计实现已统一到 core/analysis/style-measurement（与参考小说分析、专家蒸馏
+   * 共用同一测量器，V2 方案阶段 1）；此处只负责取样本与格式化。
    */
   private formatStyleFingerprint(prevChapters: NovelChapter[]): string {
     if (prevChapters.length === 0) return ''
@@ -4059,100 +4074,14 @@ export class NovelPromptBuilder {
 
     if (sampleText.trim().length < 200) return ''
 
-    // 分句（按句号/问号/感叹号）
-    const sentences = sampleText.split(/[。！？\n]+/).filter((s) => s.trim().length > 0)
-    if (sentences.length === 0) return ''
-
-    const sentenceLengths = sentences.map((s) => s.replace(/\s/g, '').length)
-    const totalChars = sentenceLengths.reduce((sum, len) => sum + len, 0)
-    const avgSentenceLength = Math.round(totalChars / sentences.length)
-    const shortSentences = sentenceLengths.filter((len) => len < 15).length
-    const longSentences = sentenceLengths.filter((len) => len > 40).length
-    const shortSentenceRatio = Math.round((shortSentences / sentences.length) * 100)
-    const longSentenceRatio = Math.round((longSentences / sentences.length) * 100)
-
-    // 对话占比（含引号的段落字数 / 总字数）
-    // ⚠️ 引号字符类必须用转义码点书写：之前直接写弯引号，被格式化/编码转换吃成 ASCII "，
-    // 导致中文正文里的 “…” 一个都匹配不到，对话占比恒为 0%。
-    const paragraphs = sampleText.split(/\n+/).filter((p) => p.trim().length > 0)
-    const totalParaChars = paragraphs.reduce((sum, p) => sum + p.replace(/\s/g, '').length, 0)
-    const dialogueChars = paragraphs
-      .filter((p) => DIALOGUE_QUOTE_PATTERN.test(p))
-      .reduce((sum, p) => sum + p.replace(/\s/g, '').length, 0)
-    const dialogueRatio =
-      totalParaChars > 0 ? Math.round((dialogueChars / totalParaChars) * 100) : 0
-
-    // 比喻密度（每千字比喻词出现次数）；整数取整会把真实密度（通常 <1/千字）全部抹成 0，
-    // 所以保留一位小数。
-    const metaphorWords = (sampleText.match(/犹如|宛若|仿佛|恍若|好似|有如|好像|像是/g) || [])
-      .length
-    const metaphorDensity =
-      totalChars > 0 ? Math.round((metaphorWords / totalChars) * 10000) / 10 : 0
-
-    // 段落平均长度
-    const avgParagraphLength =
-      paragraphs.length > 0 ? Math.round(totalParaChars / paragraphs.length) : 0
-
-    // 叙事人称检测
-    const firstPersonCount = (sampleText.match(/我(?!们|国|方|军|辈)/g) || []).length
-    const thirdPersonCount = (sampleText.match(/他|她|它/g) || []).length
-    const narrativePerson: 'first' | 'third' | 'mixed' =
-      firstPersonCount > thirdPersonCount * 2
-        ? 'first'
-        : thirdPersonCount > firstPersonCount * 2
-          ? 'third'
-          : 'mixed'
-
-    // 情感温度（0=冷峻，10=热烈）
-    // 原实现用 5 + (hot - cold) * 0.5 的绝对词频差，样本一长必然被 clamp 到 0，
-    // 任何克制型长文都会得到"情感温度 0"这种错误基准。改为按每千字归一后再映射。
-    const hotWords = (sampleText.match(/怒|吼|咆哮|狂|爆|燃|热血|激昂|疯狂/g) || []).length
-    const coldWords = (sampleText.match(/冷|静|默|沉|淡|克制|漠然/g) || []).length
-    const per1k = (count: number): number => (totalChars > 0 ? (count / totalChars) * 1000 : 0)
-    const emotionalTemperature = Math.min(
-      10,
-      Math.max(0, Math.round(5 + (per1k(hotWords) - per1k(coldWords)) * 0.6))
-    )
+    const snapshot = measureStyleMetrics(sampleText)
+    if (snapshot.sentenceCount === 0) return ''
 
     const sampleRange: [number, number] = [
       prevChapters[0].chapterNumber,
       prevChapters[prevChapters.length - 1].chapterNumber
     ]
-
-    const lines: string[] = [
-      `## 文风指纹（第${sampleRange[0]}-${sampleRange[1]}章提取，最近样本统计）`,
-      '',
-      `- 平均句长：${avgSentenceLength} 字`,
-      `- 短句占比（<15字）：${shortSentenceRatio}%`,
-      `- 长句占比（>40字）：${longSentenceRatio}%`,
-      `- 对话占比：${dialogueRatio}%`,
-      `- 比喻密度：${metaphorDensity}/千字`,
-      `- 段落平均长度：${avgParagraphLength} 字`,
-      `- 叙事人称：${narrativePerson === 'first' ? '第一人称' : narrativePerson === 'third' ? '第三人称' : '混合人称'}`,
-      `- 情感温度：${emotionalTemperature}/10（0=冷峻克制，10=热烈奔放）`
-    ]
-
-    // 指纹只是"从既有正文自动量化"的观测值，不能升级成逐章硬约束。
-    // 即使样本可信，它也只说明最近章节的稳定倾向；场景任务和人物关系必须允许
-    // 句长、对话与情感温度自然波动，否则生成会迅速收敛成同一种节拍。
-    const trustworthy =
-      totalParaChars >= FINGERPRINT_TRUST.minParagraphChars &&
-      paragraphs.length >= FINGERPRINT_TRUST.minParagraphCount &&
-      dialogueRatio > 0 &&
-      emotionalTemperature > 0
-    if (trustworthy) {
-      lines.push('')
-      lines.push(
-        '说明：样本量足够，以上可作为最近正文的稳定倾向，但不是本章配额。当前场景、人物关系和叙事压力优先，允许在合理范围内偏离；不得为了贴近均值复制前章的句式、开场或段落节拍。'
-      )
-    } else {
-      lines.push('')
-      lines.push(
-        '说明：以上仅为前文自动量化的观测值，样本量或指标可信度不足，仅作参考，不作为硬约束；本章文风以「项目文风档案」为准。'
-      )
-    }
-
-    return lines.join('\n')
+    return formatStyleMetricsAsFingerprint(snapshot, `第${sampleRange[0]}-${sampleRange[1]}章提取`)
   }
 
   /**

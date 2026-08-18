@@ -110,32 +110,19 @@ describe('阈值单一来源', () => {
     expect(overLimit.issues.some((i) => i.code === 'fragmented_paragraphs')).toBe(true)
   })
 
-  it('role-writer.md 的段落约束与检查阈值一致', async () => {
+  it('精确段落阈值只由写后质量门执行，不塞进 Writer 实时提示', async () => {
     const { readFile } = await import('node:fs/promises')
     const { join } = await import('node:path')
     const text = await readFile(
       join(process.cwd(), 'src/plugins/novel-plugin/core/prompts/role-writer.md'),
       'utf8',
     )
-    // prompt 必须引用与 PROSE_SHAPE_LIMITS 同一个数字，而不是自己写一个更严/更松的措辞。
-    // 断言从常量派生：调阈值时测试会指出 prompt 也要一起改。
-    const limit = PROSE_SHAPE_LIMITS.maxConsecutiveSingleSentenceParagraphs
-    expect(text).toContain(`连续单句段不得超过 ${limit} 段`)
-    // 旧措辞（写死"六段"或比检查更严的"三段"禁令）必须已移除
-    expect(text).not.toContain('避免连续六段以上单句成段')
-    expect(text).not.toContain('禁止连续三段以上单句成段')
-  })
-
-  it('role-writer.md 的短段占比措辞与检查阈值一致', async () => {
-    const { readFile } = await import('node:fs/promises')
-    const { join } = await import('node:path')
-    const text = await readFile(
-      join(process.cwd(), 'src/plugins/novel-plugin/core/prompts/role-writer.md'),
-      'utf8',
-    )
-    // 0.25 → "四分之一"。阈值改动时这条会失败，提醒同步 prompt 措辞。
+    expect(text).toContain('段落跟着动作单元和注意力变化自然分合')
+    expect(text).not.toContain('连续单句段不得超过')
+    expect(text).not.toContain('18 字以内的短段')
+    expect(text).not.toContain('每千字')
+    expect(PROSE_SHAPE_LIMITS.maxConsecutiveSingleSentenceParagraphs).toBe(3)
     expect(PROSE_SHAPE_LIMITS.shortParagraphRatioWarning).toBe(0.25)
-    expect(text).toContain('18 字以内的短段全章不超过四分之一')
   })
 
 

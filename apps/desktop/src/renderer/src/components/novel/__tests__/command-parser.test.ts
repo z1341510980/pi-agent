@@ -41,7 +41,7 @@ describe('parseCommand /继续（resume）', () => {
   })
 
   it('resume 不接受数字参数（带数字视为未知命令）', () => {
-    expect(parseCommand('/继续 3').kind).toBe('unknown')
+    expect(parseCommand('/继续 3')).toEqual({ kind: 'unknown', raw: '/继续 3' })
   })
 })
 

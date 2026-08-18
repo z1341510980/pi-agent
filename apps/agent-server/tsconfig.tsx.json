@@ -1,0 +1,20 @@
+/**
+ * tsx 运行时使用这份配置：移除 paths 映射，不遮蔽 pi-subagents。
+ * tsx 会把 tsconfig paths 应用到运行时模块解析，遮蔽会导致无限递归。
+ *
+ * 为什么不删 paths 并只用环境模块声明？——环境模块声明遮蔽不了可解析的
+ * 真实包，typescript 会把真实包源码树整个拉进来并报错（因为 pi-subagents 内
+ * 部 import 带 .ts 后缀，本项目不兼容）。
+ */
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}

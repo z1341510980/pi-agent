@@ -28,6 +28,10 @@ import {
   TextInput,
 } from './shared'
 import { CHAPTER_STATUS_TRANSITIONS } from '@repo/shared/novel'
+import {
+  ChapterOutlineEditor,
+  type AppliedChapterOutlineGeneration,
+} from './chapter-outline-editor'
 
 const CHAPTER_STATUS_LABELS: Record<ChapterStatus, string> = {
   planned: '已规划',
@@ -46,9 +50,13 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
     status: entity.status,
     rhythm: entity.rhythm ?? '',
   })
+  const [outlineDraft, setOutlineDraft] = useState(entity.outline ?? '')
+  const [appliedOutlineGeneration, setAppliedOutlineGeneration] =
+    useState<AppliedChapterOutlineGeneration | null>(null)
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [outlineSaveError, setOutlineSaveError] = useState<string | null>(null)
   const statusOptions = CHAPTER_STATUS_TRANSITIONS[entity.status]
 
   useEffect(() => {
@@ -57,29 +65,50 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
       status: entity.status,
       rhythm: entity.rhythm ?? '',
     })
-  }, [entity.id, entity.title, entity.status, entity.rhythm])
+    setOutlineDraft(entity.outline ?? '')
+    setAppliedOutlineGeneration(null)
+    setOutlineSaveError(null)
+  }, [entity.id, entity.title, entity.status, entity.rhythm, entity.outline])
 
   const dirty =
     form.title !== entity.title ||
     form.status !== entity.status ||
-    (form.rhythm || '') !== (entity.rhythm ?? '')
+    (form.rhythm || '') !== (entity.rhythm ?? '') ||
+    outlineDraft !== (entity.outline ?? '')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
     setError(null)
+    setOutlineSaveError(null)
+    const outlineChanged = outlineDraft !== (entity.outline ?? '')
     try {
       const updated = await updateChapter(entity.id, {
         title: form.title,
         status: form.status,
         rhythm: form.rhythm === '' ? undefined : (form.rhythm as ChapterRhythm),
+        ...(outlineChanged
+          ? {
+              outline: outlineDraft,
+              ...(appliedOutlineGeneration
+                ? {
+                    expectedOutlineHash: appliedOutlineGeneration.outlineHash,
+                    expectedContentRevisionId: appliedOutlineGeneration.contentRevisionId,
+                    outlineGenerationId: appliedOutlineGeneration.generationId,
+                  }
+                : {}),
+            }
+          : {}),
       })
+      setAppliedOutlineGeneration(null)
       upsertChapter(updated)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存失败')
+      const message = err instanceof Error ? err.message : '保存失败'
+      if (outlineChanged) setOutlineSaveError(message)
+      else setError(message)
     } finally {
       setSaving(false)
     }
-  }, [entity.id, form, upsertChapter])
+  }, [appliedOutlineGeneration, entity.id, entity.outline, form, outlineDraft, upsertChapter])
 
   const handlePublish = useCallback(async () => {
     if (publishing || entity.status !== 'review') return
@@ -101,14 +130,18 @@ export function ChapterForm({ entity }: { entity: NovelChapter }): ReactElement 
 
   return (
     <div className="space-y-2">
-      <SectionHeader title="章纲" />
-      <DebouncedOutlineField
-        label="章纲内容"
-        value={entity.outline ?? ''}
-        placeholder="编写章纲（生成的统一起点）..."
-        onSave={async (outline) => {
-          const updated = await updateChapter(entity.id, { outline })
-          upsertChapter(updated)
+      <ChapterOutlineEditor
+        entity={entity}
+        value={outlineDraft}
+        saveError={outlineSaveError}
+        onChange={(outline) => {
+          setOutlineDraft(outline)
+          setOutlineSaveError(null)
+        }}
+        onApplyGeneration={(outline, generation) => {
+          setOutlineDraft(outline)
+          setAppliedOutlineGeneration(generation)
+          setOutlineSaveError(null)
         }}
       />
 

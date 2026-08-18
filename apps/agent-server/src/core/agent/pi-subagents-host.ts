@@ -24,8 +24,9 @@
 import type { EventBus } from '@repo/shared/events'
 import * as nodeFs from 'node:fs'
 import { setTimeout as nodeSetTimeout, clearTimeout as nodeClearTimeout } from 'node:timers'
-// 编译期走 src/types/pi-subagents.d.ts 垫片（避免其 TS 源码树进入类型程序）；
-// 运行时由 Node/vitest 解析真实扩展工厂。
+// 编译期走 src/types/pi-subagents-shim.d.ts 垫片（tsconfig.json paths 映射，
+// 避免真实包 TS 源码树进入类型程序）；运行时由 tsx 用 tsconfig.tsx.json
+// （无 paths 映射）直接加载真实包，vitest 同理不应用 paths。
 import registerSubagentExtension from 'pi-subagents'
 import {
   SUBAGENT_DELEGATION_CANCEL_EVENT,

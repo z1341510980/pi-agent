@@ -93,7 +93,7 @@ export class NovelDiscussionRunner {
     // 插话投递通道（对话化交互形态 §3.1，批次 1 任务 3）：engine 是本方法内的
     // 局部实例、插话端点不可直达，因此把 enqueueUserMessage 闭包登记到共享注册表，
     // 供 POST /projects/:projectId/flows/:flowId/messages 在 kind='discussion' 时路由。
-    const interjectFlowKey = `${projectId}|${chapterNumber}`
+    const interjectFlowKey = options.flowKey ?? `${projectId}|${chapterNumber}`
     try {
       this.store.assertTimelineAllowsGeneration?.(projectId, chapterNumber)
       // 首次运行解析并冻结项目主模型；恢复旧快照没有该字段时才回读当前设置。
@@ -166,6 +166,7 @@ export class NovelDiscussionRunner {
         boundary,
         options.memberModel,
         projectModel,
+        options.styleExpertIds,
       )
 
       // 5. 构建引擎并运行
@@ -176,6 +177,7 @@ export class NovelDiscussionRunner {
             return this.context.createSession({
               systemPrompt: opts.systemPrompt,
               userMessage: opts.userMessage,
+              tools: [],
               timeoutMs: opts.timeoutMs,
               modelId: opts.model,
               signal: opts.signal,
@@ -233,6 +235,7 @@ export class NovelDiscussionRunner {
       const settings = this.discussionSettingsStore?.get() ?? {}
       const engineOptions: DiscussionOptions = {
         ...options,
+        styleExpertIds: options.styleExpertIds,
         projectModel,
         resolveCharacterMembers: (characterNames) =>
           this.resolveCharacterMembers(
@@ -302,6 +305,7 @@ export class NovelDiscussionRunner {
             extractResult: () => ({
               toolCalled: Boolean(draft.review),
               review: draft.review ?? null,
+              styleTechniqueChecks: draft.styleTechniqueChecks,
             }),
           }
         },
@@ -357,9 +361,13 @@ export class NovelDiscussionRunner {
       // 永远停在 queued。注销后收尾窗口内的插话由端点回 409。
       let result: DiscussionResult
       try {
-        result = resumeState
-          ? await discussionEngine.resumeChapterWeaving(goal, members, engineOptions, resumeState)
-          : await discussionEngine.run(goal, members, engineOptions)
+        // 断点续跑入口分流：acting/scene_setup → 场景推演续跑（Moderator 继续
+        // 驱动）；chapter_weaving/reviewing → 编织/复核续跑（不再调用 Moderator）
+        result = !resumeState
+          ? await discussionEngine.run(goal, members, engineOptions)
+          : resumeState.phase === 'acting' || resumeState.phase === 'scene_setup'
+            ? await discussionEngine.resumeSceneActing(goal, members, engineOptions, resumeState)
+            : await discussionEngine.resumeChapterWeaving(goal, members, engineOptions, resumeState)
       } finally {
         unregisterInterjectEnqueuer(interjectFlowKey)
       }
@@ -561,6 +569,7 @@ export class NovelDiscussionRunner {
     boundary?: ChapterBoundaryContext,
     memberModel?: { provider: string; modelId: string },
     projectModel: { provider: string; modelId: string } | undefined = parseNovelModelRef(this.store.getNovelModelId(projectId)),
+    styleExpertIds?: string[],
   ): DiscussionMember[] {
     const members: DiscussionMember[] = []
 
@@ -591,8 +600,8 @@ export class NovelDiscussionRunner {
         // 因此 shared 末尾的 cache breakpoint 可跨工种命中。
         buildSystemPrompt: () => this.promptBuilder.buildSystemPrompt(projectId, agentType),
         buildIdentityPrompt: () => discussionSkillPath
-          ? this.promptBuilder.buildDiscussionSkillIdentity(agentType, projectId)
-          : this.promptBuilder.buildAgentIdentity(projectId, agentType, true),
+          ? this.promptBuilder.buildDiscussionSkillIdentity(agentType, projectId, styleExpertIds)
+           : this.promptBuilder.buildAgentIdentity(projectId, agentType, true, styleExpertIds),
         ...(discussionSkillPath
           ? { skill: { name: `novel-${agentType}-discussion`, path: discussionSkillPath } }
           : {}),
@@ -601,14 +610,14 @@ export class NovelDiscussionRunner {
           : undefined,
         buildFinalReviewIdentityPrompt: agentType === 'reviewer'
           ? () => finalReviewSkillPath
-            ? this.promptBuilder.buildReviewerSkillIdentity(projectId)
-            : this.promptBuilder.buildAgentIdentity(projectId, agentType, false)
+            ? this.promptBuilder.buildReviewerSkillIdentity(projectId, styleExpertIds)
+             : this.promptBuilder.buildAgentIdentity(projectId, agentType, false, styleExpertIds)
           : undefined,
         ...(finalReviewSkillPath
           ? { finalReviewSkill: { name: 'novel-reviewer', path: finalReviewSkillPath } }
           : {}),
         buildProseEditorIdentityPrompt: agentType === 'reviewer'
-          ? () => this.promptBuilder.buildProseEditorIdentity(projectId)
+          ? () => this.promptBuilder.buildProseEditorIdentity(projectId, styleExpertIds)
           : undefined,
         // 工作流与群聊共用优先级：本次模型 > 项目创作主模型 > AgentPage 配置。
         modelId: memberModel ?? projectModel ?? agentConfig?.model,

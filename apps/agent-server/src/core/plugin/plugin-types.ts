@@ -27,6 +27,8 @@ import type { ConfirmationManager } from '../tool/confirmation-manager.js'
 // 按 5 参数签名调用，因此必须使用 pi-coding-agent 的 ToolDefinition 类型。
 import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { ModelRegistryLike } from './cache-control-support.js'
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
+import type Database from 'better-sqlite3'
 
 /** 插件状态 */
 export type PluginStatus = 'loaded' | 'enabled' | 'disabled' | 'error'
@@ -114,6 +116,13 @@ export interface MigrationDefinition {
   id: string
   /** SQL 语句（必须幂等，使用 IF NOT EXISTS） */
   sql: string
+  /**
+   * 在 SQL 之前于同一事务中执行的兼容准备步骤。
+   * 仅用于无法用 SQLite 静态 SQL 表达的旧库结构迁移。
+   */
+  beforeApply?: (db: Database.Database) => void
+  /** 在 SQL 之后于同一事务中执行的数据回填步骤。 */
+  afterApply?: (db: Database.Database) => void
 }
 
 /** 插件清单：插件元数据 */
@@ -344,17 +353,17 @@ export interface PluginSessionOptions {
    * 未来接入 pi-subagents / pi-actors 等第三方运行时时通过 AgentRuntimeRegistry 注册适配器。
    */
   runtime?: string
-  /** 自定义工具（可选，默认注入插件工具） */
+  /** 自定义工具。undefined 注入默认插件工具；[] 显式禁用工具；非空数组为本次会话白名单。 */
   tools?: PiToolDefinition[]
   /** 模型 ID（可选，默认使用已配置的第一个 Provider 的第一个模型） */
-  modelId?: { provider: string; modelId: string }
+  modelId?: { provider: string; modelId: string; thinkingLevel?: ThinkingLevel | null }
   /** 中止信号 */
   signal?: AbortSignal
   /** LLM 温度（0-2，未配置则使用 SDK 默认） */
   temperature?: number
   /** LLM 最大输出 token 数（未配置则从模型注册信息自动读取） */
   maxTokens?: number
-  /** 响应格式：'json' 强制 JSON 输出（依赖 provider 支持 json_object） */
+  /** 响应格式：'json' 强制 JSON 输出，但不会移除工具定义；只读 JSON 会话仍需显式 tools: []。 */
   responseFormat?: 'json' | 'text'
   /** LLM 调用超时时间（毫秒），默认 120000（2 分钟）。写作等长文本 Agent 建议设 300000+ */
   timeoutMs?: number

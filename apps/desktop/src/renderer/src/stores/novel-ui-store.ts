@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import type { NovelEdgeType } from '@/api/novel-client'
+import type { ThinkingLevel } from './session-store'
 import { readLegacyViewMode } from './novel-legacy-view-mode'
 
 // ── 节点类型 ──
@@ -20,6 +21,13 @@ export type NovelNodeType =
   | 'info_layer'
   | 'item'
   | 'narrative'
+
+/** 小说会话输入框最近一次选择的模型。 */
+export interface NovelAgentModelRef {
+  provider: string
+  modelId: string
+  thinkingLevel?: ThinkingLevel | null
+}
 
 // ── Store 状态 ──
 
@@ -41,6 +49,9 @@ export interface NovelUiState {
 
   // ── 当前创作模式（手动编排 / AI编排，不持久化）──
   creationMode: 'manual' | 'ai-arrange' | null
+
+  // ── 小说会话偏好（跨右栏 Tab / 应用重启保留）──
+  selectedAgentModel: NovelAgentModelRef | null
 
   // ── 矩阵视图折叠分组（与 NovelSidebar 共享）──
   // 用 string[] 而非 MatrixEntityKind[] 是因为 NovelSidebar 还有一个 'chapter' 分组
@@ -81,6 +92,7 @@ export interface NovelUiState {
   setCanvasEdgeType: (edgeType: NovelEdgeType) => void
   setPlayheadChapter: (chapter: number) => void
   setCreationMode: (mode: 'manual' | 'ai-arrange' | null) => void
+  setSelectedAgentModel: (model: NovelAgentModelRef | null) => void
   toggleCollapsedGroup: (kind: string) => void
   toggleExpandedVolume: (id: string) => void
   setMatrixScrollTarget: (target: { chapter: number; ts: number } | null) => void
@@ -137,6 +149,8 @@ export const useNovelUiStore = create<NovelUiState>()(
 
       creationMode: null,
 
+      selectedAgentModel: null,
+
       collapsedGroups: [],
 
       expandedVolumes: [],
@@ -155,6 +169,7 @@ export const useNovelUiStore = create<NovelUiState>()(
       setCanvasEdgeType: (edgeType) => set({ canvasEdgeType: edgeType }),
       setPlayheadChapter: (chapter) => set({ playheadChapter: chapter }),
       setCreationMode: (mode) => set({ creationMode: mode }),
+      setSelectedAgentModel: (model) => set({ selectedAgentModel: model }),
 
       toggleCollapsedGroup: (kind: string) =>
         set((state) => {
@@ -259,6 +274,7 @@ export const useNovelUiStore = create<NovelUiState>()(
         collapsedGroups: state.collapsedGroups,
         expandedVolumes: state.expandedVolumes,
         matrixSidebarCollapsed: state.matrixSidebarCollapsed,
+        selectedAgentModel: state.selectedAgentModel,
       }),
       // 自定义 merge：旧版本 localStorage 没有 canvasLayoutMode 字段时填回默认值 'grouped'
       // 避免从旧数据反序列化出 undefined 导致按钮 variant 判断失效
@@ -269,6 +285,7 @@ export const useNovelUiStore = create<NovelUiState>()(
           ...p,
           canvasLayoutMode: p.canvasLayoutMode ?? 'grouped',
           matrixSidebarCollapsed: p.matrixSidebarCollapsed ?? false,
+          selectedAgentModel: p.selectedAgentModel ?? current.selectedAgentModel,
         }
       },
     },

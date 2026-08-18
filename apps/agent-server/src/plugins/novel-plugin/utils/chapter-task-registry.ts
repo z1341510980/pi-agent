@@ -20,6 +20,8 @@ export type NovelChapterTaskKind = 'workflow' | 'discussion' | 'discussion-resum
 /** 运行中的章节任务 */
 export interface ActiveNovelChapterTask {
   kind: NovelChapterTaskKind
+  /** 本次运行 ID；插话端点必须精确匹配，防止旧客户端写入同章的新运行。 */
+  flowId: string
   controller: AbortController
   startedAt: number
   /**
@@ -49,6 +51,7 @@ export const activeNovelChapterTasks = new Map<string, ActiveNovelChapterTask>()
 export function registerNovelChapterTask(
   lockKey: string,
   kind: NovelChapterTaskKind,
+  flowId = lockKey.split(':').at(-1) ?? lockKey,
 ): ActiveNovelChapterTask {
   let resolveDone!: () => void
   const donePromise = new Promise<void>((resolve) => {
@@ -56,6 +59,7 @@ export function registerNovelChapterTask(
   })
   const task: ActiveNovelChapterTask = {
     kind,
+    flowId,
     controller: new AbortController(),
     startedAt: Date.now(),
     donePromise,
@@ -101,7 +105,7 @@ export type InterjectEventPublisher = (event: NovelUserMessageEvent) => void
  */
 export type InterjectEnqueuer = (msg: { id: string; content: string; createdAt: number }) => boolean
 
-/** flowKey（`${projectId}|${chapterNumber}`，与 orchestrator.runKey 同构）→ 推送回调 */
+/** flowKey（`${projectId}|${chapterNumber}|${flowId}`）→ 推送回调 */
 const interjectFlowPublishers = new Map<string, InterjectEventPublisher>()
 
 /** flowKey → 群聊 engine 插话入队闭包（runner 启动时注册，run 结束注销） */
@@ -112,9 +116,10 @@ interface TrackedInterjectMessage {
   flowKey: string
   flowId: string
   content: string
-  targetAgent?: string
+  targetAgent?: NovelUserMessageEvent['targetAgent']
 }
 const trackedInterjectMessages = new Map<string, TrackedInterjectMessage>()
+let interjectStatusPersister: ((messageId: string, status: 'injected' | 'dropped', agentType?: string) => void) | undefined
 
 /** create-flow 启动后登记本 flow 的插话事件推送回调；重复登记覆盖旧值。 */
 export function registerInterjectFlow(flowKey: string, publish: InterjectEventPublisher): void {
@@ -158,7 +163,7 @@ export function announceInterjectQueued(info: {
   flowId: string
   messageId: string
   content: string
-  targetAgent?: string
+  targetAgent?: NovelUserMessageEvent['targetAgent']
 }): void {
   trackedInterjectMessages.set(info.messageId, {
     flowKey: info.flowKey,
@@ -188,6 +193,7 @@ export function dispatchInterjectStatus(
   extra?: { agentType?: string },
 ): void {
   for (const id of ids) {
+    interjectStatusPersister?.(id, status, extra?.agentType)
     const info = trackedInterjectMessages.get(id)
     // 无论能否推送都先移除追踪：injected 已消费、dropped 已收尾，状态不再流转
     if (!info) continue
@@ -209,7 +215,10 @@ export function dispatchInterjectStatus(
  * orchestrator 单例的插话生命周期 hooks（novel-services 构造时传入第 8 参）：
  * injected/dropped 回调经本注册表按 messageId/flowKey 路由到对应 flow 的 SSE 通道。
  */
-export function createInterjectDispatchHooks(): NovelOrchestratorHooks {
+export function createInterjectDispatchHooks(
+  persistStatus?: (messageId: string, status: 'injected' | 'dropped', agentType?: string) => void,
+): NovelOrchestratorHooks {
+  interjectStatusPersister = persistStatus
   return {
     onInterjectInjected: (ids, agentType) => dispatchInterjectStatus('injected', ids, { agentType }),
     onInterjectDropped: ids => dispatchInterjectStatus('dropped', ids),

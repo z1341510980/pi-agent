@@ -270,7 +270,7 @@ describe('NovelOrchestrator Skill 白名单路径（Writer / Reviser 迁移）',
     await expect(invokeRunAgentOnce('director', { contextMode: 'identity_only' })).rejects.toThrow(STOP_ERROR)
 
     expect(sessionArg().skill).toBeUndefined()
-    expect(buildAgentIdentitySpy).toHaveBeenCalledWith(fx.projectId, 'director')
+    expect(buildAgentIdentitySpy).toHaveBeenCalledWith(fx.projectId, 'director', false, undefined)
   })
 
   it('SQLite 覆盖 role-writer 时回退旧模板，不绕过用户配置', async () => {
@@ -279,7 +279,7 @@ describe('NovelOrchestrator Skill 白名单路径（Writer / Reviser 迁移）',
       await expect(invokeRunAgentOnce('writer')).rejects.toThrow(STOP_ERROR)
 
       expect(sessionArg().skill).toBeUndefined()
-      expect(buildAgentIdentitySpy).toHaveBeenCalledWith(fx.projectId, 'writer')
+      expect(buildAgentIdentitySpy).toHaveBeenCalledWith(fx.projectId, 'writer', false, undefined)
 
       const prefix = sessionArg().prefixUserMessage as string[]
       expect(prefix[1]).toContain('用户自定义 Writer 模板')

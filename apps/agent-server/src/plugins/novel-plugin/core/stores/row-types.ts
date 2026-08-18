@@ -276,6 +276,28 @@ export interface WritingStyleProfileRow {
   positive_examples: string
   negative_examples: string
   notes: string
+  style_experts: string
+  version: number
+  created_at: number
+  updated_at: number
+}
+
+export interface StyleExpertRow {
+  id: string
+  project_id: string
+  name: string
+  source_title: string
+  source_author: string | null
+  description: string
+  distilled_prompt: string
+  metrics_json: string | null
+  techniques_json: string | null
+  exclusions_json: string | null
+  exemplars_json: string | null
+  custom_prompt: string | null
+  enabled: number
+  sort_order: number
+  distill_meta: string | null
   version: number
   created_at: number
   updated_at: number

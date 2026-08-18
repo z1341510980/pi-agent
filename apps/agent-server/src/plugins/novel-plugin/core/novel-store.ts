@@ -246,6 +246,8 @@ export class NovelStore implements NovelPromptStores {
   listWorldRules(projectId: string): NovelWorldRule[] { return this.world.listWorldRules(projectId) }
   listStyleGuide(projectId: string): NovelStyleGuide[] { return this.world.listStyleGuide(projectId) }
   getWritingStyleProfile(projectId: string): NovelWritingStyleProfile | undefined { return this.world.getWritingStyleProfile(projectId) }
+  listStyleExperts(projectId: string) { return this.world.listStyleExperts(projectId) }
+  createStyleExpert(input: any) { return this.world.createStyleExpert(input) }
   listCharacters(projectId: string): NovelCharacter[] { return this.character.listCharacters(projectId) }
   listRelationships(projectId: string): NovelRelationship[] { return this.character.listRelationships(projectId) }
   listConflicts(projectId: string): NovelConflict[] { return this.conflict.listConflicts(projectId) }
@@ -1063,6 +1065,10 @@ export class NovelStore implements NovelPromptStores {
   updateStyleGuide(id: string, updates: Partial<Omit<NovelStyleGuide, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelStyleGuide | undefined { return this.world.updateStyleGuide(id, updates) }
   deleteStyleGuide(id: string): boolean { return this.world.deleteStyleGuide(id) }
   upsertWritingStyleProfile(projectId: string, input: NovelWritingStyleProfileInput): NovelWritingStyleProfile { return this.world.upsertWritingStyleProfile(projectId, input) }
+  updateStyleExpert(projectId: string, id: string, patch: any) { return this.world.updateStyleExpert(projectId, id, patch) }
+  listStyleExpertVersions(projectId: string, id: string) { return this.world.listStyleExpertVersions(projectId, id) }
+  rollbackStyleExpert(projectId: string, id: string, version: number) { return this.world.rollbackStyleExpert(projectId, id, version) }
+  deleteStyleExpert(projectId: string, id: string) { return this.world.deleteStyleExpert(projectId, id) }
   createConstraint(constraint: Omit<NovelConstraint, 'createdAt' | 'updatedAt'>): NovelConstraint { return this.world.createConstraint(constraint) }
   updateConstraint(id: string, updates: Partial<Omit<NovelConstraint, 'id' | 'projectId' | 'createdAt' | 'updatedAt'>>): NovelConstraint | undefined { return this.world.updateConstraint(id, updates) }
   deleteConstraint(id: string): boolean { return this.world.deleteConstraint(id) }

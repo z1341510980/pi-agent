@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef, useState, type ReactElement } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { RefreshCw, CheckCircle2, AlertCircle, Hash, Brain, Zap, Database, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -97,7 +97,7 @@ export function CacheMonitorPanel({ chapterNumber }: CacheMonitorPanelProps): Re
     queryFn: () => getObservabilityCache(currentProjectId!, { chapterNumber, limit: 200 }),
     enabled: !!currentProjectId,
     refetchInterval: 60_000,
-    placeholderData: (prev: unknown) => prev,
+    placeholderData: keepPreviousData,
   })
   const obs = obsQuery.data
 

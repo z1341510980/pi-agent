@@ -93,6 +93,7 @@ export function createCharacterRoutes(services: NovelServices): RouteDefinition[
     modelId: z.object({
       provider: z.string().min(1),
       modelId: z.string().min(1),
+      thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).nullable().optional(),
     }).optional(),
   })
 

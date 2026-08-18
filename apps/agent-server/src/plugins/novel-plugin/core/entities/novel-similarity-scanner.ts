@@ -73,6 +73,7 @@ export class NovelSimilarityScanner {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage,
+      tools: [],
       responseFormat: 'json',
       // 实体清单可能较大，LLM 需要逐对比对，耗时较长
       timeoutMs: 300_000,

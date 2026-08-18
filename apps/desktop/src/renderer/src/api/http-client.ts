@@ -198,11 +198,16 @@ export async function deleteApi<T>(path: string): Promise<T> {
   return body.data
 }
 
-export async function postApi<T>(path: string, payload: unknown): Promise<T> {
+export async function postApi<T>(
+  path: string,
+  payload: unknown,
+  options?: { signal?: AbortSignal },
+): Promise<T> {
   const response = await fetch(`${browserConfig.apiBaseUrl}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: options?.signal,
   })
 
   const body = (await safeParseJson(response)) as ApiResponse<T> | null

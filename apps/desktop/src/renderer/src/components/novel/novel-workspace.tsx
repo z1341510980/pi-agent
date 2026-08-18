@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Feather, Settings as SettingsIcon, Gauge, Activity } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -15,7 +15,9 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useNovelDataStore } from '@/stores/novel-data-store'
+import { listWritingStyleExperts } from '@/api/novel-client'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import { useNovelWorkspaceLayoutStore, type RightPanelView, type WorkspaceLayoutMode } from '@/stores/novel-workspace-layout-store'
 import {
@@ -43,8 +45,8 @@ import {
   type SimilarityEntityKind,
   type NovelChapter,
 } from '@/api/novel-client'
-import { useNovelCreationFlow } from '@/hooks/use-novel-creation-flow'
-import { useChapterChat } from '@/hooks/use-chapter-chat'
+import { useNovelSession } from '@/hooks/use-novel-session'
+import type { NovelInterjectTargetAgent, NovelStyleExpert } from '@repo/shared/novel'
 import { useNovelSimilarityScan } from '@/hooks/use-novel-similarity-scan'
 import { useShortcut } from '@/hooks/use-shortcut'
 import { useNovelWorkspaceShortcuts } from '@/hooks/use-novel-workspace-shortcuts'
@@ -54,7 +56,6 @@ import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
 import { NovelConversationPanel, type NovelFlowType } from './novel-conversation-panel'
-import { ChatPanel } from './chat-panel'
 import { SettingsPanel } from './settings-panel'
 import { ConsistencyAuditPanel } from './consistency-audit-panel'
 import type { MentionOption } from '@/components/shared/conversation'
@@ -73,7 +74,6 @@ import {
   type ChapterTaskSnapshot,
 } from './chapter-task'
 import { ChapterContentEditor } from './chapter-content-editor'
-import { WritingStyleProfileEditor } from './writing-style-profile-editor'
 import { ReferenceAnalysisWorkspace } from './reference-analysis/reference-analysis-workspace'
 import { ErrorBoundary } from '@/components/overlays/error-boundary'
 import { MatrixErrorFallback } from './matrix-error-fallback'
@@ -96,8 +96,7 @@ const LAYOUT_MODE_OPTIONS: ReadonlyArray<SegmentedOption<WorkspaceLayoutMode>> =
 // ── 右侧面板 Tab ──
 
 const RIGHT_PANEL_OPTIONS: ReadonlyArray<SegmentedOption<RightPanelView>> = [
-  { value: 'conversation', label: '创作', icon: PenLine, title: '创作流程（工作流/群聊/反推/编排 + 进度/检查点）', dataTour: 'right-tab-conversation' },
-  { value: 'chat', label: '聊天', icon: MessageSquare, title: '章节自由对话（@ Agent/角色 问答）', dataTour: 'right-tab-chat' },
+  { value: 'conversation', label: '会话', icon: MessageSquare, title: '章节统一会话（聊天/工作流/群聊/编排）', dataTour: 'right-tab-conversation' },
   { value: 'detail', label: '详情', icon: Info, title: '实体查看/编辑（角色/冲突/伏笔/线索等）', dataTour: 'right-tab-detail' },
   { value: 'settings', label: '设置', icon: SettingsIcon, title: '项目级配置（标题/大纲/创作主模型/节奏模型/目标平台）', dataTour: 'right-tab-settings' },
   { value: 'audit', label: '审计', icon: ShieldCheck, title: '一致性诊断（伏笔回收/钩子/孤儿/时间线矛盾）', dataTour: 'right-tab-audit' },
@@ -243,7 +242,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
   // 创作流程
-  const creationFlow = useNovelCreationFlow()
+  const session = useNovelSession()
+  const creationFlow = session.creationFlow
   const [creationChapterNumber, setCreationChapterNumber] = useState<number | undefined>(undefined)
   // 创作子模式切换：编排模式（create-flow）/ 群聊模式（create-discussion）/ 反推（reverse-arrange）/ AI编排（ai-arrange）
   // 由右栏 NovelConversationPanel 的 Tab 控制，这里仅持有状态供 handleStartFlow 读取
@@ -258,7 +258,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // （creationFlow.isRunning 是 React state，setState 异步生效，ref 在 await 期间立即生效）
   const startCreationLockRef = useRef(false)
   /** 本次创作 per-call 模型（输入框旁选择器传入；null = 默认） */
-  const creationModelIdRef = useRef<{ provider: string; modelId: string } | null>(null)
+  const creationModelIdRef = useRef<{ provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null>(null)
 
   const [relayoutSignal, setRelayoutSignal] = useState(0)
   const sidebarVisible = useNovelWorkspaceLayoutStore((s) => s.sidebarVisible)
@@ -273,18 +273,36 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const focusMode = useNovelWorkspaceLayoutStore((s) => s.focusMode)
   const toggleFocusMode = useNovelWorkspaceLayoutStore((s) => s.toggleFocusMode)
   const [nodeCount, setNodeCount] = useState(0)
-  const [cachePanelOpen, setCachePanelOpen] = useState(false)
-  const [timelinePanelOpen, setTimelinePanelOpen] = useState(false)
+  const [diagnosticsPanelOpen, setDiagnosticsPanelOpen] = useState(false)
+  const [diagnosticsTab, setDiagnosticsTab] = useState<'logs' | 'cache' | 'trend'>('logs')
   const [p3PanelOpen, setP3PanelOpen] = useState(false)
-  const [logPanelOpen, setLogPanelOpen] = useState(false)
-  const [stylePanelOpen, setStylePanelOpen] = useState(false)
+  const [selectedStyleExpertIds, setSelectedStyleExpertIds] = useState<string[]>([])
+  const [styleExperts, setStyleExperts] = useState<NovelStyleExpert[]>([])
   const [referenceAnalysisOpen, setReferenceAnalysisOpen] = useState(false)
 
   // ── 章节自由聊天（"聊天" Tab）──
-  const chapterChat = useChapterChat()
+  const chapterChat = session.chapterChat
   const chapterChatLoadHistory = chapterChat.loadHistory
   // 聊天目标章节：优先创作流程章节，回退到当前选中章节
   const chatChapterNumber = creationChapterNumber ?? playheadChapter ?? undefined
+
+  const refreshStyleExperts = useCallback((): void => {
+    if (!currentProjectId) {
+      setStyleExperts([])
+      setSelectedStyleExpertIds([])
+      return
+    }
+    void listWritingStyleExperts(currentProjectId).then((experts) => {
+      const mappedExperts = experts.map((expert) => ({ ...expert, distilledPrompt: expert.distilledPrompt })) as NovelStyleExpert[]
+      setStyleExperts(mappedExperts)
+      setSelectedStyleExpertIds(mappedExperts.filter((expert) => expert.enabled).map((expert) => expert.id))
+    }).catch(() => {
+      setStyleExperts([])
+      setSelectedStyleExpertIds([])
+    })
+  }, [currentProjectId])
+
+  useEffect(() => refreshStyleExperts(), [refreshStyleExperts])
 
   // ── LLM 相似度扫描（SSE 流式扫描 + 多选弹框 + REST 合并）──
   const similarityScan = useNovelSimilarityScan()
@@ -640,10 +658,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     }
     const creationModelId = creationModelIdRef.current ?? undefined
     if (task.kind === 'discussion') {
-      await creationFlow.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId })
+      await session.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId, styleExpertIds: selectedStyleExpertIds })
       return
     }
-    await creationFlow.startCreation(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId })
+    await session.startWorkflow(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId, styleExpertIds: selectedStyleExpertIds })
   }, [chapters, creationFlow, resolveArrangedEntities, setCreationMode])
 
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
@@ -808,7 +826,23 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     setCreationChapterNumber(chapterNumber)
     setActiveChapterTask({ kind: 'discussion', projectId: currentProjectId, chapterNumber })
     creationFlow.reset()
-    void creationFlow.resumeDiscussion(currentProjectId, chapterNumber, runId)
+    void session.resumeDiscussion(currentProjectId, chapterNumber, runId)
+  }, [currentProjectId, creationChapterNumber, chatChapterNumber, creationFlow, setCreationMode])
+
+  /**
+   * 工作流断点续跑：从失败快照恢复（跳过已完成阶段）。
+   * runId='latest'（/继续 命令回退）由后端取该章最近一条可续跑快照。
+   */
+  const handleResumeWorkflow = useCallback((runId: string): void => {
+    if (!currentProjectId) return
+    const chapterNumber = creationChapterNumber ?? chatChapterNumber
+    if (chapterNumber == null) return
+    setFlowType('workflow')
+    setCreationMode('manual')
+    setCreationChapterNumber(chapterNumber)
+    setActiveChapterTask({ kind: 'workflow', projectId: currentProjectId, chapterNumber })
+    creationFlow.reset()
+    void session.resumeWorkflow(currentProjectId, chapterNumber, runId)
   }, [currentProjectId, creationChapterNumber, chatChapterNumber, creationFlow, setCreationMode])
 
   const handleSendMessage = useCallback((message: string) => {
@@ -819,19 +853,25 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
    * 插话（对话化交互形态 §3.1）：flow 运行中输入框发送分流到此。
    * 成功 toast「已排队」；409 表示当前无运行中可插话流程。
    */
-  const handleSendInterject = useCallback(async (content: string) => {
-    const outcome = await creationFlow.sendInterject(content)
+  const handleSendInterject = useCallback(async (
+    content: string,
+    targetAgent?: NovelInterjectTargetAgent
+  ) => {
+    const outcome = await session.sendInterject(content, targetAgent)
     if (outcome.ok) {
-      toastSuccess('已排队', '反馈将注入下一个被调用的 Agent')
+      toastSuccess(
+        '已排队',
+        targetAgent ? '反馈将注入指定 Agent' : '反馈将注入下一个被调用的 Agent'
+      )
     } else if (outcome.statusCode === 409) {
       toastError('发送失败', '当前无运行中流程')
     } else {
       toastError('发送失败', outcome.error)
     }
-  }, [creationFlow])
+  }, [session.sendInterject])
 
   // 右栏对话面板"开始"按钮：根据 flowType 分发到对应流程
-  const handleStartFlow = useCallback((modelId?: { provider: string; modelId: string } | null) => {
+  const handleStartFlow = useCallback((modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null) => {
     creationModelIdRef.current = modelId ?? null
     if (flowType === 'arrange') {
       void handleStartCreation('ai-arrange')
@@ -849,7 +889,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const handleStartFlowCommand = useCallback((
     command: 'write' | 'rewrite' | 'discuss',
     chapterNumber: number,
-    modelId?: { provider: string; modelId: string } | null,
+    modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null,
   ) => {
     if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
     const chapterExists = chapters.some((c) => c.chapterNumber === chapterNumber)
@@ -902,12 +942,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // ── 章节自由聊天回调 ──
   // ⚠️ 只依赖 hook 返回的稳定方法（useCallback 引用），不依赖整个 chapterChat 对象，
   // 避免 NovelConversationPanel 因回调引用变化而频繁重渲染
-  const chapterChatSendMessage = chapterChat.sendMessage
-  const chapterChatAbort = chapterChat.abort
+  const chapterChatSendMessage = session.sendChat
+  const chapterChatAbort = session.abortChat
   const handleSendChapterChat = useCallback(
-    (message: string, mentionedAgents?: string[], modelId?: { provider: string; modelId: string } | null) => {
+    (message: string, mentionedAgents?: string[], modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null, styleExpertIds?: string[]) => {
       if (!currentProjectId || chatChapterNumber == null) return
-      void chapterChatSendMessage(currentProjectId, chatChapterNumber, message, mentionedAgents, modelId)
+      void chapterChatSendMessage(currentProjectId, chatChapterNumber, message, mentionedAgents, modelId, styleExpertIds)
     },
     [currentProjectId, chatChapterNumber, chapterChatSendMessage],
   )
@@ -1048,19 +1088,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             <Button
               size="icon-sm"
               variant="ghost"
-              onClick={() => setCachePanelOpen(true)}
+              onClick={() => setDiagnosticsPanelOpen(true)}
               disabled={!currentProject}
-              title="缓存诊断"
-              className="text-subtle hover:text-text"
-            >
-              <Database className="size-3.5" />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => setTimelinePanelOpen(true)}
-              disabled={!currentProject}
-              title="调用趋势"
+              title="调用诊断（日志 / 缓存 / 趋势）"
+              aria-label="调用诊断（日志 / 缓存 / 趋势）"
               className="text-subtle hover:text-text"
             >
               <Activity className="size-3.5" />
@@ -1078,32 +1109,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             <Button
               size="icon-sm"
               variant="ghost"
-              onClick={() => setLogPanelOpen(true)}
-              disabled={!currentProject}
-              title="Agent 调用日志"
-              className="text-subtle hover:text-text"
-            >
-              <ScrollText className="size-3.5" />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
               onClick={() => setReferenceAnalysisOpen(true)}
               disabled={!currentProject}
-              title="参考小说分析"
+              title="参考小说与文风工作台"
               className="text-subtle hover:text-text"
             >
               <BookSearch className="size-3.5" />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => setStylePanelOpen(true)}
-              disabled={!currentProject}
-              title="文风设置"
-              className="text-subtle hover:text-text"
-            >
-              <Feather className="size-3.5" />
             </Button>
             <Button
               size="sm"
@@ -1383,6 +1394,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onReRevise={handleReRevise}
                         onKeepDraft={handleKeepDraft}
                         onResumeDiscussion={handleResumeDiscussion}
+                        onResumeWorkflow={handleResumeWorkflow}
                         creationMode={creationMode}
                         onSubmitCheckpoint={creationFlow.submitCheckpoint}
                         onSave={handleSaveChapter}
@@ -1390,34 +1402,32 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         onSendMessage={handleSendMessage}
                         userMessages={creationFlow.userMessages}
                         interjectMessages={creationFlow.interjectMessages}
-                        onSendInterject={(content) => { void handleSendInterject(content) }}
+                        onSendInterject={(content, targetAgent) => {
+                          void handleSendInterject(content, targetAgent)
+                        }}
                         flowType={flowType}
                         onFlowTypeChange={setFlowType}
                         onStartFlow={handleStartFlow}
-                        onStartFlowCommand={handleStartFlowCommand}
+                        onStartFlowCommand={(command, chapterNumber, modelId) => {
+                          creationModelIdRef.current = modelId ?? null
+                          handleStartFlowCommand(command, chapterNumber, modelId)
+                        }}
                         onCancelFlow={handleDiscardCreation}
                         chapterChatMessages={chapterChat.messages}
+                        chapterChatAgentOutputs={chapterChat.agentOutputs}
+                        chapterChatRunning={chapterChat.isRunning}
+                        chapterChatError={chapterChat.error}
+                        onSendChapterChat={(message, mentionedAgents, modelId, styleExpertIds) => {
+                          handleSendChapterChat(message, mentionedAgents, modelId, styleExpertIds)
+                        }}
+                        onAbortChapterChat={handleAbortChapterChat}
+                        chatMentionOptions={chatMentionOptions}
+                        styleExperts={styleExperts}
+                        selectedStyleExpertIds={selectedStyleExpertIds}
+                        onStyleExpertsChange={setSelectedStyleExpertIds}
+                        onOpenStyleExperts={() => setReferenceAnalysisOpen(true)}
                       />
                     </ErrorBoundary>
-                  </motion.div>
-                ) : rightPanelView === 'chat' ? (
-                  <motion.div
-                    key="chat"
-                    className="h-full"
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -20 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <ChatPanel
-                      chapterChatMessages={chapterChat.messages}
-                      chapterChatAgentOutputs={chapterChat.agentOutputs}
-                      chapterChatRunning={chapterChat.isRunning}
-                      chapterChatError={chapterChat.error}
-                      onSendChapterChat={handleSendChapterChat}
-                      onAbortChapterChat={handleAbortChapterChat}
-                      chatMentionOptions={chatMentionOptions}
-                    />
                   </motion.div>
                 ) : rightPanelView === 'settings' ? (
                   <motion.div
@@ -1475,39 +1485,47 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         </DragOverlay>
         </DndContext>
 
-        {/* 缓存诊断弹窗 */}
-        <Dialog open={cachePanelOpen} onOpenChange={setCachePanelOpen}>
-          <DialogContent className="sm:max-w-md max-h-[80vh] p-0 gap-0">
-            <DialogHeader className="px-4 py-3 border-b border-border">
-              <DialogTitle className="flex items-center gap-2 text-sm">
-                <Database className="size-4 text-primary" />
-                缓存诊断
-              </DialogTitle>
-              <DialogDescription className="text-xs text-pretty">
-                提示词缓存命中率监控
-              </DialogDescription>
-            </DialogHeader>
-            <div className="max-h-[60vh] overflow-y-auto">
-              <CacheMonitorPanel chapterNumber={creationChapterNumber} />
-            </div>
-          </DialogContent>
-        </Dialog>
-
-        {/* 调用趋势弹窗 */}
-        <Dialog open={timelinePanelOpen} onOpenChange={setTimelinePanelOpen}>
-          <DialogContent className="sm:max-w-xl max-h-[80vh] p-0 gap-0">
-            <DialogHeader className="px-4 py-3 border-b border-border">
+        {/* 调用诊断弹窗：日志、缓存、趋势共用同一工作区 */}
+        <Dialog open={diagnosticsPanelOpen} onOpenChange={setDiagnosticsPanelOpen}>
+          <DialogContent className="w-[calc(100%-1rem)] sm:w-[min(94vw,1200px)] max-w-none sm:max-w-none h-[min(88vh,900px)] max-h-[90vh] p-0 gap-0">
+            <DialogHeader className="px-4 py-3 border-b border-border shrink-0">
               <DialogTitle className="flex items-center gap-2 text-sm">
                 <Activity className="size-4 text-primary" />
-                调用趋势
+                调用诊断
               </DialogTitle>
               <DialogDescription className="text-xs text-pretty">
-                最近 50 次模型调用的 token 量与缓存命中率（失败调用以红色条呈现）
+                统一查看 Agent 调用日志、提示词缓存命中与调用趋势
               </DialogDescription>
             </DialogHeader>
-            <div className="h-[65vh]">
-              <ObservabilityTimeline />
-            </div>
+            <Tabs
+              value={diagnosticsTab}
+              onValueChange={(value) => setDiagnosticsTab(value as 'logs' | 'cache' | 'trend')}
+              className="min-h-0 flex-1 flex-col gap-0 overflow-hidden"
+            >
+              <TabsList className="mx-4 mt-3 grid h-9 w-auto shrink-0 grid-cols-3" aria-label="调用诊断视图">
+                <TabsTrigger value="logs" className="gap-1.5 text-xs">
+                  <ScrollText className="size-3.5" />
+                  调用日志
+                </TabsTrigger>
+                <TabsTrigger value="cache" className="gap-1.5 text-xs">
+                  <Database className="size-3.5" />
+                  缓存诊断
+                </TabsTrigger>
+                <TabsTrigger value="trend" className="gap-1.5 text-xs">
+                  <Activity className="size-3.5" />
+                  调用趋势
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="logs" className="mt-3 min-h-0 overflow-hidden">
+                <AgentLogPanel chapterNumber={creationChapterNumber} />
+              </TabsContent>
+              <TabsContent value="cache" className="mt-3 min-h-0 overflow-hidden">
+                <CacheMonitorPanel chapterNumber={creationChapterNumber} />
+              </TabsContent>
+              <TabsContent value="trend" className="mt-3 min-h-0 overflow-hidden">
+                <ObservabilityTimeline />
+              </TabsContent>
+            </Tabs>
           </DialogContent>
         </Dialog>
 
@@ -1529,47 +1547,12 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           </DialogContent>
         </Dialog>
 
-        {/* Agent 调用日志弹窗 */}
-        <Dialog open={logPanelOpen} onOpenChange={setLogPanelOpen}>
-          <DialogContent className="sm:max-w-2xl max-h-[85vh] p-0 gap-0">
-            <DialogHeader className="px-4 py-3 border-b border-border">
-              <DialogTitle className="flex items-center gap-2 text-sm">
-                <ScrollText className="size-4 text-primary" />
-                Agent 调用日志
-              </DialogTitle>
-              <DialogDescription className="text-xs text-pretty">
-                记录每次 Agent 调用的完整上下文（系统提示词 / 章节上下文 / 任务指令 / 工具 / 结果）
-              </DialogDescription>
-            </DialogHeader>
-            <div className="h-[70vh]">
-              <AgentLogPanel chapterNumber={creationChapterNumber} />
-            </div>
-          </DialogContent>
-        </Dialog>
-
-        {/* 文风设置弹窗：从 header 入口打开，避免深藏在详情面板的 ProjectForm 末尾 */}
-        <Dialog open={stylePanelOpen} onOpenChange={setStylePanelOpen}>
-          <DialogContent className="sm:max-w-2xl max-h-[85vh] p-0 gap-0">
-            <DialogHeader className="px-4 py-3 border-b border-border">
-              <DialogTitle className="flex items-center gap-2 text-sm">
-                <Feather className="size-4 text-primary" />
-                文风设置
-              </DialogTitle>
-              <DialogDescription className="text-xs text-pretty">
-                配置项目文风档案：叙事声音、规则约束、正反样本。系统会自动叠加从既有章节提取的文风指纹和声音锚点。
-              </DialogDescription>
-            </DialogHeader>
-            <div className="max-h-[70vh] overflow-y-auto p-4">
-              {currentProjectId && <WritingStyleProfileEditor projectId={currentProjectId} />}
-            </div>
-          </DialogContent>
-        </Dialog>
-
         {currentProjectId && (
           <ReferenceAnalysisWorkspace
             projectId={currentProjectId}
             open={referenceAnalysisOpen}
             onOpenChange={setReferenceAnalysisOpen}
+            onStyleExpertsChanged={refreshStyleExperts}
           />
         )}
 

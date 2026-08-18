@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto'
-import type { NovelWritingStyleProfile } from '../types.js'
+import type {
+  ChapterPositioning,
+  NarrativeTaskType,
+  NovelWritingStyleProfile,
+} from '../types.js'
 
 export type WritingStylePromptTarget = 'writer' | 'reviser' | 'reviewer'
 
@@ -135,6 +139,26 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
   const notes = cleanText(profile.notes, 400)
   if (notes) sections.push(`### 补充说明\n${notes}`)
 
+  const experts = (profile.styleExperts ?? []).filter((expert) => expert.enabled).slice(0, 8)
+  if (experts.length > 0) {
+    const perExpertBudget = Math.max(180, Math.min(1200, Math.floor(2000 / experts.length)))
+    sections.push([
+      '### 本次召集的独立文风能力',
+      '以下能力来自参考小说样本的写作机制蒸馏。它们不是内容模板，不改变本章任务、人物行动、事实和 POV。只迁移已审核的手法，不复制原作内容。',
+      ...experts.map((expert) => cleanText([
+        `- **${cleanText(expert.name, 20)}**（${cleanText(expert.sourceTitle, 35)}）`,
+        cleanText(expert.description, 60),
+        `迁移提示：${cleanText(expert.customPrompt ?? expert.distilledPrompt, 240)}`,
+        ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence === 'verified').slice(0, 2).map((technique) => {
+          const evidence = technique.evidence[0]?.quote
+          return `  - [${technique.dimension}] ${cleanText(technique.name, 30)}：${cleanText(technique.mechanism, 70)}；${cleanText(technique.transfer, 70)}${evidence ? `；证据方向：${cleanText(evidence, 30)}` : ''}`
+        }),
+        ...(expert.exemplarPassages ?? []).slice(0, 2).map((passage) => `  - 手法样本（只学机制）：${cleanText(passage.text, 180)}`),
+        ...(expert.exclusions ?? []).slice(0, 4).map((item) => `  - 不得迁移：${cleanText(item, 60)}`),
+      ].join('\n  '), perExpertBudget)),
+    ].join('\n'))
+  }
+
   const examples = profile.positiveExamples
     .map(example => cleanSample(example, POSITIVE_SAMPLE_MAX_LENGTH))
     .filter(Boolean)
@@ -162,6 +186,104 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
   return sections
 }
 
+export function selectStyleExperts(
+  profile: NovelWritingStyleProfile,
+  selectedIds?: string[],
+): NovelWritingStyleProfile {
+  if (selectedIds === undefined) return profile
+  return {
+    ...profile,
+    styleExperts: (profile.styleExperts ?? []).filter((expert) => selectedIds.includes(expert.id)),
+  }
+}
+
+const POSITIONING_DECISIONS: Record<ChapterPositioning, {
+  label: string
+  focus: string
+  variation: string
+}> = {
+  high_pressure: {
+    label: '高压章',
+    focus: '动作、阻力和即时后果优先，只保留人物在压力下真正来得及注意的信息。',
+    variation: '句子和段落可以临时收紧；少解释，但不要把全章切成整齐的短句。',
+  },
+  advancement: {
+    label: '推进章',
+    focus: '让人物的选择带来可见增量，场景之间由后果衔接，不按任务字段逐项交付。',
+    variation: '允许观察、停顿和无效动作，不要求每一段都推进主线。',
+  },
+  cultivation: {
+    label: '修炼试错章',
+    focus: '过程、失败、身体反馈和代价优先，让领悟从具体尝试中出现。',
+    variation: '可以放慢关键步骤；不要用总结替代试错，也不必固定为成功收尾。',
+  },
+  relationship: {
+    label: '关系章',
+    focus: '用选择、回避、误答和未完成的话改变关系，不让人物把感受解释完整。',
+    variation: '对话可以明显高于项目均值，停顿和不合时宜的小事可以保留。',
+  },
+  low_pressure: {
+    label: '低压章',
+    focus: '让生活动作、感官和人物习惯承载关系或状态变化，不临时制造大冲突。',
+    variation: '允许闲笔和较长呼吸，只要细节来自人物当下，不在段尾总结意义。',
+  },
+  information: {
+    label: '信息章',
+    focus: '让信息附着在追问、误解、物件和行动后果上，避免集中讲解或列清单。',
+    variation: '信息可以分散、延迟或被说错；不要求本章把所有疑问整理干净。',
+  },
+}
+
+const TASK_DECISIONS: Record<NarrativeTaskType, string> = {
+  advance_mainline: '主线变化落到人物选择及其后果，不用旁白宣布“剧情推进”。',
+  advance_subline: '支线必须影响当前关系、资源或判断，避免写成与主线隔离的插曲。',
+  create_conflict: '冲突从双方都说得通的欲望中发生，不把一方临时写笨。',
+  escalate_conflict: '升级来自已有选择的代价，不靠突然加码或旁白提高音量。',
+  release_info: '明确谁为何此刻透露、谁只听到一部分，以及信息怎样改变行动。',
+  hide_info: '保留人物有理由忽略或误读的痕迹，不用全知旁白替读者遮挡。',
+  reinforce_foreshadow: '让既有痕迹改变一次判断或行动，不重复提醒它很重要。',
+  recover_foreshadow: '回收要产生新后果，不只解释旧线索的正确答案。',
+  change_relationship: '关系变化由一次有代价的选择显影，不由双方达成完整共识。',
+  change_cognition: '认知变化保留迟疑和旧习惯的惯性，不让人物瞬间想通一切。',
+  create_reversal: '反转改写读者对既有事实的理解，但不撤销已经发生的因果。',
+  create_suspense: '悬念留下可验证的异常或限制，不用泛化危险宣告。',
+  phase_closure: '收束阶段后果，同时保留人物未能整理干净的余波。',
+  introduce_problem: '新问题从当前行动中长出，并立刻给人物造成具体阻力。',
+}
+
+/**
+ * 把项目级文风压缩成一次性的章节选择，避免 Writer 同时背诵整套统计指标。
+ * 精确段落比例和修辞计数由写后质量门处理，这里只决定当前章节的写法重心。
+ */
+export function buildStyleDecisionPack(input: {
+  positioning?: ChapterPositioning | null
+  narrativeTaskType: NarrativeTaskType
+  profile?: Pick<
+    NovelWritingStyleProfile,
+    'narrativePerson' | 'narrativeDistance' | 'vocabularyRegister'
+  >
+}): string {
+  const decision = input.positioning
+    ? POSITIONING_DECISIONS[input.positioning]
+    : {
+        label: '未指定定位',
+        focus: '以人物此刻的欲望、阻力和选择决定速度，不预设统一段落形态。',
+        variation: '根据场景压力自然改变句长、对话密度和感官重心。',
+      }
+  const stableVoice = input.profile
+    ? `${PERSON_LABELS[input.profile.narrativePerson]}；${DISTANCE_LABELS[input.profile.narrativeDistance]}；${REGISTER_LABELS[input.profile.vocabularyRegister]}。`
+    : '沿用现有正文的人称、观察距离和语域，不自行发明固定句式。'
+
+  return [
+    `### 本章风格决策：${decision.label}`,
+    `- 稳定声音：${stableVoice}`,
+    `- 场景重心：${decision.focus}`,
+    `- 任务落点：${TASK_DECISIONS[input.narrativeTaskType]}`,
+    `- 变化许可：${decision.variation}`,
+    '- 自然度：允许有来处的停顿、误解、句法不规则和局部闲笔；不要为了整齐而修平。',
+  ].join('\n')
+}
+
 export function compileWritingStylePrompt(
   profile: NovelWritingStyleProfile,
   target: WritingStylePromptTarget,
@@ -172,7 +294,7 @@ export function compileWritingStylePrompt(
   } else if (target === 'reviser') {
     sections.push('### 修订方式\n你输出的“修改后”文字必须保持本档案的稳定声音，其中人称、视角信息范围和明确硬约束必须遵守；句式节奏、对话密度、情感温度和意象密度只需落在当前场景合理范围。只修复审稿指出的问题，不要为了风格统一把整章改成同一种句长、语气或段落节拍，也不要抹平人物之间的声音差异。')
   } else {
-    sections.push('### 文风验收方式\n先检查叙事人称、视角信息范围和明确硬约束，再判断句式、语域、对话、情感温度是否符合当前场景的合理波动。不得仅因某一章偏离全书平均值就判定失败；只有偏离无法由场景任务、人物关系或节奏压力解释时才报告问题。必须引用具体段落说明偏差，不能只写“文风不一致”。')
+    sections.push('### 文风验收方式\n先检查叙事人称、视角信息范围和明确硬约束，再检查本次召集的独立文风能力是否体现在具体手法上：场景、人物、对话、动作/打斗、感情引爆和叙事结构按专家提供的手法卡逐项核对。必须引用正文证据说明“已体现/未体现/与当前场景不适用”，不能只写“文风不一致”。当前场景的合理波动优先；不得仅因某一章偏离全书平均值就判定失败。数字指纹只作辅助，不能单独判定失败。')
   }
 
   const content = sections.join('\n\n')

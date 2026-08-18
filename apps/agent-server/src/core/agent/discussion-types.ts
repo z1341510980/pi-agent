@@ -103,7 +103,7 @@ export interface DiscussionMember {
    * 工种成员默认从 AgentManager 中读取；业务适配层也可以为本次运行统一覆盖
    * 工种和角色成员的模型。
    */
-  modelId?: { provider: string; modelId: string }
+  modelId?: { provider: string; modelId: string; thinkingLevel?: import('@earendil-works/pi-agent-core').ThinkingLevel | null }
   /**
    * 该成员使用的 LLM 温度（可选，未配置时工种成员回退到 0.7，角色成员回退到 characterTemperature）
    *
@@ -229,6 +229,10 @@ export interface DiscussionOptions {
    * Moderator 保持使用 moderatorModel，避免协调模型被正文创作模型意外替换。
    */
   memberModel?: { provider: string; modelId: string }
+  /** 本次群聊运行唯一插话隔离键。 */
+  flowKey?: string
+  /** 本轮召集的独立蒸馏文风专家 ID；只作用于正文工种成员。 */
+  styleExpertIds?: string[]
   /**
    * 本次运行启动时冻结的项目主模型；null 表示启动时明确未配置。
    * 断点续跑必须沿用该状态，不能因项目设置后来改变而换模型。
@@ -338,6 +342,16 @@ export interface ReviewerOutcome {
    * 引擎不感知其内部结构，由业务层（如 novel-discussion-runner）做类型断言。
    */
   review: unknown | null
+  styleTechniqueChecks?: Array<{
+    expertId: string
+    expertName: string
+    techniqueId: string
+    techniqueName: string
+    dimension: string
+    verdict: 'present' | 'absent' | 'not_applicable'
+    evidence?: string
+    note?: string
+  }>
 }
 
 /** 单次群聊成员 LLM 调用的审计信息。 */
@@ -386,8 +400,10 @@ export interface DiscussionResult {
   scenes: SceneDefinition[]
   stateChanges?: Array<{ type: string; description: string }>
   error?: string
-  /** 异常终止时所在阶段；chapter_weaving 可直接从 Writer 断点续跑。 */
+  /** 异常终止时所在阶段；chapter_weaving/acting/reviewing 等可断点续跑。 */
   failedPhase?: DiscussionPhase
+  /** failedPhase='acting'/'scene_setup' 时中断的场景 ID（断点续跑从此场景继续）。 */
+  failedSceneId?: number
   /**
    * Reviewer 工具化验收结果（仅 completed 状态且业务层提供 buildReviewerToolset 时存在）。
    * 业务层据此持久化结构化验收报告，无需再从 transcript 中正则解析 Reviewer 输出。
@@ -395,11 +411,22 @@ export interface DiscussionResult {
   review?: ReviewerOutcome
 }
 
-/** 从已持久化群聊快照恢复 Writer 编织阶段所需的最小状态。 */
+/**
+ * 从已持久化群聊快照恢复所需的最小状态。
+ *
+ * phase 语义（断点续跑入口）：
+ * - 'scene_setup' / 'acting'：场景推演中断，从 failedSceneId（缺省第一个场景）继续场景循环
+ * - 'chapter_weaving'：推演已完成，直接进入全章编织
+ * - 'reviewing'：正文已织成（content 携带），从最终质量门复核继续
+ */
 export interface DiscussionResumeState {
-  phase: 'chapter_weaving'
+  phase: 'chapter_weaving' | 'scene_setup' | 'acting' | 'reviewing'
   transcript: DiscussionMessage[]
   scenes: SceneDefinition[]
+  /** phase='reviewing' 时的已织正文（跳过编织直接复核） */
+  content?: string
+  /** phase='scene_setup'/'acting' 时中断的场景 ID（缺省从第一个场景继续） */
+  failedSceneId?: number
 }
 
 /** 群聊引擎常量 */

@@ -5,6 +5,8 @@ import { validateBody } from '../../../lib/validate.js'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { MAX_REFERENCE_SOURCE_BYTES } from '../core/analysis/reference-analysis.js'
+import { distillStyleExpertFromReference } from '../core/prompting/style-expert-distiller.js'
+import { measureStyleMetrics } from '../core/analysis/style-measurement.js'
 
 const REFERENCE_PREFLIGHT_BODY_LIMIT = Math.ceil((MAX_REFERENCE_SOURCE_BYTES * 4) / 3) + 64 * 1024
 
@@ -169,6 +171,45 @@ export function createReferenceAnalysisRoutes(services: NovelServices): RouteDef
         withReferenceError(() =>
           success(service.listSections(request.params.sourceId), request.traceId)
         )
+    },
+    {
+      method: 'POST',
+      path: '/reference-sources/:sourceId/style-distill-input',
+      bodyLimit: 2 * 1024 * 1024,
+      handler: async (request: any, reply: any) => {
+        const input = validateBody(z.object({ sectionIds: z.array(z.string().min(1)).min(1).max(30) }), request, reply)
+        if (!input) return reply
+        return withReferenceError(() => {
+          const { sectionTexts: _sectionTexts, ...sample } = service.getSectionsText(request.params.sourceId, input.sectionIds)
+          return success(sample, request.traceId)
+        })
+      }
+    },
+    {
+      method: 'POST',
+      path: '/reference-sources/:sourceId/style-distill',
+      bodyLimit: 2 * 1024 * 1024,
+      handler: async (request: any, reply: any) => {
+        const input = validateBody(z.object({
+          sectionIds: z.array(z.string().min(1)).min(1).max(30),
+          notes: z.string().max(2000).optional(),
+          modelId: z.object({ provider: z.string(), modelId: z.string() }).optional(),
+        }), request, reply)
+        if (!input) return reply
+        return withReferenceError(async () => {
+          const sample = service.getSectionsText(request.params.sourceId, input.sectionIds)
+          const metrics = measureStyleMetrics(sample.text)
+          const draft = await distillStyleExpertFromReference(services.context, {
+            sourceId: sample.sourceId,
+            sections: sample.sections,
+            text: sample.text,
+            sectionTexts: sample.sectionTexts,
+            metrics,
+            notes: input.notes,
+          }, input.modelId)
+          return success(draft, request.traceId)
+        })
+      }
     },
     {
       method: 'GET',

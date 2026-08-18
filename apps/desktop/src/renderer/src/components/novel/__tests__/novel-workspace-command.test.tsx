@@ -41,6 +41,9 @@ const api = vi.hoisted(() => ({
   getChapterArrangedEntities: vi.fn(),
   createChapter: vi.fn(),
   completeChapter: vi.fn(),
+  getWritingStyleProfile: vi.fn().mockResolvedValue(null),
+  listWritingStyleExperts: vi.fn().mockResolvedValue([]),
+  saveWritingStyleProfile: vi.fn(),
 }))
 
 vi.mock('@/api/novel-client', () => api)
@@ -80,6 +83,7 @@ const flow = vi.hoisted(() => ({
   aiArrange: vi.fn(),
   reverseArrange: vi.fn(),
   resumeDiscussion: vi.fn(),
+  resumeWorkflow: vi.fn(),
   reRevise: vi.fn(),
   keepDraft: vi.fn(),
   takeArrangedCharacterFunctions: vi.fn(),
@@ -104,6 +108,22 @@ const chapterChat = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/use-chapter-chat', () => ({ useChapterChat: () => chapterChat }))
+
+vi.mock('@/hooks/use-novel-session', () => ({
+  useNovelSession: () => ({
+    creationFlow: flow,
+    chapterChat,
+    activeRun: { kind: 'idle', isRunning: false },
+    chatAgentOutputs: chapterChat.agentOutputs,
+    startWorkflow: flow.startCreation,
+    startDiscussion: flow.startDiscussion,
+    resumeWorkflow: flow.resumeWorkflow,
+    resumeDiscussion: flow.resumeDiscussion,
+    sendChat: chapterChat.sendMessage,
+    abortChat: chapterChat.abort,
+    sendInterject: flow.sendInterject,
+  }),
+}))
 
 const similarityScan = vi.hoisted(() => ({
   phase: 'idle' as 'idle',
@@ -170,6 +190,7 @@ function makeChapter(chapterNumber: number): NovelChapter {
     narrativeTask: '',
     acceptanceResult: null,
     createdAt: 1,
+    updatedAt: 1,
   }
 }
 
@@ -324,6 +345,28 @@ describe('ensureChapterExists（建章辅助，模块级直测）', () => {
 // ── /写 N、/重写 N 命令的 workspace 分发 ──
 
 describe('NovelWorkspace 输入框命令启动（真实面板输入 → workspace 分发）', () => {
+  it('调用诊断使用单一入口打开，并可在日志、缓存、趋势页签间切换', async () => {
+    renderWorkspace()
+
+    const diagnosticsButton = screen.getByRole('button', {
+      name: '调用诊断（日志 / 缓存 / 趋势）',
+    })
+    fireEvent.click(diagnosticsButton)
+
+    expect(screen.getByRole('dialog').textContent).toContain('调用诊断')
+    const diagnosticsTabList = screen.getByRole('tablist', { name: '调用诊断视图' })
+    expect(diagnosticsTabList.parentElement?.className).toContain('flex-col')
+    expect(diagnosticsTabList.className).toContain('grid-cols-3')
+    expect(screen.getByRole('tab', { name: '调用日志' }).getAttribute('aria-selected')).toBe('true')
+
+    const cacheTab = screen.getByRole('tab', { name: '缓存诊断' })
+    const trendTab = screen.getByRole('tab', { name: '调用趋势' })
+    fireEvent.mouseDown(cacheTab, { button: 0, ctrlKey: false })
+    await waitFor(() => expect(cacheTab.getAttribute('aria-selected')).toBe('true'))
+    fireEvent.mouseDown(trendTab, { button: 0, ctrlKey: false })
+    await waitFor(() => expect(trendTab.getAttribute('aria-selected')).toBe('true'))
+  })
+
   it('/写 N 章节不存在：ensureChapterExists 先建空章节，再启动第 N 章工作流', async () => {
     renderWorkspace()
 

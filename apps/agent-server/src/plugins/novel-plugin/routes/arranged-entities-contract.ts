@@ -68,7 +68,12 @@ void _schemaHasNoExtras
 export const creationFlowBodySchema = z.object({
   arrangedEntities: arrangedEntitiesSchema.optional(),
   /** per-call 模型覆盖（输入框旁选择器传入，本次创作临时切换模型） */
-  modelId: z.object({ provider: z.string(), modelId: z.string() }).optional(),
+  modelId: z.object({
+    provider: z.string(),
+    modelId: z.string(),
+    thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).nullable().optional(),
+  }).optional(),
+  styleExpertIds: z.array(z.string().min(1).max(80)).max(8).optional(),
 }).optional().default({})
 
 /**

@@ -230,6 +230,23 @@ export class ReferenceAnalysisService {
     return this.store.listSections(sourceId)
   }
 
+  getSectionsText(sourceId: string, sectionIds: string[]): {
+    sourceId: string
+    sections: ReferenceSection[]
+    text: string
+    sectionTexts: Record<string, string>
+  } {
+    const source = this.store.requireSource(sourceId)
+    const allSections = this.store.listSections(sourceId)
+    const selected = allSections.filter((section) => sectionIds.includes(section.id) && section.included)
+    if (selected.length === 0) throw new Error('至少选择一个可分析的参考章节')
+    const text = this.store.getNormalizedText(sourceId)
+    const sectionTexts = Object.fromEntries(
+      selected.map((section) => [section.id, text.slice(section.start, section.end)]),
+    )
+    return { sourceId: source.id, sections: selected, text: Object.values(sectionTexts).join('\n\n'), sectionTexts }
+  }
+
   getTextPreview(
     sourceId: string,
     input: { sectionId?: string; start?: number; end?: number; contextChars?: number }

@@ -23,6 +23,7 @@ import { validateBody } from '../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { evaluateProseQuality } from './core/quality/prose-quality-evaluator.js'
 import { createChapterRoutes } from './routes/chapter-routes.js'
+import { createChapterOutlineRoutes } from './routes/chapter-outline-routes.js'
 import { createCharacterRoutes } from './routes/character-routes.js'
 import { createEntityCandidateRoutes } from './routes/entity-candidate-routes.js'
 import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
@@ -39,6 +40,7 @@ import { createMemoryRoutes } from './routes/memory-routes.js'
 import { createEntityDeleteRoutes } from './routes/entity-delete-routes.js'
 import { createCacheRoutes } from './routes/cache-routes.js'
 import { createEntityMaintenanceRoutes } from './routes/entity-maintenance-routes.js'
+import { distillStyleExpert } from './core/prompting/style-expert-distiller.js'
 
 /**
  * 创建小说系统 REST API 路由
@@ -96,6 +98,23 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     },
   })
 
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/writing-style-experts/:expertId/versions',
+    handler: async (request: any) => success(store.listStyleExpertVersions(request.params.projectId, request.params.expertId), request.traceId),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/writing-style-experts/:expertId/rollback',
+    handler: async (request: any, reply: any) => {
+      const input = z.object({ version: z.number().int().positive() }).parse(request.body ?? {})
+      const expert = store.rollbackStyleExpert(request.params.projectId, request.params.expertId, input.version)
+      if (!expert) return reply.code(404).send({ ok: false, error: '文风专家版本不存在' })
+      return success(expert, request.traceId)
+    },
+  })
+
   // P3-2：建立伏笔↔信息差双向关联
   // 请求体：{ foreshadowId, infoLayerId }
   // 幂等：已关联时返回成功不重复写入
@@ -143,6 +162,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // 已迁移至 ./routes/chapter-routes.ts（PR-6）
   // ═══════════════════════════════════════════════════════════════
   routes.push(...createChapterRoutes(services))
+  routes.push(...createChapterOutlineRoutes(services))
 
   // ═══════════════════════════════════════════════════════════════
   // 角色（CRUD + AI 生成 + 历史 + 弧光）
@@ -231,6 +251,25 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     path: '/projects/:projectId/foreshadowing',
     handler: async (request: any) => {
       return success(store.listForeshadowing(request.params.projectId), request.traceId)
+    },
+  })
+
+  const distillStyleExpertSchema = z.object({
+    sourceTitle: z.string().trim().min(1).max(160),
+    sourceAuthor: z.string().trim().max(100).optional(),
+    sample: z.string().trim().min(80).max(30000),
+    notes: z.string().trim().max(2000).optional(),
+    modelId: z.object({ provider: z.string(), modelId: z.string() }).optional(),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/writing-style-experts/distill',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(distillStyleExpertSchema, request, reply)
+      if (!input) return reply
+      const draft = await distillStyleExpert(services.context, input, input.modelId)
+      return success(draft, request.traceId)
     },
   })
 
@@ -646,6 +685,25 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
     positiveExamples: z.array(z.string().trim().min(20).max(3000)).max(5).default([]),
     negativeExamples: z.array(z.string().trim().min(20).max(3000)).max(5).default([]),
     notes: z.string().max(2000).default(''),
+    styleExperts: z.array(z.object({
+      id: z.string().trim().min(1).max(80),
+      name: z.string().trim().min(1).max(40),
+      sourceTitle: z.string().trim().min(1).max(160),
+      sourceAuthor: z.string().trim().max(100).optional(),
+      description: z.string().trim().min(1).max(400),
+      distilledPrompt: z.string().trim().min(1).max(3000).optional(),
+      prompt: z.string().trim().min(1).max(3000).optional(),
+      customPrompt: z.string().trim().max(3000).nullable().optional(),
+      metrics: z.record(z.string(), z.unknown()).optional(),
+      techniques: z.array(z.unknown()).optional(),
+      exclusions: z.array(z.string()).optional(),
+      exemplarPassages: z.array(z.unknown()).optional(),
+      distillMeta: z.record(z.string(), z.unknown()).optional(),
+      enabled: z.boolean().default(true),
+    }).refine((expert) => Boolean(expert.distilledPrompt ?? expert.prompt), {
+      message: '文风专家必须提供 distilledPrompt 或 prompt',
+      path: ['distilledPrompt'],
+    })).max(8).default([]),
   })
 
   routes.push({
@@ -657,12 +715,94 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   })
 
   routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/writing-style-experts',
+    handler: async (request: any) => success(store.listStyleExperts(request.params.projectId), request.traceId),
+  })
+
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/writing-style-experts',
+    handler: async (request: any, reply: any) => {
+      const input = z.object({
+        name: z.string().trim().min(1).max(80), sourceTitle: z.string().trim().min(1).max(160),
+        sourceAuthor: z.string().trim().max(100).optional(), description: z.string().trim().min(1).max(400),
+        distilledPrompt: z.string().trim().min(1).max(3000), customPrompt: z.string().trim().max(3000).optional(),
+        enabled: z.boolean().default(true), sortOrder: z.number().int().min(0).max(1000).default(0),
+        distillMeta: z.record(z.string(), z.unknown()).optional(),
+        metrics: z.record(z.string(), z.unknown()).optional(),
+        techniques: z.array(z.unknown()).optional(),
+        exclusions: z.array(z.string()).optional(),
+        exemplarPassages: z.array(z.unknown()).optional(),
+      }).parse(request.body ?? {})
+      const expert = store.createStyleExpert({
+        id: randomUUID(), projectId: request.params.projectId, ...input, version: 1,
+        createdAt: Date.now(), updatedAt: Date.now(),
+      })
+      return success(expert, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'PATCH',
+    path: '/projects/:projectId/writing-style-experts/:expertId',
+    handler: async (request: any, reply: any) => {
+      const input = z.object({
+        name: z.string().trim().min(1).max(80).optional(),
+        sourceTitle: z.string().trim().min(1).max(160).optional(),
+        sourceAuthor: z.string().trim().max(100).optional(),
+        description: z.string().trim().min(1).max(400).optional(),
+        customPrompt: z.string().trim().min(1).max(3000).nullable().optional(),
+        enabled: z.boolean().optional(),
+        sortOrder: z.number().int().min(0).max(1000).optional(),
+      }).parse(request.body ?? {})
+      const expert = store.updateStyleExpert(request.params.projectId, request.params.expertId, input)
+      if (!expert) return reply.code(404).send({ ok: false, error: '文风专家不存在' })
+      return success(expert, request.traceId)
+    },
+  })
+
+  routes.push({
+    method: 'DELETE',
+    path: '/projects/:projectId/writing-style-experts/:expertId',
+    handler: async (request: any, reply: any) => {
+      const deleted = store.deleteStyleExpert(request.params.projectId, request.params.expertId)
+      if (!deleted) return reply.code(404).send({ ok: false, error: '文风专家不存在' })
+      return success({ id: request.params.expertId, deleted: true }, request.traceId)
+    },
+  })
+
+  routes.push({
     method: 'PUT',
     path: '/projects/:projectId/writing-style-profile',
     handler: async (request: any, reply: any) => {
       const input = validateBody(writingStyleProfileSchema, request, reply)
       if (!input) return reply
-      const profile = store.upsertWritingStyleProfile(request.params.projectId, input)
+      const normalizedStyleExperts = input.styleExperts?.map((expert: any, index: number) => ({
+        id: expert.id,
+        projectId: request.params.projectId,
+        name: expert.name,
+        sourceTitle: expert.sourceTitle,
+        sourceAuthor: expert.sourceAuthor,
+        description: expert.description,
+        distilledPrompt: expert.distilledPrompt ?? expert.prompt,
+        customPrompt: expert.customPrompt,
+        metrics: expert.metrics,
+        techniques: expert.techniques,
+        exclusions: expert.exclusions,
+        exemplarPassages: expert.exemplarPassages,
+        distillMeta: expert.distillMeta,
+        enabled: expert.enabled,
+        sortOrder: expert.sortOrder ?? index,
+        version: expert.version ?? 1,
+        createdAt: expert.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+      }))
+      const { styleExperts: _rawStyleExperts, ...profileInput } = input
+      const profile = store.upsertWritingStyleProfile(request.params.projectId, {
+        ...profileInput,
+        ...(normalizedStyleExperts ? { styleExperts: normalizedStyleExperts } : {}),
+      } as any)
       return success(profile, request.traceId)
     },
   })

@@ -214,6 +214,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
     await characterGenerator.generate('p-1', '沉默寡言的剑客')
     expect(mockState.createSessionCalls).toBe(1)
+    expect(mockState.lastOptions?.tools).toEqual([])
   })
 
   it('characterGenerator.generate 将本次指定模型传给 createSession', async () => {

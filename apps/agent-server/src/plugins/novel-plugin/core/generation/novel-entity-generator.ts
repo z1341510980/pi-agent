@@ -531,6 +531,7 @@ export class NovelEntityGenerator {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage: userPrompt,
+      tools: [],
       responseFormat: 'json',
       modelId: directorModel,
       // 实体生成（冲突/伏笔/势力/地点/世界要素）涉及详细设定，LLM 耗时较长；
@@ -1895,6 +1896,7 @@ export class NovelEntityGenerator {
       systemPrompt,
       // 身份段注入 userMessage 开头（systemPrompt 不含身份段，以跨 Agent 共享 system 缓存）
       userMessage: fullUserMessage,
+      tools: [],
       responseFormat: 'json',
       modelId: directorModel,
       // 规划阶段可能生成大量 JSON（多个实体），LLM 耗时较长；
@@ -2212,6 +2214,7 @@ export class NovelEntityGenerator {
       const session = await this.context.createSession({
         systemPrompt,
         userMessage,
+        tools: [],
         responseFormat: 'json',
         modelId: directorModel,
         timeoutMs: 300_000,

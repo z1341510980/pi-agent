@@ -498,11 +498,22 @@ export function safeParseParticipants(raw: string): string[] {
  * 视觉上与 `FormSection` 的 header 对齐（同样的字号、字重、图标位），
  * 以免同一面板内两种分组样式并存。
  */
-export function SectionHeader({ title, hint }: { title: string; hint?: string }): ReactElement {
+export function SectionHeader({
+  title,
+  hint,
+  action,
+}: {
+  title: string
+  hint?: string
+  action?: ReactNode
+}): ReactElement {
   return (
-    <div className="flex items-baseline gap-1.5 border-b border-border/50 pb-1.5 pt-4 first:pt-0">
-      <span className="text-xs font-semibold text-text">{title}</span>
-      {hint && <span className="truncate text-nano text-muted-foreground/70">{hint}</span>}
+    <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-1.5 pt-4 first:pt-0">
+      <div className="flex min-w-0 items-baseline gap-1.5">
+        <span className="text-xs font-semibold text-text">{title}</span>
+        {hint && <span className="truncate text-nano text-muted-foreground/70">{hint}</span>}
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
     </div>
   )
 }

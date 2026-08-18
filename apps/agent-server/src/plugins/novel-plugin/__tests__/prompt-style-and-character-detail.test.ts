@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { NovelPromptBuilder } from '../core/prompt-builder.js'
 import { NovelStore } from '../core/novel-store.js'
 import { novelMigrations } from '../novel-migrations.js'
+import { buildStyleDecisionPack } from '../core/prompting/writing-style-prompt-factory.js'
 
 /**
  * 覆盖两组历史缺陷：
@@ -67,6 +68,44 @@ function buildBuilder(store: NovelStore): NovelPromptBuilder {
   const promptManager = { render: () => 'instruction', getTemplate: () => '' } as any
   return new NovelPromptBuilder(promptManager, createStoresMock(store) as any)
 }
+
+describe('章节风格决策包', () => {
+  it('关系章允许偏离项目均值，优先保留停顿、回避和潜台词', () => {
+    const pack = buildStyleDecisionPack({
+      positioning: 'relationship',
+      narrativeTaskType: 'change_relationship',
+      profile: {
+        narrativePerson: 'third',
+        narrativeDistance: 'limited',
+        vocabularyRegister: 'plain',
+      },
+    })
+
+    expect(pack).toContain('关系章')
+    expect(pack).toContain('对话可以明显高于项目均值')
+    expect(pack).toContain('停顿、误解、句法不规则')
+    expect(pack).toContain('限制视角')
+  })
+
+  it('同一文风按章节定位产生不同选择，不输出写后统计阈值', () => {
+    const highPressure = buildStyleDecisionPack({
+      positioning: 'high_pressure',
+      narrativeTaskType: 'escalate_conflict',
+    })
+    const lowPressure = buildStyleDecisionPack({
+      positioning: 'low_pressure',
+      narrativeTaskType: 'advance_subline',
+    })
+
+    expect(highPressure).toContain('动作、阻力和即时后果优先')
+    expect(lowPressure).toContain('允许闲笔和较长呼吸')
+    expect(highPressure).not.toBe(lowPressure)
+    for (const pack of [highPressure, lowPressure]) {
+      expect(pack).not.toMatch(/每千字|不超过四分之一|连续单句段不得超过/)
+      expect(pack.length).toBeLessThan(600)
+    }
+  })
+})
 
 describe('文风指纹指标可信度', () => {
   let db: Database.Database

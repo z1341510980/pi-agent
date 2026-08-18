@@ -53,6 +53,12 @@ import {
 } from './arranged-entities-contract.js'
 import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 
+/**
+ * 群聊可续跑阶段：这些阶段失败时快照携带足够状态（transcript/scenes/content/
+ * failedSceneId）从断点继续。planning 阶段失败无可续跑产物，仍整场重来。
+ */
+const DISCUSSION_RESUMABLE_PHASES = new Set(['chapter_weaving', 'reviewing', 'acting', 'scene_setup'])
+
 export function createCreationFlowRoutes(services: NovelServices): RouteDefinition[] {
   const { store } = services
   const routes: RouteDefinition[] = []
@@ -196,16 +202,17 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         reply.raw.write(': keepalive\n\n')
       }, 15000)
 
+      const workflowRunId = randomUUID()
       const emitter = createNovelAgUiEmitter(
         createSseEmitterSink((data) => reply.raw.write(data)),
         `novel:chapter:${projectId}:${chapterNumber}`,
-        randomUUID(),
+        workflowRunId,
       )
       // 插话回显通道（§3.1/§4）：把本 flow 的 emitter 登记到插话注册表，
       // 供 POST /projects/:projectId/flows/:flowId/messages 端点与 orchestrator
       // 插话 hooks（injected/dropped）沿本 SSE 连接推 novel:user-message 事件。
       // writableEnded 守卫：SSE 已结束（收尾竞态窗口）时丢弃推送。
-      const interjectFlowKey = `${projectId}|${chapterNumberValue}`
+      const interjectFlowKey = `${projectId}|${chapterNumberValue}|${workflowRunId}`
       registerInterjectFlow(interjectFlowKey, (event) => {
         if (!reply.raw.writableEnded) emitter.userMessage(event)
       })
@@ -217,7 +224,42 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       if (typeof orchestrator.clearStaleInterjectMessages === 'function') {
         orchestrator.clearStaleInterjectMessages(interjectFlowKey)
       }
-      const workflowRunId = randomUUID()
+      // ── 断点续跑快照：阶段边界即时落库 + 运行终态收尾 ──
+      // 边界即时落库保证进程崩溃也能保住最后一次边界（快照 row status='running'）。
+      // 失败终态把最后边界固化为 status='error' + phase，前端据此展示「从中断处继续」。
+      let lastBoundary: import('../core/workflow-run-store.js').WorkflowResumeState | undefined
+      const saveRunSnapshot = (
+        status: 'running' | 'completed' | 'cancelled' | 'error',
+        extra?: { failedPhase?: string; error?: string; resumedFromRunId?: string },
+      ): void => {
+        const boundary = lastBoundary
+        try {
+          services.workflowRunStore.save({
+            id: workflowRunId,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            status,
+            // 未到达任何边界（Director 阶段即失败）时不落 phase：无可续跑产物
+            phase: boundary?.entry,
+            failedPhase: extra?.failedPhase as import('@repo/shared/novel').CreationPhase | undefined,
+            directorTask: boundary?.directorTask,
+            directorOutput: boundary?.directorOutput,
+            rhythmSuggestion: boundary?.rhythmSuggestion,
+            arrangedEntities: boundary?.arrangedEntities,
+            writerDraft: boundary?.writerDraft,
+            finalContent: boundary?.finalContent,
+            modelId: input.modelId,
+            styleExpertIds: input.styleExpertIds,
+            error: extra?.error,
+            resumedFromRunId: extra?.resumedFromRunId,
+          })
+        } catch (snapshotError) {
+          request.log.warn(
+            { err: snapshotError, projectId, chapterNumber, workflowRunId },
+            '工作流运行快照落库失败（不影响创作流程）',
+          )
+        }
+      }
       const persistWorkflowMessage = (message: {
         role: 'agent' | 'system'
         fromId: string
@@ -237,7 +279,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           },
         })
       }
-      const task = registerNovelChapterTask(creationLockKey, 'workflow')
+      const task = registerNovelChapterTask(creationLockKey, 'workflow', workflowRunId)
       const abortOnDisconnect = () => {
         if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
           task.controller.abort(new Error('客户端已断开创作流'))
@@ -251,9 +293,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           role: 'system',
           fromId: 'system',
           fromName: '系统',
-          content: `开始第 ${chapterNumberValue} 章工作流创作`,
+          content: `开始第 ${chapterNumberValue} 章工作流创作${input.styleExpertIds?.length ? `（召集 ${input.styleExpertIds.length} 个文风专家）` : ''}`,
           phase: 'pre_creation',
-          metadata: { workflowMessageType: 'run_start' },
+          metadata: { workflowMessageType: 'run_start', styleExpertIds: input.styleExpertIds },
         })
         const result = await orchestrator.createChapterWithFlow(
           projectId,
@@ -262,6 +304,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             emit: emitter.emit,
             // per-call 模型覆盖（输入框旁选择器传入）
             modelId: input.modelId,
+            flowKey: interjectFlowKey,
+            styleExpertIds: input.styleExpertIds,
+            // 断点续跑：阶段边界快照（Director 批准 / Writer 成稿 / 正文定稿）
+            onRunStateUpdate: (state) => {
+              lastBoundary = state
+              saveRunSnapshot('running')
+            },
             onCheckpoint: async (checkpoint) => {
               // 通过 ConfirmationManager 发起决策请求
               // timeoutMs=0 表示无超时：用户可能需要长时间阅读/checkpoint 内容并思考，
@@ -318,20 +367,31 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               ? '工作流创作已取消'
               : `工作流创作结束：${result.error ?? result.status}`,
           phase: 'review',
-          metadata: { workflowMessageType: 'run_end' },
+          metadata: { workflowMessageType: 'run_end', styleExpertIds: input.styleExpertIds },
         })
-        emitter.result(result)
+        // 快照终态：失败且有边界产物 → 标记可续跑；完成/取消 → 关闭续跑入口
+        const resumable = result.status === 'error' && lastBoundary != null
+        saveRunSnapshot(result.status, {
+          failedPhase: result.failedPhase,
+          error: result.error,
+        })
+        emitter.result(resumable
+          ? { ...result, workflowRunId, canResume: true }
+          : { ...result, workflowRunId })
       } catch (err) {
+        const errMessage = err instanceof Error ? err.message : String(err)
         persistWorkflowMessage({
           role: 'system',
           fromId: 'system',
           fromName: '系统',
-          content: `工作流创作失败：${err instanceof Error ? err.message : String(err)}`,
+          content: `工作流创作失败：${errMessage}`,
           phase: 'review',
           metadata: { workflowMessageType: 'run_end', failed: true },
         })
-        cancelDebug('create-flow-catch', { projectId, chapterNumber, errMessage: err instanceof Error ? err.message : String(err), errStack: err instanceof Error ? err.stack : undefined, signalAborted: task.controller.signal.aborted })
-        emitter.error(String(err))
+        // 路由层异常（orchestrator 未返回 result）：有边界产物同样可续跑
+        if (lastBoundary != null) saveRunSnapshot('error', { error: errMessage })
+        cancelDebug('create-flow-catch', { projectId, chapterNumber, errMessage, errStack: err instanceof Error ? err.stack : undefined, signalAborted: task.controller.signal.aborted })
+        emitter.error(errMessage)
       } finally {
         clearInterval(heartbeat)
         reply.raw.off('close', abortOnDisconnect)
@@ -342,6 +402,251 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         // 的 finally 内推出，此处仅清理注册表，防止向已结束连接推送。
         unregisterInterjectFlow(interjectFlowKey)
         cancelDebug('create-flow-finally-post', { projectId, chapterNumber, lockExists: chapterCreationLocks.has(creationLockKey), taskExists: activeNovelChapterTasks.has(creationLockKey) })
+        reply.raw.end()
+      }
+    },
+  })
+
+  // 工作流断点续跑：从失败快照恢复，跳过已完成阶段（Director 已批准 → 跳过 Director；
+  // Writer 草稿已成 → 跳过 Writer；正文定稿 → 只剩落库与记忆提取）。
+  // runId 传 'latest' 时取该章最近一条可续跑快照（应用重启后前端已丢失 result.runId）。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/create-flow/:runId/resume',
+    handler: async (request: any, reply: any) => {
+      const { projectId, chapterNumber, runId } = request.params as {
+        projectId: string
+        chapterNumber: string
+        runId: string
+      }
+      const orchestrator = services.orchestrator
+      const chapter = requireWritableChapter(projectId, chapterNumber)
+      const snapshot = runId === 'latest'
+        ? services.workflowRunStore.getLatestResumable(projectId, chapter)
+        : services.workflowRunStore.get(runId)
+      if (!snapshot || snapshot.projectId !== projectId || snapshot.chapterNumber !== chapter) {
+        reply.code(404).send({ ok: false, error: '未找到该章节的工作流中断记录' })
+        return
+      }
+      if (snapshot.status === 'completed' || snapshot.status === 'cancelled' || !snapshot.phase) {
+        reply.code(409).send({ ok: false, error: '该工作流记录不支持断点续跑' })
+        return
+      }
+
+      const creationLockKey = `${projectId}:${chapterNumber}`
+      if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
+        reply.code(409).send({ ok: false, error: '该章节正在创作中，请勿重复启动断点续跑' })
+        return
+      }
+
+      // SSE 设置与 create-flow 一致（绕过 Fastify CORS 中间件，需手动附加 CORS 头）
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': request.headers.origin || '*',
+        'Access-Control-Allow-Credentials': 'true',
+      })
+      request.raw.socket?.setNoDelay?.(true)
+      const heartbeat = setInterval(() => reply.raw.write(': keepalive\n\n'), 15000)
+
+      const resumeRunId = randomUUID()
+      const emitter = createNovelAgUiEmitter(
+        createSseEmitterSink((data) => reply.raw.write(data)),
+        `novel:chapter-resume:${projectId}:${chapterNumber}`,
+        resumeRunId,
+      )
+      // 插话回显通道与 create-flow 同构
+      const interjectFlowKey = `${projectId}|${chapter}|${resumeRunId}`
+      registerInterjectFlow(interjectFlowKey, (event) => {
+        if (!reply.raw.writableEnded) emitter.userMessage(event)
+      })
+      if (typeof orchestrator.clearStaleInterjectMessages === 'function') {
+        orchestrator.clearStaleInterjectMessages(interjectFlowKey)
+      }
+      const persistWorkflowMessage = (message: {
+        role: 'agent' | 'system'
+        fromId: string
+        fromName: string
+        content: string
+        phase: 'pre_creation' | 'checkpoint' | 'discussion' | 'review'
+        metadata?: Record<string, unknown>
+      }): void => {
+        services.chapterChatStore.add({
+          projectId,
+          chapterNumber: chapter,
+          ...message,
+          metadata: {
+            ...message.metadata,
+            flowMode: 'workflow',
+            workflowRunId: resumeRunId,
+          },
+        })
+      }
+      const task = registerNovelChapterTask(creationLockKey, 'workflow', resumeRunId)
+      const abortOnDisconnect = () => {
+        if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
+          task.controller.abort(new Error('客户端已断开工作流断点续跑'))
+        }
+      }
+      reply.raw.once('close', abortOnDisconnect)
+
+      // 续跑快照：沿用原快照的阶段产物，模型冻结为首跑选择（避免同一次创作换模型）。
+      // 先用原边界初始化，确保续跑在产生新边界前再次失败时仍可继续。
+      let lastBoundary: import('../core/workflow-run-store.js').WorkflowResumeState = {
+        entry: snapshot.phase,
+        directorTask: snapshot.directorTask,
+        directorOutput: snapshot.directorOutput,
+        rhythmSuggestion: snapshot.rhythmSuggestion,
+        arrangedEntities: snapshot.arrangedEntities,
+        writerDraft: snapshot.writerDraft,
+        finalContent: snapshot.finalContent,
+      }
+      const saveRunSnapshot = (
+        status: 'running' | 'completed' | 'cancelled' | 'error',
+        extra?: { failedPhase?: string; error?: string },
+      ): void => {
+        const boundary = lastBoundary
+        try {
+          services.workflowRunStore.save({
+            id: resumeRunId,
+            projectId,
+            chapterNumber: chapter,
+            status,
+            phase: boundary?.entry,
+            failedPhase: extra?.failedPhase as import('@repo/shared/novel').CreationPhase | undefined,
+            directorTask: boundary?.directorTask,
+            directorOutput: boundary?.directorOutput,
+            rhythmSuggestion: boundary?.rhythmSuggestion,
+            arrangedEntities: boundary?.arrangedEntities,
+            writerDraft: boundary?.writerDraft,
+            finalContent: boundary?.finalContent,
+            modelId: snapshot.modelId,
+            styleExpertIds: snapshot.styleExpertIds,
+            error: extra?.error,
+            resumedFromRunId: snapshot.id,
+          })
+        } catch (snapshotError) {
+          request.log.warn(
+            { err: snapshotError, projectId, chapterNumber, resumeRunId },
+            '工作流续跑快照落库失败（不影响创作流程）',
+          )
+        }
+      }
+
+      try {
+        chapterCreationLocks.add(creationLockKey)
+        persistWorkflowMessage({
+          role: 'system',
+          fromId: 'system',
+          fromName: '系统',
+          content: `从第 ${chapter} 章工作流的${snapshot.phase === 'writing' ? '写作' : snapshot.phase === 'reviewing' ? '审稿' : '收尾'}阶段断点继续`,
+          phase: 'pre_creation',
+          metadata: { workflowMessageType: 'run_start', resumedFromRunId: snapshot.id },
+        })
+        const result = await orchestrator.createChapterWithFlow(
+          projectId,
+          chapter,
+          {
+            emit: emitter.emit,
+            // 模型冻结：续跑沿用首跑的 per-call 模型
+            modelId: snapshot.modelId,
+            flowKey: interjectFlowKey,
+            onRunStateUpdate: (state) => {
+              lastBoundary = state
+              saveRunSnapshot('running')
+            },
+            // 断点续跑状态：跳过快照边界之前的所有阶段
+            resume: {
+              entry: snapshot.phase,
+              directorTask: snapshot.directorTask,
+              directorOutput: snapshot.directorOutput,
+              rhythmSuggestion: snapshot.rhythmSuggestion,
+              arrangedEntities: snapshot.arrangedEntities,
+              writerDraft: snapshot.writerDraft,
+              finalContent: snapshot.finalContent,
+            },
+            styleExpertIds: snapshot.styleExpertIds,
+            onCheckpoint: async (checkpoint) => {
+              const toolCallId = randomUUID()
+              const checkpointCreatedAt = Date.now()
+              const decisionPromise = services.confirmationManager.requestDecision({
+                threadId: `novel-checkpoint-${projectId}-${chapterNumber}`,
+                toolCallId,
+                toolName: `checkpoint_${checkpoint.type}`,
+                args: { checkpoint, workflowRunId: resumeRunId } as Record<string, unknown>,
+                reason: `等待用户确认 ${checkpoint.type} 检查点（断点续跑）`,
+              }, 0)
+              const pending = services.confirmationManager.listPending().find((r) => r.toolCallId === toolCallId)
+              const persistedCheckpoint = {
+                ...checkpoint,
+                checkpointId: pending?.id,
+                createdAt: checkpointCreatedAt,
+              }
+              persistWorkflowMessage({
+                role: 'system',
+                fromId: 'system',
+                fromName: '检查点',
+                content: typeof checkpoint.data === 'string'
+                  ? checkpoint.data
+                  : JSON.stringify(checkpoint.data) ?? '',
+                phase: 'checkpoint',
+                metadata: {
+                  workflowMessageType: 'checkpoint',
+                  checkpointId: pending?.id,
+                  checkpointType: checkpoint.type,
+                  checkpointData: checkpoint.data,
+                  checkpointOptions: checkpoint.options,
+                },
+              })
+              emitter.checkpoint(persistedCheckpoint)
+              return decisionPromise as Promise<'approve' | 'reject' | 'revise' | 'rewrite'>
+            },
+            onProgress: (event) => emitter.progress(event),
+            onConversationMessage: persistWorkflowMessage,
+            signal: task.controller.signal,
+            arrangedEntities: snapshot.arrangedEntities,
+          },
+        )
+        persistWorkflowMessage({
+          role: 'system',
+          fromId: 'system',
+          fromName: '系统',
+          content: result.status === 'completed'
+            ? '工作流断点续跑完成'
+            : result.status === 'cancelled'
+              ? '工作流断点续跑已取消'
+              : `工作流断点续跑结束：${result.error ?? result.status}`,
+          phase: 'review',
+          metadata: { workflowMessageType: 'run_end' },
+        })
+        const resumable = result.status === 'error' && lastBoundary != null
+        saveRunSnapshot(result.status, {
+          failedPhase: result.failedPhase,
+          error: result.error,
+        })
+        emitter.result(resumable
+          ? { ...result, workflowRunId: resumeRunId, canResume: true }
+          : { ...result, workflowRunId: resumeRunId })
+      } catch (err) {
+        const errMessage = err instanceof Error ? err.message : String(err)
+        persistWorkflowMessage({
+          role: 'system',
+          fromId: 'system',
+          fromName: '系统',
+          content: `工作流断点续跑失败：${errMessage}`,
+          phase: 'review',
+          metadata: { workflowMessageType: 'run_end', failed: true },
+        })
+        if (lastBoundary != null) saveRunSnapshot('error', { error: errMessage })
+        emitter.error(errMessage)
+      } finally {
+        clearInterval(heartbeat)
+        reply.raw.off('close', abortOnDisconnect)
+        finishNovelChapterTask(creationLockKey, task)
+        chapterCreationLocks.delete(creationLockKey)
+        unregisterInterjectFlow(interjectFlowKey)
         reply.raw.end()
       }
     },
@@ -513,10 +818,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
   // 插话（对话化交互形态 §3.1）：向运行中的 create-flow 注入用户中途反馈
   // ═══════════════════════════════════════════════════════════════
 
-  // flowId 解析约定：create-flow 是 SSE 端点，启动时无独立 flowId 返回体
-  // （workflowRunId 只存在于消息 metadata；运行中 flow 注册表
-  // activeNovelChapterTasks 以 `${projectId}:${chapterNumber}` 为 key）。
-  // 因此 flowId 约定为章节号字符串；非数字 flowId 需 body/query 显式 chapterNumber。
+  // flowId 是 RUN_STARTED 发出的本次运行 ID；chapterNumber 仅用于定位章节任务。
+  // 兼容旧客户端：数字 flowId 仍可作为 chapterNumber 解析，但只会命中同样以数字
+  // 注册的测试/旧任务，不会被新 UUID 运行接受。
   const interjectMessageSchema = z.object({
     content: z.string().min(1).max(4000),
     targetAgent: z.enum(['director', 'writer', 'reviewer', 'reviser', 'memory']).optional(),
@@ -532,29 +836,43 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       if (!input) return reply
 
       const queryChapter = Number((request.query as Record<string, string | undefined>)?.chapterNumber)
-      const chapterNumber = input.chapterNumber
+      let chapterNumber = input.chapterNumber
         ?? (/^\d+$/.test(flowId) ? Number(flowId) : undefined)
         ?? (Number.isInteger(queryChapter) && queryChapter > 0 ? queryChapter : undefined)
-      if (!chapterNumber) {
-        reply.code(400).send({ ok: false, error: 'flowId 不是章节号且未提供 chapterNumber，无法定位目标创作流' })
-        return
-      }
 
       // create-flow（kind='workflow'）经 orchestrator 消费（drain）并终态收尾（dropped）插话；
       // create-discussion（kind='discussion'，批次 1 任务 3）经 runner 登记的 engine
       // enqueue 闭包入队，Moderator 每轮 decide 前 drain、engine 收尾 dropped。
       // 其余流程（编排/反推等）无此通道，入队只会石沉大海。
-      const lockKey = `${projectId}:${chapterNumber}`
-      const task = activeNovelChapterTasks.get(lockKey)
-      if (!task || (task.kind !== 'workflow' && task.kind !== 'discussion')) {
+      const locateByFlowId = chapterNumber == null
+      let task = chapterNumber
+        ? activeNovelChapterTasks.get(`${projectId}:${chapterNumber}`)
+        : undefined
+      if (locateByFlowId) {
+        for (const [candidateLockKey, candidateTask] of activeNovelChapterTasks) {
+          if (!candidateLockKey.startsWith(`${projectId}:`) || candidateTask.flowId !== flowId) continue
+          const candidateChapter = Number(candidateLockKey.slice(projectId.length + 1))
+          if (!Number.isInteger(candidateChapter) || candidateChapter < 1) continue
+          chapterNumber = candidateChapter
+          task = candidateTask
+          break
+        }
+      }
+      if (!task || (task.kind !== 'workflow' && task.kind !== 'discussion' && task.kind !== 'discussion-resume')) {
         reply.code(409).send({ ok: false, error: '该章节当前没有运行中的可插话创作流程（工作流/群聊），无法接收插话' })
         return
       }
+      if (task.flowId !== flowId) {
+        reply.code(409).send({ ok: false, error: 'flowId 已过期或不属于当前运行中的创作流程' })
+        return
+      }
 
-      const flowKey = `${projectId}|${chapterNumber}`
+      // 命中任务后 chapterNumber 必然来自显式参数或活动任务 key。
+      const resolvedChapterNumber = chapterNumber as number
+      const flowKey = `${projectId}|${resolvedChapterNumber}|${task.flowId}`
 
       // 群聊分支：无 targetAgent 语义（Moderator 自主决定响应方式），定向字段直接拒绝
-      if (task.kind === 'discussion') {
+      if (task.kind === 'discussion' || task.kind === 'discussion-resume') {
         if (input.targetAgent) {
           reply.code(400).send({
             ok: false,
@@ -589,7 +907,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         try {
           services.chapterChatStore.add({
             projectId,
-            chapterNumber,
+            chapterNumber: resolvedChapterNumber,
             role: 'user',
             fromId: 'user',
             fromName: '用户',
@@ -599,10 +917,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
               interject: true,
               messageId: discussionMessageId,
               flowMode: 'discussion',
+              flowId,
+              interjectStatus: 'queued',
             },
           })
         } catch (err) {
-          request.log.error({ err, projectId, chapterNumber, messageId: discussionMessageId }, '群聊插话消息落库失败')
+          request.log.error({ err, projectId, chapterNumber: resolvedChapterNumber, messageId: discussionMessageId }, '群聊插话消息落库失败')
         }
         reply.code(201).send(success({ flowId, messageId: discussionMessageId, status: 'queued' }, request.traceId))
         return
@@ -615,10 +935,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         flowKey,
       })
       if (!accepted) {
-        // 目前仅 targetAgent='memory' 被拒绝：Memory 主路径是结构化 LLM 调用，不经插话通道
-        reply.code(400).send({
+        reply.code(409).send({
           ok: false,
-          error: '插话未被受理：memory 阶段不经插话通道，请省略 targetAgent 后重试',
+          error: '创作流程已收尾，不再接收插话',
         })
         return
       }
@@ -637,7 +956,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       try {
         services.chapterChatStore.add({
           projectId,
-          chapterNumber,
+          chapterNumber: resolvedChapterNumber,
           role: 'user',
           fromId: 'user',
           fromName: '用户',
@@ -648,10 +967,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             messageId,
             targetAgent: input.targetAgent,
             flowMode: 'workflow',
+            flowId,
+            interjectStatus: 'queued',
           },
         })
       } catch (err) {
-        request.log.error({ err, projectId, chapterNumber, messageId }, '插话消息落库失败')
+        request.log.error({ err, projectId, chapterNumber: resolvedChapterNumber, messageId }, '插话消息落库失败')
       }
 
       reply.code(201).send(success({ flowId, messageId, status: 'queued' }, request.traceId))
@@ -718,11 +1039,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       // 插话回显通道（批次 1 任务 3）：与 create-flow 同构，把本 flow 的 emitter
       // 登记到插话注册表。群聊侧 runner 另行登记 engine 的 enqueue 闭包，
       // engine 的 injected/dropped 回调经 dispatchInterjectStatus 路由回本 SSE。
-      const interjectFlowKey = `${projectId}|${chapterNumberValue}`
+      const interjectFlowKey = `${projectId}|${chapterNumberValue}|${discussionRunId}`
       registerInterjectFlow(interjectFlowKey, (event) => {
         if (!reply.raw.writableEnded) emitter.userMessage(event)
       })
-      const task = registerNovelChapterTask(creationLockKey, 'discussion')
+      const task = registerNovelChapterTask(creationLockKey, 'discussion', discussionRunId)
       const abortOnDisconnect = () => {
         if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
           task.controller.abort(new Error('客户端已断开群聊创作流'))
@@ -765,6 +1086,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             onProgress: (event) => emitter.progress(event),
             moderatorModel: settings.moderatorModel,
             memberModel: input.modelId,
+            flowKey: interjectFlowKey,
+            styleExpertIds: input.styleExpertIds,
             projectModel,
             // 插话生命周期（批次 1 任务 3）：engine drain/收尾时回调，
             // 经注册表按 messageId 反查本 flow 的 SSE 通道推 injected/dropped 事件。
@@ -780,11 +1103,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           chapterNumber: chapterNumberValue,
           status: result.status,
           failedPhase: result.failedPhase,
+          failedSceneId: result.failedSceneId,
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities,
           memberModel: input.modelId,
           projectModel,
+          styleExpertIds: input.styleExpertIds,
           content: result.content,
           error: result.error,
         })
@@ -805,7 +1130,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         emitter.result({
           ...result,
           discussionRunId,
-          canResume: result.status === 'error' && result.failedPhase === 'chapter_weaving',
+          canResume: result.status === 'error' && result.failedPhase != null
+            && DISCUSSION_RESUMABLE_PHASES.has(result.failedPhase),
         })
       } catch (err) {
         emitter.error(String(err))
@@ -838,8 +1164,9 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         reply.code(404).send({ ok: false, error: '未找到该章节的群聊中断记录' })
         return
       }
-      if (snapshot.status !== 'error' || snapshot.failedPhase !== 'chapter_weaving') {
-        reply.code(409).send({ ok: false, error: '该群聊记录不支持从写作阶段继续' })
+      if (snapshot.status !== 'error' || snapshot.failedPhase == null
+          || !DISCUSSION_RESUMABLE_PHASES.has(snapshot.failedPhase)) {
+        reply.code(409).send({ ok: false, error: '该群聊记录不支持断点续跑' })
         return
       }
 
@@ -865,7 +1192,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         `novel:discussion-resume:${projectId}:${chapterNumber}`,
         resumeRunId,
       )
-      const task = registerNovelChapterTask(creationLockKey, 'discussion-resume')
+      const interjectFlowKey = `${projectId}|${chapter}|${resumeRunId}`
+      registerInterjectFlow(interjectFlowKey, (event) => {
+        if (!reply.raw.writableEnded) emitter.userMessage(event)
+      })
+      const task = registerNovelChapterTask(creationLockKey, 'discussion-resume', resumeRunId)
       const abortOnDisconnect = () => {
         if (!reply.raw.writableEnded && !task.controller.signal.aborted) {
           task.controller.abort(new Error('客户端已断开群聊断点续跑'))
@@ -907,13 +1238,20 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             moderatorModel: settings.moderatorModel,
             memberModel: snapshot.memberModel,
             projectModel,
+            flowKey: interjectFlowKey,
+            styleExpertIds: snapshot.styleExpertIds,
+            onInterjectInjected: ids => dispatchInterjectStatus('injected', ids),
+            onInterjectDropped: ids => dispatchInterjectStatus('dropped', ids),
             signal: task.controller.signal,
           },
           snapshot.arrangedEntities,
           {
-            phase: 'chapter_weaving',
+            // 上面 409 守卫已用 DISCUSSION_RESUMABLE_PHASES 收窄到可续跑阶段
+            phase: snapshot.failedPhase as 'chapter_weaving' | 'reviewing' | 'acting' | 'scene_setup',
             transcript: snapshot.transcript,
             scenes: snapshot.scenes,
+            content: snapshot.content,
+            failedSceneId: snapshot.failedSceneId,
           },
         )
 
@@ -923,11 +1261,13 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           chapterNumber: chapter,
           status: result.status,
           failedPhase: result.failedPhase,
+          failedSceneId: result.failedSceneId,
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities: snapshot.arrangedEntities,
           memberModel: snapshot.memberModel,
           projectModel,
+          styleExpertIds: snapshot.styleExpertIds,
           content: result.content,
           error: result.error,
           resumedFromRunId: runId,
@@ -957,7 +1297,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           ...result,
           discussionRunId: resumeRunId,
           resumedFromRunId: runId,
-          canResume: result.status === 'error' && result.failedPhase === 'chapter_weaving',
+          canResume: result.status === 'error' && result.failedPhase != null
+            && DISCUSSION_RESUMABLE_PHASES.has(result.failedPhase),
         })
       } catch (err) {
         emitter.error(String(err))
@@ -966,6 +1307,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         reply.raw.off('close', abortOnDisconnect)
         finishNovelChapterTask(creationLockKey, task)
         chapterCreationLocks.delete(creationLockKey)
+        unregisterInterjectFlow(interjectFlowKey)
         reply.raw.end()
       }
     },
@@ -1297,13 +1639,15 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         ...(input.rhythm ? [`节奏建议：${input.rhythm}`] : []),
       ])
       store.updateChapter(chapter.id, { narrativeTask: input.narrativeTask })
-      const task = registerNovelChapterTask(creationLockKey, 'workflow')
+      const teamRunId = randomUUID()
+      const task = registerNovelChapterTask(creationLockKey, 'workflow', teamRunId)
       chapterCreationLocks.add(creationLockKey)
       try {
         const result = await services.orchestrator.createChapterWithFlow(projectId, chapterNum, {
           emit: (() => {}) as any,
           onCheckpoint: async () => 'approve',
           onProgress: () => {},
+          flowKey: `${projectId}|${chapterNum}|${teamRunId}`,
           signal: task.controller.signal,
         })
         return success(result, request.traceId)
@@ -1513,7 +1857,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     message: z.string().min(1).max(8000),
     mentionedAgents: z.array(z.string()).max(10).optional(),
     /** per-call 模型覆盖（输入框旁选择器传入，本次回复临时切换模型） */
-    modelId: z.object({ provider: z.string(), modelId: z.string() }).optional(),
+    modelId: z.object({
+      provider: z.string(),
+      modelId: z.string(),
+      thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).nullable().optional(),
+    }).optional(),
+    styleExpertIds: z.array(z.string().min(1).max(80)).max(8).optional(),
   })
 
   routes.push({
@@ -1559,6 +1908,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             emit: emitter.emit,
             moderatorModel: settings.moderatorModel,
             modelId: input.modelId,
+            styleExpertIds: input.styleExpertIds,
           },
         )
         emitter.result({ status: 'completed', replies: result.replies })

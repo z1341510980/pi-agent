@@ -44,6 +44,33 @@ describe('ChapterChatRunner', () => {
     }
   }
 
+  it('按 messageId 持久化插话状态与实际注入 Agent', () => {
+    chatStore.add({
+      projectId: 'interject-project',
+      chapterNumber: 1,
+      role: 'user',
+      fromId: 'user',
+      fromName: '用户',
+      content: '加强结尾悬念',
+      phase: 'checkpoint',
+      metadata: {
+        interject: true,
+        messageId: 'interject-message',
+        flowMode: 'workflow',
+        flowId: 'run-1',
+        interjectStatus: 'queued',
+      },
+    })
+
+    expect(chatStore.updateInterjectStatus('interject-message', 'injected', 'writer')).toBe(true)
+    expect(chatStore.list('interject-project', 1)[0]?.metadata).toMatchObject({
+      messageId: 'interject-message',
+      interjectStatus: 'injected',
+      agentType: 'writer',
+    })
+    expect(chatStore.updateInterjectStatus('missing-message', 'dropped')).toBe(false)
+  })
+
   it('不存在的项目或章节在用户消息落库前失败', async () => {
     const { runner, createAgUiSession } = createRunner(vi.fn())
 
@@ -105,6 +132,7 @@ describe('ChapterChatRunner', () => {
     expect(result.replies[0]?.agentId).toBe('novel-writer')
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
       modelId: { provider: 'cheap', modelId: 'moderator' },
+      tools: [],
     }))
     expect(createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({
       modelId: selectedModel,

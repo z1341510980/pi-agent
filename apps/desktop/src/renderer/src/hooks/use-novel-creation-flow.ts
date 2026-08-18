@@ -38,7 +38,7 @@ export type {
   CheckpointData,
   CreationFlowEvent,
   AgentOutput,
-  CreationResult,
+  CreationResult
 } from '@repo/shared/novel'
 
 import type {
@@ -49,6 +49,7 @@ import type {
   AgentOutput,
   CreationResult,
   NovelUserMessageEvent,
+  NovelInterjectTargetAgent
 } from '@repo/shared/novel'
 
 /** 用户在创作过程中发送的消息（参与创作的指令，前端 UI 独有类型） */
@@ -69,7 +70,7 @@ export interface InterjectMessage {
   content: string
   status: 'queued' | 'injected' | 'dropped'
   /** 定向 Agent（缺省注入下一个被调用的 Agent） */
-  targetAgent?: string
+  targetAgent?: NovelInterjectTargetAgent
   /** status='injected' 时实际消费该插话的 Agent 类型 */
   agentType?: string
   timestamp: number
@@ -82,7 +83,7 @@ export interface InterjectMessage {
 const INTERJECT_STATUS_ORDER: Record<InterjectMessage['status'], number> = {
   queued: 0,
   injected: 1,
-  dropped: 1,
+  dropped: 1
 }
 
 /**
@@ -95,7 +96,7 @@ const INTERJECT_STATUS_ORDER: Record<InterjectMessage['status'], number> = {
  */
 export function applyUserMessageEvent(
   prev: InterjectMessage[],
-  event: NovelUserMessageEvent,
+  event: NovelUserMessageEvent
 ): InterjectMessage[] {
   const next: InterjectMessage = {
     messageId: event.messageId,
@@ -103,7 +104,7 @@ export function applyUserMessageEvent(
     status: event.status,
     targetAgent: event.targetAgent,
     agentType: event.agentType,
-    timestamp: event.timestamp,
+    timestamp: event.timestamp
   }
   const index = prev.findIndex((message) => message.messageId === event.messageId)
   if (index === -1) return [...prev, next]
@@ -123,6 +124,22 @@ export type SendInterjectOutcome =
 /** 只有 Writer 的原始输出是可直接展示的章节正文。 */
 export function streamsChapterContent(agentType: AgentOutput['agentType']): boolean {
   return agentType === 'writer'
+}
+
+type StreamAgentMeta = Pick<AgentOutput, 'agentType' | 'agentName'>
+
+const PHASE_AGENT_META: Record<string, StreamAgentMeta> = {
+  directing: { agentType: 'director', agentName: '导演' },
+  writing: { agentType: 'writer', agentName: '写作' },
+  rewriting: { agentType: 'writer', agentName: '写作' },
+  reviewing: { agentType: 'reviewer', agentName: '审稿' },
+  revising: { agentType: 'reviser', agentName: '修订' },
+  memory: { agentType: 'memory', agentName: '记忆' },
+  chapter_weaving: { agentType: 'writer', agentName: '编织' },
+}
+
+function inferStreamAgentMeta(phase: string | undefined): StreamAgentMeta | undefined {
+  return phase ? PHASE_AGENT_META[phase] : undefined
 }
 
 // ── Hook 返回值 ──
@@ -170,23 +187,38 @@ export interface UseNovelCreationFlowReturn {
   /** flow 运行中的插话消息（SSE novel:user-message 驱动状态流转） */
   interjectMessages: InterjectMessage[]
   /** 启动创作流程 */
-  startCreation: (projectId: string, chapterNumber: number, options?: {
-    arrangedEntities?: ArrangedEntitiesPayload
-    /** per-call 模型（输入框旁选择器传入，本次创作统一使用） */
-    modelId?: { provider: string; modelId: string }
-  }) => Promise<void>
+  startCreation: (
+    projectId: string,
+    chapterNumber: number,
+    options?: {
+      arrangedEntities?: ArrangedEntitiesPayload
+      /** per-call 模型（输入框旁选择器传入，本次创作统一使用） */
+       modelId?: { provider: string; modelId: string; thinkingLevel?: import('./../stores/session-store').ThinkingLevel | null }
+      styleExpertIds?: string[]
+    }
+  ) => Promise<void>
   /**
    * 启动群聊模式创作流程。
    *
    * 与 startCreation 结构一致，仅后端端点不同（/create-discussion），
    * ag-ui 事件格式与状态机共用同一 handleEvent。
    */
-  startDiscussion: (projectId: string, chapterNumber: number, options?: {
-    arrangedEntities?: ArrangedEntitiesPayload
-    modelId?: { provider: string; modelId: string }
-  }) => Promise<void>
+  startDiscussion: (
+    projectId: string,
+    chapterNumber: number,
+    options?: {
+      arrangedEntities?: ArrangedEntitiesPayload
+       modelId?: { provider: string; modelId: string; thinkingLevel?: import('./../stores/session-store').ThinkingLevel | null }
+      styleExpertIds?: string[]
+    }
+  ) => Promise<void>
   /** 从失败的群聊快照直接恢复 Writer 全章编织阶段 */
   resumeDiscussion: (projectId: string, chapterNumber: number, runId: string) => Promise<void>
+  /**
+   * 工作流断点续跑：从失败快照恢复，跳过已完成阶段。
+   * runId 传 'latest' 取该章最近一条可续跑快照（应用重启后使用）。
+   */
+  resumeWorkflow: (projectId: string, chapterNumber: number, runId: string) => Promise<void>
   /**
    * 启动 AI 编排流程（模式2）
    *
@@ -210,7 +242,9 @@ export interface UseNovelCreationFlowReturn {
    * characterFunctions 不落库，只在编排返回值里存在；触发 create-flow 时需要显式带上，
    * 否则 Writer 拿不到"每个角色本章负责推动什么"。取出后即清空。
    */
-  takeArrangedCharacterFunctions: (chapterNumber: number) => Array<{ characterId: string; function: string; note?: string }> | undefined
+  takeArrangedCharacterFunctions: (
+    chapterNumber: number
+  ) => Array<{ characterId: string; function: string; note?: string }> | undefined
   /** 提交检查点决策（comment 为检查点卡片内修改意见，随 userMessages 一并提交既有 decision 端点） */
   submitCheckpoint: (decision: CheckpointDecision, comment?: string) => Promise<void>
   /** 用户发送消息参与创作（存入本地 state，在下一个检查点决策时一并发送） */
@@ -221,7 +255,10 @@ export interface UseNovelCreationFlowReturn {
    * 状态流转由 SSE novel:user-message 事件推回 interjectMessages。
    * 返回结果供调用方 toast：成功「已排队」；409 表示当前无运行中流程。
    */
-  sendInterject: (content: string) => Promise<SendInterjectOutcome>
+  sendInterject: (
+    content: string,
+    targetAgent?: NovelInterjectTargetAgent
+  ) => Promise<SendInterjectOutcome>
   /**
    * 质量门修订失败后，对已保留修订稿的未通过项**再次定向修订**。
    *
@@ -229,9 +266,14 @@ export interface UseNovelCreationFlowReturn {
    * 后端返回的 failedItems 跑有界修订循环（最多 2 轮），避免失败后整条
    * 重跑烧掉大量 token。通过后返回修订稿（**不自动落库**，由用户决定保存）。
    */
-  reRevise: (projectId: string, chapterNumber: number, content: string, options?: {
-    arrangedEntities?: ArrangedEntitiesPayload
-  }) => Promise<void>
+  reRevise: (
+    projectId: string,
+    chapterNumber: number,
+    content: string,
+    options?: {
+      arrangedEntities?: ArrangedEntitiesPayload
+    }
+  ) => Promise<void>
   /**
    * 保留当前修订稿为草稿：清空错误提示与结果，但**不丢内容**——
    * 正文继续留在编辑器可手动编辑，也不触发落库。
@@ -246,38 +288,73 @@ export interface UseNovelCreationFlowReturn {
 // ── 详情格式化（将后端 detail payload 转为可读 markdown 气泡内容）──
 
 const RHYTHM_LABELS: Record<string, string> = {
-  setup: '铺垫', rising: '上升', climax: '高潮', falling: '下降',
-  resolution: '收束', twist: '转折', breather: '舒缓', suspense: '悬念',
+  setup: '铺垫',
+  rising: '上升',
+  climax: '高潮',
+  falling: '下降',
+  resolution: '收束',
+  twist: '转折',
+  breather: '舒缓',
+  suspense: '悬念'
 }
 const CLIMAX_INTENSITY_LABELS: Record<string, string> = {
-  minor: '小高潮', medium: '中高潮', major: '大高潮',
+  minor: '小高潮',
+  medium: '中高潮',
+  major: '大高潮'
 }
 const CLIMAX_TYPE_LABELS: Record<string, string> = {
-  emotional: '情感', fate: '命运', character: '性格', combat: '打斗', theme: '主题', composite: '复合',
+  emotional: '情感',
+  fate: '命运',
+  character: '性格',
+  combat: '打斗',
+  theme: '主题',
+  composite: '复合'
 }
 const TASK_TYPE_LABELS: Record<string, string> = {
-  advance_mainline: '推进主线', advance_subline: '推进副线',
-  create_conflict: '创建冲突', escalate_conflict: '升级冲突',
-  release_info: '释放信息', hide_info: '隐藏信息',
-  reinforce_foreshadow: '强化伏笔', recover_foreshadow: '回收伏笔',
-  change_relationship: '改变关系', change_cognition: '改变认知',
-  create_reversal: '制造突转', create_suspense: '制造悬念',
-  phase_closure: '阶段收束', introduce_problem: '引入问题',
+  advance_mainline: '推进主线',
+  advance_subline: '推进副线',
+  create_conflict: '创建冲突',
+  escalate_conflict: '升级冲突',
+  release_info: '释放信息',
+  hide_info: '隐藏信息',
+  reinforce_foreshadow: '强化伏笔',
+  recover_foreshadow: '回收伏笔',
+  change_relationship: '改变关系',
+  change_cognition: '改变认知',
+  create_reversal: '制造突转',
+  create_suspense: '制造悬念',
+  phase_closure: '阶段收束',
+  introduce_problem: '引入问题'
 }
 const PRIORITY_LABELS: Record<string, string> = { high: '高', medium: '中', low: '低' }
 const CONFLICT_STAGE_LABELS: Record<string, string> = {
-  latent: '潜伏', emerging: '浮现', escalating: '升级', erupting: '爆发',
-  reversing: '逆转', resolved: '已解决', transformed: '转化',
+  latent: '潜伏',
+  emerging: '浮现',
+  escalating: '升级',
+  erupting: '爆发',
+  reversing: '逆转',
+  resolved: '已解决',
+  transformed: '转化'
 }
 const SUSPENSE_STATUS_LABELS: Record<string, string> = {
-  planting: '埋设', sustaining: '维持', releasing: '释放',
+  planting: '埋设',
+  sustaining: '维持',
+  releasing: '释放'
 }
 const POSITIONING_LABELS: Record<string, string> = {
-  high_pressure: '高压章', advancement: '推进章', cultivation: '修炼试错章',
-  relationship: '关系回收章', low_pressure: '低压生活章', information: '信息整理章',
+  high_pressure: '高压章',
+  advancement: '推进章',
+  cultivation: '修炼试错章',
+  relationship: '关系回收章',
+  low_pressure: '低压生活章',
+  information: '信息整理章'
 }
 const CHAPTER_ENDING_HOOK_LABELS: Record<string, string> = {
-  suspense: '悬念', reversal: '突转', emotional: '情感', action: '动作', none: '无',
+  suspense: '悬念',
+  reversal: '突转',
+  emotional: '情感',
+  action: '动作',
+  none: '无'
 }
 
 /** 将后端 detail 事件 payload 格式化为 markdown 气泡内容
@@ -299,7 +376,8 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
     const climaxIntensity = detail.climaxIntensity as string | undefined
     const climaxType = detail.climaxType as string | undefined
     let md = `## 本章节奏建议\n\n**节奏**：${RHYTHM_LABELS[rhythm] ?? rhythm}`
-    if (climaxIntensity) md += `\n**高潮强度**：${CLIMAX_INTENSITY_LABELS[climaxIntensity] ?? climaxIntensity}`
+    if (climaxIntensity)
+      md += `\n**高潮强度**：${CLIMAX_INTENSITY_LABELS[climaxIntensity] ?? climaxIntensity}`
     if (climaxType) md += `\n**高潮类型**：${CLIMAX_TYPE_LABELS[climaxType] ?? climaxType}高潮`
     md += `\n\n**说明**：${detail.description as string}\n\n**原因**：${detail.reason as string}`
     return { agentType: 'context', agentName: '节奏', content: md }
@@ -329,7 +407,7 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
     // 核心字段
     md += `\n**任务类型**：${TASK_TYPE_LABELS[taskType] ?? taskType}`
     if (secondaryTasks.length > 0) {
-      md += `\n**次要任务**：${secondaryTasks.map(t => TASK_TYPE_LABELS[t] ?? t).join('、')}`
+      md += `\n**次要任务**：${secondaryTasks.map((t) => TASK_TYPE_LABELS[t] ?? t).join('、')}`
     }
     md += `\n**优先级**：${PRIORITY_LABELS[priority] ?? priority}`
     if (targetEntity) md += `\n**目标实体**：${targetEntity}`
@@ -340,9 +418,11 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
       md += `\n**章尾钩子**：${CHAPTER_ENDING_HOOK_LABELS[chapterEndingHook] ?? chapterEndingHook}`
       if (chapterEndingHookDescription) md += `\n> ${chapterEndingHookDescription}`
     }
-    if (climaxTarget) md += `\n**高潮目标**：${CLIMAX_TYPE_LABELS[climaxTarget.type] ?? climaxTarget.type}（${CLIMAX_INTENSITY_LABELS[climaxTarget.intensity] ?? climaxTarget.intensity}）`
+    if (climaxTarget)
+      md += `\n**高潮目标**：${CLIMAX_TYPE_LABELS[climaxTarget.type] ?? climaxTarget.type}（${CLIMAX_INTENSITY_LABELS[climaxTarget.intensity] ?? climaxTarget.intensity}）`
     if (suspenseDuration != null) md += `\n**悬念持续**：${suspenseDuration} 章`
-    if (expectedIntensityDelta != null) md += `\n**预期强度变化**：${expectedIntensityDelta > 0 ? '+' : ''}${expectedIntensityDelta}`
+    if (expectedIntensityDelta != null)
+      md += `\n**预期强度变化**：${expectedIntensityDelta > 0 ? '+' : ''}${expectedIntensityDelta}`
     if (timeOffset != null) md += `\n**时间线偏移**：${timeOffset} 天`
     return { agentType: 'director', agentName: '导演', content: md }
   }
@@ -416,49 +496,76 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
       { label: '冲突', items: conflicts },
       { label: '伏笔', items: foreshadows },
       { label: '势力', items: factions },
-      { label: '地点', items: locations },
+      { label: '地点', items: locations }
     ]
     for (const s of sections) {
       if (s.items.length === 0) continue
       md += `\n### ${s.label}（${s.items.length}）\n`
-      s.items.forEach((it, i) => { md += `\n${i + 1}. ${it}` })
+      s.items.forEach((it, i) => {
+        md += `\n${i + 1}. ${it}`
+      })
     }
-    if (characters.length + conflicts.length + foreshadows.length + factions.length + locations.length === 0) {
+    if (
+      characters.length +
+        conflicts.length +
+        foreshadows.length +
+        factions.length +
+        locations.length ===
+      0
+    ) {
       md += `\n\n*章纲未规划新实体*`
     }
     return { agentType: 'arranger', agentName: '规划', content: md }
   }
   if (kind === 'arrange_result') {
     const characters = (detail.characters as Array<{ name: string; description: string }>) ?? []
-    const conflicts = (detail.conflicts as Array<{ description: string; intensity: number; tier: string; climaxChapter: number | null; climaxType: string | null }>) ?? []
-    const foreshadows = (detail.foreshadows as Array<{ description: string; category: string }>) ?? []
+    const conflicts =
+      (detail.conflicts as Array<{
+        description: string
+        intensity: number
+        tier: string
+        climaxChapter: number | null
+        climaxType: string | null
+      }>) ?? []
+    const foreshadows =
+      (detail.foreshadows as Array<{ description: string; category: string }>) ?? []
     const factions = (detail.factions as Array<{ name: string; type: string }>) ?? []
     const locations = (detail.locations as Array<{ name: string; type: string }>) ?? []
     let md = `## 编排完成清单\n`
     if (characters.length > 0) {
       md += `\n### 角色（${characters.length}）\n`
-      characters.forEach((c, i) => { md += `\n${i + 1}. **${c.name}** — ${c.description}` })
+      characters.forEach((c, i) => {
+        md += `\n${i + 1}. **${c.name}** — ${c.description}`
+      })
     }
     if (conflicts.length > 0) {
       md += `\n### 冲突（${conflicts.length}）\n`
       conflicts.forEach((c, i) => {
         const tierLabel = c.tier === 'main' ? '主要' : c.tier === 'goal' ? '主角目的' : '次要'
         const climaxMark = c.climaxChapter != null ? ` 🔥第${c.climaxChapter}章` : ''
-        const climaxTypeLabel = c.climaxType ? ` ${CLIMAX_TYPE_LABELS[c.climaxType] ?? c.climaxType}高潮` : ''
+        const climaxTypeLabel = c.climaxType
+          ? ` ${CLIMAX_TYPE_LABELS[c.climaxType] ?? c.climaxType}高潮`
+          : ''
         md += `\n${i + 1}. [${tierLabel}] ${c.description}（强度 ${c.intensity}/10${climaxMark}${climaxTypeLabel}）`
       })
     }
     if (foreshadows.length > 0) {
       md += `\n### 伏笔（${foreshadows.length}）\n`
-      foreshadows.forEach((f, i) => { md += `\n${i + 1}. [${f.category}] ${f.description}` })
+      foreshadows.forEach((f, i) => {
+        md += `\n${i + 1}. [${f.category}] ${f.description}`
+      })
     }
     if (factions.length > 0) {
       md += `\n### 势力（${factions.length}）\n`
-      factions.forEach((f, i) => { md += `\n${i + 1}. **${f.name}**（${f.type}）` })
+      factions.forEach((f, i) => {
+        md += `\n${i + 1}. **${f.name}**（${f.type}）`
+      })
     }
     if (locations.length > 0) {
       md += `\n### 地点（${locations.length}）\n`
-      locations.forEach((l, i) => { md += `\n${i + 1}. **${l.name}**（${l.type}）` })
+      locations.forEach((l, i) => {
+        md += `\n${i + 1}. **${l.name}**（${l.type}）`
+      })
     }
     return { agentType: 'arranger', agentName: '编排', content: md }
   }
@@ -474,7 +581,8 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
   }
   if (kind === 'revision_passed') {
     // re-revise 定向修订通过：展示轮次与结果（不自动落库，由用户决定保存）
-    const rounds = (detail.revisionRounds as Array<{ round: number; appliedPatches: number }> | undefined) ?? []
+    const rounds =
+      (detail.revisionRounds as Array<{ round: number; appliedPatches: number }> | undefined) ?? []
     const applied = rounds.reduce((sum, r) => sum + (r.appliedPatches ?? 0), 0)
     const md = [
       '## 定向修订完成',
@@ -484,26 +592,34 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
       `- 修订轮次：${rounds.length} 轮`,
       `- 成功应用修改：${applied} 处`,
       '',
-      '可在编辑器中继续修改，或点击「保存到章节」落库。',
+      '可在编辑器中继续修改，或点击「保存到章节」落库。'
     ].join('\n')
     return { agentType: 'reviser', agentName: '修订', content: md }
   }
   if (kind === 'quality_gate_revision_incomplete') {
     // 质量门修订失败：结构化信息已由 NovelConversationPanel 的失败卡展示，
     // 这里给时间线一条摘要气泡，方便回看。
-    const failedItems = (detail.failedItems as Array<{ gateId?: string; reason?: string }> | undefined) ?? []
-    const rounds = (detail.revisionRounds as Array<{ round: number; appliedPatches: number }> | undefined) ?? []
+    const failedItems =
+      (detail.failedItems as Array<{ gateId?: string; reason?: string }> | undefined) ?? []
+    const rounds =
+      (detail.revisionRounds as Array<{ round: number; appliedPatches: number }> | undefined) ?? []
     const md = [
       '## 正文质量门未通过',
       '',
       '修订稿已保留（未落库），可对未通过项再次定向修订、手动编辑或保留草稿。',
       '',
       ...(failedItems.length > 0
-        ? ['**未通过项：**', ...failedItems.map(item => `- ${item.reason ?? item.gateId ?? '未知项'}`), '']
+        ? [
+            '**未通过项：**',
+            ...failedItems.map((item) => `- ${item.reason ?? item.gateId ?? '未知项'}`),
+            ''
+          ]
         : []),
       ...(rounds.length > 0
-        ? [`**已自动修订：** ${rounds.length} 轮（成功应用 ${rounds.reduce((sum, r) => sum + (r.appliedPatches ?? 0), 0)} 处修改）`]
-        : []),
+        ? [
+            `**已自动修订：** ${rounds.length} 轮（成功应用 ${rounds.reduce((sum, r) => sum + (r.appliedPatches ?? 0), 0)} 处修改）`
+          ]
+        : [])
     ].join('\n')
     return { agentType: 'reviser', agentName: '修订', content: md }
   }
@@ -546,6 +662,12 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
   const chapterNumberRef = useRef<number | null>(null)
   /** 当前创作模式（供持久化用户发言时区分工作流/群聊） */
   const flowModeRef = useRef<'workflow' | 'discussion'>('workflow')
+  /** 当前 SSE RUN_STARTED 的运行 ID，插话必须带它做运行级隔离。 */
+  const activeFlowIdRef = useRef<string | null>(null)
+  /** 最近一次业务事件的阶段；标准 TEXT_MESSAGE_* 事件本身不带角色元数据时用于兜底。 */
+  const activePhaseRef = useRef<string | undefined>(undefined)
+  /** 保证实时气泡按到达顺序排列，即使后端事件时间戳相同或回退。 */
+  const timelineTimestampRef = useRef(0)
   /**
    * 最近一次 AI 编排产出的角色功能位。
    *
@@ -558,9 +680,18 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     entries: Array<{ characterId: string; function: string; note?: string }>
   } | null>(null)
   /** messageId → { agentType, agentName } 映射：agent_start 时记录，TEXT_MESSAGE_* 时查询 */
-  const messageAgentMapRef = useRef<Map<string, { agentType: AgentOutput['agentType']; agentName: string }>>(new Map())
+  const messageAgentMapRef = useRef<
+    Map<string, { agentType: AgentOutput['agentType']; agentName: string }>
+  >(new Map())
   /** 已收到正文 delta 的消息；首个 delta 会替换 agent_start 的占位文案。 */
   const messagesWithTextRef = useRef<Set<string>>(new Set())
+  /**
+   * 思考流缓冲：按 messageId 累积 THINKING_TEXT_MESSAGE_CONTENT delta。
+   *
+   * 与 deltaBufferRef 分开存放：思考文本绝不进入 writerContentRef（章节正文），
+   * 只在正文 delta 尚未到达时充作气泡的临时展示内容（正文开始后即被取代）。
+   */
+  const thinkingBufferRef = useRef<Map<string, string>>(new Map())
   /** writer/reviser 累积文本（delta 累积，避免每次 setState 丢失增量） */
   const writerContentRef = useRef('')
   /**
@@ -586,6 +717,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    * 又不会退化成每个 delta 一次 setState。
    */
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const nextTimelineTimestamp = useCallback((candidate?: number): number => {
+    const base = typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : Date.now()
+    const next = Math.max(base, timelineTimestampRef.current + 1)
+    timelineTimestampRef.current = next
+    return next
+  }, [])
 
   /** 取消所有待执行的 flush 调度 */
   const cancelDeltaFlush = useCallback(() => {
@@ -621,9 +759,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       }
 
       const buffer = deltaBufferRef.current
-      if (buffer.size === 0) return
+      if (buffer.size === 0 && thinkingBufferRef.current.size === 0) return
       const entries = Array.from(buffer.entries())
       buffer.clear()
+
+      // 思考 delta：只进气泡的 thinking 字段，绝不进章节正文（writerContentRef）
+      const thinkingEntries = Array.from(thinkingBufferRef.current.entries())
+      thinkingBufferRef.current.clear()
 
       // Reviser 的流式文本通常只是"已应用 N 处修订"；真正的修订正文由
       // apply_revision 工具生成，并在最终 result 中返回。不能让它覆盖 Writer 草稿。
@@ -643,14 +785,25 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       setAgentOutputs((prev) => {
         let updated = prev
         for (const [messageId, delta] of entries) {
-          const idx = updated.findIndex(o => o.messageId === messageId)
+          const idx = updated.findIndex((o) => o.messageId === messageId)
           if (idx === -1) continue
-          if (updated === prev) updated = [...prev]  // 懒复制
+          if (updated === prev) updated = [...prev] // 懒复制
           const newContent = updated[idx].content + delta
           updated[idx] = {
             ...updated[idx],
             content: newContent,
-            preview: newContent.slice(-200),
+            preview: newContent.slice(-200)
+          }
+        }
+        // 思考 delta 合并到 thinking 字段（正文已开始的跳过：思考不覆盖正文）
+        for (const [messageId, delta] of thinkingEntries) {
+          if (messagesWithTextRef.current.has(messageId)) continue
+          const idx = updated.findIndex((o) => o.messageId === messageId)
+          if (idx === -1) continue
+          if (updated === prev) updated = [...prev]
+          updated[idx] = {
+            ...updated[idx],
+            thinking: (updated[idx].thinking ?? '') + delta
           }
         }
         return updated
@@ -666,6 +819,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    *
    * 与 chat 共用同一套 ag-ui 协议：
    * - TEXT_MESSAGE_START/CONTENT/END → LLM 流式文本（增量 delta，按 messageId 累积）
+   * - THINKING_TEXT_MESSAGE_CONTENT → 推理模型思考流（正文到达前展示，正文开始即取代）
    * - CUSTOM(novel:progress) → 阶段变更 / agent_start / data_changed / 心跳
    * - CUSTOM(novel:checkpoint) → CheckpointData，等待用户决策
    * - CUSTOM(novel:result) → CreationResult，流程结束
@@ -679,32 +833,49 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     // 已取消：跳过所有后续事件处理，避免 setState 覆盖 reset() 的 idle
     if (abortControllerRef.current?.signal.aborted) return
 
+    if (event.type === 'RUN_STARTED') {
+      activeFlowIdRef.current = (event as { runId?: string }).runId ?? null
+      return
+    }
+
     // ── 标准 AG-UI 事件：LLM 流式文本（与 chat 共用同一协议） ──
     // TEXT_MESSAGE_START：StreamEmitter 开始发射某 messageId 的文本。
     // 不在这里清空 agent_start 文案：工具型 Agent 可能只有 START/END，没有文本 delta。
     if (event.type === 'TEXT_MESSAGE_START') {
-      const { messageId } = event as { type: 'TEXT_MESSAGE_START'; messageId: string }
+      const { messageId, agentType: eventAgentType, agentName: eventAgentName } = event as {
+        type: 'TEXT_MESSAGE_START'
+        messageId: string
+        agentType?: AgentOutput['agentType']
+        agentName?: string
+      }
       // 首 token 已到达，等待类心跳文案已失效，回退显示当前阶段名称。
       setProgressMessage(null)
       const meta = messageAgentMapRef.current.get(messageId)
+        ?? (eventAgentType
+          ? { agentType: eventAgentType, agentName: eventAgentName ?? eventAgentType }
+          : inferStreamAgentMeta(activePhaseRef.current))
       if (meta) {
+        messageAgentMapRef.current.set(messageId, meta)
         setAgentOutputs((prev) => {
-          const idx = prev.findIndex(o => o.messageId === messageId)
+          const idx = prev.findIndex((o) => o.messageId === messageId)
           if (idx >= 0) {
             const updated = [...prev]
             updated[idx] = { ...updated[idx], streaming: true }
             return updated
           }
           // 无初始气泡 → 新建 streaming 气泡
-          return [...prev, {
-            agentType: meta.agentType,
-            agentName: meta.agentName,
-            content: '',
-            preview: '',
-            timestamp: Date.now(),
-            streaming: true,
-            messageId,
-          }]
+          return [
+            ...prev,
+            {
+              agentType: meta.agentType,
+              agentName: meta.agentName,
+              content: '',
+              preview: '',
+              timestamp: nextTimelineTimestamp(),
+              streaming: true,
+              messageId
+            }
+          ]
         })
       }
       return
@@ -712,14 +883,41 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
     // TEXT_MESSAGE_CONTENT：累积到缓冲，rAF 批量 flush（避免高频 setState）
     if (event.type === 'TEXT_MESSAGE_CONTENT') {
-      const { messageId, delta } = event as { type: 'TEXT_MESSAGE_CONTENT'; messageId: string; delta: string }
+      const { messageId, delta } = event as {
+        type: 'TEXT_MESSAGE_CONTENT'
+        messageId: string
+        delta: string
+      }
+      const meta = messageAgentMapRef.current.get(messageId) ?? inferStreamAgentMeta(activePhaseRef.current)
+      if (meta) messageAgentMapRef.current.set(messageId, meta)
+      if (!meta) return
       if (!messagesWithTextRef.current.has(messageId)) {
         messagesWithTextRef.current.add(messageId)
         setAgentOutputs((prev) => {
-          const idx = prev.findIndex(o => o.messageId === messageId)
-          if (idx === -1) return prev
+          const idx = prev.findIndex((o) => o.messageId === messageId)
+          if (idx === -1) {
+            return [
+              ...prev,
+              {
+                agentType: meta.agentType,
+                agentName: meta.agentName,
+                content: '',
+                preview: '',
+                timestamp: nextTimelineTimestamp(),
+                streaming: true,
+                messageId
+              }
+            ]
+          }
           const updated = [...prev]
-          updated[idx] = { ...updated[idx], content: '', preview: '' }
+          // 首个正文 delta：清空占位文案与思考文本，标记此后展示正文而非 thinking
+          updated[idx] = {
+            ...updated[idx],
+            content: '',
+            preview: '',
+            hasStreamedText: true,
+            thinking: undefined
+          }
           return updated
         })
       }
@@ -729,9 +927,40 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       return
     }
 
+    // THINKING_TEXT_MESSAGE_CONTENT：思考流式 delta（推理模型）。
+    // 不展示的话，长思考期间气泡停留在"已启动"占位文案，SSE 明明有数据会话却无输出。
+    // REASONING_MESSAGE_CONTENT 与之成对发射（内容相同），跳过避免重复。
+    if (
+      event.type === 'THINKING_TEXT_MESSAGE_CONTENT' ||
+      event.type === 'REASONING_MESSAGE_CONTENT'
+    ) {
+      if (event.type === 'REASONING_MESSAGE_CONTENT') return
+      const { messageId, delta } = event as {
+        type: 'THINKING_TEXT_MESSAGE_CONTENT'
+        messageId: string
+        delta: string
+      }
+      if (!delta) return
+      // 正文已开始：思考不再展示（气泡只保留正文，避免交错覆盖）
+      if (messagesWithTextRef.current.has(messageId)) return
+      const existing = thinkingBufferRef.current.get(messageId) ?? ''
+      thinkingBufferRef.current.set(messageId, existing + delta)
+      if (!existing) {
+        // 首个思考 delta：状态栏从"等待 LLM 响应"切换为"思考中"（心跳已失效）。
+        // 无 meta 说明是未展示的内部调用（如群聊角色审查），不动状态栏。
+        const meta = messageAgentMapRef.current.get(messageId)
+        if (meta) setProgressMessage(`${meta.agentName} 正在思考...`)
+      }
+      scheduleDeltaFlush()
+      return
+    }
+
     // TEXT_MESSAGE_END：标记该 Agent 输出完成
     if (event.type === 'TEXT_MESSAGE_END') {
       const { messageId } = event as { type: 'TEXT_MESSAGE_END'; messageId: string }
+      // 同步合并残留思考 delta（rAF 可能还没触发），此后该消息不再接收思考流
+      const pendingThinking = thinkingBufferRef.current.get(messageId)
+      thinkingBufferRef.current.delete(messageId)
       // 先同步 flush 残留 delta（rAF 可能还没触发），避免最后一段文本丢失
       const pending = deltaBufferRef.current.get(messageId)
       if (pending) {
@@ -742,7 +971,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           setChapterContent(writerContentRef.current)
         }
         setAgentOutputs((prev) => {
-          const idx = prev.findIndex(o => o.messageId === messageId)
+          const idx = prev.findIndex((o) => o.messageId === messageId)
           if (idx === -1) return prev
           const updated = [...prev]
           const newContent = updated[idx].content + pending
@@ -751,19 +980,31 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             content: newContent,
             preview: newContent.slice(-200),
             streaming: false,
+            thinking: undefined
           }
           return updated
         })
       } else {
         setAgentOutputs((prev) => {
-          const idx = prev.findIndex(o => o.messageId === messageId)
+          const idx = prev.findIndex((o) => o.messageId === messageId)
           if (idx === -1) return prev
           const updated = [...prev]
           const meta = messageAgentMapRef.current.get(messageId)
-          const completion = meta?.agentType === 'reviser' && !messagesWithTextRef.current.has(messageId)
-            ? '修订已完成，正文已更新。'
-            : updated[idx].content
-          updated[idx] = { ...updated[idx], content: completion, preview: completion.slice(-200), streaming: false }
+          const mergedThinking = pendingThinking
+            ? (updated[idx].thinking ?? '') + pendingThinking
+            : updated[idx].thinking
+          const completion =
+            meta?.agentType === 'reviser' && !messagesWithTextRef.current.has(messageId)
+              ? '修订已完成，正文已更新。'
+              : updated[idx].content
+          updated[idx] = {
+            ...updated[idx],
+            content: completion,
+            preview: completion.slice(-200),
+            streaming: false,
+            // 纯思考无正文的消息保留思考供完成态展示；有正文的清掉
+            thinking: messagesWithTextRef.current.has(messageId) ? undefined : mergedThinking
+          }
           return updated
         })
       }
@@ -778,6 +1019,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           const evt = custom.value as CreationFlowEvent
           setEvents((prev) => [...prev, evt])
           setPhase(evt.phase)
+          activePhaseRef.current = evt.phase
           const data = evt.data as {
             type?: string
             agentType?: string
@@ -787,7 +1029,14 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             dataChanged?: boolean
             data?: unknown
             detail?: Record<string, unknown>
-            scene?: { sceneId: number; title: string; location: string; time: string; conflict?: string; goal: string }
+            scene?: {
+              sceneId: number
+              title: string
+              location: string
+              time: string
+              conflict?: string
+              goal: string
+            }
           }
           const isPhaseProgress = evt.type === 'phase_change' || data?.type === 'phase_change'
           if (isPhaseProgress && data?.message) {
@@ -800,15 +1049,18 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             const detailKind = data.detail.kind as string
             if (!detailKind.startsWith('arrange_')) {
               const formatted = formatDetailBubble(data.detail)
-              setAgentOutputs((prev) => [...prev, {
-                agentType: formatted.agentType,
-                agentName: formatted.agentName,
-                content: formatted.content,
-                preview: data.message ?? formatted.content.slice(0, 100),
-                timestamp: evt.timestamp,
-                // memory_result 携带 dataChanged 标记，触发画布刷新
-                dataChanged: data.dataChanged === true,
-              }])
+              setAgentOutputs((prev) => [
+                ...prev,
+                {
+                  agentType: formatted.agentType,
+                  agentName: formatted.agentName,
+                  content: formatted.content,
+                  preview: data.message ?? formatted.content.slice(0, 100),
+                  timestamp: nextTimelineTimestamp(evt.timestamp),
+                  // memory_result 携带 dataChanged 标记，触发画布刷新
+                  dataChanged: data.dataChanged === true
+                }
+              ])
               return
             }
           }
@@ -820,7 +1072,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           if (data?.type === 'agent_start' && data.messageId && data.agentType && data.agentName) {
             messageAgentMapRef.current.set(data.messageId, {
               agentType: data.agentType as AgentOutput['agentType'],
-              agentName: data.agentName,
+              agentName: data.agentName
             })
             if (streamsChapterContent(data.agentType as AgentOutput['agentType'])) {
               writerContentRef.current = ''
@@ -829,16 +1081,19 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             // 创建初始 streaming 气泡：TEXT_MESSAGE_START 会清空 content 准备接收流式 delta
             const initialMsg = data.message ?? `${data.agentName} 已启动...`
             setAgentOutputs((prev) => {
-              if (prev.some(o => o.messageId === data.messageId)) return prev
-              return [...prev, {
-                agentType: data.agentType as AgentOutput['agentType'],
-                agentName: data.agentName!,
-                content: initialMsg,
-                preview: initialMsg,
-                timestamp: evt.timestamp,
-                streaming: true,
-                messageId: data.messageId,
-              }]
+              if (prev.some((o) => o.messageId === data.messageId)) return prev
+              return [
+                ...prev,
+                {
+                  agentType: data.agentType as AgentOutput['agentType'],
+                  agentName: data.agentName!,
+                  content: initialMsg,
+                  preview: initialMsg,
+                  timestamp: nextTimelineTimestamp(evt.timestamp),
+                  streaming: true,
+                  messageId: data.messageId
+                }
+              ]
             })
             return
           }
@@ -851,23 +1106,31 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               const last = prev[prev.length - 1]
               if (last && last.agentType === 'memory' && last.streaming) {
                 // 关闭 streaming 气泡，附加提取摘要
-                return [...prev.slice(0, -1), {
-                  ...last,
-                  content: summary ? `${last.content}\n\n---\n\n**提取摘要**：${summary}` : (data.message ?? last.content),
-                  preview: summary ?? data.message ?? last.preview,
-                  streaming: false,
-                  dataChanged: true,
-                }]
+                return [
+                  ...prev.slice(0, -1),
+                  {
+                    ...last,
+                    content: summary
+                      ? `${last.content}\n\n---\n\n**提取摘要**：${summary}`
+                      : (data.message ?? last.content),
+                    preview: summary ?? data.message ?? last.preview,
+                    streaming: false,
+                    dataChanged: true
+                  }
+                ]
               }
               // 无前置 streaming 气泡 → 直接创建完成态气泡
-              return [...prev, {
-                agentType: (data.agentType ?? 'memory') as AgentOutput['agentType'],
-                agentName: data.agentName ?? '记忆',
-                content: summary ?? data.message ?? '数据已更新',
-                preview: summary ?? data.message ?? '数据已更新',
-                timestamp: evt.timestamp,
-                dataChanged: true,
-              }]
+              return [
+                ...prev,
+                {
+                  agentType: (data.agentType ?? 'memory') as AgentOutput['agentType'],
+                  agentName: data.agentName ?? '记忆',
+                  content: summary ?? data.message ?? '数据已更新',
+                  preview: summary ?? data.message ?? '数据已更新',
+                  timestamp: nextTimelineTimestamp(evt.timestamp),
+                  dataChanged: true
+                }
+              ]
             })
             return
           }
@@ -879,16 +1142,22 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               const last = prev[prev.length - 1]
               if (last && last.agentType === 'memory' && last.streaming) {
                 // 更新现有 memory 气泡的 message
-                return [...prev.slice(0, -1), { ...last, content: data.message!, preview: data.message! }]
+                return [
+                  ...prev.slice(0, -1),
+                  { ...last, content: data.message!, preview: data.message! }
+                ]
               }
-              return [...prev, {
-                agentType: 'memory',
-                agentName: '记忆',
-                content: data.message!,
-                preview: data.message!,
-                timestamp: evt.timestamp,
-                streaming: true,
-              }]
+              return [
+                ...prev,
+                {
+                  agentType: 'memory',
+                  agentName: '记忆',
+                  content: data.message!,
+                  preview: data.message!,
+                  timestamp: nextTimelineTimestamp(evt.timestamp),
+                  streaming: true
+                }
+              ]
             })
             return
           }
@@ -903,28 +1172,35 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             preview: string,
             timestamp: number,
             agentName: string,
-            dataChanged: boolean,
-          ) => {
+            dataChanged: boolean
+          ): void => {
             setAgentOutputs((prev) => {
               const last = prev[prev.length - 1]
               if (last && last.agentType === 'arranger' && last.streaming) {
-                return [...prev.slice(0, -1), { ...last, streaming: false }, {
+                return [
+                  ...prev.slice(0, -1),
+                  { ...last, streaming: false },
+                  {
+                    agentType: 'arranger',
+                    agentName,
+                    content,
+                    preview,
+                    timestamp,
+                    dataChanged
+                  }
+                ]
+              }
+              return [
+                ...prev,
+                {
                   agentType: 'arranger',
                   agentName,
                   content,
                   preview,
                   timestamp,
-                  dataChanged,
-                }]
-              }
-              return [...prev, {
-                agentType: 'arranger',
-                agentName,
-                content,
-                preview,
-                timestamp,
-                dataChanged,
-              }]
+                  dataChanged
+                }
+              ]
             })
           }
           const evtType = (evt as { type?: string }).type
@@ -933,8 +1209,9 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             const evtDetail = (evt as { detail?: Record<string, unknown> }).detail
             const detail = evtDetail ?? data?.detail
             const detailKind = detail?.kind as string | undefined
-            const partial = (data as { partial?: string } | undefined)?.partial
-              ?? (evtDetail as { partial?: string } | undefined)?.partial
+            const partial =
+              (data as { partial?: string } | undefined)?.partial ??
+              (evtDetail as { partial?: string } | undefined)?.partial
 
             // arrange_done + arrange_summary：编排完成，实体已落库
             // → 渲染汇总气泡 + dataChanged: true 触发画布/侧边栏刷新
@@ -944,14 +1221,15 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               // "这个角色本章负责推动什么"，多角色同场就会退化成点名式叙述。
               // 后端 emitter.progress({ type:'arrange_done', data: arrangedEntities })
               // → 前端 data = evt.data 即 progress 载荷，编排结果在 data.data
-              const payload = (data as { data?: unknown } | undefined)?.data
-                ?? (evtDetail as { data?: unknown } | undefined)?.data
+              const payload =
+                (data as { data?: unknown } | undefined)?.data ??
+                (evtDetail as { data?: unknown } | undefined)?.data
               if (payload && typeof payload === 'object') {
                 const arranged = payload as ArrangedEntitiesPayload
                 if (arranged.characterFunctions?.length) {
                   lastArrangeFunctionsRef.current = {
                     chapterNumber: chapterNumberRef.current,
-                    entries: arranged.characterFunctions,
+                    entries: arranged.characterFunctions
                   }
                 }
               }
@@ -984,16 +1262,22 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               setAgentOutputs((prev) => {
                 const last = prev[prev.length - 1]
                 if (last && last.agentType === 'arranger' && last.streaming) {
-                  return [...prev.slice(0, -1), { ...last, content: streamContent, preview: partial }]
+                  return [
+                    ...prev.slice(0, -1),
+                    { ...last, content: streamContent, preview: partial }
+                  ]
                 }
-                return [...prev, {
-                  agentType: 'arranger',
-                  agentName: '编排',
-                  content: streamContent,
-                  preview: partial,
-                  timestamp: evt.timestamp,
-                  streaming: true,
-                }]
+                return [
+                  ...prev,
+                  {
+                    agentType: 'arranger',
+                    agentName: '编排',
+                    content: streamContent,
+                    preview: partial,
+                    timestamp: nextTimelineTimestamp(evt.timestamp),
+                    streaming: true
+                  }
+                ]
               })
               return
             }
@@ -1006,14 +1290,17 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
                 if (last && last.agentType === 'arranger' && last.streaming) {
                   return [...prev.slice(0, -1), { ...last, content: evtMsg, preview: evtMsg }]
                 }
-                return [...prev, {
-                  agentType: 'arranger',
-                  agentName: '编排',
-                  content: evtMsg,
-                  preview: evtMsg,
-                  timestamp: evt.timestamp,
-                  streaming: true,
-                }]
+                return [
+                  ...prev,
+                  {
+                    agentType: 'arranger',
+                    agentName: '编排',
+                    content: evtMsg,
+                    preview: evtMsg,
+                    timestamp: nextTimelineTimestamp(evt.timestamp),
+                    streaming: true
+                  }
+                ]
               })
             }
             return
@@ -1023,13 +1310,16 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           if (data?.type === 'scene_change' && data.scene) {
             const scene = data.scene
             const content = `## 场景${scene.sceneId}：${scene.title}\n- 地点：${scene.location}\n- 时间：${scene.time}\n- 冲突：${scene.conflict ?? '无'}\n- 目标：${scene.goal}`
-            setAgentOutputs((prev) => [...prev, {
-              agentType: 'director',
-              agentName: '场景',
-              content,
-              preview: `场景${scene.sceneId}：${scene.title}`,
-              timestamp: evt.timestamp,
-            }])
+            setAgentOutputs((prev) => [
+              ...prev,
+              {
+                agentType: 'director',
+                agentName: '场景',
+                content,
+                preview: `场景${scene.sceneId}：${scene.title}`,
+                timestamp: nextTimelineTimestamp(evt.timestamp)
+              }
+            ])
             return
           }
           // phase_change / 心跳：只更新 events 和 phase，不覆盖 chapterContent
@@ -1039,7 +1329,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           const checkpoint = custom.value as CheckpointData
           const checkpointWithTimestamp = {
             ...checkpoint,
-            createdAt: checkpoint.createdAt ?? Date.now(),
+            createdAt: checkpoint.createdAt ?? Date.now()
           }
           setProgressMessage(null)
           setCurrentCheckpoint(checkpointWithTimestamp)
@@ -1053,6 +1343,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           // 先取消可能挂起的 flush（rAF + 定时器），再清空缓冲（result.content 是权威全量）
           cancelDeltaFlush()
           deltaBufferRef.current.clear()
+          thinkingBufferRef.current.clear()
           // result 里的 content 是最终完整内容，覆盖累积值
           if (resultData.content) {
             setChapterContent(resultData.content)
@@ -1063,7 +1354,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
               ? 'completed'
               : resultData.status === 'cancelled'
                 ? 'cancelled'
-                : 'error',
+                : 'error'
           )
           setIsRunning(false)
           setCurrentCheckpoint(null)
@@ -1102,7 +1393,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
 
     // RUN_STARTED / TOOL_CALL_* / STEP_* / ACTIVITY_* / 其他事件：暂不展示
     // （Memory Agent 的工具调用事件已在后端发射，前端未来可扩展展示）
-  }, [])
+  }, [nextTimelineTimestamp])
 
   /**
    * 内部通用 SSE 流执行器（startCreation 与 aiArrange 共用）。
@@ -1114,33 +1405,37 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    */
   const runFlow = useCallback(
     async (url: string, body: unknown, controller: AbortController): Promise<void> => {
+      activeFlowIdRef.current = null
       try {
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
+            Accept: 'text/event-stream'
           },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal: controller.signal
         })
 
         if (!response.ok) {
           let serverMessage = ''
           try {
-            const payload = await response.json() as {
+            const payload = (await response.json()) as {
               error?: string | { message?: string }
               message?: string
             }
-            serverMessage = typeof payload.error === 'string'
-              ? payload.error
-              : payload.error?.message ?? payload.message ?? ''
+            serverMessage =
+              typeof payload.error === 'string'
+                ? payload.error
+                : (payload.error?.message ?? payload.message ?? '')
           } catch {
             // 非 JSON 错误响应保留 HTTP 状态作为兜底。
           }
-          throw new Error(serverMessage
-            ? `创作流程启动失败：${serverMessage}`
-            : `创作流程启动失败: HTTP ${response.status} ${response.statusText}`)
+          throw new Error(
+            serverMessage
+              ? `创作流程启动失败：${serverMessage}`
+              : `创作流程启动失败: HTTP ${response.status} ${response.statusText}`
+          )
         }
 
         if (!response.body) {
@@ -1164,19 +1459,25 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         setCurrentCheckpoint(null)
       }
     },
-    [handleEvent],
+    [handleEvent]
   )
 
   const startCreation = useCallback(
-    async (projectId: string, chapterNumber: number, options?: {
-      arrangedEntities?: ArrangedEntitiesPayload
-      modelId?: { provider: string; modelId: string }
-    }): Promise<void> => {
+    async (
+      projectId: string,
+      chapterNumber: number,
+      options?: {
+        arrangedEntities?: ArrangedEntitiesPayload
+         modelId?: { provider: string; modelId: string; thinkingLevel?: import('./../stores/session-store').ThinkingLevel | null }
+        styleExpertIds?: string[]
+      }
+    ): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
 
       // 重置状态
       setPhase('idle')
+      activePhaseRef.current = undefined
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
@@ -1191,6 +1492,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
+      thinkingBufferRef.current.clear()
       cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
@@ -1204,6 +1506,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const body = {
         ...(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}),
         ...(options?.modelId ? { modelId: options.modelId } : {}),
+        ...(options?.styleExpertIds ? { styleExpertIds: options.styleExpertIds } : {})
       }
 
       const runPromise = runFlow(url, body, controller)
@@ -1215,7 +1518,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow],
+    [runFlow]
   )
 
   /**
@@ -1225,15 +1528,21 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    * ag-ui 事件格式与状态机共用同一 handleEvent / runFlow。
    */
   const startDiscussion = useCallback(
-    async (projectId: string, chapterNumber: number, options?: {
-      arrangedEntities?: ArrangedEntitiesPayload
-      modelId?: { provider: string; modelId: string }
-    }): Promise<void> => {
+    async (
+      projectId: string,
+      chapterNumber: number,
+      options?: {
+        arrangedEntities?: ArrangedEntitiesPayload
+         modelId?: { provider: string; modelId: string; thinkingLevel?: import('./../stores/session-store').ThinkingLevel | null }
+        styleExpertIds?: string[]
+      }
+    ): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
 
       // 重置状态
       setPhase('idle')
+      activePhaseRef.current = undefined
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
@@ -1248,6 +1557,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
+      thinkingBufferRef.current.clear()
       cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
@@ -1261,6 +1571,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       const body = {
         ...(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}),
         ...(options?.modelId ? { modelId: options.modelId } : {}),
+        ...(options?.styleExpertIds ? { styleExpertIds: options.styleExpertIds } : {})
       }
 
       const runPromise = runFlow(url, body, controller)
@@ -1272,7 +1583,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow],
+    [runFlow]
   )
 
   const resumeDiscussion = useCallback(
@@ -1280,6 +1591,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       if (abortControllerRef.current) return
 
       setPhase('idle')
+      activePhaseRef.current = undefined
       setProgressMessage(null)
       setEvents([])
       setCurrentCheckpoint(null)
@@ -1294,6 +1606,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
+      thinkingBufferRef.current.clear()
       cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
@@ -1312,7 +1625,57 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow],
+    [runFlow]
+  )
+
+  /**
+   * 工作流断点续跑：从失败快照恢复，跳过已完成阶段
+   * （Director 已批准 → 直接写作；Writer 草稿已成 → 直接审校；正文定稿 → 收尾）。
+   *
+   * runId 传 'latest' 时由后端取该章最近一条可续跑快照
+   * （应用重启后 result 已丢失，/继续 命令走此路径）。
+   * 状态重置与 resumeDiscussion 一致，flowMode 标记为 workflow。
+   */
+  const resumeWorkflow = useCallback(
+    async (projectId: string, chapterNumber: number, runId: string): Promise<void> => {
+      if (abortControllerRef.current) return
+
+      setPhase('idle')
+      activePhaseRef.current = undefined
+      setProgressMessage(null)
+      setEvents([])
+      setCurrentCheckpoint(null)
+      setCheckpointHistory([])
+      setResult(null)
+      setError(null)
+      setChapterContent('')
+      setAgentOutputs([])
+      setUserMessages([])
+      setInterjectMessages([])
+      messageAgentMapRef.current.clear()
+      messagesWithTextRef.current.clear()
+      writerContentRef.current = ''
+      deltaBufferRef.current.clear()
+      thinkingBufferRef.current.clear()
+      cancelDeltaFlush()
+      setIsRunning(true)
+      projectIdRef.current = projectId
+      chapterNumberRef.current = chapterNumber
+      flowModeRef.current = 'workflow'
+
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+      const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/create-flow/${runId}/resume`
+      const runPromise = runFlow(url, {}, controller)
+      runFlowPromiseRef.current = runPromise
+      try {
+        await runPromise
+      } finally {
+        abortControllerRef.current = null
+        runFlowPromiseRef.current = null
+      }
+    },
+    [runFlow]
   )
 
   /**
@@ -1345,6 +1708,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
+      thinkingBufferRef.current.clear()
       cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
@@ -1364,7 +1728,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow],
+    [runFlow]
   )
 
   /**
@@ -1395,6 +1759,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messagesWithTextRef.current.clear()
       writerContentRef.current = ''
       deltaBufferRef.current.clear()
+      thinkingBufferRef.current.clear()
       cancelDeltaFlush()
       setIsRunning(true)
       projectIdRef.current = projectId
@@ -1414,7 +1779,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow],
+    [runFlow]
   )
 
   const submitCheckpoint = useCallback(
@@ -1428,17 +1793,22 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         const trimmedComment = comment?.trim()
         const messagesToSend = [
           ...userMessages.map((m) => m.content),
-          ...(trimmedComment ? [trimmedComment] : []),
+          ...(trimmedComment ? [trimmedComment] : [])
         ]
         // 决策端点路由参数使用后端推送的 checkpointId（UUID），
         // 而非 checkpoint.type（如 'narrative_task'），否则后端找不到对应请求返回 404
         if (!currentCheckpoint.checkpointId) {
           throw new Error('检查点缺少 checkpointId，无法提交决策')
         }
-        await submitCheckpointDecision(projectId, currentCheckpoint.checkpointId, decision, messagesToSend)
+        await submitCheckpointDecision(
+          projectId,
+          currentCheckpoint.checkpointId,
+          decision,
+          messagesToSend
+        )
         setCheckpointHistory((previous) => [
           ...previous.filter((item) => item.checkpointId !== currentCheckpoint.checkpointId),
-          { ...currentCheckpoint, decision, resolvedAt: Date.now() },
+          { ...currentCheckpoint, decision, resolvedAt: Date.now() }
         ])
         // 决策已提交，清空当前检查点与用户消息，等待后续 SSE 事件推进流程
         setCurrentCheckpoint(null)
@@ -1447,34 +1817,37 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         setError(err instanceof Error ? err.message : '提交决策失败')
       }
     },
-    [currentCheckpoint, userMessages],
+    [currentCheckpoint, userMessages]
   )
 
-  const sendMessage = useCallback((content: string): void => {
-    const trimmed = content.trim()
-    if (!trimmed) return
-    setUserMessages((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        content: trimmed,
-        timestamp: Date.now(),
-      },
-    ])
-    // 持久化到章节聊天历史（fire-and-forget，不阻塞创作流程）
-    const projectId = projectIdRef.current
-    const chapterNumber = chapterNumberRef.current
-    if (projectId && chapterNumber != null) {
-      const persistPhase = currentCheckpoint ? 'checkpoint' : 'discussion'
-      persistChapterChat(projectId, chapterNumber, {
-        phase: persistPhase,
-        content: trimmed,
-        metadata: { flowMode: flowModeRef.current },
-      }).catch(() => {
-        // 持久化失败不影响创作流程
-      })
-    }
-  }, [currentCheckpoint])
+  const sendMessage = useCallback(
+    (content: string): void => {
+      const trimmed = content.trim()
+      if (!trimmed) return
+      setUserMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          content: trimmed,
+          timestamp: Date.now()
+        }
+      ])
+      // 持久化到章节聊天历史（fire-and-forget，不阻塞创作流程）
+      const projectId = projectIdRef.current
+      const chapterNumber = chapterNumberRef.current
+      if (projectId && chapterNumber != null) {
+        const persistPhase = currentCheckpoint ? 'checkpoint' : 'discussion'
+        persistChapterChat(projectId, chapterNumber, {
+          phase: persistPhase,
+          content: trimmed,
+          metadata: { flowMode: flowModeRef.current }
+        }).catch(() => {
+          // 持久化失败不影响创作流程
+        })
+      }
+    },
+    [currentCheckpoint]
+  )
 
   /**
    * 发送插话（对话化交互形态 §3.1）：flow 运行中用户的中途反馈。
@@ -1482,9 +1855,13 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    * 与 sendMessage（本地暂存、随下一个检查点决策一并提交）不同，插话经
    * `POST /flows/:flowId/messages` 端点即时入队（后端落库 chapterChatStore，
    * metadata.interject 标记），状态流转由 SSE novel:user-message 事件推回。
-   * flowId 约定为章节号字符串（与后端 activeNovelChapterTasks 注册键对齐）。
+   * flowId 取当前 SSE 的 RUN_STARTED.runId；章节号仅作为定位提示，后端仍会校验
+   * 该运行 ID 是否精确匹配当前活动任务。
    */
-  const sendInterject = useCallback(async (content: string): Promise<SendInterjectOutcome> => {
+  const sendInterject = useCallback(async (
+    content: string,
+    targetAgent?: NovelInterjectTargetAgent
+  ): Promise<SendInterjectOutcome> => {
     const trimmed = content.trim()
     if (!trimmed) return { ok: false, error: '插话内容为空' }
     const projectId = projectIdRef.current
@@ -1492,24 +1869,33 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     if (!projectId || chapterNumber == null) {
       return { ok: false, error: '当前没有可插话的创作流程' }
     }
-    const flowId = String(chapterNumber)
+    const flowId = activeFlowIdRef.current
+    if (!flowId) {
+      return { ok: false, error: '创作流程尚未建立运行 ID，请稍后重试' }
+    }
     try {
-      // TODO(targetAgent)：本期 UI 无定向入口（端点 targetAgent 可选，缺省注入
-      // 下一个被调用的 Agent）；后续可在输入区增加 @ 提及选择定向 Agent。
-      const res = await sendFlowMessage(projectId, flowId, { content: trimmed })
-      // 本地乐观插入 queued 气泡；随后的 SSE queued 事件按 messageId 幂等覆盖
-      setInterjectMessages((prev) => applyUserMessageEvent(prev, {
-        flowId,
-        messageId: res.messageId,
+      const res = await sendFlowMessage(projectId, flowId, {
         content: trimmed,
-        status: res.status,
-        timestamp: Date.now(),
-      }))
+        targetAgent,
+        chapterNumber
+      })
+      // 本地乐观插入 queued 气泡；随后的 SSE queued 事件按 messageId 幂等覆盖
+      setInterjectMessages((prev) =>
+        applyUserMessageEvent(prev, {
+          flowId,
+          messageId: res.messageId,
+          content: trimmed,
+          targetAgent,
+          status: res.status,
+          timestamp: Date.now()
+        })
+      )
       return { ok: true, messageId: res.messageId }
     } catch (err) {
-      const statusCode = typeof (err as { statusCode?: number }).statusCode === 'number'
-        ? (err as { statusCode: number }).statusCode
-        : undefined
+      const statusCode =
+        typeof (err as { statusCode?: number }).statusCode === 'number'
+          ? (err as { statusCode: number }).statusCode
+          : undefined
       const message = err instanceof Error ? err.message : String(err)
       return { ok: false, error: message, statusCode }
     }
@@ -1524,9 +1910,14 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    * - 端点 POST /re-revise，返回的修订稿不自动落库，由用户决定保存。
    */
   const reRevise = useCallback(
-    async (projectId: string, chapterNumber: number, content: string, options?: {
-      arrangedEntities?: ArrangedEntitiesPayload
-    }): Promise<void> => {
+    async (
+      projectId: string,
+      chapterNumber: number,
+      content: string,
+      options?: {
+        arrangedEntities?: ArrangedEntitiesPayload
+      }
+    ): Promise<void> => {
       // 并发保护
       if (abortControllerRef.current) return
 
@@ -1537,6 +1928,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       messageAgentMapRef.current.clear()
       messagesWithTextRef.current.clear()
       deltaBufferRef.current.clear()
+      thinkingBufferRef.current.clear()
       cancelDeltaFlush()
       setIsRunning(true)
       setPhase('revising')
@@ -1549,7 +1941,10 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       abortControllerRef.current = controller
 
       const url = `${browserConfig.apiBaseUrl}/api/plugins/novel/projects/${projectId}/chapters/${chapterNumber}/re-revise`
-      const body = { content, ...(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {}) }
+      const body = {
+        content,
+        ...(options?.arrangedEntities ? { arrangedEntities: options.arrangedEntities } : {})
+      }
 
       const runPromise = runFlow(url, body, controller)
       runFlowPromiseRef.current = runPromise
@@ -1560,7 +1955,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
         runFlowPromiseRef.current = null
       }
     },
-    [runFlow],
+    [runFlow]
   )
 
   /**
@@ -1601,7 +1996,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       try {
         await fetch(url, {
           method: 'POST',
-          keepalive: true,
+          keepalive: true
         })
       } catch {
         // 后端取消请求失败（如网络断开），fallback 到本地 abort
@@ -1628,6 +2023,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     // ── 清理 UI 状态 ──
     cancelDeltaFlush()
     deltaBufferRef.current.clear()
+    thinkingBufferRef.current.clear()
     setIsRunning(false)
     setProgressMessage(null)
     // 使用函数式更新避免覆盖已由 result 事件设置的 phase
@@ -1661,6 +2057,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     messagesWithTextRef.current.clear()
     writerContentRef.current = ''
     deltaBufferRef.current.clear()
+    thinkingBufferRef.current.clear()
     cancelDeltaFlush()
   }, [])
 
@@ -1669,17 +2066,21 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
    * 用完即清，避免把上一章的功能位带到下一章。
    */
   const takeArrangedCharacterFunctions = useCallback(
-    (chapterNumber: number): Array<{ characterId: string; function: string; note?: string }> | undefined => {
+    (
+      chapterNumber: number
+    ): Array<{ characterId: string; function: string; note?: string }> | undefined => {
       const cached = lastArrangeFunctionsRef.current
-      if (!cached || cached.chapterNumber !== chapterNumber || cached.entries.length === 0) return undefined
+      if (!cached || cached.chapterNumber !== chapterNumber || cached.entries.length === 0)
+        return undefined
       lastArrangeFunctionsRef.current = null
       return cached.entries
     },
-    [],
+    []
   )
 
   return {
-    phase,    isRunning,
+    phase,
+    isRunning,
     progressMessage,
     events,
     currentCheckpoint,
@@ -1693,6 +2094,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     startCreation,
     startDiscussion,
     resumeDiscussion,
+    resumeWorkflow,
     aiArrange,
     reverseArrange,
     takeArrangedCharacterFunctions,
@@ -1702,6 +2104,6 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
     reRevise,
     keepDraft,
     cancel,
-    reset,
+    reset
   }
 }

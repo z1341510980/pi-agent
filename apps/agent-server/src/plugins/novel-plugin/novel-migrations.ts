@@ -8,6 +8,71 @@
  */
 
 import type { MigrationDefinition } from '../../core/plugin/plugin-types.js'
+import type Database from 'better-sqlite3'
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)
+}
+
+function tableColumns(db: Database.Database, table: string): Set<string> {
+  return new Set(
+    (db.prepare('SELECT name FROM pragma_table_info(?)').all(table) as Array<{ name: string }>)
+      .map((row) => row.name),
+  )
+}
+
+/**
+ * 084 之前的版本已经使用过 novel_scenes / novel_storylines，但列模型不同。
+ * 084 因索引命中旧列而回滚时，schema_migrations 不会留下 084；后续迁移仍会继续，
+ * 最终形成“099 已执行但 V2 计划表不存在”的半升级库。先把旧表改名保留，再创建 V2 表。
+ */
+function archiveLegacyScenePlanTables(db: Database.Database): void {
+  if (tableExists(db, 'novel_scenes') && !tableColumns(db, 'novel_scenes').has('chapter_id')) {
+    db.exec('ALTER TABLE novel_scenes RENAME TO novel_scenes_legacy_v1')
+  }
+  if (tableExists(db, 'novel_storylines') && !tableColumns(db, 'novel_storylines').has('lifecycle')) {
+    db.exec('ALTER TABLE novel_storylines RENAME TO novel_storylines_legacy_v1')
+  }
+}
+
+function backfillLegacyScenePlanTables(db: Database.Database): void {
+  if (tableExists(db, 'novel_scenes_legacy_v1')) {
+    db.exec(`
+      INSERT OR IGNORE INTO novel_scenes (id, chapter_id, project_id, stable_key, created_at)
+      SELECT legacy.id,
+             chapter.id,
+             legacy.project_id,
+             'legacy-' || CAST(legacy.chapter_number AS TEXT) || '-' || CAST(legacy.scene_order AS TEXT),
+             legacy.created_at
+      FROM novel_scenes_legacy_v1 legacy
+      JOIN novel_chapters chapter
+        ON chapter.project_id = legacy.project_id
+       AND chapter.chapter_number = legacy.chapter_number
+    `)
+  }
+  if (tableExists(db, 'novel_storylines_legacy_v1')) {
+    db.exec(`
+      INSERT OR IGNORE INTO novel_storylines (
+        id, project_id, name, kind, lifecycle, maturity, description, created_at, updated_at
+      )
+      SELECT id,
+             project_id,
+             name,
+             COALESCE(kind, 'subplot'),
+             CASE status
+               WHEN 'active' THEN 'active'
+               WHEN 'resolved' THEN 'resolved'
+               WHEN 'abandoned' THEN 'abandoned'
+               ELSE 'paused'
+             END,
+             CASE maturity WHEN 'established' THEN 'established' ELSE 'candidate' END,
+             COALESCE(description, ''),
+             created_at,
+             updated_at
+      FROM novel_storylines_legacy_v1
+    `)
+  }
+}
 
 export const novelMigrations: MigrationDefinition[] = [
   {
@@ -1775,6 +1840,277 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       ALTER TABLE novel_agent_logs ADD COLUMN error_code TEXT;
       CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_fingerprint
         ON novel_agent_logs(project_id, request_fingerprint);
+    `
+  },
+  {
+    // 103: 文风专家团配置。存于既有文风档案，避免创建第二套生效源。
+    id: '103_add_style_experts',
+    sql: `ALTER TABLE novel_writing_style_profiles ADD COLUMN style_experts TEXT NOT NULL DEFAULT '[]';`
+  },
+  {
+    // 101: 工作流运行快照：create-flow 阶段产物（已批准叙事任务 / Writer 草稿 / 最终正文）
+    // 落库，失败后可从断点续跑，不重烧 Director+Writer。
+    // phase 字段记录"快照推进到的阶段"：writing=Director 已批准，reviewing=草稿已成，
+    // memory=正文已定稿待落库。status='error' 且 phase 可续跑时前端展示「从中断处继续」。
+    id: '101_create_novel_workflow_runs',
+    sql: `CREATE TABLE IF NOT EXISTS novel_workflow_runs (
+      id                    TEXT PRIMARY KEY,
+      project_id            TEXT NOT NULL,
+      chapter_number        INTEGER NOT NULL,
+      status                TEXT NOT NULL,
+      phase                 TEXT,
+      failed_phase          TEXT,
+      director_task         TEXT,
+      director_output       TEXT,
+      rhythm_suggestion     TEXT,
+      arranged_entities     TEXT,
+      writer_draft          TEXT,
+      final_content         TEXT,
+      model_id              TEXT,
+      error                 TEXT,
+      resumed_from_run_id   TEXT,
+      created_at            INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at            INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_workflow_runs_chapter
+      ON novel_workflow_runs(project_id, chapter_number, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_novel_workflow_runs_resumed_from
+      ON novel_workflow_runs(resumed_from_run_id);`
+  },
+  {
+    // 102: 群聊快照补充中断场景 ID：acting/scene_setup 阶段失败时记录推演到哪个场景，
+    // 断点续跑从该场景继续（此前只支持 chapter_weaving 整段续跑）。
+    id: '102_add_discussion_run_failed_scene',
+    sql: `ALTER TABLE novel_discussion_runs ADD COLUMN failed_scene_id INTEGER;`
+  },
+  {
+    // 107: 文风专家版本历史，用于查看和回滚用户编辑过的提示词。
+    id: '107_create_novel_style_expert_versions',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_style_expert_versions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        expert_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        custom_prompt TEXT,
+        enabled INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_style_expert_versions_unique
+        ON novel_style_expert_versions(project_id, expert_id, version);
+      CREATE INDEX IF NOT EXISTS idx_style_expert_versions_expert
+        ON novel_style_expert_versions(project_id, expert_id, version DESC);
+    `
+  },
+  {
+    // 104: 独立文风专家库。旧 profile JSON 暂时保留，供过渡期兼容。
+    id: '104_create_novel_style_experts',
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_style_experts (
+        id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        source_title TEXT NOT NULL,
+        source_author TEXT,
+        description TEXT NOT NULL,
+        distilled_prompt TEXT NOT NULL,
+        custom_prompt TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        distill_meta TEXT,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (project_id, id),
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_novel_style_experts_project_order
+        ON novel_style_experts(project_id, sort_order, id);
+    `
+  },
+  {
+    // 105: 将旧 profile JSON 中的专家迁入独立表。重复执行安全，非法/空 JSON 跳过。
+    id: '105_backfill_novel_style_experts',
+    sql: `
+      INSERT OR IGNORE INTO novel_style_experts (
+        id, project_id, name, source_title, source_author, description,
+        distilled_prompt, custom_prompt, enabled, sort_order, version, created_at, updated_at
+      )
+      SELECT
+        json_extract(item.value, '$.id'),
+        p.project_id,
+        json_extract(item.value, '$.name'),
+        COALESCE(json_extract(item.value, '$.sourceTitle'), '历史文风样本'),
+        json_extract(item.value, '$.sourceAuthor'),
+        COALESCE(json_extract(item.value, '$.description'), ''),
+        COALESCE(json_extract(item.value, '$.distilledPrompt'), json_extract(item.value, '$.prompt'), ''),
+        json_extract(item.value, '$.customPrompt'),
+        CASE WHEN json_extract(item.value, '$.enabled') = 0 THEN 0 ELSE 1 END,
+        CAST(item.key AS INTEGER),
+        COALESCE(json_extract(item.value, '$.version'), 1),
+        p.created_at,
+        p.updated_at
+      FROM novel_writing_style_profiles p, json_each(p.style_experts) item
+      WHERE json_valid(p.style_experts)
+        AND json_type(p.style_experts) = 'array'
+        AND json_extract(item.value, '$.id') IS NOT NULL
+        AND json_extract(item.value, '$.name') IS NOT NULL
+        AND COALESCE(json_extract(item.value, '$.distilledPrompt'), json_extract(item.value, '$.prompt'), '') <> '';
+    `
+  }
+  ,{
+    // 106: 冻结工作流/群聊断点续跑时使用的本轮文风专家选择。
+    id: '106_add_style_expert_ids_to_runs',
+    sql: `
+      ALTER TABLE novel_workflow_runs ADD COLUMN style_expert_ids TEXT;
+      ALTER TABLE novel_discussion_runs ADD COLUMN style_expert_ids TEXT;
+    `
+  },
+  {
+    // 108: 保存文风专家的 L1 指标、L2 手法卡、L3 排除清单和证据样本。
+    id: '108_add_style_expert_profile_artifacts',
+    sql: `
+      ALTER TABLE novel_style_experts ADD COLUMN metrics_json TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN techniques_json TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN exclusions_json TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN exemplars_json TEXT;
+    `
+  },
+  {
+    // 109: 修复旧库中 084 因 legacy novel_scenes/novel_storylines 列冲突而回滚的问题。
+    // 旧表改名保留，V2 表按 084 的正式模型补建；旧场景身份和故事线尽量回填。
+    id: '109_repair_scene_plan_schema',
+    beforeApply: archiveLegacyScenePlanTables,
+    afterApply: backfillLegacyScenePlanTables,
+    sql: `
+      CREATE TABLE IF NOT EXISTS novel_chapter_plan_revisions (
+        id                    TEXT PRIMARY KEY,
+        chapter_id            TEXT NOT NULL,
+        project_id            TEXT NOT NULL,
+        creation_run_id       TEXT,
+        supersedes_id         TEXT,
+        base_content_revision_id TEXT,
+        positioning           TEXT,
+        rhythm                TEXT,
+        budget                TEXT NOT NULL DEFAULT '{}',
+        status                TEXT NOT NULL DEFAULT 'draft',
+        revision              INTEGER NOT NULL,
+        idempotency_key       TEXT,
+        created_at            INTEGER NOT NULL,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_revisions_chapter_rev
+        ON novel_chapter_plan_revisions(chapter_id, revision);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_revisions_idempotency
+        ON novel_chapter_plan_revisions(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS novel_scenes (
+        id            TEXT PRIMARY KEY,
+        chapter_id    TEXT NOT NULL,
+        project_id    TEXT NOT NULL,
+        stable_key    TEXT NOT NULL,
+        created_at    INTEGER NOT NULL,
+        FOREIGN KEY (chapter_id) REFERENCES novel_chapters(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_scenes_chapter_key
+        ON novel_scenes(chapter_id, stable_key);
+
+      CREATE TABLE IF NOT EXISTS novel_scene_revisions (
+        id                    TEXT PRIMARY KEY,
+        scene_id              TEXT NOT NULL,
+        chapter_id            TEXT NOT NULL,
+        project_id            TEXT NOT NULL,
+        plan_revision_id      TEXT NOT NULL,
+        content_revision_id   TEXT,
+        supersedes_id         TEXT,
+        order_no              INTEGER NOT NULL,
+        title                 TEXT NOT NULL DEFAULT '',
+        goal                  TEXT NOT NULL DEFAULT '',
+        summary               TEXT NOT NULL DEFAULT '',
+        location_text         TEXT NOT NULL DEFAULT '',
+        time_text             TEXT NOT NULL DEFAULT '',
+        pov_mode              TEXT NOT NULL DEFAULT 'single',
+        pov_character_id      TEXT,
+        target_words          INTEGER NOT NULL DEFAULT 0,
+        status                TEXT NOT NULL DEFAULT 'planned',
+        created_at            INTEGER NOT NULL,
+        FOREIGN KEY (scene_id) REFERENCES novel_scenes(id) ON DELETE CASCADE,
+        FOREIGN KEY (plan_revision_id) REFERENCES novel_chapter_plan_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_revisions_plan_order
+        ON novel_scene_revisions(plan_revision_id, order_no);
+      CREATE INDEX IF NOT EXISTS idx_scene_revisions_scene
+        ON novel_scene_revisions(scene_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS novel_scene_focus (
+        scene_revision_id TEXT NOT NULL,
+        character_id      TEXT NOT NULL,
+        PRIMARY KEY (scene_revision_id, character_id),
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_scene_presence (
+        scene_revision_id TEXT NOT NULL,
+        character_id      TEXT NOT NULL,
+        PRIMARY KEY (scene_revision_id, character_id),
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS novel_scene_functions (
+        scene_revision_id TEXT NOT NULL,
+        character_id      TEXT NOT NULL,
+        function          TEXT NOT NULL,
+        prominence        TEXT NOT NULL DEFAULT 'brief',
+        note              TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (scene_revision_id, character_id, function),
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS novel_storylines (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        kind          TEXT NOT NULL DEFAULT 'main',
+        lifecycle     TEXT NOT NULL DEFAULT 'active',
+        maturity      TEXT NOT NULL DEFAULT 'candidate',
+        description   TEXT NOT NULL DEFAULT '',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_storylines_project_name
+        ON novel_storylines(project_id, name);
+
+      CREATE TABLE IF NOT EXISTS novel_storyline_progress (
+        id                  TEXT PRIMARY KEY,
+        project_id          TEXT NOT NULL,
+        storyline_id        TEXT NOT NULL,
+        scene_revision_id   TEXT NOT NULL,
+        primary_flag        INTEGER NOT NULL DEFAULT 0,
+        type                TEXT NOT NULL DEFAULT 'advance',
+        before_state        TEXT NOT NULL DEFAULT '',
+        after_state         TEXT NOT NULL DEFAULT '',
+        summary             TEXT NOT NULL DEFAULT '',
+        status              TEXT NOT NULL DEFAULT 'confirmed',
+        created_at          INTEGER NOT NULL,
+        FOREIGN KEY (storyline_id) REFERENCES novel_storylines(id) ON DELETE CASCADE,
+        FOREIGN KEY (scene_revision_id) REFERENCES novel_scene_revisions(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_scene_storyline
+        ON novel_storyline_progress(scene_revision_id, storyline_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_scene_primary
+        ON novel_storyline_progress(scene_revision_id) WHERE primary_flag = 1;
+    `
+  },
+  {
+    // 110: 专家版本补齐所有可编辑的来源和排序字段，确保回滚不是部分恢复。
+    id: '110_expand_style_expert_versions',
+    sql: `
+      ALTER TABLE novel_style_expert_versions ADD COLUMN source_title TEXT;
+      ALTER TABLE novel_style_expert_versions ADD COLUMN source_author TEXT;
+      ALTER TABLE novel_style_expert_versions ADD COLUMN sort_order INTEGER;
     `
   }
 ]

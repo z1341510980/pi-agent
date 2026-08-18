@@ -3,7 +3,7 @@
  *
  * 覆盖链路：
  * - POST /projects/:projectId/flows/:flowId/messages 校验与受理
- *   （空/超长 content 400；非法 targetAgent 400；memory 400 带业务提示；无运行中 flow 409）；
+ *   （空/超长 content 400；非法 targetAgent 400；无运行中 flow 409）；
  * - 201 + queued 响应 + chapterChatStore 落库（metadata.interject/messageId/targetAgent/flowMode）
  *   + 立即向目标 flow 的 SSE 通道推 status='queued' 事件；
  * - injected / dropped 状态：orchestrator hooks（createInterjectDispatchHooks）经注册表
@@ -37,8 +37,9 @@ import type { InterjectMessage } from '../core/novel-orchestrator.js'
 
 const PROJECT_ID = 'interject-proj'
 const CHAPTER = 1
+const RUN_ID = 'run-1'
 const LOCK_KEY = `${PROJECT_ID}:${CHAPTER}`
-const FLOW_KEY = `${PROJECT_ID}|${CHAPTER}`
+const FLOW_KEY = `${PROJECT_ID}|${CHAPTER}|${RUN_ID}`
 const INTERJECT_PATH = '/projects/:projectId/flows/:flowId/messages'
 const CREATE_FLOW_PATH = '/projects/:projectId/chapters/:chapterNumber/create-flow'
 const CREATE_DISCUSSION_PATH = '/projects/:projectId/chapters/:chapterNumber/create-discussion'
@@ -90,13 +91,20 @@ function createRequest(overrides: {
   body?: unknown
   query?: Record<string, string | undefined>
 } = {}) {
+  const rawBody = overrides.body ?? { content: '打斗戏改用棍' }
   return {
-    params: overrides.params ?? { projectId: PROJECT_ID, flowId: String(CHAPTER) },
-    body: overrides.body ?? { content: '打斗戏改用棍' },
+    params: overrides.params ?? { projectId: PROJECT_ID, flowId: RUN_ID },
+    body: rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
+      ? { chapterNumber: CHAPTER, ...rawBody }
+      : rawBody,
     query: overrides.query ?? {},
     traceId: 'trace-interject',
     log: { warn: vi.fn(), error: vi.fn() },
   } as any
+}
+
+function interjectRequest(flowId: string, body: unknown = { content: '打斗戏改用棍' }) {
+  return createRequest({ params: { projectId: PROJECT_ID, flowId }, body })
 }
 
 /** 复刻任务 1 钉死的 orchestrator 插话契约（enqueue 追加 / drain 定向取走并触发 hooks / 启动清陈旧）。 */
@@ -107,7 +115,6 @@ function createMockOrchestrator() {
     hooks,
     queue,
     enqueueUserMessage: vi.fn((msg: Omit<InterjectMessage, 'createdAt'>) => {
-      if (msg.targetAgent === 'memory') return false
       queue.push({ ...msg, createdAt: Date.now() })
       return true
     }),
@@ -170,12 +177,13 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
 
   function seedRunningWorkflow(chapter: number = CHAPTER) {
     const lockKey = `${PROJECT_ID}:${chapter}`
-    seededTasks.push({ lockKey, task: registerNovelChapterTask(lockKey, 'workflow') })
+    const flowId = chapter === CHAPTER ? RUN_ID : `run-${chapter}`
+    seededTasks.push({ lockKey, task: registerNovelChapterTask(lockKey, 'workflow', flowId) })
   }
 
-  function seedPublisher(chapter: number = CHAPTER) {
+  function seedPublisher(chapter: number = CHAPTER, flowId = chapter === CHAPTER ? RUN_ID : `run-${chapter}`) {
     const publisher = vi.fn()
-    const flowKey = `${PROJECT_ID}|${chapter}`
+    const flowKey = `${PROJECT_ID}|${chapter}|${flowId}`
     seededFlowKeys.push(flowKey)
     registerInterjectFlow(flowKey, publisher)
     return publisher
@@ -193,7 +201,7 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
     expect(reply.statusCode).toBe(201)
     const payload = reply.payload as { ok: boolean; data: { flowId: string; messageId: string; status: string } }
     expect(payload.ok).toBe(true)
-    expect(payload.data).toMatchObject({ flowId: String(CHAPTER), messageId: expect.any(String), status: 'queued' })
+    expect(payload.data).toMatchObject({ flowId: RUN_ID, messageId: expect.any(String), status: 'queued' })
 
     // 入队参数：id 与响应一致，flowKey 定向到目标 flow
     expect(mockOrchestrator.enqueueUserMessage).toHaveBeenCalledWith({
@@ -215,13 +223,15 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
         messageId: payload.data.messageId,
         targetAgent: 'writer',
         flowMode: 'workflow',
+        flowId: RUN_ID,
+        interjectStatus: 'queued',
       },
     }))
 
     // SSE queued 事件：沿目标 flow 的推送回调发出
     expect(publisher).toHaveBeenCalledTimes(1)
     expect(publisher).toHaveBeenCalledWith(expect.objectContaining({
-      flowId: String(CHAPTER),
+      flowId: RUN_ID,
       messageId: payload.data.messageId,
       content: '打斗戏改用棍',
       targetAgent: 'writer',
@@ -245,9 +255,10 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
     expect(publisher).toHaveBeenCalledTimes(1)
   })
 
-  it('非数字 flowId 用 body.chapterNumber 定位目标 flow', async () => {
-    seedRunningWorkflow()
-    const publisher = seedPublisher()
+  it('非数字 flowId 结合 body.chapterNumber 定位并精确匹配目标运行', async () => {
+    const lockKey = `${PROJECT_ID}:${CHAPTER}`
+    seededTasks.push({ lockKey, task: registerNovelChapterTask(lockKey, 'workflow', 'run-abc') })
+    const publisher = seedPublisher(CHAPTER, 'run-abc')
 
     const reply = createReply()
     await route.handler(createRequest({
@@ -256,8 +267,21 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
     }), reply)
 
     expect(reply.statusCode).toBe(201)
-    expect(mockOrchestrator.enqueueUserMessage).toHaveBeenCalledWith(expect.objectContaining({ flowKey: FLOW_KEY }))
+    expect(mockOrchestrator.enqueueUserMessage).toHaveBeenCalledWith(expect.objectContaining({ flowKey: `${PROJECT_ID}|${CHAPTER}|run-abc` }))
     expect(publisher).toHaveBeenCalledWith(expect.objectContaining({ flowId: 'run-abc', status: 'queued' }))
+  })
+
+  it('同章旧运行 ID 不得注入当前运行', async () => {
+    seedRunningWorkflow()
+    seedPublisher()
+
+    const reply = createReply()
+    await route.handler(interjectRequest('stale-run', { content: '旧运行残留反馈' }), reply)
+
+    expect(reply.statusCode).toBe(409)
+    expect((reply.payload as { error?: string }).error).toContain('flowId 已过期')
+    expect(mockOrchestrator.enqueueUserMessage).not.toHaveBeenCalled()
+    expect(chapterChatAdd).not.toHaveBeenCalled()
   })
 
   // ───────────────────────── 校验失败 400 ─────────────────────────
@@ -281,31 +305,47 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
     expect(publisher).not.toHaveBeenCalled()
   })
 
-  it('targetAgent=memory：enqueue 返回 false → 400 带业务提示，不落库不推事件', async () => {
+  it('targetAgent=memory：201 排队并保留定向元数据，供 Finalizer 结构化消费', async () => {
     seedRunningWorkflow()
     const publisher = seedPublisher()
 
     const reply = createReply()
     await route.handler(createRequest({ body: { content: '本章要回收伏笔', targetAgent: 'memory' } }), reply)
 
-    expect(reply.statusCode).toBe(400)
-    const payload = reply.payload as { ok: boolean; error?: string }
-    expect(payload.ok).toBe(false)
-    expect(payload.error).toContain('memory')
-    // 被拒消息不进任何通道（不会以 queued → dropped 的假流转糊弄调用方）
-    expect(mockOrchestrator.queue).toHaveLength(0)
-    expect(chapterChatAdd).not.toHaveBeenCalled()
-    expect(publisher).not.toHaveBeenCalled()
+    expect(reply.statusCode).toBe(201)
+    const payload = reply.payload as { ok: boolean; data: { messageId: string; status: string } }
+    expect(payload.ok).toBe(true)
+    expect(payload.data.status).toBe('queued')
+    expect(mockOrchestrator.queue).toEqual([
+      expect.objectContaining({
+        id: payload.data.messageId,
+        content: '本章要回收伏笔',
+        targetAgent: 'memory',
+        flowKey: FLOW_KEY,
+      }),
+    ])
+    expect(chapterChatAdd).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ targetAgent: 'memory', interjectStatus: 'queued' }),
+    }))
+    expect(publisher).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: payload.data.messageId,
+      targetAgent: 'memory',
+      status: 'queued',
+    }))
   })
 
-  it('flowId 非章节号且未提供 chapterNumber → 400', async () => {
+  it('仅凭运行级 flowId 也能定位当前项目的活动任务', async () => {
+    const lockKey = `${PROJECT_ID}:${CHAPTER}`
+    seededTasks.push({ lockKey, task: registerNovelChapterTask(lockKey, 'workflow', 'run-direct') })
+    const publisher = seedPublisher(CHAPTER, 'run-direct')
     const reply = createReply()
     await route.handler(createRequest({
-      params: { projectId: PROJECT_ID, flowId: 'run-abc' },
-      body: { content: '找不到目标' },
+      params: { projectId: PROJECT_ID, flowId: 'run-direct' },
+      body: { content: '仅凭运行 ID 定位', chapterNumber: undefined },
     }), reply)
-    expect(reply.statusCode).toBe(400)
-    expect(mockOrchestrator.enqueueUserMessage).not.toHaveBeenCalled()
+    expect(reply.statusCode).toBe(201)
+    expect(mockOrchestrator.enqueueUserMessage).toHaveBeenCalledWith(expect.objectContaining({ flowKey: `${PROJECT_ID}|${CHAPTER}|run-direct` }))
+    expect(publisher).toHaveBeenCalledWith(expect.objectContaining({ flowId: 'run-direct', status: 'queued' }))
   })
 
   // ───────────────────────── 无运行中 flow 409 ─────────────────────────
@@ -377,23 +417,23 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
 
   it('并发章节 flow 隔离：A drain 后 injected 事件按 messageId 只路由到 A 的 emitter，不串台到 B', async () => {
     const CHAPTER_B = 2
-    const flowKeyA = `${PROJECT_ID}|${CHAPTER}`
-    const flowKeyB = `${PROJECT_ID}|${CHAPTER_B}`
+    const flowKeyA = `${PROJECT_ID}|${CHAPTER}|${RUN_ID}`
+    const flowKeyB = `${PROJECT_ID}|${CHAPTER_B}|run-2`
     seedRunningWorkflow(CHAPTER)
     seedRunningWorkflow(CHAPTER_B)
     const publisherA = seedPublisher(CHAPTER)
     const publisherB = seedPublisher(CHAPTER_B)
 
-    // 两个 flow 各自受理一条插话（flowId=章节号约定）
+    // 两个运行实例各自受理一条插话（flowId=RUN_STARTED.runId）
     const replyA = createReply()
     await route.handler(createRequest({
-      params: { projectId: PROJECT_ID, flowId: String(CHAPTER) },
+      params: { projectId: PROJECT_ID, flowId: RUN_ID },
       body: { content: '第一章的中途反馈' },
     }), replyA)
     const replyB = createReply()
     await route.handler(createRequest({
-      params: { projectId: PROJECT_ID, flowId: String(CHAPTER_B) },
-      body: { content: '第二章的中途反馈' },
+      params: { projectId: PROJECT_ID, flowId: 'run-2' },
+      body: { content: '第二章的中途反馈', chapterNumber: CHAPTER_B },
     }), replyB)
     expect(replyA.statusCode).toBe(201)
     expect(replyB.statusCode).toBe(201)
@@ -434,13 +474,15 @@ describe('插话端点 POST /projects/:projectId/flows/:flowId/messages', () => 
 
 describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
   let seededTask: { lockKey: string; task: ActiveNovelChapterTask } | undefined
+  let seededFlowKey: string | undefined
 
   afterEach(() => {
     if (seededTask) {
       finishNovelChapterTask(seededTask.lockKey, seededTask.task)
       seededTask = undefined
     }
-    unregisterInterjectFlow(FLOW_KEY)
+    if (seededFlowKey) unregisterInterjectFlow(seededFlowKey)
+    seededFlowKey = undefined
   })
 
   it('create-flow 启动即登记 publisher：插话事件落到 SSE write；flow 终态注销后再插话 409', async () => {
@@ -469,12 +511,16 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
     // handler 同步段已执行到 createChapterWithFlow（注册表登记先于调用）
     expect(createChapterWithFlow).toHaveBeenCalledTimes(1)
     expect(sseReply.raw.write).toHaveBeenCalled()
+    const activeTask = activeNovelChapterTasks.get(LOCK_KEY)
+    expect(activeTask?.kind).toBe('workflow')
+    expect(activeTask?.flowId).toEqual(expect.any(String))
+    seededFlowKey = `${PROJECT_ID}|${CHAPTER}|${activeTask!.flowId}`
     // 启动路径接线陈旧插话清理：清上一 flow 竞态窗口残留（本例无残留 → 空）
-    expect(mockOrchestrator.clearStaleInterjectMessages).toHaveBeenCalledWith(FLOW_KEY)
+    expect(mockOrchestrator.clearStaleInterjectMessages).toHaveBeenCalledWith(seededFlowKey)
 
     // 运行中插话：201，且 queued 事件经登记的 publisher 落到本 SSE 连接的 write
     const reply = createReply()
-    await interjectRoute.handler(createRequest({ body: { content: '中途反馈' } }), reply)
+    await interjectRoute.handler(createRequest({ params: { projectId: PROJECT_ID, flowId: activeTask!.flowId }, body: { content: '中途反馈' } }), reply)
     expect(reply.statusCode).toBe(201)
 
     const written = sseReply.raw.write.mock.calls.map(([data]) => String(data))
@@ -484,7 +530,7 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
       .filter(event => event?.name === 'novel:user-message')
     expect(userMessageEvents).toHaveLength(1)
     expect(userMessageEvents[0].value).toMatchObject({
-      flowId: String(CHAPTER),
+      flowId: activeTask!.flowId,
       messageId: (reply.payload as { data: { messageId: string } }).data.messageId,
       content: '中途反馈',
       status: 'queued',
@@ -498,7 +544,7 @@ describe('create-flow 路由级插话接线（SSE write 捕获）', () => {
 
     // 终态后再插话 → 409（无运行中 workflow）
     const afterReply = createReply()
-    await interjectRoute.handler(createRequest(), afterReply)
+    await interjectRoute.handler(createRequest({ params: { projectId: PROJECT_ID, flowId: activeTask!.flowId } }), afterReply)
     expect(afterReply.statusCode).toBe(409)
   })
 })
@@ -540,12 +586,13 @@ describe('群聊插话端点（kind=discussion）', () => {
 
   function seedRunningDiscussion(chapter: number = CHAPTER) {
     const lockKey = `${PROJECT_ID}:${chapter}`
-    seededTasks.push({ lockKey, task: registerNovelChapterTask(lockKey, 'discussion') })
+    const flowId = chapter === CHAPTER ? RUN_ID : `run-${chapter}`
+    seededTasks.push({ lockKey, task: registerNovelChapterTask(lockKey, 'discussion', flowId) })
   }
 
-  function seedEnqueuer(chapter: number = CHAPTER) {
+  function seedEnqueuer(chapter: number = CHAPTER, flowId = chapter === CHAPTER ? RUN_ID : `run-${chapter}`) {
     const queue: Array<{ id: string; content: string; createdAt: number }> = []
-    const flowKey = `${PROJECT_ID}|${chapter}`
+    const flowKey = `${PROJECT_ID}|${chapter}|${flowId}`
     seededFlowKeys.push(flowKey)
     registerInterjectEnqueuer(flowKey, msg => {
       queue.push(msg)
@@ -555,15 +602,15 @@ describe('群聊插话端点（kind=discussion）', () => {
   }
 
   /** 登记已收尾的 enqueuer（engine 存活标记失效，投递返回 false） */
-  function seedDeadEnqueuer(chapter: number = CHAPTER) {
-    const flowKey = `${PROJECT_ID}|${chapter}`
+  function seedDeadEnqueuer(chapter: number = CHAPTER, flowId = chapter === CHAPTER ? RUN_ID : `run-${chapter}`) {
+    const flowKey = `${PROJECT_ID}|${chapter}|${flowId}`
     seededFlowKeys.push(flowKey)
     registerInterjectEnqueuer(flowKey, () => false)
   }
 
-  function seedPublisherSpy(chapter: number = CHAPTER) {
+  function seedPublisherSpy(chapter: number = CHAPTER, flowId = chapter === CHAPTER ? RUN_ID : `run-${chapter}`) {
     const publisher = vi.fn()
-    const flowKey = `${PROJECT_ID}|${chapter}`
+    const flowKey = `${PROJECT_ID}|${chapter}|${flowId}`
     seededFlowKeys.push(flowKey)
     registerInterjectFlow(flowKey, publisher)
     return publisher
@@ -579,7 +626,7 @@ describe('群聊插话端点（kind=discussion）', () => {
 
     expect(reply.statusCode).toBe(201)
     const payload = reply.payload as { ok: boolean; data: { flowId: string; messageId: string; status: string } }
-    expect(payload.data).toMatchObject({ flowId: String(CHAPTER), messageId: expect.any(String), status: 'queued' })
+    expect(payload.data).toMatchObject({ flowId: RUN_ID, messageId: expect.any(String), status: 'queued' })
 
     // 入队：投递到 runner 登记的 engine enqueue 闭包（不走 orchestrator 队列）
     expect(enqueuerQueue).toEqual([{
@@ -599,13 +646,15 @@ describe('群聊插话端点（kind=discussion）', () => {
         interject: true,
         messageId: payload.data.messageId,
         flowMode: 'discussion',
+        flowId: RUN_ID,
+        interjectStatus: 'queued',
       },
     }))
 
     // SSE queued 事件：无 targetAgent 字段（群聊无定向语义）
     expect(publisher).toHaveBeenCalledTimes(1)
     expect(publisher).toHaveBeenCalledWith(expect.objectContaining({
-      flowId: String(CHAPTER),
+      flowId: RUN_ID,
       messageId: payload.data.messageId,
       content: '群聊中途反馈：多写点对话',
       status: 'queued',
@@ -678,7 +727,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
       discussionRunner: {
         run: vi.fn((projectId: string, chapterNumber: number, options: any) => {
           capturedRunnerOptions = options
-          registerInterjectEnqueuer(`${projectId}|${chapterNumber}`, msg => {
+          registerInterjectEnqueuer(options.flowKey, msg => {
             enqueuerQueue.push(msg)
             return true
           })
@@ -722,7 +771,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
   afterEach(() => {
     const task = activeNovelChapterTasks.get(LOCK_KEY)
     if (task) finishNovelChapterTask(LOCK_KEY, task)
-    unregisterInterjectFlow(FLOW_KEY)
+    if (task) unregisterInterjectFlow(`${PROJECT_ID}|${CHAPTER}|${task.flowId}`)
   })
 
   it('injected：Moderator 消费插话后，engine 回调沿 create-discussion SSE 推 injected 事件；终态后再插话 409', async () => {
@@ -736,10 +785,14 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
     const flowPromise = discussionRoute.handler(createSseRequest(), sseReply as any)
     expect(services.discussionRunner.run).toHaveBeenCalledTimes(1)
     expect(sseReply.raw.write).toHaveBeenCalled()
+    const activeTask = activeNovelChapterTasks.get(LOCK_KEY)
+    expect(activeTask?.kind).toBe('discussion')
+    expect(activeTask?.flowId).toEqual(expect.any(String))
+    const flowId = activeTask!.flowId
 
     // 运行中插话：201，消息经 runner 登记的 enqueue 闭包进入 engine 队列
     const reply = createReply()
-    await interjectRoute.handler(createRequest({ body: { content: '群聊运行中的反馈' } }), reply)
+    await interjectRoute.handler(interjectRequest(flowId, { content: '群聊运行中的反馈' }), reply)
     expect(reply.statusCode).toBe(201)
     const messageId = (reply.payload as { data: { messageId: string } }).data.messageId
     expect(enqueuerQueue.map(m => m.id)).toEqual([messageId])
@@ -748,7 +801,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
     let events = collectUserMessageEvents(sseReply)
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({
-      flowId: String(CHAPTER),
+      flowId,
       messageId,
       content: '群聊运行中的反馈',
       status: 'queued',
@@ -770,7 +823,7 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
 
     // 终态后再插话 → 409（无运行中 discussion）
     const afterReply = createReply()
-    await interjectRoute.handler(createRequest(), afterReply)
+    await interjectRoute.handler(interjectRequest(flowId), afterReply)
     expect(afterReply.statusCode).toBe(409)
   })
 
@@ -782,9 +835,12 @@ describe('create-discussion 路由级插话接线（SSE write 捕获）', () => 
 
     const sseReply = createSseReply()
     const flowPromise = discussionRoute.handler(createSseRequest(), sseReply as any)
+    const activeTask = activeNovelChapterTasks.get(LOCK_KEY)
+    expect(activeTask?.kind).toBe('discussion')
+    const flowId = activeTask!.flowId
 
     const reply = createReply()
-    await interjectRoute.handler(createRequest({ body: { content: '来不及注入的群聊反馈' } }), reply)
+    await interjectRoute.handler(interjectRequest(flowId, { content: '来不及注入的群聊反馈' }), reply)
     expect(reply.statusCode).toBe(201)
     const messageId = (reply.payload as { data: { messageId: string } }).data.messageId
 

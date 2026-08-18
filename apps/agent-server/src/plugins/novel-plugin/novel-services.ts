@@ -37,7 +37,9 @@ import { createChapterProjectionRecorder } from './core/chapters/chapter-project
 import { NovelDiscussionRunner } from './core/discussion/novel-discussion-runner.js'
 import { ChapterChatRunner } from './core/chapters/chapter-chat-runner.js'
 import { ChapterChatStore } from './core/chapters/chapter-chat-store.js'
+import { ChapterOutlineGenerator } from './core/chapters/chapter-outline-generator.js'
 import { DiscussionRunStore } from './core/discussion/discussion-run-store.js'
+import { WorkflowRunStore } from './core/workflow-run-store.js'
 import { DiscussionSettingsStore } from '../../core/agent/discussion-settings-store.js'
 import { ConsistencyAuditor } from './core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from './core/analysis/novel-relationship-graph.js'
@@ -54,6 +56,8 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { createInterjectDispatchHooks } from './utils/chapter-task-registry.js'
 
 export interface NovelServices {
+  /** 插件运行时，用于文风蒸馏等不改写领域账本的临时 Agent 调用。 */
+  context: PluginContext
   store: NovelStore
   memoryStore: NovelMemoryStore
   promptManager: PromptManager
@@ -102,10 +106,13 @@ export interface NovelServices {
   discussionSettingsStore: DiscussionSettingsStore
   /** 群聊运行快照存储（断点续跑） */
   discussionRunStore: DiscussionRunStore
+  workflowRunStore: WorkflowRunStore
   /** 章节聊天消息存储（按章节持久化用户输入与 Agent 回复） */
   chapterChatStore: ChapterChatStore
   /** 章节级自由聊天 Runner */
   chapterChatRunner: ChapterChatRunner
+  /** 无副作用的章节章纲草稿生成器 */
+  outlineGenerator: ChapterOutlineGenerator
   /** 参考小说阶段 1：与故事实体/Prompt 隔离的本地分析服务 */
   referenceAnalysis?: ReferenceAnalysisService
   /** P0 成本报表服务（只读聚合 novel_agent_logs + 度量表） */
@@ -203,14 +210,28 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     memoryStore 注入用于账本承接：Memory 需要看到「章前状态 + 本章计划变更」
   //     才能做差分，而不是每章从零重新判断实体现在算什么状态。
   const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine, memoryStore)
+  // 插话状态回调需要在 orchestrator 构造时即可写入章节聊天历史。
+  const chapterChatStore = new ChapterChatStore(db)
   // 第 8 参 hooks：插话 injected/dropped 生命周期回调，经注册表按 messageId/flowKey
   // 路由到对应运行中 flow 的 SSE 通道（见 utils/chapter-task-registry.ts）。
-  const orchestrator = new NovelOrchestrator(store, memoryStore, tools, promptBuilder, engine, context, memoryGenerator, createInterjectDispatchHooks())
+  const orchestrator = new NovelOrchestrator(
+    store,
+    memoryStore,
+    tools,
+    promptBuilder,
+    engine,
+    context,
+    memoryGenerator,
+    createInterjectDispatchHooks((messageId, status, agentType) => {
+      chapterChatStore.updateInterjectStatus(messageId, status, agentType)
+    }),
+  )
 
   // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/promptBuilder/engine/context + memoryGenerator）
   //     discussionSettingsStore 读取持久化的 moderatorModel 传入 runner 构造函数
   const discussionSettingsStore = new DiscussionSettingsStore(db)
   const discussionRunStore = new DiscussionRunStore(db)
+  const workflowRunStore = new WorkflowRunStore(db)
   const discussionRunner = new NovelDiscussionRunner(
     store, memoryStore, promptBuilder, engine, context,
     discussionSettingsStore.get().moderatorModel,
@@ -220,11 +241,13 @@ export function createNovelServices(context: PluginContext): NovelServices {
 
   // 7.7 创建章节聊天组件（按章节持久化用户输入 + 自由聊天）
   //     chapterChatStore 依赖 db；chapterChatRunner 依赖 store/promptBuilder/engine/context/chatStore
-  const chapterChatStore = new ChapterChatStore(db)
   const chapterChatRunner = new ChapterChatRunner(
     store, promptBuilder, engine, context, chapterChatStore,
     discussionSettingsStore.get().moderatorModel,
   )
+
+  // 7.8 章纲生成只读取领域上下文并返回草稿，不直接写章节或派生状态。
+  const outlineGenerator = new ChapterOutlineGenerator(store, memoryStore, promptManager, context)
 
   // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
   //    PluginContext.createSession 用于 generate 调用 LLM
@@ -244,5 +267,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const observabilityService = new ObservabilityService(db)
   const sharedOverlapAnalyzer = new SharedOverlapAnalyzer(db)
 
-  return { store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, chapterChatStore, chapterChatRunner, referenceAnalysis, costReportService, observabilityService, sharedOverlapAnalyzer }
+  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, referenceAnalysis, costReportService, observabilityService, sharedOverlapAnalyzer }
 }

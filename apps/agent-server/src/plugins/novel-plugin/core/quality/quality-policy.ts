@@ -17,9 +17,8 @@
  *
  * 1. **字数**：创作指令说"宁可写得更短也不要用空转描写凑字数"，
  *    Guard 却在 <75% 时整章重写 —— 同一件事一边鼓励一边惩罚。
- * 2. **段落形态**：role-writer.md 禁止"连续三段以上单句成段"，
- *    而 prose-quality 要到"连续 6 段"才报问题。prompt 比检查严一倍，
- *    Writer 被多约束了一截，却没有任何一方校验这个更严的要求。
+ * 2. **段落形态**：把连续单句段、短段比例和比喻密度的精确阈值全部塞给 Writer，
+ *    会让生成过程变成按指标交作业；这些可确定判断应留在写后质量门。
  * 3. **点名 vs 反流水账**：Guard 要求矩阵角色姓名逐字出现否则整章重写，
  *    prompt 同时要求"不能靠点名交差""叙事任务不是写作顺序"。
  * 4. **档案 vs 指纹**：档案说对话占比 45%、情感温度 5/10，
@@ -117,7 +116,6 @@ export const GATE_REGISTRY: QualityGate[] = [
     kind: 'deterministic',
     maxAction: 'revise',
     source: 'prose-quality-evaluator',
-    promptCounterpart: 'role-writer.md 的「禁止连续 N 段以上单句成段」',
   },
   {
     id: 'cliche-patterns',
@@ -125,7 +123,7 @@ export const GATE_REGISTRY: QualityGate[] = [
     kind: 'deterministic',
     maxAction: 'revise',
     source: 'cliche-scanner',
-    promptCounterpart: 'role-writer.md 的「避免现成句壳」',
+    promptCounterpart: 'system-base-rules.md 的「少用万能连接词和现成句壳」',
   },
   {
     id: 'character-voice',
@@ -182,8 +180,8 @@ export const CONFLICT_RULES: Array<{
   },
   {
     gates: ['prose-shape', 'cliche-patterns'],
-    conflict: 'prompt 禁止连续 3 段以上单句成段，检查却要到连续 6 段才报问题',
-    resolution: 'prompt 的阈值必须与 prose-quality 的检查阈值一致，由 PROSE_SHAPE_LIMITS 单一来源提供。',
+    conflict: 'Writer 同时背诵段落比例、连续短段和比喻密度阈值，会优先满足指标而牺牲场景自然度',
+    resolution: 'Writer 只接收自然段落与现场修辞原则；精确阈值由 PROSE_SHAPE_LIMITS 在写后统一检测并交 Reviser 局部处理。',
   },
   {
     gates: ['matrix-characters', 'cliche-patterns'],
@@ -204,9 +202,8 @@ export const CONFLICT_RULES: Array<{
 /**
  * 段落形态的**单一阈值来源**。
  *
- * prompt 侧（role-writer.md）与检查侧（prose-quality-evaluator）必须用同一组数字。
- * 历史上 prompt 写"连续三段以上"，检查却是"连续 6 段"，Writer 被多约束了一截
- * 而没有任何一方校验那个更严的要求。
+ * 这些数字只属于写后 prose-quality-evaluator，不注入 Writer 实时提示。
+ * Writer 只接收自然段落原则，避免模型在生成时围绕指标排版。
  */
 export const PROSE_SHAPE_LIMITS = {
   /**

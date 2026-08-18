@@ -49,6 +49,8 @@ import type {
   ChapterStoryContext, ChangeValueType, NovelAnnotation, NovelAnnotationKind, NovelAnnotationScope,
   NovelChangeRecord, NovelStoryEntityType, NovelStoryEvent, StoryEventEntityRef,
   StoryEventSource, StoryEventStatus,
+  ChapterOutlineGenerationResult, GenerateChapterOutlineInput,
+  NovelInterjectTargetAgent,
 } from '@repo/shared/novel'
 
 // re-export 共享类型供外部消费者使用
@@ -165,6 +167,10 @@ export interface UpdateChapterInput {
   outline?: string
   volumeId?: string | null
   rhythm?: ChapterRhythm
+  /** AI 草稿来源版本；提供后后端会在同一次 PATCH 中执行乐观并发校验。 */
+  expectedOutlineHash?: string
+  expectedContentRevisionId?: string | null
+  outlineGenerationId?: string
 }
 
 export interface CompleteChapterInput {
@@ -428,7 +434,7 @@ export type UpdateMarkerInput = Partial<CreateMarkerInput>
 
 export interface AiGenerateCharacterInput {
   coreStyle: string
-  modelId?: { provider: string; modelId: string }
+  modelId?: { provider: string; modelId: string; thinkingLevel?: import('../stores/session-store').ThinkingLevel | null }
 }
 
 // CharacterGenerationProgressEvent 已迁入 @repo/shared/novel 共享包（顶部 import）
@@ -492,6 +498,20 @@ export function createChapter(projectId: string, input: CreateChapterInput): Pro
 
 export function updateChapter(id: string, input: UpdateChapterInput): Promise<ChapterSaveResult> {
   return patchApi<ChapterSaveResult>(`${BASE}/chapters/${id}`, input)
+}
+
+/** 生成无副作用的章纲草稿；只有后续 updateChapter 才会持久化 outline。 */
+export function generateChapterOutline(
+  projectId: string,
+  chapterNumber: number,
+  input: GenerateChapterOutlineInput,
+  signal?: AbortSignal,
+): Promise<ChapterOutlineGenerationResult> {
+  return postApi<ChapterOutlineGenerationResult>(
+    `${BASE}/projects/${projectId}/chapters/${chapterNumber}/outline/generate`,
+    input,
+    { signal },
+  )
 }
 
 export function completeChapter(id: string, input: CompleteChapterInput): Promise<NovelChapter> {
@@ -827,6 +847,66 @@ export function deleteStyleGuide(id: string): Promise<{ id: string; deleted: boo
 
 export function getWritingStyleProfile(projectId: string): Promise<NovelWritingStyleProfile | null> {
   return getApi<NovelWritingStyleProfile | null>(`${BASE}/projects/${projectId}/writing-style-profile`)
+}
+
+export interface DistilledStyleExpertDraft {
+  name: string
+  sourceTitle: string
+  sourceAuthor?: string
+  description: string
+  distilledPrompt: string
+  enabled: boolean
+}
+
+export interface NovelStyleExpertApi {
+  id: string
+  projectId: string
+  name: string
+  sourceTitle: string
+  sourceAuthor?: string
+  description: string
+  distilledPrompt: string
+  customPrompt?: string
+  enabled: boolean
+  sortOrder: number
+  version: number
+  createdAt: number
+  updatedAt: number
+  metrics?: Record<string, unknown>
+  techniques?: unknown[]
+  exclusions?: string[]
+  exemplarPassages?: unknown[]
+}
+
+export function listWritingStyleExperts(projectId: string): Promise<NovelStyleExpertApi[]> {
+  return getApi<NovelStyleExpertApi[]>(`${BASE}/projects/${projectId}/writing-style-experts`)
+}
+
+export function createWritingStyleExpert(projectId: string, input: Omit<NovelStyleExpertApi, 'id' | 'projectId' | 'version' | 'createdAt' | 'updatedAt'>): Promise<NovelStyleExpertApi> {
+  return postApi<NovelStyleExpertApi>(`${BASE}/projects/${projectId}/writing-style-experts`, input)
+}
+
+export function updateWritingStyleExpert(projectId: string, expertId: string, input: Partial<Pick<NovelStyleExpertApi, 'name' | 'sourceTitle' | 'sourceAuthor' | 'description' | 'customPrompt' | 'enabled' | 'sortOrder'>>): Promise<NovelStyleExpertApi> {
+  return patchApi<NovelStyleExpertApi>(`${BASE}/projects/${projectId}/writing-style-experts/${expertId}`, input)
+}
+
+export function listWritingStyleExpertVersions(projectId: string, expertId: string): Promise<Array<{ id: string; version: number; name: string; description: string; customPrompt?: string; enabled: number; createdAt: number }>> {
+  return getApi(`${BASE}/projects/${projectId}/writing-style-experts/${expertId}/versions`)
+}
+
+export function rollbackWritingStyleExpert(projectId: string, expertId: string, version: number): Promise<NovelStyleExpertApi> {
+  return postApi<NovelStyleExpertApi>(`${BASE}/projects/${projectId}/writing-style-experts/${expertId}/rollback`, { version })
+}
+
+export function deleteWritingStyleExpert(projectId: string, expertId: string): Promise<{ id: string; deleted: boolean }> {
+  return deleteApi<{ id: string; deleted: boolean }>(`${BASE}/projects/${projectId}/writing-style-experts/${expertId}`)
+}
+
+export function distillWritingStyleExpert(
+  projectId: string,
+  input: { sourceTitle: string; sourceAuthor?: string; sample: string; notes?: string; modelId?: { provider: string; modelId: string } },
+): Promise<DistilledStyleExpertDraft> {
+  return postApi<DistilledStyleExpertDraft>(`${BASE}/projects/${projectId}/writing-style-experts/distill`, input)
 }
 
 export function saveWritingStyleProfile(
@@ -1604,6 +1684,12 @@ export interface SendFlowMessageResult {
   status: 'queued'
 }
 
+interface SendFlowMessageResponse {
+  ok?: boolean
+  data?: SendFlowMessageResult
+  error?: string | { message?: string }
+}
+
 /** 插话失败（statusCode 区分 409 无运行中 flow 等） */
 export class FlowMessageError extends Error {
   constructor(
@@ -1618,14 +1704,14 @@ export class FlowMessageError extends Error {
 /**
  * 向运行中的创作流（工作流/群聊）发送插话。
  *
- * flowId 约定为章节号字符串；后端无运行中可插话 flow 时返回 409。
+ * flowId 是 SSE RUN_STARTED 发出的本次运行 ID；后端无运行中或 ID 过期时返回 409。
  * 不走 postApi：需要读取 HTTP 状态码（409 → 无运行中流程）与裸 error 字符串，
  * 而通用包装会把这些信息抹掉。
  */
 export async function sendFlowMessage(
   projectId: string,
   flowId: string,
-  input: { content: string; targetAgent?: string; chapterNumber?: number },
+  input: { content: string; targetAgent?: NovelInterjectTargetAgent; chapterNumber?: number },
 ): Promise<SendFlowMessageResult> {
   const response = await fetch(`${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/flows/${flowId}/messages`, {
     method: 'POST',
@@ -1633,9 +1719,9 @@ export async function sendFlowMessage(
     body: JSON.stringify(input),
   })
 
-  let payload: { ok?: boolean; data?: SendFlowMessageResult; error?: string | { message?: string } } | null = null
+  let payload: SendFlowMessageResponse | null = null
   try {
-    payload = await response.json() as typeof payload
+    payload = await response.json() as SendFlowMessageResponse
   } catch {
     // 非 JSON 响应保留 HTTP 状态兜底
   }
@@ -2204,7 +2290,8 @@ export async function sendChapterChat(
   mentionedAgents: string[] | undefined,
   options: ChapterChatFlowOptions & {
     /** per-call 模型覆盖（输入框旁选择器传入） */
-    modelId?: { provider: string; modelId: string }
+    modelId?: { provider: string; modelId: string; thinkingLevel?: import('../stores/session-store').ThinkingLevel | null }
+    styleExpertIds?: string[]
   },
 ): Promise<void> {
   const url = `${browserConfig.apiBaseUrl}${BASE}/projects/${projectId}/chapters/${chapterNumber}/chat`
@@ -2214,7 +2301,7 @@ export async function sendChapterChat(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ message, mentionedAgents, modelId: options.modelId }),
+    body: JSON.stringify({ message, mentionedAgents, modelId: options.modelId, styleExpertIds: options.styleExpertIds }),
     signal: options.signal,
   })
 
@@ -2330,6 +2417,36 @@ export function listReferenceSections(
   sourceId: string
 ): Promise<import('@repo/shared/novel').ReferenceSection[]> {
   return getApi(`${BASE}/reference-sources/${sourceId}/sections`)
+}
+
+export interface StyleTechniqueDraftApi {
+  id: string
+  dimension: string
+  name: string
+  mechanism: string
+  transfer: string
+  evidence: Array<{ sectionId: string; quote: string }>
+  metricAnchors: string[]
+  confidence: 'verified' | 'unverified' | 'rejected'
+  kept: boolean
+}
+
+export interface StyleDistillDraftApi {
+  name: string
+  sourceTitle: string
+  description: string
+  distilledPrompt: string
+  exclusions: string[]
+  techniques: StyleTechniqueDraftApi[]
+  metrics: Record<string, unknown>
+  exemplarPassages: Array<{ sectionId: string; text: string; reason: string }>
+}
+
+export function distillReferenceStyle(
+  sourceId: string,
+  input: { sectionIds: string[]; notes?: string; modelId?: { provider: string; modelId: string } },
+): Promise<StyleDistillDraftApi> {
+  return postApi<StyleDistillDraftApi>(`${BASE}/reference-sources/${sourceId}/style-distill`, input)
 }
 
 export function getReferenceTextPreview(

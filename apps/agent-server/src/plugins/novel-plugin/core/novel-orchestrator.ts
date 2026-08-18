@@ -184,6 +184,8 @@ interface RunAgentOverrides {
    * 返回值会覆盖 logResult；runAgent 仍返回 raw result 给调用方。
    */
   augmentLogResult?: (rawResult: string) => string
+  /** 仅首次 Writer 初稿显式附加 lengdu；重写和其他 Agent 不继承。 */
+  useLengduSkill?: boolean
 }
 
 /**
@@ -196,8 +198,8 @@ export interface InterjectMessage {
   content: string
   /**
    * 定向 Agent；缺省注入「下一个将被调用的 Agent」。
-   * 注意 'memory' 不可达：Memory 主路径是 NovelMemoryGenerator 的结构化 LLM 调用，
-   * 不经插话注入通道，enqueueUserMessage 对其前置拒绝（返回 false）。
+   * 'memory' 在 Finalizer 进入结构化 Memory 分析时作为只读关注点消费，
+   * 不会作为自由文本写库指令执行。
    */
   targetAgent?: 'director' | 'writer' | 'reviewer' | 'reviser' | 'memory'
   /**
@@ -296,19 +298,38 @@ export class NovelOrchestrator {
   /**
    * 追加插话（§3.1）：不覆盖既有 userMessages / 既有插话，append 语义。
    * flowKey 定向到具体创作流（缺省为全局消息）；返回是否入队成功。
-   * targetAgent='memory' 前置拒绝（返回 false）：Memory 主路径是结构化 LLM 调用，
-   * 不经插话注入通道，入队只会以 dropped 收场，不如在入口明确告知调用方省略 targetAgent。
    */
   enqueueUserMessage(msg: Omit<InterjectMessage, 'createdAt'>): boolean {
-    if (msg.targetAgent === 'memory') {
-      this.context.logger.warn(
-        { id: msg.id, flowKey: msg.flowKey },
-        '插话入队被拒绝：memory 阶段不经插话通道，请省略 targetAgent',
-      )
-      return false
-    }
     this.interjectQueue().push({ ...msg, createdAt: Date.now() })
     return true
+  }
+
+  /**
+   * 在进入 Finalizer 前消费定向给 Memory 的插话。
+   *
+   * 消息只进入 CreationOptions.memoryFocus，由结构化 Memory 分析核对正文证据；
+   * applyAnalysis 的既有校验与事务边界保持不变。只有真正交给 Finalizer 时才回报 injected。
+   */
+  private withMemoryInterjects(
+    projectId: string,
+    chapterNumber: number,
+    options: CreationOptions,
+  ): CreationOptions {
+    options.signal?.throwIfAborted()
+    const interjected = this.drainPendingMessages(
+      'memory',
+      options.flowKey ?? this.runKey(projectId, chapterNumber),
+    )
+    if (interjected.length === 0) return options
+
+    this.hooks?.onInterjectInjected?.(interjected.map(message => message.id), 'memory')
+    return {
+      ...options,
+      memoryFocus: [
+        ...(options.memoryFocus ?? []),
+        ...interjected.map(message => this.promptBuilder.stripEmDash(message.content)),
+      ],
+    }
   }
 
   /**
@@ -347,8 +368,8 @@ export class NovelOrchestrator {
    * 的定向插话（orchestrator 是插件级单例，队列按 flow 隔离）；被清消息通过
    * onInterjectDropped 回调暴露（§4 不静默丢失），避免残留到同实例的下一次创作流程。
    */
-  private finalizeInterjectQueue(projectId: string, chapterNumber: number): void {
-    const flowKey = this.runKey(projectId, chapterNumber)
+  private finalizeInterjectQueue(projectId: string, chapterNumber: number, scopedFlowKey?: string): void {
+    const flowKey = scopedFlowKey ?? this.runKey(projectId, chapterNumber)
     const queue = this.interjectQueue()
     const dropped = queue.filter(m => !m.flowKey || m.flowKey === flowKey)
     this.interjectMessages = queue.filter(m => m.flowKey && m.flowKey !== flowKey)
@@ -373,9 +394,24 @@ export class NovelOrchestrator {
    */
   clearStaleInterjectMessages(flowKey: string): string[] {
     const queue = this.interjectQueue()
-    const stale = queue.filter(m => m.flowKey === flowKey)
+    // 新运行使用新的 UUID，因此不能只按当前 key 清理。清掉同一项目/章节下
+    // 旧的运行级 key 以及兼容旧客户端的 `${project}|${chapter}` key，保留其他章节。
+    const parts = flowKey.split('|')
+    if (parts.length < 3) {
+      const stale = queue.filter(m => m.flowKey === flowKey)
+      if (stale.length === 0) return []
+      this.interjectMessages = queue.filter(m => !stale.includes(m))
+      const ids = stale.map(m => m.id)
+      this.hooks?.onInterjectDropped?.(ids, flowKey)
+      return ids
+    }
+    const prefix = parts.slice(0, -1).join('|')
+    const stale = queue.filter(m => {
+      if (!m.flowKey || m.flowKey === flowKey) return false
+      return m.flowKey === prefix || m.flowKey.startsWith(`${prefix}|`)
+    })
     if (stale.length === 0) return []
-    this.interjectMessages = queue.filter(m => m.flowKey !== flowKey)
+    this.interjectMessages = queue.filter(m => !stale.includes(m))
     const ids = stale.map(m => m.id)
     this.context.logger.info(
       { flowKey, stale: ids },
@@ -401,7 +437,13 @@ export class NovelOrchestrator {
         askStoryPolicy: getNovelAskStoryPolicy(this.store.getProject(projectId)?.novelAskStoryPolicy),
         factPackPathActive: true,
         projectModelId: this.store.getNovelModelId(projectId),
-        arrangedEntities: options.arrangedEntities,
+        // 断点续跑：快照携带的编排实体优先（首跑可能带了，快照冻结当时的约束）
+        arrangedEntities: options.resume?.arrangedEntities ?? options.arrangedEntities,
+        // 续跑恢复的 Director 产物：跳过 Director 阶段时 Writer/Reviewer 的
+        // SEMI 层与叙事任务注入直接用快照值
+        directorOutput: options.resume?.directorOutput,
+        directorTask: options.resume?.directorTask,
+        rhythmSuggestion: options.resume?.rhythmSuggestion,
         semiLayerSharedCache: null,
         budget: createChapterBudgetUsage(),
         askStoryCounts: {},
@@ -419,10 +461,26 @@ export class NovelOrchestrator {
     const run = this.requireRunContext()
     // 将本章编排实体约束暂存到实例字段，供 runAgent 构建 SEMI 层时读取。
     // 采用临时字段方案是最小改动：无需改 runAgent 签名，也无需沿调用链透传。
-    run.arrangedEntities = options.arrangedEntities
+    // 续跑时优先用快照冻结的编排实体（首跑可能带了，失败后矩阵可能被手动改过）。
+    run.arrangedEntities = options.resume?.arrangedEntities ?? options.arrangedEntities
     // 清空单章 SEMI shared 缓存：每次进入 createChapterWithFlow（含 rewrite 递归）都重新构建，
     // 避免上一章/上一次创作的 shared 字符串残留导致 LLM 缓存条目错配。
     run.semiLayerSharedCache = null
+    // 断点续跑：resume 存在时跳过已完成阶段。rewriting 递归（guard/整章重写）
+    // 必须清除 resume——那是"从头重写"，不能沿用快照跳阶段。
+    const resume = options.resume
+    // 阶段追踪：失败时报告 failedPhase，路由据此判定可续跑的快照边界。
+    let currentPhase: CreationPhase = 'directing'
+    if (resume) {
+      currentPhase = resume.entry
+      this.emitProgress(options, resume.entry, 'phase_change', {
+        message: resume.entry === 'writing'
+          ? '已恢复上次运行的叙事任务，从写作阶段继续...'
+          : resume.entry === 'reviewing'
+            ? '已恢复上次运行的章节草稿，从审稿阶段继续...'
+            : '已恢复上次运行的定稿正文，从落库与记忆提取继续...',
+      })
+    }
     try {
       const styleProfile = this.store.getWritingStyleProfile(projectId)
       if (!styleProfile || styleProfile.positiveExamples.length === 0 || styleProfile.negativeExamples.length === 0) {
@@ -436,32 +494,37 @@ export class NovelOrchestrator {
           },
         })
       }
-      // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）
-      const rhythmController = new RhythmController()
-      const project = this.store.getProject(projectId)
-      const chapters = this.store.listChapters(projectId)
-      const rhythmHistory = chapters
-        .filter(c => c.rhythm)
-        .map(c => ({
-          chapterNumber: c.chapterNumber,
-          rhythm: c.rhythm!,
-          effectiveness: 'medium' as const,
-        }))
-      const rhythmModel = RhythmController.MODELS.find(m => m.id === project?.rhythmModelId) ?? RhythmController.DEFAULT_MODEL
-      // 读取活跃冲突和待回收伏笔，让 RhythmController 感知故事状态
-      const activeConflicts = this.store.listConflicts(projectId).filter(
-        c => c.stage !== 'resolved' && c.stage !== 'transformed'
-      )
-      const pendingForeshadows = this.store.listForeshadowing(projectId).filter(
-        f => f.status !== 'recovered' && f.status !== 'abandoned'
-      )
-      const rhythmSuggestion = rhythmController.suggestRhythm(
-        chapterNumber,
-        project?.currentStage ?? 'setup',
-        rhythmHistory,
-        rhythmModel,
-        { activeConflicts, pendingForeshadows },
-      )
+      // 计算本章节奏建议（供 Director 在规划叙事任务时参考节奏）。
+      // 续跑时沿用快照冻结的节奏建议：失败后矩阵/章节状态可能被手动改动，
+      // 重算会让 Writer 拿到与首跑不同的约束，叙事任务与正文出现错配。
+      const computeRhythmSuggestion = (): RhythmSuggestion => {
+        const rhythmController = new RhythmController()
+        const project = this.store.getProject(projectId)
+        const chapters = this.store.listChapters(projectId)
+        const rhythmHistory = chapters
+          .filter(c => c.rhythm)
+          .map(c => ({
+            chapterNumber: c.chapterNumber,
+            rhythm: c.rhythm!,
+            effectiveness: 'medium' as const,
+          }))
+        const rhythmModel = RhythmController.MODELS.find(m => m.id === project?.rhythmModelId) ?? RhythmController.DEFAULT_MODEL
+        // 读取活跃冲突和待回收伏笔，让 RhythmController 感知故事状态
+        const activeConflicts = this.store.listConflicts(projectId).filter(
+          c => c.stage !== 'resolved' && c.stage !== 'transformed'
+        )
+        const pendingForeshadows = this.store.listForeshadowing(projectId).filter(
+          f => f.status !== 'recovered' && f.status !== 'abandoned'
+        )
+        return rhythmController.suggestRhythm(
+          chapterNumber,
+          project?.currentStage ?? 'setup',
+          rhythmHistory,
+          rhythmModel,
+          { activeConflicts, pendingForeshadows },
+        )
+      }
+      const rhythmSuggestion = resume?.rhythmSuggestion ?? computeRhythmSuggestion()
       // 暂存节奏建议：runAgent 构建 ChapterConstraints 时注入 rhythmConstraint
       run.rhythmSuggestion = rhythmSuggestion
 
@@ -479,9 +542,11 @@ export class NovelOrchestrator {
       })
 
       // Phase 1: Director（支持 rewrite 循环：用户在检查点补充修改意见后可重写）
+      // 断点续跑：快照已带已批准的叙事任务时跳过 Director 与检查点 1，
+      // 叙事任务在首跑已被用户确认过，再弹一次检查点只是浪费一次交互。
       const chapter = this.store.getChapter(projectId, chapterNumber)
       let directorResult = ''
-      let needRewrite = true
+      let needRewrite = !resume?.directorTask
       // Director 未调用工具时的重试计数器，避免无限循环
       let directorToolMissedCount = 0
       const MAX_DIRECTOR_TOOL_MISS = 2
@@ -593,31 +658,49 @@ export class NovelOrchestrator {
       // 这是方案 A 的核心：让 Director 的规划真正成为 Writer 的创作指导。
       // 注入前清洗破折号：Director 输出可能含破折号，注入 Writer 后会被模仿，
       // 在注入点清洗切断示范传播链。
-      run.directorOutput = this.promptBuilder.stripEmDash(directorResult)
-      // 此时 narrativeDraft.task 必然存在（while 内部已校验）
-      // 使用非空断言：TS 无法跨闭包收窄 narrativeDraft.task 的可选性
-      const directorTask = narrativeDraft.task!
-      // 注入高潮目标（来自节奏建议，parseDirectorTask 旧逻辑也在这里注入）
-      if (rhythmSuggestion.rhythm === 'climax' && rhythmSuggestion.climaxIntensity) {
-        directorTask.climaxTarget = {
-          type: rhythmSuggestion.climaxType ?? 'composite',
-          intensity: rhythmSuggestion.climaxIntensity,
+      // 断点续跑：Director 输出与任务直接取快照（首跑已清洗/已注入默认值）。
+      if (resume?.directorTask) {
+        directorResult = resume.directorOutput ?? ''
+        run.directorOutput = directorResult
+      } else {
+        run.directorOutput = this.promptBuilder.stripEmDash(directorResult)
+      }
+      // 非续跑时 narrativeDraft.task 必然存在（while 内部已校验）；
+      // 续跑时用快照任务。使用非空断言：TS 无法跨闭包收窄可选性。
+      const directorTask = resume?.directorTask ?? narrativeDraft.task!
+      if (!resume) {
+        // 注入高潮目标（来自节奏建议，parseDirectorTask 旧逻辑也在这里注入）
+        if (rhythmSuggestion.rhythm === 'climax' && rhythmSuggestion.climaxIntensity) {
+          directorTask.climaxTarget = {
+            type: rhythmSuggestion.climaxType ?? 'composite',
+            intensity: rhythmSuggestion.climaxIntensity,
+          }
         }
-      }
-      // 悬念持续章数默认值（仅 create_suspense 任务且 Director 未指定时）
-      if (directorTask.type === 'create_suspense' && directorTask.suspenseDuration === undefined) {
-        directorTask.suspenseDuration = 3
-      }
-      // 冲突强度变化默认值（仅 escalate_conflict 任务且 Director 未指定时）
-      if (directorTask.type === 'escalate_conflict' && directorTask.expectedIntensityDelta === undefined) {
-        directorTask.expectedIntensityDelta = 1
+        // 悬念持续章数默认值（仅 create_suspense 任务且 Director 未指定时）
+        if (directorTask.type === 'create_suspense' && directorTask.suspenseDuration === undefined) {
+          directorTask.suspenseDuration = 3
+        }
+        // 冲突强度变化默认值（仅 escalate_conflict 任务且 Director 未指定时）
+        if (directorTask.type === 'escalate_conflict' && directorTask.expectedIntensityDelta === undefined) {
+          directorTask.expectedIntensityDelta = 1
+        }
+        // T03 V2 计划写（2026-08-12 逻辑统一：scenePlanV2Write 转正，恒写 V2 plan + scenes）。
+        // 续跑跳过：首跑已写过，重写会重复追加场景计划。
+        this.shadowWriteDirectorPlan(
+          projectId, chapter, chapterNumber, directorTask, run.arrangedEntities, rhythmSuggestion,
+        )
       }
       run.directorTask = directorTask
+      currentPhase = 'writing'
 
-      // T03 V2 计划写（2026-08-12 逻辑统一：scenePlanV2Write 转正，恒写 V2 plan + scenes）
-      this.shadowWriteDirectorPlan(
-        projectId, chapter, chapterNumber, directorTask, run.arrangedEntities, rhythmSuggestion,
-      )
+      // 阶段边界快照 1：Director 已批准。此后任何失败都可从 Writer 阶段续跑。
+      options.onRunStateUpdate?.({
+        entry: 'writing',
+        directorTask,
+        directorOutput: run.directorOutput,
+        rhythmSuggestion,
+        arrangedEntities: run.arrangedEntities,
+      })
 
       // 推送叙事任务详情，让用户了解 Director 通过工具提交的完整结构化任务（气泡展示）
       // 直接用 directorTask 局部变量（已断言非空），避免 run.directorTask 可能 undefined 的类型问题
@@ -696,6 +779,15 @@ export class NovelOrchestrator {
       const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
 
       while (true) {
+        // 断点续跑：reviewing 入口恢复已生成的 Writer 草稿（跳过 Writer 阶段，
+        // 质量门/审稿全部重跑——确定性检测便宜，语义审校只多一次调用，
+        // 相比重烧 Director+Writer 两个大头可以忽略）；memory 入口连草稿都
+        // 不需要（正文已定稿，直接走收尾）。
+        if (resume?.entry === 'reviewing' && resume.writerDraft) {
+          writerResult = resume.writerDraft
+          break
+        }
+        if (resume?.entry === 'memory') break
         // 重写策略：上一稿可用时做定向修改，否则全量重写。
         // 此前一律全量重写（只传 reason 字符串），每次都要重新吃掉 19k input，
         // 而 ch9 重写 10 次 / ch10 重写 13 次 —— 那两章 token 爆炸的主要来源之一。
@@ -737,6 +829,7 @@ export class NovelOrchestrator {
             ? rewritePlan.input
             : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
           options,
+          rewritePlan ? undefined : { useLengduSkill: true },
         )
 
         // 检测 Writer 是否标记推回
@@ -986,10 +1079,11 @@ export class NovelOrchestrator {
             if (rewrite.allowed) {
               run.budget = rewrite.usage
               this.emitProgress(options, 'rewriting', 'phase_change', { message: '用户选择从头重写整章...' })
+              // 从头重写：清除 resume，避免递归沿用快照跳过 Director
               return this.createChapterWithFlow(
                 projectId,
                 chapterNumber,
-                { ...options, arrangedEntities: run.arrangedEntities },
+                { ...options, arrangedEntities: run.arrangedEntities, resume: undefined },
               )
             }
             requestedRevisionReason = '整章重写次数已达到本章上限，改为局部修订'
@@ -1009,7 +1103,52 @@ export class NovelOrchestrator {
         break
       }
 
+      // 断点续跑 memory 入口：正文在首跑已通过验收/修订定稿（finalContent），
+      // 直接落库 + 记忆提取，跳过全部生成与审校阶段。
+      // 快照沿用首跑的 finalContent/writerDraft（本路径 Writer 循环未执行，
+      // writerResult 为空，不能用空值覆盖快照产物）。
+      if (resume?.entry === 'memory' && resume.finalContent) {
+        currentPhase = 'memory'
+        options.onRunStateUpdate?.({
+          entry: 'memory',
+          directorTask: run.directorTask,
+          directorOutput: run.directorOutput,
+          rhythmSuggestion,
+          arrangedEntities: run.arrangedEntities,
+          writerDraft: resume.writerDraft,
+          finalContent: resume.finalContent,
+        })
+        const resumedFinalContent = sanitizeNovelProse(resume.finalContent)
+        return await this.finalizer.finalize({
+          projectId,
+          chapterNumber,
+          content: resumedFinalContent,
+          options: this.withMemoryInterjects(projectId, chapterNumber, {
+            ...options,
+            modelId: options.modelId ?? parseNovelModelRef(run.projectModelId),
+          }),
+          arrangedEntities: run.arrangedEntities,
+          directorTask: run.directorTask,
+          chapterId: chapter?.id ?? null,
+          versionSource: { phase: 'reviser_final', agentType: 'reviser', trigger: '断点续跑后落库' },
+        })
+      }
+
+      // 阶段边界快照 2：Writer 草稿已成。此后失败（审校/修订/检查点超时）都可
+      // 从审稿阶段续跑，最贵的 Director+Writer 不再重烧。
+      // （reviewing 续跑入口在循环内已把 writerResult 恢复为快照草稿，此处
+      // 再落一次边界让新快照行携带同样产物。）
+      options.onRunStateUpdate?.({
+        entry: 'reviewing',
+        directorTask: run.directorTask,
+        directorOutput: run.directorOutput,
+        rhythmSuggestion,
+        arrangedEntities: run.arrangedEntities,
+        writerDraft: writerResult,
+      })
+
       // Phase 3: Reviewer
+      currentPhase = 'reviewing'
       this.emitProgress(options, 'reviewing', 'phase_change', { message: '审稿 Agent 正在检查章节...' })
 
       // 先执行确定性的符号清理，再让 Reviewer 审查最终会落库的同一版本。
@@ -1131,7 +1270,7 @@ export class NovelOrchestrator {
       const reviewDraft: ReviewDraftHolder = {}
       const submitReviewTool = createNovelSubmitReviewTool(reviewDraft)
       const reviewResult = await this.runAgent('reviewer', projectId, chapterNumber,
-        `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${reviewContent}\n\n---\n\n${clicheReport}\n\n---\n\n${proseQualityReport}\n\n---\n\n## 盲审文字编辑意见\n\n${this.promptBuilder.stripEmDash(proseEditorResult)}${guardReviewReport ? `\n\n---\n\n${guardReviewReport}` : ''}`,
+         `请验收第 ${chapterNumber} 章的内容。\n\n---\n\n## 待审稿章节正文\n\n${reviewContent}\n\n---\n\n${clicheReport}\n\n---\n\n${proseQualityReport}\n\n---\n\n## 盲审文字编辑意见\n\n${this.promptBuilder.stripEmDash(proseEditorResult)}${guardReviewReport ? `\n\n---\n\n${guardReviewReport}` : ''}\n\n---\n\n## 独立文风专家手法检查\n如果本次召集了独立文风专家，请逐条检查其已审核手法卡，并通过 novel_submit_review.styleTechniqueChecks 提交 present/absent/not_applicable 与正文证据。没有适用场景的手法必须标记 not_applicable，不要强行套用。`,
         options,
         {
           extraTools: [submitReviewTool],
@@ -1253,6 +1392,15 @@ export class NovelOrchestrator {
         })
       }
       const reportChars = proseQualityReport.length + clicheReport.length + (reviewResult?.length ?? 0)
+      const styleTechniqueChecks = reviewDraft.styleTechniqueChecks ?? []
+      if (styleTechniqueChecks.length > 0) {
+        options.onConversationMessage?.({
+          role: 'system', fromId: 'style-review', fromName: '文风手法验收',
+          content: `本次召集的文风手法检查：已体现 ${styleTechniqueChecks.filter((item) => item.verdict === 'present').length}，未体现 ${styleTechniqueChecks.filter((item) => item.verdict === 'absent').length}，不适用 ${styleTechniqueChecks.filter((item) => item.verdict === 'not_applicable').length}。`,
+          phase: 'review',
+          metadata: { workflowMessageType: 'style_technique_checks', styleTechniqueChecks },
+        })
+      }
       const reviewDecision = requestedRevisionReason
         ? 'revise'
         : await options.onCheckpoint({
@@ -1314,6 +1462,7 @@ export class NovelOrchestrator {
       }
 
       if (effectiveReviewDecision === 'revise') {
+        currentPhase = 'revising'
         const autoReviseLabels = [
           ...autoReviseHits.map(hit => hit.name),
           ...severeProseIssues.map(issue => issue.message),
@@ -1439,10 +1588,11 @@ export class NovelOrchestrator {
         if (rewrite.allowed) {
           run.budget = rewrite.usage
           this.emitProgress(options, 'rewriting', 'phase_change', { message: '重新创作章节...' })
+          // 从头重写：清除 resume，避免递归沿用快照跳过 Director
           return this.createChapterWithFlow(
             projectId,
             chapterNumber,
-            { ...options, arrangedEntities: run.arrangedEntities },
+            { ...options, arrangedEntities: run.arrangedEntities, resume: undefined },
           )
         }
         // 非强制质量门下，预算耗尽可以接受当前正文；强制质量门下在上面已把
@@ -1469,30 +1619,44 @@ export class NovelOrchestrator {
         )
       }
 
+      // 阶段边界快照 3：正文已定稿。此后失败（记忆提取/落库异常）都可从收尾
+      // 阶段续跑，零生成成本。
+      options.onRunStateUpdate?.({
+        entry: 'memory',
+        directorTask: run.directorTask,
+        directorOutput: run.directorOutput,
+        rhythmSuggestion,
+        arrangedEntities: run.arrangedEntities,
+        writerDraft: writerResult,
+        finalContent: sanitizedFinalContent,
+      })
+
       // Phase 5: Memory（收尾逻辑委托给 ChapterFinalizer）。Memory 只读取正文和
       // 相关实体状态，不携带创作阶段的 shared context。
       // 计算版本来源：是否经过 Reviser 修订（finalContent 与 reviewContent 不同表示修订已生效）
+      currentPhase = 'memory'
       const isReviserPath = finalContent !== reviewContent
       const versionSource: VersionSource = isReviserPath
         ? { phase: 'reviser_final', agentType: 'reviser', trigger: 'Reviser 修订后落库' }
         : writerGuardRewriteCount > 0
           ? { phase: 'writer_initial', agentType: 'writer', trigger: `PostWriteGuard 原地重写后落库（第 ${writerGuardRewriteCount} 次）` }
           : { phase: 'writer_initial', agentType: 'writer', trigger: 'Writer 初稿落库' }
-      return await this.finalizer.finalize({
+      const result = await this.finalizer.finalize({
         projectId,
         chapterNumber,
         content: sanitizedFinalContent,
         // Finalizer 的 Memory、标题和提要也必须遵守本次运行冻结的模型，
         // 否则正文使用项目主模型而收尾悄悄回到默认模型。
-        options: {
+        options: this.withMemoryInterjects(projectId, chapterNumber, {
           ...options,
           modelId: options.modelId ?? parseNovelModelRef(run.projectModelId),
-        },
+        }),
         arrangedEntities: options.arrangedEntities,
         directorTask: run.directorTask,
         chapterId: chapter?.id ?? null,
         versionSource,
       })
+      return { ...result, styleTechniqueChecks } as CreationResult
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       cancelDebug('orchestrator-catch', { projectId, chapterNumber, errMessage: message, errStack: err instanceof Error ? err.stack : undefined, signalAborted: options.signal?.aborted, errName: err instanceof Error ? err.name : typeof err })
@@ -1501,12 +1665,12 @@ export class NovelOrchestrator {
         return { status: 'cancelled' }
       }
       this.emitProgress(options, 'error', 'error', { message })
-      return { status: 'error', error: message }
+      return { status: 'error', error: message, failedPhase: currentPhase }
     } finally {
       cancelDebug('orchestrator-finally', { projectId, chapterNumber, signalAborted: options.signal?.aborted })
       // 插话队列终态收尾（§3.1/§4）：finally 覆盖 completed/error/cancelled 全部出口，
       // 记录未注入消息后清空（rewrite 递归时内层先清、外层幂等再清）。
-      this.finalizeInterjectQueue(projectId, chapterNumber)
+      this.finalizeInterjectQueue(projectId, chapterNumber, options.flowKey)
     }
   }
 
@@ -2382,7 +2546,7 @@ export class NovelOrchestrator {
           name: string
           modes: ReadonlySet<'full' | 'editor'>
           resolvePath: (pid: string) => string | undefined
-          buildIdentity: (pid: string) => string
+          buildIdentity: (pid: string, styleExpertIds?: string[]) => string
         }
       >
     > = {
@@ -2393,7 +2557,7 @@ export class NovelOrchestrator {
           typeof this.promptBuilder.getReviewerSkillPath === 'function'
             ? this.promptBuilder.getReviewerSkillPath(pid)
             : undefined,
-        buildIdentity: pid => this.promptBuilder.buildReviewerSkillIdentity(pid),
+        buildIdentity: (pid, styleExpertIds) => this.promptBuilder.buildReviewerSkillIdentity(pid, styleExpertIds),
       },
       director: {
         name: 'novel-director',
@@ -2411,7 +2575,7 @@ export class NovelOrchestrator {
           typeof this.promptBuilder.getWriterSkillPath === 'function'
             ? this.promptBuilder.getWriterSkillPath(pid)
             : undefined,
-        buildIdentity: pid => this.promptBuilder.buildWriterSkillIdentity(pid),
+        buildIdentity: (pid, styleExpertIds) => this.promptBuilder.buildWriterSkillIdentity(pid, styleExpertIds),
       },
       reviser: {
         name: 'novel-reviser',
@@ -2420,7 +2584,7 @@ export class NovelOrchestrator {
           typeof this.promptBuilder.getReviserSkillPath === 'function'
             ? this.promptBuilder.getReviserSkillPath(pid)
             : undefined,
-        buildIdentity: pid => this.promptBuilder.buildReviserSkillIdentity(pid),
+        buildIdentity: (pid, styleExpertIds) => this.promptBuilder.buildReviserSkillIdentity(pid, styleExpertIds),
       },
       // Memory 主路径是 NovelMemoryGenerator 的纯 JSON 提取（novel-memory-generator Skill，
       // 见 novel-memory-generator.ts）；此条目覆盖 ChapterFinalizer 未注入 generator 时的
@@ -2435,15 +2599,24 @@ export class NovelOrchestrator {
         buildIdentity: pid => this.promptBuilder.buildMemorySkillIdentity(pid),
       },
     }
-    const skillConfig = skillByAgent[agentType]
+        const skillConfig = skillByAgent[agentType]
     const contextMode = overrides?.contextMode ?? 'full'
     const skillEnabled =
       !!skillConfig && contextMode !== 'identity_only' && skillConfig.modes.has(contextMode)
     const skillPath = skillEnabled && skillConfig ? skillConfig.resolvePath(projectId) : undefined
+    const lengduSkillPath = overrides?.useLengduSkill && agentType === 'writer' && contextMode === 'full'
+      ? this.promptBuilder.getLengduSkillPath?.()
+      : undefined
+    if (overrides?.useLengduSkill && !lengduSkillPath) {
+      this.context.logger.warn(
+        { projectId, skill: 'lengdu', envVar: 'PI_LENGDU_SKILL_PATH' },
+        'Writer requested lengdu Skill, but no explicit Skill path was found; continuing without it',
+      )
+    }
     const agentIdentity = overrides?.identityPrompt
       ?? (skillPath && skillConfig
-        ? skillConfig.buildIdentity(projectId)
-        : this.promptBuilder.buildAgentIdentity(projectId, agentType))
+        ? skillConfig.buildIdentity(projectId, options.styleExpertIds)
+         : this.promptBuilder.buildAgentIdentity(projectId, agentType, false, options.styleExpertIds))
     metricCollector.add('identity', 'identity', agentIdentity, 'full')
 
     // 保存真正的原始任务输入（用于日志记录），再附加用户指令。
@@ -2470,7 +2643,7 @@ export class NovelOrchestrator {
     // 人工修改意见。盲审（consumeUserMessages: false）不消费，留给完整 Reviewer。
     // drain 传入当前 flow 标识：并发 flow 共享队列，其他 flow 的定向插话不被本 flow 消费。
     const interjected = consumeUserMessages
-      ? this.drainPendingMessages(agentType, pendingMessageKey)
+      ? this.drainPendingMessages(agentType, options.flowKey ?? pendingMessageKey)
       : []
     if (interjected.length > 0) {
       const interjectBlocks = interjected
@@ -2803,8 +2976,15 @@ export class NovelOrchestrator {
         promptCacheScope,
         userMessage,
         ...(skillPath && skillConfig
-          ? { skill: { name: skillConfig.name, path: skillPath } }
-          : {}),
+          ? {
+              skill: { name: skillConfig.name, path: skillPath },
+              ...(lengduSkillPath
+                ? { extraSkills: [{ name: 'lengdu', path: lengduSkillPath }] }
+                : {}),
+            }
+          : lengduSkillPath
+            ? { skill: { name: 'lengdu', path: lengduSkillPath } }
+            : {}),
         tools: finalTools,
         signal: options?.signal,
         temperature,

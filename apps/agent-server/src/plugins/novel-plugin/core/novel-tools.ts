@@ -2295,6 +2295,16 @@ export interface ReviewDraftHolder {
   review?: Omit<NovelChapterReview, 'id' | 'projectId' | 'chapterId' | 'reviewedBy' | 'createdAt' | 'contentRevisionId' | 'contentHash'>
   /** Reviewer 的原始自然语言输出（推理过程等），用于审计和回退展示。 */
   rawOutput?: string
+  styleTechniqueChecks?: Array<{
+    expertId: string
+    expertName: string
+    techniqueId: string
+    techniqueName: string
+    dimension: string
+    verdict: 'present' | 'absent' | 'not_applicable'
+    evidence?: string
+    note?: string
+  }>
 }
 
 const SubmitReviewParams = Type.Object({
@@ -2372,6 +2382,11 @@ const SubmitReviewParams = Type.Object({
   suggestions: Type.Array(Type.String(), {
     description: '修改建议列表（与 issues 一一对应或整体建议，空数组表示无建议）',
   }),
+  styleTechniqueChecks: Type.Optional(Type.Array(Type.Object({
+    expertId: Type.String(), expertName: Type.String(), techniqueId: Type.String(), techniqueName: Type.String(), dimension: Type.String(),
+    verdict: Type.Union([Type.Literal('present'), Type.Literal('absent'), Type.Literal('not_applicable')]),
+    evidence: Type.Optional(Type.String()), note: Type.Optional(Type.String()),
+  }), { description: '本次召集专家手法卡逐项体现检查：present/absent/not_applicable' })),
 })
 
 /**
@@ -2415,15 +2430,20 @@ export function createNovelSubmitReviewTool(
       }
 
       draft.review = review
+      draft.styleTechniqueChecks = params.styleTechniqueChecks ?? []
 
       const issuesCount = params.issues?.length ?? 0
       const suggestionsCount = params.suggestions?.length ?? 0
+      const styleChecks = params.styleTechniqueChecks ?? []
+      const styleSummary = styleChecks.length > 0
+        ? `\n- 专家手法检查：已体现=${styleChecks.filter((item) => item.verdict === 'present').length}/未体现=${styleChecks.filter((item) => item.verdict === 'absent').length}/不适用=${styleChecks.filter((item) => item.verdict === 'not_applicable').length}`
+        : ''
       const summary = `验收报告已提交：\n` +
         `- 结论：${params.verdict}\n` +
         `- 总体评分：${params.overallScore ?? '（未提供）'}\n` +
         `- 十维评分：一致性=${params.consistencyScore ?? '-'}/角色=${params.characterScore ?? '-'}/任务=${params.taskCompletionScore ?? '-'}/线索=${params.clueProgressScore ?? '-'}/伏笔=${params.foreshadowStatusScore ?? '-'}/冲突=${params.conflictChangeScore ?? '-'}/节奏=${params.pacingScore ?? '-'}/信息=${params.infoControlScore ?? '-'}/钩子=${params.readerHookScore ?? '-'}/文风=${params.styleScore ?? '-'}\n` +
         `- 问题数：${issuesCount}\n` +
-        `- 建议数：${suggestionsCount}`
+        `- 建议数：${suggestionsCount}${styleSummary}`
 
       return {
         content: [{ type: 'text', text: summary }],

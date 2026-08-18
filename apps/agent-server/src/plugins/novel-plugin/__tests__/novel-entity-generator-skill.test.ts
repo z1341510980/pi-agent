@@ -67,6 +67,7 @@ describe('NovelEntityGenerator Skill 白名单路径（能力拆分）', () => {
     skill?: { name: string; path: string }
     userMessage: string
     responseFormat: string
+    tools?: unknown[]
   } {
     return createSessionSpy.mock.calls[0][0] as never
   }
@@ -88,6 +89,7 @@ describe('NovelEntityGenerator Skill 白名单路径（能力拆分）', () => {
       path: expect.stringMatching(/role-matrix-arranger\.md$/),
     })
     expect(opts.responseFormat).toBe('json')
+    expect(opts.tools).toEqual([])
     expect(opts.userMessage).toContain('novel-matrix-arranger Skill')
     // 角色方法正文由 /skill: 展开提供，不重复嵌入任务消息
     expect(opts.userMessage).not.toContain('## 规划原则')

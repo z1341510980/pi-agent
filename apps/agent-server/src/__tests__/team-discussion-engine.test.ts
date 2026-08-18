@@ -1000,6 +1000,95 @@ describe('TeamDiscussionEngine', () => {
     ]))
   })
 
+  it('从 acting 快照恢复时从 failedSceneId 对应场景继续推演', async () => {
+    const members = [
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'novel-reviewer', name: '审稿' }),
+      makeMember({ id: 'char-1', name: '叶明远', type: 'character' }),
+    ]
+    const recoveredContent = '密室里的灯火忽明忽暗，叶明远停在门边，终于看清墙上的旧刻痕。'.repeat(5)
+    const prompts: string[] = []
+    const ctx = {
+      createAgUiSession: vi.fn().mockImplementation(async (opts: { userMessage: string }) => {
+        prompts.push(opts.userMessage)
+        const output = opts.userMessage.includes('请将以下各场景')
+          || opts.userMessage.includes('请基于群聊记录产出完整章节正文')
+          ? recoveredContent
+          : opts.userMessage.includes('请只从文字读感盲审')
+            ? '盲审：通过'
+            : '## 结论：accept'
+        return {
+          session: { prompt: vi.fn().mockResolvedValue(output) },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: `resume-acting-${prompts.length}`,
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const moderator = makeMockModerator([
+      { type: 'converge', agentId: 'novel-writer', scope: 'scene', reason: '场景已收敛' },
+    ])
+    const decide = vi.spyOn(moderator, 'decide')
+    const onProgress = vi.fn()
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+
+    const result = await engine.resumeSceneActing(
+      goal,
+      members,
+      makeOptions({ onProgress }),
+      {
+        phase: 'acting',
+        failedSceneId: 2,
+        transcript: [{
+          id: 'scene-1-finished',
+          fromId: 'char-1',
+          fromName: '叶明远',
+          content: '场景一已经完成。',
+          timestamp: 1,
+          type: 'member',
+          sceneId: 1,
+        }],
+        scenes: [
+          {
+            sceneId: 1,
+            title: '矿道入口',
+            location: '矿道',
+            time: '夜',
+            presentCharacters: ['char-1'],
+            goal: '进入矿道',
+          },
+          {
+            sceneId: 2,
+            title: '密室对峙',
+            location: '密室',
+            time: '深夜',
+            presentCharacters: ['char-1'],
+            goal: '确认旧刻痕的来源',
+          },
+        ],
+      },
+    )
+
+    expect(result.status).toBe('completed')
+    expect(result.content).toBe(recoveredContent)
+    expect(decide).toHaveBeenCalledTimes(1)
+    expect(decide.mock.calls[0]?.[3]).toMatchObject({
+      phase: 'acting',
+      currentScene: { sceneId: 2 },
+    })
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      phase: 'scene_setup',
+      data: expect.objectContaining({ scene: expect.objectContaining({ sceneId: 2 }) }),
+    }))
+    expect(result.transcript).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'scene-1-finished' }),
+      expect.objectContaining({ fromId: 'novel-writer', content: recoveredContent }),
+    ]))
+    const weavePrompt = prompts.find(prompt => prompt.includes('请将以下各场景'))
+    expect(weavePrompt).toContain('密室对峙')
+  })
+
   // ───────────────────────── 插话队列（对话化交互形态 §3.1，批次 1 任务 3） ─────────────────────────
 
   it('插话入队后下一轮 Moderator decide 的输入包含该消息（带前缀区块），不重排既有消息', async () => {

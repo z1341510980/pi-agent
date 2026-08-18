@@ -37,9 +37,8 @@ export type WorkspaceLayoutMode =
 export type RightPanelVisibility = 'closed' | 'open'
 
 /** 右侧面板当前视图（按"做什么"划分，职责单一） */
-export type RightPanelView = 'conversation' | 'chat' | 'detail' | 'settings' | 'audit'
-// - conversation：创作流程（工作流/群聊/反推/编排 4 模式 + 进度/检查点）
-// - chat：章节自由对话（@ Agent/角色 问答）
+export type RightPanelView = 'conversation' | 'detail' | 'settings' | 'audit'
+// - conversation：统一章节会话（自由聊天/工作流/群聊/反推/编排）
 // - detail：矩阵实体查看/编辑（12 类）+ 实体时间线
 // - settings：项目级配置（标题/大纲/创作主模型/节奏模型/目标平台）
 // - audit：一致性诊断（伏笔回收/钩子悬挂/孤儿实体/时间线矛盾）
@@ -171,6 +170,11 @@ export function migrateWorkspaceLayoutPersisted(persisted: unknown, version: num
   return next
 }
 
+/** 旧版独立 chat Tab 迁移到统一章节会话容器。 */
+export function migrateRightPanelView(view: unknown): RightPanelView {
+  return view === 'detail' || view === 'settings' || view === 'audit' ? view : 'conversation'
+}
+
 
 // ── Store ──
 
@@ -243,7 +247,7 @@ export const useNovelWorkspaceLayoutStore = create<NovelWorkspaceLayoutState>()(
           sidebarWidth: p.sidebarWidth ?? current.sidebarWidth,
           rightPanelVisible: p.rightPanelVisible ?? current.rightPanelVisible,
           rightPanelWidth: p.rightPanelWidth ?? current.rightPanelWidth,
-          rightPanelView: p.rightPanelView ?? current.rightPanelView,
+          rightPanelView: migrateRightPanelView(p.rightPanelView ?? current.rightPanelView),
           contentEditorHeight: legacyHeight ?? p.contentEditorHeight ?? current.contentEditorHeight,
           // focusMode 永远不持久化
           focusMode: false,

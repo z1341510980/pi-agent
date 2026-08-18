@@ -19,6 +19,16 @@ const api = vi.hoisted(() => ({
   listReferenceProviders: vi.fn(),
   listReferenceSections: vi.fn(),
   listReferenceSources: vi.fn(),
+  getWritingStyleProfile: vi.fn(),
+  listWritingStyleExperts: vi.fn(),
+  updateWritingStyleExpert: vi.fn(),
+  deleteWritingStyleExpert: vi.fn(),
+  listWritingStyleExpertVersions: vi.fn(),
+  rollbackWritingStyleExpert: vi.fn(),
+  getWritingStylePromptPreview: vi.fn(),
+  saveWritingStyleProfile: vi.fn(),
+  createWritingStyleExpert: vi.fn(),
+  distillReferenceStyle: vi.fn(),
   parseReferenceSource: vi.fn(),
   preflightReferenceFile: vi.fn(),
   preflightReferencePaste: vi.fn(),
@@ -95,6 +105,8 @@ function renderWithQueryClient(element: ReactNode): QueryClient {
 
 beforeEach(() => {
   api.listReferenceSources.mockResolvedValue([])
+  api.getWritingStyleProfile.mockResolvedValue(null)
+  api.listWritingStyleExperts.mockResolvedValue([])
   api.listReferenceProviders.mockResolvedValue([
     {
       id: 'provider-1',
@@ -137,6 +149,20 @@ describe('参考小说分析交互', () => {
     expect(screen.getByRole('button', { name: /质量与章节/ }).hasAttribute('disabled')).toBe(true)
 
     queryClient.clear()
+  })
+
+  it('在同一个工作台内切换文风基线和专家库', async () => {
+    renderWithQueryClient(
+      <ReferenceAnalysisWorkspace projectId="project-1" open onOpenChange={vi.fn()} />
+    )
+
+    await screen.findByText('当前项目还没有参考源')
+    fireEvent.click(screen.getByRole('button', { name: '文风基线' }))
+    expect(await screen.findByText('默认文风')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '文风专家' }))
+    expect(await screen.findByText('独立文风专家库')).not.toBeNull()
+    expect(screen.getByText('当前项目还没有独立文风专家。')).not.toBeNull()
   })
 
   it('完成粘贴文本预检、权利确认和本地解析纵向路径', async () => {

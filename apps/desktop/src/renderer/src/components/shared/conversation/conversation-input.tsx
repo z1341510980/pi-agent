@@ -1,7 +1,9 @@
 import { useState, useRef, useCallback, type KeyboardEvent, type ReactElement } from 'react'
-import { Send, Square, Play } from 'lucide-react'
+import { Send, Square, Play, Settings2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import type { NovelStyleExpert } from '@repo/shared/novel'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
 /** 可被 @ 提及的对象（如 agent） */
 export interface MentionOption {
@@ -10,13 +12,21 @@ export interface MentionOption {
   description?: string
 }
 
+/** 斜杠命令候选项 */
+export interface CommandOption {
+  id: string
+  label: string
+  description?: string
+  insertText: string
+}
+
 export interface ConversationInputProps {
   /** 发送消息 */
   onSend: (text: string) => void
   /** 中断当前运行 */
   onAbort: () => void
   /** 是否正在运行 */
-  isRunning: boolean
+  isRunning?: boolean
   /** 运行中是否仍允许发送消息；启用后会同时显示发送与停止按钮 */
   allowSendWhileRunning?: boolean
   /** 禁用输入 */
@@ -33,6 +43,13 @@ export interface ConversationInputProps {
   mentionOptions?: MentionOption[]
   /** 带提及 ID 的发送回调；提供后将替代 onSend 调用 */
   onSendWithMentions?: (text: string, mentionedIds: string[]) => void
+  /** 输入 / 时显示的命令候选 */
+  commandOptions?: CommandOption[]
+  /** 当前章节本轮可召集的文风专家 */
+  styleExperts?: NovelStyleExpert[]
+  selectedStyleExpertIds?: string[]
+  onStyleExpertsChange?: (expertIds: string[]) => void
+  onOpenStyleExperts?: () => void
 }
 
 /**
@@ -64,7 +81,7 @@ function detectMention(
 export function ConversationInput({
   onSend,
   onAbort,
-  isRunning,
+  isRunning = false,
   allowSendWhileRunning = false,
   disabled = false,
   placeholder = '输入消息...',
@@ -73,11 +90,18 @@ export function ConversationInput({
   onStart,
   mentionOptions,
   onSendWithMentions,
+  commandOptions,
+  styleExperts,
+  selectedStyleExpertIds = [],
+  onStyleExpertsChange,
+  onOpenStyleExperts,
 }: ConversationInputProps): ReactElement {
   const [text, setText] = useState('')
   const [mentionOpen, setMentionOpen] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
   const [mentionIndex, setMentionIndex] = useState(0)
+  const [commandOpen, setCommandOpen] = useState(false)
+  const [commandIndex, setCommandIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const mentionedIdsRef = useRef<Set<string>>(new Set())
 
@@ -87,6 +111,28 @@ export function ConversationInput({
           opt.label.toLowerCase().includes(mentionQuery.toLowerCase()),
         )
       : []
+
+  const filteredCommands =
+    commandOpen && commandOptions && commandOptions.length > 0
+      ? commandOptions.filter((command) => {
+          const query = text.trim().slice(1).toLowerCase()
+          return `${command.label} ${command.description ?? ''} ${command.insertText}`
+            .toLowerCase()
+            .includes(query)
+        })
+      : []
+
+  const selectCommand = useCallback((command: CommandOption) => {
+    setText(command.insertText)
+    setCommandOpen(false)
+    setCommandIndex(0)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(command.insertText.length, command.insertText.length)
+    })
+  }, [])
 
   const selectMention = useCallback(
     (agent: MentionOption) => {
@@ -136,6 +182,32 @@ export function ConversationInput({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      const typedCommandIsComplete = filteredCommands.some(
+        (command) => command.insertText.trim() === text.trim(),
+      )
+      if (commandOpen && filteredCommands.length > 0 && !typedCommandIsComplete) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setCommandIndex((i) => (i + 1) % filteredCommands.length)
+          return
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setCommandIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length)
+          return
+        }
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault()
+          selectCommand(filteredCommands[commandIndex]!)
+          return
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          setCommandOpen(false)
+          return
+        }
+      }
+
       // 提及下拉导航：方向键 / Enter 选中 / Esc 关闭
       if (mentionOpen && filteredMentions.length > 0) {
         if (e.key === 'ArrowDown') {
@@ -178,6 +250,11 @@ export function ConversationInput({
       filteredMentions,
       mentionIndex,
       selectMention,
+      commandOpen,
+      filteredCommands,
+      commandIndex,
+      selectCommand,
+      text,
       isRunning,
       allowSendWhileRunning,
       onAbort,
@@ -247,6 +324,37 @@ export function ConversationInput({
           </div>
         )}
 
+        {commandOpen && filteredCommands.length > 0 && (
+          <div
+            role="listbox"
+            aria-label="可用命令"
+            className={cn(
+              'absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto',
+              'rounded-lg border border-border bg-surface-1 shadow-lg',
+            )}
+          >
+            {filteredCommands.map((command, idx) => (
+              <div
+                key={command.id}
+                role="option"
+                aria-selected={idx === commandIndex}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  selectCommand(command)
+                }}
+                onMouseEnter={() => setCommandIndex(idx)}
+                className={cn(
+                  'cursor-pointer px-3 py-2 text-xs hover:bg-surface-2',
+                  idx === commandIndex && 'bg-surface-2',
+                )}
+              >
+                <div className="font-medium text-text">{command.label}</div>
+                {command.description ? <div className="text-subtle">{command.description}</div> : null}
+              </div>
+            ))}
+          </div>
+        )}
+
         <textarea
           ref={textareaRef}
           value={text}
@@ -258,6 +366,12 @@ export function ConversationInput({
             const newValue = e.target.value
             setText(newValue)
             handleInput()
+            if (commandOptions && newValue.trimStart().startsWith('/')) {
+              setCommandOpen(true)
+              setCommandIndex(0)
+            } else {
+              setCommandOpen(false)
+            }
             if (mentionOptions && mentionOptions.length > 0) {
               const cursorPos = e.target.selectionStart ?? newValue.length
               const detection = detectMention(newValue, cursorPos)
@@ -273,6 +387,7 @@ export function ConversationInput({
           onBlur={() => {
             // 延迟关闭，避免点击下拉项时先触发 blur
             setTimeout(() => setMentionOpen(false), 150)
+            setTimeout(() => setCommandOpen(false), 150)
           }}
           className={cn(
             'w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm leading-relaxed',
@@ -285,10 +400,58 @@ export function ConversationInput({
 
         {/* 底部工具栏 */}
         <div className="flex items-center justify-between gap-2 px-4 pb-3">
-          {/* 左侧：快捷键提示 */}
-          <span className="hidden text-xs text-hint md:inline">
-            Enter 发送 · Shift+Enter 换行
-          </span>
+          <div className="flex min-w-0 items-center gap-2">
+            {styleExperts ? (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button type="button" size="sm" variant="outline" className="h-7 gap-1.5 rounded-md px-2 text-[11px]" title="召集文风专家团">
+                    <span className="flex -space-x-1">
+                    {styleExperts.filter((expert) => selectedStyleExpertIds.includes(expert.id)).slice(0, 3).map((expert) => (
+                        <span key={expert.id} className="flex size-4 items-center justify-center rounded-full border border-background bg-primary/15 text-[9px] text-primary">
+                          {expert.name.slice(0, 1)}
+                        </span>
+                      ))}
+                    </span>
+                    <span>文风专家团</span>
+                    <span className="text-muted-foreground">{selectedStyleExpertIds.length}/{styleExperts.length}</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" side="top" className="w-80 p-3">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-text">本轮召集文风专家</div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">选择参与当前聊天或创作任务的专家</div>
+                    </div>
+                    <Button type="button" size="icon-sm" variant="ghost" onClick={onOpenStyleExperts} title="管理专家团">
+                      <Settings2 className="size-3.5" />
+                    </Button>
+                  </div>
+                  <div className="space-y-1">
+                    {styleExperts.map((expert) => {
+                      const selected = selectedStyleExpertIds.includes(expert.id)
+                      return (
+                        <button
+                          key={expert.id}
+                          type="button"
+                          className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors', selected ? 'bg-primary/10' : 'hover:bg-surface-2')}
+                          onClick={() => onStyleExpertsChange?.(selected ? selectedStyleExpertIds.filter((id) => id !== expert.id) : [...selectedStyleExpertIds, expert.id])}
+                        >
+                          <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-full text-xs', selected ? 'bg-primary text-primary-foreground' : 'bg-surface-3 text-text')}>{expert.name.slice(0, 1)}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-medium text-text">{expert.name}</span>
+                            <span className="block truncate text-[10px] text-muted-foreground">{expert.sourceTitle}</span>
+                          </span>
+                          <span className={cn('text-[10px]', selected ? 'text-primary' : 'text-muted-foreground')}>{selected ? '本轮参与' : '未召集'}</span>
+                        </button>
+                      )
+                    })}
+                    {styleExperts.length === 0 && <div className="rounded-md border border-dashed border-border p-3 text-center text-[11px] text-muted-foreground">还没有文风专家，点击右上角管理按钮创建。</div>}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            ) : null}
+            <span className="hidden text-xs text-hint md:inline">Enter 发送 · Shift+Enter 换行</span>
+          </div>
 
           {/* 右侧：发送 / 开始 / 停止 */}
           <div className="flex items-center gap-2">

@@ -35,14 +35,21 @@ import { cn } from '@/lib/utils'
 import { toastError, toastSuccess } from '@/hooks/use-toast'
 import {
   getWritingStyleProfile,
+  listWritingStyleExperts,
+  updateWritingStyleExpert,
+  deleteWritingStyleExpert,
+  listWritingStyleExpertVersions,
+  rollbackWritingStyleExpert,
   getWritingStylePromptPreview,
   saveWritingStyleProfile,
   type NovelWritingStyleProfileInput,
   type WritingStylePromptPreview
 } from '@/api/novel-client'
+import { DEFAULT_NOVEL_STYLE_EXPERTS, type NovelStyleExpert } from '@repo/shared/novel'
 
-type EditorSection = 'settings' | 'rules' | 'examples' | 'preview'
+type EditorSection = 'settings' | 'rules' | 'experts' | 'examples' | 'preview'
 type MarkdownMode = 'edit' | 'preview'
+type WritingStyleProfileEditorMode = 'all' | 'baseline' | 'experts'
 
 const DEFAULT_PROFILE: NovelWritingStyleProfileInput = {
   name: '默认文风',
@@ -58,7 +65,8 @@ const DEFAULT_PROFILE: NovelWritingStyleProfileInput = {
   softRules: ['优先用动作和感官展示情绪', '场景压力越高，句子越短'],
   positiveExamples: [],
   negativeExamples: [],
-  notes: ''
+  notes: '',
+  styleExperts: DEFAULT_NOVEL_STYLE_EXPERTS.map((expert) => ({ ...expert }))
 }
 
 const PRESETS: Record<string, Partial<NovelWritingStyleProfileInput>> = {
@@ -116,7 +124,8 @@ function cloneProfile(profile: NovelWritingStyleProfileInput): NovelWritingStyle
     hardRules: [...profile.hardRules],
     softRules: [...profile.softRules],
     positiveExamples: [...profile.positiveExamples],
-    negativeExamples: [...(profile.negativeExamples ?? [])]
+    negativeExamples: [...(profile.negativeExamples ?? [])],
+    styleExperts: (profile.styleExperts ?? DEFAULT_NOVEL_STYLE_EXPERTS).map((expert) => ({ ...expert }))
   }
 }
 
@@ -138,6 +147,13 @@ export function markdownToRules(markdown: string): string[] {
         .trim()
     )
     .filter(Boolean)
+}
+
+export function withoutStyleExperts(
+  profile: NovelWritingStyleProfileInput,
+): NovelWritingStyleProfileInput {
+  const { styleExperts: _styleExperts, ...baseline } = profile
+  return baseline
 }
 
 function RangeField({
@@ -267,7 +283,13 @@ function MarkdownField({
   )
 }
 
-export function WritingStyleProfileEditor({ projectId }: { projectId: string }): ReactElement {
+export function WritingStyleProfileEditor({
+  projectId,
+  mode = 'all'
+}: {
+  projectId: string
+  mode?: WritingStyleProfileEditorMode
+}): ReactElement {
   const [form, setForm] = useState<NovelWritingStyleProfileInput>(() =>
     cloneProfile(DEFAULT_PROFILE)
   )
@@ -284,10 +306,25 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
-  const [activeSection, setActiveSection] = useState<EditorSection>('settings')
+  const [activeSection, setActiveSection] = useState<EditorSection>(() =>
+    mode === 'experts' ? 'experts' : 'settings'
+  )
   const [previewTarget, setPreviewTarget] = useState<'writer' | 'reviser' | 'reviewer'>('writer')
   const [preview, setPreview] = useState<WritingStylePromptPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [experts, setExperts] = useState<NovelStyleExpert[]>([])
+  const [expertDraft, setExpertDraft] = useState<NovelStyleExpert | null>(null)
+  const [expertSaving, setExpertSaving] = useState(false)
+  const [expertVersions, setExpertVersions] = useState<any[]>([])
+
+  const loadExpertList = useCallback(async (): Promise<NovelStyleExpert[]> => {
+    const items = await listWritingStyleExperts(projectId)
+    return items.map((item) => ({ ...item, distilledPrompt: item.distilledPrompt })) as NovelStyleExpert[]
+  }, [projectId])
+
+  useEffect(() => {
+    setActiveSection(mode === 'experts' ? 'experts' : 'settings')
+  }, [mode])
 
   useEffect(() => {
     let cancelled = false
@@ -317,17 +354,18 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
         setSoftRulesDraft(rulesToMarkdown(loaded.softRules))
         setVersion(profileVersion)
       })
-      .catch((error) => {
-        if (!cancelled)
-          toastError('文风档案加载失败', error instanceof Error ? error.message : '未知错误')
-      })
+    void loadExpertList().then((items) => {
+      if (!cancelled) setExperts(items)
+    }).catch(() => {
+      if (!cancelled) setExperts([])
+    })
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
     return () => {
       cancelled = true
     }
-  }, [projectId])
+  }, [loadExpertList, projectId])
 
   const isDirty = useMemo(
     () =>
@@ -392,8 +430,11 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
       const droppedNegative = form.negativeExamples.filter(
         (e) => e.trim().length > 0 && e.trim().length < 20,
       ).length
+      // 专家由独立 CRUD/version API 管理。基线表单持有的专家副本可能已过期，
+      // 保存基线时不能把它同步回专家表并覆盖刚完成的独立编辑。
+      const baselineForm = withoutStyleExperts(form)
       const input: NovelWritingStyleProfileInput = {
-        ...form,
+        ...baselineForm,
         hardRules: markdownToRules(hardRulesDraft),
         softRules: markdownToRules(softRulesDraft),
         positiveExamples: form.positiveExamples
@@ -404,7 +445,7 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
           .filter((example) => example.length >= 20)
       }
       const saved = await saveWritingStyleProfile(projectId, input)
-      const normalized = cloneProfile(input)
+      const normalized = cloneProfile({ ...input, styleExperts: form.styleExperts })
       setForm(normalized)
       setSavedForm(cloneProfile(normalized))
       setHardRulesDraft(rulesToMarkdown(normalized.hardRules))
@@ -426,6 +467,154 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
     }
   }, [activeSection, form, hardRulesDraft, loadPreview, previewTarget, projectId, softRulesDraft])
 
+  const saveExpert = useCallback(async () => {
+    if (!expertDraft) return
+    setExpertSaving(true)
+    try {
+      const saved = await updateWritingStyleExpert(projectId, expertDraft.id, {
+        name: expertDraft.name,
+        sourceTitle: expertDraft.sourceTitle,
+        sourceAuthor: expertDraft.sourceAuthor,
+        description: expertDraft.description,
+        customPrompt: expertDraft.customPrompt,
+        enabled: expertDraft.enabled,
+        sortOrder: expertDraft.sortOrder,
+      })
+      setExperts((current) => current.map((expert) => expert.id === saved.id ? saved as NovelStyleExpert : expert))
+      setExpertDraft(null)
+      toastSuccess('文风专家已保存', `当前版本 v${saved.version}`)
+    } catch (error) {
+      toastError('文风专家保存失败', error instanceof Error ? error.message : '未知错误')
+    } finally {
+      setExpertSaving(false)
+    }
+  }, [expertDraft, projectId])
+
+  const loadExpertVersions = useCallback(async (expert: NovelStyleExpert) => {
+    setExpertDraft({ ...expert })
+    setExpertVersions(await listWritingStyleExpertVersions(projectId, expert.id))
+  }, [projectId])
+
+  const rollbackExpert = useCallback(async (version: number) => {
+    if (!expertDraft) return
+    try {
+      const restored = await rollbackWritingStyleExpert(projectId, expertDraft.id, version)
+      setExperts((current) => current.map((expert) => expert.id === restored.id ? restored as NovelStyleExpert : expert))
+      setExpertDraft(restored as NovelStyleExpert)
+      setExpertVersions(await listWritingStyleExpertVersions(projectId, restored.id))
+      toastSuccess('文风专家已回滚', `已从 v${version} 创建新版本 v${restored.version}`)
+    } catch (error) {
+      toastError('文风专家回滚失败', error instanceof Error ? error.message : '未知错误')
+    }
+  }, [expertDraft, projectId])
+
+  const removeExpert = useCallback(async (expert: NovelStyleExpert) => {
+    try {
+      await deleteWritingStyleExpert(projectId, expert.id)
+      setExperts((current) => current.filter((item) => item.id !== expert.id))
+      setExpertDraft(null)
+    } catch (error) {
+      toastError('文风专家删除失败', error instanceof Error ? error.message : '未知错误')
+    }
+  }, [projectId])
+
+  const expertPanel = (
+    <div className="mx-auto max-w-4xl space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-medium text-text">独立文风专家库</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            专家来自不同小说或样本的文风蒸馏，不是岗位角色。输入框只负责本轮召集。
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => {
+            setExpertDraft(null)
+            void loadExpertList()
+              .then(setExperts)
+              .catch((error) => toastError('文风专家刷新失败', error instanceof Error ? error.message : '未知错误'))
+          }}
+        >
+          刷新列表
+        </Button>
+      </div>
+      <div className="space-y-2">
+        {experts.map((expert) => (
+          <div key={expert.id} className="flex items-start gap-3 rounded-lg border border-border p-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm text-primary">
+              {expert.name.slice(0, 1)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-text">{expert.name}</span>
+                <span className="text-[10px] text-muted-foreground">v{expert.version}</span>
+                <span className={cn('text-[10px]', expert.enabled ? 'text-emerald-600' : 'text-muted-foreground')}>
+                  {expert.enabled ? '可召集' : '已停用'}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">来源：{expert.sourceTitle}</p>
+              <p className="mt-1 text-xs text-text/80">{expert.description}</p>
+            </div>
+            <div className="flex shrink-0 gap-1">
+              <Button type="button" size="sm" variant="outline" onClick={() => void loadExpertVersions(expert)}>
+                编辑
+              </Button>
+              <Button type="button" size="icon-sm" variant="ghost" onClick={() => void removeExpert(expert)} title="删除专家">
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        ))}
+        {experts.length === 0 && (
+          <p className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+            当前项目还没有独立文风专家。
+          </p>
+        )}
+      </div>
+      {expertDraft && (
+        <section className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-4">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-medium text-text">编辑专家</h4>
+            <span className="text-xs text-muted-foreground">蒸馏提示词不可覆盖，修改保存到 customPrompt</span>
+          </div>
+          <Input value={expertDraft.name} onChange={(event) => setExpertDraft({ ...expertDraft, name: event.target.value })} placeholder="专家名称" />
+          <Input value={expertDraft.sourceTitle} onChange={(event) => setExpertDraft({ ...expertDraft, sourceTitle: event.target.value })} placeholder="来源小说/样本组" />
+          <textarea value={expertDraft.description} onChange={(event) => setExpertDraft({ ...expertDraft, description: event.target.value })} className="min-h-16 w-full rounded-md border border-border bg-input-bg p-2 text-xs text-text" placeholder="文风能力摘要" />
+          <textarea value={expertDraft.customPrompt ?? expertDraft.distilledPrompt} onChange={(event) => setExpertDraft({ ...expertDraft, customPrompt: event.target.value })} className="min-h-32 w-full rounded-md border border-border bg-input-bg p-2 text-xs text-text" placeholder="当前生效提示词" />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setExpertDraft(null)}>取消</Button>
+            <Button type="button" onClick={() => void saveExpert()} disabled={expertSaving}>
+              {expertSaving ? '保存中...' : '保存专家'}
+            </Button>
+          </div>
+          {expertVersions.length > 0 && (
+            <div className="border-t border-border pt-3">
+              <div className="mb-2 text-xs font-medium text-text">版本历史</div>
+              <div className="space-y-1">
+                {expertVersions.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>v{item.version} · {new Date(item.createdAt).toLocaleString()}</span>
+                    <span className="flex items-center gap-2">
+                      {item.customPrompt ? '已自定义' : '蒸馏版本'}
+                      {item.version !== expertDraft.version && (
+                        <Button type="button" size="sm" variant="ghost" onClick={() => void rollbackExpert(item.version)}>
+                          回滚
+                        </Button>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  )
+
+
   const handleSectionChange = useCallback(
     (value: string) => {
       const section = value as EditorSection
@@ -439,6 +628,12 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
 
   if (loading) {
     return <p className="py-3 text-xs text-muted-foreground">正在加载文风档案...</p>
+  }
+
+  const expertOnly = mode === 'experts'
+
+  if (expertOnly) {
+    return <div className="space-y-3">{expertPanel}</div>
   }
 
   const styleBaselineReady = Boolean(
@@ -455,30 +650,47 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="truncate text-sm font-medium text-text">{form.name}</span>
+                <span className="truncate text-sm font-medium text-text">
+                  {expertOnly ? '独立文风专家库' : form.name}
+                </span>
                 <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-nano tabular-nums text-muted-foreground">
                   {version ? `v${version}` : '未保存'}
                 </span>
-                <span
-                  className={cn(
-                    'shrink-0 rounded px-1.5 py-0.5 text-nano',
-                    styleBaselineReady
-                      ? 'bg-emerald-500/10 text-emerald-600'
-                      : 'bg-amber-500/10 text-amber-600'
-                  )}
-                >
-                  {styleBaselineReady ? '质量基线已就绪' : '缺少正反样本'}
-                </span>
+                {expertOnly ? (
+                  <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-nano text-primary">
+                    {experts.length} 个专家
+                  </span>
+                ) : (
+                  <span
+                    className={cn(
+                      'shrink-0 rounded px-1.5 py-0.5 text-nano',
+                      styleBaselineReady
+                        ? 'bg-emerald-500/10 text-emerald-600'
+                        : 'bg-amber-500/10 text-amber-600'
+                    )}
+                  >
+                    {styleBaselineReady ? '质量基线已就绪' : '缺少正反样本'}
+                  </span>
+                )}
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                {PERSON_LABEL[form.narrativePerson]} · {DISTANCE_LABEL[form.narrativeDistance]} ·{' '}
-                {RHYTHM_LABEL[form.sentenceRhythm]}
+                {expertOnly
+                  ? '来源小说蒸馏的可召集写作能力，独立于项目文风基线。'
+                  : `${PERSON_LABEL[form.narrativePerson]} · ${DISTANCE_LABEL[form.narrativeDistance]} · ${RHYTHM_LABEL[form.sentenceRhythm]}`}
               </p>
             </div>
           </div>
-          <Button type="button" size="sm" variant="outline" onClick={() => setEditorOpen(true)}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setActiveSection(expertOnly ? 'experts' : 'settings')
+              setEditorOpen(true)
+            }}
+          >
             <Settings2 className="size-3.5" />
-            详细编辑
+            {expertOnly ? '管理专家' : '详细编辑'}
           </Button>
         </div>
 
@@ -489,9 +701,9 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
           </div>
           <div>
             <div className="text-xs font-medium tabular-nums text-text">
-              {form.hardRules.length + form.softRules.length}
+              {expertOnly ? experts.filter((expert) => expert.enabled).length : form.hardRules.length + form.softRules.length}
             </div>
-            <div className="mt-0.5 text-nano text-muted-foreground">文风规则</div>
+            <div className="mt-0.5 text-nano text-muted-foreground">{expertOnly ? '可召集专家' : '文风规则'}</div>
           </div>
           <div>
             <div className="text-xs font-medium tabular-nums text-text">
@@ -533,7 +745,7 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
             className="h-full min-h-0 flex-col gap-0 overflow-hidden"
           >
             <div className="border-b border-border px-5 py-2">
-              <TabsList className="grid h-10 w-full max-w-2xl grid-cols-4">
+                 <TabsList className="grid h-10 w-full max-w-2xl grid-cols-5">
                 <TabsTrigger value="settings">
                   <Settings2 />
                   基础设定
@@ -542,10 +754,14 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
                   <FileText />
                   规则与说明
                 </TabsTrigger>
-                <TabsTrigger value="examples">
+                  <TabsTrigger value="examples">
                   <BookOpen />
                   文风样本
-                </TabsTrigger>
+                  </TabsTrigger>
+                  <TabsTrigger value="experts">
+                    <Sparkles />
+                    专家库
+                  </TabsTrigger>
                 <TabsTrigger value="preview">
                   <Eye />
                   提示词预览
@@ -553,7 +769,7 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
               </TabsList>
             </div>
 
-            <TabsContent value="settings" className="min-h-0 overflow-y-auto px-5 py-5">
+             <TabsContent value="settings" className="min-h-0 overflow-y-auto px-5 py-5">
               <div className="mx-auto max-w-4xl space-y-6">
                 <section className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-1.5">
@@ -728,9 +944,13 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
                   />
                 </div>
               </div>
-            </TabsContent>
+             </TabsContent>
 
-            <TabsContent value="examples" className="min-h-0 overflow-y-auto px-5 py-5">
+              <TabsContent value="experts" className="min-h-0 overflow-y-auto px-5 py-5">
+                {expertPanel}
+              </TabsContent>
+
+             <TabsContent value="examples" className="min-h-0 overflow-y-auto px-5 py-5">
               <div className="mx-auto max-w-4xl space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -870,7 +1090,7 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
               </div>
             </TabsContent>
 
-            <TabsContent value="preview" className="min-h-0 overflow-y-auto px-5 py-5">
+             <TabsContent value="preview" className="min-h-0 overflow-y-auto px-5 py-5">
               <div className="mx-auto max-w-4xl space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div
@@ -925,10 +1145,10 @@ export function WritingStyleProfileEditor({ projectId }: { projectId: string }):
                   }
                 />
               </div>
-            </TabsContent>
-          </Tabs>
+             </TabsContent>
+           </Tabs>
 
-          <DialogFooter className="mx-0 mb-0 items-center rounded-none px-5 py-3 sm:justify-between">
+           <DialogFooter className="mx-0 mb-0 items-center rounded-none px-5 py-3 sm:justify-between">
             <span className={cn('text-xs', isDirty ? 'text-amber-500' : 'text-muted-foreground')}>
               {isDirty ? '有未保存修改' : version ? `已保存 v${version}` : '尚未保存'}
             </span>

@@ -1021,14 +1021,17 @@ export class PluginManager {
          * baseUrl 要查注册表才能拿到（用户可能给自定义 provider 配了 Anthropic 端点）。
          */
         let cacheControlTarget: { provider?: string; modelId?: string; baseUrl?: string } = {}
-        if (options.modelId) {
-          if (this.modelRegistry) {
+          if (options.modelId) {
+            if (this.modelRegistry) {
             const targetModel = this.modelRegistry.find(
               options.modelId.provider,
               options.modelId.modelId,
             )
             if (targetModel) {
-              await threadSession.session.setModel(targetModel)
+               await threadSession.session.setModel(targetModel)
+               if (options.modelId.thinkingLevel) {
+                 threadSession.session.setThinkingLevel(options.modelId.thinkingLevel)
+               }
               modelMaxTokens = targetModel.maxTokens
               cacheControlTarget = {
                 provider: options.modelId.provider,

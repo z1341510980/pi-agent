@@ -169,6 +169,26 @@ describe('NovelConversationPanel 检查点对话化卡片', () => {
     expect(onSendInterject).toHaveBeenCalledWith('打斗戏改用棍')
     expect(onSendMessage).not.toHaveBeenCalled()
   })
+
+  it('工作流运行中可选择 Memory，并把定向 Agent 随插话发送', async () => {
+    const onSendInterject = vi.fn()
+    render(<NovelConversationPanel {...makePanelProps({ onSendInterject })} />)
+
+    const targetSelect = screen.getByRole('combobox', { name: '插话目标 Agent' })
+    fireEvent.keyDown(targetSelect, { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: '记忆' }))
+
+    const input = screen.getByLabelText('消息输入')
+    fireEvent.change(input, { target: { value: '核对旧案伏笔' } })
+    fireEvent.click(screen.getByLabelText('发送'))
+
+    expect(onSendInterject).toHaveBeenCalledWith('核对旧案伏笔', 'memory')
+  })
+
+  it('群聊运行中不显示定向 Agent 选择器', () => {
+    render(<NovelConversationPanel {...makePanelProps({ flowType: 'discussion' })} />)
+    expect(screen.queryByRole('combobox', { name: '插话目标 Agent' })).toBeNull()
+  })
 })
 
 describe('NovelConversationPanel 插话消息徽标', () => {
@@ -483,14 +503,15 @@ describe('NovelConversationPanel 输入框命令解析与分流', () => {
     expect(onSendInterject).toHaveBeenCalledWith('打斗戏改用棍')
   })
 
-  it('空闲态普通文本：不触发任何发送/启动回调，toast 引导到「聊天」面板', () => {
+  it('空闲态普通文本：进入统一章节聊天通道', () => {
     const onStartFlowCommand = vi.fn()
     const onSendInterject = vi.fn()
     const onSendMessage = vi.fn()
     const onStartFlow = vi.fn()
+    const onSendChapterChat = vi.fn()
     render(
       <NovelConversationPanel
-        {...makeIdleProps({ onStartFlowCommand, onSendInterject, onSendMessage, onStartFlow })}
+        {...makeIdleProps({ onStartFlowCommand, onSendInterject, onSendMessage, onStartFlow, onSendChapterChat })}
       />,
     )
 
@@ -500,8 +521,12 @@ describe('NovelConversationPanel 输入框命令解析与分流', () => {
     expect(onSendInterject).not.toHaveBeenCalled()
     expect(onSendMessage).not.toHaveBeenCalled()
     expect(onStartFlow).not.toHaveBeenCalled()
-    // 不再静默丢弃：toast 告知自由对话入口与命令入口
-    expect(toasts.toastInfo).toHaveBeenCalledWith('自由对话请切换到「聊天」面板', '输入 /写 N 可启动创作')
+    expect(onSendChapterChat).toHaveBeenCalledWith(
+      '随便聊聊',
+      [],
+      null,
+      ['style-sample-01', 'style-sample-02', 'style-sample-03', 'style-sample-04'],
+    )
   })
 
   it('空闲态越界命令（/写 0、/写 10000）：toast 提示章节号范围，不启动', () => {

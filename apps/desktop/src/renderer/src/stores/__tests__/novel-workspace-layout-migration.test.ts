@@ -12,7 +12,7 @@
  * 这条路径只在版本升级那一次跑，写错的代价是布局偏好被静默丢弃，故单独覆盖。
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { migrateWorkspaceLayoutPersisted } from '../novel-workspace-layout-store'
+import { migrateRightPanelView, migrateWorkspaceLayoutPersisted } from '../novel-workspace-layout-store'
 import { resetLegacyViewModeCache } from '../novel-legacy-view-mode'
 
 const UI_STORE_KEY = 'wenlang-agent-novel-ui'
@@ -70,6 +70,18 @@ describe('layoutMode 迁移：按上次实际显示的内容换算', () => {
   it('ui-store 的 payload 损坏时按旧默认 matrix 处理，不抛错', () => {
     localStorage.setItem(UI_STORE_KEY, '{ not json')
     expect(migrateFromV2('matrix').layoutMode).toBe('timeline')
+  })
+})
+
+describe('统一章节会话迁移', () => {
+  it('旧 chat Tab 迁移到 conversation', () => {
+    expect(migrateRightPanelView('chat')).toBe('conversation')
+  })
+
+  it('保留详情、设置和审计面板', () => {
+    expect(migrateRightPanelView('detail')).toBe('detail')
+    expect(migrateRightPanelView('settings')).toBe('settings')
+    expect(migrateRightPanelView('audit')).toBe('audit')
   })
 })
 

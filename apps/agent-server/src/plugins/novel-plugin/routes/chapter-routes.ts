@@ -18,6 +18,7 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 import { RhythmController } from '../core/chapters/rhythm-controller.js'
 import { diffChapterVersions } from '../core/chapters/chapter-version-diff.js'
 import { canTransitionChapterStatus } from '@repo/shared/novel'
+import { hashChapterOutline } from '../core/chapters/chapter-outline.js'
 
 function buildDerivedState(store: NovelServices['store'], projectId: string, contentChanged: boolean) {
   if (!contentChanged) return { isMiddleRewrite: false }
@@ -105,12 +106,17 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
     // published 只能通过 /publish 命令进入，确保正文与审稿前置条件被校验。
     status: z.enum(['planned', 'drafting', 'review', 'rejected']).optional(),
     outline: z.string().max(20000).optional(),
+    rhythm: z.enum(['setup', 'rising', 'climax', 'falling', 'resolution', 'twist', 'breather', 'suspense']).optional(),
     volumeId: z.string().nullable().optional(),
     tension: z.number().int().min(1).max(10).nullable().optional(),
     positioning: z.enum(['high_pressure', 'advancement', 'cultivation', 'relationship', 'low_pressure', 'information']).nullable().optional(),
     timeOffset: z.number().int().nullable().optional(),
     chapterEndingHook: z.enum(['suspense', 'reversal', 'emotional', 'action', 'none']).nullable().optional(),
     recap: z.string().max(500).nullable().optional(),
+    /** AI 章纲草稿采用时的乐观锁控制字段，不会写入 novel_chapters。 */
+    expectedOutlineHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    expectedContentRevisionId: z.string().nullable().optional(),
+    outlineGenerationId: z.string().uuid().optional(),
   })
 
   routes.push({
@@ -121,18 +127,54 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       if (!input) return reply
       const existing = store.getChapterById(request.params.id)
       if (!existing) throw new AppError(ErrorCode.NOT_FOUND, `章节不存在: ${request.params.id}`, 404)
-      if (existing.status === 'published' && (input.content !== undefined || input.status !== undefined)) {
-        throw new AppError(ErrorCode.CONFLICT, '已发布章节不能直接改正文或状态，请先进入修订流程', 409)
+      const {
+        expectedOutlineHash,
+        expectedContentRevisionId,
+        outlineGenerationId,
+        ...chapterInput
+      } = input
+      const outlineControlFieldCount = [
+        expectedOutlineHash,
+        expectedContentRevisionId,
+        outlineGenerationId,
+      ].filter((value) => value !== undefined).length
+      if (outlineControlFieldCount > 0
+        && chapterInput.outline === undefined) {
+        throw new AppError(ErrorCode.BAD_REQUEST, '章纲版本校验字段只能与 outline 一起提交', 400)
       }
-      if (input.status !== undefined && !canTransitionChapterStatus(existing.status, input.status)) {
+      if (outlineControlFieldCount > 0 && outlineControlFieldCount < 3) {
+        throw new AppError(
+          ErrorCode.BAD_REQUEST,
+          '采用 AI 章纲时必须同时提交章纲 hash、正文 revision 和生成记录 ID',
+          400,
+        )
+      }
+      if (expectedOutlineHash !== undefined
+        && expectedOutlineHash !== hashChapterOutline(existing.outline)) {
+        throw new AppError(ErrorCode.CONFLICT, '章纲已经发生变化，AI 草稿未覆盖当前内容', 409)
+      }
+      if (expectedContentRevisionId !== undefined) {
+        const currentContentRevisionId = store.getCurrentContentRevision(existing.id)?.id ?? null
+        if (currentContentRevisionId !== expectedContentRevisionId) {
+          throw new AppError(ErrorCode.CONFLICT, '章节正文版本已经变化，请重新生成章纲', 409)
+        }
+      }
+      if (existing.status === 'published' && (
+        chapterInput.content !== undefined
+        || chapterInput.status !== undefined
+        || (chapterInput.outline !== undefined && chapterInput.outline !== (existing.outline ?? ''))
+      )) {
+        throw new AppError(ErrorCode.CONFLICT, '已发布章节不能直接改正文、状态或章纲，请先进入修订流程', 409)
+      }
+      if (chapterInput.status !== undefined && !canTransitionChapterStatus(existing.status, chapterInput.status)) {
         throw new AppError(
           ErrorCode.CONFLICT,
-          `章节状态不能从 ${existing.status} 变更为 ${input.status}`,
+          `章节状态不能从 ${existing.status} 变更为 ${chapterInput.status}`,
           409,
         )
       }
-      if (input.volumeId) {
-        const volume = store.getVolume(input.volumeId)
+      if (chapterInput.volumeId) {
+        const volume = store.getVolume(chapterInput.volumeId)
         if (!volume || volume.projectId !== existing.projectId) {
           throw new AppError(ErrorCode.BAD_REQUEST, '卷不存在或不属于该章节项目', 400)
         }
@@ -140,20 +182,27 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
 
       // 传 content 时自动重算 wordCount（与前端 chapter-live-view.tsx 的 countWords 一致），
       // 避免 spread patch 保留旧 wordCount 导致统计与正文不同步。
-      let patch: Partial<NovelChapter> = input
+      let patch: Partial<NovelChapter> = chapterInput
       let versionSource: VersionSource = undefined
-      if (input.content != null) {
-        const cleaned = input.content.replace(/[#*`>\-\[\]()!]/g, '').replace(/\s+/g, '')
-        patch = { ...input, wordCount: cleaned.length, status: 'drafting' }
+      if (chapterInput.content != null) {
+        const cleaned = chapterInput.content.replace(/[#*`>\-\[\]()!]/g, '').replace(/\s+/g, '')
+        patch = { ...chapterInput, wordCount: cleaned.length, status: 'drafting' }
         versionSource = { phase: 'manual_patch', trigger: '用户手动编辑' }
       }
 
       const updated = store.updateChapter(request.params.id, patch, versionSource)!
 
+      if (outlineGenerationId && chapterInput.outline !== existing.outline) {
+        services.context.logger.info(
+          { projectId: existing.projectId, chapterNumber: existing.chapterNumber, outlineGenerationId },
+          '用户采用并保存 AI 章纲草稿',
+        )
+      }
+
       const derivedState = buildDerivedState(
         store,
         updated.projectId,
-        input.content != null && input.content !== existing.content,
+        chapterInput.content != null && chapterInput.content !== existing.content,
       )
       return success({ ...updated, derivedState }, request.traceId)
     },

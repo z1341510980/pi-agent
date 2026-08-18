@@ -29,6 +29,7 @@ let services: NovelServices
 /** mock characterGenerator.generate 返回固定角色 */
 function makeMockServices(): NovelServices {
   return {
+    context: {} as any,
     store,
     memoryStore,
     promptManager,
@@ -84,6 +85,11 @@ function makeMockServices(): NovelServices {
       save: vi.fn(),
       get: vi.fn(),
     } as any,
+    workflowRunStore: {
+      save: vi.fn(),
+      get: vi.fn(),
+      getLatestResumable: vi.fn(),
+    } as any,
     chapterChatStore: {
       add: vi.fn(),
       list: vi.fn(() => []),
@@ -91,6 +97,9 @@ function makeMockServices(): NovelServices {
     } as any,
     chapterChatRunner: {
       run: vi.fn(),
+    } as any,
+    outlineGenerator: {
+      generate: vi.fn(),
     } as any,
     tools: [],
     costReportService: new CostReportService(db),

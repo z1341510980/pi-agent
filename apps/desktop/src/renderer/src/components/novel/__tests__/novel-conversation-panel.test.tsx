@@ -34,6 +34,32 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
 afterEach(cleanup)
 
 describe('NovelConversationPanel Reviser output', () => {
+  it('defaults the style expert selection to empty instead of enabling every expert', () => {
+    const props: ComponentProps<typeof NovelConversationPanel> = {
+      phase: 'idle',
+      isRunning: false,
+      chapterContent: '',
+      agentOutputs: [],
+      currentCheckpoint: null,
+      checkpointHistory: [],
+      result: null,
+      error: null,
+      styleExperts: [
+        { id: 'expert-1', projectId: 'project-1', name: '克制留白', sourceTitle: '样本', description: 'desc', distilledPrompt: 'prompt', enabled: true, sortOrder: 0, version: 1, createdAt: 0, updatedAt: 0 }
+      ],
+      onSubmitCheckpoint: vi.fn(),
+      onSave: vi.fn().mockResolvedValue(undefined),
+      onDiscard: vi.fn(),
+      flowType: 'workflow',
+      onFlowTypeChange: vi.fn(),
+      onStartFlow: vi.fn(),
+      onCancelFlow: vi.fn()
+    }
+
+    render(<NovelConversationPanel {...props} />)
+    expect(screen.queryByText('0/1')).toBeNull()
+  })
+
   it('maps completed Reviser text into a visible conversation message', () => {
     const props: ComponentProps<typeof NovelConversationPanel> = {
       phase: 'revising',

@@ -143,7 +143,8 @@ export class TeamDiscussionEngine {
     let rounds = 0
     let noProgressRounds = 0
     let chapterConvergerId: string | undefined
-    let activePhase: DiscussionPhase = 'planning'
+    // 阶段/场景追踪：失败时生成 failedPhase + failedSceneId（acting 断点续跑定位）
+    const track: { phase: DiscussionPhase; sceneId?: number } = { phase: 'planning' }
 
     try {
       // 记录当前目标，供 invokeMember 注入成员 prefixUserMessage
@@ -186,60 +187,30 @@ export class TeamDiscussionEngine {
       // 所有场景推演完毕后，Phase 3 的 weaveChapter 一次性整合全章剧本为正文。
       // 这样 Writer 只触发 1 次，避免多次触发导致的风格割裂和 token 浪费。
       if (scenes.length > 0) {
-        activePhase = 'scene_setup'
-        for (let i = 0; i < scenes.length; i++) {
-          const scene = scenes[i]
-          rounds = 0
-          noProgressRounds = 0
-
-          history.push(this.systemMessage(this.buildSceneContext(scene)))
-          this.emitProgress(options, 'scene_setup', { type: 'scene_change', data: { scene } })
-
-          const activeMembers = this.filterMembersByScene(members, scene)
-          let sceneDone = false
-
-          while (!sceneDone && rounds < limits.maxRoundsPerScene) {
-            activePhase = 'acting'
-            const state: ModeratorState = {
-              phase: 'acting',
-              round: rounds,
-              currentScene: scene,
-              scenesRemaining: scenes.length - i - 1,
-              scenesDefined: true,
-            }
-            // 插话 drain（§3.1）：与规划阶段同口径，场景轮次 decide 前注入。
-            this.drainInterjectQueue(history, options)
-            const decision = await this.moderator.decide(goal, history, activeMembers, state, options.signal)
-            await this.handleDecision(decision, history, activeMembers, options, channelName, { phase: 'acting', sceneId: scene.sceneId })
-            rounds++
-
-            // 场景推演阶段：converge(scope=scene) 和 next_scene 都只标记场景结束，不触发 Writer。
-            // observe 超限也只标记结束，由 Phase 3 统一编织。
-            if (decision.type === 'converge' && decision.scope === 'scene') {
-              sceneDone = true
-            } else if (decision.type === 'next_scene') {
-              sceneDone = true
-            } else if (decision.type === 'observe') {
-              noProgressRounds++
-              if (noProgressRounds >= limits.maxObserveRounds) {
-                sceneDone = true
-              }
-            } else {
-              noProgressRounds = 0
-            }
-          }
-          // 场景推演结束，剧本已在 history 中，直接进入下一场景
-        }
+        await this.runSceneLoop({
+          goal,
+          members,
+          history,
+          scenes,
+          options,
+          limits: {
+            maxRoundsPerScene: limits.maxRoundsPerScene,
+            maxObserveRounds: limits.maxObserveRounds,
+          },
+          channelName,
+          startIndex: 0,
+          track,
+        })
       }
 
       // ── Phase 3：全章编织（一次性整合所有场景剧本）──
-      activePhase = 'chapter_weaving'
+      track.phase = 'chapter_weaving'
       this.emitProgress(options, 'chapter_weaving', { type: 'phase_change', data: { message: '正在编织完整章节' } })
       finalContent = await this.weaveChapter(members, history, scenes, goal, options, chapterConvergerId)
       this.recordWriterOutput(members, history, finalContent)
 
       // ── Phase 4：最终正文质量门 ──
-      activePhase = 'reviewing'
+      track.phase = 'reviewing'
       const qualityResult = await this.reviewFinalChapter(finalContent, members, history, options, goal.targetWords)
       if (qualityResult.status === 'cancelled') {
         return { status: 'cancelled', transcript: history, scenes, review: qualityResult.review }
@@ -262,7 +233,8 @@ export class TeamDiscussionEngine {
       return {
         status: 'error',
         error: message,
-        failedPhase: activePhase,
+        failedPhase: track.phase,
+        failedSceneId: this.sceneIdForFailure(track),
         content: finalContent || undefined,
         transcript: history,
         scenes,
@@ -280,9 +252,82 @@ export class TeamDiscussionEngine {
     }
   }
 
+  /** 推演阶段失败时的中断场景 ID（非推演阶段返回 undefined） */
+  private sceneIdForFailure(track: { phase: DiscussionPhase; sceneId?: number }): number | undefined {
+    return track.phase === 'acting' || track.phase === 'scene_setup' ? track.sceneId : undefined
+  }
+
+  /**
+   * 场景推演循环（run 与 acting/scene_setup 断点续跑共用）。
+   *
+   * 从 startIndex 场景开始推演（续跑时中断场景重演该场景的轮次，已完成场景
+   * 的剧本已在 history）。track.phase/track.sceneId 由调用方持有：失败时据此
+   * 生成 failedPhase/failedSceneId 供下次断点定位。
+   */
+  private async runSceneLoop(params: {
+    goal: DiscussionGoal
+    members: DiscussionMember[]
+    history: DiscussionMessage[]
+    scenes: SceneDefinition[]
+    options: DiscussionOptions
+    limits: { maxRoundsPerScene: number; maxObserveRounds: number }
+    channelName: string
+    startIndex: number
+    track: { phase: DiscussionPhase; sceneId?: number }
+  }): Promise<void> {
+    const { goal, members, history, scenes, options, limits, channelName, startIndex, track } = params
+    for (let i = startIndex; i < scenes.length; i++) {
+      const scene = scenes[i]
+      let rounds = 0
+      let noProgressRounds = 0
+
+      track.sceneId = scene.sceneId
+      track.phase = 'scene_setup'
+      history.push(this.systemMessage(this.buildSceneContext(scene)))
+      this.emitProgress(options, 'scene_setup', { type: 'scene_change', data: { scene } })
+
+      const activeMembers = this.filterMembersByScene(members, scene)
+      let sceneDone = false
+
+      while (!sceneDone && rounds < limits.maxRoundsPerScene) {
+        track.phase = 'acting'
+        const state: ModeratorState = {
+          phase: 'acting',
+          round: rounds,
+          currentScene: scene,
+          scenesRemaining: scenes.length - i - 1,
+          scenesDefined: true,
+        }
+        // 插话 drain（§3.1）：与规划阶段同口径，场景轮次 decide 前注入。
+        this.drainInterjectQueue(history, options)
+        const decision = await this.moderator.decide(goal, history, activeMembers, state, options.signal)
+        await this.handleDecision(decision, history, activeMembers, options, channelName, { phase: 'acting', sceneId: scene.sceneId })
+        rounds++
+
+        // 场景推演阶段：converge(scope=scene) 和 next_scene 都只标记场景结束，不触发 Writer。
+        // observe 超限也只标记结束，由 Phase 3 统一编织。
+        if (decision.type === 'converge' && decision.scope === 'scene') {
+          sceneDone = true
+        } else if (decision.type === 'next_scene') {
+          sceneDone = true
+        } else if (decision.type === 'observe') {
+          noProgressRounds++
+          if (noProgressRounds >= limits.maxObserveRounds) {
+            sceneDone = true
+          }
+        } else {
+          noProgressRounds = 0
+        }
+      }
+      // 场景推演结束，剧本已在 history 中，直接进入下一场景
+    }
+  }
+
   /**
    * 从持久化快照直接恢复全章编织，不再调用 Moderator、Director 或角色 Agent。
    * Writer 成功后继续执行 Reviewer/Reviser 与原有检查点流程。
+   *
+   * phase='reviewing' 入口：正文已在快照中（content），跳过编织直接进最终质量门。
    */
   async resumeChapterWeaving(
     goal: DiscussionGoal,
@@ -305,14 +350,28 @@ export class TeamDiscussionEngine {
 
     try {
       this.currentGoal = goal
-      this.emitProgress(options, 'chapter_weaving', {
-        type: 'phase_change',
-        data: { message: '已恢复群聊记录，正在从写作 Agent 继续' },
-      })
-      finalContent = await this.weaveChapter(members, history, scenes, goal, options)
-      this.recordWriterOutput(members, history, finalContent)
+      if (resumeState.phase === 'reviewing' && resumeState.content) {
+        // reviewing 入口：正文已在首跑织成并落快照，直接从最终质量门继续
+        finalContent = resumeState.content
+        activePhase = 'reviewing'
+        this.emitProgress(options, 'reviewing', {
+          type: 'phase_change',
+          data: { message: '已恢复群聊记录与章节正文，从最终质量门继续' },
+        })
+      } else {
+        this.emitProgress(options, 'chapter_weaving', {
+          type: 'phase_change',
+          data: { message: '已恢复群聊记录，正在从写作 Agent 继续' },
+        })
+        // 续跑的 chapter_weaving 没有 Moderator 循环，仍需在 Writer 调用前消费
+        // 已排队插话，否则 finally 会把它们全部标为 dropped。
+        this.drainInterjectQueue(history, options)
+        finalContent = await this.weaveChapter(members, history, scenes, goal, options)
+        this.recordWriterOutput(members, history, finalContent)
 
-      activePhase = 'reviewing'
+        activePhase = 'reviewing'
+      }
+      this.drainInterjectQueue(history, options)
       const qualityResult = await this.reviewFinalChapter(
         finalContent,
         members,
@@ -344,6 +403,97 @@ export class TeamDiscussionEngine {
       this.acceptingInterjects = false
       for (const member of members) this.channel.unsubscribe(channelName, member.id)
       // 断点续跑不走 Moderator decide，期间入队的插话全部在收尾 dropped。
+      this.flushInterjectDropped(options)
+    }
+  }
+
+  /**
+   * 从场景推演中断处恢复（acting/scene_setup 失败）：
+   * 恢复 transcript + scenes，从 failedSceneId 对应场景继续推演（该场景未完成
+   * 的轮次从头算，此前已完成场景的剧本保留在 history）。推演完毕后进入
+   * 全章编织与最终质量门（与 run 的 Phase 3/4 相同）。
+   */
+  async resumeSceneActing(
+    goal: DiscussionGoal,
+    members: DiscussionMember[],
+    options: DiscussionOptions,
+    resumeState: DiscussionResumeState,
+  ): Promise<DiscussionResult> {
+    const history = resumeState.transcript.map(message => ({ ...message }))
+    const scenes = resumeState.scenes.map(scene => ({
+      ...scene,
+      presentCharacters: [...scene.presentCharacters],
+      presentCharacterNames: scene.presentCharacterNames ? [...scene.presentCharacterNames] : undefined,
+      unresolvedCharacterNames: scene.unresolvedCharacterNames ? [...scene.unresolvedCharacterNames] : undefined,
+    }))
+    const channelName = `discuss-resume-acting-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const limits = {
+      maxRoundsPerScene: options.limits?.maxRoundsPerScene ?? DISCUSSION_LIMITS.MAX_ROUNDS_PER_SCENE,
+      maxObserveRounds: DISCUSSION_LIMITS.MAX_OBSERVE_ROUNDS,
+    }
+    const track: { phase: DiscussionPhase; sceneId?: number } = {
+      phase: resumeState.phase,
+      sceneId: resumeState.failedSceneId,
+    }
+    let finalContent = ''
+
+    for (const member of members) this.channel.subscribe(channelName, member.id)
+
+    try {
+      this.currentGoal = goal
+      // 中断场景定位：failedSceneId 缺失（scene_setup 入口或旧快照）时从头推演
+      const failedIndex = resumeState.failedSceneId != null
+        ? scenes.findIndex(scene => scene.sceneId === resumeState.failedSceneId)
+        : -1
+      const startIndex = failedIndex >= 0 ? failedIndex : 0
+      this.emitProgress(options, resumeState.phase, {
+        type: 'phase_change',
+        data: { message: `已恢复群聊记录，从场景 ${scenes[startIndex]?.sceneId ?? 1} 继续推演` },
+      })
+      await this.runSceneLoop({
+        goal,
+        members,
+        history,
+        scenes,
+        options,
+        limits,
+        channelName,
+        startIndex,
+        track,
+      })
+
+      track.phase = 'chapter_weaving'
+      this.emitProgress(options, 'chapter_weaving', { type: 'phase_change', data: { message: '正在编织完整章节' } })
+      this.drainInterjectQueue(history, options)
+      finalContent = await this.weaveChapter(members, history, scenes, goal, options)
+      this.recordWriterOutput(members, history, finalContent)
+
+      track.phase = 'reviewing'
+      this.drainInterjectQueue(history, options)
+      const qualityResult = await this.reviewFinalChapter(finalContent, members, history, options, goal.targetWords)
+      if (qualityResult.status === 'cancelled') {
+        return { status: 'cancelled', content: finalContent, transcript: history, scenes, review: qualityResult.review }
+      }
+      finalContent = qualityResult.content
+      return { status: 'completed', content: finalContent, transcript: history, scenes, review: qualityResult.review }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.context.logger.error({ err }, '群聊场景推演断点续跑异常')
+      if (options.signal?.aborted) {
+        return { status: 'cancelled', content: finalContent || undefined, transcript: history, scenes }
+      }
+      return {
+        status: 'error',
+        error: message,
+        failedPhase: track.phase,
+        failedSceneId: this.sceneIdForFailure(track),
+        content: finalContent || undefined,
+        transcript: history,
+        scenes,
+      }
+    } finally {
+      this.acceptingInterjects = false
+      for (const member of members) this.channel.unsubscribe(channelName, member.id)
       this.flushInterjectDropped(options)
     }
   }

@@ -6,7 +6,7 @@
  * 弹窗内容分上下两段：上段 timeline 条形列表，下段按 Agent 分组汇总
  * （调用次数/成功率/命中率/平均耗时/最近错误）。
  */
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
 import { Activity, Bot } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -28,14 +28,14 @@ export function ObservabilityTimeline(): ReactElement {
     queryFn: () => getObservabilityTimeline(projectId!, { limit: 50 }),
     enabled: !!projectId,
     refetchInterval: 60_000,
-    placeholderData: (prev: unknown) => prev,
+    placeholderData: keepPreviousData,
   })
   const agentsQuery = useQuery({
     queryKey: ['novel-observability-agents', projectId],
     queryFn: () => getObservabilityAgents(projectId!),
     enabled: !!projectId,
     refetchInterval: 60_000,
-    placeholderData: (prev: unknown) => prev,
+    placeholderData: keepPreviousData,
   })
   if (!projectId) {
     return (

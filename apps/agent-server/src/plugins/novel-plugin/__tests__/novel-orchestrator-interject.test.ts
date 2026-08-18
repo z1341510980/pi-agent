@@ -12,7 +12,7 @@
  *   - flow 到达终态（completed / error）后队列清空，drain 返回空（§4 不静默丢失的反面：不残留）；
  *   - 队列按 flow 隔离（orchestrator 是插件级单例）：flowKey 定向的消息不被其他 flow
  *     drain、不被其他 flow 的终态误清，收尾时经 onInterjectDropped 回调暴露 dropped ids；
- *   - targetAgent='memory' 前置拒绝（返回 false）：Memory 主路径是结构化 LLM 调用，不经插话通道。
+ *   - targetAgent='memory' 在 Finalizer 入口作为结构化提取关注点消费，不直接成为写库指令。
  *
  * 测试策略：
  *   队列 API 与注入用例沿用 novel-orchestrator-skill-path.test.ts 的哨兵模式
@@ -214,10 +214,10 @@ describe('NovelOrchestrator 插话队列（create-flow 中途反馈）', () => {
     expect(orchestrator.pendingMessages()).toEqual([])
   })
 
-  it('targetAgent=memory 前置拒绝：返回 false 且不入队（memory 主路径不经插话通道）', () => {
-    expect(orchestrator.enqueueUserMessage({ id: 'm-mem', content: '本章要回收伏笔', targetAgent: 'memory' })).toBe(false)
-    // 被拒消息不进队列：不会以 queued → dropped 的假流转糊弄调用方
-    expect(orchestrator.pendingMessages()).toEqual([])
+  it('targetAgent=memory 正常入队，且不会被其他 Agent 提前消费', () => {
+    expect(orchestrator.enqueueUserMessage({ id: 'm-mem', content: '本章要回收伏笔', targetAgent: 'memory' })).toBe(true)
+    expect(orchestrator.drainPendingMessages('director')).toEqual([])
+    expect(orchestrator.pendingMessages().map(message => message.id)).toEqual(['m-mem'])
   })
 
   it('并发 flow 隔离：drain 只消费本 flow 定向与全局消息，不消费其他 flow 的', () => {
@@ -372,12 +372,46 @@ describe('NovelOrchestrator 插话队列（create-flow 中途反馈）', () => {
     expect(orch.drainPendingMessages('reviser')).toEqual([])
   })
 
+  it('Memory 定向插话仅在 Finalizer 入口消费为只读关注点，并回报 injected', async () => {
+    const { orchestrator: orch } = createLightweightOrchestrator()
+    const onInterjectInjected = vi.fn()
+    ;(orch as unknown as { hooks?: unknown }).hooks = { onInterjectInjected }
+    orch.enqueueUserMessage({
+      id: 'memory-focus-1',
+      content: '本章要核对旧案伏笔是否已经回收',
+      flowKey: 'project|1|run-memory',
+      targetAgent: 'memory',
+    })
+
+    const result = await orch.createChapterWithFlow('project', 1, {
+      emit: vi.fn(),
+      onCheckpoint: vi.fn(async () => 'approve' as const),
+      onProgress: vi.fn(),
+      flowKey: 'project|1|run-memory',
+    })
+
+    expect(result.status).toBe('completed')
+    const finalize = (orch as unknown as { finalizer: { finalize: ReturnType<typeof vi.fn> } }).finalizer.finalize
+    expect(finalize).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        memoryFocus: ['本章要核对旧案伏笔是否已经回收'],
+      }),
+    }))
+    expect(onInterjectInjected).toHaveBeenCalledWith(['memory-focus-1'], 'memory')
+    expect(orch.pendingMessages()).toEqual([])
+  })
+
   it('并发 flow 终态隔离：flowA 结束只清自己的插话并回调 onInterjectDropped，不动 flowB 的', async () => {
     const { orchestrator: orch } = createLightweightOrchestrator()
     const onInterjectDropped = vi.fn()
     ;(orch as unknown as { hooks?: unknown }).hooks = { onInterjectDropped }
 
-    orch.enqueueUserMessage({ id: 'fa-drop', content: 'flowA 来不及注入的反馈', flowKey: 'projA|1' })
+    orch.enqueueUserMessage({
+      id: 'fa-drop',
+      content: 'flowA 来不及注入的修订反馈',
+      flowKey: 'projA|1',
+      targetAgent: 'reviser',
+    })
     orch.enqueueUserMessage({ id: 'fb-stay', content: 'flowB 运行中的反馈', flowKey: 'projB|2' })
 
     const result = await orch.createChapterWithFlow('projA', 1, {

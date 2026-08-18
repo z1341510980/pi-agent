@@ -48,6 +48,8 @@ export class ChapterChatStore {
   private stmtInsert: Database.Statement
   private stmtClear: Database.Statement
   private stmtClearPhase: Database.Statement
+  private stmtFindInterject: Database.Statement
+  private stmtUpdateMetadata: Database.Statement
 
   constructor(private db: Database.Database) {
     this.stmtList = db.prepare(`
@@ -75,6 +77,16 @@ export class ChapterChatStore {
     this.stmtClearPhase = db.prepare(`
       DELETE FROM novel_chapter_chat_messages
       WHERE project_id = ? AND chapter_number = ? AND phase = ?
+    `)
+    this.stmtFindInterject = db.prepare(`
+      SELECT id, metadata
+      FROM novel_chapter_chat_messages
+      WHERE json_extract(metadata, '$.messageId') = ?
+      ORDER BY rowid DESC
+      LIMIT 1
+    `)
+    this.stmtUpdateMetadata = db.prepare(`
+      UPDATE novel_chapter_chat_messages SET metadata = ? WHERE id = ?
     `)
   }
 
@@ -125,6 +137,25 @@ export class ChapterChatStore {
   /** 清空指定阶段的消息 */
   clearPhase(projectId: string, chapterNumber: number, phase: ChapterChatPhase): void {
     this.stmtClearPhase.run(projectId, chapterNumber, phase)
+  }
+
+  /** 按插话 messageId 持久化 queued/injected/dropped 状态。 */
+  updateInterjectStatus(
+    messageId: string,
+    status: 'queued' | 'injected' | 'dropped',
+    agentType?: string,
+  ): boolean {
+    const row = this.stmtFindInterject.get(messageId) as Pick<ChatRow, 'id' | 'metadata'> | undefined
+    if (!row?.metadata) return false
+    let metadata: ChapterChatMetadata
+    try {
+      metadata = JSON.parse(row.metadata) as ChapterChatMetadata
+    } catch {
+      return false
+    }
+    metadata.interjectStatus = status
+    if (agentType) metadata.agentType = agentType
+    return this.stmtUpdateMetadata.run(JSON.stringify(metadata), row.id).changes > 0
   }
 
   private rowToMessage = (row: ChatRow): ChapterChatMessage => {

@@ -62,7 +62,7 @@ describe('PromptManager runtime overrides', () => {
     const manager = new PromptManager(db, process.cwd())
 
     const writer = manager.getTemplate('role-writer')
-    expect(writer).toContain('负责正文生成')
+    expect(writer).toContain('你是小说的执笔人')
     expect(writer).not.toContain('name: novel-writer')
     expect(manager.getDefaultTemplatePath('role-writer')).toMatch(/role-writer\.md$/)
 
@@ -123,6 +123,15 @@ describe('PromptManager runtime overrides', () => {
     for (const [name, path] of Object.entries(rolePaths)) {
       expect(skills.find(s => s.name === name)!.filePath, name).toBe(path)
     }
+  })
+
+  it('解析项目内显式外部 Skill，不扫描其他 Skill', () => {
+    db = new Database(':memory:')
+    for (const migration of novelMigrations) db.exec(migration.sql)
+    const manager = new PromptManager(db, process.cwd())
+
+    expect(manager.getExternalSkillPath('lengdu')).toMatch(/\.claude[\\/]skills[\\/]lengdu[\\/]SKILL\.md$/)
+    expect(manager.getExternalSkillPath('missing-skill')).toBeUndefined()
   })
 
   it('群聊 discussion 模板同样支持 Skill 化（无 reviser discussion 模板则回退）', async () => {

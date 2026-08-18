@@ -48,7 +48,8 @@ export interface ChapterChatOptions {
   /** Moderator 模型配置 */
   moderatorModel?: { provider: string; modelId: string }
   /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用，Moderator 仍独立调度 */
-  modelId?: { provider: string; modelId: string }
+  modelId?: { provider: string; modelId: string; thinkingLevel?: import('@earendil-works/pi-agent-core').ThinkingLevel | null }
+  styleExpertIds?: string[]
 }
 
 /** 自由聊天请求输入 */
@@ -121,6 +122,7 @@ export class ChapterChatRunner {
       chapterNumber,
       boundary,
       this.buildRoleChapterContext(chapterNumber, chapter),
+      options.styleExpertIds,
     )
     if (members.length === 0) {
       throw new Error('无可用的聊天成员')
@@ -218,6 +220,7 @@ export class ChapterChatRunner {
           return this.context.createSession({
             systemPrompt: opts.systemPrompt,
             userMessage: opts.userMessage,
+            tools: [],
             timeoutMs: opts.timeoutMs,
             modelId: opts.model,
             signal: opts.signal,
@@ -298,7 +301,7 @@ export class ChapterChatRunner {
       ...(extraSkills ? { extraSkills } : {}),
       signal: options.signal,
       // 本次选择覆盖成员配置；未选择时工种按 AgentPage 配置，角色走系统默认。
-      modelId: options.modelId ?? member.modelId,
+       modelId: options.modelId ?? member.modelId,
       temperature: member.type === 'character' ? 0.8 : 0.5,
       timeoutMs: runtimePerformance.llm.timeoutMs,
       emit: options.emit,
@@ -357,6 +360,7 @@ export class ChapterChatRunner {
     chapterNumber: number,
     boundary: ChapterBoundaryContext,
     roleChapterContext: string,
+    styleExpertIds?: string[],
   ): DiscussionMember[] {
     const members: DiscussionMember[] = []
 
@@ -376,8 +380,8 @@ export class ChapterChatRunner {
         buildSystemPrompt: () => this.promptBuilder.buildSystemPrompt(projectId, agentType),
         buildContextPrompt: () => roleChapterContext,
         buildIdentityPrompt: () => skill
-          ? this.buildRoleIdentityPrompt(agentType, projectId, skill.buildIdentity)
-          : this.buildRoleIdentityPrompt(agentType, projectId),
+          ? this.buildRoleIdentityPrompt(agentType, projectId, skill.buildIdentity, styleExpertIds)
+          : this.buildRoleIdentityPrompt(agentType, projectId, undefined, styleExpertIds),
         ...(skill ? { skill: { name: skill.name, path: skill.path } } : {}),
         modelId: agentConfig?.model,
       })
@@ -413,11 +417,12 @@ export class ChapterChatRunner {
   private buildRoleIdentityPrompt(
     agentType: NovelAgentType,
     projectId: string,
-    buildIdentity?: (pid: string) => string,
+    buildIdentity?: (pid: string, styleExpertIds?: string[]) => string,
+    styleExpertIds?: string[],
   ): string {
     const identity = buildIdentity
-      ? buildIdentity(projectId)
-      : this.promptBuilder.buildAgentIdentity(projectId, agentType)
+      ? buildIdentity(projectId, styleExpertIds)
+      : this.promptBuilder.buildAgentIdentity(projectId, agentType, false, styleExpertIds)
     const roleHint = `\n\n## 当前模式：章节自由聊天\n你正在与用户就当前章节进行自由对话。回答要简洁、聚焦，不要写小说正文，不要使用破折号"——"。`
     return identity + roleHint
   }
@@ -430,11 +435,11 @@ export class ChapterChatRunner {
   private resolveRoleSkill(
     agentType: NovelAgentType,
     projectId: string,
-  ): { name: string; path: string; buildIdentity: (pid: string) => string } | undefined {
+  ): { name: string; path: string; buildIdentity: (pid: string, styleExpertIds?: string[]) => string } | undefined {
     const entries: Partial<
       Record<
         NovelAgentType,
-        { name: string; getPath: (pid: string) => string | undefined; buildIdentity: (pid: string) => string }
+        { name: string; getPath: (pid: string) => string | undefined; buildIdentity: (pid: string, styleExpertIds?: string[]) => string }
       >
     > = {
       director: {
@@ -445,17 +450,17 @@ export class ChapterChatRunner {
       writer: {
         name: 'novel-writer',
         getPath: pid => this.promptBuilder.getWriterSkillPath(pid),
-        buildIdentity: pid => this.promptBuilder.buildWriterSkillIdentity(pid),
+        buildIdentity: (pid, styleExpertIds) => this.promptBuilder.buildWriterSkillIdentity(pid, styleExpertIds),
       },
       reviewer: {
         name: 'novel-reviewer',
         getPath: pid => this.promptBuilder.getReviewerSkillPath(pid),
-        buildIdentity: pid => this.promptBuilder.buildReviewerSkillIdentity(pid),
+        buildIdentity: (pid, styleExpertIds) => this.promptBuilder.buildReviewerSkillIdentity(pid, styleExpertIds),
       },
       reviser: {
         name: 'novel-reviser',
         getPath: pid => this.promptBuilder.getReviserSkillPath(pid),
-        buildIdentity: pid => this.promptBuilder.buildReviserSkillIdentity(pid),
+        buildIdentity: (pid, styleExpertIds) => this.promptBuilder.buildReviserSkillIdentity(pid, styleExpertIds),
       },
     }
     const entry = entries[agentType]

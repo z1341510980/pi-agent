@@ -56,4 +56,68 @@ describe('transactional migration application', () => {
     `).run()).toThrow(/UNIQUE constraint failed/)
     db.close()
   })
+
+  it('repairs legacy scene/storyline tables before creating the V2 plan schema', () => {
+    const db = new Database(':memory:')
+    db.exec(`
+      CREATE TABLE schema_migrations (id TEXT PRIMARY KEY);
+      CREATE TABLE novel_projects (id TEXT PRIMARY KEY);
+      CREATE TABLE novel_chapters (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapter_number INTEGER NOT NULL
+      );
+      INSERT INTO novel_projects (id) VALUES ('project-1');
+      INSERT INTO novel_chapters (id, project_id, chapter_number)
+      VALUES ('chapter-2', 'project-1', 2);
+      CREATE TABLE novel_scenes (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chapter_number INTEGER NOT NULL,
+        scene_order INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        pov_mode TEXT NOT NULL,
+        pov_character_ids TEXT NOT NULL,
+        status TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO novel_scenes (
+        id, project_id, chapter_number, scene_order, title, summary,
+        pov_mode, pov_character_ids, status, source, created_at, updated_at
+      ) VALUES ('legacy-scene', 'project-1', 2, 1, '旧场景', '', 'none', '[]', 'planned', 'manual', 1, 1);
+      CREATE TABLE novel_storylines (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        maturity TEXT NOT NULL,
+        current_state TEXT NOT NULL,
+        next_direction TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO novel_storylines (
+        id, project_id, name, description, kind, status, maturity,
+        current_state, next_direction, created_at, updated_at
+      ) VALUES ('legacy-line', 'project-1', '旧主线', '', 'main', 'active', 'candidate', '', '', 1, 1);
+    `)
+
+    const migration = novelMigrations.find((item) => item.id === '109_repair_scene_plan_schema')
+    expect(migration).toBeDefined()
+    applyMigrations(db, [migration!])
+
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'novel_chapter_plan_revisions'").get()).toBeDefined()
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'novel_scene_revisions'").get()).toBeDefined()
+    expect(db.prepare('SELECT chapter_id, stable_key FROM novel_scenes WHERE id = ?').get('legacy-scene'))
+      .toEqual({ chapter_id: 'chapter-2', stable_key: 'legacy-2-1' })
+    expect(db.prepare('SELECT id, lifecycle FROM novel_storylines WHERE id = ?').get('legacy-line'))
+      .toEqual({ id: 'legacy-line', lifecycle: 'active' })
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'novel_scenes_legacy_v1'").get()).toBeDefined()
+    db.close()
+  })
 })

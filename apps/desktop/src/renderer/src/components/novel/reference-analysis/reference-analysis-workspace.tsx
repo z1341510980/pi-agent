@@ -10,7 +10,8 @@ import {
   LoaderCircle,
   Plus,
   RotateCcw,
-  ScanText
+  ScanText,
+  Sparkles
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -32,6 +33,9 @@ import {
 import { ReferenceImportPanel } from './reference-import-panel'
 import { ReferenceSectionList } from './reference-section-list'
 import { ReferenceLocalReportPanel, ReferenceQualityPanel } from './reference-report-panels'
+import { StyleDistillReviewDialog } from './style-distill-review-dialog'
+import { createWritingStyleExpert } from '@/api/novel-client'
+import { WritingStyleProfileEditor } from '../writing-style-profile-editor'
 
 type ReferencePage = 'sources' | 'import' | 'quality' | 'report'
 type QualityView = 'overview' | 'sections'
@@ -47,12 +51,16 @@ interface ReferenceAnalysisWorkspaceProps {
   projectId: string
   open: boolean
   onOpenChange: (open: boolean) => void
+  onStyleExpertsChanged?: () => void
 }
+
+export type ReferenceStyleWorkspaceTab = 'sources' | 'baseline' | 'experts'
 
 export function ReferenceAnalysisWorkspace({
   projectId,
   open,
-  onOpenChange
+  onOpenChange,
+  onStyleExpertsChanged
 }: ReferenceAnalysisWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
   const [page, setPage] = useState<ReferencePage>('sources')
@@ -61,6 +69,8 @@ export function ReferenceAnalysisWorkspace({
   const [resumeSourceId, setResumeSourceId] = useState<string | null>(null)
   const [importDirty, setImportDirty] = useState(false)
   const [sectionsDirty, setSectionsDirty] = useState(false)
+  const [styleDistillOpen, setStyleDistillOpen] = useState(false)
+  const [workspaceTab, setWorkspaceTab] = useState<ReferenceStyleWorkspaceTab>('sources')
 
   const sourcesQuery = useQuery({
     queryKey: ['reference-analysis', projectId, 'sources'],
@@ -131,6 +141,13 @@ export function ReferenceAnalysisWorkspace({
     void queryClient.invalidateQueries({ queryKey: ['reference-analysis', projectId, 'sources'] })
   }
 
+  function openStyleWorkspaceTab(tab: ReferenceStyleWorkspaceTab): void {
+    setWorkspaceTab(tab)
+    if (tab === 'experts' || tab === 'baseline') {
+      setStyleDistillOpen(false)
+    }
+  }
+
   function handleParsed(source: ReferenceSourceDetail): void {
     setResumeSourceId(null)
     setImportDirty(false)
@@ -149,181 +166,244 @@ export function ReferenceAnalysisWorkspace({
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(900px,calc(100vh-32px))] w-[min(1280px,calc(100vw-32px))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
-        <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-12">
-          <DialogTitle>参考小说分析</DialogTitle>
-          <DialogDescription className="text-pretty">
-            阶段 1 本地分析 · 原文与当前项目事实隔离
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex min-h-0 flex-1">
-          <aside className="w-48 shrink-0 border-r border-border bg-surface-1 p-2.5">
-            <nav className="space-y-0.5" aria-label="参考小说分析页面">
-              {PAGE_ITEMS.map((item) => {
-                const Icon = item.icon
-                const disabled = (item.id === 'quality' || item.id === 'report') && !parsed
-                const complete =
-                  (item.id === 'sources' && Boolean(sourcesQuery.data?.length)) ||
-                  (item.id === 'import' && parsed) ||
-                  (item.id === 'quality' && Boolean(qualityQuery.data)) ||
-                  (item.id === 'report' && Boolean(reportQuery.data))
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => requestPage(item.id)}
-                    disabled={disabled}
-                    aria-current={page === item.id ? 'page' : undefined}
-                    className={`flex h-11 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-medium transition-[color,background-color,transform] active:scale-[0.96] ${page === item.id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-text'} disabled:pointer-events-none disabled:opacity-40`}
-                  >
-                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-2 font-mono text-[10px] tabular-nums">
-                      {complete ? <Check className="size-3" /> : item.step}
-                    </span>
-                    <Icon className="size-4" />
-                    <span className="min-w-0 truncate">{item.label}</span>
-                  </button>
-                )
-              })}
-            </nav>
-            {!parsed && selectedSource && (
-              <p className="mx-2 mt-2 text-pretty text-[11px] leading-4 text-muted-foreground">
-                完成编码预检和本地解析后，可查看质量与报告。
-              </p>
-            )}
-            {selectedSource && (
-              <div className="mt-4 border-t border-border px-2 pt-3">
-                <p
-                  className="truncate text-xs font-medium text-text"
-                  title={selectedSource.displayName}
-                >
-                  {selectedSource.displayName}
-                </p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {selectedSource.encoding.toUpperCase()} · {selectedSource.chapterCount} 章
-                </p>
-              </div>
-            )}
-          </aside>
-          <div className="min-w-0 flex-1">
-            {page === 'sources' && (
-              <SourcePage
-                loading={sourcesQuery.isLoading}
-                error={sourcesQuery.error}
-                sources={sourcesQuery.data ?? []}
-                selectedSourceId={selectedSourceId}
-                onRetry={() => void sourcesQuery.refetch()}
-                onSelect={(source) => {
-                  const hasReport =
-                    source.parseStatus === 'parsed' || source.parseStatus === 'confirmed'
-                  setSelectedSourceId(source.id)
-                  setResumeSourceId(hasReport ? null : source.id)
-                  requestPage(hasReport ? 'report' : 'import')
-                }}
-                onImport={() => {
-                  setSelectedSourceId(null)
-                  setResumeSourceId(null)
-                  requestPage('import')
-                }}
-              />
-            )}
-            {page === 'import' && (
-              <ReferenceImportPanel
-                key={resumeSourceId ?? 'new-reference-source'}
-                projectId={projectId}
-                initialSource={
-                  sourcesQuery.data?.find((source) => source.id === resumeSourceId) ?? null
-                }
-                onSourceCreated={refreshSources}
-                onParsed={handleParsed}
-                onDirtyChange={setImportDirty}
-              />
-            )}
-            {page === 'quality' && (
-              <div className="flex h-full min-h-0 flex-col">
-                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3">
-                  <Tabs
-                    value={qualityView}
-                    onValueChange={(value) => requestQualityView(value as QualityView)}
-                  >
-                    <TabsList className="h-10">
-                      <TabsTrigger value="overview" className="px-3 text-xs">
-                        <ScanText className="size-3.5" /> 质量概览
-                      </TabsTrigger>
-                      <TabsTrigger value="sections" className="px-3 text-xs">
-                        <ListChecks className="size-3.5" /> 章节边界
-                        {qualityQuery.data?.lowConfidenceSectionIds.length ? (
-                          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] tabular-nums text-amber-700 dark:text-amber-300">
-                            {qualityQuery.data.lowConfidenceSectionIds.length}
-                          </span>
-                        ) : null}
-                      </TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                  <Button size="sm" onClick={() => requestPage('report')}>
-                    <BarChart3 className="size-3.5" /> 查看本地报告
-                  </Button>
-                </div>
-                {qualityView === 'overview' ? (
-                  <div className="min-h-0 flex-1 overflow-hidden">
-                    {qualityQuery.isError ? (
-                      <QueryErrorState
-                        label="数据质量报告读取失败"
-                        error={qualityQuery.error}
-                        onRetry={() => void qualityQuery.refetch()}
-                      />
-                    ) : qualityQuery.data ? (
-                      <ReferenceQualityPanel report={qualityQuery.data} />
-                    ) : (
-                      <LoadingState label="读取数据质量报告" />
-                    )}
+    <>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent className="flex h-[min(900px,calc(100vh-32px))] w-[min(1280px,calc(100vw-32px))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">
+          <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-12">
+            <DialogTitle>参考小说与文风工作台</DialogTitle>
+            <DialogDescription className="text-pretty">
+              从参考小说导入、分析并蒸馏文风专家，再在写作会话中召集。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-2">
+            {([
+              ['sources', '参考小说'],
+              ['baseline', '文风基线'],
+              ['experts', '文风专家']
+            ] as const).map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => openStyleWorkspaceTab(tab)}
+                className={`rounded-md px-3 py-1.5 text-xs ${workspaceTab === tab ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {workspaceTab === 'sources' ? (
+            <div className="flex min-h-0 flex-1">
+              <aside className="w-48 shrink-0 border-r border-border bg-surface-1 p-2.5">
+                <nav className="space-y-0.5" aria-label="参考小说分析页面">
+                  {PAGE_ITEMS.map((item) => {
+                    const Icon = item.icon
+                    const disabled = (item.id === 'quality' || item.id === 'report') && !parsed
+                    const complete =
+                      (item.id === 'sources' && Boolean(sourcesQuery.data?.length)) ||
+                      (item.id === 'import' && parsed) ||
+                      (item.id === 'quality' && Boolean(qualityQuery.data)) ||
+                      (item.id === 'report' && Boolean(reportQuery.data))
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => requestPage(item.id)}
+                        disabled={disabled}
+                        aria-current={page === item.id ? 'page' : undefined}
+                        className={`flex h-11 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-medium transition-[color,background-color,transform] active:scale-[0.96] ${page === item.id ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-text'} disabled:pointer-events-none disabled:opacity-40`}
+                      >
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-2 font-mono text-[10px] tabular-nums">
+                          {complete ? <Check className="size-3" /> : item.step}
+                        </span>
+                        <Icon className="size-4" />
+                        <span className="min-w-0 truncate">{item.label}</span>
+                      </button>
+                    )
+                  })}
+                </nav>
+                {!parsed && selectedSource && (
+                  <p className="mx-2 mt-2 text-pretty text-[11px] leading-4 text-muted-foreground">
+                    完成编码预检和本地解析后，可查看质量与报告。
+                  </p>
+                )}
+                {selectedSource && (
+                  <div className="mt-4 border-t border-border px-2 pt-3">
+                    <p
+                      className="truncate text-xs font-medium text-text"
+                      title={selectedSource.displayName}
+                    >
+                      {selectedSource.displayName}
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {selectedSource.encoding.toUpperCase()} · {selectedSource.chapterCount} 章
+                    </p>
                   </div>
-                ) : (
-                  <div className="min-h-0 flex-1 overflow-y-auto">
-                    <div className="border-b border-border px-5 py-3">
-                      <h3 className="text-balance text-xs font-semibold text-text">
-                        章节边界与分析范围
-                      </h3>
-                      <p className="mt-1 text-pretty text-[11px] text-muted-foreground">
-                        优先确认低置信度边界；偏移基于标准化文本，保存时执行版本与重叠检查。
-                      </p>
+                )}
+              </aside>
+              <div className="min-w-0 flex-1">
+                {page === 'sources' && (
+                  <SourcePage
+                    loading={sourcesQuery.isLoading}
+                    error={sourcesQuery.error}
+                    sources={sourcesQuery.data ?? []}
+                    selectedSourceId={selectedSourceId}
+                    onRetry={() => void sourcesQuery.refetch()}
+                    onSelect={(source) => {
+                      const hasReport =
+                        source.parseStatus === 'parsed' || source.parseStatus === 'confirmed'
+                      setSelectedSourceId(source.id)
+                      setResumeSourceId(hasReport ? null : source.id)
+                      requestPage(hasReport ? 'report' : 'import')
+                    }}
+                    onImport={() => {
+                      setSelectedSourceId(null)
+                      setResumeSourceId(null)
+                      requestPage('import')
+                    }}
+                  />
+                )}
+                {page === 'import' && (
+                  <ReferenceImportPanel
+                    key={resumeSourceId ?? 'new-reference-source'}
+                    projectId={projectId}
+                    initialSource={
+                      sourcesQuery.data?.find((source) => source.id === resumeSourceId) ?? null
+                    }
+                    onSourceCreated={refreshSources}
+                    onParsed={handleParsed}
+                    onDirtyChange={setImportDirty}
+                  />
+                )}
+                {page === 'quality' && (
+                  <div className="flex h-full min-h-0 flex-col">
+                    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3">
+                      <Tabs
+                        value={qualityView}
+                        onValueChange={(value) => requestQualityView(value as QualityView)}
+                      >
+                        <TabsList className="h-10">
+                          <TabsTrigger value="overview" className="px-3 text-xs">
+                            <ScanText className="size-3.5" /> 质量概览
+                          </TabsTrigger>
+                          <TabsTrigger value="sections" className="px-3 text-xs">
+                            <ListChecks className="size-3.5" /> 章节边界
+                            {qualityQuery.data?.lowConfidenceSectionIds.length ? (
+                              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] tabular-nums text-amber-700 dark:text-amber-300">
+                                {qualityQuery.data.lowConfidenceSectionIds.length}
+                              </span>
+                            ) : null}
+                          </TabsTrigger>
+                        </TabsList>
+                      </Tabs>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!sectionsQuery.data?.some((section) => section.included)}
+                          onClick={() => setStyleDistillOpen(true)}
+                        >
+                          <Sparkles className="size-3.5" /> 蒸馏文风专家
+                        </Button>
+                        <Button size="sm" onClick={() => requestPage('report')}>
+                          <BarChart3 className="size-3.5" /> 查看本地报告
+                        </Button>
+                      </div>
                     </div>
-                    {sectionsQuery.isError ? (
-                      <QueryErrorState
-                        label="章节边界读取失败"
-                        error={sectionsQuery.error}
-                        onRetry={() => void sectionsQuery.refetch()}
-                      />
-                    ) : sectionsQuery.data ? (
-                      <ReferenceSectionList
-                        sections={sectionsQuery.data}
-                        attentionSectionIds={qualityQuery.data?.lowConfidenceSectionIds ?? []}
-                        onUpdated={handleSectionsUpdated}
-                        onDirtyChange={setSectionsDirty}
-                      />
+                    {qualityView === 'overview' ? (
+                      <div className="min-h-0 flex-1 overflow-hidden">
+                        {qualityQuery.isError ? (
+                          <QueryErrorState
+                            label="数据质量报告读取失败"
+                            error={qualityQuery.error}
+                            onRetry={() => void qualityQuery.refetch()}
+                          />
+                        ) : qualityQuery.data ? (
+                          <ReferenceQualityPanel report={qualityQuery.data} />
+                        ) : (
+                          <LoadingState label="读取数据质量报告" />
+                        )}
+                      </div>
                     ) : (
-                      <LoadingState label="读取章节" />
+                      <div className="min-h-0 flex-1 overflow-y-auto">
+                        <div className="border-b border-border px-5 py-3">
+                          <h3 className="text-balance text-xs font-semibold text-text">
+                            章节边界与分析范围
+                          </h3>
+                          <p className="mt-1 text-pretty text-[11px] text-muted-foreground">
+                            优先确认低置信度边界；偏移基于标准化文本，保存时执行版本与重叠检查。
+                          </p>
+                        </div>
+                        {sectionsQuery.isError ? (
+                          <QueryErrorState
+                            label="章节边界读取失败"
+                            error={sectionsQuery.error}
+                            onRetry={() => void sectionsQuery.refetch()}
+                          />
+                        ) : sectionsQuery.data ? (
+                          <ReferenceSectionList
+                            sections={sectionsQuery.data}
+                            attentionSectionIds={qualityQuery.data?.lowConfidenceSectionIds ?? []}
+                            onUpdated={handleSectionsUpdated}
+                            onDirtyChange={setSectionsDirty}
+                          />
+                        ) : (
+                          <LoadingState label="读取章节" />
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
+                {page === 'report' &&
+                  (reportQuery.isError ? (
+                    <QueryErrorState
+                      label="本地分析报告读取失败"
+                      error={reportQuery.error}
+                      onRetry={() => void reportQuery.refetch()}
+                    />
+                  ) : reportQuery.data ? (
+                    <ReferenceLocalReportPanel report={reportQuery.data} />
+                  ) : (
+                    <LoadingState label="读取本地分析报告" />
+                  ))}
               </div>
-            )}
-            {page === 'report' &&
-              (reportQuery.isError ? (
-                <QueryErrorState
-                  label="本地分析报告读取失败"
-                  error={reportQuery.error}
-                  onRetry={() => void reportQuery.refetch()}
-                />
-              ) : reportQuery.data ? (
-                <ReferenceLocalReportPanel report={reportQuery.data} />
-              ) : (
-                <LoadingState label="读取本地分析报告" />
-              ))}
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+            </div>
+          ) : workspaceTab === 'baseline' ? (
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <WritingStyleProfileEditor projectId={projectId} mode="baseline" />
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <WritingStyleProfileEditor projectId={projectId} mode="experts" />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+      {selectedSource && sectionsQuery.data ? (
+        <StyleDistillReviewDialog
+          sourceId={selectedSource.id}
+          sourceTitle={selectedSource.displayName}
+          sectionIds={sectionsQuery.data.filter((section) => section.included).map((section) => section.id)}
+          open={styleDistillOpen}
+          onOpenChange={setStyleDistillOpen}
+          onAccepted={async (draft) => {
+            await createWritingStyleExpert(projectId, {
+              name: draft.name,
+              sourceTitle: selectedSource.displayName,
+              description: draft.description,
+              distilledPrompt: draft.distilledPrompt,
+              metrics: draft.metrics,
+              techniques: draft.techniques,
+              exclusions: draft.exclusions,
+              exemplarPassages: draft.exemplarPassages,
+              enabled: true,
+              sortOrder: 0,
+            })
+            onStyleExpertsChanged?.()
+          }}
+        />
+      ) : null}
+      </>
   )
 }
 

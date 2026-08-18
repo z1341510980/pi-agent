@@ -119,11 +119,32 @@ export interface CreationOptions {
    * 用于"本次创作临时切换模型"。
    */
   modelId?: { provider: string; modelId: string }
+  /** 本次运行唯一插话隔离键；未传时兼容旧调用方按项目+章节隔离。 */
+  flowKey?: string
+  /** 当前会话本轮召集的文风专家；未传则使用项目默认启用专家。 */
+  styleExpertIds?: string[]
+  /**
+   * 用户定向给 Memory 的本轮提取关注点。
+   *
+   * 这是只读提示，不是事实或写库指令。NovelMemoryGenerator 仍只能从已定稿正文
+   * 提取结构化变更，并由既有 applyAnalysis 校验后提交。
+   */
+  memoryFocus?: string[]
   /**
    * 本次 Agent 可使用的章节上下文 token 预算（不含动态任务、工具 schema 与输出预留）。
    * 未提供时保持既有行为；由调用方在已知模型窗口时显式传入。
    */
   contextBudgetTokens?: number
+  /**
+   * 断点续跑状态：携带已持久化的阶段产物，orchestrator 据此跳过已完成阶段
+   * （entry='writing' 跳过 Director，'reviewing' 跳过 Writer，'memory' 直接收尾）。
+   */
+  resume?: import('../../plugins/novel-plugin/core/workflow-run-store.js').WorkflowResumeState
+  /**
+   * 阶段边界快照回调：Director 批准后 / Writer 草稿成稿后 / 正文定稿后触发，
+   * 由路由层落库到 WorkflowRunStore（进程崩溃也能保住最后边界）。
+   */
+  onRunStateUpdate?: (state: import('../../plugins/novel-plugin/core/workflow-run-store.js').WorkflowResumeState) => void
 }
 
 /** CreationResult 已迁入 @repo/shared/novel 共享包，此处通过顶部 import 引入 */
@@ -422,6 +443,7 @@ export class ChapterFinalizer {
           options.arrangedEntities,
           options.signal,
           options.modelId,
+          options.memoryFocus,
         )
         attempts.push({ operation, result, durationMs: Date.now() - attemptStartedAt })
         return result
@@ -535,6 +557,7 @@ export class ChapterFinalizer {
           options.arrangedEntities,
           options.signal,
           options.modelId,
+          options.memoryFocus,
         )
         attempts.push({ operation: 'memory', result, durationMs: Date.now() - startTime })
         resultSummary = result.summary
@@ -718,6 +741,7 @@ export class ChapterFinalizer {
       chapterNumber,
       task: `请从第 ${chapterNumber} 章中提取状态变更，并调用记忆工具写入。所有工具的 projectId 参数请使用 "${projectId}"。`,
       content: chapterContent,
+      memoryFocus: options.memoryFocus,
     }, options)
   }
 
@@ -777,6 +801,7 @@ export class ChapterFinalizer {
           options.arrangedEntities,
           options.signal,
           options.modelId,
+          options.memoryFocus,
         )
         attempts.push({ operation: 'retry', result, durationMs: Date.now() - attemptStartedAt })
         if (result.status !== 'error') {

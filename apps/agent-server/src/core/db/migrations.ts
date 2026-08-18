@@ -283,7 +283,9 @@ export function applyMigrations(
   for (const migration of migrations) {
     if (applied.has(migration.id)) continue
     db.transaction(() => {
+      migration.beforeApply?.(db)
       db.exec(migration.sql)
+      migration.afterApply?.(db)
       db.prepare('INSERT INTO schema_migrations (id) VALUES (?)').run(migration.id)
     })()
     if (applied instanceof Set) applied.add(migration.id)
