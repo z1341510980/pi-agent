@@ -139,7 +139,7 @@ export class PiAgUiAgent {
           role: 'tool'
         } as ToolCallResultEvent)
         if (traceId) {
-          this.tracer.addEvent(traceId, {
+          this.tracer?.addEvent(traceId, {
             type: 'tool_result',
             data: { toolCallId, content: typeof lastMessage.content === 'string' ? lastMessage.content : JSON.stringify(lastMessage.content) },
             status: 'completed',
@@ -272,7 +272,7 @@ export class PiAgUiAgent {
 
       if (!userText) {
         if (traceId) {
-          this.tracer.addEvent(traceId, {
+          this.tracer?.addEvent(traceId, {
             type: 'run_error',
             data: { message: '无用户消息' },
             status: 'failed',
@@ -305,7 +305,7 @@ export class PiAgUiAgent {
 
       if (lastAssistantError) {
         if (traceId) {
-          this.tracer.addEvent(traceId, {
+          this.tracer?.addEvent(traceId, {
             type: 'llm_response',
             data: { error: lastAssistantError },
             status: 'failed',

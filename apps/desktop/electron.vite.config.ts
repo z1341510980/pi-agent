@@ -16,7 +16,13 @@ export default defineConfig({
     server: {
       // 避开 Windows 动态保留端口范围 5141-5240（含 5173）
       port: 5273,
-      strictPort: true
+      strictPort: true,
+      proxy: {
+        '/api': {
+          target: 'http://127.0.0.1:3900',
+          changeOrigin: true
+        }
+      }
     },
     plugins: [react(), tailwindcss()]
   }

@@ -66,6 +66,8 @@ export function ChapterContentEditor({
   draftContentRef.current = draftContent
   // ── 避免重载循环：仅 chapterId 变化才重载 draft ──
   const loadedChapterIdRef = useRef<string | null>(null)
+  // ── 版本锁：记录加载时的版本号，用于判断内容是否被外部更新 ──
+  const loadedVersionRef = useRef<number>(0)
 
   // ── 手动落库 ──
   const flushSave = useCallback(async (): Promise<boolean> => {
@@ -82,7 +84,36 @@ export function ChapterContentEditor({
     if (targetChapter.chapterNumber !== useNovelUiStore.getState().playheadChapter) {
       return false
     }
-    const content = draftContentRef.current
+    const editorInstance = editor
+    const content = editorInstance
+      ? (editorInstance.storage as { markdown?: MarkdownStorage }).markdown?.getMarkdown() ?? draftContentRef.current
+      : draftContentRef.current
+
+    // 版本锁校验：检查加载后内容是否被外部更新
+    const currentVersion = targetChapter.updatedAt ?? Date.now()
+    if (loadedVersionRef.current !== 0 && loadedVersionRef.current !== currentVersion) {
+      // 内容已被外部更新（如 AI 生成、其他用户编辑），提示用户并刷新
+      const shouldReload = window.confirm(
+        `第 ${targetChapter.chapterNumber} 章内容已被外部更新，您当前的修改将覆盖最新内容。\n\n确定要继续保存吗？点击「确定」覆盖，点击「取消」重新加载最新内容。`,
+      )
+      if (!shouldReload) {
+        // 取消保存，重新加载最新内容
+        saveStateRef.current = 'saved'
+        setSaveState('saved')
+        setErrorMsg(null)
+        // 重新加载最新内容
+        const latestContent = targetChapter.content ?? ''
+        setDraftContent(latestContent)
+        draftContentRef.current = latestContent
+        loadedVersionRef.current = currentVersion
+        if (editor) editor.commands.setContent(latestContent, { emitUpdate: false })
+        clearUnsavedChapterDraft(targetChapter.id)
+        return true
+      }
+      // 用户选择覆盖，更新版本锁
+      loadedVersionRef.current = currentVersion
+    }
+
     // 空正文守卫：章节已有正文而草稿为空（加载时序异常/草稿残留）时，
     // 空内容会把现有正文覆盖成一个空版本。要求显式确认才放行。
     if (!content.trim() && (targetChapter.content ?? '').trim()) {
@@ -102,6 +133,8 @@ export function ChapterContentEditor({
     try {
       const updated = await updateChapter(targetChapter.id, { content })
       upsertChapter(updated)
+      // 版本锁同步：更新为最新版本号
+      loadedVersionRef.current = updated.updatedAt ?? Date.now()
       // T04 决策 4：中间章重写 → 提示后续派生状态待重建
       if (updated.derivedState?.isMiddleRewrite) {
         const ds = updated.derivedState
@@ -224,6 +257,8 @@ export function ChapterContentEditor({
     if (loadedChapterIdRef.current === targetChapter.id) return
 
     loadedChapterIdRef.current = targetChapter.id
+    // 版本锁：记录加载时的 updatedAt，用于检测外部更新
+    loadedVersionRef.current = targetChapter.updatedAt ?? Date.now()
 
     const draft = unsavedChapterDraft?.chapterId === targetChapter.id ? unsavedChapterDraft : null
     // 坏草稿防御：恢复的草稿为空而章节本身有正文（上次会话的加载时序残留），
@@ -246,8 +281,15 @@ export function ChapterContentEditor({
     const content = draft?.content ?? targetChapter.content ?? ''
     setDraftContent(content)
     draftContentRef.current = content
-    saveStateRef.current = draft ? 'dirty' : 'saved'
-    setSaveState(draft ? 'dirty' : 'saved')
+    // 如果有草稿，标记为 dirty；否则检查内容是否与加载时的版本一致
+    if (draft) {
+      saveStateRef.current = 'dirty'
+      setSaveState('dirty')
+    } else {
+      // 无草稿时，内容应与后端一致，视为已保存
+      saveStateRef.current = 'saved'
+      setSaveState('saved')
+    }
     setErrorMsg(null)
     try {
       editor?.setEditable(!isCreationActive)

@@ -64,6 +64,7 @@ import { CacheMonitorPanel } from './cache-monitor-panel'
 import { ObservabilityTimeline } from './observability-timeline'
 import { P3ContextReportPanel } from './p3-context-report-panel'
 import { AgentLogPanel } from './agent-log-panel'
+import { TraceTimelinePanel } from './trace-timeline-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
 import { computeCharacterSpans, GROUP_META, type MatrixDragData } from './matrix/matrix-logic'
 import {
@@ -277,7 +278,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const toggleFocusMode = useNovelWorkspaceLayoutStore((s) => s.toggleFocusMode)
   const [nodeCount, setNodeCount] = useState(0)
   const [diagnosticsPanelOpen, setDiagnosticsPanelOpen] = useState(false)
-  const [diagnosticsTab, setDiagnosticsTab] = useState<'logs' | 'cache' | 'trend'>('logs')
+  const [diagnosticsTab, setDiagnosticsTab] = useState<'logs' | 'cache' | 'trend' | 'trace'>('logs')
   const [p3PanelOpen, setP3PanelOpen] = useState(false)
   const [selectedStyleExpertIds, setSelectedStyleExpertIds] = useState<string[]>([])
   const [styleExperts, setStyleExperts] = useState<NovelStyleExpert[]>([])
@@ -1511,43 +1512,53 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
 
         {/* 调用诊断弹窗：日志、缓存、趋势共用同一工作区 */}
         <Dialog open={diagnosticsPanelOpen} onOpenChange={setDiagnosticsPanelOpen}>
-          <DialogContent className="w-[calc(100%-1rem)] sm:w-[min(94vw,1200px)] max-w-none sm:max-w-none h-[min(88vh,900px)] max-h-[90vh] p-0 gap-0">
-            <DialogHeader className="px-4 py-3 border-b border-border shrink-0">
-              <DialogTitle className="flex items-center gap-2 text-sm">
+          <DialogContent className="w-[calc(100%-1rem)] sm:w-[min(94vw,1200px)] max-w-none sm:max-w-none h-[min(88vh,900px)] max-h-[90vh] p-0 gap-0 flex flex-col">
+            <DialogHeader className="px-4 py-3 border-b border-border shrink-0 max-h-16 overflow-hidden">
+              <DialogTitle className="flex items-center gap-2 text-sm truncate">
                 <Activity className="size-4 text-primary" />
                 调用诊断
               </DialogTitle>
-              <DialogDescription className="text-xs text-pretty">
+              <DialogDescription className="text-xs text-pretty truncate">
                 统一查看 Agent 调用日志、提示词缓存命中与调用趋势
               </DialogDescription>
             </DialogHeader>
             <Tabs
               value={diagnosticsTab}
               onValueChange={(value) => setDiagnosticsTab(value as 'logs' | 'cache' | 'trend')}
-              className="min-h-0 flex-1 flex-col gap-0 overflow-hidden"
+              className="min-h-0 flex-1 flex-col gap-0 overflow-hidden h-full"
             >
-              <TabsList className="mx-4 mt-3 grid h-9 w-auto shrink-0 grid-cols-3" aria-label="调用诊断视图">
-                <TabsTrigger value="logs" className="gap-1.5 text-xs">
+              <TabsList className="mx-4 mt-3 flex h-auto w-auto shrink-0 gap-1 rounded-lg bg-muted/40 p-1" aria-label="调用诊断视图">
+                <TabsTrigger value="logs" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
                   <ScrollText className="size-3.5" />
                   调用日志
                 </TabsTrigger>
-                <TabsTrigger value="cache" className="gap-1.5 text-xs">
+                <TabsTrigger value="cache" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
                   <Database className="size-3.5" />
                   缓存诊断
                 </TabsTrigger>
-                <TabsTrigger value="trend" className="gap-1.5 text-xs">
+                <TabsTrigger value="trend" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
                   <Activity className="size-3.5" />
                   调用趋势
                 </TabsTrigger>
+                <TabsTrigger value="trace" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
+                  <Activity className="size-3.5" />
+                  追踪时间线
+                </TabsTrigger>
               </TabsList>
-              <TabsContent value="logs" className="mt-3 min-h-0 overflow-hidden">
+              <TabsContent value="logs" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
                 <AgentLogPanel chapterNumber={creationChapterNumber} />
               </TabsContent>
-              <TabsContent value="cache" className="mt-3 min-h-0 overflow-hidden">
+              <TabsContent value="cache" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
                 <CacheMonitorPanel chapterNumber={creationChapterNumber} />
               </TabsContent>
-              <TabsContent value="trend" className="mt-3 min-h-0 overflow-hidden">
+              <TabsContent value="trend" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
                 <ObservabilityTimeline />
+              </TabsContent>
+              <TabsContent value="trace" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
+                <TraceTimelinePanel
+                  sessionId={currentProjectId || undefined}
+                  chapterNumber={creationChapterNumber}
+                />
               </TabsContent>
             </Tabs>
           </DialogContent>

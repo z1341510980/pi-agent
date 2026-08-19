@@ -120,6 +120,8 @@ interface CreationRunContext {
    * "404 model not supported / 401"类配置失败；未设置时为 undefined（各 Agent 用各自配置）。
    */
   projectModelId?: string
+  /** per-call 模型覆盖（用户在前端选择），在整个流程中持久化，防止递归重写时丢失 */
+  perCallModelId?: PluginSessionOptions['modelId']
   arrangedEntities?: ArrangedEntity
   directorOutput?: string
   directorTask?: NarrativeTask
@@ -437,6 +439,8 @@ export class NovelOrchestrator {
         askStoryPolicy: getNovelAskStoryPolicy(this.store.getProject(projectId)?.novelAskStoryPolicy),
         factPackPathActive: true,
         projectModelId: this.store.getNovelModelId(projectId),
+        // per-call 模型覆盖（用户在前端选择），持久化到上下文，防止递归重写时丢失
+        perCallModelId: options.modelId,
         // 断点续跑：快照携带的编排实体优先（首跑可能带了，快照冻结当时的约束）
         arrangedEntities: options.resume?.arrangedEntities ?? options.arrangedEntities,
         // 续跑恢复的 Director 产物：跳过 Director 阶段时 Writer/Reviewer 的
@@ -2919,9 +2923,32 @@ export class NovelOrchestrator {
     // 本流程所有 Agent 统一使用该 provider+model，保证 promptCacheScope 内模型一致
     // → shared 前缀缓存全程可命中，并消除"404 model not supported / 401"类配置失败。
     const projectModelRef = parseNovelModelRef(run.projectModelId)
-    // ⚠️ 模型优先级：per-call 覆盖（输入框旁选择器）> 项目主模型 > AgentPage 配置。
+    // ⚠️ 模型优先级：per-call 覆盖（上下文持久化）> options.modelId > 项目主模型 > AgentPage 配置。
     // per-call 与项目主模型都保证 promptCacheScope 内模型一致 → shared 前缀缓存可命中。
-    const modelId = options.modelId ?? projectModelRef ?? agentConfig?.model
+    const modelId = run.perCallModelId ?? options.modelId ?? projectModelRef ?? agentConfig?.model
+
+    // 增加调试日志，方便排查模型选择问题
+    if (run.perCallModelId) {
+      this.context.logger.debug(
+        { projectId, chapterNumber, agentType, modelId, source: 'per-call-context' },
+        '使用 per-call 模型覆盖（从上下文恢复）'
+      )
+    } else if (options.modelId) {
+      this.context.logger.debug(
+        { projectId, chapterNumber, agentType, modelId, source: 'options' },
+        '使用 options.modelId'
+      )
+    } else if (projectModelRef) {
+      this.context.logger.debug(
+        { projectId, chapterNumber, agentType, modelId, source: 'project' },
+        '使用项目默认模型'
+      )
+    } else {
+      this.context.logger.debug(
+        { projectId, chapterNumber, agentType, modelId, source: 'agent' },
+        '使用 Agent 配置模型'
+      )
+    }
 
     // LLM 调用超时：统一走 runtimePerformance（默认 300s，可通过环境变量
     // PI_LLM_TIMEOUT_MS 调大）。国内 OpenAI 兼容网关首 token 偏慢、长输出耗时

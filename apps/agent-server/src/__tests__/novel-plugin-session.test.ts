@@ -67,10 +67,21 @@ function createMockContext(): PluginContext {
 
   return {
     pluginName: 'novel',
+    config: {},
     logger,
     db,
     cwd: process.cwd(),
     dataDir: process.cwd(),
+    subagentManager: undefined,
+    teamManager: undefined,
+    agentCallLogger: undefined,
+    modelRegistry: undefined,
+    confirmationManager: {
+      requestDecision: () => Promise.resolve('approve'),
+      respondDecision: () => true,
+      listPending: () => [],
+      dispose: noop,
+    } as any,
     registerTool: noop,
     registerRoute: noop,
     onEvent: noop,
@@ -79,12 +90,9 @@ function createMockContext(): PluginContext {
     registerSessionTools: noop,
     registerService: noop,
     registerPromptTemplates: noop,
-    confirmationManager: {
-      requestDecision: () => Promise.resolve('approve'),
-      respondDecision: () => true,
-      listPending: () => [],
-      dispose: noop,
-    } as any,
+    provide: <T>(_key: string, _service: T) => {},
+    get: <T>(_key: string): T | undefined => undefined,
+    dependsOn: (_pluginNames: string[]) => {},
     createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
       mockState.createSessionCalls++
       mockState.lastOptions = options
