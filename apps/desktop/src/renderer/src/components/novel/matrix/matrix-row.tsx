@@ -537,7 +537,7 @@ interface DraggablePresentCellProps {
   onPlayheadChange?: (chapter: number) => void
 }
 
-function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist, onContextMenu, onPlayheadChange }: DraggablePresentCellProps): ReactElement {
+function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist, onContextMenu }: DraggablePresentCellProps): ReactElement {
   const meta = GROUP_META[entity.kind]
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `cell:${entity.entityId}:${chapter}`,

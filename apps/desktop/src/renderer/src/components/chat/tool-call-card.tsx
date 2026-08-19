@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, Loader2, Wrench, FileText, Terminal, Search, FolderCog, CheckCircle2, XCircle, Clock } from 'lucide-react'
+import { ChevronDown, Loader2, Wrench, FileText, Terminal, Search, FolderCog } from 'lucide-react'
 import type { ToolCallInfo } from './types'
 import { FileDiffView } from './file-diff-view'
 import { Badge } from '@/components/ui/badge'
@@ -105,15 +105,7 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
         ? partialResult.slice(0, 120)
         : JSON.stringify(partialResult).slice(0, 120)
 
-  // 检测结果类型用于语法高亮
-  const detectResultType = (value: unknown): 'json' | 'yaml' | 'shell' | 'text' => {
-    if (typeof value !== 'string') return 'json'
-    const trimmed = value.trim()
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return 'json'
-    if (trimmed.startsWith('---') || /^[a-zA-Z_][a-zA-Z0-9_-]*:/.test(trimmed)) return 'yaml'
-    if (/^[\w\-\.]+\s*=\s*/.test(trimmed) || trimmed.includes('$ ')) return 'shell'
-    return 'text'
-  }
+
 
   const hasDetails = args !== undefined || partialResult !== undefined
   const isError = status === 'error'

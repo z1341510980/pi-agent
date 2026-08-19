@@ -57,6 +57,7 @@ interface TraceEvent {
   parentSeq?: number
   sourceEventSeqs?: number[]
   spanId?: string
+  metadata?: Record<string, unknown>
 }
 
 interface TraceSummary {
@@ -108,13 +109,7 @@ function formatTime(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.floor((ms % 60_000) / 1000)
-  return `${m}m${s}s`
-}
+
 
 function formatRelativeTime(ts: number): string {
   const now = Date.now()
@@ -362,11 +357,7 @@ function exportTraceReport(
     return acc
   }, {} as Record<string, number>)
 
-  // 事件类型统计
-  const typeCounts = events.reduce((acc, e) => {
-    acc[e.type] = (acc[e.type] || 0) + 1
-    return acc
-  }, {} as Record<string, number>)
+
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -498,7 +489,6 @@ function TraceGroup({ trace }: { trace: TraceSummary }) {
   const [loading, setLoading] = useState(false)
   const [surfaceMode, setSurfaceMode] = useState<'all' | 'surface'>('all')
   const [surfaceData, setSurfaceData] = useState<SurfaceResponse | null>(null)
-  const [surfaceLoading, setSurfaceLoading] = useState(false)
 
   const toggleExpand = async () => {
     if (!expanded) {
@@ -507,14 +497,11 @@ function TraceGroup({ trace }: { trace: TraceSummary }) {
         const data = await fetchTraceDetail(trace.id)
         setDetail(data)
         // 预加载表面数据
-        setSurfaceLoading(true)
         try {
           const surface = await fetchSurface(trace.id)
           setSurfaceData(surface)
         } catch (err) {
           console.error('Failed to load surface:', err)
-        } finally {
-          setSurfaceLoading(false)
         }
       } catch (err) {
         console.error('Failed to load trace detail:', err)

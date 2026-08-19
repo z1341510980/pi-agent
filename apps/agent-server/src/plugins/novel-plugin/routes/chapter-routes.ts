@@ -216,6 +216,29 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
 
       const updated = store.updateChapter(request.params.id, patch, versionSource)!
 
+      // 记录观测日志（时间线数据）
+      if (chapterInput.content != null && chapterInput.content !== existing.content) {
+        try {
+          const logEntry = {
+            projectId: existing.projectId,
+            chapterNumber: existing.chapterNumber,
+            agentType: 'editor',
+            agentName: '编辑器',
+            phase: 'manual_save',
+            status: 'success',
+            result: '手动保存章节内容',
+            resultLength: chapterInput.content.length,
+            durationMs: 0,
+            metadata: JSON.stringify({ source: 'chapter-routes', action: 'manual_patch' }),
+          };
+          if (services.context.agentCallLogger) {
+            services.context.agentCallLogger.record(logEntry);
+          }
+        } catch (logErr) {
+          services.context.logger.warn({ err: logErr }, '记录章节保存日志失败');
+        }
+      }
+
       if (outlineGenerationId && chapterInput.outline !== existing.outline) {
         services.context.logger.info(
           { projectId: existing.projectId, chapterNumber: existing.chapterNumber, outlineGenerationId },

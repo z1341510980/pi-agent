@@ -26,6 +26,7 @@ import { createNovelPlugin } from './novel-plugin/index.js'
 import { createWebSearchPlugin } from './web-search-plugin/index.js'
 import { applyMigrations } from '../core/db/migrations.js'
 import yaml from 'js-yaml'
+import type { Plugin } from '../core/plugin/plugin-types.js'
 
 export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'plugin-loader')
@@ -56,25 +57,14 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
     { plugin: createWebSearchPlugin() },
   ]
 
-  // 尝试从配置文件加载插件列表（支持预设继承）
+  // 尝试从配置文件加载插件列表
   let builtinPlugins = defaultBuiltinPlugins
   const configPath = resolve(process.cwd(), 'config/plugins.yml')
 
   if (existsSync(configPath)) {
     try {
       const configContent = readFileSync(configPath, 'utf-8')
-      const rawConfig = yaml.load(configContent) as {
-        presets?: Record<string, {
-          description?: string
-          extends?: string
-          plugins?: Array<{
-            id: string
-            source: 'builtin' | 'local' | 'npm'
-            enabled: boolean
-            isolate?: boolean
-            config?: Record<string, unknown>
-          }>
-        }>
+      const config = yaml.load(configContent) as {
         plugins?: Array<{
           id: string
           source: 'builtin' | 'local' | 'npm'
@@ -82,106 +72,11 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
           isolate?: boolean
           config?: Record<string, unknown>
         }>
-        active?: string
       }
 
-      // 解析预设
-      let activePlugins: Array<{
-        id: string
-        source: 'builtin' | 'local' | 'npm'
-        enabled: boolean
-        isolate?: boolean
-        config?: Record<string, unknown>
-      }> = []
-
-      const hasPresets = rawConfig.presets && Object.keys(rawConfig.presets).length > 0
-
-      if (hasPresets) {
-        // 预设模式：解析预设继承
-        const presetNames = Object.keys(rawConfig.presets!)
-        const activeName = rawConfig.active || presetNames[0]
-
-        log.info({ presets: presetNames, active: activeName }, '使用预设模式加载插件')
-
-        // 递归解析预设（处理 extends 链）
-        const resolvePreset = (name: string, visited: Set<string> = new Set()): Array<{
-          id: string
-          source: 'builtin' | 'local' | 'npm'
-          enabled: boolean
-          isolate?: boolean
-          config?: Record<string, unknown>
-        }> => {
-          if (visited.has(name)) {
-            log.warn({ preset: name }, '检测到预设循环引用，跳过')
-            return []
-          }
-          visited.add(name)
-
-          const preset = rawConfig.presets![name]
-          if (!preset) {
-            log.warn({ preset: name }, '预设不存在')
-            return []
-          }
-
-          let plugins: Array<{
-            id: string
-            source: 'builtin' | 'local' | 'npm'
-            enabled: boolean
-            isolate?: boolean
-            config?: Record<string, unknown>
-          }> = []
-
-          // 如果有 extends，先加载父预设
-          if (preset.extends) {
-            const parentPlugins = resolvePreset(preset.extends, visited)
-            // 先添加父预设的插件（会被子预设覆盖）
-            plugins = [...parentPlugins]
-          }
-
-          // 再添加当前预设的插件（覆盖同名插件）
-          if (preset.plugins) {
-            const ownPlugins = preset.plugins.filter((p) => p.enabled !== false)
-            // 按 id 合并：后面的覆盖前面的
-            const pluginMap = new Map<string, typeof plugins[0]>()
-            for (const p of plugins) {
-              pluginMap.set(p.id, p)
-            }
-            for (const p of ownPlugins) {
-              // 深度合并 config
-              const existing = pluginMap.get(p.id)
-              if (existing && p.config) {
-                pluginMap.set(p.id, {
-                  ...existing,
-                  config: { ...(existing.config || {}), ...p.config },
-                  isolate: p.isolate ?? existing.isolate,
-                  enabled: p.enabled !== false,
-                })
-              } else {
-                pluginMap.set(p.id, p)
-              }
-            }
-            plugins = Array.from(pluginMap.values())
-          }
-
-          return plugins
-        }
-
-        activePlugins = resolvePreset(activeName)
-        log.info({
-          preset: activeName,
-          pluginCount: activePlugins.length,
-          pluginIds: activePlugins.map((p) => p.id),
-        }, '预设解析完成')
-      } else if (rawConfig.plugins) {
-        // 兼容旧模式：直接使用 plugins 列表
-        activePlugins = rawConfig.plugins.filter((p) => p.enabled !== false)
-        log.info({ count: activePlugins.length }, '使用传统 plugins 列表模式')
-      }
-
-      // 加载解析后的插件
-      if (activePlugins.length > 0) {
+      if (config?.plugins && config.plugins.length > 0) {
         const loadedPlugins: Array<{ plugin: Plugin; source: 'builtin'; config?: Record<string, unknown>; isolate?: boolean }> = []
-        for (const pluginConfig of activePlugins) {
+        for (const pluginConfig of config.plugins) {
           if (!pluginConfig.enabled) continue
           if (pluginConfig.source === 'builtin') {
             const factory = pluginFactories[pluginConfig.id]

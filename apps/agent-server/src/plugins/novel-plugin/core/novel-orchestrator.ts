@@ -28,14 +28,8 @@
  *   - approve：跳过修订，直接进入 Memory 阶段
  *   - revise：调用 Writer 根据审稿意见修订局部内容
  *   - rewrite：重新开始整个创作流程（递归调用）
- *
- * ── 事件流 ──
- *
- * 通过 onProgress 回调向外推送 CreationFlowEvent，
- * 上层（如 SSE 路由）通过该回调实现实时进度推送。
- * 检查点决策由上层通过 onCheckpoint 回调委托 ConfirmationManager 完成
- * （统一超时机制 + pending 列表 + 'confirmation:*' 事件）。
  */
+import type { PluginSessionOptions } from '../../../core/plugin/plugin-types.js'
 
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'

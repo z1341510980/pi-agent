@@ -1,88 +1,48 @@
 # pi-agent 插件配置文件
-# 支持预设继承/覆盖（参考 DeepSeek Harness 的 agent.cordis.yml）
-#
-# 两种模式：
-# 1. 预设模式（使用 presets + active）：支持继承和覆盖
-# 2. 传统模式（直接使用 plugins）：向后兼容
-
-# ===== 预设定义 =====
-presets:
-  # 基础预设：包含核心插件
-  base:
-    description: "基础功能预设"
-    plugins:
-      - id: novel-plugin
-        source: builtin
-        enabled: true
-        isolate: false
-        config:
-          dataDir: ./data/novel
-          maxChapters: 100
-          maxTokensPerChapter: 8000
-          defaultModel: deepseek-chat
-          features:
-            autoSave: true
-            versionHistory: true
-            scenePlanning: true
-
-      - id: hello-plugin
-        source: builtin
-        enabled: false
-        config:
-          greeting: "Hello from base!"
-
-  # 高级预设：继承 base，添加搜索功能，覆盖部分配置
-  advanced:
-    description: "高级功能预设（含搜索）"
-    extends: base
-    plugins:
-      - id: web-search-plugin
-        source: builtin
-        enabled: true
-        isolate: false
-        config:
-          searchEngine: google
-          apiKey: ${WEB_SEARCH_API_KEY}
-          timeoutMs: 30000
-          maxResults: 10
-
-      # 覆盖 base 中的 novel-plugin 配置
-      - id: novel-plugin
-        config:
-          maxChapters: 200
-          maxTokensPerChapter: 16000
-          defaultModel: deepseek-reasoner
-
-      # 启用 hello-plugin（base 中禁用了）
-      - id: hello-plugin
-        enabled: true
-        config:
-          greeting: "Hello from advanced!"
-
-  # 调试预设：只加载小说插件，适合快速调试
-  debug:
-    description: "调试预设（仅小说插件）"
-    plugins:
-      - id: novel-plugin
-        source: builtin
-        enabled: true
-        isolate: true
-        config:
-          dataDir: ./data/novel-debug
-          maxChapters: 10
-          maxTokensPerChapter: 4000
-
-# 当前激活的预设（使用 advanced）
-active: advanced
-
-# ===== 配置说明 =====
 # 
-# 预设继承规则：
-# 1. 子预设通过 extends 继承父预设的所有插件
-# 2. 同名插件以子预设的配置覆盖父预设
-# 3. config 字段会深度合并（子预设覆盖父预设的同名字段）
-# 4. enabled 字段以子预设为准
-#
+# 使用说明：
+# 1. 在此文件中声明要加载的插件
+# 2. 每个插件必须指定 id 和 source
+# 3. 可通过 enabled 控制插件是否启用
+# 4. 可通过 config 传递插件特定配置
+# 5. 可通过 isolate: true 让插件在隔离环境中运行
+
+plugins:
+  # 小说创作插件 - 核心业务插件
+  - id: novel-plugin
+    source: builtin
+    enabled: true
+    isolate: false
+    config:
+      dataDir: ./data/novel
+      maxChapters: 100
+      maxTokensPerChapter: 8000
+      defaultModel: deepseek-chat
+      features:
+        autoSave: true
+        versionHistory: true
+        scenePlanning: true
+
+  # 网络搜索插件
+  - id: web-search-plugin
+    source: builtin
+    enabled: true
+    isolate: false
+    config:
+      searchEngine: google
+      apiKey: ${WEB_SEARCH_API_KEY}
+      timeoutMs: 30000
+      maxResults: 10
+
+  # 示例插件 - 默认禁用
+  - id: hello-plugin
+    source: builtin
+    enabled: false
+    isolate: false
+    config:
+      greeting: "Hello from pi-agent!"
+
+# 配置说明：
 # source 支持三种类型：
 #   - builtin: 内置插件（在 plugin-loader 中注册的工厂函数）
 #   - local: 本地文件系统插件（需要配置 localPluginsDir）

@@ -202,30 +202,6 @@ export interface PluginContext {
    * - 旧 boolean API（requestConfirmation/respond）与新 string API（requestDecision/respondDecision）均可调用
    */
   readonly confirmationManager: ConfirmationManager
-  /**
-   * 注册服务：供其他插件消费
-   *
-   * 与 registerService 的区别：
-   * - registerService 将服务挂载到 Fastify 实例（供路由和外部访问）
-   * - provide 将服务注册到服务容器（供其他插件通过 get 获取）
-   *
-   * @param key 服务标识（建议使用 `${pluginName}:${serviceName}` 避免冲突）
-   * @param service 服务实例
-   */
-  provide<T>(key: string, service: T): void
-  /**
-   * 获取其他插件提供的服务
-   *
-   * 查找顺序：
-   * 1. 当前插件提供的服务（通过 provide 注册）
-   * 2. 全局服务容器（其他插件通过 provide 注册）
-   *
-   * @param key 服务标识
-   * @returns 服务实例，若不存在则返回 undefined
-   */
-  get<T>(key: string): T | undefined
-  /** 声明本插件依赖的其他插件（用于控制加载顺序） */
-  dependsOn(pluginNames: string[]): void
   /** 注册工具 */
   registerTool(tool: ToolDefinition): void
   /** 注册 HTTP 路由（路径自动加 /api/plugins/:pluginName 前缀） */

@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useCallback } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2, ArrowDown } from 'lucide-react'
-import { useVirtualizer } from '@tanstack/react-virtual'
 import { EventType, type BaseEvent } from '@repo/protocol/events'
 import type { ChatMessage, MessageSegment, ToolCallInfo, ToolResultDetails } from './types'
 import {
@@ -527,42 +526,23 @@ export function MessageStream({
     return null
   }, [messages])
 
-  // ===== 虚拟滚动 =====
-  const virtualizerRef = useRef<HTMLDivElement>(null)
-  const estimateSize = useCallback(() => {
-    // 返回一个估计值，实际高度由内容决定
-    // 不同消息类型高度不同：user 消息约 40-80px，assistant 消息包含 markdown 和工具调用，可能 200-800px
-    // 使用较保守的估计，让虚拟化能工作但不会过度压缩
-    return 120
-  }, [])
-
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    getScrollElement: () => virtualizerRef.current,
-    estimateSize,
-    overscan: 5,
-    // 当消息列表变化时保持滚��位置稳定
-    keyExtractor: (index) => messages[index]?.id ?? String(index),
-  })
-
-  // 新消息到达时自动滚动到底部（如果用户没有主动滚动离开）
+  // 新消息到达时自动滚动到底部（使用 useAutoScroll 的 forceFollow）
   const prevLengthRef = useRef(messages.length)
   useEffect(() => {
     const currentLength = messages.length
-    if (currentLength > prevLengthRef.current && followingRef.current) {
+    if (currentLength > prevLengthRef.current) {
       // 新消息到达，滚动到底部
-      virtualizer.scrollToIndex(currentLength - 1, { align: 'end' })
+      forceFollow()
     }
     prevLengthRef.current = currentLength
-  }, [messages.length, virtualizer])
+  }, [messages.length, forceFollow])
 
   // 用户消息后强制跟随
   useEffect(() => {
     if (lastUserMessageId) {
-      followingRef.current = true
-      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' })
+      forceFollow()
     }
-  }, [lastUserMessageId, messages.length, virtualizer])
+  }, [lastUserMessageId, forceFollow])
 
   return (
     <div className="relative min-h-0 flex-1 flex flex-col">

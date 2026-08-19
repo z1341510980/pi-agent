@@ -90,9 +90,6 @@ function createMockContext(): PluginContext {
     registerSessionTools: noop,
     registerService: noop,
     registerPromptTemplates: noop,
-    provide: <T>(_key: string, _service: T) => {},
-    get: <T>(_key: string): T | undefined => undefined,
-    dependsOn: (_pluginNames: string[]) => {},
     createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
       mockState.createSessionCalls++
       mockState.lastOptions = options

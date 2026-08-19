@@ -834,39 +834,6 @@ export class PluginManager {
         entry.promptTemplateDirs.push(dir)
         logger.debug({ dir }, '已注册提示词模板目录')
       },
-      // ===== 服务容器 API（对标 DSH Cordis 的 provide/get） =====
-      provide: <T>(key: string, service: T) => {
-        entry.providedServices.set(key, service)
-        logger.debug({ key, serviceType: typeof service }, '服务已注册（provide）')
-      },
-      get: <T>(key: string): T | undefined => {
-        // 1. 先查本插件提供的服务
-        if (entry.providedServices.has(key)) {
-          return entry.providedServices.get(key) as T
-        }
-        // 2. 遍历所有已启用插件，查找服务
-        for (const [name, otherEntry] of this.entries) {
-          if (name === pluginName) continue
-          if (otherEntry.status !== 'enabled') continue
-          if (otherEntry.providedServices.has(key)) {
-            logger.debug({ key, provider: name }, '服务已从其他插件获取（get）')
-            return otherEntry.providedServices.get(key) as T
-          }
-        }
-        logger.debug({ key }, '服务未找到')
-        return undefined
-      },
-      dependsOn: (pluginNames: string[]) => {
-        // 记录依赖关系（用于加载顺序校验）
-        // 实际依赖检查在启动时由 PluginManager 处理
-        logger.debug({ dependencies: pluginNames }, '插件声明依赖')
-        // 可以在这里添加依赖验证逻辑，例如检查依赖插件是否已加载
-        for (const name of pluginNames) {
-          if (!this.entries.has(name)) {
-            logger.warn({ dependency: name }, '依赖的插件尚未加载')
-          }
-        }
-      },
       createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
         // AgentRuntime 路由（方案 §9.3）：默认 'pi-session' 走下方内联实现；
         // 第三方运行时（pi-subagents / pi-actors 等）通过 PluginManagerOptions

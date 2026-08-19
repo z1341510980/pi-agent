@@ -157,12 +157,12 @@ export class PiAgUiAgent {
         source: 'agent',
       })
       if (traceId) {
-        this.tracer.addEvent(traceId, {
+        this.tracer?.addEvent(traceId, {
           type: 'run_error',
           data: { message: `线程 ${threadId} 已有活跃 run` },
           status: 'failed',
         })
-        this.tracer.finishTrace(traceId, 'failed')
+        this.tracer?.finishTrace(traceId, 'failed')
       }
       emitTermination({
         type: EventType.RUN_ERROR,
@@ -277,7 +277,7 @@ export class PiAgUiAgent {
             data: { message: '无用户消息' },
             status: 'failed',
           })
-          this.tracer.finishTrace(traceId, 'failed')
+          this.tracer?.finishTrace(traceId, 'failed')
         }
         emitSingleAssistantMessage(emit, '我需要一条用户消息才能继续。')
         emitTermination({
@@ -290,7 +290,7 @@ export class PiAgUiAgent {
 
       // ===== 追踪：LLM 请求开始 =====
       if (traceId) {
-        this.tracer.addEvent(traceId, {
+        this.tracer?.addEvent(traceId, {
           type: 'llm_request',
           data: {
             userText,
@@ -310,7 +310,7 @@ export class PiAgUiAgent {
             data: { error: lastAssistantError },
             status: 'failed',
           })
-          this.tracer.finishTrace(traceId, 'failed')
+          this.tracer?.finishTrace(traceId, 'failed')
         }
         throw new Error(`LLM 调用失败: ${lastAssistantError}`)
       }
@@ -326,12 +326,12 @@ export class PiAgUiAgent {
       })
 
       if (traceId) {
-        this.tracer.addEvent(traceId, {
+        this.tracer?.addEvent(traceId, {
           type: 'assistant_message',
           data: { content: completeText },
           status: 'completed',
         })
-        this.tracer.finishTrace(traceId, 'completed')
+        this.tracer?.finishTrace(traceId, 'completed')
       }
 
       emitTermination({
