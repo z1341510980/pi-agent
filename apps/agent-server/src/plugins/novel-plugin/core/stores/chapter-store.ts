@@ -320,6 +320,10 @@ export class ChapterStore {
    * 事务内完成：旧 committed → superseded → 插入新行 → 推进 current 指针。
    */
   appendContentRevision(chapter: NovelChapter, source: VersionSource | null): ContentRevision | undefined {
+  // 防止空内容被保存为版本
+  if (!chapter.content || chapter.content.trim() === '') {
+    return undefined;
+  }
     return this.db.transaction(() => {
       const currentId = this.chapterRepository.getLatestCommittedId(chapter.id)
       if (currentId) {

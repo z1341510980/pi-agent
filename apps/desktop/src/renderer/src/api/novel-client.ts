@@ -865,6 +865,217 @@ export function compareReferenceProfileVersions(profileId: string, fromVersionId
   return getApi(`${BASE}/reference-profiles/${profileId}/compare?fromVersionId=${fromVersionId}&toVersionId=${toVersionId}`)
 }
 
+// ── P6/P7：应用预览、模板草稿与同场景验证（M4）──
+
+export interface ReferenceCompiledRule {
+  findingKey: string
+  category: 'spirit' | 'technique' | 'power' | 'pacing'
+  rule: string
+  strength: 'hard' | 'soft' | 'reference'
+  agentScopes: string[]
+  chapterScope: string[]
+}
+
+export interface ReferenceApplicationPreview {
+  profileId: string
+  profileHash: string
+  compiledRules: {
+    spirit: ReferenceCompiledRule[]
+    technique: ReferenceCompiledRule[]
+    power: ReferenceCompiledRule[]
+    pacing: ReferenceCompiledRule[]
+  }
+  fieldChanges: Array<{ field: string; currentValue: string; candidateValue: string; basis: string }>
+  agentPromptDiffs: Array<{ agent: string; addedCharacters: number; budget: number; withinBudget: boolean; ruleCount: number }>
+  promptCharacters: Record<string, number>
+  estimatedTokens: Record<string, number>
+  projectRuleConflicts: Array<{ projectRule: string; templateRuleKey: string; reason: string }>
+  emergentStyleConflicts: Array<{ expertName: string; reason: string }>
+  sourceSpecificMatches: Array<{ kind: string; match: string; ruleKey: string }>
+  safetyBlockers: string[]
+  warnings: string[]
+  blocking: boolean
+  previewHash: string
+  generatedAt: number
+}
+
+export interface ReferenceTemplate {
+  id: string
+  ownerProjectId: string | null
+  name: string
+  description: string
+  visibility: 'private' | 'shared'
+  status: 'draft' | 'published' | 'archived'
+  currentVersionId: string | null
+  sourceProfileId: string | null
+  sourceTextState: 'available' | 'deleted'
+  bindingCount: number
+  versionCount: number
+  previewHash: string | null
+  createdAt: number
+  updatedAt: number
+  archivedAt: number | null
+  deletedAt: number | null
+}
+
+export interface ReferenceTemplateVersion {
+  id: string
+  templateId: string
+  version: number
+  status: 'draft' | 'in_review' | 'published' | 'superseded' | 'rolled_back'
+  parentVersionId: string | null
+  templateHash: string
+  profileHash: string | null
+  spiritRules: ReferenceCompiledRule[]
+  techniqueRules: ReferenceCompiledRule[]
+  powerRules: ReferenceCompiledRule[]
+  pacingRules: ReferenceCompiledRule[]
+  chapterRuleSets: Array<{ chapterClassification: string; ruleKeys: string[] }>
+  defaultAgentScopes: string[]
+  projectOverrides: Record<string, unknown>
+  validationRunId: string | null
+  safetyResult: Record<string, unknown>
+  changeSummary: string | null
+  createdAt: number
+  publishedAt: number | null
+}
+
+export interface ReferenceValidationRun {
+  id: string
+  templateVersionId: string
+  scenarioSource: 'system_original' | 'user_input' | 'project_facts'
+  scenarioType: string | null
+  scenarioFacts: string
+  fixedScenarioVersion: string
+  fixedFactsHash: string
+  baselineConfig: Record<string, unknown>
+  templateConfig: Record<string, unknown>
+  baselineOutput: string | null
+  templateOutput: string | null
+  ruleHits: Record<string, unknown>
+  feedback: string | null
+  decision: 'accepted' | 'rejected' | null
+  decisionNote: string | null
+  decisionHash: string | null
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  providerId: string | null
+  modelId: string | null
+  estimate: Record<string, unknown>
+  usage: Record<string, unknown>
+  cost: Record<string, unknown>
+  safetyReport: Record<string, unknown>
+  error: string | null
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+  workerRunning?: boolean
+  publishable?: boolean
+  templateVersionStatus?: string | null
+  eventsUrl?: string
+}
+
+export function getReferenceApplicationPreview(profileId: string, input: {
+  findingKeys?: string[]
+  ownerProjectId?: string
+} = {}): Promise<ReferenceApplicationPreview> {
+  return postApi(`${BASE}/reference-profiles/${profileId}/application-preview`, input)
+}
+
+export function createReferenceTemplateDraft(profileId: string, input: {
+  name: string
+  description?: string
+  findingKeys?: string[]
+  defaultAgentScopes?: Array<'Director' | 'Writer' | 'Reviser' | 'Reviewer'>
+  chapterRuleSets?: Array<{ chapterClassification: string; ruleKeys: string[] }>
+  previewHash?: string
+  ownerProjectId?: string
+}): Promise<{ template: ReferenceTemplate; version: ReferenceTemplateVersion }> {
+  return postApi(`${BASE}/reference-profiles/${profileId}/template-drafts`, input)
+}
+
+export function listReferenceTemplates(query: { status?: string; projectId?: string } = {}): Promise<ReferenceTemplate[]> {
+  const params = new URLSearchParams()
+  if (query.status) params.set('status', query.status)
+  if (query.projectId) params.set('projectId', query.projectId)
+  const qs = params.toString()
+  return getApi(`${BASE}/reference-templates${qs ? `?${qs}` : ''}`)
+}
+
+export function getReferenceTemplate(templateId: string): Promise<{
+  template: ReferenceTemplate
+  currentVersion: ReferenceTemplateVersion | null
+  versions: Array<{
+    id: string; version: number; status: string; ruleCount: number
+    changeSummary: string | null; createdAt: number; publishedAt: number | null
+  }>
+}> {
+  return getApi(`${BASE}/reference-templates/${templateId}`)
+}
+
+export function createReferenceTemplateRevision(versionId: string, input: {
+  ruleOverrides?: Array<{
+    findingKey: string
+    rule?: string
+    strength?: 'hard' | 'soft' | 'reference'
+    agentScopes?: Array<'Director' | 'Writer' | 'Reviser' | 'Reviewer'>
+    chapterScope?: string[]
+  }>
+  defaultAgentScopes?: Array<'Director' | 'Writer' | 'Reviser' | 'Reviewer'>
+  chapterRuleSets?: Array<{ chapterClassification: string; ruleKeys: string[] }>
+  changeSummary?: string
+}): Promise<{
+  version: ReferenceTemplateVersion
+  diff: { ruleCount: number }
+  hash: string
+  safetyResult: Record<string, unknown>
+}> {
+  return postApi(`${BASE}/reference-template-versions/${versionId}/revisions`, input)
+}
+
+export function startReferenceValidationRun(versionId: string, input: {
+  scenarioSource: 'system_original' | 'user_input' | 'project_facts'
+  scenarioType?: string
+  scenarioFacts: string
+  providerId: string
+  modelId: string
+  highCostConfirmed: boolean
+}): Promise<ReferenceValidationRun> {
+  return postApi(`${BASE}/reference-template-versions/${versionId}/validation-runs`, input)
+}
+
+export function getReferenceValidationRun(runId: string): Promise<ReferenceValidationRun> {
+  return getApi(`${BASE}/reference-validation-runs/${runId}`)
+}
+
+export function submitReferenceValidationFeedback(runId: string, input: {
+  feedback: string
+  targetFindingKeys?: string[]
+  version?: number
+}): Promise<{
+  feedback: string
+  ruleSuggestions: Array<{ findingKey: string; currentRule: string; suggestedRule: string; reason: string }>
+  newVersionId: string | null
+  note: string
+}> {
+  return postApi(`${BASE}/reference-validation-runs/${runId}/feedback`, input)
+}
+
+export function regenerateReferenceValidationRun(runId: string, input: {
+  templateVersionId?: string
+  reuseFixedScenario: true
+  highCostConfirmed: boolean
+}): Promise<ReferenceValidationRun> {
+  return postApi(`${BASE}/reference-validation-runs/${runId}/regenerate`, input)
+}
+
+export function decideReferenceValidationRun(runId: string, input: {
+  decision: 'accepted' | 'rejected'
+  note?: string
+  version?: number
+}): Promise<ReferenceValidationRun> {
+  return postApi(`${BASE}/reference-validation-runs/${runId}/decision`, input)
+}
+
 // ── Storyline/Scene 人工 revision 与剧情矩阵重投影（M2）──
 
 export interface StorylineRevisionItem {

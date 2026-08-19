@@ -76,7 +76,26 @@ export function ChapterContentEditor({
       ? chapters.find((c) => c.id === targetChapterId)
       : undefined
     if (!targetChapter) return false
+    // 写入一致性守卫：播放头已切走说明 ref 过期（切换/数据刷新竞态），
+    // 此时落库会把 A 章正文写进 B 章的版本链。草稿已在 unsavedChapterDraft
+    // 持久化，切回该章后会恢复，这里直接放弃本次写入。
+    if (targetChapter.chapterNumber !== useNovelUiStore.getState().playheadChapter) {
+      return false
+    }
     const content = draftContentRef.current
+    // 空正文守卫：章节已有正文而草稿为空（加载时序异常/草稿残留）时，
+    // 空内容会把现有正文覆盖成一个空版本。要求显式确认才放行。
+    if (!content.trim() && (targetChapter.content ?? '').trim()) {
+      const confirmed = window.confirm(
+        `第 ${targetChapter.chapterNumber} 章已有正文，保存空内容会将其覆盖（生成一个空版本）。确认清空本章？`,
+      )
+      if (!confirmed) {
+        saveStateRef.current = 'saved'
+        setSaveState('saved')
+        clearUnsavedChapterDraft(targetChapter.id)
+        return true
+      }
+    }
     saveStateRef.current = 'saving'
     setSaveState('saving')
     setErrorMsg(null)
@@ -207,6 +226,23 @@ export function ChapterContentEditor({
     loadedChapterIdRef.current = targetChapter.id
 
     const draft = unsavedChapterDraft?.chapterId === targetChapter.id ? unsavedChapterDraft : null
+    // 坏草稿防御：恢复的草稿为空而章节本身有正文（上次会话的加载时序残留），
+    // 直接丢弃并以章节正文为准，避免空草稿标记 dirty 进而覆盖成空版本。
+    if (draft && !draft.content.trim() && (targetChapter.content ?? '').trim()) {
+      clearUnsavedChapterDraft(targetChapter.id)
+      setDraftContent(targetChapter.content ?? '')
+      draftContentRef.current = targetChapter.content ?? ''
+      saveStateRef.current = 'saved'
+      setSaveState('saved')
+      setErrorMsg(null)
+      try {
+        editor?.setEditable(!isCreationActive)
+        if (editor) editor.commands.setContent(targetChapter.content ?? '', { emitUpdate: false })
+      } catch {
+        editor?.setEditable(true)
+      }
+      return
+    }
     const content = draft?.content ?? targetChapter.content ?? ''
     setDraftContent(content)
     draftContentRef.current = content

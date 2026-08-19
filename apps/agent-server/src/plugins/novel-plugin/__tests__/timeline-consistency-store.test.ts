@@ -66,7 +66,8 @@ describe('TimelineConsistencyStore', () => {
     store.updateChapterContent(second.id, '改写后的正文', 6)
 
     const invalidation = store.getActiveTimelineInvalidation(projectId)
-    expect(invalidation).toMatchObject({ startChapterNumber: 2, status: 'pending', affectedChapters: [2, 3] })
+    // 第 3 章无派生状态与账本（未生成），不进入重建范围
+    expect(invalidation).toMatchObject({ startChapterNumber: 2, status: 'pending', affectedChapters: [2] })
     expect(invalidation!.staleCounts.memoryEvents).toBeGreaterThanOrEqual(1)
     expect(invalidation!.staleCounts.memorySnapshots).toBe(1)
     expect(invalidation!.staleCounts.characterHistory).toBe(1)
@@ -83,8 +84,10 @@ describe('TimelineConsistencyStore', () => {
     expect(preview.automaticRebuildAvailable).toBe(false)
     expect(preview.confirmationToken).toHaveLength(64)
     expect(preview.blockedReasons.length).toBeGreaterThan(0)
-    expect(() => store.assertTimelineAllowsGeneration(projectId, 2)).toThrow('时间线尚未重建')
-    expect(() => store.assertTimelineAllowsGeneration(projectId, 3)).toThrow('时间线尚未重建')
+    // 产品决策 2026-08-18：时间线闸门降级为提示，生成不再被阻断；
+    // 失效范围仍通过 getTimelineRebuildPreview 查询供前端提示。
+    expect(() => store.assertTimelineAllowsGeneration(projectId, 2)).not.toThrow()
+    expect(() => store.assertTimelineAllowsGeneration(projectId, 3)).not.toThrow()
     expect(() => store.assertTimelineAllowsGeneration(projectId, 1)).not.toThrow()
     expect(first.content).toContain('正文 1')
     db.close()
@@ -323,6 +326,32 @@ describe('TimelineConsistencyStore', () => {
     // 预览仍可用（invalidation 仍 active），允许用户确认后创建范围匹配的新任务
     const preview = store.getTimelineRebuildPreview(projectId)!
     expect(preview.automaticRebuildAvailable).toBe(true)
+    db.close()
+  })
+
+  it('手动新建且未生成的章节不进入重建范围，也不要求 Memory 账本', () => {
+    const db = createDb()
+    const store = new NovelStore(db)
+    const memory = new NovelMemoryStore(db)
+    const projectId = createProject(store)
+    createChapter(store, projectId, 1)
+    const second = createChapter(store, projectId, 2)
+    const third = createChapter(store, projectId, 3)
+    // 只有第二章有账本；第三章是手动新建（无账本、无派生状态）
+    db.prepare(`
+      INSERT INTO novel_memory_operation_runs
+        (id, project_id, chapter_id, source, payload_hash, status, created_at, committed_at)
+      VALUES (?, ?, ?, 'test', 'hash', 'committed', 1, 1)
+    `).run(randomUUID(), projectId, second.id)
+    memory.saveSnapshot({ projectId, chapterNumber: 1, snapshotType: 'full', entityId: null, snapshotData: '{}' })
+    store.updateChapterContent(second.id, '改写正文', 4)
+
+    const preview = store.getTimelineRebuildPreview(projectId)!
+    expect(preview.automaticRebuildAvailable).toBe(true)
+    expect(preview.blockedReasons).not.toContain(expect.stringContaining('第 3 章'))
+    const job = store.createTimelineRebuildJob(projectId, preview.confirmationToken)
+    expect(job.steps.map(step => step.chapterNumber)).toEqual([2])
+    expect(job.endChapterNumber).toBe(2)
     db.close()
   })
 })

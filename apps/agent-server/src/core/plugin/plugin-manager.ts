@@ -647,6 +647,8 @@ export class PluginManager {
     plugin: Plugin,
     source: 'builtin' | 'local' | 'npm',
     filePath?: string,
+    config?: Record<string, unknown>,
+    isolate?: boolean,
   ): Promise<void> {
     try {
       const manifest = plugin.manifest
@@ -665,6 +667,8 @@ export class PluginManager {
         status: 'loaded',
         source,
         filePath,
+        config: config ?? {},
+        isolate: isolate ?? false,
         tools: [],
         routes: [],
         panels: [],
@@ -677,7 +681,7 @@ export class PluginManager {
       }
       this.entries.set(manifest.name, entry)
       this.logger.info(
-        { plugin: manifest.name, version: manifest.version, source },
+        { plugin: manifest.name, version: manifest.version, source, hasConfig: !!config },
         '插件已加载',
       )
     } catch (err) {

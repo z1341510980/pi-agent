@@ -767,14 +767,18 @@ export class NovelStore implements NovelPromptStores {
     return this.timeline.completeRebuildJob(projectId, jobId)
   }
 
-  assertTimelineAllowsGeneration(projectId: string, chapterNumber: number): void {
-    const block = this.timeline.getGenerationBlock(projectId, chapterNumber)
-    if (block) throw new Error(block.message)
+  /**
+   * 时间线闸门已降级为提示（产品决策 2026-08-18）：
+   * 派生状态未重建不再阻断创作/发布/派生写入，只在保存回执与
+   * 顶栏「检查时间线」入口提示。重建保留为可选的一致性修复工具，
+   * getGenerationBlock/getPublishBlock 仍可查询失效范围供前端展示。
+   */
+  assertTimelineAllowsGeneration(_projectId: string, _chapterNumber: number): void {
+    // 降级为提示：不阻断生成。失效范围由 getTimelineRebuildPreview 查询。
   }
 
-  assertTimelineAllowsPublish(projectId: string, chapterNumber: number): void {
-    const block = this.timeline.getPublishBlock(projectId, chapterNumber)
-    if (block) throw new Error(block.message)
+  assertTimelineAllowsPublish(_projectId: string, _chapterNumber: number): void {
+    // 降级为提示：不阻断发布。
   }
 
   private assertTimelineAllowsChapterDerivedWrite(projectId: string, chapterId: string): void {

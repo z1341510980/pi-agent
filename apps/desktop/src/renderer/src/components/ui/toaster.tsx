@@ -18,7 +18,7 @@ import {
  *
  * 支持 5 种类型：default / success / info / warning / destructive(error)
  * 自动消失时长：success/info 3s，warning 4s，error 5s，default 4s
- * 堆叠显示（最多 3 条，超出移除最早的），从右侧滑入。
+ * 堆叠显示（最多 3 条，超出移除最早的），固定在右上角、从右侧滑入、向下堆叠。
  *
  * 用法：
  *   import { toast } from '@/hooks/use-toast'
@@ -49,26 +49,26 @@ const VARIANT_CONFIG: Record<
   success: {
     icon: CheckCircle2,
     iconColor: 'text-success',
-    border: 'border-success/30',
-    bg: 'bg-success/5 text-text',
+    border: 'border-success/50',
+    bg: 'bg-surface-1 text-text',
   },
   destructive: {
     icon: AlertCircle,
     iconColor: 'text-destructive',
-    border: 'border-destructive/30',
-    bg: 'bg-destructive/5 text-text',
+    border: 'border-destructive/50',
+    bg: 'bg-surface-1 text-text',
   },
   info: {
     icon: Info,
     iconColor: 'text-primary',
-    border: 'border-primary/30',
-    bg: 'bg-primary/5 text-text',
+    border: 'border-primary/50',
+    bg: 'bg-surface-1 text-text',
   },
   warning: {
     icon: AlertTriangle,
     iconColor: 'text-accent-foreground',
-    border: 'border-accent/30',
-    bg: 'bg-accent/5 text-text',
+    border: 'border-accent/50',
+    bg: 'bg-surface-1 text-text',
   },
 }
 
@@ -78,7 +78,7 @@ export function Toaster(): ReactElement {
   return (
     <ToastPrimitive.Provider swipeDirection="right" duration={5000}>
       <div
-        className="pointer-events-none fixed bottom-0 right-0 z-[100] flex max-h-screen w-full flex-col-reverse gap-2 p-4 sm:max-w-[400px]"
+        className="pointer-events-none fixed top-0 right-0 z-[100] flex max-h-screen w-full flex-col gap-2 p-4 sm:max-w-[400px]"
         role="region"
         aria-label="通知"
       >
@@ -128,7 +128,7 @@ function ToastItem({ toast }: { toast: ToastData }): ReactElement {
           <p className="text-sm font-semibold leading-tight">{toast.title}</p>
         )}
         {toast.description && (
-          <p className="text-sm opacity-90 text-pretty leading-snug">
+          <p className="text-sm text-subtle text-pretty leading-snug">
             {toast.description}
           </p>
         )}

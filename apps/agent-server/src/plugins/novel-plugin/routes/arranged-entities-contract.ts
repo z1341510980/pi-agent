@@ -71,6 +71,13 @@ export const creationFlowBodySchema = z.object({
   /** per-call 模型覆盖（输入框旁选择器传入，本次创作临时切换模型） */
   modelId: modelSelectionSchema.optional(),
   styleExpertIds: z.array(z.string().min(1).max(80)).max(8).optional(),
+  /** P9: 参考模板配置（方案 §9 章节生成集成） */
+  referenceTemplate: z.object({
+    enabled: z.boolean(),
+    templateId: z.string().uuid().optional(),
+    templateVersionId: z.string().uuid().optional(),
+    chapterClassification: z.string().max(100).optional(),
+  }).optional(),
 }).optional().default({})
 
 /**

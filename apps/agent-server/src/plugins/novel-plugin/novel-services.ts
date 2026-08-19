@@ -48,6 +48,9 @@ import { ReferenceAnalysisService } from './core/analysis/reference-analysis-ser
 import { ReferenceAnalysisRunStore } from './core/analysis/reference-analysis-run-store.js'
 import { ReferenceAnalysisRunWorker } from './core/analysis/reference-analysis-run-worker.js'
 import { ReferenceProfileStore } from './core/analysis/reference-profile-store.js'
+import { ReferenceTemplateStore } from './core/analysis/reference-template-store.js'
+import { ReferenceValidationRunStore } from './core/analysis/reference-validation-run-store.js'
+import { ReferenceValidationRunWorker } from './core/analysis/reference-validation-run-worker.js'
 import { TimelineRebuildRunner } from './core/analysis/timeline-rebuild-runner.js'
 import { CostReportService } from './core/analysis/cost-report-service.js'
 import { ObservabilityService } from './core/analysis/observability-service.js'
@@ -125,6 +128,12 @@ export interface NovelServices {
   referenceAnalysisWorker: ReferenceAnalysisRunWorker
   /** P5：参考档案与 finding 审核存储（novel_reference_profiles） */
   referenceProfiles: ReferenceProfileStore
+  /** P6：私人模板与不可变版本链存储 */
+  referenceTemplates: ReferenceTemplateStore
+  /** P7：同场景验证 run 存储 */
+  referenceValidationRuns: ReferenceValidationRunStore
+  /** P7：同场景验证执行器（双路生成/固定 facts hash/安全拦截） */
+  referenceValidationWorker: ReferenceValidationRunWorker
   /** 中间章隔离顺序重建执行器（start/resume 触发逐章隔离分析，不写主库派生事实） */
   timelineRebuildRunner: TimelineRebuildRunner
   /** P0 成本报表服务（只读聚合 novel_agent_logs + 度量表） */
@@ -283,13 +292,18 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     分析产物只落 rebuild steps/checkpoints，不写主库派生事实（方案 §6）。
   const timelineRebuildRunner = new TimelineRebuildRunner(context, store, memoryStore)
 
-  // 9.8 P4/P5：远端分析 run 执行器与参考档案存储。
+  // 9.8 P4-P7：远端分析 run 执行器、参考档案、模板与同场景验证。
   //     worker 依赖阶段 1 服务读取 sections/本地报告；事件表只存阶段与摘要。
   const referenceAnalysisRuns = new ReferenceAnalysisRunStore(db)
   const referenceProfiles = new ReferenceProfileStore(db)
   const referenceAnalysisWorker = new ReferenceAnalysisRunWorker(
     context, referenceAnalysisRuns, referenceProfiles, referenceAnalysis,
   )
+  const referenceTemplates = new ReferenceTemplateStore(db, referenceProfiles)
+  const referenceValidationRuns = new ReferenceValidationRunStore(db)
+  const referenceValidationWorker = new ReferenceValidationRunWorker(
+    context, referenceValidationRuns, referenceTemplates, referenceProfiles, referenceAnalysis,
+  )
 
-  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, referenceAnalysis, referenceAnalysisRuns, referenceAnalysisWorker, referenceProfiles, timelineRebuildRunner, costReportService, observabilityService, sharedOverlapAnalyzer }
+  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, referenceAnalysis, referenceAnalysisRuns, referenceAnalysisWorker, referenceProfiles, referenceTemplates, referenceValidationRuns, referenceValidationWorker, timelineRebuildRunner, costReportService, observabilityService, sharedOverlapAnalyzer }
 }

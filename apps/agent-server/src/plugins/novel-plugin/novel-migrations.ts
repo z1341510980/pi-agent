@@ -2535,5 +2535,12 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       CREATE INDEX IF NOT EXISTS idx_narrative_matrix_rebuild_events_rebuild
         ON novel_narrative_matrix_rebuild_events(rebuild_id, sequence_no);
     `
+  },
+  {
+    // 115: P7 验收记录保存固定输入（方案 §9：验收记录必须保存固定输入）。
+    // 此前只存 fixed_facts_hash，regenerate 无法复用场景事实文本，
+    // 执行器会拿到空场景生成，破坏“regenerate 必须复用同一 facts hash”的不变量。
+    id: '115_add_validation_scenario_facts',
+    sql: `ALTER TABLE novel_reference_validation_runs ADD COLUMN scenario_facts TEXT NOT NULL DEFAULT '';`
   }
 ]

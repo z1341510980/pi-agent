@@ -83,7 +83,17 @@ export class TimelineRebuildRunner {
     const baseSnapshotHash = hash(baseSnapshot.snapshotData)
     const priorAnalyses: Array<{ chapterNumber: number; summary: string }> = []
 
-    for (const initialStep of job.steps) {
+    // 过滤掉无正文的步骤（刚创建尚未生成内容的章节）
+    const validSteps = job.steps.filter((step) => {
+      const rev = this.store.getContentRevision(step.contentRevisionId)
+      return rev && rev.content.trim().length > 0
+    })
+    if (validSteps.length === 0) {
+      this.context.logger.info({ jobId, projectId }, '无有效正文章节可重建，自动完成')
+      this.store.completeTimelineRebuildAnalysisPhase(projectId, jobId)
+      return
+    }
+    for (const initialStep of validSteps) {
       signal.throwIfAborted()
       job = this.store.getTimelineRebuildJob(projectId, jobId)
       if (!job || !['queued', 'running'].includes(job.status)) return

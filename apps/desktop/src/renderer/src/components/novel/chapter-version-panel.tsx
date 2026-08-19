@@ -134,9 +134,14 @@ export function ChapterVersionPanel({
   const loadVersions = useCallback(
     async (selectLatest = false): Promise<void> => {
       if (!chapterId) return
+      const requestChapterId = chapterId // 记录发起请求时的章节
       setLoading(true)
       try {
-        const list = await listChapterVersions(chapterId)
+        const list = await listChapterVersions(requestChapterId)
+        // 校验：如果章节已切换，忽略旧请求的结果
+        if (requestChapterId !== chapterId) {
+          return
+        }
         setVersions(list)
         setSelectedId((current) => {
           if (!selectLatest && current && list.some((version) => version.id === current)) {
@@ -145,9 +150,13 @@ export function ChapterVersionPanel({
           return list[0]?.id ?? null
         })
       } catch (error) {
-        toastError('加载版本列表失败', errorMessage(error))
+        if (requestChapterId === chapterId) {
+          toastError('加载版本列表失败', errorMessage(error))
+        }
       } finally {
-        setLoading(false)
+        if (requestChapterId === chapterId) {
+          setLoading(false)
+        }
       }
     },
     [chapterId]
@@ -169,6 +178,7 @@ export function ChapterVersionPanel({
 
   useEffect(() => {
     if (!open || !chapterId) return
+    let cancelled = false
     setVersions([])
     setSelectedId(null)
     setSelectedDetail(null)
@@ -177,14 +187,26 @@ export function ChapterVersionPanel({
     setDiffToId(null)
     setDiffResult(null)
     setConfirmApplyId(null)
-    void loadVersions(true)
-    // 默认展示 V2 版本链页，挂载即加载链数据（避免需手动刷新才显示）
-    void loadChain()
+    
+    const load = async () => {
+      if (cancelled) return
+      await loadVersions(true)
+      if (!cancelled) await loadChain()
+    }
+    load()
+    
+    return () => { cancelled = true }
   }, [chapterId, loadVersions, loadChain, open])
 
   // V2 版本链回滚（不可变语义：生成 rollback_applied 新版本）
   const handleChainRollback = useCallback(async (revisionId: string): Promise<void> => {
     if (!chapterId) return
+    // 校验该版本是否属于当前章节（链表中所有版本都属于该章节，但安全起见检查）
+    const targetRevision = chainRevisions.find(r => r.id === revisionId)
+    if (!targetRevision) {
+      toastError('回滚失败', '未找到该版本')
+      return
+    }
     setChainApplyingId(revisionId)
     try {
       // 与 handleApplyVersion 一致：回滚前先保存未落库的正文，避免覆盖用户刚编辑的内容
@@ -202,7 +224,7 @@ export function ChapterVersionPanel({
     } finally {
       setChainApplyingId(null)
     }
-  }, [chapterId, loadChain, loadVersions, onBeforeApply, onApplySuccess])
+  }, [chapterId, chainRevisions, loadChain, loadVersions, onBeforeApply, onApplySuccess])
 
   useEffect(() => {
     if (!open || !chapterId || !selectedId) {

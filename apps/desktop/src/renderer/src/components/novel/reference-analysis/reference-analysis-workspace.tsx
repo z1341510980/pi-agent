@@ -7,6 +7,7 @@ import {
   FileInput,
   Files,
   FlaskConical,
+  Layers,
   ListChecks,
   LoaderCircle,
   Plus,
@@ -36,10 +37,11 @@ import { ReferenceSectionList } from './reference-section-list'
 import { ReferenceLocalReportPanel, ReferenceQualityPanel } from './reference-report-panels'
 import { StyleDistillReviewDialog } from './style-distill-review-dialog'
 import { ReferenceRunSection, ReferenceReviewSection } from './reference-run-panel'
+import { ReferenceTemplatePanel } from './reference-template-panel'
 import { createWritingStyleExpert } from '@/api/novel-client'
 import { WritingStyleProfileEditor } from '../writing-style-profile-editor'
 
-type ReferencePage = 'sources' | 'import' | 'quality' | 'report' | 'analysis' | 'review'
+type ReferencePage = 'sources' | 'import' | 'quality' | 'report' | 'analysis' | 'review' | 'template'
 type QualityView = 'overview' | 'sections'
 
 const PAGE_ITEMS = [
@@ -48,7 +50,8 @@ const PAGE_ITEMS = [
   { id: 'quality' as const, label: '质量与章节', icon: ScanText, step: 3 },
   { id: 'report' as const, label: '本地报告', icon: BarChart3, step: 4 },
   { id: 'analysis' as const, label: '远端分析', icon: FlaskConical, step: 5 },
-  { id: 'review' as const, label: '档案审核', icon: ListChecks, step: 6 }
+  { id: 'review' as const, label: '档案审核', icon: ListChecks, step: 6 },
+  { id: 'template' as const, label: '模板与验证', icon: Layers, step: 7 }
 ]
 
 interface ReferenceAnalysisWorkspaceProps {
@@ -206,13 +209,14 @@ export function ReferenceAnalysisWorkspace({
                     const Icon = item.icon
                     const disabled =
                       ((item.id === 'quality' || item.id === 'report' || item.id === 'analysis') && !parsed) ||
-                      (item.id === 'review' && !activeProfileId)
+                      ((item.id === 'review' || item.id === 'template') && !activeProfileId)
                     const complete =
                       (item.id === 'sources' && Boolean(sourcesQuery.data?.length)) ||
                       (item.id === 'import' && parsed) ||
                       (item.id === 'quality' && Boolean(qualityQuery.data)) ||
                       (item.id === 'report' && Boolean(reportQuery.data)) ||
-                      (item.id === 'review' && Boolean(activeProfileId))
+                      (item.id === 'review' && Boolean(activeProfileId)) ||
+                      (item.id === 'template' && Boolean(activeProfileId))
                     return (
                       <button
                         key={item.id}
@@ -390,6 +394,11 @@ export function ReferenceAnalysisWorkspace({
                 {page === 'review' && (
                   <div className="h-full min-h-0 overflow-y-auto">
                     <ReferenceReviewSection profileId={activeProfileId} />
+                  </div>
+                )}
+                {page === 'template' && (
+                  <div className="h-full min-h-0 overflow-hidden">
+                    <ReferenceTemplatePanel profileId={activeProfileId} projectId={projectId} />
                   </div>
                 )}
               </div>

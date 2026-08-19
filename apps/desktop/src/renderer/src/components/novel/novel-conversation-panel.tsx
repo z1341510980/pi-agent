@@ -65,6 +65,7 @@ import type {
 import { formatDetailBubble } from '@/hooks/use-novel-creation-flow'
 import type { ChatAgentOutput } from '@/hooks/use-chapter-chat'
 import type { ChapterChatMessage } from '@/api/novel-client'
+import { useTimelineRebuildStore } from '@/stores/timeline-rebuild-store'
 import type { NovelCreationMode, NovelInterjectTargetAgent } from '@repo/shared/novel'
 import { DEFAULT_NOVEL_STYLE_EXPERTS, type NovelStyleExpert } from '@repo/shared/novel'
 import type { MentionOption } from '@/components/shared/conversation'
@@ -859,6 +860,8 @@ export function NovelConversationPanel({
   // 反推和 AI 编排不生成正文，不显示"保存到章节"。
   // AI 编排的落库由 arrange_review 的确认按钮完成，不是流程结束后的额外保存。
   const canSave = isCompleted && !!chapterContent && !isArrangeMode && !isReverseMode
+  // 时间线重建的对话流可见化状态（由顶栏 TimelineRebuildControl 同步写入）
+  const timelineStatus = useTimelineRebuildStore((s) => s.status)
 
   // ── 完成时的动作标签 ──
   const completedActionLabel = isArrangeMode ? '编排' : isReverseMode ? '反推' : '创作'
@@ -1159,6 +1162,53 @@ export function NovelConversationPanel({
       })
     }
 
+    // 时间线重建状态 → 对话流可见的系统消息（进度/待应用/完成/失败）
+    if (timelineStatus.phase !== 'idle') {
+      const start = timelineStatus.startChapterNumber
+      const range = timelineStatus.total > 0 ? `第 ${start} 章起 ${timelineStatus.total} 章` : ''
+      let content: string
+      let actions: ConversationMessage['systemActions']
+      switch (timelineStatus.phase) {
+        case 'invalidated':
+          content = `检测到时间线失效（${range}）。后续章节的派生状态基于旧正文，继续生成前建议重建。`
+          if (!timelineStatus.error) {
+            actions = [{ label: '开始重建', action: 'timeline-start', variant: 'default' as const }]
+          } else {
+            content += `\n当前不能自动重建：${timelineStatus.error}`
+          }
+          break
+        case 'analyzing':
+          content = `时间线重建进行中（${range}）：已完成 ${timelineStatus.completed}/${timelineStatus.total} 章的隔离分析。`
+          break
+        case 'awaiting_apply':
+          content = `时间线分析完成（${range}）：${timelineStatus.total - timelineStatus.completed} 章重建结果待应用。应用后将恢复派生状态并解除创作限制。`
+          actions = [{ label: '应用重建结果', action: 'timeline-apply-all', variant: 'default' as const }]
+          break
+        case 'applying':
+          content = `正在应用时间线重建结果（${timelineStatus.completed}/${timelineStatus.total} 章）…`
+          break
+        case 'completed':
+          content = `时间线重建完成：${range}的派生状态已按重放结果恢复，创作与发布限制已解除。`
+          break
+        case 'failed':
+          content = `时间线重建失败${timelineStatus.error ? `：${timelineStatus.error}` : ''}。可重试；若持续失败请检查模型配置。`
+          actions = [{ label: '重试重建', action: 'timeline-start', variant: 'default' as const }]
+          break
+        default:
+          content = ''
+      }
+      if (content) {
+        msgs.push({
+          id: 'timeline-rebuild-status',
+          role: 'system',
+          content,
+          status: 'complete',
+          timestamp: timelineStatus.updatedAt || Date.now(),
+          systemActions: actions,
+        })
+      }
+    }
+
     // 按时间戳排序
     return msgs.sort((a, b) => a.timestamp - b.timestamp)
   }, [
@@ -1174,7 +1224,8 @@ export function NovelConversationPanel({
     isCompleted,
     completedActionLabel,
     canSave,
-    chapterNumber
+    chapterNumber,
+    timelineStatus
   ])
 
   // ── 回调 ──

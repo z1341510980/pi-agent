@@ -647,7 +647,7 @@ export function MatrixView({
                     isCurrent && 'bg-amber-500/[0.07]',
                   )}
                   style={{ width: cellWidth }}
-                  onClick={() => onPlayheadChange(ch)}
+                  onClick={(e) => { e.stopPropagation(); onPlayheadChange(ch); }}
                   onKeyDown={handleRulerKeyDown}
                   onContextMenu={(e) => {
                     e.preventDefault()

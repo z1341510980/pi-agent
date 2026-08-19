@@ -14,6 +14,7 @@ import {
 } from '@/api/novel-client'
 import { toastError, toastSuccess } from '@/hooks/use-toast'
 import type { NovelAgentModelRef } from '@/stores/novel-ui-store'
+import { useTimelineRebuildStore, type TimelineRebuildStatus } from '@/stores/timeline-rebuild-store'
 
 interface TimelineRebuildControlProps {
   projectId: string | null
@@ -47,6 +48,55 @@ function isAnalysisPhaseDone(job: TimelineRebuildJob | null): boolean {
   return job.steps.every(step => step.status === 'ready_to_apply' || step.status === 'applied')
 }
 
+/** 把 job/preview 状态同步到对话流可见化 store。 */
+function syncStatusToStore(
+  patchStatus: (patch: Partial<TimelineRebuildStatus>) => void,
+  job: TimelineRebuildJob | null,
+  preview: TimelineRebuildPreview | null,
+): void {
+  if (job) {
+    const total = job.steps.length
+    if (job.status === 'completed') {
+      patchStatus({ phase: 'completed', startChapterNumber: job.startChapterNumber, total, completed: total, error: null })
+      return
+    }
+    if (job.status === 'failed') {
+      patchStatus({ phase: 'failed', startChapterNumber: job.startChapterNumber, total, completed: job.completed, error: job.error })
+      return
+    }
+    if (job.status === 'running' || job.status === 'queued') {
+      const pending = job.steps.filter(step => step.status === 'pending' || step.status === 'replaying').length
+      if (pending > 0) {
+        // 分析进度 = 已出结论的章节数（ready_to_apply + applied）
+        patchStatus({
+          phase: 'analyzing',
+          startChapterNumber: job.startChapterNumber,
+          total,
+          completed: total - pending,
+          error: null,
+        })
+        return
+      }
+      patchStatus({ phase: 'awaiting_apply', startChapterNumber: job.startChapterNumber, total, completed: job.completed, error: null })
+      return
+    }
+    // cancelled / paused：回失效态，等待用户重新启动
+    patchStatus({ phase: 'invalidated', startChapterNumber: job.startChapterNumber, total, completed: 0, error: job.error })
+    return
+  }
+  if (preview) {
+    patchStatus({
+      phase: 'invalidated',
+      startChapterNumber: preview.startChapterNumber,
+      total: preview.affectedChapters.length,
+      completed: 0,
+      error: preview.automaticRebuildAvailable ? null : preview.blockedReasons.join('；'),
+    })
+    return
+  }
+  patchStatus({ phase: 'idle', startChapterNumber: null, total: 0, completed: 0, error: null })
+}
+
 /**
  * 项目级时间线重建入口。
  *
@@ -59,17 +109,20 @@ export function TimelineRebuildControl({ projectId, selectedModel }: TimelineReb
   const [error, setError] = useState<string | null>(null)
   const jobRef = useRef<TimelineRebuildJob | null>(null)
   const readErrorRef = useRef<string | null>(null)
+  const patchStatus = useTimelineRebuildStore((s) => s.patchStatus)
 
   const updateJob = useCallback((next: TimelineRebuildJob | null): void => {
     jobRef.current = next
     setJob(next)
-  }, [])
+    syncStatusToStore(patchStatus, next, null)
+  }, [patchStatus])
 
   const syncPreview = useCallback(async (): Promise<TimelineRebuildPreview | null> => {
     if (!projectId) {
       updateJob(null)
       setError(null)
       readErrorRef.current = null
+      patchStatus({ phase: 'idle', startChapterNumber: null, total: 0, completed: 0, error: null })
       return null
     }
     try {
@@ -78,18 +131,23 @@ export function TimelineRebuildControl({ projectId, selectedModel }: TimelineReb
       readErrorRef.current = null
       // 预览成功只清掉读取错误；失败任务的错误由 job 状态继续显示。
       setError((current) => jobRef.current?.status === 'failed' ? current : null)
+      syncStatusToStore(patchStatus, jobRef.current, next)
       return next
     } catch (cause) {
       if (cause instanceof ApiClientError && cause.code === 'NOT_FOUND') {
         readErrorRef.current = null
         if (jobRef.current?.status !== 'failed' && jobRef.current?.status !== 'cancelled') setError(null)
+        // 无失效：回 idle；已完成的重建保留 completed 提示（对话流可见），不清除。
+        if (jobRef.current?.status !== 'completed') {
+          syncStatusToStore(patchStatus, jobRef.current?.status === 'failed' ? jobRef.current : null, null)
+        }
         return null
       }
       readErrorRef.current = errorMessage(cause)
       setError(readErrorRef.current)
       return null
     }
-  }, [projectId, updateJob])
+  }, [projectId, updateJob, patchStatus])
 
   useEffect(() => {
     updateJob(null)
@@ -197,6 +255,7 @@ export function TimelineRebuildControl({ projectId, selectedModel }: TimelineReb
     let current = jobRef.current
     if (!current) return
     setBusy(true)
+    patchStatus({ phase: 'applying' })
     try {
       for (;;) {
         const next = current.steps.find(step => step.status === 'ready_to_apply')
@@ -207,16 +266,31 @@ export function TimelineRebuildControl({ projectId, selectedModel }: TimelineReb
       if (current.steps.every(step => step.status === 'applied')) {
         const completed = await completeTimelineRebuildJob(projectId, current.id)
         updateJob(completed)
+        patchStatus({ phase: 'completed', completed: completed.steps.length, error: null })
         toastSuccess('时间线重建完成', '派生状态已按重放结果恢复，创作与发布闸门已解除。')
       }
     } catch (cause) {
       const message = errorMessage(cause)
       setError(message)
+      patchStatus({ phase: 'failed', error: message })
       toastError('应用重建结果失败', message)
     } finally {
       setBusy(false)
     }
-  }, [busy, projectId, updateJob])
+  }, [busy, projectId, updateJob, patchStatus])
+
+  // 把启动/应用动作注册到共享 store，对话面板的系统消息按钮通过它触发本控件逻辑。
+  const handleApplyAllRef = useRef(handleApplyAll)
+  handleApplyAllRef.current = handleApplyAll
+  const handleStartRef = useRef(handleStart)
+  handleStartRef.current = handleStart
+  const registerActions = useTimelineRebuildStore((s) => s.registerActions)
+  useEffect(() => {
+    return registerActions({
+      start: () => void handleStartRef.current(),
+      applyAll: () => void handleApplyAllRef.current(),
+    })
+  }, [registerActions])
 
   // 项目级入口始终可见，避免一次临时请求失败或切换布局后用户失去修复入口。
   const visible = !!projectId

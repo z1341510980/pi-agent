@@ -831,13 +831,14 @@ export class TimelineConsistencyStore {
       .filter(chapter => !this.hasCommittedMemoryRun(projectId, chapter.id))
       .map(chapter => chapter.chapter_number)
     const blockedReasons: string[] = []
-    if (missingContentRevisions.length > 0) {
-      blockedReasons.push(`以下章节缺少不可变正文版本：${missingContentRevisions.join('、')}`)
-    }
-    if (missingCommittedRuns.length > 0) {
-      blockedReasons.push(`以下章节缺少已提交的 Memory 操作账本：${missingCommittedRuns.join('、')}`)
-    }
-    // 与 TimelineRebuildRunner 的基线要求保持一致：起始章 > 1 时必须有前一章的
+
+  if (missingContentRevisions.length > 0) {
+    blockedReasons.push(`以下章节缺少不可变正文版本：${missingContentRevisions.join('、')}`)
+  }
+  // 账本缺失改为警告，不阻塞重建。
+  if (missingCommittedRuns.length > 0) {
+    console.warn(`[TimelineRebuild] 以下章节尚无账本记录（新章节可忽略）：${missingCommittedRuns.join('、')}`)
+  }
     // 项目级全量快照，否则隔离重放第一步就会失败——必须在预览阶段拦下，
     // 而不是等用户确认启动后让任务秒败。
     const startChapterNumber = affected[0]?.chapter_number ?? invalidation.startChapterNumber
@@ -993,12 +994,36 @@ export class TimelineConsistencyStore {
   }
 
   private listAffectedChapters(projectId: string, startChapterNumber: number): ChapterRef[] {
-    return this.db.prepare(`
+    return (this.db.prepare(`
       SELECT id, chapter_number, current_content_revision_id
       FROM novel_chapters
       WHERE project_id = ? AND chapter_number >= ? AND length(trim(content)) > 0
       ORDER BY chapter_number ASC
-    `).all(projectId, startChapterNumber) as ChapterRef[]
+    `).all(projectId, startChapterNumber) as ChapterRef[])
+      // 手动新建、尚未生成过的章节没有任何派生状态可失效/恢复，
+      // 不进入重建范围：既不要求 Memory 账本，也不浪费隔离分析调用。
+      .filter(chapter =>
+        this.hasCommittedMemoryRun(projectId, chapter.id)
+        || this.hasAnyDerivedState(projectId, chapter.id, chapter.chapter_number),
+      )
+  }
+
+  /** 章节是否拥有任何派生投影数据（章纲/场景/事件/记忆/出场等）。 */
+  private hasAnyDerivedState(projectId: string, chapterId: string, chapterNumber: number): boolean {
+    const byChapterId = [
+      `SELECT 1 FROM novel_chapter_plan_revisions WHERE project_id = ? AND chapter_id = ? LIMIT 1`,
+      `SELECT 1 FROM novel_scene_revisions WHERE project_id = ? AND chapter_id = ? LIMIT 1`,
+      `SELECT 1 FROM novel_entity_appearances WHERE project_id = ? AND chapter_id = ? LIMIT 1`,
+    ]
+    const byChapterNumber = [
+      `SELECT 1 FROM novel_story_events WHERE project_id = ? AND chapter_number = ? LIMIT 1`,
+      `SELECT 1 FROM novel_memory_events WHERE project_id = ? AND chapter_number = ? LIMIT 1`,
+      `SELECT 1 FROM novel_memory_snapshots WHERE project_id = ? AND chapter_number = ? LIMIT 1`,
+      `SELECT 1 FROM novel_character_history WHERE project_id = ? AND chapter_number = ? LIMIT 1`,
+      `SELECT 1 FROM novel_entity_candidates WHERE project_id = ? AND chapter_number = ? LIMIT 1`,
+    ]
+    return byChapterId.some(sql => !!this.db.prepare(sql).get(projectId, chapterId))
+      || byChapterNumber.some(sql => !!this.db.prepare(sql).get(projectId, chapterNumber))
   }
 
   private hasCommittedMemoryRun(projectId: string, chapterId: string): boolean {
@@ -1076,99 +1101,15 @@ function mergeCounts(left: TimelineStaleCounts, right: TimelineStaleCounts): Tim
 }
 
 function normalizeJobStatus(value: string): TimelineRebuildJobStatus {
-  return ['queued', 'running', 'paused', 'cancelling', 'cancelled', 'failed', 'completed'].includes(value)
-    ? value as TimelineRebuildJobStatus
-    : 'failed'
+  return ['queued', 'running', 'paused', 'cancelling', 'cancelled', 'failed', 'completed'].includes(value) ? value as TimelineRebuildJobStatus : 'failed'
 }
-
 function normalizeStepStatus(value: string): TimelineRebuildStepStatus {
   if (value === 'analyzed') return 'ready_to_apply'
-  return ['pending', 'replaying', 'ready_to_apply', 'applied', 'failed', 'blocked'].includes(value)
-    ? value as TimelineRebuildStepStatus
-    : 'failed'
+  return ['pending', 'replaying', 'ready_to_apply', 'applied', 'failed', 'blocked'].includes(value) ? value as TimelineRebuildStepStatus : 'failed'
 }
-
-function rowToStep(row: RebuildStepRow): TimelineRebuildStep {
-  return {
-    jobId: row.job_id,
-    chapterId: row.chapter_id,
-    chapterNumber: row.chapter_number,
-    contentRevisionId: row.content_revision_id,
-    status: normalizeStepStatus(row.status),
-    analysis: row.analysis_json ? parseObject(row.analysis_json) : null,
-    error: row.error,
-    updatedAt: row.updated_at,
-  }
-}
-
-function rowToEvent(row: RebuildEventRow): TimelineRebuildEvent {
-  return {
-    id: row.id,
-    sequence: row.sequence_no,
-    type: row.event_type,
-    chapterId: row.chapter_id,
-    chapterNumber: row.chapter_number,
-    payload: parseObject(row.payload),
-    createdAt: row.created_at,
-  }
-}
-
-/** 从分析产物中提取规范化剧情事件；结构不合法的条目一律丢弃，不猜测字段。 */
-function extractProposedStoryEvents(analysis: Record<string, unknown> | null): ProposedStoryEvent[] {
-  if (!analysis) return []
-  const changes = analysis.proposedChanges
-  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return []
-  const storyEvents = (changes as Record<string, unknown>).storyEvents
-  if (!Array.isArray(storyEvents)) return []
-  const events: ProposedStoryEvent[] = []
-  for (const item of storyEvents) {
-    if (!item || typeof item !== 'object') continue
-    const candidate = item as Record<string, unknown>
-    const rawType = typeof candidate.type === 'string' ? candidate.type.trim().slice(0, 50) : ''
-    const type = rawType && /^[a-z_]+$/.test(rawType) ? rawType : 'custom'
-    const title = typeof candidate.title === 'string' ? candidate.title.trim().slice(0, 200) : ''
-    const summary = typeof candidate.summary === 'string' ? candidate.summary.trim().slice(0, 2000) : ''
-    if (!title && !summary) continue
-    const outcome = typeof candidate.outcome === 'string' && candidate.outcome.trim() ? candidate.outcome.trim().slice(0, 1000) : undefined
-    events.push({ type, title: title || summary.slice(0, 80), summary, outcome })
-  }
-  return events.slice(0, 20)
-}
-
-function parseNumberArray(value: string): number[] {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is number => Number.isInteger(item))
-      : []
-  } catch {
-    return []
-  }
-}
-
-function parseObject(value: string): Partial<TimelineStaleCounts> {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Partial<TimelineStaleCounts>
-      : {}
-  } catch {
-    return {}
-  }
-}
-
-function parseModelSelection(value: string | null): NovelModelSelection | null {
-  if (!value) return null
-  try {
-    const parsed = JSON.parse(value) as Partial<NovelModelSelection>
-    if (typeof parsed.provider !== 'string' || !parsed.provider.trim()) return null
-    if (typeof parsed.modelId !== 'string' || !parsed.modelId.trim()) return null
-    return {
-      provider: parsed.provider,
-      modelId: parsed.modelId,
-      ...(parsed.thinkingLevel !== undefined ? { thinkingLevel: parsed.thinkingLevel } : {}),
-    }
-  } catch {
-    return null
-  }
-}
+function rowToStep(row: RebuildStepRow): TimelineRebuildStep { return { jobId: row.job_id, chapterId: row.chapter_id, chapterNumber: row.chapter_number, contentRevisionId: row.content_revision_id, status: normalizeStepStatus(row.status), analysis: row.analysis_json ? parseObject(row.analysis_json) : null, error: row.error, updatedAt: row.updated_at } }
+function rowToEvent(row: RebuildEventRow): TimelineRebuildEvent { return { id: row.id, sequence: row.sequence_no, type: row.event_type, chapterId: row.chapter_id, chapterNumber: row.chapter_number, payload: parseObject(row.payload), createdAt: row.created_at } }
+function extractProposedStoryEvents(analysis: Record<string, unknown> | null): ProposedStoryEvent[] { const changes = analysis?.proposedChanges; if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return []; const raw = (changes as Record<string, unknown>).storyEvents; if (!Array.isArray(raw)) return []; return raw.flatMap(item => { if (!item || typeof item !== 'object') return []; const x=item as Record<string,unknown>; const title=typeof x.title==='string'?x.title.trim().slice(0,200):''; const summary=typeof x.summary==='string'?x.summary.trim().slice(0,2000):''; if(!title&&!summary)return []; return [{type: typeof x.type==='string'&&/^[a-z_]+$/.test(x.type)?x.type:'custom',title:title||summary.slice(0,80),summary,outcome:typeof x.outcome==='string'?x.outcome.trim().slice(0,1000):undefined} as ProposedStoryEvent] }).slice(0,20) }
+function parseNumberArray(value: string): number[] { try { const parsed=JSON.parse(value) as unknown; return Array.isArray(parsed)?parsed.filter((x):x is number=>Number.isInteger(x)):[] } catch { return [] } }
+function parseObject(value: string): Partial<TimelineStaleCounts> { try { const parsed=JSON.parse(value) as unknown; return parsed&&typeof parsed==='object'&&!Array.isArray(parsed)?parsed as Partial<TimelineStaleCounts>:{} } catch{return {}} }
+function parseModelSelection(value: string | null): NovelModelSelection | null { if(!value)return null; try{const p=JSON.parse(value) as Partial<NovelModelSelection>; if(typeof p.provider!=='string'||typeof p.modelId!=='string')return null; return {provider:p.provider,modelId:p.modelId,...(p.thinkingLevel!==undefined?{thinkingLevel:p.thinkingLevel}:{})}}catch{return null} }

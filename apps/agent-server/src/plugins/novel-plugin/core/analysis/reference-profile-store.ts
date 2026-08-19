@@ -117,6 +117,12 @@ export class ReferenceProfileStore {
       power: { summary: string; rules: string[] }
       pacing: { summary: string; rules: string[] }
       findings: Array<{ category: ReferenceFindingCategory; observation: string; rule: string; strength?: ReferenceFindingStrength; evidence?: string[] }>
+      safetyHints?: {
+        directQuotes?: string[]
+        properNouns?: string[]
+        plotSequences?: string[]
+        uniqueScenes?: string[]
+      }
     },
     verifiedDirectQuotes: string[],
   ): ReferenceProfile {
@@ -145,9 +151,9 @@ export class ReferenceProfileStore {
     })
     const safetyReport: ReferenceSafetyReport = {
       directQuotes: verifiedDirectQuotes.map((quote) => ({ prefix: quote.slice(0, 10), length: quote.length })),
-      properNouns: [],
-      plotSequences: [],
-      uniqueScenes: [],
+      properNouns: (book.safetyHints?.properNouns ?? []).slice(0, 30),
+      plotSequences: (book.safetyHints?.plotSequences ?? []).slice(0, 20),
+      uniqueScenes: (book.safetyHints?.uniqueScenes ?? []).slice(0, 20),
       blockers: verifiedDirectQuotes.length > 0
         ? [`存在 ${verifiedDirectQuotes.length} 条经核实的直接引用（≥12 字），进入应用预览前必须删除或改写`]
         : [],
@@ -179,10 +185,16 @@ export class ReferenceProfileStore {
     if (!row) return undefined
     const reviews = (this.db.prepare('SELECT * FROM novel_reference_finding_reviews WHERE profile_id = ? ORDER BY created_at ASC').all(id) as ReviewRow[])
       .map(toReview)
+    console.log('[getProfile] row.findings:', row.findings);
     const findings = parseFindings(row.findings).map((finding) => {
       const review = reviews.find((item) => item.findingKey === finding.key) ?? null
-      return review ? applyReview(finding, review) : finding
+      if (review) {
+        return applyReview(finding, review)
+      }
+      return finding
     })
+    console.log('[getProfile] findings count:', findings.length);
+    console.log('[getProfile] findings keys:', findings.map(f => f.key).join(', '));
     return {
       id: row.id,
       analysisRunId: row.analysis_run_id,

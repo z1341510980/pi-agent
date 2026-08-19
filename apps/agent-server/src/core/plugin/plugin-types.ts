@@ -152,6 +152,8 @@ export interface PluginManifest {
 export interface PluginContext {
   /** 当前插件名 */
   readonly pluginName: string
+  /** 插件配置（从 plugins.yml 加载时传入） */
+  readonly config: Record<string, unknown>
   /** 模块级日志器（已绑定 pluginName） */
   readonly logger: FastifyBaseLogger
   /** SQLite 数据库连接（由 databasePlugin 提供） */
@@ -482,6 +484,10 @@ export interface PluginEntry {
   source: 'builtin' | 'local' | 'npm'
   /** 插件文件路径 */
   filePath?: string
+  /** 插件配置（从配置文件加载时传入） */
+  config?: Record<string, unknown>
+  /** 是否隔离运行（默认 false） */
+  isolate?: boolean
   /** 已注册的工具 */
   tools: ToolDefinition[]
   /** 已注册的路由 */

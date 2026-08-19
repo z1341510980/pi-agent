@@ -11,7 +11,7 @@
  * - hc()：hover 卡属性构造器（matrix-view 也复用）
  */
 
-import { useMemo, useCallback, memo, type ReactElement } from 'react'
+import { useMemo, useCallback, memo, useRef, type ReactElement } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { ChevronRight, GripVertical, LayoutGrid } from 'lucide-react'
@@ -469,7 +469,7 @@ const HitCell = memo(function HitCell({ entity, chapter, cellWidth, onTogglePres
         className="group/cell absolute top-0 bottom-0 flex items-center justify-center cursor-pointer hover:bg-primary/[0.06] focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
         style={{ left, width: cellWidth }}
           {...hc(entity.name, chapter, { after: resolveEmptyCellHint(entity.kind), color: meta.color })}
-        onClick={handleActivate}
+        onClick={handleSelect}
         onDoubleClick={canTogglePresence ? handleToggle : undefined}
         onContextMenu={onContextMenu}
         aria-label={`第 ${chapter} 章 ${entity.name} 空单元格`}
@@ -491,11 +491,12 @@ const HitCell = memo(function HitCell({ entity, chapter, cellWidth, onTogglePres
         left={left}
         isProtagonist={symbol.type === 'present' ? symbol.protagonist : false}
         onContextMenu={onContextMenu}
+        onPlayheadChange={onPlayheadChange}
       />
     )
   }
 
-  // 其余类型已出场：点击选中，双击定位播放头
+  // 其余类型已出场：单击选中并定位播放头，双击亦定位
   return (
     <div
       className="absolute top-0 bottom-0 cursor-pointer focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
@@ -503,12 +504,15 @@ const HitCell = memo(function HitCell({ entity, chapter, cellWidth, onTogglePres
       role="button"
       tabIndex={0}
           {...hc(entity.name, chapter, { after: resolvePresentCellHint(entity.kind, symbol.type), color: meta.color })}
-      onClick={handleSelect}
+      onClick={(e) => {
+        handleSelect(e)
+      }}
       onDoubleClick={handleActivate}
       onKeyDown={(e) => {
         if (e.key !== 'Enter' && e.key !== ' ') return
         e.preventDefault()
         handleSelect(e)
+        onPlayheadChange?.(chapter)
       }}
       onContextMenu={onContextMenu}
       aria-label={`第 ${chapter} 章 ${entity.name}`}
@@ -530,9 +534,10 @@ interface DraggablePresentCellProps {
   left: number
   isProtagonist: boolean
   onContextMenu?: (e: React.MouseEvent) => void
+  onPlayheadChange?: (chapter: number) => void
 }
 
-function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist, onContextMenu }: DraggablePresentCellProps): ReactElement {
+function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist, onContextMenu, onPlayheadChange }: DraggablePresentCellProps): ReactElement {
   const meta = GROUP_META[entity.kind]
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `cell:${entity.entityId}:${chapter}`,
@@ -543,11 +548,19 @@ function DraggablePresentCell({ entity, chapter, cellWidth, left, isProtagonist,
       chapter,
     } satisfies CellDragData,
   })
+  // 区分单击与拖拽：pointerdown 记录起点，click 时位移超过阈值视为拖拽残留，不切播放头。
+  const downPosRef = useRef<{ x: number; y: number } | null>(null)
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
+      onPointerDownCapture={(e) => { downPosRef.current = { x: e.clientX, y: e.clientY } }}
+      onClick={(e) => {
+        const down = downPosRef.current
+        downPosRef.current = null
+        if (down && (Math.abs(e.clientX - down.x) > 4 || Math.abs(e.clientY - down.y) > 4)) return
+      }}
       onContextMenu={onContextMenu}
       {...hc(entity.name, chapter, { after: entity.kind === 'character' ? '出场（可拖动换章）' : '出场（可拖动换章）', color: meta.color })}
       aria-label={`第 ${chapter} 章 ${entity.name} 出场，可拖动到其他章节`}
