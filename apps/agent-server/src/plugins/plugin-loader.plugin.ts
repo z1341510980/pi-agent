@@ -17,12 +17,15 @@
 import fp from 'fastify-plugin'
 import type { FastifyPluginAsync } from 'fastify'
 import { join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { createModuleLogger } from '../lib/logger.js'
 import { PluginManager } from '../core/plugin/plugin-manager.js'
 import { createHelloPlugin } from './examples/hello-plugin/index.js'
 import { createNovelPlugin } from './novel-plugin/index.js'
 import { createWebSearchPlugin } from './web-search-plugin/index.js'
 import { applyMigrations } from '../core/db/migrations.js'
+import yaml from 'js-yaml'
 
 export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const log = createModuleLogger(app.log, 'plugin-loader')
@@ -39,12 +42,64 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const cwd = process.env.PI_CWD ?? process.cwd()
   const dataDir = process.env.PI_DATA_DIR ?? `${process.env.HOME ?? process.env.USERPROFILE}/.pi`
 
-  // 准备内置插件列表
-  const builtinPlugins = [
+  // 插件工厂映射表：用于 builtin 插件的创建
+  const pluginFactories: Record<string, () => Plugin> = {
+    'hello-plugin': createHelloPlugin,
+    'novel-plugin': createNovelPlugin,
+    'web-search-plugin': createWebSearchPlugin,
+  }
+
+  // 默认内置插件列表（兼容旧行为）
+  const defaultBuiltinPlugins = [
     ...(enableExamples ? [{ plugin: createHelloPlugin() }] : []),
     { plugin: createNovelPlugin() },
     { plugin: createWebSearchPlugin() },
   ]
+
+  // 尝试从配置文件加载插件列表
+  let builtinPlugins = defaultBuiltinPlugins
+  const configPath = resolve(process.cwd(), 'config/plugins.yml')
+
+  if (existsSync(configPath)) {
+    try {
+      const configContent = readFileSync(configPath, 'utf-8')
+      const config = yaml.load(configContent) as { plugins?: Array<{
+        id: string
+        source: 'builtin' | 'local' | 'npm'
+        enabled: boolean
+        isolate?: boolean
+        config?: Record<string, unknown>
+      }> }
+
+      if (config?.plugins && config.plugins.length > 0) {
+        const loadedPlugins: Array<{ plugin: Plugin; source: 'builtin'; config?: Record<string, unknown>; isolate?: boolean }> = []
+        for (const pluginConfig of config.plugins) {
+          if (!pluginConfig.enabled) continue
+          if (pluginConfig.source === 'builtin') {
+            const factory = pluginFactories[pluginConfig.id]
+            if (!factory) {
+              log.warn({ pluginId: pluginConfig.id }, '未找到内置插件工厂，跳过')
+              continue
+            }
+            loadedPlugins.push({
+              plugin: factory(),
+              source: 'builtin',
+              config: pluginConfig.config,
+              isolate: pluginConfig.isolate,
+            })
+          } else {
+            log.warn({ pluginId: pluginConfig.id, source: pluginConfig.source }, '当前仅支持 builtin 插件，其他类型待实现')
+          }
+        }
+        if (loadedPlugins.length > 0) {
+          builtinPlugins = loadedPlugins
+          log.info({ count: loadedPlugins.length, configPath }, '从配置文件加载插件')
+        }
+      }
+    } catch (err) {
+      log.warn({ err, configPath }, '解析 plugins.yml 失败，回退到默认插件列表')
+    }
+  }
 
   log.info(
     {

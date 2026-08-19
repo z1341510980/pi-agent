@@ -156,6 +156,29 @@ function formatTimestamp(ts: number): string {
 }
 
 /**
+ * 格式化相对时间（"刚刚"、"5分钟前"等）
+ * 对标 DSH 的时间显示风格
+ */
+function formatRelativeTime(ts: number): string {
+  const now = Date.now()
+  const diff = now - ts
+
+  if (diff < 0) return formatTimestamp(ts)
+
+  const seconds = Math.floor(diff / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+
+  if (seconds < 10) return '刚刚'
+  if (seconds < 60) return `${seconds}秒前`
+  if (minutes < 60) return `${minutes}分钟前`
+  if (hours < 24) return `${hours}小时前`
+  if (days < 7) return `${days}天前`
+  return formatTimestamp(ts)
+}
+
+/**
  * MessageBubble：单条消息气泡（AionUi 风格对齐）
  *
  * 设计要点（借鉴 AionUi MessageText）：
@@ -278,8 +301,11 @@ export function MessageBubble({
           >
             <MessageHoverActions message={message} onQuote={onQuote} onRegenerate={onRegenerate} />
             {message.createdAt && (
-              <span className="text-[11px] text-hint opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                {formatTimestamp(message.createdAt)}
+              <span
+                className="text-[11px] text-hint transition-opacity duration-150"
+                title={formatTimestamp(message.createdAt)}
+              >
+                {formatRelativeTime(message.createdAt)}
               </span>
             )}
           </div>

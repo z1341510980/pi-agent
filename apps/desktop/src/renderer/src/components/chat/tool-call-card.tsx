@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, Loader2, Wrench, FileText, Terminal, Search, FolderCog } from 'lucide-react'
+import { ChevronDown, Loader2, Wrench, FileText, Terminal, Search, FolderCog, CheckCircle2, XCircle, Clock } from 'lucide-react'
 import type { ToolCallInfo } from './types'
 import { FileDiffView } from './file-diff-view'
 import { Badge } from '@/components/ui/badge'
@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils'
 
 export interface ToolCallCardProps {
   toolCall: ToolCallInfo
+  /** 工具在序列中的序号（可选） */
+  index?: number
 }
 
 /** 状态标签配置 */
@@ -55,7 +57,7 @@ function getToolVisual(toolName: string): ToolVisual {
  *   - 折叠/展开使用 framer-motion 动画
  *   - 失败状态用 destructive 色调
  */
-export function ToolCallCard({ toolCall }: ToolCallCardProps) {
+export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
   const { toolName, status, args, partialResult, startedAt, endedAt, details } = toolCall
   const [expanded, setExpanded] = useState(false)
 
@@ -64,12 +66,25 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
   const { Icon } = visual
 
   // 耗时
+  const durationMs = startedAt && endedAt ? endedAt - startedAt : null
   const duration =
-    startedAt && endedAt
-      ? ((endedAt - startedAt) / 1000).toFixed(1) + 's'
+    durationMs !== null
+      ? durationMs < 1000
+        ? `${durationMs}ms`
+        : `${(durationMs / 1000).toFixed(1)}s`
       : startedAt && status === 'running'
         ? '…'
         : null
+
+  // 耗时颜色：<1s 绿色，1-5s 黄色，>5s 红色
+  const durationColor =
+    durationMs !== null
+      ? durationMs < 1000
+        ? 'text-emerald-500'
+        : durationMs < 5000
+          ? 'text-amber-500'
+          : 'text-red-500'
+      : 'text-hint'
 
   // 参数摘要
   const argsSummary =
@@ -89,6 +104,16 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
       : typeof partialResult === 'string'
         ? partialResult.slice(0, 120)
         : JSON.stringify(partialResult).slice(0, 120)
+
+  // 检测结果类型用于语法高亮
+  const detectResultType = (value: unknown): 'json' | 'yaml' | 'shell' | 'text' => {
+    if (typeof value !== 'string') return 'json'
+    const trimmed = value.trim()
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return 'json'
+    if (trimmed.startsWith('---') || /^[a-zA-Z_][a-zA-Z0-9_-]*:/.test(trimmed)) return 'yaml'
+    if (/^[\w\-\.]+\s*=\s*/.test(trimmed) || trimmed.includes('$ ')) return 'shell'
+    return 'text'
+  }
 
   const hasDetails = args !== undefined || partialResult !== undefined
   const isError = status === 'error'
@@ -142,10 +167,21 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
         <span className="font-mono font-medium text-text truncate text-xs">
           {toolName}
         </span>
-        <Badge variant={meta.variant} className="ml-auto shrink-0">
-          {status === 'running' && <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />}
-          {meta.label}
-        </Badge>
+        {/* 序号和耗时 */}
+        <div className="flex items-center gap-2 ml-auto shrink-0">
+          {index !== undefined && (
+            <span className="text-[10px] text-hint font-mono">#{index + 1}</span>
+          )}
+          {duration && (
+            <span className={cn('text-[10px] font-mono', durationColor)} aria-label="耗时">
+              {duration}
+            </span>
+          )}
+          <Badge variant={meta.variant} className="shrink-0">
+            {status === 'running' && <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />}
+            {meta.label}
+          </Badge>
+        </div>
       </button>
 
       {/* 折叠区域：参数 / 结果 */}

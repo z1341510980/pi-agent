@@ -15,6 +15,8 @@ import type { ThreadSettingsStore } from './thread-settings-store.js'
 import { StreamEmitter, emitSingleAssistantMessage } from './stream-emitter.js'
 import { ReasoningPipeline } from './reasoning-pipeline.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import type { Tracer } from '../tracer/tracer.js'
+import type { TraceEvent } from '../tracer/types.js'
 
 /** streamRun 输入（宽松类型，兼容 @repo/protocol schema 输出） */
 export interface StreamRunInput {
@@ -55,6 +57,7 @@ export interface SteerResult {
  */
 export class PiAgUiAgent {
   readonly agentId: string
+  private readonly tracer?: Tracer
 
   constructor(
     private readonly sessionStore: PiSessionStore,
@@ -63,9 +66,11 @@ export class PiAgUiAgent {
     private readonly providerConfigStore: ProviderConfigStore,
     private readonly threadSettingsStore: ThreadSettingsStore,
     private readonly eventBus?: EventBus,
-    agentId = 'default'
+    agentId = 'default',
+    tracer?: Tracer,
   ) {
     this.agentId = agentId
+    this.tracer = tracer
   }
 
   async streamRun(
@@ -84,9 +89,27 @@ export class PiAgUiAgent {
       emit(event)
     }
 
+    // ===== 追踪：开始 =====
+    let traceId: string | undefined
+    if (this.tracer) {
+      const trace = this.tracer.startTrace({
+        sessionId: threadId,
+        runId,
+        metadata: { agentId: this.agentId },
+      })
+      traceId = trace.id
+      this.tracer.addEvent(traceId, {
+        type: 'user_message',
+        data: {
+          messages: input.messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })),
+        },
+        status: 'completed',
+      })
+    }
+
     this.eventBus?.emit('devlog:entry', {
       level: 'debug',
-      message: `Run 开始: threadId=${threadId}, runId=${runId}`,
+      message: `Run 开始: threadId=${threadId}, runId=${runId}${traceId ? `, traceId=${traceId}` : ''}`,
       source: 'agent',
     })
 
@@ -115,6 +138,13 @@ export class PiAgUiAgent {
               : JSON.stringify(lastMessage.content),
           role: 'tool'
         } as ToolCallResultEvent)
+        if (traceId) {
+          this.tracer.addEvent(traceId, {
+            type: 'tool_result',
+            data: { toolCallId, content: typeof lastMessage.content === 'string' ? lastMessage.content : JSON.stringify(lastMessage.content) },
+            status: 'completed',
+          })
+        }
       }
     }
 
@@ -126,6 +156,14 @@ export class PiAgUiAgent {
         message: `Run 被拒绝（线程 ${threadId} 已有活跃 run）`,
         source: 'agent',
       })
+      if (traceId) {
+        this.tracer.addEvent(traceId, {
+          type: 'run_error',
+          data: { message: `线程 ${threadId} 已有活跃 run` },
+          status: 'failed',
+        })
+        this.tracer.finishTrace(traceId, 'failed')
+      }
       emitTermination({
         type: EventType.RUN_ERROR,
         message: `线程 ${threadId} 已有活跃 run，请等待完成或中断后再试`
@@ -233,6 +271,14 @@ export class PiAgUiAgent {
       const userText = typeof lastUserMessage?.content === 'string' ? lastUserMessage.content : ''
 
       if (!userText) {
+        if (traceId) {
+          this.tracer.addEvent(traceId, {
+            type: 'run_error',
+            data: { message: '无用户消息' },
+            status: 'failed',
+          })
+          this.tracer.finishTrace(traceId, 'failed')
+        }
         emitSingleAssistantMessage(emit, '我需要一条用户消息才能继续。')
         emitTermination({
           type: EventType.RUN_FINISHED,
@@ -242,9 +288,30 @@ export class PiAgUiAgent {
         return
       }
 
+      // ===== 追踪：LLM 请求开始 =====
+      if (traceId) {
+        this.tracer.addEvent(traceId, {
+          type: 'llm_request',
+          data: {
+            userText,
+            model: input.model,
+            temperature: input.temperature,
+          },
+          status: 'pending',
+        })
+      }
+
       await threadSession.session.prompt(userText)
 
       if (lastAssistantError) {
+        if (traceId) {
+          this.tracer.addEvent(traceId, {
+            type: 'llm_response',
+            data: { error: lastAssistantError },
+            status: 'failed',
+          })
+          this.tracer.finishTrace(traceId, 'failed')
+        }
         throw new Error(`LLM 调用失败: ${lastAssistantError}`)
       }
 
@@ -257,6 +324,16 @@ export class PiAgUiAgent {
         message: `Run 完成: threadId=${threadId}, runId=${runId}`,
         source: 'agent',
       })
+
+      if (traceId) {
+        this.tracer.addEvent(traceId, {
+          type: 'assistant_message',
+          data: { content: completeText },
+          status: 'completed',
+        })
+        this.tracer.finishTrace(traceId, 'completed')
+      }
+
       emitTermination({
         type: EventType.RUN_FINISHED,
         threadId,

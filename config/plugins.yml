@@ -1,0 +1,58 @@
+# pi-agent 插件配置文件
+# 参考 DeepSeek Harness 的 agent.cordis.yml 设计
+# 
+# 使用说明：
+# 1. 在此文件中声明要加载的插件
+# 2. 每个插件必须指定 id 和 source
+# 3. 可通过 enabled 控制插件是否启用
+# 4. 可通过 config 传递插件特定配置
+# 5. 可通过 isolate: true 让插件在隔离环境中运行
+
+plugins:
+  # 小说创作插件 - 核心业务插件
+  - id: novel-plugin
+    source: builtin
+    enabled: true
+    isolate: false  # 与主进程共享资源，便于调试
+    config:
+      dataDir: ./data/novel
+      maxChapters: 100
+      maxTokensPerChapter: 8000
+      defaultModel: deepseek-chat
+      features:
+        autoSave: true
+        versionHistory: true
+        scenePlanning: true
+
+  # 网络搜索插件
+  - id: web-search-plugin
+    source: builtin
+    enabled: true
+    isolate: false
+    config:
+      searchEngine: google
+      apiKey: ${WEB_SEARCH_API_KEY}  # 从环境变量读取
+      timeoutMs: 30000
+      maxResults: 10
+
+  # 示例插件 - 默认禁用
+  - id: hello-plugin
+    source: builtin
+    enabled: false
+    isolate: false
+    config:
+      greeting: "Hello from pi-agent!"
+
+# 配置说明：
+# source 支持三种类型：
+#   - builtin: 内置插件（在 plugin-loader 中注册的工厂函数）
+#   - local: 本地文件系统插件（需要配置 localPluginsDir）
+#   - npm: npm 包插件（包名以 wenlang-agent-plugin- 开头）
+#
+# isolate: true 时插件将运行在独立上下文中：
+#   - 独立的数据库连接
+#   - 独立的事件总线（仅接收本插件事件）
+#   - 独立的日志上下文
+#   - 适合需要高隔离性的第三方插件
+#
+# 环境变量引用：使用 ${VAR_NAME} 语法，启动时会自动替换

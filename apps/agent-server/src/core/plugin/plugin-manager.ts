@@ -13,7 +13,7 @@
  * - 未来可考虑使用 worker_threads 或 vm 模块实现沙箱
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -263,8 +263,12 @@ export class PluginManager {
 
     // 1. 加载内置插件
     if (this.options.builtinPlugins) {
-      for (const { plugin } of this.options.builtinPlugins) {
-        await this.loadPluginEntry(plugin, 'builtin')
+      for (const item of this.options.builtinPlugins) {
+        // 支持两种格式：{ plugin } 或 { plugin, config, isolate }
+        const plugin = item.plugin
+        const config = (item as { config?: Record<string, unknown> }).config
+        const isolate = (item as { isolate?: boolean }).isolate
+        await this.loadPluginEntry(plugin, 'builtin', undefined, config, isolate)
       }
     }
 
@@ -350,13 +354,16 @@ export class PluginManager {
 
     this.logger.info({ plugin: name }, '开始重载插件')
 
+    // 保存配置和隔离设置（重载后恢复）
+    const savedConfig = entry.config ?? {}
+    const savedIsolate = entry.isolate ?? false
+    const filePath = entry.filePath
+    const source = entry.source
+
     // 停止并清理
     if (entry.status === 'enabled') {
       await this.stopPlugin(name)
     }
-
-    const filePath = entry.filePath
-    const source = entry.source
 
     // 从注册表中移除
     this.entries.delete(name)
@@ -368,10 +375,11 @@ export class PluginManager {
     }
 
     // ESM 模块重载：通过添加 query 参数强制重新加载
-    await this.loadFromFile(filePath, source, true)
+    // 传入保存的配置和隔离设置，确保重载后恢复
+    await this.loadFromFile(filePath, source, true, savedConfig, savedIsolate)
     await this.startPlugin(name)
 
-    this.logger.info({ plugin: name }, '插件重载完成')
+    this.logger.info({ plugin: name, configRestored: Object.keys(savedConfig).length > 0 }, '插件重载完成')
   }
 
   /** 列出所有插件 */
@@ -607,11 +615,15 @@ export class PluginManager {
   /**
    * 从文件加载插件（错误隔离）
    * @param reload 是否为重载（添加时间戳 query 强制 ESM 重新加载）
+   * @param config 插件配置（重载时恢复）
+   * @param isolate 是否隔离运行（重载时恢复）
    */
   private async loadFromFile(
     filePath: string,
     source: 'local' | 'npm',
     reload = false,
+    config?: Record<string, unknown>,
+    isolate?: boolean,
   ): Promise<void> {
     try {
       // ESM 重载：添加 query 参数强制重新加载模块
@@ -634,7 +646,7 @@ export class PluginManager {
         plugin = factory
       }
 
-      await this.loadPluginEntry(plugin, source, filePath)
+      await this.loadPluginEntry(plugin, source, filePath, config, isolate)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       this.logger.error({ filePath, err }, `加载插件文件失败: ${errorMsg}`)
@@ -678,6 +690,7 @@ export class PluginManager {
         sessionTools: [],
         services: [],
         promptTemplateDirs: [],
+        providedServices: new Map(),
       }
       this.entries.set(manifest.name, entry)
       this.logger.info(
@@ -773,6 +786,7 @@ export class PluginManager {
 
     return {
       pluginName,
+      config: entry.config ?? {},
       logger,
       db: this.db,
       cwd: this.cwd,
@@ -819,6 +833,39 @@ export class PluginManager {
       registerPromptTemplates: (dir: string) => {
         entry.promptTemplateDirs.push(dir)
         logger.debug({ dir }, '已注册提示词模板目录')
+      },
+      // ===== 服务容器 API（对标 DSH Cordis 的 provide/get） =====
+      provide: <T>(key: string, service: T) => {
+        entry.providedServices.set(key, service)
+        logger.debug({ key, serviceType: typeof service }, '服务已注册（provide）')
+      },
+      get: <T>(key: string): T | undefined => {
+        // 1. 先查本插件提供的服务
+        if (entry.providedServices.has(key)) {
+          return entry.providedServices.get(key) as T
+        }
+        // 2. 遍历所有已启用插件，查找服务
+        for (const [name, otherEntry] of this.entries) {
+          if (name === pluginName) continue
+          if (otherEntry.status !== 'enabled') continue
+          if (otherEntry.providedServices.has(key)) {
+            logger.debug({ key, provider: name }, '服务已从其他插件获取（get）')
+            return otherEntry.providedServices.get(key) as T
+          }
+        }
+        logger.debug({ key }, '服务未找到')
+        return undefined
+      },
+      dependsOn: (pluginNames: string[]) => {
+        // 记录依赖关系（用于加载顺序校验）
+        // 实际依赖检查在启动时由 PluginManager 处理
+        logger.debug({ dependencies: pluginNames }, '插件声明依赖')
+        // 可以在这里添加依赖验证逻辑，例如检查依赖插件是否已加载
+        for (const name of pluginNames) {
+          if (!this.entries.has(name)) {
+            logger.warn({ dependency: name }, '依赖的插件尚未加载')
+          }
+        }
       },
       createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
         // AgentRuntime 路由（方案 §9.3）：默认 'pi-session' 走下方内联实现；

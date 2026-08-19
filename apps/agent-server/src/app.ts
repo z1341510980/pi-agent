@@ -32,6 +32,7 @@ import { cronRoute } from './routes/cron.route.js'
 import { workspaceRoute } from './routes/workspace.route.js'
 import { skillsRoute } from './routes/skills.route.js'
 import { searchRoute } from './routes/search.route.js'
+import { traceRoute } from './routes/trace.route.js'
 import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { SqliteSessionIdentityRegistry } from './core/agent/session-identity-registry.js'
@@ -43,6 +44,7 @@ import { activeNovelChapterTasks } from './plugins/novel-plugin/utils/chapter-ta
 import { Gate } from './core/tool/gate.js'
 import { ConfirmationManager } from './core/tool/confirmation-manager.js'
 import { createPiSession } from './core/agent/pi-session.js'
+import { Tracer, SqliteTraceStore, createTraceTables } from './core/tracer/index.js'
 
 export async function createApp(): Promise<Fastify.FastifyInstance> {
   const app = Fastify({
@@ -153,7 +155,24 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // 注入 ProviderConfigStore（供 onPayload 读取 stream_options 屏蔽开关等应用级配置）
   app.pluginManager?.setProviderConfigStore(app.providerConfigStore)
 
-  const piAgUiAgent = new PiAgUiAgent(sessionStore, app.modelRegistry, app.providerConfigStore, app.threadSettingsStore, app.eventBus)
+  // ===== 初始化追踪系统（对标 DSH session-query） =====
+  const tracerStore = new SqliteTraceStore(app.db)
+  createTraceTables(app.db)
+  const tracer = new Tracer(tracerStore, {
+    maxEvents: 10000,
+    recordPayloadDetails: true,
+  })
+  app.log.info('追踪系统已初始化（Tracer）')
+
+  const piAgUiAgent = new PiAgUiAgent(
+    sessionStore,
+    app.modelRegistry,
+    app.providerConfigStore,
+    app.threadSettingsStore,
+    app.eventBus,
+    'default',
+    tracer,  // 注入 tracer
+  )
 
   // pi-subagents 可观测桥（§9.3.3）：把章节任务与运行时运行注册为
   // pi-subagents 的 background-work / external-runs provider（供给侧，无调度语义）。
@@ -201,6 +220,11 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(workspaceRoute)
   await app.register(skillsRoute)
   await app.register(searchRoute)
+
+  // 暴露 tracer 供路由使用（必须在 traceRoute 注册之前）
+  app.decorate('tracer', tracer)
+
+  await app.register(traceRoute)
 
   return app
 }
