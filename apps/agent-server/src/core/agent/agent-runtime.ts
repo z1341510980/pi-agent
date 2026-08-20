@@ -14,8 +14,8 @@
  * 无需改动 NovelOrchestrator / TeamDiscussionEngine 等编排层。
  *
  * 注意：PluginSessionHandle 的 prompt()/promptStream() 语义（发送创建时指定的
- * userMessage，含 /skill: 展开与多 Skill 组合）由句柄自身保证，运行时适配器
- * 只需忠实返回句柄，因此接口刻意保持最小。
+ * userMessage，含 /skill: 展开与多 Skill 组合；prompt(message) 可追加一轮用户消息）
+ * 由句柄自身保证，运行时适配器只需忠实返回句柄，因此接口刻意保持最小。
  */
 
 import type { PluginSessionHandle, PluginSessionOptions } from '../plugin/plugin-types.js'

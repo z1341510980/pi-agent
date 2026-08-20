@@ -220,22 +220,33 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       if (chapterInput.content != null && chapterInput.content !== existing.content) {
         try {
           const logEntry = {
-            projectId: existing.projectId,
-            chapterNumber: existing.chapterNumber,
-            agentType: 'editor',
+            agentId: 'novel-editor',
             agentName: '编辑器',
-            phase: 'manual_save',
-            status: 'success',
+            threadId: request.traceId ?? '',
+            systemPrompt: '(用户手动编辑章节)',
+            userMessage: `手动保存第 ${existing.chapterNumber} 章正文。`,
+            taskInput: chapterInput.content,
+            tools: '[]',
+            toolNames: '[]',
             result: '手动保存章节内容',
             resultLength: chapterInput.content.length,
             durationMs: 0,
-            metadata: JSON.stringify({ source: 'chapter-routes', action: 'manual_patch' }),
-          };
+            status: 'success' as const,
+            error: '',
+            metadata: JSON.stringify({
+              projectId: existing.projectId,
+              chapterNumber: existing.chapterNumber,
+              agentType: 'editor',
+              phase: 'manual_save',
+              source: 'chapter-routes',
+              action: 'manual_patch',
+            }),
+          }
           if (services.context.agentCallLogger) {
-            services.context.agentCallLogger.record(logEntry);
+            services.context.agentCallLogger.record(logEntry)
           }
         } catch (logErr) {
-          services.context.logger.warn({ err: logErr }, '记录章节保存日志失败');
+          services.context.logger.warn({ err: logErr }, '记录章节保存日志失败')
         }
       }
 

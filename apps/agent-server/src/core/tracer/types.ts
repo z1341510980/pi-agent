@@ -158,7 +158,7 @@ export interface TraceStore {
   /** 追加事件到追踪 */
   appendEvents(traceId: TraceId, events: TraceEvent[]): Promise<void>
   /** 更新追踪状态 */
-  updateTraceStatus(traceId: TraceId, status: Trace['status']): Promise<void>
+  updateTraceStatus(traceId: TraceId, status: Trace['status'], endedAt?: Timestamp): Promise<void>
   /** 获取完整追踪 */
   getTrace(traceId: TraceId): Promise<Trace | null>
   /** 获取追踪的事件列表 */

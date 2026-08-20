@@ -140,11 +140,11 @@ export class SqliteTraceStore implements TraceStore {
     insertMany(events)
   }
 
-  async updateTraceStatus(traceId: TraceId, status: Trace['status']): Promise<void> {
+  async updateTraceStatus(traceId: TraceId, status: Trace['status'], endedAt: Timestamp = Date.now()): Promise<void> {
     const stmt = this.db.prepare(`
-      UPDATE traces SET status = ?, ended_at = unixepoch() * 1000 WHERE id = ?
+      UPDATE traces SET status = ?, ended_at = ? WHERE id = ?
     `)
-    stmt.run(status, traceId)
+    stmt.run(status, endedAt, traceId)
   }
 
   async getTrace(traceId: TraceId): Promise<Trace | null> {

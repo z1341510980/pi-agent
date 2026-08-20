@@ -13,7 +13,7 @@
  * - 未来可考虑使用 worker_threads 或 vm 模块实现沙箱
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -43,6 +43,8 @@ import {
 import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
+import type { Tracer } from '../tracer/tracer.js'
+import type { EventStatus, TraceEventType } from '../tracer/types.js'
 import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
 import type {
   Plugin,
@@ -139,6 +141,8 @@ export class PluginManager {
    * 与 SessionStore / ModelRegistry 同时期注入。
    */
   private providerConfigStore?: ProviderConfigStore
+  /** Tracer 在 app 启动后注入；未注入时插件会话保持原有行为。 */
+  private tracer?: Tracer
   /**
    * AgentRuntime 注册表（方案 §9.3）。
    *
@@ -198,6 +202,12 @@ export class PluginManager {
   setProviderConfigStore(store: ProviderConfigStore): void {
     this.providerConfigStore = store
     this.logger.debug('已注入 ProviderConfigStore，onPayload 可读取应用级配置')
+  }
+
+  /** 注入 Tracer，供显式声明 trace 归属的插件 Session 写入追踪时间线。 */
+  setTracer(tracer: Tracer): void {
+    this.tracer = tracer
+    this.logger.debug('已注入 Tracer，插件 Session 可按领域会话写入追踪')
   }
 
   /**
@@ -854,6 +864,43 @@ export class PluginManager {
         }
 
         const threadId = `plugin:${pluginName}:${randomUUID()}`
+        const trace = options.trace
+          ? this.tracer?.startTrace({
+              sessionId: options.trace.sessionId,
+              runId: options.trace.runId,
+              metadata: {
+                pluginName,
+                ...(options.trace.metadata ?? {}),
+              },
+            })
+          : undefined
+        let traceFinished = false
+        const recordTraceEvent = (
+          type: TraceEventType,
+          data: Record<string, unknown>,
+          sourceEventSeqs?: number[],
+          status: EventStatus = 'completed',
+        ): number | undefined => {
+          if (!trace || !this.tracer) return undefined
+          try {
+            return this.tracer.addEvent(trace.id, { type, data, sourceEventSeqs, status }).seq
+          } catch (err) {
+            logger.debug({ err, traceId: trace.id, type }, '插件 Session 追踪事件写入失败')
+            return undefined
+          }
+        }
+        const finishTrace = (
+          status: 'completed' | 'failed' | 'aborted',
+          terminalData?: Record<string, unknown>,
+        ): void => {
+          if (!trace || !this.tracer || traceFinished) return
+          traceFinished = true
+          try {
+            this.tracer.finishTrace(trace.id, status, terminalData)
+          } catch (err) {
+            logger.debug({ err, traceId: trace.id }, '插件 Session 追踪结束写入失败')
+          }
+        }
 
         // 多 Skill 白名单（方案 §9.1）：主 skill + extraSkills 全部只经
         // additionalSkillPaths 定向加载，不扫描环境中的其他 Skills。
@@ -1007,7 +1054,18 @@ export class PluginManager {
           completeText += delta
         })
 
-        const runPromptUntilFinalAssistant = async (): Promise<void> => {
+        const runPromptUntilFinalAssistant = async (nextUserMessage?: string): Promise<void> => {
+          const visibleMessage = nextUserMessage === undefined ? options.userMessage : nextUserMessage
+          const userSeq = recordTraceEvent('user_message', {
+            source: 'plugin-session',
+            length: visibleMessage.length,
+            preview: visibleMessage.slice(0, 500),
+          })
+          const requestSeq = recordTraceEvent('llm_request', {
+            source: 'plugin-session',
+            modelId: options.modelId,
+            responseFormat: options.responseFormat ?? 'text',
+          }, userSeq === undefined ? undefined : [userSeq])
           const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
           let resolveCurrentFinalAssistant: (() => void) | undefined
           const finalAssistantPromise = new Promise<void>((resolve) => {
@@ -1016,7 +1074,9 @@ export class PluginManager {
           })
           const promptPromise = withAgentConfig(agentConfig, async () => {
             await threadSession.session.prompt(
-              buildPluginSessionPrompt(options.userMessage, options.skill, options.extraSkills),
+              nextUserMessage === undefined
+                ? buildPluginSessionPrompt(options.userMessage, options.skill, options.extraSkills)
+                : nextUserMessage,
             )
           })
 
@@ -1026,6 +1086,28 @@ export class PluginManager {
               finalAssistantPromise,
               timeoutMs,
             })
+            // Pi SDK 的 stopReason='error' 可能让 prompt 生命周期正常 resolve。
+            // 在写入成功响应前检查终态，避免时间线出现“成功响应”后又失败的假象。
+            if (lastErrorMessage) {
+              throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+            }
+            recordTraceEvent('llm_response', {
+              source: 'plugin-session',
+              length: completeText.length,
+              preview: completeText.slice(0, 500),
+            }, requestSeq === undefined ? undefined : [requestSeq])
+            recordTraceEvent('assistant_message', {
+              source: 'plugin-session',
+              length: completeText.length,
+              preview: completeText.slice(0, 500),
+            }, requestSeq === undefined ? undefined : [requestSeq])
+          } catch (error) {
+            finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {
+              source: 'plugin-session',
+              message: error instanceof Error ? error.message : String(error),
+              ...(requestSeq === undefined ? {} : { sourceEventSeq: requestSeq }),
+            })
+            throw error
           } finally {
             if (resolveFinalAssistant === resolveCurrentFinalAssistant) {
               resolveFinalAssistant = undefined
@@ -1042,42 +1124,30 @@ export class PluginManager {
          * baseUrl 要查注册表才能拿到（用户可能给自定义 provider 配了 Anthropic 端点）。
          */
         let cacheControlTarget: { provider?: string; modelId?: string; baseUrl?: string } = {}
-          if (options.modelId) {
-            if (this.modelRegistry) {
-            const targetModel = this.modelRegistry.find(
-              options.modelId.provider,
-              options.modelId.modelId,
-            )
-            if (targetModel) {
-               await threadSession.session.setModel(targetModel)
-               if (options.modelId.thinkingLevel) {
-                 threadSession.session.setThinkingLevel(options.modelId.thinkingLevel)
-               }
-              modelMaxTokens = targetModel.maxTokens
-              cacheControlTarget = {
-                provider: options.modelId.provider,
-                modelId: options.modelId.modelId,
-                baseUrl: (targetModel as { baseUrl?: string }).baseUrl,
-              }
-            } else {
-              logger.warn(
-                { provider: options.modelId.provider, modelId: options.modelId.modelId },
-                'modelRegistry 未找到指定模型，使用默认模型',
-              )
-              // 查不到 baseUrl 时仍按 provider/modelId 判断，避免直接退回到"全量打断点"
-              cacheControlTarget = {
-                provider: options.modelId.provider,
-                modelId: options.modelId.modelId,
-              }
-            }
-          } else {
-            logger.warn(
-              'ModelRegistry 未注入，无法切换模型，使用默认模型',
-            )
-            cacheControlTarget = {
-              provider: options.modelId.provider,
-              modelId: options.modelId.modelId,
-            }
+        if (options.modelId) {
+          if (!this.modelRegistry) {
+            const message = `无法使用所选模型：ModelRegistry 未注入 (${options.modelId.provider}/${options.modelId.modelId})`
+            finishTrace('failed', { source: 'plugin-session', message })
+            throw new Error(message)
+          }
+          const targetModel = this.modelRegistry.find(
+            options.modelId.provider,
+            options.modelId.modelId,
+          )
+          if (!targetModel) {
+            const message = `未找到所选模型：${options.modelId.provider}/${options.modelId.modelId}`
+            finishTrace('failed', { source: 'plugin-session', message })
+            throw new Error(message)
+          }
+          await threadSession.session.setModel(targetModel)
+          if (options.modelId.thinkingLevel) {
+            threadSession.session.setThinkingLevel(options.modelId.thinkingLevel)
+          }
+          modelMaxTokens = targetModel.maxTokens
+          cacheControlTarget = {
+            provider: options.modelId.provider,
+            modelId: options.modelId.modelId,
+            baseUrl: (targetModel as { baseUrl?: string }).baseUrl,
           }
         } else if (this.modelRegistry?.getAll) {
           // 未指定 modelId 时，尝试从注册表第一个模型读取 maxTokens
@@ -1341,7 +1411,7 @@ export class PluginManager {
 
         return {
           sessionId: (threadSession.session as { sessionId?: string }).sessionId,
-          prompt: async (): Promise<string> => {
+          prompt: async (message?: string): Promise<string> => {
             // signal 已 abort 时立即抛错。
             //
             // 必须检查的原因：createSession 每次 runAgent 都用新 threadId 创建新 Pi Session，
@@ -1363,13 +1433,21 @@ export class PluginManager {
             lastErrorMessage = '' // 重置
             // message_end(stop/length) 已代表正文完成。Pi SDK 随后的自动压缩
             // 属于 Session 维护，不应阻塞一次性的 create-flow Agent。
-            await runPromptUntilFinalAssistant()
-            // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
-            if (lastErrorMessage) {
-              cancelDebug('prompt-error-detected', { threadId, lastErrorMessage, signalAborted: options.signal?.aborted })
-              throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+            try {
+              await runPromptUntilFinalAssistant(message)
+              // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
+              if (lastErrorMessage) {
+                cancelDebug('prompt-error-detected', { threadId, lastErrorMessage, signalAborted: options.signal?.aborted })
+                throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+              }
+              return completeText
+            } catch (error) {
+              finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {
+                source: 'plugin-session',
+                message: error instanceof Error ? error.message : String(error),
+              })
+              throw error
             }
-            return completeText
           },
           promptStream: async (onDelta: (delta: string) => void): Promise<string> => {
             // 见 prompt() 中的注释：signal 已 abort 时必须立即抛错，
@@ -1402,12 +1480,20 @@ export class PluginManager {
               if (delta) onDelta(delta)
             })
             try {
-              await runPromptUntilFinalAssistant()
-              // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
-              if (lastErrorMessage) {
-                throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+              try {
+                await runPromptUntilFinalAssistant()
+                // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
+                if (lastErrorMessage) {
+                  throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
+                }
+                return completeText
+              } catch (error) {
+                finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {
+                  source: 'plugin-session',
+                  message: error instanceof Error ? error.message : String(error),
+                })
+                throw error
               }
-              return completeText
             } finally {
               streamUnsubscribe()
             }
@@ -1424,6 +1510,7 @@ export class PluginManager {
           },
           dispose: () => {
             // 取消订阅；PiSessionStore 自带 LRU 淘汰，无需显式 delete
+            finishTrace(options.signal?.aborted ? 'aborted' : 'completed')
             try {
               unsubscribe()
             } catch (err) {

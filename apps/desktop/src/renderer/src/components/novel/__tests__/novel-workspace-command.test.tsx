@@ -362,13 +362,13 @@ describe('NovelWorkspace 输入框命令启动（真实面板输入 → workspac
     expect(screen.getByRole('dialog').textContent).toContain('调用诊断')
     const diagnosticsTabList = screen.getByRole('tablist', { name: '调用诊断视图' })
     expect(diagnosticsTabList.parentElement?.className).toContain('flex-col')
-    expect(diagnosticsTabList.className).toContain('grid-cols-4')
+    expect(diagnosticsTabList.className).toContain('flex')
     expect(screen.getByRole('tab', { name: '调用日志' }).getAttribute('aria-selected')).toBe('true')
 
     const cacheTab = screen.getByRole('tab', { name: '缓存诊断' })
     const trendTab = screen.getByRole('tab', { name: '调用趋势' })
     // 新增追踪时间线标签页
-    expect(screen.getByRole('tab', { name: '追踪时间线' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '追踪时间线' })).toBeDefined()
     fireEvent.mouseDown(cacheTab, { button: 0, ctrlKey: false })
     await waitFor(() => expect(cacheTab.getAttribute('aria-selected')).toBe('true'))
     fireEvent.mouseDown(trendTab, { button: 0, ctrlKey: false })

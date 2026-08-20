@@ -48,7 +48,7 @@ export interface ChapterChatOptions {
   signal?: AbortSignal
   /** Moderator 模型配置 */
   moderatorModel?: { provider: string; modelId: string }
-  /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用，Moderator 仍独立调度 */
+  /** per-call 模型覆盖（输入框旁选择器传入）：本次回复统一使用，包括 Moderator 调度 */
   modelId?: NovelModelSelection
   styleExpertIds?: string[]
 }
@@ -229,7 +229,7 @@ export class ChapterChatRunner {
         },
         logger: this.context.logger,
       },
-      options.moderatorModel ?? this.moderatorModel,
+      options.modelId ?? options.moderatorModel ?? this.moderatorModel,
     )
 
     const state: ModeratorState = {

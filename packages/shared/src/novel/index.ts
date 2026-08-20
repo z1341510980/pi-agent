@@ -2262,7 +2262,9 @@ export interface ChapterChatMetadata {
   /** 工作流运行 ID，用于区分同一章节的多次创作尝试 */
   workflowRunId?: string
   /** 工作流消息类型 */
-  workflowMessageType?: 'run_start' | 'agent' | 'checkpoint' | 'decision' | 'memory' | 'style_technique_checks' | 'run_end'
+  workflowMessageType?: 'run_start' | 'agent' | 'checkpoint' | 'decision' | 'memory' | 'style_technique_checks' | 'lengdu_quality_report' | 'run_end'
+  /** 工作流中的结构化展示信息（例如 lengdu 的读感质量报告）。 */
+  detail?: Record<string, unknown>
   /** 检查点类型 */
   checkpointType?: CheckpointType
   /** 检查点原始数据，供前端恢复卡片内容 */

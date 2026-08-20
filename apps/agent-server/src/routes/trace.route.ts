@@ -20,7 +20,7 @@ export const traceRoute: FastifyPluginAsync = async (app) => {
   // GET /api/traces/:traceId - 获取完整追踪
   app.get<{ Params: { traceId: string } }>('/api/traces/:traceId', async (req, reply) => {
     const { traceId } = req.params
-    const trace = tracer.getTrace(traceId)
+    const trace = await tracer.getTraceAsync(traceId)
     if (!trace) {
       return reply.status(404).send({ error: 'Trace not found' })
     }
@@ -45,14 +45,21 @@ export const traceRoute: FastifyPluginAsync = async (app) => {
       const offset = parseInt(req.query.offset ?? '0', 10)
       const limit = parseInt(req.query.limit ?? '50', 10)
 
-      const trace = tracer.getTrace(traceId)
+      const trace = await tracer.getTraceAsync(traceId)
       if (!trace) {
         return reply.status(404).send({ error: 'Trace not found' })
       }
 
       const events = trace.events.slice(offset, offset + limit)
       return {
+        id: trace.id,
         traceId,
+        sessionId: trace.sessionId,
+        runId: trace.runId,
+        startedAt: trace.startedAt,
+        endedAt: trace.endedAt,
+        status: trace.status,
+        eventCount: trace.events.length,
         total: trace.events.length,
         offset,
         limit,
@@ -73,7 +80,7 @@ export const traceRoute: FastifyPluginAsync = async (app) => {
   // GET /api/traces/:traceId/surface - 获取当前表面（折叠后的事件）
   app.get<{ Params: { traceId: string } }>('/api/traces/:traceId/surface', async (req, reply) => {
     const { traceId } = req.params
-    const trace = tracer.getTrace(traceId)
+    const trace = await tracer.getTraceAsync(traceId)
     if (!trace) {
       return reply.status(404).send({ error: 'Trace not found' })
     }
@@ -103,6 +110,8 @@ export const traceRoute: FastifyPluginAsync = async (app) => {
       const seqNum = parseInt(seq, 10)
 
       try {
+        const trace = await tracer.getTraceAsync(traceId)
+        if (!trace) throw new Error(`Trace ${traceId} not found`)
         const result = tracer.traceEvent(traceId, seqNum)
         return {
           target: {
@@ -140,6 +149,7 @@ export const traceRoute: FastifyPluginAsync = async (app) => {
           startedAt: t.startedAt,
           status: t.status,
           eventCount: t.events.length,
+          metadata: t.metadata,
         })),
       }
     },

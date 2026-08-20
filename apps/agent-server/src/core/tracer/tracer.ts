@@ -56,6 +56,8 @@ export interface TracerOptions {
  */
 export class Tracer {
   private readonly traces = new Map<TraceId, Trace>()
+  /** Per-trace queue keeps SQLite writes in root -> events -> final status order. */
+  private readonly persistence = new Map<TraceId, Promise<void>>()
   private readonly stores: TraceStore
   private readonly options: TracerOptions
 
@@ -91,13 +93,18 @@ export class Tracer {
 
     this.traces.set(id, trace)
 
-    // 添加根事件
-    this.addEvent(id, {
+    // The root must be stored before any later events. In particular, deployments
+    // with SQLite foreign keys enabled reject events whose trace row is not present.
+    const rootEvent = this.createEvent(trace, {
       type: 'run_started',
       data: { sessionId: params.sessionId, runId: params.runId },
       status: 'completed',
       metadata: params.metadata,
     })
+    trace.events.push(rootEvent)
+    trace.rootEvent = rootEvent
+    const initialTrace: Trace = { ...trace, events: [rootEvent], rootEvent }
+    this.queuePersistence(id, () => this.stores.saveTrace(initialTrace))
 
     return trace
   }
@@ -126,29 +133,11 @@ export class Tracer {
       throw new Error(`Trace ${traceId} exceeded max events limit`)
     }
 
-    const seq = trace.events.length + 1
-    const now = Date.now()
-
-    const event: TraceEvent = {
-      id: randomUUID(),
-      traceId,
-      seq,
-      type: params.type,
-      time: now,
-      status: params.status ?? 'completed',
-      data: this.options.recordPayloadDetails ? params.data : { _truncated: true },
-      parentSeq: params.parentSeq,
-      sourceEventSeqs: params.sourceEventSeqs,
-      spanId: params.spanId,
-      metadata: params.metadata,
-    }
+    const event = this.createEvent(trace, params)
 
     trace.events.push(event)
 
-    // 异步持久化
-    void this.stores.appendEvents(traceId, [event]).catch((err) => {
-      console.error(`Failed to persist event ${event.id}:`, err)
-    })
+    this.queuePersistence(traceId, () => this.stores.appendEvents(traceId, [event]))
 
     return event
   }
@@ -156,7 +145,11 @@ export class Tracer {
   /**
    * 结束追踪
    */
-  finishTrace(traceId: TraceId, status: 'completed' | 'failed' | 'aborted' = 'completed'): void {
+  finishTrace(
+    traceId: TraceId,
+    status: 'completed' | 'failed' | 'aborted' = 'completed',
+    terminalData?: Record<string, unknown>,
+  ): void {
     const trace = this.traces.get(traceId)
     if (!trace) {
       throw new Error(`Trace ${traceId} not found`)
@@ -167,14 +160,20 @@ export class Tracer {
 
     this.addEvent(traceId, {
       type: status === 'completed' ? 'run_finished' : 'run_error',
-      data: { status },
-      status: 'completed',
+      data: { status, ...(terminalData ?? {}) },
+      status: status === 'completed' ? 'completed' : status === 'aborted' ? 'cancelled' : 'failed',
     })
 
-    // 异步持久化
-    void this.stores.updateTraceStatus(traceId, status).catch((err) => {
-      console.error(`Failed to update trace ${traceId} status:`, err)
-    })
+    this.queuePersistence(traceId, () => this.stores.updateTraceStatus(traceId, status, trace.endedAt))
+  }
+
+  /** Wait until pending writes finish; useful for graceful shutdown and persistence tests. */
+  async flush(traceId?: TraceId): Promise<void> {
+    if (traceId) {
+      await this.persistence.get(traceId)
+      return
+    }
+    await Promise.all(this.persistence.values())
   }
 
   /**
@@ -182,6 +181,15 @@ export class Tracer {
    */
   getTrace(traceId: TraceId): Trace | undefined {
     return this.traces.get(traceId)
+  }
+
+  /** 获取内存或 SQLite 中的追踪，并把历史追踪回填进内存以支持 surface 查询。 */
+  async getTraceAsync(traceId: TraceId): Promise<Trace | null> {
+    const inMemory = this.traces.get(traceId)
+    if (inMemory) return inMemory
+    const stored = await this.stores.getTrace(traceId)
+    if (stored) this.traces.set(traceId, stored)
+    return stored
   }
 
   /**
@@ -406,10 +414,49 @@ export class Tracer {
     for (const [id, trace] of this.traces) {
       if (trace.status !== 'running' && trace.endedAt && trace.endedAt < threshold) {
         this.traces.delete(id)
+        this.persistence.delete(id)
         removed++
       }
     }
 
     return removed
+  }
+
+  private createEvent(
+    trace: Trace,
+    params: {
+      type: TraceEventType
+      data: Record<string, unknown>
+      status?: EventStatus
+      parentSeq?: EventSeq
+      sourceEventSeqs?: EventSeq[]
+      spanId?: string
+      metadata?: Record<string, unknown>
+    },
+  ): TraceEvent {
+    return {
+      id: randomUUID(),
+      traceId: trace.id,
+      seq: trace.events.length + 1,
+      type: params.type,
+      time: Date.now(),
+      status: params.status ?? 'completed',
+      data: this.options.recordPayloadDetails ? params.data : { _truncated: true },
+      parentSeq: params.parentSeq,
+      sourceEventSeqs: params.sourceEventSeqs,
+      spanId: params.spanId,
+      metadata: params.metadata,
+    }
+  }
+
+  private queuePersistence(traceId: TraceId, operation: () => Promise<void>): void {
+    const previous = this.persistence.get(traceId) ?? Promise.resolve()
+    const next = previous
+      .catch(() => undefined)
+      .then(operation)
+    this.persistence.set(traceId, next)
+    void next.catch((err) => {
+      console.error(`Failed to persist trace ${traceId}:`, err)
+    })
   }
 }

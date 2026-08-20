@@ -18,7 +18,7 @@ export interface DiscussionRunSnapshot {
   transcript: DiscussionMessage[]
   scenes: SceneDefinition[]
   arrangedEntities?: ArrangedEntity
-  /** 首次运行显式选择的成员模型；有选择时断点续跑必须沿用，避免同一次创作换模型。 */
+  /** 历史兼容字段。新群聊运行不再读取或写入临时成员模型，角色始终使用其设置模型。 */
   memberModel?: PluginSessionOptions['modelId']
   /** 首次运行冻结的项目主模型；断点续跑不得读取后来变更的项目设置。 */
   projectModel?: { provider: string; modelId: string } | null

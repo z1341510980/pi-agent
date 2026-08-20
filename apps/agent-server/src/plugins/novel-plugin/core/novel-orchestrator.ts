@@ -82,6 +82,8 @@ import { baseTargetOf, resolveWordBudget } from './chapters/word-budget-resolver
 import { ON_DEMAND_LIMITS } from './prompting/entity-summary.js'
 import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './prompting/context-budget.js'
 import { buildScenePlanFromNarrativeTask } from './chapters/chapter-scene-plan-adapter.js'
+import { LengduWorkflow } from './lengdu/lengdu-workflow.js'
+import { persistNovelFailureAudit } from './observability/novel-error-audit.js'
 
 import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
 import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './quality/llm-error-policy.js'
@@ -180,8 +182,6 @@ interface RunAgentOverrides {
    * 返回值会覆盖 logResult；runAgent 仍返回 raw result 给调用方。
    */
   augmentLogResult?: (rawResult: string) => string
-  /** 仅首次 Writer 初稿显式附加 lengdu；重写和其他 Agent 不继承。 */
-  useLengduSkill?: boolean
 }
 
 /**
@@ -774,6 +774,9 @@ export class NovelOrchestrator {
       // 不再弹出第二个会覆盖该选择的验收检查点。
       let requestedRevisionReason = ''
       let bestWriterCandidate: { content: string; score: number } | undefined
+      // lengdu 是独立的“作者侧校准 → Reader → 修订 → 新 Reader”工作流，
+      // 只在本次完成初稿后运行，不能作为 Writer 的附加说明混进正文生成。
+      const lengduSkillPath = this.promptBuilder.getLengduSkillPath?.()
       const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
 
       while (true) {
@@ -827,7 +830,6 @@ export class NovelOrchestrator {
             ? rewritePlan.input
             : `请执行已批准的本章叙事任务，直接创作第 ${chapterNumber} 章正文。`,
           options,
-          rewritePlan ? undefined : { useLengduSkill: true },
         )
 
         // 检测 Writer 是否标记推回
@@ -1129,6 +1131,121 @@ export class NovelOrchestrator {
           directorTask: run.directorTask,
           chapterId: chapter?.id ?? null,
           versionSource: { phase: 'reviser_final', agentType: 'reviser', trigger: '断点续跑后落库' },
+        })
+      }
+
+      // reviewing 快照是在 lengdu 处理完成后保存的；续跑时绝不能让已读过
+      // 该版本的工作流再执行一次，否则会伪造“新 Reader”独立性。
+      if (lengduSkillPath && !(resume?.entry === 'reviewing' && resume.writerDraft)) {
+        const lengduModelId = options.modelId ?? parseNovelModelRef(run.projectModelId)
+        const lengduResult = await new LengduWorkflow(this.context).run({
+          projectId,
+          chapterNumber,
+          content: writerResult,
+          skillPath: lengduSkillPath,
+          signal: options.signal,
+          modelId: lengduModelId,
+          onProgress: message => this.emitProgress(options, 'writing', 'phase_change', { message }),
+          onDegraded: event => persistNovelFailureAudit({
+            store: this.store,
+            projectId,
+            chapterNumber,
+            operation: `lengdu-${event.stage}`,
+            source: {
+              file: 'apps/agent-server/src/plugins/novel-plugin/core/lengdu/lengdu-workflow.ts',
+              symbol: `LengduWorkflow > ${event.stage}`,
+            },
+            input: {
+              content: event.content,
+              skillPath: lengduSkillPath,
+              modelId: lengduModelId,
+              stage: event.stage,
+            },
+            errorCode: `lengdu_${event.stage}_degraded`,
+            error: event.error,
+            durationMs: event.durationMs,
+            result: {
+              status: 'degraded',
+              fallback: event.stage === 'calibrator' ? '不使用校准报告' : '自审 Reader 报告',
+            },
+            requestTraceId: event.traceId,
+            agentType: 'audit',
+            agentName: 'lengdu 降级审计',
+            displayAgentType: 'audit',
+            displayAgentName: 'lengdu 降级审计',
+            phase: 'reviewing',
+            onAuditFailure: auditError => this.context.logger.warn(
+              { projectId, chapterNumber, err: auditError, stage: event.stage },
+              'lengdu 降级错误审计写入失败',
+            ),
+          }),
+          onFailure: event => persistNovelFailureAudit({
+            store: this.store,
+            projectId,
+            chapterNumber,
+            operation: `lengdu-${event.stage}`,
+            source: {
+              file: 'apps/agent-server/src/plugins/novel-plugin/core/lengdu/lengdu-workflow.ts',
+              symbol: `LengduWorkflow > ${event.stage}`,
+            },
+            input: {
+              content: event.content,
+              skillPath: lengduSkillPath,
+              modelId: lengduModelId,
+              stage: event.stage,
+            },
+            errorCode: `lengdu_${event.stage}_failed`,
+            error: event.error,
+            durationMs: event.durationMs,
+            result: { status: 'error', failedStage: event.stage },
+            requestTraceId: event.traceId,
+            agentType: 'audit',
+            agentName: 'lengdu 失败审计',
+            displayAgentType: 'audit',
+            displayAgentName: 'lengdu 失败审计',
+            phase: 'writing',
+            onAuditFailure: auditError => this.context.logger.warn(
+              { projectId, chapterNumber, err: auditError, stage: event.stage },
+              'lengdu 失败错误审计写入失败',
+            ),
+          }),
+        })
+        writerResult = lengduResult.content
+        this.context.logger.info(
+          {
+            projectId,
+            chapterNumber,
+            independentCalibration: lengduResult.usedIndependentCalibration,
+            independentReader: lengduResult.usedIndependentReader,
+            revisionCount: lengduResult.revisionCount,
+          },
+          'lengdu 独立读感工作流已完成',
+        )
+        const quality = lengduResult.quality
+        const statusMessage = quality.status === 'passed'
+          ? 'lengdu 独立读感已通过：看懂、流畅、好看三项均通过。'
+          : quality.status === 'degraded'
+            ? 'lengdu 未完成独立验证，已标记为自审降级。'
+            : 'lengdu 独立读感发现待处理项，已完成本轮有界修订。'
+        this.emitProgress(options, 'writing', 'phase_change', {
+          message: statusMessage,
+          detail: { kind: 'lengdu_quality_report', ...quality },
+        })
+        options.onConversationMessage?.({
+          role: 'system',
+          fromId: 'lengdu',
+          fromName: 'lengdu 读感校验',
+          content: statusMessage,
+          phase: 'review',
+          metadata: {
+            workflowMessageType: 'lengdu_quality_report',
+            detail: { kind: 'lengdu_quality_report', ...quality },
+          },
+        })
+        this.emitProgress(options, 'writing', 'phase_change', {
+          message: lengduResult.usedIndependentReader
+            ? 'lengdu 独立冷读已完成，进入常规审稿...'
+            : 'lengdu Reader 未完成，已按自审降级模式进入常规审稿...',
         })
       }
 
@@ -1705,6 +1822,8 @@ export class NovelOrchestrator {
         askStoryPolicy: getNovelAskStoryPolicy(this.store.getProject(projectId)?.novelAskStoryPolicy),
         factPackPathActive: true,
         projectModelId: this.store.getNovelModelId(projectId),
+        // 定向再修订同样要冻结用户本次选中的模型，不能回退到项目或角色配置。
+        perCallModelId: options.modelId,
         arrangedEntities,
         directorOutput: undefined,
         directorTask: undefined,
@@ -2602,15 +2721,6 @@ export class NovelOrchestrator {
     const skillEnabled =
       !!skillConfig && contextMode !== 'identity_only' && skillConfig.modes.has(contextMode)
     const skillPath = skillEnabled && skillConfig ? skillConfig.resolvePath(projectId) : undefined
-    const lengduSkillPath = overrides?.useLengduSkill && agentType === 'writer' && contextMode === 'full'
-      ? this.promptBuilder.getLengduSkillPath?.()
-      : undefined
-    if (overrides?.useLengduSkill && !lengduSkillPath) {
-      this.context.logger.warn(
-        { projectId, skill: 'lengdu', envVar: 'PI_LENGDU_SKILL_PATH' },
-        'Writer requested lengdu Skill, but no explicit Skill path was found; continuing without it',
-      )
-    }
     const agentIdentity = overrides?.identityPrompt
       ?? (skillPath && skillConfig
         ? skillConfig.buildIdentity(projectId, options.styleExpertIds)
@@ -2996,16 +3106,21 @@ export class NovelOrchestrator {
         // 必须给同一个缓存路由键，否则各自被导到不同机器，前缀白建。
         promptCacheScope,
         userMessage,
+        trace: {
+          sessionId: novelTraceSessionId(projectId, chapterNumber),
+          runId: `${agentType}:${randomUUID()}`,
+          metadata: {
+            source: 'novel-orchestrator',
+            projectId,
+            chapterNumber,
+            agentType: displayAgentType,
+            agentName: displayAgentName,
+            phase,
+          },
+        },
         ...(skillPath && skillConfig
-          ? {
-              skill: { name: skillConfig.name, path: skillPath },
-              ...(lengduSkillPath
-                ? { extraSkills: [{ name: 'lengdu', path: lengduSkillPath }] }
-                : {}),
-            }
-          : lengduSkillPath
-            ? { skill: { name: 'lengdu', path: lengduSkillPath } }
-            : {}),
+          ? { skill: { name: skillConfig.name, path: skillPath } }
+          : {}),
         tools: finalTools,
         signal: options?.signal,
         temperature,
@@ -3477,4 +3592,8 @@ export class NovelOrchestrator {
   private runKey(projectId: string, chapterNumber: number): string {
     return `${projectId}|${chapterNumber}`
   }
+}
+
+function novelTraceSessionId(projectId: string, chapterNumber: number): string {
+  return `novel:chapter:${projectId}:${chapterNumber}`
 }

@@ -47,6 +47,7 @@ const AGENT_STYLE: Record<string, { label: string; badge: string }> = {
   reviewer: { label: '审稿', badge: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/40' },
   reviser: { label: '修订', badge: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/40' },
   memory: { label: '记忆', badge: 'bg-gray-500/15 text-gray-700 dark:text-gray-300 border-gray-500/40' },
+  audit: { label: '审计', badge: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/40' },
 }
 
 const STATUS_STYLE: Record<string, { label: string; icon: typeof CheckCircle2; color: string }> = {
@@ -64,7 +65,7 @@ const PROTOCOL_BADGE_LABEL: Record<string, string> = {
   unknown: '协议未知',
 }
 
-const AGENT_TYPE_FILTERS = ['', 'director', 'writer', 'reviewer', 'memory']
+const AGENT_TYPE_FILTERS = ['', 'director', 'writer', 'reviewer', 'reviser', 'memory', 'audit']
 
 // ── 工具函数 ──
 
@@ -87,6 +88,20 @@ function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
   if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`
   return String(tokens)
+}
+
+/** 将错误审计 JSON 压缩成日志列表中可直接阅读的一行原因。 */
+function formatFailureSummary(error: string): string {
+  try {
+    const parsed = JSON.parse(error) as { errorCode?: unknown; message?: unknown }
+    const message = typeof parsed.message === 'string' ? parsed.message : ''
+    const errorCode = typeof parsed.errorCode === 'string' ? parsed.errorCode : ''
+    if (errorCode && message) return `${errorCode}: ${message}`
+    if (message) return message
+  } catch {
+    // 兼容旧日志：错误字段可能只是未结构化的异常文本。
+  }
+  return error.replace(/\s+/g, ' ').trim()
 }
 
 /** 计算单条日志的缓存命中率：cacheRead / (cacheRead + input) */
@@ -163,6 +178,14 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
       content: log.result,
       length: log.resultLength,
     },
+    ...(log.error ? [{
+      key: 'error',
+      label: '错误审计（信息、堆栈与代码位置）',
+      icon: AlertCircle,
+      color: 'text-destructive',
+      content: log.error,
+      length: log.error.length,
+    }] : []),
   ]
 
   return (
@@ -177,6 +200,7 @@ function LogDetail({ id }: LogDetailProps): ReactElement {
           <Wrench className="size-2.5" />
           工具 {log.toolNames.length} 个
         </span>
+        {log.operation && <span>操作 {log.operation}</span>}
         {/* 提示词各层字符数：SEMI 层（章节上下文）通常是体积大头，
             只看 system/user 会漏掉它，导致"看不出 token 从哪来" */}
         <span title="STATIC 层（系统提示词）字符数">静态 {log.systemPrompt.length}</span>
@@ -565,6 +589,14 @@ export function AgentLogPanel({ chapterNumber }: AgentLogPanelProps): ReactEleme
                   >
                     {log.displayAgentName || agentStyle?.label || log.agentType}
                   </Badge>
+                  {log.status === 'error' && log.error && (
+                    <span
+                      className="min-w-0 max-w-56 truncate text-nano text-destructive"
+                      title={formatFailureSummary(log.error)}
+                    >
+                      {formatFailureSummary(log.error)}
+                    </span>
+                  )}
                   {log.cacheProtocol && (
                     <Badge variant="outline" className="text-nano h-4 px-1 shrink-0">
                       {PROTOCOL_BADGE_LABEL[log.cacheProtocol] ?? log.cacheProtocol}

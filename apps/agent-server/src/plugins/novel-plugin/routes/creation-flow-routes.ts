@@ -54,16 +54,59 @@ import {
 import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 import type { ArrangeDraftHandle } from '../core/generation/novel-entity-generator.js'
 import { modelSelectionSchema } from './model-selection-contract.js'
+import { persistNovelFailureAudit } from '../core/observability/novel-error-audit.js'
 
 /**
  * 群聊可续跑阶段：这些阶段失败时快照携带足够状态（transcript/scenes/content/
  * failedSceneId）从断点继续。planning 阶段失败无可续跑产物，仍整场重来。
  */
 const DISCUSSION_RESUMABLE_PHASES = new Set(['chapter_weaving', 'reviewing', 'acting', 'scene_setup'])
+const CREATION_FLOW_ROUTES_FILE = 'apps/agent-server/src/plugins/novel-plugin/routes/creation-flow-routes.ts'
 
 export function createCreationFlowRoutes(services: NovelServices): RouteDefinition[] {
   const { store } = services
   const routes: RouteDefinition[] = []
+
+  const persistRouteFailureAudit = (params: {
+    request: any
+    projectId: string
+    chapterNumber: number
+    operation: string
+    sourceSymbol: string
+    input: unknown
+    errorCode: string
+    error: unknown
+    durationMs: number
+    result?: unknown
+    agentType?: string
+    agentName?: string
+    displayAgentType?: string
+    displayAgentName?: string
+    phase?: string
+  }): void => {
+    persistNovelFailureAudit({
+      store,
+      projectId: params.projectId,
+      chapterNumber: params.chapterNumber,
+      operation: params.operation,
+      source: { file: CREATION_FLOW_ROUTES_FILE, symbol: params.sourceSymbol },
+      input: params.input,
+      errorCode: params.errorCode,
+      error: params.error,
+      durationMs: params.durationMs,
+      result: params.result,
+      requestTraceId: params.request.traceId,
+      agentType: params.agentType,
+      agentName: params.agentName,
+      displayAgentType: params.displayAgentType,
+      displayAgentName: params.displayAgentName,
+      phase: params.phase,
+      onAuditFailure: (auditError) => params.request.log?.error?.(
+        { err: auditError, projectId: params.projectId, chapterNumber: params.chapterNumber, operation: params.operation },
+        '创作流程错误审计写入失败',
+      ),
+    })
+  }
 
   const aiArrangeBodySchema = z.object({
     /** 本次编排的临时模型覆盖；未传时按项目主模型/novel-director/系统默认解析。 */
@@ -311,6 +354,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         }
       }
       reply.raw.once('close', abortOnDisconnect)
+      const startedAt = Date.now()
 
       try {
         chapterCreationLocks.add(creationLockKey)
@@ -400,6 +444,21 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           failedPhase: result.failedPhase,
           error: result.error,
         })
+        if (result.status === 'error') {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            operation: 'create-flow',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-flow',
+            input,
+            errorCode: 'create_flow_failed',
+            error: new Error(result.error ?? '工作流创作失败'),
+            durationMs: Date.now() - startedAt,
+            result,
+            phase: result.failedPhase ?? 'workflow',
+          })
+        }
         emitter.result(resumable
           ? { ...result, workflowRunId, canResume: true }
           : { ...result, workflowRunId })
@@ -416,6 +475,20 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         // 路由层异常（orchestrator 未返回 result）：有边界产物同样可续跑
         if (lastBoundary != null) saveRunSnapshot('error', { error: errMessage })
         cancelDebug('create-flow-catch', { projectId, chapterNumber, errMessage, errStack: err instanceof Error ? err.stack : undefined, signalAborted: task.controller.signal.aborted })
+        if (!task.controller.signal.aborted) {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            operation: 'create-flow',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-flow',
+            input,
+            errorCode: 'create_flow_request_failed',
+            error: err,
+            durationMs: Date.now() - startedAt,
+            phase: 'workflow',
+          })
+        }
         emitter.error(errMessage)
       } finally {
         clearInterval(heartbeat)
@@ -516,6 +589,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         }
       }
       reply.raw.once('close', abortOnDisconnect)
+      const startedAt = Date.now()
 
       // 续跑快照：沿用原快照的阶段产物，模型冻结为首跑选择（避免同一次创作换模型）。
       // 先用原边界初始化，确保续跑在产生新边界前再次失败时仍可继续。
@@ -651,6 +725,21 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           failedPhase: result.failedPhase,
           error: result.error,
         })
+        if (result.status === 'error') {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapter,
+            operation: 'create-flow-resume',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-flow/:runId/resume',
+            input: request.body ?? {},
+            errorCode: 'create_flow_resume_failed',
+            error: new Error(result.error ?? '工作流断点续跑失败'),
+            durationMs: Date.now() - startedAt,
+            result,
+            phase: result.failedPhase ?? snapshot.phase,
+          })
+        }
         emitter.result(resumable
           ? { ...result, workflowRunId: resumeRunId, canResume: true }
           : { ...result, workflowRunId: resumeRunId })
@@ -665,6 +754,20 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           metadata: { workflowMessageType: 'run_end', failed: true },
         })
         if (lastBoundary != null) saveRunSnapshot('error', { error: errMessage })
+        if (!task.controller.signal.aborted) {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapter,
+            operation: 'create-flow-resume',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-flow/:runId/resume',
+            input: request.body ?? {},
+            errorCode: 'create_flow_resume_request_failed',
+            error: err,
+            durationMs: Date.now() - startedAt,
+            phase: snapshot.phase,
+          })
+        }
         emitter.error(errMessage)
       } finally {
         clearInterval(heartbeat)
@@ -688,6 +791,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       const reReviseBodySchema = z.object({
         content: z.string().min(1, '缺少待修订正文'),
         arrangedEntities: arrangedEntitiesSchema.optional(),
+        /** 本次定向修订使用的临时模型覆盖；未传时按项目/角色配置解析。 */
+        modelId: modelSelectionSchema.optional(),
       })
       const input = validateBody(reReviseBodySchema, request, reply)
       if (!input) return reply
@@ -735,6 +840,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       }
       reply.raw.once('close', abortOnDisconnect)
 
+      const startedAt = Date.now()
       try {
         chapterCreationLocks.add(creationLockKey)
         const result = await services.orchestrator.reviseOnly({
@@ -749,11 +855,49 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             onCheckpoint: async () => 'approve' as const,
             onProgress: (event) => emitter.progress(event),
             signal: task.controller.signal,
+            modelId: input.modelId,
           },
         })
+        if (result.status === 'error') {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            operation: 're-revise',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/re-revise',
+            input,
+            errorCode: result.errorCode ?? 're_revise_failed',
+            error: new Error(result.error ?? '定向再修订失败'),
+            durationMs: Date.now() - startedAt,
+            result,
+            agentType: 'reviser',
+            agentName: '再修订审计',
+            displayAgentType: 'reviser',
+            displayAgentName: '修订错误审计',
+            phase: 'revising',
+          })
+        }
         emitter.result(result)
       } catch (err) {
         cancelDebug('re-revise-catch', { projectId, chapterNumber, errMessage: err instanceof Error ? err.message : String(err), signalAborted: task.controller.signal.aborted })
+        if (!task.controller.signal.aborted) {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            operation: 're-revise',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/re-revise',
+            input,
+            errorCode: 're_revise_request_failed',
+            error: err,
+            durationMs: Date.now() - startedAt,
+            agentType: 'reviser',
+            agentName: '再修订审计',
+            displayAgentType: 'reviser',
+            displayAgentName: '修订错误审计',
+            phase: 'revising',
+          })
+        }
         emitter.error(err instanceof Error ? err.message : String(err))
       } finally {
         clearInterval(heartbeat)
@@ -1099,6 +1243,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         }
       }
       reply.raw.once('close', abortOnDisconnect)
+      const startedAt = Date.now()
 
       try {
         chapterCreationLocks.add(creationLockKey)
@@ -1134,7 +1279,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             },
             onProgress: (event) => emitter.progress(event),
             moderatorModel: settings.moderatorModel,
-            memberModel: input.modelId,
             flowKey: interjectFlowKey,
             styleExpertIds: input.styleExpertIds,
             projectModel,
@@ -1156,7 +1300,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities,
-          memberModel: input.modelId,
           projectModel,
           styleExpertIds: input.styleExpertIds,
           content: result.content,
@@ -1182,7 +1325,36 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           canResume: result.status === 'error' && result.failedPhase != null
             && DISCUSSION_RESUMABLE_PHASES.has(result.failedPhase),
         })
+        if (result.status === 'error') {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            operation: 'create-discussion',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion',
+            input,
+            errorCode: 'create_discussion_failed',
+            error: new Error(result.error ?? '群聊创作失败'),
+            durationMs: Date.now() - startedAt,
+            result,
+            phase: result.failedPhase ?? 'discussion',
+          })
+        }
       } catch (err) {
+        if (!task.controller.signal.aborted) {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapterNumberValue,
+            operation: 'create-discussion',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion',
+            input,
+            errorCode: 'create_discussion_request_failed',
+            error: err,
+            durationMs: Date.now() - startedAt,
+            phase: 'discussion',
+          })
+        }
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
@@ -1252,6 +1424,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         }
       }
       reply.raw.once('close', abortOnDisconnect)
+      const startedAt = Date.now()
 
       try {
         chapterCreationLocks.add(creationLockKey)
@@ -1285,7 +1458,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             },
             onProgress: event => emitter.progress(event),
             moderatorModel: settings.moderatorModel,
-            memberModel: snapshot.memberModel,
             projectModel,
             flowKey: interjectFlowKey,
             styleExpertIds: snapshot.styleExpertIds,
@@ -1314,7 +1486,6 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities: snapshot.arrangedEntities,
-          memberModel: snapshot.memberModel,
           projectModel,
           styleExpertIds: snapshot.styleExpertIds,
           content: result.content,
@@ -1349,7 +1520,36 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           canResume: result.status === 'error' && result.failedPhase != null
             && DISCUSSION_RESUMABLE_PHASES.has(result.failedPhase),
         })
+        if (result.status === 'error') {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapter,
+            operation: 'create-discussion-resume',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion/:runId/resume',
+            input: request.body ?? {},
+            errorCode: 'create_discussion_resume_failed',
+            error: new Error(result.error ?? '群聊断点续跑失败'),
+            durationMs: Date.now() - startedAt,
+            result,
+            phase: result.failedPhase ?? snapshot.failedPhase,
+          })
+        }
       } catch (err) {
+        if (!task.controller.signal.aborted) {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chapter,
+            operation: 'create-discussion-resume',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/create-discussion/:runId/resume',
+            input: request.body ?? {},
+            errorCode: 'create_discussion_resume_request_failed',
+            error: err,
+            durationMs: Date.now() - startedAt,
+            phase: snapshot.failedPhase,
+          })
+        }
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
@@ -1499,6 +1699,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         if (clientDisconnected || reply.raw.writableEnded) return
         reply.raw.write(': keepalive\n\n')
       }, 15000)
+      const startedAt = Date.now()
 
       // 锁置入 try 块开头：确保 finally 必定执行 delete，避免 SSE 设置抛错导致锁残留
       try {
@@ -1624,6 +1825,20 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       } catch (err) {
         pendingArrangeDrafts.get(lockKey)?.handle.rollback()
         pendingArrangeDrafts.delete(lockKey)
+        if (!task.controller.signal.aborted) {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chNum,
+            operation: 'ai-arrange',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/ai-arrange',
+            input: arrangeInput,
+            errorCode: 'ai_arrange_request_failed',
+            error: err,
+            durationMs: Date.now() - startedAt,
+            phase: 'arranging',
+          })
+        }
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
@@ -1690,6 +1905,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         if (clientDisconnected || reply.raw.writableEnded) return
         reply.raw.write(': keepalive\n\n')
       }, 15000)
+      const startedAt = Date.now()
 
       try {
         aiArrangeLocks.set(lockKey, Promise.resolve())
@@ -1737,6 +1953,20 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           }],
         })
       } catch (err) {
+        if (!task.controller.signal.aborted) {
+          persistRouteFailureAudit({
+            request,
+            projectId,
+            chapterNumber: chNum,
+            operation: 'reverse-arrange',
+            sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/reverse-arrange',
+            input,
+            errorCode: 'reverse_arrange_request_failed',
+            error: err,
+            durationMs: Date.now() - startedAt,
+            phase: 'arranging',
+          })
+        }
         emitter.error(String(err))
       } finally {
         clearInterval(heartbeat)
@@ -2038,6 +2268,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         threadId,
         randomUUID(),
       )
+      const startedAt = Date.now()
 
       try {
         const result = await services.chapterChatRunner.run(
@@ -2054,6 +2285,18 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         emitter.result({ status: 'completed', replies: result.replies })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
+        persistRouteFailureAudit({
+          request,
+          projectId,
+          chapterNumber: chapterNum,
+          operation: 'chapter-chat',
+          sourceSymbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/chat',
+          input,
+          errorCode: 'chapter_chat_request_failed',
+          error: err,
+          durationMs: Date.now() - startedAt,
+          phase: 'chat',
+        })
         emitter.error(message)
       } finally {
         clearInterval(heartbeat)

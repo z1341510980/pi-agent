@@ -320,6 +320,17 @@ export interface PluginSessionOptions {
   /** 首条用户消息（章节上下文/生成指令） */
   userMessage: string
   /**
+   * 可选的可观测性归属。
+   *
+   * 插件 Session 默认彼此独立；提供此字段时，底座会把本次调用记录到指定
+   * Tracer 会话，供领域 UI 按项目或章节聚合展示。
+   */
+  trace?: {
+    sessionId: string
+    runId: string
+    metadata?: Record<string, unknown>
+  }
+  /**
    * 显式授权给本次插件 Session 的 Skill。
    *
    * 底座仅加载该路径，并在 prompt() 时使用 Pi 原生 `/skill:<name>` 语法展开正文；
@@ -415,8 +426,14 @@ export interface PluginPayloadStats {
 export interface PluginSessionHandle {
   /** 底层 Pi Session 的稳定 ID，用于用量账本关联 */
   readonly sessionId?: string
-  /** 触发 LLM 推理，返回完整 assistant 文本 */
-  prompt(): Promise<string>
+  /**
+   * 触发 LLM 推理，返回完整 assistant 文本。
+   *
+   * 传入 message 时会向同一 Session 追加一条用户消息再推理，
+   * 用于需要保持零继承、多轮上下文隔离的插件工作流（如 lengdu Reader）。
+   * 不传参数时保持创建 Session 时首条 userMessage 的既有语义。
+   */
+  prompt(message?: string): Promise<string>
   /**
    * 触发 LLM 推理，流式推送 delta 文本。
    *

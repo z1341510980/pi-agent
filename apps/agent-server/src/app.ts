@@ -163,6 +163,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
     recordPayloadDetails: true,
   })
   app.log.info('追踪系统已初始化（Tracer）')
+  app.pluginManager?.setTracer(tracer)
 
   const piAgUiAgent = new PiAgUiAgent(
     sessionStore,

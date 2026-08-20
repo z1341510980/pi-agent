@@ -1161,7 +1161,7 @@ export class NovelPromptBuilder {
     return this.promptManager.getDefaultTemplatePath('novel-creation', projectId)
   }
 
-  /** 项目级 lengdu Skill：仅供 Writer 初稿显式授权，不参与默认 Skill 扫描。 */
+  /** 项目级 lengdu Skill：供独立校准与 Reader 工作流按路径加载，不参与默认 Skill 扫描。 */
   getLengduSkillPath(): string | undefined {
     return this.promptManager.getExternalSkillPath('lengdu', 'PI_LENGDU_SKILL_PATH')
   }

@@ -992,10 +992,14 @@ export function NovelConversationPanel({
             timestamp: message.createdAt
           })
         } else {
+          const detail = message.metadata?.detail
+          const content = detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).kind === 'string'
+            ? formatDetailBubble(detail as Record<string, unknown>).content
+            : message.content
           msgs.push({
             id: `workflow-history-${message.id}`,
             role: 'system',
-            content: message.content,
+            content,
             status: 'complete',
             timestamp: message.createdAt
           })

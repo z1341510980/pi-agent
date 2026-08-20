@@ -66,6 +66,7 @@ interface TraceSummary {
   startedAt: number
   status: 'running' | 'completed' | 'failed' | 'aborted'
   eventCount: number
+  metadata?: Record<string, unknown>
 }
 
 interface TracesResponse {
@@ -550,7 +551,9 @@ function TraceGroup({ trace }: { trace: TraceSummary }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-text truncate">
-              {trace.id.slice(0, 8)}…{trace.id.slice(-6)}
+              {typeof trace.metadata?.agentName === 'string'
+                ? trace.metadata.agentName
+                : `${trace.id.slice(0, 8)}…${trace.id.slice(-6)}`}
             </span>
             <span className={cn('text-[10px] font-medium', statusColor)}>
               ● {statusLabel}

@@ -80,6 +80,36 @@ describe('PluginManager', () => {
     expect(stats.messagesChars).toBe(JSON.stringify(payload.system).length + JSON.stringify(payload.messages).length)
     expect(stats.totalChars).toBe(JSON.stringify(payload).length)
   })
+
+  it('rejects an explicitly selected model that is not registered instead of using the default model', async () => {
+    let context: PluginContext | undefined
+    const session = {
+      subscribe: vi.fn(() => () => undefined),
+      setModel: vi.fn(),
+    }
+    manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+      builtinPlugins: [
+        {
+          plugin: createTestPlugin({
+            name: 'model-selection-test',
+            setupFn: (pluginContext) => { context = pluginContext },
+          }),
+        },
+      ],
+    })
+    manager.setSessionStore({ getOrCreate: vi.fn().mockResolvedValue({ session }) } as any)
+    manager.setModelRegistry({ find: vi.fn(() => undefined) })
+    await manager.init()
+    await manager.start()
+
+    await expect(context!.createSession({
+      systemPrompt: 'system',
+      userMessage: 'user',
+      modelId: { provider: 'missing-provider', modelId: 'missing-model' },
+    })).rejects.toThrow('未找到所选模型：missing-provider/missing-model')
+    expect(session.setModel).not.toHaveBeenCalled()
+  })
+
   let eventBus: EventBus
   let manager: PluginManager
 

@@ -66,6 +66,29 @@ afterEach(() => {
 })
 
 describe('useNovelCreationFlow progress', () => {
+  it('formats the persisted lengdu quality report with all reader gates and isolation status', async () => {
+    const { formatDetailBubble } = await import('../use-novel-creation-flow')
+
+    const result = formatDetailBubble({
+      kind: 'lengdu_quality_report',
+      status: 'degraded',
+      calibration: 'independent',
+      reader: 'self_review',
+      comprehension: 'passed',
+      fluency: 'needs_attention',
+      appeal: 'unverified',
+      revisionCount: 1,
+      summary: '中段有些卡，未完成独立 Reader 复核。',
+    })
+
+    expect(result).toMatchObject({ agentType: 'context', agentName: 'lengdu 读感' })
+    expect(result.content).toContain('看懂：通过')
+    expect(result.content).toContain('流畅：待关注')
+    expect(result.content).toContain('好看：未验证')
+    expect(result.content).toContain('独立校准完成；Reader 自审降级')
+    expect(result.content).toContain('中段有些卡')
+  })
+
   it.each([
     ['create-flow', 'startCreation'],
     ['群聊', 'startDiscussion']
@@ -313,6 +336,73 @@ describe('useNovelCreationFlow progress', () => {
     expect(result.current.agentOutputs[1].timestamp).toBeGreaterThan(result.current.agentOutputs[0].timestamp)
   })
 
+  it('缺失 messageId 的导演流不会覆盖排在前面的详情气泡', async () => {
+    parseSseStreamMock.mockImplementationOnce(
+      async (_body: unknown, onEvent: (event: BaseEvent) => void) => {
+        onEvent({
+          type: 'CUSTOM',
+          name: 'novel:progress',
+          value: {
+            timestamp: 1,
+            type: 'phase_change',
+            phase: 'directing',
+            data: {
+              type: 'phase_change',
+              detail: {
+                kind: 'narrative_task',
+                description: '先梳理本章冲突',
+                taskType: 'advance_mainline',
+                priority: 'medium'
+              }
+            }
+          }
+        } as unknown as BaseEvent)
+        onEvent({
+          type: 'CUSTOM',
+          name: 'novel:progress',
+          value: {
+            timestamp: 2,
+            type: 'agent_start',
+            phase: 'directing',
+            data: {
+              type: 'agent_start',
+              messageId: 'director-missing-id',
+              agentType: 'director',
+              agentName: '导演',
+              message: '导演已启动'
+            }
+          }
+        } as unknown as BaseEvent)
+        onEvent({ type: 'TEXT_MESSAGE_START' } as unknown as BaseEvent)
+        onEvent({
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: '   ',
+          delta: '导演的流式输出'
+        } as unknown as BaseEvent)
+        onEvent({ type: 'TEXT_MESSAGE_END' } as unknown as BaseEvent)
+      }
+    )
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.startCreation('project-1', 1)
+    })
+
+    const detailOutput = result.current.agentOutputs.find((output) => !output.messageId)
+    const directorOutput = result.current.agentOutputs.find(
+      (output) => output.messageId === 'director-missing-id'
+    )
+
+    expect(detailOutput).toEqual(
+      expect.objectContaining({ content: expect.stringContaining('先梳理本章冲突') })
+    )
+    expect(detailOutput?.content).not.toContain('导演的流式输出')
+    expect(directorOutput).toEqual(
+      expect.objectContaining({ content: '导演的流式输出', streaming: false })
+    )
+  })
+
   it('思考流式 delta 进入 thinking 字段，正文 delta 到达后取代思考', async () => {
     vi.useFakeTimers()
     try {
@@ -514,6 +604,43 @@ describe('useNovelCreationFlow progress', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       'http://test.local/api/plugins/novel/projects/project-1/chapters/7/create-flow/latest/resume',
       expect.objectContaining({ method: 'POST' })
+    )
+  })
+
+  it('reRevise 把当前选择的模型传给定向修订端点', async () => {
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+    const modelId = { provider: 'selected-provider', modelId: 'selected-model', thinkingLevel: 'medium' as const }
+
+    await act(async () => {
+      await result.current.reRevise('project-1', 7, '待修订正文', { modelId })
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test.local/api/plugins/novel/projects/project-1/chapters/7/re-revise',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ content: '待修订正文', modelId }),
+        signal: expect.any(AbortSignal),
+      })
+    )
+  })
+
+  it('reverseArrange 把当前选择的模型传给反推编排端点', async () => {
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+    const modelId = { provider: 'selected-provider', modelId: 'selected-model', thinkingLevel: 'medium' as const }
+
+    await act(async () => {
+      await result.current.reverseArrange('project-1', 7, { modelId })
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://test.local/api/plugins/novel/projects/project-1/chapters/7/reverse-arrange',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ modelId }),
+      }),
     )
   })
 

@@ -24,6 +24,7 @@ function createSseReply() {
       writeHead: ReturnType<typeof vi.fn>
       write: ReturnType<typeof vi.fn>
       end: ReturnType<typeof vi.fn>
+      on: ReturnType<typeof vi.fn>
       once: ReturnType<typeof vi.fn>
       off: ReturnType<typeof vi.fn>
       writableEnded: boolean
@@ -33,6 +34,7 @@ function createSseReply() {
     writeHead: vi.fn(),
     write: vi.fn(),
     end: vi.fn(),
+    on: vi.fn(),
     once: vi.fn(),
     off: vi.fn(),
     writableEnded: false,
@@ -151,8 +153,201 @@ describe('chapter SSE route preconditions', () => {
   }
 })
 
-describe('discussion member model contract', () => {
-  it('passes the selected model to the runner and persists it for resume', async () => {
+describe('re-revise model and audit contract', () => {
+  const routePath = '/projects/:projectId/chapters/:chapterNumber/re-revise'
+
+  it('passes the selected model to the reviser and persists structured quality-gate failures', async () => {
+    const selectedModel = { provider: 'selected-provider', modelId: 'selected-model', thinkingLevel: 'high' as const }
+    const insertAgentLog = vi.fn()
+    const reviseOnly = vi.fn(async () => ({
+      status: 'error' as const,
+      errorCode: 'quality_gate_revision_incomplete',
+      error: '仍有表达问题未通过',
+      failedItems: [{ type: 'cliche', message: '套话', excerpt: '旧句' }],
+      revisionRounds: [{ round: 1, appliedPatches: 0, failedPatches: 1, remainingFailures: [], contentLength: 4 }],
+    }))
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+        insertAgentLog,
+      },
+      orchestrator: { reviseOnly },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => item.path === routePath)!
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      body: { content: '待修订正文', modelId: selectedModel },
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      traceId: 'trace-revise-1',
+    } as any, createSseReply() as any)
+
+    expect(reviseOnly).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1',
+      chapterNumber: 1,
+      content: '待修订正文',
+      options: expect.objectContaining({ modelId: selectedModel }),
+    }))
+    expect(insertAgentLog).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: 'reviser',
+      operation: 're-revise',
+      status: 'error',
+      errorCode: 'quality_gate_revision_incomplete',
+    }))
+
+    const audit = insertAgentLog.mock.calls[0]?.[0]
+    expect(JSON.parse(audit.taskInput)).toMatchObject({
+      source: expect.objectContaining({
+        file: 'apps/agent-server/src/plugins/novel-plugin/routes/creation-flow-routes.ts',
+        operation: 're-revise',
+      }),
+      request: {
+        traceId: 'trace-revise-1',
+        params: { projectId: 'project-1', chapterNumber: 1 },
+        body: { content: '待修订正文', modelId: selectedModel },
+      },
+    })
+    expect(JSON.parse(audit.error)).toMatchObject({
+      errorCode: 'quality_gate_revision_incomplete',
+      message: '仍有表达问题未通过',
+    })
+    expect(JSON.parse(audit.result)).toMatchObject({
+      errorCode: 'quality_gate_revision_incomplete',
+      revisionRounds: expect.any(Array),
+    })
+  })
+
+  it('persists the error stack and source location when the re-revise request throws', async () => {
+    const failure = new Error('Provider 请求被拒绝')
+    failure.stack = 'Error: Provider 请求被拒绝\n    at reviseOnly (test.ts:42:1)'
+    const insertAgentLog = vi.fn()
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+        insertAgentLog,
+      },
+      orchestrator: { reviseOnly: vi.fn(async () => { throw failure }) },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => item.path === routePath)!
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      body: { content: '需要复现的正文' },
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      traceId: 'trace-revise-2',
+    } as any, createSseReply() as any)
+
+    const audit = insertAgentLog.mock.calls[0]?.[0]
+    expect(audit).toMatchObject({
+      operation: 're-revise',
+      errorCode: 're_revise_request_failed',
+      status: 'error',
+    })
+    expect(JSON.parse(audit.error)).toMatchObject({
+      message: 'Provider 请求被拒绝',
+      stack: failure.stack,
+      source: expect.objectContaining({
+        symbol: 'createCreationFlowRoutes > POST /projects/:projectId/chapters/:chapterNumber/re-revise',
+      }),
+    })
+    expect(JSON.parse(audit.taskInput)).toMatchObject({
+      request: expect.objectContaining({
+        traceId: 'trace-revise-2',
+        body: { content: '需要复现的正文' },
+      }),
+    })
+  })
+})
+
+describe('other creation-flow model and audit contracts', () => {
+  it('passes the selected model through reverse-arrange to entity extraction', async () => {
+    const selectedModel = { provider: 'selected-provider', modelId: 'selected-model', thinkingLevel: 'high' as const }
+    const generateAndArrange = vi.fn(async () => ({
+      characterIds: [], conflictIds: [], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], itemIds: [],
+    }))
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting', content: '已完成的章节正文。' })),
+      },
+      entityGenerator: { generateAndArrange },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/reverse-arrange'
+    ))!
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      body: { modelId: selectedModel },
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      log: { error: vi.fn() },
+    } as any, createSseReply() as any)
+
+    expect(generateAndArrange).toHaveBeenCalledWith(
+      'project-1',
+      1,
+      '已完成的章节正文。',
+      expect.any(Function),
+      'content',
+      expect.any(AbortSignal),
+      selectedModel,
+    )
+  })
+
+  it('persists an audit record when the main workflow returns an error result', async () => {
+    const insertAgentLog = vi.fn()
+    const createChapterWithFlow = vi.fn(async () => ({
+      status: 'error', error: 'Provider 请求失败', failedPhase: 'writing',
+    }))
+    const services = {
+      store: {
+        getProject: vi.fn(() => ({ id: 'project-1' })),
+        getChapter: vi.fn(() => ({ id: 'chapter-1', status: 'drafting' })),
+        insertAgentLog,
+      },
+      orchestrator: { createChapterWithFlow, clearStaleInterjectMessages: vi.fn() },
+      workflowRunStore: { save: vi.fn() },
+      chapterChatStore: { add: vi.fn() },
+      confirmationManager: { requestDecision: vi.fn(), listPending: vi.fn(() => []) },
+    } as any
+    const route = createCreationFlowRoutes(services).find(item => (
+      item.path === '/projects/:projectId/chapters/:chapterNumber/create-flow'
+    ))!
+
+    await route.handler({
+      params: { projectId: 'project-1', chapterNumber: '1' },
+      body: { modelId: { provider: 'selected-provider', modelId: 'selected-model' } },
+      headers: {},
+      raw: { socket: { setNoDelay: vi.fn() } },
+      traceId: 'trace-workflow-1',
+      log: { error: vi.fn(), warn: vi.fn() },
+    } as any, createSseReply() as any)
+
+    const audit = insertAgentLog.mock.calls[0]?.[0]
+    expect(audit).toMatchObject({
+      agentType: 'audit',
+      operation: 'create-flow',
+      errorCode: 'create_flow_failed',
+      status: 'error',
+    })
+    expect(JSON.parse(audit.taskInput)).toMatchObject({
+      source: expect.objectContaining({ operation: 'create-flow' }),
+      request: {
+        traceId: 'trace-workflow-1',
+        body: { modelId: { provider: 'selected-provider', modelId: 'selected-model' } },
+      },
+    })
+    expect(JSON.parse(audit.error)).toMatchObject({ message: 'Provider 请求失败' })
+  })
+})
+
+describe('discussion model contract', () => {
+  it('keeps role models under their configured settings when a request includes a selected model', async () => {
     const memberModel = { provider: 'selected', modelId: 'run-model' }
     const projectModel = { provider: 'project', modelId: 'main-model' }
     const run = vi.fn(async () => ({
@@ -188,16 +383,18 @@ describe('discussion member model contract', () => {
       'project-1',
       1,
       expect.objectContaining({
-        memberModel,
         projectModel,
         moderatorModel: { provider: 'cheap', modelId: 'moderator' },
       }),
       undefined,
     )
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ memberModel, projectModel }))
+    const firstRunOptions = (run.mock.calls as unknown as unknown[][])[0]?.[2]
+    expect(firstRunOptions).not.toHaveProperty('memberModel')
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ projectModel }))
+    expect(save.mock.calls[0]?.[0]).not.toHaveProperty('memberModel')
   })
 
-  it('reuses the original member model when resuming a failed run', async () => {
+  it('does not restore a legacy per-call member model when resuming a failed run', async () => {
     const memberModel = { provider: 'selected', modelId: 'run-model' }
     const projectModel = { provider: 'project', modelId: 'frozen-model' }
     const snapshot = {
@@ -238,15 +435,17 @@ describe('discussion member model contract', () => {
     expect(run).toHaveBeenCalledWith(
       'project-1',
       1,
-      expect.objectContaining({ memberModel, projectModel }),
+      expect.objectContaining({ projectModel }),
       undefined,
       expect.objectContaining({ phase: 'chapter_weaving' }),
     )
+    const resumedRunOptions = (run.mock.calls as unknown as unknown[][])[0]?.[2]
+    expect(resumedRunOptions).not.toHaveProperty('memberModel')
     expect(save).toHaveBeenCalledWith(expect.objectContaining({
-      memberModel,
       projectModel,
       resumedFromRunId: 'failed-run',
     }))
+    expect(save.mock.calls[0]?.[0]).not.toHaveProperty('memberModel')
   })
 
   it('keeps an explicitly empty project model empty when resuming', async () => {

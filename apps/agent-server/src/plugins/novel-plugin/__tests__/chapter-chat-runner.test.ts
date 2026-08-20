@@ -131,7 +131,7 @@ describe('ChapterChatRunner', () => {
 
     expect(result.replies[0]?.agentId).toBe('novel-writer')
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
-      modelId: { provider: 'cheap', modelId: 'moderator' },
+      modelId: selectedModel,
       tools: [],
     }))
     expect(createAgUiSession).toHaveBeenCalledWith(expect.objectContaining({

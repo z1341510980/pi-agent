@@ -652,7 +652,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       return
     }
     if (task.kind === 'reverse') {
-      await creationFlow.reverseArrange(task.projectId, task.chapterNumber)
+      await creationFlow.reverseArrange(task.projectId, task.chapterNumber, { modelId: creationModelId })
       return
     }
 
@@ -664,7 +664,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
       ...(characterFunctions ? { characterFunctions } : {}),
     }
     if (task.kind === 'discussion') {
-      await session.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId, styleExpertIds: selectedStyleExpertIds })
+      await session.startDiscussion(task.projectId, task.chapterNumber, { arrangedEntities, styleExpertIds: selectedStyleExpertIds })
       return
     }
     await session.startWorkflow(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId, styleExpertIds: selectedStyleExpertIds })
@@ -811,8 +811,11 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     const projectId = currentProject.id
     const chapterNumber = creationChapterNumber
     setCreationMode('manual')
-    void creationFlow.reRevise(projectId, chapterNumber, content)
-  }, [currentProject, creationChapterNumber, creationFlow, setCreationMode])
+    // 与首次创作一致：点击时快照顶栏模型，运行期间切换不影响本次修订。
+    void creationFlow.reRevise(projectId, chapterNumber, content, {
+      modelId: selectedAgentModel ?? undefined,
+    })
+  }, [currentProject, creationChapterNumber, creationFlow, selectedAgentModel, setCreationMode])
 
   /**
    * 质量门修订失败后「手动编辑 / 保留草稿」：内容留在编辑器（不落库不丢弃），
@@ -1524,7 +1527,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             </DialogHeader>
             <Tabs
               value={diagnosticsTab}
-              onValueChange={(value) => setDiagnosticsTab(value as 'logs' | 'cache' | 'trend')}
+              onValueChange={(value) => setDiagnosticsTab(value as 'logs' | 'cache' | 'trend' | 'trace')}
               className="min-h-0 flex-1 flex-col gap-0 overflow-hidden h-full"
             >
               <TabsList className="mx-4 mt-3 flex h-auto w-auto shrink-0 gap-1 rounded-lg bg-muted/40 p-1" aria-label="调用诊断视图">
@@ -1556,8 +1559,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               </TabsContent>
               <TabsContent value="trace" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
                 <TraceTimelinePanel
-                  sessionId={currentProjectId || undefined}
-                  chapterNumber={creationChapterNumber}
+                  sessionId={currentProjectId && (creationChapterNumber ?? playheadChapter)
+                    ? `novel:chapter:${currentProjectId}:${creationChapterNumber ?? playheadChapter}`
+                    : undefined}
+                  chapterNumber={creationChapterNumber ?? playheadChapter ?? undefined}
                 />
               </TabsContent>
             </Tabs>
