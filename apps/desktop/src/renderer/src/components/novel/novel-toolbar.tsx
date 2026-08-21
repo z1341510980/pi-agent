@@ -1,4 +1,4 @@
-import { useCallback, type ReactElement } from 'react'
+import { useCallback, type ChangeEvent, type ReactElement } from 'react'
 import { useReactFlow, type Edge as XYEdge } from '@xyflow/react'
 import {
   Maximize,
@@ -17,13 +17,6 @@ import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import {
-  deleteCharacter,
-  deleteConflict,
-  deleteForeshadow,
-  deleteFaction,
-  deleteLocation,
-  deleteWorldElement,
-  deleteNodePosition,
   findGraphNeighbors,
   findGraphPath,
   type NovelEdgeType,
@@ -31,6 +24,7 @@ import {
 } from '@/api/novel-client'
 import { toast, toastError, toastSuccess } from '@/hooks/use-toast'
 import type { ReviewPanelKind } from './novel-review-center'
+import { useCanvasNodeDeletion } from './canvas/use-node-deletion'
 
 // ── 手动连线可选的关系类型 ──
 // 注：自动边类型（appearance/involvement/member/hierarchy/association/foreshadow/base）
@@ -66,14 +60,6 @@ export function NovelToolbar({
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
   const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
-  const clearSelection = useNovelUiStore((s) => s.clearSelection)
-  const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
-  const removeConflict = useNovelDataStore((s) => s.removeConflict)
-  const removeForeshadow = useNovelDataStore((s) => s.removeForeshadow)
-  const removeFaction = useNovelDataStore((s) => s.removeFaction)
-  const removeLocation = useNovelDataStore((s) => s.removeLocation)
-  const removeWorldElement = useNovelDataStore((s) => s.removeWorldElement)
-  const removeNodePosition = useNovelDataStore((s) => s.removeNodePosition)
   const canvasEdgeType = useNovelUiStore((s) => s.canvasEdgeType)
   const setCanvasEdgeType = useNovelUiStore((s) => s.setCanvasEdgeType)
   // 画布布局模式：grouped（按类型分区）/ force（d3-force 力导向）
@@ -91,7 +77,8 @@ export function NovelToolbar({
   const worldElements = useNovelDataStore((s) => s.worldElements)
   const foreshadows = useNovelDataStore((s) => s.foreshadows)
 
-  const { zoomIn, zoomOut, fitView, getEdges } = useReactFlow()
+  // 缩放已收敛到 ReactFlow Controls（画布左下角），工具条只保留 getEdges 供高亮/找路径
+  const { getEdges } = useReactFlow()
 
   const noProject = !currentProjectId
   const hasSelection = !!selectedNodeId && !!selectedNodeType
@@ -227,55 +214,12 @@ export function NovelToolbar({
     [setCanvasEdgeType],
   )
 
-  // ── 删除当前选中节点 ──
-  // 画布已收敛为纯实体关系图，不再渲染 project/chapter 节点，
-  // 因此删除分支仅保留实体类型。
+  // ── 删除当前选中节点（P2-2b：与画布共用 useCanvasNodeDeletion）──
+  const { deleteNode } = useCanvasNodeDeletion()
   const handleDeleteSelected = useCallback(async () => {
-    if (!currentProjectId || !selectedNodeId || !selectedNodeType) return
-    // group 节点不对应持久化实体
-    if (selectedNodeType === 'group') return
-    if (!window.confirm('确认删除此节点？相关数据将被永久移除。')) return
-    try {
-      switch (selectedNodeType) {
-        case 'character':
-          await deleteCharacter(selectedNodeId)
-          removeCharacter(selectedNodeId)
-          break
-        case 'conflict':
-          await deleteConflict(selectedNodeId)
-          removeConflict(selectedNodeId)
-          break
-        case 'foreshadow':
-          await deleteForeshadow(selectedNodeId)
-          removeForeshadow(selectedNodeId)
-          break
-        case 'faction':
-          await deleteFaction(selectedNodeId)
-          removeFaction(selectedNodeId)
-          break
-        case 'location':
-          await deleteLocation(selectedNodeId)
-          removeLocation(selectedNodeId)
-          break
-        case 'world_element':
-          await deleteWorldElement(selectedNodeId)
-          removeWorldElement(selectedNodeId)
-          break
-        default:
-          return
-      }
-      // 删除节点位置（best-effort）
-      try {
-        await deleteNodePosition(currentProjectId, selectedNodeType as NovelNodeTypeName, selectedNodeId)
-      } catch {
-        // 位置删除失败不阻塞主流程
-      }
-      removeNodePosition(selectedNodeType as NovelNodeTypeName, selectedNodeId)
-      clearSelection()
-    } catch {
-      // 静默失败
-    }
-  }, [currentProjectId, selectedNodeId, selectedNodeType, removeCharacter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeNodePosition, clearSelection])
+    if (!selectedNodeId || !selectedNodeType) return
+    await deleteNode(selectedNodeId, selectedNodeType)
+  }, [selectedNodeId, selectedNodeType, deleteNode])
 
   return (
     // 浮动工具条：由父级 absolute 定位在画布左上角，不再占据文档流横条
@@ -404,105 +348,51 @@ export function NovelToolbar({
 
       <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
-      {/* T04：待审实体候选（Memory 新冲突/线索 needs_review） */}
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() => setCandidatePanelOpen(true)}
-        disabled={noProject}
-        title="查看 Memory 提出、待你确认的新冲突/线索候选"
-        className="relative"
-      >
-        <ShieldQuestion className="size-3.5" />
-        <span className="hidden sm:inline">待审实体</span>
-        {pendingCandidateCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium text-white">
-            {pendingCandidateCount}
-          </span>
-        )}
-      </Button>
+      {/* 审校入口（P1-1 收敛）：路由到右栏「审校」Tab，面板本体在 NovelReviewCenter 唯一挂载 */}
+      {onOpenReview && (
+        <>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onOpenReview('candidate')}
+            disabled={noProject}
+            title="查看 Memory 提出、待你确认的新冲突/线索候选"
+            className="relative"
+          >
+            <ShieldQuestion className="size-3.5" />
+            <span className="hidden sm:inline">待审实体</span>
+            {reviewBadge > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium text-white">
+                {reviewBadge > 99 ? '99+' : reviewBadge}
+              </span>
+            )}
+          </Button>
 
-      {/* 第二轮：剧情推进轨道 */}
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() => setTrackPanelOpen(true)}
-        disabled={noProject}
-        title="查看故事线如何被逐章推进（剧情推进轨道）"
-      >
-        <GitBranch className="size-3.5" />
-        <span className="hidden sm:inline">剧情轨道</span>
-      </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onOpenReview('track')}
+            disabled={noProject}
+            title="查看故事线如何被逐章推进（剧情推进轨道）"
+          >
+            <GitBranch className="size-3.5" />
+            <span className="hidden sm:inline">剧情轨道</span>
+          </Button>
 
-      {/* M2：故事线/场景人工修订 */}
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() => setRevisionPanelOpen(true)}
-        disabled={noProject}
-        title="编辑故事线/场景规范事实（草稿→审核→批准→回滚）并重建矩阵"
-      >
-        <PenLine className="size-3.5" />
-        <span className="hidden sm:inline">修订</span>
-      </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onOpenReview('revision')}
+            disabled={noProject}
+            title="编辑故事线/场景规范事实（草稿→审核→批准→回滚）并重建矩阵"
+          >
+            <PenLine className="size-3.5" />
+            <span className="hidden sm:inline">修订</span>
+          </Button>
+        </>
+      )}
 
-      <EntityCandidatePanel
-        open={candidatePanelOpen}
-        onOpenChange={setCandidatePanelOpen}
-        projectId={currentProjectId}
-      />
-      <NarrativeTrackPanel
-        open={trackPanelOpen}
-        onOpenChange={setTrackPanelOpen}
-        projectId={currentProjectId}
-      />
-      <NarrativeRevisionPanel
-        open={revisionPanelOpen}
-        onOpenChange={setRevisionPanelOpen}
-        projectId={currentProjectId}
-      />
-
-      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-
-      {/* 缩放控制 */}
-      <div className="flex items-center gap-0.5">
-        <Button size="icon-sm" variant="ghost" onClick={() => zoomIn({ duration: 200 })} title="放大">
-          <ZoomIn className="size-3.5" />
-        </Button>
-        <Button size="icon-sm" variant="ghost" onClick={() => zoomOut({ duration: 200 })} title="缩小">
-          <ZoomOut className="size-3.5" />
-        </Button>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          onClick={() => fitView({ padding: 0.2, duration: 300 })}
-          title="适应视图"
-        >
-          <Maximize className="size-3.5" />
-        </Button>
-      </div>
-
-      {/* 右侧：导出/导入 */}
-      <div className="ml-auto flex items-center gap-0.5">
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          onClick={onImport}
-          title="导入"
-          className={cn(!onImport && 'hidden')}
-        >
-          <Upload className="size-3.5" />
-        </Button>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          onClick={onExport}
-          title="导出"
-          className={cn(!onExport && 'hidden')}
-        >
-          <Download className="size-3.5" />
-        </Button>
-      </div>
+      <div className={cn('mx-1 h-5 w-px bg-border', !onOpenReview && 'hidden')} aria-hidden="true" />
     </div>
   )
 }

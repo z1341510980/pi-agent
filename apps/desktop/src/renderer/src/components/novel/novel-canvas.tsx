@@ -17,12 +17,6 @@ import { AlertTriangle, Layers } from 'lucide-react'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore, type NovelNodeType } from '@/stores/novel-ui-store'
 import {
-  deleteCharacter,
-  deleteConflict,
-  deleteForeshadow,
-  deleteFaction,
-  deleteLocation,
-  deleteWorldElement,
   deleteNodePosition,
   upsertNodePositions,
   createEdge,
@@ -37,6 +31,7 @@ import { CreationProgressOverlay } from './creation-progress-overlay'
 import type { CreationPhase } from '@/hooks/use-novel-creation-flow'
 import { cn } from '@/lib/utils'
 import { applyForceLayout } from './force-layout'
+import { useCanvasNodeDeletion } from './canvas/use-node-deletion'
 import { COMPACT_THRESHOLD, WARNING_THRESHOLD, POSITION_SYNC_DEBOUNCE_MS, EDGE_TYPE_LABELS } from './canvas/constants'
 import { parseNodeId } from './canvas/node-utils'
 import { buildLayout, isValidConnection, computePulsingNodeIds } from './canvas/layout'
@@ -84,13 +79,6 @@ export function NovelCanvas({
   const clearSelection = useNovelUiStore((s) => s.clearSelection)
   const upsertNodePosition = useNovelDataStore((s) => s.upsertNodePosition)
   const setNodePositions = useNovelDataStore((s) => s.setNodePositions)
-  const removeNodePosition = useNovelDataStore((s) => s.removeNodePosition)
-  const removeCharacter = useNovelDataStore((s) => s.removeCharacter)
-  const removeConflict = useNovelDataStore((s) => s.removeConflict)
-  const removeForeshadow = useNovelDataStore((s) => s.removeForeshadow)
-  const removeFaction = useNovelDataStore((s) => s.removeFaction)
-  const removeLocation = useNovelDataStore((s) => s.removeLocation)
-  const removeWorldElement = useNovelDataStore((s) => s.removeWorldElement)
   // 边数据：手动边来自 store（已持久化），与 buildLayout 自动边合并后渲染
   // 注意：store 的 addEdge/removeEdge 与 xyflow 的 addEdge 同名，这里别名以避免冲突
   const manualEdges = useNovelDataStore((s) => s.edges)
@@ -210,55 +198,8 @@ export function NovelCanvas({
     [creationPhase, characters, conflicts, foreshadows],
   )
 
-  // ── 节点删除：调用 API + 更新 store ──
-  const handleDeleteNode = useCallback(async (targetId: string, targetType: NovelNodeType) => {
-    const pid = currentProjectIdRef.current
-    if (!pid) return
-    // group 节点不对应持久化实体，无需调用 API
-    if (targetType === 'group') return
-    if (!window.confirm('确认删除此节点？相关数据将被永久移除。')) return
-    try {
-      switch (targetType) {
-        case 'character':
-          await deleteCharacter(targetId)
-          removeCharacter(targetId)
-          break
-        case 'conflict':
-          await deleteConflict(targetId)
-          removeConflict(targetId)
-          break
-        case 'foreshadow':
-          await deleteForeshadow(targetId)
-          removeForeshadow(targetId)
-          break
-        case 'faction':
-          await deleteFaction(targetId)
-          removeFaction(targetId)
-          break
-        case 'location':
-          await deleteLocation(targetId)
-          removeLocation(targetId)
-          break
-        case 'world_element':
-          await deleteWorldElement(targetId)
-          removeWorldElement(targetId)
-          break
-        default:
-          return
-      }
-      // 删除节点位置（best-effort）
-      try {
-        await deleteNodePosition(pid, targetType as NovelNodeTypeName, targetId)
-      } catch {
-        // 位置删除失败不阻塞主流程
-      }
-      removeNodePosition(targetType as NovelNodeTypeName, targetId)
-      clearSelection()
-      onDeleteNode?.()
-    } catch {
-      // 静默失败（可在通知中心提示）
-    }
-  }, [removeCharacter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeNodePosition, clearSelection, onDeleteNode])
+  // ── 节点删除：P2-2b 与工具条共用 useCanvasNodeDeletion ──
+  const { deleteNode: handleDeleteNode } = useCanvasNodeDeletion({ onDeleted: onDeleteNode })
 
   // ── 位置批量同步：将待同步队列一次性 PUT 到 API ──
   const flushPositions = useCallback(() => {

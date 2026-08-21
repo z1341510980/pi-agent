@@ -59,9 +59,12 @@ describe('PiSessionStore 会话身份恢复（§9.4）', () => {
   it('chat 线程命中注册表时把 resumePath 传给工厂；plugin:* 线程不恢复', async () => {
     registry.put('chat-thread', '/sessions/chat.jsonl')
 
+    // mock 与真实 AgentSession 形态一致：路径暴露为 sessionFile getter
     const factory = vi.fn(async (threadId: string, ctx?: { resumePath?: string }) => ({
       threadId,
-      getMetadata: async () => ({ path: `/sessions/${threadId}.jsonl` }),
+      get sessionFile() {
+        return `/sessions/${threadId}.jsonl`
+      },
     }))
     const store = new PiSessionStore()
     store.setIdentityRegistry(registry)
@@ -81,14 +84,21 @@ describe('PiSessionStore 会话身份恢复（§9.4）', () => {
     store.setIdentityRegistry(registry)
     store.setSessionFactory(async (threadId: string) => ({
       threadId,
-      getMetadata: async () => ({ path: `/sessions/${threadId}.jsonl` }),
+      get sessionFile() {
+        return `/sessions/${threadId}.jsonl`
+      },
     }))
 
     await store.getOrCreate('fresh-chat-thread')
-    // persistSessionIdentity 是 fire-and-forget：等待一个微任务+定时器周期
-    await vi.waitFor(() => {
-      expect(registry.get('fresh-chat-thread')).toBe('/sessions/fresh-chat-thread.jsonl')
-    })
+    // persistSessionIdentity 是 fire-and-forget；vi.waitFor 默认只等 1s，
+    // 全量并行时 worker 被抢占会让它饿过预算（表现为 expected null）。
+    // 这里给显式宽裕预算，只放宽等待，不改变断言。
+    await vi.waitFor(
+      () => {
+        expect(registry.get('fresh-chat-thread')).toBe('/sessions/fresh-chat-thread.jsonl')
+      },
+      { timeout: 15_000, interval: 50 }
+    )
     store.dispose()
   })
 
@@ -97,7 +107,9 @@ describe('PiSessionStore 会话身份恢复（§9.4）', () => {
     store.setIdentityRegistry(registry)
     store.setSessionFactory(async (threadId: string) => ({
       threadId,
-      getMetadata: async () => ({ path: `/sessions/${threadId}.jsonl` }),
+      get sessionFile() {
+        return `/sessions/${threadId}.jsonl`
+      },
     }))
 
     await store.getOrCreate('plugin:novel:one-shot')

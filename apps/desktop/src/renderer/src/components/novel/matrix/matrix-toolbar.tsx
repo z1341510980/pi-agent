@@ -8,7 +8,6 @@
 
 import { type ReactElement } from 'react'
 import {
-  ArrowLeft,
   Undo2,
   Redo2,
   History,
@@ -112,13 +111,10 @@ export function MatrixToolbar({
 
   return (
     <div className="relative z-20 shrink-0 border-b border-border bg-surface-1">
-      {/* ── 单行工具栏 ── */}
+      {/* ── 单行工具栏 ──
+          返回按钮已删除（A7）：顶栏返回走 onClose 关闭工作台，此处 window.history.back()
+          语义不一致且在 Electron 下行为不可预期。 */}
       <div className="flex items-center gap-1 px-2 h-10 text-xs overflow-hidden">
-        {/* 返回 */}
-        <button type="button" className={iconBtn} onClick={() => window.history.back()} title="返回" aria-label="返回">
-          <ArrowLeft className="size-3.5" />
-        </button>
-
         {/* 视图切换已上移到顶栏的布局切换器（正文 / 正文+时间线 / 时间线 / 关系图）。
             这里原有一份 矩阵↔画布 的副本，在分屏布局下点"画布"会让正文编辑器一并消失，
             正是两个模式维度互相覆盖的产物；合并为单一 layoutMode 后不再需要。 */}

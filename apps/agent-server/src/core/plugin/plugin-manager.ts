@@ -15,7 +15,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type Database from 'better-sqlite3'
 import type { FastifyBaseLogger } from 'fastify'
@@ -27,6 +27,7 @@ import { composeSkillBlocks, fingerprintSkillContent } from './skill-compose.js'
 import { createSkillReadTool } from './skill-read-tool.js'
 import { resolveDependencyOrder, type DependencyNode } from './plugin-catalog.js'
 import { verifyPackageIntegrity } from './plugin-integrity.js'
+import { resolveWithin } from './path-guard.js'
 import type { PluginCatalogItem } from './plugin-catalog.js'
 import { cancelDebug } from '../../plugins/novel-plugin/utils/cancel-debug-log.js'
 import { StreamEmitter } from '../agent/stream-emitter.js'
@@ -1275,17 +1276,12 @@ export class PluginManager {
     // 约定辅助：把相对路径钉在 dataDir 内，越界抛错。
     // 这不是沙箱——插件仍可直接 import 'node:fs' 绕过（强制边界需 Worker/独立进程，属 P3）。
     // 提供它的目的是让"插件该往哪写"只有一个答案，将来收口时只改这一处。
-    const resolvePluginPath = (...segments: string[]): string => {
-      const target = resolve(pluginDataDir, ...segments)
-      const rel = relative(pluginDataDir, target)
-      if (rel === '') return target
-      if (rel.startsWith('..') || isAbsolute(rel)) {
-        throw new Error(
-          `插件 ${pluginName} 的路径 ${segments.join('/')} 越出 dataDir 边界，已拒绝`
-        )
-      }
-      return target
-    }
+    const resolvePluginPath = (...segments: string[]): string =>
+      resolveWithin(
+        pluginDataDir,
+        segments,
+        (attempted) => `插件 ${pluginName} 的路径 ${attempted} 越出 dataDir 边界，已拒绝`
+      )
     const execPluginCommand = async (command: string): Promise<string> => {
       if (!/^[A-Za-z0-9._-]+(?:\s+[^;&|<>$`]+)?$/.test(command)) {
         throw new Error('process.exec 仅允许无 shell 的命令和参数')
@@ -1507,6 +1503,9 @@ export class PluginManager {
           panel.rendererKey && allowedSlots.includes(slot) ? 'active' : 'invalid'
         entry.uiContributions.push({
           contributionId: panel.id,
+          // title 转为显示名：右栏 tab 等位置需要人类可读标签，
+          // 否则只能展示 contributionId 这类技术 id
+          ...(panel.title ? { label: panel.title } : {}),
           slot,
           scope,
           priority: panel.priority ?? 0,

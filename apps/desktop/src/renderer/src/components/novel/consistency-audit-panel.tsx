@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { PanelShell } from './panel-shell'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import {
   getConsistencyReport,
@@ -482,67 +483,65 @@ export function ConsistencyAuditPanel({
   }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      {/* 创作进行中的时效提示：报告不含正在生成的这一章 */}
-      {creationActive && (
-        <div className="shrink-0 px-3 py-2 border-b border-border bg-surface-2 text-micro leading-relaxed text-muted-foreground">
+    <PanelShell
+      notice={creationActive && (
+        <div className="px-3 py-2 border-b border-border bg-surface-2 text-micro leading-relaxed text-muted-foreground">
           创作进行中。报告基于已入库章节计算，尚未包含正在生成的这一章。
         </div>
       )}
-
-      {/* 顶部：健康度评分 + 刷新按钮 */}
-      <div className="shrink-0 p-3 border-b border-border">
-        <div className="flex items-center gap-3">
-          {style && <HealthRing score={report.healthScore} color={style.color} />}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className={cn('text-sm font-semibold', style?.textClass)}>
-                {style?.label}
-              </span>
-              {isRefreshing && (
-                <RefreshCw className="size-3 text-subtle animate-spin" />
-              )}
+      header={(
+        <div className="p-3 border-b border-border">
+          <div className="flex items-center gap-3">
+            {style && <HealthRing score={report.healthScore} color={style.color} />}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className={cn('text-sm font-semibold', style?.textClass)}>
+                  {style?.label}
+                </span>
+                {isRefreshing && (
+                  <RefreshCw className="size-3 text-subtle animate-spin" />
+                )}
+              </div>
+              <div className="text-micro text-subtle tabular-nums">
+                {report.writtenChapters} / {report.totalChapters} 章已写
+              </div>
+              <div className="text-nano text-hint mt-1">
+                每 60 秒自动刷新
+              </div>
             </div>
-            <div className="text-micro text-subtle tabular-nums">
-              {report.writtenChapters} / {report.totalChapters} 章已写
-            </div>
-            <div className="text-nano text-hint mt-1">
-              每 60 秒自动刷新
-            </div>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => query.refetch()}
+              disabled={isRefreshing}
+              title="立即刷新"
+            >
+              <RefreshCw className={cn('size-3.5', isRefreshing && 'animate-spin')} />
+            </Button>
           </div>
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            onClick={() => query.refetch()}
-            disabled={isRefreshing}
-            title="立即刷新"
-          >
-            <RefreshCw className={cn('size-3.5', isRefreshing && 'animate-spin')} />
-          </Button>
         </div>
-      </div>
-
+      )}
+      bodyClassName="p-2 space-y-2"
+    >
       {/* 中部：4 个分项卡片 */}
-      <div className="flex-1 overflow-auto p-2 space-y-2">
-        <ForeshadowSection foreshadow={report.foreshadow} />
-        <HookSection hooks={report.hooks} />
-        <OrphanSection orphans={report.orphanEntities} />
-        <TimelineSection timeline={report.timeline} />
+      <ForeshadowSection foreshadow={report.foreshadow} />
+      <HookSection hooks={report.hooks} />
+      <OrphanSection orphans={report.orphanEntities} />
+      <TimelineSection timeline={report.timeline} />
 
-        {/* 底部：摘要 */}
-        {report.summary.length > 0 && (
-          <div className="rounded-md bg-surface-2 p-2 mt-2">
-            <div className="text-nano font-medium text-subtle mb-1">摘要</div>
-            <ul className="space-y-0.5">
-              {report.summary.map((s, i) => (
-                <li key={i} className="text-micro text-text-secondary leading-relaxed">
-                  {s}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-    </div>
+      {/* 底部：摘要 */}
+      {report.summary.length > 0 && (
+        <div className="rounded-md bg-surface-2 p-2 mt-2">
+          <div className="text-nano font-medium text-subtle mb-1">摘要</div>
+          <ul className="space-y-0.5">
+            {report.summary.map((s, i) => (
+              <li key={i} className="text-micro text-text-secondary leading-relaxed">
+                {s}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </PanelShell>
   )
 }

@@ -12,11 +12,10 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from 'tiptap-markdown'
 import { Sparkles, ChevronLeft, ChevronRight, History, Save } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
-import { updateChapter, reverseArrangeFlow, getChapter } from '@/api/novel-client'
-import { toastSuccess, toastError } from '@/hooks/use-toast'
+import { updateChapter, getChapter } from '@/api/novel-client'
+import { toastError } from '@/hooks/use-toast'
 import { countWords } from '@/lib/novel-utils'
 import { ChapterVersionPanel } from './chapter-version-panel'
 import './chapter-content-editor.css'
@@ -28,6 +27,11 @@ export interface ChapterContentEditorProps {
   creationChapterNumber?: number
   /** 创作流程实时正文 —— 只读模式下显示，覆盖 playheadChapter 对应章节 */
   creationChapterContent?: string
+  /**
+   * 反推实体入口（P1-2a 统一）：组件内只负责保存草稿，
+   * 流程启动由 workspace 的 runChapterTask({kind:'reverse'}) 承担。
+   */
+  onReverseArrange?: () => void
 }
 
 type SaveState = 'saved' | 'saving' | 'dirty' | 'error'
@@ -55,22 +59,20 @@ function hashContent(value: string): string {
 export function ChapterContentEditor({
   isCreationActive,
   creationChapterNumber,
-  creationChapterContent
+  creationChapterContent,
+  onReverseArrange
 }: ChapterContentEditorProps): ReactElement {
-  const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
   const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
   const setUnsavedChapterDraft = useNovelUiStore((s) => s.setUnsavedChapterDraft)
   const clearUnsavedChapterDraft = useNovelUiStore((s) => s.clearUnsavedChapterDraft)
   const chapters = useNovelDataStore((s) => s.chapters)
   const upsertChapter = useNovelDataStore((s) => s.upsertChapter)
-  const queryClient = useQueryClient()
   const activeChapterId = chapters.find((chapter) => chapter.chapterNumber === playheadChapter)?.id
 
   const [draftContent, setDraftContent] = useState('')
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [reverseArranging, setReverseArranging] = useState(false)
   const [versionPanelOpen, setVersionPanelOpen] = useState(false)
   const [chapterLoadRevision, setChapterLoadRevision] = useState(0)
 
@@ -220,50 +222,18 @@ export function ChapterContentEditor({
   }, [clearUnsavedChapterDraft, readEditorMarkdown, setUnsavedChapterDraft, upsertChapter])
 
   // ── 从正文反推实体到矩阵 ──
-  // 先 flushSave 确保最新正文落库，再调用 reverse-arrange SSE 接口
+  // P1-2a 入口统一：本组件只负责「先 flushSave 确保最新正文落库」，
+  // 流程启动统一交给 workspace 的 runChapterTask({kind:'reverse'})（与反推 Tab 同一路径，
+  // 进度在右栏会话面板展示）。此前这里直连 reverse-arrange SSE 的第二份实现已删除。
   const handleReverseArrange = useCallback(async () => {
-    if (!currentProjectId || reverseArranging || isCreationActive) return
-    const baseline = baselineRef.current
-    const targetChapter = baseline
-      ? useNovelDataStore.getState().chapters.find((chapter) => chapter.id === baseline.chapterId)
-      : undefined
-    if (!targetChapter || !readEditorMarkdown().trim()) {
+    if (!onReverseArrange || isCreationActive) return
+    if (!readEditorMarkdown().trim()) {
       toastError('正文为空', '请先写好章节正文，再反推实体')
       return
     }
-    setReverseArranging(true)
-    try {
-      const saved = await flushSave()
-      if (!saved) return
-      toastSuccess(
-        '开始反推实体',
-        `正在从第 ${targetChapter.chapterNumber} 章正文提取实体到矩阵...`
-      )
-      await reverseArrangeFlow(currentProjectId, targetChapter.chapterNumber, {
-        onProgress: (evt: unknown) => {
-          const e = evt as { type?: string; message?: string }
-          if (e?.type === 'arrange_done' && e.message) toastSuccess('反推完成', e.message)
-        },
-        onResult: () => {
-          void queryClient.invalidateQueries({ queryKey: ['novel-project-data', currentProjectId] })
-        },
-        onError: (err: string) => {
-          toastError('反推失败', err)
-        }
-      })
-    } catch (err) {
-      toastError('反推失败', err instanceof Error ? err.message : '未知错误')
-    } finally {
-      setReverseArranging(false)
-    }
-  }, [
-    currentProjectId,
-    flushSave,
-    isCreationActive,
-    queryClient,
-    readEditorMarkdown,
-    reverseArranging
-  ])
+    const saved = await flushSave()
+    if (saved) onReverseArrange()
+  }, [flushSave, isCreationActive, onReverseArrange, readEditorMarkdown])
 
   // 历史版本应用由单章接口重新读取，避免非章节响应成为新的正文基线。
   const handleVersionApplied = useCallback(() => {
@@ -543,14 +513,14 @@ export function ChapterContentEditor({
           </button>
           <button
             type="button"
-            onClick={handleReverseArrange}
-            disabled={isCreationActive || reverseArranging || !currentChapter || wordCount === 0}
-            title="从当前正文提取角色/冲突/伏笔等实体到矩阵"
+            onClick={() => void handleReverseArrange()}
+            disabled={isCreationActive || !onReverseArrange || !currentChapter || wordCount === 0}
+            title="从当前正文提取角色/冲突/伏笔等实体到矩阵（进度见右栏会话）"
             className="cce-reverse-btn"
             data-tour="reverse-arrange"
           >
             <Sparkles className="size-3" />
-            <span>{reverseArranging ? '反推中...' : '反推实体'}</span>
+            <span>反推实体</span>
           </button>
           <button
             type="button"

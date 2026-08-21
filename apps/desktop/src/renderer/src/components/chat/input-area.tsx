@@ -68,10 +68,12 @@ export interface InputAreaProps {
   toolbarRight?: ReactNode
 }
 
-/** 单行模式最大字符数（超过则切换多行） */
-const MAX_SINGLE_LINE_CHARACTERS = 200
-/** 单行模式最大宽度（px），超过则切换多行 */
-const SINGLE_LINE_MAX_WIDTH = 720
+/** 单行模式的内容行高（text-base leading-6） */
+const SINGLE_LINE_HEIGHT = 24
+/** 实测内容高度超过该值说明已折行，切到多行布局 */
+const SINGLE_LINE_HEIGHT_LIMIT = 30
+/** 输入框最高高度（px），超出后在框内纵向滚动 */
+const MAX_INPUT_HEIGHT = 240
 
 /** 根据文件名推断 MIME 类型 */
 function inferMimeType(name: string): string {
@@ -98,7 +100,7 @@ function isImageMime(mime: string): boolean {
  * InputArea：消息输入区（对齐 AionUi SendBox 设计）
  *
  * 设计要点：
- *   - 单行/多行自适应：文本含 \n 或超过 MAX_SINGLE_LINE_CHARACTERS 自动切多行
+ *   - 单行/多行自适应：实测内容超过一行（或含换行）自动切多行，最高 240px 后框内纵向滚动
  *   - 单行布局：[左侧工具栏] [textarea flex-1] [发送/中断按钮]
  *   - 多行布局：[textarea 全宽] 行 + [左侧工具栏] [右侧工具栏 + 发送按钮] 行
  *   - 焦点环：聚焦时紫色 1px 边框 + 紫色光晕（box-shadow），过渡 200ms
@@ -141,8 +143,8 @@ export function InputArea({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const text = value ?? internalText
 
-  // ── 单行/多行模式判定（对齐 AionUi 逻辑） ──
-  const isSingleLine = text.length <= MAX_SINGLE_LINE_CHARACTERS && !text.includes('\n')
+  // ── 单行/多行布局：由自适应高度 effect 按实测内容高度切换 ──
+  const [isSingleLine, setIsSingleLine] = useState(true)
 
   // ── 当前选中模型对象（用于思考强度选择器读取 supportedReasoningEfforts 等元数据） ──
   const currentModel = useMemo<ModelOption | undefined>(() => {
@@ -314,13 +316,21 @@ export function InputArea({
     [handleSend, slashPanelOpen, mentionPanelOpen]
   )
 
-  // 自适应高度（多行模式）
+  // 自适应高度：textarea 始终允许换行（禁止横向滚动），
+  // 实测内容超过一行就切多行布局；高度夹在 [一行, MAX_INPUT_HEIGHT]，
+  // 到顶后框内纵向滚动。height 全部走命令式赋值，避免与 React style diff 打架。
   useEffect(() => {
     const el = textareaRef.current
-    if (!el || isSingleLine) return
+    if (!el) return
     el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`
-  }, [text, isSingleLine])
+    const contentHeight = el.scrollHeight
+    const nextSingleLine =
+      contentHeight <= SINGLE_LINE_HEIGHT_LIMIT && !text.includes('\n')
+    setIsSingleLine(nextSingleLine)
+    el.style.height = `${
+      nextSingleLine ? SINGLE_LINE_HEIGHT : Math.min(contentHeight, MAX_INPUT_HEIGHT)
+    }px`
+  }, [text])
 
   const canSend = (text.trim().length > 0 || attachments.length > 0) && !disabled
 
@@ -450,7 +460,6 @@ export function InputArea({
             'flex w-full min-w-0 overflow-hidden',
             isSingleLine ? 'items-center gap-2 px-3 py-2.5' : 'flex-col px-3 pt-3'
           )}
-          style={{ maxWidth: isSingleLine ? '100%' : `${SINGLE_LINE_MAX_WIDTH}px` }}
         >
           {/* 单行模式：左侧工具栏 */}
           {isSingleLine && (
@@ -485,19 +494,19 @@ export function InputArea({
             disabled={disabled}
             className={cn(
               'w-full resize-none bg-transparent text-base leading-6',
+              // 始终换行：超宽折行变高，绝不出现横向滚动条
+              'whitespace-pre-wrap break-words',
               'text-text placeholder:text-hint [caret-color:var(--dsw-alias-state-business-primary)]',
               'focus-visible:outline-none',
               'disabled:cursor-not-allowed disabled:opacity-50',
               isSingleLine ? 'px-0 py-0' : 'px-0 pb-2'
             )}
             style={{
-              height: isSingleLine ? '24px' : 'auto',
-              minHeight: isSingleLine ? '24px' : '48px',
-              maxHeight: '240px',
+              height: isSingleLine ? `${SINGLE_LINE_HEIGHT}px` : undefined,
+              minHeight: isSingleLine ? `${SINGLE_LINE_HEIGHT}px` : '48px',
+              maxHeight: `${MAX_INPUT_HEIGHT}px`,
+              overflowX: 'hidden',
               overflowY: isSingleLine ? 'hidden' : 'auto',
-              whiteSpace: isSingleLine ? 'nowrap' : 'pre-wrap',
-              textOverflow: isSingleLine ? 'ellipsis' : 'clip',
-              wordBreak: isSingleLine ? 'normal' : 'break-word',
               flex: isSingleLine ? 1 : 'none',
               minWidth: 0
             }}

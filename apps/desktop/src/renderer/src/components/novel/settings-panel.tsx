@@ -9,6 +9,7 @@ import { useMemo, type ReactElement } from 'react'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { ConversationEmptyState } from '@/components/shared/conversation'
 import { ProjectForm } from './detail-forms/project-form'
+import { PanelShell } from './panel-shell'
 
 export function SettingsPanel(): ReactElement {
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
@@ -30,10 +31,8 @@ export function SettingsPanel(): ReactElement {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
-        <ProjectForm entity={project} />
-      </div>
-    </div>
+    <PanelShell bodyClassName="px-3 py-2">
+      <ProjectForm entity={project} />
+    </PanelShell>
   )
 }

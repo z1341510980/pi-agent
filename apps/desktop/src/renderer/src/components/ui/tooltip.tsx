@@ -47,8 +47,9 @@ function TooltipContent({
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         // dsh Tooltip：深色底板（两主题一致偏暗）、r8、13/20、无箭头
+        // bg-tooltip-bg 对应 @theme 的 --color-tooltip-bg（写 bg-tooltip 会因令牌不存在而透明）
         className={cn(
-          'z-50 w-fit max-w-[50vw] origin-(--radix-tooltip-content-transform-origin) rounded-lg bg-tooltip px-[7px] py-[3px] text-[13px] leading-5 text-tooltip-foreground break-words',
+          'z-50 w-fit max-w-[50vw] origin-(--radix-tooltip-content-transform-origin) rounded-lg bg-tooltip-bg px-[7px] py-[3px] text-[13px] leading-5 text-tooltip-foreground break-words',
           'data-open:animate-in data-open:fade-in-0 duration-150 data-closed:animate-out data-closed:fade-out-0',
           className,
         )}

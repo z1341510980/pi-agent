@@ -8,7 +8,8 @@
  * 面板本体仍是对话框组件（原样复用）；本组件负责入口列表 + 单点挂载 + 快捷路由
  * （autoOpen：矩阵/画布工具栏的入口点击后跳转到这里并直接打开对应面板）。
  */
-import { useEffect, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useState, type ReactElement } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   ChevronRight,
   ClipboardCheck,
@@ -19,6 +20,7 @@ import {
   ShieldQuestion,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { PanelShell } from './panel-shell'
 import { NarrativeTrackPanel } from './narrative-track-panel'
 import { EntityCandidatePanel } from './entity-candidate-panel'
 import { PendingEventsDialog } from './matrix/pending-events-dialog'
@@ -48,6 +50,12 @@ export function NovelReviewCenter({
   const [eventsOpen, setEventsOpen] = useState(false)
   const [annotationsOpen, setAnnotationsOpen] = useState(false)
   const [revisionOpen, setRevisionOpen] = useState(false)
+  const queryClient = useQueryClient()
+
+  // 待确认事件在对话框内被确认/驳回后，同步刷新 Tab 角标计数（useReviewCounts 的轮询 key）
+  const handlePendingCountChange = useCallback((): void => {
+    void queryClient.invalidateQueries({ queryKey: ['novel-pending-events-count', projectId] })
+  }, [queryClient, projectId])
 
   // 快捷路由：矩阵/画布工具栏点名某面板时直接打开，然后清空请求避免重渲染复开
   useEffect(() => {
@@ -110,21 +118,24 @@ export function NovelReviewCenter({
   ]
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 px-3 pt-3 pb-2">
-        <ClipboardCheck className="size-4 text-primary" />
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-text">审校中心</div>
-          <div className="text-nano text-subtle">审校类功能的统一入口，任意布局可达</div>
-        </div>
-        {counts.total > 0 && (
-          <span className="ml-auto shrink-0 rounded-full bg-amber-500/90 px-2 py-0.5 text-[10px] font-semibold leading-4 text-white tabular-nums">
-            {counts.total > 99 ? '99+' : counts.total} 待办
-          </span>
+    <>
+      <PanelShell
+        header={(
+          <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+            <ClipboardCheck className="size-4 text-primary" />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-text">审校中心</div>
+              <div className="text-nano text-subtle">审校类功能的统一入口，任意布局可达</div>
+            </div>
+            {counts.total > 0 && (
+              <span className="ml-auto shrink-0 rounded-full bg-amber-500/90 px-2 py-0.5 text-[10px] font-semibold leading-4 text-white tabular-nums">
+                {counts.total > 99 ? '99+' : counts.total} 待办
+              </span>
+            )}
+          </div>
         )}
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
+        bodyClassName="px-2 pb-3"
+      >
         <ul className="space-y-1.5">
           {entries.map((entry) => {
             const Icon = entry.icon
@@ -162,14 +173,19 @@ export function NovelReviewCenter({
         {!projectId && (
           <p className="px-2 pt-3 text-center text-nano text-hint">请先选择项目</p>
         )}
-      </div>
+      </PanelShell>
 
       {/* 五个面板的唯一挂载点（对话框形态原样复用） */}
       <NarrativeTrackPanel open={trackOpen} onOpenChange={setTrackOpen} projectId={projectId} />
       <EntityCandidatePanel open={candidateOpen} onOpenChange={setCandidateOpen} projectId={projectId} />
-      <PendingEventsDialog open={eventsOpen} onOpenChange={setEventsOpen} projectId={projectId} />
+      <PendingEventsDialog
+        open={eventsOpen}
+        onOpenChange={setEventsOpen}
+        projectId={projectId}
+        onPendingCountChange={handlePendingCountChange}
+      />
       <AnnotationPanelDialog open={annotationsOpen} onOpenChange={setAnnotationsOpen} projectId={projectId} />
       <NarrativeRevisionPanel open={revisionOpen} onOpenChange={setRevisionOpen} projectId={projectId} />
-    </div>
+    </>
   )
 }

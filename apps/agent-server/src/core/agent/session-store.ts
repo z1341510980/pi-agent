@@ -272,6 +272,25 @@ export class PiSessionStore {
   }
 
   /**
+   * 从 Pi 会话对象解析 JSONL 文件路径。
+   *
+   * pi-coding-agent 的 `AgentSession` **没有 `getMetadata()`**（那是
+   * pi-agent-core harness 内部 SessionStorage 的接口）。它对外暴露的是
+   * `sessionFile` getter；兜底再问一层 `sessionManager.getSessionFile()`。
+   * 之前这里调 `getMetadata()`，每次都抛 TypeError 被吞掉 —— 注册表因此
+   * 一行都没写过，历史消息分页永远为空。
+   */
+  private resolveSessionPath(session: WenlangAgentSession): string | null {
+    const direct = session?.sessionFile
+    if (typeof direct === 'string' && direct.length > 0) return direct
+    const manager = session?.sessionManager
+    const viaManager =
+      typeof manager?.getSessionFile === 'function' ? manager.getSessionFile() : undefined
+    if (typeof viaManager === 'string' && viaManager.length > 0) return viaManager
+    return null
+  }
+
+  /**
    * 持久化 threadId → sessionPath（fire-and-forget）。
    *
    * 会话创建成功即写注册表，使 getSessionFilePath 在 LRU 淘汰/重启后仍可查表；
@@ -281,13 +300,12 @@ export class PiSessionStore {
     if (!this.identityRegistry) return
     if (threadSession.threadId.startsWith('plugin:')) return
     try {
-      const metadata = await threadSession.session.getMetadata()
-      const path = (metadata as { path?: unknown } | undefined)?.path
-      if (typeof path === 'string' && path.length > 0) {
+      const path = this.resolveSessionPath(threadSession.session)
+      if (path) {
         this.identityRegistry.put(threadSession.threadId, path)
       }
     } catch {
-      // 存储实现没有 metadata / 读取失败：跳过本次持久化
+      // 会话对象异常：跳过本次持久化
     }
   }
 
@@ -301,9 +319,9 @@ export class PiSessionStore {
    * **与 threadId 毫无关系**。`GET /api/sessions/:threadId/messages` 原来直接拼
    * `${threadId}.jsonl` 去读，永远找不到文件 —— 历史消息分页因此一直返回空。
    *
-   * 真实路径在 session 的 metadata 里（`JsonlSessionMetadata.path`），优先从活跃
-   * session 对象拿；内存 miss（LRU 淘汰或进程重启）时回退到持久化的会话身份
-   * 注册表（方案 §9.4，见 SqliteSessionIdentityRegistry / 迁移 015）。
+   * 真实路径从活跃 session 对象解析（`sessionFile` getter，见
+   * {@link resolveSessionPath}）；内存 miss（LRU 淘汰或进程重启）时回退到
+   * 持久化的会话身份注册表（方案 §9.4，见 SqliteSessionIdentityRegistry / 迁移 015）。
    *
    * @returns 文件路径；会话不在内存中且注册表无记录、或底层不是 JSONL 存储时返回 null
    */
@@ -311,11 +329,10 @@ export class PiSessionStore {
     const threadSession = this.sessions.get(threadId)
     if (threadSession?.session) {
       try {
-        const metadata = await threadSession.session.getMetadata()
-        const path = (metadata as { path?: unknown } | undefined)?.path
-        if (typeof path === 'string' && path.length > 0) return path
+        const path = this.resolveSessionPath(threadSession.session)
+        if (path) return path
       } catch {
-        // 存储实现没有 metadata / 读取失败：继续尝试注册表
+        // 会话对象异常：继续尝试注册表
       }
     }
     // 方案 §9.4：内存 miss（LRU 淘汰/重启）时回退持久化注册表

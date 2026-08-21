@@ -228,7 +228,7 @@ describe('GET /api/plugins/ui-contributions 契约', () => {
       (item: { contributionId: string }) => item.contributionId === 'hello-panel'
     )
     expect(hello).toBeDefined()
-    // entryKey 仅在 keyed slot 贡献上出现
+    // entryKey/label 仅在对应场景出现（keyed slot 用 entryKey；有 title 的面板带 label）
     expectContract(hello, [
       'contributionId',
       'slot',
@@ -238,8 +238,8 @@ describe('GET /api/plugins/ui-contributions 契约', () => {
       'state',
       'pluginId',
       'activationGeneration',
-    ], ['entryKey', 'props'])
-    // rendererKey 必须能被桌面白名单解析；component 源码字符串绝不下发
+    ], ['entryKey', 'props', 'label'])
+    expect(hello.label).toBe('Hello 插件面板')    // rendererKey 必须能被桌面白名单解析；component 源码字符串绝不下发
     expect(typeof hello.rendererKey).toBe('string')
     expect(hello).not.toHaveProperty('component')
   })

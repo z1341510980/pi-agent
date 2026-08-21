@@ -66,6 +66,8 @@ export interface PluginUiContribution {
   pluginId: string
   activationGeneration: number
   contributionId: string
+  /** 显示名（PanelDefinition.title），用于 tab 标签等位置 */
+  label?: string
   slot:
     | 'app.navigation'
     | 'workspace.main'

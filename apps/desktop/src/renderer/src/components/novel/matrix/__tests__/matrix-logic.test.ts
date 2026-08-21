@@ -13,6 +13,8 @@ import {
   buildPool,
   appendPendingEntities,
   computeCellSymbol,
+  findSpanAt,
+  mergeSpanIntoList,
   GROUP_META,
   GROUP_ORDER,
   tensionToBgClass,
@@ -159,9 +161,37 @@ describe('computeSpanRange', () => {
   })
 })
 
+describe('mergeSpanIntoList', () => {
+  it('empty list → single-point span', () => {
+    expect(mergeSpanIntoList([], [4, 4])).toEqual([[4, 4]])
+  })
+  it('chapter already inside a span → list unchanged', () => {
+    expect(mergeSpanIntoList([[2, 6]], [4, 4])).toEqual([[2, 6]])
+  })
+  it('disjoint chapter → appended and sorted', () => {
+    expect(mergeSpanIntoList([[1, 2], [8, 9]], [5, 5])).toEqual([[1, 2], [5, 5], [8, 9]])
+  })
+  it('adjacent to end → extends that span', () => {
+    expect(mergeSpanIntoList([[1, 3]], [4, 4])).toEqual([[1, 4]])
+  })
+  it('adjacent to start → extends that span', () => {
+    expect(mergeSpanIntoList([[3, 6]], [2, 2])).toEqual([[2, 6]])
+  })
+  it('both-side adjacent → merges all into one span', () => {
+    // 此前 conflict/faction/item 的内联实现只扩展一侧，留下本应相连的两段
+    expect(mergeSpanIntoList([[1, 2], [4, 5]], [3, 3])).toEqual([[1, 5]])
+  })
+  it('overlapping span is absorbed', () => {
+    expect(mergeSpanIntoList([[2, 8]], [4, 6])).toEqual([[2, 8]])
+  })
+  it('findSpanAt finds inside merged result', () => {
+    const spans = mergeSpanIntoList([[10, 12]], [13, 13])
+    expect(findSpanAt(spans, 13)).toEqual([10, 13])
+  })
+})
+
 describe('shiftChapterSpan', () => {
-  it('keeps span duration while moving it by chapter delta', () => {
-    expect(shiftChapterSpan([3, 8], 2, 20)).toEqual([5, 10])
+  it('keeps span duration while moving it by chapter delta', () => {    expect(shiftChapterSpan([3, 8], 2, 20)).toEqual([5, 10])
   })
 
   it('clamps a moved span to both timeline edges', () => {

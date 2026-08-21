@@ -109,6 +109,7 @@ function buildRegisterOptions(
     contributionId: `${contribution.activationGeneration}:${contribution.contributionId}`,
     priority: contribution.priority
   }
+  if (contribution.label) base.label = contribution.label
   if (KEYED_SLOTS.has(slot)) {
     base.key = contribution.entryKey ?? contribution.contributionId
   } else {

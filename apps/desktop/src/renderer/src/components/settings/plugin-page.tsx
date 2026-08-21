@@ -664,20 +664,41 @@ export function PluginPage(): ReactElement {
 
       {/* 授权管理对话框 */}
       <Dialog open={showGrantDialog} onOpenChange={setShowGrantDialog}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-[600px]">
           <DialogHeader>
             <DialogTitle>管理授权</DialogTitle>
             <DialogDescription>
-              {detailLoading
-                ? '正在读取当前实际授权...'
-                : `请求能力：${detail?.permissions.join(', ') || '无'}；当前授权：${detail?.grants.join(', ') || '无'}`}
+              {detailLoading ? (
+                '正在读取当前实际授权...'
+              ) : (
+                <>
+                  <span className="block">
+                    请求能力：{detail?.permissions.join('、') || '无'}
+                  </span>
+                  <span className="block">
+                    当前授权：{detail?.grants.join('、') || '无'}
+                  </span>
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="space-y-3 py-2">
             <p className="text-sm text-muted-foreground">选择要授予该插件的能力（全量替换）：</p>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {AVAILABLE_CAPABILITIES.map((cap) => (
-                <div key={cap} className="flex items-center space-x-2">
+                <div
+                  key={cap}
+                  className="flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5"
+                >
+                  <Label
+                    htmlFor={`cap-${cap}`}
+                    className="flex min-w-0 flex-col items-start gap-0.5"
+                  >
+                    <span className="font-mono text-sm leading-5">{cap}</span>
+                    <span className="text-xs leading-4 font-normal text-muted-foreground">
+                      {CAPABILITY_HINTS[cap] ?? ''}
+                    </span>
+                  </Label>
                   <Switch
                     id={`cap-${cap}`}
                     checked={editingGrants.has(cap)}
@@ -691,12 +712,6 @@ export function PluginPage(): ReactElement {
                       setEditingGrants(next)
                     }}
                   />
-                  <Label htmlFor={`cap-${cap}`} className="text-sm">
-                    <span className="block">{cap}</span>
-                    <span className="block text-xs text-muted-foreground">
-                      {CAPABILITY_HINTS[cap] ?? ''}
-                    </span>
-                  </Label>
                 </div>
               ))}
             </div>

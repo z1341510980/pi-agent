@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity, ClipboardCheck } from 'lucide-react'
+import { ArrowLeft, Download, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity, ClipboardCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -15,7 +15,6 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { listWritingStyleExperts } from '@/api/novel-client'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
@@ -42,7 +41,6 @@ import {
   getChapterArrangedEntities,
   createChapter,
   completeChapter,
-  type SimilarityEntityKind,
   type NovelChapter,
 } from '@/api/novel-client'
 import { useNovelSession } from '@/hooks/use-novel-session'
@@ -62,13 +60,11 @@ import { SettingsPanel } from './settings-panel'
 import { ConsistencyAuditPanel } from './consistency-audit-panel'
 import type { MentionOption } from '@/components/shared/conversation'
 import { SimilarityScanPanel } from './similarity-scan-panel'
-import { CacheMonitorPanel } from './cache-monitor-panel'
-import { ObservabilityTimeline } from './observability-timeline'
 import { P3ContextReportPanel } from './p3-context-report-panel'
-import { AgentLogPanel } from './agent-log-panel'
-import { TraceTimelinePanel } from './trace-timeline-panel'
 import { MatrixWorkspace } from './matrix/matrix-workspace'
 import { computeCharacterSpans, GROUP_META, type MatrixDragData } from './matrix/matrix-logic'
+import { SimilarityMergeDialog, similarityKindLabel } from './similarity-merge-dialog'
+import { DiagnosticsDialog } from './diagnostics-dialog'
 import {
   foreshadowHasBeatAtChapter,
   resolveChapterTaskKind,
@@ -158,22 +154,6 @@ export async function ensureChapterExists(
   } catch {
     return false
   }
-}
-
-// ── 相似度扫描实体类型中文标签（含 world_element）──
-const SIMILARITY_KIND_LABEL: Record<SimilarityEntityKind, string> = {
-  character: '角色',
-  conflict: '冲突',
-  foreshadow: '伏笔',
-  faction: '势力',
-  location: '地点',
-  world_element: '世界要素',
-  hook: '钩子',
-  character_arc: '角色弧光',
-}
-
-function similarityKindLabel(kind: SimilarityEntityKind): string {
-  return SIMILARITY_KIND_LABEL[kind] ?? kind
 }
 
 // ── 拖拽预览卡片：根据拖源类型渲染不同的 floating 提示 ──
@@ -291,7 +271,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const toggleFocusMode = useNovelWorkspaceLayoutStore((s) => s.toggleFocusMode)
   const [nodeCount, setNodeCount] = useState(0)
   const [diagnosticsPanelOpen, setDiagnosticsPanelOpen] = useState(false)
-  const [diagnosticsTab, setDiagnosticsTab] = useState<'logs' | 'cache' | 'trend' | 'trace'>('logs')
   const [p3PanelOpen, setP3PanelOpen] = useState(false)
   const [selectedStyleExpertIds, setSelectedStyleExpertIds] = useState<string[]>([])
   const [styleExperts, setStyleExperts] = useState<NovelStyleExpert[]>([])
@@ -339,6 +318,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // ── LLM 相似度扫描（SSE 流式扫描 + 多选弹框 + REST 合并）──
   const similarityScan = useNovelSimilarityScan()
   const [similarityDialogOpen, setSimilarityDialogOpen] = useState(false)
+  // 扫描详情弹窗（P1-2e：扫描不再劫持右栏 Tab 栏，由状态条/此弹窗承载）
+  const [similarityPanelOpen, setSimilarityPanelOpen] = useState(false)
   // 用户勾选的组索引集合（默认全选）
   const [selectedGroupIndices, setSelectedGroupIndices] = useState<Set<number>>(new Set())
   // 记录是否已对本次扫描 toast 过"开始扫描"，避免重复
@@ -698,6 +679,17 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     await session.startWorkflow(task.projectId, task.chapterNumber, { arrangedEntities, modelId: creationModelId, styleExpertIds: selectedStyleExpertIds })
   }, [chapters, creationFlow, resolveArrangedEntities, setCreationMode])
 
+  /**
+   * 编辑器 footer「反推实体」入口（P1-2a 统一路径）：
+   * 与反推 Tab 共用 runChapterTask({kind:'reverse'})，进度在右栏会话面板展示
+   * （isCreationActive effect 会自动切到会话 Tab）。
+   */
+  const handleReverseFromEditor = useCallback((): void => {
+    if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
+    const playhead = useNovelUiStore.getState().playheadChapter
+    void runChapterTask({ kind: 'reverse', projectId: currentProjectId, chapterNumber: playhead })
+  }, [currentProjectId, creationFlow.isRunning, runChapterTask])
+
   const handleStartCreation = useCallback(async (mode: 'manual' | 'ai-arrange', chapterNumber?: number) => {
     if (!currentProjectId || creationFlow.isRunning) return
     // ref 级互斥锁：creationFlow.isRunning 是 React state（setState 异步生效），
@@ -1048,6 +1040,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               isCreationActive={isCreationRunning}
               creationChapterNumber={creationChapterNumber}
               creationChapterContent={creationFlow.chapterContent}
+              onReverseArrange={handleReverseFromEditor}
             />
             {currentProject && (
               <div className="absolute top-3 left-3 z-50">
@@ -1246,7 +1239,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         <div className="absolute top-2 left-2 z-30">
                           <NovelToolbar
                             onRelayout={handleRelayout}
-                            onExport={handleExport}
+                            onOpenReview={handleOpenReviewPanel}
+                            reviewBadge={reviewCounts.candidateCount}
                           />
                         </div>
                       )}
@@ -1267,6 +1261,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                           isCreationActive={isCreationRunning}
                           creationChapterNumber={creationChapterNumber}
                           creationChapterContent={creationFlow.chapterContent}
+                          onReverseArrange={handleReverseFromEditor}
                         />
                       </ErrorBoundary>
                     </div>
@@ -1311,6 +1306,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             isCreationActive={isCreationRunning}
                             creationChapterNumber={creationChapterNumber}
                             creationChapterContent={creationFlow.chapterContent}
+                            onReverseArrange={handleReverseFromEditor}
                           />
                         </ErrorBoundary>
                       </div>
@@ -1380,51 +1376,44 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             className="shrink-0 h-full min-h-0 overflow-hidden flex flex-col bg-surface-1 border-l border-border/60 shadow-[var(--shadow-raised)] transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
           >
             <div style={{ width: detailWidth }} className="h-full min-h-0 overflow-hidden flex flex-col">
-            {/* 右栏视图切换：对话 / 详情 / 审计（与顶栏布局切换共用 Segmented）
-                扫描进行时显示"相似度扫描"标签，保持 tab 栏位置稳定避免布局抖动 */}
+            {/* 右栏视图切换：会话 / 详情 / 设置 / 审计 / 审校。
+                扫描状态不再替换 Tab 栏（P1-2e），降为下方一条可点击的状态条。 */}
             <div className="shrink-0 mx-2 my-1.5">
-              {scanPhase === 'idle' ? (
-                <Segmented
-                  options={RIGHT_PANEL_OPTIONS}
-                  value={rightPanelView}
-                  onChange={setRightPanelView}
-                  ariaLabel="右侧面板视图"
-                  size="sm"
-                  className="w-full"
-                />
-              ) : (
-                <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg">
-                  <div className="inline-flex items-center gap-1.5 h-6 px-2.5 text-micro font-medium rounded-[6px] bg-surface-1 text-text shadow-sm">
-                    <Sparkle className="size-3 text-primary" />
-                    <span className="leading-none">相似度扫描</span>
-                  </div>
-                </div>
-              )}
+              <Segmented
+                options={rightPanelOptions}
+                value={rightPanelView}
+                onChange={setRightPanelView}
+                ariaLabel="右侧面板视图"
+                size="sm"
+                className="w-full"
+              />
             </div>
+
+            {/* 相似度扫描状态条：仅在扫描期间出现，点击展开详情 Dialog */}
+            {scanPhase !== 'idle' && (
+              <button
+                type="button"
+                onClick={() => setSimilarityPanelOpen(true)}
+                className="shrink-0 mx-2 mb-1.5 flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-primary/30 bg-primary/8 text-micro font-medium text-primary transition-colors hover:bg-primary/12"
+                title="查看相似度扫描详情"
+              >
+                <Sparkle className={cn('size-3', similarityScan.isScanning && 'animate-pulse')} />
+                <span className="truncate leading-none">
+                  {similarityScan.isScanning
+                    ? '相似度扫描进行中…'
+                    : scanPhase === 'completed'
+                      ? `扫描完成：${scanReport?.groups.length ?? 0} 组待处理`
+                      : scanPhase === 'error'
+                        ? '扫描失败，点击查看'
+                        : '扫描已取消'}
+                </span>
+              </button>
+            )}
 
             {/* 内容区 */}
             <div className="flex-1 min-h-0 overflow-hidden">
               <AnimatePresence mode="wait">
-                {scanPhase !== 'idle' ? (
-                  <motion.div
-                    key="scan"
-                    className="h-full"
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -20 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <SimilarityScanPanel
-                      phase={scanPhase}
-                      isScanning={similarityScan.isScanning}
-                      progressEvents={similarityScan.progressEvents}
-                      groupCount={scanReport?.groups.length ?? 0}
-                      error={scanError}
-                      onCancel={similarityScan.cancel}
-                      onReset={similarityScan.reset}
-                    />
-                  </motion.div>
-                ) : rightPanelView === 'conversation' ? (
+                {rightPanelView === 'conversation' ? (
                   <motion.div
                     key="conversation"
                     className="h-full"
@@ -1524,6 +1513,32 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       <ConsistencyAuditPanel creationActive={isCreationActive} />
                     </ErrorBoundary>
                   </motion.div>
+                ) : rightPanelView === 'review' ? (
+                  <motion.div
+                    key="review"
+                    className="h-full"
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <ErrorBoundary
+                      fallback={(err, reset) => (
+                        <CreationErrorFallback
+                          error={err}
+                          reset={reset}
+                          onDiscardCreation={handleDiscardCreation}
+                        />
+                      )}
+                    >
+                      <NovelReviewCenter
+                        projectId={currentProjectId}
+                        autoOpen={reviewAutoOpen}
+                        onAutoOpenConsumed={() => setReviewAutoOpen(null)}
+                        counts={reviewCounts}
+                      />
+                    </ErrorBoundary>
+                  </motion.div>
                 ) : (
                   <motion.div
                     key="detail"
@@ -1548,61 +1563,17 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
         </DragOverlay>
         </DndContext>
 
-        {/* 调用诊断弹窗：日志、缓存、趋势共用同一工作区 */}
-        <Dialog open={diagnosticsPanelOpen} onOpenChange={setDiagnosticsPanelOpen}>
-          <DialogContent className="w-[calc(100%-1rem)] sm:w-[min(94vw,1200px)] max-w-none sm:max-w-none h-[min(88vh,900px)] max-h-[90vh] p-0 gap-0 flex flex-col">
-            <DialogHeader className="px-4 py-3 border-b border-border shrink-0 max-h-16 overflow-hidden">
-              <DialogTitle className="flex items-center gap-2 text-sm truncate">
-                <Activity className="size-4 text-primary" />
-                调用诊断
-              </DialogTitle>
-              <DialogDescription className="text-xs text-pretty truncate">
-                统一查看 Agent 调用日志、提示词缓存命中与调用趋势
-              </DialogDescription>
-            </DialogHeader>
-            <Tabs
-              value={diagnosticsTab}
-              onValueChange={(value) => setDiagnosticsTab(value as 'logs' | 'cache' | 'trend' | 'trace')}
-              className="min-h-0 flex-1 flex-col gap-0 overflow-hidden h-full"
-            >
-              <TabsList className="mx-4 mt-3 flex h-auto w-auto shrink-0 gap-1 rounded-lg bg-muted/40 p-1" aria-label="调用诊断视图">
-                <TabsTrigger value="logs" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
-                  <ScrollText className="size-3.5" />
-                  调用日志
-                </TabsTrigger>
-                <TabsTrigger value="cache" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
-                  <Database className="size-3.5" />
-                  缓存诊断
-                </TabsTrigger>
-                <TabsTrigger value="trend" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
-                  <Activity className="size-3.5" />
-                  调用趋势
-                </TabsTrigger>
-                <TabsTrigger value="trace" className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all data-[state=active]:bg-background data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/60 hover:bg-background/60">
-                  <Activity className="size-3.5" />
-                  追踪时间线
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="logs" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
-                <AgentLogPanel chapterNumber={creationChapterNumber} />
-              </TabsContent>
-              <TabsContent value="cache" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
-                <CacheMonitorPanel chapterNumber={creationChapterNumber} />
-              </TabsContent>
-              <TabsContent value="trend" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
-                <ObservabilityTimeline />
-              </TabsContent>
-              <TabsContent value="trace" className="mt-3 min-h-0 overflow-hidden flex-1 h-full">
-                <TraceTimelinePanel
-                  sessionId={currentProjectId && (creationChapterNumber ?? playheadChapter)
-                    ? `novel:chapter:${currentProjectId}:${creationChapterNumber ?? playheadChapter}`
-                    : undefined}
-                  chapterNumber={creationChapterNumber ?? playheadChapter ?? undefined}
-                />
-              </TabsContent>
-            </Tabs>
-          </DialogContent>
-        </Dialog>
+        {/* 调用诊断弹窗：P2-3b 拆出，Tab 状态由组件内部持有 */}
+        <DiagnosticsDialog
+          open={diagnosticsPanelOpen}
+          onOpenChange={setDiagnosticsPanelOpen}
+          chapterNumber={creationChapterNumber}
+          traceSessionId={
+            currentProjectId && (creationChapterNumber ?? playheadChapter)
+              ? `novel:chapter:${currentProjectId}:${creationChapterNumber ?? playheadChapter}`
+              : undefined
+          }
+        />
 
         {/* P3 灰度看板弹窗 */}
         <Dialog open={p3PanelOpen} onOpenChange={setP3PanelOpen}>
@@ -1631,152 +1602,50 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           />
         )}
 
-        {/* LLM 相似度扫描多选对话框（勾选的组才合并） */}
-        <Dialog open={similarityDialogOpen} onOpenChange={(open) => {
-          // 合并执行中不允许通过点击遮罩/ESC 关闭，避免中断
-          if (!similarityScan.isMerging) setSimilarityDialogOpen(open)
-        }}>
-          <DialogContent className="sm:max-w-2xl max-h-[85vh] p-0 gap-0">
+        {/* 相似度扫描详情弹窗（P1-2e：由右栏状态条点击展开） */}
+        <Dialog open={similarityPanelOpen} onOpenChange={setSimilarityPanelOpen}>
+          <DialogContent className="sm:max-w-lg max-h-[80vh] p-0 gap-0">
             <DialogHeader className="px-4 py-3 border-b border-border">
               <DialogTitle className="flex items-center gap-2 text-sm">
                 <Sparkle className="size-4 text-primary" />
-                AI 相似度整理
+                相似度扫描
               </DialogTitle>
               <DialogDescription className="text-xs text-pretty">
-                勾选需要合并的组，未勾选的将跳过。合并后删除项的关联数据会迁移到保留项
+                LLM 语义相似实体检测进度与结果概览
               </DialogDescription>
             </DialogHeader>
-            <div className="overflow-y-auto p-4 max-h-[60vh]">
-              {similarityScan.report == null ? (
-                <div className="text-xs text-muted-foreground py-8 text-center">等待扫描结果...</div>
-              ) : similarityScan.report.groups.length === 0 ? (
-                <div className="text-xs text-muted-foreground py-8 text-center">
-                  未发现相似实体，所有条目均唯一
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {/* 全选 / 取消全选 + 统计 */}
-                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-border">
-                    <label className="flex items-center gap-2 cursor-pointer text-xs text-text select-none">
-                      <input
-                        type="checkbox"
-                        className="size-3.5 rounded border-border accent-primary cursor-pointer"
-                        checked={selectedGroupIndices.size === similarityScan.report.groups.length}
-                        ref={(el) => {
-                          if (el && similarityScan.report) {
-                            el.indeterminate = selectedGroupIndices.size > 0 && selectedGroupIndices.size < similarityScan.report.groups.length
-                          }
-                        }}
-                        onChange={(e) => toggleAllGroups(e.target.checked)}
-                      />
-                      <span className="font-medium">
-                        {selectedGroupIndices.size === similarityScan.report.groups.length ? '取消全选' : '全选'}
-                      </span>
-                    </label>
-                    <div className="text-xs text-muted-foreground">
-                      已选 <span className="text-text font-medium tabular-nums">{selectedGroupIndices.size}</span>
-                      {' / '}
-                      <span className="tabular-nums">{similarityScan.report.groups.length}</span> 组
-                    </div>
-                  </div>
-
-                  {similarityScan.report.groups.map((g, idx) => {
-                    const checked = selectedGroupIndices.has(idx)
-                    return (
-                      <label
-                        key={`${g.kind}-${g.keptId}-${idx}`}
-                        className={`block rounded-md border p-3 cursor-pointer transition-colors select-none ${checked ? 'border-primary/40 bg-primary/5' : 'border-border bg-surface-2/50 hover:bg-surface-2'}`}
-                      >
-                        <div className="flex items-start gap-2.5">
-                          <input
-                            type="checkbox"
-                            className="mt-0.5 size-3.5 rounded border-border accent-primary cursor-pointer shrink-0"
-                            checked={checked}
-                            onChange={() => toggleGroupSelection(idx)}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                              <span className="text-nano px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
-                                {similarityKindLabel(g.kind)}
-                              </span>
-                              <span className="text-nano px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 font-medium tabular-nums">
-                                相似度 {Math.round(g.similarity * 100)}%
-                              </span>
-                            </div>
-                            <div className="text-xs text-muted-foreground mb-2 italic leading-relaxed">
-                              {g.reason}
-                            </div>
-                            <div className="text-xs space-y-1">
-                              <div className="text-emerald-700">
-                                保留：<span className="font-mono text-micro">{g.keptId.slice(0, 8)}</span>
-                              </div>
-                              <div className="text-amber-600">
-                                删除：{g.removed.map((r) => (
-                                  <span key={r.id} className="inline-block mr-1">
-                                    {r.name}
-                                    <span className="text-muted-foreground ml-0.5 text-nano">({r.id.slice(0, 8)})</span>
-                                  </span>
-                                ))}
-                                <span className="text-muted-foreground ml-1">（共 {g.removed.length} 个）</span>
-                              </div>
-                              {g.fieldMerges && g.fieldMerges.length > 0 && (
-                                <div className="mt-2 pt-2 border-t border-border/60">
-                                  <div className="text-micro text-muted-foreground mb-1">字段级合并建议：</div>
-                                  <div className="space-y-1">
-                                    {g.fieldMerges.map((fm, fidx) => (
-                                      <div key={fidx} className="text-micro text-muted-foreground leading-relaxed pl-2 border-l border-border">
-                                        <span className="text-text font-medium">{fm.field}</span>
-                                        <span className="mx-1">←</span>
-                                        <span className="text-text">{fm.fromName}</span>
-                                        <span className="text-muted-foreground ml-1 text-nano">({fm.fromId.slice(0, 8)})</span>
-                                        <div className="text-nano italic">{fm.reason}</div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-            <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border bg-surface-1/50">
-              <div className="text-xs text-muted-foreground">
-                {selectedGroupIndices.size > 0 && (
-                  <>将合并 <span className="text-amber-500 font-medium tabular-nums">{selectedGroupIndices.size}</span> 组</>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setSimilarityDialogOpen(false)
-                    similarityScan.reset()
-                  }}
-                  disabled={similarityScan.isMerging}
-                >
-                  取消
-                </Button>
-                <Button
-                  size="sm"
-                  variant="default"
-                  onClick={() => void handleSimilarityMerge()}
-                  disabled={
-                    similarityScan.isMerging ||
-                    selectedGroupIndices.size === 0
-                  }
-                >
-                  {similarityScan.isMerging ? '合并中...' : `确认合并${selectedGroupIndices.size > 0 ? `（${selectedGroupIndices.size} 组）` : ''}`}
-                </Button>
-              </div>
+            <div className="max-h-[65vh] overflow-y-auto p-4">
+              <SimilarityScanPanel
+                phase={scanPhase}
+                isScanning={similarityScan.isScanning}
+                progressEvents={similarityScan.progressEvents}
+                groupCount={scanReport?.groups.length ?? 0}
+                error={scanError}
+                onCancel={similarityScan.cancel}
+                onReset={() => {
+                  similarityScan.reset()
+                  setSimilarityPanelOpen(false)
+                }}
+              />
             </div>
           </DialogContent>
         </Dialog>
+
+        {/* LLM 相似度扫描多选对话框（P2-3a 拆出，状态与回调留在 workspace） */}
+        <SimilarityMergeDialog
+          open={similarityDialogOpen}
+          onOpenChange={setSimilarityDialogOpen}
+          report={similarityScan.report}
+          isMerging={similarityScan.isMerging}
+          selectedGroupIndices={selectedGroupIndices}
+          onToggleGroup={toggleGroupSelection}
+          onToggleAll={toggleAllGroups}
+          onMerge={() => void handleSimilarityMerge()}
+          onCancel={() => {
+            setSimilarityDialogOpen(false)
+            similarityScan.reset()
+          }}
+        />
           </>
         )}
       </div>

@@ -16,11 +16,11 @@
 
 import fp from 'fastify-plugin'
 import type { FastifyPluginAsync } from 'fastify'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { createModuleLogger } from '../lib/logger.js'
 import { PluginManager } from '../core/plugin/plugin-manager.js'
+import { isInsideDir } from '../core/plugin/path-guard.js'
 import {
   ALL_PLUGIN_CAPABILITIES,
   parsePluginCatalog,
@@ -256,7 +256,9 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
           continue
         }
         const packageDirResolved = resolve(nodeModulesDir, packageName)
-        if (!packageDirResolved.startsWith(nodeModulesDir + '\\')) {
+        // 包含性判定收口到 path-guard：这里曾把分隔符硬编码成 '\\'，
+        // 使校验在 posix 上恒为"逃逸"并拒绝所有合法 npm 插件。
+        if (!isInsideDir(nodeModulesDir, packageDirResolved)) {
           log.warn(
             { catalogId: config.catalogId, packageName },
             '拒绝逃逸 node_modules 的 npm 插件路径'

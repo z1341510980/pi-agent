@@ -41,6 +41,7 @@ import {
   buildPool,
   findSpanAt,
   GROUP_ORDER,
+  mergeSpanIntoList,
   moveForeshadowEndpointBeat,
   resolveForeshadowLeftClickBeat,
   setForeshadowBeatNote,
@@ -60,37 +61,6 @@ import { EntityNoteDialog } from './entity-note-dialog'
 import { ChapterContextMenu, type ChapterContextMenuPosition } from './chapter-context-menu'
 import { toastError } from '@/hooks/use-toast'
 import type { ReviewPanelKind } from '../novel-review-center'
-
-/**
- * 把新区间合并进现有跨度列表：
- * - 与新区间相交（含相邻）的段合并为一个段 [min, max]
- * - 不相交的段保留
- * - 结果按 start 升序排序
- *
- * 用于 EntitySpanDialog 提交时：对话框编辑单段，需保留其他段不被覆盖。
- */
-function mergeSpanIntoList(
-  existing: Array<[number, number]>,
-  newSpan: [number, number],
-): Array<[number, number]> {
-  const [ns, ne] = newSpan
-  let mergedStart = ns
-  let mergedEnd = ne
-  const kept: Array<[number, number]> = []
-  for (const [s, e] of existing) {
-    // 相交或相邻（区间 [s,e] 与 [mergedStart,mergedEnd] 有重叠或首尾相连）
-    const overlaps = s <= mergedEnd + 1 && e >= mergedStart - 1
-    if (overlaps) {
-      mergedStart = Math.min(mergedStart, s)
-      mergedEnd = Math.max(mergedEnd, e)
-    } else {
-      kept.push([s, e])
-    }
-  }
-  const result: Array<[number, number]> = [...kept, [mergedStart, mergedEnd]]
-  result.sort((a, b) => a[0] - b[0])
-  return result
-}
 
 function getForeshadowBeats(foreshadow: NovelForeshadow): NonNullable<NovelForeshadow['beats']> {
   // beats 为空时从 firstChapter 补埋设点；
@@ -605,27 +575,10 @@ export function MatrixWorkspace({
             return
           }
           // 拖入冲突到矩阵的语义（操作 chapterSpans 多段跨度）：
-          // - chapter 已在某段内 → 不操作
-          // - chapterSpans 为空 → 新建单章段 [[chapter, chapter]]
-          // - chapter 紧邻某段 start-1 → 扩展该段 start
-          // - chapter 紧邻某段 end+1 → 扩展该段 end
-          // - 否则 → 追加新段 [chapter, chapter] 并按起始章节排序
+          // 章节已在段内不操作；否则并入相邻/相交段或追加新段（mergeSpanIntoList 统一处理）
           const spans = c.chapterSpans
           if (findSpanAt(spans, chapter) != null) break
-          let newSpans: Array<[number, number]>
-          if (spans.length === 0) {
-            newSpans = [[chapter, chapter]]
-          } else {
-            const adjStartIdx = spans.findIndex((sp) => sp[0] === chapter + 1)
-            const adjEndIdx = spans.findIndex((sp) => sp[1] === chapter - 1)
-            if (adjStartIdx >= 0) {
-              newSpans = spans.map((sp, i) => i === adjStartIdx ? [chapter, sp[1]] as [number, number] : sp)
-            } else if (adjEndIdx >= 0) {
-              newSpans = spans.map((sp, i) => i === adjEndIdx ? [sp[0], chapter] as [number, number] : sp)
-            } else {
-              newSpans = [...spans, [chapter, chapter] as [number, number]].sort((a, b) => a[0] - b[0])
-            }
-          }
+          const newSpans = mergeSpanIntoList(spans, [chapter, chapter])
           const updated = await updateConflict(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertConflict(updated)
           invalidateNovelData()
@@ -650,20 +603,7 @@ export function MatrixWorkspace({
           // 拖入势力到矩阵的语义（与 conflict 一致，操作 chapterSpans）
           const spans = f.chapterSpans
           if (findSpanAt(spans, chapter) != null) break
-          let newSpans: Array<[number, number]>
-          if (spans.length === 0) {
-            newSpans = [[chapter, chapter]]
-          } else {
-            const adjStartIdx = spans.findIndex((sp) => sp[0] === chapter + 1)
-            const adjEndIdx = spans.findIndex((sp) => sp[1] === chapter - 1)
-            if (adjStartIdx >= 0) {
-              newSpans = spans.map((sp, i) => i === adjStartIdx ? [chapter, sp[1]] as [number, number] : sp)
-            } else if (adjEndIdx >= 0) {
-              newSpans = spans.map((sp, i) => i === adjEndIdx ? [sp[0], chapter] as [number, number] : sp)
-            } else {
-              newSpans = [...spans, [chapter, chapter] as [number, number]].sort((a, b) => a[0] - b[0])
-            }
-          }
+          const newSpans = mergeSpanIntoList(spans, [chapter, chapter])
           const updated = await updateFaction(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertFaction(updated)
           invalidateNovelData()
@@ -678,20 +618,7 @@ export function MatrixWorkspace({
           }
           const spans = it.chapterSpans ?? []
           if (findSpanAt(spans, chapter) != null) break
-          let newSpans: Array<[number, number]>
-          if (spans.length === 0) {
-            newSpans = [[chapter, chapter]]
-          } else {
-            const adjStartIdx = spans.findIndex((sp) => sp[0] === chapter + 1)
-            const adjEndIdx = spans.findIndex((sp) => sp[1] === chapter - 1)
-            if (adjStartIdx >= 0) {
-              newSpans = spans.map((sp, i) => i === adjStartIdx ? [chapter, sp[1]] as [number, number] : sp)
-            } else if (adjEndIdx >= 0) {
-              newSpans = spans.map((sp, i) => i === adjEndIdx ? [sp[0], chapter] as [number, number] : sp)
-            } else {
-              newSpans = [...spans, [chapter, chapter] as [number, number]].sort((a, b) => a[0] - b[0])
-            }
-          }
+          const newSpans = mergeSpanIntoList(spans, [chapter, chapter])
           const updated = await updateItem(entityId, { chapterSpans: newSpans })
           useNovelDataStore.getState().upsertItem(updated)
           invalidateNovelData()

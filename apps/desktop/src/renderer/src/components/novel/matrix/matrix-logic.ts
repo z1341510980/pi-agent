@@ -359,6 +359,41 @@ export function findSpanAt(
 }
 
 /**
+ * 把新区间合并进现有跨度列表：
+ * - 与新区间相交（含相邻）的段合并为一个段 [min, max]
+ * - 不相交的段保留
+ * - 结果按 start 升序排序
+ *
+ * 用于拖入标记出场（conflict/faction/item/clue 共用，P2-2a 去重）与
+ * EntitySpanDialog 提交：对话框编辑单段，需保留其他段不被覆盖。
+ *
+ * 注：双侧相邻（[1,2],[4,5] 插 3）会正确合并为 [1,5]——此前 conflict/faction/item
+ * 的三份内联实现只扩展其中一侧，留下本应相连的两段。
+ */
+export function mergeSpanIntoList(
+  existing: Array<[number, number]>,
+  newSpan: [number, number],
+): Array<[number, number]> {
+  const [ns, ne] = newSpan
+  let mergedStart = ns
+  let mergedEnd = ne
+  const kept: Array<[number, number]> = []
+  for (const [s, e] of existing) {
+    // 相交或相邻（区间 [s,e] 与 [mergedStart,mergedEnd] 有重叠或首尾相连）
+    const overlaps = s <= mergedEnd + 1 && e >= mergedStart - 1
+    if (overlaps) {
+      mergedStart = Math.min(mergedStart, s)
+      mergedEnd = Math.max(mergedEnd, e)
+    } else {
+      kept.push([s, e])
+    }
+  }
+  const result: Array<[number, number]> = [...kept, [mergedStart, mergedEnd]]
+  result.sort((a, b) => a[0] - b[0])
+  return result
+}
+
+/**
  * 计算伏笔的埋设→回收连线
  * @param first 埋设章节
  * @param recover 回收章节（null 表示未回收）

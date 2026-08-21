@@ -174,6 +174,13 @@ export interface RouteDefinition {
  */
 export interface PluginUiContribution {
   contributionId: string
+  /**
+   * 显示名（来自 PanelDefinition.title）。
+   *
+   * 桌面端用它渲染 tab 标签等人类可读位置；不下发时桌面只能显示
+   * contributionId 这类技术标识。
+   */
+  label?: string
   slot:
     | 'app.navigation'
     | 'workspace.main'

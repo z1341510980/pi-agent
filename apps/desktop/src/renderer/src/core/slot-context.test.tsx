@@ -91,6 +91,27 @@ describe('ui-contributions → Slot 注册（白名单解析）', () => {
     expect(screen.queryByText(/Hello 插件/)).toBeNull()
   })
 
+  it('label 下发到注册项，供 tab 栏等位置显示', async () => {
+    mockGet.mockResolvedValue({
+      schemaVersion: 1,
+      contributions: [
+        contribution({
+          slot: 'right-panel.tab',
+          rendererKey: 'builtin.hello-right-panel',
+          label: '我的插件视图',
+        }),
+      ],
+    })
+
+    render(createElement(SlotProvider, null, createElement(Probe)))
+
+    await waitFor(() => {
+      expect(captured?.rawEntries('right-panel.tab')).toHaveLength(1)
+    })
+    const entry = captured!.rawEntries('right-panel.tab')[0]!
+    expect(entry.options.label).toBe('我的插件视图')
+  })
+
   it('state 非 active 的贡献不注册', async () => {
     mockGet.mockResolvedValue({
       schemaVersion: 1,

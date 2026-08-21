@@ -64,6 +64,7 @@ import { FactionForm } from './detail-forms/faction-form'
 import { LocationForm } from './detail-forms/location-form'
 import { WorldElementForm } from './detail-forms/world-element-form'
 import { ItemForm } from './detail-forms/item-form'
+import { PanelShell } from './panel-shell'
 
 type PanelMode = 'overview' | 'edit'
 type Selection = { id: string; type: DetailEntityType }
@@ -389,9 +390,22 @@ export function NovelDetailPanel({
   const presentation = getDetailEntityPresentation(activeSelection.type)
   const EntityIcon = presentation.icon
 
+  const creationNotice = creationActive ? (
+    <div className="flex gap-1.5 border-b border-border bg-amber-500/8 px-3 py-2">
+      <Clock className="mt-px size-3 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+      <p className="text-nano leading-relaxed text-muted-foreground">
+        创作进行中。本章上下文已在流程开始时构建，此处的修改要到下一次创作才会生效。
+      </p>
+    </div>
+  ) : undefined
+
   return (
-    <div className="pi-side-panel flex h-full flex-col bg-surface-1">
-      <header className="relative z-10 flex shrink-0 items-start gap-2.5 border-b border-border/75 bg-surface-1 px-3 py-3 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
+    <>
+      <PanelShell
+        className="pi-side-panel"
+        notice={creationNotice}
+        header={(
+        <header className="relative z-10 flex shrink-0 items-start gap-2.5 border-b border-border/75 bg-surface-1 px-3 py-3 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
         <span
           className={`flex size-9 shrink-0 items-center justify-center rounded-lg shadow-[inset_0_0_0_1px_color-mix(in_srgb,currentColor_12%,transparent)] ${presentation.tone}`}
         >
@@ -489,17 +503,8 @@ export function NovelDetailPanel({
           </Button>
         </div>
       </header>
-
-      {creationActive && (
-        <div className="flex shrink-0 gap-1.5 border-b border-border bg-amber-500/8 px-3 py-2">
-          <Clock className="mt-px size-3 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
-          <p className="text-nano leading-relaxed text-muted-foreground">
-            创作进行中。本章上下文已在流程开始时构建，此处的修改要到下一次创作才会生效。
-          </p>
-        </div>
-      )}
-
-      <div className="min-h-0 flex-1 overflow-y-auto">
+        )}
+      >
         {mode === 'overview' ? (
           <EntityOverview
             entity={entity as unknown as Record<string, unknown>}
@@ -546,7 +551,7 @@ export function NovelDetailPanel({
             </div>
           </DetailPanelEditProvider>
         )}
-      </div>
+      </PanelShell>
 
       <Dialog
         open={pendingAction !== null}
@@ -602,6 +607,6 @@ export function NovelDetailPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   )
 }

@@ -103,7 +103,8 @@ function ToastItem({ toast }: { toast: ToastData }): ReactElement {
       aria-live="polite"
       className={cn(
         // dsh Toast：contrast 深色底板 + 反色文字，r14、shadow-lv3
-        'pointer-events-auto group relative flex w-full items-start gap-3 overflow-hidden rounded-[14px] border border-[var(--dsw-alias-border-inverted)] bg-toast p-3.5 text-toast-foreground shadow-[var(--dsw-shadow-lv3)]',
+        // bg-toast-bg 对应 @theme 的 --color-toast-bg（写 bg-toast 会因令牌不存在而透明）
+        'pointer-events-auto group relative flex w-full items-start gap-3 overflow-hidden rounded-[14px] border border-[var(--dsw-alias-border-inverted)] bg-toast-bg p-3.5 text-toast-foreground shadow-[var(--dsw-shadow-lv3)]',
       )}
     >
       <Icon
