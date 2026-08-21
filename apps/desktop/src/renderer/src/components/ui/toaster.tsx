@@ -36,39 +36,27 @@ const VARIANT_CONFIG: Record<
   {
     icon: typeof Info
     iconColor: string
-    border: string
-    bg: string
   }
 > = {
   default: {
     icon: Info,
-    iconColor: 'text-muted-foreground',
-    border: 'border-border',
-    bg: 'bg-surface-1 text-text',
+    iconColor: 'text-[var(--dsw-static-neutral-bluish-300)]',
   },
   success: {
     icon: CheckCircle2,
-    iconColor: 'text-success',
-    border: 'border-success/50',
-    bg: 'bg-surface-1 text-text',
+    iconColor: 'text-[var(--dsw-alias-state-success-secondary)]',
   },
   destructive: {
     icon: AlertCircle,
-    iconColor: 'text-destructive',
-    border: 'border-destructive/50',
-    bg: 'bg-surface-1 text-text',
+    iconColor: 'text-[var(--dsw-alias-state-error-secondary)]',
   },
   info: {
     icon: Info,
-    iconColor: 'text-primary',
-    border: 'border-primary/50',
-    bg: 'bg-surface-1 text-text',
+    iconColor: 'text-[var(--dsw-static-deepseek-300)]',
   },
   warning: {
     icon: AlertTriangle,
-    iconColor: 'text-accent-foreground',
-    border: 'border-accent/50',
-    bg: 'bg-surface-1 text-text',
+    iconColor: 'text-[var(--dsw-alias-state-warn-secondary)]',
   },
 }
 
@@ -114,9 +102,8 @@ function ToastItem({ toast }: { toast: ToastData }): ReactElement {
       role="status"
       aria-live="polite"
       className={cn(
-        'pointer-events-auto group relative flex w-full items-start gap-3 overflow-hidden rounded-lg border p-4 shadow-lg',
-        config.border,
-        config.bg,
+        // dsh Toast：contrast 深色底板 + 反色文字，r14、shadow-lv3
+        'pointer-events-auto group relative flex w-full items-start gap-3 overflow-hidden rounded-[14px] border border-[var(--dsw-alias-border-inverted)] bg-toast p-3.5 text-toast-foreground shadow-[var(--dsw-shadow-lv3)]',
       )}
     >
       <Icon
@@ -125,10 +112,10 @@ function ToastItem({ toast }: { toast: ToastData }): ReactElement {
       />
       <div className="min-w-0 flex-1 space-y-1">
         {toast.title && (
-          <p className="text-sm font-semibold leading-tight">{toast.title}</p>
+          <p className="text-sm font-medium leading-[22px]">{toast.title}</p>
         )}
         {toast.description && (
-          <p className="text-sm text-subtle text-pretty leading-snug">
+          <p className="text-sm text-[var(--dsw-static-neutral-bluish-300)] text-pretty leading-snug">
             {toast.description}
           </p>
         )}

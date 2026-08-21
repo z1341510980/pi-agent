@@ -24,6 +24,7 @@ import { CronPage } from './cron-page'
 import { AssistantSettings } from './assistant-settings'
 import { SkillsSettings } from './skills-settings'
 import { ProviderSettings } from './provider-settings'
+import { PluginPage } from './plugin-page'
 
 export type SettingsSection =
   | 'general'
@@ -31,6 +32,7 @@ export type SettingsSection =
   | 'skills'
   | 'providers'
   | 'models'
+  | 'plugins'
   | 'agents'
   | 'security'
   | 'cron'
@@ -65,6 +67,7 @@ const navGroups: NavGroup[] = [
       { id: 'skills', label: '技能', icon: SparklesIcon },
       { id: 'providers', label: '模型与 Provider', icon: PlugIcon },
       { id: 'models', label: '模型管理', icon: LayersIcon },
+      { id: 'plugins', label: '插件', icon: PlugIcon },
       { id: 'agents', label: 'Agent 管理', icon: BotIcon },
       { id: 'security', label: '权限与安全', icon: ShieldIcon },
       { id: 'cron', label: '定时任务', icon: ClockIcon }
@@ -91,10 +94,10 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
       {/* ── 顶部标题栏 ── */}
       <header className="pi-glass-header flex items-center justify-between min-w-0 bg-titlebar-bg">
         <div className="flex items-center gap-3 h-full min-w-0 px-4 [webkit-app-region:drag]">
-          <span className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <span className="flex size-7 items-center justify-center rounded-lg text-subtle">
             <SettingsIcon className="size-4" />
           </span>
-          <h1 className="text-sm font-semibold text-text text-balance">设置</h1>
+          <h1 className="text-sm font-medium text-text text-balance">设置</h1>
         </div>
         <div className="flex h-full [webkit-app-region:no-drag]">
           <Button
@@ -111,43 +114,37 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
 
       {/* ── 主体：左侧导航 + 右侧内容 ── */}
       <div className="grid grid-cols-[236px_minmax(0,1fr)] min-h-0 max-md:grid-cols-1">
-        {/* ── 左侧导航（对齐 AionUi SettingsSider 风格） ── */}
-        <nav className="pi-nav-panel flex flex-col gap-1 overflow-auto p-3" aria-label="设置导航">
+        {/* ── 左侧导航（对齐 dsh SettingsRoot nav：188px 轨、r12 单元格） ── */}
+        <nav className="pi-nav-panel flex flex-col gap-4 overflow-auto p-3" aria-label="设置导航">
           {navGroups.map((group, groupIdx) => (
-            <div key={group.label} className={groupIdx === 0 ? '' : 'mt-4'}>
-              {/* 分组标题：对齐 AionUi settings-sider__group-header */}
-              <div className="px-3 pb-2 pt-1 text-xs font-[600] text-hint select-none">
+            <div key={group.label} className={groupIdx === 0 ? '' : 'mt-2'}>
+              {/* 分组标题 */}
+              <div className="px-3 pb-1.5 pt-1 text-xs leading-4 text-subtle select-none">
                 {group.label}
               </div>
-              {group.items.map((item) => {
-                const Icon = item.icon
-                const active = section === item.id
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setSection(item.id)}
-                    aria-current={active ? 'page' : undefined}
-                    data-tour={`nav-${item.id}`}
-                    className={`group flex h-10 w-full items-center gap-2.5 rounded-xl px-2.5 text-sm text-left transition-[background-color,color,box-shadow,transform] active:scale-[0.97] ${
-                      active
-                        ? 'bg-primary/10 text-primary font-[650] shadow-[inset_3px_0_0_var(--color-primary)]'
-                        : 'text-muted-foreground hover:bg-surface-2 hover:text-text'
-                    }`}
-                  >
-                    <span
-                      className={`flex size-7 shrink-0 items-center justify-center rounded-lg transition-[background-color,color] ${
+              <div className="flex flex-col gap-1">
+                {group.items.map((item) => {
+                  const Icon = item.icon
+                  const active = section === item.id
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setSection(item.id)}
+                      aria-current={active ? 'page' : undefined}
+                      data-tour={`nav-${item.id}`}
+                      className={`flex h-10 w-full items-center gap-2 rounded-xl px-3 text-sm leading-[22px] text-left transition-colors ${
                         active
-                          ? 'bg-primary/10 text-primary'
-                          : 'bg-surface-2 text-muted-foreground group-hover:text-text'
+                          ? 'bg-[var(--color-sidebar-nav-active)] font-medium text-text'
+                          : 'text-text hover:bg-[var(--color-sidebar-nav-hover)]'
                       }`}
                     >
-                      <Icon className="size-4" />
-                    </span>
-                    <span className="truncate">{item.label}</span>
-                  </button>
-                )
-              })}
+                      <Icon className="size-4 shrink-0 text-subtle" aria-hidden="true" />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           ))}
         </nav>
@@ -159,6 +156,7 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
           {section === 'skills' && <SkillsSettings />}
           {section === 'providers' && <ProviderSettings />}
           {section === 'models' && <ModelsPage />}
+          {section === 'plugins' && <PluginPage />}
           {section === 'agents' && <AgentPage />}
           {section === 'security' && <SecurityPage />}
           {section === 'cron' && <CronPage />}

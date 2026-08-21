@@ -44,7 +44,7 @@ export interface ThinkingLevelSelectorProps {
 const DEFAULT_REASONING_LEVELS: ThinkingLevel[] = ['low', 'medium', 'high']
 
 const TRIGGER_CLASS =
-  'min-w-[110px] h-7 rounded-md border-0 bg-surface-4 text-xs! text-subtle hover:bg-surface-3 focus:ring-0 focus:ring-offset-0 px-2'
+  'min-w-[110px] h-7 rounded-lg border-0 bg-transparent text-[13px]! leading-5! font-medium text-text-secondary hover:bg-accent focus:ring-0 focus:ring-offset-0 px-2 aria-expanded:bg-accent'
 
 export function ThinkingLevelSelector({
   value,

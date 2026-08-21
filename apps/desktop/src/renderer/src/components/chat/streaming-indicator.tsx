@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
-import { Brain, Wrench, PenLine, CircleStop } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
+import { CircleStop } from 'lucide-react'
 import type { ChatMessage } from './types'
 import { readSegments } from './types'
-import { cn } from '@/lib/utils'
 
 /** 流式当前阶段 */
 export type StreamingPhase =
@@ -38,64 +37,65 @@ export function StreamingIndicator({ activeMessage, onCancel }: StreamingIndicat
     setEnterKey(step.label)
   }, [step.label])
 
+  // 本轮已运行时长（dsh turnStatusClock：扫光文字后的等宽小字计时）
+  const startedAtRef = useRef(Date.now())
+  const [elapsedSec, setElapsedSec] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setElapsedSec(Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000)))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
   return (
-    <div className="flex justify-start max-w-[80%]">
-      <div className="bg-surface-2 rounded-lg px-4 py-3 min-w-[200px]">
-        <div className="flex items-center gap-2.5 text-sm">
-          <motion.span
-            key={enterKey}
-            initial={{ scale: 0.6, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            className={cn(
-              'flex size-5 items-center justify-center rounded-full',
-              step.iconBg,
-            )}
-            aria-hidden="true"
-          >
-            <step.Icon className="size-3" />
-          </motion.span>
+    // dsh turnStatus：一行品牌蓝扫光文字，无卡片
+    <div className="flex justify-start min-w-0">
+      <div className="flex items-center">
+        <motion.span
+          key={enterKey}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+          className="dsh-turn-status"
+        >
+          {step.label}
+        </motion.span>
 
-          <span className="font-medium text-text">{step.label}</span>
-
-          {/* 三点跳动 */}
-          <span className="flex items-center gap-0.5 ml-1" aria-hidden="true">
-            <Dot delay={0} />
-            <Dot delay={150} />
-            <Dot delay={300} />
+        {elapsedSec > 0 && (
+          <span className="ml-2 text-[13px] leading-5 font-normal tabular-nums text-hint">
+            {formatElapsed(elapsedSec)}
           </span>
+        )}
 
-          {onCancel && (
-            <button
-              type="button"
-              onClick={onCancel}
-              className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-hint hover:bg-surface-3 hover:text-text transition-colors"
-              aria-label="停止生成"
-            >
-              <CircleStop className="size-3" />
-              停止
-            </button>
-          )}
-        </div>
+        {/* 三点跳动 */}
+        <span className="ml-1 flex items-center gap-0.5" aria-hidden="true">
+          <Dot delay={0} />
+          <Dot delay={150} />
+          <Dot delay={300} />
+        </span>
 
-        {/* 阶段切换的副标题（可选） */}
-        <AnimatePresence mode="wait">
-          {step.hint && (
-            <motion.p
-              key={step.hint}
-              initial={{ opacity: 0, y: -2 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -2 }}
-              transition={{ duration: 0.15 }}
-              className="mt-1 text-xs text-subtle"
-            >
-              {step.hint}
-            </motion.p>
-          )}
-        </AnimatePresence>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="ml-3 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-hint transition-colors hover:bg-accent hover:text-text"
+            aria-label="停止生成"
+          >
+            <CircleStop className="size-3" />
+            停止
+          </button>
+        )}
       </div>
     </div>
   )
+}
+
+/** 秒数 → 计时文本：<60s 显示 "42s"，之后 "1m07s" */
+function formatElapsed(totalSec: number): string {
+  if (totalSec < 60) return `${totalSec}s`
+  const minutes = Math.floor(totalSec / 60)
+  const seconds = totalSec % 60
+  return `${minutes}m${String(seconds).padStart(2, '0')}s`
 }
 
 /** 跳动小圆点 */
@@ -139,38 +139,16 @@ function derivePhase(msg?: ChatMessage): StreamingPhase {
 /** 阶段 → 显示配置 */
 function phaseToStep(phase: StreamingPhase): {
   label: string
-  hint?: string
-  Icon: typeof Brain
-  iconBg: string
 } {
   switch (phase.kind) {
     case 'thinking':
-      return {
-        label: '思考中',
-        hint: '正在分析需求与拆解方案',
-        Icon: Brain,
-        iconBg: 'bg-purple-500/15 text-purple-500',
-      }
+      return { label: '思考中' }
     case 'tool':
-      return {
-        label: `调用工具 · ${phase.toolName}`,
-        hint: '正在执行工具调用',
-        Icon: Wrench,
-        iconBg: 'bg-blue-500/15 text-blue-500',
-      }
+      return { label: `调用工具 · ${phase.toolName}` }
     case 'generating':
-      return {
-        label: '生成回复',
-        hint: '正在组织最终回答',
-        Icon: PenLine,
-        iconBg: 'bg-emerald-500/15 text-emerald-500',
-      }
+      return { label: '生成回复' }
     case 'idle':
     default:
-      return {
-        label: '等待响应',
-        Icon: Brain,
-        iconBg: 'bg-muted text-muted-foreground',
-      }
+      return { label: '等待响应' }
   }
 }

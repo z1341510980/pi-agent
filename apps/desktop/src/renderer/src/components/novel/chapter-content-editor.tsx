@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from 'tiptap-markdown'
-import { Sparkles, FileText, ChevronLeft, ChevronRight, History, Save } from 'lucide-react'
+import { Sparkles, ChevronLeft, ChevronRight, History, Save } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
@@ -382,13 +382,8 @@ export function ChapterContentEditor({
 
   return (
     <div className="chapter-content-editor" data-tour="editor">
+      {/* 单行 chrome：左章节导航 + 右富文本格式组（原 header/toolbar 两行合并） */}
       <header className="cce-header">
-        {/* 左：editor-title */}
-        <div className="cce-title">
-          <FileText className="size-3.5 text-amber-500" aria-hidden="true" />
-          <span>章节正文</span>
-        </div>
-        {/* 右：导航 + chapter-badge */}
         <div className="cce-nav" data-tour="chapter-nav">
           <button
             type="button"
@@ -414,104 +409,103 @@ export function ChapterContentEditor({
             <ChevronRight className="size-3.5" aria-hidden="true" />
           </button>
         </div>
+        <div className="cce-format-group">
+          <select
+            onChange={(e) => {
+              const v = e.target.value
+              if (v === 'p') editor?.chain().focus().setParagraph().run()
+              else if (v === 'h1') editor?.chain().focus().setHeading({ level: 1 }).run()
+              else if (v === 'h2') editor?.chain().focus().setHeading({ level: 2 }).run()
+              else if (v === 'h3') editor?.chain().focus().setHeading({ level: 3 }).run()
+            }}
+            disabled={isCreationActive}
+            title="标题级别"
+            value={
+              editor?.isActive('heading', { level: 1 })
+                ? 'h1'
+                : editor?.isActive('heading', { level: 2 })
+                  ? 'h2'
+                  : editor?.isActive('heading', { level: 3 })
+                    ? 'h3'
+                    : 'p'
+            }
+          >
+            <option value="p">正文</option>
+            <option value="h1">标题 1</option>
+            <option value="h2">标题 2</option>
+            <option value="h3">标题 3</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().toggleBold().run()}
+            disabled={isCreationActive || !editor?.can().toggleBold()}
+            className={editor?.isActive('bold') ? 'is-active' : ''}
+            title="粗体"
+          >
+            B
+          </button>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().toggleItalic().run()}
+            disabled={isCreationActive || !editor?.can().toggleItalic()}
+            className={editor?.isActive('italic') ? 'is-active' : ''}
+            title="斜体"
+          >
+            I
+          </button>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().toggleBlockquote().run()}
+            disabled={isCreationActive}
+            className={editor?.isActive('blockquote') ? 'is-active' : ''}
+            title="引用"
+          >
+            "
+          </button>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+            disabled={isCreationActive}
+            className={editor?.isActive('orderedList') ? 'is-active' : ''}
+            title="有序列表"
+          >
+            1.
+          </button>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().toggleBulletList().run()}
+            disabled={isCreationActive}
+            className={editor?.isActive('bulletList') ? 'is-active' : ''}
+            title="无序列表"
+          >
+            •
+          </button>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().setHorizontalRule().run()}
+            disabled={isCreationActive}
+            title="分割线"
+          >
+            —
+          </button>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().undo().run()}
+            disabled={isCreationActive || !editor?.can().undo()}
+            title="撤销（正文格式）"
+          >
+            ↶
+          </button>
+          <button
+            type="button"
+            onClick={() => editor?.chain().focus().redo().run()}
+            disabled={isCreationActive || !editor?.can().redo()}
+            title="重做（正文格式）"
+          >
+            ↷
+          </button>
+        </div>
       </header>
-      {/* 富文本工具栏：header 下方独立一行 */}
-      <div className="cce-toolbar">
-        <select
-          onChange={(e) => {
-            const v = e.target.value
-            if (v === 'p') editor?.chain().focus().setParagraph().run()
-            else if (v === 'h1') editor?.chain().focus().setHeading({ level: 1 }).run()
-            else if (v === 'h2') editor?.chain().focus().setHeading({ level: 2 }).run()
-            else if (v === 'h3') editor?.chain().focus().setHeading({ level: 3 }).run()
-          }}
-          disabled={isCreationActive}
-          title="标题级别"
-          value={
-            editor?.isActive('heading', { level: 1 })
-              ? 'h1'
-              : editor?.isActive('heading', { level: 2 })
-                ? 'h2'
-                : editor?.isActive('heading', { level: 3 })
-                  ? 'h3'
-                  : 'p'
-          }
-        >
-          <option value="p">正文</option>
-          <option value="h1">标题 1</option>
-          <option value="h2">标题 2</option>
-          <option value="h3">标题 3</option>
-        </select>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().toggleBold().run()}
-          disabled={isCreationActive || !editor?.can().toggleBold()}
-          className={editor?.isActive('bold') ? 'is-active' : ''}
-          title="粗体"
-        >
-          B
-        </button>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().toggleItalic().run()}
-          disabled={isCreationActive || !editor?.can().toggleItalic()}
-          className={editor?.isActive('italic') ? 'is-active' : ''}
-          title="斜体"
-        >
-          I
-        </button>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().toggleBlockquote().run()}
-          disabled={isCreationActive}
-          className={editor?.isActive('blockquote') ? 'is-active' : ''}
-          title="引用"
-        >
-          "
-        </button>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
-          disabled={isCreationActive}
-          className={editor?.isActive('orderedList') ? 'is-active' : ''}
-          title="有序列表"
-        >
-          1.
-        </button>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().toggleBulletList().run()}
-          disabled={isCreationActive}
-          className={editor?.isActive('bulletList') ? 'is-active' : ''}
-          title="无序列表"
-        >
-          •
-        </button>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().setHorizontalRule().run()}
-          disabled={isCreationActive}
-          title="分割线"
-        >
-          —
-        </button>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().undo().run()}
-          disabled={isCreationActive || !editor?.can().undo()}
-          title="撤销"
-        >
-          ↶
-        </button>
-        <button
-          type="button"
-          onClick={() => editor?.chain().focus().redo().run()}
-          disabled={isCreationActive || !editor?.can().redo()}
-          title="重做"
-        >
-          ↷
-        </button>
-      </div>
       <div className="cce-body">
         {currentChapter ? (
           <EditorContent editor={editor} />

@@ -44,6 +44,9 @@ const mocks = vi.hoisted(() => {
     createAgentSession: vi.fn(async () => ({
       session,
     })),
+    // §10.12-1：每个线程首次创建都会新建独立 SessionManager，因此 mock 必须提供它。
+    createSessionManager: vi.fn(() => ({ getSessionDir: () => '/sessions' })),
+    openSessionManager: vi.fn(() => ({ getSessionDir: () => '/sessions' })),
   }
 })
 
@@ -53,6 +56,10 @@ vi.mock('@earendil-works/pi-coding-agent', () => {
       async reload() {}
     },
     createAgentSession: mocks.createAgentSession,
+    SessionManager: {
+      create: mocks.createSessionManager,
+      open: mocks.openSessionManager,
+    },
   }
 })
 
@@ -62,6 +69,8 @@ describe('createPiSession beforeToolCall integration', () => {
     mocks.agent.afterToolCall = undefined
     mocks.session.subscribe.mockClear()
     mocks.createAgentSession.mockClear()
+    mocks.createSessionManager.mockClear()
+    mocks.openSessionManager.mockClear()
   })
 
   it('TC-01: installs beforeToolCall hook on session.agent', async () => {
@@ -70,6 +79,13 @@ describe('createPiSession beforeToolCall integration', () => {
     ]))
 
     expect(typeof mocks.session.agent.beforeToolCall).toBe('function')
+  })
+
+  it('TC-01b: chat 线程无 resumePath 时也新建独立 SessionManager', async () => {
+    await createPiSession(createDeps([{ provider: 'openai', id: 'gpt-4.1-mini' }]))
+
+    expect(mocks.createSessionManager).toHaveBeenCalledTimes(1)
+    expect(mocks.openSessionManager).not.toHaveBeenCalled()
   })
 
   it('TC-02: selects configured OpenAI model instead of DeepSeek when both exist', async () => {
@@ -104,7 +120,7 @@ function createDeps(
         models.find((model) => model.provider === provider && model.id === modelId)
       ),
     } as unknown as ModelRuntime,
-    sessionManager: {} as unknown as SessionManager,
+    sessionManager: { getSessionDir: () => '/sessions' } as unknown as SessionManager,
     settingsManager: {} as SettingsManager,
     providerConfigStore: {
       getApiKey: (provider: string) => provider === 'openai' ? 'test-key' : undefined,

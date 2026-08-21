@@ -26,7 +26,7 @@ export function createHelloPlugin(): Plugin {
       version: '1.0.0',
       description: '示例插件：演示工具、路由、事件监听、UI 面板注册',
       author: 'wenlang-agent',
-      builtin: true,
+      builtin: true
     },
 
     async setup(context) {
@@ -43,9 +43,9 @@ export function createHelloPlugin(): Plugin {
           properties: {
             name: { type: 'string', description: '问候对象名称' },
             language: { type: 'string', description: '问候语言：zh / en' },
-            times: { type: 'number', description: '重复次数（默认 1，最大 10）' },
+            times: { type: 'number', description: '重复次数（默认 1，最大 10）' }
           },
-          required: ['name'],
+          required: ['name']
         },
         async execute(args) {
           const name = String(args.name ?? 'world')
@@ -67,9 +67,9 @@ export function createHelloPlugin(): Plugin {
 
           return {
             ok: true,
-            data: { messages, greetCount },
+            data: { messages, greetCount }
           }
-        },
+        }
       })
 
       // 2. 注册路由：GET /status（实际路径 /api/plugins/hello/status）
@@ -85,11 +85,11 @@ export function createHelloPlugin(): Plugin {
               version: '1.0.0',
               status: 'running',
               greetCount,
-              lastEvent,
+              lastEvent
             },
-            request.traceId,
+            request.traceId
           )
-        },
+        }
       })
 
       // 3. 注册路由：POST /greet（实际路径 /api/plugins/hello/greet）
@@ -112,7 +112,7 @@ export function createHelloPlugin(): Plugin {
           }
 
           return success({ messages, greetCount }, request.traceId)
-        },
+        }
       })
 
       // 4. 监听事件：agent:run:started
@@ -126,8 +126,12 @@ export function createHelloPlugin(): Plugin {
         id: 'hello-panel',
         title: 'Hello 插件面板',
         component: 'HelloPanel',
+        rendererKey: 'builtin.hello-panel',
+        slot: 'app.navigation',
+        scope: 'app',
+        priority: 100,
         position: 'sidebar',
-        props: { initialGreetCount: greetCount },
+        props: { initialGreetCount: greetCount }
       })
 
       logger.info('Hello 插件注册完成')
@@ -137,7 +141,7 @@ export function createHelloPlugin(): Plugin {
       // 重置内部状态
       greetCount = 0
       lastEvent = null
-    },
+    }
   }
 }
 

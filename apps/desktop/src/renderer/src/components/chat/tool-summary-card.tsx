@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, Layers } from 'lucide-react'
 import type { ToolCallInfo } from './types'
 import { ToolCallCard } from './tool-call-card'
@@ -56,62 +55,46 @@ export function ToolSummaryCard({ toolCalls }: ToolSummaryCardProps) {
   const summary = summaryParts.join(' · ')
 
   return (
-    <div className={cn(
-      'rounded-lg border border-border bg-background overflow-hidden',
-      'dark:bg-surface-1',
-    )}>
-      {/* 折叠态标题 */}
+    <div className="flex min-w-0 flex-col">
+      {/* 折叠态标题（dsh ToolRow 风格：单行、无卡片边框） */}
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left hover:bg-muted/50 dark:hover:bg-surface-2/50 transition-colors"
+        className="dsh-sweep-host -mx-1 flex w-[calc(100%+8px)] items-center rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent"
+        data-running={hasRunning ? 'true' : undefined}
         aria-expanded={expanded}
       >
-        <span className="flex size-5 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden="true">
-          <Layers className="size-3" />
+        <span className="relative mr-1.5 inline-flex size-4 shrink-0 items-center justify-center text-subtle" aria-hidden="true">
+          <Layers className="size-3.5" />
         </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-text">
-            调用了 {totalCount} 个工具
-          </div>
-          {summary && (
-            <div className="mt-0.5 text-[11px] text-hint truncate">
-              {summary}
-            </div>
-          )}
-        </div>
+        <span className="shrink-0 text-sm leading-6 text-text-secondary">
+          调用了 {totalCount} 个工具
+        </span>
         {durationLabel && (
-          <span className="shrink-0 text-[11px] text-hint">
-            ⏱ {durationLabel}
-          </span>
+          <span className="ml-2 shrink-0 font-mono text-[11px] text-hint">{durationLabel}</span>
+        )}
+        {summary && (
+          <>
+            <span className="mx-2 size-0.5 shrink-0 rounded-full bg-hint" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-sm leading-6 text-subtle">{summary}</span>
+          </>
         )}
         <ChevronDown
           className={cn(
-            'h-3.5 w-3.5 shrink-0 text-hint transition-transform',
+            'ml-auto h-3.5 w-3.5 shrink-0 text-hint transition-transform',
             expanded && 'rotate-180',
           )}
         />
       </button>
 
-      {/* 展开态：依次渲染工具卡片 */}
-      <AnimatePresence initial={false}>
-        {expanded && (
-          <motion.div
-            key="tool-list"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            className="overflow-hidden border-t border-border/60"
-          >
-            <div className="p-2 space-y-1.5">
-              {toolCalls.map((tc) => (
-                <ToolCallCard key={tc.toolCallId} toolCall={tc} />
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* 展开态：依次渲染工具行 */}
+      {expanded && (
+        <div className="mt-1 space-y-1 pl-1">
+          {toolCalls.map((tc) => (
+            <ToolCallCard key={tc.toolCallId} toolCall={tc} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

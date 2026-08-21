@@ -14,12 +14,13 @@ import { cn } from '@/lib/utils'
  * 共享的条目样式集中在 `menuItemClass`，供 Item / CheckboxItem / RadioItem 复用。
  */
 
+// dsh Menu cell：min-h 40、r10、pad 10/8、14/22 主文字，图标与标签间距 8
 const menuItemClass =
-  'relative flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs outline-none select-none ' +
+  'relative flex min-h-[34px] w-full cursor-default items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-sm leading-[22px] text-foreground outline-none select-none ' +
   'transition-colors focus:bg-accent focus:text-accent-foreground ' +
-  'data-disabled:pointer-events-none data-disabled:opacity-50 ' +
+  'data-disabled:pointer-events-none data-disabled:opacity-40 ' +
   "data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 " +
-  "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5"
+  "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
 
 function DropdownMenu({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
   return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
@@ -44,7 +45,8 @@ function DropdownMenuContent({
         sideOffset={sideOffset}
         align={align}
         className={cn(
-          'z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md',
+          // dsh MenuDropdown：r12、inverted 发丝线、shadow-lv3、4px 内衬
+          'z-50 min-w-[10rem] origin-(--radix-dropdown-menu-content-transform-origin) rounded-xl border border-[var(--dsw-alias-border-inverted)] bg-popover p-1 text-popover-foreground shadow-[var(--dsw-shadow-lv3)]',
           'max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto',
           'data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95',
           'data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
@@ -128,7 +130,7 @@ function DropdownMenuLabel({
   return (
     <DropdownMenuPrimitive.Label
       data-slot="dropdown-menu-label"
-      className={cn('px-2 py-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase', className)}
+      className={cn('px-2.5 py-2 text-xs leading-4 text-subtle', className)}
       {...props}
     />
   )
@@ -141,7 +143,7 @@ function DropdownMenuSeparator({
   return (
     <DropdownMenuPrimitive.Separator
       data-slot="dropdown-menu-separator"
-      className={cn('-mx-1 my-1 h-px bg-border', className)}
+      className={cn('-mx-1 my-1 h-px bg-[var(--dsw-alias-border-l1)]', className)}
       {...props}
     />
   )
@@ -177,7 +179,7 @@ function DropdownMenuSubContent({
       <DropdownMenuPrimitive.SubContent
         data-slot="dropdown-menu-sub-content"
         className={cn(
-          'z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md',
+          'z-50 min-w-[10rem] origin-(--radix-dropdown-menu-content-transform-origin) rounded-xl border border-[var(--dsw-alias-border-inverted)] bg-popover p-1 text-popover-foreground shadow-[var(--dsw-shadow-lv3)]',
           'data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95',
           className,
         )}

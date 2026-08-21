@@ -152,6 +152,14 @@ export interface NovelServices {
 export function createNovelServices(context: PluginContext): NovelServices {
   const { db, cwd, teamManager, subagentManager: agentManager, confirmationManager } = context
 
+  // confirmationManager 现按 confirmation.request capability 条件注入。
+  // novel 是 builtin（默认持有全部 capability），因此这里只可能因宿主装配错误而缺失，
+  // 早失败比让下游服务在运行时拿到 undefined 更好诊断。
+  if (!confirmationManager) {
+    throw new Error('novel 插件需要 confirmation.request 能力（confirmationManager 未注入）')
+  }
+
+
   // 1. 创建 NovelStore（依赖 db）
   const store = new NovelStore(db)
   const referenceAnalysisStore = new ReferenceAnalysisStore(db)

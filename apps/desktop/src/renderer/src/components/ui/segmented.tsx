@@ -24,6 +24,8 @@ export interface SegmentedOption<T extends string> {
   title?: string
   /** 单个选项上的引导锚点（driver.js 有几处直接指向某一个 tab） */
   dataTour?: string
+  /** 可选角标计数（0 或 undefined 不显示），如审校 Tab 的待办数 */
+  badge?: number
 }
 
 export interface SegmentedProps<T extends string> {
@@ -103,6 +105,14 @@ export function Segmented<T extends string>({
           >
             {Icon && <Icon className={ICON_CLASS[size]} />}
             <span className="leading-none">{option.label}</span>
+            {option.badge != null && option.badge > 0 && (
+              <span
+                className="inline-flex min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-semibold leading-3.5 text-white tabular-nums"
+                aria-label={`${option.badge} 项待办`}
+              >
+                {option.badge > 99 ? '99+' : option.badge}
+              </span>
+            )}
           </button>
         )
       })}

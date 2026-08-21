@@ -1,14 +1,34 @@
 /**
  * MatrixToolbar：矩阵视图工具栏（单行紧凑）
  *
- * 单行结构：返回 + 关系叠加层 | 章节 badge | 撤销/重做 + 补全 + 扫描 | 缩放 + 筛选 chips
+ * 单行结构：返回 + 关系叠加层 | 章节 badge | 撤销/重做 + 补全 + 扫描 + 审校▾ | 缩放 + 筛选 chips
  *
  * 图例（MatrixLegend）在本组件之外、由 MatrixWorkspace 插入到 toolbar 与 view 之间。
  */
 
 import { type ReactElement } from 'react'
-import { ArrowLeft, Undo2, Redo2, History, Minus, Plus, Wand2, Network } from 'lucide-react'
+import {
+  ArrowLeft,
+  Undo2,
+  Redo2,
+  History,
+  Minus,
+  Plus,
+  Wand2,
+  Network,
+  ClipboardCheck,
+  GitBranch,
+  ShieldQuestion,
+  Inbox,
+  MessageSquareText,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu'
 import { GROUP_META, GROUP_ORDER, type MatrixEntityKind } from './matrix-logic'
 
 export interface MatrixToolbarProps {
@@ -40,6 +60,13 @@ export interface MatrixToolbarProps {
   /** 关系叠加层开关 */
   showRelationshipOverlay?: boolean
   onToggleRelationshipOverlay?: () => void
+  /** ── 审校面板入口（原第二排按钮收纳为下拉，面板仍是对话框）── */
+  onOpenTrackPanel?: () => void
+  onOpenCandidatePanel?: () => void
+  onOpenPendingEvents?: () => void
+  onOpenAnnotations?: () => void
+  /** 待确认事件数（审校下拉角标） */
+  pendingEventCount?: number
 }
 
 const FILTER_OPTIONS: Array<{ key: MatrixEntityKind | null; label: string }> = [
@@ -70,8 +97,18 @@ export function MatrixToolbar({
   similarityScanning = false,
   showRelationshipOverlay = false,
   onToggleRelationshipOverlay,
+  onOpenTrackPanel,
+  onOpenCandidatePanel,
+  onOpenPendingEvents,
+  onOpenAnnotations,
+  pendingEventCount = 0,
 }: MatrixToolbarProps): ReactElement {
   const zoomPct = Math.round((cellWidth / 56) * 100)
+  const hasReviewEntries =
+    onOpenTrackPanel != null ||
+    onOpenCandidatePanel != null ||
+    onOpenPendingEvents != null ||
+    onOpenAnnotations != null
 
   return (
     <div className="relative z-20 shrink-0 border-b border-border bg-surface-1">
@@ -151,6 +188,58 @@ export function MatrixToolbar({
           >
             <Wand2 className={cn('size-3.5', similarityScanning && 'animate-spin')} />
           </button>
+        )}
+
+        {/* 审校面板入口（剧情轨道/待审实体/待确认事件/批注，原第二排按钮收纳于此） */}
+        {hasReviewEntries && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className={cn(iconBtn, 'relative w-auto gap-1 px-1.5')}
+                title="审校：剧情轨道 / 待审实体 / 待确认事件 / 批注"
+                aria-label="审校面板"
+              >
+                <ClipboardCheck className="size-3.5" />
+                {pendingEventCount > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 min-w-3.5 rounded-full bg-red-500 px-0.5 text-[8px] leading-3.5 text-white">
+                    {pendingEventCount > 99 ? '99+' : pendingEventCount}
+                  </span>
+                )}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[11rem]">
+              {onOpenTrackPanel && (
+                <DropdownMenuItem onSelect={onOpenTrackPanel}>
+                  <GitBranch className="size-3.5" />
+                  剧情轨道
+                </DropdownMenuItem>
+              )}
+              {onOpenCandidatePanel && (
+                <DropdownMenuItem onSelect={onOpenCandidatePanel}>
+                  <ShieldQuestion className="size-3.5" />
+                  待审实体
+                </DropdownMenuItem>
+              )}
+              {onOpenPendingEvents && (
+                <DropdownMenuItem onSelect={onOpenPendingEvents}>
+                  <Inbox className="size-3.5" />
+                  待确认事件
+                  {pendingEventCount > 0 && (
+                    <span className="ml-auto rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold leading-4 text-white">
+                      {pendingEventCount > 99 ? '99+' : pendingEventCount}
+                    </span>
+                  )}
+                </DropdownMenuItem>
+              )}
+              {onOpenAnnotations && (
+                <DropdownMenuItem onSelect={onOpenAnnotations}>
+                  <MessageSquareText className="size-3.5" />
+                  批注
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
 
         {/* 弹性间距 */}

@@ -69,10 +69,10 @@ function parseKey(key: string): { provider: string; modelId: string } {
 }
 
 /**
- * ModelSelector：模型选择器（Craft 风格）
+ * ModelSelector：模型选择器（dsh composer 芯片风格）
  *
- * - 圆角无边框，背景 #F1F5F9
- * - 左侧紫色小圆点 + 模型名称
+ * - 透明底芯片，13/20 中等字重次级文字，hover 浅交互填充
+ * - 左侧业务蓝小圆点 + 模型名称
  * - 按 Provider 分组展示
  */
 export function ModelSelector({
@@ -111,16 +111,16 @@ export function ModelSelector({
       <SelectTrigger
         size="sm"
         data-tour="model-selector"
-        className="min-w-[120px] max-w-[200px] h-7 rounded-md border-0 bg-surface-4 text-xs! text-subtle hover:bg-surface-3 focus:ring-0 focus:ring-offset-0"
+        className="min-w-[120px] max-w-[220px] h-7 rounded-lg border-0 bg-transparent text-[13px]! leading-5! font-medium text-text-secondary hover:bg-accent focus:ring-0 focus:ring-offset-0 aria-expanded:bg-accent"
       >
         <SelectValue placeholder={placeholder}>
           {selectedModel ? (
             <span className="flex items-center gap-1.5 truncate">
-              <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+              <span className="size-1.5 shrink-0 rounded-full bg-info" aria-hidden="true" />
               <span className="truncate">{selectedModel.name ?? selectedModel.id}</span>
             </span>
           ) : (
-            <span className="text-muted-foreground truncate">{placeholder}</span>
+            <span className="text-hint truncate">{placeholder}</span>
           )}
         </SelectValue>
       </SelectTrigger>

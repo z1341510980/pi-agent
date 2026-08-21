@@ -62,6 +62,10 @@ export interface InputAreaProps {
   queueFull?: boolean
   /** 输入框上方的插槽（待发队列面板） */
   beforeInput?: ReactNode
+  /** 工具栏左侧插槽（插件贡献；在附件按钮之后） */
+  toolbarLeft?: ReactNode
+  /** 工具栏右侧插槽（插件贡献；在模型/思考强度之前） */
+  toolbarRight?: ReactNode
 }
 
 /** 单行模式最大字符数（超过则切换多行） */
@@ -124,7 +128,9 @@ export function InputArea({
   activeSessionId = '',
   onFilePreview,
   queueFull = false,
-  beforeInput
+  beforeInput,
+  toolbarLeft,
+  toolbarRight
 }: InputAreaProps): ReactElement {
   const [internalText, setInternalText] = useState('')
   const [attachments, setAttachments] = useState<FileAttachment[]>([])
@@ -330,23 +336,24 @@ export function InputArea({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* 待发队列面板：贴在输入卡片上方，属于同一个"输入区"语义 */}
-      {beforeInput}
+      {/* 待发队列面板：贴在输入卡片上方，属于同一个"输入区"语义。
+          宽度对齐 dsh dock 卡 = 正文列宽（748px），与输入卡同轴。 */}
+      {beforeInput && (
+        <div className="mx-auto w-full max-w-[748px]">{beforeInput}</div>
+      )}
 
-      {/* 输入卡片容器：圆角 20px，紫色聚焦光环，拖拽态虚线边框 */}
-      <div
-        data-tour="input-card"
-        data-focused={isFocused ? 'true' : undefined}
-        data-dragging={isDragOver ? 'true' : undefined}
-        className={cn(
-          'pi-input-card relative rounded-[20px] border bg-input-bg transition-[border-color,box-shadow,background-color] duration-200',
-          isDragOver
-            ? 'border-primary border-dashed bg-primary/5'
-            : isFocused
-              ? 'border-primary'
-              : 'border-transparent'
-        )}
-      >
+      {/* 输入卡片容器：dsh 悬浮胶囊（r22、发丝线、lv2 阴影），拖拽态虚线边框。
+          宽度对齐 dsh 输入卡 = 正文列 + 32px（780px），与消息流同轴居中。 */}
+      <div className="mx-auto w-full max-w-[780px]">
+        <div
+          data-tour="input-card"
+          data-focused={isFocused ? 'true' : undefined}
+          data-dragging={isDragOver ? 'true' : undefined}
+          className={cn(
+            'pi-input-card relative rounded-[22px] border border-input bg-input-bg transition-[border-color,box-shadow,background-color] duration-150',
+            isDragOver ? 'border-info border-dashed' : ''
+          )}
+        >
         {/* ── 浮层面板（绝对定位在 textarea 上方） ── */}
         {slashPanelOpen && (
           <div className="absolute left-3 right-3 bottom-[calc(100%+8px)] z-50">
@@ -451,8 +458,8 @@ export function InputArea({
               <button
                 type="button"
                 className={cn(
-                  'inline-flex size-8 shrink-0 items-center justify-center rounded-lg',
-                  'text-subtle hover:bg-surface-3 hover:text-text',
+                  'inline-flex size-7 shrink-0 items-center justify-center rounded-full',
+                  'bg-[var(--dsw-specific-selector)] text-text hover:bg-[var(--dsw-alias-interactive-bg-hover-solid)]',
                   'transition-[background-color,color,transform] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50'
                 )}
                 onClick={() => void handleAttachClick()}
@@ -477,15 +484,15 @@ export function InputArea({
             rows={1}
             disabled={disabled}
             className={cn(
-              'w-full resize-none bg-transparent text-sm leading-relaxed',
-              'text-text placeholder:text-hint',
+              'w-full resize-none bg-transparent text-base leading-6',
+              'text-text placeholder:text-hint [caret-color:var(--dsw-alias-state-business-primary)]',
               'focus-visible:outline-none',
               'disabled:cursor-not-allowed disabled:opacity-50',
               isSingleLine ? 'px-0 py-0' : 'px-0 pb-2'
             )}
             style={{
-              height: isSingleLine ? '20px' : 'auto',
-              minHeight: isSingleLine ? '20px' : '40px',
+              height: isSingleLine ? '24px' : 'auto',
+              minHeight: isSingleLine ? '24px' : '48px',
               maxHeight: '240px',
               overflowY: isSingleLine ? 'hidden' : 'auto',
               whiteSpace: isSingleLine ? 'nowrap' : 'pre-wrap',
@@ -564,8 +571,8 @@ export function InputArea({
               <button
                 type="button"
                 className={cn(
-                  'inline-flex size-8 shrink-0 items-center justify-center rounded-lg',
-                  'text-subtle hover:bg-surface-3 hover:text-text',
+                  'inline-flex size-7 shrink-0 items-center justify-center rounded-full',
+                  'bg-[var(--dsw-specific-selector)] text-text hover:bg-[var(--dsw-alias-interactive-bg-hover-solid)]',
                   'transition-[background-color,color,transform] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50'
                 )}
                 onClick={() => void handleAttachClick()}
@@ -574,10 +581,12 @@ export function InputArea({
               >
                 <Paperclip className="size-4" aria-hidden="true" />
               </button>
+              {toolbarLeft}
             </div>
 
             {/* 右侧：权限模式 + 模型选择 + 思考强度 + 发送/中断 */}
             <div className="flex items-center gap-2">
+              {toolbarRight}
               <PermissionModeSwitch compact />
               {models.length > 0 && onModelChange && (
                 <ModelSelector
@@ -611,6 +620,8 @@ export function InputArea({
         {/* ── 单行模式底部工具栏（隐藏式：权限 + 模型选择，浮在右侧不占主行空间） ── */}
         {isSingleLine && (
           <div className="flex items-center justify-end gap-2 px-3 pb-2.5 -mt-0.5">
+            {toolbarLeft}
+            {toolbarRight}
             <PermissionModeSwitch compact />
             {models.length > 0 && onModelChange && (
               <ModelSelector
@@ -633,6 +644,7 @@ export function InputArea({
             )}
           </div>
         )}
+        </div>
       </div>
     </form>
   )
@@ -643,6 +655,8 @@ export function InputArea({
  *
  * 运行中**同时**给出「停止」和「排队」两个按钮 —— 原来运行中只有停止按钮，
  * 用户想排队没有入口；如果把停止换成排队，又会丢掉中断能力。两个都要。
+ *
+ * 发送键对齐 dsh 主发送（34px 圆、业务蓝填充、白色箭头，空文本 0.4 透明）。
  */
 function SendControls({
   isRunning,
@@ -661,7 +675,7 @@ function SendControls({
         type="submit"
         size="icon"
         disabled={!canSend}
-        className="pi-send-button rounded-full size-8 bg-primary text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-hint"
+        className="size-[34px] rounded-full bg-info text-white shadow-none hover:bg-info-hover disabled:bg-info disabled:text-white disabled:opacity-40"
         aria-label="发送"
       >
         <ArrowUp className="size-4" aria-hidden="true" />
@@ -686,7 +700,7 @@ function SendControls({
         size="icon"
         variant="outline"
         disabled={!canSend || queueFull}
-        className="rounded-full size-8 border-border text-text-secondary hover:bg-surface-3 hover:text-text disabled:text-hint"
+        className="rounded-full size-8 border-border text-text-secondary hover:bg-accent hover:text-text disabled:text-hint"
         aria-label={queueFull ? '队列已满' : '加入待发队列'}
         title={queueFull ? '队列已满，先发出或清理几条' : '加入待发队列（当前轮结束后自动发送）'}
       >

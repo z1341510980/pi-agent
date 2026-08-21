@@ -33,6 +33,78 @@ import type Database from 'better-sqlite3'
 /** 插件状态 */
 export type PluginStatus = 'loaded' | 'enabled' | 'disabled' | 'error'
 
+/** 插件生命周期投影（status 保持旧 API 兼容，lifecycle 表示过渡状态）。 */
+export type PluginLifecycleState = PluginStatus | 'starting' | 'stopping'
+
+/** effect 被宿主回收时的真实边界。 */
+export type PluginEffectUnloadScope =
+  | 'immediate'
+  | 'new-session-only'
+  | 'restart-required'
+  | 'persistent'
+
+/** effect ledger 中一项 effect 的状态。 */
+export type PluginEffectState = 'active' | 'released' | 'residual' | 'failed'
+
+/** effect 的可审计描述字段。 */
+export interface PluginEffectMetadata {
+  resourceId?: string
+  owner?: string
+  unloadScope?: PluginEffectUnloadScope
+  [key: string]: unknown
+}
+
+/** 可幂等调用的 effect 释放函数。 */
+export type PluginEffectDisposer = () => void | Promise<void>
+
+/** 插件 effect ledger 记录。disposer 不直接暴露给管理 API。 */
+export interface PluginEffectRecord {
+  id: string
+  kind: string
+  resourceId: string
+  owner: string
+  activationGeneration: number
+  unloadScope: PluginEffectUnloadScope
+  state: PluginEffectState
+  /** route/service 是否已经挂到 Fastify 宿主；pending 不能宣称已生效。 */
+  hostAttached: boolean
+  createdAt: number
+  disposedAt?: number
+  disposeAttempts: number
+  lastError?: string
+  dispose: PluginEffectDisposer
+}
+
+/** 最近一次停止或 setup 回滚的结果。 */
+export interface PluginStopResult {
+  outcome: 'completed' | 'partial' | 'failed'
+  activationGeneration: number
+  disposedEffectCount: number
+  residualEffectCount: number
+  errors: string[]
+  at: number
+}
+
+/**
+ * 插件能力类型
+ *
+ * 用于 manifest.permissions（插件请求）和 entry.grants（实际授予）
+ * 注册方法时检查 grants 是否包含对应能力
+ */
+export type PluginCapability =
+  | 'tools.register' // 注册工具
+  | 'agent.hooks' // 注册 Agent 生命周期钩子
+  | 'provider.transform' // 改写 Provider 请求/响应
+  | 'provider.observe' // 观察 Provider 请求（只读）
+  | 'routes.register' // 注册 HTTP 路由
+  | 'storage.plugin' // 使用插件专用存储
+  | 'ui.contribute' // 贡献 UI 组件
+  | 'network.outbound' // 发起网络请求
+  | 'process.exec' // 执行子进程
+  | 'session.create' // 创建独立 Pi Session（消耗模型额度）
+  | 'agent.orchestrate' // 访问 subagent/team 管理器与调用日志
+  | 'confirmation.request' // 复用 chat 的确认/决策流程
+
 /** 工具参数 JSON Schema（简化版，兼容 AG-UI Tool 定义） */
 export interface ToolParameterSchema {
   type: string
@@ -71,7 +143,10 @@ export interface ToolDefinition {
   /** 参数 JSON Schema */
   parameters?: ToolParameterSchema
   /** 执行函数 */
-  execute: (args: Record<string, unknown>, ctx: ToolExecutionContext) => Promise<ToolExecutionResult>
+  execute: (
+    args: Record<string, unknown>,
+    ctx: ToolExecutionContext
+  ) => Promise<ToolExecutionResult>
 }
 
 /** 路由 HTTP 方法 */
@@ -93,18 +168,49 @@ export interface RouteDefinition {
   handler: (request: any, reply: any) => Promise<any> | any
 }
 
+/**
+ * P2 受信 UI contribution：只描述桌面已编译的 rendererKey，不传递源码。
+ * 旧 PanelDefinition 仍保留为插件注册输入，转换在 API projection 层完成。
+ */
+export interface PluginUiContribution {
+  contributionId: string
+  slot:
+    | 'app.navigation'
+    | 'workspace.main'
+    | 'right-panel.tab'
+    | 'tool.detail'
+    | 'trace.detail'
+    | 'plugin-page.top'
+  scope: 'app' | 'page' | 'session'
+  priority: number
+  rendererKey: string
+  entryKey?: string
+  props?: Record<string, unknown>
+  state: 'active' | 'disabled' | 'restart-required' | 'invalid'
+}
+
 /** UI 面板定义：插件可注册的前端面板 */
 export interface PanelDefinition {
   /** 面板 ID（全局唯一，建议使用插件名作为前缀） */
   id: string
   /** 面板标题 */
   title: string
-  /** 前端组件名（前端需注册对应组件） */
+  /** 前端组件名（仅作旧协议输入，不得直接执行） */
   component: string
   /** 面板位置 */
   position?: 'sidebar' | 'main' | 'panel'
   /** 初始 props */
   props?: Record<string, unknown>
+  /** P2 Slot 名；缺省时由 position 映射 */
+  slot?: PluginUiContribution['slot']
+  /** P2 作用域 */
+  scope?: PluginUiContribution['scope']
+  /** P2 排序优先级 */
+  priority?: number
+  /** P2 本地编译 renderer 白名单键 */
+  rendererKey?: string
+  /** keyed Slot 的 entry key */
+  entryKey?: string
 }
 
 /** 事件处理器 */
@@ -162,25 +268,31 @@ export interface PluginContext {
   readonly cwd: string
   /** 数据目录 */
   readonly dataDir: string
+  /** 仅在授予 process.exec 时提供的受限命令 facade。 */
+  readonly process?: { exec(command: string): Promise<string> }
+  /** 仅在授予 network.outbound 时提供的网络 facade。 */
+  readonly network?: { fetch: typeof fetch }
   /**
    * AgentManager（由 subagentPlugin 提供）
-   * 在 subagentPlugin 之后加载的插件可通过此引用注册 Agent。
-   * 若 subagentPlugin 未注册则为 undefined。
+   *
+   * 需要 `agent.orchestrate` capability：未授予时为 undefined，
+   * 与 process / network facade 使用同一"条件注入"约定。
+   * 即使已授予，若 subagentPlugin 未注册仍为 undefined。
    */
   readonly subagentManager?: AgentManager
   /**
    * TeamManager（由 teamPlugin 提供）
-   * 在 teamPlugin 之后加载的插件可通过此引用注册 Team。
-   * 若 teamPlugin 未注册则为 undefined。
+   *
+   * 需要 `agent.orchestrate` capability：未授予时为 undefined。
+   * 即使已授予，若 teamPlugin 未注册仍为 undefined。
    */
   readonly teamManager?: TeamManager
   /**
    * AgentCallLogger（由 subagentPlugin 提供，通用 Agent 调用日志记录器）
    *
-   * 在 subagentPlugin 之后加载的插件可通过此引用记录 Agent 调用日志。
+   * 需要 `agent.orchestrate` capability：未授予时为 undefined。
    * 领域插件（如 novel）可在自身编排流程中显式调用 record，
    * 并在 metadata 携带领域扩展字段（projectId / chapterNumber 等）。
-   * 若 subagentPlugin 未注册则为 undefined。
    */
   readonly agentCallLogger?: AgentCallLogger
   /**
@@ -196,12 +308,37 @@ export interface PluginContext {
   /**
    * ConfirmationManager（chat 底座共享，由 app.ts 注入到 PluginManager）
    *
+   * 需要 `confirmation.request` capability：未授予时为 undefined。
    * 供插件复用 chat 的统一确认/决策流程：
    * - 拿到默认 120s 超时机制（避免永久 pending）
    * - 复用 pending 列表与 'confirmation:request' / 'confirmation:resolved' 事件
    * - 旧 boolean API（requestConfirmation/respond）与新 string API（requestDecision/respondDecision）均可调用
    */
-  readonly confirmationManager: ConfirmationManager
+  readonly confirmationManager?: ConfirmationManager
+  /**
+   * 把相对路径解析到本插件 dataDir 之内，越界即抛错。
+   *
+   * 这是**约定辅助**而非强制沙箱：插件仍可直接 import 'node:fs' 绕过。
+   * 强制文件边界需要 Worker / 独立进程，属 P3。插件写文件应统一走这里，
+   * 以便未来收口时有单一改造点。
+   */
+  readonly resolvePath: (...segments: string[]) => string
+  /** 在当前 activation generation 中登记一个带 disposer 的宿主 effect。 */
+  readonly effect: (
+    kind: string,
+    metadata: PluginEffectMetadata,
+    setup: () => PluginEffectDisposer | void
+  ) => PluginEffectDisposer
+  /** 登记已经由插件创建的外部资源。 */
+  readonly registerDisposable: (
+    dispose: PluginEffectDisposer,
+    metadata?: PluginEffectMetadata
+  ) => PluginEffectDisposer
+  /** 登记插件创建的 Session，在插件停用时 abort 并 dispose。 */
+  readonly trackSession: (
+    handle: PluginSessionHandle,
+    metadata?: PluginEffectMetadata
+  ) => PluginEffectDisposer
   /** 注册工具 */
   registerTool(tool: ToolDefinition): void
   /** 注册 HTTP 路由（路径自动加 /api/plugins/:pluginName 前缀） */
@@ -221,6 +358,7 @@ export interface PluginContext {
   /**
    * 创建独立的 Pi SDK Session（用于插件内部 LLM 调用，如多 Agent 编排）
    *
+   * 需要 `session.create` capability：未授予时抛错。
    * 与主聊天 Session 隔离：使用独立的 threadId，不污染用户对话历史。
    * 系统提示词、工具、模型均可自定义。
    *
@@ -242,6 +380,8 @@ export interface PluginContext {
    * 4. new StreamEmitter(emit, messageId, reasoningPipeline, { emitRaw })
    * 5. session.subscribe(streamEmitter.handleSessionEvent)
    *
+   * 需要 `session.create` capability（与 createSession 同一条 grant）。
+   *
    * 插件拿到句柄后只需：
    * - 发射 agent_start（带返回的 messageId）
    * - 调用 handle.prompt() 触发 LLM
@@ -249,12 +389,14 @@ export interface PluginContext {
    *
    * @returns AG-UI Session 句柄（含 session / streamEmitter / messageId / dispose）
    */
-  createAgUiSession(options: PluginSessionOptions & {
-    /** AG-UI 事件 sink（StreamEmitter 发射目标） */
-    emit: AgUiEventSink
-    /** 是否发射 RAW 事件（默认 false，插件不需要；chat 显式开启用于调试） */
-    emitRaw?: boolean
-  }): Promise<AgUiSessionHandle>
+  createAgUiSession(
+    options: PluginSessionOptions & {
+      /** AG-UI 事件 sink（StreamEmitter 发射目标） */
+      emit: AgUiEventSink
+      /** 是否发射 RAW 事件（默认 false，插件不需要；chat 显式开启用于调试） */
+      emitRaw?: boolean
+    }
+  ): Promise<AgUiSessionHandle>
 }
 
 /**
@@ -489,28 +631,85 @@ export type PluginFactory = () => Plugin | Promise<Plugin>
 
 /** 插件运行时条目：PluginManager 内部维护的插件状态 */
 export interface PluginEntry {
+  /** 配置/安装记录主键（来自 YAML 的 id 或安装时生成） */
+  catalogId: string
+  /** 插件清单稳定身份（manifest.name），用于依赖引用 */
+  pluginId: string
   /** 插件清单 */
   manifest: PluginManifest
   /** 插件实例 */
   plugin: Plugin
   /** 当前状态 */
   status: PluginStatus
+  /** 包含 starting/stopping 的生命周期投影。 */
+  lifecycle: PluginLifecycleState
+  /**
+   * 配置声明的期望状态。
+   *
+   * 与 status（observedState）分开：`enabled: false` 的插件仍进 catalog 且可见，
+   * 只是启动时不 setup。把"用户关了它"和"我们没找到它"混为一谈会让
+   * POST /enable 找不到目标。
+   */
+  desiredEnabled: boolean
   /** 错误信息（status=error 时） */
   error?: string
+  /** 依赖诊断：缺失依赖、循环依赖或被上游阻断的原因 */
+  dependencyDiagnostics?: string[]
   /** 插件来源 */
   source: 'builtin' | 'local' | 'npm'
+  /**
+   * 包完整性校验状态。
+   *
+   * - `verified`：plugins.yml 有锁且加载前校验通过
+   * - `unverified`：目录扫描发现（PI_PLUGINS_DIR / PI_PLUGINS_ENABLE_NPM）且无锁，
+   *   代码未经校验即被 import；启动日志会警告，catalog 如实上报
+   * - `not-applicable`：builtin，代码随应用一起构建，不适用包级锁
+   *
+   * 不把"没校验"显示成"已校验"是这个字段存在的唯一理由（研究文档 §6.3）。
+   */
+  integrityStatus: 'verified' | 'unverified' | 'not-applicable'
   /** 插件文件路径 */
   filePath?: string
   /** 插件配置（从配置文件加载时传入） */
   config?: Record<string, unknown>
   /** 是否隔离运行（默认 false） */
   isolate?: boolean
+  /** 最近一次 activation 的单调 generation。 */
+  activationGeneration: number
+  /** 最近一次 activation 的稳定运行标识。 */
+  runId?: string
+  /** 最近一次 stop 或 setup rollback 结果。 */
+  lastStop?: PluginStopResult
+  /**
+   * 本次 activation 注册的 route/service 是否要等重启才真正生效。
+   *
+   * 宿主只在启动期挂载 route 和 decorate service；运行期 enable 的插件即使 setup 成功，
+   * 它的 route/service 也只存在于 catalog 投影里，HTTP 请求打不到。
+   * API 必须如实返回这一点，不能只说 status: 'enabled'（研究文档 §10.11）。
+   */
+  effectiveAfterRestart: boolean
+  /**
+   * 本次 activation 是否发生在宿主启动期挂载之前。
+   *
+   * true 表示宿主之后会挂载它注册的 route/service；false 表示宿主已过挂载阶段。
+   */
+  activationMountedByHost: boolean
+  /** 已授予的能力（由宿主在加载时根据 manifest.permissions 和用户授权决定） */
+  grants: Set<PluginCapability>
+  /** 停用后是否需要重启才能完全卸载（true 表示 route/service 有残留） */
+  restartRequired: boolean
+  /** 卸载作用域：'none' 无残留 | 'restart-required' 需重启 | 'session' 仅新会话生效 */
+  unloadScope: 'none' | 'restart-required' | 'session'
+  /** 已注册的 effect ledger，保留历史 generation 以供诊断。 */
+  effects: PluginEffectRecord[]
   /** 已注册的工具 */
   tools: ToolDefinition[]
   /** 已注册的路由 */
   routes: RouteDefinition[]
   /** 已注册的面板 */
   panels: PanelDefinition[]
+  /** P2 桌面端受信 UI projection */
+  uiContributions: PluginUiContribution[]
   /** 已注册的事件监听器（用于卸载时取消订阅） */
   eventHandlers: Array<{ type: string; handler: EventHandler }>
   /** 已注册的数据库迁移 */
@@ -533,7 +732,25 @@ export interface PluginListItem {
   author?: string
   status: PluginStatus
   source: 'builtin' | 'local' | 'npm'
+  /** 包完整性校验状态（unverified 表示无锁的目录扫描插件） */
+  integrityStatus: 'verified' | 'unverified' | 'not-applicable'
   error?: string
+  lifecycle: PluginLifecycleState
+  /** 配置声明的期望状态（区别于 status 的实际状态） */
+  desiredEnabled: boolean
+  /** 依赖诊断（缺失/循环/被阻断） */
+  dependencyDiagnostics?: string[]
+  restartRequired: boolean
+  unloadScope: 'none' | 'restart-required' | 'session'
+  activationGeneration: number
+  runId?: string
+  effectCount: number
+  activeEffectCount: number
+  /** route/service 是否已真正挂到宿主；false 表示需重启才生效 */
+  hostAttached: boolean
+  /** 本次 activation 的 route/service 需要重启才生效 */
+  effectiveAfterRestart: boolean
+  lastStop?: PluginStopResult
   toolCount: number
   routeCount: number
   panelCount: number
@@ -551,8 +768,20 @@ export interface PluginManagerOptions {
   enableNpmPlugins?: boolean
   /** 是否启用内置示例插件（默认 false） */
   enableBuiltinExamples?: boolean
-  /** 内置插件列表 */
-  builtinPlugins?: Array<{ plugin: Plugin; source?: 'builtin' }>
+  /**
+   * 内置插件列表。
+   *
+   * catalogId 是配置身份（plugins.yml 的 id，如 `hello-plugin`），与 manifest.name
+   * （运行身份，如 `hello`）不同。不传 catalogId 会让 catalog 回写找不到对应条目，
+   * grants/enabled 变更就无法持久化（研究文档 §10.2）。
+   */
+  builtinPlugins?: Array<{
+    plugin: Plugin
+    source?: 'builtin'
+    catalogId?: string
+    config?: Record<string, unknown>
+    isolate?: boolean
+  }>
   /**
    * AgentRuntime 注册表（方案 §9.3）。
    *

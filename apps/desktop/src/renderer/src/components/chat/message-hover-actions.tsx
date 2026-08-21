@@ -2,6 +2,7 @@ import { Copy, Check, RefreshCw, Quote } from 'lucide-react'
 import { useState, type MouseEvent } from 'react'
 import type { ChatMessage } from './types'
 import { cn } from '@/lib/utils'
+import { SlotRenderer } from '../slot'
 
 export interface MessageHoverActionsProps {
   /** 当前消息 */
@@ -60,7 +61,8 @@ export function MessageHoverActions({ message, onQuote, onRegenerate }: MessageH
   const canQuote = text.length > 0 && Boolean(onQuote)
   const canRegenerate = isAssistant && isComplete && Boolean(onRegenerate)
 
-  if (!canCopy && !canQuote && !canRegenerate) return null
+  // 插件贡献不参与 canCopy/canQuote/canRegenerate 判定：即使宿主三个动作都不可用，
+  // 插件仍可能有自己的消息动作，所以容器不能提前 return null。
 
   return (
     <div
@@ -95,11 +97,14 @@ export function MessageHoverActions({ message, onQuote, onRegenerate }: MessageH
           <RefreshCw className="size-3.5" />
         </ActionButton>
       )}
+
+      {/* 插件贡献的消息动作（list slot，宿主动作之后） */}
+      <SlotRenderer name="chat.message.actions" fallback={null} extraProps={{ message }} />
     </div>
   )
 }
 
-/** 单个动作按钮 */
+/** 单个动作按钮（dsh IconActions：28px 圆形热区、三级灰、hover 提亮） */
 function ActionButton({
   label,
   onClick,
@@ -113,7 +118,7 @@ function ActionButton({
     <button
       type="button"
       onClick={onClick}
-      className="p-1 rounded-md cursor-pointer text-hint hover:bg-surface-3 hover:text-text transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="inline-flex size-7 cursor-pointer items-center justify-center rounded-full p-1.5 text-subtle transition-colors hover:bg-accent hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       aria-label={label}
       title={label}
     >

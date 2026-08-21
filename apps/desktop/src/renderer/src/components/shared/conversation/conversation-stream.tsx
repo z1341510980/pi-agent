@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import type { ConversationMessage } from './types'
 import { MessageBubble } from './message-bubble'
@@ -24,6 +24,11 @@ export interface ConversationStreamProps {
   emptyTitle?: string
   /** 空状态插图变体 */
   emptyVariant?: EmptyStateVariant
+  /**
+   * 吸底插槽（错误卡等）：渲染在滚动容器内部最后，sticky 跟随滚动但始终可见，
+   * 不再作为消息流的兄弟块压缩消息可视区。
+   */
+  stickyFooter?: ReactNode
 }
 
 /** 分组后的渲染单元 */
@@ -79,7 +84,8 @@ export function ConversationStream({
   emptyHint = '暂无消息',
   emptyTitle = '开始对话',
   emptyVariant = 'default',
-}: ConversationStreamProps) {
+  stickyFooter,
+}: ConversationStreamProps): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
 
@@ -153,6 +159,12 @@ export function ConversationStream({
           })
         )}
       </div>
+      {/* 吸底插槽：sticky 于滚动容器底部，长内容不压缩消息可视区 */}
+      {stickyFooter != null && (
+        <div className="sticky bottom-0 z-10 -mx-3 mt-3 px-3">
+          {stickyFooter}
+        </div>
+      )}
     </section>
   )
 }

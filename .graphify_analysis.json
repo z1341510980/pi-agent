@@ -1,0 +1,211 @@
+{
+  "communities": {
+    "0": [
+      "plugin_plugin_manager_pluginmanager",
+      "plugin_plugin_manager_pluginmanager_constructor",
+      "plugin_plugin_manager_pluginmanager_getallmigrations",
+      "plugin_plugin_manager_pluginmanager_getallpanels",
+      "plugin_plugin_manager_pluginmanager_getallprompttemplatedirs",
+      "plugin_plugin_manager_pluginmanager_getallroutes",
+      "plugin_plugin_manager_pluginmanager_getallservices",
+      "plugin_plugin_manager_pluginmanager_getallsessiontools",
+      "plugin_plugin_manager_pluginmanager_getalltools",
+      "plugin_plugin_manager_pluginmanager_getloadedmigrations",
+      "plugin_plugin_manager_pluginmanager_list",
+      "plugin_plugin_manager_pluginmanager_setagentcalllogger",
+      "plugin_plugin_manager_pluginmanager_setagentmanager",
+      "plugin_plugin_manager_pluginmanager_setconfirmationmanager",
+      "plugin_plugin_manager_pluginmanager_setmodelregistry",
+      "plugin_plugin_manager_pluginmanager_setproviderconfigstore",
+      "plugin_plugin_manager_pluginmanager_setsessionstore",
+      "plugin_plugin_manager_pluginmanager_setteammanager",
+      "plugin_plugin_manager_pluginmanager_settracer"
+    ],
+    "1": [
+      "plugin_plugin_types_eventhandler",
+      "plugin_plugin_types_plugin",
+      "plugin_plugin_types_plugincontext",
+      "plugin_plugin_types_pluginentry",
+      "plugin_plugin_types_pluginmanifest",
+      "plugin_plugin_types_pluginpayloadstats",
+      "plugin_plugin_types_pluginstatus",
+      "plugin_plugin_types_routemethod",
+      "plugin_plugin_types_toolexecutioncontext",
+      "plugin_plugin_types_toolexecutionresult",
+      "plugin_plugin_types_toolparameterschema",
+      "plugin_types_ts"
+    ],
+    "2": [
+      "plugin_manager_ts",
+      "plugin_plugin_manager_measurepayload",
+      "plugin_plugin_types_aguisessionhandle",
+      "plugin_plugin_types_migrationdefinition",
+      "plugin_plugin_types_paneldefinition",
+      "plugin_plugin_types_pluginfactory",
+      "plugin_plugin_types_pluginlistitem",
+      "plugin_plugin_types_pluginmanageroptions",
+      "plugin_plugin_types_pluginsessionhandle",
+      "plugin_plugin_types_pluginsessionoptions",
+      "plugin_plugin_types_routedefinition",
+      "plugin_plugin_types_tooldefinition"
+    ],
+    "3": [
+      "plugin_plugin_manager_pluginmanager_createplugincontext",
+      "plugin_plugin_manager_pluginmanager_disable",
+      "plugin_plugin_manager_pluginmanager_enable",
+      "plugin_plugin_manager_pluginmanager_get",
+      "plugin_plugin_manager_pluginmanager_reload",
+      "plugin_plugin_manager_pluginmanager_start",
+      "plugin_plugin_manager_pluginmanager_startplugin",
+      "plugin_plugin_manager_pluginmanager_stop",
+      "plugin_plugin_manager_pluginmanager_stopplugin"
+    ],
+    "4": [
+      "cache_control_support_ts",
+      "plugin_cache_control_support_anthropic_providers",
+      "plugin_cache_control_support_buildpromptcachekey",
+      "plugin_cache_control_support_cachecontroltarget",
+      "plugin_cache_control_support_findmodelbaseurl",
+      "plugin_cache_control_support_modelregistrylike",
+      "plugin_cache_control_support_supportsanthropiccachecontrol",
+      "plugin_cache_control_support_usesopenaipromptcachekey"
+    ],
+    "5": [
+      "plugin_skill_read_tool_createskillreadtool",
+      "plugin_skill_read_tool_default_skill_read_extensions",
+      "plugin_skill_read_tool_resolveskillreadpath",
+      "plugin_skill_read_tool_skillreadparams",
+      "plugin_skill_read_tool_skillreadpathresolution",
+      "plugin_skill_read_tool_skillreadtooloptions",
+      "skill_read_tool_ts"
+    ],
+    "6": [
+      "plugin_plugin_manager_buildpluginsessionprompt",
+      "plugin_skill_compose_composedskill",
+      "plugin_skill_compose_composeskillblocks",
+      "plugin_skill_compose_fingerprintskillcontent",
+      "plugin_skill_compose_stripskillfrontmatter",
+      "skill_compose_ts"
+    ],
+    "7": [
+      "plugin_plugin_manager_pluginmanager_init",
+      "plugin_plugin_manager_pluginmanager_loadfromfile",
+      "plugin_plugin_manager_pluginmanager_loadpluginentry",
+      "plugin_plugin_manager_pluginmanager_resolvepluginentry",
+      "plugin_plugin_manager_pluginmanager_scanlocalplugins",
+      "plugin_plugin_manager_pluginmanager_scannpmplugins"
+    ],
+    "8": [
+      "plugin_plugin_session_outcome_getassistantterminalerror",
+      "plugin_plugin_session_outcome_isfinalassistantsuccess",
+      "plugin_plugin_session_outcome_promptwaitresult",
+      "plugin_plugin_session_outcome_waitforfinalassistantorprompt",
+      "plugin_session_outcome_ts"
+    ],
+    "9": [
+      "external_skill_paths_ts",
+      "plugin_external_skill_paths_externalskillpathsoptions",
+      "plugin_external_skill_paths_resolveexternalskillpaths",
+      "plugin_external_skill_paths_skillrootof"
+    ]
+  },
+  "cohesion": {
+    "0": 0.11,
+    "1": 0.17,
+    "2": 0.17,
+    "3": 0.33,
+    "4": 0.25,
+    "5": 0.29,
+    "6": 0.33,
+    "7": 0.53,
+    "8": 0.4,
+    "9": 0.5
+  },
+  "gods": [
+    {
+      "id": "plugin_plugin_manager_pluginmanager",
+      "label": "PluginManager",
+      "degree": 34
+    },
+    {
+      "id": "plugin_cache_control_support_modelregistrylike",
+      "label": "ModelRegistryLike",
+      "degree": 3
+    },
+    {
+      "id": "plugin_skill_compose_composeskillblocks",
+      "label": "composeSkillBlocks()",
+      "degree": 3
+    },
+    {
+      "id": "plugin_cache_control_support_supportsanthropiccachecontrol",
+      "label": "supportsAnthropicCacheControl()",
+      "degree": 2
+    },
+    {
+      "id": "plugin_cache_control_support_usesopenaipromptcachekey",
+      "label": "usesOpenAiPromptCacheKey()",
+      "degree": 2
+    },
+    {
+      "id": "plugin_cache_control_support_buildpromptcachekey",
+      "label": "buildPromptCacheKey()",
+      "degree": 2
+    },
+    {
+      "id": "plugin_plugin_manager_buildpluginsessionprompt",
+      "label": "buildPluginSessionPrompt()",
+      "degree": 2
+    },
+    {
+      "id": "plugin_plugin_session_outcome_getassistantterminalerror",
+      "label": "getAssistantTerminalError()",
+      "degree": 2
+    },
+    {
+      "id": "plugin_plugin_session_outcome_isfinalassistantsuccess",
+      "label": "isFinalAssistantSuccess()",
+      "degree": 2
+    },
+    {
+      "id": "plugin_plugin_session_outcome_waitforfinalassistantorprompt",
+      "label": "waitForFinalAssistantOrPrompt()",
+      "degree": 2
+    }
+  ],
+  "surprises": [
+    {
+      "source": "buildPluginSessionPrompt()",
+      "target": "composeSkillBlocks()",
+      "source_files": [
+        "plugin-manager.ts",
+        "skill-compose.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "connects across different repos/directories"
+    }
+  ],
+  "questions": [
+    {
+      "type": "bridge_node",
+      "question": "Why does `PluginManager` connect `Community 0` to `Community 2`, `Community 3`, `Community 7`?",
+      "why": "High betweenness centrality (0.572) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `composeSkillBlocks()` connect `Community 6` to `Community 2`?",
+      "why": "High betweenness centrality (0.000) - this node is a cross-community bridge."
+    },
+    {
+      "type": "isolated_nodes",
+      "question": "What connects `CacheControlTarget`, `ANTHROPIC_PROVIDERS`, `ExternalSkillPathsOptions` to the rest of the system?",
+      "why": "16 weakly-connected nodes found - possible documentation gaps or missing edges."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `Community 0` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.11 - nodes in this community are weakly interconnected."
+    }
+  ]
+}

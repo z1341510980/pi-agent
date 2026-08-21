@@ -26,7 +26,6 @@ import { sessionRoute } from './routes/session.route.js'
 import { settingsRoute } from './routes/settings.route.js'
 import { agentsRoute } from './routes/agents.route.js'
 import { teamsRoute } from './routes/teams.route.js'
-import { pluginsRoute } from './routes/plugins.route.js'
 import { i18nRoute } from './routes/i18n.route.js'
 import { cronRoute } from './routes/cron.route.js'
 import { workspaceRoute } from './routes/workspace.route.js'
@@ -104,6 +103,9 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // 会话身份索引 P0（方案 §9.4）：threadId → sessionPath 持久化，
   // 支撑历史消息分页与聊天线程在重启/LRU 淘汰后的会话恢复。
   sessionStore.setIdentityRegistry(new SqliteSessionIdentityRegistry(app.db))
+  // 产品级会话退休通知（§10.12）：idle/LRU/配置失效/关闭时发射 `session:retired`。
+  // 这是本仓库自己的事件，不是 Pi SDK 的 session_shutdown。
+  sessionStore.setEventBus(app.eventBus)
 
   // pi-subagents 无头扩展宿主（§9.3.5：能力级接入，非 CLI）：
   // 承载扩展工厂，服务端闭环 /delegation 事件协议；绑定会话后委托派生子进程执行。
@@ -213,7 +215,6 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   await app.register(settingsRoute)
   await app.register(agentsRoute)
   await app.register(teamsRoute)
-  await app.register(pluginsRoute)
   await app.register(aguiRoute)
   await app.register(copilotkitRoute)
   await app.register(i18nRoute)

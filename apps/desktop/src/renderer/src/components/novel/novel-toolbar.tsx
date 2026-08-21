@@ -1,15 +1,7 @@
-import { useCallback, useEffect, useState, type ChangeEvent, type ReactElement } from 'react'
+import { useCallback, type ReactElement } from 'react'
 import { useReactFlow, type Edge as XYEdge } from '@xyflow/react'
-import { EntityCandidatePanel } from './entity-candidate-panel'
-import { NarrativeTrackPanel } from './narrative-track-panel'
-import { NarrativeRevisionPanel } from './narrative-revision-panel'
-import { listEntityCandidates } from '@/api/novel-client'
 import {
   Maximize,
-  ZoomIn,
-  ZoomOut,
-  Download,
-  Upload,
   Trash2,
   Share2,
   Route,
@@ -38,6 +30,7 @@ import {
   type NovelNodeTypeName,
 } from '@/api/novel-client'
 import { toast, toastError, toastSuccess } from '@/hooks/use-toast'
+import type { ReviewPanelKind } from './novel-review-center'
 
 // ── 手动连线可选的关系类型 ──
 // 注：自动边类型（appearance/involvement/member/hierarchy/association/foreshadow/base）
@@ -57,34 +50,20 @@ const RELATION_TYPES: { value: NovelEdgeType; label: string }[] = [
 export interface NovelToolbarProps {
   /** 触发重新布局 */
   onRelayout: () => void
-  /** 导出当前画布数据为 JSON */
-  onExport?: () => void
-  onImport?: () => void
+  /**
+   * 审校面板快捷入口：路由到右栏「审校」Tab 并打开对应面板。
+   * 面板本体挂载在 NovelReviewCenter（唯一挂载点），此处不再重复实例化。
+   */
+  onOpenReview?: (kind: ReviewPanelKind | null) => void
+  /** 待审实体数（角标，由 workspace 级 useReviewCounts 提供） */
+  reviewBadge?: number
 }
 export function NovelToolbar({
   onRelayout,
-  onExport,
-  onImport,
+  onOpenReview,
+  reviewBadge = 0,
 }: NovelToolbarProps): ReactElement {
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
-  // T04：待审实体候选（Memory 新冲突/线索 needs_review）
-  const [candidatePanelOpen, setCandidatePanelOpen] = useState(false)
-  const [pendingCandidateCount, setPendingCandidateCount] = useState(0)
-  // 第二轮：剧情推进轨道（Storyline × 章节）
-  const [trackPanelOpen, setTrackPanelOpen] = useState(false)
-  // M2：故事线/场景人工修订与矩阵重投影
-  const [revisionPanelOpen, setRevisionPanelOpen] = useState(false)
-  useEffect(() => {
-    let cancelled = false
-    if (!currentProjectId) {
-      setPendingCandidateCount(0)
-      return
-    }
-    void listEntityCandidates(currentProjectId, 'needs_review')
-      .then((data) => { if (!cancelled) setPendingCandidateCount(data.pendingCount) })
-      .catch(() => { if (!cancelled) setPendingCandidateCount(0) })
-    return () => { cancelled = true }
-  }, [currentProjectId, candidatePanelOpen])
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
   const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
   const clearSelection = useNovelUiStore((s) => s.clearSelection)
@@ -299,7 +278,12 @@ export function NovelToolbar({
   }, [currentProjectId, selectedNodeId, selectedNodeType, removeCharacter, removeConflict, removeForeshadow, removeFaction, removeLocation, removeWorldElement, removeNodePosition, clearSelection])
 
   return (
-    <div className="flex items-center gap-1 px-3 h-11 border-b border-border bg-surface-1 shrink-0" data-tour="canvas-toolbar">
+    // 浮动工具条：由父级 absolute 定位在画布左上角，不再占据文档流横条
+    // （原独立 h-11 横条在切换布局时插入/拔出，引起整页纵向跳动）
+    <div
+      className="flex items-center gap-1 px-2 h-10 rounded-xl border border-border/60 bg-surface-1/95 shadow-[var(--shadow-raised)] backdrop-blur-sm"
+      data-tour="canvas-toolbar"
+    >
       {/* 布局模式切换：分组（按类型分区）/ 图谱（力导向聚类） */}
       <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg" role="group" aria-label="画布布局模式">
         <Button

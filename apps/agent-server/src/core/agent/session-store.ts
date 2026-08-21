@@ -6,6 +6,8 @@ type WenlangAgentSession = any
  */
 export interface PiSessionFactoryContext {
   resumePath?: string
+  /** Policy Hook Manager（由 plugin-loader 注入） */
+  hookManager?: import('../policy/policy-hook-manager.js').PolicyHookManager
 }
 type PiSessionFactory = (threadId: string, context?: PiSessionFactoryContext) => Promise<WenlangAgentSession>
 
@@ -18,6 +20,41 @@ export interface PiThreadSession {
   pendingToolCalls: Map<string, unknown>
   /** 当前活跃 run 的 runId（用于互斥控制）；undefined 表示无活跃 run */
   activeRunId?: string
+  /**
+   * 配置已变更、该 session 需要在空闲后重建。
+   *
+   * 标记而不是立即删除：删除条目会连带丢掉 run lease，让同一 thread 的新 run
+   * 与仍在跑的旧 run 重叠。stale session 在 run 结束（或本来就空闲）时才退休。
+   */
+  stale?: boolean
+  /** 置为 stale 的原因，用于诊断"为什么这个会话被重建" */
+  staleReason?: string
+}
+
+/** 会话失效的作用域 */
+export type SessionInvalidationScope = 'all' | 'thread'
+
+export interface SessionInvalidationOptions {
+  /** all：全部会话；thread：仅指定 threadId */
+  scope: SessionInvalidationScope
+  /** scope='thread' 时必填 */
+  threadId?: string
+  /** 失效原因，写入 staleReason 供诊断 */
+  reason: string
+  /**
+   * 是否中止仍在运行的 run。
+   *
+   * 默认 false：变更已保存，但当前 run 跑完后才重建（避免用户对话被配置改动打断）。
+   * 只有 Provider 被删除、显式退出或应用关闭才应传 true。
+   */
+  abortActive?: boolean
+}
+
+export interface SessionInvalidationResult {
+  /** 立即退休（dispose + 移除）的会话数 */
+  retired: number
+  /** 标记为 stale、等待 run 结束后重建的会话数 */
+  markedStale: number
 }
 
 export interface PiSessionStoreStats {
@@ -25,6 +62,8 @@ export interface PiSessionStoreStats {
   pendingToolCalls: number
   activeRuns: number
   evictedCount: number
+  /** 已标记 stale、等待重建的会话数 */
+  staleCount: number
 }
 
 export interface PiSessionStoreOptions {
@@ -58,8 +97,29 @@ export class PiSessionStore {
   private readonly sweepIntervalMs: number
   private sweepTimer: ReturnType<typeof setInterval> | null = null
   private evictedCount = 0
+  /** invalidate cache writes while an async session factory is still resolving */
+  private cacheEpoch = 0
+
+  private releaseSession(session: WenlangAgentSession, abort: boolean): void {
+    try {
+      if (abort) session.abort?.()
+      session.dispose?.()
+    } catch {
+      // Disposal is best-effort; cache consistency must not depend on SDK cleanup.
+    }
+  }
   /** 会话身份注册表（可选）：threadId → sessionPath 持久化（方案 §9.4） */
   private identityRegistry?: import('./session-identity-registry.js').SessionIdentityRegistry
+  /** Policy Hook Manager（由 plugin-loader 注入） */
+  private hookManager?: import('../policy/policy-hook-manager.js').PolicyHookManager
+  /**
+   * 可选 EventBus：会话退休时发射产品级 `session:retired` 事件。
+   *
+   * 注意边界：这是本仓库自己的通知，不是 Pi SDK 的 `session_shutdown` ——
+   * SDK 的 `dispose()` 不发任何 shutdown 回调。消费者据此清理自己持有的
+   * 会话资源，不能假设 Extension 已收到 SDK 级生命周期通知。
+   */
+  private eventBus?: import('@repo/shared/events').EventBus
 
   constructor(options: PiSessionStoreOptions = {}) {
     this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS
@@ -84,9 +144,31 @@ export class PiSessionStore {
     this.identityRegistry = registry
   }
 
+  /**
+   * 注入 Policy Hook Manager
+   */
+  setHookManager(hookManager: import('../policy/policy-hook-manager.js').PolicyHookManager): void {
+    this.hookManager = hookManager
+  }
+
+  /** 注入 EventBus（可选）：会话退休时发射 `session:retired` */
+  setEventBus(eventBus: import('@repo/shared/events').EventBus): void {
+    this.eventBus = eventBus
+  }
+
   async getOrCreate(threadId: string): Promise<PiThreadSession> {
+    const epoch = this.cacheEpoch
     const existing = this.sessions.get(threadId)
     if (existing) {
+      // stale 且已无活跃 run/pending tool：此刻重建，让配置变更真正生效。
+      // 仍在运行时保持旧 session，避免中途换掉正在使用的会话。
+      if (existing.stale && this.canRetire(existing)) {
+        this.retireSession(threadId, existing, {
+          abort: false,
+          reason: existing.staleReason ?? 'stale-rebuild'
+        })
+        return this.createAndCache(threadId, epoch)
+      }
       // 如果是占位条目（session 为 null），需要填充真实 session
       if (existing.session === null) {
         // 检查是否有进行中的创建 Promise
@@ -106,6 +188,10 @@ export class PiSessionStore {
               throw new Error('SessionFactory 未设置，请先调用 setSessionFactory')
             }
             const session = await factory(threadId, this.restoreContext(threadId))
+            if (epoch !== this.cacheEpoch) {
+              this.releaseSession(session, true)
+              throw new Error('Session 创建在缓存清理期间完成，已丢弃')
+            }
             existing.session = session
             existing.lastAccessedAt = Date.now()
             void this.persistSessionIdentity(existing)
@@ -129,6 +215,15 @@ export class PiSessionStore {
       return pending
     }
 
+    return this.createAndCache(threadId, epoch)
+  }
+
+  /**
+   * 新建 session 并写入缓存。
+   *
+   * epoch 用于拒绝在失效期间完成的异步 factory：过期结果立即释放，绝不回写缓存。
+   */
+  private createAndCache(threadId: string, epoch: number): Promise<PiThreadSession> {
     if (!this.sessionFactory) {
       throw new Error('SessionFactory 未设置，请先调用 setSessionFactory')
     }
@@ -140,6 +235,10 @@ export class PiSessionStore {
           throw new Error('SessionFactory 未设置，请先调用 setSessionFactory')
         }
         const session = await factory(threadId, this.restoreContext(threadId))
+        if (epoch !== this.cacheEpoch) {
+          this.releaseSession(session, true)
+          throw new Error('Session 创建在缓存清理期间完成，已丢弃')
+        }
         const threadSession: PiThreadSession = {
           threadId,
           session,
@@ -272,15 +371,146 @@ export class PiSessionStore {
   getStats(): PiSessionStoreStats {
     let pendingToolCalls = 0
     let activeRuns = 0
+    let staleCount = 0
     for (const session of this.sessions.values()) {
       pendingToolCalls += session.pendingToolCalls.size
       if (session.activeRunId) activeRuns++
+      if (session.stale) staleCount++
     }
     return {
       threadCount: this.sessions.size,
       pendingToolCalls,
       activeRuns,
       evictedCount: this.evictedCount,
+      staleCount,
+    }
+  }
+
+  /** 该会话是否已可安全退休（无活跃 run、无 pending tool call） */
+  private canRetire(session: PiThreadSession): boolean {
+    return !session.activeRunId && session.pendingToolCalls.size === 0
+  }
+
+  /**
+   * 退休一个会话：dispose 后从索引移除，并发射产品级 `session:retired`。
+   *
+   * 与直接 `Map.delete()` 的差别是显式释放 Pi session（abort 订阅、失效
+   * Extension context、回收资源），不把清理责任留给 GC。
+   *
+   * 事件在 dispose 完成后发射，payload 不携带 session 对象引用 ——
+   * 消费者拿到已退休对象的引用只会诱发 use-after-dispose。
+   */
+  private retireSession(
+    threadId: string,
+    session: PiThreadSession,
+    options: { abort: boolean; reason: string }
+  ): void {
+    this.releaseSession(session.session, options.abort)
+    this.sessions.delete(threadId)
+    this.eventBus?.emit('session:retired', {
+      threadId,
+      reason: options.reason,
+      aborted: options.abort,
+      hadActiveRun: Boolean(session.activeRunId)
+    })
+  }
+
+  /**
+   * 按作用域使会话失效（方案 §10.12-2）。
+   *
+   * 语义与旧的全局 `clear()` 不同：
+   * - 空闲会话立即 dispose 并移除；
+   * - 仍在运行的会话默认只标记 stale，run 结束后由下次 getOrCreate 重建。
+   *   删除仍有 lease 的条目会让同一 thread 的新 run 与旧 run 重叠，
+   *   旧 run 的 finally 只能看到新条目，互斥不变量就此失效。
+   *
+   * @returns 立即退休数与标记 stale 数
+   */
+  invalidate(options: SessionInvalidationOptions): SessionInvalidationResult {
+    if (options.scope === 'thread' && !options.threadId) {
+      throw new Error("invalidate({ scope: 'thread' }) 必须提供 threadId")
+    }
+
+    const targets: Array<[string, PiThreadSession]> =
+      options.scope === 'thread'
+        ? (() => {
+            const found = this.sessions.get(options.threadId!)
+            return found ? [[options.threadId!, found]] : []
+          })()
+        : Array.from(this.sessions.entries())
+
+    // 全量失效才推进 epoch：thread 级失效不能丢弃其他线程正在创建的 session。
+    if (options.scope === 'all') {
+      this.cacheEpoch += 1
+      this.pendingPromises.clear()
+    } else {
+      this.pendingPromises.delete(options.threadId!)
+    }
+
+    let retired = 0
+    let markedStale = 0
+    for (const [threadId, session] of targets) {
+      const canRetireNow = this.canRetire(session) || options.abortActive === true
+      if (canRetireNow) {
+        this.retireSession(threadId, session, {
+          abort: !!session.activeRunId,
+          reason: options.reason
+        })
+        retired++
+        continue
+      }
+      session.stale = true
+      session.staleReason = options.reason
+      markedStale++
+    }
+    return { retired, markedStale }
+  }
+
+  /** 停止 sweep 定时器（用于优雅关闭） */
+  dispose(): void {
+    this.stopSweepTimer()
+    // 应用关闭：显式 abort 并 dispose 每个会话，不留下运行中的 run。
+    this.invalidate({ scope: 'all', reason: 'store dispose', abortActive: true })
+    this.sessions.clear()
+    this.pendingPromises.clear()
+  }
+
+  /** 手动触发一次淘汰扫描，返回被淘汰的会话数 */
+  sweepIdle(): number {
+    const now = Date.now()
+    let evicted = 0
+    for (const [threadId, session] of this.sessions) {
+      if (!this.canRetire(session)) continue
+      // stale 会话不必等 idleTimeout：配置已经变了，留着只会被下次 getOrCreate 丢弃。
+      if (session.stale || now - session.lastAccessedAt > this.idleTimeoutMs) {
+        this.retireSession(threadId, session, {
+          abort: false,
+          reason: session.stale ? (session.staleReason ?? 'stale') : 'idle-timeout'
+        })
+        evicted++
+      }
+    }
+    this.evictedCount += evicted
+    return evicted
+  }
+
+  /** LRU 淘汰：当缓存超过 maxSessions 时淘汰最久未访问的会话 */
+  private evictLRU(): void {
+    while (this.sessions.size > this.maxSessions) {
+      let oldestId: string | null = null
+      let oldestTime = Infinity
+      for (const [threadId, session] of this.sessions) {
+        if (!this.canRetire(session)) continue
+        if (session.lastAccessedAt < oldestTime) {
+          oldestTime = session.lastAccessedAt
+          oldestId = threadId
+        }
+      }
+      if (oldestId === null) break
+      const evicted = this.sessions.get(oldestId)
+      if (evicted) this.retireSession(oldestId, evicted, { abort: false, reason: 'lru' })
+      else this.sessions.delete(oldestId)
+      this.evictedCount++
     }
   }
 
@@ -299,57 +529,6 @@ export class PiSessionStore {
       return call
     }
     return undefined
-  }
-
-  /**
-   * 清除所有缓存的 Session（不影响持久化的会话历史）。
-   * Provider 配置更新后调用，使下次请求创建新的 Session（使用新配置）。
-   * 正在执行的 run 不会被强制中断，但下次 getOrCreate 会重建 Session。
-   */
-  clear(): void {
-    this.sessions.clear()
-    this.pendingPromises.clear()
-  }
-
-  /** 停止 sweep 定时器（用于优雅关闭） */
-  dispose(): void {
-    this.stopSweepTimer()
-    this.clear()
-  }
-
-  /** 手动触发一次淘汰扫描，返回被淘汰的会话数 */
-  sweepIdle(): number {
-    const now = Date.now()
-    let evicted = 0
-    for (const [threadId, session] of this.sessions) {
-      if (session.activeRunId) continue
-      if (session.pendingToolCalls.size > 0) continue
-      if (now - session.lastAccessedAt > this.idleTimeoutMs) {
-        this.sessions.delete(threadId)
-        evicted++
-      }
-    }
-    this.evictedCount += evicted
-    return evicted
-  }
-
-  /** LRU 淘汰：当缓存超过 maxSessions 时淘汰最久未访问的会话 */
-  private evictLRU(): void {
-    while (this.sessions.size > this.maxSessions) {
-      let oldestId: string | null = null
-      let oldestTime = Infinity
-      for (const [threadId, session] of this.sessions) {
-        if (session.activeRunId) continue
-        if (session.pendingToolCalls.size > 0) continue
-        if (session.lastAccessedAt < oldestTime) {
-          oldestTime = session.lastAccessedAt
-          oldestId = threadId
-        }
-      }
-      if (oldestId === null) break
-      this.sessions.delete(oldestId)
-      this.evictedCount++
-    }
   }
 
   private startSweepTimer(): void {

@@ -14,6 +14,7 @@ import type { ProviderConfigStore } from '../config/provider-config-store.js'
 import type { ThreadSettingsStore } from './thread-settings-store.js'
 import { StreamEmitter, emitSingleAssistantMessage } from './stream-emitter.js'
 import { ReasoningPipeline } from './reasoning-pipeline.js'
+import { installRunPayloadBridge, type RunPayloadBridge } from './run-payload-bridge.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { Tracer } from '../tracer/tracer.js'
 import type { TraceEvent } from '../tracer/types.js'
@@ -174,6 +175,7 @@ export class PiAgUiAgent {
     let threadSession: PiThreadSession | null = null
     let unsubscribe: (() => void) | null = null
     let abortHandler: (() => void) | null = null
+    let payloadBridge: RunPayloadBridge | null = null
 
     try {
       threadSession = await this.sessionStore.getOrCreate(threadId)
@@ -207,38 +209,23 @@ export class PiAgUiAgent {
       if (input.temperature !== undefined) {
         inject.temperature = input.temperature
       }
-      // stream_options 屏蔽：与 plugin-manager.ts createSession 保持一致
+      // stream_options 屏蔽：某些 OpenAI 兼容中转（如 fastaitoken.com）不兼容
+      // stream_options.include_usage 参数，收到后会断流。
       const stripStreamOptions = this.providerConfigStore.getStripStreamOptions()
-      if (Object.keys(inject).length > 0 || stripStreamOptions) {
-        const piSession = threadSession.session as {
-          agent?: { onPayload?: (payload: unknown) => unknown | Promise<unknown> }
-        }
-        if (piSession.agent) {
-          // 必须使用 async/await：Pi SDK 默认的 onPayload 是 async 函数，
-          // 返回 Promise<payload>。若不 await，spread Promise 会得到空对象，
-          // 导致 messages 字段丢失，LLM 网关返回 400。
-          // 这与 plugin-manager.ts createSession 的 onPayload 修复保持一致。
-          const prevOnPayload = piSession.agent.onPayload
-          piSession.agent.onPayload = async (payload: unknown) => {
-            let next = prevOnPayload ? await prevOnPayload(payload) : payload
-            if (Object.keys(inject).length > 0) {
-              next = { ...(next as Record<string, unknown>), ...inject }
-            }
-            if (stripStreamOptions) {
-              const p = next as Record<string, unknown>
-              if (p && typeof p === 'object' && 'stream_options' in p) {
-                const { stream_options: _removed, ...rest } = p
-                console.info('[pi-agui-agent] ✅ 已移除 stream_options 字段（兼容中转网关）', { threadId })
-                next = rest
-              }
-            }
-            return next
-          }
-          console.info(
-            '[pi-agui-agent] 🔧 已注入 onPayload 钩子',
-            { threadId, stripStreamOptions, injectKeys: Object.keys(inject) },
-          )
-        }
+      // 方案 §10.12-5：桥只安装一次（幂等），本次 run 的参数在 lease 下设置、
+      // finally 清除。旧实现每轮重新包一层 onPayload，会把上一轮的 temperature /
+      // max_tokens / strip_stream_options 带进下一轮。
+      payloadBridge = installRunPayloadBridge(threadSession.session, (event) => {
+        console.info('[pi-agui-agent] payload bridge', { threadId, ...event })
+      })
+      if (payloadBridge) {
+        payloadBridge.setRunOptions({ inject, stripStreamOptions })
+        console.info('[pi-agui-agent] 🔧 已设置本次 run 的 payload 参数', {
+          threadId,
+          runId,
+          stripStreamOptions,
+          injectKeys: Object.keys(inject)
+        })
       }
 
       const assistantResponseMessageId = randomUUID()
@@ -375,7 +362,9 @@ export class PiAgUiAgent {
         message
       } as RunErrorEvent)
     } finally {
-      // 清理资源顺序：移除 abort 监听 → 取消订阅 → 清理 pendingToolCalls → 释放 run 占用
+      // 清理资源顺序：清除本次 run 的 payload 参数 → 移除 abort 监听 → 取消订阅
+      //   → 清理 pendingToolCalls → 释放 run 占用
+      payloadBridge?.clearRunOptions()
       if (abortHandler && runOptions.signal) {
         runOptions.signal.removeEventListener('abort', abortHandler)
       }
@@ -607,8 +596,11 @@ export class PiAgUiAgent {
   }
 
   /**
-   * 设置指定 thread 的 thinkingLevel 并清掉 session 缓存，使下次请求按新 level 重建 Session。
-   * 切换 thinkingLevel 不影响其他 thread 的 session。
+   * 设置指定 thread 的 thinkingLevel 并使该 thread 的 session 失效，
+   * 使下次请求按新 level 重建 Session。
+   *
+   * 作用域是单个 thread：thinkingLevel 是 per-thread 设置，
+   * 用全局失效会连带重建其他线程的会话。
    */
   setThreadThinkingLevel(threadId: string, level: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'): {
     threadId: string
@@ -616,7 +608,11 @@ export class PiAgUiAgent {
   } {
     this.threadSettingsStore.setThinkingLevel(threadId, level)
     // 思考强度作为 AgentSession 的初始化参数：必须在下次创建 Session 时生效
-    this.sessionStore.clear()
+    this.sessionStore.invalidate({
+      scope: 'thread',
+      threadId,
+      reason: `thinkingLevel=${level}`,
+    })
     return { threadId, level }
   }
 

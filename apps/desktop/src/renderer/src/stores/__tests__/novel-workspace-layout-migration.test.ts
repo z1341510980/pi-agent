@@ -78,10 +78,11 @@ describe('统一章节会话迁移', () => {
     expect(migrateRightPanelView('chat')).toBe('conversation')
   })
 
-  it('保留详情、设置和审计面板', () => {
+  it('保留详情、设置、审计和审校面板', () => {
     expect(migrateRightPanelView('detail')).toBe('detail')
     expect(migrateRightPanelView('settings')).toBe('settings')
     expect(migrateRightPanelView('audit')).toBe('audit')
+    expect(migrateRightPanelView('review')).toBe('review')
   })
 })
 
@@ -104,12 +105,16 @@ describe('layoutMode 迁移：不牵连其他字段', () => {
       { mainMode: 'matrix', splitRatio: 0.5, density: 'compact', rightPanelDocked: true, sidebarWidth: 300 },
       1,
     ) as Record<string, unknown>
-    expect(next).toEqual({ layoutMode: 'timeline', sidebarWidth: 300 })
+    expect(next).toEqual({
+      layoutMode: 'timeline',
+      sidebarWidth: 300,
+      rightPanelWidths: { conversation: 340, detail: 420, settings: 380, audit: 400, review: 400 },
+    })
   })
 
-  it('已是 v3 的 payload 原样返回', () => {
+  it('已是 v4 的 payload 原样返回', () => {
     const payload = { layoutMode: 'graph', sidebarWidth: 300 }
-    expect(migrateWorkspaceLayoutPersisted(payload, 3)).toBe(payload)
+    expect(migrateWorkspaceLayoutPersisted(payload, 4)).toBe(payload)
   })
 
   it('已带 layoutMode 时不被旧字段覆盖', () => {
@@ -119,6 +124,43 @@ describe('layoutMode 迁移：不牵连其他字段', () => {
       2,
     ) as Record<string, unknown>
     expect(next.layoutMode).toBe('text')
+  })
+})
+
+describe('rightPanelWidth → rightPanelWidths 迁移（v3 → v4）', () => {
+  it('旧单一宽度沿用为 conversation/detail 的记忆值，其余取默认', () => {
+    const next = migrateWorkspaceLayoutPersisted(
+      { layoutMode: 'text', rightPanelWidth: 500 },
+      3,
+    ) as Record<string, unknown>
+    expect(next.rightPanelWidths).toEqual({
+      conversation: 500,
+      detail: 500,
+      settings: 380,
+      audit: 400,
+      review: 400,
+    })
+    expect('rightPanelWidth' in next).toBe(false)
+  })
+
+  it('缺 rightPanelWidth 时全部落到默认值', () => {
+    const next = migrateWorkspaceLayoutPersisted({ layoutMode: 'text' }, 3) as Record<string, unknown>
+    expect(next.rightPanelWidths).toEqual({
+      conversation: 340,
+      detail: 420,
+      settings: 380,
+      audit: 400,
+      review: 400,
+    })
+  })
+
+  it('已带 rightPanelWidths 时不被旧字段覆盖', () => {
+    const widths = { conversation: 360, detail: 480, settings: 380, audit: 400, review: 400 }
+    const next = migrateWorkspaceLayoutPersisted(
+      { layoutMode: 'text', rightPanelWidth: 500, rightPanelWidths: widths },
+      3,
+    ) as Record<string, unknown>
+    expect(next.rightPanelWidths).toEqual(widths)
   })
 })
 

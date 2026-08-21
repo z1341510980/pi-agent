@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity } from 'lucide-react'
+import { ArrowLeft, Download, Database, ScrollText, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity, ClipboardCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -48,6 +48,7 @@ import {
 import { useNovelSession } from '@/hooks/use-novel-session'
 import type { NovelInterjectTargetAgent, NovelStyleExpert } from '@repo/shared/novel'
 import { useNovelSimilarityScan } from '@/hooks/use-novel-similarity-scan'
+import { useReviewCounts } from '@/hooks/use-review-counts'
 import { useShortcut } from '@/hooks/use-shortcut'
 import { useNovelWorkspaceShortcuts } from '@/hooks/use-novel-workspace-shortcuts'
 import { toastSuccess, toastError } from '@/hooks/use-toast'
@@ -56,6 +57,7 @@ import { NovelToolbar } from './novel-toolbar'
 import { NovelCanvas } from './novel-canvas'
 import { NovelDetailPanel } from './novel-detail-panel'
 import { NovelConversationPanel, type NovelFlowType } from './novel-conversation-panel'
+import { NovelReviewCenter, type ReviewPanelKind } from './novel-review-center'
 import { SettingsPanel } from './settings-panel'
 import { ConsistencyAuditPanel } from './consistency-audit-panel'
 import type { MentionOption } from '@/components/shared/conversation'
@@ -97,13 +99,23 @@ const LAYOUT_MODE_OPTIONS: ReadonlyArray<SegmentedOption<WorkspaceLayoutMode>> =
 ]
 
 // ── 右侧面板 Tab ──
+//
+// 「审校」Tab 的角标（全局待办数）是动态值，因此基础选项在此定义，
+// 渲染时用 useMemo 附加 review 项与角标。
 
-const RIGHT_PANEL_OPTIONS: ReadonlyArray<SegmentedOption<RightPanelView>> = [
+const RIGHT_PANEL_BASE_OPTIONS: ReadonlyArray<SegmentedOption<RightPanelView>> = [
   { value: 'conversation', label: '会话', icon: MessageSquare, title: '章节统一会话（聊天/工作流/群聊/编排）', dataTour: 'right-tab-conversation' },
   { value: 'detail', label: '详情', icon: Info, title: '实体查看/编辑（角色/冲突/伏笔/线索等）', dataTour: 'right-tab-detail' },
   { value: 'settings', label: '设置', icon: SettingsIcon, title: '项目级配置（标题/大纲/创作主模型/节奏模型/目标平台）', dataTour: 'right-tab-settings' },
   { value: 'audit', label: '审计', icon: ShieldCheck, title: '一致性诊断（伏笔回收/钩子/孤儿/时间线矛盾）', dataTour: 'right-tab-audit' },
 ]
+
+const REVIEW_TAB_OPTION: SegmentedOption<RightPanelView> = {
+  value: 'review',
+  label: '审校',
+  icon: ClipboardCheck,
+  title: '审校中心：剧情轨道/待审实体/待确认事件/批注/叙事修订',
+}
 
 
 export interface NovelWorkspaceProps {
@@ -269,7 +281,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const toggleSidebar = useNovelWorkspaceLayoutStore((s) => s.toggleSidebar)
   const sidebarWidth = useNovelWorkspaceLayoutStore((s) => s.sidebarWidth)
   const setSidebarWidth = useNovelWorkspaceLayoutStore((s) => s.setSidebarWidth)
-  const detailWidth = useNovelWorkspaceLayoutStore((s) => s.rightPanelWidth)
+  // 右栏宽度按当前视图记忆（v4）：切 Tab 各自恢复
+  const detailWidth = useNovelWorkspaceLayoutStore((s) => s.rightPanelWidths[s.rightPanelView])
   const setDetailWidth = useNovelWorkspaceLayoutStore((s) => s.setRightPanelWidth)
   const rightPanelVisible = useNovelWorkspaceLayoutStore((s) => s.rightPanelVisible)
   const toggleRightPanel = useNovelWorkspaceLayoutStore((s) => s.toggleRightPanel)
@@ -307,6 +320,21 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   }, [currentProjectId])
 
   useEffect(() => refreshStyleExperts(), [refreshStyleExperts])
+
+  // ── 审校中心（右栏 Tab）──
+  // 全局待办计数（待确认事件 + 待审实体），Tab 角标与审校中心共用
+  const reviewCounts = useReviewCounts(currentProjectId)
+  // 矩阵/画布工具栏快捷入口的路由请求：切到审校 Tab 并直接打开对应面板
+  const [reviewAutoOpen, setReviewAutoOpen] = useState<ReviewPanelKind | null>(null)
+  const handleOpenReviewPanel = useCallback((kind: ReviewPanelKind | null) => {
+    if (kind != null) setReviewAutoOpen(kind)
+    setRightPanelView('review')
+    setRightPanelVisible('open')
+  }, [setRightPanelView, setRightPanelVisible])
+  const rightPanelOptions = useMemo<ReadonlyArray<SegmentedOption<RightPanelView>>>(
+    () => [...RIGHT_PANEL_BASE_OPTIONS, { ...REVIEW_TAB_OPTION, badge: reviewCounts.total }],
+    [reviewCounts.total],
+  )
 
   // ── LLM 相似度扫描（SSE 流式扫描 + 多选弹框 + REST 合并）──
   const similarityScan = useNovelSimilarityScan()
@@ -1159,14 +1187,6 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
           </div>
         </header>
 
-        {/* 工具栏（仅关系图显示；时间线自带工具栏） */}
-        {currentProject && layoutMode === 'graph' && (
-          <NovelToolbar
-            onRelayout={handleRelayout}
-            onExport={handleExport}
-          />
-        )}
-
         {/* 主体三栏布局（DndContext 覆盖侧边栏 + 矩阵，支持拖拽） */}
         <DndContext
           sensors={sensors}
@@ -1202,24 +1222,35 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               <>
                 <div className="flex-1 min-h-0 flex flex-col">
                   {layoutMode === 'graph' ? (
-                    <ErrorBoundary
-                      fallback={(err, reset) => (
-                        <CanvasErrorFallback
-                          error={err}
-                          reset={reset}
-                          onSwitchToMatrix={() => setLayoutMode('timeline')}
+                    /* 关系图：画布 + 左上角浮动工具条（不占文档流，切换布局无纵向跳动） */
+                    <div className="relative flex-1 min-h-0">
+                      <ErrorBoundary
+                        fallback={(err, reset) => (
+                          <CanvasErrorFallback
+                            error={err}
+                            reset={reset}
+                            onSwitchToMatrix={() => setLayoutMode('timeline')}
+                          />
+                        )}
+                      >
+                        <NovelCanvas
+                          relayoutSignal={relayoutSignal}
+                          creationPhase={creationFlow.phase}
+                          creationRunning={creationFlow.isRunning}
+                          creationError={creationFlow.error}
+                          onCancelCreation={handleDiscardCreation}
+                          onNodeCountChange={setNodeCount}
                         />
+                      </ErrorBoundary>
+                      {currentProject && (
+                        <div className="absolute top-2 left-2 z-30">
+                          <NovelToolbar
+                            onRelayout={handleRelayout}
+                            onExport={handleExport}
+                          />
+                        </div>
                       )}
-                    >
-                      <NovelCanvas
-                        relayoutSignal={relayoutSignal}
-                        creationPhase={creationFlow.phase}
-                        creationRunning={creationFlow.isRunning}
-                        creationError={creationFlow.error}
-                        onCancelCreation={handleDiscardCreation}
-                        onNodeCountChange={setNodeCount}
-                      />
-                    </ErrorBoundary>
+                    </div>
                   ) : layoutMode === 'text' ? (
                     /* 正文：编辑器全宽 */
                     <div className="flex-1 min-h-0 overflow-hidden">
@@ -1258,6 +1289,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                           onStartCreationAt={handleStartCreationAt}
                           onSimilarityScan={handleStartSimilarityScan}
                           similarityScanning={similarityScan.isScanning}
+                          onOpenReview={handleOpenReviewPanel}
+                          pendingEventCount={reviewCounts.pendingEventCount}
                         />
                       </ErrorBoundary>
                     </div>
@@ -1305,7 +1338,9 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             onRegenerateChapter={handleRegenerateChapter}
                             onStartCreationAt={handleStartCreationAt}
                             onSimilarityScan={handleStartSimilarityScan}
-                            similarityScanning={similarityScan.isScanning}
+                          similarityScanning={similarityScan.isScanning}
+                          onOpenReview={handleOpenReviewPanel}
+                          pendingEventCount={reviewCounts.pendingEventCount}
                           />
                         </ErrorBoundary>
                       </div>

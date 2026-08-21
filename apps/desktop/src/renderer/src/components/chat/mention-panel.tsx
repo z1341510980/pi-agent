@@ -188,7 +188,7 @@ function renderHighlighted(
     seg.highlighted ? (
       <mark
         key={i}
-        className="bg-primary/20 text-primary rounded-[2px] px-0.5 font-semibold"
+        className="bg-[var(--color-primary-10)] text-info rounded-[2px] px-0.5 font-medium"
       >
         {seg.text}
       </mark>
@@ -331,12 +331,12 @@ export function MentionPanel({
   // 空状态
   if (filtered.length === 0) {
     return (
-      <div className="rounded-2xl border border-border bg-popover shadow-[0_20px_60px_-15px_rgba(0,0,0,0.25),0_8px_24px_-8px_rgba(0,0,0,0.12)] overflow-hidden">
+      <div className="rounded-xl border border-[var(--dsw-alias-border-inverted)] bg-popover shadow-[var(--dsw-shadow-lv3)] overflow-hidden">
         <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
-          <Search className="size-6 text-muted-foreground/40" aria-hidden="true" />
+          <Search className="size-6 text-hint/40" aria-hidden="true" />
           <div className="text-sm text-muted-foreground">没有匹配的会话</div>
           {query && (
-            <div className="text-xs text-muted-foreground/70">
+            <div className="text-xs text-hint/70">
               未找到包含「{query}」的会话
             </div>
           )}
@@ -349,29 +349,29 @@ export function MentionPanel({
 
   return (
     <div
-      className="rounded-2xl border border-border bg-popover/95 backdrop-blur-md shadow-[0_20px_60px_-15px_rgba(0,0,0,0.25),0_8px_24px_-8px_rgba(0,0,0,0.12)] overflow-hidden"
+      className="rounded-xl border border-[var(--dsw-alias-border-inverted)] bg-popover shadow-[var(--dsw-shadow-lv3)] overflow-hidden"
       role="listbox"
       aria-label="会话引用"
       aria-activedescendant={`mention-item-${activeIndex}`}
     >
       {/* 顶部：标题栏 */}
-      <div className="flex items-center justify-between gap-2 px-3.5 h-9 border-b border-border/60 bg-surface-2/40">
-        <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 px-3 h-9 border-b border-[var(--dsw-alias-border-l1)]">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-subtle">
           <Hash className="size-3" aria-hidden="true" />
           <span>引用会话</span>
         </div>
-        <div className="flex items-center gap-1.5 text-[10px]">
+        <div className="flex items-center gap-1.5 text-[11px]">
           {isSearching ? (
-            <span className="text-muted-foreground">
+            <span className="text-subtle">
               搜索: <span className="text-text font-medium">{deferredQuery}</span>
             </span>
           ) : (
-            <span className="text-muted-foreground/70 flex items-center gap-1">
+            <span className="text-hint flex items-center gap-1">
               <Sparkles className="size-2.5" aria-hidden="true" />
               最近更新的会话
             </span>
           )}
-          <kbd className="font-mono text-muted-foreground/60 px-1.5 py-0.5 rounded bg-surface-3">
+          <kbd className="font-mono text-hint px-1.5 py-0.5 rounded bg-secondary">
             ESC
           </kbd>
         </div>
@@ -383,12 +383,10 @@ export function MentionPanel({
         className="max-h-[min(34vh,260px)] overflow-y-auto p-1.5 sidebar-scroll"
         onMouseLeave={() => setHoverIndex(-1)}
       >
-        <div className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold text-muted-foreground/80 uppercase tracking-wider">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 text-xs leading-4 text-subtle">
           <MessageSquare className="size-2.5" aria-hidden="true" />
           会话
-          <span className="text-muted-foreground/50 font-normal normal-case tracking-normal">
-            · {filtered.length}
-          </span>
+          <span className="text-hint font-normal">· {filtered.length}</span>
         </div>
         {filtered.map(({ session, indices, matchedField }, idx) => {
           const active = idx === activeIndex
@@ -414,44 +412,33 @@ export function MentionPanel({
                 handleSelect(session)
               }}
               className={cn(
-                'relative w-full flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-lg text-left transition-colors active:scale-[0.99]',
-                isHighlighted
-                  ? 'bg-primary/8 text-text'
-                  : 'text-text hover:bg-surface-2/40',
+                'relative w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[10px] text-left transition-colors',
+                isHighlighted ? 'bg-accent text-text' : 'text-text',
               )}
             >
-              {/* 左侧 indicator bar（仅 active 显示） */}
-              {active && (
-                <span
-                  className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-primary"
-                  aria-hidden="true"
-                />
-              )}
               <span
                 className={cn(
-                  'flex size-7 shrink-0 items-center justify-center rounded-md transition-colors',
-                  active
-                    ? 'bg-primary/15 text-primary'
-                    : 'bg-surface-3 text-muted-foreground',
+                  'flex size-7 shrink-0 items-center justify-center rounded-lg transition-colors',
+                  active ? 'bg-surface-3 text-text' : 'bg-surface-2 text-subtle',
                 )}
               >
                 <MessageSquare className="size-3.5" aria-hidden="true" />
               </span>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">
+                <div className="text-sm leading-[22px] truncate">
                   {/* 仅当匹配字段是 title 时才高亮 title */}
                   {matchedField === 'title'
                     ? renderHighlighted(session.title, indices)
                     : session.title}
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5">
-                  <span className="text-[11px] text-muted-foreground truncate leading-tight flex-1 min-w-0">
+                  <span className="text-xs text-subtle truncate leading-tight flex-1 min-w-0">
                     {/* 匹配 preview 时高亮 */}
                     {matchedField === 'preview'
                       ? renderHighlighted(session.preview, indices)
                       : session.preview}
                   </span>
-                  <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/70 tabular-nums">
+                  <span className="shrink-0 inline-flex items-center gap-0.5 text-[11px] text-hint tabular-nums">
                     <Clock className="size-2.5" aria-hidden="true" />
                     {formatRelativeTime(session.updatedAt)}
                   </span>
@@ -459,7 +446,7 @@ export function MentionPanel({
               </div>
               {active && (
                 <CornerDownLeft
-                  className="size-3 text-muted-foreground shrink-0"
+                  className="size-3 text-subtle shrink-0"
                   aria-hidden="true"
                 />
               )}
@@ -469,18 +456,18 @@ export function MentionPanel({
       </div>
 
       {/* 底部：状态栏 */}
-      <div className="flex items-center justify-between gap-2 px-3.5 h-8 border-t border-border/60 bg-surface-2/40 text-[10px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 px-3 h-8 border-t border-[var(--dsw-alias-border-l1)] text-[11px] text-subtle">
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1">
-            <kbd className="bg-surface-3 rounded px-1 py-0.5 font-mono">↑↓</kbd>
+            <kbd className="bg-secondary rounded px-1 py-0.5 font-mono">↑↓</kbd>
             导航
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="bg-surface-3 rounded px-1 py-0.5 font-mono">↵</kbd>
+            <kbd className="bg-secondary rounded px-1 py-0.5 font-mono">↵</kbd>
             选择
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="bg-surface-3 rounded px-1 py-0.5 font-mono">Tab</kbd>
+            <kbd className="bg-secondary rounded px-1 py-0.5 font-mono">Tab</kbd>
             关闭
           </span>
         </div>

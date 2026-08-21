@@ -5,7 +5,11 @@ async function main(): Promise<void> {
   const app = await createApp()
 
   try {
-    const host = process.env.PI_HOST ?? '127.0.0.1'
+    const configuredHost = process.env.PI_HOST
+    if (configuredHost && !['127.0.0.1', 'localhost', '::1'].includes(configuredHost)) {
+      throw new Error('本地模式只允许监听 loopback 地址（127.0.0.1/localhost/::1）')
+    }
+    const host = configuredHost ?? '127.0.0.1'
     const port = parseInt(process.env.PI_PORT ?? '3900', 10)
 
     await app.listen({ host, port })

@@ -7,27 +7,27 @@
   border-bottom: 1px solid var(--color-border, #e5e7eb);
 }
 
+/* 单行 chrome：左侧章节导航 + 右侧富文本格式组（原 header 与 toolbar 两行合并）。
+   极窄容器下允许换行降级，避免格式按钮被裁剪后不可达。 */
 .cce-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 16px;
-  height: 38px;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding: 5px 12px;
+  min-height: 36px;
   border-bottom: 1px solid rgba(229, 231, 235, 0.6);
   flex-shrink: 0;
   font-size: 12px;
 }
 
-/* editor-title：图标 + "章节正文" 标题（与 HTML 样例对齐） */
-.cce-title {
+/* 富文本格式组（并入 header 右侧） */
+.cce-format-group {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text, #111);
-  flex-shrink: 0;
+  gap: 2px;
+  margin-left: auto;
 }
 
 /* chapter-badge：琥珀色胶囊徽章 + 发光圆点（与 HTML 样例对齐） */
@@ -42,7 +42,8 @@
   color: #d97706;
   font-size: 11px;
   font-weight: 500;
-  max-width: 280px;
+  /* 单行 chrome 下徽章优先让位：窄容器先截断标题，格式组不被挤出换行 */
+  max-width: clamp(120px, 24vw, 280px);
 }
 
 .chapter-badge .dot {
@@ -83,6 +84,7 @@
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  min-width: 0;
 }
 
 /* 导航按钮：极简图标按钮，无边框，hover 浮底 */
@@ -174,10 +176,10 @@
 
 .cce-body {
   flex: 1;
-  /* 空正文兜底：min-height:0 会让"无内容"的编辑区沿 flex 链塌陷到 0 高度，
-     空章节（content=''）时点击不到、无法输入。240px 保证空文档始终有可点击编辑区；
-     有内容时正文自然撑高，不受此下限影响。 */
-  min-height: 240px;
+  /* 关键：body 自身不设 min-height，容器多矮都精确占满 flex 分配的高度（分屏最小 120px
+     时不再溢出裁剪）。空正文的可点击区域由内部 .ProseMirror 的 min-height 兜底，
+     超出部分在 body 内滚动。 */
+  min-height: 0;
   overflow-y: auto;
   /* 窄面板（分屏/侧栏）下垂直滚动条会挤占水平空间，禁止水平溢出避免出现双向滚动 */
   overflow-x: hidden;
@@ -201,7 +203,7 @@
 
 .cce-body .ProseMirror {
   outline: none;
-  /* 空文档兜底 240px 可点击区域；有内容时自然撑高，不依赖父容器 100% 避免溢出计算异常 */
+  /* 空文档兜底：240px 可点击区域。body 高度不足时在 body 内滚动，不撑破容器 */
   min-height: 240px;
   /* 兜底：即使 .cce-body 的 max()/calc padding 不生效，文字栏也不会超过 38em */
   max-width: 38em;
@@ -303,17 +305,8 @@
   padding: 0;
 }
 
-.cce-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 12px;
-  height: 32px;
-  border-bottom: 1px solid rgba(229, 231, 235, 0.6);
-  flex-shrink: 0;
-}
-
-.cce-toolbar button {
+/* 格式组按钮样式（原 .cce-toolbar，现挂在 header 内的 .cce-format-group 下） */
+.cce-format-group button {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -324,21 +317,21 @@
   color: var(--color-text, #111);
 }
 
-.cce-toolbar button:hover:not(:disabled) {
+.cce-format-group button:hover:not(:disabled) {
   background: var(--color-muted, rgba(0, 0, 0, 0.05));
 }
 
-.cce-toolbar button:disabled {
+.cce-format-group button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.cce-toolbar button.is-active {
+.cce-format-group button.is-active {
   background: var(--color-primary-soft, rgba(59, 130, 246, 0.15));
   color: var(--color-primary, #3b82f6);
 }
 
-.cce-toolbar select {
+.cce-format-group select {
   border: 1px solid var(--color-border, #e5e7eb);
   border-radius: 4px;
   padding: 2px 4px;

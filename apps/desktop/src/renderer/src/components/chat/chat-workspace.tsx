@@ -48,6 +48,8 @@ import { ChatTitleEditor } from './chat-title-editor'
 import { AgentSwitcher } from './agent-switcher'
 import { AgentDetailCard } from './agent-detail-card'
 import { CommandQueuePanel } from './command-queue-panel'
+import { RightPanelTabs } from './right-panel-tabs'
+import { SlotRenderer } from '../slot'
 import { FileReferenceProvider } from './file-reference-context'
 import type { FileReference } from '@/lib/file-reference'
 import { useActiveAgent } from '@/hooks/use-active-agent'
@@ -152,6 +154,13 @@ export function ChatWorkspace({
   const [usageDetailOpen, setUsageDetailOpen] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [rightPanelWidth, setRightPanelWidth] = useState(320)
+  /**
+   * 右栏当前选中的插件 tab（null = 宿主的上下文面板）。
+   *
+   * 右栏从"二元切换"改为 tab registry：宿主的 Context 始终可用，文件预览仍是
+   * 临时覆盖，插件贡献作为可移除项插入（研究文档 §10.6 / §10.13）。
+   */
+  const [rightPanelTab, setRightPanelTab] = useState<string | null>(null)
 
   const messageState: MessageStreamState =
     sessionMessages[activeThreadId] ?? createEmptyMessageState()
@@ -882,6 +891,12 @@ export function ChatWorkspace({
             </div>
 
             <div className="flex items-center gap-1 [webkit-app-region:no-drag]">
+              {/* 插件贡献的标题栏动作（list slot，宿主按钮之前） */}
+              <SlotRenderer
+                name="chat.header.actions"
+                fallback={null}
+                extraProps={{ threadId: activeThreadId }}
+              />
               <Button
                 variant="ghost"
                 size="icon"
@@ -962,15 +977,37 @@ export function ChatWorkspace({
             disabled={!isOnline}
             queueFull={activeQueue.length >= MAX_QUEUE_LENGTH}
             beforeInput={
-              <CommandQueuePanel
-                queue={activeQueue}
-                errorPaused={queueErrorPaused}
-                canResume={!isRunning && activeQueue.length > 0}
-                onRemove={(id) => removeCommand(activeThreadId, id)}
-                onEdit={(id, text) => updateCommandText(activeThreadId, id, text)}
-                onReorder={(ids) => reorderQueue(activeThreadId, ids)}
-                onClear={() => clearQueue(activeThreadId)}
-                onResume={drainQueue}
+              <>
+                {/* 插件贡献的输入区上方停靠位（例如待办条、状态提示） */}
+                <SlotRenderer
+                  name="chat.composer.dock"
+                  fallback={null}
+                  extraProps={{ threadId: activeThreadId }}
+                />
+                <CommandQueuePanel
+                  queue={activeQueue}
+                  errorPaused={queueErrorPaused}
+                  canResume={!isRunning && activeQueue.length > 0}
+                  onRemove={(id) => removeCommand(activeThreadId, id)}
+                  onEdit={(id, text) => updateCommandText(activeThreadId, id, text)}
+                  onReorder={(ids) => reorderQueue(activeThreadId, ids)}
+                  onClear={() => clearQueue(activeThreadId)}
+                  onResume={drainQueue}
+                />
+              </>
+            }
+            toolbarLeft={
+              <SlotRenderer
+                name="chat.composer.left"
+                fallback={null}
+                extraProps={{ threadId: activeThreadId }}
+              />
+            }
+            toolbarRight={
+              <SlotRenderer
+                name="chat.composer.right"
+                fallback={null}
+                extraProps={{ threadId: activeThreadId }}
               />
             }
             value={drafts[activeThreadId] ?? ''}
@@ -1002,33 +1039,41 @@ export function ChatWorkspace({
             <aside
               style={{ width: rightPanelWidth }}
               className="pi-side-panel bg-surface-1 shrink-0 overflow-hidden flex flex-col"
-              aria-label={filePreview ? '文件预览' : '上下文'}
+              aria-label={filePreview ? '文件预览' : rightPanelTab ? '插件面板' : '上下文'}
             >
               {filePreview ? (
+                // 文件预览是临时覆盖：关闭后回到原本选中的 tab，不丢状态
                 <FilePreviewPanel file={filePreview} onClose={closeFilePreview} />
               ) : (
-                <ContextPanel
-                  stats={{
-                    tokensUsed: contextState.tokensUsed,
-                    contextWindow: currentContextWindow,
-                    messageCount: messageState.messages.length,
-                    toolCallCount: executions.length,
-                    compactionCount,
-                    generationCount: contextState.callCount || executions.length,
-                    totalInputTokens: contextState.totalInputTokens,
-                    totalOutputTokens: contextState.totalOutputTokens,
-                    model: contextState.model,
-                    provider: contextState.provider
-                  }}
-                  isOnline={isOnline}
-                  isCompacting={compactionEvent?.state === 'running'}
-                  onCompact={() => void handleCompact()}
-                  onOpenSettings={onOpenSettings}
-                  onViewDetails={() => setUsageDetailOpen(true)}
-                  workspacePath={workspaceQuery.data?.path}
-                  associatedFiles={associatedFiles}
-                  memorySummary={memorySummaryQuery.data ?? null}
-                  activities={activities}
+                <RightPanelTabs
+                  activeTab={rightPanelTab}
+                  onSelectTab={setRightPanelTab}
+                  threadId={activeThreadId}
+                  context={
+                    <ContextPanel
+                      stats={{
+                        tokensUsed: contextState.tokensUsed,
+                        contextWindow: currentContextWindow,
+                        messageCount: messageState.messages.length,
+                        toolCallCount: executions.length,
+                        compactionCount,
+                        generationCount: contextState.callCount || executions.length,
+                        totalInputTokens: contextState.totalInputTokens,
+                        totalOutputTokens: contextState.totalOutputTokens,
+                        model: contextState.model,
+                        provider: contextState.provider
+                      }}
+                      isOnline={isOnline}
+                      isCompacting={compactionEvent?.state === 'running'}
+                      onCompact={() => void handleCompact()}
+                      onOpenSettings={onOpenSettings}
+                      onViewDetails={() => setUsageDetailOpen(true)}
+                      workspacePath={workspaceQuery.data?.path}
+                      associatedFiles={associatedFiles}
+                      memorySummary={memorySummaryQuery.data ?? null}
+                      activities={activities}
+                    />
+                  }
                 />
               )}
             </aside>

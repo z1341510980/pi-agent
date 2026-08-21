@@ -130,9 +130,9 @@ export function MermaidBlock({ code, isDark }: MermaidBlockProps): ReactElement 
   const canShowDiagram = svg !== null
 
   return (
-    <div className="group/code my-3 overflow-hidden rounded-xl border border-border bg-surface-2">
-      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
-        <span className="font-mono text-nano tracking-wide text-hint select-none">mermaid</span>
+    <div className="group/code my-4 overflow-hidden rounded-xl bg-[var(--color-code-block-bg)]">
+      <div className="flex items-center justify-between gap-3 bg-[var(--color-code-block-banner)] px-3.5 py-2">
+        <span className="font-mono text-xs leading-[18px] text-text select-none">mermaid</span>
         <div className="flex items-center gap-1">
           {/* 视图切换：只有渲染成功才给图表选项 */}
           <div
@@ -155,7 +155,7 @@ export function MermaidBlock({ code, isDark }: MermaidBlockProps): ReactElement 
           <button
             type="button"
             onClick={() => void handleCopy()}
-            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-nano text-hint opacity-0 transition-all hover:bg-surface-3 hover:text-text focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/code:opacity-100 max-sm:opacity-100"
+            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-hint opacity-0 transition-all hover:bg-accent hover:text-text focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/code:opacity-100 max-sm:opacity-100"
             aria-label={copied ? '已复制' : '复制源码'}
           >
             {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
@@ -177,7 +177,7 @@ export function MermaidBlock({ code, isDark }: MermaidBlockProps): ReactElement 
 
       {/* 渲染不出来时给一句解释，避免用户以为功能坏了 */}
       {!canShowDiagram && debounced.trim().length > 0 && (
-        <div className="flex items-center gap-1.5 border-t border-border px-3 py-1 text-nano text-hint">
+        <div className="flex items-center gap-1.5 border-t border-[var(--dsw-alias-border-l1)] px-3 py-1.5 text-xs text-hint">
           <AlertTriangle className="size-3 shrink-0" aria-hidden />
           图表语法尚不完整或有误，暂显示源码
         </div>

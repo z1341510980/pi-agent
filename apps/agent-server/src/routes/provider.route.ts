@@ -124,12 +124,16 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     //    使 getAvailable() 能返回此 Provider 的模型，且 LLM 调用能直接使用此 Key
     await modelRuntime.setRuntimeApiKey(config.id, config.apiKey)
 
-    // 4. 清除 Session 缓存：使下次请求创建新 Session（使用新配置）
-    //    正在执行的 run 不受影响，但新的请求会重建 Session
-    sessionStore.clear()
+    // 4. 使 Session 缓存失效：空闲会话立即重建，正在跑的 run 标记为 stale，
+    //    等本轮结束后按新配置重建（不打断用户对话）。
+    const invalidation = sessionStore.invalidate({
+      scope: 'all',
+      reason: `provider upsert: ${config.id}`,
+    })
 
     app.log.info(
-      `Provider "${config.id}" 已注册（${config.models.length} 个模型，API Key 已注入，Session 缓存已清除）`
+      { ...invalidation },
+      `Provider "${config.id}" 已注册（${config.models.length} 个模型，API Key 已注入，Session 缓存已失效）`
     )
 
     // 返回时隐藏 apiKey
@@ -152,10 +156,14 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     // 移除 runtime API Key 注入
     await modelRuntime.removeRuntimeApiKey(id)
 
-    // 清除 Session 缓存
-    sessionStore.clear()
+    // Provider 被删除：正在跑的 run 已经没有可用凭证，必须 abort 而不是让它继续。
+    const invalidation = sessionStore.invalidate({
+      scope: 'all',
+      reason: `provider deleted: ${id}`,
+      abortActive: true,
+    })
 
-    app.log.info(`Provider "${id}" 已删除（API Key 已移除，Session 缓存已清除）`)
+    app.log.info({ ...invalidation }, `Provider "${id}" 已删除（API Key 已移除，Session 已失效）`)
     return success({ deleted: true }, request.traceId)
   })
 
@@ -176,10 +184,14 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
       throw new AppError(ErrorCode.NOT_FOUND, `Provider "${id}" 不存在`, 404)
     }
     store.setDefaultProviderId(id)
-    // 清除 Session 缓存：让后续 createPiSession 重新选择默认 Provider 的模型，
+    // 使 Session 缓存失效：让后续 createPiSession 重新选择默认 Provider 的模型，
     // 否则已缓存的 session 会继续使用旧 Provider（如从 DeepSeek 切到 OpenAI 时不生效）。
-    sessionStore.clear()
-    app.log.info(`默认 Provider 已设置为 "${id}"，Session 缓存已清除`)
+    // 正在跑的 run 不打断，只标 stale，结束后重建。
+    const invalidation = sessionStore.invalidate({
+      scope: 'all',
+      reason: `default provider: ${id}`,
+    })
+    app.log.info({ ...invalidation }, `默认 Provider 已设置为 "${id}"，Session 缓存已失效`)
     return success({ id }, request.traceId)
   })
 

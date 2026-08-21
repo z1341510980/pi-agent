@@ -1,6 +1,5 @@
-import { ChevronDown, Clock } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { ChevronDown, ChevronRight, Clock } from 'lucide-react'
+import { useEffect, useState, type ReactElement } from 'react'
 import type { ThinkingBlock as ThinkingBlockData } from './types'
 import { cn } from '@/lib/utils'
 
@@ -16,13 +15,16 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * ThinkingBlock：思考状态卡片（可折叠）
+ * ThinkingBlock：思考行（对齐 dsh ReasoningRow）
  *
- * 显示 REASONING_/THINKING_ 事件的内容
- * 流式时默认展开，完成后默认折叠
- * 紫色圆点 + 耗时标识
+ * 设计要点（DeepSeek 会话流）：
+ *   - 无卡片边框：一条 24px 单行 —— [16px 图标] gap6 [标题 14/24] · [摘要省略]
+ *   - 流式时标题"思考中"，完成后"已深度思考（耗时）"
+ *   - 展开体：14/24 三级灰，左缩进 22px 与图标对齐
+ *   - 运行中整行带背景扫光（dsh-sweep-host）
+ *   - 流式默认展开，结束自动折叠
  */
-export function ThinkingBlock({ content, isStreaming, startedAt, endedAt }: ThinkingBlockProps) {
+export function ThinkingBlock({ content, isStreaming, startedAt, endedAt }: ThinkingBlockProps): ReactElement {
   const [expanded, setExpanded] = useState(isStreaming)
 
   // 流式时实时刷新耗时
@@ -33,89 +35,78 @@ export function ThinkingBlock({ content, isStreaming, startedAt, endedAt }: Thin
     return () => clearInterval(timer)
   }, [isStreaming])
 
-  // 标题
-  const title = isStreaming ? '正在分析你的需求' : '分析完成'
-
-  // 描述：内容首行 或 默认提示
-  const description =
-    content.trim().split('\n')[0] ||
-    (isStreaming ? '正在整理推理步骤…' : '已生成思考过程')
-
   // 耗时
-  const durationMs = startedAt
-    ? (endedAt ?? now) - startedAt
-    : null
+  const durationMs = startedAt ? (endedAt ?? now) - startedAt : null
   const durationLabel =
-    durationMs != null && durationMs >= 0 ? formatDuration(durationMs) : null
+    durationMs != null && durationMs >= 0 && !isStreaming ? formatDuration(durationMs) : null
+
+  // 标题：流式"思考中"，完成"已深度思考"
+  const title = isStreaming ? '思考中' : '已深度思考'
+
+  // 摘要：内容首行
+  const summary = content.trim().split('\n')[0] || ''
 
   return (
-    <div className={cn(
-      'rounded-lg border border-border bg-background',
-      'dark:bg-surface-1',
-    )}>
-      <motion.button
+    <div className="flex min-w-0 flex-col" data-state={isStreaming ? 'running' : 'done'}>
+      {/* 折叠头 */}
+      <button
         type="button"
         onClick={() => setExpanded(!expanded)}
-        whileTap={{ scale: 0.96 }}
-        transition={{ duration: 0.1 }}
         className={cn(
-          'flex w-full items-start gap-3 px-3.5 py-2.5 text-left',
-          'hover:bg-muted/50 dark:hover:bg-surface-2/50',
+          'dsh-sweep-host group/think -mx-1 flex w-[calc(100%+8px)] items-center rounded-md px-1 py-1 text-left',
+          'transition-colors hover:bg-accent'
         )}
+        data-running={isStreaming ? 'true' : undefined}
+        aria-expanded={expanded}
       >
-        {/* 紫色状态圆点 */}
-        <span className={cn(
-          'mt-1.5 size-2 shrink-0 rounded-full bg-purple-500',
-          isStreaming && 'animate-pulse',
-        )} />
+        {/* 引导图标：hover 时由右箭头切换为下箭头 */}
+        <span className="relative mr-1.5 inline-flex size-4 shrink-0 items-center justify-center text-subtle">
+          <ChevronRight
+            className={cn(
+              'absolute size-4 transition-opacity duration-100 group-hover/think:opacity-0',
+              expanded && 'opacity-0 group-hover/think:opacity-0'
+            )}
+            aria-hidden="true"
+          />
+          <ChevronDown
+            className={cn(
+              'absolute size-4 opacity-0 transition-opacity duration-100 group-hover/think:opacity-100',
+              expanded && 'opacity-100'
+            )}
+            aria-hidden="true"
+          />
+        </span>
 
-        {/* 标题与描述 */}
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-text">
-            {title}
-          </div>
-          <div className={cn(
-            'mt-0.5 text-[11px] text-muted-foreground',
-            'line-clamp-1',
-          )}>
-            {expanded ? '点击折叠详情' : description}
-          </div>
-        </div>
+        {/* 标题 */}
+        <span className="shrink-0 text-sm leading-6 text-text-secondary">{title}</span>
 
-        {/* 耗时标识 */}
+        {/* 耗时 */}
         {durationLabel && (
-          <span className="mt-0.5 flex items-center gap-1 shrink-0 text-[11px] text-muted-foreground">
-            <Clock className="size-3" />
+          <span className="ml-2 flex shrink-0 items-center gap-1 text-xs leading-5 text-hint">
+            <Clock className="size-3" aria-hidden="true" />
             {durationLabel}
           </span>
         )}
 
-        <ChevronDown
-          className={cn(
-            'mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-            expanded && 'rotate-180',
-          )}
-        />
-      </motion.button>
-
-      <AnimatePresence initial={false}>
-        {expanded && (
-          <motion.div
-            key="thinking-content"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-            className="overflow-hidden border-t border-border/60"
-          >
-            <div className="px-3.5 py-2.5">
-              <pre className="whitespace-pre-wrap text-xs text-foreground/90 font-mono">
-                {content}
-              </pre>
-            </div>
-          </motion.div>
+        {/* 分隔点 + 摘要（仅折叠且非流式时显示） */}
+        {!expanded && !isStreaming && (
+          <>
+            <span className="mx-2 size-0.5 shrink-0 rounded-full bg-hint" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-sm leading-6 text-subtle">
+              {summary}
+            </span>
+          </>
         )}
-      </AnimatePresence>
+      </button>
+
+      {/* 展开体 */}
+      {expanded && (
+        <div className="py-1 pl-[22px] pr-1">
+          <pre className="m-0 font-sans whitespace-pre-wrap break-words text-sm leading-6 text-subtle">
+            {content}
+          </pre>
+        </div>
+      )}
     </div>
   )
 }

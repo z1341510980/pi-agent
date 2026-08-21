@@ -53,18 +53,13 @@ import { MatrixToolbar } from './matrix-toolbar'
 import { MatrixView } from './matrix-view'
 import { MatrixLegend } from './matrix-legend'
 import { MatrixHoverCard } from './matrix-hover-card'
-import { ChapterContextMenu, type ChapterContextMenuPosition } from './chapter-context-menu'
 import { EntityCellMenu, type EntityCellMenuPosition } from './entity-cell-menu'
 import { EntityCreateDialog } from './entity-create-dialog'
 import { EntitySpanDialog } from './entity-span-dialog'
 import { EntityNoteDialog } from './entity-note-dialog'
+import { ChapterContextMenu, type ChapterContextMenuPosition } from './chapter-context-menu'
 import { toastError } from '@/hooks/use-toast'
-import { NarrativeTrackPanel } from '../narrative-track-panel'
-import { EntityCandidatePanel } from '../entity-candidate-panel'
-import { PendingEventsDialog } from './pending-events-dialog'
-import { AnnotationPanelDialog } from './annotation-panel-dialog'
-import { Button } from '@/components/ui/button'
-import { GitBranch, Inbox, MessageSquareText, ShieldQuestion } from 'lucide-react'
+import type { ReviewPanelKind } from '../novel-review-center'
 
 /**
  * 把新区间合并进现有跨度列表：
@@ -119,6 +114,13 @@ export interface MatrixWorkspaceProps {
   /** LLM 相似度扫描：语义相似智能合并 */
   onSimilarityScan?: () => void
   similarityScanning?: boolean
+  /**
+   * 审校面板快捷入口：路由到右栏「审校」Tab 并打开对应面板。
+   * 传 null 仅跳转不点名。面板本体挂载在 NovelReviewCenter（唯一挂载点）。
+   */
+  onOpenReview?: (kind: ReviewPanelKind | null) => void
+  /** 待确认事件数（审校下拉角标，由 workspace 级 useReviewCounts 提供） */
+  pendingEventCount?: number
 }
 
 const DEFAULT_CELL_WIDTH = MATRIX_LAYOUT.defaultCellWidth
@@ -133,6 +135,8 @@ export function MatrixWorkspace({
   onStartCreationAt,
   onSimilarityScan,
   similarityScanning = false,
+  onOpenReview,
+  pendingEventCount = 0,
 }: MatrixWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
@@ -180,12 +184,6 @@ export function MatrixWorkspace({
 
   // ── 本地 UI 状态 ──
   const [cellWidth, setCellWidth] = useState<number>(DEFAULT_CELL_WIDTH)
-  // 剧情轨道 / 待审实体入口（矩阵视图也能访问，不只在画布工具栏）
-  const [trackPanelOpen, setTrackPanelOpen] = useState(false)
-  const [candidatePanelOpen, setCandidatePanelOpen] = useState(false)
-  const [pendingEventsOpen, setPendingEventsOpen] = useState(false)
-  const [pendingCount, setPendingCount] = useState(0)
-  const [annotationsOpen, setAnnotationsOpen] = useState(false)
   const collapsedGroups = useMemo(() => new Set(collapsedGroupsArr as MatrixEntityKind[]), [collapsedGroupsArr])
   const [activeFilter, setActiveFilter] = useState<MatrixEntityKind | null>(null)
   const [isCompleting, setIsCompleting] = useState(false)
@@ -1479,72 +1477,14 @@ export function MatrixWorkspace({
           similarityScanning={similarityScanning}
           showRelationshipOverlay={showRelationshipOverlay}
           onToggleRelationshipOverlay={() => setShowRelationshipOverlay((v) => !v)}
+          onOpenTrackPanel={onOpenReview ? () => onOpenReview('track') : undefined}
+          onOpenCandidatePanel={onOpenReview ? () => onOpenReview('candidate') : undefined}
+          onOpenPendingEvents={onOpenReview ? () => onOpenReview('events') : undefined}
+          onOpenAnnotations={onOpenReview ? () => onOpenReview('annotations') : undefined}
+          pendingEventCount={pendingEventCount}
         />
-        {/* 剧情轨道 / 待审实体（矩阵视图入口，与画布工具栏并列） */}
-        <div className="flex items-center gap-1 px-2 pb-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1 text-xs"
-            onClick={() => setTrackPanelOpen(true)}
-            disabled={!currentProjectId}
-            title="查看故事线如何被逐章推进（剧情推进轨道）"
-          >
-            <GitBranch className="size-3.5" />
-            剧情轨道
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1 text-xs"
-            onClick={() => setCandidatePanelOpen(true)}
-            disabled={!currentProjectId}
-            title="查看 Memory 提出、待确认的新冲突/线索候选"
-          >
-            <ShieldQuestion className="size-3.5" />
-            待审实体
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1 text-xs"
-            onClick={() => setPendingEventsOpen(true)}
-            disabled={!currentProjectId}
-            title="确认或驳回 AI 自动提取的故事事件"
-          >
-            <Inbox className="size-3.5" />
-            待确认事件
-            {pendingCount > 0 && (
-              <span className="ml-0.5 rounded-full bg-amber-500/90 px-1.5 text-[10px] font-semibold leading-4 text-white">
-                {pendingCount > 99 ? '99+' : pendingCount}
-              </span>
-            )}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1 text-xs"
-            onClick={() => setAnnotationsOpen(true)}
-            disabled={!currentProjectId}
-            title="统一批注：说明、意图、待办、警告、疑问"
-          >
-            <MessageSquareText className="size-3.5" />
-            批注
-          </Button>
-        </div>
-        <NarrativeTrackPanel open={trackPanelOpen} onOpenChange={setTrackPanelOpen} projectId={currentProjectId} />
-        <EntityCandidatePanel open={candidatePanelOpen} onOpenChange={setCandidatePanelOpen} projectId={currentProjectId} />
-        <PendingEventsDialog
-          open={pendingEventsOpen}
-          onOpenChange={setPendingEventsOpen}
-          projectId={currentProjectId}
-          onPendingCountChange={setPendingCount}
-        />
-        <AnnotationPanelDialog
-          open={annotationsOpen}
-          onOpenChange={setAnnotationsOpen}
-          projectId={currentProjectId}
-        />
+        {/* 审校面板已收敛到右栏「审校」Tab（NovelReviewCenter 唯一挂载点）；
+            工具栏下拉仅作快捷路由，这里不再重复挂载面板实例。 */}
       </div>
 
       <div data-tour="matrix-legend">

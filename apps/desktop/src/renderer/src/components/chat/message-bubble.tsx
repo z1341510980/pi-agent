@@ -52,19 +52,12 @@ const REMARK_PLUGINS: MarkdownPluginList = [remarkGfm]
  * 聊天消息同样不开。
  */
 
-/** prose 类名提到常量：每个文本分段都要用，且它长得离谱 */
-const MARKDOWN_CLASS = `message-markdown prose prose-sm max-w-none
-  prose-p:my-2 prose-p:leading-relaxed
-  prose-headings:my-3 prose-headings:leading-tight
-  prose-h1:text-base prose-h2:text-sm prose-h3:text-sm
-  prose-ul:my-2 prose-ol:my-2
-  prose-li:my-0.5
-  prose-code:before:content-none prose-code:after:content-none
-  prose-blockquote:my-2.5 prose-blockquote:border-l-2 prose-blockquote:border-l-primary/50 prose-blockquote:pl-3 prose-blockquote:not-italic prose-blockquote:font-normal prose-blockquote:text-muted-foreground
-  prose-hr:my-4 prose-hr:border-border
-  prose-a:text-primary prose-a:no-underline prose-a:decoration-primary/40 prose-a:underline-offset-2 hover:prose-a:underline
-  prose-strong:text-text prose-strong:font-semibold prose-em:text-text-secondary
-  prose-img:my-2 prose-img:rounded-lg`
+/**
+ * 助手消息流排版（对齐 dsh MarkdownText）：
+ * 正文 16/28、块间距 16、链接业务蓝、行内代码浅灰胶囊。
+ * 具体规则集中在 main.css 的 .message-markdown，这里只挂类名。
+ */
+const MARKDOWN_CLASS = `message-markdown`
 
 /**
  * 渲染分组。
@@ -179,13 +172,13 @@ function formatRelativeTime(ts: number): string {
 }
 
 /**
- * MessageBubble：单条消息气泡（AionUi 风格对齐）
+ * MessageBubble：单条消息（对齐 dsh MessageItem）
  *
- * 设计要点（借鉴 AionUi MessageText）：
- *   - 不显示头像与 Agent 名字（保持极简，对齐 AionUi）
- *   - 用户气泡：淡灰背景 (bg-surface-3) + 不对称圆角 (8px 0 8px 8px)，左上角无圆角
- *   - AI 消息：无背景色，仅 Markdown 文本与子组件（思考/工具调用）
- *   - 复制按钮 + 时间戳：默认 opacity-0，group-hover 时显现，固定行高避免抖动
+ * 设计要点（DeepSeek 会话流）：
+ *   - 不显示头像与 Agent 名字
+ *   - 用户气泡：浅蓝填充（deepseek-50）+ 22px 胶囊圆角，右对齐，525px 封顶
+ *   - AI 消息：无气泡，16/28 文本流 + 思考/工具行
+ *   - 复制按钮 + 时间戳：hover 显现
  */
 export function MessageBubble({
   message,
@@ -213,11 +206,12 @@ export function MessageBubble({
     <article
       className={cn('group flex min-w-0', isUser ? 'justify-end' : 'justify-start')}
       data-message-role={message.role}
+      data-time-hover-root=""
     >
       <div
         className={cn(
           'min-w-0 flex flex-col',
-          isUser ? 'items-end max-w-[76%]' : 'items-start max-w-[88%]'
+          isUser ? 'items-end max-w-[min(525px,82%)]' : 'items-start w-full'
         )}
       >
         {/* ── 文件附件 ── */}
@@ -246,13 +240,13 @@ export function MessageBubble({
         {/* ── 文本气泡 ── */}
         {isUser ? (
           displayContent ? (
-            <div className="message-user-bubble px-3.5 py-2.5 text-text text-sm leading-relaxed break-words [border-radius:14px_4px_14px_14px]">
+            <div className="message-user-bubble px-4 py-2.5 text-base leading-6 text-text break-words rounded-[22px]">
               <p className="m-0 whitespace-pre-wrap text-pretty">{displayContent}</p>
             </div>
           ) : null
         ) : (
           /* AI 消息：按 segments 顺序渲染 —— 顺序即实际发生顺序 */
-          <div className="text-sm text-text-secondary leading-relaxed min-w-0 break-words w-full">
+          <div className="min-w-0 break-words w-full">
             {renderGroups.map((group) => {
               if (group.kind === 'thinking') {
                 return (
@@ -268,7 +262,7 @@ export function MessageBubble({
 
               if (group.kind === 'tools') {
                 return (
-                  <div key={group.id} className="w-full min-w-0 space-y-1.5 my-2">
+                  <div key={group.id} className="w-full min-w-0 space-y-1 my-1">
                     {group.calls.length >= 3 ? (
                       <ToolSummaryCard toolCalls={group.calls} />
                     ) : (
@@ -284,8 +278,10 @@ export function MessageBubble({
             })}
             {/* 错误标记 */}
             {message.status === 'error' && message.error && (
-              <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
-                {message.error}
+              <div className="mt-2 flex items-start gap-2 text-[13px] leading-5">
+                <span className="mt-[7px] size-2 shrink-0 rounded-full bg-destructive" aria-hidden="true" />
+                <span className="font-semibold text-destructive">出错了</span>
+                <span className="min-w-0 text-text-secondary break-all">{message.error}</span>
               </div>
             )}
           </div>
@@ -295,14 +291,14 @@ export function MessageBubble({
         {hasCopyableText && (
           <div
             className={cn(
-              'h-6 flex items-center mt-1 gap-1.5 select-none',
-              isUser && 'flex-row-reverse'
+              'h-7 flex items-center mt-1 gap-1 select-none',
+              isUser ? 'flex-row-reverse' : '-ml-1.5'
             )}
           >
             <MessageHoverActions message={message} onQuote={onQuote} onRegenerate={onRegenerate} />
             {message.createdAt && (
               <span
-                className="text-[11px] text-hint transition-opacity duration-150"
+                className="pi-msg-time text-xs text-subtle transition-opacity duration-150"
                 title={formatTimestamp(message.createdAt)}
               >
                 {formatRelativeTime(message.createdAt)}

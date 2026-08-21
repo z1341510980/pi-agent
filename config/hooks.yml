@@ -1,0 +1,120 @@
+# Pi-Agent Hook 配置文件
+#
+# Hook 在 Agent 生命周期的特定点执行外部命令，通过 stdin 传递 JSON payload，
+# 根据 stdout/stderr 和退出码决定是否阻断或修改行为。
+#
+# Hook 点：
+#   - PreToolUse: 工具执行前（可阻断、修改参数）
+#   - PostToolUse: 工具执行后（可阻断结果、注入上下文）
+#   - SessionStart: 会话创建时
+#   - UserPromptSubmit: 用户提交提示词时
+#   - Stop: Agent 停止时
+
+# 宿主安全策略。缺省即最严格：
+#   - 无 shell：command 按 argv 执行（引号感知分词），管道/重定向不可用
+#   - 环境变量只继承内置白名单（PATH 等），API Key 一律不传给 Hook 进程
+#   - stdout/stderr 各自 64KB 上限，超限截断并在诊断中标记
+# 需要 shell 语法时把 trusted 设为 true，并在对应 Hook 上写 shell: true。
+security:
+  trusted: false
+  maxOutputBytes: 65536
+
+hooks:
+  # 示例 1：危险工具阻断
+  - point: PreToolUse
+    command: node
+    args:
+      - '-e'
+      - |
+        const input = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+        const toolName = input.toolName || '';
+        const deny = toolName === 'bash' || toolName === 'rm';
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: deny ? 'deny' : 'allow',
+            ...(deny ? { permissionDecisionReason: '禁止使用危险工具，请改用安全的替代方案' } : {})
+          }
+        }));
+    timeoutSec: 5
+    matcher: bash|rm
+    enabled: true
+
+  # 示例 2：敏感操作确认（ask）
+  - point: PreToolUse
+    command: node
+    args:
+      - '-e'
+      - |
+        const input = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+        const toolName = input.toolName || '';
+        const ask = toolName === 'write' || toolName === 'edit';
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: ask ? 'ask' : 'allow',
+            ...(ask ? { permissionDecisionReason: '修改文件需要您的确认' } : {})
+          }
+        }));
+    timeoutSec: 5
+    matcher: write|edit
+    enabled: false # 默认禁用，需要时启用
+
+  # 示例 3：工具后处理（注入额外上下文）
+  - point: PostToolUse
+    command: node
+    args:
+      - '-e'
+      - |
+        const input = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+        const result = input.result || {};
+        const hasError = Array.isArray(result.content)
+          && result.content.some((c) => c && c.text && String(c.text).includes('error'));
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            ...(hasError ? { additionalContext: '检测到错误输出，建议检查参数' } : {})
+          }
+        }));
+    timeoutSec: 5
+    matcher: .* # 匹配所有工具
+    enabled: false
+
+  # 示例 4：会话启动时注入系统消息
+  - point: SessionStart
+    command: node
+    args:
+      - '-e'
+      - |
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'SessionStart',
+            additionalContext: '会话已启动，当前工作目录: ' + process.cwd()
+          },
+          systemMessage: '请使用安全的编程实践'
+        }));
+    timeoutSec: 5
+    enabled: true
+
+# Hook 配置说明：
+# - point: Hook 点，必需；未知 point 的条目会被拒绝并在启动日志中列出
+# - command: 可执行文件；无 shell 模式下不做 shell 求值
+# - args: 显式 argv 参数；提供时不再对 command 分词
+# - timeoutSec: 超时时间（秒），必须 > 0；默认 10 分钟
+# - matcher: 匹配器，对 PreToolUse/PostToolUse 匹配工具名；支持正则或管道分隔的精确候选集
+# - enabled: 是否启用，默认 true
+# - shell: 要求 shell 求值；仅当 security.trusted 为 true 时生效
+#
+# 输出协议：
+# - exit 0 + JSON: 结构化输出，可包含 continue/stopReason/decision/systemMessage/additionalContext
+# - exit 0 + 非 JSON: 保留原文本
+# - exit 2: 阻断，stderr 为阻断原因
+# - 其他 exit code: 记录错误但不阻断
+# - 超时 / 取消 / 启动失败：exitCode 为空，terminationReason 分别为 timeout / cancelled / spawn-failed
+#
+# decision 优先级：deny > ask > allow
+# 多个 Hook 合并规则：
+# - deny 覆盖 allow/ask
+# - ask 覆盖 allow
+# - 第一处 continue:false 为粘性停止
+# - additionalContext 和 systemMessage 按顺序累积

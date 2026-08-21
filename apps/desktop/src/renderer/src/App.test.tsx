@@ -116,6 +116,11 @@ describe('App shell', () => {
     expect(await screen.findByText('Hello world')).toBeTruthy()
     expect((await screen.findAllByText('read')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText((content) => content.includes('README.md'))).length).toBeGreaterThan(0)
+    // 工具行折叠时只显示参数摘要；OUT 结果（partialResult）在展开体里，
+    // 点击工具行展开后可见（对齐 dsh ToolRow 交互）
+    const toolRow = screen.getAllByText('read')[0]?.closest('[data-state]')
+    expect(toolRow).toBeTruthy()
+    fireEvent.click(toolRow as Element)
     expect(await screen.findByText('file preview')).toBeTruthy()
 
     expect(fetchMock).toHaveBeenCalledWith(

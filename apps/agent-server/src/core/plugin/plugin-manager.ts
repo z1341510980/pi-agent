@@ -15,30 +15,35 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type Database from 'better-sqlite3'
 import type { FastifyBaseLogger } from 'fastify'
 import type { EventBus } from '@repo/shared/events'
 import type { PiSessionStore } from '../agent/session-store.js'
 import { withAgentConfig } from '../agent/pi-session.js'
-import {
-  AgentRuntimeRegistry,
-  DEFAULT_AGENT_RUNTIME_KIND,
-} from '../agent/agent-runtime.js'
+import { AgentRuntimeRegistry, DEFAULT_AGENT_RUNTIME_KIND } from '../agent/agent-runtime.js'
 import { composeSkillBlocks, fingerprintSkillContent } from './skill-compose.js'
 import { createSkillReadTool } from './skill-read-tool.js'
+import { resolveDependencyOrder, type DependencyNode } from './plugin-catalog.js'
+import { verifyPackageIntegrity } from './plugin-integrity.js'
+import type { PluginCatalogItem } from './plugin-catalog.js'
 import { cancelDebug } from '../../plugins/novel-plugin/utils/cancel-debug-log.js'
 import { StreamEmitter } from '../agent/stream-emitter.js'
 import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
 import type { AgentConfig, AgentManager } from '../agent/subagent-tool.js'
 import type { ProviderConfigStore } from '../config/provider-config-store.js'
-import { supportsAnthropicCacheControl, usesOpenAiPromptCacheKey, buildPromptCacheKey, type ModelRegistryLike } from './cache-control-support.js'
+import {
+  supportsAnthropicCacheControl,
+  usesOpenAiPromptCacheKey,
+  buildPromptCacheKey,
+  type ModelRegistryLike
+} from './cache-control-support.js'
 import {
   getAssistantTerminalError,
   isFinalAssistantSuccess,
-  waitForFinalAssistantOrPrompt,
+  waitForFinalAssistantOrPrompt
 } from './plugin-session-outcome.js'
 import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
@@ -48,19 +53,24 @@ import type { EventStatus, TraceEventType } from '../tracer/types.js'
 import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
 import type {
   Plugin,
+  PluginCapability,
   PluginContext,
   PluginEntry,
   PluginFactory,
   PluginListItem,
   PluginManagerOptions,
   PluginSessionHandle,
+  PluginEffectDisposer,
+  PluginEffectMetadata,
+  PluginEffectRecord,
   PluginSessionOptions,
   AgUiSessionHandle,
   RouteDefinition,
   ToolDefinition,
   PanelDefinition,
+  PluginUiContribution,
   EventHandler,
-  MigrationDefinition,
+  MigrationDefinition
 } from './plugin-types.js'
 
 /** npm 插件包名前缀 */
@@ -69,7 +79,7 @@ const NPM_PLUGIN_PREFIX = 'wenlang-agent-plugin-'
 export function buildPluginSessionPrompt(
   userMessage: string,
   skill?: { name: string; path: string },
-  extraSkills: Array<{ name: string; path: string }> = [],
+  extraSkills: Array<{ name: string; path: string }> = []
 ): string {
   if (!skill) return userMessage
   // 单 Skill：Pi 原生 /skill: 展开（已验证路径）
@@ -151,6 +161,67 @@ export class PluginManager {
    * createSession 按 PluginSessionOptions.runtime 路由，未注册的 kind 显式抛错。
    */
   private readonly runtimeRegistry: AgentRuntimeRegistry
+  /** 插件目录配置（从 YAML 加载，包括 disabled 插件） */
+  private catalogConfigs: PluginCatalogItem[] = []
+  /** Service registry for dynamic service lookup (service name → plugin name → service instance) */
+  private serviceRegistry = new Map<string, Map<string, { service: unknown; pluginId: string }>>()
+  /** Policy Hook Manager（由 plugin-loader 注入） */
+  private hookManager?: import('../policy/policy-hook-manager.js').PolicyHookManager
+  /**
+   * 宿主是否已完成启动期的 route 挂载与 service decorate。
+   *
+   * Fastify 只能在启动期注册路由和 decoration。一旦这个阶段结束，运行期 enable 的插件
+   * 即使 setup 成功，它的 route/service 也只存在于 catalog 投影里 —— HTTP 请求打不到，
+   * `app.decorate` 也不会再执行。API 必须如实区分这两种"enabled"（研究文档 §10.11）。
+   */
+  private hostMounted = false
+
+  /**
+   * 标记宿主启动期挂载已完成。
+   *
+   * 由 plugin-loader 在挂完 route 与 service 之后调用。之后每次 startPlugin
+   * 若注册了 route/service，都会把 effectiveAfterRestart 置为 true。
+   */
+  markHostMounted(): void {
+    this.hostMounted = true
+    // 启动期已挂载的 route/service effect 才算真正 attached
+    for (const entry of this.entries.values()) {
+      if (entry.status !== 'enabled') continue
+      this.applyHostAttachment(entry)
+    }
+  }
+
+  /**
+   * 按当前宿主阶段修正 entry 的 route/service effect 归属。
+   *
+   * - 启动期（hostMounted=false → markHostMounted 时）：本次注册的 route/service
+   *   会被宿主挂载，hostAttached=true，effectiveAfterRestart=false。
+   * - 运行期（hostMounted=true 时 startPlugin）：宿主不会再挂载，
+   *   hostAttached=false，effectiveAfterRestart=true。
+   */
+  private applyHostAttachment(entry: PluginEntry): void {
+    const registeredHostResources = entry.routes.length > 0 || entry.services.length > 0
+    // startPlugin 发生在启动期挂载之前 → 本次注册项会被挂上；否则不会
+    const attachedByHost = registeredHostResources && entry.activationMountedByHost
+    entry.effectiveAfterRestart = registeredHostResources && !entry.activationMountedByHost
+    for (const effect of entry.effects) {
+      if (effect.activationGeneration !== entry.activationGeneration) continue
+      if (effect.kind !== 'route' && effect.kind !== 'service') continue
+      effect.hostAttached = attachedByHost
+    }
+  }
+
+  /**
+   * 注入 Policy Hook Manager
+   */
+  setHookManager(hookManager: import('../policy/policy-hook-manager.js').PolicyHookManager): void {
+    this.hookManager = hookManager
+    // 如果 sessionStore 已经注入，立即传递
+    if (this.sessionStore && typeof this.sessionStore.setHookManager === 'function') {
+      this.sessionStore.setHookManager(hookManager)
+    }
+    this.logger.debug('已注入 PolicyHookManager')
+  }
 
   constructor(
     logger: FastifyBaseLogger,
@@ -158,7 +229,7 @@ export class PluginManager {
     db: Database.Database,
     cwd: string,
     dataDir: string,
-    options: PluginManagerOptions = {},
+    options: PluginManagerOptions = {}
   ) {
     this.logger = logger
     this.eventBus = eventBus
@@ -167,6 +238,53 @@ export class PluginManager {
     this.dataDir = dataDir
     this.options = options
     this.runtimeRegistry = options.runtimeRegistry ?? new AgentRuntimeRegistry()
+  }
+
+  /**
+   * 设置插件目录配置（供管理界面使用）
+   */
+  setCatalogConfigs(configs: PluginCatalogItem[]): void {
+    this.catalogConfigs = configs
+  }
+
+  /**
+   * 更新插件的运行期配置/授权/期望状态，并同步回 catalog 投影。
+   *
+   * 所有变更都标记 restartRequired：capability grant 只在下一次 activation 生效，
+   * 运行中的 route/service 不会因为 grants 变化而重新校验。
+   */
+  updateCatalogConfig(
+    pluginId: string,
+    patch: { enabled?: boolean; config?: Record<string, unknown>; grants?: PluginCapability[] }
+  ): void {
+    const entry = this.entries.get(pluginId)
+    if (!entry) throw new Error(`插件 ${pluginId} 不存在`)
+    if (patch.config) entry.config = { ...entry.config, ...patch.config }
+    if (patch.grants) entry.grants = new Set(patch.grants)
+    if (patch.enabled !== undefined) entry.desiredEnabled = patch.enabled
+    entry.restartRequired = true
+    this.syncCatalog(entry, patch)
+  }
+
+  /**
+   * 把 entry 的期望状态写回 catalog 投影。
+   *
+   * enable/disable 必须走这里，否则 persistCatalog 写回的是旧的 enabled 值，
+   * 重启后用户的开关意图丢失。
+   */
+  private syncCatalog(
+    entry: PluginEntry,
+    patch: { enabled?: boolean; config?: Record<string, unknown>; grants?: PluginCapability[] } = {}
+  ): void {
+    const catalog = this.catalogConfigs.find((item) => item.catalogId === entry.catalogId)
+    if (!catalog) return
+    catalog.enabled = entry.desiredEnabled
+    if (patch.config) catalog.config = { ...(catalog.config ?? {}), ...patch.config }
+    if (patch.grants) catalog.grants = [...patch.grants]
+  }
+
+  getCatalogConfigs(): PluginCatalogItem[] {
+    return this.catalogConfigs
   }
 
   /**
@@ -274,11 +392,16 @@ export class PluginManager {
     // 1. 加载内置插件
     if (this.options.builtinPlugins) {
       for (const item of this.options.builtinPlugins) {
-        // 支持两种格式：{ plugin } 或 { plugin, config, isolate }
-        const plugin = item.plugin
-        const config = (item as { config?: Record<string, unknown> }).config
-        const isolate = (item as { isolate?: boolean }).isolate
-        await this.loadPluginEntry(plugin, 'builtin', undefined, config, isolate)
+        // catalogId 必须透传：它是配置身份（plugins.yml 的 id），与 manifest.name
+        // 不同。缺了它，catalog 回写会找不到条目，grants/enabled 变更无法持久化。
+        await this.loadPluginEntry(
+          item.plugin,
+          'builtin',
+          undefined,
+          item.config,
+          item.isolate,
+          item.catalogId
+        )
       }
     }
 
@@ -300,13 +423,56 @@ export class PluginManager {
 
   /**
    * 启动所有已加载的插件（调用 setup）
-   * 错误隔离：单个插件 setup 失败不影响其他插件
+   *
+   * 顺序由 manifest.dependencies 的拓扑排序决定：依赖先于消费方启动。
+   * 缺失依赖、循环依赖或被上游阻断的插件不 setup，而是标记为 error 并写入
+   * dependencyDiagnostics —— 让它照常启动只会在 setup 里拿不到服务而报模糊错误。
+   *
+   * desiredEnabled=false 的插件保留在 catalog 中但不 setup，
+   * 之后可通过 enable() 恢复。
+   *
+   * 错误隔离：单个插件 setup 失败不影响其他插件。
    */
   async start(): Promise<void> {
     this.logger.info('开始启动插件')
-    for (const [name, entry] of this.entries) {
+
+    const nodes: DependencyNode[] = Array.from(this.entries.values()).map((entry) => ({
+      pluginId: entry.pluginId,
+      dependencies: entry.manifest.dependencies ?? []
+    }))
+    const { order, missing, cycles, blocked } = resolveDependencyOrder(nodes)
+
+    // 先把被阻断的插件标成 error，避免它们被后续消费方误认为可用
+    for (const entry of this.entries.values()) {
+      if (!blocked.has(entry.pluginId)) {
+        entry.dependencyDiagnostics = undefined
+        continue
+      }
+      const diagnostics: string[] = []
+      const absent = missing.get(entry.pluginId)
+      if (absent?.length) diagnostics.push(`缺失依赖: ${absent.join(', ')}`)
+      const cycle = cycles.get(entry.pluginId)
+      if (cycle?.length) diagnostics.push(`循环依赖: ${cycle.join(' -> ')}`)
+      if (diagnostics.length === 0) diagnostics.push('依赖链上游被阻断，无法安全启动')
+      entry.dependencyDiagnostics = diagnostics
+      entry.status = 'error'
+      entry.lifecycle = 'error'
+      entry.error = diagnostics.join('；')
+      this.logger.error({ plugin: entry.pluginId, diagnostics }, '插件依赖不满足，跳过启动')
+    }
+
+    for (const pluginId of order) {
+      const entry = this.entries.get(pluginId)
+      if (!entry) continue
+      if (!entry.desiredEnabled) {
+        // 配置里关着：保持可见但不 setup，disabled 是期望状态而非发现失败
+        entry.status = 'disabled'
+        entry.lifecycle = 'disabled'
+        this.logger.info({ plugin: pluginId }, '插件在配置中被禁用，跳过启动')
+        continue
+      }
       if (entry.status === 'loaded' || entry.status === 'error') {
-        await this.startPlugin(name)
+        await this.startPlugin(pluginId)
       }
     }
     this.logger.info('插件启动完成')
@@ -325,7 +491,9 @@ export class PluginManager {
 
   /**
    * 启用指定插件（调用 setup）
-   * 已启用的插件会先停止再重新启动
+   *
+   * 会把 desiredEnabled 置为 true，使配置中被禁用的插件可以恢复。
+   * 依赖不满足时拒绝启动并返回诊断，而不是让 setup 报模糊错误。
    */
   async enable(name: string): Promise<void> {
     const entry = this.entries.get(name)
@@ -336,7 +504,31 @@ export class PluginManager {
       this.logger.warn({ plugin: name }, '插件已启用，无需重复启用')
       return
     }
+    const unmet = this.findUnmetDependencies(entry)
+    if (unmet.length > 0) {
+      entry.dependencyDiagnostics = [`缺失或未启用的依赖: ${unmet.join(', ')}`]
+      throw new Error(`插件 ${name} 依赖不满足: ${unmet.join(', ')}`)
+    }
+    entry.desiredEnabled = true
+    entry.dependencyDiagnostics = undefined
     await this.startPlugin(name)
+    // 期望状态写回 catalog，使重启后仍保持启用
+    this.syncCatalog(entry)
+  }
+
+  /**
+   * 找出该插件当前不满足的依赖。
+   *
+   * 依赖必须既存在于 catalog，也处于 enabled 状态 —— 依赖插件被禁用时，
+   * 消费方拿到的服务引用会是 stale 的。
+   */
+  private findUnmetDependencies(entry: PluginEntry): string[] {
+    const unmet: string[] = []
+    for (const dependency of entry.manifest.dependencies ?? []) {
+      const target = this.entries.get(dependency)
+      if (!target || target.status !== 'enabled') unmet.push(dependency)
+    }
+    return unmet
   }
 
   /** 禁用指定插件（调用 teardown 并清理注册项） */
@@ -345,6 +537,10 @@ export class PluginManager {
     if (!entry) {
       throw new Error(`插件不存在: ${name}`)
     }
+    // 期望状态先落定：即使当前不是 enabled，用户的"关掉它"意图也要被记录，
+    // 否则重启后配置回写会把它又打开。
+    entry.desiredEnabled = false
+    this.syncCatalog(entry)
     if (entry.status !== 'enabled') {
       this.logger.warn({ plugin: name }, `插件当前状态为 ${entry.status}，无需禁用`)
       return
@@ -354,7 +550,11 @@ export class PluginManager {
 
   /**
    * 重载指定插件：先停止，再重新加载模块和启动
-   * 用于开发期热更新
+   *
+   * 预检先行（研究文档 §10.11）：旧实现先 stop 并 `entries.delete()`，之后才检查
+   * `source === 'builtin'` 并抛错。结果是 builtin 插件被从 catalog 里删掉、
+   * 请求返回 500，而已挂到 Fastify 的旧 route/service 仍在工作，连 `/enable`
+   * 也找不回来。任何拒绝条件都必须在破坏状态之前判定。
    */
   async reload(name: string): Promise<void> {
     const entry = this.entries.get(name)
@@ -362,11 +562,21 @@ export class PluginManager {
       throw new Error(`插件不存在: ${name}`)
     }
 
+    // ---- 预检：在任何破坏性操作之前 ----
+    if (entry.source === 'builtin') {
+      throw new Error(`内置插件 ${name} 不支持重载，请重启服务`)
+    }
+    if (!entry.filePath) {
+      throw new Error(`插件 ${name} 没有文件路径，不支持重载，请重启服务`)
+    }
+
     this.logger.info({ plugin: name }, '开始重载插件')
 
     // 保存配置和隔离设置（重载后恢复）
     const savedConfig = entry.config ?? {}
     const savedIsolate = entry.isolate ?? false
+    const savedCatalogId = entry.catalogId
+    const savedDesiredEnabled = entry.desiredEnabled
     const filePath = entry.filePath
     const source = entry.source
 
@@ -378,18 +588,23 @@ export class PluginManager {
     // 从注册表中移除
     this.entries.delete(name)
 
-    // 重新加载
-    if (source === 'builtin' || !filePath) {
-      // 内置插件无法重载（无文件路径），需要重新注册
-      throw new Error(`内置插件 ${name} 不支持重载，请重启服务`)
-    }
-
     // ESM 模块重载：通过添加 query 参数强制重新加载
     // 传入保存的配置和隔离设置，确保重载后恢复
-    await this.loadFromFile(filePath, source, true, savedConfig, savedIsolate)
-    await this.startPlugin(name)
+    await this.loadFromFile(filePath, source, true, savedConfig, savedIsolate, savedCatalogId)
+    const reloaded = this.entries.get(name)
+    if (!reloaded) {
+      // 重新 import 失败：catalog 里已经没有这个条目，必须明确报出来而不是静默成功
+      throw new Error(`插件 ${name} 重载后未能重新注册，请检查插件文件并重启服务`)
+    }
+    reloaded.desiredEnabled = savedDesiredEnabled
+    if (savedDesiredEnabled) {
+      await this.startPlugin(name)
+    }
 
-    this.logger.info({ plugin: name, configRestored: Object.keys(savedConfig).length > 0 }, '插件重载完成')
+    this.logger.info(
+      { plugin: name, configRestored: Object.keys(savedConfig).length > 0 },
+      '插件重载完成'
+    )
   }
 
   /** 列出所有插件 */
@@ -401,14 +616,34 @@ export class PluginManager {
       author: entry.manifest.author,
       status: entry.status,
       source: entry.source,
+      integrityStatus: entry.integrityStatus,
       error: entry.error,
+      lifecycle: entry.lifecycle,
+      desiredEnabled: entry.desiredEnabled,
+      ...(entry.dependencyDiagnostics
+        ? { dependencyDiagnostics: entry.dependencyDiagnostics }
+        : {}),
+      activationGeneration: entry.activationGeneration,
+      runId: entry.runId,
+      effectCount: entry.effects.length,
+      activeEffectCount: entry.effects.filter((effect) => effect.state === 'active').length,
+      hostAttached: entry.effects.some(
+        (effect) =>
+          effect.activationGeneration === entry.activationGeneration &&
+          (effect.kind === 'route' || effect.kind === 'service') &&
+          effect.hostAttached
+      ),
+      effectiveAfterRestart: entry.effectiveAfterRestart,
+      lastStop: entry.lastStop,
+      restartRequired: entry.restartRequired,
+      unloadScope: entry.unloadScope,
       toolCount: entry.tools.length,
       routeCount: entry.routes.length,
       panelCount: entry.panels.length,
       eventHandlerCount: entry.eventHandlers.length,
       migrationCount: entry.migrations.length,
       sessionToolCount: entry.sessionTools.length,
-      serviceCount: entry.services.length,
+      serviceCount: entry.services.length
     }))
   }
 
@@ -450,6 +685,25 @@ export class PluginManager {
       }
     }
     return panels
+  }
+
+  /** 获取当前启用插件的受信 renderer manifest。不会返回可执行源码。 */
+  getAllUiContributions(): Array<
+    PluginUiContribution & { pluginId: string; activationGeneration: number }
+  > {
+    const result: Array<PluginUiContribution & { pluginId: string; activationGeneration: number }> =
+      []
+    for (const entry of this.entries.values()) {
+      if (entry.status !== 'enabled') continue
+      for (const contribution of entry.uiContributions) {
+        result.push({
+          ...contribution,
+          pluginId: entry.pluginId,
+          activationGeneration: entry.activationGeneration
+        })
+      }
+    }
+    return result
   }
 
   /** 获取所有已启用插件的数据库迁移（按 id 排序） */
@@ -516,6 +770,62 @@ export class PluginManager {
 
   // ============ 内部实现 ============
 
+  /**
+   * 对目录扫描发现的插件做完整性判定。
+   *
+   * 扫描路径（PI_PLUGINS_DIR / PI_PLUGINS_ENABLE_NPM）不经过 catalog 驱动的加载分支，
+   * 因此这里补上同一套判定：catalog 里有锁就必须校验通过；没锁则允许加载但标记
+   * unverified 并告警。不静默放行、也不因为没锁就拒绝本地开发。
+   *
+   * @returns 'verified' / 'unverified'；null 表示有锁但校验失败，调用方必须跳过加载
+   */
+  private resolveScannedIntegrity(
+    packageDir: string,
+    dirName: string,
+    source: 'local' | 'npm'
+  ): 'verified' | 'unverified' | null {
+    const locked = this.catalogConfigs.find(
+      (item) =>
+        (item.integrity !== undefined || item.resolvedVersion !== undefined) &&
+        (item.catalogId === dirName ||
+          item.sourceRef === dirName ||
+          (item.sourceRef !== undefined && resolve(item.sourceRef) === resolve(packageDir)))
+    )
+    if (!locked) {
+      this.logger.warn(
+        { packageDir, source },
+        '扫描发现的插件未在 plugins.yml 声明 integrity/resolvedVersion，以 unverified 状态加载'
+      )
+      return 'unverified'
+    }
+    const verification = verifyPackageIntegrity({
+      packageDir,
+      ...(locked.integrity !== undefined ? { integrity: locked.integrity } : {}),
+      ...(locked.resolvedVersion !== undefined
+        ? { resolvedVersion: locked.resolvedVersion }
+        : {})
+    })
+    if (!verification.ok) {
+      this.logger.error(
+        {
+          packageDir,
+          source,
+          catalogId: locked.catalogId,
+          reason: verification.reason,
+          computedSri: verification.computedSri,
+          actualVersion: verification.actualVersion
+        },
+        '扫描插件完整性校验失败，拒绝加载'
+      )
+      return null
+    }
+    this.logger.info(
+      { packageDir, source, catalogId: locked.catalogId, fileCount: verification.fileCount },
+      '扫描插件完整性校验通过'
+    )
+    return 'verified'
+  }
+
   /** 扫描本地插件目录 */
   private async scanLocalPlugins(dir: string): Promise<void> {
     if (!existsSync(dir)) {
@@ -549,7 +859,10 @@ export class PluginManager {
         continue
       }
 
-      await this.loadFromFile(entryFile, 'local')
+      const integrityStatus = this.resolveScannedIntegrity(pluginPath, name, 'local')
+      if (integrityStatus === null) continue
+
+      await this.loadFromFile(entryFile, 'local', false, undefined, undefined, undefined, integrityStatus)
     }
   }
 
@@ -588,7 +901,10 @@ export class PluginManager {
         continue
       }
 
-      await this.loadFromFile(entryFile, 'npm')
+      const integrityStatus = this.resolveScannedIntegrity(pluginDir, name, 'npm')
+      if (integrityStatus === null) continue
+
+      await this.loadFromFile(entryFile, 'npm', false, undefined, undefined, undefined, integrityStatus)
     }
   }
 
@@ -628,12 +944,14 @@ export class PluginManager {
    * @param config 插件配置（重载时恢复）
    * @param isolate 是否隔离运行（重载时恢复）
    */
-  private async loadFromFile(
+  public async loadFromFile(
     filePath: string,
     source: 'local' | 'npm',
     reload = false,
     config?: Record<string, unknown>,
     isolate?: boolean,
+    catalogId?: string,
+    integrityStatus: 'verified' | 'unverified' = 'unverified'
   ): Promise<void> {
     try {
       // ESM 重载：添加 query 参数强制重新加载模块
@@ -656,7 +974,15 @@ export class PluginManager {
         plugin = factory
       }
 
-      await this.loadPluginEntry(plugin, source, filePath, config, isolate)
+      await this.loadPluginEntry(
+        plugin,
+        source,
+        filePath,
+        config,
+        isolate,
+        catalogId,
+        integrityStatus
+      )
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       this.logger.error({ filePath, err }, `加载插件文件失败: ${errorMsg}`)
@@ -665,12 +991,14 @@ export class PluginManager {
   }
 
   /** 加载插件实例到注册表（错误隔离） */
-  private async loadPluginEntry(
+  public async loadPluginEntry(
     plugin: Plugin,
     source: 'builtin' | 'local' | 'npm',
     filePath?: string,
     config?: Record<string, unknown>,
     isolate?: boolean,
+    catalogId?: string,
+    integrityStatus?: 'verified' | 'unverified'
   ): Promise<void> {
     try {
       const manifest = plugin.manifest
@@ -678,34 +1006,89 @@ export class PluginManager {
         throw new Error('插件 manifest 缺少 name 或 version')
       }
 
+      // 如果未提供 catalogId，使用 manifest.name 作为默认值（向后兼容）
+      const finalCatalogId = catalogId ?? manifest.name
+
       if (this.entries.has(manifest.name)) {
         this.logger.warn({ plugin: manifest.name }, '插件已存在，跳过重复加载')
         return
       }
 
+      // 初始化能力授予：builtin 插件默认获得所有能力；local/npm 只授予 manifest.permissions 中声明的
+      const allCapabilities: PluginCapability[] = [
+        'tools.register',
+        'agent.hooks',
+        'provider.transform',
+        'provider.observe',
+        'routes.register',
+        'storage.plugin',
+        'ui.contribute',
+        'network.outbound',
+        'process.exec',
+        'session.create',
+        'agent.orchestrate',
+        'confirmation.request'
+      ]
+      const requested = new Set(manifest.permissions ?? [])
+      const configuredGrants =
+        this.catalogConfigs.find((item) => item.catalogId === finalCatalogId)?.grants ?? []
+      const grants = new Set<PluginCapability>()
+      if (source === 'builtin') {
+        // builtin 插件信任，授予所有能力。外部插件不能仅凭 manifest 自声明取得能力。
+        for (const cap of allCapabilities) grants.add(cap)
+      } else {
+        // local/npm 只能使用宿主持久化的显式 grants，不能使用 manifest.permissions 自举。
+        for (const cap of configuredGrants) {
+          if (allCapabilities.includes(cap)) grants.add(cap)
+        }
+      }
+
       const entry: PluginEntry = {
+        catalogId: finalCatalogId,
+        pluginId: manifest.name,
         manifest,
         plugin,
         status: 'loaded',
+        lifecycle: 'loaded',
+        // 期望状态来自 catalog；未在 catalog 中出现的插件（如默认内置列表）默认期望启用。
+        desiredEnabled:
+          this.catalogConfigs.find((item) => item.catalogId === finalCatalogId)?.enabled ?? true,
+        activationGeneration: 0,
         source,
+        // builtin 随应用构建，不适用包级锁；local/npm 由调用方告知本次是否经过校验。
+        integrityStatus: source === 'builtin' ? 'not-applicable' : (integrityStatus ?? 'unverified'),
         filePath,
         config: config ?? {},
         isolate: isolate ?? false,
+        grants,
+        restartRequired: false,
+        unloadScope: 'none',
+        effectiveAfterRestart: false,
+        // 尚未 setup：留待 startPlugin 按当时的宿主阶段判定
+        activationMountedByHost: false,
+        effects: [],
         tools: [],
         routes: [],
         panels: [],
+        uiContributions: [],
         eventHandlers: [],
         // 收集插件静态声明的迁移（在 setup 之前执行，确保 setup 时表已存在）
         migrations: [...(plugin.migrations ?? [])],
         sessionTools: [],
         services: [],
         promptTemplateDirs: [],
-        providedServices: new Map(),
+        providedServices: new Map()
       }
       this.entries.set(manifest.name, entry)
       this.logger.info(
-        { plugin: manifest.name, version: manifest.version, source, hasConfig: !!config },
-        '插件已加载',
+        {
+          plugin: manifest.name,
+          catalogId: finalCatalogId,
+          version: manifest.version,
+          source,
+          hasConfig: !!config
+        },
+        '插件已加载'
       )
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
@@ -719,11 +1102,21 @@ export class PluginManager {
     if (!entry) return
 
     try {
+      entry.lifecycle = 'starting'
+      entry.activationGeneration += 1
+      entry.runId = randomUUID()
+      for (const effect of entry.effects) {
+        if (effect.state === 'active') {
+          effect.state = effect.unloadScope === 'restart-required' ? 'residual' : 'released'
+          effect.disposedAt ??= Date.now()
+        }
+      }
       // 清空之前的注册项（防止重复启动累积）
       // 注意：migrations 保留静态声明的部分，setup 中通过 registerMigration 注册的会在 setup 时追加
       entry.tools = []
       entry.routes = []
       entry.panels = []
+      entry.uiContributions = []
       entry.eventHandlers = []
       entry.migrations = [...(entry.plugin.migrations ?? [])]
       entry.sessionTools = []
@@ -731,9 +1124,40 @@ export class PluginManager {
       entry.promptTemplateDirs = []
 
       const context = this.createPluginContext(entry)
-      await entry.plugin.setup(context)
+      try {
+        await entry.plugin.setup(context)
+      } catch (error) {
+        // setup 可能已注册部分 EventBus/service；失败时必须走同一清理路径，
+        // 防止重试累积幽灵 listener 或 stale service。
+        for (const { type, handler } of entry.eventHandlers) this.eventBus.off(type, handler)
+        for (const effect of entry.effects
+          .filter((item) => item.activationGeneration === entry.activationGeneration)
+          .reverse()) {
+          try {
+            await effect.dispose()
+          } catch (cleanupError) {
+            this.logger.warn(
+              { plugin: name, effect: effect.kind, cleanupError },
+              '插件 setup 失败清理 effect 失败'
+            )
+          }
+        }
+        for (const service of entry.services) {
+          const pluginMap = this.serviceRegistry.get(service.name)
+          pluginMap?.delete(entry.pluginId)
+          if (pluginMap?.size === 0) this.serviceRegistry.delete(service.name)
+        }
+        entry.eventHandlers = []
+        entry.services = []
+        throw error
+      }
       entry.status = 'enabled'
+      entry.lifecycle = 'enabled'
       entry.error = undefined
+      // route/service 只在宿主启动期被挂载：运行期 enable 的插件必须如实报告
+      // "已 setup，但 route/service 要等重启才生效"。
+      entry.activationMountedByHost = !this.hostMounted
+      this.applyHostAttachment(entry)
 
       this.logger.info(
         {
@@ -742,12 +1166,14 @@ export class PluginManager {
           routes: entry.routes.length,
           panels: entry.panels.length,
           eventHandlers: entry.eventHandlers.length,
+          effectiveAfterRestart: entry.effectiveAfterRestart
         },
-        '插件已启用',
+        '插件已启用'
       )
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       entry.status = 'error'
+      entry.lifecycle = 'error'
       entry.error = errorMsg
       this.logger.error({ plugin: name, err }, `插件启动失败: ${errorMsg}`)
     }
@@ -758,6 +1184,7 @@ export class PluginManager {
     const entry = this.entries.get(name)
     if (!entry) return
 
+    entry.lifecycle = 'stopping'
     // 调用 teardown（错误隔离）
     if (entry.plugin.teardown) {
       try {
@@ -773,78 +1200,393 @@ export class PluginManager {
       this.eventBus.off(type, handler)
     }
 
+    // 先移除 serviceRegistry 中属于本插件的实例，避免 proxy 继续返回 stale service。
+    for (const service of entry.services) {
+      const pluginMap = this.serviceRegistry.get(service.name)
+      pluginMap?.delete(entry.pluginId)
+      if (pluginMap?.size === 0) this.serviceRegistry.delete(service.name)
+    }
+
+    const stopErrors: string[] = []
+    let disposedEffectCount = 0
+    for (const effect of entry.effects
+      .filter((item) => item.activationGeneration === entry.activationGeneration)
+      .reverse()) {
+      if (effect.state !== 'active') continue
+      if (effect.unloadScope === 'restart-required' || effect.unloadScope === 'persistent') {
+        effect.state = 'residual'
+        continue
+      }
+      try {
+        await effect.dispose()
+        disposedEffectCount += 1
+      } catch (error) {
+        stopErrors.push(error instanceof Error ? error.message : String(error))
+      }
+    }
+
+    // 检测残留：如果 routes 或 services 非空，说明有 Fastify 路由/服务未卸载
+    const hasResidualRoutes = entry.routes.length > 0
+    const hasResidualServices = entry.services.length > 0
+    const restartRequired = hasResidualRoutes || hasResidualServices
+
+    // 清除 tools/panels/eventHandlers/migrations/sessionTools/promptTemplateDirs
+    // 但保留 routes 和 services 如果有残留，以便 list 能显示实际残留状态
     entry.tools = []
-    entry.routes = []
     entry.panels = []
     entry.eventHandlers = []
     entry.migrations = []
     entry.sessionTools = []
-    entry.services = []
     entry.promptTemplateDirs = []
+    if (!restartRequired) {
+      entry.routes = []
+      entry.services = []
+    }
     entry.status = 'disabled'
+    entry.lifecycle = 'disabled'
+    entry.restartRequired = restartRequired
+    entry.unloadScope = restartRequired ? 'restart-required' : 'none'
+    entry.lastStop = {
+      outcome: stopErrors.length > 0 ? 'failed' : restartRequired ? 'partial' : 'completed',
+      activationGeneration: entry.activationGeneration,
+      disposedEffectCount,
+      residualEffectCount: entry.effects.filter((effect) => effect.state === 'residual').length,
+      errors: stopErrors,
+      at: Date.now()
+    }
 
-    this.logger.info({ plugin: name }, '插件已禁用')
+    this.logger.info(
+      {
+        plugin: name,
+        restartRequired,
+        routesCount: entry.routes.length,
+        servicesCount: entry.services.length
+      },
+      '插件已禁用'
+    )
   }
 
   /** 创建插件上下文 */
   private createPluginContext(entry: PluginEntry): PluginContext {
     const pluginName = entry.manifest.name
     const logger = this.logger.child({ plugin: pluginName })
+    const hostDb = this.db
+    const pluginDataDir = join(this.dataDir, 'plugins', entry.pluginId)
+    // 约定辅助：把相对路径钉在 dataDir 内，越界抛错。
+    // 这不是沙箱——插件仍可直接 import 'node:fs' 绕过（强制边界需 Worker/独立进程，属 P3）。
+    // 提供它的目的是让"插件该往哪写"只有一个答案，将来收口时只改这一处。
+    const resolvePluginPath = (...segments: string[]): string => {
+      const target = resolve(pluginDataDir, ...segments)
+      const rel = relative(pluginDataDir, target)
+      if (rel === '') return target
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        throw new Error(
+          `插件 ${pluginName} 的路径 ${segments.join('/')} 越出 dataDir 边界，已拒绝`
+        )
+      }
+      return target
+    }
+    const execPluginCommand = async (command: string): Promise<string> => {
+      if (!/^[A-Za-z0-9._-]+(?:\s+[^;&|<>$`]+)?$/.test(command)) {
+        throw new Error('process.exec 仅允许无 shell 的命令和参数')
+      }
+      const { execFile } = await import('node:child_process')
+      return new Promise<string>((resolve, reject) => {
+        execFile(
+          command.split(/\s+/)[0],
+          command.split(/\s+/).slice(1),
+          {
+            cwd: pluginDataDir,
+            shell: false,
+            timeout: 30_000,
+            maxBuffer: 256 * 1024
+          },
+          (error, stdout, stderr) => {
+            if (error) {
+              reject(new Error(stderr.trim() || error.message))
+              return
+            }
+            resolve(stdout)
+          }
+        )
+      })
+    }
+    const fetchPluginUrl = async (
+      input: RequestInfo | URL,
+      init?: RequestInit
+    ): Promise<Response> => {
+      const url = new URL(input instanceof Request ? input.url : input.toString())
+      if (!['http:', 'https:'].includes(url.protocol))
+        throw new Error('network.fetch 仅允许 HTTP(S)')
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 30_000)
+      try {
+        return await fetch(url, { ...init, signal: controller.signal })
+      } finally {
+        clearTimeout(timer)
+      }
+    }
     // 对象字面量 getter 内的 this 指向字面量自身，因此通过闭包延迟读取。
     const getModelRegistry = (): ModelRegistryLike | undefined =>
       this.modelRegistry as ModelRegistryLike | undefined
+
+    const registerEffect = (
+      kind: string,
+      metadata: PluginEffectMetadata,
+      setup: () => PluginEffectDisposer | void
+    ): PluginEffectDisposer => {
+      const disposer = setup()
+      const effect: PluginEffectRecord = {
+        id: `${entry.pluginId}:${entry.activationGeneration}:${randomUUID()}`,
+        kind,
+        resourceId: String(metadata.resourceId ?? kind),
+        owner: String(metadata.owner ?? entry.pluginId),
+        activationGeneration: entry.activationGeneration,
+        unloadScope: metadata.unloadScope ?? 'immediate',
+        state: 'active',
+        hostAttached: metadata.hostAttached !== false,
+        createdAt: Date.now(),
+        disposeAttempts: 0,
+        dispose: async () => {
+          const current = entry.effects.find((candidate) => candidate.id === effect.id)
+          if (!current || current.state === 'released') return
+          current.disposeAttempts += 1
+          try {
+            if (disposer) await disposer()
+            current.state = 'released'
+            current.disposedAt = Date.now()
+          } catch (error) {
+            current.state = 'failed'
+            current.lastError = error instanceof Error ? error.message : String(error)
+            throw error
+          }
+        }
+      }
+      entry.effects.push(effect)
+      return effect.dispose
+    }
+
+    const pushTrackedEffect = (
+      kind: string,
+      resourceId: string,
+      disposer: PluginEffectDisposer,
+      metadata: PluginEffectMetadata = {}
+    ): PluginEffectDisposer => {
+      const normalized: PluginEffectMetadata = {
+        resourceId,
+        owner: entry.pluginId,
+        ...metadata
+      }
+      return registerEffect(kind, normalized, () => disposer)
+    }
 
     return {
       pluginName,
       config: entry.config ?? {},
       logger,
-      db: this.db,
-      cwd: this.cwd,
-      dataDir: this.dataDir,
-      subagentManager: this.agentManager,
-      teamManager: this.teamManager,
-      confirmationManager: this.confirmationManager!,
-      agentCallLogger: this.agentCallLogger,
+      // DB 访问按 capability 判定而非按 source 判定：builtin 默认持有全部
+      // capability，local/npm 必须由宿主显式授予 storage.plugin。
+      // 与 registerMigration / registerService 使用同一条 grant，避免出现
+      // "能注册迁移但拿不到连接"的半可用状态。
+      get db(): Database.Database {
+        if (!entry.grants.has('storage.plugin')) {
+          throw new Error(`插件 ${pluginName} 未获得 storage.plugin 能力，无法访问数据库`)
+        }
+        return hostDb
+      },
+      cwd: entry.source === 'builtin' ? this.cwd : pluginDataDir,
+      dataDir: pluginDataDir,
+      resolvePath: resolvePluginPath,
+      ...(entry.grants.has('process.exec') ? { process: { exec: execPluginCommand } } : {}),
+      ...(entry.grants.has('network.outbound') ? { network: { fetch: fetchPluginUrl } } : {}),
+      // 编排类宿主管理器同样按 capability 条件注入，与 process / network 一致：
+      // 未授予 agent.orchestrate 的插件拿到 undefined，而不是可用的原始管理器。
+      ...(entry.grants.has('agent.orchestrate')
+        ? {
+            subagentManager: this.agentManager,
+            teamManager: this.teamManager,
+            agentCallLogger: this.agentCallLogger
+          }
+        : {}),
+      ...(entry.grants.has('confirmation.request')
+        ? { confirmationManager: this.confirmationManager }
+        : {}),
       // getter 而非直接取值：setModelRegistry 在 app.ts 启动后期才调用，
       // 晚于插件 setup（createPluginContext 构建本 context 的时机），
       // 直接传 this.modelRegistry 会把 undefined 固化进 context。
       get modelRegistry(): ModelRegistryLike | undefined {
         return getModelRegistry()
       },
+      effect: registerEffect,
+      registerDisposable: (dispose: PluginEffectDisposer, metadata: PluginEffectMetadata = {}) =>
+        registerEffect('disposable', metadata, () => dispose),
+      trackSession: (handle: PluginSessionHandle, metadata: PluginEffectMetadata = {}) =>
+        registerEffect('session', metadata, () => async () => {
+          handle.abort()
+          handle.dispose()
+        }),
       registerTool: (tool: ToolDefinition) => {
+        if (!entry.grants.has('tools.register')) {
+          throw new Error(
+            `插件 ${pluginName} 未获得 tools.register 能力，无法注册工具 ${tool.name}`
+          )
+        }
         entry.tools.push(tool)
+        pushTrackedEffect(
+          'tool',
+          tool.name,
+          () => {
+            entry.tools = entry.tools.filter((candidate) => candidate !== tool)
+          },
+          { unloadScope: 'immediate' }
+        )
         logger.debug({ tool: tool.name }, '工具已注册')
       },
       registerRoute: (route: RouteDefinition) => {
+        if (!entry.grants.has('routes.register')) {
+          throw new Error(
+            `插件 ${pluginName} 未获得 routes.register 能力，无法注册路由 ${route.method} ${route.path}`
+          )
+        }
         entry.routes.push(route)
+        pushTrackedEffect(
+          'route',
+          `${route.method}:${route.path}`,
+          () => {
+            entry.routes = entry.routes.filter((candidate) => candidate !== route)
+          },
+          { unloadScope: 'restart-required', hostAttached: false }
+        )
         logger.debug({ method: route.method, path: route.path }, '路由已注册')
       },
       onEvent: (type: string, handler: EventHandler) => {
+        if (!entry.grants.has('agent.hooks')) {
+          throw new Error(`插件 ${pluginName} 未获得 agent.hooks 能力，无法注册事件监听 ${type}`)
+        }
         this.eventBus.on(type, handler)
-        entry.eventHandlers.push({ type, handler })
+        const eventRegistration = { type, handler }
+        entry.eventHandlers.push(eventRegistration)
+        pushTrackedEffect(
+          'event',
+          type,
+          () => {
+            this.eventBus.off(type, handler)
+            entry.eventHandlers = entry.eventHandlers.filter(
+              (candidate) => candidate !== eventRegistration
+            )
+          },
+          { unloadScope: 'immediate' }
+        )
         logger.debug({ event: type }, '事件监听已注册')
       },
       registerPanel: (panel: PanelDefinition) => {
+        if (!entry.grants.has('ui.contribute')) {
+          throw new Error(
+            `插件 ${pluginName} 未获得 ui.contribute 能力，无法注册 UI 面板 ${panel.id}`
+          )
+        }
         entry.panels.push(panel)
-        logger.debug({ panel: panel.id }, 'UI 面板已注册')
+        const slot =
+          panel.slot ??
+          (panel.position === 'sidebar'
+            ? 'app.navigation'
+            : panel.position === 'main'
+              ? 'workspace.main'
+              : 'right-panel.tab')
+        const scope =
+          panel.scope ?? (slot === 'workspace.main' || slot === 'right-panel.tab' ? 'page' : 'app')
+        const allowedSlots: PluginUiContribution['slot'][] = [
+          'app.navigation',
+          'workspace.main',
+          'right-panel.tab',
+          'tool.detail',
+          'trace.detail',
+          'plugin-page.top'
+        ]
+        const state: PluginUiContribution['state'] =
+          panel.rendererKey && allowedSlots.includes(slot) ? 'active' : 'invalid'
+        entry.uiContributions.push({
+          contributionId: panel.id,
+          slot,
+          scope,
+          priority: panel.priority ?? 0,
+          rendererKey: panel.rendererKey ?? panel.component,
+          entryKey: panel.entryKey,
+          props: panel.props,
+          state
+        })
+        pushTrackedEffect(
+          'panel',
+          panel.id,
+          () => {
+            entry.panels = entry.panels.filter((candidate) => candidate !== panel)
+            entry.uiContributions = entry.uiContributions.filter(
+              (candidate) => candidate.contributionId !== panel.id
+            )
+          },
+          { unloadScope: 'immediate' }
+        )
+        logger.debug(
+          { panel: panel.id, slot, rendererKey: panel.rendererKey ?? panel.component },
+          'UI 面板已注册'
+        )
       },
       registerMigration: (migration: MigrationDefinition) => {
+        if (!entry.grants.has('storage.plugin')) {
+          throw new Error(
+            `插件 ${pluginName} 未获得 storage.plugin 能力，无法注册数据库迁移 ${migration.id}`
+          )
+        }
         entry.migrations.push(migration)
         logger.debug({ migrationId: migration.id }, '已注册数据库迁移')
       },
       registerSessionTools: (tools: PiToolDefinition[]) => {
+        if (!entry.grants.has('tools.register')) {
+          throw new Error(`插件 ${pluginName} 未获得 tools.register 能力，无法注册 Session 工具`)
+        }
         entry.sessionTools.push(...tools)
         logger.debug({ count: tools.length }, '已注册 Session 工具')
       },
       registerService: (name: string, service: unknown) => {
+        if (!entry.grants.has('storage.plugin')) {
+          throw new Error(`插件 ${pluginName} 未获得 storage.plugin 能力，无法注册服务 ${name}`)
+        }
         entry.services.push({ name, service })
-        logger.debug({ serviceName: name }, '已注册 Fastify 服务')
+        // 注册到 serviceRegistry 以便动态查找和替换
+        if (!this.serviceRegistry.has(name)) {
+          this.serviceRegistry.set(name, new Map())
+        }
+        const pluginMap = this.serviceRegistry.get(name)!
+        pluginMap.set(entry.pluginId, { service, pluginId: entry.pluginId })
+        pushTrackedEffect(
+          'service',
+          name,
+          () => {
+            const current = this.serviceRegistry.get(name)
+            current?.delete(entry.pluginId)
+            if (current?.size === 0) this.serviceRegistry.delete(name)
+            entry.services = entry.services.filter(
+              (candidate) => candidate.name !== name || candidate.service !== service
+            )
+          },
+          { unloadScope: 'restart-required', hostAttached: true }
+        )
+        logger.debug(
+          { serviceName: name, pluginId: entry.pluginId },
+          '已注册 Fastify 服务（可替换）'
+        )
       },
       registerPromptTemplates: (dir: string) => {
+        // 提示词模板注册不需要特殊能力
         entry.promptTemplateDirs.push(dir)
         logger.debug({ dir }, '已注册提示词模板目录')
       },
       createSession: async (options: PluginSessionOptions): Promise<PluginSessionHandle> => {
+        // 创建独立 Pi Session 会消耗模型额度并拿到工具集，属高风险能力：
+        // 与 registerTool / registerRoute 同样按 grant 判定，local/npm 默认拒绝。
+        if (!entry.grants.has('session.create')) {
+          throw new Error(`插件 ${pluginName} 未获得 session.create 能力，无法创建 Session`)
+        }
         // AgentRuntime 路由（方案 §9.3）：默认 'pi-session' 走下方内联实现；
         // 第三方运行时（pi-subagents / pi-actors 等）通过 PluginManagerOptions
         // 注入的注册表承载，未注册的 kind 显式抛错。
@@ -853,7 +1595,7 @@ export class PluginManager {
           const runtime = this.runtimeRegistry.get(runtimeKind)
           if (!runtime) {
             throw new Error(
-              `未注册的 AgentRuntime: ${runtimeKind}（可用: ${this.runtimeRegistry.listKinds().join(', ') || '无'}）`,
+              `未注册的 AgentRuntime: ${runtimeKind}（可用: ${this.runtimeRegistry.listKinds().join(', ') || '无'}）`
             )
           }
           return runtime.createSession(options)
@@ -870,8 +1612,8 @@ export class PluginManager {
               runId: options.trace.runId,
               metadata: {
                 pluginName,
-                ...(options.trace.metadata ?? {}),
-              },
+                ...(options.trace.metadata ?? {})
+              }
             })
           : undefined
         let traceFinished = false
@@ -879,7 +1621,7 @@ export class PluginManager {
           type: TraceEventType,
           data: Record<string, unknown>,
           sourceEventSeqs?: number[],
-          status: EventStatus = 'completed',
+          status: EventStatus = 'completed'
         ): number | undefined => {
           if (!trace || !this.tracer) return undefined
           try {
@@ -891,7 +1633,7 @@ export class PluginManager {
         }
         const finishTrace = (
           status: 'completed' | 'failed' | 'aborted',
-          terminalData?: Record<string, unknown>,
+          terminalData?: Record<string, unknown>
         ): void => {
           if (!trace || !this.tracer || traceFinished) return
           traceFinished = true
@@ -906,7 +1648,7 @@ export class PluginManager {
         // additionalSkillPaths 定向加载，不扫描环境中的其他 Skills。
         const authorizedSkills = [
           ...(options.skill ? [options.skill] : []),
-          ...(options.extraSkills ?? []),
+          ...(options.extraSkills ?? [])
         ]
 
         // 构建 AgentConfig，通过 withAgentConfig 注入 systemPrompt 到 system role。
@@ -937,19 +1679,24 @@ export class PluginManager {
           systemPrompt: options.systemPrompt,
           ...(options.modelId ? { model: options.modelId } : {}),
           ...(authorizedSkills.length > 0
-            ? { skillPaths: authorizedSkills.map(s => s.path) }
+            ? { skillPaths: authorizedSkills.map((s) => s.path) }
             : {}),
           ...(Array.isArray(options.tools)
             ? {
-                tools: options.tools.map(t => t.name),
-                extraTools: options.tools,
+                tools: options.tools.map((t) => t.name),
+                extraTools: options.tools
               }
             : {}),
           // 受限 skill_read（方案 §9.2）：仅当本次会话显式授权了 Skill 且调用方
           // 声明 skillRead 时注入；授权范围绑定到本次会话的 skill 根目录。
           ...(options.skillRead && authorizedSkills.length > 0
-            ? { extraTools: [...(Array.isArray(options.tools) ? options.tools : []), createSkillReadTool(options.skillRead)] }
-            : {}),
+            ? {
+                extraTools: [
+                  ...(Array.isArray(options.tools) ? options.tools : []),
+                  createSkillReadTool(options.skillRead)
+                ]
+              }
+            : {})
         }
 
         // 在 withAgentConfig 上下文中创建 session：
@@ -965,13 +1712,13 @@ export class PluginManager {
             filePath: string
           }>
           for (const authorized of authorizedSkills) {
-            const loaded = loadedSkills.find(skill => skill.name === authorized.name)
+            const loaded = loadedSkills.find((skill) => skill.name === authorized.name)
             if (!loaded || resolve(loaded.filePath) !== resolve(authorized.path)) {
               throw new Error(`插件 Session 未能加载授权 Skill: ${authorized.name}`)
             }
           }
           // 增强：Skill 内容指纹审计（SHA-256 前 16 位），用于规则漂移检测与日志留痕。
-          const fingerprints = authorizedSkills.map(skill => {
+          const fingerprints = authorizedSkills.map((skill) => {
             let fingerprint = ''
             try {
               fingerprint = fingerprintSkillContent(readFileSync(skill.path, 'utf-8'))
@@ -980,7 +1727,10 @@ export class PluginManager {
             }
             return { name: skill.name, fingerprint }
           })
-          logger.info({ threadId, skillFingerprints: fingerprints }, '插件 Session 已加载授权 Skill（指纹审计）')
+          logger.info(
+            { threadId, skillFingerprints: fingerprints },
+            '插件 Session 已加载授权 Skill（指纹审计）'
+          )
         }
 
         // 注入 SEMI 层前缀消息（章节上下文）：作为独立首条 user 消息加入对话历史，
@@ -1001,18 +1751,22 @@ export class PluginManager {
             const prefixMessages = prefixes.map((content, i) => ({
               role: 'user',
               content,
-              timestamp: now + i,
+              timestamp: now + i
             }))
             const existing = piSession.agent.state.messages ?? []
             piSession.agent.state.messages = [...existing, ...prefixMessages]
             logger.debug(
-              { threadId, prefixCount: prefixMessages.length, prefixLengths: prefixes.map(p => p.length) },
-              '已注入 SEMI 层前缀消息（每条独立打 cache_control breakpoint）',
+              {
+                threadId,
+                prefixCount: prefixMessages.length,
+                prefixLengths: prefixes.map((p) => p.length)
+              },
+              '已注入 SEMI 层前缀消息（每条独立打 cache_control breakpoint）'
             )
           } else {
             logger.warn(
               { threadId },
-              '无法注入前缀消息：session.agent.state 不可用，将回退到拼接模式',
+              '无法注入前缀消息：session.agent.state 不可用，将回退到拼接模式'
             )
           }
         }
@@ -1027,16 +1781,26 @@ export class PluginManager {
           if (event.type === 'message_end') {
             const message = event.message as Record<string, unknown> | undefined
             const terminalError = getAssistantTerminalError(message, {
-              requireComplete: options.responseFormat === 'json',
+              requireComplete: options.responseFormat === 'json'
             })
-            cancelDebug('message_end-received', { threadId, stopReason: message?.stopReason, hasError: !!terminalError, errorMessage: terminalError || undefined })
+            cancelDebug('message_end-received', {
+              threadId,
+              stopReason: message?.stopReason,
+              hasError: !!terminalError,
+              errorMessage: terminalError || undefined
+            })
             if (terminalError !== null) {
               lastErrorMessage = terminalError
             }
             if (terminalError) {
               logger.error(
-                { threadId, errorMessage: lastErrorMessage, provider: message?.provider, model: message?.model },
-                'Pi Session LLM 调用失败（message_end stopReason=error）',
+                {
+                  threadId,
+                  errorMessage: lastErrorMessage,
+                  provider: message?.provider,
+                  model: message?.model
+                },
+                'Pi Session LLM 调用失败（message_end stopReason=error）'
               )
             }
             if (isFinalAssistantSuccess(message)) {
@@ -1055,17 +1819,22 @@ export class PluginManager {
         })
 
         const runPromptUntilFinalAssistant = async (nextUserMessage?: string): Promise<void> => {
-          const visibleMessage = nextUserMessage === undefined ? options.userMessage : nextUserMessage
+          const visibleMessage =
+            nextUserMessage === undefined ? options.userMessage : nextUserMessage
           const userSeq = recordTraceEvent('user_message', {
             source: 'plugin-session',
             length: visibleMessage.length,
-            preview: visibleMessage.slice(0, 500),
+            preview: visibleMessage.slice(0, 500)
           })
-          const requestSeq = recordTraceEvent('llm_request', {
-            source: 'plugin-session',
-            modelId: options.modelId,
-            responseFormat: options.responseFormat ?? 'text',
-          }, userSeq === undefined ? undefined : [userSeq])
+          const requestSeq = recordTraceEvent(
+            'llm_request',
+            {
+              source: 'plugin-session',
+              modelId: options.modelId,
+              responseFormat: options.responseFormat ?? 'text'
+            },
+            userSeq === undefined ? undefined : [userSeq]
+          )
           const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
           let resolveCurrentFinalAssistant: (() => void) | undefined
           const finalAssistantPromise = new Promise<void>((resolve) => {
@@ -1076,7 +1845,7 @@ export class PluginManager {
             await threadSession.session.prompt(
               nextUserMessage === undefined
                 ? buildPluginSessionPrompt(options.userMessage, options.skill, options.extraSkills)
-                : nextUserMessage,
+                : nextUserMessage
             )
           })
 
@@ -1084,28 +1853,36 @@ export class PluginManager {
             await waitForFinalAssistantOrPrompt({
               promptPromise,
               finalAssistantPromise,
-              timeoutMs,
+              timeoutMs
             })
             // Pi SDK 的 stopReason='error' 可能让 prompt 生命周期正常 resolve。
             // 在写入成功响应前检查终态，避免时间线出现“成功响应”后又失败的假象。
             if (lastErrorMessage) {
               throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
             }
-            recordTraceEvent('llm_response', {
-              source: 'plugin-session',
-              length: completeText.length,
-              preview: completeText.slice(0, 500),
-            }, requestSeq === undefined ? undefined : [requestSeq])
-            recordTraceEvent('assistant_message', {
-              source: 'plugin-session',
-              length: completeText.length,
-              preview: completeText.slice(0, 500),
-            }, requestSeq === undefined ? undefined : [requestSeq])
+            recordTraceEvent(
+              'llm_response',
+              {
+                source: 'plugin-session',
+                length: completeText.length,
+                preview: completeText.slice(0, 500)
+              },
+              requestSeq === undefined ? undefined : [requestSeq]
+            )
+            recordTraceEvent(
+              'assistant_message',
+              {
+                source: 'plugin-session',
+                length: completeText.length,
+                preview: completeText.slice(0, 500)
+              },
+              requestSeq === undefined ? undefined : [requestSeq]
+            )
           } catch (error) {
             finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {
               source: 'plugin-session',
               message: error instanceof Error ? error.message : String(error),
-              ...(requestSeq === undefined ? {} : { sourceEventSeq: requestSeq }),
+              ...(requestSeq === undefined ? {} : { sourceEventSeq: requestSeq })
             })
             throw error
           } finally {
@@ -1132,7 +1909,7 @@ export class PluginManager {
           }
           const targetModel = this.modelRegistry.find(
             options.modelId.provider,
-            options.modelId.modelId,
+            options.modelId.modelId
           )
           if (!targetModel) {
             const message = `未找到所选模型：${options.modelId.provider}/${options.modelId.modelId}`
@@ -1147,7 +1924,7 @@ export class PluginManager {
           cacheControlTarget = {
             provider: options.modelId.provider,
             modelId: options.modelId.modelId,
-            baseUrl: (targetModel as { baseUrl?: string }).baseUrl,
+            baseUrl: (targetModel as { baseUrl?: string }).baseUrl
           }
         } else if (this.modelRegistry?.getAll) {
           // 未指定 modelId 时，尝试从注册表第一个模型读取 maxTokens
@@ -1165,7 +1942,7 @@ export class PluginManager {
             cacheControlTarget = {
               provider: allModels[0].provider,
               modelId: allModels[0].id,
-              baseUrl: allModels[0].baseUrl,
+              baseUrl: allModels[0].baseUrl
             }
           }
         }
@@ -1175,9 +1952,10 @@ export class PluginManager {
         // 才可能命中那台机器上的前缀缓存。pi-ai 默认用 sessionId，而我们每次
         // runAgent 都新建 session → 随机 key → 同一章的多个 Agent 各走一台机器，
         // 共享前缀白建。有 promptCacheScope 时改用稳定 key。
-        const promptCacheKey = options.promptCacheScope && usesOpenAiPromptCacheKey(cacheControlTarget)
-          ? buildPromptCacheKey(options.promptCacheScope)
-          : undefined
+        const promptCacheKey =
+          options.promptCacheScope && usesOpenAiPromptCacheKey(cacheControlTarget)
+            ? buildPromptCacheKey(options.promptCacheScope)
+            : undefined
 
         // 注入生成参数到 provider payload（temperature / max_tokens / response_format / cache_control）
         // Agent.onPayload 在 provider 请求发送前调用，返回修改后的 payload
@@ -1255,15 +2033,20 @@ export class PluginManager {
 
               // 1) 处理 system prompt（仅 Anthropic 格式：payload.system 为 string 或 content blocks）
               if (typeof payload.system === 'string' && payload.system.length > 0) {
-                payload.system = [{
-                  type: 'text',
-                  text: payload.system,
-                  cache_control: { type: 'ephemeral' },
-                }]
+                payload.system = [
+                  {
+                    type: 'text',
+                    text: payload.system,
+                    cache_control: { type: 'ephemeral' }
+                  }
+                ]
               } else if (Array.isArray(payload.system) && payload.system.length > 0) {
                 const last = payload.system[payload.system.length - 1] as Record<string, unknown>
                 if (last && typeof last === 'object' && !last.cache_control) {
-                  payload.system = [...payload.system.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+                  payload.system = [
+                    ...payload.system.slice(0, -1),
+                    { ...last, cache_control: { type: 'ephemeral' } }
+                  ]
                 }
               }
               // OpenAI 兼容格式：system 在 messages[0].role === 'system'，content 为 string。
@@ -1299,7 +2082,9 @@ export class PluginManager {
                   if (typeof content === 'string') {
                     messages[i] = {
                       ...msg,
-                      content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }],
+                      content: [
+                        { type: 'text', text: content, cache_control: { type: 'ephemeral' } }
+                      ]
                     }
                     markedAny = true
                     breakpointCount++
@@ -1308,7 +2093,10 @@ export class PluginManager {
                     if (lastBlock && typeof lastBlock === 'object' && !lastBlock.cache_control) {
                       messages[i] = {
                         ...msg,
-                        content: [...content.slice(0, -1), { ...lastBlock, cache_control: { type: 'ephemeral' } }],
+                        content: [
+                          ...content.slice(0, -1),
+                          { ...lastBlock, cache_control: { type: 'ephemeral' } }
+                        ]
                       }
                       markedAny = true
                       breakpointCount++
@@ -1333,7 +2121,10 @@ export class PluginManager {
                 logger.info({ threadId }, '✅ 已移除 stream_options 字段（兼容中转网关）')
                 return rest
               }
-              logger.warn({ threadId, hasStreamOptions: false }, '⚠️ strip 开启但 payload 未检测到 stream_options 字段')
+              logger.warn(
+                { threadId, hasStreamOptions: false },
+                '⚠️ strip 开启但 payload 未检测到 stream_options 字段'
+              )
               return payload
             }
 
@@ -1371,9 +2162,9 @@ export class PluginManager {
                 // 未支持时不打断点，交由 provider 的自动前缀缓存命中
                 cacheControlSupported,
                 cacheControlTarget,
-                injectKeys: Object.keys(inject),
+                injectKeys: Object.keys(inject)
               },
-              '🔧 已注入 onPayload 钩子到 Pi Session',
+              '🔧 已注入 onPayload 钩子到 Pi Session'
             )
           } else {
             logger.warn({ threadId, ...inject }, 'session.agent 不可用，无法注入生成参数')
@@ -1383,29 +2174,45 @@ export class PluginManager {
         // 中止信号转发
         if (options.signal) {
           const signalAlreadyAborted = options.signal.aborted
-          cancelDebug('createSession-register-listener', { threadId, signalAlreadyAborted, hasAgent: !!(threadSession.session as any).agent })
+          cancelDebug('createSession-register-listener', {
+            threadId,
+            signalAlreadyAborted,
+            hasAgent: !!(threadSession.session as any).agent
+          })
           if (signalAlreadyAborted) {
             // signal 已 abort：立即调用 session.abort()。但此时 session 还没有 activeRun，
             // session.abort() 内部 this.activeRun?.abortController.abort() 无操作。
             // 后续 prompt() 入口会再次检查 signal.aborted 并抛错。
             try {
               threadSession.session.abort()
-              cancelDebug('createSession-already-aborted-call', { threadId, hasActiveRun: !!(threadSession.session as any).agent?.activeRun })
+              cancelDebug('createSession-already-aborted-call', {
+                threadId,
+                hasActiveRun: !!(threadSession.session as any).agent?.activeRun
+              })
             } catch (err) {
-              cancelDebug('createSession-already-aborted-fail', { threadId, errMessage: err instanceof Error ? err.message : String(err) })
+              cancelDebug('createSession-already-aborted-fail', {
+                threadId,
+                errMessage: err instanceof Error ? err.message : String(err)
+              })
             }
           }
           options.signal.addEventListener(
             'abort',
             () => {
-              cancelDebug('signal-abort-event', { threadId, hasActiveRun: !!(threadSession.session as any).agent?.activeRun })
+              cancelDebug('signal-abort-event', {
+                threadId,
+                hasActiveRun: !!(threadSession.session as any).agent?.activeRun
+              })
               try {
                 threadSession.session.abort()
               } catch (err) {
-                cancelDebug('signal-abort-event-fail', { threadId, errMessage: err instanceof Error ? err.message : String(err) })
+                cancelDebug('signal-abort-event-fail', {
+                  threadId,
+                  errMessage: err instanceof Error ? err.message : String(err)
+                })
               }
             },
-            { once: true },
+            { once: true }
           )
         }
 
@@ -1429,59 +2236,165 @@ export class PluginManager {
               cancelDebug('prompt-aborted-at-entry', { threadId })
               throw new Error('LLM 调用已被中止')
             }
+
+            // === UserPromptSubmit Hook ===
+            const hookMessage = message ?? options.userMessage
+            let finalMessage = hookMessage
+            if (this.hookManager) {
+              try {
+                const hookResult = await this.hookManager.runUserPromptSubmitHooks(
+                  hookMessage,
+                  options.signal ?? new AbortController().signal
+                )
+                if (hookResult.outcome.decision === 'deny') {
+                  throw new Error(
+                    `UserPromptSubmit Hook 拒绝: ${hookResult.outcome.reason ?? '无原因'}`
+                  )
+                }
+                // 如果 Hook 返回了 additionalContext，将其前置到消息中
+                if (hookResult.outcome.additionalContext.length > 0) {
+                  const ctxText = hookResult.outcome.additionalContext.join('\n\n')
+                  finalMessage = `${ctxText}\n\n${hookMessage}`
+                  logger.debug(
+                    { threadId, additionalContext: hookResult.outcome.additionalContext },
+                    'UserPromptSubmit Hook 附加上下文已前置'
+                  )
+                }
+                // 如果有系统消息，通过 eventBus 记录
+                if (hookResult.outcome.systemMessages.length > 0) {
+                  this.eventBus.emit('devlog:entry', {
+                    level: 'info',
+                    message: `UserPromptSubmit Hook 系统消息: ${hookResult.outcome.systemMessages.join(', ')}`,
+                    source: 'agent'
+                  })
+                }
+              } catch (error) {
+                // 如果错误是阻断错误，重新抛出
+                if (
+                  error instanceof Error &&
+                  error.message.startsWith('UserPromptSubmit Hook 拒绝')
+                ) {
+                  throw error
+                }
+                // 其他错误记录但不阻断
+                logger.warn({ threadId, err: error }, 'UserPromptSubmit Hook 执行异常，继续执行')
+              }
+            }
+            // ==================================
+
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
             // message_end(stop/length) 已代表正文完成。Pi SDK 随后的自动压缩
             // 属于 Session 维护，不应阻塞一次性的 create-flow Agent。
             try {
-              await runPromptUntilFinalAssistant(message)
+              await runPromptUntilFinalAssistant(finalMessage)
               // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
               if (lastErrorMessage) {
-                cancelDebug('prompt-error-detected', { threadId, lastErrorMessage, signalAborted: options.signal?.aborted })
+                cancelDebug('prompt-error-detected', {
+                  threadId,
+                  lastErrorMessage,
+                  signalAborted: options.signal?.aborted
+                })
                 throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
               }
               return completeText
             } catch (error) {
               finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {
                 source: 'plugin-session',
-                message: error instanceof Error ? error.message : String(error),
+                message: error instanceof Error ? error.message : String(error)
               })
               throw error
             }
           },
           promptStream: async (onDelta: (delta: string) => void): Promise<string> => {
             // 见 prompt() 中的注释：signal 已 abort 时必须立即抛错，
-            // 否则跨 Agent 之间的 abort 无法生效。
+            // 否则跨 Agent 之间�� abort 无法生效。
             if (options.signal?.aborted) {
               cancelDebug('promptStream-aborted-at-entry', { threadId })
               throw new Error('LLM 调用已被中止')
             }
+
+            // === UserPromptSubmit Hook ===
+            const hookMessage = options.userMessage
+            let finalMessage = hookMessage
+            if (this.hookManager) {
+              try {
+                const hookResult = await this.hookManager.runUserPromptSubmitHooks(
+                  hookMessage,
+                  options.signal ?? new AbortController().signal
+                )
+                if (hookResult.outcome.decision === 'deny') {
+                  throw new Error(
+                    `UserPromptSubmit Hook 拒绝: ${hookResult.outcome.reason ?? '无原因'}`
+                  )
+                }
+                // 如果 Hook 返回了 additionalContext，将其前置到消息中
+                if (hookResult.outcome.additionalContext.length > 0) {
+                  const ctxText = hookResult.outcome.additionalContext.join('\n\n')
+                  finalMessage = `${ctxText}\n\n${hookMessage}`
+                  logger.debug(
+                    { threadId, additionalContext: hookResult.outcome.additionalContext },
+                    'UserPromptSubmit Hook 附加上下文已前置'
+                  )
+                }
+                // 如果有系统消息，通过 eventBus 记录
+                if (hookResult.outcome.systemMessages.length > 0) {
+                  this.eventBus.emit('devlog:entry', {
+                    level: 'info',
+                    message: `UserPromptSubmit Hook 系统消息: ${hookResult.outcome.systemMessages.join(', ')}`,
+                    source: 'agent'
+                  })
+                }
+              } catch (error) {
+                // 如果错误是阻断错误，重新抛出
+                if (
+                  error instanceof Error &&
+                  error.message.startsWith('UserPromptSubmit Hook 拒绝')
+                ) {
+                  throw error
+                }
+                // 其他错误记录但不阻断
+                logger.warn({ threadId, err: error }, 'UserPromptSubmit Hook 执行异常，继续执行')
+              }
+            }
+            // ==================================
+
+            // 如果消息被 Hook 修改，使用修改后的消息重新构建 prompt
+            const finalUserMessage = finalMessage !== hookMessage ? finalMessage : undefined
+
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
             // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。
-            const streamUnsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
-              if (event.type === 'message_end') {
-                const message = event.message as Record<string, unknown> | undefined
-                const terminalError = getAssistantTerminalError(message, {
-                  requireComplete: options.responseFormat === 'json',
-                })
-                if (terminalError !== null) {
-                  lastErrorMessage = terminalError
+            const streamUnsubscribe = threadSession.session.subscribe(
+              (event: Record<string, unknown>) => {
+                if (event.type === 'message_end') {
+                  const message = event.message as Record<string, unknown> | undefined
+                  const terminalError = getAssistantTerminalError(message, {
+                    requireComplete: options.responseFormat === 'json'
+                  })
+                  if (terminalError !== null) {
+                    lastErrorMessage = terminalError
+                  }
+                  return
                 }
-                return
+                if (event.type !== 'message_update') return
+                const assistantMessageEvent = event.assistantMessageEvent as
+                  | Record<string, unknown>
+                  | undefined
+                if (!assistantMessageEvent) return
+                if (assistantMessageEvent.type !== 'text_delta') return
+                const delta = (assistantMessageEvent.delta as string) ?? ''
+                if (delta) onDelta(delta)
               }
-              if (event.type !== 'message_update') return
-              const assistantMessageEvent = event.assistantMessageEvent as
-                | Record<string, unknown>
-                | undefined
-              if (!assistantMessageEvent) return
-              if (assistantMessageEvent.type !== 'text_delta') return
-              const delta = (assistantMessageEvent.delta as string) ?? ''
-              if (delta) onDelta(delta)
-            })
+            )
             try {
               try {
-                await runPromptUntilFinalAssistant()
+                // 如果消息被修改，传递修改后的消息
+                if (finalUserMessage) {
+                  await runPromptUntilFinalAssistant(finalUserMessage)
+                } else {
+                  await runPromptUntilFinalAssistant()
+                }
                 // stopReason='error' 时即使有部分文本也视为失败（截断结果不可信）
                 if (lastErrorMessage) {
                   throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
@@ -1490,7 +2403,7 @@ export class PluginManager {
               } catch (error) {
                 finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {
                   source: 'plugin-session',
-                  message: error instanceof Error ? error.message : String(error),
+                  message: error instanceof Error ? error.message : String(error)
                 })
                 throw error
               }
@@ -1516,7 +2429,7 @@ export class PluginManager {
             } catch (err) {
               logger.warn({ err }, '取消订阅 Pi Session 事件失败')
             }
-          },
+          }
         }
       },
 
@@ -1534,7 +2447,7 @@ export class PluginManager {
         agUiOptions: PluginSessionOptions & {
           emit: import('@repo/protocol/events').AgUiEventSink
           emitRaw?: boolean
-        },
+        }
       ): Promise<AgUiSessionHandle> {
         // onFirstText 在此解构后不传入 createSession（createSession 不识别该字段）
         const { emit, emitRaw = false, onFirstText, ...sessionOptions } = agUiOptions
@@ -1550,15 +2463,21 @@ export class PluginManager {
           streamEmitter.handleSessionEvent(event)
           // 检测首段 text_delta，触发 onFirstText 回调（只触发一次）
           if (
-            !firstTextFired
-            && onFirstText
-            && event.type === 'message_update'
-            && (event as Record<string, unknown>).assistantMessageEvent
-            && ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>).type === 'text_delta'
-            && ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>).delta
+            !firstTextFired &&
+            onFirstText &&
+            event.type === 'message_update' &&
+            (event as Record<string, unknown>).assistantMessageEvent &&
+            ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>)
+              .type === 'text_delta' &&
+            ((event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown>)
+              .delta
           ) {
             firstTextFired = true
-            try { onFirstText() } catch { /* 忽略回调错误，避免影响事件流 */ }
+            try {
+              onFirstText()
+            } catch {
+              /* 忽略回调错误，避免影响事件流 */
+            }
           }
         })
         return {
@@ -1568,11 +2487,19 @@ export class PluginManager {
           reasoningPipeline,
           messageId,
           dispose(): void {
-            try { unsubscribe() } catch { /* 忽略 */ }
-            try { session.dispose() } catch { /* 忽略 */ }
-          },
+            try {
+              unsubscribe()
+            } catch {
+              /* 忽略 */
+            }
+            try {
+              session.dispose()
+            } catch {
+              /* 忽略 */
+            }
+          }
         }
-      },
+      }
     }
   }
 }
@@ -1590,7 +2517,8 @@ export type {
   ToolDefinition,
   RouteDefinition,
   PanelDefinition,
-  EventHandler,
+  PluginUiContribution,
+  EventHandler
 } from './plugin-types.js'
 
 /**
@@ -1618,6 +2546,6 @@ export function measurePayload(payload: unknown): import('./plugin-types.js').Pl
     messagesChars: safeLength(record.messages) + safeLength(record.system),
     toolsChars: safeLength(record.tools),
     toolCount: tools.length,
-    totalChars: safeLength(payload),
+    totalChars: safeLength(payload)
   }
 }

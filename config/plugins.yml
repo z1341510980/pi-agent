@@ -1,11 +1,12 @@
 # pi-agent 插件配置文件
-# 
+#
 # 使用说明：
 # 1. 在此文件中声明要加载的插件
 # 2. 每个插件必须指定 id 和 source
-# 3. 可通过 enabled 控制插件是否启用
+# 3. 可通过 enabled 控制插件是否启用；enabled: false 的插件仍在插件管理页可见，
+#    可通过 POST /api/plugins/:id/enable 恢复
 # 4. 可通过 config 传递插件特定配置
-# 5. 可通过 isolate: true 让插件在隔离环境中运行
+# 5. 可通过 isolate 记录隔离意图（当前未实现隔离，见文末说明）
 
 plugins:
   # 小说创作插件 - 核心业务插件
@@ -24,6 +25,8 @@ plugins:
         scenePlanning: true
 
   # 网络搜索插件
+  # apiKey 用 ${WEB_SEARCH_API_KEY} 引用环境变量；未设置该变量时启动日志会明确报错，
+  # 且配置项为 undefined，不会把字面量 "${WEB_SEARCH_API_KEY}" 当成密钥传给插件。
   - id: web-search-plugin
     source: builtin
     enabled: true
@@ -40,18 +43,74 @@ plugins:
     enabled: false
     isolate: false
     config:
-      greeting: "Hello from pi-agent!"
+      greeting: 'Hello from pi-agent!'
 
 # 配置说明：
 # source 支持三种类型：
 #   - builtin: 内置插件（在 plugin-loader 中注册的工厂函数）
-#   - local: 本地文件系统插件（需要配置 localPluginsDir）
-#   - npm: npm 包插件（包名以 wenlang-agent-plugin- 开头）
+#   - local: 本地文件系统插件（必须提供 sourceRef 指向入口文件）
+#   - npm: npm 包插件（必须提供 sourceRef 指向包名）
 #
-# isolate: true 时插件将运行在独立上下文中：
-#   - 独立的数据库连接
-#   - 独立的事件总线（仅接收本插件事件）
-#   - 独立的日志上下文
-#   - 适合需要高隔离性的第三方插件
+# enabled: false 的语义按来源不同：
+#   - builtin：仍会实例化并进入 catalog（代码随仓库编译，实例化无额外副作用），
+#     只是启动时不执行 setup，因此可以在运行期 enable
+#   - local/npm：不 import 模块（执行第三方顶层代码本身就是副作用），
+#     仅出现在 /api/plugins/catalog 中，启用需要重启
 #
-# 环境变量引用：使用 ${VAR_NAME} 语法，启动时会自动替换
+# isolate 当前只被记录，不产生隔离效果。代码中没有据此创建独立进程、独立数据库
+# 或独立事件总线的实现。真正的隔离按方案属于 P3（Worker / 独立进程）。
+#
+# 环境变量引用：
+#   只支持"整个值就是一个引用"的形式 ${VAR_NAME}，变量名须为大写字母/数字/下划线。
+#   混合写法（如 https://${HOST}/api）和小写名不会被替换，会在启动日志中报错，
+#   避免插件把 ${HOST} 当成真实主机名使用。
+#
+# 版本与完整性锁定（local/npm）：
+#   resolvedVersion: 锁定的版本号，与包的 package.json version 精确比对
+#   integrity: 包目录摘要（SRI 格式 sha256-<base64>），import 之前校验，
+#              任何文件被改动、增删都会导致校验失败并拒绝加载
+#   生成方式：
+#     pnpm --filter agent-server exec tsx --tsconfig tsconfig.tsx.json scripts/seal-plugin.ts <插件包目录>
+#   写错的 integrity 按错误处理，不会静默降级为"未锁定"。
+#   算法只接受 sha256（目录摘要就是用它算的）；写 sha384/sha512 会被拒绝，
+#   而不是通过配置校验却在加载期永久失败。
+#   未声明锁的 local/npm 插件仍会加载，但状态为 integrityStatus: unverified，
+#   启动日志告警，插件详情的 diagnostics 里也会明示。生产环境应先 seal。
+#
+# grants（local/npm 的能力授予）：
+#   manifest.permissions 只是插件的"请求"，不构成授权。local/npm 插件的实际
+#   能力完全来自这里的 grants 列表；不写就是零能力。builtin 默认持有全部能力。
+#   可用能力：
+#     tools.register        注册工具
+#     agent.hooks           注册 Agent 生命周期钩子
+#     provider.transform    改写 Provider 请求/响应
+#     provider.observe      观察 Provider 请求（只读）
+#     routes.register       注册 HTTP 路由（启动期挂载，运行期 enable 需重启）
+#     storage.plugin        访问数据库、注册迁移与 Fastify 服务
+#     ui.contribute         贡献 UI 面板与 slot
+#     network.outbound      发起网络请求（仅 HTTP(S)，30s 超时）
+#     process.exec          执行子进程（无 shell，30s，输出 256KB 上限，cwd 锁 dataDir）
+#     session.create        创建独立 Pi Session（会消耗模型额度）
+#     agent.orchestrate     访问 subagent / team 管理器与 Agent 调用日志
+#     confirmation.request  复用 chat 的确认/决策流程
+#   示例：
+#     - id: my-plugin
+#       source: local
+#       sourceRef: ./plugins/my-plugin/index.js
+#       enabled: true
+#       resolvedVersion: "1.0.0"
+#       integrity: sha256-...
+#       grants:
+#         - tools.register
+#         - session.create
+#   授权变更经 PUT /api/plugins/:id/grants 写回本文件，并标记 restartRequired。
+#
+# 插件文件写入：
+#   插件应通过 context.resolvePath(...) 解析路径，它把结果钉在插件自己的
+#   dataDir 内，越界即抛错。这是约定辅助而非沙箱——插件仍可直接用 node:fs
+#   绕过，强制文件边界需要 Worker / 独立进程（P3）。
+#
+# 依赖：
+#   manifest.dependencies 会参与拓扑排序，依赖先于消费方启动。
+#   缺失依赖、循环依赖或依赖链上游被阻断的插件不会执行 setup，
+#   而是标记为 error 并在插件详情的 dependencyDiagnostics 中给出原因。

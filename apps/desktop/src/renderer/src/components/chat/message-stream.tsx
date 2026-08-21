@@ -563,7 +563,7 @@ export function MessageStream({
         <div
           ref={contentRef}
           style={{ overflowAnchor: 'none' }}
-          className={`mx-auto w-full max-w-[920px] space-y-5 min-w-0 ${isEmpty ? 'flex-1 flex flex-col justify-center' : ''}`}
+          className={`mx-auto w-full max-w-[748px] space-y-4 min-w-0 ${isEmpty ? 'flex-1 flex flex-col justify-center' : ''}`}
         >
           {banner}
           {showLoadMoreSentinel && (
@@ -630,7 +630,7 @@ export function MessageStream({
         </div>
       </section>
 
-      {/* 滚动到底部浮动按钮（AionUi 风格：圆形 + 阴影） */}
+      {/* 滚动到底部浮动按钮（dsh toBottom：34px 圆、发丝线、lv2 阴影） */}
       <AnimatePresence>
         {showJumpButton && messages.length > 0 && (
           <motion.button
@@ -640,7 +640,7 @@ export function MessageStream({
             exit={{ opacity: 0, y: 8, scale: 0.8 }}
             transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
             onClick={() => scrollToBottom({ smooth: true })}
-            className="pi-floating-button absolute bottom-4 left-1/2 -translate-x-1/2 size-10 rounded-full bg-surface-1 flex items-center justify-center text-text-secondary hover:text-text hover:bg-surface-2 active:scale-[0.96] z-10"
+            className="absolute bottom-4 left-1/2 z-10 flex size-[34px] -translate-x-1/2 items-center justify-center rounded-full border border-border bg-[var(--dsw-alias-button-floating-fill)] text-text shadow-[var(--dsw-shadow-lv2)] transition-colors hover:bg-[var(--dsw-alias-button-floating-hover)] active:scale-[0.96]"
             aria-label="滚动到底部"
           >
             <ArrowDown className="size-4" />

@@ -37,11 +37,21 @@ export type WorkspaceLayoutMode =
 export type RightPanelVisibility = 'closed' | 'open'
 
 /** 右侧面板当前视图（按"做什么"划分，职责单一） */
-export type RightPanelView = 'conversation' | 'detail' | 'settings' | 'audit'
+export type RightPanelView = 'conversation' | 'detail' | 'settings' | 'audit' | 'review'
 // - conversation：统一章节会话（自由聊天/工作流/群聊/反推/编排）
 // - detail：矩阵实体查看/编辑（12 类）+ 实体时间线
 // - settings：项目级配置（标题/大纲/创作主模型/节奏模型/目标平台）
 // - audit：一致性诊断（伏笔回收/钩子悬挂/孤儿实体/时间线矛盾）
+// - review：审校中心（剧情轨道/待审实体/待确认事件/批注/叙事修订）
+
+/** 各视图的默认宽度：会话窄、表单类宽，避免一刀切挤压（P1-4） */
+export const RIGHT_PANEL_DEFAULT_WIDTHS: Record<RightPanelView, number> = {
+  conversation: 340,
+  detail: 420,
+  settings: 380,
+  audit: 400,
+  review: 400,
+}
 
 // ── 尺寸约束常量 ──
 
@@ -63,7 +73,11 @@ export interface NovelWorkspaceLayoutState {
 
   // ── 右侧面板 ──
   rightPanelVisible: RightPanelVisibility
-  rightPanelWidth: number
+  /**
+   * 右栏宽度按视图分别记忆（v4）：会话/表单/审计内容密度不同，
+   * 一刀切宽度必然挤压某一类。读写都走当前 rightPanelView。
+   */
+  rightPanelWidths: Record<RightPanelView, number>
   rightPanelView: RightPanelView
 
   // ── 正文编辑器高度（px，仅 text-timeline 分屏有效，兼容旧 key）──
@@ -151,7 +165,7 @@ function deriveLayoutMode(mainMode: unknown, viewMode: 'matrix' | 'canvas'): Wor
  * 而这条路径只在版本升级那一次执行，手工验证成本很高。
  */
 export function migrateWorkspaceLayoutPersisted(persisted: unknown, version: number): unknown {
-  if (version >= 3 || persisted == null || typeof persisted !== 'object') return persisted
+  if (version >= 4 || persisted == null || typeof persisted !== 'object') return persisted
   const next: Record<string, unknown> = { ...(persisted as Record<string, unknown>) }
 
   if (version < 2) {
@@ -167,12 +181,26 @@ export function migrateWorkspaceLayoutPersisted(persisted: unknown, version: num
   }
   delete next.mainMode
 
+  // v3 → v4：单一 rightPanelWidth → 按视图记忆的 rightPanelWidths。
+  // 旧宽度沿用为 conversation/detail 的记忆值（用户实际拖过的就是这两类），
+  // 其余视图取各自默认值。
+  if (!('rightPanelWidths' in next)) {
+    const legacyWidth = typeof next.rightPanelWidth === 'number' ? next.rightPanelWidth : null
+    next.rightPanelWidths = {
+      ...RIGHT_PANEL_DEFAULT_WIDTHS,
+      ...(legacyWidth != null ? { conversation: legacyWidth, detail: legacyWidth } : {}),
+    }
+  }
+  delete next.rightPanelWidth
+
   return next
 }
 
 /** 旧版独立 chat Tab 迁移到统一章节会话容器。 */
 export function migrateRightPanelView(view: unknown): RightPanelView {
-  return view === 'detail' || view === 'settings' || view === 'audit' ? view : 'conversation'
+  return view === 'detail' || view === 'settings' || view === 'audit' || view === 'review'
+    ? view
+    : 'conversation'
 }
 
 
@@ -188,7 +216,7 @@ export const useNovelWorkspaceLayoutStore = create<NovelWorkspaceLayoutState>()(
       sidebarWidth: LAYOUT_CONSTRAINTS.sidebar.default,
 
       rightPanelVisible: 'open',
-      rightPanelWidth: LAYOUT_CONSTRAINTS.rightPanel.default,
+      rightPanelWidths: { ...RIGHT_PANEL_DEFAULT_WIDTHS },
       rightPanelView: 'conversation',
 
       contentEditorHeight: LAYOUT_CONSTRAINTS.contentEditor.default,
@@ -206,8 +234,14 @@ export const useNovelWorkspaceLayoutStore = create<NovelWorkspaceLayoutState>()(
       toggleRightPanel: () =>
         set((s) => ({ rightPanelVisible: s.rightPanelVisible === 'closed' ? 'open' : 'closed' })),
       setRightPanelVisible: (visible) => set({ rightPanelVisible: visible }),
+      // 写入当前视图自己的宽度，其他视图的记忆不受影响
       setRightPanelWidth: (width) =>
-        set({ rightPanelWidth: clamp(width, LAYOUT_CONSTRAINTS.rightPanel.min, LAYOUT_CONSTRAINTS.rightPanel.max) }),
+        set((s) => ({
+          rightPanelWidths: {
+            ...s.rightPanelWidths,
+            [s.rightPanelView]: clamp(width, LAYOUT_CONSTRAINTS.rightPanel.min, LAYOUT_CONSTRAINTS.rightPanel.max),
+          },
+        })),
       setRightPanelView: (view) => set({ rightPanelView: view }),
 
       setContentEditorHeight: (height) =>
@@ -219,7 +253,7 @@ export const useNovelWorkspaceLayoutStore = create<NovelWorkspaceLayoutState>()(
     {
       name: 'wenlang-agent-novel-workspace-layout',
       storage: createJSONStorage(() => localStorage),
-      version: 3,
+      version: 4,
       migrate: migrateWorkspaceLayoutPersisted,
       // 只持久化布局偏好，不持久化 focusMode（临时状态）
       partialize: (state) => ({
@@ -227,7 +261,7 @@ export const useNovelWorkspaceLayoutStore = create<NovelWorkspaceLayoutState>()(
         sidebarVisible: state.sidebarVisible,
         sidebarWidth: state.sidebarWidth,
         rightPanelVisible: state.rightPanelVisible,
-        rightPanelWidth: state.rightPanelWidth,
+        rightPanelWidths: state.rightPanelWidths,
         rightPanelView: state.rightPanelView,
         contentEditorHeight: state.contentEditorHeight,
       }),
@@ -246,7 +280,7 @@ export const useNovelWorkspaceLayoutStore = create<NovelWorkspaceLayoutState>()(
           sidebarVisible: p.sidebarVisible ?? current.sidebarVisible,
           sidebarWidth: p.sidebarWidth ?? current.sidebarWidth,
           rightPanelVisible: p.rightPanelVisible ?? current.rightPanelVisible,
-          rightPanelWidth: p.rightPanelWidth ?? current.rightPanelWidth,
+          rightPanelWidths: { ...current.rightPanelWidths, ...(p.rightPanelWidths ?? {}) },
           rightPanelView: migrateRightPanelView(p.rightPanelView ?? current.rightPanelView),
           contentEditorHeight: legacyHeight ?? p.contentEditorHeight ?? current.contentEditorHeight,
           // focusMode 永远不持久化

@@ -47,7 +47,6 @@ import { cn } from '@/lib/utils'
 import {
   ConversationStream,
   ConversationInput,
-  ConversationEmptyState,
   type ConversationMessage,
   type ConversationAgentType,
   type EmptyStateVariant,
@@ -1374,18 +1373,17 @@ export function NovelConversationPanel({
         ? 'discussion'
         : 'workflow'
 
-  const isEmpty = messages.length === 0
   const activeError = error
   const activeIsRunning = isRunning || chapterChatRunning
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* ── 流程模式分级入口：高频 Segmented + 低频 Popover ── */}
+      {/* ── 单行 header：左流程模式 + 右章节徽章/状态（原两行合并，省出消息区高度）── */}
       <header className="shrink-0 border-b border-border/60 bg-surface-1">
-        <div className="flex items-center gap-1.5 px-2 pt-2 pb-0">
+        <div className="flex items-center gap-1.5 px-2 h-9">
           {isRunning ? (
-            /* 运行中：锁定当前模式，显示名称 + 阶段 */
-            <div className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-primary/8 text-primary">
+            /* 运行中：锁定当前模式，显示名称 */
+            <div className="flex items-center gap-1.5 h-6 px-2 rounded-lg bg-primary/8 text-primary shrink-0">
               {(() => {
                 const tab = FLOW_TABS.find((t) => t.type === flowType)
                 const Icon = tab?.icon ?? Workflow
@@ -1398,7 +1396,7 @@ export function NovelConversationPanel({
           ) : (
             <>
               {/* 工作流和群聊统一由会话命令选择；这里仅保留反推与矩阵编排 */}
-              <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg">
+              <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg shrink-0">
                 {PRIMARY_FLOW_TABS.map((tab) => {
                   const Icon = tab.icon
                   const isActive = flowType === tab.type
@@ -1423,20 +1421,19 @@ export function NovelConversationPanel({
               </div>
             </>
           )}
-        </div>
-        {/* 状态栏：独立圆角卡片样式（对齐原型 status-bar + status-badge 胶囊 + 语义状态色） */}
-        <div className="mx-2 mt-2 mb-3 flex items-center gap-2 px-3 py-1.5 bg-surface-2 rounded-lg">
-          {chapterNumber != null && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-surface-3 text-text-secondary text-nano font-medium tabular-nums shrink-0">
-              第 {chapterNumber} 章
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-1.5">
+
+          {/* 右侧：章节徽章 + 状态（窄栏下状态文字优先截断） */}
+          <div className="ml-auto flex items-center gap-1.5 min-w-0">
+            {chapterNumber != null && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-surface-3 text-text-secondary text-nano font-medium tabular-nums shrink-0">
+                第 {chapterNumber} 章
+              </span>
+            )}
             {activeIsRunning && (
               <motion.span
                 animate={{ opacity: [0.5, 1, 0.5] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
-                className="flex min-w-0 max-w-[240px] items-center gap-1 text-micro text-primary"
+                className="flex min-w-0 max-w-[200px] items-center gap-1 text-micro text-primary"
                 title={progressMessage ?? PHASE_LABELS[phase] ?? phase}
               >
                 <Loader2 className="size-3 shrink-0 animate-spin" />
@@ -1444,69 +1441,66 @@ export function NovelConversationPanel({
               </motion.span>
             )}
             {!activeIsRunning && isCompleted && (
-              <span className="text-micro text-success">{completedActionLabel}完成</span>
+              <span className="shrink-0 text-micro text-success">{completedActionLabel}完成</span>
             )}
             {!activeIsRunning && isError && (
-              <span className="text-micro text-destructive">出错</span>
+              <span className="shrink-0 text-micro text-destructive">出错</span>
             )}
             {!activeIsRunning && phase === 'idle' && (
-              <span className="text-micro text-muted-foreground">等待开始</span>
+              <span className="shrink-0 text-micro text-muted-foreground">等待开始</span>
             )}
           </div>
         </div>
       </header>
 
-      {/* ── 消息流 ── */}
+      {/* ── 消息流（错误卡经 stickyFooter 吸底，不再压缩消息可视区）── */}
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            {(activeError || chapterChatError) && (
-          <div className="p-3 shrink-0">
-            {chapterChatError && !activeError && (
-              <div className="mb-2 rounded-lg border border-destructive/45 bg-destructive/8 px-3 py-2 text-xs text-destructive">
-                {chapterChatError}
+        <ConversationStream
+          messages={messages}
+          onCheckpointResolve={handleCheckpointResolve}
+          // 群聊检查点不提供修改意见输入：decision 端点 discussion 分支不消费
+          // userMessages（意见会被静默丢弃），反馈走底部常开插话输入
+          allowCheckpointComment={flowType !== 'discussion'}
+          onSystemAction={handleSystemAction}
+          emptyHint={emptyHint}
+          emptyTitle={emptyTitle}
+          emptyVariant={emptyVariant}
+          stickyFooter={
+            (activeError || chapterChatError) ? (
+              <div className="space-y-2 pb-1">
+                {chapterChatError && !activeError && (
+                  <div className="rounded-lg border border-destructive/45 bg-destructive/8 px-3 py-2 text-xs text-destructive backdrop-blur-sm">
+                    {chapterChatError}
+                  </div>
+                )}
+                {activeError && (result?.errorCode === 'quality_gate_revision_incomplete' ? (
+                  // 质量门修订失败：展示具体未通过项 + 修订记录 + 原始报错，
+                  // 并提供再次修订/手动编辑/保留草稿/取消，避免整条重跑。
+                  <QualityGateFailureCard
+                    result={result}
+                    error={error}
+                    onReRevise={onReRevise}
+                    onKeepDraft={onKeepDraft}
+                    onDiscard={onDismissError}
+                  />
+                ) : (
+                  <ErrorCard
+                    message={activeError}
+                    onRetry={
+                      result?.canResume && result.discussionRunId
+                        ? () => onResumeDiscussion?.(result.discussionRunId!)
+                        : result?.canResume && result.workflowRunId
+                          ? () => onResumeWorkflow?.(result.workflowRunId!)
+                          : onRetry
+                    }
+                    retryLabel={result?.canResume ? '从中断处继续' : '重试'}
+                    onDismiss={onDismissError}
+                  />
+                ))}
               </div>
-            )}
-            {activeError && (result?.errorCode === 'quality_gate_revision_incomplete' ? (
-              // 质量门修订失败：展示具体未通过项 + 修订记录 + 原始报错，
-              // 并提供再次修订/手动编辑/保留草稿/取消，避免整条重跑。
-              <QualityGateFailureCard
-                result={result}
-                error={error}
-                onReRevise={onReRevise}
-                onKeepDraft={onKeepDraft}
-                onDiscard={onDismissError}
-              />
-            ) : (
-              <ErrorCard
-                message={activeError}
-                onRetry={
-                  result?.canResume && result.discussionRunId
-                    ? () => onResumeDiscussion?.(result.discussionRunId!)
-                    : result?.canResume && result.workflowRunId
-                      ? () => onResumeWorkflow?.(result.workflowRunId!)
-                      : onRetry
-                }
-                retryLabel={result?.canResume ? '从中断处继续' : '重试'}
-                onDismiss={onDismissError}
-              />
-            ))}
-          </div>
-        )}
-        {isEmpty ? (
-          /* 空状态：SVG 插图 + 标题 + 引导文案 */
-          <ConversationEmptyState variant={emptyVariant} title={emptyTitle} hint={emptyHint} />
-        ) : (
-          <ConversationStream
-            messages={messages}
-            onCheckpointResolve={handleCheckpointResolve}
-            // 群聊检查点不提供修改意见输入：decision 端点 discussion 分支不消费
-            // userMessages（意见会被静默丢弃），反馈走底部常开插话输入
-             allowCheckpointComment={flowType !== 'discussion'}
-            onSystemAction={handleSystemAction}
-            emptyHint={emptyHint}
-            emptyTitle={emptyTitle}
-            emptyVariant={emptyVariant}
-          />
-        )}
+            ) : undefined
+          }
+        />
       </div>
 
       {/* ── 输入区 ── */}

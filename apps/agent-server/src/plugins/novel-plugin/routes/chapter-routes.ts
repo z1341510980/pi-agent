@@ -217,6 +217,8 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
       const updated = store.updateChapter(request.params.id, patch, versionSource)!
 
       // 记录观测日志（时间线数据）
+      // 观测是旁路：logger / agentCallLogger 缺失或抛错都不能把一次成功的保存变成 500，
+      // 因此 catch 里也只用可选链，不再二次解引用 services.context。
       if (chapterInput.content != null && chapterInput.content !== existing.content) {
         try {
           const logEntry = {
@@ -242,16 +244,14 @@ export function createChapterRoutes(services: NovelServices): RouteDefinition[] 
               action: 'manual_patch',
             }),
           }
-          if (services.context.agentCallLogger) {
-            services.context.agentCallLogger.record(logEntry)
-          }
+          services.context?.agentCallLogger?.record(logEntry)
         } catch (logErr) {
-          services.context.logger.warn({ err: logErr }, '记录章节保存日志失败')
+          services.context?.logger?.warn({ err: logErr }, '记录章节保存日志失败')
         }
       }
 
       if (outlineGenerationId && chapterInput.outline !== existing.outline) {
-        services.context.logger.info(
+        services.context?.logger?.info(
           { projectId: existing.projectId, chapterNumber: existing.chapterNumber, outlineGenerationId },
           '用户采用并保存 AI 章纲草稿',
         )

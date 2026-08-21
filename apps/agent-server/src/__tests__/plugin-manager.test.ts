@@ -1,7 +1,11 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { EventBus } from '@repo/shared/events'
-import { buildPluginSessionPrompt, PluginManager, measurePayload } from '../core/plugin/plugin-manager.js'
+import {
+  buildPluginSessionPrompt,
+  PluginManager,
+  measurePayload
+} from '../core/plugin/plugin-manager.js'
 import { eventBusPlugin } from '../plugins/event-bus.plugin.js'
 import { pluginLoaderPlugin } from '../plugins/plugin-loader.plugin.js'
 import { createHelloPlugin } from '../plugins/examples/hello-plugin/index.js'
@@ -18,7 +22,7 @@ function createSilentLogger() {
     trace: noop,
     fatal: noop,
     child: () => logger,
-    level: 'silent',
+    level: 'silent'
   } as unknown as FastifyInstance['log']
   return logger
 }
@@ -28,7 +32,7 @@ function createMockDb() {
   return {
     prepare: () => ({ get: () => undefined, all: () => [], run: () => undefined }),
     exec: () => undefined,
-    transaction: (fn: () => unknown) => fn,
+    transaction: (fn: () => unknown) => fn
   } as unknown as import('better-sqlite3').Database
 }
 
@@ -44,7 +48,7 @@ function createTestPlugin(options: {
     manifest: {
       name: options.name,
       version: options.version ?? '1.0.0',
-      description: `测试插件 ${options.name}`,
+      description: `测试插件 ${options.name}`
     },
     async setup(ctx) {
       if (options.shouldFail) {
@@ -54,7 +58,7 @@ function createTestPlugin(options: {
         await options.setupFn(ctx)
       }
     },
-    teardown: options.teardownFn,
+    teardown: options.teardownFn
   }
 }
 
@@ -62,22 +66,28 @@ describe('PluginManager', () => {
   it('buildPluginSessionPrompt 显式展开授权 Skill 并保留原任务', () => {
     const prompt = buildPluginSessionPrompt('请验收第 3 章', {
       name: 'novel-reviewer',
-      path: 'D:/skills/novel-reviewer/SKILL.md',
+      path: 'D:/skills/novel-reviewer/SKILL.md'
     })
     expect(prompt).toBe('/skill:novel-reviewer 请验收第 3 章')
     expect(
       buildPluginSessionPrompt('请规划第 4 章叙事任务', {
         name: 'novel-director',
-        path: 'D:/skills/novel-director/SKILL.md',
-      }),
+        path: 'D:/skills/novel-director/SKILL.md'
+      })
     ).toBe('/skill:novel-director 请规划第 4 章叙事任务')
     expect(buildPluginSessionPrompt('普通任务')).toBe('普通任务')
   })
 
   it('measurePayload counts a top-level provider system prompt', () => {
-    const payload = { system: 'system text', messages: [{ role: 'user', content: 'hello' }], tools: [] }
+    const payload = {
+      system: 'system text',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: []
+    }
     const stats = measurePayload(payload)
-    expect(stats.messagesChars).toBe(JSON.stringify(payload.system).length + JSON.stringify(payload.messages).length)
+    expect(stats.messagesChars).toBe(
+      JSON.stringify(payload.system).length + JSON.stringify(payload.messages).length
+    )
     expect(stats.totalChars).toBe(JSON.stringify(payload).length)
   })
 
@@ -85,28 +95,32 @@ describe('PluginManager', () => {
     let context: PluginContext | undefined
     const session = {
       subscribe: vi.fn(() => () => undefined),
-      setModel: vi.fn(),
+      setModel: vi.fn()
     }
     manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
       builtinPlugins: [
         {
           plugin: createTestPlugin({
             name: 'model-selection-test',
-            setupFn: (pluginContext) => { context = pluginContext },
-          }),
-        },
-      ],
+            setupFn: (pluginContext) => {
+              context = pluginContext
+            }
+          })
+        }
+      ]
     })
     manager.setSessionStore({ getOrCreate: vi.fn().mockResolvedValue({ session }) } as any)
     manager.setModelRegistry({ find: vi.fn(() => undefined) })
     await manager.init()
     await manager.start()
 
-    await expect(context!.createSession({
-      systemPrompt: 'system',
-      userMessage: 'user',
-      modelId: { provider: 'missing-provider', modelId: 'missing-model' },
-    })).rejects.toThrow('未找到所选模型：missing-provider/missing-model')
+    await expect(
+      context!.createSession({
+        systemPrompt: 'system',
+        userMessage: 'user',
+        modelId: { provider: 'missing-provider', modelId: 'missing-model' }
+      })
+    ).rejects.toThrow('未找到所选模型：missing-provider/missing-model')
     expect(session.setModel).not.toHaveBeenCalled()
   })
 
@@ -122,7 +136,7 @@ describe('PluginManager', () => {
     it('init 加载内置插件但不启动', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -137,7 +151,7 @@ describe('PluginManager', () => {
       const setupFn = vi.fn()
       const plugin = createTestPlugin({ name: 'test-1', setupFn })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -152,7 +166,7 @@ describe('PluginManager', () => {
       const teardownFn = vi.fn()
       const plugin = createTestPlugin({ name: 'test-1', teardownFn })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -167,7 +181,7 @@ describe('PluginManager', () => {
     it('重复 init 会被忽略', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -184,8 +198,8 @@ describe('PluginManager', () => {
         builtinPlugins: [
           { plugin: createTestPlugin({ name: 'ok-plugin', setupFn: okSetup }) },
           { plugin: createTestPlugin({ name: 'bad-plugin', shouldFail: true }) },
-          { plugin: createTestPlugin({ name: 'ok-plugin-2', setupFn: okSetup }) },
-        ],
+          { plugin: createTestPlugin({ name: 'ok-plugin-2', setupFn: okSetup }) }
+        ]
       })
 
       await manager.init()
@@ -207,10 +221,10 @@ describe('PluginManager', () => {
         name: 'test-1',
         teardownFn: () => {
           throw new Error('teardown 失败')
-        },
+        }
       })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -226,7 +240,7 @@ describe('PluginManager', () => {
     it('enable 启用指定插件', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -238,7 +252,7 @@ describe('PluginManager', () => {
     it('disable 禁用指定插件', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -259,7 +273,7 @@ describe('PluginManager', () => {
     it('已启用的插件再次 enable 不报错', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -267,6 +281,193 @@ describe('PluginManager', () => {
       // 不应抛出异常
       await manager.enable('test-1')
       expect(manager.get('test-1')?.status).toBe('enabled')
+    })
+  })
+
+  describe('desiredState 与实际状态分离（研究文档 §10.2）', () => {
+    it('catalog 中 enabled: false 的插件仍可见，start 不 setup', async () => {
+      let setupCalled = false
+      const plugin = createTestPlugin({
+        name: 'off-plugin',
+        setupFn: () => {
+          setupCalled = true
+        }
+      })
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin }]
+      })
+      manager.setCatalogConfigs([
+        { catalogId: 'off-plugin', source: 'builtin', enabled: false }
+      ])
+
+      await manager.init()
+      await manager.start()
+
+      const entry = manager.get('off-plugin')
+      // 可见：不是"未发现"
+      expect(entry).toBeDefined()
+      expect(entry?.desiredEnabled).toBe(false)
+      expect(entry?.status).toBe('disabled')
+      expect(setupCalled).toBe(false)
+      expect(manager.list().map((item) => item.name)).toContain('off-plugin')
+    })
+
+    it('配置中被禁用的插件可以在运行期 enable 恢复', async () => {
+      const plugin = createTestPlugin({ name: 'off-plugin' })
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin }]
+      })
+      manager.setCatalogConfigs([
+        { catalogId: 'off-plugin', source: 'builtin', enabled: false }
+      ])
+
+      await manager.init()
+      await manager.start()
+      await manager.enable('off-plugin')
+
+      expect(manager.get('off-plugin')?.status).toBe('enabled')
+      expect(manager.get('off-plugin')?.desiredEnabled).toBe(true)
+    })
+
+    it('disable 记录期望状态，即使插件当前不是 enabled', async () => {
+      const plugin = createTestPlugin({ name: 'test-1' })
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin }]
+      })
+
+      await manager.init()
+      // 尚未 start：状态是 loaded
+      await manager.disable('test-1')
+
+      expect(manager.get('test-1')?.desiredEnabled).toBe(false)
+    })
+  })
+
+  describe('依赖图（研究文档 §10.2）', () => {
+    it('start 按依赖拓扑排序，依赖先于消费方 setup', async () => {
+      const order: string[] = []
+      const base = createTestPlugin({
+        name: 'base',
+        setupFn: () => {
+          order.push('base')
+        }
+      })
+      const consumer: Plugin = {
+        manifest: { name: 'consumer', version: '1.0.0', dependencies: ['base'] },
+        setup: () => {
+          order.push('consumer')
+        }
+      }
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        // 故意把 consumer 放前面：排序必须由 dependencies 决定，不是声明顺序
+        builtinPlugins: [{ plugin: consumer }, { plugin: base }]
+      })
+
+      await manager.init()
+      await manager.start()
+
+      expect(order).toEqual(['base', 'consumer'])
+    })
+
+    it('缺失依赖的插件不 setup，标记 error 并给出诊断', async () => {
+      let setupCalled = false
+      const consumer: Plugin = {
+        manifest: { name: 'consumer', version: '1.0.0', dependencies: ['absent'] },
+        setup: () => {
+          setupCalled = true
+        }
+      }
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin: consumer }]
+      })
+
+      await manager.init()
+      await manager.start()
+
+      const entry = manager.get('consumer')
+      expect(setupCalled).toBe(false)
+      expect(entry?.status).toBe('error')
+      expect(entry?.dependencyDiagnostics?.join(' ')).toContain('absent')
+    })
+
+    it('循环依赖被检出，两端都不 setup', async () => {
+      const a: Plugin = {
+        manifest: { name: 'a', version: '1.0.0', dependencies: ['b'] },
+        setup: () => {}
+      }
+      const b: Plugin = {
+        manifest: { name: 'b', version: '1.0.0', dependencies: ['a'] },
+        setup: () => {}
+      }
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin: a }, { plugin: b }]
+      })
+
+      await manager.init()
+      await manager.start()
+
+      expect(manager.get('a')?.status).toBe('error')
+      expect(manager.get('b')?.status).toBe('error')
+      expect(manager.get('a')?.dependencyDiagnostics?.join(' ')).toContain('循环依赖')
+    })
+
+    it('依赖不满足的插件被 enable 时明确拒绝', async () => {
+      const consumer: Plugin = {
+        manifest: { name: 'consumer', version: '1.0.0', dependencies: ['absent'] },
+        setup: () => {}
+      }
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin: consumer }]
+      })
+
+      await manager.init()
+      await expect(manager.enable('consumer')).rejects.toThrow('依赖不满足')
+    })
+
+    it('健康插件不被同批次的坏插件牵连', async () => {
+      const broken: Plugin = {
+        manifest: { name: 'broken', version: '1.0.0', dependencies: ['absent'] },
+        setup: () => {}
+      }
+      const healthy = createTestPlugin({ name: 'healthy' })
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin: broken }, { plugin: healthy }]
+      })
+
+      await manager.init()
+      await manager.start()
+
+      expect(manager.get('broken')?.status).toBe('error')
+      expect(manager.get('healthy')?.status).toBe('enabled')
+    })
+  })
+
+  describe('reload 预检（研究文档 §10.11）', () => {
+    it('builtin reload 在 stop/delete 之前就被拒绝，插件仍在 catalog 中', async () => {
+      let teardownCalled = false
+      const plugin = createTestPlugin({
+        name: 'builtin-1',
+        teardownFn: () => {
+          teardownCalled = true
+        }
+      })
+      manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+        builtinPlugins: [{ plugin }]
+      })
+
+      await manager.init()
+      await manager.start()
+
+      await expect(manager.reload('builtin-1')).rejects.toThrow('不支持重载')
+
+      // 关键：拒绝不能是破坏性的 —— 条目仍在，状态未变，teardown 未被调用
+      expect(manager.get('builtin-1')?.status).toBe('enabled')
+      expect(teardownCalled).toBe(false)
+      expect(manager.list().map((item) => item.name)).toContain('builtin-1')
+    })
+
+    it('reload 不存在的插件抛错', async () => {
+      await expect(manager.reload('nonexistent')).rejects.toThrow('插件不存在')
     })
   })
 
@@ -281,26 +482,26 @@ describe('PluginManager', () => {
             description: '测试工具',
             async execute() {
               return { ok: true, data: 'tool-result' }
-            },
+            }
           })
           ctx.registerRoute({
             method: 'GET',
             path: '/test',
             async handler() {
               return { ok: true }
-            },
+            }
           })
           ctx.registerPanel({
             id: 'full-panel',
             title: '测试面板',
-            component: 'TestPanel',
+            component: 'TestPanel'
           })
           ctx.onEvent('test:event', eventHandler)
-        },
+        }
       }
 
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -330,17 +531,90 @@ describe('PluginManager', () => {
       expect(eventHandler).toHaveBeenCalledWith({ foo: 'bar' })
     })
 
+    it('非 builtin 插件未获 capability 时不暴露 db/process/network', async () => {
+      const manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '')
+      const plugin = createTestPlugin({
+        name: 'external-capability-test',
+        setupFn: (ctx) => {
+          expect(() => ctx.db.prepare('select 1')).toThrow('storage.plugin')
+          expect(ctx.process).toBeUndefined()
+          expect(ctx.network).toBeUndefined()
+        }
+      })
+      await manager.loadPluginEntry(plugin, 'local')
+      await manager.start()
+      expect(manager.get('external-capability-test')?.status).toBe('enabled')
+    })
+
+    it('未获 agent.orchestrate / confirmation.request 时不暴露宿主管理器', async () => {
+      const manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '')
+      const plugin = createTestPlugin({
+        name: 'external-manager-test',
+        setupFn: (ctx) => {
+          // 原始管理器与 process/network 采用同一"条件注入"约定：未授予即 undefined，
+          // 而不是交出可直接操作宿主状态的引用。
+          expect(ctx.subagentManager).toBeUndefined()
+          expect(ctx.teamManager).toBeUndefined()
+          expect(ctx.agentCallLogger).toBeUndefined()
+          expect(ctx.confirmationManager).toBeUndefined()
+        }
+      })
+      await manager.loadPluginEntry(plugin, 'local')
+      await manager.start()
+      expect(manager.get('external-manager-test')?.status).toBe('enabled')
+    })
+
+    it('未获 session.create 时 createSession 抛错且可审计', async () => {
+      const manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '')
+      let rejection: Error | undefined
+      const plugin = createTestPlugin({
+        name: 'external-session-test',
+        setupFn: async (ctx) => {
+          await ctx
+            .createSession({ systemPrompt: 'x', userMessage: 'y' })
+            .catch((err: Error) => {
+              rejection = err
+            })
+        }
+      })
+      await manager.loadPluginEntry(plugin, 'local')
+      await manager.start()
+      expect(rejection?.message).toContain('session.create')
+      expect(rejection?.message).toContain('external-session-test')
+    })
+
+    it('resolvePath 把路径钉在 dataDir 内，越界抛错', async () => {
+      const manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '')
+      let inside: string | undefined
+      let escaped: Error | undefined
+      const plugin = createTestPlugin({
+        name: 'path-guard-test',
+        setupFn: (ctx) => {
+          inside = ctx.resolvePath('cache', 'a.json')
+          try {
+            ctx.resolvePath('..', '..', 'etc', 'passwd')
+          } catch (err) {
+            escaped = err as Error
+          }
+        }
+      })
+      await manager.loadPluginEntry(plugin, 'local')
+      await manager.start()
+      expect(inside).toContain('path-guard-test')
+      expect(escaped?.message).toContain('越出 dataDir 边界')
+    })
+
     it('disable 后插件注册的事件监听被取消', async () => {
       const eventHandler = vi.fn()
       const plugin: Plugin = {
         manifest: { name: 'event-plugin', version: '1.0.0' },
         async setup(ctx: PluginContext) {
           ctx.onEvent('test:event', eventHandler)
-        },
+        }
       }
 
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -365,25 +639,25 @@ describe('PluginManager', () => {
             description: '测试',
             async execute() {
               return { ok: true }
-            },
+            }
           })
           ctx.registerRoute({
             method: 'GET',
             path: '/r',
             async handler() {
               return {}
-            },
+            }
           })
           ctx.registerPanel({
             id: 'reg-panel',
             title: 'T',
-            component: 'C',
+            component: 'C'
           })
-        },
+        }
       }
 
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -406,8 +680,8 @@ describe('PluginManager', () => {
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
         builtinPlugins: [
           { plugin: createTestPlugin({ name: 'a', version: '1.0.0' }) },
-          { plugin: createTestPlugin({ name: 'b', version: '2.0.0' }) },
-        ],
+          { plugin: createTestPlugin({ name: 'b', version: '2.0.0' }) }
+        ]
       })
 
       await manager.init()
@@ -422,7 +696,7 @@ describe('PluginManager', () => {
     it('get 返回插件详情', async () => {
       const plugin = createTestPlugin({ name: 'test-1' })
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin }],
+        builtinPlugins: [{ plugin }]
       })
 
       await manager.init()
@@ -448,7 +722,7 @@ describe('PluginManager', () => {
 
     it('hello 插件注册工具、路由、面板、事件监听', async () => {
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin: createHelloPlugin() }],
+        builtinPlugins: [{ plugin: createHelloPlugin() }]
       })
 
       await manager.init()
@@ -464,7 +738,7 @@ describe('PluginManager', () => {
 
     it('hello.greet 工具执行正确', async () => {
       manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
-        builtinPlugins: [{ plugin: createHelloPlugin() }],
+        builtinPlugins: [{ plugin: createHelloPlugin() }]
       })
 
       await manager.init()
@@ -510,7 +784,7 @@ describe('Plugin 系统 Fastify 集成', () => {
   it('默认不加载示例插件（禁用示例时）', () => {
     const list = app.pluginManager.list()
     // 禁用 PI_PLUGINS_ENABLE_EXAMPLES 后，hello 示例不加载，但内置插件（如 novel）仍加载
-    const names = list.map(p => p.name)
+    const names = list.map((p) => p.name)
     expect(names).not.toContain('hello')
   })
 })
@@ -533,7 +807,7 @@ describe('Plugin 系统 API 路由', () => {
   it('GET /api/plugins 返回插件列表', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/plugins',
+      url: '/api/plugins'
     })
 
     expect(response.statusCode).toBe(200)
@@ -546,12 +820,16 @@ describe('Plugin 系统 API 路由', () => {
     const hello = body.data.plugins.find((p: { name: string }) => p.name === 'hello')
     expect(hello).toBeDefined()
     expect(hello.status).toBe('enabled')
+    expect(hello.lifecycle).toBe('enabled')
+    expect(hello.activationGeneration).toBeGreaterThan(0)
+    expect(hello).toHaveProperty('effectCount')
+    expect(hello).toHaveProperty('activeEffectCount')
   })
 
   it('GET /api/plugins/hello 返回插件详情', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/plugins/hello',
+      url: '/api/plugins/hello'
     })
 
     expect(response.statusCode).toBe(200)
@@ -560,12 +838,21 @@ describe('Plugin 系统 API 路由', () => {
     expect(body.data.version).toBe('1.0.0')
     expect(body.data.tools).toBeInstanceOf(Array)
     expect(body.data.tools.length).toBeGreaterThan(0)
+    expect(body.data.lifecycle).toBe('enabled')
+    expect(body.data.activationGeneration).toBeGreaterThan(0)
+    expect(body.data.uiContributions).toEqual([
+      expect.objectContaining({
+        contributionId: 'hello-panel',
+        rendererKey: 'builtin.hello-panel',
+        slot: 'app.navigation'
+      })
+    ])
   })
 
   it('GET /api/plugins/nonexistent 返回 404', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/plugins/nonexistent',
+      url: '/api/plugins/nonexistent'
     })
 
     expect(response.statusCode).toBe(404)
@@ -574,7 +861,7 @@ describe('Plugin 系统 API 路由', () => {
   it('GET /api/plugins/hello/status（插件注册的路由）返回插件状态', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/plugins/hello/status',
+      url: '/api/plugins/hello/status'
     })
 
     expect(response.statusCode).toBe(200)
@@ -588,7 +875,7 @@ describe('Plugin 系统 API 路由', () => {
       method: 'POST',
       url: '/api/plugins/hello/greet',
       headers: { 'content-type': 'application/json' },
-      body: { name: 'Tester', language: 'zh', times: 2 },
+      body: { name: 'Tester', language: 'zh', times: 2 }
     })
 
     expect(response.statusCode).toBe(200)
@@ -600,7 +887,7 @@ describe('Plugin 系统 API 路由', () => {
   it('POST /api/plugins/hello/disable 禁用插件', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/plugins/hello/disable',
+      url: '/api/plugins/hello/disable'
     })
 
     expect(response.statusCode).toBe(200)
@@ -616,13 +903,13 @@ describe('Plugin 系统 API 路由', () => {
     // 先禁用
     await app.inject({
       method: 'POST',
-      url: '/api/plugins/hello/disable',
+      url: '/api/plugins/hello/disable'
     })
 
     // 再启用
     const response = await app.inject({
       method: 'POST',
-      url: '/api/plugins/hello/enable',
+      url: '/api/plugins/hello/enable'
     })
 
     expect(response.statusCode).toBe(200)
@@ -633,7 +920,7 @@ describe('Plugin 系统 API 路由', () => {
   it('GET /api/plugins/hello/tools 列出插件工具', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/plugins/hello/tools',
+      url: '/api/plugins/hello/tools'
     })
 
     expect(response.statusCode).toBe(200)
@@ -643,10 +930,50 @@ describe('Plugin 系统 API 路由', () => {
     expect(greetTool).toBeDefined()
   })
 
+  it('GET /api/plugins/hello/inspect 返回运行、effect 和 Slot 诊断投影', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/plugins/hello/inspect' })
+    expect(response.statusCode).toBe(200)
+    const body = response.json()
+    expect(body.data.schemaVersion).toBe(1)
+    expect(body.data.plugin).toMatchObject({
+      pluginId: 'hello',
+      // catalogId 是配置身份（plugins.yml / 默认列表里的工厂键），与 manifest.name 不同
+      catalogId: 'hello-plugin',
+      version: '1.0.0',
+      lifecycle: 'enabled'
+    })
+    expect(body.data.effects).toBeInstanceOf(Array)
+    expect(
+      body.data.effects.every((effect: Record<string, unknown>) => !('dispose' in effect))
+    ).toBe(true)
+    expect(body.data.slots).toEqual([
+      expect.objectContaining({ contributionId: 'hello-panel', rendererKey: 'builtin.hello-panel' })
+    ])
+    expect(body.data.diagnostics).toContain('存在需要重启才能完全卸载的路由或服务')
+  })
+
+  it('GET /api/plugins/ui-contributions 返回版本化受信 renderer manifest', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/plugins/ui-contributions' })
+    expect(response.statusCode).toBe(200)
+    const body = response.json()
+    expect(body.ok).toBe(true)
+    expect(body.data.schemaVersion).toBe(1)
+    const hello = body.data.contributions.find(
+      (item: { contributionId: string }) => item.contributionId === 'hello-panel'
+    )
+    expect(hello).toMatchObject({
+      pluginId: 'hello',
+      slot: 'app.navigation',
+      rendererKey: 'builtin.hello-panel',
+      state: 'active'
+    })
+    expect(hello).not.toHaveProperty('componentSource')
+  })
+
   it('GET /api/plugins/panels/all 列出所有面板', async () => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/plugins/panels/all',
+      url: '/api/plugins/panels/all'
     })
 
     expect(response.statusCode).toBe(200)

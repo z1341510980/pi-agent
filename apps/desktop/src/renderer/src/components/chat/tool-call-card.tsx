@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, Loader2, Wrench, FileText, Terminal, Search, FolderCog } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { ChevronDown, ChevronRight, FileText, Terminal, Search, FolderCog, Wrench } from 'lucide-react'
 import type { ToolCallInfo } from './types'
 import { FileDiffView } from './file-diff-view'
-import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { SlotRenderer } from '../slot'
 
 export interface ToolCallCardProps {
   toolCall: ToolCallInfo
@@ -12,58 +12,32 @@ export interface ToolCallCardProps {
   index?: number
 }
 
-/** 状态标签配置 */
-const STATUS_META = {
-  pending: { label: '等待', variant: 'secondary' as const },
-  running: { label: '执行中', variant: 'default' as const },
-  success: { label: '完成', variant: 'outline' as const },
-  error: { label: '失败', variant: 'destructive' as const },
-}
-
-/** 工具类型视觉配置：色条 + 图标 */
-interface ToolVisual {
-  /** 左侧色条类名 */
-  bar: string
-  /** 图标组件 */
-  Icon: typeof Wrench
-  /** 图标圆背景 */
-  iconBg: string
-}
-
-/** 按工具名推断类型视觉 */
-function getToolVisual(toolName: string): ToolVisual {
+/** 工具类型图标（dsh 风格：中性三级灰，不再用彩色圆块） */
+function getToolIcon(toolName: string): typeof Wrench {
   const name = toolName.toLowerCase()
-  if (name.includes('read') || name.includes('cat') || name.includes('view')) {
-    return { bar: 'bg-blue-500', Icon: FileText, iconBg: 'bg-blue-500/15 text-blue-500' }
-  }
-  if (name.includes('write') || name.includes('edit') || name.includes('patch') || name.includes('create')) {
-    return { bar: 'bg-orange-500', Icon: FolderCog, iconBg: 'bg-orange-500/15 text-orange-500' }
-  }
-  if (name.includes('bash') || name.includes('shell') || name.includes('exec') || name.includes('run')) {
-    return { bar: 'bg-emerald-500', Icon: Terminal, iconBg: 'bg-emerald-500/15 text-emerald-500' }
-  }
-  if (name.includes('search') || name.includes('grep') || name.includes('find') || name.includes('query')) {
-    return { bar: 'bg-purple-500', Icon: Search, iconBg: 'bg-purple-500/15 text-purple-500' }
-  }
-  return { bar: 'bg-slate-400', Icon: Wrench, iconBg: 'bg-surface-3 text-hint' }
+  if (name.includes('read') || name.includes('cat') || name.includes('view')) return FileText
+  if (name.includes('write') || name.includes('edit') || name.includes('patch') || name.includes('create')) return FolderCog
+  if (name.includes('bash') || name.includes('shell') || name.includes('exec') || name.includes('run')) return Terminal
+  if (name.includes('search') || name.includes('grep') || name.includes('find') || name.includes('query')) return Search
+  return Wrench
 }
 
 /**
- * ToolCallCard：工具调用卡片
+ * ToolCallCard：工具调用行（对齐 dsh ToolRow）
  *
- * 借鉴 AionUi：
- *   - 左侧 3px 色条标识工具类型（read=蓝、write=橙、bash=绿、search=紫）
- *   - 顶部图标圆角方块（不再用纯 Wrench 图标）
- *   - 折叠/展开使用 framer-motion 动画
- *   - 失败状态用 destructive 色调
+ * 设计要点（DeepSeek 会话流）：
+ *   - 无卡片边框：一条 24px 单行 —— [16px 图标] gap6 [工具名 14/24] · [摘要省略]
+ *   - 执行中整行带背景扫光（dsh-sweep-host）
+ *   - 展开体：IN/OUT 双段代码卡（r12、代码面填充），diff 紧随其下
+ *   - 失败行摘要与 OUT 文本用错误色
  */
-export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
+export function ToolCallCard({ toolCall, index }: ToolCallCardProps): React.ReactElement {
   const { toolName, status, args, partialResult, startedAt, endedAt, details } = toolCall
   const [expanded, setExpanded] = useState(false)
 
-  const meta = STATUS_META[status] ?? STATUS_META.pending
-  const visual = getToolVisual(toolName)
-  const { Icon } = visual
+  const Icon = getToolIcon(toolName)
+  const isRunning = status === 'running'
+  const isError = status === 'error'
 
   // 耗时
   const durationMs = startedAt && endedAt ? endedAt - startedAt : null
@@ -72,43 +46,30 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
       ? durationMs < 1000
         ? `${durationMs}ms`
         : `${(durationMs / 1000).toFixed(1)}s`
-      : startedAt && status === 'running'
+      : isRunning
         ? '…'
         : null
 
-  // 耗时颜色：<1s 绿色，1-5s 黄色，>5s 红色
-  const durationColor =
-    durationMs !== null
-      ? durationMs < 1000
-        ? 'text-emerald-500'
-        : durationMs < 5000
-          ? 'text-amber-500'
-          : 'text-red-500'
-      : 'text-hint'
-
-  // 参数摘要
+  // 参数摘要（折叠行的省略文本）
   const argsSummary =
     args === undefined
       ? null
       : typeof args === 'string'
-        ? args.slice(0, 80)
+        ? args.slice(0, 120)
         : Object.values(args as Record<string, unknown>)
             .map((v) => (typeof v === 'string' ? v : JSON.stringify(v)))
             .join(', ')
-            .slice(0, 80)
+            .slice(0, 120)
 
   // 结果摘要
   const resultSummary =
     partialResult === undefined
       ? null
       : typeof partialResult === 'string'
-        ? partialResult.slice(0, 120)
-        : JSON.stringify(partialResult).slice(0, 120)
-
-
+        ? partialResult.slice(0, 160)
+        : JSON.stringify(partialResult).slice(0, 160)
 
   const hasDetails = args !== undefined || partialResult !== undefined
-  const isError = status === 'error'
 
   /**
    * 改动 diff（edit/write 工具的 details）。
@@ -129,96 +90,126 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
         })()
       : undefined
 
+  // 折叠行摘要：优先参数，其次结果；失败行用错误色
+  const collapsedSummary = isError && resultSummary ? resultSummary : (argsSummary ?? resultSummary)
+
   return (
     <motion.div
-      layout
-      initial={{ opacity: 0, y: -4 }}
+      layout="position"
+      initial={{ opacity: 0, y: -2 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-      className={cn(
-        'relative rounded-lg border bg-background overflow-hidden',
-        isError ? 'border-destructive/40' : 'border-border',
-        'dark:bg-surface-1',
-      )}
+      transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+      className={cn('flex min-w-0 flex-col rounded-md', hasDetails && 'cursor-pointer')}
+      data-state={status}
+      onClick={() => hasDetails && setExpanded(!expanded)}
     >
-      {/* 左侧色条 */}
-      <div className={cn('absolute left-0 top-0 bottom-0 w-[3px]', visual.bar)} aria-hidden="true" />
-
-      {/* 顶部标题行 */}
-      <button
-        type="button"
-        onClick={() => hasDetails && setExpanded(!expanded)}
+      {/* 单行折叠头 */}
+      <div
         className={cn(
-          'flex w-full items-center gap-2.5 pl-4 pr-3.5 py-2.5 text-left',
-          hasDetails && 'hover:bg-muted/50 dark:hover:bg-surface-2/50',
+          'dsh-sweep-host -mx-1 flex items-center rounded-md px-1 py-0.5',
+          hasDetails && 'transition-colors hover:bg-accent'
         )}
+        data-running={isRunning ? 'true' : undefined}
       >
-        <span className={cn('flex size-5 items-center justify-center rounded-md', visual.iconBg)} aria-hidden="true">
-          <Icon className="size-3" />
+        {/* 引导图标：hover 时切换为展开箭头 */}
+        <span className="relative mr-1.5 inline-flex size-4 shrink-0 items-center justify-center text-subtle">
+          <Icon
+            className={cn(
+              'absolute size-3.5 transition-opacity duration-100',
+              expanded ? 'opacity-0' : 'group-hover:opacity-0'
+            )}
+            aria-hidden="true"
+          />
+          <ChevronRight
+            className={cn(
+              'absolute size-4 transition-opacity duration-100',
+              expanded ? 'opacity-0' : 'opacity-0 group-hover:opacity-100'
+            )}
+            aria-hidden="true"
+          />
+          <ChevronDown
+            className={cn(
+              'absolute size-4 transition-opacity duration-100',
+              expanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            )}
+            aria-hidden="true"
+          />
         </span>
-        <span className="font-mono font-medium text-text truncate text-xs">
+
+        {/* 工具名 */}
+        <span className="shrink-0 text-sm leading-6 font-normal text-text-secondary">
           {toolName}
         </span>
-        {/* 序号和耗时 */}
-        <div className="flex items-center gap-2 ml-auto shrink-0">
-          {index !== undefined && (
-            <span className="text-[10px] text-hint font-mono">#{index + 1}</span>
-          )}
-          {duration && (
-            <span className={cn('text-[10px] font-mono', durationColor)} aria-label="耗时">
-              {duration}
-            </span>
-          )}
-          <Badge variant={meta.variant} className="shrink-0">
-            {status === 'running' && <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />}
-            {meta.label}
-          </Badge>
-        </div>
-      </button>
 
-      {/* 折叠区域：参数 / 结果 */}
-      <AnimatePresence initial={false}>
-        {hasDetails && expanded && (
-          <motion.div
-            key="details"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            className="overflow-hidden border-t border-border/60"
-          >
-            <div className="pl-4 pr-3.5 py-2.5 space-y-2">
-              {args !== undefined && (
-                <div>
-                  <div className="mb-1 text-[11px] text-hint">参数</div>
-                  <pre className="max-h-32 overflow-auto rounded bg-muted/50 p-2 text-[11px] text-text/90 dark:bg-surface-2/50">
-                    {typeof args === 'string' ? args : JSON.stringify(args, null, 2)}
-                  </pre>
-                </div>
+        {/* 序号 / 耗时 */}
+        {index !== undefined && (
+          <span className="ml-2 shrink-0 font-mono text-[10px] text-hint">#{index + 1}</span>
+        )}
+        {duration && (
+          <span className="ml-2 shrink-0 font-mono text-[11px] text-hint" aria-label="耗时">
+            {duration}
+          </span>
+        )}
+
+        {/* 分隔点 + 摘要 */}
+        {collapsedSummary && (
+          <>
+            <span className="mx-2 size-0.5 shrink-0 rounded-full bg-hint" aria-hidden="true" />
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-sm leading-6',
+                isError ? 'text-destructive' : 'text-subtle'
               )}
-              {partialResult !== undefined && (
-                <div>
-                  <div className="mb-1 text-[11px] text-hint">结果</div>
-                  <pre className={cn(
-                    'max-h-40 overflow-auto rounded p-2 text-[11px]',
-                    isError
-                      ? 'bg-destructive/10 text-destructive'
-                      : 'bg-muted/50 text-text/90 dark:bg-surface-2/50',
-                  )}>
+            >
+              {collapsedSummary}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* 展开体：IN/OUT 代码卡 */}
+      {expanded && hasDetails && (
+        <div className="ml-1 flex min-w-0 flex-col">
+          {/* 插件贡献的工具详情（keyed slot，按工具名取席位；无贡献时不占空间） */}
+          <SlotRenderer
+            name="chat.tool.detail"
+            entryKey={toolName}
+            fallback={null}
+            extraProps={{ toolCall }}
+          />
+          <div className="dsh-io-card">
+            {args !== undefined && (
+              <div className="dsh-io-section">
+                <span className="dsh-io-label">IN</span>
+                <pre className="m-0 overflow-x-auto font-[inherit] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                  <code className="dsh-io-text block">
+                    {typeof args === 'string' ? args : JSON.stringify(args, null, 2)}
+                  </code>
+                </pre>
+              </div>
+            )}
+            {args !== undefined && partialResult !== undefined && (
+              <div className="dsh-io-divider" />
+            )}
+            {partialResult !== undefined && (
+              <div className="dsh-io-section">
+                <span className="dsh-io-label">OUT</span>
+                <pre className="m-0 overflow-x-auto font-[inherit] whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                  <code className="dsh-io-text block" data-error={isError || undefined}>
                     {typeof partialResult === 'string'
                       ? partialResult
                       : JSON.stringify(partialResult, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                  </code>
+                </pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
-      {/* 改动 diff：默认只给 +N −M 统计条，点开才展开全文 */}
+      {/* 改动 diff：不依赖展开态，直接展示在行下方（改了什么最重要） */}
       {diffText && (
-        <div className="border-t border-border/60 pl-4 pr-3.5 pb-2">
+        <div className="ml-1 mt-1 mb-0.5 min-w-0 pr-1">
           <FileDiffView
             diff={diffText}
             filePath={diffFilePath}
@@ -226,37 +217,6 @@ export function ToolCallCard({ toolCall, index }: ToolCallCardProps) {
           />
         </div>
       )}
-
-      {/* 底部元信息 */}
-      <div className={cn(
-        'flex items-center gap-3 border-t border-border/60 pl-4 pr-3.5 py-1.5',
-        'text-[11px] text-hint',
-      )}>
-        {hasDetails ? (
-          <button
-            type="button"
-            onClick={() => setExpanded(!expanded)}
-            className="flex items-center gap-1 hover:text-text"
-          >
-            <ChevronDown className={cn('h-3 w-3 transition-transform', expanded && 'rotate-180')} />
-            {expanded ? '收起详情' : '查看详情'}
-          </button>
-        ) : (
-          <span>无详情</span>
-        )}
-
-        <div className="ml-auto flex items-center gap-2">
-          {argsSummary && !expanded && (
-            <span className="truncate max-w-[180px]" title="参数">{argsSummary}</span>
-          )}
-          {resultSummary && !expanded && (
-            <span className="truncate max-w-[180px]" title="结果">{resultSummary}</span>
-          )}
-          {duration && (
-            <span aria-label="耗时">⏱ {duration}</span>
-          )}
-        </div>
-      </div>
     </motion.div>
   )
 }

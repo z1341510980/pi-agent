@@ -148,16 +148,16 @@ export function PermissionModeSwitch({ compact = false, className }: PermissionM
               data-tour="permission-switch"
               disabled={updateMutation.isPending || gateQuery.isLoading}
               className={cn(
-                'inline-flex items-center gap-1 rounded-md px-2 h-8',
-                'bg-transparent border border-border cursor-pointer',
-                'hover:bg-surface-3 disabled:opacity-50 disabled:cursor-not-allowed',
-                'transition-colors text-[12px]!',
+                'inline-flex items-center gap-1.5 rounded-lg px-2 h-7',
+                'bg-transparent cursor-pointer',
+                'hover:bg-accent aria-expanded:bg-accent disabled:opacity-50 disabled:cursor-not-allowed',
+                'transition-colors text-[13px]! leading-5! font-medium text-text-secondary',
                 className,
               )}
             >
               <Icon className={cn('size-3', meta.color)} />
-              <span className="text-text">{meta.label}</span>
-              <ChevronDownIcon className="size-3 text-muted-foreground" />
+              <span>{meta.label}</span>
+              <ChevronDownIcon className="size-3 text-hint" />
             </button>
           </DropdownMenuTrigger>
           {/* 输入栏在底部，菜单向上展开；贴边时由 Radix 自动翻转 */}

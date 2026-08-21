@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
+import { join } from 'node:path'
 import { NovelStore } from '../plugins/novel-plugin/core/novel-store.js'
 import { NovelMemoryStore } from '../plugins/novel-plugin/core/novel-memory-store.js'
 import { PromptManager } from '../plugins/novel-plugin/core/prompting/prompt-manager.js'
@@ -7,7 +8,11 @@ import { NovelPromptBuilder } from '../plugins/novel-plugin/core/prompt-builder.
 import { NovelEngine } from '../plugins/novel-plugin/core/novel-engine.js'
 import { NovelCharacterGenerator } from '../plugins/novel-plugin/core/generation/novel-character-generator.js'
 import { novelMigrations } from '../plugins/novel-plugin/novel-migrations.js'
-import type { PluginContext, PluginSessionHandle, PluginSessionOptions } from '../core/plugin/plugin-types.js'
+import type {
+  PluginContext,
+  PluginSessionHandle,
+  PluginSessionOptions
+} from '../core/plugin/plugin-types.js'
 
 let db: Database.Database
 let store: NovelStore
@@ -49,7 +54,7 @@ beforeEach(() => {
   mockState = {
     createSessionCalls: 0,
     lastOptions: null,
-    handles: [],
+    handles: []
   }
 })
 
@@ -61,8 +66,14 @@ afterEach(() => {
 function createMockContext(): PluginContext {
   const noop = () => {}
   const logger = {
-    info: noop, warn: noop, error: noop, debug: noop, trace: noop, fatal: noop,
-    child: () => logger, level: 'silent',
+    info: noop,
+    warn: noop,
+    error: noop,
+    debug: noop,
+    trace: noop,
+    fatal: noop,
+    child: () => logger,
+    level: 'silent'
   } as any
 
   return {
@@ -72,6 +83,7 @@ function createMockContext(): PluginContext {
     db,
     cwd: process.cwd(),
     dataDir: process.cwd(),
+    resolvePath: (...segments: string[]) => join(process.cwd(), ...segments),
     subagentManager: undefined,
     teamManager: undefined,
     agentCallLogger: undefined,
@@ -80,8 +92,18 @@ function createMockContext(): PluginContext {
       requestDecision: () => Promise.resolve('approve'),
       respondDecision: () => true,
       listPending: () => [],
-      dispose: noop,
+      dispose: noop
     } as any,
+    effect: (
+      _kind: string,
+      _metadata: Record<string, unknown>,
+      setup: () => (() => void | Promise<void>) | void
+    ) => setup() ?? noop,
+    registerDisposable: (dispose: () => void | Promise<void>) => dispose,
+    trackSession: (handle: PluginSessionHandle) => () => {
+      handle.abort()
+      handle.dispose()
+    },
     registerTool: noop,
     registerRoute: noop,
     onEvent: noop,
@@ -118,7 +140,7 @@ function createMockContext(): PluginContext {
         },
         dispose() {
           this.disposeCalls++
-        },
+        }
       }
       mockState.handles.push(handle)
       return handle
@@ -131,25 +153,40 @@ function createMockContext(): PluginContext {
         session,
         streamEmitter: {
           handleSessionEvent: noop,
-          finishTextMessage: noop,
+          finishTextMessage: noop
         } as any,
         reasoningPipeline: {} as any,
         messageId: 'test-message-id',
         dispose() {
-          try { session.dispose() } catch { /* 忽略 */ }
-        },
+          try {
+            session.dispose()
+          } catch {
+            /* 忽略 */
+          }
+        }
       }
-    },
+    }
   } as PluginContext
 }
 
 describe('Plugin createSession 集成 - 句柄结构', () => {
   beforeEach(() => {
-    characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
+    characterGenerator = new NovelCharacterGenerator(
+      promptBuilder,
+      promptManager,
+      createMockContext()
+    )
     // 预置项目
     store.createProject({
-      id: 'p-1', title: '测试小说', genre: '玄幻', synopsis: '', targetWords: 0,
-      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+      id: 'p-1',
+      title: '测试小说',
+      genre: '玄幻',
+      synopsis: '',
+      targetWords: 0,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active'
     })
   })
 
@@ -157,7 +194,7 @@ describe('Plugin createSession 集成 - 句柄结构', () => {
     const ctx = createMockContext()
     const handle = await ctx.createSession({
       systemPrompt: 'test-system',
-      userMessage: 'test-user',
+      userMessage: 'test-user'
     })
     expect(typeof handle.prompt).toBe('function')
     expect(typeof handle.promptStream).toBe('function')
@@ -169,7 +206,7 @@ describe('Plugin createSession 集成 - 句柄结构', () => {
     const ctx = createMockContext()
     const handle = await ctx.createSession({
       systemPrompt: 'sys',
-      userMessage: 'user',
+      userMessage: 'user'
     })
     const result = await handle.prompt()
     expect(typeof result).toBe('string')
@@ -180,7 +217,7 @@ describe('Plugin createSession 集成 - 句柄结构', () => {
     const ctx = createMockContext()
     const handle = await ctx.createSession({
       systemPrompt: 'sys',
-      userMessage: 'user',
+      userMessage: 'user'
     })
     expect(() => handle.dispose()).not.toThrow()
     expect(() => handle.dispose()).not.toThrow()
@@ -190,7 +227,7 @@ describe('Plugin createSession 集成 - 句柄结构', () => {
     const ctx = createMockContext()
     const handle = await ctx.createSession({
       systemPrompt: 'sys',
-      userMessage: 'user',
+      userMessage: 'user'
     })
     expect(() => handle.abort()).not.toThrow()
   })
@@ -199,7 +236,7 @@ describe('Plugin createSession 集成 - 句柄结构', () => {
     const ctx = createMockContext()
     await ctx.createSession({
       systemPrompt: 'sys-prompt',
-      userMessage: 'user-msg',
+      userMessage: 'user-msg'
     })
     expect(mockState.lastOptions).not.toBeNull()
     expect(mockState.lastOptions!.systemPrompt).toBe('sys-prompt')
@@ -210,27 +247,46 @@ describe('Plugin createSession 集成 - 句柄结构', () => {
 describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
   beforeEach(() => {
     store.createProject({
-      id: 'p-1', title: '测试小说', genre: '玄幻', synopsis: '', targetWords: 0,
-      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+      id: 'p-1',
+      title: '测试小说',
+      genre: '玄幻',
+      synopsis: '',
+      targetWords: 0,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active'
     })
   })
 
   it('characterGenerator.generate 调用 createSession 1 次', async () => {
-    characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
+    characterGenerator = new NovelCharacterGenerator(
+      promptBuilder,
+      promptManager,
+      createMockContext()
+    )
     await characterGenerator.generate('p-1', '沉默寡言的剑客')
     expect(mockState.createSessionCalls).toBe(1)
     expect(mockState.lastOptions?.tools).toEqual([])
   })
 
   it('characterGenerator.generate 将本次指定模型传给 createSession', async () => {
-    characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
+    characterGenerator = new NovelCharacterGenerator(
+      promptBuilder,
+      promptManager,
+      createMockContext()
+    )
     const modelId = { provider: 'provider-a', modelId: 'model-a' }
     await characterGenerator.generate('p-1', '沉默寡言的剑客', undefined, undefined, modelId)
     expect(mockState.lastOptions?.modelId).toEqual(modelId)
   })
 
   it('characterGenerator.generate 调用 handle.promptStream() 并获取结果', async () => {
-    characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
+    characterGenerator = new NovelCharacterGenerator(
+      promptBuilder,
+      promptManager,
+      createMockContext()
+    )
     await characterGenerator.generate('p-1', '勇敢的少年')
     expect(mockState.handles).toHaveLength(1)
     // generate 现在使用 promptStream 而非 prompt
@@ -239,7 +295,11 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
   })
 
   it('characterGenerator.generate 在结束时调用 dispose()', async () => {
-    characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
+    characterGenerator = new NovelCharacterGenerator(
+      promptBuilder,
+      promptManager,
+      createMockContext()
+    )
     await characterGenerator.generate('p-1', '聪明的法师')
     expect(mockState.handles).toHaveLength(1)
     expect(mockState.handles[0].disposeCalls).toBe(1)
@@ -259,7 +319,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
       currentPressure: '身份暴露',
       secret: '前朝遗孤',
       arcStage: 'rising',
-      speechStyle: '惜字如金',
+      speechStyle: '惜字如金'
     })
     ctx.createSession = async () => ({
       prompt: async () => mockResult,
@@ -269,7 +329,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
       },
       abort: () => {},
       subscribe: () => () => {},
-      dispose: () => {},
+      dispose: () => {}
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
 
@@ -281,7 +341,8 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
 
   it('characterGenerator.generate LLM 返回 ```json 代码块也能被解析', async () => {
     const ctx = createMockContext()
-    const mockResult = '```json\n{"name":"代码块角色","description":"x","identity":"","personality":"","appearance":"","currentState":"","currentGoal":"","currentPressure":"","secret":"","arcStage":"setup","speechStyle":""}\n```'
+    const mockResult =
+      '```json\n{"name":"代码块角色","description":"x","identity":"","personality":"","appearance":"","currentState":"","currentGoal":"","currentPressure":"","secret":"","arcStage":"setup","speechStyle":""}\n```'
     ctx.createSession = async () => ({
       prompt: async () => mockResult,
       promptStream: async (onDelta: (delta: string) => void) => {
@@ -290,7 +351,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
       },
       abort: () => {},
       subscribe: () => () => {},
-      dispose: () => {},
+      dispose: () => {}
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
     const result = await characterGenerator.generate('p-1', 'x')
@@ -308,7 +369,7 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
       },
       abort: () => {},
       subscribe: () => () => {},
-      dispose: () => {},
+      dispose: () => {}
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
     const result = await characterGenerator.generate('p-1', '沉默寡言的剑客背负血海深仇')
@@ -321,11 +382,15 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
   it('characterGenerator.generate handle.prompt 抛错时回退到模板角色', async () => {
     const ctx = createMockContext()
     ctx.createSession = async () => ({
-      prompt: async () => { throw new Error('LLM 调用失败') },
-      promptStream: async () => { throw new Error('LLM 调用失败') },
+      prompt: async () => {
+        throw new Error('LLM 调用失败')
+      },
+      promptStream: async () => {
+        throw new Error('LLM 调用失败')
+      },
       abort: () => {},
       subscribe: () => () => {},
-      dispose: () => {},
+      dispose: () => {}
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
     const result = await characterGenerator.generate('p-1', '愤怒的战士')
@@ -337,11 +402,15 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
     const disposeFn = vi.fn()
     const ctx = createMockContext()
     ctx.createSession = async () => ({
-      prompt: async () => { throw new Error('LLM 调用失败') },
-      promptStream: async () => { throw new Error('LLM 调用失败') },
+      prompt: async () => {
+        throw new Error('LLM 调用失败')
+      },
+      promptStream: async () => {
+        throw new Error('LLM 调用失败')
+      },
       abort: () => {},
       subscribe: () => () => {},
-      dispose: disposeFn,
+      dispose: disposeFn
     })
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
     await characterGenerator.generate('p-1', '聪明的法师')
@@ -351,7 +420,9 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
   it('characterGenerator.generate createSession 抛错时不调用 dispose', async () => {
     // createSession 本身抛错，handle 不存在，无法调用 dispose
     const ctx = createMockContext()
-    ctx.createSession = async () => { throw new Error('Session 创建失败') }
+    ctx.createSession = async () => {
+      throw new Error('Session 创建失败')
+    }
     characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, ctx)
     // createSession 抛错未被捕获，将向上传播
     await expect(characterGenerator.generate('p-1', 'x')).rejects.toThrow('Session 创建失败')
@@ -361,13 +432,24 @@ describe('Plugin createSession 集成 - NovelCharacterGenerator', () => {
 describe('Plugin createSession 集成 - 多次调用独立性', () => {
   beforeEach(() => {
     store.createProject({
-      id: 'p-1', title: '测试小说', genre: '玄幻', synopsis: '', targetWords: 0,
-      currentVolume: 1, currentChapter: 0, currentStage: 'setup', status: 'active',
+      id: 'p-1',
+      title: '测试小说',
+      genre: '玄幻',
+      synopsis: '',
+      targetWords: 0,
+      currentVolume: 1,
+      currentChapter: 0,
+      currentStage: 'setup',
+      status: 'active'
     })
   })
 
   it('多次调用 generate 创建多个独立 handle', async () => {
-    characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, createMockContext())
+    characterGenerator = new NovelCharacterGenerator(
+      promptBuilder,
+      promptManager,
+      createMockContext()
+    )
     await characterGenerator.generate('p-1', '角色A')
     await characterGenerator.generate('p-1', '角色B')
     expect(mockState.createSessionCalls).toBe(2)

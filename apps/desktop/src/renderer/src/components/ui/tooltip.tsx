@@ -46,15 +46,15 @@ function TooltipContent({
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        // dsh Tooltip：深色底板（两主题一致偏暗）、r8、13/20、无箭头
         className={cn(
-          'z-50 w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) rounded-md bg-foreground px-2 py-1 text-[11px] leading-relaxed text-background',
-          'data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95',
+          'z-50 w-fit max-w-[50vw] origin-(--radix-tooltip-content-transform-origin) rounded-lg bg-tooltip px-[7px] py-[3px] text-[13px] leading-5 text-tooltip-foreground break-words',
+          'data-open:animate-in data-open:fade-in-0 duration-150 data-closed:animate-out data-closed:fade-out-0',
           className,
         )}
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="size-2 translate-y-[calc(-50%_-_1px)] rotate-45 rounded-[2px] fill-foreground" />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )

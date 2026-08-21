@@ -91,7 +91,9 @@ export function CodeBlock({ className, children }: CodeBlockProps): ReactElement
   const isInline = !langClass && !code.includes('\n')
   if (isInline) {
     return (
-      <code className="rounded bg-surface-4 px-1 py-0.5 text-[0.85em] text-primary">{code}</code>
+      <code className="inline-flex items-center rounded-md bg-[var(--dsw-alias-markdown-inline-code)] px-[5px] py-0 text-[0.875em] text-text">
+        {code}
+      </code>
     )
   }
 
@@ -147,46 +149,53 @@ function CodeBlockFrame({
   }
 
   return (
-    <div className="group/code my-3 overflow-hidden rounded-xl border border-border bg-surface-2">
-      {/* 头部：语言标签 + 复制。语言标签本身也是"这是代码块"的视觉锚点 */}
-      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
-        <span className="font-mono text-nano tracking-wide text-hint select-none">
-          {langClass ?? 'text'}
-        </span>
-        <button
-          type="button"
-          onClick={() => void handleCopy()}
-          // 移动/触摸设备没有 hover，用 focus-within 兜不住，所以小屏常显
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-nano text-hint opacity-0 transition-all hover:bg-surface-3 hover:text-text focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/code:opacity-100 max-sm:opacity-100"
-          aria-label={copied ? '已复制' : '复制代码'}
-          title={copied ? '已复制' : '复制代码'}
-        >
-          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-          {copied ? '已复制' : '复制'}
-        </button>
+    // dsh CodeBlock：r12、代码面填充、语言横幅（banner 色）。
+    // 横幅 sticky 钉在滚动容器顶部：长代码滚动时语言标签始终可读。
+    // 外层不做 overflow:hidden（会困住 sticky），底部圆角交给内容区裁剪。
+    <div className="group/code my-4 rounded-xl bg-[var(--color-code-block-bg)]">
+      {/* 横幅 sticky 包装：底色用页面背景，代码从其下穿过时被遮住 */}
+      <div className="sticky top-0 z-10 rounded-t-xl bg-app-bg">
+        <div className="flex items-center justify-between gap-3 rounded-t-xl bg-[var(--color-code-block-banner)] px-3.5 py-2">
+          <span className="font-mono text-xs leading-[18px] text-text select-none">
+            {langClass ?? 'text'}
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleCopy()}
+            // 移动/触摸设备没有 hover，用 focus-within 兜不住，所以小屏常显
+            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-hint opacity-0 transition-all hover:bg-accent hover:text-text focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/code:opacity-100 max-sm:opacity-100"
+            aria-label={copied ? '已复制' : '复制代码'}
+            title={copied ? '已复制' : '复制代码'}
+          >
+            {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+            {copied ? '已复制' : '复制'}
+          </button>
+        </div>
       </div>
 
-      <div className={cn('relative', isCollapsed && 'overflow-hidden')}>
-        {/* fallback 是同样排版的纯文本：加载高亮 chunk 期间内容照常可读，不留白 */}
-        <Suspense fallback={<PlainCode code={shownCode} />}>
-          <HighlightedCode code={shownCode} language={langClass} isDark={isDark} />
-        </Suspense>
+      <div className="overflow-hidden rounded-b-xl">
+        <div className={cn('relative', isCollapsed && 'overflow-hidden')}>
+          {/* fallback 是同样排版的纯文本：加载高亮 chunk 期间内容照常可读，不留白 */}
+          <Suspense fallback={<PlainCode code={shownCode} />}>
+            <HighlightedCode code={shownCode} language={langClass} isDark={isDark} />
+          </Suspense>
 
-        {isCollapsed && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-surface-2 to-transparent" />
+          {isCollapsed && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-[var(--color-code-block-bg)] to-transparent" />
+          )}
+        </div>
+
+        {collapsible && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="flex w-full items-center justify-center gap-1 px-3 py-1.5 text-xs text-hint transition-colors hover:bg-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ChevronDown className={cn('size-3 transition-transform', expanded && 'rotate-180')} />
+            {expanded ? '收起' : `展开剩余 ${lineCount - COLLAPSED_LINES} 行`}
+          </button>
         )}
       </div>
-
-      {collapsible && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="flex w-full items-center justify-center gap-1 border-t border-border px-3 py-1 text-nano text-hint transition-colors hover:bg-surface-3 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ChevronDown className={cn('size-3 transition-transform', expanded && 'rotate-180')} />
-          {expanded ? '收起' : `展开剩余 ${lineCount - COLLAPSED_LINES} 行`}
-        </button>
-      )}
     </div>
   )
 }

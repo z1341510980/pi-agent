@@ -1,6 +1,16 @@
-import { createAgentSession, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent'
-import type { ModelRuntime, AgentSession, SettingsManager, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  SessionManager
+} from '@earendil-works/pi-coding-agent'
+import type {
+  ModelRuntime,
+  AgentSession,
+  SettingsManager,
+  ToolDefinition
+} from '@earendil-works/pi-coding-agent'
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
+import { validateToolArguments } from '@earendil-works/pi-ai'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -19,7 +29,11 @@ import { InstructionLoader } from './instruction-loader.js'
 import type { FactStore } from '../memory/fact-store.js'
 import { MemoryTicker } from '../memory/memory-ticker.js'
 import type { AgentManager, AgentConfig } from './subagent-tool.js'
-import { createSubagentTool, createSubagentReplyTool, createSubagentCloseTool } from './subagent-tool.js'
+import {
+  createSubagentTool,
+  createSubagentReplyTool,
+  createSubagentCloseTool
+} from './subagent-tool.js'
 import type { TeamManager } from './team-manager.js'
 import { createTeamExecuteTool } from './team-tool.js'
 
@@ -55,27 +69,31 @@ export function withAgentConfig<T>(config: AgentConfig, fn: () => Promise<T>): P
 /**
  * 选择本次会话使用的 SessionManager（纯函数，便于单测）。
  *
- * - plugin:* 线程：每次新建独立 SessionManager（避免跨 Agent 历史泄漏）；
- * - chat 线程 + resumePath：SessionManager.open 恢复既有 JSONL（方案 §9.4）；
- * - 其余 chat 线程：复用共享 sessionManager。
+ * ## 为什么不再复用共享 SessionManager
+ *
+ * Pi 的 `SessionManager` 持有单个 `sessionId`、`sessionFile`、`fileEntries`、`byId`
+ * 和 `leafId`。把同一个实例交给多个 thread，会让它们落进同一棵会话树和同一个 JSONL：
+ * 历史消息、模型变更和 thinking level 变更条目互相串扰，`createAgentSession()` 还会
+ * 从这份共享上下文恢复模型。因此每个线程首次创建时都必须独立 `SessionManager.create()`。
+ *
+ * - plugin:* 线程：每次新建（一次性调用，不做恢复）；
+ * - chat 线程 + resumePath：`SessionManager.open` 恢复既有 JSONL（方案 §9.4）；
+ * - chat 线程无 resumePath：同样新建，只是沿用共享实例的 sessionDir。
  */
 export function selectSessionManager(input: {
   isPluginThread: boolean
   resumePath?: string
   cwd: string
   sessionDir: string
-  sharedSessionManager: SessionManager
   newId: () => string
   createManager: (cwd: string, sessionDir: string, meta: { id: string }) => SessionManager
   openManager: (path: string, sessionDir: string, cwdOverride: string) => SessionManager
 }): SessionManager {
-  if (input.isPluginThread) {
-    return input.createManager(input.cwd, input.sessionDir, { id: input.newId() })
-  }
-  if (input.resumePath) {
+  // 恢复优先于新建：只有注册表命中本线程自己的 JSONL 时才 open。
+  if (!input.isPluginThread && input.resumePath) {
     return input.openManager(input.resumePath, input.sessionDir, input.cwd)
   }
-  return input.sharedSessionManager
+  return input.createManager(input.cwd, input.sessionDir, { id: input.newId() })
 }
 
 export interface PiSessionDeps {
@@ -123,6 +141,13 @@ export interface PiSessionDeps {
     cwd: string
     dataDir: string
   }
+  /**
+   * Policy Hook Manager（可选）
+   * 用于在工具调用前后执行 Hook 策略
+   */
+  hookManager?: import('../policy/policy-hook-manager.js').PolicyHookManager
+  /** 创建会话时的取消信号，用于 SessionStart Hook。 */
+  signal?: AbortSignal
 }
 
 /**
@@ -151,11 +176,52 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
    */
   const isPluginThread = deps.threadId.startsWith('plugin:')
 
-  // 2. 资源加载器
+  // 2. 执行 SessionStart Hook（如果 hookManager 可用且不是插件线程）
+  let hookSystemMessages: string[] = []
+  let hookAdditionalContext: string[] = []
+  if (deps.hookManager && !isPluginThread) {
+    try {
+      const signal = deps.signal ?? new AbortController().signal
+      const result = await deps.hookManager.runSessionStartHooks(signal)
+      hookSystemMessages = result.outcome.systemMessages
+      hookAdditionalContext = result.outcome.additionalContext
+      if (hookAdditionalContext.length > 0) {
+        deps.eventBus.emit('devlog:entry', {
+          level: 'debug',
+          message: `SessionStart Hook 附加上下文: ${hookAdditionalContext.join(', ')}`,
+          source: 'agent'
+        })
+      }
+      if (hookSystemMessages.length > 0) {
+        deps.eventBus.emit('devlog:entry', {
+          level: 'info',
+          message: `SessionStart Hook 系统消息: ${hookSystemMessages.join(', ')}`,
+          source: 'agent'
+        })
+      }
+    } catch (error) {
+      deps.eventBus.emit('devlog:entry', {
+        level: 'error',
+        message: `SessionStart Hook 执行异常: ${error instanceof Error ? error.message : String(error)}`,
+        source: 'agent'
+      })
+    }
+  }
+
+  // 3. 资源加载器
   const resourceLoader = new DefaultResourceLoader({
     cwd: deps.config.cwd,
     agentDir: deps.config.dataDir,
-    systemPromptOverride: () => buildSystemPrompt(deps),
+    systemPromptOverride: () => {
+      let systemPrompt = buildSystemPrompt(deps)
+      if (hookSystemMessages.length > 0) {
+        systemPrompt += '\n\n## Hook 系统指令\n' + hookSystemMessages.join('\n')
+      }
+      if (hookAdditionalContext.length > 0) {
+        systemPrompt += '\n\n## Hook 附加上下文\n' + hookAdditionalContext.join('\n')
+      }
+      return systemPrompt
+    },
     // 插件会话不扫描环境中的这些资源：它们只会进系统提示词，不会被用到。
     // Skill 是例外：仍保持 noSkills=true，但允许通过 AgentConfig.skillPaths
     // 定向加载本次调用显式授权的 SKILL.md，避免暴露用户/项目的全部 Skills。
@@ -165,11 +231,16 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           noContextFiles: true,
           noExtensions: true,
           noPromptTemplates: true,
-          additionalSkillPaths: agentConfigStorage.getStore()?.skillPaths ?? [],
+          additionalSkillPaths: agentConfigStorage.getStore()?.skillPaths ?? []
         }
-      : {}),
+      : {})
   })
-  await resourceLoader.reload()
+  await resourceLoader.reload({
+    resolveProjectTrust: async () => {
+      // plugin 线程不加载项目 extension；chat 线程加载
+      return !isPluginThread
+    }
+  })
 
   // 3. Gate 集成：获取被禁止的工具列表
   const gateDeniedTools = deps.gate.getDeniedTools()
@@ -220,7 +291,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
       ErrorCode.CONFIG_ERROR,
       '未找到已配置的 Provider。请在设置中配置 Provider（含 API Key 和模型）后再开始对话。',
       500,
-      'No provider is configured. Please configure a provider in Settings before starting a conversation.',
+      'No provider is configured. Please configure a provider in Settings before starting a conversation.'
     )
   }
 
@@ -230,7 +301,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     customTools.push(
       createSubagentTool(deps.subagentManager),
       createSubagentReplyTool(deps.subagentManager),
-      createSubagentCloseTool(deps.subagentManager),
+      createSubagentCloseTool(deps.subagentManager)
     )
   }
   if (deps.teamManager) {
@@ -256,7 +327,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   // 注意：必须在白名单过滤之前加入，否则会被 tools 白名单过滤掉。
   const agentConfigForExtra = agentConfigStorage.getStore()
   if (agentConfigForExtra?.extraTools && agentConfigForExtra.extraTools.length > 0) {
-    const existingNames = new Set(customTools.map(t => t.name))
+    const existingNames = new Set(customTools.map((t) => t.name))
     for (const tool of agentConfigForExtra.extraTools) {
       if (!existingNames.has(tool.name)) {
         customTools.push(tool)
@@ -286,7 +357,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   const agentConfigForTools = agentConfigStorage.getStore()
   if (agentConfigForTools?.tools && Array.isArray(agentConfigForTools.tools)) {
     const allowedToolNames = new Set(agentConfigForTools.tools)
-    const extraToolNames = new Set((agentConfigForTools.extraTools ?? []).map(t => t.name))
+    const extraToolNames = new Set((agentConfigForTools.extraTools ?? []).map((t) => t.name))
     for (let i = customTools.length - 1; i >= 0; i--) {
       const toolName = customTools[i].name
       // extraTools 豁免：orchestrator 显式注入的闭包工具不被白名单过滤
@@ -298,10 +369,11 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
   }
 
   // 6. 选择 SessionManager：
-  //    - plugin:* 线程每次创建独立 SessionManager，避免不同 Agent 调用共享同一 Pi SDK 会话树，
-  //      从而防止历史消息（含 tool 消息）跨 Agent 泄漏，导致网关报 400。
+  //    - 每个线程首次创建都新建独立 SessionManager。共享实例会让多个线程落进同一棵
+  //      会话树/同一个 JSONL，历史、模型和 thinking level 条目互相串扰。
   //    - chat 线程在提供 resumePath 时用 SessionManager.open 打开既有 JSONL
-  //      （方案 §9.4：重启/LRU 淘汰后恢复原会话）；否则复用共享 sessionManager。
+  //      （方案 §9.4：重启/LRU 淘汰后恢复原会话）。
+  //    - deps.sessionManager 仅用于取共享 sessionDir，不再作为会话本体。
   const sessionManager = selectSessionManager({
     isPluginThread,
     resumePath: deps.resumePath,
@@ -310,10 +382,9 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
       typeof deps.sessionManager.getSessionDir === 'function'
         ? deps.sessionManager.getSessionDir()
         : join(deps.config.dataDir, 'agent', 'sessions'),
-    sharedSessionManager: deps.sessionManager,
     newId: () => randomUUID(),
     createManager: (cwd, dir, meta) => SessionManager.create(cwd, dir, meta),
-    openManager: (path, dir, cwdOverride) => SessionManager.open(path, dir, cwdOverride),
+    openManager: (path, dir, cwdOverride) => SessionManager.open(path, dir, cwdOverride)
   })
 
   // 7. 创建 Agent Session
@@ -330,50 +401,231 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
     model: defaultModel,
     ...(thinkingLevel ? { thinkingLevel } : {}),
     ...(customTools.length > 0 ? { customTools } : {}),
-    ...(excludeTools.length > 0 ? { excludeTools } : {}),
+    ...(excludeTools.length > 0 ? { excludeTools } : {})
   })
 
-  // 7. 注入 beforeToolCall 钩子：Gate 权限检查 + 用户确认
-  // 使用 Pi SDK 原生钩子，统一拦截所有工具调用（内置 + 扩展 + customTools）
-  session.agent.beforeToolCall = createBeforeToolCall({
-    threadId: deps.threadId,
-    gate: deps.gate,
-    confirmationManager: deps.confirmationManager,
-  })
+  // 7. 恢复 session.bindExtensions() 调用，触发 session_start / resources_discover 事件
+  // 注意：在设置 beforeToolCall 之前调用，确保 extension 的 session_start handler 能正常执行
+  if (typeof session.bindExtensions === 'function') {
+    await session.bindExtensions({})
+  }
 
-  // 8. 注入 afterToolCall 钩子：Evidence Ledger 记录 + EventBus 事件转发
+  // 8. 保存 SDK 原生回调（用于 Pi Extension 的 tool_call / tool_result 事件）
+  // 注意：必须在这里保存，因为 createAgentSession 已经安装了它们
+  const nativeBeforeToolCall = session.agent.beforeToolCall
+  const nativeAfterToolCall = session.agent.afterToolCall
+
+  // 8. 安装产品编排器作为唯一的 beforeToolCall / afterToolCall
+  // 执行顺序：原生 Pi Extension → Gate → Confirmation → 执行 → 原生 after → 产品逻辑
   const evidenceLedger = new EvidenceLedger({
     threadId: deps.threadId,
-    db: deps.db,
+    db: deps.db
   })
 
-  session.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+  // 8a. beforeToolCall 编排器
+  session.agent.beforeToolCall = async (params, signal) => {
+    // Step 1: ���用原生 Pi Extension（如果有）
+    let extensionResult = undefined
+    if (typeof nativeBeforeToolCall === 'function') {
+      try {
+        extensionResult = await nativeBeforeToolCall(params)
+        // 如果原生回调返回了阻断结果，直接返回（不继续执行产品逻辑）
+        if (extensionResult?.block) {
+          return extensionResult
+        }
+      } catch (error) {
+        // Extension 异常：记录但不阻断，继续执行产品逻辑
+        deps.eventBus.emit('devlog:entry', {
+          level: 'error',
+          message: `Pi Extension beforeToolCall 异常: ${error instanceof Error ? error.message : String(error)}`,
+          source: 'agent'
+        })
+      }
+    }
+
+    // Step 2: 执行 PreToolUse Hook（如果 hookManager 可用）
+    let hookDecision = 'none'
+    let hookReason: string | undefined
+    if (deps.hookManager) {
+      try {
+        const toolName = params.toolCall?.name ?? 'unknown'
+        const args = (params.args ?? {}) as Record<string, unknown>
+        const hookResult = await deps.hookManager.runPreToolUseHooks(
+          toolName,
+          args,
+          signal ?? new AbortController().signal
+        )
+        if (hookResult.outcome.updatedInput !== undefined) {
+          try {
+            const tool = params.context.tools?.find((candidate) => candidate.name === toolName)
+            if (!tool) return { block: true, reason: `Hook 改写后找不到工具：${toolName}` }
+            const validatedArgs = validateToolArguments(tool, {
+              type: 'toolCall',
+              id: params.toolCall?.id ?? randomUUID(),
+              name: toolName,
+              arguments: hookResult.outcome.updatedInput
+            })
+            params.args = validatedArgs
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error)
+            deps.eventBus.emit('devlog:entry', {
+              level: 'warn',
+              message: `PreToolUse Hook 参数复验失败: ${toolName} - ${reason}`,
+              source: 'agent'
+            })
+            return { block: true, reason: `Hook 改写后的参数无效：${reason}` }
+          }
+        }
+        if (hookResult.outcome.decision === 'deny') {
+          hookDecision = 'deny'
+          hookReason = hookResult.outcome.reason ?? 'Hook 策略拒绝执行'
+          // 记录 hook 执行结果到 eventBus
+          deps.eventBus.emit('devlog:entry', {
+            level: 'warn',
+            message: `PreToolUse Hook 阻断: ${toolName} - ${hookReason}`,
+            source: 'agent'
+          })
+          return { block: true, reason: hookReason }
+        } else if (hookResult.outcome.decision === 'ask') {
+          hookDecision = 'ask'
+          hookReason = hookResult.outcome.reason ?? 'Hook 请求确认'
+          deps.eventBus.emit('devlog:entry', {
+            level: 'info',
+            message: `PreToolUse Hook 请求确认: ${toolName} - ${hookReason}`,
+            source: 'agent'
+          })
+        }
+        // 累积 additionalContext 和 systemMessages 到 params 中（后续可注入）
+        if (hookResult.outcome.additionalContext.length > 0) {
+          // 将 additionalContext 附加到工具调用上下文中
+          // 这里暂时通过 eventBus 传递，后续可优化
+          deps.eventBus.emit('devlog:entry', {
+            level: 'debug',
+            message: `PreToolUse Hook 附加上下文: ${hookResult.outcome.additionalContext.join(', ')}`,
+            source: 'agent'
+          })
+        }
+      } catch (error) {
+        deps.eventBus.emit('devlog:entry', {
+          level: 'error',
+          message: `PreToolUse Hook 执行异常: ${error instanceof Error ? error.message : String(error)}`,
+          source: 'agent'
+        })
+        // Hook 异常不阻断，继续执行
+      }
+    }
+
+    // Step 3: 产品逻辑（Gate + Confirmation）
+    // 复用 createBeforeToolCall 的逻辑
+    const productBefore = createBeforeToolCall({
+      threadId: deps.threadId,
+      gate: deps.gate,
+      confirmationManager: deps.confirmationManager
+    })
+    const productResult = await productBefore(params)
+
+    // Step 4: 如果产品逻辑阻断，返回阻断结果
+    if (productResult?.block) {
+      return productResult
+    }
+
+    // Step 5: 返回原生 Extension 的结果（如果有）
+    return extensionResult
+  }
+
+  // 8b. afterToolCall 编排器
+  session.agent.afterToolCall = async (context, signal) => {
+    const { toolCall, args, result, isError } = context
+    // Step 1: 调用原生 Pi Extension（如果有）
+    let extensionResult = undefined
+    if (typeof nativeAfterToolCall === 'function') {
+      try {
+        extensionResult = await nativeAfterToolCall(context)
+      } catch (error) {
+        deps.eventBus.emit('devlog:entry', {
+          level: 'error',
+          message: `Pi Extension afterToolCall 异常: ${error instanceof Error ? error.message : String(error)}`,
+          source: 'agent'
+        })
+      }
+    }
+
+    // Step 2: 执行 PostToolUse Hook（如果 hookManager 可用）
+    if (deps.hookManager) {
+      try {
+        const hookResult = await deps.hookManager.runPostToolUseHooks(
+          toolCall.name,
+          result,
+          signal ?? new AbortController().signal
+        )
+        if (hookResult.outcome.decision === 'deny') {
+          deps.eventBus.emit('devlog:entry', {
+            level: 'warn',
+            message: `PostToolUse Hook 拒绝结果: ${toolCall.name} - ${hookResult.outcome.reason}`,
+            source: 'agent'
+          })
+          // 返回阻断结果
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Hook 拒绝此工具结果: ${hookResult.outcome.reason ?? '未提供原因'}`
+              }
+            ],
+            isError: true
+          }
+        }
+        // 累积 additionalContext 到日志
+        if (hookResult.outcome.additionalContext.length > 0) {
+          deps.eventBus.emit('devlog:entry', {
+            level: 'debug',
+            message: `PostToolUse Hook 附加上下文: ${hookResult.outcome.additionalContext.join(', ')}`,
+            source: 'agent'
+          })
+        }
+        // 如果 Hook 有系统消息，可以注入到后续对话中（这里通过 eventBus 传递）
+        if (hookResult.outcome.systemMessages.length > 0) {
+          deps.eventBus.emit('devlog:entry', {
+            level: 'info',
+            message: `PostToolUse Hook 系统消息: ${hookResult.outcome.systemMessages.join(', ')}`,
+            source: 'agent'
+          })
+        }
+      } catch (error) {
+        deps.eventBus.emit('devlog:entry', {
+          level: 'error',
+          message: `PostToolUse Hook 执行异常: ${error instanceof Error ? error.message : String(error)}`,
+          source: 'agent'
+        })
+      }
+    }
+
+    // Step 3: 产品逻辑（Evidence Ledger + EventBus + 输出截断）
     // Evidence Ledger：记录工具调用证据
     evidenceLedger.record({
       toolCallId: toolCall.id,
       toolName: toolCall.name,
       argsSummary: summarizeArgs(
-        (args && typeof args === 'object' && !Array.isArray(args))
-          ? args as Record<string, unknown>
-          : {},
+        args && typeof args === 'object' && !Array.isArray(args)
+          ? (args as Record<string, unknown>)
+          : {}
       ),
       resultSummary: summarizeResult(result),
-      isError,
+      isError
     })
 
     // EventBus：转发工具执行结束事件
     deps.eventBus.emit('tool:execution:end', {
       toolName: toolCall.name,
-      toolCallId: toolCall.id,
+      toolCallId: toolCall.id
     })
     deps.eventBus.emit('devlog:entry', {
       level: 'debug',
       message: `工具调用结束: ${toolCall.name}`,
-      source: 'agent',
+      source: 'agent'
     })
 
     // OutputTruncator：截断超长工具输出（32KB head+tail）
-    // 在 afterToolCall 中修改 content，SDK 会将修改后的结果发送给 LLM
     let wasTruncated = false
     const truncatedContent = result.content.map((item) => {
       if (item.type === 'text' && shouldTruncate(item.text)) {
@@ -384,19 +636,25 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           threadId: deps.threadId,
           toolCallId: toolCall.id,
           toolName: toolCall.name,
-          originalBytes,
+          originalBytes
         })
         deps.eventBus.emit('notification:push', {
           level: 'warning',
           title: '工具输出已截断',
           message: `${toolCall.name} 输出从 ${originalBytes} 字节截断`,
           category: 'tool',
-          threadId: deps.threadId,
+          threadId: deps.threadId
         })
         return { ...item, text: truncatedText }
       }
       return item
     })
+
+    // Step 4: 合并结果
+    // 如果原生 Extension 返回了修改后的结果，使用它；否则使用产品逻辑的结果
+    if (extensionResult?.content) {
+      return extensionResult
+    }
 
     return wasTruncated ? { content: truncatedContent } : undefined
   }
@@ -415,12 +673,12 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
 
       deps.eventBus.emit('tool:execution:start', {
         toolName,
-        toolCallId,
+        toolCallId
       })
       deps.eventBus.emit('devlog:entry', {
         level: 'debug',
         message: `工具调用开始: ${toolName}`,
-        source: 'agent',
+        source: 'agent'
       })
 
       // Storm Breaker：检测工具调用死循环
@@ -430,14 +688,14 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           threadId: deps.threadId,
           toolName,
           toolCallId,
-          stats: stormBreaker.getStats(deps.threadId),
+          stats: stormBreaker.getStats(deps.threadId)
         })
         deps.eventBus.emit('notification:push', {
           level: 'error',
           title: '检测到工具调用死循环',
           message: `${toolName} 已被 Storm Breaker 中止`,
           category: 'tool',
-          threadId: deps.threadId,
+          threadId: deps.threadId
         })
       }
     }
@@ -461,7 +719,7 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           cacheReadTokens: (usage?.cacheRead as number) ?? undefined,
           cacheWriteTokens: (usage?.cacheWrite as number) ?? undefined,
           durationMs: 0, // Pi SDK 不提供单次调用耗时
-          agentId: 'default',
+          agentId: 'default'
         })
 
         // 推送上下文占用更新：totalTokens 是当前上下文窗口的实际 token 占用
@@ -476,13 +734,13 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
           outputTokens,
           model: msg.model as string,
           provider: msg.provider as string,
-          contextWindow,
+          contextWindow
         })
 
         deps.eventBus.emit('devlog:entry', {
           level: 'debug',
           message: `LLM 调用完成: ${msg.provider as string}/${msg.model as string} (上下文 ${totalTokens} tokens)`,
-          source: 'llm',
+          source: 'llm'
         })
       }
     }
@@ -492,18 +750,74 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
       if (memoryTicker.recordTurn()) {
         deps.eventBus.emit('memory:compile:requested', {
           threadId: deps.threadId,
-          phase: 'turn_threshold',
+          phase: 'turn_threshold'
         })
         deps.eventBus.emit('devlog:entry', {
           level: 'info',
           message: `记忆编译已触发（阶段：turn_threshold）`,
-          source: 'memory',
+          source: 'memory'
         })
         // 标记已编译，重置计数器
         memoryTicker.markCompiled()
       }
     }
   })
+
+  // ===== 包装 session.prompt 以支持 UserPromptSubmit Hook =====
+  if (deps.hookManager && !isPluginThread) {
+    const originalPrompt = session.prompt.bind(session)
+    session.prompt = (async (text: string, options?: any): Promise<void> => {
+      let nextText = text
+      try {
+        const signal = deps.signal ?? new AbortController().signal
+        const result = await deps.hookManager!.runUserPromptSubmitHooks(text, signal)
+        if (result.outcome.decision === 'deny') {
+          deps.eventBus.emit('devlog:entry', {
+            level: 'warn',
+            message: `UserPromptSubmit Hook 拒绝: ${result.outcome.reason ?? '未提供原因'}`,
+            source: 'agent'
+          })
+          throw new Error(`UserPromptSubmit Hook 拒绝: ${result.outcome.reason ?? '未提供原因'}`)
+        }
+        if (typeof result.outcome.updatedInput === 'object' && result.outcome.updatedInput) {
+          const updated = result.outcome.updatedInput as { userMessage?: unknown }
+          if (typeof updated.userMessage === 'string') nextText = updated.userMessage
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('UserPromptSubmit Hook 拒绝'))
+          throw error
+        deps.eventBus.emit('devlog:entry', {
+          level: 'error',
+          message: `UserPromptSubmit Hook 执行异常: ${error instanceof Error ? error.message : String(error)}`,
+          source: 'agent'
+        })
+      }
+      return originalPrompt(nextText, options)
+    }) as typeof session.prompt
+  }
+
+  // ===== 包装 session.dispose 以支持 Stop Hook =====
+  if (deps.hookManager && !isPluginThread) {
+    const originalDispose = session.dispose.bind(session)
+    session.dispose = async function (this: any) {
+      try {
+        const signal = new AbortController().signal
+        await deps.hookManager!.runStopHooks(signal)
+        deps.eventBus.emit('devlog:entry', {
+          level: 'debug',
+          message: 'Stop Hook 执行完成',
+          source: 'agent'
+        })
+      } catch (error) {
+        deps.eventBus.emit('devlog:entry', {
+          level: 'warn',
+          message: `Stop Hook 执行异常: ${error instanceof Error ? error.message : String(error)}`,
+          source: 'agent'
+        })
+      }
+      return originalDispose()
+    }
+  }
 
   return session
 }
@@ -541,7 +855,9 @@ function buildSystemPrompt(deps: PiSessionDeps): string {
       parts.push(`\n## 人格\n${agentConfig.personality}`)
     }
     if (agentConfig.name) {
-      parts.push(`\n## 当前角色\n你当前作为 "${agentConfig.name}" 运行。${agentConfig.description ? `职责：${agentConfig.description}` : ''}`)
+      parts.push(
+        `\n## 当前角色\n你当前作为 "${agentConfig.name}" 运行。${agentConfig.description ? `职责：${agentConfig.description}` : ''}`
+      )
     }
   }
 

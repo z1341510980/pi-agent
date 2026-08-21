@@ -204,21 +204,19 @@ export function SessionList({
       aria-label="会话"
       data-tour="session-list"
     >
-      {/* 新建会话按钮（AionUi 风格：低调幽灵 + Plus 图标容器） */}
+      {/* 新建会话按钮（dsh New Session：38px 白底胶囊条 + 发丝线） */}
       <button
         type="button"
         onClick={onNewSession}
         aria-label="新建会话"
-        className="group flex w-full items-center gap-2 h-10 px-2.5 rounded-xl bg-transparent hover:bg-surface-3 dark:hover:bg-surface-2 text-text text-sm font-medium transition-[background-color,box-shadow,transform] active:scale-[0.96]"
+        className="flex w-full items-center justify-center gap-1.5 h-[38px] px-4 rounded-xl border border-border bg-[var(--dsw-alias-button-elevated-fill)] text-text text-sm leading-[22px] font-medium transition-colors hover:bg-[var(--dsw-alias-button-floating-hover)] active:scale-[0.99]"
       >
-        <span className="flex size-7 items-center justify-center rounded-lg bg-surface-2 text-text-secondary shadow-[var(--shadow-border)] group-hover:text-text transition-[color,box-shadow]">
-          <Plus className="size-3.5" aria-hidden="true" />
-        </span>
+        <Plus className="size-3.5" aria-hidden="true" />
         <span>新对话</span>
       </button>
 
-      {/* 分隔线（AionUi 风格：1px 浅色分隔） */}
-      <div className="h-px bg-border mx-1 my-2" aria-hidden="true" />
+      {/* 分隔线 */}
+      <div className="h-px bg-[var(--dsw-alias-border-l1)] mx-1 my-2" aria-hidden="true" />
 
       {/* 置顶会话分组（独立区域，不参与虚拟化，可拖拽排序） */}
       {pinnedSessions.length > 0 && (
@@ -447,10 +445,10 @@ function SessionItem({
     <DropdownMenu.Root>
       <div
         className={cn(
-          'group relative flex items-center gap-2.5 h-9 rounded-xl px-2.5 text-left transition-[background-color,color,box-shadow,transform] cursor-pointer active:scale-[0.98]',
+          'group relative flex items-center gap-2.5 h-9 rounded-lg px-2.5 text-left transition-[background-color,color] cursor-pointer',
           isActive
-            ? 'bg-[var(--color-active-bg)] shadow-[inset_3px_0_0_var(--color-primary)]'
-            : 'hover:bg-surface-3 dark:hover:bg-surface-2'
+            ? 'bg-[var(--color-sidebar-nav-active)]'
+            : 'hover:bg-[var(--color-sidebar-nav-hover)]'
         )}
         onClick={onSelect}
         onDoubleClick={onRename}
@@ -464,9 +462,9 @@ function SessionItem({
           }
         }}
       >
-        {/* 左侧 Agent 身份标识（AionUi 风格：22×22px 图标容器） */}
+        {/* 左侧 Agent 身份标识 */}
         <span
-          className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-text-secondary shadow-[var(--shadow-border)]"
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-text-secondary"
           aria-hidden="true"
           title={agentName}
         >
@@ -524,13 +522,13 @@ function SessionItem({
       </div>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
-          className="z-50 min-w-36 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 animate-in fade-in-0 zoom-in-95"
+          className="z-50 min-w-36 rounded-xl border border-[var(--dsw-alias-border-inverted)] bg-popover p-1 text-popover-foreground shadow-[var(--dsw-shadow-lv3)] animate-in fade-in-0 zoom-in-95"
           side="right"
           align="start"
           sideOffset={4}
         >
           <DropdownMenu.Item
-            className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
+            className="flex min-h-[34px] cursor-default items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-40"
             onSelect={onRename}
           >
             <Pencil className="size-3.5" />
@@ -538,7 +536,7 @@ function SessionItem({
           </DropdownMenu.Item>
           {onTogglePin && (
             <DropdownMenu.Item
-              className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
+              className="flex min-h-[34px] cursor-default items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-sm outline-none select-none hover:bg-accent hover:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-40"
               onSelect={onTogglePin}
             >
               {isPinned ? (
@@ -554,9 +552,9 @@ function SessionItem({
               )}
             </DropdownMenu.Item>
           )}
-          <DropdownMenu.Separator className="my-1 h-px bg-border" />
+          <DropdownMenu.Separator className="my-1 h-px bg-[var(--dsw-alias-border-l1)]" />
           <DropdownMenu.Item
-            className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm outline-none select-none hover:bg-destructive/10 hover:text-destructive data-disabled:pointer-events-none data-disabled:opacity-50"
+            className="flex min-h-[34px] cursor-default items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-sm outline-none select-none hover:bg-destructive/10 hover:text-destructive data-disabled:pointer-events-none data-disabled:opacity-40"
             onSelect={onDelete}
           >
             <Trash2 className="size-3.5" />

@@ -5,9 +5,11 @@ import { NovelConversationPanel } from '../novel-conversation-panel'
 
 vi.mock('@/components/shared/conversation', () => ({
   ConversationStream: ({
-    messages
+    messages,
+    stickyFooter
   }: {
     messages: Array<{ agentType?: string; content: string; status: string; checkpointOptions?: Array<{ label: string; action: string }> }>
+    stickyFooter?: ReactNode
   }) => (
     <div data-testid="conversation-stream">
       {messages.map((message, index) => (
@@ -18,6 +20,8 @@ vi.mock('@/components/shared/conversation', () => ({
           ))}
         </article>
       ))}
+      {/* 错误卡经 stickyFooter 吸底渲染（P0-5），mock 需透出以供断言 */}
+      {stickyFooter}
     </div>
   ),
   ConversationInput: () => null,

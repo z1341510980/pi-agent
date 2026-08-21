@@ -9,16 +9,17 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
+        // dsh Pill：胶囊小标签，中性填充 + 次级文字
+        default: "bg-secondary text-text [a]:hover:bg-surface-3",
         secondary:
-          "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
+          "bg-surface-2 text-text-secondary [a]:hover:bg-surface-3",
         destructive:
           "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
         outline:
-          "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
+          "border-border text-text-secondary [a]:hover:bg-accent",
         ghost:
-          "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
-        link: "text-primary underline-offset-4 hover:underline",
+          "hover:bg-accent hover:text-muted-foreground",
+        link: "text-info underline-offset-4 hover:underline",
       },
     },
     defaultVariants: {

@@ -37,7 +37,11 @@ export function MarkdownAnchor(props: Props): ReactElement {
   const label = props.children
 
   if (!context) {
-    return <code className="rounded bg-surface-4 px-1 py-0.5 text-[0.9em]">{label}</code>
+    return (
+      <code className="inline-flex items-center rounded-md bg-[var(--dsw-alias-markdown-inline-code)] px-[5px] py-0 text-[0.875em]">
+        {label}
+      </code>
+    )
   }
 
   const line = toNumber(props['data-file-line'])
@@ -51,8 +55,8 @@ export function MarkdownAnchor(props: Props): ReactElement {
       title={`打开 ${filePath}${line != null ? `（第 ${line} 行）` : ''}`}
       className={cn(
         'inline-flex max-w-full items-baseline gap-0.5 rounded px-1 align-baseline',
-        'bg-primary/8 font-mono text-[0.9em] text-primary',
-        'transition-colors hover:bg-primary/15',
+        'font-mono text-[0.875em] text-info',
+        'transition-colors hover:underline hover:decoration-info hover:[text-underline-offset:3px]',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       )}
     >

@@ -74,11 +74,19 @@ export const settingsRoute: FastifyPluginAsync = async (app) => {
     if (!input) return
 
     app.providerConfigStore.setStripStreamOptions(input.stripStreamOptions)
-    // 清除 Session 缓存：让后续请求重建 Session 时使用新配置
-    app.piSessionStore.clear()
+    // 使 Session 缓存失效：后续请求按新配置重建 Session。
+    // 这是应用级开关，作用域为全部会话；正在跑的 run 不打断，只标 stale。
+    const invalidation = app.piSessionStore.invalidate({
+      scope: 'all',
+      reason: 'stream_options 开关变更',
+    })
     app.log.info(
-      { traceId: request.traceId, stripStreamOptions: input.stripStreamOptions },
-      'stream_options 屏蔽开关已更新，Session 缓存已清除',
+      {
+        traceId: request.traceId,
+        stripStreamOptions: input.stripStreamOptions,
+        ...invalidation,
+      },
+      'stream_options 屏蔽开关已更新，Session 缓存已失效',
     )
     return success({ stripStreamOptions: input.stripStreamOptions }, request.traceId)
   })
