@@ -133,6 +133,18 @@ export class TeamManager {
     this.store?.delete(id)
   }
 
+  /**
+   * Remove a plugin-owned in-memory team without touching persistence.
+   * The expected object check prevents a later activation from removing a
+   * replacement team that happens to reuse the same id.
+   */
+  unregisterEphemeralTeam(id: string, expected?: TeamConfig): boolean {
+    const current = this.teams.get(id)
+    if (!current || (expected && current !== expected)) return false
+    this.teams.delete(id)
+    return true
+  }
+
   /** 获取 Team 配置 */
   getTeam(id: string): TeamConfig | undefined {
     return this.teams.get(id)

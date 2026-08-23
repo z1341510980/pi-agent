@@ -15,6 +15,7 @@ import type { ProxyConfigStore } from '../core/config/proxy-config-store.js'
 import type { ProxyManager } from '../core/config/proxy-manager.js'
 import type { ThreadSettingsStore } from '../core/agent/thread-settings-store.js'
 import type { RuntimeRunRegistry } from '../core/agent/runtime-run-registry.js'
+import type { BackgroundWorkRegistry } from '../core/agent/background-work-registry.js'
 import type { PiActorsKernel } from '../core/agent/pi-actors-kernel.js'
 import type { PiSubagentsHost } from '../core/agent/pi-subagents-host.js'
 import type { SettingsManager } from '@earendil-works/pi-coding-agent'
@@ -39,6 +40,7 @@ declare module 'fastify' {
     modelRuntime: PiModelRuntime
     modelRegistry: PiModelRegistry
     runtimeRuns: RuntimeRunRegistry
+    backgroundWorkRegistry: BackgroundWorkRegistry
     piActorsKernel: PiActorsKernel
     piSubagentsHost: PiSubagentsHost
     sessionManager: PiSessionManager

@@ -15,11 +15,11 @@
 import type { PluginContext } from '../../../../core/plugin/plugin-types.js'
 import type { AgUiEventSink } from '@repo/protocol/events'
 import { EventType } from '@ag-ui/core'
-import { Moderator } from '../../../../core/agent/moderator.js'
+import { Moderator } from '../discussion/engine/moderator.js'
 import type {
   DiscussionMember,
   ModeratorState,
-} from '../../../../core/agent/discussion-types.js'
+} from '../discussion/engine/discussion-types.js'
 import { ChapterChatStore, type ChapterChatMessage } from './chapter-chat-store.js'
 import { NovelStore } from '../novel-store.js'
 import { NovelPromptBuilder } from '../prompting/prompt-builder.js'

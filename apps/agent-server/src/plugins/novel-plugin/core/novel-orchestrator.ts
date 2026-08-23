@@ -65,16 +65,16 @@ import { createNovelApplyRevisionTool, type RevisionDraftHolder } from './novel-
 import { createNovelSubmitNarrativeTaskTool, type NarrativeTaskDraftHolder } from './novel-tools.js'
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from './novel-tools.js'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { ChapterFinalizer, type CreationOptions, type CreationResult } from '../../../core/agent/chapter-finalizer.js'
+import { ChapterFinalizer, type CreationOptions, type CreationResult } from './chapter-finalizer.js'
 import { parseNovelModelRef } from './domain/novel-model-ref.js'
-import { cancelDebug } from '../utils/cancel-debug-log.js'
+import { cancelDebug } from '../../../lib/cancel-debug-log.js'
 import {
   evaluateProseQuality,
   formatProseQualityReport,
   buildProseRevisionPlan,
   type ProseQualityReport,
 } from './quality/prose-quality-evaluator.js'
-import { arbitrateQuality, type QualitySignal } from './quality/quality-policy.js'
+import { arbitrateQuality, WORD_COUNT_LIMITS, type QualitySignal } from './quality/quality-policy.js'
 import { scanCliches, formatClicheReport, type ClicheHit } from './quality/cliche-scanner.js'
 import { isNovelFeatureEnabled } from './domain/novel-feature-flags.js'
 import { ChunkCache, buildWithChunkCacheLazy, buildChunkVersionSource } from './prompting/chunk-cache.js'
@@ -86,6 +86,7 @@ import { LengduWorkflow } from './lengdu/lengdu-workflow.js'
 import { persistNovelFailureAudit } from './observability/novel-error-audit.js'
 
 import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
+import { measureStyleMetrics, buildStyleMetricsDiff } from './analysis/style-measurement.js'
 import { classifyLlmFailure, retryDelayMs, LLM_MAX_RETRIES } from './quality/llm-error-policy.js'
 import {
   buildRequestFingerprint,
@@ -103,7 +104,7 @@ import {
   tryRecordFullChapterRewrite,
   type ChapterBudgetUsage,
 } from './chapters/chapter-budget.js'
-export type { CreationOptions, CreationResult } from '../../../core/agent/chapter-finalizer.js'
+export type { CreationOptions, CreationResult } from './chapter-finalizer.js'
 
 interface CreationRunContext {
   /** 策略在流程启动时冻结，避免并发请求或运行中环境变更影响同一章。 */
@@ -221,6 +222,34 @@ export interface NovelOrchestratorHooks {
  * 可通过环境变量 NOVEL_CONTEXT_METRIC_ENABLED=false 关闭。
  */
 export const contextSectionMetricEnabled = process.env.NOVEL_CONTEXT_METRIC_ENABLED !== 'false'
+
+/**
+ * P1-3：按审稿严重度生成修订策略指令。
+ *
+ * S2 的成因是结构（因果链断裂、人物失真、剧情重复），逐句补丁只能改措辞，
+ * 改完还是不成立——必须整段重写并重建因果链。S3/S4 维持 Reviser 默认的
+ * 最小改动原则。无 S2 时返回空串，不注入额外指令。
+ */
+export function buildRevisionSeverityDirective(severities: readonly string[]): string {
+  if (!severities.includes('S2')) return ''
+  return [
+    '',
+    '---',
+    '',
+    '## 修订策略（检测到 S2 级结构问题）',
+    '',
+    '对每个 S2 级问题：',
+    '1. 以问题的 location 为锚，**重写其所在的完整段落组**——向前向后扩展到自然的段落或场景边界，不要在原句子上做词级替换。',
+    '2. 重写必须重建该处的因果链：谁此刻想要什么 → 具体阻力是什么 → 被迫做什么有代价的选择 → 可见后果改变了什么。',
+    '3. 人物失真类问题：让人物依据其既有缺点、秘密和信息边界重新做出"不那么正确但成立"的选择，而不是修正为正确答案。',
+    '4. 剧情重复类问题：删掉重复发生的那次，保留更有代价的一次；不得两处都留。',
+    '',
+    '其余 S3/S4 问题仍按最小改动原则处理，不要顺手扩大修改范围。',
+    '',
+    '---',
+    '',
+  ].join('\n')
+}
 
 export class NovelOrchestrator {
   /** PostWriteGuard 自动重写上限：超过则降级交给 Reviewer 人工判断，避免无限递归 */
@@ -1222,6 +1251,24 @@ export class NovelOrchestrator {
           'lengdu 独立读感工作流已完成',
         )
         const quality = lengduResult.quality
+        // P2-1：持久化最近一次读感质量报告（publish 门数据源）
+        const lengduChapter = this.store.getChapter(projectId, chapterNumber)
+        if (lengduChapter) {
+          try {
+            this.store.setChapterLengduQuality(lengduChapter.id, {
+              ...quality,
+              usedIndependentCalibration: lengduResult.usedIndependentCalibration,
+              usedIndependentReader: lengduResult.usedIndependentReader,
+              revisionCount: lengduResult.revisionCount,
+              savedAt: Date.now(),
+            })
+          } catch (persistErr) {
+            this.context.logger.warn(
+              { err: persistErr, projectId, chapterNumber },
+              'lengdu 质量报告写入失败（不影响创作流程）',
+            )
+          }
+        }
         const statusMessage = quality.status === 'passed'
           ? 'lengdu 独立读感已通过：看懂、流畅、好看三项均通过。'
           : quality.status === 'degraded'
@@ -1615,11 +1662,13 @@ export class NovelOrchestrator {
         // "修订"变成无的放矢。现在把 reviewDraft.review 格式化后作为"结构化审稿报告"注入。
         const structuredReviewReport = this.formatReviewReportForReviser(reviewDraft.review)
         let reviewFindingTexts: string[] = []
+        let reviewSeverities: string[] = []
         try {
           const findings = JSON.parse(reviewDraft.review?.issues ?? '[]') as Array<{
             description?: string
             location?: string
             suggestion?: string
+            severity?: string
           }>
           if (Array.isArray(findings)) {
             reviewFindingTexts = findings.flatMap((finding) => [
@@ -1627,27 +1676,41 @@ export class NovelOrchestrator {
               finding.location ?? '',
               finding.suggestion ?? '',
             ]).filter(Boolean)
+            reviewSeverities = findings
+              .map((finding) => finding.severity ?? '')
+              .filter(Boolean)
           }
         } catch {
           // Invalid review JSON yields no derived references; the structured report remains available.
         }
+        // ── P1-3：修订策略按严重度路由 ──
+        // S2 是结构问题（因果链缺失、人物失真），逐句补丁修不动——要求整段重写；
+        // S3/S4 维持最小改动补丁。S1 不应到达此处（reject 路径在前）。
+        const severityDirective = buildRevisionSeverityDirective(reviewSeverities)
         const reviserFactPack = this.promptBuilder.buildReviewFactPack(
           projectId,
           reviewFindingTexts,
           run.directorTask?.requiredReferences,
           this.promptBuilder.getChapterBoundaryContext(projectId, chapterNumber),
         )
+        // ── P1-3 v1.1：碎段/短段/声音趋同属分布级问题，先由 Writer 重构节奏 ──
+        const shapeVoiceFailure = estimateFailedItems.some(
+          item => item.gateId === 'prose-shape' || item.gateId === 'character-voice',
+        )
         const revisionLoop = await this.runTargetedRevisionLoop({
           projectId,
           chapterNumber,
           options,
           initialContent: reviewContent,
+          rhythmPrePass: shapeVoiceFailure
+            ? { details: estimateFailedItems.map(item => `${this.gateLabel(item.gateId)}：${item.reason}`).join('；') }
+            : undefined,
           buildRoundPrompt: ({ round, content, failedItems, report, clicheHits }) => {
             if (round === 1) {
               // 首轮：完整上下文（原正文 + 结构化审稿意见 + 质量报告 + 修订计划）。
               // 注入原始正文（含破折号）：Reviser 需要看到破折号在哪才能清除它们，
               // 审稿意见中的破折号由 stripEmDash 清洗（审稿意见是 Reviewer 产出，非正文）。
-              return `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${content}\n\n---\n\n${structuredReviewReport}${reviserFactPack ? `\n\n---\n\n${reviserFactPack}` : ''}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}${revisionPlan.instruction ? `\n\n---\n\n${revisionPlan.instruction}` : ''}`
+              return `请根据审稿意见修订第 ${chapterNumber} 章的局部内容。\n\n---\n\n## 原章节正文\n\n${content}\n\n---\n\n${structuredReviewReport}${severityDirective}${reviserFactPack ? `\n\n---\n\n${reviserFactPack}` : ''}${autoReviseReason ? `\n\n---\n\n## 系统质量门（必须修复）\n\n${autoReviseReason}\n\n${clicheReport}` : ''}${revisionPlan.instruction ? `\n\n---\n\n${revisionPlan.instruction}` : ''}`
             }
             // 第 2 轮起：只针对未通过项定向修补，不重复语义审稿意见。
             return this.buildTargetedRepairPrompt(chapterNumber, content, failedItems, report, clicheHits)
@@ -1947,6 +2010,12 @@ export class NovelOrchestrator {
     initialContent: string
     /** 起点扫描已干净时是否直接通过（re-revise 传入 true，主流程不传） */
     earlyPassIfClean?: boolean
+    /**
+     * P1-3 v1.1 节奏预重构：碎段率/短段密度/声音趋同等是**分布级**问题，
+     * Reviser 的逐对精确替换修不动（ch4 实测两轮 0 改善后 blocked）。
+     * 启用后先由 Writer 按形态指令整体重构节奏，再视残留进入 Reviser 轮。
+     */
+    rhythmPrePass?: { details: string }
     buildRoundPrompt: (ctx: {
       round: number
       content: string
@@ -1959,11 +2028,64 @@ export class NovelOrchestrator {
     status: 'passed' | 'blocked'
     rounds: RevisionRoundRecord[]
     failedItems: QualityGateFailureItem[]
+    /** P2-3：修订前后 L1 形态指标差异报告（Markdown 表格） */
+    styleDiffText?: string
   }> {
     const { projectId, chapterNumber, options, initialContent, earlyPassIfClean, buildRoundPrompt } = params
     let content = initialContent
     const rounds: RevisionRoundRecord[] = []
     let lastAppliedPatches = 1 // 起点视为"已应用"，保证首轮必然执行
+    // P2-3：修订前后 L1 形态指标对比（证据化"修订改了什么"）
+    const beforeMetrics = measureStyleMetrics(initialContent)
+    const finishWithMetrics = (status: 'passed' | 'blocked', failedItems: QualityGateFailureItem[]) => {
+      const afterMetrics = measureStyleMetrics(content)
+      const diff = buildStyleMetricsDiff(beforeMetrics, afterMetrics)
+      this.emitProgress(options, 'revising', 'phase_change', {
+        message: diff.changed
+          ? `修订形态指标变化：${diff.text.split('\n').at(-1)}`
+          : '修订未改变正文形态指标（仅措辞层修改）',
+        detail: { kind: 'style_metrics_diff', status, text: diff.text },
+      })
+      return { content, status, rounds, failedItems, styleDiffText: diff.text }
+    }
+
+    // ── P1-3 v1.1：节奏预重构（Writer 整体重构，替代 Reviser 修分布）──
+    if (params.rhythmPrePass) {
+      const preSanitized = sanitizeNovelProse(content)
+      const preReport = evaluateProseQuality(preSanitized)
+      const preCliches = scanCliches(preSanitized)
+      const preFailures = this.scanQualityGateFailures(preSanitized, preReport, preCliches)
+      if (preFailures.length > 0) {
+        this.emitProgress(options, 'revising', 'phase_change', {
+          message: `检测到节奏级问题（${preFailures.map(item => item.reason).join('、')}），先由 Writer 重构整体形态...`,
+        })
+        const plan = buildWriterRewritePlan({
+          chapterNumber,
+          reason: '正文形态未达标',
+          details: params.rhythmPrePass.details,
+          previousDraft: content,
+          attempt: 1,
+          maxAttempts: 1,
+        })
+        const rewritten = await this.runAgent('writer', projectId, chapterNumber, plan.input, options, {
+          phase: 'rewriting',
+        })
+        if (rewritten?.trim()) {
+          content = rewritten
+        }
+        // 预重构后即干净 → 直接通过，不进 Reviser 轮
+        const postSanitized = sanitizeNovelProse(content)
+        const postFailures = this.scanQualityGateFailures(
+          postSanitized,
+          evaluateProseQuality(postSanitized),
+          scanCliches(postSanitized),
+        )
+        if (postFailures.length === 0) {
+          return finishWithMetrics('passed', [])
+        }
+      }
+    }
+
     for (let round = 1; round <= NovelOrchestrator.MAX_AUTO_REVISION_ROUNDS; round += 1) {
       const sanitized = sanitizeNovelProse(content)
       const report = evaluateProseQuality(sanitized)
@@ -1972,7 +2094,7 @@ export class NovelOrchestrator {
       if (failedItems.length === 0) {
         // 起点干净（re-revise 已修正内容）或上一轮修订后已通过 → 直接通过
         if (round > 1 || earlyPassIfClean) {
-          return { content, status: 'passed', rounds, failedItems: [] }
+          return finishWithMetrics('passed', [])
         }
         // 主流程首轮：用户明确选择"修订"，即使确定性门干净也要让 Reviser
         // 基于审稿意见走一轮（语义问题不在确定性扫描范围内）。
@@ -2030,7 +2152,7 @@ export class NovelOrchestrator {
         contentLength: content.replace(/\s/g, '').length,
       })
       if (afterFailures.length === 0) {
-        return { content, status: 'passed', rounds, failedItems: [] }
+        return finishWithMetrics('passed', [])
       }
       if (successful.length === 0) break
     }
@@ -2038,12 +2160,10 @@ export class NovelOrchestrator {
     const finalSanitized = sanitizeNovelProse(content)
     const finalReport = evaluateProseQuality(finalSanitized)
     const finalCliches = scanCliches(finalSanitized)
-    return {
-      content,
-      status: 'blocked',
-      rounds,
-      failedItems: this.scanQualityGateFailures(finalSanitized, finalReport, finalCliches),
-    }
+    return finishWithMetrics(
+      'blocked',
+      this.scanQualityGateFailures(finalSanitized, finalReport, finalCliches),
+    )
   }
 
   /**
@@ -2271,8 +2391,10 @@ export class NovelOrchestrator {
    * 在 Reviewer 之前运行，捕获模型退化等致命问题，避免浪费 Reviewer token。
    * 检测项：
    * 1. 模型退化（复读/截断/拒绝/工程词泄漏）→ 自动重写
-   * 2. 字数严重偏离（低于 75% 或高于 130%）→ 自动重写；轻微偏离交 Reviewer
+   * 2. 截断兜底（低于目标 50% 或不足 800 字）→ 重写；偏短交 Reviewer 结合
+   *    事件密度判断；超长天花板（>130%）→ 定向压缩重写（P0-2 修正版）
    * 3. 大纲边界检查（简化版：检测是否包含工程词）
+   * 4. 契约兑现度代理（叙事任务提及的角色缺失）→ advisory
    */
   private runPostWriteGuard(
     content: string,
@@ -2315,7 +2437,10 @@ export class NovelOrchestrator {
       }
     }
 
-    // 2. 字数检测
+    // 2. 字数检测（P0-2：字数不再是重写依据）
+    // 只有「截断兜底」才重写——那是防残稿的确定性判断，不是字数审美。
+    // 其余偏离一律降为 advisory 交 Reviewer 结合事件密度与任务完成度判断，
+    // 消除"创作指令鼓励宁短勿凑、Guard 却惩罚偏短"的自相矛盾。
     const project = this.store.getProject(projectId)
     const advisories: Array<{ reason: string; details: string }> = []
     if (project) {
@@ -2335,34 +2460,63 @@ export class NovelOrchestrator {
       const targetWords = constraintsTarget
         ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
 
-      // 只有明显失控才整章重写。75%-85% 与 115%-130% 属于轻微偏差，
-      // 交给 Reviewer 结合章节完整性判断，避免边界差几个字就浪费一次 Writer 调用。
-      if (wordCount < targetWords * 0.75) {
+      const truncationFloor = Math.max(
+        targetWords * WORD_COUNT_LIMITS.truncationFloorRatio,
+        WORD_COUNT_LIMITS.minTruncationFloorWords,
+      )
+      if (wordCount < truncationFloor) {
         return {
           shouldRewrite: true,
-          reason: '字数严重不足',
-          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（仅 ${Math.round((wordCount / targetWords) * 100)}%）`,
+          reason: '正文疑似截断',
+          details: `实际 ${wordCount} 字，低于截断兜底线 ${Math.round(truncationFloor)} 字（目标 ${targetWords} 字）`,
         }
       }
-      if (wordCount > targetWords * 1.30) {
-        return {
-          shouldRewrite: true,
-          reason: '字数严重超标',
-          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
-        }
-      }
-      if (wordCount < targetWords * 0.85) {
+      if (wordCount < targetWords * WORD_COUNT_LIMITS.advisoryBelow) {
         advisories.push({
-          reason: '字数略低于建议范围',
-          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
+          reason: '字数低于建议范围',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）；请结合事件密度判断是否注水或赶戏`,
         })
-      } else if (wordCount > targetWords * 1.15) {
+      } else if (wordCount > targetWords * WORD_COUNT_LIMITS.advisoryAbove
+        && wordCount <= targetWords * WORD_COUNT_LIMITS.bloatCeilingRatio) {
         advisories.push({
-          reason: '字数略高于建议范围',
-          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）`,
+          reason: '字数高于建议范围',
+          details: `实际 ${wordCount} 字，目标 ${targetWords} 字（${Math.round((wordCount / targetWords) * 100)}%）；请检查是否存在空转描写`,
         })
       }
 
+      // 超长天花板：>130% 触发「定向压缩重写」——保留情节节点删空转，
+      // 不是整章推倒。P0-2 首版完全放行导致实测写到目标约 2 倍，恢复硬线。
+      if (wordCount > targetWords * WORD_COUNT_LIMITS.bloatCeilingRatio) {
+        return {
+          shouldRewrite: true,
+          reason: '字数严重超标',
+          details: `实际 ${wordCount} 字，超过天花板 ${targetWords} 字的 ${Math.round(WORD_COUNT_LIMITS.bloatCeilingRatio * 100)}%（${Math.round((wordCount / targetWords) * 100)}%）`,
+        }
+      }
+
+      // ── 契约兑现度（确定性代理，advisory）──
+      // Director 叙事任务里点名提到、但正文从未出现的项目角色：可能被 Writer 遗漏，
+      // 也可能是任务里的背景提及。字符串层无法区分，交 Reviewer 做语义验收。
+      if (run.directorTask?.description) {
+        const mentionedButMissing = this.store
+          .listCharacters(projectId)
+          .map(character => character.name)
+          .filter(name => name && run.directorTask!.description.includes(name))
+          .filter(name => !content.includes(name))
+          .filter(name => {
+            // 矩阵角色缺失已由下方硬检查覆盖，这里只报矩阵之外的任务提及
+            return !arrangedEntities?.characterIds.some(
+              id => this.store.getCharacter(id)?.name === name,
+            )
+          })
+          .slice(0, 5)
+        if (mentionedButMissing.length > 0) {
+          advisories.push({
+            reason: '叙事任务提及的角色未在正文出现',
+            details: `${mentionedButMissing.join('、')}——请确认是背景提及还是 Writer 遗漏了任务要求`,
+          })
+        }
+      }
     }
 
     // 3. 矩阵实体检查：角色姓名缺失属于确定性失败；势力和地点可能使用简称、
@@ -2419,6 +2573,9 @@ export class NovelOrchestrator {
     }
     if (!guard.shouldRewrite) return 1_000_000 + wordCount
     if (guard.reason === '未完整执行矩阵编排') return 500_000 + wordCount
+    // 截断残稿优先于超长稿，但仍高于计划/说明类输出
+    if (guard.reason === '正文疑似截断') return 200_000 + wordCount
+    // 超长稿可定向压缩，排在其后
     if (guard.reason === '字数严重超标') return 100_000 - wordCount
     return wordCount
   }

@@ -28,9 +28,9 @@ import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import type { CheckpointDecision, CheckpointType } from '@repo/shared/novel'
-import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, type NovelAgentType } from '../core/domain/novel-agents.js'
+import { getAllNovelAgentTemperatures, updateNovelAgentTemperatures, getAllNovelAgentModels, updateNovelAgentModel, type NovelAgentType } from '../core/domain/novel-agents.js'
 import { persistDiscussionHistory } from '../core/discussion/discussion-history.js'
-import type { DiscussionResult } from '../../../core/agent/discussion-types.js'
+import type { DiscussionResult } from '../core/discussion/engine/discussion-types.js'
 import {
   aiArrangeLocks,
   chapterCreationLocks,
@@ -44,7 +44,7 @@ import {
   dispatchInterjectStatus,
 } from '../utils/chapter-task-registry.js'
 import { createNovelAgUiEmitter, createSseEmitterSink } from '../utils/sse-emitter.js'
-import { cancelDebug } from '../utils/cancel-debug-log.js'
+import { cancelDebug } from '../../../lib/cancel-debug-log.js'
 import {
   creationFlowBodySchema,
   arrangedEntitiesSchema,
@@ -2157,9 +2157,12 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     path: '/agent-config',
     handler: async (request: any) => {
       const temperatures = getAllNovelAgentTemperatures(services.agentManager)
+      const models = getAllNovelAgentModels(services.agentManager)
       const result = (Object.entries(temperatures) as Array<[NovelAgentType, number]>).map(([agentType, temperature]) => ({
         agentType,
         temperature,
+        // P2-2：per-Agent 模型（null = 未配置，运行时回退项目主模型）
+        model: models[agentType],
       }))
       return success(result, request.traceId)
     },
@@ -2169,6 +2172,11 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     items: z.array(z.object({
       agentType: z.enum(['director', 'writer', 'reviser', 'reviewer', 'memory']),
       temperature: z.number().min(0).max(2),
+      // P2-2：可选模型覆盖（审稿异源：把 reviewer/reviser 切到与 writer 不同的模型档位）
+      model: z.object({
+        provider: z.string().min(1),
+        modelId: z.string().min(1),
+      }).nullable().optional(),
     })),
   })
 
@@ -2181,10 +2189,17 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       updateNovelAgentTemperatures(input.items, services.agentManager)
       // updateNovelAgentTemperatures 内部已通过 agentManager.updateAgent 同步温度，
       // subagent / team_execute 路径立即可见，无需手动同步
+      for (const item of input.items) {
+        if (item.model !== undefined) {
+          updateNovelAgentModel(item.agentType, item.model, services.agentManager)
+        }
+      }
       const temperatures = getAllNovelAgentTemperatures(services.agentManager)
+      const models = getAllNovelAgentModels(services.agentManager)
       const result = (Object.entries(temperatures) as Array<[NovelAgentType, number]>).map(([agentType, temperature]) => ({
         agentType,
         temperature,
+        model: models[agentType],
       }))
       return success(result, request.traceId)
     },

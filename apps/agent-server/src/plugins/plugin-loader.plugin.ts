@@ -12,6 +12,10 @@
  * - PI_PLUGINS_DIR：本地插件目录（绝对路径），未设置则不扫描
  * - PI_PLUGINS_ENABLE_NPM：是否启用 npm 插件扫描（'true' / '1' 启用）
  * - PI_PLUGINS_ENABLE_EXAMPLES：是否启用内置示例插件（'true' / '1' 启用，默认启用）
+ * - PI_PLUGINS_HOT_RELOAD：是否启用 local/npm 插件热更新（'true' / '1' 启用）。
+ *   文件变更后自动重载；候选代码不可用或完整性锁校验失败时保留旧插件继续运行。
+ *   注意：开发模式下 tsx watch 会因 src 变更重启整个进程，热更新主要服务于
+ *   生产运行时（node dist/index.js）与外置插件目录的开发迭代。
  */
 
 import fp from 'fastify-plugin'
@@ -21,6 +25,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createModuleLogger } from '../lib/logger.js'
 import { PluginManager } from '../core/plugin/plugin-manager.js'
 import { isInsideDir } from '../core/plugin/path-guard.js'
+import { PluginWatcher } from '../core/plugin/plugin-watcher.js'
 import {
   ALL_PLUGIN_CAPABILITIES,
   parsePluginCatalog,
@@ -36,6 +41,7 @@ import {
 import { createHelloPlugin } from './examples/hello-plugin/index.js'
 import { createNovelPlugin } from './novel-plugin/index.js'
 import { createWebSearchPlugin } from './web-search-plugin/index.js'
+import { createInfiniteCanvasPlugin } from './infinite-canvas-plugin/index.js'
 import { applyMigrations } from '../core/db/migrations.js'
 import yaml from 'js-yaml'
 import type { Plugin, PluginCapability } from '../core/plugin/plugin-types.js'
@@ -50,6 +56,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const enableExamples =
     process.env.PI_PLUGINS_ENABLE_EXAMPLES !== 'false' &&
     process.env.PI_PLUGINS_ENABLE_EXAMPLES !== '0'
+  const enableHotReload =
+    process.env.PI_PLUGINS_HOT_RELOAD === 'true' || process.env.PI_PLUGINS_HOT_RELOAD === '1'
 
   // 工作目录与数据目录（与 app.ts 保持一致）
   const cwd = process.env.PI_CWD ?? process.cwd()
@@ -59,14 +67,16 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   const pluginFactories: Record<string, () => Plugin> = {
     'hello-plugin': createHelloPlugin,
     'novel-plugin': createNovelPlugin,
-    'web-search-plugin': createWebSearchPlugin
+    'web-search-plugin': createWebSearchPlugin,
+    'infinite-canvas-plugin': createInfiniteCanvasPlugin
   }
 
   // 默认内置插件列表（没有 plugins.yml 时的兼容行为）；catalogId 与工厂键一致
   const defaultBuiltinPlugins = [
     ...(enableExamples ? [{ plugin: createHelloPlugin(), catalogId: 'hello-plugin' }] : []),
     { plugin: createNovelPlugin(), catalogId: 'novel-plugin' },
-    { plugin: createWebSearchPlugin(), catalogId: 'web-search-plugin' }
+    { plugin: createWebSearchPlugin(), catalogId: 'web-search-plugin' },
+    { plugin: createInfiniteCanvasPlugin(), catalogId: 'infinite-canvas-plugin' }
   ]
 
   // 尝试从配置文件加载插件列表
@@ -201,6 +211,7 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   } else {
     log.warn('teamPlugin 未注册，插件 context.teamManager 将不可用')
   }
+  manager.setBackgroundWorkRegistry(app.backgroundWorkRegistry)
   // 注入 ConfirmationManager（app.ts 已在 pluginLoaderPlugin 之前创建并 decorate）
   // 使插件 setup 可通过 context.confirmationManager 复用 chat 的确认/决策流程
   // （超时机制 + pending 列表 + 'confirmation:request' / 'confirmation:resolved' 事件）
@@ -364,7 +375,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
         config.config,
         config.isolate,
         config.catalogId,
-        integrityStatus
+        integrityStatus,
+        packageDir
       )
     } catch (err) {
       log.error(
@@ -509,6 +521,34 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   // manager 会把 effectiveAfterRestart 置为 true，API 据此如实告知用户需要重启。
   manager.markHostMounted()
 
+  // ============ 插件热更新（可选） ============
+  // PI_PLUGINS_HOT_RELOAD=true/1 时监视 local/npm 插件文件变更并自动重载。
+  // 重载走 manager.reload() 的候选先行契约：新代码导入/校验失败、或带
+  // integrity 锁的插件校验不通过时，保留旧插件继续运行，只记录告警。
+  // 运行期重载的工具/事件/Session 工具即时生效；路由与 Fastify 服务装饰
+  // 只在启动期挂载，变更后仍需重启（inspect 的 effectiveAfterRestart 如实上报）。
+  let pluginWatcher: PluginWatcher | undefined
+  if (enableHotReload) {
+    pluginWatcher = new PluginWatcher(log, async (pluginId) => {
+      try {
+        await manager.reload(pluginId)
+        const entry = manager.get(pluginId)
+        log.info({ pluginId, status: entry?.status }, '检测到插件文件变更，已自动重载')
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        log.warn({ pluginId, err }, `插件热更新未应用，已保留当前运行状态：${message}`)
+      }
+    })
+    const targets = manager.getHotReloadTargets()
+    for (const target of targets) {
+      pluginWatcher.add(target.pluginId, target.filePath, target.watchDir)
+    }
+    log.info(
+      { watchedRoots: pluginWatcher.watchedRootCount, targets: targets.length },
+      '插件热更新已启用'
+    )
+  }
+
   // ============ 插件管理 API ============
   // 获取插件列表
   app.get('/api/plugins', async (request, reply) => {
@@ -569,6 +609,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
           position: panel.position
         })),
         toolNames: entry.tools.map((t) => t.name),
+        sessionToolCount: entry.sessionTools.length,
+        sessionToolNames: entry.sessionTools.map((tool) => tool.name),
         routePaths: entry.routes.map((r) => r.path),
         panelIds: entry.panels.map((p) => p.id),
         uiContributions: entry.uiContributions,
@@ -678,6 +720,10 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       // 期望状态已改：写回 YAML，使重启后保持启用
       persistCatalog()
       const entry = manager.get(pluginId)
+      // 运行期启用的插件补挂热更新监视（add 幂等：已监视的目录直接跳过）
+      if (pluginWatcher && entry?.filePath && entry.source !== 'builtin') {
+        pluginWatcher.add(entry.pluginId, entry.filePath, entry.packageDir)
+      }
       return reply.send({
         ok: true,
         data: {
@@ -707,6 +753,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       const { pluginId } = request.params as { pluginId: string }
       await manager.disable(pluginId)
       persistCatalog()
+      // 摘除热更新监视：禁用的第三方代码不因磁盘变更被重新 import
+      pluginWatcher?.remove(pluginId)
       const entry = manager.get(pluginId)
       return reply.send({
         ok: true,
@@ -797,11 +845,16 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       if (body.enabled !== undefined) {
         if (body.enabled && entry.status !== 'enabled') {
           await manager.enable(pluginId)
+          if (pluginWatcher && entry.filePath && entry.source !== 'builtin') {
+            pluginWatcher.add(entry.pluginId, entry.filePath, entry.packageDir)
+          }
         } else if (!body.enabled && entry.status === 'enabled') {
           await manager.disable(pluginId)
+          pluginWatcher?.remove(pluginId)
         } else {
           // 状态已一致，但期望状态仍要落定（例如对 loaded/error 插件设 enabled: false）
           manager.updateCatalogConfig(pluginId, { enabled: body.enabled })
+          if (!body.enabled) pluginWatcher?.remove(pluginId)
         }
       }
       // enable/disable 会改 desiredEnabled，必须在它们之后统一写回，
@@ -872,6 +925,9 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   // Fastify 关闭时停止所有插件
   app.addHook('onClose', async () => {
     log.info('正在停止插件系统')
+    // 先关闭热更新 watcher 并排空在途重载，再停插件：
+    // 迟到的自动重载不允许在 manager.stop() 之后重新 startPlugin。
+    await pluginWatcher?.close()
     await manager.stop()
     log.info('插件系统已停止')
   })

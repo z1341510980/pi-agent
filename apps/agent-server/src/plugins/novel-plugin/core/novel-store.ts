@@ -63,6 +63,7 @@ import type {
   StorylineMaturity,
   NovelStorylineProgress,
   ProgressStatus,
+  NovelBeatPlan,
   NovelEntityCandidate,
   EntityCandidateStatus,
   NovelEntityCandidateReview,
@@ -74,6 +75,7 @@ import { ProjectStore } from './stores/project-store.js'
 import { ChapterStore, hashChapterContent } from './stores/chapter-store.js'
 import { ScenePlanStore } from './stores/scene-plan-store.js'
 import { NarrativeLedgerStore } from './stores/narrative-ledger-store.js'
+import { BeatPlanStore, type BeatPlanInput } from './stores/beat-plan-store.js'
 import {
   TimelineConsistencyStore,
   type TimelineInvalidation,
@@ -165,6 +167,7 @@ export class NovelStore implements NovelPromptStores {
   private readonly graph: GraphStore
   private readonly scenePlan: ScenePlanStore
   private readonly ledger: NarrativeLedgerStore
+  private readonly beatPlans: BeatPlanStore
   private readonly timeline: TimelineConsistencyStore
   private readonly storylineRevision: StorylineRevisionStore
   private readonly sceneReview: SceneRevisionReviewStore
@@ -200,6 +203,7 @@ export class NovelStore implements NovelPromptStores {
     this.item = new ItemStore(db, deleteEdges)
     this.scenePlan = new ScenePlanStore(db)
     this.ledger = new NarrativeLedgerStore(db)
+    this.beatPlans = new BeatPlanStore(db)
     this.timeline = new TimelineConsistencyStore(db)
     this.storylineRevision = new StorylineRevisionStore(db)
     this.sceneReview = new SceneRevisionReviewStore(db)
@@ -688,6 +692,92 @@ export class NovelStore implements NovelPromptStores {
     return this.ledger.confirmProgress(id)
   }
   markStaleFromChapter(projectId: string, chapterId: string): number { return this.ledger.markStaleFromChapter(projectId, chapterId) }
+
+  // ── 卷级节拍规划（Beat Planner）──
+  replaceVolumeBeatPlan(projectId: string, volumeNumber: number, beats: BeatPlanInput[]): NovelBeatPlan[] {
+    return this.beatPlans.replaceVolumePlan(projectId, volumeNumber, beats)
+  }
+  getBeat(id: string): NovelBeatPlan | undefined { return this.beatPlans.getBeat(id) }
+  getBeatByChapter(projectId: string, chapterNumber: number): NovelBeatPlan | undefined {
+    return this.beatPlans.getBeatByChapter(projectId, chapterNumber)
+  }
+  listBeatsByVolume(projectId: string, volumeNumber: number, includeSuperseded = false): NovelBeatPlan[] {
+    return this.beatPlans.listBeatsByVolume(projectId, volumeNumber, includeSuperseded)
+  }
+  listBeatsByProject(projectId: string): NovelBeatPlan[] { return this.beatPlans.listBeatsByProject(projectId) }
+  updateBeat(
+    id: string,
+    patch: Partial<
+      Pick<NovelBeatPlan, 'dramaticFunction' | 'emotionalDebt' | 'payoff' | 'arcPosition' | 'summary' | 'status'>
+    >
+  ): NovelBeatPlan | undefined {
+    return this.beatPlans.updateBeat(id, patch)
+  }
+  confirmBeatForChapter(projectId: string, chapterNumber: number): NovelBeatPlan | undefined {
+    return this.beatPlans.confirmBeatForChapter(projectId, chapterNumber)
+  }
+
+  // ── P2-1：章节级 lengdu 读感质量报告 ──
+  /** 覆盖写入最近一次 lengdu 质量报告（JSON 序列化）；null 清空。 */
+  setChapterLengduQuality(chapterId: string, quality: unknown): void {
+    this.db
+      .prepare('UPDATE novel_chapters SET lengdu_quality = ? WHERE id = ?')
+      .run(quality == null ? null : JSON.stringify(quality), chapterId)
+  }
+
+  /**
+   * ScenePlan V2 覆盖率统计（P1-3 v2 激活前置审计）。
+   * 只读聚合：有场景行 / 有 approved 计划的章节数与平均场景数。
+   */
+  getScenePlanCoverage(projectId: string): {
+    totalChapters: number
+    chaptersWithScenes: number
+    chaptersWithApprovedPlan: number
+    totalSceneRevisions: number
+    avgSceneCountPerChapter: number | null
+  } {
+    const row = this.db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM novel_chapters WHERE project_id = @projectId) AS totalChapters,
+           (SELECT COUNT(DISTINCT chapter_id) FROM novel_scenes WHERE project_id = @projectId) AS chaptersWithScenes,
+           (SELECT COUNT(DISTINCT chapter_id) FROM novel_chapter_plan_revisions WHERE project_id = @projectId AND status = 'approved') AS chaptersWithApprovedPlan,
+           (SELECT COUNT(*) FROM novel_scene_revisions WHERE project_id = @projectId) AS totalSceneRevisions,
+           (SELECT AVG(cnt) FROM (
+              SELECT COUNT(*) AS cnt FROM novel_scenes WHERE project_id = @projectId GROUP BY chapter_id
+            )) AS avgSceneCountPerChapter`
+      )
+      .get({ projectId }) as {
+      totalChapters: number
+      chaptersWithScenes: number
+      chaptersWithApprovedPlan: number
+      totalSceneRevisions: number
+      avgSceneCountPerChapter: number | null
+    }
+    return row
+  }
+
+  /** 读取最近一次 lengdu 质量报告；无记录或 JSON 损坏返回 undefined。 */
+  getChapterLengduQuality(chapterId: string): {
+    status: 'passed' | 'needs_attention' | 'degraded'
+    comprehension?: string
+    fluency?: string
+    appeal?: string
+    revisionCount?: number
+    usedIndependentReader?: boolean
+    summary?: string
+    savedAt?: number
+  } | undefined {
+    const row = this.db
+      .prepare('SELECT lengdu_quality FROM novel_chapters WHERE id = ?')
+      .get(chapterId) as { lengdu_quality: string | null } | undefined
+    if (!row?.lengdu_quality) return undefined
+    try {
+      return JSON.parse(row.lengdu_quality)
+    } catch {
+      return undefined
+    }
+  }
 
   getActiveTimelineInvalidation(projectId: string): TimelineInvalidation | undefined {
     return this.timeline.getActiveInvalidation(projectId)

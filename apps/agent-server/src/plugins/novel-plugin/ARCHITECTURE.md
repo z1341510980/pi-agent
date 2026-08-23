@@ -800,6 +800,24 @@ interface NovelCharacter {
 - 首 delta 触发"开始生成内容..."事件
 - Writer timeout 300s，其他 120s
 
+### 11.6 戏剧结构层与质量门重构批次（2026-08-22 ~ 2026-08-23，P0-P2 共 9 项）
+
+> 完整诊断与方案：`docs/novel/2026-08-22-小说生成逻辑整理与作家视角改造方案.md`（含落地进度表）
+
+| 项 | 核心改动 | 主要落点 |
+| --- | --- | --- |
+| P0-1 卷级节拍规划器 | 新增 Beat Planner：卷纲质量门（<50 字拒绝）→ 未来 3-8 章节拍表（十种戏剧功能/情绪债务/爽点/弧光位置）→ `beatConstraint` 注入 Director/Writer/Reviewer 约束；Director 决策顺序第 0 条服从节拍。迁移 116 `novel_beat_plans`；REST 4 条路由 | `chapters/beat-plan-generator.ts`、`stores/beat-plan-store.ts`、`prompts/role-beat-planner.md`、`routes/beat-plan-routes.ts`、`novel-engine.buildChapterConstraints` |
+| P0-2 字数门→事件密度门 | 删除 <75%/>130% 整章重写线，字数偏离全部 advisory；仅保留截断兜底（<max(50%,800 字) → `正文疑似截断`）；新增 `contract-coverage` 门；chapter-instruction 改事件密度导向 | `quality/quality-policy.ts`、`runPostWriteGuard`、`chapters/writer-rewrite-plan.ts` |
+| P1-1 对手戏欲望碰撞卡 | `formatDesireCollision`：同场角色按"对"对照目标/压力/信息差（零 LLM 调用），注入「角色关系」之后 | `prompting/prompt-builder.ts` |
+| P1-2 文风样本分桶+自池 | 静态身份预算 7199→11999、锚定样本收敛 1 条；`inferSceneType` + `buildSceneSampleSection` 按本章主导场景类型分桶注入 Writer 指令层；自池=高分已发布章结尾摘段 | `prompting/writing-style-prompt-factory.ts`、`prompting/prompt-builder.ts` |
+| P1-3 修订按严重度路由 | issues 含 S2 时向 Reviser 首轮注入结构性修订指令（整段组重写+重建因果链）；S3/S4 维持最小补丁 | `buildRevisionSeverityDirective`（novel-orchestrator.ts） |
+| P1-4 Memory 补提取回路 | 主提取解析后确定性核对（正文出场但清单未提及的实体）→ 定向补提取一次 → 轨道拼接合并 | `generation/novel-memory-generator.ts` |
+| P2-1 Reader 门联动 publish | 迁移 117 `novel_chapters.lengdu_quality`；lengdu 完成后持久化报告；publish 门拦截 `needs_attention`；Reader 修订轮 1→2 | `novel-store.ts`、`novel-engine.publishChapter`、`lengdu/lengdu-workflow.ts` |
+| P2-2 审稿异源入口 | GET/PUT `/agent-config` 暴露 per-Agent `model`（null=回退项目主模型），reviewer/reviser 可切异源模型档位 | `domain/novel-agents.ts`、`routes/creation-flow-routes.ts` |
+| P2-3 修订形态指标差异 | `buildStyleMetricsDiff` 八项 L1 对比表；修订循环起止测量并经 `style_metrics_diff` 事件输出 | `analysis/style-measurement.ts`、`runTargetedRevisionLoop` |
+
+前端配套：`desktop/src/renderer/src/api/novel-client.ts` 新增 beat-plan 四个 API 函数；`novel-agent-config-client.ts` 支持 `model` 字段；侧栏新增「节拍表」分组（`sidebar/beat-plan-group.tsx`，位于大纲树之下）——支持选卷生成、节拍列表展示与点击行内编辑（戏剧功能/情绪债务/爽点/走向）。
+
 ---
 
 ## 12. 测试与迁移

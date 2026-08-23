@@ -29,7 +29,7 @@ import { resolveDependencyOrder, type DependencyNode } from './plugin-catalog.js
 import { verifyPackageIntegrity } from './plugin-integrity.js'
 import { resolveWithin } from './path-guard.js'
 import type { PluginCatalogItem } from './plugin-catalog.js'
-import { cancelDebug } from '../../plugins/novel-plugin/utils/cancel-debug-log.js'
+import { cancelDebug } from '../../lib/cancel-debug-log.js'
 import { StreamEmitter } from '../agent/stream-emitter.js'
 import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
@@ -48,6 +48,7 @@ import {
 } from './plugin-session-outcome.js'
 import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
+import type { BackgroundWorkRegistry, BackgroundWorkProvider } from '../agent/background-work-registry.js'
 import type { ConfirmationManager } from '../tool/confirmation-manager.js'
 import type { Tracer } from '../tracer/tracer.js'
 import type { EventStatus, TraceEventType } from '../tracer/types.js'
@@ -122,6 +123,8 @@ export class PluginManager {
    * 注入后插件 setup 可通过 context.teamManager 访问。
    */
   private teamManager?: TeamManager
+  /** Host-owned read-only registry for plugin background-work observation. */
+  private backgroundWorkRegistry?: BackgroundWorkRegistry
   /**
    * ConfirmationManager（chat 底座共享）
    *
@@ -152,6 +155,11 @@ export class PluginManager {
    * 与 SessionStore / ModelRegistry 同时期注入。
    */
   private providerConfigStore?: ProviderConfigStore
+  private mediaGenerator?: {
+    generateImage(input: { prompt: string; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
+    generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+    generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+  }
   /** Tracer 在 app 启动后注入；未注入时插件会话保持原有行为。 */
   private tracer?: Tracer
   /**
@@ -323,6 +331,19 @@ export class PluginManager {
     this.logger.debug('已注入 ProviderConfigStore，onPayload 可读取应用级配置')
   }
 
+  setMediaGenerator(generator: {
+    generateImage(input: { prompt: string; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
+    generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+    generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+  }): void {
+    this.mediaGenerator = generator
+    this.logger.debug('已注入媒体生成服务')
+  }
+
+  private mediaGeneratorFacade(): PluginContext['media'] {
+    return this.mediaGenerator
+  }
+
   /** 注入 Tracer，供显式声明 trace 归属的插件 Session 写入追踪时间线。 */
   setTracer(tracer: Tracer): void {
     this.tracer = tracer
@@ -351,6 +372,12 @@ export class PluginManager {
   setTeamManager(manager: TeamManager): void {
     this.teamManager = manager
     this.logger.debug('已注入 TeamManager，插件可通过 context.teamManager 访问')
+  }
+
+  /** Inject the host background-work registry before plugin setup runs. */
+  setBackgroundWorkRegistry(registry: BackgroundWorkRegistry): void {
+    this.backgroundWorkRegistry = registry
+    this.logger.debug('已注入 BackgroundWorkRegistry，插件可登记后台工作观测 provider')
   }
 
   /**
@@ -550,12 +577,20 @@ export class PluginManager {
   }
 
   /**
-   * 重载指定插件：先停止，再重新加载模块和启动
+   * 重载指定插件：候选先行（import-before-dispose），成功后再替换运行中的实例
    *
    * 预检先行（研究文档 §10.11）：旧实现先 stop 并 `entries.delete()`，之后才检查
    * `source === 'builtin'` 并抛错。结果是 builtin 插件被从 catalog 里删掉、
    * 请求返回 500，而已挂到 Fastify 的旧 route/service 仍在工作，连 `/enable`
    * 也找不回来。任何拒绝条件都必须在破坏状态之前判定。
+   *
+   * 候选先行（参考 dsh/Cordis HMR 的事务化重载契约）：先把磁盘上的新模块完整
+   * 导入并校验出 Plugin 实例，全部通过后才卸载旧实例。导入或校验失败时直接抛错，
+   * 旧插件保持原状继续运行 —— 热更新绝不能把一个活着的插件降级成不可用。
+   *
+   * 完整性锁同样属于预检（§6.3）：磁盘代码可能已被替换，带 resolvedVersion/
+   * integrity 锁的插件必须在重新 import 之前通过校验；校验失败拒绝重载且保留
+   * 当前运行状态 —— 热更新不能成为绕过封存校验的旁路。
    */
   async reload(name: string): Promise<void> {
     const entry = this.entries.get(name)
@@ -570,31 +605,72 @@ export class PluginManager {
     if (!entry.filePath) {
       throw new Error(`插件 ${name} 没有文件路径，不支持重载，请重启服务`)
     }
+    // 重载前重新校验完整性锁：锁定插件的磁盘文件一旦变更，摘要必然不匹配，
+    // 此时必须拒绝重载并提示重新封存，而不是把篡改后的代码换进运行时。
+    const locked = this.catalogConfigs.find(
+      (item) =>
+        item.catalogId === entry.catalogId &&
+        (item.integrity !== undefined || item.resolvedVersion !== undefined)
+    )
+    let reloadedIntegrity: 'verified' | 'unverified' | undefined
+    if (locked) {
+      const verification = verifyPackageIntegrity({
+        packageDir: entry.packageDir ?? resolve(entry.filePath, '..'),
+        ...(locked.integrity !== undefined ? { integrity: locked.integrity } : {}),
+        ...(locked.resolvedVersion !== undefined
+          ? { resolvedVersion: locked.resolvedVersion }
+          : {})
+      })
+      if (!verification.ok) {
+        throw new Error(
+          `插件 ${name} 完整性校验失败（${verification.reason}），拒绝重载；` +
+            '请重新安装插件并运行 scripts/seal-plugin.ts 更新 plugins.yml 的锁定信息'
+        )
+      }
+      reloadedIntegrity = 'verified'
+    } else {
+      // 无锁插件保持原校验状态，不让重载悄悄改变信任级别
+      reloadedIntegrity =
+        entry.integrityStatus === 'unverified'
+          ? 'unverified'
+          : entry.integrityStatus === 'verified'
+            ? 'verified'
+            : undefined
+    }
 
     this.logger.info({ plugin: name }, '开始重载插件')
+
+    // ---- 候选先行：新代码完整可用之前，不动旧插件 ----
+    const candidatePlugin = await this.importPluginModule(entry.filePath, true)
 
     // 保存配置和隔离设置（重载后恢复）
     const savedConfig = entry.config ?? {}
     const savedIsolate = entry.isolate ?? false
     const savedCatalogId = entry.catalogId
     const savedDesiredEnabled = entry.desiredEnabled
+    const savedPackageDir = entry.packageDir
     const filePath = entry.filePath
     const source = entry.source
 
-    // 停止并清理
+    // 候选就绪，进入替换段：停止旧实例 → 移除注册 → 登记候选 → 按期望状态启动
     if (entry.status === 'enabled') {
       await this.stopPlugin(name)
     }
-
-    // 从注册表中移除
     this.entries.delete(name)
-
-    // ESM 模块重载：通过添加 query 参数强制重新加载
-    // 传入保存的配置和隔离设置，确保重载后恢复
-    await this.loadFromFile(filePath, source, true, savedConfig, savedIsolate, savedCatalogId)
+    await this.loadPluginEntry(
+      candidatePlugin,
+      source,
+      filePath,
+      savedConfig,
+      savedIsolate,
+      savedCatalogId,
+      reloadedIntegrity,
+      savedPackageDir
+    )
     const reloaded = this.entries.get(name)
     if (!reloaded) {
-      // 重新 import 失败：catalog 里已经没有这个条目，必须明确报出来而不是静默成功
+      // 候选已在上面校验过 manifest；走到这里说明同名条目登记被拒，
+      // 必须明确报出来而不是静默成功
       throw new Error(`插件 ${name} 重载后未能重新注册，请检查插件文件并重启服务`)
     }
     reloaded.desiredEnabled = savedDesiredEnabled
@@ -606,6 +682,31 @@ export class PluginManager {
       { plugin: name, configRestored: Object.keys(savedConfig).length > 0 },
       '插件重载完成'
     )
+  }
+
+  /**
+   * 收集支持热更新的插件监视目标。
+   *
+   * 只有 local/npm 且带确定入口文件的插件可被外部重载；builtin 插件随宿主编译，
+   * 重载需要重启进程，不参与热更新。期望状态为关闭的插件不监视 —— 禁用的
+   * 第三方代码不应因磁盘变更被重新 import（与启动期"禁用即不加载"一致）。
+   *
+   * watchDir 优先取包根目录：npm 的 main 可能指向 dist/index.js，
+   * 按入口文件所在目录监听会漏掉包内其他目录的变更。
+   */
+  getHotReloadTargets(): Array<{ pluginId: string; filePath: string; watchDir: string }> {
+    const targets: Array<{ pluginId: string; filePath: string; watchDir: string }> = []
+    for (const entry of this.entries.values()) {
+      if (entry.source === 'builtin') continue
+      if (!entry.filePath) continue
+      if (!entry.desiredEnabled) continue
+      targets.push({
+        pluginId: entry.pluginId,
+        filePath: entry.filePath,
+        watchDir: entry.packageDir ?? resolve(entry.filePath, '..')
+      })
+    }
+    return targets
   }
 
   /** 列出所有插件 */
@@ -863,7 +964,16 @@ export class PluginManager {
       const integrityStatus = this.resolveScannedIntegrity(pluginPath, name, 'local')
       if (integrityStatus === null) continue
 
-      await this.loadFromFile(entryFile, 'local', false, undefined, undefined, undefined, integrityStatus)
+      await this.loadFromFile(
+        entryFile,
+        'local',
+        false,
+        undefined,
+        undefined,
+        undefined,
+        integrityStatus,
+        pluginPath
+      )
     }
   }
 
@@ -905,7 +1015,16 @@ export class PluginManager {
       const integrityStatus = this.resolveScannedIntegrity(pluginDir, name, 'npm')
       if (integrityStatus === null) continue
 
-      await this.loadFromFile(entryFile, 'npm', false, undefined, undefined, undefined, integrityStatus)
+      await this.loadFromFile(
+        entryFile,
+        'npm',
+        false,
+        undefined,
+        undefined,
+        undefined,
+        integrityStatus,
+        pluginDir
+      )
     }
   }
 
@@ -940,10 +1059,45 @@ export class PluginManager {
   }
 
   /**
+   * 导入插件模块并解析出 Plugin 实例（供加载与候选先行重载共用）。
+   *
+   * @param bustCache true 时给 URL 追加时间戳 query，强制 ESM 重新执行模块
+   * @throws 模块无法导入、未导出插件工厂、工厂执行失败或 manifest 非法时抛错；
+   *         调用方决定错误是隔离吞掉（启动扫描）还是如实上抛（重载）
+   */
+  private async importPluginModule(filePath: string, bustCache = false): Promise<Plugin> {
+    // ESM 重载：添加 query 参数强制重新加载模块
+    const fileUrl = bustCache
+      ? `${pathToFileURL(filePath).href}?t=${Date.now()}`
+      : pathToFileURL(filePath).href
+    const mod = await import(fileUrl)
+
+    // 支持 default 导出或命名导出
+    const factory: PluginFactory | Plugin | undefined = mod.default ?? mod.createPlugin ?? mod.plugin
+    if (!factory) {
+      throw new Error('插件模块未导出 default / createPlugin / plugin')
+    }
+
+    let plugin: Plugin
+    if (typeof factory === 'function') {
+      plugin = await (factory as PluginFactory)()
+    } else {
+      plugin = factory
+    }
+
+    const manifest = plugin.manifest
+    if (!manifest || typeof manifest.name !== 'string' || typeof manifest.version !== 'string') {
+      throw new Error('插件 manifest 缺少 name 或 version')
+    }
+    return plugin
+  }
+
+  /**
    * 从文件加载插件（错误隔离）
    * @param reload 是否为重载（添加时间戳 query 强制 ESM 重新加载）
    * @param config 插件配置（重载时恢复）
    * @param isolate 是否隔离运行（重载时恢复）
+   * @param packageDir 插件包根目录（完整性校验的摘要范围；缺省取入口文件所在目录）
    */
   public async loadFromFile(
     filePath: string,
@@ -952,29 +1106,11 @@ export class PluginManager {
     config?: Record<string, unknown>,
     isolate?: boolean,
     catalogId?: string,
-    integrityStatus: 'verified' | 'unverified' = 'unverified'
+    integrityStatus: 'verified' | 'unverified' = 'unverified',
+    packageDir?: string
   ): Promise<void> {
     try {
-      // ESM 重载：添加 query 参数强制重新加载模块
-      const fileUrl = reload
-        ? `${pathToFileURL(filePath).href}?t=${Date.now()}`
-        : pathToFileURL(filePath).href
-      const mod = await import(fileUrl)
-
-      // 支持 default 导出或命名导出
-      const factory: PluginFactory | Plugin | undefined =
-        mod.default ?? mod.createPlugin ?? mod.plugin
-      if (!factory) {
-        throw new Error('插件模块未导出 default / createPlugin / plugin')
-      }
-
-      let plugin: Plugin
-      if (typeof factory === 'function') {
-        plugin = await (factory as PluginFactory)()
-      } else {
-        plugin = factory
-      }
-
+      const plugin = await this.importPluginModule(filePath, reload)
       await this.loadPluginEntry(
         plugin,
         source,
@@ -982,7 +1118,8 @@ export class PluginManager {
         config,
         isolate,
         catalogId,
-        integrityStatus
+        integrityStatus,
+        packageDir ?? resolve(filePath, '..')
       )
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
@@ -999,7 +1136,8 @@ export class PluginManager {
     config?: Record<string, unknown>,
     isolate?: boolean,
     catalogId?: string,
-    integrityStatus?: 'verified' | 'unverified'
+    integrityStatus?: 'verified' | 'unverified',
+    packageDir?: string
   ): Promise<void> {
     try {
       const manifest = plugin.manifest
@@ -1028,9 +1166,9 @@ export class PluginManager {
         'process.exec',
         'session.create',
         'agent.orchestrate',
-        'confirmation.request'
+        'confirmation.request',
+        'media.generate'
       ]
-      const requested = new Set(manifest.permissions ?? [])
       const configuredGrants =
         this.catalogConfigs.find((item) => item.catalogId === finalCatalogId)?.grants ?? []
       const grants = new Set<PluginCapability>()
@@ -1059,6 +1197,8 @@ export class PluginManager {
         // builtin 随应用构建，不适用包级锁；local/npm 由调用方告知本次是否经过校验。
         integrityStatus: source === 'builtin' ? 'not-applicable' : (integrityStatus ?? 'unverified'),
         filePath,
+        // 包根目录用于重载前的完整性锁复验；未显式提供时回退入口文件所在目录
+        packageDir: source === 'builtin' ? undefined : (packageDir ?? (filePath ? resolve(filePath, '..') : undefined)),
         config: config ?? {},
         isolate: isolate ?? false,
         grants,
@@ -1325,6 +1465,7 @@ export class PluginManager {
     // 对象字面量 getter 内的 this 指向字面量自身，因此通过闭包延迟读取。
     const getModelRegistry = (): ModelRegistryLike | undefined =>
       this.modelRegistry as ModelRegistryLike | undefined
+    const getMediaGenerator = (): PluginContext['media'] => this.mediaGenerator
 
     const registerEffect = (
       kind: string,
@@ -1393,6 +1534,18 @@ export class PluginManager {
       cwd: entry.source === 'builtin' ? this.cwd : pluginDataDir,
       dataDir: pluginDataDir,
       resolvePath: resolvePluginPath,
+      registerBackgroundWork: (name: string, provider: BackgroundWorkProvider) => {
+        if (!this.backgroundWorkRegistry) {
+          throw new Error(`插件 ${pluginName} 无法注册后台工作 provider：宿主未提供 BackgroundWorkRegistry`)
+        }
+        const dispose = this.backgroundWorkRegistry.register(name, provider)
+        pushTrackedEffect(
+          'background-work',
+          name,
+          dispose,
+          { unloadScope: 'immediate' },
+        )
+      },
       ...(entry.grants.has('process.exec') ? { process: { exec: execPluginCommand } } : {}),
       ...(entry.grants.has('network.outbound') ? { network: { fetch: fetchPluginUrl } } : {}),
       // 编排类宿主管理器同样按 capability 条件注入，与 process / network 一致：
@@ -1407,6 +1560,9 @@ export class PluginManager {
       ...(entry.grants.has('confirmation.request')
         ? { confirmationManager: this.confirmationManager }
         : {}),
+      get media(): PluginContext['media'] {
+        return entry.grants.has('media.generate') ? getMediaGenerator() : undefined
+      },
       // getter 而非直接取值：setModelRegistry 在 app.ts 启动后期才调用，
       // 晚于插件 setup（createPluginContext 构建本 context 的时机），
       // 直接传 this.modelRegistry 会把 undefined 固化进 context。

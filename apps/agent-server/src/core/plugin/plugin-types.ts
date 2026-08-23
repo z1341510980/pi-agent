@@ -29,6 +29,7 @@ import type { ToolDefinition as PiToolDefinition } from '@earendil-works/pi-codi
 import type { ModelRegistryLike } from './cache-control-support.js'
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
 import type Database from 'better-sqlite3'
+import type { BackgroundWorkProvider } from '../agent/background-work-registry.js'
 
 /** 插件状态 */
 export type PluginStatus = 'loaded' | 'enabled' | 'disabled' | 'error'
@@ -104,6 +105,7 @@ export type PluginCapability =
   | 'session.create' // 创建独立 Pi Session（消耗模型额度）
   | 'agent.orchestrate' // 访问 subagent/team 管理器与调用日志
   | 'confirmation.request' // 复用 chat 的确认/决策流程
+  | 'media.generate' // 调用宿主受控媒体 Provider（不向插件暴露 API Key）
 
 /** 工具参数 JSON Schema（简化版，兼容 AG-UI Tool 定义） */
 export interface ToolParameterSchema {
@@ -312,6 +314,14 @@ export interface PluginContext {
    * 实现上为 getter（注入晚于插件 setup，直接取值会拿到 undefined）。
    */
   readonly modelRegistry?: ModelRegistryLike
+  /** 受 capability 保护的媒体生成 facade。 */
+  readonly media?: {
+    generateImage(input: { prompt: string; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
+    generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+    generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+    editImage?(input: { prompt: string; image: string; mask?: string; model?: string; size?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
+    analyzeImage?(input: { image: string; instruction?: string; model?: string; signal?: AbortSignal }): Promise<{ text: string }>
+  }
   /**
    * ConfirmationManager（chat 底座共享，由 app.ts 注入到 PluginManager）
    *
@@ -330,6 +340,8 @@ export interface PluginContext {
    * 以便未来收口时有单一改造点。
    */
   readonly resolvePath: (...segments: string[]) => string
+  /** Register a read-only provider for host background-work observation. */
+  readonly registerBackgroundWork: (name: string, provider: BackgroundWorkProvider) => void
   /** 在当前 activation generation 中登记一个带 disposer 的宿主 effect。 */
   readonly effect: (
     kind: string,
@@ -677,6 +689,13 @@ export interface PluginEntry {
   integrityStatus: 'verified' | 'unverified' | 'not-applicable'
   /** 插件文件路径 */
   filePath?: string
+  /**
+   * 插件包根目录（完整性校验的摘要范围）。
+   *
+   * npm 为 node_modules/<pkg>；local 为入口文件所在目录。重载前重新校验
+   * 完整性锁时必须用它，不能从 filePath 猜 —— npm 的 main 可能指向 dist/。
+   */
+  packageDir?: string
   /** 插件配置（从配置文件加载时传入） */
   config?: Record<string, unknown>
   /** 是否隔离运行（默认 false） */

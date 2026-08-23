@@ -1,0 +1,70 @@
+/**
+ * 提示词模板管理 API 客户端
+ *
+ * 端点（自动加 /api/plugins/novel 前缀）：
+ * - GET    /prompts            → 模板列表（含来源/覆盖状态）
+ * - GET    /prompts/:name      → 生效内容 + 默认内容 + 来源
+ * - PUT    /prompts/:name      → 保存运行时覆盖
+ * - DELETE /prompts/:name      → 恢复默认（删除覆盖）
+ */
+
+import { getApi, putApi, deleteApi } from './http-client'
+
+const BASE = '/api/plugins/novel'
+
+export type PromptTemplateSource = 'runtime' | 'project-file' | 'default'
+
+/** 与写作风格强相关、推荐用户自定义的模板 */
+export const STYLE_RELATED_TEMPLATES = new Set([
+  'chapter-instruction',
+  'role-writer',
+  'role-reviser',
+  'role-prose-editor',
+  'system-base-rules',
+])
+
+export interface PromptTemplateInfo {
+  name: string
+  source: PromptTemplateSource
+}
+
+export interface PromptTemplateDetail {
+  name: string
+  /** 生效内容；不存在为 null */
+  content: string | null
+  source: PromptTemplateSource
+  hasRuntimeOverride: boolean
+  /** 内置默认内容（纯自定义模板无此项） */
+  defaultContent?: string | null
+}
+
+export function listPromptTemplates(projectId?: string): Promise<PromptTemplateInfo[]> {
+  const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+  return getApi<PromptTemplateInfo[]>(`${BASE}/prompts${query}`)
+}
+
+export function getPromptTemplate(name: string, projectId?: string): Promise<PromptTemplateDetail> {
+  const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+  return getApi<PromptTemplateDetail>(`${BASE}/prompts/${encodeURIComponent(name)}${query}`)
+}
+
+export function savePromptTemplate(
+  name: string,
+  input: { content: string; projectId: string | null; description?: string },
+): Promise<{ name: string; saved: boolean }> {
+  return putApi<{ name: string; saved: boolean }>(
+    `${BASE}/prompts/${encodeURIComponent(name)}`,
+    input,
+  )
+}
+
+/** 恢复默认：删除运行时覆盖（projectId 精确范围；不传则删全局） */
+export function resetPromptTemplate(
+  name: string,
+  projectId?: string,
+): Promise<{ name: string; reset: boolean }> {
+  const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+  return deleteApi<{ name: string; reset: boolean }>(
+    `${BASE}/prompts/${encodeURIComponent(name)}${query}`,
+  )
+}

@@ -1,4 +1,4 @@
-import type { DiscussionMessage, DiscussionResult } from './../../../../core/agent/discussion-types.js'
+import type { DiscussionMessage, DiscussionResult } from './engine/discussion-types.js'
 import type { ChapterChatMessage, ChapterChatStore } from '../chapters/chapter-chat-store.js'
 
 type PersistedChapterChatMessage = Omit<ChapterChatMessage, 'id'>

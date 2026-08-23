@@ -295,3 +295,139 @@ context.registerPanel({
 - 不在禁用时删除 SQLite 数据或回滚迁移。
 - 不实现 workspace.main 的多插件同屏混排（keyed slot 经 N1-0 的选择原语做到单激活，切换即互斥）。
 - 不动 `@repo/shared/novel` 的归属与内容。
+
+## 9. 按插件开发指南收敛后的方案（v3）
+
+### 9.1 交付形态与边界
+
+小说继续作为随应用编译的 **builtin 插件**，不改成 local/npm。身份固定为：
+
+| 项目 | 约定 |
+| --- | --- |
+| catalogId | `novel-plugin`，必须命中 `plugin-loader.plugin.ts` 的工厂映射 |
+| pluginId | `novel`，等于 `manifest.name`，是运行期路由与依赖引用身份 |
+| source | `builtin` |
+| 入口 | `apps/agent-server/src/plugins/novel-plugin/index.ts` |
+| 数据 | `context.db` + 静态迁移 013-026；表和用户数据是 `persistent` |
+| HTTP 前缀 | `/api/plugins/novel`；插件内部路由只声明相对 path |
+
+保持一个插件而不是拆成多个插件。创作编排、参考小说分析、文风档案、版本/账本和审计共享同一项目事实、事务和 Agent 生命周期，拆分会制造跨插件事务与版本同步问题。插件内部用 `core/chapters`、`core/analysis`、`core/prompting`、`core/observability`、`routes`、`infrastructure` 分域即可。
+
+### 9.2 manifest 与 capability 请求
+
+manifest 只声明插件实际使用的能力，作为自我描述；实际授权仍以宿主 `grants` 为准：
+
+```ts
+permissions: [
+  'tools.register',
+  'routes.register',
+  'storage.plugin',
+  'ui.contribute',
+  'session.create',
+  'agent.orchestrate',
+  'confirmation.request',
+]
+```
+
+小说当前未使用 `agent.hooks`、`network.outbound`、`process.exec`、`provider.transform`、`provider.observe`，不把这些能力写进请求清单。builtin 目前启动时会获得全部能力，这属于宿主级策略；小说方案不在局部修改该语义，最小授权另走宿主 P0-2 决策。
+
+### 9.3 setup、teardown 与 effect 纪律
+
+`setup(context)` 只做可审计的注册和初始化：静态迁移先由宿主执行，然后注册 5 个服务、4 个 Novel Agent、1 个内存 Team、Session 工具、REST routes、UI contributions。每个由插件创建的 Agent、Team、后台任务、Session 和观察 provider 都要通过 `context.effect()`、`registerDisposable()` 或 `trackSession()` 登记。
+
+`teardown()` 按固定顺序执行：
+
+1. 中止本插件所有在飞创作/分析任务，并在有限时间内 drain；超时写入 `lastStop.errors`，不无限等待。
+2. 仅注销本次 activation 注册的 Agent 和临时 Team；不能删除用户持久化 Agent，也不能调用会写库的 Team `deleteTeam()`。
+3. 释放 Session、事件订阅和后台观测 provider。
+4. 不删除 SQLite 表、正文、版本、账本、参考源或模板。
+
+必须如实标注卸载边界：Session/任务/Agent/Team/事件为 `immediate`，Session 工具为 `new-session-only`，route/service 为 `restart-required`，迁移和数据为 `persistent`。运行期 enable/disable 不得在 UI 或文档中宣称路由已即时挂载或已即时移除。
+
+### 9.4 宿主反向依赖清零
+
+插件只能依赖 core 的通用基础设施和 `@repo/shared/novel` 契约，core/app 不得 import `plugins/novel-plugin` 或硬编码小说标识。按现有 v2 切片执行：
+
+- `chapter-finalizer` 归位到插件；
+- 通用 `cancel-debug-log` 移到 `src/lib`；
+- app 通过 `BackgroundWorkRegistry` 读取插件任务，不直接 import 小说注册表；
+- discussion moderator/engine/settings/types 归位到插件；
+- 小说测试随模块归位，架构守卫同时扫描 import 和 `novel_*`/`novel-` 标识符。
+
+不得通过“保留迁移已执行”或“共享单例”绕过边界。插件 disabled 时迁移仍可能按当前宿主语义执行，但 core 不得因此读取小说表。
+
+### 9.5 UI 贡献与桌面白名单
+
+小说注册两个 contribution，而不是继续依赖 `App.tsx` 的 `novel` 特例：
+
+| contribution | slot | rendererKey | entryKey | 作用 |
+| --- | --- | --- | --- | --- |
+| `novel-workspace` | `workspace.main` | `novel.workspace` | `novel` | 小说工作区整页，单激活 keyed slot |
+| `novel-navigation` | `app.navigation` | `novel.navigation` | 无 | 左侧导航入口 |
+
+桌面宿主负责实现可信 renderer、加入白名单、提供导航上下文和 keyed slot 选择；插件只声明 JSON 可序列化 props。插件禁用后 contribution 从投影消失，单个 renderer 出错由 EntryBoundary 隔离。运行期 enable 若 route 尚未挂载，工作区显示“需重启服务后可用”，不能把 404 当作插件逻辑错误。
+
+### 9.6 配置与数据目录
+
+插件文件写入统一使用 `context.dataDir`/`context.resolvePath()`，不再把 `config.dataDir` 当作绕过宿主数据边界的路径。`plugins.yml` 只保留产品配置（默认模型、章节/token 限制等）；禁用、重启和卸载均不删除数据。若未来需要清理，单独设计备份、确认、审计和不可恢复删除流程。
+
+## 10. 接口契约与需求覆盖基线
+
+### 10.1 唯一接口基线
+
+`docs/novel/2026-08-10-新增小说功能接口清单.md` 作为小说插件的页面级接口契约，所有接口均标注 `/api/plugins/novel` 省略前缀。每个页面必须保持独立接口清单；实现、重构或拆路由时先更新该文档，再更新代码和测试。
+
+接口清单的状态语义必须保留：
+
+- **已交付**：后端接口和可达桌面入口都存在；
+- **仅后端**：只有接口，没有独立页面或页面未调用；
+- **未交付**：仅需求/设计契约，不能在验收中冒充能力。
+
+参考小说阶段 2 以后、顺序重建和 Storyline/Scene revision 等缺口，继续按清单写明“部分交付/未交付”，不因插件化而扩大承诺。
+
+### 10.2 页面、字段、路径和外部系统验收
+
+每个页面的接口小节必须同时覆盖：
+
+1. 页面操作对应的 method/path、请求字段、响应字段和状态/错误边界；
+2. 源需求与原型（如后续补充）展示的全部字段；当前没有原型图片时，在文档显式记录该事实；
+3. 用户从入口到提交、等待、审核、回滚或刷新结果的操作路径；
+4. 外部系统或内部设施调用、数据方向、失败边界和可复用结论；
+5. 与相近模块复用的接口、状态机、存储或事件，并说明不能复用的原因；
+6. 模糊描述、未决语义和阻塞条件，单独列入“模糊项与待确认决策”。
+
+现有接口清单的 §23-§25 已覆盖外部系统、复用合理性和模糊项；后续新增页面不得只补 route 表，必须同步补这三部分。参考源导入尤其要保留 File API/Base64、SQLite、LLM Provider、AG-UI/SSE、PromptManager、React Flow/dnd-kit 和 HMAC/安全密钥的边界说明。
+
+### 10.3 插件级接口注册目录
+
+在接口清单之外增加一份可机器校验的注册摘要（可先作为文档附录，稳定后再转 JSON）：
+
+| 注册类别 | 验收内容 |
+| --- | --- |
+| services | 5 个服务名、所属模块、消费者和 `storage.plugin` |
+| agents/teams | 4 个 Agent、1 个 Team、owner、注销方式和 `agent.orchestrate` |
+| session tools | 工具名、参数 schema、取消语义、所属页面和 `tools.register` |
+| routes | 所有相对 path、页面归属、状态、鉴权/确认/模型依赖 |
+| migrations | 013-026、表用途、数据保留和前置依赖 |
+| UI contributions | slot、rendererKey、entryKey、priority、运行期撤销状态 |
+
+注册摘要与 `createNovelPlugin()` 的实际注册结果做契约测试：新增注册物必须同时更新摘要和页面接口清单；删除注册物必须保留兼容或迁移说明。
+
+## 11. 分阶段实施与验收门槛
+
+| 阶段 | 主要交付 | 通过条件 |
+| --- | --- | --- |
+| P0 契约冻结 | 页面接口基线、插件注册摘要、需求/字段/外部系统/路径/复用/模糊项对账 | 每个页面有独立接口清单；所有字段可追溯；未交付能力不被标成已交付 |
+| P1 边界归位 | core/app 解耦、测试归位、架构守卫 | core/app/routes/lib 对插件 import 零命中；白名单只剩有书面理由的暂留项 |
+| P2 生命周期 | effect ledger、任务 abort/drain、Agent/Team 注销、Session 追踪 | disable 后立即资源不可见；route/service 诚实标 restart-required；数据保留；失败有 diagnostics |
+| P3 Slot UI | keyed workspace、navigation contribution、trusted renderer、刷新和错误隔离 | 启用/禁用/切页行为可验证；未知 rendererKey 不渲染；单贡献错误不影响宿主 |
+| P4 回归收口 | route/schema、注册摘要、页面流程、SSE/取消/重启/e2e | 创作流、群聊、矩阵、画布、参考分析、审计和文风链路回归通过 |
+
+每阶段都使用“测试先行 -> 实现 -> 类型检查 -> 失败诊断 -> 回归”的小切片；不把路由重命名、数据库重构、UI Slot 化和参考小说新产品能力混成一个提交。
+
+## 12. 方案范围外但必须保留的决策记录
+
+- builtin 是否遵守显式 grants 是宿主级授权策略，不在小说插件内偷偷改变。
+- Fastify route/service 的运行期挂载和撤销需要重启；前端必须展示这一事实。
+- 已发布章节撤回/修订、`asOfRevision` 历史语义、顺序重建隔离重放、Storyline/Scene revision、Prompt 模板权限以及参考小说 P4-P9 阈值仍是产品决策，不由插件化方案替用户决定。
+- 原型图片当前缺失；一旦补充，必须重新执行“页面字段 -> 接口字段”覆盖检查。

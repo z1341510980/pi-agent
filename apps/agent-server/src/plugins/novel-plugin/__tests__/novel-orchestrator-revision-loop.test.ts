@@ -21,7 +21,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { NovelOrchestrator } from '../core/novel-orchestrator.js'
 import type { NovelEngine } from '../core/novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
-import type { CreationOptions } from '../../../core/agent/chapter-finalizer.js'
+import type { CreationOptions } from '../core/chapter-finalizer.js'
 import { createNovelFixture, FIXTURE_TARGET_CHAPTER, type NovelFixture } from './fixtures/novel-fixture.js'
 
 /** 恒定命中的强制 AI 腔句式（ending_summary）：修订复检必不过 */

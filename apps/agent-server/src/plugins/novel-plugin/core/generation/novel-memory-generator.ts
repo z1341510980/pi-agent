@@ -280,6 +280,65 @@ function addPayloadStats(target: MemoryPayloadStats, stats: PluginPayloadStats):
   target.roundTrips++
 }
 
+/**
+ * P1-4 确定性核对：正文中出场、但变更清单全文未提及的实体名。
+ *
+ * 变更清单对实体的引用以名字为匹配键（Updates 按名匹配），
+ * 因此「名字未出现在清单任何字段」是漏提取的廉价代理信号：
+ * 不是所有命中都需要补提取（可能确无变化），但值得一次定向复核。
+ */
+export function findUnmentionedEntities(
+  payload: MemoryUpdatePayload,
+  content: string,
+  entityNames: string[]
+): string[] {
+  let payloadText: string
+  try {
+    payloadText = JSON.stringify(payload)
+  } catch {
+    return []
+  }
+  return entityNames.filter(
+    (name) => name.trim().length >= 2 && content.includes(name) && !payloadText.includes(name)
+  )
+}
+
+const MERGEABLE_TRACKS = [
+  'characterUpdates',
+  'characterCreates',
+  'foreshadowUpdates',
+  'foreshadowCreates',
+  'clueUpdates',
+  'clueCreates',
+  'conflictUpdates',
+  'conflictCreates',
+  'factionUpdates',
+  'locationUpdates',
+  'relationshipUpdates',
+  'relationshipCreates',
+  'itemUpdates',
+  'itemCreates',
+  'hookUpdates',
+  'narrativeCreates',
+  'narrativeUpdates',
+] as const
+
+/** 合并两次提取结果：逐轨道拼接；summary 保留主提取的版本 */
+export function mergeMemoryPayloads(
+  base: MemoryUpdatePayload,
+  supplement: MemoryUpdatePayload
+): MemoryUpdatePayload {
+  const merged: MemoryUpdatePayload = { ...base }
+  for (const track of MERGEABLE_TRACKS) {
+    const extra = supplement[track] as unknown[] | undefined
+    if (Array.isArray(extra) && extra.length > 0) {
+      const original = merged[track] as unknown[] | undefined
+      merged[track] = [...(Array.isArray(original) ? original : []), ...extra] as never
+    }
+  }
+  return merged
+}
+
 export class NovelMemoryGenerator {
   constructor(
     private promptBuilder: NovelPromptBuilder,
@@ -448,6 +507,39 @@ export class NovelMemoryGenerator {
       // ── 4. 解析 JSON ──
       onProgress?.({ phase: 'parsing', message: '正在解析变更列表...' })
       payload = this.parseResult(result)
+
+      // ── 5. P1-4 确定性补提取回路（最多一次）──
+      // 正文出场但清单全文未提及的实体 → 定向复核一次，防"漏提取→下一章状态陈旧"。
+      // 补提取失败不回滚主提取结果。
+      const candidateNames = this.collectCoverageCandidates(projectId, chapterContent, arrangedEntities)
+      const missing = findUnmentionedEntities(payload, chapterContent, candidateNames)
+      if (missing.length > 0) {
+        onProgress?.({
+          phase: 'generating',
+          message: `检测到 ${missing.length} 个正文涉及但变更清单未提及的实体，正在定向补提取...`,
+          data: { missing },
+        })
+        try {
+          const supplement = await this.supplementMissingEntities(
+            projectId,
+            systemPrompt,
+            memorySkillPath,
+            chapterNumber,
+            chapterContent,
+            missing,
+            signal,
+            modelId,
+          )
+          if (supplement) {
+            payload = mergeMemoryPayloads(payload, supplement)
+          }
+        } catch (supplementErr) {
+          this.context.logger.warn(
+            { projectId, chapterNumber, err: supplementErr, missing },
+            '记忆补提取失败，保留主提取结果',
+          )
+        }
+      }
     } catch (err) {
       this.context.logger.error(
         { projectId, chapterNumber, err },
@@ -472,6 +564,92 @@ export class NovelMemoryGenerator {
       stats: this.emptyStats(),
       analysis: payload,
       logContext: { systemPrompt, userMessage: fullUserMessage, sessionId: session.sessionId, payloadStats },
+    }
+  }
+
+  /**
+   * P1-4：收集参与覆盖核对的实体名。
+   * 有编排时用矩阵角色；无编排时回退到项目全量角色（正文出现才会计入缺失）。
+   */
+  private collectCoverageCandidates(
+    projectId: string,
+    chapterContent: string,
+    arrangedEntities?: ArrangedEntity,
+  ): string[] {
+    const isConcreteName = (name: string | undefined | null): name is string =>
+      !!name && name.trim().length >= 2 && !/（待定）|待补充|待定$/.test(name)
+    if (arrangedEntities && arrangedEntities.characterIds.length > 0) {
+      return arrangedEntities.characterIds
+        .map((id) => this.store.getCharacter(id)?.name)
+        .filter(isConcreteName)
+    }
+    return this.store
+      .listCharacters(projectId)
+      .map((character) => character.name)
+      .filter(isConcreteName)
+      .filter((name) => chapterContent.includes(name))
+  }
+
+  /** P1-4：针对漏提及实体的一次定向补提取（单次 JSON 调用，失败由调用方兜底）。 */
+  private async supplementMissingEntities(
+    projectId: string,
+    systemPrompt: string,
+    memorySkillPath: string | undefined,
+    chapterNumber: number,
+    chapterContent: string,
+    missing: string[],
+    signal?: AbortSignal,
+    modelId?: { provider: string; modelId: string },
+  ): Promise<MemoryUpdatePayload | null> {
+    const charactersByName = new Map(
+      this.store.listCharacters(projectId).map((character) => [character.name, character]),
+    )
+    const states = missing
+      .map((name) => {
+        const found = charactersByName.get(name)
+        if (!found) return `- ${name}：（未找到档案）`
+        return [
+          `- ${found.name}`,
+          `  当前状态：${found.currentState || '（空）'}`,
+          `  当前目标：${found.currentGoal || '（空）'}`,
+          `  当前压力：${found.currentPressure || '（空）'}`,
+          `  弧光阶段：${found.arcStage || '（空）'}`,
+        ].join('\n')
+      })
+      .join('\n')
+
+    const userMessage = [
+      `以下人物在正文中出场，但你此前输出的变更清单完全没有提到他们：${missing.join('、')}。`,
+      '请重新核对正文，仅针对这些人物判断：他们的状态/目标/压力/秘密/弧光是否发生了值得跨章跟踪的变化，或是否需要新建档案。',
+      '只输出与这些人物相关的补充变更轨道（characterUpdates / characterCreates / relationshipUpdates / relationshipCreates）；',
+      '若确认无任何状态变化，输出 {"summary":"无补充变更"} 即可。不要复述正文，不要输出其他轨道。',
+      '',
+      `## 第 ${chapterNumber} 章正文`,
+      '',
+      chapterContent,
+      '',
+      '## 相关人物当前状态',
+      '',
+      states,
+    ].join('\n')
+
+    const session = await this.context.createSession({
+      systemPrompt,
+      userMessage,
+      tools: [],
+      responseFormat: 'json' as const,
+      timeoutMs: 120_000,
+      signal,
+      modelId,
+      ...(memorySkillPath
+        ? { skill: { name: 'novel-memory-generator', path: memorySkillPath } }
+        : {}),
+    })
+    try {
+      const result = await session.prompt()
+      return this.parseResult(result)
+    } finally {
+      session.dispose()
     }
   }
 

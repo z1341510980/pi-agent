@@ -219,3 +219,50 @@ export function updateNovelAgentTemperatures(
     updateNovelAgentTemperature(item.agentType, item.temperature, agentManager)
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// P2-2：per-Agent 模型配置（审稿异源的零代码入口）
+// ═══════════════════════════════════════════════════════════════
+
+export interface NovelAgentModelSelection {
+  provider: string
+  modelId: string
+}
+
+/** 模型读写所需的 AgentManager 子集 */
+type AgentModelManagerLike = {
+  getAgent(id: string): { model?: { provider: string; modelId: string } } | undefined
+  updateAgent(id: string, patch: { model?: { provider: string; modelId: string } }): unknown
+}
+
+/**
+ * 读取全部 Agent 的模型选择（未配置为 null，运行时回退项目主模型）。
+ *
+ * 用途：把 Reviewer/盲审切到与 Writer 不同的模型档位即可降低审美相关性，
+ * 这是"审稿异源"的最低成本实现——解析链见 novel-orchestrator（agentConfig?.model）。
+ */
+export function getAllNovelAgentModels(
+  agentManager?: AgentModelManagerLike,
+): Record<NovelAgentType, NovelAgentModelSelection | null> {
+  const result = {} as Record<NovelAgentType, NovelAgentModelSelection | null>
+  for (const agentType of Object.keys(NOVEL_AGENT_CONFIGS) as NovelAgentType[]) {
+    const config = NOVEL_AGENT_CONFIGS[agentType]
+    result[agentType] = agentManager?.getAgent(config.id)?.model ?? null
+  }
+  return result
+}
+
+/**
+ * 设置单个 Agent 的模型选择；null 表示清除（回退项目主模型）。
+ * agent 未注册时 no-op（与温度更新的回退语义一致）。
+ */
+export function updateNovelAgentModel(
+  agentType: NovelAgentType,
+  model: NovelAgentModelSelection | null,
+  agentManager?: AgentModelManagerLike,
+): void {
+  if (!agentManager) return
+  const config = NOVEL_AGENT_CONFIGS[agentType]
+  if (!agentManager.getAgent(config.id)) return
+  void agentManager.updateAgent(config.id, { model: model ?? undefined })
+}

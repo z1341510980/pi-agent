@@ -69,7 +69,9 @@ interface CalibrationResult {
   independent: boolean
 }
 
-const MAX_READER_REVISIONS = 1
+// P2-1：修订轮次 1 → 2。首轮 Reader 发现的问题往往需要一次有界重建才能消除；
+// 第二轮用"新的 Reader 复核修订稿"，避免同一个 Reader 固化首读印象。
+const MAX_READER_REVISIONS = 2
 
 /**
  * Execute the isolation rules encoded by the bundled lengdu skill. The workflow

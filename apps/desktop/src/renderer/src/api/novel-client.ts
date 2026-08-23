@@ -51,6 +51,7 @@ import type {
   StoryEventSource, StoryEventStatus,
   ChapterOutlineGenerationResult, GenerateChapterOutlineInput,
   NovelInterjectTargetAgent,
+  NovelBeatPlan, BeatDramaticFunction,
 } from '@repo/shared/novel'
 
 // re-export 共享类型供外部消费者使用
@@ -512,6 +513,72 @@ export function generateChapterOutline(
     input,
     { signal },
   )
+}
+
+// ── 卷级节拍表（Beat Planner，P0-1）──
+
+export interface GenerateBeatPlanInput {
+  count?: number
+  instruction?: string
+}
+
+export interface BeatPlanGenerationResult {
+  generationId: string
+  volumeNumber: number
+  startChapter: number
+  beats: NovelBeatPlan[]
+  notes: string
+  warnings: string[]
+  promptVersion: string
+}
+
+/** 为指定卷生成未来数章的节拍表（覆盖该卷既有 planned 节拍；published 章保留） */
+export function generateVolumeBeatPlan(
+  projectId: string,
+  volumeNumber: number,
+  input: GenerateBeatPlanInput = {},
+  signal?: AbortSignal,
+): Promise<BeatPlanGenerationResult> {
+  return postApi<BeatPlanGenerationResult>(
+    `${BASE}/projects/${projectId}/volumes/${volumeNumber}/beat-plan/generate`,
+    input,
+    { signal },
+  )
+}
+
+/** 列出节拍：带 volumeNumber 查单卷，否则返回全书 */
+export function listBeatPlans(
+  projectId: string,
+  volumeNumber?: number,
+): Promise<{ beats: NovelBeatPlan[] }> {
+  const query = volumeNumber !== undefined ? `?volumeNumber=${volumeNumber}` : ''
+  return getApi<{ beats: NovelBeatPlan[] }>(
+    `${BASE}/projects/${projectId}/beat-plans${query}`,
+  )
+}
+
+/** 查询单章节拍 */
+export function getChapterBeatPlan(
+  projectId: string,
+  chapterNumber: number,
+): Promise<{ beat: NovelBeatPlan | null }> {
+  return getApi<{ beat: NovelBeatPlan | null }>(
+    `${BASE}/projects/${projectId}/chapters/${chapterNumber}/beat-plan`,
+  )
+}
+
+export interface UpdateBeatPlanInput {
+  dramaticFunction?: BeatDramaticFunction
+  emotionalDebt?: string
+  payoff?: string
+  arcPosition?: string
+  summary?: string
+  status?: 'planned' | 'confirmed' | 'superseded'
+}
+
+/** 手工修订单个节拍（改戏剧功能/情绪债务/爽点/走向或状态） */
+export function updateBeatPlan(id: string, input: UpdateBeatPlanInput): Promise<NovelBeatPlan> {
+  return patchApi<NovelBeatPlan>(`${BASE}/beat-plans/${id}`, input)
 }
 
 export function completeChapter(id: string, input: CompleteChapterInput): Promise<NovelChapter> {

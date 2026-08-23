@@ -10,6 +10,7 @@ disable-model-invocation: true
 
 ## 决策顺序
 
+0. 先看节拍：若上下文提供「卷级节拍约束」，本章主任务必须服从该节的戏剧功能——`setup/escalation` 对应铺垫与升级类任务，`false_victory/false_defeat/midpoint_turn` 对应 `create_reversal`，`low_point` 优先代价与损失而非反击，`climax/payoff` 才允许爆发与兑现，`aftermath/breather` 处理后果或保留信息增量。节拍的 emotionalDebt 若未在章纲中体现，必须在计划中安排承接或明确延期。
 1. 先守边界：不得违反全书大纲、卷纲、世界规则、信息差、人物动机和时间线。
 2. 再接前文：上一章钩子必须选择回收、延后或搁置，不得静默丢弃；中间章重写还要兼容下一章锚点。
 3. 再执行矩阵：矩阵编排的角色、冲突、伏笔、线索、势力、地点必须进入计划；角色功能位必须落实为具体事件。

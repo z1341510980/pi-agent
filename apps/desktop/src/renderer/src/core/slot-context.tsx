@@ -16,7 +16,11 @@ import { BUILTIN_SLOTS } from '../ui/slot-types'
 import {
   HelloPanelContribution,
   HelloWorkspaceContribution,
-  HelloRightPanelContribution
+  HelloRightPanelContribution,
+  NovelWorkspaceContribution,
+  NovelNavigationContribution,
+  InfiniteCanvasWorkspaceContribution,
+  InfiniteCanvasNavigationContribution
 } from '../components/slot/trusted-renderers'
 
 /**
@@ -28,7 +32,11 @@ import {
 const RENDERERS: Record<string, React.ComponentType<Record<string, unknown>>> = {
   'builtin.hello-panel': HelloPanelContribution,
   'builtin.hello-workspace': HelloWorkspaceContribution,
-  'builtin.hello-right-panel': HelloRightPanelContribution
+  'builtin.hello-right-panel': HelloRightPanelContribution,
+  'novel.workspace': NovelWorkspaceContribution,
+  'novel.navigation': NovelNavigationContribution,
+  'infinite-canvas.workspace': InfiniteCanvasWorkspaceContribution,
+  'infinite-canvas.navigation': InfiniteCanvasNavigationContribution
 }
 
 export function registerTrustedRenderer(

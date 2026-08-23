@@ -96,11 +96,18 @@ function cleanSample(value: string, maxLength: number): string {
 /**
  * 正向样本给足体积才能承载"句式 + 观察距离 + 节奏"。
  * 700 字太短：中文样本必然断在句中，模型学到的是断句而不是文风。
+ * P1-2 扩容到 2400 字：单样本足以覆盖一次完整的场景起伏；
+ * 静态身份只保留 1 条锚定样本，其余按章节场景类型分桶注入（见 buildSceneSampleSection）。
  * 反向样本只需识别出要避开的句壳，维持较小预算。
  */
-const POSITIVE_SAMPLE_MAX_LENGTH = 1200
+const POSITIVE_SAMPLE_MAX_LENGTH = 2400
 const NEGATIVE_SAMPLE_MAX_LENGTH = 500
-const WRITING_STYLE_PROMPT_MAX_LENGTH = 7199
+/**
+ * P1-2 扩容：7199 → 11999。
+ * 文风档案属于 STATIC 身份层（跨章缓存），扩容只增加一次性缓存写入，
+ * 命中后不再产生输入计费差；上限仍受 joinPromptSectionsWithinBudget 强制。
+ */
+const WRITING_STYLE_PROMPT_MAX_LENGTH = 11999
 const PROFILE_HASH_LENGTH = 16
 const PROFILE_MARKER_PREFIX = '\n\n文风档案标识：'
 
@@ -165,7 +172,9 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
   const examples = profile.positiveExamples
     .map(example => cleanSample(example, POSITIVE_SAMPLE_MAX_LENGTH))
     .filter(Boolean)
-    .slice(0, 2)
+    // P1-2：静态身份只保留 1 条锚定样本；其余样本按章节场景类型
+    // 由 buildSceneSampleSection 分桶注入（per-chapter，不破坏静态缓存）
+    .slice(0, 1)
   if (examples.length > 0) {
     sections.push([
       '### 正向文风样本',
@@ -346,4 +355,109 @@ export function compileWritingStylePrompt(
     target,
     content: `${content}${PROFILE_MARKER_PREFIX}${profileHash}`,
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// P1-2：场景类型分桶 + 自池动态样本
+// ═══════════════════════════════════════════════════════════════
+
+export type StyleSceneType = 'dialogue' | 'action' | 'quiet'
+
+const SCENE_TYPE_LABELS: Record<StyleSceneType, string> = {
+  dialogue: '对话场',
+  action: '动作场',
+  quiet: '静场',
+}
+
+const SCENE_TYPE_HINTS: Record<StyleSceneType, string> = {
+  dialogue: '样本优先示范对话的呼吸：打断、半句、答非所问、潜台词压在动作里。',
+  action: '样本优先示范动作场的节奏：短句推进、感官锚点、后果即时可见。',
+  quiet: '样本优先示范静场的观察距离：环境细节承载情绪，留白多于解释。',
+}
+
+/** 场景类型关键词（命中即归类；顺序为 dialogue > action > quiet 兜底） */
+const DIALOGUE_HINT_PATTERN = /对话|谈判|审讯|质问|逼问|争辩|对峙|交谈|盘问|说服|摊牌|密谈/
+const ACTION_HINT_PATTERN = /战斗|打斗|追逐|逃|追杀|突袭|爆炸|厮杀|交火|搏|袭击|突围|追捕|行动开始/
+
+/**
+ * 从叙事任务文本推断本章主导场景类型。
+ * 纯启发式：只用于挑选更贴切的文风样本，不改变任何硬约束；
+ * 无法判断时归入 quiet（最通用的默认桶）。
+ */
+export function inferSceneType(text: string): StyleSceneType {
+  if (DIALOGUE_HINT_PATTERN.test(text)) return 'dialogue'
+  if (ACTION_HINT_PATTERN.test(text)) return 'action'
+  return 'quiet'
+}
+
+export interface SceneStyleSampleInput {
+  /** 文风档案正向样本（静态池） */
+  positiveExamples?: string[]
+  /**
+   * 自池摘段：本书已发布且审稿得分最高章节的结尾片段。
+   * 来源标注会让模型知道这是"同一本书的声音"，迁移时不复用情节。
+   */
+  selfPoolExcerpts?: Array<{
+    chapterNumber: number
+    score: number | null
+    excerpt: string
+  }>
+  sceneType: StyleSceneType
+  maxSamples?: number
+  sampleMaxLength?: number
+}
+
+/**
+ * 按章节主导场景类型挑样本文本；返回可直接注入 Writer 指令的分节字符串。
+ * 无可用样本返回空串——宁可不注入，不注入凑数段落。
+ *
+ * 选择规则：
+ * 1. 候选 = 档案正向样本 + 自池摘段，各自按 inferSceneType 分桶
+ * 2. 先取同桶样本（最多 maxSamples-1 条），不足时从其他桶按原顺序补足
+ * 3. 自池摘段带章节与评分来源标注；档案样本不重复出现在静态身份里的那条
+ *    （调用方通过 excludeExampleText 传入静态已用的样本原文）
+ */
+export function buildSceneSampleSection(input: SceneStyleSampleInput): string {
+  const maxSamples = input.maxSamples ?? 2
+  const sampleMaxLength = input.sampleMaxLength ?? 1600
+
+  const candidates: Array<{ text: string; sourceLabel: string; type: StyleSceneType }> = []
+  for (const example of input.positiveExamples ?? []) {
+    const cleaned = cleanSample(example, sampleMaxLength)
+    if (!cleaned) continue
+    candidates.push({ text: cleaned, sourceLabel: '档案样本', type: inferSceneType(cleaned) })
+  }
+  for (const item of input.selfPoolExcerpts ?? []) {
+    const cleaned = cleanSample(item.excerpt, sampleMaxLength)
+    if (!cleaned || cleaned.length < 200) continue
+    const scoreLabel = item.score != null ? `，审稿 ${item.score} 分` : ''
+    candidates.push({
+      text: cleaned,
+      sourceLabel: `本书第 ${item.chapterNumber} 章结尾${scoreLabel}`,
+      type: inferSceneType(cleaned),
+    })
+  }
+  if (candidates.length === 0) return ''
+
+  const matched = candidates.filter((candidate) => candidate.type === input.sceneType)
+  const others = candidates.filter((candidate) => candidate.type !== input.sceneType)
+  const selected = [...matched, ...others].slice(0, Math.max(0, maxSamples))
+  // 同一候选可能既在 matched 又在 others？不会——两个过滤器互补。去重防御：
+  const seen = new Set<string>()
+  const unique = selected.filter((candidate) => {
+    const key = candidate.text.slice(0, 80)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  if (unique.length === 0) return ''
+
+  return [
+    `### 本章场景文风样本（主导场景：${SCENE_TYPE_LABELS[input.sceneType]}）`,
+    SCENE_TYPE_HINTS[input.sceneType],
+    '只学习这些写法，不复用人物、情节或专有名词；与静态档案冲突时以档案为准。',
+    ...unique.map((candidate, index) =>
+      `\n【场景样本 ${index + 1}｜来源：${candidate.sourceLabel}】\n${candidate.text}`
+    ),
+  ].join('\n')
 }

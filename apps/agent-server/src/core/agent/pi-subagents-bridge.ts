@@ -7,7 +7,7 @@
  *
  * 本模块把小说产品运行时的两类真实工作接入这两个注册表：
  * - 章节任务（workflow / discussion / ai-arrange / reverse-arrange / re-revise）
- *   来自 NovelChapterTaskRegistry（并发锁 + 任务态）；
+ *   来自宿主 BackgroundWorkRegistry；小说插件负责提供任务观测 provider；
  * - Subagent 派遣运行（AgentManager.dispatchToAgent）来自 RuntimeRunRegistry。
  *
  * 边界：注册表是进程内 Symbol.for 全局；pi-subagents 扩展宿主持有消费端。
@@ -18,19 +18,21 @@
 import { registerBackgroundWorkProvider, type BackgroundWorkProvider } from 'pi-subagents/background-work'
 import { registerExternalRunProvider, type ExternalRunProvider, type ExternalRun } from 'pi-subagents/external-runs'
 import type { RuntimeRunRegistry } from './runtime-run-registry.js'
+import type { BackgroundWorkRegistry } from './background-work-registry.js'
 
 export interface PiSubagentsBridge {
   /** 解除本桥注册的全部 provider（幂等） */
   dispose(): void
 }
 
-/** 章节任务供给侧的最小结构（由模块级 activeNovelChapterTasks 适配） */
+/** 兼容旧调用方的章节任务供给侧最小结构。 */
 export interface ChapterTaskBridgeSource {
   listActive(): Array<{ id: string; chapterKey?: string }>
 }
 
 export interface PiSubagentsBridgeDeps {
   chapterTasks?: ChapterTaskBridgeSource
+  backgroundWork?: BackgroundWorkRegistry
   runtimeRuns?: Pick<RuntimeRunRegistry, 'list' | 'listActive'>
 }
 
@@ -70,7 +72,15 @@ function runtimeRunProvider(
  */
 export function createPiSubagentsBridge(deps: PiSubagentsBridgeDeps): PiSubagentsBridge {
   const disposers: Array<() => void> = []
-  if (deps.chapterTasks) {
+  if (deps.backgroundWork) {
+    disposers.push(registerBackgroundWorkProvider({
+      name: 'novel-chapter-tasks',
+      listActiveWork: () => deps.backgroundWork!.listActive().map((item) => ({
+        id: item.id,
+        sessionId: typeof item.chapterKey === 'string' ? item.chapterKey : item.id,
+      })),
+    }))
+  } else if (deps.chapterTasks) {
     disposers.push(registerBackgroundWorkProvider(chapterTaskProvider(deps.chapterTasks)))
   }
   if (deps.runtimeRuns) {

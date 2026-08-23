@@ -3,7 +3,7 @@ import type {
   DiscussionMessage,
   DiscussionPhase,
   SceneDefinition,
-} from './../../../../core/agent/discussion-types.js'
+} from './engine/discussion-types.js'
 import type { ArrangedEntity } from '../types.js'
 import type { PluginSessionOptions } from '../../../../core/plugin/plugin-types.js'
 

@@ -13,7 +13,7 @@
  * - 场景字数均分 resolvedTarget，余数给最后一场（文档 §5 校验规则）。
  */
 import type { NarrativeTask, ArrangedEntity } from '../types.js'
-import type { SceneDefinition } from '../../../../core/agent/discussion-types.js'
+import type { SceneDefinition } from '../discussion/engine/discussion-types.js'
 import type { ChapterScenePlan, ChapterScenePlanScene } from './chapter-scene-plan.js'
 import type { ChapterPlanRevision } from '../types.js'
 

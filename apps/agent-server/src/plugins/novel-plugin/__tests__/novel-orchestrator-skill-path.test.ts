@@ -27,7 +27,7 @@ import { createChapterBudgetUsage } from '../core/chapters/chapter-budget.js'
 import type { NovelAgentType } from '../core/domain/novel-agents.js'
 import type { NovelEngine } from '../core/novel-engine.js'
 import type { PluginContext } from '../../../core/plugin/plugin-types.js'
-import type { CreationOptions } from '../../../core/agent/chapter-finalizer.js'
+import type { CreationOptions } from '../core/chapter-finalizer.js'
 import {
   createNovelFixture,
   createPromptStores,

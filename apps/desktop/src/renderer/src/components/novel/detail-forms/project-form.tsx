@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/select'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { toastError, toastSuccess } from '@/hooks/use-toast'
+import { ModelPicker, type ModelRef } from '@/components/novel/model-picker'
 import {
   updateProject,
   listRhythmModels,
@@ -30,6 +31,21 @@ import {
 
 // ── 项目表单 ──
 
+/** "provider:modelId" 复合串 → ModelRef（首个冒号分隔，与后端 parseNovelModelRef 规则一致） */
+function toModelRef(value: string | null | undefined): ModelRef | null {
+  if (!value) return null
+  const i = value.indexOf(':')
+  if (i <= 0 || i === value.length - 1) return null
+  const provider = value.slice(0, i).trim()
+  const modelId = value.slice(i + 1).trim()
+  return provider && modelId ? { provider, modelId } : null
+}
+
+/** ModelRef → "provider:modelId" 复合串；null 表示清除（各 Agent 用各自配置） */
+function fromModelRef(ref: ModelRef | null): string | null {
+  return ref ? `${ref.provider}:${ref.modelId}` : null
+}
+
 export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement {
   const upsertProject = useNovelDataStore((s) => s.upsertProject)
   const [form, setForm] = useState({
@@ -45,6 +61,8 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rhythmModels, setRhythmModels] = useState<RhythmModel[]>([])
+  // 项目级创作主模型：独立于 form（对象值）；null = 未设置，各 Agent 用各自配置
+  const [mainModel, setMainModel] = useState<ModelRef | null>(() => toModelRef(entity.novelModelId))
 
   useEffect(() => {
     let cancelled = false
@@ -68,7 +86,8 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
     form.currentStage !== entity.currentStage ||
     form.status !== entity.status ||
     (form.rhythmModelId || '') !== (entity.rhythmModelId ?? '') ||
-    form.targetPlatform !== (entity.targetPlatform ?? '__none__')
+    form.targetPlatform !== (entity.targetPlatform ?? '__none__') ||
+    fromModelRef(mainModel) !== (entity.novelModelId ?? '')
 
   const handleSave = useCallback(async () => {
     setSaving(true)
@@ -82,7 +101,8 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
         currentStage: form.currentStage,
         status: form.status,
         rhythmModelId: form.rhythmModelId === '' ? undefined : form.rhythmModelId,
-        targetPlatform: form.targetPlatform === '__none__' ? null : form.targetPlatform
+        targetPlatform: form.targetPlatform === '__none__' ? null : form.targetPlatform,
+        novelModelId: fromModelRef(mainModel)
       })
       upsertProject(updated)
       toastSuccess('项目已保存', '修改已生效')
@@ -93,7 +113,7 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
     } finally {
       setSaving(false)
     }
-  }, [entity.id, form, upsertProject])
+  }, [entity.id, form, mainModel, upsertProject])
 
   return (
     <div className="space-y-2">
@@ -128,6 +148,15 @@ export function ProjectForm({ entity }: { entity: NovelProject }): ReactElement 
           step={100}
           value={form.targetWords}
           onChange={(e) => setForm((f) => ({ ...f, targetWords: e.target.value }))}
+        />
+      </FieldRow>
+
+      <SectionHeader title="创作主模型" hint="编排/写作/审稿/修订统一使用" />
+      <FieldRow label="创作主模型" hint="留空则各 Agent 用各自配置">
+        <ModelPicker
+          value={mainModel}
+          onChange={(m) => setMainModel(m ? { provider: m.provider, modelId: m.modelId } : null)}
+          label="项目统一"
         />
       </FieldRow>
 

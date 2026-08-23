@@ -51,6 +51,17 @@ export function createObservabilityRoutes(services: NovelServices): RouteDefinit
       const { projectId } = request.params as { projectId: string }; if (!store.getProject(projectId)) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
       return success(services.sharedOverlapAnalyzer.analyze(projectId), request.traceId)
     } },
+    { method: 'GET', path: '/projects/:projectId/scene-plan-coverage', handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }; if (!store.getProject(projectId)) throw new AppError(ErrorCode.NOT_FOUND, '项目不存在', 404)
+      // P1-3 v2 激活前置审计：场景计划覆盖率只读探针
+      const coverage = store.getScenePlanCoverage(projectId)
+      return success({
+        projectId,
+        ...coverage,
+        /** 场景级重写的建议：覆盖率与平均场景数同时达标才有意义 */
+        sceneRewriteReady: coverage.chaptersWithScenes > 0 && (coverage.avgSceneCountPerChapter ?? 0) >= 2,
+      }, request.traceId)
+    } },
     { method: 'POST', path: '/admin/agent-log-payloads/cleanup', handler: async (request: any) => success(store.cleanupExpiredPayloads(), request.traceId) },
   ]
 }

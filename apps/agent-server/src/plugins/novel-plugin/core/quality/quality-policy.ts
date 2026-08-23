@@ -88,11 +88,21 @@ export const GATE_REGISTRY: QualityGate[] = [
   },
   {
     id: 'word-count',
-    name: '字数偏离',
+    name: '字数偏离（仅截断兜底重写；其余降为 advisory 交 Reviewer 判断事件密度）',
     kind: 'deterministic',
     maxAction: 'rewrite',
     source: 'novel-orchestrator.runPostWriteGuard',
     promptCounterpart: 'chapter-instruction.md 的「字数要求」',
+  },
+  {
+    id: 'contract-coverage',
+    name: '叙事任务提及的角色未在正文出现（契约兑现度的确定性代理）',
+    kind: 'deterministic',
+    // Director 任务里提到的角色可能本就不出场（背景提及/对比对象），
+    // 字符层缺失不足以重写，交 Reviewer 结合任务完成度做语义验收
+    maxAction: 'advisory',
+    source: 'novel-orchestrator.runPostWriteGuard',
+    promptCounterpart: 'role-writer.md 的「矩阵实体必须真正参与事件」',
   },
   {
     id: 'matrix-characters',
@@ -175,8 +185,10 @@ export const CONFLICT_RULES: Array<{
     gates: ['word-count', 'prose-shape'],
     conflict: '创作指令鼓励"宁可更短"，字数门却在低于 75% 时整章重写',
     resolution:
-      '字数门只拦"明显失控"（<75% / >130%）；75%-85% 与 115%-130% 降为 advisory 交 Reviewer。'
-      + 'prompt 侧必须同时说明硬下限，避免 Writer 以为"短即可"。',
+      'P0-2 起偏短不再惩罚：<75% 与 85% 以下同样降为 advisory，由 Reviewer 结合事件密度判断。'
+      + '保留两条硬线：截断兜底（<50% 且 <800 字）防残稿；超长天花板（>130%）触发定向压缩'
+      + '（writer-rewrite-plan 的 targeted 策略，保留情节删空转），不是整章推倒。'
+      + 'prompt 侧同步改为事件密度导向，不承诺字数惩罚。',
   },
   {
     gates: ['prose-shape', 'cliche-patterns'],
@@ -232,14 +244,28 @@ export const PROSE_SHAPE_LIMITS = {
 
 /** 字数门的分级阈值（相对目标字数的比例） */
 export const WORD_COUNT_LIMITS = {
-  /** 低于此比例整章重写 */
-  rewriteBelow: 0.75,
-  /** 高于此比例整章重写 */
-  rewriteAbove: 1.30,
+  /**
+   * 截断兜底线：低于目标此比例视为「未完成输出」（截断/半途而废），触发重写。
+   *
+   * 这是防残稿的确定性兜底，不是字数审美——正常偏短的完整章节不在此列，
+   * 一律降为 advisory 交 Reviewer 结合事件密度判断（P0-2：删除 75% 重写线）。
+   */
+  truncationFloorRatio: 0.5,
+  /** 截断兜底的绝对下限（字）：目标字数很小的短章也至少要写满这么多 */
+  minTruncationFloorWords: 800,
   /** 低于此比例交 Reviewer（advisory） */
   advisoryBelow: 0.85,
   /** 高于此比例交 Reviewer（advisory） */
   advisoryAbove: 1.15,
+  /**
+   * 超长天花板：高于此比例触发「定向压缩重写」（不是整章推倒）。
+   *
+   * P0-2 首版把超长也完全放行，实测 Writer 会写到目标的约 2 倍——
+   * "不为凑数注水"的软约束拦不住惯性膨胀。恢复硬上限，但走
+   * writer-rewrite-plan 的定向压缩策略（保留情节节点，删空转描写），
+   * 与旧的整章重写不同。
+   */
+  bloatCeilingRatio: 1.3,
 } as const
 
 export interface QualitySignal {
@@ -306,10 +332,22 @@ export const QUALITY_POLICY_INVARIANTS: Array<{ name: string; check: () => boole
       .every((gate) => gate.kind === 'deterministic'),
   },
   {
-    name: '字数的重写区间必须严格宽于 advisory 区间',
+    name: '截断兜底线必须严格低于 advisory 下线（兜底只拦残稿，不拦偏短章节）',
     check: () =>
-      WORD_COUNT_LIMITS.rewriteBelow < WORD_COUNT_LIMITS.advisoryBelow
-      && WORD_COUNT_LIMITS.rewriteAbove > WORD_COUNT_LIMITS.advisoryAbove,
+      WORD_COUNT_LIMITS.truncationFloorRatio < WORD_COUNT_LIMITS.advisoryBelow
+      && WORD_COUNT_LIMITS.minTruncationFloorWords > 0,
+  },
+  {
+    name: '超长天花板必须严格高于 advisory 上线（只拦惯性膨胀，不拦正常波动）',
+    check: () =>
+      WORD_COUNT_LIMITS.bloatCeilingRatio > WORD_COUNT_LIMITS.advisoryAbove,
+  },
+  {
+    name: 'contract-coverage 门不得触发重写（提及≠必须出场，语义兑现交 Reviewer）',
+    check: () => {
+      const gate = GATE_REGISTRY.find((g) => g.id === 'contract-coverage')
+      return !!gate && ACTION_RANK[gate.maxAction] <= ACTION_RANK.advisory
+    },
   },
   {
     name: '段落形态的错误线必须高于警告线',

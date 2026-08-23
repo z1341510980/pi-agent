@@ -1,4 +1,4 @@
-import type { DiscussionMember } from './../../../../core/agent/discussion-types.js'
+import type { DiscussionMember } from './engine/discussion-types.js'
 import type { NovelCharacter, ArrangedEntity } from '../types.js'
 import type { NovelStore } from '../novel-store.js'
 import type { NovelPromptBuilder, ChapterBoundaryContext } from '../prompting/prompt-builder.js'

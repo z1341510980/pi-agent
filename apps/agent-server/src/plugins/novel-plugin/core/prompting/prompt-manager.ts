@@ -207,6 +207,64 @@ export class PromptManager {
   }
 
   /**
+   * 模板来源诊断（提示词面板用）：当前生效内容来自哪一层、默认内容是什么。
+   */
+  getTemplateSource(
+    name: string,
+    projectId?: string,
+  ): {
+    exists: boolean
+    source: 'runtime' | 'project-file' | 'default'
+    hasRuntimeOverride: boolean
+    /** 生效内容；不存在时为 null */
+    effectiveContent: string | null
+    /** 内置默认内容；纯自定义模板（无默认文件）为 null */
+    defaultContent: string | null
+  } {
+    const runtimeRow = this.stmtGetTemplate.get(name, projectId ?? null) as { content: string } | undefined
+    const projectFile = join(this.projectPromptsDir, `${name}.md`)
+    const hasProjectFile = existsSync(projectFile)
+    const defaultContent = this.cache.get(`default:${name}`) ?? null
+
+    if (runtimeRow) {
+      return { exists: true, source: 'runtime', hasRuntimeOverride: true, effectiveContent: runtimeRow.content, defaultContent }
+    }
+    if (hasProjectFile) {
+      const content = stripPromptFrontmatter(readFileSync(projectFile, 'utf-8'))
+      return { exists: true, source: 'project-file', hasRuntimeOverride: false, effectiveContent: content, defaultContent }
+    }
+    if (defaultContent !== null) {
+      return { exists: true, source: 'default', hasRuntimeOverride: false, effectiveContent: defaultContent, defaultContent }
+    }
+    return { exists: false, source: 'default', hasRuntimeOverride: false, effectiveContent: null, defaultContent: null }
+  }
+
+  /**
+   * 列出模板及覆盖状态（提示词面板列表用）
+   */
+  listTemplateInfos(projectId?: string): Array<{ name: string; source: 'runtime' | 'project-file' | 'default' }> {
+    return this.listTemplateNames().map((name) => ({
+      name,
+      source: this.getTemplateSource(name, projectId).source,
+    }))
+  }
+
+  /**
+   * 恢复默认：删除该范围的运行时覆盖（project_id 精确匹配；global 传 null）。
+   * 返回是否删除了行。项目文件层的覆盖不受影响（那是磁盘上的手动文件）。
+   */
+  deleteTemplateOverride(name: string, projectId?: string): boolean {
+    const result = this.db
+      .prepare('DELETE FROM novel_prompt_templates WHERE name = ? AND project_id IS ?')
+      .run(name, projectId ?? null)
+    const prefix = `resolved:${name}:`
+    for (const key of this.cache.keys()) {
+      if (key.startsWith(prefix)) this.cache.delete(key)
+    }
+    return Number(result.changes) > 0
+  }
+
+  /**
    * 清除缓存（模板更新后调用）
    */
   clearCache(): void {

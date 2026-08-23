@@ -29,6 +29,7 @@ export const ALL_PLUGIN_CAPABILITIES: readonly PluginCapability[] = [
   'session.create',
   'agent.orchestrate',
   'confirmation.request'
+  , 'media.generate'
 ]
 
 /** 一条已校验的 catalog 条目 */

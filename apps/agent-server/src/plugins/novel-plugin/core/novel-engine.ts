@@ -33,6 +33,7 @@ import type {
   NovelChapterReview,
   ConflictTarget,
   RhythmConstraint,
+  BeatConstraint,
   SuspenseHook,
   RhythmSuggestion,
   NovelConflict,
@@ -193,6 +194,24 @@ export class NovelEngine {
       }
     }
 
+    // ── 卷级节拍约束（仅当该章有 Beat Planner 节拍时构建）──
+    // 节拍是消费卷纲与事件账本后的规划层事实；存在时优先于节奏标签，
+    // Director 的任务类型必须服从节拍的戏剧功能（见 role-director 决策顺序第 0 条）。
+    // 用可选调用兼容测试中的部分 mock store。
+    let beatConstraint: BeatConstraint | undefined
+    if (chapterNumber !== undefined) {
+      const beat = this.store.getBeatByChapter?.(projectId, chapterNumber)
+      if (beat && beat.status !== 'superseded') {
+        beatConstraint = {
+          dramaticFunction: beat.dramaticFunction,
+          emotionalDebt: beat.emotionalDebt,
+          payoff: beat.payoff,
+          arcPosition: beat.arcPosition,
+          summary: beat.summary
+        }
+      }
+    }
+
     // ── 悬念钩子 ──
     // 来源：待回收伏笔（planting/sustaining/releasing）+ 未揭示信息差（sustaining/releasing）
     const suspenseHooks: SuspenseHook[] = []
@@ -305,6 +324,7 @@ export class NovelEngine {
       })),
       conflictTargets,
       rhythmConstraint,
+      beatConstraint,
       suspenseHooks,
       wordBudget,
       positioning: positioning ?? null
@@ -570,6 +590,17 @@ export class NovelEngine {
     const unpublishedEarlier = this.store.listChapters(existing.projectId)
       .some(chapter => chapter.chapterNumber < existing.chapterNumber && chapter.status !== 'published')
     if (unpublishedEarlier) throw new Error('存在未发布的前序章节，不能跳章发布')
+
+    // ── P2-1：lengdu 读感门 ──
+    // 独立 Reader 冷读结论为 needs_attention 时阻止发布；
+    // passed / degraded（自审降级）不拦截——降级只是验证强度不足，不是负面证据。
+    // 可选调用兼容部分 mock store。
+    const lengduQuality = this.store.getChapterLengduQuality?.(chapterId)
+    if (lengduQuality?.status === 'needs_attention') {
+      throw new Error(
+        `lengdu 独立读感未通过（${lengduQuality.summary || '存在待处理读感问题'}），请先修订或复核后再发布`
+      )
+    }
 
     // 发布是受前置条件保护的专用命令，绕过普通编辑迁移表中的 published 禁入规则。
     const updated = this.store.publishReviewedChapter(chapterId)

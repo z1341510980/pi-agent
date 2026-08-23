@@ -39,7 +39,7 @@ describe('仲裁', () => {
   it('取最强动作', () => {
     const signals: QualitySignal[] = [
       { gateId: 'prose-shape', action: 'revise', reason: '碎片段落' },
-      { gateId: 'word-count', action: 'rewrite', reason: '字数严重不足' },
+      { gateId: 'word-count', action: 'rewrite', reason: '正文疑似截断' },
       { gateId: 'matrix-semantic-entities', action: 'advisory', reason: '势力全名缺失' },
     ]
     const decision = arbitrateQuality(signals)
@@ -126,10 +126,30 @@ describe('阈值单一来源', () => {
   })
 
 
-  it('role-writer.md 说明了字数硬下限与"出现不等于交差"', () => {
-    // 这两条是 S5 登记的冲突的 prompt 侧修复：
-    // 字数：prompt 原本只说"宁可更短"，与 <75% 整章重写矛盾
-    // 点名：prompt 原本只说"不能靠点名交差"，与姓名必须出现的确定性检查矛盾
-    expect(WORD_COUNT_LIMITS.rewriteBelow).toBe(0.75)
+  it('P0-2：偏短不罚，仅保留截断兜底与超长天花板两条硬线', () => {
+    // S5 登记冲突的 P0-2 修复：创作指令"宁可更短"与 <75% 整章重写矛盾，
+    // 偏短全部降为 advisory；保留截断兜底（防残稿）与 130% 天花板（定向压缩，非整章推倒）
+    expect(WORD_COUNT_LIMITS.truncationFloorRatio).toBe(0.5)
+    expect(WORD_COUNT_LIMITS.advisoryBelow).toBe(0.85)
+    expect(WORD_COUNT_LIMITS.advisoryAbove).toBe(1.15)
+    expect(WORD_COUNT_LIMITS.bloatCeilingRatio).toBe(1.3)
+    expect(WORD_COUNT_LIMITS).not.toHaveProperty('rewriteBelow')
+    expect(WORD_COUNT_LIMITS).not.toHaveProperty('rewriteAbove')
+    const wordCountGate = GATE_REGISTRY.find((gate) => gate.id === 'word-count')
+    expect(wordCountGate?.maxAction).toBe('rewrite')
+    // contract-coverage 门只到 advisory：提及≠必须出场
+    const coverageGate = GATE_REGISTRY.find((gate) => gate.id === 'contract-coverage')
+    expect(coverageGate?.maxAction).toBe('advisory')
+  })
+
+  it('chapter-instruction.md 不再用字数惩罚威胁 Writer', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { join } = await import('node:path')
+    const text = await readFile(
+      join(process.cwd(), 'src/plugins/novel-plugin/core/prompts/chapter-instruction.md'),
+      'utf8',
+    )
+    expect(text).not.toContain('会触发重写或修订')
+    expect(text).toContain('参考字数')
   })
 })

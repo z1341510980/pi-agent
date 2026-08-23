@@ -83,6 +83,31 @@ describe('卷与大纲 API', () => {
     expect(res.json().data.title).toBe('测试项目')
   })
 
+  it('PATCH 项目 novelModelId（创作主模型）：写入/非法拒绝/null 清除', async () => {
+    const res = await app.inject({
+      method: 'PATCH', url: `/projects/${projectId}`,
+      payload: { novelModelId: 'xkiro:google/gemini-3.7-flash' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().data.novelModelId).toBe('xkiro:google/gemini-3.7-flash')
+
+    // 非法格式（无冒号）→ 400，且原值不被破坏
+    const bad = await app.inject({
+      method: 'PATCH', url: `/projects/${projectId}`,
+      payload: { novelModelId: 'no-separator' },
+    })
+    expect(bad.statusCode).toBe(400)
+    expect(store.getProject(projectId)?.novelModelId).toBe('xkiro:google/gemini-3.7-flash')
+
+    // null 清除主模型，恢复各 Agent 各自配置
+    const cleared = await app.inject({
+      method: 'PATCH', url: `/projects/${projectId}`,
+      payload: { novelModelId: null },
+    })
+    expect(cleared.statusCode).toBe(200)
+    expect(cleared.json().data.novelModelId).toBeNull()
+  })
+
   it('PATCH 章节 outline + volumeId，未传字段不被覆盖', async () => {
     const chapterId = randomUUID()
     store.createChapter({

@@ -11,7 +11,7 @@ import {
 } from '../core/chapters/chapter-scene-plan-adapter.js'
 import { validateChapterScenePlan } from '../core/chapters/chapter-scene-plan.js'
 import type { NarrativeTask } from '../core/types.js'
-import type { SceneDefinition } from '../../../core/agent/discussion-types.js'
+import type { SceneDefinition } from '../core/discussion/engine/discussion-types.js'
 
 const BUDGET: PlanBudget = { baseTarget: 3000, adjustmentPct: 0, resolvedTarget: 3000, min: 2550, max: 3450 }
 

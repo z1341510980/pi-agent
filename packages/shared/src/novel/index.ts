@@ -466,6 +466,57 @@ export interface NovelStorylineProgress {
   createdAt: number
 }
 
+// ── 卷级节拍规划（Beat Planner）──
+
+/**
+ * 节拍戏剧功能：节拍在卷弧光中承担的叙事职责。
+ * Director 的任务类型必须由节拍的戏剧功能推导，而不是自由选择。
+ */
+export type BeatDramaticFunction =
+  | 'setup' // 铺垫：建立欲望、关系或威胁
+  | 'escalation' // 递进：压力升级，代价变大
+  | 'false_victory' // 假胜利：目标看似达成，埋下反转种子
+  | 'false_defeat' // 假失败：挫折压顶，逼出底牌
+  | 'midpoint_turn' // 中点反转：认知或局势发生不可逆改变
+  | 'low_point' // 低谷：最大代价，情绪最低点
+  | 'climax' // 爆发：蓄势释放，正面决战
+  | 'payoff' // 兑现：伏笔或承诺兑现，爽点释放
+  | 'aftermath' // 余波：处理后果，重整旗鼓
+  | 'breather' // 缓冲：降低强度但保留信息或关系增量
+
+/** 节拍状态：planned（规划待执行）/ confirmed（对应章节已发布）/ superseded（被重新规划取代） */
+export type BeatPlanStatus = 'planned' | 'confirmed' | 'superseded'
+
+/** 单章节拍：卷级节拍表中的一行，回答"这一章在卷弧光里负责什么" */
+export interface NovelBeatPlan {
+  id: string
+  projectId: string
+  volumeNumber: number
+  chapterNumber: number
+  /** 戏剧功能（十选一） */
+  dramaticFunction: BeatDramaticFunction
+  /** 情绪债务：进入本章时，前文欠读者的东西（必须在本章或明确延期） */
+  emotionalDebt: string
+  /** 爽点设计：本章给读者的回报类型与内容（可为空字符串表示蓄压章） */
+  payoff: string
+  /** 在卷弧光中的位置说明（如"第二幕中段""距爆发还有2章"） */
+  arcPosition: string
+  /** 本章核心走向摘要（1-2 句，不是正文） */
+  summary: string
+  status: BeatPlanStatus
+  createdAt: number
+  updatedAt: number
+}
+
+/** 注入章节约束的卷级节拍（来自 BeatPlanStore，只读投影） */
+export interface BeatConstraint {
+  dramaticFunction: BeatDramaticFunction
+  emotionalDebt: string
+  payoff: string
+  arcPosition: string
+  summary: string
+}
+
 // ── Memory 新实体候选与审核（V2 决策 3）──
 
 /** 候选状态：needs_review（待用户确认）→ confirmed / rejected；上游正文变化进 stale */
@@ -1604,6 +1655,8 @@ export interface ChapterConstraints {
   conflictTargets: ConflictTarget[]
   /** 本章节奏约束（含高潮强度和类型建议） */
   rhythmConstraint?: RhythmConstraint
+  /** 本章卷级节拍约束（来自 Beat Planner，存在时 Director 任务类型必须服从其戏剧功能） */
+  beatConstraint?: BeatConstraint
   /** 本章悬念钩子（需要维持或释放的悬念） */
   suspenseHooks: SuspenseHook[]
   /** 本章 POV（视点人物）角色 ID 列表，Writer 必须严格使用这些角色的视角 */

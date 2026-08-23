@@ -24,6 +24,7 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 import { evaluateProseQuality } from './core/quality/prose-quality-evaluator.js'
 import { createChapterRoutes } from './routes/chapter-routes.js'
 import { createChapterOutlineRoutes } from './routes/chapter-outline-routes.js'
+import { createBeatPlanRoutes } from './routes/beat-plan-routes.js'
 import { createCharacterRoutes } from './routes/character-routes.js'
 import { createEntityCandidateRoutes } from './routes/entity-candidate-routes.js'
 import { createCreationFlowRoutes } from './routes/creation-flow-routes.js'
@@ -169,6 +170,7 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
   // ═══════════════════════════════════════════════════════════════
   routes.push(...createChapterRoutes(services))
   routes.push(...createChapterOutlineRoutes(services))
+  routes.push(...createBeatPlanRoutes(services))
 
   // ═══════════════════════════════════════════════════════════════
   // 角色（CRUD + AI 生成 + 历史 + 弧光）

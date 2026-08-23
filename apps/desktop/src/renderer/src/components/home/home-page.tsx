@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { getApi } from '@/api/http-client'
 import logoImage from '@/assets/logo.png'
+import { useOptionalSlotRegistry } from '@/core/slot-context-value'
 
 // ── 类型 ──
 
@@ -49,6 +50,10 @@ export function HomePage({
   onOpenNovel,
   onOpenSettings,
 }: HomePageProps): ReactElement {
+  const slotRegistry = useOptionalSlotRegistry()
+  const novelAvailable = slotRegistry?.entriesOfSlot('sidebar.navigation').some(
+    (entry) => entry.pluginId === 'novel',
+  ) ?? false
   // 健康检查
   const healthQuery = useQuery<HealthData>({
     queryKey: ['health'],
@@ -120,14 +125,16 @@ export function HomePage({
               onClick={onOpenChat}
               data-tour="entry-chat"
             />
-            <EntryCard
-              icon={BookOpen}
-              title="小说创作"
-              description="多 Agent 协作的长篇小说创作工作台"
-              accent="text-amber-500"
-              onClick={onOpenNovel}
-              data-tour="entry-novel"
-            />
+            {novelAvailable && (
+              <EntryCard
+                icon={BookOpen}
+                title="小说创作"
+                description="多 Agent 协作的长篇小说创作工作台"
+                accent="text-amber-500"
+                onClick={onOpenNovel}
+                data-tour="entry-novel"
+              />
+            )}
             <EntryCard
               icon={Settings}
               title="设置"
@@ -142,7 +149,7 @@ export function HomePage({
         {/* ── 最近活动 ── */}
         <section className="grid gap-5 sm:grid-cols-2">
           {/* 最近会话 */}
-          <div>
+          {novelAvailable && <div>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-xs font-[760] text-subtle uppercase tracking-wider m-0">
                 最近会话
@@ -186,7 +193,7 @@ export function HomePage({
                 </ul>
               )}
             </div>
-          </div>
+          </div>}
 
           {/* 最近项目 */}
           <div>

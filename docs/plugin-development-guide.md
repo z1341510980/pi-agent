@@ -314,6 +314,31 @@ pnpm --filter agent-server exec tsx --tsconfig tsconfig.tsx.json scripts/seal-pl
 | `PI_PLUGINS_DIR`             | 启用本地目录扫描（plugins.yml 之外的旁路）                                           |
 | `PI_PLUGINS_ENABLE_NPM`      | `true`/`1` 启用 node\_modules 扫描，只认 `wenlang-agent-plugin-` 前缀          |
 | `PI_PLUGINS_ENABLE_EXAMPLES` | `false`/`0` 关闭示例插件（hello）。默认开启                                        |
+| `PI_PLUGINS_HOT_RELOAD`      | `true`/`1` 启用 local/npm 插件热更新：文件变更后自动重载。默认关闭                          |
+
+### 热更新（PI_PLUGINS_HOT_RELOAD）
+
+启用后，local/npm 插件包目录内的文件变更会自动触发重载，语义与
+`POST /api/plugins/:pluginId/reload` 一致，并遵循同一套安全契约：
+
+- **候选先行**：先把磁盘上的新模块完整导入并校验出 Plugin 实例，成功后才卸载旧实例。
+  编辑出语法错误、导出缺失或工厂抛错时只记录告警，旧插件继续运行 —— 热更新不会把
+  活着的插件打成不可用状态。
+- **setup 失败的边界**：候选先行只保护"导入/校验"阶段；新代码 setup 抛错时旧实例已
+  卸载，插件进入 error 态。修复文件后再次存盘会自动重试（期望状态为启用时，重载会
+  重新执行 setup）。
+- **完整性锁复验**：plugins.yml 里带 `resolvedVersion`/`integrity` 锁的插件在重载前
+  重新校验；磁盘代码一旦变更摘要必然不匹配，此时拒绝重载并提示重新 seal。热更新不能
+  绕过封存校验。
+- **生效范围**：工具 / Session 工具 / 事件监听即时生效；路由与 Fastify 服务装饰只在启动期
+  挂载，重载后的新路由要等重启（inspect 的 `effectiveAfterRestart` 如实上报）。
+- **去抖与串行**：编辑器一次保存的多次写入合并为一次重载（默认 500ms）；上一次重载未结束
+  时再次变更会顺延重试，不会并发进入。
+- **关闭排空**：进程 onClose 先关闭 watcher 并等待在途重载结算，再停止插件系统。
+
+注意：开发模式 `pnpm dev` 使用 tsx watch，src 下任何变更都会重启整个进程；
+热更新主要服务于生产运行时（`node dist/index.js`）和 PI_PLUGINS_DIR 外置插件的迭代。
+
 
 ***
 

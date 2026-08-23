@@ -13,9 +13,9 @@
 
 import type { PluginContext } from '../../../../core/plugin/plugin-types.js'
 import { AgentChannel } from '../../../../core/agent/agent-channel.js'
-import { Moderator } from '../../../../core/agent/moderator.js'
-import { TeamDiscussionEngine } from '../../../../core/agent/team-discussion-engine.js'
-import { ChapterFinalizer } from '../../../../core/agent/chapter-finalizer.js'
+import { Moderator } from './engine/moderator.js'
+import { TeamDiscussionEngine } from './engine/team-discussion-engine.js'
+import { ChapterFinalizer } from '../chapter-finalizer.js'
 import type {
   DiscussionFlowEvent,
   DiscussionGoal,
@@ -25,8 +25,8 @@ import type {
   DiscussionResult,
   DiscussionResumeState,
   SceneDefinition,
-} from '../../../../core/agent/discussion-types.js'
-import type { DiscussionSettingsStore } from '../../../../core/agent/discussion-settings-store.js'
+} from './engine/discussion-types.js'
+import type { DiscussionSettingsStore } from './engine/discussion-settings-store.js'
 import { NovelStore } from '../novel-store.js'
 import { NovelMemoryStore } from '../novel-memory-store.js'
 import { NovelPromptBuilder, type ChapterBoundaryContext } from '../prompting/prompt-builder.js'

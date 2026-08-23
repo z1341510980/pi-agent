@@ -229,3 +229,77 @@ export function formatStyleMetricsAsFingerprint(
   )
   return lines.join('\n')
 }
+
+// ═══════════════════════════════════════════════════════════════
+// P2-3：修订前后 L1 形态指标差异报告
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * 对比修订前后的关键 L1 形态指标，产出紧凑差异文本。
+ *
+ * 目的（风格系统 v2 收尾项）：让每次修订"改了什么"在形态层可验证——
+ * Reviser 声称修复碎段/声音趋同时，句长分布与对话占比的位移就是证据；
+ * 反过来，若修订把节奏修平（各分布向均值塌缩），差异表也会立刻暴露。
+ */
+export function buildStyleMetricsDiff(
+  before: StyleMetricsSnapshot,
+  after: StyleMetricsSnapshot,
+): { changed: boolean; text: string } {
+  const rows: Array<{ label: string; before: string; after: string }> = [
+    {
+      label: '平均句长（字）',
+      before: String(Math.round(before.sentenceLength.average)),
+      after: String(Math.round(after.sentenceLength.average)),
+    },
+    {
+      label: '短句占比（<15字）',
+      before: `${before.shortSentenceRatio}%`,
+      after: `${after.shortSentenceRatio}%`,
+    },
+    {
+      label: '长句占比（>40字）',
+      before: `${before.longSentenceRatio}%`,
+      after: `${after.longSentenceRatio}%`,
+    },
+    {
+      label: '对话占比',
+      before: `${Math.round(before.dialogue.charRatio * 100)}%`,
+      after: `${Math.round(after.dialogue.charRatio * 100)}%`,
+    },
+    {
+      label: '比喻密度（/千字）',
+      before: String(Math.round(before.metaphorDensity * 10) / 10),
+      after: String(Math.round(after.metaphorDensity * 10) / 10),
+    },
+    {
+      label: '段落中位长度（字）',
+      before: String(Math.round(before.paragraphLength.median)),
+      after: String(Math.round(after.paragraphLength.median)),
+    },
+    {
+      label: '情感温度',
+      before: String(Math.round(before.emotionalTemperature * 10) / 10),
+      after: String(Math.round(after.emotionalTemperature * 10) / 10),
+    },
+    {
+      label: '叙事人称',
+      before: before.narrativePerson,
+      after: after.narrativePerson,
+    },
+  ]
+
+  const changedRows = rows.filter((row) => row.before !== row.after)
+  const text = [
+    '## 修订前后形态指标对比（L1）',
+    '',
+    '| 指标 | 修订前 | 修订后 |',
+    '| --- | --- | --- |',
+    ...rows.map((row) => `| ${row.label} | ${row.before} | ${row.after} |`),
+    '',
+    changedRows.length === 0
+      ? '结论：各形态指标未发生显著变化（修订只动了措辞层）。'
+      : `结论：${changedRows.length} 项形态指标发生变化（${changedRows.map((row) => row.label).join('、')}）。`,
+  ].join('\n')
+
+  return { changed: changedRows.length > 0, text }
+}

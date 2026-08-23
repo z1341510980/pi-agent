@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'framer-motion'
-import { BookOpen, Home, MessageSquare, SettingsIcon, PlugIcon } from 'lucide-react'
+import { Home, MessageSquare, SettingsIcon, PlugIcon } from 'lucide-react'
 import { browserConfig, initEmbeddedServerPort } from '@repo/config/browser'
 import { I18nProvider } from './i18n'
 import { ThemeProvider } from './components/theme-provider'
@@ -11,7 +11,6 @@ import { Button } from '@/components/ui/button'
 import { ChatWorkspace } from './components/chat/chat-workspace'
 import { SettingsPage } from './components/settings/settings-page'
 import { PluginPage } from './components/settings/plugin-page'
-import { NovelWorkspace } from './components/novel/novel-workspace'
 import { HomePage } from './components/home/home-page'
 import { ErrorBoundary } from './components/overlays/error-boundary'
 import { UpdateDialog, useUpdateStatus } from './components/overlays/update-dialog'
@@ -37,11 +36,12 @@ const queryClient = new QueryClient({
  * slot 的插件贡献提供（研究文档 §10.13：导航与主工作区交给注册表投影，
  * home/chat/settings 仍是宿主固定页）。
  */
-type AppView = 'home' | 'chat' | 'settings' | 'novel' | 'plugins' | `plugin:${string}`
+type AppView = 'home' | 'chat' | 'settings' | 'plugins' | `plugin:${string}`
 
 /** 引导只认识四个宿主页面；插件页与插件管理页都归到 home。 */
 function onboardingView(view: AppView): 'home' | 'chat' | 'novel' | 'settings' {
-  if (view === 'chat' || view === 'novel' || view === 'settings') return view
+  if (view === 'chat' || view === 'settings') return view
+  if (view === 'plugin:novel') return 'novel'
   return 'home'
 }
 
@@ -50,7 +50,9 @@ export default function App(): ReactElement {
   const [autoUpdateDialogOpen, setAutoUpdateDialogOpen] = useState(false)
   const [ready, setReady] = useState(false)
   const { status, download, install } = useUpdateStatus()
-  const onboardingSetView = (next: 'home' | 'chat' | 'novel' | 'settings'): void => setView(next)
+  const onboardingSetView = (next: 'home' | 'chat' | 'novel' | 'settings'): void => {
+    setView(next === 'novel' ? 'plugin:novel' : next)
+  }
 
   useEffect(() => {
     initEmbeddedServerPort().finally(() => setReady(true))
@@ -99,12 +101,6 @@ export default function App(): ReactElement {
                           onClick={() => setView('chat')}
                         />
                         <RailButton
-                          icon={BookOpen}
-                          label="小说创作"
-                          active={view === 'novel'}
-                          onClick={() => setView('novel')}
-                        />
-                        <RailButton
                           icon={PlugIcon}
                           label="插件"
                           active={view === 'plugins'}
@@ -133,8 +129,6 @@ export default function App(): ReactElement {
                           <SettingsPage onClose={() => setView('home')} />
                         ) : view === 'plugins' ? (
                           <PluginPage />
-                        ) : view === 'novel' ? (
-                          <NovelWorkspace onClose={() => setView('home')} />
                         ) : view === 'chat' ? (
                           <ChatWorkspace
                             appName={browserConfig.appName}
@@ -144,10 +138,11 @@ export default function App(): ReactElement {
                         ) : view.startsWith('plugin:') ? (
                           // 插件贡献的工作区：workspace.main 是 keyed slot，
                           // entryKey 就是 view 里的贡献标识。宿主固定页（home/chat/
-                          // settings/novel/plugins）不走 registry，插件也无法顶替它们。
+                          // settings/plugins remain host pages; plugin workspaces use the registry.
                           <SlotRenderer
                             name="workspace.main"
                             entryKey={view.slice('plugin:'.length)}
+                            extraProps={{ onClose: () => setView('home') }}
                             fallback={
                               <div className="flex h-full items-center justify-center text-sm text-subtle">
                                 该插件页面已不可用（插件可能已被禁用）
@@ -157,7 +152,7 @@ export default function App(): ReactElement {
                         ) : (
                           <HomePage
                             onOpenChat={() => setView('chat')}
-                            onOpenNovel={() => setView('novel')}
+                            onOpenNovel={() => setView('plugin:novel')}
                             onOpenSettings={() => setView('settings')}
                           />
                         )}

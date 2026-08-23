@@ -9,6 +9,15 @@
 # 5. 可通过 isolate 记录隔离意图（当前未实现隔离，见文末说明）
 
 plugins:
+  # PI Agent 无限画布：组织 Prompt、文件引用、Agent 结果和工作流节点
+  - id: infinite-canvas-plugin
+    source: builtin
+    enabled: true
+    isolate: false
+    config:
+      maxProjects: 100
+      maxNodesPerProject: 500
+
   # 小说创作插件 - 核心业务插件
   - id: novel-plugin
     source: builtin

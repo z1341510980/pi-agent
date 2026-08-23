@@ -36,14 +36,15 @@ import { PiAgUiAgent } from './core/agent/pi-agui-agent.js'
 import { PiSessionStore } from './core/agent/session-store.js'
 import { SqliteSessionIdentityRegistry } from './core/agent/session-identity-registry.js'
 import { RuntimeRunRegistry } from './core/agent/runtime-run-registry.js'
+import { BackgroundWorkRegistry } from './core/agent/background-work-registry.js'
 import { PiActorsKernel } from './core/agent/pi-actors-kernel.js'
 import { PiSubagentsHost } from './core/agent/pi-subagents-host.js'
 import { createPiSubagentsBridge } from './core/agent/pi-subagents-bridge.js'
-import { activeNovelChapterTasks } from './plugins/novel-plugin/utils/chapter-task-registry.js'
 import { Gate } from './core/tool/gate.js'
 import { ConfirmationManager } from './core/tool/confirmation-manager.js'
 import { createPiSession } from './core/agent/pi-session.js'
 import { Tracer, SqliteTraceStore, createTraceTables } from './core/tracer/index.js'
+import { createMediaGenerator } from './core/config/media-generator.js'
 
 export async function createApp(): Promise<Fastify.FastifyInstance> {
   const app = Fastify({
@@ -66,6 +67,10 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // 在 subagentPlugin 之前 decorate，使 dispatch 路径能记录起止状态。
   const runtimeRuns = new RuntimeRunRegistry()
   app.decorate('runtimeRuns', runtimeRuns)
+  // Plugins register background-work observation providers during setup.
+  // The host owns the registry so app.ts never imports a plugin module.
+  const backgroundWorkRegistry = new BackgroundWorkRegistry()
+  app.decorate('backgroundWorkRegistry', backgroundWorkRegistry)
   // pi-actors 长任务 Run 内核（§9.3.4：能力级接入，非 CLI）：
   // 本地命令/Recipe 的 spawn → 状态/trace/输出 → cancel/kill，观测写入 runtimeRuns。
   const piActorsKernel = new PiActorsKernel({ runtimeRuns })
@@ -156,6 +161,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   app.pluginManager?.setModelRegistry(app.modelRegistry)
   // 注入 ProviderConfigStore（供 onPayload 读取 stream_options 屏蔽开关等应用级配置）
   app.pluginManager?.setProviderConfigStore(app.providerConfigStore)
+  app.pluginManager?.setMediaGenerator(createMediaGenerator(app.providerConfigStore))
 
   // ===== 初始化追踪系统（对标 DSH session-query） =====
   const tracerStore = new SqliteTraceStore(app.db)
@@ -180,12 +186,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   // pi-subagents 可观测桥（§9.3.3）：把章节任务与运行时运行注册为
   // pi-subagents 的 background-work / external-runs provider（供给侧，无调度语义）。
   const piSubagentsBridge = createPiSubagentsBridge({
-    chapterTasks: {
-      listActive: () => Array.from(activeNovelChapterTasks.entries()).map(([lockKey]) => ({
-        id: lockKey,
-        chapterKey: lockKey,
-      })),
-    },
+    backgroundWork: backgroundWorkRegistry,
     runtimeRuns,
   })
 

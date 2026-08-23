@@ -84,6 +84,8 @@ import {
   buildStyleDecisionPack,
   compileWritingStylePrompt,
   selectStyleExperts,
+  inferSceneType,
+  buildSceneSampleSection,
   type WritingStylePromptTarget
 } from './writing-style-prompt-factory.js'
 import { buildVoiceProfiles, formatVoiceContrastTable } from '../entities/character-voice.js'
@@ -275,7 +277,15 @@ const PROMPT_VALUE_LABELS: Record<string, string> = {
   owned: '持有中',
   lost: '遗失',
   sealed: '封印',
-  upgraded: '已升级'
+  upgraded: '已升级',
+  // ── 卷级节拍戏剧功能（Beat Planner）──
+  escalation: '递进加压',
+  false_victory: '假胜利',
+  false_defeat: '假失败',
+  midpoint_turn: '中点反转',
+  low_point: '低谷',
+  payoff: '兑现爽点',
+  aftermath: '余波'
 }
 
 function promptLabel(value: string): string {
@@ -404,6 +414,11 @@ export interface NovelPromptStores {
   getInformationLayer(infoLayerId: string): NovelInformationLayer | undefined
   listConstraints(projectId: string): NovelConstraint[]
   listRecentChapters(projectId: string, limit: number): NovelChapter[]
+  /**
+   * 章节验收（P1-2 自池用，可选）：返回最新一次审稿报告。
+   * 缺失时自池退化为"最近发布章节"，仍可用但不做分数排序。
+   */
+  getChapterReview?(chapterId: string): { overallScore?: number | null } | undefined
   /** 查询指定章节之前抛出且未兑现的钩子（v0.2：供 Writer 承接） */
   listUnfulfilledHooksBefore(projectId: string, beforeChapter: number): NovelHook[]
   getChapter(projectId: string, chapterNumber: number): NovelChapter | undefined
@@ -1867,6 +1882,12 @@ export class NovelPromptBuilder {
         narrativeTaskType: narrativeTask.type,
         profile: this.stores.getWritingStyleProfile?.(projectId),
       })
+      // ── P1-2：按本章主导场景类型分桶挑选文风样本 + 自池动态样本 ──
+      // 注入点在 per-chapter 指令层（SEMI），不进静态身份，保住跨章缓存。
+      const sceneSampleSection = this.buildWriterSceneSamples(projectId, chapterNumber, narrativeTask.description)
+      const positioningGuidance = sceneSampleSection
+        ? `${styleDecisionPack}\n\n${sceneSampleSection}`
+        : styleDecisionPack
       const instruction = this.promptManager.render(
         'chapter-instruction',
         {
@@ -1874,7 +1895,7 @@ export class NovelPromptBuilder {
           narrative_task: narrativeTask.description,
           task_type: promptLabel(narrativeTask.type),
           target_words: String(targetWords),
-          positioning_guidance: styleDecisionPack,
+          positioning_guidance: positioningGuidance,
         },
         projectId
       )
@@ -1882,6 +1903,84 @@ export class NovelPromptBuilder {
     }
 
     return chunks
+  }
+
+  /**
+   * P1-2：Writer 每章的场景文风样本分节。
+   *
+   * 样本来源 = 档案正向样本（跳过静态身份已用的第一条锚定样本）+ 自池摘段
+   * （本书已发布、审稿得分最高的章节结尾，"本书最好的三章"）。
+   * 按叙事任务推断的主导场景类型（对话场/动作场/静场）优先取同桶样本。
+   *
+   * 注入在 per-chapter 指令层而非静态身份：样本选择随章变化，
+   * 进身份会破坏 Writer 的跨章前缀缓存。
+   */
+  private buildWriterSceneSamples(
+    projectId: string,
+    chapterNumber: number,
+    narrativeTaskText: string,
+  ): string {
+    const profile = this.stores.getWritingStyleProfile?.(projectId)
+    // 静态身份保留第一条作锚定样本，分桶时跳过它避免重复注入
+    const remainingExamples = (profile?.positiveExamples ?? []).slice(1)
+
+    const selfPoolExcerpts = this.getSelfPoolExcerpts(projectId, chapterNumber)
+
+    return buildSceneSampleSection({
+      positiveExamples: remainingExamples.length > 0 ? remainingExamples : undefined,
+      selfPoolExcerpts: selfPoolExcerpts.length > 0 ? selfPoolExcerpts : undefined,
+      sceneType: inferSceneType(narrativeTaskText),
+      maxSamples: 2,
+      sampleMaxLength: 1600,
+    })
+  }
+
+  /**
+   * 自池：最近发布章节按最新审稿 overallScore 排序，取前三的结尾摘段。
+   * 审稿缺失（旧章节/未审）按 null 处理排在有分章节之后；
+   * 正文不足 1500 字的章节不参与（太短学不到场景起伏）。
+   * P1-2 反馈回路修正：**碎段/超短句风格的章节不得进入正向样本池**——
+   * 否则自池会把被质量门惩罚的节奏当作"本书声音"喂回给 Writer，形成恶性循环。
+   */
+  private getSelfPoolExcerpts(
+    projectId: string,
+    excludeChapterNumber: number,
+  ): Array<{ chapterNumber: number; score: number | null; excerpt: string }> {
+    try {
+      const candidates = this.stores
+        .listRecentChapters(projectId, 24)
+        .filter((chapter) => chapter.chapterNumber !== excludeChapterNumber)
+        .filter((chapter) => (chapter.content ?? '').length >= 1500)
+        .map((chapter) => {
+          const metrics = measureStyleMetrics(chapter.content ?? '')
+          return {
+            chapterNumber: chapter.chapterNumber,
+            score: this.stores.getChapterReview?.(chapter.id)?.overallScore ?? null,
+            content: chapter.content ?? '',
+            metrics,
+          }
+        })
+        .filter(({ metrics }) => (
+          // 形态过滤：超短句占主导或段落中位长度过小的，视为碎段风格，排除
+          metrics.trustworthy
+          && metrics.paragraphLength.median >= 60
+          && metrics.sentenceLength.buckets['1-10'] / Math.max(1, metrics.sentenceCount) <= 0.5
+        ))
+        .sort((a, b) => {
+          const scoreA = a.score ?? -1
+          const scoreB = b.score ?? -1
+          return scoreB - scoreA || b.chapterNumber - a.chapterNumber
+        })
+        .slice(0, 3)
+      return candidates.map((candidate) => ({
+        chapterNumber: candidate.chapterNumber,
+        score: candidate.score,
+        excerpt: candidate.content.slice(-1600),
+      }))
+    } catch {
+      // 自池是增益能力，任何存储异常都不能阻塞创作主链
+      return []
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -2131,6 +2230,18 @@ export class NovelPromptBuilder {
       parts.push(segs.join('；'))
     }
 
+    // 卷级节拍约束（Beat Planner）：存在时是本章任务类型与情绪曲线的最高规划依据
+    if (constraints.beatConstraint) {
+      const bc = constraints.beatConstraint
+      parts.push('\n### 卷级节拍约束（本章在整卷结构中的职责，最高优先规划依据）')
+      const segs = [`- 戏剧功能：${promptLabel(bc.dramaticFunction)}`]
+      if (bc.arcPosition) segs.push(`弧光位置：${bc.arcPosition}`)
+      if (bc.emotionalDebt) segs.push(`进入本章时的情绪债务：${bc.emotionalDebt}`)
+      if (bc.payoff) segs.push(`本章爽点/回报：${bc.payoff}`)
+      if (bc.summary) segs.push(`核心走向：${bc.summary}`)
+      parts.push(segs.join('；'))
+    }
+
     // 悬念钩子
     if (constraints.suspenseHooks.length > 0) {
       parts.push('\n### 悬念钩子（本章需维持或释放的悬念）')
@@ -2286,10 +2397,10 @@ export class NovelPromptBuilder {
       reverse: '反向',
       progressive: '递进'
     }
+    // 过滤占位角色：名字含"（待定）"/"待补充"等的是 AI 编排未命名的占位角色，
+    // 其字段全是"待补充（占位）"模板文本，对 Writer 无意义且浪费上下文
+    const isPlaceholderName = (name: string): boolean => /（待定）|待补充|待定$/.test(name)
     if (arranged.characterIds.length > 0) {
-      // 过滤占位角色：名字含"（待定）"/"待补充"等的是 AI 编排未命名的占位角色，
-      // 其字段全是"待补充（占位）"模板文本，对 Writer 无意义且浪费上下文
-      const isPlaceholderName = (name: string): boolean => /（待定）|待补充|待定$/.test(name)
       const chars = arranged.characterIds
         .map(resolveCharacter)
         .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
@@ -2414,6 +2525,30 @@ export class NovelPromptBuilder {
           if (r.chapterHint) parts.push(`⚡ 本章约束：${r.chapterHint}`)
           lines.push(parts.join('；'))
         }
+      }
+    }
+
+    // ── P1-1：对手戏欲望碰撞卡（对话的潜台词引擎）──
+    // 角色短卡是纵向档案，模型逐张读完不会自动比较两人的欲望是否互斥；
+    // 这张卡把同场角色的目标、压力与信息差横向摆进同一对视框，
+    // 让对话的张力来自"我想要你身上的什么"，而不是"提问→完整回答→下一个问题"。
+    if (arranged.characterIds.length > 1) {
+      const charIdSet = new Set(arranged.characterIds)
+      const pairRelations = boundary.entities.relationships.filter(
+        (r) => charIdSet.has(r.characterA) && charIdSet.has(r.characterB)
+      )
+      const resolvedChars = arranged.characterIds
+        .map(resolveCharacter)
+        .filter((resolved): resolved is NonNullable<typeof resolved> => resolved != null)
+        .filter(({ entity }) => !isPlaceholderName(entity.name))
+      const collision = this.formatDesireCollision(
+        resolvedChars,
+        pairRelations,
+        boundary.entities.informationLayers
+      )
+      if (collision) {
+        lines.push('')
+        lines.push(collision)
       }
     }
     if (arranged.conflictIds.length > 0) {
@@ -2635,6 +2770,115 @@ export class NovelPromptBuilder {
     }
     // 矩阵执行验收已移至 Reviewer 专属 suffix（2026-07-18），
     // 不再在共享层注入"Reviewer 必须逐项核对"以避免对 Director/Writer/Memory 的无效指令。
+    return lines.join('\n')
+  }
+
+  /**
+   * 对手戏欲望碰撞卡（P1-1）：把同场角色的目标、压力与信息差按"对"横向摆开。
+   *
+   * 数据全部来自既有实体（currentGoal/currentPressure + 关系 + 信息差表），
+   * 规则拼装，不需要额外 LLM 调用。无可用配对或双方均无欲望/压力/信息差时
+   * 返回空串——宁可不注入，不注入凑数段落。
+   */
+  private formatDesireCollision(
+    characters: Array<{ entity: NovelCharacter; hasBoundaryState: boolean }>,
+    relations: NovelRelationship[],
+    infoLayers: NovelInformationLayer[]
+  ): string {
+    if (characters.length < 2) return ''
+    const nameById = new Map(characters.map(({ entity }) => [entity.id, entity.name]))
+    const charById = new Map(characters.map(({ entity }) => [entity.id, entity]))
+
+    // 配对来源：优先用已登记关系；没有关系记录时，在非功能位角色间两两组合
+    type Pair = { aId: string; bId: string; relation?: NovelRelationship }
+    let pairs: Pair[] = relations.map((relation) => ({
+      aId: relation.characterA,
+      bId: relation.characterB,
+      relation,
+    }))
+    if (pairs.length === 0) {
+      const heavy = characters
+        .map(({ entity }) => entity)
+        .filter((c) => c.plotRole !== 'function' && c.plotRole !== 'background')
+      pairs = []
+      for (let i = 0; i < heavy.length && pairs.length < 4; i += 1) {
+        for (let j = i + 1; j < heavy.length && pairs.length < 4; j += 1) {
+          pairs.push({ aId: heavy[i].id, bId: heavy[j].id })
+        }
+      }
+    }
+    if (pairs.length === 0) return ''
+
+    const alignmentLabel: Record<string, string> = {
+      ally: '同一边',
+      temporary_ally: '暂时同路',
+      opponent: '对立',
+      temporary_opponent: '暂时对立',
+      neutral: '中立',
+      pending_shift: '待转变'
+    }
+    const trendLabel: Record<string, string> = {
+      stable: '稳定',
+      warming: '升温',
+      cooling: '降温',
+      breaking: '即将破裂',
+      reconciling: '和解中'
+    }
+
+    // 预解析信息差：characterKnowledge JSON 的键是"知道此事"的角色 id
+    const knowledgeByLayer = infoLayers
+      .filter((layer) => !layer.isRevealed)
+      .map((layer) => {
+        let knownBy = new Set<string>()
+        try {
+          const parsed = JSON.parse(layer.characterKnowledge ?? '{}') as Record<string, unknown>
+          knownBy = new Set(Object.keys(parsed))
+        } catch {
+          knownBy = new Set()
+        }
+        return { description: layer.infoDescription, knownBy }
+      })
+      .filter((layer) => layer.description.trim().length > 0)
+
+    const lines: string[] = ['### 对手戏欲望碰撞（同场角色对照，对话的潜台词引擎）']
+    let pairCount = 0
+    for (const pair of pairs.slice(0, 4)) {
+      const a = charById.get(pair.aId)
+      const b = charById.get(pair.bId)
+      if (!a || !b) continue
+      const headerParts: string[] = []
+      if (pair.relation) {
+        if (pair.relation.alignment) headerParts.push(alignmentLabel[pair.relation.alignment] ?? pair.relation.alignment)
+        if (pair.relation.trend) headerParts.push(`走向${trendLabel[pair.relation.trend] ?? pair.relation.trend}`)
+      }
+      lines.push(`- ${a.name} ↔ ${b.name}${headerParts.length > 0 ? `（${headerParts.join('；')}）` : ''}`)
+      let sideWritten = false
+      for (const side of [a, b]) {
+        const want = usableDetail(side.currentGoal) ? compactPromptText(side.currentGoal, CHARACTER_CARD_BUDGET.currentGoal) : ''
+        const pressure = usableDetail(side.currentPressure) ? compactPromptText(side.currentPressure, CHARACTER_CARD_BUDGET.currentPressure) : ''
+        if (!want && !pressure) continue
+        const segs = [`  - ${side.name}`]
+        if (want) segs.push(`想要：${want}`)
+        if (pressure) segs.push(`压力：${pressure}`)
+        lines.push(segs.join('；'))
+        sideWritten = true
+      }
+      // 信息差：一方知道而另一方不知道的未揭示信息（每对最多一条）
+      for (const layer of knowledgeByLayer) {
+        const aKnows = layer.knownBy.has(a.id)
+        const bKnows = layer.knownBy.has(b.id)
+        if (aKnows === bKnows) continue
+        const knower = aKnows ? a.name : b.name
+        const blind = aKnows ? b.name : a.name
+        lines.push(`  - 信息差：${knower} 知道而 ${blind} 不知道——${compactPromptText(layer.description, 120)}`)
+        break
+      }
+      if (sideWritten) pairCount += 1
+    }
+    if (pairCount === 0) return ''
+    lines.push(
+      '  碰撞写作要求：欲望冲突必须通过台词与行动发生，不得由旁白宣布共识；双方达成任何一致都要付出代价。'
+    )
     return lines.join('\n')
   }
 

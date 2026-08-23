@@ -38,9 +38,10 @@ import { NovelDiscussionRunner } from './core/discussion/novel-discussion-runner
 import { ChapterChatRunner } from './core/chapters/chapter-chat-runner.js'
 import { ChapterChatStore } from './core/chapters/chapter-chat-store.js'
 import { ChapterOutlineGenerator } from './core/chapters/chapter-outline-generator.js'
+import { VolumeBeatPlanner } from './core/chapters/beat-plan-generator.js'
 import { DiscussionRunStore } from './core/discussion/discussion-run-store.js'
 import { WorkflowRunStore } from './core/workflow-run-store.js'
-import { DiscussionSettingsStore } from '../../core/agent/discussion-settings-store.js'
+import { DiscussionSettingsStore } from './core/discussion/engine/discussion-settings-store.js'
 import { ConsistencyAuditor } from './core/analysis/consistency-auditor.js'
 import { RelationshipGraph } from './core/analysis/novel-relationship-graph.js'
 import { ReferenceAnalysisStore } from './core/analysis/reference-analysis-store.js'
@@ -120,6 +121,8 @@ export interface NovelServices {
   chapterChatRunner: ChapterChatRunner
   /** 无副作用的章节章纲草稿生成器 */
   outlineGenerator: ChapterOutlineGenerator
+  /** 卷级节拍表生成器（Beat Planner，含卷纲质量门） */
+  beatPlanner: VolumeBeatPlanner
   /** 参考小说阶段 1：与故事实体/Prompt 隔离的本地分析服务 */
   referenceAnalysis?: ReferenceAnalysisService
   /** P4：远端分析 run 持久化（novel_reference_analysis_runs） */
@@ -278,6 +281,9 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 7.8 章纲生成只读取领域上下文并返回草稿，不直接写章节或派生状态。
   const outlineGenerator = new ChapterOutlineGenerator(store, memoryStore, promptManager, context)
 
+  // 7.9 卷级节拍表生成（Beat Planner）：消费卷纲与故事状态，产出按卷替换的节拍行。
+  const beatPlanner = new VolumeBeatPlanner(store, promptManager, context)
+
   // 8. 创建 NovelCharacterGenerator（依赖 NovelPromptBuilder + PromptManager + PluginContext）
   //    PluginContext.createSession 用于 generate 调用 LLM
   const characterGenerator = new NovelCharacterGenerator(promptBuilder, promptManager, context)
@@ -313,5 +319,5 @@ export function createNovelServices(context: PluginContext): NovelServices {
     context, referenceValidationRuns, referenceTemplates, referenceProfiles, referenceAnalysis,
   )
 
-  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, referenceAnalysis, referenceAnalysisRuns, referenceAnalysisWorker, referenceProfiles, referenceTemplates, referenceValidationRuns, referenceValidationWorker, timelineRebuildRunner, costReportService, observabilityService, sharedOverlapAnalyzer }
+  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, beatPlanner, referenceAnalysis, referenceAnalysisRuns, referenceAnalysisWorker, referenceProfiles, referenceTemplates, referenceValidationRuns, referenceValidationWorker, timelineRebuildRunner, costReportService, observabilityService, sharedOverlapAnalyzer }
 }

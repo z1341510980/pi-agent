@@ -1,4 +1,4 @@
-import { Children, useCallback, type ReactElement } from 'react'
+import { Children, useCallback, type ReactElement, type ReactNode } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import {
@@ -56,6 +56,7 @@ import { OutlineTree } from '../outline-tree'
 import { GROUP_META, type MatrixEntityKind, type SidebarDragData } from '../matrix/matrix-logic'
 import { type DraggableEntityType } from './sidebar-constants'
 import { EmptyHint } from './empty-hint'
+import { BeatPlanGroup } from './beat-plan-group'
 
 // ── 项目分组树 ──
 
@@ -320,6 +321,9 @@ export function ProjectTree({
           onAiArrange={onAiArrange}
         />
       </CollapsibleGroup>
+
+      {/* 节拍表（卷级戏剧结构规划，P0-1）── 紧跟大纲树，同属结构层 */}
+      <BeatPlanGroup projectId={projectId} volumes={volumes} />
 
       {/* 角色集合 */}
       <CollapsibleGroup
@@ -609,7 +613,7 @@ interface CollapsibleGroupProps {
   addLabel: string
   /** 隐藏底部"新建"按钮（如大纲树无需手动添加） */
   hideAdd?: boolean
-  children: ReactElement | ReactElement[]
+  children: ReactNode
 }
 
 export function CollapsibleGroup({

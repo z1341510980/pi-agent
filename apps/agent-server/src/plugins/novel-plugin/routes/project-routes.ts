@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
+import { parseNovelModelRef } from '../core/domain/novel-model-ref.js'
 
 /** Project lifecycle routes: creation, editing and recycle-bin operations. */
 export function createProjectRoutes(services: NovelServices): RouteDefinition[] {
@@ -35,6 +36,16 @@ export function createProjectRoutes(services: NovelServices): RouteDefinition[] 
     status: z.enum(['active', 'paused', 'completed']).optional(), outline: z.string().max(20000).optional(),
     targetPlatform: z.enum(['fanqie', 'qidian', 'zhihu_yanyan', 'general']).nullable().optional(),
     novelAskStoryPolicy: z.enum(['legacy', 'directorReviewerOff', 'allOffWithReferences']).nullable().optional(),
+    // 项目级「创作主模型」："provider:modelId" 复合串；null 清除（恢复各 Agent 各自配置）。
+    // 校验规则与 parseNovelModelRef 一致：首个冒号分隔、两端不能为空。
+    novelModelId: z
+      .union([
+        z.null(),
+        z.string().refine((v) => parseNovelModelRef(v) !== undefined, {
+          message: '需为 "provider:modelId" 复合串',
+        }),
+      ])
+      .optional(),
   })
   routes.push({ method: 'PATCH', path: '/projects/:id', handler: async (request: any, reply: any) => {
     const input = validateBody(updateProjectSchema, request, reply); if (!input) return reply

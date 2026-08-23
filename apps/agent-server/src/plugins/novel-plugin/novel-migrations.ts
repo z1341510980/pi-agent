@@ -2542,5 +2542,39 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
     // 执行器会拿到空场景生成，破坏“regenerate 必须复用同一 facts hash”的不变量。
     id: '115_add_validation_scenario_facts',
     sql: `ALTER TABLE novel_reference_validation_runs ADD COLUMN scenario_facts TEXT NOT NULL DEFAULT '';`
+  },
+  {
+    // 116: 卷级节拍规划表（Beat Planner）。
+    // 一行 = 单章节拍，回答"这一章在卷弧光里负责什么"。
+    // (project_id, chapter_number) 唯一：一章只属于一个节拍；重新规划按卷替换
+    // planned/superseded 行，published 章的 confirmed 节拍保留（由 Store 层过滤）。
+    id: '116_create_novel_beat_plans',
+    sql: `CREATE TABLE IF NOT EXISTS novel_beat_plans (
+      id                TEXT PRIMARY KEY,
+      project_id        TEXT NOT NULL,
+      volume_number     INTEGER NOT NULL,
+      chapter_number    INTEGER NOT NULL,
+      dramatic_function TEXT NOT NULL,
+      emotional_debt    TEXT NOT NULL DEFAULT '',
+      payoff            TEXT NOT NULL DEFAULT '',
+      arc_position      TEXT NOT NULL DEFAULT '',
+      summary           TEXT NOT NULL DEFAULT '',
+      status            TEXT NOT NULL DEFAULT 'planned'
+                        CHECK (status IN ('planned', 'confirmed', 'superseded')),
+      created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+      FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_novel_beat_plans_project_volume
+      ON novel_beat_plans(project_id, volume_number, chapter_number);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_novel_beat_plans_project_chapter
+      ON novel_beat_plans(project_id, chapter_number);`
+  },
+  {
+    // 117: 章节级 lengdu 读感质量报告（P2-1 发布门）。
+    // JSON 列存最近一次 LengduQualityReport（status/comprehension/fluency/appeal 等），
+    // needs_attention 时阻止 publish；重写/修订后由编排器覆盖写入最新结果。
+    id: '117_add_chapter_lengdu_quality',
+    sql: `ALTER TABLE novel_chapters ADD COLUMN lengdu_quality TEXT;`
   }
 ]

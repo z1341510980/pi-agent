@@ -141,7 +141,7 @@ describe('GET /api/plugins/:id 详情契约', () => {
       'uiContributions',
       'dependencies',
       'reloadable',
-    ], ['description', 'author', 'error', 'lifecycle', 'activationGeneration', 'runId', 'effectCount', 'activeEffectCount', 'hostAttached', 'lastStop', 'restartRequired', 'unloadScope', 'toolCount', 'routeCount', 'panelCount', 'eventHandlerCount', 'migrationCount', 'sessionToolCount', 'serviceCount', 'toolNames', 'routePaths', 'panelIds', 'filePath', 'builtin', 'main'])
+    ], ['description', 'author', 'error', 'lifecycle', 'activationGeneration', 'runId', 'effectCount', 'activeEffectCount', 'hostAttached', 'lastStop', 'restartRequired', 'unloadScope', 'toolCount', 'routeCount', 'panelCount', 'eventHandlerCount', 'migrationCount', 'sessionToolCount', 'sessionToolNames', 'serviceCount', 'toolNames', 'routePaths', 'panelIds', 'filePath', 'builtin', 'main'])
     expect(Array.isArray(detail.grants)).toBe(true)
     // builtin 默认持有全部 capability
     expect(detail.grants.length).toBeGreaterThan(0)
@@ -154,6 +154,49 @@ describe('GET /api/plugins/:id 详情契约', () => {
     const body = response.json()
     expect(body.ok).toBe(false)
     expect(body.error.code).toBe('PLUGIN_NOT_FOUND')
+  })
+
+  it('novel 插件契约包含 capability 请求和 Slot contributions', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/plugins/novel' })
+    expect(response.statusCode).toBe(200)
+    const detail = response.json().data
+    expect(detail.permissions).toEqual(expect.arrayContaining([
+      'tools.register',
+      'routes.register',
+      'storage.plugin',
+      'ui.contribute',
+      'session.create',
+      'agent.orchestrate',
+      'confirmation.request',
+    ]))
+    expect(detail.uiContributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        contributionId: 'novel-workspace',
+        slot: 'workspace.main',
+        rendererKey: 'novel.workspace',
+        entryKey: 'novel',
+        state: 'active',
+      }),
+      expect.objectContaining({
+        contributionId: 'novel-navigation',
+        slot: 'app.navigation',
+        rendererKey: 'novel.navigation',
+        state: 'active',
+      }),
+    ]))
+  })
+
+  it('infinite-canvas 插件注册独立工作区、路由和 Agent 工具', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/plugins/infinite-canvas' })
+    expect(response.statusCode).toBe(200)
+    const detail = response.json().data
+    expect(detail.name).toBe('infinite-canvas')
+    expect(detail.routePaths).toContain('/projects')
+    expect(detail.sessionToolCount).toBeGreaterThanOrEqual(3)
+    expect(detail.uiContributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ contributionId: 'infinite-canvas-workspace', rendererKey: 'infinite-canvas.workspace', entryKey: 'infinite-canvas', state: 'active' }),
+      expect.objectContaining({ contributionId: 'infinite-canvas-navigation', rendererKey: 'infinite-canvas.navigation', slot: 'app.navigation', state: 'active' }),
+    ]))
   })
 })
 

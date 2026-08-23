@@ -23,6 +23,8 @@ import { novelMigrations } from './novel-migrations.js'
 import { createNovelServices } from './novel-services.js'
 import { createNovelRoutes } from './novel-routes.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType, getNovelAgentTemperature } from './core/domain/novel-agents.js'
+import { activeNovelChapterTasks } from './utils/chapter-task-registry.js'
+import type { TeamConfig } from '@repo/shared/agent'
 
 /** Novel Team ID（全局唯一，避免重复创建） */
 const NOVEL_TEAM_ID = 'novel-team'
@@ -40,11 +42,23 @@ function extractProjectId(task: string): string | undefined {
 }
 
 export function createNovelPlugin(): Plugin {
+  let ownedAgentIds: string[] = []
+  let ownedTeam: TeamConfig | undefined
+  let pluginLogger: PluginContext['logger'] | undefined
   return {
     manifest: {
       name: 'novel',
       version: '1.0.0',
       description: 'AI 小说创作工作台',
+      permissions: [
+        'tools.register',
+        'routes.register',
+        'storage.plugin',
+        'ui.contribute',
+        'session.create',
+        'agent.orchestrate',
+        'confirmation.request',
+      ],
       builtin: true,
     },
 
@@ -52,6 +66,9 @@ export function createNovelPlugin(): Plugin {
     migrations: novelMigrations,
 
     async setup(context: PluginContext) {
+      pluginLogger = context.logger
+      ownedAgentIds = []
+      ownedTeam = undefined
       // 1. 初始化服务（迁移已执行，表已存在）
       //    传入 context 供 NovelOrchestrator/NovelCharacterGenerator 调用 createSession API
       //    context.teamManager 由 plugin-loader 注入（teamPlugin 已在 pluginLoaderPlugin 之前注册）
@@ -141,6 +158,12 @@ export function createNovelPlugin(): Plugin {
               systemPromptBuilder,
               toolFilter,
             })
+            ownedAgentIds.push(config.id)
+            context.effect(
+              'agent.registration',
+              { resourceId: config.id, unloadScope: 'immediate' },
+              () => () => agentManager.unregisterAgent(config.id),
+            )
             registeredCount++
           } catch (err) {
             context.logger.error({ agentId: config.id, err }, '注册 Novel Agent 失败')
@@ -163,7 +186,7 @@ export function createNovelPlugin(): Plugin {
           try {
             // 使用 registerTeam（仅内存注册）而非 createTeam（持久化）
             // 因为 AgentManager.registerAgent 只注册到内存，createTeam 持久化时外键约束会失败
-            teamManager.registerTeam({
+            const team: TeamConfig = {
               id: NOVEL_TEAM_ID,
               name: '小说创作团队',
               description: '小说多 Agent 创作团队：导演→作家→审稿→(作家修订)→记忆',
@@ -176,7 +199,14 @@ export function createNovelPlugin(): Plugin {
               ],
               defaultStrategy: 'pipeline',
               maxParallel: 1,
-            })
+            }
+            teamManager.registerTeam(team)
+            ownedTeam = team
+            context.effect(
+              'team.registration',
+              { resourceId: NOVEL_TEAM_ID, unloadScope: 'immediate' },
+              () => () => { teamManager.unregisterEphemeralTeam(NOVEL_TEAM_ID, team) },
+            )
             context.logger.info({ teamId: NOVEL_TEAM_ID }, 'Novel Team 已注册到 TeamManager')
           } catch (err) {
             context.logger.error({ teamId: NOVEL_TEAM_ID, err }, '注册 Novel Team 失败')
@@ -185,6 +215,18 @@ export function createNovelPlugin(): Plugin {
       } else {
         context.logger.warn('teamManager 不可用，跳过 Novel Team 注册')
       }
+
+      // The host consumes this provider for observation only. The disposer is
+      // tracked by PluginManager and removes it before the next activation.
+      context.registerBackgroundWork('novel-chapter-tasks', {
+        listActive: () => Array.from(activeNovelChapterTasks.entries()).map(([lockKey, task]) => ({
+          id: lockKey,
+          chapterKey: lockKey,
+          kind: task.kind,
+          flowId: task.flowId,
+          startedAt: task.startedAt,
+        })),
+      })
 
       // 5. 注册 Pi Session 工具（注入到 customTools）
       // services.tools 为 pi-coding-agent 的 ToolDefinition（由 defineTool 创建），
@@ -200,13 +242,42 @@ export function createNovelPlugin(): Plugin {
 
       // 7. 注册前端面板
       context.registerPanel({
-        id: 'novel-canvas',
+        id: 'novel-workspace',
         title: '小说工作台',
-        component: 'NovelCanvas',
-        position: 'main',
+        component: 'NovelWorkspace',
+        slot: 'workspace.main',
+        scope: 'page',
+        priority: 10,
+        rendererKey: 'novel.workspace',
+        entryKey: 'novel',
+      })
+      context.registerPanel({
+        id: 'novel-navigation',
+        title: '小说工作台',
+        component: 'NovelNavigation',
+        slot: 'app.navigation',
+        scope: 'app',
+        priority: 20,
+        rendererKey: 'novel.navigation',
       })
 
       context.logger.info('小说创作系统插件已初始化')
+    },
+    async teardown() {
+      const active = Array.from(activeNovelChapterTasks.values())
+      for (const task of active) task.controller.abort()
+      if (active.length > 0) {
+        const drain = Promise.allSettled(active.map((task) => task.donePromise))
+        const drained = await Promise.race([
+          drain,
+          new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 10_000)),
+        ])
+        if (drained === 'timeout') {
+          pluginLogger?.warn({ count: active.length }, 'Novel 插件停止时仍有任务未完成 drain')
+        }
+      }
+      ownedAgentIds = []
+      ownedTeam = undefined
     },
   }
 }
