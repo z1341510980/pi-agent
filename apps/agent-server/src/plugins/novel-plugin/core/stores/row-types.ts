@@ -294,6 +294,14 @@ export interface StyleExpertRow {
   techniques_json: string | null
   exclusions_json: string | null
   exemplars_json: string | null
+  /** 迁移 118：语言指纹（六项） */
+  expression_dna_json: string | null
+  /** 迁移 118：内在张力（含取舍原则） */
+  tensions_json: string | null
+  /** 迁移 118：该文风明确避免的写法 */
+  anti_patterns_json: string | null
+  /** 迁移 118：这套能力覆盖不到的场景 */
+  boundaries_json: string | null
   custom_prompt: string | null
   enabled: number
   sort_order: number

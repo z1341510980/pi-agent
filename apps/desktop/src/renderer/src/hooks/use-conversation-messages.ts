@@ -208,12 +208,34 @@ const CHAPTER_BUDGET_OPTIONS = [
   }
 ]
 
+// 群聊 Moderator 暂停：LLM 的候选项文本只作内容展示，可执行按钮固定两值
+const DISCUSSION_PAUSE_OPTIONS = [
+  {
+    label: '继续',
+    action: 'approve',
+    variant: 'default' as const,
+    description: '按你的意见继续推演/编织'
+  },
+  {
+    label: '终止',
+    action: 'reject',
+    variant: 'destructive' as const,
+    description: '中止本次群聊创作'
+  }
+]
+
 export function getCheckpointPresentation(checkpoint: Pick<CheckpointData, 'type' | 'options'>): {
   checkpointType: NonNullable<ConversationMessage['checkpointType']>
   checkpointOptions: NonNullable<ConversationMessage['checkpointOptions']>
 } {
   let presentation
   switch (checkpoint.type) {
+    case 'discussion_pause':
+      presentation = {
+        checkpointType: 'discussion_pause' as const,
+        checkpointOptions: DISCUSSION_PAUSE_OPTIONS
+      }
+      break
     case 'arrange_review':
       presentation = {
         checkpointType: 'arrange_review' as const,
@@ -258,9 +280,14 @@ export function getCheckpointPresentation(checkpoint: Pick<CheckpointData, 'type
   return checkpoint.options
     ? {
         ...presentation,
-        checkpointOptions: presentation.checkpointOptions.filter((option) =>
-          checkpoint.options!.includes(option.action as CheckpointDecision)
-        )
+        checkpointOptions: (() => {
+          const filtered = presentation.checkpointOptions.filter((option) =>
+            checkpoint.options!.includes(option.action as CheckpointDecision)
+          )
+          // 服务端下发的 options 若全部匹配不上固定动作（如 LLM 自由文本），
+          // 保留默认按钮组，绝不渲染空按钮区（2026-08-24 空检查点修复）
+          return filtered.length > 0 ? filtered : presentation.checkpointOptions
+        })()
       }
     : presentation
 }
@@ -280,6 +307,24 @@ function formatMinutes(value: unknown): string {
 /** 渲染 checkpoint.data 的实际内容 */
 export function renderCheckpointContent(checkpoint: CheckpointData): string {
   const data = checkpoint.data
+
+  // 群聊 Moderator 暂停（2026-08-24 空检查点修复）：展示提问与 LLM 候选项。
+  // 旧载荷没有 data 字段（只有 question），必须先于 data 空值检查处理。
+  if (checkpoint.type === 'discussion_pause') {
+    const record = (typeof data === 'object' && data !== null ? data : {}) as Record<string, unknown>
+    const lines: string[] = []
+    if (typeof record.message === 'string' && record.message.trim()) {
+      lines.push(record.message)
+    } else if (typeof checkpoint.question === 'string' && checkpoint.question.trim()) {
+      lines.push(checkpoint.question)
+    }
+    if (Array.isArray(record.choices) && record.choices.length > 0) {
+      lines.push('', '**主持人给出的候选项：**')
+      for (const choice of record.choices) lines.push(`- ${String(choice)}`)
+    }
+    return lines.join('\n')
+  }
+
   if (data == null) return ''
 
   if (typeof data === 'string') {
@@ -288,6 +333,7 @@ export function renderCheckpointContent(checkpoint: CheckpointData): string {
 
   if (typeof data === 'object') {
     const record = data as Record<string, unknown>
+
     if (checkpoint.type === 'post_write_guard' || checkpoint.type === 'guard_degraded') {
       const lines = [
         checkpoint.type === 'post_write_guard' ? '## 写作守护触发原因' : '## 写作守护降级原因',
@@ -434,7 +480,8 @@ export function mapAgentType(agentType: string): ConversationAgentType {
     'context',
     'extractor',
     'moderator',
-    'character'
+    'character',
+    'lengdu'
   ]
   return knownTypes.includes(agentType as ConversationAgentType)
     ? (agentType as ConversationAgentType)
@@ -704,6 +751,8 @@ export function buildConversationMessages(input: ConversationMessagesInput): Con
           : (thinkingText ?? output.content)
         : undefined,
       status: output.streaming ? 'streaming' : 'complete',
+      // 2026-08-24：思考过程随气泡保留，正文区上方渲染可展开区块
+      thinking: output.thinking || undefined,
       timestamp: output.timestamp
     })
   })

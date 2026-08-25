@@ -216,7 +216,18 @@ function readMediaSize(
   })
 }
 
-export function InfiniteCanvasWorkspace({ onClose }: { onClose?: () => void }): ReactElement {
+export function InfiniteCanvasWorkspace({
+  onClose,
+  active = true,
+}: {
+  onClose?: () => void
+  /**
+   * 当前视图是否可见。keep-alive 下隐藏挂载时必须关闭全局按键监听：
+   * 这里的 Delete/Backspace/Ctrl+Z/Ctrl+A 都带 preventDefault，会在
+   * 其他页面上吞键并操作不可见画布的选区。
+   */
+  active?: boolean
+}): ReactElement {
   const theme = useCanvasTheme()
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [project, setProject] = useState<CanvasProject | null>(null)
@@ -1315,6 +1326,7 @@ export function InfiniteCanvasWorkspace({ onClose }: { onClose?: () => void }): 
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent): void => {
+      if (!active) return
       const target = event.target
       if (
         target instanceof HTMLInputElement ||
@@ -1372,7 +1384,7 @@ export function InfiniteCanvasWorkspace({ onClose }: { onClose?: () => void }): 
         setSelectionBox(null)
       }
     },
-    [copySelected, deleteSelected, pasteCopied, pasteFromSystemClipboard, redo, undo]
+    [active, copySelected, deleteSelected, pasteCopied, pasteFromSystemClipboard, redo, undo]
   )
 
   useEffect(() => {
@@ -2169,6 +2181,7 @@ export function InfiniteCanvasWorkspace({ onClose }: { onClose?: () => void }): 
           theme={theme}
           backgroundMode={settings.backgroundMode}
           onViewportChange={setViewport}
+          hotkeysEnabled={active}
           onCanvasMouseDown={handleCanvasMouseDown}
           onCanvasDeselect={() => {
             setSelectedNodeIds(new Set())

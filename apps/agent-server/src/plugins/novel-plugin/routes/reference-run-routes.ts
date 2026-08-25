@@ -88,6 +88,15 @@ export function createReferenceRunRoutes(services: NovelServices): RouteDefiniti
   return [
     // ── P4 ──
     {
+      method: 'GET',
+      path: '/reference-sources/:sourceId/analysis-runs',
+      handler: async (request: any) => {
+        // 列出该参考源的全部分析任务（新→旧）；重启后前端据此恢复待审核档案入口
+        const runs = runStore.listRuns(request.params.sourceId)
+        return success({ runs }, request.traceId)
+      },
+    },
+    {
       method: 'POST',
       path: '/reference-sources/:sourceId/analysis-runs',
       handler: async (request: any, reply: any) => {

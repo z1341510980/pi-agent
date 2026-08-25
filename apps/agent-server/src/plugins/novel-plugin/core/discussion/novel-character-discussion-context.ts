@@ -165,6 +165,11 @@ export function buildCharacterVisibleContext(input: {
 
   const conflicts = new Map((boundary?.entities.conflicts ?? []).map(conflict => [conflict.id, conflict]))
   const locations = new Map((boundary?.entities.locations ?? []).map(location => [location.id, location]))
+  // P1-4b（2026-08-24）：矩阵为本章明确编排的冲突无条件对出场角色可见。
+  // 此前一律按 participants 过滤，登记不全时角色可见背景近乎为空——
+  // 角色看不到自己正身处的冲突，只能靠 Moderator prompt 里那一句刺激演戏。
+  // 未编排路径（includeCharacterConflictsWhenUnarranged）仍按 participants 过滤。
+  const arrangedConflictIds = new Set(arrangedEntities?.conflictIds ?? [])
   const conflictIds = arrangedEntities?.conflictIds
     ?? (includeCharacterConflictsWhenUnarranged ? [...conflicts.keys()] : [])
   const conflictLines = conflictIds
@@ -177,6 +182,7 @@ export function buildCharacterVisibleContext(input: {
     .filter(resolved => resolved && (
       !character
       || !resolved.hasBoundaryState
+      || arrangedConflictIds.has(resolved.entity.id)
       || parseIdList(resolved.entity.participants).includes(character.id)
     ))
     .slice(0, 3)

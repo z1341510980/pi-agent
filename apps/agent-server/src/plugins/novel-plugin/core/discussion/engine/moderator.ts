@@ -29,11 +29,33 @@ export interface ModeratorContext {
   logger: FastifyBaseLogger
 }
 
+/**
+ * Moderator 单次 LLM 调用超时（2026-08-24 二次调整：45s → 90s，可经设置覆盖）。
+ *
+ * 实测同 Provider 下 minimax-m2.7 的单次调用延迟普遍在 70–150s（含思考）：
+ * Director 一次规划 120s、Writer 一次成文 100s。45s×2 的预算对该模型必然
+ * 双次超时 → 每轮降级。默认提到 90s；可用讨论设置 moderatorTimeoutMs 覆盖。
+ * 注意重试仍是两次：对这类模型宁可慢，也不要整场退化为规则协调。
+ */
+const MODERATOR_TIMEOUT_MS = 90_000
+
 export class Moderator {
   constructor(
     private context: ModeratorContext,
     private model?: { provider: string; modelId: string },
+    /**
+     * 运行时限制（2026-08-24 演绎链路修复）：降级协调的强制收敛轮数此前硬编码为 3，
+     * 与引擎的 maxRoundsPerScene 完全脱钩——用户把单场景轮数调到 10，一旦降级仍每场
+     * 3 轮封顶。现在由调用方注入，缺省回落 DISCUSSION_LIMITS。
+     */
+    private limits?: { maxRoundsPerScene?: number; timeoutMs?: number },
   ) {}
+
+  /** 最近一次失败的原因摘要（超时/Provider 报错/解析失败），供 UI 警告透出 */
+  get lastErrorReason(): string {
+    return this.lastFailureReason
+  }
+  private lastFailureReason = ''
 
   async decide(
     goal: DiscussionGoal,
@@ -44,41 +66,77 @@ export class Moderator {
   ): Promise<ModeratorDecision> {
     const systemPrompt = this.buildSystemPrompt(members, state)
     const userMessage = this.buildUserPrompt(goal, history, state)
+    const spokenIds = this.collectSpokenMemberIds(history, state)
+    const lastSpeech = this.collectLastSpeech(history)
+
+    // 首次尝试：正常 prompt。
+    // 若失败原因是"输出无法解析"（思考型模型常见：整段散文没有 JSON），
+    // 第二次改用纠正性重试——明确告知上一次没有 JSON、第一个字符必须是 {，
+    // 比原样重发同一段 prompt 的成功率高一截。
+    let firstAttemptFailedWithParseError = false
 
     try {
       const result = await this.callLlm(systemPrompt, userMessage, signal)
-      return this.enforceDecision(this.parseDecision(result), members, state)
+      return this.enforceDecision(this.parseDecision(result), members, state, spokenIds)
     } catch (err) {
       if (signal?.aborted) throw err
+      this.lastFailureReason = err instanceof Error ? err.message : String(err)
+      firstAttemptFailedWithParseError = this.lastFailureReason.includes('JSON')
       this.context.logger.warn(
-        { err, phase: state.phase, round: state.round, reason: err instanceof Error ? err.message : String(err) },
+        { err, phase: state.phase, round: state.round, reason: this.lastFailureReason },
         'Moderator LLM 调用失败，尝试重试',
       )
       try {
-        const retryResult = await this.callLlm(systemPrompt, userMessage, signal)
-        return this.enforceDecision(this.parseDecision(retryResult), members, state)
+        const retryUserMessage = firstAttemptFailedWithParseError
+          ? `${userMessage}\n\n---\n\n## 重试要求（上一次的回复没有输出可解析的 JSON）\n\n现在只输出一个 JSON 对象：第一个字符必须是 {，最后一个字符必须是 }。不要输出任何解释、思考过程或 markdown 代码块。\n格式示例：\n{"type":"invite","agentId":"成员ID","prompt":"给该成员的任务","reason":"一句话理由"}`
+          : userMessage
+        const retryResult = await this.callLlm(systemPrompt, retryUserMessage, signal)
+        return this.enforceDecision(this.parseDecision(retryResult), members, state, spokenIds)
       } catch (retryErr) {
         if (signal?.aborted) throw retryErr
+        this.degradedCount++
+        this.lastFailureReason = retryErr instanceof Error ? retryErr.message : String(retryErr)
         this.context.logger.error(
           {
             err: retryErr,
             phase: state.phase,
             round: state.round,
-            reason: retryErr instanceof Error ? retryErr.message : String(retryErr),
+            reason: this.lastFailureReason,
             model: this.model,
           },
-          'Moderator LLM 重试仍失败，降级为规则协调（顺序点名）。请检查 moderatorModel 配置或默认模型是否可用。',
+          'Moderator LLM 重试仍失败，降级为规则协调（未发言者优先 + 场景契约点名）。请检查 moderatorModel 配置或默认模型是否可用。',
         )
-        return this.fallbackDecide(members, state)
+        return this.fallbackDecide(members, state, spokenIds, lastSpeech)
       }
     }
+  }
+
+  /**
+   * 本次运行中 Moderator 降级轮数（双次尝试均失败才计一次轮）。
+   * 引擎重置后读取，写入 diagnostics.moderatorDegradedRounds。
+   */
+  get degradedRounds(): number {
+    return this.degradedCount
+  }
+  private degradedCount = 0
+
+  /** 最近一条角色/成员发言（供降级点名构造具体刺激，避免裸模板导致刻板演出） */
+  private collectLastSpeech(history: DiscussionMessage[]): { name: string; excerpt: string } | undefined {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const message = history[i]
+      if (message.type !== 'member') continue
+      const excerpt = message.content.replace(/\s+/g, ' ').trim().slice(0, 60)
+      if (!excerpt) continue
+      return { name: message.fromName, excerpt }
+    }
+    return undefined
   }
 
   private async callLlm(systemPrompt: string, userMessage: string, signal?: AbortSignal): Promise<string> {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage,
-      timeoutMs: 15_000,
+      timeoutMs: this.limits?.timeoutMs ?? MODERATOR_TIMEOUT_MS,
       model: this.model,
       signal,
     })
@@ -210,14 +268,32 @@ ${memberList}
 \`\`\``
   }
 
-  private buildUserPrompt(goal: DiscussionGoal, history: DiscussionMessage[], state: ModeratorState): string {
+  private buildUserPrompt(goal: DiscussionGoal, history: DiscussionMessage[], _state: ModeratorState): string {
     const recentHistory = history.slice(-15)
     const transcript = recentHistory.map(m => `[${m.fromName}] ${m.content}`).join('\n\n')
     return `## 目标\n${goal.task}\n\n## 群聊记录（最近${recentHistory.length}条）\n${transcript}\n\n## 请决策下一步`
   }
 
+  /** 收集当前场景（或全局，规划阶段）已发言成员 ID，供降级轮转"未发言者优先" */
+  private collectSpokenMemberIds(history: DiscussionMessage[], state: ModeratorState): Set<string> {
+    const sceneId = state.currentScene?.sceneId
+    const spoken = new Set<string>()
+    for (const message of history) {
+      if (message.type !== 'member') continue
+      // 演出阶段只统计本场景的发言；规划阶段无 currentScene，统计全部
+      if (sceneId != null && message.sceneId != null && message.sceneId !== sceneId) continue
+      spoken.add(message.fromId)
+    }
+    return spoken
+  }
+
   /** 降级决策：Moderator LLM 不可用时按规则协调 */
-  private fallbackDecide(members: DiscussionMember[], state: ModeratorState): ModeratorDecision {
+  private fallbackDecide(
+    members: DiscussionMember[],
+    state: ModeratorState,
+    spokenIds: Set<string> = new Set(),
+    lastSpeech?: { name: string; excerpt: string },
+  ): ModeratorDecision {
     if (members.length === 0) {
       return { type: 'observe', reason: '降级模式：无可用成员' }
     }
@@ -227,16 +303,18 @@ ${memberList}
         ? members.filter(m => m.type === 'role' && (m.id === 'novel-director' || m.id.includes('director')))
         : members
     const converger = members.find(m => m.canConverge)
+    // 降级强制收敛轮数与引擎 maxRoundsPerScene 对齐（此前硬编码 3，导致降级时每场最多 3 轮）
+    const forceConvergeRound = this.limits?.maxRoundsPerScene ?? DISCUSSION_LIMITS.MAX_ROUNDS_PER_SCENE
 
-    // 规划阶段：第 0 轮优先点名 Director（让 Director 先拆场），后续轮让角色发言
-    // 演出阶段：按角色顺序发言
-    // 超过 3 轮强制收敛
-    if (state.phase !== 'free_chat' && state.round >= 3 && converger) {
+    // 规划阶段：优先点名 Director（让 Director 先拆场），超限强制收敛
+    // 演出阶段：未发言者优先轮流发言，全员发言过一轮后再按序轮转
+    // 超过 forceConvergeRound 强制收敛
+    if (state.phase !== 'free_chat' && state.round >= forceConvergeRound && converger) {
       return {
         type: 'converge',
         agentId: converger.id,
         scope: state.phase === 'planning' ? 'chapter' : 'scene',
-        reason: '降级模式：轮数达上限，强制收敛',
+        reason: `降级模式：轮数达上限（${forceConvergeRound}），强制收敛`,
       }
     }
 
@@ -266,16 +344,63 @@ ${memberList}
       }
     }
 
-    // 其余轮次：按 speakers 顺序轮流
-    const next = speakers[state.round % speakers.length]
+    // 未发言者优先：保证在场每个角色至少发言一次，避免顺序轮转漏人
+    // （旧逻辑 round % speakers.length 在 ≥4 人同场时必有人零发言）
+    const next = speakers.find(member => !spokenIds.has(member.id))
+      ?? speakers[state.round % speakers.length]
     return {
       type: 'invite',
       agentId: next.id,
       prompt: state.phase === 'planning'
         ? '请基于当前群聊记录继续推进规划任务。'
-        : `请基于当前群聊记录演出场景"${state.currentScene?.title ?? ''}"中你的部分。`,
-      reason: '降级模式：按顺序轮流发言',
+        : this.buildFallbackActingPrompt(next, state.currentScene, lastSpeech),
+      reason: '降级模式：未发言者优先轮流发言',
     }
+  }
+
+  /**
+   * 降级演出的点名 prompt（2026-08-24 刻板演出修复）。
+   *
+   * 旧模板只有"请基于当前群聊记录演出场景X中你的部分"，没有任何刺激、对手和
+   * 抉择——实测一次运行中 Moderator 全程降级，演员只能交差式挤出口号
+   * （29 字符的"三件事：止血，找据点，摸规则。"）。现在即使降级，也用场景契约
+   * + 最近对手台词构造具体刺激，与正常 Moderator 的点名质量对齐。
+   */
+  private buildFallbackActingPrompt(
+    member: DiscussionMember,
+    scene: ModeratorState['currentScene'],
+    lastSpeech?: { name: string; excerpt: string },
+  ): string {
+    if (!scene) {
+      return `请以 ${member.name} 的身份推进当前讨论。`
+    }
+    // 去掉字段尾部句号再拼接，避免"。。"；对手台词剥掉剧本标记后截断
+    const conflict = (scene.conflict ?? '无').replace(/[。.]+\s*$/, '')
+    const goal = (scene.goal || '').replace(/[。.]+\s*$/, '')
+    const parts = [
+      `${member.name}，现在轮到你。`,
+      `场景「${scene.title}」：${scene.location}，${scene.time}。冲突：${conflict}。本场要完成的推进：${goal}。`,
+    ]
+    if (lastSpeech && lastSpeech.name !== member.name) {
+      parts.push(`你刚听到 ${lastSpeech.name} 说："${this.sanitizeSpeechExcerpt(lastSpeech.excerpt)}"。按你的性格、目标和已知信息做出回应或行动。`)
+    } else if (lastSpeech) {
+      parts.push(`你刚说完："${this.sanitizeSpeechExcerpt(lastSpeech.excerpt)}"。场面在等你继续或收住这一拍。`)
+    }
+    parts.push('只演此刻一个动作单元（2-6 行剧本），给对手留下可接的话头；不要替其他角色发言，不要复述别人的话。')
+    return parts.join('\n')
+  }
+
+  /** 台词摘要清洗：剥离剧本动作标记与引号、压平空白、按完整语义截断到 ~48 字 */
+  private sanitizeSpeechExcerpt(raw: string): string {
+    const cleaned = raw
+      .replace(/\[[^\]]*\]/g, ' ')
+      .replace(/[“”「」『』"]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (cleaned.length <= 48) return cleaned
+    const cut = cleaned.slice(0, 48)
+    const lastStop = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('，'), cut.lastIndexOf('；'))
+    return (lastStop > 12 ? cut.slice(0, lastStop + 1) : cut) + '……'
   }
 
   /** 对 LLM 决策施加代码级阶段边界，避免仅依赖 prompt 约束。 */
@@ -283,7 +408,7 @@ ${memberList}
     decision: ModeratorDecision,
     members: DiscussionMember[],
     state: ModeratorState,
-    signal?: AbortSignal,
+    spokenIds: Set<string> = new Set(),
   ): ModeratorDecision {
     if (decision.type === 'invite') {
       // 用局部常量持有窄化后的 invite 决策：下方对 agentIds 的修正会产生新对象，
@@ -302,14 +427,14 @@ ${memberList}
                 prompt: '请完成本章场景拆分规划。',
                 reason: '规划阶段只允许 Director 发言',
               }
-            : this.fallbackDecide(members, state)
+            : this.fallbackDecide(members, state, spokenIds)
         }
       }
       if (state.phase === 'acting' && selected?.type !== 'character') {
-        return this.fallbackDecide(members, state)
+        return this.fallbackDecide(members, state, spokenIds)
       }
       if (state.phase === 'free_chat' && !selected) {
-        return this.fallbackDecide(members, state)
+        return this.fallbackDecide(members, state, spokenIds)
       }
       // 多角色点名：剔除不存在或非角色的 id。
       // 规划/自由聊天阶段不允许多角色（那两个阶段本就只该有一个成员发言）。
@@ -326,24 +451,54 @@ ${memberList}
     }
 
     if (decision.type === 'converge') {
+      // 规划阶段收敛必须是 chapter scope：引擎只在 scope==='chapter' 时退出 planning 循环。
+      // 若 Moderator 返回 scene scope，旧逻辑会跑满 maxRounds 后 scenes=[] 落入盲写降级
+      // （2026-08-24 演绎链路修复：代码级纠偏，不依赖 prompt）。
+      if (state.phase === 'planning' && decision.scope !== 'chapter') {
+        return { ...decision, scope: 'chapter', reason: `${decision.reason}（规划阶段收敛自动按 chapter 处理）` }
+      }
       const converger = members.find(member => member.id === decision.agentId && member.canConverge)
-      if (!converger) return this.fallbackDecide(members, state)
+      if (!converger) return this.fallbackDecide(members, state, spokenIds)
     }
 
     return decision
   }
 
-  /** 解析 Moderator 输出为决策（容错 markdown 包裹） */
+  /** 解析 Moderator 输出为决策（容错 markdown 包裹与思考块） */
   private parseDecision(raw: string): ModeratorDecision {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      throw new Error('Moderator 输出无法解析为 JSON')
+    // 思考型模型（minimax-m2 等）会先输出 <think>…</think> 再给答案；
+    // 思考里可能有大括号干扰提取，先剥掉。
+    const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, ' ')
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const parsed = this.tryParseDecision(jsonMatch[0])
+      if (parsed) return parsed
     }
-    const parsed = JSON.parse(jsonMatch[0])
-    if (!['invite', 'pause', 'converge', 'next_scene', 'observe'].includes(parsed.type)) {
-      throw new Error(`Moderator 输出 type 非法: ${parsed.type}`)
+    // 贪婪匹配失败（思考含大括号导致跨对象拼接 / 前后杂文本）时，
+    // 退化为平铺扫描：决策 JSON 是单层结构，逐个尝试 {...} 无嵌套片段
+    for (const flat of cleaned.matchAll(/\{[^{}]*\}/g)) {
+      const parsed = this.tryParseDecision(flat[0])
+      if (parsed) return parsed
     }
-    // 校验各类型必填字段，缺失时抛错触发重试/降级
+    throw new Error('Moderator 输出无法解析为 JSON')
+  }
+
+  /** 尝试解析并校验一段候选 JSON；非法返回 undefined，字段问题抛错进重试 */
+  private tryParseDecision(candidate: string): ModeratorDecision | undefined {
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(candidate)
+    } catch {
+      return undefined
+    }
+    if (!['invite', 'pause', 'converge', 'next_scene', 'observe'].includes(parsed.type as string)) {
+      return undefined
+    }
+    return this.validateDecisionFields(parsed as ModeratorDecision)
+  }
+
+  /** 校验各类型必填字段，缺失时抛错触发重试/降级（错误信息区分原因） */
+  private validateDecisionFields(parsed: ModeratorDecision): ModeratorDecision {
     switch (parsed.type) {
       case 'invite':
         if (typeof parsed.agentId !== 'string' || !parsed.agentId) {

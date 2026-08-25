@@ -46,3 +46,46 @@ describe('buildCharacterVisibleContext previous chapter visibility', () => {
     expect(context).not.toContain('只有凶手知道的名字')
   })
 })
+
+describe('buildCharacterVisibleContext conflict visibility（P1-4b）', () => {
+  const arrangedConflict = {
+    id: 'conflict-1',
+    description: '巡逻队正在追查幸存者下落',
+    participants: '["character-b"]',
+    stage: '升级',
+    stakes: '性命',
+  }
+
+  function makeConflictStore() {
+    return {
+      ...makeStore(null),
+      getChapter: (_projectId: string, chapterNumber: number) => ({ id: `chapter-${chapterNumber}`, outline: '任务' }),
+      getConflict: (id: string) => id === 'conflict-1' ? arrangedConflict : undefined,
+    } as any
+  }
+
+  it('矩阵编排的冲突无条件对出场角色可见，即使 participants 未登记该角色', () => {
+    const context = buildCharacterVisibleContext({
+      store: makeConflictStore(),
+      projectId: 'project-1',
+      chapterNumber: 2,
+      character,
+      arrangedEntities: { characterIds: ['character-a'], conflictIds: ['conflict-1'], foreshadowIds: [], clueIds: [], factionIds: [], locationIds: [], itemIds: [], characterFunctions: [] },
+    })
+
+    expect(context).toContain('你正身处的冲突')
+    expect(context).toContain('巡逻队正在追查幸存者下落')
+  })
+
+  it('未编排路径仍按 participants 过滤，不向无关角色泄露冲突动态状态', () => {
+    const context = buildCharacterVisibleContext({
+      store: makeConflictStore(),
+      projectId: 'project-1',
+      chapterNumber: 2,
+      character,
+      includeCharacterConflictsWhenUnarranged: true,
+    })
+
+    expect(context).not.toContain('当前阶段：升级')
+  })
+})

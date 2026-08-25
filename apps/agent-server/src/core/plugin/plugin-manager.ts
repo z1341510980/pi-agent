@@ -27,6 +27,7 @@ import { composeSkillBlocks, fingerprintSkillContent } from './skill-compose.js'
 import { createSkillReadTool } from './skill-read-tool.js'
 import { resolveDependencyOrder, type DependencyNode } from './plugin-catalog.js'
 import { verifyPackageIntegrity } from './plugin-integrity.js'
+import { bumpHotGeneration } from './hot-module-cache.js'
 import { resolveWithin } from './path-guard.js'
 import type { PluginCatalogItem } from './plugin-catalog.js'
 import { cancelDebug } from '../../lib/cancel-debug-log.js'
@@ -46,6 +47,10 @@ import {
   isFinalAssistantSuccess,
   waitForFinalAssistantOrPrompt
 } from './plugin-session-outcome.js'
+import {
+  buildResponseFormatInjection,
+  resolveJsonSchemaSupport
+} from './structured-outputs-support.js'
 import type { AgentCallLogger } from '../agent/agent-call-logger.js'
 import type { TeamManager } from '../agent/team-manager.js'
 import type { BackgroundWorkRegistry, BackgroundWorkProvider } from '../agent/background-work-registry.js'
@@ -422,13 +427,16 @@ export class PluginManager {
       for (const item of this.options.builtinPlugins) {
         // catalogId 必须透传：它是配置身份（plugins.yml 的 id），与 manifest.name
         // 不同。缺了它，catalog 回写会找不到条目，grants/enabled 变更无法持久化。
+        // filePath 是可选的源码入口：提供时 builtin 也参与热更新重载。
         await this.loadPluginEntry(
           item.plugin,
           'builtin',
-          undefined,
+          item.filePath,
           item.config,
           item.isolate,
-          item.catalogId
+          item.catalogId,
+          undefined,
+          item.filePath ? resolve(item.filePath, '..') : undefined
         )
       }
     }
@@ -599,11 +607,15 @@ export class PluginManager {
     }
 
     // ---- 预检：在任何破坏性操作之前 ----
-    if (entry.source === 'builtin') {
-      throw new Error(`内置插件 ${name} 不支持重载，请重启服务`)
-    }
+    // builtin 不再一刀切拒绝：dev 下 loader 会解析出源码入口（src/plugins/<dir>/index.ts），
+    // 带 filePath 的 builtin 走与 local/npm 完全相同的候选先行重载；
+    // 打包构建里解析不到源码目录时 filePath 为空，退化为"重载需重启"。
     if (!entry.filePath) {
-      throw new Error(`插件 ${name} 没有文件路径，不支持重载，请重启服务`)
+      throw new Error(
+        entry.source === 'builtin'
+          ? `内置插件 ${name} 没有可重载的源码入口，请重启服务`
+          : `插件 ${name} 没有文件路径，不支持重载，请重启服务`
+      )
     }
     // 重载前重新校验完整性锁：锁定插件的磁盘文件一旦变更，摘要必然不匹配，
     // 此时必须拒绝重载并提示重新封存，而不是把篡改后的代码换进运行时。
@@ -687,9 +699,10 @@ export class PluginManager {
   /**
    * 收集支持热更新的插件监视目标。
    *
-   * 只有 local/npm 且带确定入口文件的插件可被外部重载；builtin 插件随宿主编译，
-   * 重载需要重启进程，不参与热更新。期望状态为关闭的插件不监视 —— 禁用的
-   * 第三方代码不应因磁盘变更被重新 import（与启动期"禁用即不加载"一致）。
+   * 带确定入口文件且期望启用的插件都可被外部重载 —— 包括 dev 下解析出
+   * src 源码入口的 builtin 插件。打包构建里的 builtin（无源码目录）与
+   * 期望状态为关闭的插件不监视：禁用的第三方代码不应因磁盘变更被重新
+   * import（与启动期"禁用即不加载"一致）。
    *
    * watchDir 优先取包根目录：npm 的 main 可能指向 dist/index.js，
    * 按入口文件所在目录监听会漏掉包内其他目录的变更。
@@ -697,7 +710,6 @@ export class PluginManager {
   getHotReloadTargets(): Array<{ pluginId: string; filePath: string; watchDir: string }> {
     const targets: Array<{ pluginId: string; filePath: string; watchDir: string }> = []
     for (const entry of this.entries.values()) {
-      if (entry.source === 'builtin') continue
       if (!entry.filePath) continue
       if (!entry.desiredEnabled) continue
       targets.push({
@@ -1061,14 +1073,16 @@ export class PluginManager {
   /**
    * 导入插件模块并解析出 Plugin 实例（供加载与候选先行重载共用）。
    *
-   * @param bustCache true 时给 URL 追加时间戳 query，强制 ESM 重新执行模块
+   * @param bustCache true 时以 `?hot=<新代数>` 导入：配合 hot-module-cache
+   *        的 resolve 钩子把整棵依赖子树换成全新 URL，多文件插件的子模块
+   *        不再命中旧缓存
    * @throws 模块无法导入、未导出插件工厂、工厂执行失败或 manifest 非法时抛错；
    *         调用方决定错误是隔离吞掉（启动扫描）还是如实上抛（重载）
    */
   private async importPluginModule(filePath: string, bustCache = false): Promise<Plugin> {
-    // ESM 重载：添加 query 参数强制重新加载模块
+    // ESM 重载：代数戳 + 解析钩子让整棵子树重新加载
     const fileUrl = bustCache
-      ? `${pathToFileURL(filePath).href}?t=${Date.now()}`
+      ? `${pathToFileURL(filePath).href}?hot=${bumpHotGeneration()}`
       : pathToFileURL(filePath).href
     const mod = await import(fileUrl)
 
@@ -1653,7 +1667,8 @@ export class PluginManager {
           'right-panel.tab',
           'tool.detail',
           'trace.detail',
-          'plugin-page.top'
+          'plugin-page.top',
+          'home.showcase'
         ]
         const state: PluginUiContribution['state'] =
           panel.rendererKey && allowedSlots.includes(slot) ? 'active' : 'invalid'
@@ -1973,7 +1988,7 @@ export class PluginManager {
           completeText += delta
         })
 
-        const runPromptUntilFinalAssistant = async (nextUserMessage?: string): Promise<void> => {
+        const runSinglePromptTurn = async (nextUserMessage?: string): Promise<void> => {
           const visibleMessage =
             nextUserMessage === undefined ? options.userMessage : nextUserMessage
           const userSeq = recordTraceEvent('user_message', {
@@ -1991,6 +2006,23 @@ export class PluginManager {
             userSeq === undefined ? undefined : [userSeq]
           )
           const timeoutMs = options.timeoutMs ?? runtimePerformance.llm.timeoutMs
+          // ── 多轮 prompt 串行化（lengdu Reader 等分包会话的生命线）──
+          //
+          // waitForFinalAssistantOrPrompt 刻意只等最终 assistant 消息、不等 Pi 的完整
+          // prompt 生命周期（一次性 create-flow Agent 不该被自动压缩阻塞）。但 Pi 的
+          // AgentSession.prompt() 在上一轮未走完（isStreaming=true）时会抛
+          // "Agent is already processing"。两者组合下，同一 Session 的第二次
+          // prompt(message) 必然撞上未结束的上一轮 —— 这是 lengdu Reader 恒降级的根因。
+          //
+          // 处理：发起本轮之前，先等上一次 prompt 的**完整生命周期**落定。
+          // - 本轮自己的返回时机不变（终态消息即返回，仍不被压缩阻塞）；
+          // - 栅栏加上与本次调用相同的超时上限：provider 挂死时不会把队列永久卡住，
+          //   超限放行后下一轮会撞守卫并得到可观测的错误；
+          // - 从栅栏放行到登记新 promptPromise 之间全部同步，并发 prompt 也严格排队。
+          await Promise.race([
+            lastPluginPromptSettled,
+            new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+          ])
           let resolveCurrentFinalAssistant: (() => void) | undefined
           const finalAssistantPromise = new Promise<void>((resolve) => {
             resolveCurrentFinalAssistant = resolve
@@ -2003,6 +2035,10 @@ export class PluginManager {
                 : nextUserMessage
             )
           })
+          lastPluginPromptSettled = promptPromise.then(
+            () => undefined,
+            () => undefined
+          )
 
           try {
             await waitForFinalAssistantOrPrompt({
@@ -2045,6 +2081,13 @@ export class PluginManager {
               resolveFinalAssistant = undefined
             }
           }
+        }
+
+        /** 最近一次 prompt 的完整生命周期落定信号（成功/失败都算落定）；见上方串行化说明。 */
+        let lastPluginPromptSettled: Promise<void> = Promise.resolve()
+
+        const runPromptUntilFinalAssistant = async (nextUserMessage?: string): Promise<void> => {
+          await runSinglePromptTurn(nextUserMessage)
         }
 
         // 模型切换（如指定）+ 读取模型 maxTokens 配置
@@ -2137,20 +2180,25 @@ export class PluginManager {
           if (effectiveMaxTokens !== undefined) inject.max_tokens = effectiveMaxTokens
           // 稳定的缓存路由键：覆盖 pi-ai 按 sessionId 生成的随机值
           if (promptCacheKey !== undefined) inject.prompt_cache_key = promptCacheKey
-          if (options.responseFormat === 'json') {
-            inject.response_format = { type: 'json_object' }
-            // 实体规划/生成阶段只需纯 JSON 输出，不需要工具调用。
-            // 禁用工具可避免某些 OpenAI 兼容网关在 response_format=json 时
-            // 仍 emit tool_calls 导致 messages 历史不一致
-            // （LLM 网关报 400 "tool_calls must be followed by tool messages"）。
-            //
-            // ⚠️ 仅限 responseFormat='json' 场景：
-            //   - planEntitiesFromOutline（实体规划）
-            //   - generate()（5 类实体生成）
-            //   - character-generator / memory-generator 的纯 JSON 生成
-            // Writer/Reviewer/Memory 等 create-flow Agent 走 createAgUiSession，
-            // 不传 responseFormat，因此仍保留全部工具能力。
-            inject.tool_choice = 'none'
+          {
+            // 响应格式注入（方案 A2）：提供 responseJsonSchema 且探测为 strict 的
+            // provider 走 json_schema 严格结构化输出；否则维持 json_object 既有行为。
+            // 探测口径与降级策略见 structured-outputs-support.ts。
+            const schemaSupport = resolveJsonSchemaSupport(
+              {
+                provider: cacheControlTarget.provider,
+                baseUrl: cacheControlTarget.baseUrl
+              },
+              process.env
+            )
+            Object.assign(
+              inject,
+              buildResponseFormatInjection({
+                responseFormat: options.responseFormat,
+                responseJsonSchema: options.responseJsonSchema,
+                support: schemaSupport
+              })
+            )
           }
 
           const piSession = threadSession.session as {

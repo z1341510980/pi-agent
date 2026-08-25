@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   analyzeReferenceText,
+  buildReferenceLocalChunkPlan,
   buildReferenceQualityReport,
   detectAndDecodeReferenceText,
   detectReferenceSections,
   normalizeReferenceText,
+  sampleSectionIdsEvenly,
   sha256
 } from '../core/analysis/reference-analysis.js'
 
@@ -68,6 +70,65 @@ describe('参考文本编码与结构识别', () => {
   })
 })
 
+describe('参考文本本地章节分包', () => {
+  it('以章节为边界组合接近目标的本地分包', () => {
+    const sections = [180_000, 110_000, 40_000].map((estimatedTokens, index) => ({
+      id: `chapter-${index + 1}`,
+      sourceId: 'source-1',
+      type: 'chapter' as const,
+      order: index,
+      title: `第${index + 1}章`,
+      start: index * 100,
+      end: (index + 1) * 100,
+      characterCount: estimatedTokens,
+      estimatedTokens,
+      boundaryConfidence: 1,
+      contentHash: '',
+      included: true,
+      warnings: [],
+      version: 1
+    }))
+
+    const plan = buildReferenceLocalChunkPlan(sections, 300_000)
+
+    expect(plan).toMatchObject({ strategy: 'chapter_boundary', splitRequired: true })
+    expect(plan.chunks).toHaveLength(2)
+    expect(plan.chunks[0]).toMatchObject({
+      sectionIds: ['chapter-1', 'chapter-2'],
+      estimatedTokens: 290_000
+    })
+    expect(plan.chunks[1]).toMatchObject({ sectionIds: ['chapter-3'], estimatedTokens: 40_000 })
+  })
+
+  it('不在章节内部隐式拆分超大章节', () => {
+    const plan = buildReferenceLocalChunkPlan(
+      [
+        {
+          id: 'chapter-1',
+          sourceId: 'source-1',
+          type: 'chapter',
+          order: 0,
+          title: '第一章',
+          start: 0,
+          end: 100,
+          characterCount: 320_000,
+          estimatedTokens: 320_000,
+          boundaryConfidence: 1,
+          contentHash: '',
+          included: true,
+          warnings: [],
+          version: 1
+        }
+      ],
+      300_000
+    )
+
+    expect(plan.chunks).toHaveLength(1)
+    expect(plan.chunks[0]).toMatchObject({ sectionIds: ['chapter-1'], exceedsTarget: true })
+    expect(plan.warnings.join('\n')).toContain('为保留章节完整性已单独成包')
+  })
+})
+
 describe('参考小说本地确定性统计', () => {
   it('生成句长、段落、对话、感官、词汇、标点与章节长度报告', () => {
     const normalized = normalizeReferenceText(SAMPLE)
@@ -119,5 +180,33 @@ describe('参考小说本地确定性统计', () => {
     expect(quality.adCandidates.length).toBeGreaterThan(0)
     expect(quality.watermarkCandidates.length).toBeGreaterThan(0)
     expect(quality.duplicateHeaderFooterCount).toBe(3)
+  })
+})
+
+describe('蒸馏入参等距抽样', () => {
+  it('未超上限时原样返回且不共享底层数组', () => {
+    const ids = ['a', 'b', 'c']
+    const sampled = sampleSectionIdsEvenly(ids, 500)
+
+    expect(sampled).toEqual(['a', 'b', 'c'])
+    expect(sampled).not.toBe(ids)
+  })
+
+  it('超上限时等距收敛：保留首尾、维持顺序、长度等于上限', () => {
+    const ids = Array.from({ length: 1573 }, (_, index) => `s-${index + 1}`)
+    const sampled = sampleSectionIdsEvenly(ids, 500)
+
+    expect(sampled).toHaveLength(500)
+    expect(sampled[0]).toBe('s-1')
+    expect(sampled.at(-1)).toBe('s-1573')
+    const positions = sampled.map((id) => ids.indexOf(id))
+    expect(positions.every((position, index) => index === 0 || position > positions[index - 1])).toBe(true)
+    expect(new Set(sampled).size).toBe(500)
+  })
+
+  it('limit 为 1 时只保留首章，非法上限直接抛错', () => {
+    expect(sampleSectionIdsEvenly(['a', 'b', 'c'], 1)).toEqual(['a'])
+    expect(() => sampleSectionIdsEvenly(['a'], 0)).toThrow()
+    expect(() => sampleSectionIdsEvenly(['a'], 1.5)).toThrow()
   })
 })

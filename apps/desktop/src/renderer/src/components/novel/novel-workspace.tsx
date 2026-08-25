@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity, ClipboardCheck } from 'lucide-react'
+import { ArrowLeft, Download, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity, ClipboardCheck, ScrollText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -16,7 +16,12 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { useNovelDataStore } from '@/stores/novel-data-store'
-import { listWritingStyleExperts } from '@/api/novel-client'
+import {
+  listWritingStyleExperts,
+  updateProject,
+  parseNovelModelId,
+  type NovelMainModelRef,
+} from '@/api/novel-client'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
 import { useNovelWorkspaceLayoutStore, type RightPanelView, type WorkspaceLayoutMode } from '@/stores/novel-workspace-layout-store'
 import {
@@ -76,6 +81,7 @@ import { ChapterContentEditor } from './chapter-content-editor'
 import { TimelineRebuildControl } from './timeline-rebuild-control'
 import { ModelPicker } from './model-picker'
 import { ReferenceAnalysisWorkspace } from './reference-analysis/reference-analysis-workspace'
+import { PromptTemplatesDialog } from './prompt-templates-dialog'
 import { ErrorBoundary } from '@/components/overlays/error-boundary'
 import { MatrixErrorFallback } from './matrix-error-fallback'
 import { CanvasErrorFallback } from './canvas-error-fallback'
@@ -116,6 +122,12 @@ const REVIEW_TAB_OPTION: SegmentedOption<RightPanelView> = {
 
 export interface NovelWorkspaceProps {
   onClose: () => void
+  /**
+   * 当前视图是否可见。App 外壳对插件工作区做 keep-alive（切页只隐藏不卸载，
+   * 保住进行中的创作流 SSE 与相似度扫描），隐藏期间必须关闭全部全局按键监听，
+   * 避免抢当前页面的快捷键或误删不可见画布上的选中节点。
+   */
+  active?: boolean
 }
 
 // ── 建章辅助 ──
@@ -197,7 +209,7 @@ function MatrixDragPreview({ data }: { data: MatrixDragData | null }): ReactElem
   )
 }
 
-export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
+export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps): ReactElement {
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const projects = useNovelDataStore((s) => s.projects)
   const loadProjectData = useNovelDataStore((s) => s.loadProjectData)
@@ -227,15 +239,17 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   // 全局创作模型：顶栏选择器唯一入口，所有 AI 调用（编排/章纲/正文/群聊等）统一遵守
   const selectedAgentModel = useNovelUiStore((s) => s.selectedAgentModel)
   const setSelectedAgentModel = useNovelUiStore((s) => s.setSelectedAgentModel)
+  const upsertProject = useNovelDataStore((s) => s.upsertProject)
 
   // ── 全局快捷键：撤销/重做（编辑器内由 Tiptap 自行处理）──
+  // keep-alive 隐藏挂载时 enabled=false 让出按键
   useShortcut({
     onUndo: () => useNovelDataStore.getState().undo(),
     onRedo: () => useNovelDataStore.getState().redo(),
-  })
+  }, { enabled: active })
 
   // ── 工作台快捷键：Ctrl+B/J/1/2/3/4、Ctrl+Shift+F 专注模式 ──
-  useNovelWorkspaceShortcuts()
+  useNovelWorkspaceShortcuts({ enabled: active })
 
   const queryClient = useQueryClient()
 
@@ -275,6 +289,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const [selectedStyleExpertIds, setSelectedStyleExpertIds] = useState<string[]>([])
   const [styleExperts, setStyleExperts] = useState<NovelStyleExpert[]>([])
   const [referenceAnalysisOpen, setReferenceAnalysisOpen] = useState(false)
+  const [promptDialogOpen, setPromptDialogOpen] = useState(false)
 
   // ── 章节自由聊天（"聊天" Tab）──
   const chapterChat = session.chapterChat
@@ -291,7 +306,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     void listWritingStyleExperts(currentProjectId).then((experts) => {
       const mappedExperts = experts.map((expert) => ({ ...expert, distilledPrompt: expert.distilledPrompt })) as NovelStyleExpert[]
       setStyleExperts(mappedExperts)
-      setSelectedStyleExpertIds(mappedExperts.filter((expert) => expert.enabled).map((expert) => expert.id))
+      // 默认不召集任何专家：文风专家是"本轮额外能力"，不是隐式默认值。
+      // 此前默认全选 enabled 专家，用户不知道正文被哪些能力影响，也无法只跑基线。
+      // 刷新时只保留仍然存在的已选项（新蒸馏的专家不会自动进入本轮）。
+      setSelectedStyleExpertIds((current) => current.filter((id) => mappedExperts.some((expert) => expert.id === id)))
     }).catch(() => {
       setStyleExperts([])
       setSelectedStyleExpertIds([])
@@ -339,6 +357,32 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   const handleContentEditorHeightChange = useNovelWorkspaceLayoutStore((s) => s.setContentEditorHeight)
 
   const currentProject = projects.find((p) => p.id === currentProjectId) ?? null
+
+  // ── 创作主模型：header 唯一设置入口 ──
+  // 显示优先级：本次覆盖（selectedAgentModel，即将被淘汰的旧机制）> 项目主模型。
+  // 选择即写入项目 novelModelId 并清掉本次覆盖 —— 后端解析链为
+  // 「per-call 覆盖 > 项目主模型 > Agent 配置」，清掉覆盖后 header 的选择就是唯一事实源。
+  const headerModelValue: NovelMainModelRef | null =
+    selectedAgentModel
+      ? { provider: selectedAgentModel.provider, modelId: selectedAgentModel.modelId }
+      : parseNovelModelId(currentProject?.novelModelId)
+
+  const handleHeaderModelChange = useCallback(async (ref: NovelMainModelRef | null) => {
+    setSelectedAgentModel(null)
+    if (!currentProject?.id) return
+    try {
+      const updated = await updateProject(currentProject.id, {
+        novelModelId: ref ? `${ref.provider}:${ref.modelId}` : null,
+      })
+      upsertProject(updated)
+      toastSuccess(
+        '创作主模型已更新',
+        ref ? `本章之后的所有创作流程将使用 ${ref.provider}/${ref.modelId}` : '已恢复各 Agent 各自配置'
+      )
+    } catch (err) {
+      toastError('保存创作主模型失败', err instanceof Error ? err.message : '未知错误')
+    }
+  }, [currentProject?.id, setSelectedAgentModel, upsertProject])
 
   // 拉取当前项目的全部实体数据
   const projectDataQuery = useQuery({
@@ -900,8 +944,8 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
   }, [session.sendInterject])
 
   // 右栏对话面板"开始"按钮：根据 flowType 分发到对应流程
-  // 模型统一取全局 store（runChapterTask 内快照），入参 modelId 仅保持签名兼容
-  const handleStartFlow = useCallback((_modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null) => {
+  // 模型统一取全局 store（runChapterTask 内快照）；零参函数可赋给 (modelId?) => void 签名
+  const handleStartFlow = useCallback(() => {
     if (flowType === 'arrange') {
       void handleStartCreation('ai-arrange')
     } else {
@@ -920,6 +964,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
     chapterNumber: number,
     _modelId?: { provider: string; modelId: string; thinkingLevel?: import('@/stores/session-store').ThinkingLevel | null } | null,
   ) => {
+    void _modelId // 仅保持与面板 onStartFlowCommand 签名兼容；模型由 runChapterTask 从全局 store 快照
     if (!currentProjectId || creationFlow.isRunning || startCreationLockRef.current) return
     const chapterExists = chapters.some((c) => c.chapterNumber === chapterNumber)
     if (!chapterExists && command !== 'write') {
@@ -1110,8 +1155,13 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             {currentProject && (
               <ModelPicker
                 compact
-                value={selectedAgentModel}
-                onChange={setSelectedAgentModel}
+                label="创作模型"
+                value={headerModelValue}
+                onChange={(model) => {
+                  void handleHeaderModelChange(
+                    model ? { provider: model.provider, modelId: model.modelId } : null
+                  )
+                }}
               />
             )}
             {currentProject && (
@@ -1165,6 +1215,17 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
               className="text-subtle hover:text-text"
             >
               <BookSearch className="size-3.5" />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setPromptDialogOpen(true)}
+              disabled={!currentProject}
+              title="查看与编辑主流程提示词（文风相关段可自由修改，保存为本项目覆盖）"
+              className="text-subtle hover:text-text gap-1.5"
+            >
+              <ScrollText className="size-3.5" />
+              <span className="hidden sm:inline text-xs">提示词</span>
             </Button>
             <Button
               size="sm"
@@ -1233,6 +1294,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                           creationError={creationFlow.error}
                           onCancelCreation={handleDiscardCreation}
                           onNodeCountChange={setNodeCount}
+                          hotkeysEnabled={active}
                         />
                       </ErrorBoundary>
                       {currentProject && (
@@ -1262,6 +1324,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                           creationChapterNumber={creationChapterNumber}
                           creationChapterContent={creationFlow.chapterContent}
                           onReverseArrange={handleReverseFromEditor}
+                          hotkeysEnabled={active}
                         />
                       </ErrorBoundary>
                     </div>
@@ -1286,6 +1349,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                           similarityScanning={similarityScan.isScanning}
                           onOpenReview={handleOpenReviewPanel}
                           pendingEventCount={reviewCounts.pendingEventCount}
+                          hotkeysEnabled={active}
                         />
                       </ErrorBoundary>
                     </div>
@@ -1307,6 +1371,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             creationChapterNumber={creationChapterNumber}
                             creationChapterContent={creationFlow.chapterContent}
                             onReverseArrange={handleReverseFromEditor}
+                            hotkeysEnabled={active}
                           />
                         </ErrorBoundary>
                       </div>
@@ -1334,9 +1399,10 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                             onRegenerateChapter={handleRegenerateChapter}
                             onStartCreationAt={handleStartCreationAt}
                             onSimilarityScan={handleStartSimilarityScan}
-                          similarityScanning={similarityScan.isScanning}
-                          onOpenReview={handleOpenReviewPanel}
-                          pendingEventCount={reviewCounts.pendingEventCount}
+                            similarityScanning={similarityScan.isScanning}
+                            onOpenReview={handleOpenReviewPanel}
+                            pendingEventCount={reviewCounts.pendingEventCount}
+                            hotkeysEnabled={active}
                           />
                         </ErrorBoundary>
                       </div>
@@ -1432,6 +1498,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                       )}
                     >
                       <NovelConversationPanel
+                        projectId={currentProject?.id}
                         phase={creationFlow.phase}
                         isRunning={creationFlow.isRunning}
                         progressMessage={creationFlow.progressMessage}
@@ -1478,6 +1545,7 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
                         selectedStyleExpertIds={selectedStyleExpertIds}
                         onStyleExpertsChange={setSelectedStyleExpertIds}
                         onOpenStyleExperts={() => setReferenceAnalysisOpen(true)}
+                        onStyleExpertsRefresh={refreshStyleExperts}
                       />
                     </ErrorBoundary>
                   </motion.div>
@@ -1599,6 +1667,14 @@ export function NovelWorkspace({ onClose }: NovelWorkspaceProps): ReactElement {
             open={referenceAnalysisOpen}
             onOpenChange={setReferenceAnalysisOpen}
             onStyleExpertsChanged={refreshStyleExperts}
+          />
+        )}
+
+        {/* 提示词模板弹窗（header 直达）：左列模板类型、右列内容编辑 */}
+        {currentProjectId && (
+          <PromptTemplatesDialog
+            open={promptDialogOpen}
+            onOpenChange={setPromptDialogOpen}
           />
         )}
 

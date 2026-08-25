@@ -7,7 +7,7 @@ import { AppError, ErrorCode } from '@repo/shared/errors'
 import { modelSelectionSchema } from './model-selection-contract.js'
 
 const generateBeatPlanSchema = z.object({
-  count: z.number().int().min(3).max(8).optional(),
+  count: z.number().int().min(3).max(100).optional(),
   instruction: z.string().trim().max(2000).optional(),
   modelId: modelSelectionSchema.optional()
 })

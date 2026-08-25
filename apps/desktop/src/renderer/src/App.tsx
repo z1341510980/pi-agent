@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'framer-motion'
 import { Home, MessageSquare, SettingsIcon, PlugIcon } from 'lucide-react'
@@ -47,11 +47,27 @@ function onboardingView(view: AppView): 'home' | 'chat' | 'novel' | 'settings' {
 
 export default function App(): ReactElement {
   const [view, setView] = useState<AppView>('home')
+  // ── 常驻保活视图（chat / 插件工作区）──
+  //
+  // 进行中的流式 run、小说创作 SSE、相似度扫描、WebSocket 推送全部活在这两类
+  // 工作区的组件树里；一旦卸载，状态即丢失，且后端对 SSE 断连的处理是直接取消
+  // 流程（create-flow 等路由的 abortOnDisconnect）。因此访问过一次后就保持挂载，
+  // 切换页面只隐藏不卸载。home/settings/plugins 无长连接状态，离开即卸载。
+  const [persistentViews, setPersistentViews] = useState<AppView[]>([])
   const [autoUpdateDialogOpen, setAutoUpdateDialogOpen] = useState(false)
   const [ready, setReady] = useState(false)
   const { status, download, install } = useUpdateStatus()
+
+  /** 带保活登记的导航：chat 与插件工作区进过一次就常驻 */
+  const navigate = useCallback((next: AppView): void => {
+    setView(next)
+    if (next === 'chat' || next.startsWith('plugin:')) {
+      setPersistentViews((prev) => (prev.includes(next) ? prev : [...prev, next]))
+    }
+  }, [])
+
   const onboardingSetView = (next: 'home' | 'chat' | 'novel' | 'settings'): void => {
-    setView(next === 'novel' ? 'plugin:novel' : next)
+    navigate(next === 'novel' ? 'plugin:novel' : next)
   }
 
   useEffect(() => {
@@ -92,24 +108,25 @@ export default function App(): ReactElement {
                           icon={Home}
                           label="首页"
                           active={view === 'home'}
-                          onClick={() => setView('home')}
+                          onClick={() => navigate('home')}
                         />
                         <RailButton
                           icon={MessageSquare}
                           label="对话工作台"
                           active={view === 'chat'}
-                          onClick={() => setView('chat')}
+                          onClick={() => navigate('chat')}
                         />
                         <RailButton
                           icon={PlugIcon}
                           label="插件"
                           active={view === 'plugins'}
-                          onClick={() => setView('plugins')}
+                          onClick={() => navigate('plugins')}
                         />
                         <SlotRenderer
                           name="sidebar.navigation"
                           fallback={null}
-                          extraProps={{ onNavigate: setView, currentView: view }}
+                          // 插件导航按钮统一走 navigate：plugin:* 视图需要登记保活
+                          extraProps={{ onNavigate: navigate, currentView: view }}
                         />
                         <OnboardingRailButton
                           setView={onboardingSetView}
@@ -120,42 +137,59 @@ export default function App(): ReactElement {
                           icon={SettingsIcon}
                           label="设置"
                           active={view === 'settings'}
-                          onClick={() => setView('settings')}
+                          onClick={() => navigate('settings')}
                         />
                       </nav>
 
                       <div className="min-w-0 flex-1 overflow-hidden">
-                        {view === 'settings' ? (
-                          <SettingsPage onClose={() => setView('home')} />
-                        ) : view === 'plugins' ? (
-                          <PluginPage />
-                        ) : view === 'chat' ? (
-                          <ChatWorkspace
-                            appName={browserConfig.appName}
-                            config={browserConfig}
-                            onOpenSettings={() => setView('settings')}
-                          />
-                        ) : view.startsWith('plugin:') ? (
-                          // 插件贡献的工作区：workspace.main 是 keyed slot，
-                          // entryKey 就是 view 里的贡献标识。宿主固定页（home/chat/
-                          // settings/plugins remain host pages; plugin workspaces use the registry.
-                          <SlotRenderer
-                            name="workspace.main"
-                            entryKey={view.slice('plugin:'.length)}
-                            extraProps={{ onClose: () => setView('home') }}
-                            fallback={
-                              <div className="flex h-full items-center justify-center text-sm text-subtle">
-                                该插件页面已不可用（插件可能已被禁用）
-                              </div>
-                            }
-                          />
-                        ) : (
+                        {/*
+                          常驻保活视图：已访问过的 chat / 插件工作区只隐藏不卸载。
+                          hidden 属性让内容退出布局与可访问性树（测试里的 role 查询
+                          也据此判定「不可见」），active prop 让隐藏的工作台让出全局按键。
+                        */}
+                        {persistentViews.map((persistentView) => (
+                          <div
+                            key={persistentView}
+                            hidden={persistentView !== view}
+                            className="h-full w-full"
+                          >
+                            {persistentView === 'chat' ? (
+                              <ChatWorkspace
+                                appName={browserConfig.appName}
+                                config={browserConfig}
+                                onOpenSettings={() => navigate('settings')}
+                                active={view === 'chat'}
+                              />
+                            ) : (
+                              // 插件贡献的工作区：workspace.main 是 keyed slot，
+                              // entryKey 就是保活视图里的贡献标识。
+                              <SlotRenderer
+                                name="workspace.main"
+                                entryKey={persistentView.slice('plugin:'.length)}
+                                extraProps={{
+                                  onClose: () => navigate('home'),
+                                  active: view === persistentView
+                                }}
+                                fallback={
+                                  <div className="flex h-full items-center justify-center text-sm text-subtle">
+                                    该插件页面已不可用（插件可能已被禁用）
+                                  </div>
+                                }
+                              />
+                            )}
+                          </div>
+                        ))}
+
+                        {/* 轻量视图：无长连接状态，离开即卸载 */}
+                        {view === 'home' && (
                           <HomePage
-                            onOpenChat={() => setView('chat')}
-                            onOpenNovel={() => setView('plugin:novel')}
-                            onOpenSettings={() => setView('settings')}
+                            onOpenChat={() => navigate('chat')}
+                            onOpenNovel={() => navigate('plugin:novel')}
+                            onOpenSettings={() => navigate('settings')}
                           />
                         )}
+                        {view === 'settings' && <SettingsPage onClose={() => navigate('home')} />}
+                        {view === 'plugins' && <PluginPage />}
                       </div>
                     </div>
                   </OnboardingProvider>

@@ -1,7 +1,8 @@
 /**
  * MatrixToolbar：矩阵视图工具栏（单行紧凑）
  *
- * 单行结构：返回 + 关系叠加层 | 章节 badge | 撤销/重做 + 补全 + 扫描 + 审校▾ | 缩放 + 筛选 chips
+ * 单行结构：叠加层 + 章节 badge | 撤销/重做 | 补全 + 扫描 + 审校▾ …… 缩放 | 筛选 chips
+ * 功能簇之间用竖分隔线隔开，避免控件糊成一片。
  *
  * 图例（MatrixLegend）在本组件之外、由 MatrixWorkspace 插入到 toolbar 与 view 之间。
  */
@@ -114,7 +115,7 @@ export function MatrixToolbar({
       {/* ── 单行工具栏 ──
           返回按钮已删除（A7）：顶栏返回走 onClose 关闭工作台，此处 window.history.back()
           语义不一致且在 Electron 下行为不可预期。 */}
-      <div className="flex items-center gap-1 px-2 h-10 text-xs overflow-hidden">
+      <div className="flex items-center gap-1 px-3 h-10 text-xs overflow-hidden">
         {/* 视图切换已上移到顶栏的布局切换器（正文 / 正文+时间线 / 时间线 / 关系图）。
             这里原有一份 矩阵↔画布 的副本，在分屏布局下点"画布"会让正文编辑器一并消失，
             正是两个模式维度互相覆盖的产物；合并为单一 layoutMode 后不再需要。 */}
@@ -147,7 +148,7 @@ export function MatrixToolbar({
         </span>
 
         {/* 分隔 */}
-        <div className="mx-0.5 h-4 w-px bg-border/60 shrink-0" aria-hidden="true" />
+        <div className="mx-1.5 h-4 w-px bg-border/70 shrink-0" aria-hidden="true" />
 
         {/* 撤销/重做 */}
         <button type="button" className={iconBtn} onClick={onUndo} title="撤销 (Ctrl+Z)" aria-label="撤销" disabled={!canUndo}>
@@ -156,6 +157,9 @@ export function MatrixToolbar({
         <button type="button" className={iconBtn} onClick={onRedo} title="重做 (Ctrl+Shift+Z)" aria-label="重做" disabled={!canRedo}>
           <Redo2 className="size-3.5" />
         </button>
+
+        {/* 分隔：历史操作 | 补全/扫描/审校 */}
+        <div className="mx-1.5 h-4 w-px bg-border/70 shrink-0" aria-hidden="true" />
 
         {/* 补全历史 */}
         <button
@@ -254,8 +258,8 @@ export function MatrixToolbar({
           </button>
         </div>
 
-        {/* 分隔 */}
-        <div className="mx-0.5 h-4 w-px bg-border/60 shrink-0" aria-hidden="true" />
+        {/* 分隔：缩放 | 筛选 */}
+        <div className="mx-1.5 h-4 w-px bg-border/70 shrink-0" aria-hidden="true" />
 
         {/* 筛选 chips（紧凑胶囊） */}
         <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-none shrink-0" role="group" aria-label="实体类型筛选">

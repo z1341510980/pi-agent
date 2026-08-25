@@ -47,6 +47,8 @@ const api = vi.hoisted(() => ({
   getWritingStyleProfile: vi.fn().mockResolvedValue(null),
   listWritingStyleExperts: vi.fn().mockResolvedValue([]),
   saveWritingStyleProfile: vi.fn(),
+  updateProject: vi.fn(),
+  parseNovelModelId: vi.fn(() => null),
 }))
 
 vi.mock('@/api/novel-client', () => api)

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type {
   ReferenceDistributionSummary,
   ReferenceFrequencyItem,
+  ReferenceLocalChunkPlan,
   ReferenceLocalAnalysisReport,
   ReferenceQualityReport,
   ReferenceSection,
@@ -13,6 +14,11 @@ export const REFERENCE_PARSER_VERSION = 'reference-parser-v1'
 export const REFERENCE_ANALYZER_VERSION = 'reference-local-v1'
 export const MAX_REFERENCE_SOURCE_BYTES = 20 * 1024 * 1024
 export const MAX_REFERENCE_PREVIEW_CHARS = 2000
+/**
+ * 长参考文本的本地分包目标。实际模型输入更小时，预算估算会进一步收紧该值。
+ * 分包只在章节边界发生，避免把一个章节切成两段交给不同的语义分析任务。
+ */
+export const REFERENCE_LOCAL_CHUNK_TARGET_TOKENS = 300_000
 
 const CHAPTER_HEADING =
   /^(?:#{1,6}\s*)?(?:第[0-9零〇一二两三四五六七八九十百千万]+[章节回卷篇部].*|chapter\s+\d+\b.*)$/i
@@ -50,6 +56,93 @@ export function estimateReferenceTokens(text: string): number {
   const hanCount = (text.match(/[\u3400-\u9fff]/g) ?? []).length
   const nonHan = text.length - hanCount
   return Math.max(1, Math.ceil(hanCount * 1.05 + nonHan / 4))
+}
+
+/**
+ * 将可分析分段组合为章节边界上的本地分包。
+ *
+ * 该计划不持久化正文，也不修改原章节；调用方可按当前模型上下文重新计算目标大小。
+ * 单章超过目标时宁可单独成包并报警，也不在章节内部做隐式截断。
+ */
+export function buildReferenceLocalChunkPlan(
+  sections: ReferenceSection[],
+  targetTokens = REFERENCE_LOCAL_CHUNK_TARGET_TOKENS
+): ReferenceLocalChunkPlan {
+  const normalizedTarget = Math.floor(targetTokens)
+  if (!Number.isFinite(normalizedTarget) || normalizedTarget < 1) {
+    throw new Error('本地分包 token 目标必须大于 0')
+  }
+
+  const selected = sections
+    .filter((section) => section.included)
+    .sort((left, right) => left.order - right.order || left.start - right.start)
+  const chunks: ReferenceLocalChunkPlan['chunks'] = []
+  let current: ReferenceSection[] = []
+  let currentTokens = 0
+
+  const flush = (): void => {
+    if (current.length === 0) return
+    const estimatedTokens = current.reduce((sum, section) => sum + section.estimatedTokens, 0)
+    chunks.push({
+      id: `local-chunk-${chunks.length + 1}`,
+      order: chunks.length,
+      sectionIds: current.map((section) => section.id),
+      chapterCount: current.filter((section) => section.type === 'chapter').length,
+      characterCount: current.reduce((sum, section) => sum + section.characterCount, 0),
+      estimatedTokens,
+      exceedsTarget: current.some((section) => section.estimatedTokens > normalizedTarget)
+    })
+    current = []
+    currentTokens = 0
+  }
+
+  for (const section of selected) {
+    if (current.length > 0 && currentTokens + section.estimatedTokens > normalizedTarget) flush()
+    current.push(section)
+    currentTokens += section.estimatedTokens
+    if (section.estimatedTokens > normalizedTarget) flush()
+  }
+  flush()
+
+  const warnings: string[] = []
+  if (chunks.length > 1) {
+    warnings.push(
+      `参考文本已按章节在本地拆分为 ${chunks.length} 个分包，每包目标约 ${normalizedTarget.toLocaleString()} tokens。`
+    )
+  }
+  for (const section of selected.filter((item) => item.estimatedTokens > normalizedTarget)) {
+    warnings.push(
+      `${section.title ?? `第 ${section.order + 1} 章`} 约 ${section.estimatedTokens.toLocaleString()} tokens，超过分包目标；为保留章节完整性已单独成包。`
+    )
+  }
+
+  return {
+    strategy: 'chapter_boundary',
+    targetTokens: normalizedTarget,
+    totalTokens: selected.reduce((sum, section) => sum + section.estimatedTokens, 0),
+    splitRequired: chunks.length > 1,
+    chunks,
+    warnings
+  }
+}
+
+/**
+ * 蒸馏入参超过单次上限时按等距抽样收敛：保持首尾覆盖、原始顺序与均匀跨度。
+ * 抽样只影响本次调用的输入范围，不修改章节的 included 状态。
+ */
+export function sampleSectionIdsEvenly(sectionIds: string[], limit: number): string[] {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error('抽样上限必须是正整数')
+  }
+  if (sectionIds.length <= limit) return [...sectionIds]
+  if (limit === 1) return [sectionIds[0]!]
+  const picked = new Set<number>()
+  for (let index = 0; index < limit; index += 1) {
+    picked.add(Math.round((index * (sectionIds.length - 1)) / (limit - 1)))
+  }
+  return [...picked]
+    .sort((left, right) => left - right)
+    .map((position) => sectionIds[position]!)
 }
 
 function hasGb18030FourByteSequence(bytes: Uint8Array): boolean {

@@ -13,7 +13,7 @@ describe('structured style expert prompt compilation', () => {
       }],
     }, 'writer')
     expect(compiled.content).toContain('感官收窄后释放')
-    expect(compiled.content).toContain('证据方向：她没有抬头')
+    expect(compiled.content).toContain('证据方向=她没有抬头')
     expect(compiled.content).toContain('手法样本（只学机制）：她没有抬头，只把手指收紧。')
     expect(compiled.content).toContain('不得迁移：原作人物姓名')
     expect(compiled.content).toContain('本次召集的独立文风能力')

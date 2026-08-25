@@ -706,6 +706,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       techniques: z.array(z.unknown()).optional(),
       exclusions: z.array(z.string()).optional(),
       exemplarPassages: z.array(z.unknown()).optional(),
+      expressionDna: z.record(z.string(), z.unknown()).optional(),
+      tensions: z.array(z.unknown()).optional(),
+      antiPatterns: z.array(z.string()).optional(),
+      boundaries: z.array(z.string()).optional(),
       distillMeta: z.record(z.string(), z.unknown()).optional(),
       enabled: z.boolean().default(true),
     }).refine((expert) => Boolean(expert.distilledPrompt ?? expert.prompt), {
@@ -742,6 +746,11 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         techniques: z.array(z.unknown()).optional(),
         exclusions: z.array(z.string()).optional(),
         exemplarPassages: z.array(z.unknown()).optional(),
+        // 蒸馏契约 v2：语言指纹 / 内在张力 / 反模式 / 诚实边界
+        expressionDna: z.record(z.string(), z.unknown()).optional(),
+        tensions: z.array(z.unknown()).optional(),
+        antiPatterns: z.array(z.string()).optional(),
+        boundaries: z.array(z.string()).optional(),
       }).parse(request.body ?? {})
       const expert = store.createStyleExpert({
         id: randomUUID(), projectId: request.params.projectId, ...input, version: 1,
@@ -799,6 +808,10 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         techniques: expert.techniques,
         exclusions: expert.exclusions,
         exemplarPassages: expert.exemplarPassages,
+        expressionDna: expert.expressionDna,
+        tensions: expert.tensions,
+        antiPatterns: expert.antiPatterns,
+        boundaries: expert.boundaries,
         distillMeta: expert.distillMeta,
         enabled: expert.enabled,
         sortOrder: expert.sortOrder ?? index,

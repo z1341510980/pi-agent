@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { BookOpen, FileText, ImageIcon, Search, X } from 'lucide-react'
 
+import {
+  listPromptItems,
+  refreshPromptSources,
+  type NormalizedPromptItem
+} from '@/api/infinite-canvas-client'
 import type { CanvasNodeData } from '@/api/infinite-canvas-client'
 import type { CanvasTheme } from './canvas-theme'
 
@@ -12,76 +17,10 @@ export interface CanvasAsset {
   createdAt: number
 }
 
-/** 对齐参考项目 RawPrompt：title + prompt 必填，附带来源与封面信息。 */
-export interface PromptItem {
-  id: string
-  sourceId: string
-  sourceName: string
-  title: string
-  prompt: string
-  description: string
-  tags: string[]
-  coverUrl: string
-}
-
-export interface PromptSource {
-  id: string
-  name: string
-  url: string
-  homepage: string
-  enabled: boolean
-}
+/** 兼容旧引用：现在由服务端归一化后返回。 */
+export type PromptItem = NormalizedPromptItem
 
 const STORAGE_KEY = 'pi-agent:infinite-canvas-assets'
-const PROMPT_SOURCE_KEY = 'pi-agent:infinite-canvas-prompt-sources'
-const PROMPT_CACHE_KEY = 'pi-agent:infinite-canvas-prompt-cache'
-const PROMPT_CACHE_TTL_MS = 1000 * 60 * 60
-
-// 与参考项目一致的提示词注册表（yukkcat/image-prompts）。
-const PROMPT_REGISTRY_SOURCE_BASE =
-  'https://raw.githubusercontent.com/yukkcat/image-prompts/main/dist/sources'
-
-function registrySource(id: string, name: string, homepage: string): PromptSource {
-  return { id, name, url: `${PROMPT_REGISTRY_SOURCE_BASE}/${id}.json`, homepage, enabled: true }
-}
-
-export const DEFAULT_PROMPT_SOURCES: PromptSource[] = [
-  registrySource(
-    'banana-prompt-quicker',
-    'Banana Prompt Quicker',
-    'https://glidea.github.io/banana-prompt-quicker/'
-  ),
-  registrySource(
-    'davidwu-gpt-image2-prompts',
-    'DavidWu GPT Image 2',
-    'https://github.com/davidwuw0811-boop/awesome-gpt-image2-prompts'
-  ),
-  registrySource(
-    'freestylefly-gpt-image-2',
-    'Freestylefly GPT Image 2',
-    'https://github.com/freestylefly/awesome-gpt-image-2'
-  ),
-  registrySource(
-    'awesome-gpt-image',
-    'Awesome GPT Image',
-    'https://github.com/ZeroLu/awesome-gpt-image'
-  ),
-  registrySource(
-    'awesome-gpt4o-image-prompts',
-    'Awesome GPT-4o',
-    'https://github.com/ImgEdify/Awesome-GPT4o-Image-Prompts'
-  ),
-  registrySource(
-    'youmind-gpt-image-2',
-    'YouMind GPT Image 2',
-    'https://github.com/YouMind-OpenLab/awesome-gpt-image-2'
-  ),
-  registrySource(
-    'youmind-nano-banana-pro',
-    'YouMind Nano Banana Pro',
-    'https://github.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts'
-  )
-]
 
 export function readCanvasAssets(): CanvasAsset[] {
   try {
@@ -94,83 +33,6 @@ export function readCanvasAssets(): CanvasAsset[] {
 
 function writeCanvasAssets(assets: CanvasAsset[]): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(assets.slice(0, 500)))
-}
-
-function readPromptSources(): PromptSource[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(PROMPT_SOURCE_KEY) ?? 'null')
-    if (!Array.isArray(value)) return DEFAULT_PROMPT_SOURCES
-    // 内置来源始终以最新注册表为准（URL 规则修正后旧缓存自动失效）。
-    const byId = new Map(value.map((source: PromptSource) => [source.id, source]))
-    return DEFAULT_PROMPT_SOURCES.map((source) => ({
-      ...source,
-      enabled: byId.get(source.id)?.enabled ?? true
-    }))
-  } catch {
-    return DEFAULT_PROMPT_SOURCES
-  }
-}
-
-interface PromptCacheEntry {
-  fetchedAt: number
-  items: PromptItem[]
-}
-
-type PromptCache = Record<string, PromptCacheEntry>
-
-function readPromptCache(): PromptCache {
-  try {
-    const value = JSON.parse(localStorage.getItem(PROMPT_CACHE_KEY) ?? '{}')
-    return value && typeof value === 'object' ? value : {}
-  } catch {
-    return {}
-  }
-}
-
-function writePromptCache(cache: PromptCache): void {
-  localStorage.setItem(PROMPT_CACHE_KEY, JSON.stringify(cache))
-}
-
-function absoluteUrl(base: string, value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) return ''
-  try {
-    return new URL(value, base).toString()
-  } catch {
-    return ''
-  }
-}
-
-async function fetchPromptSource(source: PromptSource): Promise<PromptItem[]> {
-  const response = await fetch(source.url, { cache: 'no-store' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const data: unknown = await response.json()
-  if (!Array.isArray(data)) throw new Error('格式不是数组')
-  const seen = new Set<string>()
-  const items: PromptItem[] = []
-  for (const [index, raw] of data.entries()) {
-    if (!raw || typeof raw !== 'object') continue
-    const record = raw as Record<string, unknown>
-    const title = String(record.title ?? '').trim()
-    const prompt = String(record.prompt ?? '').trim()
-    if (!title || !prompt) continue
-    const id = String(record.id ?? '').trim() || `${source.id}-${index + 1}`
-    if (seen.has(id)) continue
-    seen.add(id)
-    const referenceImageUrls = Array.isArray(record.referenceImageUrls)
-      ? record.referenceImageUrls.map((url) => absoluteUrl(source.url, url)).filter(Boolean)
-      : []
-    items.push({
-      id,
-      sourceId: source.id,
-      sourceName: source.name,
-      title,
-      prompt,
-      description: String(record.description ?? ''),
-      tags: Array.isArray(record.tags) ? record.tags.map((tag) => String(tag)).filter(Boolean) : [],
-      coverUrl: absoluteUrl(source.url, record.coverUrl) || referenceImageUrls[0] || ''
-    })
-  }
-  return items
 }
 
 export function saveCanvasAsset(asset: Omit<CanvasAsset, 'id' | 'createdAt'>): CanvasAsset {
@@ -231,33 +93,19 @@ export function CanvasAssetLibrary({
     )
   }, [activeCategory, assets, prompts, query, tab])
 
-  // 首次进入提示词页：优先读 1 小时缓存，过期来源静默重拉。
+  // 从服务端 SQLite 缓存读取；force=true 时先让服务端刷新再拉取。
   const loadPrompts = async (force = false): Promise<void> => {
     setPromptLoading(true)
-    const cache = readPromptCache()
-    const sources = readPromptSources().filter((source) => source.enabled)
-    let failed = 0
-    const results = await Promise.all(
-      sources.map(async (source) => {
-        const entry = cache[source.id]
-        if (!force && entry && Date.now() - entry.fetchedAt < PROMPT_CACHE_TTL_MS)
-          return entry.items
-        try {
-          const items = await fetchPromptSource(source)
-          if (!items.length) failed += 1
-          cache[source.id] = { fetchedAt: Date.now(), items }
-          return items
-        } catch {
-          // 拉取失败退回过期缓存；无缓存则计为失败来源。
-          if (!entry) failed += 1
-          return entry?.items ?? []
-        }
-      })
-    )
-    writePromptCache(cache)
-    setPrompts(results.flat())
-    setFailedCount(failed)
-    setPromptLoading(false)
+    try {
+      if (force) await refreshPromptSources()
+      const items = await listPromptItems()
+      setPrompts(items)
+      setFailedCount(0)
+    } catch {
+      setFailedCount(1)
+    } finally {
+      setPromptLoading(false)
+    }
   }
 
   const loadPromptsRef = useRef(loadPrompts)

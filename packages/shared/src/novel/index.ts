@@ -267,13 +267,14 @@ export type ChapterStatus = 'planned' | 'drafting' | 'review' | 'published' | 'r
  * 章节状态的普通编辑迁移。
  * `published` 只能由发布命令进入；已发布章节在产品定义撤回命令前保持终态。
  */
-export const CHAPTER_STATUS_TRANSITIONS: Readonly<Record<ChapterStatus, readonly ChapterStatus[]>> = {
-  planned: ['planned', 'drafting'],
-  drafting: ['drafting', 'review'],
-  review: ['review', 'drafting', 'rejected'],
-  rejected: ['rejected', 'drafting'],
-  published: ['published'],
-}
+export const CHAPTER_STATUS_TRANSITIONS: Readonly<Record<ChapterStatus, readonly ChapterStatus[]>> =
+  {
+    planned: ['planned', 'drafting'],
+    drafting: ['drafting', 'review'],
+    review: ['review', 'drafting', 'rejected'],
+    rejected: ['rejected', 'drafting'],
+    published: ['published']
+  }
 
 export function canTransitionChapterStatus(from: ChapterStatus, to: ChapterStatus): boolean {
   return CHAPTER_STATUS_TRANSITIONS[from].includes(to)
@@ -391,7 +392,13 @@ export interface ChapterPlanRevision {
   positioning?: string | null
   rhythm?: string | null
   /** WordBudgetResolution 的 JSON（baseTarget/adjustmentPct/resolvedTarget/min/max） */
-  budget: { baseTarget: number; adjustmentPct: number; resolvedTarget: number; min: number; max: number }
+  budget: {
+    baseTarget: number
+    adjustmentPct: number
+    resolvedTarget: number
+    min: number
+    max: number
+  }
   status: PlanRevisionStatus
   revision: number
   idempotencyKey?: string | null
@@ -557,14 +564,14 @@ export interface NovelEntityCandidateReview {
 
 /** 剧情条目的类型（区分于冲突/线索/伏笔的承载语义） */
 export type NarrativeType =
-  | 'advance'   // 剧情推进：局势变化、事件进展
-  | 'turn'      // 转折：意料之外的走向
-  | 'reversal'  // 反转：局势彻底改变
-  | 'suspense'  // 悬念：遗留未决的紧张点
-  | 'resolve'   // 收束：处理并解决
-  | 'setup'     // 铺垫：为后续蓄势
-  | 'reveal'    // 揭示：信息/真相曝光
-  | 'misc'      // 其他剧情事件
+  | 'advance' // 剧情推进：局势变化、事件进展
+  | 'turn' // 转折：意料之外的走向
+  | 'reversal' // 反转：局势彻底改变
+  | 'suspense' // 悬念：遗留未决的紧张点
+  | 'resolve' // 收束：处理并解决
+  | 'setup' // 铺垫：为后续蓄势
+  | 'reveal' // 揭示：信息/真相曝光
+  | 'misc' // 其他剧情事件
 
 export interface NovelNarrative {
   id: string
@@ -1281,19 +1288,40 @@ export interface NovelStyleExpert {
   /** 专家真正注入 Agent 的提示词，可由用户修改。 */
   distilledPrompt: string
   metrics?: Record<string, unknown>
-  techniques?: Array<{
-    id: string
-    dimension: string
-    name: string
-    mechanism: string
-    transfer: string
-    evidence: Array<{ sectionId: string; quote: string }>
-    metricAnchors: string[]
-    confidence: 'verified' | 'unverified' | 'rejected'
-    kept: boolean
-  }>
+  techniques?: NovelStyleTechnique[]
   exclusions?: string[]
   exemplarPassages?: Array<{ sectionId: string; text: string; reason: string }>
+  /**
+   * 表达 DNA：可量化的语言指纹。
+   *
+   * 与 metrics（本地统计）区别：metrics 是数值观测，DNA 是「怎么写」的可执行描述，
+   * 直接进 Writer 提示词。字段刻意收敛为六项，避免变成无法执行的风格散文。
+   */
+  expressionDna?: {
+    /** 句式偏好：长短句配比与落点句处理 */
+    sentence?: string
+    /** 词汇特征：高频词、专属句法、禁忌词 */
+    lexicon?: string
+    /** 节奏：先结论还是先铺垫、转折方式 */
+    rhythm?: string
+    /** 幽默方式：讽刺/自嘲/荒诞/冷幽默/不幽默 */
+    humor?: string
+    /** 确定性表达：断言型还是保留型 */
+    certainty?: string
+    /** 叙述距离与视角贴合方式 */
+    distance?: string
+  }
+  /**
+   * 内在张力：该文风自身相互拉扯的两股力量。
+   *
+   * 只有一条条正向规则的专家会把正文推向"样样都做到"的模板腔；
+   * 张力显式写出后，Writer 才知道哪些地方必须做取舍。
+   */
+  tensions?: Array<{ name: string; between: [string, string]; resolution: string }>
+  /** 反模式：该文风明确避免的写法（不同于 exclusions 的"不可搬运内容"）。 */
+  antiPatterns?: string[]
+  /** 诚实边界：这套能力覆盖不到什么，防止被当万能风格。 */
+  boundaries?: string[]
   /** 旧 profile JSON 的兼容字段，稳定期迁移后移除。 */
   prompt?: string
   customPrompt?: string
@@ -1306,11 +1334,103 @@ export interface NovelStyleExpert {
   enabled: boolean
 }
 
+/**
+ * 一条可迁移的写作手法。
+ *
+ * `failureMode` 与三重验证字段是 v2 增补：
+ * - 没有失效条件的手法会被无差别套用（"每章都要压后爆"就是这么来的）；
+ * - 三重验证（跨域复现/生成力/排他性）把"随口一说"和真正的机制区分开，
+ *   只有三项都过才配得上 verified。
+ */
+export interface NovelStyleTechnique {
+  id: string
+  dimension: string
+  name: string
+  mechanism: string
+  transfer: string
+  /** 什么情况下这条手法会失效或必须让位（必填才算 verified）。 */
+  failureMode?: string
+  evidence: Array<{ sectionId: string; quote: string }>
+  metricAnchors: string[]
+  /** 三重验证记录：跨域复现 / 生成力 / 排他性。 */
+  validation?: {
+    /** 在几个不同场景/维度中复现（≥2 才算跨域） */
+    crossDomain?: number
+    /** 能否据此推断新场景下的写法 */
+    generative?: boolean
+    /** 是否只属于该文风，而非所有作者的通用常识 */
+    exclusive?: boolean
+  }
+  confidence: 'verified' | 'unverified' | 'rejected'
+  kept: boolean
+}
+
+/**
+ * 占位默认专家（仅供前端"还没蒸馏时"的空状态文案参考，不再作为生效值）。
+ *
+ * 曾经它们在 store 层作为无专家时的回退被直接编译进 Writer 提示词：四条没有手法、
+ * 没有证据、没有张力的泛泛而谈冒充文风引导，比没有更糟——用户以为文风已配置。
+ * 现在 store 只返回真实蒸馏结果，空列表即空列表。
+ *
+ * @deprecated 不要用于任何生效路径；新代码请读 listStyleExperts 的真实结果。
+ */
 export const DEFAULT_NOVEL_STYLE_EXPERTS: NovelStyleExpert[] = [
-  { id: 'style-sample-01', projectId: '__default__', name: '冷峻留白', sourceTitle: '项目样本蒸馏 01', description: '克制叙述、低情绪显性表达、依靠动作和留白传递压力。', distilledPrompt: '从正向样本中提炼克制叙述、信息留白和动作承载情绪的写法。不要复制人物、情节、专名或显眼句子，只让当前正文在句法和观察距离上接近这套能力。', enabled: true, sortOrder: 0, version: 1, createdAt: 0, updatedAt: 0 },
-  { id: 'style-sample-02', projectId: '__default__', name: '旧城肌理', sourceTitle: '项目样本蒸馏 02', description: '具体环境细节、生活质感和人物关系中的含蓄张力。', distilledPrompt: '从正向样本中提炼环境细节、生活质感和含蓄对话的写法。只迁移观察方式、节奏和细节选择，不复制原作内容。', enabled: true, sortOrder: 1, version: 1, createdAt: 0, updatedAt: 0 },
-  { id: 'style-sample-03', projectId: '__default__', name: '悬压推进', sourceTitle: '项目样本蒸馏 03', description: '用句长变化、信息延迟和场景动作持续提高悬念压力。', distilledPrompt: '从正向样本中提炼悬念推进、信息延迟和句长变化。让压力服务当前章节任务，不套用固定开场、转折或收束句式。', enabled: true, sortOrder: 2, version: 1, createdAt: 0, updatedAt: 0 },
-  { id: 'style-sample-04', projectId: '__default__', name: '人物贴身', sourceTitle: '项目样本蒸馏 04', description: '贴近 POV 感知，用身体反应和有限信息呈现人物状态。', distilledPrompt: '从正向样本中提炼贴身 POV、身体感知和有限信息边界。不得替角色知道未知事实，也不得把样本中的人物表达直接搬入当前正文。', enabled: true, sortOrder: 3, version: 1, createdAt: 0, updatedAt: 0 },
+  {
+    id: 'style-sample-01',
+    projectId: '__default__',
+    name: '冷峻留白',
+    sourceTitle: '项目样本蒸馏 01',
+    description: '克制叙述、低情绪显性表达、依靠动作和留白传递压力。',
+    distilledPrompt:
+      '从正向样本中提炼克制叙述、信息留白和动作承载情绪的写法。不要复制人物、情节、专名或显眼句子，只让当前正文在句法和观察距离上接近这套能力。',
+    enabled: true,
+    sortOrder: 0,
+    version: 1,
+    createdAt: 0,
+    updatedAt: 0
+  },
+  {
+    id: 'style-sample-02',
+    projectId: '__default__',
+    name: '旧城肌理',
+    sourceTitle: '项目样本蒸馏 02',
+    description: '具体环境细节、生活质感和人物关系中的含蓄张力。',
+    distilledPrompt:
+      '从正向样本中提炼环境细节、生活质感和含蓄对话的写法。只迁移观察方式、节奏和细节选择，不复制原作内容。',
+    enabled: true,
+    sortOrder: 1,
+    version: 1,
+    createdAt: 0,
+    updatedAt: 0
+  },
+  {
+    id: 'style-sample-03',
+    projectId: '__default__',
+    name: '悬压推进',
+    sourceTitle: '项目样本蒸馏 03',
+    description: '用句长变化、信息延迟和场景动作持续提高悬念压力。',
+    distilledPrompt:
+      '从正向样本中提炼悬念推进、信息延迟和句长变化。让压力服务当前章节任务，不套用固定开场、转折或收束句式。',
+    enabled: true,
+    sortOrder: 2,
+    version: 1,
+    createdAt: 0,
+    updatedAt: 0
+  },
+  {
+    id: 'style-sample-04',
+    projectId: '__default__',
+    name: '人物贴身',
+    sourceTitle: '项目样本蒸馏 04',
+    description: '贴近 POV 感知，用身体反应和有限信息呈现人物状态。',
+    distilledPrompt:
+      '从正向样本中提炼贴身 POV、身体感知和有限信息边界。不得替角色知道未知事实，也不得把样本中的人物表达直接搬入当前正文。',
+    enabled: true,
+    sortOrder: 3,
+    version: 1,
+    createdAt: 0,
+    updatedAt: 0
+  }
 ]
 
 export type NovelWritingStyleProfileInput = Omit<
@@ -2085,6 +2205,12 @@ export type CreationPhase =
 export type CheckpointType =
   | 'narrative_task'
   | 'review'
+  // 群聊 Moderator 主动暂停：讨论中出现需要用户拍板的分歧。
+  // 载荷 data = { message: 提问, choices?: LLM 给出的候选项文本 }；
+  // 决策按钮固定为 继续(approve) / 终止(reject)，choices 仅作内容展示。
+  // （2026-08-24 修复：此前该类型不在联合内，前端落入 review 兜底且
+  // 内容读取 data 字段而载荷只有 question → 弹出空卡片无法决策。）
+  | 'discussion_pause'
   // AI 编排结果的落库确认：生成阶段只保留临时变更，用户确认后才提交。
   | 'arrange_review'
   // PostWriteGuard 命中（字数失控/模型退化/矩阵缺项等）且未达上限时的重写决策点
@@ -2114,6 +2240,11 @@ export interface CheckpointData {
   resolvedAt?: number
   /** 后端 ConfirmationManager 生成的决策请求 ID（UUID），用于决策端点路由 */
   checkpointId?: string
+  /**
+   * 检查点提问原文（2026-08-24 空检查点修复补充）：discussion_pause 的渲染
+   * 兜底字段——data.message 缺失时回退展示 question。
+   */
+  question?: string
 }
 
 /**
@@ -2154,6 +2285,8 @@ export interface AgentOutput {
     | 'context'
     | 'character'
     | 'moderator'
+    /** lengdu 读感校验（校准者 / Reader / 主作家共用同一气泡类型） */
+    | 'lengdu'
   /** Agent 名称（中文） */
   agentName: string
   /** Agent 的完整输出文本 */
@@ -2212,6 +2345,16 @@ export interface CreationResult {
    * 为 false 时前端不应提供「再次修订」入口。
    */
   canReviseAgain?: boolean
+  /**
+   * status='completed' 时可选：质量门未完全通过，但已按策略保留当前稿落库。
+   * 前端据此在章节上展示「待处理表达问题」标注与修订轮次审计，
+   * 替代旧的"未过审即扣留草稿报错"行为（草稿不再消失）。
+   */
+  qualityWarnings?: {
+    message: string
+    failedItems: QualityGateFailureItem[]
+    revisionRounds: RevisionRoundRecord[]
+  }
   styleTechniqueChecks?: Array<{
     expertId: string
     expertName: string
@@ -2315,7 +2458,15 @@ export interface ChapterChatMetadata {
   /** 工作流运行 ID，用于区分同一章节的多次创作尝试 */
   workflowRunId?: string
   /** 工作流消息类型 */
-  workflowMessageType?: 'run_start' | 'agent' | 'checkpoint' | 'decision' | 'memory' | 'style_technique_checks' | 'lengdu_quality_report' | 'run_end'
+  workflowMessageType?:
+    | 'run_start'
+    | 'agent'
+    | 'checkpoint'
+    | 'decision'
+    | 'memory'
+    | 'style_technique_checks'
+    | 'lengdu_quality_report'
+    | 'run_end'
   /** 工作流中的结构化展示信息（例如 lengdu 的读感质量报告）。 */
   detail?: Record<string, unknown>
   /** 检查点类型 */
@@ -2858,11 +3009,37 @@ export interface ReferenceTokenBudgetEstimate {
   estimatedCost?: { currency: string; min: number; max: number }
   pricingSource: 'provider_config' | 'fallback' | 'unknown'
   tokenizerSource: 'provider' | 'model_family' | 'fallback'
+  /**
+   * 本地预处理产生的章节分包计划。分包始终保留完整章节，
+   * 用于在整本参考文本超过模型上下文时分批处理。
+   */
+  localChunkPlan: ReferenceLocalChunkPlan
   withinLimit: boolean
   excessTokens: number
   excessCharacters: number
   warnings: string[]
   estimateHash: string
+}
+
+export interface ReferenceLocalChunk {
+  /** 仅在本次预处理计划中稳定，不写入参考源正文。 */
+  id: string
+  order: number
+  sectionIds: string[]
+  chapterCount: number
+  characterCount: number
+  estimatedTokens: number
+  /** 单章本身大于目标时，保留章节完整性并单独成包。 */
+  exceedsTarget: boolean
+}
+
+export interface ReferenceLocalChunkPlan {
+  strategy: 'chapter_boundary'
+  targetTokens: number
+  totalTokens: number
+  splitRequired: boolean
+  chunks: ReferenceLocalChunk[]
+  warnings: string[]
 }
 
 export interface ReferenceDistributionSummary {

@@ -735,11 +735,19 @@ function EstimateResult({ estimate }: { estimate: ReferenceTokenBudgetEstimate }
           }
         />
       </div>
+      {estimate.localChunkPlan.splitRequired && (
+        <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+          已按章节在本地分为 {estimate.localChunkPlan.chunks.length} 包，每包目标约{' '}
+          {estimate.localChunkPlan.targetTokens.toLocaleString()} tokens。
+        </div>
+      )}
       <p
         className={`mt-3 font-medium ${estimate.withinLimit ? 'text-success' : 'text-destructive'}`}
       >
         {estimate.withinLimit
-          ? '当前所选文本在模型有效输入预算内。'
+          ? estimate.localChunkPlan.splitRequired
+            ? '整本会按章节边界合并分包处理，单个完整章节均可放入模型输入预算。'
+            : '当前所选文本在模型有效输入预算内。'
           : `超出有效输入预算 ${estimate.excessTokens.toLocaleString()} tokens。`}
       </p>
       {estimate.warnings.length > 0 && (

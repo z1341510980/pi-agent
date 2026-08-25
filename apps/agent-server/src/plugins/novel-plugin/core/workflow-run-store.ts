@@ -167,6 +167,54 @@ export class WorkflowRunStore {
     return row ? this.rowToSnapshot(row) : undefined
   }
 
+  /**
+   * 项目级可续跑 run 列表（每章取最近一条）。
+   *
+   * 供章节视图展示"本章有中断的创作（停在第 X 阶段，含 N 字草稿）"，
+   * 解决中断入口不可见的问题：此前只有 result 还在屏幕上时才能续跑，
+   * 应用重启/切页后用户无从得知哪些章节有半成品。
+   */
+  listResumableByProject(projectId: string): WorkflowRunSnapshot[] {
+    const rows = this.db.prepare(`
+      SELECT id, project_id, chapter_number, status, phase, failed_phase,
+             director_task, director_output, rhythm_suggestion, arranged_entities,
+             writer_draft, final_content, model_id, style_expert_ids, error, resumed_from_run_id,
+             created_at, updated_at
+      FROM novel_workflow_runs
+      WHERE project_id = ? AND phase IS NOT NULL
+        AND status IN ('error', 'running')
+      ORDER BY rowid DESC
+    `).all(projectId) as WorkflowRunRow[]
+    const seen = new Set<number>()
+    const latest: WorkflowRunSnapshot[] = []
+    for (const row of rows) {
+      if (seen.has(row.chapter_number)) continue
+      seen.add(row.chapter_number)
+      latest.push(this.rowToSnapshot(row))
+    }
+    return latest
+  }
+
+  /**
+   * 启动时回收孤儿 running 快照：服务启动瞬间不可能有在跑流程，
+   * 此时仍是 status='running' 的行必然是上次进程退出/重启的残留。
+   * 统一标记为 error（保留 phase 作为续跑入口与 failedPhase），
+   * 避免前端把死 run 当成进行中而永远转圈。
+   *
+   * @returns 回收的 run 数量（用于启动日志观测）
+   */
+  reconcileOrphanRunning(reason: string): number {
+    const result = this.db.prepare(`
+      UPDATE novel_workflow_runs
+      SET status = 'error',
+          failed_phase = COALESCE(failed_phase, phase),
+          error = ?,
+          updated_at = ?
+      WHERE status = 'running'
+    `).run(reason, Math.floor(Date.now() / 1000))
+    return result.changes
+  }
+
   private rowToSnapshot(row: WorkflowRunRow): WorkflowRunSnapshot {
     return {
       id: row.id,

@@ -4,11 +4,13 @@ import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
-import { MAX_REFERENCE_SOURCE_BYTES } from '../core/analysis/reference-analysis.js'
+import { MAX_REFERENCE_SOURCE_BYTES, sampleSectionIdsEvenly } from '../core/analysis/reference-analysis.js'
 import { distillStyleExpertFromReference } from '../core/prompting/style-expert-distiller.js'
 import { measureStyleMetrics } from '../core/analysis/style-measurement.js'
 
 const REFERENCE_PREFLIGHT_BODY_LIMIT = Math.ceil((MAX_REFERENCE_SOURCE_BYTES * 4) / 3) + 64 * 1024
+/** 蒸馏单次输入的章节数上限；超过时服务端按等距自动抽样，不再拒绝请求。 */
+export const MAX_REFERENCE_STYLE_DISTILL_SECTIONS = 500
 
 const preflightSchema = z.discriminatedUnion('inputKind', [
   z.object({
@@ -177,11 +179,24 @@ export function createReferenceAnalysisRoutes(services: NovelServices): RouteDef
       path: '/reference-sources/:sourceId/style-distill-input',
       bodyLimit: 2 * 1024 * 1024,
       handler: async (request: any, reply: any) => {
-        const input = validateBody(z.object({ sectionIds: z.array(z.string().min(1)).min(1).max(30) }), request, reply)
+        const input = validateBody(
+          z.object({
+            sectionIds: z.array(z.string().min(1)).min(1)
+          }),
+          request,
+          reply
+        )
         if (!input) return reply
         return withReferenceError(() => {
-          const { sectionTexts: _sectionTexts, ...sample } = service.getSectionsText(request.params.sourceId, input.sectionIds)
-          return success(sample, request.traceId)
+          const sampled = sampleSectionIdsEvenly(
+            input.sectionIds,
+            MAX_REFERENCE_STYLE_DISTILL_SECTIONS
+          )
+          const sample = service.getSectionsText(request.params.sourceId, sampled)
+          return success(
+            { sourceId: sample.sourceId, sections: sample.sections, text: sample.text },
+            request.traceId
+          )
         })
       }
     },
@@ -190,24 +205,126 @@ export function createReferenceAnalysisRoutes(services: NovelServices): RouteDef
       path: '/reference-sources/:sourceId/style-distill',
       bodyLimit: 2 * 1024 * 1024,
       handler: async (request: any, reply: any) => {
-        const input = validateBody(z.object({
-          sectionIds: z.array(z.string().min(1)).min(1).max(30),
-          notes: z.string().max(2000).optional(),
-          modelId: z.object({ provider: z.string(), modelId: z.string() }).optional(),
-        }), request, reply)
+        const input = validateBody(
+          z.object({
+            sectionIds: z.array(z.string().min(1)).min(1),
+            notes: z.string().max(2000).optional(),
+            modelId: z.object({ provider: z.string(), modelId: z.string() }).optional()
+          }),
+          request,
+          reply
+        )
         if (!input) return reply
         return withReferenceError(async () => {
-          const sample = service.getSectionsText(request.params.sourceId, input.sectionIds)
+          const sampled = sampleSectionIdsEvenly(
+            input.sectionIds,
+            MAX_REFERENCE_STYLE_DISTILL_SECTIONS
+          )
+          const sample = service.getSectionsText(request.params.sourceId, sampled)
           const metrics = measureStyleMetrics(sample.text)
-          const draft = await distillStyleExpertFromReference(services.context, {
-            sourceId: sample.sourceId,
-            sections: sample.sections,
-            text: sample.text,
-            sectionTexts: sample.sectionTexts,
-            metrics,
-            notes: input.notes,
-          }, input.modelId)
-          return success(draft, request.traceId)
+          const source = service.getSource(sample.sourceId)
+          const startedAt = Date.now()
+          let draftName = ''
+          let failure = ''
+          try {
+            const draft = await distillStyleExpertFromReference(
+              services.context,
+              {
+                sourceId: sample.sourceId,
+                sections: sample.sections,
+                text: sample.text,
+                sectionTexts: sample.sectionTexts,
+                metrics,
+                notes: input.notes
+              },
+              input.modelId
+            )
+            draftName = draft.name
+            return success(draft, request.traceId)
+          } catch (error) {
+            failure = error instanceof Error ? error.message : '文风蒸馏失败'
+            throw error
+          } finally {
+            const durationMs = Date.now() - startedAt
+            const taskInput = JSON.stringify({
+              referenceSourceId: source.id,
+              sectionIds: sample.sections.map((section) => section.id),
+              notesProvided: Boolean(input.notes?.trim())
+            })
+            try {
+              services.store.insertAgentLog({
+                projectId: source.projectId,
+                chapterNumber: 0,
+                agentType: 'reference-style-distill',
+                agentName: '参考文风蒸馏',
+                displayAgentType: 'reference-style-distill',
+                displayAgentName: '参考文风蒸馏',
+                phase: 'reference-analysis',
+                systemPrompt: '参考小说文风蒸馏（LLM 调用；原文不写入日志）',
+                chapterContext: '',
+                userMessage: '从参考文本分包样本中蒸馏写作手法。',
+                taskInput,
+                userInstructions: [],
+                tools: [],
+                toolNames: [],
+                askStoryPolicy: 'allOffWithReferences',
+                askStoryEnabled: false,
+                result: draftName ? `已生成文风专家草稿：${draftName}` : '',
+                resultLength: draftName.length,
+                durationMs,
+                status: failure ? 'error' : 'success',
+                error: failure,
+                sessionId: '',
+                operation: 'style_distill',
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                llmProvider: input.modelId?.provider ?? '',
+                llmModel: input.modelId?.modelId ?? '',
+                payloadMessagesChars: 0,
+                payloadToolsChars: 0,
+                payloadToolCount: 0,
+                payloadTotalChars: 0,
+                llmRoundTrips: 1,
+                dataQuality: 'no_data'
+              })
+            } catch (error) {
+              services.context.logger.warn(
+                { error, sourceId: source.id },
+                '文风蒸馏项目日志写入失败'
+              )
+            }
+            try {
+              services.context.agentCallLogger?.record({
+                agentId: 'reference-style-distill',
+                agentName: '参考文风蒸馏',
+                threadId: '',
+                systemPrompt: '参考小说文风蒸馏（LLM 调用；原文不写入日志）',
+                userMessage: '从参考文本分包样本中蒸馏写作手法。',
+                taskInput,
+                tools: '[]',
+                toolNames: '[]',
+                result: draftName ? `已生成文风专家草稿：${draftName}` : '',
+                resultLength: draftName.length,
+                durationMs,
+                status: failure ? 'error' : 'success',
+                error: failure,
+                metadata: JSON.stringify({
+                  projectId: source.projectId,
+                  referenceSourceId: source.id,
+                  operation: 'style_distill',
+                  providerId: input.modelId?.provider ?? null,
+                  modelId: input.modelId?.modelId ?? null
+                })
+              })
+            } catch (error) {
+              services.context.logger.warn(
+                { error, sourceId: source.id },
+                '文风蒸馏通用日志写入失败'
+              )
+            }
+          }
         })
       }
     },
@@ -317,16 +434,27 @@ function optionalInteger(value: unknown): number | undefined {
   return Number(value)
 }
 
+function toReferenceAppError(error: unknown): AppError {
+  if (error instanceof AppError) return error
+  const message = error instanceof Error ? error.message : '参考小说分析失败'
+  if (message.includes('不存在') || message.includes('没有'))
+    return new AppError(ErrorCode.NOT_FOUND, message, 404)
+  if (message.includes('版本冲突') || message.includes('版本过期'))
+    return new AppError(ErrorCode.CONFLICT, message, 409)
+  return new AppError(ErrorCode.BAD_REQUEST, message, 400)
+}
+
 function withReferenceError<T>(operation: () => T): T {
   try {
-    return operation()
+    const result = operation()
+    // 异步操作必须接管 rejection：否则异常绕过本映射，被 Fastify 兜底成无详情的 500
+    if (result instanceof Promise) {
+      return result.catch((error: unknown) => {
+        throw toReferenceAppError(error)
+      }) as T
+    }
+    return result
   } catch (error) {
-    if (error instanceof AppError) throw error
-    const message = error instanceof Error ? error.message : '参考小说分析失败'
-    if (message.includes('不存在') || message.includes('没有'))
-      throw new AppError(ErrorCode.NOT_FOUND, message, 404)
-    if (message.includes('版本冲突') || message.includes('版本过期'))
-      throw new AppError(ErrorCode.CONFLICT, message, 409)
-    throw new AppError(ErrorCode.BAD_REQUEST, message, 400)
+    throw toReferenceAppError(error)
   }
 }

@@ -32,6 +32,12 @@ export interface ChapterContentEditorProps {
    * 流程启动由 workspace 的 runChapterTask({kind:'reverse'}) 承担。
    */
   onReverseArrange?: () => void
+  /**
+   * Ctrl/Cmd+S 保存快捷键是否生效。
+   * keep-alive 下隐藏挂载的工作台必须关闭：不能在其他页面按 Ctrl+S 时
+   * 悄悄保存不可见编辑器的正文。
+   */
+  hotkeysEnabled?: boolean
 }
 
 type SaveState = 'saved' | 'saving' | 'dirty' | 'error'
@@ -60,7 +66,8 @@ export function ChapterContentEditor({
   isCreationActive,
   creationChapterNumber,
   creationChapterContent,
-  onReverseArrange
+  onReverseArrange,
+  hotkeysEnabled = true
 }: ChapterContentEditorProps): ReactElement {
   const playheadChapter = useNovelUiStore((s) => s.playheadChapter)
   const setPlayheadChapter = useNovelUiStore((s) => s.setPlayheadChapter)
@@ -297,6 +304,7 @@ export function ChapterContentEditor({
   // ── Ctrl/Cmd+S：唯一的快捷保存入口 ──
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
+      if (!hotkeysEnabled) return
       if (isCreationActive || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's')
         return
       event.preventDefault()
@@ -304,7 +312,7 @@ export function ChapterContentEditor({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [flushSave, isCreationActive])
+  }, [flushSave, isCreationActive, hotkeysEnabled])
 
   // ── 关闭窗口/页面时保护未保存正文；不在卸载时偷偷写入后端 ──
   useEffect(() => {

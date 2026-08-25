@@ -12,6 +12,7 @@ import { Brain, Check, ChevronRight, CircleHelp, Sparkles } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import { getApi } from '@/api/http-client'
+import { toastWarning } from '@/hooks/use-toast'
 import {
   THINKING_LEVEL_LABELS,
   THINKING_LEVELS,
@@ -102,6 +103,21 @@ export function ModelPicker({ value, onChange, label, compact = false }: ModelPi
     }))),
     [providers],
   )
+
+  // 失效选择自动清理：Provider 模型列表变更（删除/裁剪）后，持久化的旧选择
+  // 会指向不存在的模型——后端会直接报"未找到所选模型"让整次创作失败。
+  // 这里在清单加载后校验一次，失效即恢复默认并提示，而不是等运行时炸掉。
+  useEffect(() => {
+    if (!value || models.length === 0) return
+    const exists = models.some((m) => m.provider === value.provider && m.id === value.modelId)
+    if (!exists) {
+      onChange(null)
+      toastWarning(
+        '模型选择已失效',
+        `${value.provider}/${value.modelId} 不在当前 Provider 配置里，已恢复为默认模型`
+      )
+    }
+  }, [value, models, onChange])
 
   const selectedModel = models.find((model) => model.provider === value?.provider && model.id === value?.modelId)
   const previewModel = models.find((model) => `${model.provider}:${model.id}` === hoveredKey) ?? selectedModel ?? models[0]

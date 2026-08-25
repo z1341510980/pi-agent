@@ -81,12 +81,28 @@ describe('useNovelCreationFlow progress', () => {
       summary: '中段有些卡，未完成独立 Reader 复核。',
     })
 
-    expect(result).toMatchObject({ agentType: 'context', agentName: 'lengdu 读感' })
+    expect(result).toMatchObject({ agentType: 'lengdu', agentName: 'lengdu 读感' })
     expect(result.content).toContain('看懂：通过')
     expect(result.content).toContain('流畅：待关注')
     expect(result.content).toContain('好看：未验证')
     expect(result.content).toContain('独立校准完成；Reader 自审降级')
     expect(result.content).toContain('中段有些卡')
+  })
+
+  it('formats the lengdu reader packet report as a cold-read bubble', async () => {
+    const { formatDetailBubble } = await import('../use-novel-creation-flow')
+
+    const result = formatDetailBubble({
+      kind: 'lengdu_reader_packet',
+      round: 0,
+      packetIndex: 2,
+      packetCount: 5,
+      report: '## 这段读感\n- 看懂：一眼懂\n- 流畅：卡了一下',
+    })
+
+    expect(result).toMatchObject({ agentType: 'lengdu', agentName: 'lengdu Reader' })
+    expect(result.content).toContain('第 1 轮 事件包 2/5')
+    expect(result.content).toContain('流畅：卡了一下')
   })
 
   it.each([
@@ -565,7 +581,8 @@ describe('useNovelCreationFlow progress', () => {
           messageId: 'writer-msg',
           content: '夜色沉下去。',
           hasStreamedText: true,
-          thinking: undefined
+          // 2026-08-24：迟到的思考 delta 也累积，气泡内可展开（不再丢弃）
+          thinking: '迟到的思考'
         })
       )
       // 思考绝不进入章节正文

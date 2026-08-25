@@ -374,11 +374,23 @@ const CHAPTER_ENDING_HOOK_LABELS: Record<string, string> = {
  * 因此本函数需要 export，避免在 CheckpointMessage 中重复格式化逻辑。
  */
 export function formatDetailBubble(detail: Record<string, unknown>): {
-  agentType: 'director' | 'context' | 'memory' | 'arranger' | 'reviser'
+  agentType: 'director' | 'context' | 'memory' | 'arranger' | 'reviser' | 'lengdu'
   agentName: string
   content: string
 } {
   const kind = detail.kind as string
+  if (kind === 'lengdu_reader_packet') {
+    const round = Number(detail.round ?? 0) + 1
+    const packetIndex = Number(detail.packetIndex ?? 0)
+    const packetCount = Number(detail.packetCount ?? 0)
+    const report = String(detail.report ?? '').trim() || '（Reader 未返回本包读感）'
+    const md = [
+      `## 冷读 · 第 ${round} 轮 事件包 ${packetIndex}/${packetCount}`,
+      '',
+      report,
+    ].join('\n')
+    return { agentType: 'lengdu', agentName: 'lengdu Reader', content: md }
+  }
   if (kind === 'lengdu_quality_report') {
     const verdictLabel: Record<string, string> = {
       passed: '通过',
@@ -404,7 +416,7 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
       '',
       `**读者总评**：${String(detail.summary ?? '未返回可展示的 Reader 总评。')}`,
     ].join('\n')
-    return { agentType: 'context', agentName: 'lengdu 读感', content: md }
+    return { agentType: 'lengdu', agentName: 'lengdu 读感', content: md }
   }
   if (kind === 'rhythm_suggestion') {
     const rhythm = detail.rhythm as string
@@ -865,9 +877,9 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             preview: newContent.slice(-200)
           }
         }
-        // 思考 delta 合并到 thinking 字段（正文已开始的跳过：思考不覆盖正文）
+        // 思考 delta 合并到 thinking 字段（2026-08-24：正文开始后仍继续累积，
+        // 思考过程改为气泡内可展开区块展示，不再被正文取代后丢弃）
         for (const [messageId, delta] of thinkingEntries) {
-          if (messagesWithTextRef.current.has(messageId)) continue
           const idx = updated.findIndex((o) => o.messageId === messageId)
           if (idx === -1) continue
           if (updated === prev) updated = [...prev]
@@ -982,13 +994,12 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             ]
           }
           const updated = [...prev]
-          // 首个正文 delta：清空占位文案与思考文本，标记此后展示正文而非 thinking
+          // 首个正文 delta：清空占位文案，标记此后展示正文；思考文本保留（气泡内可展开）
           updated[idx] = {
             ...updated[idx],
             content: '',
             preview: '',
-            hasStreamedText: true,
-            thinking: undefined
+            hasStreamedText: true
           }
           return updated
         })
@@ -1014,11 +1025,12 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
       }
       const messageId = resolveStreamMessageId(rawMessageId)
       if (!delta) return
-      // 正文已开始：思考不再展示（气泡只保留正文，避免交错覆盖）
-      if (messagesWithTextRef.current.has(messageId)) return
+      // 2026-08-24：正文开始后到达的思考 delta 也继续缓冲（气泡内可展开区块展示），
+      // 不再直接丢弃。状态栏"思考中"提示仅在正文未开始时切换。
+      const hasTextStarted = messagesWithTextRef.current.has(messageId)
       const existing = thinkingBufferRef.current.get(messageId) ?? ''
       thinkingBufferRef.current.set(messageId, existing + delta)
-      if (!existing) {
+      if (!existing && !hasTextStarted) {
         // 首个思考 delta：状态栏从"等待 LLM 响应"切换为"思考中"（心跳已失效）。
         // 无 meta 说明是未展示的内部调用（如群聊角色审查），不动状态栏。
         const meta = messageAgentMapRef.current.get(messageId)
@@ -1049,12 +1061,16 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
           if (idx === -1) return prev
           const updated = [...prev]
           const newContent = updated[idx].content + pending
+          const lateThinking = pendingThinking
+            ? (updated[idx].thinking ?? '') + pendingThinking
+            : updated[idx].thinking
           updated[idx] = {
             ...updated[idx],
             content: newContent,
             preview: newContent.slice(-200),
             streaming: false,
-            thinking: undefined
+            // 2026-08-24：迟到的思考 delta 同样保留（气泡内可展开）
+            thinking: lateThinking || undefined
           }
           return updated
         })
@@ -1076,8 +1092,8 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             content: completion,
             preview: completion.slice(-200),
             streaming: false,
-            // 纯思考无正文的消息保留思考供完成态展示；有正文的清掉
-            thinking: messagesWithTextRef.current.has(messageId) ? undefined : mergedThinking
+            // 2026-08-24：思考过程一律保留（气泡内可展开），不再因有正文而丢弃
+            thinking: mergedThinking
           }
           return updated
         })
@@ -1101,6 +1117,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             agentName?: string
             messageId?: string
             message?: string
+            content?: string
             dataChanged?: boolean
             data?: unknown
             detail?: Record<string, unknown>
@@ -1392,6 +1409,31 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
                 ]
               })
             }
+            return
+          }
+          // 群聊主持人点名（2026-08-24）：以完整气泡实时呈现，不再只更新状态栏一行文案
+          if (data?.type === 'agent_output' && data.agentType === 'moderator' && typeof data.content === 'string') {
+            const content = data.content
+            setAgentOutputs((prev) => {
+              const last = prev[prev.length - 1]
+              // 连续点名合并到同一条主持人气泡，避免刷屏
+              if (last && last.agentType === 'moderator' && !last.streaming) {
+                return [
+                  ...prev.slice(0, -1),
+                  { ...last, content: `${last.content}\n\n${content}`, preview: content.slice(0, 100) }
+                ]
+              }
+              return [
+                ...prev,
+                {
+                  agentType: 'moderator',
+                  agentName: data.agentName ?? '主持人',
+                  content,
+                  preview: content.slice(0, 100),
+                  timestamp: nextTimelineTimestamp(evt.timestamp)
+                }
+              ]
+            })
             return
           }
           // 群聊过程事件：scene_change（场景切换）→ 创建 director 系统气泡

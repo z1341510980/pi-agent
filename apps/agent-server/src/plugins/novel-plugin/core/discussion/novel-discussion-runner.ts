@@ -40,6 +40,7 @@ import { buildScenePlanFromSceneDefinitions } from '../chapters/chapter-scene-pl
 import { sanitizeNovelProse } from '../agent-run-utils.js'
 import { createNovelApplyRevisionTool, type RevisionDraftHolder } from '../novel-tools.js'
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from '../novel-tools.js'
+import { createNovelSubmitScenePlanTool, type ScenePlanDraftHolder } from '../novel-tools.js'
 import {
   buildVoiceProfiles,
   type CharacterVoiceProfile,
@@ -171,6 +172,10 @@ export class NovelDiscussionRunner {
 
       // 5. 构建引擎并运行
       const channel = new AgentChannel()
+      // 从 discussionSettingsStore 读取运行时限制（maxRounds/maxRoundsPerScene/characterTemperature），
+      // 覆盖引擎默认 DISCUSSION_LIMITS，让设置页的修改即时生效。
+      // 需在 Moderator 构造前读取：降级协调的强制收敛轮数必须与引擎同源（2026-08-24）。
+      const settings = this.discussionSettingsStore?.get() ?? {}
       const moderator = new Moderator(
         {
           createSession: async (opts) => {
@@ -186,6 +191,11 @@ export class NovelDiscussionRunner {
           logger: this.context.logger,
         },
         options.moderatorModel ?? this.moderatorModel,
+        {
+          maxRoundsPerScene: settings.maxRoundsPerScene,
+          // Moderator 超时可经讨论设置覆盖（思考型模型单次延迟普遍 70-150s）
+          timeoutMs: settings.moderatorTimeoutMs,
+        },
       )
       const discussionEngine = new TeamDiscussionEngine(moderator, channel, {
         createAgUiSession: async (opts) => {
@@ -230,9 +240,7 @@ export class NovelDiscussionRunner {
         error: 'error',
         cancelled: 'cancelled',
       }
-      // 从 discussionSettingsStore 读取运行时限制（maxRounds/maxRoundsPerScene/characterTemperature），
-      // 覆盖引擎默认 DISCUSSION_LIMITS，让设置页的修改即时生效。
-      const settings = this.discussionSettingsStore?.get() ?? {}
+      // 运行时限制已在 Moderator 构造前读取（settings），此处复用同一份。
       const engineOptions: DiscussionOptions = {
         ...options,
         styleExpertIds: options.styleExpertIds,
@@ -261,6 +269,11 @@ export class NovelDiscussionRunner {
           maxRoundsPerScene: settings.maxRoundsPerScene,
           characterTemperature: settings.characterTemperature,
         },
+        // 编排角色白名单（2026-08-24）：矩阵编排了本章角色时，Director 点名中
+        // 白名单外的角色被拦截，不再动态建临时角色出场
+        allowedCharacterMemberIds: arrangedEntities?.characterIds?.length
+          ? arrangedEntities.characterIds.map(id => `char-${id}`)
+          : undefined,
         // 最终整章 Reviewer 已覆盖整体质量门，默认关闭逐角色即时审查，
         // 避免角色数 × 对戏轮数的额外 LLM 调用。底层引擎仍保留显式开启能力。
         reviewCharacterSpeech: false,
@@ -307,6 +320,18 @@ export class NovelDiscussionRunner {
               review: draft.review ?? null,
               styleTechniqueChecks: draft.styleTechniqueChecks,
             }),
+          }
+        },
+        // ⚠️ 工具化方案（2026-08-24 演绎链路修复）：业务层通过 buildScenePlanToolset
+        // 提供 draft + 工具。引擎在规划阶段调用 Director 时注入 novel_submit_scene_plan，
+        // Director 必须调用工具提交结构化场景计划；引擎 converge 后优先读取工具结果，
+        // Markdown 解析只作回退。旧路径让 Director 输出 Markdown 场景拆分再正则解析，
+        // 输出中文数字/表格变体时解析全部失败，scenes=[] 导致整章静默跳过角色演出。
+        buildScenePlanToolset: () => {
+          const draft: ScenePlanDraftHolder = {}
+          return {
+            tools: [createNovelSubmitScenePlanTool(draft)],
+            extractResult: () => draft.plan ?? null,
           }
         },
         onMemberInvocation: (invocation) => {

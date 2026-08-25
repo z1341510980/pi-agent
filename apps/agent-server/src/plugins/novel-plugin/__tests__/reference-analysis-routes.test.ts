@@ -255,4 +255,46 @@ describe('参考小说分析阶段 1 路由闭环', () => {
     expect(parsed.statusCode).toBe(400)
     expect(parsed.json().error.message).toContain('确认有权分析')
   })
+
+  it('整本超过模型上下文时按章节生成本地分包，而非直接阻断', async () => {
+    const chapters = [1, 2, 3].map((index) => `第${index}章\n${'长'.repeat(10_000)}`).join('\n\n')
+    const preflight = await app.inject({
+      method: 'POST',
+      url: `${PREFIX}/projects/${projectId}/reference-sources/preflight`,
+      payload: { inputKind: 'paste', displayName: '长篇参考文本', text: chapters }
+    })
+    const draft = preflight.json().data
+    const options = await app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/reference-sources/${draft.sourceDraftId}/import-options`,
+      payload: {
+        encoding: 'utf-8',
+        retentionPolicy: 'manual_delete',
+        rightsConfirmed: true,
+        version: draft.version
+      }
+    })
+    await app.inject({
+      method: 'POST',
+      url: `${PREFIX}/reference-sources/${draft.sourceDraftId}/parse`,
+      payload: { version: options.json().data.source.version }
+    })
+
+    const estimate = await app.inject({
+      method: 'POST',
+      url: `${PREFIX}/reference-sources/${draft.sourceDraftId}/analysis-estimate`,
+      payload: { providerId: 'provider-1', modelId: 'model-1' }
+    })
+
+    expect(estimate.statusCode).toBe(200)
+    expect(estimate.json().data).toMatchObject({
+      withinLimit: true,
+      excessTokens: 0,
+      localChunkPlan: { strategy: 'chapter_boundary', splitRequired: true }
+    })
+    expect(estimate.json().data.selectedTextTokens).toBeGreaterThan(
+      estimate.json().data.effectiveInputLimit
+    )
+    expect(estimate.json().data.localChunkPlan.chunks).toHaveLength(3)
+  })
 })

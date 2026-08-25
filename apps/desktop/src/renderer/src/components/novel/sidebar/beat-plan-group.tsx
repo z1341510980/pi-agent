@@ -193,11 +193,11 @@ export function BeatPlanGroup({ projectId, volumes }: BeatPlanGroupProps): React
             </Select>
           </div>
           <div className="space-y-1">
-            <Label className="text-nano">规划章数（3-8）</Label>
+            <Label className="text-nano">规划章数（3-100）</Label>
             <Input
               type="number"
               min={3}
-              max={8}
+              max={100}
               value={count}
               onChange={(e) => setCount(e.target.value)}
               className="h-7 text-xs"

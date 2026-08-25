@@ -1304,6 +1304,66 @@ body {
 
 /* ── 动画关键帧 ── */
 
+/* 首页 launchpad 入场（transform/opacity，全局 reduce-motion 规则自动禁用） */
+@keyframes pi-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.pi-rise {
+  animation: pi-rise 0.6s var(--ds-ease-in-out) both;
+}
+
+.pi-rise-1 {
+  animation-delay: 0.06s;
+}
+
+.pi-rise-2 {
+  animation-delay: 0.12s;
+}
+
+.pi-rise-3 {
+  animation-delay: 0.18s;
+}
+
+/* 首页展示卡：辉光漂移 + 弧线节点呼吸 */
+@keyframes pi-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(-26px, 20px, 0);
+  }
+}
+
+.novel-showcase-orb {
+  animation: pi-drift 16s ease-in-out infinite;
+}
+
+@keyframes pi-node-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 0.1;
+  }
+}
+
+.novel-showcase-ring {
+  animation: pi-node-pulse 2.8s ease-in-out infinite;
+}
+
 @keyframes streaming-pulse {
   0%,
   100% {

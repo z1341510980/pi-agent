@@ -162,7 +162,6 @@ export function createNovelServices(context: PluginContext): NovelServices {
     throw new Error('novel 插件需要 confirmation.request 能力（confirmationManager 未注入）')
   }
 
-
   // 1. 创建 NovelStore（依赖 db）
   const store = new NovelStore(db)
   const referenceAnalysisStore = new ReferenceAnalysisStore(db)
@@ -175,14 +174,16 @@ export function createNovelServices(context: PluginContext): NovelServices {
   //     S4-1 对账实测：账本原本完全没有势力/地点的记录，角色/线索/冲突/伏笔也各有缺失，
   //     来源是手工编辑、Memory Agent 工具、矩阵拖拽这些不经过编排器的写入路径。
   //     观察者挂在 NovelStore 门面上，是覆盖所有路径的唯一收口点；记录器本身幂等。
-  store.setChapterProjectionObserver(createChapterProjectionRecorder(memoryStore, {
-    onError: (err, projectId, change) => {
-      context.logger.warn(
-        { err, projectId, entityType: change.entityType, entityId: change.entityId },
-        '章节投影账本记录失败（实体写入已成功，可由对账脚本补齐）',
-      )
-    },
-  }))
+  store.setChapterProjectionObserver(
+    createChapterProjectionRecorder(memoryStore, {
+      onError: (err, projectId, change) => {
+        context.logger.warn(
+          { err, projectId, entityType: change.entityType, entityId: change.entityId },
+          '章节投影账本记录失败（实体写入已成功，可由对账脚本补齐）'
+        )
+      }
+    })
+  )
 
   // 2.6 删除实体时同步清理账本里的多态引用。
   //     story_event_entities.entity_id / memory_events.subject_id 没有外键，
@@ -194,7 +195,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     } catch (err) {
       context.logger.warn(
         { err, projectId, entityType: event.entityType, entityId: event.entityId },
-        '删除实体后清理账本引用失败（可由 cleanup 脚本补做）',
+        '删除实体后清理账本引用失败（可由 cleanup 脚本补做）'
       )
     }
   })
@@ -241,7 +242,14 @@ export function createNovelServices(context: PluginContext): NovelServices {
   // 7.5 先创建 NovelMemoryGenerator（orchestrator 依赖它）
   //     memoryStore 注入用于账本承接：Memory 需要看到「章前状态 + 本章计划变更」
   //     才能做差分，而不是每章从零重新判断实体现在算什么状态。
-  const memoryGenerator = new NovelMemoryGenerator(promptBuilder, promptManager, context, store, engine, memoryStore)
+  const memoryGenerator = new NovelMemoryGenerator(
+    promptBuilder,
+    promptManager,
+    context,
+    store,
+    engine,
+    memoryStore
+  )
   // 插话状态回调需要在 orchestrator 构造时即可写入章节聊天历史。
   const chapterChatStore = new ChapterChatStore(db)
   // 第 8 参 hooks：插话 injected/dropped 生命周期回调，经注册表按 messageId/flowKey
@@ -256,7 +264,7 @@ export function createNovelServices(context: PluginContext): NovelServices {
     memoryGenerator,
     createInterjectDispatchHooks((messageId, status, agentType) => {
       chapterChatStore.updateInterjectStatus(messageId, status, agentType)
-    }),
+    })
   )
 
   // 7.6 创建群聊共创模式组件（依赖 store/memoryStore/promptBuilder/engine/context + memoryGenerator）
@@ -264,18 +272,33 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const discussionSettingsStore = new DiscussionSettingsStore(db)
   const discussionRunStore = new DiscussionRunStore(db)
   const workflowRunStore = new WorkflowRunStore(db)
+  // 启动即回收：此刻不可能有在跑流程，残留 running 必为上次进程退出的孤儿。
+  // 标记为 error（phase 保留为续跑入口），防止前端把死 run 当进行中永远转圈。
+  const orphanRuns =
+    workflowRunStore.reconcileOrphanRunning('服务重启导致创作流程中断；可从断点继续')
+  if (orphanRuns > 0) {
+    context.logger.warn({ count: orphanRuns }, '已回收上次进程残留的创作流程运行记录')
+  }
   const discussionRunner = new NovelDiscussionRunner(
-    store, memoryStore, promptBuilder, engine, context,
+    store,
+    memoryStore,
+    promptBuilder,
+    engine,
+    context,
     discussionSettingsStore.get().moderatorModel,
     memoryGenerator,
-    discussionSettingsStore,
+    discussionSettingsStore
   )
 
   // 7.7 创建章节聊天组件（按章节持久化用户输入 + 自由聊天）
   //     chapterChatStore 依赖 db；chapterChatRunner 依赖 store/promptBuilder/engine/context/chatStore
   const chapterChatRunner = new ChapterChatRunner(
-    store, promptBuilder, engine, context, chapterChatStore,
-    discussionSettingsStore.get().moderatorModel,
+    store,
+    promptBuilder,
+    engine,
+    context,
+    chapterChatStore,
+    discussionSettingsStore.get().moderatorModel
   )
 
   // 7.8 章纲生成只读取领域上下文并返回草稿，不直接写章节或派生状态。
@@ -290,7 +313,14 @@ export function createNovelServices(context: PluginContext): NovelServices {
 
   // 9. 创建 NovelEntityGenerator（通用实体生成器，character 分支委托给 characterGenerator）
   //    依赖 NovelStore 用于 generateAndArrange 落库（角色/冲突/伏笔 + 角色历史）
-  const entityGenerator = new NovelEntityGenerator(promptBuilder, promptManager, context, characterGenerator, store, memoryStore)
+  const entityGenerator = new NovelEntityGenerator(
+    promptBuilder,
+    promptManager,
+    context,
+    characterGenerator,
+    store,
+    memoryStore
+  )
 
   // 9.5 创建 NovelSimilarityScanner（LLM 驱动的相似实体扫描器）
   //     与 store.deduplicateEntities 互补：deduplicateEntities 处理"完全相同"的重复，
@@ -311,13 +341,58 @@ export function createNovelServices(context: PluginContext): NovelServices {
   const referenceAnalysisRuns = new ReferenceAnalysisRunStore(db)
   const referenceProfiles = new ReferenceProfileStore(db)
   const referenceAnalysisWorker = new ReferenceAnalysisRunWorker(
-    context, referenceAnalysisRuns, referenceProfiles, referenceAnalysis,
+    context,
+    referenceAnalysisRuns,
+    referenceProfiles,
+    referenceAnalysis,
+    store
   )
   const referenceTemplates = new ReferenceTemplateStore(db, referenceProfiles)
   const referenceValidationRuns = new ReferenceValidationRunStore(db)
   const referenceValidationWorker = new ReferenceValidationRunWorker(
-    context, referenceValidationRuns, referenceTemplates, referenceProfiles, referenceAnalysis,
+    context,
+    referenceValidationRuns,
+    referenceTemplates,
+    referenceProfiles,
+    referenceAnalysis,
+    store
   )
 
-  return { context, store, memoryStore, promptManager, promptBuilder, relationshipGraph, consistencyAuditor, engine, orchestrator, characterGenerator, entityGenerator, similarityScanner, tools, teamManager, agentManager, confirmationManager, discussionRunner, discussionSettingsStore, discussionRunStore, workflowRunStore, chapterChatStore, chapterChatRunner, outlineGenerator, beatPlanner, referenceAnalysis, referenceAnalysisRuns, referenceAnalysisWorker, referenceProfiles, referenceTemplates, referenceValidationRuns, referenceValidationWorker, timelineRebuildRunner, costReportService, observabilityService, sharedOverlapAnalyzer }
+  return {
+    context,
+    store,
+    memoryStore,
+    promptManager,
+    promptBuilder,
+    relationshipGraph,
+    consistencyAuditor,
+    engine,
+    orchestrator,
+    characterGenerator,
+    entityGenerator,
+    similarityScanner,
+    tools,
+    teamManager,
+    agentManager,
+    confirmationManager,
+    discussionRunner,
+    discussionSettingsStore,
+    discussionRunStore,
+    workflowRunStore,
+    chapterChatStore,
+    chapterChatRunner,
+    outlineGenerator,
+    beatPlanner,
+    referenceAnalysis,
+    referenceAnalysisRuns,
+    referenceAnalysisWorker,
+    referenceProfiles,
+    referenceTemplates,
+    referenceValidationRuns,
+    referenceValidationWorker,
+    timelineRebuildRunner,
+    costReportService,
+    observabilityService,
+    sharedOverlapAnalyzer
+  }
 }

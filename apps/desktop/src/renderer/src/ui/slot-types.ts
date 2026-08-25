@@ -99,7 +99,8 @@ export const BUILTIN_SLOTS = {
   CHAT_TOOL_DETAIL: 'chat.tool.detail',
   RIGHT_PANEL_TAB: 'right-panel.tab',
   WORKSPACE_MAIN: 'workspace.main',
-  PLUGIN_PAGE_TOP: 'plugin-page.top'
+  PLUGIN_PAGE_TOP: 'plugin-page.top',
+  HOME_SHOWCASE: 'home.showcase'
 } as const
 
 export type BuiltinSlot = (typeof BUILTIN_SLOTS)[keyof typeof BUILTIN_SLOTS]

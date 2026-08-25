@@ -35,6 +35,7 @@ import {
 import { motion } from 'framer-motion'
 import { ErrorCard } from '@/components/chat/error-card'
 import { type ModelRef } from './model-picker'
+import { StalledRunBanner } from './stalled-run-banner'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -64,7 +65,7 @@ import type { ChapterChatMessage } from '@/api/novel-client'
 import { useTimelineRebuildStore } from '@/stores/timeline-rebuild-store'
 import { useConversationMessages } from '@/hooks/use-conversation-messages'
 import type { NovelCreationMode, NovelInterjectTargetAgent } from '@repo/shared/novel'
-import { DEFAULT_NOVEL_STYLE_EXPERTS, type NovelStyleExpert } from '@repo/shared/novel'
+import { type NovelStyleExpert } from '@repo/shared/novel'
 import type { MentionOption } from '@/components/shared/conversation'
 import { parseCommand } from './command-parser'
 import { toastError, toastInfo, toastWarning } from '@/hooks/use-toast'
@@ -306,6 +307,8 @@ function QualityGateFailureCard({
 // ── Props ──
 
 export interface NovelConversationPanelProps {
+  /** 当前项目 ID（用于查询本章是否有中断的可续跑创作） */
+  projectId?: string
   /** 当前阶段 */
   phase: CreationPhase
   /** 是否正在运行 */
@@ -357,6 +360,8 @@ export interface NovelConversationPanelProps {
   onStyleExpertsChange?: (expertIds: string[]) => void
   /** 打开文风专家团长期配置 */
   onOpenStyleExperts?: () => void
+  /** 打开召集面板时重新拉取专家列表（新蒸馏的专家立即可见） */
+  onStyleExpertsRefresh?: () => void
   /** 创作模式 */
   creationMode?: 'manual' | 'ai-arrange' | null
   /** 提交检查点决策（comment 为卡片内修改意见，随既有 decision 端点一并提交）；async 时卡片跟踪提交完成做防抖 */
@@ -398,6 +403,7 @@ export interface NovelConversationPanelProps {
 }
 
 export function NovelConversationPanel({
+  projectId,
   phase,
   isRunning,
   progressMessage,
@@ -420,10 +426,11 @@ export function NovelConversationPanel({
   onSendChapterChat,
   onAbortChapterChat,
   chatMentionOptions,
-  styleExperts = DEFAULT_NOVEL_STYLE_EXPERTS,
+  styleExperts = [],
   selectedStyleExpertIds,
   onStyleExpertsChange,
   onOpenStyleExperts,
+  onStyleExpertsRefresh,
   onSubmitCheckpoint,
   onSave,
   onDiscard,
@@ -438,8 +445,9 @@ export function NovelConversationPanel({
   onCancelFlow,
   chapterChatMessages
 }: NovelConversationPanelProps): ReactElement {
-  const effectiveStyleExpertIds = selectedStyleExpertIds
-    ?? styleExperts.filter((expert) => expert.enabled).map((expert) => expert.id)
+  // 默认不召集：专家是本轮显式追加的能力，未选中时只跑项目文风基线。
+  // 传 undefined（父组件未托管选择状态）时同样视为"未召集"，不再默认全选。
+  const effectiveStyleExpertIds = selectedStyleExpertIds ?? []
   // 右栏会话面板在切换到详情/设置时会卸载；模型偏好放在持久化 store，
   // 避免切页后回到会话又回到“默认模型”。
   const creationModelRef = useNovelUiStore((state) => state.selectedAgentModel)
@@ -698,6 +706,14 @@ export function NovelConversationPanel({
         </div>
       </header>
 
+      {/* ── 中断创作提示条：空闲且有可续跑快照时展示，解决"半成品不可见" ── */}
+      <StalledRunBanner
+        projectId={projectId}
+        chapterNumber={chapterNumber}
+        visible={!activeIsRunning && phase === 'idle'}
+        onResume={(runId) => onResumeWorkflow?.(runId)}
+      />
+
       {/* ── 消息流（错误卡经 stickyFooter 吸底，不再压缩消息可视区）── */}
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         <ConversationStream
@@ -789,6 +805,7 @@ export function NovelConversationPanel({
           selectedStyleExpertIds={effectiveStyleExpertIds}
           onStyleExpertsChange={onStyleExpertsChange}
           onOpenStyleExperts={onOpenStyleExperts}
+          onStyleExpertsRefresh={onStyleExpertsRefresh}
             onAbort={() => {
               if (isRunning) handleAbort()
               else onAbortChapterChat?.()

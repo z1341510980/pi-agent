@@ -124,6 +124,92 @@ describe('PluginManager', () => {
     expect(session.setModel).not.toHaveBeenCalled()
   })
 
+  /**
+   * 模拟 Pi AgentSession 的流式守卫：
+   * prompt 生命周期内（含模拟的自动压缩收尾）再次 prompt 会抛
+   * "Agent is already processing"。终态 message_end 先于 promise 落定到达，
+   * 与真实 SDK 行为一致。
+   */
+  function createStreamingGuardSession() {
+    const handlers = new Set<(event: Record<string, unknown>) => void>()
+    let isStreaming = false
+    let turn = 0
+    const prompts: Array<string | undefined> = []
+    const emit = (event: Record<string, unknown>): void => {
+      for (const handler of handlers) handler(event)
+    }
+    return {
+      prompts,
+      session: {
+        subscribe: (handler: (event: Record<string, unknown>) => void) => {
+          handlers.add(handler)
+          return () => handlers.delete(handler)
+        },
+        async prompt(text?: string): Promise<string> {
+          prompts.push(text)
+          if (isStreaming) {
+            throw new Error(
+              "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
+            )
+          }
+          isStreaming = true
+          turn += 1
+          emit({
+            type: 'message_update',
+            assistantMessageEvent: { type: 'text_delta', delta: `turn-${turn}` }
+          })
+          emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } })
+          // 关键：终态事件之后 prompt promise 仍延迟落定，模拟自动压缩等收尾
+          await new Promise((resolve) => setTimeout(resolve, 25))
+          isStreaming = false
+          return `result-${turn}`
+        }
+      }
+    }
+  }
+
+  it('serializes multi-turn prompt() calls so the second turn does not hit the Pi streaming guard', async () => {
+    let context: PluginContext | undefined
+    const fake = createStreamingGuardSession()
+    manager = new PluginManager(createSilentLogger(), eventBus, createMockDb(), '', '', {
+      builtinPlugins: [
+        {
+          plugin: createTestPlugin({
+            name: 'multi-turn-session-test',
+            setupFn: (pluginContext) => {
+              context = pluginContext
+            }
+          })
+        }
+      ]
+    })
+    manager.setSessionStore({
+      getOrCreate: vi.fn().mockResolvedValue({ session: fake.session })
+    } as any)
+    await manager.init()
+    await manager.start()
+
+    const handle = await context!.createSession({ systemPrompt: 'sys', userMessage: 'setup' })
+
+    // 模拟 lengdu Reader：装载档案后按事件包连续多轮 prompt。
+    // 回归背景：waitForFinalAssistantOrPrompt 在终态消息即返回，而上一轮
+    // promptPromise 尚未落定，第二轮直接撞 Pi 的 "Agent is already processing"。
+    const first = await handle.prompt('【正文事件包 1】')
+    const second = await handle.prompt('【正文事件包 2】')
+    const third = await handle.prompt('请给出最终读感。')
+
+    // 句柄返回的是事件流累积的 assistant 文本（text_delta 拼接），不是 SDK 返回值
+    expect(first).toBe('turn-1')
+    expect(second).toBe('turn-2')
+    expect(third).toBe('turn-3')
+    expect(fake.prompts).toEqual([
+      '【正文事件包 1】',
+      '【正文事件包 2】',
+      '请给出最终读感。'
+    ])
+    handle.dispose()
+  })
+
   let eventBus: EventBus
   let manager: PluginManager
 
@@ -458,7 +544,8 @@ describe('PluginManager', () => {
       await manager.init()
       await manager.start()
 
-      await expect(manager.reload('builtin-1')).rejects.toThrow('不支持重载')
+      // 无源码入口的 builtin 依旧被拒绝，文案随热更新改造更新为"没有可重载的源码入口"
+      await expect(manager.reload('builtin-1')).rejects.toThrow('没有可重载的源码入口')
 
       // 关键：拒绝不能是破坏性的 —— 条目仍在，状态未变，teardown 未被调用
       expect(manager.get('builtin-1')?.status).toBe('enabled')

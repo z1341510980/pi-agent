@@ -33,6 +33,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { toastError, toastSuccess } from '@/hooks/use-toast'
+import { StyleDistillLauncher } from './style-distill-launcher'
 import {
   getWritingStyleProfile,
   listWritingStyleExperts,
@@ -45,7 +46,7 @@ import {
   type NovelWritingStyleProfileInput,
   type WritingStylePromptPreview
 } from '@/api/novel-client'
-import { DEFAULT_NOVEL_STYLE_EXPERTS, type NovelStyleExpert } from '@repo/shared/novel'
+import { type NovelStyleExpert } from '@repo/shared/novel'
 
 type EditorSection = 'settings' | 'rules' | 'experts' | 'examples' | 'preview'
 type MarkdownMode = 'edit' | 'preview'
@@ -66,7 +67,8 @@ const DEFAULT_PROFILE: NovelWritingStyleProfileInput = {
   positiveExamples: [],
   negativeExamples: [],
   notes: '',
-  styleExperts: DEFAULT_NOVEL_STYLE_EXPERTS.map((expert) => ({ ...expert }))
+  // 空列表：专家只能由蒸馏产生，占位专家不进生效路径
+  styleExperts: []
 }
 
 const PRESETS: Record<string, Partial<NovelWritingStyleProfileInput>> = {
@@ -125,7 +127,7 @@ function cloneProfile(profile: NovelWritingStyleProfileInput): NovelWritingStyle
     softRules: [...profile.softRules],
     positiveExamples: [...profile.positiveExamples],
     negativeExamples: [...(profile.negativeExamples ?? [])],
-    styleExperts: (profile.styleExperts ?? DEFAULT_NOVEL_STYLE_EXPERTS).map((expert) => ({ ...expert }))
+    styleExperts: (profile.styleExperts ?? []).map((expert) => ({ ...expert }))
   }
 }
 
@@ -285,10 +287,13 @@ function MarkdownField({
 
 export function WritingStyleProfileEditor({
   projectId,
-  mode = 'all'
+  mode = 'all',
+  onExpertsChanged
 }: {
   projectId: string
   mode?: WritingStyleProfileEditorMode
+  /** 专家库发生变化（蒸馏入库/编辑/删除）后通知父级刷新 */
+  onExpertsChanged?: () => void
 }): ReactElement {
   const [form, setForm] = useState<NovelWritingStyleProfileInput>(() =>
     cloneProfile(DEFAULT_PROFILE)
@@ -316,6 +321,8 @@ export function WritingStyleProfileEditor({
   const [expertDraft, setExpertDraft] = useState<NovelStyleExpert | null>(null)
   const [expertSaving, setExpertSaving] = useState(false)
   const [expertVersions, setExpertVersions] = useState<any[]>([])
+  // 蒸馏入口：直接在专家面板发起"选参考源 → 勾章节 → 深度分析 → 入库"
+  const [distillLauncherOpen, setDistillLauncherOpen] = useState(false)
 
   const loadExpertList = useCallback(async (): Promise<NovelStyleExpert[]> => {
     const items = await listWritingStyleExperts(projectId)
@@ -482,6 +489,7 @@ export function WritingStyleProfileEditor({
       })
       setExperts((current) => current.map((expert) => expert.id === saved.id ? saved as NovelStyleExpert : expert))
       setExpertDraft(null)
+      onExpertsChanged?.()
       toastSuccess('文风专家已保存', `当前版本 v${saved.version}`)
     } catch (error) {
       toastError('文风专家保存失败', error instanceof Error ? error.message : '未知错误')
@@ -513,10 +521,11 @@ export function WritingStyleProfileEditor({
       await deleteWritingStyleExpert(projectId, expert.id)
       setExperts((current) => current.filter((item) => item.id !== expert.id))
       setExpertDraft(null)
+      onExpertsChanged?.()
     } catch (error) {
       toastError('文风专家删除失败', error instanceof Error ? error.message : '未知错误')
     }
-  }, [projectId])
+  }, [projectId, onExpertsChanged])
 
   const expertPanel = (
     <div className="mx-auto max-w-4xl space-y-4">
@@ -527,18 +536,29 @@ export function WritingStyleProfileEditor({
             专家来自不同小说或样本的文风蒸馏，不是岗位角色。输入框只负责本轮召集。
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => {
-            setExpertDraft(null)
-            void loadExpertList()
-              .then(setExperts)
-              .catch((error) => toastError('文风专家刷新失败', error instanceof Error ? error.message : '未知错误'))
-          }}
-        >
-          刷新列表
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setDistillLauncherOpen(true)}
+          >
+            <Sparkles className="size-3.5" /> 从参考小说蒸馏
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setExpertDraft(null)
+              void loadExpertList()
+                .then(setExperts)
+                .catch((error) => toastError('文风专家刷新失败', error instanceof Error ? error.message : '未知错误'))
+            }}
+          >
+            刷新列表
+          </Button>
+        </div>
       </div>
       <div className="space-y-2">
         {experts.map((expert) => (
@@ -611,6 +631,22 @@ export function WritingStyleProfileEditor({
           )}
         </section>
       )}
+      <StyleDistillLauncher
+        projectId={projectId}
+        open={distillLauncherOpen}
+        onOpenChange={(next) => {
+          setDistillLauncherOpen(next)
+          // 蒸馏入库或取消后都对齐一次专家列表
+          if (!next) {
+            void loadExpertList().then(setExperts).catch(() => undefined)
+            onExpertsChanged?.()
+          }
+        }}
+        onAccepted={() => {
+          void loadExpertList().then(setExperts).catch(() => undefined)
+          onExpertsChanged?.()
+        }}
+      />
     </div>
   )
 

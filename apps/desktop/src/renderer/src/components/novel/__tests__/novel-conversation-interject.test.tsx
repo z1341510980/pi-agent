@@ -525,7 +525,8 @@ describe('NovelConversationPanel 输入框命令解析与分流', () => {
       '随便聊聊',
       [],
       null,
-      ['style-sample-01', 'style-sample-02', 'style-sample-03', 'style-sample-04'],
+      // 默认不召集任何专家：未显式勾选时只跑项目文风基线（不再默认全选占位专家）
+      [],
     )
   })
 

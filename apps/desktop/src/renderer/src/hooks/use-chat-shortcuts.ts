@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
-import { useShortcut, type ShortcutHandlers } from './use-shortcut'
+import { useShortcut, type ShortcutHandlers, type UseShortcutOptions } from './use-shortcut'
 
 // ── 类型定义 ──
 
@@ -46,19 +46,29 @@ function isEditableTarget(e: KeyboardEvent): boolean {
  * macOS vs Windows 的键位差异由 react-hotkeys-hook 的 `mod` 前缀自动处理
  *（macOS 上 mod = Cmd，Windows/Linux 上 mod = Ctrl）。
  *
- * 与 useNovelWorkspaceShortcuts 不会冲突：聊天与小说工作台不会同时挂载。
+ * 与 useNovelWorkspaceShortcuts 的冲突由 enabled 选项隔离：App 外壳对两个
+ * 工作区做 keep-alive（切页只隐藏不卸载），隐藏挂载的一方必须传
+ * enabled=false 让出按键，否则 Esc 中断 / Ctrl+B 折叠面板会双重触发。
  */
-export function useChatShortcuts(handlers: ChatShortcutHandlers): void {
+export function useChatShortcuts(
+  handlers: ChatShortcutHandlers,
+  options: UseShortcutOptions = {}
+): void {
+  const { enabled = true } = options
+
   // 剥离聊天专属 handler，剩余委托给底层 useShortcut
   const { onShowShortcutHelp, ...baseHandlers } = handlers
-  useShortcut(baseHandlers)
+  useShortcut(baseHandlers, { enabled })
 
-  // 使用 ref 保存最新的 handlers，避免 useHotkeys 闭包陈旧
+  // 使用 ref 保存最新的 handlers/enabled，避免 useHotkeys 闭包陈旧
   const handlersRef = useRef(handlers)
   handlersRef.current = handlers
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
 
   // Cmd/Ctrl+B — 切换左侧栏（与 Cmd/Ctrl+\ 等效的补充绑定）
   useHotkeys('mod+b', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onToggleLeftPanel?.()
@@ -66,6 +76,7 @@ export function useChatShortcuts(handlers: ChatShortcutHandlers): void {
 
   // Cmd/Ctrl+Shift+B — 切换右侧栏（与 Cmd/Ctrl+Shift+\ 等效的补充绑定）
   useHotkeys('mod+shift+b', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onToggleRightPanel?.()
@@ -73,6 +84,7 @@ export function useChatShortcuts(handlers: ChatShortcutHandlers): void {
 
   // Cmd/Ctrl+/ — 显示快捷键帮助（即使在输入框中也触发）
   useHotkeys('mod+/', (e) => {
+    if (!enabledRef.current) return
     e.preventDefault()
     handlersRef.current.onShowShortcutHelp?.()
   }, { enableOnFormTags: true, preventDefault: true }, [])

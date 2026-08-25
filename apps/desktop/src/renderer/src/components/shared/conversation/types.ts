@@ -2,6 +2,7 @@
 export type ConversationAgentType =
   | 'director' | 'writer' | 'reviewer' | 'reviser'
   | 'memory' | 'arranger' | 'context' | 'extractor' | 'moderator' | 'character'
+  | 'lengdu'
 
 /** 统一消息类型，chat 和 novel 共用 */
 export interface ConversationMessage {
@@ -23,10 +24,13 @@ export interface ConversationMessage {
   error?: string
 
   // ── checkpoint 专用 ──
-  // 与共享包 CheckpointType 第一值 'narrative_task' 对齐（不再用旧值 'narrative'）
-  checkpointType?: 'narrative_task' | 'review' | 'arrange_review' | 'post_write_guard' | 'writer_pushback' | 'guard_degraded' | 'chapter_budget'
+  // 与共享包 CheckpointType 逐一对应（不再用旧值 'narrative'）
+  checkpointType?: 'narrative_task' | 'review' | 'discussion_pause' | 'arrange_review' | 'post_write_guard' | 'writer_pushback' | 'guard_degraded' | 'chapter_budget'
   checkpointOptions?: Array<{ label: string; action: string; variant: 'default' | 'outline' | 'destructive' | 'ghost'; description?: string }>
   checkpointResolved?: string
+
+  /** 推理模型思考过程（2026-08-24）：气泡内可展开展示，正文开始后不再丢弃 */
+  thinking?: string
 
   // ── user 专用：插话（对话化交互形态 §3.1）──
   // flow 运行中用户中途反馈的状态徽标：queued=已排队 / injected=已注入 / dropped=已丢弃
@@ -60,6 +64,7 @@ export const AGENT_COLORS: Record<ConversationAgentType, AgentColorConfig> = {
   extractor: { avatarClass: 'bg-amber-500',   badgeClass: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40',    borderColor: 'rgba(245,158,11,0.3)' },
   moderator: { avatarClass: 'bg-pink-500',    badgeClass: 'bg-pink-500/15 text-pink-700 dark:text-pink-300 border-pink-500/40',        borderColor: 'rgba(236,72,153,0.3)' },
   character: { avatarClass: 'bg-rose-500',    badgeClass: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/40',        borderColor: 'rgba(244,63,94,0.3)' },
+  lengdu:    { avatarClass: 'bg-teal-500',    badgeClass: 'bg-teal-500/15 text-teal-700 dark:text-teal-300 border-teal-500/40',        borderColor: 'rgba(20,184,166,0.3)' },
 }
 
 /** Agent 类型对应的中文标签 */
@@ -74,6 +79,7 @@ export const AGENT_LABELS: Record<ConversationAgentType, string> = {
   extractor: '反推',
   moderator: '主持人',
   character: '角色',
+  lengdu: '冷读',
 }
 
 /** 格式化时间戳为 HH:mm */

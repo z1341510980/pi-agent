@@ -5,6 +5,7 @@ import { infiniteCanvasMigrations } from './migrations.js'
 import { createInfiniteCanvasRoutes } from './routes.js'
 import { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
+import { createPromptSourceService } from './prompt-source-service.js'
 import {
   applyCanvasAgentOperations,
   summarizeCanvasAgentOperations,
@@ -50,6 +51,7 @@ export function createInfiniteCanvasPlugin(): Plugin {
     setup(context: PluginContext) {
       const store = new InfiniteCanvasStore(context.db)
       context.registerService('infiniteCanvasStore', store)
+      const promptSourceService = createPromptSourceService(context.db, context)
       for (const route of createInfiniteCanvasRoutes(
         store,
         async ({ prompt, mode, context: graphContext }) => {
@@ -83,7 +85,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
         ({ image, instruction, model, signal }) => {
           if (!context.media?.analyzeImage) throw new Error('视觉理解 Provider 尚未配置')
           return context.media.analyzeImage({ image, instruction, model, signal })
-        }
+        },
+        promptSourceService
       ))
         context.registerRoute(route)
 

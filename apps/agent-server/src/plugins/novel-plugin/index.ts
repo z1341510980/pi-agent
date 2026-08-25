@@ -260,6 +260,15 @@ export function createNovelPlugin(): Plugin {
         priority: 20,
         rendererKey: 'novel.navigation',
       })
+      context.registerPanel({
+        id: 'novel-home-showcase',
+        title: '小说创作',
+        component: 'NovelHomeShowcase',
+        slot: 'home.showcase',
+        scope: 'app',
+        priority: 10,
+        rendererKey: 'novel.home-showcase',
+      })
 
       context.logger.info('小说创作系统插件已初始化')
     },

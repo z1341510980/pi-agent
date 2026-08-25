@@ -54,6 +54,12 @@ export interface NovelCanvasProps {
   onNodeCountChange?: (count: number) => void
   /** 节点删除完成后的回调（删除逻辑在画布内处理：调用 store + API） */
   onDeleteNode?: () => void
+  /**
+   * Delete/Backspace 删除选中节点是否生效。
+   * keep-alive 下隐藏挂载的工作台必须关闭：否则在其他页面按 Backspace
+   * 会删掉不可见画布上仍处于选中态的节点。
+   */
+  hotkeysEnabled?: boolean
 }
 
 export function NovelCanvas({
@@ -64,6 +70,7 @@ export function NovelCanvas({
   onCancelCreation,
   onNodeCountChange,
   onDeleteNode,
+  hotkeysEnabled = true,
 }: NovelCanvasProps): ReactElement {
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const characters = useNovelDataStore((s) => s.characters)
@@ -503,6 +510,7 @@ export function NovelCanvas({
   // 优先删除选中的节点；若未选中节点但选中了边，则删除边
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!hotkeysEnabled) return
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
       // 输入框中不触发删除
       const evtTarget = e.target as HTMLElement | null
@@ -520,7 +528,7 @@ export function NovelCanvas({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedNodeId, selectedNodeType, selectedEdgeId, edges, handleDeleteNode, handleDeleteEdge])
+  }, [hotkeysEnabled, selectedNodeId, selectedNodeType, selectedEdgeId, edges, handleDeleteNode, handleDeleteEdge])
 
   // ── 卸载 / 项目切换前刷新待同步位置 ──
   useEffect(() => {

@@ -67,6 +67,12 @@ type ChatWorkspaceProps = {
   appName: string
   config: BrowserConfig
   onOpenSettings?: () => void
+  /**
+   * 当前视图是否可见。App 外壳对聊天工作台做 keep-alive（切页只隐藏不卸载，
+   * 保住进行中的流式 run 与 WebSocket 推送），隐藏期间必须关闭全局快捷键，
+   * 避免和当前可见页面抢键（Esc 中断、Ctrl+B 折叠面板等）。
+   */
+  active?: boolean
 }
 
 type CompactThreadResponse = {
@@ -89,7 +95,8 @@ const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
 export function ChatWorkspace({
   appName: _appName,
   config: _config,
-  onOpenSettings
+  onOpenSettings,
+  active = true
 }: ChatWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
@@ -741,21 +748,24 @@ export function ChatWorkspace({
     ]
   )
 
-  // 全局快捷键（实现 §9.3 快捷键全表 + 聊天专属绑定）
-  useChatShortcuts({
-    onCommandPalette: toggleCommandPalette,
-    onNewSession: handleNewSession,
-    onOpenSettings: () => onOpenSettings?.(),
-    onToggleDevLog: toggleDevLog,
-    onToggleLeftPanel: toggleLeftPanel,
-    onToggleRightPanel: toggleRightPanel,
-    onPrevSession: handlePrevSession,
-    onNextSession: handleNextSession,
-    onAbort: handleAbort,
-    onFocusInput: handleFocusInput,
-    onTogglePermissionMode: () => void handleTogglePermissionMode(),
-    onShowShortcutHelp: handleShowShortcutHelp
-  })
+  // 全局快捷键（实现 §9.3 快捷键全表 + 聊天专属绑定）；keep-alive 隐藏挂载时让出按键
+  useChatShortcuts(
+    {
+      onCommandPalette: toggleCommandPalette,
+      onNewSession: handleNewSession,
+      onOpenSettings: () => onOpenSettings?.(),
+      onToggleDevLog: toggleDevLog,
+      onToggleLeftPanel: toggleLeftPanel,
+      onToggleRightPanel: toggleRightPanel,
+      onPrevSession: handlePrevSession,
+      onNextSession: handleNextSession,
+      onAbort: handleAbort,
+      onFocusInput: handleFocusInput,
+      onTogglePermissionMode: () => void handleTogglePermissionMode(),
+      onShowShortcutHelp: handleShowShortcutHelp
+    },
+    { enabled: active }
+  )
 
   const health = healthQuery.data
   const isOnline = health?.status === 'online'

@@ -51,6 +51,17 @@ function isEditableTarget(e: KeyboardEvent): boolean {
 
 // ── Hook ──
 
+export interface UseShortcutOptions {
+  /**
+   * false 时忽略全部按键。
+   *
+   * App 外壳对 chat / 插件工作区做 keep-alive（切页只隐藏不卸载），隐藏挂载的
+   * 工作台必须让出按键，否则会和当前可见页面抢同一组快捷键（如 Esc 中断、
+   * Ctrl+B 折叠面板），甚至误触发不可见页面的中断/撤销。
+   */
+  enabled?: boolean
+}
+
 /**
  * 全局快捷键 hook（基于 react-hotkeys-hook）
  *
@@ -69,19 +80,28 @@ function isEditableTarget(e: KeyboardEvent): boolean {
  * 大部分快捷键在可编辑元素中不触发（避免与文本输入冲突），
  * 仅 Cmd/Ctrl+K 和 Esc 例外。
  */
-export function useShortcut(handlers: ShortcutHandlers): void {
-  // 使用 ref 保存最新的 handlers，避免 useHotkeys 闭包陈旧
+export function useShortcut(
+  handlers: ShortcutHandlers,
+  options: UseShortcutOptions = {}
+): void {
+  const { enabled = true } = options
+
+  // 使用 ref 保存最新的 handlers/enabled，避免 useHotkeys 闭包陈旧
   const handlersRef = useRef(handlers)
   handlersRef.current = handlers
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
 
   // Cmd/Ctrl+K — 命令面板（即使在输入框中也触发）
   useHotkeys('mod+k', (e) => {
+    if (!enabledRef.current) return
     e.preventDefault()
     handlersRef.current.onCommandPalette?.()
   }, { enableOnFormTags: true, preventDefault: true }, [])
 
   // Cmd/Ctrl+N — 新建会话
   useHotkeys('mod+n', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onNewSession?.()
@@ -89,6 +109,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+, — 打开设置
   useHotkeys('mod+comma', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onOpenSettings?.()
@@ -96,6 +117,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+D — 切换 DevLog
   useHotkeys('mod+d', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onToggleDevLog?.()
@@ -103,6 +125,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+\ — 切换左栏
   useHotkeys('mod+backslash', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onToggleLeftPanel?.()
@@ -110,6 +133,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+Shift+\ — 切换右栏
   useHotkeys('mod+shift+backslash', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onToggleRightPanel?.()
@@ -117,6 +141,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+[ — 上一会话
   useHotkeys('mod+bracketleft', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onPrevSession?.()
@@ -124,6 +149,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+] — 下一会话
   useHotkeys('mod+bracketright', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onNextSession?.()
@@ -132,6 +158,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
   // Esc — 中断 / 关闭浮层（在非编辑区中断运行；编辑区由 React 组件处理）
   useEffect(() => {
     function handler(e: KeyboardEvent) {
+      if (!enabledRef.current) return
       if (e.key === 'Escape' && !isEditableTarget(e)) {
         if (handlersRef.current.onAbort) {
           e.preventDefault()
@@ -145,6 +172,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+L — 聚焦输入框
   useHotkeys('mod+l', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onFocusInput?.()
@@ -152,6 +180,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+M — 切换权限模式
   useHotkeys('mod+m', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onTogglePermissionMode?.()
@@ -159,6 +188,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+Z — 撤销（编辑器内由 Tiptap 自行处理）
   useHotkeys('mod+z', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onUndo?.()
@@ -166,6 +196,7 @@ export function useShortcut(handlers: ShortcutHandlers): void {
 
   // Cmd/Ctrl+Shift+Z 或 Cmd/Ctrl+Y — 重做
   useHotkeys(['mod+shift+z', 'mod+y'], (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     handlersRef.current.onRedo?.()

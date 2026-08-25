@@ -190,6 +190,7 @@ export interface PluginUiContribution {
     | 'tool.detail'
     | 'trace.detail'
     | 'plugin-page.top'
+    | 'home.showcase'
   scope: 'app' | 'page' | 'session'
   priority: number
   rendererKey: string
@@ -539,6 +540,18 @@ export interface PluginSessionOptions {
   maxTokens?: number
   /** 响应格式：'json' 强制 JSON 输出，但不会移除工具定义；只读 JSON 会话仍需显式 tools: []。 */
   responseFormat?: 'json' | 'text'
+  /**
+   * JSON Schema 结构化输出（方案 A2，structured-outputs-support）。
+   *
+   * 提供后按探测结果注入 `response_format: {type:'json_schema', strict:true}`：
+   * 推理时语法约束解码，合法性与结构同时得到保证（OpenAI 官方端点等支持）。
+   * 探测非 strict 的 provider 自动退回 responseFormat/'json_object' 行为，
+   * 调用方无需自行判断能力。
+   */
+  responseJsonSchema?: {
+    name: string
+    schema: Record<string, unknown>
+  }
   /** LLM 调用超时时间（毫秒），默认 120000（2 分钟）。写作等长文本 Agent 建议设 300000+ */
   timeoutMs?: number
   /**
@@ -807,6 +820,14 @@ export interface PluginManagerOptions {
     catalogId?: string
     config?: Record<string, unknown>
     isolate?: boolean
+    /**
+     * 内置插件的源码入口文件（dev 下为 src/plugins/<dir>/index.ts）。
+     *
+     * 提供后该插件参与热更新：文件变更时按同一套候选先行契约重载。
+     * 未提供（如打包成单文件的构建产物里解析不到源码目录）则退化为
+     * "重载需重启"的旧行为。
+     */
+    filePath?: string
   }>
   /**
    * AgentRuntime 注册表（方案 §9.3）。

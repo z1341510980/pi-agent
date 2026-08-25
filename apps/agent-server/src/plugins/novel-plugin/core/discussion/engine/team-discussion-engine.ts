@@ -38,6 +38,9 @@ import type {
   DiscussionPhase,
   DiscussionResumeState,
   ReviewerOutcome,
+  ScenePlanToolset,
+  SubmittedSceneInput,
+  DiscussionDiagnostics,
 } from './discussion-types.js'
 import { DISCUSSION_LIMITS } from './discussion-types.js'
 import {
@@ -96,6 +99,29 @@ export class TeamDiscussionEngine {
    */
   private acceptingInterjects = true
 
+  /**
+   * 角色发言格式纠正计数（演绎链路诊断，2026-08-24）：
+   * 每次进入 prepareCharacterSpeech 且首次输出未通过校验时 +1，
+   * run/resume 入口重置。随 diagnostics.formatCorrections 对外暴露。
+   */
+  private formatCorrectionCount = 0
+
+  /**
+   * 最近一次编织的台词复用率（P1-2）：由 ensureTranscriptFidelity 写入，
+   * run() 在编织完成后并入 diagnostics.transcriptReuseRate。undefined 表示未检测
+   * （盲写降级或无推演台词）。
+   */
+  private transcriptReuseRate?: number
+
+  /**
+   * 当前推演场景（P1-4a）：runSceneLoop 每进入一个场景时设置，循环结束后清除。
+   * 供 invokeMember 给角色成员常驻注入场景契约，避免场景信息随 10 条滑动窗口滑出。
+   */
+  private currentScene?: SceneDefinition
+
+  /** 是否已对用户发出过"主持人降级"警告（每次 run 只警告一次） */
+  private moderatorDegradeWarned = false
+
   constructor(
     private moderator: Moderator,
     private channel: AgentChannel,
@@ -146,6 +172,15 @@ export class TeamDiscussionEngine {
     let chapterConvergerId: string | undefined
     // 阶段/场景追踪：失败时生成 failedPhase + failedSceneId（acting 断点续跑定位）
     const track: { phase: DiscussionPhase; sceneId?: number } = { phase: 'planning' }
+    // 演出链路诊断（2026-08-24）：让"演出是否真的发生"成为可查询数据
+    this.formatCorrectionCount = 0
+    this.transcriptReuseRate = undefined
+    this.moderatorDegradeWarned = false
+    let planningRetries = 0
+    let sceneSource: DiscussionDiagnostics['sceneSource'] = 'none'
+    // 场景计划工具集：业务层提供时，Director 规划调用会挂载 novel_submit_scene_plan，
+    // converge 后优先读取工具提交结果，Markdown 解析降级为回退。
+    const scenePlan = options.buildScenePlanToolset?.()
 
     try {
       // 记录当前目标，供 invokeMember 注入成员 prefixUserMessage
@@ -163,11 +198,31 @@ export class TeamDiscussionEngine {
         // 以 user 角色追加进去（只追加不重排），Moderator 自主决定如何响应。
         this.drainInterjectQueue(history, options)
         const decision = await this.moderator.decide(goal, history, members, state, options.signal)
-        await this.handleDecision(decision, history, members, options, channelName, { phase: 'planning' })
+        this.noteModeratorDegradation(options, 'planning')
+        await this.handleDecision(decision, history, members, options, channelName, { phase: 'planning', extraTools: scenePlan?.tools })
         rounds++
 
         if (decision.type === 'converge' && decision.scope === 'chapter') {
-          scenes = this.parseScenes(history, members)
+          const collected = this.collectScenes(scenePlan, history, members)
+          sceneSource = collected.source
+          if (collected.scenes.length === 0) {
+            // 纠正性重试一次：显式要求 Director 调用工具提交，不再静默落入盲写
+            planningRetries++
+            const retried = await this.retrySceneCollection(scenePlan, history, members, options)
+            scenes = retried.scenes
+            if (retried.source !== 'none') sceneSource = retried.source
+          } else {
+            scenes = collected.scenes
+          }
+          if (sceneSource === 'markdown') {
+            this.emitProgress(options, 'planning', {
+              type: 'phase_change',
+              data: { message: '⚠️ Director 未通过工具提交场景计划，已回退文本解析；格式不符时演出阶段可能不完整。' },
+            })
+          }
+          // 编排白名单（2026-08-24）：编排了角色清单时，把 Director 点名中
+          // 白名单外的角色过滤掉，不再动态建临时角色出场
+          this.applyCastWhitelist(scenes, history, options, members)
           await this.resolveSceneCharacters(scenes, members, options, channelName)
           chapterConvergerId = decision.agentId
           planningDone = true
@@ -204,17 +259,42 @@ export class TeamDiscussionEngine {
         })
       }
 
+      // ── Phase 2.5：演出产出闸门（2026-08-24）──
+      // 静默盲写是"没有演绎"的直接来源：旧路径在 scenes=[] 或场景零发言时
+      // 无任何用户可见信号。此处统计覆盖度并显式告警；盲写兜底本身保留
+      // （weaveChapter 内），但必须携带警告事件与 transcript 记录。
+      const characterMemberIds = new Set(members.filter(m => m.type === 'character').map(m => m.id))
+      const emptyScenes = scenes.filter(scene =>
+        !history.some(m => m.type === 'member' && m.sceneId === scene.sceneId && characterMemberIds.has(m.fromId)),
+      )
+      const diagnostics = this.buildDiagnosticsSnapshot({
+        sceneSource,
+        scenes,
+        history,
+        members,
+        planningRetries,
+      })
+      if (scenes.length > 0 && emptyScenes.length > 0) {
+        const detail = emptyScenes.map(s => `场景${s.sceneId}「${s.title}」`).join('、')
+        this.emitProgress(options, 'chapter_weaving', {
+          type: 'phase_change',
+          data: { message: `⚠️ ${detail}未产生角色推演，编织时将以场景契约为准补写。` },
+        })
+      }
+
       // ── Phase 3：全章编织（一次性整合所有场景剧本）──
       track.phase = 'chapter_weaving'
       this.emitProgress(options, 'chapter_weaving', { type: 'phase_change', data: { message: '正在编织完整章节' } })
       finalContent = await this.weaveChapter(members, history, scenes, goal, options, chapterConvergerId)
+      // P1-2：编织完成后回填台词复用率（weaveChapter 内部经 ensureTranscriptFidelity 写入）
+      diagnostics.transcriptReuseRate = this.transcriptReuseRate
       this.recordWriterOutput(members, history, finalContent)
 
       // ── Phase 4：最终正文质量门 ──
       track.phase = 'reviewing'
       const qualityResult = await this.reviewFinalChapter(finalContent, members, history, options, goal.targetWords)
       if (qualityResult.status === 'cancelled') {
-        return { status: 'cancelled', transcript: history, scenes, review: qualityResult.review }
+        return { status: 'cancelled', transcript: history, scenes, review: qualityResult.review, diagnostics }
       }
       finalContent = qualityResult.content
 
@@ -224,6 +304,7 @@ export class TeamDiscussionEngine {
         transcript: history,
         scenes,
         review: qualityResult.review,
+        diagnostics,
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -239,6 +320,7 @@ export class TeamDiscussionEngine {
         content: finalContent || undefined,
         transcript: history,
         scenes,
+        diagnostics: this.buildDiagnosticsSnapshot({ sceneSource, scenes, history, members, planningRetries }),
       }
     } finally {
       // 先关闭插话通道再收尾：收尾期间（dropped flush 等）新到插话直接拒绝，
@@ -284,6 +366,8 @@ export class TeamDiscussionEngine {
 
       track.sceneId = scene.sceneId
       track.phase = 'scene_setup'
+      // P1-4a：记录当前场景，供 invokeMember 给角色常驻注入场景契约
+      this.currentScene = scene
       history.push(this.systemMessage(this.buildSceneContext(scene)))
       this.emitProgress(options, 'scene_setup', { type: 'scene_change', data: { scene } })
 
@@ -302,6 +386,7 @@ export class TeamDiscussionEngine {
         // 插话 drain（§3.1）：与规划阶段同口径，场景轮次 decide 前注入。
         this.drainInterjectQueue(history, options)
         const decision = await this.moderator.decide(goal, history, activeMembers, state, options.signal)
+        this.noteModeratorDegradation(options, 'acting')
         await this.handleDecision(decision, history, activeMembers, options, channelName, { phase: 'acting', sceneId: scene.sceneId })
         rounds++
 
@@ -322,6 +407,7 @@ export class TeamDiscussionEngine {
       }
       // 场景推演结束，剧本已在 history 中，直接进入下一场景
     }
+    this.currentScene = undefined
   }
 
   /**
@@ -556,7 +642,7 @@ export class TeamDiscussionEngine {
     members: DiscussionMember[],
     options: DiscussionOptions,
     channelName: string,
-    ctx: { phase: DiscussionPhase; sceneId?: number },
+    ctx: { phase: DiscussionPhase; sceneId?: number; extraTools?: unknown[] },
   ): Promise<void> {
     switch (decision.type) {
       case 'invite': {
@@ -611,6 +697,12 @@ export class TeamDiscussionEngine {
           type: 'phase_change',
           data: { message: moderatorMsg.content },
         })
+        // 主持人点名以完整气泡实时呈现（2026-08-24）：此前只更新状态栏一行文案，
+        // 运行中看不到主持人的调度（持久化气泡要等流程结束落库后才可见）
+        this.emitProgress(options, ctx.phase, {
+          type: 'agent_output',
+          data: { type: 'agent_output', agentType: 'moderator', agentName: '主持人', content: moderatorMsg.content },
+        })
         try {
           const memberPrompt = member.type === 'character'
             ? `${decision.prompt}\n\n主持人的任务只说明本回合关注点，不代表预设结果。你可以拒绝不符合人设、已知信息或当前目标的结论。只演此刻一个动作单元。`
@@ -641,11 +733,18 @@ export class TeamDiscussionEngine {
       }
       case 'pause': {
         this.emitProgress(options, ctx.phase, { type: 'pause', data: { question: decision.question } })
+        // 2026-08-24 空检查点修复：前端渲染读 data 字段、决策按钮按 options 过滤。
+        // LLM 给的 choices 是自由文本（如"方案A/方案B"），只作内容展示；
+        // 可执行按钮固定为 继续(approve) / 终止(reject)，LLM 未给 options 时同样兜底。
         const userReply = await options.onCheckpoint({
           type: 'discussion_pause',
           phase: ctx.phase,
           question: decision.question,
-          options: decision.options,
+          data: {
+            message: decision.question,
+            ...(decision.options?.length ? { choices: decision.options } : {}),
+          },
+          options: ['approve', 'reject'],
         })
         history.push({
           id: `user-${Date.now()}`,
@@ -767,6 +866,11 @@ export class TeamDiscussionEngine {
     this.emitProgress(options, ctx.phase, {
       type: 'phase_change',
       data: { message: moderatorMsg.content },
+    })
+    // 合并点名同样以完整气泡实时呈现（与单角色 invite 同口径）
+    this.emitProgress(options, ctx.phase, {
+      type: 'agent_output',
+      data: { type: 'agent_output', agentType: 'moderator', agentName: '主持人', content: moderatorMsg.content },
     })
 
     for (const batch of batches) {
@@ -913,13 +1017,16 @@ export class TeamDiscussionEngine {
   ): Promise<string> {
     let content = initialContent
     if (!this.isValidCharacterSpeech(content)) {
+      this.formatCorrectionCount++
       this.emitProgress(options, ctx.phase, {
         type: 'phase_change',
         data: { message: `${member.name} 未按剧本格式发言，正在纠正当前发言` },
       })
+      // 2026-08-24 刻板修复：旧重试词命令"重新演出"，实测模型会把 433 字的内容
+      // 压成 29 字的口号交差。改为"保留全部内容、只调整排版"，并放宽到 2-8 行。
       const retry = await this.invokeMember(
         member,
-        `上一条输出不是角色演出。重新演出当前回合，只输出 2-6 行，每行严格使用：[可见动作] “角色台词”。\n不得输出“意图、心理、应对、分析、说明”等标签，不得替其他角色说话。\n\n当前回合：${memberPrompt}`,
+        `上一条输出未通过剧本格式检查。请保留其中的全部信息、台词和行动，只调整排版：每行一个动作单元，格式为 [可见动作] "角色台词"，2-8 行。\n不得输出"意图/心理/应对/分析/说明"等标签或小节标题，不得替其他角色说话，不要删减已有内容。\n\n当前回合：${memberPrompt}`,
         history,
         options,
         ctx,
@@ -988,6 +1095,19 @@ ${reviewResult.rewrite_suggestion}
       : member.buildContextPrompt?.() ?? this.currentGoal?.context ?? ''
     const prefixMessages = (invocationOverrides?.prefixMessages ?? [visibleChapterContext, identityPrompt])
       .filter(message => message.trim().length > 0)
+    // P1-4a（2026-08-24）：演出阶段给角色成员常驻注入当前场景契约。
+    // 场景契约此前只以 system 消息进 history，而角色可见的群聊记录仅最近 10 条，
+    // 场景中段之后角色看不到本场地点/冲突/目标/情绪（Moderator 自己看 15 条，
+    // 会误以为角色仍然知道）。固定前缀不随窗口滑动，且场景内稳定可命中缓存。
+    if (
+      !invocationOverrides
+      && member.type === 'character'
+      && ctx.sceneId != null
+      && this.currentScene
+      && this.currentScene.sceneId === ctx.sceneId
+    ) {
+      prefixMessages.push(this.buildSceneContext(this.currentScene))
+    }
     const transcriptSummary = this.formatTranscriptForMember(history, member.id)
     const userMessage = `${prompt}\n\n---\n\n## 群聊记录\n\n${transcriptSummary}`
     const startTime = Date.now()
@@ -1110,26 +1230,63 @@ ${reviewResult.rewrite_suggestion}
     }
   }
 
+  /**
+   * 角色发言校验（2026-08-24 放宽）。
+   *
+   * 旧版要求每行严格匹配 `[动作] “台词”` 且总行数 ≤6，实测一次运行中 48% 的首次
+   * 发言被误杀（全角括号动作、名字前缀双括号、第 7 行），重试后产出缩水、归一化把
+   * 动作改写成罐头文本——演出在校验层就被销毁。
+   *
+   * 新版只拒绝明显不可用的形态：
+   * - 空输出 / 超长（>12 行）
+   * - 完全没有台词（任何引号内容都没有）
+   * - 提纲/分析式输出（Markdown 标题，或"意图/心理/应对"等元标签行）
+   * 动作与台词的排列组合不再强校验，格式引导交给 role-character-actor 提示词与重试提示。
+   */
   private isValidCharacterSpeech(content: string): boolean {
     const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-    if (lines.length < 1 || lines.length > 6) return false
-    return lines.every(line => (
-      /^\[[^\]\n]{1,100}\]\s*[“「『"][^”」』"\n]{1,300}[”」』"](?:\s*\[PUSHBACK\][^\n]*)?$/.test(line)
-    ))
+    if (lines.length < 1 || lines.length > 12) return false
+    // 必须至少有一句台词（兼容中英日引号）
+    if (!/[“「『"][^”」』"\n]{1,300}[”」』"]/.test(content)) return false
+    // 拒绝提纲式输出：Markdown 标题或以元标签开头的行
+    if (/^#{1,6}\s/m.test(content)) return false
+    if (/^\s*(意图|心理|应对|策略|分析|说明|旁白|备注|提纲)\s*[：:]/m.test(content)) return false
+    return true
   }
 
+  /**
+   * 兜底归一化（仅在重试后仍不合格时使用）。尽量保留原文台词与动作：
+   * - 逐行提取 `[动作] “台词”` 配对原样保留；
+   * - 无动作的裸台词补中性动作 `[X开口]`；
+   * - "台词：/回应：/应对：" 标签值保留（沿用旧版行为）；
+   * - 只有完全没有任何引号台词时才使用罐头兜底句，并记审计日志。
+   * 不再截断到前 3 句、不再把所有动作改写成"按住没有说出口的话"。
+   */
   private normalizeCharacterSpeech(content: string, characterName: string): string {
-    const quoted = [...content.matchAll(/[“「『"]([^”」』"\n]{1,220})[”」』"]/g)]
-      .map(match => match[1].trim())
-      .filter(Boolean)
-      .slice(0, 3)
-    if (quoted.length > 0) {
-      return quoted.map(line => `[${characterName}按住没有说出口的话] “${line}”`).join('\n')
+    const kept: string[] = []
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line) continue
+      const paired = line.match(/^\[([^\]\n]{1,100})\]\s*[“「『"]([^”」』"\n]{1,300})[”」』"]\s*$/)
+      if (paired) {
+        kept.push(`[${paired[1].trim()}] “${paired[2].trim()}”`)
+        continue
+      }
+      for (const match of line.matchAll(/[“「『"]([^”」』"\n]{1,300})[”」』"]/g)) {
+        const quote = match[1].trim()
+        if (quote) kept.push(`[${characterName}开口] “${quote}”`)
+      }
     }
+    if (kept.length > 0) return kept.slice(0, 12).join('\n')
+
     const response = content.match(/(?:应对|回应|台词)\s*[：:]\s*([^\n]{2,180})/)?.[1]
       ?.replace(/^[“「『"]|[”」』"]$/g, '')
       .trim()
     if (response) return `[${characterName}看向对方] “${response}”`
+    this.context.logger.warn(
+      { characterName },
+      '角色发言完全无台词，使用罐头兜底句',
+    )
     return `[${characterName}没有立刻表态] “先把眼前这件事说清楚。”`
   }
 
@@ -1321,6 +1478,149 @@ ${speech}
     return { shouldRewrite: false, reason: '' }
   }
 
+  /** 从角色成员发言中提取引号台词（P1-2 台词复用率检测用） */
+  private collectTranscriptQuotes(history: DiscussionMessage[], members: DiscussionMember[]): string[] {
+    const characterIds = new Set(members.filter(m => m.type === 'character').map(m => m.id))
+    const quotes: string[] = []
+    for (const message of history) {
+      if (message.type !== 'member' || !characterIds.has(message.fromId)) continue
+      for (const match of message.content.matchAll(/[“「『"]([^”」』"\n]{6,120})[”」』"]/g)) {
+        const quote = match[1].trim()
+        if (quote) quotes.push(quote)
+      }
+    }
+    return quotes
+  }
+
+  /** 匹配口径归一化：去空白、标点与符号（允许 Writer 改写句式后仍可命中） */
+  private static normalizeForMatch(text: string): string {
+    return text.replace(/[\s\p{P}\p{S}]+/gu, '')
+  }
+
+  /**
+   * 计算正文对角色推演台词的复用率（P1-2）。
+   * 台词去空白/标点后，任一 8 字窗口出现在正文中即算命中——只检测语义载体的
+   * 存在性，不要求逐字复刻。
+   */
+  private computeTranscriptFidelity(
+    content: string,
+    history: DiscussionMessage[],
+    members: DiscussionMember[],
+  ): { rate: number; totalLines: number; missedLines: string[] } {
+    const quotes = this.collectTranscriptQuotes(history, members)
+    if (quotes.length === 0) return { rate: 1, totalLines: 0, missedLines: [] }
+    const haystack = TeamDiscussionEngine.normalizeForMatch(content)
+    const missedLines: string[] = []
+    let hits = 0
+    for (const quote of quotes) {
+      const needle = TeamDiscussionEngine.normalizeForMatch(quote)
+      let found = false
+      if (needle.length >= 8) {
+        for (let i = 0; i + 8 <= needle.length; i += 2) {
+          if (haystack.includes(needle.slice(i, i + 8))) {
+            found = true
+            break
+          }
+        }
+      } else if (needle.length > 0 && haystack.includes(needle)) {
+        found = true
+      }
+      if (found) hits++
+      else missedLines.push(quote)
+    }
+    return { rate: hits / quotes.length, totalLines: quotes.length, missedLines }
+  }
+
+  /**
+   * 台词复用率闸门（P1-2，2026-08-24）：演出素材进入正文的可验证收据。
+   *
+   * 旧链路里 transcript 全量注入 weave prompt，但 Writer 提示词明确豁免复用义务，
+   * PostWriteGuard 只查字数/复读/角色名出现——实测台词正文复用率仅 15%~44%，
+   * 「别回头，趴下！」这类关键动作台词直接消失且无人发现。
+   *
+   * 现在编织后计算复用率：低于阈值且推演台词足够多（≥ FIDELITY_MIN_QUOTED_LINES）
+   * 时，携带未落地台词清单定向重写一次（PostWriteGuard 照常把关），取两次中
+   * 复用率较高者。结果写入 this.transcriptReuseRate → diagnostics.transcriptReuseRate，
+   * 形成"演出已进正文"的第四态记录。
+   */
+  private async ensureTranscriptFidelity(
+    content: string,
+    writer: DiscussionMember,
+    history: DiscussionMessage[],
+    members: DiscussionMember[],
+    goal: DiscussionGoal,
+    options: DiscussionOptions,
+    originalPrompt: string,
+  ): Promise<string> {
+    const first = this.computeTranscriptFidelity(content, history, members)
+    this.transcriptReuseRate = first.rate
+    if (
+      first.totalLines < DISCUSSION_LIMITS.FIDELITY_MIN_QUOTED_LINES
+      || first.rate >= DISCUSSION_LIMITS.FIDELITY_RATE_THRESHOLD
+    ) {
+      return content
+    }
+
+    const percent = Math.round(first.rate * 100)
+    const listed = first.missedLines
+      .slice(0, DISCUSSION_LIMITS.FIDELITY_MAX_LISTED)
+      .map(line => `- ${line}`)
+      .join('\n')
+    this.emitProgress(options, 'chapter_weaving', {
+      type: 'phase_change',
+      data: { message: `⚠️ 角色台词正文复用率仅 ${percent}%（${first.missedLines.length}/${first.totalLines} 条未落地），正在定向补织。` },
+    })
+    this.context.logger.warn(
+      { rate: first.rate, totalLines: first.totalLines, missedCount: first.missedLines.length },
+      '群聊编织台词复用率低于阈值，触发定向补织重写',
+    )
+
+    const rewritePrompt = `${originalPrompt}
+
+---
+
+## ⚠️ 上一次编织丢弃了过多角色推演台词（当前复用率 ${percent}%）
+
+以下推演台词在正文中找不到踪迹。请重写完整章节正文，把它们之中至少一半自然织入对应场景（可直接引用、可拆成被打断的半句、可嵌入叙述转述），其余确实与场景目标冲突的才允许舍弃：
+
+${listed}
+
+再次强调：推演中每个角色说过的关键台词，其语义都必须在正文中有着落；字数硬约束不变。`
+    try {
+      const rewritten = await this.invokeMember(writer, rewritePrompt, [], options, { phase: 'chapter_weaving' })
+      const guarded = await this.guardAndMaybeRewrite(
+        rewritten, writer, rewritePrompt, options, goal.targetWords, goal.requiredMentions,
+      )
+      const second = this.computeTranscriptFidelity(guarded, history, members)
+      // 取复用率更高的一版；重写退化时不回退内容
+      if (second.rate >= first.rate) {
+        this.transcriptReuseRate = second.rate
+        return guarded
+      }
+      return content
+    } catch (err) {
+      if (options.signal?.aborted) throw err
+      this.context.logger.warn({ err }, '台词定向补织重写失败，保留首次编织正文')
+      return content
+    }
+  }
+
+  /**
+   * 场景推演摘要（P1-3）：给 Reviser 的角色声音基准。
+   * 修订阶段看不到演出素材时，会把 Writer 已落地的角色声音当冗余删掉（二次抹平）。
+   */
+  private buildTranscriptDigest(history: DiscussionMessage[], members: DiscussionMember[]): string {
+    const characterIds = new Set(members.filter(m => m.type === 'character').map(m => m.id))
+    const lines: string[] = []
+    for (const message of history) {
+      if (message.type !== 'member' || !characterIds.has(message.fromId)) continue
+      const sceneLabel = message.sceneId != null ? `（场景${message.sceneId}）` : ''
+      const body = message.content.length > 200 ? `${message.content.slice(0, 200)}…` : message.content
+      lines.push(`[${message.fromName}]${sceneLabel} ${body}`)
+    }
+    return lines.slice(0, 24).join('\n\n')
+  }
+
   /**
    * 对 Writer 编织后的正文执行 PostWriteGuard，命中则重写一次。
    *
@@ -1409,8 +1709,15 @@ ${speech}
     // ⚠️ 这是降级行为，不是 bug。role 注入后 Director 应正确拆场走 Phase 2，
     // 不会走到这里。仅在 Director 不听话时降级，此时只有 Writer 生成一次，
     // 不会出现"双重生成"（双重生成的根因是 role 未注入导致第一个 Agent 直接写正文）。
+    // 2026-08-24：降级不再静默——显式事件 + transcript 记录，让用户与 Writer 都知道
+    // 本章没有角色推演素材。
     const hasAnyScript = sceneScripts.some(s => s.transcript.length > 0)
     if (scenes.length === 0 || !hasAnyScript) {
+      history.push(this.systemMessage('【降级】本章未产生可用的角色推演剧本，Writer 直接基于群聊记录成文。'))
+      this.emitProgress(options, 'chapter_weaving', {
+        type: 'phase_change',
+        data: { message: '⚠️ 未获取到角色推演剧本，Writer 进入盲写降级路径（本章没有角色演出素材）。' },
+      })
       const targetHint = goal.targetWords
         ? `正文必须控制在 ${Math.round(goal.targetWords * 0.85)}-${Math.round(goal.targetWords * 1.30)} 字，目标约 ${goal.targetWords} 字。生成后自行计数并删减或补足。`
         : ''
@@ -1462,8 +1769,12 @@ ${combined}
 
     const result = await this.invokeMember(writer, prompt, [], options, { phase: 'chapter_weaving' })
     // PostWriteGuard：模型退化/字数失控检测，命中则让 Writer 重写一次
-    return this.guardAndMaybeRewrite(
+    const guarded = await this.guardAndMaybeRewrite(
       result, writer, prompt, options, goal.targetWords, goal.requiredMentions,
+    )
+    // P1-2：台词复用率闸门——低于阈值时携带未落地台词清单定向补织一次
+    return this.ensureTranscriptFidelity(
+      guarded, writer, history, members, goal, options, prompt,
     )
   }
 
@@ -1574,6 +1885,9 @@ ${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}\n\n---
     // 旧 applyRevision 回调让 Reviser 输出"原文/修改后"配对文本再正则解析，
     // LLM 不严格遵守格式时会走 full 兜底把"修改意见"当作完整正文落库。
     const toolset = options.buildReviserToolset?.(content)
+    // P1-3（2026-08-24）：Reviser 必须看到角色推演摘要。修订阶段若看不到演出素材，
+    // 会把 Writer 已落地的角色声音当冗余删掉，造成二次抹平。
+    const transcriptDigest = this.buildTranscriptDigest(history, members)
     const rawRevision = await this.invokeMember(
       reviser,
       `请根据审稿意见修订章节，必须通过调用 novel_apply_revision 工具应用修改，不要在对话文本中输出"原文/修改后"配对。${targetWords ? `修订后正文目标约 ${targetWords} 字。` : ''}
@@ -1584,7 +1898,13 @@ ${content}
 
 ## 审稿意见
 
-${report}`,
+${report}${transcriptDigest ? `
+
+## 角色推演记录（修订时的角色声音基准）
+
+以下是小组成员在推演中的原始发言。正文中已落地的台词和动作是其语义的载体：修订可以润色句式，但不得整体删除或替换角色的核心表达。
+
+${transcriptDigest}` : ''}`,
       [],
       options,
       { phase: 'reviewing', extraTools: toolset?.tools },
@@ -1634,6 +1954,200 @@ ${report}`,
   }
 
   /** 解析 Director 输出为场景列表 */
+  /**
+   * 收集场景计划（2026-08-24 演绎链路修复）：
+   * 优先读取 Director 通过 novel_submit_scene_plan 工具提交的结构化计划；
+   * 未提交时回退 Markdown 解析（source='markdown'，调用方必须显式告警）。
+   */
+  private collectScenes(
+    planToolset: ScenePlanToolset | undefined,
+    history: DiscussionMessage[],
+    members: DiscussionMember[],
+  ): { scenes: SceneDefinition[]; source: 'tool' | 'markdown' | 'none' } {
+    const submitted = planToolset?.extractResult()?.scenes ?? []
+    if (submitted.length > 0) {
+      return { scenes: this.toSceneDefinitions(submitted, members), source: 'tool' }
+    }
+    const markdownScenes = this.parseScenes(history, members)
+    if (markdownScenes.length > 0) {
+      return { scenes: markdownScenes, source: 'markdown' }
+    }
+    return { scenes: [], source: 'none' }
+  }
+
+  /** 工具提交的原始场景 → SceneDefinition（角色名映射为成员 ID，未命中记入 unresolvedCharacterNames） */
+  private toSceneDefinitions(inputs: SubmittedSceneInput[], members: DiscussionMember[]): SceneDefinition[] {
+    const nameToId = new Map<string, string>()
+    for (const member of members) {
+      if (member.type === 'character') {
+        nameToId.set(this.normalizeCharacterName(member.name), member.id)
+      }
+    }
+    return inputs.map((input, index) => {
+      const names = input.presentCharacters.map(name => name.trim()).filter(Boolean)
+      const presentCharacters = names
+        .map(name => nameToId.get(this.normalizeCharacterName(name)))
+        .filter((id): id is string => !!id)
+      const unmatchedNames = names.filter(name => !nameToId.has(this.normalizeCharacterName(name)))
+      if (unmatchedNames.length > 0) {
+        this.context.logger.warn(
+          { title: input.title, unmatchedNames, availableCharacters: Array.from(nameToId.keys()) },
+          '场景计划在场角色名匹配不上成员列表，未命中者将走动态角色解析',
+        )
+      }
+      // 工具 schema 无场景编号字段：数组顺序即演出顺序，sceneId 按序分配（1 起）
+      return {
+        sceneId: index + 1,
+        title: input.title,
+        location: input.location,
+        time: input.time,
+        conflict: input.conflict,
+        goal: input.goal,
+        emotion: input.emotion,
+        presentCharacters,
+        presentCharacterNames: names,
+        unresolvedCharacterNames: unmatchedNames,
+      }
+    })
+  }
+
+  /**
+   * 场景计划缺失时的纠正性重试：显式要求 Director 调用工具重新提交一次。
+   * 旧路径在此处直接静默落入盲写；现在至少给模型一次结构化补救机会，
+   * 重试后仍失败才进入盲写降级（且 weaveChapter 会发显式警告）。
+   */
+  private async retrySceneCollection(
+    planToolset: ScenePlanToolset | undefined,
+    history: DiscussionMessage[],
+    members: DiscussionMember[],
+    options: DiscussionOptions,
+  ): Promise<{ scenes: SceneDefinition[]; source: 'tool' | 'markdown' | 'none' }> {
+    const director = members.find(member =>
+      member.type === 'role' && (member.id === 'novel-director' || member.id.includes('director')),
+    )
+    if (!director) return { scenes: [], source: 'none' }
+    const moderatorMsg = this.moderatorMessage(
+      `@${director.name} 你的场景拆分无法被系统读取：既没有调用 novel_submit_scene_plan 工具，文本输出也不符合可解析格式。请立即调用 novel_submit_scene_plan 工具，按顺序提交每个场景的标题、地点、时间、冲突、目标、情绪和在场角色。`,
+    )
+    history.push(moderatorMsg)
+    this.emitProgress(options, 'planning', { type: 'phase_change', data: { message: moderatorMsg.content } })
+    try {
+      await this.invokeMember(
+        director,
+        '上一次输出没有生成可用的场景计划。请立即调用 novel_submit_scene_plan 工具提交本章场景拆分；工具参数会强制校验结构，不要在文本中重复完整计划。',
+        history,
+        options,
+        { phase: 'planning', extraTools: planToolset?.tools },
+      )
+    } catch (err) {
+      if (options.signal?.aborted) throw err
+      this.context.logger.warn({ err }, '场景计划纠正性重试失败')
+      return { scenes: [], source: 'none' }
+    }
+    return this.collectScenes(planToolset, history, members)
+  }
+
+  private moderatorMessage(content: string): DiscussionMessage {
+    return {
+      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      fromId: 'moderator',
+      fromName: '主持人',
+      content,
+      timestamp: Date.now(),
+      type: 'moderator',
+    }
+  }
+
+  /** 演出链路诊断：Moderator 首次降级时对用户发显式警告（每次 run 一次，附失败原因） */
+  private noteModeratorDegradation(options: DiscussionOptions, phase: DiscussionPhase): void {
+    if (this.moderatorDegradeWarned) return
+    if (this.moderator.degradedRounds <= 0) return
+    this.moderatorDegradeWarned = true
+    const reason = this.moderator.lastErrorReason.replace(/\s+/g, ' ').slice(0, 80)
+    this.emitProgress(options, phase, {
+      type: 'phase_change',
+      data: { message: `⚠️ 主持人决策连续失败（${reason || '原因未知'}），已降级为规则协调点名（对戏刺激会变弱）。建议检查群聊设置里的 Moderator 模型，或调大 moderatorTimeoutMs。` },
+    })
+  }
+
+  /**
+   * 出场角色白名单（2026-08-24）：编排了角色清单时过滤 Director 点名。
+   * 以"允许成员的名字→ID 映射"为准双口径过滤：不在白名单的名字从
+   * presentCharacters/presentCharacterNames 中剔除、unresolved 清空，
+   * 并写入 system 警告，让用户与后续 Moderator 都知道该角色被编排约束拦截。
+   */
+  private applyCastWhitelist(
+    scenes: SceneDefinition[],
+    history: DiscussionMessage[],
+    options: DiscussionOptions,
+    members: DiscussionMember[],
+  ): void {
+    const allowed = options.allowedCharacterMemberIds
+    if (!allowed || allowed.length === 0) return
+    const allowedSet = new Set(allowed)
+    const nameToAllowedId = new Map(
+      members
+        .filter(member => member.type === 'character' && allowedSet.has(member.id))
+        .map(member => [this.normalizeCharacterName(member.name), member.id]),
+    )
+    const droppedNames: string[] = []
+    for (const scene of scenes) {
+      const names = scene.presentCharacterNames ?? []
+      if (names.length > 0) {
+        const keptNames: string[] = []
+        const keptIds: string[] = []
+        for (const name of names) {
+          const id = nameToAllowedId.get(this.normalizeCharacterName(name))
+          if (id) {
+            keptNames.push(name)
+            keptIds.push(id)
+          } else {
+            droppedNames.push(name)
+          }
+        }
+        scene.presentCharacterNames = keptNames
+        scene.presentCharacters = keptIds
+        scene.unresolvedCharacterNames = []
+      } else if (scene.presentCharacters.length > 0) {
+        // 无名字口径（旧快照）时按 ID 直接过滤
+        scene.presentCharacters = scene.presentCharacters.filter(id => allowedSet.has(id))
+      }
+    }
+    if (droppedNames.length > 0) {
+      const detail = Array.from(new Set(droppedNames)).join('、')
+      history.push(this.systemMessage(`【编排约束】以下角色不在本章编排清单中，已拦截不出场：${detail}`))
+      this.emitProgress(options, 'planning', {
+        type: 'phase_change',
+        data: { message: `⚠️ 编排外角色已拦截：${detail}（如需让其出场请回到矩阵编排）` },
+      })
+      this.context.logger.warn({ droppedNames }, '编排外角色已被白名单拦截')
+    }
+  }
+
+  /** 汇总演绎链路诊断快照（run 各返回点共用同一口径） */
+  private buildDiagnosticsSnapshot(input: {
+    sceneSource: DiscussionDiagnostics['sceneSource']
+    scenes: SceneDefinition[]
+    history: DiscussionMessage[]
+    members: DiscussionMember[]
+    planningRetries: number
+  }): DiscussionDiagnostics {
+    const { sceneSource, scenes, history, members, planningRetries } = input
+    const characterMemberIds = new Set(members.filter(m => m.type === 'character').map(m => m.id))
+    const emptyCount = scenes.filter(scene =>
+      !history.some(m => m.type === 'member' && m.sceneId === scene.sceneId && characterMemberIds.has(m.fromId)),
+    ).length
+    return {
+      sceneSource,
+      scenesTotal: scenes.length,
+      scenesWithActing: scenes.length - emptyCount,
+      characterSpeeches: history.filter(m => m.type === 'member' && characterMemberIds.has(m.fromId)).length,
+      formatCorrections: this.formatCorrectionCount,
+      planningRetries,
+      moderatorDegradedRounds: this.moderator.degradedRounds,
+    }
+  }
+
   private parseScenes(history: DiscussionMessage[], members: DiscussionMember[]): SceneDefinition[] {
     const directorIds = new Set(
       members
@@ -1753,6 +2267,16 @@ ${report}`,
       scenes.flatMap(scene => scene.unresolvedCharacterNames ?? []),
     ))
     if (unresolvedNames.length === 0 || !options.resolveCharacterMembers) return
+
+    // 编排白名单（2026-08-24）：编排了角色清单时不再动态建临时角色，
+    // 白名单外的名字已在 applyCastWhitelist 拦截；此处兜底防漏。
+    if (options.allowedCharacterMemberIds && options.allowedCharacterMemberIds.length > 0) {
+      this.context.logger.warn(
+        { unresolvedNames, allowedCount: options.allowedCharacterMemberIds.length },
+        '存在编排白名单，跳过动态角色解析',
+      )
+      return
+    }
 
     const resolvedMembers = await options.resolveCharacterMembers(unresolvedNames)
     for (const member of resolvedMembers) {

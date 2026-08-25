@@ -108,12 +108,19 @@ export const CHAPTER_ANCHOR_BUDGET = {
   recentChapterCount: 5,
   /** 无 recap 时用正文开头兜底的字数 */
   recapFallback: 300,
-  /** 上一章结尾取尾部字数 */
-  previousEnding: 400,
+  /**
+   * 上一章结尾取尾部字数。
+   *
+   * 这是 Writer 的"续写语感锚点"：每次创作都是全新会话（无跨章 session），
+   * 模型能接触到的自己前文只有这段逐字原文。400 字只够看到钩子，
+   * 看不到场景切换的节奏和句子呼吸；2400 字覆盖 1-2 个完整场景收尾。
+   * 位于 shared 缓存段内：同一次 run 内各 Agent 复用同一份缓存，增量成本可控。
+   */
+  previousEnding: 2400,
   /** 叙事声音锚点：每章代表片段字数 */
   soundAnchorExcerpt: 200,
-  /** 下一章开头取字数（重写中间章时的兼容锚点） */
-  nextChapterOpening: 400,
+  /** 下一章开头取字数（重写中间章时的兼容锚点；与上一章结尾保持对称） */
+  nextChapterOpening: 1600,
   /** 上一章未兑现钩子条数（必须完整承接） */
   previousChapterHookCount: 3,
   /** 更早遗留钩子条数（仅作债务提醒） */
@@ -179,5 +186,9 @@ export const PROMPT_BUDGET_INVARIANTS: Array<{ name: string; check: () => boolea
   {
     name: '上一章结尾字数不得超过下一章开头字数的 2 倍（前后锚点应对称）',
     check: () => CHAPTER_ANCHOR_BUDGET.previousEnding <= CHAPTER_ANCHOR_BUDGET.nextChapterOpening * 2,
+  },
+  {
+    name: '上一章结尾是续写语感锚点，不得低于一个完整场景的体量（否则 Writer 只能靠摘要想象前文）',
+    check: () => CHAPTER_ANCHOR_BUDGET.previousEnding >= 1200,
   },
 ]

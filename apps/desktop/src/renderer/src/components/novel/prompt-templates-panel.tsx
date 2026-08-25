@@ -169,23 +169,22 @@ export function PromptTemplatesPanel(): ReactElement {
                     <Button
                       type="button"
                       variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-nano"
+                      size="xs"
                       onClick={handleReset}
                       disabled={saving}
                     >
-                      <RotateCcw className="size-3 mr-1" />
+                      <RotateCcw className="size-3" />
                       恢复默认
                     </Button>
                   )}
                   <Button
                     type="button"
-                    size="sm"
-                    className="h-6 px-2 text-nano"
+                    size="xs"
+                    className="disabled:bg-secondary disabled:text-text-secondary"
                     onClick={handleSave}
                     disabled={saving || !dirty}
                   >
-                    <Save className="size-3 mr-1" />
+                    <Save className="size-3" />
                     {saving ? '保存中...' : '保存为本项目覆盖'}
                   </Button>
                 </div>

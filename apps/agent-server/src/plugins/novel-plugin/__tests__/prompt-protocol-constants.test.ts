@@ -14,7 +14,8 @@ import {
   REVIEWER_DIALOGUE_PATTERN,
   REVISER_SILENT_PROTECTION,
   REVISER_NO_NEW_METAPHOR,
-  DISCUSSION_NO_LINE_SCRIPT,
+  DISCUSSION_LINES_MUST_LAND,
+  DISCUSSION_NO_ROBOTIC_SCRIPT,
   BASE_RULES_NO_FIRST_LINE_TEMPLATE,
   BASE_RULES_HUMAN_SAMPLE_PRIORITY,
   WRITER_STYLE_PRIORITY,
@@ -76,9 +77,10 @@ describe('提示词协议常量与提示词文件一致性守卫（P1-5-2 防再
     expect(reviser).toContain(REVISER_SILENT_PROTECTION)
   })
 
-  it('群聊 Writer 不整理成同声台词稿', async () => {
+  it('群聊 Writer：台词留存义务 + 非机械整理风格约束', async () => {
     const discussion = await prompt('role-writer-discussion')
-    expect(discussion).toContain(DISCUSSION_NO_LINE_SCRIPT)
+    expect(discussion).toContain(DISCUSSION_LINES_MUST_LAND)
+    expect(discussion).toContain(DISCUSSION_NO_ROBOTIC_SCRIPT)
   })
 
   it('通用铁律：第一句不强制动作开头 + 人工样本优先', async () => {

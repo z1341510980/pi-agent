@@ -16,7 +16,6 @@ import {
   saveWritingStyleProfile,
 } from '@/api/novel-client'
 import {
-  DEFAULT_NOVEL_STYLE_EXPERTS,
   type NovelStyleExpert,
   type NovelWritingStyleProfile,
   type NovelWritingStyleProfileInput,
@@ -34,7 +33,7 @@ function toInput(profile: NovelWritingStyleProfile, styleExperts: NovelStyleExpe
 
 export function WritingStyleExpertMenu({ projectId, onOpenSettings }: WritingStyleExpertMenuProps): ReactElement {
   const [profile, setProfile] = useState<NovelWritingStyleProfile | null>(null)
-  const [experts, setExperts] = useState<NovelStyleExpert[]>(DEFAULT_NOVEL_STYLE_EXPERTS)
+  const [experts, setExperts] = useState<NovelStyleExpert[]>([])
   const [loading, setLoading] = useState(false)
   const [savingId, setSavingId] = useState<string | null>(null)
 
@@ -43,7 +42,8 @@ export function WritingStyleExpertMenu({ projectId, onOpenSettings }: WritingSty
     try {
       const next = await getWritingStyleProfile(projectId)
       setProfile(next)
-      setExperts(next?.styleExperts?.length ? next.styleExperts : DEFAULT_NOVEL_STYLE_EXPERTS)
+      // 没有蒸馏过就是空列表；不再用占位默认专家撑场面（它们没有手法与证据）
+      setExperts(next?.styleExperts ?? [])
     } catch (error) {
       toastError('文风专家团加载失败', error instanceof Error ? error.message : '未知错误')
     } finally {
@@ -89,6 +89,11 @@ export function WritingStyleExpertMenu({ projectId, onOpenSettings }: WritingSty
       <DropdownMenuContent align="end" className="w-72">
         <DropdownMenuLabel>文风专家团</DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {experts.length === 0 ? (
+          <div className="px-2 py-3 text-[11px] text-muted-foreground">
+            还没有蒸馏出文风专家。打开详细设置从参考小说蒸馏。
+          </div>
+        ) : null}
         {experts.map((expert) => (
           <DropdownMenuCheckboxItem
             key={expert.id}

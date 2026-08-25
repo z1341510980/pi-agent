@@ -19,6 +19,7 @@ import {
   HelloRightPanelContribution,
   NovelWorkspaceContribution,
   NovelNavigationContribution,
+  NovelHomeShowcaseContribution,
   InfiniteCanvasWorkspaceContribution,
   InfiniteCanvasNavigationContribution
 } from '../components/slot/trusted-renderers'
@@ -35,6 +36,7 @@ const RENDERERS: Record<string, React.ComponentType<Record<string, unknown>>> = 
   'builtin.hello-right-panel': HelloRightPanelContribution,
   'novel.workspace': NovelWorkspaceContribution,
   'novel.navigation': NovelNavigationContribution,
+  'novel.home-showcase': NovelHomeShowcaseContribution,
   'infinite-canvas.workspace': InfiniteCanvasWorkspaceContribution,
   'infinite-canvas.navigation': InfiniteCanvasNavigationContribution
 }
@@ -52,7 +54,8 @@ const SLOT_MAP: Partial<Record<PluginUiContribution['slot'], string>> = {
   'workspace.main': BUILTIN_SLOTS.WORKSPACE_MAIN,
   'right-panel.tab': BUILTIN_SLOTS.RIGHT_PANEL_TAB,
   'tool.detail': BUILTIN_SLOTS.CHAT_TOOL_DETAIL,
-  'plugin-page.top': BUILTIN_SLOTS.PLUGIN_PAGE_TOP
+  'plugin-page.top': BUILTIN_SLOTS.PLUGIN_PAGE_TOP,
+  'home.showcase': BUILTIN_SLOTS.HOME_SHOWCASE
 }
 
 /** 需要 key 的 keyed slot；其余按 list 处理（用 id 参与冲突判定） */

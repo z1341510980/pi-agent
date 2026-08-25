@@ -50,6 +50,13 @@ export interface ConversationInputProps {
   selectedStyleExpertIds?: string[]
   onStyleExpertsChange?: (expertIds: string[]) => void
   onOpenStyleExperts?: () => void
+  /**
+   * 打开召集面板时重新拉取专家列表。
+   *
+   * 列表此前只在工作台挂载和参考分析弹窗回调时刷新，新蒸馏或脚本写入的专家
+   * 在当前会话里看不到；每次打开面板都对齐一次服务端，避免"新增的专家没进来"。
+   */
+  onStyleExpertsRefresh?: () => void
 }
 
 /**
@@ -95,6 +102,7 @@ export function ConversationInput({
   selectedStyleExpertIds = [],
   onStyleExpertsChange,
   onOpenStyleExperts,
+  onStyleExpertsRefresh,
 }: ConversationInputProps): ReactElement {
   const [text, setText] = useState('')
   const [mentionOpen, setMentionOpen] = useState(false)
@@ -402,7 +410,7 @@ export function ConversationInput({
         <div className="flex items-center justify-between gap-2 px-4 pb-3">
           <div className="flex min-w-0 items-center gap-2">
             {styleExperts ? (
-              <Popover>
+              <Popover onOpenChange={(open) => { if (open) onStyleExpertsRefresh?.() }}>
                 <PopoverTrigger asChild>
                   <Button type="button" size="sm" variant="outline" className="h-7 gap-1.5 rounded-md px-2 text-[11px]" title="召集文风专家团">
                     <span className="flex -space-x-1">
@@ -420,7 +428,11 @@ export function ConversationInput({
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div>
                       <div className="text-xs font-semibold text-text">本轮召集文风专家</div>
-                      <div className="mt-1 text-[10px] text-muted-foreground">选择参与当前聊天或创作任务的专家</div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        {selectedStyleExpertIds.length === 0
+                          ? '当前未召集：本轮只按项目文风基线创作'
+                          : `已召集 ${selectedStyleExpertIds.length} 个能力，叠加在文风基线之上`}
+                      </div>
                     </div>
                     <Button type="button" size="icon-sm" variant="ghost" onClick={onOpenStyleExperts} title="管理专家团">
                       <Settings2 className="size-3.5" />
@@ -445,7 +457,7 @@ export function ConversationInput({
                         </button>
                       )
                     })}
-                    {styleExperts.length === 0 && <div className="rounded-md border border-dashed border-border p-3 text-center text-[11px] text-muted-foreground">还没有文风专家，点击右上角管理按钮创建。</div>}
+                    {styleExperts.length === 0 && <div className="rounded-md border border-dashed border-border p-3 text-center text-[11px] text-muted-foreground">还没有文风专家，点击右上角管理按钮从参考小说蒸馏。</div>}
                   </div>
                 </PopoverContent>
               </Popover>

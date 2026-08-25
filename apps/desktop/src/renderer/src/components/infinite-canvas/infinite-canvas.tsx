@@ -56,6 +56,12 @@ export interface InfiniteCanvasProps {
   onCanvasDoubleClick?: (event: React.MouseEvent) => void
   onContextMenu?: (event: React.MouseEvent) => void
   onDropFiles?: (event: ReactDragEvent<HTMLDivElement>) => void
+  /**
+   * 空格/Ctrl 临时反转工具的按键监听是否生效。
+   * keep-alive 下隐藏挂载时必须关闭：Space 分支带全局 preventDefault，
+   * 会吞掉其他页面上聚焦按钮的空格激活。
+   */
+  hotkeysEnabled?: boolean
   children: ReactNode
 }
 
@@ -72,6 +78,7 @@ export function InfiniteCanvas({
   onCanvasDoubleClick,
   onContextMenu,
   onDropFiles,
+  hotkeysEnabled = true,
   children
 }: InfiniteCanvasProps): React.ReactElement {
   const [isSpacePressed, setIsSpacePressed] = useState(false)
@@ -103,6 +110,10 @@ export function InfiniteCanvas({
   const onCanvasDeselectRef = useRef(onCanvasDeselect)
   onCanvasDeselectRef.current = onCanvasDeselect
 
+  // ref 保持最新值：监听器只绑定一次，不因 prop 变化重挂
+  const hotkeysEnabledRef = useRef(hotkeysEnabled)
+  hotkeysEnabledRef.current = hotkeysEnabled
+
   // ── 空格 / Ctrl 临时反转当前工具 ──
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null): boolean =>
@@ -112,6 +123,7 @@ export function InfiniteCanvas({
       (target instanceof Element && Boolean(target.closest("[contenteditable='true']")))
 
     const handleKeyDown = (event: KeyboardEvent): void => {
+      if (!hotkeysEnabledRef.current) return
       if (event.code === 'Space' && !isEditableTarget(event.target)) {
         event.preventDefault()
         setIsSpacePressed(true)
@@ -119,6 +131,7 @@ export function InfiniteCanvas({
       if (event.key === 'Control') setIsControlPressed(true)
     }
     const handleKeyUp = (event: KeyboardEvent): void => {
+      if (!hotkeysEnabledRef.current) return
       if (event.code === 'Space') setIsSpacePressed(false)
       if (event.key === 'Control') setIsControlPressed(false)
     }

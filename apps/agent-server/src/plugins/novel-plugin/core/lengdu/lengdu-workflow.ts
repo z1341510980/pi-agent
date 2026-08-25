@@ -1,22 +1,81 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import type { PluginContext, PluginSessionOptions } from '../../../../core/plugin/plugin-types.js'
+import { fileURLToPath } from 'node:url'
+import type { AgUiEventSink } from '@repo/protocol/events'
+import type {
+  AgUiSessionHandle,
+  PluginContext,
+  PluginSessionOptions
+} from '../../../../core/plugin/plugin-types.js'
+import {
+  addLlmUsage,
+  extractLlmUsageFromMessage,
+  hasLlmUsage,
+  type LlmUsageSnapshot
+} from '../agent-run-utils.js'
+
+export type LengduStage = 'calibrator' | 'reader' | 'revision'
 
 export interface LengduWorkflowOptions {
   projectId: string
   chapterNumber: number
   content: string
-  skillPath: string
+  /**
+   * 显式 lengdu Skill 路径（PI_LENGDU_SKILL_PATH / 项目内 .claude/skills/lengdu）。
+   * 提供时档案从 `<skillDir>/references/` 读取（用户可调）；缺省或读取失败时
+   * 回退到随插件分发的内置档案（core/lengdu/profiles），不再静默跳过整个工作流。
+   */
+  skillPath?: string
   signal?: AbortSignal
   modelId?: PluginSessionOptions['modelId']
-  onProgress?: (message: string) => void
+  /** AG-UI sink：传入时各阶段经 createAgUiSession 流式推送 TEXT_MESSAGE_*。 */
+  emit?: AgUiEventSink
+  /** 过程事件：状态行 / 阶段启动 / Reader 包级读感，由编排层映射为前端进度。 */
+  onEvent?: (event: LengduFlowEvent) => void
+  /** 阶段调用结束回调：编排层负责 insertAgentLog 落库与单章预算记账。 */
+  onStageLog?: (log: LengduStageLog) => void
   onDegraded?: (event: LengduDegradationEvent) => void
   onFailure?: (event: LengduFailureEvent) => void
 }
 
+export type LengduFlowEvent =
+  | { kind: 'status'; stage: LengduStage; message: string }
+  | {
+      kind: 'stage_start'
+      stage: LengduStage
+      round: number
+      messageId: string
+      agentName: string
+    }
+  | {
+      kind: 'packet_report'
+      round: number
+      packetIndex: number
+      packetCount: number
+      report: string
+    }
+
+/** 单次阶段调用的可观测记录；usage 为该阶段全部 LLM 往返之和。 */
+export interface LengduStageLog {
+  stage: LengduStage
+  /** reader 第几轮首读（0 起）；calibrator / revision 恒为 0。 */
+  round: number
+  systemPrompt: string
+  /** 首条用户消息（reader 为档案装载消息；分包内容不重复计入）。 */
+  userMessage: string
+  result: string
+  durationMs: number
+  status: 'success' | 'error' | 'cancelled'
+  error?: string
+  sessionId?: string
+  usage?: LlmUsageSnapshot
+  payloadTotalChars: number
+  llmRoundTrips: number
+}
+
 export interface LengduDegradationEvent {
-  stage: 'calibrator' | 'reader'
+  stage: Exclude<LengduStage, 'revision'>
   error: unknown
   traceId: string
   content: string
@@ -24,7 +83,7 @@ export interface LengduDegradationEvent {
 }
 
 export interface LengduFailureEvent {
-  stage: 'revision'
+  stage: Extract<LengduStage, 'revision'>
   error: unknown
   traceId: string
   content: string
@@ -73,10 +132,24 @@ interface CalibrationResult {
 // 第二轮用"新的 Reader 复核修订稿"，避免同一个 Reader 固化首读印象。
 const MAX_READER_REVISIONS = 2
 
+const STAGE_TIMEOUT_MS = 300_000
+
+/** 各阶段对外展示名；编排层落 AgentLog 时复用，避免两处口径漂移。 */
+export const LENGDU_STAGE_AGENT_NAMES: Record<LengduStage, string> = {
+  calibrator: 'lengdu 校准者',
+  reader: 'lengdu Reader',
+  revision: 'lengdu 主作家',
+}
+
+const STAGE_AGENT_NAMES = LENGDU_STAGE_AGENT_NAMES
+
 /**
  * Execute the isolation rules encoded by the bundled lengdu skill. The workflow
- * deliberately creates fresh plugin Sessions rather than reusing the Writer's
+ * deliberately creates fresh AG-UI sessions rather than reusing the Writer's
  * session: calibration and Reader must not inherit the outline or author intent.
+ *
+ * 所有阶段都走 `createAgUiSession` 底座：前端能收到 agent_start + 流式正文，
+ * 编排层能拿到 usage/payload 计量并统一落 AgentLog 与单章预算。
  */
 export class LengduWorkflow {
   constructor(private readonly context: PluginContext) {}
@@ -92,19 +165,17 @@ export class LengduWorkflow {
 
     for (let round = 0; round <= MAX_READER_REVISIONS; round += 1) {
       options.signal?.throwIfAborted()
-      options.onProgress?.(
-        round === 0
-          ? 'lengdu Reader 正在按事件包进行独立首读...'
-          : 'lengdu 正在用新的 Reader 复核修订稿...'
-      )
-      const reader = await this.readAsReader(options, references, content)
+      this.emitStatus(options, 'reader', round === 0
+        ? 'lengdu Reader 正在按事件包进行独立首读...'
+        : 'lengdu 正在用新的 Reader 复核修订稿...')
+      const reader = await this.readAsReader(options, references, content, round)
       readerReports.push(reader.report)
       usedIndependentReader ||= reader.independent
 
       if (!reader.independent || readerPassed(reader.report)) break
       if (round === MAX_READER_REVISIONS) break
 
-      options.onProgress?.('lengdu 主作家正在依据读感重建必要范围...')
+      this.emitStatus(options, 'revision', 'lengdu 主作家正在依据读感重建必要范围...')
       content = await this.revise(options, references, content, reader.report, calibrationReport)
       revisionCount += 1
     }
@@ -130,34 +201,63 @@ export class LengduWorkflow {
     references: LengduReferences
   ): Promise<CalibrationResult> {
     options.signal?.throwIfAborted()
-    options.onProgress?.('lengdu 作者侧校准者正在独立检查正文...')
+    this.emitStatus(options, 'calibrator', 'lengdu 作者侧校准者正在独立检查正文...')
     const startedAt = Date.now()
     const trace = this.trace(options, 'calibrator')
+    let profile = ''
     try {
-      const calibratorProfile = references.read('author-calibrator-profile-v0.2.md')
-      const session = await this.context.createSession({
+      profile = references.read('author-calibrator-profile-v0.2.md')
+      const userMessage = [
+        '阅读当前正文并按随附档案提交校准记录。',
+        '',
+        '## 校准者档案',
+        profile,
+        '',
+        '## 当前正文',
+        options.content
+      ].join('\n')
+      const stage = await this.openStageSession(options, {
+        stage: 'calibrator',
+        round: 0,
         systemPrompt: '你是本次独立作者侧校准者。只处理随后的档案与当前正文，不使用任何工具。',
-        userMessage: [
-          '阅读当前正文并按随附档案提交校准记录。',
-          '',
-          '## 校准者档案',
-          calibratorProfile,
-          '',
-          '## 当前正文',
-          options.content
-        ].join('\n'),
-        tools: [],
+        userMessage,
         trace,
-        signal: options.signal,
-        modelId: options.modelId,
-        timeoutMs: 300_000
       })
       try {
-        return { report: await session.prompt(), independent: true }
+        const report = await stage.handle.session.prompt()
+        stage.finish()
+        this.emitStageLog(options, {
+          stage: 'calibrator',
+          round: 0,
+          systemPrompt: stage.systemPrompt,
+          userMessage,
+          result: report,
+          durationMs: Date.now() - startedAt,
+          status: 'success',
+          sessionId: stage.handle.sessionId,
+          usage: stage.readUsage(),
+          payloadTotalChars: stage.payload.totalChars,
+          llmRoundTrips: stage.payload.roundTrips,
+        })
+        return { report, independent: true }
       } finally {
-        session.dispose()
+        stage.dispose()
       }
     } catch (error) {
+      const aborted = options.signal?.aborted === true
+      this.emitStageLog(options, {
+        stage: 'calibrator',
+        round: 0,
+        systemPrompt: profile,
+        userMessage: '',
+        result: '',
+        durationMs: Date.now() - startedAt,
+        status: aborted ? 'cancelled' : 'error',
+        error: error instanceof Error ? error.message : String(error),
+        usage: undefined,
+        payloadTotalChars: 0,
+        llmRoundTrips: 0,
+      })
       if (options.signal?.aborted) throw error
       this.notifyDegradation(options, {
         stage: 'calibrator',
@@ -177,43 +277,89 @@ export class LengduWorkflow {
   private async readAsReader(
     options: LengduWorkflowOptions,
     references: LengduReferences,
-    content: string
+    content: string,
+    round: number
   ): Promise<ReaderResult> {
-    let session: Awaited<ReturnType<PluginContext['createSession']>> | undefined
     const startedAt = Date.now()
-    const trace = this.trace(options, 'reader')
+    const trace = this.trace(options, 'reader', round)
     try {
       const readerProfile = references.read('reader-profile-v0.4.md')
       const packets = splitIntoReadingPackets(content)
-      session = await this.context.createSession({
+      const setupMessage = [
+        '完整阅读以下 Reader 档案。之后正文会按原顺序分包发送。',
+        '每次只依据目前收到的文字，严格使用档案中的输出格式。',
+        '不得索取后文、提供改写、评价 AI 味或检测结果。收到【全文结束】前只返回当前事件包读感。',
+        '',
+        '## Reader 档案',
+        readerProfile
+      ].join('\n')
+      const stage = await this.openStageSession(options, {
+        stage: 'reader',
+        round,
         systemPrompt: '你是本次干净的普通 Reader。只按收到的文字首读，不使用任何工具。',
-        userMessage: [
-          '完整阅读以下 Reader 档案。之后正文会按原顺序分包发送。',
-          '每次只依据目前收到的文字，严格使用档案中的输出格式。',
-          '不得索取后文、提供改写、评价 AI 味或检测结果。收到【全文结束】前只返回当前事件包读感。',
-          '',
-          '## Reader 档案',
-          readerProfile
-        ].join('\n'),
-        tools: [],
+        userMessage: setupMessage,
         trace,
-        signal: options.signal,
-        modelId: options.modelId,
-        timeoutMs: 300_000
       })
 
-      // First send the neutral Reader setup. Subsequent prompt(message) calls
-      // then append exactly one event packet to this isolated Session.
-      await session.prompt()
+      let report = ''
+      try {
+        // First send the neutral Reader setup. Subsequent prompt(message) calls
+        // then append exactly one event packet to this isolated Session.
+        // （底座已把相邻 prompt 的完整生命周期串行化，分包多轮不再撞上
+        // Pi 的 "Agent is already processing" 守卫。）
+        await stage.handle.session.prompt()
 
-      for (let index = 0; index < packets.length; index += 1) {
-        options.signal?.throwIfAborted()
-        const finalMarker = index === packets.length - 1 ? '\n\n【全文结束】' : ''
-        await session.prompt(`【正文事件包 ${index + 1}】\n${packets[index]}${finalMarker}`)
+        for (let index = 0; index < packets.length; index += 1) {
+          options.signal?.throwIfAborted()
+          const finalMarker = index === packets.length - 1 ? '\n\n【全文结束】' : ''
+          const packetReport = await stage.handle.session.prompt(
+            `【正文事件包 ${index + 1}】\n${packets[index]}${finalMarker}`
+          )
+          options.onEvent?.({
+            kind: 'packet_report',
+            round,
+            packetIndex: index + 1,
+            packetCount: packets.length,
+            report: packetReport.trim(),
+          })
+        }
+        report = await stage.handle.session.prompt(
+          '请只按 Reader 档案中的“全文输出”格式，给出最终读感。'
+        )
+        stage.finish()
+      } finally {
+        stage.dispose()
       }
-      const report = await session.prompt('请只按 Reader 档案中的“全文输出”格式，给出最终读感。')
+
+      this.emitStageLog(options, {
+        stage: 'reader',
+        round,
+        systemPrompt: stage.systemPrompt,
+        userMessage: setupMessage,
+        result: report,
+        durationMs: Date.now() - startedAt,
+        status: 'success',
+        sessionId: stage.handle.sessionId,
+        usage: stage.readUsage(),
+        payloadTotalChars: stage.payload.totalChars,
+        llmRoundTrips: stage.payload.roundTrips,
+      })
       return { report, independent: true }
     } catch (error) {
+      const aborted = options.signal?.aborted === true
+      this.emitStageLog(options, {
+        stage: 'reader',
+        round,
+        systemPrompt: '',
+        userMessage: '',
+        result: '',
+        durationMs: Date.now() - startedAt,
+        status: aborted ? 'cancelled' : 'error',
+        error: error instanceof Error ? error.message : String(error),
+        usage: undefined,
+        payloadTotalChars: 0,
+        llmRoundTrips: 0,
+      })
       if (options.signal?.aborted) throw error
       this.notifyDegradation(options, {
         stage: 'reader',
@@ -231,8 +377,6 @@ export class LengduWorkflow {
           '## 最终读感\n- 看懂：未完成独立验证\n- 流畅：未完成独立验证\n- 好看：未完成独立验证\n- 一句话总评：Reader 会话未完成，属于自审降级模式。',
         independent: false
       }
-    } finally {
-      session?.dispose()
     }
   }
 
@@ -245,39 +389,70 @@ export class LengduWorkflow {
   ): Promise<string> {
     const startedAt = Date.now()
     const trace = this.trace(options, 'revision')
-    let session: Awaited<ReturnType<PluginContext['createSession']>> | undefined
     try {
       const writerProfile = references.read('writer-profile-v0.3.md')
       const revisionProtocol = references.read('writer-revision-protocol.md')
-      session = await this.context.createSession({
+      const userMessage = [
+        '请保留既定事实、核心事件、人物关系与文风，只重建读感确实受阻的最小自然叙事范围。',
+        '不要逐条机械照改，不要为了人工感制造错别字、逻辑漏洞或无效细节。',
+        '',
+        '## 作家人格档案',
+        writerProfile,
+        '',
+        '## 当前正文',
+        content,
+        '',
+        '## 普通 Reader 最终读感',
+        readerReport,
+        ...(calibrationReport
+          ? ['', '## 作者侧校准候选（仅作证据，采纳与范围由你判断）', calibrationReport]
+          : []),
+        '',
+        '## 修改协议',
+        revisionProtocol
+      ].join('\n')
+      const stage = await this.openStageSession(options, {
+        stage: 'revision',
+        round: 0,
         systemPrompt: '你是成熟中文小说作家。只输出修订后的完整正文，不使用工具。',
-        userMessage: [
-          '请保留既定事实、核心事件、人物关系与文风，只重建读感确实受阻的最小自然叙事范围。',
-          '不要逐条机械照改，不要为了人工感制造错别字、逻辑漏洞或无效细节。',
-          '',
-          '## 作家人格档案',
-          writerProfile,
-          '',
-          '## 当前正文',
-          content,
-          '',
-          '## 普通 Reader 最终读感',
-          readerReport,
-          ...(calibrationReport
-            ? ['', '## 作者侧校准候选（仅作证据，采纳与范围由你判断）', calibrationReport]
-            : []),
-          '',
-          '## 修改协议',
-          revisionProtocol
-        ].join('\n'),
-        tools: [],
+        userMessage,
         trace,
-        signal: options.signal,
-        modelId: options.modelId,
-        timeoutMs: 300_000
       })
-      return await session.prompt()
+      try {
+        const revised = await stage.handle.session.prompt()
+        stage.finish()
+        this.emitStageLog(options, {
+          stage: 'revision',
+          round: 0,
+          systemPrompt: stage.systemPrompt,
+          userMessage,
+          result: revised,
+          durationMs: Date.now() - startedAt,
+          status: 'success',
+          sessionId: stage.handle.sessionId,
+          usage: stage.readUsage(),
+          payloadTotalChars: stage.payload.totalChars,
+          llmRoundTrips: stage.payload.roundTrips,
+        })
+        return revised
+      } finally {
+        stage.dispose()
+      }
     } catch (error) {
+      const aborted = options.signal?.aborted === true
+      this.emitStageLog(options, {
+        stage: 'revision',
+        round: 0,
+        systemPrompt: '',
+        userMessage: '',
+        result: '',
+        durationMs: Date.now() - startedAt,
+        status: aborted ? 'cancelled' : 'error',
+        error: error instanceof Error ? error.message : String(error),
+        usage: undefined,
+        payloadTotalChars: 0,
+        llmRoundTrips: 0,
+      })
       if (options.signal?.aborted) throw error
       this.notifyFailure(options, {
         stage: 'revision',
@@ -287,21 +462,110 @@ export class LengduWorkflow {
         durationMs: Date.now() - startedAt,
       })
       throw error
-    } finally {
-      session?.dispose()
     }
   }
 
-  private trace(options: LengduWorkflowOptions, stage: 'calibrator' | 'reader' | 'revision'): NonNullable<PluginSessionOptions['trace']> {
+  /**
+   * 通过底座工厂打开一个阶段会话：StreamEmitter 已订阅并向前端流式推送，
+   * 这里只额外订阅 usage、累积 payload 计量，并在结束时补 finishTextMessage。
+   */
+  private async openStageSession(
+    options: LengduWorkflowOptions,
+    args: {
+      stage: LengduStage
+      round: number
+      systemPrompt: string
+      userMessage: string
+      trace: NonNullable<PluginSessionOptions['trace']>
+    }
+  ): Promise<{
+    handle: AgUiSessionHandle
+    systemPrompt: string
+    payload: { totalChars: number; roundTrips: number }
+    readUsage: () => LlmUsageSnapshot | undefined
+    finish: () => void
+    dispose: () => void
+  }> {
+    const sink: AgUiEventSink = options.emit ?? (() => {})
+    const payload = { totalChars: 0, roundTrips: 0 }
+    let capturedUsage: LlmUsageSnapshot | undefined
+    const handle = await this.context.createAgUiSession({
+      systemPrompt: args.systemPrompt,
+      userMessage: args.userMessage,
+      tools: [],
+      trace: args.trace,
+      signal: options.signal,
+      modelId: options.modelId,
+      timeoutMs: STAGE_TIMEOUT_MS,
+      promptCacheScope: `${novelTraceSessionId(options.projectId, options.chapterNumber)}:lengdu:${args.stage}`,
+      emit: sink,
+      onPayloadStats: (stats) => {
+        payload.roundTrips += 1
+        payload.totalChars += stats.totalChars
+      },
+    })
+    const unsubscribeUsage = handle.session.subscribe((event: Record<string, unknown>) => {
+      if (event.type !== 'message_end') return
+      const message = (event as { message?: Record<string, unknown> }).message
+      if (!message || message.role !== 'assistant') return
+      const next = extractLlmUsageFromMessage(message)
+      if (next) capturedUsage = addLlmUsage(capturedUsage, next)
+    })
+    options.onEvent?.({
+      kind: 'stage_start',
+      stage: args.stage,
+      round: args.round,
+      messageId: handle.messageId,
+      agentName: STAGE_AGENT_NAMES[args.stage],
+    })
+    let finished = false
     return {
-      sessionId: `novel:chapter:${options.projectId}:${options.chapterNumber}`,
+      handle,
+      systemPrompt: args.systemPrompt,
+      payload,
+      readUsage: () => (hasLlmUsage(capturedUsage) ? capturedUsage : undefined),
+      finish: () => {
+        if (finished) return
+        finished = true
+        try {
+          handle.streamEmitter.finishTextMessage()
+        } catch {
+          /* 无文本时 finish 是空操作 */
+        }
+      },
+      dispose: () => {
+        unsubscribeUsage()
+        handle.dispose()
+      },
+    }
+  }
+
+  private emitStatus(options: LengduWorkflowOptions, stage: LengduStage, message: string): void {
+    options.onEvent?.({ kind: 'status', stage, message })
+  }
+
+  private emitStageLog(options: LengduWorkflowOptions, log: LengduStageLog): void {
+    try {
+      options.onStageLog?.(log)
+    } catch (logError) {
+      this.context.logger.warn(
+        { projectId: options.projectId, chapterNumber: options.chapterNumber, err: logError, stage: log.stage },
+        'lengdu 阶段日志回调失败',
+      )
+    }
+  }
+
+  private trace(options: LengduWorkflowOptions, stage: LengduStage, round = 0): NonNullable<PluginSessionOptions['trace']> {
+    return {
+      sessionId: novelTraceSessionId(options.projectId, options.chapterNumber),
       runId: `lengdu:${stage}:${randomUUID()}`,
       metadata: {
         source: 'lengdu',
         projectId: options.projectId,
         chapterNumber: options.chapterNumber,
         stage,
-        agentName: stage === 'calibrator' ? 'lengdu 校准者' : stage === 'reader' ? 'lengdu Reader' : 'lengdu 主作家',
+        ...(stage === 'reader' ? { round } : {}),
+        agentName: STAGE_AGENT_NAMES[stage],
       },
     }
   }
@@ -329,17 +593,35 @@ export class LengduWorkflow {
   }
 }
 
-class LengduReferences {
-  private readonly root: string
+function novelTraceSessionId(projectId: string, chapterNumber: number): string {
+  return `novel:chapter:${projectId}:${chapterNumber}`
+}
 
-  constructor(skillPath: string) {
-    this.root = join(dirname(skillPath), 'references')
+/**
+ * 档案解析：显式 Skill 的 references 目录优先（用户可热调），
+ * 缺省或文件缺失时回退到随插件分发的内置档案。
+ */
+class LengduReferences {
+  private readonly externalRoot?: string
+
+  constructor(skillPath?: string) {
+    this.externalRoot = skillPath ? join(dirname(skillPath), 'references') : undefined
   }
 
   read(name: string): string {
-    return readFileSync(join(this.root, name), 'utf-8')
+    const candidates = [
+      ...(this.externalRoot ? [join(this.externalRoot, name)] : []),
+      join(BUNDLED_PROFILES_DIR, name)
+    ]
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) continue
+      return readFileSync(candidate, 'utf-8')
+    }
+    throw new Error(`lengdu 档案缺失: ${name}（尝试过: ${candidates.join(', ')}）`)
   }
 }
+
+const BUNDLED_PROFILES_DIR = join(dirname(fileURLToPath(import.meta.url)), 'profiles')
 
 function readerPassed(report: string): boolean {
   return /看懂：通过/.test(report) && /流畅：顺畅/.test(report) && /好看：想马上继续/.test(report)

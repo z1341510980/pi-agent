@@ -60,7 +60,8 @@ export class PluginUiRegistry {
       [BUILTIN_SLOTS.CHAT_TOOL_DETAIL, { kind: 'keyed', scope: 'session-maybe' }],
       [BUILTIN_SLOTS.RIGHT_PANEL_TAB, { kind: 'list', scope: 'root' }],
       [BUILTIN_SLOTS.WORKSPACE_MAIN, { kind: 'keyed', scope: 'root' }],
-      [BUILTIN_SLOTS.PLUGIN_PAGE_TOP, { kind: 'list', scope: 'root' }]
+      [BUILTIN_SLOTS.PLUGIN_PAGE_TOP, { kind: 'list', scope: 'root' }],
+      [BUILTIN_SLOTS.HOME_SHOWCASE, { kind: 'list', scope: 'root' }]
     ]
     for (const [name, spec] of builtins) this.declareSlot(name, spec, '(built-in)')
   }

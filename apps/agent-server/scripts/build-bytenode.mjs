@@ -522,6 +522,8 @@ async function main() {
   const resources = [
     { src: join(ROOT, 'src/core/i18n/locales'), dest: join(DIST, 'locales') },
     { src: join(ROOT, 'src/plugins/novel-plugin/core/prompts'), dest: join(DIST, 'prompts') },
+    // lengdu 内置读感档案：运行时按模块同级 profiles/ 目录解析（与 prompts 同约定）
+    { src: join(ROOT, 'src/plugins/novel-plugin/core/lengdu/profiles'), dest: join(DIST, 'profiles') },
   ]
   for (const { src, dest } of resources) {
     if (existsSync(src)) {

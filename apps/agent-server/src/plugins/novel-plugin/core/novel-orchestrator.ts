@@ -82,7 +82,7 @@ import { baseTargetOf, resolveWordBudget } from './chapters/word-budget-resolver
 import { ON_DEMAND_LIMITS } from './prompting/entity-summary.js'
 import { degradeChunks, materializeDegradedChunks, type DegradableChunk } from './prompting/context-budget.js'
 import { buildScenePlanFromNarrativeTask } from './chapters/chapter-scene-plan-adapter.js'
-import { LengduWorkflow } from './lengdu/lengdu-workflow.js'
+import { LengduWorkflow, LENGDU_STAGE_AGENT_NAMES } from './lengdu/lengdu-workflow.js'
 import { persistNovelFailureAudit } from './observability/novel-error-audit.js'
 
 import { buildWriterRewritePlan } from './chapters/writer-rewrite-plan.js'
@@ -718,6 +718,21 @@ export class NovelOrchestrator {
         )
       }
       run.directorTask = directorTask
+      // 回写章节表：把批准的导演任务描述落库为 chapter.narrativeTask。
+      // SEMI 共享层（formatChapterInfo）读的是章节表字段——若停留在创建时的
+      // 「待补充」占位符，会输出「当前任务尚待规划」，与 Writer suffix 里
+      // 注入的完整任务自相矛盾，稀释模型对任务指令的遵从。
+      // 尽力而为：写回失败只告警，不阻断创作主流程。
+      if (chapter?.id && directorTask.description) {
+        try {
+          this.store.updateChapter(chapter.id, { narrativeTask: directorTask.description })
+        } catch (writeBackError) {
+          this.context.logger.warn(
+            { err: writeBackError, projectId, chapterNumber },
+            '叙事任务回写章节表失败（不影响本次创作）',
+          )
+        }
+      }
       currentPhase = 'writing'
 
       // 阶段边界快照 1：Director 已批准。此后任何失败都可从 Writer 阶段续跑。
@@ -805,7 +820,6 @@ export class NovelOrchestrator {
       let bestWriterCandidate: { content: string; score: number } | undefined
       // lengdu 是独立的“作者侧校准 → Reader → 修订 → 新 Reader”工作流，
       // 只在本次完成初稿后运行，不能作为 Writer 的附加说明混进正文生成。
-      const lengduSkillPath = this.promptBuilder.getLengduSkillPath?.()
       const MAX_PUSHBACK = 1 // 限制推回 1 次，避免无限循环
 
       while (true) {
@@ -1165,8 +1179,15 @@ export class NovelOrchestrator {
 
       // reviewing 快照是在 lengdu 处理完成后保存的；续跑时绝不能让已读过
       // 该版本的工作流再执行一次，否则会伪造“新 Reader”独立性。
-      if (lengduSkillPath && !(resume?.entry === 'reviewing' && resume.writerDraft)) {
+      if (!(resume?.entry === 'reviewing' && resume.writerDraft)) {
         const lengduModelId = options.modelId ?? parseNovelModelRef(run.projectModelId)
+        const lengduSkillPath = this.promptBuilder.getLengduSkillPath?.()
+        // 档案来源显式告知：外部 Skill 缺失时回退到插件内置档案，不再静默跳过。
+        if (!lengduSkillPath) {
+          this.emitProgress(options, 'writing', 'phase_change', {
+            message: '未找到外部 lengdu Skill（PI_LENGDU_SKILL_PATH 或 .claude/skills/lengdu），使用插件内置读感档案。',
+          })
+        }
         const lengduResult = await new LengduWorkflow(this.context).run({
           projectId,
           chapterNumber,
@@ -1174,7 +1195,87 @@ export class NovelOrchestrator {
           skillPath: lengduSkillPath,
           signal: options.signal,
           modelId: lengduModelId,
-          onProgress: message => this.emitProgress(options, 'writing', 'phase_change', { message }),
+          emit: options.emit,
+          onEvent: event => {
+            switch (event.kind) {
+              case 'status':
+                this.emitProgress(options, 'writing', 'phase_change', { message: event.message })
+                break
+              case 'stage_start':
+                // 与 runAgentOnce 相同的 agent_start 契约：先于首 token 发射，
+                // 前端据此把 TEXT_MESSAGE_* 流式增量挂到对应气泡。
+                this.emitProgress(options, 'writing', 'agent_start', {
+                  agentType: 'lengdu',
+                  agentName: event.agentName,
+                  messageId: event.messageId,
+                  message: `${event.agentName} 已启动...`,
+                })
+                break
+              case 'packet_report':
+                this.emitProgress(options, 'writing', 'phase_change', {
+                  message: `lengdu Reader 第 ${event.round + 1} 轮：事件包 ${event.packetIndex}/${event.packetCount} 读感已返回`,
+                  detail: {
+                    kind: 'lengdu_reader_packet',
+                    round: event.round,
+                    packetIndex: event.packetIndex,
+                    packetCount: event.packetCount,
+                    report: event.report,
+                  },
+                })
+                break
+            }
+          },
+          onStageLog: log => {
+            // 统一计量：AgentLog 面板可见 + 单章预算计入（此前 lengdu 的全部
+            // LLM 调用都绕过 recordLlmCall，成本闸门系统性低估）。
+            try {
+              this.store.insertAgentLog({
+                projectId,
+                chapterNumber,
+                agentType: 'lengdu',
+                agentName: LENGDU_STAGE_AGENT_NAMES[log.stage],
+                displayAgentType: 'lengdu',
+                displayAgentName: LENGDU_STAGE_AGENT_NAMES[log.stage],
+                phase: 'reviewing',
+                systemPrompt: log.systemPrompt,
+                chapterContext: '',
+                userMessage: log.userMessage,
+                taskInput: '',
+                userInstructions: [],
+                tools: [],
+                toolNames: [],
+                askStoryPolicy: run.askStoryPolicy,
+                askStoryEnabled: false,
+                result: log.result,
+                resultLength: log.result.length,
+                durationMs: log.durationMs,
+                status: log.status,
+                error: log.error ?? '',
+                sessionId: log.sessionId ?? '',
+                operation: `lengdu-${log.stage}`,
+                inputTokens: log.usage?.inputTokens ?? 0,
+                outputTokens: log.usage?.outputTokens ?? 0,
+                cacheReadTokens: log.usage?.cacheReadTokens ?? 0,
+                cacheWriteTokens: log.usage?.cacheWriteTokens ?? 0,
+                llmProvider: log.usage?.llmProvider ?? '',
+                llmModel: log.usage?.llmModel ?? '',
+                payloadMessagesChars: 0,
+                payloadToolsChars: 0,
+                payloadToolCount: 0,
+                payloadTotalChars: log.payloadTotalChars,
+                llmRoundTrips: log.llmRoundTrips,
+                cacheKey: `novel:${projectId}:${chapterNumber}:lengdu:${log.stage}`,
+              })
+            } catch (logErr) {
+              this.context.logger.warn(
+                { err: logErr, projectId, chapterNumber, stage: log.stage },
+                'lengdu 阶段日志写入失败（不影响创作流程）',
+              )
+            }
+            if (run.budget && hasLlmUsage(log.usage)) {
+              run.budget = recordLlmCall(run.budget, log.usage.inputTokens)
+            }
+          },
           onDegraded: event => persistNovelFailureAudit({
             store: this.store,
             projectId,
@@ -1605,6 +1706,12 @@ export class NovelOrchestrator {
         || effectiveReviewDecision === 'reject'
 
       let finalContent = reviewContent
+      // 质量门未完全通过但保留落库时的警告（随结果返回前端，章节不再被扣留）
+      let qualityGateWarning: {
+        message: string
+        failedItems: QualityGateFailureItem[]
+        revisionRounds: RevisionRoundRecord[]
+      } | undefined
 
       if (!isKnownReviewDecision) {
         this.context.logger.error(
@@ -1717,12 +1824,16 @@ export class NovelOrchestrator {
           },
         })
         if (revisionLoop.status === 'blocked') {
+          // ⚠️ 策略变更：草稿绝不扣留。旧逻辑在此 return error，几千字修订稿锁死在
+          // run 记录里（实测 30 次 run 有 10 份草稿被扣留），用户看到的就是"消失"。
+          // 现在：保留当前最好版本（应用过 patch 用修订稿，否则用原稿）继续走落库，
+          // 未通过项作为警告随结果返回，由用户决定是否再修订/手动处理。
           const lastRound = revisionLoop.rounds[revisionLoop.rounds.length - 1]
           const noPatchApplied = (lastRound?.appliedPatches ?? 0) === 0
           const reason = noPatchApplied
-            ? '修订未成功应用任何修改，已阻止原正文落库'
-            : `自动修订 ${revisionLoop.rounds.length} 轮后仍有 ${revisionLoop.failedItems.length} 项表达问题未通过，已阻止落库`
-          this.context.logger.error(
+            ? `修订未成功应用任何修改，已按审稿意见保留原稿落库（${revisionLoop.failedItems.length} 项表达问题待人工处理）`
+            : `自动修订 ${revisionLoop.rounds.length} 轮后仍有 ${revisionLoop.failedItems.length} 项表达问题未通过，已保留当前修订稿落库`
+          this.context.logger.warn(
             {
               projectId,
               chapterNumber,
@@ -1730,37 +1841,27 @@ export class NovelOrchestrator {
               failedItems: revisionLoop.failedItems,
               revisionRounds: revisionLoop.rounds,
             },
-            reason,
+            `质量门未完全通过，正文已保留落库：${reason}`,
           )
-          this.emitProgress(options, 'error', 'error', {
+          qualityGateWarning = {
             message: reason,
-            detail: {
-              kind: 'quality_gate_revision_incomplete',
-              errorCode: 'quality_gate_revision_incomplete',
-              failedItems: revisionLoop.failedItems,
-              revisionRounds: revisionLoop.rounds,
+            failedItems: revisionLoop.failedItems,
+            revisionRounds: revisionLoop.rounds,
+          }
+          finalContent = revisionLoop.content
+        } else {
+          finalContent = revisionLoop.content
+          this.context.logger.info(
+            {
+              projectId,
+              chapterNumber,
+              rounds: revisionLoop.rounds.length,
+              appliedPatches: revisionLoop.rounds.reduce((sum, r) => sum + r.appliedPatches, 0),
+              revisedLength: finalContent.length,
             },
-          })
-          // ⚠️ 关键：error 结果必须携带当前修订稿 content 与结构化失败信息，
-          // 否则前端拿不到修订成果，只能整条重跑。
-          return this.buildQualityGateErrorResult(
-            revisionLoop.content,
-            revisionLoop.failedItems,
-            revisionLoop.rounds,
-            reason,
+            '修订循环完成，正文已通过确定性质量门',
           )
         }
-        finalContent = revisionLoop.content
-        this.context.logger.info(
-          {
-            projectId,
-            chapterNumber,
-            rounds: revisionLoop.rounds.length,
-            appliedPatches: revisionLoop.rounds.reduce((sum, r) => sum + r.appliedPatches, 0),
-            revisedLength: finalContent.length,
-          },
-          '修订循环完成，正文已通过确定性质量门',
-        )
       } else if (effectiveReviewDecision === 'rewrite') {
         const rewrite = tryRecordFullChapterRewrite(run.budget)
         if (rewrite.allowed) {
@@ -1815,10 +1916,18 @@ export class NovelOrchestrator {
       currentPhase = 'memory'
       const isReviserPath = finalContent !== reviewContent
       const versionSource: VersionSource = isReviserPath
-        ? { phase: 'reviser_final', agentType: 'reviser', trigger: 'Reviser 修订后落库' }
+        ? {
+            phase: 'reviser_final',
+            agentType: 'reviser',
+            trigger: qualityGateWarning
+              ? `自动修订未过审，保留修订稿落库（${qualityGateWarning.failedItems.length} 项待处理）`
+              : 'Reviser 修订后落库',
+          }
         : writerGuardRewriteCount > 0
           ? { phase: 'writer_initial', agentType: 'writer', trigger: `PostWriteGuard 原地重写后落库（第 ${writerGuardRewriteCount} 次）` }
-          : { phase: 'writer_initial', agentType: 'writer', trigger: 'Writer 初稿落库' }
+          : qualityGateWarning
+            ? { phase: 'writer_initial', agentType: 'writer', trigger: `质量门未通过，按原稿保留落库（${qualityGateWarning.failedItems.length} 项待处理）` }
+            : { phase: 'writer_initial', agentType: 'writer', trigger: 'Writer 初稿落库' }
       const result = await this.finalizer.finalize({
         projectId,
         chapterNumber,
@@ -1834,7 +1943,11 @@ export class NovelOrchestrator {
         chapterId: chapter?.id ?? null,
         versionSource,
       })
-      return { ...result, styleTechniqueChecks } as CreationResult
+      return {
+        ...result,
+        styleTechniqueChecks,
+        ...(qualityGateWarning ? { qualityWarnings: qualityGateWarning } : {}),
+      } as CreationResult
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       cancelDebug('orchestrator-catch', { projectId, chapterNumber, errMessage: message, errStack: err instanceof Error ? err.stack : undefined, signalAborted: options.signal?.aborted, errName: err instanceof Error ? err.name : typeof err })

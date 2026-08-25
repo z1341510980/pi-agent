@@ -207,11 +207,17 @@ export interface DiscussionCheckpoint {
   question: string
   options?: string[]
   context?: string
+  /**
+   * 结构化渲染载荷（2026-08-24 空检查点修复）：前端 renderCheckpointContent
+   * 读 checkpoint.data；此前 pause 只有 question 字段，前端内容区为空。
+   * discussion_pause 的 data 形如 { message, choices? }。
+   */
+  data?: unknown
 }
 
 /** 群聊流程事件 */
 export interface DiscussionFlowEvent {
-  type: 'phase_change' | 'agent_start' | 'scene_change' | 'pause' | 'completed' | 'error' | 'cancelled' | 'data_changed'
+  type: 'phase_change' | 'agent_start' | 'agent_output' | 'scene_change' | 'pause' | 'completed' | 'error' | 'cancelled' | 'data_changed'
   phase: DiscussionPhase
   data: unknown
   timestamp: number
@@ -243,6 +249,14 @@ export interface DiscussionOptions {
   resolveCharacterMembers?: (
     characterNames: string[],
   ) => DiscussionMember[] | Promise<DiscussionMember[]>
+  /**
+   * 出场角色白名单（2026-08-24 编排外角色修复）：业务层编排了角色清单时传入
+   * （成员 ID 形如 `char-{characterId}`）。设置后：
+   * - 场景 presentCharacters 只保留白名单内的成员；
+   * - Director 提到白名单外的名字不再动态建临时角色，而是丢弃并写入 system 警告。
+   * 未设置（未编排）时保持旧行为：未知名字走 resolveCharacterMembers 动态解析。
+   */
+  allowedCharacterMemberIds?: string[]
   /** 引擎运行时限制（覆盖默认 DISCUSSION_LIMITS，来自 DiscussionSettingsStore） */
   limits?: {
     maxRounds?: number
@@ -277,6 +291,13 @@ export interface DiscussionOptions {
    * Reviewer 返回后引擎调用 extractResult() 得到结构化验收对象。
    */
   buildReviewerToolset?: () => ReviewerToolset
+  /**
+   * 业务层为 Director 提供"工具化场景计划"能力（2026-08-24 演绎链路修复）。
+   *
+   * 引擎在规划阶段调用 Director 时把工具集注入 LLM 调用；converge(chapter) 后
+   * 优先读 extractResult()，未提交时回退 Markdown 解析并显式告警。
+   */
+  buildScenePlanToolset?: () => ScenePlanToolset
   /**
    * 插话被 Moderator 消费（写入群聊 history）后回调（对话化交互形态 §3.1，
    * 供端点沿 SSE 推 status='injected' 事件）。
@@ -319,6 +340,33 @@ export interface ReviserOutcome {
   mode: 'patch' | 'rejected'
   /** 未应用原因（mode=rejected 时填写） */
   reason?: string
+}
+
+/**
+ * Director 场景计划工具集：业务层创建的 draft + 工具，引擎在规划阶段调用 Director 前取得。
+ *
+ * ⚠️ 工具化方案（2026-08-24 群聊演绎链路修复）：旧路径让 Director 输出 Markdown 场景拆分，
+ * 引擎用正则解析 `### 场景N` 与 `- 字段：` 行。实测 Director 输出中文数字/表格变体时解析
+ * 全部失败，scenes=[] 导致整章静默跳过演出、Writer 盲写。
+ * 新方案：Director 必须调用 novel_submit_scene_plan 工具提交结构化场景计划，
+ * 工具参数 schema 强制校验；Markdown 解析降级为兼容回退，且回退时必须显式告警。
+ */
+export interface ScenePlanToolset {
+  /** 注入 Director 规划 LLM 调用的工具列表（工具内部已绑定 draft） */
+  tools: unknown[]
+  /** Director 结束后调用，返回提交的场景计划；未调用工具时返回 null */
+  extractResult: () => { scenes: SubmittedSceneInput[] } | null
+}
+
+/** 工具提交的原始场景：presentCharacters 是角色名，由引擎映射为成员 ID */
+export interface SubmittedSceneInput {
+  title: string
+  location: string
+  time: string
+  conflict?: string
+  goal: string
+  emotion?: string
+  presentCharacters: string[]
 }
 
 /**
@@ -410,6 +458,33 @@ export interface DiscussionResult {
    * 业务层据此持久化结构化验收报告，无需再从 transcript 中正则解析 Reviewer 输出。
    */
   review?: ReviewerOutcome
+  /**
+   * 演绎链路健康度（2026-08-24）：让"演出是否真的发生、走了哪条解析路径、
+   * 格式重试烧了多少调用"成为可查询数据，而不是只存在于服务端日志。
+   */
+  diagnostics?: DiscussionDiagnostics
+}
+
+/** 群聊演绎链路诊断统计 */
+export interface DiscussionDiagnostics {
+  /** 场景计划来源：工具提交 / Markdown 回退 / 无 */
+  sceneSource: 'tool' | 'markdown' | 'none'
+  scenesTotal: number
+  /** 至少有一条角色发言的场景数 */
+  scenesWithActing: number
+  /** 角色发言总条数（不含合并调用的格式纠正重试） */
+  characterSpeeches: number
+  /** 角色发言未通过格式校验触发重试的次数 */
+  formatCorrections: number
+  /** 规划阶段因场景计划缺失触发的纠正性重试次数 */
+  planningRetries: number
+  /**
+   * 台词复用率（P1-2）：正文对角色推演引号台词的命中率（0~1）。
+   * 编织完成后写入；无推演台词（盲写降级）时不填。
+   */
+  transcriptReuseRate?: number
+  /** Moderator 双次尝试均失败、退化为规则协调的轮数。>0 时对戏质量可能下降 */
+  moderatorDegradedRounds?: number
 }
 
 /**
@@ -437,4 +512,10 @@ export const DISCUSSION_LIMITS = {
   MAX_OBSERVE_ROUNDS: 3,
   MAX_PUSHBACK_PER_SCENE: 2,
   MAX_SCENE_REPLAYS: 2,
+  /** 台词复用率闸门（P1-2）：推演引号台词少于该数时不启用（样本太小无统计意义） */
+  FIDELITY_MIN_QUOTED_LINES: 4,
+  /** 台词复用率低于该阈值时触发一次定向补织重写 */
+  FIDELITY_RATE_THRESHOLD: 0.4,
+  /** 定向补织 prompt 中最多列出的未落地台词条数 */
+  FIDELITY_MAX_LISTED: 12,
 } as const

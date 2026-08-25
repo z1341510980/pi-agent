@@ -17,7 +17,7 @@ import {
   renderCheckpointContent,
   type ConversationMessagesInput,
 } from '../use-conversation-messages'
-import type { AgentOutput, CheckpointData, UserMessage, InterjectMessage } from '@/hooks/use-novel-creation-flow'
+import type { AgentOutput, CheckpointData, CheckpointDecision, UserMessage, InterjectMessage } from '@/hooks/use-novel-creation-flow'
 import type { ChatAgentOutput } from '@/hooks/use-chapter-chat'
 import type { ChapterChatMessage } from '@/api/novel-client'
 import type { TimelineRebuildStatus } from '@/stores/timeline-rebuild-store'
@@ -300,5 +300,47 @@ describe('mapAgentType 与 renderCheckpointContent', () => {
 
   it('字符串 data 原样返回', () => {
     expect(renderCheckpointContent(makeCheckpoint({ type: 'review', data: '纯文本结论' }))).toBe('纯文本结论')
+  })
+
+  it('discussion_pause 渲染提问与候选项（2026-08-24 空检查点修复）', () => {
+    const content = renderCheckpointContent(makeCheckpoint({
+      type: 'discussion_pause',
+      question: '两位角色的行动出现分歧，需要你拍板。',
+      data: {
+        message: '两位角色的行动出现分歧，需要你拍板。',
+        choices: ['方案A：先去据点', '方案B：原地养伤'],
+      },
+    }))
+    expect(content).toContain('两位角色的行动出现分歧')
+    expect(content).toContain('- 方案A：先去据点')
+    expect(content).toContain('- 方案B：原地养伤')
+  })
+
+  it('discussion_pause 的 data 缺失时回退 question 字段', () => {
+    const content = renderCheckpointContent(makeCheckpoint({
+      type: 'discussion_pause',
+      question: '请确认下一步走向。',
+      data: undefined,
+    }))
+    expect(content).toBe('请确认下一步走向。')
+  })
+
+  it('getCheckpointPresentation：discussion_pause 固定继续/终止按钮；options 全不匹配时保留默认按钮组', async () => {
+    const { getCheckpointPresentation } = await import('../use-conversation-messages')
+    // 服务端固定下发 approve/reject → 两枚按钮
+    const matched = getCheckpointPresentation({
+      type: 'discussion_pause',
+      options: ['approve', 'reject'],
+    })
+    expect(matched.checkpointType).toBe('discussion_pause')
+    expect(matched.checkpointOptions.map((o) => o.action)).toEqual(['approve', 'reject'])
+
+    // LLM 自由文本选项匹配不上任何动作 → 兜底保留默认按钮组（不再渲染空按钮区）。
+    // 该形态只来自旧版载荷，用断言模拟（新版引擎固定下发 approve/reject）。
+    const fallback = getCheckpointPresentation({
+      type: 'discussion_pause',
+      options: ['方案A', '方案B'] as unknown as CheckpointDecision[],
+    })
+    expect(fallback.checkpointOptions.length).toBeGreaterThanOrEqual(2)
   })
 })

@@ -14,7 +14,8 @@ import {
   REVIEWER_DIALOGUE_PATTERN,
   REVISER_SILENT_PROTECTION,
   REVISER_NO_NEW_METAPHOR,
-  DISCUSSION_NO_LINE_SCRIPT,
+  DISCUSSION_LINES_MUST_LAND,
+  DISCUSSION_NO_ROBOTIC_SCRIPT,
   BASE_RULES_NO_FIRST_LINE_TEMPLATE,
   BASE_RULES_HUMAN_SAMPLE_PRIORITY,
   WRITER_STYLE_PRIORITY,
@@ -74,10 +75,15 @@ describe('小说提示词协议', () => {
     expect(text).toContain('修改后的台词能否放回对应角色的声音坐标')
   })
 
-  it('群聊 Writer 不会把角色演出整理成同声台词稿', async () => {
+  it('群聊 Writer 负有台词留存义务，机械感风格约束不构成豁免', async () => {
     const text = await prompt('role-writer-discussion')
     expect(text).toContain(SCENE_DRIVE_CAUSAL_CHAIN)
-    expect(text).toContain(DISCUSSION_NO_LINE_SCRIPT)
+    // P1-1 义务反转：关键台词语义必须落地（正向硬约束）
+    expect(text).toContain(DISCUSSION_LINES_MUST_LAND)
+    expect(text).toContain('每个场景至少把该场推演中的两处台词或动作写入正文')
+    // 风格约束保留，但明确"不是丢弃理由"
+    expect(text).toContain(DISCUSSION_NO_ROBOTIC_SCRIPT)
+    expect(text).toContain('不是丢弃台词的理由')
   })
 
   it('通用铁律是正文底线，不再强迫统一的第一句模板', async () => {

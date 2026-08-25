@@ -41,5 +41,31 @@ export const infiniteCanvasMigrations: MigrationDefinition[] = [
   {
     id: '117_add_infinite_canvas_project_settings',
     sql: `ALTER TABLE infinite_canvas_projects ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'`
+  },
+  {
+    id: '118_create_infinite_canvas_prompt_cache',
+    sql: `
+      CREATE TABLE IF NOT EXISTS infinite_canvas_prompt_sources (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        homepage TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_fetched_at INTEGER,
+        last_error TEXT
+      );
+      CREATE TABLE IF NOT EXISTS infinite_canvas_prompt_items (
+        id TEXT NOT NULL,
+        source_id TEXT NOT NULL REFERENCES infinite_canvas_prompt_sources(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        cover_url TEXT NOT NULL DEFAULT '',
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY (source_id, id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_prompt_items_source ON infinite_canvas_prompt_items(source_id);
+    `
   }
 ]

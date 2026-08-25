@@ -51,6 +51,7 @@ import type { NovelStore } from './novel-store.js'
 import type { NovelMemoryStore } from './novel-memory-store.js'
 import { isAdmissibleNewForeshadow } from './entities/foreshadow-policy.js'
 import type { ChapterBoundaryContext } from './prompting/prompt-builder.js'
+import type { SubmittedSceneInput } from './discussion/engine/discussion-types.js'
 import type {
   ChapterStoryContext,
   NarrativeTask,
@@ -2268,6 +2269,82 @@ export function createNovelSubmitNarrativeTaskTool(
         `- 时间线偏移：${task.timeOffset ?? 0} 天\n` +
         (task.secondaryTasks?.length ? `- 次要任务：${task.secondaryTasks.join('、')}\n` : '')
 
+      return {
+        content: [{ type: 'text', text: summary }],
+        details: undefined,
+      }
+    },
+  })
+}
+
+/**
+ * 群聊场景计划草稿持有者
+ *
+ * 由 novel-discussion-runner 在规划阶段前创建，通过闭包传递给 novel_submit_scene_plan 工具。
+ * Director 调用工具提交结构化场景计划，工具内部把对象存入 draft.plan。
+ * 引擎在 converge(chapter) 后优先读取 draft.plan；Markdown 解析只作回退。
+ *
+ * 设计动机（2026-08-24 群聊演绎链路修复）：
+ * 旧路径让 Director 输出 Markdown 场景拆分，引擎用正则解析 `### 场景N` 与 `- 字段：` 行。
+ * 实测 Director 输出中文数字（场景一）/Markdown 表格字段变体时解析全部失败，
+ * scenes=[] 导致整章静默跳过角色演出、Writer 盲写（run b616f15f 第4章）。
+ * 与 novel_submit_narrative_task / novel_submit_review 同构：schema 强制结构化，绕开文本解析。
+ */
+export interface ScenePlanDraftHolder {
+  /** Director 提交的场景计划（未调用工具时为 undefined） */
+  plan?: { scenes: SubmittedSceneInput[] }
+}
+
+const SubmitScenePlanParams = Type.Object({
+  scenes: Type.Array(
+    Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 60, description: '场景标题' }),
+      location: Type.String({ minLength: 1, maxLength: 100, description: '场景发生地点' }),
+      time: Type.String({ minLength: 1, maxLength: 60, description: '时间点' }),
+      conflict: Type.Optional(Type.String({ maxLength: 300, description: '本场景核心冲突，无则省略' })),
+      goal: Type.String({ minLength: 2, maxLength: 500, description: '本场景必须完成的推进' }),
+      emotion: Type.Optional(Type.String({ maxLength: 120, description: '情绪走向（如"从警惕转向震惊"）' })),
+      presentCharacters: Type.Array(Type.String({ minLength: 1, maxLength: 40 }), {
+        minItems: 0,
+        maxItems: 8,
+        description: '在场角色名列表，必须与项目角色档案名完全一致；纯过渡场景可为空数组',
+      }),
+    }),
+    { minItems: 1, maxItems: 5, description: '本章场景列表，按演出顺序排列' },
+  ),
+})
+
+/**
+ * 创建 novel_submit_scene_plan 工具
+ *
+ * ⚠️ 此工具不进入全局 createNovelTools 列表，而是由 discussion runner 在规划阶段
+ * 通过 buildScenePlanToolset 动态注入。理由与 narrative_task/review 工具一致：
+ * 闭包绑定 draft、其他成员不可见、不污染 STATIC 层 schema 的跨 Agent 缓存。
+ */
+export function createNovelSubmitScenePlanTool(
+  draft: ScenePlanDraftHolder,
+): ToolDefinition<typeof SubmitScenePlanParams> {
+  return defineTool({
+    name: 'novel_submit_scene_plan',
+    label: '提交场景计划',
+    description:
+      '提交本章群聊共创的结构化场景计划。Director 必须调用此工具提交场景拆分，不要只在对话文本中输出 Markdown 表格或章节概述。' +
+      '每个场景包含标题/地点/时间/冲突/目标/情绪/在场角色；在场角色名必须与项目角色档案完全一致。',
+    promptSnippet: '提交结构化场景计划（逐场地点/时间/冲突/目标/情绪/在场角色）',
+    parameters: SubmitScenePlanParams,
+    async execute(toolCallId, params): Promise<AgentToolResult<undefined>> {
+      const scenes: SubmittedSceneInput[] = params.scenes.map(scene => ({
+        title: scene.title.trim(),
+        location: scene.location.trim(),
+        time: scene.time.trim(),
+        ...(scene.conflict?.trim() ? { conflict: scene.conflict.trim() } : {}),
+        goal: scene.goal.trim(),
+        ...(scene.emotion?.trim() ? { emotion: scene.emotion.trim() } : {}),
+        presentCharacters: scene.presentCharacters.map(name => name.trim()).filter(Boolean),
+      }))
+      draft.plan = { scenes }
+      const summary = `场景计划已提交：共 ${scenes.length} 个场景。\n` +
+        scenes.map((s, i) => `${i + 1}. ${s.title}（在场：${s.presentCharacters.join('、') || '未指定'}）`).join('\n')
       return {
         content: [{ type: 'text', text: summary }],
         details: undefined,

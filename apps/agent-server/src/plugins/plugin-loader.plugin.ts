@@ -20,12 +20,14 @@
 
 import fp from 'fastify-plugin'
 import type { FastifyPluginAsync } from 'fastify'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { createModuleLogger } from '../lib/logger.js'
 import { PluginManager } from '../core/plugin/plugin-manager.js'
 import { isInsideDir } from '../core/plugin/path-guard.js'
 import { PluginWatcher } from '../core/plugin/plugin-watcher.js'
+import { ensureHotResolveHooks } from '../core/plugin/hot-module-cache.js'
 import {
   ALL_PLUGIN_CAPABILITIES,
   parsePluginCatalog,
@@ -71,12 +73,54 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
     'infinite-canvas-plugin': createInfiniteCanvasPlugin
   }
 
+  // ============ 内置插件源码入口解析（热更新用） ============
+  // 本文件在 dev 位于 src/plugins/、tsc 构建后位于 dist/plugins/，
+  // builtin 插件目录就在旁边，按自身扩展名推断入口文件。
+  // 直接运行源码的进程（tsx）里这些 .ts 入口可被动态 import，
+  // 因此 builtin 也走候选先行热更新；打包成单文件的构建产物里
+  // 目录不存在 → 解析不到 → 自动退化为"重载需重启"。
+  const loaderFile = fileURLToPath(import.meta.url)
+  const pluginsBaseDir = dirname(loaderFile)
+  const sourceExt = loaderFile.endsWith('.ts') ? '.ts' : '.js'
+  const builtinEntryDirs: Record<string, string> = {
+    'hello-plugin': join('examples', 'hello-plugin'),
+    'novel-plugin': 'novel-plugin',
+    'web-search-plugin': 'web-search-plugin',
+    'infinite-canvas-plugin': 'infinite-canvas-plugin'
+  }
+  const resolveBuiltinEntry = (catalogId: string): string | undefined => {
+    const dir = builtinEntryDirs[catalogId]
+    if (!dir) return undefined
+    const candidate = join(pluginsBaseDir, dir, `index${sourceExt}`)
+    return existsSync(candidate) ? candidate : undefined
+  }
+
   // 默认内置插件列表（没有 plugins.yml 时的兼容行为）；catalogId 与工厂键一致
   const defaultBuiltinPlugins = [
-    ...(enableExamples ? [{ plugin: createHelloPlugin(), catalogId: 'hello-plugin' }] : []),
-    { plugin: createNovelPlugin(), catalogId: 'novel-plugin' },
-    { plugin: createWebSearchPlugin(), catalogId: 'web-search-plugin' },
-    { plugin: createInfiniteCanvasPlugin(), catalogId: 'infinite-canvas-plugin' }
+    ...(enableExamples
+      ? [
+          {
+            plugin: createHelloPlugin(),
+            catalogId: 'hello-plugin',
+            filePath: resolveBuiltinEntry('hello-plugin')
+          }
+        ]
+      : []),
+    {
+      plugin: createNovelPlugin(),
+      catalogId: 'novel-plugin',
+      filePath: resolveBuiltinEntry('novel-plugin')
+    },
+    {
+      plugin: createWebSearchPlugin(),
+      catalogId: 'web-search-plugin',
+      filePath: resolveBuiltinEntry('web-search-plugin')
+    },
+    {
+      plugin: createInfiniteCanvasPlugin(),
+      catalogId: 'infinite-canvas-plugin',
+      filePath: resolveBuiltinEntry('infinite-canvas-plugin')
+    }
   ]
 
   // 尝试从配置文件加载插件列表
@@ -89,6 +133,7 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
     catalogId: string
     config?: Record<string, unknown>
     isolate?: boolean
+    filePath?: string
   }> = []
   const configRoot = process.env.PI_CONFIG_DIR ?? join(cwd, 'config')
   const configPath = resolve(configRoot, 'plugins.yml')
@@ -157,7 +202,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
           source: 'builtin',
           catalogId: item.catalogId,
           config: item.config,
-          isolate: item.isolate
+          isolate: item.isolate,
+          filePath: resolveBuiltinEntry(item.catalogId)
         })
       }
       log.info(
@@ -529,6 +575,8 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
   // 只在启动期挂载，变更后仍需重启（inspect 的 effectiveAfterRestart 如实上报）。
   let pluginWatcher: PluginWatcher | undefined
   if (enableHotReload) {
+    // 解析钩子必须在任何 ?hot= 导入之前注册（含手动 POST /reload 的路径）
+    await ensureHotResolveHooks()
     pluginWatcher = new PluginWatcher(log, async (pluginId) => {
       try {
         await manager.reload(pluginId)
@@ -721,7 +769,7 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       persistCatalog()
       const entry = manager.get(pluginId)
       // 运行期启用的插件补挂热更新监视（add 幂等：已监视的目录直接跳过）
-      if (pluginWatcher && entry?.filePath && entry.source !== 'builtin') {
+      if (pluginWatcher && entry?.filePath) {
         pluginWatcher.add(entry.pluginId, entry.filePath, entry.packageDir)
       }
       return reply.send({
@@ -845,7 +893,7 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       if (body.enabled !== undefined) {
         if (body.enabled && entry.status !== 'enabled') {
           await manager.enable(pluginId)
-          if (pluginWatcher && entry.filePath && entry.source !== 'builtin') {
+          if (pluginWatcher && entry.filePath) {
             pluginWatcher.add(entry.pluginId, entry.filePath, entry.packageDir)
           }
         } else if (!body.enabled && entry.status === 'enabled') {

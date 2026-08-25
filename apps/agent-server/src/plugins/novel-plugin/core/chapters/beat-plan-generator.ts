@@ -33,7 +33,7 @@ const BEAT_FUNCTIONS: readonly BeatDramaticFunction[] = [
 export interface GenerateBeatPlanParams {
   projectId: string
   volumeNumber: number
-  /** 规划的未来章数（默认 6，夹在 3-8） */
+  /** 规划的未来章数（默认 6，夹在 3-100） */
   count?: number
   instruction?: string
   modelId?: NovelModelSelection
@@ -179,7 +179,7 @@ export class VolumeBeatPlanner {
       )
     }
 
-    const count = Math.min(8, Math.max(3, params.count ?? DEFAULT_BEAT_COUNT))
+    const count = Math.min(100, Math.max(3, params.count ?? DEFAULT_BEAT_COUNT))
     const chapters = this.store
       .listChapters(projectId)
       .filter((item) => item.volume === params.volumeNumber)

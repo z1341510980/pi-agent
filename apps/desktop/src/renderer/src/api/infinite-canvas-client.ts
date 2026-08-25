@@ -217,3 +217,53 @@ export async function reverseCanvasPrompt(
     options
   )
 }
+
+// ── 提示词来源（服务端代理 + SQLite 缓存） ──
+
+export interface PromptSourceInfo {
+  id: string
+  name: string
+  url: string
+  homepage: string
+  enabled: boolean
+  lastFetchedAt: number | null
+  lastError: string | null
+  itemCount: number
+}
+
+export interface NormalizedPromptItem {
+  id: string
+  sourceId: string
+  sourceName: string
+  title: string
+  prompt: string
+  description: string
+  tags: string[]
+  coverUrl: string
+}
+
+export async function listPromptSources(): Promise<PromptSourceInfo[]> {
+  return getApi<PromptSourceInfo[]>(`${BASE}/prompt-sources`)
+}
+
+export async function listPromptItems(sourceId?: string): Promise<NormalizedPromptItem[]> {
+  const qs = sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ''
+  return getApi<NormalizedPromptItem[]>(`${BASE}/prompt-items${qs}`)
+}
+
+export async function refreshPromptSources(): Promise<{ successCount: number; failureCount: number }> {
+  return postApi<{ successCount: number; failureCount: number }>(
+    `${BASE}/prompt-sources/refresh`,
+    {}
+  )
+}
+
+export async function togglePromptSource(
+  sourceId: string,
+  enabled: boolean
+): Promise<{ id: string; enabled: boolean }> {
+  return patchApi<{ id: string; enabled: boolean }>(
+    `${BASE}/prompt-sources/${encodeURIComponent(sourceId)}/toggle`,
+    { enabled }
+  )
+}

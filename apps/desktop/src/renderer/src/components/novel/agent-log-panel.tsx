@@ -48,6 +48,9 @@ const AGENT_STYLE: Record<string, { label: string; badge: string }> = {
   reviser: { label: '修订', badge: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/40' },
   memory: { label: '记忆', badge: 'bg-gray-500/15 text-gray-700 dark:text-gray-300 border-gray-500/40' },
   audit: { label: '审计', badge: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/40' },
+  'reference-analysis-chunk': { label: '参考分包分析', badge: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/40' },
+  'reference-analysis-book': { label: '参考全书汇总', badge: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/40' },
+  'reference-style-distill': { label: '参考文风蒸馏', badge: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/40' },
 }
 
 const STATUS_STYLE: Record<string, { label: string; icon: typeof CheckCircle2; color: string }> = {
@@ -65,7 +68,18 @@ const PROTOCOL_BADGE_LABEL: Record<string, string> = {
   unknown: '协议未知',
 }
 
-const AGENT_TYPE_FILTERS = ['', 'director', 'writer', 'reviewer', 'reviser', 'memory', 'audit']
+const AGENT_TYPE_FILTERS = [
+  '',
+  'director',
+  'writer',
+  'reviewer',
+  'reviser',
+  'memory',
+  'audit',
+  'reference-analysis-chunk',
+  'reference-analysis-book',
+  'reference-style-distill'
+]
 
 // ── 工具函数 ──
 

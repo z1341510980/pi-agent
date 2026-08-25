@@ -479,6 +479,13 @@ export interface ChapterBoundaryContext {
   entities: ChapterBoundaryEntities
   /** true 表示严格读取第 N-1 章持久化快照，而非当前库的顺序生成回退。 */
   fromSnapshot: boolean
+  /**
+   * true 表示当前状态取自实体表「全书最新值」，且可能包含目标章节之后才发生的事实
+   * （重写旧章节且无历史快照可用的回退场景）。注入上下文时必须附带越界警告，
+   * 要求模型以用户章纲/叙事任务为准，禁止把本章之后的进展写入正文。
+   * 可选：未判定（如测试桩或旁路构造）时不告警。
+   */
+  stateAheadOfBoundary?: boolean
 }
 
 /**
@@ -542,6 +549,10 @@ export class NovelPromptBuilder {
         chapterNumber: number,
         options?: { snapshotType?: 'full' }
       ): MemorySnapshot | undefined
+      listSnapshots?(
+        projectId: string,
+        options?: { chapterNumber?: number; snapshotType?: 'full'; includeInactive?: boolean }
+      ): MemorySnapshot[]
       getChapterStoryContext?(projectId: string, chapterNumber: number): ChapterStoryContext
       // diff 模式读取第 N-1 章的原子变化记录，用 ChapterStoryContext['plannedChanges']
       // （即 NovelChangeRecord[]）作为返回类型，避免新增 import。
@@ -1392,9 +1403,7 @@ export class NovelPromptBuilder {
       // chooseEntityChunkMode 决策后传入；默认 full 保持逐字节等价。
       chunks.push({
         chunkId: 'story-state',
-        content: options?.entitySummaryMode === 'summary'
-          ? buildStoryStateSummary(boundary.state)
-          : this.formatStoryState(boundary.state, options?.askStoryEnabled ?? true),
+        content: this.buildStoryStateChunk(boundary, options),
       })
       // 无编排是旧项目/降级项目的常见路径，不能因为没有 arrangedEntities 就丢掉角色声音。
       // formatStoryState 只给状态和目标；声音对照表仍需单独注入，否则 Writer 在这条路径
@@ -1531,10 +1540,7 @@ export class NovelPromptBuilder {
     }
     if (!hasArranged) {
       if (enabled('story-state')) {
-        builders.push(builder('story-state', () =>
-          options?.entitySummaryMode === 'summary'
-            ? buildStoryStateSummary(boundary().state)
-            : this.formatStoryState(boundary().state, options?.askStoryEnabled ?? true)))
+        builders.push(builder('story-state', () => this.buildStoryStateChunk(boundary(), options)))
       }
       if (enabled('voice-contrast')) {
         builders.push(builder('voice-contrast', () => {
@@ -3037,6 +3043,29 @@ export class NovelPromptBuilder {
    * （buildChapterContextShared）只在 !hasArranged 时调用且从不传第二个参数，
    * 该分支自始不可达，已随死代码清理一并删除。
    */
+  /**
+   * 组装 story-state chunk：全量/摘要二选一，并在状态可能越界时附加警告。
+   *
+   * 越界场景：重写旧章节且无该章前快照（或快照全部失效），只能回退实体表
+   * 「全书最新」状态——其中可能包含本章之后才发生的事实。不声明的话，
+   * Writer 会把未来进展当既成事实写进正文，与用户章纲直接冲突。
+   */
+  private buildStoryStateChunk(
+    boundary: ChapterBoundaryContext,
+    options?: { entitySummaryMode?: 'full' | 'summary'; askStoryEnabled?: boolean },
+  ): string {
+    const body = options?.entitySummaryMode === 'summary'
+      ? buildStoryStateSummary(boundary.state)
+      : this.formatStoryState(boundary.state, options?.askStoryEnabled ?? true)
+    if (!boundary.stateAheadOfBoundary) return body
+    const warning = [
+      '> ⚠️ 状态边界警告：以下是全书当前最新状态，可能包含本章之后才发生的进展。',
+      '> 本章创作必须以「用户章纲」和「本章叙事任务」为准；',
+      '> 上述仅适用于本章之后的事实一律不得写入本章正文，也不得让角色表现出尚未经历这些事件后的心态。',
+    ].join('\n')
+    return `${warning}\n\n${body}`
+  }
+
   private formatStoryState(state: StoryState, askStoryEnabled: boolean): string {
     // 占位实体过滤：名字含“（待定）”/“待补充”/“新的”的是 AI 编排未命名的占位实体，
     // 对 Writer 无意义且污染上下文，跳过输出
@@ -3416,13 +3445,21 @@ export class NovelPromptBuilder {
       const ch = recentChapters[i]
       if (ch.content && ch.content.trim().length > 100) {
         const content = ch.content.trim()
-        // 取结尾 400 字（覆盖一个完整的场景收尾 + 钩子）
+        // 取结尾原文（覆盖完整的场景收尾 + 钩子 + 场景切换节奏）。
+        // 这是 Writer 在全新会话里能接触到的唯一大段前文逐字原文——续写语感靠它。
+        const budget = CHAPTER_ANCHOR_BUDGET.previousEnding
         const ending =
-          content.length > CHAPTER_ANCHOR_BUDGET.previousEnding
-            ? content.slice(-CHAPTER_ANCHOR_BUDGET.previousEnding)
+          content.length > budget
+            ? content.slice(-budget)
             : content
-        const prefix = content.length > 400 ? '...' : ''
-        return `## 上一章结尾（本章开头必须自然承接此处的悬念钩子）\n\n第${ch.chapterNumber}章《${ch.title}》结尾：\n\n${prefix}${ending}`
+        const prefix = content.length > budget ? '...' : ''
+        return [
+          '## 上一章结尾原文（你在续写一部已有的长篇）',
+          '',
+          `以下是第${ch.chapterNumber}章《${ch.title}》的结尾原文。本章是它的下一章：语感、句子呼吸、称谓习惯、场景切换方式都要从这里自然延续；未落地的动作和悬念钩子必须先承接。只延续，不复述、不改写、不重复这段文字。`,
+          '',
+          `${prefix}${ending}`,
+        ].join('\n')
       }
     }
     return ''
@@ -4210,9 +4247,23 @@ export class NovelPromptBuilder {
     )
     const latestKnownChapter = Math.max(project.currentChapter, latestWrittenChapter)
     if (chapterNumber > 1 && latestKnownChapter >= chapterNumber) {
-      const snapshot = this.memoryStore?.getSnapshot?.(projectId, chapterNumber - 1, {
-        snapshotType: 'full'
-      })
+      // ⚠️ 必须容忍非 active 快照：时间线重建/后续章节落库会把历史快照打成 stale/superseded，
+      // 但那只是「不再是最新」，不代表历史边界状态不可信。若因 active 过滤查不到唯一的历史
+      // 快照，会静默回退到实体表当前全局状态——重写旧章节时注入未来章节的状态（矩阵穿越）。
+      const memory = this.memoryStore
+      const candidates = memory?.listSnapshots
+        ? memory.listSnapshots(projectId, {
+            chapterNumber: chapterNumber - 1,
+            snapshotType: 'full',
+            includeInactive: true,
+          })
+        // 窄接口回退（测试桩/适配器只暴露 getSnapshot）：至少保留原行为
+        : [memory?.getSnapshot?.(projectId, chapterNumber - 1, { snapshotType: 'full' })]
+          .filter((s): s is NonNullable<typeof s> => s != null)
+      // 排除时间线重建写入的重放摘要行（kind:'timeline_rebuild'，内容是审计摘要而非实体状态）
+      const snapshot = candidates
+        .filter((candidate) => !candidate.snapshotData.includes('"kind":"timeline_rebuild"'))
+        .sort((a, b) => b.createdAt - a.createdAt)[0]
       if (snapshot) {
         try {
           const entities = this.parseBoundaryEntities(snapshot.snapshotData)
@@ -4224,7 +4275,8 @@ export class NovelPromptBuilder {
               entities,
               chapterNumber
             ),
-            fromSnapshot: true
+            fromSnapshot: true,
+            stateAheadOfBoundary: false
           }
         } catch {
           // 损坏快照不可用时只能回退到顺序生成状态；不混用部分当前实体。
@@ -4237,7 +4289,10 @@ export class NovelPromptBuilder {
       chapterNumber,
       entities,
       state: this.toStoryState(project, entities, chapterNumber),
-      fromSnapshot: false
+      fromSnapshot: false,
+      // 走到这里且存在「本章或更后」的已写章节 / 进度标记时，实体表当前值可能包含本章之后的事实。
+      stateAheadOfBoundary:
+        latestWrittenChapter >= chapterNumber || latestKnownChapter > chapterNumber
     }
   }
 

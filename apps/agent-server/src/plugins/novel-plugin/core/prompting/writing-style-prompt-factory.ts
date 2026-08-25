@@ -151,20 +151,43 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
 
   const experts = (profile.styleExperts ?? []).filter((expert) => expert.enabled).slice(0, 8)
   if (experts.length > 0) {
-    const perExpertBudget = Math.max(180, Math.min(1200, Math.floor(2000 / experts.length)))
+    // 单专家时给足预算；四专家时人均约 1400 字符——
+    // 预算必须容得下「迁移提示 + 语言指纹 + 张力 + 三条手法（含失效条件）」，
+    // 否则截断会把反模式与能力边界切掉，Writer 又退回"只知正向规则"的状态。
+    const perExpertBudget = Math.max(240, Math.min(1600, Math.floor(5600 / experts.length)))
     sections.push([
       '### 本次召集的独立文风能力',
       '以下能力来自参考小说样本的写作机制蒸馏。它们不是内容模板，不改变本章任务、人物行动、事实和 POV。只迁移已审核的手法，不复制原作内容。',
+      '手法带失效条件时，先判断本章场景是否命中失效条件；命中就不要用这条手法。内在张力说明哪些效果不能同时追求，必须按取舍原则选一边。',
       ...experts.map((expert) => cleanText([
         `- **${cleanText(expert.name, 20)}**（${cleanText(expert.sourceTitle, 35)}）`,
-        cleanText(expert.description, 60),
-        `迁移提示：${cleanText(expert.customPrompt ?? expert.distilledPrompt, 240)}`,
-        ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence === 'verified').slice(0, 2).map((technique) => {
+        cleanText(expert.description, 80),
+        `迁移提示：${cleanText(expert.customPrompt ?? expert.distilledPrompt, 300)}`,
+        ...(expert.expressionDna
+          ? [`  - 语言指纹：${[
+              expert.expressionDna.sentence && `句式=${cleanText(expert.expressionDna.sentence, 60)}`,
+              expert.expressionDna.rhythm && `节奏=${cleanText(expert.expressionDna.rhythm, 60)}`,
+              expert.expressionDna.lexicon && `词汇=${cleanText(expert.expressionDna.lexicon, 60)}`,
+              expert.expressionDna.certainty && `确定性=${cleanText(expert.expressionDna.certainty, 40)}`,
+              expert.expressionDna.humor && `幽默=${cleanText(expert.expressionDna.humor, 40)}`,
+              expert.expressionDna.distance && `叙述距离=${cleanText(expert.expressionDna.distance, 50)}`,
+            ].filter(Boolean).join('；')}`]
+          : []),
+        ...(expert.tensions ?? []).slice(0, 3).map((tension) =>
+          `  - 张力「${cleanText(tension.name, 20)}」：${cleanText(tension.between[0], 24)} ↔ ${cleanText(tension.between[1], 24)}；取舍=${cleanText(tension.resolution, 90)}`),
+        // verified 优先，不足 3 条时用 kept 的 unverified 补齐（标注置信度，让模型自行降权）
+        ...[
+          ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence === 'verified'),
+          ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence !== 'verified'),
+        ].slice(0, 3).map((technique) => {
           const evidence = technique.evidence[0]?.quote
-          return `  - [${technique.dimension}] ${cleanText(technique.name, 30)}：${cleanText(technique.mechanism, 70)}；${cleanText(technique.transfer, 70)}${evidence ? `；证据方向：${cleanText(evidence, 30)}` : ''}`
+          return `  - [${technique.dimension}${technique.confidence === 'verified' ? '' : '·待验证'}] ${cleanText(technique.name, 30)}：${cleanText(technique.mechanism, 90)}；迁移=${cleanText(technique.transfer, 90)}${technique.failureMode ? `；失效条件=${cleanText(technique.failureMode, 70)}` : ''}${evidence ? `；证据方向=${cleanText(evidence, 30)}` : ''}`
         }),
-        ...(expert.exemplarPassages ?? []).slice(0, 2).map((passage) => `  - 手法样本（只学机制）：${cleanText(passage.text, 180)}`),
+        ...(expert.antiPatterns ?? []).slice(0, 3).map((item) => `  - 本能力反模式：${cleanText(item, 70)}`),
+        ...(expert.boundaries ?? []).slice(0, 2).map((item) => `  - 能力边界：${cleanText(item, 60)}`),
         ...(expert.exclusions ?? []).slice(0, 4).map((item) => `  - 不得迁移：${cleanText(item, 60)}`),
+        // 范例段放最后：预算截断时牺牲的是"参考样本"，而不是防抄袭与防跑偏的护栏
+        ...(expert.exemplarPassages ?? []).slice(0, 2).map((passage) => `  - 手法样本（只学机制）：${cleanText(passage.text, 180)}`),
       ].join('\n  '), perExpertBudget)),
     ].join('\n'))
   }

@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { useNovelWorkspaceLayoutStore } from '@/stores/novel-workspace-layout-store'
 
@@ -26,9 +27,29 @@ function isEditableTarget(e: KeyboardEvent): boolean {
   )
 }
 
-export function useNovelWorkspaceShortcuts(): void {
+export interface UseNovelWorkspaceShortcutsOptions {
+  /**
+   * false 时忽略全部按键。
+   *
+   * App 外壳对小说工作区做 keep-alive（切页只隐藏不卸载），隐藏挂载时必须
+   * 让出按键——尤其 Esc：聊天页按 Esc 中断运行，不能同时触发这里隐藏的
+   * 专注模式退出；Ctrl+1~4 也不能悄悄改掉不可见工作区的布局。
+   */
+  enabled?: boolean
+}
+
+export function useNovelWorkspaceShortcuts(
+  options: UseNovelWorkspaceShortcutsOptions = {}
+): void {
+  const { enabled = true } = options
+
+  // ref 保持最新值，避免 useHotkeys 闭包陈旧
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
+
   // Ctrl+B — 切换左侧栏
   useHotkeys('mod+b', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     useNovelWorkspaceLayoutStore.getState().toggleSidebar()
@@ -36,6 +57,7 @@ export function useNovelWorkspaceShortcuts(): void {
 
   // Ctrl+J — 切换右侧面板
   useHotkeys('mod+j', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     useNovelWorkspaceLayoutStore.getState().toggleRightPanel()
@@ -43,24 +65,28 @@ export function useNovelWorkspaceShortcuts(): void {
 
   // Ctrl+1~4 — 主工作区布局，顺序与顶栏 Segmented 从左到右一致
   useHotkeys('mod+1', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     useNovelWorkspaceLayoutStore.getState().setLayoutMode('text')
   }, { preventDefault: false }, [])
 
   useHotkeys('mod+2', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     useNovelWorkspaceLayoutStore.getState().setLayoutMode('text-timeline')
   }, { preventDefault: false }, [])
 
   useHotkeys('mod+3', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     useNovelWorkspaceLayoutStore.getState().setLayoutMode('timeline')
   }, { preventDefault: false }, [])
 
   useHotkeys('mod+4', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     useNovelWorkspaceLayoutStore.getState().setLayoutMode('graph')
@@ -68,6 +94,7 @@ export function useNovelWorkspaceShortcuts(): void {
 
   // Ctrl+Shift+F — 切换专注模式
   useHotkeys('mod+shift+f', (e) => {
+    if (!enabledRef.current) return
     if (isEditableTarget(e)) return
     e.preventDefault()
     useNovelWorkspaceLayoutStore.getState().toggleFocusMode()
@@ -75,6 +102,7 @@ export function useNovelWorkspaceShortcuts(): void {
 
   // Esc — 退出专注模式（仅在专注模式下生效，不干扰其他 Esc 行为）
   useHotkeys('esc', (e) => {
+    if (!enabledRef.current) return
     const { focusMode, setFocusMode } = useNovelWorkspaceLayoutStore.getState()
     if (focusMode) {
       e.preventDefault()

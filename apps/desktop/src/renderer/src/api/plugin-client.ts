@@ -75,6 +75,7 @@ export interface PluginUiContribution {
     | 'tool.detail'
     | 'trace.detail'
     | 'plugin-page.top'
+    | 'home.showcase'
   scope: 'app' | 'page' | 'session'
   priority: number
   rendererKey: string

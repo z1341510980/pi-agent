@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   listReferenceProviders: vi.fn(),
   listReferenceSections: vi.fn(),
   listReferenceSources: vi.fn(),
+  listReferenceAnalysisRuns: vi.fn(),
   getWritingStyleProfile: vi.fn(),
   listWritingStyleExperts: vi.fn(),
   updateWritingStyleExpert: vi.fn(),
@@ -105,6 +106,7 @@ function renderWithQueryClient(element: ReactNode): QueryClient {
 
 beforeEach(() => {
   api.listReferenceSources.mockResolvedValue([])
+  api.listReferenceAnalysisRuns.mockResolvedValue({ runs: [] })
   api.getWritingStyleProfile.mockResolvedValue(null)
   api.listWritingStyleExperts.mockResolvedValue([])
   api.listReferenceProviders.mockResolvedValue([

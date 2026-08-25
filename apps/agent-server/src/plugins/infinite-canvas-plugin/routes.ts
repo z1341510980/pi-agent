@@ -2,6 +2,7 @@ import { success } from '../../lib/api-response.js'
 import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
+import type { PromptSourceService } from './prompt-source-service.js'
 
 export type CanvasGenerateHandler = (input: {
   projectId: string
@@ -81,9 +82,55 @@ export function createInfiniteCanvasRoutes(
   generateImage?: CanvasImageGenerateHandler,
   generateMedia?: CanvasMediaGenerateHandler,
   editImage?: CanvasImageEditHandler,
-  reversePrompt?: CanvasReversePromptHandler
+  reversePrompt?: CanvasReversePromptHandler,
+  promptSources?: PromptSourceService
 ): RouteDefinition[] {
   return [
+    {
+      method: 'GET',
+      path: '/prompt-sources',
+      handler: async (request, reply) => {
+        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        return success(promptSources.listSources(), request.traceId)
+      }
+    },
+    {
+      method: 'GET',
+      path: '/prompt-items',
+      handler: async (request, reply) => {
+        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        const query = request.query as { sourceId?: string }
+        return success(promptSources.listItems(query.sourceId || undefined), request.traceId)
+      }
+    },
+    {
+      method: 'POST',
+      path: '/prompt-sources/refresh',
+      bodyLimit: 1024,
+      handler: async (request, reply) => {
+        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        try {
+          const result = await promptSources.refreshAll()
+          return success(result, request.traceId)
+        } catch (error) {
+          return reply.code(502).send({
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          })
+        }
+      }
+    },
+    {
+      method: 'PATCH',
+      path: '/prompt-sources/:sourceId/toggle',
+      bodyLimit: 1024,
+      handler: async (request, reply) => {
+        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        const input = body(request)
+        promptSources.toggleSource(request.params.sourceId, Boolean(input.enabled))
+        return success({ id: request.params.sourceId, enabled: Boolean(input.enabled) }, request.traceId)
+      }
+    },
     {
       method: 'GET',
       path: '/projects',

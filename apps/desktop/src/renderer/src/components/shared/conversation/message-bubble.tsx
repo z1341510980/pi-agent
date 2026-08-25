@@ -154,6 +154,20 @@ export function MessageBubble({ message, compact = false }: MessageBubbleProps) 
           </div>
         )}
 
+        {/* 思考过程（推理模型，2026-08-24）：可展开区块，默认折叠，正文开始后不再丢弃 */}
+        {message.thinking ? (
+          <details className="group/thinking max-w-full rounded-md border border-border/60 bg-surface-2/60">
+            <summary className="flex cursor-pointer select-none items-center gap-1 px-2.5 py-1 text-[10px] font-medium text-muted-foreground hover:text-text">
+              <span className="transition-transform group-open/thinking:rotate-90" aria-hidden="true">▶</span>
+              思考过程
+              <span className="text-hint">（{message.thinking.length} 字）</span>
+            </summary>
+            <div className="max-h-64 overflow-y-auto whitespace-pre-wrap border-t border-border/50 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+              {message.thinking}
+            </div>
+          </details>
+        ) : null}
+
         {/* 文本气泡（浅灰背景 + agent 边框色；错误时红色边框） */}
         {displayContent ? (
           <div

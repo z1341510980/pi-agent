@@ -2576,5 +2576,23 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
     // needs_attention 时阻止 publish；重写/修订后由编排器覆盖写入最新结果。
     id: '117_add_chapter_lengdu_quality',
     sql: `ALTER TABLE novel_chapters ADD COLUMN lengdu_quality TEXT;`
+  },
+  {
+    // 118: 文风专家蒸馏契约 v2。
+    //
+    // 只有"正向手法清单"的专家会把正文推成模板腔：Writer 拿到十条规则就想样样做到。
+    // v2 增补四类字段（参考 nuwa-skill 的心智模型方法论）：
+    //   - expression_dna_json：句式/词汇/节奏/幽默/确定性/叙述距离六项语言指纹
+    //   - tensions_json：文风自身拉扯的两股力量 + 取舍原则（不做取舍就会变成"全都要"）
+    //   - anti_patterns_json：该文风明确避免的写法（区别于 exclusions 的"不可搬运内容"）
+    //   - boundaries_json：这套能力覆盖不到的场景，防止被当万能风格套用
+    // 手法卡自身的 failureMode 与三重验证记录仍存在 techniques_json 内（无需新列）。
+    id: '118_add_style_expert_dna_and_tensions',
+    sql: `
+      ALTER TABLE novel_style_experts ADD COLUMN expression_dna_json TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN tensions_json TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN anti_patterns_json TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN boundaries_json TEXT;
+    `
   }
 ]

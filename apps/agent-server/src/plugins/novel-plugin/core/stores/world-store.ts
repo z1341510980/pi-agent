@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { DEFAULT_NOVEL_STYLE_EXPERTS, type NovelStyleExpert } from '@repo/shared/novel'
+import { type NovelStyleExpert } from '@repo/shared/novel'
 import type {
   NovelWorldRule, NovelStyleGuide, NovelWritingStyleProfile,
   NovelWritingStyleProfileInput, NovelConstraint, NovelWorldElement,
@@ -94,11 +94,8 @@ export class WorldStore {
     const row = this.repository.getWritingStyleProfile(projectId)
     if (!row) return undefined
     const profile = this.rowToWritingStyleProfile(row)
-    // 独立专家表是新的生效源；旧 JSON 只作为迁移前/空表兼容回退。
-    const experts = this.repository.listStyleExperts(projectId)
-    profile.styleExperts = experts.length > 0
-      ? experts.map((expert) => this.rowToStyleExpert(expert))
-      : this.listStyleExperts(projectId)
+    // 独立专家表是唯一生效源；无行时给空列表，不再回退到占位默认专家。
+    profile.styleExperts = this.listStyleExperts(projectId)
     return profile
   }
 
@@ -111,7 +108,7 @@ export class WorldStore {
       ...input,
       styleExperts: input.styleExperts !== undefined
         ? input.styleExperts
-        : existing?.styleExperts ?? DEFAULT_NOVEL_STYLE_EXPERTS,
+        : existing?.styleExperts ?? [],
       version: (existing?.version ?? 0) + 1,
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
@@ -158,8 +155,12 @@ export class WorldStore {
   }
 
   listStyleExperts(projectId: string): NovelStyleExpert[] {
-    const rows = this.repository.listStyleExperts(projectId)
-    return (rows.length > 0 ? rows : DEFAULT_NOVEL_STYLE_EXPERTS.map((expert) => ({ ...expert, projectId } as NovelStyleExpert))).map((row) => this.rowToStyleExpert(row as StyleExpertRow))
+    // 只返回真实蒸馏出的专家。
+    //
+    // 此前无专家时回退到 DEFAULT_NOVEL_STYLE_EXPERTS（四条"项目样本蒸馏 01-04"占位），
+    // 它们没有手法、证据、张力和边界，却因 enabled=true 被直接编译进 Writer 提示词——
+    // 等于用四段泛泛而谈的空话冒充文风引导。空列表是诚实状态：前端据此提示用户去蒸馏。
+    return this.repository.listStyleExperts(projectId).map((row) => this.rowToStyleExpert(row))
   }
 
   createStyleExpert(input: Omit<NovelStyleExpert, 'createdAt' | 'updatedAt'>): NovelStyleExpert {
@@ -208,7 +209,7 @@ export class WorldStore {
   deleteStyleExpert(projectId: string, id: string): boolean { return this.repository.deleteStyleExpert(projectId, id) }
 
   private toStyleExpertRow(expert: NovelStyleExpert): StyleExpertRow {
-    return { id: expert.id, project_id: expert.projectId, name: expert.name, source_title: expert.sourceTitle, source_author: expert.sourceAuthor ?? null, description: expert.description, distilled_prompt: expert.distilledPrompt, custom_prompt: expert.customPrompt ?? null, metrics_json: expert.metrics ? JSON.stringify(expert.metrics) : null, techniques_json: expert.techniques ? JSON.stringify(expert.techniques) : null, exclusions_json: expert.exclusions ? JSON.stringify(expert.exclusions) : null, exemplars_json: expert.exemplarPassages ? JSON.stringify(expert.exemplarPassages) : null, enabled: expert.enabled ? 1 : 0, sort_order: expert.sortOrder, distill_meta: expert.distillMeta ? JSON.stringify(expert.distillMeta) : null, version: expert.version, created_at: expert.createdAt, updated_at: expert.updatedAt }
+    return { id: expert.id, project_id: expert.projectId, name: expert.name, source_title: expert.sourceTitle, source_author: expert.sourceAuthor ?? null, description: expert.description, distilled_prompt: expert.distilledPrompt, custom_prompt: expert.customPrompt ?? null, metrics_json: expert.metrics ? JSON.stringify(expert.metrics) : null, techniques_json: expert.techniques ? JSON.stringify(expert.techniques) : null, exclusions_json: expert.exclusions ? JSON.stringify(expert.exclusions) : null, exemplars_json: expert.exemplarPassages ? JSON.stringify(expert.exemplarPassages) : null, expression_dna_json: expert.expressionDna ? JSON.stringify(expert.expressionDna) : null, tensions_json: expert.tensions ? JSON.stringify(expert.tensions) : null, anti_patterns_json: expert.antiPatterns ? JSON.stringify(expert.antiPatterns) : null, boundaries_json: expert.boundaries ? JSON.stringify(expert.boundaries) : null, enabled: expert.enabled ? 1 : 0, sort_order: expert.sortOrder, distill_meta: expert.distillMeta ? JSON.stringify(expert.distillMeta) : null, version: expert.version, created_at: expert.createdAt, updated_at: expert.updatedAt }
   }
 
   private toStyleExpertVersionRow(expert: NovelStyleExpert) {
@@ -230,7 +231,7 @@ export class WorldStore {
 
   private rowToStyleExpert(row: StyleExpertRow | NovelStyleExpert): NovelStyleExpert {
     if ('project_id' in row) {
-    return { id: row.id, projectId: row.project_id, name: row.name, sourceTitle: row.source_title, sourceAuthor: row.source_author ?? undefined, description: row.description, distilledPrompt: row.distilled_prompt, metrics: row.metrics_json ? JSON.parse(row.metrics_json) : undefined, techniques: row.techniques_json ? JSON.parse(row.techniques_json) : undefined, exclusions: row.exclusions_json ? JSON.parse(row.exclusions_json) : undefined, exemplarPassages: row.exemplars_json ? JSON.parse(row.exemplars_json) : undefined, customPrompt: row.custom_prompt ?? undefined, enabled: row.enabled === 1, sortOrder: row.sort_order, distillMeta: row.distill_meta ? JSON.parse(row.distill_meta) : undefined, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at }
+    return { id: row.id, projectId: row.project_id, name: row.name, sourceTitle: row.source_title, sourceAuthor: row.source_author ?? undefined, description: row.description, distilledPrompt: row.distilled_prompt, metrics: row.metrics_json ? JSON.parse(row.metrics_json) : undefined, techniques: row.techniques_json ? JSON.parse(row.techniques_json) : undefined, exclusions: row.exclusions_json ? JSON.parse(row.exclusions_json) : undefined, exemplarPassages: row.exemplars_json ? JSON.parse(row.exemplars_json) : undefined, expressionDna: row.expression_dna_json ? JSON.parse(row.expression_dna_json) : undefined, tensions: row.tensions_json ? JSON.parse(row.tensions_json) : undefined, antiPatterns: row.anti_patterns_json ? JSON.parse(row.anti_patterns_json) : undefined, boundaries: row.boundaries_json ? JSON.parse(row.boundaries_json) : undefined, customPrompt: row.custom_prompt ?? undefined, enabled: row.enabled === 1, sortOrder: row.sort_order, distillMeta: row.distill_meta ? JSON.parse(row.distill_meta) : undefined, version: row.version, createdAt: row.created_at, updatedAt: row.updated_at }
     }
     return row
   }
@@ -334,7 +335,9 @@ export class WorldStore {
       positiveExamples: parseStringArray(row.positive_examples),
       negativeExamples: parseStringArray(row.negative_examples),
       notes: row.notes ?? '',
-      styleExperts: parseJSON(row.style_experts, DEFAULT_NOVEL_STYLE_EXPERTS),
+      // 旧 JSON 列已不是生效源（getWritingStyleProfile 用专家表覆盖），
+      // 缺省给空数组而不是占位默认专家。
+      styleExperts: parseJSON(row.style_experts, [] as NovelStyleExpert[]),
       version: Math.max(1, Number(row.version) || 1),
       createdAt: row.created_at,
       updatedAt: row.updated_at,

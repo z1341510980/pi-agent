@@ -17,7 +17,9 @@ import { ReferenceAnalysisStore } from './reference-analysis-store.js'
 import {
   MAX_REFERENCE_PREVIEW_CHARS,
   MAX_REFERENCE_SOURCE_BYTES,
+  REFERENCE_LOCAL_CHUNK_TARGET_TOKENS,
   analyzeReferenceText,
+  buildReferenceLocalChunkPlan,
   buildReferenceQualityReport,
   detectAndDecodeReferenceText,
   detectReferenceSections,
@@ -230,7 +232,10 @@ export class ReferenceAnalysisService {
     return this.store.listSections(sourceId)
   }
 
-  getSectionsText(sourceId: string, sectionIds: string[]): {
+  getSectionsText(
+    sourceId: string,
+    sectionIds: string[]
+  ): {
     sourceId: string
     sections: ReferenceSection[]
     text: string
@@ -238,13 +243,20 @@ export class ReferenceAnalysisService {
   } {
     const source = this.store.requireSource(sourceId)
     const allSections = this.store.listSections(sourceId)
-    const selected = allSections.filter((section) => sectionIds.includes(section.id) && section.included)
+    const selected = allSections.filter(
+      (section) => sectionIds.includes(section.id) && section.included
+    )
     if (selected.length === 0) throw new Error('至少选择一个可分析的参考章节')
     const text = this.store.getNormalizedText(sourceId)
     const sectionTexts = Object.fromEntries(
-      selected.map((section) => [section.id, text.slice(section.start, section.end)]),
+      selected.map((section) => [section.id, text.slice(section.start, section.end)])
     )
-    return { sourceId: source.id, sections: selected, text: Object.values(sectionTexts).join('\n\n'), sectionTexts }
+    return {
+      sourceId: source.id,
+      sections: selected,
+      text: Object.values(sectionTexts).join('\n\n'),
+      sectionTexts
+    }
   }
 
   getTextPreview(
@@ -418,7 +430,12 @@ export class ReferenceAnalysisService {
   ): ReferenceTokenBudgetEstimate {
     const source = this.store.requireSource(sourceId)
     const text = this.store.getNormalizedText(sourceId)
-    const allSections = this.store.listSections(sourceId)
+    const persistedSections = this.store.listSections(sourceId)
+    // 导入确认阶段尚未落库章节；此时也要能预览本地分包，故按同一章节识别器临时计算。
+    const allSections =
+      persistedSections.length > 0
+        ? persistedSections
+        : detectReferenceSections(text, sourceId).sections
     const selectedSections = input.selectedSectionIds?.length
       ? allSections.filter((section) => input.selectedSectionIds!.includes(section.id))
       : allSections.filter((section) => section.included)
@@ -453,8 +470,17 @@ export class ReferenceAnalysisService {
         safetyMarginTokens
     )
     const selectedTextTokens = estimateReferenceTokens(selectedText)
-    const excessTokens = Math.max(0, selectedTextTokens - effectiveInputLimit)
-    const withinLimit = excessTokens === 0
+    const localChunkPlan = buildReferenceLocalChunkPlan(
+      selectedSections,
+      Math.max(1, Math.min(REFERENCE_LOCAL_CHUNK_TARGET_TOKENS, effectiveInputLimit))
+    )
+    const largestChunkTokens = Math.max(
+      0,
+      ...localChunkPlan.chunks.map((chunk) => chunk.estimatedTokens)
+    )
+    // 总文本超过上下文时按章节分批处理；只有完整章节自身无法容纳时才阻断。
+    const excessTokens = Math.max(0, largestChunkTokens - effectiveInputLimit)
+    const withinLimit = effectiveInputLimit > 0 && excessTokens === 0
     const estimatedInputTokens = {
       min: selectedTextTokens,
       max: Math.ceil(selectedTextTokens * 1.15)
@@ -466,9 +492,16 @@ export class ReferenceAnalysisService {
     const warnings = [
       '阶段 1 只执行本地统计，不会发送文本；该估算用于后续语义分析前的硬限制与费用确认。'
     ]
-    if (!withinLimit)
-      warnings.push(`超出模型有效输入上限 ${excessTokens} tokens，不得启动语义分析。`)
-    else if (selectedTextTokens >= effectiveInputLimit * 0.7)
+    warnings.push(...localChunkPlan.warnings)
+    if (!withinLimit) {
+      warnings.push(
+        effectiveInputLimit === 0
+          ? '模型没有可用的输入预算，不能启动语义分析。'
+          : `存在完整章节超出模型有效输入上限 ${excessTokens.toLocaleString()} tokens；请在章节边界手动拆分后重试。`
+      )
+    } else if (localChunkPlan.splitRequired) {
+      warnings.push('整本参考文本超过单次上下文，远端分析将按章节边界合并分包处理。')
+    } else if (selectedTextTokens >= effectiveInputLimit * 0.7)
       warnings.push('输入已接近模型有效上下文上限，后续分析需要谨慎确认。')
     const pricing = input.model.cost
     const estimatedCost = pricing
@@ -499,7 +532,8 @@ export class ReferenceAnalysisService {
       selectedSectionIds: selectedSections.map((section) => section.id),
       contextWindow,
       outputReserveTokens,
-      safetyMarginTokens
+      safetyMarginTokens,
+      localChunkPlan
     }
     return {
       providerId: input.providerId,
@@ -522,6 +556,7 @@ export class ReferenceAnalysisService {
       estimatedCost,
       pricingSource: pricing ? 'provider_config' : 'unknown',
       tokenizerSource: 'fallback',
+      localChunkPlan,
       withinLimit,
       excessTokens,
       excessCharacters:

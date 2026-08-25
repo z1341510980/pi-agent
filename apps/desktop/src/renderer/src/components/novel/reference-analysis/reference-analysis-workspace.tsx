@@ -405,11 +405,11 @@ export function ReferenceAnalysisWorkspace({
             </div>
           ) : workspaceTab === 'baseline' ? (
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              <WritingStyleProfileEditor projectId={projectId} mode="baseline" />
+              <WritingStyleProfileEditor projectId={projectId} mode="baseline" onExpertsChanged={onStyleExpertsChanged} />
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              <WritingStyleProfileEditor projectId={projectId} mode="experts" />
+              <WritingStyleProfileEditor projectId={projectId} mode="experts" onExpertsChanged={onStyleExpertsChanged} />
             </div>
           )}
         </DialogContent>
@@ -431,6 +431,12 @@ export function ReferenceAnalysisWorkspace({
               techniques: draft.techniques,
               exclusions: draft.exclusions,
               exemplarPassages: draft.exemplarPassages,
+              // v2 蒸馏契约：语言指纹 / 内在张力 / 反模式 / 能力边界
+              // 漏传这几项会让新蒸馏的专家退回 v1 效果（只有正向手法清单）
+              expressionDna: draft.expressionDna,
+              tensions: draft.tensions,
+              antiPatterns: draft.antiPatterns,
+              boundaries: draft.boundaries,
               enabled: true,
               sortOrder: 0,
             })

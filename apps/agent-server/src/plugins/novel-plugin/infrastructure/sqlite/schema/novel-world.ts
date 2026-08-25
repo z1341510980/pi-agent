@@ -24,6 +24,9 @@ export const novelStyleExperts = sqliteTable('novel_style_experts', {
   id: text('id').notNull(), projectId: text('project_id').notNull(), name: text('name').notNull(),
   sourceTitle: text('source_title').notNull(), sourceAuthor: text('source_author'), description: text('description').notNull(),
   distilledPrompt: text('distilled_prompt').notNull(), metricsJson: text('metrics_json'), techniquesJson: text('techniques_json'), exclusionsJson: text('exclusions_json'), exemplarsJson: text('exemplars_json'), customPrompt: text('custom_prompt'), enabled: integer('enabled').notNull().default(1),
+  // 迁移 118（蒸馏契约 v2）：语言指纹、内在张力、反模式与诚实边界
+  expressionDnaJson: text('expression_dna_json'), tensionsJson: text('tensions_json'),
+  antiPatternsJson: text('anti_patterns_json'), boundariesJson: text('boundaries_json'),
   sortOrder: integer('sort_order').notNull().default(0), distillMeta: text('distill_meta'), version: integer('version').notNull().default(1),
   createdAt: integer('created_at').notNull(), updatedAt: integer('updated_at').notNull(),
 })

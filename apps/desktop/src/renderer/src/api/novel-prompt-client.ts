@@ -40,7 +40,19 @@ export interface PromptTemplateDetail {
 
 export function listPromptTemplates(projectId?: string): Promise<PromptTemplateInfo[]> {
   const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
-  return getApi<PromptTemplateInfo[]>(`${BASE}/prompts${query}`)
+  // 兼容旧后端返回 string[] 的格式（服务未重载时优雅降级为纯名称列表）
+  return getApi<unknown[]>(`${BASE}/prompts${query}`).then((raw) =>
+    (Array.isArray(raw) ? raw : [])
+      .map((item): PromptTemplateInfo | null => {
+        if (typeof item === 'string') return { name: item, source: 'default' }
+        if (item != null && typeof item === 'object' && typeof (item as PromptTemplateInfo).name === 'string') {
+          const info = item as Partial<PromptTemplateInfo>
+          return { name: info.name as string, source: info.source ?? 'default' }
+        }
+        return null
+      })
+      .filter((item): item is PromptTemplateInfo => item !== null),
+  )
 }
 
 export function getPromptTemplate(name: string, projectId?: string): Promise<PromptTemplateDetail> {

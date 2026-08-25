@@ -91,6 +91,12 @@ export interface MatrixWorkspaceProps {
   onOpenReview?: (kind: ReviewPanelKind | null) => void
   /** 待确认事件数（审校下拉角标，由 workspace 级 useReviewCounts 提供） */
   pendingEventCount?: number
+  /**
+   * 方向键/Escape/Ctrl+A 等矩阵快捷键是否生效。
+   * App 外壳 keep-alive 下隐藏挂载时必须关闭：方向键带全局 preventDefault，
+   * 会在其他页面上吞掉滚动/光标移动并悄悄改不可见矩阵的选区。
+   */
+  hotkeysEnabled?: boolean
 }
 
 const DEFAULT_CELL_WIDTH = MATRIX_LAYOUT.defaultCellWidth
@@ -107,6 +113,7 @@ export function MatrixWorkspace({
   similarityScanning = false,
   onOpenReview,
   pendingEventCount = 0,
+  hotkeysEnabled = true,
 }: MatrixWorkspaceProps): ReactElement {
   const queryClient = useQueryClient()
 
@@ -333,10 +340,12 @@ export function MatrixWorkspace({
 
   // 仅在矩阵视图且焦点不在输入框/富文本时响应（避免与正文编辑冲突）
   // enableOnTags 排除 INPUT/TEXTAREA/SELECT；ProseMirror 的 contenteditable 通过检查 activeElement
+  // hotkeysEnabled：keep-alive 下隐藏挂载的工作台整体让出按键
   const hotkeyOpts = {
-    enabled: true,
+    enabled: hotkeysEnabled,
     enableOnTags: ['BODY', 'DIV', 'BUTTON', 'SPAN'] as const,
     filter: () => {
+      if (!hotkeysEnabled) return false
       const ae = document.activeElement
       if (!ae) return true
       // 焦点在输入框/富文本/可编辑元素时禁用方向键导航
@@ -348,7 +357,7 @@ export function MatrixWorkspace({
   }
   useHotkeys('arrowdown', (e) => { e.preventDefault(); moveSelection('down') }, hotkeyOpts, [moveSelection])
   useHotkeys('arrowup', (e) => { e.preventDefault(); moveSelection('up') }, hotkeyOpts, [moveSelection])
-  useHotkeys('escape', () => clearMatrixSelection(), { enabled: true }, [clearMatrixSelection])
+  useHotkeys('escape', () => clearMatrixSelection(), { enabled: hotkeysEnabled }, [clearMatrixSelection])
   useHotkeys('mod+a', (e) => { e.preventDefault(); selectAllVisible() }, hotkeyOpts, [selectAllVisible])
 
   const handleContextMenuChapter = useCallback(

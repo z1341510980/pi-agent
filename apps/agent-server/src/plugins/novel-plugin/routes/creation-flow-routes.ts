@@ -531,6 +531,22 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
         return
       }
 
+      // 快照冻结模型失效兜底：Provider 模型列表可能已变更（删除/裁剪），
+      // 沿用失效模型会让整条续跑在首个 Agent 调用就报"未找到所选模型"。
+      // 此时丢弃 per-call 覆盖，让解析链回落到项目主模型/Agent 配置，并明确告知用户。
+      let frozenModelId = snapshot.modelId
+      if (frozenModelId) {
+        const registry = services.context?.modelRegistry
+        // 仅在注册表可用且明确查不到时降级；注册表缺失（测试/异常装配）保持透传原行为
+        if (typeof registry?.find === 'function' && !registry.find(frozenModelId.provider, frozenModelId.modelId)) {
+          request.log.warn(
+            { projectId, chapterNumber: chapter, runId, modelId: frozenModelId },
+            '续跑快照冻结的模型已不存在，降级为默认解析链'
+          )
+          frozenModelId = undefined
+        }
+      }
+
       const creationLockKey = `${projectId}:${chapterNumber}`
       if (chapterCreationLocks.has(creationLockKey) || aiArrangeLocks.has(creationLockKey) || activeNovelChapterTasks.has(creationLockKey)) {
         reply.code(409).send({ ok: false, error: '该章节正在创作中，请勿重复启动断点续跑' })
@@ -621,7 +637,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             arrangedEntities: boundary?.arrangedEntities,
             writerDraft: boundary?.writerDraft,
             finalContent: boundary?.finalContent,
-            modelId: snapshot.modelId,
+            modelId: frozenModelId,
             styleExpertIds: snapshot.styleExpertIds,
             error: extra?.error,
             resumedFromRunId: snapshot.id,
@@ -650,7 +666,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           {
             emit: emitter.emit,
             // 模型冻结：续跑沿用首跑的 per-call 模型
-            modelId: snapshot.modelId,
+            modelId: frozenModelId,
             flowKey: interjectFlowKey,
             onRunStateUpdate: (state) => {
               lastBoundary = state
@@ -1611,6 +1627,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
     maxRounds: z.number().int().min(1).optional(),
     maxRoundsPerScene: z.number().int().min(1).optional(),
     characterTemperature: z.number().min(0).max(2).optional(),
+    // Moderator 单次调用超时毫秒（2026-08-24）：思考型模型延迟普遍 70-150s
+    moderatorTimeoutMs: z.number().int().min(10_000).max(600_000).optional(),
   })
 
   routes.push({
@@ -1850,6 +1868,56 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
       }
     },
   })
+
+  // 可续跑 run 列表：每章取最近一条中断快照（含草稿长度与失败信息）。
+  // 供章节视图展示"本章有未完成的创作"，解决中断入口不可见导致的半成品堆积。
+  routes.push({
+    method: 'GET',
+    path: '/projects/:projectId/resumable-runs',
+    handler: async (request: any) => {
+      const { projectId } = request.params as { projectId: string }
+      if (!store.getProject(projectId)) {
+        throw new AppError(ErrorCode.NOT_FOUND, `项目不存在: ${projectId}`, 404)
+      }
+      const runs = services.workflowRunStore.listResumableByProject(projectId).map((run) => ({
+        runId: run.id,
+        chapterNumber: run.chapterNumber,
+        status: run.status,
+        phase: run.phase,
+        failedPhase: run.failedPhase,
+        writerDraftLength: run.writerDraft?.length ?? 0,
+        finalContentLength: run.finalContent?.length ?? 0,
+        error: run.error,
+        updatedAt: run.updatedAt,
+      }))
+      return success(runs, request.traceId)
+    },
+  })
+
+  // 弃用中断 run：标记为 cancelled，使其退出可续跑列表（用户明确放弃半成品时调用）。
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/chapters/:chapterNumber/create-flow/:runId/discard',
+    handler: async (request: any, reply: any) => {
+      const { projectId, runId } = request.params as { projectId: string; runId: string }
+      const snapshot = services.workflowRunStore.get(runId)
+      if (!snapshot || snapshot.projectId !== projectId) {
+        reply.code(404).send({ ok: false, error: '未找到该工作流中断记录' })
+        return
+      }
+      if (snapshot.status === 'completed' || snapshot.status === 'cancelled') {
+        reply.code(409).send({ ok: false, error: '该记录无需弃用' })
+        return
+      }
+      services.workflowRunStore.save({ ...snapshot, status: 'cancelled', error: snapshot.error })
+      request.log.info(
+        { projectId, chapterNumber: snapshot.chapterNumber, runId },
+        '工作流中断快照已弃用',
+      )
+      return success({ discarded: true }, request.traceId)
+    },
+  })
+
 
   // ═══════════════════════════════════════════════════════════════
   // 模式3：从已写好的正文反推实体到矩阵（SSE）

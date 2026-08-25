@@ -291,6 +291,32 @@ describe('App shell', () => {
     expect(screen.queryByLabelText('设置中心')).toBeNull()
   })
 
+  it('keeps the chat workspace mounted (hidden) across view switches so running streams survive', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+
+    const { default: App } = await import('./App')
+    const { container } = render(<App />)
+    await enterChatWorkspace()
+
+    // 输入框内容属于工作台组件树；切页再回来必须原样保留（不经历卸载重建）
+    const input = await screen.findByRole('textbox', { name: '消息输入' })
+    fireEvent.change(input, { target: { value: '切页保活' } })
+
+    // 回到首页：聊天工作台从可访问性树消失，但 DOM 仍挂载在 hidden 容器里
+    fireEvent.click(screen.getByRole('button', { name: '首页' }))
+    await screen.findByText('服务在线')
+    expect(screen.queryByRole('main', { name: 'Wenlang Agent 工作台' })).toBeNull()
+    const keptMain = container.querySelector(
+      'div[hidden] [aria-label="Wenlang Agent 工作台"]'
+    )
+    expect(keptMain).toBeTruthy()
+
+    // 回到对话工作台：输入内容仍在，证明组件未被重建
+    fireEvent.click(screen.getByRole('button', { name: '对话工作台' }))
+    const restored = await screen.findByRole('textbox', { name: '消息输入' })
+    expect((restored as HTMLTextAreaElement).value).toBe('切页保活')
+  })
+
   it('TC-09: renders the provider list from the models endpoint', async () => {
     vi.stubGlobal('fetch', createFetchMock([], {
       models: [

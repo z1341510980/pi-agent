@@ -820,6 +820,10 @@ export function startReferenceAnalysisRun(sourceId: string, input: {
   return postApi(`${BASE}/reference-sources/${sourceId}/analysis-runs`, input)
 }
 
+export function listReferenceAnalysisRuns(sourceId: string): Promise<{ runs: ReferenceAnalysisRun[] }> {
+  return getApi(`${BASE}/reference-sources/${sourceId}/analysis-runs`)
+}
+
 export function getReferenceAnalysisRun(runId: string): Promise<ReferenceAnalysisRun> {
   return getApi(`${BASE}/reference-analysis-runs/${runId}`)
 }
@@ -847,6 +851,55 @@ export function retryReferenceAnalysisRun(runId: string, highCostConfirmed: bool
 export function resumeReferenceAnalysisRun(runId: string, highCostConfirmed: boolean): Promise<ReferenceAnalysisRun> {
   return postApi(`${BASE}/reference-analysis-runs/${runId}/resume`, { highCostConfirmed })
 }
+
+// ── 工作流断点续跑：可续跑列表与弃用 ──
+
+/** 中断的工作流 run 概要（每章最近一条；用于章节视图展示"未完成的创作"） */
+export interface ResumableRunInfo {
+  runId: string
+  chapterNumber: number
+  status: 'running' | 'error'
+  /** 快照推进到的阶段边界（writing/reviewing/memory） */
+  phase: string
+  failedPhase?: string
+  writerDraftLength: number
+  finalContentLength: number
+  error?: string
+  updatedAt: number
+}
+
+/** 列出项目内所有可续跑的工作流中断快照（每章取最近一条） */
+export function listResumableRuns(projectId: string): Promise<ResumableRunInfo[]> {
+  return getApi(`${BASE}/projects/${projectId}/resumable-runs`)
+}
+
+/** 弃用中断 run：标记为 cancelled，退出可续跑列表 */
+export function discardResumableRun(projectId: string, chapterNumber: number, runId: string): Promise<{ discarded: boolean }> {
+  return postApi(`${BASE}/projects/${projectId}/chapters/${chapterNumber}/create-flow/${runId}/discard`, {})
+}
+
+// ── 项目创作主模型（novelModelId）的复合串转换 ──
+// 存储格式 "provider:modelId"（首个冒号分隔，与后端 parseNovelModelRef 规则一致）。
+
+export interface NovelMainModelRef {
+  provider: string
+  modelId: string
+}
+
+export function parseNovelModelId(value: string | null | undefined): NovelMainModelRef | null {
+  if (!value) return null
+  const i = value.indexOf(':')
+  if (i <= 0 || i === value.length - 1) return null
+  const provider = value.slice(0, i).trim()
+  const modelId = value.slice(i + 1).trim()
+  return provider && modelId ? { provider, modelId } : null
+}
+
+export function formatNovelModelId(ref: NovelMainModelRef | null): string | null {
+  return ref ? `${ref.provider}:${ref.modelId}` : null
+}
+
+
 
 export function getReferenceProfile(profileId: string): Promise<ReferenceProfileDetail> {
   return getApi(`${BASE}/reference-profiles/${profileId}`)
@@ -1606,6 +1659,11 @@ export interface NovelStyleExpertApi {
   techniques?: unknown[]
   exclusions?: string[]
   exemplarPassages?: unknown[]
+  /** v2 蒸馏契约字段（迁移 118） */
+  expressionDna?: Record<string, unknown>
+  tensions?: unknown[]
+  antiPatterns?: string[]
+  boundaries?: string[]
 }
 
 export function listWritingStyleExperts(projectId: string): Promise<NovelStyleExpertApi[]> {
@@ -3157,8 +3215,11 @@ export interface StyleTechniqueDraftApi {
   name: string
   mechanism: string
   transfer: string
+  /** 什么情况下这条手法失效或必须让位（v2 蒸馏契约必填才算 verified） */
+  failureMode?: string
   evidence: Array<{ sectionId: string; quote: string }>
   metricAnchors: string[]
+  validation?: { crossDomain?: number; generative?: boolean; exclusive?: boolean }
   confidence: 'verified' | 'unverified' | 'rejected'
   kept: boolean
 }
@@ -3172,6 +3233,18 @@ export interface StyleDistillDraftApi {
   techniques: StyleTechniqueDraftApi[]
   metrics: Record<string, unknown>
   exemplarPassages: Array<{ sectionId: string; text: string; reason: string }>
+  /** v2 蒸馏契约：语言指纹 / 内在张力 / 反模式 / 诚实边界 */
+  expressionDna?: {
+    sentence?: string
+    lexicon?: string
+    rhythm?: string
+    humor?: string
+    certainty?: string
+    distance?: string
+  }
+  tensions?: Array<{ name: string; between: [string, string]; resolution: string }>
+  antiPatterns?: string[]
+  boundaries?: string[]
 }
 
 export function distillReferenceStyle(

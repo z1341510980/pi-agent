@@ -606,6 +606,10 @@ export class TimelineConsistencyStore {
     expectedContentRevisionId: string,
     now: number,
   ): TimelineRebuildArtifacts {
+    // 本模块内部表（jobs/steps/invalidations/events）自洽使用毫秒；但 story_events /
+    // memory_snapshots 等跨模块表的 created_at/updated_at 惯例是秒（见 novel-memory-store
+    // 的 now()）。混用会让毫秒行在 ORDER BY created_at DESC 中永远排最前，污染"最新"判定。
+    const nowSec = Math.floor(now / 1000)
     const proposedEvents = extractProposedStoryEvents(step.analysis)
     const restored: TimelineStaleCounts = { ...EMPTY_STALE_COUNTS }
     const unstore = (sql: string, ...params: Array<string | number>): number =>
@@ -637,7 +641,7 @@ export class TimelineConsistencyStore {
           VALUES (?, ?, ?, NULL, 0, ?, ?, ?, ?, 'confirmed', NULL, 'timeline_rebuild', ?, ?)
         `).run(
           randomUUID(), projectId, step.chapterNumber,
-          event.type, event.title, event.summary, event.outcome ?? '', now, now,
+          event.type, event.title, event.summary, event.outcome ?? '', nowSec, nowSec,
         )
       }
     } else {
@@ -645,7 +649,7 @@ export class TimelineConsistencyStore {
         UPDATE novel_story_events
         SET status = COALESCE(stale_from, 'confirmed'), stale_from = NULL, updated_at = ?
         WHERE project_id = ? AND status = 'stale' AND chapter_number = ?
-      `, now, projectId, step.chapterNumber)
+      `, nowSec, projectId, step.chapterNumber)
     }
     restored.memoryEvents = unstore(`
       UPDATE novel_memory_events
@@ -674,7 +678,7 @@ export class TimelineConsistencyStore {
       INSERT INTO novel_memory_snapshots
         (id, project_id, chapter_number, snapshot_type, entity_id, snapshot_data, status, created_at)
         VALUES (?, ?, ?, 'full', NULL, ?, 'active', ?)
-    `).run(randomUUID(), projectId, step.chapterNumber, snapshotData, now)
+    `).run(randomUUID(), projectId, step.chapterNumber, snapshotData, nowSec)
     restored.memorySnapshots = 1
     restored.characterHistory = unstore(`
       UPDATE novel_character_history
@@ -967,7 +971,7 @@ export class TimelineConsistencyStore {
       UPDATE novel_story_events SET status = 'stale', stale_from = status, updated_at = ?
       WHERE project_id = ? AND chapter_number >= ?
         AND status IN ('planned', 'confirmed', 'generated')
-    `).run(Date.now(), projectId, startChapterNumber).changes
+    `).run(Math.floor(Date.now() / 1000), projectId, startChapterNumber).changes
     counts.memoryEvents = this.db.prepare(`
       UPDATE novel_memory_events SET status = 'stale', stale_from = status
       WHERE project_id = ? AND chapter_number >= ? AND status IN ('pending', 'confirmed')

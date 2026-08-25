@@ -6,7 +6,7 @@
  * （角色/冲突是色带 + 端点把手、地点是 6px 圆点），用户按图例找符号找不到。
  *
  * 折叠态：紧凑条，仅显示展开按钮 + 摘要
- * 展开态：图例项横排；搜索框固定在同一行右端（不再独占一行）
+ * 展开态：左侧图例样例区（可横向滚动）与右侧搜索区用分隔线隔开，互不挤压
  */
 
 import { useState, type ReactElement } from 'react'
@@ -127,8 +127,8 @@ export function MatrixLegend({
 
   return (
     <div className="shrink-0 border-b border-border bg-surface-1/50">
-      {/* 图例条：图例项 + 搜索框同一行（搜索框固定右端，不再独占一行） */}
-      <div className="flex items-center gap-2 px-3 min-h-7 py-1 text-nano text-muted-foreground">
+      {/* 图例条：左「图例样例」区（可横向滚动）｜分隔线｜右「搜索」区，两块互不挤压 */}
+      <div className="flex items-center gap-2.5 px-3 h-8 text-nano text-muted-foreground">
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}
@@ -142,7 +142,7 @@ export function MatrixLegend({
           <span className="font-mono text-hint">{total}</span>
         </button>
         {!collapsed && (
-          <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap flex-1 min-w-0">
+          <div className="flex items-center gap-3 overflow-x-auto scrollbar-none whitespace-nowrap flex-1 min-w-0">
             {entries.map((entry) => (
               <LegendRow key={entry.id} entry={entry} />
             ))}
@@ -158,31 +158,35 @@ export function MatrixLegend({
           </div>
         )}
         {collapsed && (
-          <span className="text-nano text-hint truncate">已折叠 · 点击左侧按钮展开查看符号含义</span>
+          <span className="text-nano text-hint truncate flex-1 min-w-0">已折叠 · 点击左侧按钮展开查看符号含义</span>
         )}
         {onSearchChange && (
-          <div className="relative ml-auto w-44 shrink-0">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-hint pointer-events-none" aria-hidden="true" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-              placeholder="搜索实体定位行…"
-              className="w-full h-6 pl-7 pr-6 rounded-md bg-surface-2 border border-border text-nano text-text placeholder:text-hint focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors"
-              aria-label="搜索实体"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => onSearchChange('')}
-                className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex size-4 items-center justify-center rounded text-hint hover:bg-muted hover:text-text transition-colors"
-                aria-label="清除搜索"
-                title="清除"
-              >
-                <X className="size-2.5" aria-hidden="true" />
-              </button>
-            )}
-          </div>
+          <>
+            {/* 分隔线：图例区 | 搜索区 */}
+            <div className="h-4 w-px bg-border/70 shrink-0" aria-hidden="true" />
+            <div className="relative w-44 shrink-0">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-hint pointer-events-none" aria-hidden="true" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => onSearchChange(e.target.value)}
+                placeholder="搜索实体定位行…"
+                className="w-full h-6 pl-7 pr-6 rounded-md bg-surface-2 border border-border text-nano text-text placeholder:text-hint focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors"
+                aria-label="搜索实体"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => onSearchChange('')}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex size-4 items-center justify-center rounded text-hint hover:bg-muted hover:text-text transition-colors"
+                  aria-label="清除搜索"
+                  title="清除"
+                >
+                  <X className="size-2.5" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          </>
         )}
       </div>
     </div>
