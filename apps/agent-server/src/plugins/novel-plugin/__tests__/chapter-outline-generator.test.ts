@@ -137,10 +137,10 @@ describe('ChapterOutlineGenerator', () => {
 
   afterEach(() => db.close())
 
-  function createGenerator(): ChapterOutlineGenerator {
+  function createGenerator(fakeConfig: { /** 禁用工具执行，模拟 provider 不支持工具调用的兜底路径 */ disableToolExecution?: boolean } = {}): ChapterOutlineGenerator {
     const context = {
       logger,
-      createSession: vi.fn(async (options: PluginSessionOptions) => {
+      createSession: vi.fn(async (options: PluginSessionOptions & { disableToolExecution?: boolean }) => {
         capturedOptions = options
         let subscriber: ((event: Record<string, unknown>) => void) | undefined
         return {
@@ -155,6 +155,14 @@ describe('ChapterOutlineGenerator', () => {
                 usage: { inputTokens: 120, outputTokens: 80 }
               }
             })
+            // ── 工具路径模拟：模型发起 tool call → SDK 执行工具 → 助手仅回确认语 ──
+            if (!fakeConfig.disableToolExecution && Array.isArray(options.tools) && options.tools.length > 0) {
+              const submitTool = options.tools[0] as unknown as {
+                execute: (id: string, args: unknown) => Promise<unknown>
+              }
+              await submitTool.execute('fake-tool-call', JSON.parse(modelResult))
+              return '章纲已通过结构化提交工具入库。'
+            }
             return modelResult
           },
           promptStream: vi.fn(),
@@ -186,8 +194,11 @@ describe('ChapterOutlineGenerator', () => {
       provider: 'provider-a',
       modelId: 'model-outline'
     })
-    expect(capturedOptions?.tools).toEqual([])
-    expect(capturedOptions?.responseFormat).toBe('json')
+    // 方案 D：挂载结构化提交工具，且不再声明 json 响应格式（避免 tool_choice 冲突）
+    const tools = capturedOptions?.tools as unknown as Array<{ name?: string }> | undefined
+    expect(tools).toHaveLength(1)
+    expect(tools?.[0]?.name).toBe('submit_chapter_outline')
+    expect(capturedOptions?.responseFormat).toBeUndefined()
     expect(capturedOptions?.maxTokens).toBeUndefined()
     expect(capturedOptions?.userMessage).toContain('主角逐步发现失踪案与旧城改造有关')
     expect(capturedOptions?.userMessage).toContain('第一卷聚焦旧城区的三起失踪案')
@@ -224,5 +235,49 @@ describe('ChapterOutlineGenerator', () => {
       agentType: 'outline-planner',
       status: 'error'
     })
+  })
+
+  it('兜底路径：provider 不执行工具时按容错文本解析成功', async () => {
+    // 禁用工具执行 → prompt 返回原始 JSON 文本 → 走 parseChapterOutlineDraft 兜底
+    const generator = createGenerator({ disableToolExecution: true })
+    const result = await generator.generate({
+      projectId,
+      chapterNumber: 2,
+      mode: 'rewrite',
+      currentOutline: '调查旧城区。',
+      expectedOutline: '调查旧城区。'
+    })
+
+    expect(result.draft.povSuggestions[0]?.characterName).toBe('林默')
+    expect(result.draft.storylines[0]?.storylineName).toBe('失踪案主线')
+  })
+
+  it('协议漂移（元信息包装 + 中文键）在兜底解析中归一成功', async () => {
+    modelResult = JSON.stringify({
+      元信息: { 备注: '测试' },
+      章纲: {
+        正文: '林默进入旧城区核查证词，发现记录被人为篡改，结尾锁定幕后调查方向。',
+        章节目标: '确认失踪案并非偶发事件',
+        开场状态: '林默只有一条来源不明的线索',
+        推进: ['进入旧城区', '核对证词'],
+        转折点: '证词指向幕后人特征',
+        结尾状态: '林默锁定下一步方向',
+        钩子: '幕后人开始跟踪',
+        场景数: 3,
+        povSuggestions: [{ characterId, mode: 'single' }],
+        storylines: [{ storylineId, intendedProgress: '确认组织存在' }],
+        continuityRisks: []
+      }
+    })
+    const generator = createGenerator({ disableToolExecution: true })
+    const result = await generator.generate({
+      projectId,
+      chapterNumber: 2,
+      mode: 'rewrite',
+      currentOutline: '调查旧城区。',
+      expectedOutline: '调查旧城区。'
+    })
+    expect(result.draft.chapterGoal).toBe('确认失踪案并非偶发事件')
+    expect(result.draft.povSuggestions[0]?.characterName).toBe('林默')
   })
 })

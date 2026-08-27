@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
-import type { NovelProject, NovelChapter, NovelVolume } from '@/api/novel-client'
+import type { NovelProject, NovelChapter, NovelVolume, NovelBeatPlan } from '@/api/novel-client'
+import { useNovelBeatStore } from '@/stores/novel-beat-store'
+import { generateChapterBeatPlan } from '@/api/novel-client'
 
 // ── mock store：用 vi.hoisted 保证 mock 对象在 vi.mock factory 中可访问 ──
 
@@ -41,6 +43,7 @@ vi.mock('@/api/novel-client', async () => {
     updateChapter: vi.fn().mockResolvedValue({}),
     createVolume: vi.fn().mockResolvedValue({ id: 'v-new' }),
     updateVolume: vi.fn().mockResolvedValue({}),
+    generateChapterBeatPlan: vi.fn(),
   }
 })
 
@@ -166,5 +169,59 @@ describe('OutlineTree', () => {
     await renderTree()
     const aiBtn = screen.getByTitle('AI编排') as HTMLButtonElement
     expect(aiBtn.disabled).toBe(false)
+  })
+})
+
+describe('OutlineTree 节拍徽标（T4）', () => {
+  const beat: NovelBeatPlan = {
+    id: 'b1',
+    projectId: 'p1',
+    volumeNumber: 1,
+    chapterNumber: 1,
+    dramaticFunction: 'escalation',
+    emotionalDebt: '上一章钩子未解',
+    payoff: '',
+    arcPosition: '前段',
+    summary: '主角申诉被堵死。',
+    status: 'planned',
+    createdAt: 0,
+    updatedAt: 0,
+  }
+
+  afterEach(() => {
+    cleanup()
+    useNovelBeatStore.setState({ loadedProjectId: null, beats: [] })
+    vi.mocked(generateChapterBeatPlan).mockReset()
+  })
+
+  it('有节拍时章节行渲染戏剧功能徽标与走向', async () => {
+    useNovelBeatStore.setState({ loadedProjectId: 'p1', beats: [beat] })
+    await renderTree()
+    expect(screen.getByText('递进加压')).toBeTruthy()
+    expect(screen.getByText('主角申诉被堵死。')).toBeTruthy()
+  })
+
+  it('无节拍的未发布章显示生成入口，点击后写回共享 store', async () => {
+    useNovelBeatStore.setState({ loadedProjectId: 'p1', beats: [] })
+    const generated: NovelBeatPlan = { ...beat, dramaticFunction: 'climax', summary: '爆发。' }
+    vi.mocked(generateChapterBeatPlan).mockResolvedValue({
+      generationId: 'g1',
+      chapterNumber: 1,
+      beat: generated,
+      promptVersion: 'beat-planner-v1'
+    })
+    await renderTree()
+    fireEvent.click(screen.getByText('生成本章节拍'))
+    // 等待异步生成完成写回 store
+    await vi.waitFor(() => {
+      expect(useNovelBeatStore.getState().beats).toHaveLength(1)
+    })
+    expect(useNovelBeatStore.getState().beats[0].dramaticFunction).toBe('climax')
+  })
+
+  it('已发布章节不显示生成入口（节拍只读）', async () => {
+    const publishedChapter: NovelChapter = { ...chapter, status: 'published' }
+    await renderTree({ chapters: [publishedChapter] })
+    expect(screen.queryByText('生成本章节拍')).toBeNull()
   })
 })

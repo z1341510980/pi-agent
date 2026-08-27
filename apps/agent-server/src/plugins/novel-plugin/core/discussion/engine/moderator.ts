@@ -16,6 +16,7 @@ import type {
   ModeratorState,
 } from './discussion-types.js'
 import { DISCUSSION_LIMITS } from './discussion-types.js'
+import { createNovelSubmitModeratorDecisionTool, type ModeratorDecisionDraftHolder } from '../../tools/submit.js'
 
 /** Moderator 创建会话的上下文 */
 export interface ModeratorContext {
@@ -25,6 +26,14 @@ export interface ModeratorContext {
     timeoutMs: number
     model?: { provider: string; modelId: string }
     signal?: AbortSignal
+    tools?: unknown[]
+    responseFormat?: undefined
+    onPayloadStats?: (stats: {
+      messagesChars: number
+      toolsChars: number
+      toolCount: number
+      totalChars: number
+    }) => void
   }): Promise<PluginSessionHandle>
   logger: FastifyBaseLogger
 }
@@ -64,6 +73,12 @@ export class Moderator {
     state: ModeratorState,
     signal?: AbortSignal,
   ): Promise<ModeratorDecision> {
+    this.invocationCount++
+    if (state.phase === 'acting' && state.currentScene?.actionBeats?.length) {
+      // 新版动作图的正常演出不再经过 Moderator；只有引擎显式调用
+      // interveneForActionBeat 时才会进入这里，避免每个角色回合重复决策。
+      this.context.logger.info({ sceneId: state.currentScene.sceneId, round: state.round }, '动作图异常仲裁')
+    }
     const systemPrompt = this.buildSystemPrompt(members, state)
     const userMessage = this.buildUserPrompt(goal, history, state)
     const spokenIds = this.collectSpokenMemberIds(history, state)
@@ -76,7 +91,16 @@ export class Moderator {
     let firstAttemptFailedWithParseError = false
 
     try {
-      const result = await this.callLlm(systemPrompt, userMessage, signal)
+      const draft: ModeratorDecisionDraftHolder = {}
+      const tool = createNovelSubmitModeratorDecisionTool(draft)
+      const result = await this.callLlm(
+        `${systemPrompt}\n\n必须调用 novel_submit_moderator_decision 工具提交决策；不要在文本中输出 JSON。`,
+        userMessage,
+        signal,
+        tool,
+      )
+      const submitted = draft.payload
+      if (submitted) return this.enforceDecision(submitted as ModeratorDecision, members, state, spokenIds)
       return this.enforceDecision(this.parseDecision(result), members, state, spokenIds)
     } catch (err) {
       if (signal?.aborted) throw err
@@ -90,7 +114,17 @@ export class Moderator {
         const retryUserMessage = firstAttemptFailedWithParseError
           ? `${userMessage}\n\n---\n\n## 重试要求（上一次的回复没有输出可解析的 JSON）\n\n现在只输出一个 JSON 对象：第一个字符必须是 {，最后一个字符必须是 }。不要输出任何解释、思考过程或 markdown 代码块。\n格式示例：\n{"type":"invite","agentId":"成员ID","prompt":"给该成员的任务","reason":"一句话理由"}`
           : userMessage
-        const retryResult = await this.callLlm(systemPrompt, retryUserMessage, signal)
+        const retryDraft: ModeratorDecisionDraftHolder = {}
+        const retryTool = createNovelSubmitModeratorDecisionTool(retryDraft)
+        const retryResult = await this.callLlm(
+          `${systemPrompt}\n\n必须调用 novel_submit_moderator_decision 工具提交决策；不要在文本中输出 JSON。`,
+          retryUserMessage,
+          signal,
+          retryTool,
+        )
+        if (retryDraft.payload) {
+          return this.enforceDecision(retryDraft.payload as ModeratorDecision, members, state, spokenIds)
+        }
         return this.enforceDecision(this.parseDecision(retryResult), members, state, spokenIds)
       } catch (retryErr) {
         if (signal?.aborted) throw retryErr
@@ -119,6 +153,17 @@ export class Moderator {
     return this.degradedCount
   }
   private degradedCount = 0
+  private invocationCount = 0
+
+  get invocations(): number {
+    return this.invocationCount
+  }
+
+  resetRunState(): void {
+    this.degradedCount = 0
+    this.lastFailureReason = ''
+    this.invocationCount = 0
+  }
 
   /** 最近一条角色/成员发言（供降级点名构造具体刺激，避免裸模板导致刻板演出） */
   private collectLastSpeech(history: DiscussionMessage[]): { name: string; excerpt: string } | undefined {
@@ -132,13 +177,19 @@ export class Moderator {
     return undefined
   }
 
-  private async callLlm(systemPrompt: string, userMessage: string, signal?: AbortSignal): Promise<string> {
+  private async callLlm(
+    systemPrompt: string,
+    userMessage: string,
+    signal?: AbortSignal,
+    tool?: unknown,
+  ): Promise<string> {
     const session = await this.context.createSession({
       systemPrompt,
       userMessage,
       timeoutMs: this.limits?.timeoutMs ?? MODERATOR_TIMEOUT_MS,
       model: this.model,
       signal,
+      tools: tool ? [tool] : [],
     })
     try {
       return await session.prompt()
@@ -442,7 +493,8 @@ ${memberList}
         if (state.phase !== 'acting') {
           return { ...invite, agentIds: undefined }
         }
-        const valid = invite.agentIds.filter((id) =>
+        const mergedIds = Array.from(new Set([invite.agentId, ...invite.agentIds]))
+        const valid = mergedIds.filter((id) =>
           members.some((m) => m.id === id && m.type === 'character'),
         )
         return { ...invite, agentIds: valid.length > 1 ? valid : undefined }

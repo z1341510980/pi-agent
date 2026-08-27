@@ -85,6 +85,7 @@ function createMockContext(): PluginContext {
     dataDir: process.cwd(),
     resolvePath: (...segments: string[]) => join(process.cwd(), ...segments),
     registerBackgroundWork: () => noop,
+    registerSettings: () => {},
     subagentManager: undefined,
     teamManager: undefined,
     agentCallLogger: undefined,

@@ -382,6 +382,7 @@ export function ReferenceAnalysisWorkspace({
                 {page === 'analysis' && (
                   <div className="h-full min-h-0 overflow-y-auto">
                     <ReferenceRunSection
+                      projectId={projectId}
                       sourceId={selectedSourceId}
                       parsed={parsed}
                       onProfileReady={(profileId) => {

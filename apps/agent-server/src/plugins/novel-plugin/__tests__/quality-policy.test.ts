@@ -142,14 +142,18 @@ describe('阈值单一来源', () => {
     expect(coverageGate?.maxAction).toBe('advisory')
   })
 
-  it('chapter-instruction.md 不再用字数惩罚威胁 Writer', async () => {
+  it('chapter-instruction.md 明示与字数门同口径的硬上限（首稿控长）', async () => {
     const { readFile } = await import('node:fs/promises')
     const { join } = await import('node:path')
     const text = await readFile(
       join(process.cwd(), 'src/plugins/novel-plugin/core/prompts/chapter-instruction.md'),
       'utf8',
     )
+    // 2026-08-25：软"参考字数"拦不住首稿惯性超写，改为明示天花板 + 按场分配预算。
+    // 退回动作是定向压缩，不是整章重写威胁。
+    expect(text).toContain('{{target_words}}')
+    expect(text).toContain('{{max_words}}')
+    expect(text).toContain('定向压缩')
     expect(text).not.toContain('会触发重写或修订')
-    expect(text).toContain('参考字数')
   })
 })

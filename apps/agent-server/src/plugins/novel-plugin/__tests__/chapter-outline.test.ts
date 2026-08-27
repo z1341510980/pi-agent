@@ -21,6 +21,53 @@ function validDraft(overrides: Record<string, unknown> = {}): Record<string, unk
 }
 
 describe('ChapterOutlineDraft 协议', () => {
+  it('结构漂移归一：元信息包装 + 中文键别名 + 标量矫正都能解析', () => {
+    const wrapped = JSON.stringify({
+      元信息: { 模型: 'test', 时间: '2026-08-25' },
+      章纲: {
+        version: '1',
+        正文: '主角进入旧城区追查线索，在误导中确认真正目标，最终发现新的威胁。',
+        章节目标: '确认失踪案的真目标',
+        开场状态: '车队只留下一名线人',
+        推进: ['进入旧城区', '验证证词'],
+        障碍: ['时间不够', '证人不愿开口'],
+        转折点: '证人的证词指向新的幕后主使',
+        结尾状态: '主角锁定新的调查方向',
+        钩子: '花瓶的裂纹已经被注意到',
+        场景数: '3',
+        povSuggestions: [{ characterId: 'char-1', mode: 'single' }],
+        storylines: [{ storylineId: 'line-1', intendedProgress: '确认包裹失踪的真事件' }],
+        continuityRisks: []
+      }
+    })
+    const draft = parseChapterOutlineDraft(wrapped, {
+      characters: new Map([['char-1', '叶默']]),
+      storylines: new Map([['line-1', '失踪案']])
+    })
+    expect(draft.version).toBe(1)
+    expect(draft.outlineText).toContain('旧城区')
+    expect(draft.sceneCountEstimate).toBe(3)
+    expect(draft.povSuggestions[0].characterName).toBe('叶默')
+  })
+
+  it('协议版本标签归一化：字符串数字 / 自增版本 / 缺失都接受为当前版本', () => {
+    const references = {
+      characters: new Map([['char-1', '叶默']]),
+      storylines: new Map([['line-1', '失踪案']])
+    }
+    for (const version of ['1', 7, undefined]) {
+      const overrides = version === undefined
+        ? { version: undefined }
+        : { version }
+      const draft = parseChapterOutlineDraft(
+        JSON.stringify(validDraft(overrides)),
+        references
+      )
+      expect(draft.version).toBe(1)
+      expect(draft.outlineText.length).toBeGreaterThan(20)
+    }
+  })
+
   it('严格解析 JSON 并用可信实体名称补全展示字段', () => {
     const draft = parseChapterOutlineDraft(JSON.stringify(validDraft()), {
       characters: new Map([['char-1', '林默']]),

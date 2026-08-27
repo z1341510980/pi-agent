@@ -183,6 +183,9 @@ export const CHAPTER_RENUMBER_FIELDS: ChapterRenumberField[] = [
   { table: 'novel_relationships', column: 'last_updated_chapter', kind: 'scalar', nullable: true },
   // 上下文成本埋点：与 agent_logs 同口径（被删章的行删除，其余前移）
   { table: 'novel_context_section_metrics', column: 'chapter_number', kind: 'scalar', nullable: false },
+  // 卷级节拍表：NOT NULL chapter_number → 被删章的节拍行删除，其余前移，
+  // 否则删章后节拍仍指向旧章号，节拍↔章节映射静默错位
+  { table: 'novel_beat_plans', column: 'chapter_number', kind: 'scalar', nullable: false },
 ]
 
 // 启动时校验 CHAPTER_RENUMBER_FIELDS 的标识符合法性（防御性，防止未来误传用户输入）

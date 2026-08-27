@@ -47,6 +47,36 @@ import { createEntityMaintenanceRoutes } from './routes/entity-maintenance-route
 import { distillStyleExpert } from './core/prompting/style-expert-distiller.js'
 
 /**
+ * 参考章节 → 文风基线样本：句界截断（单条 ≤2800 字，避免样本以半句话收尾）。
+ *
+ * append-reference-samples（手动选章）与 auto-baseline（分析完成后分层取样）
+ * 共用同一截断逻辑，保证两条路径产出的样本形态一致。
+ */
+function truncateReferenceSample(sectionText: string, title: string): string {
+  const body = sectionText.trim()
+  const capped =
+    body.length <= 2800
+      ? body
+      : (() => {
+          const head = body.slice(0, 2800)
+          const lastStop = Math.max(
+            head.lastIndexOf('。'),
+            head.lastIndexOf('！'),
+            head.lastIndexOf('？'),
+            head.lastIndexOf('"')
+          )
+          return lastStop > 1400 ? head.slice(0, lastStop + 1) : head.trim()
+        })()
+  return `## 参考样本：${title}\n\n${capped}`
+}
+
+/**
+ * 基线分层取样位置：首章 + 约 10%/35%/60%/85%，覆盖头/中/尾。
+ * 只学开头的文风会让基线带偏全书，分层是低成本的对冲。
+ */
+const BASELINE_SAMPLE_POSITIONS = [0, 0.1, 0.35, 0.6, 0.85]
+
+/**
  * 创建小说系统 REST API 路由
  *
  * PR-6 路由聚合入口：高密度模块已拆分到 routes/ 子目录，
@@ -772,8 +802,14 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
         customPrompt: z.string().trim().min(1).max(3000).nullable().optional(),
         enabled: z.boolean().optional(),
         sortOrder: z.number().int().min(0).max(1000).optional(),
+        reviewStatus: z.enum(['draft', 'approved']).optional(),
       }).parse(request.body ?? {})
-      const expert = store.updateStyleExpert(request.params.projectId, request.params.expertId, input)
+      // 启用即视为审核通过：草稿专家经用户显式开启后脱离待审核态，
+      // 与文风面板的"审核启用"操作共用同一语义。
+      const patch = input.enabled === true
+        ? { ...input, reviewStatus: 'approved' as const }
+        : input
+      const expert = store.updateStyleExpert(request.params.projectId, request.params.expertId, patch)
       if (!expert) return reply.code(404).send({ ok: false, error: '文风专家不存在' })
       return success(expert, request.traceId)
     },
@@ -835,6 +871,181 @@ export function createNovelRoutes(services: NovelServices): RouteDefinition[] {
       const target = request.query?.target
       const normalizedTarget = target === 'reviser' || target === 'reviewer' ? target : 'writer'
       return success(services.promptBuilder.buildWritingStylePrompt(request.params.projectId, normalizedTarget) ?? null, request.traceId)
+    },
+  })
+
+  /**
+   * 把参考小说的勾选章节截取为文风基线样本（正向或反向）。
+   *
+   * 解决"参考小说分析产出的文本进不了基线"的断点：蒸馏只产专家卡，
+   * 而基线正/反样本此前只能手工粘贴。服务端一次完成取文、句界截断、
+   * 上限校验与落库；正向样本第一条即锚定（每章必注入）。
+   */
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/writing-style-profile/append-reference-samples',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(
+        z.object({
+          sourceId: z.string().min(1),
+          sectionIds: z.array(z.string().min(1)).min(1).max(5),
+          kind: z.enum(['positive', 'negative']).default('positive')
+        }),
+        request,
+        reply
+      )
+      if (!input) return reply
+      {
+        const referenceAnalysis = services.referenceAnalysis
+        if (!referenceAnalysis) throw new Error('参考分析服务未初始化')
+        const { sections, sectionTexts } = referenceAnalysis.getSectionsText(input.sourceId, input.sectionIds)
+
+        const existingProfile = store.getWritingStyleProfile(request.params.projectId)
+        if (!existingProfile) throw new AppError(ErrorCode.BAD_REQUEST, '请先创建文风档案再加入样本')
+
+        const samples = sections.map((section, index) =>
+          truncateReferenceSample(sectionTexts[section.id] ?? '', section.title ?? `第 ${index + 1} 章`)
+        )
+
+        const key = input.kind === 'positive' ? 'positiveExamples' : 'negativeExamples'
+        const current = (existingProfile[key] ?? []) as string[]
+        const remaining = 5 - current.length
+        if (remaining <= 0) {
+          throw new AppError(
+            ErrorCode.CONFLICT,
+            `${input.kind === 'positive' ? '正向' : '反向'}样本已达上限（5 条），请先在文风样本编辑器中移除后再添加`
+          )
+        }
+        const fitting = samples.slice(0, remaining).filter((sample) => sample.length >= 20)
+        const skipped = samples.length - fitting.length
+
+        const updated = store.upsertWritingStyleProfile(request.params.projectId, {
+          name: existingProfile.name,
+          preset: existingProfile.preset,
+          narrativePerson: existingProfile.narrativePerson,
+          narrativeDistance: existingProfile.narrativeDistance,
+          sentenceRhythm: existingProfile.sentenceRhythm,
+          dialogueRatio: existingProfile.dialogueRatio,
+          emotionalTemperature: existingProfile.emotionalTemperature,
+          imageryDensity: existingProfile.imageryDensity,
+          vocabularyRegister: existingProfile.vocabularyRegister,
+          hardRules: existingProfile.hardRules,
+          softRules: existingProfile.softRules,
+          positiveExamples:
+            key === 'positiveExamples'
+              ? [...existingProfile.positiveExamples, ...fitting]
+              : existingProfile.positiveExamples,
+          negativeExamples:
+            key === 'negativeExamples'
+              ? [...(existingProfile.negativeExamples ?? []), ...fitting]
+              : existingProfile.negativeExamples,
+          notes: existingProfile.notes,
+        })
+
+        return success(
+          {
+            profile: updated,
+            added: fitting.length,
+            skipped,
+            anchorIsNew: key === 'positiveExamples' && current.length === 0 && fitting.length > 0
+          },
+          request.traceId
+        )
+      }
+    },
+  })
+
+  /**
+   * 分析完成后的一键文风基线：从分析范围章节分层取样正向样本（首章 + 10%/35%/60%/85%）。
+   *
+   * 与 append-reference-samples 的差别只在没有 kind（只产正向样本）与取样策略：
+   * 手动路径按传入顺序截前 N 章，本路由按位置分层，避免基线只学开头的文风。
+   * 样本位已满（5 条）时返回 reason: 'full' 且不改动档案。
+   */
+  routes.push({
+    method: 'POST',
+    path: '/projects/:projectId/writing-style-profile/auto-baseline',
+    handler: async (request: any, reply: any) => {
+      const input = validateBody(
+        z.object({
+          sourceId: z.string().min(1),
+          sectionIds: z.array(z.string().min(1)).min(1)
+        }),
+        request,
+        reply
+      )
+      if (!input) return reply
+      {
+        const referenceAnalysis = services.referenceAnalysis
+        if (!referenceAnalysis) throw new Error('参考分析服务未初始化')
+        const { sections, sectionTexts } = referenceAnalysis.getSectionsText(input.sourceId, input.sectionIds)
+        const ordered = [...sections].sort((a, b) => a.order - b.order)
+
+        const existingProfile = store.getWritingStyleProfile(request.params.projectId)
+        if (!existingProfile) throw new AppError(ErrorCode.BAD_REQUEST, '请先创建文风档案再加入样本')
+
+        const current = existingProfile.positiveExamples ?? []
+        const remaining = 5 - current.length
+        if (remaining <= 0) {
+          return success(
+            {
+              profile: existingProfile,
+              added: 0,
+              skipped: ordered.length,
+              anchorIsNew: false,
+              reason: 'full'
+            },
+            request.traceId
+          )
+        }
+
+        const seen = new Set<number>()
+        const pickedIndexes: number[] = []
+        for (const ratio of BASELINE_SAMPLE_POSITIONS) {
+          const index = Math.min(ordered.length - 1, Math.round((ordered.length - 1) * ratio))
+          if (index < 0 || seen.has(index)) continue
+          seen.add(index)
+          pickedIndexes.push(index)
+        }
+
+        const fitting = pickedIndexes
+          .slice(0, remaining)
+          .map((index) => {
+            const section = ordered[index]!
+            return truncateReferenceSample(
+              sectionTexts[section.id] ?? '',
+              section.title ?? `第 ${section.order + 1} 章`
+            )
+          })
+          .filter((sample) => sample.length >= 20)
+
+        const updated = store.upsertWritingStyleProfile(request.params.projectId, {
+          name: existingProfile.name,
+          preset: existingProfile.preset,
+          narrativePerson: existingProfile.narrativePerson,
+          narrativeDistance: existingProfile.narrativeDistance,
+          sentenceRhythm: existingProfile.sentenceRhythm,
+          dialogueRatio: existingProfile.dialogueRatio,
+          emotionalTemperature: existingProfile.emotionalTemperature,
+          imageryDensity: existingProfile.imageryDensity,
+          vocabularyRegister: existingProfile.vocabularyRegister,
+          hardRules: existingProfile.hardRules,
+          softRules: existingProfile.softRules,
+          positiveExamples: [...current, ...fitting],
+          negativeExamples: existingProfile.negativeExamples,
+          notes: existingProfile.notes,
+        })
+
+        return success(
+          {
+            profile: updated,
+            added: fitting.length,
+            skipped: ordered.length - fitting.length,
+            anchorIsNew: current.length === 0 && fitting.length > 0
+          },
+          request.traceId
+        )
+      }
     },
   })
 

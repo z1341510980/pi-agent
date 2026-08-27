@@ -1,7 +1,9 @@
 import {
   createAgentSession,
   DefaultResourceLoader,
-  SessionManager
+  SessionManager,
+  createBashToolDefinition,
+  defineTool
 } from '@earendil-works/pi-coding-agent'
 import type {
   ModelRuntime,
@@ -36,6 +38,12 @@ import {
 } from './subagent-tool.js'
 import type { TeamManager } from './team-manager.js'
 import { createTeamExecuteTool } from './team-tool.js'
+import {
+  createTerminalBashOperations,
+  DEFAULT_TERMINAL_SHELL,
+  getTerminalPrompt,
+  type TerminalShell
+} from '../config/terminal-shell.js'
 
 /**
  * AsyncLocalStorage：传递 subagent 的 AgentConfig 到 session factory
@@ -148,6 +156,8 @@ export interface PiSessionDeps {
   hookManager?: import('../policy/policy-hook-manager.js').PolicyHookManager
   /** 创建会话时的取消信号，用于 SessionStart Hook。 */
   signal?: AbortSignal
+  /** Agent bash 工具使用的终端类型。 */
+  terminalShell?: TerminalShell
 }
 
 /**
@@ -366,6 +376,24 @@ export async function createPiSession(deps: PiSessionDeps): Promise<AgentSession
         customTools.splice(i, 1)
       }
     }
+  }
+
+  // SDK 默认 bash 工具固定使用 Bash 的 `-c` 参数。用宿主适配器覆盖它，
+  // 让 PowerShell、cmd 和 WSL 使用各自正确的启动参数。
+  const terminalShell = deps.terminalShell ?? DEFAULT_TERMINAL_SHELL
+  const canUseBash = !agentConfigForTools?.tools || agentConfigForTools.tools.includes('bash')
+  if (!isPluginThread && canUseBash && !gateDeniedTools.includes('bash')) {
+    customTools.push(
+      defineTool(
+        createBashToolDefinition(deps.config.cwd, {
+          commandPrefix: deps.settingsManager.getShellCommandPrefix?.(),
+          operations: createTerminalBashOperations(
+            terminalShell,
+            terminalShell === 'git-bash' ? deps.settingsManager.getShellPath?.() : undefined
+          )
+        })
+      )
+    )
   }
 
   // 6. 选择 SessionManager：
@@ -830,9 +858,10 @@ function buildSystemPrompt(deps: PiSessionDeps): string {
   // 注入运行环境信息，避免 LLM 在 Windows 上生成 bash 不兼容的 PowerShell 命令
   const platform = process.platform
   const isWindows = platform === 'win32'
-  const shellInfo = isWindows
-    ? '当前运行在 Windows 系统上。bash 工具使用 Git Bash（/usr/bin/bash），请使用 Unix/bash 语法（如 ls、cat、grep），不要使用 PowerShell 语法（如 Get-ChildItem、Select-Object、Get-Content）。如需 Windows 特定操作，使用 cmd 语法（如 dir、type）。'
-    : `当前运行在 ${platform === 'darwin' ? 'macOS' : 'Linux'} 系统上，bash 工具使用标准 Unix shell。`
+  const shellInfo = getTerminalPrompt(
+    deps.terminalShell ?? DEFAULT_TERMINAL_SHELL,
+    isWindows ? 'win32' : platform
+  )
   parts.push(`\n## 运行环境\n${shellInfo}`)
 
   const loader = new InstructionLoader(deps.config.cwd)

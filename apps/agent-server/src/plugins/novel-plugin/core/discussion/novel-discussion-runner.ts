@@ -34,13 +34,14 @@ import { NovelEngine } from '../novel-engine.js'
 import type { NovelMemoryGenerator } from '../generation/novel-memory-generator.js'
 import { NOVEL_AGENT_CONFIGS, type NovelAgentType } from '../domain/novel-agents.js'
 import type { NovelCharacter, NarrativeTask, ArrangedEntity, VersionSource } from '../types.js'
-import { isNovelFeatureEnabled } from '../domain/novel-feature-flags.js'
 import { baseTargetOf, resolveWordBudget } from '../chapters/word-budget-resolver.js'
 import { buildScenePlanFromSceneDefinitions } from '../chapters/chapter-scene-plan-adapter.js'
 import { sanitizeNovelProse } from '../agent-run-utils.js'
 import { createNovelApplyRevisionTool, type RevisionDraftHolder } from '../novel-tools.js'
 import { createNovelSubmitReviewTool, type ReviewDraftHolder } from '../novel-tools.js'
-import { createNovelSubmitScenePlanTool, type ScenePlanDraftHolder } from '../novel-tools.js'
+import { createNovelSubmitScenePlanTool, createNovelSubmitCharacterTurnTool, createNovelSubmitModeratorDecisionTool, type ScenePlanDraftHolder } from '../novel-tools.js'
+import type { CharacterTurnDraftHolder } from '../tools/submit.js'
+import type { ModeratorDecisionDraftHolder } from '../tools/submit.js'
 import {
   buildVoiceProfiles,
   type CharacterVoiceProfile,
@@ -182,7 +183,11 @@ export class NovelDiscussionRunner {
             return this.context.createSession({
               systemPrompt: opts.systemPrompt,
               userMessage: opts.userMessage,
-              tools: [],
+              // Moderator 也走 submit 工具主路径。此前这里硬编码空数组，
+              // 导致 Moderator 虽然创建了工具，provider 实际拿不到工具，
+              // 只能回到自由文本 JSON + 降级解析。
+              tools: opts.tools as never[] ?? [],
+              onPayloadStats: opts.onPayloadStats,
               timeoutMs: opts.timeoutMs,
               modelId: opts.model,
               signal: opts.signal,
@@ -213,6 +218,7 @@ export class NovelDiscussionRunner {
             emit: opts.emit,
             emitRaw: opts.emitRaw,
             onFirstText: opts.onFirstText,
+            onPayloadStats: opts.onPayloadStats,
           })
         },
         logger: this.context.logger,
@@ -231,7 +237,7 @@ export class NovelDiscussionRunner {
       const phaseMap: Record<string, string> = {
         planning: 'directing',       // 规划 ≈ 导演阶段
         scene_setup: 'directing',    // 场景设置 ≈ 导演
-        acting: 'writing',           // 演出 ≈ 写作
+        acting: 'acting',            // 角色演出独立于 Writer，避免角色流污染正文
         scene_weaving: 'writing',    // 场景编织 ≈ 写作
         chapter_weaving: 'writing',  // 全章编织 ≈ 写作
         reviewing: 'reviewing',
@@ -277,6 +283,8 @@ export class NovelDiscussionRunner {
         // 最终整章 Reviewer 已覆盖整体质量门，默认关闭逐角色即时审查，
         // 避免角色数 × 对戏轮数的额外 LLM 调用。底层引擎仍保留显式开启能力。
         reviewCharacterSpeech: false,
+        // 新运行默认禁止盲写；旧快照 resume 另由兼容入口显式打开。
+        allowLegacyActing: false,
         buildProseQualityReport: content => formatProseQualityReport(evaluateProseQuality(content)),
         // ⚠️ 工具化修订方案：业务层通过 buildReviserToolset 提供 draft + 工具。
         // 引擎在调用 Reviser 前传入原章节正文，工厂创建 draft（持有原正文）+ 工具，
@@ -330,8 +338,22 @@ export class NovelDiscussionRunner {
         buildScenePlanToolset: () => {
           const draft: ScenePlanDraftHolder = {}
           return {
-            tools: [createNovelSubmitScenePlanTool(draft)],
+            tools: [createNovelSubmitScenePlanTool(draft, { requireActionBeats: true })],
             extractResult: () => draft.plan ?? null,
+          }
+        },
+        buildCharacterTurnToolset: ({ actionBeatId }) => {
+          const draft: CharacterTurnDraftHolder = {}
+          return {
+            tools: [createNovelSubmitCharacterTurnTool(draft, actionBeatId)],
+            extractResult: () => draft.turn ?? null,
+          }
+        },
+        buildModeratorDecisionToolset: () => {
+          const draft: ModeratorDecisionDraftHolder = {}
+          return {
+            tools: [createNovelSubmitModeratorDecisionTool(draft)],
+            extractResult: () => draft.payload as any,
           }
         },
         onMemberInvocation: (invocation) => {

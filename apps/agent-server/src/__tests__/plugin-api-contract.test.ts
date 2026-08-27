@@ -352,3 +352,74 @@ describe('capability 契约', () => {
     )
   })
 })
+
+describe('GET /api/plugins/settings-schema 设置声明契约', () => {
+  it('结构为 { ok, data: { schemaVersion, plugins } }，schemaVersion=1', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/plugins/settings-schema' })
+    expect(response.statusCode).toBe(200)
+    const body = response.json()
+    expectContract(body, ['ok', 'data'])
+    expect(body.ok).toBe(true)
+    expectContract(body.data, ['schemaVersion', 'plugins'])
+    expect(body.data.schemaVersion).toBe(1)
+    expect(Array.isArray(body.data.plugins)).toBe(true)
+  })
+
+  it('hello 插件的 registerSettings 声明出现在 schema 中且字段契约合法', async () => {
+    const { plugins } = (
+      await app.inject({ method: 'GET', url: '/api/plugins/settings-schema' })
+    ).json().data
+    const hello = plugins.find((item: { pluginId: string }) => item.pluginId === 'hello')
+    expect(hello, 'hello 插件应声明设置 schema').toBeTruthy()
+    expectContract(hello, ['pluginId', 'label', 'fields'], ['description'])
+    for (const field of hello.fields) {
+      expectContract(field, ['key', 'label', 'type'], [
+        'default',
+        'options',
+        'description',
+        'required',
+        'min',
+        'max',
+        'step',
+        'placeholder'
+      ])
+      expect(['string', 'number', 'boolean', 'select', 'textarea']).toContain(field.type)
+      if (field.type === 'select') {
+        expect(Array.isArray(field.options)).toBe(true)
+        expect(field.options.length).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('PATCH config 后 GET 详情返回合并后的新值并标记 restartRequired', async () => {
+    const patch = await app.inject({
+      method: 'PATCH',
+      url: '/api/plugins/hello/config',
+      payload: { config: { greetingLanguage: 'en' } },
+    })
+    expect(patch.statusCode).toBe(200)
+    const patchBody = patch.json()
+    expectContract(patchBody, ['ok', 'data'])
+    expectContract(patchBody.data, ['pluginId', 'restartRequired'], ['status', 'config'])
+    expect(patchBody.data.config.greetingLanguage).toBe('en')
+    expect(patchBody.data.restartRequired).toBe(true)
+
+    const detail = (
+      await app.inject({ method: 'GET', url: '/api/plugins/hello' })
+    ).json().data
+    expect(detail.config.greetingLanguage).toBe('en')
+  })
+
+  it('novel 插件贡献 plugin-settings slot 的自定义面板', async () => {
+    const { contributions } = (
+      await app.inject({ method: 'GET', url: '/api/plugins/ui-contributions' })
+    ).json().data
+    const panel = contributions.find(
+      (item: { pluginId: string; slot: string }) =>
+        item.pluginId === 'novel' && item.slot === 'plugin-settings',
+    )
+    expect(panel, 'novel 应贡献 plugin-settings 面板').toBeTruthy()
+    expect(panel.state).toBe('active')
+    expect(panel.rendererKey).toBe('novel.discussion-settings')
+  })
+})

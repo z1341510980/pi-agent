@@ -12,7 +12,8 @@ import {
   CheckCircleIcon,
   ClockIcon,
   ShieldAlertIcon,
-  TypeIcon
+  TypeIcon,
+  TerminalIcon
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -46,6 +47,7 @@ interface ProxyConfig {
 /** 显示与交互偏好（持久化到 pi-agent.general-config） */
 type FontSize = 'small' | 'medium' | 'large' | 'x-large'
 type SendShortcut = 'enter' | 'cmd-enter'
+type TerminalShell = 'git-bash' | 'pwsh' | 'cmd' | 'wsl'
 
 interface DisplayPreferences {
   fontSize: FontSize
@@ -76,6 +78,8 @@ const defaultDisplay: DisplayPreferences = {
   showTokenUsage: true
 }
 
+const defaultTerminalShell: TerminalShell = 'git-bash'
+
 const FONT_SIZE_OPTIONS: Array<{ value: FontSize; label: string }> = [
   { value: 'small', label: '小' },
   { value: 'medium', label: '中' },
@@ -104,6 +108,9 @@ export function GeneralSettings(): ReactElement {
   const [stripStreamOptions, setStripStreamOptions] = useState(false)
   const [stripStreamOptionsSaving, setStripStreamOptionsSaving] = useState(false)
   const [stripStreamOptionsError, setStripStreamOptionsError] = useState<string | null>(null)
+  const [terminalShell, setTerminalShell] = useState<TerminalShell>(defaultTerminalShell)
+  const [terminalShellSaving, setTerminalShellSaving] = useState(false)
+  const [terminalShellError, setTerminalShellError] = useState<string | null>(null)
   // 显示与交互偏好（仅 localStorage 持久化，后续可对接后端）
   const [display, setDisplay] = useState<DisplayPreferences>(() => loadDisplay())
 
@@ -138,6 +145,16 @@ export function GeneralSettings(): ReactElement {
       })
       .catch(() => {
         // 后端不可用时保留默认值（关闭）
+      })
+  }, [])
+
+  useEffect(() => {
+    void getApi<{ shell?: unknown }>('/api/settings/terminal')
+      .then((data) => {
+        if (isTerminalShell(data?.shell)) setTerminalShell(data.shell)
+      })
+      .catch(() => {
+        // 后端不可用时保留默认值，设置页仍可编辑
       })
   }, [])
 
@@ -195,6 +212,22 @@ export function GeneralSettings(): ReactElement {
     }
   }
 
+  async function updateTerminalShell(value: string): Promise<void> {
+    if (!isTerminalShell(value) || value === terminalShell) return
+    const previous = terminalShell
+    setTerminalShell(value)
+    setTerminalShellSaving(true)
+    setTerminalShellError(null)
+    try {
+      await putApi('/api/settings/terminal', { shell: value })
+    } catch (err) {
+      setTerminalShell(previous)
+      setTerminalShellError(err instanceof Error ? err.message : '保存终端设置失败')
+    } finally {
+      setTerminalShellSaving(false)
+    }
+  }
+
   async function handleTestProxy(): Promise<void> {
     if (proxy.mode === 'manual' && (!proxy.host || !proxy.port)) {
       setProxyTestResult({ ok: false, message: '请填写代理主机和端口' })
@@ -232,6 +265,30 @@ export function GeneralSettings(): ReactElement {
         title="通用设置"
         description="调整主题、语言、聊天交互、网络代理和运行目录。"
       />
+
+      {/* ── Agent 终端 ── */}
+      <div className="settings-field-card grid gap-2">
+        <div className="flex items-center gap-2">
+          <TerminalIcon className="size-4 text-muted-foreground" />
+          <Label htmlFor="terminal-shell-select">终端执行器</Label>
+          {terminalShellSaving && <span className="text-xs text-muted-foreground">保存中...</span>}
+        </div>
+        <Select value={terminalShell} onValueChange={(value) => void updateTerminalShell(value)}>
+          <SelectTrigger id="terminal-shell-select" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="git-bash">Git Bash</SelectItem>
+            <SelectItem value="pwsh">PowerShell（pwsh）</SelectItem>
+            <SelectItem value="cmd">命令提示符（cmd）</SelectItem>
+            <SelectItem value="wsl">Windows Subsystem for Linux（WSL）</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground m-0">
+          Agent 的 bash 工具执行命令时使用的终端。修改后新会话生效，正在执行的命令不受影响。
+        </p>
+        {terminalShellError && <p className="text-xs text-destructive m-0">{terminalShellError}</p>}
+      </div>
 
       {/* ── 主题切换 ── */}
       <div className="settings-field-card grid gap-2">
@@ -642,6 +699,10 @@ function saveDisplay(prefs: DisplayPreferences): void {
   } catch {
     // 忽略存储失败
   }
+}
+
+function isTerminalShell(value: unknown): value is TerminalShell {
+  return value === 'git-bash' || value === 'pwsh' || value === 'cmd' || value === 'wsl'
 }
 
 /**

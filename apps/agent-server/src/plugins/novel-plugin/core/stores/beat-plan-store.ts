@@ -102,6 +102,60 @@ export class BeatPlanStore {
     return row ? this.rowToBeat(row) : undefined
   }
 
+  /**
+   * 单章节拍 upsert（外科手术式）：按 (project_id, chapter_number) 定位。
+   * 已有行（含 superseded）→ 更新五字段并重置为 planned；无则插入。
+   * 只影响该章一行，不触碰其他章节的节拍。
+   */
+  upsertChapterPlan(
+    projectId: string,
+    volumeNumber: number,
+    input: BeatPlanInput
+  ): NovelBeatPlan | undefined {
+    const existing = this.db
+      .prepare('SELECT id FROM novel_beat_plans WHERE project_id = ? AND chapter_number = ?')
+      .get(projectId, input.chapterNumber) as { id: string } | undefined
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE novel_beat_plans SET
+             volume_number = ?, dramatic_function = ?, emotional_debt = ?, payoff = ?,
+             arc_position = ?, summary = ?, status = 'planned', updated_at = unixepoch()
+           WHERE id = ?`
+        )
+        .run(
+          volumeNumber,
+          input.dramaticFunction,
+          input.emotionalDebt ?? '',
+          input.payoff ?? '',
+          input.arcPosition ?? '',
+          input.summary ?? '',
+          existing.id
+        )
+      return this.getBeat(existing.id)
+    }
+    const id = randomUUID()
+    this.db
+      .prepare(
+        `INSERT INTO novel_beat_plans
+           (id, project_id, volume_number, chapter_number, dramatic_function,
+            emotional_debt, payoff, arc_position, summary, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', unixepoch(), unixepoch())`
+      )
+      .run(
+        id,
+        projectId,
+        volumeNumber,
+        input.chapterNumber,
+        input.dramaticFunction,
+        input.emotionalDebt ?? '',
+        input.payoff ?? '',
+        input.arcPosition ?? '',
+        input.summary ?? ''
+      )
+    return this.getBeat(id)
+  }
+
   getBeatByChapter(projectId: string, chapterNumber: number): NovelBeatPlan | undefined {
     const row = this.db
       .prepare('SELECT * FROM novel_beat_plans WHERE project_id = ? AND chapter_number = ?')

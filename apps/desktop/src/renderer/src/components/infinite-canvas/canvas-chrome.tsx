@@ -12,6 +12,7 @@ import {
   Hand,
   HelpCircle,
   ImageIcon,
+  Key,
   List,
   Menu,
   Moon,
@@ -121,6 +122,7 @@ export interface CanvasToolbarProps {
   onDelete: () => void
   onClear: () => void
   onSettingsChange: (patch: Partial<CanvasProjectSettings>) => void
+  onOpenMediaConfig?: () => void
 }
 
 /** 底部居中 Dock：工具切换、节点创建、上传、外观、删除与清空。 */
@@ -144,7 +146,8 @@ export function CanvasToolbar({
   onUpload,
   onDelete,
   onClear,
-  onSettingsChange
+  onSettingsChange,
+  onOpenMediaConfig
 }: CanvasToolbarProps): React.ReactElement {
   const [stylePanelOpen, setStylePanelOpen] = useState(false)
   const [extensionsOpen, setExtensionsOpen] = useState(false)
@@ -305,6 +308,9 @@ export function CanvasToolbar({
             </div>
           )}
         </div>
+        {onOpenMediaConfig && (
+          <DockButton icon={<Key />} label="生图 API 配置" onClick={onOpenMediaConfig} />
+        )}
         {selectedCount > 0 && (
           <DockButton
             icon={<Trash2 />}

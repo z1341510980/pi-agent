@@ -269,6 +269,17 @@ export function createNovelPlugin(): Plugin {
         priority: 10,
         rendererKey: 'novel.home-showcase',
       })
+      // 插件自己的设置面板：挂在桌面设置中心"插件设置"分区，
+      // 群聊模式设置的 UI 归属随领域走，不再寄宿在宿主 Agent 管理页
+      context.registerPanel({
+        id: 'novel-discussion-settings',
+        title: '群聊模式设置',
+        component: 'NovelDiscussionSettingsPanel',
+        slot: 'plugin-settings',
+        scope: 'app',
+        priority: 10,
+        rendererKey: 'novel.discussion-settings',
+      })
 
       context.logger.info('小说创作系统插件已初始化')
     },

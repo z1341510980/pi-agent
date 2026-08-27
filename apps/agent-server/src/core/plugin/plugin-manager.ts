@@ -31,6 +31,7 @@ import { bumpHotGeneration } from './hot-module-cache.js'
 import { resolveWithin } from './path-guard.js'
 import type { PluginCatalogItem } from './plugin-catalog.js'
 import { cancelDebug } from '../../lib/cancel-debug-log.js'
+import { sessionDiag } from './session-diag.js'
 import { StreamEmitter } from '../agent/stream-emitter.js'
 import { ReasoningPipeline } from '../agent/reasoning-pipeline.js'
 import { runtimePerformance } from '../../config/performance.js'
@@ -74,10 +75,11 @@ import type {
   AgUiSessionHandle,
   RouteDefinition,
   ToolDefinition,
-  PanelDefinition,
-  PluginUiContribution,
-  EventHandler,
-  MigrationDefinition
+   PanelDefinition,
+   PluginUiContribution,
+   PluginSettingField,
+   EventHandler,
+   MigrationDefinition
 } from './plugin-types.js'
 
 /** npm 插件包名前缀 */
@@ -161,9 +163,10 @@ export class PluginManager {
    */
   private providerConfigStore?: ProviderConfigStore
   private mediaGenerator?: {
-    generateImage(input: { prompt: string; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
+     generateImage(input: { prompt: string; references?: string[]; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
     generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
     generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+    editImage?(input: { prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
   }
   /** Tracer 在 app 启动后注入；未注入时插件会话保持原有行为。 */
   private tracer?: Tracer
@@ -337,9 +340,10 @@ export class PluginManager {
   }
 
   setMediaGenerator(generator: {
-    generateImage(input: { prompt: string; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
+     generateImage(input: { prompt: string; references?: string[]; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
     generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
     generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
+    editImage?(input: { prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
   }): void {
     this.mediaGenerator = generator
     this.logger.debug('已注入媒体生成服务')
@@ -820,6 +824,32 @@ export class PluginManager {
     return result
   }
 
+  /** 获取所有已启用插件声明的标量设置 schema（供桌面端通用渲染器生成表单） */
+  getAllSettings(): Array<{
+    pluginId: string
+    label: string
+    description?: string
+    fields: PluginSettingField[]
+  }> {
+    const result: Array<{
+      pluginId: string
+      label: string
+      description?: string
+      fields: PluginSettingField[]
+    }> = []
+    for (const entry of this.entries.values()) {
+      if (entry.status !== 'enabled') continue
+      if (entry.settingsFields.length === 0) continue
+      result.push({
+        pluginId: entry.pluginId,
+        label: entry.manifest.name,
+        ...(entry.manifest.description ? { description: entry.manifest.description } : {}),
+        fields: entry.settingsFields
+      })
+    }
+    return result
+  }
+
   /** 获取所有已启用插件的数据库迁移（按 id 排序） */
   getAllMigrations(): MigrationDefinition[] {
     const all: MigrationDefinition[] = []
@@ -1229,6 +1259,7 @@ export class PluginManager {
         eventHandlers: [],
         // 收集插件静态声明的迁移（在 setup 之前执行，确保 setup 时表已存在）
         migrations: [...(plugin.migrations ?? [])],
+        settingsFields: [],
         sessionTools: [],
         services: [],
         promptTemplateDirs: [],
@@ -1274,6 +1305,7 @@ export class PluginManager {
       entry.uiContributions = []
       entry.eventHandlers = []
       entry.migrations = [...(entry.plugin.migrations ?? [])]
+      entry.settingsFields = []
       entry.sessionTools = []
       entry.services = []
       entry.promptTemplateDirs = []
@@ -1391,6 +1423,7 @@ export class PluginManager {
     entry.panels = []
     entry.eventHandlers = []
     entry.migrations = []
+    entry.settingsFields = []
     entry.sessionTools = []
     entry.promptTemplateDirs = []
     if (!restartRequired) {
@@ -1668,7 +1701,11 @@ export class PluginManager {
           'tool.detail',
           'trace.detail',
           'plugin-page.top',
-          'home.showcase'
+          'plugin-settings',
+          'home.showcase',
+          'home.actions',
+          'home.hero-aside',
+          'home.footer'
         ]
         const state: PluginUiContribution['state'] =
           panel.rendererKey && allowedSlots.includes(slot) ? 'active' : 'invalid'
@@ -1700,6 +1737,47 @@ export class PluginManager {
           { panel: panel.id, slot, rendererKey: panel.rendererKey ?? panel.component },
           'UI 面板已注册'
         )
+      },
+      registerSettings: (fields: PluginSettingField[]) => {
+        if (!entry.grants.has('ui.contribute')) {
+          throw new Error(
+            `插件 ${pluginName} 未获得 ui.contribute 能力，无法声明设置项`
+          )
+        }
+        if (!Array.isArray(fields)) {
+          throw new Error(`插件 ${pluginName} registerSettings 需要字段数组`)
+        }
+        // 同键重复声明以最后一次为准；非法字段整体拒绝而不是静默跳过，
+        // 否则桌面渲染器会拿到半残 schema 生成出不可用的表单
+        const seen = new Set<string>()
+        for (const field of fields) {
+          if (
+            !field ||
+            typeof field.key !== 'string' ||
+            field.key.length === 0 ||
+            typeof field.label !== 'string' ||
+            !['string', 'number', 'boolean', 'select', 'textarea'].includes(field.type)
+          ) {
+            throw new Error(`插件 ${pluginName} 声明了非法的设置字段：${JSON.stringify(field)}`)
+          }
+          if (field.type === 'select' && (!field.options || field.options.length === 0)) {
+            throw new Error(`插件 ${pluginName} 的 select 设置 ${field.key} 缺少 options`)
+          }
+          if (seen.has(field.key)) {
+            throw new Error(`插件 ${pluginName} 重复声明设置字段 ${field.key}`)
+          }
+          seen.add(field.key)
+        }
+        entry.settingsFields = [...fields]
+        pushTrackedEffect(
+          'settings',
+          `${entry.pluginId}:settings`,
+          () => {
+            entry.settingsFields = []
+          },
+          { unloadScope: 'immediate' }
+        )
+        logger.debug({ count: fields.length }, '设置 schema 已声明')
       },
       registerMigration: (migration: MigrationDefinition) => {
         if (!entry.grants.has('storage.plugin')) {
@@ -1947,6 +2025,11 @@ export class PluginManager {
         // 这里捕获错误信息，供 prompt/promptStream 在调用后检查并抛出，避免"空响应+success"的假象。
         let lastErrorMessage = ''
         let resolveFinalAssistant: (() => void) | undefined
+        // ── 临时诊断（2026-08-26 群聊 Director 空响应）：统计全部 assistant 事件类型
+        //    与 reasoning/text 各自的字符量。排查完删除。
+        const diagEventTypes = new Map<string, number>()
+        let diagTextChars = 0
+        let diagReasoningChars = 0
         const unsubscribe = threadSession.session.subscribe((event: Record<string, unknown>) => {
           if (event.type === 'message_end') {
             const message = event.message as Record<string, unknown> | undefined
@@ -1959,6 +2042,35 @@ export class PluginManager {
               hasError: !!terminalError,
               errorMessage: terminalError || undefined
             })
+            if (sessionDiag.enabled) {
+              const blocks = Array.isArray(message?.content)
+                ? (message?.content as Array<Record<string, unknown>>).map(block => ({
+                    type: String(block?.type ?? 'unknown'),
+                    chars:
+                      typeof block?.text === 'string'
+                        ? block.text.length
+                        : typeof block?.thinking === 'string'
+                          ? block.thinking.length
+                          : 0,
+                  }))
+                : undefined
+              sessionDiag.messageEnd({
+                threadId,
+                stopReason: message?.stopReason,
+                role: message?.role,
+                provider: message?.provider,
+                model: message?.model,
+                usageRaw: message?.usage,
+                textChars: diagTextChars,
+                reasoningChars: diagReasoningChars,
+                contentBlocks: blocks,
+                assistantEventTypes: Object.fromEntries(diagEventTypes),
+                errorMessage: terminalError ?? undefined,
+              })
+              diagEventTypes.clear()
+              diagTextChars = 0
+              diagReasoningChars = 0
+            }
             if (terminalError !== null) {
               lastErrorMessage = terminalError
             }
@@ -1983,12 +2095,39 @@ export class PluginManager {
             | Record<string, unknown>
             | undefined
           if (!assistantMessageEvent) return
+          if (sessionDiag.enabled) {
+            const eventType = String(assistantMessageEvent.type ?? 'unknown')
+            diagEventTypes.set(eventType, (diagEventTypes.get(eventType) ?? 0) + 1)
+            const deltaLen =
+              typeof assistantMessageEvent.delta === 'string' ? assistantMessageEvent.delta.length : 0
+            if (eventType === 'text_delta') {
+              diagTextChars += deltaLen
+            } else if (eventType.includes('think') || eventType.includes('reason')) {
+              diagReasoningChars += deltaLen
+            }
+          }
           if (assistantMessageEvent.type !== 'text_delta') return
           const delta = (assistantMessageEvent.delta as string) ?? ''
           completeText += delta
         })
 
         const runSinglePromptTurn = async (nextUserMessage?: string): Promise<void> => {
+          if (sessionDiag.enabled) {
+            sessionDiag.turnStart({
+              threadId,
+              hasTools: Array.isArray(options.tools) ? options.tools.length : 0,
+              toolNames: (options.tools as Array<{ name?: string }> | undefined)?.map(t => t?.name ?? '?') ?? [],
+              modelId: options.modelId
+                ? `${options.modelId.provider}/${options.modelId.modelId}`
+                : undefined,
+              thinkingLevel: options.modelId?.thinkingLevel,
+              temperature: options.temperature,
+              responseFormat: options.responseFormat,
+              maxTokens: effectiveMaxTokens,
+              userMessageChars:
+                (nextUserMessage === undefined ? options.userMessage : nextUserMessage).length,
+            })
+          }
           const visibleMessage =
             nextUserMessage === undefined ? options.userMessage : nextUserMessage
           const userSeq = recordTraceEvent('user_message', {
@@ -2353,6 +2492,16 @@ export class PluginManager {
                   /* 计量失败不能影响请求 */
                 }
               }
+              if (sessionDiag.enabled) {
+                const p = next as Record<string, unknown>
+                sessionDiag.payloadHookFired({
+                  threadId,
+                  payloadChars: JSON.stringify(next ?? {})?.length ?? 0,
+                  keys: Object.keys(p ?? {}),
+                  maxTokens: p?.max_tokens,
+                  streamOptionsPresent: 'stream_options' in (p ?? {}),
+                })
+              }
               return next
             }
             logger.info(
@@ -2487,6 +2636,7 @@ export class PluginManager {
 
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
+            const promptTurnStartedAt = Date.now()
             // message_end(stop/length) 已代表正文完成。Pi SDK 随后的自动压缩
             // 属于 Session 维护，不应阻塞一次性的 create-flow Agent。
             try {
@@ -2500,6 +2650,12 @@ export class PluginManager {
                 })
                 throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
               }
+              sessionDiag.promptResolved({
+                threadId,
+                resultChars: completeText.length,
+                lastErrorMessage: lastErrorMessage || undefined,
+                durationMs: Date.now() - promptTurnStartedAt,
+              })
               return completeText
             } catch (error) {
               finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {
@@ -2567,6 +2723,7 @@ export class PluginManager {
 
             completeText = '' // 重置
             lastErrorMessage = '' // 重置
+            const promptStreamTurnStartedAt = Date.now()
             // 临时订阅 text_delta 事件，在 prompt 执行期间推送 delta 给调用方。
             const streamUnsubscribe = threadSession.session.subscribe(
               (event: Record<string, unknown>) => {
@@ -2602,6 +2759,12 @@ export class PluginManager {
                 if (lastErrorMessage) {
                   throw new Error(`LLM 调用失败: ${lastErrorMessage}`)
                 }
+                sessionDiag.promptResolved({
+                  threadId,
+                  resultChars: completeText.length,
+                  lastErrorMessage: lastErrorMessage || undefined,
+                  durationMs: Date.now() - promptStreamTurnStartedAt,
+                })
                 return completeText
               } catch (error) {
                 finishTrace(options.signal?.aborted ? 'aborted' : 'failed', {

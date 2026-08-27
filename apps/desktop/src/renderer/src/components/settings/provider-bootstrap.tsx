@@ -11,10 +11,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { postApi } from '../../api'
-import { providerPresets, presetOptions } from './provider-manager'
+import { getApi, postApi } from '../../api'
+import { generateProviderId, providerPresets, presetOptions } from './provider-manager'
 
 export type ProviderSettings = {
+  /** Provider 的稳定唯一 ID，不使用预设名称作为 ID。 */
+  id?: string
   provider: string
   model: string
   apiKey: string
@@ -23,6 +25,7 @@ export type ProviderSettings = {
 const storageKey = 'wenlang-agent.provider'
 
 const defaultSettings: ProviderSettings = {
+  id: '',
   provider: 'openai',
   model: 'gpt-5.4-mini',
   apiKey: ''
@@ -46,7 +49,9 @@ export function ProviderBootstrap(): ReactElement {
   function updateSettings(field: keyof ProviderSettings, value: string): void {
     setSettings((current) => ({
       ...current,
-      [field]: value
+      [field]: value,
+      // 切换预设后不能继续复用上一个预设的 Provider ID。
+      ...(field === 'provider' && current.provider !== value ? { id: '' } : {}),
     }))
   }
 
@@ -70,9 +75,23 @@ export function ProviderBootstrap(): ReactElement {
       }
 
       const label = presetOptions.find((o) => o.value === settings.provider)?.label ?? settings.provider
+      const existingProviders = await getApi<Array<{
+        id: string
+        name: string
+        baseUrl: string
+        api: string
+      }>>('/api/providers').catch(() => [])
+      const currentProvider = existingProviders.find(
+        (provider) =>
+          (settings.id && provider.id === settings.id) ||
+          (provider.name.trim().toLowerCase() === label.trim().toLowerCase() &&
+            provider.api === preset.api &&
+            normalizeProviderUrl(provider.baseUrl) === normalizeProviderUrl(preset.baseUrl))
+      )
+      const id = currentProvider?.id || generateProviderId()
 
       await postApi('/api/providers', {
-        id: settings.provider,
+        id,
         name: label,
         baseUrl: preset.baseUrl,
         apiKey: settings.apiKey,
@@ -84,7 +103,9 @@ export function ProviderBootstrap(): ReactElement {
       // Provider 变更后，使模型列表缓存失效，让对话界面的模型选择器重新获取
       void queryClient.invalidateQueries({ queryKey: ['agui-models'] })
 
-      window.localStorage.setItem(storageKey, JSON.stringify(settings))
+      const nextSettings = { ...settings, id }
+      setSettings(nextSettings)
+      window.localStorage.setItem(storageKey, JSON.stringify(nextSettings))
       setSaveState('saved')
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : '保存失败')
@@ -168,4 +189,8 @@ function loadProviderSettings(): ProviderSettings {
   } catch {
     return defaultSettings
   }
+}
+
+function normalizeProviderUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '').toLowerCase()
 }

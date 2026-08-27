@@ -13,6 +13,7 @@ export type StyleCraftDimension =
   | 'dialogue_craft'
   | 'action_craft'
   | 'emotion_craft'
+  | 'conflict_craft'
   | 'narrative_craft'
 
 export interface StyleTechniqueDraft {
@@ -84,6 +85,7 @@ const STYLE_DIMENSIONS = new Set<StyleCraftDimension>([
   'dialogue_craft',
   'action_craft',
   'emotion_craft',
+  'conflict_craft',
   'narrative_craft'
 ])
 
@@ -258,10 +260,11 @@ const DISTILL_SYSTEM_PROMPT = `你是小说写作手法分析师，不是作者�
 4. **boundaries（诚实边界）**：这套能力覆盖不到什么场景（如"不适合快节奏群战"）。防止被当万能风格套用。
 5. **exclusions（不可迁移内容）**：人物、剧情、专名、世界观、独有比喻、原句。
 
-## 六个维度
+## 七个维度
 
-必须分别分析：场景描写（scene_craft）、人物描写（character_craft）、对话描写（dialogue_craft）、动作/打斗（action_craft）、感情引爆（emotion_craft）、叙事结构（narrative_craft）。
+必须分别分析：场景描写（scene_craft）、人物描写（character_craft）、对话描写（dialogue_craft）、动作/打斗（action_craft）、感情引爆（emotion_craft）、冲突构建（conflict_craft）、叙事结构（narrative_craft）。
 感情引爆必须具体说明：铺垫、蓄势、引爆点、爆发时的语言/节奏变化、爆发后的余韵。
+冲突构建必须具体说明：冲突如何埋设（双方欲望如何先于对抗出现）、升级路径（代价如何逐步加码）、对撞时刻（压力最大时语言与节奏怎么处理）、冲突余波（对抗结束后的关系与代价如何显影）。
 
 ## 禁止
 
@@ -276,6 +279,43 @@ const DISTILL_SYSTEM_PROMPT = `你是小说写作手法分析师，不是作者�
 不要在对话文本中输出 JSON 或 Markdown 围栏。
 若运行环境确实无法调用工具，才退化为仅输出一个合法 JSON 对象，字段名与工具参数一致。`
 
+/** 专家团维度说明：聚焦蒸馏时注入，让单次调用只挖一个维度的手法。 */
+export const STYLE_DIMENSION_LABELS: Record<StyleCraftDimension, string> = {
+  scene_craft: '场景描写',
+  character_craft: '人物描写',
+  dialogue_craft: '对话描写',
+  action_craft: '动作/打斗',
+  emotion_craft: '感情引爆',
+  conflict_craft: '冲突构建',
+  narrative_craft: '叙事结构'
+}
+
+const STYLE_DIMENSION_FOCUS: Record<StyleCraftDimension, string> = {
+  scene_craft:
+    '环境如何承载情绪与信息：感官锚点的选取与分布、空间调度的顺序、环境细节何时让位于动作、闲笔如何服务氛围。',
+  character_craft:
+    '人物如何被显影：外貌/动作/习惯的取舍、出场方式、身体反应如何代替心理描写、多人在场时的区分手段。',
+  dialogue_craft:
+    '对话的呼吸：潜台词压在动作里的方式、打断与半句的处理、答非所问的时机、不同人物声音差异的实现。',
+  action_craft:
+    '动作/打斗的节奏：短句推进的密度变化、感官锚点的位置、后果如何即时可见、身体反馈与疼痛的处理。',
+  emotion_craft:
+    '感情的引爆链路：铺垫如何布置、蓄势如何收窄感官、引爆点的语言与节奏突变、爆发后的余韵如何降温。',
+  conflict_craft:
+    '冲突的构建：双方欲望如何先于对抗出现（埋设）、代价如何逐步加码（升级路径）、压力最大的对撞时刻怎么写、对抗结束后的关系与代价如何显影（余波）。',
+  narrative_craft:
+    '叙事的结构：POV 切换的时机与标记、信息释放的控制、章节钩子与收束方式、跨场景的节奏布局。'
+}
+
+function buildDimensionFocusPrompt(dimension: StyleCraftDimension): string {
+  return [
+    `## 本次任务只分析一个维度：${STYLE_DIMENSION_LABELS[dimension]}（${dimension}）`,
+    STYLE_DIMENSION_FOCUS[dimension],
+    'techniques 只提交该维度的手法；其他维度即使观察到也不要提交。',
+    'name 以「' + STYLE_DIMENSION_LABELS[dimension] + '·」开头，后接这个能力自己的名字（如「' + STYLE_DIMENSION_LABELS[dimension] + '·蓄压引爆」）。'
+  ].join('\n')
+}
+
 // ── 结构化提交工具（方案 D）─────────────────────────────────────────
 //
 // 蒸馏产物此前靠"模型自觉输出合法 JSON 文本 + 正则截取"，寒暄前缀/围栏/尾逗号
@@ -288,6 +328,7 @@ const STYLE_DIMENSION_SCHEMAS = [
   Type.Literal('dialogue_craft'),
   Type.Literal('action_craft'),
   Type.Literal('emotion_craft'),
+  Type.Literal('conflict_craft'),
   Type.Literal('narrative_craft')
 ] as const
 
@@ -407,10 +448,14 @@ export async function distillStyleExpertFromReference(
   context: PluginContext,
   input: StyleDistillInput,
   modelId?: { provider: string; modelId: string },
-  options: { allowLegacyOutput?: boolean } = {}
+  options: { allowLegacyOutput?: boolean; dimension?: StyleCraftDimension } = {}
 ): Promise<StyleDistillDraft> {
   if (input.sections.length === 0) throw new Error('参考样本不足，至少选择一个章节')
   if (input.text.trim().length < 80) throw new Error('参考样本不足，至少需要 80 字符')
+  const dimensionFocus = options.dimension ? buildDimensionFocusPrompt(options.dimension) : ''
+  const systemPrompt = dimensionFocus
+    ? `${DISTILL_SYSTEM_PROMPT}\n\n${dimensionFocus}`
+    : DISTILL_SYSTEM_PROMPT
   const sectionContext = input.sections
     .map((section) => `【sectionId=${section.id} title=${section.title ?? ''}】`)
     .join('\n')
@@ -423,7 +468,7 @@ export async function distillStyleExpertFromReference(
   const submitDraft: StyleSubmitDraftHolder = {}
   const submitTool = createStyleDistillSubmitTool(submitDraft)
   const sessionBase = {
-    systemPrompt: DISTILL_SYSTEM_PROMPT,
+    systemPrompt,
     userMessage: [
       '参考章节索引：',
       sectionContext,
@@ -626,11 +671,16 @@ export async function distillStyleExpertFromReference(
           resolution: record.resolution as string
         }
       })
+    // 维度聚焦蒸馏：即使提示已聚焦，模型仍可能夹带其他维度手法——按目标维度硬过滤。
+    // 过滤后为空数组是合法结果（该参考小说在此维度无排他性手法），由上层决定跳过入库。
+    const dimensionTechniques = options.dimension
+      ? techniques.filter((technique) => technique.dimension === options.dimension)
+      : techniques
     return {
       ...parsed,
       distilledPrompt,
       metrics: input.metrics,
-      techniques,
+      techniques: dimensionTechniques,
       exclusions,
       exemplarPassages,
       expressionDna,

@@ -190,7 +190,11 @@ export interface PluginUiContribution {
     | 'tool.detail'
     | 'trace.detail'
     | 'plugin-page.top'
+    | 'plugin-settings'
     | 'home.showcase'
+    | 'home.actions'
+    | 'home.hero-aside'
+    | 'home.footer'
   scope: 'app' | 'page' | 'session'
   priority: number
   rendererKey: string
@@ -225,6 +229,31 @@ export interface PanelDefinition {
 
 /** 事件处理器 */
 export type EventHandler = (data: unknown) => void | Promise<void>
+
+/**
+ * 声明式设置字段描述符：插件用数据描述自己的可配置项，
+ * 宿主通用渲染器据此生成表单，读写走 plugins.yml 的 config（GET/PATCH 已有）。
+ *
+ * 适用标量键值设置；复杂交互 UI 应改用 plugin-settings slot 贡献自定义面板。
+ */
+export interface PluginSettingField {
+  /** config 中的键名 */
+  key: string
+  /** 展示标签 */
+  label: string
+  type: 'string' | 'number' | 'boolean' | 'select' | 'textarea'
+  /** 缺省值（config 未设置时表单展示的初始值） */
+  default?: string | number | boolean
+  /** select 的可选项 */
+  options?: Array<{ value: string; label: string }>
+  /** 字段说明 */
+  description?: string
+  required?: boolean
+  min?: number
+  max?: number
+  step?: number
+  placeholder?: string
+}
 
 /** 数据库迁移定义：插件可注册的数据库表创建/变更 */
 export interface MigrationDefinition {
@@ -317,10 +346,10 @@ export interface PluginContext {
   readonly modelRegistry?: ModelRegistryLike
   /** 受 capability 保护的媒体生成 facade。 */
   readonly media?: {
-    generateImage(input: { prompt: string; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
+     generateImage(input: { prompt: string; references?: string[]; model?: string; size?: string; count?: number; signal?: AbortSignal }): Promise<{ images: string[] }>
     generateAudio(input: { prompt: string; model?: string; voice?: string; format?: string; speed?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
     generateVideo(input: { prompt: string; model?: string; size?: string; seconds?: number; signal?: AbortSignal }): Promise<{ outputs: Array<{ url: string; mimeType: string }> }>
-    editImage?(input: { prompt: string; image: string; mask?: string; model?: string; size?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
+     editImage?(input: { prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string; signal?: AbortSignal }): Promise<{ images: string[] }>
     analyzeImage?(input: { image: string; instruction?: string; model?: string; signal?: AbortSignal }): Promise<{ text: string }>
   }
   /**
@@ -367,6 +396,15 @@ export interface PluginContext {
   onEvent(type: string, handler: EventHandler): void
   /** 注册 UI 面板 */
   registerPanel(panel: PanelDefinition): void
+  /**
+   * 声明插件的标量设置项（schema 驱动，宿主通用渲染器生成表单）。
+   *
+   * 需要 `ui.contribute` capability。声明后：
+   * - GET /api/plugins/settings-schema 下发给桌面端自动生成设置分区
+   * - 表单读写走既有 GET/PATCH /api/plugins/:pluginId/config（写回 plugins.yml）
+   * - config 变更时若插件实现了 Plugin.onConfigChange 会收到回调
+   */
+  registerSettings(fields: PluginSettingField[]): void
   /** 注册数据库迁移（在 database 插件之后、session factory 之前执行） */
   registerMigration(migration: MigrationDefinition): void
   /** 注入 Pi Session customTools（每次创建 session 时注入） */
@@ -656,6 +694,13 @@ export interface Plugin {
   setup(context: PluginContext): void | Promise<void>
   /** 可选：插件销毁时清理资源 */
   teardown?(): void | Promise<void>
+  /**
+   * 可选：插件 config 变更回调（PATCH /api/plugins/:pluginId/config 成功后触发）。
+   *
+   * 收到的 config 是合并后的最新全量值。错误会被隔离记录，不影响持久化结果；
+   * 需要重启才能生效的资源（路由/服务装饰等）不会因该回调重建。
+   */
+  onConfigChange?(config: Record<string, unknown>): void | Promise<void>
 }
 
 /** 插件工厂函数：从模块导出的入口 */
@@ -753,6 +798,8 @@ export interface PluginEntry {
   eventHandlers: Array<{ type: string; handler: EventHandler }>
   /** 已注册的数据库迁移 */
   migrations: MigrationDefinition[]
+  /** 本次 activation 声明的标量设置 schema（registerSettings 注册） */
+  settingsFields: PluginSettingField[]
   /** 已注册的 Session 工具（注入到 Pi Session customTools） */
   sessionTools: PiToolDefinition[]
   /** 已注册的 Fastify 服务 */

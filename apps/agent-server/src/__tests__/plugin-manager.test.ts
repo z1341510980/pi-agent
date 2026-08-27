@@ -931,7 +931,7 @@ describe('Plugin 系统 API 路由', () => {
       expect.objectContaining({
         contributionId: 'hello-panel',
         rendererKey: 'builtin.hello-panel',
-        slot: 'app.navigation'
+        slot: 'plugin-page.top'
       })
     ])
   })
@@ -1050,7 +1050,7 @@ describe('Plugin 系统 API 路由', () => {
     )
     expect(hello).toMatchObject({
       pluginId: 'hello',
-      slot: 'app.navigation',
+      slot: 'plugin-page.top',
       rendererKey: 'builtin.hello-panel',
       state: 'active'
     })

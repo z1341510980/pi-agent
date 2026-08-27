@@ -120,6 +120,45 @@ function listSection(title: string, values: string[], limit: number, itemMaxLeng
   return [`### ${title}`, ...lines.map(line => `- ${line}`)].join('\n')
 }
 
+type StyleExpertCard = NonNullable<NovelWritingStyleProfile['styleExperts']>[number]
+
+/**
+ * 单个文风专家的完整卡片：身份段简版与场景聚焦展开版共用同一渲染，
+ * 差别只在预算——预算截断时牺牲的是"参考样本"，而不是防抄袭与防跑偏的护栏。
+ */
+function renderStyleExpertCard(expert: StyleExpertCard, perExpertBudget: number): string {
+  return cleanText([
+    `- **${cleanText(expert.name, 20)}**（${cleanText(expert.sourceTitle, 35)}）`,
+    cleanText(expert.description, 80),
+    `迁移提示：${cleanText(expert.customPrompt ?? expert.distilledPrompt, 300)}`,
+    ...(expert.expressionDna
+      ? [`  - 语言指纹：${[
+          expert.expressionDna.sentence && `句式=${cleanText(expert.expressionDna.sentence, 60)}`,
+          expert.expressionDna.rhythm && `节奏=${cleanText(expert.expressionDna.rhythm, 60)}`,
+          expert.expressionDna.lexicon && `词汇=${cleanText(expert.expressionDna.lexicon, 60)}`,
+          expert.expressionDna.certainty && `确定性=${cleanText(expert.expressionDna.certainty, 40)}`,
+          expert.expressionDna.humor && `幽默=${cleanText(expert.expressionDna.humor, 40)}`,
+          expert.expressionDna.distance && `叙述距离=${cleanText(expert.expressionDna.distance, 50)}`,
+        ].filter(Boolean).join('；')}`]
+      : []),
+    ...(expert.tensions ?? []).slice(0, 3).map((tension) =>
+      `  - 张力「${cleanText(tension.name, 20)}」：${cleanText(tension.between[0], 24)} ↔ ${cleanText(tension.between[1], 24)}；取舍=${cleanText(tension.resolution, 90)}`),
+    // verified 优先，不足 3 条时用 kept 的 unverified 补齐（标注置信度，让模型自行降权）
+    ...[
+      ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence === 'verified'),
+      ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence !== 'verified'),
+    ].slice(0, 3).map((technique) => {
+      const evidence = technique.evidence[0]?.quote
+      return `  - [${technique.dimension}${technique.confidence === 'verified' ? '' : '·待验证'}] ${cleanText(technique.name, 30)}：${cleanText(technique.mechanism, 90)}；迁移=${cleanText(technique.transfer, 90)}${technique.failureMode ? `；失效条件=${cleanText(technique.failureMode, 70)}` : ''}${evidence ? `；证据方向=${cleanText(evidence, 30)}` : ''}`
+    }),
+    ...(expert.antiPatterns ?? []).slice(0, 3).map((item) => `  - 本能力反模式：${cleanText(item, 70)}`),
+    ...(expert.boundaries ?? []).slice(0, 2).map((item) => `  - 能力边界：${cleanText(item, 60)}`),
+    ...(expert.exclusions ?? []).slice(0, 4).map((item) => `  - 不得迁移：${cleanText(item, 60)}`),
+    // 范例段放最后：预算截断时牺牲的是"参考样本"，而不是防抄袭与防跑偏的护栏
+    ...(expert.exemplarPassages ?? []).slice(0, 2).map((passage) => `  - 手法样本（只学机制）：${cleanText(passage.text, 180)}`),
+  ].join('\n  '), perExpertBudget)
+}
+
 function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
   const sections = [
     `## 项目文风档案：${cleanText(profile.name, 80)}`,
@@ -159,36 +198,7 @@ function buildBaseSections(profile: NovelWritingStyleProfile): string[] {
       '### 本次召集的独立文风能力',
       '以下能力来自参考小说样本的写作机制蒸馏。它们不是内容模板，不改变本章任务、人物行动、事实和 POV。只迁移已审核的手法，不复制原作内容。',
       '手法带失效条件时，先判断本章场景是否命中失效条件；命中就不要用这条手法。内在张力说明哪些效果不能同时追求，必须按取舍原则选一边。',
-      ...experts.map((expert) => cleanText([
-        `- **${cleanText(expert.name, 20)}**（${cleanText(expert.sourceTitle, 35)}）`,
-        cleanText(expert.description, 80),
-        `迁移提示：${cleanText(expert.customPrompt ?? expert.distilledPrompt, 300)}`,
-        ...(expert.expressionDna
-          ? [`  - 语言指纹：${[
-              expert.expressionDna.sentence && `句式=${cleanText(expert.expressionDna.sentence, 60)}`,
-              expert.expressionDna.rhythm && `节奏=${cleanText(expert.expressionDna.rhythm, 60)}`,
-              expert.expressionDna.lexicon && `词汇=${cleanText(expert.expressionDna.lexicon, 60)}`,
-              expert.expressionDna.certainty && `确定性=${cleanText(expert.expressionDna.certainty, 40)}`,
-              expert.expressionDna.humor && `幽默=${cleanText(expert.expressionDna.humor, 40)}`,
-              expert.expressionDna.distance && `叙述距离=${cleanText(expert.expressionDna.distance, 50)}`,
-            ].filter(Boolean).join('；')}`]
-          : []),
-        ...(expert.tensions ?? []).slice(0, 3).map((tension) =>
-          `  - 张力「${cleanText(tension.name, 20)}」：${cleanText(tension.between[0], 24)} ↔ ${cleanText(tension.between[1], 24)}；取舍=${cleanText(tension.resolution, 90)}`),
-        // verified 优先，不足 3 条时用 kept 的 unverified 补齐（标注置信度，让模型自行降权）
-        ...[
-          ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence === 'verified'),
-          ...(expert.techniques ?? []).filter((technique) => technique.kept && technique.confidence !== 'verified'),
-        ].slice(0, 3).map((technique) => {
-          const evidence = technique.evidence[0]?.quote
-          return `  - [${technique.dimension}${technique.confidence === 'verified' ? '' : '·待验证'}] ${cleanText(technique.name, 30)}：${cleanText(technique.mechanism, 90)}；迁移=${cleanText(technique.transfer, 90)}${technique.failureMode ? `；失效条件=${cleanText(technique.failureMode, 70)}` : ''}${evidence ? `；证据方向=${cleanText(evidence, 30)}` : ''}`
-        }),
-        ...(expert.antiPatterns ?? []).slice(0, 3).map((item) => `  - 本能力反模式：${cleanText(item, 70)}`),
-        ...(expert.boundaries ?? []).slice(0, 2).map((item) => `  - 能力边界：${cleanText(item, 60)}`),
-        ...(expert.exclusions ?? []).slice(0, 4).map((item) => `  - 不得迁移：${cleanText(item, 60)}`),
-        // 范例段放最后：预算截断时牺牲的是"参考样本"，而不是防抄袭与防跑偏的护栏
-        ...(expert.exemplarPassages ?? []).slice(0, 2).map((passage) => `  - 手法样本（只学机制）：${cleanText(passage.text, 180)}`),
-      ].join('\n  '), perExpertBudget)),
+      ...experts.map((expert) => renderStyleExpertCard(expert, perExpertBudget)),
     ].join('\n'))
   }
 
@@ -360,7 +370,7 @@ export function compileWritingStylePrompt(
   } else if (target === 'reviser') {
     sections.push('### 修订方式\n你输出的“修改后”文字必须保持本档案的稳定声音，其中人称、视角信息范围和明确硬约束必须遵守；句式节奏、对话密度、情感温度和意象密度只需落在当前场景合理范围。只修复审稿指出的问题，不要为了风格统一把整章改成同一种句长、语气或段落节拍，也不要抹平人物之间的声音差异。')
   } else {
-    sections.push('### 文风验收方式\n先检查叙事人称、视角信息范围和明确硬约束，再检查本次召集的独立文风能力是否体现在具体手法上：场景、人物、对话、动作/打斗、感情引爆和叙事结构按专家提供的手法卡逐项核对。必须引用正文证据说明“已体现/未体现/与当前场景不适用”，不能只写“文风不一致”。当前场景的合理波动优先；不得仅因某一章偏离全书平均值就判定失败。数字指纹只作辅助，不能单独判定失败。')
+    sections.push('### 文风验收方式\n先检查叙事人称、视角信息范围和明确硬约束，再检查本次召集的独立文风能力是否体现在具体手法上：场景、人物、对话、动作/打斗、感情引爆、冲突构建和叙事结构按专家提供的手法卡逐项核对。必须引用正文证据说明“已体现/未体现/与当前场景不适用”，不能只写“文风不一致”。当前场景的合理波动优先；不得仅因某一章偏离全书平均值就判定失败。数字指纹只作辅助，不能单独判定失败。')
   }
 
   const content = joinPromptSectionsWithinBudget(sections)
@@ -482,5 +492,58 @@ export function buildSceneSampleSection(input: SceneStyleSampleInput): string {
     ...unique.map((candidate, index) =>
       `\n【场景样本 ${index + 1}｜来源：${candidate.sourceLabel}】\n${candidate.text}`
     ),
+  ].join('\n')
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 专家团场景聚焦（迁移 119 后续）：按本章主导场景优先放大维度专家
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * 场景类型 → 本章优先召集的专家维度。
+ *
+ * 与样本分桶（inferSceneType）同一套场景判定，但对象从"样本"换成"专家"：
+ * 身份段给全部启用专家简版卡（跨章缓存稳定），这里把与主导场景最相关的
+ * 维度放大成完整手法卡。7 个维度全量平摊预算时人均只有 ~800 字符，
+ * 张力与反模式会被截断——聚焦让预算集中到真正会用的能力上。
+ */
+const SCENE_PRIORITY_DIMENSIONS: Record<StyleSceneType, string[]> = {
+  dialogue: ['dialogue_craft', 'emotion_craft', 'character_craft'],
+  action: ['action_craft', 'conflict_craft', 'emotion_craft'],
+  quiet: ['scene_craft', 'narrative_craft', 'character_craft'],
+}
+
+export interface SceneExpertFocusInput {
+  /** 已启用的文风专家（调用方负责应用 styleExpertIds 召集过滤） */
+  experts: NonNullable<NovelWritingStyleProfile['styleExperts']>
+  sceneType: StyleSceneType
+  maxExperts?: number
+  perExpertBudget?: number
+}
+
+/**
+ * 生成本章优先文风能力段（per-chapter 层，注入 Writer 的 suffix）。
+ *
+ * 只放大带 dimension 的团队专家；手动/历史蒸馏的专家没有维度标注，
+ * 不参与场景聚焦，行为与之前一致。无匹配专家返回空串——宁可不注入，
+ * 不注入凑数段落。
+ */
+export function buildSceneExpertFocus(input: SceneExpertFocusInput): string {
+  const maxExperts = input.maxExperts ?? 3
+  const perExpertBudget = input.perExpertBudget ?? 1600
+  const priority = SCENE_PRIORITY_DIMENSIONS[input.sceneType] ?? []
+  if (priority.length === 0) return ''
+  const withDimension = (input.experts ?? []).filter(
+    (expert) => expert.enabled && expert.dimension && priority.includes(expert.dimension),
+  )
+  if (withDimension.length === 0) return ''
+  const ordered = priority
+    .flatMap((dimension) => withDimension.filter((expert) => expert.dimension === dimension))
+    .slice(0, maxExperts)
+  return [
+    `### 本章优先文风能力（主导场景：${SCENE_TYPE_LABELS[input.sceneType]}）`,
+    '以下是身份段专家卡的展开版：只放大与本章主导场景最相关的维度，手法卡更完整。',
+    '其余维度仍以身份段简版存在；未列出的维度不要求在本章体现，也不算风格缺失。',
+    ...ordered.map((expert) => renderStyleExpertCard(expert, perExpertBudget)),
   ].join('\n')
 }

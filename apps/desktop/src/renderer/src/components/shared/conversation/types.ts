@@ -31,6 +31,13 @@ export interface ConversationMessage {
 
   /** 推理模型思考过程（2026-08-24）：气泡内可展开展示，正文开始后不再丢弃 */
   thinking?: string
+  /** 角色结构化演出回合的私有判断，气泡内可展开查看。 */
+  actorTurn?: {
+    innerThought?: string
+    conflictReading?: string
+    responsePlan?: string
+    consequence?: string
+  }
 
   // ── user 专用：插话（对话化交互形态 §3.1）──
   // flow 运行中用户中途反馈的状态徽标：queued=已排队 / injected=已注入 / dropped=已丢弃

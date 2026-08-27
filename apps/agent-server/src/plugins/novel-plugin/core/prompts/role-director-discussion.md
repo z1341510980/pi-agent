@@ -24,7 +24,22 @@ disable-model-invocation: true
 
 ## 场景拆分提交方式（必须遵守）
 
-**优先调用 `novel_submit_scene_plan` 工具**提交结构化场景计划：每个场景包含 title（标题）、location（地点）、time（时间）、conflict（冲突）、goal（目标）、emotion（情绪）、presentCharacters（在场角色名数组）。工具参数会强制校验结构；系统以工具提交结果为准。
+**优先调用 `novel_submit_scene_plan` 工具**提交结构化场景计划：每个场景包含 title（标题）、location（地点）、time（时间）、conflict（冲突）、goal（目标）、emotion（情绪）、presentCharacters（在场角色名数组）和 actionBeats（戏剧动作节点数组）。工具参数会强制校验结构；系统以工具提交结果为准。
+
+### actionBeats 是戏肉，不是角色名单
+
+除非是明确的单人过渡场景，否则每个场景必须提交 2-8 个 actionBeats，不能只把所有编排角色列进 presentCharacters。每个动作节点必须写清：
+
+- `actor`：谁先行动
+- `target`：行动针对谁（没有明确对象才省略）
+- `pressure`：角色此刻面对的具体阻力
+- `action`：角色采取的具体行动，不写“推进剧情/展现关系”
+- `choice`：角色必须在什么选择之间取舍
+- `consequence`：这个选择造成的即时后果
+- `nextActor`：默认由谁回应
+- `exitCondition`：该节点何时完成或允许跳过
+
+动作节点只规定压力、选择边界和后果，不要写死角色必须说的台词。角色可以误判、拒绝、退让、撒谎或采取不同应对，但必须让行动改变风险、信息、关系或目标中的至少一项。出场角色是演员名单，actionBeats 才是本场戏的因果路径；不要为了让每个人露脸而轮流安排一句反应。
 
 只有在确实无法调用工具时，才使用下方 Markdown 格式作为回退。文本中可以简述规划思路，但不要在文本里重复完整计划。
 

@@ -30,9 +30,10 @@
 
 - 描述：gate 模式读写、确认请求、LLM provider 与全局设置。
 - 核心：`apps/agent-server/src/routes/gate.route.ts`、`confirmation.route.ts`、`provider.route.ts`、`settings.route.ts`
-- 测试：`apps/agent-server/src/__tests__/gate-route.test.ts`、`confirmation-route.test.ts`、`provider-route.test.ts`、`provider-route-model-mapping.test.ts`
-- 覆盖：partial
-- last-updated: 2026-08-25
+- 测试：`apps/agent-server/src/__tests__/gate-route.test.ts`、`confirmation-route.test.ts`、`provider-route.test.ts`、`provider-route-model-mapping.test.ts`、`apps/desktop/src/renderer/src/components/settings/__tests__/provider-manager-id.test.ts`
+- 备注：Provider 创建由后端或桌面端分配与名称无关的唯一 ID；桌面端 Provider 管理还负责旧 localStorage 缓存与后端记录合并。
+- 覆盖：sufficient
+- last-updated: 2026-08-27
 
 ### 观测 / 用量 / 其他
 
@@ -42,3 +43,14 @@
 - 备注：web-search-plugin 与 infinite-canvas-plugin 位于 `apps/agent-server/src/plugins/`，各自携带路由，本次未深入展开。
 - 覆盖：partial
 - last-updated: 2026-08-25
+
+### Infinite Canvas 图片生成
+
+- 描述：无限画布项目的文本生成、图片生成与图片编辑路由；图片 Provider 支持同步图片响应以及 xKiro 风格的异步任务提交与轮询。
+- 入口：`POST /api/plugins/infinite-canvas/projects/:projectId/generate-image`、`POST /api/plugins/infinite-canvas/projects/:projectId/edit-image`、`GET/PUT /api/plugins/infinite-canvas/media-config`
+- 核心：`apps/agent-server/src/plugins/infinite-canvas-plugin/routes.ts`、`apps/agent-server/src/plugins/infinite-canvas-plugin/index.ts`、`apps/agent-server/src/core/config/media-generator.ts`
+- 客户端：`apps/desktop/src/renderer/src/api/infinite-canvas-client.ts`、`apps/desktop/src/renderer/src/components/infinite-canvas/infinite-canvas-workspace.tsx`、`apps/desktop/src/renderer/src/components/infinite-canvas/media-config-dialog.tsx`
+- 测试：`apps/agent-server/src/core/config/media-generator.test.ts`、`apps/agent-server/src/plugins/infinite-canvas-plugin/agent-ops.test.ts`
+- 备注：xKiro 使用 `POST /v1/images/generations` 返回 job ID，再轮询 `GET /v1/images/generations/{id}`；编辑使用 multipart `/v1/images/edits`，同样轮询任务结果。画布上游图片通过 `references` 单独传递，有参考图时切换到编辑接口；旧版 `context` 中的 data URL 也会兼容提取。
+- 覆盖：sufficient
+- last-updated: 2026-08-27

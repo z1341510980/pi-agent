@@ -128,6 +128,50 @@ export interface DiscussionGoal {
   constraints?: unknown
 }
 
+/** Director 为场景安排的一个可执行戏剧动作节点。 */
+export interface SceneActionBeat {
+  /** 稳定的节点 ID；旧计划没有此字段时由引擎按顺序补齐。 */
+  beatId: string
+  /** 当前节点由哪个角色先行动（canonical member ID）。 */
+  actor: string
+  /** 行动针对的角色（canonical member ID），无明确对象时可为空。 */
+  target?: string
+  /** 当前节点的具体阻力，不能只是“推进剧情”。 */
+  pressure: string
+  /** 角色要采取的具体可演行动。 */
+  action: string
+  /** 角色必须面对的选择边界。 */
+  choice: string
+  /** 该行动已经造成的即时后果。 */
+  consequence: string
+  /** 默认下一回应角色（canonical member ID）。 */
+  nextActor?: string
+  /** 节点何时完成或允许跳过。 */
+  exitCondition: string
+}
+
+/** 角色一次结构化演出回合。公开内容与私有判断分开，避免信息差泄漏。 */
+export interface CharacterTurn {
+  /** 工具提交时绑定的动作节点 ID。 */
+  actionBeatId?: string
+  /** 进入公共 transcript 和正文编织的动作/现场反应/台词。 */
+  publicText: string
+  /** 只对用户和 Writer 可见。 */
+  innerThought: string
+  /** 只对用户和 Writer 可见。 */
+  conflictReading: string
+  /** 只对用户和 Writer 可见。 */
+  responsePlan: string
+  /** 本次行动造成的后果。 */
+  consequence: string
+  /** 用于动作图进度和无进展检测。 */
+  progress: 'advance' | 'escalate' | 'retreat' | 'reveal' | 'stall'
+  /** 角色主动请求当前场景内哪些角色回应（显示名）。 */
+  mentionNames: string[]
+  /** 因果回应的上一条消息 ID。 */
+  replyToMessageId?: string
+}
+
 /** 场景定义（Director 拆场后产出） */
 export interface SceneDefinition {
   sceneId: number
@@ -144,6 +188,10 @@ export interface SceneDefinition {
   goal: string
   /** 本场景的情绪走向（如"从警惕转向震惊"），角色 Agent 演出时承载，Writer 编织时呼应 */
   emotion?: string
+  /** 新版 Director 动作图；缺失时走有界 legacy acting。 */
+  actionBeats?: SceneActionBeat[]
+  /** 旧计划兼容标记，供诊断和性能统计使用。 */
+  legacyPlan?: boolean
 }
 
 /** 群聊消息 */
@@ -157,6 +205,8 @@ export interface DiscussionMessage {
   /** 当前场景序号 */
   sceneId?: number
   type: 'system' | 'moderator' | 'member' | 'user' | 'error'
+  /** 角色结构化回合的私有元数据；其他角色 prompt 不得直接读取。 */
+  actorTurn?: CharacterTurn
 }
 
 /** Moderator 决策类型 */
@@ -184,6 +234,10 @@ export interface ModeratorState {
   currentScene?: SceneDefinition
   scenesRemaining?: number
   scenesDefined: boolean
+  /** 当前 actionBeat，供异常仲裁使用；正常 acting 不必每回合调用 Moderator。 */
+  currentActionBeat?: SceneActionBeat
+  /** 当前场景已完成的动作节点数。 */
+  actionBeatsCompleted?: number
 }
 
 /** 群聊阶段 */
@@ -265,6 +319,8 @@ export interface DiscussionOptions {
   }
   /** 是否在每次角色发言后额外调用 Reviewer。Novel runner 默认关闭，避免角色数 × 轮数的 token 放大。 */
   reviewCharacterSpeech?: boolean
+  /** 当前流程是否允许旧的 Moderator→角色轮询。默认 true，兼容旧场景快照。 */
+  allowLegacyActing?: boolean
   /** 成员 LLM 调用完成后的审计回调，由业务适配层决定如何持久化。 */
   onMemberInvocation?: (invocation: DiscussionMemberInvocation) => void
   /** 业务层提供的正文形态扫描，用于最终 Reviewer 复核。 */
@@ -291,6 +347,8 @@ export interface DiscussionOptions {
    * Reviewer 返回后引擎调用 extractResult() 得到结构化验收对象。
    */
   buildReviewerToolset?: () => ReviewerToolset
+  /** Moderator 结构化决策工具；未提供时保留文本解析兼容。 */
+  buildModeratorDecisionToolset?: () => ModeratorDecisionToolset
   /**
    * 业务层为 Director 提供"工具化场景计划"能力（2026-08-24 演绎链路修复）。
    *
@@ -298,6 +356,12 @@ export interface DiscussionOptions {
    * 优先读 extractResult()，未提交时回退 Markdown 解析并显式告警。
    */
   buildScenePlanToolset?: () => ScenePlanToolset
+  /** 业务层为角色演出提供结构化回合工具。 */
+  buildCharacterTurnToolset?: (input: {
+    memberId: string
+    sceneId?: number
+    actionBeatId?: string
+  }) => CharacterTurnToolset
   /**
    * 插话被 Moderator 消费（写入群聊 history）后回调（对话化交互形态 §3.1，
    * 供端点沿 SSE 推 status='injected' 事件）。
@@ -358,6 +422,17 @@ export interface ScenePlanToolset {
   extractResult: () => { scenes: SubmittedSceneInput[] } | null
 }
 
+/** 业务层创建的角色回合工具集；draft 由闭包持有，终答为空也不影响取数。 */
+export interface CharacterTurnToolset {
+  tools: unknown[]
+  extractResult: () => CharacterTurn | null
+}
+
+export interface ModeratorDecisionToolset {
+  tools: unknown[]
+  extractResult: () => ModeratorDecision | null
+}
+
 /** 工具提交的原始场景：presentCharacters 是角色名，由引擎映射为成员 ID */
 export interface SubmittedSceneInput {
   title: string
@@ -367,6 +442,8 @@ export interface SubmittedSceneInput {
   goal: string
   emotion?: string
   presentCharacters: string[]
+  /** 新版动作图；旧计划缺失时引擎走 legacy bounded acting。 */
+  actionBeats?: SceneActionBeat[]
 }
 
 /**
@@ -453,6 +530,8 @@ export interface DiscussionResult {
   failedPhase?: DiscussionPhase
   /** failedPhase='acting'/'scene_setup' 时中断的场景 ID（断点续跑从此场景继续）。 */
   failedSceneId?: number
+  /** actionBeat 级断点：续跑从该节点之后继续，避免整场重复演出。 */
+  failedActionBeatId?: string
   /**
    * Reviewer 工具化验收结果（仅 completed 状态且业务层提供 buildReviewerToolset 时存在）。
    * 业务层据此持久化结构化验收报告，无需再从 transcript 中正则解析 Reviewer 输出。
@@ -485,6 +564,25 @@ export interface DiscussionDiagnostics {
   transcriptReuseRate?: number
   /** Moderator 双次尝试均失败、退化为规则协调的轮数。>0 时对戏质量可能下降 */
   moderatorDegradedRounds?: number
+  /** 正常自主 acting 的逻辑角色回合数。 */
+  autonomousCharacterTurns?: number
+  /** 角色主动 mention 触发的回合数。 */
+  autonomousMentions?: number
+  /** Moderator 因异常介入的次数。 */
+  moderatorExceptionInvocations?: number
+  /** 旧场景计划数量；用于观察兼容路径是否仍被大量使用。 */
+  legacyPlanScenes?: number
+  /** 未完成的动作节点/场景义务。 */
+  incompleteActionBeats?: number
+  /** 角色工具回合的成功/失败/取消统计。 */
+  characterTurnFailures?: number
+  characterTurnCancelled?: number
+  completedActionBeats?: number
+  /** 本次 run 的 logical/provider 调用统计。 */
+  totalMemberInvocations?: number
+  totalModeratorInvocations?: number
+  totalLlmRoundTrips?: number
+  totalDurationMs?: number
 }
 
 /**
@@ -503,6 +601,8 @@ export interface DiscussionResumeState {
   content?: string
   /** phase='scene_setup'/'acting' 时中断的场景 ID（缺省从第一个场景继续） */
   failedSceneId?: number
+  /** phase='acting' 时中断的 actionBeat ID。 */
+  failedActionBeatId?: string
 }
 
 /** 群聊引擎常量 */

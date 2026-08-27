@@ -150,6 +150,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
         cwd,
         dataDir,
       },
+      terminalShell: app.providerConfigStore.getTerminalShell(),
     })
   })
 
@@ -161,7 +162,7 @@ export async function createApp(): Promise<Fastify.FastifyInstance> {
   app.pluginManager?.setModelRegistry(app.modelRegistry)
   // 注入 ProviderConfigStore（供 onPayload 读取 stream_options 屏蔽开关等应用级配置）
   app.pluginManager?.setProviderConfigStore(app.providerConfigStore)
-  app.pluginManager?.setMediaGenerator(createMediaGenerator(app.providerConfigStore))
+  app.pluginManager?.setMediaGenerator(createMediaGenerator(app.providerConfigStore, undefined, { logger: app.log }))
 
   // ===== 初始化追踪系统（对标 DSH session-query） =====
   const tracerStore = new SqliteTraceStore(app.db)

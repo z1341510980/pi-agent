@@ -530,6 +530,61 @@ describe('useNovelCreationFlow progress', () => {
     ])
   })
 
+  it('Director 工具提交事件显示完整场景计划并覆盖启动占位', async () => {
+    parseSseStreamMock.mockImplementationOnce(
+      async (_body: unknown, onEvent: (event: BaseEvent) => void) => {
+        onEvent({
+          type: 'CUSTOM',
+          name: 'novel:progress',
+          value: {
+            timestamp: 1,
+            type: 'agent_start',
+            phase: 'directing',
+            data: {
+              type: 'agent_start',
+              messageId: 'director-tool-only',
+              agentType: 'director',
+              agentName: '导演',
+              message: '导演已启动，正在向 AI 发送请求...'
+            }
+          }
+        } as unknown as BaseEvent)
+        onEvent({
+          type: 'CUSTOM',
+          name: 'novel:progress',
+          value: {
+            timestamp: 2,
+            type: 'agent_output',
+            phase: 'directing',
+            data: {
+              type: 'agent_output',
+              agentType: 'director',
+              agentName: '导演',
+              content: '## 场景拆分计划（已通过工具提交）\n\n### 场景1：客厅对峙\n- 地点：客厅\n- 时间：傍晚\n- 冲突：父子冲突\n- 目标：展现对立\n- 情绪：警惕转震惊\n- 在场角色：赵岩'
+            }
+          }
+        } as unknown as BaseEvent)
+      }
+    )
+    const { useNovelCreationFlow } = await import('../use-novel-creation-flow')
+    const { result } = renderHook(() => useNovelCreationFlow())
+
+    await act(async () => {
+      await result.current.startCreation('project-1', 1)
+    })
+
+    expect(result.current.agentOutputs).toEqual([
+      expect.objectContaining({
+        messageId: 'director-tool-only',
+        agentType: 'director',
+        content: expect.stringContaining('- 地点：客厅'),
+        preview: expect.stringContaining('场景拆分计划'),
+        streaming: false
+      })
+    ])
+    expect(result.current.agentOutputs[0].content).toContain('- 在场角色：赵岩')
+  })
+
   it('正文开始后到达的思考 delta 不覆盖正文', async () => {
     vi.useFakeTimers()
     try {

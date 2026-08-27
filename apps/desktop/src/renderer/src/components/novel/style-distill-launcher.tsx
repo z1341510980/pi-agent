@@ -12,8 +12,10 @@ import {
 import {
   listReferenceSources,
   listReferenceSections,
-  createWritingStyleExpert
+  createWritingStyleExpert,
+  appendReferenceSamplesToBaseline,
 } from '@/api/novel-client'
+import { toastSuccess, toastError } from '@/hooks/use-toast'
 import type { ReferenceSection, ReferenceSourceDetail } from '@repo/shared/novel'
 import {
   StyleDistillReviewDialog,
@@ -26,7 +28,11 @@ interface StyleDistillLauncherProps {
   onOpenChange: (open: boolean) => void
   /** 专家入库成功后的回调（父级刷新专家列表） */
   onAccepted?: () => void
+  /** 基线样本更新后的回调（父级可刷新文风相关状态） */
+  onBaselineUpdated?: () => void
 }
+
+/** 在句号/问号/叹号边界内截断，避免样本以半句话收尾（服务端路由已内置同款逻辑，客户端不再使用） */
 
 /**
  * 从文风专家面板直接发起蒸馏的轻量入口。
@@ -39,7 +45,8 @@ export function StyleDistillLauncher({
   projectId,
   open,
   onOpenChange,
-  onAccepted
+  onAccepted,
+  onBaselineUpdated
 }: StyleDistillLauncherProps): ReactElement {
   const [sources, setSources] = useState<ReferenceSourceDetail[]>([])
   const [sourcesLoading, setSourcesLoading] = useState(false)
@@ -48,6 +55,7 @@ export function StyleDistillLauncher({
   const [sectionsLoading, setSectionsLoading] = useState(false)
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
   const [distillOpen, setDistillOpen] = useState(false)
+  const [baselineSaving, setBaselineSaving] = useState(false)
 
   const selectedSource = useMemo(
     () => sources.find((source) => source.id === selectedSourceId) ?? null,
@@ -142,9 +150,39 @@ export function StyleDistillLauncher({
       antiPatterns: draft.antiPatterns,
       boundaries: draft.boundaries,
       enabled: true,
-      sortOrder: 0
+      sortOrder: 0,
     })
     onAccepted?.()
+  }
+
+  /**
+   * 把勾选章节的文本截取为正向样本，追加进文风基线。
+   *
+   * 解决"分析出来的参考小说进不了文风基线"的断点：此前蒸馏只产专家卡，
+   * 基线的正/反样本只能手工粘贴；现在选完章节由服务端一次完成取文、
+   * 句界截断与落库。第一条新样本即锚定样本（每章必注入，可在编辑器调换）。
+   */
+  async function handleAppendToBaseline(): Promise<void> {
+    if (!selectedSource || includedSections.length === 0) return
+    setBaselineSaving(true)
+    try {
+      const result = await appendReferenceSamplesToBaseline(projectId, {
+        sourceId: selectedSource.id,
+        sectionIds: includedSections.map((section) => section.id),
+        kind: 'positive'
+      })
+      toastSuccess(
+        '已加入文风基线',
+        `新增 ${result.added} 条正向样本${result.skipped > 0 ? `；${result.skipped} 条因样本位不足被跳过` : ''}。` +
+          (result.anchorIsNew ? '第一条新样本即锚定样本（每章必注入），可在编辑器中调整。' : '')
+      )
+      onBaselineUpdated?.()
+      onOpenChange(false)
+    } catch (error) {
+      toastError('加入文风基线失败', error instanceof Error ? error.message : '未知错误')
+    } finally {
+      setBaselineSaving(false)
+    }
   }
 
   const totalChars = includedSections.reduce(
@@ -275,6 +313,14 @@ export function StyleDistillLauncher({
           <DialogFooter className="shrink-0 border-t border-border px-5 py-3">
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               取消
+            </Button>
+            <Button
+              variant="outline"
+              disabled={includedSections.length === 0 || baselineSaving}
+              title="把勾选章节截取为文风基线的正向样本（前 5 章内有效）"
+              onClick={() => void handleAppendToBaseline()}
+            >
+              {baselineSaving ? '保存中…' : `加入文风基线样本（${Math.min(includedSections.length, 5)} 章）`}
             </Button>
             <Button disabled={includedSections.length === 0} onClick={() => setDistillOpen(true)}>
               <Sparkles className="size-3.5" /> 开始分析（{includedSections.length} 章）

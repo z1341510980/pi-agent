@@ -30,3 +30,14 @@
 - 备注：本次未深入各页面组件定位，后续触碰具体页面时补全条目。
 - 覆盖：partial
 - last-updated: 2026-08-25
+
+### Agent 终端执行器
+
+- 描述：设置 Agent `bash` 工具在 Windows 上使用的终端，可选 Git Bash、PowerShell、cmd 或 WSL；配置持久化到 SQLite，变更后使空闲会话重建。
+- 页面入口：`apps/desktop/src/renderer/src/components/settings/general-settings.tsx`（通用设置 → 终端执行器）
+- API 入口：`apps/agent-server/src/routes/settings.route.ts`（`GET/PUT /api/settings/terminal`）
+- 核心：`apps/agent-server/src/core/config/terminal-shell.ts`、`apps/agent-server/src/core/agent/pi-session.ts`、`apps/agent-server/src/core/config/provider-config-store.ts`
+- 测试：`apps/agent-server/src/core/config/terminal-shell.test.ts`、`apps/agent-server/src/__tests__/provider-route.test.ts`
+- 备注：默认 `git-bash`；SDK 的 Bash 工具通过宿主适配器为不同终端组装启动参数。
+- 覆盖：sufficient
+- last-updated: 2026-08-27

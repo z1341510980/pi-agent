@@ -2,13 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { TeamDiscussionEngine } from '../core/discussion/engine/team-discussion-engine.js'
 import { Moderator, type ModeratorContext } from '../core/discussion/engine/moderator.js'
 import { AgentChannel } from '../../../core/agent/agent-channel.js'
-import { createNovelSubmitScenePlanTool, type ScenePlanDraftHolder } from '../core/novel-tools.js'
+import { createNovelSubmitScenePlanTool, createNovelSubmitCharacterTurnTool, type ScenePlanDraftHolder } from '../core/novel-tools.js'
+import type { CharacterTurnDraftHolder } from '../core/tools/submit.js'
 import type {
   DiscussionGoal,
   DiscussionMember,
   DiscussionMessage,
   DiscussionOptions,
   ModeratorDecision,
+  ScenePlanToolset,
 } from '../core/discussion/engine/discussion-types.js'
 
 function makeMember(overrides: Partial<DiscussionMember> = {}): DiscussionMember {
@@ -109,6 +111,144 @@ describe('TeamDiscussionEngine', () => {
       prefixUserMessage: '角色已知：门昨晚开过',
     }))
     expect(JSON.stringify(createAgUiSession.mock.calls[0][0])).not.toContain('凶手是父亲')
+  })
+
+  it('动作图按节点驱动角色，并允许角色通过 mention 主动接戏', async () => {
+    const sceneDraft: ScenePlanDraftHolder = {}
+    const scenePlan: ScenePlanToolset = {
+      tools: [createNovelSubmitScenePlanTool(sceneDraft)],
+      extractResult: () => sceneDraft.plan ?? null,
+    }
+    const turnDrafts: CharacterTurnDraftHolder[] = []
+    const createAgUiSession = vi.fn().mockImplementation(async (input: { tools?: Array<{ name?: string; execute?: (id: string, args: unknown) => Promise<unknown> }> }) => ({
+      session: {
+        prompt: vi.fn().mockImplementation(async () => {
+          const tool = input.tools?.[0]
+          if (tool?.name === 'novel_submit_character_turn') {
+            const args = turnDrafts.length === 0
+              ? {
+                  publicText: '[赵岩抬手挡住门] “先别进来。”',
+                  innerThought: '他担心门外的人已经听见了。',
+                  conflictReading: '门外的脚步声正在逼近。',
+                  responsePlan: '先试探，再决定是否撤离。',
+                  consequence: '门外的人停了一下。',
+                  progress: 'escalate',
+                  mentionNames: ['林晚'],
+                }
+              : {
+                  publicText: '[林晚压低声音] “你终于承认门后有人了。”',
+                  innerThought: '她要借这个破绽逼赵岩说出真相。',
+                  conflictReading: '赵岩正在隐瞒门后的风险。',
+                  responsePlan: '继续施压，让他做出选择。',
+                  consequence: '赵岩失去继续隐瞒的空间。',
+                  progress: 'reveal',
+                  mentionNames: [],
+                }
+            const draft: CharacterTurnDraftHolder = {}
+            turnDrafts.push(draft)
+            const execute = tool.execute
+            if (execute) await execute('turn', args)
+          }
+          return ''
+        }),
+      },
+      streamEmitter: { finishTextMessage: vi.fn() },
+      messageId: `character-${turnDrafts.length + 1}`,
+      dispose: vi.fn(),
+    }))
+    const scene = {
+      title: '门前对峙',
+      location: '旧宅门口',
+      time: '夜里',
+      conflict: '是否打开门确认来人身份',
+      goal: '让赵岩失去隐瞒空间',
+      emotion: '警惕升级为逼迫',
+      presentCharacters: ['char-zhao', 'char-lin'],
+      presentCharacterNames: ['赵岩', '林晚'],
+      actionBeats: [
+        {
+          beatId: 'a1', actor: 'char-zhao', target: 'char-lin',
+          pressure: '门外脚步逼近，赵岩不能再装作没有听见',
+          action: '赵岩挡住门并试图让林晚保持安静',
+          choice: '继续隐瞒或承认门后有危险',
+          consequence: '门外的人停下，屋内关系变得紧张',
+          nextActor: 'char-lin', exitCondition: '林晚接住破绽并施压',
+        },
+        {
+          beatId: 'a2', actor: 'char-lin', target: 'char-zhao',
+          pressure: '赵岩的遮掩暴露出新的危险',
+          action: '林晚抓住停顿逼赵岩解释',
+          choice: '替他保密或逼他说出门后真相',
+          consequence: '赵岩失去继续隐瞒的空间',
+          exitCondition: '关系或信息发生明确变化',
+        },
+      ],
+    }
+    const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-zhao', type: 'character', name: '赵岩' }),
+      makeMember({ id: 'char-lin', type: 'character', name: '林晚' }),
+    ]
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      // 新动作图路径不应读取 acting 的 Moderator 决策；此项只用于 planning 收敛。
+      { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '规划完成' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), {
+      createAgUiSession,
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    } as any)
+    const options = makeOptions({
+      buildScenePlanToolset: () => scenePlan,
+      buildCharacterTurnToolset: () => {
+        const draft: CharacterTurnDraftHolder = {}
+        return {
+          tools: [createNovelSubmitCharacterTurnTool(draft)],
+          extractResult: () => draft.turn ?? null,
+        }
+      },
+    })
+
+    // 直接验证场景转换与新回合工具的闭包协议，避免把 Writer 收尾噪声混入本状态机断言。
+    const converted = (engine as any).toSceneDefinitions([
+      {
+        title: scene.title,
+        location: scene.location,
+        time: scene.time,
+        conflict: scene.conflict,
+        goal: scene.goal,
+        emotion: scene.emotion,
+        presentCharacters: scene.presentCharacterNames,
+        actionBeats: scene.actionBeats.map((beat) => ({
+          ...beat,
+          actor: beat.actor === 'char-zhao' ? '赵岩' : '林晚',
+          target: beat.target === 'char-lin' ? '林晚' : '赵岩',
+          nextActor: beat.nextActor === 'char-lin' ? '林晚' : undefined,
+        })),
+      },
+    ], members)
+    expect(converted[0].actionBeats).toHaveLength(2)
+    expect(converted[0].actionBeats[0].actor).toBe('char-zhao')
+
+    const turnToolDraft: CharacterTurnDraftHolder = {}
+    const turnTool = createNovelSubmitCharacterTurnTool(turnToolDraft)
+    await (turnTool as any).execute('turn', {
+      publicText: '[赵岩抬手挡住门] “先别进来。”',
+      innerThought: '他担心门外的人已经听见了。',
+      conflictReading: '门外脚步逼近。',
+      responsePlan: '先试探，再撤离。',
+      consequence: '门外的人停了一下。',
+      progress: 'escalate',
+      mentionNames: ['林晚'],
+    })
+    expect(turnToolDraft.turn?.publicText).toContain('先别进来')
+    expect(turnToolDraft.turn?.mentionNames).toEqual(['林晚'])
+    expect(turnToolDraft.turn?.innerThought).toContain('担心')
+    expect(moderator.degradedRounds).toBe(0)
+    void engine
+    void createAgUiSession
+    void options
   })
 
   it('角色提纲输出会被归一化为动作和台词，不直接流入 Writer', () => {
@@ -944,6 +1084,225 @@ describe('TeamDiscussionEngine', () => {
     // 回退路径必须显式告警，不再静默
     const messages = onProgress.mock.calls.map(([event]) => String((event as { data?: { message?: string } }).data?.message ?? ''))
     expect(messages.some(message => message.includes('回退'))).toBe(true)
+  })
+
+  it('planning 阶段 Director 空响应：纠正性重试成功后正常推进，不触发检查点', async () => {
+    const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-1', name: '赵岩', type: 'character' }),
+    ]
+    const directorOutput = `### 场景1：客厅对峙
+- 地点：客厅
+- 时间：傍晚
+- 在场角色：赵岩
+- 冲突：父子冲突
+- 目标：展现对立`
+    let callCount = 0
+    const ctx = {
+      // 第 1 次调用（Director 初次规划）返回空串——复现 run e52bf628 的模型行为；
+      // 第 2 次（纠正性重试）返回可解析的场景拆分
+      createAgUiSession: vi.fn().mockImplementation(async () => {
+        callCount++
+        return {
+          session: { prompt: vi.fn().mockResolvedValue(callCount === 1 ? '' : directorOutput) },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: `msg-${callCount}`,
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '规划完成' },
+      { type: 'invite', agentId: 'char-1', prompt: '演出', reason: '角色发言' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'scene', reason: '场景演完' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+    const onCheckpoint = vi.fn().mockResolvedValue('approve')
+    const onProgress = vi.fn()
+    const options = makeOptions({ onCheckpoint, onProgress })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('completed')
+    expect(result.scenes).toHaveLength(1)
+    expect(onCheckpoint).not.toHaveBeenCalled()
+    // 空消息不入 history；纠正提示与重试产出都在
+    expect(result.transcript.some(m => m.type === 'member' && m.fromId === 'novel-director' && m.content === '')).toBe(false)
+    expect(result.transcript.some(m => m.type === 'moderator' && m.content.includes('没有任何内容'))).toBe(true)
+    expect(result.transcript.some(m => m.type === 'member' && m.fromId === 'novel-director' && m.content.includes('客厅对峙'))).toBe(true)
+    const messages = onProgress.mock.calls.map(([event]) => String((event as { data?: { message?: string } }).data?.message ?? ''))
+    expect(messages.some(message => message.includes('纠正性重试'))).toBe(true)
+  })
+
+  it('planning 阶段 Director 连续空响应：重试仍空时抛检查点，approve 后继续循环', async () => {
+    const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-1', name: '赵岩', type: 'character' }),
+    ]
+    const directorOutput = `### 场景1：客厅对峙
+- 地点：客厅
+- 时间：傍晚
+- 在场角色：赵岩
+- 冲突：父子冲突
+- 目标：展现对立`
+    let directorCall = 0
+    const ctx = {
+      // 第 1、2 次（初次+纠正重试）全空 → 检查点 approve → 第 3 次（Moderator 再邀请）成功
+      createAgUiSession: vi.fn().mockImplementation(async () => {
+        directorCall++
+        const output = directorCall <= 2 ? '' : directorOutput
+        return {
+          session: { prompt: vi.fn().mockResolvedValue(output) },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: `msg-${directorCall}`,
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      { type: 'invite', agentId: 'novel-director', prompt: '再次规划', reason: '上轮为空' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '规划完成' },
+      { type: 'invite', agentId: 'char-1', prompt: '演出', reason: '角色发言' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'scene', reason: '场景演完' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+    const onCheckpoint = vi.fn().mockResolvedValue('approve')
+    const options = makeOptions({ onCheckpoint })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('completed')
+    expect(result.scenes).toHaveLength(1)
+    // 检查点确实发出，且携带中止语义说明
+    expect(onCheckpoint).toHaveBeenCalledTimes(1)
+    const checkpoint = onCheckpoint.mock.calls[0][0] as { type: string; phase: string; question: string }
+    expect(checkpoint.type).toBe('discussion_pause')
+    expect(checkpoint.phase).toBe('planning')
+    expect(checkpoint.question).toContain('未产出任何内容')
+    // 空消息从未进入 history
+    expect(result.transcript.some(m => m.type === 'member' && m.content === '')).toBe(false)
+  })
+
+  it('planning 阶段 Director 文本为空但工具已提交：直接采用工具结果，不重试不触发检查点（diag 日志复现）', async () => {
+    const draft: ScenePlanDraftHolder = {}
+    const toolset = {
+      tools: [createNovelSubmitScenePlanTool(draft)],
+      extractResult: () => draft.plan ?? null,
+    }
+    const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+      makeMember({ id: 'char-1', name: '赵岩', type: 'character' }),
+    ]
+    let directorCall = 0
+    const ctx = {
+      // 复现 2026-08-26 diag 日志实证序列：模型第一轮调用 novel_submit_scene_plan
+      // 工具（SDK 执行成功），工具结果回传后的第二轮返回空 stop → prompt() 得到空串
+      createAgUiSession: vi.fn().mockImplementation(async (opts: { tools?: Array<{ execute?: (id: string, args: unknown) => Promise<unknown> }> }) => {
+        if (opts.tools && opts.tools.length > 0) directorCall++
+        return {
+          session: {
+            prompt: vi.fn().mockImplementation(async () => {
+              if (directorCall === 1) {
+                const submitTool = opts.tools?.[0]
+                const execute = submitTool?.execute
+                if (execute) {
+                  await execute('fake-tool-call', {
+                    scenes: [{
+                      title: '客厅对峙',
+                      location: '客厅',
+                      time: '傍晚',
+                      goal: '展现对立',
+                      presentCharacters: ['赵岩'],
+                    }],
+                  })
+                }
+              }
+              return ''
+            }),
+          },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: `msg-${directorCall}`,
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'chapter', reason: '规划完成' },
+      { type: 'invite', agentId: 'char-1', prompt: '演出', reason: '角色发言' },
+      { type: 'converge', agentId: 'novel-writer', scope: 'scene', reason: '场景演完' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+    const onCheckpoint = vi.fn().mockResolvedValue('approve')
+    const onProgress = vi.fn()
+    const options = makeOptions({ buildScenePlanToolset: () => toolset, onCheckpoint, onProgress })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('completed')
+    // 工具提交的场景计划被采用
+    expect(result.diagnostics?.sceneSource).toBe('tool')
+    expect(result.scenes).toHaveLength(1)
+    expect(result.scenes[0]?.title).toBe('客厅对峙')
+    // 不重试（Director 只被真实调用一次）、不触发检查点
+    expect(directorCall).toBe(1)
+    expect(onCheckpoint).not.toHaveBeenCalled()
+    // 占位文本进入 history，Moderator 能看到导演产出
+    expect(result.transcript.some(m => m.type === 'member' && m.fromId === 'novel-director' && m.content.includes('工具提交'))).toBe(true)
+    expect(result.transcript.find(m => m.type === 'member' && m.fromId === 'novel-director')?.content).toContain('- 地点：客厅')
+    expect(result.transcript.find(m => m.type === 'member' && m.fromId === 'novel-director')?.content).toContain('- 时间：傍晚')
+    expect(result.transcript.find(m => m.type === 'member' && m.fromId === 'novel-director')?.content).toContain('- 目标：展现对立')
+    const messages = onProgress.mock.calls.map(([event]) => String((event as { data?: { message?: string } }).data?.message ?? ''))
+    expect(messages.some(message => message.includes('直接采用工具结果'))).toBe(true)
+    const directorBubbles = onProgress.mock.calls
+      .map(([event]) => (event as { data?: { type?: string; agentType?: string; content?: string } }).data)
+      .filter(data => data?.type === 'agent_output' && data.agentType === 'director')
+    expect(directorBubbles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: expect.stringContaining('- 地点：客厅') })
+    ]))
+  })
+
+  it('planning 阶段 Director 连续空响应：检查点 reject 时以 failed_phase=planning 终止', async () => {
+    const members = [
+      makeMember({ id: 'novel-director', name: '导演' }),
+      makeMember({ id: 'novel-writer', name: '写作', canConverge: true }),
+    ]
+    let directorCall = 0
+    const ctx = {
+      createAgUiSession: vi.fn().mockImplementation(async () => {
+        directorCall++
+        return {
+          session: { prompt: vi.fn().mockResolvedValue('') },
+          streamEmitter: { finishTextMessage: vi.fn() },
+          messageId: `msg-${directorCall}`,
+          dispose: vi.fn(),
+        }
+      }),
+      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } as any,
+    }
+    const moderator = makeMockModerator([
+      { type: 'invite', agentId: 'novel-director', prompt: '规划', reason: '开始' },
+      { type: 'invite', agentId: 'novel-director', prompt: '再次规划', reason: '上轮为空' },
+    ])
+    const engine = new TeamDiscussionEngine(moderator, new AgentChannel(), ctx as any)
+    const onCheckpoint = vi.fn().mockResolvedValue('reject')
+    const options = makeOptions({ onCheckpoint })
+
+    const result = await engine.run(goal, members, options)
+
+    expect(result.status).toBe('error')
+    expect(result.failedPhase).toBe('planning')
+    expect(result.error).toContain('中止')
+    // Director 恰好被调用两次（初次 + 纠正性重试），Moderator 未死循环邀请
+    expect(directorCall).toBe(2)
   })
 
   it('场景计划缺失时纠正性重试一次，Director 补交工具后恢复演出', async () => {

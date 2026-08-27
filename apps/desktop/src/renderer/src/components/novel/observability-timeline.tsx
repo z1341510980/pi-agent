@@ -21,11 +21,11 @@ const AGENT_COLORS: Record<string, string> = {
   memory: 'bg-gray-500',
 }
 
-export function ObservabilityTimeline(): ReactElement {
+export function ObservabilityTimeline({ compact = false }: { compact?: boolean }): ReactElement {
   const projectId = useNovelDataStore((s) => s.currentProjectId)
   const q = useQuery({
     queryKey: ['novel-observability-timeline', projectId],
-    queryFn: () => getObservabilityTimeline(projectId!, { limit: 50 }),
+    queryFn: () => getObservabilityTimeline(projectId!, { limit: compact ? 20 : 50 }),
     enabled: !!projectId,
     refetchInterval: 60_000,
     placeholderData: keepPreviousData,
@@ -33,7 +33,7 @@ export function ObservabilityTimeline(): ReactElement {
   const agentsQuery = useQuery({
     queryKey: ['novel-observability-agents', projectId],
     queryFn: () => getObservabilityAgents(projectId!),
-    enabled: !!projectId,
+    enabled: !!projectId && !compact,
     refetchInterval: 60_000,
     placeholderData: keepPreviousData,
   })
@@ -50,11 +50,13 @@ export function ObservabilityTimeline(): ReactElement {
     <div className="flex h-full flex-col bg-surface-1">
       {/* 上段：调用趋势条形列表 */}
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">
-          <Activity className="size-4 text-primary" />
-          <span className="text-sm font-semibold text-text">调用趋势</span>
-        </div>
-        <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-1">
+        {!compact && (
+          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">
+            <Activity className="size-4 text-primary" />
+            <span className="text-sm font-semibold text-text">调用趋势</span>
+          </div>
+        )}
+        <div className={cn('flex-1 overflow-y-auto min-h-0', compact ? 'p-1.5 space-y-0.5' : 'p-3 space-y-1')}>
           {rows.length === 0 ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
               {q.isLoading ? '加载中...' : '暂无调用数据'}
@@ -83,8 +85,10 @@ export function ObservabilityTimeline(): ReactElement {
           )}
         </div>
       </div>
-      {/* 下段：Agent 汇总 */}
-      <ObservabilityAgentSummary rows={agentsQuery.data ?? []} isLoading={agentsQuery.isLoading} />
+      {/* 下段：Agent 汇总（compact 模式省略） */}
+      {!compact && (
+        <ObservabilityAgentSummary rows={agentsQuery.data ?? []} isLoading={agentsQuery.isLoading} />
+      )}
     </div>
   )
 }

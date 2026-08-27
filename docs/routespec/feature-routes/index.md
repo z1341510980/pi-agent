@@ -19,6 +19,7 @@
 | novel 业务插件 | [novel-plugin.md](novel-plugin.md) | 小说创作全链路（编排、章节、账本等） |
 | 桌面宿主 | [desktop-app.md](desktop-app.md) | Electron 主进程、嵌入 server、renderer |
 | workspace 共享包 | [packages.md](packages.md) | shared / protocol / config |
+| infinite-canvas 插件 | [api-routes.md](api-routes.md) | 画布项目、媒体配置、图片生成与编辑 |
 
 ---
 

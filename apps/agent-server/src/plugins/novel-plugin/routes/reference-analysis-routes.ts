@@ -1,16 +1,33 @@
 import { z } from 'zod'
+import { randomUUID } from 'node:crypto'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { success } from '../../../lib/api-response.js'
 import { validateBody } from '../../../lib/validate.js'
 import type { RouteDefinition } from '../../../core/plugin/plugin-types.js'
 import type { NovelServices } from '../novel-services.js'
 import { MAX_REFERENCE_SOURCE_BYTES, sampleSectionIdsEvenly } from '../core/analysis/reference-analysis.js'
-import { distillStyleExpertFromReference } from '../core/prompting/style-expert-distiller.js'
+import {
+  distillStyleExpertFromReference,
+  STYLE_DIMENSION_LABELS,
+  type StyleCraftDimension
+} from '../core/prompting/style-expert-distiller.js'
 import { measureStyleMetrics } from '../core/analysis/style-measurement.js'
 
 const REFERENCE_PREFLIGHT_BODY_LIMIT = Math.ceil((MAX_REFERENCE_SOURCE_BYTES * 4) / 3) + 64 * 1024
 /** 蒸馏单次输入的章节数上限；超过时服务端按等距自动抽样，不再拒绝请求。 */
 export const MAX_REFERENCE_STYLE_DISTILL_SECTIONS = 500
+
+const STYLE_TEAM_DIMENSIONS = [
+  'scene_craft',
+  'character_craft',
+  'dialogue_craft',
+  'action_craft',
+  'emotion_craft',
+  'conflict_craft',
+  'narrative_craft'
+] as const
+
+const styleTeamDimensionSchema = z.enum(STYLE_TEAM_DIMENSIONS)
 
 const preflightSchema = z.discriminatedUnion('inputKind', [
   z.object({
@@ -343,6 +360,187 @@ export function createReferenceAnalysisRoutes(services: NovelServices): RouteDef
             request.traceId
           )
         )
+    },
+    {
+      /**
+       * 专家团维度蒸馏（迁移 119）：一次调用只蒸馏一个维度，产出一维一专家的草稿。
+       *
+       * - 幂等：同 (teamKey=sourceId, dimension) 已有专家直接跳过，前端逐维重试即可断点续传；
+       * - 草稿态：enabled=false + reviewStatus='draft'，等待文风档案面板人工审核；
+       * - 空维度（如日常文无打斗手法）返回 skipped: 'empty'，不算失败。
+       */
+      method: 'POST',
+      path: '/reference-sources/:sourceId/style-team-distill/dimension',
+      bodyLimit: 2 * 1024 * 1024,
+      handler: async (request: any, reply: any) => {
+        const input = validateBody(
+          z.object({
+            sectionIds: z.array(z.string().min(1)).min(1),
+            dimension: styleTeamDimensionSchema,
+            notes: z.string().max(2000).optional(),
+            modelId: z.object({ provider: z.string(), modelId: z.string() }).optional()
+          }),
+          request,
+          reply
+        )
+        if (!input) return reply
+        return withReferenceError(async () => {
+          const source = service.getSource(request.params.sourceId)
+          const projectId = source.projectId
+          const dimension = input.dimension as StyleCraftDimension
+          const dimensionLabel = STYLE_DIMENSION_LABELS[dimension]
+
+          const existing = services.store
+            .listStyleExperts(projectId)
+            .find((expert) => expert.teamKey === source.id && expert.dimension === dimension)
+          if (existing) {
+            return success({ skipped: true, reason: 'exists', expert: existing }, request.traceId)
+          }
+
+          const sampled = sampleSectionIdsEvenly(input.sectionIds, MAX_REFERENCE_STYLE_DISTILL_SECTIONS)
+          const sample = service.getSectionsText(request.params.sourceId, sampled)
+          const metrics = measureStyleMetrics(sample.text)
+          const startedAt = Date.now()
+          let failure = ''
+          let resultSummary = ''
+          try {
+            const draft = await distillStyleExpertFromReference(
+              services.context,
+              {
+                sourceId: sample.sourceId,
+                sections: sample.sections,
+                text: sample.text,
+                sectionTexts: sample.sectionTexts,
+                metrics,
+                notes: input.notes
+              },
+              input.modelId,
+              { dimension }
+            )
+            if (draft.techniques.length === 0) {
+              resultSummary = `${dimensionLabel}维度没有可迁移手法，跳过`
+              return success({ skipped: true, reason: 'empty', dimension }, request.traceId)
+            }
+            const now = Date.now()
+            const expert = services.store.createStyleExpert({
+              id: randomUUID(),
+              projectId,
+              name: draft.name,
+              dimension,
+              teamKey: source.id,
+              reviewStatus: 'draft',
+              sourceTitle: source.displayName,
+              description: draft.description,
+              distilledPrompt: draft.distilledPrompt,
+              metrics: draft.metrics as unknown as Record<string, unknown>,
+              techniques: draft.techniques,
+              exclusions: draft.exclusions,
+              exemplarPassages: draft.exemplarPassages,
+              expressionDna: draft.expressionDna,
+              tensions: draft.tensions,
+              antiPatterns: draft.antiPatterns,
+              boundaries: draft.boundaries,
+              enabled: false,
+              sortOrder: STYLE_TEAM_DIMENSIONS.indexOf(dimension),
+              version: 1,
+              createdAt: now,
+              updatedAt: now,
+              distillMeta: {
+                model: input.modelId?.modelId,
+                distilledAt: now,
+                sampleChars: sample.text.length
+              }
+            })
+            resultSummary = `已生成${dimensionLabel}维度草稿专家：${draft.name}`
+            return success({ skipped: false, expert }, request.traceId)
+          } catch (error) {
+            failure = error instanceof Error ? error.message : '文风专家团维度蒸馏失败'
+            throw error
+          } finally {
+            const durationMs = Date.now() - startedAt
+            const taskInput = JSON.stringify({
+              referenceSourceId: source.id,
+              dimension,
+              sectionCount: sampled.length,
+              notesProvided: Boolean(input.notes?.trim())
+            })
+            try {
+              services.store.insertAgentLog({
+                projectId,
+                chapterNumber: 0,
+                agentType: 'reference-style-distill',
+                agentName: '参考文风专家团蒸馏',
+                displayAgentType: 'reference-style-distill',
+                displayAgentName: '参考文风专家团蒸馏',
+                phase: 'reference-analysis',
+                systemPrompt: `参考小说专家团${dimensionLabel}维度蒸馏（LLM 调用；原文不写入日志）`,
+                chapterContext: '',
+                userMessage: `从参考文本分包样本中蒸馏${dimensionLabel}维度写作手法。`,
+                taskInput,
+                userInstructions: [],
+                tools: [],
+                toolNames: [],
+                askStoryPolicy: 'allOffWithReferences',
+                askStoryEnabled: false,
+                result: resultSummary,
+                resultLength: resultSummary.length,
+                durationMs,
+                status: failure ? 'error' : 'success',
+                error: failure,
+                sessionId: '',
+                operation: 'style_team_distill',
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                llmProvider: input.modelId?.provider ?? '',
+                llmModel: input.modelId?.modelId ?? '',
+                payloadMessagesChars: 0,
+                payloadToolsChars: 0,
+                payloadToolCount: 0,
+                payloadTotalChars: 0,
+                llmRoundTrips: 1,
+                dataQuality: 'no_data'
+              })
+            } catch (error) {
+              services.context.logger.warn(
+                { error, sourceId: source.id, dimension },
+                '专家团维度蒸馏项目日志写入失败'
+              )
+            }
+            try {
+              services.context.agentCallLogger?.record({
+                agentId: 'reference-style-distill',
+                agentName: '参考文风专家团蒸馏',
+                threadId: '',
+                systemPrompt: `参考小说专家团${dimensionLabel}维度蒸馏（LLM 调用；原文不写入日志）`,
+                userMessage: `从参考文本分包样本中蒸馏${dimensionLabel}维度写作手法。`,
+                taskInput,
+                tools: '[]',
+                toolNames: '[]',
+                result: resultSummary,
+                resultLength: resultSummary.length,
+                durationMs,
+                status: failure ? 'error' : 'success',
+                error: failure,
+                metadata: JSON.stringify({
+                  projectId,
+                  referenceSourceId: source.id,
+                  operation: 'style_team_distill',
+                  dimension,
+                  providerId: input.modelId?.provider ?? null,
+                  modelId: input.modelId?.modelId ?? null
+                })
+              })
+            } catch (error) {
+              services.context.logger.warn(
+                { error, sourceId: source.id, dimension },
+                '专家团维度蒸馏通用日志写入失败'
+              )
+            }
+          }
+        })
+      }
     },
     {
       method: 'PATCH',

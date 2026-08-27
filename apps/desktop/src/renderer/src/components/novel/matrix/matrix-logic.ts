@@ -186,6 +186,12 @@ export interface MatrixEntity {
   // ── 角色出场：按连续跨度分组 ──
   /** 角色出场章节跨度（相邻章节合并为一段） */
   characterSpans?: Array<{ start: number; end: number }>
+  /**
+   * 待时间线重建确认的出场章节（来源行 status='stale'，见 timeline invalidation）。
+   * 这些章节已计入 characterSpans 恢复显示；渲染层可据此画成空心/半透明点，
+   * 并提示「内容已重写，待时间线重建确认」。
+   */
+  staleChapters?: number[]
 
   // ── 冲突/势力跨度（多段）──
   /** 多段章节跨度（如 [[1,3],[10,12]]），空数组表示未放置 */

@@ -130,6 +130,7 @@ type StreamAgentMeta = Pick<AgentOutput, 'agentType' | 'agentName'>
 
 const PHASE_AGENT_META: Record<string, StreamAgentMeta> = {
   directing: { agentType: 'director', agentName: '导演' },
+  acting: { agentType: 'character', agentName: '角色演出' },
   writing: { agentType: 'writer', agentName: '写作' },
   rewriting: { agentType: 'writer', agentName: '写作' },
   reviewing: { agentType: 'reviewer', agentName: '审稿' },
@@ -294,6 +295,8 @@ export interface UseNovelCreationFlowReturn {
 }
 
 // ── 详情格式化（将后端 detail payload 转为可读 markdown 气泡内容）──
+
+import { BEAT_FUNCTION_LABELS } from '@/components/novel/sidebar/beat-labels'
 
 const RHYTHM_LABELS: Record<string, string> = {
   setup: '铺垫',
@@ -493,7 +496,17 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
     const conflictTargets = (detail.conflictTargets as Array<Record<string, unknown>>) ?? []
     const suspenseHooks = (detail.suspenseHooks as Array<Record<string, unknown>>) ?? []
     const rhythmConstraint = detail.rhythmConstraint as Record<string, unknown> | undefined
+    const beatConstraint = detail.beatConstraint as Record<string, unknown> | null | undefined
     let md = `## 章节约束已构建`
+    if (beatConstraint) {
+      const fn = BEAT_FUNCTION_LABELS[beatConstraint.dramaticFunction as string]
+        ?? (beatConstraint.dramaticFunction as string)
+      md += `\n\n### 卷级节拍约束\n`
+      md += `\n**${fn}**${beatConstraint.arcPosition ? `（${beatConstraint.arcPosition as string}）` : ''}`
+      if (beatConstraint.emotionalDebt) md += `\n- 进入本章情绪债务：${beatConstraint.emotionalDebt as string}`
+      if (beatConstraint.payoff) md += `\n- 本章爽点：${beatConstraint.payoff as string}`
+      if (beatConstraint.summary) md += `\n- 核心走向：${beatConstraint.summary as string}`
+    }
     if (rhythmConstraint) {
       md += `\n\n### 节奏约束\n\n**${RHYTHM_LABELS[rhythmConstraint.rhythm as string] ?? rhythmConstraint.rhythm}**：${rhythmConstraint.description as string}`
     }
@@ -514,7 +527,7 @@ export function formatDetailBubble(detail: Record<string, unknown>): {
         md += `\n${i + 1}. [${status}] ${h.description as string}（已持续 ${sustained} 章${release != null ? `，计划第 ${release} 章释放` : ''}）`
       })
     }
-    if (conflictTargets.length === 0 && suspenseHooks.length === 0 && !rhythmConstraint) {
+    if (conflictTargets.length === 0 && suspenseHooks.length === 0 && !rhythmConstraint && !beatConstraint) {
       md += `\n\n*本章无特殊约束*`
     }
     return { agentType: 'context', agentName: '约束', content: md }
@@ -1118,6 +1131,7 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
             messageId?: string
             message?: string
             content?: string
+            actorTurn?: AgentOutput['actorTurn']
             dataChanged?: boolean
             data?: unknown
             detail?: Record<string, unknown>
@@ -1434,6 +1448,56 @@ export function useNovelCreationFlow(): UseNovelCreationFlowReturn {
                 }
               ]
             })
+            return
+          }
+          // 群聊 Director 的工具提交：工具调用后的终答可能为空，完整场景计划
+          // 由后端通过 agent_output 事件发送。覆盖该 Director 的启动占位气泡，
+          // 让用户看到工具参数中的完整内容，而不是只看到“已启动”或空正文。
+          if (data?.type === 'agent_output' && data.agentType === 'director' && typeof data.content === 'string') {
+            const content = data.content
+            setAgentOutputs((prev) => {
+              const last = prev[prev.length - 1]
+              if (last && last.agentType === 'director' && last.streaming && !last.hasStreamedText) {
+                return [
+                  ...prev.slice(0, -1),
+                  {
+                    ...last,
+                    content,
+                    preview: content.slice(0, 200),
+                    streaming: false,
+                  }
+                ]
+              }
+              return [
+                ...prev,
+                {
+                  agentType: 'director',
+                  agentName: data.agentName ?? '导演',
+                  content,
+                  preview: content.slice(0, 200),
+                  timestamp: nextTimelineTimestamp(evt.timestamp),
+                  streaming: false,
+                }
+              ]
+            })
+            return
+          }
+          // 角色结构化工具回合：publicText 作为正文气泡，私有判断放进同一气泡的
+          // actorTurn 字段，由 ConversationMessage 的可展开区渲染；不混入章节正文。
+          if (data?.type === 'agent_output' && data.agentType === 'character' && typeof data.content === 'string') {
+            const content = data.content
+            const actorTurn = data.actorTurn
+            setAgentOutputs((prev) => [
+              ...prev,
+              {
+                agentType: 'character',
+                agentName: data.agentName ?? '角色',
+                content,
+                preview: content.slice(0, 200),
+                timestamp: nextTimelineTimestamp(evt.timestamp),
+                actorTurn,
+              }
+            ])
             return
           }
           // 群聊过程事件：scene_change（场景切换）→ 创建 director 系统气泡

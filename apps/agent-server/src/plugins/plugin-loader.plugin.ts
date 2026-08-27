@@ -910,6 +910,15 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       persistCatalog()
       entry.restartRequired = true
       const updated = manager.get(pluginId)
+      // config 变更回调：错误隔离，不影响持久化与响应。
+      // 需要重启才生效的资源（路由/服务装饰）不因回调重建 —— restartRequired 如实返回。
+      if (updated?.plugin.onConfigChange) {
+        try {
+          await updated.plugin.onConfigChange(updated.config ?? {})
+        } catch (err) {
+          log.warn({ pluginId, err }, '插件 onConfigChange 回调失败')
+        }
+      }
       return reply.send({
         ok: true,
         data: {
@@ -957,6 +966,13 @@ export const pluginLoaderPlugin: FastifyPluginAsync = fp(async (app) => {
       ok: true,
       data: { schemaVersion: 1, contributions }
     })
+  })
+
+  // 插件声明的标量设置 schema（registerSettings）：桌面端据此自动生成设置分区，
+  // 表单读写走既有 GET/PATCH /api/plugins/:pluginId/config。
+  app.get('/api/plugins/settings-schema', async (_request, reply) => {
+    const plugins = manager.getAllSettings()
+    return reply.send({ ok: true, data: { schemaVersion: 1, plugins } })
   })
 
   // 获取插件目录配置（包括 disabled 插件）

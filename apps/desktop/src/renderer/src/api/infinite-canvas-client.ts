@@ -158,6 +158,7 @@ export async function generateCanvasImage(
     nodeId?: string
     prompt: string
     context?: string
+    references?: string[]
     model?: string
     size?: string
     count?: number
@@ -195,7 +196,7 @@ export async function generateCanvasMedia(
 /** 蒙版局部重绘：原图 + 涂抹蒙版交给 /images/edits。 */
 export async function editCanvasImage(
   projectId: string,
-  payload: { prompt: string; image: string; mask?: string; model?: string; size?: string },
+  payload: { prompt: string; image: string; images?: string[]; mask?: string; model?: string; size?: string },
   options?: { signal?: AbortSignal }
 ): Promise<{ images: string[] }> {
   return postApi<{ images: string[] }>(
@@ -251,6 +252,15 @@ export async function listPromptItems(sourceId?: string): Promise<NormalizedProm
   return getApi<NormalizedPromptItem[]>(`${BASE}/prompt-items${qs}`)
 }
 
+export interface PromptTagInfo {
+  tag: string
+  count: number
+}
+
+export async function listPromptTags(): Promise<PromptTagInfo[]> {
+  return getApi<PromptTagInfo[]>(`${BASE}/prompt-tags`)
+}
+
 export async function refreshPromptSources(): Promise<{ successCount: number; failureCount: number }> {
   return postApi<{ successCount: number; failureCount: number }>(
     `${BASE}/prompt-sources/refresh`,
@@ -266,4 +276,33 @@ export async function togglePromptSource(
     `${BASE}/prompt-sources/${encodeURIComponent(sourceId)}/toggle`,
     { enabled }
   )
+}
+
+// ── 画布独立生图配置 ──
+
+export interface CanvasMediaConfigStatus {
+  configured: boolean
+  baseUrl: string
+  model: string
+  imageSize: string
+  imageProtocol: 'openai-images' | 'apimart'
+  imageResolution: string
+  imageLanguage: string
+  keyHint: string
+}
+
+export async function getMediaConfig(): Promise<CanvasMediaConfigStatus> {
+  return getApi<CanvasMediaConfigStatus>(`${BASE}/media-config`)
+}
+
+export async function updateMediaConfig(payload: {
+  imageBaseUrl?: string
+  imageApiKey?: string
+  imageModel?: string
+  imageSize?: string
+  imageProtocol?: 'openai-images' | 'apimart'
+  imageResolution?: string
+  imageLanguage?: string
+}): Promise<CanvasMediaConfigStatus> {
+  return putApi<CanvasMediaConfigStatus>(`${BASE}/media-config`, payload)
 }

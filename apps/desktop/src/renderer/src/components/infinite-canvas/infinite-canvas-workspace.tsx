@@ -92,6 +92,7 @@ import {
 } from './media-dialog'
 import { CanvasAssetLibrary, saveCanvasAsset, type CanvasAsset } from './asset-library'
 import { CanvasAgentPanel } from './canvas-agent-panel'
+import { MediaConfigDialog } from './media-config-dialog'
 
 type LocalNode = ApiCanvasNodeData
 type LocalConnection = { id: string; fromNodeId: string; toNodeId: string }
@@ -192,6 +193,14 @@ function fileAsDataUrl(file: File): Promise<string> {
   })
 }
 
+async function imageContentAsDataUrl(content: string): Promise<string> {
+  if (content.startsWith('data:')) return content
+  const response = await fetch(content)
+  if (!response.ok) throw new Error(`参考图片读取失败（HTTP ${response.status}）`)
+  const blob = await response.blob()
+  return fileAsDataUrl(new File([blob], 'reference-image', { type: blob.type || 'image/png' }))
+}
+
 function readMediaSize(
   url: string,
   type: 'image' | 'video'
@@ -265,6 +274,7 @@ export function InfiniteCanvasWorkspace({
   } | null>(null)
   const [replaceMediaNodeId, setReplaceMediaNodeId] = useState<string | null>(null)
   const [agentPanelOpen, setAgentPanelOpen] = useState(false)
+  const [mediaConfigOpen, setMediaConfigOpen] = useState(false)
   const [assetLibraryState, setAssetLibraryState] = useState<{
     open: boolean
     tab: 'assets' | 'prompts'
@@ -1816,10 +1826,10 @@ export function InfiniteCanvasWorkspace({
         .filter((connection) => connection.toNodeId === nodeId)
         .map((connection) => nodesRef.current.find((node) => node.id === connection.fromNodeId))
         .filter((node): node is LocalNode => Boolean(node))
-        .map(
-          (node) =>
-            `${node.title}: ${typeof node.metadata?.content === 'string' ? node.metadata.content.slice(0, 4000) : ''}`
-        )
+        .map((node) => {
+          if (node.type === 'image') return `${node.title}: [图片参考]`
+          return `${node.title}: ${typeof node.metadata?.content === 'string' ? node.metadata.content.slice(0, 4000) : ''}`
+        })
         .filter((line) => line.endsWith(': ') === false)
         .join('\n')
 
@@ -1830,6 +1840,22 @@ export function InfiniteCanvasWorkspace({
         resolvePromptReferences(storedPrompt).trim() ||
         (upstream.trim() ? '根据已连接的上游内容执行本次生成任务。' : '')
       if (!effectivePrompt) return
+
+      const upstreamImages =
+        generationMode === 'image'
+          ? await Promise.all(
+              connectionsRef.current
+                .filter((connection) => connection.toNodeId === nodeId)
+                .map((connection) => nodesRef.current.find((node) => node.id === connection.fromNodeId))
+                .filter(
+                  (node): node is LocalNode =>
+                    Boolean(node && node.type === 'image' && typeof node.metadata?.content === 'string' && node.metadata.content)
+                )
+                .map(async (node) =>
+                  imageContentAsDataUrl(typeof node.metadata?.content === 'string' ? node.metadata.content : '')
+                )
+            )
+          : []
 
       generationControllersRef.current.get(nodeId)?.abort()
       const controller = new AbortController()
@@ -1865,6 +1891,7 @@ export function InfiniteCanvasWorkspace({
                   nodeId,
                   prompt: effectivePrompt,
                   context: upstream,
+                  references: upstreamImages.filter(Boolean),
                   model: typeof meta.model === 'string' ? meta.model : undefined,
                   size: sizeValue,
                   count:
@@ -2578,7 +2605,14 @@ export function InfiniteCanvasWorkspace({
           onDelete={deleteSelected}
           onClear={() => setClearConfirmOpen(true)}
           onSettingsChange={updateSettings}
+          onOpenMediaConfig={() => setMediaConfigOpen(true)}
         />
+        {mediaConfigOpen && (
+          <MediaConfigDialog
+            theme={theme}
+            onClose={() => setMediaConfigOpen(false)}
+          />
+        )}
         {miniMapOpen && (
           <Minimap
             theme={theme}

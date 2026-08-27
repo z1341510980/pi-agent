@@ -9,6 +9,8 @@
  * - PUT /api/settings/llm — 更新 LLM 请求超时
  * - GET /api/settings/stream-options — 获取 stream_options 屏蔽开关
  * - PUT /api/settings/stream-options — 更新 stream_options 屏蔽开关
+ * - GET /api/settings/terminal — 获取 Agent 终端类型
+ * - PUT /api/settings/terminal — 更新 Agent 终端类型
  *
  * 前端设置中心保存代理配置时调用此 API，
  * 后端将配置持久化到 proxy.json 并应用到全局 HTTP 客户端（undici）。
@@ -37,6 +39,10 @@ const llmConfigSchema = z.object({
 const streamOptionsSchema = z.object({
   /** 是否屏蔽 stream_options.include_usage 字段（兼容不完整的中转网关） */
   stripStreamOptions: z.boolean(),
+})
+
+const terminalConfigSchema = z.object({
+  shell: z.enum(['git-bash', 'pwsh', 'cmd', 'wsl']),
 })
 
 export const settingsRoute: FastifyPluginAsync = async (app) => {
@@ -89,6 +95,28 @@ export const settingsRoute: FastifyPluginAsync = async (app) => {
       'stream_options 屏蔽开关已更新，Session 缓存已失效',
     )
     return success({ stripStreamOptions: input.stripStreamOptions }, request.traceId)
+  })
+
+  // GET /api/settings/terminal — 获取 Agent 终端类型
+  app.get('/api/settings/terminal', async (request) => {
+    return success({ shell: app.providerConfigStore.getTerminalShell() }, request.traceId)
+  })
+
+  // PUT /api/settings/terminal — 更新 Agent 终端类型
+  app.put('/api/settings/terminal', async (request, reply) => {
+    const input = validateBody(terminalConfigSchema, request, reply)
+    if (!input) return
+
+    app.providerConfigStore.setTerminalShell(input.shell)
+    const invalidation = app.piSessionStore.invalidate({
+      scope: 'all',
+      reason: `terminal shell: ${input.shell}`,
+    })
+    app.log.info(
+      { traceId: request.traceId, shell: input.shell, ...invalidation },
+      'Agent 终端已更新，Session 缓存已失效',
+    )
+    return success({ shell: input.shell }, request.traceId)
   })
 
   // GET /api/settings/proxy — 获取当前代理配置（密码脱敏）

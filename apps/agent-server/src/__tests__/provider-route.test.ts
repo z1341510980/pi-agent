@@ -52,6 +52,28 @@ describe('provider route createOnly 冲突保护', () => {
     expect(response.json().data.id).toBe('brand-new-provider')
   })
 
+  it('创建请求省略 id 时由后端分配与名称无关的唯一 ID', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/providers',
+      body: { ...baseConfig, createOnly: true },
+    })
+    expect(response.statusCode).toBe(200)
+
+    const id = response.json().data.id as string
+    expect(id).toMatch(/^provider-/)
+    expect(id).not.toBe('OpenAI')
+    expect(id).not.toBe('openai')
+
+    const deleted = await app.inject({
+      method: 'DELETE',
+      url: `/api/providers/${encodeURIComponent(id)}`,
+    })
+    expect(deleted.statusCode).toBe(200)
+    expect(deleted.json().data.deleted).toBe(true)
+    expect(app.modelRegistry.find(id, 'gpt-5.4-mini')).toBeUndefined()
+  })
+
   it('新增（createOnly=true）遇已存在 id 返回 409，且不覆盖原数据', async () => {
     // 先正常注册 id=openai（不带 createOnly，模拟既有 Provider）
     const seed = await app.inject({
@@ -102,5 +124,31 @@ describe('provider route createOnly 冲突保护', () => {
     for (const p of all) {
       expect(p).not.toHaveProperty('createOnly')
     }
+  })
+
+  it('可读取、更新并持久化 Agent 终端类型', async () => {
+    const initial = await app.inject({ method: 'GET', url: '/api/settings/terminal' })
+    expect(initial.statusCode).toBe(200)
+    expect(initial.json().data.shell).toBe('git-bash')
+
+    const updated = await app.inject({
+      method: 'PUT',
+      url: '/api/settings/terminal',
+      body: { shell: 'pwsh' },
+    })
+    expect(updated.statusCode).toBe(200)
+    expect(updated.json().data.shell).toBe('pwsh')
+
+    const reread = await app.inject({ method: 'GET', url: '/api/settings/terminal' })
+    expect(reread.json().data.shell).toBe('pwsh')
+  })
+
+  it('拒绝不支持的 Agent 终端类型', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings/terminal',
+      body: { shell: 'powershell' },
+    })
+    expect(response.statusCode).toBe(400)
   })
 })

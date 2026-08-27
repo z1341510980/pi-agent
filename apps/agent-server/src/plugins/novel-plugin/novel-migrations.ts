@@ -2594,5 +2594,25 @@ CREATE INDEX IF NOT EXISTS idx_novel_agent_logs_parent ON novel_agent_logs(paren
       ALTER TABLE novel_style_experts ADD COLUMN anti_patterns_json TEXT;
       ALTER TABLE novel_style_experts ADD COLUMN boundaries_json TEXT;
     `
+  },
+  {
+    // 119: 参考小说专家团（一维一专家）。
+    //
+    // 分析完成后自动按维度生成专家团：场景/人物/对话/打斗/情感/冲突/叙事各一张卡，
+    // 同一次生成共享 team_key（= referenceSourceId）便于分组展示与整团队召集。
+    // review_status='draft' + enabled=0 的草稿态等待人工审核，历史行默认 approved。
+    id: '119_add_style_expert_team_fields',
+    sql: `
+      ALTER TABLE novel_style_experts ADD COLUMN dimension TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN team_key TEXT;
+      ALTER TABLE novel_style_experts ADD COLUMN review_status TEXT NOT NULL DEFAULT 'approved';
+      CREATE INDEX IF NOT EXISTS idx_novel_style_experts_team
+        ON novel_style_experts(project_id, team_key);
+    `
+  }
+  ,{
+    // 120: 群聊动作图断点：acting 中断时精确恢复到失败节点之后。
+    id: '120_add_discussion_run_failed_action_beat',
+    sql: `ALTER TABLE novel_discussion_runs ADD COLUMN failed_action_beat_id TEXT;`
   }
 ]

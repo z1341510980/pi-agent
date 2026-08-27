@@ -1,17 +1,26 @@
-import { useCallback, type ReactElement } from 'react'
-import { ChevronDown, Plus, Wand2, BookText } from 'lucide-react'
+import { useCallback, useEffect, useState, type ReactElement } from 'react'
+import { ChevronDown, Plus, Wand2, BookText, Zap, RefreshCw } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
+import { useNovelBeatStore } from '@/stores/novel-beat-store'
 import {
   createChapter,
   createVolume,
+  generateChapterBeatPlan,
+  updateBeatPlan,
   type NovelProject,
   type NovelChapter,
   type NovelVolume,
 } from '@/api/novel-client'
 import { Button } from '@/components/ui/button'
+import {
+  BEAT_FUNCTION_LABELS,
+  BEAT_FUNCTION_ACCENTS,
+  BEAT_STATUS_LABELS,
+} from './sidebar/beat-labels'
+import { BeatEditForm, type BeatEditFormFields } from './sidebar/beat-edit-form'
 
 // ── 主组件 ──
 
@@ -164,6 +173,7 @@ export function OutlineTree({
                 {volChapters.map((ch) => (
                   <ChapterRow
                     key={ch.id}
+                    projectId={project.id}
                     chapter={ch}
                     selected={selectedNodeId === ch.id}
                     isPlayhead={playheadChapter === ch.chapterNumber}
@@ -192,6 +202,7 @@ export function OutlineTree({
           {orphanChapters.map((ch) => (
             <ChapterRow
               key={ch.id}
+              projectId={project.id}
               chapter={ch}
               selected={selectedNodeId === ch.id}
               isPlayhead={playheadChapter === ch.chapterNumber}
@@ -209,6 +220,7 @@ export function OutlineTree({
 // ── 章节行 ──
 
 interface ChapterRowProps {
+  projectId: string
   chapter: NovelChapter
   selected: boolean
   isPlayhead: boolean
@@ -218,6 +230,7 @@ interface ChapterRowProps {
 }
 
 function ChapterRow({
+  projectId,
   chapter,
   selected,
   isPlayhead,
@@ -225,6 +238,60 @@ function ChapterRow({
   onAiArrange,
   onOutlineSelect,
 }: ChapterRowProps): ReactElement {
+  const beat = useNovelBeatStore((s) =>
+    s.beats.find((item) => item.chapterNumber === chapter.chapterNumber)
+  )
+  const upsertBeat = useNovelBeatStore((s) => s.upsertBeat)
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [error, setError] = useState('')
+  const [hint, setHint] = useState(false)
+  const isPublished = chapter.status === 'published'
+
+  // 章号变化（删章重排）时重置行内交互状态
+  useEffect(() => {
+    setEditing(false)
+    setError('')
+    setHint(false)
+  }, [chapter.chapterNumber])
+
+  const handleGenerate = useCallback(async () => {
+    setGenerating(true)
+    setError('')
+    setHint(false)
+    try {
+      const result = await generateChapterBeatPlan(projectId, chapter.chapterNumber)
+      upsertBeat(result.beat)
+      setHint(true)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(`节拍生成失败：${message}`)
+      console.error('[OutlineTree] 单章节拍生成失败:', err)
+    } finally {
+      setGenerating(false)
+    }
+  }, [projectId, chapter.chapterNumber, upsertBeat])
+
+  const handleSave = useCallback(
+    async (fields: BeatEditFormFields) => {
+      if (!beat) return
+      setSaving(true)
+      try {
+        const updated = await updateBeatPlan(beat.id, fields)
+        upsertBeat(updated)
+        setEditing(false)
+        setError('')
+      } catch (err) {
+        console.error('[OutlineTree] 保存节拍失败:', err)
+        setError('保存节拍失败，请重试')
+      } finally {
+        setSaving(false)
+      }
+    },
+    [beat, upsertBeat]
+  )
+
   return (
     <div className="flex flex-col">
       <button
@@ -249,6 +316,80 @@ function ChapterRow({
           selected={selected}
           onClick={onOutlineSelect}
         />
+        {/* 节拍行：本章在整卷戏剧结构中的职责（与侧栏节拍表共享数据源） */}
+        {editing && beat ? (
+          <BeatEditForm
+            initial={{
+              dramaticFunction: beat.dramaticFunction,
+              emotionalDebt: beat.emotionalDebt,
+              payoff: beat.payoff,
+              arcPosition: beat.arcPosition,
+              summary: beat.summary,
+            }}
+            saving={saving}
+            onSave={handleSave}
+            onCancel={() => setEditing(false)}
+          />
+        ) : beat ? (
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => !isPublished && setEditing(true)}
+              title={
+                isPublished
+                  ? `${BEAT_FUNCTION_LABELS[beat.dramaticFunction]}｜已发布章节只读`
+                  : `${BEAT_FUNCTION_LABELS[beat.dramaticFunction]}｜点击编辑本章节拍`
+              }
+              className="flex min-w-0 flex-1 items-center gap-1 px-2 py-0.5 text-left text-nano rounded-md hover:bg-muted/50 transition-colors"
+            >
+              <Zap
+                className={cn(
+                  'size-3 shrink-0',
+                  BEAT_FUNCTION_ACCENTS[beat.dramaticFunction]
+                )}
+              />
+              <span className={cn('shrink-0', BEAT_FUNCTION_ACCENTS[beat.dramaticFunction])}>
+                {BEAT_FUNCTION_LABELS[beat.dramaticFunction]}
+              </span>
+              {beat.status !== 'planned' && (
+                <span className="shrink-0 text-muted-foreground">
+                  ·{BEAT_STATUS_LABELS[beat.status]}
+                </span>
+              )}
+              {beat.summary && (
+                <span className="truncate text-muted-foreground">{beat.summary}</span>
+              )}
+            </button>
+            {!isPublished && (
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={generating}
+                title="重新生成本章节拍（只替换这一行，不动其他章节的节拍）"
+                className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-text transition-colors"
+              >
+                <RefreshCw className={cn('size-3', generating && 'animate-spin')} />
+              </button>
+            )}
+          </div>
+        ) : !isPublished ? (
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={generating}
+            className="flex items-center gap-1 px-2 py-0.5 text-nano text-muted-foreground hover:text-text hover:bg-muted/50 rounded-md transition-colors"
+            title="为本章生成节拍（需要所属卷已填写卷纲）"
+          >
+            <Zap className="size-3" />
+            {generating ? '节拍生成中...' : '生成本章节拍'}
+          </button>
+        ) : null}
+        {hint && (
+          <div className="px-2 text-nano text-muted-foreground">
+            已更新本章节拍；若与后续节拍结构冲突，建议在节拍表分组整卷重排
+          </div>
+        )}
+        {error && <div className="px-2 text-nano text-destructive">{error}</div>}
         <div className="flex items-center gap-1 px-1">
           <Button
             size="sm"

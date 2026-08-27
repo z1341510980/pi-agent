@@ -15,6 +15,7 @@ export interface DiscussionRunSnapshot {
   failedPhase?: DiscussionPhase
   /** failedPhase='acting'/'scene_setup' 时中断的场景 ID（断点续跑从此场景继续） */
   failedSceneId?: number
+  failedActionBeatId?: string
   transcript: DiscussionMessage[]
   scenes: SceneDefinition[]
   arrangedEntities?: ArrangedEntity
@@ -39,6 +40,7 @@ interface DiscussionRunRow {
   status: string
   failed_phase: string | null
   failed_scene_id: number | null
+  failed_action_beat_id: string | null
   transcript: string
   scenes: string
   arranged_entities: string | null
@@ -59,14 +61,15 @@ export class DiscussionRunStore {
   constructor(private readonly db: Database.Database) {
     this.stmtUpsert = db.prepare(`
       INSERT INTO novel_discussion_runs (
-        id, project_id, chapter_number, status, failed_phase, failed_scene_id,
+         id, project_id, chapter_number, status, failed_phase, failed_scene_id, failed_action_beat_id,
         transcript, scenes, arranged_entities, member_model, project_model, style_expert_ids, content, error,
         resumed_from_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         failed_phase = excluded.failed_phase,
-        failed_scene_id = excluded.failed_scene_id,
+         failed_scene_id = excluded.failed_scene_id,
+         failed_action_beat_id = excluded.failed_action_beat_id,
         transcript = excluded.transcript,
         scenes = excluded.scenes,
         arranged_entities = excluded.arranged_entities,
@@ -79,7 +82,7 @@ export class DiscussionRunStore {
         updated_at = excluded.updated_at
     `)
     this.stmtGet = db.prepare(`
-      SELECT id, project_id, chapter_number, status, failed_phase, failed_scene_id,
+       SELECT id, project_id, chapter_number, status, failed_phase, failed_scene_id, failed_action_beat_id,
              transcript, scenes, arranged_entities, member_model, project_model, style_expert_ids, content, error,
              resumed_from_run_id, created_at, updated_at
       FROM novel_discussion_runs
@@ -100,6 +103,7 @@ export class DiscussionRunStore {
       input.status,
       input.failedPhase ?? null,
       input.failedSceneId ?? null,
+      input.failedActionBeatId ?? null,
       JSON.stringify(input.transcript),
       JSON.stringify(input.scenes),
       input.arrangedEntities ? JSON.stringify(input.arrangedEntities) : null,
@@ -132,6 +136,7 @@ export class DiscussionRunStore {
       status: row.status as DiscussionRunSnapshot['status'],
       failedPhase: row.failed_phase as DiscussionPhase | undefined,
       failedSceneId: row.failed_scene_id ?? undefined,
+      failedActionBeatId: row.failed_action_beat_id ?? undefined,
       transcript: JSON.parse(row.transcript) as DiscussionMessage[],
       scenes: JSON.parse(row.scenes) as SceneDefinition[],
       arrangedEntities: row.arranged_entities

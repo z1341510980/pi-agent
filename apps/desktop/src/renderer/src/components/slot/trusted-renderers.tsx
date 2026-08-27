@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { BookOpen, ArrowRight } from 'lucide-react'
 import { NovelWorkspace } from '../novel/novel-workspace'
+import { NovelDiscussionSettingsPanel } from '../novel/discussion-settings-panel'
 import { Button } from '../ui/button'
 import {
   InfiniteCanvasNavigationContribution,
@@ -187,3 +188,8 @@ export function InfiniteCanvasWorkspaceContribution(props: Record<string, unknow
 }
 
 export { InfiniteCanvasNavigationContribution }
+
+/** novel 插件设置面板：群聊模式设置（plugin-settings slot）。 */
+export function NovelDiscussionSettingsContribution(): ReactElement {
+  return <NovelDiscussionSettingsPanel />
+}

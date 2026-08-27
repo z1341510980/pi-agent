@@ -75,7 +75,11 @@ export interface PluginUiContribution {
     | 'tool.detail'
     | 'trace.detail'
     | 'plugin-page.top'
+    | 'plugin-settings'
     | 'home.showcase'
+    | 'home.actions'
+    | 'home.hero-aside'
+    | 'home.footer'
   scope: 'app' | 'page' | 'session'
   priority: number
   rendererKey: string
@@ -229,12 +233,25 @@ export async function disablePlugin(pluginId: string): Promise<PluginToggleResul
 
 /**
  * 更新插件配置
+ *
+ * 服务端返回的是更新投影（非完整 Detail）：config 已写回 plugins.yml，
+ * restartRequired=true 表示路由/服务装饰等启动期资源需重启才生效。
  */
+export interface PluginConfigUpdateResult {
+  pluginId: string
+  status?: string
+  config?: Record<string, unknown>
+  restartRequired: boolean
+}
+
 export async function updatePluginConfig(
   pluginId: string,
   updates: PluginConfigUpdateRequest
-): Promise<PluginDetail> {
-  return patchApi<PluginDetail>(`/api/plugins/${encodeURIComponent(pluginId)}/config`, updates)
+): Promise<PluginConfigUpdateResult> {
+  return patchApi<PluginConfigUpdateResult>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/config`,
+    updates
+  )
 }
 
 /**
@@ -268,6 +285,36 @@ export async function getPluginUiContributions(): Promise<{
   contributions: PluginUiContribution[]
 }> {
   return getApi('/api/plugins/ui-contributions')
+}
+
+/** 插件声明的标量设置字段（registerSettings），宿主通用渲染器据此生成表单 */
+export interface PluginSettingField {
+  key: string
+  label: string
+  type: 'string' | 'number' | 'boolean' | 'select' | 'textarea'
+  default?: string | number | boolean
+  options?: Array<{ value: string; label: string }>
+  description?: string
+  required?: boolean
+  min?: number
+  max?: number
+  step?: number
+  placeholder?: string
+}
+
+export interface PluginSettingsSchema {
+  pluginId: string
+  label: string
+  description?: string
+  fields: PluginSettingField[]
+}
+
+/** 获取所有已启用插件声明的设置 schema。 */
+export async function getPluginSettingsSchemas(): Promise<{
+  schemaVersion: number
+  plugins: PluginSettingsSchema[]
+}> {
+  return getApi('/api/plugins/settings-schema')
 }
 
 /**

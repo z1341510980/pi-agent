@@ -12,6 +12,11 @@ const generateBeatPlanSchema = z.object({
   modelId: modelSelectionSchema.optional()
 })
 
+const generateChapterBeatSchema = z.object({
+  instruction: z.string().trim().max(2000).optional(),
+  modelId: modelSelectionSchema.optional()
+})
+
 const updateBeatPlanSchema = z.object({
   dramaticFunction: z
     .enum([
@@ -36,10 +41,10 @@ const updateBeatPlanSchema = z.object({
 
 function mapBeatPlanError(err: unknown): AppError {
   const message = err instanceof Error ? err.message : String(err)
-  if (/尚未填写卷纲|少于 \d+ 字/.test(message)) {
+  if (/尚未填写卷纲|少于 \d+ 字|未归属任何卷/.test(message)) {
     return new AppError(ErrorCode.BAD_REQUEST, message, 400)
   }
-  if (/均已发布|无需规划节拍/.test(message)) {
+  if (/均已发布|无需规划节拍|已发布/.test(message)) {
     return new AppError(ErrorCode.CONFLICT, message, 409)
   }
   if (/不存在/.test(message)) {
@@ -92,6 +97,52 @@ export function createBeatPlanRoutes(services: NovelServices): RouteDefinition[]
           services.context.logger.error(
             { err, projectId: request.params.projectId, volumeNumber },
             '卷级节拍表生成失败'
+          )
+          throw mapBeatPlanError(err)
+        } finally {
+          reply.raw.off('close', abortOnDisconnect)
+        }
+      }
+    },
+    {
+      method: 'POST',
+      path: '/projects/:projectId/chapters/:chapterNumber/beat-plan/generate',
+      handler: async (request: any, reply: any) => {
+        const input = validateBody(generateChapterBeatSchema, request, reply)
+        if (!input) return reply
+        const chapterNumber = Number.parseInt(request.params.chapterNumber, 10)
+        if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {
+          throw new AppError(
+            ErrorCode.BAD_REQUEST,
+            `无效的章节号: ${request.params.chapterNumber}`,
+            400
+          )
+        }
+
+        const controller = new AbortController()
+        const abortOnDisconnect = (): void => {
+          if (!reply.raw.writableEnded && !controller.signal.aborted) {
+            controller.abort(new Error('客户端已取消节拍生成'))
+          }
+        }
+        reply.raw.once('close', abortOnDisconnect)
+
+        try {
+          const result = await beatPlanner.generateForChapter({
+            projectId: request.params.projectId,
+            chapterNumber,
+            instruction: input.instruction,
+            modelId: input.modelId,
+            signal: controller.signal
+          })
+          return success(result, request.traceId)
+        } catch (err) {
+          if (controller.signal.aborted) {
+            throw new AppError(ErrorCode.AGENT_CANCELLED, '单章节拍生成已取消', 499)
+          }
+          services.context.logger.error(
+            { err, projectId: request.params.projectId, chapterNumber },
+            '单章节拍生成失败'
           )
           throw mapBeatPlanError(err)
         } finally {

@@ -1153,6 +1153,11 @@ export function buildGroups(params: {
     if (spans.length === 0) continue // 无历史 → 进元素池（调用方处理）
     const isProtagonist = character.isProtagonist || character.plotRole === 'protagonist'
     const plotRole = isProtagonist ? 'protagonist' : character.plotRole
+    // stale 出场：所在章内容被重写、待时间线重建确认。恢复显示并单独收集，
+    // 渲染层画成空心点提示「待重建」，而不是把数据藏到用户以为丢失。
+    const staleChapters = history
+      .filter((h) => h.status === 'stale' && h.chapterNumber != null)
+      .map((h) => h.chapterNumber as number)
     characterGroup.entities.push({
       id: character.id,
       kind: 'character',
@@ -1160,8 +1165,11 @@ export function buildGroups(params: {
       entityId: character.id,
       entityType: 'character',
       isProtagonist,
-      subLabel: CHARACTER_PLOT_ROLE_LABELS[plotRole] ?? '配角',
+      subLabel:
+        (CHARACTER_PLOT_ROLE_LABELS[plotRole] ?? '配角') +
+        (staleChapters.length > 0 ? ` · ${staleChapters.length} 章待重建` : ''),
       characterSpans: spans,
+      staleChapters: staleChapters.length > 0 ? staleChapters : undefined,
       note: noteMap.get(character.id),
     })
   }

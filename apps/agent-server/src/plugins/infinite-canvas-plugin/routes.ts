@@ -3,6 +3,7 @@ import type { RouteDefinition } from '../../core/plugin/plugin-types.js'
 import type { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import type { PromptSourceService } from './prompt-source-service.js'
+import type { CanvasMediaSettingsService } from './media-settings.js'
 
 export type CanvasGenerateHandler = (input: {
   projectId: string
@@ -14,9 +15,11 @@ export type CanvasGenerateHandler = (input: {
 
 export type CanvasImageGenerateHandler = (input: {
   prompt: string
+  references?: string[]
   model?: string
   size?: string
   count?: number
+  traceId?: string
   signal?: AbortSignal
 }) => Promise<{ images: string[] }>
 
@@ -35,9 +38,11 @@ export type CanvasMediaGenerateHandler = (input: {
 export type CanvasImageEditHandler = (input: {
   prompt: string
   image: string
+  images?: string[]
   mask?: string
   model?: string
   size?: string
+  traceId?: string
   signal?: AbortSignal
 }) => Promise<{ images: string[] }>
 
@@ -83,9 +88,69 @@ export function createInfiniteCanvasRoutes(
   generateMedia?: CanvasMediaGenerateHandler,
   editImage?: CanvasImageEditHandler,
   reversePrompt?: CanvasReversePromptHandler,
-  promptSources?: PromptSourceService
+  promptSources?: PromptSourceService,
+  mediaSettings?: CanvasMediaSettingsService
 ): RouteDefinition[] {
   return [
+    {
+      // 图片代理：绕过 CSP 加载外部封面图；只允许 http(s)，30s 超时。
+      method: 'GET',
+      path: '/proxy-image',
+      handler: async (request, reply) => {
+        const query = request.query as { url?: string }
+        const url = query.url
+        if (!url || !/^https?:\/\//.test(url)) {
+          return reply.code(400).send({ ok: false, error: '无效图片 URL' })
+        }
+        try {
+          const response = await fetch(url, {
+            signal: AbortSignal.timeout(30_000),
+            headers: { Accept: 'image/*' }
+          })
+          if (!response.ok) return reply.code(response.status).send()
+          const contentType = response.headers.get('content-type') ?? 'image/png'
+          if (!contentType.startsWith('image/')) {
+            return reply.code(400).send({ ok: false, error: '非图片资源' })
+          }
+          const buffer = await response.arrayBuffer()
+          return reply
+            .header('Content-Type', contentType)
+            .header('Cache-Control', 'public, max-age=86400')
+            .send(Buffer.from(buffer))
+        } catch {
+          return reply.code(502).send({ ok: false, error: '图片代理请求失败' })
+        }
+      }
+    },
+    {
+      method: 'GET',
+      path: '/media-config',
+      handler: async (request, reply) => {
+        if (!mediaSettings) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
+        return success(mediaSettings.getStatus(), request.traceId)
+      }
+    },
+    {
+      method: 'PUT',
+      path: '/media-config',
+      bodyLimit: 4096,
+      handler: async (request, reply) => {
+        if (!mediaSettings) return reply.code(503).send({ ok: false, error: '媒体配置服务未初始化' })
+        const input = body(request)
+        mediaSettings.update({
+          imageBaseUrl: typeof input.imageBaseUrl === 'string' ? input.imageBaseUrl : undefined,
+          imageApiKey: typeof input.imageApiKey === 'string' ? input.imageApiKey : undefined,
+          imageModel: typeof input.imageModel === 'string' ? input.imageModel : undefined,
+          imageSize: typeof input.imageSize === 'string' ? input.imageSize : undefined,
+          imageProtocol: input.imageProtocol === 'apimart' || input.imageProtocol === 'openai-images'
+            ? input.imageProtocol
+            : undefined,
+          imageResolution: typeof input.imageResolution === 'string' ? input.imageResolution : undefined,
+          imageLanguage: typeof input.imageLanguage === 'string' ? input.imageLanguage : undefined
+        })
+        return success(mediaSettings.getStatus(), request.traceId)
+      }
+    },
     {
       method: 'GET',
       path: '/prompt-sources',
@@ -104,7 +169,15 @@ export function createInfiniteCanvasRoutes(
       }
     },
     {
-      method: 'POST',
+      method: 'GET',
+      path: '/prompt-tags',
+      handler: async (request, reply) => {
+        if (!promptSources) return reply.code(503).send({ ok: false, error: '提示词源服务未初始化' })
+        return success(promptSources.listTags(), request.traceId)
+      }
+    },
+    {
+      method: 'GET',
       path: '/prompt-sources/refresh',
       bodyLimit: 1024,
       handler: async (request, reply) => {
@@ -292,11 +365,18 @@ export function createInfiniteCanvasRoutes(
         if (!store.getProject(request.params.projectId))
           return reply.code(404).send({ ok: false, error: '画布项目不存在' })
         try {
+          const explicitReferences = Array.isArray(input.references)
+            ? input.references.filter((item): item is string => typeof item === 'string' && item.startsWith('data:'))
+            : []
           const result = await generateImage({
             prompt,
+            references: explicitReferences.length
+              ? explicitReferences
+              : extractDataUrls(typeof input.context === 'string' ? input.context : ''),
             model: input.model === undefined ? undefined : String(input.model),
             size: input.size === undefined ? undefined : String(input.size),
-            count: input.count === undefined ? undefined : Number(input.count)
+            count: input.count === undefined ? undefined : Number(input.count),
+            traceId: request.traceId
           })
           return success(result, request.traceId)
         } catch (error) {
@@ -357,9 +437,13 @@ export function createInfiniteCanvasRoutes(
           const result = await editImage({
             prompt,
             image,
+            images: Array.isArray(input.images)
+              ? input.images.filter((item): item is string => typeof item === 'string' && item.startsWith('data:'))
+              : undefined,
             mask: typeof input.mask === 'string' && input.mask ? input.mask : undefined,
             model: input.model === undefined ? undefined : String(input.model),
-            size: input.size === undefined ? undefined : String(input.size)
+            size: input.size === undefined ? undefined : String(input.size),
+            traceId: request.traceId
           })
           return success(result, request.traceId)
         } catch (error) {
@@ -487,4 +571,8 @@ export function createInfiniteCanvasRoutes(
       }
     }
   ]
+}
+
+export function extractDataUrls(value: string): string[] {
+  return value.match(/data:image\/[a-z0-9.+-]+(?:;[^,\s]*)?,[^\s"']+/gi) ?? []
 }

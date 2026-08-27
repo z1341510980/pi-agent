@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-quer
 import { ReactFlowProvider } from '@xyflow/react'
 import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter, type Active } from '@dnd-kit/core'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Download, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity, ClipboardCheck, ScrollText } from 'lucide-react'
+import { ArrowLeft, Download, LayoutGrid, Grid3x3, Sparkle, MessageSquare, Info, BookOpen, BookSearch, ShieldCheck, PenLine, Rows2, PanelLeft, PanelRight, Minimize2, Settings as SettingsIcon, Gauge, Activity, ClipboardCheck, ScrollText, MoreHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ResizableSplitter } from '@/components/ui/resizable-splitter'
 import { Segmented, type SegmentedOption } from '@/components/ui/segmented'
@@ -15,6 +15,14 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 import { useNovelDataStore } from '@/stores/novel-data-store'
 import {
   listWritingStyleExperts,
@@ -464,7 +472,9 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
       return
     }
     let cancelled = false
-    void listProjectCharacterHistory(currentProjectId)
+    // includeStale：章节重写会把后续出场标记为 stale（待时间线重建确认）。
+    // 矩阵必须拿到这些数据才能恢复显示并打上「待重建」标注，否则表现为全员出场被清空。
+    void listProjectCharacterHistory(currentProjectId, { includeStale: true })
       .then((history) => {
         if (!cancelled) setCharacterHistory(history)
       })
@@ -1141,7 +1151,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
             </div>
           </div>
 
-          {/* 中：主工作区布局切换（四个互斥选项，始终全部可达）+ 全局模型选择 */}
+          {/* 中：左＝视图切换（你在哪），右＝项目状态（模型 / 重建） */}
           <div className="flex items-center justify-center gap-2">
             {currentProject && (
               <Segmented
@@ -1153,27 +1163,29 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
               />
             )}
             {currentProject && (
-              <ModelPicker
-                compact
-                label="创作模型"
-                value={headerModelValue}
-                onChange={(model) => {
-                  void handleHeaderModelChange(
-                    model ? { provider: model.provider, modelId: model.modelId } : null
-                  )
-                }}
-              />
-            )}
-            {currentProject && (
-              <TimelineRebuildControl
-                projectId={currentProject.id}
-                selectedModel={selectedAgentModel}
-              />
+              <>
+                <div className="mx-0.5 h-5 w-px bg-border" aria-hidden="true" />
+                <ModelPicker
+                  compact
+                  label="创作模型"
+                  value={headerModelValue}
+                  onChange={(model) => {
+                    void handleHeaderModelChange(
+                      model ? { provider: model.provider, modelId: model.modelId } : null
+                    )
+                  }}
+                />
+                <TimelineRebuildControl
+                  projectId={currentProject.id}
+                  selectedModel={selectedAgentModel}
+                />
+              </>
             )}
           </div>
 
           {/* 右：操作按钮组 */}
-          <div className="flex items-center justify-end gap-0.5">
+          {/* 右：右栏开关 + 诊断 + 项目菜单（P3 / 参考 / 提示词 / 导出） */}
+          <div className="flex items-center justify-end gap-1">
             <Button
               size="icon-sm"
               variant="ghost"
@@ -1196,48 +1208,41 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
             >
               <Activity className="size-3.5" />
             </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => setP3PanelOpen(true)}
-              disabled={!currentProject}
-              title="P3 灰度看板"
-              className="text-subtle hover:text-text"
-            >
-              <Gauge className="size-3.5" />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => setReferenceAnalysisOpen(true)}
-              disabled={!currentProject}
-              title="参考小说与文风工作台"
-              className="text-subtle hover:text-text"
-            >
-              <BookSearch className="size-3.5" />
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setPromptDialogOpen(true)}
-              disabled={!currentProject}
-              title="查看与编辑主流程提示词（文风相关段可自由修改，保存为本项目覆盖）"
-              className="text-subtle hover:text-text gap-1.5"
-            >
-              <ScrollText className="size-3.5" />
-              <span className="hidden sm:inline text-xs">提示词</span>
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handleExport}
-              disabled={!currentProject}
-              title="导出项目数据"
-              className="text-subtle hover:text-text gap-1.5"
-            >
-              <Download className="size-3.5" />
-              <span className="hidden sm:inline text-xs">导出</span>
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!currentProject}
+                  title="项目操作"
+                  aria-label="项目操作"
+                  className="text-subtle hover:text-text gap-1.5"
+                >
+                  <MoreHorizontal className="size-3.5" />
+                  <span className="hidden sm:inline text-xs">项目</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[180px]">
+                <DropdownMenuLabel className="text-micro text-hint">项目</DropdownMenuLabel>
+                <DropdownMenuItem onSelect={() => setP3PanelOpen(true)}>
+                  <Gauge className="size-3.5" />
+                  P3 灰度看板
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setReferenceAnalysisOpen(true)}>
+                  <BookSearch className="size-3.5" />
+                  参考与文风
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setPromptDialogOpen(true)}>
+                  <ScrollText className="size-3.5" />
+                  提示词
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => handleExport()}>
+                  <Download className="size-3.5" />
+                  导出
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
@@ -1299,11 +1304,7 @@ export function NovelWorkspace({ onClose, active = true }: NovelWorkspaceProps):
                       </ErrorBoundary>
                       {currentProject && (
                         <div className="absolute top-2 left-2 z-30">
-                          <NovelToolbar
-                            onRelayout={handleRelayout}
-                            onOpenReview={handleOpenReviewPanel}
-                            reviewBadge={reviewCounts.candidateCount}
-                          />
+                          <NovelToolbar onRelayout={handleRelayout} />
                         </div>
                       )}
                     </div>

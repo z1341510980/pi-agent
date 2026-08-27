@@ -43,6 +43,8 @@ import {
   rollbackWritingStyleExpert,
   getWritingStylePromptPreview,
   saveWritingStyleProfile,
+  STYLE_TEAM_DIMENSION_LABELS,
+  type StyleTeamDimension,
   type NovelWritingStyleProfileInput,
   type WritingStylePromptPreview
 } from '@/api/novel-client'
@@ -118,6 +120,38 @@ const RHYTHM_LABEL: Record<NovelWritingStyleProfileInput['sentenceRhythm'], stri
   short: '短句为主',
   balanced: '长短句交替',
   long: '中长句为主'
+}
+
+/** 维度徽标文案：未知维度值兜底显示原值 */
+function dimensionBadgeLabel(dimension: string): string {
+  return STYLE_TEAM_DIMENSION_LABELS[dimension as StyleTeamDimension] ?? dimension
+}
+
+interface StyleExpertGroup {
+  key: string
+  teamKey?: string
+  sourceTitle: string
+  experts: NovelStyleExpert[]
+}
+
+/** 专家按 teamKey（专家团）分组；无 teamKey 的历史/手动专家按 sourceTitle 兜底分组 */
+function groupStyleExperts(experts: NovelStyleExpert[]): StyleExpertGroup[] {
+  const groups = new Map<string, StyleExpertGroup>()
+  for (const expert of experts) {
+    const key = expert.teamKey ?? expert.sourceTitle
+    const existing = groups.get(key)
+    if (existing) {
+      existing.experts.push(expert)
+    } else {
+      groups.set(key, {
+        key,
+        teamKey: expert.teamKey,
+        sourceTitle: expert.sourceTitle,
+        experts: [expert]
+      })
+    }
+  }
+  return Array.from(groups.values())
 }
 
 function cloneProfile(profile: NovelWritingStyleProfileInput): NovelWritingStyleProfileInput {
@@ -321,6 +355,8 @@ export function WritingStyleProfileEditor({
   const [expertDraft, setExpertDraft] = useState<NovelStyleExpert | null>(null)
   const [expertSaving, setExpertSaving] = useState(false)
   const [expertVersions, setExpertVersions] = useState<any[]>([])
+  // 草稿专家"通过审核"（enabled=true）快捷操作进行中的专家 ID
+  const [approvingExpertId, setApprovingExpertId] = useState<string | null>(null)
   // 蒸馏入口：直接在专家面板发起"选参考源 → 勾章节 → 深度分析 → 入库"
   const [distillLauncherOpen, setDistillLauncherOpen] = useState(false)
 
@@ -527,6 +563,28 @@ export function WritingStyleProfileEditor({
     }
   }, [projectId, onExpertsChanged])
 
+  // 草稿专家快捷审核：enabled=true 时后端会自动把 reviewStatus 置为 approved
+  const approveDraftExpert = useCallback(async (expert: NovelStyleExpert) => {
+    setApprovingExpertId(expert.id)
+    try {
+      await updateWritingStyleExpert(projectId, expert.id, { enabled: true })
+      const items = await loadExpertList()
+      setExperts(items)
+      // 若该专家正被编辑，同步编辑中的副本，避免旧的 enabled 覆盖审核结果
+      setExpertDraft((current) =>
+        current?.id === expert.id ? (items.find((item) => item.id === expert.id) ?? current) : current
+      )
+      onExpertsChanged?.()
+      toastSuccess('专家已通过审核', `${expert.name} 已可召集`)
+    } catch (error) {
+      toastError('专家启用失败', error instanceof Error ? error.message : '未知错误')
+    } finally {
+      setApprovingExpertId(null)
+    }
+  }, [loadExpertList, onExpertsChanged, projectId])
+
+  const expertGroups = useMemo(() => groupStyleExperts(experts), [experts])
+
   const expertPanel = (
     <div className="mx-auto max-w-4xl space-y-4">
       <div className="flex items-start justify-between gap-3">
@@ -560,31 +618,60 @@ export function WritingStyleProfileEditor({
           </Button>
         </div>
       </div>
-      <div className="space-y-2">
-        {experts.map((expert) => (
-          <div key={expert.id} className="flex items-start gap-3 rounded-lg border border-border p-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm text-primary">
-              {expert.name.slice(0, 1)}
+      <div className="space-y-4">
+        {expertGroups.map((group) => (
+          <div key={group.key} className="space-y-2">
+            <div className="text-xs font-medium text-text">
+              {group.teamKey
+                ? `《${group.sourceTitle}》· 专家团（${group.experts.length}）`
+                : `《${group.sourceTitle}》`}
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-text">{expert.name}</span>
-                <span className="text-[10px] text-muted-foreground">v{expert.version}</span>
-                <span className={cn('text-[10px]', expert.enabled ? 'text-emerald-600' : 'text-muted-foreground')}>
-                  {expert.enabled ? '可召集' : '已停用'}
-                </span>
+            {group.experts.map((expert) => (
+              <div key={expert.id} className="flex items-start gap-3 rounded-lg border border-border p-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm text-primary">
+                  {expert.name.slice(0, 1)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-text">{expert.name}</span>
+                    {expert.dimension ? (
+                      <span className="rounded bg-primary/10 px-1 py-0.5 text-[10px] text-primary">
+                        {dimensionBadgeLabel(expert.dimension)}
+                      </span>
+                    ) : null}
+                    <span className="text-[10px] text-muted-foreground">v{expert.version}</span>
+                    <span className={cn('text-[10px]', expert.enabled ? 'text-emerald-600' : 'text-muted-foreground')}>
+                      {expert.enabled ? '可召集' : '已停用'}
+                    </span>
+                    {expert.reviewStatus === 'draft' ? (
+                      <span className="rounded bg-amber-500/15 px-1 py-0.5 text-[10px] text-amber-700">待审核</span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">来源：{expert.sourceTitle}</p>
+                  <p className="mt-1 text-xs text-text/80">{expert.description}</p>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  {expert.reviewStatus === 'draft' ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={approvingExpertId === expert.id}
+                      title="启用该专家，启用后自动转为已审核"
+                      onClick={() => void approveDraftExpert(expert)}
+                    >
+                      {approvingExpertId === expert.id ? '启用中...' : '通过审核'}
+                    </Button>
+                  ) : null}
+                  <Button type="button" size="sm" variant="outline" onClick={() => void loadExpertVersions(expert)}>
+                    编辑
+                  </Button>
+                  <Button type="button" size="icon-sm" variant="ghost" onClick={() => void removeExpert(expert)} title="删除专家">
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">来源：{expert.sourceTitle}</p>
-              <p className="mt-1 text-xs text-text/80">{expert.description}</p>
-            </div>
-            <div className="flex shrink-0 gap-1">
-              <Button type="button" size="sm" variant="outline" onClick={() => void loadExpertVersions(expert)}>
-                编辑
-              </Button>
-              <Button type="button" size="icon-sm" variant="ghost" onClick={() => void removeExpert(expert)} title="删除专家">
-                <Trash2 className="size-3.5" />
-              </Button>
-            </div>
+            ))}
           </div>
         ))}
         {experts.length === 0 && (
@@ -658,8 +745,34 @@ export function WritingStyleProfileEditor({
       if (section === 'preview' && version && !preview && !previewLoading) {
         void loadPreview(previewTarget)
       }
+      // 从专家面板切到样本页时重新拉取档案：蒸馏启动器的「加入文风基线」
+      // 会在服务端追加正向样本，本地 form 需要对齐，否则编辑器展示旧数据
+      if (section === 'examples') {
+        getWritingStyleProfile(projectId)
+          .then((profile) => {
+            if (!profile) return
+            const {
+              id: _id,
+              projectId: _pid,
+              version: _v,
+              createdAt: _c,
+              updatedAt: _u,
+              ...input
+            } = profile
+            setForm((currentForm) => {
+              // 只同步样本区（用户在样本页的未保存编辑以当前输入为准的其余字段不覆盖）
+              return { ...currentForm, positiveExamples: input.positiveExamples, negativeExamples: input.negativeExamples ?? [] }
+            })
+            setSavedForm((currentSaved) => ({
+              ...currentSaved,
+              positiveExamples: input.positiveExamples,
+              negativeExamples: input.negativeExamples ?? []
+            }))
+          })
+          .catch(() => undefined)
+      }
     },
-    [loadPreview, preview, previewLoading, previewTarget, version]
+    [loadPreview, preview, previewLoading, previewTarget, version, projectId]
   )
 
   if (loading) {
@@ -986,15 +1099,18 @@ export function WritingStyleProfileEditor({
                 {expertPanel}
               </TabsContent>
 
-             <TabsContent value="examples" className="min-h-0 overflow-y-auto px-5 py-5">
-              <div className="mx-auto max-w-4xl space-y-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-medium text-text">正向文风样本</h3>
-                    <p className="mt-1 text-xs text-muted-foreground tabular-nums">
-                      {form.positiveExamples.length} / 5
-                    </p>
-                  </div>
+              <TabsContent value="examples" className="min-h-0 overflow-y-auto px-5 py-5">
+               <div className="mx-auto max-w-4xl space-y-4">
+                 <div className="flex items-start justify-between gap-3">
+                   <div>
+                     <h3 className="text-sm font-medium text-text">正向文风样本</h3>
+                     <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+                       {form.positiveExamples.length} / 5
+                     </p>
+                     <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-muted-foreground">
+                       标注「锚定」的第一条样本会注入每一次生成的每一章；其余样本按本章场景类型（对话/动作/静场）分桶引用。用「设为锚定」选择最希望模型每章都记得的那条。
+                     </p>
+                   </div>
                   <Button
                     type="button"
                     variant="outline"
@@ -1023,26 +1139,54 @@ export function WritingStyleProfileEditor({
                       className="border-t border-border pt-4 first:border-t-0 first:pt-0"
                     >
                       <div className="mb-2 flex items-center justify-between gap-3">
-                        <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                        <span className="flex items-center gap-2 font-mono text-xs tabular-nums text-muted-foreground">
                           样本 {index + 1}
+                          {index === 0 ? (
+                            <span
+                              className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-sans text-primary"
+                              title="锚定样本随静态身份注入每一次生成的每一章；其余样本按本章场景类型分桶引用"
+                            >
+                              锚定 · 每章必注入
+                            </span>
+                          ) : null}
                         </span>
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          title={`删除样本 ${index + 1}`}
-                          aria-label={`删除样本 ${index + 1}`}
-                          onClick={() =>
-                            setForm((current) => ({
-                              ...current,
-                              positiveExamples: current.positiveExamples.filter(
-                                (_, itemIndex) => itemIndex !== index
-                              )
-                            }))
-                          }
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {index !== 0 ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              title="设为锚定样本：移到第一位，随静态身份注入每章生成"
+                              onClick={() =>
+                                setForm((current) => {
+                                  const next = [...current.positiveExamples]
+                                  const [picked] = next.splice(index, 1)
+                                  next.unshift(picked!)
+                                  return { ...current, positiveExamples: next }
+                                })
+                              }
+                            >
+                              设为锚定
+                            </Button>
+                          ) : null}
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            title={`删除样本 ${index + 1}`}
+                            aria-label={`删除样本 ${index + 1}`}
+                            onClick={() =>
+                              setForm((current) => ({
+                                ...current,
+                                positiveExamples: current.positiveExamples.filter(
+                                  (_, itemIndex) => itemIndex !== index
+                                )
+                              }))
+                            }
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
                       </div>
                       <MarkdownField
                         label={`样本 ${index + 1} 内容`}

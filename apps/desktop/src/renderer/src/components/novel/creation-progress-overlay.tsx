@@ -34,6 +34,7 @@ interface PhaseMeta {
 
 const PHASE_META: Partial<Record<CreationPhase, PhaseMeta>> = {
   directing: { label: '导演分析', icon: Clapperboard, progress: 10, color: 'text-violet-500' },
+  acting: { label: '角色演出中', icon: Clapperboard, progress: 35, color: 'text-amber-500' },
   checkpoint_narrative: { label: '等待确认叙事任务', icon: Clapperboard, progress: 20, color: 'text-violet-500' },
   writing: { label: '写作创作中', icon: PenLine, progress: 40, color: 'text-emerald-500' },
   reviewing: { label: '审稿检查中', icon: CheckCircle, progress: 60, color: 'text-blue-500' },

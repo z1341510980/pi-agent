@@ -100,7 +100,11 @@ export const BUILTIN_SLOTS = {
   RIGHT_PANEL_TAB: 'right-panel.tab',
   WORKSPACE_MAIN: 'workspace.main',
   PLUGIN_PAGE_TOP: 'plugin-page.top',
-  HOME_SHOWCASE: 'home.showcase'
+  PLUGIN_SETTINGS: 'plugin-settings',
+  HOME_SHOWCASE: 'home.showcase',
+  HOME_ACTIONS: 'home.actions',
+  HOME_HERO_ASIDE: 'home.hero-aside',
+  HOME_FOOTER: 'home.footer'
 } as const
 
 export type BuiltinSlot = (typeof BUILTIN_SLOTS)[keyof typeof BUILTIN_SLOTS]

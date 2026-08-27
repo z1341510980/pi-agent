@@ -13,11 +13,13 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { success } from '../lib/api-response.js'
 import { validateBody } from '../lib/validate.js'
 import { AppError, ErrorCode } from '@repo/shared/errors'
 import { buildProviderModelsUrl, normalizeProviderBaseUrl } from '../core/config/provider-base-url.js'
+import { MEDIA_PROTOCOLS } from '../core/config/provider-config-store.js'
 
 // Pi-ai SDK 原生思考强度档位（与 pi-ai 的 ThinkingLevel 对齐）
 const REASONING_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const
@@ -61,13 +63,19 @@ const providerModelSchema = z.object({
 })
 
 const providerConfigSchema = z.object({
-  id: z.string().min(1),
+  /** 创建时可省略，由后端分配与名称无关的稳定唯一 ID。 */
+  id: z.string().min(1).optional(),
   name: z.string().min(1),
   baseUrl: z.string().url(),
   apiKey: z.string().min(1),
   api: z.string().min(1),
   authHeader: z.boolean().optional(),
   models: z.array(providerModelSchema).min(1),
+  /** 图片生成协议；省略时保持 OpenAI Images 兼容协议。 */
+  mediaProtocol: z.enum(MEDIA_PROTOCOLS).optional(),
+  mediaModel: z.string().trim().optional(),
+  mediaResolution: z.string().trim().optional(),
+  mediaLanguage: z.string().trim().min(2).max(16).optional(),
   /**
    * 新增模式标记：为 true 时若 id 已存在则拒绝写入（返回 409），
    * 防止"新增 Provider"因 id 与已有 Provider（如默认 Provider）冲突而意外覆盖其数据。
@@ -93,25 +101,27 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     const config = validateBody(providerConfigSchema, request, reply)
     if (!config) return
 
+    const id = config.id ?? `provider-${randomUUID()}`
+
     // 新增模式（createOnly）下，若 id 已存在则拒绝写入。
     // 这是后端兜底防线：即使前端 id 派生/去重逻辑有遗漏，
     // 也不会让"新增 Provider"意外覆盖已有 Provider（如默认 Provider）的数据。
-    if (config.createOnly && store.get(config.id)) {
+    if (config.createOnly && store.get(id)) {
       throw new AppError(
         ErrorCode.CONFLICT,
-        `Provider "${config.id}" 已存在，新增被拒绝。请更换名称，或直接编辑该 Provider`,
+        `Provider "${id}" 已存在，新增被拒绝。请更换名称，或直接编辑该 Provider`,
         409
       )
     }
 
     // createOnly 仅用于请求语义，不持久化到 store
-    const { createOnly: _createOnly, ...persistConfig } = config
+    const { createOnly: _createOnly, ...persistConfig } = { ...config, id }
 
     // 1. 存入 ProviderConfigStore（供 fallback resolver 读取 API Key）
     store.upsert(persistConfig)
 
     // 2. 注册到 ModelRegistry（供 Agent Session 使用）
-    modelRegistry.registerProvider(config.id, {
+    modelRegistry.registerProvider(id, {
       name: config.name,
       baseUrl: normalizeProviderBaseUrl(config.api, config.baseUrl),
       apiKey: config.apiKey,
@@ -122,22 +132,22 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
 
     // 3. 注入 API Key 到 ModelRuntime（runtime override，异步）
     //    使 getAvailable() 能返回此 Provider 的模型，且 LLM 调用能直接使用此 Key
-    await modelRuntime.setRuntimeApiKey(config.id, config.apiKey)
+    await modelRuntime.setRuntimeApiKey(id, config.apiKey)
 
     // 4. 使 Session 缓存失效：空闲会话立即重建，正在跑的 run 标记为 stale，
     //    等本轮结束后按新配置重建（不打断用户对话）。
     const invalidation = sessionStore.invalidate({
       scope: 'all',
-      reason: `provider upsert: ${config.id}`,
+      reason: `provider upsert: ${id}`,
     })
 
     app.log.info(
       { ...invalidation },
-      `Provider "${config.id}" 已注册（${config.models.length} 个模型，API Key 已注入，Session 缓存已失效）`
+      `Provider "${id}" 已注册（${config.models.length} 个模型，API Key 已注入，Session 缓存已失效）`
     )
 
     // 返回时隐藏 apiKey
-    const { apiKey: _unused, ...safeConfig } = config
+    const { apiKey: _unused, ...safeConfig } = { ...config, id }
     return success(safeConfig, request.traceId)
   })
 
@@ -152,6 +162,10 @@ export const providerRoute: FastifyPluginAsync = async (app) => {
     if (!existed) {
       throw new AppError(ErrorCode.NOT_FOUND, `Provider "${id}" 不存在`, 404)
     }
+
+    // ProviderConfigStore 只负责持久化；同时从运行时注册表移除，
+    // 否则删除后旧模型仍可能继续出现在模型列表中。
+    modelRegistry.unregisterProvider(id)
 
     // 移除 runtime API Key 注入
     await modelRuntime.removeRuntimeApiKey(id)

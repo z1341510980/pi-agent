@@ -1312,7 +1312,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           chapterNumber: chapterNumberValue,
           status: result.status,
           failedPhase: result.failedPhase,
-          failedSceneId: result.failedSceneId,
+           failedSceneId: result.failedSceneId,
+           failedActionBeatId: result.failedActionBeatId,
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities,
@@ -1488,7 +1489,8 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
             transcript: snapshot.transcript,
             scenes: snapshot.scenes,
             content: snapshot.content,
-            failedSceneId: snapshot.failedSceneId,
+             failedSceneId: snapshot.failedSceneId,
+             failedActionBeatId: snapshot.failedActionBeatId,
           },
         )
 
@@ -1499,6 +1501,7 @@ export function createCreationFlowRoutes(services: NovelServices): RouteDefiniti
           status: result.status,
           failedPhase: result.failedPhase,
           failedSceneId: result.failedSceneId,
+          failedActionBeatId: result.failedActionBeatId,
           transcript: result.transcript,
           scenes: result.scenes,
           arrangedEntities: snapshot.arrangedEntities,

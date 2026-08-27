@@ -557,6 +557,29 @@ export function listBeatPlans(
   )
 }
 
+export interface GenerateChapterBeatInput {
+  instruction?: string
+}
+
+export interface ChapterBeatGenerationResult {
+  generationId: string
+  chapterNumber: number
+  beat: NovelBeatPlan
+  promptVersion: string
+}
+
+/** 为单个章节生成/重生成节拍（外科手术式：只替换该章一行，不动其他章节的节拍） */
+export function generateChapterBeatPlan(
+  projectId: string,
+  chapterNumber: number,
+  input: GenerateChapterBeatInput = {},
+): Promise<ChapterBeatGenerationResult> {
+  return postApi<ChapterBeatGenerationResult>(
+    `${BASE}/projects/${projectId}/chapters/${chapterNumber}/beat-plan/generate`,
+    input,
+  )
+}
+
 /** 查询单章节拍 */
 export function getChapterBeatPlan(
   projectId: string,
@@ -1664,6 +1687,33 @@ export interface NovelStyleExpertApi {
   tensions?: unknown[]
   antiPatterns?: string[]
   boundaries?: string[]
+  /** 专家团字段（迁移 119）：维度、团队键与审核状态 */
+  dimension?: string
+  teamKey?: string
+  reviewStatus?: 'draft' | 'approved'
+}
+
+/** 专家团维度（迁移 119）：一次参考小说分析可生成 7 个一维一专家的草稿团队。 */
+export const STYLE_TEAM_DIMENSIONS = [
+  'scene_craft',
+  'character_craft',
+  'dialogue_craft',
+  'action_craft',
+  'emotion_craft',
+  'conflict_craft',
+  'narrative_craft'
+] as const
+
+export type StyleTeamDimension = (typeof STYLE_TEAM_DIMENSIONS)[number]
+
+export const STYLE_TEAM_DIMENSION_LABELS: Record<StyleTeamDimension, string> = {
+  scene_craft: '场景',
+  character_craft: '人物',
+  dialogue_craft: '对话',
+  action_craft: '打斗',
+  emotion_craft: '情感',
+  conflict_craft: '冲突',
+  narrative_craft: '叙事'
 }
 
 export function listWritingStyleExperts(projectId: string): Promise<NovelStyleExpertApi[]> {
@@ -1674,7 +1724,7 @@ export function createWritingStyleExpert(projectId: string, input: Omit<NovelSty
   return postApi<NovelStyleExpertApi>(`${BASE}/projects/${projectId}/writing-style-experts`, input)
 }
 
-export function updateWritingStyleExpert(projectId: string, expertId: string, input: Partial<Pick<NovelStyleExpertApi, 'name' | 'sourceTitle' | 'sourceAuthor' | 'description' | 'customPrompt' | 'enabled' | 'sortOrder'>>): Promise<NovelStyleExpertApi> {
+export function updateWritingStyleExpert(projectId: string, expertId: string, input: Partial<Pick<NovelStyleExpertApi, 'name' | 'sourceTitle' | 'sourceAuthor' | 'description' | 'customPrompt' | 'enabled' | 'sortOrder' | 'reviewStatus'>>): Promise<NovelStyleExpertApi> {
   return patchApi<NovelStyleExpertApi>(`${BASE}/projects/${projectId}/writing-style-experts/${expertId}`, input)
 }
 
@@ -2414,8 +2464,10 @@ export function listCharacterHistory(
 /** 项目级角色历史：用于 data_changed SSE 事件后全量刷新 */
 export function listProjectCharacterHistory(
   projectId: string,
+  options?: { includeStale?: boolean }
 ): Promise<NovelCharacterHistory[]> {
-  return getApi<NovelCharacterHistory[]>(`${BASE}/projects/${projectId}/character-history`)
+  const query = options?.includeStale ? '?includeStale=1' : ''
+  return getApi<NovelCharacterHistory[]>(`${BASE}/projects/${projectId}/character-history${query}`)
 }
 
 export function createCharacterHistory(
@@ -3252,6 +3304,56 @@ export function distillReferenceStyle(
   input: { sectionIds: string[]; notes?: string; modelId?: { provider: string; modelId: string } },
 ): Promise<StyleDistillDraftApi> {
   return postApi<StyleDistillDraftApi>(`${BASE}/reference-sources/${sourceId}/style-distill`, input)
+}
+
+/** 把参考小说的勾选章节截取为文风基线样本（正向/反向），服务端完成取文与句界截断 */
+export function appendReferenceSamplesToBaseline(
+  projectId: string,
+  input: { sourceId: string; sectionIds: string[]; kind: 'positive' | 'negative' }
+): Promise<{ profile: unknown; added: number; skipped: number; anchorIsNew: boolean }> {
+  return postApi(
+    `${BASE}/projects/${projectId}/writing-style-profile/append-reference-samples`,
+    input
+  )
+}
+
+/** 分析完成后的一键基线：服务端按头/中/尾分层取样正向样本；样本位已满时返回 reason: 'full' */
+export function autoBaselineFromReference(
+  projectId: string,
+  input: { sourceId: string; sectionIds: string[] }
+): Promise<{
+  profile: unknown
+  added: number
+  skipped: number
+  anchorIsNew: boolean
+  reason?: 'full'
+}> {
+  return postApi(
+    `${BASE}/projects/${projectId}/writing-style-profile/auto-baseline`,
+    input
+  )
+}
+
+/**
+ * 专家团维度蒸馏（一维一专家）：单次调用只蒸馏一个维度，产出一个草稿专家。
+ * 幂等：同团队同维度已有专家返回 { skipped: true, reason: 'exists' }；
+ * 该维度无可迁移手法返回 { skipped: true, reason: 'empty' }。
+ */
+export function distillStyleTeamDimension(
+  sourceId: string,
+  input: {
+    sectionIds: string[]
+    dimension: StyleTeamDimension
+    notes?: string
+    modelId?: { provider: string; modelId: string }
+  }
+): Promise<{
+  skipped: boolean
+  reason?: 'exists' | 'empty'
+  dimension?: string
+  expert?: NovelStyleExpertApi
+}> {
+  return postApi(`${BASE}/reference-sources/${sourceId}/style-team-distill/dimension`, input)
 }
 
 export function getReferenceTextPreview(

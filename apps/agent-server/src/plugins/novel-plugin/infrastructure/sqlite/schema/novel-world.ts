@@ -27,6 +27,9 @@ export const novelStyleExperts = sqliteTable('novel_style_experts', {
   // 迁移 118（蒸馏契约 v2）：语言指纹、内在张力、反模式与诚实边界
   expressionDnaJson: text('expression_dna_json'), tensionsJson: text('tensions_json'),
   antiPatternsJson: text('anti_patterns_json'), boundariesJson: text('boundaries_json'),
+  // 迁移 119（专家团）：维度、团队键与审核状态
+  dimension: text('dimension'), teamKey: text('team_key'),
+  reviewStatus: text('review_status').notNull().default('approved'),
   sortOrder: integer('sort_order').notNull().default(0), distillMeta: text('distill_meta'), version: integer('version').notNull().default(1),
   createdAt: integer('created_at').notNull(), updatedAt: integer('updated_at').notNull(),
 })

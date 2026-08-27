@@ -353,7 +353,7 @@ describe('ensureChapterExists（建章辅助，模块级直测）', () => {
 // ── /写 N、/重写 N 命令的 workspace 分发 ──
 
 describe('NovelWorkspace 输入框命令启动（真实面板输入 → workspace 分发）', () => {
-  it('调用诊断使用单一入口打开，并可在日志、缓存、趋势页签间切换', async () => {
+  it('调用诊断使用单一入口打开，并可在轨迹、缓存页签间切换', async () => {
     renderWorkspace()
 
     const diagnosticsButton = screen.getByRole('button', {
@@ -365,16 +365,12 @@ describe('NovelWorkspace 输入框命令启动（真实面板输入 → workspac
     const diagnosticsTabList = screen.getByRole('tablist', { name: '调用诊断视图' })
     expect(diagnosticsTabList.parentElement?.className).toContain('flex-col')
     expect(diagnosticsTabList.className).toContain('flex')
-    expect(screen.getByRole('tab', { name: '调用日志' }).getAttribute('aria-selected')).toBe('true')
+    // 合并后默认 tab 为「调用轨迹」（原调用日志 + 调用趋势 + 追踪时间线）
+    expect(screen.getByRole('tab', { name: '调用轨迹' }).getAttribute('aria-selected')).toBe('true')
 
     const cacheTab = screen.getByRole('tab', { name: '缓存诊断' })
-    const trendTab = screen.getByRole('tab', { name: '调用趋势' })
-    // 新增追踪时间线标签页
-    expect(screen.getByRole('tab', { name: '追踪时间线' })).toBeDefined()
     fireEvent.mouseDown(cacheTab, { button: 0, ctrlKey: false })
     await waitFor(() => expect(cacheTab.getAttribute('aria-selected')).toBe('true'))
-    fireEvent.mouseDown(trendTab, { button: 0, ctrlKey: false })
-    await waitFor(() => expect(trendTab.getAttribute('aria-selected')).toBe('true'))
   })
 
   it('/写 N 章节不存在：ensureChapterExists 先建空章节，再启动第 N 章工作流', async () => {

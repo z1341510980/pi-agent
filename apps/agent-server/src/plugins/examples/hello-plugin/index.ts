@@ -30,7 +30,8 @@ export function createHelloPlugin(): Plugin {
     },
 
     async setup(context) {
-      const { logger, registerTool, registerRoute, onEvent, registerPanel } = context
+      const { logger, registerTool, registerRoute, onEvent, registerPanel, registerSettings } =
+        context
 
       logger.info('Hello 插件启动')
 
@@ -121,18 +122,41 @@ export function createHelloPlugin(): Plugin {
         logger.info({ data }, '收到 agent:run:started 事件')
       })
 
-      // 5. 注册 UI 面板
+      // 5. 注册 UI 面板：挂在插件管理页顶部（不占主界面左侧导航）
       registerPanel({
         id: 'hello-panel',
         title: 'Hello 插件面板',
         component: 'HelloPanel',
         rendererKey: 'builtin.hello-panel',
-        slot: 'app.navigation',
+        slot: 'plugin-page.top',
         scope: 'app',
         priority: 100,
-        position: 'sidebar',
         props: { initialGreetCount: greetCount }
       })
+
+      // 6. 声明式设置：桌面设置中心自动生成"插件设置 → hello"分区，
+      //    表单读写走 GET/PATCH /api/plugins/hello/config（写回 plugins.yml）
+      registerSettings([
+        {
+          key: 'greetingName',
+          label: '默认问候对象',
+          type: 'string',
+          default: 'world',
+          placeholder: 'world',
+          description: '未显式指定 name 时使用的问候对象'
+        },
+        {
+          key: 'greetingLanguage',
+          label: '默认问候语言',
+          type: 'select',
+          default: 'zh',
+          options: [
+            { value: 'zh', label: '中文' },
+            { value: 'en', label: 'English' }
+          ],
+          description: '未显式指定 language 时使用的语言'
+        }
+      ])
 
       logger.info('Hello 插件注册完成')
     },

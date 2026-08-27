@@ -93,8 +93,10 @@ export interface ModelConfig {
 export const CONTEXT_PRESETS = [32_000, 64_000, 128_000, 256_000] as const
 export const MAX_TOKENS_PRESETS = [8_000, 16_000, 32_000, 64_000] as const
 
+export type MediaProtocol = 'openai-images' | 'apimart'
+
 export interface ProviderEntry {
-  /** 添加时可能未生成 id，落库前由调用方用 `id || name` 推导 */
+  /** Provider 的稳定唯一 ID；旧版 localStorage 数据可能没有此字段 */
   id?: string
   name: string
   api: string
@@ -102,8 +104,18 @@ export interface ProviderEntry {
   apiKey: string
   authHeader?: boolean
   models: ModelConfig[]
+  /** 图片生成协议；省略时使用 OpenAI Images 兼容协议。 */
+  mediaProtocol?: MediaProtocol
+  /** 独立图片模型；省略时由协议适配器选择默认值。 */
+  mediaModel?: string
+  /** 图片生成默认分辨率，例如 APIMart 的 1k/2k/4k。 */
+  mediaResolution?: string
+  /** 异步图片任务状态接口的语言参数。 */
+  mediaLanguage?: string
   /** 是否已注册到后端 */
   registered?: boolean
+  /** 仅用于区分新增表单与编辑表单；保存后不持久化 */
+  isNew?: boolean
   /**
    * 本次会话内是否已通过"拉取模型/测试"以该 id 预注册过。
    * 为 true 时保存按覆盖更新处理（不传 createOnly），避免新增模式误报 409。
@@ -118,7 +130,13 @@ interface BackendProvider {
   baseUrl: string
   api: string
   authHeader?: boolean
+  apiKey?: string
   models: ModelConfig[]
+  mediaProtocol?: MediaProtocol
+  mediaModel?: string
+  mediaResolution?: string
+  mediaLanguage?: string
+  registered?: boolean
 }
 
 type TestState =
@@ -195,14 +213,19 @@ const modelSchema = z.object({
 })
 
 const providerFormSchema = z.object({
-  id: z.string().optional(), // 添加时自动从名称生成
+  id: z.string().optional(),
   name: providerNameSchema,
   api: z.string().min(1, 'API 类型不能为空'),
   baseUrl: apiBaseUrlSchema,
   apiKey: apiKeySchema,
   authHeader: z.boolean().optional(),
+  mediaProtocol: z.enum(['openai-images', 'apimart']).optional(),
+  mediaModel: z.string().trim().optional(),
+  mediaResolution: z.string().trim().optional(),
+  mediaLanguage: z.string().trim().max(16).optional(),
   models: z.array(modelSchema).min(1, '请至少添加一个模型'),
   registered: z.boolean().optional(),
+  isNew: z.boolean().optional(),
 })
 
 type ProviderFormValues = z.infer<typeof providerFormSchema>
@@ -280,7 +303,7 @@ export const providerPresets: Record<string, { baseUrl: string; api: string; mod
 
 export function ProviderManager(): ReactElement {
   const queryClient = useQueryClient()
-  const [backendProviders, setBackendProviders] = useState<ProviderEntry[]>([])
+  const [backendProviders, setBackendProviders] = useState<BackendProvider[]>([])
   const [localProviders, setLocalProviders] = useState<ProviderEntry[]>(() => loadLocalProviders())
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -292,13 +315,20 @@ export function ProviderManager(): ReactElement {
   const backendIds = new Set(backendProviders.map((p) => p.id))
 
   // 合并后的 backend providers（带 local apiKey）
-  const mergedBackendProviders = backendProviders.map((p) => ({
+  const mergedBackendProviders: ProviderEntry[] = backendProviders.map((p) => ({
     ...p,
-    apiKey: localById.get(p.id)?.apiKey ?? p.apiKey,
+    apiKey:
+      localById.get(p.id)?.apiKey ??
+      localProviders.find((local) => isLegacyMatch(local, p))?.apiKey ??
+      p.apiKey ??
+      '',
   }))
 
-  // 仅本地的 providers（未注册到后端）
-  const localOnlyProviders = localProviders.filter((p) => !backendIds.has(p.id))
+  // 仅本地的 providers（未注册到后端）。旧缓存没有 id 时，也要按配置匹配后端，
+  // 否则同一个 Provider 会在列表中出现两次。
+  const localOnlyProviders = localProviders.filter(
+    (p) => (!p.id || !backendIds.has(p.id)) && !backendProviders.some((backend) => isLegacyMatch(p, backend))
+  )
 
   // 拉取后端已注册的 Provider
   useEffect(() => {
@@ -319,14 +349,16 @@ export function ProviderManager(): ReactElement {
         // 默认 Provider 是附属信息，取不到时不应影响主列表渲染
         getApi<{ id: string | null } | null>('/api/providers/default').catch(() => null),
       ])
-      setBackendProviders(
-        (data ?? []).map((p) => ({
-          ...p,
-          apiKey: '',
-          models: p.models ?? [],
-          registered: true,
-        }))
-      )
+      const nextBackendProviders: BackendProvider[] = (data ?? []).map((p) => ({
+        ...p,
+        apiKey: '',
+        models: p.models ?? [],
+        registered: true,
+      }))
+      setBackendProviders(nextBackendProviders)
+      // 迁移旧版 localStorage：旧数据可能没有 id，与后端同一 Provider 会被渲染成两条。
+      // 能匹配到后端时复用后端 ID，匹配不到时分配新的随机 ID，避免继续使用名称作为 ID。
+      setLocalProviders((prev) => reconcileLocalProviders(prev, nextBackendProviders))
       setDefaultProviderId(defaultRes?.id ?? null)
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '加载 Provider 列表失败')
@@ -348,34 +380,65 @@ export function ProviderManager(): ReactElement {
   }
 
   function handleAdd(): void {
+    const existingIds = new Set(
+      [...backendProviders, ...localProviders]
+        .map((p) => p.id)
+        .filter((id): id is string => Boolean(id))
+    )
     setEditing({
-      id: '',
+      id: generateProviderId(existingIds),
       name: '',
       api: 'openai-completions',
       baseUrl: '',
       apiKey: '',
       models: [],
+      isNew: true,
     })
     setDialogOpen(true)
   }
 
   function handleEdit(provider: ProviderEntry): void {
-    setEditing({ ...provider })
+    const existingIds = new Set(
+      [...backendProviders, ...localProviders]
+        .map((p) => p.id)
+        .filter((id): id is string => Boolean(id))
+    )
+    const backendProvider = backendProviders.find(
+      (p) => (provider.id !== undefined && p.id === provider.id) || isLegacyMatch(provider, p)
+    )
+    const id = provider.id || backendProvider?.id || generateProviderId(existingIds)
+    // 旧缓存没有 id 时，编辑前就补上稳定 ID，避免保存后旧记录仍留在 localStorage。
+    if (!provider.id) {
+      setLocalProviders((prev) => prev.map((p) => (p === provider ? { ...p, id } : p)))
+    }
+    setEditing({ ...provider, id, isNew: false })
     setDialogOpen(true)
   }
 
-  async function handleDelete(id: string): Promise<void> {
-    const isRegistered = backendProviders.some((p) => p.id === id)
-    if (isRegistered) {
+  async function handleDelete(provider: ProviderEntry): Promise<void> {
+    // 兼容旧版无 id 缓存：按完整配置找到对应后端 Provider，不能再把名称拼到删除 URL。
+    const registeredProvider = backendProviders.find(
+      (p) => (provider.id !== undefined && p.id === provider.id) || isLegacyMatch(provider, p)
+    )
+    const id = registeredProvider?.id
+
+    if (id) {
       try {
-        await deleteApi(`/api/providers/${id}`)
+        await deleteApi(`/api/providers/${encodeURIComponent(id)}`)
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : '删除 Provider 失败')
         return
       }
     }
-    setLocalProviders((prev) => prev.filter((p) => p.id !== id))
-    if (isRegistered) {
+
+    setLocalProviders((prev) =>
+      prev.filter((p) => {
+        if (p === provider) return false
+        if (id && p.id === id) return false
+        return !(registeredProvider && isLegacyMatch(p, registeredProvider))
+      })
+    )
+    if (id) {
       void refreshBackendProviders()
       // Provider 变更后，使模型列表缓存失效，让对话界面的模型选择器重新获取
       void queryClient.invalidateQueries({ queryKey: ['agui-models'] })
@@ -386,10 +449,7 @@ export function ProviderManager(): ReactElement {
     if (entry.models.length === 0) {
       throw new Error('请至少添加一个模型')
     }
-    // 编辑模式：保持原 id（避免默认设置/会话绑定失效）；
-    // 新增模式：从名称派生 id，并确保不与已有 Provider 冲突（冲突自动追加 -2/-3 后缀）。
-    // 否则"新增"会因 id 与已有 Provider（如默认 Provider 的 openai/deepseek）相同，
-    // 触发后端 upsert 语义，意外覆盖其全部数据。
+    // 新增时 ID 已在打开表单时分配；这里仅为旧数据/异常调用保留随机 ID 兜底。
     const existingIds = new Set(
       [...backendProviders, ...localProviders]
         .map((p) => p.id)
@@ -397,9 +457,9 @@ export function ProviderManager(): ReactElement {
     )
     const id =
       entry.id ||
-      ensureUniqueProviderId(deriveProviderId(entry.name), existingIds) ||
-      `provider-${Math.random().toString(36).slice(2, 10)}`
-    const config: ProviderEntry = { ...entry, id }
+      generateProviderId(existingIds)
+    const { isNew: _isNew, alreadyRegistered: _alreadyRegistered, ...persistedEntry } = entry
+    const config: ProviderEntry = { ...persistedEntry, id }
 
     await postApi('/api/providers', {
       id: config.id,
@@ -409,9 +469,8 @@ export function ProviderManager(): ReactElement {
       api: config.api,
       authHeader: config.authHeader ?? true,
       models: config.models,
-      // 新增模式且本会话未预注册过该 id：后端兜底拒绝覆盖已存在 Provider（返回 409 而非静默覆盖）；
-      // 会话内已预注册（拉取/测试）或编辑模式则不传，按正常注册/更新处理
-      createOnly: !entry.id && !entry.alreadyRegistered,
+      // 新增模式且本会话未预注册过该 id：后端兜底拒绝覆盖已存在 Provider。
+      createOnly: entry.isNew === true && !entry.alreadyRegistered,
     })
 
     // 更新 localStorage 缓存
@@ -468,9 +527,9 @@ export function ProviderManager(): ReactElement {
             onDelete={handleDelete}
           />
         ))}
-        {localOnlyProviders.map((provider) => (
+        {localOnlyProviders.map((provider, index) => (
           <ProviderCard
-            key={`local-${provider.id}`}
+            key={`local-${provider.id ?? provider.name}-${index}`}
             provider={provider}
             isDefault={false}
             onSetDefault={() => {}}
@@ -492,11 +551,6 @@ export function ProviderManager(): ReactElement {
             if (!open) setEditing(null)
           }}
           onSave={handleSave}
-          existingProviderIds={new Set(
-            [...backendProviders, ...localProviders]
-              .map((p) => p.id)
-              .filter((id): id is string => Boolean(id))
-          )}
         />
       )}
     </section>
@@ -510,11 +564,11 @@ interface ProviderCardProps {
   isDefault: boolean
   onSetDefault: (id: string) => void
   onEdit: (provider: ProviderEntry) => void
-  onDelete: (id: string) => void
+  onDelete: (provider: ProviderEntry) => void
 }
 
 function ProviderCard({ provider, isDefault, onSetDefault, onEdit, onDelete }: ProviderCardProps): ReactElement {
-  const providerId = provider.id ?? provider.name
+  const providerId = provider.id
   return (
     <div className="bg-surface-2 border border-border rounded-lg p-3 flex items-center gap-3">
       {/* 默认 Provider 单选圆圈 */}
@@ -524,7 +578,9 @@ function ProviderCard({ provider, isDefault, onSetDefault, onEdit, onDelete }: P
         aria-label={isDefault ? `${provider.name} 是默认 Provider` : `将 ${provider.name} 设为默认`}
         aria-pressed={isDefault}
         title={isDefault ? '默认 Provider' : '点击设为默认 Provider'}
-        onClick={() => onSetDefault(providerId)}
+        onClick={() => {
+          if (providerId) onSetDefault(providerId)
+        }}
       >
         {isDefault && <span className="size-2 rounded-full bg-accent" />}
       </button>
@@ -562,7 +618,7 @@ function ProviderCard({ provider, isDefault, onSetDefault, onEdit, onDelete }: P
           variant="ghost"
           size="icon-sm"
           aria-label={`删除 ${provider.name}`}
-          onClick={() => void onDelete(provider.id ?? provider.name)}
+          onClick={() => void onDelete(provider)}
         >
           <TrashIcon className="size-3.5" />
         </Button>
@@ -588,11 +644,9 @@ interface ProviderFormDialogProps {
   entry: ProviderEntry
   onOpenChange: (open: boolean) => void
   onSave: (entry: ProviderEntry) => Promise<void>
-  /** 后端已注册 + 本地缓存的全部 Provider id，用于新增时生成不冲突的唯一 id */
-  existingProviderIds: Set<string>
 }
 
-function ProviderFormDialog({ open, entry, onOpenChange, onSave, existingProviderIds }: ProviderFormDialogProps): ReactElement {
+function ProviderFormDialog({ open, entry, onOpenChange, onSave }: ProviderFormDialogProps): ReactElement {
   const {
     register,
     control,
@@ -638,7 +692,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave, existingProvide
   }, [entry, reset])
 
   const models = watch('models')
-  const formId = watch('id')
+  const isNew = watch('isNew')
   const baseUrl = watch('baseUrl')
   const apiKey = watch('apiKey')
 
@@ -664,9 +718,9 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave, existingProvide
       setSaveError('请先填写 Base URL 和 API Key')
       return
     }
-    // 与保存时保持一致的 ID 派生逻辑：新增模式派生唯一 id，
-    // 避免"拉取模型"这一步就以默认 Provider 同名 id 注册（覆盖其数据）
-    const id = computeDialogId(form, existingProviderIds)
+    // 新增表单的 ID 在打开时已分配；旧表单没有 ID 时在首次预注册前补齐。
+    const id = computeDialogId(form)
+    if (!form.id) setValue('id', id)
 
     setFetchingModels(true)
     setSaveError(null)
@@ -768,8 +822,9 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave, existingProvide
       if (form.models.length === 0) {
         throw new Error('请先添加至少一个模型')
       }
-      // 与保存/拉取一致的唯一 id 派生，避免测试注册时覆盖已有 Provider
-      const id = computeDialogId(form, existingProviderIds)
+      // 新增表单的 ID 在打开时已分配；旧表单没有 ID 时在首次预注册前补齐。
+      const id = computeDialogId(form)
+      if (!form.id) setValue('id', id)
       // 先注册到后端（不带 createOnly，理由同 handleFetchModels）
       await postApi('/api/providers', {
         id,
@@ -809,7 +864,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave, existingProvide
     try {
       // 若本次会话已通过"拉取模型/测试"预注册过该 id，
       // 保存属于对临时数据的覆盖更新（不传 createOnly，避免误报 409）
-      const actualId = computeDialogId(values, existingProviderIds)
+      const actualId = computeDialogId(values)
       await onSave({
         ...values,
         alreadyRegistered: tempRegisteredIds.has(actualId),
@@ -825,7 +880,7 @@ function ProviderFormDialog({ open, entry, onOpenChange, onSave, existingProvide
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{formId ? '编辑 Provider' : '添加 Provider'}</DialogTitle>
+          <DialogTitle>{isNew ? '添加 Provider' : '编辑 Provider'}</DialogTitle>
         </DialogHeader>
         <form className="grid gap-3.5" onSubmit={handleSubmit(onSubmit, (validationErrors) => {
           // 校验失败时显示第一个错误
@@ -1399,20 +1454,15 @@ export function ensureUniqueProviderId(baseId: string, existingIds: Set<string>,
 /**
  * 计算表单对应的 Provider ID：
  * - 编辑模式（已有 id）：直接使用原 id
- * - 新增模式：从名称派生并确保唯一；名称无法派生（如纯中文）时回退随机 id
+ * - 新增模式：使用表单已分配的 ID；旧表单没有 ID 时生成随机 ID
  *
  * 拉取模型 / 测试连接 / 保存三处共用本函数，保证会话内计算出的 id 一致，
  * 避免"拉取模型"预注册的 id 与"保存"时算出的 id 不一致导致残留或误判。
  */
 function computeDialogId(
-  form: Pick<ProviderFormValues, 'id' | 'name'>,
-  existingProviderIds: Set<string>
+  form: Pick<ProviderFormValues, 'id'>
 ): string {
-  return (
-    form.id ||
-    ensureUniqueProviderId(deriveProviderId(form.name), existingProviderIds) ||
-    `provider-${Math.random().toString(36).slice(2, 10)}`
-  )
+  return form.id || generateProviderId()
 }
 
 /**
@@ -1444,6 +1494,83 @@ function loadLocalProviders(): ProviderEntry[] {
   } catch {
     return []
   }
+}
+
+/**
+ * 将旧版本地缓存与后端 Provider 对齐。
+ *
+ * 旧版本可能把名称派生值（如 openai-2）或空值写入 localStorage，
+ * 导致后端同一配置被渲染成另一条本地 Provider。只有看起来像旧版派生 ID
+ * 的记录才按名称和连接配置匹配，新的随机 ID 即使配置相同也必须保留。
+ */
+export function reconcileLocalProviders(
+  localProviders: ProviderEntry[],
+  backendProviders: BackendProvider[]
+): ProviderEntry[] {
+  const usedIds = new Set(backendProviders.map((provider) => provider.id))
+  const reconciled: ProviderEntry[] = []
+
+  for (const provider of localProviders) {
+    const backendProvider = backendProviders.find(
+      (candidate) =>
+        (provider.id !== undefined && candidate.id === provider.id) ||
+        isLegacyMatch(provider, candidate)
+    )
+    const id = backendProvider?.id ?? (provider.id || generateProviderId(usedIds))
+    const normalized = { ...provider, id }
+    const existingIndex = reconciled.findIndex((item) => item.id === id)
+
+    if (existingIndex >= 0) {
+      const previous = reconciled[existingIndex]
+      reconciled[existingIndex] = {
+        ...previous,
+        ...normalized,
+        // 不要因为旧缓存中的空值覆盖另一条缓存中的 API Key。
+        apiKey: normalized.apiKey || previous.apiKey,
+      }
+    } else {
+      reconciled.push(normalized)
+    }
+    usedIds.add(id)
+  }
+
+  return reconciled
+}
+
+function isLegacyMatch(local: ProviderEntry, backend: BackendProvider): boolean {
+  if (local.id && !isLegacyProviderId(local.id, local.name)) return false
+  return (
+    local.name.trim().toLowerCase() === backend.name.trim().toLowerCase() &&
+    local.api === backend.api &&
+    normalizeProviderUrl(local.baseUrl) === normalizeProviderUrl(backend.baseUrl)
+  )
+}
+
+function isLegacyProviderId(id: string, name: string): boolean {
+  const baseId = deriveProviderId(name)
+  if (!baseId) return false
+  return id === baseId || new RegExp(`^${escapeRegExp(baseId)}-\\d+$`).test(id)
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function normalizeProviderUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '').toLowerCase()
+}
+
+/** 创建不依赖名称的 Provider 稳定唯一 ID。 */
+export function generateProviderId(existingIds: Set<string> = new Set()): string {
+  let id = ''
+  do {
+    const randomPart =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2, 14)
+    id = `provider-${randomPart}`
+  } while (existingIds.has(id))
+  return id
 }
 
 function saveLocalProviders(providers: ProviderEntry[]): void {

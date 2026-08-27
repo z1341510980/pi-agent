@@ -52,7 +52,6 @@ import {
 import { buildGroups, MATRIX_LAYOUT } from './matrix-model'
 import { MatrixToolbar } from './matrix-toolbar'
 import { MatrixView } from './matrix-view'
-import { MatrixLegend } from './matrix-legend'
 import { MatrixHoverCard } from './matrix-hover-card'
 import { EntityCellMenu, type EntityCellMenuPosition } from './entity-cell-menu'
 import { EntityCreateDialog } from './entity-create-dialog'
@@ -1418,16 +1417,8 @@ export function MatrixWorkspace({
           onOpenPendingEvents={onOpenReview ? () => onOpenReview('events') : undefined}
           onOpenAnnotations={onOpenReview ? () => onOpenReview('annotations') : undefined}
           pendingEventCount={pendingEventCount}
-        />
-        {/* 审校面板已收敛到右栏「审校」Tab（NovelReviewCenter 唯一挂载点）；
-            工具栏下拉仅作快捷路由，这里不再重复挂载面板实例。 */}
-      </div>
-
-      <div data-tour="matrix-legend">
-        <MatrixLegend
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
-          hasExpandedSubtracks={expandedEntityIds.length > 0}
         />
       </div>
 

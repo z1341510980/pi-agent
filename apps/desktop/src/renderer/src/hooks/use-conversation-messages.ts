@@ -696,6 +696,7 @@ export function buildConversationMessages(input: ConversationMessagesInput): Con
           agentName: msg.fromName,
           agentType: mapAgentType(msg.metadata?.agentType ?? 'unknown'),
           content: msg.content,
+          actorTurn: msg.metadata?.actorTurn,
           status: 'complete',
           timestamp: msg.createdAt
         })
@@ -737,6 +738,14 @@ export function buildConversationMessages(input: ConversationMessagesInput): Con
       !output.hasStreamedText && output.thinking
         ? `**思考过程**\n\n${output.thinking}`
         : undefined
+    const actorTurnText = output.actorTurn
+      ? `\n\n<details><summary>角色判断与应对</summary>\n\n${[
+          output.actorTurn.innerThought ? `**内心判断**：${output.actorTurn.innerThought}` : '',
+          output.actorTurn.conflictReading ? `**冲突判断**：${output.actorTurn.conflictReading}` : '',
+          output.actorTurn.responsePlan ? `**应对方案**：${output.actorTurn.responsePlan}` : '',
+          output.actorTurn.consequence ? `**即时后果**：${output.actorTurn.consequence}` : '',
+        ].filter(Boolean).join('\n\n')}\n\n</details>`
+      : ''
     msgs.push({
       id: output.messageId
         ? `agent-${output.messageId}`
@@ -744,7 +753,8 @@ export function buildConversationMessages(input: ConversationMessagesInput): Con
       role: 'assistant',
       agentName: output.agentName,
       agentType: mapAgentType(output.agentType),
-      content: output.streaming ? output.preview : (thinkingText ?? output.content),
+      content: output.streaming ? output.preview : `${thinkingText ?? output.content}${actorTurnText}`,
+      actorTurn: output.actorTurn,
       streamingBuffer: output.streaming
         ? output.hasStreamedText
           ? output.content

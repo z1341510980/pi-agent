@@ -107,13 +107,16 @@ export function HomePage({ onOpenChat, onOpenNovel, onOpenSettings }: HomePagePr
           className="mb-16 flex flex-col items-center pb-2 pt-6 text-center"
           data-tour="home-hero"
         >
-          <p className="pi-rise m-0 inline-flex h-6 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2.5 text-xs text-muted-foreground">
-            <span
-              className={`size-1.5 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-muted-foreground'}`}
-              aria-hidden="true"
-            />
-            {isOnline ? '服务在线' : '服务离线'}
-          </p>
+          <div className="pi-rise mt-5 flex flex-wrap items-center justify-center gap-2">
+            <p className="m-0 inline-flex h-6 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2.5 text-xs text-muted-foreground">
+              <span
+                className={`size-1.5 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-muted-foreground'}`}
+                aria-hidden="true"
+              />
+              {isOnline ? '服务在线' : '服务离线'}
+            </p>
+            <SlotRenderer name={BUILTIN_SLOTS.HOME_HERO_ASIDE} fallback={null} />
+          </div>
           <h1 className="pi-rise pi-rise-1 m-0 mt-6 text-balance text-[44px] font-bold leading-[1.1] tracking-tight text-text sm:text-[56px]">
             让 AI，{'\u00A0'}
             <span className="bg-gradient-to-r from-info to-[var(--dsw-static-deepseek-400)] bg-clip-text text-transparent">
@@ -143,6 +146,7 @@ export function HomePage({ onOpenChat, onOpenNovel, onOpenSettings }: HomePagePr
                 小说创作
               </Button>
             )}
+            <SlotRenderer name={BUILTIN_SLOTS.HOME_ACTIONS} fallback={null} />
           </div>
         </section>
 
@@ -255,6 +259,11 @@ export function HomePage({ onOpenChat, onOpenNovel, onOpenSettings }: HomePagePr
             </div>
           )}
         </section>
+
+        {/* ── 插件页脚 ── */}
+        <footer className="mt-12 flex flex-wrap items-center justify-center gap-4 text-[11px] text-hint">
+          <SlotRenderer name={BUILTIN_SLOTS.HOME_FOOTER} fallback={null} />
+        </footer>
       </div>
     </div>
   )

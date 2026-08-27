@@ -35,12 +35,15 @@ import type {
   ModeratorState,
   ModeratorDecision,
   SceneDefinition,
+  SceneActionBeat,
+  CharacterTurn,
   DiscussionPhase,
   DiscussionResumeState,
   ReviewerOutcome,
   ScenePlanToolset,
   SubmittedSceneInput,
   DiscussionDiagnostics,
+  CharacterTurnToolset,
 } from './discussion-types.js'
 import { DISCUSSION_LIMITS } from './discussion-types.js'
 import {
@@ -122,6 +125,47 @@ export class TeamDiscussionEngine {
   /** 是否已对用户发出过"主持人降级"警告（每次 run 只警告一次） */
   private moderatorDegradeWarned = false
 
+  /**
+   * 当前场景计划工具集（P2.0 修复 2026-08-26）：
+   * run() planning 阶段设置，供 handleDecision 在 Director 返回空串时检查工具是否已提交。
+   * 推理模型（gpt-5.6-luna）工具调用后第二轮返回空 stop 是已实证行为——工具执行了，
+   * 但 prompt() 只返回第二轮 text delta = 空。引擎需用工具结果替代空串。
+   */
+  private currentScenePlan?: ScenePlanToolset
+
+  /** 当前角色回合工具集；仅在一次 actor 调用期间有效。 */
+  private currentCharacterTurn?: CharacterTurnToolset
+
+  /** 当前自主演出产生的待回应角色，按因果顺序 FIFO 执行。 */
+  private pendingCharacterMentions: Array<{ targetId: string; sourceMessageId: string; depth: number }> = []
+
+  /** 正常自主角色逻辑回合计数。 */
+  private autonomousCharacterTurns = 0
+
+  /** 角色主动 mention 计数。 */
+  private autonomousMentions = 0
+
+  /** 新动作图场景完成的节点数，用于诊断与收敛判断。 */
+  private completedActionBeats = 0
+
+  /** 当前 run 的诊断计数，不依赖 Moderator 的 degradedRounds。 */
+  private moderatorExceptionInvocations = 0
+  private characterTurnFailures = 0
+  private characterTurnCancelled = 0
+  private currentActionBeatId?: string
+  private currentActionBeatSceneId?: number
+  private totalMemberInvocations = 0
+  private totalModeratorInvocations = 0
+  private totalLlmRoundTrips = 0
+  private runStartedAt = 0
+
+  /**
+   * Planning 阶段 Director 连续空响应标志（2026-08-26）：
+   * 空响应且工具未提交、纠正性重试仍空时置此标志，由 planning 循环抛检查点
+   * 让用户决策（重试/中止），不再静默循环邀请。
+   */
+  private planningDirectorEmpty = false
+
   constructor(
     private moderator: Moderator,
     private channel: AgentChannel,
@@ -144,6 +188,8 @@ export class TeamDiscussionEngine {
     members: DiscussionMember[],
     options: DiscussionOptions,
   ): Promise<DiscussionResult> {
+    this.runStartedAt = Date.now()
+    this.moderator.resetRunState()
     // 合并运行时限制：options.limits（来自 DiscussionSettingsStore）覆盖默认 DISCUSSION_LIMITS
     const limits = {
       maxRounds: options.limits?.maxRounds ?? DISCUSSION_LIMITS.MAX_ROUNDS,
@@ -176,11 +222,28 @@ export class TeamDiscussionEngine {
     this.formatCorrectionCount = 0
     this.transcriptReuseRate = undefined
     this.moderatorDegradeWarned = false
+    this.planningDirectorEmpty = false
+    this.currentScenePlan = undefined
+    this.currentCharacterTurn = undefined
+    this.pendingCharacterMentions = []
+    this.autonomousCharacterTurns = 0
+    this.autonomousMentions = 0
+    this.completedActionBeats = 0
+    this.moderatorExceptionInvocations = 0
+    this.characterTurnFailures = 0
+    this.characterTurnCancelled = 0
+    this.currentActionBeatId = undefined
+    this.currentActionBeatSceneId = undefined
+    this.totalMemberInvocations = 0
+    this.totalModeratorInvocations = 0
+    this.totalLlmRoundTrips = 0
     let planningRetries = 0
     let sceneSource: DiscussionDiagnostics['sceneSource'] = 'none'
     // 场景计划工具集：业务层提供时，Director 规划调用会挂载 novel_submit_scene_plan，
     // converge 后优先读取工具提交结果，Markdown 解析降级为回退。
     const scenePlan = options.buildScenePlanToolset?.()
+    // 供 handleDecision 在 Director 返回空串时检查工具是否已提交（见字段注释）
+    this.currentScenePlan = scenePlan
 
     try {
       // 记录当前目标，供 invokeMember 注入成员 prefixUserMessage
@@ -201,6 +264,59 @@ export class TeamDiscussionEngine {
         this.noteModeratorDegradation(options, 'planning')
         await this.handleDecision(decision, history, members, options, channelName, { phase: 'planning', extraTools: scenePlan?.tools })
         rounds++
+
+        // 工具提交本身就是 planning 完成信号，不再把控制权交回 Moderator。
+        // gpt-5.6-luna 经实测会在 novel_submit_scene_plan 成功后返回空 stop：
+        // 工具结果已经写入 draft，但 prompt() 的文本结果为空。上一版只写占位
+        // 消息，仍让下一轮 Moderator 决定 invite，导致 Director 被重复调用。
+        // 这里直接采用工具计划并进入 acting，彻底切断重复邀请链。
+        if (!planningDone && scenePlan?.extractResult()?.scenes.length) {
+          const collected = this.collectScenes(scenePlan, history, members)
+          scenes = collected.scenes
+          sceneSource = collected.source
+          if (sceneSource === 'tool') {
+            this.emitProgress(options, 'planning', {
+              type: 'phase_change',
+              data: { message: `✅ 场景计划已提交，结束规划并进入演出（共 ${scenes.length} 个场景）` },
+            })
+          }
+          this.applyCastWhitelist(scenes, history, options, members)
+          await this.resolveSceneCharacters(scenes, members, options, channelName)
+          chapterConvergerId = members.find(member => member.canConverge)?.id
+          planningDone = true
+        }
+
+        // ── Director 空响应检查点（2026-08-26）──
+        // handleDecision 在 Director 连续两轮空响应时置此标志；不让 Moderator 继续
+        // 死循环邀请，而是抛检查点让用户决策。approve → 清标志继续循环（Moderator
+        // 会再次邀请导演）；其它（reject 等）→ 抛错，run 以 failed_phase=planning 终止。
+        if (this.planningDirectorEmpty) {
+          this.planningDirectorEmpty = false
+          const reply = await options.onCheckpoint({
+            type: 'discussion_pause',
+            phase: 'planning',
+            question:
+              '导演连续两轮未产出任何内容（模型可能异常或输出预算耗尽）。可重试导演规划，或中止本次群聊（中止后可对同章改用标准工作流创作）。',
+            data: {
+              message: '导演连续两轮未产出任何内容（模型可能异常或输出预算耗尽）。',
+              choices: ['重试导演规划', '中止群聊'],
+            },
+            options: ['approve', 'reject'],
+          })
+          history.push({
+            id: `user-checkpoint-${Date.now()}`,
+            fromId: 'user',
+            fromName: '用户',
+            content: typeof reply === 'string' ? reply : '已决策',
+            timestamp: Date.now(),
+            type: 'user',
+          })
+          if (reply !== 'approve') {
+            throw new Error('导演未能产出场景拆分，用户选择中止群聊')
+          }
+          // 检查点视为用户参与，重置 observe 停滞计数
+          noProgressRounds = 0
+        }
 
         if (decision.type === 'converge' && decision.scope === 'chapter') {
           const collected = this.collectScenes(scenePlan, history, members)
@@ -282,6 +398,16 @@ export class TeamDiscussionEngine {
         })
       }
 
+      if (options.allowLegacyActing === false && emptyScenes.length > 0) {
+        throw new Error(
+          `有 ${emptyScenes.length} 个场景未产生有效角色演出，已阻止 Writer 盲写。请重试角色演出或改用标准工作流。`,
+        )
+      }
+
+      if (scenes.length === 0 && options.allowLegacyActing === false) {
+        throw new Error('群聊没有产生可用场景或角色演出，已阻止静默盲写。请重试规划或改用标准工作流。')
+      }
+
       // ── Phase 3：全章编织（一次性整合所有场景剧本）──
       track.phase = 'chapter_weaving'
       this.emitProgress(options, 'chapter_weaving', { type: 'phase_change', data: { message: '正在编织完整章节' } })
@@ -357,6 +483,10 @@ export class TeamDiscussionEngine {
     channelName: string
     startIndex: number
     track: { phase: DiscussionPhase; sceneId?: number }
+    /** 断点续跑保留旧收敛语义，不额外补齐历史快照中未发言角色。 */
+    enforceCastCoverage?: boolean
+    /** acting 中断时从该场景的指定动作节点之后继续。 */
+    failedActionBeatId?: string
   }): Promise<void> {
     const { goal, members, history, scenes, options, limits, channelName, startIndex, track } = params
     for (let i = startIndex; i < scenes.length; i++) {
@@ -373,6 +503,24 @@ export class TeamDiscussionEngine {
 
       const activeMembers = this.filterMembersByScene(members, scene)
       let sceneDone = false
+
+      if (options.allowLegacyActing === false && (!scene.actionBeats || scene.actionBeats.length === 0)) {
+        throw new Error(`场景「${scene.title}」缺少 Director 动作节点，无法进入严格演出`)
+      }
+      if (scene.actionBeats && scene.actionBeats.length > 0 && options.buildCharacterTurnToolset) {
+        await this.runActionBeatScene({
+          ...params,
+          scene,
+          activeMembers,
+          startIndex: i,
+          failedActionBeatId: i === startIndex ? params.failedActionBeatId : undefined,
+        })
+        continue
+      }
+
+      if (options.allowLegacyActing === false) {
+        throw new Error(`场景「${scene.title}」没有可执行的动作图，已阻止回退到 Moderator 轮询`)
+      }
 
       while (!sceneDone && rounds < limits.maxRoundsPerScene) {
         track.phase = 'acting'
@@ -393,7 +541,23 @@ export class TeamDiscussionEngine {
         // 场景推演阶段：converge(scope=scene) 和 next_scene 都只标记场景结束，不触发 Writer。
         // observe 超限也只标记结束，由 Phase 3 统一编织。
         if (decision.type === 'converge' && decision.scope === 'scene') {
-          sceneDone = true
+          const spokenIds = new Set(
+            history
+              .filter(message => message.type === 'member' && message.sceneId === scene.sceneId)
+              .map(message => message.fromId),
+          )
+          const missing = activeMembers.filter(member => member.type === 'character' && !spokenIds.has(member.id))
+          if (params.enforceCastCoverage !== false && missing.length > 0 && rounds < limits.maxRoundsPerScene) {
+            noProgressRounds = 0
+            await this.handleDecision({
+              type: 'invite',
+              agentId: missing[0].id,
+              prompt: this.buildLegacyActingPrompt(missing[0], scene),
+              reason: `场景仍有 ${missing.length} 个角色未完成有效演出`,
+            }, history, activeMembers, options, channelName, { phase: 'acting', sceneId: scene.sceneId })
+          } else {
+            sceneDone = true
+          }
         } else if (decision.type === 'next_scene') {
           sceneDone = true
         } else if (decision.type === 'observe') {
@@ -408,6 +572,474 @@ export class TeamDiscussionEngine {
       // 场景推演结束，剧本已在 history 中，直接进入下一场景
     }
     this.currentScene = undefined
+  }
+
+  private buildLegacyActingPrompt(member: DiscussionMember, scene: SceneDefinition): string {
+    return `${member.name}，围绕场景「${scene.title}」的冲突“${scene.conflict ?? '当前阻力'}”，做出一个具体选择。请写清你看到的阻力、准备采取的动作、动作带来的风险或后果，并用角色自己的动作和台词演出来。不要只复述场景目标。`
+  }
+
+  /**
+   * 新版动作图演出：Director 决定戏剧节点，角色决定现场表达和下一位回应者。
+   * Moderator 不参与正常回合，只在节点失败或队列出现异常时介入。
+   */
+  private async runActionBeatScene(params: {
+    goal: DiscussionGoal
+    members: DiscussionMember[]
+    history: DiscussionMessage[]
+    scenes: SceneDefinition[]
+    options: DiscussionOptions
+    limits: { maxRoundsPerScene: number; maxObserveRounds: number }
+    channelName: string
+    startIndex: number
+    track: { phase: DiscussionPhase; sceneId?: number }
+    scene: SceneDefinition
+    activeMembers: DiscussionMember[]
+    failedActionBeatId?: string
+  }): Promise<void> {
+    const { history, members, options, channelName, track, scene, activeMembers } = params
+    const actionBeats = scene.actionBeats ?? []
+    const resumeAfter = params.failedActionBeatId
+    const failedBeatIndex = resumeAfter
+      ? actionBeats.findIndex(beat => beat.beatId === resumeAfter)
+      : -1
+    const firstBeatIndex = failedBeatIndex >= 0 ? failedBeatIndex + 1 : 0
+    const characterMembers = activeMembers.filter(member => member.type === 'character')
+    const memberById = new Map(characterMembers.map(member => [member.id, member]))
+    const memberByName = new Map(characterMembers.map(member => [this.normalizeCharacterName(member.name), member]))
+    const completed = new Set<string>()
+    const failed = new Set<string>()
+    // 续跑时，失败节点之前的节点已经写入 transcript，不能再次算作未完成。
+    for (const beat of actionBeats.slice(0, firstBeatIndex)) completed.add(beat.beatId)
+    const edgeCounts = new Map<string, number>()
+    let autonomousRounds = 0
+    let pending: Array<{ targetId: string; sourceMessageId: string; depth: number }> = []
+
+    for (const actionBeat of actionBeats.slice(firstBeatIndex)) {
+      if (completed.has(actionBeat.beatId)) continue
+      if (options.signal?.aborted) throw options.signal.reason ?? new Error('角色演出已取消')
+      track.phase = 'acting'
+      this.currentActionBeatId = actionBeat.beatId
+      this.currentActionBeatSceneId = scene.sceneId
+      this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'start')
+      if (autonomousRounds >= params.limits.maxRoundsPerScene) break
+      const actor = memberById.get(actionBeat.actor)
+      if (!actor) {
+        failed.add(actionBeat.beatId)
+        const decision = await this.interveneForActionBeat(
+          `动作节点「${actionBeat.beatId}」的 actor 不在当前场景：${actionBeat.actor}`,
+          scene,
+          history,
+          members,
+          options,
+          channelName,
+          track,
+        )
+        if (decision === 'abort') throw new Error('主持人终止当前动作节点，群聊演出中止')
+        continue
+      }
+
+      const turn = await this.invokeCharacterTurn(
+        actor,
+        actionBeat,
+        scene,
+        history,
+        members,
+        options,
+        channelName,
+        track,
+        memberByName,
+        undefined,
+      )
+      autonomousRounds++
+      this.autonomousCharacterTurns++
+      if (!turn) {
+        failed.add(actionBeat.beatId)
+        this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'failed')
+        const decision = await this.interveneForActionBeat(
+          `角色「${actor.name}」未提交动作节点「${actionBeat.beatId}」的有效回合`,
+          scene,
+          history,
+          members,
+          options,
+          channelName,
+          track,
+        )
+        if (decision === 'abort') throw new Error('主持人终止当前动作节点，群聊演出中止')
+        continue
+      }
+
+      if (turn.progress === 'stall' || !turn.consequence.trim()) {
+        failed.add(actionBeat.beatId)
+        this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'failed')
+        const decision = await this.interveneForActionBeat(
+          `角色「${actor.name}」的回合没有产生有效进展或后果，动作节点「${actionBeat.beatId}」暂不标记完成`,
+          scene,
+          history,
+          members,
+          options,
+          channelName,
+          track,
+        )
+        if (decision === 'abort') throw new Error('主持人终止当前动作节点，群聊演出中止')
+        continue
+      }
+
+      // 工具提交的角色回合是该动作节点的完成凭证；没有提交有效回合才允许仲裁。
+      // 角色已完成当前动作节点的提交。若它主动转交给另一个角色，
+      // pending 队列只承载回应关系，不重复执行已完成的 actionBeat。
+      completed.add(actionBeat.beatId)
+      this.completedActionBeats++
+      this.appendActionBeatSystemMessage(history, options, scene, actionBeat, 'complete')
+
+      const sourceMessageId = this.appendCharacterTurn(
+        actor,
+        turn,
+        scene.sceneId,
+        history,
+        options,
+        channelName,
+      )
+      pending = this.enqueueCharacterMentions(
+        pending,
+        actor,
+        turn,
+        sourceMessageId,
+        scene,
+        memberByName,
+        edgeCounts,
+        history,
+        options,
+      )
+      if (actionBeat.nextActor && pending.length === 0) {
+        const defaultTarget = memberById.get(actionBeat.nextActor)
+        if (defaultTarget && defaultTarget.id !== actor.id) {
+          pending.push({ targetId: defaultTarget.id, sourceMessageId, depth: 1 })
+        }
+      }
+
+      while (pending.length > 0 && autonomousRounds < params.limits.maxRoundsPerScene) {
+        if (options.signal?.aborted) throw options.signal.reason ?? new Error('角色演出已取消')
+        const next = pending.shift()!
+        const target = memberById.get(next.targetId)
+        if (!target) continue
+        const source = history.find(message => message.id === next.sourceMessageId)
+        const targetBeat = actionBeats.find(beat =>
+          beat.actor === target.id && !completed.has(beat.beatId),
+        )
+        if (!targetBeat) {
+          this.context.logger.warn(
+            { sceneId: scene.sceneId, sourceMessageId: next.sourceMessageId, targetId: target.id },
+            '角色 mention 未找到对应动作节点，跳过以保护动作顺序',
+          )
+          continue
+        }
+        const response = await this.invokeCharacterTurn(
+          target,
+          targetBeat,
+          scene,
+          history,
+          members,
+          options,
+          channelName,
+          track,
+          memberByName,
+          source,
+        )
+        autonomousRounds++
+        this.autonomousCharacterTurns++
+        if (!response) {
+          const decision = await this.interveneForActionBeat(
+            `角色「${target.name}」未能回应「${actor.name}」的主动点名`,
+            scene,
+            history,
+            members,
+            options,
+            channelName,
+            track,
+          )
+          if (decision === 'abort') throw new Error('主持人终止当前动作节点，群聊演出中止')
+          continue
+        }
+        if (response.progress === 'stall' || !response.consequence.trim()) {
+          const decision = await this.interveneForActionBeat(
+            `角色「${target.name}」的回应没有产生有效进展或后果`,
+            scene,
+            history,
+            members,
+            options,
+            channelName,
+            track,
+          )
+          if (decision === 'abort') throw new Error('主持人终止当前动作节点，群聊演出中止')
+          continue
+        }
+        completed.add(targetBeat.beatId)
+        const responseMessageId = this.appendCharacterTurn(
+          target,
+          response,
+          scene.sceneId,
+          history,
+          options,
+          channelName,
+        )
+        pending = this.enqueueCharacterMentions(
+          pending,
+          target,
+          response,
+          responseMessageId,
+          scene,
+          memberByName,
+          edgeCounts,
+          history,
+          options,
+          next.depth,
+        )
+        if (targetBeat?.nextActor && pending.length === 0) {
+          const defaultTarget = memberById.get(targetBeat.nextActor)
+          if (defaultTarget && defaultTarget.id !== target.id) {
+            pending.push({ targetId: defaultTarget.id, sourceMessageId: responseMessageId, depth: next.depth + 1 })
+          }
+        }
+      }
+    }
+
+    const incomplete = actionBeats.slice(firstBeatIndex).filter(beat => !completed.has(beat.beatId))
+    if (incomplete.length > 0) {
+      const decision = await this.interveneForActionBeat(
+        `场景「${scene.title}」仍有 ${incomplete.length} 个动作节点未完成：${incomplete.map(beat => beat.beatId).join('、')}`,
+        scene,
+        history,
+        members,
+        options,
+        channelName,
+        track,
+      )
+      if (decision === 'abort') throw new Error('主持人终止当前动作节点，群聊演出中止')
+      if (options.allowLegacyActing === false) {
+        throw new Error(
+          `场景「${scene.title}」有 ${incomplete.length} 个动作节点未完成（失败 ${failed.size} 个），已阻止 Writer 盲写。`,
+        )
+      }
+    }
+  }
+
+  private appendActionBeatSystemMessage(
+    history: DiscussionMessage[],
+    options: DiscussionOptions,
+    scene: SceneDefinition,
+    beat: SceneActionBeat,
+    kind: 'start' | 'complete' | 'failed',
+  ): void {
+    const label = kind === 'start' ? '开始' : kind === 'complete' ? '完成' : '失败'
+    const message = this.systemMessage(
+      `【动作节点${label}】${beat.beatId}：${beat.action}；选择：${beat.choice}；后果：${beat.consequence}`,
+    )
+    message.sceneId = scene.sceneId
+    history.push(message)
+    this.emitProgress(options, 'acting', {
+      type: 'phase_change',
+      data: { message: message.content, sceneId: scene.sceneId, actionBeatId: beat.beatId },
+    })
+  }
+
+  private async invokeCharacterTurn(
+    member: DiscussionMember,
+    actionBeat: SceneActionBeat,
+    scene: SceneDefinition,
+    history: DiscussionMessage[],
+    members: DiscussionMember[],
+    options: DiscussionOptions,
+    channelName: string,
+    track: { phase: DiscussionPhase; sceneId?: number },
+    memberByName: Map<string, DiscussionMember>,
+    sourceMessage?: DiscussionMessage,
+  ): Promise<CharacterTurn | null> {
+    const toolset = options.buildCharacterTurnToolset?.({
+      memberId: member.id,
+      sceneId: scene.sceneId,
+      actionBeatId: actionBeat.beatId,
+    })
+    this.currentCharacterTurn = toolset
+    if (!toolset) {
+      this.context.logger.warn({ memberId: member.id, sceneId: scene.sceneId }, '角色回合工具集未提供，进入一次性 legacy 回退')
+    }
+    const prompt = [
+      `当前动作节点：${actionBeat.beatId}`,
+      `当前阻力：${actionBeat.pressure}`,
+      `你要采取的行动边界：${actionBeat.action}`,
+      `你必须面对的选择：${actionBeat.choice}`,
+      `节点预期即时后果：${actionBeat.consequence}`,
+      `节点完成条件：${actionBeat.exitCondition}`,
+      sourceMessage ? `请回应 ${sourceMessage.fromName} 刚才的动作：\n${sourceMessage.content}` : '',
+      '只演当前角色，不替其他角色说话。完成后必须调用 novel_submit_character_turn 工具提交结构化回合。',
+    ].filter(Boolean).join('\n')
+    try {
+      const raw = await this.invokeMember(
+        member,
+        prompt,
+        history,
+        options,
+        { phase: 'acting', sceneId: scene.sceneId },
+      )
+      const submitted = toolset?.extractResult() ?? null
+      if (submitted) {
+        if (submitted.actionBeatId && submitted.actionBeatId !== actionBeat.beatId) {
+          this.context.logger.warn(
+            { expected: actionBeat.beatId, received: submitted.actionBeatId, memberId: member.id },
+            '角色回合未对应当前动作节点，拒绝提交',
+          )
+          return null
+        }
+        if (submitted.progress === 'stall' || !submitted.consequence.trim()) return null
+        return submitted
+      }
+      // provider 不支持工具时保留 legacy 文本兼容，但只允许当前角色的公开演出。
+      if (raw.trim()) {
+        return {
+          publicText: raw.trim(),
+          innerThought: '',
+          conflictReading: actionBeat.pressure,
+          responsePlan: actionBeat.action,
+          consequence: actionBeat.consequence,
+          progress: 'advance',
+          mentionNames: actionBeat.nextActor
+            ? [memberByName.get(actionBeat.nextActor)?.name ?? '']
+            : [],
+        }
+      }
+      return null
+    } catch (err) {
+      if (options.signal?.aborted) {
+        this.characterTurnCancelled++
+        throw err
+      }
+      this.characterTurnFailures++
+      this.context.logger.warn({ err, memberId: member.id, sceneId: scene.sceneId }, '自主角色回合失败，保留场景继续')
+      this.emitProgress(options, 'acting', {
+        type: 'phase_change',
+        data: { message: `⚠️ ${member.name} 本回合失败，跳过当前节点并继续演出` },
+      })
+      return null
+    } finally {
+      this.currentCharacterTurn = undefined
+    }
+  }
+
+  private appendCharacterTurn(
+    member: DiscussionMember,
+    turn: CharacterTurn,
+    sceneId: number,
+    history: DiscussionMessage[],
+    options: DiscussionOptions,
+    channelName: string,
+  ): string {
+    const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const message: DiscussionMessage = {
+      id,
+      fromId: member.id,
+      fromName: member.name,
+      content: turn.publicText,
+      timestamp: Date.now(),
+      sceneId,
+      type: 'member',
+      actorTurn: turn,
+    }
+    history.push(message)
+    this.channel.broadcast(channelName, member.id, message)
+    this.emitProgress(options, 'acting', {
+      type: 'agent_output',
+      data: {
+        agentType: 'character',
+        agentName: member.name,
+        content: turn.publicText,
+        actorTurn: turn,
+        messageId: id,
+      },
+    })
+    return id
+  }
+
+  private enqueueCharacterMentions(
+    pending: Array<{ targetId: string; sourceMessageId: string; depth: number }>,
+    sourceMember: DiscussionMember,
+    turn: CharacterTurn,
+    sourceMessageId: string,
+    scene: SceneDefinition,
+    memberByName: Map<string, DiscussionMember>,
+    edgeCounts: Map<string, number>,
+    history: DiscussionMessage[],
+    options: DiscussionOptions,
+    parentDepth = 0,
+  ): Array<{ targetId: string; sourceMessageId: string; depth: number }> {
+    const result = [...pending]
+    const seen = new Set(result.map(item => `${item.sourceMessageId}:${item.targetId}`))
+    for (const name of turn.mentionNames) {
+      const target = memberByName.get(this.normalizeCharacterName(name))
+      if (!target || target.id === sourceMember.id) continue
+      const edge = `${sourceMember.id}->${target.id}`
+      const count = edgeCounts.get(edge) ?? 0
+      if (count >= 2 || parentDepth >= 3) {
+        this.context.logger.warn({ sceneId: scene.sceneId, edge, parentDepth }, '角色主动 mention 被回环/深度预算拦截')
+        continue
+      }
+      const key = `${sourceMessageId}:${target.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      edgeCounts.set(edge, count + 1)
+      result.push({ targetId: target.id, sourceMessageId, depth: parentDepth + 1 })
+      this.autonomousMentions++
+      this.emitProgress(options, 'acting', {
+        type: 'phase_change',
+        data: { message: `${sourceMember.name} 主动邀请 ${target.name} 接戏` },
+      })
+    }
+    return result
+  }
+
+  private async interveneForActionBeat(
+    reason: string,
+    scene: SceneDefinition,
+    history: DiscussionMessage[],
+    members: DiscussionMember[],
+    options: DiscussionOptions,
+    channelName: string,
+    track: { phase: DiscussionPhase; sceneId?: number },
+  ): Promise<'continue' | 'abort'> {
+    this.moderatorExceptionInvocations++
+    this.totalModeratorInvocations++
+    this.emitProgress(options, 'acting', {
+      type: 'phase_change',
+      data: { message: `⚠️ 演出异常，交由主持人仲裁：${reason}` },
+    })
+    const sceneMembers = [
+      ...members.filter(member => member.type === 'role'),
+      ...members.filter(member => member.type === 'character' && scene.presentCharacters.includes(member.id)),
+    ]
+    const decision = await this.moderator.decide(
+      {
+        task: `当前场景「${scene.title}」的动作节点演出出现异常：${reason}`,
+        context: '',
+      },
+      history,
+      sceneMembers,
+      {
+        phase: 'acting',
+        round: this.moderatorExceptionInvocations,
+          currentScene: scene,
+      currentActionBeat: scene.actionBeats?.find(beat => beat.beatId === this.currentActionBeatId),
+          actionBeatsCompleted: this.completedActionBeats,
+          scenesDefined: true,
+      },
+      options.signal,
+    )
+    this.noteModeratorDegradation(options, 'acting')
+    await this.handleDecision(decision, history, sceneMembers, options, channelName, {
+      phase: 'acting',
+      sceneId: track.sceneId,
+    })
+      if (decision.type === 'pause') return 'abort'
+    if (decision.type === 'converge' || decision.type === 'next_scene') return 'continue'
+    return 'continue'
   }
 
   /**
@@ -547,6 +1179,8 @@ export class TeamDiscussionEngine {
         channelName,
         startIndex,
         track,
+        enforceCastCoverage: false,
+        failedActionBeatId: resumeState.failedActionBeatId,
       })
 
       track.phase = 'chapter_weaving'
@@ -574,11 +1208,14 @@ export class TeamDiscussionEngine {
         error: message,
         failedPhase: track.phase,
         failedSceneId: this.sceneIdForFailure(track),
+        failedActionBeatId: this.currentActionBeatSceneId === track.sceneId ? this.currentActionBeatId : undefined,
         content: finalContent || undefined,
         transcript: history,
         scenes,
       }
     } finally {
+      this.currentActionBeatId = undefined
+      this.currentActionBeatSceneId = undefined
       this.acceptingInterjects = false
       for (const member of members) this.channel.unsubscribe(channelName, member.id)
       this.flushInterjectDropped(options)
@@ -714,6 +1351,76 @@ export class TeamDiscussionEngine {
             )
           }
 
+          // ── Planning 阶段 Director 空响应处理（2026-08-26，基于 diag 日志实证）──
+          // 推理模型（gpt-5.6-luna）已实证行为：第一轮正常调用 novel_submit_scene_plan
+          // 工具（工具执行成功），但 SDK 回传工具结果后的第二轮返回空 stop
+          // （contentBlocks=[]、零 delta）→ prompt() 只返回第二轮 text = 空串。
+          // 此时工具 draft 里已有完整场景计划，绝不能当"没产出"处理。
+          if (ctx.phase === 'planning' && member.type === 'role' && !content.trim()) {
+            const isDirector = member.id === 'novel-director' || member.id.includes('director')
+            if (isDirector) {
+              const submitted = this.currentScenePlan?.extractResult()
+              if (submitted && submitted.scenes.length > 0) {
+                // 工具已提交场景计划：把工具参数完整格式化为 Director 气泡，
+                // 同时用非空摘要让兼容旧流程的 Moderator 仍能看到导演有产出。
+                content = this.formatSubmittedScenePlan(submitted.scenes)
+                this.emitProgress(options, ctx.phase, {
+                  type: 'phase_change',
+                  data: { message: '✅ 导演已通过工具提交场景计划（正文返回为空，已直接采用工具结果）' },
+                })
+                this.emitProgress(options, ctx.phase, {
+                  type: 'agent_output',
+                  data: {
+                    agentType: 'director',
+                    agentName: member.name,
+                    content,
+                  },
+                })
+              } else {
+                // 工具未提交 + 文本为空：纠正性重试一次（明确要求调用工具或文本输出）
+                const retryNotice = this.moderatorMessage(
+                  `@${member.name} 你上一条回复没有任何内容，系统无法读取场景拆分。请立即调用 novel_submit_scene_plan 工具提交本章场景拆分；若无法调用工具，直接在文本中输出各场景的标题、地点、时间、冲突、目标、情绪与在场角色。`,
+                )
+                history.push(retryNotice)
+                this.emitProgress(options, ctx.phase, {
+                  type: 'phase_change',
+                  data: { message: '⚠️ 导演本轮回复为空，已发起纠正性重试' },
+                })
+                content = await this.invokeMember(
+                  member,
+                  '你上一条回复为空。请立即调用 novel_submit_scene_plan 工具提交本章场景拆分（每个场景含标题/地点/时间/冲突/目标/情绪/在场角色）；若无法调用工具，在文本中直接输出完整场景列表，不要输出空内容。',
+                  history,
+                  options,
+                  ctx,
+                )
+                if (!content.trim()) {
+                  // 重试后再次检查工具（重试轮同样可能只调工具不产文本）
+                  const resubmitted = this.currentScenePlan?.extractResult()
+                  if (resubmitted && resubmitted.scenes.length > 0) {
+                    content = this.formatSubmittedScenePlan(resubmitted.scenes)
+                    this.emitProgress(options, ctx.phase, {
+                      type: 'phase_change',
+                      data: { message: '✅ 重试轮导演通过工具提交了场景计划，已直接采用工具结果' },
+                    })
+                    this.emitProgress(options, ctx.phase, {
+                      type: 'agent_output',
+                      data: {
+                        agentType: 'director',
+                        agentName: member.name,
+                        content,
+                      },
+                    })
+                  } else {
+                    // 两次均空且工具未提交：不把空消息计入 history，标记由 planning 循环抛检查点/中止
+                    history.push(this.systemMessage('导演连续两轮未产出内容（模型可能异常），等待用户决策。'))
+                    this.planningDirectorEmpty = true
+                    break
+                  }
+                }
+              }
+            }
+          }
+
           const msg: DiscussionMessage = {
             id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             fromId: member.id,
@@ -725,9 +1432,10 @@ export class TeamDiscussionEngine {
           }
           history.push(msg)
           this.channel.broadcast(channelName, member.id, msg)
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err)
-          history.push(this.errorMessage(`${member.name} 发言失败：${errMsg}`))
+          } catch (err) {
+            if (options.signal?.aborted) throw err
+            const errMsg = err instanceof Error ? err.message : String(err)
+            history.push(this.errorMessage(`${member.name} 发言失败：${errMsg}`))
         }
         break
       }
@@ -915,6 +1623,7 @@ export class TeamDiscussionEngine {
           },
         )
       } catch (err) {
+        if (options.signal?.aborted) throw err
         const errMsg = err instanceof Error ? err.message : String(err)
         history.push(this.errorMessage(`${names.join('、')} 合并发言失败：${errMsg}`))
         for (const member of batchMembers) {
@@ -954,6 +1663,7 @@ export class TeamDiscussionEngine {
           history.push(msg)
           this.channel.broadcast(channelName, member.id, msg)
         } catch (err) {
+          if (options.signal?.aborted) throw err
           this.context.logger.warn(
             { err, memberId: member.id, memberName: member.name },
             '合并输出的角色分段处理失败，回落为单独调用',
@@ -1000,6 +1710,7 @@ export class TeamDiscussionEngine {
       history.push(msg)
       this.channel.broadcast(channelName, member.id, msg)
     } catch (err) {
+      if (options.signal?.aborted) throw err
       const errMsg = err instanceof Error ? err.message : String(err)
       history.push(this.errorMessage(`${member.name} 发言失败：${errMsg}`))
     }
@@ -1088,6 +1799,9 @@ ${reviewResult.rewrite_suggestion}
       participantNames?: string[]
     },
   ): Promise<string> {
+    const characterTurnToolset = member.type === 'character'
+      ? this.currentCharacterTurn
+      : undefined
     const systemPrompt = invocationOverrides?.systemPrompt ?? member.buildSystemPrompt()
     const identityPrompt = invocationOverrides ? '' : member.buildIdentityPrompt?.() ?? ''
     const visibleChapterContext = invocationOverrides
@@ -1111,12 +1825,14 @@ ${reviewResult.rewrite_suggestion}
     const transcriptSummary = this.formatTranscriptForMember(history, member.id)
     const userMessage = `${prompt}\n\n---\n\n## 群聊记录\n\n${transcriptSummary}`
     const startTime = Date.now()
+    const requestedTools = characterTurnToolset?.tools ?? ctx.extraTools ?? []
     let result = ''
     let status: 'success' | 'error' | 'cancelled' = 'success'
     let error = ''
 
     // 真实 payload 体积累加器：每次 LLM 往返一次回调，累加才是本次调用送出去的总量
     const payloadStats = { messagesChars: 0, toolsChars: 0, toolCount: 0, totalChars: 0, roundTrips: 0 }
+    this.totalMemberInvocations++
     const handle = await this.context.createAgUiSession({
       systemPrompt,
       // 工种成员使用共享章节上下文；角色成员可通过 buildContextPrompt 使用
@@ -1125,9 +1841,10 @@ ${reviewResult.rewrite_suggestion}
       userMessage,
       // 注入业务层提供的工具（如 Reviser 的 novel_apply_revision）。
       // 工具不在 STATIC/SEMI 层 prompt 中出现，不影响跨 Agent 的 prompt cache 命中率。
-      tools: ctx.extraTools ?? [],
+      tools: requestedTools,
       onPayloadStats: (stats) => {
         payloadStats.roundTrips += 1
+        this.totalLlmRoundTrips += 1
         payloadStats.messagesChars += stats.messagesChars
         payloadStats.toolsChars += stats.toolsChars
         payloadStats.totalChars += stats.totalChars
@@ -1186,6 +1903,11 @@ ${reviewResult.rewrite_suggestion}
 
     try {
       result = await session.prompt()
+      if (member.type === 'character' && characterTurnToolset?.extractResult()) {
+        // 工具主路径的终答可能为空；调用方读取闭包 payload，不能再触发一次 legacy 解析。
+        streamEmitter.finishTextMessage()
+        return result
+      }
       streamEmitter.finishTextMessage()
       return result
     } catch (err) {
@@ -1206,7 +1928,10 @@ ${reviewResult.rewrite_suggestion}
           result,
           // 记录实际挂载的工具名：排查"修订没生效"时要能区分
           // "工具没挂上"与"工具挂了但模型没调"
-          toolNames: (ctx.extraTools ?? []).map(tool => (tool as { name: string }).name),
+          toolNames: [
+            ...(characterTurnToolset?.tools ?? []),
+            ...(ctx.extraTools ?? []),
+          ].map(tool => (tool as { name: string }).name),
           durationMs: Date.now() - startTime,
           status,
           error,
@@ -1698,9 +2423,18 @@ ${listed}
     if (!writer) throw new Error('无可收敛成员')
 
     // 从 history 提取每个场景的角色推演剧本（type='member' 且 sceneId 匹配）
-    const sceneScripts = scenes.map(scene => {
-      const sceneMessages = history.filter(m => m.sceneId === scene.sceneId && m.type === 'member')
-      const transcript = sceneMessages.map(m => `[${m.fromName}] ${m.content}`).join('\n\n')
+      const sceneScripts = scenes.map(scene => {
+        const sceneMessages = history.filter(m => m.sceneId === scene.sceneId && m.type === 'member')
+        const transcript = sceneMessages.map(m => {
+          const actorTurn = m.actorTurn
+          if (!actorTurn) return `[${m.fromName}] ${m.content}`
+          return `[${m.fromName}] ${m.content}\n` +
+            `[角色判断，仅 Writer 可见]\n` +
+            `- 内心：${actorTurn.innerThought}\n` +
+            `- 冲突：${actorTurn.conflictReading}\n` +
+            `- 应对：${actorTurn.responsePlan}\n` +
+            `- 后果：${actorTurn.consequence}`
+        }).join('\n\n')
       return { scene, transcript }
     })
 
@@ -1712,7 +2446,7 @@ ${listed}
     // 2026-08-24：降级不再静默——显式事件 + transcript 记录，让用户与 Writer 都知道
     // 本章没有角色推演素材。
     const hasAnyScript = sceneScripts.some(s => s.transcript.length > 0)
-    if (scenes.length === 0 || !hasAnyScript) {
+    if ((scenes.length === 0 || !hasAnyScript) && options.allowLegacyActing !== false) {
       history.push(this.systemMessage('【降级】本章未产生可用的角色推演剧本，Writer 直接基于群聊记录成文。'))
       this.emitProgress(options, 'chapter_weaving', {
         type: 'phase_change',
@@ -1741,6 +2475,7 @@ ${listed}
 - 冲突：${s.conflict ?? '无'}
 - 目标：${s.goal}
 - 情绪：${s.emotion ?? '未指定'}
+- 戏剧动作节点：${s.actionBeats?.map(beat => `${beat.actor}${beat.target ? `→${beat.target}` : ''}：${beat.action}；选择：${beat.choice}；后果：${beat.consequence}`).join(' / ') || '无'}
 
 ## 角色推演记录
 ${scriptBlock}`
@@ -1785,7 +2520,7 @@ ${combined}
     history: DiscussionMessage[],
     options: DiscussionOptions,
     targetWords?: number,
-  ): Promise<{ status: 'completed'; content: string; review?: ReviewerOutcome } | { status: 'cancelled'; review?: ReviewerOutcome }> {
+  ): Promise<{ status: 'completed'; content: string; review?: ReviewerOutcome } | { status: 'cancelled'; content: string; review?: ReviewerOutcome }> {
     const reviewer = members.find(member => member.id === 'novel-reviewer')
     if (!reviewer) return { status: 'completed', content }
 
@@ -1867,7 +2602,7 @@ ${content}${proseQualityReport ? `\n\n---\n\n${proseQualityReport}` : ''}\n\n---
       options: ['approve', 'revise', 'reject'],
       context: report,
     })
-    if (decision === 'reject') return { status: 'cancelled', review: reviewOutcome ?? undefined }
+    if (decision === 'reject') return { status: 'cancelled', content, review: reviewOutcome ?? undefined }
     const wordCount = content.replace(/\s/g, '').length
     // 仅严重偏离触发自动 Reviser；轻微偏离由 Reviewer/用户决定。
     const lengthOutOfRange = targetWords != null && (
@@ -1975,6 +2710,25 @@ ${transcriptDigest}` : ''}`,
     return { scenes: [], source: 'none' }
   }
 
+  /**
+   * 工具提交的场景计划 → Director 可见气泡正文。
+   *
+   * 工具调用后的终答可能是空 stop，不能只用工具摘要或依赖 TEXT_MESSAGE_CONTENT；
+   * 这里直接把工具参数中的完整结构写入 transcript，并通过 agent_output 实时推给前端。
+   */
+  private formatSubmittedScenePlan(scenes: SubmittedSceneInput[]): string {
+    const sections = scenes.map((scene, index) => [
+      `### 场景${index + 1}：${scene.title}`,
+      `- 地点：${scene.location}`,
+      `- 时间：${scene.time}`,
+      `- 冲突：${scene.conflict ?? '无'}`,
+      `- 目标：${scene.goal}`,
+      `- 情绪：${scene.emotion ?? '未指定'}`,
+      `- 在场角色：${scene.presentCharacters.length > 0 ? scene.presentCharacters.join('、') : '未指定'}`,
+    ].join('\n'))
+    return `## 场景拆分计划（已通过工具提交）\n\n${sections.join('\n\n')}`
+  }
+
   /** 工具提交的原始场景 → SceneDefinition（角色名映射为成员 ID，未命中记入 unresolvedCharacterNames） */
   private toSceneDefinitions(inputs: SubmittedSceneInput[], members: DiscussionMember[]): SceneDefinition[] {
     const nameToId = new Map<string, string>()
@@ -1983,7 +2737,7 @@ ${transcriptDigest}` : ''}`,
         nameToId.set(this.normalizeCharacterName(member.name), member.id)
       }
     }
-    return inputs.map((input, index) => {
+    return inputs.flatMap((input, index) => {
       const names = input.presentCharacters.map(name => name.trim()).filter(Boolean)
       const presentCharacters = names
         .map(name => nameToId.get(this.normalizeCharacterName(name)))
@@ -2007,7 +2761,45 @@ ${transcriptDigest}` : ''}`,
         presentCharacters,
         presentCharacterNames: names,
         unresolvedCharacterNames: unmatchedNames,
+        actionBeats: this.toActionBeats(input.actionBeats, names, nameToId),
+        legacyPlan: !input.actionBeats || input.actionBeats.length === 0,
       }
+    })
+  }
+
+  /** 将 Director 提交的角色名动作图转换为 canonical member ID 动作图。 */
+  private toActionBeats(
+    inputs: SubmittedSceneInput['actionBeats'],
+    presentNames: string[],
+    nameToId: Map<string, string>,
+  ): SceneActionBeat[] {
+    if (!inputs || inputs.length === 0) return []
+    const present = new Set(presentNames.map(name => this.normalizeCharacterName(name)))
+    return inputs.flatMap((input, index) => {
+      const actorName = this.normalizeCharacterName(input.actor)
+      const targetName = input.target ? this.normalizeCharacterName(input.target) : undefined
+      const nextActorName = input.nextActor ? this.normalizeCharacterName(input.nextActor) : undefined
+      const actor = nameToId.get(actorName)
+      const target = targetName ? nameToId.get(targetName) : undefined
+      const nextActor = nextActorName ? nameToId.get(nextActorName) : undefined
+      if (!actor || !present.has(actorName) || (targetName && (!target || !present.has(targetName))) || (nextActorName && (!nextActor || !present.has(nextActorName)))) {
+        this.context.logger.warn(
+          { beatId: input.beatId, actor: input.actor, target: input.target, nextActor: input.nextActor },
+          '动作节点角色不在本场在场名单，已丢弃不可执行节点',
+        )
+        return []
+      }
+      return [{
+        beatId: input.beatId.trim() || `action-${index + 1}`,
+        actor,
+        ...(target ? { target } : {}),
+        pressure: input.pressure.trim(),
+        action: input.action.trim(),
+        choice: input.choice.trim(),
+        consequence: input.consequence.trim(),
+        ...(nextActor ? { nextActor } : {}),
+        exitCondition: input.exitCondition.trim(),
+      }]
     })
   }
 
@@ -2145,6 +2937,25 @@ ${transcriptDigest}` : ''}`,
       formatCorrections: this.formatCorrectionCount,
       planningRetries,
       moderatorDegradedRounds: this.moderator.degradedRounds,
+      autonomousCharacterTurns: this.autonomousCharacterTurns,
+      autonomousMentions: this.autonomousMentions,
+      moderatorExceptionInvocations: this.moderatorExceptionInvocations,
+      characterTurnFailures: this.characterTurnFailures,
+      characterTurnCancelled: this.characterTurnCancelled,
+      completedActionBeats: this.completedActionBeats,
+      totalMemberInvocations: this.totalMemberInvocations,
+      totalModeratorInvocations: this.totalModeratorInvocations,
+      totalLlmRoundTrips: this.totalLlmRoundTrips,
+      totalDurationMs: this.runStartedAt > 0 ? Date.now() - this.runStartedAt : undefined,
+      legacyPlanScenes: scenes.filter(scene => scene.legacyPlan || !scene.actionBeats?.length).length,
+      incompleteActionBeats: scenes.reduce((sum, scene) => {
+        if (!scene.actionBeats?.length) return sum
+        const acted = new Set(history
+          .filter(message => message.type === 'member' && message.sceneId === scene.sceneId)
+          .map(message => message.actorTurn?.actionBeatId)
+          .filter((beatId): beatId is string => Boolean(beatId)))
+        return sum + Math.max(0, scene.actionBeats.length - acted.size)
+      }, 0),
     }
   }
 
@@ -2297,6 +3108,11 @@ ${transcriptDigest}` : ''}`,
         .filter((id): id is string => !!id)
       scene.unresolvedCharacterNames = names
         .filter(name => !nameToId.has(this.normalizeCharacterName(name)))
+      scene.actionBeats = this.toActionBeats(
+        scene.actionBeats,
+        names,
+        nameToId,
+      )
     }
   }
 
@@ -2310,9 +3126,16 @@ ${transcriptDigest}` : ''}`,
   }
 
   /** 格式化群聊记录摘要（给成员看） */
-  private formatTranscriptForMember(history: DiscussionMessage[], _memberId: string): string {
+  private formatTranscriptForMember(history: DiscussionMessage[], memberId: string): string {
     const recent = history.slice(-10)
-    return recent.map(m => `[${m.fromName}] ${m.content}`).join('\n\n')
+    return recent.map(m => {
+      const publicLine = `[${m.fromName}] ${m.content}`
+      // 角色只接收公共演出；Writer 可以读取角色私有判断，避免信息差泄漏。
+      if (memberId === 'novel-writer' && m.actorTurn) {
+        return `${publicLine}\n[角色私有判断，仅 Writer 可见]\n- 内心：${m.actorTurn.innerThought}\n- 冲突：${m.actorTurn.conflictReading}\n- 应对：${m.actorTurn.responsePlan}\n- 后果：${m.actorTurn.consequence}`
+      }
+      return publicLine
+    }).join('\n\n')
   }
 
   private systemMessage(content: string): DiscussionMessage {

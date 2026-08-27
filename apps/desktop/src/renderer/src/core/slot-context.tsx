@@ -20,6 +20,7 @@ import {
   NovelWorkspaceContribution,
   NovelNavigationContribution,
   NovelHomeShowcaseContribution,
+  NovelDiscussionSettingsContribution,
   InfiniteCanvasWorkspaceContribution,
   InfiniteCanvasNavigationContribution
 } from '../components/slot/trusted-renderers'
@@ -37,6 +38,8 @@ const RENDERERS: Record<string, React.ComponentType<Record<string, unknown>>> = 
   'novel.workspace': NovelWorkspaceContribution,
   'novel.navigation': NovelNavigationContribution,
   'novel.home-showcase': NovelHomeShowcaseContribution,
+  // 设置中心"插件设置"分区使用的自定义面板（plugin-settings slot）
+  'novel.discussion-settings': NovelDiscussionSettingsContribution,
   'infinite-canvas.workspace': InfiniteCanvasWorkspaceContribution,
   'infinite-canvas.navigation': InfiniteCanvasNavigationContribution
 }
@@ -48,6 +51,18 @@ export function registerTrustedRenderer(
   RENDERERS[rendererKey] = component
 }
 
+/**
+ * 查询受信 renderer 白名单（只读）。
+ *
+ * 设置中心的"插件设置"分区用它把 plugin-settings 贡献解析到本地组件；
+ * 不在白名单的 key 返回 undefined，由调用方决定降级展示。
+ */
+export function getTrustedRenderer(
+  rendererKey: string
+): React.ComponentType<Record<string, unknown>> | undefined {
+  return RENDERERS[rendererKey]
+}
+
 /** 服务端 slot 名 → 桌面宿主 slot 名。未列出的服务端 slot 一律跳过。 */
 const SLOT_MAP: Partial<Record<PluginUiContribution['slot'], string>> = {
   'app.navigation': BUILTIN_SLOTS.SIDEBAR_NAVIGATION,
@@ -55,7 +70,12 @@ const SLOT_MAP: Partial<Record<PluginUiContribution['slot'], string>> = {
   'right-panel.tab': BUILTIN_SLOTS.RIGHT_PANEL_TAB,
   'tool.detail': BUILTIN_SLOTS.CHAT_TOOL_DETAIL,
   'plugin-page.top': BUILTIN_SLOTS.PLUGIN_PAGE_TOP,
-  'home.showcase': BUILTIN_SLOTS.HOME_SHOWCASE
+  // 插件设置面板不进全局 registry：设置中心直接按 rendererKey 白名单渲染，
+  // 这里不做映射，避免与设置页自己的分区逻辑重复注册
+  'home.showcase': BUILTIN_SLOTS.HOME_SHOWCASE,
+  'home.actions': BUILTIN_SLOTS.HOME_ACTIONS,
+  'home.hero-aside': BUILTIN_SLOTS.HOME_HERO_ASIDE,
+  'home.footer': BUILTIN_SLOTS.HOME_FOOTER
 }
 
 /** 需要 key 的 keyed slot；其余按 list 处理（用 id 参与冲突判定） */

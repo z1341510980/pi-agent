@@ -1,12 +1,52 @@
 /**
- * provider-manager ID 派生与去重逻辑测试
+ * provider-manager Provider ID 与旧缓存迁移逻辑测试
  *
- * 核心回归场景：新增 Provider 时 id 从名称派生（如 openai/deepseek），
- * 若与已有 Provider（尤其默认 Provider）id 冲突，必须去重为 -2/-3 后缀，
- * 否则会触发后端 upsert 语义，意外覆盖已有 Provider 数据。
+ * 核心回归场景：新增 Provider 必须分配与名称无关的唯一 ID；
+ * 旧版缓存中的名称派生 ID 需要和后端记录合并，否则会渲染成两条且无法正确删除。
  */
 import { describe, expect, it } from 'vitest'
-import { deriveProviderId, ensureUniqueProviderId } from '../provider-manager'
+import {
+  deriveProviderId,
+  ensureUniqueProviderId,
+  generateProviderId,
+  reconcileLocalProviders,
+} from '../provider-manager'
+
+describe('generateProviderId', () => {
+  it('生成与 Provider 名称无关的唯一 ID', () => {
+    const id = generateProviderId(new Set(['provider-existing']))
+    expect(id).toMatch(/^provider-/)
+    expect(id).not.toBe('OpenAI')
+    expect(id).not.toBe('openai')
+    expect(id).not.toBe('deepseek')
+  })
+})
+
+describe('reconcileLocalProviders', () => {
+  it('将旧版名称派生 ID 的本地缓存合并到后端 Provider', () => {
+    const local = {
+      id: 'openai',
+      name: 'OpenAI',
+      api: 'openai-completions',
+      baseUrl: 'https://api.openai.com/v1/',
+      apiKey: 'sk-local-key',
+      models: [{ id: 'gpt-4o', name: 'GPT-4o' }],
+    }
+    const backend = {
+      id: 'provider-550e8400-e29b-41d4-a716-446655440000',
+      name: 'OpenAI',
+      api: 'openai-completions',
+      baseUrl: 'https://api.openai.com/v1',
+      models: [{ id: 'gpt-4o', name: 'GPT-4o' }],
+    }
+
+    const result = reconcileLocalProviders([local], [backend])
+
+    expect(result).toHaveLength(1)
+    expect(result[0].id).toBe(backend.id)
+    expect(result[0].apiKey).toBe(local.apiKey)
+  })
+})
 
 describe('deriveProviderId', () => {
   it('小写化并替换非字母数字为连字符', () => {

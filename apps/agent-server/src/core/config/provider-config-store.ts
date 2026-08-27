@@ -11,6 +11,11 @@
  */
 
 import type Database from 'better-sqlite3'
+import {
+  DEFAULT_TERMINAL_SHELL,
+  isTerminalShell,
+  type TerminalShell,
+} from './terminal-shell.js'
 
 /** Pi-ai SDK 原生思考强度档位（不含 'off' 与 'minimal'） */
 export type ReasoningEffortLevel = 'low' | 'medium' | 'high' | 'xhigh'
@@ -26,6 +31,14 @@ export type ThinkingFormat =
   | 'qwen-chat-template'
   | 'string-thinking'
   | 'ant-ling'
+
+/** 图片生成协议；默认保持 OpenAI Images 兼容协议。 */
+export const MEDIA_PROTOCOLS = ['openai-images', 'apimart'] as const
+export type MediaProtocol = (typeof MEDIA_PROTOCOLS)[number]
+
+export function normalizeMediaProtocol(value: unknown): MediaProtocol {
+  return value === 'apimart' ? 'apimart' : 'openai-images'
+}
 
 export interface ProviderModelConfig {
   id: string
@@ -61,6 +74,14 @@ export interface ProviderConfig {
   api: string
   authHeader?: boolean
   models: ProviderModelConfig[]
+  /** Image generation protocol; omitted values use the OpenAI Images shape. */
+  mediaProtocol?: MediaProtocol
+  /** Image model independent from the provider's chat model list. */
+  mediaModel?: string
+  /** Provider default image resolution, e.g. APIMart's 1k/2k/4k. */
+  mediaResolution?: string
+  /** Locale sent to asynchronous media task status endpoints. */
+  mediaLanguage?: string
 }
 
 /** providers 表行结构 */
@@ -72,6 +93,10 @@ interface ProviderRow {
   api: string
   auth_header: number
   models: string
+  media_protocol?: string
+  media_model?: string
+  media_resolution?: string
+  media_language?: string
   updated_at: number
 }
 
@@ -88,16 +113,26 @@ export class ProviderConfigStore {
     // 预编译 SQL，提升反复执行性能
     this.stmtSelectAll = db.prepare('SELECT * FROM providers')
     this.stmtUpsert = db.prepare(`
-      INSERT INTO providers (id, name, base_url, api_key, api, auth_header, models, updated_at)
-      VALUES (@id, @name, @base_url, @api_key, @api, @auth_header, @models, unixepoch())
+      INSERT INTO providers (
+        id, name, base_url, api_key, api, auth_header, models,
+        media_protocol, media_model, media_resolution, media_language, updated_at
+      )
+      VALUES (
+        @id, @name, @base_url, @api_key, @api, @auth_header, @models,
+        @media_protocol, @media_model, @media_resolution, @media_language, unixepoch()
+      )
       ON CONFLICT(id) DO UPDATE SET
-        name        = excluded.name,
-        base_url    = excluded.base_url,
-        api_key     = excluded.api_key,
-        api         = excluded.api,
-        auth_header = excluded.auth_header,
-        models      = excluded.models,
-        updated_at  = unixepoch()
+        name             = excluded.name,
+        base_url         = excluded.base_url,
+        api_key          = excluded.api_key,
+        api              = excluded.api,
+        auth_header      = excluded.auth_header,
+        models           = excluded.models,
+        media_protocol   = excluded.media_protocol,
+        media_model      = excluded.media_model,
+        media_resolution = excluded.media_resolution,
+        media_language   = excluded.media_language,
+        updated_at       = unixepoch()
     `)
     this.stmtDelete = db.prepare('DELETE FROM providers WHERE id = ?')
     this.stmtGetSetting = db.prepare('SELECT value FROM app_settings WHERE key = ?')
@@ -131,22 +166,37 @@ export class ProviderConfigStore {
       api: row.api,
       authHeader: row.auth_header === 1,
       models,
+      mediaProtocol: normalizeMediaProtocol(row.media_protocol),
+      mediaModel: row.media_model || undefined,
+      mediaResolution: row.media_resolution || undefined,
+      mediaLanguage: row.media_language || 'en',
     }
   }
 
   /** 注册或更新 Provider 配置 */
   upsert(config: ProviderConfig): void {
+    const normalized: ProviderConfig = {
+      ...config,
+      mediaProtocol: normalizeMediaProtocol(config.mediaProtocol),
+      mediaModel: config.mediaModel?.trim() || undefined,
+      mediaResolution: config.mediaResolution?.trim() || undefined,
+      mediaLanguage: config.mediaLanguage?.trim() || 'en',
+    }
     // 先更新内存 Map
-    this.providers.set(config.id, config)
+    this.providers.set(normalized.id, normalized)
     // 同步写入 SQLite（UPSERT）
     this.stmtUpsert.run({
-      id: config.id,
-      name: config.name,
-      base_url: config.baseUrl,
-      api_key: config.apiKey,
-      api: config.api,
-      auth_header: config.authHeader === false ? 0 : 1,
-      models: JSON.stringify(config.models ?? []),
+      id: normalized.id,
+      name: normalized.name,
+      base_url: normalized.baseUrl,
+      api_key: normalized.apiKey,
+      api: normalized.api,
+      auth_header: normalized.authHeader === false ? 0 : 1,
+      models: JSON.stringify(normalized.models ?? []),
+      media_protocol: normalized.mediaProtocol,
+      media_model: normalized.mediaModel ?? '',
+      media_resolution: normalized.mediaResolution ?? '',
+      media_language: normalized.mediaLanguage ?? 'en',
     })
   }
 
@@ -184,7 +234,9 @@ export class ProviderConfigStore {
 
   /** 读取默认 Provider ID；未设置或指向已不存在的 Provider 时返回 undefined */
   getDefaultProviderId(): string | undefined {
-    const row = this.stmtGetSetting.get(ProviderConfigStore.DEFAULT_PROVIDER_KEY) as { value: string } | undefined
+    const row = this.stmtGetSetting.get(ProviderConfigStore.DEFAULT_PROVIDER_KEY) as
+      | { value: string }
+      | undefined
     const id = row?.value
     if (!id) return undefined
     // 校验对应的 Provider 仍然存在，避免脏数据
@@ -218,12 +270,34 @@ export class ProviderConfigStore {
    * 默认关闭（false）以保留 token 用量统计能力。
    */
   getStripStreamOptions(): boolean {
-    const row = this.stmtGetSetting.get(ProviderConfigStore.STRIP_STREAM_OPTIONS_KEY) as { value: string } | undefined
+    const row = this.stmtGetSetting.get(ProviderConfigStore.STRIP_STREAM_OPTIONS_KEY) as
+      | { value: string }
+      | undefined
     return row?.value === 'true'
   }
 
   /** 设置 stream_options 屏蔽开关 */
   setStripStreamOptions(enabled: boolean): void {
-    this.stmtSetSetting.run(ProviderConfigStore.STRIP_STREAM_OPTIONS_KEY, enabled ? 'true' : 'false')
+    this.stmtSetSetting.run(
+      ProviderConfigStore.STRIP_STREAM_OPTIONS_KEY,
+      enabled ? 'true' : 'false',
+    )
+  }
+
+  // ── Agent 终端设置 ──
+
+  private static readonly TERMINAL_SHELL_KEY = 'terminal_shell'
+
+  /** 获取 Agent bash 工具使用的终端，默认保持 Windows 上的 Git Bash 行为。 */
+  getTerminalShell(): TerminalShell {
+    const row = this.stmtGetSetting.get(ProviderConfigStore.TERMINAL_SHELL_KEY) as
+      | { value: string }
+      | undefined
+    return isTerminalShell(row?.value) ? row.value : DEFAULT_TERMINAL_SHELL
+  }
+
+  /** 设置 Agent bash 工具使用的终端。 */
+  setTerminalShell(shell: TerminalShell): void {
+    this.stmtSetSetting.run(ProviderConfigStore.TERMINAL_SHELL_KEY, shell)
   }
 }

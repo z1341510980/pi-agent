@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   XIcon,
   SettingsIcon,
@@ -12,6 +12,7 @@ import {
   ClockIcon,
   SparklesIcon,
   UsersIcon,
+  PuzzleIcon,
   type LucideIcon
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -25,7 +26,9 @@ import { AssistantSettings } from './assistant-settings'
 import { SkillsSettings } from './skills-settings'
 import { ProviderSettings } from './provider-settings'
 import { PluginPage } from './plugin-page'
+import { PluginSettingsSection, usePluginSettingsEntries } from './plugin-settings-section'
 
+/** 宿主固定分区；插件声明分区以 `plugin:<pluginId>` 动态加入 */
 export type SettingsSection =
   | 'general'
   | 'assistants'
@@ -37,6 +40,7 @@ export type SettingsSection =
   | 'security'
   | 'cron'
   | 'about'
+  | `plugin:${string}`
 
 interface SettingsPageProps {
   onClose: () => void
@@ -57,9 +61,10 @@ interface NavGroup {
 /**
  * 左侧导航分组（对齐 AionUi SettingsSider 的 GROUP_HEADER_BEFORE 风格）
  * - AI 核心：助手 / 技能 / 模型与 Provider / Agent / 权限与安全 / 定时任务
+ * - 插件设置：由插件声明（registerSettings / plugin-settings slot）动态生成
  * - 应用：通用设置 / 关于
  */
-const navGroups: NavGroup[] = [
+const hostNavGroups: NavGroup[] = [
   {
     label: 'AI 核心',
     items: [
@@ -85,6 +90,22 @@ const navGroups: NavGroup[] = [
 export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
   // 默认落在"通用设置"，对齐 AionUi 首屏聚焦应用偏好的体验
   const [section, setSection] = useState<SettingsSection>('general')
+  // 插件声明驱动的动态分区：有设置声明（schema 或自定义面板）的插件各占一项
+  const { entries: pluginSettingEntries } = usePluginSettingsEntries()
+  const navGroups: NavGroup[] = useMemo(() => {
+    const pluginGroup: NavGroup | null =
+      pluginSettingEntries.length > 0
+        ? {
+            label: '插件设置',
+            items: pluginSettingEntries.map((entry) => ({
+              id: `plugin:${entry.pluginId}` as SettingsSection,
+              label: entry.label,
+              icon: PuzzleIcon
+            }))
+          }
+        : null
+    return pluginGroup ? [hostNavGroups[0], pluginGroup, hostNavGroups[1]] : hostNavGroups
+  }, [pluginSettingEntries])
 
   return (
     <div
@@ -151,16 +172,31 @@ export function SettingsPage({ onClose }: SettingsPageProps): ReactElement {
 
         {/* ── 右侧内容区（统一卡片式布局） ── */}
         <main className="pi-settings-main overflow-auto min-w-0">
-          {section === 'general' && <GeneralSettings />}
-          {section === 'assistants' && <AssistantSettings />}
-          {section === 'skills' && <SkillsSettings />}
-          {section === 'providers' && <ProviderSettings />}
-          {section === 'models' && <ModelsPage />}
-          {section === 'plugins' && <PluginPage />}
-          {section === 'agents' && <AgentPage />}
-          {section === 'security' && <SecurityPage />}
-          {section === 'cron' && <CronPage />}
-          {section === 'about' && <AboutPage />}
+          {section.startsWith('plugin:') ? (
+            (() => {
+              const entry = pluginSettingEntries.find(
+                (candidate) => `plugin:${candidate.pluginId}` === section,
+              )
+              return entry ? (
+                <PluginSettingsSection entry={entry} />
+              ) : (
+                <div className="p-6 text-sm text-subtle">该插件当前未提供设置。</div>
+              )
+            })()
+          ) : (
+            <>
+              {section === 'general' && <GeneralSettings />}
+              {section === 'assistants' && <AssistantSettings />}
+              {section === 'skills' && <SkillsSettings />}
+              {section === 'providers' && <ProviderSettings />}
+              {section === 'models' && <ModelsPage />}
+              {section === 'plugins' && <PluginPage />}
+              {section === 'agents' && <AgentPage />}
+              {section === 'security' && <SecurityPage />}
+              {section === 'cron' && <CronPage />}
+              {section === 'about' && <AboutPage />}
+            </>
+          )}
         </main>
       </div>
     </div>

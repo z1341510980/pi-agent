@@ -36,6 +36,7 @@ import { motion } from 'framer-motion'
 import { ErrorCard } from '@/components/chat/error-card'
 import { type ModelRef } from './model-picker'
 import { StalledRunBanner } from './stalled-run-banner'
+import { ChapterBeatBanner } from './chapter-beat-banner'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -121,6 +122,7 @@ const SESSION_COMMANDS: CommandOption[] = [
 const PHASE_LABELS: Partial<Record<CreationPhase, string>> = {
   idle: '等待开始',
   directing: '导演分析中',
+  acting: '角色演出中',
   checkpoint_narrative: '等待确认叙事任务',
   writing: '写作创作中',
   reviewing: '审稿检查中',
@@ -705,6 +707,9 @@ export function NovelConversationPanel({
           </div>
         </div>
       </header>
+
+      {/* ── 本章节拍横幅：创作目标章的卷级节拍约束（与大纲树共享数据源）── */}
+      <ChapterBeatBanner projectId={projectId} chapterNumber={chapterNumber} />
 
       {/* ── 中断创作提示条：空闲且有可续跑快照时展示，解决"半成品不可见" ── */}
       <StalledRunBanner

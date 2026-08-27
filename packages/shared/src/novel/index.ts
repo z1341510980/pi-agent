@@ -1280,6 +1280,15 @@ export interface NovelStyleExpert {
   /** 稳定 ID；专家不是岗位，而是一套可独立召集的蒸馏文风能力。 */
   id: string
   name: string
+  /**
+   * 蒸馏维度（迁移 119）：专家团按"一维一专家"生成（场景/人物/对话/打斗/情感/冲突/叙事）。
+   * 手动蒸馏或历史专家为空，分组 UI 以 sourceTitle 兜底。
+   */
+  dimension?: string
+  /** 团队键（迁移 119）：同一次参考小说专家团生成共用一个 teamKey（通常为 referenceSourceId）。 */
+  teamKey?: string
+  /** 审核状态（迁移 119）：团队自动生成的专家先落 draft，人工审核启用后转 approved。 */
+  reviewStatus?: 'draft' | 'approved'
   /** 该能力主要从哪本小说/哪组样本中蒸馏而来。 */
   sourceTitle: string
   sourceAuthor?: string
@@ -1498,6 +1507,14 @@ export interface NovelCharacterHistory {
   newValue: string | null
   reason: string | null
   createdAt: number
+  /**
+   * 时间线失效标记（方案：章节重写 → 派生状态失效）。
+   * stale = 所在章内容被重写、待时间线重建确认；矩阵显示时以此区分样式。
+   * 缺省视为 active（兼容旧数据）。
+   */
+  status?: 'active' | 'stale'
+  /** 被标 stale 的来源章节号 */
+  staleFrom?: number | null
 }
 
 // ── 节点位置（前端画布节点坐标持久化）──
@@ -2190,6 +2207,7 @@ export type CreationPhase =
   | 'directing'
   | 'checkpoint_narrative'
   | 'writing'
+  | 'acting'
   | 'reviewing'
   | 'checkpoint_review'
   | 'revising'
@@ -2308,6 +2326,13 @@ export interface AgentOutput {
   thinking?: string
   /** 是否已收到正文 delta（true 后前端展示 content 而非 thinking） */
   hasStreamedText?: boolean
+  /** 角色结构化演出回合的私有判断（用户/Writer 可见，其他角色不可见）。 */
+  actorTurn?: {
+    innerThought: string
+    conflictReading: string
+    responsePlan: string
+    consequence: string
+  }
 }
 
 /** 创作流程最终结果（后端权威定义原在 chapter-finalizer.ts，迁入共享包） */
@@ -2485,6 +2510,13 @@ export interface ChapterChatMetadata {
   discussionCanResume?: boolean
   /** 群聊场景 ID */
   sceneId?: number
+  /** 角色结构化演出回合的私有判断（用户/Writer 可见）。 */
+  actorTurn?: {
+    innerThought?: string
+    conflictReading?: string
+    responsePlan?: string
+    consequence?: string
+  }
   /** 插话标记：创作流程运行中用户的中途反馈（role='user'，经插话端点落库） */
   interject?: boolean
   /** 插话消息 ID（与 SSE novel:user-message 事件 / 插话端点响应的 messageId 对齐，供前端渲染状态徽标） */

@@ -130,6 +130,29 @@ export class PromptSourceService {
     }))
   }
 
+  /** 聚合全部已爬取条目的 tags，按使用频次降序返回。 */
+  listTags(): Array<{ tag: string; count: number }> {
+    const rows = this.db
+      .prepare('SELECT tags_json FROM infinite_canvas_prompt_items')
+      .all() as Array<{ tags_json: string }>
+    const counter = new Map<string, number>()
+    for (const row of rows) {
+      try {
+        const tags = JSON.parse(row.tags_json) as string[]
+        for (const tag of tags) {
+          const trimmed = tag.trim()
+          if (!trimmed) continue
+          counter.set(trimmed, (counter.get(trimmed) ?? 0) + 1)
+        }
+      } catch {
+        /* skip malformed */
+      }
+    }
+    return [...counter.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count)
+  }
+
   toggleSource(id: string, enabled: boolean): void {
     this.db.prepare('UPDATE infinite_canvas_prompt_sources SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
   }

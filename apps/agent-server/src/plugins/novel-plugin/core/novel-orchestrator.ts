@@ -3086,6 +3086,7 @@ export class NovelOrchestrator {
             releaseByChapter: h.releaseByChapter,
           })),
           rhythmConstraint: constraints.rhythmConstraint,
+          beatConstraint: constraints.beatConstraint ?? null,
           povCharacters: narrativeTask.povCharacters,
           sceneCount: narrativeTask.sceneCount,
           timeOffset: narrativeTask.timeOffset,
@@ -3213,6 +3214,19 @@ export class NovelOrchestrator {
         boundary,
       )
       if (writerFactPack) suffixContext += `${suffixContext ? '\n\n---\n\n' : ''}${writerFactPack}`
+    }
+    // 专家团场景聚焦：身份段保留全部启用专家的简版卡（跨章缓存稳定），
+    // 这里把与本章主导场景最相关的团队维度专家放大成完整手法卡。
+    // 尊重本次召集选择（styleExpertIds），未召集的专家不放大。
+    if (agentType === 'writer') {
+      const sceneExpertFocus = this.promptBuilder.buildWriterSceneExpertFocus(
+        projectId,
+        suffixNarrativeTask.description,
+        options.styleExpertIds,
+      )
+      if (sceneExpertFocus) {
+        suffixContext += `${suffixContext ? '\n\n---\n\n' : ''}${sceneExpertFocus}`
+      }
     }
     metricCollector.add('suffix', 'suffix', suffixContext, 'full')
 

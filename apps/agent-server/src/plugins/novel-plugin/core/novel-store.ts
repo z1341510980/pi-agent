@@ -597,7 +597,12 @@ export class NovelStore implements NovelPromptStores {
       if (chapter.status !== 'review') {
         throw new Error(`只有待审章节可以发布，当前状态为 ${chapter.status}`)
       }
-      return this.chapter.updateChapter(id, { status: 'published' })
+      const published = this.chapter.updateChapter(id, { status: 'published' })
+      if (published) {
+        // 同事务内确认该章节拍（幂等）：节拍状态与章节发布事实保持一致
+        this.beatPlans.confirmBeatForChapter(published.projectId, published.chapterNumber)
+      }
+      return published
     })
   }
   listChapterVersions(chapterId: string): ChapterVersionSummary[] { return this.chapter.listChapterVersions(chapterId) }
@@ -698,6 +703,13 @@ export class NovelStore implements NovelPromptStores {
     return this.beatPlans.replaceVolumePlan(projectId, volumeNumber, beats)
   }
   getBeat(id: string): NovelBeatPlan | undefined { return this.beatPlans.getBeat(id) }
+  upsertChapterBeatPlan(
+    projectId: string,
+    volumeNumber: number,
+    input: BeatPlanInput
+  ): NovelBeatPlan | undefined {
+    return this.beatPlans.upsertChapterPlan(projectId, volumeNumber, input)
+  }
   getBeatByChapter(projectId: string, chapterNumber: number): NovelBeatPlan | undefined {
     return this.beatPlans.getBeatByChapter(projectId, chapterNumber)
   }
@@ -1164,7 +1176,13 @@ export class NovelStore implements NovelPromptStores {
       origin,
     })
   }
-  listCharacterHistory(projectId: string, characterId?: string): NovelCharacterHistory[] { return this.character.listCharacterHistory(projectId, characterId) }
+  listCharacterHistory(
+    projectId: string,
+    characterId?: string,
+    options?: { includeStale?: boolean }
+  ): NovelCharacterHistory[] {
+    return this.character.listCharacterHistory(projectId, characterId, options)
+  }
   getRelationship(relationshipId: string): NovelRelationship | undefined { return this.character.getRelationship(relationshipId) }
   createRelationship(rel: Omit<NovelRelationship, 'createdAt' | 'updatedAt'>): NovelRelationship {
     this.assertCharacterBelongsToProject(rel.characterA, rel.projectId)

@@ -372,6 +372,9 @@ describe('App shell', () => {
     // 验证语言选项存在
     expect(screen.getByRole('combobox', { name: '语言' })).toBeTruthy()
 
+    // 验证 Agent 终端选项存在
+    expect(screen.getByRole('combobox', { name: '终端执行器' })).toBeTruthy()
+
     // 验证数据目录和工作目录显示
     expect(screen.getByText('工作目录（PI_CWD）')).toBeTruthy()
   })

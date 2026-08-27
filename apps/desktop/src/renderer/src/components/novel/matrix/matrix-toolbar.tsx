@@ -21,6 +21,8 @@ import {
   ShieldQuestion,
   Inbox,
   MessageSquareText,
+  Search,
+  X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -67,6 +69,9 @@ export interface MatrixToolbarProps {
   onOpenAnnotations?: () => void
   /** 待确认事件数（审校下拉角标） */
   pendingEventCount?: number
+  /** 搜索关键字（从 MatrixLegend 迁入，受控由 MatrixWorkspace 持有） */
+  searchQuery?: string
+  onSearchChange?: (next: string) => void
 }
 
 const FILTER_OPTIONS: Array<{ key: MatrixEntityKind | null; label: string }> = [
@@ -102,6 +107,8 @@ export function MatrixToolbar({
   onOpenPendingEvents,
   onOpenAnnotations,
   pendingEventCount = 0,
+  searchQuery = '',
+  onSearchChange,
 }: MatrixToolbarProps): ReactElement {
   const zoomPct = Math.round((cellWidth / 56) * 100)
   const hasReviewEntries =
@@ -245,6 +252,35 @@ export function MatrixToolbar({
         {/* 弹性间距 */}
         <div className="flex-1" aria-hidden="true" />
 
+        {/* 搜索（从 MatrixLegend 迁入） */}
+        {onSearchChange && (
+          <div className="relative w-36 shrink-0">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-hint pointer-events-none" aria-hidden="true" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="搜索实体…"
+              className="w-full h-6 pl-6 pr-5 rounded-md bg-surface-2 border border-border text-nano text-text placeholder:text-hint focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors"
+              aria-label="搜索实体"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => onSearchChange('')}
+                className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex size-4 items-center justify-center rounded text-hint hover:bg-muted hover:text-text transition-colors"
+                aria-label="清除搜索"
+                title="清除"
+              >
+                <X className="size-2.5" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* 分隔：搜索 | 缩放 */}
+        <div className="mx-1.5 h-4 w-px bg-border/70 shrink-0" aria-hidden="true" />
+
         {/* 缩放组（紧凑：- 百分比 +） */}
         <div className="inline-flex items-center gap-0.5 shrink-0" aria-label="矩阵缩放">
           <button type="button" className={iconBtn} onClick={onZoomOut} title="缩小 (Ctrl+滚轮)" aria-label="缩小" disabled={cellWidth <= 24}>
@@ -258,42 +294,40 @@ export function MatrixToolbar({
           </button>
         </div>
 
-        {/* 分隔：缩放 | 筛选 */}
-        <div className="mx-1.5 h-4 w-px bg-border/70 shrink-0" aria-hidden="true" />
+      </div>
 
-        {/* 筛选 chips（紧凑胶囊） */}
-        <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-none shrink-0" role="group" aria-label="实体类型筛选">
-          {FILTER_OPTIONS.map((opt) => {
-            const active = activeFilter === opt.key
-            const color = opt.key ? GROUP_META[opt.key].color : undefined
-            return (
-              <button
-                key={opt.key ?? 'all'}
-                type="button"
-                onClick={() => onFilterChange(opt.key)}
-                aria-pressed={active}
-                className={cn(
-                  'inline-flex h-6 items-center gap-1 px-2 rounded-full text-nano whitespace-nowrap transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
-                  active
-                    ? color
-                      ? 'text-white border border-transparent'
-                      : 'text-text bg-surface-3 border border-border'
-                    : 'text-muted-foreground border border-transparent hover:text-text hover:bg-muted',
-                )}
-                style={active && color ? { background: color } : undefined}
-                title={opt.key ? `只显示${opt.label}` : '显示全部'}
-              >
-                {color && (
-                  <span
-                    className={cn('w-1.5 h-1.5 rounded-full shrink-0', active && 'bg-white/90')}
-                    style={!active ? { background: color } : undefined}
-                  />
-                )}
-                {opt.label}
-              </button>
-            )
-          })}
-        </div>
+      {/* 筛选 chips：独立行，宽度不足时自动换行 */}
+      <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-t border-border/50 text-xs" role="group" aria-label="实体类型筛选">
+        {FILTER_OPTIONS.map((opt) => {
+          const active = activeFilter === opt.key
+          const color = opt.key ? GROUP_META[opt.key].color : undefined
+          return (
+            <button
+              key={opt.key ?? 'all'}
+              type="button"
+              onClick={() => onFilterChange(opt.key)}
+              aria-pressed={active}
+              className={cn(
+                'inline-flex h-6 items-center gap-1 px-2 rounded-full text-nano whitespace-nowrap transition-[color,background-color,border-color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 shrink-0',
+                active
+                  ? color
+                    ? 'text-white border border-transparent'
+                    : 'text-text bg-surface-3 border border-border'
+                  : 'text-muted-foreground border border-transparent hover:text-text hover:bg-muted',
+              )}
+              style={active && color ? { background: color } : undefined}
+              title={opt.key ? `只显示${opt.label}` : '显示全部'}
+            >
+              {color && (
+                <span
+                  className={cn('w-1.5 h-1.5 rounded-full shrink-0', active && 'bg-white/90')}
+                  style={!active ? { background: color } : undefined}
+                />
+              )}
+              {opt.label}
+            </button>
+          )
+        })}
       </div>
     </div>
   )

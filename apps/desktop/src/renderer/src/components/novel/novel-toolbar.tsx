@@ -1,17 +1,6 @@
 import { useCallback, type ChangeEvent, type ReactElement } from 'react'
 import { useReactFlow, type Edge as XYEdge } from '@xyflow/react'
-import {
-  Maximize,
-  Trash2,
-  Share2,
-  Route,
-  Eraser,
-  LayoutGrid,
-  ShieldQuestion,
-  GitBranch,
-  Network,
-  PenLine,
-} from 'lucide-react'
+import { Maximize, Trash2, Share2, Route, Eraser, LayoutGrid, Network } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useNovelDataStore } from '@/stores/novel-data-store'
@@ -20,10 +9,9 @@ import {
   findGraphNeighbors,
   findGraphPath,
   type NovelEdgeType,
-  type NovelNodeTypeName,
+  type NovelNodeTypeName
 } from '@/api/novel-client'
 import { toast, toastError, toastSuccess } from '@/hooks/use-toast'
-import type { ReviewPanelKind } from './novel-review-center'
 import { useCanvasNodeDeletion } from './canvas/use-node-deletion'
 
 // ── 手动连线可选的关系类型 ──
@@ -38,25 +26,14 @@ const RELATION_TYPES: { value: NovelEdgeType; label: string }[] = [
   { value: 'subordinate', label: '隶属' },
   { value: 'trigger', label: '触发' },
   { value: 'causality', label: '因果' },
-  { value: 'relationship', label: '关系' },
+  { value: 'relationship', label: '关系' }
 ]
 
 export interface NovelToolbarProps {
   /** 触发重新布局 */
   onRelayout: () => void
-  /**
-   * 审校面板快捷入口：路由到右栏「审校」Tab 并打开对应面板。
-   * 面板本体挂载在 NovelReviewCenter（唯一挂载点），此处不再重复实例化。
-   */
-  onOpenReview?: (kind: ReviewPanelKind | null) => void
-  /** 待审实体数（角标，由 workspace 级 useReviewCounts 提供） */
-  reviewBadge?: number
 }
-export function NovelToolbar({
-  onRelayout,
-  onOpenReview,
-  reviewBadge = 0,
-}: NovelToolbarProps): ReactElement {
+export function NovelToolbar({ onRelayout }: NovelToolbarProps): ReactElement {
   const currentProjectId = useNovelDataStore((s) => s.currentProjectId)
   const selectedNodeId = useNovelUiStore((s) => s.selectedNodeId)
   const selectedNodeType = useNovelUiStore((s) => s.selectedNodeType)
@@ -87,7 +64,7 @@ export function NovelToolbar({
   /** 把 entityId + entityType 转为 xyflow node id（"type:id"） */
   const toNodeId = useCallback(
     (entityId: string, entityType: NovelNodeTypeName): string => `${entityType}:${entityId}`,
-    [],
+    []
   )
 
   /** 从 store 中查找实体名称（用于 toast 提示） */
@@ -112,7 +89,7 @@ export function NovelToolbar({
           return entityId
       }
     },
-    [characters, conflicts, factions, locations, worldElements, foreshadows],
+    [characters, conflicts, factions, locations, worldElements, foreshadows]
   )
 
   // ── 高亮邻居：调用 graph API，高亮选中节点 + 所有邻居节点 + 相关边 ──
@@ -136,10 +113,7 @@ export function NovelToolbar({
         }
       }
       setHighlight([...neighborNodeIds], matchedEdgeIds)
-      toastSuccess(
-        `已高亮 ${graphEdges.length} 条关系`,
-        `涉及 ${neighborNodeIds.size} 个节点`,
-      )
+      toastSuccess(`已高亮 ${graphEdges.length} 条关系`, `涉及 ${neighborNodeIds.size} 个节点`)
     } catch (err) {
       toastError('高亮邻居失败', err instanceof Error ? err.message : undefined)
     }
@@ -156,7 +130,7 @@ export function NovelToolbar({
       toast({
         title: '已选起点',
         description: `${name}，请选择终点节点后再次点击"查找路径"`,
-        duration: 6000,
+        duration: 6000
       })
       return
     }
@@ -171,7 +145,7 @@ export function NovelToolbar({
     // 第二步：调用 API 查路径
     const fromId = pathFindSourceId
     const toId = selectedNodeId
-    setPathFindSource(null)  // 立即清空，避免重复触发
+    setPathFindSource(null) // 立即清空，避免重复触发
     try {
       const path = await findGraphPath(fromId, toId, 6)
       if (!path.found || path.nodes.length === 0) {
@@ -186,21 +160,25 @@ export function NovelToolbar({
         const s = pathNodeIds[i]
         const t = pathNodeIds[i + 1]
         const found = allEdges.find(
-          (e) =>
-            (e.source === s && e.target === t) ||
-            (e.source === t && e.target === s),
+          (e) => (e.source === s && e.target === t) || (e.source === t && e.target === s)
         )
         if (found) matchedEdgeIds.push(found.id)
       }
       setHighlight(pathNodeIds, matchedEdgeIds)
-      toastSuccess(
-        `找到路径`,
-        `共 ${path.nodes.length} 个节点 · ${path.edges.length} 条边`,
-      )
+      toastSuccess(`找到路径`, `共 ${path.nodes.length} 个节点 · ${path.edges.length} 条边`)
     } catch (err) {
       toastError('查找路径失败', err instanceof Error ? err.message : undefined)
     }
-  }, [selectedNodeId, selectedNodeType, pathFindSourceId, setPathFindSource, findEntityName, toNodeId, getEdges, setHighlight])
+  }, [
+    selectedNodeId,
+    selectedNodeType,
+    pathFindSourceId,
+    setPathFindSource,
+    findEntityName,
+    toNodeId,
+    getEdges,
+    setHighlight
+  ])
 
   const handleClearHighlight = useCallback(() => {
     clearHighlight()
@@ -211,7 +189,7 @@ export function NovelToolbar({
     (e: ChangeEvent<HTMLSelectElement>) => {
       setCanvasEdgeType(e.target.value as NovelEdgeType)
     },
-    [setCanvasEdgeType],
+    [setCanvasEdgeType]
   )
 
   // ── 删除当前选中节点（P2-2b：与画布共用 useCanvasNodeDeletion）──
@@ -229,7 +207,11 @@ export function NovelToolbar({
       data-tour="canvas-toolbar"
     >
       {/* 布局模式切换：分组（按类型分区）/ 图谱（力导向聚类） */}
-      <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg" role="group" aria-label="画布布局模式">
+      <div
+        className="inline-flex items-center gap-0.5 p-0.5 bg-surface-2 rounded-lg"
+        role="group"
+        aria-label="画布布局模式"
+      >
         <Button
           size="sm"
           variant={canvasLayoutMode === 'grouped' ? 'default' : 'ghost'}
@@ -330,9 +312,7 @@ export function NovelToolbar({
           className={cn(!hasSelection && 'opacity-50')}
         >
           <Route className="size-3.5" />
-          <span className="hidden sm:inline">
-            {pathFindSourceId ? '选终点' : '路径'}
-          </span>
+          <span className="hidden sm:inline">{pathFindSourceId ? '选终点' : '路径'}</span>
         </Button>
         <Button
           size="icon-sm"
@@ -345,54 +325,6 @@ export function NovelToolbar({
           <Eraser className="size-3.5" />
         </Button>
       </div>
-
-      <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-
-      {/* 审校入口（P1-1 收敛）：路由到右栏「审校」Tab，面板本体在 NovelReviewCenter 唯一挂载 */}
-      {onOpenReview && (
-        <>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onOpenReview('candidate')}
-            disabled={noProject}
-            title="查看 Memory 提出、待你确认的新冲突/线索候选"
-            className="relative"
-          >
-            <ShieldQuestion className="size-3.5" />
-            <span className="hidden sm:inline">待审实体</span>
-            {reviewBadge > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-medium text-white">
-                {reviewBadge > 99 ? '99+' : reviewBadge}
-              </span>
-            )}
-          </Button>
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onOpenReview('track')}
-            disabled={noProject}
-            title="查看故事线如何被逐章推进（剧情推进轨道）"
-          >
-            <GitBranch className="size-3.5" />
-            <span className="hidden sm:inline">剧情轨道</span>
-          </Button>
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onOpenReview('revision')}
-            disabled={noProject}
-            title="编辑故事线/场景规范事实（草稿→审核→批准→回滚）并重建矩阵"
-          >
-            <PenLine className="size-3.5" />
-            <span className="hidden sm:inline">修订</span>
-          </Button>
-        </>
-      )}
-
-      <div className={cn('mx-1 h-5 w-px bg-border', !onOpenReview && 'hidden')} aria-hidden="true" />
     </div>
   )
 }

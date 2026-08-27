@@ -67,5 +67,26 @@ export const infiniteCanvasMigrations: MigrationDefinition[] = [
       );
       CREATE INDEX IF NOT EXISTS idx_prompt_items_source ON infinite_canvas_prompt_items(source_id);
     `
+  },
+  {
+    id: '119_create_infinite_canvas_media_settings',
+    sql: `
+      CREATE TABLE IF NOT EXISTS infinite_canvas_media_settings (
+        id TEXT PRIMARY KEY DEFAULT 'default',
+        image_base_url TEXT NOT NULL DEFAULT '',
+        image_api_key TEXT NOT NULL DEFAULT '',
+        image_model TEXT NOT NULL DEFAULT '',
+        image_size TEXT NOT NULL DEFAULT '1024x1024',
+        updated_at INTEGER
+      )
+    `
+  },
+  {
+    id: '120_add_infinite_canvas_media_protocol',
+    sql: `
+      ALTER TABLE infinite_canvas_media_settings ADD COLUMN image_protocol TEXT NOT NULL DEFAULT 'openai-images';
+      ALTER TABLE infinite_canvas_media_settings ADD COLUMN image_resolution TEXT NOT NULL DEFAULT '';
+      ALTER TABLE infinite_canvas_media_settings ADD COLUMN image_language TEXT NOT NULL DEFAULT 'en';
+    `
   }
 ]

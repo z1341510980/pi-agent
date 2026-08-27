@@ -21,6 +21,8 @@ export class CharacterStore {
   private readonly repository: CharacterRepository
   private readonly stmtListCharacterHistoryByProject: Database.Statement
   private readonly stmtListCharacterHistoryByCharacter: Database.Statement
+  private readonly stmtListCharacterHistoryByProjectIncludingStale: Database.Statement
+  private readonly stmtListCharacterHistoryByCharacterIncludingStale: Database.Statement
 
   constructor(
     private db: Database.Database,
@@ -29,6 +31,9 @@ export class CharacterStore {
     this.repository = new CharacterRepository(createNovelDrizzleDb(db))
     this.stmtListCharacterHistoryByProject = db.prepare("SELECT * FROM novel_character_history WHERE project_id = ? AND status = 'active' ORDER BY created_at DESC")
     this.stmtListCharacterHistoryByCharacter = db.prepare("SELECT * FROM novel_character_history WHERE project_id = ? AND character_id = ? AND status = 'active' ORDER BY created_at DESC")
+    // 含 stale 变体：矩阵显示需要把「待时间线重建确认」的出场也带出来（带 status 标记）
+    this.stmtListCharacterHistoryByProjectIncludingStale = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? ORDER BY created_at DESC')
+    this.stmtListCharacterHistoryByCharacterIncludingStale = db.prepare('SELECT * FROM novel_character_history WHERE project_id = ? AND character_id = ? ORDER BY created_at DESC')
   }
 
   listCharacters(projectId: string): NovelCharacter[] {
@@ -153,10 +158,19 @@ export class CharacterStore {
     return results
   }
 
-  listCharacterHistory(projectId: string, characterId?: string): NovelCharacterHistory[] {
+  listCharacterHistory(
+    projectId: string,
+    characterId?: string,
+    options?: { includeStale?: boolean }
+  ): NovelCharacterHistory[] {
+    const includeStale = options?.includeStale === true
     const rows = characterId
-      ? this.stmtListCharacterHistoryByCharacter.all(projectId, characterId) as CharacterHistoryRow[]
-      : this.stmtListCharacterHistoryByProject.all(projectId) as CharacterHistoryRow[]
+      ? (includeStale
+          ? this.stmtListCharacterHistoryByCharacterIncludingStale.all(projectId, characterId)
+          : this.stmtListCharacterHistoryByCharacter.all(projectId, characterId)) as CharacterHistoryRow[]
+      : (includeStale
+          ? this.stmtListCharacterHistoryByProjectIncludingStale.all(projectId)
+          : this.stmtListCharacterHistoryByProject.all(projectId)) as CharacterHistoryRow[]
     return rows.map((r) => this.rowToCharacterHistory(r))
   }
 
@@ -250,6 +264,8 @@ export class CharacterStore {
       fieldName: row.field_name as NovelCharacterHistory['fieldName'],
       oldValue: row.old_value, newValue: row.new_value,
       reason: row.reason, createdAt: row.created_at,
+      status: (row as { status?: string }).status === 'stale' ? 'stale' : 'active',
+      staleFrom: (row as { stale_from?: number | null }).stale_from ?? null,
     }
   }
 }

@@ -57,6 +57,7 @@ import { GROUP_META, type MatrixEntityKind, type SidebarDragData } from '../matr
 import { type DraggableEntityType } from './sidebar-constants'
 import { EmptyHint } from './empty-hint'
 import { BeatPlanGroup } from './beat-plan-group'
+import { useBeatPlansLoader } from '@/hooks/use-beat-plans'
 
 // ── 项目分组树 ──
 
@@ -99,6 +100,8 @@ export function ProjectTree({
   onManualArrange,
   onAiArrange,
 }: ProjectTreeProps): ReactElement {
+  // 节拍表共享数据源：挂在常驻的 ProjectTree 上（分组折叠即卸载，不能依赖它加载）
+  const { reload: reloadBeats } = useBeatPlansLoader(projectId)
   const upsertConflict = useNovelDataStore((s) => s.upsertConflict)
   const upsertClue = useNovelDataStore((s) => s.upsertClue)
   const upsertForeshadow = useNovelDataStore((s) => s.upsertForeshadow)
@@ -257,6 +260,8 @@ export function ProjectTree({
           case 'chapter':
             await deleteChapter(id)
             removeChapter(id)
+            // 删章会触发后端节拍重排（章号左移），重拉保持徽标同步
+            void reloadBeats()
             break
           case 'conflict':
             await deleteConflict(id)

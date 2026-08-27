@@ -14,18 +14,29 @@ import {
   RotateCcw,
   Save,
   ShieldAlert,
+  Users,
   X
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { ModelPicker, type ModelRef } from '@/components/novel/model-picker'
 import { toastError, toastInfo, toastSuccess } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import {
+  autoBaselineFromReference,
   cancelReferenceAnalysisRun,
   compareReferenceProfileVersions,
+  distillStyleTeamDimension,
   estimateReferenceAnalysis,
   getReferenceAnalysisRun,
   getReferenceFindingEvidence,
@@ -35,15 +46,19 @@ import {
   listReferenceFindings,
   listReferenceProfileVersions,
   listReferenceRunObservations,
+  listWritingStyleExperts,
   resumeReferenceAnalysisRun,
   retryReferenceAnalysisRun,
   reviewReferenceFinding,
   batchReviewReferenceFindings,
   startReferenceAnalysisRun,
+  STYLE_TEAM_DIMENSIONS,
+  STYLE_TEAM_DIMENSION_LABELS,
   type ReferenceAnalysisRun,
   type ReferenceFindingItem,
   type ReferenceProfileDetail,
-  type ReferenceRunStage
+  type ReferenceRunStage,
+  type StyleTeamDimension
 } from '@/api/novel-client'
 
 const STAGES: ReferenceRunStage[] = [
@@ -80,17 +95,65 @@ const CATEGORY_LABEL: Record<string, string> = {
 
 const AGENT_TARGETS = ['Director', 'Writer', 'Reviser', 'Reviewer'] as const
 
+// ── 分析完成后的一键文风基线 + 专家团 ──
+
+type TeamBaselineState = 'running' | 'done' | 'full' | 'failed'
+type TeamDimState = 'pending' | 'running' | 'done' | 'skipExists' | 'skipEmpty' | 'failed'
+
+interface TeamDimProgress {
+  state: TeamDimState
+  expertName?: string
+}
+
+interface TeamProgress {
+  baseline: TeamBaselineState
+  baselineAdded: number
+  dims: Partial<Record<StyleTeamDimension, TeamDimProgress>>
+}
+
+function teamDimStatusLabel(progress: TeamDimProgress): string {
+  switch (progress.state) {
+    case 'pending':
+      return '待处理'
+    case 'running':
+      return '进行中'
+    case 'done':
+      return progress.expertName ? `已生成：${progress.expertName}` : '已生成'
+    case 'skipExists':
+      return '跳过（已存在）'
+    case 'skipEmpty':
+      return '跳过（无可用手法）'
+    case 'failed':
+      return '失败'
+  }
+}
+
+function teamBaselineStatusLabel(progress: TeamProgress): string {
+  switch (progress.baseline) {
+    case 'running':
+      return '进行中'
+    case 'done':
+      return `已加入 ${progress.baselineAdded} 条基线样本`
+    case 'full':
+      return '跳过（正向样本已满）'
+    case 'failed':
+      return '失败（不阻塞专家团）'
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // P4：远端分析
 // ═══════════════════════════════════════════════════════════════
 
 interface ReferenceRunSectionProps {
+  projectId: string
   sourceId: string | null
   parsed: boolean
   onProfileReady: (profileId: string) => void
 }
 
 export function ReferenceRunSection({
+  projectId,
   sourceId,
   parsed,
   onProfileReady
@@ -110,6 +173,16 @@ export function ReferenceRunSection({
   const [run, setRun] = useState<ReferenceAnalysisRun | null>(null)
   const [observations, setObservations] = useState<string>('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // 分析完成后的文风基线 + 专家团确认框
+  const [teamDialogOpen, setTeamDialogOpen] = useState(false)
+  const [teamModel, setTeamModel] = useState<ModelRef | null>(null)
+  const [teamChecked, setTeamChecked] = useState<Set<StyleTeamDimension>>(
+    () => new Set(STYLE_TEAM_DIMENSIONS)
+  )
+  const [teamRunning, setTeamRunning] = useState(false)
+  const [teamProgress, setTeamProgress] = useState<TeamProgress | null>(null)
+  const teamAutoPromptedRef = useRef(false)
 
   const active = run !== null && ['queued', 'running'].includes(run.status)
 
@@ -170,6 +243,155 @@ export function ReferenceRunSection({
       cancelled = true
     }
   }, [sourceId, parsed, loadObservations])
+
+  // 换源后重置一键团队生成相关状态：自动弹框额度与进度按源隔离
+  useEffect(() => {
+    teamAutoPromptedRef.current = false
+    setTeamDialogOpen(false)
+    setTeamProgress(null)
+    setTeamModel(null)
+  }, [sourceId])
+
+  // 分析到达待审核/完成且带章节范围时：无该源团队则自动弹一次确认框；有团队则仅展示手动入口按钮
+  useEffect(() => {
+    if (
+      !run ||
+      (run.status !== 'awaiting_review' && run.status !== 'completed') ||
+      run.includedSectionIds.length === 0
+    ) {
+      return
+    }
+    let cancelled = false
+    listWritingStyleExperts(projectId)
+      .then((experts) => {
+        if (cancelled) return
+        const hasTeam = experts.some((expert) => expert.teamKey === sourceId)
+        if (!hasTeam && !teamAutoPromptedRef.current) {
+          teamAutoPromptedRef.current = true
+          setTeamDialogOpen(true)
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [run?.status, run?.id, run?.includedSectionIds?.length, projectId, sourceId])
+
+  // 打开确认框时用本次 run 的模型预填蒸馏模型
+  useEffect(() => {
+    if (!teamDialogOpen || teamModel || !run?.providerId || !run?.modelId) return
+    setTeamModel({ provider: run.providerId, modelId: run.modelId, thinkingLevel: null })
+  }, [teamDialogOpen, teamModel, run?.providerId, run?.modelId])
+
+  const teamReady =
+    run !== null &&
+    (run.status === 'awaiting_review' || run.status === 'completed') &&
+    run.includedSectionIds.length > 0
+
+  const profileEntryReady =
+    run !== null &&
+    (run.status === 'awaiting_review' || run.status === 'completed') &&
+    run.profileId !== null
+
+  const teamCheckedList = useMemo(
+    () => STYLE_TEAM_DIMENSIONS.filter((dim) => teamChecked.has(dim)),
+    [teamChecked]
+  )
+
+  const handleTeamDialogOpenChange = (next: boolean): void => {
+    if (teamRunning && !next) return
+    setTeamDialogOpen(next)
+  }
+
+  async function handleTeamGenerate(): Promise<void> {
+    if (!sourceId || !run || teamRunning) return
+    const sectionIds = run.includedSectionIds
+    const dims = teamCheckedList
+    if (dims.length === 0 || sectionIds.length === 0) return
+    setTeamRunning(true)
+    setTeamProgress({
+      baseline: 'running',
+      baselineAdded: 0,
+      dims: Object.fromEntries(dims.map((dim) => [dim, { state: 'pending' as const }]))
+    })
+    // 基线失败不阻塞专家团
+    try {
+      const result = await autoBaselineFromReference(projectId, { sourceId, sectionIds })
+      if (result.reason === 'full') {
+        toastInfo('正向样本已满，跳过基线')
+        setTeamProgress((prev) => (prev ? { ...prev, baseline: 'full' } : prev))
+      } else {
+        toastSuccess('已加入基线样本', `已加入 ${result.added} 条基线样本`)
+        setTeamProgress((prev) =>
+          prev ? { ...prev, baseline: 'done', baselineAdded: result.added } : prev
+        )
+      }
+    } catch (error) {
+      toastError('基线生成失败', error instanceof Error ? error.message : '未知错误')
+      setTeamProgress((prev) => (prev ? { ...prev, baseline: 'failed' } : prev))
+    }
+    let generated = 0
+    let skipped = 0
+    let failed = 0
+    for (const dim of dims) {
+      setTeamProgress((prev) =>
+        prev ? { ...prev, dims: { ...prev.dims, [dim]: { state: 'running' } } } : prev
+      )
+      try {
+        const result = await distillStyleTeamDimension(sourceId, {
+          sectionIds,
+          dimension: dim,
+          modelId: teamModel
+            ? { provider: teamModel.provider, modelId: teamModel.modelId }
+            : undefined
+        })
+        if (result.skipped) {
+          skipped += 1
+          setTeamProgress((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  dims: {
+                    ...prev.dims,
+                    [dim]: { state: result.reason === 'empty' ? 'skipEmpty' : 'skipExists' }
+                  }
+                }
+              : prev
+          )
+        } else {
+          generated += 1
+          setTeamProgress((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  dims: { ...prev.dims, [dim]: { state: 'done', expertName: result.expert?.name } }
+                }
+              : prev
+          )
+        }
+      } catch (error) {
+        failed += 1
+        setTeamProgress((prev) =>
+          prev ? { ...prev, dims: { ...prev.dims, [dim]: { state: 'failed' } } } : prev
+        )
+        toastError(
+          `「${STYLE_TEAM_DIMENSION_LABELS[dim]}」维度蒸馏失败`,
+          error instanceof Error ? error.message : '未知错误'
+        )
+        break
+      }
+    }
+    setTeamRunning(false)
+    const summary = `生成 ${generated} 个专家、跳过 ${skipped} 个、失败 ${failed} 个`
+    if (failed > 0) {
+      toastError(
+        '专家团生成中断',
+        `${summary}。可再次点击「开始生成」断点续传；已生成专家请到文风档案 · 专家团页签审核启用`
+      )
+    } else {
+      toastSuccess('专家团生成完成', `${summary}。请到文风档案 · 专家团页签审核启用`)
+    }
+  }
 
   const handleEstimate = (): void => {
     if (!sourceId || !model) return
@@ -383,11 +605,26 @@ export function ReferenceRunSection({
               {run.error}
             </div>
           )}
-          {(run.status === 'awaiting_review' || run.status === 'completed') && run.profileId && (
-            <Button size="sm" onClick={() => onProfileReady(run.profileId!)}>
-              <FileSearch className="size-3.5" />
-              进入档案审核
-            </Button>
+          {(teamReady || profileEntryReady) && (
+            <div className="flex flex-wrap gap-2">
+              {teamReady && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={teamRunning}
+                  onClick={() => setTeamDialogOpen(true)}
+                >
+                  <Users className="size-3.5" />
+                  生成文风基线与专家团
+                </Button>
+              )}
+              {profileEntryReady && (
+                <Button size="sm" onClick={() => onProfileReady(run.profileId!)}>
+                  <FileSearch className="size-3.5" />
+                  进入档案审核
+                </Button>
+              )}
+            </div>
           )}
         </section>
       )}
@@ -401,6 +638,115 @@ export function ReferenceRunSection({
           </pre>
         </section>
       )}
+
+      {/* 一键生成文风基线与专家团 */}
+      <Dialog open={teamDialogOpen} onOpenChange={handleTeamDialogOpenChange}>
+        <DialogContent
+          className="flex max-h-[80vh] w-[min(560px,calc(100vw-32px))] max-w-none flex-col gap-0 overflow-hidden p-0"
+          showCloseButton={!teamRunning}
+        >
+          <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-12">
+            <DialogTitle>生成文风基线与专家团</DialogTitle>
+            <DialogDescription className="text-pretty">
+              将完成两件事：① 从本源分层取样最多 5 条正向文风基线样本（已满 5 条则跳过）；②
+              按勾选维度逐个蒸馏专家（草稿态，需在文风档案中审核启用）。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+            <p className="text-xs text-muted-foreground">
+              约 {teamCheckedList.length} 次模型调用，每次注入约 2.4 万字分层样本。
+            </p>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium">蒸馏维度</span>
+                <span className="text-[11px] tabular-nums text-muted-foreground">
+                  已选 {teamCheckedList.length}/7
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {STYLE_TEAM_DIMENSIONS.map((dim) => (
+                  <label
+                    key={dim}
+                    className={cn(
+                      'flex items-center gap-2 rounded-md px-2 py-1.5',
+                      teamRunning ? 'opacity-60' : 'cursor-pointer hover:bg-muted'
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      className="size-3.5 accent-[var(--primary)]"
+                      checked={teamChecked.has(dim)}
+                      disabled={teamRunning}
+                      onChange={(event) => {
+                        const next = new Set(teamChecked)
+                        if (event.target.checked) next.add(dim)
+                        else next.delete(dim)
+                        setTeamChecked(next)
+                      }}
+                    />
+                    <span className="text-xs">{STYLE_TEAM_DIMENSION_LABELS[dim]}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className={cn('space-y-1.5', teamRunning && 'pointer-events-none opacity-60')}>
+              <ModelPicker value={teamModel} onChange={setTeamModel} label="蒸馏模型" />
+            </div>
+
+            {teamProgress && (
+              <div className="space-y-1.5 rounded-md border p-3 text-xs">
+                <div className="flex items-center gap-1.5 font-medium">
+                  进度{' '}
+                  {
+                    teamCheckedList.filter((dim) => {
+                      const state = teamProgress.dims[dim]?.state
+                      return state !== undefined && state !== 'pending'
+                    }).length
+                  }
+                  /{teamCheckedList.length}
+                  {teamRunning && <LoaderCircle className="size-3 animate-spin" />}
+                </div>
+                <div className="text-muted-foreground">
+                  基线样本：{teamBaselineStatusLabel(teamProgress)}
+                </div>
+                {teamCheckedList.map((dim) => {
+                  const progress = teamProgress.dims[dim]
+                  if (!progress) return null
+                  return (
+                    <div key={dim} className="text-muted-foreground">
+                      {STYLE_TEAM_DIMENSION_LABELS[dim]}：{teamDimStatusLabel(progress)}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="shrink-0 border-t border-border px-5 py-3">
+            <Button
+              variant="outline"
+              disabled={teamRunning}
+              onClick={() => setTeamDialogOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              disabled={teamCheckedList.length === 0 || teamRunning}
+              onClick={() => void handleTeamGenerate()}
+            >
+              {teamRunning ? (
+                <LoaderCircle className="size-3.5 animate-spin" />
+              ) : (
+                <Users className="size-3.5" />
+              )}
+              {teamRunning ? '生成中…' : `开始生成（${teamCheckedList.length} 个维度）`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

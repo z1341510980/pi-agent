@@ -204,6 +204,20 @@ export function MessageBubble({ message, compact = false }: MessageBubbleProps) 
           </div>
         ) : null}
 
+        {message.actorTurn ? (
+          <details className="max-w-full rounded-md border border-border/60 bg-surface-2/60">
+            <summary className="cursor-pointer select-none px-2.5 py-1 text-[10px] font-medium text-muted-foreground hover:text-text">
+              角色判断与应对
+            </summary>
+            <div className="space-y-1 border-t border-border/50 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+              {message.actorTurn.innerThought ? <div><b>内心判断：</b>{message.actorTurn.innerThought}</div> : null}
+              {message.actorTurn.conflictReading ? <div><b>冲突判断：</b>{message.actorTurn.conflictReading}</div> : null}
+              {message.actorTurn.responsePlan ? <div><b>应对方案：</b>{message.actorTurn.responsePlan}</div> : null}
+              {message.actorTurn.consequence ? <div><b>即时后果：</b>{message.actorTurn.consequence}</div> : null}
+            </div>
+          </details>
+        ) : null}
+
         {/* 错误信息 */}
         {isError && message.error ? (
           <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">

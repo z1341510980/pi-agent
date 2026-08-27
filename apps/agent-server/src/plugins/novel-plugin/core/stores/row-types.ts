@@ -302,6 +302,12 @@ export interface StyleExpertRow {
   anti_patterns_json: string | null
   /** 迁移 118：这套能力覆盖不到的场景 */
   boundaries_json: string | null
+  /** 迁移 119：专家团维度（scene_craft 等；手动/历史专家为空） */
+  dimension: string | null
+  /** 迁移 119：团队键（通常为 referenceSourceId；手动/历史专家为空） */
+  team_key: string | null
+  /** 迁移 119：审核状态；团队自动生成先落 draft，历史行默认 approved */
+  review_status: string
   custom_prompt: string | null
   enabled: number
   sort_order: number

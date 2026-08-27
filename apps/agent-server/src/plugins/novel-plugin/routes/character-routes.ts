@@ -169,17 +169,21 @@ const aiGenerateCharacterSchema = z.object({
       const history = store.listCharacterHistory(
         request.params.projectId,
         request.params.characterId,
+        { includeStale: request.query?.includeStale === '1' }
       )
       return success(history, request.traceId)
     },
   })
 
   // 项目级角色历史：用于 data_changed SSE 事件后全量刷新（不传 characterId 返回项目全部）
+  // ?includeStale=1 时把「待时间线重建确认」的 stale 出场也带出来（矩阵显示用，附 status 标记）
   routes.push({
     method: 'GET',
     path: '/projects/:projectId/character-history',
     handler: async (request: any) => {
-      const history = store.listCharacterHistory(request.params.projectId)
+      const history = store.listCharacterHistory(request.params.projectId, undefined, {
+        includeStale: request.query?.includeStale === '1'
+      })
       return success(history, request.traceId)
     },
   })

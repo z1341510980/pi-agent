@@ -6,6 +6,14 @@ import { createInfiniteCanvasRoutes } from './routes.js'
 import { InfiniteCanvasStore } from './store.js'
 import type { AnyCanvasNodeType } from './types.js'
 import { createPromptSourceService } from './prompt-source-service.js'
+import { CanvasMediaSettingsService } from './media-settings.js'
+import {
+  defaultImageModelForBaseUrl,
+  defaultImageModelForProtocol,
+  normalizeImageBaseUrl,
+  requestImageEdit,
+  requestImageGeneration
+} from '../../core/config/media-generator.js'
 import {
   applyCanvasAgentOperations,
   summarizeCanvasAgentOperations,
@@ -52,6 +60,117 @@ export function createInfiniteCanvasPlugin(): Plugin {
       const store = new InfiniteCanvasStore(context.db)
       context.registerService('infiniteCanvasStore', store)
       const promptSourceService = createPromptSourceService(context.db, context)
+      const mediaSettings = new CanvasMediaSettingsService(context.db)
+      const imageLogger = context.logger.child({ module: 'infinite-canvas-image' })
+
+      /** 画布独立生图：优先用画布自己的 Base URL + Key，否则走宿主 Provider。 */
+      const generateImageWithOverride = async (input: {
+        prompt: string
+        references?: string[]
+        model?: string
+        size?: string
+        count?: number
+        traceId?: string
+        signal?: AbortSignal
+      }): Promise<{ images: string[] }> => {
+        const settings = mediaSettings.get()
+        const hasOverride = Boolean(settings.imageBaseUrl && settings.imageApiKey)
+        const baseUrl = hasOverride ? normalizeImageBaseUrl(settings.imageBaseUrl) : ''
+        const modelId =
+          input.model ||
+          settings.imageModel ||
+          (hasOverride ? defaultImageModelForProtocol(settings.imageProtocol, baseUrl) : undefined)
+
+        if (input.references?.length && hasOverride) {
+          const [image, ...images] = input.references
+          return requestImageEdit({
+            context: {
+              baseUrl,
+              modelId: modelId || defaultImageModelForProtocol(settings.imageProtocol, baseUrl),
+              mediaProtocol: settings.imageProtocol,
+              mediaResolution: settings.imageResolution,
+              mediaLanguage: settings.imageLanguage,
+              headers: { Authorization: `Bearer ${settings.imageApiKey}` }
+            },
+            prompt: input.prompt,
+            image,
+            images,
+            size: input.size || settings.imageSize,
+            signal: input.signal,
+            logger: imageLogger,
+            traceId: input.traceId
+          })
+        }
+        if (input.references?.length) {
+          if (!context.media?.editImage) throw new Error('图像编辑 Provider 尚未配置')
+          return context.media.editImage({
+            prompt: input.prompt,
+            image: input.references[0],
+            images: input.references.slice(1),
+            model: input.model,
+            size: input.size,
+            signal: input.signal
+          })
+        }
+        if (hasOverride) {
+          const size = input.size || settings.imageSize || (settings.imageProtocol === 'apimart' ? '1:1' : '1024x1024')
+          return requestImageGeneration({
+            context: {
+              baseUrl,
+              modelId: modelId || defaultImageModelForProtocol(settings.imageProtocol, baseUrl),
+              mediaProtocol: settings.imageProtocol,
+              mediaResolution: settings.imageResolution,
+              mediaLanguage: settings.imageLanguage,
+              headers: { Authorization: `Bearer ${settings.imageApiKey}` }
+            },
+            prompt: input.prompt,
+            size,
+            count: input.count ?? 1,
+            signal: input.signal,
+            logger: imageLogger,
+            traceId: input.traceId
+          })
+        }
+        if (!context.media) throw new Error('图片 Provider 尚未配置，请在设置中添加 Provider 或在画布中配置生图 API')
+        return context.media.generateImage(input)
+      }
+
+      const editImageWithOverride = async (input: {
+        prompt: string
+        image: string
+        images?: string[]
+        mask?: string
+        model?: string
+        size?: string
+        traceId?: string
+        signal?: AbortSignal
+      }): Promise<{ images: string[] }> => {
+        const settings = mediaSettings.get()
+        if (settings.imageBaseUrl && settings.imageApiKey) {
+          const baseUrl = normalizeImageBaseUrl(settings.imageBaseUrl)
+          return requestImageEdit({
+            context: {
+              baseUrl,
+              modelId: input.model || settings.imageModel || defaultImageModelForProtocol(settings.imageProtocol, baseUrl),
+              mediaProtocol: settings.imageProtocol,
+              mediaResolution: settings.imageResolution,
+              mediaLanguage: settings.imageLanguage,
+              headers: { Authorization: `Bearer ${settings.imageApiKey}` }
+            },
+            prompt: input.prompt,
+            image: input.image,
+            images: input.images,
+            mask: input.mask,
+            size: input.size || settings.imageSize,
+            signal: input.signal,
+            logger: imageLogger,
+            traceId: input.traceId
+          })
+        }
+        if (!context.media?.editImage) throw new Error('图像编辑 Provider 尚未配置')
+        return context.media.editImage(input)
+      }
+
       for (const route of createInfiniteCanvasRoutes(
         store,
         async ({ prompt, mode, context: graphContext }) => {
@@ -68,25 +187,20 @@ export function createInfiniteCanvasPlugin(): Plugin {
             session.dispose()
           }
         },
-        ({ prompt, model, size, count, signal }) => {
-          if (!context.media) throw new Error('图片 Provider 尚未配置')
-          return context.media.generateImage({ prompt, model, size, count, signal })
-        },
+        generateImageWithOverride,
         ({ mode, prompt, model, voice, format, speed, size, seconds, signal }) => {
           if (!context.media) throw new Error('媒体 Provider 尚未配置')
           return mode === 'audio'
             ? context.media.generateAudio({ prompt, model, voice, format, speed, signal })
             : context.media.generateVideo({ prompt, model, size, seconds, signal })
         },
-        ({ prompt, image, mask, model, size, signal }) => {
-          if (!context.media?.editImage) throw new Error('图像编辑 Provider 尚未配置')
-          return context.media.editImage({ prompt, image, mask, model, size, signal })
-        },
+        editImageWithOverride,
         ({ image, instruction, model, signal }) => {
           if (!context.media?.analyzeImage) throw new Error('视觉理解 Provider 尚未配置')
           return context.media.analyzeImage({ image, instruction, model, signal })
         },
-        promptSourceService
+        promptSourceService,
+        mediaSettings
       ))
         context.registerRoute(route)
 
@@ -140,8 +254,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
               {
                 signal,
                 generate: async ({ prompt, mode, signal: generationSignal }) => {
-                  if (mode === 'image' && context.media)
-                    return context.media.generateImage({ prompt, signal: generationSignal })
+                  if (mode === 'image')
+                    return generateImageWithOverride({ prompt, signal: generationSignal })
                   const session = await context.createSession({
                     systemPrompt: '你是画布 Agent，只输出可直接写入节点的结果正文。',
                     userMessage: prompt,
@@ -274,8 +388,8 @@ export function createInfiniteCanvasPlugin(): Plugin {
           const result = await applyCanvasAgentOperations(store, project.id, ops, {
             signal: toolContext.signal,
             generate: async ({ prompt, mode, signal }) => {
-              if (mode === 'image' && context.media)
-                return context.media.generateImage({ prompt, signal })
+              if (mode === 'image')
+                return generateImageWithOverride({ prompt, signal })
               const session = await context.createSession({
                 systemPrompt: '你是画布 Agent，只输出可直接写入节点的结果正文。',
                 userMessage: prompt,

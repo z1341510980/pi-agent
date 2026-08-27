@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  ChapterOutlineDraft,
   ChapterOutlineGenerationMode,
   ChapterOutlineGenerationResult,
   NovelChapter
@@ -19,6 +20,9 @@ import {
   type LlmUsageSnapshot
 } from '../agent-run-utils.js'
 import {
+  buildChapterOutlineDraftFromSubmit,
+  createChapterOutlineSubmitTool,
+  type ChapterOutlineSubmitDraftHolder,
   hashChapterOutline,
   hashChapterOutlineContext,
   parseChapterOutlineDraft
@@ -157,6 +161,10 @@ export class ChapterOutlineGenerator {
     const generationId = randomUUID()
 
     const rolePrompt = this.promptManager.getTemplate('role-outline-planner', params.projectId)
+    // 方案 D：结构化提交工具为主路径（参数结构由 provider 约束 + SDK 校验），
+    // 文本 JSON 解析降级为 provider 不支持工具时的兜底。
+    const submitDraft: ChapterOutlineSubmitDraftHolder = {}
+    const submitTool = createChapterOutlineSubmitTool(submitDraft)
     const systemPrompt = this.promptManager.render(
       'system-base',
       {
@@ -164,7 +172,7 @@ export class ChapterOutlineGenerator {
         agent_role: rolePrompt
       },
       params.projectId
-    )
+    ) + '\n\n必须调用 submit_chapter_outline 工具提交章纲；不要在对话文本中输出 JSON。'
     const taskMessage = this.buildTaskMessage(params.mode, params.instruction)
     const contextText = JSON.stringify(outlineContext, null, 2)
     const userMessage = `${taskMessage}\n\n<chapter_outline_context>\n${contextText}\n</chapter_outline_context>`
@@ -193,8 +201,8 @@ export class ChapterOutlineGenerator {
       session = await this.context.createSession({
         systemPrompt,
         userMessage,
-        tools: [],
-        responseFormat: 'json',
+        // 挂载提交工具时不声明 responseFormat='json'（底座会注入 tool_choice='none'）
+        tools: [submitTool],
         modelId,
         temperature: directorAgent?.temperature ?? 0.4,
         timeoutMs: 180_000,
@@ -237,10 +245,37 @@ export class ChapterOutlineGenerator {
 
     try {
       rawResult = await session.prompt()
-      const draft = parseChapterOutlineDraft(rawResult, {
+      const references = {
         characters: characterNames,
         storylines: storylineNames
-      })
+      }
+      let draft: ChapterOutlineDraft
+      if (submitDraft.payload) {
+        // ── 主路径：工具提交（结构化参数经 provider 约束 + SDK 校验后闭包捕获）──
+        draft = buildChapterOutlineDraftFromSubmit(submitDraft.payload, references)
+      } else {
+        // ── 兜底：provider 未发起工具调用 → 容错解析自由文本 + 一次修复轮 ──
+        try {
+          draft = parseChapterOutlineDraft(rawResult, references)
+        } catch (firstError) {
+          if (params.signal?.aborted) throw firstError
+          this.context.logger.warn(
+            { chapterNumber: params.chapterNumber, rawHead: rawResult.slice(0, 160), err: firstError },
+            '章纲协议校验失败且未收到工具提交，发起同会话修复轮'
+          )
+          const repairedRaw = await session.prompt(
+            [
+              '你上一条回复不符合输出协议：' +
+                (firstError instanceof Error ? firstError.message : String(firstError)),
+              '',
+              '请立即调用 submit_chapter_outline 工具提交章纲；',
+              '若无法调用工具，则只输出一个合法 JSON 对象（顶层字段：version、outlineText、chapterGoal、openingState、progression、obstacles、turningPoint、endingState、hook、sceneCountEstimate、povSuggestions、storylines、continuityRisks），不要任何解释或元信息包装。'
+            ].join('\n')
+          )
+          rawResult = repairedRaw
+          draft = parseChapterOutlineDraft(repairedRaw, references)
+        }
+      }
       const resolvedModelId =
         usage?.llmProvider && usage?.llmModel
           ? `${usage.llmProvider}:${usage.llmModel}`

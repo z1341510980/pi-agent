@@ -207,6 +207,7 @@ describe('novel_ask_story policy', () => {
       buildArrangedEntitiesSection: () => '',
       buildReferenceFactPack: () => '',
       buildReviewFactPack: () => '',
+      buildWriterSceneExpertFocus: () => '',
       stripEmDash: (value: string) => value,
     }
     orchestrator.novelTools = [{ name: 'novel_ask_story', description: 'ask story' }]

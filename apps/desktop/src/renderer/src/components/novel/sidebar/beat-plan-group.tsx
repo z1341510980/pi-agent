@@ -12,46 +12,18 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import type { NovelVolume, NovelBeatPlan, BeatDramaticFunction } from '@/api/novel-client'
-import { generateVolumeBeatPlan, listBeatPlans, updateBeatPlan } from '@/api/novel-client'
+import type { NovelVolume, NovelBeatPlan } from '@/api/novel-client'
+import { generateVolumeBeatPlan, updateBeatPlan } from '@/api/novel-client'
 import { useNovelUiStore } from '@/stores/novel-ui-store'
+import { useNovelBeatStore } from '@/stores/novel-beat-store'
 import { EmptyHint } from './empty-hint'
 import { CollapsibleGroup } from './project-tree'
+import { BEAT_FUNCTION_LABELS, BEAT_FUNCTION_ACCENTS, BEAT_STATUS_LABELS } from './beat-labels'
+import { BeatEditForm, type BeatEditFormFields } from './beat-edit-form'
 
 // ── 节拍表分组（P0-1 前端入口）──
-
-const BEAT_FUNCTION_LABELS: Record<BeatDramaticFunction, string> = {
-  setup: '铺垫',
-  escalation: '递进加压',
-  false_victory: '假胜利',
-  false_defeat: '假失败',
-  midpoint_turn: '中点反转',
-  low_point: '低谷',
-  climax: '爆发',
-  payoff: '兑现爽点',
-  aftermath: '余波',
-  breather: '缓冲',
-}
-
-/** 戏剧功能配色：爆发/兑现暖色警示，低谷冷灰，反转系紫，铺垫缓冲绿蓝 */
-const BEAT_FUNCTION_ACCENTS: Record<BeatDramaticFunction, string> = {
-  setup: 'text-blue-500',
-  escalation: 'text-orange-500',
-  false_victory: 'text-violet-500',
-  false_defeat: 'text-violet-500',
-  midpoint_turn: 'text-violet-600 font-medium',
-  low_point: 'text-slate-400',
-  climax: 'text-rose-500 font-medium',
-  payoff: 'text-amber-500 font-medium',
-  aftermath: 'text-emerald-500',
-  breather: 'text-emerald-400',
-}
-
-const BEAT_STATUS_LABELS: Record<NovelBeatPlan['status'], string> = {
-  planned: '待执行',
-  confirmed: '已发布',
-  superseded: '已取代',
-}
+// 数据源是共享的 useNovelBeatStore（由 ProjectTree 上的 useBeatPlansLoader 加载），
+// 与大纲树章节行的节拍徽标同源，编辑/生成后双方同步刷新。
 
 export interface BeatPlanGroupProps {
   projectId: string
@@ -61,9 +33,10 @@ export interface BeatPlanGroupProps {
 export function BeatPlanGroup({ projectId, volumes }: BeatPlanGroupProps): ReactElement {
   const collapsedGroups = useNovelUiStore((s) => s.collapsedGroups)
   const toggleCollapsedGroup = useNovelUiStore((s) => s.toggleCollapsedGroup)
+  const beats = useNovelBeatStore((s) => s.beats)
+  const setBeats = useNovelBeatStore((s) => s.setBeats)
+  const upsertBeat = useNovelBeatStore((s) => s.upsertBeat)
 
-  const [beats, setBeats] = useState<NovelBeatPlan[]>([])
-  const [loading, setLoading] = useState(false)
   const [showGenerate, setShowGenerate] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
@@ -73,30 +46,8 @@ export function BeatPlanGroup({ projectId, volumes }: BeatPlanGroupProps): React
   const [count, setCount] = useState('6')
   const [instruction, setInstruction] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<{
-    dramaticFunction: BeatDramaticFunction
-    emotionalDebt: string
-    payoff: string
-    arcPosition: string
-    summary: string
-  } | null>(null)
+  const [editInitial, setEditInitial] = useState<BeatEditFormFields | null>(null)
   const [saving, setSaving] = useState(false)
-
-  const reload = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await listBeatPlans(projectId)
-      setBeats(result.beats)
-    } catch (err) {
-      console.error('[BeatPlanGroup] 加载节拍表失败:', err)
-    } finally {
-      setLoading(false)
-    }
-  }, [projectId])
-
-  useEffect(() => {
-    void reload()
-  }, [reload])
 
   useEffect(() => {
     if (volumes.length > 0 && !volumes.some((v) => String(v.volumeNumber) === volumeNumber)) {
@@ -122,7 +73,11 @@ export function BeatPlanGroup({ projectId, volumes }: BeatPlanGroupProps): React
         warnings: result.warnings,
       })
       setShowGenerate(false)
-      await reload()
+      // 整卷替换：保留其他卷的行，用返回结果覆盖该卷
+      const rest = useNovelBeatStore.getState().beats.filter(
+        (beat) => beat.volumeNumber !== targetVolume
+      )
+      setBeats(projectId, [...rest, ...result.beats].sort((a, b) => a.chapterNumber - b.chapterNumber))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(`节拍表生成失败：${message}`)
@@ -130,11 +85,11 @@ export function BeatPlanGroup({ projectId, volumes }: BeatPlanGroupProps): React
     } finally {
       setGenerating(false)
     }
-  }, [projectId, volumeNumber, count, instruction, reload])
+  }, [projectId, volumeNumber, count, instruction, setBeats])
 
   const startEdit = useCallback((beat: NovelBeatPlan) => {
     setEditingId(beat.id)
-    setEditForm({
+    setEditInitial({
       dramaticFunction: beat.dramaticFunction,
       emotionalDebt: beat.emotionalDebt,
       payoff: beat.payoff,
@@ -143,21 +98,24 @@ export function BeatPlanGroup({ projectId, volumes }: BeatPlanGroupProps): React
     })
   }, [])
 
-  const handleSave = useCallback(async () => {
-    if (!editingId || !editForm) return
-    setSaving(true)
-    try {
-      const updated = await updateBeatPlan(editingId, editForm)
-      setBeats((prev) => prev.map((beat) => (beat.id === updated.id ? updated : beat)))
-      setEditingId(null)
-      setEditForm(null)
-    } catch (err) {
-      console.error('[BeatPlanGroup] 保存节拍失败:', err)
-      setError('保存节拍失败，请重试')
-    } finally {
-      setSaving(false)
-    }
-  }, [editingId, editForm])
+  const handleSave = useCallback(
+    async (fields: BeatEditFormFields) => {
+      if (!editingId) return
+      setSaving(true)
+      try {
+        const updated = await updateBeatPlan(editingId, fields)
+        upsertBeat(updated)
+        setEditingId(null)
+        setEditInitial(null)
+      } catch (err) {
+        console.error('[BeatPlanGroup] 保存节拍失败:', err)
+        setError('保存节拍失败，请重试')
+      } finally {
+        setSaving(false)
+      }
+    },
+    [editingId, upsertBeat]
+  )
 
   return (
     <CollapsibleGroup
@@ -260,76 +218,21 @@ export function BeatPlanGroup({ projectId, volumes }: BeatPlanGroupProps): React
         </div>
       )}
 
-      {loading ? (
-        <EmptyHint text="加载中..." />
-      ) : beats.length === 0 ? (
+      {beats.length === 0 ? (
         <EmptyHint text="暂无节拍；先填卷纲，再点上方「生成本卷节拍表」" />
       ) : (
         beats.map((beat) =>
-          editingId === beat.id && editForm ? (
-            <div key={beat.id} className="mx-1 my-0.5 rounded-lg border border-border/60 p-2 space-y-1.5">
-              <div className="space-y-1">
-                <Label className="text-nano">戏剧功能</Label>
-                <Select
-                  value={editForm.dramaticFunction}
-                  onValueChange={(v) => setEditForm((f) => f ? { ...f, dramaticFunction: v as BeatDramaticFunction } : f)}
-                >
-                  <SelectTrigger className="w-full h-7">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(BEAT_FUNCTION_LABELS) as BeatDramaticFunction[]).map((fn) => (
-                      <SelectItem key={fn} value={fn}>{BEAT_FUNCTION_LABELS[fn]}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-nano">情绪债务</Label>
-                <Input
-                  value={editForm.emotionalDebt}
-                  onChange={(e) => setEditForm((f) => f ? { ...f, emotionalDebt: e.target.value } : f)}
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-nano">爽点/回报</Label>
-                <Input
-                  value={editForm.payoff}
-                  onChange={(e) => setEditForm((f) => f ? { ...f, payoff: e.target.value } : f)}
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-nano">核心走向</Label>
-                <Input
-                  value={editForm.summary}
-                  onChange={(e) => setEditForm((f) => f ? { ...f, summary: e.target.value } : f)}
-                  className="h-7 text-xs"
-                />
-              </div>
-              <div className="flex gap-1.5 justify-end">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-2 text-nano"
-                  onClick={() => { setEditingId(null); setEditForm(null) }}
-                  disabled={saving}
-                >
-                  取消
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-6 px-2 text-nano"
-                  onClick={handleSave}
-                  disabled={saving}
-                >
-                  {saving ? '保存中...' : '保存'}
-                </Button>
-              </div>
-            </div>
+          editingId === beat.id && editInitial ? (
+            <BeatEditForm
+              key={beat.id}
+              initial={editInitial}
+              saving={saving}
+              onSave={handleSave}
+              onCancel={() => {
+                setEditingId(null)
+                setEditInitial(null)
+              }}
+            />
           ) : (
             <button
               key={beat.id}

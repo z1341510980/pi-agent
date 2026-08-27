@@ -88,6 +88,7 @@ export function buildDiscussionHistoryMessages(
         ...(agentType ? { agentType } : {}),
         discussionMessageType: message.type,
         ...(message.sceneId !== undefined ? { sceneId: message.sceneId } : {}),
+        ...(message.actorTurn ? { actorTurn: message.actorTurn } : {}),
       },
       createdAt: message.timestamp,
     })
@@ -110,7 +111,7 @@ export function buildDiscussionHistoryMessages(
       ...commonMetadata,
       discussionMessageType: 'run_end',
       discussionRunStatus: result.status,
-      discussionCanResume: result.status === 'error' && result.failedPhase === 'chapter_weaving',
+      discussionCanResume: result.status === 'error' && result.failedPhase != null,
     },
     createdAt: lastTimestamp + 1,
   })

@@ -86,10 +86,13 @@ import {
   selectStyleExperts,
   inferSceneType,
   buildSceneSampleSection,
+  buildSceneExpertFocus,
   type WritingStylePromptTarget
 } from './writing-style-prompt-factory.js'
+import { isLengduWriterDisciplineEnabled, LENGDU_WRITER_DISCIPLINE } from './lengdu-writer-discipline.js'
 import { buildVoiceProfiles, formatVoiceContrastTable } from '../entities/character-voice.js'
 import { evaluateProseQuality } from '../quality/prose-quality-evaluator.js'
+import { WORD_COUNT_LIMITS } from '../quality/quality-policy.js'
 import { isNovelFeatureEnabled } from '../domain/novel-feature-flags.js'
 import { CHUNK_BY_ID, resolveChunkMode } from './context-chunk.js'
 import { buildStoryStateSummary, chooseEntityChunkMode } from './entity-summary.js'
@@ -942,7 +945,12 @@ export class NovelPromptBuilder {
       agentType as WritingStylePromptTarget,
       styleExpertIds,
     )
-    const final = compiledStyle ? `${result}\n\n---\n\n${compiledStyle.content}` : result
+    const withStyle = compiledStyle ? `${result}\n\n---\n\n${compiledStyle.content}` : result
+    // lengdu 写作纪律只给 Writer（非 Skill 路径与 Skill 路径行为对齐）
+    const final =
+      agentType === 'writer' && isLengduWriterDisciplineEnabled()
+        ? `${withStyle}\n\n---\n\n${LENGDU_WRITER_DISCIPLINE}`
+        : withStyle
     this.guardAgentIdentity(agentType, final)
     return final
   }
@@ -1018,7 +1026,17 @@ export class NovelPromptBuilder {
     const rules = this.promptManager.getTemplate('system-base-rules', projectId)
     const withRules = rules ? `${identity}\n\n---\n\n${rules}` : identity
     const compiledStyle = this.buildWritingStylePrompt(projectId, 'writer', styleExpertIds)
-    return compiledStyle ? `${withRules}\n\n---\n\n${compiledStyle.content}` : withRules
+    // lengdu 写作纪律（方案：写作侧接入）：与读感验收共用同一套标准，
+    // 注入静态身份层（跨章稳定，命中 prompt 缓存）。PI_LENGDU_WRITER_DISCIPLINE=off 可关。
+    const disciplineParts: string[] = []
+    if (isLengduWriterDisciplineEnabled()) {
+      disciplineParts.push(LENGDU_WRITER_DISCIPLINE)
+    }
+    const discipline = disciplineParts.join('\n\n')
+    const base = compiledStyle
+      ? `${withRules}\n\n---\n\n${compiledStyle.content}`
+      : withRules
+    return discipline ? `${base}\n\n---\n\n${discipline}` : base
   }
 
   /**
@@ -1871,7 +1889,37 @@ export class NovelPromptBuilder {
             '你必须逐项核对矩阵实体是否全部兑现，未兑现项必须在审稿报告中明确指出。'
         )
       }
+      // 本章风格决策（验收对照）：静态身份只有全书档案；高压章收紧句式、关系章
+      // 对话偏高等定位级许可只有 per-chapter 层能看到。缺了它 Reviewer 只能对照
+      // 全书均值，会把合法的场景级波动误报为"文风不一致"。
+      parts.push([
+        '## 本章风格决策（验收对照）',
+        buildStyleDecisionPack({
+          positioning: constraints.positioning ?? narrativeTask.positioning ?? null,
+          narrativeTaskType: narrativeTask.type,
+          profile: this.stores.getWritingStyleProfile?.(projectId),
+        }),
+        '以上决策中许可的变化不属于风格偏离；仅当正文违反稳定声音（人称/视角信息范围/硬约束）或完全脱离档案声音时才判失败。',
+      ].join('\n\n'))
       if (parts.length > 0) chunks.push({ chunkId: 'reviewer-rubric', content: parts.join('\n\n---\n\n') })
+    }
+
+    // ── 本章风格决策（修订对照，仅 Reviser 注入）──
+    // 修订最容易犯的错是"为风格统一修平"：高压章合法的短句节奏、关系章偏高的
+    // 对话密度被改成全书平均形态。把本章许可波动显式交给 Reviser，保住场景级差异。
+    if (agentType === 'reviser') {
+      chunks.push({
+        chunkId: 'reviser-guidance',
+        content: [
+          '## 本章风格决策（修订对照）',
+          buildStyleDecisionPack({
+            positioning: constraints.positioning ?? narrativeTask.positioning ?? null,
+            narrativeTaskType: narrativeTask.type,
+            profile: this.stores.getWritingStyleProfile?.(projectId),
+          }),
+          '修订时保持上述决策：决策许可的句长、对话密度和节奏变化不是问题，不要为了贴近档案把它们修平。',
+        ].join('\n\n'),
+      })
     }
 
     // ── 创作指令（仅 Writer 注入，其他 Agent 看到会越权写作）──
@@ -1883,6 +1931,10 @@ export class NovelPromptBuilder {
       // 无定位时不再应用节奏倍率（2026-08-12 逻辑统一：删除 computeChapterTargetWords）。
       const targetWords = constraints.wordBudget?.target
         ?? resolveWordBudget({ baseTarget: baseTargetOf(project?.targetWords) }).resolvedTarget
+      // 硬上限与 PostWriteGuard 的字数门同口径（target × bloatCeilingRatio）。
+      // 指令里明示天花板并要求按场分配预算，压第一稿的超写惯性——
+      // 否则每章都要白吃一轮"定向压缩重写"。
+      const maxWords = Math.round(targetWords * WORD_COUNT_LIMITS.bloatCeilingRatio)
       const styleDecisionPack = buildStyleDecisionPack({
         positioning: constraints.positioning ?? narrativeTask.positioning,
         narrativeTaskType: narrativeTask.type,
@@ -1901,6 +1953,7 @@ export class NovelPromptBuilder {
           narrative_task: narrativeTask.description,
           task_type: promptLabel(narrativeTask.type),
           target_words: String(targetWords),
+          max_words: String(maxWords),
           positioning_guidance: positioningGuidance,
         },
         projectId
@@ -1938,6 +1991,32 @@ export class NovelPromptBuilder {
       sceneType: inferSceneType(narrativeTaskText),
       maxSamples: 2,
       sampleMaxLength: 1600,
+    })
+  }
+
+  /**
+   * 专家团场景聚焦（迁移 119 后续）：Writer 每章的维度专家放大段。
+   *
+   * 身份段给全部启用专家各一张简版卡（跨章缓存稳定）；本方法在 per-chapter
+   * 层把与本章主导场景最相关的 2-3 个维度专家放大成完整手法卡。
+   *
+   * 只放大本次召集且带 dimension 的团队专家：styleExpertIds 与身份段同一套
+   * selectStyleExperts 过滤（undefined = 全部启用，[] = 用户明确不召集任何
+   * 专家），手动/历史蒸馏的无维度专家不参与，行为与之前一致。
+   */
+  buildWriterSceneExpertFocus(
+    projectId: string,
+    narrativeTaskText: string,
+    styleExpertIds?: string[],
+  ): string {
+    const profile = this.stores.getWritingStyleProfile?.(projectId)
+    if (!profile) return ''
+    const convened = selectStyleExperts(profile, styleExpertIds)
+    const enabled = (convened.styleExperts ?? []).filter((expert) => expert.enabled)
+    if (enabled.length === 0) return ''
+    return buildSceneExpertFocus({
+      experts: enabled,
+      sceneType: inferSceneType(narrativeTaskText),
     })
   }
 

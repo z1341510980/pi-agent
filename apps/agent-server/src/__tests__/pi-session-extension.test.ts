@@ -56,11 +56,15 @@ const mocks = vi.hoisted(() => {
     }
     return { session }
   })
+  const createBashToolDefinition = vi.fn(() => ({ name: 'bash' }))
+  const defineTool = vi.fn((tool: unknown) => tool)
 
   return {
     agent,
     session,
     createAgentSession,
+    createBashToolDefinition,
+    defineTool,
     // §10.12-1：每个线程首次创建都会新建独立 SessionManager，因此 mock 必须提供它。
     createSessionManager: vi.fn(() => ({ getSessionDir: () => '/sessions' })),
     openSessionManager: vi.fn(() => ({ getSessionDir: () => '/sessions' })),
@@ -73,6 +77,8 @@ vi.mock('@earendil-works/pi-coding-agent', () => {
       async reload() {}
     },
     createAgentSession: mocks.createAgentSession,
+    createBashToolDefinition: mocks.createBashToolDefinition,
+    defineTool: mocks.defineTool,
     SessionManager: {
       create: mocks.createSessionManager,
       open: mocks.openSessionManager,
